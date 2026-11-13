@@ -59,6 +59,14 @@ async def _run_one_heartbeat(chassis) -> dict:
     return env.payload["details"]
 
 
+@pytest.fixture(autouse=True)
+def _no_listeners(monkeypatch):
+    """Listener state is process-wide; keep other tests' listeners out of these."""
+    from orion.core.bus import resilience
+
+    monkeypatch.setattr(resilience, "_SUBSCRIPTION_STATES", {})
+
+
 @pytest.mark.asyncio
 async def test_no_provider_publishes_empty_details_unchanged() -> None:
     """Omitting heartbeat_details (every pre-existing BaseChassis caller) must keep

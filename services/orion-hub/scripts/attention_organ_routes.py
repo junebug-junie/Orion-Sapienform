@@ -53,6 +53,7 @@ from sqlalchemy import create_engine, text
 
 from orion.graph.falkor_client import RedisGraphQueryClient
 from orion.substrate.attention_self_model import ACTIVE_INFERENCE_DOMAINS
+from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
 
 from app.settings import settings
 
@@ -82,16 +83,17 @@ router = APIRouter(prefix="/api/attention-organ", tags=["attention-organ"])
 # calls "a different, louder failure", for a domain nobody should be alarmed
 # about. A retired domain belongs off the list, not in a warning state forever.
 #
-# `harness_closure` deliberately STAYS: it is excluded from the aggregate but
-# has a live producer, which is exactly what that heading is for.
+# `harness_closure` REMOVED 2026-11-11 for the same reason: its producer (a
+# fixed 0.65, never a measured size) was retired. Until the stored node is
+# deleted it still renders, as an unlisted extra row with its real age.
+#
+# `bus_synaptic` and `route` REMOVED 2026-11 (PE suite rebuild step 5), same
+# reasoning as transport above: producers, nodes and readers retired together.
 KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
     "biometrics",
-    "bus_synaptic",
     "chat",
     "codebase",
     "execution",
-    "route",
-    "harness_closure",
 )
 
 _NODE_ID_PREFIX = "node:substrate."
@@ -288,6 +290,10 @@ def build_domain_rows(
         node_id = str(row.get("node_id") or "")
         if not node_id.startswith(_NODE_ID_PREFIX):
             continue
+        # A retired node (2026-11: bus_synaptic, route) can linger in the
+        # graph; its stored value is not a reading and is not shown.
+        if is_retired_prediction_error_node(node_id):
+            continue
         domain = node_id[len(_NODE_ID_PREFIX) :]
         raw_value = row.get("prediction_error")
         try:
@@ -351,7 +357,7 @@ def build_domain_rows(
     return out
 
 
-# How much the 5-domain mean can move if exactly ONE active domain traverses
+# How much the active-domain mean (3 domains since 2026-11) can move if exactly ONE active domain traverses
 # its full [0, 1] range between the row's write and this module's graph read:
 # 1.0 / len(ACTIVE_INFERENCE_DOMAINS). Confirmed live 2026-07-30 that this is
 # not hypothetical -- `execution` and `bus_synaptic` both swing between ~0 and

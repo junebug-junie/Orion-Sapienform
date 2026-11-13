@@ -669,7 +669,7 @@ async def queue_rpc_request(
         await queue.enqueue(stream, envelope, maxlen=maxlen, extra_fields=extra_fields)
 
         async def _wait_one() -> dict:
-            async for msg in reply_bus.iter_messages(pubsub):
+            async for msg in reply_bus._iter_reply(pubsub, reply_channel):
                 return msg
 
         return await asyncio.wait_for(_wait_one(), timeout=timeout_sec)

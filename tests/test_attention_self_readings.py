@@ -33,10 +33,14 @@ def _by_id(readings):
 def test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_placeholder() -> None:
     nodes = sr.prompt_reaching_nodes()
     assert nodes == sorted([
-        "node:substrate.biometrics", "node:substrate.bus_synaptic", "node:substrate.cabinet",
+        "node:substrate.biometrics", "node:substrate.cabinet",
         "node:substrate.chat", "node:substrate.codebase", "node:substrate.execution",
-        "node:substrate.route",
+        "node:substrate.strain",
+        # forecast surprise (value_kind surprise_excess, 2026-11-11): a measurement, the body.
+        "node:prediction.body", "node:prediction.room",
     ])
+    # bus_synaptic and route retired 2026-11 (PE suite rebuild step 5).
+    assert "node:substrate.bus_synaptic" not in nodes and "node:substrate.route" not in nodes
     assert "node:substrate.perception" not in nodes  # the world, not the body
     assert "node:substrate.harness_closure" not in nodes  # placeholder
 
@@ -113,18 +117,18 @@ def test_absent_signal_is_named_unreadable_not_calm() -> None:
 
 def test_score_is_polarity_aware(monkeypatch) -> None:
     rows = fx.busy_body_rows()
-    base = _by_id(sr.build_self_readings(_cache(rows), now=NOW))["node:substrate.bus_synaptic"]
+    base = _by_id(sr.build_self_readings(_cache(rows), now=NOW))["node:substrate.biometrics"]
     assert base.score_0_10 == 10 and base.unusual
 
     real = wf.node_prediction_error_semantics
 
     def flipped(node_id):
         vk, pol = real(node_id)
-        return (vk, "higher_is_better") if node_id == "node:substrate.bus_synaptic" else (vk, pol)
+        return (vk, "higher_is_better") if node_id == "node:substrate.biometrics" else (vk, pol)
 
     monkeypatch.setattr(wf, "node_prediction_error_semantics", flipped)
     monkeypatch.setattr(sr, "node_prediction_error_semantics", flipped)
-    inv = _by_id(sr.build_self_readings(_cache(rows), now=NOW))["node:substrate.bus_synaptic"]
+    inv = _by_id(sr.build_self_readings(_cache(rows), now=NOW))["node:substrate.biometrics"]
     # At the top of its week: great if higher is better, so its bad-direction score is 0.
     assert inv.score_0_10 == 0 and not inv.unusual
 
@@ -172,12 +176,12 @@ def test_unreadable_glossary_renders_nothing(monkeypatch) -> None:
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
 def test_non_finite_latest_value_is_no_reading_never_a_measurement(bad) -> None:
-    rows = fx.busy_body_rows() + [("node:substrate.route", NOW - timedelta(seconds=3), bad)]
+    rows = fx.busy_body_rows() + [("node:substrate.codebase", NOW - timedelta(seconds=3), bad)]
     block = sr.project_self_readings(_cache(rows), now=NOW)
-    route = _by_id(block.readings)["node:substrate.route"]
-    assert route.state == "no_reading" and route.value is None and not route.unusual
+    codebase = _by_id(block.readings)["node:substrate.codebase"]
+    assert codebase.state == "no_reading" and codebase.value is None and not codebase.unusual
     assert "inf" not in block.text and "nan" not in block.text
-    assert "route (no reading)" in block.text
+    assert "codebase (no reading)" in block.text
 
 
 def test_calm_with_unread_signals_is_not_logged_all_calm() -> None:
@@ -258,7 +262,7 @@ def test_a_clause_never_attaches_to_a_calm_or_unread_signal() -> None:
 
 
 def test_the_clause_is_dropped_before_a_reading_would_be() -> None:
-    nodes = ["node:substrate.execution", "node:substrate.bus_synaptic", "node:substrate.cabinet"]
+    nodes = ["node:substrate.execution", "node:substrate.biometrics", "node:substrate.cabinet"]
     readings = sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW,
                                       associations={n: _assoc(n) for n in nodes})
     plain = sr.render_self_readings(sr.build_self_readings(_cache(fx.busy_body_rows()), now=NOW), now=NOW)
@@ -266,3 +270,32 @@ def test_the_clause_is_dropped_before_a_reading_would_be() -> None:
     assert len(block.text) <= 600
     assert block.shown == plain.shown  # every reading still shown
     assert block.text == plain.text  # three readings fill the cap: every clause gave way
+
+
+def test_stale_trigger_is_unreadable_not_no_recent_events() -> None:
+    """Strain news writes 0.0 every tick with a known regulation reading. Its last write going
+    stale means regulation was unreadable, not "no events": it must not read as calm."""
+    cut = NOW - timedelta(hours=2)
+    rows = [r for r in fx.busy_body_rows() if not (r[0] == "node:substrate.strain" and r[1] > cut)]
+    block = sr.project_self_readings(_cache(rows), now=NOW)
+    strain = next(r for r in block.readings if r.source_id == "node:substrate.strain")
+    assert strain.state == "stale"
+    assert "strain (stale)" in block.text
+    assert "No recent events: strain" not in block.text
+    calm = [r for r in fx.calm_rows() if not (r[0] == "node:substrate.strain" and r[1] > cut)]
+    assert sr.project_self_readings(_cache(calm), now=NOW).skip_reason == "calm_partial"
+
+
+def test_a_surprising_forecast_renders_in_plain_words_with_its_row_ref() -> None:
+    """node:prediction.room (value_kind surprise_excess, 2026-11-11) is ranked like a level against
+    its own week and, when high, gets a line Orion can read."""
+    rows = fx.calm_rows() + [("node:prediction.room", NOW - timedelta(seconds=40), 1.0)]
+    block = sr.project_self_readings(_cache(rows), now=NOW)
+    by = _by_id(block.readings)
+    room = by["node:prediction.room"]
+    assert room.value_kind == "surprise_excess" and room.unusual and room.state == "live"
+    assert "node:prediction.room" in block.shown
+    assert "office's temperature is surprising my own forecast" in block.text
+    assert f"[{room.ref}]" in block.text and room.ref.startswith("pe:prediction.room@")
+    # Its calm sibling stays silent.
+    assert not by["node:prediction.body"].unusual

@@ -111,13 +111,12 @@ def test_gate_catches_a_drifted_source() -> None:
         assert sum(p.startswith(f"{row_id}:") for p in problems) == 1, (row_id, problems)
 
 
-def test_bus_synaptic_row_is_capability_transport_pressure_from_bus_synaptic() -> None:
-    """The row id is a label; the metric is capability:transport.pressure, fed
-    only by node:substrate.bus_synaptic prediction_error."""
-    src = _channels()["bus_synaptic_pressure"]["source"]
-    assert src == {"layer": "m4", "vector": M4_VECTOR, "channel": "pressure"}
-    feeders = _channels_written_into(M4_VECTOR)["pressure"]
-    assert [(s, c) for s, c, _ in feeders] == [("node:substrate.bus_synaptic", "prediction_error")]
+def test_retired_bus_synaptic_row_and_edge_are_gone() -> None:
+    """Retired 2026-11 (PE suite rebuild step 5): no policy row, and nothing
+    in the topology writes capability:transport.pressure any more -- it is
+    absent (unmeasured), never a quiet 0.0."""
+    assert "bus_synaptic_pressure" not in _channels()
+    assert "pressure" not in _channels_written_into(M4_VECTOR)
 
 
 def test_retired_contract_pressure_row_is_gone() -> None:

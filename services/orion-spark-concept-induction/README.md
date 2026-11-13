@@ -80,25 +80,10 @@ cosmetic. A successful recall populates `SubstrateActResultV1.recall_outcome`
 durable SQL storage rather than only the local file-store fallback inside
 `_execute_readonly_recall`.
 
-## Real surprise signal for ActionOutcomeEmitV1 (2026-07-28)
+## ActionOutcomeEmitV1.surprise is retired (2026-11-10)
 
-Every `ActionOutcomeRefV1`/`ActionOutcomeEmitV1` this worker emits
-(`episode_fetch.py`'s readonly fetch, `policy_act.py`'s readonly recall,
-`curiosity_reuse.py`'s world-pulse-followup reuse) previously hardcoded
-`surprise` as a binary success/fail proxy (`0.0`/`1.0`) — see
-`orion/autonomy/models.py::ActionOutcomeRefV1`'s docstring. `ConceptWorker`
-now supplies a real `surprise_source` callable
-(`self._bus_synaptic_surprise_source`) to all three emit paths, backed by
-`orion.substrate.bus_synaptic_surprise.latest_bus_synaptic_prediction_error()`
-— a real, generic, already-live-validated ambient mesh-wide surprise signal
-(PR #1377, calm-floor fixed PR #1391), the same instrument
-`services/orion-execution-dispatch-runtime` uses for the same field.
-
-This is optional and fail-open: `ORION_ACTION_OUTCOME_DB_URL` (unset by
-default) gates whether `_get_surprise_engine()` ever builds a real Postgres
-connection — this service has no other Postgres dependency. Unset, absent,
-stale (see that function's staleness-guard docstring), or erroring reads all
-degrade to `None`, and every emitter's own `resolve_surprise()` falls back to
-the pre-2026-07-28 success/fail-proxy exactly as before. Set it to the same
-`conjourney` DSN `services/orion-cortex-exec` already uses for this class of
-read to turn the real signal on.
+This worker used to stamp the ambient bus_synaptic prediction error onto every
+action outcome it emitted. Nothing read it, so the stamp, its Postgres read and
+the `ORION_ACTION_OUTCOME_DB_URL` key were removed (prediction-error suite
+rebuild, retire step 1). The field stays at its 0.0 default only because the
+`action_outcomes.surprise` column is NOT NULL.

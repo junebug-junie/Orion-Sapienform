@@ -86,3 +86,22 @@ def test_producer_rows_construct_the_sql_models() -> None:
         clause="c",
     )
     assert SelfSignalOutcomeAssociationSQL(**assoc.model_dump()).verdict == "tends_more"
+
+
+def test_association_rows_have_bounded_retention() -> None:
+    """Readers need only each pair's last few hourly rows; the table no longer grows forever."""
+    from app.grammar_retention_loop import retention_days_for
+    from app.grammar_truth import GRAMMAR_RETENTION_TABLES, _EXTRA_RETENTION_TABLES, _other_retention_truth_blocks
+
+    settings = Settings(SQL_WRITER_SUBSCRIBE_CHANNELS=[])
+    assert settings.self_signal_outcome_association_retention_days == 30
+    assert retention_days_for(settings)["self_signal_outcome_association"] == 30
+    assert "self_signal_outcome_association" in dict(GRAMMAR_RETENTION_TABLES)
+    assert "self_signal_outcome_association" in _EXTRA_RETENTION_TABLES
+    assert "self_signal_outcome_association" in _other_retention_truth_blocks(settings)
+    assert "SELF_SIGNAL_OUTCOME_ASSOCIATION_RETENTION_DAYS=30" in (SERVICE_ROOT / ".env_example").read_text()
+    assert "SELF_SIGNAL_OUTCOME_ASSOCIATION_RETENTION_DAYS" in (SERVICE_ROOT / "docker-compose.yml").read_text()
+    # Every managed table keeps a >= 5 s share of the cycle budget.
+    assert settings.grammar_retention_periodic_max_cycle_sec / len(GRAMMAR_RETENTION_TABLES) >= 5.0
+    # The prune ages rows by created_at, which this table has.
+    assert "created_at" in inspect(SelfSignalOutcomeAssociationSQL).columns

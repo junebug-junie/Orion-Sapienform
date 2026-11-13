@@ -244,8 +244,59 @@ async def test_execute_unified_turn_uses_mind_appraisal_text_for_stance_not_harn
     assert "MERGE (h:HelpRequest" not in stance_req.user_message
     harness_client_run.assert_awaited_once()
     harness_req = harness_client_run.await_args.args[0]
-    assert harness_req.user_message == kickoff
+    # The full kickoff reaches the motor intact. A HelpRequest kickoff may also
+    # carry the role-teach "Mind work-shape" advisory in front of it
+    # (orion/curiosity/role_teach_disclosure.py, 2026-09-19), so not `==`.
+    assert harness_req.user_message.endswith(kickoff)
     assert "MERGE (h:HelpRequest" in harness_req.user_message
+
+
+@pytest.mark.asyncio
+async def test_execute_unified_turn_gives_stance_the_view_and_harness_the_full_prompt() -> None:
+    """A reading turn: the stance reads the task without the reader's JSON contract,
+    the motor gets the full prompt with it."""
+    full = 'Read https://example.org/a.\nRequired JSON shape: {"summary": "..."}'
+    view = "Read https://example.org/a.\n[contract withheld]"
+    harness_client_run = AsyncMock(return_value=_harness_run())
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    with patches[0], patches[1] as react_mock, patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="orion_world_pulse_read",
+            user_message=full,
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+            reading_only=True,
+            stance_view_message=view,
+        )
+
+    stance_req = react_mock.await_args.args[0]
+    assert stance_req.user_message == view
+    assert '"summary"' not in str(stance_req.stance_inputs)
+    harness_req = harness_client_run.await_args.args[0]
+    assert harness_req.user_message == full
+
+
+@pytest.mark.asyncio
+async def test_stance_view_also_replaces_harness_user_message_on_the_appraisal_path() -> None:
+    full = 'Read it.\nRequired JSON shape: {"summary": "..."}'
+    patches = _hub_client_patches(thought=_thought(), harness_run=_harness_run())
+    with patches[0], patches[1] as react_mock, patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message=full,
+            payload={},
+            emit_observation_fn=lambda **_kwargs: None,
+            mind_appraisal_text="subject",
+            stance_view_message="Read it.",
+        )
+
+    stance_req = react_mock.await_args.args[0]
+    assert stance_req.user_message == "subject"
+    assert stance_req.stance_inputs["harness_user_message"] == "Read it."
 
 
 @pytest.mark.asyncio
@@ -313,3 +364,31 @@ async def test_execute_unified_turn_threads_origin_into_harness_request(origin) 
 
     harness_req = harness_client_run.await_args.args[0]
     assert harness_req.utterance_origin == origin
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("with_focus", "origin", "expected"),
+    [(True, "orion", True), (False, "orion", False),
+     # A Hub chat client's payload is the raw request body: it never reaches the system prompt.
+     (True, "juniper", False), (True, None, False)],
+)
+async def test_execute_unified_turn_puts_a_curiosity_focus_on_the_harness_request(with_focus, origin, expected) -> None:
+    """The focus a curiosity run took rides payload -> HarnessRunRequestV1.curiosity_focus, where the
+    governor anchors it in the system prompt (orion/harness/task_anchor.py::build_focus_anchor)."""
+    from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1
+
+    focus = CuriosityFocusAnchorV1(
+        focus_id="a21f96c9-f1aa-5c19-9562-91ed82a64b80", run_id="480ee593ead6",
+        question="Do walkway regulars keep a weekly rhythm?", origin="self", graph="orion_worldview",
+    )
+    harness_client_run = AsyncMock(return_value=_harness_run())
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    payload = {"curiosity_focus": focus.model_dump(mode="json")} if with_focus else {}
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=MagicMock(), correlation_id=_CORR_ID, session_id="sess-1", user_message="investigate",
+            payload=payload, emit_observation_fn=lambda **_kwargs: None, utterance_origin=origin,
+        )
+    harness_req = harness_client_run.await_args.args[0]
+    assert harness_req.curiosity_focus == (focus if expected else None)

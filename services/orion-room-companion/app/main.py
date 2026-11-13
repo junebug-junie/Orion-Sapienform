@@ -11,6 +11,8 @@ from typing import Any, Dict, Optional
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.consult.core import consult_id_from_room
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.room_claude import (
     ExternalRoomResponderV1,
     RoomClaudeRequestV1,
@@ -18,7 +20,15 @@ from orion.schemas.room_claude import (
 )
 
 from .claude_session import ClaudeTurnResult, run_room_turn
-from .room_prompt import append_system_prompt_for, build_turn_prompt, filtered_summary, is_pass
+from .room_prompt import (
+    append_system_prompt_for,
+    build_turn_prompt,
+    filtered_summary,
+    is_pass,
+    line_key,
+    lines_after_mark,
+    newest_created_at,
+)
 from .session_store import forget_session, peek_or_mint_session, remember_session
 from .settings import Settings, get_settings
 
@@ -139,28 +149,49 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
     """
     ensure_runtime_dirs(settings)
     key = room_key(request)
-    session_id, resume = peek_or_mint_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key)
+    # A consult room (Hub's consult loop, orion.consult.core): Hub writes the whole user-role
+    # text itself, Claude reads the code read-only, thinks harder and gets more time.
+    consult = consult_id_from_room(request.room_id) is not None
+    slot = peek_or_mint_session(
+        settings.ROOM_COMPANION_SESSION_STATE_PATH, key, rotate_daily=not consult
+    )
+    session_id, resume = slot.session_id, slot.resume
 
-    prompt = build_turn_prompt(
+    # A resumed session gets only the lines it has not been sent: Hub sends the
+    # whole window on every invite and does not know this session's mark.
+    transcript = request.transcript if not resume else lines_after_mark(
+        request.transcript,
+        sent_up_to=slot.sent_up_to,
+        claude_participant_id=settings.ROOM_COMPANION_PARTICIPANT_ID,
+        sent_keys=slot.sent_keys,
+    )
+    prompt = request.prompt if consult else build_turn_prompt(
         prompt=request.prompt,
         invited_by_name=request.invited_by,
-        transcript=request.transcript,
+        transcript=transcript,
         # filtered_summary(), not the raw dict. This is the privacy boundary:
         # the summary is third-party-bound, so it goes through the allowlist
         # rather than whatever orion-social-memory happens to include today.
         social_memory_summary=filtered_summary(request.social_memory_summary),
         first_turn=not resume,
+        hub_index=request.hub_index,
+        transcript_note=request.transcript_note,
+    )
+    logger.info(
+        "room_companion_prompt room=%s request=%s resume=%s minted=%s lines=%d/%d prompt_chars=%d",
+        key, request.request_id, resume, slot.minted_reason or "-",
+        len(transcript), len(request.transcript), len(prompt),
     )
 
     result = run_room_turn(
         prompt,
         claude_bin=settings.ROOM_COMPANION_CLAUDE_BIN,
-        model=settings.ROOM_COMPANION_MODEL,
-        effort=settings.ROOM_COMPANION_EFFORT,
+        model=settings.ROOM_COMPANION_CONSULT_MODEL if consult else settings.ROOM_COMPANION_MODEL,
+        effort=settings.ROOM_COMPANION_CONSULT_EFFORT if consult else settings.ROOM_COMPANION_EFFORT,
         setting_sources_env_key=settings.ROOM_COMPANION_SETTING_SOURCES_ENV_KEY,
         session_id=session_id,
         resume=resume,
-        timeout_sec=settings.ROOM_COMPANION_TIMEOUT_SEC,
+        timeout_sec=settings.ROOM_COMPANION_CONSULT_TIMEOUT_SEC if consult else settings.ROOM_COMPANION_TIMEOUT_SEC,
         # EVERY turn, not just the first. An earlier version passed this only
         # when minting a session, on the assumption that `--resume` carried the
         # framing forward. It does not: verified live in this container with a
@@ -180,9 +211,12 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
         append_system_prompt=append_system_prompt_for(
             trigger=request.trigger,
             prompt=request.prompt,
+            consult=consult,
         ),
         env=build_subprocess_env(settings),
-        cwd=settings.ROOM_COMPANION_WORKSPACE,
+        cwd=settings.ROOM_COMPANION_CONSULT_REPO if consult else settings.ROOM_COMPANION_WORKSPACE,
+        tools=settings.ROOM_COMPANION_CONSULT_TOOLS if consult else "",
+        consult=consult,
     )
 
     # A resume against a session the CLI no longer holds fails identically on
@@ -204,6 +238,11 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
             settings.ROOM_COMPANION_SESSION_STATE_PATH,
             key,
             result.claude_session_id or session_id,
+            day=slot.day,
+            # Every line Hub sent is now held by this session: the ones just
+            # sent, and the older ones it already had.
+            sent_up_to=newest_created_at(request.transcript),
+            sent_keys=[k for k in (line_key(e) for e in request.transcript) if k],
         )
 
     return _to_utterance(settings, request, result)
@@ -226,7 +265,7 @@ def _to_utterance(
     # It keeps ok=True and its true cost_usd -- suppressing the event would
     # hide that spend from the meter, and deciding not to speak costs the same
     # tokens as speaking.
-    passed = bool(result.ok and is_pass(result.text))
+    passed = bool(result.ok and is_pass(result.text) and consult_id_from_room(request.room_id) is None)
     return RoomClaudeUtteranceV1(
         request_id=request.request_id,
         correlation_id=request.correlation_id,
@@ -315,22 +354,26 @@ async def handle_message(settings: Settings, bus: OrionBusAsync, raw: Any) -> No
 
 
 async def run_consumer(settings: Settings, bus: OrionBusAsync, stop: asyncio.Event) -> None:
-    channel = settings.CHANNEL_ROOM_CLAUDE_REQUEST
-    async with bus.subscribe(channel) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            if stop.is_set():
-                break
-            try:
-                data = msg.get("data")
-                raw = json.loads(data if isinstance(data, str) else data.decode("utf-8"))
-            except Exception:
-                logger.exception("room_companion_bad_envelope")
-                continue
-            try:
-                await handle_message(settings, bus, raw)
-            except Exception:
-                # One bad turn must not kill the consumer loop.
-                logger.exception("room_companion_handle_failed")
+    async def _handle(msg: dict) -> None:
+        try:
+            data = msg.get("data")
+            raw = json.loads(data if isinstance(data, str) else data.decode("utf-8"))
+        except Exception:
+            logger.exception("room_companion_bad_envelope")
+            return
+        try:
+            await handle_message(settings, bus, raw)
+        except Exception:
+            # One bad turn must not kill the consumer loop.
+            logger.exception("room_companion_handle_failed")
+
+    await run_subscription(
+        bus,
+        settings.CHANNEL_ROOM_CLAUDE_REQUEST,
+        _handle,
+        stop_event=stop,
+        name="room-companion-claude-request",
+    )
 
 
 async def main_async() -> None:

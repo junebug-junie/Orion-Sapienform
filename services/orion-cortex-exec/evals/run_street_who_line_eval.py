@@ -17,7 +17,10 @@ Checks:
 1. every name Juniper gave (within the cap) is shown, and before any unnamed
    phrase;
 2. no phrase appears twice;
-3. "and N more" only hides names when there are more names than the cap.
+3. "and N more" only hides names when there are more names than the cap;
+4. no bare number of people or of any other living kind (spec PR #2763
+   decision 5; dogs since 2026-10-29): unnamed people and dogs are a range,
+   "at least L, at most H", "at least N", "up to N" or "a person" / "a dog".
 
 Usage (from repo root):
     python services/orion-cortex-exec/evals/run_street_who_line_eval.py
@@ -29,6 +32,7 @@ Exit 0 = pass, 1 = a check failed, 2 = the database could not be read.
 
 from __future__ import annotations
 
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -37,6 +41,7 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
 from orion.situational import perception_reader as pr  # noqa: E402
+from orion.vision.walkway_rollup import bare_living_counts  # noqa: E402
 
 PREFIX = "On the walkway in the last 15 minutes: "
 NOW = datetime(2026, 10, 15, 23, 35, tzinfo=timezone.utc)
@@ -54,6 +59,8 @@ FIXTURE = [
     *[_row(f"bike{i}", "bicycle", minutes_ago=4 + i) for i in range(4)],
     *[_row(f"p{i}", "person", minutes_ago=5 + i) for i in range(3)],
     *[_row(f"v{i}", "vehicle", minutes_ago=6 + i) for i in range(2)],
+    # Live 2026-10-25 00:33 UTC said "2 unfamiliar dogs" (two clusters, one dog at once).
+    *[_row(f"d{i}", "dog", minutes_ago=2 + i) for i in range(2)],
 ]
 
 
@@ -61,11 +68,13 @@ def check(line: str, names: list[str]) -> list[str]:
     failures: list[str] = []
     if not line.startswith(PREFIX):
         return [f"no who line: {line!r}"] if names else []
+    failures += [f"bare count of a living kind: {b!r}" for b in bare_living_counts(line)]
     body = line[len(PREFIX):].rstrip(".")
     more = ""
-    if ", and " in body and body.rsplit(", and ", 1)[1].endswith(" more"):
+    if ", and " in body and body.rsplit(", and ", 1)[1].endswith((" more", "others")):
         body, more = body.rsplit(", and ", 1)
-    parts = [p.strip() for p in body.split(", ")]
+    # "at least 1, at most 4 unfamiliar people" is one phrase, not two.
+    parts = [p.strip() for p in re.split(r", (?!at most )", body)]
     if len(parts) != len(set(parts)):
         failures.append(f"a phrase repeats: {parts}")
     want = names[: pr._MAX_WHO_PHRASES]
@@ -123,7 +132,7 @@ def main(argv: list[str]) -> int:
     else:
         line = pr.summarize_street(
             sightings=FIXTURE, expectations=[], unresolved=[], patio=None,
-            now=NOW, tz=ZoneInfo("America/Denver"),
+            now=NOW, tz=ZoneInfo("America/Denver"), people_windows=[{"counts": {"person": 2, "dog": 1}}],
         )[0]
         names = ["Pip"]
     print(line or "(no who line)")

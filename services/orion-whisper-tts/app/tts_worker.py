@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional, cast
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.tts import TTSRequestPayload, TTSResultPayload
 
 from .settings import settings
@@ -16,6 +17,10 @@ from .tts import TTSOutput, TTSEngine
 logger = logging.getLogger("orion-whisper-tts.worker")
 
 _tts_engine: TTSEngine | None = None
+
+# Running synthesis tasks. asyncio keeps only a weak reference to a task, so an
+# unreferenced fire-and-forget task can be garbage-collected mid-run.
+_inflight: set[asyncio.Task] = set()
 
 
 def get_tts_engine() -> TTSEngine:
@@ -216,7 +221,7 @@ async def process_tts_request(
             pass
 
 
-async def listener_worker(bus: OrionBusAsync) -> None:
+async def listener_worker(bus: OrionBusAsync, *, stop: asyncio.Event | None = None) -> None:
     """
     Subscribes to CHANNEL_TTS_INTAKE and processes messages.
     """
@@ -229,25 +234,31 @@ async def listener_worker(bus: OrionBusAsync) -> None:
         settings.channel_tts_intake,
     )
 
-    async with bus.subscribe(settings.channel_tts_intake) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            try:
-                # Decode using Codec
-                data = msg.get("data")
-                decoded = bus.codec.decode(data)
+    def _handle(msg: dict) -> None:
+        try:
+            # Decode using Codec
+            data = msg.get("data")
+            decoded = bus.codec.decode(data)
 
-                if not decoded.ok:
-                    logger.warning(
-                        "Decode failed on %s: %s",
-                        settings.channel_tts_intake,
-                        decoded.error
-                    )
-                    continue
-
-                # Process asynchronously (fire and forget task to not block listener)
-                asyncio.create_task(
-                    process_tts_request(bus, decoded.envelope, decoded.raw)
+            if not decoded.ok:
+                logger.warning(
+                    "Decode failed on %s: %s",
+                    settings.channel_tts_intake,
+                    decoded.error
                 )
+                return
 
-            except Exception:
-                logger.error("Error processing message loop", exc_info=True)
+            # Process asynchronously (fire and forget task to not block listener).
+            # Returns None, not the task: run_subscription awaits a returned awaitable.
+            task = asyncio.create_task(
+                process_tts_request(bus, decoded.envelope, decoded.raw)
+            )
+            _inflight.add(task)
+            task.add_done_callback(_inflight.discard)
+
+        except Exception:
+            logger.error("Error processing message loop", exc_info=True)
+
+    await run_subscription(
+        bus, settings.channel_tts_intake, _handle, stop_event=stop, name="whisper-tts-intake"
+    )

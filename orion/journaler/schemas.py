@@ -22,6 +22,12 @@ JournalTriggerKind = Literal[
     # services/orion-actions/app/walkway_forecast.py.
     "walkway_forecast",
     "walkway_grade",
+    # Walkway rollups (2026-10-18, orion/vision/walkway_rollup.py): the day, week
+    # (Sunday night) and month (last day) summary of the street, written from the
+    # deterministic vision_rollup row. Same producer.
+    "walkway_day",
+    "walkway_week",
+    "walkway_month",
     # Orion's Day (orion/schemas/orion_day.py): the daily note about yesterday,
     # written by the orion_day.letter durable run. Hub emails it (pretty HTML);
     # the journal row is the durable record, so no journal email (dispatch_registry).

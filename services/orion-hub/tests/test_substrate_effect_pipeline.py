@@ -58,7 +58,10 @@ def test_pipeline_handles_internal_failure_without_raising(monkeypatch):
 
     monkeypatch.setattr(mod, "appraise_repair_pressure", boom)
     cache = SubstrateEffectCache(max_entries=8)
-    summary, snapshot = run_substrate_effect_pipeline(
+    # mod.run_..., not the module-level import: conftest purges scripts.* before
+    # every test, so the module-level function belongs to a copy `boom` never
+    # reaches, and the failure path was not exercised at all.
+    summary, snapshot = mod.run_substrate_effect_pipeline(
         turn_id="turn-C",
         message_id=None,
         user_text="anything",

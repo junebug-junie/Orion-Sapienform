@@ -293,7 +293,7 @@ def test_draft_revision_dom_cases_pass_under_node() -> None:
     if node is None:
         pytest.skip("node not on PATH -- draft-revision.test.js was NOT executed")
     result = subprocess.run(
-        [node, "--test", str(HUB_ROOT / "static" / "js" / "draft-revision.test.js")],
+        [node, "--test", "--test-reporter=tap", str(HUB_ROOT / "static" / "js" / "draft-revision.test.js")],
         capture_output=True,
         text=True,
         cwd=str(REPO_ROOT),
@@ -301,4 +301,4 @@ def test_draft_revision_dom_cases_pass_under_node() -> None:
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "# fail 0" in result.stdout, result.stdout
-    assert "# pass 7" in result.stdout, result.stdout
+    assert "# pass 8" in result.stdout, result.stdout

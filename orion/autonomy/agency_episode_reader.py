@@ -64,40 +64,20 @@ def collect(conn, graph, *, limit: int = 10) -> dict:
         sql("sql_briefs", "SELECT brief_id,help_id,run_id,peer,status,written_at,created_at "
             "FROM curiosity_peer_brief WHERE help_id = ANY(%s) ORDER BY brief_id LIMIT %s", (help_ids, limit * 10 + 1))
 
-    # Sample recent activity AND recent scored history. Looking only at scored
-    # rows would hide a scoring outage while dispatch continues.
-    sql("result_sample", "SELECT result_id,dispatch_id,frame_id,status,created_at FROM substrate_dispatch_results "
-        "ORDER BY created_at DESC,result_id LIMIT %s", (limit,))
-    # Act-ledger rows (dispatch_kind 'act:<verb>', orion/grammar/act_ledger.py) have no
-    # dispatch or feedback frame by design; they are not motor episodes.
+    # The dispatch rung (and the proposal rung before it) retired 2026-11-07 (ladder retirement PR 6,
+    # docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md). Their tables are
+    # no longer read: each source reads "retired", which the audit reports as unverified, never as
+    # an empty (and so "missing") link. Motor episodes now come only from non-act outcome rows: the
+    # cooling world act (orion-durable-runs, episode id cooling_act:<want_id>).
+    for retired in ("result_sample", "results", "dispatch_frames", "proposal_frames"):
+        bundle[retired] = {"status": "retired", "rows": [], "retired_on": "2026-11-07"}
+    # Act-ledger rows (dispatch_kind 'act:<verb>', orion/grammar/act_ledger.py) are not motor episodes.
     sql("outcome_sample", "SELECT dispatch_id FROM substrate_action_outcomes WHERE dispatch_kind NOT LIKE 'act:%%' "
         "ORDER BY observed_at DESC,id DESC LIMIT %s", (limit,))
-    dispatch_ids = sorted({r["dispatch_id"] for key in ("result_sample", "outcome_sample") for r in bundle[key]["rows"] if r.get("dispatch_id")})
-    sql("results", "SELECT result_id,dispatch_id,frame_id,status,created_at, "
-        "result_json->>'visual_outcome' AS visual_outcome FROM substrate_dispatch_results "
-        "WHERE dispatch_id = ANY(%s) ORDER BY result_id LIMIT %s", (dispatch_ids, limit * 10 + 1))
+    dispatch_ids = sorted({r["dispatch_id"] for r in bundle["outcome_sample"]["rows"] if r.get("dispatch_id")})
     sql("outcomes", "SELECT id,dispatch_id,dispatch_frame_id,feedback_frame_id,signal_id,predicted_delta,"
         "observed_at,arm,frame_dispatch_count FROM substrate_action_outcomes "
         "WHERE dispatch_id = ANY(%s) AND dispatch_kind NOT LIKE 'act:%%' ORDER BY id LIMIT %s", (dispatch_ids, limit * 10 + 1))
-    frame_ids = sorted({r["frame_id"] for r in bundle["results"]["rows"]} |
-                       {r["dispatch_frame_id"] for r in bundle["outcomes"]["rows"]})
-    sql("dispatch_frames", "SELECT frame_id,source_proposal_frame_id,created_at, "
-        "dispatch_frame_json FROM substrate_execution_dispatch_frames WHERE frame_id = ANY(%s)", (frame_ids,))
-    # Strip request envelopes, reasons, target contents etc. before an export.
-    for row in bundle["dispatch_frames"]["rows"]:
-        payload = row.pop("dispatch_frame_json")
-        candidates = []
-        for key in ("candidates", "blocked_candidates", "dispatched_candidates"):
-            for c in payload.get(key, []):
-                candidates.append({k: c.get(k) for k in ("dispatch_id", "source_proposal_id", "source_decision_id", "dispatched_at", "expected_effect", "cortex_verb")})
-        row["candidates"] = candidates
-    proposal_ids = [r["source_proposal_frame_id"] for r in bundle["dispatch_frames"]["rows"]]
-    sql("proposal_frames", "SELECT frame_id,proposal_frame_json FROM substrate_proposal_frames WHERE frame_id = ANY(%s)", (proposal_ids,))
-    for row in bundle["proposal_frames"]["rows"]:
-        payload = row.pop("proposal_frame_json")
-        row["proposal_ids"] = [c["proposal_id"] for c in payload.get("candidates", []) if c.get("proposal_id")]
-    feedback_ids = sorted({r["feedback_frame_id"] for r in bundle["outcomes"]["rows"]})
-    sql("feedback_frames", "SELECT frame_id,source_execution_dispatch_frame_id FROM substrate_feedback_frames WHERE frame_id = ANY(%s)", (feedback_ids,))
     # Attend-to-act loop (2026-10-01): world-action episodes for the sampled dispatches, the broadcast
     # rows they bound to, and the loop verdicts. Metadata only. The ledger table only exists once a
     # world action has been decided; until then the source is "unavailable", never "empty".
@@ -112,9 +92,12 @@ def collect(conn, graph, *, limit: int = 10) -> dict:
         "FROM substrate_attention_broadcast_log WHERE log_id = ANY(%s)", (log_ids,))
     sql("loop_outcomes", "SELECT outcome_id, loop_id, verdict, actor, created_at, "
         "features_at_close->>'episode_id' AS episode_id FROM attention_loop_outcome WHERE loop_id = ANY(%s) "
-        "ORDER BY created_at LIMIT %s", (loop_ids, limit * 10 + 1))
+        "ORDER BY created_at DESC LIMIT %s", (loop_ids, limit * 10 + 1))
     # Refuse a capped relationship set rather than asserting false missing links.
-    for source in ("graph_briefs", "sql_briefs", "outcomes", "results"):
+    # loop_outcomes: newest first, and refused when capped -- one loop id (world:chat's fixed label,
+    # 2026-11-12) gathers outcomes across conversations, so an oldest-first cap would drop the
+    # newest episodes' 'acted' rows and report their links as missing.
+    for source in ("graph_briefs", "sql_briefs", "outcomes", "loop_outcomes"):
         if len(bundle.get(source, {}).get("rows", [])) > limit * 10:
             bundle[source] = {"status": "truncated", "rows": []}
     return bundle

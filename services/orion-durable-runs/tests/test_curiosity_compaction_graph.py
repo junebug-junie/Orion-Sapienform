@@ -46,26 +46,33 @@ class Store:
 
 
 class Model:
-    def __init__(self, world, *, fail=False, preempt=False):
-        self.world, self.calls, self.entries = world, [], []
+    def __init__(self, world, *, fail=False, preempt=False, too_long=0, bug=None):
+        self.world, self.calls, self.entries, self.options = world, [], [], []
         self.fail, self.preempt = fail, preempt
+        self.too_long, self.bug = too_long, bug   # answers over the body cap still to give; a code error to raise
         self.publish_ok = True
-    async def call(self, verb, metadata, route, *, gpu_lease, timeout_sec, user_text):
+    async def call(self, verb, metadata, route, *, gpu_lease, timeout_sec, user_text, options=None):
         assert gpu_lease.model_dump() == self.world.ref() and route == "agent"
         assert verb == "curiosity_compactor_digest_v1"
         prompt = metadata["curiosity_compaction_prompt"]
         phase = "overall" if 'overall chronological synthesis' in prompt else "topics"
         self.calls.append(phase)
+        self.options.append(options)
         if self.preempt:
             self.preempt = False
             raise HoldLost("hold recalled")
+        if self.bug is not None:
+            raise self.bug
         if self.fail:
             return ""
+        if self.too_long and phase == "topics":
+            self.too_long -= 1
+            return json.dumps({"record_topics": {"s0": 0}, "topics": [{"topic": "Delivery reliability", "body": BODY * 8}]})
         if phase == "overall":
             return json.dumps({"body": BODY})
         records = json.loads(prompt.split("SOURCE RECORDS:\n")[1])
-        return json.dumps({"topics": [{"topic": "Delivery reliability", "body": BODY,
-                                       "refs": [r["ref"] for r in records]}]})
+        return json.dumps({"record_topics": {r["ref"]: 0 for r in records},
+                           "topics": [{"topic": "Delivery reliability", "body": BODY}]})
     async def publish(self, entry):
         self.entries.append(entry)
         return entry.entry_id if self.publish_ok else None
@@ -151,6 +158,7 @@ def test_preemption_costs_no_attempt_and_empty_generation_is_bounded():
         world.grant()
         done = await graph(world, saver, store, model).ainvoke(Command(resume={}), CFG)
         assert done["status"] == "failed" and store.row["status"] == "pending" and model.entries == []
+        assert store.row["state"]["rejected_at"] == ["topics", 1, 0]   # an empty answer is the model's
     asyncio.run(run())
 
 
@@ -174,4 +182,70 @@ def test_large_window_exceeds_default_25_step_limit_without_dropping_material():
         assert done["status"] == "completed" and len(model.calls) > 40
         assert model.calls[-1] == "overall"
         assert store.row["state"]["topics"][0]["sources"] == ["j1"]
+    asyncio.run(run())
+
+
+def test_a_body_over_the_cap_is_retried_and_the_next_sample_saves_the_batch():
+    """#2899 failed these fast (ValueError = deterministic): 0 batches saved 2026-10-24..27. A
+    rejected model answer is now a bounded attempt; the re-sample lands and the run completes."""
+    async def run():
+        world, saver, store = World(), InMemorySaver(), Store()
+        world.grant()
+        model = Model(world, too_long=1)
+        await graph(world, saver, store, model).ainvoke(initial(), CFG)
+        snap = await graph(world, saver, store, model).aget_state(CFG)
+        assert snap.values["status"] == "waiting_resource" and snap.values["attempt"] == 1
+        assert snap.values["last_error"].startswith("ModelOutputRejected:")
+        assert store.row["state"]["partials"] == [] and store.row["status"] == "pending"   # rejected: nothing saved
+        world.grant()
+        done = await graph(world, saver, store, model).ainvoke(Command(resume={}), CFG)
+        assert done["status"] == "completed" and model.calls == ["topics", "topics", "overall"]
+        assert store.row["status"] == "completed" and len(model.entries) == 1
+    asyncio.run(run())
+
+
+def test_rejected_answers_stay_bounded_by_max_attempts():
+    async def run():
+        world, saver, store = World(), InMemorySaver(), Store()
+        world.grant()
+        model = Model(world, too_long=5)
+        await graph(world, saver, store, model).ainvoke(initial(), CFG)
+        world.grant()
+        done = await graph(world, saver, store, model).ainvoke(Command(resume={}), CFG)
+        assert done["status"] == "failed" and done["attempt"] == 2 and model.calls == ["topics", "topics"]
+        assert not done["last_error"].startswith("deterministic:")
+        # The next sleep counts this failed generation toward giving the window up.
+        assert store.row["state"]["rejected_at"] == ["topics", 1, 0]
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("bug", [ValueError("bad window arithmetic"), TypeError("x"), KeyError("batches")])
+def test_a_real_code_error_still_fails_fast(bug):
+    async def run():
+        world, saver, store = World(), InMemorySaver(), Store()
+        world.grant()
+        model = Model(world, bug=bug)
+        done = await graph(world, saver, store, model).ainvoke(initial(), CFG)
+        assert done["status"] == "failed" and done["attempt"] == 1 and model.calls == ["topics"]
+        assert done["last_error"].startswith("deterministic:")
+        assert "rejected_at" not in store.row["state"]   # a code bug is not the model's failure
+    asyncio.run(run())
+
+
+def test_each_call_sends_the_phase_output_schema_to_the_gateway():
+    async def run():
+        world, saver, store = World(), InMemorySaver(), Store()
+        world.grant()
+        model = Model(world)
+        await graph(world, saver, store, model).ainvoke(initial(), CFG)
+        topics, overall = model.options
+        assert topics["structured_output_method"] == overall["structured_output_method"] == "json_object_schema"
+        assert topics["structured_output_thinking_policy"] == "disabled_for_artifact"
+        assert topics["structured_output_schema_name"] == "CuriosityCompactionTopicPassV2"
+        item = topics["structured_output_schema"]["properties"]["topics"]["items"]["properties"]
+        assert item["body"]["maxLength"] == 1200 and "refs" not in item
+        assert topics["structured_output_schema"]["properties"]["record_topics"]["required"] == ["s0"]
+        assert topics["structured_output_schema"]["properties"]["topics"]["maxItems"] == 4
+        assert overall["structured_output_schema_name"] == "CuriosityCompactionSummaryV1"
+        assert overall["structured_output_schema"]["properties"]["body"]["maxLength"] == 2400
     asyncio.run(run())

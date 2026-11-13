@@ -47,12 +47,18 @@
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" bgcolor="#e8f3ee"
        style="background-color:#e8f3ee;border-left:5px solid #2f7d5b;" data-section="carry-forward">
 <tr><td style="padding:14px 18px;color:#17352a;font-family:Arial,Helvetica,sans-serif;font-size:14px;">
-<p style="margin:0 0 4px 0;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:#2f7d5b;font-weight:bold;">Carrying forward into curiosity</p>
-<p style="margin:0 0 10px 0;font-size:12px;color:#3d5c4f;">Offered once to Orion's next regular curiosity run{% if carry_forward_expires %}, until {{ carry_forward_expires }}{% endif %}. This is the only part of the letter curiosity sees.</p>
+<p style="margin:0 0 4px 0;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:#2f7d5b;font-weight:bold;">Threads I am carrying</p>
+<p style="margin:0 0 10px 0;font-size:12px;color:#3d5c4f;">The letter's own list. Prime holds these threads; curiosity hears about them only through Prime.</p>
 {{ carry_forward_html }}
 </td></tr>
 </table>
 </td></tr>
+{% if turn_correlation_id or missed_letters %}
+<tr><td style="padding:2px 28px 4px 28px;font-family:Arial,Helvetica,sans-serif;font-size:12px;color:#9aa4b2;" data-section="provenance">
+{% if turn_correlation_id %}<p style="margin:0 0 4px 0;">Written as unified turn <code style="font-family:Menlo,Consolas,monospace;">{{ turn_correlation_id }}</code>.</p>{% endif %}
+{% if missed_letters %}<p style="margin:0;">Days with no letter that this letter was told about: {% for x in missed_letters %}{{ x.date }} ({{ x.reason }}){% if not loop.last %}; {% endif %}{% endfor %}.</p>{% endif %}
+</td></tr>
+{% endif %}
 
 {% if what_i_read %}
 {#- Compact, record-built: Orion's own take (first sentences of the stored read) and what the
@@ -218,7 +224,8 @@
 <p style="margin:0 0 6px 0;"><strong>Sources with gaps:</strong>
 {% for name, status, error, truncated in source_problems %}{{ name }} ({{ status }}{% if truncated %}, more rows existed than were read{% endif %}{% if error %}: {{ error }}{% endif %}){% if not loop.last %}; {% endif %}{% endfor %}</p>
 {% endif %}
-<p style="margin:0 0 6px 0;">Everything above is shown in full. Orion wrote the note from a condensed view: {{ condensed.reverie_thoughts_included }} of {{ condensed.reverie_thoughts_total }} reverie thoughts{% if condensed.full_text_items_clipped %}, and {{ condensed.full_text_items_clipped }} of {{ condensed.full_text_items_total }} long texts shortened to {{ condensed.full_text_clip_chars }} characters for the model{% endif %}.</p>
+<p style="margin:0 0 6px 0;">Everything above is shown in full. Orion wrote the note from a condensed view: {{ condensed.reverie_thoughts_included }} of {{ condensed.reverie_thoughts_total }} reverie thoughts{% if condensed.full_text_items_clipped %}, and {{ condensed.full_text_items_clipped }} of {{ condensed.full_text_items_total }} long texts shortened to {{ condensed.full_text_clip_chars }} characters for the model{% endif %}.{% if condensed.self_sense_answers_total > condensed.self_sense_answers_shown %} Self-sense: {{ condensed.self_sense_answers_shown }} questions shown once each, latest answer ({{ condensed.self_sense_answers_total }} answers in all).{% endif %}{% if condensed.tail_items_total %} Readings, dreams, news and code changes were trimmed to one line each{% if condensed.tail_items_left_out %}, and {{ condensed.tail_items_left_out }} of {{ condensed.tail_items_total }} were left out to fit{% endif %}.{% endif %}</p>
+{% if input_shares %}<p style="margin:0 0 6px 0;">Share of the note's input by source: {% for name, share in input_shares %}{{ name }} {{ "%.0f"|format(share * 100) }}%{% if not loop.last %}, {% endif %}{% endfor %}.</p>{% endif %}
 <p style="margin:0;">Sent by orion-hub. The letter row is <code style="font-family:Menlo,Consolas,monospace;">orion_day_letter</code> for {{ letter_date }}.</p>
 </td></tr>
 

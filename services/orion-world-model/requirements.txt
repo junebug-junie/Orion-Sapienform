@@ -19,3 +19,6 @@ pyyaml==6.0.2
 
 # VRAM-aware GPU selection
 nvidia-ml-py==12.535.161
+
+# numpy: transition-model weight export (scripts/train_transition.py) and orion.embodiment.transition
+numpy>=1.26,<3

@@ -4,7 +4,6 @@ import logging
 import asyncio
 import os
 import uuid
-import time
 from typing import Optional
 
 from fastapi import FastAPI
@@ -12,8 +11,7 @@ from fastapi.responses import JSONResponse
 import torch
 
 from orion.core.bus.async_service import OrionBusAsync
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.telemetry.system_health import SystemHealthV1
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 
 from .settings import settings
 from .tts_worker import listener_worker
@@ -32,10 +30,11 @@ app = FastAPI(title="Orion Whisper/TTS Service")
 bus: Optional[OrionBusAsync] = None
 listener_task: Optional[asyncio.Task] = None
 stt_task: Optional[asyncio.Task] = None
-heartbeat_task: Optional[asyncio.Task] = None
 cuda_watchdog_task: Optional[asyncio.Task] = None
+heartbeat_chassis: Optional[HeartbeatOnly] = None
 
-# Generate a unique Boot ID for this process instance
+# Identifies THIS process run. /health reports it and the bus heartbeat carries the
+# same value (build_heartbeat_chassis), so both surfaces agree on restarts.
 BOOT_ID = str(uuid.uuid4())
 
 
@@ -57,45 +56,28 @@ def _require_cuda_or_die() -> None:
 # call this during startup before spinning workers
 
 
-async def heartbeat_loop(bus_instance: OrionBusAsync):
-    """Publishes a heartbeat every 30 seconds."""
-    logger.info(f"Heartbeat loop started. boot_id={BOOT_ID}")
-    try:
-        while True:
-            try:
-                # FIX: Added boot_id and last_seen_ts to satisfy SystemHealthV1 schema
-                payload = SystemHealthV1(
-                    service=settings.service_name,
-                    version=settings.service_version,
-                    node="whisper-node",
-                    status="ok",
-                    boot_id=BOOT_ID,
-                    last_seen_ts=time.time(),
-                    # heartbeat_interval_sec must match this loop's real period. Left at the
-                    # schema default of 10.0, orion-equilibrium-service computes
-                    # grace = interval * EQUILIBRIUM_GRACE_MULTIPLIER (3.0) = 30.0s and marks the
-                    # service "down" once delta > grace (service.py's status check). Publishing
-                    # every 30s leaves ZERO margin, so any event-loop delay or bus latency flips
-                    # it to down, emits a spurious transition and pushes distress_score.
-                    heartbeat_interval_sec=30.0,
-                ).model_dump(mode="json")
-
-                await bus_instance.publish("orion:system:health", BaseEnvelope(
-                    kind="system.health.v1",
-                    source=ServiceRef(name=settings.service_name, version=settings.service_version),
-                    payload=payload
-                ))
-            except Exception as e:
-                logger.warning(f"Heartbeat failed: {e}")
-
-            await asyncio.sleep(30)
-    except asyncio.CancelledError:
-        logger.info("Heartbeat loop stopping...")
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Standard SystemHealthV1 heartbeat (orion:system:health) on its own bus
+    connection, separate from `bus` (the TTS/STT listeners'). Replaces a
+    hand-rolled 30s loop that reported the made-up node name "whisper-node".
+    Pattern: docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    chassis = HeartbeatOnly(
+        ChassisConfig(
+            service_name=settings.service_name,
+            service_version=settings.service_version,
+            node_name=settings.node_name,
+            bus_url=settings.orion_bus_url,
+            bus_enabled=settings.orion_bus_enabled,
+            heartbeat_interval_sec=settings.heartbeat_interval_sec,
+        )
+    )
+    chassis.boot_id = BOOT_ID
+    return chassis
 
 
 @app.on_event("startup")
 async def startup() -> None:
-    global bus, listener_task, stt_task, heartbeat_task, cuda_watchdog_task
+    global bus, listener_task, stt_task, heartbeat_chassis, cuda_watchdog_task
     logger.info(
         "Starting Whisper/TTS service %s v%s",
         settings.service_name,
@@ -145,7 +127,20 @@ async def startup() -> None:
     # Start the bus listener as an async task
     listener_task = asyncio.create_task(listener_worker(bus))
     stt_task = asyncio.create_task(stt_listener_worker(bus))
-    heartbeat_task = asyncio.create_task(heartbeat_loop(bus))
+    # A heartbeat failure is logged, never fatal: TTS/STT keep serving.
+    try:
+        chassis = build_heartbeat_chassis()
+        await chassis.start_background()
+        heartbeat_chassis = chassis
+        logger.info(
+            "system_health_heartbeat_started service=%s node=%s interval_sec=%s",
+            settings.service_name,
+            settings.node_name,
+            settings.heartbeat_interval_sec,
+        )
+    except Exception as exc:
+        logger.warning("system_health_heartbeat_start_failed error=%s", exc)
+        heartbeat_chassis = None
     if gpu_expected and settings.cuda_watchdog_enabled:
         cuda_watchdog_task = asyncio.create_task(
             cuda_watchdog_loop(
@@ -159,7 +154,7 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
-    global bus, listener_task, stt_task, heartbeat_task, cuda_watchdog_task
+    global bus, listener_task, stt_task, heartbeat_chassis, cuda_watchdog_task
     logger.info("Shutting down Whisper/TTS service...")
 
     # Review finding, 2026-08-26: these were four hand-copied cancel/await/
@@ -167,7 +162,14 @@ async def shutdown() -> None:
     # could drift independently -- a 5th background task added later means
     # another hand-applied copy, easy to apply to some sites and silently
     # miss one. One helper, applied uniformly to all four.
-    for task in (listener_task, stt_task, cuda_watchdog_task, heartbeat_task):
+    if heartbeat_chassis is not None:
+        try:
+            await heartbeat_chassis.stop()
+        except Exception as exc:
+            logger.warning("system_health_heartbeat_stop_error error=%s", exc)
+        heartbeat_chassis = None
+
+    for task in (listener_task, stt_task, cuda_watchdog_task):
         if task:
             task.cancel()
             try:

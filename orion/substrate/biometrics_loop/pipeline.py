@@ -160,6 +160,7 @@ def process_biometrics_grammar_events(
     stale_after_sec: int = 180,
     min_confidence: float = 0.60,
     now: datetime | None = None,
+    offline_frozen_hint_guard: bool = True,
 ) -> dict[str, int]:
     clock = now or datetime.now(timezone.utc)
     stats = {"events": 0, "receipts": 0, "emissions": 0, "published": 0}
@@ -210,6 +211,7 @@ def process_biometrics_grammar_events(
             stale_after_sec=stale_after_sec,
             min_confidence=min_confidence,
             now=clock,
+            offline_frozen_hint_guard=offline_frozen_hint_guard,
         )
         emission = validate_organ_emission(emission)
         if emission.candidate_events:

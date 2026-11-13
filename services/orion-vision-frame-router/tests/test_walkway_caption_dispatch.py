@@ -130,13 +130,34 @@ def test_real_config_turns_blip_off_for_walkway_only():
     assert walkway["baseline"]["request"]["want_caption"] is False
     cfg = policy.caption_dispatch_for("walkway", "walkway")
     assert cfg["enabled"] is True
-    assert "nothing notable" in cfg["prompt"] and cfg["null_answers"] == ["nothing notable"]
+    # 2026-10-16: no existence question / null answer (Qwen2-VL-2B said
+    # "nothing notable" to 24/24 frames with a person or car in them).
+    assert "nothing notable" not in cfg["prompt"] and not cfg.get("null_answers")
+    assert cfg["crop_to_detections"] is True
     assert set(cfg["labels"]) >= {"person", "dog", "bicycle", "stroller", "vehicle", "package", "mail truck"}
-    # cam0/carbon unchanged: BLIP caption, no VLM lane.
-    for stream in ("cam0", "carbon"):
-        merged = policy.resolve_stream_policy(stream, stream)[0]
-        assert merged["triggered"]["request"]["want_caption"] is True
-        assert policy.caption_dispatch_for(stream, stream) == {}
+    # carbon unchanged: BLIP caption, no VLM lane. (cam0 joined the VLM lane
+    # 2026-11-04 -- test_real_config_office_camera_has_walkway_parity.)
+    merged = policy.resolve_stream_policy("carbon", "carbon")[0]
+    assert merged["triggered"]["request"]["want_caption"] is True
+    assert policy.caption_dispatch_for("carbon", "carbon") == {}
+
+
+def test_real_config_office_camera_has_walkway_parity():
+    """2026-11-04 (Juniper: "it should do most of the things the walkway cam
+    does"): cam0 crops get body + face vectors in both tiers, captions come
+    from the VLM lane and name the activity, and the face check stays on."""
+    policy = FrameDispatchPolicy.load(Settings(ROUTER_POLICY_PATH=str(REAL_POLICY)))
+    room = policy.resolve_stream_policy("cam0", "cam0")[0]
+    for tier in ("baseline", "triggered"):
+        req = room[tier]["request"]
+        assert req["want_caption"] is False, tier
+        assert req["want_crop_embeddings"] is True and req["want_crop_faces"] is True, tier
+        assert "person" in req["crop_embedding_labels"], tier
+    assert room["triggered"]["identity_dispatch"]["enabled"] is True
+    cfg = policy.caption_dispatch_for("cam0", "cam0")
+    assert cfg["enabled"] is True and cfg["crop_to_detections"] is True
+    assert "doing" in cfg["prompt"] and "nothing notable" not in cfg["prompt"]
+    assert "person" in cfg["labels"]
 
 
 @pytest.mark.asyncio
@@ -157,8 +178,8 @@ async def test_detection_in_reply_sends_caption_task_to_qwen_lane():
     task = env.payload
     assert task["task_type"] == "caption_frame"
     assert Path(task["request"]["image_path"]).name.startswith("walkway_")
-    assert "nothing notable" in task["request"]["caption_prompt"]
-    assert task["request"]["caption_null_answers"] == ["nothing notable"]
+    assert task["request"]["caption_prompt"].startswith("In one short sentence")
+    assert "caption_null_answers" not in task["request"]
     assert task["meta"]["stream_id"] == "walkway"
     assert task["meta"]["source_objects"] == [{"label": "person", "score": 0.62, "box_xyxy": [100.0, 200.0, 180.0, 420.0]}]
     assert str(env.correlation_id) != corr and env.reply_to.endswith(str(env.correlation_id))
@@ -201,12 +222,22 @@ async def test_baseline_tier_reply_does_not_caption():
 
 
 @pytest.mark.asyncio
-async def test_cam0_never_uses_the_qwen_lane():
+async def test_cam0_person_gets_an_activity_caption_from_the_qwen_lane():
+    """2026-11-04: the office camera moved from the host's BLIP caption (which
+    listed furniture: "Multiple tables, chairs, desks...") to the VLM lane,
+    asked what the person is doing."""
     d, bus = _make()
-    corr, env = await _triggered_primary(d, bus, stream="cam0")
-    assert env.payload["request"]["want_caption"] is True
-    await d.handle_reply_envelope(_reply(corr, stream="cam0", objects=[PERSON]))
-    assert all(ch != CAPTION_CHANNEL for ch, _ in bus.published)
+    d.state.record_activity("cam0", ["person"], now=time.time())
+    _ready(d, "cam0")
+    await d.handle_frame_envelope(_frame_env("cam0"))
+    # cam0 also publishes its identity_face check; take the primary task.
+    [primary] = [e for ch, e in bus.published if ch == HOST_CHANNEL and e.payload["task_type"] == "retina_fast"]
+    assert primary.payload["request"]["want_caption"] is False
+    await d.handle_reply_envelope(_reply(str(primary.correlation_id), stream="cam0", objects=[PERSON]))
+    captions = [e for ch, e in bus.published if ch == CAPTION_CHANNEL]
+    assert len(captions) == 1
+    assert captions[0].payload["meta"]["stream_id"] == "cam0"
+    assert "doing" in captions[0].payload["request"]["caption_prompt"]
 
 
 @pytest.mark.asyncio
@@ -316,3 +347,66 @@ async def test_same_scene_is_not_recaptioned_until_it_changes_or_ages_out():
     cam.last_caption_dispatch_ts = time.time() - 301  # past same_scene_ttl_sec
     await frame([SKELETON])
     assert d.metrics.caption_dispatched_total == 3
+
+
+@pytest.mark.asyncio
+async def test_caption_task_carries_the_detector_boxes_for_a_crop():
+    """2026-10-16: Qwen read the whole 2560x1920 frame at ~1 MP and said
+    "nothing notable" on 24/24 tasks. The caption task now names the boxes
+    so the host can show the model the detector's region."""
+    d, bus = _make()
+    corr, _ = await _triggered_primary(d, bus)
+    await d.handle_reply_envelope(_reply(corr, objects=[PERSON, SKELETON]))
+    _, env = bus.published[-1]
+    req = env.payload["request"]
+    # Same boxes as meta.source_objects (highest score first).
+    assert req["caption_crop_boxes"] == [list(PERSON.box_xyxy), list(SKELETON.box_xyxy)]
+    assert req["caption_crop_pad"] == pytest.approx(0.5)
+
+
+def test_crop_off_sends_no_boxes():
+    policy = FrameDispatchPolicy.load(Settings(ROUTER_POLICY_PATH=str(REAL_POLICY)))
+    cfg = dict(policy.caption_dispatch_for("walkway", "walkway"), crop_to_detections=False)
+    task = type("T", (), {"image_path": "/f/walkway_x.jpg", "percept_sha256": None, "camera_id": "walkway",
+                          "frame_ts": 1.0, "dispatch_tier": "triggered", "correlation_id": "c"})()
+    objs = [{"label": "person", "score": 0.6, "box_xyxy": [1.0, 2.0, 3.0, 4.0]}]
+    req = FrameDispatchPolicy.build_caption_task_request(task, stream_id="walkway", source_objects=objs, cfg=cfg).request
+    assert "caption_crop_boxes" not in req
+
+
+def test_no_caption_streak_counts_up_and_resets_on_a_caption():
+    """A lane that answers but never captions must show up as a streak, not
+    hide inside healthy reply counters (2026-10-16: 24/24 null_answer)."""
+    m = RouterMetrics()
+    for _ in range(24):
+        m.record_caption_no_caption("null_answer")
+    assert m.caption_no_caption_streak == 24
+    m.record_captioned()
+    assert m.caption_no_caption_streak == 0 and m.caption_captioned_total == 1
+    # Failures (lane down) are a different signal and do not touch the streak.
+    m.record_caption_failure("timeout")
+    assert m.caption_no_caption_streak == 0
+
+
+@pytest.mark.asyncio
+async def test_ten_null_replies_log_caption_lane_silent_once():
+    from loguru import logger
+
+    d, bus = _make()
+    lines: list[str] = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="WARNING")
+    try:
+        for _ in range(12):
+            cam = d.state.camera("walkway")
+            cam.last_caption_dispatch_ts = None
+            cam.last_caption_objects = []
+            corr, _ = await _triggered_primary(d, bus)
+            await d.handle_reply_envelope(_reply(corr, objects=[PERSON]))
+            c = str(bus.published[-1][1].correlation_id)
+            await d.handle_reply_envelope(_reply(c, task_type="caption_frame",
+                                                 caption=VisionCaption(text="", confidence=0.0, rejected_reason="null_answer")))
+    finally:
+        logger.remove(sink)
+    assert d.metrics.caption_no_caption_streak == 12
+    silent = [l for l in lines if "caption_lane_silent" in l]
+    assert len(silent) == 1 and "streak=10" in silent[0]

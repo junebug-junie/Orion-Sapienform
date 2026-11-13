@@ -21,11 +21,18 @@ Two things live here:
   ``vision_scene_inventory`` (orion-vision-window's per-camera windows,
   written by orion-sql-writer; a row means frames from that camera were
   processed): newest window = last frame, oldest window = the day this camera
-  started feeding Orion. Walkway individuals seen today come from
-  ``vision_individual_sighting`` (stationary fixtures and no-embed zones
-  excluded, as in the street summary). The frame reads walk the
-  ``(stream_id, observed_at DESC)`` index (0.4 ms live); the individuals read
-  uses only the ``stream_id`` prefix of ``(stream_id, started_at)``.
+  started feeding Orion. The frame reads walk the
+  ``(stream_id, observed_at DESC)`` index (0.4 ms live).
+
+* **People today, as a range** -- from today's walkway day rollup
+  (``vision_rollup`` grain=day, orion-sql-writer; the same row the day letter
+  reads), via ``walkway_rollup.person_count_range``: "at least <most at once>,
+  at most <clusters>", through the last closed hour. Juniper, spec #2763
+  decision 5: never a bare cluster count. Until 2026-11-03 this clause printed
+  ``count(DISTINCT individual_id)`` from ``vision_individual_sighting`` -- every
+  appearance cluster of every kind (vehicles too), e.g. "111 individuals counted
+  today" in live turn 4bbaaf2a. No range (no row yet, nobody passed, read
+  failed) -> no number at all.
 
 Fail-open by contract: ``fetch_camera_eyes`` never raises and returns None
 when nothing could be read; a missing table costs that one number.
@@ -41,6 +48,7 @@ from datetime import datetime, timezone, tzinfo
 from typing import Any, Mapping, Optional, Sequence
 
 from orion.schemas.situation import CameraSenseV1
+from orion.vision.walkway_rollup import person_count_range, range_phrase
 
 logger = logging.getLogger(__name__)
 
@@ -52,12 +60,20 @@ CAMERA_EYES_DEADLINE_SEC = 2.0
 # Equal to the .env_example value in orion-cortex-exec, orion-hub and
 # orion-thought (tests/test_camera_eyes.py pins this).
 DEFAULT_CAMERA_DESCRIPTIONS: dict[str, dict[str, Any]] = {
-    "cam0": {"name": "your room camera", "view": "the room where Juniper works", "outside": False},
+    "cam0": {"name": "your office camera", "view": "the office where Juniper works", "outside": False},
     "carbon": {"name": "the laptop webcam", "view": "Juniper at her laptop", "outside": False},
     "walkway": {
         "name": "your outdoor camera",
         "view": "the community walkway, the street and our patio",
         "outside": True,
+    },
+    # event_driven: frames only after something happens (Ring motion/ding
+    # bursts), so no recent frame means "waiting", not "broken".
+    "doorbell": {
+        "name": "your doorbell camera",
+        "view": "our front door, up close, only when someone comes to it",
+        "outside": True,
+        "event_driven": True,
     },
 }
 
@@ -68,6 +84,7 @@ class CameraDescription:
     name: str
     view: str
     outside: bool
+    event_driven: bool = False
 
 
 def _parse(raw: str | None) -> dict[str, dict[str, Any]] | None:
@@ -98,7 +115,13 @@ def describe_camera(stream_id: str, descriptions: Mapping[str, Mapping[str, Any]
     entry = table.get(stream_id) or {}
     name = str(entry.get("name") or "").strip() or f"camera {stream_id}"
     view = str(entry.get("view") or "").strip()
-    return CameraDescription(stream_id=stream_id, name=name, view=view, outside=entry.get("outside") is True)  # "false" string is not outside
+    return CameraDescription(
+        stream_id=stream_id,
+        name=name,
+        view=view,
+        outside=entry.get("outside") is True,  # "false" string is not outside
+        event_driven=entry.get("event_driven") is True,
+    )
 
 
 # --- live state ---------------------------------------------------------------
@@ -111,7 +134,10 @@ class CameraEye:
     stream_id: str
     first_frame_at: Optional[datetime]
     last_frame_at: Optional[datetime]
-    individuals_today: Optional[int] = None
+    # Today's people range from the day rollup ({low, high}); None = no range.
+    people_today: Optional[Mapping[str, Any]] = None
+    # When that range was counted through (the rollup's covered_until).
+    people_through: Optional[datetime] = None
 
 
 def _aware(value: Any) -> Optional[datetime]:
@@ -142,14 +168,38 @@ def _frames_stmts():
     return newest, oldest
 
 
-def _individuals_stmt(*, stationary: bool):
+def _day_rollup_stmt():
     from sqlalchemy import text
 
+    # The primary key (stream_id, grain, period_start): one row, one index probe.
     return text(
-        "SELECT count(DISTINCT individual_id) FROM vision_individual_sighting "
-        "WHERE stream_id = :stream_id AND ended_at >= :since AND NOT zone_no_embed"
-        + (" AND NOT stationary" if stationary else "")
+        "SELECT rollup FROM vision_rollup WHERE stream_id = :stream_id AND grain = 'day' "
+        "AND period_start = :since"
     )
+
+
+def _rollup_json(raw: Any) -> Optional[dict[str, Any]]:
+    if isinstance(raw, (str, bytes)):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) else None
+
+
+def people_today_from_rollup(raw: Any) -> tuple[Optional[dict[str, Any]], Optional[datetime]]:
+    """(range, counted-through) from a day rollup row, or (None, None). The range is
+    ``person_count_range`` -- the helper the day letter and journals print from."""
+    rollup = _rollup_json(raw)
+    if rollup is None:
+        return None, None
+    try:
+        r = person_count_range(rollup)
+    except (TypeError, ValueError):
+        return None, None
+    if not r:
+        return None, None
+    return {"low": int(r["low"]), "high": int(r["high"])}, _aware(rollup.get("covered_until"))
 
 
 def _scalar(conn: Any, stmt: Any, params: dict[str, Any], label: str) -> tuple[bool, Any, Exception | None]:
@@ -164,16 +214,6 @@ def _scalar(conn: Any, stmt: Any, params: dict[str, Any], label: str) -> tuple[b
         return False, None, exc
 
 
-def _is_missing_column(exc: Exception | None) -> bool:
-    """Only a missing `stationary` column earns the fallback statement -- a
-    timeout must not buy a second 1.5 s statement (Postgres UndefinedColumn,
-    SQLite "no such column")."""
-    if exc is None:
-        return False
-    blob = f"{type(exc).__name__} {type(getattr(exc, 'orig', None)).__name__} {exc}"
-    return "UndefinedColumn" in blob or "no such column" in blob
-
-
 def local_midnight_utc(now: datetime, tz: tzinfo) -> datetime:
     local = now.astimezone(tz)
     return local.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(timezone.utc)
@@ -182,7 +222,7 @@ def local_midnight_utc(now: datetime, tz: tzinfo) -> datetime:
 def fetch_camera_eyes(
     stream_ids: Sequence[str],
     *,
-    count_individuals_for: Sequence[str] = (),
+    people_range_for: Sequence[str] = (),
     tz_name: str = "America/Denver",
     engine: Any | None = None,
     now: datetime | None = None,
@@ -191,9 +231,9 @@ def fetch_camera_eyes(
 
     None when no read could happen at all (no DSN, database down, every
     statement failed) -- "unread", which the caller must not render as "every
-    camera is dark". ``count_individuals_for`` names the streams whose
-    distinct individuals since local midnight are counted (the street
-    cameras); others get None.
+    camera is dark". ``people_range_for`` names the streams whose people
+    range for today is read from their day rollup (the street cameras);
+    others get None.
     """
     from zoneinfo import ZoneInfo
 
@@ -216,7 +256,8 @@ def fetch_camera_eyes(
         tz = timezone.utc
     now = now or datetime.now(timezone.utc)
     since = local_midnight_utc(now, tz)
-    counted = set(count_individuals_for)
+    counted = set(people_range_for)
+    day_stmt = _day_rollup_stmt()
     newest_stmt, oldest_stmt = _frames_stmts()
     eyes: list[CameraEye] = []
     any_ok = False
@@ -226,21 +267,19 @@ def fetch_camera_eyes(
                 ok_new, last_at, _ = _scalar(conn, newest_stmt, {"stream_id": sid}, "newest")
                 ok_old, first_at, _ = _scalar(conn, oldest_stmt, {"stream_id": sid}, "oldest")
                 any_ok = any_ok or ok_new or ok_old
-                individuals: Optional[int] = None
+                people: Optional[dict[str, Any]] = None
+                through: Optional[datetime] = None
                 if sid in counted:
-                    params = {"stream_id": sid, "since": since}
-                    ok, n, err = _scalar(conn, _individuals_stmt(stationary=True), params, "individuals")
-                    if not ok and _is_missing_column(err):
-                        # `stationary` ships in manual_migration_walkway_privacy_v2.sql.
-                        ok, n, _ = _scalar(conn, _individuals_stmt(stationary=False), params, "individuals_pre_stationary")
-                    if ok and n is not None:
-                        individuals = int(n)
+                    ok, raw, _ = _scalar(conn, day_stmt, {"stream_id": sid, "since": since}, "people_today")
+                    if ok:
+                        people, through = people_today_from_rollup(raw)
                 eyes.append(
                     CameraEye(
                         stream_id=sid,
                         first_frame_at=_aware(first_at) if ok_old else None,
                         last_frame_at=_aware(last_at) if ok_new else None,
-                        individuals_today=individuals,
+                        people_today=people,
+                        people_through=through,
                     )
                 )
     except Exception as exc:  # noqa: BLE001 -- fail-open by contract
@@ -295,6 +334,8 @@ def to_sense(
         status = "not_seeing"
     else:
         status = "live"
+    # Live only, as before: a camera that is not seeing does not report its day.
+    people = eye.people_today if eye.people_today and status == "live" else None
     return CameraSenseV1(
         stream_id=desc.stream_id,
         name=desc.name,
@@ -304,7 +345,11 @@ def to_sense(
         live_window_seconds=float(live_max_age_seconds),
         since=since_date(eye.first_frame_at, tz),
         last_frame_age_seconds=age,
-        individuals_today=eye.individuals_today if status == "live" else None,
+        people_today_low=int(people["low"]) if people else None,
+        people_today_high=int(people["high"]) if people else None,
+        people_today_through=(
+            eye.people_through.astimezone(tz).strftime("%H:%M") if people and eye.people_through else None
+        ),
     )
 
 
@@ -312,8 +357,9 @@ def eye_phrase(sense: CameraSenseV1) -> str:
     """One camera, one clause: what it is, where it looks, and whether it is
     seeing -- e.g. "your outdoor camera (walkway, since 2026-10-14; looks at
     the community walkway, the street and our patio -- outside and public,
-    not your room): receiving frames (newest within the last 15 min), 3
-    individuals counted today (fixtures excluded)".
+    not your room): receiving frames (newest within the last 15 min); today
+    so far (through 13:00), people: at least 2, at most 15 (the camera splits
+    one person into several)". People only ever as a range, never a count.
 
     It names the threshold, not the newest frame's age: the brief is
     cached for up to five minutes, so a precise age would be stale on most
@@ -329,6 +375,14 @@ def eye_phrase(sense: CameraSenseV1) -> str:
     if sense.outside:
         paren += " -- outside and public, not your room"
     head = f"{sense.name} ({paren})"
+    if sense.status != "live" and describe_camera(sense.stream_id).event_driven:
+        # An event camera with no recent frame is waiting, not broken.
+        if sense.status == "no_frames" or sense.last_frame_age_seconds is None:
+            return f"{head}: sends frames only when something happens there; nothing yet"
+        return (
+            f"{head}: sends frames only when something happens there; "
+            f"last time {age_phrase(sense.last_frame_age_seconds)}"
+        )
     if sense.status == "no_frames" or sense.last_frame_age_seconds is None:
         return f"{head}: no frames yet"
     if sense.status == "not_seeing":
@@ -339,9 +393,10 @@ def eye_phrase(sense: CameraSenseV1) -> str:
     # Room/street lines' job (vision_events), which can lag or go blank while
     # frames flow (review: cam0 captions lagged inventory 9 min live).
     state = f"{head}: receiving frames (newest within the last {window} min)"
-    if sense.individuals_today is not None:
-        n = sense.individuals_today
-        state += f", {n} {'individual' if n == 1 else 'individuals'} counted today (fixtures excluded)"
+    if sense.people_today_low is not None and sense.people_today_high is not None:
+        through = f" (through {sense.people_today_through})" if sense.people_today_through else ""
+        phrase = range_phrase({"low": sense.people_today_low, "high": sense.people_today_high})
+        state += f"; today so far{through}, {phrase}"
     return state
 
 

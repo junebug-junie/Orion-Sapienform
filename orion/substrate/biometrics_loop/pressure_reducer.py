@@ -247,11 +247,22 @@ def reduce_node_pressure_candidates(
             # same re-fire contract `active_pressures` already relies on.
             node_state.capability_impacts = []
         elif role == "node_pressure_suppressed":
+            # Suppression clears EVERY active pressure kind, not just the role's
+            # merge bucket ("strain"). It used to remove only `pressure ==
+            # pressure_kind`, so an `availability` pressure written while the node
+            # was still believed online could never leave: Rule B' (recovered) needs
+            # the node to report again, and this arm skipped it. The suppressible
+            # sweep then re-selected the node on every tick forever, and each pass
+            # re-added `strain` from the node's frozen hints. Confirmed live on atlas
+            # (PR #2714 report, 2026-10-16). An expected-offline node that stopped
+            # reporting has no current pressure of any kind.
             for pressure in list(node_state.active_pressures):
-                if pressure == pressure_kind:
-                    node_state.active_pressures.remove(pressure)
-                    if pressure not in node_state.suppressed_pressures:
-                        node_state.suppressed_pressures.append(pressure)
+                node_state.active_pressures.remove(pressure)
+                if pressure not in node_state.suppressed_pressures:
+                    node_state.suppressed_pressures.append(pressure)
+            # Nothing is active, so the score that summarised it goes too (it only
+            # ever ratchets up via max(); live hecate sat at 1.0 since 2026-10-15).
+            node_state.pressure_score = 0.0
             # Suppression is the ONLY reachable clearing path for a decommissioned
             # node. `node_availability_recovered` needs the node to start reporting
             # again, and a retired box never will -- so without this, anything

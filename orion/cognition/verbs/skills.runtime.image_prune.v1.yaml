@@ -17,10 +17,11 @@ can_interrupt_others: false
 requires_gpu: false
 requires_memory: false
 # Must sit ABOVE the prune subprocess's own 600s budget
-# (IMAGE_PRUNE_TIMEOUT_SEC) and BELOW the maintenance route's 720s
-# rpc_timeout_sec -- innermost budget fires first, so a real overrun is
-# attributable to the docker command rather than to an opaque outer timeout.
-# Same staggering as skills.runtime.builder_prune.v1.
+# (IMAGE_PRUNE_TIMEOUT_SEC) and BELOW the caller's 720s RPC budget
+# (orion-hardware-watch's HARDWARE_WATCH_IMAGE_PRUNE_RPC_TIMEOUT_SEC since
+# 2026-11-06; dispatch's prune_dangling_images route before) -- innermost budget
+# fires first, so a real overrun is attributable to the docker command rather
+# than to an opaque outer timeout. Same staggering as skills.runtime.builder_prune.v1.
 timeout_ms: 660000
 max_recursion_depth: 0
 services: []
@@ -29,3 +30,11 @@ plan:
     description: Measure host disk + dangling image count, gate, prune in dry-run/execute modes, re-measure.
     order: 0
     services: []
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 1
+  family: execution_dispatch.maintain
+  lanes: []
+  deferrable_window_s: 21600

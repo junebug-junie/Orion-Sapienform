@@ -42,11 +42,13 @@ def _journal_payload() -> dict[str, str]:
 
 
 def test_journal_entry_write_uses_nested_payload_for_validation_and_write(monkeypatch) -> None:
-    captured: dict[str, object] = {}
+    # The writer persists the journal row and THEN derives evidence_units rows
+    # from it (`_persist_evidence_units`), so record every write rather than
+    # keeping only the last one.
+    writes: list[tuple[str, dict]] = []
 
     def _fake_write_row(sql_model_cls, data):
-        captured["table"] = sql_model_cls.__tablename__
-        captured["data"] = data
+        writes.append((sql_model_cls.__tablename__, data))
         return True
 
     monkeypatch.setattr(worker, "_write_row", _fake_write_row)
@@ -68,8 +70,10 @@ def test_journal_entry_write_uses_nested_payload_for_validation_and_write(monkey
 
     asyncio.run(worker.handle_envelope(env, bus=None))
 
-    assert captured["table"] == "journal_entries"
-    written = captured["data"]
+    tables = [table for table, _data in writes]
+    assert tables[0] == "journal_entries", tables
+    assert tables.count("journal_entries") == 1, tables
+    written = writes[0][1]
     assert written["author"] == journal_payload["author"]
     assert written["mode"] == journal_payload["mode"]
     assert written["body"] == journal_payload["body"]
@@ -104,11 +108,10 @@ def test_regression_full_envelope_shape_fails_journal_schema_but_nested_payload_
 
 
 def test_non_regression_other_route_keeps_payload_shape(monkeypatch) -> None:
-    captured: dict[str, object] = {}
+    writes: list[tuple[str, dict]] = []
 
     def _fake_write_row(sql_model_cls, data):
-        captured["table"] = sql_model_cls.__tablename__
-        captured["data"] = data
+        writes.append((sql_model_cls.__tablename__, data))
         return True
 
     monkeypatch.setattr(worker, "_write_row", _fake_write_row)
@@ -123,7 +126,8 @@ def test_non_regression_other_route_keeps_payload_shape(monkeypatch) -> None:
 
     asyncio.run(worker.handle_envelope(env, bus=None))
 
-    assert captured["table"] == "chat_gpt_message"
-    written = captured["data"]
+    tables = [table for table, _data in writes]
+    assert tables[0] == "chat_gpt_message", tables
+    written = writes[0][1]
     assert written["message_id"] == payload["message_id"]
     assert written["content"] == payload["content"]

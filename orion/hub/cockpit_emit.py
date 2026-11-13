@@ -11,6 +11,7 @@ from orion.cockpit.builders import (
     hop_from_ingress,
     hop_from_motor_boot,
     hop_from_motor_step,
+    hop_from_working_notes,
     hop_from_outcome,
     hop_from_progress,
     hop_from_run_artifact,
@@ -18,7 +19,7 @@ from orion.cockpit.builders import (
     hop_from_stance_inputs,
     hop_from_thought,
 )
-from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
+from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER, COCKPIT_WORKING_NOTES_MARKER
 from orion.cockpit.publish import publish_cockpit_hop
 from orion.cockpit.sequencer import advance_seq, next_seq, reset_seq
 from orion.schemas.cockpit_sighting import CockpitHopStatusV1, CockpitHopV1, CockpitStageV1
@@ -277,6 +278,9 @@ def emit_motor_hop_from_claude_step(
             seq=next_seq(correlation_id),
             prompt=prompt if isinstance(prompt, str) else "",
         )
+        return _hop_frame(correlation_id, hop)
+    if step.get("_cockpit") == COCKPIT_WORKING_NOTES_MARKER:
+        hop = hop_from_working_notes(correlation_id=correlation_id, seq=next_seq(correlation_id), payload=step)
         return _hop_frame(correlation_id, hop)
     hop = hop_from_motor_step(
         correlation_id=correlation_id,

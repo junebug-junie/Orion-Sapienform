@@ -21,3 +21,11 @@ steps:
     order: 0
     services: [LLMGatewayService]
     prompt_template: concept_induction_journal_synthesize.j2
+
+# Body economy (Patch C2): who pays for this verb. Parsed by plan_loader.load_verb_physiology;
+# checked by scripts/check_verb_physiology.py. Tier 0 never bids (turn/autonomic).
+physiology:
+  tier: 2
+  family: concept_induction
+  lanes: [agent]
+  deferrable_window_s: 86400

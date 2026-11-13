@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -91,19 +92,46 @@ def _configure_push_auth(workspace: Path) -> None:
     live (env | grep -i GITHUB found nothing, git push failed with no SSH agent
     and no HTTPS credential available).
     """
+    _scrub_stale_push_credentials(workspace)
     token = _load_fcc_env_value("GITHUB_PAT")
     if not token:
-        logger.info("fcc_sandbox_push_auth_skipped_no_token")
+        logger.warning("fcc_sandbox_push_auth_skipped_no_token (fetch works anonymously; push will fail)")
         return
-    result = _run_git(
-        workspace,
-        "config",
-        "--local",
-        "url.https://x-access-token:" + token + "@github.com/.insteadOf",
-        "git@github.com:",
+    for prefix in ("git@github.com:", "https://github.com/"):
+        result = _run_git(
+            workspace,
+            "config",
+            "--local",
+            "--add",
+            "url.https://x-access-token:" + token + "@github.com/.insteadOf",
+            prefix,
+        )
+        if result.returncode != 0:
+            logger.warning("fcc_sandbox_push_auth_config_failed err=%s", result.stderr.strip())
+
+
+_CREDENTIAL_IN_URL = re.compile(r"^(https://)[^/@]+@(github\.com/)")
+
+
+def _scrub_stale_push_credentials(workspace: Path) -> None:
+    """Remove any token a previous identity left in this clone's git config.
+
+    Places that hold one: ``remote.origin.url`` / ``pushurl`` (``https://user:TOKEN@github.com/..``)
+    and ``url.https://x-access-token:TOKEN@github.com/.insteadOf`` (the token is
+    part of the KEY, so writing a new token adds a second key instead of replacing
+    the first). Without this, switching Orion to its own GitHub token would leave
+    the previous operator's token in place and ``origin`` would keep using it.
+    """
+    for key in ("remote.origin.url", "remote.origin.pushurl"):
+        current = _run_git(workspace, "config", "--local", "--get", key).stdout.strip()
+        clean = _CREDENTIAL_IN_URL.sub(r"\1\2", current)
+        if current and clean != current:
+            _run_git(workspace, "config", "--local", key, clean)
+    listing = _run_git(
+        workspace, "config", "--local", "--name-only", "--get-regexp", r"^url\..*x-access-token.*\.insteadof$"
     )
-    if result.returncode != 0:
-        logger.warning("fcc_sandbox_push_auth_config_failed err=%s", result.stderr.strip())
+    for key in listing.stdout.split():
+        _run_git(workspace, "config", "--local", "--unset-all", key)
 
 
 class _SyncAbort(Exception):
@@ -464,3 +492,54 @@ def _sync_locked(workspace: str, path: Path) -> str:
     except OSError as exc:
         logger.warning("fcc_sandbox_sync_os_error workspace=%s err=%s", workspace, exc)
         return _record(workspace, "error_os")
+
+
+# Result a held turn lock produces; the CLI below waits it out, bounded.
+_TURN_IN_FLIGHT = "skipped_turn_in_flight_external"
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run one sync from the command line and print a one-line verdict.
+
+    Used by ``scripts/sync_fcc_sandbox_after_deploy.sh`` after a post-pull rebuild
+    (``docker exec <hub> python3 -m orion.fcc.sandbox_sync``). Before that, only a
+    Hub browser connect refreshed the sandbox, so an open tab kept Orion's turns
+    on stale code after a deploy (2026-11-04: sandbox at #3107 while #3109 and
+    #3112 were deployed). Orion's turns import the sandbox's ``orion/`` first.
+
+    ``--wait-s``: a turn holding the shared lock makes the sync skip. Retry until
+    the lock frees or the wait runs out; never touch the tree during a turn.
+    Exit 0 only when the sandbox now sits at origin/main.
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m orion.fcc.sandbox_sync")
+    parser.add_argument(
+        "--workspace",
+        default=os.environ.get("HUB_AGENT_CLAUDE_WORKSPACE")
+        or os.environ.get("HARNESS_FCC_WORKSPACE")
+        or "",
+    )
+    parser.add_argument("--wait-s", type=float, default=0.0)
+    parser.add_argument("--poll-s", type=float, default=10.0)
+    args = parser.parse_args(argv)
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
+
+    deadline = time.monotonic() + max(0.0, args.wait_s)
+    while True:
+        result = sync_fcc_sandbox(args.workspace or None)
+        if result != _TURN_IN_FLIGHT or time.monotonic() + args.poll_s > deadline:
+            break
+        time.sleep(max(0.1, args.poll_s))
+
+    attempt = last_sync_state()["last_attempt"]
+    fields = [f"result={result}", f"workspace={args.workspace or '-'}"]
+    for key in ("head", "commits_advanced", "rescue_method", "rescued_from", "behind_main"):
+        if attempt.get(key) is not None:
+            fields.append(f"{key}={attempt[key]}")
+    print(" ".join(fields), flush=True)
+    return 0 if result in _SUCCESS_RESULTS else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

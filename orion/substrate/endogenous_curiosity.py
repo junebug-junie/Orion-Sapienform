@@ -34,6 +34,7 @@ from typing import Any, Sequence
 
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.schemas.attention_candidate import NO_CURIOSITY_CONSUMER_NODE_IDS
+from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
 from orion.substrate.pressure import PressureConfig
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -58,9 +59,8 @@ HARD_BUDGET_CEILING = 8
 # ::_transport_tick()` (docs/superpowers/specs/2026-07-26-transport-domain-
 # retirement-bus-synaptic-successor-design.md) -- it was a narrow, known-fake
 # "world_pulse" census, not real bus traffic, and this staleness ceiling was only
-# ever a mitigation for it, not a fix. `node:substrate.bus_synaptic` is the real
-# mesh-wide successor and already flows into this same generic node iteration
-# with zero code change here. This staleness-decay guard remains load-bearing
+# ever a mitigation for it, not a fix. Its successor `node:substrate.bus_synaptic`
+# was itself retired 2026-11 and is skipped here (RETIRED_PREDICTION_ERROR_NODE_IDS). This staleness-decay guard remains load-bearing
 # for every other node this function reads, not specifically for transport.
 #
 # `node:substrate.perception` (P2 camera-surprise, PR #1746, shipped
@@ -119,7 +119,9 @@ HARD_BUDGET_CEILING = 8
 # (1.2%); 0 of its first 18 tick writes crossed. The room node over the prior
 # 7 days crossed on 2.7% of ticks. Daytime street traffic is NOT yet measured.
 # Gate record: docs/superpowers/pr-reports/2026-10-15-walkway-street-into-mind-pr.md.
-# Attention still fences it (NO_ATTENTION_CONSUMER_NODE_IDS).
+# World-first attention admits it only at its own p99+ band since 2026-10-21
+# (ATTENTION_MIN_BAND_BY_NODE_ID). A tick whose camera input is missing writes
+# 0.0 (marked prediction_error_missing_reason), which never crosses min_error.
 #
 # Deliberately NOT switched to reading `dynamic_pressure` directly, unlike the
 # sibling fix in `attention_broadcast.py::_node_salience()` (PR #1061):
@@ -283,6 +285,22 @@ def _prediction_error_candidates(
     min_error: float,
     now: datetime,
 ) -> list[FrontierInvocationSignalV1]:
+    """One candidate per node whose prediction_error is a real measurement and is
+    still above ``min_error`` after staleness decay.
+
+    Value-kind rule (retire step 3, docs/superpowers/specs/2026-11-08-prediction-
+    error-suite-rebuild-design.md): a node whose glossary value_kind is not a
+    measurement (placeholder, bucket, or no entry) never seeds curiosity -- the
+    same rule ``orion.attention.self_readings`` applies to what Orion reads about
+    itself. Before this, ``node:substrate.harness_closure`` (a fixed 0.65) led 130
+    of 1,575 invoked curiosity runs in the 7 days to 2026-11-11. An unreadable
+    glossary reads as "not a measurement" for that tick (fail closed: no
+    prediction-error seeds, other seed sources unaffected).
+    """
+    from orion.attention.self_readings import (
+        node_prediction_error_is_measurement as is_measurement,
+    )
+
     candidates: list[FrontierInvocationSignalV1] = []
     for node in nodes:
         try:
@@ -295,6 +313,10 @@ def _prediction_error_candidates(
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
             if not node_id or node_id in NO_CURIOSITY_CONSUMER_NODE_IDS:
+                continue
+            if is_retired_prediction_error_node(node_id) or not is_measurement(node_id):
+                # placeholder / bucket / no glossary entry: the stored number is
+                # not a size, so it is not "sustained prediction error".
                 continue
             candidates.append(
                 FrontierInvocationSignalV1(
@@ -369,9 +391,10 @@ def _attention_loop_candidates(
                 if strength < min_salience:
                     continue
                 refs = [str(r) for r in (getattr(loop, "source_refs", None) or [])][:8]
-                if not any(r.startswith("node:") for r in refs):
+                concept_refs = [r for r in refs if r.startswith(("node:", "sub-concept-"))]
+                if not concept_refs:
                     # A world-first external loop (e.g. "world:chat") names no
-                    # graph node: a concept_expand over it would match nothing.
+                    # graph node; reading loops carry actual concept endpoints.
                     continue
                 candidates.append(
                     FrontierInvocationSignalV1(
@@ -380,7 +403,7 @@ def _attention_loop_candidates(
                         subject_ref=subject_ref,
                         target_zone="concept_graph",
                         task_type_candidate="concept_expand",
-                        focal_node_refs=refs,
+                        focal_node_refs=concept_refs,
                         signal_strength=strength,
                         evidence_summary=f"unresolved attention open-loop: {loop.description}",
                         confidence=_clamp01(getattr(loop, "confidence", 0.6)),

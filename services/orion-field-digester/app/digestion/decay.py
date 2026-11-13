@@ -86,8 +86,8 @@ CAPABILITY_DECAY_CHANNELS = {
 # older than the given seconds. For a reading whose producer rewrites it every
 # few seconds, "not written lately" means the producer stopped (service down,
 # flag rolled back, bus outage) -- and a held last value then reads as a live
-# measurement to diffusion, capability provenance, and feedback credit's
-# write-backed check (orion/field/credit_integrity.py), none of which can tell
+# measurement to diffusion and capability provenance (and, until the feedback rung
+# retired on 2026-11-04, feedback credit's write-backed check), none of which can tell
 # it apart from a fresh one. Dropping the key makes every consumer see
 # "unmeasured" instead -- including one layer up: a capability channel left
 # with no measuring source is dropped by apply_diffusion() too (2026-10-07),
@@ -114,11 +114,30 @@ EXPIRING_NODE_CHANNELS: dict[str, float] = {
 }
 
 
+# Same rule as EXPIRING_NODE_CHANNELS, scoped to ONE node's channel, for a
+# channel other nodes write on a different cadence (2026-11-10, PE suite
+# rebuild spec retire step 8). The camera surprise tick in
+# orion-substrate-runtime writes these two nodes every 30 s -- a value, or a
+# missing marker that clears the key (state_deltas.py). `prediction_error` is
+# neither decayed nor expired anywhere else, so without this a stopped producer
+# (substrate-runtime down, tick flag off, or a producer newer than this
+# digester's last rebuild) would hold the last spike forever. 180 s = six
+# missed ticks.
+EXPIRING_NODE_CHANNELS_BY_NODE: dict[tuple[str, str], float] = {
+    ("node:substrate.perception", "prediction_error"): 180.0,
+    ("node:substrate.perception_walkway", "prediction_error"): 180.0,
+}
+
+
 def expire_unrefreshed_channels(state: FieldStateV1, *, now: datetime) -> None:
     now_aware = _aware_utc(now)
     for node_id, vec in state.node_vectors.items():
         stamps = state.node_vector_updated_at.get(node_id) or {}
-        for ch, max_age in EXPIRING_NODE_CHANNELS.items():
+        rules = dict(EXPIRING_NODE_CHANNELS)
+        for (rule_node, ch), max_age in EXPIRING_NODE_CHANNELS_BY_NODE.items():
+            if rule_node == node_id:
+                rules[ch] = max_age
+        for ch, max_age in rules.items():
             if ch not in vec:
                 continue
             ts = stamps.get(ch)

@@ -18,6 +18,7 @@ from app.storage.ddl import (
     DRIFT_DDL,
     EVENTS_DDL,
     EDGES_DDL,
+    ENRICHMENT_CACHE_DDL,
     MODEL_EVENTS_DDL,
     MODELS_DDL,
     RUNS_DDL,
@@ -27,6 +28,63 @@ from app.storage.pg import pg_conn
 
 
 logger = logging.getLogger("orion-topic-foundry.repository")
+
+
+# Columns added after their tables shipped. ALTER TABLE ... ADD COLUMN IF NOT EXISTS takes an
+# ACCESS EXCLUSIVE lock even when the column is already there, so running them on every start
+# queued behind any reader: live 2026-10-31 a 27-minute pg_dump held startup at the first ALTER for
+# 11+ minutes (and queued every later reader of topic_foundry_runs behind it). Only missing ones run.
+ADDED_COLUMNS = (
+    ("topic_foundry_runs", "spec_hash", "VARCHAR"),
+    ("topic_foundry_runs", "stage", "VARCHAR"),
+    ("topic_foundry_segments", "title", "TEXT"),
+    ("topic_foundry_segments", "aspects", "JSONB"),
+    ("topic_foundry_segments", "sentiment", "JSONB"),
+    ("topic_foundry_segments", "meaning", "JSONB"),
+    ("topic_foundry_segments", "enrichment", "JSONB"),
+    ("topic_foundry_segments", "enriched_at", "TIMESTAMPTZ"),
+    ("topic_foundry_segments", "enrichment_version", "TEXT"),
+    ("topic_foundry_segments", "snippet", "TEXT"),
+    ("topic_foundry_segments", "chars", "INTEGER"),
+    ("topic_foundry_segments", "row_ids_count", "INTEGER"),
+    ("topic_foundry_segments", "start_at", "TIMESTAMPTZ"),
+    ("topic_foundry_segments", "end_at", "TIMESTAMPTZ"),
+    ("topic_foundry_models", "enrichment_spec", "JSONB"),
+)
+
+
+# CREATE INDEX IF NOT EXISTS takes a SHARE lock on the table before it checks the name, which
+# queues behind any long write transaction; existing ones are skipped the same way.
+INDEXES = (
+    ("ix_topic_foundry_runs_spec_hash",
+     "CREATE INDEX IF NOT EXISTS ix_topic_foundry_runs_spec_hash ON topic_foundry_runs (spec_hash)"),
+    ("ix_topic_foundry_segments_aspects",
+     "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_aspects ON topic_foundry_segments USING GIN (aspects)"),
+    ("ix_topic_foundry_segments_run_id_created_at",
+     "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_run_id_created_at ON topic_foundry_segments (run_id, created_at)"),
+)
+# A schema change that does have to run waits at most this long for its lock; startup then fails and
+# the container restarts, instead of hanging silently behind a backup (gpu-pool store.py does the same).
+SCHEMA_LOCK_TIMEOUT = "10s"
+
+
+def missing_indexes(cur) -> list[str]:
+    cur.execute(
+        "SELECT indexname FROM pg_indexes WHERE schemaname = current_schema() AND indexname = ANY(%s)",
+        ([name for name, _ in INDEXES],),
+    )
+    present = {row[0] for row in cur.fetchall()}
+    return [sql for name, sql in INDEXES if name not in present]
+
+
+def missing_columns(cur) -> list[tuple[str, str, str]]:
+    cur.execute(
+        "SELECT table_name, column_name FROM information_schema.columns "
+        "WHERE table_schema = current_schema() AND table_name = ANY(%s)",
+        (sorted({table for table, _, _ in ADDED_COLUMNS}),),
+    )
+    present = {(row[0], row[1]) for row in cur.fetchall()}
+    return [col for col in ADDED_COLUMNS if (col[0], col[1]) not in present]
 
 
 def ensure_tables() -> None:
@@ -44,31 +102,19 @@ def ensure_tables() -> None:
             cur.execute(CONVERSATIONS_DDL)
             cur.execute(CONVERSATION_BLOCKS_DDL)
             cur.execute(CONVERSATION_OVERRIDES_DDL)
-            cur.execute("ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT EXISTS spec_hash VARCHAR")
-            cur.execute("ALTER TABLE topic_foundry_runs ADD COLUMN IF NOT EXISTS stage VARCHAR")
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS ix_topic_foundry_runs_spec_hash ON topic_foundry_runs (spec_hash)"
-            )
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS title TEXT")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS aspects JSONB")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS sentiment JSONB")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS meaning JSONB")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS enrichment JSONB")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS enriched_at TIMESTAMPTZ")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS enrichment_version TEXT")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS snippet TEXT")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS chars INTEGER")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS row_ids_count INTEGER")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS start_at TIMESTAMPTZ")
-            cur.execute("ALTER TABLE topic_foundry_segments ADD COLUMN IF NOT EXISTS end_at TIMESTAMPTZ")
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_aspects ON topic_foundry_segments USING GIN (aspects)"
-            )
-            cur.execute(
-                "CREATE INDEX IF NOT EXISTS ix_topic_foundry_segments_run_id_created_at "
-                "ON topic_foundry_segments (run_id, created_at)"
-            )
-            cur.execute("ALTER TABLE topic_foundry_models ADD COLUMN IF NOT EXISTS enrichment_spec JSONB")
+            cur.execute(ENRICHMENT_CACHE_DDL)
+            columns = missing_columns(cur)
+            if columns:
+                cur.execute(f"SET LOCAL lock_timeout = '{SCHEMA_LOCK_TIMEOUT}'")
+            for table, column, sql_type in columns:
+                logger.info("topic_foundry_schema_add_column table=%s column=%s", table, column)
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}")
+            indexes = missing_indexes(cur)
+            if indexes and not columns:
+                cur.execute(f"SET LOCAL lock_timeout = '{SCHEMA_LOCK_TIMEOUT}'")
+            for sql in indexes:
+                logger.info("topic_foundry_schema_create_index %s", sql.split(" ON ")[0].rsplit(" ", 1)[-1])
+                cur.execute(sql)
 
 
 def create_dataset(dataset: DatasetSpec) -> None:
@@ -288,17 +334,34 @@ def fetch_run(run_id: UUID) -> Optional[Dict[str, Any]]:
             return cur.fetchone()
 
 
-def fetch_run_by_spec_hash(spec_hash: str) -> Optional[Dict[str, Any]]:
+def fetch_run_by_spec_hash(spec_hash: str, *, complete_within_secs: int = 0) -> Optional[Dict[str, Any]]:
+    """Find a run that makes a new run with this ``spec_hash`` redundant.
+
+    A queued or running run always counts. A complete run counts only when it
+    completed within the last ``complete_within_secs`` seconds (0 = never).
+
+    Before 2026-10-30 only queued/running runs counted, so a finished run did
+    not stop an identical new one. Hub runs a training tick on every restart,
+    and spec_hash 569e0f36f1 trained six times on 2026-10-29 alone.
+    """
     with pg_conn() as conn:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
                 SELECT * FROM topic_foundry_runs
-                WHERE spec_hash = %s AND status IN ('queued', 'running')
+                WHERE spec_hash = %s
+                  AND (
+                    status IN ('queued', 'running')
+                    OR (
+                      %s > 0
+                      AND status = 'complete'
+                      AND completed_at >= NOW() - make_interval(secs => %s)
+                    )
+                  )
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                (spec_hash,),
+                (spec_hash, int(complete_within_secs), int(complete_within_secs)),
             )
             return cur.fetchone()
 
@@ -677,6 +740,36 @@ def fetch_segment(segment_id: UUID) -> Optional[Dict[str, Any]]:
                 (str(segment_id),),
             )
             return cur.fetchone()
+
+
+def fetch_enrichment_cache(cache_keys: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Return ``{cache_key: enrichment}`` for every key already in the cache."""
+    keys = sorted({k for k in cache_keys if k})
+    if not keys:
+        return {}
+    with pg_conn() as conn:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT cache_key, enrichment FROM topic_foundry_enrichment_cache WHERE cache_key = ANY(%s)",
+                (keys,),
+            )
+            return {row["cache_key"]: row["enrichment"] for row in (cur.fetchall() or [])}
+
+
+def insert_enrichment_cache(cache_key: str, *, enrichment: Dict[str, Any], enricher: str) -> None:
+    with pg_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO topic_foundry_enrichment_cache (cache_key, enricher, enrichment)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (cache_key) DO UPDATE
+                SET enrichment = EXCLUDED.enrichment,
+                    enricher = EXCLUDED.enricher,
+                    created_at = NOW()
+                """,
+                (cache_key, enricher, Json(enrichment)),
+            )
 
 
 def update_segment_enrichment(segment_id: UUID, *, enrichment: Dict[str, Any], enrichment_version: str) -> None:

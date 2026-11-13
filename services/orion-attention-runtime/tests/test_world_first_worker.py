@@ -30,7 +30,10 @@ def _worker(*, pe_rows=None, pe_error=None, turns=None, chat_error=None) -> Atte
     w = AttentionRuntimeWorker.__new__(AttentionRuntimeWorker)
     w._store = MagicMock(spec=AttentionRuntimeStore)
     w._pe_history = NodePeHistoryCache()
-    w._settings = SimpleNamespace(attention_world_first_enabled=True)
+    w._settings = SimpleNamespace(
+        attention_world_first_enabled=True,
+        attention_world_reading_enabled=True,
+    )
     if pe_error is not None:
         w._store.fetch_node_prediction_error_history.side_effect = pe_error
     else:
@@ -41,6 +44,7 @@ def _worker(*, pe_rows=None, pe_error=None, turns=None, chat_error=None) -> Atte
         w._store.fetch_chat_turn_times.side_effect = chat_error
     else:
         w._store.fetch_chat_turn_times.return_value = turns or []
+    w._store.fetch_accepted_reading_link_events.return_value = []
     return w
 
 
@@ -58,7 +62,9 @@ def _by_id(cands):
 def test_candidates_cover_every_stored_node_plus_chat() -> None:
     rows = _history("node:substrate.execution", 0.0, 0.9) + _history("node:substrate.biometrics", 0.02, 0.02)
     cands = _by_id(_worker(pe_rows=rows)._world_first_candidates(_field(), NOW))
-    assert set(cands) == {"node:substrate.execution", "node:substrate.biometrics", "world:chat"}
+    assert set(cands) == {
+        "node:substrate.execution", "node:substrate.biometrics", "world:chat", "world:reading"
+    }
     ex = cands["node:substrate.execution"]
     assert ex.source_kind == "internal" and ex.unusualness.band == "unusual"
     assert cands["node:substrate.biometrics"].unusualness.percentile_now == 0.0
@@ -73,6 +79,23 @@ def test_unreadable_history_makes_body_nodes_absent_not_calm() -> None:
 def test_unreadable_chat_log_is_absent() -> None:
     cands = _by_id(_worker(chat_error=RuntimeError("db down"))._world_first_candidates(_field(), NOW))
     assert cands["world:chat"].absent
+
+
+def test_field_runtime_reads_accepted_links_and_reuses_cache() -> None:
+    w = _worker(pe_rows=[])
+    events = [
+        (NOW - timedelta(days=d), f"sub-concept-old-{d}", f"sub-concept-old-{d}-obj")
+        for d in range(1, 7)
+    ] + [
+        (NOW - timedelta(minutes=i), f"sub-concept-wp-read-{i}", f"sub-concept-wp-read-{i}-obj")
+        for i in range(6)
+    ]
+    w._store.fetch_accepted_reading_link_events.return_value = events
+    first = _by_id(w._world_first_candidates(_field(), NOW))
+    second = _by_id(w._world_first_candidates(_field(), NOW + timedelta(seconds=30)))
+    assert first["world:reading"].unusualness.band in {"high", "unusual"}
+    assert second["world:reading"].evidence_refs == first["world:reading"].evidence_refs
+    w._store.fetch_accepted_reading_link_events.assert_called_once()
 
 
 def test_camera_absence_comes_from_frame_staleness() -> None:
@@ -129,14 +152,33 @@ def test_event_decay_setting_reaches_the_candidates() -> None:
         assert cands["node:substrate.biometrics"].event_window_sec is None
 
 
-def test_walkway_perception_node_is_never_a_candidate() -> None:
-    """node:substrate.perception_walkway is recorded every tick (history + field
-    vector) but has no cognition consumer until its live-data check runs, so a
-    loud walkway reading must not bid, from either the history or the field."""
+def test_walkway_bids_as_world_and_wins_only_in_its_own_p99_band() -> None:
+    """node:substrate.perception_walkway bids from the history (2026-10-21) as
+    an outdoor (world) source, eligible only at its own p99+ band."""
+    from orion.attention.world_first import judge_candidate
+
     walkway = "node:substrate.perception_walkway"
-    rows = _history(walkway, 0.0, 1.0) + _history("node:substrate.execution", 0.0, 0.9)
     field = _field()
     field = field.model_copy(update={"node_vectors": {**field.node_vectors, walkway: {"prediction_error": 1.0}}})
-    cands = _by_id(_worker(pe_rows=rows)._world_first_candidates(field, NOW))
-    assert walkway not in cands
-    assert "node:substrate.execution" in cands
+    rows = _history(walkway, 0.0, 1.0) + _history("node:substrate.execution", 0.0, 0.9)
+    cand = _by_id(_worker(pe_rows=rows)._world_first_candidates(field, NOW))[walkway]
+    assert cand.source_kind == "external" and not cand.absent
+    verdict = judge_candidate(cand)
+    assert verdict.band == "unusual" and verdict.eligible
+
+    # A high-but-not-p99 reading: 2% of its history above the current value.
+    rows = [(walkway, NOW - timedelta(minutes=10 * (400 - i)), 1.0 if i < 8 else 0.0) for i in range(400)]
+    rows.append((walkway, NOW - timedelta(seconds=20), 0.5))
+    cand = _by_id(_worker(pe_rows=rows)._world_first_candidates(field, NOW))[walkway]
+    verdict = judge_candidate(cand)
+    assert verdict.band == "high" and not verdict.eligible
+
+
+def test_walkway_with_no_recent_history_row_is_absent() -> None:
+    """Missing input writes no history row, so the newest stored reading ages
+    and the walkway reads absent after 180 s -- never calm."""
+    walkway = "node:substrate.perception_walkway"
+    rows = [(walkway, NOW - timedelta(minutes=10 * (400 - i)), 0.0) for i in range(400)]
+    rows.append((walkway, NOW - timedelta(minutes=20), 1.0))
+    cand = _by_id(_worker(pe_rows=rows)._world_first_candidates(_field(), NOW))[walkway]
+    assert cand.absent and "old" in (cand.absent_reason or "")

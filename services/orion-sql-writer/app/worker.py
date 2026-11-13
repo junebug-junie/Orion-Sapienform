@@ -27,6 +27,8 @@ from app.models import (
     PowerIntentSettledSQL,
     CabinetAmbientSpikeSQL,
     HomeCoolingSampleSQL,
+    OfficeEnvSampleSQL,
+    ClosetEnvSampleSQL,
     EnergyBillActualSQL,
     EnergyBillForecastSQL,
     EnergyCostAccruedSQL,
@@ -65,19 +67,22 @@ from app.models import (
     RecipientProfileDB,
     NotificationPreferenceDB,
     JournalEntrySQL,
-    SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
     CuriosityPeerBriefSQL,
     CuriosityHopReadingSQL,
     DurableRunStateSQL,
     GpuPoolEventSQL,
     GpuPoolStateSQL,
+    PhysiologyStateSQL,
+    WantLedgerSQL,
+    LlmCallUsageSQL,
     TransportBaselineHourlySQL,
     SelfSignalHourSQL,
     SelfSignalOutcomeAssociationSQL,
     FieldChannelAnomalyScoreSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SelfSenseEvalLogSQL,
     SocialRoomTurnSQL,
     ExternalRoomMessageSQL,
@@ -120,18 +125,23 @@ from app.harness_turn_trace_persist import upsert_harness_turn_trace
 from app.cockpit_turn_sighting_persist import append_cockpit_hop
 from orion.autonomy.models import ActionOutcomeEmitV1
 from orion.evidence_index import build_evidence_units
-from orion.schemas.self_knowledge_item_log import SelfKnowledgeItemLogV1
 from orion.schemas.attention_schema import AttentionSchemaV1
 from orion.schemas.curiosity_peer import PeerBriefV1
 from orion.schemas.curiosity_supervisor import HopReadingV1
 from orion.schemas.durable_run import DurableRunStateV1
 from orion.schemas.gpu_pool import GpuPoolEventV1, GpuPoolStateV1
 from app.models.gpu_pool_state import state_history_row
+from app.models.physiology_state import physiology_state_row
+from orion.schemas.physiology import PhysiologyStateV1
+from app.models.want_ledger import want_ledger_row
+from orion.schemas.physiology_want import WantDecisionV1
+from orion.schemas.llm_call_usage import LlmCallUsageV1
 from orion.schemas.telemetry.transport_baseline_hourly import TransportBaselineHourlyV1
 from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcomeAssociationV1
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
+from orion.schemas.personality import DispositionNamingV1
 from orion.schemas.self_sense import SelfSenseEvalV1
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
@@ -161,6 +171,8 @@ from orion.schemas.telemetry.meta_tags import MetaTagsPayload
 from orion.schemas.power import PowerIntentSettledV1
 from orion.schemas.telemetry.cabinet_ambient_spike import CabinetAmbientSpikeV1
 from orion.schemas.telemetry.home_cooling import HomeCoolingSampleV1
+from orion.schemas.telemetry.office_env import OfficeEnvSampleV1
+from orion.schemas.telemetry.closet_env import ClosetEnvSampleV1
 from orion.schemas.energy import (
     EnergyBillActualV1,
     EnergyBillForecastV1,
@@ -263,17 +275,20 @@ INSERT_ONLY_MODELS = {
     JournalEntrySQL,
     GpuPoolEventSQL,
     GpuPoolStateSQL,
+    PhysiologyStateSQL,
+    WantLedgerSQL,
+    LlmCallUsageSQL,
     TransportBaselineHourlySQL,
     SelfSignalOutcomeAssociationSQL,
     FieldChannelAnomalyScoreSQL,
     DurableRunStateSQL,
-    SelfKnowledgeItemLogSQL,
     AttentionSchemaSQL,
     CuriosityPeerBriefSQL,
     CuriosityHopReadingSQL,
     DurableRunStateSQL,
     ChatStanceBeliefLogSQL,
     SelfConceptHistorySQL,
+    DispositionNamingSQL,
     SocialRoomTurnSQL,
     ChatResponseFeedbackSQL,
     MindRunSQL,
@@ -510,6 +525,8 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "PowerIntentSettledSQL": (PowerIntentSettledSQL, PowerIntentSettledV1),
     "CabinetAmbientSpikeSQL": (CabinetAmbientSpikeSQL, CabinetAmbientSpikeV1),
     "HomeCoolingSampleSQL": (HomeCoolingSampleSQL, HomeCoolingSampleV1),
+    "OfficeEnvSampleSQL": (OfficeEnvSampleSQL, OfficeEnvSampleV1),
+    "ClosetEnvSampleSQL": (ClosetEnvSampleSQL, ClosetEnvSampleV1),
     "EnergyUsageIntervalSQL": (EnergyUsageIntervalSQL, EnergyUsageIntervalV1),
     "EnergyCostAccruedSQL": (EnergyCostAccruedSQL, EnergyCostAccruedV1),
     "EnergyRunCostSQL": (EnergyRunCostSQL, EnergyRunCostEstimatedV1),
@@ -540,19 +557,22 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "RecipientProfileDB": (RecipientProfileDB, None),
     "NotificationPreferenceDB": (NotificationPreferenceDB, None),
     "JournalEntrySQL": (JournalEntrySQL, JournalEntryWriteV1),
-    "SelfKnowledgeItemLogSQL": (SelfKnowledgeItemLogSQL, SelfKnowledgeItemLogV1),
     "AttentionSchemaSQL": (AttentionSchemaSQL, AttentionSchemaV1),
     "CuriosityPeerBriefSQL": (CuriosityPeerBriefSQL, PeerBriefV1),
     "CuriosityHopReadingSQL": (CuriosityHopReadingSQL, HopReadingV1),
     "DurableRunStateSQL": (DurableRunStateSQL, DurableRunStateV1),
     "GpuPoolEventSQL": (GpuPoolEventSQL, GpuPoolEventV1),
     "GpuPoolStateSQL": (GpuPoolStateSQL, GpuPoolStateV1),
+    "PhysiologyStateSQL": (PhysiologyStateSQL, PhysiologyStateV1),
+    "WantLedgerSQL": (WantLedgerSQL, WantDecisionV1),
+    "LlmCallUsageSQL": (LlmCallUsageSQL, LlmCallUsageV1),
     "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
     "SelfSignalHourSQL": (SelfSignalHourSQL, SelfSignalHourV1),
     "SelfSignalOutcomeAssociationSQL": (SelfSignalOutcomeAssociationSQL, SelfSignalOutcomeAssociationV1),
     "FieldChannelAnomalyScoreSQL": (FieldChannelAnomalyScoreSQL, FieldChannelAnomalyScoreV1),
     "ChatStanceBeliefLogSQL": (ChatStanceBeliefLogSQL, ChatStanceBeliefLogV1),
     "SelfConceptHistorySQL": (SelfConceptHistorySQL, SelfConceptHistoryV1),
+    "DispositionNamingSQL": (DispositionNamingSQL, DispositionNamingV1),
     "SelfSenseEvalLogSQL": (SelfSenseEvalLogSQL, SelfSenseEvalV1),
     "SocialRoomTurnSQL": (SocialRoomTurnSQL, SocialRoomTurnV1),
     "ExternalRoomMessageSQL": (ExternalRoomMessageSQL, ExternalRoomMessageV1),
@@ -1663,6 +1683,83 @@ def _normalize_home_cooling_sample_payload(write_data: dict) -> dict:
     return out
 
 
+def _normalize_env_sample_payload(
+    write_data: dict,
+    *,
+    float_keys: tuple[str, ...],
+    int_keys: tuple[str, ...],
+    state_keys: tuple[str, ...],
+) -> dict:
+    """Flatten a pan-1 env sample (office or closet) onto its SQL columns.
+
+    Nested sensor/measurements/state/provenance objects are flattened. A stale
+    sample has no measurements, so the reading columns stay NULL -- never 0.
+    """
+    full_payload = dict(write_data)
+    out = dict(write_data)
+
+    sensor = out.pop("sensor", None)
+    if isinstance(sensor, dict):
+        if sensor.get("id") is not None:
+            out["sensor_id"] = str(sensor["id"])
+        if "online" in sensor:
+            out["sensor_online"] = bool(sensor["online"])
+
+    measurements = out.pop("measurements", None)
+    if isinstance(measurements, dict):
+        for key in float_keys:
+            value = measurements.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                out[key] = float(value)
+        for key in int_keys:
+            value = measurements.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                out[key] = value
+
+    state = out.pop("state", None)
+    if isinstance(state, dict):
+        for key in ("stale", *state_keys):
+            if state.get(key) is not None:
+                out[key] = bool(state[key])
+
+    provenance = out.pop("provenance", None)
+    if isinstance(provenance, dict):
+        age = provenance.get("sample_age_sec")
+        if isinstance(age, (int, float)) and not isinstance(age, bool):
+            out["sample_age_sec"] = float(age)
+        seq = provenance.get("frame_seq")
+        if isinstance(seq, int) and not isinstance(seq, bool):
+            out["frame_seq"] = seq
+
+    out["payload_json"] = _json_sanitize(full_payload)
+    out.pop("schema_name", None)
+    out.pop("schema", None)
+    return out
+
+
+def _normalize_office_env_sample_payload(write_data: dict) -> dict:
+    """Map ``office.env.sample.v1`` onto OfficeEnvSampleSQL columns."""
+    return _normalize_env_sample_payload(
+        write_data,
+        float_keys=("office_temp_c", "office_humidity_pct", "office_lux"),
+        int_keys=(
+            "office_eco2_ppm", "office_tvoc_ppb",
+            "office_pm1_ug_m3", "office_pm25_ug_m3", "office_pm10_ug_m3",
+        ),
+        state_keys=("air_warming", "light_saturated"),
+    )
+
+
+def _normalize_closet_env_sample_payload(write_data: dict) -> dict:
+    """Map ``closet.env.sample.v1`` onto ClosetEnvSampleSQL columns."""
+    return _normalize_env_sample_payload(
+        write_data,
+        float_keys=("closet_temp_c", "closet_humidity_pct"),
+        int_keys=("closet_co2_ppm",),
+        state_keys=(),
+    )
+
+
 def _normalize_biometrics_cluster_payload(write_data: dict) -> dict:
     """Map a ``biometrics.cluster.v1`` payload onto BiometricsClusterSQL's columns.
 
@@ -1720,6 +1817,10 @@ def _write_row(sql_model_cls, data: dict) -> bool:
             write_data = _normalize_biometrics_cluster_payload(write_data)
         if sql_model_cls is HomeCoolingSampleSQL:
             write_data = _normalize_home_cooling_sample_payload(write_data)
+        if sql_model_cls is OfficeEnvSampleSQL:
+            write_data = _normalize_office_env_sample_payload(write_data)
+        if sql_model_cls is ClosetEnvSampleSQL:
+            write_data = _normalize_closet_env_sample_payload(write_data)
 
         col_key_by_name = {col.name: col.key for col in mapper.columns}
         valid_keys = set(attr.key for attr in mapper.attrs)
@@ -2159,7 +2260,15 @@ async def _write(
             )
             raise
         data = (state_history_row(obj) if sql_model_cls is GpuPoolStateSQL else
+                physiology_state_row(obj) if sql_model_cls is PhysiologyStateSQL else
+                want_ledger_row(obj) if sql_model_cls is WantLedgerSQL else
                 obj.model_dump() if hasattr(obj, "model_dump") else obj.dict())
+        if sql_model_cls is DispositionNamingSQL:
+            # jsonb columns hold the nested packet (datetimes inside); the engine's serializer is
+            # plain json.dumps. Top-level written_at stays a datetime for its timestamptz column.
+            as_json = obj.model_dump(mode="json")
+            for key in ("shown", "evidence_refs", "refused_reasons"):
+                data[key] = as_json[key]
     else:
         data = payload if isinstance(payload, dict) else {}
 
@@ -2359,7 +2468,19 @@ def _memory_turn_initiator(prompt: str, client_meta: Any) -> str | None:
     """Who opened a turn, or None when the turn is not memory: "juniper" when she wrote a
     prompt; "orion" only for Orion's own outreach (client_meta.unsolicited, the flag the
     outreach path writes). Other prompt-less rows -- e.g. Claude speaking in the room
-    (client_meta.room_claude, 17 live rows) -- stay out of memory, as before 2026-10-09."""
+    (client_meta.room_claude, 18 live rows) -- stay out of memory, as before 2026-10-09.
+
+    A room_claude row is never memory, even with a prompt (2026-11-12): Hub now keeps
+    Juniper's @claude prompt in client_meta.room_claude.prompt, and a side exchange with
+    Claude must not become Orion's memory if that text ever reaches the prompt column."""
+    meta = client_meta
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:  # noqa: BLE001
+            meta = None
+    if isinstance(meta, dict) and meta.get("room_claude"):
+        return None
     if prompt:
         return "juniper"
     if isinstance(client_meta, dict) and client_meta.get("unsolicited") is True:
@@ -3058,6 +3179,12 @@ async def _handle_envelope_body(env: BaseEnvelope, *, bus: Any | None = None) ->
                 write_ok = await _write(sql_model, None, data_to_process, {}, kind=env.kind)
             elif sql_model is CockpitTurnSightingSQL:
                 write_ok = await _write(sql_model, CockpitHopV1, data_to_process, {}, kind=env.kind)
+            elif sql_model is LlmCallUsageSQL:
+                # extra_fields={}: the generic extras carry the ENVELOPE correlation_id, which is a
+                # fresh uuid4 whenever the producer had none (or a non-UUID turn id). Merging it
+                # would overwrite the payload's correlation_id -- NULL is meaningful here (the
+                # FCC-path gateway row) and the per-turn join reads the payload's value.
+                write_ok = await _write(sql_model, schema_model, data_to_process, {}, kind=env.kind)
             else:
                 write_ok = await _write(sql_model, schema_model, data_to_process, extra_sql_fields, kind=env.kind)
             if env.kind == JOURNAL_WRITE_KIND and write_ok:

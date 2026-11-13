@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.telemetry.biometrics import (
     BiometricsClusterV1,
     BiometricsInductionV1,
@@ -110,14 +111,9 @@ class BiometricsCache:
             "orion:biometrics:cluster",
         ]
         logger.info("Subscribing to biometrics channels: %s", channels)
-        try:
-            async with self._bus.subscribe(*channels) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    await self._handle_message(msg)
-        except asyncio.CancelledError:
-            logger.info("Biometrics cache task cancelled.")
-        except Exception as exc:
-            logger.error("Biometrics cache loop failed: %s", exc, exc_info=True)
+        await run_subscription(
+            self._bus, channels, self._handle_message, stop_event=None, name="hub.biometrics_cache"
+        )
 
     async def _handle_message(self, msg: Dict[str, Any]) -> None:
         if not self._bus:

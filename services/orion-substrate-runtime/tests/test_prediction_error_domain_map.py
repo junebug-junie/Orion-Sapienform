@@ -146,7 +146,7 @@ def test_domain_map_matches_active_inference_domains_exactly():
         f"  only in the reducer:  {sorted(set(ACTIVE_INFERENCE_DOMAINS) - mapped)}\n"
         "If a domain is being retired, remove it from BOTH in the same patch. "
         "If one is being added, wire it into both, or add it here with a comment "
-        "explaining the deliberate asymmetry (see harness_closure/codebase)."
+        "explaining the deliberate asymmetry (see codebase)."
     )
 
 
@@ -219,8 +219,25 @@ def test_retired_transport_producer_stays_deleted():
     assert "transport_prediction_error" not in defined, (
         "transport_prediction_error() is back in orion/substrate/prediction_error.py. "
         "It measured a 2-Redis-Stream 'world_pulse' census, not inter-service bus "
-        "traffic. The successor is bus_synaptic_prediction_error()."
+        "traffic. Its successor bus_synaptic_prediction_error() was retired 2026-11 too."
     )
+
+
+@pytest.mark.parametrize("name", ["route_prediction_error", "bus_synaptic_prediction_error"])
+def test_retired_pe_step5_producers_stay_deleted(name):
+    """route/bus_synaptic prediction errors were deleted 2026-11 (PE suite
+    rebuild step 5): neither was a forecast. Same "kill means kill" gate as
+    transport above."""
+    tree = ast.parse(PREDICTION_ERROR.read_text())
+    defined = {
+        n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    assert name not in defined
+
+
+def test_active_inference_domains_are_exactly_the_three_live_ones():
+    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution", "biometrics", "chat"}
+    assert set(_domain_map().values()) == {"execution", "biometrics", "chat"}
 
 
 class TestTheGateHasTeeth:
@@ -236,8 +253,6 @@ class TestTheGateHasTeeth:
         '    "node:substrate.execution": "execution",\n'
         '    "node:substrate.biometrics": "biometrics",\n'
         '    "node:substrate.chat": "chat",\n'
-        '    "node:substrate.route": "route",\n'
-        '    "node:substrate.bus_synaptic": "bus_synaptic",\n'
         "}\n"
     )
 

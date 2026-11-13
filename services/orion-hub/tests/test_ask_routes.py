@@ -101,9 +101,9 @@ class _FakeConn:
             if r is None or not self._answerable(r):
                 return None
             if same_rule:
-                # The real SQL: a "same person?" card only takes yes / no (or a dismissal).
-                same_kind, yes_no = same_rule
-                if r["source_kind"] == same_kind and answer is not None and answer not in yes_no:
+                # The real SQL: "same person?" / "Is this X?" cards only take yes / no (or a dismissal).
+                yes_no_kinds, yes_no = same_rule
+                if r["source_kind"] in yes_no_kinds and answer is not None and answer not in yes_no:
                     return None
             # The real SQL: /answer|/dismiss exclude RESOLVABLE_KINDS, /resolve requires them.
             wants_resolvable = "= ANY($4" in sql
@@ -239,6 +239,46 @@ def test_dismiss_sets_status_and_publishes_without_answer(env):
     assert rows["a2"]["status"] == "dismissed"
     assert rows["a2"]["answer"] is None
     assert published[0].status == "dismissed" and published[0].answer is None
+
+
+def test_dont_know_dismisses_a_who_is_this_card_without_a_name(env):
+    """2026-10-27: "I don't know" is a dismissal that says why. No answer is stored
+    (so sql-writer never makes it a label) and answer_detail marks it dont_know."""
+    client, rows, published = env
+    r = client.post("/api/asks/a2/dismiss", json={"reason": "dont_know"})
+    assert r.status_code == 200, r.text
+    assert rows["a2"]["status"] == "dismissed"
+    assert rows["a2"]["answer"] is None
+    assert rows["a2"]["answer_detail"] == {"dont_know": True}
+    assert published[0].status == "dismissed" and published[0].answer is None
+
+
+def test_plain_dismiss_carries_no_dont_know(env):
+    client, rows, _pub = env
+    assert client.post("/api/asks/a2/dismiss").status_code == 200
+    assert rows["a2"].get("answer_detail") is None
+
+
+def test_dont_know_only_on_who_is_this_cards(env):
+    client, rows, published = env
+    rows["p2"] = _pair_row("p2")
+    r = client.post("/api/asks/p2/dismiss", json={"reason": "dont_know"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == "dont_know_only_on_who_is_this_cards"
+    assert rows["p2"]["status"] == "open" and published == []
+
+
+def test_dismiss_refuses_an_unknown_reason(env):
+    client, rows, _pub = env
+    assert client.post("/api/asks/a2/dismiss", json={"reason": "never"}).status_code == 422
+    assert rows["a2"]["status"] == "open"
+
+
+def test_dont_know_on_a_closed_card_is_409(env):
+    client, rows, _pub = env
+    r = client.post("/api/asks/done/dismiss", json={"reason": "dont_know"})
+    assert r.status_code == 409
+    assert rows["done"]["status"] == "answered"
 
 
 def test_blank_answer_rejected_without_touching_row(env):
@@ -602,12 +642,97 @@ def test_same_person_card_can_be_dismissed_as_not_sure(env):
     assert rows["p2"]["status"] == "dismissed"
 
 
+def _confirm_row(ask_id: str) -> dict[str, Any]:
+    r = _row(ask_id)
+    r.update(source_kind="vision_person_confirm", source_ref="ind-9|Juniper", image_ref="thumb:" + "c" * 64,
+             image_refs='["thumb:' + "c" * 64 + '"]', question="Is this Juniper? It is my best guess, but I am not sure.")
+    return r
+
+
+def test_is_this_x_card_takes_yes_or_no_only_and_publishes_the_ref(env):
+    client, rows, published = env
+    rows["c1"] = _confirm_row("c1")
+    r = client.post("/api/asks/c1/answer", json={"answer": "it is Bob"})
+    assert r.status_code == 422 and r.json()["detail"] == "answer_must_be_yes_or_no"
+    assert rows["c1"]["status"] == "open" and published == []
+    r = client.post("/api/asks/c1/answer", json={"answer": "No"})
+    assert r.status_code == 200, r.text
+    assert (published[0].source_kind, published[0].source_ref, published[0].answer) == (
+        "vision_person_confirm", "ind-9|Juniper", "no")
+
+
+def _confirm_row_3(ask_id: str) -> dict[str, Any]:
+    r = _confirm_row(ask_id)
+    refs = ["thumb:" + c * 64 for c in "def"]
+    r.update(image_ref=refs[0], image_refs=json.dumps(refs))
+    return r
+
+
+def test_is_this_x_card_says_which_picture_is_the_person(env):
+    """2026-10-23, Juniper: "one of the three is Emerald but I can't specify which"."""
+    client, rows, published = env
+    rows["c3"] = _confirm_row_3("c3")
+    refs = ["thumb:" + c * 64 for c in "def"]
+    r = client.post("/api/asks/c3/answer", json={"answer": "yes", "pictures": [
+        {"image_ref": refs[2], "verdict": "unsure"},
+        {"image_ref": refs[0], "verdict": "different"},
+        {"image_ref": refs[1], "verdict": "same"},
+    ]})
+    assert r.status_code == 200, r.text
+    assert rows["c3"]["answer"] == "yes"
+    assert rows["c3"]["answer_detail"] == {"pictures": [
+        {"image_ref": refs[0], "index": 0, "verdict": "different"},
+        {"image_ref": refs[1], "index": 1, "verdict": "same"},
+        {"image_ref": refs[2], "index": 2, "verdict": "unsure"},
+    ]}
+    assert published[0].source_kind == "vision_person_confirm"
+
+
+@pytest.mark.parametrize("answer,pictures,detail", [
+    ("no", [("d", "same"), ("e", "unsure"), ("f", "unsure")], "answer_does_not_match_pictures"),
+    ("yes", [("d", "different"), ("e", "unsure"), ("f", "unsure")], "answer_does_not_match_pictures"),
+    ("yes", [("d", "same"), ("d", "same"), ("f", "unsure")], "picture_listed_twice"),
+    ("yes", [("d", "same"), ("e", "unsure"), ("z", "unsure")], "picture_not_on_card"),
+])
+def test_bad_picture_answers_on_is_this_x_are_refused(env, answer, pictures, detail):
+    client, rows, published = env
+    rows["c3"] = _confirm_row_3("c3")
+    r = client.post("/api/asks/c3/answer", json={"answer": answer, "pictures": [
+        {"image_ref": "thumb:" + c * 64, "verdict": v} for c, v in pictures]})
+    assert r.status_code == 422 and r.json()["detail"] == detail, r.text
+    assert rows["c3"]["status"] == "open" and published == []
+
+
+def test_a_picture_the_card_could_not_show_counts_as_not_sure(env):
+    client, rows, _pub = env
+    rows["c3"] = _confirm_row_3("c3")
+    r = client.post("/api/asks/c3/answer", json={"answer": "yes", "pictures": [
+        {"image_ref": "thumb:" + "d" * 64, "verdict": "same"}, {"image_ref": "thumb:" + "e" * 64, "verdict": "different"}]})
+    assert r.status_code == 200, r.text
+    assert [p["verdict"] for p in rows["c3"]["answer_detail"]["pictures"]] == ["same", "different", "unsure"]
+
+
+def test_a_name_on_an_is_this_x_picture_is_refused(env):
+    client, rows, _pub = env
+    rows["c3"] = _confirm_row_3("c3")
+    r = client.post("/api/asks/c3/answer", json={"answer": "yes", "pictures": [
+        {"image_ref": "thumb:" + c * 64, "verdict": "same", "name": "Bob" if c == "d" else ""} for c in "def"]})
+    assert r.status_code == 422 and r.json()["detail"] == "no_names_on_is_this_cards"
+
+
+def test_is_this_x_card_can_be_dismissed_as_cant_tell(env):
+    client, rows, _pub = env
+    rows["c2"] = _confirm_row("c2")
+    assert client.post("/api/asks/c2/dismiss").status_code == 200
+    assert rows["c2"]["status"] == "dismissed"
+
+
 def test_answer_sql_enforces_yes_no_for_same_person_cards(env):
     client, rows, _pub = env
     client.post("/api/asks/a1/answer", json={"answer": "Bob"})
     pool = client.app.state.memory_pg_pool
     upd = next(q for q in pool.conn.sql if q.lstrip().startswith("UPDATE"))
-    assert "source_kind <> $5::text OR $3::text IS NULL OR $3::text = ANY($6::text[])" in upd
+    assert "source_kind <> ALL($5::text[]) OR $3::text IS NULL OR $3::text = ANY($6::text[])" in upd
 
 
 @pytest.mark.skipif(not __import__("os").getenv("ORION_TEST_PG_URI"),
@@ -628,15 +753,24 @@ def test_close_ask_sql_runs_on_real_postgres():
         try:
             await conn.execute("DELETE FROM orion_ask WHERE ask_id LIKE 'sqltest-%'")
             for aid, kind in (("sqltest-p1", "vision_same_individual"), ("sqltest-p2", "vision_same_individual"),
-                              ("sqltest-p3", "vision_same_individual"), ("sqltest-w1", "vision_individual")):
+                              ("sqltest-p3", "vision_same_individual"), ("sqltest-w1", "vision_individual"),
+                              ("sqltest-c1", "vision_person_confirm"), ("sqltest-c2", "vision_person_confirm")):
                 await conn.execute("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref) "
                                    "VALUES ($1, 'q', $2, $1)", aid, kind)
-            args = (list(ask_routes.RESOLVABLE_KINDS), ask_routes.SAME_INDIVIDUAL_KIND, list(ask_routes.YES_NO_ANSWERS))
+            args = (list(ask_routes.RESOLVABLE_KINDS), list(ask_routes.YES_NO_KINDS), list(ask_routes.YES_NO_ANSWERS))
             run = lambda aid, st, ans, d=None: conn.fetchrow(ask_routes.CLOSE_ASK_SQL, aid, st, ans, *args, d)  # noqa: E731
             assert (await run("sqltest-p1", "answered", "yes"))["answer"] == "yes"
             assert await run("sqltest-p2", "answered", "maybe") is None
             assert (await run("sqltest-p3", "dismissed", None))["status"] == "dismissed"
             assert (await run("sqltest-w1", "answered", "Bob"))["answer"] == "Bob"
+            await conn.execute("INSERT INTO orion_ask (ask_id, question, source_kind, source_ref) "
+                               "VALUES ('sqltest-w3', 'q', 'vision_individual', 'sqltest-w3')")
+            dk = await run("sqltest-w3", "dismissed", None, '{"dont_know": true}')
+            assert (dk["status"], dk["answer"]) == ("dismissed", None)
+            stored = await conn.fetchval("SELECT answer_detail::text FROM orion_ask WHERE ask_id = 'sqltest-w3'")
+            assert json.loads(stored) == {"dont_know": True}
+            assert await run("sqltest-c1", "answered", "maybe Bob") is None
+            assert (await run("sqltest-c2", "answered", "no"))["answer"] == "no"
             await conn.execute("UPDATE orion_ask SET status='open' WHERE ask_id = 'sqltest-p1'")
             assert (await run("sqltest-p1", "answered", "no", '{"names": {"x": "Theo"}}'))["answer"] == "no"
             stored = await conn.fetchval("SELECT answer_detail::text FROM orion_ask WHERE ask_id = 'sqltest-p1'")

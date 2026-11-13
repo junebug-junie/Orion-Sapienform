@@ -5,17 +5,30 @@ own. Accrual always recomputes a whole billing cycle in time order: a late inter
 earlier in the cycle moves every later interval's block position.
 
 Mid-cycle holes mean cycle position is UNKNOWN — never treated as zero usage.
+
+Cycles start on ENERGY_BILLING_CYCLE_START_DAY until a bill says otherwise: every
+meter-read date from an actual bill replaces the scheduled start within READ_SNAP_DAYS
+of it (RMP read on Oct 19, not the 18th, so the cycle is Sep 18 -> Oct 19).
 """
 
 from __future__ import annotations
 
 import calendar
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import date, datetime, timezone
+from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
 from orion.energy.tariff import Tariff
 from orion.schemas.energy import EnergyCostAccruedV1, EnergyUsageIntervalV1
+
+# A read this close to a scheduled cycle start is that cycle's real start. Reads are ~30 days
+# apart, so one read can only ever match one scheduled start.
+READ_SNAP_DAYS = 10
+
+
+def _month_offset(year: int, month: int, k: int) -> tuple[int, int]:
+    index = year * 12 + (month - 1) + k
+    return index // 12, index % 12 + 1
 
 
 class UsageLedger:
@@ -28,6 +41,7 @@ class UsageLedger:
         self._intervals: dict[str, dict[datetime, EnergyUsageIntervalV1]] = {}
         self._accrued: dict[tuple[str, datetime], dict[datetime, EnergyCostAccruedV1]] = {}
         self._dirty_cycles: set[tuple[str, datetime]] = set()
+        self._read_dates: list[date] = []
 
     @property
     def tariff(self) -> Tariff:
@@ -59,8 +73,26 @@ class UsageLedger:
         return set(self._intervals)
 
     def _start_on(self, year: int, month: int) -> datetime:
-        day = min(self._cycle_start_day, calendar.monthrange(year, month)[1])
-        return datetime(year, month, day, tzinfo=self._tz)
+        scheduled = date(year, month, min(self._cycle_start_day, calendar.monthrange(year, month)[1]))
+        near = [r for r in self._read_dates if abs((r - scheduled).days) <= READ_SNAP_DAYS]
+        start = min(near, key=lambda r: abs((r - scheduled).days)) if near else scheduled
+        return datetime(start.year, start.month, start.day, tzinfo=self._tz)
+
+    def set_read_dates(self, days: Iterable[date]) -> list[tuple[str, datetime]]:
+        """Replace the known meter-read dates; return the (usage point, cycle start) pairs whose bounds moved."""
+        merged = sorted(set(days))
+        if merged == self._read_dates:
+            return []
+        before = {key: self.cycle_bounds(key[1]) for key in self.all_cycles()}
+        self._read_dates = merged
+        after = self.all_cycles()
+        live = {self._cycle_key(point, start) for point, start in after}
+        for key in set(self._accrued) - live:
+            del self._accrued[key]
+        moved = sorted(key for key in after if before.get(key) != self.cycle_bounds(key[1]))
+        # Their cached costs were priced with the old bounds: unknown until re-accrued.
+        self._dirty_cycles = (self._dirty_cycles & live) | {self._cycle_key(point, start) for point, start in moved}
+        return moved
 
     def period_days(self, start: datetime, end: datetime) -> int:
         """Calendar days in [start, end) as the bill counts them (local dates, DST-proof)."""
@@ -68,12 +100,12 @@ class UsageLedger:
 
     def cycle_bounds(self, ts: datetime) -> tuple[datetime, datetime]:
         local = ts.astimezone(self._tz)
-        this = self._start_on(local.year, local.month)
-        if local >= this:
-            ny, nm = (local.year + 1, 1) if local.month == 12 else (local.year, local.month + 1)
-            return this, self._start_on(ny, nm)
-        py, pm = (local.year - 1, 12) if local.month == 1 else (local.year, local.month - 1)
-        return self._start_on(py, pm), this
+        # A snapped read can move a start into the neighbouring month, so bracket from +-2 months.
+        starts = [self._start_on(*_month_offset(local.year, local.month, k)) for k in range(-2, 3)]
+        for start, end in zip(starts, starts[1:]):
+            if start <= local < end:
+                return start, end
+        raise ValueError(f"no billing cycle contains {ts.isoformat()}")
 
     def all_cycles(self) -> set[tuple[str, datetime]]:
         return {

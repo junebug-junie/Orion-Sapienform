@@ -1,0 +1,50 @@
+# What Orion asks the interlocutor about a person, in this order (2026-10-22).
+# Design: docs/superpowers/specs/2026-10-22-people-one-record-design.md
+#
+# Each category has:
+#   about_other:  the question about someone else ({name} = their name)
+#   about_you:    the question when the person is the interlocutor (null = not asked)
+#   sensitive:    stated only, never inferred. Orion may ASK (the interlocutor, 2026-10-14:
+#                 "Orion is welcome to ask anything about anything"); a value is
+#                 stored only from the answer or their own words.
+#
+# Producer: orion/person_model/facts.py next_question(). Consumers: the Hub
+# person page (every category) and the person block other readers build from
+# person_fact. A category nobody answered renders nothing.
+categories:
+  - key: relationship
+    about_other: "How do you know {name}? For example: a family friend, a neighbor, a classmate of your kid."
+    about_you: null
+    sensitive: false
+  - key: pronouns
+    about_other: "What pronouns should I use for {name}?"
+    about_you: null            # stated in config/person_model/people.yaml
+    sensitive: false
+  - key: age
+    about_other: "Is {name} a child or a grown-up? About how old?"
+    about_you: null
+    sensitive: false
+  - key: gender
+    about_other: "What is {name}'s gender, if you know and want to tell me?"
+    about_you: "What is your gender, in your own words?"
+    sensitive: true
+  - key: sexuality
+    about_other: "What is {name}'s sexuality, if you know and want to tell me?"
+    about_you: "What is your sexuality, in your own words?"
+    sensitive: true
+  - key: preferences
+    about_other: "What does {name} like, or not like?"
+    about_you: "What do you like, or not like, that I should know?"
+    sensitive: false
+  - key: routines
+    about_other: "When I see {name} outside, where is {name} usually going, or why?"
+    about_you: "What does a normal day look like for you?"
+    sensitive: false
+  - key: goals
+    about_other: null
+    about_you: "What are you working toward right now?"
+    sensitive: false
+  - key: anything_else
+    about_other: "Is there anything else I should know about {name}?"
+    about_you: "Is there anything else about you I should know?"
+    sensitive: false

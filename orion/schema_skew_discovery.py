@@ -77,6 +77,11 @@ LIB_HOPS = 1
 #: on an entry that no longer matches anything unresolved.
 DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # Cross-service writers code cannot see (validate-then-persist, HTTP API).
+    "orion.prime.state:PrimeStateV1": (
+        "orion-mind",
+        "app/prime_loop.py writes Redis orion:prime:state every tick; hub's room_claude_context reads it "
+        "back via orion.prime.block.parse_prime_redis for the Claude invite's concern count",
+    ),
     "orion.memory_graph.dto:SuggestDraftV1": (
         "orion-memory-consolidation",
         "validates the LLM draft, insert_pending_draft() stores it; hub routes validate it back",
@@ -91,6 +96,23 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # claims (orion/world_pulse_read/assertions.py) became a writer code can see. A
     # declaration only applies to a model with NO discovered writer, so it went stale;
     # the durable-runs writer is now uncovered by this check (single-writer limit).
+    # SelfMonitorStateV1 / FacultyRecordV1 were declared here (writer orion-durable-runs) until the
+    # self_monitor node (rung 6 patch 2, PR #3066) became a writer code can see: same rule as above.
+    "orion.schemas.prediction:ActionBetCountsV1": (
+        "orion-prediction",
+        "app/action_bets.py backoff() builds the per-level counts at quote/place time and stores them on "
+        "prediction_action_bet; the Hub reads them back over HTTP (/action-bets/quote) as part of ActionBetQuoteV1",
+    ),
+    "orion.schemas.prediction:ActionBetQuoteV1": (
+        "orion-prediction",
+        "POST /action-bets/quote (app/main.py) validates each quote from app/action_bets.py; the Hub "
+        "reads it back over HTTP (scripts/retro_experience.py)",
+    ),
+    "orion.schemas.prediction:ActionBetV1": (
+        "orion-prediction",
+        "app/main.py _bet_out validates each stored prediction_action_bet row before returning it from "
+        "place / settle / list; the Hub reads only plain JSON from it",
+    ),
     "orion.schemas.regulation:ArousalInputsV1": (
         "orion-durable-runs",
         "the regulate node builds it from its own DB reads (app/regulation_store.py) and reads it back "
@@ -121,6 +143,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
         "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's node_history "
         "tool arguments into the bus request; orion-hub's node_history introspect listener validates them back",
     ),
+    "orion.schemas.introspect:PowerAttributionArguments": (
+        "orion-harness-governor",
+        "orion-introspect MCP (spawned by the governor's FCC turns) validates the model's power_attribution "
+        "tool arguments into the bus request; orion-hub's power_attribution introspect listener validates them back",
+    ),
     # No cross-service writer.
     "orion.substrate.neighborhood:NeighborhoodRequestV1": (
         None,
@@ -129,12 +156,10 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     ),
     "orion/attention/field_attention/policy.py": (None, "policy YAML the reader loads itself"),
     "orion.autonomy.models:CapabilityPolicyV1": (None, "capability policy YAML the reader loads itself"),
+    "orion.cognition.verb_physiology:VerbPhysiologyV1": (None, "the verb YAML physiology block cortex-orch loads itself (plan_loader.load_verb_physiology, Patch C3a)"),
+    "orion.schemas.person_model:PersonRefV1": (None, "config/person_model/people.yaml the reader loads itself (load_people)"),
+    "orion.schemas.person_model:PronounEvidenceV1": (None, "nested in PersonRefV1 rows of config/person_model/people.yaml"),
     "orion.autonomy.models:CapabilityPolicyRuleV1": (None, "capability policy YAML the reader loads itself"),
-    "orion/consolidation/policy.py": (None, "policy YAML the reader loads itself"),
-    "orion/execution_dispatch/policy.py": (None, "policy YAML the reader loads itself"),
-    "orion/feedback/policy.py": (None, "policy YAML the reader loads itself"),
-    "orion/policy/policy.py": (None, "policy YAML the reader loads itself"),
-    "orion/proposals/policy.py": (None, "policy YAML the reader loads itself"),
     "orion/reverie/baseline.py": (None, "policy YAML the reader loads itself"),
     "orion/gpu_pool/config.py": (None, "pool YAML the reader loads itself"),
     "orion/schemas/world_pulse.py": (None, "source registry YAML the reader loads itself"),
@@ -143,6 +168,7 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     "orion/core/schemas/drives.py": (None, "orion:memory:drives:state has had no producer since the 2026-07-30 drive-pressure deletion"),
     "orion/schemas/actions/daily.py": (None, "LLM output parsed by orion-actions"),
     "orion/schemas/world_pulse_read.py": (None, "LLM output and the hub's own DB round trip"),
+    "orion/schemas/consult.py": (None, "Claude's consult reply (LLM output) the hub parses, and the hub's own DB round trip"),
     "orion/schemas/telemetry/mood_arc.py": (None, "manifest file written by the offline fit script"),
     "orion/schemas/telemetry/phi_encoder.py": (None, "manifest file written by the offline fit script"),
     "orion/schemas/evidence_index.py": (

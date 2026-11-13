@@ -81,6 +81,7 @@ from orion.world_pulse_read.queue import (
     skip_already_read_stage2,
 )
 from orion.world_pulse_read.retry import is_refused_before_work
+from orion.world_pulse_read.reader_contract import defuse_fence_markers, fence_reader_contract
 from orion.world_pulse_read.fetch_provenance import (
     hop_allowlist,
     hop_refusal_reason,
@@ -217,7 +218,7 @@ def retry_note(prior_error: str | None) -> str:
     return (
         f"\nRETRY: the previous attempt of this pass ran out of time ({reason}). Do not call "
         "WebFetch or WebSearch this time. Answer from the handoff "
-        "and any retained text above, and say in summary what could not be read.\n"
+        "and any retained text above, and say what could not be read.\n"
     )
 
 
@@ -240,9 +241,15 @@ def _build_stage2_prompt(
     return (
         "You are continuing a deliberate source reading. Start from this Stage 1 handoff "
         "JSON (do not ignore it). Treat source claims as attributed candidates, not settled truth. "
-        "Do not write RDF, execute graph queries, or call Graphiti. Form/test priors, note hops, and return ONE "
-        "JSON object — no prose outside a fenced JSON block.\n"
-        f"handoff={payload}\n"
+        "Do not write RDF, execute graph queries, or call Graphiti. Form/test priors and note hops.\n"
+        # Labelled as input: the stance pass reads it, and a bare dict here looked like an
+        # output shape to the stance model (review of the 2026-10-29 fix).
+        "Stage 1 handoff (input data from the earlier read, not an output shape): "
+        f"handoff={defuse_fence_markers(str(payload))}\n"
+        # Fenced so the stance pass does not see the reader's keys
+        # (orion/world_pulse_read/reader_contract.py).
+        + fence_reader_contract(
+        "Return ONE JSON object — no prose outside a fenced JSON block.\n"
         "Required JSON shape (use exactly these top-level keys; anything else is dropped):\n"
         "{\n"
         '  "summary": "non-empty prose",\n'
@@ -267,6 +274,7 @@ def _build_stage2_prompt(
         # spend output on hops that are dropped.
         "need_stage1_urls may only hold URLs written in a page that was fetched (by you this "
         "turn, or by Stage 1) or URLs you fetched yourself this turn; a guessed URL is dropped, never read.\n"
+        )
         + WEBFETCH_LIMIT_NOTE
         + retry_note(prior_error)
         # Only when this read has retained text, stored concepts and existing candidates
@@ -350,7 +358,10 @@ class WorldPulseReadStage2Pipeline:
         meaning_target_links: bool = True,
         projector_readiness: Optional[Callable[[], Any]] = None,
         concept_search: Optional[SearchConfig] = None,
+        resonance: Optional[dict[str, Any]] = None,
     ) -> None:
+        self._resonance = resonance
+        self._resonance_task: Optional[asyncio.Task] = None
         self.enabled = enabled
         # HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: kill switch for relationship claims
         # (prompt block, journal writes, and Hub's reading assertion projector).
@@ -435,6 +446,10 @@ class WorldPulseReadStage2Pipeline:
         )
 
     async def stop(self) -> None:
+        if self._resonance_task is not None:
+            self._resonance_task.cancel()
+            await asyncio.gather(self._resonance_task, return_exceptions=True)
+            self._resonance_task = None
         self._stop.set()
         if self._concept_index_task is not None:
             self._concept_index_task.cancel()
@@ -514,7 +529,18 @@ class WorldPulseReadStage2Pipeline:
         async with pool.acquire() as conn:
             return await fn(conn)
 
+    async def _reconcile_resonance(self):
+        from orion.world_pulse_read.resonance_submit import reconcile
+        try:
+            await self._with_conn(lambda conn: reconcile(conn, cfg=self.concept_search,
+                bus=self._bus, source=self._source_ref, durable_url=self.durable_url,
+                substrate_store=self._store_provider() if self._store_provider else None, **self._resonance))
+        except Exception:
+            logger.exception("reading_resonance_reconcile_failed")
+
     async def tick(self, *, force: bool = False) -> str | None:
+        if self._resonance and self.concept_search and (self._resonance_task is None or self._resonance_task.done()):
+            self._resonance_task = asyncio.create_task(self._reconcile_resonance())
         now = datetime.now(timezone.utc)
         self.last_round_trips = 0
         await self._reclaim_stale_claimed()

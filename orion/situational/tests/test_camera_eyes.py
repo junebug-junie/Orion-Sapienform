@@ -72,16 +72,22 @@ def test_env_example_matches_code_default(service: str) -> None:
 # --- live state from real-shaped tables -------------------------------------
 
 
-def _engine(*, tables: bool = True, stationary: bool = True):
+def _engine(*, tables: bool = True, rollup: bool = True):
     eng = create_engine("sqlite://")
     if not tables:
         return eng
     with eng.begin() as c:
         c.execute(text("CREATE TABLE vision_scene_inventory (stream_id TEXT, observed_at TIMESTAMP)"))
-        cols = "individual_id TEXT, stream_id TEXT, ended_at TIMESTAMP, zone_no_embed BOOLEAN"
-        if stationary:
-            cols += ", stationary BOOLEAN"
-        c.execute(text(f"CREATE TABLE vision_individual_sighting ({cols})"))
+        # The bare-count source this clause used to read: present and full, so a
+        # test proves the clause no longer reads it.
+        c.execute(text(
+            "CREATE TABLE vision_individual_sighting (individual_id TEXT, stream_id TEXT, ended_at TIMESTAMP, "
+            "zone_no_embed BOOLEAN, stationary BOOLEAN)"
+        ))
+        if rollup:
+            c.execute(text(
+                "CREATE TABLE vision_rollup (stream_id TEXT, grain TEXT, period_start TIMESTAMP, rollup TEXT)"
+            ))
     return eng
 
 
@@ -102,11 +108,38 @@ def _sighting(eng, ind: str, age: timedelta, *, stationary: bool = False, no_emb
         )
 
 
+# 2026-10-15 local midnight, America/Denver (MDT, UTC-6).
+TODAY_START = datetime(2026, 10, 15, 6, 0, tzinfo=timezone.utc)
+
+
+def _day_rollup(eng, rollup: dict, *, start: datetime = TODAY_START, stream: str = "walkway") -> None:
+    with eng.begin() as c:
+        c.execute(
+            text("INSERT INTO vision_rollup VALUES (:s, 'day', :p, :r)"),
+            {"s": stream, "p": start, "r": json.dumps(rollup)},
+        )
+
+
+def _v4_day(low: int, high: int, *, through: str = "2026-10-15T14:00:00+00:00") -> dict:
+    """A rules_version 4 day row as orion-sql-writer writes it (live 2026-11-02 shape)."""
+    return {
+        "schema": "vision.rollup.v1", "rules_version": 4, "grain": "day", "covered_until": through,
+        "kinds": {
+            "person": {"passings": high, "distinct": high,
+                       "count_range": {"low": low, "high": high, "method_low": "peak_at_once",
+                                       "method_high": "clusters"}},
+            "vehicle": {"passings": 109, "distinct": 70},
+        },
+        "peak_at_once": {"person": low, "vehicle": 4},
+        "total": {"passings": high + 109},
+    }
+
+
 def test_empty_tables_read_as_no_frames_not_unread() -> None:
-    eyes = fetch_camera_eyes(["cam0", "walkway"], count_individuals_for=["walkway"], engine=_engine(), now=NOW)
+    eyes = fetch_camera_eyes(["cam0", "walkway"], people_range_for=["walkway"], engine=_engine(), now=NOW)
     assert [e.stream_id for e in eyes] == ["cam0", "walkway"]
     assert all(e.last_frame_at is None and e.first_frame_at is None for e in eyes)
-    assert eyes[1].individuals_today == 0
+    assert eyes[1].people_today is None  # no day rollup yet: no number at all
     senses = build_senses(eyes, now=NOW, tz=TZ, live_max_age_seconds=900)
     assert [s.status for s in senses] == ["no_frames", "no_frames"]
     assert "no frames yet" in senses_line(senses)
@@ -117,52 +150,115 @@ def test_missing_tables_are_unread_and_no_engine_is_unread() -> None:
     assert fetch_camera_eyes([], engine=_engine(), now=NOW) == []
 
 
-def test_fresh_walkway_is_live_with_todays_individuals() -> None:
+def test_fresh_walkway_is_live_with_todays_people_range() -> None:
     eng = _engine()
     _frames(eng, "walkway", timedelta(hours=10), timedelta(seconds=9))
     _frames(eng, "cam0", timedelta(days=50), timedelta(seconds=6))
     _frames(eng, "carbon", timedelta(days=50), timedelta(days=36))
-    _sighting(eng, "a", timedelta(hours=1))
-    _sighting(eng, "a", timedelta(minutes=5))
-    _sighting(eng, "b", timedelta(minutes=2))
-    _sighting(eng, "fixture", timedelta(minutes=1), stationary=True)
-    _sighting(eng, "c", timedelta(hours=12))  # yesterday, local time
+    for i in range(111):  # the clusters the old clause counted bare (live turn 4bbaaf2a)
+        _sighting(eng, f"ind{i}", timedelta(minutes=5))
+    _day_rollup(eng, _v4_day(2, 15))
+    _day_rollup(eng, _v4_day(5, 79), start=TODAY_START - timedelta(days=1))  # yesterday is not today
     eyes = fetch_camera_eyes(
-        ["carbon", "cam0", "walkway"], count_individuals_for=["walkway"], engine=eng, now=NOW, tz_name="America/Denver"
+        ["carbon", "cam0", "walkway"], people_range_for=["walkway"], engine=eng, now=NOW, tz_name="America/Denver"
     )
     walk = eyes[2]
-    assert walk.individuals_today == 2
-    assert eyes[0].individuals_today is None  # room cameras are not counted
+    assert walk.people_today == {"low": 2, "high": 15}
+    assert eyes[0].people_today is None  # room cameras are not counted
     senses = build_senses(eyes, now=NOW, tz=TZ, live_max_age_seconds=900, descriptions=DEFAULT_CAMERA_DESCRIPTIONS)
     assert [s.status for s in senses] == ["not_seeing", "live", "live"]
+    assert (senses[2].people_today_low, senses[2].people_today_high, senses[2].people_today_through) == (2, 15, "08:00")
     line = senses_line(senses)
     assert line.startswith("Your cameras (your own eyes): ")
-    assert "your room camera (cam0" in line
+    assert "your office camera (cam0" in line
     assert (
         "your outdoor camera (walkway, since 2026-10-14; looks at the community walkway, the street"
-        " and our patio -- outside and public, not your room): receiving frames (newest within the last 15 min),"
-        " 2 individuals counted today (fixtures excluded)"
+        " and our patio -- outside and public, not your room): receiving frames (newest within the last 15 min);"
+        " today so far (through 08:00), people: at least 2, at most 15 (the camera splits one person into several)"
     ) in line
+    assert "111" not in line and "individual" not in line
     assert "the laptop webcam (carbon" in line and "no frames arriving, last frame 36 days ago" in line
 
 
-def test_stale_walkway_is_not_seeing_and_drops_its_count() -> None:
+def test_no_people_today_drops_the_number_not_says_zero() -> None:
+    eng = _engine()
+    _frames(eng, "walkway", timedelta(seconds=9))
+    for i in range(7):
+        _sighting(eng, f"car{i}", timedelta(minutes=5))
+    day = _v4_day(0, 0)
+    day["kinds"].pop("person")
+    _day_rollup(eng, day)
+    (eye,) = fetch_camera_eyes(["walkway"], people_range_for=["walkway"], engine=eng, now=NOW)
+    assert eye.people_today is None
+    line = senses_line(build_senses([eye], now=NOW, tz=TZ, live_max_age_seconds=900))
+    assert line.endswith("receiving frames (newest within the last 15 min).")
+    assert "people" not in line and "individual" not in line
+
+
+def test_pre_range_rollup_row_is_derived_into_a_range() -> None:
+    """A rules_version 1 day row has no count_range: person_count_range derives it
+    (the day letter's rule), so the clause still never prints a bare count."""
+    eng = _engine()
+    _frames(eng, "walkway", timedelta(seconds=9))
+    _day_rollup(eng, {"rules_version": 1, "kinds": {"person": {"passings": 79}}, "peak_at_once": {"person": 5}})
+    (eye,) = fetch_camera_eyes(["walkway"], people_range_for=["walkway"], engine=eng, now=NOW)
+    (sense,) = build_senses([eye], now=NOW, tz=TZ, live_max_age_seconds=900)
+    line = senses_line([sense])
+    assert "; today so far, people: at least 5, at most 79 (the camera splits one person into several)." in line
+
+
+def test_missing_or_bad_rollup_is_no_number_and_cameras_still_read() -> None:
+    eng = _engine(rollup=False)
+    _frames(eng, "walkway", timedelta(seconds=9))
+    (eye,) = fetch_camera_eyes(["walkway"], people_range_for=["walkway"], engine=eng, now=NOW)
+    assert eye.last_frame_at is not None and eye.people_today is None
+    eng2 = _engine()
+    _frames(eng2, "walkway", timedelta(seconds=9))
+    with eng2.begin() as c:
+        c.execute(text("INSERT INTO vision_rollup VALUES ('walkway', 'day', :p, 'not json')"), {"p": TODAY_START})
+    (eye2,) = fetch_camera_eyes(["walkway"], people_range_for=["walkway"], engine=eng2, now=NOW)
+    assert eye2.people_today is None
+
+
+def test_stale_walkway_is_not_seeing_and_drops_its_range() -> None:
     eng = _engine()
     _frames(eng, "walkway", timedelta(hours=3))
-    _sighting(eng, "a", timedelta(hours=3, minutes=5))
-    (eye,) = fetch_camera_eyes(["walkway"], count_individuals_for=["walkway"], engine=eng, now=NOW)
+    _day_rollup(eng, _v4_day(2, 15))
+    (eye,) = fetch_camera_eyes(["walkway"], people_range_for=["walkway"], engine=eng, now=NOW)
     (sense,) = build_senses([eye], now=NOW, tz=TZ, live_max_age_seconds=900)
-    assert sense.status == "not_seeing" and sense.individuals_today is None
+    assert sense.status == "not_seeing" and sense.people_today_low is None and sense.people_today_high is None
     assert senses_line([sense]).endswith("no frames arriving, last frame 3 h ago.")
 
 
-def test_pre_stationary_schema_still_counts() -> None:
-    eng = _engine(stationary=False)
-    _frames(eng, "walkway", timedelta(seconds=5))
-    with eng.begin() as c:
-        c.execute(text("INSERT INTO vision_individual_sighting VALUES ('a', 'walkway', :t, 0)"), {"t": NOW})
-    (eye,) = fetch_camera_eyes(["walkway"], count_individuals_for=["walkway"], engine=eng, now=NOW)
-    assert eye.individuals_today == 1
+def test_quiet_doorbell_reads_waiting_not_broken(monkeypatch) -> None:
+    """2026-10-17: the Ring doorbell only sends frames after a visit. Hours
+    without one is a quiet door, not a failing eye."""
+    monkeypatch.delenv("ORION_CAMERA_DESCRIPTIONS", raising=False)
+    eng = _engine()
+    _frames(eng, "doorbell", timedelta(hours=3))
+    eyes = fetch_camera_eyes(["doorbell", "carbon"], people_range_for=["doorbell"], engine=eng, now=NOW)
+    senses = build_senses(eyes, now=NOW, tz=TZ, live_max_age_seconds=900)
+    assert [s.status for s in senses] == ["not_seeing", "no_frames"]
+    line = senses_line(senses)
+    assert "your doorbell camera (doorbell" in line
+    assert "sends frames only when something happens there; last time 3 h ago" in line
+    assert "the laptop webcam (carbon" in line and "no frames yet" in line  # room cameras unchanged
+    assert describe_camera("walkway").event_driven is False
+
+
+def test_no_bare_people_count_anywhere_in_the_eyes_line() -> None:
+    """Spec #2763 decision 5 (Juniper): a people number only ever comes with its range."""
+    import re
+
+    from orion.schemas.situation import CameraSenseV1
+
+    assert "individuals_today" not in CameraSenseV1.model_fields
+    for low, high in ((1, 1), (2, 15), (0, 3)):
+        sense = CameraSenseV1(stream_id="walkway", name="your outdoor camera", status="live", live_window_seconds=900,
+                              last_frame_age_seconds=5, people_today_low=low, people_today_high=high)
+        line = senses_line([sense])
+        assert f"people: at least {low}, at most {high}" in line
+        assert not re.search(r"\b\d+ (people|persons|individuals?)\b", line)
 
 
 def test_street_framing_names_the_eye_and_its_first_day() -> None:
@@ -201,7 +297,7 @@ def _stub(monkeypatch, eyes):
 
     def _fetch(streams, **kw):
         seen["streams"] = list(streams)
-        seen["counted"] = list(kw.get("count_individuals_for") or [])
+        seen["counted"] = list(kw.get("people_range_for") or [])
         return eyes
 
     monkeypatch.setattr(situation_mod, "fetch_camera_eyes", _fetch)
@@ -230,19 +326,24 @@ def test_brief_lists_room_and_walkway_and_the_street_line_says_what_it_is(monkey
     eyes = [
         CameraEye("carbon", now - timedelta(days=50), now - timedelta(days=36)),
         CameraEye("cam0", now - timedelta(days=50), now - timedelta(seconds=6)),
-        CameraEye("walkway", datetime(2026, 10, 15, 4, 56, tzinfo=timezone.utc), now - timedelta(seconds=9), 3),
+        CameraEye("walkway", datetime(2026, 10, 15, 4, 56, tzinfo=timezone.utc), now - timedelta(seconds=9),
+                  {"low": 1, "high": 3}),
     ]
     seen = _stub(monkeypatch, eyes)
     diag = SituationDiagnosticsV1()
-    cfg = _cfg(perception_enabled=True, perception_stream_ids=["carbon", "cam0"])
+    cfg = _cfg(perception_enabled=True, perception_stream_ids=["carbon", "cam0"], street_stream_ids=["walkway"])
     ctx = asyncio.run(situation_mod._build_perception_context(cfg, diag))
     assert seen == {"streams": ["carbon", "cam0", "walkway"], "counted": ["walkway"]}
     assert diag.provider_status["perception_cameras"] == "ok"
     assert [c.status for c in ctx.cameras] == ["not_seeing", "live", "live"]
     text = _brief_text(ctx)
     assert "- Your cameras (your own eyes): " in text
-    assert "your room camera (cam0" in text
-    assert "outside and public, not your room): receiving frames (newest within the last 15 min), 3 individuals counted today (fixtures excluded)" in text
+    assert "your office camera (cam0" in text
+    assert (
+        "outside and public, not your room): receiving frames (newest within the last 15 min); today so far,"
+        " people: at least 1, at most 3 (the camera splits one person into several)"
+    ) in text
+    assert "individuals counted today" not in text
     assert (
         "- Your outdoor camera (walkway, since 2026-10-14), looking over the community walkway, the street"
         " and our patio: Around the walkway now: an unfamiliar person (seen 2 min ago)."
@@ -252,7 +353,7 @@ def test_brief_lists_room_and_walkway_and_the_street_line_says_what_it_is(monkey
 def test_unread_cameras_leave_no_line_and_street_still_framed(monkeypatch) -> None:
     _stub(monkeypatch, None)
     diag = SituationDiagnosticsV1()
-    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True, street_stream_ids=["walkway"]), diag))
     assert ctx.cameras == []
     assert diag.provider_status["perception_cameras"] == "unread"
     text = _brief_text(ctx)
@@ -268,7 +369,7 @@ def test_camera_read_error_is_fail_open(monkeypatch) -> None:
 
     monkeypatch.setattr(situation_mod, "fetch_camera_eyes", _boom)
     diag = SituationDiagnosticsV1()
-    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True, street_stream_ids=["walkway"]), diag))
     assert ctx.cameras == [] and diag.provider_status["perception_cameras"] == "error"
     assert ctx.street_summary.startswith("Your outdoor camera (walkway)")
 
@@ -294,12 +395,6 @@ def test_outside_must_be_a_real_true() -> None:
     assert describe_camera("w", {"w": {"name": "x", "outside": True}}).outside is True
 
 
-def test_only_a_missing_column_buys_the_fallback_statement() -> None:
-    assert camera_eyes._is_missing_column(Exception("no such column: stationary"))
-    assert not camera_eyes._is_missing_column(Exception("canceling statement due to statement timeout"))
-    assert not camera_eyes._is_missing_column(None)
-
-
 def test_frames_arriving_without_a_room_description_do_not_claim_sight(monkeypatch) -> None:
     """cam0 frames keep flowing while its captions lag or go blank (live: 9 min).
     The camera clause must say frames arrive, never that Orion sees the room,
@@ -310,7 +405,7 @@ def test_frames_arriving_without_a_room_description_do_not_claim_sight(monkeypat
     ctx = asyncio.run(situation_mod._build_perception_context(cfg, SituationDiagnosticsV1()))
     assert ctx.available is False
     text = _brief_text(ctx)
-    assert "your room camera (cam0" in text and "receiving frames (newest within the last 15 min)" in text
+    assert "your office camera (cam0" in text and "receiving frames (newest within the last 15 min)" in text
     assert "Room: haven't seen anything recently; do not infer." in text
     assert ": live" not in text
 
@@ -323,7 +418,7 @@ def test_slow_camera_read_hits_the_deadline_not_the_turn(monkeypatch) -> None:
     monkeypatch.setattr(situation_mod, "fetch_camera_eyes", lambda *a, **k: _time.sleep(0.5))
     diag = SituationDiagnosticsV1()
     t0 = _time.monotonic()
-    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
+    ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True, street_stream_ids=["walkway"]), diag))
     assert diag.provider_status["perception_cameras"] == "timeout" and ctx.cameras == []
     assert ctx.street_summary.startswith("Your outdoor camera (walkway)")
     assert _time.monotonic() - t0 < 2.0

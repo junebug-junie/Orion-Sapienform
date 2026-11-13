@@ -6,6 +6,11 @@
 #
 # Usage:
 #   scripts/rebuild_services_from_git_diff.sh [--dry-run] [--base REF] [--list-only]
+#   scripts/rebuild_services_from_git_diff.sh --services "svc ..." [--recreate "svc ..."]
+#
+# --services skips the git-diff planner and the migration step and rebuilds
+# exactly the named stacks, with the same per-stack rules. It is the command
+# an interrupted run prints (ABORT) to finish what it left undone.
 #
 # Requires:
 #   - python3
@@ -15,6 +20,12 @@
 # Opt-in post-merge hook: set ORION_POST_MERGE_REBUILD=1 or create
 #   .orion/post-merge-rebuild-enabled
 # at repo root (see scripts/git_hooks/post-merge).
+# Every compose step is logged (start/end/exit code) to $ORION_REBUILD_LOG,
+# default ~/.orion/post_pull_rebuild.log.
+#
+# After a successful deploy run, Orion's FCC sandbox (/mnt/orion-fcc/repo) is
+# reset to origin/main (scripts/sync_fcc_sandbox_after_deploy.sh; one
+# SANDBOX_SYNC line in the log). Kill switch: ORION_POST_PULL_SANDBOX_SYNC=0.
 
 set -e
 
@@ -24,6 +35,8 @@ cd "$REPO_ROOT"
 DRY_RUN=0
 LIST_ONLY=0
 BASE_REF=""
+ONLY_SERVICES=""
+ONLY_RECREATE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -41,8 +54,29 @@ while [ $# -gt 0 ]; do
                 exit 2
             fi
             ;;
+        --services|--recreate)
+            opt="$1"
+            shift
+            case "${1:-}" in
+                ""|-*)
+                    echo "rebuild_services_from_git_diff.sh: $opt requires a service list" >&2
+                    exit 2
+                    ;;
+            esac
+            for _svc in $1; do
+                if ! printf '%s' "$_svc" | grep -Eq '^[a-z0-9][a-z0-9_-]*$' || [ ! -d "$REPO_ROOT/services/$_svc" ]; then
+                    echo "rebuild_services_from_git_diff.sh: $opt: unknown service: $_svc" >&2
+                    exit 2
+                fi
+            done
+            if [ "$opt" = "--services" ]; then
+                ONLY_SERVICES="$1"
+            else
+                ONLY_RECREATE="$1"
+            fi
+            ;;
         -h|--help)
-            sed -n '2,20p' "$0"
+            sed -n '2,30p' "$0"
             exit 0
             ;;
         *)
@@ -64,21 +98,91 @@ if [ ! -f "$PY" ]; then
     exit 2
 fi
 
+# Run log: one line per compose step (start, end, exit code), appended to
+# $ORION_REBUILD_LOG (default ~/.orion/post_pull_rebuild.log). The post-merge
+# hook's output only reaches the terminal that ran `git pull`, and docker keeps
+# about a minute of events here, so without this file nobody can tell later
+# whether a pull's rebuild recreated a container, failed, or was still running.
+# 2026-10-16: orion-vision-retina-walkway looked "not recreated" at 18:56; the
+# hook's step was in fact mid-recreate (old container inside its 30 s
+# stop_grace_period), and a manual --force-recreate raced it. Best effort:
+# a log write never fails the rebuild.
+REBUILD_LOG="${ORION_REBUILD_LOG:-${HOME:-/tmp}/.orion/post_pull_rebuild.log}"
+REBUILD_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+# Judge every `up` of this run against the commit the run started on, not
+# against an origin/main that a PR merge moves mid-run (2026-10-20: one merge
+# refused 55 remaining services). safe_docker_build.sh still refuses a main
+# that moved, is ahead of, or diverged from origin/main. Pin only when the run
+# STARTS in sync with origin/main: a run started on an already-stale main stays
+# unpinned, so the wrapper refuses it exactly as before.
+ORION_DEPLOY_PINNED_HEAD=""
+if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] &&
+    git -C "$REPO_ROOT" fetch --quiet origin main 2>/dev/null; then
+    _pin_head=$(git -C "$REPO_ROOT" rev-parse --verify HEAD 2>/dev/null || true)
+    _pin_origin=$(git -C "$REPO_ROOT" rev-parse --verify origin/main 2>/dev/null || true)
+    if [ -n "$_pin_head" ] && [ "$_pin_head" = "$_pin_origin" ]; then
+        ORION_DEPLOY_PINNED_HEAD="$_pin_head"
+    fi
+fi
+export ORION_DEPLOY_PINNED_HEAD
+rebuild_log() {
+    (
+        mkdir -p "$(dirname "$REBUILD_LOG")" &&
+            printf '%s pid=%s head=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$REBUILD_HEAD" "$*" >>"$REBUILD_LOG"
+    ) 2>/dev/null || true
+}
+
 if [ -n "$BASE_REF" ]; then
     set -- --base "$BASE_REF"
 else
     set --
+fi
+if [ -n "$ONLY_SERVICES" ] && [ -n "$BASE_REF" ]; then
+    echo "rebuild_services_from_git_diff.sh: --services and --base do not combine" >&2
+    exit 2
+fi
+if [ -n "$ONLY_RECREATE" ] && [ -z "$ONLY_SERVICES" ]; then
+    echo "rebuild_services_from_git_diff.sh: --recreate needs --services" >&2
+    exit 2
+fi
+for _svc in $ONLY_RECREATE; do
+    if ! printf '%s\n' $ONLY_SERVICES | grep -qx "$_svc"; then
+        echo "rebuild_services_from_git_diff.sh: --recreate $_svc is not in --services" >&2
+        exit 2
+    fi
+done
+
+# A run killed by SIGKILL cannot write its own ABORT line (no trap runs). Say
+# so at the start of the next run, once: the step in flight, the services
+# never rebuilt, and the command that finishes them (scripts/check_rebuild_log.py
+# appends a DIED line so the same run is not reported twice). Never fails the run.
+if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] && [ -f "$REPO_ROOT/scripts/check_rebuild_log.py" ]; then
+    ORION_REBUILD_LOG="$REBUILD_LOG" python3 "$REPO_ROOT/scripts/check_rebuild_log.py" --mark </dev/null || true
 fi
 
 # --plan prints "<service>\t<build|recreate>". recreate = a changed repo path
 # is bind-mounted into the service's containers, so an unchanged image would
 # not recreate them (and a single-file mount keeps the old inode) -- those
 # get --force-recreate below.
-set +e
-PLAN=$(python3 "$PY" --plan "$@")
-PY_RC=$?
-set -e
+if [ -n "$ONLY_SERVICES" ]; then
+    PLAN=$(for _svc in $ONLY_SERVICES; do
+        if printf '%s\n' $ONLY_RECREATE | grep -qx "$_svc"; then
+            printf '%s\trecreate\n' "$_svc"
+        else
+            printf '%s\tbuild\n' "$_svc"
+        fi
+    done)
+    PY_RC=0
+else
+    set +e
+    PLAN=$(python3 "$PY" --plan "$@")
+    PY_RC=$?
+    set -e
+fi
 if [ "$PY_RC" -ne 0 ]; then
+    if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
+        rebuild_log "PLANNER_FAILED rc=$PY_RC base=${BASE_REF:-default}"
+    fi
     exit "$PY_RC"
 fi
 SERVICES=$(printf '%s\n' "$PLAN" | awk -F'\t' 'NF {print $1}')
@@ -96,7 +200,20 @@ RECREATE=$(printf '%s\n' "$PLAN" | awk -F'\t' '$2 == "recreate" {print $1}')
 # ORION_POST_PULL_APPLY_MIGRATIONS=0. Then the read-only report shows the live
 # verdict and the manual command for anything still unapplied. Only on a host
 # whose service list includes orion-sql-db (the classifier lists none on circe).
-if [ "$LIST_ONLY" != "1" ]; then
+#
+# A running backup (2026-10-17: nightly pg_dump held locks ~45 min, the apply
+# hit lock_timeout, hub and sql-writer stayed refused until applied by hand):
+# this first pass runs with --defer-if-backup, so it never waits; the applier
+# exits 3 when it deferred files behind a backup. Every rebuild then runs as
+# usual (consumers of the deferred files are refused by the deploy gate, the
+# rest deploy), and only after that does apply_deferred_migrations wait for
+# the backup, apply, and re-run the rebuild of the refused consumers.
+APPLY_RC=0
+APPLIER=""
+CHECK_PY=python3
+MIGRATIONS=""
+# --services finishes an earlier run, which already passed its migration step.
+if [ "$LIST_ONLY" != "1" ] && [ -z "$ONLY_SERVICES" ]; then
     set +e
     MIGRATIONS=$(python3 "$PY" --migrations "$@" 2>/dev/null)
     set -e
@@ -119,7 +236,7 @@ if [ "$LIST_ONLY" != "1" ]; then
         RAW_APPLY="docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 <"
         APPLIER="$REPO_ROOT/scripts/apply_post_pull_migrations.py"
         if [ -f "$APPLIER" ]; then
-            APPLY_ARGS=""
+            APPLY_ARGS="--defer-if-backup"
             if [ "$DRY_RUN" = "1" ]; then
                 APPLY_ARGS="--dry-run"
             fi
@@ -128,7 +245,10 @@ if [ "$LIST_ONLY" != "1" ]; then
             set +e
             # shellcheck disable=SC2086
             (cd "$REPO_ROOT" && "$CHECK_PY" "$APPLIER" $APPLY_ARGS $MIGRATIONS </dev/null 2>&1)
+            APPLY_RC=$?
             set -e
+        else
+            APPLIER=""
         fi
         REPORT_RC=1
         if [ -f "$CHECKER" ]; then
@@ -158,7 +278,7 @@ if [ "$LIST_ONLY" != "1" ]; then
 fi
 
 # cortex-exec and cortex-orch are coupled at runtime, not just by the
-# import-graph classifier above: cortex-exec's self_study.py round-trips
+# import-graph classifier above: cortex-exec's verb_adapters.py (via app/orch_paths.py) round-trips
 # CortexClientRequest calls through cortex-orch (verb resolution + verb
 # activation live there), so a cortex-exec change can require an orch
 # rebuild even when the affected-services classifier -- which walks .py
@@ -180,9 +300,108 @@ $CORTEX_ORCH_SVC"
     fi
 fi
 
+# Second pass for files the first pass deferred behind a running backup: wait
+# for it (bounded: ORION_MIGRATION_BACKUP_MAX_WAIT_S, default 90 min), then
+# apply. Sets DEFERRED_RAN=1 when the pass got to the files (exit 0, or 1 =
+# some file still refused/failed); the caller then retries the refused
+# consumers, and the deploy gate re-refuses any whose file did not land.
+# Runs after the rebuilds, so nothing else waits -- but the post-merge hook is
+# synchronous, so `git pull` itself does not return until this is done.
+DEFERRED_RAN=0
+apply_deferred_migrations() {
+    DEFERRED_RAN=0
+    [ "$APPLY_RC" = "3" ] && [ -n "$APPLIER" ] && [ "$DRY_RUN" != "1" ] || return 0
+    echo ""
+    echo "rebuild_services_from_git_diff.sh: migration(s) were deferred behind a running backup; waiting for it, then applying (Ctrl-C is safe: lock_timeout keeps every apply short; rerun this script or apply by hand later)"
+    echo "rebuild_services_from_git_diff.sh: git pull will not return until the backup finishes or ${ORION_MIGRATION_BACKUP_MAX_WAIT_S:-5400}s pass (ORION_MIGRATION_BACKUP_MAX_WAIT_S)" >&2
+    rebuild_log "DEFERRED-APPLY start"
+    set +e
+    # shellcheck disable=SC2086
+    (cd "$REPO_ROOT" && "$CHECK_PY" "$APPLIER" $MIGRATIONS </dev/null 2>&1)
+    local rc=$?
+    set -e
+    rebuild_log "DEFERRED-APPLY end rc=$rc"
+    if [ "$rc" = "0" ] || [ "$rc" = "1" ]; then
+        DEFERRED_RAN=1
+    fi
+    if [ "$rc" != "0" ]; then
+        echo "rebuild_services_from_git_diff.sh: deferred migration apply did not finish (exit $rc); consumers of any file still unapplied stay refused by the deploy gate until it is applied" >&2
+    fi
+}
+
+# Orion's FCC sandbox (/mnt/orion-fcc/repo) after a deploy. Orion's chat turns
+# import the sandbox's orion/ first (PYTHONPATH), and before this only a Hub
+# browser connect refreshed it, so chatting on in an open tab after a pull ran
+# old code (2026-11-04: sandbox at #3107 while #3109 and #3112 were deployed).
+# Runs after every successful deploy run (rebuilt or not): the sandbox is
+# Orion's copy of the whole repo, not of one image. Mid-turn safety is the
+# sync's own turn lock: it never touches the tree while any turn runs. It
+# waits up to 2 min (`git pull` waits with it); when a long turn outlasts that
+# (2026-11-04: two agent turns held the lock for 40+ min), a detached retry
+# waits up to 90 min more and appends its own "SANDBOX_SYNC retry ..." line
+# (one pending retry at a time). scripts/sync_fcc_sandbox_after_deploy.sh re-checks the clean
+# primary main checkout. Never fails the run. Kill switch:
+# ORION_POST_PULL_SANDBOX_SYNC=0.
+# Consult source export (2026-11-11): the deployed commit as plain tracked files
+# for orion-room-companion's consult rooms (scripts/export_consult_source.py).
+# Never fails the run. Kill switch: ORION_POST_PULL_CONSULT_EXPORT=0.
+export_consult_source() {
+    [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] || return 0
+    [ -n "$ORION_DEPLOY_PINNED_HEAD" ] || return 0
+    [ "${ORION_POST_PULL_CONSULT_EXPORT:-1}" != "0" ] || return 0
+    local line
+    line=$(python3 "$REPO_ROOT/scripts/export_consult_source.py" --repo "$REPO_ROOT" \
+        --ref "$ORION_DEPLOY_PINNED_HEAD" --never-fail </dev/null 2>&1 | tail -n 1)
+    echo "rebuild_services_from_git_diff.sh: CONSULT_EXPORT $line"
+    rebuild_log "CONSULT_EXPORT $line"
+}
+
+sync_fcc_sandbox() {
+    [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] || return 0
+    local line helper="$REPO_ROOT/scripts/sync_fcc_sandbox_after_deploy.sh"
+    if [ -z "$ORION_DEPLOY_PINNED_HEAD" ]; then
+        # Not a deploy run: main was not origin/main when it started.
+        return 0
+    fi
+    if [ "$1" != "ok" ]; then
+        line="skipped reason=$1"
+    elif [ "${ORION_POST_PULL_SANDBOX_SYNC:-1}" = "0" ]; then
+        line="skipped reason=disabled (ORION_POST_PULL_SANDBOX_SYNC=0)"
+    elif [ ! -x "$helper" ]; then
+        line="skipped reason=helper_missing"
+    else
+        # stdout is the verdict; the sync's own diagnostics pass through on stderr.
+        line=$("$helper" --wait-s "${ORION_SANDBOX_SYNC_WAIT_S:-120}" </dev/null) || true
+        line=$(printf '%s\n' "$line" | awk 'NF' | tail -n 1)
+        [ -n "$line" ] || line="failed reason=helper_printed_nothing"
+        case "$line" in
+            *result=skipped_turn_in_flight_external*)
+                # Detached (own session, no terminal) so the pull returns now.
+                if command -v setsid >/dev/null 2>&1; then
+                    setsid "$helper" --wait-s "${ORION_SANDBOX_SYNC_RETRY_WAIT_S:-5400}" --log-to "$REBUILD_LOG" \
+                        </dev/null >/dev/null 2>&1 &
+                    line="$line retry=detached_pid_$!"
+                else
+                    line="$line retry=unavailable_no_setsid"
+                fi
+                ;;
+        esac
+    fi
+    echo "rebuild_services_from_git_diff.sh: SANDBOX_SYNC $line"
+    rebuild_log "SANDBOX_SYNC $line"
+}
+
 if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
+    # A failed second pass is reported on stderr but, like the first pass, never
+    # fails the pull: there is nothing to rebuild, and the deploy gate holds.
+    apply_deferred_migrations
     echo "rebuild_services_from_git_diff.sh: no affected services to rebuild on this host"
     echo "rebuild_services_from_git_diff.sh: (see rebuild_affected_services stderr above for host filter details)"
+    if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
+        rebuild_log "NOTHING base=${BASE_REF:-default} (no affected services on this host)"
+    fi
+    export_consult_source
+    sync_fcc_sandbox ok
     exit 0
 fi
 
@@ -214,8 +433,72 @@ ANALYTICS="orion-analytics"
 FAILED=""
 REBUILT=0
 
+# Interrupted runs. Before this, a run killed mid-step just stopped: the log
+# showed a START with no END, and nothing named what was left undone
+# (2026-10-29: killed inside `orion-harness-governor up -d --build`; compose had
+# stopped the old container and left the new one "Created", so no worker served
+# orion:harness:run:request for ~9.5 h, and hub, thought and cortex-orch were
+# never rebuilt). Now any exit before DONE -- a signal, or set -e -- writes an
+# ABORT line naming the step in flight and the unfinished services, plus the
+# command that finishes them, to the run log and to stderr. SIGKILL runs no
+# trap: scripts/check_rebuild_log.py reports that case at the next run and at
+# session start. Bash runs a trap only after the foreground compose step
+# returns, so ABORT never cuts a step in half that was not already cut.
+RUN_ACTIVE=0
+CURRENT_SVC=""
+IN_FLIGHT=""
+QUEUED=""
+on_abort() {
+    [ "$RUN_ACTIVE" = "1" ] || return 0
+    RUN_ACTIVE=0
+    trap '' PIPE  # stdout may be the closed pipe that killed us; writes must fail, not re-signal
+    local todo recreate cmd waiting="" migrate=""
+    # Migrations deferred behind a backup and not yet applied: their consumers sit in FAILED,
+    # refused by the deploy gate, waiting for the retry this run will no longer do.
+    if [ "$APPLY_RC" = "3" ] && [ "$DEFERRED_RAN" != "1" ] && [ -n "$APPLIER" ]; then
+        waiting="$FAILED"
+        migrate="python3 scripts/apply_post_pull_migrations.py $(printf '%s ' $MIGRATIONS)"
+        migrate="${migrate% }"
+    fi
+    todo=$(printf '%s\n' $CURRENT_SVC $QUEUED $waiting | awk 'NF && !seen[$0]++' | tr '\n' ' ')
+    todo="${todo% }"
+    recreate=""
+    for _svc in $todo; do
+        if printf '%s\n' $RECREATE | grep -qx "$_svc" 2>/dev/null; then
+            recreate="$recreate $_svc"
+        fi
+    done
+    recreate="${recreate# }"
+    rebuild_log "ABORT reason=$1 in_flight=${IN_FLIGHT:-none} unfinished=${todo:-none} failed=${FAILED# }"
+    if [ -n "$migrate" ]; then
+        rebuild_log "ABORT-MIGRATIONS run first (deferred behind a backup, not applied): $migrate"
+        {
+            echo "rebuild_services_from_git_diff.sh: migrations were deferred behind a backup and are NOT applied; run first: $migrate"
+        } >&2 2>/dev/null || true
+    fi
+    if [ -n "$todo" ]; then
+        cmd="scripts/rebuild_services_from_git_diff.sh --services '$todo'${recreate:+ --recreate '$recreate'}"
+        rebuild_log "ABORT-FINISH $cmd"
+        {
+            echo "rebuild_services_from_git_diff.sh: ABORTED ($1) during: ${IN_FLIGHT:-between steps}"
+            echo "rebuild_services_from_git_diff.sh: not rebuilt: $todo"
+            echo "rebuild_services_from_git_diff.sh: a container of the step in flight may be stopped or left 'Created' (docker ps -a)"
+            echo "rebuild_services_from_git_diff.sh: finish from the primary main checkout: $cmd"
+        } >&2 2>/dev/null || true
+    fi
+}
+trap 'on_abort "exit rc=$?"' EXIT
+trap 'on_abort SIGINT; exit 130' INT
+trap 'on_abort SIGHUP; exit 129' HUP
+trap 'on_abort SIGTERM; exit 143' TERM
+trap 'on_abort SIGPIPE; exit 141' PIPE
+
 # run_safe_build <service-dir> <compose args...>; sets rc.
 run_safe_build() {
+    local started
+    started=$(date +%s) || started=0
+    rebuild_log "START $*"
+    IN_FLIGHT="$*"
     set +e
     if [ -n "$ALLOW_SHARED" ]; then
         ORION_ALLOW_SHARED_CHECKOUT_WRITE="$ALLOW_SHARED" "$SAFE_BUILD" "$@"
@@ -224,9 +507,19 @@ run_safe_build() {
     fi
     rc=$?
     set -e
+    IN_FLIGHT=""
+    rebuild_log "END rc=$rc seconds=$(($(date +%s) - started)) $*"
 }
 
-for svc in $SERVICES; do
+if [ "$DRY_RUN" != "1" ]; then
+    RUN_ACTIVE=1
+    rebuild_log "RUN base=${BASE_REF:-default} services=$(printf '%s ' $SERVICES)recreate=$(printf '%s ' $RECREATE)"
+fi
+
+# rebuild_one <service>: the full rebuild of one stack; adds it to FAILED,
+# or counts it in REBUILT.
+rebuild_one() {
+    local svc="$1"
     RECREATE_FLAG=""
     if printf '%s\n' $RECREATE | grep -qx "$svc" 2>/dev/null; then
         RECREATE_FLAG="--force-recreate"
@@ -243,23 +536,110 @@ for svc in $SERVICES; do
     fi
     # shellcheck disable=SC2086
     PROFILE_SERVICES=$(python3 "$PY" --running-profile-services "$svc" $SKIP_PROFILE_ARGS || true)
+    # Second compose files of this stack (docker-compose.<name>.yml) with a
+    # container running from them now. A plain `up` only ever read
+    # docker-compose.yml, so the Qwen caption lane (docker-compose.circe-qwen.yml)
+    # kept its 2026-10-16 image and env through every pull (2026-10-20). Never
+    # starts a lane that is not running; GPU-pool launch files are skipped.
+    EXTRA_COMPOSE=$(python3 "$PY" --running-extra-compose "$svc" || true)
+
+    # GPU-pool launch targets of this stack (config/gpu_pool.yaml `launch:`).
+    # A STOPPED one was evicted by the pool on purpose: build its image, never
+    # start it. Confirmed live 2026-10-16 04:02 UTC: a plain `up -d --build`
+    # restarted diffusion-host under agent-gpu2 on gpu2, the lane controller
+    # then refused every load/unload (seat_and_evicted_both_running) and no
+    # picture rendered for 15 hours. The helper exits non-zero when it cannot
+    # tell what the pool owns: that stack is skipped (FAILED), never plain-up'd.
+    POOL_RC=0
+    POOL_PLAN=$(python3 "$PY" --pool-held-services "$svc") || POOL_RC=$?
+    if [ "$POOL_RC" -ne 0 ]; then
+        echo "rebuild_services_from_git_diff.sh: FAILED $svc -- cannot read GPU pool ownership (exit $POOL_RC); not starting anything" >&2
+        FAILED="$FAILED $svc"
+        return 0
+    fi
+    POOL_HOLD=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "hold" { print $2 }')
 
     if [ "$DRY_RUN" = "1" ]; then
-        echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}"
+        if [ -n "$POOL_PLAN" ]; then
+            echo "[dry-run] would build: $svc, then up -d --no-build --no-deps${RECREATE_FLAG:+ $RECREATE_FLAG} on its non-held services"
+            if [ -n "$POOL_HOLD" ]; then
+                # shellcheck disable=SC2086
+                echo "[dry-run] would hold stopped (GPU pool evicted it): $svc" $POOL_HOLD
+            fi
+        else
+            echo "[dry-run] would rebuild: $svc${RECREATE_FLAG:+ ($RECREATE_FLAG)}"
+        fi
+        if [ -x "$REPO_ROOT/services/$svc/scripts/pre_rebuild.sh" ]; then
+            echo "[dry-run] would run first: services/$svc/scripts/pre_rebuild.sh"
+        fi
+        if [ -x "$REPO_ROOT/services/$svc/scripts/post_rebuild.sh" ]; then
+            echo "[dry-run] would run after a good build: services/$svc/scripts/post_rebuild.sh"
+        fi
         if [ -n "$PROFILE_SERVICES" ]; then
             printf '%s\n' "$PROFILE_SERVICES" | while IFS="$(printf '\t')" read -r profile name; do
                 [ -n "$name" ] || continue
                 echo "[dry-run] would rebuild running profile service: $svc --profile $profile $name"
             done
         fi
+        if [ -n "$EXTRA_COMPOSE" ]; then
+            printf '%s\n' "$EXTRA_COMPOSE" | while IFS="$(printf '\t')" read -r extra names; do
+                [ -n "$extra" ] || continue
+                echo "[dry-run] would rebuild running extra compose file: $svc --compose-file $extra $names"
+            done
+        fi
         REBUILT=$((REBUILT + 1))
-        continue
+        return 0
     fi
 
     echo ""
     echo "=== rebuild_services_from_git_diff: $svc ==="
 
-    if [ "$svc" = "$CORTEX_EXEC" ]; then
+    # A stack whose build reads generated source runs its own step first, and
+    # can ship what compose does not after a good build (post_rebuild.sh, below):
+    # orion-ai-town builds from its patched, gitignored upstream/ and keeps its
+    # Convex functions outside compose, so a plain `up --build` shipped neither
+    # (live town code sat at 2026-08-30 until 2026-10-23). Failure skips the stack.
+    PRE_REBUILD="$REPO_ROOT/services/$svc/scripts/pre_rebuild.sh"
+    if [ -x "$PRE_REBUILD" ]; then
+        rebuild_log "PRE-START $svc"
+        set +e
+        "$PRE_REBUILD" </dev/null
+        rc=$?
+        set -e
+        rebuild_log "PRE-END rc=$rc $svc"
+        if [ "$rc" -ne 0 ]; then
+            echo "rebuild_services_from_git_diff.sh: FAILED $svc -- services/$svc/scripts/pre_rebuild.sh exit $rc; not building" >&2
+            FAILED="$FAILED $svc"
+            return 0
+        fi
+    fi
+
+    if [ -n "$POOL_PLAN" ]; then
+        # Build first, then decide what to start from a FRESH look at docker:
+        # the build takes minutes and the pool may evict a target meanwhile.
+        run_safe_build "$svc" build
+        if [ "$rc" -eq 0 ]; then
+            POOL_RC=0
+            POOL_PLAN=$(python3 "$PY" --pool-held-services "$svc") || POOL_RC=$?
+            if [ "$POOL_RC" -ne 0 ]; then
+                echo "rebuild_services_from_git_diff.sh: cannot re-read GPU pool ownership for $svc (exit $POOL_RC); built, not started" >&2
+                rc=$POOL_RC
+            else
+                POOL_HOLD=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "hold" { print $2 }')
+                POOL_UP=$(printf '%s\n' "$POOL_PLAN" | awk -F '\t' '$1 == "running" || $1 == "start" { print $2 }')
+                if [ -n "$POOL_HOLD" ]; then
+                    # The controller's next load starts the image built above.
+                    # shellcheck disable=SC2086
+                    echo "rebuild_services_from_git_diff.sh: GPU pool holds stopped:" $POOL_HOLD "-- built, not started"
+                fi
+                if [ -n "$POOL_UP" ]; then
+                    # --no-deps: a depends_on edge must not start a held service.
+                    # shellcheck disable=SC2086
+                    run_safe_build "$svc" up -d --no-build --no-deps $RECREATE_FLAG $POOL_UP
+                fi
+            fi
+        fi
+    elif [ "$svc" = "$CORTEX_EXEC" ]; then
         # Match mesh-utilities/common/cortex_exec_fleet_helpers.sh lane bring-up.
         # shellcheck disable=SC2086
         run_safe_build "$svc" up -d --build $RECREATE_FLAG $CORTEX_LANES
@@ -300,19 +680,107 @@ $PROFILE_SERVICES
 EOF_PROFILES
     fi
 
+    if [ -n "$EXTRA_COMPOSE" ]; then
+        TAB=$(printf '\t')
+        while IFS="$TAB" read -r extra names; do
+            [ -n "$extra" ] && [ -n "$names" ] || continue
+            echo "=== rebuild_services_from_git_diff: $svc (running extra compose file $extra: $names) ==="
+            # Only the services running now, --no-deps: a stopped sibling in the
+            # same file (or a depends_on edge) is never started.
+            # shellcheck disable=SC2086
+            run_safe_build "$svc" --compose-file "$extra" up -d --build --no-deps $RECREATE_FLAG $names </dev/null
+            if [ "$rc" -ne 0 ]; then
+                echo "rebuild_services_from_git_diff.sh: FAILED $svc/$extra (exit $rc)" >&2
+                svc_failed=1
+            fi
+        done <<EOF_EXTRA
+$EXTRA_COMPOSE
+EOF_EXTRA
+    fi
+
+    # Only after every compose step passed: safe_docker_build.sh's main-checkout
+    # and migration gates have let this tree deploy, and the stack is up.
+    POST_REBUILD="$REPO_ROOT/services/$svc/scripts/post_rebuild.sh"
+    if [ "$svc_failed" -eq 0 ] && [ -x "$POST_REBUILD" ]; then
+        rebuild_log "POST-START $svc"
+        set +e
+        "$POST_REBUILD" </dev/null
+        rc=$?
+        set -e
+        rebuild_log "POST-END rc=$rc $svc"
+        if [ "$rc" -ne 0 ]; then
+            echo "rebuild_services_from_git_diff.sh: FAILED $svc -- services/$svc/scripts/post_rebuild.sh exit $rc" >&2
+            svc_failed=1
+        fi
+    fi
+
     if [ "$svc_failed" -ne 0 ]; then
         FAILED="$FAILED $svc"
     else
         REBUILT=$((REBUILT + 1))
     fi
-done
+}
+
+# rebuild_queue <services...>: rebuild each in order; QUEUED always holds the
+# ones not started yet, CURRENT_SVC the one in progress (for on_abort).
+rebuild_queue() {
+    QUEUED="$*"
+    for svc in "$@"; do
+        QUEUED="${QUEUED#"$svc"}"
+        QUEUED="${QUEUED# }"
+        CURRENT_SVC="$svc"
+        rebuild_one "$svc"
+        CURRENT_SVC=""
+    done
+}
+
+# shellcheck disable=SC2086
+rebuild_queue $SERVICES
+
+# Files deferred behind a backup: wait, apply, then rebuild again the
+# consumers the deploy gate refused above. Only services that FAILED and are
+# named in a deferred file's REQUIRED-BY header are retried, once.
+apply_deferred_migrations
+if [ "$DEFERRED_RAN" = "1" ] && [ -n "${FAILED//[$'\n\r\t ']}" ]; then
+    set +e
+    # shellcheck disable=SC2086
+    NEEDS=$(cd "$REPO_ROOT" && "$CHECK_PY" "$APPLIER" --required-by $MIGRATIONS </dev/null 2>/dev/null)
+    set -e
+    RETRY=""
+    STILL_FAILED=""
+    for svc in $FAILED; do
+        if printf '%s\n' $NEEDS | grep -qx "$svc" 2>/dev/null; then
+            RETRY="$RETRY $svc"
+        else
+            STILL_FAILED="$STILL_FAILED $svc"
+        fi
+    done
+    if [ -n "${RETRY// }" ]; then
+        echo ""
+        echo "rebuild_services_from_git_diff.sh: deferred migration pass done; rebuilding the services the deploy gate refused:$RETRY"
+        rebuild_log "RETRY-AFTER-MIGRATION services=${RETRY# }"
+        FAILED="$STILL_FAILED"
+        # shellcheck disable=SC2086
+        rebuild_queue $RETRY
+    fi
+fi
 
 echo ""
 echo "rebuild_services_from_git_diff.sh: rebuilt $REBUILT service(s)"
+if [ "$DRY_RUN" != "1" ]; then
+    RUN_ACTIVE=0
+    rebuild_log "DONE rebuilt=$REBUILT failed=${FAILED# }"
+    echo "rebuild_services_from_git_diff.sh: run log: $REBUILD_LOG"
+fi
 
 if [ -n "${FAILED//[$'\n\r\t ']}" ]; then
     echo "rebuild_services_from_git_diff.sh: failures:$FAILED" >&2
+    # Some stack did not deploy; the operator finishes it with --services, and
+    # that run's success refreshes the sandbox.
+    sync_fcc_sandbox rebuild_failures
     exit 1
 fi
 
+export_consult_source
+sync_fcc_sandbox ok
 exit 0

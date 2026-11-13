@@ -14,6 +14,7 @@ from uuid import uuid4
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, ChatResultPayload, LLMMessage, ServiceRef
 from orion.core.bus.rpc_health import SharedRpcHealthSink
+from orion.llm.resource_lease import GPU_LEASE_OPTION
 
 from .llm_context import MindLLMRequestContext
 from .settings import settings
@@ -26,6 +27,12 @@ logger = logging.getLogger("orion-mind.llm")
 # orion:exec:request:LLMGatewayService outcome was discarded with its bus. app.main's
 # RpcHealthPublisher drains this sink into a long-lived bus.
 RPC_HEALTH_SINK = SharedRpcHealthSink()
+
+# A call that also waits for a GPU pool seat (request_json ``pool_wait_sec``): the bus RPC waits for
+# the seat, the generation, and this margin, so the gateway's own answer always lands first.
+POOL_WAIT_RPC_MARGIN_SEC = 15.0
+# meta key holding the gateway's typed error on an empty reply: {"error", "reason", "retry_after_sec"}.
+GATEWAY_ERROR_KEY = "gateway_error"
 
 
 def _run_blocking(coro):
@@ -48,6 +55,16 @@ def _run_blocking(coro):
     if "error" in result:
         raise result["error"]
     return result.get("value")
+
+
+def gateway_error_of(raw: Any) -> Optional[Dict[str, Any]]:
+    """The gateway's typed error from a reply's ``raw`` (llm-gateway main._pool_unavailable_result,
+    _deadline_result, _revoked_result, upstream failures), or None when it carries none."""
+    if not isinstance(raw, dict) or not raw.get("error"):
+        return None
+    details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+    return {"error": str(raw["error"]), "reason": details.get("reason"),
+            "retry_after_sec": details.get("retry_after_sec")}
 
 
 def extract_json(content: str) -> Optional[Dict[str, Any]]:
@@ -88,16 +105,21 @@ class MindLLMClientProtocol(Protocol):
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
         extra_options: dict[str, Any] | None = None,
+        pool_wait_sec: float | None = None,
     ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]: ...
 
 
 class MindLLMClient:
-    def __init__(self) -> None:
+    def __init__(self, *, rpc_health: bool = True) -> None:
         self._service_ref = ServiceRef(
             name=settings.SERVICE_NAME,
             node=settings.NODE_NAME,
             version=settings.SERVICE_VERSION,
         )
+        # False for Orion Prime (app/prime_loop.py): its calls ride a background route that waits for
+        # slot slack by design, so its waits and timeouts are not transport health and must not land
+        # in the window the transport metrics read.
+        self._rpc_health = rpc_health
 
     def _bus_enabled(self) -> bool:
         return bool(settings.MIND_LLM_USE_BUS and settings.ORION_BUS_ENABLED)
@@ -114,7 +136,15 @@ class MindLLMClient:
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
         extra_options: dict[str, Any] | None = None,
+        pool_wait_sec: float | None = None,
     ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]:
+        """``timeout_sec`` is the generation budget. ``pool_wait_sec`` (Orion Prime, 2026-11-03): how
+        long the call may also wait for a GPU pool seat first, sent as the gateway's
+        ``gateway_pool_wait_sec`` option; the bus RPC then waits for both plus a margin, so the
+        gateway's own answer ("no seat", or the reply) always arrives before this side gives up.
+
+        On an empty reply the gateway's typed error (``raw.error`` / ``raw.details``) is copied to
+        ``meta["gateway_error"]`` so a caller can tell "never got a seat" from "the model failed"."""
         meta: dict[str, Any] = {"route": route, "phase": context.phase_name if context else None}
         if not self._bus_enabled():
             return None, "bus_disabled", meta
@@ -129,6 +159,10 @@ class MindLLMClient:
         }
         if extra_options:
             options.update(extra_options)
+        rpc_timeout = effective_timeout
+        if pool_wait_sec is not None and pool_wait_sec > 0:
+            options["gateway_pool_wait_sec"] = float(pool_wait_sec)
+            rpc_timeout = effective_timeout + float(pool_wait_sec) + POOL_WAIT_RPC_MARGIN_SEC
         if not thinking:
             # 2026-09-08: `options["thinking"] = True` (the old body of this branch)
             # was a pure no-op -- confirmed nothing in orion-llm-gateway ever reads a
@@ -150,6 +184,9 @@ class MindLLMClient:
             options["mind_run_id"] = context.mind_run_id
             options["mind_phase"] = context.phase_name
             options["mind_router_profile_id"] = context.router_profile_id
+            if context.gpu_lease is not None:
+                # The gateway attaches this call to the turn's hold (llm-gateway gpu_lease_from_options).
+                options[GPU_LEASE_OPTION] = context.gpu_lease
         try:
             content, usage, model_used, result_meta = self._bus_chat(
                 system_prompt=system_prompt,
@@ -157,10 +194,14 @@ class MindLLMClient:
                 route=route,
                 options=options,
                 context=context,
-                timeout_sec=effective_timeout,
+                timeout_sec=rpc_timeout,
             )
             meta["model_used"] = model_used
             meta["usage"] = usage
+            if isinstance(result_meta, dict) and isinstance(result_meta.get(GATEWAY_ERROR_KEY), dict):
+                meta[GATEWAY_ERROR_KEY] = result_meta[GATEWAY_ERROR_KEY]
+            if isinstance(result_meta, dict) and isinstance(result_meta.get("pool_wait_ms"), (int, float)):
+                meta["pool_wait_ms"] = float(result_meta["pool_wait_ms"])
             if isinstance(result_meta, dict):
                 unc = result_meta.get("llm_uncertainty")
                 if isinstance(unc, dict):
@@ -273,11 +314,15 @@ class MindLLMClient:
                 result = ChatResultPayload.model_validate(decoded.envelope.payload)
                 usage = dict(result.usage or {})
                 result_meta = dict(result.meta or {})
+                gateway_error = gateway_error_of(result.raw)
+                if gateway_error is not None:
+                    result_meta[GATEWAY_ERROR_KEY] = gateway_error
                 return str(result.content or result.text or ""), usage, result.model_used, result_meta
             finally:
                 # Before close, even on timeout/error: fold this call's outcome into the
                 # process sink so the published window sees it.
-                RPC_HEALTH_SINK.absorb_bus(bus)
+                if self._rpc_health:
+                    RPC_HEALTH_SINK.absorb_bus(bus)
                 await bus.close()
 
         return _run_blocking(_call())
@@ -303,6 +348,7 @@ class FakeMindLLMClient:
         context: MindLLMRequestContext | None = None,
         timeout_sec: float | None = None,
         extra_options: dict[str, Any] | None = None,
+        pool_wait_sec: float | None = None,
     ) -> tuple[Optional[Dict[str, Any]], str | None, dict[str, Any]]:
         self.calls.append(
             {
@@ -312,6 +358,7 @@ class FakeMindLLMClient:
                 "context": context,
                 "timeout_sec": timeout_sec,
                 "extra_options": extra_options,
+                "pool_wait_sec": pool_wait_sec,
             }
         )
         if self._idx >= len(self._responses):

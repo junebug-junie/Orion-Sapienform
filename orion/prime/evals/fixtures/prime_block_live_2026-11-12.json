@@ -1,0 +1,259 @@
+{
+ "captured_note": "live orion:prime:state + orion:prime:concerns, 2026-11-12 (living Prime Part 1 eval)",
+ "state": {
+  "schema_version": "prime.state.v1",
+  "concerns": [],
+  "open_nominations": [],
+  "pending_changes": [],
+  "recent_outcomes": [
+   "my bet that the concern 'Monitor if the high activity pace ($29/month) driven by attention:juniper spending (price 0.81, pace 6.0) causes the mon' leads somewhere was not placed: my own record says these have been unreliable lately (self-monitor: track_record_failing); one is re-tested every 6 h",
+   "my bet that the concern 'Monitor if the high activity pace ($29/month) driven by attention:juniper spending (price 0.81, pace 6.0) causes the mon' leads somewhere was not placed: my own record says these have been unreliable lately (self-monitor: track_record_failing); one is re-tested every 6 h",
+   "my question \"What factors determine when 'lane:agent' becomes the binding constraint in Orion's body economy, and how does its strain\" (act act_4e638cf59b49acc09d00d51b): held back as a control (it was never sent)",
+   "my question \"Does Orion's substrate configuration include any automated governance or safety mechanisms that trigger when the always-\" (act act_41b7eb080ae91966dd78676c): treated run a8d349997e36 reached_out_blocked disposition=explored; concern settled: 'Monitor if the high activity pace ($29/month) driven by attention:juniper spending (price 0.81, pace 6.0) causes the mon'",
+   "a try to think at 14:06 UTC never reached the model (upstream_5xx: http_502); I tried again",
+   "my move was not sent: ref {\"kind\": \"act\", \"id\": \"world_pulse_read_seed:reading:7dfc3c44-fcfb-5744-aff7-93511efcabe6\"} is not usable (kinds: arc, act): Value error, act id must look like act_ + 24 hex characters, got 'world_pulse_read_seed:reading:7dfc3c44-fcfb-5744-aff7-93511efcabe6'",
+   "my move was not sent: ref {\"kind\": \"act\", \"id\": \"world_pulse_read_seed:reading:db23d662-e2bf-556e-9d22-eb2c2d4bc9ac\"} is not usable (kinds: arc, act): Value error, act id must look like act_ + 24 hex characters, got 'world_pulse_read_seed:reading:db23d662-e2bf-556e-9d22-eb2c2d4bc9ac'",
+   "my question \"What governance or safety mechanisms exist in Orion's substrate configuration to detect and mitigate when the always-on \" (act act_c0e460d9de11dc85901c9796): treated run 724632a75422 reached_out_blocked; concern settled: 'Monitor whether the persistent always-on energy floor ($115/month vs $100 envelope) triggers any structural mitigation o'",
+   "a try to think at 08:36 UTC never reached the model (upstream_5xx: http_502); I tried again",
+   "my question \"What factors determine when 'lane:agent' becomes the binding constraint in Orion's body economy, and how does its strain\" (act act_8e84c23bb742aa48ce151d33): treated run df5b3b1359e2 reached_out_blocked; concern settled: 'Monitor if the high activity pace ($29/month) driven by attention:juniper spending (price 0.81, pace 6.0) causes the mon'"
+  ],
+  "concern_record": [
+   {
+    "concern_id": "fb88ad23b93c4182",
+    "text": "Investigate the nature of the 'Strain prediction error' in arc 4bb25be595e2847b to determine if it reflects a genuine resource constraint or a modeling artifact.",
+    "opened_at": "2026-11-01T21:22:28.896351Z",
+    "act_opened_at": "2026-11-01T21:22:37.707772Z",
+    "closed_at": "2026-11-01T21:39:53.983464Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: The arc associated with this concern (4bb25be595e2847b) is no longer in attention; attention has moved to a different arc.",
+    "published": true
+   },
+   {
+    "concern_id": "a5f7af3505f646e7",
+    "text": "Investigate the nature of the 'Chat prediction error' in arc 135983b11378395c to determine if it correlates with specific input types, time windows, or model versions.",
+    "opened_at": "2026-11-01T21:39:53.983464Z",
+    "act_opened_at": "2026-11-01T21:40:02.520418Z",
+    "closed_at": "2026-11-01T21:50:21.271628Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: The arc 135983b11378395c is no longer in attention; the current attention is on a different arc (349e9da5fa3b45cf).",
+    "published": true
+   },
+   {
+    "concern_id": "142aaa0565d94d1d",
+    "text": "Investigate the nature of the 'Bus synaptic prediction error' in arc 349e9da5fa3b45cf to determine if it correlates with specific bus traffic patterns, time windows, or model versions.",
+    "opened_at": "2026-11-01T21:50:21.271628Z",
+    "act_opened_at": "2026-11-01T21:50:29.769181Z",
+    "closed_at": "2026-11-01T22:08:54.133087Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: Attention has moved away from the Bus synaptic prediction error arc to 'Orion is reading' (arc 9bff5f71bea5c190), making this concern no longer relevant.",
+    "published": true
+   },
+   {
+    "concern_id": "484303bfd56644ed",
+    "text": "Monitor whether the open curiosity question about Chat prediction error yields a result that clarifies its impact on system performance or resource usage.",
+    "opened_at": "2026-11-01T22:48:59.330666Z",
+    "act_opened_at": "2026-11-01T22:49:06.424671Z",
+    "closed_at": "2026-11-02T03:42:37.024184Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: The associated arc is closed and the question has been open for 18 hours without resolution, making it stale relative to the new attention focus on Bus synaptic prediction error.",
+    "published": true
+   },
+   {
+    "concern_id": "47d508169f364a6a",
+    "text": "Monitor whether the 'Bus synaptic prediction error' (arc c0ca80ca8cc046e3) yields actionable insights or resource implications once the current curiosity block clears.",
+    "opened_at": "2026-11-02T03:42:37.024184Z",
+    "act_opened_at": "2026-11-02T03:42:46.987955Z",
+    "closed_at": "2026-11-02T06:00:51.497046Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: The arc c0ca80ca8cc046e3 is no longer in ATTENTION, and the previous concern about Chat prediction error is stale/blocked. No new actionable insights are emerging from these closed/stale arcs.",
+    "published": true
+   },
+   {
+    "concern_id": "a90412eca4104315",
+    "text": "Monitor if the $107/month always-on energy floor triggers any automatic throttling or configuration changes in the substrate nodes (athena/circe) given the $100 envelope breach.",
+    "opened_at": "2026-11-02T07:37:48.130872Z",
+    "act_opened_at": "2026-11-02T07:37:55.606447Z",
+    "closed_at": "2026-11-02T16:02:31.058502Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: The concern was about monitoring for automatic throttling/config changes. After 8 hours with no new evidence of such changes and the energy state remaining static (floor > envelope), the passive monit",
+    "published": true
+   },
+   {
+    "concern_id": "39ebcbef249640ec",
+    "text": "Investigate the nature of the 'Codebase prediction error' (arc 65a9c96290b77220) to determine if it stems from structural drift, data quality issues, or model misalignment, and whether it impacts current operational stability.",
+    "opened_at": "2026-11-02T19:07:13.825474Z",
+    "act_opened_at": "2026-11-02T19:07:21.253759Z",
+    "closed_at": "2026-11-03T00:23:12.103606Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: No new signals or arcs related to 'Codebase prediction error' have appeared in 5 hours, and curiosity runs are saturated with other topics. The concern is stale and not currently actionable without a ",
+    "published": true
+   },
+   {
+    "concern_id": "cfdb9efeba7149ee",
+    "text": "Investigate the nature and impact of the 'Chat prediction error' (arc 6d6b6d44087421b0) to determine if it correlates with specific chat lane behaviors or resource usage patterns.",
+    "opened_at": "2026-11-03T01:38:10.867146Z",
+    "act_opened_at": "2026-11-03T01:38:19.710866Z",
+    "closed_at": "2026-11-03T01:43:24.536097Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: Attention has moved away from 'Chat prediction error' to 'Orion is reading'. While the chat lane metrics are visible, no new specific anomaly or error signal is present in the current frame to justify",
+    "published": true
+   },
+   {
+    "concern_id": "a7a9af4bdd7c40fb",
+    "text": "Determine if the persistent $7/month structural deficit (always-on floor > envelope) triggers any automated governance responses, such as hard limits on non-essential background processes or forced sleep states for substrate nodes.",
+    "opened_at": "2026-11-02T16:02:31.058502Z",
+    "act_opened_at": "2026-11-02T16:02:42.020566Z",
+    "closed_at": "2026-11-03T09:02:25.723360Z",
+    "end": "settled",
+    "produced": true,
+    "note": "settled: question act act_bf0c3c498c363d23a3e5c929: treated run cf46936ae336 finished disposition=explored",
+    "published": true
+   },
+   {
+    "concern_id": "05dfa8acead84513",
+    "text": "Investigate why the agent lane is now the binding constraint (strain 0.00 at ceiling) and whether this correlates with specific activity patterns or resource allocation shifts distinct from the chat lane issues previously explored.",
+    "opened_at": "2026-11-03T14:30:14.434235Z",
+    "act_opened_at": "2026-11-03T14:31:31.183568Z",
+    "closed_at": "2026-11-03T17:04:17.878949Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: The agent lane is no longer the binding constraint; strain has dropped to slack/nothing, making the original question about its ceiling behavior moot.",
+    "published": true
+   },
+   {
+    "concern_id": "634696ff35374b54",
+    "text": "Agent lane binding constraint recurs intermittently; monitor for patterns in demand spikes that cause it to become binding despite low average strain.",
+    "opened_at": "2026-11-03T17:10:09.836595Z",
+    "act_opened_at": "2026-11-03T17:10:23.248573Z",
+    "closed_at": "2026-11-03T17:23:02.317233Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: Agent lane is no longer the binding constraint; chat lane has taken over as the bottleneck.",
+    "published": true
+   },
+   {
+    "concern_id": "4f76b97f3a9a4013",
+    "text": "Chat lane is now the binding constraint (0.011 strain) with 239s of idle holds in lease window; monitor if this shifts to sustained load or remains intermittent.",
+    "opened_at": "2026-11-03T17:23:02.317233Z",
+    "act_opened_at": "2026-11-03T17:23:38.906108Z",
+    "closed_at": "2026-11-03T17:52:20.557720Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: Chat lane is no longer the binding constraint; strain dropped to 0.0 and attention:juniper has taken over as the bottleneck.",
+    "published": true
+   },
+   {
+    "concern_id": "bfd09195f0c64dc5",
+    "text": "Monitor 'lane:agent' as the new binding constraint (strain 0.00 at ceiling 1); track if strain rises or if it remains a stable bottleneck given current activity.",
+    "opened_at": "2026-11-03T18:41:35.759444Z",
+    "act_opened_at": "2026-11-03T18:42:17.735987Z",
+    "closed_at": "2026-11-03T19:54:26.066482Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: lane:agent is no longer the binding constraint; attention:juniper has taken over.",
+    "published": true
+   },
+   {
+    "concern_id": "ea876d46c0be4f3e",
+    "text": "Monitor attention:juniper as the new binding constraint (strain 0.02); track if it sustains load or remains intermittent given the day-end pace of 4.4 messages.",
+    "opened_at": "2026-11-03T17:52:20.557720Z",
+    "act_opened_at": "2026-11-03T17:52:32.114749Z",
+    "closed_at": "2026-11-03T23:01:18.737444Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: The constraint 'attention:juniper' is now explicitly classified as 'my own spending, not strain', resolving the ambiguity about whether it was a capacity bottleneck or budgetary issue. The concern abo",
+    "published": true
+   },
+   {
+    "concern_id": "8e5903a589374109",
+    "text": "Monitor if the high activity pace ($29/month) driven by attention:juniper spending (price 0.81, pace 6.0) causes the month-end energy forecast to exceed the $100 envelope significantly beyond the current $135.86 projection, and whether any automated governance or budget controls trigger.",
+    "opened_at": "2026-11-03T23:01:18.737444Z",
+    "act_opened_at": "2026-11-04T00:42:23.767804Z",
+    "closed_at": "2026-11-05T08:05:29.013047Z",
+    "end": "settled",
+    "produced": true,
+    "note": "settled: question act act_41b7eb080ae91966dd78676c: treated run a8d349997e36 reached_out_blocked disposition=explored",
+    "published": true
+   },
+   {
+    "concern_id": "5aeef602330e4031",
+    "text": "Evaluate whether the recent world_pulse_read events (DreamX and arxiv paper) contain actionable insights that could mitigate the structural energy deficit or improve body economy efficiency.",
+    "opened_at": "2026-11-05T14:06:28.036405Z",
+    "act_opened_at": "2026-11-05T14:06:38.483679Z",
+    "closed_at": "2026-11-05T20:06:30.230328Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: The concern has been held for 6 hours without generating a question or insight. The specific events (DreamX/arxiv) are less relevant than the newly funded high-value reads (NASA/Chainalysis). Replacin",
+    "published": true
+   },
+   {
+    "concern_id": "3902a859d57d4283",
+    "text": "Assess whether recent high-unusualness world_pulse_read events (specifically NASA space comms and Chainalysis security incidents) contain actionable insights relevant to Orion's infrastructure efficiency or security posture, given the persistent energy deficit.",
+    "opened_at": "2026-11-05T20:06:30.230328Z",
+    "act_opened_at": "2026-11-05T20:06:46.237904Z",
+    "closed_at": "2026-11-06T02:06:42.898657Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: The concern regarding extracting insights from specific world_pulse_read events (NASA/Chainalysis) has aged out without resolution. The core issue is the structural energy deficit, not acute informati",
+    "published": true
+   },
+   {
+    "concern_id": "bafe0843dec34b81",
+    "text": "Monitor whether the persistent always-on energy floor ($115/month vs $100 envelope) triggers any structural mitigation or governance response in Orion's body economy, given that recent curiosity runs have ignored this deficit.",
+    "opened_at": "2026-11-06T02:06:42.898657Z",
+    "act_opened_at": "2026-11-06T02:06:56.824179Z",
+    "closed_at": "2026-11-08T08:35:32.240038Z",
+    "end": "settled",
+    "produced": true,
+    "note": "settled: question act act_c0e460d9de11dc85901c9796: treated run 724632a75422 reached_out_blocked",
+    "published": true
+   },
+   {
+    "concern_id": "ab7a330602854a01",
+    "text": "Monitor if the high activity pace ($29/month) driven by attention:juniper spending (price 0.81, pace 6.0) causes the monthly energy forecast to exceed $135, triggering a structural mitigation or strain.",
+    "opened_at": "2026-11-09T02:35:49.473449Z",
+    "act_opened_at": "2026-11-09T02:36:06.078916Z",
+    "closed_at": "2026-11-09T09:26:06.285132Z",
+    "end": "settled",
+    "produced": true,
+    "note": "settled: question act act_8e84c23bb742aa48ce151d33: treated run df5b3b1359e2 reached_out_blocked",
+    "published": true
+   },
+   {
+    "concern_id": "76c691d058b94b82",
+    "text": "Monitor if the persistent energy floor deficit ($104 vs $100) triggers any new structural mitigation or governance response in Orion's body economy.",
+    "opened_at": "2026-11-09T21:26:09.728022Z",
+    "act_opened_at": "2026-11-09T21:26:24.750710Z",
+    "closed_at": "2026-11-10T21:27:26.726106Z",
+    "end": "dropped",
+    "produced": false,
+    "note": "dropped unresolved: No open events to attach new concerns to; energy is explicitly marked 'out of my hands' with zero strain, making structural mitigation monitoring unactionable and likely to fade without resolution.",
+    "published": true
+   }
+  ],
+  "open_regulations": [],
+  "regulation_rest_until": {},
+  "last_thought_at": "2026-11-12T03:28:02.550511Z",
+  "last_reading": "The system is quiet with no strain and zero heat. The energy floor deficit ($108.71 vs $100 envelope) persists but is explicitly marked 'out of my hands' by the body, making it unactionable for me. Attention:juniper is within budget (3 msgs vs 4.3 budgeted) with a high price signal (2.27), indicating value despite pace. There are no open concerns and no events that suggest a critical structural issue requiring investigation. The recent curiosity runs have closed previous loops on log discrepancies, vehicle observations, and governance mechanisms.",
+  "thoughts_total": 235,
+  "seen_active_arc_id": "390d630d1fc992b8",
+  "seen_binding": [],
+  "no_model_streak": 0,
+  "no_model_tries_total": 4,
+  "last_try_kind": "model",
+  "retry_not_before": null
+ },
+ "view": {
+  "schema_version": "prime.concerns.view.v1",
+  "as_of": "2026-11-12T04:22:48.078849Z",
+  "concerns": []
+ }
+}

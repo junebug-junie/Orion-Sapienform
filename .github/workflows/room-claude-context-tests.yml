@@ -1,0 +1,55 @@
+name: Room Claude context
+# Claude in Hub chat: the whole conversation (Patch 1a), stdin prompt, daily
+# session rotation, the sent-up-to mark, and Orion's light view of side
+# exchanges (open question 11). Design:
+# docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md.
+on:
+  pull_request:
+    paths:
+      - 'orion/schemas/room_claude.py'
+      - 'services/orion-room-companion/**'
+      - 'services/orion-hub/scripts/room_claude_context.py'
+      - 'services/orion-hub/scripts/room_claude_relay.py'
+      - 'services/orion-hub/scripts/chat_history_rehydrate.py'
+      - 'services/orion-hub/scripts/api_routes.py'
+      - 'services/orion-hub/scripts/websocket_handler.py'
+      - 'services/orion-hub/tests/test_room_claude_*.py'
+      - 'services/orion-hub/tests/test_chat_history_rehydrate.py'
+      - 'services/orion-hub/app/settings.py'
+      - 'services/orion-hub/requirements.txt'
+      - 'services/orion-hub/scripts/pg_engine.py'
+      - 'services/orion-hub/scripts/cortex_request_builder.py'
+      - 'services/orion-sql-writer/app/worker.py'
+      - '.github/workflows/room-claude-context-tests.yml'
+permissions:
+  contents: read
+jobs:
+  room-claude:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # The invite-route tests import scripts.api_routes, which needs most Hub
+      # requirements (aiohttp, spacy, ...). faster-whisper/soundfile are left
+      # out, as in notify-durable-messages-tests.yml: their `av` dependency
+      # does not build on the runner and nothing here needs speech-to-text.
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          grep -vE '^(faster-whisper|soundfile)' services/orion-hub/requirements.txt > /tmp/hub-reqs.txt
+          python -m pip install -r /tmp/hub-reqs.txt
+          python -m pip install -r services/orion-room-companion/requirements.txt
+          # rdflib/pyshacl: api_routes imports orion.memory_graph (not in hub requirements.txt).
+          python -m pip install "pytest>=8.2,<10" "pytest-asyncio>=0.23,<1" rdflib pyshacl
+      - name: Companion (stdin prompt, rotation, sent-line keys, schema compat)
+        working-directory: services/orion-room-companion
+        run: PYTHONPATH=${{ github.workspace }} python -m pytest tests -q -p no:cacheprovider
+      - name: Hub (whole-conversation window, side-exchange view, relay)
+        working-directory: services/orion-hub
+        run: |
+          PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
+            tests/test_room_claude_full_context.py \
+            tests/test_room_claude_relay.py \
+            tests/test_chat_history_rehydrate.py

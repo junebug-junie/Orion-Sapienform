@@ -30,16 +30,18 @@ from orion.schemas.temporal_self import (
     TemporalSelfDayBlockV1,
     TemporalSelfDayV1,
 )
+from orion.self_monitor.names import faculty_arc_words, faculty_of, plain_name
 from orion.temporal_self.day import DEFAULT_TZ
-from orion.temporal_self.stance_cue import span_words
+from orion.temporal_self.stance_cue import binding_words, span_words, strain_cause_text
 
 TOP_ATTENTION = 5
 MAX_CURIOSITY_LINES = 10
 MAX_IMMUNE_LINES = 5
+MAX_FACULTY_ITEMS = 6
 IMMUNE_KIND_WORDS = {"constant": "constant", "floor_locked": "floor-locked", "replayed": "replayed",
                      "decayed_to_zero": "decayed to zero"}
 KIND_ORDER = ("attention", "conversation", "curiosity", "sleep", "imagery", "concern", "reverie", "interoception",
-              "company")
+              "company", "strain", "play", "street", "binding", "faculty")
 
 
 def _clock(at: datetime | None, day_id: str, tz: ZoneInfo) -> str:
@@ -176,6 +178,30 @@ def render_closed_day_block(
         if len(runs) > MAX_CURIOSITY_LINES:
             lines.append((4, f"- and {len(runs) - MAX_CURIOSITY_LINES} more {day_ref}."))
 
+    strains = [a for a in arcs if a.kind == "strain"]
+    if strains:
+        parts = []
+        for a in strains:
+            start = clock(a, a.episode_began_at or a.began_at)
+            causes = strain_cause_text(a.subject_label)
+            end = "still strained at midnight" if a.closed_reason == "day_boundary" else f"to {clock(a, a.ended_at)}"
+            parts.append(f"{start} {end}{f' ({causes})' if causes else ''} {ref(a, start)}")
+        lines.append((2, "Strained: " + "; ".join(parts) + "."))
+
+    bindings = [a for a in arcs if a.kind == "binding" and a.binding is not None]
+    if bindings:
+        parts = []
+        for a in bindings:
+            start = clock(a, a.episode_began_at or a.began_at)
+            if a.closed_reason == "day_boundary":
+                end = "still binding at midnight"
+            elif a.closed_reason == "source_stale":
+                end = f"last read binding at {clock(a, a.ended_at)}"  # unread: the real end is unknown
+            else:
+                end = f"to {clock(a, a.ended_at)}"
+            parts.append(f"{binding_words(a.binding, short=True)} {start} {end} {ref(a, start)}")
+        lines.append((2, "Body limits binding: " + "; ".join(parts) + "."))
+
     sleeps = [a for a in arcs if a.kind == "sleep"]
     if sleeps:
         lines.append((2, "Sleep cycles: " + "; ".join(f"{clock(a, a.began_at)} {ref(a, clock(a, a.began_at))}" for a in sleeps) + "."))
@@ -218,6 +244,27 @@ def render_closed_day_block(
         day_warnings.append(f"{w} {ref(arc)}" if arc is not None else f"{w} {day_ref}")
     if day_warnings:
         lines.append((1, "Instrument warnings: " + " | ".join(day_warnings) + "."))
+
+    # Self-monitor patch 2: the stretches a faculty spent broken, unreliable or miscalibrated. Priority 3,
+    # with expectations: what Orion attended to and did (1-2) survives the cap first.
+    faculties = sorted((a for a in arcs if a.kind == "faculty"),
+                       key=lambda a: (a.episode_began_at or a.began_at, a.arc_id))
+    if faculties:
+        parts = []
+        for a in faculties[:MAX_FACULTY_ITEMS]:
+            start = clock(a, a.episode_began_at or a.began_at)
+            end = "still so at midnight" if a.closed_reason == "day_boundary" else f"to {clock(a, a.ended_at)}"
+            if a.closed_reason == "source_stale":
+                end += ", then no word from the self-monitor"
+            # Plain name, then the faculty's id, then the status (Juniper 2026-11-03). The citation
+            # gate matches what is shown: the stored "<faculty> <status>" label, the id and the plain
+            # name, so a letter naming the faculty either way without [arc:] reads UNVERIFIED.
+            faculty = faculty_of(a.subject_ref)
+            shown = (faculty, plain_name(faculty)) if faculty else ()
+            parts.append(f"{faculty_arc_words(a.subject_ref, a.subject_label)} from {start} {end} "
+                         f"{ref(a, a.subject_label, *shown)}")
+        more = f"; and {len(faculties) - MAX_FACULTY_ITEMS} more {day_ref}" if len(faculties) > MAX_FACULTY_ITEMS else ""
+        lines.append((3, "Track record: " + "; ".join(parts) + more + "."))
 
     # Priority 3 (with expectations and threads): a run of stuck gauges must not evict what Orion
     # attended to and did, which sits at 1-2.

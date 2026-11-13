@@ -51,9 +51,10 @@ LIVE_ROWS = [
 
 
 def test_live_line_puts_the_name_first_and_groups_the_parked_cars() -> None:
+    # No window count read: the unnamed people can only be "up to" (PR #2763 decision 5).
     assert _who(LIVE_ROWS) == (
-        PREFIX + "Pip, 3 unfamiliar people, 2 vehicles I have each seen on 2 days but have no "
-        "name for, 2 unfamiliar vehicles, and 4 more."
+        PREFIX + "Pip, up to 3 unfamiliar people (the camera splits one person into several), "
+        "2 vehicles I have each seen on 2 days but have no name for, 2 unfamiliar vehicles, and 4 more."
     )
 
 
@@ -94,6 +95,11 @@ def test_identical_unnamed_phrases_are_grouped_with_honest_day_counts() -> None:
     assert mixed == PREFIX + "3 vehicles I have each seen on at least 2 days but have no name for."
     one = _who([_s("a", "person", days=2)])
     assert one == PREFIX + "a person I have seen on 2 days but have no name for."
+    many = _who([_s("a", "person", days=2), _s("b", "person", days=5), _s("c", "person")])
+    assert many == PREFIX + (
+        "up to 3 people I have no name for (some seen here on other days; "
+        "the camera splits one person into several)."
+    )
 
 
 def test_no_phrase_repeats() -> None:
@@ -149,7 +155,8 @@ def test_now_is_bound_into_every_windowed_street_read() -> None:
     conn = _Conn()
     fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
     windowed = [(sql, p) for sql, p in conn.calls if "make_interval" in sql]
-    assert len(windowed) == 4  # sightings, expectations, unresolved, captions
+    # sightings, expectations, unresolved, captions, people windows, stationary people
+    assert len(windowed) == 6
     for sql, params in windowed:
         assert "now()" not in sql
         assert ":now" in sql

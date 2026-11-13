@@ -130,11 +130,24 @@ class Settings(BaseSettings):
     # 3 is the point at which a median is meaningfully a median; at 1 or 2 a
     # single anomalous reading is half or more of the estimate.
     DIFFUSION_POWER_PRIOR_MIN_SAMPLES: int = 3
+    # Where the prior's window survives a container relaunch (the GPU pool relaunches this
+    # service for almost every generation; in memory only, it restarted empty each time --
+    # 2026-11-03). Empty disables persistence. The compose file bind-mounts the directory.
+    DIFFUSION_POWER_PRIOR_STATE_PATH: str = "/var/lib/orion-diffusion-host/power_prior.json"
+    # A sample older than this no longer counts (7 days). After a longer gap the intent says None
+    # (unknown) instead of a stale guess. 0 disables the age limit.
+    DIFFUSION_POWER_PRIOR_MAX_AGE_SEC: float = 604800.0
     # The producer learns from its own settlements by subscribing here, rather
     # than taking a Postgres dependency for a read the bus already carries.
     POWER_INTENT_SETTLED_CHANNEL: str = "orion:power:intent:settled"
     DIFFUSION_DTYPE: str = "fp16"
     DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD: bool = True
+    # /ready says ready only while this card has at least this many GiB free for this process (free
+    # + already reserved by it). Offloaded FLUX peaks at ~24GB; on circe gpu2 (32GiB) the agent-gpu2
+    # seat leaves ~7.6GiB free (measured 2026-10-20) and an empty card ~31GiB. 20 sits between both:
+    # it means "the card is not taken", not "a generation is guaranteed to fit" (that would be ~24).
+    # 0 = off (old behaviour: loaded + not draining). See /ready in app/main.py.
+    DIFFUSION_READY_MIN_GPU_GB: float = 20.0
     DIFFUSION_NUM_INFERENCE_STEPS: int = 4
     DIFFUSION_GUIDANCE_SCALE: float = 0.0
     DIFFUSION_MAX_SEQUENCE_LENGTH: int = 256

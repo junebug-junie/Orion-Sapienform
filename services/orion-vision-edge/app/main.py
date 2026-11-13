@@ -21,7 +21,14 @@ logging.basicConfig(level=logging.INFO)
 BOOT_ID = str(uuid.uuid4())
 
 async def heartbeat_loop(bus_instance):
-    """Publishes a heartbeat every 30 seconds."""
+    """Publishes a heartbeat every 30 seconds.
+
+    Deliberately NOT the shared HeartbeatOnly chassis
+    (orion/core/bus/bus_service_chassis.py) the other services use: that chassis always
+    sends status="ok", and this loop's "degraded" when the camera is blind is the fix
+    for the 2026-10-11 frozen-frame incident below. Move to HeartbeatOnly once the
+    chassis can report a per-tick status.
+    """
     logger.info("Heartbeat loop started.")
     try:
         while True:
@@ -31,7 +38,7 @@ async def heartbeat_loop(bus_instance):
                     version=settings.SERVICE_VERSION,
                     boot_id=BOOT_ID,
                     last_seen_ts=datetime.now(timezone.utc),
-                    node="vision-edge-node",
+                    node=settings.NODE_NAME,
                     # Blind is degraded, not ok: on 10-11 this heartbeat said "ok" for 16 h while
                     # the camera connection was dead and the room Orion saw was a frozen frame.
                     status="ok" if camera.get_frame() is not None else "degraded",

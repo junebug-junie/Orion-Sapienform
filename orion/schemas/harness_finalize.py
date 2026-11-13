@@ -62,6 +62,42 @@ class SubstrateFinalizeAppraisalV1(BaseModel):
     )
 
 
+# reflection_source of a reflection the harness wrote because the 5b judge call failed (bad JSON,
+# no GPU slot, gateway error). Its alignment_verdict is "misaligned" so the turn still degrades
+# safely (response repair still runs), but it is not a judgment of the draft. Handled today: the
+# metacog chat-turn gate (reports reflection_failed, no verdict) and response_repair_reason
+# ("reflection_failed"). The turn-outcome molecule still carries alignment_verdict="misaligned".
+REFLECTION_SOURCE_JUDGE_FAILED = "degraded_llm_failure_fallback"
+
+# Intention ledger, step D0 (docs/superpowers/specs/2026-11-11-intention-ledger-design.md).
+# Max promise items the judge may list per field.
+PROMISE_ITEMS_MAX = 3
+PROMISE_QUOTE_MAX_CHARS = 240
+
+
+class PromiseV1(BaseModel):
+    """One forward promise Orion made in this reply, as the 5b judge found it.
+
+    quote is an exact span of the reply. Plain code (orion.harness.promise_gate) drops any
+    quote that is not literally in the reply, so the judge can name a promise but cannot
+    invent one. offer=True marks a promise that waits for Juniper's yes ("if you want,
+    I'll ..."): it is recorded, but it counts as a promise only after a later judge call
+    lists it in offers_accepted (Juniper's 2026-11-12 answer 1).
+    """
+
+    # Length caps are enforced by the judge's JSON schema and by the gate, not here: a
+    # malformed promise list must never fail validation and sink the alignment verdict.
+    quote: str
+    offer: bool = False
+
+
+class OpenPromiseRefV1(BaseModel):
+    """An earlier promise shown to the judge so it can say this reply kept it."""
+
+    id: str
+    quote: str
+
+
 class FinalizeReflectionV1(BaseModel):
     schema_version: Literal["finalize.reflection.v1"] = "finalize.reflection.v1"
     correlation_id: str
@@ -108,6 +144,23 @@ class FinalizeReflectionV1(BaseModel):
     # structurally unreachable for a benign "what do you see" ask. See
     # orion/harness/finalize.py::maybe_run_finalize_tool_retry.
     world_contact_opportunity: bool = False
+
+    # Intention ledger D0 (ORION_PROMISE_LEDGER_ENABLED). Judge-written, then gated by
+    # orion.harness.promise_gate.gate_promises before anything reads them:
+    # - promises_made: promises in THIS reply, each an exact quote of it.
+    # - offers_accepted: quotes of offers from Orion's previous reply that THIS user
+    #   message accepts; only quotes the harness showed the judge survive.
+    # - promises_kept: ids of open promises THIS reply delivers; only ids the harness
+    #   showed the judge survive.
+    # No consumer validates this model with extra="forbid", so old readers drop the
+    # fields. Empty lists on every reflection the judge did not write. Caps
+    # (PROMISE_ITEMS_MAX, PROMISE_QUOTE_MAX_CHARS) live in the gate.
+    # Source of truth: the run artifact (HarnessRunV1.reflection), gated against the final
+    # text Juniper saw. The copy in HarnessVerdictMoleculeV1 is published before response
+    # repair and is gated only against the draft; D1 must not open acts from it.
+    promises_made: list[PromiseV1] = Field(default_factory=list)
+    offers_accepted: list[str] = Field(default_factory=list)
+    promises_kept: list[str] = Field(default_factory=list)
 
 
 class HarnessVerdictMoleculeV1(BaseModel):
@@ -197,6 +250,7 @@ class HarnessAttachmentV1(BaseModel):
 
 from orion.schemas.reading import ReadingToolBindingV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
+from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1
 
 
 class HarnessRunRequestV1(BaseModel):
@@ -241,6 +295,11 @@ class HarnessRunRequestV1(BaseModel):
     # (HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY). None from an older Hub build
     # means "not a chat reply", i.e. today's behavior.
     utterance_origin: str | None = None
+    # A curiosity run that took a focus (orion/curiosity/focus.py): the governor puts the focus and
+    # the focus_disposition instruction in the system prompt, where CLI compaction cannot reach it
+    # (orion/harness/task_anchor.py::build_focus_anchor). None for every other turn. This model
+    # ignores unknown keys, so an older governor drops it silently; deploy the governor first.
+    curiosity_focus: CuriosityFocusAnchorV1 | None = None
     attachments: list[HarnessAttachmentV1] = Field(
         default_factory=list,
         description=(
@@ -273,6 +332,17 @@ class HarnessRunRequestV1(BaseModel):
             "prefix.py::compile_harness_prefix). None when situation "
             "context is disabled or failed to build; the prompt then omits "
             "the block entirely rather than showing a placeholder."
+        ),
+    )
+    prime_block: str | None = Field(
+        default=None,
+        description=(
+            "Prime's present (living Prime design Part 1): concerns held now, last thought and its "
+            "move, open asks/regulate signals, body read, each line cited. Rendered by code in "
+            "orion-hub BEFORE this request is built (orion/prime/block.py::fetch_prime_block, capped "
+            "at 600 chars) and placed verbatim after the situation fragment "
+            "(orion/harness/prefix.py). None when HUB_PRIME_BLOCK_ENABLED is off; an older governor "
+            "ignores the key (this model ignores unknown keys), so deploy the governor first."
         ),
     )
     recent_turns: list[TurnWindowMessageV1] = Field(
@@ -343,6 +413,12 @@ class HarnessRunV1(BaseModel):
     finalize_degraded_reason: str | None = None
     step_count: int
     exit_code: int | None = None
+    # Why the motor stopped (orion/harness/stop_reason.py): "cancel:<reason>" when a
+    # harness cancel killed the process (user_stop, client_disconnect,
+    # durable_attempt_stopped, ...), else the motor's error code (fcc_timeout,
+    # fcc_stream_stalled, fcc_nonzero_exit, ...), else None. None also on records
+    # from governors that predate this field: absent means unknown, never "outside".
+    stop_reason: str | None = None
     compliance_verdict: Literal["completed", "partial", "failed", "refused"]
     grounding_status: str
     grammar_event_ids: list[str] = Field(default_factory=list)

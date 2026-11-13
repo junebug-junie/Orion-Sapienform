@@ -186,7 +186,7 @@ def test_select_node_targets_observation_count_survives_a_pruned_window() -> Non
     assert "n=20" in targets[0].reasons[0]
 
 
-def test_select_node_targets_only_covers_the_confirmed_five_reducers() -> None:
+def test_select_node_targets_only_covers_the_confirmed_live_reducers() -> None:
     # Locks the real, live-confirmed mapping (services/orion-substrate-runtime/
     # app/worker.py's _prediction_error_receipt call sites) -- a silent
     # addition/removal here would change which real signals ground live
@@ -194,13 +194,12 @@ def test_select_node_targets_only_covers_the_confirmed_five_reducers() -> None:
     # deliberately excluded (code review, 2026-07-30): its write was
     # permanently retired 2026-07-26, superseded by bus_synaptic -- an
     # earlier draft's inclusion of it here was a real bug this test would
-    # have caught, and now does.
+    # have caught, and now does. route and bus_synaptic were retired 2026-11
+    # (PE suite rebuild step 5) the same way.
     assert set(PREDICTION_ERROR_NATIVE_TARGETS.keys()) == {
         "node:substrate.biometrics",
         "node:substrate.execution",
         "node:substrate.chat",
-        "node:substrate.route",
-        "node:substrate.bus_synaptic",
     }
     assert "node:substrate.transport" not in PREDICTION_ERROR_NATIVE_TARGETS
 

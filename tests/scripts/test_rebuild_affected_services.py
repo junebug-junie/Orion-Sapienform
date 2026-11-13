@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -393,6 +394,12 @@ def test_script_mapping_real_repo() -> None:
     assert "orion-hub" in payload["services"]
 
 
+@pytest.mark.parametrize("path", ["orion/dig/__main__.py", "orion/body_atlas/names.py", "orion/self_inventory.py"])
+def test_cli_packages_orion_runs_in_the_harness_rebuild_it(path: str) -> None:
+    # No service imports these; Orion runs them through Bash in the harness. PR #2951 rebuilt nothing.
+    assert "orion-harness-governor" in _resolve([path], ROOT)["services"]
+
+
 def test_resolve_base_ref_prefers_orig_head(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -591,6 +598,87 @@ def test_skip_profile_excludes_analytics(tmp_path: Path) -> None:
     assert _profile_services(ROOT, "orion-analytics", ps, tmp_path, "analytics") == []
 
 
+# --- GPU-pool launch targets held stopped (2026-10-16 diffusion-host incident) ---
+
+
+def _pool_held(
+    repo: Path, service: str, ps_lines: list[str] | None, tmp_path: Path, expect_rc: int = 0
+) -> list[str]:
+    cmd = [sys.executable, str(MODULE), "--repo-root", str(repo), "--pool-held-services", service]
+    env = None
+    if ps_lines is not None:
+        ps_file = tmp_path / "docker-ps.txt"
+        ps_file.write_text("\n".join(ps_lines) + "\n")
+        cmd.extend(["--docker-ps-file", str(ps_file)])
+    else:
+        # docker unreadable: point docker at a binary that fails.
+        fake_bin = tmp_path / "bin"
+        fake_bin.mkdir()
+        (fake_bin / "docker").write_text("#!/bin/sh\nexit 1\n")
+        (fake_bin / "docker").chmod(0o755)
+        env = {**os.environ, "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}"}
+        env.pop("ORION_REBUILD_DOCKER_PS_FILE", None)
+    proc = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=60, env=env)
+    assert proc.returncode == expect_rc, proc.stderr
+    return proc.stdout.splitlines()
+
+
+_DIFFUSION_COMPOSE = (ROOT / "services/orion-diffusion-host/docker-compose.yml").resolve().as_posix()
+
+
+def test_real_pool_config_names_diffusion_host_as_a_launch_target(tmp_path: Path) -> None:
+    # Pins the live wiring: config/gpu_pool.yaml roles.diffusion.launch -> diffusion-host.
+    assert _pool_held(ROOT, "orion-diffusion-host", [], tmp_path) == ["hold\tdiffusion-host"]
+
+
+def test_running_pool_target_is_not_held(tmp_path: Path) -> None:
+    ps = [f"orion-diffusion-host\tdiffusion-host\t{_DIFFUSION_COMPOSE}"]
+    assert _pool_held(ROOT, "orion-diffusion-host", ps, tmp_path) == ["running\tdiffusion-host"]
+
+
+def test_running_target_from_another_checkout_path_counts_as_running(tmp_path: Path) -> None:
+    # circe's controller runs compose from a /repo mount; the label then carries that prefix.
+    ps = ["orion-diffusion-host\tdiffusion-host\t/repo/services/orion-diffusion-host/docker-compose.yml"]
+    assert _pool_held(ROOT, "orion-diffusion-host", ps, tmp_path) == ["running\tdiffusion-host"]
+
+
+def test_same_name_from_another_stack_does_not_count_as_running(tmp_path: Path) -> None:
+    ps = ["other\tdiffusion-host\t/srv/services/orion-other/docker-compose.yml"]
+    assert _pool_held(ROOT, "orion-diffusion-host", ps, tmp_path) == ["hold\tdiffusion-host"]
+
+
+def test_malformed_pool_config_exits_3(mini_repo: Path, tmp_path: Path) -> None:
+    (mini_repo / "config").mkdir(exist_ok=True)
+    (mini_repo / "config" / "gpu_pool.yaml").write_text("roles: [unclosed\n")
+    _pool_held(mini_repo, "orion-actions", [], tmp_path, expect_rc=3)
+
+
+def test_docker_unreadable_holds_every_pool_target(tmp_path: Path) -> None:
+    assert _pool_held(ROOT, "orion-diffusion-host", None, tmp_path) == ["hold\tdiffusion-host"]
+
+
+def test_profile_launch_target_is_left_to_the_profile_rule(tmp_path: Path) -> None:
+    # atlas-agent-burst lives behind compose profile agent-burst: a plain `up` never starts it.
+    assert _pool_held(ROOT, "orion-llamacpp-host", [], tmp_path) == []
+
+
+def test_non_pool_service_prints_nothing(tmp_path: Path) -> None:
+    assert _pool_held(ROOT, "orion-vision-retina", [], tmp_path) == []
+
+
+def test_hold_lists_the_stacks_other_plain_services_to_start(mini_repo: Path, tmp_path: Path) -> None:
+    (mini_repo / "config").mkdir(exist_ok=True)
+    (mini_repo / "config" / "gpu_pool.yaml").write_text(
+        "roles:\n  gen:\n    launch: {actuator: h, compose: services/orion-gen/docker-compose.yml, service: gen}\n"
+    )
+    _service(
+        mini_repo,
+        "orion-gen",
+        "services:\n  gen:\n    image: x\n  sidecar:\n    image: y\n  extra:\n    image: z\n    profiles: [p]\n",
+    )
+    assert _pool_held(mini_repo, "orion-gen", [], tmp_path) == ["hold\tgen", "start\tsidecar"]
+
+
 def test_plan_output_marks_recreate(mini_repo: Path) -> None:
     _service(
         mini_repo,
@@ -648,6 +736,122 @@ def test_profile_service_started_from_another_checkout_is_left_alone(tmp_path: P
     overlay = f"{_RETINA_COMPOSE},/tmp/overlay.yml"
     ps = [f"orion-vision-retina\torion-vision-retina-walkway\t{overlay}"]
     assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == []
+
+
+def test_profile_service_from_a_deleted_worktree_is_adopted(tmp_path: Path) -> None:
+    """2026-10-20: orion-energy-portal ran from a pruned worktree and was skipped on
+    every pull; only main can ever redeploy it, so it is adopted."""
+    gone = (ROOT.parent / f"{ROOT.name}-pruned-worktree").as_posix()
+    ps = [f"orion-vision-retina\torion-vision-retina-walkway\t{gone}/services/orion-vision-retina/docker-compose.yml"]
+    assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == ["walkway\torion-vision-retina-walkway"]
+    # Another compose project would clash with main's on container_name: left alone.
+    ps = [f"custom\torion-vision-retina-walkway\t{gone}/services/orion-vision-retina/docker-compose.yml"]
+    assert _profile_services(ROOT, "orion-vision-retina", ps, tmp_path) == []
+
+
+# --- Second compose files (2026-10-20 Qwen caption lane incident) -------------
+
+
+def _extra(service: str, ps_lines: list[str], tmp_path: Path, repo: Path = ROOT) -> list[str]:
+    ps_file = tmp_path / "docker-ps.txt"
+    ps_file.write_text("\n".join(ps_lines) + "\n")
+    proc = subprocess.run(
+        [sys.executable, str(MODULE), "--repo-root", str(repo), "--running-extra-compose", service,
+         "--docker-ps-file", str(ps_file)],
+        capture_output=True, text=True, check=False, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    return proc.stdout.splitlines()
+
+
+_QWEN = (ROOT / "services/orion-vision-host/docker-compose.circe-qwen.yml").resolve().as_posix()
+_QWEN_PROJECT = "orion-vision-host-qwen"  # the file's own `name:`
+_ATLAS = (ROOT / "services/orion-llamacpp-host/docker-compose.atlas-workers.yml").resolve().as_posix()
+
+
+def test_running_qwen_lane_is_rebuilt_from_its_own_file(tmp_path: Path) -> None:
+    ps = [f"{_QWEN_PROJECT}\tvision-host-circe-qwen\t{_QWEN}"]
+    assert _extra("orion-vision-host", ps, tmp_path) == ["docker-compose.circe-qwen.yml\tvision-host-circe-qwen"]
+
+
+def test_stopped_extra_compose_lane_is_never_started(tmp_path: Path) -> None:
+    main = (ROOT / "services/orion-vision-host/docker-compose.yml").resolve().as_posix()
+    assert _extra("orion-vision-host", [f"orion-vision-host\tvision-host\t{main}"], tmp_path) == []
+
+
+def test_extra_compose_from_another_place_or_project_is_left_alone(tmp_path: Path) -> None:
+    for project, files in (
+        (_QWEN_PROJECT, "/srv/elsewhere/services/orion-vision-host/docker-compose.circe-qwen.yml"),
+        (_QWEN_PROJECT, f"{_QWEN},/tmp/overlay.yml"),  # overlay
+        ("orion-vision-host", _QWEN),  # a different project: main's up would clash
+    ):
+        assert _extra("orion-vision-host", [f"{project}\tvision-host-circe-qwen\t{files}"], tmp_path) == []
+
+
+def test_extra_compose_from_a_deleted_worktree_is_adopted(tmp_path: Path) -> None:
+    gone = (ROOT.parent / f"{ROOT.name}-pruned-worktree").as_posix()
+    ps = [f"{_QWEN_PROJECT}\tvision-host-circe-qwen\t{gone}/services/orion-vision-host/docker-compose.circe-qwen.yml"]
+    assert _extra("orion-vision-host", ps, tmp_path) == ["docker-compose.circe-qwen.yml\tvision-host-circe-qwen"]
+    # No separator after the repo name: an unrelated clone, not a worktree of this repo.
+    other = (ROOT.parent / f"{ROOT.name}X").as_posix()
+    ps = [f"{_QWEN_PROJECT}\tvision-host-circe-qwen\t{other}/services/orion-vision-host/docker-compose.circe-qwen.yml"]
+    assert _extra("orion-vision-host", ps, tmp_path) == []
+
+
+def _sibling_repo(tmp_path: Path) -> tuple[Path, Path]:
+    """tmp/Repo (main) + tmp/Repo-wt (a LIVE worktree), each with one two-service lane file."""
+    lane = "services:\n  lane-a: {image: x}\n  lane-b: {image: x}\n"
+    roots = []
+    for name in ("Repo", "Repo-wt"):
+        d = tmp_path / name / "services" / "orion-x"
+        d.mkdir(parents=True)
+        (d / "docker-compose.yml").write_text("services:\n  main: {image: x}\n  side: {image: x, profiles: [p]}\n")
+        (d / "docker-compose.lane.yml").write_text(lane)
+        roots.append(tmp_path / name)
+    return roots[0], roots[1]
+
+
+def test_live_sibling_worktree_deploys_are_never_taken_over(tmp_path: Path) -> None:
+    """A path under the repo's worktree prefix that still EXISTS is a live worktree
+    deploy: main's up would silently replace it."""
+    repo, wt = _sibling_repo(tmp_path)
+    lane = (wt / "services/orion-x/docker-compose.lane.yml").as_posix()
+    assert _extra("orion-x", [f"orion-x\tlane-a\t{lane}"], tmp_path, repo) == []
+    prof = (wt / "services/orion-x/docker-compose.yml").as_posix()
+    assert _profile_services(repo, "orion-x", [f"orion-x\tside\t{prof}"], tmp_path) == []
+
+
+def test_only_the_running_services_of_an_extra_file_are_named(tmp_path: Path) -> None:
+    repo, _wt = _sibling_repo(tmp_path)
+    lane = (repo / "services/orion-x/docker-compose.lane.yml").resolve().as_posix()
+    assert _extra("orion-x", [f"orion-x\tlane-b\t{lane}"], tmp_path, repo) == ["docker-compose.lane.yml\tlane-b"]
+
+
+def test_extra_file_that_needs_its_own_env_file_is_left_alone(tmp_path: Path) -> None:
+    """orion-bus/docker-compose.atlas-standby.yml runs with .env.atlas-standby; the
+    wrapper always loads services/<svc>/.env, so it must never redeploy it."""
+    standby = (ROOT / "services/orion-bus/docker-compose.atlas-standby.yml").resolve().as_posix()
+    import yaml
+
+    project = (yaml.safe_load(Path(standby).read_text()) or {}).get("name") or "orion-bus"
+    assert _extra("orion-bus", [f"{project}\tbus-core-standby\t{standby}"], tmp_path) == []
+
+
+def test_gpu_pool_launch_files_are_left_to_the_lane_controller(tmp_path: Path) -> None:
+    ps = [
+        f"orion-llamacpp-host\tatlas-agent\t{_ATLAS}",
+        # The controller's own container path: missing on the host, but not an orphan.
+        "orion-llamacpp-host\tatlas-agent-burst\t/repo/services/orion-llamacpp-host/docker-compose.atlas-workers.yml",
+    ]
+    assert _extra("orion-llamacpp-host", ps, tmp_path) == []
+
+
+def test_controller_path_is_not_an_orphan_even_without_the_pool_skip() -> None:
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import rebuild_affected_services as rebuild
+
+    rows = [("orion-llamacpp-host", "atlas-agent-burst", "/repo/services/orion-llamacpp-host/docker-compose.atlas-workers.yml")]
+    assert rebuild.running_extra_compose_files(ROOT, "orion-llamacpp-host", rows, set()) == []
 
 
 def test_docker_unavailable_starts_no_profile_services(tmp_path: Path) -> None:
@@ -827,3 +1031,195 @@ def test_migrations_flag_omits_a_deleted_migration(mini_repo: Path) -> None:
     )
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout == ""
+
+
+def _commit_pair(tmp_path: Path, before: str, after: str, name: str = "orion/mod.py") -> tuple[Path, str]:
+    repo = tmp_path / "repo"
+    (repo / name).parent.mkdir(parents=True)
+    for cmd in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e.com"], ["config", "user.name", "T"]):
+        subprocess.run(["git", *cmd], cwd=repo, check=True)
+    (repo / name).write_text(before, encoding="utf-8")
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=repo, check=True)
+    first = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+    ).stdout.strip()
+    (repo / name).write_text(after, encoding="utf-8")
+    subprocess.run(["git", "commit", "-aq", "-m", "two"], cwd=repo, check=True)
+    return repo, first
+
+
+def _changed(tmp_path: Path, before: str, after: str, name: str = "orion/mod.py") -> list[str]:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rebuild_affected_services_under_test", MODULE)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    repo, first = _commit_pair(tmp_path, before, after, name)
+    return mod.changed_files(repo, first)
+
+
+VERB = "orion/cognition/verbs/v.yaml"
+
+
+def test_comment_only_yaml_change_is_not_a_change(tmp_path: Path) -> None:
+    """2026-10-31: a comment in stance_react.yaml rebuilt 13 services."""
+    assert _changed(tmp_path, "name: v\ntimeout: 240\n", "# why\nname: v\ntimeout: 240  # note\n", VERB) == []
+
+
+def test_real_yaml_change_is_still_a_change(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "timeout: 240\n", "timeout: 300\n", VERB) == [VERB]
+    assert _changed(tmp_path / "s", "x: '1'\n", "x: 1\n", VERB) == [VERB]  # str -> int is real
+    assert _changed(tmp_path / "m", "a: 1\n", "a: 1\n---\nb: 2\n", VERB) == [VERB]  # new document
+
+
+def test_yaml_type_and_order_changes_are_real(tmp_path: Path) -> None:
+    """Python's == calls 1 == True == 1.0 and ignores key order; a consumer does not."""
+    assert _changed(tmp_path / "b", "a: 1\n", "a: true\n", VERB) == [VERB]
+    assert _changed(tmp_path / "f", "a: 1\n", "a: 1.0\n", VERB) == [VERB]
+    assert _changed(tmp_path / "o", "a: 1\nb: 2\n", "b: 2\na: 1\n", VERB) == [VERB]
+    assert _changed(tmp_path / "k", "1: x\n", "true: x\n", VERB) == [VERB]
+
+
+def test_yml_suffix_and_duplicate_keys(tmp_path: Path) -> None:
+    yml = "services/x/docker-compose.yml"
+    assert _changed(tmp_path / "c", "a: 1\n", "a: 1  # c\n", yml) == []
+    # compose rejects a duplicate key: adding one is a change even with the same last value
+    assert _changed(tmp_path / "d", "a: 1\n", "a: 0\na: 1\n", yml) == [yml]
+
+
+def test_missing_yaml_package_keeps_the_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "yaml", None)
+    assert _changed(tmp_path, "a: 1\n", "a: 1  # c\n", VERB) == [VERB]
+
+
+def test_unparseable_yaml_is_kept(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "a: [1\n", "a: [1  # c\n", VERB) == [VERB]
+
+
+def test_comment_only_python_change_is_not_a_change(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "X = 1\n", "# note\nX = 1  # why\n") == []
+
+
+def test_real_python_change_is_still_a_change(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "X = 1\n", "X = 2\n") == ["orion/mod.py"]
+
+
+def test_docstring_change_still_counts(tmp_path: Path) -> None:
+    assert _changed(tmp_path, '"""a"""\nX = 1\n', '"""b"""\nX = 1\n') == ["orion/mod.py"]
+
+
+def test_unparseable_python_is_kept(tmp_path: Path) -> None:
+    assert _changed(tmp_path, "X = (\n", "X = (  # c\n") == ["orion/mod.py"]
+
+
+def test_non_utf8_python_does_not_crash_planner(tmp_path: Path) -> None:
+    head = "# -*- coding: latin-1 -*-\n"
+    before = (head + "X = '\xe9'\n").encode("latin-1").decode("utf-8", "surrogateescape")
+    after = (head + "X = '\xe9'  # c\n").encode("latin-1").decode("utf-8", "surrogateescape")
+    # comment-only edit to a latin-1 file is still skipped, and nothing raises
+    assert _changed_bytes(tmp_path, before, after) == []
+    assert _changed_bytes(tmp_path / "b", before, after.replace("'\udce9'", "'z'")) == ["orion/mod.py"]
+
+
+def _changed_bytes(tmp_path: Path, before: str, after: str) -> list[str]:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("rebuild_affected_services_under_test", MODULE)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = mod
+    spec.loader.exec_module(mod)
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    repo = tmp_path / "repo"
+    (repo / "orion").mkdir(parents=True)
+    for cmd in (["init", "-q", "-b", "main"], ["config", "user.email", "t@e.com"], ["config", "user.name", "T"]):
+        subprocess.run(["git", *cmd], cwd=repo, check=True)
+    f = repo / "orion" / "mod.py"
+    f.write_bytes(before.encode("utf-8", "surrogateescape"))
+    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "one"], cwd=repo, check=True)
+    first = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True).stdout.strip()
+    f.write_bytes(after.encode("utf-8", "surrogateescape"))
+    subprocess.run(["git", "commit", "-aq", "-m", "two"], cwd=repo, check=True)
+    return mod.changed_files(repo, first)
+
+
+_PR2728_PATHS = [
+    "services/orion-vision-retina/app/frame_corruption.py",
+    "services/orion-vision-retina/app/health.py",
+    "services/orion-vision-retina/app/main.py",
+    "services/orion-vision-retina/app/settings.py",
+    "services/orion-vision-retina/app/sources.py",
+    "services/orion-vision-retina/docker-compose.yml",
+    "services/orion-vision-retina/.env_example",
+]
+
+
+def test_pr2728_retina_app_change_plans_a_build_that_changes_the_image() -> None:
+    """PR #2728 (2026-10-16) changed retina app/*.py, bind-mounted at /app/app.
+
+    The plan says `build`, not `recreate`. That is enough only because the
+    Dockerfile also COPYs app/, so the image changes and compose recreates
+    every container of the stack, including the walkway profile one.
+    """
+    proc = subprocess.run(
+        [sys.executable, str(MODULE), "--plan", "--paths", *_PR2728_PATHS, "--repo-root", str(ROOT),
+         "--host", "athena"],  # retina runs on athena; circe excludes it
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.splitlines() == ["orion-vision-retina\tbuild"]
+    dockerfile = (ROOT / "services/orion-vision-retina/Dockerfile").read_text(encoding="utf-8")
+    assert "COPY services/orion-vision-retina/app ./app" in dockerfile
+
+
+# Own-directory bind mounts that hold .py files a long-running process does
+# not import, so "live on disk" really is live. Anything else must be baked.
+_OWN_MOUNT_PY_NOT_IMPORTED = {
+    # dbt project dir; its one .py is an operator helper (scripts/init_local_env.py).
+    "services/orion-analytics",
+}
+
+
+def test_own_python_code_mounts_are_also_baked_into_the_image() -> None:
+    """A bind-mounted code dir changes on `git pull`, but the running process
+    keeps the modules it already imported. The planner treats an own-dir
+    directory mount as live and plans `build`, not `recreate`; that only
+    restarts the process if the same files are COPY'd into the image. A
+    mount-only Python app would keep running old code after every pull.
+
+    Limits: checked per services/<svc> directory, not per compose service, so
+    a sibling compose service that mounts the code onto a prebuilt `image:`
+    would pass. A repo-root `COPY . /app` yields no own-dir build prefix and
+    fails conservatively; add an allowlist entry with a reason if that occurs.
+    """
+    sys.path.insert(0, str(ROOT / "scripts"))
+    try:
+        import rebuild_affected_services as planner
+    finally:
+        sys.path.pop(0)
+    deps = planner.build_dependency_sources(str(ROOT), include_own=True)
+    baked: dict[str, list[str]] = {}
+    for dep in deps:
+        if dep.mode == planner.MODE_BUILD:
+            baked.setdefault(dep.service, []).append(dep.prefix)
+    offenders = []
+    for dep in deps:
+        own = f"services/{dep.service}"
+        if dep.mode != planner.MODE_RECREATE or not (dep.prefix == own or dep.prefix.startswith(own + "/")):
+            continue
+        mount = ROOT / dep.prefix
+        if not mount.is_dir() or dep.prefix in _OWN_MOUNT_PY_NOT_IMPORTED:
+            continue
+        if not any(p.suffix == ".py" and "tests" not in p.parts for p in mount.rglob("*.py")):
+            continue
+        prefixes = baked.get(dep.service, [])
+        if not any(dep.prefix == b or dep.prefix.startswith(b + "/") for b in prefixes):
+            offenders.append(dep.prefix)
+    assert offenders == [], (
+        "bind-mounted Python code with no matching Dockerfile COPY; a pull would "
+        f"leave the old process running: {offenders}"
+    )

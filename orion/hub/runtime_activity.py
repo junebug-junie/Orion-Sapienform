@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
+from orion.cockpit.markers import COCKPIT_WORKING_NOTES_MARKER
 from orion.harness.fcc_motor import _extract_tool_name, summarize_harness_step
 from orion.llm.routes import is_agent_route_model_label
 
@@ -91,7 +92,7 @@ def summarize_step(step: dict[str, Any], *, index: int) -> str:
     if not isinstance(step, dict):
         return "step"
     if _COCKPIT_MARKER_KEY in step:
-        return "motor boot"
+        return "working notes" if step[_COCKPIT_MARKER_KEY] == COCKPIT_WORKING_NOTES_MARKER else "motor boot"
     tool = _extract_tool_name(step)
     if tool:
         return f"tool {tool}"

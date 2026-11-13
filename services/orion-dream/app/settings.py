@@ -38,17 +38,28 @@ class Settings(BaseSettings):
     # Cap on requests drained per REM pass (§cap-all-collections).
     DREAM_REM_MAX_REQUESTS: int = Field(default=50)
 
-    # --- Compaction APPLIER (Phase G — the hot gate, hard-off) ---
-    # THIS MUTATES MEMORY. It stays off pending explicit proposal-mode sign-off +
-    # a live §14 backfill verification. Even when on it applies ONLY deltas whose
-    # proposal was policy-approved for execution (reverie proposals carry
-    # operator_review, so they require a human). Snapshot precedes every apply.
-    ORION_DREAM_COMPACTION_APPLY_ENABLED: bool = Field(default=False)
+    # --- Compaction APPLIER (Phase G — the hot gate) ---
+    # THIS MUTATES MEMORY: substrate_reverie_thought.salience only (app/compaction_store.py), downscale
+    # only, snapshot first. On since 2026-11-13 (Juniper's standing consent dream-compaction-downscale).
+    # Even when on it applies ONLY deltas the want market's consent gate allows
+    # (config/physiology/consent.yaml: downscale needs the standing consent; prune is always refused).
+    # false -> every consented delta reads `disabled`, nothing is written.
+    ORION_DREAM_COMPACTION_APPLY_ENABLED: bool = Field(default=True)
     # Safer subset first: apply downscale-renormalize only; prune stays gated
     # behind this flag being flipped false (never prune before downscale is trusted).
     ORION_DREAM_COMPACTION_DOWNSCALE_ONLY: bool = Field(default=True)
-    # §14 snapshot destination (before/after + rollback artifact).
-    DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/tmp/dream-compaction-apply")
+    # §14 snapshot destination (before-state + rollback artifact). Under /app/logs, the persistent host
+    # mount, so a snapshot outlives the container: restore with
+    # `python -m app.compaction_store restore <dir>/<delta_id>/snapshot_before.json`.
+    DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/app/logs/compaction-snapshots")
+    # REM proposes new salience = salience x this factor for each settled reverie thought a consolidate
+    # entry folds in (once per thought). Must be in (0, 1); outside it, no downscale is proposed.
+    DREAM_COMPACTION_DOWNSCALE_FACTOR: float = Field(default=0.8)
+    # Attention patch 3d: after REM stages a delta, ask the want market's consent gate about it
+    # (app/compaction_consent.py) and, on allow + apply on, apply it through the real store. Every
+    # real delta leaves a verdict (want_ledger, producer orion-dream.compaction_applier.consent).
+    # false -> no ask and no apply.
+    DREAM_COMPACTION_CONSENT_ASK_ENABLED: bool = Field(default=True)
 
     # --- Dream cycle v2 (sleep pressure -> replay -> REM recombination) ---
     # Default off. When on, a background loop checks sleep pressure every
@@ -105,6 +116,26 @@ class Settings(BaseSettings):
     DREAM_REPLAY_WALKWAY_ENABLED: bool = Field(default=True)
     DREAM_WALKWAY_STREAM_IDS: str = Field(default="walkway")
     DREAM_WALKWAY_TIMEZONE: str = Field(default="America/Denver")
+
+    # Act ledger (body economy A5): each sleep that starts replay publishes one `make` act
+    # (actor dream.cycle) on orion:grammar:event, opened at the start and closed when the cycle
+    # is persisted (0 on any failure). Its recombination LLM calls then share the act's
+    # correlation id, so the ledger charges the cycle for its GPU leases. Off = no act, and each
+    # LLM call keeps its own correlation id. app/act_emit.py.
+    DREAM_ACT_EMIT_ENABLED: bool = Field(default=True)
+
+    # Body economy Patch C3b: a check that would sleep places a SHADOW bid (orion.physiology.client
+    # -> durable-runs POST /physiology/bid) and logs it beside the real outcome (held, empty, ran).
+    # Never obeyed; off = no bid, no log line. app/physiology_shadow.py.
+    DREAM_PHYSIOLOGY_SHADOW_BID_ENABLED: bool = Field(default=True)
+    # Body economy Patch D (2026-10-30): the sleep OBEYS its bid. on: a check that clears every gate of
+    # the dream's own asks the market just before the sleep's act opens; funded (or the metacog lane full
+    # but worth its price) -> sleep; price (Prime's slow charge included), no hunger or net <= 0 -> held,
+    # bid again at a later check, never past the family's 6 h window or the overdue line
+    # (DREAM_LOOKBACK_HOURS since the last good sleep; an overdue sleep never bids). No market answer ->
+    # sleep as before. shadow (or anything else) -> the C3b shadow bid above, exactly as before.
+    # app/physiology_bind.py.
+    ORION_PHYSIOLOGY_BID_DREAM_CYCLE: str = Field(default="on")
 
     # Weekly/monthly Curiosity write-up summaries after a persisted successful sleep.
     DREAM_CURIOSITY_COMPACTION_ENABLED: bool = Field(default=False)

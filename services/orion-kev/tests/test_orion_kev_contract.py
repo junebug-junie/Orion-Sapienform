@@ -41,8 +41,21 @@ def test_dockerfile_binds_all_interfaces() -> None:
 def _env_value(path: Path, key: str) -> str:
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith(f"{key}="):
-            return line.split("=", 1)[1].strip()
+            return line.split("=", 1)[1].split("#", 1)[0].strip()
     raise AssertionError(f"{key} missing from {path}")
+
+
+# config/gpu_pool.yaml names circe cards by index only (CardSpec has no UUID field), so the
+# card -> UUID join lives here. Verified live 2026-10-23 with `nvidia-smi -L` on circe, and
+# Kev's pid matched to gpu3's UUID with `nvidia-smi --query-compute-apps`. This is a
+# consistency check against a hand-kept table, not proof of placement: if circe renumbers,
+# re-verify these by hand. The test below forces an update when a circe card is added or renamed.
+CIRCE_CARD_UUIDS = {
+    "gpu0": "GPU-5b4609d2-95c2-2891-8aff-98ac1af92302",
+    "gpu1": "GPU-83b0aa77-90da-ed6c-cc04-a1e530d0a0f1",
+    "gpu2": "GPU-00e3b626-de2a-e344-796e-017b7a1b3f40",
+    "gpu3": "GPU-599d16a7-8c7c-1e3a-ac94-a01e5cb5cf7a",
+}
 
 
 def test_gpu_pin_matches_gpu_pool_kev_role() -> None:
@@ -52,8 +65,11 @@ def test_gpu_pin_matches_gpu_pool_kev_role() -> None:
     pool = yaml.safe_load((repo / "config" / "gpu_pool.yaml").read_text(encoding="utf-8"))
     role = pool["roles"]["kev"]
     assert role["kind"] == "service"
-    indices = {str(pool["cards"][card]["index"]) for card in role["cards"]}
-    assert indices == {_env_value(ROOT / ".env_example", "KEV_GPU_DEVICE_ID")}
+    circe_cards = {name for name, spec in pool["cards"].items() if spec.get("host") is None}
+    assert set(CIRCE_CARD_UUIDS) == circe_cards, "update CIRCE_CARD_UUIDS to match gpu_pool.yaml cards"
+    assert set(role["cards"]) <= circe_cards, "kev is a circe card"
+    uuids = {CIRCE_CARD_UUIDS[card] for card in role["cards"]}
+    assert uuids == {_env_value(ROOT / ".env_example", "KEV_GPU_DEVICE_ID")}
     assert str(role["port"]) == _env_value(ROOT / ".env_example", "KEV_HOST_PORT")
 
 

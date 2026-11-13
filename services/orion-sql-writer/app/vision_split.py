@@ -467,8 +467,12 @@ def split_one(conn, *, ask_id: str, source_id: str, group_key: str, verdicts: Se
         if row is not None:
             affected[sid] = row
             before_sightings.append(row)
+    # Sightings past crop retention whose crops are really gone (kept labels,
+    # e.g. person, still have theirs and were planned over above).
     oor = conn.execute(text(
-        "SELECT count(*) FROM vision_individual_sighting WHERE individual_id=:i AND ended_at < :c"),
+        "SELECT count(*) FROM vision_individual_sighting s WHERE s.individual_id=:i AND s.ended_at < :c "
+        "AND NOT EXISTS (SELECT 1 FROM vision_crop_observation c WHERE c.individual_id=:i "
+        "AND c.observed_at BETWEEN s.started_at AND s.ended_at)"),
         {"i": source_id, "c": now - timedelta(days=cfg.crop_retention_days)}).scalar() or 0
 
     # --- new individual ---------------------------------------------------------------------------

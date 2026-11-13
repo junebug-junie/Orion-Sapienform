@@ -160,7 +160,13 @@ def test_thumb_retention_is_read_from_the_same_env_key_as_the_host() -> None:
     from app.vision_individuals_loop import individuals_config
 
     f = Settings.model_fields["vision_crop_thumb_retention_days"]
-    assert f.alias == "VISION_CROP_THUMB_RETENTION_DAYS" and f.default == 10.0
+    assert f.alias == "VISION_CROP_THUMB_RETENTION_DAYS" and f.default == 0.0   # 0 = kept forever
+    # Both services ship the same value (the host prunes, this service picks ask pictures).
+    repo = Path(__file__).resolve().parents[3]
+    assert "\nVISION_CROP_THUMB_RETENTION_DAYS=0\n" in (repo / "services/orion-sql-writer/.env_example").read_text()
+    assert "\nVISION_CROP_THUMB_RETENTION_DAYS=0\n" in (repo / "services/orion-vision-host/.env_example").read_text()
+    assert "VISION_CROP_THUMB_RETENTION_DAYS: float = 0.0" in \
+        (repo / "services/orion-vision-host/app/settings.py").read_text()
     assert "thumb_retention_days=float(settings.vision_crop_thumb_retention_days)" in \
         (Path(__file__).resolve().parents[1] / "app" / "vision_individuals_loop.py").read_text()
     assert callable(individuals_config)

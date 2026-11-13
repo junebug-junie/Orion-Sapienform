@@ -1,5 +1,4 @@
-"""The before/after replay script reproduces the v1 route dilution on a live-shaped
-projection and shows v2 reading the same decision flip at full size."""
+"""The before/after chat replay script (its route half was retired 2026-11)."""
 
 from __future__ import annotations
 
@@ -18,22 +17,9 @@ _SPEC.loader.exec_module(replay)
 T0 = datetime(2026, 9, 25, tzinfo=timezone.utc)
 
 
-def _run(i: int, lane: str = "background", reason: str = "verb_background") -> dict:
-    return {
-        "trace_id": f"r{i}", "correlation_id": f"r{i}", "node_id": "athena",
-        "lane": lane, "lane_reason": reason, "output_mode": "direct_answer",
-        "mind_requested": False, "evidence_event_ids": [],
-        "last_updated_at": (T0 + timedelta(seconds=30 * i)).isoformat(),
-    }
-
-
-def test_route_replay_v1_diluted_v2_full_size() -> None:
-    runs = {f"r{i}": _run(i) for i in range(400)}
-    runs["r400"] = _run(400, lane="chat", reason="mode_chat")
-    out = replay.replay_route({"runs": runs})
-    assert out["v2"][-1] == 0.5
-    assert out["v1"][-1] < 0.002  # 0.5 * 2 / 401
-    assert max(out["v2"][:-1]) == 0.0  # identical background decisions stay calm
+def test_route_replay_is_retired() -> None:
+    # route_prediction_error() was retired 2026-11 (PE suite rebuild step 5).
+    assert not hasattr(replay, "replay_route")
 
 
 def test_chat_replay_runs_and_v2_drops_topic_coherence() -> None:

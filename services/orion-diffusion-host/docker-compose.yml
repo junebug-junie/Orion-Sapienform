@@ -40,6 +40,7 @@ services:
       - DIFFUSION_DEVICE=${DIFFUSION_DEVICE:-cuda:0}
       - DIFFUSION_DTYPE=${DIFFUSION_DTYPE:-fp16}
       - DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD=${DIFFUSION_ENABLE_MODEL_CPU_OFFLOAD:-true}
+      - DIFFUSION_READY_MIN_GPU_GB=${DIFFUSION_READY_MIN_GPU_GB:-20}
       - DIFFUSION_NUM_INFERENCE_STEPS=${DIFFUSION_NUM_INFERENCE_STEPS:-4}
       - DIFFUSION_GUIDANCE_SCALE=${DIFFUSION_GUIDANCE_SCALE:-0.0}
       - DIFFUSION_MAX_SEQUENCE_LENGTH=${DIFFUSION_MAX_SEQUENCE_LENGTH:-256}
@@ -54,6 +55,9 @@ services:
       # this mount stopped being a bare path convention once a real model
       # load was first wired in.
       - /mnt/storage-warm/models/diffusion:/mnt/storage-warm/models/diffusion
+      # The power prior's window (app/power_prior.py): survives the GPU pool relaunching
+      # this container, which happens for almost every generation.
+      - /mnt/storage-warm/orion-diffusion-host:/var/lib/orion-diffusion-host
 
     # GPU reservation, Circe agent-lane assignment (2026-08-20).
     # CUDA_VISIBLE_DEVICES above scopes the container to one physical

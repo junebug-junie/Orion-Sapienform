@@ -13,6 +13,8 @@ from orion.introspect.transport import (
     DREAM_REQUEST_CHANNEL,
     NODE_HISTORY_REQUEST_CHANNEL,
     ORION_DAY_REQUEST_CHANNEL,
+    POWER_ATTRIBUTION_REQUEST_CHANNEL,
+    QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL,
     RECORD_CORRECTION_REQUEST_CHANNEL,
     REQUEST_KIND,
     RESULT_KIND,
@@ -26,6 +28,8 @@ from orion.schemas.introspect import (
     IntrospectToolBindingV1,
     NodeHistoryArguments,
     OrionDayArguments,
+    PowerAttributionArguments,
+    QueueCuriosityFocusArguments,
     ReadingResultArguments,
     RecordCorrectionArguments,
 )
@@ -76,7 +80,10 @@ CURIOSITY_DESCRIPTION = (
     "words> to find runs by meaning (items carry similarity 0-1), run_id for one run, or "
     "nothing for your most recent finished runs; line and since=<ISO timestamp with timezone, "
     "within the last 90 days> narrow query or recent mode; limit up to 5. kind=self_question lists your open "
-    "self-questions instead. items=[] means nothing matched; a tool error means the answer is "
+    "self-questions instead. kind=focus lists the focuses you queued with queue_curiosity_focus, "
+    "newest first, each with its story: queued -> taken by run X -> disposition (explored, set "
+    "aside and why, or unknown), or expired / replaced / cleared / failed; a run that took a "
+    "focus carries extra.focus. items=[] means nothing matched; a tool error means the answer is "
     "unknown, never that no run happened."
 )
 
@@ -127,11 +134,28 @@ RECORD_CORRECTION_DESCRIPTION = (
     "ok=true and a correction_id."
 )
 
+QUEUE_CURIOSITY_FOCUS_DESCRIPTION = (
+    "Queue one question for your next regular curiosity run (the investigate line) to look at, "
+    "when you have chosen what you want to focus on, or Juniper asked you to look into something "
+    "next. question: the question, in plain words. why: why you want it now. origin: 'self' "
+    "(your own choice, the default) or 'juniper' (Juniper named it). There is one slot: a new "
+    "focus replaces the pending one, and the result names what it replaced; your own choice "
+    "cannot replace a focus Juniper asked for (that is a tool error saying not queued). It "
+    "starts nothing now: the run still waits for its normal schedule, cooldown and daily cap, "
+    "and the result says when the next run can start. A pending focus expires after 48 hours. "
+    "The run is shown the focus first and decides itself whether to explore it or set it "
+    "aside; that disposition is recorded, and curiosity(kind=focus) reads it back. Only from a "
+    "conversation with Juniper. A tool error saying 'not queued' means nothing was written "
+    "(it says why); 'answer unknown' means it may or may not have been (calling again with the "
+    "same words is safe: it returns the same focus_id). Never say a focus was queued without "
+    "ok=true and a focus_id."
+)
+
 NODE_HISTORY_DESCRIPTION = (
     "Read the history of one of your substrate nodes' prediction error (how surprised that "
     "part of you was, reading by reading). The node in your graph holds only its current "
     "value; the series lives here, up to 7 days back. Pass node_id=<exact id, e.g. "
-    "node:substrate.bus_synaptic> and hours=<window length, up to 168, default 24>; "
+    "node:substrate.execution> and hours=<window length, up to 168, default 24>; "
     "until=<ISO timestamp with timezone> ends the window there instead of now (the whole "
     "window must start within the last 168 hours). You get count, min, median, max, the "
     "first and last reading, a series of at most 48 time buckets (bucket_start, n, mean, "
@@ -142,6 +166,26 @@ NODE_HISTORY_DESCRIPTION = (
     "window. items=[] means that node has no reading in that window; a node_id with no stored "
     "reading at all is a tool error saying not found; any other tool error means the answer "
     "is unknown, never that the node was quiet."
+)
+
+
+POWER_ATTRIBUTION_DESCRIPTION = (
+    "Heat archaeology: where your machines' power (and so the cabinet's heat) went, and since "
+    "when. For each machine (circe, athena, hecate, and cooling = the cabinet AC plug) over the "
+    "last days=<2-30, default 14> days (until=<ISO timestamp with timezone> ends the window "
+    "earlier; node=<name> picks one): the steps in hourly wall watts (when, before/after W), "
+    "each split into GPU, CPU and rest watts; a least-squares fit of hourly wall watts on "
+    "GPU-pool workload busy-hours (harness = http:anthropic, ai-town = http:openai, cortex-exec, "
+    "vision-council, ...) plus a CPU-load regime, with R2 and each term's watts per busy-hour "
+    "and standard error; each step's watts attributed to the workloads that changed with it "
+    "(unexplained = what the fit cannot place); CPU-load shifts, which GPU leases cannot see "
+    "(point at host processes and container restarts), with the same split across each shift; "
+    "and durable-run holds, reported as "
+    "reservations, never load. Each item's text is the plain-English answer; extra holds the "
+    "numbers and the evidence for each claim, and a last item holds the exact SQL to re-run. "
+    "Everything is a correlation (epistemic_status=unsettled, verified=false): say UNVERIFIED "
+    "until stopping the suspect drops the watts. items=[] means no machine had a wall-power "
+    "reading in the window; a tool error means the answer is unknown, never that nothing changed."
 )
 
 
@@ -168,7 +212,9 @@ class IntrospectTools:
             ToolSpec("curiosity", CURIOSITY_DESCRIPTION, CuriosityArguments),
             ToolSpec("orion_day", ORION_DAY_DESCRIPTION, OrionDayArguments),
             ToolSpec("record_correction", RECORD_CORRECTION_DESCRIPTION, RecordCorrectionArguments),
+            ToolSpec("queue_curiosity_focus", QUEUE_CURIOSITY_FOCUS_DESCRIPTION, QueueCuriosityFocusArguments),
             ToolSpec("node_history", NODE_HISTORY_DESCRIPTION, NodeHistoryArguments),
+            ToolSpec("power_attribution", POWER_ATTRIBUTION_DESCRIPTION, PowerAttributionArguments),
         ]
 
     async def invoke(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -199,12 +245,28 @@ class IntrospectTools:
                 history_args.model_dump(mode="json", exclude_none=True),
             )
             return result.model_dump(mode="json")
+        if name == "power_attribution":
+            power_args = PowerAttributionArguments.model_validate(arguments)
+            result = await self._introspect_rpc(
+                POWER_ATTRIBUTION_REQUEST_CHANNEL, "power_attribution",
+                power_args.model_dump(mode="json", exclude_none=True),
+            )
+            return result.model_dump(mode="json")
         if name == "record_correction":
             correction_args = RecordCorrectionArguments.model_validate(arguments)
             result = await self._introspect_rpc(
                 RECORD_CORRECTION_REQUEST_CHANNEL, "record_correction",
                 correction_args.model_dump(mode="json"),
                 refused="not recorded",
+            )
+            return result.model_dump(mode="json")
+        if name == "queue_curiosity_focus":
+            focus_args = QueueCuriosityFocusArguments.model_validate(arguments)
+            result = await self._introspect_rpc(
+                QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL, "queue_curiosity_focus",
+                # Never refs from a chat turn: nothing on this path opens them first (orion/refs.py rule).
+                focus_args.model_dump(mode="json", exclude={"refs"}),
+                refused="not queued",
             )
             return result.model_dump(mode="json")
         if name != "reading_results":

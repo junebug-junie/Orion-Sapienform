@@ -68,21 +68,51 @@ def save_frame(
     )
 
 
-def cleanup_old_frames(directory: str, max_age_seconds: int) -> int:
-    if not os.path.isdir(directory):
-        return 0
+def owned_frame_pattern(camera_id: str, stream_id: str) -> re.Pattern[str]:
+    """File names save_frame() writes for this camera/stream, and nothing else."""
+    prefix = f"{_sanitize_id(camera_id)}_{_sanitize_id(stream_id)}_"
+    return re.compile(rf"^{re.escape(prefix)}\d+_[0-9a-f]{{8}}\.jpg$")
+
+
+def cleanup_old_frames(directory: str, max_age_seconds: int, *, camera_id: str, stream_id: str) -> int:
+    """Delete this camera/stream's own frames older than max_age_seconds.
+    Never raises.
+
+    Ownership: only names save_frame() wrote for this camera_id/stream_id.
+    The directory is shared, and each writer prunes only its own files at its
+    own retention (2026-10-17: the edge pruned every file at 60 s, including
+    the walkway's, which are meant to live FRAME_RETENTION_SECONDS).
+
+    The frames directory is shared: orion-vision-edge and every local-mode
+    retina prune it, and orion-sql-writer reads it. Any file can vanish
+    between listing it and looking at it. 2026-10-17: a file deleted between
+    the old isfile() and getmtime() raised FileNotFoundError, which killed
+    the walkway's capture task and the eye went dark for 3 h with no log.
+    So: one stat per file, inside a try, and skip anything that is gone.
+    """
+    owned = owned_frame_pattern(camera_id, stream_id)
     now = time.time()
     removed = 0
-    for name in os.listdir(directory):
-        fp = os.path.join(directory, name)
-        if not os.path.isfile(fp):
-            continue
-        if now - os.path.getmtime(fp) > max_age_seconds:
-            try:
-                os.remove(fp)
-                removed += 1
-            except OSError as exc:
-                logger.debug(f"[RETINA] cleanup skip {fp}: {exc}")
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if not owned.match(entry.name):
+                    continue
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                    if now - entry.stat(follow_symlinks=False).st_mtime <= max_age_seconds:
+                        continue
+                    os.remove(entry.path)
+                    removed += 1
+                except FileNotFoundError:
+                    continue  # another pruner got it first
+                except OSError as exc:
+                    logger.debug(f"[RETINA] cleanup skip {entry.path}: {exc}")
+    except FileNotFoundError:
+        return removed  # no frames dir yet (or it was removed): nothing to prune
+    except OSError as exc:
+        logger.warning(f"[RETINA] cleanup cannot list {directory}: {exc}")
     return removed
 
 

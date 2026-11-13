@@ -9,7 +9,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
+from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER, COCKPIT_WORKING_NOTES_MARKER
+from orion.harness import working_notes
 from orion.fcc.context_budget import (
     apply_context_overflow_hint,
     is_context_overflow_text,
@@ -30,6 +31,7 @@ from orion.harness.fcc_motor import (
     run_fcc_turn,
     is_progress_frame,
     summarize_harness_step,
+    text_tool_call,
 )
 from orion.harness.grammar_emit import (
     HarnessGrammarCollector,
@@ -45,7 +47,7 @@ from orion.gpu_pool.placement import (
     placement_from_route_default,
 )
 from orion.harness.grammar_publish import publish_harness_step_grammar
-from orion.harness.cut_short import TurnFindings, build_cut_short_draft, is_cut_short_code
+from orion.harness.cut_short import TEXT_TOOL_CALL_CODE, TurnFindings, build_cut_short_draft, is_cut_short_code
 from orion.harness.last_tool_fetch_cache import publish_last_tool_fetch, read_last_tool_fetch
 from orion.harness.attachment_staging import describe_for_prompt
 from orion.harness.prefix import compile_harness_prefix, harness_motor_instruction
@@ -55,7 +57,8 @@ from orion.harness.reading_receipts import (
 )
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.step_stream import publish_harness_run_step
-from orion.harness.task_anchor import build_task_anchor
+from orion.harness.stop_reason import turn_stop_reason
+from orion.harness.task_anchor import build_focus_anchor, build_task_anchor, compose_task_anchor
 from orion.harness.tool_provenance_audit import detect_tool_provenance_mismatch, fetch_shaped_tool_names
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import (
@@ -86,6 +89,9 @@ class HarnessMotorResult:
     # the turn's own findings. The governor keeps the cut-short marker on the
     # final text so finalize/repair cannot present it as a finished answer.
     cut_short_reason: str | None = None
+    # Why the motor stopped (orion/harness/stop_reason.py): ``cancel:<reason>`` when a
+    # harness cancel killed it, else the motor's error code, else None.
+    stop_reason: str | None = None
     draft_molecule: HarnessDraftMoleculeV1 | None = None
     grammar_collector: HarnessGrammarCollector | None = None
     # Wall time for the FCC leg ALONE -- the motor loop, not the turn. This is
@@ -139,6 +145,8 @@ class HarnessMotorResult:
     # What this turn's `record_correction` calls actually returned. The governor checks claims in
     # the reply against it (orion/harness/claim_gate.py).
     correction_results: tuple[str, ...] = ()
+    # Same, for `queue_curiosity_focus` (a claimed focus_id).
+    focus_results: tuple[str, ...] = ()
     # Real backend model the CLI's stream-json "assistant" events echoed back
     # (see fcc_motor.py's _served_model_from_assistant), distinct from the
     # ~/.fcc/.env route alias in HarnessRunRequestV1.fcc_model_label -- that
@@ -223,6 +231,8 @@ def build_harness_prompt(
     situation_prompt_fragment: str | None = None,
     reading_binding: Any = None,
     reading_only: bool = False,
+    working_notes_block: str | None = None,
+    prime_block: str | None = None,
 ) -> str:
     prefix = compile_harness_prefix(
         thought,
@@ -236,6 +246,8 @@ def build_harness_prompt(
         situation_prompt_fragment=situation_prompt_fragment,
         reading_binding=reading_binding,
         reading_only=reading_only,
+        working_notes_block=working_notes_block,
+        prime_block=prime_block,
     )
     instruction = harness_motor_instruction(
         thought=thought,
@@ -346,6 +358,61 @@ class HarnessRunner:
     async def _read_pool_state(self) -> dict[str, Any] | None:
         return await fetch_pool_state(self.bus, source="orion-harness-governor", include_config=True)
 
+    async def _settle_working_notes(
+        self,
+        *,
+        correlation_id: str,
+        session_id: str,
+        notes_file: Any,
+        carried_in: str,
+        outside_content: list[str],
+    ) -> None:
+        """End of a chat turn, success or failure: harvest the notes file, update the
+        carry for the next turn, and record a working_notes cockpit stage. Never raises."""
+        notes = None
+        try:
+            if notes_file is not None:
+                notes = working_notes.finish_turn(notes_file, tainted_by=outside_content)
+                if not notes.raw_text.strip():
+                    logger.info("fcc_working_notes_empty corr=%s read_error=%s", correlation_id, notes.read_error)
+                if notes.tainted_by:
+                    logger.warning("fcc_working_notes_tainted corr=%s tools=%s", correlation_id,
+                                   ",".join(notes.tainted_by))
+                if notes.dropped:
+                    logger.info("fcc_working_notes_dropped corr=%s dropped=%s kept=%s", correlation_id,
+                                notes.dropped, len(notes.kept))
+                if notes.suspicious:
+                    logger.warning("fcc_working_notes_suspicious corr=%s lines=%s", correlation_id,
+                                   notes.suspicious)
+                if notes.carried:
+                    logger.info("fcc_working_notes_carried corr=%s kept=%s", correlation_id, len(notes.kept))
+                if notes.raw_text.strip():
+                    # Re-read, not the turn-start copy: a turn that overlapped this one may have written.
+                    carry = await working_notes.read_carry(self.bus, session_id=session_id)
+                    await working_notes.write_carry(
+                        self.bus,
+                        session_id=session_id,
+                        carry=working_notes.fold_batch(carry, notes, correlation_id=correlation_id),
+                    )
+        except Exception:
+            logger.warning("fcc_working_notes_settle_failed corr=%s", correlation_id, exc_info=True)
+        try:
+            await publish_harness_run_step(
+                self.bus,
+                correlation_id=correlation_id,
+                step_index=-1,  # a marker, like motor_boot: never counted as a motor step
+                step={
+                    "_cockpit": COCKPIT_WORKING_NOTES_MARKER,
+                    **working_notes.cockpit_payload(
+                        carried_in=carried_in, notes=notes, enabled_this_turn=notes_file is not None
+                    ),
+                },
+                channel=self.step_channel,
+            )
+        except Exception:
+            logger.warning("harness working_notes cockpit step publish failed corr=%s", correlation_id,
+                           exc_info=True)
+
     async def run(
         self,
         request: HarnessRunRequestV1,
@@ -424,11 +491,33 @@ class HarnessRunner:
         # Independent reads (bus lookup, pool/gateway probe) -- run concurrently
         # rather than serially so a slow/unreachable probe (its own timeout,
         # default 2s) doesn't add to the bus round-trip on top of its own latency.
-        prior_tool_fetch, serving_placement = await asyncio.gather(
+        # Turn working notes (orion/harness/working_notes.py): Hub chat replies only.
+        # Reading-only turns handle web content and get no notes file.
+        notes_session = (
+            thought.session_id
+            if is_chat_reply_request(request) and not getattr(request, "reading_only", False)
+            else None
+        )
+        notes_on = bool(notes_session) and working_notes.enabled()
+
+        async def _no_carry() -> None:
+            return None
+
+        prior_tool_fetch, serving_placement, notes_carry = await asyncio.gather(
             read_last_tool_fetch(self.bus, session_id=thought.session_id),
             _probe_serving_placement(),
+            working_notes.read_carry(self.bus, session_id=notes_session) if notes_on else _no_carry(),
         )
         prior_tool_fetch_names = (prior_tool_fetch or {}).get("tool_names")
+        notes_file = working_notes.notes_path(notes_session, request.correlation_id) if notes_on else None
+        if notes_file is not None and not working_notes.begin_turn(notes_file):
+            notes_file = None
+        working_notes_block = (
+            working_notes.render_block(notes_carry, notes_file=notes_file, session_id=notes_session)
+            if notes_session
+            else None
+        )
+        outside_content = working_notes.OutsideContent()
 
         prompt = build_harness_prompt(
             thought=thought,
@@ -443,6 +532,8 @@ class HarnessRunner:
             situation_prompt_fragment=getattr(request, "situation_prompt_fragment", None),
             reading_binding=getattr(request, "reading_binding", None),
             reading_only=getattr(request, "reading_only", False),
+            working_notes_block=working_notes_block,
+            prime_block=getattr(request, "prime_block", None),
         )
 
         try:
@@ -482,6 +573,7 @@ class HarnessRunner:
         last_recorded_step_order = 0  # order of the last non-progress frame in the collector
         draft_text = ""
         exit_code: int | None = None
+        stop_reason: str | None = None
         fcc_served_model: str | None = None
         compliance_verdict = "completed"
         grounding_status = "grounded"
@@ -520,175 +612,237 @@ class HarnessRunner:
         turn_findings = TurnFindings()
         cut_short_reason: str | None = None
 
-        async for event in self.fcc_runner(
-            **({"gpu_lease": request.gpu_lease.model_dump(mode="json")}
-               if getattr(request, "gpu_lease", None) is not None else {}),
-            **({"pool_state": turn_pool_state} if isinstance(turn_pool_state, dict) else {}),
-            **({"resume_key": request.resume_key} if getattr(request, "resume_key", None) else {}),
-            **({"task_anchor": anchor} if (anchor := build_task_anchor(
-                request.user_message, reading_only=bool(getattr(request, "reading_only", False)),
-                utterance_origin=getattr(request, "utterance_origin", None))) else {}),
-            **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
-            **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
-            # Only a Juniper-originated Hub chat reply. Passed only when true so
-            # custom fcc_runner callables that predate it keep working.
-            **({"chat_reply": True} if is_chat_reply_request(request) else {}),
-            prompt=prompt,
-            correlation_id=request.correlation_id,
-            fcc_model_label=request.fcc_model_label,
-            timeout_sec=request.inference_timeout_sec or self.fcc_timeout_sec,
-        ):
-            etype = str(event.get("type") or "")
-            if etype == "step":
-                step = event.get("step")
-                if not isinstance(step, dict):
-                    continue
-                reading_tracker.observe(step)
-                # Heartbeat frames stay in the live stream, receipts and step_count (unchanged)
-                # but are not grammar-recorded work: kept out of the collector atoms AND out
-                # of step_char_sum/max so avg_step_chars (= sum / completed atoms) keeps a
-                # numerator and denominator over the same population.
-                progress_frame = is_progress_frame(step)
-                if not progress_frame:
-                    turn_findings.observe(step)
-                    step_chars = measure_step_payload_chars(step)
-                    step_char_sum += step_chars
-                    step_char_max = max(step_char_max, step_chars)
-                for error_text in _extract_tool_result_errors(step):
-                    kind = short_error_kind(error_text)
-                    if kind == _last_tool_failure_kind:
-                        tool_failure_streak += 1
-                    else:
-                        tool_failure_streak = 1
-                        _last_tool_failure_kind = kind
-                    tool_failure_streak_max = max(tool_failure_streak_max, tool_failure_streak)
-                summary = summarize_harness_step(step, index=step_count)
-                if not progress_frame:
-                    last_recorded_step_order = step_count + 1
-                    collector.record_step_started(order=step_count + 1, summary=summary)
-                tool_name = _extract_tool_name(step)
-                step_kind = classify_step_tool_kind(tool_name)
-                if step_kind == "context_gathering":
-                    context_gathering_step_count += 1
-                elif step_kind == "execution":
-                    execution_step_count += 1
-                result_tokens = extract_result_output_tokens(step)
-                if result_tokens is not None:
-                    reasoning_output_tokens = max(reasoning_output_tokens, result_tokens)
-                receipt = await publish_harness_step_grammar(
-                    self.bus,
-                    correlation_id=request.correlation_id,
-                    channel=self.grammar_channel,
-                    step_index=step_count,
-                    tool_name=tool_name,
-                    summary=summary,
-                    publish_fn=publish_grammar_fn,
-                )
-                receipts.append(receipt)
-                step_count += 1
-                if not progress_frame:
-                    collector.record_step_completed(order=step_count)
-                try:
-                    await publish_harness_run_step(
+        if getattr(request, "resume_key", None):
+            # A resumed CLI session may already hold outside text the step stream never shows.
+            outside_content.add("resume")
+        try:
+            async for event in self.fcc_runner(
+                **({"gpu_lease": request.gpu_lease.model_dump(mode="json")}
+                   if getattr(request, "gpu_lease", None) is not None else {}),
+                **({"pool_state": turn_pool_state} if isinstance(turn_pool_state, dict) else {}),
+                **({"resume_key": request.resume_key} if getattr(request, "resume_key", None) else {}),
+                **({"task_anchor": anchor} if (anchor := compose_task_anchor(
+                    build_task_anchor(
+                        request.user_message, reading_only=bool(getattr(request, "reading_only", False)),
+                        utterance_origin=getattr(request, "utterance_origin", None)),
+                    # A curiosity run that took a focus: the focus and its disposition instruction.
+                    build_focus_anchor(getattr(request, "curiosity_focus", None)),
+                )) else {}),
+                **({"reading_binding": request.reading_binding} if getattr(request, "reading_binding", None) else {}),
+                **({"reading_only": True} if getattr(request, "reading_only", False) else {}),
+                # Only a Juniper-originated Hub chat reply. Passed only when true so
+                # custom fcc_runner callables that predate it keep working.
+                **({"chat_reply": True} if is_chat_reply_request(request) else {}),
+                prompt=prompt,
+                correlation_id=request.correlation_id,
+                fcc_model_label=request.fcc_model_label,
+                timeout_sec=request.inference_timeout_sec or self.fcc_timeout_sec,
+            ):
+                etype = str(event.get("type") or "")
+                if etype == "step":
+                    step = event.get("step")
+                    if not isinstance(step, dict):
+                        continue
+                    reading_tracker.observe(step)
+                    if notes_file is not None:
+                        outside_content.observe(step)
+                    # Heartbeat frames stay in the live stream, receipts and step_count (unchanged)
+                    # but are not grammar-recorded work: kept out of the collector atoms AND out
+                    # of step_char_sum/max so avg_step_chars (= sum / completed atoms) keeps a
+                    # numerator and denominator over the same population.
+                    progress_frame = is_progress_frame(step)
+                    if not progress_frame:
+                        turn_findings.observe(step)
+                        step_chars = measure_step_payload_chars(step)
+                        step_char_sum += step_chars
+                        step_char_max = max(step_char_max, step_chars)
+                    for error_text in _extract_tool_result_errors(step):
+                        kind = short_error_kind(error_text)
+                        if kind == _last_tool_failure_kind:
+                            tool_failure_streak += 1
+                        else:
+                            tool_failure_streak = 1
+                            _last_tool_failure_kind = kind
+                        tool_failure_streak_max = max(tool_failure_streak_max, tool_failure_streak)
+                    summary = summarize_harness_step(step, index=step_count)
+                    if not progress_frame:
+                        last_recorded_step_order = step_count + 1
+                        collector.record_step_started(order=step_count + 1, summary=summary)
+                    tool_name = _extract_tool_name(step)
+                    step_kind = classify_step_tool_kind(tool_name)
+                    if step_kind == "context_gathering":
+                        context_gathering_step_count += 1
+                    elif step_kind == "execution":
+                        execution_step_count += 1
+                    result_tokens = extract_result_output_tokens(step)
+                    if result_tokens is not None:
+                        reasoning_output_tokens = max(reasoning_output_tokens, result_tokens)
+                    receipt = await publish_harness_step_grammar(
                         self.bus,
                         correlation_id=request.correlation_id,
-                        step_index=step_count - 1,
-                        step=step,
-                        channel=self.step_channel,
+                        channel=self.grammar_channel,
+                        step_index=step_count,
+                        tool_name=tool_name,
+                        summary=summary,
+                        publish_fn=publish_grammar_fn,
                     )
-                except Exception:
-                    logger.warning(
-                        "harness run step publish failed corr=%s index=%s",
-                        request.correlation_id,
-                        step_count - 1,
-                        exc_info=True,
+                    receipts.append(receipt)
+                    step_count += 1
+                    if not progress_frame:
+                        collector.record_step_completed(order=step_count)
+                    try:
+                        await publish_harness_run_step(
+                            self.bus,
+                            correlation_id=request.correlation_id,
+                            step_index=step_count - 1,
+                            step=step,
+                            channel=self.step_channel,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "harness run step publish failed corr=%s index=%s",
+                            request.correlation_id,
+                            step_count - 1,
+                            exc_info=True,
+                        )
+                elif etype == "final":
+                    draft_text = str(event.get("llm_response") or "").strip()
+                    if is_context_overflow_text(draft_text):
+                        draft_text = apply_context_overflow_hint(draft_text)
+                    meta = event.get("metadata")
+                    if isinstance(meta, dict):
+                        raw_exit = meta.get("exit_code")
+                        if isinstance(raw_exit, int):
+                            exit_code = raw_exit
+                    seen_served_model = _served_model_from_metadata(meta)
+                    if seen_served_model:
+                        fcc_served_model = seen_served_model
+                    text_call = (
+                        None if getattr(request, "reading_only", False) else text_tool_call(draft_text)
                     )
-            elif etype == "final":
-                draft_text = str(event.get("llm_response") or "").strip()
-                if is_context_overflow_text(draft_text):
-                    draft_text = apply_context_overflow_hint(draft_text)
-                meta = event.get("metadata")
-                if isinstance(meta, dict):
-                    raw_exit = meta.get("exit_code")
-                    if isinstance(raw_exit, int):
-                        exit_code = raw_exit
-                seen_served_model = _served_model_from_metadata(meta)
-                if seen_served_model:
-                    fcc_served_model = seen_served_model
-            elif etype == "error":
-                error_path_taken = True
-                partial = str(event.get("llm_response") or "").strip()
-                error_code = str(event.get("error_code") or "").strip()
-                error_msg = str(event.get("error") or "").strip()
-                err_meta = event.get("metadata")
-                seen_served_model = _served_model_from_metadata(err_meta)
-                if seen_served_model:
-                    fcc_served_model = seen_served_model
-                # fcc_nonzero_exit carries the real exit code (negative = killed by a
-                # signal, e.g. a Hub cancel's SIGKILL); keep it instead of None.
-                if isinstance(err_meta, dict) and isinstance(err_meta.get("exit_code"), int):
-                    exit_code = err_meta["exit_code"]
-                # Not cut short when the CLI already reported the turn complete
-                # (the process only hung on exit -- `partial` IS the answer), nor
-                # on reading-only machine turns: their consumer needs JSON and
-                # retries on a clean `turn_error:<code>`, which a findings draft
-                # would turn into a finalize parse failure.
-                result_seen = isinstance(err_meta, dict) and bool(err_meta.get("fcc_result_seen"))
-                use_cut_short = (
-                    is_cut_short_code(error_code)
-                    and not result_seen
-                    and not getattr(request, "reading_only", False)
-                )
-                cut_short_draft = (
-                    build_cut_short_draft(
+                    if text_call:
+                        # The answer is a tool call that never ran (the motor already resumed once).
+                        # Finalize would "repair" raw call syntax into a summary of work that never
+                        # happened -- live 2026-11-03, 4bbaaf2a. Build the draft from what the turn
+                        # actually recorded, marked cut short, so repair is skipped.
+                        logger.warning(
+                            "harness_text_tool_call_final corr=%s tool=%s steps=%s",
+                            request.correlation_id,
+                            text_call,
+                            step_count,
+                        )
+                        # Treated like the error branch's cut-short path: no clean-final side effects
+                        # (last-tool-fetch hint), and the last step is recorded as failed.
+                        error_path_taken = True
+                        turn_findings.drop_trailing_text_call()
+                        cut_short_draft = build_cut_short_draft(
+                            error_code=TEXT_TOOL_CALL_CODE,
+                            step_count=step_count,
+                            findings=turn_findings,
+                        )
+                        compliance_verdict = "partial"
+                        grounding_status = TEXT_TOOL_CALL_CODE
+                        if last_recorded_step_order > 0:
+                            collector.record_step_failed(
+                                order=last_recorded_step_order,
+                                error_kind=short_error_kind(TEXT_TOOL_CALL_CODE),
+                            )
+                        if cut_short_draft:
+                            draft_text = cut_short_draft
+                            cut_short_reason = TEXT_TOOL_CALL_CODE
+                        else:
+                            # Nothing recorded to stand behind a draft: the motor failed.
+                            draft_text = ""
+                            compliance_verdict = "failed"
+                            motor_failed = True
+                elif etype == "error":
+                    error_path_taken = True
+                    partial = str(event.get("llm_response") or "").strip()
+                    error_code = str(event.get("error_code") or "").strip()
+                    error_msg = str(event.get("error") or "").strip()
+                    err_meta = event.get("metadata")
+                    seen_served_model = _served_model_from_metadata(err_meta)
+                    if seen_served_model:
+                        fcc_served_model = seen_served_model
+                    # fcc_nonzero_exit carries the real exit code (negative = killed by a
+                    # signal, e.g. a Hub cancel's SIGKILL); keep it instead of None.
+                    if isinstance(err_meta, dict) and isinstance(err_meta.get("exit_code"), int):
+                        exit_code = err_meta["exit_code"]
+                    stop_reason = turn_stop_reason(
+                        cancel_reason=err_meta.get("cancel_reason") if isinstance(err_meta, dict) else None,
                         error_code=error_code,
-                        step_count=step_count,
-                        findings=turn_findings,
-                        last_text=partial,
                     )
-                    if use_cut_short
-                    else ""
-                )
-                if cut_short_draft:
-                    # The motor stopped a still-working turn. Its `llm_response` is
-                    # only the LAST text fragment -- on a long investigation, a
-                    # lead-in like "Let me check X:". Build the draft from what the
-                    # turn actually recorded instead, plainly marked as cut short.
-                    draft_text = cut_short_draft
-                    compliance_verdict = "partial"
-                    grounding_status = error_code
-                    cut_short_reason = error_code
-                elif use_cut_short:
-                    # Cut short with nothing recorded: no findings to stand behind
-                    # a draft, so the motor failed -- never a lone lead-in line.
-                    compliance_verdict = "failed"
-                    grounding_status = error_code
-                    motor_failed = True
-                elif partial:
-                    draft_text = apply_context_overflow_hint(partial)
-                    compliance_verdict = "partial"
-                    grounding_status = error_code or "partial"
-                else:
-                    compliance_verdict = "failed"
-                    # Prefer structured error_code (e.g. fcc_timeout) over the
-                    # human message so Hub/tests can key off stable codes.
-                    hinted = apply_context_overflow_hint(error_msg) if error_msg else ""
-                    grounding_status = error_code or hinted or error_msg or "failed"
-                    motor_failed = True
-                if last_recorded_step_order > 0:
-                    # Not step_count: trailing progress frames have no started atom to
-                    # link the failure to.
-                    collector.record_step_failed(
-                        order=last_recorded_step_order,
-                        error_kind=short_error_kind(error_code or error_msg),
+                    # Not cut short when the CLI already reported the turn complete
+                    # (the process only hung on exit -- `partial` IS the answer), nor
+                    # on reading-only machine turns: their consumer needs JSON and
+                    # retries on a clean `turn_error:<code>`, which a findings draft
+                    # would turn into a finalize parse failure.
+                    result_seen = isinstance(err_meta, dict) and bool(err_meta.get("fcc_result_seen"))
+                    use_cut_short = (
+                        is_cut_short_code(error_code)
+                        and not result_seen
+                        and not getattr(request, "reading_only", False)
                     )
-                logger.warning(
-                    "fcc motor error corr=%s code=%s err=%s",
-                    request.correlation_id,
-                    event.get("error_code"),
-                    event.get("error"),
-                )
-                break
+                    cut_short_draft = (
+                        build_cut_short_draft(
+                            error_code=error_code,
+                            step_count=step_count,
+                            findings=turn_findings,
+                            last_text=partial,
+                        )
+                        if use_cut_short
+                        else ""
+                    )
+                    if cut_short_draft:
+                        # The motor stopped a still-working turn. Its `llm_response` is
+                        # only the LAST text fragment -- on a long investigation, a
+                        # lead-in like "Let me check X:". Build the draft from what the
+                        # turn actually recorded instead, plainly marked as cut short.
+                        draft_text = cut_short_draft
+                        compliance_verdict = "partial"
+                        grounding_status = error_code
+                        cut_short_reason = error_code
+                    elif use_cut_short:
+                        # Cut short with nothing recorded: no findings to stand behind
+                        # a draft, so the motor failed -- never a lone lead-in line.
+                        compliance_verdict = "failed"
+                        grounding_status = error_code
+                        motor_failed = True
+                    elif partial:
+                        draft_text = apply_context_overflow_hint(partial)
+                        compliance_verdict = "partial"
+                        grounding_status = error_code or "partial"
+                    else:
+                        compliance_verdict = "failed"
+                        # Prefer structured error_code (e.g. fcc_timeout) over the
+                        # human message so Hub/tests can key off stable codes.
+                        hinted = apply_context_overflow_hint(error_msg) if error_msg else ""
+                        grounding_status = error_code or hinted or error_msg or "failed"
+                        motor_failed = True
+                    if last_recorded_step_order > 0:
+                        # Not step_count: trailing progress frames have no started atom to
+                        # link the failure to.
+                        collector.record_step_failed(
+                            order=last_recorded_step_order,
+                            error_kind=short_error_kind(error_code or error_msg),
+                        )
+                    logger.warning(
+                        "fcc motor error corr=%s code=%s err=%s",
+                        request.correlation_id,
+                        event.get("error_code"),
+                        event.get("error"),
+                    )
+                    break
+        finally:
+            if notes_on:
+                # Success, error event, or an exception/cancel out of the loop: always harvest.
+                await asyncio.shield(self._settle_working_notes(
+                    correlation_id=request.correlation_id,
+                    session_id=notes_session,
+                    notes_file=notes_file,
+                    carried_in=working_notes_block or "",
+                    outside_content=outside_content.reasons(),
+                ))
 
         reading_receipts = reading_tracker.outcomes()
         grounded_draft = enforce_reading_receipt_grounding(draft_text, reading_receipts)
@@ -781,6 +935,7 @@ class HarnessRunner:
                 grammar_receipts=receipts,
                 step_count=step_count,
                 exit_code=exit_code,
+                stop_reason=stop_reason,
                 compliance_verdict=compliance_verdict if compliance_verdict != "completed" else "failed",
                 grounding_status=grounding_status if grounding_status != "grounded" else "empty_draft",
                 grammar_collector=collector,
@@ -844,6 +999,7 @@ class HarnessRunner:
             grammar_receipts=receipts,
             step_count=step_count,
             exit_code=exit_code,
+            stop_reason=stop_reason,
             compliance_verdict=compliance_verdict,
             grounding_status=grounding_status,
             cut_short_reason=cut_short_reason,
@@ -851,6 +1007,7 @@ class HarnessRunner:
             grammar_collector=collector,
             tool_provenance_audit=tool_provenance_audit,
             correction_results=tuple(turn_findings.correction_results),
+            focus_results=tuple(turn_findings.focus_results),
             step_char_sum=step_char_sum,
             step_char_max=step_char_max,
             tool_failure_streak_max=tool_failure_streak_max,

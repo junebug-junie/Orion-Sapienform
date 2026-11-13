@@ -34,9 +34,24 @@ from app.admitted_graph import (
     GONE, GRANTED, REFUSED, WAITING, AdmissionDeps, HoldPreempted, HoldRecalled, RunControlPending,
     WorkflowDeadline, build_admitted_graph,
 )
-from app.admitted_reflect_graph import build_admitted_reflect_graph
 from app.compactor_digest_graph import build_compactor_digest_graph, finish_detail as compactor_digest_finish_detail
+from app.reading_resonance_graph import build_reading_resonance_graph, finish_detail as resonance_finish_detail
+from orion.schemas.reading_resonance import READING_RESONANCE_WORKFLOW, ReadingResonanceRunBriefV1
+from app.reading_resonance_store import persist_resonance
 from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
+from app.harness_smoke_graph import (
+    build_consult_turn_graph, build_harness_smoke_graph, consult_turn_finish_detail,
+    finish_detail as harness_smoke_finish_detail,
+)
+from app.harness_step import harness_step_correlation_id
+from orion.schemas.consult_turn_run import CONSULT_ORION_TURN_STEP_KEY, CONSULT_ORION_TURN_WORKFLOW
+from orion.schemas.harness_step_run import HARNESS_ECHO_SMOKE_STEP_KEY, HARNESS_ECHO_SMOKE_WORKFLOW
+from app.pr_field_note_graph import build_pr_field_note_graph, finish_detail as pr_field_note_finish_detail
+from app.pr_field_note_ledger import FieldNoteLedger
+from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_STEP_KEY, PR_FIELD_NOTE_WORKFLOW
+from app.reminiscence_graph import build_reminiscence_graph, finish_detail as reminiscence_finish_detail, pending_step
+from app.reminiscence_ledger import ReminiscenceLedger
+from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW
 from app.dream_carry_graph import (
     DEFAULT_CHILD_MAX_ATTEMPTS as DREAM_CARRY_DEFAULT_CHILD_MAX_ATTEMPTS,
     DEFAULT_CHILD_MIN_WINDOW_SEC as DREAM_CARRY_DEFAULT_CHILD_MIN_WINDOW_SEC,
@@ -58,11 +73,15 @@ from app.pool_hold import (
     HELD, URGENT_PREEMPT, WAITING as POOL_WAITING, PoolHolds, UnknownRoute, is_hold_ref, is_pool_trouble,
     hold_placement, ref_dict, refusal_is_terminal,
 )
-from app.reflect_graph import finish_detail as reflect_finish_detail
+from app.run_acts import RunActEmitter
+from app.run_bids import HOLD_EVENT, RELEASE_EVENT, RunBidder
 from app.orion_day_graph import (
-    OrionDayDeps, build_orion_day_graph, finish_detail as orion_day_finish_detail, slim_brief as orion_day_slim_brief,
+    LETTER_STEP_KEY as ORION_DAY_LETTER_STEP_KEY, OrionDayDeps, build_orion_day_graph,
+    finish_detail as orion_day_finish_detail, letter_turn_correlation_id as orion_day_letter_turn_id,
+    slim_brief as orion_day_slim_brief,
 )
 from app.orion_day_store import persist_letter as persist_orion_day_letter
+from orion.orion_day.letter_turn import MAX_THREADS as ORION_DAY_MAX_THREADS
 from app.reading_graph import build_reading_graph, finish_detail as reading_finish_detail
 from app.reverie_visual_graph import (
     RETRY_WINDOW_EXPIRED, abandon_request, build_reverie_visual_graph,
@@ -73,7 +92,7 @@ from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.reading_turn import READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, reverie_visual_run_id
 from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
-from app.self_sense_graph import finish_detail as self_sense_finish_detail
+from app.self_sense_graph import finish_detail as self_sense_finish_detail, next_unanswered, question_turn_id
 from orion.durable_runs.registry_store import (
     ABANDON_ACKED_EVENT,
     ABANDON_GIVE_UP_SEC,
@@ -90,11 +109,10 @@ logger = logging.getLogger(__name__)
 TERMINAL = {"completed", "failed", "cancelled"}
 DEFAULT_WORKFLOW = "curiosity.investigate"
 SELF_SENSE_WORKFLOW = "self_sense_eval"
-REFLECT_WORKFLOW = "self_study.reflect"
 # The node of each admitted workflow that does GPU work under the hold. A restarted driver that
 # finds one of these still pending fences the previous attempt and replays it under the same hold.
-WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORKFLOW: {"ask_questions"},
-              REFLECT_WORKFLOW: {"llm_call"}, READING_WORKFLOW: {"reading_turn"},
+WORK_NODES = {READING_RESONANCE_WORKFLOW: {"judge"}, DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORKFLOW: {"ask_questions"},
+              READING_WORKFLOW: {"reading_turn"},
               # Only generate holds the diffusion hold; it releases it before its result is
               # checkpointed, so a restart after generate resumes at caption with no lease.
               REVERIE_VISUAL_WORKFLOW: {"generate"},
@@ -102,13 +120,28 @@ WORK_NODES = {DEFAULT_WORKFLOW: {"run_started", "harness_turn"}, SELF_SENSE_WORK
               COMPACTOR_DIGEST_WORKFLOW: {"digest"},
               # Only compose holds the GPU; publish lets the hold go before it sends the write.
               JOURNAL_COMPOSE_WORKFLOW: {"compose"},
-              # Both LLM calls run under the hold; a restart replays the first one without a
-              # checkpointed text (a finished note is never regenerated). persist needs no GPU.
-              ORION_DAY_WORKFLOW: {"write_note", "write_carry_forward"},
+              # The letter's one unified turn runs under the hold; it releases the hold once the
+              # letter is checkpointed (never regenerated). persist needs no GPU.
+              ORION_DAY_WORKFLOW: {"write_letter"},
               # Only a text hop holds the LLM hold; it releases it before its hop is checkpointed.
               # Image hops are child reverie.visual runs and hold nothing in the carry.
               DREAM_CARRY_WORKFLOW: {"text_hop"},
-              CURIOSITY_COMPACTION_WORKFLOW: {"compact"}}
+              CURIOSITY_COMPACTION_WORKFLOW: {"compact"},
+              # One harness turn under the hold (app/harness_step.py); finish needs no GPU.
+              HARNESS_ECHO_SMOKE_WORKFLOW: {"harness_step"},
+              # One of Orion's consult turns (Hub's consult loop): the same single-step graph.
+              CONSULT_ORION_TURN_WORKFLOW: {"harness_step"},
+              # One harness turn (plus verify_receipt) under the hold; precheck and finish need none.
+              PR_FIELD_NOTE_WORKFLOW: {"field_note"},
+              # One harness turn per step (five hops, then the cross-read), each under the run's one hold;
+              # precheck and finish need none.
+              REMINISCENCE_WORKFLOW: {"step"}}
+# Workflows whose one step is a harness turn on app/harness_step.py: workflow -> its step key.
+HARNESS_STEP_WORKFLOWS = {HARNESS_ECHO_SMOKE_WORKFLOW: HARNESS_ECHO_SMOKE_STEP_KEY,
+                          PR_FIELD_NOTE_WORKFLOW: PR_FIELD_NOTE_STEP_KEY,
+                          CONSULT_ORION_TURN_WORKFLOW: CONSULT_ORION_TURN_STEP_KEY}
+# Workflows of several harness steps on that seam: workflow -> (state -> the step key not yet done).
+HARNESS_MULTI_STEP_WORKFLOWS = {REMINISCENCE_WORKFLOW: pending_step}
 # Interrupt nodes the driver resumes only once the run's checkpointed ``retry_at`` has passed, and
 # whose loop iterations are not lifecycle facts (no run.<status> / run.resumed event per wake).
 TIMED_WAIT_NODES = frozenset({"retry_wait", "image_wait"})
@@ -129,7 +162,8 @@ PREEMPT_REQUEUE_MARGIN_SEC = 3.0
 MAX_CONCURRENT_DRIVERS = 4
 # "system" runs (memory.episode_distill, 2026-10-02) are also outside it, capped here: a system run
 # must not wait behind four background turns before it even asks the pool, where it then ranks
-# above background. One at a time: the distiller is the only system producer (~1-2 episodes/day).
+# above background. One at a time: the producers are the distiller (~1-2 episodes/day) and the day letter
+# (one turn/day, up to 3 attempts; it waits for its hold without holding this slot).
 MAX_CONCURRENT_SYSTEM_DRIVERS = 1
 # Which pool refusals fail the run is decided in one place: ``pool_hold.refusal_is_terminal``.
 # Any other unavailable (dead-lettered after expiries during a durable-runs outage, an abort) is
@@ -143,12 +177,37 @@ def _priority(row: dict) -> str | None:
     return (((row.get("request") or {}).get("admission")) or {}).get("priority")
 
 
+def _bind_mode(value: Any) -> str:
+    """ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE: ``on`` binds, ``shadow`` does not. Anything else is
+    shadow, said loudly (a typo must not silently change what binds -- nor crash admission)."""
+    mode = str(value or "").strip().lower()
+    if mode not in ("on", "shadow"):
+        logger.warning("physiology_bind_flag_unknown value=%r -> shadow (expected on|shadow)", value)
+        return "shadow"
+    return mode
+
+
+def make_bidder(settings, market_getter=None) -> RunBidder:
+    """The process's bid site, from settings (one place, so the flag wiring is testable)."""
+    return RunBidder(
+        enabled=bool(getattr(settings, "physiology_shadow_bids_enabled", True)),
+        market_getter=market_getter or (lambda: None),
+        binding_enabled=_bind_mode(getattr(settings, "physiology_bid_curiosity_investigate", "shadow")) == "on",
+        # Attention 3c: reading stage 1 binds (live week; shadow = 3b's value-only bid).
+        reading_binding_enabled=_bind_mode(getattr(settings, "physiology_bid_reading", "on")) == "on")
+
+
+def _economy_held(state: dict) -> bool:
+    """The run is held by its binding bid (``_economy_gate``): no pool request exists yet."""
+    return bool((state.get("hold") or {}).get("economy"))
+
+
 def _without_backoff(hold: dict) -> dict:
     """The hold minus the pool-refusal backoff fields: the pool answered, the episode is over."""
     return {k: v for k, v in hold.items() if k not in ("retry_at", "refusals")}
 
 
-from app.admitted_graph import HoldLost
+from app.admitted_graph import LISTENER_WAIT_HOLD_KEY, HoldLost
 
 # release() reasons of a pool take-back (HoldLost / HoldPreempted): the node goes straight back to
 # resource_wait, so a hold the pool already re-granted is kept for it.
@@ -156,11 +215,20 @@ TAKEBACK_RELEASE_REASONS = frozenset({HoldLost.release_reason, URGENT_PREEMPT})
 
 
 class AdmissionRuntime:
-    def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None):
+    def __init__(self, settings, runner, pool, *, store=None, clock=None, holds=None, market_getter=None):
         self.settings, self.runner, self.pool = settings, runner, pool
         self.store = store or DurableRunRegistryStore(pool)
         self.now = clock or (lambda: datetime.now(timezone.utc))
         self.holds = holds or PoolHolds(runner._bus, source=settings.service_name)
+        # Body economy A5: want-family runs open an act at their first grant, close it at terminal.
+        self.acts = RunActEmitter(
+            enabled=bool(getattr(settings, "durable_act_emit_enabled", True)), store=self.store,
+            publish=lambda *args: runner._publish(*args), corr_for=lambda c: runner._corr_for_admission(c),
+            now=self.now)
+        # Body economy C3a (SHADOW): want-family runs bid at submit, open at first grant, release at
+        # terminal. Logged to want_ledger, never obeyed: admission below is unchanged.
+        # Patch D: curiosity investigate's bid BINDS (``_economy_gate`` in ``register``).
+        self.bids = make_bidder(settings, market_getter)
         if settings.lease_heartbeat_sec * 2 > self.holds.hold_ttl_sec:
             # Two missed beats must still land inside the pool's TTL, or a slow bus expires a
             # healthy run's hold mid-turn.
@@ -171,15 +239,18 @@ class AdmissionRuntime:
             now=self.now, max_attempts=settings.retry_max_attempts,
             retry_base_seconds=settings.retry_base_sec, retry_max_seconds=settings.retry_max_sec,
             guard=self.guard, keep_for_outreach=self.keep_for_outreach, requeued=self.requeued,
-            max_takebacks=settings.hold_max_takebacks)
+            max_takebacks=settings.hold_max_takebacks,
+            # getattr: bare test settings predate these keys; the AdmissionDeps defaults match Settings'.
+            listener_wait_max_tries=int(getattr(settings, "listener_wait_max_tries", 6)),
+            listener_wait_base_seconds=float(getattr(settings, "listener_wait_base_sec", 60.0)),
+            listener_wait_max_seconds=float(getattr(settings, "listener_wait_max_sec", 300.0)))
         self.deps = admission_deps
         # One compiled graph per workflow. Before 2026-09-22 every admitted run shared the
-        # curiosity graph; before 4.5 an admitted reflect run still did.
+        # curiosity graph.
         self.graphs = {
             DEFAULT_WORKFLOW: build_admitted_graph(runner._curiosity_deps(), admission_deps, runner._checkpointer),
             SELF_SENSE_WORKFLOW: build_admitted_self_sense_graph(
                 runner._self_sense_deps(), admission_deps, runner._checkpointer),
-            REFLECT_WORKFLOW: build_admitted_reflect_graph(runner._reflect_deps(), admission_deps, runner._checkpointer),
             READING_WORKFLOW: build_reading_graph(lambda request: runner._run_reading_turn(request), admission_deps, runner._checkpointer),
             REVERIE_VISUAL_WORKFLOW: build_reverie_visual_graph(self._reverie_step, admission_deps, runner._checkpointer),
             # Late-bound (like reading above): the runner's method is read per call.
@@ -190,6 +261,9 @@ class AdmissionRuntime:
             COMPACTOR_DIGEST_WORKFLOW: build_compactor_digest_graph(
                 lambda payload, **kw: runner._cortex_orch_rpc(payload, **kw), admission_deps, runner._checkpointer),
             # Late-bound (like reading/reverie above): the runner's methods are read per call.
+            READING_RESONANCE_WORKFLOW: build_reading_resonance_graph(
+                lambda prompt, **kw: runner._call_reading_resonance_llm(prompt, **kw),
+                lambda result: persist_resonance(self.pool, result), admission_deps, runner._checkpointer),
             JOURNAL_COMPOSE_WORKFLOW: build_journal_compose_graph(
                 lambda brief, **kw: runner._compose_journal(brief, **kw),
                 lambda write: runner._publish_journal_write(write), admission_deps, runner._checkpointer),
@@ -198,9 +272,24 @@ class AdmissionRuntime:
                 lambda brief: self._load_episode(brief),
                 lambda prompt, **kw: runner._call_memory_distill_llm(prompt, **kw),
                 lambda **kw: self._persist_episode(**kw), admission_deps, runner._checkpointer),
+            # Durable-run -> harness step seam smoke. Late-bound: the same Hub turn RPC curiosity and
+            # self_sense_eval use (orion:curiosity:turn:request), resolved on the runner per call.
+            HARNESS_ECHO_SMOKE_WORKFLOW: build_harness_smoke_graph(
+                lambda request: runner._run_turn(request), admission_deps, runner._checkpointer),
+            # Consults: one of Orion's turns per run, on the same seam (orion/schemas/consult_turn_run.py).
+            CONSULT_ORION_TURN_WORKFLOW: build_consult_turn_graph(
+                lambda request: runner._run_turn(request), admission_deps, runner._checkpointer),
+            # PR field notes Patch 2: the same seam, plus a code receipt check against Orion's ledger.
+            PR_FIELD_NOTE_WORKFLOW: build_pr_field_note_graph(
+                lambda request: runner._run_turn(request), admission_deps, runner._checkpointer,
+                ledger=FieldNoteLedger(getattr(settings, "field_note_ledger_dir", "/mnt/orion-fcc/self"))),
+            # Daily reminiscence Patch 2: six steps on the same seam, each checked against Orion's ledger.
+            REMINISCENCE_WORKFLOW: build_reminiscence_graph(
+                lambda request: runner._run_turn(request), admission_deps, runner._checkpointer,
+                ledger=ReminiscenceLedger(getattr(settings, "reminiscence_ledger_dir", "/mnt/orion-fcc/self"))),
             # Bound lazily (like reading's run_turn): resolved on the runner at call time.
             ORION_DAY_WORKFLOW: build_orion_day_graph(OrionDayDeps(
-                call_verb_text=lambda *args, **kwargs: runner._call_verb_text(*args, **kwargs),
+                run_turn=lambda request: runner._run_turn(request),
                 persist_letter=lambda row: persist_orion_day_letter(self.pool, row),
                 publish_journal=lambda entry: runner._publish_journal(entry),
                 load_brief=self._orion_day_brief,
@@ -273,8 +362,8 @@ class AdmissionRuntime:
         workflow = workflow or DEFAULT_WORKFLOW
         if workflow == SELF_SENSE_WORKFLOW:
             return self_sense_finish_detail(state)
-        if workflow == REFLECT_WORKFLOW:
-            return reflect_finish_detail(state)
+        if workflow == READING_RESONANCE_WORKFLOW:
+            return resonance_finish_detail(state)
         if workflow == READING_WORKFLOW:
             return reading_finish_detail(state)
         if workflow == REVERIE_VISUAL_WORKFLOW:
@@ -291,6 +380,14 @@ class AdmissionRuntime:
             return episode_distill_finish_detail(state)
         if workflow == DREAM_CARRY_WORKFLOW:
             return dream_carry_finish_detail(state)
+        if workflow == HARNESS_ECHO_SMOKE_WORKFLOW:
+            return harness_smoke_finish_detail(state)
+        if workflow == CONSULT_ORION_TURN_WORKFLOW:
+            return consult_turn_finish_detail(state)
+        if workflow == PR_FIELD_NOTE_WORKFLOW:
+            return pr_field_note_finish_detail(state)
+        if workflow == REMINISCENCE_WORKFLOW:
+            return reminiscence_finish_detail(state)
         return finish_detail(state)
 
     async def _load_episode(self, brief) -> dict:
@@ -373,8 +470,11 @@ class AdmissionRuntime:
         if request.workflow == DREAM_CARRY_WORKFLOW and request.admission.deadline_at is None:
             # Text/finish retries never spend attempts: the deadline is the carry's only bound.
             raise ValueError("dream.carry runs require admission.deadline_at")
-        row = await self.store.submit(request.model_dump(mode="json"))
+        payload = request.model_dump(mode="json")
+        row = await self.store.submit(payload)
         self._wake.set()
+        if not row.get("terminal") and (bids := getattr(self, "bids", None)) is not None:
+            bids.on_submit(payload)   # background task; never raises, never delays the receipt
         return {"run_id": request.run_id, "status": row.get("terminal") or "waiting_resource",
                 "workflow_kind": request.workflow, "requested_resource": request.admission.resource}
 
@@ -395,12 +495,30 @@ class AdmissionRuntime:
         admission = row["request"]["admission"]
         hold = dict(state.get("hold") or {})
         seq = int(state.get("hold_seq") or 0)
+        if hold.get(LISTENER_WAIT_HOLD_KEY) and not hold.get("request_id") and hold.get("retry_at") \
+                and self.now() < datetime.fromisoformat(hold["retry_at"]):
+            # Parked by listener_wait (a step's RPC reached nobody): no pool request until
+            # retry_at. resource_wait interrupts; _hold_ready resumes the run once it passes.
+            return {"status": "waiting_resource", "hold": hold, "hold_seq": seq}
+        if seq == 0 and not hold.get("request_id"):
+            # Never asked the pool yet: a binding family's run asks the body economy first.
+            held = await self._economy_gate(state, row["request"])
+            if held is not None:
+                return held
         if not hold.get("request_id"):
             seq += 1
+        # Attention patch 3b: the run's market net rides on its hold request (the pool serves its
+        # background queue by value). Only a new request carries it: re-asking is idempotent.
+        value_kw = {}
+        if not hold.get("request_id") and (bids := getattr(self, "bids", None)) is not None:
+            value = await bids.value_for(row["request"])
+            if value is not None:
+                value_kw = {"value": value}
         for _ in range(HOLD_SEQ_SKIP_MAX):
             request_id = hold.get("request_id") or f"{run_id}:{seq}"
             try:
-                reply = await self.holds.acquire(run_id, request_id, admission, correlation_id=state.get("correlation_id"))
+                reply = await self.holds.acquire(run_id, request_id, admission, correlation_id=state.get("correlation_id"),
+                                                 **value_kw)
             except UnknownRoute as exc:
                 return {"status": "failed", "last_error": f"gpu_pool_{exc}", "hold": None, "hold_seq": seq}
             except Exception as exc:  # noqa: BLE001 -- unreachable pool (RPC timeout, bus down): transient
@@ -433,6 +551,36 @@ class AdmissionRuntime:
                 event_id=f"waiting:{reply.lease_id}")
         return {"status": "waiting_resource", "hold": {"request_id": request_id, "lease_id": reply.lease_id},
                 "hold_seq": seq}
+
+    async def _economy_gate(self, state, request: dict) -> dict | None:
+        """Body economy Patch D: the run's binding bid. None -> ask the pool now (funded, a capacity
+        deferral worth its price -- the pool's queue is the queue --, no market answer, the window's
+        end, or not a binding family). Otherwise the run is HELD: ``waiting_resource`` with no pool
+        request, ``hold.retry_at`` = the next bid (``_hold_ready`` wakes it then, and
+        ``resource_request`` bids again). ``hold_seq`` stays 0, so only a run that never asked the pool
+        is ever gated. Each verdict is a run event carrying the market's own reason."""
+        bids = getattr(self, "bids", None)
+        if bids is None:
+            return None
+        verdict = await bids.bind(request, self.now())
+        if verdict is None:
+            return None
+        run_id = state["run_id"]
+        detail = {"verdict": verdict.why, **verdict.detail}
+        try:
+            if verdict.admit:
+                await self.store.record_event(run_id, RELEASE_EVENT, detail,
+                                              event_id=f"economy_admitted:{run_id}:{verdict.detail.get('decision_id') or verdict.why}")
+            else:
+                detail["retry_at"] = verdict.retry_at.isoformat()
+                await self.store.record_event(run_id, HOLD_EVENT, detail,
+                                              event_id=f"economy_held:{run_id}:{verdict.detail.get('decision_id')}:{detail['retry_at']}")
+        except Exception:  # noqa: BLE001 -- the event is evidence, never a reason to change the verdict
+            logger.warning("durable_economy_event_failed run=%s verdict=%s", run_id, verdict.why, exc_info=True)
+        if verdict.admit:
+            return None
+        return {"status": "waiting_resource", "hold_seq": 0,
+                "hold": {"retry_at": verdict.retry_at.isoformat(), "economy": verdict.why}}
 
     async def _pool_refused(self, state, admission: dict, hold: dict, request_id: str, seq: int,
                             pool_status: str, reason: str) -> dict:
@@ -486,10 +634,14 @@ class AdmissionRuntime:
             ref = ref_dict(reply, durable_run_holder(run_id))
             detail = {"lease": ref, "lane": ref["role"], "lease_id": ref["lease_id"], "generation": ref["generation"],
                       "role": ref["role"], "requested_lane": (state.get("admission") or {}).get("preferred_lane")}
-            await self.store.record_event(run_id, "run.resource_granted", detail,
-                                          event_id=f"granted:{ref['lease_id']}:{ref['generation']}")
+            granted = await self.store.record_event(run_id, "run.resource_granted", detail,
+                                                    event_id=f"granted:{ref['lease_id']}:{ref['generation']}")
             await self.store.record_event(run_id, "run.lane_assigned", detail,
                                           event_id=f"assigned:{ref['lease_id']}:{ref['generation']}")
+            if (acts := getattr(self, "acts", None)) is not None:   # absent on bare test runtimes
+                await acts.on_grant(state, granted)
+            if (bids := getattr(self, "bids", None)) is not None:
+                bids.on_grant(run_id, self.now())
             return GRANTED, {"status": "admitted", "lease": ref, "hold": _without_backoff(hold)}
         if reply.status in POOL_WAITING:
             self._checked[run_id] = time.monotonic()   # just read: the poll fallback starts from here
@@ -593,15 +745,25 @@ class AdmissionRuntime:
             # Joinable to the pool's child leases (acceptance check 2: no un-attached agent lease
             # under a turn whose run holds a hold).
             detail["turn_correlation_id"] = turn_correlation_id(state)
-        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW) \
+        elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW,
+                                       HARNESS_ECHO_SMOKE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, REMINISCENCE_WORKFLOW,
+                                       CONSULT_ORION_TURN_WORKFLOW, ORION_DAY_WORKFLOW) \
                 and state.get("step_correlation_id"):
+            # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
+            # or a worker that dies mid-step is still traceable by it (self-sense: the question's).
             detail["step_correlation_id"] = state["step_correlation_id"]
         await self.event(state, "run.started", detail)
         work = asyncio.create_task(node(state))
-        timeout = float(state["brief"]["timeout_sec"])
+        # ``node_timeout_sec``: a node whose attempt is a slice of the brief's budget (self-sense:
+        # one question's share), so one hung step cannot hold the GPU for the whole run's budget.
+        timeout = float(state.get("node_timeout_sec") or state["brief"]["timeout_sec"])
         deadline = state["admission"].get("deadline_at")
         if deadline:
             timeout = min(timeout, max(0, (datetime.fromisoformat(deadline)-self.now()).total_seconds()))
+        # The reason the harness cancel carries (orion/harness/stop_reason.py). A lost/recalled hold,
+        # an operator control or a worker shutdown stops the turn from outside; the attempt's own time
+        # budget running out is the turn being too slow, so it gets its own reason and stays a failure.
+        stop_reason = "durable_attempt_stopped"
         try:
             # Timeout starts only after the hold is confirmed. Each heartbeat re-reads the operator
             # control row and asks the pool whether the hold is still ours at this generation.
@@ -627,6 +789,7 @@ class AdmissionRuntime:
                             if beat.status == "recall" and beat.reason == URGENT_PREEMPT \
                             else steady
         except TimeoutError as exc:
+            stop_reason = "durable_attempt_timeout"
             if deadline and self.now() >= datetime.fromisoformat(deadline):
                 raise WorkflowDeadline("workflow_deadline") from exc
             raise
@@ -635,7 +798,7 @@ class AdmissionRuntime:
                 # Cancel Hub before awaiting the local task's cleanup -- self-sense clears
                 # `_inflight_turn_correlation_ids` in its finally, so this must run while those ids
                 # are still stamped on `state`.
-                await self._cancel_harness(state, "durable_attempt_stopped")
+                await self._cancel_harness(state, stop_reason)
                 work.cancel()
                 await asyncio.gather(work, return_exceptions=True)
         # Outside the turn's time budget: a slow preempt check must not replace the work's own error.
@@ -921,6 +1084,10 @@ class AdmissionRuntime:
         lease_id = hold.get("lease_id")
         retry_at = hold.get("retry_at")
         backing_off = bool(retry_at) and self.now() < datetime.fromisoformat(retry_at)
+        if hold.get(LISTENER_WAIT_HOLD_KEY) and backing_off:
+            # Parked by listener_wait: the only pool event for it is its own released hold. Wait.
+            self._hints.discard(run_id)
+            return False
         if run_id in self._hints:
             # The pool only publishes events for a hold it created, so a hint means the pool is
             # answering -- even mid-backoff (e.g. an acquire that timed out but landed and was
@@ -951,10 +1118,9 @@ class AdmissionRuntime:
         if state.get("workflow") == COMPACTOR_DIGEST_WORKFLOW:
             # No harness turn: each digest call is a plain cortex-orch verb RPC; a replay re-asks.
             return
-        if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, ORION_DAY_WORKFLOW, DREAM_CARRY_WORKFLOW):
+        if state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW):
             # No harness turn: generate runs in orion-thought, whose replay is idempotent (the
-            # recorded artifact, or a generate_in_flight retry); orion_day.letter's calls are plain
-            # cortex verbs, never a harness run, so there is nothing to cancel by turn id.
+            # recorded artifact, or a generate_in_flight retry).
             return
         ids: list[str] = []
         try:
@@ -974,6 +1140,22 @@ class AdmissionRuntime:
         inflight = state.get("_inflight_turn_correlation_ids")
         if isinstance(inflight, list):
             ids.extend(c for c in inflight if isinstance(c, str) and c)
+        if state.get("workflow") == SELF_SENSE_WORKFLOW and isinstance(state.get("brief"), dict):
+            # The question turn a dead worker left running: its id derives from the checkpoint
+            # (the in-memory in-flight list above died with that worker).
+            pending = next_unanswered(state)
+            if pending is not None:
+                ids.append(question_turn_id(state, pending[0]))
+        step_key = HARNESS_STEP_WORKFLOWS.get(state.get("workflow"))
+        if state.get("workflow") in HARNESS_MULTI_STEP_WORKFLOWS:
+            step_key = HARNESS_MULTI_STEP_WORKFLOWS[state["workflow"]](state)
+        if state.get("workflow") == ORION_DAY_WORKFLOW:
+            # The letter's one unified turn (orion_day_graph.write_letter): harness_turn_meta above
+            # names the issued turn; before the letter lands its id also derives from the checkpoint.
+            step_key = ORION_DAY_LETTER_STEP_KEY
+        if step_key and step_key not in (state.get("steps") or {}):
+            # The step turn a dead worker left running: its id derives from the checkpoint.
+            ids.append(harness_step_correlation_id(state, step_key))
         seen: set[str] = set()
         for correlation_id in ids:
             if not correlation_id or correlation_id in seen:
@@ -1093,7 +1275,9 @@ class AdmissionRuntime:
                             and self.now() < datetime.fromisoformat(state["retry_at"]):
                         return
                     resume = Command(resume=True)
-                    if snap.next != ("image_wait",):   # a child poll is not a lifecycle fact
+                    if snap.next != ("image_wait",) and not _economy_held(state):
+                        # A child poll is not a lifecycle fact; neither is an economy re-bid (its
+                        # run.economy_held / run.economy_admitted events are the record).
                         await self.event(state, "run.resumed", {"node": snap.next[0]})
                 async for update in graph.astream(resume, cfg, stream_mode="updates", durability="sync"):
                     snap = await graph.aget_state(cfg)
@@ -1104,6 +1288,8 @@ class AdmissionRuntime:
                         status = state.get("status", "running")
                         if status in TERMINAL or node in TIMED_WAIT_NODES:
                             continue  # Atomic terminal projection owns terminal lifecycle facts.
+                        if node in ("resource_request", "resource_wait") and _economy_held(state):
+                            continue  # still held by the economy: one hold cycle, no status rows
                         checkpoint = snap.config["configurable"].get("checkpoint_id", "")
                         await self.store.record_event(run_id, "run."+status, {"node": node},
                             event_id=f"{run_id}:{checkpoint}:{node}:{status}")
@@ -1167,6 +1353,13 @@ class AdmissionRuntime:
             actual = await self.store.finish_projection(run_id, status, detail, cancelled_detail=cancelled)
         else:
             actual = await self.store.finish_projection(run_id, status, detail)
+        if actual is not None and (acts := getattr(self, "acts", None)) is not None:
+            # Close the run's act first, right after the terminal row commits: nothing below may
+            # raise before it (a later step failing would leave the act to the ledger's expiry).
+            # on_terminal never raises.
+            await acts.on_terminal({**state, "run_id": run_id, "workflow": wf}, actual)
+        if actual is not None and (bids := getattr(self, "bids", None)) is not None:
+            bids.on_terminal(run_id)   # never raises
         if actual is not None and actual != status:
             await self._graph_for(wf).aupdate_state(self.config(run_id), {"status": actual}, as_node="finish")
         if actual is not None and actual != "completed" and run_id in self.outreach:
@@ -1177,6 +1370,11 @@ class AdmissionRuntime:
         if actual is not None:
             self._hints.discard(run_id)
             self._checked.pop(run_id, None)
+        if wf == READING_RESONANCE_WORKFLOW and actual in TERMINAL:
+            await self.runner._reading_resonance_lifecycle(
+                ReadingResonanceRunBriefV1.model_validate(state["brief"]),
+                "resonance_completed" if actual == "completed" else "resonance_failed",
+                state["correlation_id"], None if actual == "completed" else state.get("last_error") or actual)
         if wf == DREAM_CARRY_WORKFLOW and actual in TERMINAL:
             # Any carry terminal, completed-partial included (a deadline stop with a picture still being
             # painted): nobody reads that child any more. _cancel_carry_child skips ended/unknown ones.
@@ -1357,7 +1555,7 @@ class AdmissionRuntime:
             terminal = event.event.removeprefix("run.")
             if terminal in TERMINAL_STATE_NODE and event.entry_id == f"{event.run_id}:terminal:{terminal}":
                 # Every admitted terminal (completed, failed, cancelled) is also a DurableRunStateV1:
-                # waiters (cortex-exec reflect, dispatch settlement) must see failures end the run.
+                # waiters (dispatch settlement) must see failures end the run.
                 # At-least-once: acked only after both publishes; sql-writer dedupes on entry_id.
                 row = await self.store.get_run(event.run_id)
                 workflow = ((row or {}).get("request") or {}).get("workflow") or DEFAULT_WORKFLOW
@@ -1452,13 +1650,28 @@ class AdmissionRuntime:
                     "error": values.get("last_error"),
                     "work_started": await self.store.first_event_at(run_id, "run.started") is not None}
                    if workflow == REVERIE_VISUAL_WORKFLOW else {}),
+                # The step results the smoke checkpointed (full text), and the turn it is retrying.
+                **({"harness_steps": dict(values.get("steps") or {}), "error": values.get("last_error"),
+                    "attempt": int(values.get("attempt") or 0), "retry_at": values.get("retry_at"),
+                    "harness_turn_meta": values.get("harness_turn_meta")}
+                   if workflow in HARNESS_STEP_WORKFLOWS or workflow in HARNESS_MULTI_STEP_WORKFLOWS else {}),
+                **({"pr_field_note": {"pr_number": (values.get("brief") or {}).get("pr_number"),
+                                      "outcome": values.get("outcome"), "note_id": values.get("note_id")}}
+                   if workflow == PR_FIELD_NOTE_WORKFLOW else {}),
+                **({"reminiscence": {k: (values.get("brief") or {}).get(k) for k in ("episode", "period_start", "period_end")}
+                    | {"outcome": values.get("outcome"), "hop_ids": values.get("hop_ids"),
+                       "next_step": pending_step(values)}}
+                   if workflow == REMINISCENCE_WORKFLOW else {}),
                 **({"orion_day": {
                     "letter_date": (values.get("brief") or {}).get("letter_date"),
-                    "note_ready": bool(values.get("note_md")),
-                    "carry_forward_ready": bool(values.get("carry_forward_md")),
+                    "letter_ready": bool(values.get("note_md")),
+                    "threads": list(values.get("threads") or [])[:ORION_DAY_MAX_THREADS],
+                    "turn_correlation_id": orion_day_letter_turn_id(values)
+                    or (values.get("harness_turn_meta") or {}).get("turn_correlation_id"),
+                    "prime_act_id": (values.get("brief") or {}).get("prime_act_id"),
                     "persisted": bool(values.get("persisted")),
                     "persist_outcome": values.get("persist_outcome"),
-                    "llm_attempts": dict(values.get("llm_attempts") or {}),
+                    "attempt": int(values.get("attempt") or 0),
                     "retry_at": values.get("retry_at"),
                     "deadline_at": (row["request"]["admission"] or {}).get("deadline_at")},
                     "error": values.get("last_error")}

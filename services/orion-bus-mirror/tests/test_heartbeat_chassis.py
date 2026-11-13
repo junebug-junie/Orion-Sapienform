@@ -15,7 +15,7 @@ re-enable the container.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -44,10 +44,9 @@ class _StopMirror(Exception):
 async def test_mirror_bus_starts_and_stops_heartbeat_chassis(tmp_path, monkeypatch) -> None:
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
     fake_bus = AsyncMock()
-    # bus.subscribe() is an @asynccontextmanager -- calling it returns an async context
-    # manager directly (not a coroutine to await), so a plain MagicMock side_effect raises
-    # synchronously at the `async with bus.subscribe(...)` call, before entry.
-    fake_bus.subscribe = MagicMock(side_effect=RuntimeError("stop before subscribing"))
+    # The subscribe loop (run_subscription) retries a failing subscribe forever, so
+    # the loop itself is stubbed to end the mirror at the point it would subscribe.
+    fake_subscription = AsyncMock(side_effect=RuntimeError("stop before subscribing"))
 
     monkeypatch.setattr(settings, "MIRROR_PARQUET_DIR", str(tmp_path / "parquet"))
     monkeypatch.setattr(settings, "MIRROR_SQLITE_PATH", str(tmp_path / "mirror.sqlite"))
@@ -55,7 +54,7 @@ async def test_mirror_bus_starts_and_stops_heartbeat_chassis(tmp_path, monkeypat
 
     with patch("app.main.OrionBusAsync", return_value=fake_bus), patch(
         "app.main.build_heartbeat_chassis", return_value=fake_chassis
-    ):
+    ), patch("app.main.run_subscription", fake_subscription):
         with pytest.raises(RuntimeError, match="stop before subscribing"):
             await mirror_bus()
 
@@ -70,7 +69,7 @@ async def test_mirror_bus_survives_heartbeat_start_failure(tmp_path, monkeypatch
     fake_chassis = AsyncMock(spec=HeartbeatOnly)
     fake_chassis.start_background.side_effect = RuntimeError("bus unreachable")
     fake_bus = AsyncMock()
-    fake_bus.subscribe = MagicMock(side_effect=RuntimeError("reached subscribe"))
+    fake_subscription = AsyncMock(side_effect=RuntimeError("reached subscribe"))
 
     monkeypatch.setattr(settings, "MIRROR_PARQUET_DIR", str(tmp_path / "parquet"))
     monkeypatch.setattr(settings, "MIRROR_SQLITE_PATH", str(tmp_path / "mirror.sqlite"))
@@ -78,7 +77,7 @@ async def test_mirror_bus_survives_heartbeat_start_failure(tmp_path, monkeypatch
 
     with patch("app.main.OrionBusAsync", return_value=fake_bus), patch(
         "app.main.build_heartbeat_chassis", return_value=fake_chassis
-    ):
+    ), patch("app.main.run_subscription", fake_subscription):
         with pytest.raises(RuntimeError, match="reached subscribe"):
             await mirror_bus()
 

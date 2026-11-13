@@ -61,13 +61,26 @@ class Graph:
         return []
 
 
-def test_sampling_fetches_matching_old_results_not_only_latest():
+def test_sampling_fetches_matching_old_outcomes_not_only_latest():
     conn = Connection()
     data = collect(conn, Graph(), limit=1)
-    assert {r["dispatch_id"] for r in data["results"]["rows"]} == {"old", "new"}
-    query, params = next((q, p) for q, p in conn.queries if "FROM substrate_dispatch_results WHERE" in q)
-    assert set(params[0]) == {"old", "new"}
+    query, params = next((q, p) for q, p in conn.queries if "FROM substrate_action_outcomes WHERE dispatch_id" in q)
+    assert set(params[0]) == {"old"}
     assert "%s" in query
+    assert data["outcomes"]["status"] == "ok"
+
+
+def test_retired_ladder_tables_are_never_read_and_read_as_retired():
+    """Ladder retirement PR 6 (2026-11-07): proposal/policy/dispatch tables are dropped after PR 7.
+    The audit must not query them, and must not report their absence as an empty (missing) link."""
+    conn = Connection()
+    data = collect(conn, Graph(), limit=1)
+    joined = " ".join(q for q, _ in conn.queries)
+    for table in ("substrate_dispatch_results", "substrate_execution_dispatch_frames",
+                  "substrate_proposal_frames", "substrate_policy_decision_frames"):
+        assert table not in joined
+    for source in ("result_sample", "results", "dispatch_frames", "proposal_frames"):
+        assert data[source]["status"] == "retired" and data[source]["rows"] == []
 
 
 def test_failed_source_is_distinct_from_empty_and_error_is_redacted():
@@ -131,3 +144,21 @@ def test_act_ledger_rows_are_not_read_as_motor_episodes():
 
     src = inspect.getsource(agency_episode_reader)
     assert src.count("dispatch_kind NOT LIKE 'act:%%'") == 2
+
+
+def test_loop_outcomes_are_newest_first_and_refused_when_capped(monkeypatch):
+    """world:chat has one fixed loop id (2026-11-12), so its outcomes pile up across conversations.
+    An oldest-first cap would drop the newest episodes' 'acted' rows and fake 'missing' links."""
+    conn = Connection()
+
+    class CappedCursor(Cursor):
+        def execute(self, query, params=None):
+            super().execute(query, params)
+            if "FROM attention_loop_outcome" in query:
+                self.rows = [{"outcome_id": f"o{i}", "loop_id": "open-loop-chat"} for i in range(params[-1])]
+
+    conn.cursor = lambda **kw: CappedCursor(conn)
+    data = collect(conn, Graph(), limit=1)
+    query = next(q for q, _ in conn.queries if "FROM attention_loop_outcome" in q)
+    assert "ORDER BY created_at DESC" in query
+    assert data["loop_outcomes"]["status"] == "truncated" and data["loop_outcomes"]["rows"] == []

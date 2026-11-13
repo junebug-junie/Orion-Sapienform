@@ -617,8 +617,66 @@ class VisionUnresolvedV1(BaseModel):
     camera_id: Optional[str] = None
     window_id: Optional[str] = None
     observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    reason: Literal["council_uncertainty", "no_label", "surprise"]
+    # handoff_missed (2026-10-20): orion-sql-writer's handoff reducer -- someone
+    # left one camera toward the other, the target camera was watching, and no
+    # data explanation (late, turned back, detector miss, a place to go) held.
+    reason: Literal["council_uncertainty", "no_label", "surprise", "handoff_missed"]
     description: str
     what_was_tried: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
     image_ref: Optional[str] = None
+
+
+# Street events (docs/superpowers/specs/2026-10-20-street-continuity-handoff-
+# design.md, section 6). One fact about the street that may compete for
+# Orion's attention: a doorbell press, a cross-camera handoff outcome, a known
+# person's arrival. Producers: orion-vision-retina (doorbell_ring) and the
+# handoff reducer in orion-sql-writer (approach_door, handoff_met for a known
+# person, handoff_missed after its hypotheses settle unexplained,
+# overlap_pair). orion-substrate-runtime consumes the channel (later PR).
+StreetEventKind = Literal[
+    "doorbell_ring",
+    "handoff_met",
+    "handoff_late",
+    "handoff_missed",
+    "overlap_pair",
+    "known_person_arrived",
+    "approach_door",
+]
+StreetSubjectKind = Literal["person", "dog", "vehicle", "unknown"]
+
+
+class StreetEventV1(BaseModel):
+    """One street event on ``orion:vision:street:events``.
+
+    ``salience`` is the spec's ``who x what x surprise`` (0..1); a doorbell
+    ring is always 1.0. ``p_value`` is set only by events graded against a
+    model (handoffs): the probability of an outcome at least this unlikely.
+    ``individual_id`` / ``person_guess`` are a walkway individual and a
+    Juniper-given name guess, never a face match.
+
+    ``extra="forbid"``: a new field must reach every consumer before any
+    producer sends it (consumer-first migration).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["vision.street.event.v1"] = "vision.street.event.v1"
+    event_id: str
+    kind: StreetEventKind
+    stream_ids: List[str] = Field(min_length=1)
+    occurred_at: datetime
+    subject_kind: StreetSubjectKind = "unknown"
+    individual_id: Optional[str] = None
+    person_guess: Optional[str] = None
+    salience: float = Field(ge=0.0, le=1.0)
+    p_value: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Log density, in nats per second, of the actual arrival time under the
+    # handoff's predicted arrival distribution (orion-sql-writer
+    # app/vision_handoff.py arrival_log_score). Set on handoff_met /
+    # handoff_late only; None for misses, unscorable and every other kind.
+    # Read by orion-substrate-runtime's Rung 6 street_handoff domain.
+    # Consumer-first: rebuild the consumer before a producer sends it.
+    arrival_log_score: Optional[float] = None
+    evidence_refs: List[str] = Field(default_factory=list)
+    correlation_id: str

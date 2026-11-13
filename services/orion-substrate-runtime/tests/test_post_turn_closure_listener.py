@@ -71,54 +71,12 @@ def _make_worker() -> object:
     return worker
 
 
-def test_worker_handle_post_turn_closure_writes_prediction_error_when_unresolved(monkeypatch) -> None:
-    from app.worker import _PREDICTION_ERROR_NODE_FLAG
-
-    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
-    worker = _make_worker()
-    calls: list[dict[str, object]] = []
-
-    def _capture(**kwargs: object) -> None:
-        calls.append(kwargs)
-
-    monkeypatch.setattr(worker, "_write_prediction_error_node", _capture)
-    worker.handle_post_turn_closure(_sample_closure(surprise_unresolved=True))
-    assert len(calls) == 1
-    assert calls[0]["node_id"] == "node:substrate.harness_closure"
-    assert calls[0]["reducer_key"] == "post_turn_closure"
-    assert calls[0]["contributing_id"] == "c-1"
-
-
-def test_worker_handle_post_turn_closure_skips_when_flag_disabled(monkeypatch, caplog) -> None:
-    import logging
-
-    from app.worker import _PREDICTION_ERROR_NODE_FLAG
-
-    caplog.set_level(logging.INFO, logger="orion.substrate.runtime")
-    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "false")
-    worker = _make_worker()
-    monkeypatch.setattr(
-        worker,
-        "_write_prediction_error_node",
-        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not write")),
-    )
-    worker.handle_post_turn_closure(_sample_closure(surprise_unresolved=True))
-    assert "post_turn_closure_prediction_error_skipped" in caplog.text
-
-
-def test_worker_handle_post_turn_closure_skips_when_surprise_resolved(monkeypatch) -> None:
-    worker = _make_worker()
-    monkeypatch.setattr(worker, "_write_prediction_error_node", lambda **_kwargs: (_ for _ in ()).throw(AssertionError("should not write")))
-    worker.handle_post_turn_closure(_sample_closure(surprise_unresolved=False))
-
-
 class _RecordingStore:
-    """Fake graph store that actually persists nodes, so repeat
-    handle_post_turn_closure() calls exercise the real get_node_by_id
-    carry-forward path (not a monkeypatched _write_prediction_error_node)."""
+    """Fake graph store that persists nodes and exposes a SQL engine stand-in."""
 
     def __init__(self) -> None:
         self.nodes: dict = {}
+        self.engine = object()
 
     def get_node_by_id(self, node_id):
         return self.nodes.get(node_id)
@@ -127,37 +85,47 @@ class _RecordingStore:
         self.nodes[node.node_id] = node
 
 
-def test_two_closures_land_on_shared_node_and_accumulate_turn_ids(monkeypatch) -> None:
-    """Two harness turns with different correlation_ids both write
-    node:substrate.harness_closure (fixed identity), and
-    contributing_turn_ids accumulates both across the two calls -- proving
-    the shared-node accumulation design instead of each turn getting its own
-    isolated, decay-only node."""
+def _no_pe_write(**_kwargs: object) -> None:
+    raise AssertionError("harness_closure prediction_error is retired; nothing may write it")
+
+
+def test_unresolved_closure_writes_no_prediction_error_node(monkeypatch) -> None:
+    """Retire step 3 (2026-11-11): an unresolved closure no longer writes the
+    fixed 0.65 to node:substrate.harness_closure -- with the PE-node flag ON."""
+    import app.turn_referent_store as trs
     from app.worker import _PREDICTION_ERROR_NODE_FLAG
 
     monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
     worker = _make_worker()
     store = _RecordingStore()
     worker._substrate_graph_store = store
+    monkeypatch.setattr(worker, "_write_prediction_error_node", _no_pe_write)
+    persisted: list[str] = []
+    monkeypatch.setattr(
+        trs, "persist_turn_referent", lambda closure, engine: persisted.append(closure.correlation_id)
+    )
 
     worker.handle_post_turn_closure(_sample_closure(correlation_id="corr-a", surprise_unresolved=True))
     worker.handle_post_turn_closure(_sample_closure(correlation_id="corr-b", surprise_unresolved=True))
 
-    assert list(store.nodes.keys()) == ["node:substrate.harness_closure"]
-    node = store.nodes["node:substrate.harness_closure"]
-    assert node.metadata["contributing_turn_ids"] == ["corr-a", "corr-b"]
+    assert store.nodes == {}
+    # The turn referent (a different artifact, read by reverie) is still persisted.
+    assert persisted == ["corr-a", "corr-b"]
 
 
-def test_repeat_closure_same_correlation_id_does_not_duplicate(monkeypatch) -> None:
-    from app.worker import _PREDICTION_ERROR_NODE_FLAG
+def test_resolved_closure_writes_nothing(monkeypatch) -> None:
+    import app.turn_referent_store as trs
 
-    monkeypatch.setenv(_PREDICTION_ERROR_NODE_FLAG, "true")
     worker = _make_worker()
-    store = _RecordingStore()
-    worker._substrate_graph_store = store
+    monkeypatch.setattr(worker, "_write_prediction_error_node", _no_pe_write)
+    monkeypatch.setattr(
+        trs, "persist_turn_referent",
+        lambda closure, engine: (_ for _ in ()).throw(AssertionError("resolved: no referent")),
+    )
+    worker.handle_post_turn_closure(_sample_closure(surprise_unresolved=False))
 
-    worker.handle_post_turn_closure(_sample_closure(correlation_id="corr-a", surprise_unresolved=True))
-    worker.handle_post_turn_closure(_sample_closure(correlation_id="corr-a", surprise_unresolved=True))
 
-    node = store.nodes["node:substrate.harness_closure"]
-    assert node.metadata["contributing_turn_ids"] == ["corr-a"]
+def test_harness_closure_constant_is_gone() -> None:
+    import app.worker as worker_module
+
+    assert not hasattr(worker_module, "_HARNESS_CLOSURE_UNRESOLVED_ERROR")

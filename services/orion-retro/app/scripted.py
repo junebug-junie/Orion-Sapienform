@@ -1,0 +1,120 @@
+"""Explicitly handed-off, open-loop baseline. No perception or learning claim."""
+
+from .goals import Goals, POLICY_ID as GOAL_POLICY_ID
+
+POLICY_ID = 'scripted-right-jump-v1'
+INTERVAL = 1 / 15
+HOLD_TTL = .1
+
+
+class Scripted:
+    def __init__(self, authority, record, goals_factory=None):
+        self.authority = authority
+        self.record = record
+        self.active = {}
+        # Nova keeps the v1 Goals mailbox; a Zelda worker passes its GoalV2 motor.
+        self.goals_factory = goals_factory or (lambda: Goals(record))
+
+    def public(self):
+        return [dict(port=p, policy_id=s['policy_id'], epoch=s['grant']['epoch'],
+                     duration_seconds=s['duration'], started_frame=s['frame'],
+                     cognition=s['goals'].public() if s['goals'] else None)
+                for p, s in sorted(self.active.items())]
+
+    def start(self, sponsor, port, duration, now, frame, expected_epoch, cognition=False):
+        old = self.authority.leases.get(port)
+        # Explicit transfer of the caller's own live controller only. Scripts
+        # cannot seize another human's port, even through the shared Hub identity.
+        if (not old or old['connection'] != sponsor or old['expires'] <= now
+                or old['epoch'] != expected_epoch):
+            raise ValueError('script_requires_owned_controller')
+        connection = 'scripted:'+str(port)
+        # A leisure sponsor's grant stays preemptible by any human acquire.
+        grant = self.authority.control(connection, port, 'takeover', now, leisure=old.get('leisure', False))
+        goals = self.goals_factory() if cognition else None
+        self.active[port] = dict(sponsor=sponsor, connection=connection, grant=grant,
+                                 duration=duration, until=now+duration, next=now,
+                                 seq=0, frame=frame, goal_attempt_id=None, goals=goals,
+                                 interval=getattr(goals, 'INTERVAL', INTERVAL),
+                                 policy_id=getattr(goals, 'POLICY_ID', GOAL_POLICY_ID) if cognition else POLICY_ID)
+        self.record('policy_started', port=port, policy_id=self.active[port]['policy_id'],
+                    epoch=grant['epoch'], duration_seconds=duration)
+
+    def stop(self, port, reason):
+        s = self.active.pop(port, None)
+        if not s:
+            return
+        if s['goals'] is not None and hasattr(s['goals'], 'abort'):
+            s['goals'].abort(reason)  # GoalV2 records goal_finished with the stop reason
+        # A human may already have taken over. Never release their newer lease.
+        self.authority.disconnect(s['connection'])
+        self.record('policy_stopped', port=port, policy_id=s['policy_id'],
+                    epoch=s['grant']['epoch'], reason=reason)
+
+    def cancel(self, reason, sponsor=None):
+        for port, s in list(self.active.items()):
+            if sponsor is None or sponsor == s['sponsor']:
+                self.stop(port, reason)
+
+    def tick(self, now):
+        for port, s in list(self.active.items()):
+            lease = self.authority.leases.get(port)
+            if not lease or lease['connection'] != s['connection']:
+                self.stop(port, 'human_takeover')
+            elif now >= s['until']:
+                self.stop(port, 'budget_expired')
+            elif now >= lease['expires']:
+                self.stop(port, 'policy_deadline_missed')
+            elif (s['goals'] is not None and s['sponsor'].startswith('leisure:')
+                    and getattr(s['goals'], 'idle_offers', 0) >= 2):
+                self.stop(port, 'leisure_sponsor_lost')  # no goal for two offer windows (60 s)
+            elif now >= s['next'] or s['interval'] == 0:
+                # Four decisions jumping right, eleven walking right. A fixed
+                # diagnostic sequence, independent of pixels, RAM, or outcomes.
+                mask = (s['goals'].mask(now, s['seq']) if s['goals'] else
+                        128 | (256 if s['seq'] % 15 < 4 else 0))
+                goals = s['goals']
+                s['goal_attempt_id'] = (goals.accepted['attempt_id']
+                    if goals and goals.accepted_current() and now < goals.until else None)
+                if (s['interval'] == 0 and mask == 0 and s.get('last_mask') == 0
+                        and not (goals and (goals.accepted_current() or getattr(goals, 'recovering', None)))):
+                    # GoalV2 idle: the held neutral mask is enough. Refresh the hold
+                    # without a new input row (60 rows/s would fill the journal).
+                    lease['expires'] = now+HOLD_TTL
+                    continue
+                s['seq'] += 1; s['last_mask'] = mask
+                self.authority.submit(s['connection'],
+                    dict(s['grant'], seq=s['seq'], mask=mask), now)
+                lease['expires'] = now+HOLD_TTL
+                s['next'] = now+s['interval']  # no catch-up burst after a stall
+
+    def controller(self, port, epoch=None):
+        """Who drives this port: 'script' (browser-sponsored policy), 'leisure' (a leisure
+        sponsor's policy or lease), 'human', or 'none' (no live lease). With an epoch, it
+        names the owner of that applied input's grant rather than the current lease."""
+        s = self.active.get(port); lease = self.authority.leases.get(port)
+        if s and (s['grant']['epoch'] == epoch if epoch is not None
+                  else lease is not None and lease['connection'] == s['connection']):
+            return 'leisure' if s['sponsor'].startswith('leisure:') else 'script'
+        if lease is None or (epoch is not None and lease['epoch'] != epoch):
+            return 'human' if epoch is not None else 'none'
+        return 'leisure' if lease.get('leisure') else 'human'
+
+    def annotate(self, event):
+        event['controller'] = self.controller(event['port'], event['epoch'])
+        s = self.active.get(event['port'])
+        if s and event['epoch'] == s['grant']['epoch']:
+            event['policy_id'] = s['policy_id']
+            if s['goal_attempt_id'] and event['seq'] == s['seq']:
+                event['goal_attempt_id'] = s['goal_attempt_id']
+                if hasattr(s['goals'], 'note_applied'):
+                    s['goals'].note_applied(s['goal_attempt_id'], event['mask'])
+
+    def goal(self, sponsor, data, now):
+        s = self.active.get(data['port'])
+        lease = self.authority.leases.get(data['port'])
+        if (not s or not s['goals'] or s['sponsor'] != sponsor or not lease
+                or now >= s['until'] or lease['connection'] != s['connection'] or lease['expires'] <= now
+                or s['grant']['epoch'] != data['expected_epoch']):
+            raise ValueError('goal_requires_active_controller')
+        return s['goals'].accept(data, now)

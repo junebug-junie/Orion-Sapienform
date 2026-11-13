@@ -212,37 +212,17 @@ def _stop_at_wait(graph, value, thread):
     return run()
 
 
-@pytest.mark.parametrize("how", ["raised", "returned"])
-def test_a_preempted_reflect_call_waits_for_its_hold_instead_of_finishing_empty(how):
-    from app.admitted_reflect_graph import build_admitted_reflect_graph
-    from app.reflect_graph import Deps as ReflectDeps
-
-    async def scenario():
-        admission = HeldAdmission(HoldPreempted("gpu_hold_preempted:hold-1") if how == "raised" else None,
-                                  preempted=how == "returned")
-
-        async def call(reflect_input, llm_route, gpu_lease=None):
-            return None                                        # the non-ok result a lost attach gives
-
-        graph = build_admitted_reflect_graph(ReflectDeps(call_reflect_llm=call), admission.deps(), InMemorySaver())
-        snap = await _stop_at_wait(graph, {"run_id": "r-1", "correlation_id": "c", "workflow": "self_study.reflect",
-                                           "attempt": 0, "admission": {}, "brief": {"timeout_sec": 5}}, "r-1")
-        assert snap.next == ("resource_wait",) and snap.values["status"] == "waiting_resource"
-        assert snap.values["attempt"] == 0 and snap.values["hold"]["lease_id"] == "hold-1"
-        assert admission.release_calls == [(URGENT_PREEMPT, True)]
-    asyncio.run(scenario())
-
-
 def test_a_preempted_self_sense_node_waits_for_its_hold_instead_of_failing_the_run():
     from app.admitted_self_sense_graph import build_admitted_self_sense_graph
     from app.self_sense_graph import Deps as SelfSenseDeps
+    from test_admitted_self_sense_graph import _brief
 
     async def scenario():
         admission = HeldAdmission(HoldPreempted("gpu_hold_preempted:hold-1"))
         graph = build_admitted_self_sense_graph(SelfSenseDeps(run_turn=AsyncMock(), publish_rows=AsyncMock()),
                                                 admission.deps(), InMemorySaver())
         snap = await _stop_at_wait(graph, {"run_id": "r-1", "correlation_id": "c", "workflow": "self_sense_eval",
-                                           "attempt": 0, "admission": {}, "brief": {"timeout_sec": 5}}, "r-1")
+                                           "attempt": 0, "admission": {}, "brief": _brief()}, "r-1")
         assert snap.next == ("resource_wait",) and snap.values["status"] == "waiting_resource"
         assert snap.values["hold"]["lease_id"] == "hold-1"
         assert admission.release_calls == [(URGENT_PREEMPT, True)]
@@ -276,9 +256,11 @@ def test_a_self_sense_question_that_came_back_empty(preempted):
         snap = await _stop_at_wait(graph, {"run_id": "r-1", "correlation_id": "c", "workflow": "self_sense_eval",
                                            "attempt": 0, "admission": {}, "brief": _brief()}, "r-1")
         if preempted:
-            # The node replays under the kept hold; nothing from the failed pass is kept or published.
+            # The node replays under the kept hold. The answer checkpointed before the take-back is
+            # kept (one question per node run); the empty one is dropped; nothing is published.
             assert snap.next == ("resource_wait",) and snap.values["status"] == "waiting_resource"
-            assert snap.values["hold"]["lease_id"] == "hold-1" and not snap.values.get("answers")
+            assert snap.values["hold"]["lease_id"] == "hold-1"
+            assert [a["text"] for a in snap.values["answers"].values()] == ["an answer"]
             assert admission.release_calls == [(URGENT_PREEMPT, True)] and published == []
         else:
             # A real empty answer: published as before, the run completes.
@@ -365,7 +347,7 @@ def bare_runtime(holds, store=None):
 LEASE = {"lease_id": "hold-1", "generation": 1, "role": "agent", "holder": HOLDER}
 
 
-def _held_state(workflow="self_study.reflect"):
+def _held_state(workflow="self_sense_eval"):
     return {"run_id": "study-001", "correlation_id": "trace-001", "workflow": workflow, "attempt": 0,
             "lease": dict(LEASE), "hold": {"request_id": "study-001:1", "lease_id": "hold-1"},
             "brief": {"timeout_sec": 5}, "admission": {}}
@@ -424,6 +406,24 @@ def test_a_preempt_seen_by_the_heartbeat_stops_the_turn_and_cancels_it_in_hub():
         assert started.is_set() and cancelled == [True]
         channel = rt.runner._publish.await_args.args[0]
         assert channel == "orion:harness:run:cancel"
+        # Stopped from outside: the killed turn's record reads "interrupted", not a failure.
+        assert rt.runner._publish.await_args.args[2].reason == "durable_attempt_stopped"
+    asyncio.run(scenario())
+
+
+def test_an_attempt_that_ran_out_of_its_own_time_cancels_with_a_timeout_reason():
+    # The turn was too slow, not stopped from outside: it must stay failed_to_execute downstream.
+    async def scenario():
+        rt = bare_runtime(Holds([_reply("granted")] * 20))
+
+        async def node(state):
+            await asyncio.sleep(10)
+
+        state = {**_held_state("curiosity.investigate"), "brief": {"timeout_sec": 0.05}}
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(rt.execute(state, node), 3)
+        assert rt.runner._publish.await_args.args[0] == "orion:harness:run:cancel"
+        assert rt.runner._publish.await_args.args[2].reason == "durable_attempt_timeout"
     asyncio.run(scenario())
 
 
@@ -902,4 +902,41 @@ def test_a_system_run_is_driven_ahead_of_background_even_when_every_background_s
         gate.set()
         await asyncio.gather(*rt.active.values())
         assert rt.active == {} and rt._system_drivers == set()
+    asyncio.run(scenario())
+
+
+def test_a_node_timeout_slice_bounds_the_attempt_and_the_step_id_is_logged_before_the_turn():
+    """Live 2026-10-23 (run 20261023T180730Z-0842e5): the attempt timer was the whole 8840 s brief
+    budget, so one hung self-sense question held the GPU for all of it. ``node_timeout_sec`` bounds
+    one step; the step's turn id is on ``run.started`` before the turn runs, so a hung turn is
+    traceable even if the worker dies."""
+    async def scenario():
+        rt = bare_runtime(Holds([_reply("granted")]))
+
+        async def node(state):
+            await asyncio.sleep(10)
+
+        state = {**_held_state("self_sense_eval"), "brief": {"timeout_sec": 30},
+                 "node_timeout_sec": 0.2, "step_correlation_id": "q-turn-1"}
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(rt.execute(state, node), 5)
+        assert loop.time() - started < 2
+        run_started = [e for e in rt.store.events if e[1] == "run.started"]
+        assert run_started and run_started[0][2]["step_correlation_id"] == "q-turn-1"
+    asyncio.run(scenario())
+
+
+def test_recovery_cancels_the_self_sense_question_a_dead_worker_left_running():
+    from app.self_sense_graph import question_turn_id
+    from test_admitted_self_sense_graph import _brief
+
+    async def scenario():
+        rt = bare_runtime(Holds([_reply("granted")]))
+        state = {**_held_state("self_sense_eval"), "brief": _brief(), "hold_seq": 1,
+                 "answers": {_brief()["questions"][0][0]: {"text": "a", "correlation_id": "answered-1"}}}
+        await rt._cancel_harness(state, "worker_recovery")
+        cancelled = {call.args[2].correlation_id for call in rt.runner._publish.await_args_list}
+        assert question_turn_id(state, _brief()["questions"][1][0]) in cancelled
     asyncio.run(scenario())

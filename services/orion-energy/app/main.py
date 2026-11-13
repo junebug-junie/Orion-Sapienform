@@ -12,6 +12,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import OrionCodec
+from orion.core.bus.resilience import run_subscription
 from orion.energy.ledger import UsageLedger
 from orion.energy.tariff import load_tariff
 from orion.schemas.power import PowerIntentSettledV1
@@ -142,30 +143,41 @@ async def status_loop(bus: OrionBusAsync, settings: Settings, pipeline: EnergyPi
         await asyncio.sleep(settings.ENERGY_STATUS_INTERVAL_SEC)
 
 
-async def settlement_loop(bus: OrionBusAsync, settings: Settings, pipeline: EnergyPipeline, lock: asyncio.Lock) -> None:
+async def settlement_loop(
+    bus: OrionBusAsync,
+    settings: Settings,
+    pipeline: EnergyPipeline,
+    lock: asyncio.Lock,
+    *,
+    stop: asyncio.Event | None = None,
+) -> None:
     codec = OrionCodec()
-    async with bus.subscribe(settings.POWER_SETTLED_CHANNEL) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            try:
-                decoded = codec.decode(msg.get("data"))
-                if not decoded.ok:
-                    logger.warning("energy_settlement_decode_failed error=%s", decoded.error)
-                    continue
-                settled = PowerIntentSettledV1.model_validate(decoded.envelope.payload)
-                async with lock:
-                    outbound = pipeline.on_settlement(settled, now=datetime.now(timezone.utc))
-                await publish_all(bus, settings, outbound)
-                est = outbound[0].payload
-                logger.info(
-                    "energy_run_cost intent_id=%s usd=%s gap=%s house_usd=%s house_gap=%s",
-                    settled.intent_id,
-                    est.estimated_run_cost_usd,
-                    est.run_cost_gap,
-                    est.house_share_cost_usd,
-                    est.house_share_gap,
-                )
-            except Exception:
-                logger.exception("energy_settlement_handle_failed")
+
+    async def _handle(msg: dict) -> None:
+        try:
+            decoded = codec.decode(msg.get("data"))
+            if not decoded.ok:
+                logger.warning("energy_settlement_decode_failed error=%s", decoded.error)
+                return
+            settled = PowerIntentSettledV1.model_validate(decoded.envelope.payload)
+            async with lock:
+                outbound = pipeline.on_settlement(settled, now=datetime.now(timezone.utc))
+            await publish_all(bus, settings, outbound)
+            est = outbound[0].payload
+            logger.info(
+                "energy_run_cost intent_id=%s usd=%s gap=%s house_usd=%s house_gap=%s",
+                settled.intent_id,
+                est.estimated_run_cost_usd,
+                est.run_cost_gap,
+                est.house_share_cost_usd,
+                est.house_share_gap,
+            )
+        except Exception:
+            logger.exception("energy_settlement_handle_failed")
+
+    await run_subscription(
+        bus, settings.POWER_SETTLED_CHANNEL, _handle, stop_event=stop, name="energy-power-settled"
+    )
 
 
 def build_heartbeat_chassis(settings: Optional[Settings] = None) -> HeartbeatOnly:

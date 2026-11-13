@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+import re
+
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -17,6 +20,10 @@ class Settings(BaseSettings):
     CHANNEL_RETINA_PUB: str = "orion:vision:frames"
     CHANNEL_RETINA_ERROR: str = "orion:vision:retina:error"
     CHANNEL_SYSTEM_HEALTH: str = "orion:system:health"
+    # Ring source only (app/ring_events.py): one vision event per Ring push
+    # (-> scribe -> vision_events) and one StreetEventV1 per ding.
+    CHANNEL_VISION_EVENTS_PUB: str = "orion:vision:events"
+    CHANNEL_STREET_EVENTS_PUB: str = "orion:vision:street:events"
 
     RETINA_SOURCE_TYPE: str = "folder"
     RETINA_SOURCE: str = "/mnt/telemetry/vision/intake"
@@ -47,6 +54,14 @@ class Settings(BaseSettings):
     JPEG_QUALITY: int = 90
 
     HEALTH_INTERVAL_SECONDS: float = 10.0
+    # Publisher watchdog. Nothing published for this long, outside an
+    # expected quiet state (RTSP quiet wait, Ring between events) ->
+    # health status degraded + capture_stalled. If capture_loop itself has
+    # not ticked that long, or the RTSP reader is still delivering frames
+    # while nothing is published, the process exits so the container
+    # restart policy brings the eye back (2026-10-17: walkway dark 3 h,
+    # health "ok"). 0 disables both.
+    RETINA_PUBLISH_STALL_SECONDS: float = 120.0
     SOURCE_RECONNECT_SECONDS: float = 5.0
 
     # RTSP cameras only (webcam/folder/mock ignore these). See
@@ -64,6 +79,57 @@ class Settings(BaseSettings):
     RETINA_RTSP_TRANSPORT: str = "tcp"
     RETINA_RTSP_IO_TIMEOUT_SECONDS: float = 5.0
     RETINA_RTSP_STALL_SECONDS: float = 30.0
+    #   RECONNECT_QUIET_SECONDS  no RTSP (re)connect until this long after the
+    #                   last camera session (reader reconnect, watchdog
+    #                   replacement, pause/resume, heal, process start). A
+    #                   Reolink keeps a dropped session alive; reconnecting
+    #                   inside that window muxes the stale session in (bad
+    #                   cseq + every frame smeared, 2026-10-15 and 2026-10-16).
+    #                   Live 2026-10-16: 180 s stop/start was clean. 90 s is
+    #                   above RFC 2326's 60 s default session timeout (Reolink
+    #                   does not document its own). 0 disables.
+    #   SESSION_STATE_DIR  where the last-session time is persisted so a
+    #                   container restart/deploy also waits. Unset/unreadable
+    #                   at boot -> wait one full quiet period.
+    #   HEAL_*          live self-heal: every HEAL_CHECK_EVERY served frames,
+    #                   score smear/decoder-gray (evals/frame_smear.py math).
+    #                   When >= HEAL_MIN_SHARE of checks over
+    #                   HEAL_WINDOW_SECONDS are corrupt, drop the session, wait
+    #                   the quiet period (doubling per heal in a row, max 8x),
+    #                   reconnect. Never reboots the camera.
+    RETINA_RTSP_RECONNECT_QUIET_SECONDS: float = 90.0
+    RETINA_RTSP_SESSION_STATE_DIR: str = "/var/lib/orion-vision-retina"
+    RETINA_RTSP_HEAL_ENABLED: bool = True
+    RETINA_RTSP_HEAL_CHECK_EVERY: int = 10
+    RETINA_RTSP_HEAL_WINDOW_SECONDS: float = 120.0
+    RETINA_RTSP_HEAL_MIN_SHARE: float = 0.8
+
+    # RETINA_SOURCE_TYPE=ring only (app/ring_source.py): a Ring doorbell with
+    # no RTSP and no recordings. RETINA_SOURCE = the doorbell's name in the
+    # Ring app or its device id (empty = first camera on the account).
+    #   STATE_DIR     Ring refresh token, push credentials, stable hardware
+    #                 id. Owner-only files; written by `python -m
+    #                 app.ring_login` and kept fresh by the source.
+    #   EVENT_KINDS   Ring push kinds that open a live view.
+    #   BURST_SECONDS how long each live view runs; RETINA_FPS samples it.
+    #   COOLDOWN_SECONDS  from the end of one live view to the next start.
+    #                 Each live view wakes a battery camera. A ding ignores
+    #                 it: a ring always opens (or extends) a live view.
+    RETINA_RING_STATE_DIR: str = "/var/lib/orion-vision-ring"
+    RETINA_RING_EVENT_KINDS: str = "motion,ding"
+    RETINA_RING_BURST_SECONDS: float = 15.0
+    RETINA_RING_COOLDOWN_SECONDS: float = 30.0
+    # Active looking (spec 2026-10-20 street continuity, section 5). The
+    # handoff reducer SETs RETINA_RING_SELF_LOOK_KEY (value = handoff id, with
+    # a TTL) when it expects someone at the door; the retina then opens a
+    # live view if none is open and the cooldown has passed, at most
+    # MAX_PER_DAY per UTC day and MIN_SPACING_SECONDS apart. Read from the
+    # bus Redis (ORION_BUS_URL); one open per distinct key value.
+    RETINA_RING_SELF_LOOK_ENABLED: bool = True
+    RETINA_RING_SELF_LOOK_MAX_PER_DAY: int = 8
+    RETINA_RING_SELF_LOOK_MIN_SPACING_SECONDS: float = 300.0
+    RETINA_RING_SELF_LOOK_KEY: str = "orion:vision:look:doorbell"
+    RETINA_RING_SELF_LOOK_POLL_SECONDS: float = 2.0
 
     # On-demand video+audio clip capture for AffectGPT (app/clip_capture.py).
     # Separate from RETINA_SOURCE/RETINA_CAMERA_ID above -- those drive the
@@ -140,6 +206,56 @@ class Settings(BaseSettings):
         return v
 
     @model_validator(mode="after")
+    def _check_rtsp_heal(self) -> "Settings":
+        if self.RETINA_RTSP_RECONNECT_QUIET_SECONDS < 0:
+            raise ValueError("RETINA_RTSP_RECONNECT_QUIET_SECONDS must be >= 0")
+        if self.RETINA_RTSP_HEAL_CHECK_EVERY < 1:
+            raise ValueError("RETINA_RTSP_HEAL_CHECK_EVERY must be >= 1")
+        if self.RETINA_RTSP_HEAL_WINDOW_SECONDS <= 0:
+            raise ValueError("RETINA_RTSP_HEAL_WINDOW_SECONDS must be > 0")
+        if not 0 < self.RETINA_RTSP_HEAL_MIN_SHARE <= 1:
+            raise ValueError("RETINA_RTSP_HEAL_MIN_SHARE must be in (0, 1]")
+        if self.RETINA_SOURCE_TYPE.strip().lower() == "rtsp" and self.RETINA_RTSP_HEAL_ENABLED:
+            # CorruptionTracker needs >= 5 checks inside one window, or the
+            # self-heal is silently dead.
+            checks = self.RETINA_RTSP_HEAL_WINDOW_SECONDS * self.RETINA_FPS / self.RETINA_RTSP_HEAL_CHECK_EVERY
+            if checks < 5:
+                raise ValueError(
+                    f"RETINA_RTSP_HEAL_WINDOW_SECONDS x RETINA_FPS / RETINA_RTSP_HEAL_CHECK_EVERY = {checks:.1f} "
+                    "checks per window; the self-heal needs >= 5 (raise the window or lower CHECK_EVERY)"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _check_ring(self) -> "Settings":
+        if self.RETINA_RING_BURST_SECONDS <= 0:
+            raise ValueError("RETINA_RING_BURST_SECONDS must be > 0")
+        if self.RETINA_RING_COOLDOWN_SECONDS < 0:
+            raise ValueError("RETINA_RING_COOLDOWN_SECONDS must be >= 0")
+        if self.RETINA_RING_SELF_LOOK_MAX_PER_DAY < 0:
+            raise ValueError("RETINA_RING_SELF_LOOK_MAX_PER_DAY must be >= 0")
+        if self.RETINA_RING_SELF_LOOK_MIN_SPACING_SECONDS < 0:
+            raise ValueError("RETINA_RING_SELF_LOOK_MIN_SPACING_SECONDS must be >= 0")
+        if self.RETINA_RING_SELF_LOOK_POLL_SECONDS <= 0:
+            raise ValueError("RETINA_RING_SELF_LOOK_POLL_SECONDS must be > 0")
+        if self.RETINA_SOURCE_TYPE.strip().lower() == "ring" and not self.ring_event_kinds():
+            raise ValueError("RETINA_RING_EVENT_KINDS is empty: the doorbell would never open a live view")
+        return self
+
+    def ring_event_kinds(self) -> tuple[str, ...]:
+        from .ring_source import normalize_kind
+
+        return tuple(normalize_kind(k) for k in self.RETINA_RING_EVENT_KINDS.split(",") if k.strip())
+
+    def rtsp_session_state_path(self) -> str | None:
+        """Per-stream file under RETINA_RTSP_SESSION_STATE_DIR (None if unset)."""
+        d = (self.RETINA_RTSP_SESSION_STATE_DIR or "").strip()
+        if not d:
+            return None
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", self.RETINA_STREAM_ID or "stream")
+        return os.path.join(d, f"rtsp_session_{safe}.json")
+
+    @model_validator(mode="after")
     def _check_rtsp_stall_window(self) -> "Settings":
         stall = self.RETINA_RTSP_STALL_SECONDS
         floor = 3 * self.RETINA_RTSP_IO_TIMEOUT_SECONDS + self.SOURCE_RECONNECT_SECONDS
@@ -148,6 +264,28 @@ class Settings(BaseSettings):
                 f"RETINA_RTSP_STALL_SECONDS={stall} must be 0 or > {floor} "
                 "(3 x RETINA_RTSP_IO_TIMEOUT_SECONDS + SOURCE_RECONNECT_SECONDS), "
                 "or the watchdog races the reader's own reconnect"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_publish_stall(self) -> "Settings":
+        limit = self.RETINA_PUBLISH_STALL_SECONDS
+        if limit < 0:
+            raise ValueError("RETINA_PUBLISH_STALL_SECONDS must be >= 0")
+        if limit == 0:
+            return self
+        floor = max(
+            self.RETINA_RTSP_STALL_SECONDS,
+            self.HEALTH_INTERVAL_SECONDS,
+            2.0 / max(self.RETINA_FPS, 0.01),
+            # pause_device holds the capture loop for stop + clip + start.
+            self.RETINA_CLIP_TIMEOUT_SEC + self.SOURCE_RECONNECT_SECONDS + 10.0 if self.RETINA_CLIP_ENABLED else 0.0,
+        )
+        if limit <= floor:
+            raise ValueError(
+                f"RETINA_PUBLISH_STALL_SECONDS={limit} must be 0 or > {floor} (the RTSP stall "
+                "watchdog, health interval, two capture intervals and the clip timeout), or a "
+                "normal pause reads as a dead publisher"
             )
         return self
 

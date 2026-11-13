@@ -6,11 +6,14 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from scripts.main import app
-
-
 @pytest.fixture()
 def client() -> TestClient:
+    # Imported here, not at module level: conftest's _hub_service_isolation
+    # purges scripts.* before every test, so a module-level `app` would be a
+    # stale copy whose routes read a different `settings` than the one these
+    # tests patch -- and the route would read the operator's real ~/.fcc/.env.
+    from scripts.main import app
+
     return TestClient(app)
 
 

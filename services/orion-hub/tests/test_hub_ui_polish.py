@@ -24,8 +24,10 @@ for key, value in {
 
 
 def _render_hub_index(monkeypatch: pytest.MonkeyPatch) -> str:
+    # Fresh settings/main for this render; monkeypatch.delitem puts the
+    # originals back at teardown so the pop does not leak past this test.
     for mod in ("scripts.main", "scripts.settings", "app.settings"):
-        sys.modules.pop(mod, None)
+        monkeypatch.delitem(sys.modules, mod, raising=False)
     import app.settings as app_settings
 
     app_settings.get_settings.cache_clear()
@@ -35,8 +37,16 @@ def _render_hub_index(monkeypatch: pytest.MonkeyPatch) -> str:
 
 
 def test_hub_main_layout_is_fifty_fifty_and_scrollable_chat() -> None:
+    # Since the 2026-10-06 layout revamp the 50/50 split lives in CSS, not in a
+    # `md:w-1/2` class: the EKG drawer is half width while open and the chat card
+    # takes the rest (and all of it when the drawer collapses).
     template = (HUB_ROOT / "templates" / "index.html").read_text(encoding="utf-8")
-    assert template.count("md:w-1/2 bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0") >= 2
+    css = (HUB_ROOT / "static" / "css" / "style.css").read_text(encoding="utf-8")
+    column = "bg-gray-900 rounded-2xl shadow-lg p-5 flex flex-col space-y-4 h-[56rem] min-h-0"
+    assert f'class="hub-ekg-drawer {column}"' in template
+    assert f'class="hub-chat-card {column}"' in template
+    assert ".hub-ekg-drawer { width: 50%;" in css
+    assert ".hub-chat-card { flex: 1 1 0;" in css
     assert 'id="conversation" class="flex-1 min-h-0' in template
 
 

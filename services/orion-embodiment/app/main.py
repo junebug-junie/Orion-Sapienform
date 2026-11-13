@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI
 
@@ -75,6 +76,13 @@ app = FastAPI(title="orion-embodiment", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, Any]:
     s = get_settings()
-    return {"status": "ok", "service": s.service_name, "enabled": str(s.enabled)}
+    out: dict[str, Any] = {"status": "ok", "service": s.service_name, "enabled": str(s.enabled)}
+    # Ladder retirement PR 3: Orion's AI Town session timer. A silent hold shows here (each tick's
+    # result, the refusal counts, the controller's hold), not only in the logs.
+    try:
+        out["town_self_start"] = worker.town_self_start_snapshot()
+    except Exception as exc:  # noqa: BLE001 -- /health never fails on a debug block
+        out["town_self_start"] = {"error": type(exc).__name__}
+    return out

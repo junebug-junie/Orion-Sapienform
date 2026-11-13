@@ -129,7 +129,7 @@ def test_only_bus_rpc_hops_count():
         "http:llm-gateway:8210/routes",
         "gpu_pool:fast#gpu_pool_wait",
         "fcc:claude-opus",
-        "verb:self_study.reflect",
+        "verb:journal.compose",
         "governor:agent",
     ):
         assert not counted_hop(hop, ()), hop

@@ -127,7 +127,8 @@ reasons for wanting it converged on the same fix.
 
 ## Credential isolation
 
-Identical in shape and rationale to `orion-self-study-enrichment` — read that
+Identical in shape and rationale to the self-study enrichment service (deleted
+2026-10-30; read its README from git history) — read that
 service's "Credential isolation (safety requirement)" section too; it carries
 the incident history. That service still uses the file-mount pattern this one
 retired 2026-08-18; the staleness bug below applies to it identically and is
@@ -170,8 +171,8 @@ reported `model` and `cost_usd`.
 ### FIXED 2026-08-18: the `:ro` credential mount went stale on token refresh
 
 This section is kept as the incident record; the mount it describes no longer
-exists in this service. **It still applies unfixed to
-`orion-self-study-enrichment`**, which uses the same pattern.
+exists in this service. It also applied, unfixed, to the self-study enrichment service until that service
+was deleted on 2026-10-30.
 
 Confirmed live 2026-08-14, and it broke the room roughly every 7.5 hours.
 Claude Code refreshes the OAuth login by **atomic rename**, which creates a
@@ -191,9 +192,8 @@ after refresh        host      inode=5936397 mtime=1786725885
                      container inode=5936136 mtime=1786697381   <- pinned, stale
 ```
 
-`orion-self-study-enrichment` was silently in this state too, with the same
-revoked-token error, and had been since the refresh — still is, as of this
-writing, since it has not received this fix.
+The self-study enrichment service (deleted 2026-10-30) was silently in this state
+too, with the same revoked-token error.
 
 **Real fix applied**: switched to `claude setup-token`'s long-lived (1-year)
 OAuth token, passed as `CLAUDE_CODE_OAUTH_TOKEN` — see "Credential isolation"
@@ -210,15 +210,58 @@ and re-copying the credential into `CLAUDE_CONFIG_DIR` before each turn (still
 needs a directory mount as its source, so it inherits the same exposure).
 Neither was needed once the credential itself stopped being a file.
 
+## Consult rooms (2026-11-11)
+
+A room id that starts with `consult:` is a consult from Hub's consult loop
+(`services/orion-hub/scripts/consult_loop.py`): Orion brings a plumbing question to Claude before
+Juniper. Such a turn is different in five ways:
+
+- **It reads code.** `--tools Read,Grep,Glob` with the working directory at `/consult-src/current`.
+  That is a `git archive` export of the deployed commit (`scripts/export_consult_source.py`, refreshed
+  by the post-pull rebuild), mounted read-only. It holds tracked files only: no `.git`, no `.env`,
+  nothing Orion wrote. Orion's FCC sandbox clone is never mounted. Its `.git/config` remote URL
+  carries a credential, and Orion writes into it (review finding, 2026-11-11).
+- **It never bypasses permissions.** It uses `--permission-mode default` with deny rules for `/proc`,
+  `/root`, `/data`, `/etc`, `/app`, `.env` files and `.git` (`claude_session.consult_argv`). In `-p`
+  mode a read that needs a permission is denied. Verified live in this container on 2026-11-11: a
+  read inside the working directory worked. `/proc/self/environ`, `/etc/hostname`,
+  `/usr/lib/os-release`, a Grep of `/proc/self/environ` and a Glob of `/root` were all refused.
+- **Trust boundary.** Any bus publisher can open a consult room by sending a `consult:` room id. That
+  is the existing bus boundary. No Hub social path builds such an id.
+- **It thinks harder.** `ROOM_COMPANION_CONSULT_MODEL` (claude-sonnet-5-5), `_EFFORT` (high), and
+  `_TIMEOUT_SEC` (900).
+- **Hub writes the whole prompt.** The companion passes it through and adds the consult framing
+  (`orion.consult.core.CLAUDE_CONSULT_SYSTEM`).
+- **It never passes.** Orion asked a question, so `[pass]` is kept as text.
+
 ## Session continuity
 
-One room is one durable Claude session. The first turn mints a uuid and passes
-`--session-id`; every later turn passes `--resume`. The map lives in
-`ROOM_COMPANION_SESSION_STATE_PATH` on this service's own volume.
+One room is one durable Claude session per Denver day. The first turn mints a
+uuid and passes `--session-id`; every later turn passes `--resume`. The map
+lives in `ROOM_COMPANION_SESSION_STATE_PATH` on this service's own volume.
+
+- **Daily rotation.** The first invite after 04:00 America/Denver mints a new
+  session, reseeded from the whole conversation Hub sends. This bounds what a
+  resumed session carries, and so its per-turn cost. Consult rooms never
+  rotate (a consult can run across 04:00). A legacy entry from before
+  2026-11-12 (a bare session id, no day) rotates on its first invite.
+- **Sent-up-to mark.** Hub sends the whole window on every invite. The
+  companion keeps, per session, a key for every line it has sent
+  (`<turn ref>|<speaker>`), and a resumed turn gets only lines with a new key,
+  plus the new message. A key and not a time, because Hub merges Orion's reply
+  into the row Juniper's half already opened, with the same `created_at`.
+  Lines from Hub before 2026-11-12 (no turn ref) fall back to a time mark. It
+  never re-sends side-exchange lines (Claude's own replies and the prompts
+  that asked for them): the session already holds them.
 
 That is what makes Claude a *participant* rather than a stateless helper, and
-it means a turn sends only the new message — the transcript in the request is
+it means a turn sends only what is new — the transcript in the request is
 first-turn seeding and a recovery path, not the memory mechanism.
+
+**The prompt goes over stdin, never argv.** Linux refuses any single argument
+over 131,072 bytes, and a first-turn prompt is up to ~160,000 characters.
+Verified live 2026-11-12 in this image (CLI 2.1.239): a 150,101-byte prompt
+piped to `claude -p` was read whole.
 
 If a `--resume` fails because the CLI no longer holds that session, the
 mapping is dropped so the next turn can mint a fresh one. Without that, the
@@ -239,6 +282,14 @@ Room-native context and nothing from Orion's interior. Specifically:
   through an **allowlist** (`_SUMMARY_KEYS`) rather than wholesale — this is a
   third-party-bound payload, so "everything we happened to have" is the wrong
   default.
+- On a session's first turn: a names-and-counts index of what is open in Hub
+  (`hub_index`: the tab Juniper is on, open consults, open asks, how many
+  concerns Prime holds -- never their content), and the whole Hub
+  conversation back to `HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS` (160,000), oldest
+  first, whole rows only, after one `[Earlier: N turns ... not shown.]` line.
+  Each line reads `Speaker [turn:1a2b3c4d] (Thu Nov 12 09:16): text`, with
+  Orion's unprompted messages labelled `Oríon (unprompted)` and Claude's own
+  side exchanges as `Juniper (to Claude)` / `Claude`.
 - The new message, prefixed with who said it.
 
 Not sent: recall results, self-state, drives, journals, mirrors. Tools are off

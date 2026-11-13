@@ -66,11 +66,11 @@ separate hard-fail paths regressed the exact resilience this closes:
   exactly what survived the real incident. Boot-broken must degrade the
   same way mid-uptime-broken does, not worse.
 - **The CUDA watchdog** (`app/cuda_watchdog.py`), a background task started
-  alongside the existing heartbeat loop -- the single real enforcement path
+  alongside the bus heartbeat (`HeartbeatOnly`) -- the single real enforcement path
   for BOTH "broken at boot" and "broken mid-uptime". Polls
   `torch.cuda.is_available()` (off the event loop, under a timeout -- a
   genuine NVML wedge can hang rather than fast-return, and an in-line
-  synchronous call would freeze `heartbeat_loop`/`listener_task`/`stt_task`
+  synchronous call would freeze the heartbeat/`listener_task`/`stt_task`
   right along with itself) every `CUDA_WATCHDOG_POLL_SEC`. On
   `CUDA_WATCHDOG_FAILURE_THRESHOLD` consecutive failures (debounced against
   a single transient hiccup; a hang counts as a failure, a raised exception

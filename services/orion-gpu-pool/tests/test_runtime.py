@@ -73,7 +73,7 @@ def make(down=(), store=None, saver=None, clock=None, bus=None, mode="enforce"):
         _, file, slots, ctx = LIVE[role]
         return Probe(True, {"model_path": f"/models/gguf/{file}", "total_slots": slots,
                             "default_generation_settings": {"n_ctx": ctx}, "modalities": {"vision": False}},
-                     checked_at=clock())
+                     checked_at=clock(), backend=CFG.roles[role].backend)
 
     rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=store or MemoryStore(),
                      graph=build_lease_graph(lambda: CFG, saver or MemorySaver()), bus=bus or FakeBus(),

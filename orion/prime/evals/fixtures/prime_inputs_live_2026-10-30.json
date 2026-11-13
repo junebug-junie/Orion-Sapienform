@@ -1,0 +1,1216 @@
+{
+ "captured_at": "2026-10-30T07:10:09.782190+00:00",
+ "body": {
+  "ok": true,
+  "shadow": true,
+  "age_sec": 108.5,
+  "strain": {
+   "value": 0.0,
+   "constraint": null,
+   "exogenous_bind": [
+    "energy"
+   ],
+   "self_spent": [
+    "attention:juniper"
+   ],
+   "stuck": [],
+   "no_reading": [
+    "claude"
+   ],
+   "why": "strain 0: every live constraint is slack; out of my hands: energy; my own spending, not strain: attention:juniper"
+  },
+  "prices": {
+   "heat": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 0.8847,
+    "budget": 7.0347,
+    "excess": -0.8742,
+    "horizon_sec": 21600.0,
+    "why": "cabinet 24.9 C; Orion's share 0.88 C (2 h step response: a short-run lower bound) [athena +24 W x 0.64 = 0.16 C; circe +234 W x 0.31 = 0.73 C; hecate asleep]; room without Orion 24.0 C vs line 31.0 C"
+   },
+   "energy": {
+    "value": 1.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "exogenous_bind",
+    "use": 196.4772,
+    "budget": 100.0,
+    "excess": null,
+    "horizon_sec": 21600.0,
+    "why": "my always-on body (rest plus anything left running) costs about $147/month, more than the $100 envelope by itself; my activity above it adds about $44 this month (pace $39/month); month to date $184.50; forecast $196.48 by month end at $0.256/h; the always-on floor alone ($0.202/h) reaches $193.96 vs envelope $100"
+   },
+   "lane:agent": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 3599.962,
+    "budget": 3600.0,
+    "excess": -0.0,
+    "horizon_sec": 3600.0,
+    "why": "3600 lease-s asked of 1 slot(s) in 60 min; 6 deferrable waiting (hunger, not priced)"
+   },
+   "lane:agent-deep": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 0.0,
+    "budget": 0.0,
+    "excess": 0.0,
+    "horizon_sec": 3600.0,
+    "why": "seat has no live slot now; 6 deferrable waiting (hunger, not priced)"
+   },
+   "lane:agent-gpu2": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 0.0,
+    "budget": 0.0,
+    "excess": 0.0,
+    "horizon_sec": 3600.0,
+    "why": "seat has no live slot now; its 6974 lease-s this window ran while it was loaded (swap seat, unloaded since); 6 deferrable waiting (hunger, not priced)"
+   },
+   "lane:chat": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 1505.657,
+    "budget": 3600.0,
+    "excess": -0.5818,
+    "horizon_sec": 3600.0,
+    "why": "1506 lease-s asked of 1 slot(s) in 60 min; 6 deferrable waiting (hunger, not priced)"
+   },
+   "lane:diffusion": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 34.362,
+    "budget": 3600.0,
+    "excess": -0.9905,
+    "horizon_sec": 3600.0,
+    "why": "34 lease-s asked of 1 slot(s) in 60 min"
+   },
+   "lane:experiment": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 0.0,
+    "budget": 0.0,
+    "excess": 0.0,
+    "horizon_sec": 3600.0,
+    "why": "seat has no live slot now"
+   },
+   "lane:fast": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 6144.607,
+    "budget": 14400.0,
+    "excess": -0.5733,
+    "horizon_sec": 3600.0,
+    "why": "6145 lease-s asked of 4 slot(s) in 60 min"
+   },
+   "lane:kev": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 0.0,
+    "budget": 3600.0,
+    "excess": -1.0,
+    "horizon_sec": 3600.0,
+    "why": "0 lease-s asked of 1 slot(s) in 60 min"
+   },
+   "lane:metacog": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 2432.822,
+    "budget": 14400.0,
+    "excess": -0.8311,
+    "horizon_sec": 3600.0,
+    "why": "2433 lease-s asked of 4 slot(s) in 60 min"
+   },
+   "lane:world": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 0.0,
+    "budget": 7200.0,
+    "excess": -1.0,
+    "horizon_sec": 3600.0,
+    "why": "0 lease-s asked of 2 slot(s) in 60 min"
+   },
+   "attention:juniper": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "slack",
+    "use": 0.0,
+    "budget": 4.0,
+    "excess": -1.0,
+    "horizon_sec": 86400.0,
+    "why": "0 of 4 cap-counted messages by 01:08 local; day-end pace 0.0"
+   },
+   "claude": {
+    "value": 0.0,
+    "ceiling": 1.0,
+    "ceiling_source": "provisional",
+    "bind_state": "no_reading",
+    "use": null,
+    "budget": null,
+    "excess": null,
+    "horizon_sec": 21600.0,
+    "why": "claude limit state unknown (no_observation); price held at its last value"
+   }
+  }
+ },
+ "temporal": {
+  "as_of": "2026-10-30T07:03:21.438419Z",
+  "day_id": "2026-10-30",
+  "frame_id": "519f8bdd436bdd27",
+  "warnings": [
+   "3 rows at or before the watermark were not folded (re-read or late)"
+  ],
+  "day_phase": "pre_dawn",
+  "active_arc": {
+   "kind": "conversation",
+   "arc_id": "a94bf8ec38978408",
+   "status": "open",
+   "began_at": "2026-10-30T06:12:10.306471Z",
+   "ended_at": null,
+   "causes_now": null,
+   "subject_ref": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
+   "last_seen_at": "2026-10-30T07:01:10.841530Z",
+   "subject_label": "",
+   "episode_began_at": null,
+   "attention_returns": 1,
+   "cumulative_dwell_sec": 0.0
+  },
+  "arcs_today": [
+   {
+    "kind": "interoception",
+    "arc_id": "a52a1db34a2c61e9",
+    "status": "closed",
+    "began_at": "2026-10-30T05:59:55.163978Z",
+    "ended_at": "2026-10-30T06:10:28.874146Z",
+    "causes_now": null,
+    "subject_ref": "node:substrate.execution",
+    "last_seen_at": "2026-10-30T06:10:28.874146Z",
+    "subject_label": "node:substrate.execution",
+    "episode_began_at": null,
+    "attention_returns": 2,
+    "cumulative_dwell_sec": 246.957
+   },
+   {
+    "kind": "concern",
+    "arc_id": "8d0df9035443762c",
+    "status": "closed",
+    "began_at": "2026-10-30T06:00:00Z",
+    "ended_at": "2026-10-30T07:00:02.217898Z",
+    "causes_now": null,
+    "subject_ref": "open-loop-a7f206f3eb1a",
+    "last_seen_at": "2026-10-30T07:00:02.217898Z",
+    "subject_label": "",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 0.0
+   },
+   {
+    "kind": "concern",
+    "arc_id": "8d87adeca2ce06a5",
+    "status": "open",
+    "began_at": "2026-10-30T06:00:00Z",
+    "ended_at": null,
+    "causes_now": null,
+    "subject_ref": "open-loop-5cb6cd032923",
+    "last_seen_at": "2026-10-30T06:06:38.532855Z",
+    "subject_label": "",
+    "episode_began_at": null,
+    "attention_returns": 1,
+    "cumulative_dwell_sec": 0.0
+   },
+   {
+    "kind": "concern",
+    "arc_id": "f687c34bb02d9757",
+    "status": "closed",
+    "began_at": "2026-10-30T06:00:00Z",
+    "ended_at": "2026-10-30T07:00:02.217898Z",
+    "causes_now": null,
+    "subject_ref": "open-loop-14fa7efbb371",
+    "last_seen_at": "2026-10-30T07:00:02.217898Z",
+    "subject_label": "",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 0.0
+   },
+   {
+    "kind": "reverie",
+    "arc_id": "0509ac24b85645c9",
+    "status": "closed",
+    "began_at": "2026-10-30T06:00:34.778761Z",
+    "ended_at": "2026-10-30T06:01:35.579686Z",
+    "causes_now": null,
+    "subject_ref": "f9e3a686-bc24-43f2-9e62-2a485138bdc4",
+    "last_seen_at": "2026-10-30T06:01:35.579686Z",
+    "subject_label": "open-loop-442aec94a6f4",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 60.801
+   },
+   {
+    "kind": "interoception",
+    "arc_id": "5d9d511709c739af",
+    "status": "suspended",
+    "began_at": "2026-10-30T06:00:48.790396Z",
+    "ended_at": null,
+    "causes_now": null,
+    "subject_ref": "node:substrate.bus_synaptic",
+    "last_seen_at": "2026-10-30T06:38:07.713287Z",
+    "subject_label": "node:substrate.bus_synaptic",
+    "episode_began_at": null,
+    "attention_returns": 2,
+    "cumulative_dwell_sec": 1104.77
+   },
+   {
+    "kind": "strain",
+    "arc_id": "253490ed11625f82",
+    "status": "closed",
+    "began_at": "2026-10-30T06:02:21.285623Z",
+    "ended_at": "2026-10-30T06:36:33.580021Z",
+    "causes_now": [],
+    "subject_ref": "orion:arousal",
+    "last_seen_at": "2026-10-30T06:36:33.580021Z",
+    "subject_label": "gpu_queue_sustained",
+    "episode_began_at": "2026-10-30T06:02:21.285623Z",
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 2052.294
+   },
+   {
+    "kind": "attention",
+    "arc_id": "16b688a8ce2581f3",
+    "status": "closed",
+    "began_at": "2026-10-30T06:03:42.365639Z",
+    "ended_at": "2026-10-30T06:06:10.166991Z",
+    "causes_now": null,
+    "subject_ref": "node:substrate.strain",
+    "last_seen_at": "2026-10-30T06:06:10.166991Z",
+    "subject_label": "Strain prediction error",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 147.801
+   },
+   {
+    "kind": "reverie",
+    "arc_id": "3d0fb034131bebf3",
+    "status": "closed",
+    "began_at": "2026-10-30T06:06:40.752223Z",
+    "ended_at": "2026-10-30T06:06:58.947813Z",
+    "causes_now": null,
+    "subject_ref": "e2a36f7c-1c58-4325-bd52-47fff899483a",
+    "last_seen_at": "2026-10-30T06:06:58.947813Z",
+    "subject_label": "open-loop-82efcd93c7ad",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 18.196
+   },
+   {
+    "kind": "conversation",
+    "arc_id": "a94bf8ec38978408",
+    "status": "open",
+    "began_at": "2026-10-30T06:12:10.306471Z",
+    "ended_at": null,
+    "causes_now": null,
+    "subject_ref": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
+    "last_seen_at": "2026-10-30T07:01:10.841530Z",
+    "subject_label": "",
+    "episode_began_at": null,
+    "attention_returns": 1,
+    "cumulative_dwell_sec": 0.0
+   },
+   {
+    "kind": "attention",
+    "arc_id": "36ec771e79b1cc02",
+    "status": "closed",
+    "began_at": "2026-10-30T06:12:23.526999Z",
+    "ended_at": "2026-10-30T06:21:27.703301Z",
+    "causes_now": null,
+    "subject_ref": "world:chat",
+    "last_seen_at": "2026-10-30T06:21:27.703301Z",
+    "subject_label": "Juniper is talking (1 message in the last 15 min)",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 544.176
+   },
+   {
+    "kind": "reverie",
+    "arc_id": "dfe57ab3b9a86f93",
+    "status": "closed",
+    "began_at": "2026-10-30T06:13:20.401935Z",
+    "ended_at": "2026-10-30T06:13:33.810856Z",
+    "causes_now": null,
+    "subject_ref": "06028df7-50f2-4093-a841-ddbb6d3f6ff3",
+    "last_seen_at": "2026-10-30T06:13:33.810856Z",
+    "subject_label": "open-loop-f9e44196c903",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 13.409
+   },
+   {
+    "kind": "attention",
+    "arc_id": "01598bdc3eef0327",
+    "status": "suspended",
+    "began_at": "2026-10-30T06:23:15.075043Z",
+    "ended_at": null,
+    "causes_now": null,
+    "subject_ref": "node:substrate.bus_synaptic",
+    "last_seen_at": "2026-10-30T06:36:59.080858Z",
+    "subject_label": "Bus synaptic prediction error",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 824.006
+   },
+   {
+    "kind": "reverie",
+    "arc_id": "8082e3de293cf107",
+    "status": "closed",
+    "began_at": "2026-10-30T06:25:47.384381Z",
+    "ended_at": "2026-10-30T06:26:03.130592Z",
+    "causes_now": null,
+    "subject_ref": "cf1a3005-c6e6-4aa7-9559-16f6dd7506d7",
+    "last_seen_at": "2026-10-30T06:26:03.130592Z",
+    "subject_label": "open-loop-442aec94a6f4",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 15.746
+   },
+   {
+    "kind": "interoception",
+    "arc_id": "12386082bea14acb",
+    "status": "open",
+    "began_at": "2026-10-30T06:38:07.713287Z",
+    "ended_at": null,
+    "causes_now": null,
+    "subject_ref": "node:substrate.chat",
+    "last_seen_at": "2026-10-30T06:40:48.071007Z",
+    "subject_label": "node:substrate.chat",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 160.358
+   },
+   {
+    "kind": "reverie",
+    "arc_id": "d79d10a75f02ea77",
+    "status": "closed",
+    "began_at": "2026-10-30T06:39:40.634821Z",
+    "ended_at": "2026-10-30T06:39:49.898972Z",
+    "causes_now": null,
+    "subject_ref": "c1bcdce8-5d22-44bf-9157-cb7bebf4841f",
+    "last_seen_at": "2026-10-30T06:39:49.898972Z",
+    "subject_label": "open-loop-e91fa7e1c61e",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 9.264
+   },
+   {
+    "kind": "reverie",
+    "arc_id": "73faacbbffedcedb",
+    "status": "closed",
+    "began_at": "2026-10-30T07:02:24.349708Z",
+    "ended_at": "2026-10-30T07:02:28.994779Z",
+    "causes_now": null,
+    "subject_ref": "018216e5-f821-43bb-b0be-5bf2d6e3ee17",
+    "last_seen_at": "2026-10-30T07:02:28.994779Z",
+    "subject_label": "open-loop-f9e44196c903",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 4.645
+   }
+  ],
+  "open_threads": [
+   {
+    "arc_id": "8d87adeca2ce06a5",
+    "subject_ref": "open-loop-5cb6cd032923",
+    "last_returned": "2026-10-30T06:06:38.532855Z",
+    "returns_today": 1,
+    "subject_label": "",
+    "first_seen_today": "2026-10-30T06:00:00Z",
+    "carried_from_previous_day": true
+   }
+  ],
+  "previous_arc": {
+   "kind": "attention",
+   "arc_id": "01598bdc3eef0327",
+   "status": "suspended",
+   "began_at": "2026-10-30T06:23:15.075043Z",
+   "ended_at": null,
+   "causes_now": null,
+   "subject_ref": "node:substrate.bus_synaptic",
+   "last_seen_at": "2026-10-30T06:36:59.080858Z",
+   "subject_label": "Bus synaptic prediction error",
+   "episode_began_at": null,
+   "attention_returns": 0,
+   "cumulative_dwell_sec": 824.006
+  },
+  "sleep_arc_ids": [],
+  "active_by_kind": {
+   "conversation": {
+    "kind": "conversation",
+    "arc_id": "a94bf8ec38978408",
+    "status": "open",
+    "began_at": "2026-10-30T06:12:10.306471Z",
+    "ended_at": null,
+    "causes_now": null,
+    "subject_ref": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
+    "last_seen_at": "2026-10-30T07:01:10.841530Z",
+    "subject_label": "",
+    "episode_began_at": null,
+    "attention_returns": 1,
+    "cumulative_dwell_sec": 0.0
+   },
+   "interoception": {
+    "kind": "interoception",
+    "arc_id": "12386082bea14acb",
+    "status": "open",
+    "began_at": "2026-10-30T06:38:07.713287Z",
+    "ended_at": null,
+    "causes_now": null,
+    "subject_ref": "node:substrate.chat",
+    "last_seen_at": "2026-10-30T06:40:48.071007Z",
+    "subject_label": "node:substrate.chat",
+    "episode_began_at": null,
+    "attention_returns": 0,
+    "cumulative_dwell_sec": 160.358
+   }
+  },
+  "schema_version": "temporal_self.frame.v1",
+  "source_cursors": {
+   "gpu_wait": "2026-10-30T07:00:51.207367+00:00|232407087f94480aa8f2f162286f4c7a",
+   "chat_turn": "2026-10-30T07:01:10.841530+00:00|ec07db46-eeb0-4d24-9fab-b8b7f9b9952a",
+   "retro_play": "2026-10-30T02:10:19.767883+00:00|f0ef1446-1d67-4a91-96b6-d5db11f4769f",
+   "visual_run": "2026-10-30T05:32:17.813807+00:00|b67fb0f0-02c0-4fc2-b7b3-d216b64a08a6",
+   "dream_cycle": "2026-10-30T05:00:22.207668+00:00|dc-3dd0c301e98c",
+   "street_event": "2026-10-29T21:21:27.980453+00:00|7cb252d44d74135819233c85d83a366d",
+   "attention_row": "2026-10-30T07:02:58.603989+00:00|cortex-04de26cb-b2f2-4bad-89a2-914b5b050919-curiosity_compactor_digest_v1",
+   "curiosity_run": "2026-10-29T15:28:30.600238+00:00|8ce4e099c883",
+   "reverie_chain": "2026-10-30T07:02:28.994779+00:00|018216e5-f821-43bb-b0be-5bf2d6e3ee17",
+   "action_outcome": "2026-10-30T07:00:59.434806+00:00|146675",
+   "broadcast_tick": "2026-10-30T07:02:01.983834+00:00|broadcast-abe258103b071dba5115573d",
+   "memory_episode": "2026-10-17T02:41:00.000000+00:00|d29bd622-8fbd-5489-8fdd-d27a129fe655",
+   "vision_percept": "2026-10-30T00:07:36.218640+00:00|33ea6cae-4b4a-420e-af6c-6c7e66abe831",
+   "visual_deferral": "2026-10-10T06:15:50.799129+00:00|451c1718-7203-4bc9-ae48-b238f3eca1ad",
+   "dream_hypothesis": "2026-10-30T05:00:10.421365+00:00|dh-c5f3853f7087",
+   "arousal_transition": "2026-10-30T07:01:10.847052+00:00|2026-10-30T07:01:10.847052+00:00:engaged",
+   "expectation_verdict": "2026-10-30T07:02:24.404280+00:00|da1a90b2-9756-4809-a9c2-3e6147ad0a1d",
+   "field_dominance_run": "2026-10-30T06:40:48.071007+00:00|field-dominance-run:attention.frame:tick_89126c1ecdc9:field_attention_policy.v1",
+   "metacog_observation": "2026-10-30T06:49:29.301648+00:00|metacog_9080c92e-6c9a-45e6-ad25-6ed7be391b25",
+   "presence_transition": "2026-10-30T05:01:54.053319+00:00|d66eb0a58d3e62e53bf990a34298e3dc",
+   "attention_loop_raised": "2026-10-30T06:06:38.532855+00:00|saltrace_01a2714fc62a1d5ddcddff34",
+   "attention_loop_verdict": "2026-10-30T07:00:02.217898+00:00|loopoutcome_7979333d04a70960ef40aa76",
+   "consolidation_window_close": "2026-10-30T06:12:14.844628+00:00|035078b3-2e25-483e-a52b-d97e7cff6355"
+  },
+  "reducer_version": "temporal_self.reducer.v1",
+  "arcs_today_total": 17,
+  "entered_day_with": [
+   "338711d4156f401b",
+   "3ff35ee4a1a8e2f5",
+   "997fd25d701e4067",
+   "b3fffe699227c801",
+   "ba10d4fd9ee9ed49"
+  ],
+  "constraint_overflow": 0,
+  "constraint_event_ids": [
+   "gpu_wait:c1d63d0954b04049b0fbf40b825c47f7",
+   "gpu_wait:9a844ee45e5047eb9d8fdd7bcc09b035",
+   "gpu_wait:5ba84fe07d4a43d69c60eb61d3a5193e",
+   "gpu_wait:6c7f98acdde247e69c14adb9d6dd2c4e",
+   "gpu_wait:232407087f94480aa8f2f162286f4c7a"
+  ],
+  "expectations_pending": [
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-3543a5812d1d",
+    "expires_at": "2026-10-30T11:35:23.346812Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T11:35:23.346812Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-78ef0123ff9f",
+    "expires_at": "2026-10-30T11:35:23.346812Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T11:35:23.346812Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-97ad55cdf51c",
+    "expires_at": "2026-10-30T11:35:23.346812Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T11:35:23.346812Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-ff225080f8bd",
+    "expires_at": "2026-10-30T11:35:23.346812Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T11:35:23.346812Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-3f38194e08bc",
+    "expires_at": "2026-10-30T17:43:12.574030Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T17:43:12.574030Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-ce6dc5aae359",
+    "expires_at": "2026-10-30T17:43:12.574030Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T17:43:12.574030Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-e787e85b1cab",
+    "expires_at": "2026-10-30T17:43:12.574030Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T17:43:12.574030Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-f40270cd1a40",
+    "expires_at": "2026-10-30T17:43:12.574030Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T17:43:12.574030Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-85a93b30f65c",
+    "expires_at": "2026-10-30T23:45:23.488016Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T23:45:23.488016Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-9a89caa1b262",
+    "expires_at": "2026-10-30T23:45:23.488016Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T23:45:23.488016Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-d2b663ac530a",
+    "expires_at": "2026-10-30T23:45:23.488016Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T23:45:23.488016Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-da7f691a0591",
+    "expires_at": "2026-10-30T23:45:23.488016Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-27T23:45:23.488016Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-2e8e288eec45",
+    "expires_at": "2026-10-31T06:15:55.136146Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-28T06:15:55.136146Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-3f24aea6af21",
+    "expires_at": "2026-10-31T06:15:55.136146Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-28T06:15:55.136146Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-59d1340a906c",
+    "expires_at": "2026-10-31T06:15:55.136146Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-28T06:15:55.136146Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-5e2f94d9cca8",
+    "expires_at": "2026-10-31T06:15:55.136146Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-28T06:15:55.136146Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-545e4c3d669f",
+    "expires_at": "2026-11-01T02:49:40.605205Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-29T02:49:40.605205Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-a99068f44f56",
+    "expires_at": "2026-11-01T02:49:40.605205Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-29T02:49:40.605205Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-f4b46e629ae7",
+    "expires_at": "2026-11-01T02:49:40.605205Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-29T02:49:40.605205Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-fea75ac56e84",
+    "expires_at": "2026-11-01T02:49:40.605205Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-29T02:49:40.605205Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-1f060b6226a4",
+    "expires_at": "2026-11-01T13:02:21.393279Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-29T13:02:21.393279Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-7b7a79286c5f",
+    "expires_at": "2026-11-01T13:02:21.393279Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-29T13:02:21.393279Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-88d8322d7449",
+    "expires_at": "2026-11-01T13:02:21.393279Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-29T13:02:21.393279Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-d25cb76c7b2a",
+    "expires_at": "2026-11-01T13:02:21.393279Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-29T13:02:21.393279Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-5ca22b2f2560",
+    "expires_at": "2026-11-02T05:00:10.421365Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-30T05:00:10.421365Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-a05239e432de",
+    "expires_at": "2026-11-02T05:00:10.421365Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-30T05:00:10.421365Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-a9353b10ede7",
+    "expires_at": "2026-11-02T05:00:10.421365Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-30T05:00:10.421365Z"
+   },
+   {
+    "verdict": null,
+    "event_id": "dream_hypothesis:dh-c5f3853f7087",
+    "expires_at": "2026-11-02T05:00:10.421365Z",
+    "resolved_at": null,
+    "source_kind": "dream_hypothesis",
+    "committed_at": "2026-10-30T05:00:10.421365Z"
+   }
+  ],
+  "self_change_overflow": 0,
+  "self_change_event_ids": [
+   "action_outcome:146670",
+   "action_outcome:146671",
+   "action_outcome:146672",
+   "action_outcome:146673",
+   "action_outcome:146674",
+   "action_outcome:146675"
+  ],
+  "unbound_context_overflow": 0,
+  "unbound_context_event_ids": [
+   "consolidation_window_close:035078b3-2e25-483e-a52b-d97e7cff6355",
+   "metacog_observation:metacog_3fbde0ba-bb53-43ef-bff5-51175ffe1d40"
+  ],
+  "expectations_resolved_today": [
+   {
+    "verdict": "claim_upheld=null",
+    "event_id": "action_outcome:146670",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T06:05:59.928749Z",
+    "source_kind": "action_outcome",
+    "committed_at": "2026-10-30T06:05:59.928749Z"
+   },
+   {
+    "verdict": "claim_upheld=false",
+    "event_id": "action_outcome:146671",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T06:11:05.067273Z",
+    "source_kind": "action_outcome",
+    "committed_at": "2026-10-30T06:11:05.067273Z"
+   },
+   {
+    "verdict": "claim_upheld=false",
+    "event_id": "action_outcome:146672",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T06:15:57.392664Z",
+    "source_kind": "action_outcome",
+    "committed_at": "2026-10-30T06:15:57.392664Z"
+   },
+   {
+    "verdict": "claim_upheld=false",
+    "event_id": "action_outcome:146673",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T06:22:00.706140Z",
+    "source_kind": "action_outcome",
+    "committed_at": "2026-10-30T06:22:00.706140Z"
+   },
+   {
+    "verdict": "claim_upheld=true",
+    "event_id": "action_outcome:146674",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T06:34:44.953910Z",
+    "source_kind": "action_outcome",
+    "committed_at": "2026-10-30T06:34:44.953910Z"
+   },
+   {
+    "verdict": "unscored",
+    "event_id": "expectation_verdict:84449f55-501e-49c2-908f-2c894a30b9d1",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T06:39:33.240415Z",
+    "source_kind": "expectation_verdict",
+    "committed_at": "2026-10-30T06:00:34.778761Z"
+   },
+   {
+    "verdict": "unscored",
+    "event_id": "expectation_verdict:7e20f3b8-58e9-4c4e-a11f-4e280cf61564",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T06:39:40.701435Z",
+    "source_kind": "expectation_verdict",
+    "committed_at": "2026-10-30T06:00:55.922724Z"
+   },
+   {
+    "verdict": "claim_upheld=true",
+    "event_id": "action_outcome:146675",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T07:00:59.434806Z",
+    "source_kind": "action_outcome",
+    "committed_at": "2026-10-30T07:00:59.434806Z"
+   },
+   {
+    "verdict": "unscored",
+    "event_id": "expectation_verdict:62e61242-7452-48fd-a7b5-7fbeb5fa22a8",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T07:02:20.255049Z",
+    "source_kind": "expectation_verdict",
+    "committed_at": "2026-10-30T06:01:18.992699Z"
+   },
+   {
+    "verdict": "unscored",
+    "event_id": "expectation_verdict:da1a90b2-9756-4809-a9c2-3e6147ad0a1d",
+    "expires_at": null,
+    "resolved_at": "2026-10-30T07:02:24.404280Z",
+    "source_kind": "expectation_verdict",
+    "committed_at": "2026-10-30T06:01:35.515663Z"
+   }
+  ],
+  "expectations_resolved_total": 10,
+  "skipped_at_or_before_watermark": 3
+ },
+ "curiosity": {
+  "runs": [
+   {
+    "run_id": "fe855a79df3c",
+    "line": "investigate",
+    "line_known": true,
+    "plain_line_label": "World question",
+    "started_at": 1793340028457,
+    "started_at_iso": "2026-10-30T06:00:28.457000+00:00",
+    "started_from": "admission",
+    "finished_at": null,
+    "finished_at_iso": null,
+    "duration_sec": null,
+    "accepted_at": 1793340028457,
+    "admitted_at": null,
+    "lane": "",
+    "lane_wait_sec": null,
+    "active_sec": null,
+    "retries": 0,
+    "anomalies": {},
+    "status": "running",
+    "attempts": null,
+    "error": "",
+    "hops": 0,
+    "findings": 0,
+    "revisions": 0,
+    "prior_touched": null,
+    "reach_out": {
+     "wanted": false,
+     "why": "",
+     "decision": null,
+     "gate": null,
+     "decided_at": null,
+     "sent_at": null,
+     "composed_text": "",
+     "reply": null,
+     "can_reply": false
+    },
+    "journal_entry_id": "",
+    "finding_text": "",
+    "self_written": null,
+    "self_sense": null,
+    "harness": null,
+    "outcome_kind": "running",
+    "about": {
+     "text": "This is your own time. Nobody asked you anything, and there is no task here -- this is you looking at what you have been forming, and following whatever you actually want to follow.\n\nTHE LAST 4 RUNS YOU DID, most recent first:\n\n  1. My readable self is a curated 6 percent mirror: 18 of the 274 tabl\u2026",
+     "detail": [],
+     "source": "brief",
+     "prior_id": null
+    }
+   },
+   {
+    "run_id": "8ce4e099c883",
+    "line": "investigate",
+    "line_known": true,
+    "plain_line_label": "World question",
+    "started_at": 1793277306757,
+    "started_at_iso": "2026-10-29T12:35:06.757000+00:00",
+    "started_from": "admission",
+    "finished_at": 1793301099497,
+    "finished_at_iso": "2026-10-29T19:11:39.497000+00:00",
+    "duration_sec": 23792.7,
+    "accepted_at": 1793277306757,
+    "admitted_at": 1793279253485,
+    "lane": "agent",
+    "lane_wait_sec": 1946.7,
+    "active_sec": 21846.0,
+    "retries": 3,
+    "anomalies": {},
+    "status": "completed",
+    "attempts": 3,
+    "error": "",
+    "hops": 0,
+    "findings": 0,
+    "revisions": 0,
+    "prior_touched": null,
+    "reach_out": {
+     "wanted": false,
+     "why": "",
+     "decision": null,
+     "gate": null,
+     "decided_at": null,
+     "sent_at": null,
+     "composed_text": "",
+     "reply": null,
+     "can_reply": false
+    },
+    "journal_entry_id": "curiosity-investigation:8ce4e099c883",
+    "finding_text": "The previous run was terminated by context-compaction thrashing (autocompact cycle repeated 3 times). The investigation into rung6's tuner silence\u2014specifically why `prediction_expectation` proposes no patches after merge\u2014is still live. I have read the mechanism files (`prediction_expectation.py`, `\u2026",
+    "self_written": null,
+    "self_sense": null,
+    "harness": {
+     "elapsed_sec": 1249.246,
+     "turn_correlation_id": "ce48f3c7-ed80-50e3-af1e-06c66489c92c"
+    },
+    "outcome_kind": "wrote_nothing",
+    "about": {
+     "text": "This is your own time. Nobody asked you anything, and there is no task here -- this is you looking at what you have been forming, and following whatever you actually want to follow.\n\nTHE LAST 4 RUNS YOU DID, most recent first:\n\n  1. My readable self is a curated 6 percent mirror: 18 of the 274 tabl\u2026",
+     "detail": [],
+     "source": "brief",
+     "prior_id": null
+    }
+   },
+   {
+    "run_id": "d7d0c7d60c96",
+    "line": "investigate",
+    "line_known": true,
+    "plain_line_label": "World question",
+    "started_at": 1793272204315,
+    "started_at_iso": "2026-10-29T11:10:04.315000+00:00",
+    "started_from": "admission",
+    "finished_at": 1793300307027,
+    "finished_at_iso": "2026-10-29T18:58:27.027000+00:00",
+    "duration_sec": 28102.7,
+    "accepted_at": 1793272204315,
+    "admitted_at": 1793277208805,
+    "lane": "agent-gpu2",
+    "lane_wait_sec": 5004.5,
+    "active_sec": 23098.2,
+    "retries": 3,
+    "anomalies": {},
+    "status": "failed",
+    "attempts": 4,
+    "error": "TimeoutError:",
+    "hops": 0,
+    "findings": 0,
+    "revisions": 0,
+    "prior_touched": null,
+    "reach_out": {
+     "wanted": false,
+     "why": "",
+     "decision": null,
+     "gate": null,
+     "decided_at": null,
+     "sent_at": null,
+     "composed_text": "",
+     "reply": null,
+     "can_reply": false
+    },
+    "journal_entry_id": "",
+    "finding_text": "",
+    "self_written": null,
+    "self_sense": null,
+    "harness": null,
+    "outcome_kind": "died",
+    "about": {
+     "text": "This is your own time. Nobody asked you anything, and there is no task here -- this is you looking at what you have been forming, and following whatever you actually want to follow.\n\nTHE LAST 4 RUNS YOU DID, most recent first:\n\n  1. My readable self is a curated 6 percent mirror: 18 of the 274 tabl\u2026",
+     "detail": [],
+     "source": "brief",
+     "prior_id": null
+    }
+   },
+   {
+    "run_id": "c8363ab11231",
+    "line": "investigate",
+    "line_known": true,
+    "plain_line_label": "World question",
+    "started_at": 1793268602771,
+    "started_at_iso": "2026-10-29T10:10:02.771000+00:00",
+    "started_from": "admission",
+    "finished_at": 1793296914333,
+    "finished_at_iso": "2026-10-29T18:01:54.333000+00:00",
+    "duration_sec": 28311.6,
+    "accepted_at": 1793268602771,
+    "admitted_at": 1793269414605,
+    "lane": "chat",
+    "lane_wait_sec": 811.8,
+    "active_sec": 27499.7,
+    "retries": 3,
+    "anomalies": {},
+    "status": "completed",
+    "attempts": 3,
+    "error": "",
+    "hops": 0,
+    "findings": 0,
+    "revisions": 0,
+    "prior_touched": null,
+    "reach_out": {
+     "wanted": false,
+     "why": "",
+     "decision": null,
+     "gate": null,
+     "decided_at": null,
+     "sent_at": null,
+     "composed_text": "",
+     "reply": null,
+     "can_reply": false
+    },
+    "journal_entry_id": "curiosity-investigation:c8363ab11231",
+    "finding_text": "[Cut short - not a finished answer.]\nThis turn was stopped after 230 steps because its context filled past the lane's window (fcc_context_ceiling_exceeded), before Orion wrote a conclusion. What follows is what the turn actually recorded (66 tool results), in order. None of it has been synthesized \u2026",
+    "self_written": null,
+    "self_sense": null,
+    "harness": {
+     "elapsed_sec": 765.965,
+     "turn_correlation_id": "943a9cbd-e63a-51a3-9f7f-f8780ce57c86"
+    },
+    "outcome_kind": "wrote_nothing",
+    "about": {
+     "text": "This is your own time. Nobody asked you anything, and there is no task here -- this is you looking at what you have been forming, and following whatever you actually want to follow.\n\nTHE LAST 4 RUNS YOU DID, most recent first:\n\n  1. My readable self is a curated 6 percent mirror: 18 of the 274 tabl\u2026",
+     "detail": [],
+     "source": "brief",
+     "prior_id": null
+    }
+   },
+   {
+    "run_id": "ca4a5a4829a8",
+    "line": "investigate",
+    "line_known": true,
+    "plain_line_label": "World question",
+    "started_at": 1793265001514,
+    "started_at_iso": "2026-10-29T09:10:01.514000+00:00",
+    "started_from": "admission",
+    "finished_at": 1793277474756,
+    "finished_at_iso": "2026-10-29T12:37:54.756000+00:00",
+    "duration_sec": 12473.2,
+    "accepted_at": 1793265001514,
+    "admitted_at": 1793265002569,
+    "lane": "agent-gpu2",
+    "lane_wait_sec": 1.1,
+    "active_sec": 12472.2,
+    "retries": 4,
+    "anomalies": {},
+    "status": "failed",
+    "attempts": 5,
+    "error": "HarnessTurnFailed: no_final_frame",
+    "hops": 0,
+    "findings": 0,
+    "revisions": 0,
+    "prior_touched": null,
+    "reach_out": {
+     "wanted": false,
+     "why": "",
+     "decision": null,
+     "gate": null,
+     "decided_at": null,
+     "sent_at": null,
+     "composed_text": "",
+     "reply": null,
+     "can_reply": false
+    },
+    "journal_entry_id": "",
+    "finding_text": "",
+    "self_written": null,
+    "self_sense": null,
+    "harness": null,
+    "outcome_kind": "died",
+    "about": {
+     "text": "This is your own time. Nobody asked you anything, and there is no task here -- this is you looking at what you have been forming, and following whatever you actually want to follow.\n\nTHE LAST 4 RUNS YOU DID, most recent first:\n\n  1. My readable self is a curated 6 percent mirror: 18 of the 274 tabl\u2026",
+     "detail": [],
+     "source": "brief",
+     "prior_id": null
+    }
+   },
+   {
+    "run_id": "003022656682",
+    "line": "investigate",
+    "line_known": true,
+    "plain_line_label": "World question",
+    "started_at": 1793261399075,
+    "started_at_iso": "2026-10-29T08:09:59.075000+00:00",
+    "started_from": "admission",
+    "finished_at": 1793295812452,
+    "finished_at_iso": "2026-10-29T17:43:32.452000+00:00",
+    "duration_sec": 34413.4,
+    "accepted_at": 1793261399075,
+    "admitted_at": 1793261412233,
+    "lane": "agent",
+    "lane_wait_sec": 13.2,
+    "active_sec": 34400.2,
+    "retries": 14,
+    "anomalies": {},
+    "status": "completed",
+    "attempts": 3,
+    "error": "",
+    "hops": 0,
+    "findings": 0,
+    "revisions": 0,
+    "prior_touched": null,
+    "reach_out": {
+     "wanted": false,
+     "why": "",
+     "decision": null,
+     "gate": null,
+     "decided_at": null,
+     "sent_at": null,
+     "composed_text": "",
+     "reply": null,
+     "can_reply": false
+    },
+    "journal_entry_id": "curiosity-investigation:003022656682",
+    "finding_text": "The draft is a status report on run outcomes and harness errors. It fails the integration because it ignores the explicit imperative to reflect on the \"curated mirror\" (6% readability) vs raw machinery, the \"depressed recon loss,\" and the silence of unasked thought. It reads like an operator's log,\u2026",
+    "self_written": null,
+    "self_sense": null,
+    "harness": {
+     "elapsed_sec": 1114.966,
+     "turn_correlation_id": "dff81024-a940-55c0-a5a8-dae651267886"
+    },
+    "outcome_kind": "wrote_nothing",
+    "about": {
+     "text": "This is your own time. Nobody asked you anything, and there is no task here -- this is you looking at what you have been forming, and following whatever you actually want to follow.\n\nTHE LAST 4 RUNS YOU DID, most recent first:\n\n  1. My readable self is a curated 6 percent mirror: 18 of the 274 tabl\u2026",
+     "detail": [],
+     "source": "brief",
+     "prior_id": null
+    }
+   }
+  ],
+  "schedule": {
+   "available": true,
+   "local_date": "2026-10-30",
+   "tz": "America/Denver",
+   "last_investigation_at": "2026-10-30T06:00:26.283282+00:00",
+   "next_eligible_at": "2026-10-30T06:30:26.283282+00:00",
+   "runs_today": 1,
+   "daily_cap": 7,
+   "cooldown_sec": 1800.0,
+   "lines": {
+    "investigate": {
+     "enabled": true,
+     "daily_cap": 7,
+     "cooldown_sec": 1800.0,
+     "runs_today": 1,
+     "last_at": "2026-10-30T06:00:26.283282+00:00",
+     "next_eligible_at": "2026-10-30T06:30:26.283282+00:00"
+    },
+    "self_inquiry": {
+     "enabled": true,
+     "daily_cap": 7,
+     "cooldown_sec": 7200.0,
+     "runs_today": 0,
+     "last_at": "2026-10-30T05:45:29.346932+00:00",
+     "next_eligible_at": "2026-10-30T07:45:29.346932+00:00"
+    },
+    "self_sense_eval": {
+     "enabled": true,
+     "daily_cap": 7,
+     "cooldown_sec": 10800.0,
+     "runs_today": 0,
+     "last_at": "2026-10-30T04:11:17.382145+00:00",
+     "next_eligible_at": "2026-10-30T07:11:17.382145+00:00"
+    }
+   },
+   "pending_focus": {
+    "available": true,
+    "focus": null,
+    "enabled": true
+   },
+   "runs_seen_today": {
+    "investigate": 1
+   }
+  }
+ }
+}

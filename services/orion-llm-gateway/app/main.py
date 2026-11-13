@@ -23,6 +23,8 @@ from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 from orion.schemas.vector.schemas import VectorUpsertV1
 
 from orion.gpu_pool.client import Lease, LeaseUnavailable
+from orion.llm.call_usage import run_usage_publisher
+from orion.schemas.llm_call_usage import LLM_CALL_USAGE_CHANNEL
 
 from .ctx_overflow import CONTEXT_OVERFLOW_ERROR
 from .llm_backend import (
@@ -34,7 +36,7 @@ from .llm_backend import (
 )
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
-from . import grammar_emit, lane_senders, pool_placement, routes_compat_reads, upstream_cancel
+from . import call_usage_emit, grammar_emit, lane_senders, pool_placement, routes_compat_reads, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .resource_lease import ResourceLeaseRejected, gpu_lease_from_options
@@ -266,16 +268,25 @@ def _result_error(result: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def _pool_unavailable_result(plan: ChatDispatchPlan, reason: str) -> Dict[str, Any]:
+def _pool_unavailable_result(plan: ChatDispatchPlan, reason: str,
+                             retry_after_sec: Optional[float] = None, local: bool = False) -> Dict[str, Any]:
     """Same shape as every early gateway error: empty text, `raw.error` set. Consumers that check
-    for empty content treat it as a failed call."""
+    for empty content treat it as a failed call. ``retry_after_sec`` (shed refusals only): how long
+    this gateway will keep refusing that priority without asking the pool
+    (orion/gpu_pool/shed_backoff.py); callers back off at least that long. ``local``: this gateway
+    answered from its backoff without asking the pool (so pool-refusal counts stay honest)."""
+    details: Dict[str, Any] = {"reason": reason, "route": plan.route, "work_class": plan.work_class}
+    if retry_after_sec is not None:
+        details["retry_after_sec"] = round(float(retry_after_sec), 1)
+    if local:
+        details["local"] = True
     return {
         "text": "",
         "content": "",
         "spark_meta": {},
         "raw": {
             "error": pool_placement.POOL_UNAVAILABLE,
-            "details": {"reason": reason, "route": plan.route, "work_class": plan.work_class},
+            "details": details,
         },
         "route": plan.route,
         "served_by": None,
@@ -400,6 +411,11 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
     left after the grant bounds the upstream call, so a call that queued for most of its budget is
     not then given a fresh budget to generate for a caller that has gone.
 
+    A caller that names its own seat wait (``options["gateway_pool_wait_sec"]``,
+    pool_placement.caller_pool_wait_sec) is waiting that much LONGER: the deadline is wait + budget,
+    the pool wait is its own number (not the priority's), and each upstream call still gets at most
+    the caller's budget. Prime (orion-mind) waits up to ~10 min for a seat, then generates for 60 s.
+
     Under a hold (``hold`` set, stage 4) every acquire is an ``attach``, and an upstream overflow is
     returned as is: the child can only run on the hold's role, so a bigger re-lease has nowhere to go.
 
@@ -408,15 +424,17 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
     """
     timing = timing if timing is not None else grammar_emit.CallClock()
     budget_s = resolve_caller_budget_sec(plan.body)
-    deadline = time.monotonic() + budget_s
     options = plan.body.options or {}
+    seat_wait_s = pool_placement.caller_pool_wait_sec(options)
+    deadline = time.monotonic() + budget_s + (seat_wait_s or 0.0)
     estimate = pool_placement.estimate_min_ctx_tokens(plan.body.messages or [], options.get("max_tokens"))
     min_ctx = estimate
     overflow: Optional[Dict[str, Any]] = None
     clamped = False
     for _ in range(3):
         remaining = deadline - time.monotonic()
-        wait_s = min(pool_placement.wait_budget_sec(plan.priority or "system"), remaining)
+        wait_cap = seat_wait_s if seat_wait_s is not None else pool_placement.wait_budget_sec(plan.priority or "system")
+        wait_s = min(wait_cap, remaining)
         timing.waiting()
         try:
             async with pool_placement.lease_for_route(
@@ -425,6 +443,8 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
             ) as lease:
                 timing.granted(getattr(lease.grant, "role", None), busy=pool_placement.busy_at_grant(lease))
                 read_timeout_s = deadline - time.monotonic()
+                if seat_wait_s is not None:
+                    read_timeout_s = min(read_timeout_s, budget_s)   # the seat wait never buys generation time
                 if read_timeout_s <= 0:
                     # The grant came after the caller's budget ran out: generate nothing.
                     return overflow or _pool_unavailable_result(plan, "deadline")
@@ -465,11 +485,14 @@ async def _dispatch_on_pool(plan: ChatDispatchPlan, *, correlation_id: str, hold
                 )
                 clamped, min_ctx = True, max_ctx
                 continue
-            logger.warning(
+            # A refusal the shed backoff answered locally is logged once per episode by the
+            # backoff itself (gpu_shed_backoff_start/end), not once per call.
+            (logger.debug if getattr(exc, "local", False) else logger.warning)(
                 "gpu_pool_unavailable correlation_id=%s route=%s class=%s reason=%s",
                 correlation_id, plan.route, plan.work_class, exc.reason,
             )
-            return _pool_unavailable_result(plan, exc.reason)
+            return _pool_unavailable_result(plan, exc.reason, getattr(exc, "retry_after_sec", None),
+                                            bool(getattr(exc, "local", False)))
     return overflow or _pool_unavailable_result(plan, "overflow_retry_exhausted")
 
 
@@ -563,6 +586,11 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
                 )
             except Exception:  # noqa: BLE001
                 pass
+        call_clock.close()
+        call_usage_emit.record_bus_call(
+            {}, outcome="gateway_exception", clock=call_clock, correlation_id=str(typed_req.correlation_id),
+            route=body.route, holder=holder, verb=body.verb, requested_model=body.model,
+        )
         raise
     if settings.llm_gateway_grammar_enabled:
         try:
@@ -573,6 +601,13 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
             )
         except Exception:  # noqa: BLE001 -- telemetry must never break a reply
             logger.warning("llm_gateway_grammar_record_failed", exc_info=True)
+    # Per-call token ledger: same call, with its correlation id (the grammar windows have none).
+    call_clock.close()
+    call_usage_emit.record_bus_call(
+        result, outcome=grammar_emit.classify_outcome(result), clock=call_clock,
+        correlation_id=str(typed_req.correlation_id), route=body.route, holder=holder, verb=body.verb,
+        requested_model=body.model,
+    )
     # A refusal / backend failure / unusable request comes back as a normal
     # llm.chat.result (empty content, typed raw.error). Mark the reply degraded so the
     # caller's RPC health counts it, never times it as this hop's speed: live
@@ -616,6 +651,9 @@ async def handle_chat(env: BaseEnvelope) -> BaseEnvelope:
         "provider_reasoning_available": bool(str(reasoning_content or "").strip()),
         "inline_think_extracted": bool(str(inline_think_content or "").strip()),
         "thinking_source": thinking_source,
+        # Time spent waiting for a pool seat (stage 6.2 clock). Lets a caller with a long seat wait
+        # (Orion Prime) tell what happened during the wait from what happened during generation.
+        "pool_wait_ms": call_clock.wait_ms,
     }
     if isinstance(structured_diag, dict) and structured_diag:
         meta["structured_output_diagnostics"] = structured_diag
@@ -764,6 +802,10 @@ async def main() -> None:
         cfg.bus_url,
     )
     tasks = [chat_svc.start(), _serve_health(), pool_bus_task]
+    if settings.llm_gateway_call_usage_enabled:
+        logger.info("[LLM-GW] per-call token ledger on channel=%s", LLM_CALL_USAGE_CHANNEL)
+        tasks.append(run_usage_publisher(chat_svc.bus, call_usage_emit.get_sink(),
+                                         source=call_usage_emit.source_ref()))
     if settings.llm_gateway_grammar_enabled:
         logger.info(
             "[LLM-GW] inference grammar windows on window_sec=%s gateway_node=%s",

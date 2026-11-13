@@ -289,6 +289,9 @@ class RunTrainRequest(BaseModel):
     dataset_id: UUID
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
+    # True trains again even when a recent complete run has the same
+    # spec_hash. A queued or running twin still dedups.
+    force: bool = False
 
 
 class RunEnrichRequest(BaseModel):

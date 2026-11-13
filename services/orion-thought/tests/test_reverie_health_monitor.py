@@ -25,7 +25,7 @@ def _settings():
 
 def test_monitor_does_not_alert_on_healthy_first_observation():
     with patch("app.reverie_health_monitor.NotifyClient") as client_cls, patch(
-        "app.reverie_health_monitor.requests.get", return_value=_no_pending_items()
+        "app.notify_pending.requests.get", return_value=_no_pending_items()
     ):
         from app.reverie_health_monitor import ReverieMetacogHealthMonitor
 
@@ -36,7 +36,7 @@ def test_monitor_does_not_alert_on_healthy_first_observation():
 
 def test_monitor_alerts_only_on_timeout_transition_not_every_tick():
     with patch("app.reverie_health_monitor.NotifyClient") as client_cls, patch(
-        "app.reverie_health_monitor.requests.get", return_value=_no_pending_items()
+        "app.notify_pending.requests.get", return_value=_no_pending_items()
     ):
         from app.reverie_health_monitor import ReverieMetacogHealthMonitor
 
@@ -55,7 +55,7 @@ def test_monitor_alerts_only_on_timeout_transition_not_every_tick():
 
 def test_monitor_sends_recovery_note_on_healthy_transition():
     with patch("app.reverie_health_monitor.NotifyClient") as client_cls, patch(
-        "app.reverie_health_monitor.requests.get", return_value=_no_pending_items()
+        "app.notify_pending.requests.get", return_value=_no_pending_items()
     ):
         from app.reverie_health_monitor import ReverieMetacogHealthMonitor
 
@@ -73,7 +73,7 @@ def test_monitor_sends_recovery_note_on_healthy_transition():
 
 def test_monitor_retries_until_notify_confirms_delivery():
     with patch("app.reverie_health_monitor.NotifyClient") as client_cls, patch(
-        "app.reverie_health_monitor.requests.get", return_value=_no_pending_items()
+        "app.notify_pending.requests.get", return_value=_no_pending_items()
     ):
         from app.reverie_health_monitor import ReverieMetacogHealthMonitor
 
@@ -98,7 +98,7 @@ def test_monitor_retries_until_notify_confirms_delivery():
 
 def test_monitor_suppresses_first_observation_when_notify_has_open_item():
     with patch("app.reverie_health_monitor.NotifyClient") as client_cls, patch(
-        "app.reverie_health_monitor.requests.get"
+        "app.notify_pending.requests.get"
     ) as mock_get:
         from app.reverie_health_monitor import ReverieMetacogHealthMonitor
 
@@ -116,7 +116,7 @@ def test_monitor_suppresses_first_observation_when_notify_has_open_item():
 
 def test_pending_lookup_failure_is_fail_open_not_fatal():
     with patch("app.reverie_health_monitor.NotifyClient") as client_cls, patch(
-        "app.reverie_health_monitor.requests.get", side_effect=RuntimeError("network down")
+        "app.notify_pending.requests.get", side_effect=RuntimeError("network down")
     ):
         from app.reverie_health_monitor import ReverieMetacogHealthMonitor
 

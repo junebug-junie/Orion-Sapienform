@@ -60,7 +60,10 @@ def test_app_js_wires_memory_graph_bridge_handlers() -> None:
     assert "hub-utterance:" in app_js
     assert "rebuildMemoryGraphBridgeTurnList" in app_js
     assert "memoryGraphBridgeAnchorDiv" in app_js
-    assert "MEMORY_GRAPH_SUGGEST_TIMEOUT_MS" in app_js
+    # The fixed MEMORY_GRAPH_SUGGEST_TIMEOUT_MS constant became a resolver (2026-06-05) so the
+    # browser budget follows the server Quick+Brain budget (memory-graph-draft-ui.js).
+    assert "function memoryGraphSuggestFetchTimeoutMs()" in app_js
+    assert "ui.resolveMemoryGraphSuggestFetchTimeoutMs()" in app_js
     assert "MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS" in app_js
     assert "MEMORY_GRAPH_SUGGEST_INPUT_PER_TURN_CHARS" in app_js
     assert "Input clipped for reliability" in app_js
@@ -111,7 +114,10 @@ def test_memory_js_listens_for_bridge_import_event() -> None:
     assert "formatSuggestCoalesceUserStatus" in memory_js
     assert "Loaded validated role-grounded SuggestDraftV1 JSON." in memory_js
     assert "No durable memory candidate found" not in memory_js
-    assert "MEMORY_GRAPH_SUGGEST_TIMEOUT_MS" in memory_js
+    # The fixed MEMORY_GRAPH_SUGGEST_TIMEOUT_MS constant became a resolver (2026-06-05) so the
+    # browser budget follows the server Quick+Brain budget (memory-graph-draft-ui.js).
+    assert "function memoryGraphSuggestFetchTimeoutMs()" in memory_js
+    assert "ui.resolveMemoryGraphSuggestFetchTimeoutMs()" in memory_js
     assert "MEMORY_GRAPH_SUGGEST_INPUT_TOTAL_CHARS" in memory_js
     assert "boundedSuggestPrompt" in memory_js
     assert "Prompt input was clipped" in memory_js

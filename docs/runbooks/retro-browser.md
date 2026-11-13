@@ -1,0 +1,492 @@
+# Retro browser play
+
+Hub `/retro` provides keyboard/gamepad play without an additional access code. The native
+core remains in the isolated Retro container. No ROM or core runs in the browser.
+No images, audio or inputs enter memory, chat or cognition. No save/load API exists.
+
+## Scripted baseline
+
+After starting the game and connecting a controller, open More and choose
+**Run scripted baseline · 60s**. It transfers only your current port to the
+visibly labeled `scripted-right-jump-v1` baseline. It repeats right/jump;
+it does not perceive, learn, or demonstrate Orion's game competence.
+**Take this controller** interrupts it with the existing neutral-frame handoff.
+Pause, leaving/closing the sponsoring browser, a missed policy deadline, or the
+60-second budget stops it. Resume returns human control, never restarts the script.
+Status lists active scripted ports; the evidence journal attributes applied
+actions by policy ID and epoch. No cognition or memory writes occur.
+
+The owner-scoped service API also accepts a 5–1800 second budget. Start requires
+the live input connection, generation, port, and `expected_epoch` of the human
+lease being transferred. Stop names the current script epoch. Neither operation
+implicitly starts or resumes a game. There is no arbitrary-code upload.
+See [remaining original-spec gates](../superpowers/specs/2026-10-20-retro-continuation-status.md).
+
+## Setup
+
+For a new installation, from clean primary main after merge, sync templates and
+prepare private credentials. **Do not rerun `install_catalog.py` on an existing
+custom catalog:** it reconstructs the kit catalog and can remove imported entries.
+An existing installation should preserve its catalog and credentials.
+
+```sh
+python3 scripts/sync_local_env_from_example.py
+python3 services/orion-retro/evals/install_catalog.py --env services/orion-retro/.env
+python3 services/orion-retro/evals/configure_hub.py --env services/orion-hub/.env --origin https://YOUR-EXACT-HUB-ORIGIN
+scripts/safe_docker_build.sh orion-retro up -d --build
+scripts/safe_docker_build.sh orion-hub up -d --build
+```
+
+Use the exact scheme, hostname and port from the browser. No wildcard, automatic
+Host trust or forwarded-header trust. HTTPS is recommended. HTTP supports keyboard
+play, but does not encrypt game traffic; gamepads require a secure
+browser context (HTTPS or localhost). Do not expose this scoped operator interface
+on an untrusted HTTP network. Existing Hub routes do not gain authentication.
+
+Retro uses Hub's network access boundary: anyone who can reach Hub can control
+Retro. POST requests and WebSockets still require the configured exact Origin.
+There is no Retro login, cookie, access code or lock button. The installer creates
+only the distinct backend `hub.token` in `~/.local/share/orion/retro/service/hub-auth/`.
+It remains private (0600); neither it nor the CLI credential is sent to the browser.
+Old `browser.code` files are unused and may be deleted.
+
+Hub mounts only the dedicated Unix socket directory and Hub credential directory.
+The emulator gets only `hub.token`, never browser-provided credentials. Its network remains `none`.
+CLI and Hub credentials cannot access each other's session or evidence. One game
+session still exists at a time. An active CLI session must be stopped by its owner
+before a browser can start a game. No browser-supplied principal is trusted.
+
+## Use
+
+Open the Retro tab from Hub's section launcher (`/#retro`). Leaving the tab
+unloads its game frame and releases control. The standalone `/retro` page also works. Choose a game, and start a
+new game. NES and SNES share this list; SNES titles end in `(SNES)`.
+Click the screen. Arrow keys move; Z is A; X is B; Enter is Start;
+Shift is Select. The Start button also sends Start. Sound begins after a click.
+SNES adds keyboard A → Y, S → X, Q → L, W → R. These extra keys are ignored
+by NES sessions. The running game's system controls the mapping; merely browsing
+another title in the dropdown does not change a running game's controls.
+
+A second window can connect to the current game using Player 2. Both windows share the Hub operator. Select the player before connecting. Standard gamepad
+buttons map to the same controls, by position in the Nintendo layout: right face button A, bottom
+face button B, D-pad or left stick to move, Start and Select in the middle. An 8BitDo Pro 2
+works in X-input mode (mode switch on the back set to X); the page names the controller it
+found, or says to switch modes when a controller is not in the browser's standard mapping.
+Over Bluetooth some Linux browsers still report X mode as non-standard: use a USB cable then.
+For SNES, top face button is X, left face button is Y, and L1/R1 are L/R.
+L2/R2 keep their save/load chords below. This is a Hub mapping change; it does not
+flash the controller or modify a stored hardware profile. Firmware updates are a
+separate device operation and physical controller input must be checked on Carbon.
+Two pads on one machine: Player 1 takes the first standard pad, Player 2 the second.
+Let Orion play (next to New game): Orion plays in 30-minute turns (Retro's limit), renewed by
+the page when one ends, until you click the game, press a game key or any controller button, or
+use Take this controller. A hidden or closed tab ends it (nobody is watching). Only a turn that ran
+out its time is renewed: if someone else takes the controller (another window), Orion stops and the
+page says so. A lost connection also ends it. No heat or strain gate applies to these turns (the
+planner is interactive priority); solo play keeps its own gates. Try Orion goals stays the 60-second
+experiment.
+Pad save and load: hold Select and press L2 to save (like F7), or R2 to load the newest save
+(like F10). The pad's Select is held back until it is released, so a chord never pauses Zelda;
+Select pressed and released alone reaches the game as a 150 ms tap. The chords work only while
+the game is connected and has focus (or is fullscreen); one chord per Select hold.
+Press any controller button once after connecting it: browsers only list a pad after input.
+Fullscreen play takes pad input without clicking the game first. A competing controller is refused until explicit
+Take this controller; the previous lease then becomes invalid. Focus loss, hidden
+tab, gamepad removal and disconnect release control. The last controller leaving
+pauses the game. Connect / resume reacquires a new lease. Restart never resumes play.
+
+## Transport contract and limits
+
+This first browser implementation uses same-origin WebSockets rather than the
+proposed WebRTC/UDP transport. Measured browser play works through the existing
+Hub HTTP path, preserving the emulator's complete network isolation. It avoids
+new ICE/UDP exposure and native codec dependencies. It is a LAN prototype, not a
+claim of equivalent WAN latency or congestion handling to WebRTC.
+
+The native child copies video before the callback expires, strips row padding,
+and copies stereo s16le PCM. Media is transient. Every two emulated frames it
+tries a fixed-size single-packet shared slot; a busy/full slot drops packets without blocking
+the controller loop. A separate API task compresses packets off the event loop.
+Slot locks are acquired without waiting. If a worker dies mid-copy, the API
+discards the abandoned slot with that session rather than blocking on a partial pipe packet.
+Only the latest compressed packet is retained. At most two viewers exist; sends
+have a 250 ms deadline. Paused disconnects release viewer slots.
+
+Wire v1 is zlib of: four-byte big-endian JSON length, UTF-8 JSON, packed video,
+stereo s16le audio. Header: version, native frame, width, height, libretro format
+(0=1555, 1=XRGB8888, 2=565), video_bytes, sample_rate, cumulative sample_end,
+audio_frames. Maximum geometry 512×512; maximum PCM chunk 65536 bytes. Current NES
+core yields 256×240, ~60.10 emulated FPS, ~30.05 delivered frames/s. Browser keeps
+one decode in flight plus one latest packet. Audio gaps discard queued sources.
+Video is drawn immediately after decode; returning presentation credit never
+waits for the audio clock or a browser timer. PCM starts at least 25 ms ahead of
+the audio clock; a queued start more than 50 ms ahead resets audio to the current
+packet. This bounds scheduled start delay, not sound heard at speakers. Bursty
+delivery can discard audio; actual A/V drift still needs an output-device check.
+
+The separate input socket preserves one upstream connection per browser. Each
+valid input is acknowledged after its native frame. Hub never multiplexes owners.
+No changes to global schemas, bus channels, model metrics or autonomy loops.
+
+## Evidence and acceptance
+
+```sh
+python -m pytest tests/retro services/orion-retro/tests -q
+python -m pytest services/orion-hub/tests/retro -q
+PYTHONPATH=. python services/orion-hub/evals/retro_browser.py --output /tmp/retro-browser-check
+```
+
+Install Hub npm dependencies first; the eval uses Puppeteer. Use a venv with Retro
+requirements and Hub's aiohttp. The eval builds no image: run the safe Retro build
+first. It starts its own isolated native container plus the actual Hub router,
+rendered template and static file in a local test server, then removes its container.
+CI uses only the original authored Pad Lab ROM. An explicit `--catalog` and
+`--game spacegulls` exercise the operator-owned game; no ROM is uploaded to CI.
+Reports contain rendered pixel diversity, nonzero PCM scheduled through Web Audio,
+applied keyboard and synthetic standard-gamepad actions, blur pause, reconnect,
+and cancellation of a delayed resume after blur. A screenshot is retained.
+
+Local Spacegulls check passed beyond 1,850 native frames with visible gameplay and
+nonzero scheduled audio. The real-container fault eval still exercises worker
+crash, quota, TTL, takeover ordering, and egress denial. **UNVERIFIED:** physical
+controller, actual speaker output, user-device input-to-photon p95 <=100 ms and
+30-minute actual-client A/V drift <=80 ms. Automated PCM scheduling is not proof
+of sound heard at speakers. These acceptance gaps remain explicit before claiming
+full P2 performance qualification.
+
+Disable: set `HUB_RETRO_ENABLED=false` and recreate Hub through the wrapper. This
+closes browser sockets; lease expiry pauses play. Preserve catalog and evidence.
+Do not remove operator artifacts or downgrade to a save-capable core implicitly.
+
+### Input latency and reconnect regression
+
+Inputs are sent every 50 ms independently of acknowledgment arrival. A browser
+allows at most 24 outstanding inputs, 4 KiB of WebSocket send buffering, and one
+second without acknowledgment of its oldest input; crossing a bound releases
+control. The server's lease expiry is 2 s (see Lease expiry below). Negative replies for
+validated input include port/epoch/sequence so old replies cannot clear a newer
+lease. Repeated Connect / resume reuses an open input connection. An expired,
+unleased connection closing does not cancel another connection's resume grace.
+
+The browser eval's `--ack-delay-ms 350` variant reproduces the original stall with
+the old client. The corrected client continues applying input; deliberately
+suppressing every acknowledgment still stops play within the bounded window.
+This checks delayed replies, not arbitrary network loss or user-device latency.
+
+The Retro input socket reads continuously; each input waits for its native frame
+in its own task. Before 2026-10-20 the socket read the next input only after the
+previous acknowledgment. One slow acknowledgment (measured up to 217 ms live)
+then held newer input past the 250 ms lease, and the game paused mid-play
+(`no_controller` in evidence). An older input that a newer one replaces before its
+frame is answered `superseded`; the browser counts that as resolved, not as lost
+control. Regression: `test_slow_ack_does_not_gate_reading_the_next_input`.
+Trade-offs: during a stall, a press and release that both arrive before one
+frame collapse to the release. Input from both browsers shares the API's 24-command
+cap, so a stall longer than about 0.5 s can return `unavailable_or_busy` (shown as
+Control interrupted). Timeout cleanup is shielded from socket cancellation
+(`test_cancelled_input_cannot_abandon_timeout_cleanup`).
+
+### Grant grace
+
+A fresh lease waits 1 s for its first input; after that, each input still expires
+after 250 ms. Before 2026-10-20 the 250 ms clock started at the grant, before the
+grant reply had crossed Hub and Tailscale to the browser. Every Connect / resume
+from a remote laptop then lost control with zero applied inputs. A granted lease
+holds the neutral mask, so the longer first window cannot hold a button down.
+Regression: `test_fresh_lease_waits_for_first_input_across_the_grant_round_trip`.
+
+### One-button play
+
+The page shows the game picker, New game and Mute. Player choice, Connect /
+resume, Pause, Stop, Start and Take this controller are under More. After New
+game (or a click on the game), lost control heals itself: up to three reconnects
+in 10 s, then the page asks for New game. Leaving the window still releases
+control and cancels pending reconnects; returning focus or clicking the game
+reacquires it. Pause and Stop turn self-healing off until the next click on the
+game. The browser eval's delayed-ack variant now asserts that play resumes after
+acknowledgments return, with no Connect click.
+
+### Lease expiry
+
+A lease now expires after 2 s without input (`LEASE_TTL`), at grant and after
+each input. Live 2026-10-20, after #2772: on each grant the first input arrived
+about 500 ms later, and the second never arrived within 250 ms. The browser ran the
+Retro page's 50 ms timer at about 1 Hz, as browsers do for pages they treat as
+background. Key presses and releases are still sent at once. Socket close,
+blur and hidden tabs still release control immediately. The cost: a browser
+that freezes without closing its socket can hold its last buttons for up to 2 s.
+Regression: `test_lease_survives_throttled_browser_heartbeat`.
+
+## Dedicated relay (hub-retro-gateway)
+
+Game traffic (`/api/retro/*`) runs in its own small process, `hub-retro-gateway`
+(`services/orion-hub/scripts/retro_gateway.py`, loopback port
+`HUB_RETRO_GATEWAY_PORT`, default 8092). It uses the same router, origin check and
+credentials as Hub, and it starts in under a second. Hub keeps its own copy of the
+routes, so play still works through Hub until the route below exists.
+
+Why: Hub's single event loop also serves every open Hub page. A/B with
+`retro_play.mjs` on 2026-10-20, with a Hub page open in another tab:
+- Through Hub: 55 inputs reached the server, acknowledgments took 720 ms p50, and
+  play dropped 4 times.
+- Through the relay: 944 inputs, 17 ms p50, no drops.
+
+One-time route (operator, on athena; tailscale serve strips the mount path):
+
+```sh
+sudo tailscale serve --bg --set-path /api/retro http://127.0.0.1:8092/api/retro
+```
+
+Check: `tailscale serve status` lists `/api/retro`, and
+`curl -s http://127.0.0.1:8092/api/retro-gateway/health` returns `{"status":"ok"}`.
+Undo: `sudo tailscale serve --bg --set-path /api/retro off`.
+
+The Retro tab also unloads Hub's other embedded pages (e.g. the `/spark/ui` WebGL
+visualizer) while it is open. That visualizer used ~22% of the shared browser
+thread. Leaving Retro reloads those pages, so their in-page state (scroll,
+filters, a loaded Gephi graph) starts fresh. New game ends the existing game
+instead of failing with `session_active`. Every Hub window shares one Hub
+credential, so New game in one window also ends a game started in another; saves
+are off. The relay has its own 8-socket cap, separate from Hub's; Retro itself
+still allows 2 input sockets.
+A paused game's inputs now answer `session_paused:<why>`, so the page reconnects
+after a lapsed lease, a dropped controller or an overload pause (at most 3 times in
+10 s). It honors an explicit Pause, including one pressed on an already auto-paused game.
+
+## Transport recovery and rollout (2026-11-11)
+
+The relay (`scripts/retro_transport.py`, shared by Hub and the dedicated gateway)
+retains one latest **complete** media packet, including its PCM. Sends have a
+750 ms deadline. A timed-out send closes that socket; it never retries a partially
+sent WebSocket message. Input acknowledgments remain ordered and are never dropped.
+The private native input write keeps its existing 250 ms deadline. HTTP deadlines,
+origin checks, ingress/message/socket caps, and native lease expiry are unchanged.
+
+The page reconnects only media for a media disconnect (300 ms retry, three retries
+per ten seconds). Missing/stale pictures send neutral human input after at most
+one second; a missing picture for three seconds closes the input controller or
+co-play sponsor. Co-play is not automatically reacquired: sponsor loss still ends
+the grant, and existing session export follows it. Dropped PCM causes the existing
+sample-discontinuity audio flush. Hidden tabs, page close, Pause and Stop release
+control; Pause/Stop do so before awaiting HTTP. Old session/intent/socket callbacks
+cannot restore a lease or picture. Another human's `port_owned` remains a conflict.
+
+Automatic Resume is permitted only with `capabilities.conditional_resume=true`
+from native `/health/ready`. The request echoes the automatic pause reason; the
+worker checks it atomically against its current reason. A newer explicit Pause
+wins. Against an older native service the page can reconnect media, but an
+auto-paused controller may need an explicit click to resume. The capability is
+cached for the page lifetime: **refresh/roll back the page before downgrading a
+native service** that advertised the capability.
+
+After merge, deployment from clean synchronized primary main on Athena:
+
+```sh
+scripts/safe_docker_build.sh orion-retro up -d --build retro
+scripts/safe_docker_build.sh orion-hub up -d --build hub-retro-gateway hub-app
+```
+
+Recreating Retro ends the current session; save first and reload afterward. Hub's
+static directory is bind-mounted and the asset version is bumped, so a pull can
+expose the new page before image rebuilds; capability negotiation keeps that
+mixed-version interval conservative. The Hub command restarts chat as well as the
+gateway because both import the shared router. No deploy was performed for this
+patch. Runtime acceptance on Athena remains UNVERIFIED until deployment and play.
+
+Inspect `docker logs orion-athena-hub-retro-gateway` for
+`retro_relay_closed sid=... channel=input|media reason=...`. Reasons include
+`browser_disconnected`, `upstream_closed`, `send_timeout`, `transport_error`, and
+`invalid_browser_message`; `retro_relay_connect_failed` records handshake failures.
+No token or raw input/media payload is logged. These are diagnostic logs, not
+cognition signals.
+
+Regression gates and isolated browser eval (never targets a production game):
+
+```sh
+python3 -m pytest services/orion-hub/tests/retro -q
+python3 -m pytest services/orion-retro/tests tests/retro -q
+PYTHONPATH=. python3 services/orion-hub/evals/retro_play_panel.py --output /tmp/retro-panel-recovery
+PYTHONPATH=. python3 services/orion-retro/evals/container_smoke.py --output /tmp/retro-native-recovery
+```
+
+The browser eval injects a dropped media socket and a silent stream, then checks
+co-play handoff/renewal/take-back. The native smoke rejects a delayed conditional
+resume after an explicit Pause. Unit tests cover slow/stuck writes, bounded media,
+cleanup, origin isolation, unrelated HTTP routes, stale session callbacks, another
+owner, old native capability, and hung Pause/Stop requests.
+
+### Post-deploy lag regression: acquisition and socket buffers
+
+The original recovery patch could discard a slow successful controller grant when
+another canvas click or focus recovery started a new connect before its response.
+The server then held a lease that the page never used. A pending acquisition now
+blocks those redundant reconnects, times out/aborts after five seconds, and cannot
+overwrite a newer takeover. Pause/Stop can still interrupt it immediately. The
+native browser eval delays a control HTTP response by 650 ms and clicks repeatedly;
+this is a separate fault from delaying input acknowledgments.
+
+One latest application packet was also insufficient to prevent video lag: a send
+can return after copying frames into TCP/proxy buffers, before the browser renders
+them. The negotiated media path now bounds those accepted-but-unpresented frames:
+
+- Proxied `GET /api/retro/health/ready` adds `capabilities.retro_media_ack_v1=true`.
+- The page opts in with `/api/retro/sessions/{id}/media?flow=ack-v1` only when that
+  capability is advertised. Native Retro's media protocol does not change.
+- The gateway sends at most three frames ahead. Browser media messages `{ "ack": N }`
+  cumulatively acknowledge the Nth message on that connection **after presentation**.
+  If the browser skips pending frames, its later cumulative ack releases their
+  credits too. The gateway validates increasing integer acknowledgments up to its
+  actual sent count; these messages never reach the native controller.
+- While credits are exhausted, the reader keeps only the latest native packet.
+  On recovery, old pictures are skipped rather than drained into play. Existing
+  PCM discontinuity handling remains responsible for audio gaps.
+- Origin checks, socket/message/rate limits and stalled-picture safety remain.
+  Old pages/new gateways and new pages/old gateways keep legacy media. Refresh the
+  page before a gateway downgrade because negotiation is cached for that page.
+
+After merging, update clean primary main and rebuild Hub through the wrapper:
+
+```sh
+scripts/safe_docker_build.sh orion-hub up -d --build hub-retro-gateway hub-app
+```
+
+Then reload `/retro` (asset v15). No native Retro rebuild is required for this
+follow-up. This command also restarts Hub chat; the gateway and Hub share router
+code. Carbon's Wi-Fi still showed independent 50–200 ms jitter and occasional
+loss during diagnosis; actual user-device play remains UNVERIFIED until deployment.
+
+## Play harness (`evals/retro_play.mjs`)
+
+Plays like a person: real Chromium, real Hub tab, scripted Mario input. It records
+input cadence, acknowledgment latency, socket closes, status text, main-thread long
+tasks and the server journal.
+
+```sh
+node services/orion-hub/evals/retro_play.mjs --url https://athena.tail348bbe.ts.net \
+  --hub --game super-mario-bros --seconds 30 --cpu 4 \
+  --evidence-dir ~/.local/share/orion/retro/service/evidence --out /tmp/retro-play
+```
+
+- `--hub` plays inside Hub's tab (iframe); omit it for standalone `/retro`.
+- `--cpu N` throttles the renderer.
+- `--override /static/js/x.js=local/file.js[,...]` serves working-copy files in
+  place of the deployed ones, so client fixes can be tried against live without a
+  deploy.
+
+`--url` is required. A run starts a real game on that service and ends any game
+already running there, so do not run it while someone is playing.
+
+### Zelda co-play harness (`evals/retro_coplay.mjs`)
+
+Watches Orion play: a real browser loads a Zelda save, clicks the game (as a person
+would), hands the controller to Orion (**Try Orion goals**) and hands it back every
+time a 60 s grant ends. At the end it reads that session's action bets from
+orion-prediction and records every socket close, with the code or stack that closed it.
+
+```sh
+RETRO_PUPPETEER_PACKAGE=/mnt/scripts/Orion-Sapienform/services/orion-hub/package.json \
+node services/orion-hub/evals/retro_coplay.mjs --url https://athena.tail348bbe.ts.net \
+  --game the-legend-of-zelda-prg1 --minutes 5 --out /tmp/coplay [--save <id>] [--no-click]
+```
+
+It loads a real game and ends any game already running, like `retro_play.mjs`.
+First live run (2026-10-23, 5 min):
+- 5 grants and 15 bets, 11 of which worked.
+- Orion took the top-ranked option 11 times.
+- The atlas went from 2 rooms to 7.
+- It also found a planner bug: in a room with 4 enemies Orion answered "fight nearest,
+  enemies_cleared, value 1" 13 times, and each answer was refused for the stray number.
+  A stray value on a non-room prediction is now dropped instead.
+
+### Quick taps
+
+A newer input that replaces a pending one before the next frame no longer erases
+the older one's buttons: they are held for exactly one frame (`latch` in
+`app/control.py`). A newer latched direction replaces an older one, and a latched direction yields to
+the current opposite one. A `superseded` reply therefore no longer means "never
+reached a frame": its buttons are held for that one frame.
+Live 2026-10-20: on Crystalis's title screen, 1 of 4 quick Start taps reached the
+game; with the latch, 4 of 4 did and the intro started. Regression:
+`test_tap_inside_one_frame_still_reaches_the_game`. `retro_play.mjs` now taps
+Start 4 times and reports `start_presses_applied` from the server journal.
+
+### Start readiness
+
+A command (such as the browser's resume right after New game) first waits for the
+worker to report ready, up to the 10 s start limit. Then its 0.75 s command
+timeout starts. Before 2026-10-20 the command clock started while the core was
+still loading (~0.48 s measured). Nova then failed at frame 0 with
+`worker_unavailable`. With the wait, all 6 catalog games pass `retro_play.mjs`
+(4/4 Start taps, no drops). Regression:
+`test_command_waits_for_a_starting_worker_instead_of_failing_the_session`.
+
+
+### Optional goal experiment
+
+`Try Orion goals · 60s` requires default-off `RETRO_COGNITION_ENABLED` (Retro)
+and `HUB_RETRO_COGNITION_ENABLED` (Hub/relay). It hands off only the currently
+owned port. The UI displays goal/rationale/outcome; `Take this controller`,
+Pause, a hidden tab and disconnect retain priority. Blur alone keeps the handoff, so
+you can watch from another window (2026-10-23). Five-second motor goals expire to
+wait if background planning is unavailable. The gateway uses GPU-pool background
+admission; thermal refusal is not an emulator failure and must not be bypassed.
+
+See the [goal-loop implementation record](../superpowers/specs/2026-10-20-retro-goal-loop-implementation.md)
+for the fingerprinted Nova observation scope, unknown cases, local evidence,
+and the real-planner acceptance gate. No deployment or game restart is implied.
+
+## Zelda play: planner v2, play panel, solo leisure
+
+Spec: [Orion plays The Legend of Zelda](../superpowers/specs/2026-10-22-orion-plays-zelda-design.md)
+(Hub half: sections D, E and the Hub view). Needs the Retro-side Zelda reader,
+navigator and atlas (Lane A) to be deployed; until then the Hub code is idle.
+
+- **Planner v2** (`scripts/retro_planner.py`, `plan_zelda`). One request per Retro
+  decision (room entry, goal finished, death, stuck), at most one in flight per
+  process, local GPU route `metacog_background` only. The prompt holds a 22x32
+  text map of the room (Link, enemies, drops, caves, learned-blocked tiles; walls
+  only when Retro includes the grid in its offer, otherwise the map says so), the
+  atlas neighbourhood and the last 5 decisions with their verdicts (the Hub keeps
+  them from Retro's `last_finished`), plus a plain line naming the sides Link can
+  walk off (Retro's `open_sides`, overworld only, each labelled visited or never
+  visited) and "nothing changed" on any goal whose start and end digests match
+  (never a `wait` or a `stopped:*` goal). Two answers are refused: an `exit`
+  through a side that is not open (`planner_side_closed`), and the previous goal
+  again when it changed nothing or was a completed `explore` toward a closed side
+  (`planner_repeats_no_effect`). A refused answer gets ONE retry with the reason
+  appended, only when the first answer took under 12 s (Retro's offer lives 30 s);
+  a second refusal is final (2026-10-23: the old
+  prompt asked "explore S" eight times against a solid wall). Replay that moment
+  against the real model with `evals/zelda_planner_replay.py`. A parse failure, an unsupported goal or an unknown observation
+  produces no goal; Retro's motor holds `wait`. A heat shed returns
+  `503 {"detail":"gpu_pool_unavailable","reason":"shed:cabinet_hot","retry_after_sec":N}`
+  and the shared `orion/gpu_pool/shed_backoff.py` rule spaces the retries.
+- **Play panel** (`/retro`, "Orion's map and goal"). The atlas grid (16x8 rooms;
+  bright edge = exit Orion used, `c` = cave, `×` = deaths, outline = current room),
+  the current goal with its reason and prediction, and the last 5 verdicts. During
+  a shed it reads "Orion is waiting: cabinet hot". A solo session is shown live
+  when the page opens, by watching only (media socket); clicking the game or
+  `Take this controller` acquires a controller, which preempts Orion.
+- **Solo leisure** (`scripts/retro_leisure.py`). Started only by Hub's leisure
+  timer (`scripts/retro_leisure_self_start.py`, every 300 s, since 2026-11-05; it calls
+  `should_start(config)` and then `run_leisure_session(config, act_id=...)`). Doer gates, checked at start and every
+  30 s, each with a named reason in the journal: arousal known and not strained,
+  no `cabinet_hot`, no relay socket open and no human Retro action in 10 min, no
+  game already running, one start per 3 h, 90 min per rolling 24 h, 30 min per
+  session, `RETRO_LEISURE_ENABLED=true` (the rollback lever). Ends after 3
+  consecutive sheds, or earlier (`shed_wait_policy_lost`) when Retro drops the
+  policy after 60 s with no goal; the paused orphan game is then closed. Loads the newest compatible save or starts fresh, and saves
+  at the end. When a human may be in control (they acted, or presence cannot be
+  read), it never saves over or stops their game: it only releases its port.
+- **Shared state** (`scripts/retro_presence.py`, Redis on `ORION_BUS_URL`):
+  `orion:retro:presence:human_at`, `orion:retro:presence:browser:<id>` (15 s TTL),
+  `orion:retro:leisure:{status,ledger,journal,lock}`. Read the journal with
+  `redis-cli -u $ORION_BUS_URL lrange orion:retro:leisure:journal 0 20`.
+- **Browser eval** (fixture Retro, real template/asset/router):
+  `python services/orion-hub/evals/retro_play_panel.py --output /tmp/retro-play-panel`
+  (set `RETRO_PUPPETEER_PACKAGE` to a `package.json` with puppeteer installed if
+  the local `node_modules` is incomplete).
+- **Session end** (`scripts/retro_session_end.py`). Leisure returns a `RetroSessionEnded`.
+  Co-play sends one to `app.state.retro_session_end_sink` (none registered means nothing is
+  written). It carries Retro's atlas record (`rooms_new`, `deaths`, `controller_frames`), and a
+  field stays None when Retro did not report it.

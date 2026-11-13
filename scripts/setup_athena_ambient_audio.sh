@@ -54,6 +54,9 @@ if [[ ! -f "$DEFAULT_ENV" ]]; then
 # Orion ambient audio reader — override service user or ALSA device if needed.
 ORION_AMBIENT_SERVICE_USER=$SERVICE_USER
 ORION_AMBIENT_AUDIO_DEVICE=$DEFAULT_DEVICE
+# Live listen ring for Hub's "Cabinet audio" button (/run/orion-audio/live, tmpfs).
+# Set to 0 and restart orion-ambient-audio to stop writing audio (levels keep flowing).
+ORION_AMBIENT_AUDIO_LIVE_ENABLED=1
 EOF
     chmod 0644 "$DEFAULT_ENV"
     echo "Created $DEFAULT_ENV"

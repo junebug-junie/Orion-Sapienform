@@ -16,7 +16,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from app.direct import direct_ar, direct_arx
+from app.direct import direct_ar, direct_arx, direct_arx_overlap
 from app.series import Seasonality, SeriesSpec
 
 MIN_CYCLES = 2
@@ -95,7 +95,7 @@ def _mstl(periods: list[int], trend: str):
     return fn
 
 
-def _prophet(seasonalities: list[Seasonality], grain_min: int):
+def _prophet(seasonalities: list[Seasonality], grain_min: int, breaks: tuple = ()):
     def fn(y, h, idx):
         from prophet import Prophet
 
@@ -104,9 +104,21 @@ def _prophet(seasonalities: list[Seasonality], grain_min: int):
         for s in seasonalities:
             m.add_seasonality(name=s.name, period=s.period_min / 1440.0, fourier_order=s.fourier_order)
         ds = idx.tz_convert("UTC").tz_localize(None)
-        m.fit(pd.DataFrame({"ds": ds, "y": y}))
+        df = pd.DataFrame({"ds": ds, "y": y})
         future = pd.DataFrame({"ds": pd.date_range(ds[-1] + pd.Timedelta(minutes=grain_min), periods=h,
                                                     freq=f"{grain_min}min")})
+        # A known break inside the training window becomes a level-shift regressor (0 before, 1 after),
+        # once a day of post-break data exists to estimate it -- a shift fitted on a few noisy points
+        # would be carried across the whole horizon.
+        min_post = 1440 // grain_min
+        for k, b in enumerate(breaks):
+            b = pd.Timestamp(b).tz_convert("UTC").tz_localize(None)
+            step = (df["ds"] >= b).astype(float)
+            if min_post <= step.sum() < len(step):
+                df[f"break_{k}"] = step
+                future[f"break_{k}"] = 1.0
+                m.add_regressor(f"break_{k}", prior_scale=1.0, standardize=False)
+        m.fit(df)
         return m.predict(future)["yhat"].to_numpy()
     return fn
 
@@ -122,9 +134,14 @@ def build_models(spec: SeriesSpec, usable: list[Seasonality]) -> dict[str, Forec
         Forecaster("window_average_1h", _window_average(max(1, 60 // spec.grain_min)), t),
         Forecaster("mstl_ets", _mstl(periods, "ets"), t),
         Forecaster("mstl_arima", _mstl(periods, "arima"), t),
-        Forecaster("prophet", _prophet(usable, spec.grain_min), t),
+        Forecaster("prophet", _prophet(usable, spec.grain_min, spec.breaks), t),
         Forecaster("direct_ar", direct_ar(spec.grain_min), t),
     ]
-    if spec.covariates:
-        zoo.append(Forecaster("direct_arx", direct_arx(spec.grain_min), t, uses_covariates=True))
+    # Covariate columns arrive in spec.covariates order. direct_arx sees the ones with full history;
+    # direct_arx_overlap sees all of them on the rows where every one has readings (app/direct.py).
+    full = tuple(k for k, c in enumerate(spec.covariates) if c not in spec.overlap_covariates)
+    if full:
+        zoo.append(Forecaster("direct_arx", direct_arx(spec.grain_min, cols=full), t, uses_covariates=True))
+    if spec.overlap_covariates:
+        zoo.append(Forecaster("direct_arx_overlap", direct_arx_overlap(spec.grain_min), t, uses_covariates=True))
     return {f.name: f for f in zoo}

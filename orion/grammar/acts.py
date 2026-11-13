@@ -18,10 +18,10 @@ in once:
   consecutive Juniper turns 2015 s, P(next turn <= 1800 s) = 0.49. A horizon
   at the median keeps the binary outcome near maximum entropy, so the
   signal is not saturated at 0 or 1 by construction.
-  Measurement limit: chat_history_log.created_at is when the merged turn row is
-  stored, i.e. after Orion's answer to Juniper's next message. So the signal is
-  "Juniper sent a turn that Orion answered and stored by the horizon": a reply
-  sent just before the horizon with a slow turn, or a turn that errored, reads 0.
+  Re-measured 2026-10-16 on the resolver's own clock (when Juniper's next turn
+  STARTED: hub ingress hop, logged created_at fallback; see act_ledger
+  _JUNIPER_REPLY_SQL): median from Orion's stored reply to her next turn start
+  1785 s, P(<= 1800 s) = 0.50 (n=250). The horizon still sits at the median.
 - Artifact horizons (make / look) come from the producer's own existing
   deadline (the run's timeout), passed in by the caller and named in
   ``basis``: "produced by the deadline Orion already gives itself".
@@ -48,9 +48,9 @@ from orion.schemas.grammar import (
 
 JUNIPER_REPLY_HORIZON_SEC = 1800.0
 JUNIPER_REPLY_BASIS = (
-    "juniper_replied by 1800s: median gap between Juniper's hub chat turns over 60d "
-    "(2015s, n=241, measured 2026-10-16); P(reply<=1800s)=0.49 so the outcome is not saturated; "
-    "reply time = when Orion's answer to it was stored"
+    "juniper_replied by 1800s: median time from Orion's reply to Juniper's next turn start over 60d "
+    "(1785s, n=250, measured 2026-10-16); P(reply<=1800s)=0.50 so the outcome is not saturated; "
+    "reply time = when Juniper's next turn started (hub ingress; logged created_at fallback)"
 )
 
 
@@ -127,6 +127,12 @@ def _provenance(source_service: str, source_component: str) -> GrammarProvenance
         return GrammarProvenanceV1(source_service="orion-hub", source_component=source_component)
     if source_service == "orion-thought":
         return GrammarProvenanceV1(source_service="orion-thought", source_component=source_component)
+    if source_service == "orion-durable-runs":
+        return GrammarProvenanceV1(source_service="orion-durable-runs", source_component=source_component)
+    if source_service == "orion-embodiment":
+        return GrammarProvenanceV1(source_service="orion-embodiment", source_component=source_component)
+    if source_service == "orion-mind":
+        return GrammarProvenanceV1(source_service="orion-mind", source_component=source_component)
     raise ValueError(f"unregistered act producer {source_service!r}")
 
 
@@ -150,6 +156,8 @@ def act_closed_event(
     source_service: str,
     source_component: str,
     note: str = "",
+    # V1 only until every reader of orion:grammar:event runs ActCostV2-aware code (consumer-first,
+    # orion/schemas/grammar.py ActCostV2). The act ledger fills V2 fields itself on close.
     cost: ActCostV1 | None = None,
     correlation_id: str | None = None,
     session_id: str | None = None,

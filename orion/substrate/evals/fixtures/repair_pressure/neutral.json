@@ -1,7 +1,43 @@
 {
   "id": "neutral",
   "class": "neutral",
-  "turn_window": [{"role": "user", "content": "what is the weather like?"}],
-  "mock_probe_lines": {},
-  "expect": {"level_max": 0.25}
+  "turn_window": [
+    {
+      "role": "user",
+      "content": "what is the weather like?"
+    }
+  ],
+  "mock_probe_lines": {
+    "specificity_demand": {
+      "yes_lp": -3.0,
+      "no_lp": -0.05
+    },
+    "trust_rupture": {
+      "yes_lp": -3.0,
+      "no_lp": -0.05
+    },
+    "coherence_gap": {
+      "yes_lp": -3.0,
+      "no_lp": -0.05
+    },
+    "repetition_failure": {
+      "yes_lp": -3.0,
+      "no_lp": -0.05
+    },
+    "operational_block": {
+      "yes_lp": -3.0,
+      "no_lp": -0.05
+    },
+    "explicit_repair_command": {
+      "yes_lp": -3.0,
+      "no_lp": -0.05
+    },
+    "assistant_accountability_demand": {
+      "yes_lp": -3.0,
+      "no_lp": -0.05
+    }
+  },
+  "expect": {
+    "level_max": 0.25
+  }
 }

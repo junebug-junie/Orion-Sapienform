@@ -129,7 +129,13 @@ def compute_pressure_hints(
     else:
         reasoning_load = 0.35 if run.reasoning_present else 0.05
     status_fail = run.status.lower() in {"fail", "partial", "failed", "error"}
-    failure_pressure = 1.0 if status_fail or failed > 0 else 0.0
+    # A deliberate GPU-pool shed is not a failure (2026-10-20). failed_step_count already
+    # excludes shed steps; a fail/partial status counts unless the run's own result error
+    # was the shed (result_shed, from cortex-exec's exec_result_assembled shed_reason kv).
+    # A real failure -- any non-shed failed step, or a fail status with no shed result
+    # behind it (validation, inactive verb, empty output, pool deadline/outage) -- still
+    # reads 1.0, even when some earlier step was shed.
+    failure_pressure = 1.0 if failed > 0 or (status_fail and not run.result_shed) else 0.0
     egress_confidence = 1.0 if egress_emitted else 0.25
     # FCC-motor-only step load, split from `cortex_exec_step_load` above (both now
     # log-ratio shaped over their own source-scoped step count, cortex-exec-only vs
@@ -269,9 +275,15 @@ def extract_execution_state_from_events(
         elif role == "exec_step_completed":
             run.completed_step_count += 1
         elif role == "exec_step_failed":
-            run.failed_step_count += 1
+            # cortex-exec adds shed_reason=<name> when the GPU pool shed the step on purpose.
+            if kv.get("shed_reason"):
+                run.shed_step_count += 1
+            else:
+                run.failed_step_count += 1
         elif role == "exec_result_assembled":
             run.status = kv.get("status", run.status)
+            if kv.get("shed_reason"):
+                run.result_shed = True
             run.final_text_present = _boolish(kv.get("final_text_present"))
             run.reasoning_present = _boolish(kv.get("reasoning_present"))
             run.thinking_source = kv.get("thinking_source", run.thinking_source)

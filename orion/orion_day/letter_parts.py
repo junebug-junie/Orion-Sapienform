@@ -253,7 +253,8 @@ SECTION_PREFIXES: dict[str, tuple[str, ...]] = {
     "dreams": ("dream:", "dream_offered:"),
     "code_changes": ("github_compactor:",),
     "conversations": ("chat_compactor:", "correction:"),
-    "world_news": ("world_pulse_digest:",),
+    # The walkway day rollup is the world outside the house: it sits with the world news.
+    "world_news": ("world_pulse_digest:", "walkway_day:"),
     "reveries": ("visual_reverie:", "reverie:"),
 }
 
@@ -271,6 +272,7 @@ _BODY_FIELDS = (
     "journal_body", "finding_text", "answer_text", "learned", "narrative", "body", "correction", "claim",
     "interpretation", "description", "executive_summary", "lived_answer_text", "self_definition_text",
     "error",
+    "line",  # walkway_day (WalkwayDayV1): last, so a curiosity run's own `line` never wins
 )
 
 

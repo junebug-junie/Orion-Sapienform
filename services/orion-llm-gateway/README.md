@@ -6,6 +6,13 @@ It now supports **latent vector emission** for vLLM/llama-cola responses (when t
 
 For **llama.cpp** and **llama-cola** backends, `ChatRequestPayload.options` may include **`chat_template_kwargs`** (e.g. `{"enable_thinking": false}`). The gateway forwards that object to `/v1/chat/completions` so Qwen3-style thinking can be toggled **per request** without restarting the model host.
 
+For a llama.cpp grant in GPU pool class `fast`, both bus chat and OpenAI HTTP
+calls send `enable_thinking=false` when the caller omits it. The gateway
+preserves an explicit `enable_thinking=true` or `false`; structured-output
+policy may still disable thinking for artifact requests. This keeps short quick calls and JSON
+extractors independent of the worker's launch default; other pool classes keep
+their own policy.
+
 ### Spark metadata (v1)
 
 The gateway no longer runs tissue ingest on chat turns. Result `spark_meta` is thin metadata only:
@@ -33,6 +40,7 @@ Fix: `llm_backend.py`'s `_served_model()` now prefers the backend's own echoed m
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
 | (Caller-defined) | (via `reply_to`) | `llm.chat.result` | Chat completion result. |
+| `orion:llm:call:usage` | `LLM_GATEWAY_CALL_USAGE_ENABLED` | `llm.call.usage.v1` | One per call that reached a model: tokens + correlation id (see "Per-call token ledger"). |
 
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
@@ -45,6 +53,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `GPU_POOL_CONFIG_PATH` | `/app/config/gpu_pool.yaml` | Route -> pool class/priority map (`routes:`). A route not listed is refused (`route_not_in_gpu_pool`). |
 | `LLM_GATEWAY_POOL_WAIT_SEC` | `300` | Max wait for a pool grant (interactive/system); capped by the caller's own `gateway_read_timeout_sec`. |
 | `LLM_GATEWAY_POOL_BACKGROUND_WAIT_SEC` | `900` | Same, for background-priority routes. |
+| (option) `gateway_pool_wait_sec` | none | Per call, in a bus request's `options` (2026-11-03): the caller's own pool seat wait, **on top of** its `gateway_read_timeout_sec`. The pool wait is this number (capped at 900 s) instead of the priority's, and each upstream call still gets at most `gateway_read_timeout_sec`. Absent: the old rule (one budget for wait + generation). Caller today: Orion Prime (orion-mind `PRIME_SEAT_WAIT_SEC`). |
 | `LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC` | `60` | Max pool wait for the HTTP passthroughs (OpenAI/Anthropic); the queued acquire is withdrawn if the client disconnects. |
 | `LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE` | `8` | Threads per granted role URL (one executor per GPU role). |
 | `LLM_ROUTE_DEFAULT` | `quick` | Default routing key when none provided. |
@@ -220,6 +229,18 @@ Failure shape (bus): empty text with `raw.error = "gpu_pool_unavailable"` and
 header `X-Gpu-Pool-Bus: down`) until the pool RPC client is connected. HTTP: 503
 with `error.type = "gpu_pool_unavailable"`.
 
+Heat-shed backoff (2026-10-20, `orion/gpu_pool/shed_backoff.py`): when the pool refuses a one-shot
+lease with `shed:<name>` (e.g. `shed:cabinet_hot`), the pool client in this process refuses later
+leases of the same priority locally, without asking the pool, for 30 s doubling to 180 s (+-20 %
+jitter); one probe per window goes to the pool, and the first grant ends the episode. Holds,
+attach children and retryable leases are never gated. Those refusals carry
+`raw.details.retry_after_sec` (bus) / `error.retry_after_sec` plus a `Retry-After` header (HTTP),
+and `local: true` when this gateway answered without asking the pool. A probe the pool queues
+instead of refusing ends the episode after 3 s (the pool refuses a shed lease on its first 1 s
+tick); a probe ending in `deadline`/`cancelled`/`pool_*` only releases the probe.
+Logs: one `gpu_shed_backoff_start` / `gpu_shed_backoff_end ... skipped=N` pair per episode; the
+per-call `gpu_pool_unavailable` warning is debug-level for a locally answered refusal.
+
 Upstream failure shape (bus, since 2026-10-07): when the granted worker answers non-2xx, answers
 2xx with an error body (`{"error": ...}` and no completion), returns an empty template, or never
 answers (timeout / refused connection), the reply is the same shape -- empty text,
@@ -387,6 +408,26 @@ one-call minute read 1.0. The field digester (`ENABLE_LLM_INFERENCE_FIELD_DIGEST
 recorded in the projection for inspection and never reach the field. Replay what the
 channel would read from existing logs with
 `evals/run_inference_outcome_eval.py`.
+
+## Per-call token ledger (2026-10-29)
+
+One `llm.call.usage.v1` (`orion/schemas/llm_call_usage.py`) per call that reached a model: bus RPC,
+`/v1/chat/completions` and `/v1/messages`, streamed or not. It carries prompt tokens (cache reuse
+included), cached prompt tokens, completion tokens, route, model, served_by, the granted pool role,
+model time (grant -> reply) and pool wait, llama.cpp decode speed, and the caller's correlation id.
+orion-sql-writer stores it in `llm_call_usage`. No prompt or reply text.
+
+* Correlation id: bus envelope `correlation_id`; HTTP header `X-Orion-Correlation-Id` (then
+  `x-request-id`). FCC per-turn spawns send the header, so harness calls are no longer `corr=-`.
+* Streams: the first and last 4 KB are kept. An Anthropic stream has its prompt counts in
+  `message_start` (first event) and its completion count in `message_delta` (last). An OpenAI
+  stream from llama.cpp has no `usage` chunk; counts come from the last chunk's `timings`
+  (`token_source = 'timings'`).
+* Not recorded: a call the pool never granted that reported no tokens (a refusal). The grammar
+  windows still count it.
+* Telemetry never waits inside a reply: events go to a bounded in-memory queue (oldest dropped
+  and logged when full), drained every 2 s by `run_usage_publisher`.
+* Off switch: `LLM_GATEWAY_CALL_USAGE_ENABLED=false`.
 
 ## Calls under a durable run's GPU pool hold
 

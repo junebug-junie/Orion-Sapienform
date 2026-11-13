@@ -198,6 +198,47 @@ async def test_run_pre_turn_appraisal_skips_publish_when_no_repair_pressure_para
 
 
 @pytest.mark.asyncio
+async def test_run_pre_turn_appraisal_shed_probe_is_failed_not_ok() -> None:
+    """Regression (2026-10-20..21): the probe was shed by heat on 19/19 turns and the cockpit read
+    `ok`. A failed paradigm must make the status `failed`, name the reason, and publish no level."""
+    _ensure_hub_import_paths()
+    from orion.hub.turn_orchestrator import _run_pre_turn_appraisal
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
+    import scripts.pre_turn_appraisal_client as pta_client_mod
+
+    bundle = TurnAppraisalBundleV1(
+        correlation_id=_CORR_ID,
+        failed_paradigms=["repair_pressure"],
+        failure_reasons={"repair_pressure": "shed:cabinet_hot"},
+    )
+    settings = SimpleNamespace(
+        ENABLE_PRE_TURN_APPRAISAL=True,
+        PRE_TURN_APPRAISAL_PARADIGMS="repair_pressure",
+        PRE_TURN_APPRAISAL_TIMEOUT_MS=800,
+    )
+    publish_mock = AsyncMock()
+    with patch.object(
+        pta_client_mod.PreTurnAppraisalClient, "appraise", AsyncMock(return_value=bundle)
+    ), patch(
+        "scripts.pre_turn_appraisal_wiring._publish_repair_pressure_appraisal", publish_mock
+    ):
+        result, texture = await _run_pre_turn_appraisal(
+            bus=MagicMock(),
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="hello",
+            continuity_messages=None,
+            settings=settings,
+        )
+
+    assert result is bundle
+    assert texture["status"] == "failed"
+    assert texture["failure_reasons"] == {"repair_pressure": "shed:cabinet_hot"}
+    assert texture["error"] == "failed_paradigms=repair_pressure:shed:cabinet_hot"
+    publish_mock.assert_not_awaited()  # no 0.0 "calm" reading reaches equilibrium's metacog gate
+
+
+@pytest.mark.asyncio
 async def test_turn_orchestrator_defaults_fcc_model_label() -> None:
     harness_run = HarnessRunV1(
         correlation_id=_CORR_ID,
@@ -1576,3 +1617,116 @@ def test_success_frames_final_omits_source_fetches_from_an_older_governor() -> N
     )
     final_frame = next(f for f in _success_frames(run, correlation_id="c") if f["type"] == "final")
     assert "harness_source_fetches" not in final_frame
+
+
+@pytest.mark.asyncio
+async def test_turn_orchestrator_recent_turns_carry_message_times() -> None:
+    """Live 2026-10-16: the history block had no times, so Orion fused a
+    cut-off turn, "night night", and a message ~9 h later into one moment.
+    A continuity message's "ts" must reach recent_turns[].at and render."""
+    harness_run = HarnessRunV1(
+        correlation_id=_CORR_ID,
+        final_text="hello",
+        finalize_ran=True,
+        step_count=1,
+        compliance_verdict="completed",
+        grounding_status="grounded",
+    )
+    bus = MagicMock()
+    harness_client_run = AsyncMock(return_value=harness_run)
+    patches = _hub_client_patches(thought=_thought(), harness_run=harness_client_run)
+    continuity_messages = [
+        {"role": "user", "content": "night night", "ts": "2026-10-16T07:47:38+00:00"},
+        {"role": "assistant", "content": "Night night, Juniper."},
+        {"role": "user", "content": "what's the latest?", "ts": "2026-10-16T16:56:40+00:00"},
+    ]
+    with patches[0], patches[1], patches[2]:
+        await execute_unified_turn(
+            bus=bus,
+            correlation_id=_CORR_ID,
+            session_id="sess-1",
+            user_message="what's the latest?",
+            payload={},
+            continuity_messages=continuity_messages,
+            emit_observation_fn=lambda **_kwargs: None,
+        )
+
+    req = harness_client_run.await_args.args[0]
+    from datetime import datetime, timezone
+
+    assert [m.at for m in req.recent_turns] == [
+        datetime(2026, 10, 16, 7, 47, 38, tzinfo=timezone.utc),
+        None,
+    ]
+    # The real Hub -> governor shape: json over the bus, then model_validate.
+    from orion.schemas.harness_finalize import HarnessRunRequestV1
+
+    wire = req.model_dump(mode="json")
+    assert "at" not in wire["recent_turns"][1]
+    on_governor = HarnessRunRequestV1.model_validate(wire)
+    assert on_governor.recent_turns[0].at == datetime(2026, 10, 16, 7, 47, 38, tzinfo=timezone.utc)
+    assert on_governor.recent_turns[1].at is None
+    from orion.harness.prefix import compile_harness_prefix
+    from orion.schemas.harness_finalize import HarnessRepairOverlayV1
+
+    prompt = compile_harness_prefix(
+        req.thought_event,
+        repair_overlay=HarnessRepairOverlayV1(),
+        user_message=req.user_message,
+        recent_turns=req.recent_turns,
+        now=datetime(2026, 10, 16, 16, 56, 40, tzinfo=timezone.utc),
+    )
+    assert "- User (Fri Oct 16, 1:47 am): night night" in prompt
+    assert "- Orion (you, prior turn): Night night, Juniper." in prompt
+    assert "Current time: Fri Oct 16, 10:56 am (Juniper's local time)" in prompt
+
+
+@pytest.mark.asyncio
+async def test_gpu_pool_hold_ref_reaches_the_pre_turn_check():
+    """Juniper 2026-11-12: world-pulse reading turns never send LLM work to the fast or metacog
+    lane. The check ran on quick_turn (Qwen3-8B, 4k slot) and stage-2 checks failed 194/373 in 7
+    days. The turn's hold now rides the check request so cortex-exec probes on the turn's seat."""
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
+    ref = GpuLeaseRefV1(lease_id="hold-1", generation=3, role="agent-gpu2", holder="durable-runs:reading-1")
+    harness_run = HarnessRunV1(correlation_id=_CORR_ID, final_text="A grounded finding.", finalize_ran=True,
+                              step_count=3, compliance_verdict="completed", grounding_status="grounded")
+    check = AsyncMock(return_value=(None, {"status": "skipped", "skipped_reason": "test"}))
+    patches = _hub_client_patches(thought=_thought(), harness_run=AsyncMock(return_value=harness_run))
+    with patches[0], patches[1], patches[2], patch("orion.hub.turn_orchestrator._run_pre_turn_appraisal", check):
+        await execute_unified_turn(
+            bus=MagicMock(), correlation_id=_CORR_ID, session_id="orion_world_pulse_read_stage2",
+            user_message="Read this", payload={"no_write": True, "gpu_lease": ref.model_dump(mode="json")},
+            emit_observation_fn=lambda **kwargs: None,
+        )
+    assert check.await_args.kwargs["gpu_lease"] == ref
+
+    check.reset_mock()
+    with patches[0], patches[1], patches[2], patch("orion.hub.turn_orchestrator._run_pre_turn_appraisal", check):
+        await execute_unified_turn(
+            bus=MagicMock(), correlation_id=_CORR_ID, session_id="juniper", user_message="hi",
+            payload={"no_write": True}, emit_observation_fn=lambda **kwargs: None,
+        )
+    assert check.await_args.kwargs["gpu_lease"] is None
+
+
+@pytest.mark.asyncio
+async def test_run_pre_turn_appraisal_sends_the_hold_on_the_request() -> None:
+    _ensure_hub_import_paths()
+    from orion.hub.turn_orchestrator import _run_pre_turn_appraisal
+    from orion.schemas.gpu_pool import GpuLeaseRefV1
+    from orion.schemas.pre_turn_appraisal import TurnAppraisalBundleV1
+    import scripts.pre_turn_appraisal_client as pta_client_mod
+
+    ref = GpuLeaseRefV1(lease_id="hold-2", generation=1, role="agent", holder="durable-runs:reading-2")
+    settings = SimpleNamespace(ENABLE_PRE_TURN_APPRAISAL=True, PRE_TURN_APPRAISAL_PARADIGMS="repair_pressure",
+                               PRE_TURN_APPRAISAL_TIMEOUT_MS=800)
+    appraise = AsyncMock(return_value=TurnAppraisalBundleV1(correlation_id=_CORR_ID, paradigms={}))
+    with patch.object(pta_client_mod.PreTurnAppraisalClient, "appraise", appraise):
+        await _run_pre_turn_appraisal(bus=MagicMock(), correlation_id=_CORR_ID, session_id="s",
+                                      user_message="hello", continuity_messages=None, settings=settings,
+                                      gpu_lease=ref)
+        assert appraise.await_args.args[0].gpu_lease == ref
+        await _run_pre_turn_appraisal(bus=MagicMock(), correlation_id=_CORR_ID, session_id="s",
+                                      user_message="hello", continuity_messages=None, settings=settings)
+        assert appraise.await_args.args[0].gpu_lease is None
+        assert "gpu_lease" not in appraise.await_args.args[0].model_dump(mode="json")

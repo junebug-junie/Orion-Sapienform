@@ -30,7 +30,8 @@ class SelfSignalOutcomeAssociationSQL(Base):
     """One row per (signal, outcome) per hourly refresh (SelfSignalOutcomeAssociationV1): next-hour
     outcome rate when the signal was high vs normal, rate ratio and 95% interval, verdict, and the
     one clause a prompt may show. Append-only; readers take the newest row per (signal_id,
-    outcome) and cite association_id. ~21 rows/hour (~180k/year); no retention policy yet."""
+    outcome) and cite association_id. ~21 rows/hour; bounded retention
+    SELF_SIGNAL_OUTCOME_ASSOCIATION_RETENTION_DAYS (30, grammar_retention_loop)."""
 
     __tablename__ = "self_signal_outcome_association"
 

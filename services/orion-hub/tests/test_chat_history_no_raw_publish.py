@@ -165,9 +165,16 @@ def test_ws_turn_still_persists_the_turn(_publish_enabled) -> None:
     bus = _RecordingBus()
     _run_ws_publish(bus)
 
-    observed = [(channel, getattr(payload, "kind", None)) for channel, payload in bus.published]
+    published = [(channel, getattr(payload, "kind", None)) for channel, payload in bus.published]
+    # Since the act ledger (thinking rung 2, `_publish_reply_say_act`), the
+    # turn also opens a `say` act on the grammar channel after it is persisted.
+    # That is not a chat-history publish, so it is checked apart from the three.
+    acts = [(c, k) for c, k in published if k == "grammar.event.v1"]
+    assert all(c == "orion:grammar:event" for c, _k in acts), acts
+    assert len(acts) <= 1, acts
+    observed = [(c, k) for c, k in published if k != "grammar.event.v1"]
 
-    # Exactly three publishes survive: the user message, the assistant message
+    # Exactly three chat-history publishes survive: the user message, the assistant message
     # (both `chat.history.message.v1` on the log channel), and the turn
     # envelope (`chat.history` on the *turn* channel). The deleted raw dict was
     # a fourth, on the log channel, with no kind at all.

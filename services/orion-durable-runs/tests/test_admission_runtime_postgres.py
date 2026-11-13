@@ -41,7 +41,6 @@ class Runner:
         self.events = []
         self.block = block
         self.outcome = outcome
-        self.reflect_calls = []
         self._bus = None
 
     def _curiosity_deps(self):
@@ -74,15 +73,6 @@ class Runner:
 
         return SelfSenseDeps(run_turn=turn, publish_rows=publish_rows)
 
-    def _reflect_deps(self):
-        from app.reflect_graph import Deps as ReflectDeps
-
-        async def call(reflect_input, llm_route, gpu_lease=None):
-            self.reflect_calls.append((llm_route, gpu_lease))
-            return [{"kind": "fixture", "summary": "reflect fixture"}]
-
-        return ReflectDeps(call_reflect_llm=call)
-
     async def _publish(self, channel, kind, model, corr):
         self.events.append((kind, model))
         return True
@@ -99,8 +89,6 @@ class Runner:
 
 def request(run_id, *, workflow="curiosity.investigate", timeout=100, **admission):
     brief = {"prompt": "Inspect the current self-inquiry evidence.", "session_id": "curiosity", "timeout_sec": timeout}
-    if workflow == "self_study.reflect":
-        brief.update(line="reflect", llm_route="agent", self_study_reflect_input={"snapshot_id": "s1"})
     return DurableRunRequestV1(run_id=run_id, workflow=workflow, correlation_id=str(uuid4()),
         admission=admission, brief=brief)
 
@@ -385,27 +373,6 @@ def test_door_a_keeps_heartbeating_the_hold_until_hub_releases_it_and_a_restart_
         assert (await gpu.lease(hold["lease_id"]))["status"] == "released"
         assert (await restarted.release_outreach(req.run_id))["reason"] == "already_released"
         await restarted.close()
-    asyncio.run(with_database(scenario))
-
-
-def test_admitted_reflect_run_holds_a_gpu_and_its_llm_call_carries_the_hold():
-    """Stage 4.4 hazard: the reflect call used to carry neither lease (it would queue behind its
-    own run once runs hold). It now runs under the run's hold and passes the ref."""
-    async def scenario(pool, saver, store):
-        gpu = await InProcessPool().boot()
-        rt = runtime(pool, saver, store, gpu=gpu)
-        req = request("reflect-001", workflow="self_study.reflect")
-        await rt.submit(req)
-        await rt._drive(await store.get_run(req.run_id))
-        assert (await store.get_run(req.run_id))["terminal"] == "completed"
-        [(route, ref)] = rt.runner.reflect_calls
-        [hold] = gpu.leases(holder="durable-runs:reflect-001")
-        assert route == "agent" and ref.lease_id == hold["lease_id"] and ref.role == "agent"
-        assert hold["status"] == "released"
-        completed = next(e for e in await store.history(req.run_id) if e["event"] == "run.completed")
-        assert completed["detail"]["line"] == "reflect" and completed["detail"]["llm_call_ok"] is True
-        assert not rt.runner.calls, "a reflect run must never drive a curiosity harness turn"
-        await rt.close()
     asyncio.run(with_database(scenario))
 
 

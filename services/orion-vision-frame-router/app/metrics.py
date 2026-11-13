@@ -1,15 +1,9 @@
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-
-from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
-from orion.schemas.telemetry.system_health import SystemHealthV1
+from typing import Any
 
 from .state import RouterState
-
-BOOT_ID = str(uuid.uuid4())
 
 
 @dataclass
@@ -40,14 +34,34 @@ class RouterMetrics:
     caption_skip_counts: dict[str, int] = field(default_factory=dict)
     caption_no_caption_counts: dict[str, int] = field(default_factory=dict)
     caption_failure_counts: dict[str, int] = field(default_factory=dict)
+    # Answered-but-no-caption replies since the last real caption, across all
+    # captioned streams (only walkway today). 2026-10-16:
+    # 24 of 24 walkway replies were "null_answer" and every counter looked
+    # healthy; a long streak now logs a warning (dispatcher).
+    caption_no_caption_streak: int = 0
+    # Main-lane dispatches per stream per "<tier>:<triggered_by>" (e.g.
+    # "triggered:experiment", "baseline:-"). Monotonic since boot. The
+    # switchback runner (orion-prediction) reads deltas at each block edge as
+    # its manipulation check: did an on-block actually raise the tier?
+    dispatch_tier_counts: dict[str, dict[str, int]] = field(default_factory=dict)
     last_error: str | None = None
 
     def record_skip(self, reason: str) -> None:
         self.frames_skipped_total += 1
         self.skip_reason_counts[reason] = self.skip_reason_counts.get(reason, 0) + 1
 
-    def record_dispatch(self) -> None:
+    def record_dispatch(
+        self, stream_id: str | None = None, tier: str | None = None, triggered_by: str | None = None
+    ) -> None:
         self.frames_dispatched_total += 1
+        if stream_id and tier:
+            # Copy-on-write: health readers copy this dict from another thread.
+            per = dict(self.dispatch_tier_counts.get(stream_id) or {})
+            key = f"{tier}:{triggered_by or '-'}"
+            per[key] = per.get(key, 0) + 1
+            # Replace the outer dict too: inserting a new stream key while asdict() iterates
+            # it from the heartbeat thread would raise "dictionary changed size".
+            self.dispatch_tier_counts = {**self.dispatch_tier_counts, stream_id: per}
 
     def record_identity_dispatch(self) -> None:
         self.identity_dispatched_total += 1
@@ -64,63 +78,61 @@ class RouterMetrics:
 
     def record_caption_no_caption(self, reason: str) -> None:
         self._bump(self.caption_no_caption_counts, reason or "unknown")
+        self.caption_no_caption_streak += 1
+
+    def record_captioned(self) -> None:
+        self.caption_captioned_total += 1
+        self.caption_no_caption_streak = 0
 
     def record_caption_failure(self, reason: str) -> None:
         self._bump(self.caption_failure_counts, reason or "host_error")
 
 
-def make_health_envelope(
+def make_health_details(
     *,
-    service_name: str,
-    service_version: str,
     router_enabled: bool,
     dry_run: bool,
     policy_path: str,
     metrics: RouterMetrics,
     state: RouterState,
-    heartbeat_interval_sec: float,
-    status: str = "ok",
-) -> BaseEnvelope:
-    # Threaded from the caller's real loop period rather than left at the schema
-    # default: orion-equilibrium-service computes grace = interval * 3.0 and marks
-    # the service "down" past it, so a hardcoded 10.0 silently mislabels any
-    # deployment that overrides HEALTH_INTERVAL_SECONDS.
-    payload = SystemHealthV1(
-        heartbeat_interval_sec=heartbeat_interval_sec,
-        service=service_name,
-        version=service_version,
-        boot_id=BOOT_ID,
-        last_seen_ts=datetime.now(timezone.utc),
-        status=status,  # type: ignore[arg-type]
-        details={
-            "frames_seen_total": metrics.frames_seen_total,
-            "frames_dispatched_total": metrics.frames_dispatched_total,
-            "identity_dispatched_total": metrics.identity_dispatched_total,
-            "identity_still_total": metrics.identity_still_total,
-            "identity_still_fallback_total": metrics.identity_still_fallback_total,
-            "frames_skipped_total": metrics.frames_skipped_total,
-            "inflight_total": state.inflight_total(),
-            "pending_count": len(state.pending),
-            "policy_path": policy_path,
-            "router_enabled": router_enabled,
-            "dry_run": dry_run,
-            "skip_reason_counts": dict(metrics.skip_reason_counts),
-            "host_replies_total": metrics.host_replies_total,
-            "host_trigger_updates_total": metrics.host_trigger_updates_total,
-            "host_errors_total": metrics.host_errors_total,
-            "host_timeouts_total": metrics.host_timeouts_total,
-            "decode_errors_total": metrics.decode_errors_total,
-            "caption_dispatched_total": metrics.caption_dispatched_total,
-            "caption_captioned_total": metrics.caption_captioned_total,
-            "caption_inflight": state.inflight_lane("caption"),
-            "caption_skip_counts": dict(metrics.caption_skip_counts),
-            "caption_no_caption_counts": dict(metrics.caption_no_caption_counts),
-            "caption_failure_counts": dict(metrics.caption_failure_counts),
-            "last_error": metrics.last_error,
-        },
-    )
-    return BaseEnvelope(
-        kind="system.health.v1",
-        source=ServiceRef(name=service_name, version=service_version),
-        payload=payload.model_dump(mode="json"),
-    )
+    experiment_override_streams: list[str] | None = None,
+) -> dict[str, Any]:
+    """The `details` dict of this service's SystemHealthV1 heartbeat.
+
+    Called by HeartbeatOnly's heartbeat loop in a worker thread
+    (asyncio.to_thread), while the event loop keeps mutating `metrics` and
+    `state.pending`. So every container is copied once with a single C-level
+    call (dict(...) / list(...)), which holds the GIL for the whole copy, and
+    the counts are computed from those copies. A Python-level generator over
+    the live dict could raise "dictionary changed size during iteration" and
+    drop that tick's details.
+    """
+    pending = list(state.pending.values())
+    return {
+        "frames_seen_total": metrics.frames_seen_total,
+        "frames_dispatched_total": metrics.frames_dispatched_total,
+        "identity_dispatched_total": metrics.identity_dispatched_total,
+        "identity_still_total": metrics.identity_still_total,
+        "identity_still_fallback_total": metrics.identity_still_fallback_total,
+        "frames_skipped_total": metrics.frames_skipped_total,
+        "inflight_total": sum(1 for t in pending if t.lane == "host"),
+        "pending_count": len(pending),
+        "policy_path": policy_path,
+        "router_enabled": router_enabled,
+        "dry_run": dry_run,
+        "skip_reason_counts": dict(metrics.skip_reason_counts),
+        "host_replies_total": metrics.host_replies_total,
+        "host_trigger_updates_total": metrics.host_trigger_updates_total,
+        "host_errors_total": metrics.host_errors_total,
+        "host_timeouts_total": metrics.host_timeouts_total,
+        "decode_errors_total": metrics.decode_errors_total,
+        "caption_dispatched_total": metrics.caption_dispatched_total,
+        "caption_captioned_total": metrics.caption_captioned_total,
+        "caption_inflight": sum(1 for t in pending if t.lane == "caption"),
+        "caption_skip_counts": dict(metrics.caption_skip_counts),
+        "experiment_override_streams": list(experiment_override_streams or []),
+        "caption_no_caption_counts": dict(metrics.caption_no_caption_counts),
+        "caption_no_caption_streak": metrics.caption_no_caption_streak,
+        "caption_failure_counts": dict(metrics.caption_failure_counts),
+        "last_error": metrics.last_error,
+    }

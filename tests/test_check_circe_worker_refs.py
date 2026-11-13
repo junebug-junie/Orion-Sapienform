@@ -74,6 +74,17 @@ def test_planted_direct_call_in_settings_fails(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize("rel", ["orion/harness/evals/replay_eval.py", "services/orion-hub/evals/run_x.py",
+                                 "scripts/bench/run_bench.py"])
+def test_a_worker_address_in_an_eval_or_bench_fails(tmp_path: Path, rel: str) -> None:
+    """Leased evals (2026-11-12): evals/ and bench/ are scanned. A replay eval that posted straight to
+    the chat worker ran beside Orion's own work on 11-12; evals call through orion/evals/leased_llm.py."""
+    root = _tree(tmp_path)
+    _write(root, rel, 'LANES = {"chat": "http://100.112.254.99:8011"}\n')
+    unallowed, _, _ = gate.classify(gate.scan_tree(root), {})
+    assert [(h.path, h.port) for h in unallowed] == [(rel, 8011)]
+
+
 @pytest.mark.parametrize(
     "line",
     [

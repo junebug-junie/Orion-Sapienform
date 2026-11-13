@@ -28,10 +28,12 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
 from orion.gpu_pool.client import Lease, LeaseUnavailable
+from orion.llm.call_usage import STREAM_HEAD_BYTES
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 
-from . import grammar_emit
+from . import call_usage_emit, grammar_emit
 from .ctx_overflow import is_context_overflow
+from .fast_thinking import with_thinking_off_default
 from .pool_placement import (
     POOL_RECALLED,
     POOL_UNAVAILABLE,
@@ -115,22 +117,33 @@ _STREAM_TAIL_BYTES = 4096
 
 
 class _CallReport:
-    """One passthrough call's entry in the inference report: recorded once, whatever the exit."""
+    """One passthrough call's entry in the inference report and the per-call token ledger:
+    recorded once, whatever the exit."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, path: str = "http_openai", route: Optional[str] = None,
+                 correlation_id: Optional[str] = None, holder: Optional[str] = None,
+                 model: Optional[str] = None, stream: bool = False) -> None:
         self.clock = grammar_emit.CallClock(pool_node=pool_node())
         self.served_by: Optional[str] = None
         self._done = False
+        self._meta = dict(path=path, route=route, correlation_id=correlation_id, holder=holder,
+                          model=model, stream=stream)
 
     def granted(self, lease: Lease) -> None:
         self.clock.granted(getattr(lease.grant, "role", None), busy=busy_at_grant(lease))
         self.served_by = getattr(lease.grant, "served_by", None)
 
-    def finish(self, outcome: str, *, body: Any = None) -> None:
+    def finish(self, outcome: str, *, body: Any = None, head: Any = None) -> None:
+        """``body``: the parsed reply, or a stream's tail. ``head``: a stream's first bytes (an
+        Anthropic stream's prompt counts are in ``message_start``, its first event)."""
         if self._done:
             return
         self._done = True
         self.clock.close()
+        call_usage_emit.record_call(
+            outcome=outcome, clock=self.clock, served_by=self.served_by,
+            payloads=tuple(p for p in (head, body) if p is not None), **self._meta,
+        )
         if not settings.llm_gateway_grammar_enabled:
             return
         try:
@@ -237,7 +250,11 @@ async def proxy_on_pool(
     # rule 3), minutes on a 27B: the 60s passthrough budget would turn interleave into a mid-turn
     # 503. It gets the class's bus wait budget instead (LLM_GATEWAY_POOL_[BACKGROUND_]WAIT_SEC).
     wait_s = wait_budget_sec(spec.priority or "system") if hold is not None else passthrough_wait_sec()
-    report = _CallReport()
+    report = _CallReport(
+        path="http_anthropic" if anthropic else "http_openai", route=route_key,
+        correlation_id=correlation_id, holder=holder,
+        model=str(forward_body.get("model") or "") or None, stream=stream,
+    )
     for _ in range(3):
         handle = PoolLease(route=route_key, spec=spec, holder=holder, turn_correlation_id=correlation_id,
                            min_ctx_tokens=min_ctx, deadline_sec=wait_s, hold=hold)
@@ -260,13 +277,19 @@ async def proxy_on_pool(
                                route_key, min_ctx, max_ctx, correlation_id or "-")
                 clamped, min_ctx = True, max_ctx
                 continue
-            logger.warning("passthrough_gpu_pool_unavailable route=%s class=%s holder=%s reason=%s corr=%s",
-                           route_key, spec.work_class, holder, exc.reason, correlation_id or "-")
+            (logger.debug if getattr(exc, "local", False) else logger.warning)(
+                "passthrough_gpu_pool_unavailable route=%s class=%s holder=%s reason=%s corr=%s",
+                route_key, spec.work_class, holder, exc.reason, correlation_id or "-")
             report.finish(POOL_UNAVAILABLE)
+            retry_after = getattr(exc, "retry_after_sec", None)
+            extra = {"retry_after_sec": round(float(retry_after), 1)} if retry_after is not None else {}
+            if getattr(exc, "local", False):
+                extra["local"] = True
             return JSONResponse(error_body(
                 POOL_UNAVAILABLE, f"GPU pool could not place route '{route_key}': {exc.reason}",
-                reason=exc.reason, route=route_key, work_class=spec.work_class,
-            ), status_code=503)
+                reason=exc.reason, route=route_key, work_class=spec.work_class, **extra,
+            ), status_code=503,
+                headers={"Retry-After": str(max(1, int(round(float(retry_after)))))} if retry_after is not None else None)
 
         except BaseException as exc:
             report.finish(_exception_outcome(exc))
@@ -281,7 +304,10 @@ async def proxy_on_pool(
         stream_owns_lease = False
         try:
             dispatch_body = dict(forward_body)
-            if granted_backend(lease.grant) == "vllm":
+            grant_backend = granted_backend(lease.grant)
+            if spec.work_class == "fast" and grant_backend == "llamacpp" and not anthropic:
+                dispatch_body = with_thinking_off_default(dispatch_body)
+            if grant_backend == "vllm":
                 if anthropic:
                     report.finish("unsupported_backend_protocol")
                     await handle.release()
@@ -325,6 +351,7 @@ async def proxy_on_pool(
                 stream_status = upstream.status_code
                 # What the stream's end looked like, for the inference report (read at close).
                 tail = bytearray()
+                head = bytearray()
                 ended: Dict[str, Any] = {"completed": False, "outcome": None}
 
                 async def close(error: Optional[BaseException] = None) -> None:
@@ -335,7 +362,7 @@ async def proxy_on_pool(
                         grammar_emit.classify_http_outcome(stream_status) if ended["completed"]
                         else grammar_emit.CLIENT_GONE  # the client left before the stream ended
                     )
-                    report.finish(outcome, body=bytes(tail))
+                    report.finish(outcome, body=bytes(tail), head=bytes(head))
                     await close_stream(error)
 
                 async def _body() -> AsyncIterator[bytes]:
@@ -348,6 +375,8 @@ async def proxy_on_pool(
                             except StopAsyncIteration:
                                 ended["completed"] = True
                                 break
+                            if len(head) < STREAM_HEAD_BYTES:
+                                head.extend(chunk[:STREAM_HEAD_BYTES - len(head)])
                             tail.extend(chunk)
                             if len(tail) > _STREAM_TAIL_BYTES:
                                 del tail[:-_STREAM_TAIL_BYTES]

@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger("orion-hub.memory_schema_bootstrap")
 
-# 75 x 60s = 75 min: outlasts the nightly backup (03:45 UTC, 48-57 min on
+# 75 x 60s = 75 min: outlasts the nightly backup (05:00 Mountain since 2026-11-05, was 03:45 UTC; 48-57 min on
 # 10-13/10-14) a hub restart can land inside.
 DEFAULT_RETRY_ATTEMPTS = 75
 DEFAULT_RETRY_DELAY_SEC = 60.0

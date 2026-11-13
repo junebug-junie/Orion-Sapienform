@@ -87,14 +87,6 @@ class EvalRunner:
 
         return SelfSenseDeps(run_turn=turn, publish_rows=rows)
 
-    def _reflect_deps(self):
-        from app.reflect_graph import Deps as ReflectDeps
-
-        async def call(reflect_input, llm_route, gpu_lease=None):
-            return []
-
-        return ReflectDeps(call_reflect_llm=call)
-
     async def _publish(self, channel, kind, model, corr):
         return True
 

@@ -1,0 +1,12 @@
+{"depth_target": 8000, "tag": "chain3", "want": "4642", "got": "4642", "ok": true, "finish": "stop", "prompt_tokens": 8711, "gen": 367, "tg": 92.57637619828407, "reasoning_chars": 834, "wall": 12.99}
+{"depth_target": 8000, "tag": "arith", "want": "3287", "got": "3287", "ok": true, "finish": "stop", "prompt_tokens": 8712, "gen": 305, "tg": 102.38697534107888, "reasoning_chars": 468, "wall": 10.3}
+{"depth_target": 8000, "tag": "update", "want": "Monday", "got": "Monday", "ok": true, "finish": "stop", "prompt_tokens": 8710, "gen": 228, "tg": 87.92347970885824, "reasoning_chars": 654, "wall": 9.89}
+{"depth_target": 24000, "tag": "chain3", "want": "5535", "got": "5535", "ok": true, "finish": "stop", "prompt_tokens": 26995, "gen": 243, "tg": 99.14090788286306, "reasoning_chars": 505, "wall": 22.93}
+{"depth_target": 24000, "tag": "arith", "want": "4083", "got": "4083", "ok": true, "finish": "stop", "prompt_tokens": 26996, "gen": 366, "tg": 102.4786837014534, "reasoning_chars": 707, "wall": 13.96}
+{"depth_target": 24000, "tag": "update", "want": "Wednesday", "got": "Wednesday", "ok": true, "finish": "stop", "prompt_tokens": 26994, "gen": 272, "tg": 85.42404055659502, "reasoning_chars": 643, "wall": 13.73}
+{"depth_target": 40000, "tag": "chain3", "want": "2384", "got": "2384", "ok": true, "finish": "stop", "prompt_tokens": 41334, "gen": 256, "tg": 95.34106606097991, "reasoning_chars": 541, "wall": 31.62}
+{"depth_target": 40000, "tag": "arith", "want": "2740", "got": "2740", "ok": true, "finish": "stop", "prompt_tokens": 41335, "gen": 320, "tg": 93.25755834944567, "reasoning_chars": 535, "wall": 12.11}
+{"depth_target": 40000, "tag": "update", "want": "Monday", "got": "Monday", "ok": true, "finish": "stop", "prompt_tokens": 41333, "gen": 305, "tg": 86.12970207477008, "reasoning_chars": 792, "wall": 11.82}
+{"depth_target": 50000, "tag": "chain3", "want": "6279", "got": "6279", "ok": true, "finish": "stop", "prompt_tokens": 50196, "gen": 275, "tg": 91.45124761591917, "reasoning_chars": 620, "wall": 40.31}
+{"depth_target": 50000, "tag": "arith", "want": "2364", "got": "2364", "ok": true, "finish": "stop", "prompt_tokens": 50197, "gen": 338, "tg": 92.76706474909099, "reasoning_chars": 705, "wall": 8.78}
+{"depth_target": 50000, "tag": "update", "want": "Saturday", "got": "Saturday", "ok": true, "finish": "stop", "prompt_tokens": 50195, "gen": 291, "tg": 88.7478655717517, "reasoning_chars": 817, "wall": 8.26}

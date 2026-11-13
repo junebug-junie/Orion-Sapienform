@@ -107,3 +107,13 @@ def test_prompt_section_is_labelled_as_the_street_and_absent_when_empty(monkeypa
         " walkway, the street and our patio; your own eye outside the house, public, not your room"
     ) in text
     assert "At 11:55 on Thu 15 Oct, the walkway camera said: A van is parked." in text
+
+
+def test_contradicted_camera_caption_card_says_the_car_did_not_move() -> None:
+    """The motion cross-check tag (orion-sql-writer app/vision_caption_motion.py) reaches curiosity."""
+    row = _row("c1", "A car is driving down the street.", 2, event_type="camera_caption")
+    row["tags"] = ["camera_caption", "motion_unverified", "detector:person",
+                   "motion_contradicted", "motion_check:vehicle:driving:parked"]
+    (card,) = build_street_caption_cards([row], now=NOW)
+    assert "caption said driving; the vehicle did not move" in card.narrative
+    assert "motion not verified" not in card.narrative

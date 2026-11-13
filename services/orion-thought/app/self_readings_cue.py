@@ -12,7 +12,9 @@ another caller, or a calm body all render nothing (``text == ""``) and log
 running in its thread and seeds the cache for the next caller (stance and reverie share it).
 
 "Tends to" clauses (spec section E, ``SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED``): the newest
-``self_signal_outcome_association`` row per (signal, outcome), refreshed within 3 h, read at most
+``self_signal_outcome_association`` row per (signal, outcome), refreshed within 3 h, whose verdict
+held on the last ``SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS`` hourly computations (the shared
+``held_latest_by_pair`` rule, same as equilibrium's episode open rows), read at most
 every 5 min in a background thread (and once at startup warm) -- never on the turn's path or under
 the history lock. Not loaded yet / unreadable -> no clause, readings unchanged. Flag off -> the
 block is byte-identical to before.
@@ -37,20 +39,12 @@ _FETCH_SQL = (
     "SELECT node_id, observed_at, value FROM substrate_node_prediction_error_history "
     "WHERE observed_at >= :since ORDER BY observed_at"
 )
-# Newest association per (signal, outcome) written by orion-equilibrium-service's hourly rollup
-# (self-calibration spec section E). Only rows refreshed within ASSOCIATION_MAX_AGE count: a
-# stalled producer stops the clause instead of repeating an old claim forever.
-_ASSOC_COLUMNS = (
-    "association_id", "computed_at", "signal_id", "outcome", "window_start", "window_end",
-    "n_high", "events_high", "n_normal", "events_normal", "rate_high", "rate_normal", "ratio",
-    "ci_low", "ci_high", "ci_method", "min_hours", "verdict", "excluded_reason", "clause",
-)
-_ASSOC_SQL = (
-    f"SELECT DISTINCT ON (signal_id, outcome) {', '.join(_ASSOC_COLUMNS)} "
-    "FROM self_signal_outcome_association WHERE computed_at >= :since "
-    "ORDER BY signal_id, outcome, computed_at DESC LIMIT 200"
-)
-ASSOCIATION_MAX_AGE = timedelta(hours=3)
+# Association rows written by orion-equilibrium-service's hourly rollup (self-calibration spec
+# section E): the newest row per (signal, outcome, hour) over the last SELF_SIGNAL_OUTCOME_
+# CONSECUTIVE_HOLDS hours (orion.attention.self_signal_outcomes.association_history_sql), so the
+# shared holds rule can see each pair's run. The newest row must be refreshed within
+# orion.attention.self_signal_outcomes.ASSOCIATION_MAX_AGE (3 h, shared with equilibrium): a stalled
+# producer stops the clause instead of repeating an old claim forever.
 # Re-read at most this often (the producer refreshes hourly).
 ASSOCIATION_REFRESH_SEC = 300.0
 # The 7-day seed is ~62k rows (0.3 s live 2026-10-14); a stuck database must not pin a thread.
@@ -104,13 +98,22 @@ def fetch_since(since: datetime) -> Iterable[tuple[str, datetime, float]]:
     return [(str(r[0]), r[1], float(r[2])) for r in rows]
 
 
-def fetch_associations(since: datetime) -> list[dict]:
+def fetch_associations(since: datetime, holds: int) -> list[dict]:
     """Seam for tests. Raises on a read error (the caller renders no clause)."""
     from sqlalchemy import text
 
+    from orion.attention.self_signal_outcomes import (
+        ASSOCIATION_COLUMNS,
+        association_history_limit,
+        association_history_sql,
+    )
+
     with _get_engine().connect() as conn:
-        rows = conn.execute(text(_ASSOC_SQL), {"since": since}).fetchall()
-    return [dict(zip(_ASSOC_COLUMNS, r)) for r in rows]
+        rows = conn.execute(
+            text(association_history_sql(":since", ":limit")),
+            {"since": since, "limit": association_history_limit(holds)},
+        ).fetchall()
+    return [dict(zip(ASSOCIATION_COLUMNS, r)) for r in rows]
 
 
 def refresh_associations(now: datetime) -> None:
@@ -119,16 +122,18 @@ def refresh_associations(now: datetime) -> None:
     unreadable table caches an empty index, retried after ASSOCIATION_REFRESH_SEC."""
     global _assoc, _assoc_refreshing
     try:
-        from orion.attention.self_signal_outcomes import index_by_signal
+        from orion.attention.self_signal_outcomes import ASSOCIATION_MAX_AGE, HOUR, index_by_signal
         from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1
 
+        holds = int(settings.self_signal_outcome_consecutive_holds)
+        fresh_since = now - ASSOCIATION_MAX_AGE
         rows = []
-        for raw in fetch_associations(now - ASSOCIATION_MAX_AGE):
+        for raw in fetch_associations(fresh_since - HOUR * (holds + 1), holds):
             try:
                 rows.append(SelfSignalOutcomeAssociationV1.model_validate(raw))
             except Exception as exc:  # noqa: BLE001 -- one malformed row hides only itself
                 logger.debug("self_signal_association_row_invalid err=%s", exc)
-        index = dict(index_by_signal(rows))
+        index = dict(index_by_signal(rows, holds=holds, fresh_since=fresh_since))
     except Exception as exc:  # noqa: BLE001 -- no table yet / read error: no clause, readings unchanged
         logger.debug("self_signal_association_fetch_failed err=%s: %s", type(exc).__name__, exc)
         index = {}

@@ -23,6 +23,11 @@ This is what you were doing before now. It may color the thought (a return, a
 contrast, something unfinished) only where it genuinely connects; do not
 recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
 {% endif %}
+{% if personality_cue %}
+WHAT YOU KEEP COMING BACK TO (your own record, from stored evidence in your own words — background only):
+{{ personality_cue }}
+Nothing here is an evidence_ref — never put it there.
+{% endif %}
 
 {% if recent_percepts %}
 WHAT YOU CAN CURRENTLY SEE (real camera input, not memory or imagination):
@@ -41,11 +46,14 @@ null if nothing natural comes to mind. Never force one every tick. At most ONE
 claim, never a list.
 {% endif %}
 
-{% if street_percepts or street_predictions %}
+{% if street_percepts or street_predictions or street_day %}
 OUTSIDE, ON THE WALKWAY ({{ street_camera or "the street camera" }} -- your own eye outside the house, public, NOT your room):
 {% for p in street_percepts or [] %}
 - just now: {{ p.narrative }}
 {% endfor %}
+{% if street_day %}
+- the day so far, counted from this camera: {{ street_day }}
+{% endif %}
 {% for line in street_predictions or [] %}
 - {{ line }}
 {% endfor %}
@@ -90,6 +98,9 @@ SOURCE (bounded internal input — what your attention settled on right now)
 - open loops (one line each: id | what it is | the measured signal or why it is open{% if has_settled_loops %} | verdict{% endif %}):
 {% for ol in open_loops %}
   - {{ ol.id }} | {{ ol.description or ol.target_type }}{% if ol.signal %} | {{ ol.signal }}{% elif ol.why_it_matters %} | {{ ol.why_it_matters }}{% endif %}{% if ol.outcome %} | verdict: {{ ol.outcome.line }}{% endif %}
+{% if ol.evidence %}
+    what it is about: {{ ol.evidence }}
+{% endif %}
 {% endfor %}
 {% endif %}
 {% if recent_percepts %}
@@ -102,6 +113,11 @@ HOW MY BODY IS DOING (measured, each signal scored 0-10 against its own last 7 d
 {{ self_readings }}
 - Real state, not an id to cite: it may color the interpretation when it bears on what you attend to,
   never replaces a grounded evidence_ref. Use the numbers exactly as shown or not at all.
+{% endif %}{% if self_track_record %}
+MY TRACK RECORD (measured from my own settled bets over the last 7 days; only what is failing or off is listed)
+{{ self_track_record }}
+- Real record, not an id to cite: it may color the thought only where it connects to what you attend to.
+  Use the numbers exactly as shown or not at all.
 {% endif %}
 {% if recent_arcs %}
 EARLIER TODAY (your own day record, closed arcs, from stored history — background only):
@@ -109,6 +125,11 @@ EARLIER TODAY (your own day record, closed arcs, from stored history — backgro
 This is what you were doing before now. It may color the thought (a return, a
 contrast, something unfinished) only where it genuinely connects; do not
 recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
+{% endif %}
+{% if personality_cue %}
+WHAT YOU KEEP COMING BACK TO (your own record, from stored evidence in your own words — background only):
+{{ personality_cue }}
+Nothing here is an evidence_ref — never put it there.
 {% endif %}
 
 {% if has_settled_loops %}
@@ -123,11 +144,14 @@ RECENT VERDICTS ON THESE LOOPS (read this before you narrate urgency)
   about the loop; never say a person closed it.
 {% endif %}
 
-{% if street_percepts or street_predictions %}
+{% if street_percepts or street_predictions or street_day %}
 OUTSIDE, ON THE WALKWAY ({{ street_camera or "the street camera" }} -- your own eye outside the house, public, NOT your room):
 {% for p in street_percepts or [] %}
 - just now: {{ p.narrative }}
 {% endfor %}
+{% if street_day %}
+- the day so far, counted from this camera: {{ street_day }}
+{% endif %}
 {% for line in street_predictions or [] %}
 - {{ line }}
 {% endfor %}
@@ -166,7 +190,7 @@ GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
 - evidence_refs MUST be a non-empty subset of the attended node ids or open
   loop ids above. A thought that cites no such id will be discarded as
   un-anchored (hollow).
-{% if street_percepts or street_predictions %}
+{% if street_percepts or street_predictions or street_day %}
 - The walkway (street) lines are outside the house: context only, never an
   id to cite, and "I notice the street" is not an anchored thought.
 {% endif %}

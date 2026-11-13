@@ -1,0 +1,11 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer
+-- Unified-turn self-prediction A1 (docs/superpowers/specs/2026-10-23-unified-turn-self-prediction-design.md):
+-- stance's private bet about the turn's own behaviour (TurnSelfPredictionV1: asks_question_p,
+-- fetches_outside_p, steps_lo/hi, reply_chars_lo/hi, coverage). Writer: orion-sql-writer
+-- (ThoughtDecisionSQL.self_prediction, from ThoughtEventV1.self_prediction on orion:thought:artifact).
+-- Reader: the self-monitor organ's turn self-prediction adapter (A3), joined to harness_turn_trace.
+--
+-- Apply BEFORE deploying orion-sql-writer (its insert names the column):
+--   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_thought_decision_self_prediction_v1.sql
+-- Additive, nullable, idempotent. Rollback: ALTER TABLE thought_decision DROP COLUMN self_prediction;
+ALTER TABLE thought_decision ADD COLUMN IF NOT EXISTS self_prediction jsonb;

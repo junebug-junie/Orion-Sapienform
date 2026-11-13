@@ -8,6 +8,8 @@ from orion.schemas.vision import (
     VisionWindowPayload,
 )
 
+from .caption_policy import CAPTIONS_WITHHELD_KEY
+
 ACTIVITY_PATTERN = re.compile(
     r"\b(watching|reading|using|talking|listening|playing|browsing)\b", re.I
 )
@@ -150,11 +152,18 @@ def enforce_evidence_grounding(
             continue
         updated = cand
         if mentions_activity and "person" in hard and cand.confidence > 0.4:
-            if (window.summary or {}).get("captions"):
+            summary = window.summary or {}
+            if summary.get("captions"):
                 updated = cand.model_copy(
                     update={"confidence": 0.4, "tags": [*cand.tags, "caption_inferred"]}
                 )
                 notes.append(f"capped_confidence:{cand.event_type}")
+            elif summary.get(CAPTIONS_WITHHELD_KEY):
+                # Captions were withheld (app/caption_policy.py): the claim is
+                # the council's own guess from detector labels. Same cap, no
+                # caption tag -- no caption was in its input.
+                updated = cand.model_copy(update={"confidence": 0.4})
+                notes.append(f"capped_confidence:{cand.event_type}:captions_withheld")
         filtered_entities = _filter_person_entity_names(list(updated.entities), hard)
         if filtered_entities != list(updated.entities):
             updated = updated.model_copy(update={"entities": filtered_entities})

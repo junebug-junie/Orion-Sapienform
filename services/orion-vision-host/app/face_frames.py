@@ -11,8 +11,9 @@ Every identity_face check that detects at least one face writes the frame and a 
     <root>/<stream_id>/<UTC date>/<HHMMSS_micro>_<best_state>_<best_similarity>.jpg / .json
     ... plus <stem>_face<N>.jpg: each detected face cropped at the source resolution (2026-10-11)
 
-At most one per stream per ``min_interval_sec``; files older than ``retention_days`` are pruned
-on a daemon thread (never on the detection path). The writer owns its retention.
+At most one per stream per ``min_interval_sec``. Kept forever by default (``retention_days`` 0,
+Juniper 2026-10-20); a positive value prunes files older than that on a daemon thread (never on
+the detection path). The writer owns its retention.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from typing import Any, Callable, Dict, List, Optional
 from loguru import logger
 from PIL import Image
 
-from .crop_embeddings import ThumbRateLimiter
+from .crop_embeddings import STALE_TMP_SEC, ThumbRateLimiter
 
 FRAME_MAX_SIDE = 1280
 FRAME_QUALITY = 90
@@ -80,7 +81,7 @@ class FaceFrameStore:
         self,
         root: str | Path,
         *,
-        retention_days: float = 14.0,
+        retention_days: float = 0.0,  # 0 = keep forever
         min_interval_sec: float = 5.0,
         prune_interval_sec: float = 3600.0,
         clock: Callable[[], float] = time.time,
@@ -131,12 +132,16 @@ class FaceFrameStore:
         now = self._clock() if now is None else now
         if not self.root.is_dir():
             return 0
+        keep_forever = self.retention_sec <= 0
         removed = 0
         for p in self.root.rglob("*"):
             if not p.is_file() or p.suffix not in (".jpg", ".json", ".tmp"):
                 continue
+            if keep_forever and p.suffix != ".tmp":
+                continue  # retention 0 = frames are never deleted by age
+            limit = STALE_TMP_SEC if keep_forever else self.retention_sec
             try:
-                if now - p.stat().st_mtime > self.retention_sec:
+                if now - p.stat().st_mtime > limit:
                     p.unlink()
                     removed += 1
             except FileNotFoundError:
@@ -147,7 +152,9 @@ class FaceFrameStore:
             except OSError:
                 pass
         if removed:
-            logger.info(f"[FACE_FRAMES] pruned {removed} file(s) older than {self.retention_sec / 86400:.0f}d")
+            logger.info(f"[FACE_FRAMES] pruned {removed} file(s)"
+                        + (" (stale .tmp only; frames kept forever)" if keep_forever
+                           else f" older than {self.retention_sec / 86400:.0f}d"))
         return removed
 
     def start_pruner(self) -> None:

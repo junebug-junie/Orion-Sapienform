@@ -170,7 +170,7 @@ def sqlite_engine(monkeypatch):
     with engine.begin() as conn:
         conn.execute(text(
             "CREATE TABLE vision_events (event_id TEXT, stream_id TEXT, event_type TEXT, "
-            "narrative TEXT, created_at TIMESTAMP)"))
+            "narrative TEXT, created_at TIMESTAMP, tags TEXT DEFAULT '[]')"))
         conn.execute(text(
             "CREATE TABLE vision_percept_expectation (expectation_id TEXT, stream_id TEXT, "
             "subject_key TEXT, subject_label TEXT, status TEXT, peak_minute INTEGER, "
@@ -197,7 +197,7 @@ def test_street_reader_reads_only_walkway_and_room_reader_never_does(sqlite_engi
         ("walkway", "visual_observation", "Old caption.", 4000),
         ("cam0", "visual_observation", "The desk lamp is on.", 20),
     ):
-        _ins(sqlite_engine, "INSERT INTO vision_events VALUES ('e', :s, :t, :n, :c)",
+        _ins(sqlite_engine, "INSERT INTO vision_events (event_id, stream_id, event_type, narrative, created_at) VALUES ('e', :s, :t, :n, :c)",
              s=sid, t=et, n=text_, c=now - timedelta(seconds=age))
     street = vision_reader.read_recent_street_events(max_age_sec=900, limit=3, stream_ids=["walkway"])
     assert [s["narrative"] for s in street] == ["A van is parked."]
@@ -245,12 +245,30 @@ def test_reducer_rows_are_excluded_before_the_row_limit(sqlite_engine):
 
     now = datetime.now(timezone.utc)
     for i in range(vision_reader._STREET_FETCH_ROWS + 5):
-        _ins(sqlite_engine, "INSERT INTO vision_events VALUES ('r', 'walkway', 'attention_worthy', :n, :c)",
+        _ins(sqlite_engine, "INSERT INTO vision_events (event_id, stream_id, event_type, narrative, created_at) VALUES ('r', 'walkway', 'attention_worthy', :n, :c)",
              n=f"worth a look {i}", c=now - timedelta(seconds=1 + i * 0.01))
-    _ins(sqlite_engine, "INSERT INTO vision_events VALUES ('e', 'walkway', 'visual_observation', "
+    _ins(sqlite_engine, "INSERT INTO vision_events (event_id, stream_id, event_type, narrative, created_at) VALUES ('e', 'walkway', 'visual_observation', "
          "'A cyclist rides past.', :c)", c=now - timedelta(seconds=60))
     got = vision_reader.read_recent_street_events(max_age_sec=900, limit=2, stream_ids=["walkway"])
     assert [g["narrative"] for g in got] == ["A cyclist rides past."]
+
+
+def test_reverie_reads_a_camera_caption_labelled_not_as_fact(sqlite_engine):
+    """orion-vision-window's camera_caption rows (2026-10-16) reach reverie
+    labelled as a caption of one frame, with the detector boxes behind it."""
+    from app import vision_reader
+
+    now = datetime.now(timezone.utc)
+    _ins(sqlite_engine,
+         "INSERT INTO vision_events (event_id, stream_id, event_type, narrative, created_at, tags) "
+         "VALUES ('c', 'walkway', 'camera_caption', 'A person is pushing a stroller.', :c, "
+         "'[\"camera_caption\", \"motion_unverified\", \"detector:person\", \"detector:stroller\"]')",
+         c=now - timedelta(seconds=30))
+    (got,) = vision_reader.read_recent_street_events(max_age_sec=900, limit=2, stream_ids=["walkway"])
+    assert got["narrative"] == (
+        'camera caption (one frame; detector saw person, stroller; motion not verified): '
+        '"A person is pushing a stroller."'
+    )
 
 
 @pytest.mark.asyncio

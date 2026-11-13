@@ -104,7 +104,7 @@ def test_runs_payload_joins_both_stores_and_excludes_reflect() -> None:
             _lifecycle("selfy", "completed", NOW - timedelta(hours=3), line="self_inquiry"),
             # The store's SQL filters this out; a fake that returns it anyway
             # proves the join filters too.
-            _lifecycle("refl", "completed", NOW - timedelta(hours=4), line="reflect", workflow="self_study.reflect"),
+            _lifecycle("refl", "completed", NOW - timedelta(hours=4), line="reflect", workflow="reading.turn"),
         ],
         "FROM journal_entries": [{"entry_id": "j1", "source_ref": "curiosity:r1", "title": "Curiosity",
                                   "body": "prose", "created_at": NOW - timedelta(hours=1)}],
@@ -423,7 +423,7 @@ def test_the_budget_tiles_read_every_line_the_loop_keys(monkeypatch) -> None:
 
 def test_runs_payload_drops_admission_runs_of_other_workflows() -> None:
     """Live 2026-10-09: the 90-day strip held ~350 reading/reverie/compactor
-    runs labelled "World question" because only `self_study.reflect` was
+    runs labelled "World question" because only the (since retired) self-study reflect workflow was
     dropped. Any admission row naming a non-curiosity workflow is not a run."""
     t0 = NOW - timedelta(hours=6)
 

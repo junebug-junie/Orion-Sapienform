@@ -67,17 +67,23 @@ class JournalDispatchPolicy:
 
 
 JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {
+    # 2026-10-23: metacog_digest is gone -- orion-actions no longer writes it (it
+    # narrated telemetry ~140x/day, "pressure is low, I should review the logs",
+    # and emailed Juniper up to 6x/day through a leaky cap). Its row stays, email
+    # off, only because old journal rows still carry the kind. daily_summary and
+    # notify_summary are the same reflective prose and only stayed out of the inbox because metacog_digest won the shared slot
+    # every day; their email is off so removing metacog doesn't hand the slot on.
     "daily_summary": JournalDispatchPolicy(
         "daily_summary",
-        email_enabled=True,
+        email_enabled=False,
         in_app_enabled=False,
         recall_profile_setting="actions_journal_scheduler_recall_profile",
     ),
     "metacog_digest": JournalDispatchPolicy(
         "metacog_digest",
-        email_enabled=True,
+        email_enabled=False,
         in_app_enabled=False,
-        recall_profile_setting="actions_journal_metacog_recall_profile",
+        recall_profile_setting="",
     ),
     "world_pulse_digest": JournalDispatchPolicy(
         "world_pulse_digest",
@@ -88,7 +94,7 @@ JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {
     ),
     "notify_summary": JournalDispatchPolicy(
         "notify_summary",
-        email_enabled=True,
+        email_enabled=False,
         in_app_enabled=False,
         recall_profile_setting="actions_journal_notify_recall_profile",
     ),
@@ -123,6 +129,26 @@ JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {
     ),
     "walkway_grade": JournalDispatchPolicy(
         "walkway_grade",
+        email_enabled=False,
+        in_app_enabled=False,
+        recall_profile_setting="",
+    ),
+    # Walkway day / week / month summaries (2026-10-18): written from the
+    # deterministic vision_rollup row; same no-email reasoning as above.
+    "walkway_day": JournalDispatchPolicy(
+        "walkway_day",
+        email_enabled=False,
+        in_app_enabled=False,
+        recall_profile_setting="",
+    ),
+    "walkway_week": JournalDispatchPolicy(
+        "walkway_week",
+        email_enabled=False,
+        in_app_enabled=False,
+        recall_profile_setting="",
+    ),
+    "walkway_month": JournalDispatchPolicy(
+        "walkway_month",
         email_enabled=False,
         in_app_enabled=False,
         recall_profile_setting="",

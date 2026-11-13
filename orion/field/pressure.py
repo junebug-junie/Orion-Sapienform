@@ -256,9 +256,10 @@ def collect_field_channel_pressures_with_holders(
     Provenance alone cannot say that: a capability winner's provenance
     resolves to the node that fed it (e.g. node:athena), which may also carry
     a node-level channel of the same name (catalog_drift_pressure,
-    reliability_pressure). The feedback credit guard
-    (credit_integrity.before_winner_went_unmeasured, 2026-10-07) needs the
-    holder to ask "is the vector that won this before still measuring it".
+    reliability_pressure). Its first consumer, the feedback credit guard
+    (credit_integrity.before_winner_went_unmeasured, 2026-10-07), retired with
+    the feedback rung on 2026-11-04; the holders are still returned for callers
+    that need to ask "is the vector that won this before still measuring it".
 
     Merge node_vectors + capability_vectors into one channel-name-keyed
     pressure dict, plus a parallel provenance dict recording which source_id
@@ -585,8 +586,8 @@ def winning_write_time(
 
     Moved from services/orion-hub/scripts/field_channel_glossary_routes.py
     (R2 of the phase-5 roadmap) into this shared module so a second consumer
-    -- orion/field/credit_integrity.py's R5 rebuild -- does not need its own
-    copy: two implementations of "which write proves this value" is exactly
+    (orion/field/credit_integrity.py, retired with the feedback rung 2026-11-04)
+    would not need its own copy: two implementations of "which write proves this value" is exactly
     the kind of definition drift the rest of this arc exists to catch.
 
     The merged value is one source's reading (R1's provenance dict names

@@ -25,9 +25,15 @@ GrammarEventKind = Literal[
 ]
 
 # Closed, versioned verb vocabulary (design section 3.2). The same at every
-# level. Producers as of rung 2: make (orion-thought paintings), say (hub chat
-# reply, outreach), ask (outreach), look (reading). The others are reserved by
-# the design and have no producer yet; a new producer must ship with a test.
+# level. Producers as of rung 2: make (orion-thought paintings; orion-durable-runs journal
+# compose), infer / ask / sense (orion-durable-runs curiosity, self-inquiry, self-sense eval,
+# body economy A5), say (hub chat
+# reply, outreach), ask (outreach), look (reading), play (hub retro leisure
+# session, 2026-10-22: docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md
+# section E), infer / ask / predict (orion-mind Orion Prime: a thought, a question for
+# curiosity, and a held concern graded on whether a question about it settled;
+# orion/prime/acts.py, tests in orion/prime/tests). The others are reserved by the
+# design and have no producer yet; a new producer must ship with a test.
 ActVerb = Literal[
     "sense",
     "look",
@@ -40,6 +46,7 @@ ActVerb = Literal[
     "make",
     "maintain",
     "regulate",
+    "play",
 ]
 
 ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]
@@ -48,8 +55,10 @@ ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]
 # horizon" event, so a horizon that passes with no evidence is a real 0, not a
 # guess (that is what lets the writer close expired acts honestly).
 #   juniper_replied   -- Juniper sent Orion a chat turn after the act, before
-#                        the horizon. Resolved by orion-sql-writer from
-#                        chat_history_log; producers never self-report it.
+#                        the horizon, by when her turn STARTED. Resolved by
+#                        orion-sql-writer from the hub ingress hop
+#                        (cockpit_turn_sighting; chat_history_log created_at
+#                        fallback); producers never self-report it.
 #   artifact_produced -- the act produced its artifact (an image stored, a
 #                        reading with real content) before the horizon.
 #                        Reported by the producer on close.
@@ -247,6 +256,78 @@ class ActCostV1(BaseModel):
     watts: float | None = Field(default=None, ge=0.0)
 
 
+class ActCostV2(BaseModel):
+    """ActCostV1 plus the body economy's per-constraint currencies (body economy Patch A2,
+    docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, Organ 3 "ActCostV2").
+
+    Additive and optional: every V1 field, same meaning. None means not measured, never zero.
+
+    * ``seconds``: wall time from act_opened to act_closed. The act ledger fills it on a PRODUCER
+      close when the producer left it unset and the open time is known. A resolver or expired
+      close is stamped at the horizon (or at Juniper's reply), so its wall time is not what the
+      act spent: left None.
+    * ``gpu_slot_s_by_lane``: GPU pool slot-seconds held, per lane (pool role). Filled on close
+      from ``gpu_pool_events`` leases whose ``turn_correlation_id`` is the act's correlation_id.
+    * ``wh_by_host``: watt-hours of the WHOLE MACHINE above rest, per host: the host's chassis watts
+      (at the wall) above its rest, split over the act's GPU pool leases by each card's above-idle
+      share of the host's load (cards + CPU), then by lease share (orion/energy/act_energy.py,
+      orion/grammar/act_energy_fill.py). A host with no chassis meter or no rest falls back to GPU
+      above idle and ``basis["wh"]`` says so for that host. CPU above rest is in the split but not
+      charged to an act (an act does not name its containers). An act with no GPU lease, or a card
+      with no reading, leaves it None.
+    * ``wh_gpu_by_host``: the GPU-above-idle part alone (the act's card watts above each card's idle
+      floor, by lease share). ``wh_by_host - wh_gpu_by_host`` is the overhead (fans, PSU loss,
+      memory) the act caused; it can read below 0 on a short act, because the chassis meter and the
+      cards are not read at the same instant.
+    * ``usd``: dollars for ``wh_by_host`` at the house tariff's marginal $/kWh. None without Wh or
+      without a recent rate.
+    * ``heat_c_by_host``: cabinet degC the act adds, per host: the fitted heat sensitivity
+      (config/physiology/heat_sensitivity.yaml) x ``wh_gpu_by_host`` / 100. The fit's regressor is
+      compute watts, so the GPU part is its input. A host with no usable fit is absent.
+    * ``basis``: per field, in words, how it was measured (cards, samples, share, rate, fit), or
+      why it was not.
+    * ``juniper_msgs``: messages that reached Juniper. Not measured yet.
+    * ``claude_limit_events``: Claude limit events the act triggered. Not measured yet.
+
+    CONSUMER-FIRST: ``ActV1.cost`` accepts V1 or V2, but V1 and ActV1 are extra="forbid", so a
+    reader running older code rejects a V2 payload outright. Producers keep sending V1 (or no cost)
+    until every reader of ``orion:grammar:event`` (sql-writer, and substrate-runtime reading
+    ``grammar_events``) runs code that knows V2. The writer-side fill below never crosses the bus:
+    it lands only in ``grammar_acts.cost_json``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    seconds: float | None = Field(default=None, ge=0.0)
+    gpu_seconds: float | None = Field(default=None, ge=0.0)
+    tokens: int | None = Field(default=None, ge=0)
+    watts: float | None = Field(default=None, ge=0.0)
+    gpu_slot_s_by_lane: dict[str, float] | None = None
+    wh_by_host: dict[str, float] | None = None
+    wh_gpu_by_host: dict[str, float] | None = None
+    juniper_msgs: int | None = Field(default=None, ge=0)
+    claude_limit_events: int | None = Field(default=None, ge=0)
+    usd: float | None = Field(default=None, ge=0.0)
+    heat_c_by_host: dict[str, float] | None = None
+    basis: dict[str, str] | None = None
+
+    @model_validator(mode="after")
+    def _non_negative_maps(self) -> "ActCostV2":
+        for name in ("gpu_slot_s_by_lane", "wh_by_host", "wh_gpu_by_host", "heat_c_by_host"):
+            for key, value in (getattr(self, name) or {}).items():
+                if value < 0:
+                    raise ValueError(f"{name}[{key!r}] must be >= 0, got {value!r}")
+        return self
+
+    @classmethod
+    def from_any(cls, cost: "ActCostV1 | ActCostV2 | None") -> "ActCostV2 | None":
+        if cost is None:
+            return None
+        if isinstance(cost, cls):
+            return cost
+        return cls(**cost.model_dump())
+
+
 class ActOutcomeV1(BaseModel):
     """What actually happened, on the expectation's own scale."""
 
@@ -285,7 +366,8 @@ class ActV1(BaseModel):
     object_ref: str | None = None
     test_before: str | None = None
     expect: ActExpectV1 | None = None
-    cost: ActCostV1 | None = None
+    # V1 or V2 (consumer-first: see ActCostV2). A dict with only V1 keys parses as V1.
+    cost: ActCostV1 | ActCostV2 | None = None
     outcome: ActOutcomeV1 | None = None
     error: float | None = None
     goal_ref: str | None = None

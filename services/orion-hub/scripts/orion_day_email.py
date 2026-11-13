@@ -1,14 +1,18 @@
 """Orion's Day email: render a persisted ``orion_day_letter`` row to HTML + plain text.
 
-Pure rendering (no bus, no DB, no network). ``scripts/orion_day_letter.py`` owns when to send.
+Pure rendering (no bus, no DB, no network). ``scripts/orion_day_mailer.py`` owns when to send.
 
 Rules this module holds:
 
 * Nothing is truncated. Every material body goes out at full length, in both the HTML and the
-  plain-text part (``tests/test_orion_day_letter.py`` and ``evals/run_orion_day_email_eval.py``
+  plain-text part (``tests/test_orion_day_mailer.py`` and ``evals/run_orion_day_email_eval.py``
   check every item's full text is present).
-* ``note_md`` (Orion's note) and ``carry_forward_md`` (threads offered to curiosity) are two
-  separate, visually distinct sections. Neither is merged into the other.
+* ``note_md`` (Orion's note) and ``carry_forward_md`` (the letter's own list of threads Orion is
+  carrying, handed to Prime -- living Prime Part 3) are two separate, visually distinct sections.
+  Neither is merged into the other.
+* Provenance, one small line each when present: the unified turn that wrote the letter
+  (``sources.turn_correlation_id``) and the days with no letter the turn was told about
+  (``sources.missed_letters``).
 * Email-safe HTML: tables and inline styles only, no external CSS/JS/fonts, no ``<details>``
   (Gmail strips it). Images are inline CID parts (``cid:reverie1@orion``).
 * Blind dream rule: dream hypotheses show claim + why only. No hypothesis id (the dream
@@ -348,7 +352,8 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "written_at": _local(letter.created_at, tz, "%Y-%m-%d %H:%M"),
         "note_html": numbered_html(split_note(letter.note_md)),
         "carry_forward_html": numbered_html(split_carry(letter.carry_forward_md)),
-        "carry_forward_expires": _local(letter.carry_forward_expires_at, tz, "%Y-%m-%d %H:%M"),
+        "turn_correlation_id": letter.sources.turn_correlation_id,
+        "missed_letters": [{"date": str(x.letter_date), "reason": x.reason} for x in letter.sources.missed_letters],
         "curiosity": curiosity,
         "curiosity_failed": [{"workflow": f.workflow, "when": _local(f.failed_at, tz),
                               "error": f.error or "no error recorded"} for f in m.curiosity_failed],
@@ -380,6 +385,7 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "reveries": reverie_counts(letter),
         "source_problems": source_problems,
         "condensed": letter.sources.condensed,
+        "input_shares": sorted(letter.sources.input_shares.items(), key=lambda kv: (-kv[1], kv[0])),
     }
 
 
@@ -399,6 +405,17 @@ def render_html(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
     return _env().get_template(TEMPLATE_NAME).render(**build_context(letter, images))
 
 
+def provenance_lines(letter: OrionDayLetterV1) -> list[str]:
+    """The plain-text provenance lines (the HTML template renders the same two facts)."""
+    out: list[str] = []
+    if letter.sources.turn_correlation_id:
+        out.append(f"Written as unified turn {letter.sources.turn_correlation_id}.")
+    if letter.sources.missed_letters:
+        out.append("Days with no letter that this letter was told about: "
+                   + "; ".join(f"{x.letter_date} ({x.reason})" for x in letter.sources.missed_letters) + ".")
+    return out + ([""] if out else [])
+
+
 def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
     """The plain-text part: the full note, carry-forward and material, as markdown."""
     m = letter.material
@@ -412,15 +429,14 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
         "",
         numbered_text(split_note(letter.note_md)).strip(),
         "",
-        "## Carrying forward into curiosity",
-        "(Offered once to Orion's next regular curiosity run"
-        + (f", until {_local(letter.carry_forward_expires_at, tz, '%Y-%m-%d %H:%M')}" if letter.carry_forward_expires_at else "")
-        + ".)",
+        "## Threads I am carrying",
+        "(The letter's own list. Prime holds these threads; curiosity hears about them only through Prime.)",
         "",
         numbered_text(split_carry(letter.carry_forward_md)).strip(),
         "",
-        "---",
     ]
+    out += provenance_lines(letter)
+    out += ["---"]
     reads = what_i_read(m)
     if reads:
         out += ["## What I read", ""]

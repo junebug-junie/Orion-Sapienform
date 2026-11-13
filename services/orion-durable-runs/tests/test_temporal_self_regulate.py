@@ -133,6 +133,167 @@ def test_juniper_turn_wakes_engaged_within_one_step_and_outreach_does_not():
     assert w.projected[-1].arousal.arousal_level == "idle"
 
 
+class Causes:
+    """Fake ``record_cause``: what the regulate node asked to write (strain loop part 1)."""
+
+    def __init__(self):
+        self.rows: list[tuple] = []
+        self.fail = False
+
+    async def __call__(self, reading, day_id, joined, seed):
+        if self.fail:
+            return False
+        self.rows.append((list(joined), seed, reading.since))
+        return True
+
+
+def test_strain_cause_rows_record_each_joining_cause_once():
+    w, causes = World(), Causes()
+    d = driver(w, record_cause=causes)
+    w.depth, w.sustained = 4, 320.0
+    tick(d)                                                      # onset: the level row carries GPU
+    assert w.transitions[-1][1] == "strained" and causes.rows == []
+    w.now += timedelta(seconds=120)
+    w.reflex, w.thermal = "cabinet_hot", "hot"
+    tick(d)                                                      # the cabinet joins mid-episode
+    assert [r[:2] for r in causes.rows] == [(["cabinet_hot"], False)]
+    assert causes.rows[0][2] == T0                               # same episode
+    for _ in range(3):                                           # unchanged, or a cause dropping out
+        w.now += timedelta(seconds=120)
+        w.depth, w.sustained = 0, 0.0
+        tick(d)
+    assert len(causes.rows) == 1 and len(w.transitions) == 1
+
+
+def test_strain_seed_row_when_strained_with_nothing_recorded_then_retry_on_failure():
+    w = World()
+    saver = InMemorySaver()
+    w.depth, w.sustained = 4, 320.0
+    tick(driver(w, saver))                                       # flag off: onset written, no cause state
+    causes = Causes()
+    causes.fail = True
+    d = driver(w, saver, record_cause=causes)                    # deploy with the flag on, mid-episode
+    w.now += timedelta(seconds=120)
+    tick(d)
+    assert causes.rows == [] and "strain_cause_write_failed" in w.projected[-1].warnings
+    causes.fail = False
+    w.now += timedelta(seconds=120)
+    tick(d)                                                      # retried next step
+    assert [r[:2] for r in causes.rows] == [(["gpu_queue_sustained"], True)] and causes.rows[0][2] == T0
+    w.now += timedelta(seconds=120)
+    tick(d)
+    assert len(causes.rows) == 1
+
+
+def test_strain_cause_rows_off_by_flag_and_not_when_calm():
+    w = World()
+    d = driver(w)                                                # record_cause=None: the flag is off
+    w.reflex, w.thermal = "cabinet_hot", "hot"
+    tick(d)
+    assert w.projected[-1].arousal.arousal_level == "strained"
+    w2, causes = World(), Causes()
+    d2 = driver(w2, record_cause=causes)
+    for _ in range(3):
+        tick(d2)
+        w2.now += timedelta(seconds=120)
+    assert causes.rows == []                                     # idle: nothing to record
+
+
+def test_strain_keepalive_every_30_min_while_strained_and_none_after():
+    w, causes = World(), Causes()
+    d = driver(w, record_cause=causes)
+    w.depth, w.sustained = 4, 320.0
+    tick(d)                                                      # onset at T0
+    for _ in range(15):                                          # 30 min of 2-min steps
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert [r[:2] for r in causes.rows] == [([], False)]         # one keepalive, at T0 + 30 min
+    for _ in range(15):
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert len(causes.rows) == 2
+    w.depth, w.sustained = 0, 0.0                                # strain clears after 10 clean min
+    for _ in range(20):
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert w.projected[-1].arousal.arousal_level != "strained"
+    n = len(causes.rows)
+    for _ in range(20):
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert len(causes.rows) == n                                 # not strained: no keepalives
+
+
+def test_strain_row_when_a_cause_leaves_no_sooner_than_10_min():
+    w, causes = World(), Causes()
+    d = driver(w, record_cause=causes)
+    w.depth, w.sustained = 4, 320.0
+    w.reflex, w.thermal = "cabinet_hot", "hot"
+    tick(d)                                                      # onset: cabinet + GPU
+    w.now += timedelta(seconds=120)
+    w.reflex, w.thermal = None, "normal"                         # the cabinet cools at T0+2 min
+    tick(d)
+    assert causes.rows == []                                     # only 2 min since the onset row
+    for _ in range(4):                                           # T0+4 .. T0+10 min
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert [r[:2] for r in causes.rows] == [([], False)]         # the leave row, at T0+10 min
+    assert w.projected[-1].arousal.arousal_level == "strained"
+    for _ in range(4):                                           # unchanged: no more rows
+        w.now += timedelta(seconds=120)
+        tick(d)
+    assert len(causes.rows) == 1
+
+
+def test_a_flapping_cause_costs_at_most_one_row_per_10_min():
+    w, causes = World(), Causes()
+    d = driver(w, record_cause=causes)
+    w.depth, w.sustained = 4, 320.0
+    tick(d)                                                      # onset: GPU
+    for i in range(30):                                          # 60 min: cabinet on/off every step
+        w.now += timedelta(seconds=120)
+        w.reflex, w.thermal = ("cabinet_hot", "hot") if i % 2 == 0 else (None, "normal")
+        tick(d)
+    assert causes.rows[0][0] == ["cabinet_hot"]                  # the first join is immediate
+    assert len(causes.rows) <= 1 + 60 // 10
+
+
+def test_first_steps_after_deploy_record_causes_now_within_10_min():
+    """A checkpoint from before this key existed: episode causes and last row known, causes present
+    at that row not. A row lands once the rate limit allows, not only at the 30-min keepalive."""
+    from app.temporal_self_graph import STRAIN_CAUSE_CHANGE_MIN_SEC, _strain_causes_step
+    from orion.schemas.regulation import ArousalReadingV1
+
+    causes = Causes()
+    deps = World().deps(record_cause=causes)
+    state = {"strain_causes_seen": ["cabinet_hot", "gpu_queue_sustained"],
+             "strain_row_at": T0.isoformat(), "day_id": "2026-10-10"}
+
+    def step(minutes):
+        r = ArousalReadingV1(arousal_level="strained", since=T0 - timedelta(days=1),
+                             observed_at=T0 + timedelta(minutes=minutes), reasons=["gpu_queue_sustained"])
+        return asyncio.run(_strain_causes_step(deps, r, state, False, []))
+
+    assert step(STRAIN_CAUSE_CHANGE_MIN_SEC / 60 - 1)[2] is None and causes.rows == []   # too soon
+    seen, row_at, now = step(STRAIN_CAUSE_CHANGE_MIN_SEC / 60)
+    assert [r[:2] for r in causes.rows] == [([], False)] and now == ["gpu_queue_sustained"]
+    assert seen == ["cabinet_hot", "gpu_queue_sustained"]
+
+
+def test_cause_row_shape_matches_the_level_row():
+    from app import regulation_store
+    from orion.schemas.regulation import ArousalReadingV1
+
+    r = ArousalReadingV1(arousal_level="strained", since=T0, observed_at=T0 + timedelta(minutes=5),
+                         reasons=["cabinet_hot"])
+    row = regulation_store.cause_row(r, "2026-10-10", ["cabinet_hot"], False)
+    assert row["event_id"] == f"arousal_transition:{T0.isoformat()}:strained:at:{(T0 + timedelta(minutes=5)).isoformat()}"
+    assert row["occurred_at"] == T0 + timedelta(minutes=5) and row["label"] == "strained"
+    payload = json.loads(row["payload"])
+    assert payload["from"] == payload["to"] == "strained" and payload["joined"] == ["cabinet_hot"]
+    assert row["event_id"] != regulation_store.transition_row(None, r, "2026-10-10")["event_id"]
+
+
 def test_strain_holds_through_a_restart_and_since_survives():
     w = World()
     saver = InMemorySaver()
@@ -308,6 +469,53 @@ def test_store_reads_a_controller_fault_from_pool_events():
     assert set(pool.event_params[0]["events"]) == {"actuate_refused", "swap_failed", "swapped"}
 
 
+def test_store_reads_the_shed_held_queue_and_selects_its_columns():
+    """2026-10-20: the shed columns (sql-writer, manual_migration_regulation_gpu_shed_held_v1)
+    reach the reducer, so the live heat-held queue is not GPU load. A json column may arrive as text."""
+    from app import regulation_store
+    from orion.regulation.arousal import classify_arousal
+
+    held = {"memory_distill": 2, "agent": 9}
+    snaps = [{"host": "circe", "generated_at": T0 - timedelta(seconds=5 * i), "queue_depth": dict(held),
+              "shed_held_depth": json.dumps(held) if i % 2 else dict(held), "shed_reason": "cabinet_hot"}
+             for i in range(70)]
+    out = asyncio.run(regulation_store._gpu(_GpuPool(snaps, []), T0, floor=2, sustain_sec=300.0))
+    assert out["gpu_queue_depth"] == 11 and out["gpu_queue_sustained_sec"] == 0.0
+    assert (out["gpu_queue_shed_held"], out["gpu_shed_reason"]) == (11, "cabinet_hot")
+    assert "shed_held_depth" in regulation_store.GPU_SNAPSHOTS_SQL and "shed_reason" in regulation_store.GPU_SNAPSHOTS_SQL
+    inputs = ArousalInputsV1(observed_at=T0, juniper_turn_read_ok=True, minutes_since_juniper_turn=300.0,
+                             cabinet_read_ok=True, cabinet_reflex=None, cabinet_thermal_state="elevated", **out)
+    assert classify_arousal(None, inputs).reasons == ["gpu_shed:cabinet_hot"]
+
+
+def test_store_reads_deferrable_self_work_and_selects_its_column():
+    """2026-10-23: the live queue {"agent": 8}, all background holds (deferrable_depth, sql-writer).
+    It reaches the reducer as hunger, not load: no sustained run, S2 fresh and clear."""
+    from app import regulation_store
+    from orion.regulation.arousal import classify_arousal
+
+    q = {"agent": 8}
+    snaps = [{"host": "circe", "generated_at": T0 - timedelta(seconds=5 * i), "queue_depth": dict(q),
+              "shed_held_depth": {}, "shed_reason": None,
+              "deferrable_depth": json.dumps(q) if i % 2 else dict(q)} for i in range(70)]
+    out = asyncio.run(regulation_store._gpu(_GpuPool(snaps, []), T0, floor=2, sustain_sec=300.0))
+    assert out["gpu_queue_depth"] == 8 and out["gpu_queue_sustained_sec"] == 0.0
+    assert out["gpu_queue_self_deferrable"] == 8
+    assert "deferrable_depth" in regulation_store.GPU_SNAPSHOTS_SQL
+    inputs = ArousalInputsV1(observed_at=T0, juniper_turn_read_ok=True, minutes_since_juniper_turn=300.0,
+                             cabinet_read_ok=True, cabinet_reflex=None, cabinet_thermal_state="elevated", **out)
+    assert classify_arousal(None, inputs).reasons == ["no_juniper_turn_45m", "gpu_queue_self_deferrable:8"]
+
+
+def test_store_reads_rows_saved_before_the_shed_columns_as_nothing_held():
+    from app import regulation_store
+
+    out = asyncio.run(regulation_store._gpu(_GpuPool(_jam(T0), []), T0, floor=2, sustain_sec=300.0))
+    assert out["gpu_queue_shed_held"] == 0 and out["gpu_shed_reason"] is None
+    assert out["gpu_queue_self_deferrable"] == 0   # no deferrable_depth key: an older row, read as 0
+    assert out["gpu_queue_sustained_sec"] >= 300.0
+
+
 def test_store_fault_read_failure_makes_gpu_stale_not_load():
     from app import regulation_store
 
@@ -351,6 +559,8 @@ def test_fault_jam_reads_unknown_through_a_restart_then_real_load_strains():
 DSN = os.getenv("ORION_ADMISSION_TEST_DSN")
 MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
 HISTORY_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_regulation_history.sql"
+SHED_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_regulation_gpu_shed_held_v1.sql"
+DEFERRABLE_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_regulation_gpu_deferrable_depth_v1.sql"
 
 
 async def _with_schema(scenario):
@@ -377,7 +587,8 @@ def test_store_reads_and_transition_write_on_postgres():
 
     async def scenario(pool):
         async with pool.connection() as conn:
-            for sql in (MIGRATION.read_text(), HISTORY_MIGRATION.read_text()):
+            for sql in (MIGRATION.read_text(), HISTORY_MIGRATION.read_text(), SHED_MIGRATION.read_text(),
+                        DEFERRABLE_MIGRATION.read_text()):
                 await conn.execute(sql, prepare=False)
             await conn.execute("""CREATE TABLE chat_history_log (id varchar PRIMARY KEY, source varchar, prompt text,
                                   client_meta jsonb, created_at timestamp DEFAULT now())""")

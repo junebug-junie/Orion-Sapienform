@@ -14,6 +14,7 @@ from orion.dream import introspect_sql
 from orion.orion_day import gather
 from orion.world_pulse_read import introspect as wp_introspect
 from orion.world_pulse_read import findings as wp_findings
+from orion.world_pulse_read.resonance_findings import RESONANCE_FINDINGS_SQL
 
 LETTER_DATE = date(2026, 9, 29)
 T0 = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)  # inside the Denver day
@@ -127,6 +128,20 @@ WORLD_PULSE = {"run_id": "1765808d", "date": "2026-09-29", "title": "Daily World
                    {"category": "no_title_dropped"}]})}
 
 
+# chat_history_log rows for the fixture day: two turns where Juniper wrote, one unsolicited message
+# from Orion (empty prompt). Not served by default: pass ``juniper_chat=JUNIPER_CHAT``.
+JUNIPER_CHAT = [
+    {"id": "turn-0001-aaaaaaaa", "correlation_id": "turn-0001-aaaaaaaa", "created_at": _t(100).replace(tzinfo=None),
+     "prompt": "", "response": "I found something in my reading queue I wanted to show you. " + "More detail. " * 80,
+     "unsolicited": True},
+    {"id": "turn-0002-bbbbbbbb", "correlation_id": "turn-0002-bbbbbbbb", "created_at": _t(130).replace(tzinfo=None),
+     "prompt": "The dog had surgery yesterday, I am wiped out.",
+     "response": "That is a long night on top of a long day. " + "I am here. " * 300, "unsolicited": False},
+    {"id": "turn-0003-cccccccc", "correlation_id": "turn-0003-cccccccc", "created_at": _t(140).replace(tzinfo=None),
+     "prompt": "Pizza helped.", "response": "Good. Tell me what you got.", "unsolicited": False},
+]
+
+
 class FakeRecord(dict):
     """asyncpg Record stand-in: mapping access by column name."""
 
@@ -150,7 +165,8 @@ class FakeConn:
     def __init__(self, *, fail: set[str] | None = None, github: dict | None = None, chat: dict | None = CHAT_COMPACTOR,
                  corrections: list[dict] | None = None, temporal_day: dict | None = None,
                  read_links: list[dict] | None = None, prior_moves: list[dict] | None = None,
-                 immune: list[dict] | None = None):
+                 immune: list[dict] | None = None, walkway: dict | None = None,
+                 juniper_chat: list[dict] | None = None, temporal_events: list[dict] | None = None):
         self.calls: list[tuple[str, tuple]] = []
         self.fail = fail or set()
         self.fetch_map = {
@@ -167,14 +183,20 @@ class FakeConn:
             gather.REVERIE_CHAINS_SQL: ("reverie_chains", REVERIE_CHAINS),
             gather.VISUAL_REVERIES_SQL: ("visual_reveries", VISUAL_REVERIES),
             gather.CORRECTIONS_SQL: ("corrections", corrections or []),
+            RESONANCE_FINDINGS_SQL: ("reading_resonance", []),
             wp_findings.READ_LINKS_SQL: ("reading_findings", READ_LINK_ROWS if read_links is None else read_links),
             wp_findings.RUN_PRIOR_MOVES_SQL: ("reading_findings", prior_moves or []),
             # R4 immune findings for the closed day: payload_json rows from temporal_self_event.
             gather.TEMPORAL_DAY_IMMUNE_SQL: ("temporal_day_immune", [{"payload_json": p} for p in immune or []]),
+            # chat_history_log rows (id, correlation_id, created_at, prompt, response, unsolicited).
+            gather.JUNIPER_CHAT_SQL: ("juniper_chat", juniper_chat or []),
+            # temporal_self_event rows for the closed day's frame ids (temporal core).
+            gather.TEMPORAL_CORE_EVENTS_SQL: ("temporal_core", temporal_events or []),
         }
         self.github = github
         self.chat = chat
         self.temporal_day = temporal_day  # a temporal_self_day.day_json, or None (day not closed)
+        self.walkway = walkway  # a vision_rollup day row (stream_id, line, complete), or None
 
     async def fetch(self, sql: str, *args: Any):
         self.calls.append((sql, args))
@@ -193,6 +215,10 @@ class FakeConn:
             if "temporal_day" in self.fail:
                 raise RuntimeError("relation temporal_self_day does not exist")
             return FakeRecord({"day_json": self.temporal_day}) if self.temporal_day is not None else None
+        if sql == gather.WALKWAY_DAY_SQL:
+            if "walkway_day" in self.fail:
+                raise RuntimeError("relation vision_rollup does not exist")
+            return FakeRecord(self.walkway) if self.walkway is not None else None
         if sql == gather.JOURNAL_BY_ID_OR_REF_SQL:
             ref, written_after = args[1], args[2]
             row = self.chat if ref.startswith("chat_history_compactor_pass:") else self.github

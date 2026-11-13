@@ -5,13 +5,14 @@ import asyncio
 import importlib.util
 import json
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from jinja2 import Environment
 
 import app.self_readings_cue as cue_mod
+import orion.attention.self_signal_outcomes as sso_mod
 from app.bus_listener import build_stance_react_context, run_stance_react
 from app.reverie import build_reverie_context
 from orion.schemas.attention_frame import AttentionBroadcastProjectionV1, AttentionFrameV1, OpenLoopV1
@@ -163,7 +164,7 @@ def test_reverie_coalition_branch_renders_block_concern_branch_never() -> None:
 def _fresh_cache(monkeypatch, associations=None):
     monkeypatch.setattr(cue_mod, "_cache", None)
     monkeypatch.setattr(cue_mod, "_assoc", None)
-    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since: list(associations or []))
+    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since, holds: list(associations or []))
 
 
 @pytest.mark.asyncio
@@ -178,7 +179,7 @@ async def test_disabled_never_reads(monkeypatch) -> None:
 async def test_read_error_renders_nothing(monkeypatch) -> None:
     _fresh_cache(monkeypatch)
 
-    def boom(since):
+    def boom(since, holds):
         raise RuntimeError("db down")
 
     monkeypatch.setattr(cue_mod, "fetch_since", boom)
@@ -274,6 +275,23 @@ _ASSOC_ROW = {
 }
 
 
+def _held(row: dict, n: int = 6, *, gap_at: int | None = None, flip_at: int | None = None) -> list[dict]:
+    """``row`` as the newest of ``n`` hourly computations (older ones get their own ids), with an
+    optional missing hour (``gap_at`` hours back) or a different verdict ``flip_at`` hours back."""
+    from datetime import timedelta
+
+    out = []
+    for i in range(n):
+        if i == gap_at:
+            continue
+        r = dict(row) if i == 0 else dict(row, association_id=f"ssa-{i:010d}",
+                                          computed_at=row["computed_at"] - timedelta(hours=i))
+        if i == flip_at:
+            r.update(verdict="no_clear_difference", clause="")
+        out.append(r)
+    return out
+
+
 async def _block_with(monkeypatch, *, enabled: bool, assoc_rows):
     _fresh_cache(monkeypatch, assoc_rows)
     if enabled:
@@ -287,9 +305,50 @@ async def _block_with(monkeypatch, *, enabled: bool, assoc_rows):
 
 @pytest.mark.asyncio
 async def test_flag_on_renders_the_cited_clause(monkeypatch) -> None:
-    block = await _block_with(monkeypatch, enabled=True, assoc_rows=[_ASSOC_ROW])
+    block = await _block_with(monkeypatch, enabled=True, assoc_rows=_held(_ASSOC_ROW))
     assert "[pe:execution@2026-10-14T03:29:30Z]; when this is high" in block.text
     assert "[assoc:ssa-0123456789]" in block.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rows", [
+    pytest.param(_held(_ASSOC_ROW, 5), id="five-of-six-holds"),
+    pytest.param(_held(_ASSOC_ROW, 7, gap_at=3), id="missing-hour"),
+    pytest.param(_held(_ASSOC_ROW, flip_at=2), id="verdict-flip"),
+    pytest.param([_ASSOC_ROW], id="one-hour-only"),
+])
+async def test_a_clause_that_has_not_held_six_hours_renders_nothing(monkeypatch, rows) -> None:
+    base = await _block_with(monkeypatch, enabled=True, assoc_rows=[])
+    block = await _block_with(monkeypatch, enabled=True, assoc_rows=rows)
+    assert block.text == base.text and "when this is high" not in block.text
+
+
+@pytest.mark.asyncio
+async def test_a_gap_older_than_the_run_does_not_matter(monkeypatch) -> None:
+    block = await _block_with(monkeypatch, enabled=True, assoc_rows=_held(_ASSOC_ROW, 8, gap_at=6))
+    assert "[assoc:ssa-0123456789]" in block.text
+
+
+@pytest.mark.asyncio
+async def test_a_stale_newest_row_renders_nothing_even_when_held(monkeypatch) -> None:
+    from datetime import timedelta
+
+    base = await _block_with(monkeypatch, enabled=True, assoc_rows=[])
+    old = dict(_ASSOC_ROW, computed_at=fx.NOW - timedelta(hours=4))
+    block = await _block_with(monkeypatch, enabled=True, assoc_rows=_held(old))
+    assert block.text == base.text
+
+
+def test_reader_asks_for_enough_history_for_the_holds_rule(monkeypatch) -> None:
+    seen = []
+    _fresh_cache(monkeypatch)
+    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since, holds: seen.append((since, holds)) or [])
+    monkeypatch.setattr(cue_mod.settings, "self_signal_outcome_consecutive_holds", 6)
+    cue_mod.refresh_associations(fx.NOW)
+    (since, holds), = seen
+    assert holds == 6
+    # The newest row may be up to ASSOCIATION_MAX_AGE old; its run reaches 6 hours further back.
+    assert fx.NOW - since >= sso_mod.ASSOCIATION_MAX_AGE + timedelta(hours=6)
 
 
 @pytest.mark.asyncio
@@ -300,7 +359,7 @@ async def test_flag_off_is_byte_identical_and_never_reads_associations(monkeypat
     monkeypatch.setattr(cue_mod.settings, "self_signal_outcome_association_enabled", False)
     calls = []
     monkeypatch.setattr(cue_mod, "_assoc", None)
-    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since: calls.append(since) or [_ASSOC_ROW])
+    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since, holds: calls.append(since) or [_ASSOC_ROW])
     assert cue_mod._associations(fx.NOW) is None
     assert cue_mod._assoc is None and calls == []  # flag off never reads, not even in background
 
@@ -309,7 +368,7 @@ async def test_flag_off_is_byte_identical_and_never_reads_associations(monkeypat
 async def test_unreadable_associations_leave_readings_unchanged(monkeypatch) -> None:
     base = await _block_with(monkeypatch, enabled=True, assoc_rows=[])
 
-    def boom(since):
+    def boom(since, holds):
         raise RuntimeError("no such table: self_signal_outcome_association")
 
     _fresh_cache(monkeypatch)
@@ -330,11 +389,15 @@ async def test_a_row_without_a_clause_or_malformed_renders_nothing_extra(monkeyp
     assert block.text == base.text
 
 
-def test_association_query_is_fresh_bounded_and_newest_per_pair() -> None:
-    sql = cue_mod._ASSOC_SQL
-    assert "DISTINCT ON (signal_id, outcome)" in sql and "computed_at >= :since" in sql
-    assert "ORDER BY signal_id, outcome, computed_at DESC" in sql and "LIMIT 200" in sql
-    assert cue_mod.ASSOCIATION_MAX_AGE.total_seconds() == 3 * 3600
+def test_association_query_is_fresh_bounded_and_one_row_per_pair_hour() -> None:
+    from orion.attention.self_signal_outcomes import association_history_limit, association_history_sql
+
+    sql = association_history_sql(":since", ":limit")
+    assert "DISTINCT ON (signal_id, outcome, date_trunc('hour', computed_at AT TIME ZONE 'UTC'))" in sql
+    assert "computed_at >= :since" in sql and sql.endswith("LIMIT :limit")
+    assert association_history_limit(6) == 32 * 3 * 11
+    assert sql.rstrip().endswith("ORDER BY computed_at DESC, signal_id, outcome LIMIT :limit")
+    assert sso_mod.ASSOCIATION_MAX_AGE.total_seconds() == 3 * 3600
 
 
 def test_flag_ships_on() -> None:
@@ -343,6 +406,8 @@ def test_flag_ships_on() -> None:
     assert ThoughtSettings(_env_file=None).self_signal_outcome_association_enabled is True
     env = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
     assert "SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED=true" in env
+    assert ThoughtSettings(_env_file=None).self_signal_outcome_consecutive_holds == 6
+    assert "SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS=6" in env
 
 
 def test_a_stale_index_never_reads_on_the_callers_thread(monkeypatch) -> None:
@@ -354,7 +419,7 @@ def test_a_stale_index_never_reads_on_the_callers_thread(monkeypatch) -> None:
     _fresh_cache(monkeypatch)
     monkeypatch.setattr(cue_mod.settings, "self_signal_outcome_association_enabled", True)
     release = threading.Event()
-    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since: release.wait(5) and [_ASSOC_ROW])
+    monkeypatch.setattr(cue_mod, "fetch_associations", lambda since, holds: release.wait(5) and _held(_ASSOC_ROW))
     t0 = time.perf_counter()
     assert cue_mod._associations(fx.NOW) is None  # nothing loaded yet: no clause, no wait
     assert cue_mod._associations(fx.NOW) is None  # a refresh is in flight: not a second one

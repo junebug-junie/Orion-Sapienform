@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.schemas.vision import (
@@ -416,29 +417,24 @@ class VisionHostService:
     async def _consume_loop(self):
         if not self.bus:
             return
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_VISIONHOST_INTAKE,
+            self._on_intake,
+            stop_event=self._shutdown_event,
+            name="vision-host.intake",
+        )
 
-        async with self.bus.subscribe(settings.CHANNEL_VISIONHOST_INTAKE) as pubsub:
-            while not self._shutdown_event.is_set():
-                try:
-                    async for msg in self.bus.iter_messages(pubsub):
-                        if self._shutdown_event.is_set():
-                            break
-
-                        data = msg.get("data")
-                        if not data:
-                            continue
-
-                        decoded = self.bus.codec.decode(data)
-                        if not decoded.ok or not decoded.envelope:
-                            logger.error(f"[BUS] decode failed: {decoded.error}")
-                            continue
-
-                        # Process in background to not block consumer
-                        asyncio.create_task(self._handle_envelope(decoded.envelope))
-
-                except Exception as e:
-                    logger.error(f"[BUS] consumer error: {e}")
-                    await asyncio.sleep(1)
+    def _on_intake(self, msg: dict) -> None:
+        data = msg.get("data")
+        if not data:
+            return
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok or not decoded.envelope:
+            logger.error(f"[BUS] decode failed: {decoded.error}")
+            return
+        # Process in background to not block consumer (returns None, not the task).
+        asyncio.create_task(self._handle_envelope(decoded.envelope))
 
     async def _handle_envelope(self, envelope: BaseEnvelope):
         # Validate payload

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 
 import inspect
 from collections.abc import Awaitable, Callable
@@ -17,8 +18,8 @@ from orion.schemas.pre_turn_appraisal import (
 from orion.substrate.appraisal.contract import assemble_repair_contract_delta
 from orion.substrate.appraisal.models import EvidenceKind, RepairEvidenceV1
 from orion.substrate.appraisal.probe.logprob_runner import (
+    _LINE_RE,
     kind_probe_to_evidence,
-    parse_yes_no_lines,
     score_binary_logprob,
     score_kind_from_answer_token,
 )
@@ -36,6 +37,38 @@ _EVIDENCE_KINDS: tuple[EvidenceKind, ...] = (
 )
 
 _LLMCaller = Callable[[str], dict[str, Any] | Awaitable[dict[str, Any]]]
+
+
+class RepairProbeUnavailable(RuntimeError):
+    """The probe produced no measurement. ``reason`` says why, e.g. ``shed:cabinet_hot`` (the GPU
+    pool refused it), ``llm_unavailable`` (empty reply), ``probe_unparseable``.
+
+    Raised instead of returning ``level=0.0``: until 2026-10-23 a refused probe came back as a
+    calm 0.0 reading with notes=["no_repair_evidence"] and the cockpit read ``ok`` -- 19/19 of
+    Juniper's turns on 10-20..21 while the 34 C heat reflex shed the probe. The caller records the
+    paradigm as failed, so its level is unknown, not zero."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def probe_failure_reason(payload: dict[str, Any]) -> str | None:
+    """Why a gateway reply carries no answer, or None if it carries one.
+
+    The gateway's refusal shape (``raw.error`` + ``raw.details.reason``, llm-gateway
+    ``_pool_unavailable_result``) names the reason, e.g. ``shed:cabinet_hot``. An empty reply with
+    no stated error is ``llm_unavailable``."""
+    raw = payload.get("raw") if isinstance(payload.get("raw"), dict) else {}
+    error = raw.get("error")
+    if error:
+        details = raw.get("details") if isinstance(raw.get("details"), dict) else {}
+        reason = str(details.get("reason") or error).strip()
+        return reason[:120] or "llm_unavailable"
+    text = str(payload.get("text") or payload.get("content") or "")
+    if not text.strip():
+        return "llm_unavailable"
+    return None
 
 
 def _repo_root() -> Path:
@@ -74,6 +107,66 @@ def build_repair_probe_prompt(window: list[TurnWindowMessageV1]) -> str:
         "Answer each line using this exact format (kind: YES or NO):\n"
         f"{kind_lines}\n"
     )
+
+
+_BARE_ANSWER_RE = re.compile(r"^\s*(?:[-*•]|(\d+)[.)])?\s*(YES|NO)\.?\s*$", re.IGNORECASE)
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
+
+
+def probe_answer_spans(text: str) -> list[tuple[str, str, int]]:
+    """``(kind, YES|NO, char offset of the answer)`` for every kind the probe reply answered.
+
+    Two reply shapes carry a real answer:
+
+    * labeled lines, ``kind: YES`` (the format the prompt shows), matched by kind name; and
+    * bare lines: exactly seven non-blank lines, each only ``YES`` or ``NO``. The prompt says "exactly
+      seven lines, one per kind, YES or NO only" and lists the kinds in ``_EVIDENCE_KINDS`` order, and
+      models obey it literally. Live 2026-11-12/13: Bonsai-2-27B (agent-gpu2) and Strata flash-next
+      (agent) answered ``NO\nNO\nNO\nNO\nNO\nNO\nNO`` (14 tokens) and all four checks failed as
+      ``probe_unparseable``. Line i is kind i of the prompt's list.
+
+    Numbered bare lines must be numbered 1..7 in order. Anything else (prose, six lines, reordered
+    numbers, a mix of bare and labeled, reasoning that never closed) answers nothing, and the caller
+    fails the check as ``probe_unparseable``: never a guessed or default reading. Only the text after
+    the last ``</think>`` is read, so reasoning that names a kind cannot count as its answer."""
+    text = text or ""
+    if text.rfind(_THINK_OPEN) > text.rfind(_THINK_CLOSE):
+        return []   # reasoning cut off before it closed (e.g. at max_tokens): there is no answer yet
+    cut = text.rfind(_THINK_CLOSE)
+    base = cut + len(_THINK_CLOSE) if cut >= 0 else 0
+    body = text[base:]
+    labeled = [
+        (m.group(1).lower(), m.group(2).upper(), base + m.start(2))
+        for m in _LINE_RE.finditer(body)
+        if m.group(1).lower() in _EVIDENCE_KINDS
+    ]
+    if labeled:
+        return labeled
+    lines: list[tuple[str, int]] = []
+    offset = 0
+    for line in body.splitlines(keepends=True):
+        if line.strip():
+            lines.append((line, offset))
+        offset += len(line)
+    if len(lines) != len(_EVIDENCE_KINDS):
+        return []
+    spans: list[tuple[str, str, int]] = []
+    numbers: list[str | None] = []
+    for kind, (line, at) in zip(_EVIDENCE_KINDS, lines):
+        m = _BARE_ANSWER_RE.match(line.rstrip("\r\n"))
+        if m is None:
+            return []
+        numbers.append(m.group(1))
+        spans.append((kind, m.group(2).upper(), base + at + m.start(2)))
+    if any(n is not None for n in numbers) and numbers != [str(i) for i in range(1, len(_EVIDENCE_KINDS) + 1)]:
+        return []   # numbered lines must be 1..7 in order: a reordered list would map answers to the wrong kinds
+    return spans
+
+
+def parse_probe_answers(text: str) -> dict[str, str]:
+    """``{kind: YES|NO}`` from a probe reply (see ``probe_answer_spans``); empty when it answers nothing."""
+    return {kind: answer for kind, answer, _ in probe_answer_spans(text)}
 
 
 def reduce_repair_level(
@@ -167,10 +260,27 @@ def _normalize_logprob_content(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
     raw = payload.get("raw")
     if isinstance(raw, dict):
+        # OpenAI-compatible reply (Strata on the agent/chat seats, and llama.cpp when the native
+        # completion path is off): per-token logprobs live under choices[0].logprobs.content. The
+        # gateway's llm_uncertainty is only a summary (no per-token list), so until 2026-11-12 every
+        # such reply fell through to the fixed text-only fallback scores.
+        choices = raw.get("choices")
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            logprobs = choices[0].get("logprobs")
+            if isinstance(logprobs, dict) and isinstance(logprobs.get("content"), list):
+                return [entry for entry in logprobs["content"] if isinstance(entry, dict)]
         probs = raw.get("probs")
-        if not isinstance(probs, list) and isinstance(raw.get("completion_probabilities"), list):
-            first = raw["completion_probabilities"][0]
-            if isinstance(first, dict):
+        if not isinstance(probs, list) and isinstance(raw.get("completion_probabilities"), list) \
+                and raw["completion_probabilities"]:
+            items = raw["completion_probabilities"]
+            first = items[0]
+            if isinstance(first, dict) and "token" in first:
+                # llama.cpp /completion today (verified live 2026-11-12 on the fast lane, same shape
+                # as the gateway's native_completion_probs_to_logprob_content): a flat list of
+                # per-token entries, each carrying token/logprob/top_logprobs. The older branch below
+                # read first["probs"] only, so this shape too fell to the text fallback.
+                probs = items
+            elif isinstance(first, dict):
                 probs = first.get("probs")
         if isinstance(probs, list):
             content: list[dict[str, Any]] = []
@@ -228,22 +338,51 @@ def _evidence_from_parsed_text_only(parsed: dict[str, str]) -> list[RepairEviden
     return evidence
 
 
-def _answer_token_entries(content: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    out: list[dict[str, Any]] = []
-    for entry in content:
-        token = str(entry.get("token") or "").strip().upper()
-        if token not in {"YES", "NO"}:
-            continue
+def _aligned_answer_entries(
+    content: list[dict[str, Any]], parsed: dict[str, str]
+) -> dict[str, dict[str, Any]] | None:
+    """Map each answered kind to the token that IS its YES/NO answer, by character position.
+
+    The answer lines are parsed again from the generated tokens' own text, and each line's YES/NO
+    is matched to the token whose span covers it. Returns None (caller uses the text-only fallback
+    for the whole reply) unless every kind the reply answered gets exactly its own answer token,
+    spelled as that answer, with alternatives to score. Matching by order instead (the code before
+    2026-11-12) let a preamble "No ..." token or reordered lines shift every score onto the wrong
+    kind; that path was dead until the parser could read real reply shapes, so the bug was latent."""
+    pieces = [str(entry.get("token") or "") for entry in content]
+    starts: list[int] = []
+    pos = 0
+    for piece in pieces:
+        starts.append(pos)
+        pos += len(piece)
+    token_text = "".join(pieces)
+
+    aligned: dict[str, dict[str, Any]] = {}
+    for kind, answer, answer_at in probe_answer_spans(token_text):
+        idx = next((i for i in range(len(pieces)) if starts[i] <= answer_at < starts[i] + len(pieces[i])), None)
+        if idx is None:
+            return None
+        entry = content[idx]
+        if str(entry.get("token") or "").strip().upper() != answer:
+            return None   # the answer shares a token with other text (e.g. ":NO"): no clean score
         tops = entry.get("top_logprobs")
         if not isinstance(tops, list) or len(tops) < 2:
-            continue
-        out.append(entry)
-    return out
+            return None
+        if kind in aligned:
+            return None   # a kind answered twice: ambiguous
+        aligned[kind] = entry
+    wanted = {kind for kind in parsed if kind in _EVIDENCE_KINDS}
+    if set(aligned) != wanted:
+        return None
+    if any(match.upper() != parsed[kind] for kind, match in
+           ((k, str(e.get("token") or "").strip()) for k, e in aligned.items())):
+        return None
+    return aligned
 
 
 def _evidence_from_probe_response(payload: dict[str, Any]) -> list[RepairEvidenceV1]:
     text = str(payload.get("text") or payload.get("content") or "")
-    parsed = parse_yes_no_lines(text)
+    parsed = parse_probe_answers(text)
     if not parsed:
         return []
 
@@ -254,21 +393,19 @@ def _evidence_from_probe_response(payload: dict[str, Any]) -> list[RepairEvidenc
 
     logprob_usable = isinstance(unc, dict) and unc.get("available") is not False
     content = _normalize_logprob_content(payload) if logprob_usable else []
-    answer_entries = _answer_token_entries(content) if content else []
+    aligned = _aligned_answer_entries(content, parsed) if content else None
 
     evidence: list[RepairEvidenceV1] = []
-    if answer_entries:
-        entry_idx = 0
+    if aligned:
         for kind in _EVIDENCE_KINDS:
-            if kind not in parsed:
+            if kind not in aligned:
                 continue
-            if entry_idx >= len(answer_entries):
-                break
-            entry = answer_entries[entry_idx]
-            entry_idx += 1
-            scored = score_kind_from_answer_token(kind, entry)
+            scored = score_kind_from_answer_token(kind, aligned[kind])
             if scored is None:
-                continue
+                # The answer token's alternatives lack the other answer: no clean score for this
+                # reply. All kinds fall back together, never a mix of real and fixed scores.
+                evidence = []
+                break
             evidence.append(kind_probe_to_evidence(scored))
 
     if not evidence:
@@ -297,38 +434,32 @@ class RepairPressureV2Paradigm:
     async def run(self, req: PreTurnAppraisalRequestV1) -> TurnAppraisalParadigmSliceV1:
         prompt = build_repair_probe_prompt(req.turn_window)
         payload = await self._call_llm(prompt)
+        failure = probe_failure_reason(payload)
+        if failure is not None:
+            logger.warning(
+                "repair_pressure_probe_unavailable corr=%s reason=%s", req.correlation_id, failure
+            )
+            raise RepairProbeUnavailable(failure)
         evidence = _evidence_from_probe_response(payload)
 
         if not evidence:
+            # The model answered, but not in the seven-line YES/NO shape: no measurement either.
             probe_text = str(payload.get("text") or payload.get("content") or "")
             logger.warning(
                 "repair_pressure_probe_no_evidence corr=%s text_head=%r",
                 req.correlation_id,
                 probe_text[:240],
             )
-            return TurnAppraisalParadigmSliceV1(
-                appraisal_kind="repair_pressure",
-                level=0.0,
-                confidence=0.0,
-                dimensions={},
-                evidence=[],
-                contract_delta=dict(req.contract_before or {"mode": "default"}),
-                notes=["no_repair_evidence"],
-            )
+            raise RepairProbeUnavailable("probe_unparseable")
 
         kind_scores = {ev.evidence_kind: float(ev.score) for ev in evidence}
         confidences = {ev.evidence_kind: float(ev.confidence) for ev in evidence}
         weights = load_repair_weights(self._weights_path)
         if not weights:
-            return TurnAppraisalParadigmSliceV1(
-                appraisal_kind="repair_pressure",
-                level=0.0,
-                confidence=0.0,
-                dimensions=dict(kind_scores),
-                evidence=evidence,
-                contract_delta=dict(req.contract_before or {"mode": "default"}),
-                notes=["weights_file_missing"],
+            logger.warning(
+                "repair_pressure_weights_missing corr=%s path=%s", req.correlation_id, self._weights_path
             )
+            raise RepairProbeUnavailable("weights_file_missing")
         level, confidence = reduce_repair_level(
             kind_scores,
             confidences=confidences,

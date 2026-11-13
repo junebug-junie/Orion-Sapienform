@@ -26,6 +26,29 @@ class ResourceLeaseRejected(RuntimeError):
     pass
 
 
+def held_call_route(
+    gpu_lease: GpuLeaseRefV1 | dict[str, Any] | None,
+    default_route: str,
+) -> tuple[str, dict[str, Any] | None]:
+    """Where an LLM call made for a turn goes: ``(route, gpu_lease_option)``.
+
+    One rule (Juniper, 2026-11-12): a turn that holds a GPU pool seat runs ALL of its LLM work on
+    that seat. World-pulse reads are durable runs, and every reading turn carries its hold
+    (``ReadingTurnRequestV1.gpu_lease`` is required). Their pre-turn check and their Mind phases
+    used to ignore the hold and ride ``quick_turn``/``metacog``: Qwen3-8B with a 4,096-token slot,
+    against 21k-39k-character reading prompts. Those calls waited in the pool to their deadline
+    (stage-2 checks failed 194 of 373 in the 7 days to 11-12).
+
+    With a hold: the call names the hold's work-class route (``agent``) and carries the hold ref as
+    the bus ``options.gpu_lease``; the gateway attaches it to the hold's role whatever the route.
+    Without one (Juniper's own chat turns): ``default_route``, unchanged. There is deliberately no
+    fallback from a held call to ``default_route``: a refused attach is a failed call, never a
+    quiet trip back to the small lanes."""
+    if gpu_lease is None:
+        return default_route, None
+    return GPU_LEASE_ROUTE, GpuLeaseRefV1.model_validate(gpu_lease).model_dump(mode="json")
+
+
 def encode_gpu_lease_header(ref: GpuLeaseRefV1 | dict[str, Any]) -> str:
     payload = GpuLeaseRefV1.model_validate(ref).model_dump(mode="json")
     encoded = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()

@@ -195,3 +195,13 @@ async def test_cut_short_chain_skips_repair_and_keeps_marked_findings() -> None:
     assert chain.finalize_changed is False
     assert chain.outcome_molecule is not None
     assert chain.outcome_molecule.final_text == draft_text
+
+
+def test_a_failed_judge_repairs_with_reason_reflection_failed_not_misaligned():
+    # Unified-turn A2: the fallback "misaligned" from a failed 5b call still triggers repair, but the
+    # reason readers see says the judge failed, not that the draft missed.
+    from orion.schemas.harness_finalize import REFLECTION_SOURCE_JUDGE_FAILED
+
+    failed = make_reflection(alignment_verdict="misaligned", reflection_source=REFLECTION_SOURCE_JUDGE_FAILED)
+    assert needs_response_repair(failed)
+    assert response_repair_reason_for(failed) == "reflection_failed"

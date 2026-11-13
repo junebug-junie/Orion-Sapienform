@@ -21,6 +21,7 @@ from app.cursor_errors import (
 from app.cursor_invoker import build_sealed_prompt, parse_peer_brief_body, run_cursor_job
 from app.settings import Settings
 from orion.autonomy.ask_claude_trigger import _budget_refusal
+from orion.core.bus.resilience import run_subscription
 from orion.curiosity.peer_brief_persist import persist_peer_brief
 from orion.curiosity.peer_briefs import peer_brief_consume_cypher
 from orion.curiosity.agency_episode import commit_ask, offer_or_complete_cypher
@@ -675,49 +676,56 @@ async def run_help_consumer(settings: Settings, bus: Any, stop: Any) -> None:
     """Subscribe to help requests and run the peer transport order."""
     channel = settings.CHANNEL_HELP_REQUEST
     loop = asyncio.get_running_loop()
-    async with bus.subscribe(channel) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            if stop.is_set():
-                break
-            try:
-                data = msg.get("data")
-                if isinstance(data, bytes):
-                    data = data.decode("utf-8")
-                logger.info(
-                    "curiosity_peer_help_seen channel=%s bytes=%s",
-                    channel,
-                    len(data) if isinstance(data, str) else 0,
-                )
-                # Sync peer path (Cursor Agent CLI + optional Claude wait) off
-                # the consumer loop; pass ``loop`` so bus I/O uses
-                # run_coroutine_threadsafe instead of asyncio.run.
-                await asyncio.to_thread(
-                    handle_help_request,
-                    data,
-                    settings=settings,
-                    bus=bus,
-                    loop=loop,
-                )
-            except Exception:
-                logger.exception("curiosity_peer_handle_failed")
+
+    async def _handle(msg: dict) -> None:
+        try:
+            data = msg.get("data")
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
+            logger.info(
+                "curiosity_peer_help_seen channel=%s bytes=%s",
+                channel,
+                len(data) if isinstance(data, str) else 0,
+            )
+            # Sync peer path (Cursor Agent CLI + optional Claude wait) off
+            # the consumer loop; pass ``loop`` so bus I/O uses
+            # run_coroutine_threadsafe instead of asyncio.run.
+            await asyncio.to_thread(
+                handle_help_request,
+                data,
+                settings=settings,
+                bus=bus,
+                loop=loop,
+            )
+        except Exception:
+            logger.exception("curiosity_peer_handle_failed")
+
+    await run_subscription(
+        bus, channel, _handle, stop_event=stop, name="curiosity-peer-help-request"
+    )
 
 
 async def run_consumed_consumer(settings: Settings, bus: Any, stop: Any) -> None:
     """Hub soft-nudge → consumed event → MERGE PeerBrief.consumed=true."""
-    channel = settings.CHANNEL_PEER_BRIEF_CONSUMED
-    async with bus.subscribe(channel) as pubsub:
-        async for msg in bus.iter_messages(pubsub):
-            if stop.is_set():
-                break
-            try:
-                data = msg.get("data")
-                if isinstance(data, bytes):
-                    data = data.decode("utf-8")
-                await asyncio.to_thread(
-                    apply_peer_brief_consumed, data, settings=settings
-                )
-            except Exception:
-                logger.exception("curiosity_peer_consume_failed")
+
+    async def _handle(msg: dict) -> None:
+        try:
+            data = msg.get("data")
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
+            await asyncio.to_thread(
+                apply_peer_brief_consumed, data, settings=settings
+            )
+        except Exception:
+            logger.exception("curiosity_peer_consume_failed")
+
+    await run_subscription(
+        bus,
+        settings.CHANNEL_PEER_BRIEF_CONSUMED,
+        _handle,
+        stop_event=stop,
+        name="curiosity-peer-brief-consumed",
+    )
 
 
 async def run_consumer(settings: Settings, bus: Any, stop: Any) -> None:

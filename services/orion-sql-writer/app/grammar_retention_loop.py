@@ -33,9 +33,6 @@ def retention_days_for(settings: Settings) -> dict[str, int]:
             getattr(settings, "substrate_organ_emissions_retention_days", 0) or 0
         ),
         "grammar_traces": int(getattr(settings, "grammar_traces_retention_days", 0) or 0),
-        "substrate_proposal_frames": int(
-            getattr(settings, "substrate_proposal_frames_retention_days", 0) or 0
-        ),
         "orion_biometrics_cluster": int(
             getattr(settings, "orion_biometrics_cluster_retention_days", 0) or 0
         ),
@@ -56,6 +53,9 @@ def retention_days_for(settings: Settings) -> dict[str, int]:
         ),
         "gpu_pool_events": int(getattr(settings, "gpu_pool_events_retention_days", 0) or 0),
         "gpu_pool_state_history": int(getattr(settings, "gpu_pool_state_history_retention_days", 0) or 0),
+        "self_signal_outcome_association": int(
+            getattr(settings, "self_signal_outcome_association_retention_days", 0) or 0
+        ),
     }
 
 

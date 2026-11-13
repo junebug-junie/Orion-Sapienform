@@ -30,6 +30,33 @@ _VALID_HDBSCAN_METRICS = frozenset(
 
 
 class Settings(BaseSettings):
+    HUB_RETRO_COGNITION_ENABLED: bool = Field(default=True, alias="HUB_RETRO_COGNITION_ENABLED")
+    # Action bets (spec 2026-10-23 embodied experience; scripts/retro_experience.py): every planned
+    # Zelda goal is quoted, placed and settled in orion-prediction. Off -> the #2870 planner exactly.
+    HUB_ACTION_BETS_ENABLED: bool = Field(default=True, alias="HUB_ACTION_BETS_ENABLED")
+    HUB_PREDICTION_URL: str = Field(default="http://127.0.0.1:8132", alias="HUB_PREDICTION_URL")
+    HUB_RETRO_ENABLED: bool = False
+    HUB_RETRO_ORIGIN: str = ""
+    HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"
+    HUB_RETRO_AUTH_DIR: str = "/run/orion-retro-auth"
+    # Solo leisure play (scripts/retro_leisure.py). Ships on; Hub's leisure timer and the doer
+    # gates decide when it actually runs.
+    RETRO_LEISURE_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_ENABLED")
+    RETRO_LEISURE_GAME_IDS: str = Field(default="the-legend-of-zelda", alias="RETRO_LEISURE_GAME_IDS")
+    RETRO_LEISURE_SESSION_MAX_SEC: float = Field(default=1800.0, ge=60.0, le=1800.0, alias="RETRO_LEISURE_SESSION_MAX_SEC")
+    RETRO_LEISURE_DAILY_MAX_SEC: float = Field(default=5400.0, ge=0.0, le=86400.0, alias="RETRO_LEISURE_DAILY_MAX_SEC")
+    RETRO_LEISURE_MIN_GAP_SEC: float = Field(default=10800.0, ge=0.0, alias="RETRO_LEISURE_MIN_GAP_SEC")
+    # Ladder retirement PR 1 (2026-11-05): Hub starts leisure on its own timer
+    # (scripts/retro_leisure_self_start.py), the only trigger. Each tick bids, then asks the gate above.
+    # 300 s = the retired dispatch route's effective cadence (its 300 s refusal hold).
+    RETRO_LEISURE_SELF_START_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_SELF_START_ENABLED")
+    RETRO_LEISURE_SELF_START_TICK_SEC: float = Field(default=300.0, ge=30.0, le=3600.0,
+                                                     alias="RETRO_LEISURE_SELF_START_TICK_SEC")
+    # The self-monitor act gate (E1, orion/self_monitor/gate.py) the timer holds for the play act, as
+    # dispatch did: a faculty held broken/unreliable is refused, except one re-test probe per interval.
+    SELF_MONITOR_ACT_GATE_ENABLED: bool = Field(default=True, alias="SELF_MONITOR_ACT_GATE_ENABLED")
+    SELF_MONITOR_PROBE_INTERVAL_SEC: float = Field(default=21600.0, ge=0.0, alias="SELF_MONITOR_PROBE_INTERVAL_SEC")
+
     """Configuration for the Orion Hub service, loaded from environment variables."""
 
     model_config = SettingsConfigDict(
@@ -165,12 +192,55 @@ class Settings(BaseSettings):
     # and never holds the Claude credential -- that lives in
     # orion-room-companion. See services/orion-room-companion/README.md for
     # why the credential is deliberately NOT in this container.
-    HUB_ROOM_CLAUDE_ENABLED: bool = Field(default=False)
+    # On (2026-11-11): consults ride this relay, and live has run it on since 2026-09.
+    HUB_ROOM_CLAUDE_ENABLED: bool = Field(default=True)
     HUB_ROOM_CLAUDE_ROOM_ID: str = Field(default="hub-direct")
     HUB_ROOM_CLAUDE_PARTICIPANT_NAME: str = Field(default="Claude")
     HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS: int = Field(default=12)
+    # What Claude gets on an invite (2026-11-12, Patch 1a of
+    # docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md).
+    # "full": the whole Hub conversation, newest rows first, whole rows only, back
+    # to HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS characters, with Orion's unprompted
+    # messages and Claude's own side exchanges labelled, real times, turn refs,
+    # and a names-and-counts index of what is open in Hub.
+    # "recent": the old HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS window (rollback).
+    HUB_ROOM_CLAUDE_CONTEXT_MODE: str = Field(default="full")
+    HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS: int = Field(default=160000)
+    # Orion's light view of Juniper's side conversations with Claude (open
+    # question 11): on reconnect rehydrate, the newest N side exchanges go into
+    # Orion's context as ONE labelled block ("you were not asked to reply"),
+    # each side trimmed. 0 turns the block off.
+    HUB_HISTORY_SIDE_EXCHANGE_MAX: int = Field(default=3)
+    HUB_HISTORY_SIDE_EXCHANGE_TRIM_CHARS: int = Field(default=300)
     CHANNEL_ROOM_CLAUDE_REQUEST: str = Field(default="orion:room:claude:request")
     CHANNEL_ROOM_CLAUDE_UTTERANCE: str = Field(default="orion:room:claude:utterance")
+
+    # ── Consults (scripts/consult_loop.py) ────────────────────────────
+    # Orion takes plumbing questions to Claude before Juniper; only proposals
+    # and disagreements reach her, as one brief (chat + email). Needs
+    # HUB_ROOM_CLAUDE_ENABLED: Claude's turns ride the room relay.
+    # Design: docs/superpowers/specs/2026-11-11-consult-claude-before-juniper-design.md.
+    HUB_CONSULT_ENABLED: bool = Field(default=True)
+    HUB_CONSULT_TICK_SEC: float = Field(default=120.0)
+    # 3 turns from Orion, 3 from Claude.
+    HUB_CONSULT_MAX_TURNS: int = Field(default=6)
+    HUB_CONSULT_WEEKLY_BRIEF_CAP: int = Field(default=3)
+    # A sent Claude turn with no reply after this long ends the consult (failed).
+    HUB_CONSULT_CLAUDE_TIMEOUT_SEC: float = Field(default=1200.0)
+    # Orion's consult turn is a durable run (consult.orion_turn): this is its budget per attempt.
+    # The GPU pool queue wait is not counted, and durable-runs retries a failed attempt -- and a
+    # cut-short one, handing the cut attempt's findings to the retry (the last attempt keeps the
+    # cut-short text). 3600 s
+    # (Juniper 2026-11-12, the most the brief allows): Hub keeps 330 s for finalize, so Orion digs
+    # ~54 min an attempt. 900 s left 540 s, and Orion's curiosity digs take a median 1052 s.
+    HUB_CONSULT_ORION_TIMEOUT_SEC: float = Field(default=3600.0)
+    # orion-durable-runs' HTTP API (submit + read back Orion's consult turn runs).
+    HUB_CONSULT_DURABLE_URL: str = Field(default="http://127.0.0.1:8124")
+    # A source not started within this window expires (never started).
+    HUB_CONSULT_SOURCE_MAX_AGE_HOURS: float = Field(default=72.0)
+    HUB_CONSULT_NOTIFY_TIMEOUT_SEC: float = Field(default=20.0)
+    # The Claude usage meter (orion-cocreation-signals). The budget gate reads it.
+    CHANNEL_CLAUDE_LIMIT: str = Field(default="orion:substrate:claude_limit")
 
     HUB_AGENT_CLAUDE_ENABLED: bool = Field(
         default=True,
@@ -267,12 +337,20 @@ class Settings(BaseSettings):
         alias="HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS",
         description="Passed to claude as CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS to cap single Read payloads.",
     )
+    HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS: int = Field(
+        default=16384,
+        alias="HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS",
+        description=(
+            "Passed to claude as CLAUDE_CODE_MAX_OUTPUT_TOKENS. The CLI reserves "
+            "min(this, 20000) + 13000 tokens before auto-compacting."
+        ),
+    )
     HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE: float = Field(
-        default=70.0,
+        default=90.0,
         alias="HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
         description=(
             "Passed to claude as CLAUDE_AUTOCOMPACT_PCT_OVERRIDE. "
-            "Compact earlier than Claude Code default (~83%%). Set 0 to omit."
+            "CLI compacts at min((window - output cap) * pct, window - output cap - 13000). Set 0 to omit."
         ),
     )
 
@@ -280,6 +358,13 @@ class Settings(BaseSettings):
     HUB_PRESENCE_WRITER_ENABLED: bool = Field(
         default=True,
         alias="HUB_PRESENCE_WRITER_ENABLED",
+    )
+    # Per-minute "Juniper is looking at the Hub" heartbeats -> hub_attention_minute
+    # (scripts/hub_attention_routes.py). Off = the route drops beats and tells the
+    # browser to stop sending them.
+    HUB_ATTENTION_TRACKER_ENABLED: bool = Field(
+        default=True,
+        alias="HUB_ATTENTION_TRACKER_ENABLED",
     )
 
     WORLD_PULSE_UI_FIXTURE_RUN_ENABLED: bool = Field(
@@ -371,7 +456,7 @@ class Settings(BaseSettings):
     # more traffic than this panel has any use for.
     VISION_FRAME_CACHE_ENABLED: bool = Field(default=True, alias="VISION_FRAME_CACHE_ENABLED")
     VISION_FRAME_CACHE_STREAM_IDS: str = Field(
-        default="carbon,walkway",
+        default="carbon,walkway,doorbell,cam0",
         alias="VISION_FRAME_CACHE_STREAM_IDS",
         description="Comma-separated stream_ids to cache the latest frame pointer for.",
     )
@@ -405,6 +490,13 @@ class Settings(BaseSettings):
     # days; docker-compose mounts it read-only at the same path.
     HUB_VISION_CROP_THUMB_DIR: str = Field(
         default="/mnt/telemetry/orion-vision-host/crop_thumbs", alias="HUB_VISION_CROP_THUMB_DIR"
+    )
+    # Walkway story pictures of the moment (scripts/motion_story_routes.py GET
+    # /api/vision/motion-stories/{story_id}/strip/{name}). orion-sql-writer
+    # writes up to 4 crops + one boxed full frame per published story here;
+    # docker-compose mounts it read-only at the same path.
+    HUB_VISION_STORY_STRIP_DIR: str = Field(
+        default="/mnt/telemetry/vision/story_strips", alias="HUB_VISION_STORY_STRIP_DIR"
     )
     # Memory confirmation loop (2026-10-06): Confirm / Revise / Reject on "Orion is asking" memory
     # cards (POST /api/asks/{id}/resolve -> attention_loop_outcome + orion:attention:loop_outcome).
@@ -458,10 +550,20 @@ class Settings(BaseSettings):
         default=5.0,
         alias="AMBIENT_AUDIO_STALE_AFTER_SEC",
     )
+    # Host reader's live PCM slot ring (tmpfs) for the Cabinet Audio listen button.
+    AMBIENT_AUDIO_LIVE_DIR: str = Field(
+        default="/run/orion-audio/live",
+        alias="AMBIENT_AUDIO_LIVE_DIR",
+    )
     CABINET_AMBIENT_HISTORY_NODE: str = Field(
         default="athena",
         alias="CABINET_AMBIENT_HISTORY_NODE",
     )
+    # Office SHT40 (pan-1 Nano ESP32) -> orion-office-env -> Postgres office_env_sample.
+    OFFICE_ENV_NODE: str = Field(default="pan-1", alias="OFFICE_ENV_NODE")
+    OFFICE_ENV_HISTORY_MAX_POINTS: int = Field(default=800, ge=1, alias="OFFICE_ENV_HISTORY_MAX_POINTS")
+    # Publisher cadence is 30 s; 3 missed publishes => the Office strip reads stale.
+    OFFICE_ENV_STALE_AFTER_SEC: float = Field(default=90.0, alias="OFFICE_ENV_STALE_AFTER_SEC")
     CABINET_AMBIENT_HISTORY_MAX_POINTS: int = Field(
         default=800,
         ge=1,
@@ -677,7 +779,7 @@ class Settings(BaseSettings):
     # a single-source gate, and the comment on TIMEOUT_SEC above already
     # records that copies of it have drifted once).
     #
-    # `agent` is circe-worker-agent-1 on :8015 (Qwen3.8-27B), a physically
+    # `agent` is circe-worker-agent-1 on :8015 (Qwen3.8-Flash-Next on Strata since 2026-10-31), a physically
     # separate worker, and as of 2026-09-03 it reports n_ctx=131072 -- the same
     # window as chat/harness, so moving here costs no context. That was NOT
     # true when the COMPUTE lane first started resolving (PR #2062 measured
@@ -706,7 +808,7 @@ class Settings(BaseSettings):
     # study material, labelled as the street (2026-10-15). Newest 3 distinct
     # captions from the last 6 h. Empty string = off. Never a room camera.
     HUB_CURIOSITY_STREET_STREAM_IDS: str = Field(
-        default="walkway", alias="HUB_CURIOSITY_STREET_STREAM_IDS"
+        default="walkway,doorbell", alias="HUB_CURIOSITY_STREET_STREAM_IDS"
     )
 
     # --- World-pulse Stage 1 concept-read loop ----------------------------
@@ -810,6 +912,13 @@ class Settings(BaseSettings):
     # gpu1/gpu2/gpu0. 1 == one read at a time (pre-2026-10-14 behaviour).
     HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT: int = Field(
         default=3, ge=1, le=8, alias="HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT"
+    )
+    # Orion plays Zelda (2026-10-22, spec section F; scripts/retro_memory_export.py): one
+    # deterministic summary per finished Retro session -> one memory_cards row (provenance
+    # retro_play) + one retro_play_sessions row (Temporal Self source retro_play). Shipped ON;
+    # false writes nothing (a leisure session's play act still closes, at 0).
+    HUB_RETRO_MEMORY_EXPORT_ENABLED: bool = Field(
+        default=True, alias="HUB_RETRO_MEMORY_EXPORT_ENABLED"
     )
     # Pending digest_item seeds older than this many days are marked
     # skipped/stale_digest_item on every Stage 1 tick. 0 disables.
@@ -938,11 +1047,34 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SPEND_LOG_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_SPEND_LOG_ENABLED"
     )
-    HUB_CURIOSITY_VALUE_ORDER_ENABLED: bool = Field(
-        default=False, alias="HUB_CURIOSITY_VALUE_ORDER_ENABLED"
+    # Self-inquiry runs are measured like investigations: a decision row (arm self_inquiry, nothing
+    # offered) at dispatch and a curiosity_run_outcomes row at turn end. Kept out of the value model's
+    # history and the personality choice lanes. Needs the spend log on.
+    # docs/superpowers/specs/2026-10-16-attention-world-candidates-design.md, "The self-inquiry gap".
+    HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED"
     )
+    # ON since 2026-11-04: the replay reported the measurement usable (see .env_example).
+    HUB_CURIOSITY_VALUE_ORDER_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_VALUE_ORDER_ENABLED"
+    )
+    # 1/3 since the replica arm went on (patch 3, 2026-11-04): value, replica and uncertainty each get
+    # an equal share (uncertainty is the rest, 0.3334).
     HUB_CURIOSITY_VALUE_ORDER_PROPENSITY: float = Field(
-        default=0.5, ge=0.0, le=1.0, alias="HUB_CURIOSITY_VALUE_ORDER_PROPENSITY"
+        default=0.3333, ge=0.0, le=1.0, alias="HUB_CURIOSITY_VALUE_ORDER_PROPENSITY"
+    )
+    # The curiosity replica's arm (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md):
+    # on this share of investigate runs orion-mind's replica plans the top of the offer. Hub waits
+    # at most PLAN_DEADLINE_SEC for the plan, then uses the uncertainty order and records why.
+    # false: no run is drawn onto the arm (rule arms only, as before). Shipped ON.
+    HUB_CURIOSITY_REPLICA_ARM_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_REPLICA_ARM_ENABLED"
+    )
+    HUB_CURIOSITY_REPLICA_ARM_PROPENSITY: float = Field(
+        default=0.3333, ge=0.0, le=1.0, alias="HUB_CURIOSITY_REPLICA_ARM_PROPENSITY"
+    )
+    HUB_CURIOSITY_REPLICA_PLAN_DEADLINE_SEC: float = Field(
+        default=90.0, gt=0.0, le=300.0, alias="HUB_CURIOSITY_REPLICA_PLAN_DEADLINE_SEC"
     )
     HUB_CURIOSITY_YIELD_WINDOW: int = Field(
         default=3, ge=1, alias="HUB_CURIOSITY_YIELD_WINDOW"
@@ -983,12 +1115,30 @@ class Settings(BaseSettings):
     # read made (accepted + projected) or a belief a curiosity run moved while citing the read. One
     # message per read, through the endogenous outreach path; no daily cap / cooldown for this kind
     # (Juniper 2026-10-13), quiet hours / turn-in-flight / recent-chat still apply.
+    HUB_READING_RESONANCE_ENABLED: bool = True
+    HUB_READING_RESONANCE_SHARE_ENABLED: bool = False
+    HUB_READING_RESONANCE_LANE: str = "agent"
+    HUB_READING_RESONANCE_MAX_TOKENS: int = 900
+    HUB_READING_RESONANCE_DAILY_MAX: int = 12
+
     HUB_READING_FINDING_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_READING_FINDING_OUTREACH_ENABLED"
     )
     HUB_READING_FINDING_OUTREACH_TICK_SEC: float = Field(
         default=300.0, alias="HUB_READING_FINDING_OUTREACH_TICK_SEC"
     )
+    # Attention as the want competition, patch 2 (scripts/reading_event_wants.py): each finished read
+    # posts an event want (family hub.world_pulse_read, event_ref world_pulse_read_seed:<id>, salience =
+    # the links it made as a percentile of 30 days of reads) to the body economy. Shadow; Prime reads the
+    # funded ones. Lookback = the family's 3 h window: an older read is no longer worth a want.
+    HUB_READING_EVENT_WANTS_ENABLED: bool = Field(default=True, alias="HUB_READING_EVENT_WANTS_ENABLED")
+    HUB_READING_EVENT_WANTS_TICK_SEC: float = Field(default=300.0, alias="HUB_READING_EVENT_WANTS_TICK_SEC")
+    HUB_READING_EVENT_WANTS_LOOKBACK_SEC: float = Field(default=10800.0, alias="HUB_READING_EVENT_WANTS_LOOKBACK_SEC")
+    # Self-monitor E2 (scripts/self_monitor_questions.py): a faculty newly held broken/unreliable in
+    # orion:self_monitor:latest mints ONE self-question (curiosity_self_questions, minted_by='orion'),
+    # once per status episode; last-seen statuses persist in Redis. Unknown/stale state: nothing.
+    SELF_MONITOR_QUESTIONS_ENABLED: bool = Field(default=True, alias="SELF_MONITOR_QUESTIONS_ENABLED")
+    SELF_MONITOR_QUESTIONS_TICK_SEC: float = Field(default=900.0, alias="SELF_MONITOR_QUESTIONS_TICK_SEC")
     # A change recorded within this many hours is told (reads up to 7 days old are watched, so a
     # belief a run moves days after the read still counts). Older changes are never messaged.
     HUB_READING_FINDING_OUTREACH_LOOKBACK_HOURS: float = Field(
@@ -998,6 +1148,28 @@ class Settings(BaseSettings):
     HUB_READING_FINDING_OUTREACH_MAX_ATTEMPTS: int = Field(
         default=3, alias="HUB_READING_FINDING_OUTREACH_MAX_ATTEMPTS"
     )
+    # After a reading message reaches Juniper, the next waits this long (a PASS does not start
+    # the wait; 0 = off). Stops the post-quiet-hours flood; derivation in .env_example.
+    HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC: float = Field(
+        default=6750.0, alias="HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC"
+    )
+    # Office camera design step C (scripts/office_reach_out.py): an office visit with a story
+    # (vision_office_session: >= MIN_ENTRIES timeline entries over >= MIN_MINUTES) gets ONE Hub chat
+    # message asking Juniper what she is up to, composed through the real unified turn, with the
+    # camera's notes under it. No daily cap or cooldown (Juniper 2026-11-05: every visit); quiet hours,
+    # turn-in-flight, recent-chat and arousal strained still hold it. Needs the reach-out columns
+    # (manual_migration_vision_office_session_reach_out_v1.sql); without them nothing is sent.
+    HUB_OFFICE_REACH_OUT_ENABLED: bool = Field(default=True, alias="HUB_OFFICE_REACH_OUT_ENABLED")
+    # The same visit posts an event want (family perception.office, salience = activity novelty as a
+    # percentile of 30 days of visits; nothing under 20 past visits). Shadow; Prime reads the funded ones.
+    HUB_OFFICE_EVENT_WANTS_ENABLED: bool = Field(default=True, alias="HUB_OFFICE_EVENT_WANTS_ENABLED")
+    HUB_OFFICE_REACH_OUT_TICK_SEC: float = Field(default=60.0, alias="HUB_OFFICE_REACH_OUT_TICK_SEC")
+    # A visit that started longer ago than this is never messaged (a quiet-hours night holds at most this).
+    HUB_OFFICE_REACH_OUT_LOOKBACK_HOURS: float = Field(default=12.0, alias="HUB_OFFICE_REACH_OUT_LOOKBACK_HOURS")
+    HUB_OFFICE_REACH_OUT_MIN_ENTRIES: int = Field(default=4, alias="HUB_OFFICE_REACH_OUT_MIN_ENTRIES")
+    HUB_OFFICE_REACH_OUT_MIN_MINUTES: float = Field(default=3.0, alias="HUB_OFFICE_REACH_OUT_MIN_MINUTES")
+    # Composition failures (empty, PASS, no question, ungrounded name) before a visit is dropped.
+    HUB_OFFICE_REACH_OUT_MAX_ATTEMPTS: int = Field(default=3, alias="HUB_OFFICE_REACH_OUT_MAX_ATTEMPTS")
     # Orion contractor peer (HelpRequest -> Cursor/Claude PeerBrief soft-nudge
     # on kickoff / self-inquiry). On by default (matches .env_example and
     # production, aligned 2026-10-10) — kill switch for the peer
@@ -1023,12 +1195,6 @@ class Settings(BaseSettings):
         default=3,
         alias="HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN",
     )
-    # Orion's Day carry-forward (orion/orion_day/carry_forward.py): the regular
-    # investigate line claims the freshest unexpired letter's carry_forward_md
-    # once and shows it as its own kickoff section. Never the letter's note.
-    HUB_CURIOSITY_CARRY_FORWARD_ENABLED: bool = Field(
-        default=True, alias="HUB_CURIOSITY_CARRY_FORWARD_ENABLED"
-    )
     # Orion's Day corrections (orion/orion_day/corrections.py): the regular investigate
     # line, on a writable graph, claims up to 5 recorded letter corrections once, shows each
     # with its named priors' current confidence / times_tested, and stamps at turn end which
@@ -1038,29 +1204,33 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED"
     )
+    # Curiosity focus (orion/curiosity/focus.py): the queue_curiosity_focus introspect tool
+    # (chat turns only) stores one pending question; the regular investigate line, on a
+    # writable graph, takes it once after every gate and shows it first; turn end stamps the
+    # disposition the run wrote (explored / set_aside:<reason>; none = unknown). Off = the tool
+    # refuses and no run takes a focus (outcomes of already-taken ones are still stamped).
+    # Needs services/orion-sql-db/manual_migration_curiosity_focus_request_v1.sql.
+    HUB_CURIOSITY_FOCUS_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_FOCUS_ENABLED"
+    )
 
-    # --- Orion's Day: the daily letter (scripts/orion_day_letter.py) --------
-    # Hub gathers yesterday (America/Denver), submits an admitted
-    # `orion_day.letter` durable run, and emails the persisted row. State is the
-    # orion_day_letter table + the durable registry; nothing is kept in memory.
-    # Needs services/orion-sql-db/manual_migration_orion_day_letter_v1.sql.
+    # --- Orion's Day: the daily letter (living Prime Part 3) -----------------
+    # Prime (orion-mind) decides when a letter is written and orders it over HTTP
+    # (scripts/orion_day_order.py: GET /api/orion-day/letters/{date}, POST
+    # /api/orion-day/letter-run). Hub gathers the day, submits the admitted
+    # `orion_day.letter` durable run under Prime's run id, and emails the persisted
+    # row (scripts/orion_day_mailer.py). Hub never submits a letter on its own.
+    # Off = the order answers `refused` and no letter is emailed (the status endpoint
+    # still answers). Needs services/orion-sql-db/manual_migration_orion_day_letter_v1.sql.
     HUB_ORION_DAY_ENABLED: bool = Field(default=True, alias="HUB_ORION_DAY_ENABLED")
     # Separate kill switch for the email only: runs still write the letter.
     HUB_ORION_DAY_EMAIL_ENABLED: bool = Field(default=True, alias="HUB_ORION_DAY_EMAIL_ENABLED")
-    HUB_ORION_DAY_HOUR_LOCAL: int = Field(default=8, ge=0, le=23, alias="HUB_ORION_DAY_HOUR_LOCAL")
-    HUB_ORION_DAY_MINUTE_LOCAL: int = Field(default=30, ge=0, le=59, alias="HUB_ORION_DAY_MINUTE_LOCAL")
-    HUB_ORION_DAY_TICK_SEC: float = Field(default=300.0, gt=0, alias="HUB_ORION_DAY_TICK_SEC")
     HUB_ORION_DAY_DURABLE_URL: str = Field(
         default="http://127.0.0.1:8124", alias="HUB_ORION_DAY_DURABLE_URL"
     )
-    # Durable attempts per letter day (orion-day-<date>-1..N); then one notice.
-    HUB_ORION_DAY_MAX_ATTEMPTS: int = Field(default=6, ge=1, alias="HUB_ORION_DAY_MAX_ATTEMPTS")
-    # Per-LLM-call budget sent on the brief (brief.timeout_sec, max 3600).
-    HUB_ORION_DAY_TIMEOUT_SEC: float = Field(default=1800.0, gt=0, le=3600, alias="HUB_ORION_DAY_TIMEOUT_SEC")
-    # How long carry_forward_md stays eligible for curiosity after the letter is written.
-    HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS: float = Field(
-        default=36.0, gt=0, le=336, alias="HUB_ORION_DAY_CARRY_FORWARD_TTL_HOURS"
-    )
+    # How often the mailer sweeps the last few days for un-emailed letter rows (the durable
+    # run-state hook emails sooner when curiosity's run-state listener is on).
+    HUB_ORION_DAY_EMAIL_SWEEP_SEC: float = Field(default=900.0, gt=0, alias="HUB_ORION_DAY_EMAIL_SWEEP_SEC")
     # Wait between email attempts after notify did not answer email_status=sent.
     HUB_ORION_DAY_EMAIL_RETRY_SEC: float = Field(default=1800.0, gt=0, alias="HUB_ORION_DAY_EMAIL_RETRY_SEC")
     # Notify call timeout: the request carries inline images.
@@ -1117,6 +1287,12 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED"
     )
+    # Personality graph read-back (spec rev 2, orion/personality/cue.py): what Orion keeps coming
+    # back to, in Orion's own words -- a record, not an instruction. Read from
+    # HUB_CURIOSITY_DURABLE_RUNS_URL /personality/frame into the curiosity kickoff (concurrently
+    # with the today fact, same 1.5 s deadline) and the endogenous outreach prompt (next to the
+    # situation block). No block on any failure or a stale/empty frame. scripts/personality_cue_reader.py.
+    HUB_PERSONALITY_CUE_ENABLED: bool = Field(default=True, alias="HUB_PERSONALITY_CUE_ENABLED")
     # Urgent curiosity runs (docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md):
     # a seeded investigation from the Hub button or orion:curiosity:urgent:request,
     # admitted at `urgent` GPU priority, bypassing the curiosity gates. Needs
@@ -1166,6 +1342,15 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS: float = Field(
         default=7.0, alias="HUB_CURIOSITY_SELF_PINNED_FLOOR_DAYS"
     )
+    # Naming branch of the self-inquiry line: Orion is shown one personality disposition
+    # (GET HUB_CURIOSITY_DURABLE_RUNS_URL/personality/naming/next) and names, rejects or merges
+    # it. Uses an existing self-inquiry slot; never displaces an overdue pinned lived question.
+    HUB_CURIOSITY_SELF_NAMING_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_SELF_NAMING_ENABLED"
+    )
+    HUB_CURIOSITY_SELF_NAMING_DAILY_CAP: int = Field(
+        default=1, alias="HUB_CURIOSITY_SELF_NAMING_DAILY_CAP"
+    )
     # Where Orion's own repository is mounted INSIDE the FCC sandbox (the
     # harness governor's compose mounts it read-only at /repo). Rendered into
     # the self-inquiry prompt only; Hub never reads it.
@@ -1201,6 +1386,16 @@ class Settings(BaseSettings):
     # messages (say/ask) and web reads (look) publish act_opened/act_closed grammar events
     # (orion/grammar/acts.py) that orion-sql-writer persists and grades into L10.
     HUB_ACT_LEDGER_ENABLED: bool = Field(default=True, alias="HUB_ACT_LEDGER_ENABLED")
+
+    # Body economy Patch C3b: outreach, retro co-play and retro leisure place a SHADOW bid
+    # (orion.physiology.client -> durable-runs POST /physiology/bid) and log the decision beside
+    # their real gate (scripts/physiology_shadow.py). Never obeyed; off = no bid, no log line.
+    HUB_PHYSIOLOGY_SHADOW_BID_ENABLED: bool = Field(default=True, alias="HUB_PHYSIOLOGY_SHADOW_BID_ENABLED")
+    # Body economy Patch D for hub.outreach (scripts/outreach_bind.py): ``on`` -> every Hub door that
+    # composes a message (the background tick, reading / self / office findings) obeys its binding bid
+    # (funded or lane-queued: compose; price / sated: hold and re-bid, at most the 1 h window; no
+    # answer: today's gates). ``shadow`` -> the C3b shadow bid only. Unknown -> shadow (logged).
+    ORION_PHYSIOLOGY_BID_HUB_OUTREACH: str = Field(default="on", alias="ORION_PHYSIOLOGY_BID_HUB_OUTREACH")
 
     HUB_ENDOGENOUS_OUTREACH_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_ENABLED"
@@ -1310,8 +1505,9 @@ class Settings(BaseSettings):
     ORION_REGULATION_READER_MAX_AGE_SEC: float = Field(
         default=360.0, gt=0.0, alias="ORION_REGULATION_READER_MAX_AGE_SEC"
     )
-    # Reader 2, curiosity pacing (investigation line): strained -> hold (reason
-    # arousal_strained); engaged -> cooldown x multiplier (arousal_engaged_cooldown).
+    # Reader 2, curiosity pacing (investigation line): engaged -> cooldown x multiplier
+    # (arousal_engaged_cooldown). Strain does not hold this line (retired 2026-11-07): its
+    # body-economy bid in durable-runs decides (ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE).
     HUB_CURIOSITY_AROUSAL_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_AROUSAL_ENABLED"
     )
@@ -1326,16 +1522,23 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED: bool = Field(
         default=True, alias="HUB_ENDOGENOUS_OUTREACH_AROUSAL_ENABLED"
     )
+    # Strain report door (strain loop part 3, scripts/strain_report.py): once per strained
+    # episode that has lasted MIN_EPISODE_SEC, one message may pass the arousal_strained refusal
+    # (every other gate still holds), at most one per local day (ORION_SITUATION_TIMEZONE).
+    ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED: bool = Field(
+        default=True, alias="ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED"
+    )
+    ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC: float = Field(
+        default=3600.0, ge=0.0, alias="ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC"
+    )
     # Background outreach waits this long after Juniper's last saved message (read from
     # chat_history_log, so a Hub restart cannot reset it). 2026-10-09: a fresh restart forgot
     # she was mid-conversation and Orion spoke over her. 0 disables.
     HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC: float = Field(
         default=900.0, alias="HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC"
     )
-    # Max outreaches per local calendar day; -1 disables the cap.
-    HUB_ENDOGENOUS_OUTREACH_DAILY_CAP: int = Field(
-        default=4, alias="HUB_ENDOGENOUS_OUTREACH_DAILY_CAP"
-    )
+    # The daily cap is orion.physiology.attention_pacing.JUNIPER_DAILY_CAP (2026-11-10, one owner for
+    # this gate and the body's attention:juniper line; no env key).
     # Quiet window [start, end) in HUB_ENDOGENOUS_OUTREACH_TZ; equal values or
     # -1 disable it.
     HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR: int = Field(
@@ -1658,6 +1861,11 @@ class Settings(BaseSettings):
     ORION_PRESENCE_DEFAULT_REQUESTOR: str = Field(default="Juniper", alias="ORION_PRESENCE_DEFAULT_REQUESTOR")
     ORION_PRESENCE_PERSIST_ALLOWED: bool = Field(default=False, alias="ORION_PRESENCE_PERSIST_ALLOWED")
     ORION_SITUATION_ENABLED: bool = Field(default=True, alias="ORION_SITUATION_ENABLED")
+    # Living Prime Part 1 (orion/prime/block.py): Prime's cited present in every unified turn's prefix.
+    # Kill switch: false renders no block (the prompt is then unchanged). STALE_MIN: Prime state whose last
+    # tick is older than this renders only "Prime has not ticked since <time>".
+    HUB_PRIME_BLOCK_ENABLED: bool = Field(default=True, alias="HUB_PRIME_BLOCK_ENABLED")
+    HUB_PRIME_BLOCK_STALE_MIN: float = Field(default=10.0, gt=0.0, alias="HUB_PRIME_BLOCK_STALE_MIN")
     ORION_SITUATION_TTL_SECONDS: int = Field(default=300, alias="ORION_SITUATION_TTL_SECONDS")
     # 2026-08-30, Juniper's explicit request: previously hardcoded to a bare
     # 1200 inside orion.situational.context.hub_settings_to_runtime_namespace
@@ -1742,8 +1950,7 @@ class Settings(BaseSettings):
     # node -- BME680 climate, LTR390 UV, magnetometer, PMSA003I particulate,
     # VL53L1X lidar, BNO085 IMU/vibration), folded into the same unified-turn
     # chat prompt via orion.situational.context.build_situation_for_ctx. The
-    # real thing LabContextV1's thermal/power framing above was always a
-    # stub stand-in for. Default ON, same "no private-home content" call as
+    # real thing the old lab stub (removed 2026-10-27) stood in for. Default ON, same "no private-home content" call as
     # curiosity/reverie above. Reuses the EXISTING CABINET_SENSORS_PATH/
     # CABINET_SENSORS_B_PATH/CABINET_SENSORS_STALE_AFTER_SEC config further
     # up this file (already wired for cabinet_sensors_routes.py's own
@@ -1783,7 +1990,7 @@ class Settings(BaseSettings):
     )
     # Walkway cameras for the Street line. Empty string disables that line.
     ORION_SITUATION_STREET_STREAM_IDS: str = Field(
-        default="walkway", alias="ORION_SITUATION_STREET_STREAM_IDS"
+        default="doorbell,walkway,cam0", alias="ORION_SITUATION_STREET_STREAM_IDS"
     )
 
     @field_validator("ORION_SITUATION_WEATHER_LAT", "ORION_SITUATION_WEATHER_LON", mode="before")
@@ -2030,17 +2237,6 @@ class Settings(BaseSettings):
     SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED: bool = Field(
         default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_AITOWN_SCHEDULER_ENABLED"
     )
-    # Same shape as the AI Town flag above, for the Self Atlas (self-model
-    # rebuild arc, Patch 3, 2026-09-05) -- topic-foundry's clustering
-    # pipeline pointed at Orion's own self_knowledge_items instead of chat.
-    # Was default OFF while unverified; turned on 2026-09-05 by operator
-    # request now that the full pipeline (including the self_concept_history
-    # cluster-description writer, PR #2114) has landed. Every step here
-    # degrades to a harmless no-op while self_knowledge_items is still empty,
-    # so enabling ahead of real history accumulating is safe.
-    SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED: bool = Field(
-        default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_SELF_SCHEDULER_ENABLED"
-    )
     SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC: float = Field(
         default=86400.0, alias="SUBSTRATE_TOPIC_FOUNDRY_SCHEDULER_INTERVAL_SEC"
     )
@@ -2132,8 +2328,10 @@ class Settings(BaseSettings):
         default=True, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_ENABLE"
     )
     # Bounds worst-case LLM calls per scheduler tick -- _run_enrichment only
-    # processes segments with enriched_at IS NULL (force=False), so this caps
-    # a single tick's LLM spend without needing to track state across ticks.
+    # processes segments with enriched_at IS NULL (force=False), and since
+    # 2026-10-30 a segment whose text was already enriched in an earlier run
+    # reuses that result without an LLM call and without counting toward this
+    # limit. So the limit caps fresh LLM calls only.
     SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT: int = Field(
         default=200, alias="SUBSTRATE_TOPIC_FOUNDRY_ENRICH_LIMIT"
     )

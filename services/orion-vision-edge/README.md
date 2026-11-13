@@ -1,5 +1,11 @@
 # 🛰 Orion Vision Edge (Athena)
 
+> **Not used since 2026-11-04.** The office camera (cam0) is captured by
+> `orion-vision-retina-office` (services/orion-vision-retina) from its 2560x1920
+> main stream. This service is kept but not run: it is in
+> `mesh-utilities/common/exclude_services.txt`, and a running edge would publish a
+> second cam0 frame stream. The frame router no longer asks it for `/still`.
+
 `orion-vision-edge` is Athena’s always-on **perception node**.
 It captures frames, runs lightweight detectors (YOLO, motion, etc.), and publishes typed artifacts via the **Titanium Bus**.
 
@@ -73,6 +79,7 @@ Activity is published on every frame where YOLO/motion yields trigger labels, in
 | Env var | Default | Notes |
 |---|---|---|
 | `FRAME_STORAGE_DIR` | `/mnt/frames` | Shared volume path for frames |
+| `FRAME_RETENTION_SECONDS` | `60` | Prune age for this service's own `frame_*`/`still_*` files only; retina files in the shared dir are left to their own writer (`app/frame_prune.py`) |
 | `EDGE_DEBUG_SAVE_FRAMES` | `False` | Save annotated debug frames |
 | `EDGE_DEBUG_DIR` | `/mnt/debug` | Path for debug frames |
 

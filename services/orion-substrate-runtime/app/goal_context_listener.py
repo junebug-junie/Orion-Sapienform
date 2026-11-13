@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.schemas.field_goal import FieldGoalProvenanceV1
 
 from .settings import Settings, get_settings
@@ -77,31 +78,13 @@ async def run_goal_context_listener(
         logger.info("Bus disabled; goal_context listener not started")
         return
 
-    channel = s.channel_goal_proposal
-    logger.info("goal_context listener subscribing channel=%s", channel)
-
-    try:
-        async with bus.subscribe(channel) as pubsub:
-            while True:
-                if stop_event is not None and stop_event.is_set():
-                    break
-                try:
-                    msg = await asyncio.wait_for(
-                        pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                        timeout=1.2,
-                    )
-                except asyncio.TimeoutError:
-                    continue
-                if not msg or msg.get("type") not in ("message", "pmessage"):
-                    continue
-                try:
-                    await _handle_bus_message(bus, msg, settings=s)
-                except Exception:
-                    logger.exception("goal_context unhandled bus worker error")
-    except asyncio.CancelledError:
-        raise
-    finally:
-        logger.info("goal_context listener stopped channel=%s", channel)
+    await run_subscription(
+        bus,
+        s.channel_goal_proposal,
+        lambda msg: _handle_bus_message(bus, msg, settings=s),
+        stop_event=stop_event,
+        name="goal_context listener",
+    )
 
 
 async def start_goal_context_listener(

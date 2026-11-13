@@ -165,6 +165,11 @@ class ReadingTurnListener:
     async def _execute(self, request):
         from orion.cognition.cortex_payload_extract import looks_like_error_text
         from orion.hub.turn_orchestrator import execute_unified_turn
+        from orion.world_pulse_read.reader_contract import (
+            READER_CONTRACT_BEGIN,
+            READER_CONTRACT_END,
+            stance_view_of_reading_prompt,
+        )
 
         brief = request.brief
 
@@ -183,6 +188,17 @@ class ReadingTurnListener:
             brief.fcc_model_label,
         )
         payload["gpu_lease"] = request.gpu_lease.model_dump(mode="json")
+        stance_view = stance_view_of_reading_prompt(brief.prompt)
+        if stance_view is None and (
+            READER_CONTRACT_BEGIN in brief.prompt or READER_CONTRACT_END in brief.prompt
+        ):
+            # Fences present but unpaired (e.g. a document that quotes a marker): the stance
+            # falls back to the full two-contract prompt this view exists to avoid.
+            logger.warning(
+                "reading_stance_view_unavailable reason=damaged_fence corr=%s seed=%s",
+                request.correlation_id,
+                brief.seed_id,
+            )
         stamp_reading_turn_budget(payload, timeout_sec=brief.timeout_sec, started=time.monotonic())
         try:
             frames = await asyncio.wait_for(
@@ -195,6 +211,9 @@ class ReadingTurnListener:
                     # "<source title> — <stage-1 claim>", set by the pipeline on
                     # the stored brief: recall searches that, not the prompt.
                     retrieval_query=brief.retrieval_query,
+                    # The stance pass reads the prompt without the reader's JSON
+                    # contract; the motor still gets brief.prompt in full.
+                    stance_view_message=stance_view,
                     payload=payload,
                     continuity_messages=None,
                     harness_rpc_bus=self.rpc_bus,

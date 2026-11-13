@@ -65,6 +65,8 @@ INNER_STATE_KEYWORDS: tuple[str, ...] = (
     "mood",
     "felt_state",
     "cluster",
+    # Body economy (2026-10-23): every physiology-shaped schema is an inner-state signal.
+    "physiology",
 )
 
 DEFAULT_CHANNELS_FILE = REPO_ROOT / "orion" / "bus" / "channels.yaml"
@@ -74,16 +76,12 @@ DEFAULT_CHANNELS_FILE = REPO_ROOT / "orion" / "bus" / "channels.yaml"
 # gate (2026-07-12) -- not a blanket allowlist, every name here was traced.
 _EXTRA_COVERED_SCHEMA_NAMES: dict[str, str] = {
     # --- companions/sub-objects of an existing REGISTRY entry ---
-    "ProposalFrameV1": "l7_l11_ladder",
-    "PolicyDecisionFrameV1": "l7_l11_ladder",
-    "ExecutionDispatchFrameV1": "l7_l11_ladder",
-    "FeedbackFrameV1": "l7_l11_ladder",
-    "ConsolidationV1": "l7_l11_ladder",
     "PhiEncoderManifestV1": "phi_intrinsic_reward.v1 (training-artifact manifest, same lineage -- still alive, written by scripts/fit_phi_encoder.py; phi_intrinsic_reward.v1's own schema was retired 2026-08-21, this manifest was not)",
     "FieldAttentionTargetV1": "field_attention_frame.v1 (per-target row, orion/schemas/field_attention_frame.py)",
     "DriveAuditV1": "drive_state.v1 (audit-trail companion, orion/core/schemas/drives.py)",
     "DriveNodeV1": "drive_state.v1 (cognitive-substrate graph-node projection, orion/core/schemas/cognitive_substrate.py -- static drive-kind node, not a live per-tick pressure reading)",
     "ArcAttentionSummaryV1": "sub-object of TemporalSelfArcV1 (orion/schemas/temporal_self.py): per-arc row counts and reason words of the already-registered attention_schema.v1 entry; no new sensor",
+    "PhysiologyReportV1": "read-only aggregate view over the registered physiology.state.v1 and physiology.want.decision.v1 entries (orion/schemas/physiology_report.py, GET /physiology/report, 2026-10-29): hourly rollups of their stored rows plus lease/energy/token tables; no new sensor, computes no new signal",
     # --- genuine keyword-collision false positives, unrelated domain ---
     "ArticleClusterV1": "false positive -- orion/schemas/world_pulse.py, news-article clustering, unrelated to node-health 'cluster'",
     "TemporalSelfStateV1": "false positive on 'selfstate' -- the Temporal Self chronology reducer's serialisable working state (orion/temporal_self/arcs.py), not the retired felt-state SelfStateV1; it reads no inner-state scalar",

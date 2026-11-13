@@ -11,6 +11,10 @@ Layer 5 substrate service: polls latest `FieldStateV1` from Postgres and builds 
 - Also publishes a bus-native `SystemHealthV1` heartbeat to `orion:system:health` every
   `HEARTBEAT_INTERVAL_SEC` (default 10s), on its own independent bus connection -- otherwise
   this service has no other bus traffic (Postgres-poll only worker)
+- With `ATTENTION_WORLD_READING_ENABLED=true`, includes accepted world-pulse reading links as
+  one bounded world-first candidate. It shares the substrate journal definition and one-minute
+  cache with the substrate broadcast, carries endpoint ids as evidence, and yields to eligible
+  `world:chat`.
 
 ## Prerequisites
 

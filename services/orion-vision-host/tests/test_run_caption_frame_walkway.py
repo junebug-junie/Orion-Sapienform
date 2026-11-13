@@ -75,3 +75,29 @@ def test_cam0_blip_without_caller_prompt_unchanged(monkeypatch):
     out = r._run_caption_frame(PROFILE, {"image_path": "/frames/x.jpg"}, "cpu", [])
     assert seen["prompt"] is None
     assert out["caption"]["text"] == "a woman sitting at a desk in an office"
+
+
+def test_caption_crop_boxes_reach_the_model_as_a_crop(monkeypatch):
+    """2026-10-16: the model must see the detector's region, not a ~1 MP
+    downscale of the whole 2560x1920 frame (24/24 "nothing notable")."""
+    r, seen = _runner(monkeypatch, "Qwen/Qwen2-VL-2B-Instruct", "A man walks a dog along the sidewalk.")
+    monkeypatch.setattr(runner_mod, "_load_image_from_request", lambda req: Image.new("RGB", (2560, 1920)))
+    sizes = {}
+
+    def fake_generate(model, processor, img, text_prompt, model_id, device, max_tokens, temperature):
+        sizes["img"] = img.size
+        return "A man walks a dog along the sidewalk."
+
+    monkeypatch.setattr(r, "_generate_vlm_text", fake_generate)
+    req = dict(REQ, caption_crop_boxes=[[1280, 454, 1408, 518]], caption_crop_pad=0.5)
+    out = r._run_caption_frame(PROFILE, req, "cpu", [])
+    assert sizes["img"] != (2560, 1920)
+    assert sizes["img"][0] < 1000 and sizes["img"][1] < 1000
+    assert out["crop_box"] is not None
+    assert out["caption"]["text"] == "A man walks a dog along the sidewalk."
+
+
+def test_no_crop_boxes_captions_the_whole_frame(monkeypatch):
+    r, _ = _runner(monkeypatch, "Qwen/Qwen2-VL-2B-Instruct", "A man walks a dog along the sidewalk.")
+    out = r._run_caption_frame(PROFILE, dict(REQ), "cpu", [])
+    assert out["crop_box"] is None

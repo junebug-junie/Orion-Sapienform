@@ -1,0 +1,205 @@
+[
+ {
+  "schema_version": "cockpit.hop.v1",
+  "correlation_id": "chat-1",
+  "seq": 0,
+  "ts": "2026-11-12T12:00:00+00:00",
+  "stage": "ingress",
+  "visor_line": "ingress \u00b7 shaped like live",
+  "status": "ok",
+  "summary": {
+   "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
+   "mode": "orion",
+   "user_message_len": 80,
+   "attachment_count": 0
+  },
+  "raw": {
+   "mode": "orion",
+   "session_id": "9c91d646-cbd0-4977-8cdd-d2c82045c7f9",
+   "user_message": "can you look at why the walkway camera keeps dropping frames?\nit was bad this morning",
+   "surface_context": {},
+   "attachment_count": 0,
+   "observation_published": true
+  },
+  "producer": "orion-hub"
+ },
+ {
+  "schema_version": "cockpit.hop.v1",
+  "correlation_id": "wp-1",
+  "seq": 0,
+  "ts": "2026-11-12T12:00:05+00:00",
+  "stage": "ingress",
+  "visor_line": "ingress \u00b7 shaped like live",
+  "status": "ok",
+  "summary": {
+   "session_id": "orion_world_pulse_read",
+   "user_message_len": 40,
+   "attachment_count": 0
+  },
+  "raw": {
+   "session_id": "orion_world_pulse_read",
+   "user_message": "Fetch the url below with WebFetch ...",
+   "attachment_count": 0,
+   "observation_published": true
+  },
+  "producer": "orion-hub"
+ },
+ {
+  "schema_version": "cockpit.hop.v1",
+  "correlation_id": "cur-1",
+  "seq": 0,
+  "ts": "2026-11-12T12:00:10+00:00",
+  "stage": "ingress",
+  "visor_line": "ingress \u00b7 shaped like live",
+  "status": "ok",
+  "summary": {
+   "session_id": "orion_curiosity",
+   "user_message_len": 46,
+   "attachment_count": 0
+  },
+  "raw": {
+   "session_id": "orion_curiosity",
+   "user_message": "Investigate run. Pick one thing worth knowing.",
+   "attachment_count": 0,
+   "observation_published": true
+  },
+  "producer": "orion-hub"
+ },
+ {
+  "schema_version": "cockpit.hop.v1",
+  "correlation_id": "chat-1",
+  "seq": 12,
+  "ts": "2026-11-12T12:02:00+00:00",
+  "stage": "finalize",
+  "visor_line": "finalize \u00b7 shaped like live",
+  "status": "ok",
+  "summary": {
+   "compliance_verdict": "completed"
+  },
+  "raw": {
+   "exit_code": 0,
+   "draft_text": "The walkway camera drops frames when its DHCP lease moves; it moved this morning.",
+   "final_text": "The walkway camera drops frames when its DHCP lease moves; it moved this morning.",
+   "reflection": {
+    "alignment_verdict": "aligned"
+   },
+   "step_count": 4,
+   "stop_reason": null,
+   "finalize_ran": true,
+   "correlation_id": "chat-1",
+   "schema_version": "harness.run.v1",
+   "compliance_verdict": "completed",
+   "grounding_status": "ok",
+   "grammar_event_ids": []
+  },
+  "producer": "orion-hub"
+ },
+ {
+  "schema_version": "cockpit.hop.v1",
+  "correlation_id": "wp-1",
+  "seq": 12,
+  "ts": "2026-11-12T12:03:00+00:00",
+  "stage": "finalize",
+  "visor_line": "finalize \u00b7 shaped like live",
+  "status": "ok",
+  "summary": {
+   "compliance_verdict": "completed"
+  },
+  "raw": {
+   "exit_code": 0,
+   "draft_text": "Read the article.",
+   "final_text": "Read the article.",
+   "reflection": {
+    "alignment_verdict": "aligned"
+   },
+   "step_count": 4,
+   "stop_reason": null,
+   "finalize_ran": true,
+   "correlation_id": "wp-1",
+   "schema_version": "harness.run.v1",
+   "compliance_verdict": "completed",
+   "grounding_status": "ok",
+   "grammar_event_ids": []
+  },
+  "producer": "orion-hub"
+ },
+ {
+  "schema_version": "cockpit.hop.v1",
+  "correlation_id": "con-1",
+  "seq": 0,
+  "ts": "2026-11-12T12:04:00+00:00",
+  "stage": "ingress",
+  "visor_line": "ingress \u00b7 shaped like live",
+  "status": "ok",
+  "summary": {
+   "session_id": "consult-9f138a849520-t1",
+   "user_message_len": 42,
+   "attachment_count": 0
+  },
+  "raw": {
+   "session_id": "consult-9f138a849520-t1",
+   "user_message": "Claude asked: what would you change first?",
+   "attachment_count": 0,
+   "observation_published": true
+  },
+  "producer": "orion-hub"
+ },
+ {
+  "schema_version": "cockpit.hop.v1",
+  "correlation_id": "cur-1",
+  "seq": 12,
+  "ts": "2026-11-12T12:20:00+00:00",
+  "stage": "finalize",
+  "visor_line": "finalize \u00b7 shaped like live",
+  "status": "ok",
+  "summary": {
+   "compliance_verdict": "completed"
+  },
+  "raw": {
+   "exit_code": 0,
+   "draft_text": "```json\n{\n  \"what_i_learned\": \"The walkway gaps are the vision gate skipping cam0 on stability, not a per-stream interval.\",\n  \"next\": \"check the gate thresholds\"\n}\n```",
+   "final_text": "```json\n{\n  \"what_i_learned\": \"The walkway gaps are the vision gate skipping cam0 on stability, not a per-stream interval.\",\n  \"next\": \"check the gate thresholds\"\n}\n```",
+   "reflection": {
+    "alignment_verdict": "aligned"
+   },
+   "step_count": 4,
+   "stop_reason": null,
+   "finalize_ran": true,
+   "correlation_id": "cur-1",
+   "schema_version": "harness.run.v1",
+   "compliance_verdict": "completed",
+   "grounding_status": "ok",
+   "grammar_event_ids": []
+  },
+  "producer": "orion-hub"
+ },
+ {
+  "schema_version": "cockpit.hop.v1",
+  "correlation_id": "con-1",
+  "seq": 12,
+  "ts": "2026-11-12T12:21:00+00:00",
+  "stage": "finalize",
+  "visor_line": "finalize \u00b7 shaped like live",
+  "status": "ok",
+  "summary": {
+   "compliance_verdict": "completed"
+  },
+  "raw": {
+   "exit_code": 0,
+   "draft_text": "I would make the gate thresholds visible first.",
+   "final_text": "I would make the gate thresholds visible first.",
+   "reflection": {
+    "alignment_verdict": "aligned"
+   },
+   "step_count": 4,
+   "stop_reason": null,
+   "finalize_ran": true,
+   "correlation_id": "con-1",
+   "schema_version": "harness.run.v1",
+   "compliance_verdict": "completed",
+   "grounding_status": "ok",
+   "grammar_event_ids": []
+  },
+  "producer": "orion-hub"
+ }
+]

@@ -144,15 +144,26 @@ is a street section):
   `ORION_REVERIE_STREET_GRADED_MAX` (4), each with the subject's 14-day hit rate
   when there is one. The rhythm reducer needs >= 5 days of support before it
   emits an expectation, so this is empty for the camera's first week.
+- **The day so far** (2026-10-23): one line from `vision_rollup` -- today's
+  running day row ("Walkway Fri 23 Oct 2026 (so far, through 10:00): people: at
+  least 1, at most 2 ..."). Today's row only: the writer builds it with today's
+  first hour, so just after midnight there is no line. Shown only through
+  `orion.vision.walkway_rollup.display_line`, so people are a range and an old
+  rules_version 1 row is re-rendered or dropped, never shown with a bare count.
+  Cut at a clause boundary to `ORION_REVERIE_STREET_DAY_MAX_CHARS` (480); a
+  first clause longer than that means no line. Yesterday's row is not "the day
+  so far" and is skipped. Context key `street_day`;
+  `ORION_REVERIE_STREET_DAY_ENABLED=false` turns only this line off. A failed
+  read costs only this line.
 
-Context keys `street_percepts` / `street_predictions` (absent when empty: no
-heading over nothing). The room-only expectation judge never reads them, and the
+Context keys `street_percepts` / `street_predictions` / `street_day` (absent
+when empty: no heading over nothing). The room-only expectation judge never reads them, and the
 prompt says any stated expectation is about the room. Readers:
 `app/vision_reader.py` `read_recent_street_events` / `read_recent_street_graded`
 (fail-open); shared wording in `orion/situational/street_material.py`.
 `ORION_REVERIE_STREET_ENABLED=false` or an empty stream list turns both off
 (no query is made). Log line when present: `reverie_street_context corr=...
-captions=N graded=N`.
+captions=N graded=N rollup=0|1` (`rollup=1`: the day line went in).
 
 ## Reverie expectation scoring (Movement III)
 
@@ -391,6 +402,44 @@ Logs: `temporal_self_cue corr=... chars=... arcs=... fetch_ms=...`,
 `temporal_self_cue_skipped corr=... reason=stale|wrong_day|fetch_failed|invalid_frame|disabled`,
 `temporal_self_day_citations corr=... label=...`. Kill switch: `TEMPORAL_SELF_STANCE_CUE_ENABLED=false`.
 
+## Personality read-back for stance_react and reverie (personality graph, spec rev 2)
+
+What Orion keeps coming back to, in Orion's own words, read back as a record, not an instruction.
+`app/personality_cue.py` fetches orion-durable-runs `GET /personality/frame` (`PERSONALITY_FRAME_URL`,
+same base as `TEMPORAL_SELF_FRAME_URL`) and renders it with `orion.personality.cue.project_personality_cue`
+(a fixed template, no LLM, <= 600 chars, strongest nodes first). No tone or style instruction is added
+anywhere: the cue only names what recurred, where, and how often.
+
+- Chat: built concurrently with Mind enrichment and the day cue (`PERSONALITY_CUE_TIMEOUT_SEC=0.5`),
+  passed as `personality_cue` and rendered as `WHAT I KEEP COMING BACK TO` in `stance_react.j2`.
+- Reverie: one fetch per step alongside reverie's other reads (`ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC`),
+  rendered as `WHAT YOU KEEP COMING BACK TO` in `reverie_narrate.j2` next to `EARLIER TODAY`.
+
+A frame that is missing, invalid, older than `PERSONALITY_CUE_MAX_AGE_SEC=3600`, or empty renders nothing.
+Log (one per build): `personality_cue corr=... rendered=true|false ids=... skip=disabled|fetch_failed|invalid_frame|stale|empty|render_failed`.
+Kill switch: `PERSONALITY_CUE_ENABLED=false`.
+
+## Self-monitor track record for stance_react and reverie (self-monitor spec step 3)
+
+What Orion is failing at or misjudging right now, from their own settled bets, in plain first-person
+sentences. `app/self_track_record_cue.py` reads Redis `orion:self_monitor:latest` on `ORION_BUS_URL`
+(the self-monitor state orion-durable-runs publishes hourly) every 5 min in a background thread and
+renders it with `orion.self_monitor.cue.project_track_record_cue` (fixed templates, no LLM).
+
+- **What renders:** only faculties whose held status is `broken`, `unreliable` or `miscalibrated`
+  (never `reliable`, never `unknown`), worst status first, then most evidence; at most 300 chars.
+  When room is left, one clause counts faculties that cannot be graded at all yet. Example:
+  "My walkway-grade journal runs failed to start 22 of 28 times this week. My guesses about how many
+  steps my turns take hold 6% of the time (I say 80%)."
+- **Where:** stance_react (`MY TRACK RECORD`) and reverie's coalition branch (same heading).
+- **Fail-open:** the turn never waits on Redis; an absent, unparseable, stale (> 3 h) or
+  future-stamped state renders nothing (reader contract, `orion/self_monitor/view.py`). Shows nothing
+  until orion-durable-runs publishes the key (self-monitor patch 2).
+- Logs: `self_track_record corr=... purpose=stance|reverie chars=... shown=...` or
+  `self_track_record_skipped reason=disabled|not_loaded|fetch_failed|absent|unparseable|stale|future_stamped|nothing_notable|render_failed`.
+- Kill switch: `SELF_TRACK_RECORD_CUE_ENABLED=false` (both prompts exactly as before).
+- Eval: `python evals/run_self_track_record_live_eval.py` renders the cue from the live state.
+
 ## Self-readings for stance_react and reverie (self-calibration spec section C)
 
 Orion's body signals, each scored 0-10 against its own last 7 days, shown to the unified turn's
@@ -424,7 +473,9 @@ template, no LLM.
   next hour had <a failed turn | a reply I had to repair | an RPC timeout> Nx as often at equal activity (...)
   [assoc:<id>]" from the newest `self_signal_outcome_association` row per (signal, outcome) written by
   orion-equilibrium-service within the last 3 h (read at most every 5 min, same lock/timeout). Only
-  rows whose 95% interval excludes 1 with enough hours carry a clause; a clause is dropped before a
+  rows whose 95% interval excludes 1 with enough hours carry a clause, and only once that verdict held
+  on each of the last `SELF_SIGNAL_OUTCOME_CONSECUTIVE_HOLDS` (6) consecutive hourly computations (a
+  gap or a different verdict resets; shared `held_latest_by_pair`); a clause is dropped before a
   reading would be. Kill switch: `SELF_SIGNAL_OUTCOME_ASSOCIATION_ENABLED=false` (block byte-identical).
 
 ## Reverie VISUAL chain (context rotation + validated episode-memory seed)
@@ -437,20 +488,37 @@ verified the full loop: real file on disk, real
 `reverie_visual_chain`/`reverie_visual_artifact` rows, correct FK, honest
 `description=null` rather than a fabricated caption.
 
-**The fixed-cadence cron itself is now OFF by default** (`ORION_VISUAL_CHAIN_ENABLED=false`,
-retired 2026-08-30 — see `.env_example`'s own comment on that key): a 600s
-timer is not a decision, since it spends real GPU watts on circe whether or
-not making an image is the best use of them, with nothing weighing it against
-the alternatives. The identical generate → store → caption → persist body
-(`run_visual_chain_once` below) is still very much live, just reached
-on-demand instead: `orion-cortex-exec`'s `skills.imagination.render_scene.v1`
-verb (`app/verb_adapters.py`) calls `orion-thought`'s
-`POST /visual-chain/run-once` whenever `orion/autonomy/allocator.py`'s
-motor allocator scores it as worth the motor-seconds against every other
-candidate action, and the ambient thermal gate can still refuse it. Setting
-`ORION_VISUAL_CHAIN_ENABLED=true` restores the old blind timer alongside the
-on-demand path (they share the same single-flight lock, so they can't double
-up), which is a real override of the 2026-08-30 decision, not a bug fix.
+**Who starts a waking painting (2026-11-05, ladder retirement PR 2): this service, and only this
+service.** `app/painting_self_start.py` ticks every `ORION_PAINTING_SELF_START_TICK_SEC` (60 s):
+
+1. It runs the visual-baseline schedule (`orion/reverie/baseline.py`, policy
+   `config/reverie/visual_baseline.v1.yaml`) on the `visual_baseline_checkpoint` row under
+   `FOR UPDATE`. A painting is due 5,400 s after the last acknowledged painting. A failed attempt
+   is asked again after 600 s. An open attempt (a dream hop too) waits.
+2. Arousal `strained` at the moment of issue defers it by 600 s
+   (`ORION_VISUAL_BASELINE_AROUSAL_ENABLED`, R3 reader 4).
+3. The self-monitor act gate (`SELF_MONITOR_ACT_GATE_ENABLED`) can refuse a painting faculty held
+   broken or unreliable, except one re-test probe per 6 h.
+4. It places a SHADOW hunger bid on `thought.painting` (a clock want, logged
+   `physiology_shadow_bid ... real=submitted`). Never obeyed: painting binds in the market later
+   (attention patch 3).
+5. It submits one `reverie.visual` durable run to orion-durable-runs (`POST /runs`). The run waits
+   for its GPU-pool `diffusion` hold, the generate step checks the thermal gate, and the steps below
+   open and close the `thought.painting` `make` act. `dispatch_id` is
+   `painting_self_start:<need_id>:<issued_at>`.
+
+`/health` -> `painting_self_start` shows the last tick (`submitted`, `visual_baseline_not_due`,
+`arousal_strained`, ...). Replay: `python -P services/orion-thought/evals/painting_self_start_replay.py`
+(fixture) or `--live --days 14` (about 10 a day against the real 9.2, in the PR report).
+
+Before this, the proposal arena's `render_scene` template and orion-proposal-runtime's baseline
+read were the triggers, through policy and execution dispatch to cortex-exec's
+`skills.imagination.render_scene.v1`. Both are gone. The verb stays for a manual run (no
+`dispatch_id`: the direct `POST /visual-chain/run-once`).
+
+**The fixed-cadence legacy worker is OFF** (`ORION_VISUAL_CHAIN_ENABLED=false`, retired
+2026-08-30). Setting it true makes the self-start loop issue nothing
+(`legacy_visual_worker_enabled`), so the two can never both paint.
 
 On whichever cadence actually triggers a run (timer, if re-enabled, or the
 on-demand dispatch above): generate an image from `orion-diffusion-host`
@@ -545,6 +613,11 @@ bodies before writing any code. The actual privacy boundary is
 producers' `source_ref` prefixes -- `source_kind='self_study'` also covers
 a sibling free-form "Curiosity" reflection confirmed live to quote
 sensitive personal content, which the allowlist deliberately excludes.
+**Repointed 2026-11-07 (ladder retirement PR 6):** those four analyses had one
+trigger, the retired dispatch rung, and stopped on 11-05. The seed now reads
+curiosity's self-inquiry answers (`self_concept_history`,
+`produced_by='curiosity_self_inquiry'`), and the prefix allowlist went with the
+old source (Juniper, 2026-10-07: no privacy boundary between her and Orion).
 `self_study_text` recorded in `chain_json` on both paths, surfaced in the
 Hub tab alongside `context_text`. `build_visual_prompt`'s old if/elif
 branches were refactored into a list-join composition (a third optional
@@ -653,6 +726,8 @@ Flags:
 | `ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED` | `true` | Painting-gap check (2026-10-10), own loop, not gated on `ORION_VISUAL_CHAIN_ENABLED` (off in production, which is why the staleness watchdog never ran during the 27.6 h 2026-10-09/10 outage) |
 | `ORION_VISUAL_PAINTING_GAP_THRESHOLD_HOURS` | `12` | If no real painting (a `reverie_visual_chain` row with a `production_receipt`, timed by its `produced_at`) has landed in this many hours, fire an orion-notify `error` attention request (emails if left unacked). Calibrated in-sample on 2026-09-14..10-10: no gap fell between 7.6 h and 14.7 h |
 | `ORION_VISUAL_PAINTING_GAP_CHECK_INTERVAL_SEC` | `600` | How often the painting-gap loop re-reads the last painting's age |
+| `ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED` | `true` | Failed-attempt streak check (critical card) in the same loop |
+| `ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD` | `6` | Painting attempts in a row with no image before the card |
 | `ORION_VISUAL_CHAIN_WATCHDOG_CHECK_INTERVAL_SEC` | `600` | How often the watchdog re-checks that staleness, independently of the worker's own loop |
 | `ORION_DIFFUSION_HOST_BASE_URL` | `http://100.112.254.99:8014` | circe's diffusion host |
 | `ORION_VISUAL_CHAIN_DIFFUSION_TIMEOUT_SEC` | `120` | `/generate` HTTP timeout (raised from `30` 2026-08-28 -- tuned for sdxl-turbo's near-instant single step; FLUX.1-schnell's real generation measured 49-56s live, timing out every tick until fixed) |
@@ -760,16 +835,8 @@ own guard, so a deployment that never runs this pipeline at all doesn't get
 a permanent false alarm.
 
 **This watchdog assumes *something* triggers a run at least every ~45
-minutes.** That assumption held under the old fixed-cadence cron; it does
-not automatically hold under the on-demand `express`-dispatch path above,
-where `render_scene` legitimately may not win the motor-seconds competition
-for a long stretch if nothing scores as worth doing — confirmed live
-2026-09-04: `orion-execution-dispatch-runtime` refused every candidate
-action, of every kind, for 8000+ consecutive ticks, tracing back to the
-same upstream attention/signal starvation reverie's text chain was
-independently found to be hitting. Worth revisiting whether this watchdog's
-"staleness" threshold makes sense once that upstream problem is understood,
-rather than assuming a wedge every time render_scene goes quiet for a while.
+minutes.** That held under the old fixed-cadence cron. It does not hold under the self-start loop
+above, which paints about every 90 minutes; the watchdog is only armed with the legacy worker.
 
 **Painting-gap check (2026-10-10).** A second, independent check,
 `visual_painting_gap`: hours since the last painting Orion actually produced
@@ -790,6 +857,17 @@ treated as no observation, not as recovery. Dream carry pictures
 (`brief.dream_hop`) write no chain row and never count. The threshold is
 calibrated in-sample on 2026-09-14..10-10 (no gap fell between 7.6 h and
 14.7 h); replay: `evals/test_painting_gap_replay.py`.
+
+`visual_attempt_failure_streak` (same loop, 2026-10-20): how many painting
+attempts in a row (`reverie_visual_attempt`) produced nothing. At
+`ORION_VISUAL_ATTEMPT_FAILURE_STREAK_THRESHOLD` (6) it raises a **critical**
+card (emailed at once), and a recovery note once an attempt produces an image.
+2026-10-16 -> 10-20 had 35 in a row while the only alert was one "error" gap
+card. 6 is one more than the longest ordinary streak on 2026-09-14..10-19;
+every streak of 6+ was an outage. Replay: `evals/test_attempt_streak_replay.py`.
+`ORION_VISUAL_ATTEMPT_STREAK_CHECK_ENABLED=false` turns it off (so does
+`ORION_VISUAL_PAINTING_GAP_CHECK_ENABLED=false`: it runs in that loop). Attempts
+still `active`/`unknown` (in progress) never count as failures.
 
 ## Acknowledged visual activity and baseline execution
 
@@ -812,7 +890,7 @@ compatible). It returns explicit `outcome`, `artifact_persisted`, and an
 `execution_receipt`. `ran=True` alone is not production. Thermal policy is unchanged:
 hot refuses, missing/stale readings allow degraded operation, and disabled is recorded.
 
-Baseline policy lives in `config/proposals/visual_baseline.v1.yaml`, **disabled by
+Baseline policy lives in `config/reverie/visual_baseline.v1.yaml`, **disabled by
 default**. With it enabled, all endpoint attempts use the durable
 `reverie_visual_attempt` claim and a shared retry gap. Replays retain their result.
 An unresolved active/unknown attempt has no automatic expiry: cancellation cannot
@@ -913,3 +991,32 @@ GPU2 diffusion/agent-burst borrowing is additive and defaults off. See the
 and [consumer-first rollout and rollback](../../docs/runbooks/gpu2-elastic-admission.md)
 for this service's exact flags, HTTP contracts and operator commands.
 No production env sync, migration, GPU transition or deployment was performed.
+
+## Body economy shadow bid (Patch C3b, 2026-10-27)
+
+The `generate` step of a `reverie.visual` run (`app/visual_steps.py`) asks the body economy
+whether it would fund the GPU work, then ignores the answer. The answer is only logged, next to
+what the step really did. Nothing changes what the step does.
+
+- Where: `generate_step`, after the replay, adoption and in-flight checks (those are not a new
+  want) and before the thermal gate. `prepare`, `caption` and `abandon` never bid.
+- Family: `thought.painting`, or `thought.dream_hop` for a dream-carry image hop. Verb `make`, tier 2.
+- `want_id`: the generate step's correlation id (one per RPC). When this step opens the run's
+  `make` act (its first real generation), that is the act's `grammar_acts.correlation_id`. A later
+  generate of the same attempt (after a failed render) runs under the act an earlier step opened:
+  its line carries `act_correlation_id=<that step's id>`, read from `stage_json.act_correlation_id`,
+  which the opening write now stores beside `act_opened_at`.
+- Real outcome: `ran` once the real gates (thermal, single-flight, stage) passed and the GPU call
+  started, whatever the render's fate; else `blocked:<the step's reason>` (`thermal_refused`,
+  `deferred_busy`, `stage_changed`, ...). A step that returns before its work decides (deadline,
+  cancel) logs when the work ends, so a late start is not logged blocked.
+- Volume: every generate retry is a new RPC and a new bid. A run held by the thermal gate bids once
+  per retry (`_THERMAL_RETRY_AFTER_SEC`, 300 s). Group by `object_ref=durable_run:<run_id>` to count
+  wants per painting, not per retry.
+- A lost `act_opened` publish (not retried) leaves the act row built from its close, on a different
+  correlation id, so that `ran` line joins nothing.
+- Log line: `physiology_shadow_bid family=... want_id=... shadow=funded|deferred|none reason=...
+  lane=... real=...`. durable-runs writes the decision into `want_ledger`. A funded decision whose
+  step was blocked releases its reservation.
+- Switch: `THOUGHT_PHYSIOLOGY_SHADOW_BID_ENABLED` (default true). The bid runs as a background task
+  and never delays the step.

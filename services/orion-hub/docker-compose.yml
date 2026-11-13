@@ -1,5 +1,33 @@
 services:
 
+  # Retro's realtime relay in its own process (scripts/retro_gateway.py). Hub's main
+  # event loop also serves every Hub page; game input queued behind it (live
+  # 2026-10-20: 720 ms acks vs 17 ms here). Loopback only; tailscale serve routes
+  # /api/retro to it.
+  hub-retro-gateway:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    build:
+      context: ../..
+      dockerfile: services/orion-hub/Dockerfile
+      args:
+        INSTALL_DEV_DEPS: ${INSTALL_DEV_DEPS:-true}
+    container_name: ${PROJECT}-hub-retro-gateway
+    # Skip Hub's bus-wait entrypoint: only optional goal planning uses Redis;
+    # human input/media must start even when cognition is unavailable.
+    entrypoint: []
+    network_mode: "host"
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ${HUB_RETRO_SOCKET_HOST:-/dev/null}:/run/orion-retro:ro
+      - ${HUB_RETRO_AUTH_HOST:-/dev/null}:/run/orion-retro-auth:ro
+    command: ["uvicorn", "scripts.retro_gateway:app", "--host", "127.0.0.1", "--port", "${HUB_RETRO_GATEWAY_PORT:-8092}"]
+
   hub-app:
     logging:
       driver: journald
@@ -28,6 +56,8 @@ services:
       - path: .env
         required: false
     volumes:
+      - ${HUB_RETRO_SOCKET_HOST:-/dev/null}:/run/orion-retro:ro
+      - ${HUB_RETRO_AUTH_HOST:-/dev/null}:/run/orion-retro-auth:ro
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/templates:/app/templates
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-hub/static:/app/static
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:/repo:ro
@@ -62,22 +92,22 @@ services:
       # small JPEG per embedded crop here (never a patio box) and prunes it
       # after 10 days. Served only by content hash (scripts/ask_routes.py).
       - ${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}:ro
+      # Walkway story pictures of the moment (read-only): orion-sql-writer
+      # writes one strip directory per published story (scripts/motion_story_routes.py).
+      - ${HUB_VISION_STORY_STRIP_DIR:-/mnt/telemetry/vision/story_strips}:${HUB_VISION_STORY_STRIP_DIR:-/mnt/telemetry/vision/story_strips}:ro
       # "Walkway (live)" in the Vision panel (read-only): the walkway retina
       # writes its frames here with a local path only. Served only from
       # directly inside this dir, downscaled (scripts/vision_live_frame.py).
       - ${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}:${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}:ro
-      # Reuse the operator's existing host-level git/gh auth read-only, same pattern
-      # as the claude-binary mount below -- no credentials are stored
-      # in this repo. `origin` is an SSH remote (git@github.com:...), so `git push`
-      # needs the SSH key + known_hosts; `gh` (PR creation) needs its own token dir.
-      # Same identity/keys this worktree's own git/gh operations already use.
-      # NOT ${HOME}/.gitconfig -- a read-only bind mount there fully replaces the
-      # file, which shadows the safe.directory/identity config baked into the
-      # image (Dockerfile) and can't be written to at runtime either (confirmed
-      # live: "could not write config file /root/.gitconfig: Device or resource
-      # busy"). Git identity/safe.directory live in the image instead.
-      - ${HOME}/.ssh:/root/.ssh:ro
-      - ${HOME}/.config/gh:/root/.config/gh:ro
+      # Orion does NOT borrow the operator's GitHub login. No ${HOME}/.ssh and no
+      # ${HOME}/.config/gh here: those carried junebug-junie's admin identity into
+      # Orion's shell. Orion authenticates as its own GitHub user through
+      # ORION_GITHUB_TOKEN (classic PAT, Write collaborator) -- see the
+      # GH_TOKEN env below and docs/superpowers/specs/2026-11-05-github-identities-design.md.
+      # tests/test_orion_own_github_identity.py fails if either mount comes back.
+      # Git identity/safe.directory live in the image (Dockerfile), NOT a
+      # ${HOME}/.gitconfig bind mount (it shadows the image config and cannot be
+      # written at runtime).
       - ${HUB_AGENT_GH_BIN_HOST:-${HOME}/.local/bin/gh}:/usr/local/bin/gh:ro
       - ${HUB_AGENT_CLAUDE_BIN_HOST:-${HOME}/.local/bin/claude}:/usr/local/bin/claude:ro
       - /var/run/docker.sock:/var/run/docker.sock
@@ -91,12 +121,21 @@ services:
       # Host cabinet sensor snapshot (systemd reader -> /run/orion-sensors/latest.json).
       # Same :ro mount as orion-biometrics; create via scripts/setup_athena_cabinet_sensors.sh.
       - /run/orion-sensors:/run/orion-sensors:ro
-      # Host ambient-audio snapshot (systemd reader -> /run/orion-audio/latest.json).
+      # Host ambient-audio snapshot + live PCM ring (systemd reader -> /run/orion-audio/{latest.json,live/}).
       - /run/orion-audio:/run/orion-audio:ro
     environment:
+      # Names the hub's psycopg2/SQLAlchemy connections in pg_stat_activity
+      # (asyncpg ignores it). Host networking makes the hub look like the Docker
+      # gateway (172.18.0.1) by IP; the headroom alarm groups by this name.
+      - PGAPPNAME=orion-hub
+      # Orion's own GitHub identity. gh prefers GH_TOKEN over any login file.
+      - ORION_GITHUB_TOKEN=${ORION_GITHUB_TOKEN:-}
+      - GH_TOKEN=${ORION_GITHUB_TOKEN:-}
       - HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED=${HUB_CURIOSITY_DURABLE_ADMISSION_ENABLED:-true}
       - HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS=${HUB_CURIOSITY_MAX_QUEUED_INVESTIGATIONS:-1}
       - HUB_CURIOSITY_DURABLE_RUNS_URL=${HUB_CURIOSITY_DURABLE_RUNS_URL:-http://127.0.0.1:8124}
+      - ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED=${ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED:-true}
+      - ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC=${ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC:-3600}
       - HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED=${HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED:-true}
       - HUB_CURIOSITY_URGENT_ENABLED=${HUB_CURIOSITY_URGENT_ENABLED:-true}
       - HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC=${HUB_CURIOSITY_URGENT_TURN_TIMEOUT_SEC:-900}
@@ -105,17 +144,10 @@ services:
       - HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC=${HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC:-330}
       - HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED=${HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED:-true}
       - HUB_DREAM_SERVICE_URL=${HUB_DREAM_SERVICE_URL:-http://127.0.0.1:8620}
-      - TRANSPORT_THRESHOLDS_DERIVED_ENABLED=${TRANSPORT_THRESHOLDS_DERIVED_ENABLED:-true}
-      - TRANSPORT_THRESHOLDS_FAST_HALF_LIFE_SEC=${TRANSPORT_THRESHOLDS_FAST_HALF_LIFE_SEC:-1800}
-      - TRANSPORT_THRESHOLDS_SLOW_HALF_LIFE_SEC=${TRANSPORT_THRESHOLDS_SLOW_HALF_LIFE_SEC:-172800}
-      - TRANSPORT_THRESHOLDS_MIN_SAMPLES=${TRANSPORT_THRESHOLDS_MIN_SAMPLES:-2880}
-      - TRANSPORT_THRESHOLDS_K_WATCH=${TRANSPORT_THRESHOLDS_K_WATCH:-5.0}
-      - TRANSPORT_THRESHOLDS_K_STEP=${TRANSPORT_THRESHOLDS_K_STEP:-2.0}
-      - TRANSPORT_THRESHOLDS_MAX_STATE_AGE_SEC=${TRANSPORT_THRESHOLDS_MAX_STATE_AGE_SEC:-600}
-      - TRANSPORT_THRESHOLDS_STATE_KEY=${TRANSPORT_THRESHOLDS_STATE_KEY:-orion:lattice:transport_thresholds:v1}
       - HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED=${HUB_CURIOSITY_DREAM_HYPOTHESES_ENABLED:-true}
       - HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN=${HUB_CURIOSITY_DREAM_HYPOTHESES_PER_RUN:-3}
       - HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED=${HUB_CURIOSITY_ORION_DAY_CORRECTIONS_ENABLED:-true}
+      - HUB_CURIOSITY_FOCUS_ENABLED=${HUB_CURIOSITY_FOCUS_ENABLED:-true}
       - HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE=${HUB_CURIOSITY_ROLE_TEACH_DISCLOSURE:-true}
       # Core service identity
       - PROJECT=${PROJECT}
@@ -151,8 +183,12 @@ services:
       - CABINET_SENSORS_STALE_AFTER_SEC=${CABINET_SENSORS_STALE_AFTER_SEC:-10.0}
       - AMBIENT_AUDIO_PATH=${AMBIENT_AUDIO_PATH:-/run/orion-audio/latest.json}
       - AMBIENT_AUDIO_STALE_AFTER_SEC=${AMBIENT_AUDIO_STALE_AFTER_SEC:-5}
+      - AMBIENT_AUDIO_LIVE_DIR=${AMBIENT_AUDIO_LIVE_DIR:-/run/orion-audio/live}
       - CABINET_AMBIENT_HISTORY_NODE=${CABINET_AMBIENT_HISTORY_NODE:-athena}
       - CABINET_AMBIENT_HISTORY_MAX_POINTS=${CABINET_AMBIENT_HISTORY_MAX_POINTS:-800}
+      - OFFICE_ENV_NODE=${OFFICE_ENV_NODE:-pan-1}
+      - OFFICE_ENV_STALE_AFTER_SEC=${OFFICE_ENV_STALE_AFTER_SEC:-90}
+      - OFFICE_ENV_HISTORY_MAX_POINTS=${OFFICE_ENV_HISTORY_MAX_POINTS:-800}
       - NOTIFY_IN_APP_ENABLED=${NOTIFY_IN_APP_ENABLED}
       - NOTIFY_IN_APP_CHANNEL=${NOTIFY_IN_APP_CHANNEL}
       - NOTIFY_IN_APP_MAX=${NOTIFY_IN_APP_MAX}
@@ -173,10 +209,24 @@ services:
       - HUB_LLM_GATEWAY_TIMEOUT_SEC=${HUB_LLM_GATEWAY_TIMEOUT_SEC:-5}
       # Room companion (Claude as a third room participant). NOTE: no
       # credential here on purpose -- orion-room-companion owns it.
-      - HUB_ROOM_CLAUDE_ENABLED=${HUB_ROOM_CLAUDE_ENABLED:-false}
+      - HUB_ROOM_CLAUDE_ENABLED=${HUB_ROOM_CLAUDE_ENABLED:-true}
       - HUB_ROOM_CLAUDE_ROOM_ID=${HUB_ROOM_CLAUDE_ROOM_ID:-hub-direct}
       - HUB_ROOM_CLAUDE_PARTICIPANT_NAME=${HUB_ROOM_CLAUDE_PARTICIPANT_NAME:-Claude}
       - HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS=${HUB_ROOM_CLAUDE_TRANSCRIPT_TURNS:-12}
+      - HUB_ROOM_CLAUDE_CONTEXT_MODE=${HUB_ROOM_CLAUDE_CONTEXT_MODE:-full}
+      - HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS=${HUB_ROOM_CLAUDE_CONTEXT_MAX_CHARS:-160000}
+      - HUB_HISTORY_SIDE_EXCHANGE_MAX=${HUB_HISTORY_SIDE_EXCHANGE_MAX:-3}
+      - HUB_HISTORY_SIDE_EXCHANGE_TRIM_CHARS=${HUB_HISTORY_SIDE_EXCHANGE_TRIM_CHARS:-300}
+      - HUB_CONSULT_ENABLED=${HUB_CONSULT_ENABLED:-true}
+      - HUB_CONSULT_TICK_SEC=${HUB_CONSULT_TICK_SEC:-120}
+      - HUB_CONSULT_MAX_TURNS=${HUB_CONSULT_MAX_TURNS:-6}
+      - HUB_CONSULT_WEEKLY_BRIEF_CAP=${HUB_CONSULT_WEEKLY_BRIEF_CAP:-3}
+      - HUB_CONSULT_CLAUDE_TIMEOUT_SEC=${HUB_CONSULT_CLAUDE_TIMEOUT_SEC:-1200}
+      - HUB_CONSULT_ORION_TIMEOUT_SEC=${HUB_CONSULT_ORION_TIMEOUT_SEC:-3600}
+      - HUB_CONSULT_DURABLE_URL=${HUB_CONSULT_DURABLE_URL:-http://127.0.0.1:8124}
+      - HUB_CONSULT_SOURCE_MAX_AGE_HOURS=${HUB_CONSULT_SOURCE_MAX_AGE_HOURS:-72}
+      - HUB_CONSULT_NOTIFY_TIMEOUT_SEC=${HUB_CONSULT_NOTIFY_TIMEOUT_SEC:-20}
+      - CHANNEL_CLAUDE_LIMIT=${CHANNEL_CLAUDE_LIMIT:-orion:substrate:claude_limit}
       - CHANNEL_ROOM_CLAUDE_REQUEST=${CHANNEL_ROOM_CLAUDE_REQUEST:-orion:room:claude:request}
       - CHANNEL_ROOM_CLAUDE_UTTERANCE=${CHANNEL_ROOM_CLAUDE_UTTERANCE:-orion:room:claude:utterance}
       - HUB_AGENT_CLAUDE_ENABLED=${HUB_AGENT_CLAUDE_ENABLED:-true}
@@ -196,9 +246,11 @@ services:
       - HUB_AGENT_CLAUDE_STREAM_READ_LIMIT=${HUB_AGENT_CLAUDE_STREAM_READ_LIMIT:-8388608}
       - HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS=${HUB_AGENT_CLAUDE_MAX_CONTEXT_TOKENS:-65536}
       - HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS=${HUB_AGENT_CLAUDE_FILE_READ_MAX_TOKENS:-8192}
-      - HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}
+      - HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS=${HUB_AGENT_CLAUDE_MAX_OUTPUT_TOKENS:-16384}
+      - HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${HUB_AGENT_CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-90}
       - HUB_AGENT_CLAUDE_CONTEXT_PRESSURE_PCT=${HUB_AGENT_CLAUDE_CONTEXT_PRESSURE_PCT:-70}
       - ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS=${ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS:-12000}
+      - HUB_ATTENTION_TRACKER_ENABLED=${HUB_ATTENTION_TRACKER_ENABLED:-true}
       - SUBSTRATE_TELEMETRY_BASE_URL=${SUBSTRATE_TELEMETRY_BASE_URL:-}
       - SUBSTRATE_TELEMETRY_READ_TOKEN=${SUBSTRATE_TELEMETRY_READ_TOKEN:-}
       - SOCIAL_MEMORY_BASE_URL=${SOCIAL_MEMORY_BASE_URL}
@@ -225,12 +277,13 @@ services:
       # would come up recording. For a camera kill switch that is the wrong
       # direction to fail, so the key is left to env_file alone.
       - VISION_FRAME_CACHE_ENABLED=${VISION_FRAME_CACHE_ENABLED:-true}
-      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway}
+      - VISION_FRAME_CACHE_STREAM_IDS=${VISION_FRAME_CACHE_STREAM_IDS:-carbon,walkway,doorbell,cam0}
       - VISION_FRAME_CHANNEL=${VISION_FRAME_CHANNEL:-orion:vision:frames}
       - PERCEPT_STORE_BASE_URL=${PERCEPT_STORE_BASE_URL:-}
       - PERCEPT_STORE_TIMEOUT_SEC=${PERCEPT_STORE_TIMEOUT_SEC:-10}
       - PERCEPT_STORE_TOKEN=${PERCEPT_STORE_TOKEN:-}
       - HUB_VISION_CROP_THUMB_DIR=${HUB_VISION_CROP_THUMB_DIR:-/mnt/telemetry/orion-vision-host/crop_thumbs}
+      - HUB_VISION_STORY_STRIP_DIR=${HUB_VISION_STORY_STRIP_DIR:-/mnt/telemetry/vision/story_strips}
       - HUB_VISION_FRAMES_DIR=${HUB_VISION_FRAMES_DIR:-/mnt/telemetry/vision/frames}
       - HUB_VISION_LIVE_MAX_WIDTH=${HUB_VISION_LIVE_MAX_WIDTH:-1280}
       - HUB_VISION_LIVE_STALE_SEC=${HUB_VISION_LIVE_STALE_SEC:-10}
@@ -319,6 +372,8 @@ services:
       - HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR=${HUB_SOCIAL_STYLE_CONFIDENCE_FLOOR}
       - HUB_SOCIAL_ROOM_REDACTION_POSTURE=${HUB_SOCIAL_ROOM_REDACTION_POSTURE}
       - ORION_SITUATION_ENABLED=${ORION_SITUATION_ENABLED:-true}
+      - HUB_PRIME_BLOCK_ENABLED=${HUB_PRIME_BLOCK_ENABLED:-true}
+      - HUB_PRIME_BLOCK_STALE_MIN=${HUB_PRIME_BLOCK_STALE_MIN:-10}
       - ORION_SITUATION_TTL_SECONDS=${ORION_SITUATION_TTL_SECONDS:-300}
       - ORION_SITUATION_TIMEZONE=${ORION_SITUATION_TIMEZONE:-America/Denver}
       - ORION_SITUATION_WEATHER_PROVIDER=${ORION_SITUATION_WEATHER_PROVIDER:-openmeteo}
@@ -346,9 +401,6 @@ services:
       - SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED=${SUBSTRATE_AUTONOMY_COGNITIVE_PROPOSALS_ENABLED:-true}
       - SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED=${SUBSTRATE_AUTONOMY_ROUTING_APPLY_ENABLED:-true}
       - SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD=${SUBSTRATE_AUTONOMY_ROUTING_ROLLBACK_DELTA_THRESHOLD:--0.05}
-      - SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED=${SUBSTRATE_PREDICTION_EXPECTATION_TUNER_ENABLED:-true}
-      - SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS=${SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS:-72}
-      - SUBSTRATE_PREDICTION_EXPECTATION_INTERVAL_MIN=${SUBSTRATE_PREDICTION_EXPECTATION_INTERVAL_MIN:-60}
       - SUBSTRATE_AUTONOMY_INTERVAL_SEC=${SUBSTRATE_AUTONOMY_INTERVAL_SEC:-30}
       - SUBSTRATE_REVIEW_SCHEDULER_ENABLED=${SUBSTRATE_REVIEW_SCHEDULER_ENABLED:-true}
       - SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC=${SUBSTRATE_REVIEW_SCHEDULER_INTERVAL_SEC:-420}

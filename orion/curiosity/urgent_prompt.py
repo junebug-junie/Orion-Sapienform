@@ -24,6 +24,7 @@ import json
 from orion.curiosity.incident_report import IS_REAL_VALUES, LABEL_INCIDENT_REPORT, SEVERITY_VALUES
 from orion.curiosity.kickoff_prompt import GRAPH_URI, _budget_section
 from orion.curiosity.worldview import _RUN_ID_RE
+from orion.introspect.brief import POWER_ATTRIBUTION
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 
 EVIDENCE_CHAR_CAP = 24_000
@@ -210,7 +211,20 @@ def _tools_section(*, pg_available: bool = True) -> list[str]:
             "from it, and say plainly which parts of the question it cannot settle.",
             "",
         ]
-    return [TOOLS_HEADER, "", *_pg_history_lines()]
+    return [TOOLS_HEADER, "", *_power_attribution_lines(), *_pg_history_lines()]
+
+
+def _power_attribution_lines() -> list[str]:
+    """The heat-archaeology tool answers "where did the watts go, since when" in one call. It is
+    an introspect MCP tool (over the bus, not HTTP), so it is named only beside Postgres: with no
+    database the evidence bundle is the whole answer."""
+    return [
+        f"  A first look in one call: {POWER_ATTRIBUTION} (if it is in your tools) "
+        "finds when each machine's wall watts stepped, splits each step into GPU/CPU/rest watts "
+        "and the workloads that moved with it, and gives the SQL behind every number. It is a "
+        "correlation: check it against the readings below before you cite it.",
+        "",
+    ]
 
 
 def _report_section(*, seed: CuriosityUrgentSeedV1, own_graph: str, run_id: str) -> list[str]:

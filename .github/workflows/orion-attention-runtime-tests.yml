@@ -10,6 +10,8 @@ on:
       - 'orion/schemas/**'
       - 'orion/bus/channels.yaml'
       - 'tests/test_attention*'
+      - 'orion/autonomy/**'
+      - 'config/autonomy/**'
       - '.github/workflows/orion-attention-runtime-tests.yml'
   push:
     branches: [main]
@@ -21,6 +23,8 @@ on:
       - 'orion/schemas/**'
       - 'orion/bus/channels.yaml'
       - 'tests/test_attention*'
+      - 'orion/autonomy/**'
+      - 'config/autonomy/**'
       - '.github/workflows/orion-attention-runtime-tests.yml'
 
 jobs:
@@ -59,5 +63,11 @@ jobs:
           python -m pytest -q services/orion-attention-runtime/tests
           tests/test_attention_runtime_worker.py tests/test_attention_runtime_store.py
           tests/test_attention_field_goal_provenance.py
+          tests/test_attention_world_first_field_frame.py
+      - name: Goal gate (world goals unlock readonly fetch/recall)
+        run: >-
+          python -m pytest -q orion/autonomy/tests/test_capability_policy.py
+          orion/autonomy/tests/test_capability_policy_models.py
+          orion/autonomy/tests/test_policy_act.py
       - name: Focus history replay eval
         run: python -m pytest -q services/orion-attention-runtime/evals

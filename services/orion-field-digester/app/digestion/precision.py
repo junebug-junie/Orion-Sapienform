@@ -1,9 +1,11 @@
-"""Producer-side update for `orion.proposals.scoring.dimension_confidence()`'s
-precision-weighted EWMA baseline (2026-07-28, docs/superpowers/specs/2026-07-
-28-precision-weighted-proposal-scoring-design.md's "Recommended next patch").
+"""Producer-side update for the per-dimension precision-weighted EWMA baseline
+(2026-07-28, docs/superpowers/specs/2026-07-28-precision-weighted-proposal-
+scoring-design.md's "Recommended next patch"). Its reader today is
+`orion.field.action_warrant` (the proposal arena that first read it retired
+2026-11-07).
 
 See `orion/schemas/field_state.py`'s `dimension_precision_ewma*` docstring
-and `orion/proposals/scoring.py`'s `DIMENSION_PRECISION_*` constants for the
+and `orion/field/pressure_dimensions.py`'s `DIMENSION_PRECISION_*` constants for the
 full account -- this module only wires the already-shared
 `orion.bus.ewma.compute_ewma_update` mechanism into this service's per-tick
 digestion pipeline, same shape as `app/digestion/perturbation.py::
@@ -14,7 +16,7 @@ from __future__ import annotations
 
 from orion.bus.ewma import compute_ewma_update
 from orion.field.pressure import field_pressures
-from orion.proposals.scoring import (
+from orion.field.pressure_dimensions import (
     DIMENSION_PRECISION_EWMA_ALPHA,
     DIMENSION_PRECISION_MIN_VARIANCE,
     PRESSURE_DIMENSIONS,
@@ -25,15 +27,13 @@ from orion.schemas.field_state import FieldStateV1
 def update_dimension_precision_baseline(state: FieldStateV1) -> FieldStateV1:
     """EWMA-baselines each of `PRESSURE_DIMENSIONS`' real per-tick
     `field_pressures(state)` reading, once per digestion tick, so
-    `orion.proposals.scoring.dimension_confidence()` can score deviation
-    from each dimension's own recent normal instead of the old binary
-    presence flag.
+    `orion.field.action_warrant` can score deviation from each dimension's
+    own recent normal.
 
     Called from `run_digestion_tick()` AFTER `apply_perturbations()` /
     `apply_decay()` / `apply_diffusion()` / `apply_suppression()` -- this
     must score the tick's FINAL `field_pressures()` reading, the same one
-    `orion/proposals/builder.py::build_proposal_frame()` later computes from
-    the persisted `FieldStateV1` it loads, not an intermediate one.
+    a reader of the persisted `FieldStateV1` sees, not an intermediate one.
 
     A dimension absent from this tick's `field_pressures()` (no real channel
     mapped to it this tick, see `orion/field/pressure.py::

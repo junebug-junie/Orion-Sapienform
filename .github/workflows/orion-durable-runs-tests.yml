@@ -5,19 +5,66 @@ on:
     paths:
       - "services/orion-gpu-pool/app/**"
       - "orion/gpu_pool/**"
+      - "orion/durable_runs/**"   # turn_identity.py: the turn id rule app/graph.py stamps
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
+      - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger
+      - "scripts/analysis/body_economy_binding_replay.py"
+      - "scripts/analysis/body_economy_shadow_vs_real.py"
+      - "scripts/analysis/tests/test_body_economy_binding_replay.py"
+      - "scripts/analysis/outreach_binding_replay.py"
+      - "scripts/analysis/tests/test_outreach_binding_replay.py"
+      - "services/orion-hub/evals/run_outreach_binding_replay.py"
+      - "services/orion-hub/scripts/outreach_bind.py"
+      - "services/orion-hub/scripts/reading_event_wants.py"   # attention 3b: LOOK_COST (orion/physiology/tests/test_no_slot_wants.py)
+      - "orion/schemas/gpu_pool.py"   # attention 3b: the hold request carries the run's net
+      - "services/orion-hub/scripts/endogenous_outreach_decisions.py"   # CAP_EXEMPT_SOURCES parity test
+      - "orion/personality/**"
+      - "orion/schemas/personality.py"
+      - "services/orion-sql-db/manual_migration_personality_graph_v1*.sql"
       - "orion/regulation/**"
       - "orion/schemas/regulation.py"
+      - "orion/physiology/**"
+      - "orion/schemas/physiology.py"
+      - "orion/schemas/physiology_want.py"
+      - "orion/schemas/physiology_report.py"
+      - "orion/energy/overhead.py"
+      - "config/physiology/**"
+      - "services/orion-sql-db/manual_migration_physiology_state_v1.sql"
       - "orion/autonomy/cabinet_heat.py"
+      - "orion/autonomy/shed_act.py"          # the cooling world act (ladder retirement PR 5): app/cooling_act.py
+      - "orion/autonomy/shed_settlement.py"
+      - "orion/autonomy/self_shed.py"
+      - "orion/autonomy/world_episodes.py"
+      - "orion/autonomy/world_settlement.py"
+      - "orion/autonomy/world_settlement_store.py"
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/hardware_watch/rules.py"
+      - "orion/autonomy/contrast.py"
+      - "orion/autonomy/prediction.py"
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
       - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql"
+      - "services/orion-sql-db/manual_migration_vision_handoff_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_office_session_v1.sql"
+      - "orion/vision/motion_story_gate.py"
       - "orion/temporal_self/**"
+      - "orion/self_monitor/**"
+      - "orion/schemas/self_monitor.py"
+      - "orion/prediction/**"
+      - "services/orion-sql-db/manual_migration_self_monitor_history_v1.sql"
       - "orion/schemas/temporal_self.py"
       - "services/orion-sql-db/manual_migration_regulation_history.sql"
+      - "services/orion-sql-db/manual_migration_regulation_gpu_shed_held_v1.sql"
       - "orion/schemas/durable_run.py"
+      - "orion/schemas/harness_step_run.py"
+      - "orion/schemas/pr_field_note_run.py"   # pr.field_note (PR field notes Patch 2)
+      - "orion/body_atlas/field_notes.py"     # the ledger app/pr_field_note_ledger.py writes
+      - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
+      - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/compactor_digest_run.py"
       - "orion/schemas/curiosity_compaction.py"
@@ -34,6 +81,9 @@ on:
       - "orion/world_pulse_read/introspect.py"
       - "orion/world_pulse_read/findings.py"
       - "orion/schemas/reading_finding.py"
+      - "orion/schemas/reading_resonance.py"
+      - "orion/world_pulse_read/resonance*.py"
+      - "services/orion-sql-db/manual_migration_reading_resonance.sql"
       - "orion/cognition/verbs/orion_day_*.yaml"
       - "orion/cognition/prompts/orion_day_*.j2"
       - "services/orion-sql-db/manual_migration_orion_day_letter_v1.sql"
@@ -42,10 +92,13 @@ on:
       - "services/orion-sql-db/manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"
       - "scripts/gpu_pool_stage5_snapshot_and_drop.sh"
       - "orion/llm/resource_lease.py"
+      - "orion/llm/call_usage.py"
+      - "orion/schemas/llm_call_usage.py"
       - "orion/schemas/gpu_pool.py"
       - "orion/schemas/harness_finalize.py"
       - "services/orion-llm-gateway/**"
       - "orion/harness/finalize.py"
+      - "orion/harness/structured_output.py"
       - "orion/harness/runner.py"
       - "orion/harness/fcc_motor.py"
       - "orion/hub/turn_orchestrator.py"
@@ -67,10 +120,41 @@ on:
     paths:
       - "services/orion-gpu-pool/app/**"
       - "orion/gpu_pool/**"
+      - "orion/durable_runs/**"   # turn_identity.py: the turn id rule app/graph.py stamps
       - "config/gpu_pool.yaml"
       - "config/llm_profiles.yaml"
       - "services/orion-durable-runs/**"
+      - "orion/core/bus/async_service.py"   # RpcPublishedToNobody: the listener wait's typed trigger
+      - "orion/physiology/**"
+      - "config/physiology/**"
+      - "scripts/analysis/body_economy_binding_replay.py"
+      - "scripts/analysis/outreach_binding_replay.py"
+      - "services/orion-hub/scripts/outreach_bind.py"
+      - "services/orion-hub/scripts/reading_event_wants.py"   # attention 3b: LOOK_COST (orion/physiology/tests/test_no_slot_wants.py)
+      - "orion/schemas/gpu_pool.py"   # attention 3b: the hold request carries the run's net
+      - "services/orion-hub/scripts/endogenous_outreach_decisions.py"   # CAP_EXEMPT_SOURCES parity test
+      - "orion/schemas/physiology_report.py"
+      - "orion/autonomy/cabinet_heat.py"
+      - "orion/autonomy/shed_act.py"          # the cooling world act (ladder retirement PR 5): app/cooling_act.py
+      - "orion/autonomy/shed_settlement.py"
+      - "orion/autonomy/self_shed.py"
+      - "orion/autonomy/world_episodes.py"
+      - "orion/autonomy/world_settlement.py"
+      - "orion/autonomy/world_settlement_store.py"
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/hardware_watch/rules.py"
+      - "orion/autonomy/contrast.py"
+      - "orion/autonomy/prediction.py"
+      - "orion/energy/overhead.py"
+      - "orion/personality/**"
+      - "orion/schemas/personality.py"
+      - "services/orion-sql-db/manual_migration_personality_graph_v1*.sql"
       - "orion/schemas/durable_run.py"
+      - "orion/schemas/harness_step_run.py"
+      - "orion/schemas/pr_field_note_run.py"   # pr.field_note (PR field notes Patch 2)
+      - "orion/body_atlas/field_notes.py"     # the ledger app/pr_field_note_ledger.py writes
+      - "orion/schemas/reminiscence_run.py"    # reminiscence.episode (daily reminiscence Patch 2)
+      - "orion/body_atlas/reminiscence.py"     # the ledger app/reminiscence_ledger.py reads
       - "orion/schemas/reverie_visual_run.py"
       - "orion/schemas/compactor_digest_run.py"
       - "orion/schemas/curiosity_compaction.py"
@@ -87,6 +171,9 @@ on:
       - "orion/world_pulse_read/introspect.py"
       - "orion/world_pulse_read/findings.py"
       - "orion/schemas/reading_finding.py"
+      - "orion/schemas/reading_resonance.py"
+      - "orion/world_pulse_read/resonance*.py"
+      - "services/orion-sql-db/manual_migration_reading_resonance.sql"
       - "orion/cognition/verbs/orion_day_*.yaml"
       - "orion/cognition/prompts/orion_day_*.j2"
       - "services/orion-sql-db/manual_migration_orion_day_letter_v1.sql"
@@ -95,10 +182,13 @@ on:
       - "services/orion-sql-db/manual_migration_gpu_pool_stage5_drop_legacy_tables.sql"
       - "scripts/gpu_pool_stage5_snapshot_and_drop.sh"
       - "orion/llm/resource_lease.py"
+      - "orion/llm/call_usage.py"
+      - "orion/schemas/llm_call_usage.py"
       - "orion/schemas/gpu_pool.py"
       - "orion/schemas/harness_finalize.py"
       - "services/orion-llm-gateway/**"
       - "orion/harness/finalize.py"
+      - "orion/harness/structured_output.py"
       - "orion/harness/runner.py"
       - "orion/harness/fcc_motor.py"
       - "orion/hub/turn_orchestrator.py"
@@ -114,7 +204,16 @@ on:
       - "services/orion-sql-db/manual_migration_temporal_self_event_v1.sql"
       - "services/orion-sql-db/manual_migration_temporal_self_v1.sql"
       - "services/orion-sql-db/manual_migration_vision_presence_transition_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_motion_story_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_motion_story_strip_v2.sql"
+      - "services/orion-sql-db/manual_migration_vision_handoff_v1.sql"
+      - "services/orion-sql-db/manual_migration_vision_office_session_v1.sql"
+      - "orion/vision/motion_story_gate.py"
       - "orion/temporal_self/**"
+      - "orion/self_monitor/**"
+      - "orion/schemas/self_monitor.py"
+      - "orion/prediction/**"
+      - "services/orion-sql-db/manual_migration_self_monitor_history_v1.sql"
       - "orion/schemas/temporal_self.py"
 
 jobs:
@@ -155,6 +254,7 @@ jobs:
       - name: Pytest services/orion-durable-runs/tests
         env:
           PYTHONPATH: ${{ github.workspace }}
+          TEST_POSTGRES_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: |
           cd services/orion-durable-runs && python -m pytest tests -q -p no:cacheprovider
@@ -169,6 +269,10 @@ jobs:
             services/orion-dream/tests/test_dream_cycle_v2.py \
             services/orion-dream/evals/test_curiosity_compaction_eval.py
           python -m pytest -q -p no:cacheprovider services/orion-cortex-exec/tests/test_dream_cycle_prompt_render.py
+      - name: Pytest orion/physiology/tests (body economy Organ 1 Body reducer)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest orion/physiology/tests -q -p no:cacheprovider
       - name: Pytest orion/orion_day/tests (Orion's Day gather, budget, contracts)
         env:
           PYTHONPATH: ${{ github.workspace }}
@@ -182,11 +286,72 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/hold_fairness.py
+      - name: Curiosity binding-bid eval (body economy Patch D -- capacity queues at the pool, holds bounded)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python services/orion-durable-runs/evals/curiosity_binding_replay.py
+          python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_body_economy_binding_replay.py
+      - name: Reading binding-bid eval (attention patch 3 replay C, fixture -- reading's lanes and measured cost)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python services/orion-durable-runs/evals/reading_binding_replay.py
+      - name: Outreach binding-bid eval (body economy Patch D for hub.outreach -- holds bounded, no answer never holds)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python services/orion-hub/evals/run_outreach_binding_replay.py
+          python -m pytest -q -p no:cacheprovider scripts/analysis/tests/test_outreach_binding_replay.py
+      - name: Cooling world act eval (ladder retirement PR 5 -- the market decides, only funded sheds, the scorer scores every episode)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python services/orion-durable-runs/evals/cooling_act_replay.py
+      - name: Daily reminiscence tick replay (21 days across DST -- window, one run at a time, oldest week first, unfinished week returns, mutations must fail)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -P services/orion-durable-runs/evals/reminiscence_daily_replay.py
+      - name: Felt-state binding arcs eval (onset/release anti-flap, no_reading never releases, one arc per constraint)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python services/orion-durable-runs/evals/body_binding_replay.py
+      - name: Prime slow-charge eval (Orion Prime step 3 -- held by the charge, released by its own hunger)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python services/orion-durable-runs/evals/prime_charge_replay.py
+      - name: Dream binding bid + Prime slow receptor (Orion Prime step 4 -- the sleep obeys its bid, never past its window or the overdue line)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q -p no:cacheprovider services/orion-dream/tests/test_physiology_bind.py \
+            services/orion-dream/tests/test_physiology_shadow_bid.py services/orion-dream/evals/test_dream_binding_replay_eval.py
+      - name: Dream arc replay (a third of the replay at most, one Temporal Self arc per kind per sleep, control pool matches)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pytest -q -p no:cacheprovider services/orion-dream/tests/test_replay_arc_candidates.py \
+            services/orion-dream/evals/test_dream_arc_kind_mix_replay_eval.py
+      - name: Consent gate (attention patch 3d -- the market refuses what it must, dream compaction asks it, nothing else changes)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python services/orion-durable-runs/evals/consent_gate_fixture.py
+          python -m pytest -q -p no:cacheprovider services/orion-dream/tests/test_compaction_applier.py \
+            services/orion-dream/tests/test_compaction_consent.py services/orion-dream/tests/test_rem_compaction.py
       - name: Deploy-order skew eval (old pool refuses holds, then upgrades) on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}
           ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
         run: python services/orion-durable-runs/evals/deploy_order_skew.py
+      - name: Deploy-window listener wait eval (2026-10-31 readings unheard during a Hub redeploy) on isolated Postgres
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
+        run: python services/orion-durable-runs/evals/deploy_window_listener_wait.py
+      - name: Listener wait mutation eval (every mutant must be killed) on isolated Postgres
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          ORION_ADMISSION_TEST_DSN: postgresql://postgres:admission-test@127.0.0.1:5432/admission_test
+        run: python services/orion-durable-runs/evals/listener_wait_mutations.py
       - name: Temporal Self live replay (the live chronicle over the 10-09 fixture reproduces patch 2) on isolated Postgres
         env:
           PYTHONPATH: ${{ github.workspace }}

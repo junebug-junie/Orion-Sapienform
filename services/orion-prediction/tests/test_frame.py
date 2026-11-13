@@ -53,3 +53,28 @@ def test_no_readings_in_an_explicit_window_is_all_nan_not_a_crash():
     # Sensor outage during a scoring window: the reducer must mark buckets missing, not raise.
     s = to_grain([], 5, "mean", 15, start=T0, end=T0 + timedelta(minutes=20))
     assert len(s) == 4 and s.isna().all()
+
+
+def test_mask_windows_masks_a_bucket_that_straddles_the_window_start():
+    """office.temp_c excludes from 22:16: the 22:15 bucket averages 22:16-22:20 readings, so it goes."""
+    idx = pd.date_range("2026-10-28T22:00:00Z", periods=6, freq="5min")
+    s = pd.Series(1.0, index=idx)
+    out = mask_windows(s, [(pd.Timestamp("2026-10-28T22:16:00Z"), pd.Timestamp("2026-10-28T22:25:00Z"))])
+    assert out.isna().tolist() == [False, False, False, True, True, False]
+
+
+def test_covariate_series_masks_the_covariates_own_exclusions():
+    from datetime import timedelta
+
+    from app.frame import covariate_series
+    from tests.helpers import T0, spec
+
+    cov = spec(exclude=[{"start": (T0 + timedelta(minutes=10)).isoformat(), "end": (T0 + timedelta(minutes=20)).isoformat()}])
+
+    class St:
+        def points(self, _spec, start, end):
+            return [(T0 + timedelta(minutes=m), 20.0) for m in range(0, 30)]
+
+    idx = pd.date_range(T0, periods=6, freq="5min")
+    out = covariate_series(St(), cov, T0, T0 + timedelta(minutes=30), idx)
+    assert out.isna().tolist() == [False, False, True, True, False, False]

@@ -56,13 +56,15 @@ def test_circe_qwen_lane_disables_artifact_broadcast():
     assert "CHANNEL_VISIONHOST_PUB=" not in text
 
 
-def test_circe_qwen_lane_broadcasts_only_walkway_and_reads_frames_read_only():
+def test_circe_qwen_lane_broadcasts_only_camera_streams_and_reads_frames_read_only():
     """2026-10-15: walkway captions come from this lane. Its broadcast opens
-    for stream_id=walkway only (main.py artifact_broadcast_allowed), and it
+    for the camera streams only (walkway; doorbell since 2026-10-17; the room
+    camera cam0 since 2026-11-04; main.py artifact_broadcast_allowed) -- never
+    for a dream caption, which has no stream_id -- and it
     reads the walkway frame by path from a READ-ONLY frames mount."""
     text = COMPOSE_PATH.read_text()
     assert (
-        "VISION_ARTIFACT_BROADCAST_STREAMS=${CIRCE_QWEN_VISION_ARTIFACT_BROADCAST_STREAMS:-walkway}"
+        "VISION_ARTIFACT_BROADCAST_STREAMS=${CIRCE_QWEN_VISION_ARTIFACT_BROADCAST_STREAMS:-walkway,doorbell,cam0}"
         in text
     )
     assert "- /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames:ro" in text

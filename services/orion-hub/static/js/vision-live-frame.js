@@ -24,6 +24,22 @@
       pollMs: 1500,
       hint: "confirm orion-vision-retina-walkway is running on athena.",
     },
+    // The office camera, cam0 (2026-11-04): orion-vision-retina-office on athena,
+    // 2 frames/s. The office camera's frames now come only from this retina.
+    "office-live": {
+      streamId: "cam0",
+      label: "Office",
+      pollMs: 1500,
+      hint: "confirm orion-vision-retina-office is running on athena (profile office).",
+    },
+    // Ring doorbell (2026-10-17): frames only during a ~15 s live view after a
+    // motion/ring event, so STALE between visits is the normal state.
+    "doorbell-live": {
+      streamId: "doorbell",
+      label: "Doorbell",
+      pollMs: 1500,
+      hint: "the doorbell only sends frames for ~15 s after motion or a ring; if it never does, check orion-vision-retina-doorbell on athena (Ring login).",
+    },
   };
 
   function formatAge(ageSec) {

@@ -1,12 +1,14 @@
 """Backtest the full model zoo on REAL cabinet history and check the served blend is honest.
 
 Fixture: evals/fixtures/cabinet_5min.csv.gz (export_cabinet_fixture.py; 5-min means from production,
-2026-09-26 AC install -> 2026-10-15). Same code production runs: app.backtest + app.models, the repo
+2026-09-26 AC install -> 2026-11-03, with the office room sensor from 2026-10-28). Same code production runs: app.backtest + app.models, the repo
 registry entry for athena.cabinet_temp_c, no database.
 
 Checks (exit 1 on failure):
 - monthly seasonality is refused on this history; daily is used.
-- every model produces residuals on >= 80% of windows (a model that silently fails is caught).
+- every model produces residuals on >= 80% of windows (a model that silently fails is caught) -- except
+  an overlap-window model (direct_arx_overlap), which refuses windows before its young covariate has
+  enough history by design; its window count is reported instead.
 - the served champion blend never loses to the better baseline at any horizon (rel_mae <= 1).
 - the blend's time-ordered holdout 80% coverage (newest third of windows) is not rejected by a binomial
   test against 0.8 at p < 0.01, counting only independent windows (holdout / ceil(h / step)). A fixed
@@ -16,10 +18,13 @@ Checks (exit 1 on failure):
 Also reports (not gated): a conditional scenario for +200 W chassis power and the AC covariate.
 
     cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py   # 40 windows, as production
+    ... --train-from 2026-10-23T19:25:21Z   # the live training start (break adopted by a change event)
+    ... --without-overlap                   # the registry before office.temp_c joined (A/B for the room covariate)
 """
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import math
 import gzip
 import json
@@ -36,9 +41,9 @@ sys.path[:0] = [str(SERVICE), str(REPO)]
 
 from app.backtest import GATE_ALPHA, horizon_metrics, run_backtest, select_champion, step_owner, stitch  # noqa: E402
 from app.causal import CausalError, scenario  # noqa: E402
-from app.frame import to_grain, training_slice  # noqa: E402
+from app.frame import mask_windows, to_grain, training_slice  # noqa: E402
 from app.models import BASELINES, build_models, split_seasonalities  # noqa: E402
-from app.series import load_registry  # noqa: E402
+from app.series import _ts, load_registry  # noqa: E402
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "cabinet_5min.csv.gz"
 
@@ -55,14 +60,36 @@ def main() -> int:
     ap.add_argument("--windows", type=int, default=40)
     ap.add_argument("--step-min", type=int, default=180)
     ap.add_argument("--json", type=Path)
+    ap.add_argument("--train-from", help="override the registry train_from (ISO time with zone)")
+    ap.add_argument("--without-overlap", action="store_true", help="drop overlap_covariates (no room covariate)")
     args = ap.parse_args()
     reg = load_registry(REPO / "config" / "prediction" / "series.v1.yaml")
     spec = reg.get("athena.cabinet_temp_c")
+    if args.train_from:
+        spec = dataclasses.replace(spec, train_from=_ts(args.train_from, "--train-from"))
+    if args.without_overlap:
+        spec = dataclasses.replace(spec, covariates=tuple(c for c in spec.covariates if c not in spec.overlap_covariates),
+                                   overlap_covariates=())
     y = load("cabinet_temp_c", spec)
     actuals = load("cabinet_temp_c", spec, fill=False).reindex(y.index)
-    cov_cols = {"athena.chassis_watts": "chassis_watts", "athena.cabinet_cooling_watts": "cooling_watts"}
-    covariates = pd.DataFrame({cid: load(cov_cols[cid], reg.get(cid), fill=False).reindex(y.index) for cid in spec.covariates},
-                              index=y.index)
+    cov_cols = {"athena.chassis_watts": "chassis_watts", "athena.cabinet_cooling_watts": "cooling_watts",
+                "circe.chassis_watts": "circe_watts", "hecate.chassis_watts": "hecate_watts",
+                "office.temp_c": "office_temp_c"}
+    skipped = [c for c in spec.covariates if c not in cov_cols]
+    # The models index covariate columns by position in spec.covariates: drop what the fixture lacks
+    # from the spec itself so the columns and the spec stay aligned.
+    spec = dataclasses.replace(spec, covariates=tuple(c for c in spec.covariates if c in cov_cols))
+    # Each covariate's own exclusions masked, as covariate_series does live (office sensor settling).
+    covariates = pd.DataFrame({cid: mask_windows(load(cov_cols[cid], reg.get(cid), fill=False),
+                                                 reg.get(cid).exclude).reindex(y.index)
+                               for cid in spec.covariates}, index=y.index)
+    if "hecate.chassis_watts" in covariates:          # zero_before_first, as covariate_series does live
+        first = covariates["hecate.chassis_watts"].first_valid_index()
+        if first is None:
+            covariates["hecate.chassis_watts"] = 0.0
+        else:
+            covariates.loc[covariates.index < first, "hecate.chassis_watts"] = 0.0
+    print("covariates in fixture:", list(covariates.columns), "| not in fixture (live only):", skipped)
     train = training_slice(y, spec)
     usable, refused = split_seasonalities(spec, len(train))
     zoo = build_models(spec, usable)
@@ -83,6 +110,9 @@ def main() -> int:
     if "monthly" not in refused or "daily" not in {s.name for s in usable}:
         failures.append(f"seasonality split wrong: usable={[s.name for s in usable]} refused={refused}")
     for name, r in results.items():
+        if name == "direct_arx_overlap":
+            print(f"{name}: residuals on {r.n_windows}/{len(r.origins)} windows (young covariate; not gated)")
+            continue
         if r.n_windows < 0.8 * len(r.origins):
             failures.append(f"{name} produced residuals on only {r.n_windows}/{len(r.origins)} windows: {r.errors[:2]}")
     for hm in spec.horizons_min:
@@ -120,9 +150,9 @@ def main() -> int:
     print("assignment:", sel.assignment, "served_baseline:", sel.served_baseline)
 
     scen = {}
-    for cov_id in spec.covariates:
+    for cov_id in [c for c in spec.covariates if c in ("athena.chassis_watts", "athena.cabinet_cooling_watts")]:
         cov_spec = reg.get(cov_id)
-        col = {"athena.chassis_watts": "chassis_watts", "athena.cabinet_cooling_watts": "cooling_watts"}[cov_id]
+        col = cov_cols[cov_id]
         x = load(col, cov_spec).reindex(y.index)
         # End where the covariate's own history ends (the fixture's AC tail can be empty).
         last = x.last_valid_index()

@@ -3,7 +3,10 @@ computed liveness for metrics beyond field channels.
 
 Deliberately narrow. The design doc scoped phase 5 as a per-surface decision
 ("where does the live sample come from") too big to solve generically in one
-pass, and left it deferred. This resolves exactly three candidates.
+pass, and left it deferred. This resolved exactly three candidates; two remain
+(`l7_l11_ladder` retired with the proposal, policy and dispatch rungs on
+2026-11-07, ladder retirement PR 6, together with its throughput source and the
+row-count helpers only it used).
 
 **Added 2026-09-04**: `organ_signal/graph_cognition/repair_pressure#level` and
 `#confidence` -- found while auditing metacog's `relational` trigger
@@ -42,9 +45,9 @@ real, verified accounting for all 15 signals:
   `orion/inner_state_registry.py`'s notes on each); `chat_stance_disposition`
   (categorical, not a numeric series); `biometrics_cluster.v1` (registry
   flags it `DUPLICATE_OF field_state.v1`).
-- **Built here (3):** `attention_self_model.v1`, `l7_l11_ladder`,
-  `organ_signal/graph_cognition/repair_pressure` (added 2026-09-04, see
-  above and below) -- see below for why these specifically.
+- **Built here (3, now 2):** `attention_self_model.v1`, `l7_l11_ladder`
+  (retired 2026-11-07), `organ_signal/graph_cognition/repair_pressure` (added
+  2026-09-04, see above and below) -- see below for why these specifically.
 - **Not investigated in this pass (6):** `field_state.v1`,
   `field_attention_frame.v1`, `attention_broadcast_projection.v1`,
   `mood_arc_encoder.v1`, `phi_heuristic.valence`, `phi_intrinsic_reward.v1`.
@@ -57,12 +60,12 @@ Why these two:
   `substrate_attention_self_model.self_model_json`, fed into the existing
   `classify_channel_series()` unmodified. Cadence confirmed live 2026-08-19:
   ~30s/tick, 119 rows in the trailing hour.
-- `l7_l11_ladder` -- five backing tables (ProposalFrameV1 -> ConsolidationV1)
-  with no shared scalar to sample -- it is a pipeline, not a signal.
+- `l7_l11_ladder` (RETIRED 2026-11-07, history) -- five backing tables
+  (ProposalFrameV1 -> ConsolidationV1) with no shared scalar to sample.
   Reframed as THROUGHPUT liveness: rows-per-bucket over a real window, same
   classifier. Elevated priority over other phase-5 candidates: the ladder
-  carries a live mutating route (`skills.runtime.builder_prune.v1`) whose
-  terminal effect is deleting host data, independent of whether anything
+  carried a live mutating route (`skills.runtime.builder_prune.v1`, until
+  2026-11-06) whose terminal effect was deleting host data, independent of whether anything
   downstream consumes it cognitively (see the R6 section above -- this was
   found only after a direct challenge to an earlier "no cognition consumer
   means nothing at stake" misreading).
@@ -75,39 +78,14 @@ Why these two:
   rather than 1h, to give `classify_channel_series` enough points to be
   meaningful.
 
-Cadences confirmed live 2026-08-19 (500 most-recent rows, avg inter-row gap):
-    substrate_proposal_frames         2.12s
-    substrate_policy_decision_frames  2.12s
-    substrate_feedback_frames         2.06s
-    substrate_attention_frames        2.13s
-    substrate_consolidation_frames    5761.49s (~96min)
-
 The classifier math is never reimplemented here -- only the data source is
 new. See `orion.field.channel_glossary.classify_channel_series` for the
 verdict vocabulary (never_produced / dead / ratchet_suspect / quiet / live)
 and `orion.attention.tension.liveness` for the sibling producer-liveness
 classifier this deliberately does not replace or duplicate (different
 question: "is this telling me anything" vs "is anyone still writing this").
-
-`classify_channel_series`'s thresholds (`LIVE_VARIANCE_THRESHOLD=0.05`,
-`SUBNORMAL_CUTOFF`) are calibrated for `[0,1]`-bounded field-channel
-salience/pressure values -- see that module's own header. The ladder's raw
-signal is integer row counts (tens per bucket), a different domain those
-thresholds were never tuned for -- a repeat of this repo's own documented
-"borrowed calibrated constant doesn't transfer across domains" failure mode,
-this time caught before shipping rather than after: a live sanity check
-(a regression test, not eyeballing) found feeding raw counts in trips
-`ratchet_suspect` on any ordinary busy-but-healthy burst, AND that scale
-normalization alone does not fix it (a monotonic climb, rescaled to its own
-max of 1.0, clears `LIVE_VARIANCE_THRESHOLD` almost every time regardless of
-original scale). `_classify_unbounded_series()` is the actual fix: it
-normalizes for the quiet/live spread boundary (`_normalize_to_unit_scale()`)
-AND downgrades `ratchet_suspect` to `live`, because that verdict's real
-meaning -- "a mode=add channel that should decay but never does" -- has no
-equivalent for pipeline throughput, where a monotonic run across a short or
-coarsely-bucketed window (the 16-bucket consolidation stage) is unremarkable.
-`dead`/`never_produced` (the genuine problems) are untouched by either
-change.
+The ladder's throughput rollup (bucketed row counts, a worst-of across stages,
+and a ratchet downgrade for unbounded counts) retired with the ladder.
 
 Read-only, real-DB, off the request path: this runs only from
 `scripts/check_metric_lineage.py --metric <name>` (an operator/agent CLI
@@ -163,7 +141,7 @@ import os
 from dataclasses import dataclass
 
 from orion.db_readonly import open_readonly_connection as _open_readonly_connection
-from orion.field.channel_glossary import CLEAN_VERDICTS, classify_channel_series
+from orion.field.channel_glossary import classify_channel_series
 from orion.metrics.lineage import MetricNode
 
 DEFAULT_POSTGRES_URI = "postgresql://postgres:postgres@localhost:55432/conjourney"
@@ -178,90 +156,9 @@ MAX_ROWS = 50_000
 # path itself: a connect to a black-holed port hung past a 15s timeout.
 CONNECT_TIMEOUT_SECONDS = 5
 
-# Worst-of rollup order for a multi-series verdict (the ladder's 5 stages).
-# Reuses channel_glossary.CLEAN_VERDICTS rather than inventing a fresh
-# severity scale -- `live` and `quiet` are BOTH clean states there (a
-# low-cadence stage reading `quiet` is not "worse" than a fast stage reading
-# `live`, it is just slower). Found live 2026-08-19: an earlier version of
-# this rollup ranked quiet above live and reported the ladder's overall
-# verdict as QUIET when 4 of 5 stages were LIVE and only the ~96min-cadence
-# consolidation stage was quiet by design -- an accurate-sounding but
-# misleading "worst-of" that would have made every healthy tick look
-# concerning. Only an actually unclean verdict (dead / never_produced /
-# ratchet_suspect) should ever win a rollup.
-_UNCLEAN_SEVERITY = {
-    "never_produced": 3,
-    "dead": 2,
-    "ratchet_suspect": 1,
-}
-
-
-def _worst_of(verdicts: list[str]) -> str:
-    """Rolls up N per-stage verdicts into one. If anything is genuinely
-    unclean, report the worst of those. Otherwise every stage is live or
-    quiet -- report `live` if any stage is, `quiet` only if all are.
-    """
-    unclean = [v for v in verdicts if v not in CLEAN_VERDICTS]
-    if unclean:
-        return max(unclean, key=lambda v: _UNCLEAN_SEVERITY.get(v, 0))
-    return "live" if "live" in verdicts else "quiet"
-
-
-def _normalize_to_unit_scale(series: list[float]) -> list[float]:
-    """Rescale a series by its own window max so classify_channel_series's
-    `[0,1]`-calibrated spread thresholds (the quiet/live boundary) mean
-    something for a domain (row counts) they were never tuned for.
-    All-zero/empty series pass through unchanged -- scaling by a positive
-    max preserves zero exactly, so `dead`/`never_produced` detection is
-    untouched.
-
-    Does NOT fix `ratchet_suspect` -- see `_classify_unbounded_series()`,
-    which is why callers use that instead of calling this directly into
-    `classify_channel_series()`. Normalizing does not change whether a
-    series is monotonically non-decreasing (climbed = last-first is
-    guaranteed to exceed LIVE_VARIANCE_THRESHOLD for almost any monotonic
-    series once rescaled to a max of 1.0), so a live sanity check caught
-    that scale alone does not fix the false-positive this exists to
-    prevent -- see the module docstring's ratchet_suspect note.
-    """
-    if not series:
-        return series
-    peak = max(series)
-    if peak <= 0:
-        return series
-    return [v / peak for v in series]
-
-
-def _classify_unbounded_series(series: list[float]) -> str:
-    """classify_channel_series(), scoped to what actually transfers to a
-    domain that isn't `[0,1]`-bounded the way field-channel salience/
-    pressure values are -- currently the ladder's bucketed row counts and
-    `attention_self_model.v1#broadcast_lane_age_sec` (a plain float age in
-    seconds, not `Field(ge=0.0, le=1.0)` like its four sibling scalars).
-
-    `ratchet_suspect` means "a mode=add channel that should decay but
-    never does" (channel_glossary.py's own docstring) -- a concept with no
-    equivalent for an unbounded magnitude that legitimately climbs (a
-    growing bucket count, a broadcast lane that hasn't refreshed in a
-    while). A monotonically non-decreasing run across a short or
-    coarsely-bucketed window (the ladder's consolidation stage: 16 buckets)
-    is common and unremarkable, not evidence of a stuck accumulator.
-    Live-tested 2026-08-19: normalizing by max (`_normalize_to_unit_scale`)
-    does NOT prevent this on its own -- a climb from any value up to the
-    series' own max, rescaled to max=1.0, clears
-    `LIVE_VARIANCE_THRESHOLD=0.05` almost every time a series is monotonic
-    at all, regardless of scale. So `ratchet_suspect` is downgraded to
-    `live` here rather than silently mis-flagging a healthy busy/ramping
-    series as a suspected stuck accumulator -- `dead` and `never_produced`
-    (genuine problems) are untouched.
-    """
-    verdict = classify_channel_series(_normalize_to_unit_scale(series))
-    return "live" if verdict == "ratchet_suspect" else verdict
-
-
 # All five AttentionSelfModelV1 scalar fields go through classify_channel_
-# series() unmodified -- `_classify_unbounded_series()` is scoped to
-# l7_l11_ladder's throughput only, deliberately NOT applied here.
+# series() unmodified. (`_classify_unbounded_series()`, the ladder throughput's
+# ratchet downgrade, was never applied here and retired with the ladder.)
 #
 # CORRECTION 2026-08-20 (a third review round, catching a regression the
 # second round introduced): an earlier version of this module routed
@@ -462,43 +359,6 @@ class FlatColumnSource:
         return _fetch_ordered_desc(conn, query, (self.window_hours, MAX_ROWS + 1))
 
 
-@dataclass(frozen=True)
-class ThroughputSource:
-    """Rows-per-bucket over a real window -- liveness for a pipeline stage
-    with no shared scalar to sample, not a signal value. Bucket size must be
-    picked relative to the table's real cadence (see module docstring) --
-    too fine and a healthy slow producer reads as mostly-empty buckets
-    ("dead" false positive); too coarse and a real stall hides inside one
-    still-nonzero bucket.
-    """
-
-    table: str
-    ts_column: str
-    window_hours: float
-    bucket_hours: float
-
-    def fetch(self, conn) -> list[float]:
-        query = f"""
-            SELECT count(t.{self.ts_column})::float8
-            FROM generate_series(
-                now() - (%s * interval '1 hour'),
-                now(),
-                (%s * interval '1 hour')
-            ) AS bucket_start
-            LEFT JOIN {self.table} t
-              ON t.{self.ts_column} >= bucket_start
-             AND t.{self.ts_column} < bucket_start + (%s * interval '1 hour')
-            GROUP BY bucket_start
-            ORDER BY bucket_start ASC
-        """
-        with conn.cursor() as cur:
-            cur.execute(
-                query, (self.window_hours, self.bucket_hours, self.bucket_hours)
-            )
-            rows = cur.fetchall()
-        return [r[0] for r in rows]
-
-
 # --------------------------------------------------------------------------
 # attention_self_model.v1 -- scalar fields
 # --------------------------------------------------------------------------
@@ -526,59 +386,6 @@ def _attention_self_model_liveness(conn, field: str) -> LivenessOutcome:
     return LivenessOutcome(
         verdict=verdict, sample_count=len(values), detail=detail, truncated=truncated
     )
-
-
-# --------------------------------------------------------------------------
-# l7_l11_ladder -- throughput across 5 pipeline stages
-# --------------------------------------------------------------------------
-
-_LADDER_STAGES: dict[str, ThroughputSource] = {
-    "substrate_proposal_frames": ThroughputSource(
-        table="substrate_proposal_frames",
-        ts_column="generated_at",
-        window_hours=1.0,
-        bucket_hours=1.0 / 60,  # 1min buckets, ~2.1s cadence -> ~28 rows/bucket healthy
-    ),
-    "substrate_policy_decision_frames": ThroughputSource(
-        table="substrate_policy_decision_frames",
-        ts_column="generated_at",
-        window_hours=1.0,
-        bucket_hours=1.0 / 60,
-    ),
-    "substrate_feedback_frames": ThroughputSource(
-        table="substrate_feedback_frames",
-        ts_column="generated_at",
-        window_hours=1.0,
-        bucket_hours=1.0 / 60,
-    ),
-    "substrate_attention_frames": ThroughputSource(
-        table="substrate_attention_frames",
-        ts_column="generated_at",
-        window_hours=1.0,
-        bucket_hours=1.0 / 60,
-    ),
-    "substrate_consolidation_frames": ThroughputSource(
-        table="substrate_consolidation_frames",
-        ts_column="generated_at",
-        window_hours=48.0,  # matches this repo's own measure_attention_self_model
-        # precedent (DEFAULT_SINCE_HOURS=48) for a slow-cadence table
-        bucket_hours=3.0,  # ~96min cadence -> ~1.9 rows/bucket healthy; a
-        # 1h bucket would read ~0.6 rows/bucket on a HEALTHY table -- false
-        # "dead" territory. 3h clears that with margin.
-    ),
-}
-
-
-def _ladder_liveness(conn) -> LivenessOutcome:
-    per_stage: dict[str, str] = {}
-    total_rows = 0
-    for table, source in _LADDER_STAGES.items():
-        series = source.fetch(conn)
-        total_rows += int(sum(series))
-        per_stage[table] = _classify_unbounded_series(series)
-    worst = _worst_of(list(per_stage.values()))
-    detail = ", ".join(f"{t}={v}" for t, v in per_stage.items())
-    return LivenessOutcome(verdict=worst, sample_count=total_rows, detail=detail)
 
 
 # --------------------------------------------------------------------------
@@ -646,7 +453,6 @@ def _repair_pressure_liveness(conn, field: str) -> LivenessOutcome:
 
 
 _KIND_ATTENTION_SELF_MODEL = "attention_self_model"
-_KIND_LADDER = "ladder"
 _KIND_REPAIR_PRESSURE = "repair_pressure"
 
 
@@ -661,8 +467,6 @@ def _resolve_source_kind(node: MetricNode) -> str | None:
     """
     if node.schema_id == _ATTENTION_SELF_MODEL_SCHEMA_ID and node.metric_field:
         return _KIND_ATTENTION_SELF_MODEL
-    if node.name == "l7_l11_ladder" and node.metric_field is None:
-        return _KIND_LADDER
     if (
         node.surface == _REPAIR_PRESSURE_SURFACE
         and node.name == _REPAIR_PRESSURE_NAME
@@ -685,8 +489,6 @@ def liveness_for_node(node: MetricNode, conn) -> LivenessOutcome | None:
     kind = _resolve_source_kind(node)
     if kind == _KIND_ATTENTION_SELF_MODEL:
         return _attention_self_model_liveness(conn, node.metric_field)
-    if kind == _KIND_LADDER:
-        return _ladder_liveness(conn)
     if kind == _KIND_REPAIR_PRESSURE:
         return _repair_pressure_liveness(conn, node.metric_field)
     return None

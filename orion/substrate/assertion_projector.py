@@ -163,6 +163,17 @@ class AssertionProjector:
             )
         return report
 
+    async def replay(self, decision: SubstrateGraphDecisionV1) -> bool:
+        """Re-write an already APPLIED decision into a graph that lost it (a wiped or rebuilt
+        store). No journal rows: the journal already says it was applied. False when its
+        proposal is gone."""
+        proposal = await self._journal.proposal(decision.proposal_id)
+        if proposal is None:
+            return False
+        record, _nodes, _edges = await asyncio.to_thread(self._record, proposal, decision)
+        await asyncio.to_thread(self._materializer.apply_record, record)
+        return True
+
     async def _fail(self, decision: SubstrateGraphDecisionV1, reason: str, report: ProjectionReportV1) -> None:
         report.failed[decision.decision_id] = reason
         last = await self._journal.last_materialization(decision.decision_id)

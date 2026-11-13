@@ -25,7 +25,8 @@ class AttentionPublisher:
         service_id: str,
         heartbeat_name: str,
         event: dict,
-    ) -> None:
+    ) -> bool:
+        """True when notify accepted the card."""
         severity = event.get("severity", "error")
         message = event.get("message", f"mesh health: {service_id}")
         event_ctx = event.get("context") or {}
@@ -65,3 +66,5 @@ class AttentionPublisher:
                 mesh_event,
                 getattr(accepted, "detail", None),
             )
+            return False
+        return True

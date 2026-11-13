@@ -107,6 +107,63 @@ Incremental trim after concept-induction publishes goals: enable `AUTONOMY_GOAL_
 
 Verify in logs: `autonomy_goal_archive_scheduler_result` or `autonomy_goal_archive_drain`.
 
+### Body economy shadow bid (Patch C3b, 2026-10-27)
+
+Each in-process journal compose asks the body economy "would you fund this?", then ignores the
+answer. The answer is only logged, next to what the compose really did. Nothing changes what the
+compose does.
+
+- Where: `_dispatch_journal`, after the journaling switch and the dedupe cooldown let the trigger
+  through (the point it would compose). A cooldown skip is not a want and does not bid.
+- Family `actions.journal`, Tier 1 (Tier 1 still bids; only Tier 0 never bids), verb `make`.
+  `want_id` = `act_emit.compose_correlation_id(dedupe_key, trigger correlation id)`, the journal
+  act's correlation id.
+- Real outcome: `ran` once the semaphore is acquired and the act opens. `ran` means the real
+  gates let it run, not that it produced: a compose that then fails still ran, and its act closes
+  at 0. `blocked:raised:<Exception>` if it was cancelled or raised before that (a funded shadow
+  decision is then released).
+- Log line: `physiology_shadow_bid family=actions.journal want_id=... shadow=... real=...`.
+  durable-runs writes the decision into `want_ledger`.
+- Durable `journal.compose` runs (world_pulse_digest) do not bid here; durable-runs admission
+  covers them. Daily metacog (`actions.daily_metacog`) is off live and has no shadow bid.
+- Switch: `ACTIONS_PHYSIOLOGY_SHADOW_BID_ENABLED` (default on). The bid is a background task; the
+  compose never waits on it. Code: `app/physiology_shadow.py`.
+
+### Self-monitor journal gate (2026-11-03, rung 6 E1)
+
+Every in-process journal compose passes `_dispatch_journal`. When the self-monitor (Redis
+`orion:self_monitor:latest`) holds its faculty `act.actions.journal.make.<trigger_kind>` (e.g.
+`walkway_grade`) `broken` or `unreliable`, the compose is skipped and audited `skipped` /
+`track_record_failing`; no act opens. One re-test probe per faculty per
+`SELF_MONITOR_PROBE_INTERVAL_SEC` (21600) runs, marked `self_monitor_probe` in its audit row. Probes
+are counted from `grammar_acts`, so keep `ACTIONS_ACT_EMIT_ENABLED` on. Unknown or stale state changes
+nothing. Kill switch: `SELF_MONITOR_ACT_GATE_ENABLED=false`. Retries of the same job are never refused
+(option A, 2026-11-03): a journal whose dedupe key (the act's `test_before = journal:<dedupe_key>`: one
+walkway night, one daily window, one trigger's content) already opened an act inside the probe window is
+admitted as `same_job_retry`, marked `self_monitor_same_job_retry` in its audit row, and spends no probe. So a
+held-broken walkway_grade still gets its whole night of retries once the night's first try (the probe) ran;
+only a new job's first try is refused.
+
+### Act ledger producers (2026-10-23, body economy A5)
+
+Two activities publish one act per attempt on `orion:grammar:event`, persisted to `grammar_acts`
+by orion-sql-writer (`app/act_emit.py`, flag `ACTIONS_ACT_EMIT_ENABLED`, default on):
+
+- `actions.daily_metacog` / `infer`: one `daily_metacog_v1` attempt. 1 when the report is
+  delivered, 0 on notify failure, exception or cancellation. The job itself is off live
+  (`ACTIONS_DAILY_METACOG_ENABLED=false`), so it emits nothing today. `daily_pulse_v1` is not an act.
+- `actions.journal` / `make`: one in-process journal compose (`_dispatch_journal`). 1 when the
+  draft came back and its `journal.entry.write.v1` was published, else 0.
+
+Ownership rule: the process that runs a journal's compose owns its act. Journals submitted as
+durable `journal.compose` runs (world_pulse_digest) are composed and counted by orion-durable-runs,
+and never pass through `_dispatch_journal`, so no journal is counted twice.
+
+The act opens after the dedupe gate and semaphore wait (the queue wait is not the act). Key = the
+job's dedupe key + the attempt envelope's correlation id: a redelivered trigger is the same act,
+a scheduler retry is a new one. The act's correlation id is the one the cortex GPU leases carry,
+so the ledger's cost fill can charge the attempt. Cost `seconds` = wall time.
+
 ### What Actions does **not** own
 
 - Workflow identity and workflow logic (`dream_cycle`, `journal_pass`, `self_review`, `concept_induction_pass`).
@@ -125,7 +182,7 @@ Verify in logs: `autonomy_goal_archive_scheduler_result` or `autonomy_goal_archi
 
 Examples:
 
-- `self_review` workflow executes through Orch and internally uses `self_concept_reflect`.
+- `self_review` workflow executes through Orch, which asks Hub for one curiosity self-inquiry turn (`orion:curiosity:self_inquiry:request`).
 - `journal_pass` workflow executes through Orch and journal compose/write boundaries.
 - Actions can schedule those workflows, but does not define them.
 
@@ -214,12 +271,12 @@ These are defined in workflow registry/runtime, not in Actions.
 - **Persisted meaning**: append-only journal write (`journal.entry.write.v1`).
 
 ### `self_review`
-- **Purpose**: bounded metacognitive reflection synthesis.
-- **Example phrases**: “Run a self review”, “do a metacognitive review”.
+- **Purpose**: ask for one curiosity self-inquiry turn now (since 2026-10-30; it used to run the retired self-study reflection loop).
+- **Example phrases**: “Run a self review”, “reflect on yourself”, “do a metacognitive review”.
 - **Schedulable**: yes.
 - **Notify**: yes.
-- **Typical result**: findings-oriented self-review summary.
-- **Persisted meaning**: may include graph/journal writebacks if underlying adapter emits them.
+- **Typical result**: “Self-inquiry turn requested” (the run itself takes ~20 minutes in Hub).
+- **Persisted meaning**: nothing from the workflow itself; the self-inquiry run writes its own journal, graph nodes and `self_concept_history` `self:definition`.
 
 ### `concept_induction_pass`
 - **Purpose**: bounded review of concept induction profiles.
@@ -455,8 +512,16 @@ Journal-entry notifications (email + in-app) are dispatched from exactly one pla
 post-persist consumer for `journal.entry.created.v1` (`_handle_journal_created`),
 after the SQL write is confirmed. It resolves policy from
 `orion.journaler.dispatch_registry.JOURNAL_DISPATCH_REGISTRY`, keyed on the journal
-entry's `trigger_kind` (`daily_summary`, `metacog_digest`, `world_pulse_digest`,
+entry's `trigger_kind` (`daily_summary`, `world_pulse_digest`,
 `notify_summary`, `autonomy_episode`, `collapse_response`, `town_episode`, `manual`).
+
+**Removed 2026-10-23: `metacog_digest`.** This service used to subscribe to
+`orion:equilibrium:metacog:trigger` and write one LLM journal per trigger (~140/day),
+which retold telemetry with no grounding and emailed it as "Journal Pass". The handler,
+`build_metacog_trigger`, and `ACTIONS_JOURNAL_METACOG_RECALL_PROFILE` are gone. The
+trigger itself still feeds cortex-orch and sql-writer. Old `metacog` rows stay in
+`journal_entries`. `daily_summary` and `notify_summary` still write but no longer email:
+they had only stayed out of the inbox because metacog won the shared daily slot.
 
 ### What this replaced
 

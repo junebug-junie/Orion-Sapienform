@@ -63,6 +63,7 @@ function _statusBadge(status) {
     stale: "bg-amber-900/40 text-amber-300 border-amber-700",
     missing: "bg-gray-800/40 text-gray-500 border-gray-700",
     inconsistent: "bg-red-900/40 text-red-300 border-red-700",
+    retired: "bg-slate-800/40 text-slate-400 border-slate-600",
   };
   const cls = map[status] || map.missing;
   return `<span class="text-[9px] border rounded px-1 py-0.5 ${cls}">${_esc(status || "—")}</span>`;
@@ -229,80 +230,16 @@ function _renderProofChain(chain) {
   // L6 (SelfStateV1 "transport_integrity") removed 2026-07-22, SelfStateV1 burn --
   // its card and chain.transport.l6 no longer exist, see substrate_lattice_routes.py.
 
-  // L7
-  const l7 = chain.transport?.l7 || {};
-  const props = l7.values || {};
-  _setText("l7Status", `${_statusBadge(l7.status)} ${_ts(l7.timestamp)}`);
-  _setText(
-    "l7Body",
-    `total candidates: <b>${_fmt(props.count)}</b> &nbsp;|&nbsp; transport candidates: <b>${_fmt(props.transport_count)}</b>`
-  );
-
-  // L8
-  const l8 = chain.transport?.l8 || {};
-  const pol = l8.values || {};
-  _setText("l8Status", `${_statusBadge(l8.status)} ${_ts(l8.timestamp)}`);
-  _setText(
-    "l8Body",
-    `approved: <b>${_fmt(pol.approved_count)}</b> rejected: <b>${_fmt(pol.rejected_count)}</b> mode: <b>${_esc(pol.policy_mode)}</b>`
-  );
-
-  // L9
-  const l9 = chain.transport?.l9 || {};
-  const disp = l9.values || {};
-  _setText("l9Status", `${_statusBadge(l9.status)} ${_ts(l9.timestamp)}`);
-  _setText(
-    "l9Body",
-    `dispatch_mode: <b>${_esc(disp.dispatch_mode)}</b> dispatched: <b>${_fmt(disp.dispatch_count)}</b> blocked: <b>${_fmt(disp.blocked_count)}</b>`
-  );
-
-  // L10
-  const l10 = chain.transport?.l10 || {};
-  const fb = l10.values || {};
-  _setText("l10Status", `${_statusBadge(l10.status)} ${_ts(l10.timestamp)}`);
-  _setText(
-    "l10Body",
-    `outcome_status: <b>${_esc(fb.outcome_status)}</b> feedback_kind: <b>${_esc(fb.feedback_kind)}</b>`
-  );
-
-  // L11
-  const l11 = chain.transport?.l11 || {};
-  const motifs = (l11.values || {}).motifs || [];
-  _setText("l11Status", `${_statusBadge(l11.status)} ${_ts(l11.timestamp)}`);
-  if (l11.status === "stale") {
+  // L7-L9 retired 2026-11-07, L10 and L11 2026-11-04: one line each saying when and what replaced them.
+  for (const key of ["l7", "l8", "l9", "l10", "l11"]) {
+    const layer = chain.transport?.[key] || {};
+    const v = layer.values || {};
+    _setText(`${key}Status`, _statusBadge(layer.status));
     _setText(
-      "l11Body",
-      `<span class="text-amber-400">stale (${_ts(l11.timestamp)})</span> — ${motifs.length} motif(s) from last consolidation: ${
-        motifs
-          .map((m) => `<span class="bg-gray-800 rounded px-1">${_esc(m.label || m.motif_id)}</span>`)
-          .join(" ")
-      }`
-    );
-  } else if (motifs.length === 0) {
-    _setText(
-      "l11Body",
-      l11.status === "missing"
-        ? '<span class="text-gray-500">no consolidation frame found</span>'
-        : "— no motifs observed"
-    );
-  } else {
-    _setText(
-      "l11Body",
-      motifs
-        .map((m) => {
-          const strength =
-            m.strength !== null && m.strength !== undefined
-              ? ` strength=${m.strength.toFixed(2)}`
-              : "";
-          const recurrence = m.recurrence_count ? ` ×${m.recurrence_count}` : "";
-          const ts = m.timestamp ? ` (${_ts(m.timestamp)})` : "";
-          const evid =
-            m.evidence && _asList(m.evidence).length
-              ? ` [${_asList(m.evidence).map(_esc).join(", ")}]`
-              : "";
-          return `<span class="bg-gray-800 rounded px-1">${_esc(m.label || m.motif_id)}</span>${strength}${recurrence}${ts}${evid}`;
-        })
-        .join(" ")
+      `${key}Body`,
+      layer.status === "retired"
+        ? `<span class="text-slate-400">retired ${_esc(v.retired_on)}</span> — ${_esc(v.note)}`
+        : '<span class="text-gray-500">—</span>'
     );
   }
 }
@@ -346,7 +283,6 @@ function _renderLatticeValues(chain) {
             <span>ceiling: <b>${_esc(ch.action_ceiling)}</b></span>
           </div>
           <div class="text-[9px] text-gray-600 font-mono">${_esc(ch.value_source)}</div>
-          <div class="text-[9px] text-gray-500 font-mono" data-testid="threshold-provenance">${_provenanceText(ch.threshold_provenance)}</div>
           <div class="flex gap-1 mt-1">
             <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-gray-800 hover:bg-gray-700 border border-gray-700" data-channel="${id}" data-judgment="too_loud">Too Loud</button>
             <button class="lattice-judgment text-[9px] rounded px-1.5 py-0.5 bg-emerald-900/40 hover:bg-emerald-900/60 border border-emerald-800" data-channel="${id}" data-judgment="right">✓ Right</button>
@@ -367,16 +303,6 @@ function _renderLatticeValues(chain) {
 
 // One line: where watch_at came from (static | derived), the EWMA window and
 // sample count, and the fast z ("unknown" until the baseline is warm).
-function _provenanceText(prov) {
-  if (!prov || !prov.watch_at) return "threshold source: n/a";
-  const w = prov.watch_at;
-  const meta = prov._meta || {};
-  const win = typeof w.window_sec === "number" ? `${(w.window_sec / 3600).toFixed(0)}h half-life` : "no window";
-  const z = typeof meta.z_fast === "number" ? meta.z_fast.toFixed(2) : "unknown";
-  const chronic = meta.chronic_hot ? " CHRONIC-HOT" : "";
-  return _esc(`watch_at source=${w.source} (${meta.reason}) static=${w.static} ${win} n=${w.n_samples} z_fast=${z}${chronic}`);
-}
-
 function _renderSimInputs(channels) {
   const el = document.getElementById("simThresholdInputs");
   if (!el) return;

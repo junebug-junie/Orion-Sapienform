@@ -4,14 +4,14 @@ import asyncio
 import contextlib
 import logging
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.hub.association import build_hub_association_bundle
 from orion.hub.chat_route import CHAT_ROUTE_UNIFIED_TURN_HARNESS
 from orion.cockpit.builders import extract_mind_quality_fields
-from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER
+from orion.cockpit.markers import COCKPIT_MOTOR_BOOT_MARKER, COCKPIT_WORKING_NOTES_MARKER
 from orion.hub.cockpit_emit import (
     begin_cockpit_timeline,
     emit_association_hop,
@@ -32,6 +32,7 @@ from orion.situational.context import build_situation_for_ctx, hub_settings_to_r
 from orion.harness.attachment_staging import prune_staging, stage_attachments
 from orion.harness.repair import map_repair_pressure_contract
 from orion.harness.runner import build_harness_prompt
+from orion.harness.prefix import format_recent_turns
 from orion.schemas.harness_finalize import (
     HARNESS_RECENT_TURNS_MAX,
     HarnessAttachmentV1,
@@ -57,6 +58,10 @@ from orion.fcc.context_budget import (
 )
 
 logger = logging.getLogger("orion.hub.turn_orchestrator")
+
+# Per-message cap for the stance pass's copy of RECENT CONVERSATION: enough to
+# follow the thread, not every word of a long reply.
+STANCE_RECENT_TURN_MAX_CHARS = 400
 
 DEFAULT_UNIFIED_TURN_FCC_MODEL_LABEL = "MODEL_SONNET"
 
@@ -325,7 +330,10 @@ async def _publish_unified_turn_chat_grammar(
             # into memory as a "repair". The sub-floor reading still
             # travels on its own atom.
             has_repair_signal=is_repair_signal(repair_pressure_level),
-            has_repair_pressure_reading=repair_bundle is not None,
+            # A reading exists only if the paradigm measured one. A bundle whose
+            # repair_pressure failed (e.g. probe shed by heat) has no level (None):
+            # no atom, rather than a 0.0 "calm" reading.
+            has_repair_pressure_reading=repair_pressure_level is not None,
             stance_disposition=stance_disposition,
             stance_disposition_reasons=stance_disposition_reasons,
             stance_boundary_register=stance_boundary_register,
@@ -594,17 +602,25 @@ async def _run_pre_turn_appraisal(
     user_message: str,
     continuity_messages: list[dict[str, Any]] | None,
     settings: Any,
+    gpu_lease: GpuLeaseRefV1 | None = None,
 ) -> tuple[TurnAppraisalBundleV1 | None, dict[str, Any]]:
     """Run pre-turn appraisal and return (bundle, cockpit_texture).
 
+    ``gpu_lease`` is the turn's GPU pool hold (durable/background turns). It rides the request so
+    cortex-exec runs the probe on that seat, not on the small ``quick_turn`` lane (Juniper,
+    2026-11-12: world-pulse work never goes to the fast or metacog lane). None for Juniper's turns.
+
     Texture is honest Hub-boundary detail for Soft HUD progress hops — never
-    fabricated cognition. Keys: status, error, failed_paradigms, elapsed_ms,
-    skipped_reason.
+    fabricated cognition. Keys: status, error, failed_paradigms, failure_reasons,
+    elapsed_ms, skipped_reason. A failed paradigm (e.g. its probe shed by heat:
+    failure_reasons={"repair_pressure": "shed:cabinet_hot"}) makes the status
+    ``failed``: its level is unknown, never reported as ``ok``.
     """
     texture: dict[str, Any] = {
         "status": "skipped",
         "error": None,
         "failed_paradigms": [],
+        "failure_reasons": {},
         "elapsed_ms": None,
         "skipped_reason": None,
     }
@@ -635,6 +651,7 @@ async def _run_pre_turn_appraisal(
                 paradigms_requested=[p.strip() for p in paradigms.split(",") if p.strip()],
                 contract_before={"mode": "default"},
                 options=PreTurnAppraisalOptionsV1(timeout_ms=timeout_ms),
+                gpu_lease=gpu_lease,
             ),
             correlation_id=correlation_id,
         )
@@ -659,10 +676,20 @@ async def _run_pre_turn_appraisal(
         return None, texture
 
     failed = list(bundle.failed_paradigms or [])
+    reasons = dict(getattr(bundle, "failure_reasons", None) or {})
     texture["failed_paradigms"] = failed
+    texture["failure_reasons"] = reasons
     if failed:
         texture["status"] = "failed"
-        texture["error"] = f"failed_paradigms={','.join(failed)}"
+        texture["error"] = "failed_paradigms=" + ",".join(
+            f"{name}:{reasons[name]}" if reasons.get(name) else name for name in failed
+        )
+        logger.warning(
+            "pre_turn_appraisal_failed corr=%s failed=%s reasons=%s",
+            correlation_id,
+            failed,
+            reasons,
+        )
     else:
         texture["status"] = "ok"
 
@@ -962,6 +989,49 @@ async def _deliver_cockpit_frames(
         logger.warning("cockpit frame deliver failed", exc_info=True)
 
 
+async def _build_prime_block(bus: Any, *, settings: Any, correlation_id: str) -> Any:
+    """Prime's present for this turn (orion/prime/block.py, living Prime design Part 1), or None
+    when HUB_PRIME_BLOCK_ENABLED is off. Fail-open: an unreadable Prime renders a labelled absent
+    block; anything unexpected here returns None and the turn goes on without it."""
+    if not bool(getattr(settings, "HUB_PRIME_BLOCK_ENABLED", True)):
+        return None
+    try:
+        from orion.prime.block import fetch_prime_block
+
+        try:
+            redis = bus.redis
+        except Exception:  # noqa: BLE001 -- bus not connected: same as unreadable
+            from orion.prime.block import absent_block
+
+            block = absent_block("Hub's bus is not connected, so Prime's state could not be read")
+        else:
+            stale_min = float(getattr(settings, "HUB_PRIME_BLOCK_STALE_MIN", 10.0) or 10.0)
+            block = await fetch_prime_block(redis, stale_after=timedelta(minutes=stale_min))
+        logger.info("prime_block corr=%s %s", correlation_id, block.log_fields())
+        return block
+    except Exception:  # noqa: BLE001 -- the Prime block must never break a turn
+        logger.warning("prime_block_failed corr=%s", correlation_id, exc_info=True)
+        return None
+
+
+def _log_prime_citations(prime_block: Any, final_text: Any, *, correlation_id: str) -> None:
+    """Count the reply's Prime refs against the block it was shown (orion/prime/block.py
+    check_prime_citations): one log line per turn, like temporal_self_day_citations. Never raises."""
+    if prime_block is None:
+        return
+    try:
+        from orion.prime.block import check_prime_citations
+
+        # A stale or absent block showed no refs: any Prime ref in the reply then is invented, and counted.
+        status = getattr(prime_block, "status", None)
+        shown = prime_block.refs if status == "ok" else ()
+        check = check_prime_citations(str(final_text or ""), shown)
+        logger.info("prime_block_citations corr=%s block=%s %s rejected_examples=%s", correlation_id,
+                    status, check.log_fields(), list(check.examples))
+    except Exception:  # noqa: BLE001
+        logger.warning("prime_block_citations_failed corr=%s", correlation_id, exc_info=True)
+
+
 async def execute_unified_turn(
     *,
     bus: Any,
@@ -986,6 +1056,7 @@ async def execute_unified_turn(
     urgent: bool = False,
     retrieval_query: str | None = None,
     draft_preview: bool = False,
+    stance_view_message: str | None = None,
 ) -> list[dict[str, Any]]:
     """Orion capability: unified Hub chat turn.
 
@@ -1012,6 +1083,13 @@ async def execute_unified_turn(
     self-initiated turn's standing question, a reading's source and claim).
     None keeps today's behavior: recall condenses the turn text itself. It
     rides StanceReactRequestV1.retrieval_query to cortex-exec's recall calls.
+
+    `stance_view_message` is the task as the stance pass should read it, when
+    that differs from what the motor gets. A reading turn passes its prompt
+    with the reader's JSON output contract cut out
+    (orion/world_pulse_read/reader_contract.py): with both contracts in view
+    the stance model wrote the reader's keys instead of its own. The motor
+    still gets `user_message` in full. None keeps today's behavior.
 
     `draft_preview=True` (interactive chat only, via run_unified_turn) asks the
     governor to publish the draft before the finalize judge (spec L8). The
@@ -1079,6 +1157,12 @@ async def execute_unified_turn(
         bus=bus,
         cockpit_sink=cockpit_sink,
     )
+    # The durable run's GPU pool hold ref rides the whole turn (pre-turn check + stance + harness).
+    turn_gpu_lease = (
+        GpuLeaseRefV1.model_validate(payload["gpu_lease"])
+        if payload.get("gpu_lease") is not None
+        else None
+    )
     repair_bundle, appraisal_texture = await _run_pre_turn_appraisal(
         bus=bus,
         correlation_id=correlation_id,
@@ -1086,6 +1170,7 @@ async def execute_unified_turn(
         user_message=user_message,
         continuity_messages=continuity_messages,
         settings=cfg,
+        gpu_lease=turn_gpu_lease,
     )
     appraisal_status = str(appraisal_texture.get("status") or "skipped")
     appraisal_error = appraisal_texture.get("error")
@@ -1108,6 +1193,7 @@ async def execute_unified_turn(
                     "phase": "done",
                     "status": appraisal_status,
                     "failed_paradigms": list(appraisal_texture.get("failed_paradigms") or []),
+                    "failure_reasons": dict(appraisal_texture.get("failure_reasons") or {}),
                     "elapsed_ms": appraisal_texture.get("elapsed_ms"),
                     "error": appraisal_error,
                     "skipped_reason": appraisal_texture.get("skipped_reason"),
@@ -1160,21 +1246,58 @@ async def execute_unified_turn(
     from scripts.harness_governor_client import HarnessGovernorClient
     from scripts.thought_client import ThoughtClient
 
-    # The durable run's GPU pool hold ref rides the whole turn (stance + harness).
-    turn_gpu_lease = (
-        GpuLeaseRefV1.model_validate(payload["gpu_lease"])
-        if payload.get("gpu_lease") is not None
-        else None
+    # Reuses build_turn_window (already the appraisal call above's normalizer)
+    # rather than passing continuity_messages through raw -- caps to the last
+    # HARNESS_RECENT_TURNS_MAX messages regardless of what the caller already
+    # capped, so HarnessRunRequestV1.recent_turns's own bound holds even if a
+    # future caller forgets to cap. No synthetic single-message fallback here
+    # (unlike _run_pre_turn_appraisal's turn_window above): an empty
+    # continuity_messages should render as a genuinely empty recent_turns, not
+    # a fabricated one-line "history".
+    #
+    # Real callers (services/orion-hub/scripts/api_routes.py's build_continuity_
+    # messages(history=user_messages, ...) and websocket_handler.py's history
+    # list) both include THIS turn's own message as the trailing entry --
+    # confirmed live review 2026-08-20: without stripping it here, recent_turns'
+    # last item duplicates user_message, so compile_harness_prefix would render
+    # the current question twice (once under RECENT CONVERSATION, once as
+    # "User message: ..."). _run_pre_turn_appraisal's turn_window above is left
+    # alone -- that RPC may legitimately want the current message included.
+    history_only = list(continuity_messages or [])
+    if history_only:
+        last = history_only[-1]
+        last_content = str(last.get("content") or "").strip() if isinstance(last, dict) else None
+        if last_content is not None and last_content == user_message.strip():
+            history_only = history_only[:-1]
+    recent_turns = build_turn_window(
+        history_only, max_turns=HARNESS_RECENT_TURNS_MAX, keep_timestamps=True
     )
+
     appraisal = (mind_appraisal_text or "").strip()
-    stance_user_message = appraisal or user_message
+    # stance_inputs["harness_user_message"] below also takes the stance view:
+    # every stance_inputs key is rendered into the stance prompt, and the full
+    # message is exactly what a stance view leaves out.
+    stance_view = (stance_view_message or "").strip()
+    stance_user_message = appraisal or stance_view or user_message
     stance_inputs: dict[str, Any] = {"user_message": stance_user_message}
     if utterance_origin in ("juniper", "orion"):
         stance_inputs["utterance_origin"] = utterance_origin
     if appraisal:
-        # Motor/harness still sees the full prompt; stance_inputs["user_message"]
-        # must match StanceReactRequestV1.user_message (Mind snapshot user_text).
-        stance_inputs["harness_user_message"] = user_message
+        # The task the motor gets, as the stance may read it (the stance view when one
+        # was given). stance_inputs["user_message"] must match
+        # StanceReactRequestV1.user_message (Mind snapshot user_text).
+        stance_inputs["harness_user_message"] = stance_view or user_message
+    if recent_turns:
+        # The stance pass writes the imperative and tone the motor follows, so
+        # it must read the message against the thread too. Without this it saw
+        # only "That was on Sunday. Today is Monday :) It was eventful" and
+        # told the motor to "meet Juniper's Monday update" -- the motor had the
+        # history but followed the stance (live 2026-10-20, corr=98bde7cf).
+        stance_inputs["recent_conversation"] = format_recent_turns(
+            recent_turns,
+            now=datetime.now(timezone.utc),
+            max_content_chars=STANCE_RECENT_TURN_MAX_CHARS,
+        )
     # Not copied into stance_inputs: stance_react.j2 renders every stance_inputs
     # key into the stance LLM prompt as "additional context". This is recall's
     # search text, not something stance should read (PR #2423 review).
@@ -1385,6 +1508,8 @@ async def execute_unified_turn(
         reasons=list(thought.disposition_reasons),
     )
 
+    # The Prime read (two Redis GETs, <= 1 s) runs alongside the situation build, not after it.
+    prime_task = asyncio.create_task(_build_prime_block(bus, settings=cfg, correlation_id=correlation_id))
     situation_bundle = await _build_situation_prompt_fragment(
         session_id=session_id,
         user_message=user_message,
@@ -1401,6 +1526,7 @@ async def execute_unified_turn(
         session_id,
         correlation_id=correlation_id,
     )
+    prime_block = await prime_task
     # Map builder statuses onto CockpitHopStatusV1 (no "empty" in the schema).
     situation_hop_status = str(situation_bundle.get("status") or "ok")
     if situation_hop_status == "empty":
@@ -1472,30 +1598,6 @@ async def execute_unified_turn(
                 correlation_id,
             )
 
-    # Reuses build_turn_window (already the appraisal call above's normalizer)
-    # rather than passing continuity_messages through raw -- caps to the last
-    # HARNESS_RECENT_TURNS_MAX messages regardless of what the caller already
-    # capped, so HarnessRunRequestV1.recent_turns's own bound holds even if a
-    # future caller forgets to cap. No synthetic single-message fallback here
-    # (unlike _run_pre_turn_appraisal's turn_window above): an empty
-    # continuity_messages should render as a genuinely empty recent_turns, not
-    # a fabricated one-line "history".
-    #
-    # Real callers (services/orion-hub/scripts/api_routes.py's build_continuity_
-    # messages(history=user_messages, ...) and websocket_handler.py's history
-    # list) both include THIS turn's own message as the trailing entry --
-    # confirmed live review 2026-08-20: without stripping it here, recent_turns'
-    # last item duplicates user_message, so compile_harness_prefix would render
-    # the current question twice (once under RECENT CONVERSATION, once as
-    # "User message: ..."). _run_pre_turn_appraisal's turn_window above is left
-    # alone -- that RPC may legitimately want the current message included.
-    history_only = list(continuity_messages or [])
-    if history_only:
-        last = history_only[-1]
-        last_content = str(last.get("content") or "").strip() if isinstance(last, dict) else None
-        if last_content is not None and last_content == user_message.strip():
-            history_only = history_only[:-1]
-    recent_turns = build_turn_window(history_only, max_turns=HARNESS_RECENT_TURNS_MAX)
 
     # "orion" or "agent" -- computed once, up near the top of this function
     # (alongside resolved_fcc_model_label; see that block's own comment) so
@@ -1546,6 +1648,9 @@ async def execute_unified_turn(
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
         resume_key=payload.get("resume_key"),
+        # Only a curiosity run that took a focus (curiosity_investigation._generate). Honored on
+        # Orion's own turns only: a chat client's payload never reaches the system prompt.
+        curiosity_focus=payload.get("curiosity_focus") if utterance_origin == "orion" else None,
         inference_timeout_sec=inference_timeout_sec,
         reply_budget_sec=reply_budget_sec,
         reading_binding=reading_binding,
@@ -1574,6 +1679,7 @@ async def execute_unified_turn(
         mode=mode_tag,
         utterance_origin=utterance_origin,
         situation_prompt_fragment=situation_prompt_fragment,
+        prime_block=prime_block.text if prime_block is not None else None,
         draft_preview=bool(draft_preview),
     )
     harness_bus = harness_rpc_bus or bus
@@ -1598,6 +1704,7 @@ async def execute_unified_turn(
             attachments=list(harness_req.attachments or []),
             recent_turns=list(harness_req.recent_turns or []),
             situation_prompt_fragment=harness_req.situation_prompt_fragment,
+            prime_block=harness_req.prime_block,
         )
     except Exception:
         logger.warning(
@@ -1711,6 +1818,8 @@ async def execute_unified_turn(
     # _success_frames/_publish_unified_turn_chat_history so the final frame,
     # the persisted chat_history_log row, AND HarnessRunRequestV1.mode
     # (consumed by orion-harness-governor's own grammar trace) all agree.
+    if run.final_text:
+        _log_prime_citations(prime_block, run.final_text, correlation_id=correlation_id)
     if run.finalize_degraded_reason and run.final_text:
         await _publish_unified_turn_chat_history(
             bus=bus,
@@ -2126,7 +2235,8 @@ async def run_unified_turn(
             step = frame.get("step")
             step_dict = step if isinstance(step, dict) else {}
             is_motor_boot = step_dict.get("_cockpit") == COCKPIT_MOTOR_BOOT_MARKER
-            if not is_motor_boot:
+            # Marker steps are cockpit records, not motor steps: never shown as a step in chat.
+            if not is_motor_boot and step_dict.get("_cockpit") != COCKPIT_WORKING_NOTES_MARKER:
                 await _send_ws(frame)
             try:
                 # Hub already recorded motor_boot pre-dispatch; ignore governor's

@@ -17,6 +17,8 @@ from .biometrics_cluster import BiometricsClusterSQL
 from .power_intent_settled import PowerIntentSettledSQL
 from .cabinet_ambient_spike import CabinetAmbientSpikeSQL
 from .home_cooling_sample import HomeCoolingSampleSQL
+from .office_env_sample import OfficeEnvSampleSQL
+from .closet_env_sample import ClosetEnvSampleSQL
 from .energy import (
     EnergyBillActualSQL,
     EnergyBillForecastSQL,
@@ -55,11 +57,18 @@ from .curiosity_hop_reading import CuriosityHopReadingSQL
 from .durable_run_state import DurableRunStateSQL
 from .gpu_pool_event import GpuPoolEventSQL
 from .gpu_pool_state import GpuPoolStateSQL
+from .physiology_state import PhysiologyStateSQL
+from .want_ledger import WantLedgerSQL
+from .llm_call_usage import LlmCallUsageSQL
 from .transport_baseline_hourly import TransportBaselineHourlySQL
+from .orion_energy_hourly import OrionEnergyHourlySQL
+from .orion_energy_attribution_hourly import OrionEnergyAttributionHourlySQL
+from .act_downstream_use import ActDownstreamUseSQL
 from .self_signal_outcome import SelfSignalHourSQL, SelfSignalOutcomeAssociationSQL
 from .field_channel_anomaly_score import FieldChannelAnomalyScoreSQL
 from .chat_stance_belief import ChatStanceBeliefLogSQL
 from .self_concept_history import SelfConceptHistorySQL
+from .disposition_naming import DispositionNamingSQL
 from .self_sense_eval_log import SelfSenseEvalLogSQL
 from .evidence_unit import EvidenceUnitSQL
 from .social_room_turn import SocialRoomTurnSQL
@@ -129,6 +138,8 @@ __all__ = [
     "PowerIntentSettledSQL",
     "CabinetAmbientSpikeSQL",
     "HomeCoolingSampleSQL",
+    "OfficeEnvSampleSQL",
+    "ClosetEnvSampleSQL",
     "EnergyUsageIntervalSQL",
     "EnergyCostAccruedSQL",
     "EnergyRunCostSQL",
@@ -157,13 +168,20 @@ __all__ = [
     "DurableRunStateSQL",
     "GpuPoolEventSQL",
     "GpuPoolStateSQL",
+    "PhysiologyStateSQL",
+    "WantLedgerSQL",
+    "LlmCallUsageSQL",
     "TransportBaselineHourlySQL",
+    "OrionEnergyHourlySQL",
+    "OrionEnergyAttributionHourlySQL",
+    "ActDownstreamUseSQL",
     "SelfSignalHourSQL",
     "SelfSignalOutcomeAssociationSQL",
     "FieldChannelAnomalyScoreSQL",
     "JournalEntryIndexSQL",
     "ChatStanceBeliefLogSQL",
     "SelfConceptHistorySQL",
+    "DispositionNamingSQL",
     "EvidenceUnitSQL",
     "SocialRoomTurnSQL",
     "ExternalRoomMessageSQL",

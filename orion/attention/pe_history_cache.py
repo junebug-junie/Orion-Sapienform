@@ -26,6 +26,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Iterable
 
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
+from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
 from orion.substrate.prediction_error_magnitude import (
     WINDOW_7D,
     compute_prediction_error_magnitude,
@@ -66,6 +67,10 @@ class NodePeHistoryCache:
         added = 0
         fresh: list[Row] = []
         for node_id, observed_at, value in fetch_since(since):
+            # A retired node's rows linger for the table's 7-day retention;
+            # they are not readings (RETIRED_PREDICTION_ERROR_NODE_IDS).
+            if is_retired_prediction_error_node(node_id):
+                continue
             observed_at = _aware(observed_at)
             key = (str(node_id), observed_at)
             if key in self._seen:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -39,6 +40,7 @@ from app.grammar_truth import (
     apply_grammar_edges_retention,
     apply_grammar_events_retention,
     apply_substrate_organ_emissions_retention,
+    build_grammar_operational_snapshot,
     build_grammar_truth_snapshot,
     extra_retention_state,
     reset_retention_state_for_tests,
@@ -124,6 +126,16 @@ def _live_cursor_floor():
     """
     return MagicMock(scalar=lambda: datetime.now(timezone.utc))
 
+
+def _mark_all_retention_runs_complete() -> None:
+    now = datetime.now(timezone.utc)
+    grammar_truth_module._retention_state.last_run_at = now
+    for table in grammar_truth_module._EXTRA_RETENTION_TABLES:
+        grammar_truth_module._extra_retention_state[table] = (
+            grammar_truth_module.GrammarRetentionState(last_run_at=now)
+        )
+
+
 def test_build_grammar_truth_snapshot_flags_degraded_when_grammar_disabled(monkeypatch) -> None:
     settings = _mock_settings(sql_writer_enable_grammar_channel=False)
     _patch_truth_deps(monkeypatch, settings)
@@ -139,6 +151,63 @@ def test_build_grammar_truth_snapshot_flags_degraded_when_grammar_disabled(monke
     snap = build_grammar_truth_snapshot()
     assert snap["degraded"] is True
     assert "grammar_channel_disabled" in snap["degraded_reasons"]
+
+
+def test_operational_snapshot_never_runs_ledger_wide_diagnostics(monkeypatch) -> None:
+    settings = _mock_settings()
+    _patch_truth_deps(monkeypatch, settings)
+    _mark_all_retention_runs_complete()
+
+    def fail_if_called():
+        raise AssertionError("ledger-wide diagnostics must not run on /health")
+
+    monkeypatch.setattr(grammar_truth_module, "_fallback_counts", fail_if_called)
+    monkeypatch.setattr(grammar_truth_module, "_latest_events_by_source", fail_if_called)
+
+    snap = build_grammar_operational_snapshot()
+
+    assert snap["ok"] is True
+    assert snap["degraded"] is False
+    assert "grammar_fallbacks" not in snap
+    assert "latest_by_source_service" not in snap
+
+
+def test_health_route_uses_operational_not_detailed_truth_builder() -> None:
+    module = ast.parse((SQL_WRITER_ROOT / "app" / "main.py").read_text())
+    health_fn = next(
+        node for node in module.body if isinstance(node, ast.FunctionDef) and node.name == "health"
+    )
+    called_names = {
+        node.func.id
+        for node in ast.walk(health_fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert "build_grammar_operational_snapshot" in called_names
+    assert "build_grammar_truth_snapshot" not in called_names
+
+
+def test_truth_composes_operational_state_with_existing_diagnostics(monkeypatch) -> None:
+    settings = _mock_settings()
+    _patch_truth_deps(monkeypatch, settings)
+    _mark_all_retention_runs_complete()
+    fallbacks = {"total": 2, "last_5m": 0, "last_30m": 1, "last_60m": 2}
+    latest = [
+        {
+            "source_service": "orion-biometrics",
+            "latest_created_at": "2026-11-02T00:00:00+00:00",
+            "event_count": 42,
+        }
+    ]
+    monkeypatch.setattr(grammar_truth_module, "_fallback_counts", lambda: fallbacks)
+    monkeypatch.setattr(grammar_truth_module, "_latest_events_by_source", lambda: latest)
+
+    operational = build_grammar_operational_snapshot()
+    truth = build_grammar_truth_snapshot()
+
+    assert truth["grammar_fallbacks"] == fallbacks
+    assert truth["latest_by_source_service"] == latest
+    assert {key: truth[key] for key in operational} == operational
 
 
 def test_retention_failure_marks_truth_degraded(monkeypatch) -> None:

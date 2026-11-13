@@ -47,8 +47,9 @@ def extract_chat_turn_state(
 
     session_id = ""
     word_count = 0
-    repair_pressure_level = 0.0
-    repair_pressure_confidence = 0.0
+    # None until a repair atom says otherwise: a turn with no reading is unknown, not 0.0.
+    repair_pressure_level: float | None = None
+    repair_pressure_confidence: float | None = None
     has_repair_signal = False
     stance_disposition = "unknown"
     stance_disposition_reasons: list[str] = []
@@ -118,13 +119,16 @@ def extract_chat_turn_state(
 
 
 def compute_chat_pressure_hints(turn: ChatTurnStateV1) -> dict[str, float]:
+    """Pressure hints for one turn. ``repair_pressure`` is omitted when the turn has no reading
+    (level None), so the field digester (state_deltas: ``if key in hints``) writes nothing instead
+    of a fabricated 0.0. chat_prediction_error reads a missing hint as 0.0, exactly as it read the
+    old fabricated 0.0, so its definition is unchanged."""
     # `topic_coherence` (= 1 - repair_pressure_level) was removed 2026-09-25: it
     # was a mirror of repair_pressure, not a separate reading of topic, and its
     # only consumer (chat_prediction_error) counted repair twice because of it.
     # The field digester already refused to put it on the lattice.
     conversation_load = min(1.0, turn.word_count / 150.0)
-    repair_pressure = turn.repair_pressure_level
-    return {
-        "conversation_load": conversation_load,
-        "repair_pressure": repair_pressure,
-    }
+    hints = {"conversation_load": conversation_load}
+    if turn.repair_pressure_level is not None:
+        hints["repair_pressure"] = float(turn.repair_pressure_level)
+    return hints

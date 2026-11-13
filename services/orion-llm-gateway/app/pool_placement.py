@@ -133,6 +133,29 @@ def wait_budget_sec(priority: str) -> float:
     return float(settings.llm_gateway_pool_wait_sec)
 
 
+# A bus caller's own seat wait (2026-11-03, Orion Prime): options["gateway_pool_wait_sec"] is how
+# long it will wait in the pool queue for a grant, ON TOP OF its generation budget
+# (options["gateway_read_timeout_sec"]). Without it the two are one number and a call that queues
+# for most of its budget has nothing left to generate with (live 10-30..11-03: 74 of 254 Prime calls
+# were cancelled after ~60 s queued). Capped like the read budget; absent or invalid = the old rule.
+CALLER_POOL_WAIT_OPTION = "gateway_pool_wait_sec"
+CALLER_POOL_WAIT_MAX_SEC = 900.0
+
+
+def caller_pool_wait_sec(options: Optional[Dict[str, Any]]) -> Optional[float]:
+    """The caller's own seat wait in seconds (capped at CALLER_POOL_WAIT_MAX_SEC), or None."""
+    raw = (options or {}).get(CALLER_POOL_WAIT_OPTION)
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not value > 0 or value != value:   # also refuses NaN
+        return None
+    return min(value, CALLER_POOL_WAIT_MAX_SEC)
+
+
 def passthrough_wait_sec() -> float:
     """HTTP passthrough callers hold a socket open while they wait: never the 300/900s bus budgets."""
     return float(settings.llm_gateway_pool_passthrough_wait_sec)

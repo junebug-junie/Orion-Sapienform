@@ -2,9 +2,19 @@
 
 Real-time facial+vocal affect assessment for Juniper, via
 [AffectGPT](https://github.com/zeroQiaoba/AffectGPT) (Qwen2.5-7B-Instruct +
-CLIP ViT-L + HuBERT-L, LoRA fine-tuned). Runs on **circe GPU1**
-(V100-SXM2-32GB) as of 2026-08-25 -- moved off GPU2 (the "agent / affect /
-testing" lane, :8014), which was confirmed idle at the same time.
+CLIP ViT-L + HuBERT-L, LoRA fine-tuned). Runs on **circe**, on the card
+named by GPU UUID in `AFFECTGPT_GPU_DEVICE_ID` (compose refuses to start
+while it is empty).
+
+**Placement is open (2026-10-23).** The old pin was index `"1"`, which meant
+the V100-SXM2-32GB on 2026-08-25. circe's GPU numbering later changed: index 1
+became the agent llama-server's card, and from 2026-10-14 03:00Z to
+2026-10-23 22:27Z this worker hit CUDA OOM at model load and restarted 601
+times (exit 3, ~144 W for 9 days, nothing alerted). The worker needs
+~18.4 GB at peak (measured 2026-08, below; the OOM hit with 7.3 GB free); no
+circe card had that on 2026-10-23
+(the SXM2, now index 3, had ~12 GB). Juniper chooses the card; the UUIDs are
+listed in `docker-compose.yml`.
 
 Bus: consumes `orion:exec:request:AffectGptWorkerService`
 (`AffectGptAssessRequestPayload`), replies on `orion:affectgpt:reply:*`

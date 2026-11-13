@@ -69,6 +69,12 @@ class BiometricsCollector:
         self._prev_net_scope: Optional[str] = None
         self._prev_rapl: Dict[str, Tuple[int, int]] = {}
         self._prev_ts: Optional[float] = None
+        # Busy cores over the last /proc/stat delta; None until a real delta exists (the first
+        # tick's util of 0.0 is a placeholder, not a measurement).
+        self._busy_cores: Optional[float] = None
+        self._prev_ctr_usec: Dict[str, int] = {}
+        self._prev_ctr_mono: Optional[float] = None
+        self._ctr_names: Dict[str, str] = {}
 
     def collect(self) -> Dict[str, Any]:
         timestamp = datetime.now(timezone.utc)
@@ -87,6 +93,7 @@ class BiometricsCollector:
         net_data = self._collect_network(errors, dt)
         temps_data = self._collect_temps(errors)
         power_data = self._collect_power(gpu_data, temps_data, dt)
+        containers_data = self._collect_containers(dt)
 
         return {
             "timestamp": timestamp,
@@ -103,6 +110,7 @@ class BiometricsCollector:
             "network": net_data,
             "temps": temps_data,
             "power": power_data,
+            "containers": containers_data,
             "errors": errors,
         }
 
@@ -128,11 +136,13 @@ class BiometricsCollector:
             total = sum(values)
             current = _CpuTimes(total=total, idle=idle)
             util = 0.0
+            self._busy_cores = None
             if self._prev_cpu:
                 total_delta = current.total - self._prev_cpu.total
                 idle_delta = current.idle - self._prev_cpu.idle
                 if total_delta > 0:
                     util = max(0.0, min(1.0, 1.0 - (idle_delta / total_delta)))
+                    self._busy_cores = util * float(os.cpu_count() or 1)
             self._prev_cpu = current
             load1, load5, load15 = self._read_loadavg()
             return {
@@ -490,6 +500,89 @@ class BiometricsCollector:
             out["cpu_package_watts"] = cpu_watts
             out["cpu_package_watts_by_domain"] = packages
         return out
+
+    # ------------------------------------------------------- per-container CPU (cgroup v2)
+
+    def _collect_containers(self, dt: Optional[float]) -> Dict[str, Any]:
+        """Busy cores per docker container over the last tick, from cgroup v2 ``cpu.stat``.
+
+        ``usage_usec`` is the container's cumulative CPU time; delta over the tick's wall time is
+        its busy cores. Read through HOST_SYS_PATH (the host's /sys, already mounted read-only),
+        so it needs no docker socket. systemd cgroup driver (athena, verified 2026-10-29):
+        ``fs/cgroup/system.slice/docker-<id>.scope``; cgroupfs driver: ``fs/cgroup/docker/<id>``.
+        Names come from ``<DOCKER_ROOT_PATH>/containers/<id>/config.v2.json``; when that is not
+        readable the name is the 12-char id, so the split still sums to the whole.
+
+        Returns host_busy_cores (from /proc/stat, None on the first tick) and the per-node idle
+        floor as well, so the pipeline's split has every input in one place. A container seen for
+        the first time has no delta and is absent this tick (absent is not zero).
+        """
+        out: Dict[str, Any] = {
+            "host_busy_cores": self._busy_cores,
+            "cpu_idle_watts": settings.cpu_idle_watts(),
+        }
+        usec = self._read_container_usec()
+        # Its own clock at the cgroup read: dt from collect() also holds nvidia-smi's latency jitter.
+        now_mono = time.monotonic()
+        prev, self._prev_ctr_usec = self._prev_ctr_usec, usec
+        prev_mono, self._prev_ctr_mono = self._prev_ctr_mono, now_mono
+        if prev_mono is not None:
+            dt = now_mono - prev_mono
+        if not usec or not prev or not dt or dt <= 0 or dt > _RAPL_MAX_GAP_SEC:
+            return out
+        cores: Dict[str, float] = {}
+        for cid, now_usec in usec.items():
+            before = prev.get(cid)
+            if before is None or now_usec < before:  # new container, or restarted under the same id
+                continue
+            name = self._container_name(cid)
+            cores[name] = cores.get(name, 0.0) + (now_usec - before) / 1e6 / dt
+        out["cpu_cores"] = cores
+        self._ctr_names = {k: v for k, v in self._ctr_names.items() if k in usec}
+        return out
+
+    def _read_container_usec(self) -> Dict[str, int]:
+        found: Dict[str, int] = {}
+        for rel, prefix, suffix in (("fs/cgroup/system.slice", "docker-", ".scope"), ("fs/cgroup/docker", "", "")):
+            base = self._host_path("sys", rel)
+            if not base:
+                continue
+            try:
+                entries = os.listdir(base)
+            except OSError:
+                continue
+            for entry in entries:
+                if not (entry.startswith(prefix) and entry.endswith(suffix)):
+                    continue
+                cid = entry[len(prefix):len(entry) - len(suffix)] if suffix else entry[len(prefix):]
+                if len(cid) != 64 or not all(c in "0123456789abcdef" for c in cid):
+                    continue
+                try:
+                    with open(os.path.join(base, entry, "cpu.stat"), "r", encoding="utf-8") as fh:
+                        for line in fh:
+                            if line.startswith("usage_usec "):
+                                found[cid] = int(line.split()[1])
+                                break
+                except (OSError, ValueError, IndexError):
+                    continue
+        return found
+
+    def _container_name(self, cid: str) -> str:
+        name = self._ctr_names.get(cid)
+        if name:
+            return name
+        name = cid[:12]
+        root = settings.DOCKER_ROOT_PATH
+        if root:
+            try:
+                with open(os.path.join(root, "containers", cid, "config.v2.json"), "r", encoding="utf-8") as fh:
+                    raw = json.load(fh).get("Name")
+                if isinstance(raw, str) and raw.strip("/"):
+                    name = raw.strip("/")
+            except (OSError, ValueError, AttributeError):
+                pass
+        self._ctr_names[cid] = name
+        return name
 
     # ------------------------------------------------------- RAPL (CPU package power)
 

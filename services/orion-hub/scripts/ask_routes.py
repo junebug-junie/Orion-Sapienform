@@ -25,6 +25,16 @@ A named pair answer also closes, in the same transaction, any open "who is
 this?" card for a named individual (``answer`` = the name, ``answer_detail`` =
 ``{"resolved_by": <pair ask_id>}``), so Juniper is not asked again.
 
+**"I don't know"** (2026-10-27). ``POST /api/asks/{id}/dismiss`` takes an
+optional body ``{"reason": "dont_know"}``, only on a "who is this?" card
+(``vision_individual``; 422 ``dont_know_only_on_who_is_this_cards`` otherwise).
+It is a dismissal: ``status='dismissed'``, ``answer`` NULL, so no name is ever
+stored, and ``answer_detail = {"dont_know": true}``. sql-writer treats that
+like an expired card (asked again after ``VISION_ASK_COOLDOWN_DAYS``); a plain
+dismissal still blocks that individual for good. Typed answers are never
+filtered by a word list: the explicit button is the fix for non-answers
+("no", "unsure") that used to be saved as names.
+
 There is no "ask opened" bus event: the Hub has no push channel for panels,
 so the card polls ``GET /api/asks`` and Postgres stays the only truth.
 
@@ -124,6 +134,10 @@ _SELECT_COLUMNS = (
 # only answers are yes / no; "not sure" is Dismiss. sql-writer reads the
 # answer as a verdict, so free text is refused here instead of being dropped there.
 SAME_INDIVIDUAL_KIND = "vision_same_individual"
+# "Is this <name>?" (orion-sql-writer person learning, 2026-10-20): yes / no too;
+# "can't tell" is Dismiss. source_ref "<individual_id>|<name>".
+PERSON_CONFIRM_KIND = "vision_person_confirm"
+YES_NO_KINDS = (SAME_INDIVIDUAL_KIND, PERSON_CONFIRM_KIND)
 YES_NO_ANSWERS = ("yes", "no")
 WHO_IS_THIS_KIND = "vision_individual"
 PAIR_SEP = "|"
@@ -142,7 +156,7 @@ WHERE ask_id = $1
   AND status = 'open'
   AND (expires_at IS NULL OR expires_at > now())
   AND source_kind <> ALL($4::text[])
-  AND (source_kind <> $5::text OR $3::text IS NULL OR $3::text = ANY($6::text[]))
+  AND (source_kind <> ALL($5::text[]) OR $3::text IS NULL OR $3::text = ANY($6::text[]))
 RETURNING ask_id, status, answer, answered_at, source_kind, source_ref
 """
 
@@ -165,6 +179,11 @@ class PictureAnswer(BaseModel):
     image_ref: str = Field(min_length=1, max_length=500)
     verdict: Literal["same", "different", "unsure"]
     name: str = Field(default="", max_length=MAX_ANSWER_CHARS)
+
+
+class AskDismissBody(BaseModel):
+    # "dont_know": Juniper does not know who it is (who-is-this cards only).
+    reason: Optional[Literal["dont_know"]] = None
 
 
 class AskAnswerBody(BaseModel):
@@ -246,6 +265,35 @@ def picture_answer_detail(answer: str, image_refs: list[str], pictures: list[Pic
             raise HTTPException(status_code=422, detail="same_picture_takes_the_answer")
         out[i] = {"image_ref": p.image_ref, "index": i, "verdict": p.verdict,
                   "name": answer if p.verdict == "same" else (name if p.verdict == "different" and name else None)}
+    return {"pictures": [out[i] for i in sorted(out)]}
+
+
+def confirm_picture_detail(answer: str, image_refs: list[str], pictures: list[PictureAnswer]) -> dict[str, Any]:
+    """``{"pictures": [...]}`` for an "Is this <name>?" card answered picture by
+    picture (2026-10-23): "same" = it is <name>, "different" = it is not,
+    "unsure". Each picture at most once (one left out is "unsure"); no names
+    (the card names one person).
+    The answer is "yes" exactly when at least one picture is <name>."""
+    if len(image_refs) < 2:
+        raise HTTPException(status_code=422, detail="pictures_need_a_multi_picture_card")
+    index: dict[str, int] = {}
+    for i, ref in enumerate(image_refs):
+        index.setdefault(ref, i)
+    out: dict[int, dict[str, Any]] = {}
+    for p in pictures:
+        if p.image_ref not in index:
+            raise HTTPException(status_code=422, detail="picture_not_on_card")
+        i = index[p.image_ref]
+        if i in out:
+            raise HTTPException(status_code=422, detail="picture_listed_twice")
+        if clean_name(p.name):
+            raise HTTPException(status_code=422, detail="no_names_on_is_this_cards")
+        out[i] = {"image_ref": p.image_ref, "index": i, "verdict": p.verdict}
+    # A picture the card could not show gets no answer: it counts as "unsure".
+    for ref, i in index.items():
+        out.setdefault(i, {"image_ref": ref, "index": i, "verdict": "unsure"})
+    if (answer == "yes") != any(v["verdict"] == "same" for v in out.values()):
+        raise HTTPException(status_code=422, detail="answer_does_not_match_pictures")
     return {"pictures": [out[i] for i in sorted(out)]}
 
 
@@ -419,10 +467,11 @@ def _event_from_row(row: Any, names: Optional[dict[str, str]] = None) -> OrionAs
 
 
 async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: dict[str, str],
-                         pictures: list[PictureAnswer]) -> Optional[dict[str, Any]]:
+                         pictures: list[PictureAnswer], dont_know: bool = False) -> Optional[dict[str, Any]]:
     """Validate typed names against the card (locks the row) and build ``answer_detail``.
-    Raises 422 for names on a card that cannot take them; None when nothing was typed."""
-    if not names and not pictures:
+    Raises 422 for names on a card that cannot take them, or "I don't know" on a
+    card that is not "who is this?"; None when nothing was typed."""
+    if not names and not pictures and not dont_know:
         return None
     card = await conn.fetchrow(
         "SELECT source_kind, source_ref, image_ref, image_refs, status, expires_at FROM orion_ask "
@@ -435,15 +484,23 @@ async def _answer_detail(conn: Any, ask_id: str, answer: Optional[str], names: d
     if card is None or card["status"] != "open" or (expires is not None and expires <= datetime.now(timezone.utc)):
         return None  # CLOSE_ASK_SQL moves nothing either: the usual 404 / 409 below
     detail: dict[str, Any] = {}
+    if dont_know:
+        if card["source_kind"] != WHO_IS_THIS_KIND:
+            raise HTTPException(status_code=422, detail="dont_know_only_on_who_is_this_cards")
+        detail["dont_know"] = True
     if names:
         if card["source_kind"] != SAME_INDIVIDUAL_KIND:
             raise HTTPException(status_code=422, detail="names_only_on_same_person_cards")
         if answer in YES_NO_ANSWERS:  # anything else is refused by CLOSE_ASK_SQL (422 below)
             detail.update(pair_answer_detail(answer, card["source_ref"], names) or {})
     if pictures:
-        if card["source_kind"] != WHO_IS_THIS_KIND:
+        if card["source_kind"] == PERSON_CONFIRM_KIND:
+            if answer in YES_NO_ANSWERS:  # anything else is refused by CLOSE_ASK_SQL (422 below)
+                detail.update(confirm_picture_detail(answer, _image_refs(card), pictures))
+        elif card["source_kind"] == WHO_IS_THIS_KIND:
+            detail.update(picture_answer_detail(answer or "", _image_refs(card), pictures) or {})
+        else:
             raise HTTPException(status_code=422, detail="pictures_only_on_who_is_this_cards")
-        detail.update(picture_answer_detail(answer or "", _image_refs(card), pictures) or {})
     return detail or None
 
 
@@ -455,6 +512,7 @@ async def _close_ask(
     answer: Optional[str],
     names: Optional[dict[str, str]] = None,
     pictures: Optional[list[PictureAnswer]] = None,
+    dont_know: bool = False,
 ) -> dict[str, Any]:
     pool = _pool(request)
     row: Any = None
@@ -464,14 +522,14 @@ async def _close_ask(
     try:
         async with pool.acquire() as conn:
             async with conn.transaction():
-                detail = await _answer_detail(conn, ask_id, answer, names or {}, pictures or [])
+                detail = await _answer_detail(conn, ask_id, answer, names or {}, pictures or [], dont_know)
                 row = await conn.fetchrow(
                     CLOSE_ASK_SQL,
                     ask_id,
                     new_status,
                     answer,
                     list(RESOLVABLE_KINDS),
-                    SAME_INDIVIDUAL_KIND,
+                    list(YES_NO_KINDS),
                     list(YES_NO_ANSWERS),
                     None if detail is None else json.dumps(detail),
                 )
@@ -489,7 +547,7 @@ async def _close_ask(
     if row is None:
         if existing is None:
             raise HTTPException(status_code=404, detail="ask_not_found")
-        if (existing["source_kind"] == SAME_INDIVIDUAL_KIND and new_status == "answered"
+        if (existing["source_kind"] in YES_NO_KINDS and new_status == "answered"
                 and answer not in YES_NO_ANSWERS and existing["status"] == "open"
                 and (existing["expires_at"] is None or existing["expires_at"] > datetime.now(timezone.utc))):
             raise HTTPException(status_code=422, detail="answer_must_be_yes_or_no")
@@ -505,13 +563,15 @@ async def _close_ask(
     event = _event_from_row(row, (detail or {}).get("names"))
     published = await _publish_answered(event)
     logger.info(
-        "ask_closed ask_id=%s status=%s source_kind=%s source_ref=%s names=%d pictures=%d published=%s",
+        "ask_closed ask_id=%s status=%s source_kind=%s source_ref=%s names=%d pictures=%d dont_know=%s "
+        "published=%s",
         event.ask_id,
         event.status,
         event.source_kind,
         event.source_ref,
         len(event.names),
         len((detail or {}).get("pictures") or []),
+        bool((detail or {}).get("dont_know")),
         published,
     )
     closed_ids = []
@@ -538,8 +598,9 @@ async def answer_ask(request: Request, ask_id: str, body: AskAnswerBody) -> dict
 
 
 @router.post("/api/asks/{ask_id}/dismiss")
-async def dismiss_ask(request: Request, ask_id: str) -> dict[str, Any]:
-    return await _close_ask(request, ask_id, new_status="dismissed", answer=None)
+async def dismiss_ask(request: Request, ask_id: str, body: Optional[AskDismissBody] = None) -> dict[str, Any]:
+    dont_know = body is not None and body.reason == "dont_know"
+    return await _close_ask(request, ask_id, new_status="dismissed", answer=None, dont_know=dont_know)
 
 
 _INSERT_OUTCOME = """
@@ -720,7 +781,8 @@ def _read_thumb(path: Path) -> Optional[bytes]:
 @router.get("/api/vision/crop-thumbs/{thumb_id}")
 async def get_crop_thumb(thumb_id: str) -> Response:
     """One crop thumbnail by content hash. 400 for anything that is not a
-    64-char lowercase hex id; 404 when absent or pruned (vision-host keeps them 10 days)."""
+    64-char lowercase hex id; 404 when absent (vision-host keeps them forever by default
+    since 2026-10-20; a positive VISION_CROP_THUMB_RETENTION_DAYS prunes them)."""
     if not _THUMB_ID_RE.fullmatch(thumb_id or ""):
         raise HTTPException(status_code=400, detail="bad_thumb_id")
     path = _crop_thumb_dir() / f"{thumb_id}.jpg"

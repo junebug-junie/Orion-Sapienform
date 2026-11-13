@@ -15,18 +15,23 @@ from orion.gpu_pool.config import load_pool_config
 from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL
 
 from .attention import AttentionPublisher
-from .equilibrium_watch import equilibrium_status_for_service, watch_equilibrium
+from .equilibrium_watch import equilibrium_status_for_service, equilibrium_subscribed, watch_equilibrium
 from .gpu_watch import ActiveProbeTracker, RefusalWatch, RoleTarget, role_targets
 from .probe import run_probe
 from .remediator import docker_cli_selfcheck, execute_remediation
 from .roster import NEVER_REMEDIATE_IDS, RosterDocument, RosterEntry, load_roster, validate_roster
 from .settings import Settings
 from .stability import (
+    STOPPED_STATES,
     AlertGate,
+    ContainerState,
     CounterRiseTracker,
     CrashLoopTracker,
     StabilityAlert,
+    StoppedContainerTracker,
     graph_inflation_alert,
+    qualify,
+    remote_restart_counts,
     slow_consumer_alert,
     snapshot_alerts,
 )
@@ -48,11 +53,12 @@ class MeshGuardianService:
         self._stop = asyncio.Event()
         self._tasks: list[asyncio.Task] = []
         self._equilibrium_queue: asyncio.Queue = asyncio.Queue(maxsize=8)
-        self._equilibrium_task_alive = False
         self._crash_loops = CrashLoopTracker()
+        self._stopped = StoppedContainerTracker()
         self._bus_disconnects = CounterRiseTracker()
         self._alert_gate = AlertGate()
         self._stability_cycles = 0
+        self._stability_started_at: float | None = None
         self._falkordb = None
         self._gpu_active = ActiveProbeTracker()
         self._gpu_refusals = RefusalWatch()
@@ -107,7 +113,9 @@ class MeshGuardianService:
         await self.bus.close()
 
     def equilibrium_subscriber_alive(self) -> bool:
-        return self._equilibrium_task_alive
+        # Subscribed right now, not merely "task started": False while the watch backs
+        # off after a Redis drop, True again once it has resubscribed.
+        return equilibrium_subscribed()
 
     async def _connect_bus_with_retry(
         self,
@@ -138,19 +146,12 @@ class MeshGuardianService:
                 backoff = min(backoff * 2.0, 15.0)
 
     async def _equilibrium_loop(self) -> None:
-        self._equilibrium_task_alive = True
-        try:
-            await watch_equilibrium(
-                self.bus,
-                self.settings.channel_equilibrium_snapshot,
-                self._equilibrium_queue,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("equilibrium watch failed")
-        finally:
-            self._equilibrium_task_alive = False
+        await watch_equilibrium(
+            self.bus,
+            self.settings.channel_equilibrium_snapshot,
+            self._equilibrium_queue,
+            stop_event=self._stop,
+        )
 
     async def _drain_equilibrium(self) -> None:
         while not self._equilibrium_queue.empty():
@@ -269,10 +270,13 @@ class MeshGuardianService:
     async def run_stability_checks(self, now: float) -> list[StabilityAlert]:
         """One cycle. Each check is isolated: one unreachable source (FalkorDB
         down, docker socket missing) must not blind the others."""
+        if self._stability_started_at is None:
+            self._stability_started_at = now
         alerts: list[StabilityAlert] = []
         summary: dict[str, object] = {}
         checks = (
             ("containers", self._check_crash_loops),
+            ("stopped", self._check_stopped_containers),
             ("bus_redis", self._check_bus_redis),
             ("falkordb", self._check_falkordb),
         )
@@ -289,16 +293,21 @@ class MeshGuardianService:
         if self._stability_cycles % 60 == 0 or alerts:
             logger.info("stability cycle %s alerts=%d", summary, len(alerts))
         self._stability_cycles += 1
-        await self._publish_alerts(alerts, now, heartbeat_name="stability")
+        delivered = await self._publish_alerts(alerts, now, heartbeat_name="stability")
+        self._stopped.confirm(delivered)
         return alerts
 
-    async def _publish_alerts(self, alerts: list[StabilityAlert], now: float, *, heartbeat_name: str) -> None:
+    async def _publish_alerts(
+        self, alerts: list[StabilityAlert], now: float, *, heartbeat_name: str
+    ) -> list[StabilityAlert]:
         """The one path to a Hub card for host-wide checks: AlertGate dedup, then notify. Shared
         by the stability and GPU loops, so a key seen by both still yields one card per window
-        (admit() never awaits, so concurrent loops cannot interleave inside it)."""
+        (admit() never awaits, so concurrent loops cannot interleave inside it). Returns the
+        alerts whose card notify accepted."""
+        delivered: list[StabilityAlert] = []
         for alert in self._alert_gate.admit(alerts, now):
             logger.warning("%s alert kind=%s subject=%s: %s", heartbeat_name, alert.kind, alert.subject, alert.message)
-            await asyncio.to_thread(
+            ok = await asyncio.to_thread(
                 self.attention.publish_transition,
                 service_id=alert.subject,
                 heartbeat_name=heartbeat_name,
@@ -308,6 +317,9 @@ class MeshGuardianService:
                     "context": {"event": alert.kind, **alert.context},
                 },
             )
+            if ok:
+                delivered.append(alert)
+        return delivered
 
     # --- GPU actuation watch (see app/gpu_watch.py) --------------------------
 
@@ -409,9 +421,62 @@ class MeshGuardianService:
         return alerts
 
     async def _check_crash_loops(self, now: float) -> tuple[list[StabilityAlert], object]:
-        counts = await _docker_restart_counts()
-        info = {"containers": len(counts), "max_restarts": max(counts.values(), default=0)}
-        return self._crash_loops.observe(counts, now), info
+        """This host's docker socket plus every remote host's census from the latest equilibrium
+        snapshot, all host-qualified ("<host>/<name>@<id12>") into one tracker. Either source
+        failing must not blind the other: a dead local socket still lets circe through, and a
+        blind remote host is its own card, never zero restarts."""
+        if self._stability_started_at is None:
+            self._stability_started_at = now
+        local = self._local_node()
+        counts: dict[str, int] = {}
+        info: dict[str, object] = {}
+        try:
+            counts.update(qualify(local, await _docker_restart_counts()))
+            info["local"] = len(counts)
+        except Exception as exc:
+            info["local"] = f"error:{type(exc).__name__}"
+            logger.warning("stability local docker restart counts failed: %s", exc)
+        alerts: list[StabilityAlert] = []
+        if self.settings.remote_container_watch_enabled:
+            snapshot = self.latest_snapshot
+            census = remote_restart_counts(
+                snapshot.services if snapshot is not None else [],
+                expected_hosts=self.settings.remote_container_host_list(),
+                local_node=local,
+                now=now,
+                watching_since=self._stability_started_at,
+                stale_after_sec=self.settings.remote_container_stale_sec,
+            )
+            counts.update(census.counts)
+            alerts += census.alerts
+            info["remote"] = {h: f"{age:.0f}s" for h, age in census.fresh_hosts.items()}
+            if census.alerts:
+                info["blind"] = [a.subject for a in census.alerts]
+            read_hosts = set(census.fresh_hosts)
+        else:
+            read_hosts = set()
+        if not isinstance(info.get("local"), str):
+            read_hosts.add(local)
+        info["containers"] = len(counts)
+        info["max_restarts"] = max(counts.values(), default=0)
+        # Only hosts actually read this cycle may drop histories: a socket error or a blind host
+        # must not reset another host's (or its own) restart history.
+        return alerts + self._crash_loops.observe(counts, now, read_hosts=read_hosts), info
+
+    async def _check_stopped_containers(self, now: float) -> tuple[list[StabilityAlert], object]:
+        """This host's containers that should run and do not (stability.stopped_containers). Own
+        check, own docker read: it only inspects the few non-running containers, and a failure
+        here must not blind the crash-loop check."""
+        if not self.settings.stopped_container_watch_enabled:
+            return [], "disabled"
+        containers = await _docker_container_states()
+        alerts = self._stopped.observe(containers, now, grace_sec=self.settings.stopped_container_grace_sec)
+        stopped = sum(1 for c in containers if c.status in STOPPED_STATES)
+        return alerts, {"containers": len(containers), "not_running": stopped}
+
+    def _local_node(self) -> str:
+        node = (self.settings.node_name or "").strip()
+        return node if node and node != "unknown" else "local"
 
     async def _check_bus_redis(self, now: float) -> tuple[list[StabilityAlert], object]:
         redis = self.bus.redis  # raises RuntimeError when not connected
@@ -494,6 +559,71 @@ async def _docker_restart_counts(socket_path: str = "/var/run/docker.sock", tran
             body = detail.json()
             lines.append(f"{body['Id']} {body['Name']} {body['RestartCount']}")
     return _parse_restart_counts("\n".join(lines))
+
+
+def _parse_docker_time(value: object) -> float | None:
+    """Docker's RFC 3339 (nanosecond) timestamp -> epoch seconds. Docker writes
+    0001-01-01T00:00:00Z for "never"; that, and anything unparsable, is None."""
+    from datetime import datetime
+
+    text = str(value or "")
+    if not text or text.startswith("0001-"):
+        return None
+    text = text.replace("Z", "+00:00")
+    head, dot, rest = text.partition(".")
+    if dot:  # trim the fraction to microseconds; fromisoformat refuses nanoseconds
+        frac = rest[: len(rest) - len(rest.lstrip("0123456789"))]
+        text = f"{head}.{frac[:6]}{rest[len(frac):]}"
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except ValueError:
+        return None
+
+
+async def _docker_container_states(socket_path: str = "/var/run/docker.sock", transport=None) -> list[ContainerState]:
+    """Every container on this host. Running ones from the list call only; the non-running
+    ones are inspected for their restart policy and FinishedAt (the list does not carry them)."""
+    import httpx
+
+    transport = transport or httpx.AsyncHTTPTransport(uds=socket_path)
+    out: list[ContainerState] = []
+    async with httpx.AsyncClient(transport=transport, base_url="http://docker", timeout=10.0) as client:
+        resp = await client.get("/containers/json", params={"all": "true"})
+        resp.raise_for_status()
+        for row in resp.json():
+            labels = row.get("Labels") or {}
+            project = labels.get("com.docker.compose.project")
+            service = labels.get("com.docker.compose.service")
+            workdir = labels.get("com.docker.compose.project.working_dir") or ""
+            # Only a services/<name> stack is a valid safe_docker_build.sh argument.
+            parent = workdir.rstrip("/").rsplit("/", 2)
+            if len(parent) < 2 or parent[-2] != "services":
+                workdir = ""
+            names = row.get("Names") or ["/?"]
+            status = str(row.get("State") or "")
+            policy, since = "", None
+            if status in STOPPED_STATES:
+                detail = await client.get(f"/containers/{row['Id']}/json")
+                if detail.status_code != 200:
+                    continue  # removed between list and inspect
+                body = detail.json()
+                policy = str(((body.get("HostConfig") or {}).get("RestartPolicy") or {}).get("Name") or "")
+                if status == "exited":
+                    since = _parse_docker_time((body.get("State") or {}).get("FinishedAt"))
+                else:
+                    since = float(row["Created"]) if row.get("Created") else _parse_docker_time(body.get("Created"))
+            out.append(
+                ContainerState(
+                    id=str(row["Id"]),
+                    name=str(names[0]).lstrip("/"),
+                    status=status,
+                    restart_policy=policy,
+                    since=since,
+                    compose_service=f"{project}/{service}" if project and service else None,
+                    compose_dir=workdir.rstrip("/").rsplit("/", 1)[-1] or None,
+                )
+            )
+    return out
 
 
 def _parse_restart_counts(text: str) -> dict[str, int]:

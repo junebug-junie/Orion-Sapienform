@@ -42,7 +42,7 @@ GPU_POOL_SHED_REQUEST_KIND = "gpu_pool.shed.request.v1"
 GPU_POOL_SHED_RESULT_KIND = "gpu_pool.shed.result.v1"
 LLM_WORKER_ANNOUNCE_KIND = "llm.worker.announce.v1"
 
-Priority = Literal["urgent", "interactive", "system", "background"]
+Priority = Literal["urgent", "interactive", "perception", "starved", "system", "background"]
 LeaseKind = Literal["request", "hold"]
 # Recall/abort/queued reason for a hold paused for urgent work: aborted after
 # urgent_preempt_grace_sec and re-queued in place (orion/gpu_pool/scheduler.py U1/U2).
@@ -99,6 +99,12 @@ class GpuLeaseRequestV1(BaseModel):
     # granted (a stale generation means the hold was re-granted and the caller must not attach).
     hold_lease_id: str | None = Field(None, min_length=1, max_length=128)
     hold_generation: int | None = Field(None, ge=1)
+    # Attention patch 3b (docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md,
+    # section 1): the body-economy decision this lease serves. The pool reads them only to order the
+    # background class by value (orion/gpu_pool/value_order.py); unset = no bid (upkeep keeps its place).
+    want_id: str | None = Field(None, min_length=1, max_length=200)
+    want_net: float | None = Field(None, allow_inf_nan=False)
+    want_family: str | None = Field(None, min_length=1, max_length=120)
 
     @model_validator(mode="after")
     def _stage4_verb_shapes(self):
@@ -153,6 +159,8 @@ class GpuPoolEventV1(BaseModel):
         "swap_requested", "swap_started", "swapped", "swap_failed", "actuate_refused", "lent", "unlent", "discovery_mismatch", "discovery_confirmed",
         # stage 5.7: the emergency stop (control verbs pause_actuation / resume_actuation)
         "actuation_paused", "actuation_resumed",
+        # attention patch 3b: a later background want was served before an earlier one, by value
+        "pool_queue_reordered",
     ]
     lease_id: str | None = None
     holder: str | None = None

@@ -58,6 +58,7 @@ from orion.substrate.store import (
     InMemorySubstrateGraphStore,
     MaterializedSubstrateGraphState,
     ACTIVATION_CAS_TOLERANCE,
+    DORMANCY_NODE_KINDS,
     NodeDynamicsWriteV1,
     SubstrateNeighborhoodSliceV1,
     SubstrateQueryResultV1,
@@ -147,6 +148,8 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # decode_entity_node falls back to "unknown"/[] for real stored values.
     "entity_type",
     "aliases_json",
+    # named camera clusters: when the name was set (falkor_codec.LABEL_SET_AT_KEY).
+    "label_set_at",
     # assertion nodes (falkor_codec.encode_node_properties' assertion branch)
     "assertion_predicate",
     "statement_key",
@@ -196,6 +199,11 @@ NATIVE_NODE_RETURN_FIELDS: tuple[str, ...] = (
     # as-is here; that is pre-existing and out of scope for this patch.
     "perception_staleness",
     "perception_yield",
+    # Camera surprise nodes (2026-10-21): the missing-input marker and the
+    # embedding clock must survive the decoded-row cache (falkor_codec
+    # DYNAMICS_METADATA_KEYS).
+    "embedding_staleness",
+    "prediction_error_missing_reason",
     # L6 (2026-10-06): without this the stamp never survives a rehydrate and
     # every tick falls back to observed_at -- i.e. the compounding decay the
     # stamp exists to remove (falkor_codec._decay_stamp_metadata_from_row).
@@ -1191,7 +1199,7 @@ class FalkorSubstrateStore:
             "n.recency_score = $recency_score",
             f"n.{ACTIVATION_DECAYED_AT_KEY} = ${ACTIVATION_DECAYED_AT_KEY}",
         ]
-        if is_concept and write.dormant is not None:
+        if write.node_kind in DORMANCY_NODE_KINDS and write.dormant is not None:
             params["dormant"] = bool(write.dormant)
             params["dormancy_updated_at"] = write.dormancy_updated_at
             activation_assignments += [
@@ -1558,15 +1566,4 @@ def build_aitown_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InM
     return build_falkor_substrate_store_from_env(
         graph_name_env="FALKORDB_AITOWN_SUBSTRATE_GRAPH",
         graph_name_default="orion_substrate_aitown",
-    )
-
-
-def build_self_falkor_substrate_store_from_env() -> FalkorSubstrateStore | InMemorySubstrateGraphStore:
-    """Third, independently-named FalkorDB graph -- the Self Atlas
-    (self-model rebuild arc, Patch 3, 2026-09-05). Same shape and same
-    Falkor-only scoping rationale as
-    build_aitown_falkor_substrate_store_from_env() above."""
-    return build_falkor_substrate_store_from_env(
-        graph_name_env="FALKORDB_SELF_SUBSTRATE_GRAPH",
-        graph_name_default="orion_substrate_self",
     )

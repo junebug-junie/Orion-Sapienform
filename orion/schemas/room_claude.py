@@ -25,13 +25,21 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 from orion.schemas.social_bridge import ParticipantKind, RoomPlatform
 
 
 def _utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _drop_defaults(data: Any, defaults: Dict[str, Any]) -> Any:
+    if isinstance(data, dict):
+        for key, default in defaults.items():
+            if key in data and data[key] == default:
+                data.pop(key)
+    return data
 
 
 class ExternalRoomResponderV1(BaseModel):
@@ -60,7 +68,29 @@ class RoomTranscriptEntryV1(BaseModel):
     speaker_name: str
     speaker_kind: ParticipantKind = "human"
     text: str
+    # When the line was said. Hub fills it from chat_history_log.created_at
+    # (2026-11-12); before that it defaulted to "now" for every line. The
+    # companion's per-session "sent up to here" mark compares these.
     created_at: str = Field(default_factory=_utcnow_iso)
+    # First 8 characters of the turn's correlation id, so Claude can name a
+    # turn ("turn:1a2b3c4d") and a later tool can look it up.
+    turn_ref: Optional[str] = None
+    # Orion spoke without being asked (client_meta.unsolicited). Labelled so
+    # Claude does not read it as an answer to the line above it.
+    unprompted: bool = False
+    # Part of a side exchange with Claude itself (Juniper's @claude prompt or
+    # Claude's own reply). A resumed Claude session already holds these, so
+    # the companion never re-sends them on --resume.
+    side_exchange: bool = False
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_new_fields(self, handler):  # type: ignore[no-untyped-def]
+        # Every consumer validates with extra="forbid". Dropping the 2026-11-12
+        # fields when they hold their defaults keeps a payload that does not use
+        # them byte-identical to before, so a companion that has not been rebuilt
+        # yet never sees a key it would reject. Same pattern as
+        # orion/schemas/pre_turn_appraisal.py TurnWindowMessageV1.
+        return _drop_defaults(handler(self), {"turn_ref": None, "unprompted": False, "side_exchange": False})
 
 
 class RoomClaudeRequestV1(BaseModel):
@@ -98,7 +128,19 @@ class RoomClaudeRequestV1(BaseModel):
     # on purpose: orion-social-memory owns that shape and this contract should
     # not fork a second copy of it that can drift.
     social_memory_summary: Dict[str, Any] = Field(default_factory=dict)
+    # "What is open in Hub now": names and counts only, never content, at most
+    # 800 characters, built by Hub at invite time. Shown on a session's first
+    # turn only. None = Hub did not send one.
+    hub_index: Optional[str] = None
+    # One line about older turns that did not fit the transcript cap, e.g.
+    # "[Earlier: 323 turns from 2026-09-18 to 2026-11-05 not shown.]".
+    transcript_note: Optional[str] = None
     created_at: str = Field(default_factory=_utcnow_iso)
+
+    @model_serializer(mode="wrap")
+    def _omit_unset_new_fields(self, handler):  # type: ignore[no-untyped-def]
+        # See RoomTranscriptEntryV1: unset 2026-11-12 fields are left out.
+        return _drop_defaults(handler(self), {"hub_index": None, "transcript_note": None})
 
 
 class RoomClaudeUtteranceV1(BaseModel):

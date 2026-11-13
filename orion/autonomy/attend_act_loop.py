@@ -6,6 +6,14 @@ A chain is every hop of one episode, joined on the episode id (= dispatch_id) an
     broadcast_row -> proposal -> decision -> dispatch -> pool_shed -> result -> outcome_row
     -> loop_outcomes -> next_tick
 
+Since 2026-11-05 (ladder retirement PR 5) the act is decided by the want market, so a NEW episode's chain is
+shorter and joins on the episode id and the market's decision id (``eligibility.want`` marks it):
+
+    want_decision (want_ledger) -> episode (precommit) -> pool_shed -> outcome_row
+
+It has no broadcast row, proposal, policy decision, dispatch frame, dispatch result or attention-loop
+verdict. Old-path episodes are checked against the old chain, unchanged.
+
 ``check_chain`` returns the violations (empty = the chain closed and broke no rule). The fixture
 eval proves each rule fires; the live eval runs it over real episodes. It never certifies that the
 action WORKED -- that is the treated-vs-control contrast, reported separately and UNVERIFIED until
@@ -23,6 +31,13 @@ TERMINAL_BY_ORION = ("resolved", "dismissed")
 TREATED_LINKS = ("broadcast_row", "proposal", "decision", "dispatch", "pool_shed", "result", "outcome",
                  "loop_outcome")
 CONTROL_LINKS = ("broadcast_row", "proposal", "decision", "dispatch", "outcome")
+MARKET_TREATED_LINKS = ("want_decision", "pool_shed", "outcome")
+MARKET_CONTROL_LINKS = ("want_decision", "outcome")
+
+
+def is_market_episode(ep: Mapping[str, Any]) -> bool:
+    """A cooling-act episode decided by the want market (its eligibility snapshot carries the want)."""
+    return bool((ep.get("eligibility") or {}).get("want"))
 
 
 def _ts(v: Any) -> datetime | None:
@@ -43,10 +58,14 @@ def check_chain(chain: Mapping[str, Any]) -> list[str]:
     outcome = dict(ep.get("outcome") or {})
     excluded = outcome.get("excluded_reason")
     terminal = ep.get("settlement_state")
-    required = list(TREATED_LINKS if arm == "treated" else CONTROL_LINKS)
+    market = is_market_episode(ep)
+    if market:
+        required = list(MARKET_TREATED_LINKS if arm == "treated" else MARKET_CONTROL_LINKS)
+    else:
+        required = list(TREATED_LINKS if arm == "treated" else CONTROL_LINKS)
     if excluded:
         required.remove("outcome")          # an excluded row is recorded on the episode, not the ledger
-    if arm == "treated" and str(terminal or "").startswith("refused"):
+    if arm == "treated" and str(terminal or "").startswith("refused") and "loop_outcome" in required:
         required.remove("loop_outcome")     # never started: Orion did not act
     for link in required:
         if not chain.get(link if link != "outcome" else "outcome_row") and link != "loop_outcome":
@@ -84,9 +103,15 @@ def check_chain(chain: Mapping[str, Any]) -> list[str]:
     if not elig.get("eligible", False):
         out.append("decided_while_ineligible")
 
-    # Precommit: the expected effect existed before the RPC was sent.
+    # The market funded it (only a funded decision may become an episode, either arm).
+    if market and chain.get("want_decision") and (chain["want_decision"].get("outcome") != "funded"):
+        out.append("episode_without_a_funded_decision")
+
+    # Precommit: the expected effect existed before the RPC was sent (market: before the pool started it).
     d = dict(chain.get("dispatch") or {})
-    created, sent = _ts(ep.get("created_at")), _ts(d.get("dispatched_at"))
+    sent_at = d.get("dispatched_at") if not market else (chain.get("pool_shed") or {}).get("created_at") \
+        or (chain.get("pool_shed") or {}).get("started_at")
+    created, sent = _ts(ep.get("created_at")), _ts(sent_at)
     if arm == "treated" and created and sent and created > sent:
         out.append("expectation_not_precommitted")
     if arm == "treated" and not ep.get("expected_effect"):
@@ -135,4 +160,5 @@ def contrast(episodes: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
             else "volume_reached"}
 
 
-__all__ = ["CONTROL_LINKS", "TREATED_LINKS", "WINNER_MAX_AGE_SEC", "check_chain", "contrast"]
+__all__ = ["CONTROL_LINKS", "MARKET_CONTROL_LINKS", "MARKET_TREATED_LINKS", "TREATED_LINKS", "WINNER_MAX_AGE_SEC",
+           "check_chain", "contrast", "is_market_episode"]

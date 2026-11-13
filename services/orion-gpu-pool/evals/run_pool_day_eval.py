@@ -90,6 +90,7 @@ sys.path[:0] = [str(SERVICE.parents[1]), str(SERVICE)]
 
 from orion.gpu_pool.config import load_pool_config  # noqa: E402
 from orion.gpu_pool.lease_graph import initial_state, transition  # noqa: E402
+from orion.gpu_pool.shed import SHEDDABLE  # noqa: E402
 from orion.gpu_pool.scheduler import (  # noqa: E402
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
     Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, schedule,
@@ -587,10 +588,10 @@ def shed_scenario(cfg=CFG) -> dict:
             apply(st, ev)
 
     during = [g for g in grants if SHED_FROM <= g[0] < SHED_UNTIL]
-    after = [g for g in grants if g[0] >= SHED_UNTIL and g[2] in ("background", "system") and not g[3]]
+    after = [g for g in grants if g[0] >= SHED_UNTIL and g[2] in SHEDDABLE and not g[3]]
     return {
         "shed_window_sec": [SHED_FROM, SHED_UNTIL],
-        "new_low_priority_grants_while_shed": sum(1 for g in during if g[2] in ("background", "system") and not g[3]),
+        "new_low_priority_grants_while_shed": sum(1 for g in during if g[2] in SHEDDABLE and not g[3]),
         "running_hold_calls_granted_while_shed": sum(1 for g in during if g[3]),
         # U1 may pause it for the urgent hold (urgent_preempt); shed itself must never recall anything.
         "running_hold_paused_for_urgent": ("H-run", "urgent_preempt") in recalls,

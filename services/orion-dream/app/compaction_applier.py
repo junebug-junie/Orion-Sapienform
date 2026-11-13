@@ -1,14 +1,21 @@
 """Phase G — compaction applier (memory mutation, hard-gated).
 
 THIS IS THE ONE RUNG THAT WRITES MEMORY. Everything here is built to be inert
-until three independent conditions all hold:
+until three independent conditions all hold, asked in this order:
 
-  1. `ORION_DREAM_COMPACTION_APPLY_ENABLED` is true (the hot gate — default off);
-  2. the delta's proposal was **policy-approved for execution** — and reverie
-     proposals carry `operator_review`, so a human must have approved it;
-  3. an injected `CompactionMemoryStore` is provided (there is no default
-     canonical-memory binding in this module — the real adapter is wired only in
-     a dedicated, signed-off change, so importing this module touches nothing).
+  1. an injected **consent** callable says yes for THIS delta and THIS plan (downscale only, or
+     prune too). Since attention patch 3d (2026-11-11) that is the want market's consent gate:
+     `app.compaction_consent.market_consent` bids for family `dream.compaction` with a consent
+     request, and the market answers from config/physiology/consent.yaml (downscale: needs
+     Juniper's standing consent; prune: irreversible, always refused). It is asked FIRST, even
+     while apply is off, so every staged delta leaves a verdict in want_ledger and a
+     `compaction_apply not_approved ... rule=...` log line: the live proof the gate answers.
+     No consent (no callable, no answer, refuse, needs_consent) -> `not_approved`. (Until
+     2026-11-07 this was a policy-rung decision frame; the policy rung retired, ladder PR 6.);
+  2. `ORION_DREAM_COMPACTION_APPLY_ENABLED` is true (the hot gate — default off) -> else `disabled`;
+  3. an injected `CompactionMemoryStore` is provided (this module binds none, so importing it touches
+     nothing; the REM pass injects `app.compaction_store.default_store()`, reverie-thought salience,
+     since 2026-11-13) -> else `no_store`.
 
 Safety invariants (§14 backfill protocol + §0A):
   - **snapshot precedes every apply**: the before-state of every target is
@@ -17,10 +24,12 @@ Safety invariants (§14 backfill protocol + §0A):
   - **downscale-renormalize first, prune last**: with `DOWNSCALE_ONLY` (default
     true) prune is skipped entirely — never prune before downscale is trusted;
   - **consolidate is dream-provenance**: gist cards are written with
-    `source_kind="dream"` and never promoted to fact;
+    `source_kind="dream"` and never promoted to fact. A store with
+    `supports_gists = False` (the live one) is never asked to write them: the
+    receipt counts them in `cards_skipped_no_gist_store` instead;
   - **caps**: the applier honors the schema caps already on the delta.
 
-Deterministic (§4): given (delta, approval, store) the applier is a pure control
+Deterministic (§4): given (delta, consent answer, store) the applier is a pure control
 flow — no LLM. It degrades to a typed no-op result and never raises.
 """
 
@@ -29,21 +38,23 @@ from __future__ import annotations
 import json
 import logging
 import os
+import dataclasses
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Optional, Protocol, Union
 
 from pydantic import BaseModel, Field
 
 from orion.schemas.compaction import MemoryCompactionDeltaV1
-from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1
 
 from app.settings import settings
 
 logger = logging.getLogger("orion-dream.compaction_applier")
 
 ApplyStatus = Literal[
-    "disabled",  # hot gate off
-    "not_approved",  # no execution-approved policy decision for this delta
+    "not_approved",  # no consent for this delta and plan (asked first; fails closed)
+    "disabled",  # consented, but the hot gate is off
+    "no_store",  # consented and on, but no memory store is wired (nothing can be written)
     "empty",  # nothing to apply
     "applied",  # applied cleanly (snapshot taken first)
     "rolled_back",  # a failure mid-apply → restored from snapshot
@@ -77,6 +88,9 @@ class CompactionMemoryStore(Protocol):
         """Crystallize a gist card with source_kind='dream' (never promoted to fact)."""
         ...
 
+    # Optional attribute: ``supports_gists = False`` means the store has no gist-card table. The applier
+    # then skips consolidate entries (counted in the receipt) and never calls ``write_gist``. Absent: True.
+
 
 class CompactionApplyReceiptV1(BaseModel):
     """Inspectable trace of an apply attempt — proof the live path did (or didn't)
@@ -89,44 +103,54 @@ class CompactionApplyReceiptV1(BaseModel):
     pruned: int = 0
     cards_written: int = 0
     prune_skipped_downscale_only: int = 0
+    cards_skipped_no_gist_store: int = 0
     snapshot_path: str | None = None
     error: str | None = None
+    # The consent gate's answer (attention patch 3d): allow | refuse | needs_consent, the consent.yaml
+    # rule, and why. None: no gate answered (no callable, no market answer).
+    consent_verdict: str | None = None
+    consent_rule: str | None = None
+    consent_reason: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-def policy_approves_execution(
-    delta: MemoryCompactionDeltaV1,
-    policy_frame: PolicyDecisionFrameV1 | None,
-) -> bool:
-    """True only if this delta's proposal was approved *for execution*.
+@dataclass(frozen=True)
+class ConsentAnswer:
+    """What a consent authority said about one delta and plan. ``approved`` is the only field the applier
+    obeys; the rest is the trace (the market's verdict, its rule, its reason, the want_ledger decision)."""
 
-    Reverie proposals carry `operator_review`, so absent an explicit human
-    approval this returns False and the applier stays inert. A missing frame,
-    a frame that doesn't reference this delta, or any non-execution decision all
-    fail closed. Any malformed frame also fails closed (never raises).
-    """
+    approved: bool
+    verdict: Optional[str] = None
+    rule_id: Optional[str] = None
+    reason: str = ""
+    decision_id: Optional[str] = None
+
+
+#: Asked once per apply, with the exact delta and whether this apply is downscale only (prune skipped).
+#: Approves only THIS delta (not a sibling that shares a source request) and THIS plan (a consent to
+#: downscale is not a consent to prune). Returns a ``ConsentAnswer`` or a bare bool. Never raises into
+#: the applier: an exception is no.
+CompactionConsent = Callable[[MemoryCompactionDeltaV1, bool], Union[bool, ConsentAnswer]]
+
+
+def ask_consent(delta: MemoryCompactionDeltaV1, consent: CompactionConsent | None, downscale_only: bool) -> ConsentAnswer:
+    """The consent answer for this exact delta and plan. Fails closed: no consent callable, an answer
+    that is not ``True`` / an approved ``ConsentAnswer``, or any exception is a no."""
+    if consent is None:
+        return ConsentAnswer(False, reason="no consent authority")
     try:
-        if policy_frame is None or not policy_frame.execution_allowed:
-            return False
-        for decision in policy_frame.approved_decisions:
-            if decision.decision != "approved_for_execution":
-                continue
-            # Memory mutation requires the human-review execution gate. The
-            # autonomy engine's self-authorized `autonomy_policy` gate is NOT
-            # accepted here — a human must approve this rung (§0A).
-            if decision.policy_gate != "execution_policy":
-                continue
-            # The approval must reference THIS exact delta. A shared
-            # `source_request_id` is deliberately NOT enough: two deltas from one
-            # night can answer the same request with different ops, so a human who
-            # reviewed delta A must not thereby authorize un-reviewed delta B.
-            refs = {decision.proposal_id, *decision.evidence_refs}
-            if delta.delta_id in refs:
-                return True
-        return False
-    except Exception:
-        # A malformed/duck-typed frame must never crash the gate — fail closed.
-        return False
+        ans = consent(delta, downscale_only)
+    except Exception as exc:  # noqa: BLE001
+        return ConsentAnswer(False, reason=f"consent raised {type(exc).__name__}")
+    if isinstance(ans, ConsentAnswer):
+        return ans if ans.approved is True else dataclasses.replace(ans, approved=False)
+    return ConsentAnswer(ans is True, reason="" if ans is True else "consent said no")
+
+
+def consent_approves(delta: MemoryCompactionDeltaV1, consent: CompactionConsent | None,
+                     downscale_only: bool = True) -> bool:
+    """True only if ``consent`` exists and says yes for this exact delta and plan."""
+    return ask_consent(delta, consent, downscale_only).approved
 
 
 def _write_snapshot_file(delta_id: str, snapshot: dict[str, Any]) -> str | None:
@@ -146,33 +170,53 @@ def _write_snapshot_file(delta_id: str, snapshot: dict[str, Any]) -> str | None:
 
 def apply_compaction_delta(
     delta: MemoryCompactionDeltaV1,
-    policy_frame: PolicyDecisionFrameV1 | None,
+    consent: CompactionConsent | None = None,
     *,
-    store: CompactionMemoryStore,
+    store: CompactionMemoryStore | None,
     enabled: bool | None = None,
     downscale_only: bool | None = None,
 ) -> CompactionApplyReceiptV1:
-    """Apply a policy-approved compaction delta to memory. Snapshot-first, with
+    """Apply a consented compaction delta to memory. Snapshot-first, with
     rollback on any error. Returns a typed receipt; never raises.
 
-    Order is fixed: snapshot → downscale-renormalize → (prune unless downscale_only)
-    → consolidate gist cards. Any exception after the snapshot triggers a restore.
+    Gates, in order: consent (asked even while apply is off, so the gate leaves a live trace) →
+    the hot gate → a store. Then the order is fixed: snapshot → downscale-renormalize → (prune
+    unless downscale_only) → consolidate gist cards. Any exception after the snapshot triggers a
+    restore.
     """
     enabled = settings.ORION_DREAM_COMPACTION_APPLY_ENABLED if enabled is None else enabled
     downscale_only = (
         settings.ORION_DREAM_COMPACTION_DOWNSCALE_ONLY if downscale_only is None else downscale_only
     )
 
+    answer = ask_consent(delta, consent, bool(downscale_only))
+    trace = {"consent_verdict": answer.verdict, "consent_rule": answer.rule_id,
+             "consent_reason": answer.reason or None}
+    if not answer.approved:
+        logger.info("compaction_apply not_approved delta=%s verdict=%s rule=%s decision=%s reason=%s apply_enabled=%s",
+                    delta.delta_id, answer.verdict, answer.rule_id, answer.decision_id, answer.reason, bool(enabled))
+        return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="not_approved", **trace)
+
     if not enabled:
-        logger.info("compaction apply disabled; delta %s not applied", delta.delta_id)
-        return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="disabled")
+        logger.info("compaction_apply disabled delta=%s verdict=%s rule=%s (consented; the hot gate is off)",
+                    delta.delta_id, answer.verdict, answer.rule_id)
+        return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="disabled", **trace)
 
-    if not policy_approves_execution(delta, policy_frame):
-        logger.info("compaction apply blocked: no execution approval for %s", delta.delta_id)
-        return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="not_approved")
+    if store is None:
+        logger.warning("compaction_apply no_store delta=%s rule=%s (consented and on, but no memory store is wired)",
+                       delta.delta_id, answer.rule_id)
+        return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="no_store", **trace)
 
-    if delta.is_empty():
-        return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="empty")
+    supports_gists = bool(getattr(store, "supports_gists", True))
+    # Only ops this store will run count: a delta of gist cards alone, handed to a store without gists,
+    # is empty (no snapshot, no write), not a fake "applied".
+    runnable = len(delta.downscale) + (0 if downscale_only else len(delta.prune)) + (
+        len(delta.consolidate) if supports_gists else 0)
+    if runnable == 0:
+        return CompactionApplyReceiptV1(
+            delta_id=delta.delta_id, status="empty",
+            prune_skipped_downscale_only=len(delta.prune) if downscale_only else 0,
+            cards_skipped_no_gist_store=0 if supports_gists else len(delta.consolidate), **trace)
 
     # §14: snapshot the before-state BEFORE any write. A snapshot failure fails
     # closed — we do not apply what we cannot roll back.
@@ -182,10 +226,10 @@ def apply_compaction_delta(
     except Exception as exc:
         logger.warning("compaction apply aborted: snapshot failed for %s: %s", delta.delta_id, exc)
         return CompactionApplyReceiptV1(
-            delta_id=delta.delta_id, status="rolled_back", error=f"snapshot_failed: {exc}"
+            delta_id=delta.delta_id, status="rolled_back", error=f"snapshot_failed: {exc}", **trace
         )
 
-    downscaled = pruned = cards = prune_skipped = 0
+    downscaled = pruned = cards = prune_skipped = cards_skipped = 0
     try:
         # 1) downscale-renormalize (the safer subset — always first).
         for entry in delta.downscale:
@@ -201,9 +245,12 @@ def apply_compaction_delta(
                 pruned += 1
 
         # 3) consolidate — dream-provenance gist cards, never promoted to fact.
-        for entry in delta.consolidate:
-            store.write_gist(entry.gist_card, list(entry.evidence_refs), list(entry.supersedes))
-            cards += 1
+        if not supports_gists:
+            cards_skipped = len(delta.consolidate)
+        else:
+            for entry in delta.consolidate:
+                store.write_gist(entry.gist_card, list(entry.evidence_refs), list(entry.supersedes))
+                cards += 1
     except Exception as exc:
         logger.warning("compaction apply failed mid-flight for %s: %s — rolling back", delta.delta_id, exc)
         try:
@@ -215,17 +262,20 @@ def apply_compaction_delta(
                 status="rolled_back",
                 snapshot_path=snapshot_path,
                 error=f"apply_failed_and_rollback_failed: {exc} / {rexc}",
+                **trace,
             )
         return CompactionApplyReceiptV1(
             delta_id=delta.delta_id,
             status="rolled_back",
             snapshot_path=snapshot_path,
             error=f"apply_failed_rolled_back: {exc}",
+            **trace,
         )
 
     logger.info(
-        "compaction applied delta=%s downscaled=%d pruned=%d cards=%d prune_skipped=%d",
-        delta.delta_id, downscaled, pruned, cards, prune_skipped,
+        "compaction applied delta=%s downscaled=%d pruned=%d cards=%d prune_skipped=%d cards_skipped=%d "
+        "snapshot=%s rule=%s",
+        delta.delta_id, downscaled, pruned, cards, prune_skipped, cards_skipped, snapshot_path, answer.rule_id,
     )
     return CompactionApplyReceiptV1(
         delta_id=delta.delta_id,
@@ -235,5 +285,7 @@ def apply_compaction_delta(
         pruned=pruned,
         cards_written=cards,
         prune_skipped_downscale_only=prune_skipped,
+        cards_skipped_no_gist_store=cards_skipped,
         snapshot_path=snapshot_path,
+        **trace,
     )

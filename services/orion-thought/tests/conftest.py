@@ -78,3 +78,25 @@ def _no_live_database(monkeypatch):
 
     if not os.environ.get("POSTGRES_URI"):
         monkeypatch.setenv("POSTGRES_URI", "postgresql://x:x@127.0.0.1:1/nope")
+
+
+@pytest.fixture(autouse=True)
+def _no_live_physiology_bid(monkeypatch):
+    """Unit tests must never POST a shadow bid to the live body economy (Patch C3b): the client
+    returns None without a call. Tests of the shadow seam stub app.physiology_shadow.abid."""
+    monkeypatch.setenv("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "false")
+
+
+@pytest.fixture(autouse=True)
+def _no_live_self_monitor(monkeypatch):
+    """The track-record cue (app/self_track_record_cue.py) is on by default and reads Redis on
+    ORION_BUS_URL in a background thread. Refuse every sync Redis client so no test touches the live
+    bus (patched on the redis package itself: per-test ``app`` re-imports would dodge a settings
+    patch); the cue renders nothing, as it would with Redis down. Opt out: a test that needs a sync
+    Redis client monkeypatches ``redis.Redis.from_url`` (or the cue's ``fetch_raw`` seam) itself."""
+    import redis
+
+    def refuse(*_a, **_k):
+        raise redis.ConnectionError("tests never read the live bus")
+
+    monkeypatch.setattr(redis.Redis, "from_url", classmethod(lambda cls, *a, **k: refuse()))

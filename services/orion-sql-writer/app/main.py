@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.db import Base, engine
+from orion.db.guarded_ddl import GuardedDDL
 from app.settings import settings
 from app.worker import build_hunter
 from app.api_notify import router as notify_router
@@ -17,6 +18,60 @@ logging.basicConfig(
     format="[SQL_WRITER] %(levelname)s - %(name)s - %(message)s",
 )
 logger = logging.getLogger("sql-writer")
+
+_OFFICE_ENV_REQUIRED_COLUMN_SHAPES = {
+    "office_eco2_ppm": ("integer", "YES"),
+    "office_tvoc_ppb": ("integer", "YES"),
+    "air_warming": ("boolean", "YES"),
+    "office_pm1_ug_m3": ("integer", "YES"),
+    "office_pm25_ug_m3": ("integer", "YES"),
+    "office_pm10_ug_m3": ("integer", "YES"),
+    "office_lux": ("double precision", "YES"),
+    "light_saturated": ("boolean", "YES"),
+}
+
+
+def _ensure_office_env_columns() -> None:
+    """Establish the columns required by the live office-sample write path.
+
+    These statements deliberately have their own transaction and no warning-only
+    exception handler. If a deploy overlaps a long-held table lock, startup must
+    fail before Hunter subscribes rather than route every office sample into the
+    fallback table with ``UndefinedColumn``.
+    """
+    with engine.begin() as conn:
+        ddl = GuardedDDL(conn.exec_driver_sql, lambda q: conn.exec_driver_sql(q).fetchall())
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_eco2_ppm INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_tvoc_ppb INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS air_warming BOOLEAN;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_pm1_ug_m3 INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_pm25_ug_m3 INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_pm10_ug_m3 INTEGER;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS office_lux DOUBLE PRECISION;")
+        ddl("ALTER TABLE IF EXISTS office_env_sample ADD COLUMN IF NOT EXISTS light_saturated BOOLEAN;")
+        actual_shapes = {
+            row[0]: (row[1], row[2])
+            for row in conn.exec_driver_sql(
+                """
+                SELECT column_name, data_type, is_nullable
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'office_env_sample'
+                """
+            ).fetchall()
+        }
+        invalid = {
+            column: {"expected": expected, "actual": actual_shapes.get(column)}
+            for column, expected in _OFFICE_ENV_REQUIRED_COLUMN_SHAPES.items()
+            if actual_shapes.get(column) != expected
+        }
+        if invalid:
+            raise RuntimeError(f"office_env_sample required column shape mismatch after boot DDL: {invalid}")
+    logger.info(
+        "office_env_sample required columns ensured; boot DDL ran=%d skipped=%d",
+        ddl.ran,
+        ddl.skipped,
+    )
 
 
 @asynccontextmanager
@@ -28,8 +83,13 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Schema init warning: %s", e)
 
+    _ensure_office_env_columns()
+
     try:
         with engine.begin() as conn:
+            # Skips DDL the catalog already satisfies: ADD COLUMN IF NOT EXISTS and CREATE INDEX IF
+            # NOT EXISTS lock the table even when there is nothing to do (orion/db/guarded_ddl.py).
+            ddl = GuardedDDL(conn.exec_driver_sql, lambda q: conn.exec_driver_sql(q).fetchall())
             # ROADMAP B1. This MUST be applied before the writer serves traffic: _write_row
             # filters payload keys against the mapper's columns, so the moment
             # BiometricsSummarySQL declares `measurements` the key enters the INSERT. Against
@@ -39,86 +99,96 @@ async def lifespan(app: FastAPI):
             # panel keep looking healthy. Boot-time DDL is the existing convention for exactly
             # this hazard (the chat_* statements below), so it lives here rather than in a
             # hand-applied file an operator has to remember.
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE IF EXISTS orion_biometrics_summary "
                 "ADD COLUMN IF NOT EXISTS measurements JSONB;"
             )
-            conn.exec_driver_sql(
+            # Same hazard again: BiometricsSummarySQL declares the binding-constraint pair, so
+            # both columns enter every biometrics-summary INSERT.
+            ddl(
+                "ALTER TABLE IF EXISTS orion_biometrics_summary "
+                "ADD COLUMN IF NOT EXISTS peak_pressure DOUBLE PRECISION;"
+            )
+            ddl(
+                "ALTER TABLE IF EXISTS orion_biometrics_summary "
+                "ADD COLUMN IF NOT EXISTS peak_pressure_channel TEXT;"
+            )
+            ddl(
                 "CREATE INDEX IF NOT EXISTS orion_biometrics_summary_node_ts_idx "
                 "ON orion_biometrics_summary (node, timestamp);"
             )
             # Same hazard as `measurements` above: the mapper declares these columns, so they
             # enter every home_cooling_sample INSERT and must exist before the writer serves.
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE IF EXISTS home_cooling_sample ADD COLUMN IF NOT EXISTS stale BOOLEAN;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE IF EXISTS home_cooling_sample ADD COLUMN IF NOT EXISTS sample_age_sec DOUBLE PRECISION;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS correlation_id TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS trace_id TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS memory_status TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_message ADD COLUMN IF NOT EXISTS memory_tier TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_message_corr_id ON chat_message (correlation_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_message_corr_role_ts ON chat_message (correlation_id, role, timestamp);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS memory_status TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS memory_tier TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS memory_reason TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS thought_process TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS client_meta JSONB;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_uncertainty_source TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_mean_logprob DOUBLE PRECISION;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_min_logprob DOUBLE PRECISION;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_mean_top1_margin DOUBLE PRECISION;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_low_margin_token_count INTEGER;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_low_logprob_token_count INTEGER;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_unstable_span_count INTEGER;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS llm_uncertainty_available BOOLEAN;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE chat_history_log ADD COLUMN IF NOT EXISTS response_identity TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE IF EXISTS aitown_chat_history_log ADD COLUMN IF NOT EXISTS response_identity TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_history_log_mem_status ON chat_history_log (memory_status);"
             )
             # 2026-08-26: JuniperMultimodalAffectSQL gained chat_correlation_id
@@ -129,11 +199,11 @@ async def lifespan(app: FastAPI):
             # UndefinedColumn ProgrammingError -- which the handlers here do not
             # catch, so ALL juniper_multimodal_affect_log persistence would stop
             # while the bus publish and the Hub panel kept looking healthy.
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE IF EXISTS juniper_multimodal_affect_log "
                 "ADD COLUMN IF NOT EXISTS chat_correlation_id TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_juniper_multimodal_affect_chat_corr "
                 "ON juniper_multimodal_affect_log (chat_correlation_id);"
             )
@@ -149,11 +219,11 @@ async def lifespan(app: FastAPI):
                 ("timings", "JSONB"),
                 ("frames_used", "INTEGER"),
             ):
-                conn.exec_driver_sql(
+                ddl(
                     "ALTER TABLE IF EXISTS juniper_multimodal_affect_log "
                     f"ADD COLUMN IF NOT EXISTS {_affect_col} {_affect_type};"
                 )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS orion_metacognitive_trace (
                     trace_id TEXT PRIMARY KEY,
@@ -169,13 +239,13 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_orion_metacog_trace_corr ON orion_metacognitive_trace (correlation_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_orion_metacog_trace_created_at ON orion_metacognitive_trace (created_at);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS chat_response_feedback (
                     feedback_id TEXT PRIMARY KEY,
@@ -196,34 +266,34 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_turn_id ON chat_response_feedback (target_turn_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_message_id ON chat_response_feedback (target_message_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_corr_id ON chat_response_feedback (target_correlation_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_target_key ON chat_response_feedback (target_key);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_session_id ON chat_response_feedback (session_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_user_id ON chat_response_feedback (user_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_value ON chat_response_feedback (feedback_value);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_created_at ON chat_response_feedback (created_at);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_fingerprint ON chat_response_feedback (submission_fingerprint);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS social_room_turns (
                     turn_id TEXT PRIMARY KEY,
@@ -246,13 +316,13 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_social_room_turns_session_id ON social_room_turns (session_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_social_room_turns_corr_id ON social_room_turns (correlation_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS external_room_messages (
                     event_id TEXT PRIMARY KEY,
@@ -280,16 +350,16 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_external_room_messages_room_id ON external_room_messages (room_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_external_room_messages_transport_msg_id ON external_room_messages (transport_message_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_external_room_messages_corr_id ON external_room_messages (correlation_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS external_room_participants (
                     participant_ref TEXT PRIMARY KEY,
@@ -306,13 +376,13 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_external_room_participants_room_id ON external_room_participants (room_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_external_room_participants_platform ON external_room_participants (platform);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS journal_entries (
                     entry_id TEXT PRIMARY KEY,
@@ -327,13 +397,13 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entries_created_at ON journal_entries (created_at);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entries_correlation_id ON journal_entries (correlation_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS journal_entry_index (
                     entry_id TEXT PRIMARY KEY,
@@ -363,52 +433,52 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_created_at ON journal_entry_index (created_at);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_mode ON journal_entry_index (mode);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_source_kind ON journal_entry_index (source_kind);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_trigger_kind ON journal_entry_index (trigger_kind);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_author ON journal_entry_index (author);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_source_ref ON journal_entry_index (source_ref);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_journal_entry_index_correlation_id ON journal_entry_index (correlation_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_uncertainty JSONB;"
             )
             # 2026-10-13 transport baseline close reasons (TransportBaselineHourlyV1.
             # conditions_closed). create_all does not add columns to an existing
             # table, and _write_row would put the key in the INSERT -- same hazard
             # as orion_biometrics_summary.measurements above.
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE IF EXISTS transport_baseline_hourly ADD COLUMN IF NOT EXISTS conditions_closed JSON;"
             )
             # 2026-10-13 degraded replies (TransportBaselineHourlyV1.degraded_count),
             # same hazard. Nullable: rows written before this have no such reading.
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE IF EXISTS transport_baseline_hourly ADD COLUMN IF NOT EXISTS degraded_count INTEGER;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_mean_logprob DOUBLE PRECISION;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_mean_top1_margin DOUBLE PRECISION;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE journal_entry_index ADD COLUMN IF NOT EXISTS llm_unstable_span_count INTEGER;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS evidence_units (
                     unit_id TEXT PRIMARY KEY,
@@ -430,28 +500,28 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_evidence_units_created_at ON evidence_units (created_at);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_evidence_units_unit_kind ON evidence_units (unit_kind);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_evidence_units_source_family ON evidence_units (source_family);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_evidence_units_source_kind ON evidence_units (source_kind);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_evidence_units_source_ref ON evidence_units (source_ref);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_evidence_units_correlation_id ON evidence_units (correlation_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_evidence_units_parent_unit_id ON evidence_units (parent_unit_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_run (
                     run_id TEXT PRIMARY KEY,
@@ -466,7 +536,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_digest (
                     run_id TEXT PRIMARY KEY,
@@ -479,7 +549,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_digest_item (
                     item_id TEXT PRIMARY KEY,
@@ -493,8 +563,8 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_digest_item_run_id ON world_pulse_digest_item (run_id);")
-            conn.exec_driver_sql(
+            ddl("CREATE INDEX IF NOT EXISTS idx_world_pulse_digest_item_run_id ON world_pulse_digest_item (run_id);")
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_article (
                     article_id TEXT PRIMARY KEY,
@@ -508,9 +578,9 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_article_run_id ON world_pulse_article (run_id);")
-            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_article_source_id ON world_pulse_article (source_id);")
-            conn.exec_driver_sql(
+            ddl("CREATE INDEX IF NOT EXISTS idx_world_pulse_article_run_id ON world_pulse_article (run_id);")
+            ddl("CREATE INDEX IF NOT EXISTS idx_world_pulse_article_source_id ON world_pulse_article (source_id);")
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_article_cluster (
                     cluster_id TEXT PRIMARY KEY,
@@ -524,9 +594,9 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_cluster_run_id ON world_pulse_article_cluster (run_id);")
-            conn.exec_driver_sql("CREATE INDEX IF NOT EXISTS idx_world_pulse_cluster_category ON world_pulse_article_cluster (category);")
-            conn.exec_driver_sql(
+            ddl("CREATE INDEX IF NOT EXISTS idx_world_pulse_cluster_run_id ON world_pulse_article_cluster (run_id);")
+            ddl("CREATE INDEX IF NOT EXISTS idx_world_pulse_cluster_category ON world_pulse_article_cluster (category);")
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_claim (
                     claim_id TEXT PRIMARY KEY,
@@ -539,7 +609,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_event (
                     event_id TEXT PRIMARY KEY,
@@ -551,7 +621,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_entity (
                     entity_id TEXT PRIMARY KEY,
@@ -563,7 +633,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_situation_brief (
                     topic_id TEXT PRIMARY KEY,
@@ -579,7 +649,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_situation_change (
                     change_id TEXT PRIMARY KEY,
@@ -592,7 +662,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_learning_delta (
                     learning_id TEXT PRIMARY KEY,
@@ -605,7 +675,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_worth_reading (
                     reading_id TEXT PRIMARY KEY,
@@ -617,7 +687,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_worth_watching (
                     watch_id TEXT PRIMARY KEY,
@@ -629,7 +699,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_context_capsule (
                     capsule_id TEXT PRIMARY KEY,
@@ -641,7 +711,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_publish_status (
                     status_id TEXT PRIMARY KEY,
@@ -655,7 +725,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS mind_runs (
                     mind_run_id TEXT PRIMARY KEY,
@@ -673,13 +743,13 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_mind_runs_correlation_id ON mind_runs (correlation_id);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_mind_runs_created_at ON mind_runs (created_at_utc DESC);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS world_pulse_hub_message (
                     message_id TEXT PRIMARY KEY,
@@ -693,7 +763,7 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE TABLE IF NOT EXISTS action_outcomes (
                     action_id TEXT PRIMARY KEY,
@@ -709,15 +779,15 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE action_outcomes ADD COLUMN IF NOT EXISTS visual_outcome TEXT NULL;"
             )
             # Composite covers the read query (WHERE subject=? ORDER BY observed_at DESC);
             # a standalone subject index would be redundant with this prefix.
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_action_outcomes_subject_observed_at ON action_outcomes (subject, observed_at DESC);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_action_outcomes_correlation_id ON action_outcomes (correlation_id);"
             )
             # drive_audits table (CREATE/ALTER/INDEX boot DDL) removed
@@ -736,7 +806,7 @@ async def lifespan(app: FastAPI):
             # was deliberately left in place at that time and fully removed
             # in a same-day follow-up patch (docs/superpowers/pr-reports/
             # 2026-08-13-untangle-drive-audit-sql-writer-pr.md).
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE bus_fallback_log ADD COLUMN IF NOT EXISTS created_at_ts TIMESTAMPTZ;"
             )
             conn.exec_driver_sql(
@@ -751,10 +821,10 @@ async def lifespan(app: FastAPI):
                 WHERE created_at_ts IS NULL;
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_bus_fallback_log_created_at_ts ON bus_fallback_log (created_at_ts);"
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE INDEX IF NOT EXISTS idx_bus_fallback_log_kind_created_at_ts
                 ON bus_fallback_log (kind, created_at_ts);
@@ -771,13 +841,14 @@ async def lifespan(app: FastAPI):
                 );
                 """
             )
-            conn.exec_driver_sql(
+            ddl(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS uq_spark_telemetry_correlation_id
                 ON spark_telemetry (correlation_id);
                 """
             )
-        logger.info("🧬 chat_message correlation/trace columns ensured")
+        logger.info("🧬 chat_message correlation/trace columns ensured; boot DDL ran=%d skipped=%d (already satisfied)",
+                    ddl.ran, ddl.skipped)
         retention_days = int(getattr(settings, "metacog_trace_retention_days", 0) or 0)
         if retention_days > 0:
             with engine.begin() as conn:
@@ -804,11 +875,14 @@ async def lifespan(app: FastAPI):
     # required deploy step; this is the safety net.
     try:
         with engine.begin() as conn:
+            # Skips DDL the catalog already satisfies: ADD COLUMN IF NOT EXISTS and CREATE INDEX IF
+            # NOT EXISTS lock the table even when there is nothing to do (orion/db/guarded_ddl.py).
+            ddl = GuardedDDL(conn.exec_driver_sql, lambda q: conn.exec_driver_sql(q).fetchall())
             conn.exec_driver_sql("SET LOCAL lock_timeout = '10s';")
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE IF EXISTS vision_events ADD COLUMN IF NOT EXISTS stream_id TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS vision_events_stream_created_idx "
                 "ON vision_events (stream_id, created_at);"
             )
@@ -847,7 +921,10 @@ async def lifespan(app: FastAPI):
     # minute forever. Nothing else would ever report it, so this says so.
     try:
         with engine.begin() as conn:
-            conn.exec_driver_sql(
+            # Skips DDL the catalog already satisfies: ADD COLUMN IF NOT EXISTS and CREATE INDEX IF
+            # NOT EXISTS lock the table even when there is nothing to do (orion/db/guarded_ddl.py).
+            ddl = GuardedDDL(conn.exec_driver_sql, lambda q: conn.exec_driver_sql(q).fetchall())
+            ddl(
                 "CREATE INDEX IF NOT EXISTS orion_biometrics_induction_node_ts_idx "
                 "ON orion_biometrics_induction (node, timestamp DESC);"
             )
@@ -878,11 +955,14 @@ async def lifespan(app: FastAPI):
     # warning line among hundreds. Its own transaction, its own handler.
     try:
         with engine.begin() as conn:
-            conn.exec_driver_sql(
+            # Skips DDL the catalog already satisfies: ADD COLUMN IF NOT EXISTS and CREATE INDEX IF
+            # NOT EXISTS lock the table even when there is nothing to do (orion/db/guarded_ddl.py).
+            ddl = GuardedDDL(conn.exec_driver_sql, lambda q: conn.exec_driver_sql(q).fetchall())
+            ddl(
                 "ALTER TABLE chat_response_feedback "
                 "ADD COLUMN IF NOT EXISTS target_artifact_ref TEXT NULL;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "CREATE INDEX IF NOT EXISTS idx_chat_response_feedback_artifact_ref "
                 "ON chat_response_feedback (target_artifact_ref);"
             )
@@ -898,7 +978,10 @@ async def lifespan(app: FastAPI):
     # field, while the bus publish and the Hub's wattage cards keep looking healthy.
     try:
         with engine.begin() as conn:
-            conn.exec_driver_sql(
+            # Skips DDL the catalog already satisfies: ADD COLUMN IF NOT EXISTS and CREATE INDEX IF
+            # NOT EXISTS lock the table even when there is nothing to do (orion/db/guarded_ddl.py).
+            ddl = GuardedDDL(conn.exec_driver_sql, lambda q: conn.exec_driver_sql(q).fetchall())
+            ddl(
                 "ALTER TABLE IF EXISTS orion_biometrics_cluster "
                 "ADD COLUMN IF NOT EXISTS measurements_by_node JSONB;"
             )
@@ -916,11 +999,14 @@ async def lifespan(app: FastAPI):
     # the new fields) would stop while the bus publish kept looking healthy.
     try:
         with engine.begin() as conn:
-            conn.exec_driver_sql(
+            # Skips DDL the catalog already satisfies: ADD COLUMN IF NOT EXISTS and CREATE INDEX IF
+            # NOT EXISTS lock the table even when there is nothing to do (orion/db/guarded_ddl.py).
+            ddl = GuardedDDL(conn.exec_driver_sql, lambda q: conn.exec_driver_sql(q).fetchall())
+            ddl(
                 "ALTER TABLE IF EXISTS chat_stance_belief_log "
                 "ADD COLUMN IF NOT EXISTS interaction_regime TEXT;"
             )
-            conn.exec_driver_sql(
+            ddl(
                 "ALTER TABLE IF EXISTS chat_stance_belief_log "
                 "ADD COLUMN IF NOT EXISTS task_mode TEXT;"
             )
@@ -1018,9 +1104,12 @@ async def lifespan(app: FastAPI):
         )
 
     # Act ledger (rung 2): materialise act events + grade closed acts; resolver closes by horizon.
+    from orion.grammar.act_ledger import configure_act_energy_cost, configure_act_workspace_binding
     from orion.grammar.ledger import configure_act_ledger
 
     configure_act_ledger(bool(getattr(settings, "sql_writer_act_ledger_enabled", True)))
+    configure_act_workspace_binding(bool(getattr(settings, "sql_writer_act_workspace_binding_enabled", True)))
+    configure_act_energy_cost(bool(getattr(settings, "sql_writer_act_energy_cost_enabled", True)))
     act_resolver_task: asyncio.Task | None = None
     if bool(getattr(settings, "sql_writer_act_ledger_enabled", True)) and float(
             getattr(settings, "sql_writer_act_resolver_interval_sec", 0.0) or 0.0) > 0:
@@ -1029,6 +1118,26 @@ async def lifespan(app: FastAPI):
         act_resolver_task = asyncio.create_task(act_resolver_loop(settings))
     else:
         logger.info("act ledger resolver DISABLED (SQL_WRITER_ACT_LEDGER_ENABLED / SQL_WRITER_ACT_RESOLVER_INTERVAL_SEC)")
+    # World-action settle scoring (moved from the retired feedback runtime, 2026-11-04). The loop
+    # itself logs DISABLED and returns when SQL_WRITER_WORLD_SETTLEMENT_INTERVAL_SEC <= 0.
+    from app.world_settlement_loop import world_settlement_loop
+
+    world_settlement_task: asyncio.Task | None = asyncio.create_task(world_settlement_loop(settings))
+
+    # Hourly kWh per Orion power source, kept after raw watts are pruned (Hub Orion energy tab).
+    from app.orion_energy_rollup import orion_energy_rollup_loop
+
+    orion_energy_rollup_task: asyncio.Task | None = asyncio.create_task(orion_energy_rollup_loop(settings))
+
+    # Hourly rest / sponsored / metered / unattributed energy per host (energy allowance input).
+    from app.orion_energy_attribution import orion_energy_attribution_loop
+
+    orion_energy_attribution_task: asyncio.Task | None = asyncio.create_task(orion_energy_attribution_loop(settings))
+
+    # Body economy weight source (a): act -> output -> cited arc -> decision (read-only rollup).
+    from app.act_downstream_use import act_downstream_use_loop
+
+    act_downstream_use_task: asyncio.Task | None = asyncio.create_task(act_downstream_use_loop(settings))
 
     # Replays events shed with error='grammar queue full' back into the ledger once the
     # grammar lanes are idle. See app/grammar_fallback_drain.py.
@@ -1085,12 +1194,74 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("vision expect-key refresh DISABLED (VISION_EXPECT_REFRESH_INTERVAL_SEC=0)")
 
+    # Walkway motion stories (app/vision_motion_loop.py). Hub-only until
+    # Juniper's spot-check passes; nothing in Orion's cognition reads them.
+    vision_motion_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_motion_stories_enabled", False)) and float(
+            getattr(settings, "vision_motion_story_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_motion_loop import vision_motion_loop
+
+        vision_motion_task = asyncio.create_task(vision_motion_loop(settings))
+    else:
+        logger.info("vision motion stories DISABLED (VISION_MOTION_STORIES_ENABLED=false or interval 0)")
+
+    # One frame per camera per hour, kept N days (app/vision_hourly_frames.py).
+    vision_hourly_frames_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_hourly_frames_enabled", False)) and float(
+            getattr(settings, "vision_hourly_frames_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_hourly_frames import vision_hourly_frames_loop
+
+        vision_hourly_frames_task = asyncio.create_task(vision_hourly_frames_loop(settings))
+    else:
+        logger.info("vision hourly frames DISABLED (VISION_HOURLY_FRAMES_ENABLED=false or interval 0)")
+
+    # Walkway rollups by hour/day/week/month (app/vision_rollup_loop.py).
+    vision_rollup_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_rollup_enabled", False)) and float(
+            getattr(settings, "vision_rollup_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_rollup_loop import vision_rollup_loop
+
+        vision_rollup_task = asyncio.create_task(vision_rollup_loop(settings))
+    else:
+        logger.info("vision rollups DISABLED (VISION_ROLLUP_ENABLED=false or interval 0)")
+
+    # Street continuity across the door and walkway cameras (app/vision_handoff_loop.py).
+    vision_handoff_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_handoff_enabled", False)) and float(
+            getattr(settings, "vision_handoff_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_handoff_loop import vision_handoff_loop
+
+        vision_handoff_task = asyncio.create_task(vision_handoff_loop(settings))
+    else:
+        logger.info("vision handoff loop DISABLED (VISION_HANDOFF_ENABLED=false or interval 0)")
+    # Attention as the want competition, patch 2: each open camera ask posts an event want to the
+    # body economy (app/ask_event_wants.py). Shadow; Prime reads the funded ones.
+    ask_event_wants_task: asyncio.Task | None = None
+    if float(getattr(settings, "ask_event_wants_interval_sec", 0.0) or 0.0) > 0:
+        from app.ask_event_wants import ask_event_wants_loop
+
+        ask_event_wants_task = asyncio.create_task(ask_event_wants_loop(settings))
+    else:
+        logger.info("ask event wants loop DISABLED (ASK_EVENT_WANTS_INTERVAL_SEC=0)")
+    # Office sessions: one row per visit to a room camera (app/vision_office_sessions_loop.py).
+    vision_office_sessions_task: asyncio.Task | None = None
+    if bool(getattr(settings, "vision_office_sessions_enabled", False)) and float(
+            getattr(settings, "vision_office_sessions_interval_sec", 0.0) or 0.0) > 0:
+        from app.vision_office_sessions_loop import vision_office_sessions_loop
+
+        vision_office_sessions_task = asyncio.create_task(vision_office_sessions_loop(settings))
+    else:
+        logger.info("vision office sessions DISABLED (VISION_OFFICE_SESSIONS_ENABLED=false or interval 0)")
+
     try:
         yield
     finally:
         pending = [
             t for t in (task, write_health_task, watch_task, retention_task, drain_task, vision_permanence_task,
-                        vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task)
+                        vision_individuals_task, vision_rhythm_task, vision_expect_task, act_resolver_task, world_settlement_task,
+                        vision_motion_task, vision_rollup_task, vision_handoff_task, orion_energy_rollup_task,
+                        orion_energy_attribution_task, vision_hourly_frames_task,
+                        act_downstream_use_task, ask_event_wants_task, vision_office_sessions_task)
             if t is not None
         ]
         for background in pending:
@@ -1115,9 +1286,9 @@ app.include_router(notify_router, prefix="/api/notify-read", tags=["notify-read"
 
 @app.get("/health")
 def health():
-    from app.grammar_truth import build_grammar_truth_snapshot
+    from app.grammar_truth import build_grammar_operational_snapshot
 
-    snap = build_grammar_truth_snapshot()
+    snap = build_grammar_operational_snapshot()
     return {
         "ok": snap["ok"],
         "degraded": snap["degraded"],

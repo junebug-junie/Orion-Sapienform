@@ -55,6 +55,7 @@ CANDIDATES = {
 def classify(node: str | None) -> str:
     if not node:
         return "none"
+    # harness_closure (retired 2026-11-11) stays: this labels historical rows.
     for key in ("chat", "biometrics", "execution", "harness_closure", "route", "codebase",
                 "perception", "bus_synaptic", "cabinet", "rpc_delivery", "circe", "vision"):
         if key in node:

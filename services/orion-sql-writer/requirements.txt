@@ -17,3 +17,6 @@ requests==2.32.3
 # one matmul per crop instead of a Python loop over every individual.
 numpy==2.0.2
 #scipy>=1.6
+# Walkway story pictures (app/vision_story_strip.py): JPEG crop, resize, box
+# drawing and luma histogram for the Hub's spot-check strips.
+Pillow==11.3.0

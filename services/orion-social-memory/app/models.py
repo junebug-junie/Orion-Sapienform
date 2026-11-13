@@ -79,7 +79,8 @@ class SocialRoomContinuitySQL(Base):
     closure_signal = Column(JSON, nullable=True)
     floor_decision = Column(JSON, nullable=True)
     gif_usage_state = Column(JSON, nullable=True)
-    active_commitments = Column(JSON, nullable=True)
+    # active_commitments: retired word-list promise detector (2026-11-12). The DB column
+    # still holds old rows; drop it later only after a backup (Juniper decides).
     calibration_signals = Column(JSON, nullable=True)
     peer_calibrations = Column(JSON, nullable=True)
     trust_boundaries = Column(JSON, nullable=True)

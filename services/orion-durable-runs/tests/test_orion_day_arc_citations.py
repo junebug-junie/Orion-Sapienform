@@ -16,12 +16,11 @@ sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parents[1])]
 
 from langgraph.checkpoint.memory import InMemorySaver  # noqa: E402
 
-from app.orion_day_graph import check_carry_forward, check_note, finish_detail, letter_row  # noqa: E402
+from app.orion_day_graph import check_note, check_threads, finish_detail, letter_row  # noqa: E402
 from orion.orion_day.budget import build_llm_view, extract_refs, material_ref_records  # noqa: E402
 from orion.orion_day.window import orion_day_window  # noqa: E402
 from orion.schemas.orion_day import (  # noqa: E402
-    ORION_DAY_CARRY_FORWARD_VERB, ORION_DAY_NOTE_VERB, OrionDayLetterSourcesV1, OrionDayMaterialV1,
-    OrionDayRunBriefV1,
+    OrionDayLetterSourcesV1, OrionDayMaterialV1, OrionDayRunBriefV1,
 )
 from orion.temporal_self.day_block import render_closed_day_block  # noqa: E402
 from orion.temporal_self.tests.patch4_fixtures import day_1009  # noqa: E402
@@ -59,7 +58,7 @@ def test_no_closed_day_means_no_block_and_no_check():
     brief = brief_1009(with_block=False)
     assert "My day as my own chronology" not in brief.llm_view.digest_md
     note = "Harness closure prediction error held me." + PAD
-    assert check_note(note, brief) == {}
+    assert check_note(note, brief) == {"note_md": note}
 
 
 def test_note_known_kept_unknown_removed_uncited_unverified():
@@ -74,11 +73,12 @@ def test_note_known_kept_unknown_removed_uncited_unverified():
     assert c["uncited_examples"] == ["Juniper spoke at 18:08."]
 
 
-def test_carry_forward_counts_refs_after_the_gate():
+def test_threads_count_refs_after_the_gate():
     brief = brief_1009()
     carry = (f"- [arc:{HARNESS}] Why did harness closure dominate?\n"
              "- [arc:feedfacefeedface] Look at the invented thing.")
-    out = check_carry_forward(carry, brief)
+    out = check_threads(carry, brief)
+    assert len(out["threads"]) == 2 and "feedface" not in out["threads"][1]
     assert "[arc:feedfacefeedface]" not in out["carry_forward_md"]
     assert out["carry_forward_refs"] == {"valid": 1, "unknown": 0}
     assert out["carry_forward_arc_citations"]["rejected_unknown"] == ["arc:feedfacefeedface"]
@@ -100,12 +100,12 @@ def test_full_run_never_retries_for_citations_and_persists_them():
     async def scenario():
         world, saver = base.World(), InMemorySaver()
         world.brief = brief_1009()
-        world.replies[ORION_DAY_NOTE_VERB] = [
-            "Harness closure prediction error held me most of the day [arc:deadbeefdeadbeef]." + PAD]
-        world.replies[ORION_DAY_CARRY_FORWARD_VERB] = [f"- [arc:{HARNESS}] Look at harness closure."]
+        world.replies = [
+            "Harness closure prediction error held me most of the day [arc:deadbeefdeadbeef]." + PAD
+            + f"\n\n## Threads I am carrying\n- [arc:{HARNESS}] Look at harness closure."]
         snap = await base.drive(world.graph(saver), world)
         assert snap.values["status"] == "completed"
-        assert snap.values["llm_attempts"] == {"write_note": 1, "write_carry_forward": 1}  # no retry
+        assert len(world.turns) == 1  # one turn, never retried for citations
         row = world.rows[date(2026, 10, 9)]
         assert "[arc:deadbeefdeadbeef]" not in row["note_md"]
         note_check = row["sources"]["arc_citations"]["note"]
@@ -118,11 +118,12 @@ def test_full_run_never_retries_for_citations_and_persists_them():
 
 
 def _render_note(digest_md: str) -> str:
-    from jinja2 import Environment
-    template = (ROOT / "orion" / "cognition" / "prompts" / "orion_day_note_v1.j2").read_text()
-    return Environment(autoescape=False).from_string(template).render(
-        metadata={"orion_day_input": {"letter_date": "2026-10-09", "timezone": "America/Denver",
-                                      "digest_md": digest_md}})
+    """The letter turn's user message (orion/orion_day/letter_turn.py) for a brief with this digest."""
+    from orion.orion_day.letter_turn import build_letter_prompt
+
+    brief = brief_1009()
+    view = brief.llm_view.model_copy(update={"digest_md": digest_md})
+    return build_letter_prompt(brief.model_copy(update={"llm_view": view}))
 
 
 def test_note_prompt_asks_for_the_chronology_brackets_before_and_after_the_record():
@@ -131,7 +132,7 @@ def test_note_prompt_asks_for_the_chronology_brackets_before_and_after_the_recor
     head, tail = rendered.split(digest)
     assert "Cite your chronology" in head
     assert "copy the [arc:<id>] next to that fact into the same sentence" in head
-    assert "[arc:<id>] for one arc, [day:<date>] for a count over the whole day" in head
+    assert "[arc:<id>] for one arc, [event:<id>] for one act or expectation, [day:<date>] for a count over the whole day" in head
     assert "a sentence naming an attention subject or a time also needs that fact's [arc:<id>]" in head
     assert "marked unverified" in head and "you do not need to cite" not in head.split("Cite your chronology")[1]
     assert "put the [arc:<id>] shown next to that fact in the same sentence" in tail
@@ -169,3 +170,47 @@ def test_a_day_bracket_alone_does_not_verify_an_attention_sentence():
     note = "Harness closure prediction error held me 2 h 15 min over 11 arcs [day:2026-10-09]." + PAD
     out = check_note(note, brief)
     assert out["note_md"] == note and out["note_arc_citations"]["label"] == "UNVERIFIED"
+
+
+def test_an_arc_shown_only_by_the_temporal_core_is_kept_and_shares_are_stored():
+    """Living Prime #3224: the temporal core is a second cited block; its arcs pass the gate, and
+    the honest input's per-source shares land in sources.input_shares."""
+    from orion.orion_day.day_input import render_day_input
+    from orion.orion_day.temporal_core import render_temporal_core
+
+    day = day_1009()
+    material = brief_1009(with_block=False).material.model_copy(update={"temporal_core": render_temporal_core(day)})
+    brief = OrionDayRunBriefV1(letter_date=material.letter_date, window_start=material.window_start,
+                               window_end=material.window_end, material=material,
+                               llm_view=render_day_input(material))
+    core_arc = next(r[4:] for r in material.temporal_core.records if r.startswith("arc:"))
+    note = f"I talked with Juniper [arc:{core_arc}]. And a door [arc:deadbeefdeadbeef]." + PAD
+    out = check_note(note, brief)
+    assert f"[arc:{core_arc}]" in out["note_md"] and "[arc:deadbeefdeadbeef]" not in out["note_md"]
+    state = {"run_id": "r", "note_md": out["note_md"], "carry_forward_md": "- x", **out}
+    sources = OrionDayLetterSourcesV1.model_validate(letter_row(state, brief, datetime.now(timezone.utc))["sources"])
+    assert sources.input_shares == brief.llm_view.source_shares and sources.input_shares
+    assert sources.input_chars["temporal_core"] == len(material.temporal_core.text)
+
+
+def test_an_event_ref_the_core_did_not_show_is_removed_and_recorded():
+    from orion.orion_day.day_input import render_day_input
+    from orion.orion_day.temporal_core import render_temporal_core
+    from orion.schemas.temporal_self import ExpectationRefV1
+
+    day = day_1009()
+    resolved = [ExpectationRefV1(event_id="action_outcome:7", source_kind="action_outcome",
+                                 committed_at=day.closed_at - timedelta(hours=2),
+                                 resolved_at=day.closed_at - timedelta(hours=2), verdict="claim_upheld=false")]
+    day = day.model_copy(update={"frame": day.frame.model_copy(update={
+        "expectations_resolved_today": resolved, "expectations_resolved_total": 1})})
+    material = brief_1009(with_block=False).material.model_copy(update={"temporal_core": render_temporal_core(day)})
+    brief = OrionDayRunBriefV1(letter_date=material.letter_date, window_start=material.window_start,
+                               window_end=material.window_end, material=material, llm_view=render_day_input(material))
+    note = "One act missed [event:action_outcome:7]. Another I made up [event:action_outcome:999999]." + PAD
+    out = check_note(note, brief)
+    assert "[event:action_outcome:7]" in out["note_md"] and "999999" not in out["note_md"]
+    assert out["note_rejected_events"] == ["action_outcome:999999"]
+    state = {"run_id": "r", "carry_forward_md": "- x", **out}
+    sources = OrionDayLetterSourcesV1.model_validate(letter_row(state, brief, datetime.now(timezone.utc))["sources"])
+    assert sources.rejected_event_refs == {"note": ["action_outcome:999999"]}

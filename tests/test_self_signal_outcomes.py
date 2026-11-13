@@ -277,8 +277,89 @@ def test_index_by_signal_takes_the_newest_row_and_the_strongest_outcome() -> Non
         row("rpc_timeout", "tends_more", 1.2, 4.0, NOW),
         row("response_repair", "tends_more", 1.8, 4.0, NOW),
     ]
-    idx = sso.index_by_signal(rows)
+    idx = sso.index_by_signal(rows, holds=1)
     assert idx[BIO].outcome == "response_repair"
+
+
+# --- repeated looks: a clause renders only after K consecutive hourly holds ----------------------
+
+
+def _run(verdicts: list[str | None], *, outcome: str = "turn_failed", end: datetime = NOW,
+         minute: int = 10) -> list[SelfSignalOutcomeAssociationV1]:
+    """One row per hourly computation, oldest first; ``None`` = that hour has no row."""
+    out = []
+    n = len(verdicts)
+    for i, v in enumerate(verdicts):
+        if v is None:
+            continue
+        at = sso.hour_floor(end) - timedelta(hours=n - 1 - i) + timedelta(minutes=minute)
+        tends = v in sso.CLAUSE_VERDICTS
+        out.append(SelfSignalOutcomeAssociationV1(
+            association_id=f"ssa-{outcome}-{i:03d}", computed_at=at, signal_id=BIO, outcome=outcome,
+            verdict=v, ci_low=1.5 if v == "tends_more" else 0.2, ci_high=4.0 if v == "tends_more" else 0.6,
+            clause="c" if tends else "",  # type: ignore[arg-type]
+        ))
+    return out
+
+
+M, L, N = "tends_more", "tends_less", "no_clear_difference"
+
+
+def test_a_clause_renders_after_k_consecutive_holds() -> None:
+    rows = _run([N] + [M] * 6)
+    assert sso.DEFAULT_CONSECUTIVE_HOLDS == 6
+    idx = sso.index_by_signal(rows)
+    assert idx[BIO].association_id == "ssa-turn_failed-006"  # the newest row is the one cited
+
+
+def test_k_minus_one_holds_does_not_render() -> None:
+    assert dict(sso.index_by_signal(_run([N] + [M] * 5))) == {}
+    assert dict(sso.index_by_signal(_run([M] * 5))) == {}
+
+
+def test_a_flip_resets_the_run() -> None:
+    assert dict(sso.index_by_signal(_run([M] * 6 + [N] + [M] * 5))) == {}
+    # A direction flip is a different verdict too.
+    assert dict(sso.index_by_signal(_run([M] * 6 + [L] * 5))) == {}
+    assert sso.index_by_signal(_run([M] * 6 + [L] * 6))[BIO].verdict == "tends_less"
+
+
+def test_a_missing_hour_resets_the_run() -> None:
+    assert dict(sso.index_by_signal(_run([M] * 3 + [None] + [M] * 5))) == {}
+    assert BIO in sso.index_by_signal(_run([M] * 3 + [None] + [M] * 6))
+
+
+def test_a_recompute_inside_an_hour_is_one_computation() -> None:
+    rows = _run([M] * 5)
+    # A restart recomputed the newest hour at :50 with a different verdict: the newer one wins.
+    late = rows[-1].model_copy(update={"association_id": "ssa-late", "verdict": N, "clause": "",
+                                       "computed_at": rows[-1].computed_at + timedelta(minutes=40)})
+    extra = rows[-1].model_copy(update={"association_id": "ssa-dup",
+                                        "computed_at": rows[-1].computed_at - timedelta(minutes=5)})
+    assert sso.consecutive_holds(sso.hourly_runs(rows + [extra])[(BIO, "turn_failed")]) == 5
+    assert sso.consecutive_holds(sso.hourly_runs(rows + [late])[(BIO, "turn_failed")]) == 0
+
+
+def test_holds_are_judged_per_pair() -> None:
+    rows = _run([M] * 6, outcome="turn_failed") + _run([M] * 6, outcome="rpc_timeout")[:-1]
+    held = sso.held_latest_by_pair(rows)
+    assert [(a.outcome, a.association_id) for a in held] == [("turn_failed", "ssa-turn_failed-005")]
+
+
+def test_fresh_since_drops_a_stale_run_and_holds_one_is_the_old_rule() -> None:
+    rows = _run([M] * 6)
+    assert dict(sso.index_by_signal(rows, fresh_since=NOW + timedelta(hours=1))) == {}
+    assert BIO in sso.index_by_signal(rows[-1:], holds=1)
+    assert BIO in sso.index_by_signal(rows[-1:], holds=0)  # clamped to 1, never "always"
+
+
+def test_history_sql_matches_the_schema_columns() -> None:
+    from orion.schemas.self_signal_outcome import SelfSignalOutcomeAssociationV1 as A
+
+    assert set(sso.ASSOCIATION_COLUMNS) <= set(A.model_fields)
+    assert set(A.model_fields) - set(sso.ASSOCIATION_COLUMNS) == {"schema_version"}
+    sql = sso.association_history_sql("%s", "%s")
+    assert sql.count("%s") == 2 and "FROM self_signal_outcome_association" in sql
 
 
 def test_hour_row_caps_signals() -> None:

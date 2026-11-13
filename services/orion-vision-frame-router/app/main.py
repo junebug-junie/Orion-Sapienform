@@ -10,11 +10,13 @@ from fastapi import FastAPI
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
+from orion.core.bus.resilience import run_subscription
 
 from . import grammar_emit
 from .dispatcher import FrameDispatcher
 from .expectation import ExpectationCache
-from .metrics import RouterMetrics, make_health_envelope
+from .metrics import RouterMetrics, make_health_details
 from .policy import FrameDispatchPolicy
 from .settings import Settings
 from .state import RouterState
@@ -38,13 +40,18 @@ class FrameRouterService:
         self._frames_task: Optional[asyncio.Task] = None
         self._reply_task: Optional[asyncio.Task] = None
         self._timeout_task: Optional[asyncio.Task] = None
-        self._health_task: Optional[asyncio.Task] = None
         self._expectation_task: Optional[asyncio.Task] = None
         self._organ_task: Optional[asyncio.Task] = None
         self._expectation_redis: Any = None
+        # One cache serves expectation steering and the experiment override;
+        # it runs when either is on and answers False for the one that is off.
         self.expectation: ExpectationCache | None = (
-            ExpectationCache(refresh_sec=self.settings.ROUTER_EXPECTATION_REFRESH_SEC)
-            if self.settings.ROUTER_EXPECTATION_STEERING_ENABLED
+            ExpectationCache(
+                refresh_sec=self.settings.ROUTER_EXPECTATION_REFRESH_SEC,
+                expectation_enabled=self.settings.ROUTER_EXPECTATION_STEERING_ENABLED,
+                experiment_enabled=self.settings.ROUTER_EXPERIMENT_OVERRIDE_ENABLED,
+            )
+            if self.settings.ROUTER_EXPECTATION_STEERING_ENABLED or self.settings.ROUTER_EXPERIMENT_OVERRIDE_ENABLED
             else None
         )
         self._shutdown = asyncio.Event()
@@ -67,7 +74,6 @@ class FrameRouterService:
         self._frames_task = asyncio.create_task(self._frames_loop())
         self._reply_task = asyncio.create_task(self._reply_loop())
         self._timeout_task = asyncio.create_task(self._timeout_loop())
-        self._health_task = asyncio.create_task(self._health_loop())
         if self.settings.VISION_ORGAN_GRAMMAR_ENABLED:
             # Expected streams = the policy file's `streams:` block. A listed stream
             # that never sends a frame is reported as absent, not as calm.
@@ -102,7 +108,6 @@ class FrameRouterService:
             self._frames_task,
             self._reply_task,
             self._timeout_task,
-            self._health_task,
             self._expectation_task,
             self._organ_task,
         ):
@@ -121,50 +126,49 @@ class FrameRouterService:
 
     async def _frames_loop(self) -> None:
         assert self.dispatcher is not None
-        async with self.bus.subscribe(self.settings.CHANNEL_FRAMES_IN) as pubsub:
-            while not self._shutdown.is_set():
-                try:
-                    async for msg in self.bus.iter_messages(pubsub):
-                        if self._shutdown.is_set():
-                            break
-                        data = msg.get("data")
-                        if not data:
-                            continue
-                        decoded = self.bus.codec.decode(data)
-                        if decoded.ok and decoded.envelope:
-                            _spawn(self.dispatcher.handle_frame_envelope(decoded.envelope))
-                        elif not decoded.ok:
-                            self.metrics.decode_errors_total += 1
-                            self.metrics.last_error = f"frame_decode_error: {decoded.error}"
-                            logger.warning(f"[FRAME-ROUTER] frame decode failed: {decoded.error}")
-                except Exception as exc:
-                    if not self._shutdown.is_set():
-                        logger.error(f"[FRAME-ROUTER] frames consumer error: {exc}")
-                        await asyncio.sleep(1)
+        await run_subscription(
+            self.bus,
+            self.settings.CHANNEL_FRAMES_IN,
+            self._handle_frame_msg,
+            stop_event=self._shutdown,
+            name="vision-frame-router.frames",
+        )
+
+    def _handle_frame_msg(self, msg: dict[str, Any]) -> None:
+        # Dispatch runs in its own task so a slow frame does not hold up the stream.
+        data = msg.get("data")
+        if not data:
+            return
+        decoded = self.bus.codec.decode(data)
+        if decoded.ok and decoded.envelope:
+            _spawn(self.dispatcher.handle_frame_envelope(decoded.envelope))
+        elif not decoded.ok:
+            self.metrics.decode_errors_total += 1
+            self.metrics.last_error = f"frame_decode_error: {decoded.error}"
+            logger.warning(f"[FRAME-ROUTER] frame decode failed: {decoded.error}")
 
     async def _reply_loop(self) -> None:
         assert self.dispatcher is not None
-        pattern = f"{self.settings.CHANNEL_REPLY_PREFIX}:*"
-        async with self.bus.subscribe(pattern, patterns=True) as pubsub:
-            while not self._shutdown.is_set():
-                try:
-                    async for msg in self.bus.iter_messages(pubsub):
-                        if self._shutdown.is_set():
-                            break
-                        data = msg.get("data")
-                        if not data:
-                            continue
-                        decoded = self.bus.codec.decode(data)
-                        if decoded.ok and decoded.envelope:
-                            _spawn(self.dispatcher.handle_reply_envelope(decoded.envelope))
-                        elif not decoded.ok:
-                            self.metrics.decode_errors_total += 1
-                            self.metrics.last_error = f"reply_decode_error: {decoded.error}"
-                            logger.warning(f"[FRAME-ROUTER] reply decode failed: {decoded.error}")
-                except Exception as exc:
-                    if not self._shutdown.is_set():
-                        logger.error(f"[FRAME-ROUTER] reply consumer error: {exc}")
-                        await asyncio.sleep(1)
+        await run_subscription(
+            self.bus,
+            f"{self.settings.CHANNEL_REPLY_PREFIX}:*",
+            self._handle_reply_msg,
+            stop_event=self._shutdown,
+            name="vision-frame-router.replies",
+            patterns=True,
+        )
+
+    def _handle_reply_msg(self, msg: dict[str, Any]) -> None:
+        data = msg.get("data")
+        if not data:
+            return
+        decoded = self.bus.codec.decode(data)
+        if decoded.ok and decoded.envelope:
+            _spawn(self.dispatcher.handle_reply_envelope(decoded.envelope))
+        elif not decoded.ok:
+            self.metrics.decode_errors_total += 1
+            self.metrics.last_error = f"reply_decode_error: {decoded.error}"
+            logger.warning(f"[FRAME-ROUTER] reply decode failed: {decoded.error}")
 
     async def _timeout_loop(self) -> None:
         assert self.dispatcher is not None
@@ -175,23 +179,16 @@ class FrameRouterService:
                 logger.warning(f"[FRAME-ROUTER] timeout sweep failed: {exc}")
             await asyncio.sleep(1.0)
 
-    async def _health_loop(self) -> None:
-        while not self._shutdown.is_set():
-            try:
-                env = make_health_envelope(
-                    service_name=self.settings.SERVICE_NAME,
-                    service_version=self.settings.SERVICE_VERSION,
-                    router_enabled=self.settings.ROUTER_ENABLED,
-                    dry_run=self.settings.DRY_RUN,
-                    policy_path=self.settings.ROUTER_POLICY_PATH,
-                    metrics=self.metrics,
-                    state=self.state,
-                    heartbeat_interval_sec=self.settings.HEALTH_INTERVAL_SECONDS,
-                )
-                await self.bus.publish(self.settings.CHANNEL_SYSTEM_HEALTH, env)
-            except Exception as exc:
-                logger.warning(f"[FRAME-ROUTER] health publish failed: {exc}")
-            await asyncio.sleep(self.settings.HEALTH_INTERVAL_SECONDS)
+    def health_details(self) -> dict[str, Any]:
+        """`details` for the SystemHealthV1 heartbeat (see build_heartbeat_chassis)."""
+        return make_health_details(
+            router_enabled=self.settings.ROUTER_ENABLED,
+            dry_run=self.settings.DRY_RUN,
+            policy_path=self.settings.ROUTER_POLICY_PATH,
+            metrics=self.metrics,
+            state=self.state,
+            experiment_override_streams=self.expectation.experiment_streams() if self.expectation else [],
+        )
 
     def metrics_snapshot(self) -> dict[str, Any]:
         return {
@@ -201,9 +198,14 @@ class FrameRouterService:
             "router_enabled": self.settings.ROUTER_ENABLED,
             "dry_run": self.settings.DRY_RUN,
             "policy_path": self.settings.ROUTER_POLICY_PATH,
-            "expectation_steering_enabled": self.expectation is not None,
+            "expectation_steering_enabled": self.settings.ROUTER_EXPECTATION_STEERING_ENABLED,
             "expectation_open_streams": self.expectation.open_streams() if self.expectation else [],
             "expectation_refresh_failures": self.expectation.refresh_failures if self.expectation else 0,
+            "experiment_override_enabled": self.settings.ROUTER_EXPERIMENT_OVERRIDE_ENABLED,
+            "experiment_override_streams": self.expectation.experiment_streams() if self.expectation else [],
+            "experiment_override_no_ttl_refusals": (
+                self.expectation.experiment_no_ttl_refusals if self.expectation else 0
+            ),
             "vision_organ_grammar_enabled": grammar_emit.get_recorder() is not None,
         }
 
@@ -226,11 +228,55 @@ def _spawn(coro) -> asyncio.Task:
     return task
 
 
+heartbeat_chassis: HeartbeatOnly | None = None
+
+
+def build_heartbeat_chassis() -> HeartbeatOnly:
+    """Standard SystemHealthV1 heartbeat (orion:system:health) on its own bus
+    connection, separate from `service.bus` (frames/replies). Replaces the old
+    FrameRouterService._health_loop, which sent no node at all (equilibrium keyed it
+    `vision-frame-router@unknown`). The router counters still ride in `details`.
+    Pattern: docs/superpowers/specs/2026-07-24-service-heartbeat-node-telemetry-design.md."""
+    s = service.settings
+    return HeartbeatOnly(
+        ChassisConfig(
+            service_name=s.SERVICE_NAME,
+            service_version=s.SERVICE_VERSION,
+            node_name=s.NODE_NAME,
+            bus_url=s.ORION_BUS_URL,
+            heartbeat_interval_sec=s.HEALTH_INTERVAL_SECONDS,
+            health_channel=s.CHANNEL_SYSTEM_HEALTH,
+        ),
+        heartbeat_details=service.health_details,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global heartbeat_chassis
     await service.start()
-    yield
-    await service.stop()
+    # A heartbeat failure is logged, never fatal: frames keep routing.
+    try:
+        chassis = build_heartbeat_chassis()
+        await chassis.start_background()
+        heartbeat_chassis = chassis
+        logger.info(
+            f"[FRAME-ROUTER] system_health_heartbeat_started node={service.settings.NODE_NAME} "
+            f"interval_sec={service.settings.HEALTH_INTERVAL_SECONDS}"
+        )
+    except Exception as exc:
+        logger.warning(f"[FRAME-ROUTER] system_health_heartbeat_start_failed error={exc}")
+        heartbeat_chassis = None
+    try:
+        yield
+    finally:
+        if heartbeat_chassis is not None:
+            try:
+                await heartbeat_chassis.stop()
+            except Exception as exc:
+                logger.warning(f"[FRAME-ROUTER] system_health_heartbeat_stop_error error={exc}")
+            heartbeat_chassis = None
+        await service.stop()
 
 
 app = FastAPI(title="Orion Vision Frame Router", version="0.1.0", lifespan=lifespan)

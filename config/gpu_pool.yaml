@@ -26,6 +26,14 @@ defaults:
   retry: {max_attempts: 3, base_sec: 5, max_sec: 300}
   # Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuation.md)
   hold_clawback_grace_sec: 600  # a recalled hold (durable run) finishes its current graph node within this, then is aborted + re-queued
+  # H5 (2026-11-04): a swap seat drained only for BACKGROUND owner work (every diffusion job) gives a running
+  # hold this long instead, so a ~1 min image no longer kills a 10-60 min reading/curiosity turn (81 killed
+  # 10-28..11-04). Images wait up to this for the running node (inside the 2.5 h Juniper allowed 2026-09-29).
+  # Default 3600 lives in orion/gpu_pool/config.py (Defaults.background_drain_grace_sec), NOT here yet:
+  # Defaults is extra=forbid and circe's lane controller parses this file, so a new key here breaks any
+  # reader still on older code. Add `background_drain_grace_sec: <sec>` here once every reader is deployed.
+  # Rollback today is a code change (set that default to 600); once every reader of this file is deployed
+  # with the field, setting the key here equal to hold_clawback_grace_sec also rolls it back.
   swap_min_residency_sec: 600   # after a seat unloads, its evicted residents stay this long (swap_requested reason=min_residency)
   actuate_ack_sec: 10           # the actuator must answer "accepted" within this, else swap_failed reason=actuator_unreachable
   # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md)
@@ -37,7 +45,12 @@ defaults:
 actuators:
   circe: {host: circe}
 
-priorities: [urgent, interactive, system, background]   # highest first
+# perception (2026-10-23, body-economy design Patch A0): Orion's senses. Below Juniper's turn, above
+# Orion's own work, and never shed by heat -- orion/gpu_pool/shed.py can only block starved/system/background.
+# starved (2026-11-03): Orion's own work whose last try lost its whole seat wait to the queue (today only
+# Orion Prime's prime_starved route). Ahead of other system work, behind Juniper and the senses, and shed
+# by the heat reflex exactly like system.
+priorities: [urgent, interactive, perception, starved, system, background]   # highest first
 
 # index = the card's CUDA / nvidia-smi device number on circe (CUDA_DEVICE_ORDER=PCI_BUS_ID). Hub's
 # biometrics GPU labels join nvidia-smi on it (stage 5.5). gpu0/1/3 verified live 2026-09-29 against
@@ -54,8 +67,18 @@ cards:
   hecate-gpu0: {vram_gb: 32, lendable: true, index: 0, host: hecate}
 
 roles:
-  chat:       {kind: llm, cards: [gpu0], owner: chat, port: 8011}
-  agent:      {kind: llm, cards: [gpu1], owner: agent, port: 8015}
+  # chat runs Strata (Qwen3.8-Flash-Next, 2026-10-30): llama.cpp's /props shape, no /completion endpoint.
+  # Rollback with the llama.cpp server: drop `backend: strata` (services/orion-llamacpp-host README).
+  chat:       {kind: llm, backend: strata, cards: [gpu0], owner: chat, port: 8011}
+  # memory_distill co-owns gpu1 (2026-10-20): it is its only role, and its route is system "ahead of
+  # curiosity's background holds". As a borrower, rule 5 gave every queued agent lease (background
+  # included) gpu1 first and recalled a running distill hold owner_waiting (10-18 11:39), so two
+  # system distill holds waited 10+ h behind background reading holds (10-20). As an owner, queue
+  # order (priority, then age) decides. Rollback: owner: agent.
+  # agent runs Strata like chat (2026-10-31), at 131072 like agent-gpu2. Rollback: drop `backend: strata`.
+  # judge co-owns gpu1 (2026-11-12) for the same reason as memory_distill: as a borrower, rule 5
+  # would hold every judge call behind any queued agent lease (curiosity holds queue there all day).
+  agent:      {kind: llm, backend: strata, cards: [gpu1], owner: [agent, memory_distill, judge], port: 8015}
   agent-gpu2: {kind: llm, cards: [gpu2], owner: agent, port: 8016,   # diffusion reclaims gpu2 via evicts
                # How long gpu2 may stay borrowed from diffusion once the pool loaded it (was
                # DURABLE_RUNS_ELASTIC_MAX_BORROW_SEC): then holds are recalled and the seat unloads.
@@ -137,10 +160,37 @@ classes:   # roles that may serve a class, in preference order; nothing big spil
   world:      {roles: [world], on_unavailable: wait}   # a world prediction replayed hours later is useless
   diffusion:  {roles: [diffusion], on_unavailable: backlog}
   experiment: {roles: [experiment], on_unavailable: fail}
-  # Memory episode distiller (2026-10-02, Juniper's choice): the 27B on gpu1 ONLY. Never the gpu2
+  # Memory episode distiller (2026-10-02, Juniper's choice): gpu1 ONLY -- the 27B until 2026-10-31,
+  # Qwen3.8-Flash-Next on Strata since (Juniper: "move distil over too"). Never the gpu2
   # seat (a different model may load there) and never the lent chat card. Backlog, not wait: a
   # distill run waits for the hold under durable-runs admission anyway.
   memory_distill: {roles: [agent], on_unavailable: backlog}
+  # The finalize 5b judge (harness_finalize_reflect) of a durable run whose hold is on a role this
+  # list does not name (2026-11-12; orion/harness/finalize.py FINALIZE_JUDGE_HOLD_ROLES must equal
+  # this list -- orion/harness/tests/test_finalize_judge_placement.py). Under a hold every call runs
+  # on the hold's role, so 22 of 90 judge calls (11-11..12) ran on whatever model the gpu2 seat had
+  # loaded; replay showed that seat's judge, thinking off, caught 2 of 5 false claims (5 of 5 with
+  # thinking on, which cannot be used: 8000 tokens and no verdict). gpu1, then chat's card only while
+  # Juniper lends it (rule 9), never the gpu2 seat or hecate. Wait, not backlog: nobody resumes a
+  # judge call later. Rollback: delete this class, its route and the owner entry on `agent`.
+  judge:          {roles: [agent, chat], on_unavailable: wait}
+  # Operator work (evals, benches, probes Juniper or an agent starts by hand; 2026-11-12, design
+  # docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md, Phase 1). Not Orion's
+  # own acts: no role names these classes as owner, so they are borrowers everywhere -- an owner that
+  # waits recalls them (rule 5) and chat's card / hecate take them only while Juniper has lent the card
+  # (rule 9). Their routes are `background` (shed by the heat reflex with Orion's background work) and
+  # they sort after every other background lease (orion/gpu_pool/value_order.py OPERATOR_CLASS_PREFIX,
+  # GPU_POOL_OPERATOR_LAST). They never bid (scripts/check_verb_physiology.py refuses an operator* lane)
+  # and the body economy reads their load as sponsored, not Orion's (PHYSIOLOGY_OPERATOR_LOAD_SPONSORED).
+  # Callers: orion/evals/leased_llm.py only. Wait, not backlog: an eval nobody resumes later.
+  # `operator`: any big lane. The pinned ones replay one specific lane.
+  operator:            {roles: [agent-gpu2, agent, agent-deep, chat], on_unavailable: wait}
+  operator_chat:       {roles: [chat], on_unavailable: wait}
+  operator_agent:      {roles: [agent], on_unavailable: wait}
+  operator_agent_gpu2: {roles: [agent-gpu2], on_unavailable: wait}
+  operator_agent_deep: {roles: [agent-deep], on_unavailable: wait}
+  operator_metacog:    {roles: [metacog], on_unavailable: wait}
+  operator_fast:       {roles: [fast], on_unavailable: wait}
 
 routes:    # what llm-gateway callers say -> class (+ priority). Every gateway route must be listed:
            # the gateway refuses a route that is not here rather than guess a GPU.
@@ -156,19 +206,60 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # Calls on a human's critical path (spec 2026-10-06-thermal-controller-redesign D4): same class
   # as metacog, but interactive, so a heat shed never holds a live Hub turn (orion-mind on a Hub
   # turn, MIND_TURN_MODEL_ROUTE). metacog stays system: it also carries background callers.
-  # quick_turn / agent_turn (spec D4, Q4) are NOT added: no live-turn caller sends quick or agent
-  # today (cortex-orch's memory annotation listens to finished turns; Hub Agent mode runs through the
-  # FCC harness). Add each with the caller that uses it, not before.
+  # Also Hub's Zelda co-play planner (2026-10-24, retro_planner.COPLAY_ROUTE): Link stands still on
+  # screen while Juniper watches each decision; ~30 reply tokens per call. Solo leisure stays on
+  # metacog_background (nobody waiting, shed under heat).
+  # agent_turn (spec D4, Q4) is NOT added: no live-turn caller sends agent today (Hub Agent mode
+  # runs through the FCC harness). Add it with the caller that uses it, not before.
   metacog_turn: {class: metacog, priority: interactive}
+  # quick_turn (2026-10-23): the pre-turn repair-pressure probe (cortex-exec
+  # REPAIR_PRESSURE_PROBE_ROUTE), awaited by every Hub turn before the stance runs. On `quick`
+  # (system) the 34 C reflex refused it on 19/19 Juniper turns 10-20..21, and the turn went on
+  # with no repair reading. Same fast class, interactive, so heat never sheds it.
+  quick_turn: {class: fast, priority: interactive}
+  # quick_embodied (2026-10-23): Orion's own speech in AI Town (orion-embodiment
+  # EMBODIMENT_SPEECH_QUICK_LLM_ROUTE, through cortex-exec chat_quick). On quick_background it
+  # waited in the fast queue behind system work (orion-topic-foundry) and the embodiment worker's
+  # 45 s RPC gave up on every reply 10-23, while the lane itself answered in 2.2 s. Someone is
+  # standing there waiting for an answer, so it is a live turn: interactive, never shed by heat.
+  quick_embodied: {class: fast, priority: interactive}
+  # Orion's sight (2026-10-23, docs/superpowers/specs/2026-10-23-organism-body-economy-design.md, A0):
+  # vision-council's scene reads. On metacog_background the 34 C reflex refused it 25,430 times in the
+  # 7 days to 10-23 -- Orion stopped interpreting what it saw whenever the cabinet ran hot. perception
+  # is never shed by heat and ranks below Juniper's turn. Load: ~33 GPU-h/week (p90 1,679 slot-s/hour);
+  # the pool alerts past GPU_POOL_PERCEPTION_ALERT_HELD_SEC_PER_HOUR.
+  metacog_perception: {class: metacog, priority: perception}
   # The old "burst" lanes: agent work on a borrowed card. The pool now decides which card
   # (agent -> gpu2 seat when loaded -> gpu0 when lent), so both are just agent work.
   agent-burst: {class: agent, priority: system}
   chat-burst: {class: agent, priority: system}
-  # Memory episode distiller (2026-10-02): durable-runs holds the 27B on gpu1 at system priority
+  # Memory episode distiller (2026-10-02): durable-runs holds gpu1 (Strata since 2026-10-31) at system priority
   # (ahead of curiosity's background holds) and calls the gateway on this route.
   memory_distill: {class: memory_distill, priority: system}
+  # The finalize 5b judge off a hold (classes.judge above). system, the priority the judge's hold child
+  # named before (route `agent`): ahead of background holds (it may use their gaps, H3), behind
+  # Juniper's turn and the senses. Shed by the heat reflex like any one-shot system call.
+  judge: {class: judge, priority: system}
   # hecate's 27B (2026-10-08): its own card, always this route's; others borrow it only while lent.
   agent-deep: {class: agent-deep, priority: system}
+  # Orion Prime's between-conversations thinking (2026-10-30, docs/superpowers/specs/2026-10-29-orion-
+  # prime-design.md section 7.1, Juniper: circe chat lane 0 by default). Same worker as `chat` (warm, no
+  # cold start). `system` since 2026-11-03: at `background` it queued behind every system call on the
+  # chat class (the harness held the role ~16 h of 4 days) and 74 of 254 thoughts lost their whole 60 s
+  # to the queue. Juniper's turn (interactive) still goes first; the heat reflex still sheds it.
+  # prime_starved: the same call one level up (`starved`), used only when Prime's previous try got no
+  # seat at all (orion/mindloop/runtime.py, Prime's loop). Both system-only (orion/llm/routes.py).
+  prime: {class: chat, priority: system}
+  prime_starved: {class: chat, priority: starved}
+  # Operator work (classes.operator* above): one route per class, always `background`. Named in the
+  # `model` field of a gateway call that carries the eval's operator hold (X-Orion-Gpu-Lease).
+  operator: {class: operator, priority: background}
+  operator_chat: {class: operator_chat, priority: background}
+  operator_agent: {class: operator_agent, priority: background}
+  operator_agent_gpu2: {class: operator_agent_gpu2, priority: background}
+  operator_agent_deep: {class: operator_agent_deep, priority: background}
+  operator_metacog: {class: operator_metacog, priority: background}
+  operator_fast: {class: operator_fast, priority: background}
 
 hold_routes:   # durable-run holds on non-LLM roles; durable-runs reads these, the gateway never does
   # reverie.visual's generate step (docs/superpowers/specs/2026-09-28-visual-reverie-durable-graph-design.md).

@@ -68,7 +68,12 @@ def context_mode_brief_lines() -> list[str]:
             f"and multi-file analysis through {mcp_tool(server, 'ctx_batch_execute')} / "
             f"{mcp_tool(server, 'ctx_execute')} so raw output stays out of the live "
             "context; recover exact omitted evidence later with "
-            f"{mcp_tool(server, 'ctx_search')} instead of re-running bulk queries."
+            f"{mcp_tool(server, 'ctx_search')} instead of re-running bulk queries. "
+            # Live 2026-10-31..11-03: 23 turns called these by name without loading them; the
+            # engine left each call as text and the turn ended on it (fcc_motor UNLOADED_TOOL_NOTE).
+            "These tools are not loaded until you load them: call ToolSearch with "
+            f"\"select:{mcp_tool(server, 'ctx_batch_execute')},{mcp_tool(server, 'ctx_execute')},"
+            f"{mcp_tool(server, 'ctx_search')}\" once before the first use, or the call will not run."
         ),
     ]
 

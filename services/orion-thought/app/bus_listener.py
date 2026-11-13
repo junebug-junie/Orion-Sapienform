@@ -11,7 +11,7 @@ from pydantic import ValidationError
 
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.cognition.recall_query import cap_retrieval_query
-from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.async_service import OrionBusAsync, PubSubSilentError, PubSubWatchdog
 
 from .rpc_health import fold_bus
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -57,7 +57,9 @@ from .mind_enrichment import (
 )
 from .settings import settings
 from .temporal_self_cue import build_stance_cue
+from .personality_cue import build_personality_cue
 from .self_readings_cue import build_self_readings_block
+from .self_track_record_cue import build_self_track_record_cue
 from .visual_steps import run_visual_step
 
 logger = logging.getLogger("orion-thought.bus")
@@ -165,6 +167,8 @@ def build_stance_react_context(
     stance_prepare_requested: bool = False,
     temporal_self_cue: str | None = None,
     self_readings: str | None = None,
+    personality_cue: str | None = None,
+    self_track_record: str | None = None,
     label_estimates: bool = False,
 ) -> dict[str, Any]:
     stance_inputs = (
@@ -211,6 +215,16 @@ def build_stance_react_context(
         # executor.py's existing `ctx.get("response_format")` forwarding
         # (executor.py:4365-4367); no executor.py change is needed.
         "response_format": {"type": "json_object"},
+        # Thinking OFF on every lane. The agent lanes think by default (Strata
+        # agent-defaults.json reasoning_effort=high; Bonsai agent-gpu2
+        # reasoning_effort=xhigh); the chat lane does not. Live 2026-10-29..31
+        # (llm_call_usage): stance_react wrote a median 342 completion tokens on
+        # chat (14 s) but 2,918 on agent and 3,652 on agent-gpu2 (158 s at
+        # ~29 tok/s), and 42 of 113 agent-gpu2 calls ran into cortex-exec's 235 s
+        # cutoff (`timeout:caller_budget_exhausted`; 108 failed reading turns
+        # since 10-14). The answer is a short JSON object and the reasoning is
+        # never read. cortex-exec's executor.py forwards this key to the gateway.
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     if isinstance(surface_context, dict) and surface_context:
         context["surface_context"] = surface_context
@@ -229,9 +243,18 @@ def build_stance_react_context(
     if self_readings:
         # Self-calibration section C: body signals unusual for themselves (rendered, no LLM).
         context["self_readings"] = self_readings
+    if personality_cue:
+        # Personality graph read-back: what Orion keeps coming back to (rendered, no LLM; a record).
+        context["personality_cue"] = personality_cue
+    if self_track_record:
+        # Self-monitor step 3: what Orion is failing at or misjudging, from settled bets (no LLM).
+        context["self_track_record"] = self_track_record
     if label_estimates and mind_coloring is not None:
         # Mind's frontier scores / confidences are an LLM's numbers: say so in the prompt.
         context["self_readings_label_estimates"] = True
+    if settings.stance_self_prediction_enabled:
+        # Self-prediction A1: stance_react.j2 asks for the private self_prediction bet only when set.
+        context["self_prediction_enabled"] = True
     if stance_prepare_requested:
         # cortex-exec waits for (and uses) the context it is already building for
         # this turn instead of building a second one (app/stance_prepare.py).
@@ -263,6 +286,8 @@ def build_stance_react_plan_request(
     stance_prepare_requested: bool = False,
     temporal_self_cue: str | None = None,
     self_readings: str | None = None,
+    personality_cue: str | None = None,
+    self_track_record: str | None = None,
     label_estimates: bool = False,
 ) -> PlanExecutionRequest:
     """Build the cortex-exec plan request for the stance_react verb (one attempt, on the turn's own
@@ -271,6 +296,7 @@ def build_stance_react_plan_request(
     context = build_stance_react_context(
         request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested,
         temporal_self_cue=temporal_self_cue, self_readings=self_readings,
+        personality_cue=personality_cue, self_track_record=self_track_record,
         label_estimates=label_estimates,
     )
     return PlanExecutionRequest(
@@ -295,6 +321,8 @@ async def execute_stance_react(
     stance_prepare_requested: bool = False,
     temporal_self_cue: str | None = None,
     self_readings: str | None = None,
+    personality_cue: str | None = None,
+    self_track_record: str | None = None,
     label_estimates: bool = False,
 ) -> tuple[dict[str, Any], dict[str, Any] | str]:
     """Run the stance_react plan once, on the turn's own route and correlation id, with the whole
@@ -310,6 +338,7 @@ async def execute_stance_react(
     plan_request = build_stance_react_plan_request(
         request, mind_coloring=mind_coloring, stance_prepare_requested=stance_prepare_requested,
         temporal_self_cue=temporal_self_cue, self_readings=self_readings,
+        personality_cue=personality_cue, self_track_record=self_track_record,
         label_estimates=label_estimates,
     )
     exec_result = await client.execute_plan(
@@ -580,6 +609,9 @@ async def run_stance_react(
         build_self_readings_block(request.correlation_id, purpose="stance", enabled=readings_enabled),
         name=f"self-readings-{request.correlation_id}",
     )
+    # Personality read-back: also alongside Mind, bounded by PERSONALITY_CUE_TIMEOUT_SEC.
+    personality_task = asyncio.create_task(build_personality_cue(request.correlation_id),
+                                           name=f"personality-cue-{request.correlation_id}")
     mind_started = time.perf_counter()
     mind_ms: float | None = None
     exec_result: dict[str, Any] | None = None
@@ -589,6 +621,9 @@ async def run_stance_react(
         mind_ms = round((time.perf_counter() - mind_started) * 1000.0, 1)
         day_cue = await cue_task
         readings = await readings_task
+        personality = await personality_task
+        # Self-monitor track record: renders from a background-refreshed cache, never waits on Redis.
+        track_record = await build_self_track_record_cue(request.correlation_id, purpose="stance")
         exec_result, raw_payload = await execute_stance_react(
             request,
             client=client,
@@ -596,6 +631,8 @@ async def run_stance_react(
             stance_prepare_requested=prepare_task is not None,
             temporal_self_cue=day_cue.text or None,
             self_readings=readings.text or None,
+            personality_cue=personality.text or None,
+            self_track_record=track_record.text or None,
             label_estimates=readings_enabled,
         )
     finally:
@@ -603,6 +640,8 @@ async def run_stance_react(
             cue_task.cancel()
         if not readings_task.done():
             readings_task.cancel()
+        if not personality_task.done():
+            personality_task.cancel()
         if prepare_task is not None:
             # Also on a mind/stance failure or cancellation: never leave the
             # prepare RPC task (and its bus connection) orphaned.
@@ -767,6 +806,7 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
             logger.info("subscribed channels=%s", ",".join(channels))
             async with bus.subscribe(*channels) as pubsub:
                 backoff_sec = 1.0
+                watchdog = PubSubWatchdog()
                 while True:
                     if stop_event is not None and stop_event.is_set():
                         break
@@ -797,7 +837,19 @@ async def run_bus_worker(stop_event: asyncio.Event | None = None) -> None:
                         reconnect = True
                         break
 
-                    if not msg or msg.get("type") not in ("message", "pmessage"):
+                    if msg is None:
+                        # A dead line answers "nothing yet" on time, so the overrun
+                        # check above never sees it; the PING does.
+                        try:
+                            msg = await watchdog.idle(pubsub)
+                        except PubSubSilentError as exc:
+                            logger.warning("pubsub silent channel=%s err=%s; reconnecting", channel, exc)
+                            reconnect = True
+                            break
+                        if msg is None:
+                            continue
+                    watchdog.heard()
+                    if msg.get("type") not in ("message", "pmessage"):
                         continue
                     idle_polls = 0
                     try:

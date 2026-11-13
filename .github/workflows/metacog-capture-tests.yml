@@ -3,6 +3,8 @@ name: metacog-capture-tests
 # Deterministic gate for the metacog row mapping (spec 2026-09-24, section B/C):
 # evidence_map unit tests, the acceptance-check eval on real stored triggers,
 # and the cortex-exec publish/draft lanes that consume them. No DB, bus or LLM.
+# Also gates context_provenance: every ctx key executor.py assigns must be
+# classified (it rotted unrun for months before 2026-10-20).
 
 on:
   pull_request:
@@ -11,6 +13,8 @@ on:
       - "orion/schemas/metacog_entry.py"
       - "orion/cognition/prompts/log_orion_metacognition_draft.j2"
       - "services/orion-cortex-exec/app/executor.py"
+      - "orion/schemas/context_provenance.py"
+      - "orion/schemas/tests/test_context_provenance.py"
       - "services/orion-cortex-exec/tests/test_metacog_*.py"
       - "scripts/analysis/replay_metacog_capture.py"
       - "services/orion-equilibrium-service/app/*metacog_gate*.py"
@@ -25,6 +29,8 @@ on:
       - "orion/schemas/metacog_entry.py"
       - "orion/cognition/prompts/log_orion_metacognition_draft.j2"
       - "services/orion-cortex-exec/app/executor.py"
+      - "orion/schemas/context_provenance.py"
+      - "orion/schemas/tests/test_context_provenance.py"
       - "services/orion-cortex-exec/tests/test_metacog_*.py"
       - "scripts/analysis/replay_metacog_capture.py"
       - "services/orion-equilibrium-service/app/*metacog_gate*.py"
@@ -54,7 +60,8 @@ jobs:
             orion/metacog/tests/test_service.py \
             orion/metacog/tests/test_capture_replay.py \
             orion/metacog/tests/test_evidence_map_producer_contract.py \
-            orion/schemas/tests/test_metacog_entry.py
+            orion/schemas/tests/test_metacog_entry.py \
+            orion/schemas/tests/test_context_provenance.py
       - name: Capture eval (checks 4-6 regression guard on real fixture)
         run: PYTHONPATH=. python orion/metacog/evals/run_capture_eval.py
       - name: cortex-exec metacog lanes

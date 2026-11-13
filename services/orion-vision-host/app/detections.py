@@ -1,5 +1,6 @@
 """
-Detection post-processing: non-maximum suppression and score-ordered capping.
+Detection post-processing: per-camera size floor, non-maximum suppression and
+score-ordered capping.
 
 Pure Python and dependency-free so it is testable without torch/numpy, which
 are container-only. Detection counts here are in the tens, so the O(n^2)
@@ -8,7 +9,7 @@ pairwise comparison is not worth vectorising.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 
 def _iou(a: Sequence[float], b: Sequence[float]) -> float:
@@ -72,6 +73,66 @@ def nms(objects: List[Dict[str, Any]], iou_threshold: float) -> List[Dict[str, A
             kept.append(candidate)
 
     return kept
+
+
+def drop_undersized(
+    objects: List[Dict[str, Any]],
+    min_long_side_frac: Mapping[str, float],
+    frame_width: int,
+    frame_height: int,
+    edge_px: float = 2.0,
+) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    Drop boxes too small to be a real object of their label on this camera.
+
+    ``min_long_side_frac`` maps a label to the smallest allowed long side of
+    its box, as a fraction of the frame's short side. Labels not in the map
+    are untouched. A box touching the frame border is always kept: it is cut
+    off by the edge, so its size says nothing (a head entering from the
+    bottom of the room camera is a short, wide box).
+
+    Why (2026-10-29): a framed photo of two people stands on the desk in the
+    cam0 room. GroundingDINO labels both pictured people `person` (scores
+    0.35-0.41, boxes 11-20 px wide x 15-31 px tall on the 640x480 frame).
+    Live cam0 person boxes 2026-08-12..10-28 that do not touch the frame
+    edge, by long side: ~250k at 8-31 px (the photo, at each spot it stood
+    on the desk); 10 at 32-47 px (9 at the photo spot or beside the photo
+    boxes, 1 unexplained); 5 at 48-63 px; then the real people from 64 px.
+    Replayed, this rule takes the 2+ person windows of 10-17..10-28 from
+    14,364 to ~61.
+
+    Labels are matched after strip().lower() (GroundingDINO labels are free
+    text). A merged phrase label such as ``person phone`` is not matched.
+
+    Returns ``(kept, dropped_count)``; order is preserved.
+    """
+    if not isinstance(min_long_side_frac, Mapping) or not min_long_side_frac:
+        return list(objects), 0
+    rule = {str(k).strip().lower(): v for k, v in min_long_side_frac.items()}
+    short_side = float(min(frame_width, frame_height))
+    if short_side <= 0:
+        return list(objects), 0
+
+    kept: List[Dict[str, Any]] = []
+    dropped = 0
+    for o in objects:
+        frac = rule.get(str(o.get("label") or "").strip().lower())
+        box = o.get("box_xyxy") or []
+        if frac is None or len(box) != 4:
+            kept.append(o)
+            continue
+        x0, y0, x1, y1 = (float(v) for v in box)
+        touches_edge = (
+            x0 <= edge_px
+            or y0 <= edge_px
+            or x1 >= frame_width - edge_px
+            or y1 >= frame_height - edge_px
+        )
+        if touches_edge or max(x1 - x0, y1 - y0) >= float(frac) * short_side:
+            kept.append(o)
+        else:
+            dropped += 1
+    return kept, dropped
 
 
 def cap_by_score(objects: List[Dict[str, Any]], max_detections: int) -> List[Dict[str, Any]]:

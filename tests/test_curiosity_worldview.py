@@ -1780,3 +1780,45 @@ def test_the_prompt_labels_coverage_priors_as_random_not_ranked() -> None:
     plain, _, _ = select_priors(_pool(20), sample=8, stale_after=3)
     view2 = WorldviewSnapshot(live_priors=plain, live_total=20, closed_total=0)
     assert "DRAWN AT RANDOM" not in "\n".join(_priors_section(view2, stale_after=3))
+
+
+# --- head_ids: the curiosity replica's picks fill the top (2026-11-04 design section 4) -------
+
+
+def test_head_ids_default_changes_nothing() -> None:
+    base, stale_a, _ = select_priors(_pool(20), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r")
+    same, stale_b, _ = select_priors(
+        _pool(20), sample=8, stale_after=3, coverage_slots=2, rotate_seed="r", head_ids=()
+    )
+    assert same == base and stale_a == stale_b
+
+
+def test_head_ids_fill_the_top_then_the_order_continues_and_coverage_is_unchanged_in_shape() -> None:
+    rows = _pool(20) + [_prior_row("old", confidence="0.5", tested=3)]
+    base, base_stale, _ = select_priors(rows, sample=8, stale_after=3, coverage_slots=2, rotate_seed="r")
+    offered, stale, _ = select_priors(
+        rows, sample=8, stale_after=3, coverage_slots=2, rotate_seed="r", head_ids=["p15", "p03", "p11"]
+    )
+    ids = [p.prior_id for p in offered]
+    # Same layout: 6 ordered, 2 coverage, same stale bucket.
+    assert len(offered) == 8 and [p.coverage for p in offered] == [p.coverage for p in base]
+    assert stale == base_stale and [p.prior_id for p in stale] == ["old"]
+    # Picks first in the replica's order, then the uncertainty order skipping them.
+    assert ids[:3] == ["p15", "p03", "p11"]
+    assert ids[3:6] == ["p00", "p01", "p02"]
+    # Coverage draws from the rest and never repeats a pick.
+    assert len(set(ids)) == 8
+    assert not set(ids[6:]) & {"p15", "p03", "p11"}
+
+
+def test_head_ids_skip_stale_unknown_and_duplicate_ids_and_never_exceed_the_ordered_slots() -> None:
+    rows = _pool(20) + [_prior_row("old", confidence="0.5", tested=3)]
+    offered, stale, _ = select_priors(
+        rows, sample=8, stale_after=3, coverage_slots=2, rotate_seed="r",
+        head_ids=["old", "nope", "p09", "p09", "p08", "p07", "p06", "p05", "p04", "p19"],
+    )
+    ids = [p.prior_id for p in offered]
+    assert "old" not in ids and [p.prior_id for p in stale] == ["old"]
+    assert ids[:6] == ["p09", "p08", "p07", "p06", "p05", "p04"]  # capped at sample - coverage
+    assert "p19" not in ids[:6]
+    assert len(set(ids)) == len(ids) == 8

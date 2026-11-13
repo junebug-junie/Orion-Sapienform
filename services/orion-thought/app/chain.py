@@ -45,7 +45,13 @@ from orion.schemas.reverie import (
 )
 
 from .resonance_monitor import check_resonance_worsening
-from .reverie import ChainContinuity, _default_broadcast_reader, _source, run_reverie_once
+from .reverie import (
+    ChainContinuity,
+    ReverieLlmUnavailable,
+    _default_broadcast_reader,
+    _source,
+    run_reverie_once,
+)
 from .rpc_health import fold_bus
 from .settings import settings
 from .store import (
@@ -249,12 +255,14 @@ async def _maybe_emit_resonance_alert(bus: OrionBusAsync) -> None:
 
         rows = load_recent_chain_theme_events(settings.reverie_resonance_window)
         events: list[ThemeEvent] = []
-        for theme_key, created_at in rows:
+        for theme_key, created_at, terminal_reason in rows:
             at = created_at
             if isinstance(at, datetime) and at.tzinfo is None:
                 at = at.replace(tzinfo=timezone.utc)
             if isinstance(at, datetime):
-                events.append(ThemeEvent(theme_key, at))
+                # no_coalition chains don't arm the cooldown (see the arm-list
+                # in run_reverie_chain), so a fast retry after one is no breach.
+                events.append(ThemeEvent(theme_key, at, armed=terminal_reason != "no_coalition"))
         alert = detect_resonance(events, refractory_sec=settings.reverie_refractory_sec)
         if alert is None:
             # No theme is currently resonant. Still let the health monitor
@@ -352,6 +360,26 @@ async def run_reverie_chain(
         )
         try:
             thought = await step_fn(chain_id, index, continuity)
+        except ReverieLlmUnavailable as exc:
+            if index == 0:
+                # The GPU pool refused (shed for heat, deadline, outage): the model was
+                # never asked, so this says nothing about the theme. No chain row, no
+                # refractory, and the theme's no_coalition streak is left untouched --
+                # neither counted nor reset (2026-10-20: cabinet_hot sheds were forcing
+                # healthy themes into cooldown after 3 refusals).
+                _count_skip(
+                    "llm_unavailable",
+                    theme=theme_key,
+                    shed=exc.shed_reason or "-",
+                    detail=exc.reason[:120],
+                )
+                return None
+            # Mid-chain: earlier thoughts were already published; end the chain as before.
+            logger.info(
+                "reverie chain step refused by gpu pool chain=%s idx=%s reason=%s",
+                chain_id, index, exc.reason,
+            )
+            thought = None
         except Exception as exc:
             logger.warning("reverie chain step failed chain=%s idx=%s err=%s", chain_id, index, exc)
             thought = None
@@ -524,7 +552,12 @@ async def run_reverie_chain_worker(stop_event: asyncio.Event | None = None) -> N
     async def _step(
         chain_id: str, index: int, continuity: ChainContinuity
     ) -> SpontaneousThoughtV1 | None:
-        return await run_reverie_once(bus, chain_context=(chain_id, index), continuity=continuity)
+        return await run_reverie_once(
+            bus,
+            chain_context=(chain_id, index),
+            continuity=continuity,
+            raise_llm_unavailable=True,
+        )
 
     logger.info("reverie chain worker started interval=%ss", settings.reverie_interval_sec)
     try:

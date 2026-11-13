@@ -179,6 +179,11 @@ class ChatMessageNotification(BaseModel):
     require_read_receipt: bool = Field(True)
     expires_at: Optional[datetime] = None
     workflow: Dict[str, Any] = Field(default_factory=dict)
+    # Optional Hub-side type for the live in-app event (e.g. "endogenous_outreach").
+    # When unset, orion-notify derives it from the event kind ("chat_message").
+    # Hub uses it to tell Orion's own outreach apart from other chat messages
+    # in the notification tray. Additive: an older orion-notify ignores it.
+    notification_type: Optional[str] = None
 
 
 class ChatMessageReceipt(BaseModel):

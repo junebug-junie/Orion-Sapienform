@@ -42,6 +42,12 @@ use), gated on a confirmed `sent` outreach decision for that exact run.
 `POST /api/urgent` is the "Run urgent" button: it publishes an urgent request
 on the bus (the hardware watcher's path too) and writes nothing itself;
 `GET /api/urgent` lists the incidents `start_urgent` recorded.
+
+`DELETE /api/focus/{id}` is the Clear button on the pending curiosity focus
+(orion/curiosity/focus.py): it marks that one pending row `cleared` and touches
+nothing else. Orion queues a focus with the `queue_curiosity_focus` tool; the
+schedule payload carries the pending one as `pending_focus`, and each run in
+`/api/runs` that took a focus carries `focus`.
 """
 
 from __future__ import annotations
@@ -51,12 +57,14 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from orion.curiosity.atlas import read_atlas, to_payload, valid_run_id
+from orion.curiosity import focus as curiosity_focus
 from orion.curiosity.run_story import LINES
 from orion.curiosity.self_panel import read_self_panel
 from orion.curiosity.self_panel import to_payload as self_panel_to_payload
@@ -157,6 +165,7 @@ async def _read_schedule() -> dict[str, Any]:
         "daily_cap": None,
         "cooldown_sec": None,
         "lines": {},
+        "pending_focus": await _read_pending_focus(),
     }
     try:
         from app.settings import get_settings
@@ -235,6 +244,62 @@ async def _read_schedule() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
         logger.warning("curiosity_atlas_schedule_unavailable err=%s", exc)
     return out
+
+
+def _focus_payload(row: Any) -> dict[str, Any]:
+    return {
+        "focus_id": row.focus_id,
+        "question": row.question,
+        "why": row.why,
+        "origin": row.origin,
+        "status": row.status,
+        "queued_at": row.created_at.isoformat() if row.created_at else None,
+        "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+        "taken_by_run": row.offered_run_id,
+        "disposition": row.disposition,
+        "disposition_words": curiosity_focus.disposition_words(row),
+        "story": curiosity_focus.focus_story(row),
+    }
+
+
+async def _read_pending_focus() -> dict[str, Any]:
+    """The one pending focus Orion queued for the next investigate run. `available: false`
+    when the table cannot be read (migration not applied, pool down) -- never "none pending"."""
+    out: dict[str, Any] = {"available": False, "focus": None, "enabled": None}
+    try:
+        from app.settings import get_settings
+
+        out["enabled"] = bool(getattr(get_settings(), "HUB_CURIOSITY_FOCUS_ENABLED", False))
+    except Exception:  # noqa: BLE001
+        pass
+    pool = _get_memory_pg_pool()
+    if pool is None:
+        return out
+    try:
+        row = await curiosity_focus.read_pending(pool)
+    except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
+        logger.warning("curiosity_focus_pending_unreadable err=%s", exc)
+        return out
+    out["available"] = True
+    out["focus"] = _focus_payload(row) if row is not None else None
+    return out
+
+
+async def _attach_run_focus(runs: list[dict[str, Any]]) -> None:
+    """Mark each run that took a focus. A failed read leaves the runs as they were."""
+    pool = _get_memory_pg_pool()
+    ids = [str(r.get("run_id")) for r in runs if r.get("run_id")]
+    if pool is None or not ids:
+        return
+    try:
+        found = await curiosity_focus.read_for_runs(pool, ids)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_focus_run_marks_unreadable err=%s", exc)
+        return
+    for run in runs:
+        row = found.get(str(run.get("run_id")))
+        if row is not None:
+            run["focus"] = _focus_payload(row)
 
 
 def _get_memory_pg_pool() -> Any:
@@ -340,6 +405,8 @@ async def curiosity_runs_api(
     except Exception as exc:  # noqa: BLE001 -- a dashboard never 500s
         logger.warning("curiosity_runs_api_failed err=%s", exc)
         payload = {"available": False, "reason": f"{type(exc).__name__}: {str(exc)[:160]}"}
+    if isinstance(payload.get("runs"), list):
+        await _attach_run_focus(payload["runs"])
     payload["schedule"] = await _read_schedule()
     # Counter-vs-stores warn is only meaningful on the live window; a paged
     # fortnight would under-count "today" and false-alarm.
@@ -559,6 +626,28 @@ async def curiosity_run_now() -> JSONResponse:
         },
         headers=_NO_CACHE,
     )
+
+
+@router.delete("/api/focus/{focus_id}")
+async def curiosity_focus_clear(focus_id: str) -> JSONResponse:
+    """Juniper's Clear button: the pending focus becomes `cleared`. Only a pending focus can be
+    cleared; one a run already took keeps its record."""
+    try:
+        parsed = UUID(str(focus_id))
+    except ValueError:
+        return JSONResponse(content={"ok": False, "reason": "invalid_focus_id"}, status_code=400, headers=_NO_CACHE)
+    pool = _get_memory_pg_pool()
+    if pool is None:
+        return JSONResponse(content={"ok": False, "reason": "store_unavailable"}, status_code=503, headers=_NO_CACHE)
+    try:
+        cleared = await curiosity_focus.clear_focus(pool, focus_id=parsed)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("curiosity_focus_clear_failed focus_id=%s err=%s", parsed, exc)
+        return JSONResponse(content={"ok": False, "reason": "store_unavailable"}, status_code=503, headers=_NO_CACHE)
+    if not cleared:
+        return JSONResponse(content={"ok": False, "reason": "not_pending"}, status_code=409, headers=_NO_CACHE)
+    logger.info("curiosity_focus_cleared focus_id=%s by=hub", parsed)
+    return JSONResponse(content={"ok": True, "focus_id": str(parsed)}, headers=_NO_CACHE)
 
 
 @router.post("/api/self-inquiry/run-now")

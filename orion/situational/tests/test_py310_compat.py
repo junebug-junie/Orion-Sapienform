@@ -84,8 +84,6 @@ def test_context_module_actually_builds_a_situation_brief() -> None:
         orion_situation_high_wind_mph_threshold=25,
         orion_situation_hot_car_temp_f_threshold=80,
         orion_situation_agenda_enabled=False,
-        orion_situation_lab_context_enabled=False,
-        orion_situation_lab_provider="stub",
         orion_situation_perception_enabled=False,
         orion_situation_perception_max_age_seconds=900,
         orion_situation_perception_stream_id="cam0",

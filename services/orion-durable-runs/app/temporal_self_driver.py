@@ -38,7 +38,9 @@ logger = logging.getLogger("orion-durable-runs.temporal_self_driver")
 
 _PRIORITY = {"chat_turn": 3, "tick": 1, "boot": 0}
 RETIRE_LOOKBACK_DAYS = 31
-CARRIED_KEYS = ("regulation", "last_inputs", "last_juniper_turn_at", "immune")
+CARRIED_KEYS = ("regulation", "last_inputs", "last_juniper_turn_at", "immune", "strain_causes_seen",
+                "strain_row_at", "strain_causes_now", "physiology_at", "physiology_prices",
+                "binding_episodes", "self_monitor_at", "self_monitor")
 
 
 def day_id_for(at: datetime, tz: ZoneInfo) -> str:
@@ -91,6 +93,8 @@ class TemporalSelfDriver:
         self.last_chronicle: Optional[dict] = None   # the chronicle node's summary of the last step
         self.last_error: Optional[str] = None
         self.last_immune: Optional[dict] = None    # the immune node's carried summary
+        self.last_physiology: Optional[dict] = None   # the physiology node's last summary
+        self.last_self_monitor: Optional[dict] = None  # the self_monitor node's last summary
         self._retired_for: Optional[str] = None
 
     # --- intake -------------------------------------------------------------------------------
@@ -178,6 +182,11 @@ class TemporalSelfDriver:
         self.latest = RegulationStateV1.model_validate(out["regulation"])
         self.last_chronicle = out.get("chronicle")
         self.last_immune = out.get("immune")
+        if out.get("physiology") is not None:
+            self.last_physiology = out.get("physiology")
+        monitor = out.get("self_monitor")
+        if isinstance(monitor, dict) and monitor.get("summary") is not None:
+            self.last_self_monitor = monitor.get("summary")
         transition = out.get("transition")
         if transition:
             a = self.latest.arousal
@@ -190,4 +199,5 @@ class TemporalSelfDriver:
         a = self.latest.arousal if self.latest else None
         return {"steps": self.steps, "arousal_level": a.arousal_level if a else None,
                 "since": a.since.isoformat() if a else None, "queued": self._queue.qsize(),
-                "last_error": self.last_error, "chronicle": self.last_chronicle, "immune": self.last_immune}
+                "last_error": self.last_error, "chronicle": self.last_chronicle, "immune": self.last_immune,
+                "physiology": self.last_physiology, "self_monitor": self.last_self_monitor}

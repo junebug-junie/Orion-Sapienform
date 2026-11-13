@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 from typing import Awaitable, Callable
 
 from orion.autonomy.capability_policy import CapabilityEvaluationContext, evaluate_capability
-from orion.autonomy.episode_fetch import EpisodeFetchRequest, SurpriseSource, execute_readonly_fetch
+from orion.autonomy.episode_fetch import EpisodeFetchRequest, execute_readonly_fetch
 from orion.autonomy.fetch_backend_resolve import resolve_fetch_backend
 from orion.autonomy.goal_state import get_active_goal
 from orion.autonomy.salience import tokenize_terms
@@ -15,76 +14,14 @@ from orion.schemas.world_pulse import (
     CuriosityFollowupV1,
     SectionCoverageV1,
 )
-from orion.substrate.bus_synaptic_surprise import latest_bus_synaptic_prediction_error
 from orion.world_pulse_read.url_filters import url_looks_like_section_index
 
 logger = logging.getLogger("orion-world-pulse.curiosity")
 
 _READONLY_CAPABILITY = "web.fetch.readonly"
 
-# Lazy, cached Postgres engine for the real ambient bus_synaptic surprise signal -- only
-# built if ORION_ACTION_OUTCOME_DB_URL is configured (see app/settings.py). This module
-# has no other Postgres dependency, so an unconfigured URL keeps
-# _default_bus_synaptic_surprise_source() inert (always None), matching this codebase's
-# established fail-open convention (orion/spark/concept_induction/bus_worker.py's
-# ConceptWorker._get_surprise_engine()) -- but unlike that class's own per-instance
-# attribute, this is a genuine process-wide module global: FastAPI runs sync route
-# handlers in a threadpool (services/orion-world-pulse/app/routers/runs.py's
-# world_pulse_run), so concurrent requests can reach this check-then-set from different
-# threads of the same process. Guarded with a lock (found in review) so two concurrent
-# first-callers can't both build and leak a real Postgres engine.
-_surprise_engine: object | None = None
-_surprise_engine_lock = threading.Lock()
 
-
-def _get_surprise_engine():
-    from app.settings import settings
-
-    if not settings.action_outcome_db_url:
-        return None
-    global _surprise_engine
-    if _surprise_engine is None:
-        with _surprise_engine_lock:
-            if _surprise_engine is None:
-                from sqlalchemy import create_engine
-
-                _surprise_engine = create_engine(settings.action_outcome_db_url, pool_pre_ping=True)
-    return _surprise_engine
-
-
-def _default_bus_synaptic_surprise_source() -> float | None:
-    """Real `surprise_source` used automatically when a caller doesn't supply one --
-    see `build_curiosity_followups`/`_gate_open` below. Fail-open: any exception here
-    (DB down, engine unbuildable) degrades to `None`, never raises into a real
-    world-pulse run.
-    """
-    engine = _get_surprise_engine()
-    if engine is None:
-        return None
-    try:
-        return latest_bus_synaptic_prediction_error(engine)
-    except Exception:
-        logger.warning("world_pulse_bus_synaptic_surprise_fetch_failed", exc_info=True)
-        return None
-
-
-def _resolve_domain_surprise(surprise_source: SurpriseSource | None) -> float | None:
-    """Same real ambient bus_synaptic value orion/autonomy/policy_act.py's identically-named
-    helper reads. `None` (the default -- no explicit surprise_source passed by the caller)
-    falls back to `_default_bus_synaptic_surprise_source`, this module's own real reader --
-    closing the disclosed gap this service had (no Postgres access at all) as of
-    2026-07-28. Still resolves to `None` in practice unless `ORION_ACTION_OUTCOME_DB_URL`
-    is configured for this service.
-    """
-    real_source = surprise_source or _default_bus_synaptic_surprise_source
-    try:
-        return real_source()
-    except Exception:
-        return None
-
-
-def _gate_open(run_id: str, *, surprise_source: SurpriseSource | None = None) -> bool:
-    _domain_surprise = _resolve_domain_surprise(surprise_source)
+def _gate_open(run_id: str) -> bool:
     ctx = CapabilityEvaluationContext(
         # predictive_pressure removed 2026-07-30 (chore/delete-orion-drives
         # Wave 2a): DriveStateV1.pressures["predictive"], its source, no
@@ -99,15 +36,14 @@ def _gate_open(run_id: str, *, surprise_source: SurpriseSource | None = None) ->
         # missing_goal, same as before, just for a real reason now.
         goal=get_active_goal(),
         budget_used={},
-        domain_surprise_score=_domain_surprise,
-        domain_surprise_source="bus_synaptic" if _domain_surprise is not None else None,
     )
     decision = evaluate_capability(_READONLY_CAPABILITY, ctx)
     logger.info(
-        "world_pulse_curiosity_gate outcome=%s reason=%s auto_execute=%s run_id=%s",
+        "world_pulse_curiosity_gate outcome=%s reason=%s auto_execute=%s goal_target=%s run_id=%s",
         decision.outcome,
         decision.reason_code,
         decision.auto_execute,
+        ctx.goal.field_target_id if ctx.goal is not None else None,
         run_id,
     )
     return decision.outcome == "allowed" and bool(decision.auto_execute)
@@ -122,7 +58,6 @@ def build_curiosity_followups(
     max_articles_per_section: int,
     max_sections: int,
     fetch_backend: Callable[..., Awaitable[dict]] | None = None,
-    surprise_source: SurpriseSource | None = None,
 ) -> list[CuriosityFollowupV1]:
     """Inline gap-fill fetch for under-covered sections.
 
@@ -141,7 +76,7 @@ def build_curiosity_followups(
     if not under_covered:
         return []
     try:
-        if not _gate_open(run_id, surprise_source=surprise_source):
+        if not _gate_open(run_id):
             return []
     except Exception:
         # A capability-policy load/eval failure (e.g. missing policy config in a
@@ -173,11 +108,7 @@ def build_curiosity_followups(
         # failure degrades to skipping this section, never failing the run.
         try:
             outcome = asyncio.run(
-                execute_readonly_fetch(
-                    req,
-                    fetch_backend=backend,
-                    surprise_source=surprise_source or _default_bus_synaptic_surprise_source,
-                )
+                execute_readonly_fetch(req, fetch_backend=backend)
             )
             followups.append(
                 CuriosityFollowupV1(

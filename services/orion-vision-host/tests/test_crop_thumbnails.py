@@ -126,10 +126,28 @@ def test_store_prunes_old_thumbs_and_rewrite_refreshes_age(tmp_path: Path) -> No
     assert not path.exists()
 
 
-def test_default_retention_outlives_an_ask() -> None:
+def test_default_retention_keeps_thumbs_forever() -> None:
     from app.crop_embeddings import DEFAULT_THUMB_RETENTION_DAYS
 
-    assert DEFAULT_THUMB_RETENTION_DAYS == 10.0 and DEFAULT_THUMB_RETENTION_DAYS > 7
+    assert DEFAULT_THUMB_RETENTION_DAYS == 0.0  # Juniper 2026-10-20: keep photos indefinitely
+
+
+def test_retention_zero_never_deletes_a_photo(tmp_path: Path) -> None:
+    now = [1_000_000.0]
+    store = ThumbStore(tmp_path, retention_days=0, prune_interval_sec=0, clock=lambda: now[0])
+    ancient = tmp_path / ("d" * 64 + ".jpg")
+    ancient.write_bytes(b"x")
+    os.utime(ancient, (1.0, 1.0))  # ~11 days before "now", and then a year more
+    now[0] += 365 * 86400
+    stale_tmp = tmp_path / (".%s.1.tmp" % ("e" * 64))
+    stale_tmp.write_bytes(b"x")
+    os.utime(stale_tmp, (now[0] - 2 * 86400, now[0] - 2 * 86400))
+    fresh_tmp = tmp_path / (".%s.2.tmp" % ("f" * 64))
+    fresh_tmp.write_bytes(b"x")
+    os.utime(fresh_tmp, (now[0], now[0]))
+    assert store.prune() == 1
+    assert ancient.exists()                              # a photo is never deleted by age
+    assert not stale_tmp.exists() and fresh_tmp.exists()  # only a crashed write's leftover goes
 
 
 def test_box_overlapping_the_patio_gets_no_embedding_and_no_thumb() -> None:
@@ -143,15 +161,15 @@ def test_box_overlapping_the_patio_gets_no_embedding_and_no_thumb() -> None:
     assert spy.sizes == [] and stats["withheld_no_embed_zone"] == 1
 
 
-def test_thumbnails_are_rate_limited_per_stream() -> None:
+def test_thumbnails_are_rate_limited_per_stream_and_label() -> None:
     now = [0.0]
     limiter = ThumbRateLimiter(10.0, clock=lambda: now[0])
     spy = _SpyThumb()
     two = lambda: [{"label": "person", "score": 0.9, "box_xyxy": list(WALKWAY_BOX)},  # noqa: E731
-                   {"label": "dog", "score": 0.9, "box_xyxy": [800.0, 700.0, 900.0, 800.0]}]
+                   {"label": "person", "score": 0.9, "box_xyxy": [800.0, 700.0, 900.0, 800.0]}]
     objs = two()
     _run(objs, spy, limiter=limiter)
-    assert [o["thumb_ref"] is not None for o in objs] == [True, False]  # one per window
+    assert [o["thumb_ref"] is not None for o in objs] == [True, False]  # one per label per window
     assert all(o["embedding"] is not None for o in objs)  # embeddings are not rate-limited
     now[0] = 5.0
     objs = two()
@@ -161,6 +179,28 @@ def test_thumbnails_are_rate_limited_per_stream() -> None:
     objs = two()
     _run(objs, spy, limiter=limiter)
     assert objs[0]["thumb_ref"] is not None
+
+
+def test_a_vehicle_taking_the_slot_does_not_block_a_person() -> None:
+    # Live 2026-10-16..20 with one slot per stream: vehicles 32,799 crops ->
+    # 197 thumbs, people 973 -> 106. Each label now has its own slot.
+    now = [0.0]
+    limiter = ThumbRateLimiter(10.0, clock=lambda: now[0])
+    spy = _SpyThumb()
+    car = [{"label": "vehicle", "score": 0.9, "box_xyxy": [800.0, 700.0, 900.0, 800.0]}]
+    _run(car, spy, limiter=limiter, tier="triggered")
+    assert car[0]["thumb_ref"] is not None
+    now[0] = 2.0
+    again = [{"label": "vehicle", "score": 0.9, "box_xyxy": [800.0, 700.0, 900.0, 800.0]},
+             {"label": "person", "score": 0.9, "box_xyxy": list(WALKWAY_BOX)}]
+    _run(again, spy, limiter=limiter, tier="triggered")
+    assert again[0]["thumb_ref"] is None       # the car's slot is still taken
+    assert again[1]["thumb_ref"] is not None   # the person has their own slot
+    # The triggered-tier gate still holds for the person's own slot.
+    now[0] = 20.0
+    base = [{"label": "person", "score": 0.9, "box_xyxy": list(WALKWAY_BOX)}]
+    _run(base, spy, limiter=limiter, tier="baseline")
+    assert base[0]["thumb_ref"] is None
 
 
 def test_thumbnails_only_on_the_triggered_tier_when_the_tier_is_known() -> None:

@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from loguru import logger
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.gpu_pool.client import LeaseUnavailable, PoolRpcTimeout, gpu_lease
@@ -371,26 +372,27 @@ class WorldModelService:
     async def _consume_loop(self) -> None:
         if not self.bus:
             return
-        async with self.bus.subscribe(settings.CHANNEL_WORLDMODEL_INTAKE) as pubsub:
-            while not self._shutdown_event.is_set():
-                try:
-                    async for msg in self.bus.iter_messages(pubsub):
-                        if self._shutdown_event.is_set():
-                            break
-                        data = msg.get("data")
-                        if not data:
-                            continue
-                        decoded = self.bus.codec.decode(data)
-                        if not decoded.ok or not decoded.envelope:
-                            logger.error(f"[BUS] decode failed: {decoded.error}")
-                            continue
-                        asyncio.create_task(self._handle_envelope(decoded.envelope))
-                except Exception as exc:
-                    logger.error(f"[BUS] consumer error: {exc}")
-                    await asyncio.sleep(1)
+        await run_subscription(
+            self.bus,
+            settings.CHANNEL_WORLDMODEL_INTAKE,
+            self._on_intake,
+            stop_event=self._shutdown_event,
+            name="world-model.intake",
+        )
+
+    def _on_intake(self, msg: dict) -> None:
+        data = msg.get("data")
+        if not data:
+            return
+        decoded = self.bus.codec.decode(data)
+        if not decoded.ok or not decoded.envelope:
+            logger.error(f"[BUS] decode failed: {decoded.error}")
+            return
+        # Fire-and-forget: returns None, not the task, so the stream is not held up.
+        asyncio.create_task(self._handle_envelope(decoded.envelope))
 
     async def _handle_envelope(self, envelope: BaseEnvelope) -> None:
-        """Runs standalone via `asyncio.create_task` from `_consume_loop`
+        """Runs standalone via `asyncio.create_task` from `_on_intake`
         (fire-and-forget, nothing awaits this task) -- an exception anywhere
         in this method, including inside `_publish_result`'s bus.publish
         calls (e.g. ORION_BUS_ENFORCE_CATALOG rejecting an unregistered

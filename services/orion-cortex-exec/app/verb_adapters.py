@@ -28,10 +28,6 @@ from orion.core.verbs.models import VerbEffectV1
 from orion.core.verbs.registry import verb
 from orion.schemas.cortex.schemas import ExecutionPlan, PlanExecutionArgs, PlanExecutionRequest, PlanExecutionResult
 from orion.schemas.notify import NotificationRequest
-from orion.schemas.self_study import (
-    SelfStudyConsumerContextV1,
-    SelfStudyRetrieveRequestV1,
-)
 from orion.notify.client import NotifyClient
 from orion.cognition.compactor.truncate import truncate_at_word_boundary
 from orion.cognition.github_compactor.constants import (
@@ -41,89 +37,14 @@ from orion.cognition.github_compactor.constants import (
 )
 
 from .router import PlanRouter
-from . import self_study as self_study_module
-from .self_study import run_self_concept_induce, run_self_concept_reflect, run_self_repo_inspect, run_self_retrieve
+from . import orch_paths
 from .self_study_analysis import run_self_study_analysis
-from .self_study_policy import (
-    build_self_study_consumer_context,
-    build_self_study_consumer_request,
-    render_self_study_consumer_context,
-    resolve_self_study_consumer_policy,
-)
 from .settings import settings
 from .workflow_journal_exec import maybe_publish_workflow_journal_write
 from .executor import _truncate_list
 
 logger = logging.getLogger("orion.cortex.exec.verb_adapters")
 VERBS_DIR = Path(orion.__file__).resolve().parent / "cognition" / "verbs"
-
-
-def _self_study_config_from_payload(payload: PlanExecutionRequest) -> Dict[str, Any]:
-    metadata = _metadata_from_payload(payload)
-    if isinstance(metadata.get("self_study"), dict):
-        return dict(metadata.get("self_study") or {})
-    extra = payload.args.extra or {}
-    options = extra.get("options") if isinstance(extra, dict) else {}
-    if isinstance(options, dict) and isinstance(options.get("self_study"), dict):
-        return dict(options.get("self_study") or {})
-    return {}
-
-
-async def _resolve_self_study_context(
-    *,
-    consumer_name: str,
-    output_mode: str | None,
-    payload: PlanExecutionRequest,
-    correlation_id: str,
-    source: ServiceRef | None,
-) -> SelfStudyConsumerContextV1:
-    config = _self_study_config_from_payload(payload)
-    decision = resolve_self_study_consumer_policy(
-        consumer_name=consumer_name,
-        output_mode=output_mode,
-        config=config,
-    )
-    notes: List[str] = []
-    result = None
-
-    if decision.enabled:
-        try:
-            request = build_self_study_consumer_request(decision, config)
-            result = await run_self_retrieve(
-                request=request,
-                bus=None,
-                source=source,
-                correlation_id=correlation_id,
-            )
-            notes.append(f"self_study_consulted mode={request.retrieval_mode}")
-        except Exception as exc:
-            notes.append(f"self_study_unavailable:{exc}")
-            logger.warning(
-                "self_study_consumer_unavailable consumer=%s corr=%s error=%s",
-                consumer_name,
-                correlation_id,
-                exc,
-            )
-    else:
-        notes.append(f"self_study_disabled:{decision.policy_reason}")
-
-    return build_self_study_consumer_context(decision, result=result, notes=notes)
-
-
-def _self_study_payload(context: SelfStudyConsumerContextV1) -> Dict[str, Any]:
-    rendered = render_self_study_consumer_context(context)
-    return {
-        "consulted": context.consulted,
-        "used": context.used,
-        "consumer_name": context.consumer_name,
-        "consumer_kind": context.consumer_kind,
-        "retrieval_mode": context.retrieval_mode,
-        "policy_reason": context.policy_reason,
-        "policy_decision": context.policy_decision.model_dump(mode="json"),
-        "notes": list(context.notes),
-        "rendered": rendered,
-        "result": context.result.model_dump(mode="json") if context.result is not None else None,
-    }
 
 
 @lru_cache(maxsize=128)
@@ -217,24 +138,6 @@ class LegacyPlanVerb(BaseVerb[PlanExecutionRequest, LegacyPlanOutput]):
         if diagnostic:
             ctx_payload["diagnostic"] = True
 
-        self_study_context = await _resolve_self_study_context(
-            consumer_name="legacy.plan",
-            output_mode=str(payload_context.get("output_mode") or extra.get("output_mode") or ""),
-            payload=payload,
-            correlation_id=correlation_id,
-            source=source,
-        )
-        self_study_payload = _self_study_payload(self_study_context)
-        ctx_payload["self_study"] = self_study_payload
-        ctx_payload["self_study_rendered"] = self_study_payload["rendered"]
-        if self_study_context.used:
-            ctx_payload.setdefault("messages", []).append(
-                {
-                    "role": "system",
-                    "content": self_study_payload["rendered"],
-                }
-            )
-
         router = PlanRouter()
         result = await router.run_plan(
             bus,
@@ -243,7 +146,6 @@ class LegacyPlanVerb(BaseVerb[PlanExecutionRequest, LegacyPlanOutput]):
             correlation_id=correlation_id,
             ctx=ctx_payload,
         )
-        result.recall_debug["self_study"] = self_study_payload
         journal_err = await maybe_publish_workflow_journal_write(
             bus=bus,
             source=source,
@@ -1197,6 +1099,41 @@ class BiometricsSnapshotVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
         return _skill_result_output(skill_name="skills.biometrics.snapshot.v1", result=result), []
 
 
+@verb("skills.physiology.state.v1")
+class PhysiologyStateVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
+    """Orion's body-economy read: GET /physiology/report on orion-durable-runs, rendered as plain
+    first-person text (orion/physiology/report_text.py, the same words `dig body-economy` prints).
+    skill_args: sections (list or comma string; default overview), window (24h|7d|30d), family."""
+
+    input_model = PlanExecutionRequest
+    output_model = SkillVerbOutput
+
+    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
+        from orion.physiology import report_text as rt
+
+        name = "skills.physiology.state.v1"
+        args = _skill_args(payload)
+        window = str(args.get("window") or "24h").strip()
+        family = (str(args.get("family")).strip() or None) if args.get("family") else None
+        try:
+            sections = rt.normalize_sections(args.get("sections"))
+            report = await asyncio.to_thread(
+                rt.fetch_report, base_url=str(settings.physiology_report_url), window=window, sections=sections,
+                family=family, timeout_sec=float(settings.physiology_report_timeout_sec))
+        except (ValueError, rt.ReportUnavailable) as exc:
+            reason = str(exc)
+            result = {"available": False, "reason": reason, "text": f"I could not read my body report: {reason}"}
+            return SkillVerbOutput(ok=False, status="unavailable", final_text=result["text"],
+                                   metadata={"skill_name": name, "skill_result": result},
+                                   error={"message": reason}), []
+        # Same turn-sized cap as `dig body-economy` (40 lines / 4000 chars); a cut is said in the text.
+        text = rt.cap_text(rt.render_report_text(report, sections))
+        result = {"available": True, "window": window, "sections": list(sections), "family": family,
+                  "generated_at": report.get("generated_at"), "missing": report.get("missing") or [], "text": text}
+        return SkillVerbOutput(ok=True, status="success", final_text=text,
+                               metadata={"skill_name": name, "skill_result": result}), []
+
+
 @verb("skills.biometrics.raw_recent.v1")
 class BiometricsRawRecentVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
     input_model = PlanExecutionRequest
@@ -1425,9 +1362,9 @@ async def _submit_render_scene_durable(ctx: VerbContext, request: Any) -> SkillV
         bus=bus,
         source=_actions_source(ctx.meta.get("source")),
         request=durable_request,
-        request_channel=self_study_module.CORTEX_ORCH_REQUEST_CHANNEL,
+        request_channel=orch_paths.CORTEX_ORCH_REQUEST_CHANNEL,
         reply_channel=f"orion:cortex:result:reverie-visual-kickoff:{run_id}:{uuid4().hex[:8]}",
-        envelope_correlation_id=self_study_module._as_envelope_correlation_id(correlation_id),
+        envelope_correlation_id=orch_paths._as_envelope_correlation_id(correlation_id),
         session_id="reverie-visual",
         user_message=REVERIE_VISUAL_WORKFLOW,
     )
@@ -1464,9 +1401,9 @@ class AskCameraVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
 
     Posts task_type=vqa to orion-vision-host's /v1/vision/task with
     request.use_latest_frame=true (see runner.py::_resolve_latest_frame_path)
-    -- resolves to whatever orion-vision-edge captured most recently, not a
-    capture freshly triggered by this call (vision-edge already captures
-    continuously at ~5s cadence regardless of any downstream consumer; for a
+    -- resolves to the office camera's (cam0, orion-vision-retina-office) most
+    recent frame, not a capture freshly triggered by this call (the retina
+    captures continuously at 2 frames/s regardless of any consumer; for a
     slow-moving room this is the practical equivalent of "look now" without
     inventing a second capture path).
 
@@ -2039,7 +1976,7 @@ def _mesh_service_scripts_child_env() -> dict[str, str]:
 
 
 def _allowlisted_mesh_service_script_paths() -> set[Path]:
-    root = self_study_module.REPO_ROOT.resolve()
+    root = orch_paths.REPO_ROOT.resolve()
     return {
         (root / "mesh-utilities" / "common" / "up_all_services.sh").resolve(),
         (root / "mesh-utilities" / "common" / "refresh_service_envs.sh").resolve(),
@@ -2075,7 +2012,7 @@ async def _run_mesh_util_shell_skill(
             error={"message": "mesh_script_disabled_by_policy"},
         ), []
 
-    repo_root = self_study_module.REPO_ROOT.resolve()
+    repo_root = orch_paths.REPO_ROOT.resolve()
     script_path = (repo_root / script_relpath).resolve()
     allowed = _allowlisted_mesh_service_script_paths()
     if script_path not in allowed:
@@ -2254,7 +2191,7 @@ _HEALTH_POLL_CONFIRM_DELAY_SEC = 3.0
 def _discover_compose_services(repo_root: Path) -> Dict[str, Path]:
     """Map bare service dirname -> its docker-compose.yml, discovered live under REPO_ROOT/services.
 
-    Mirrors ``self_study._service_items()``'s discovery style: walk the real directory tree each
+    Mirrors ``orion.self_inventory``'s discovery style: walk the real directory tree each
     call instead of hand-maintaining a static list, so this never drifts from what's actually on disk.
     """
     out: Dict[str, Path] = {}
@@ -2381,7 +2318,7 @@ async def _run_docker_compose_service_bringup(
         return _skill_result_output(skill_name=skill_name, result=result, ok=False, status="blocked", error={"message": "docker_compose_bringup_disabled_by_policy"}), []
 
     service = str(service_raw or "").strip()
-    repo_root = self_study_module.REPO_ROOT.resolve()
+    repo_root = orch_paths.REPO_ROOT.resolve()
     services_dir = repo_root / "services"
     diagnostics = {
         "repo_root": str(repo_root),
@@ -2722,52 +2659,9 @@ def _plan_request_from_payload(payload: PlanExecutionRequest, verb_name: str, sk
     )
 
 
-@verb("self_repo_inspect")
-class SelfRepoInspectVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
-    input_model = PlanExecutionRequest
-    output_model = SkillVerbOutput
-
-    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
-        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4()))
-        result = await run_self_repo_inspect(
-            bus=ctx.meta.get("bus"),
-            source=_actions_source(ctx.meta.get("source")),
-            correlation_id=correlation_id,
-        )
-        data = result.model_dump(mode="json")
-        return _skill_result_output(skill_name="self_repo_inspect", result=data), []
-
-
-@verb("self_concept_induce")
-class SelfConceptInduceVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
-    input_model = PlanExecutionRequest
-    output_model = SkillVerbOutput
-
-    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
-        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4()))
-        result = await run_self_concept_induce(
-            bus=ctx.meta.get("bus"),
-            source=_actions_source(ctx.meta.get("source")),
-            correlation_id=correlation_id,
-        )
-        data = result.model_dump(mode="json")
-        return _skill_result_output(skill_name="self_concept_induce", result=data), []
-
-
-@verb("self_concept_reflect")
-class SelfConceptReflectVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
-    input_model = PlanExecutionRequest
-    output_model = SkillVerbOutput
-
-    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
-        correlation_id = str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4()))
-        result = await run_self_concept_reflect(
-            bus=ctx.meta.get("bus"),
-            source=_actions_source(ctx.meta.get("source")),
-            correlation_id=correlation_id,
-        )
-        data = result.model_dump(mode="json")
-        return _skill_result_output(skill_name="self_concept_reflect", result=data), []
+# The four self-study verbs (inspect, induce, reflect, retrieve) were retired
+# 2026-10-30 (fold into curiosity). The daily Layer 1 scan that fed Self Atlas
+# was retired with Self Atlas in 2026-11 (dig kit + body atlas replace it).
 
 
 # ===========================================================================
@@ -2825,26 +2719,6 @@ class SelfStudyAnalyzeVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
             ),
             [],
         )
-
-
-@verb("self_retrieve")
-class SelfRetrieveVerb(BaseVerb[PlanExecutionRequest, SkillVerbOutput]):
-    input_model = PlanExecutionRequest
-    output_model = SkillVerbOutput
-
-    async def execute(self, ctx: VerbContext, payload: PlanExecutionRequest) -> Tuple[SkillVerbOutput, List[VerbEffectV1]]:
-        skill_args = _skill_args(payload)
-        if not skill_args and isinstance(payload.args.extra, dict):
-            skill_args = dict(payload.args.extra)
-        request = SelfStudyRetrieveRequestV1.model_validate(skill_args)
-        result = await run_self_retrieve(
-            request=request,
-            bus=ctx.meta.get("bus"),
-            source=_actions_source(ctx.meta.get("source")),
-            correlation_id=str(ctx.meta.get("correlation_id") or payload.args.request_id or str(uuid4())),
-        )
-        data = result.model_dump(mode="json")
-        return _skill_result_output(skill_name="self_retrieve", result=data), []
 
 
 @verb("skills.system.notify_chat_message.v1")

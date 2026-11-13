@@ -38,6 +38,13 @@ Use:
 
 Key rule: each worker must keep a unique **service identity**, **published port**, **`LLM_PROFILE_NAME`**, and **GPU visibility binding**.
 
+The staged Circe fast-worker profile is
+`qwen35-9b-udq5kxl-v100-32gb-circe-fast-4k`. It preserves four 4k slots and
+leaves metacog on Qwen3 8B Q5. Fast requests default to thinking off; callers
+can send `options.chat_template_kwargs.enable_thinking=true` or `false` through
+the gateway. See [the trial runbook](../../docs/operations/qwen35-fast-lane-trial.md)
+for the caller inventory, eval, and rollback.
+
 ---
 
 ## Atlas quickstart
@@ -73,7 +80,7 @@ ATLAS_METACOG_CUDA_VISIBLE_DEVICES=
 ATLAS_METACOG_HOST_PORT=8012
 
 ATLAS_FAST_SERVICE_NAME=atlas-worker-fast-1
-ATLAS_FAST_PROFILE_NAME=
+ATLAS_FAST_PROFILE_NAME=qwen35-9b-udq5kxl-v100-32gb-circe-fast-4k
 ATLAS_FAST_CUDA_VISIBLE_DEVICES=
 ATLAS_FAST_HOST_PORT=8013
 
@@ -88,7 +95,7 @@ ATLAS_AGENT_HOST_PORT=8015
 Notes:
 
 - `ATLAS_CHAT_PROFILE_NAME` is intentionally operator-supplied; keep it pointed at the current Atlas chat profile.
-- `ATLAS_METACOG_PROFILE_NAME`, `ATLAS_FAST_PROFILE_NAME`, and `ATLAS_AGENT_PROFILE_NAME` are intentionally operator-supplied.
+- `ATLAS_METACOG_PROFILE_NAME` and `ATLAS_AGENT_PROFILE_NAME` are intentionally operator-supplied. `ATLAS_FAST_PROFILE_NAME` defaults to the Qwen3.5 trial profile; confirm the deployed `.env` selects it.
 - FAST (`ATLAS_FAST_*`) is shared by full-chat first pass and user-facing quick mode.
 - Do **not** let the default workers collide on host ports (`8011/8012/8013`).
 - Optional `atlas-agent` split mode is behind compose profile `agent-split`.
@@ -319,6 +326,99 @@ curl -fsS http://100.87.202.68:8021/health
 
 `HECATE_AGENT_DEEP_HOST_PORT` must equal the pool role's port: discovery reports `mismatch` otherwise.
 The first boot downloads the 27B GGUF into `LLM_CACHE_DIR`.
+
+## Chat lane on Strata (circe gpu0, 2026-10-30)
+
+The `chat` role runs [Strata](https://github.com/Niko1221/Strata) serving Qwen3.8-Flash-Next IQ3_S on one V100,
+not llama.cpp. Bench: `docs/bench/2026-10-30-strata-hecate/` (PR #3015; hard set 20/20, 94 tok/s average output
+at 128K on hecate's single V100). 256K on circe is not benched yet.
+
+- `atlas-chat` is the Strata engine (`ghcr.io/niko1221/strata:0.2.7-cuda12`, `strata launch --no-api-key`), port 8011,
+  pinned to the CPUs of gpu0's socket. Model data: `ATLAS_CHAT_STRATA_DATA_DIR` (NVMe).
+- `atlas-chat-announce` is this image with a `backend: strata` profile: it heartbeats and announces, and launches nothing.
+- `config/gpu_pool.yaml` gives `chat` `backend: strata`. The pool confirms it through Strata's `/props` (same shape as
+  llama.cpp's). The gateway sends OpenAI/Anthropic calls but never llama.cpp's `/apply-template` + `/completion`.
+- One request at a time (`--parallel 1`) with a 262,144-token window, up from 65,536 on the llama.cpp lane.
+  The FCC harness (`HARNESS_FCC_MAX_CONTEXT_TOKENS`) moves with it.
+
+Env (`services/orion-llamacpp-host/.env` on circe): `ATLAS_CHAT_STRATA_PROFILE_NAME` names the strata profile the
+announcer uses (it refuses any other backend, `LLM_REQUIRE_BACKEND=strata`). `ATLAS_CHAT_PROFILE_NAME` keeps naming
+the llama.cpp profile, now used only by the rollback service.
+
+First start, from the clean primary `main` checkout on circe. Copy the model files into
+`$ATLAS_CHAT_STRATA_DATA_DIR` first, and merge the defaults into the run config before the server first answers, so no
+request is served with Strata's own defaults (thinking on). If there is no run config yet, start once, merge, restart.
+
+```bash
+set -a; . services/orion-llamacpp-host/.env; set +a
+docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v "$ATLAS_CHAT_STRATA_DATA_DIR:/data" \
+  -v "$PWD/services/orion-llamacpp-host:/svc:ro" "$ATLAS_CHAT_STRATA_IMAGE" \
+  /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/chat-defaults.json
+docker stop orion-circe-atlas-llamacpp-chat
+scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml up -d atlas-chat atlas-chat-announce
+```
+
+The merge puts the old lane's defaults into Strata's run config: thinking off unless a request asks, temperature 0.48,
+presence penalty 1.10. Setup keeps these keys on later starts. Check: `curl -s localhost:8011/props | jq .model_path`
+and the pool's `chat` role `confirmed`. The engine's container stays up only while `strata launch --status` reads
+ready (its compose wrapper); `docker stop` stops the server cleanly.
+
+Structured output: Strata checks JSON after generating it (no grammar), and takes only `json_object` or OpenAI's named
+`json_schema`. The gateway rewrites every schema shape to the named one for this lane (`response_format_for_backend`).
+
+Rollback to llama.cpp (same port and role): stop `atlas-chat` and `atlas-chat-announce`, then
+`scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile chat-llamacpp up -d atlas-chat-llamacpp`,
+and set `chat` back to `backend: llamacpp` in `config/gpu_pool.yaml` for the pool and gateway.
+
+### Agent lane on Strata (circe gpu1, 2026-10-31)
+
+The `agent` role (gpu1; also `memory_distill`) runs the same engine and model as the chat lane, at **131,072**
+tokens like `agent-gpu2`, so a curiosity run recalled on one lane can resume on the other. Thinking stays on at
+high effort, with the 27B lane's sampling (`strata/agent-defaults.json`).
+
+- Compose: `atlas-agent` (engine, profile `agent-split` as before) and `atlas-agent-announce`; both lanes share the
+  `x-strata-engine` / `x-strata-announce` blocks and differ by preset, context, CPUs, data folder, port and card.
+- CPUs: the other socket (`ATLAS_AGENT_STRATA_CPUS=18-35,54-71`), so the two engines do not compete.
+- Data: its own `ATLAS_AGENT_STRATA_DATA_DIR` for config, state and run config, plus the chat lane's model files
+  mounted at `/data/Strata-data`. Strata writes nothing there at run time, so the two engines share the ~28 GB of
+  mapped model pages; each holds ~57 GB of its own (circe 2026-10-31: ~118 GB available before this lane).
+- `ATLAS_AGENT_PROFILE_NAME` keeps naming the llama.cpp 27B profile (rollback, and the gpu2 burst worker's fallback).
+
+First start (clean primary `main` on circe), seeding the run config from the chat lane's so it never serves with
+Strata's defaults. `--context 131072` matters: Strata compares the config's `--max-context` with the launch's
+`--context` and runs setup again when they differ, which downloads llama.cpp and touches the shared model folder.
+
+```bash
+set -a; . services/orion-llamacpp-host/.env; set +a
+docker run --rm -v "$ATLAS_CHAT_STRATA_DATA_DIR:/src:ro" -v "$ATLAS_AGENT_STRATA_DATA_DIR:/dst" alpine \
+  sh -c 'mkdir -p /dst/install && cp /src/install/strata-iq3_s.json /dst/install/'
+docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v "$ATLAS_AGENT_STRATA_DATA_DIR:/data" \
+  -v "$PWD/services/orion-llamacpp-host:/svc:ro" "$ATLAS_CHAT_STRATA_IMAGE" \
+  /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/agent-defaults.json --context 131072
+# the announcer image bakes in config/llm_profiles.yaml: rebuild it when a profile was added
+scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-split build atlas-agent-announce
+docker stop orion-circe-atlas-llamacpp-agent
+scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-split up -d atlas-agent atlas-agent-announce
+```
+
+Rollback: stop `atlas-agent` and `atlas-agent-announce`, then
+`scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-llamacpp up -d atlas-agent-llamacpp`,
+and drop `backend: strata` from `agent` in `config/gpu_pool.yaml`.
+
+### VRAM reserve (both Strata lanes, 2026-10-31)
+
+Strata's setup writes `--vram-reserve-mib 700` into the run config. On circe that left only 300-500 MiB of VRAM free
+on each V100, and the engine warned at each such request (under 512 MiB the driver can page VRAM to system RAM and
+decode falls to a few tok/s). Each launch now passes `--set vram-reserve-mib=$STRATA_VRAM_RESERVE_MIB`
+(`ATLAS_CHAT_STRATA_VRAM_RESERVE_MIB` / `ATLAS_AGENT_STRATA_VRAM_RESERVE_MIB`, default 1200). `strata launch` puts
+it over the run config's args for that launch only, so the installed run config and setup are not touched.
+Editing `--vram-reserve-mib` in the run config therefore has no effect; change the env key and recreate.
+
+The reserve comes out of the expert cache (`expert cache auto: ... MiB reserved` in the engine log): 500 MiB more
+is about 2% of the ~23 GiB cache. Context does not change: the KV cells kept in VRAM are fixed by `--kv-resident`, and
+Strata's setup-rerun check (`desc_matches`) compares only context, KV format and pictures. A changed reserve needs a
+container recreate (`up -d`), not a plain restart. Check: `strata serve: N MiB of VRAM free with everything loaded`
+in `state/strata/launch/<preset>.engine.log` should read about 1000.
 
 ## agent-gpu2 on Ternary-Bonsai (GPU pool stage 7.2)
 

@@ -75,8 +75,9 @@ The README intentionally mixes live systems, experimental systems, and aspiratio
 
 | Node | Role | GPUs | Status |
 |---|---|---|---|
-| **Athena** | Core services, Hub, orchestration, memory services, FalkorDB, scheduling, operator surfaces | — | Live |
-| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 4× V100 32GB, 2× V100 16GB, 1× T10 16GB | Live |
+| **Athena** | Core services, Hub, orchestration, memory services, FalkorDB, scheduling, operator surfaces | 1× Tesla P4 8GB, 1× Tesla T10 16GB | Live |
+| **Circe** | Gigabyte G481-HA0 high-density GPU expansion node; heavy inference workhorse plus training experiments — the sorceress namesake earned | 2× V100-PCIE 32GB, 1× V100-SXM2 32GB, 1× PG500-216 | Live |
+| **Hecate** | Inspur NF5288M5 (NF5288M5-G3GPU01, AGX-2) 8-slot SXM2 server, 2× Xeon Gold 6148, 183 GB RAM; on-demand deep inference and training | 1× V100-SXM2 32GB installed | On demand |
 | **Cameras** | Office and web cameras, embodiment experiments (1 street cam up and coming) | — | Live |
 | **Sensors** | 2x Nano Ardiunos and mics with various cabinet sensors | — | Live |
 
@@ -310,7 +311,7 @@ current turn
 | **Spark deltas** | What changed, what repeated, what became salient, what is drifting. |
 | **Dream residue** | Symbolic motifs, unresolved themes, emotional or narrative echoes. |
 | **Journal residue** | Compressed autobiographical continuity from prior periods. |
-| **Social memory** | Relationship state, room state, peer style, active claims, commitments, repair context. |
+| **Social memory** | Relationship state, room state, peer style, active claims, repair context. |
 | **Equilibrium/state** | Distress, stability, system condition, recent health changes. |
 | **Situational context** | Live time-of-day, weather, physical presence, cabinet/environmental readings, and Juniper's read affect — assembled each turn into `SituationBriefV1`, not narrated interpretation. |
 | **Task mode** | Whether Orion should comfort, debug, plan, refuse, repair, reflect, play, or act. |
@@ -565,7 +566,7 @@ flowchart LR
 | Service | Role |
 |---|---|
 | `orion-social-room-bridge` | Transport-thin bridge. Normalizes room messages, applies policy, invokes Hub, posts allowed replies. |
-| `orion-social-memory` | Maintains peer continuity, room continuity, stance snapshots, style hints, rituals, threads, claims, commitments, calibration, freshness, decay, and regrounding. |
+| `orion-social-memory` | Maintains peer continuity, room continuity, stance snapshots, style hints, rituals, threads, claims, calibration, freshness, decay, and regrounding. |
 
 A generic memory might say "Alice likes short answers." Social memory has to know *where* that was said, *under what conditions*, at what confidence, whether there's an unresolved correction, and whether it's safe to generalize — because relationship has different rules than facts. It tracks peer continuity, room continuity, stance snapshots, style hints, room rituals, active threads, claims and claim revisions, consensus/divergence, commitments, repair signals, handoff signals, floor decisions, and freshness/decay/regrounding.
 
@@ -635,7 +636,7 @@ Orion runs on real machines in a real room, and increasingly, a persistent virtu
 
 The vision mesh runs a self-contained host pipe (`frames → router → host → window → council`). Host GroundingDINO detections gate VLM caption work; window evidence tiers and Council grounding produce `person_presence` without caption hallucinations. Edge YOLO/motion stays on separate channels for edge-local consumers. See [`docs/vision_services.md`](docs/vision_services.md) and service READMEs under `services/orion-vision-*`. Vision should not be treated as omniscience — it should be noisy, bounded, consent-aware evidence. False positives, lighting shifts, dust, and movement artifacts are expected engineering problems, not failures of the concept.
 
-**Cabinet sensing.** Since late August 2026, Athena's own cabinet is instrumented, not just the room around it: two Arduino Nano ESP32 boards (`firmware/athena-cabinet-nano/`) — Nano A carrying a BME680 (temperature/humidity/pressure/gas resistance), an LTR390 (UV + ambient light), and a VL53L1X (lidar distance); Nano B carrying an MMC5603 magnetometer and a BNO085 IMU (accel + yaw/pitch/roll) — plus a USB mic on the host for ambient noise (RMS/peak). Both Nanos' readings merge (`orion/telemetry/cabinet_snapshot_merge.py`) into `BiometricsSampleV1`, become baseline-relative activity pressures (climate, EM, UV, vibration, proximity, ambient-audio — a particulate channel is defined in schema but never populated, since no PMSA003I is actually in the hardware kit) on the field lattice's `node:athena` — the same footing as CPU/GPU/thermal pressure — and, as of PR #2008, fold into every chat turn's situation brief (`CabinetContextV1`), replacing a `LabContextV1` stub that had returned `available=False` since it was written. Sustained ambient-audio spikes get their own bus channel and grammar trace (`orion:cabinet:ambient:spike`). A Hub `#cabinet` tab shows live per-channel readings, history, and spike markers; the `*_activity` numbers are computed but deliberately not yet narrated into prose, pending calibration.
+**Cabinet sensing.** Since late August 2026, Athena's own cabinet is instrumented, not just the room around it: two Arduino Nano ESP32 boards (`firmware/athena-cabinet-nano/`) — Nano A carrying a BME680 (temperature/humidity/pressure/gas resistance), an LTR390 (UV + ambient light), and a VL53L1X (lidar distance); Nano B carrying an MMC5603 magnetometer and a BNO085 IMU (accel + yaw/pitch/roll) — plus a USB mic on the host for ambient noise (RMS/peak). Both Nanos' readings merge (`orion/telemetry/cabinet_snapshot_merge.py`) into `BiometricsSampleV1`, become baseline-relative activity pressures (climate, EM, UV, vibration, proximity, ambient-audio — a particulate channel is defined in schema but never populated, since no PMSA003I is actually in the hardware kit) on the field lattice's `node:athena` — the same footing as CPU/GPU/thermal pressure — and, as of PR #2008, fold into every chat turn's situation brief (`CabinetContextV1`), replacing a lab stub that had returned `available=False` since it was written (the stub itself was deleted 2026-10-27). Sustained ambient-audio spikes get their own bus channel and grammar trace (`orion:cabinet:ambient:spike`). A Hub `#cabinet` tab shows live per-channel readings, history, and spike markers; the `*_activity` numbers are computed but deliberately not yet narrated into prose, pending calibration.
 
 **Reading Juniper's affect.** Orion also reads Juniper's affect from vision. The original backend, AffectGPT (a LoRA-tuned Qwen2.5-7B VLM + CLIP + HuBERT), was found live to hallucinate confident affect readings from dead or near-silent audio and to call Juniper "the man" in every committed description — it ignored a 100%-detected face and answered from an empty-subtitle branch instead. The live default (`AFFECT_BACKEND=vision`) instead samples a few webcam frames, uploads them via `orion-percept-store`, and asks `orion-llm-gateway`'s vision-language route for a structured `AffectReadV1`: valence, arousal, a free-text `primary_affect` (never a fixed emotion enum, by explicit design), the specific visual `cues` it claims to have used, and a confidence. AffectGPT is kept only as a manual, human-selected rollback (`AFFECT_BACKEND=affectgpt`). A confidence/detection-rate gate keeps low-quality reads out of the mirror Orion's situation brief reads from. The audio transcript is never persisted, but the model's own free-text `raw_response` and the structured read both land durably in `orion-sql-writer`'s `juniper_multimodal_affect_log`.
 
@@ -678,16 +679,16 @@ Its runtime backend is `orion-substrate-runtime`, an event-native reducer worker
 
 ```text
 Layer 5  orion-attention-runtime          FieldStateV1 → FieldAttentionFrameV1
-Layer 7  orion-proposal-runtime           SelfStateV1 (+context) → ProposalFrameV1 (possible actions, not automatic)
-Layer 8  orion-policy-runtime             ProposalFrameV1 vs SubstratePolicyV1 → PolicyDecisionFrameV1 (governed decision)
-Layer 9  orion-execution-dispatch-runtime PolicyDecisionFrameV1 + ProposalFrameV1 → ExecutionDispatchFrameV1
-Layer 10 orion-feedback-runtime           ExecutionDispatchFrameV1 outcomes → FeedbackFrameV1
-Layer 11 orion-consolidation-runtime      Layers 5–10 history over a window → ConsolidationFrameV1 motif snapshots
+Layer 7  (retired 2026-11-07)             each real act starts itself through the body-economy want market
+Layer 8  (retired 2026-11-07)             its consent checks become the want market's consent gate
+Layer 9  (retired 2026-11-07)             the act ledger grades every real act
+Layer 10 (retired 2026-11-04)             the act ledger grades every real act; world-action scoring runs in orion-sql-writer
+Layer 11 (retired 2026-11-04)             killed outright
 ```
 
-`reduce_attention_self_model()` (`orion/substrate/attention_self_model.py`) and active-inference prediction-error signals across its 5 live domains (`ACTIVE_INFERENCE_DOMAINS`: biometrics, execution, chat, route, bus-synaptic) feed this pipeline. A sixth domain, transport, was retired 2026-07-26 in favor of the mesh-wide `bus_synaptic_prediction_error()` successor — kept dead on purpose, not an oversight. Drives themselves stayed on Postgres; dynamics and brain-frame projections moved to FalkorDB (Cypher-native writers). These predict/observe/surprise signals operate at multiple real timescales — micro (per-tick prediction error), meso (windowed consolidation in Layer 11), and macro (drift across the drive/policy history) — rather than one fixed cadence.
+`reduce_attention_self_model()` (`orion/substrate/attention_self_model.py`) and active-inference prediction-error signals across its 3 live domains (`ACTIVE_INFERENCE_DOMAINS`: biometrics, execution, chat) feed this pipeline. transport was retired 2026-07-26, and route and its transport successor bus-synaptic 2026-11 (PE suite rebuild step 5: neither was a forecast) — kept dead on purpose, not an oversight. Drives themselves stayed on Postgres; dynamics and brain-frame projections moved to FalkorDB (Cypher-native writers). These predict/observe/surprise signals operate at multiple real timescales — micro (per-tick prediction error) and macro (drift across the drive/policy history; the meso Layer 11 consolidation window retired 2026-11-04) — rather than one fixed cadence.
 
-**The action economy went from logging to enforcing.** Layer 9 (`orion-execution-dispatch-runtime`) used to log candidate actions without acting on the numbers; it now enforces a real motor budget, and a starvation-resistant slot reservation keeps a stream of introspective actions from crowding out mutating ones. Every candidate carries a real per-action cost and a control-arm-corrected outcome ledger, so dispatch scores value-per-second instead of firing on vibes. On 2026-08-31, `express` shipped as the first action kind whose effect leaves the machine at all — every action kind before it (maintain, inspect, summarize, observe, and more — roughly 17 families) stayed introspective. Live-verified: Orion spent 53 motor-seconds generating an image through `orion-diffusion-host` and declined ten other candidates on value-per-second, unprompted, with no cron job or operator in the loop. A separately-shipped power-intent loop (declare expected draw, measure it on real hardware, settle the difference) went from wired-but-silent to its first live-verified settlement the same week (Circe, 2026-08-29: 102W above baseline, measured not estimated).
+**The action economy went from logging to enforcing** (history: layers 7-9 retired 2026-11-07, ladder retirement PR 6, after every real act moved to a trigger of its own). Layer 9 (`orion-execution-dispatch-runtime`) used to log candidate actions without acting on the numbers; it now enforces a real motor budget, and a starvation-resistant slot reservation keeps a stream of introspective actions from crowding out mutating ones. Every candidate carries a real per-action cost and a control-arm-corrected outcome ledger, so dispatch scores value-per-second instead of firing on vibes. On 2026-08-31, `express` shipped as the first action kind whose effect leaves the machine at all — every action kind before it (maintain, inspect, summarize, observe, and more — roughly 17 families) stayed introspective. Live-verified: Orion spent 53 motor-seconds generating an image through `orion-diffusion-host` and declined ten other candidates on value-per-second, unprompted, with no cron job or operator in the loop. A separately-shipped power-intent loop (declare expected draw, measure it on real hardware, settle the difference) went from wired-but-silent to its first live-verified settlement the same week (Circe, 2026-08-29: 102W above baseline, measured not estimated).
 
 Autonomy still draws pressure from Spark drift, metacog warnings, recall failures, topic repetition, social repair signals, workflow failures, equilibrium distress, operator corrections, and service health — but it must never bypass policy, trace, review, rollback, or audit. No silent substrate mutation. No hidden permission expansion. No social autonomy escalation without policy. No high-risk code edits without operator review.
 
@@ -766,16 +767,13 @@ Memory / stores / writers:
 
 Sentience Striving Program / substrate runtime:
   orion-substrate-runtime, orion-substrate-organs, orion-substrate-telemetry,
-  orion-attention-runtime, orion-proposal-runtime, orion-policy-runtime,
-  orion-execution-dispatch-runtime, orion-feedback-runtime,
-  orion-consolidation-runtime, orion-field-digester, orion-cocreation-signals,
+  orion-attention-runtime, orion-field-digester, orion-cocreation-signals,
   orion-world-model
 
 Reflection / state / sensemaking:
   orion-spark-concept-induction, orion-dream, orion-collapse-mirror,
   orion-state-service, orion-state-journaler, orion-equilibrium-service,
-  orion-meta-tags, orion-topic-foundry, orion-world-pulse,
-  orion-self-study-enrichment
+  orion-meta-tags, orion-topic-foundry, orion-world-pulse
 
 Embodiment / perception:
   orion-vision-host, orion-vision-edge, orion-vision-frame-router,
@@ -807,7 +805,8 @@ Service placement can move. The current mesh shape and specs:
 ```text
 Athena — Core Services / Orchestration
   HP ProLiant DL380 Gen10, dual Intel Xeon Platinum-class CPUs, large ECC memory.
-  No GPU (its old P100 16GB moved to Circe -- see below).
+  2x Xeon Platinum 8168, 377 GB RAM. GPUs: Tesla P4 8GB + Tesla T10 16GB
+  (nvidia-smi, 2026-10-30).
   Role: Hub, Cortex, memory, FalkorDB, scheduler, durable service spine.
   Note (2026-08-21): this is physically the chassis that used to be Atlas.
   Athena's disks were moved into it when Atlas was decommissioned, so it
@@ -816,8 +815,8 @@ Athena — Core Services / Orchestration
 
 Circe — High-Density GPU Expansion Server
   Gigabyte G481-HA0 4U GPU server. 24 DDR4 RDIMM/LRDIMM slots, six-channel memory.
-  4× NVIDIA V100 32GB, plus 2× NVIDIA V100 16GB and 1× NVIDIA P100 16GB
-  absorbed from Atlas/Athena on 2026-08-21.
+  2x Xeon Gold 6150, 251 GB RAM. GPUs on 2026-10-30 (nvidia-smi): 2× V100-PCIE
+  32GB, 1× V100-SXM2 32GB, 1× PG500-216 (config/gpu_pool.yaml has the lane map).
   2× 10GbE (Intel X550-AT2), 2× 1GbE (Intel I350-AM2).
   Role: heavy inference workhorse plus training experiments. Status: live.
 

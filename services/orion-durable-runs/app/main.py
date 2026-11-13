@@ -12,6 +12,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
 from orion.schemas.chat_history import CHAT_HISTORY_TURN_KIND
+from orion.schemas.claude_limit import CLAUDE_LIMIT_KIND
 from orion.schemas.durable_run import (
     DURABLE_RUN_RECEIPT_KIND,
     DURABLE_RUN_REQUEST_KIND,
@@ -39,12 +40,23 @@ heartbeat: HeartbeatOnly | None = None
 _stop = asyncio.Event()
 _sweep_task: asyncio.Task[None] | None = None
 _checkpointer_cm: Any = None
+checkpoint_prune: Any = None
+_checkpoint_prune_task: Optional[asyncio.Task] = None
 admission: Any = None
 _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
+field_notes: Any = None     # app.pr_field_note_poll.FieldNotePoller while PR_FIELD_NOTES_ENABLED (Patch 2)
+_field_notes_task: asyncio.Task | None = None
+reminiscence: Any = None    # app.reminiscence_poll.ReminiscenceTicker while REMINISCENCE_ENABLED (Patch 2)
+_reminiscence_task: asyncio.Task | None = None
 situation: Any = None
 temporal_self: Any = None
+claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
+market: Any = None          # app.physiology_market.Market while ORION_PHYSIOLOGY_BID_ENABLED (Patch C1)
+cooling_act: Any = None     # app.cooling_act.CoolingAct while ORION_COOLING_ACT_ENABLED (ladder retirement PR 5)
+_cooling_act_task: asyncio.Task | None = None
 chronicle: Any = None
+personality: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
 
 
@@ -83,6 +95,13 @@ def _chassis_cfg() -> ChassisConfig:
 
 
 async def _handle_request(env: BaseEnvelope) -> None:
+    if env.kind == CLAUDE_LIMIT_KIND:
+        # The physiology node's claude constraint: keep the latest observation per kind.
+        if claude_limits is not None:
+            from datetime import datetime, timezone
+
+            claude_limits.offer(env.payload, datetime.now(timezone.utc))
+        return
     if env.kind == IDENTITY_SIGHTING_KIND:
         if situation is not None and isinstance(env.payload, dict):
             from app.situation_driver import event_from_sighting
@@ -257,6 +276,8 @@ def _build_temporal_self(saver: Any):
     checkpointer's pool, the rest drive from Redis, projects RegulationStateV1 to Redis."""
     from datetime import datetime, timezone
 
+    import dataclasses
+
     from app import regulation_store
     from app.temporal_self_driver import TemporalSelfDriver
     from app.temporal_self_graph import TemporalSelfDeps
@@ -298,6 +319,13 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_transition(
             _checkpointer_cm, regulation_store.transition_row(prev, new, day_id))
 
+    async def record_cause(reading, day_id, joined, seed) -> bool:
+        return await regulation_store.record_transition(
+            _checkpointer_cm, regulation_store.cause_row(reading, day_id, joined, seed))
+
+    async def record_binding(row) -> bool:
+        return await regulation_store.record_binding(_checkpointer_cm, row)
+
     async def read_immune_series(now):
         """R4: 24 h of every glossary channel that carries semantics, one sample per minute."""
         from orion.field.channel_glossary import load_glossary
@@ -311,12 +339,17 @@ def _build_temporal_self(saver: Any):
         return await regulation_store.record_immune_findings(
             _checkpointer_cm, [regulation_store.immune_finding_row(f, day_id, now) for f in findings])
 
+    read_body, project_physiology, body_config, price_body = (_build_physiology() if s.physiology_enabled
+                                                              else (None, None, None, None))
+
     global chronicle
     chronicle = _build_chronicle() if s.temporal_self_chronicle_enabled else None
+    monitor = _build_self_monitor() if s.self_monitor_enabled else {}
 
     deps = TemporalSelfDeps(
         read_inputs=read_inputs, read_drives=read_drives, project=project,
         record_transition=record_transition, now=lambda: datetime.now(timezone.utc),
+        record_cause=record_cause if s.temporal_self_strain_arcs_enabled else None,
         chronicle=chronicle.step if chronicle is not None else None,
         read_immune_series=read_immune_series if s.temporal_self_immune_enabled else None,
         record_immune=record_immune,
@@ -326,10 +359,164 @@ def _build_temporal_self(saver: Any):
         gpu_sustain_sec=s.regulation_strained_gpu_queue_sec,
         clear_sec=s.regulation_strained_clear_sec,
         max_prev_gap_sec=3.0 * s.temporal_self_tick_sec,
+        read_body=read_body, project_physiology=project_physiology,
+        physiology_min_interval_sec=s.physiology_min_interval_sec,
+        price_body=price_body,
+        record_binding=record_binding if s.temporal_self_binding_arcs_enabled else None,
+        binding_max_gap_sec=3.0 * s.temporal_self_tick_sec,
+        self_monitor_interval_sec=s.self_monitor_interval_sec,
+        self_monitor_timeout_sec=s.self_monitor_timeout_sec,
+        **monitor,
     )
+    if body_config is not None:
+        deps = dataclasses.replace(deps, body_config=body_config)
     return TemporalSelfDriver(checkpointer=saver, deps=deps,
                               timezone_name=s.orion_situation_timezone, tick_sec=s.temporal_self_tick_sec,
                               retention_days=s.temporal_self_retention_days)
+
+
+def _build_self_monitor() -> dict:
+    """Self-monitor organ patch 2: the self_monitor node's read (every bet source on the checkpointer's
+    pool, read-only), its Redis projection on the long-lived rpc_bus, and its two writes."""
+    from app import self_monitor_store
+    from orion.self_monitor.collect import build_state
+    from orion.self_monitor.record import WINDOW_DAYS
+    from orion.self_monitor.view import DEFAULT_MAX_AGE_SEC, SELF_MONITOR_REDIS_KEY
+
+    s = _settings
+
+    async def collect(now):
+        results = await self_monitor_store.read_sources(_checkpointer_cm, now, WINDOW_DAYS)
+        return build_state(results, now=now, window_days=WINDOW_DAYS)
+
+    async def publish(state) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        await rpc_bus.redis.setex(SELF_MONITOR_REDIS_KEY, int(DEFAULT_MAX_AGE_SEC), state.model_dump_json())
+
+    async def record_history(state) -> None:
+        await self_monitor_store.record_history(_checkpointer_cm, state,
+                                                retention_days=s.self_monitor_history_retention_days)
+
+    async def record_events(rows) -> bool:
+        return await self_monitor_store.record_events(_checkpointer_cm, rows)
+
+    return {"collect_self_monitor": collect, "publish_self_monitor": publish,
+            "record_self_monitor_history": record_history, "record_faculty_events": record_events}
+
+
+def _build_physiology():
+    """Body economy Patch A3: the physiology node's reads and its projection. Reads run on the
+    checkpointer's pool; the pool-capacity RPC and the projection on the long-lived rpc_bus."""
+    from uuid import uuid4
+    from zoneinfo import ZoneInfo
+
+    from app import physiology_store
+    from orion.gpu_pool.placement import fetch_pool_state
+    from orion.physiology.body import BodyConfig, BodyInputs
+    from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PHYSIOLOGY_STATE_REDIS_KEY
+
+    global claude_limits
+    s = _settings
+    tz = ZoneInfo(s.orion_situation_timezone)
+    source = ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
+    claude_limits = physiology_store.ClaudeLimitCache()
+    cfg = BodyConfig(heat_soft_line_c=s.physiology_heat_soft_line_c,
+                     energy_monthly_envelope_usd=s.physiology_energy_monthly_envelope_usd,
+                     lane_window_sec=s.physiology_lane_window_sec,
+                     operator_load_sponsored=s.physiology_operator_load_sponsored)
+
+    async def read_body(now, heat):
+        warnings: list[str] = []
+        pool_state = None
+        if rpc_bus is not None:
+            # include_config: the class -> seats map that places waiting self-work beside its lanes.
+            pool_state = await fetch_pool_state(rpc_bus, source=s.service_name, timeout_sec=2.0,
+                                                include_config=True)
+        if pool_state is None:
+            warnings.append("lane_capacity:pool_state_unread")
+        body = BodyInputs(
+            heat=heat,
+            energy=await physiology_store.read_energy(_checkpointer_cm, now, tz),
+            lanes=await physiology_store.read_lanes(_checkpointer_cm, now, s.physiology_lane_window_sec, pool_state),
+            juniper=await physiology_store.read_juniper(_checkpointer_cm, now, tz),
+            claude=claude_limits.snapshot() if claude_limits is not None else (),
+            backlog=await physiology_store.read_backlog(_checkpointer_cm, now),
+            host_watts=(await physiology_store.read_host_watts(_checkpointer_cm, now)
+                        if price_body is not None else None))
+        return body, warnings
+
+    async def project_physiology(model) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        try:
+            await rpc_bus.redis.setex(PHYSIOLOGY_STATE_REDIS_KEY, s.physiology_redis_ttl_sec, model.model_dump_json())
+        except Exception:  # noqa: BLE001 - the bus event (and its table row) still lands
+            logger.warning("physiology_redis_write_failed", exc_info=True)
+        await rpc_bus.publish(s.physiology_state_channel, BaseEnvelope(
+            kind=PHYSIOLOGY_STATE_KIND, source=source, correlation_id=uuid4(),
+            payload=model.model_dump(mode="json")))
+
+    price_body = None
+    if s.physiology_prices_enabled:
+        # Patch B2 (SHADOW): the Budget organ. The heat sensitivities are data, baked into the image
+        # and loaded once; their 30-day age is judged every tick against ``now``.
+        from orion.physiology.budget import BudgetConfig, price_state
+        from orion.physiology.heat_config import load_heat_sensitivity
+
+        heat_cfg, heat_err = load_heat_sensitivity(s.physiology_heat_sensitivity_path)
+        if heat_err:
+            logger.warning("physiology_heat_sensitivity_unavailable reason=%s", heat_err)
+        budget_cfg = BudgetConfig(tz=s.orion_situation_timezone, heat_soft_line_c=s.physiology_heat_soft_line_c,
+                                  heat_config=heat_cfg, heat_config_error=heat_err,
+                                  juniper_pacing=("on" if str(s.physiology_attention_pacing).strip().lower() == "on"
+                                                  else "shadow"),
+                                  juniper_waking_start_hour=s.hub_endogenous_outreach_quiet_end_hour,
+                                  juniper_waking_end_hour=s.hub_endogenous_outreach_quiet_start_hour)
+
+        def price_body(model, body, carry, now):
+            return price_state(model, body, carry, now, budget_cfg)
+
+    return read_body, project_physiology, cfg, price_body
+
+
+def _build_market():
+    """Body economy Patch C1 (SHADOW): the bid market. History reads on the checkpointer's pool; the
+    latest prices from Redis orion:physiology:latest; decisions published on the long-lived rpc_bus."""
+    from uuid import uuid4
+
+    from app.physiology_market import Market
+    from orion.physiology.families import load_families
+    from orion.schemas.physiology_want import WANT_DECISION_KIND
+
+    s = _settings
+    families, err = load_families(s.physiology_families_path)
+    if err:
+        logger.warning("physiology_families_unavailable reason=%s", err)
+    from orion.physiology.consent import load_consent
+
+    consent_rules, consent_err = load_consent(s.physiology_consent_path)
+    if consent_err:
+        logger.warning("physiology_consent_unavailable reason=%s (every want with a consent request is refused)",
+                       consent_err)
+    else:
+        logger.info("physiology_consent_loaded rules=%d standing=%d", len(consent_rules.rules),
+                    len(consent_rules.standing))
+    source = ServiceRef(name=s.service_name, version=s.service_version, node=s.node_name)
+
+    async def publish(decision) -> None:
+        if rpc_bus is None:
+            raise RuntimeError("no bus")
+        await rpc_bus.publish(s.physiology_want_decision_channel, BaseEnvelope(
+            kind=WANT_DECISION_KIND, source=source, correlation_id=uuid4(),
+            payload=decision.model_dump(mode="json")))
+
+    return Market(families=families, families_error=err, pool_getter=lambda: _checkpointer_cm,
+                  redis_getter=lambda: rpc_bus.redis if rpc_bus is not None else None, publish=publish,
+                  history_ttl_sec=s.physiology_bid_history_ttl_sec, lane_window_sec=s.physiology_lane_window_sec,
+                  stale_after_sec=s.physiology_bid_stale_after_sec,
+                  prime_regulation=bool(getattr(s, "physiology_prime_regulation", False)),
+                  consent_rules=consent_rules, consent_error=consent_err)
 
 
 def _build_chronicle():
@@ -345,20 +532,46 @@ def _build_chronicle():
     reducer = ReducerConfig(
         tz_name=s.orion_situation_timezone, arc_min_ticks=s.temporal_self_arc_min_ticks,
         return_window_sec=60.0 * s.temporal_self_return_window_min,
-        conversation_return_window_sec=60.0 * s.temporal_self_conversation_return_window_min)
+        conversation_return_window_sec=60.0 * s.temporal_self_conversation_return_window_min,
+        street_arcs_per_day=s.temporal_self_street_episodes_per_day)
     cfg = ChronicleConfig(
         reducer=reducer, read_lag_sec=s.temporal_self_read_lag_sec, backfill_days=s.temporal_self_backfill_days,
         event_retention_days=s.temporal_self_event_retention_days,
         arc_retention_days=s.temporal_self_arc_retention_days,
         day_retention_days=s.temporal_self_day_retention_days)
-    return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(_checkpointer_cm, reducer.tz_name),
+    return Chronicler(store=ChronicleStore(_checkpointer_cm), reader=SourceReader(
+        _checkpointer_cm, reducer.tz_name,
+        exclude_kinds=tuple(k for k, on in (("arousal_transition", s.temporal_self_strain_arcs_enabled),
+                                            ("body_binding", s.temporal_self_binding_arcs_enabled),
+                                            ("retro_play", s.temporal_self_retro_play_enabled),
+                                            ("street_event", s.temporal_self_street_episodes_enabled),
+                                            ("office_session", s.temporal_self_office_sessions_enabled),
+                                            ("faculty_status_changed", s.self_monitor_enabled)) if not on)),
                       cfg=cfg, now=lambda: datetime.now(timezone.utc))
+
+
+def _build_personality():
+    """Personality graph loop (spec 2026-10-16 rev 2): the single writer of personality_*, on the
+    checkpointer's pool. A plain periodic task: state lives in its own tables and cursors."""
+    from datetime import datetime, timezone
+
+    from app.personality_driver import PersonalityDriver, http_embedder
+    from app.personality_sources import PersonalitySourceReader
+    from app.personality_store import PersonalityStore
+
+    embed, close_embed = http_embedder(_settings.personality_embed_url)
+    return PersonalityDriver(store=PersonalityStore(_checkpointer_cm), reader=PersonalitySourceReader(_checkpointer_cm),
+                             embed=embed, now=lambda: datetime.now(timezone.utc),
+                             tick_sec=_settings.personality_tick_sec, close_embedder=close_embed,
+                             naming_enabled=_settings.personality_naming_apply_enabled)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global runner, rpc_bus, hunter, heartbeat, _sweep_task, admission, _admission_task, _reconcile_task
-    global rpc_health_publisher, situation, temporal_self
+    global field_notes, _field_notes_task, reminiscence, _reminiscence_task
+    global rpc_health_publisher, situation, temporal_self, personality, market, cooling_act, _cooling_act_task
+    global checkpoint_prune, _checkpoint_prune_task
     from app.runner import DurableRunner
 
     try:
@@ -378,7 +591,8 @@ async def lifespan(app: FastAPI):
         runner = DurableRunner(_settings, bus=rpc_bus, checkpointer=saver)
         if _settings.admission_enabled:
             from app.admission_runtime import AdmissionRuntime
-            admission = AdmissionRuntime(_settings, runner, _checkpointer_cm)
+            # market is built below; the bidder reads the module global at call time.
+            admission = AdmissionRuntime(_settings, runner, _checkpointer_cm, market_getter=lambda: market)
             # Admission migration is operator-managed, unlike saver migrations.
             # Fail startup if it has not been applied; never accept into memory.
             await admission.store.list_pending(limit=1)
@@ -391,12 +605,34 @@ async def lifespan(app: FastAPI):
                 logger.exception("durable_runs_resume_on_boot_failed")
         _stop.clear()
         _sweep_task = asyncio.create_task(runner.sweep_forever(_stop))
+        if _settings.checkpoint_prune_mode != "off":
+            from app.checkpoint_prune import PrunePoller
+
+            checkpoint_prune = PrunePoller(dsn=_settings.postgres_uri, mode=_settings.checkpoint_prune_mode,
+                                           interval_sec=_settings.checkpoint_prune_interval_sec)
+            _checkpoint_prune_task = asyncio.create_task(checkpoint_prune.run_forever(_stop))
         if _settings.situation_graph_enabled and _settings.orion_bus_enabled:
             situation = _build_situation(saver)
             await situation.start(_stop)
         if _settings.temporal_self_enabled and _settings.orion_bus_enabled:
             temporal_self = _build_temporal_self(saver)
             await temporal_self.start(_stop)
+        if _settings.personality_enabled:
+            personality = _build_personality()
+            await personality.start(_stop)
+        if _settings.physiology_bid_enabled:
+            market = _build_market()
+        if _settings.cooling_act_enabled:
+            if market is None or rpc_bus is None:
+                # Its bid binds: no market (or no bus for the shed RPC) means it could never act.
+                logger.warning("cooling_act_not_started reason=%s",
+                               "no_market" if market is None else "no_bus")
+            else:
+                from app.cooling_act import CoolingAct, CoolingActStore
+
+                cooling_act = CoolingAct(settings=_settings, store=CoolingActStore.from_uri(_settings.postgres_uri),
+                                         market_getter=lambda: market, bus_getter=lambda: rpc_bus)
+                _cooling_act_task = asyncio.create_task(cooling_act.run(_stop))
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -404,6 +640,23 @@ async def lifespan(app: FastAPI):
 
                 _reconcile_task = asyncio.create_task(
                     run_reconcile_loop(admission.pool, admission.submit, _settings, _stop))
+            if _settings.field_note_poll_enabled:
+                # PR field notes Patch 2: poll GitHub's public API, write code records, submit note runs.
+                from app.pr_field_note_ledger import FieldNoteLedger
+                from app.pr_field_note_poll import FieldNotePoller
+
+                field_notes = FieldNotePoller(settings=_settings, pool=admission.pool, submit=admission.submit,
+                                              ledger=FieldNoteLedger(_settings.field_note_ledger_dir))
+                _field_notes_task = asyncio.create_task(field_notes.run_forever(_stop))
+            if _settings.reminiscence_enabled:
+                # Daily reminiscence Patch 2: one reminiscence.episode run a Denver day, overnight.
+                from app.reminiscence_ledger import ReminiscenceLedger
+                from app.reminiscence_poll import ReminiscenceTicker
+
+                reminiscence = ReminiscenceTicker(settings=_settings, pool=admission.pool, submit=admission.submit,
+                                                  ledger=ReminiscenceLedger(_settings.reminiscence_ledger_dir,
+                                                                            _settings.reminiscence_repo_dir))
+                _reminiscence_task = asyncio.create_task(reminiscence.run_forever(_stop))
         if _settings.orion_bus_enabled:
             patterns = [_settings.request_channel, RESOURCE_EVENT_CHANNEL]
             if admission is not None:
@@ -415,6 +668,8 @@ async def lifespan(app: FastAPI):
                              _settings.identity_sighting_channel]
             if temporal_self is not None and _settings.chat_history_turn_channel not in patterns:
                 patterns.append(_settings.chat_history_turn_channel)
+            if claude_limits is not None and _settings.claude_limit_channel not in patterns:
+                patterns.append(_settings.claude_limit_channel)
             hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)
@@ -427,12 +682,24 @@ async def lifespan(app: FastAPI):
         _stop.set()
         if _sweep_task is not None:
             _sweep_task.cancel()
+        if checkpoint_prune is not None:
+            checkpoint_prune.request_stop()
+        if _checkpoint_prune_task is not None:
+            _checkpoint_prune_task.cancel()
         if _reconcile_task is not None:
             _reconcile_task.cancel()
+        if _field_notes_task is not None:
+            _field_notes_task.cancel()
+        if _reminiscence_task is not None:
+            _reminiscence_task.cancel()
+        if _cooling_act_task is not None:
+            _cooling_act_task.cancel()
         if situation is not None:
             await situation.close()
         if temporal_self is not None:
             await temporal_self.close()
+        if personality is not None:
+            await personality.close()
         if _admission_task is not None:
             _admission_task.cancel()
             await asyncio.gather(_admission_task, return_exceptions=True)
@@ -474,7 +741,195 @@ async def health() -> dict[str, Any]:
         "situation": situation.health() if situation is not None else None,
         "temporal_self": temporal_self.health() if temporal_self is not None else None,
         "temporal_self_chronicle": chronicle.health() if chronicle is not None else None,
+        "personality": personality.health() if personality is not None else None,
+        "physiology_market": market.health() if market is not None else None,
+        # Ladder retirement PR 5: the cooling world act (counts, last tick, the open want).
+        "cooling_act": cooling_act.health() if cooling_act is not None else None,
+        # PR field notes Patch 2: the last poll (merged PRs seen, runs submitted, code records written).
+        "field_note_poll": field_notes.health() if field_notes is not None else None,
+        # Daily reminiscence Patch 2: the last tick's decision (episode, week, run submitted or why not).
+        "reminiscence_tick": reminiscence.health() if reminiscence is not None else None,
+        # LangGraph checkpoint pruning: mode (dry_run ships), last pass's totals / deletions.
+        "checkpoint_prune": (checkpoint_prune.health() if checkpoint_prune is not None
+                             else {"mode": _settings.checkpoint_prune_mode}),
     }
+
+
+@app.get("/reminiscence/plan")
+async def reminiscence_plan(any_hour: bool = False) -> dict[str, Any]:
+    """Read-only: what the tick would do now (``any_hour``: as if inside the window), with the first
+    step's prompt. Submits nothing. The live check that the tick picks the right week and prompt."""
+    from app.reminiscence_graph import build_prompt
+    from orion.schemas.reminiscence_run import REMINISCENCE_STEPS
+
+    if reminiscence is None:
+        raise HTTPException(503, "reminiscence is off (REMINISCENCE_ENABLED / admission)")
+    result = await reminiscence.tick_once(dry_run=True, ignore_window=any_hour)
+    req = result.request if result.decision == "would_submit" else None
+    first = next((k for k in REMINISCENCE_STEPS if k.removeprefix("hop:") not in result.hops_written), None)
+    # (five hops written and a failed run today: the first step is the cross-read)
+    return {**result.as_dict(), "first_step": first,
+            "first_prompt": build_prompt(req.brief, first) if req is not None and first else None}
+
+
+@app.post("/pr-field-notes/poll")
+async def field_note_poll(since: str | None = None) -> dict[str, Any]:
+    """Run one field-notes poll now. ``since`` (ISO time) replaces the lookback for this one poll: the
+    spec's manual re-poll after an outage longer than PR_FIELD_NOTES_LOOKBACK_H. A ``since`` before
+    PR_FIELD_NOTES_NOT_BEFORE is a backfill (Juniper's decision 3: none) and is refused."""
+    from datetime import datetime, timezone
+
+    if field_notes is None:
+        raise HTTPException(503, "PR field notes are off (PR_FIELD_NOTES_ENABLED / admission)")
+    at = None
+    if since:
+        try:
+            at = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(400, f"since is not an ISO time: {since!r}") from exc
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        if at < _settings.field_note_not_before:
+            raise HTTPException(400, f"since is before PR_FIELD_NOTES_NOT_BEFORE "
+                                     f"({_settings.field_note_not_before.isoformat()}): no backfill")
+    return (await field_notes.poll_once(since=at)).as_dict()
+
+
+@app.get("/physiology/state")
+async def physiology_state() -> dict:
+    """Read-only debug readout for humans (body economy Patch B2, SHADOW): the latest
+    ``PhysiologyStateV1`` (Body readings, a price per constraint, the strain dial) from Redis
+    ``orion:physiology:latest``. Nothing that decides reads this route or those prices."""
+    from datetime import datetime, timezone
+
+    from orion.schemas.physiology import PHYSIOLOGY_STATE_REDIS_KEY, parse_physiology_state
+
+    if rpc_bus is None:
+        return {"ok": False, "reason": "bus_unavailable", "state": None}
+    try:
+        raw = await rpc_bus.redis.get(PHYSIOLOGY_STATE_REDIS_KEY)
+    except Exception as exc:  # noqa: BLE001 - a debug route reports, never raises
+        return {"ok": False, "reason": f"redis_read_failed:{type(exc).__name__}", "state": None}
+    state = parse_physiology_state(raw)
+    if state is None:
+        return {"ok": False, "reason": "absent_or_expired" if raw is None else "malformed", "state": None}
+    age = (datetime.now(timezone.utc) - state.generated_at).total_seconds()
+    return {"ok": True, "shadow": True, "age_sec": round(age, 1), "strain": state.strain.model_dump(mode="json") if state.strain else None,
+            "prices": {c.constraint: (c.price.model_dump(mode="json") if c.price else None) for c in state.constraints},
+            "state": state.model_dump(mode="json")}
+
+
+_report_cache: Any = None
+#: orion-equilibrium-service's per-service heartbeat hash (EQUILIBRIUM_STATE_KEY there). Read-only here:
+#: circe's container census rides one of those heartbeats and gives container ids their names.
+EQUILIBRIUM_STATE_REDIS_KEY = "equilibrium:state"
+
+
+async def _container_names() -> dict:
+    from app.physiology_report import container_names_from_census
+
+    if rpc_bus is None:
+        return {}
+    raw = await asyncio.wait_for(rpc_bus.redis.hgetall(EQUILIBRIUM_STATE_REDIS_KEY), timeout=2.0)
+    return container_names_from_census(raw or {})
+
+
+async def _read_town_sessions():
+    """AI Town session ledger + the controller's limits (orion/embodiment/town_sessions.py)."""
+    from orion.embodiment.town_sessions import load_config, load_rows
+
+    redis = rpc_bus.redis
+    rows = await asyncio.wait_for(load_rows(redis), timeout=2.0)
+    config = await asyncio.wait_for(load_config(redis), timeout=2.0)
+    return rows, config
+
+
+@app.get("/physiology/report")
+async def physiology_report(window: Optional[str] = "24h", sections: Optional[str] = None,
+                            family: Optional[str] = None, outcome: Optional[str] = None,
+                            limit: Optional[int] = None) -> dict:
+    """Read-only ``PhysiologyReportV1``: Orion's body economy over 24h/7d/30d, aggregate down to
+    single bid decisions. Readers: the Hub #body-economy page and skills.physiology.state.v1. An
+    empty section always has a ``missing`` entry that says why. No writes."""
+    global _report_cache
+    from app.physiology_report import ReportCache, ReportDeps, build_report, parse_query, tiers_from_families
+
+    if not _settings.physiology_report_enabled:
+        raise HTTPException(503, "the physiology report is disabled (ORION_PHYSIOLOGY_REPORT_ENABLED)")
+    if _checkpointer_cm is None:
+        raise HTTPException(503, "no database pool yet (service starting or durable runs disabled)")
+    try:
+        q = parse_query(window, sections, family, outcome, limit)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    if _report_cache is None:
+        _report_cache = ReportCache(_settings.physiology_report_cache_sec)
+    deps = ReportDeps(
+        pool=_checkpointer_cm, tz=_settings.orion_situation_timezone,
+        heat_sensitivity_path=_settings.physiology_heat_sensitivity_path,
+        gpu_pool_path=_settings.physiology_report_gpu_pool_path,
+        tiers=tiers_from_families(market.families) if market is not None else {},
+        family_weights=market.family_weights if market is not None else None,
+        town=_read_town_sessions if rpc_bus is not None else None,
+        container_names=_container_names,
+        concurrency=_settings.physiology_report_concurrency)
+    report = await _report_cache.get_or_build(q.cache_key, lambda: build_report(deps, q))
+    return report.model_dump(mode="json")
+
+
+@app.post("/physiology/bid")
+async def physiology_bid(want: dict):
+    """Body economy Patch C1, SHADOW: one ``WantV1`` -> one ``WantDecisionV1`` (funded/deferred, lane,
+    prices seen, net, binding constraint, displaced, retry_after, ``shadow=true``), priced against the
+    latest physiology state and published to ``orion:physiology:want:decision`` (want_ledger). Callers
+    must not obey it yet. A missing or stale body is ``physiology_unavailable`` -- never funded."""
+    from pydantic import ValidationError
+
+    from orion.schemas.physiology_want import WantV1
+
+    if market is None:
+        raise HTTPException(503, "the bid market is disabled (ORION_PHYSIOLOGY_BID_ENABLED)")
+    try:
+        parsed = WantV1.model_validate(want)
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_url=False, include_context=False)) from exc
+    decision = await market.bid(parsed)
+    return decision.model_dump(mode="json")
+
+
+@app.get("/physiology/event-wants")
+async def physiology_event_wants(hours: float = 24.0, limit: int = 8) -> dict:
+    """Read-only ``FundedEventWantsV1``: event wants whose latest decision is funded and whose event has
+    not expired, highest net first (attention as the want competition, patch 2). Orion Prime reads it as
+    its concern source. From want_ledger; no scoring here."""
+    from datetime import datetime, timezone
+
+    from app.event_wants_menu import read_menu
+
+    if _checkpointer_cm is None:
+        raise HTTPException(503, "no database pool yet (service starting or durable runs disabled)")
+    menu = await read_menu(_checkpointer_cm, market.families if market is not None else None,
+                           now=datetime.now(timezone.utc), hours=hours, limit=limit)
+    return menu.model_dump(mode="json")
+
+
+@app.post("/physiology/bid/{want_id}/release")
+async def physiology_bid_release(want_id: str):
+    """The want's act closed (or will not run): release its reservations now instead of at expiry."""
+    if market is None:
+        raise HTTPException(503, "the bid market is disabled (ORION_PHYSIOLOGY_BID_ENABLED)")
+    return {"want_id": want_id, "released": market.release(want_id)}
+
+
+@app.get("/physiology/reservations")
+async def physiology_reservations():
+    """Read-only debug: the reservation book (funded shadow bids still holding cost)."""
+    from datetime import datetime, timezone
+
+    if market is None:
+        raise HTTPException(503, "the bid market is disabled (ORION_PHYSIOLOGY_BID_ENABLED)")
+    now = datetime.now(timezone.utc)
+    return {"shadow": True, "reservations": market.book.snapshot(now), "market": market.health(now)}
 
 
 @app.get("/regulation/state")
@@ -486,6 +941,32 @@ async def regulation_state():
     if temporal_self.latest is None:
         raise HTTPException(404, "no regulation step has completed yet")
     return temporal_self.latest.model_dump(mode="json")
+
+
+@app.get("/self_monitor/state")
+async def self_monitor_state():
+    """The latest held SelfMonitorStateV1 from Redis orion:self_monitor:latest (TTL 3 h), verbatim,
+    with ``view``: what a reader concludes from it now (fresh / stale). Absent: 404 with the reason."""
+    from datetime import datetime, timezone
+
+    from orion.self_monitor.view import SELF_MONITOR_REDIS_KEY, parse_state, self_monitor_view
+
+    if not _settings.self_monitor_enabled:
+        raise HTTPException(503, "self-monitor is disabled (SELF_MONITOR_ENABLED)")
+    if rpc_bus is None:
+        raise HTTPException(503, "no bus connection: Redis is unreachable from durable-runs")
+    try:
+        raw = await asyncio.wait_for(rpc_bus.redis.get(SELF_MONITOR_REDIS_KEY), timeout=2.0)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(503, f"redis read failed: {type(exc).__name__}") from exc
+    if raw is None:
+        raise HTTPException(404, "no self-monitor state: no evaluation in the last 3 h (expired or never ran)")
+    state = parse_state(raw)
+    if state is None:
+        raise HTTPException(502, "self-monitor state in Redis does not parse as SelfMonitorStateV1")
+    view = self_monitor_view(raw, now=datetime.now(timezone.utc))
+    return {**state.model_dump(mode="json"), "view": {"known": view.known, "reason": view.reason,
+                                                       "age_sec": view.age_sec}}
 
 
 def _chronicle_store():
@@ -538,6 +1019,45 @@ async def temporal_self_arcs(day_id: Optional[str] = None, kind: Optional[str] =
     return {"day_id": day_id, "count": len(arcs), "arcs": arcs}
 
 
+@app.get("/temporal-self/arcs/{arc_id}")
+async def temporal_self_arc(arc_id: str):
+    """One arc by id (any retained day), or 404. The resolver for reference kind ``arc`` (orion/refs.py):
+    Prime checks an arc it cites opens here, and a curiosity run opens it with ``orion.dig arc <id>``."""
+    from orion.refs import KINDS
+
+    if not KINDS["arc"].id_re.fullmatch(arc_id):
+        raise HTTPException(422, f"arc id must look like {KINDS['arc'].id_example}")
+    arc = await _chronicle_read(_chronicle_store().arc(arc_id))
+    if arc is None:
+        raise HTTPException(404, f"arc {arc_id} is not in the chronicle (unknown, or past arc retention)")
+    return arc
+
+
+ACT_BY_ID_SQL = """
+SELECT act_id, parent_act_id, level, actor, verb, object_ref, test_before, signal_id, direction,
+       horizon_sec, expect_basis, predicted, goal_ref, opened_at, horizon_at, closed_at,
+       outcome_value, outcome_source, outcome_note, error, surprise_nats
+  FROM grammar_acts WHERE act_id = %(a)s
+"""
+
+
+@app.get("/acts/{act_id}")
+async def act_by_id(act_id: str):
+    """One act ledger row (grammar_acts) by id, or 404. Read-only. The resolver for reference kind
+    ``act`` (orion/refs.py), shared by Prime (before it sends) and ``orion.dig act <id>``."""
+    from orion.refs import KINDS
+
+    if not KINDS["act"].id_re.fullmatch(act_id):
+        raise HTTPException(422, f"act id must look like {KINDS['act'].id_example}")
+    if _checkpointer_cm is None:
+        raise HTTPException(503, "no database pool yet (service starting or durable runs disabled)")
+    async with _checkpointer_cm.connection() as conn:
+        row = await (await conn.execute(ACT_BY_ID_SQL, {"a": act_id})).fetchone()
+    if row is None:
+        raise HTTPException(404, f"act {act_id} is not on the act ledger")
+    return {k: (v.isoformat() if hasattr(v, "isoformat") else v) for k, v in dict(row).items()}
+
+
 @app.get("/temporal-self/threads")
 async def temporal_self_threads():
     """Open threads: concern loops raised in conversation with no verdict yet (from the frame)."""
@@ -573,6 +1093,84 @@ async def temporal_self_cursors():
         warnings.append("no chronicle window has committed yet")
     return {"as_of": now.isoformat(), "cursors": out, "late_rows_last_24h": late, "warnings": warnings,
             "chronicle": chronicle.health() if chronicle is not None else None}
+
+
+def _personality_store():
+    if personality is None or _checkpointer_cm is None:
+        raise HTTPException(503, "personality graph is disabled (PERSONALITY_ENABLED)")
+    from app.personality_store import PersonalityStore
+
+    return PersonalityStore(_checkpointer_cm)
+
+
+async def _personality_read(coro):
+    """A missing table means the migration was not applied: 503 with the file name, not a 500."""
+    from psycopg.errors import UndefinedColumn, UndefinedTable
+
+    try:
+        return await coro
+    except (UndefinedTable, UndefinedColumn) as exc:
+        raise HTTPException(503, "personality tables missing: apply "
+                                 "services/orion-sql-db/manual_migration_personality_graph_v1.sql and "
+                                 "manual_migration_personality_naming_v1.sql") from exc
+
+
+@app.get("/personality/frame")
+async def personality_frame():
+    """PersonalityFrameV1: active dispositions strongest first, curiosity choice style, counts."""
+    from datetime import datetime, timezone
+
+    store = _personality_store()
+    now = datetime.now(timezone.utc)
+    frame = await _personality_read(store.frame(now, warnings=personality.frame_warnings(now)))
+    # exclude_none: an unnamed node carries no name keys, so readers built before self-naming
+    # (DispositionV1 is extra="forbid") keep validating the frame if durable-runs deploys first.
+    return frame.model_dump(mode="json", exclude_none=True)
+
+
+_PERSONALITY_STATUSES = {"active", "candidate", "retired", "all"}
+
+
+@app.get("/personality/dispositions")
+async def personality_dispositions(status: str = "active", limit: int = 50):
+    """Dispositions by weight (no centroid), each with its last 60 weight-history points."""
+    if status not in _PERSONALITY_STATUSES:
+        raise HTTPException(400, "status must be active, candidate, retired or all")
+    rows = await _personality_read(_personality_store().dispositions(status=status, limit=max(1, min(limit, 500))))
+    return {"status": status, "count": len(rows), "dispositions": rows}
+
+
+@app.get("/personality/evidence")
+async def personality_evidence(disposition_id: Optional[str] = None, limit: int = 50):
+    """Evidence rows, newest first; optionally one disposition's."""
+    rows = await _personality_read(_personality_store().evidence(disposition_id or None, limit=max(1, min(limit, 500))))
+    return {"disposition_id": disposition_id, "count": len(rows), "evidence": rows}
+
+
+@app.get("/personality/naming/next")
+async def personality_naming_next():
+    """The next DispositionNamingPacketV1 for Hub's self-inquiry naming run, or 204 when nothing is
+    due (or PERSONALITY_NAMING_APPLY_ENABLED=false). Read-only: a node counts as shown only when
+    Orion's answer row is applied, so a run that never answers leaves nothing behind."""
+    from datetime import datetime, timezone
+
+    from fastapi import Response
+
+    store = _personality_store()
+    if not personality.naming_enabled:
+        return Response(status_code=204, headers={"X-Personality-Naming": "disabled"})
+    packet = await _personality_read(store.naming_next(datetime.now(timezone.utc)))
+    if packet is None:
+        return Response(status_code=204)
+    return packet.model_dump(mode="json")
+
+
+@app.get("/personality/naming")
+async def personality_naming(disposition_id: Optional[str] = None, limit: int = 50):
+    """The naming log (orion_disposition_naming), newest first; optionally one disposition's."""
+    rows = await _personality_read(_personality_store().namings(disposition_id or None,
+                                                                limit=max(1, min(limit, 500))))
+    return {"disposition_id": disposition_id, "count": len(rows), "namings": rows}
 
 
 @app.get("/runs/unfinished")

@@ -22,6 +22,51 @@ class RetinaMetrics:
     # Times an RTSP reader was abandoned and replaced for delivering no frame
     # (RtspFrameSource stall watchdog). Always 0 for other sources.
     source_stall_restarts: int = 0
+    # RTSP session hygiene (RtspFrameSource quiet period + self-heal).
+    # Always 0/None for other sources.
+    source_quiet_wait_remaining_sec: float = 0.0
+    source_last_session_end_ts: float | None = None
+    source_corrupt_frame_rate: float | None = None
+    source_corruption_checks: int = 0
+    source_corrupt_frames: int = 0
+    source_corruption_heals: int = 0
+    source_corruption_heal_suppressed: bool = False
+    # Ring event source (ring_source.py). Always 0/None for other sources.
+    # A doorbell is silent between events, so last_frame_age_sec growing is
+    # normal there; ring_bursts_failed growing is not.
+    ring_events_seen: int = 0
+    ring_events_ignored: int = 0
+    ring_bursts_started: int = 0
+    ring_bursts_failed: int = 0
+    # Failed live views in a row; ring_blind once it reaches
+    # ring_source.BLIND_AFTER_FAILED_BURSTS (status degraded).
+    ring_consecutive_failed_bursts: int = 0
+    ring_blind: bool = False
+    # Push listeners in a row found dead; ring_deaf once it reaches
+    # ring_source.DEAF_AFTER_LISTENER_DEATHS (status degraded).
+    ring_consecutive_listener_deaths: int = 0
+    ring_listener_restarts: int = 0
+    ring_deaf: bool = False
+    # Push messages the patched FCM client skipped instead of dying on.
+    ring_push_messages_skipped: int = 0
+    ring_push_last_skip_error: str | None = None
+    ring_last_event_kind: str | None = None
+    ring_last_event_ts: float | None = None
+    # Every recorded push, whatever the live view did (2026-10-20: a ding
+    # during a motion burst used to vanish).
+    ring_dings_total: int = 0
+    ring_motions_total: int = 0
+    ring_last_ding_ts: float | None = None
+    ring_bursts_extended: int = 0
+    ring_ding_reopens_refused: int = 0
+    ring_vision_events_published: int = 0
+    ring_street_events_published: int = 0
+    ring_events_publish_failed: int = 0
+    # Active looking (live views Orion opened because it expected someone).
+    ring_self_looks_today: int = 0
+    ring_self_looks_total: int = 0
+    ring_last_self_look_ts: float | None = None
+    ring_last_self_look_reason: str | None = None
 
 
 def last_frame_age_sec(metrics: RetinaMetrics, now: float | None = None) -> float | None:
@@ -44,6 +89,7 @@ def make_system_health_envelope(
     fps_target: float,
     storage_dir: str,
     heartbeat_interval_sec: float,
+    capture_stalled: str | None = None,
 ) -> BaseEnvelope:
     # Threaded from the caller's real loop period rather than left at the schema
     # default: orion-equilibrium-service computes grace = interval * 3.0 and marks
@@ -55,7 +101,17 @@ def make_system_health_envelope(
         version=service_version,
         boot_id=BOOT_ID,
         last_seen_ts=datetime.now(timezone.utc),
-        status="ok" if source_ok else "degraded",
+        # capture_stalled: nothing published for RETINA_PUBLISH_STALL_SECONDS
+        # outside an expected quiet state. 2026-10-17 the walkway reported
+        # "ok" with a 10255 s old frame; that is not ok.
+        # ring_blind: Ring events arrive but every recent live view gave no
+        # picture. 2026-10-21..23 the doorbell was blind ~2.5 days while
+        # source_ok stayed true (aiortc video buffer too small).
+        # ring_deaf: the push listener dies on every start. 2026-10-28..11-03
+        # it died within a second of each of ~1,440 daily restarts (one
+        # unpadded FCM message redelivered forever) while health read "ok".
+        status="ok" if source_ok and not capture_stalled and not metrics.ring_blind
+        and not metrics.ring_deaf else "degraded",
         details={
             "camera_id": camera_id,
             "stream_id": stream_id,
@@ -67,7 +123,41 @@ def make_system_health_envelope(
             "fps_observed": metrics.fps_observed,
             "last_frame_ts": metrics.last_frame_ts,
             "last_frame_age_sec": last_frame_age_sec(metrics),
+            "capture_stalled": bool(capture_stalled),
+            "capture_stalled_reason": capture_stalled,
             "source_stall_restarts": metrics.source_stall_restarts,
+            "source_quiet_wait_remaining_sec": metrics.source_quiet_wait_remaining_sec,
+            "source_last_session_end_ts": metrics.source_last_session_end_ts,
+            "source_corrupt_frame_rate": metrics.source_corrupt_frame_rate,
+            "source_corruption_checks": metrics.source_corruption_checks,
+            "source_corrupt_frames": metrics.source_corrupt_frames,
+            "source_corruption_heals": metrics.source_corruption_heals,
+            "source_corruption_heal_suppressed": metrics.source_corruption_heal_suppressed,
+            "ring_events_seen": metrics.ring_events_seen,
+            "ring_events_ignored": metrics.ring_events_ignored,
+            "ring_bursts_started": metrics.ring_bursts_started,
+            "ring_bursts_failed": metrics.ring_bursts_failed,
+            "ring_consecutive_failed_bursts": metrics.ring_consecutive_failed_bursts,
+            "ring_blind": metrics.ring_blind,
+            "ring_consecutive_listener_deaths": metrics.ring_consecutive_listener_deaths,
+            "ring_listener_restarts": metrics.ring_listener_restarts,
+            "ring_deaf": metrics.ring_deaf,
+            "ring_push_messages_skipped": metrics.ring_push_messages_skipped,
+            "ring_push_last_skip_error": metrics.ring_push_last_skip_error,
+            "ring_last_event_kind": metrics.ring_last_event_kind,
+            "ring_last_event_ts": metrics.ring_last_event_ts,
+            "dings_total": metrics.ring_dings_total,
+            "motions_total": metrics.ring_motions_total,
+            "last_ding_ts": metrics.ring_last_ding_ts,
+            "ring_bursts_extended": metrics.ring_bursts_extended,
+            "ring_ding_reopens_refused": metrics.ring_ding_reopens_refused,
+            "ring_vision_events_published": metrics.ring_vision_events_published,
+            "ring_street_events_published": metrics.ring_street_events_published,
+            "ring_events_publish_failed": metrics.ring_events_publish_failed,
+            "self_looks_today": metrics.ring_self_looks_today,
+            "self_looks_total": metrics.ring_self_looks_total,
+            "last_self_look_ts": metrics.ring_last_self_look_ts,
+            "last_self_look_reason": metrics.ring_last_self_look_reason,
             "last_error": metrics.last_error,
             "storage_dir": storage_dir,
         },

@@ -4,12 +4,19 @@
 #
 # Builds and read-only compose commands may run from development worktrees.
 # `up`, however, changes the live runtime and therefore has one canonical
-# source: the primary checkout on `main`, clean and equal to `origin/main`.
+# source: the primary checkout on `main`, clean and equal to `origin/main`
+# (or, when ORION_DEPLOY_PINNED_HEAD is set by a post-pull rebuild run, equal
+# to that pinned commit and behind-or-equal to `origin/main`; see 2.1).
 # This prevents a feature-named or stale worktree from becoming an accidental
 # deployment source while preserving isolated worktrees for development.
 #
 # Usage:
-#   scripts/safe_docker_build.sh <service-name> [docker compose args...]
+#   scripts/safe_docker_build.sh <service-name> [--compose-file docker-compose.<name>.yml] [docker compose args...]
+#
+# --compose-file targets a second compose file of the same service INSTEAD of
+# services/<service>/docker-compose.yml (never merged with it), e.g. the Qwen
+# caption lane in services/orion-vision-host/docker-compose.circe-qwen.yml.
+# Every check below still applies. Only docker-compose.<name>.yml basenames.
 #
 # Example:
 #   scripts/safe_docker_build.sh orion-cortex-orch build
@@ -42,10 +49,28 @@ fi
 SERVICE="$1"
 if [ -z "$SERVICE" ]; then
     echo "safe_docker_build.sh: missing required <service-name> argument." >&2
-    echo "Usage: scripts/safe_docker_build.sh <service-name> [docker compose args...]" >&2
+    echo "Usage: scripts/safe_docker_build.sh <service-name> [--compose-file docker-compose.<name>.yml] [docker compose args...]" >&2
     exit 1
 fi
 shift
+
+COMPOSE_FILE_NAME="docker-compose.yml"
+if [ "$1" = "--compose-file" ]; then
+    COMPOSE_FILE_NAME="$2"
+    case "$COMPOSE_FILE_NAME" in
+        docker-compose.yml) ;;
+        docker-compose.*.yml)
+            case "$COMPOSE_FILE_NAME" in
+                */*|*..*)
+                    echo "safe_docker_build.sh: --compose-file takes a basename, got '$COMPOSE_FILE_NAME'" >&2
+                    exit 1 ;;
+            esac ;;
+        *)
+            echo "safe_docker_build.sh: --compose-file must be docker-compose.<name>.yml, got '$COMPOSE_FILE_NAME'" >&2
+            exit 1 ;;
+    esac
+    shift 2
+fi
 
 # --- 2.1. Require live deployments to originate from canonical main --------
 IS_DEPLOY=0
@@ -90,15 +115,37 @@ if [ "$IS_DEPLOY" = "1" ]; then
         exit 1
     fi
     LOCAL_HEAD=$(git rev-parse HEAD 2>/dev/null)
-    if [ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]; then
+    # ORION_DEPLOY_PINNED_HEAD: set by rebuild_services_from_git_diff.sh to the
+    # full commit its run started on. A post-pull run brings services up one by
+    # one over many minutes; a PR merging on GitHub mid-run used to refuse every
+    # remaining service in ~1s (2026-10-20, three runs that day). With a pin,
+    # main must still be exactly that commit, and that commit must be in
+    # origin/main's history: main merely BEHIND is accepted, ahead or diverged
+    # is still refused. Without the pin, main must equal origin/main.
+    PINNED_HEAD="${ORION_DEPLOY_PINNED_HEAD:-}"
+    if [ -n "$PINNED_HEAD" ]; then
+        if [ "$LOCAL_HEAD" != "$PINNED_HEAD" ]; then
+            echo "safe_docker_build.sh: REFUSING live deployment because main moved during this run." >&2
+            echo "main=$LOCAL_HEAD pinned=$PINNED_HEAD (ORION_DEPLOY_PINNED_HEAD)" >&2
+            exit 1
+        fi
+        if ! git merge-base --is-ancestor "$LOCAL_HEAD" "$ORIGIN_MAIN" 2>/dev/null; then
+            echo "safe_docker_build.sh: REFUSING live deployment because main is not synchronized with origin/main." >&2
+            echo "main=$LOCAL_HEAD origin/main=$ORIGIN_MAIN (pinned main is not in origin/main's history)" >&2
+            exit 1
+        fi
+        if [ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]; then
+            echo "safe_docker_build.sh: deploying pinned main=$LOCAL_HEAD; origin/main advanced to $ORIGIN_MAIN during this run." >&2
+        fi
+    elif [ "$LOCAL_HEAD" != "$ORIGIN_MAIN" ]; then
         echo "safe_docker_build.sh: REFUSING live deployment because main is not synchronized with origin/main." >&2
         echo "main=$LOCAL_HEAD origin/main=$ORIGIN_MAIN" >&2
         exit 1
     fi
 fi
 
-if [ ! -f "services/$SERVICE/docker-compose.yml" ]; then
-    echo "safe_docker_build.sh: no such service compose file: services/$SERVICE/docker-compose.yml" >&2
+if [ ! -f "services/$SERVICE/$COMPOSE_FILE_NAME" ]; then
+    echo "safe_docker_build.sh: no such service compose file: services/$SERVICE/$COMPOSE_FILE_NAME" >&2
     echo "Expected path does not exist. Check the service name and that you are" >&2
     echo "running this from the repo root." >&2
     exit 1
@@ -124,11 +171,11 @@ _SCRIPT_DIR_FOR_BOARD=$(cd "$(dirname "$0")" && pwd)
 if [ -f "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" ] && command -v python3 >/dev/null 2>&1; then
     if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
         python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
-            --summary "docker compose $* for services/$SERVICE" \
+            --summary "docker compose $* for services/$SERVICE/$COMPOSE_FILE_NAME" \
             --task "deploy:$SERVICE" --session-id "$CLAUDE_CODE_SESSION_ID" >/dev/null 2>&1 || true
     else
         python3 "$_SCRIPT_DIR_FOR_BOARD/agent_board.py" heartbeat \
-            --summary "docker compose $* for services/$SERVICE" \
+            --summary "docker compose $* for services/$SERVICE/$COMPOSE_FILE_NAME" \
             --task "deploy:$SERVICE" >/dev/null 2>&1 || true
     fi
 fi
@@ -232,5 +279,5 @@ fi
 exec docker compose \
     --env-file .env \
     --env-file "services/$SERVICE/.env" \
-    -f "services/$SERVICE/docker-compose.yml" \
+    -f "services/$SERVICE/$COMPOSE_FILE_NAME" \
     "$@"

@@ -8,6 +8,7 @@ on:
   pull_request:
     paths:
       - "orion/curiosity/urgent_prompt.py"
+      - "orion/introspect/brief.py"
       - "orion/curiosity/incident_report.py"
       - "orion/curiosity/kickoff_prompt.py"
       - "orion/schemas/curiosity_urgent.py"
@@ -21,6 +22,7 @@ on:
     branches: [main]
     paths:
       - "orion/curiosity/urgent_prompt.py"
+      - "orion/introspect/brief.py"
       - "orion/curiosity/incident_report.py"
       - "orion/curiosity/kickoff_prompt.py"
       - "orion/schemas/curiosity_urgent.py"

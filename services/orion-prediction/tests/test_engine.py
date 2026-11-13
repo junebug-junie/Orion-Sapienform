@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import itertools
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -28,6 +28,8 @@ def fast_zoo(monkeypatch):
 
 class FakeStore:
     def __init__(self, points):
+        self.shadow = []
+        self.exceedances = []
         self.raw = sorted(points)
         self.runs: list[dict] = []
         self.forecasts: list[dict] = []
@@ -69,8 +71,22 @@ class FakeStore:
         o = self.last_origin(sid)
         return [f for f in self.forecasts if f["role"] == "champion" and f["origin_ts"] == o]
 
+    # hm -> model, as if the ISSUING run had assigned it (surprise event gate); and an interval_source
+    # override for rows the test engine issued with backtest ranges.
+    served_model_override: dict = {}
+    interval_source_override: str | None = None
+
     def due_for_scoring(self, sid, before, limit=2000):
-        return [f for f in self.forecasts if f["scored_at"] is None and f["target_ts"] < before][:limit]
+        # Same columns as PostgresStore.due_for_scoring: served_model from the issuing run's assignment.
+        runs = {r["run_id"]: r for r in self.runs}
+        out = []
+        for f in self.forecasts:
+            if f["scored_at"] is None and f["target_ts"] < before:
+                assignment = (runs.get(f.get("run_id")) or {}).get("assignment") or {}
+                model = self.served_model_override.get(f["horizon_min"], assignment.get(str(f["horizon_min"])))
+                src = self.interval_source_override or f.get("interval_source")
+                out.append({**f, "served_model": model, "interval_source": src})
+        return out[:limit]
 
     def write_scores(self, scores):
         by_id = {f["forecast_id"]: f for f in self.forecasts}
@@ -79,6 +95,74 @@ class FakeStore:
 
     def live_scores(self, sid, since):
         return [f for f in self.forecasts if f.get("score_status") == "scored" and f["target_ts"] >= since]
+
+    def scored_with_quantiles(self, sid, since):
+        return self.live_scores(sid, since)
+
+    def champion_pool(self, sid, since, max_h):
+        assign = {r["run_id"]: r["assignment"] for r in self.runs}
+        return [{**f, "owner": (assign.get(f["run_id"]) or {}).get(str(f["horizon_min"]), f.get("owner"))}
+                for f in self.live_scores(sid, since) if f["role"] == "champion" and f["horizon_min"] <= max_h]
+
+    exceedances: list = []
+
+    fail_next_issue = False
+
+    def insert_issue(self, forecast_rows, exceedance_rows, shadow_rows=None):
+        if self.fail_next_issue:          # all-or-nothing, like the real transaction
+            self.fail_next_issue = False
+            raise ConnectionError("pg hiccup")
+        self.insert_forecasts(forecast_rows)
+        self.insert_exceedances(exceedance_rows)
+
+    fail_shadow = False
+
+    def insert_shadow(self, rows):
+        if self.fail_shadow:
+            raise ConnectionError("shadow table missing")
+        have = {(r["model"], r["origin_ts"], r["horizon_min"]) for r in self.shadow}
+        for r in rows:
+            if (r["model"], r["origin_ts"], r["horizon_min"]) not in have:
+                self.shadow.append({**r, "shadow_id": next(self._ids), "scored_at": None, "abs_error": None})
+
+    def prune_shadow(self, sid, before):
+        n = len(self.shadow)
+        self.shadow = [r for r in self.shadow if r["target_ts"] >= before]
+        return n - len(self.shadow)
+
+    def due_shadow(self, sid, before, limit=5000):
+        return [r for r in self.shadow if r["scored_at"] is None and r["target_ts"] < before][:limit]
+
+    def write_shadow_scores(self, rows):
+        by = {r["shadow_id"]: r for r in self.shadow}
+        for r in rows:
+            by[r["shadow_id"]].update(r)
+
+    def shadow_pairs(self, sid, since):
+        base = {(f["origin_ts"], f["horizon_min"]): f["abs_error"] for f in self.forecasts
+                if f["role"] == "baseline" and f.get("score_status") == "scored"}
+        return [{"model": r["model"], "horizon_min": r["horizon_min"], "origin_ts": r["origin_ts"],
+                 "shadow_err": r["abs_error"], "base_err": base[(r["origin_ts"], r["horizon_min"])]}
+                for r in self.shadow if r["abs_error"] is not None and r["target_ts"] >= since
+                and (r["origin_ts"], r["horizon_min"]) in base]
+
+    def insert_exceedances(self, rows):
+        have = {(e["origin_ts"], e["name"]) for e in self.exceedances}
+        for r in rows:
+            if (r["origin_ts"], r["name"]) not in have:
+                self.exceedances.append({**r, "exceedance_id": next(self._ids), "scored_at": None})
+
+    def due_exceedances(self, sid, before, limit=2000):
+        return [e for e in self.exceedances if e["scored_at"] is None and e["window_end"] <= before][:limit]
+
+    def write_exceedance_outcomes(self, rows):
+        by = {e["exceedance_id"]: e for e in self.exceedances}
+        for r in rows:
+            by[r["exceedance_id"]].update(r)
+
+    def graded_exceedances(self, sid, since):
+        return [e for e in self.exceedances if e["scored_at"] is not None and (e.get("n_readings") or 0) > 0
+                and e["probability"] is not None and e["window_start"] >= since]
 
 
 def _setup(days=12.0, noise=0.05):
@@ -211,13 +295,14 @@ def test_live_metrics_compare_champion_to_baseline_on_the_same_origins():
     reg, spec, s, store, end = _setup()
     eng = _engine(reg, store, Clock(end), [])
     o = end - timedelta(hours=1)
-    for role, err in (("champion", 0.5), ("baseline", 1.0)):
-        store.forecasts.append({"series_id": "test.temp", "role": role, "origin_ts": o, "horizon_min": 60,
+    for role, err, pt in (("champion", 0.5, 28.0), ("baseline", 1.0, 28.5)):
+        store.forecasts.append({"series_id": "test.temp", "role": role, "origin_ts": o, "horizon_min": 60, "point": pt,
                                 "target_ts": o + timedelta(hours=1), "abs_error": err, "in_80": True,
                                 "in_95": True, "score_status": "scored", "scored_at": end})
     live = eng.live_metrics(spec, end + timedelta(minutes=1))
     assert live["horizons"]["60"]["rel_mae_vs_baseline"] == pytest.approx(0.5)
-    assert live["rel_mae_vs_baseline_24h"] == pytest.approx(0.5)
+    assert live["horizons"]["60"]["rel_mae_differing"] == pytest.approx(0.5)
+    assert live["horizons"]["60"]["n_differing"] == 1 and live["horizons"]["60"]["p_baseline_better"] is None
 
 
 def test_restore_refuses_a_selection_that_no_longer_fits_the_registry():
@@ -308,6 +393,38 @@ def test_restore_refuses_a_selection_made_with_different_covariates():
     assert _engine(reg, store, clock, []).restore(spec) is True
 
 
+def test_restore_refuses_a_selection_made_with_different_overlap_covariates():
+    """direct_arx's columns depend on which covariates are overlap-only: a stored selection made
+    with another split must not be restored (its residuals were measured on other columns)."""
+    import dataclasses
+    reg, spec, s, store, end = _cov_setup()
+    clock = Clock(end + timedelta(seconds=90))
+    asyncio.run(_engine(reg, store, clock, []).tick(_sync))
+    moved = dataclasses.replace(spec, overlap_covariates=("test.watts",))
+    assert _engine(reg, store, clock, []).restore(moved) is False
+    assert _engine(reg, store, clock, []).restore(spec) is True
+
+
+def test_shadow_covariate_contender_gets_covariates_when_nothing_served_uses_them(monkeypatch):
+    import dataclasses
+    monkeypatch.setattr(engine_mod, "build_models", lambda spec, usable: {
+        k: v for k, v in real_build_models(spec, usable).items() if k in FAST + ("direct_arx",)})
+    reg, spec, s, store, end = _cov_setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    base = {hm: "naive" for hm in st.served.selection.assignment}
+    sel = dataclasses.replace(st.served.selection, assignment=base)
+    st.served = dataclasses.replace(st.served, selection=sel, shadow=("direct_arx",))
+    origin = eng.latest_complete_bucket(spec, clock.t)
+    series = eng.load_series(spec, clock.t, timedelta(days=10))
+    built = eng.build_forecast(spec, series, origin, clock.t)
+    assert built["X"] is not None
+    rows, failed = eng.build_shadow(spec, built, origin, clock.t)
+    assert failed == {} and {r["model"] for r in rows} == {"direct_arx"}
+
+
 def test_restore_refuses_a_selection_from_another_gate_version():
     reg, spec, s, store, end = _setup()
     clock = Clock(end + timedelta(seconds=90))
@@ -316,3 +433,492 @@ def test_restore_refuses_a_selection_from_another_gate_version():
         if r["kind"] in ("champion_blend", "baseline_blend"):
             r["metrics"] = {k: v for k, v in r["metrics"].items() if k != "gate_version"}
     assert _engine(reg, store, clock, []).restore(spec) is False
+
+
+def test_change_events_mask_training_and_an_adopted_break_forces_a_reselect():
+    from app.events import MIN_POST_BREAK_DAYS
+    reg, spec, s, store, end = _setup(days=12.0)
+    clock = Clock(end + timedelta(seconds=90))
+    store.events = []
+    store.change_events = lambda: store.events
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    first = eng.state["test.temp"].served
+    # A window two days ago is masked out of the training view.
+    w0, w1 = end - timedelta(days=2), end - timedelta(days=2) + timedelta(hours=2)
+    store.events.append({"scope": "*", "effect": "exclude", "started_at": w0, "ended_at": w1})
+    eff = eng.effective(spec, clock.t)
+    from app.frame import training_slice
+    view = training_slice(eng.load_series(eff, clock.t, timedelta(days=10)), eff)
+    assert view[(view.index >= w0) & (view.index < w1)].isna().all()
+    # A break old enough to adopt moves the training start and makes the selection stale at once.
+    brk = end - timedelta(days=MIN_POST_BREAK_DAYS, minutes=1)
+    store.events.append({"scope": "*", "effect": "break", "started_at": brk, "ended_at": None})
+    eff = eng.effective(spec, clock.t)
+    assert eff.train_from == brk and eng.selection_due(eff, clock.t)
+    asyncio.run(eng.tick(_sync))
+    second = eng.state["test.temp"].served
+    assert second.selection_id != first.selection_id and second.train_from == brk
+    assert eng.state["test.temp"].events["break_adopted"] == brk.isoformat()
+
+
+def _events_engine():
+    reg, spec, s, store, end = _setup(days=12.0)
+    clock = Clock(end + timedelta(seconds=90))
+    store.events = []
+    store.change_events = lambda: store.events
+    return reg, spec, store, end, clock, _engine(reg, store, clock, [])
+
+
+def test_a_failed_reselect_after_an_event_change_backs_off_instead_of_looping():
+    reg, spec, store, end, clock, eng = _events_engine()
+    asyncio.run(eng.tick(_sync))
+    store.events.append({"scope": "*", "effect": "exclude", "started_at": end - timedelta(days=1),
+                         "ended_at": end - timedelta(days=1) + timedelta(hours=1)})
+    calls = []
+
+    def boom(spec, now):
+        calls.append(now)
+        raise RuntimeError("fit failed")
+    eng.select = boom
+    for _ in range(3):
+        asyncio.run(eng.tick(_sync))
+        clock.t += timedelta(seconds=30)
+    assert len(calls) == 1 and "selection_failed" in eng.state["test.temp"].alerts
+
+
+def test_a_new_change_event_forces_one_reselect_then_settles():
+    reg, spec, store, end, clock, eng = _events_engine()
+    asyncio.run(eng.tick(_sync))
+    n0 = len({r["selection_id"] for r in store.runs})
+    store.events.append({"scope": "*", "effect": "exclude", "started_at": end - timedelta(days=1),
+                         "ended_at": end - timedelta(days=1) + timedelta(hours=1)})
+    asyncio.run(eng.tick(_sync))
+    asyncio.run(eng.tick(_sync))
+    assert len({r["selection_id"] for r in store.runs}) == n0 + 1
+
+
+def test_an_unreadable_events_table_keeps_forecasting_on_the_last_good_list():
+    reg, spec, store, end, clock, eng = _events_engine()
+    store.events.append({"scope": "*", "effect": "exclude", "started_at": end - timedelta(days=1),
+                         "ended_at": end - timedelta(days=1) + timedelta(hours=1)})
+    asyncio.run(eng.tick(_sync))
+    n = len(store.forecasts)
+
+    def down():
+        raise ConnectionError("pg down")
+    store.change_events = down
+    store.raw += [(end + timedelta(seconds=k), 28.0) for k in range(0, 300, 30)]
+    clock.t = end + timedelta(minutes=5, seconds=90)
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    assert len(store.forecasts) > n and "change_events_unreadable" in st.alerts
+    assert st.events["excluded_windows"]          # still applying the cached exclusion
+
+
+
+def _live_pairs(store, end, n, champ_err, base_err, same_point=False, rng=None):
+    rng = rng or np.random.default_rng(0)
+    for i in range(n):
+        o = end - timedelta(hours=20) + timedelta(minutes=5 * i)
+        ce, be = champ_err + rng.normal(0, 0.05), base_err + rng.normal(0, 0.05)
+        for role, err, pt in (("champion", ce, 28.0), ("baseline", be if not same_point else ce, 28.0 if same_point else 28.3)):
+            store.forecasts.append({"series_id": "test.temp", "role": role, "origin_ts": o, "horizon_min": 5, "point": pt,
+                                    "target_ts": o + timedelta(minutes=5), "abs_error": abs(err), "in_80": True,
+                                    "in_95": True, "score_status": "scored", "scored_at": end})
+
+
+def test_each_issue_stores_its_threshold_probabilities_and_they_get_an_outcome():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    assert [e["name"] for e in store.exceedances] == ["hot"]
+    e = store.exceedances[0]
+    assert e["window_start"] == e["origin_ts"] + timedelta(minutes=5)
+    assert e["window_end"] == e["window_start"] + timedelta(minutes=30)
+    # The next 30 min: bucket means stay under 31 C but one raw reading spikes over it.
+    t = end
+    store.raw += [(t + timedelta(seconds=30 * i), 30.0) for i in range(70)]
+    store.raw.append((t + timedelta(minutes=12, seconds=7), 31.6))
+    clock.t = end + timedelta(minutes=40)
+    assert eng.score_exceedances(spec, clock.t) == 1
+    assert e["hit_raw"] is True and e["hit_mean"] is False and e["max_raw"] == 31.6
+
+
+
+def test_a_failed_issue_write_leaves_nothing_and_the_bucket_is_reissued():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    store.fail_next_issue = True
+    asyncio.run(eng.tick(_sync))
+    assert store.forecasts == [] and store.exceedances == []
+    clock.t += timedelta(seconds=30)
+    asyncio.run(eng.tick(_sync))
+    assert store.forecasts and [e["name"] for e in store.exceedances] == ["hot"]
+
+
+def test_a_partly_observed_window_is_unknown_unless_a_crossing_was_seen():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    e = store.exceedances[0]
+    store.raw += [(end + timedelta(seconds=30 * i), 30.0) for i in range(4)]     # 2 min of data, then silence
+    clock.t = end + timedelta(minutes=40)
+    eng.score_exceedances(spec, clock.t)
+    assert e["hit_raw"] is None and e["hit_mean"] is None and e["n_buckets_observed"] == 1
+
+
+
+def test_contenders_get_shadow_forecasts_which_get_scored(monkeypatch):
+    monkeypatch.setattr(engine_mod, "build_models",
+                        lambda spec, usable: {k: v for k, v in real_build_models(spec, usable).items() if k in FAST})
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    st.served = __import__("dataclasses").replace(st.served, shadow=("window_average_1h",))
+    store.raw += [(end + timedelta(seconds=k), 28.0) for k in range(0, 300, 30)]
+    clock.t = end + timedelta(minutes=5, seconds=90)
+    asyncio.run(eng.tick(_sync))
+    rows = [r for r in store.shadow if r["model"] == "window_average_1h"]
+    assert {r["horizon_min"] for r in rows} == {5, 60, 360}
+    store.raw += [(end + timedelta(minutes=5, seconds=k), 28.1) for k in range(0, 300, 30)]
+    clock.t = end + timedelta(minutes=12)
+    assert eng.score_shadow(spec, clock.t) >= 1
+    assert any(r["abs_error"] is not None for r in rows if r["horizon_min"] == 5)
+
+
+def test_worse_than_baseline_judges_the_model_that_serves_on_its_live_record():
+    from app.backtest import Selection
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end), [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    st.served = __import__("dataclasses").replace(
+        st.served, selection=Selection({5: "window_average_1h", 60: "naive", 360: "naive"},
+                                       {5: "naive", 60: "naive", 360: "naive"}, False, {}))
+    worse = {"verdict": "worse", "rel_mae": 1.3, "n_independent": 40, "p_worse": 0.001}
+    live = {"shadow": {"window_average_1h@5": worse}}
+    assert "5 min window_average_1h" in eng.alerts_for(spec, end, live, end)["worse_than_baseline"]
+    live = {"shadow": {"window_average_1h@60": worse}}          # losing where it does NOT serve: no alert
+    assert "worse_than_baseline" not in eng.alerts_for(spec, end, live, end)
+
+
+
+def test_a_shadow_store_failure_never_costs_the_served_forecast():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    st.served = __import__("dataclasses").replace(st.served, shadow=("window_average_1h",))
+    store.fail_shadow = True
+    store.raw += [(end + timedelta(seconds=k), 28.0) for k in range(0, 300, 30)]
+    n = len(store.forecasts)
+    clock.t = end + timedelta(minutes=5, seconds=90)
+    asyncio.run(eng.tick(_sync))
+    assert len(store.forecasts) > n and "*" in st.shadow_failed
+
+
+def test_alert_formats_a_worse_verdict_without_a_ratio():
+    from app.backtest import Selection
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end), [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    st.served = __import__("dataclasses").replace(
+        st.served, selection=Selection({5: "window_average_1h", 60: "naive", 360: "naive"},
+                                       {5: "naive", 60: "naive", 360: "naive"}, False, {}))
+    v = {"verdict": "worse", "rel_mae": None, "n_independent": 30, "p_worse": 0.001}
+    assert "worse than the baseline" in eng.alerts_for(spec, end, {"shadow": {"window_average_1h@5": v}}, end)["worse_than_baseline"]
+
+
+# --- a young target next to a mature one (office.temp_c, sensor installed 2026-10-28) ---------------
+def _young_setup(young_hours: float):
+    """Mature test.temp (12 days to `end`) beside test.young, whose sensor started `young_hours` before
+    `end`. Both run on past `end` so a later clock still has fresh input."""
+    doc = spec_doc(train_window="10d")
+    s = daily_series(17, amp=1.0, noise=0.05, seed=3)
+    end = s.index[0].to_pydatetime() + timedelta(days=12)
+    y0 = end - timedelta(hours=young_hours)
+    young_doc = dict(doc["series"][0], series_id="test.young", thresholds=[], train_from=y0.isoformat(),
+                     seasonalities=[{"name": "daily", "period": "1d"}, {"name": "weekly", "period": "7d"}])
+    reg = parse_registry({"version": 1, "series": [doc["series"][0], young_doc]})
+    store = FakeStore(points_of(s))
+    young = daily_series(6, amp=0.5, noise=0.05, seed=11, start=y0) - 2.0
+    store.cov_raw = {"test.young": points_of(young)}
+    return reg, store, end, y0
+
+
+def test_a_young_target_is_not_ready_and_the_mature_one_is_unaffected():
+    reg, store, end, y0 = _young_setup(young_hours=3)
+    now = end + timedelta(seconds=90)
+    eng = _engine(reg, store, Clock(now), [])
+    asyncio.run(eng.tick(_sync))
+    young, mature = eng.state["test.young"], eng.state["test.temp"]
+    # The young series: no selection, no forecast, no run rows, no failure alert -- just not_ready.
+    assert young.served is None and young.last_select_error is None and young.last_tick_error is None
+    assert not {"selection_failed", "tick_failed"} & set(young.alerts)
+    assert {r["series_id"] for r in store.runs} == {"test.temp"}
+    assert "test.young" not in {f["series_id"] for f in store.forecasts}
+    nr = young.not_ready
+    need = 2 * 288 + 72 + 9 * 36      # 2 days training + 6 h horizon + 10 origins 3 h apart
+    assert nr["need_buckets"] == need and 0 < nr["have_buckets"] < need
+    ready_at = datetime.fromisoformat(nr["ready_at"])
+    # The last needed bucket is in view one settle (60 s) after it ends.
+    assert ready_at == pd.Timestamp(y0).floor("5min") + timedelta(minutes=5 * need, seconds=60)
+    # Ready in ~78 h: re-checked at the normal interval, not every tick.
+    assert young.next_select_at == now + timedelta(hours=6)
+    runs = len(store.runs)
+    eng.clock.t = now + timedelta(minutes=30)
+    asyncio.run(eng.tick(_sync))
+    assert len([r for r in store.runs if r["series_id"] == "test.young"]) == 0 and len(store.runs) == runs
+    # The mature target served exactly what it serves alone.
+    solo = _engine(parse_registry(spec_doc(train_window="10d")), FakeStore(store.raw), Clock(now), [])
+    asyncio.run(solo.tick(_sync))
+    assert mature.served is not None and mature.served.selection.assignment == solo.state["test.temp"].served.selection.assignment
+    np.testing.assert_allclose(mature.served.residuals["champion"], solo.state["test.temp"].served.residuals["champion"])
+    assert {f["horizon_min"] for f in store.forecasts if f["series_id"] == "test.temp"} == {5, 60, 360}
+
+
+def test_a_young_target_rechecks_at_its_ready_time_then_selects_and_forecasts():
+    need_h = (2 * 288 + 72 + 9 * 36) * 5 / 60          # 81 h
+    reg, store, end, y0 = _young_setup(young_hours=need_h - 1)
+    now = end + timedelta(seconds=90)
+    eng = _engine(reg, store, Clock(now), [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.young"]
+    ready_at = datetime.fromisoformat(st.not_ready["ready_at"])
+    assert now < ready_at < now + timedelta(hours=6) and st.next_select_at == ready_at
+    # Half a tick early: still not ready, still waking at ready_at (not 6 h later).
+    eng.clock.t = ready_at - timedelta(seconds=30)
+    asyncio.run(eng.tick(_sync))
+    assert st.served is None and st.next_select_at == ready_at
+    # The first tick at ready_at selects (the settle delay is inside ready_at).
+    eng.clock.t = ready_at
+    asyncio.run(eng.tick(_sync))
+    assert st.served is not None and st.not_ready is None and st.last_select_error is None
+    # ~3.4 days of history: daily usable, weekly refused (needs 2 cycles = 14 days).
+    assert st.served.refused == ("weekly",) and [s.name for s in st.served.usable] == ["daily"]
+    assert {f["horizon_min"] for f in store.forecasts if f["series_id"] == "test.young"} == {5, 60, 360}
+
+
+def test_star_change_events_before_a_young_series_starts_change_nothing_for_it():
+    from app.frame import training_slice
+    reg, store, end, y0 = _young_setup(young_hours=3)
+    now = end + timedelta(seconds=90)
+    store.events = [
+        {"scope": "*", "effect": "break", "started_at": y0 - timedelta(days=4), "ended_at": None},
+        {"scope": "*", "effect": "exclude", "started_at": y0 - timedelta(days=3),
+         "ended_at": y0 - timedelta(days=3) + timedelta(hours=2)},
+    ]
+    store.change_events = lambda: store.events
+    eng = _engine(reg, store, Clock(now), [])
+    spec = reg.get("test.young")
+    eff = eng.effective(spec, now)
+    assert eff.train_from == spec.train_from and eff.breaks == ()
+    plain = eng.load_series(spec, now)
+    pd.testing.assert_series_equal(training_slice(eng.load_series(eff, now), eff), training_slice(plain, spec))
+    # The mature series does take the same break (pending: too young to adopt at 4 days).
+    mature = eng.effective(reg.get("test.temp"), now)
+    assert mature.breaks == (y0 - timedelta(days=4),)
+
+
+def test_a_young_target_old_enough_but_gappy_is_not_ready_not_failed_or_degenerate():
+    need_h = (2 * 288 + 72 + 9 * 36) * 5 / 60
+    reg, store, end, y0 = _young_setup(young_hours=need_h + 2)
+    # A 12 h outage 2.5 days in: every window that trains across it is > 10 % filled and rejected.
+    g0, g1 = y0 + timedelta(days=2.5), y0 + timedelta(days=3)
+    store.cov_raw = {"test.young": [(t, v) for t, v in store.cov_raw["test.young"] if not g0 <= t < g1]}
+    now = end + timedelta(seconds=90)
+    eng = _engine(reg, store, Clock(now), [])
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.young"]
+    assert st.served is None and st.not_ready is not None and "residual paths" in st.not_ready["reason"]
+    assert st.not_ready["ready_at"] is None and st.next_select_at == now + timedelta(hours=6)
+    assert not {"selection_failed", "tick_failed", "degenerate_forecast"} & set(st.alerts)
+    assert "test.young" not in {r["series_id"] for r in store.runs}
+    assert eng.state["test.temp"].served is not None
+
+
+def test_not_ready_backs_off_even_when_a_stale_selection_would_force_a_reselect():
+    import dataclasses
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    served = eng.state["test.temp"].served
+    # The operator moves train_from to an hour ago: the served selection is stale, the series young.
+    reg.series["test.temp"] = dataclasses.replace(spec, train_from=end - timedelta(hours=1))
+    calls = []
+    real = eng.check_ready
+    eng.check_ready = lambda *a: (calls.append(1), real(*a))[1]
+    for _ in range(4):
+        clock.t += timedelta(seconds=30)
+        asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    assert len(calls) == 1 and st.not_ready is not None and st.served is served   # keeps serving the old one
+
+
+# --- surprise (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md) ---------
+
+def test_monitor_sets_a_gate_verdict_per_horizon():
+    reg, spec, s, store, end = _setup()
+    eng = _engine(reg, store, Clock(end + timedelta(seconds=90)), [])
+    asyncio.run(eng.tick(_sync))
+    gate = eng.state["test.temp"].surprise_gate
+    assert set(gate) == {5, 60, 360}
+    # A fresh series has too few live scores (or serves a baseline): nothing passes yet.
+    assert not any(ok for ok, _ in gate.values())
+
+
+def test_surprise_summary_reports_each_horizon_with_its_gate_reason():
+    reg, spec, s, store, end = _setup()
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
+    clock.t = end + timedelta(hours=7)
+    eng.score(spec, clock.t)
+    asyncio.run(eng.monitor(spec, clock.t, _sync))
+    out = eng.surprise_summary(spec, clock.t, timedelta(hours=24))
+    assert out["calm_surprisal"] == pytest.approx(0.95)
+    assert set(out["horizons"]) == {"5", "60", "360"}
+    from app.models import BASELINES
+    assignment = eng.state["test.temp"].served.selection.assignment
+    for hm, h in out["horizons"].items():
+        expected = "served_baseline" if assignment[int(hm)] in BASELINES else "too_few_live_scores"
+        assert h["gate"] == expected, hm
+
+
+# --- surprise events (prediction.surprise.v1, issue-time gate) --------------------------------------
+
+def _surprise_events(published):
+    from orion.schemas.prediction import PredictionSurpriseV1
+
+    return [PredictionSurpriseV1.model_validate(e.payload) for c, e in published if c == "orion:prediction:surprise"]
+
+
+def _issued_then_scored(served_at_issue, *, source="adaptive", silent=False, flag=True, monitor=True):
+    """One tick issues one champion + one baseline forecast per horizon; then the 5-min target lands
+    and is scored. Returns (engine, spec, store, published)."""
+    reg, spec, s, store, end = _setup()
+    store.served_model_override = served_at_issue
+    store.interval_source_override = source
+    published = []
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, published)
+    eng.surprise_events_enabled = flag
+    asyncio.run(eng.tick(_sync))
+    if not monitor:
+        eng.state["test.temp"].surprise_gate = {}          # as after a restart: no monitor pass yet
+    future = daily_series(1, amp=1.0, noise=0.05, seed=4, start=end)
+    if silent:
+        future.iloc[0] = np.nan                            # the 5-min target bucket goes silent
+    store.raw += points_of(future)
+    clock.t = end + timedelta(hours=1, minutes=10)
+    eng.score(spec, clock.t)
+    asyncio.run(eng.publish_surprise(spec))
+    return eng, spec, store, published
+
+
+def test_gated_outcome_publishes_one_champion_event_with_its_issue_facts():
+    eng, spec, store, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar", 360: "direct_ar"})
+    evs = _surprise_events(published)
+    # 5 and 60 min targets landed (360 not yet); baseline rows never publish.
+    assert sorted(e.horizon_min for e in evs) == [5, 60]
+    ev = next(e for e in evs if e.horizon_min == 5)
+    row = next(f for f in store.forecasts if f["forecast_id"] == int(ev.forecast_id))
+    assert row["role"] == "champion" and row["horizon_min"] == 5
+    assert ev.issuing_model == "direct_ar" and ev.interval_source == "adaptive"
+    assert ev.origin_ts == row["origin_ts"] and ev.target_ts == row["target_ts"]
+    assert ev.actual == pytest.approx(row["actual"])
+    assert 0.05 <= ev.p_value <= 1 and ev.excess == pytest.approx(ev.surprisal - 0.95)
+    assert ev.calm_surprisal == pytest.approx(0.95)
+    # Drained: a second publish sends nothing new.
+    n = len(published)
+    asyncio.run(eng.publish_surprise(spec))
+    assert len(published) == n and eng.state["test.temp"].surprise_published == 2
+
+
+def test_a_forecast_issued_by_a_baseline_never_publishes():
+    """The gate judges the model that served when the forecast was ISSUED, not today's."""
+    eng, _, _, published = _issued_then_scored({5: "naive", 60: "seasonal_naive", 360: "naive"})
+    assert _surprise_events(published) == []
+    assert eng.state["test.temp"].surprise_gate_refused["issued_by_baseline"] >= 2
+
+
+def test_a_backtest_range_never_publishes():
+    eng, _, _, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar"}, source="backtest:horizon_not_adaptive")
+    assert _surprise_events(published) == []
+    assert eng.state["test.temp"].surprise_gate_refused["range_not_adaptive"] >= 2
+
+
+def test_a_missing_bucket_is_no_data_not_surprise():
+    _, _, store, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar"}, silent=True)
+    assert any(f.get("score_status") == "missing" and f["horizon_min"] == 5 for f in store.forecasts)
+    assert [e.horizon_min for e in _surprise_events(published)] == [60]   # the 5-min miss sends nothing
+
+
+def test_first_scores_after_a_restart_are_judged_not_lost():
+    """#3170 review carry-over: the gate needs no monitor pass, so nothing is dropped before one."""
+    _, _, _, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar"}, monitor=False)
+    assert sorted(e.horizon_min for e in _surprise_events(published)) == [5, 60]
+
+
+def test_kill_switch_publishes_nothing():
+    _, _, _, published = _issued_then_scored({5: "direct_ar", 60: "direct_ar"}, flag=False)
+    assert _surprise_events(published) == []
+
+
+def test_a_surprise_failure_never_costs_the_scores_or_the_rest_of_the_tick(monkeypatch):
+    """#3170 review carry-over: an exception building events must not skip scoring, exceedance or
+    shadow scoring."""
+    reg, spec, s, store, end = _setup()
+    store.served_model_override = {5: "direct_ar", 60: "direct_ar"}
+    store.interval_source_override = "adaptive"
+    clock = Clock(end + timedelta(seconds=90))
+    eng = _engine(reg, store, clock, [])
+    asyncio.run(eng.tick(_sync))
+    monkeypatch.setattr(eng, "surprise_events", lambda *a: 1 / 0)
+    called = []
+    real_exc, real_shadow = eng.score_exceedances, eng.score_shadow
+    monkeypatch.setattr(eng, "score_exceedances", lambda *a: (called.append("exc"), real_exc(*a))[1])
+    monkeypatch.setattr(eng, "score_shadow", lambda *a: (called.append("shadow"), real_shadow(*a))[1])
+    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
+    clock.t = end + timedelta(hours=1, minutes=10)
+    asyncio.run(eng.tick(_sync))
+    st = eng.state["test.temp"]
+    assert any(f.get("score_status") == "scored" for f in store.forecasts)
+    assert st.last_score_error is None and "ZeroDivisionError" in st.last_surprise_error
+    assert called == ["exc", "shadow"]
+
+
+def test_a_publish_failure_drops_that_event_and_keeps_going():
+    reg, spec, s, store, end = _setup()
+    store.served_model_override = {5: "direct_ar", 60: "direct_ar"}
+    store.interval_source_override = "adaptive"
+    failed = []
+
+    async def flaky(channel, env):
+        if channel == "orion:prediction:surprise" and not failed:
+            failed.append(channel)
+            raise ConnectionError("bus down")
+
+    clock = Clock(end + timedelta(seconds=90))
+    eng = Engine(reg, store, backtest_windows=14, backtest_step_min=180, select_interval_sec=6 * 3600,
+                 settle_sec=60, publish_enabled=True, publish=flaky,
+                 source=ServiceRef(name="orion-prediction", version="test", node="test"), clock=clock)
+    asyncio.run(eng.tick(_sync))
+    store.raw += points_of(daily_series(1, amp=1.0, noise=0.05, seed=4, start=end))
+    clock.t = end + timedelta(hours=1, minutes=10)
+    eng.score(spec, clock.t)
+    pending = len(eng.state["test.temp"].pending_surprise)
+    assert pending >= 2
+    assert asyncio.run(eng.publish_surprise(spec)) == pending - 1    # the first failed, the rest went
+    st = eng.state["test.temp"]
+    assert st.surprise_publish_failed == 1 and st.surprise_published == pending - 1

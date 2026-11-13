@@ -39,7 +39,9 @@ from orion.schemas.temporal_self import (
     PERCEPT_CAP,
     SEGMENTS_CAP,
     ArcAttentionSummaryV1,
+    ArcBindingV1,
     ArcSegmentV1,
+    ArcSummaryV1,
     ExpectationRefV1,
     TemporalSelfArcV1,
     TemporalSelfContextItemV1,
@@ -48,7 +50,8 @@ from orion.schemas.temporal_self import (
     TemporalSelfStateV1,
 )
 from orion.temporal_self.broadcast import BroadcastTickView
-from orion.temporal_self.day import DEFAULT_TZ, day_id_for, day_window
+from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_window
+from orion.temporal_self.sources import VISIT_REF_PREFIX, clip, merge_street_labels
 
 INTERRUPTIONS_CAP = 64
 DAY_LIST_CAP = 256
@@ -63,6 +66,10 @@ PROCESS_KINDS = {
     "reverie_chain": "reverie",
     "visual_run": "imagery",
     "dream_cycle": "sleep",
+    # Orion plays Zelda (section F): one finished Retro session.
+    "retro_play": "play",
+    # Episodes from the street (PR #2763 item 1): one notable outside event, capped per day.
+    "street_event": "street",
 }
 CONTEXT_KINDS = {"metacog_observation", "memory_episode", "vision_percept", "attention_row"}
 CONSTRAINT_KINDS = {"visual_deferral", "gpu_wait"}
@@ -102,6 +109,30 @@ class ReducerConfig:
     # host crash): closed source_stale at its last row, so "someone has been here" is never
     # asserted past the evidence. 2.5x tolerates one lost keepalive plus write/read lag.
     company_stale_sec: float = 1500.0
+    # Strain (strain loop part 1): regulation writes a keepalive row every STRAIN_KEEPALIVE_SEC
+    # (1800 s) while strained. An open strain arc with no row for 2.5x that means the closing row
+    # was lost, the producer died, or the kind stopped being read (flag off): closed source_stale
+    # at its last row, so "strained since" is never asserted past the evidence.
+    strain_stale_sec: float = 4500.0
+    # Binding (felt state): the physiology node writes a keepalive row every BINDING_KEEPALIVE_SEC
+    # (1800 s) while a constraint binds, and nothing while it reads no_reading. No row for 2.5x
+    # that closes the arc source_stale at its last row (an unread constraint, a dead producer, the
+    # flag off), so "binding since" is never asserted past the evidence.
+    binding_stale_sec: float = 4500.0
+    # Street (PR #2763 item 1): at most this many street arcs per local day, first come first kept;
+    # the rest are never folded (the chronicle logs them per window). 0 admits none. Live 72 h to
+    # 2026-10-23: 25 events passed (7 to 10 a day), so 12 binds only on an unusually busy day.
+    street_arcs_per_day: int = 12
+    # One visit (follow-up to PR #2876): a doorbell ring and a story this close in time are the same
+    # visit and share one street arc. 84 s is the handoff loop's own bound for a walk from the walkway
+    # camera to the door: config/vision_topology.yaml approach_door prior_sec [3, 30] plus its late
+    # margin 2 x (30 - 3) (orion-sql-writer vision_handoff.py); test_street_arcs.py reads the yaml.
+    street_visit_gap_sec: float = 84.0
+    # Faculty (self-monitor organ patch 2): the self_monitor node writes a keepalive row every
+    # FACULTY_KEEPALIVE_SEC (12 h, orion/self_monitor/host.py) while a notable status holds. An open
+    # faculty arc with no row for 2.5x that means the organ stopped (flag off, crash): closed
+    # source_stale at its last row, so "broken since" is never asserted past the evidence.
+    faculty_stale_sec: float = 2.5 * 12 * 3600.0
 
 
 LANE_RULES = {
@@ -113,10 +144,30 @@ LANE_RULES = {
     "reverie": "one reverie chain with >= 1 thought",
     "imagery": "one visual reverie chain",
     "sleep": "one completed dream cycle",
+    "play": "one finished Retro session (retro_play_sessions); label = its deterministic summary",
+    "street": ("one notable outside visit (street_event: a spot-check-gated motion story, a doorbell ring, "
+               "or a handoff with p < 0.05); events the handoff loop linked, or a ring and a story within "
+               "street_visit_gap_sec, share one arc; label starts 'Outside (<camera>)'; nothing binds to it "
+               "by time; at most street_arcs_per_day a day"),
     "company": ("presence_transition presence_id (room camera); opens on present, recent is the grace "
                 "period, same-state keepalives only refresh; closes on absent (process_ended, at the last "
                 "sighting), unknown / a producer restart / no row for company_stale_sec (source_stale); "
-                "label only when identity was confirmed; spans days"),
+                "label only when identity was confirmed, or from the visit's final office_session row "
+                "(who, probably, and what they did) once the arc is closed; spans days"),
+    "strain": ("arousal_transition (the regulation step's own rows); opens on strained, cause rows add to "
+               "the label, keepalives (every 30 min) only refresh; closes on idle/engaged (process_ended) or "
+               "unknown (source_stale); a strained row with a new episode start, a not-strained row after an "
+               "outage, or no row for strain_stale_sec closes it at its last row (source_stale); spans days"),
+    "binding": ("body_binding (the physiology node's own rows), one arc per constraint, several open at once; "
+                "opens on onset (bound >= 240 s), change/keepalive rows refresh bind state and level; closes on "
+                "release (slack >= 240 s, process_ended at the first slack reading); a row from a new episode or "
+                "no row for binding_stale_sec closes it at its last row (source_stale); nothing binds to it by "
+                "time; spans days"),
+    "faculty": ("faculty_status_changed (the self_monitor node's own rows); one arc per faculty per stretch "
+                "in a notable held status (broken, unreliable, miscalibrated); keepalives (every 12 h) only "
+                "refresh; a change to another notable status closes it and opens the next (process_ended); "
+                "a change to reliable/unknown closes it (process_ended); no row for faculty_stale_sec closes "
+                "it at its last row (source_stale); nothing binds to it by time; spans days"),
 }
 
 
@@ -168,8 +219,30 @@ def _add_context(arc: TemporalSelfArcV1, event_id: str) -> None:
         arc.context_event_ids.append(event_id)
 
 
-def _event_available_at(e: TemporalSelfEventV1) -> datetime:
-    return e.ended_at or e.occurred_at
+# Kinds whose row is written well after it ends: the adapter puts the write time in
+# ``payload.available_at``. Street stories (median 49 s, p99 20 min on 10-23) and office sessions
+# (final VISION_OFFICE_SESSIONS_SETTLE_SEC, 660 s, after the visit ended).
+AVAILABLE_AT_KINDS = frozenset({"street_event", "office_session"})
+
+
+def event_available_at(e: TemporalSelfEventV1) -> datetime:
+    """When the event could first be read: its end (a process event is emitted once complete), or
+    later when the adapter says the row was written later (``payload.available_at``, the
+    ``AVAILABLE_AT_KINDS`` only). Ordering by the write time is what lets a row written after the
+    chronicle's read lag still fold, never arrive late."""
+    base = e.ended_at or e.occurred_at
+    written = e.payload.get("available_at") if e.source_kind in AVAILABLE_AT_KINDS else None
+    if written:
+        try:
+            t = as_utc(written)
+        except (TypeError, ValueError):
+            t = None
+        if t is not None and t > base:
+            return t
+    return base
+
+
+_event_available_at = event_available_at
 
 
 def _ref(e: TemporalSelfEventV1) -> str:
@@ -316,7 +389,9 @@ def _forward_reach(arc: TemporalSelfArcV1, cfg: "ReducerConfig") -> float:
 
 # Arcs that are threads or facts about the room, not stretches of Orion's own process: nothing
 # binds to them by time.
-_NO_CONTEXT_KINDS = {"concern", "company"}
+# A street arc is a fact about the outside world: room percepts and Orion's own attention rows in
+# the same seconds are not about it.
+_NO_CONTEXT_KINDS = {"concern", "company", "strain", "street", "binding", "faculty"}
 
 
 def _covers(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, at: datetime, cfg: "ReducerConfig") -> bool:
@@ -634,6 +709,242 @@ def _fold_presence(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None: 
         _end_company(state, arc, "source_stale", t)
 
 
+OFFICE_SESSION_REF = "vision_office_session:"
+
+
+def _overlap_sec(a0: datetime, a1: datetime, b0: datetime, b1: datetime) -> float:
+    return (min(a1, b1) - max(a0, b0)).total_seconds()
+
+
+def _fold_office_session(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
+    """An office visit's final row labels today's CLOSED company arc of the same camera that overlaps
+    it most (a session and its arc are built from the same presence rows, so they cover the same
+    stretch). The label says who probably was there and what they did; an identity the presence row
+    confirmed keeps its name, the session adds the activities. The ref goes in ``related_refs``
+    (the session is not a presence row). No overlapping closed arc (the visit became final after
+    midnight, or its arc was never opened): nothing changes."""
+    start, end = e.occurred_at, e.ended_at or e.occurred_at
+    best: TemporalSelfArcV1 | None = None
+    best_key: tuple[float, datetime] | None = None
+    for arc in state.arcs.values():
+        if arc.kind != "company" or arc.subject_ref != e.subject_ref or arc.status != "closed":
+            continue
+        ov = _overlap_sec(arc.began_at, arc.ended_at or arc.last_seen_at, start, end)
+        if ov < 0 or (ov == 0 and end > start):
+            continue  # an arc that only touches the visit is another stretch
+        key = (ov, arc.began_at)
+        if best_key is None or key > best_key:
+            best, best_key = arc, key
+    if best is None:
+        return
+    ref = _ref(e)
+    if ref in best.related_refs:
+        return
+    # The arc's label so far came only from a confirmed presence row (no earlier session labelled it).
+    confirmed = bool(best.subject_label) and not any(r.startswith(OFFICE_SESSION_REF) for r in best.related_refs)
+    best.related_refs.append(ref)
+    activities = str(e.payload.get("activities") or "")
+    place = str(e.payload.get("place") or "")
+    if confirmed and place:
+        # A face match the presence row confirmed beats the camera prior: keep that name (never
+        # downgraded to "probably"), add anyone the session did not know, and what happened.
+        name = best.subject_label.strip()
+        who = name[:1].upper() + name[1:]
+        try:
+            unknown = int(e.payload.get("unknown_people") or 0)
+        except (TypeError, ValueError):
+            unknown = 0
+        if unknown:
+            who += " and " + ("someone I don't know" if unknown == 1 else f"{unknown} people I don't know")
+        best.subject_label = clip(f"{who} in {place}: {activities}" if activities else f"{who} in {place}")
+    else:
+        best.subject_label = e.label
+
+
+def _strain_arc(state: TemporalSelfStateV1) -> TemporalSelfArcV1 | None:
+    for arc in state.arcs.values():
+        if arc.kind == "strain" and arc.status == "open":
+            return arc
+    return None
+
+
+def _end_strain(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, reason: str, at: datetime) -> None:
+    _close(arc, reason, at)
+    if state.active.get("strain") == arc.arc_id:
+        del state.active["strain"]
+
+
+def _add_causes(arc: TemporalSelfArcV1, causes: list[str]) -> None:
+    """The label is every strain cause seen in the episode, in the order each joined."""
+    have = [c for c in arc.subject_label.split("+") if c]
+    arc.subject_label = "+".join(have + [c for c in causes if c not in have])
+
+
+def _fold_strain(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
+    """Strain: one arc per strain episode. Regulation writes a row only on a level change or when a
+    cause joins an episode (no keepalive), so an open arc's last row can be hours old: it is still
+    strained until a row says otherwise. Every row runs in the same durable-runs step as the
+    chronicle, and a dead input reads ``unknown``, which closes the arc."""
+    assert state.day_id is not None
+    to_level = e.payload.get("to")
+    t = e.occurred_at
+    ref = _ref(e)
+    since = as_utc(e.payload.get("since")) or t
+    arc = _strain_arc(state)
+    if to_level == "strained":
+        if arc is not None and arc.episode_began_at is not None and arc.episode_began_at != since:
+            # A new episode start while one was open: the regulation step restarted it (its last
+            # reading was too old to carry). The gap was not observed, so the old arc ends at its
+            # last row, never across the gap.
+            _end_strain(state, arc, "source_stale", arc.last_seen_at)
+            arc = None
+        if arc is None:
+            arc = TemporalSelfArcV1(
+                arc_id=arc_id_for(state.day_id, "strain", e.subject_ref or "orion:arousal", ref), day_id=state.day_id,
+                kind="strain", subject_ref=e.subject_ref or "orion:arousal", began_at=t, last_seen_at=t,
+                status="open", segments=[ArcSegmentV1(began_at=t, ended_at=t)], episode_began_at=min(since, t),
+            )
+            _add_evidence(arc, ref)
+            state.arcs[arc.arc_id] = arc
+        else:
+            _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+        _add_causes(arc, list(e.payload.get("causes") or []))
+        arc.causes_now = list(e.payload.get("causes") or [])  # every strained row carries them
+        state.active["strain"] = arc.arc_id
+        return
+    if arc is None:
+        return  # not strained, nothing open: no arc
+    if e.payload.get("gap"):
+        # Regulation came back after an outage reading not-strained: when the strain ended in the
+        # gap was not observed, so the arc ends at its last row.
+        _add_evidence(arc, ref)
+        _end_strain(state, arc, "source_stale", arc.last_seen_at)
+        return
+    _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+    _end_strain(state, arc, "process_ended" if to_level in ("idle", "engaged") else "source_stale", t)
+
+
+def binding_active_key(subject_ref: str) -> str:
+    """``state.active`` / ``frame.active_by_kind`` key of a constraint's open binding arc:
+    ``binding:<constraint>`` (one per constraint, several at once)."""
+    return "binding:" + subject_ref.removeprefix("orion:body:")
+
+
+def _binding_arc(state: TemporalSelfStateV1, subject_ref: str) -> TemporalSelfArcV1 | None:
+    for arc in state.arcs.values():
+        if arc.kind == "binding" and arc.status == "open" and arc.subject_ref == subject_ref:
+            return arc
+    return None
+
+
+def _end_binding(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, reason: str, at: datetime) -> None:
+    _close(arc, reason, at)
+    key = binding_active_key(arc.subject_ref)
+    if state.active.get(key) == arc.arc_id:
+        del state.active[key]
+
+
+def _fold_binding(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
+    """Binding (felt state): one arc per constraint episode. The physiology node writes an onset row
+    once the constraint's price has read bound for 240 s, a change row when its bound state changes,
+    a keepalive every 30 min while bound, and a release row once it has read slack for 240 s. A
+    no_reading writes nothing: the stale timeout closes the arc at its last row."""
+    assert state.day_id is not None and e.subject_ref is not None
+    p = e.payload
+    t = e.occurred_at
+    ref = _ref(e)
+    began = as_utc(p.get("began_at")) or t
+    arc = _binding_arc(state, e.subject_ref)
+    if arc is not None and arc.episode_began_at is not None and arc.episode_began_at != min(began, t):
+        # A row from another episode while one is open: the producer restarted the episode (its own
+        # stale reset, or a lost release). The gap was not observed, so the old arc ends at its
+        # last row, never across the gap.
+        _end_binding(state, arc, "source_stale", arc.last_seen_at)
+        arc = None
+    if p.get("row") == "release":
+        if arc is None:
+            return  # nothing open for this constraint (a lost onset, or already stale-closed)
+        if p.get("after_gap"):
+            # Slack after an unread stretch: when it stopped binding inside the gap was not seen,
+            # so the arc ends at its last bound row.
+            _add_evidence(arc, ref)
+            _end_binding(state, arc, "source_stale", arc.last_seen_at)
+            return
+        # Never before the open segment's start (a release just after midnight on a carried arc).
+        end = max(arc.last_seen_at, min(as_utc(p.get("slack_since")) or t, t),
+                  arc.segments[-1].began_at if arc.segments else arc.began_at)
+        _extend(arc, end, ref, accrue=True)
+        _end_binding(state, arc, "process_ended", end)
+        if arc.binding is not None:
+            arc.binding.released = True
+        return
+    if arc is None:
+        arc = TemporalSelfArcV1(
+            arc_id=arc_id_for(state.day_id, "binding", e.subject_ref, ref), day_id=state.day_id,
+            kind="binding", subject_ref=e.subject_ref, subject_label=str(p.get("constraint") or e.label),
+            began_at=t, last_seen_at=t, status="open", segments=[ArcSegmentV1(began_at=t, ended_at=t)],
+            episode_began_at=min(began, t),
+        )
+        _add_evidence(arc, ref)
+        state.arcs[arc.arc_id] = arc
+    else:
+        # After an unread stretch (no_reading, a reading gap) a new segment starts: the gap is
+        # never counted as binding time.
+        _extend(arc, max(t, arc.last_seen_at), ref, accrue=not p.get("after_gap"))
+    arc.binding = ArcBindingV1(
+        constraint=str(p.get("constraint") or e.label), bind_state=p["bind_state"], unit=p.get("unit"),
+        level=p.get("level"), line=p.get("line"), price=p.get("price"), ceiling=p.get("ceiling"),
+        self_spent=bool(p.get("self_spent")), why=str(p.get("why") or ""),
+    )
+    state.active[binding_active_key(e.subject_ref)] = arc.arc_id
+
+
+FACULTY_ARC_STATUSES = frozenset({"broken", "unreliable", "miscalibrated"})
+
+
+def faculty_status_of(arc: TemporalSelfArcV1 | ArcSummaryV1) -> str:
+    """A faculty arc's status: the label is ``<faculty> <status>``."""
+    return arc.subject_label.rsplit(" ", 1)[-1] if " " in arc.subject_label else ""
+
+
+def _faculty_arc(state: TemporalSelfStateV1, subject_ref: str) -> TemporalSelfArcV1 | None:
+    for arc in state.arcs.values():
+        if arc.kind == "faculty" and arc.status == "open" and arc.subject_ref == subject_ref:
+            return arc
+    return None
+
+
+def _fold_faculty(state: TemporalSelfStateV1, e: TemporalSelfEventV1) -> None:
+    """Faculty: one arc per stretch a faculty spends in a notable held status. The self_monitor node
+    writes a row on every held status change and a keepalive every 12 h while a notable status holds,
+    so an open arc's last row is at most ~13 h old while the organ runs."""
+    assert state.day_id is not None and e.subject_ref is not None
+    faculty = str(e.payload.get("faculty") or e.label or "")
+    to_status = str(e.payload.get("to") or "")
+    t = e.occurred_at
+    ref = _ref(e)
+    since = as_utc(e.payload.get("since")) or t
+    arc = _faculty_arc(state, e.subject_ref)
+    if arc is not None and faculty_status_of(arc) != to_status:
+        # The status moved on (to another notable status, or back to reliable/unknown): the stretch ends.
+        _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+        _close(arc, "process_ended", max(t, arc.last_seen_at))
+        arc = None
+    if to_status not in FACULTY_ARC_STATUSES:
+        return
+    if arc is None:
+        arc = TemporalSelfArcV1(
+            arc_id=arc_id_for(state.day_id, "faculty", e.subject_ref, ref), day_id=state.day_id, kind="faculty",
+            subject_ref=e.subject_ref, subject_label=clip(f"{faculty} {to_status}"), began_at=t,
+            last_seen_at=t, status="open", segments=[ArcSegmentV1(began_at=t, ended_at=t)],
+            episode_began_at=min(since, t),
+        )
+        _add_evidence(arc, ref)
+        state.arcs[arc.arc_id] = arc
+        return
+    _extend(arc, max(t, arc.last_seen_at), ref, accrue=True)
+
+
 def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConfig) -> None:
     kind = PROCESS_KINDS[e.source_kind]
     assert state.day_id is not None and e.subject_ref is not None
@@ -644,6 +955,14 @@ def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
     arc_id = arc_id_for(state.day_id, kind, e.subject_ref, evidence[0])
     if arc_id in state.arcs:
         return
+    if kind == "street":
+        visit = _street_visit(state, e, cfg)
+        if visit is not None:
+            _merge_street(visit, e)  # the same visit: no new arc, no daily slot spent
+            return
+    if kind == "street" and sum(
+            1 for a in state.arcs.values() if a.kind == "street" and a.day_id == state.day_id) >= cfg.street_arcs_per_day:
+        return  # over the daily street cap: never folded (the chronicle logs the count per window)
     arc = TemporalSelfArcV1(
         arc_id=arc_id, day_id=state.day_id, kind=kind, subject_ref=e.subject_ref,  # type: ignore[arg-type]
         subject_label=e.label, began_at=start, last_seen_at=end, status="open",
@@ -663,6 +982,79 @@ def _fold_process(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reduc
     # Bind what happened inside the process, inclusive of its end, then close it.
     _retro_bind(state, arc, start, end + timedelta(microseconds=1))
     _close(arc, "process_ended", end)
+
+
+def _visit_refs(refs: Iterable[str]) -> set[str]:
+    return {r for r in refs if r.startswith(VISIT_REF_PREFIX)}
+
+
+def _street_visit(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConfig) -> TemporalSelfArcV1 | None:
+    """Today's street arc ``e`` belongs to as the same visit (sources.py, "one visit"), else None.
+
+    Linked: ``e`` and the arc share a ``street:`` ref (one names the other's subject, or both name the
+    same story), at any distance in the day. Timed: a ring at most ``street_visit_gap_sec`` from one of
+    the arc's stories, or a story that close to one of the arc's rings, measured part to part (a street
+    arc's ``segments[i]`` is the interval of ``evidence_refs[i]``), so a busy street never chains
+    story after story onto one ring. A story never joins by time an arc that already holds a story
+    (two unlinked stories never merge, even through a ring). A link beats time; then the nearest,
+    then the arc id, so the pick never depends on dict order. An event linked to two visit arcs
+    joins the first by that order; the two arcs stay separate."""
+    own = _visit_refs(e.related_refs) | {e.subject_ref or ""}
+    other = {"doorbell_ring": "vision_motion_story:", "motion_story": "vision_events:"}.get(
+        str(e.payload.get("origin") or ""))
+    start, end = e.occurred_at, e.ended_at or e.occurred_at
+    best: tuple[int, float, str] | None = None
+    pick = None
+    for arc in state.arcs.values():
+        if arc.kind != "street" or arc.day_id != state.day_id or _ref(e) in arc.evidence_refs:
+            continue
+        if own & (_visit_refs(arc.related_refs) | {arc.subject_ref}):
+            key = (0, 0.0, arc.arc_id)
+        elif other is not None:
+            if e.payload.get("origin") == "motion_story" and any(
+                    r.startswith("vision_motion_story:") for r in arc.evidence_refs):
+                # The arc already holds a story this one is not linked to: two stories never
+                # merge on time alone, not even through a ring between them (review finding).
+                continue
+            gaps = [max(0.0, _secs(s.ended_at or s.began_at, start), _secs(end, s.began_at))
+                    for ref, s in zip(arc.evidence_refs, arc.segments) if ref.startswith(other)]
+            if not gaps or min(gaps) > cfg.street_visit_gap_sec:
+                continue
+            key = (1, min(gaps), arc.arc_id)
+        else:
+            continue
+        if best is None or key < best:
+            best, pick = key, arc
+    return pick
+
+
+def _merge_street(arc: TemporalSelfArcV1, e: TemporalSelfEventV1) -> None:
+    """Fold ``e`` into its visit's arc: its evidence and its interval as a pair (``segments[i]`` is
+    ``evidence_refs[i]``'s interval, in fold order), its refs, and its words. Dwell is the union of
+    the parts. The arc stays closed (process_ended)."""
+    start, end = e.occurred_at, e.ended_at or e.occurred_at
+    if len(arc.evidence_refs) >= min(EVIDENCE_CAP, SEGMENTS_CAP):
+        arc.evidence_overflow += 1  # never reached live (a visit is a handful of rows); keeps the pairs aligned
+        return
+    arc.subject_label = (merge_street_labels(e.label, arc.subject_label) if start < arc.began_at
+                         else merge_street_labels(arc.subject_label, e.label))
+    arc.evidence_refs.append(_ref(e))
+    arc.segments.append(ArcSegmentV1(began_at=start, ended_at=end))
+    union, cur = 0.0, None
+    for s0, s1 in sorted((s.began_at, s.ended_at or s.began_at) for s in arc.segments):
+        if cur is not None and s0 <= cur[1]:
+            cur[1] = max(cur[1], s1)
+            continue
+        if cur is not None:
+            union += _secs(cur[0], cur[1])
+        cur = [s0, s1]
+    arc.cumulative_dwell_sec = union + (_secs(cur[0], cur[1]) if cur else 0.0)
+    arc.began_at = min(arc.began_at, start)
+    arc.last_seen_at = max(arc.last_seen_at, end)
+    arc.ended_at = max(arc.ended_at or end, end)
+    for r in [e.subject_ref or "", *e.related_refs]:
+        if r and r not in arc.related_refs and len(arc.related_refs) < CORRELATION_CAP:
+            arc.related_refs.append(r)
 
 
 def _attach_by_ref(state: TemporalSelfStateV1, kind: str, e: TemporalSelfEventV1) -> None:
@@ -748,6 +1140,14 @@ def _fold_event(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: Reducer
         _fold_consolidation_close(state, e)
     elif k == "presence_transition":
         _fold_presence(state, e)
+    elif k == "arousal_transition":
+        _fold_strain(state, e)
+    elif k == "body_binding":
+        _fold_binding(state, e)
+    elif k == "faculty_status_changed":
+        _fold_faculty(state, e)
+    elif k == "office_session":
+        _fold_office_session(state, e)
     elif k in ("dream_hypothesis", "expectation_verdict", "action_outcome"):
         _fold_expectation(state, e)
         if k == "action_outcome":
@@ -778,6 +1178,12 @@ def _expire(state: TemporalSelfStateV1, at: datetime, cfg: ReducerConfig) -> Non
             _close(arc, "return_window_expired", arc.last_seen_at)
         if arc.kind == "company" and arc.status == "open" and _secs(arc.last_seen_at, at) > cfg.company_stale_sec:
             _end_company(state, arc, "source_stale", arc.last_seen_at)  # no keepalive: producer gone
+        if arc.kind == "strain" and arc.status == "open" and _secs(arc.last_seen_at, at) > cfg.strain_stale_sec:
+            _end_strain(state, arc, "source_stale", arc.last_seen_at)  # no keepalive: no evidence past it
+        if arc.kind == "binding" and arc.status == "open" and _secs(arc.last_seen_at, at) > cfg.binding_stale_sec:
+            _end_binding(state, arc, "source_stale", arc.last_seen_at)  # unread or producer gone
+        if arc.kind == "faculty" and arc.status == "open" and _secs(arc.last_seen_at, at) > cfg.faculty_stale_sec:
+            _close(arc, "source_stale", arc.last_seen_at)  # the organ stopped writing keepalives
 
 
 def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
@@ -796,7 +1202,7 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
         if arc.day_id != old_day or arc.status == "closed":
             continue
         last_row_at = arc.last_seen_at
-        if arc.kind == "company" and arc.status == "open":
+        if arc.kind in ("company", "strain", "binding", "faculty") and arc.status == "open":
             # Still open at midnight (the stale timeout already ran at day_end): going on.
             _extend(arc, max(day_end, arc.last_seen_at), None, accrue=True)
         _close(arc, "day_boundary", arc.last_seen_at)
@@ -809,6 +1215,38 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
                 began_at=day_end, last_seen_at=last_row_at, status="open",
                 segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
                 carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
+            ))
+        elif arc.kind == "strain":
+            continuations.append(TemporalSelfArcV1(
+                arc_id=arc_id_for(next_day, "strain", arc.subject_ref, arc.arc_id), day_id=next_day,
+                kind="strain", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
+                # last_seen keeps the real last row, so the stale timeout keeps counting from it.
+                began_at=day_end, last_seen_at=last_row_at, status="open",
+                segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
+                carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
+                episode_began_at=arc.episode_began_at,
+                causes_now=None if arc.causes_now is None else list(arc.causes_now),
+            ))
+        elif arc.kind == "binding":
+            continuations.append(TemporalSelfArcV1(
+                arc_id=arc_id_for(next_day, "binding", arc.subject_ref, arc.arc_id), day_id=next_day,
+                kind="binding", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
+                # last_seen keeps the real last row, so the stale timeout keeps counting from it.
+                began_at=day_end, last_seen_at=last_row_at, status="open",
+                segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
+                carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
+                episode_began_at=arc.episode_began_at,
+                binding=None if arc.binding is None else arc.binding.model_copy(),
+            ))
+        elif arc.kind == "faculty":
+            continuations.append(TemporalSelfArcV1(
+                arc_id=arc_id_for(next_day, "faculty", arc.subject_ref, arc.arc_id), day_id=next_day,
+                kind="faculty", subject_ref=arc.subject_ref, subject_label=arc.subject_label,
+                # last_seen keeps the real last row, so the stale timeout keeps counting from it.
+                began_at=day_end, last_seen_at=last_row_at, status="open",
+                segments=[ArcSegmentV1(began_at=day_end, ended_at=day_end)],
+                carried_from_previous_day=True, carried_from_arc_id=arc.arc_id,
+                episode_began_at=arc.episode_began_at,
             ))
         elif arc.kind == "concern":
             cont = TemporalSelfArcV1(
@@ -823,7 +1261,8 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
             continuations.append(cont)
         else:
             state.carry[f"{arc.kind}|{arc.subject_ref}"] = {"arc_id": arc.arc_id, "last_seen": arc.last_seen_at.isoformat()}
-    state.active = {c.kind: c.arc_id for c in continuations if c.kind == "company"}
+    state.active = {(binding_active_key(c.subject_ref) if c.kind == "binding" else c.kind): c.arc_id
+                    for c in continuations if c.kind in ("company", "strain", "binding")}
     day_arcs = sorted((a for a in state.arcs.values() if a.day_id == old_day), key=lambda a: (a.began_at, a.arc_id))
     state.pending_closed_days.append(
         TemporalSelfDayV1(day_id=old_day, closed_at=day_end, frame=frame, arcs=[a.model_copy(deep=True) for a in day_arcs])

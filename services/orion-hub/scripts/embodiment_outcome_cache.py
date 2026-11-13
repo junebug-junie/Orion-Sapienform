@@ -16,6 +16,7 @@ from collections import deque
 from typing import Any, Deque, Dict, List, Optional
 
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.resilience import run_subscription
 
 logger = logging.getLogger("orion-hub.embodiment_outcome_cache")
 
@@ -57,35 +58,32 @@ class EmbodimentOutcomeCache:
         if not self._bus:
             return
         logger.info("Subscribing to embodiment outcomes: %s", self.channel)
+        await run_subscription(
+            self._bus, self.channel, self._handle_message, stop_event=None, name="hub.embodiment_outcome_cache"
+        )
+
+    def _handle_message(self, msg: Dict[str, Any]) -> None:
         try:
-            async with self._bus.subscribe(self.channel) as pubsub:
-                async for msg in self._bus.iter_messages(pubsub):
-                    try:
-                        decoded = self._bus.codec.decode(msg.get("data"))
-                        if not decoded.ok:
-                            continue
-                        env = decoded.envelope
-                        payload = env.payload if isinstance(env.payload, dict) else {}
-                        self._entries.append(
-                            {
-                                "intent_correlation_id": payload.get("intent_correlation_id"),
-                                "source": payload.get("source"),
-                                "status": payload.get("status"),
-                                "reason": payload.get("reason"),
-                                "player_id": payload.get("player_id"),
-                            }
-                        )
-                        logger.info(
-                            "embodiment_outcome corr=%s source=%s status=%s reason=%s",
-                            payload.get("intent_correlation_id"),
-                            payload.get("source"),
-                            payload.get("status"),
-                            payload.get("reason"),
-                        )
-                    except Exception:
-                        logger.warning("embodiment_outcome_decode_failed", exc_info=True)
-                        continue
-        except asyncio.CancelledError:
-            logger.info("Embodiment outcome cache cancelled.")
-        except Exception as exc:
-            logger.error("Embodiment outcome cache loop failed: %s", exc, exc_info=True)
+            decoded = self._bus.codec.decode(msg.get("data"))
+            if not decoded.ok:
+                return
+            env = decoded.envelope
+            payload = env.payload if isinstance(env.payload, dict) else {}
+            self._entries.append(
+                {
+                    "intent_correlation_id": payload.get("intent_correlation_id"),
+                    "source": payload.get("source"),
+                    "status": payload.get("status"),
+                    "reason": payload.get("reason"),
+                    "player_id": payload.get("player_id"),
+                }
+            )
+            logger.info(
+                "embodiment_outcome corr=%s source=%s status=%s reason=%s",
+                payload.get("intent_correlation_id"),
+                payload.get("source"),
+                payload.get("status"),
+                payload.get("reason"),
+            )
+        except Exception:
+            logger.warning("embodiment_outcome_decode_failed", exc_info=True)

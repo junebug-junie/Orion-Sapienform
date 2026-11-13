@@ -10,6 +10,7 @@ from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.vision import VisionFramePointerPayload
 
 from .context import settings, bus, camera
+from .frame_prune import cleanup_old_frames as _cleanup_old_frames
 
 logger = logging.getLogger("orion-vision-edge.capture")
 
@@ -20,20 +21,6 @@ def _ensure_dir(path: str):
 
 def _save_frame(frame, path: str, quality: int = 90):
     cv2.imwrite(path, frame, [int(cv2.IMWRITE_JPEG_QUALITY), quality])
-
-def _cleanup_old_frames(directory: str, max_age: int):
-    now = time.time()
-    try:
-        for f in os.listdir(directory):
-            fp = os.path.join(directory, f)
-            if os.path.isfile(fp):
-                if now - os.path.getmtime(fp) > max_age:
-                    try:
-                        os.remove(fp)
-                    except Exception:
-                        pass
-    except Exception as e:
-        logger.warning(f"Cleanup failed: {e}")
 
 async def capture_loop():
     logger.info(f"[CAPTURE] Starting capture loop. Storage={settings.FRAME_STORAGE_DIR}")

@@ -30,6 +30,7 @@ from orion.schemas.ask import OrionAskV1
 from orion.schemas.physiology_want import WantDecisionV1
 
 NOW = datetime(2026, 11, 13, 14, 0, 53, tzinfo=timezone.utc)
+M = 146 / 190            # FakeConn's family answered share: confirm 141 of 145 + vehicle 5 of 45
 VEHICLE = "420762ba8f4b4e28af57ffe1e66c2889"
 PERSON = "10da7f9891364980bb6d3bc9e65b6340"
 
@@ -170,14 +171,14 @@ def test_the_bid_is_a_binding_event_want_keyed_by_candidate_not_by_ask_id():
     assert (w1.event_ref, w2.event_ref) == ("orion_ask:ask-a", "orion_ask:ask-b")
     assert w1.object_ref == f"vision_individual:{VEHICLE}"
     assert w1.salience == 1.0                                       # 86 sightings, above all 40 past asks
-    assert w1.outcome_value == pytest.approx(6 / 47)                # vehicle: (5 + 1) / (45 + 2)
+    assert w1.outcome_value == pytest.approx((5 + 2 * M) / 47)       # vehicle 5 of 45, toward the family share
     assert w1.window.latest == NOW + timedelta(days=7)
 
 
 def test_a_confirm_ask_carries_its_own_rules_expected_answer():
     market = Market(funded)
     ab.ask_bind(FakeConn(), confirm_ask(), now=NOW, bid=market)
-    assert market.wants[0].outcome_value == pytest.approx(142 / 147)
+    assert market.wants[0].outcome_value == pytest.approx((141 + 2 * M) / 147)
     assert market.wants[0].salience == pytest.approx(7 / 40)
 
 
@@ -300,7 +301,7 @@ def test_in_backoff_is_true_only_while_a_held_candidates_next_bid_is_not_due():
 def test_a_known_kind_skips_the_kind_read():
     conn, market = FakeConn(kinds={}), Market(funded)
     ab.ask_bind(conn, vehicle_ask(), now=NOW, bid=market, individual_kind="vehicle")
-    assert market.wants[0].outcome_value == pytest.approx(6 / 47)          # vehicle rule, though kinds={} here
+    assert market.wants[0].outcome_value == pytest.approx((5 + 2 * M) / 47)  # vehicle rule, though kinds={} here
 
 
 def test_fresh_bids_are_capped_per_minute_and_the_rest_wait_without_a_backoff_step():

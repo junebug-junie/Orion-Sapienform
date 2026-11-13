@@ -1,6 +1,8 @@
 """Each open camera ask posts one event want (attention as the want competition, patch 2). No database."""
 from __future__ import annotations
 
+import pytest
+
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -142,7 +144,8 @@ def test_juniper_story_cards_are_neither_asks_nor_history():
 
 
 def test_each_want_carries_its_rules_expected_answer():
-    """Patch 4a: outcome_value = the rule's answered share (Laplace) from Juniper's graded closes."""
+    """Patch 4a: outcome_value = the rule's answered share from Juniper's graded closes, shrunk toward the
+    family's share (issue #3350)."""
     rows = _rows()
     for r in rows:
         r["individual_kind"] = "vehicle" if r["ask_id"] == "big" else "person"
@@ -164,8 +167,9 @@ def test_each_want_carries_its_rules_expected_answer():
     run_one_cycle(postgres_uri="x", lookback=timedelta(hours=24), posted=set(), now=NOW, engine=_E(),
                   bid=lambda w: bids.append(w) or SimpleNamespace(outcome="funded", reason="net_positive", value_rank=0.5))
     by = {b.event_ref: b for b in bids}
-    assert by["orion_ask:big"].outcome_value == 2 / 12          # vehicle: (1 + 1) / (10 + 2)
-    assert by["orion_ask:small"].outcome_value == 10 / 11       # confirm: (9 + 1) / (9 + 2)
+    m = 10 / 19                                                  # the family: 10 answered of 19 closed (#3350)
+    assert by["orion_ask:big"].outcome_value == pytest.approx((1 + 2 * m) / 12)     # vehicle 1 of 10
+    assert by["orion_ask:small"].outcome_value == pytest.approx((9 + 2 * m) / 11)   # confirm 9 of 9
     # Off (SQL_WRITER_ACT_CAMERA_ASKS_ENABLED=false): no outcome on the want, as before patch 4a.
     bids.clear()
     run_one_cycle(postgres_uri="x", lookback=timedelta(hours=24), posted=set(), now=NOW, engine=_E(), graded=False,

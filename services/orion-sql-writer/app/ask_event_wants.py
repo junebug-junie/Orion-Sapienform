@@ -22,7 +22,7 @@ is already in ``want_ledger`` is not posted again).
 Expected outcome (attention patch 4a, docs/superpowers/specs/2026-11-12-attention-camera-asks-bind-design.md):
 each ask is a ``vision.ask`` act graded by Juniper's answer (orion/grammar/camera_ask_acts.py), so the want
 carries ``outcome_value`` = the answered share of the same ask RULE (confirm, same, face, office, vehicle,
-sighting) over 30 days, ``(answered + 1) / (closed + 2)``. Once the family has 30 graded closes the market ranks
+sighting) over 30 days, shrunk toward the family's answered share ``m``: ``(answered + 2m) / (closed + 2)`` (issue #3350). Once the family has 30 graded closes the market ranks
 ``salience x outcome``: a vehicle ask Juniper cannot answer (live: 5 of 45) ranks low however often it was seen.
 Juniper's own walkway-story naming cards are not Orion's asks and are in neither the asks nor the history.
 

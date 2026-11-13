@@ -170,7 +170,8 @@ def test_held_vehicle_gets_no_card_funded_person_opens_then_a_later_rebid_opens_
     opened = _open(conn, NOW, market, monkeypatch)
     # Candidates in the opener's order (moving sightings desc): VEHICLE (30), OTHER_VEHICLE (20), PERSON (12).
     assert [w.object_ref for w in market.wants] == [f"vision_individual:{x}" for x in (VEHICLE, OTHER_VEHICLE, PERSON)]
-    assert [round(w.outcome_value, 3) for w in market.wants] == [0.128, 0.128, 0.714]
+    m = 9 / 50                                   # the seeded family: vehicles 5 of 45 + people 4 of 5 answered
+    assert [w.outcome_value for w in market.wants] == pytest.approx([(5 + 2 * m) / 47] * 2 + [(4 + 2 * m) / 7])
     assert [o["source_ref"] for o in opened] == [PERSON]
     cards = _cards(conn)
     assert [r["source_ref"] for r in cards] == [PERSON]
@@ -188,7 +189,8 @@ def test_held_vehicle_gets_no_card_funded_person_opens_then_a_later_rebid_opens_
                      .mappings().all(), now=NOW + timedelta(minutes=5), lookback=timedelta(hours=24))
     assert [(p["ask_id"] == cards[0]["ask_id"], p["bid_want"]) for p in plan] == [(True, market.wants[2].want_id)]
 
-    # After the backoff the market has changed its mind (the line falls): the vehicle re-bids as the SAME want and
+    # After the backoff the market has changed its mind (the line falls under the vehicles' 0.114): the vehicle re-bids
+    # as the SAME want and
     # opens. The daily cap (2) is then full, so the other vehicle is not even bid.
     market.line = 0.1
     t = NOW + timedelta(seconds=601)

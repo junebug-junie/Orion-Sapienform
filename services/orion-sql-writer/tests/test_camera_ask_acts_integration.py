@@ -171,7 +171,9 @@ def test_lifecycle_open_answer_dont_know_expiry_and_juniper_cards(sess):
     # The want's per-rule expected outcome reads exactly these grades.
     rows = sess.execute(text(GRADES_SQL), {"actor": "vision.ask", "since": NOW - timedelta(days=30)}).fetchall()
     v = rule_outcome_values((rule_from_test_before(r[0]) or "", float(r[1])) for r in rows)
-    assert (v["confirm"], v["vehicle"], v["same"], v["face"]) == (2 / 3, 1 / 3, 1 / 3, 0.5)
+    m = 1 / 3                                     # 1 answered of 3 closed in the family (issue #3350)
+    assert [v[r] for r in ("confirm", "vehicle", "same", "face")] == pytest.approx(
+        [(1 + 2 * m) / 3, (2 * m) / 3, (2 * m) / 3, m])
 
 
 def test_withdrawn_by_orion_is_expired_not_graded_and_the_backfill_opens_older_asks(sess):

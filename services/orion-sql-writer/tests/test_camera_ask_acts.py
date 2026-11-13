@@ -147,13 +147,33 @@ def test_rules(kind, refs, ikind, rule):
     assert ask_rule(kind, json.dumps(refs), ikind) == rule
 
 
-def test_laplace_per_rule_matches_live_counts():
-    # Live, 30 days to 2026-11-13: vehicle 5 answered of 45 closed; confirm 141 of 145.
-    closes = [("vehicle", 1.0)] * 5 + [("vehicle", 0.0)] * 40 + [("confirm", 1.0)] * 141 + [("confirm", 0.0)] * 4
-    v = rule_outcome_values(closes + [("not-a-rule", 1.0)])
-    assert v["vehicle"] == pytest.approx(6 / 47) and v["confirm"] == pytest.approx(142 / 147)
-    assert v["face"] == 0.5                      # rest point: no closes, the prior
+def test_per_rule_value_shrinks_toward_the_family_share_live_counts():
+    # Live, 30 days to 2026-11-13: vehicle 5 answered of 47 closed; confirm 147 of 152; office 1 of 1 (262 closes in
+    # all, m = 0.817). Issue #3350: the prior is the family's answered share, not 0.5.
+    closes = ([("vehicle", 1.0)] * 5 + [("vehicle", 0.0)] * 42 + [("confirm", 1.0)] * 147 + [("confirm", 0.0)] * 5
+              + [("same", 1.0)] * 52 + [("face", 1.0)] * 5 + [("office", 1.0)] + [("sighting", 1.0)] * 4
+              + [("sighting", 0.0)])
+    v = rule_outcome_values(closes + [("not-a-rule", 1.0)])       # an unknown rule counts nowhere, not even in m
+    m = 214 / 262
+    assert v["vehicle"] == pytest.approx((5 + 2 * m) / 49) and 0.12 < v["vehicle"] < 0.15
+    assert v["confirm"] == pytest.approx((147 + 2 * m) / 154)
     assert set(v) == {"confirm", "same", "face", "office", "vehicle", "sighting"}
+
+
+def test_a_rare_rule_answered_once_reads_above_the_family_share_not_below_it():
+    """Issue #3350: Laplace gave office (1 of 1) 0.667, below the family's ~0.82, so under 4b it was held, never
+    opened, never graded. Shrunk toward the family share, one answer puts it above; one "don't know" below."""
+    family = [("confirm", 1.0)] * 82 + [("confirm", 0.0)] * 18
+    v = rule_outcome_values(family + [("office", 1.0)])
+    m = 83 / 101
+    assert v["office"] > m and v["office"] == pytest.approx((1 + 2 * m) / 3)
+    assert rule_outcome_values(family + [("office", 0.0)])["office"] < 82 / 101
+
+
+def test_a_rule_with_no_closes_reads_the_family_share_and_an_empty_family_reads_one_half():
+    v = rule_outcome_values([("confirm", 1.0)] * 3 + [("vehicle", 0.0)])
+    assert v["face"] == pytest.approx(0.75) and v["office"] == pytest.approx(0.75)
+    assert set(rule_outcome_values([]).values()) == {0.5}
 
 
 def test_the_act_and_its_open_event():

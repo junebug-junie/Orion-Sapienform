@@ -26,6 +26,12 @@ VERBS = REPO / "orion" / "cognition" / "verbs"
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
 
 
+def test_the_verb_gate_and_the_family_gate_use_the_same_lane_set():
+    from orion.cognition.verb_physiology import load_pool_lanes
+
+    assert load_pool_lanes(POOL) == body_lanes(POOL)
+
+
 def unreadable_family_lanes(families_doc: dict, lanes: frozenset[str]) -> dict[str, list[str]]:
     return {name: bad for name, body in (families_doc.get("families") or {}).items()
             if (bad := [x for x in ((body or {}).get("lanes") or []) if x not in lanes])}

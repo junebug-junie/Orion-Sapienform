@@ -22,8 +22,8 @@ Lanes: each name is a ROLE (seat) in ``config/gpu_pool.yaml`` (``fast``, ``agent
 ``diffusion``). The body reads one ``lane:<role>`` constraint per role and Choice uses a dispatch
 bid's lanes in place of its family's, so a work-class-only name (``metacog``, ``memory_distill``)
 is never read and the bid is deferred ``no_acceptable_lane`` (2026-11-13: metacog stopped being a
-seat in c91a21fd8 and every dream.cycle bid stalled). Shared with families.yaml through
-``orion.physiology.families.body_lanes``.
+seat in c91a21fd8 and every dream.cycle bid stalled). Same set as families.yaml's gate
+(``orion.physiology.families.body_lanes``).
 
 Non-zero windows are authored priors (the act horizon where one exists, e.g. painting 5400 s),
 not measurements. C3 should calibrate them from the act ledger before pricing on them.
@@ -122,10 +122,13 @@ def parse_verb_physiology(
 
 def load_pool_lanes(pool_path: Path) -> frozenset[str]:
     """Every role in ``config/gpu_pool.yaml``: the names a verb's lanes may use, because they are the
-    only lanes the body reads (``orion.physiology.families.body_lanes``). A work class is not a lane."""
-    from orion.physiology.families import body_lanes
+    only lanes the body reads. A work class is not a lane. Same set as
+    ``orion.physiology.families.body_lanes`` (not imported: the body-economy contract gate treats any
+    orion.physiology import as a state reader; orion/physiology/tests/test_family_lanes.py pins them equal)."""
+    import yaml
 
-    try:
-        return body_lanes(pool_path)
-    except ValueError as exc:
-        raise ValueError(f"{pool_path}: {exc}") from exc
+    data = yaml.safe_load(pool_path.read_text(encoding="utf-8")) or {}
+    roles = data.get("roles") if isinstance(data, dict) else None
+    if not isinstance(roles, dict) or not roles:
+        raise ValueError(f"{pool_path}: expected a non-empty 'roles' mapping")
+    return frozenset(str(name) for name in roles)

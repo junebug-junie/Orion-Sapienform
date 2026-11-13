@@ -84,6 +84,9 @@ Not run. No deploys from a worktree. Live placement after deploy is UNVERIFIED.
   - Fix: the test is removed. The claim is kept in the `body_lanes` docstring.
 - Finding: the dream bind docstring still said "metacog lane".
   - Fix: it now says "fast".
+- Finding (CI, static gates): the body-economy contract gate treats any `orion.physiology` import as a state reader, and `verb_physiology.py` imported `body_lanes`.
+  - Fix: `load_pool_lanes` reads the roles itself. A test pins it equal to `body_lanes`.
+  - Evidence: `check_body_economy_contract.py` OK (103 modules, all registered).
 - Nits: removed an assert that depended on `metacog` still being a work class. Re-wrapped a long comment. Added a dated note on the replay script's historical metacog seat.
 
 ## Restart required

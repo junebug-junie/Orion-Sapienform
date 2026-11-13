@@ -223,11 +223,13 @@ def test_retired_transport_producer_stays_deleted():
     )
 
 
-@pytest.mark.parametrize("name", ["route_prediction_error", "bus_synaptic_prediction_error"])
+@pytest.mark.parametrize(
+    "name", ["route_prediction_error", "bus_synaptic_prediction_error", "chat_prediction_error", "chat_raw_reading"]
+)
 def test_retired_pe_step5_producers_stay_deleted(name):
     """route/bus_synaptic prediction errors were deleted 2026-11 (PE suite
-    rebuild step 5): neither was a forecast. Same "kill means kill" gate as
-    transport above."""
+    rebuild step 5), chat 2026-11-13 (step 6): none was a forecast. Same "kill
+    means kill" gate as transport above."""
     tree = ast.parse(PREDICTION_ERROR.read_text())
     defined = {
         n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
@@ -235,9 +237,10 @@ def test_retired_pe_step5_producers_stay_deleted(name):
     assert name not in defined
 
 
-def test_active_inference_domains_are_exactly_the_three_live_ones():
-    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution", "biometrics", "chat"}
-    assert set(_domain_map().values()) == {"execution", "biometrics", "chat"}
+def test_active_inference_domains_are_exactly_the_two_live_ones():
+    # chat left 2026-11-13 (PE suite rebuild step 6; successor node:prediction.chat_turn).
+    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution", "biometrics"}
+    assert set(_domain_map().values()) == {"execution", "biometrics"}
 
 
 class TestTheGateHasTeeth:
@@ -252,7 +255,6 @@ class TestTheGateHasTeeth:
         "_PREDICTION_ERROR_DOMAIN_NODE_IDS = {\n"
         '    "node:substrate.execution": "execution",\n'
         '    "node:substrate.biometrics": "biometrics",\n'
-        '    "node:substrate.chat": "chat",\n'
         "}\n"
     )
 

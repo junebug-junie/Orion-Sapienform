@@ -56,7 +56,7 @@ class _Market:
     def __init__(self, decision):
         self.families, self.decision, self.bids, self.released = FAMS, decision, [], []
 
-    async def bid(self, want, now=None, *, reserve_at_open=False):
+    async def bid(self, want, now=None, *, reserve_at_open=False, object_text=None):
         self.bids.append(want)
         return self.decision
 

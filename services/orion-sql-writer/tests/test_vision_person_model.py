@@ -1160,7 +1160,8 @@ def test_eval_scores_both_arms_in_one_pass() -> None:
     assert v["enabled"] and set(v["on"]) == {"correct_accept", "wrong_accept", "unsure", "unsure_right_person",
                                               "reject", "no_album"}
     assert v["clusters_struck"] >= 1 and v["right_to_wrong"] + v["struck_right_top_guess"] >= 1
-    assert m["gate_passed"] == (m["wrong_accept"] == 0 and v["on"]["wrong_accept"] == 0)
+    assert m["gate_passed"] == (m["wrong_accept"] == 0 and v["on"]["wrong_accept"] == 0
+                                and v["unsure_right_not_lower"])
 
 
 @needs_pg
@@ -1211,7 +1212,7 @@ def test_person_age_bands_come_only_from_stated_answers(pg) -> None:
         for fid, pid, val, age_days in (("f1", "p1", "8 years old", 1), ("f2", "p2", "Adult, early 20s", 1),
                                         ("f3", "p4", "5 years old", 1000)):
             conn.execute(text("INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, created_at) "
-                              "VALUES (:f, :p, 'age', :v, 'juniper', :t)"),
+                              "VALUES (:f, :p, 'age', :v, 'ask_answer', :t)"),
                          {"f": fid, "p": pid, "v": val, "t": NOW - timedelta(days=age_days)})
         bands = pm.load_person_age_bands(conn, NOW, 730.0)
         assert bands == {"kid": "child", "grown": "adult"}
@@ -1221,3 +1222,69 @@ def test_person_age_bands_come_only_from_stated_answers(pg) -> None:
             conn.execute(text("INSERT INTO person (person_id, display_name, role, status, created_at, updated_at, "
                               "merged_into) VALUES ('p5', 'Kiddo', 'other', 'active', :t, :t, 'p1')"), {"t": NOW})
             assert pm.load_person_age_bands(conn, NOW, 730.0)["kiddo"] == "child"
+
+
+def test_age_veto_never_promotes_a_double_accept_to_accept() -> None:
+    bars = {("A", "body"): pm.Bar("A", "body", 0.1, None, 19, 19), ("B", "body"): pm.Bar("B", "body", 0.1, None, 19, 19)}
+    album = {"A": {1: _person("a", 0, 2)}, "B": {1: _person("b", 0, 2, seed=7)}}
+    cl = {"x": [_crop("x", "x", "2026-10-09", _vec(1))]}
+    (off,) = pm.attribute(cl, album, bars, {}, CFG)
+    assert off["band"] == "unsure"                                   # accepted for two people
+    trace: dict = {}
+    (on,) = pm.attribute(cl, album, bars, {}, CFG, person_bands={"a": "child"}, cluster_bands={"x": "adult"},
+                         veto_trace=trace)
+    assert on["person_label"] == "B" and on["band"] == "unsure" and trace == {"x": ["A"]}
+
+
+def test_a_rejected_candidate_is_never_counted_as_struck() -> None:
+    bars = {("A", "body"): pm.Bar("A", "body", None, 1.01, 19, 19), ("B", "body"): pm.Bar("B", "body", None, None, 19, 19)}
+    album = {"A": {1: _person("a", 0, 2)}, "B": {1: _person("b", 0, 2, seed=7)}}
+    cl = {"x": [_crop("x", "x", "2026-10-09", _vec(1))]}
+    trace: dict = {}
+    (g,) = pm.attribute(cl, album, bars, {}, CFG, person_bands={"a": "child"}, cluster_bands={"x": "adult"},
+                        veto_trace=trace)
+    assert g["person_label"] == "B" and trace == {} and "age_veto" not in g   # A was rejected, not struck
+
+
+def test_veto_exempt_streams_match_attribute_rule() -> None:
+    assert pm.veto_exempt_streams({"cam0": {"Juniper": 0.97}, "walkway": {}}) == frozenset({"cam0"})
+    assert pm.veto_exempt_streams({}) == frozenset()
+
+
+@needs_pg
+def test_age_veto_fails_open_and_off_when_priors_are_broken(pg, monkeypatch) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _world(conn)
+
+    def boom(*a, **k):
+        raise RuntimeError("bands down")
+
+    monkeypatch.setattr(pm, "load_person_age_bands", boom)
+    with pg.begin() as conn:
+        s = pm.run_person_model(conn, NOW, CFG)
+        assert "bands down" in s["person_age_veto_error"] and s["person_guesses"] >= 1
+        assert conn.execute(text("SELECT count(*) FROM vision_person_attribution WHERE revoked_at IS NULL")).scalar() >= 1
+    monkeypatch.setattr(pm, "_camera_priors_checked", lambda: ({}, False))
+    called = []
+    monkeypatch.setattr(pm, "load_person_age_bands", lambda *a, **k: called.append(1) or {"juniper": "child"})
+    with pg.begin() as conn:
+        s = pm.run_person_model(conn, NOW + timedelta(minutes=10), CFG)
+    assert called == [] and "priors" in s["person_age_veto_error"] and s["person_age_vetoes"] == 0
+
+
+@needs_pg
+def test_confirm_revokes_clear_the_age_veto_in_the_same_statement(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    with pg.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS age_veto jsonb"))
+        assert vi._age_veto_clear(conn) == ", age_veto = NULL"
+        conn.execute(text("ALTER TABLE vision_person_attribution DROP COLUMN age_veto"))
+        try:
+            assert vi._age_veto_clear(conn) == ""
+        finally:
+            conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS age_veto jsonb"))

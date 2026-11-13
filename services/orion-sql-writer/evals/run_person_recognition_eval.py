@@ -39,7 +39,8 @@ every held-out cluster is guessed twice in the same pass, veto off and veto on
 exempt, as live). The top-level counts are the veto-off arm (comparable with
 older rows); ``age_veto`` holds both arms, how many wrong / right top guesses
 the veto struck, and how many guesses it turned from wrong to right or right
-to wrong. The gate needs 0 wrong accepts in BOTH arms.
+to wrong. The gate needs 0 wrong accepts in BOTH arms, and the veto-on arm
+must not name the right person less often than the veto-off arm.
 
 Exit: 0 = gate passed (no wrong accepts); 1 = wrong accepts; 2 = nothing to evaluate.
 """
@@ -180,7 +181,9 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
     veto.update({"enabled": bool(person_bands), "people_with_stated_band": len(person_bands or {}),
                  "exempt_streams": sorted(veto_exempt_streams), "on": on_counts,
                  "street_accepts_on": sum(1 for g in street_on if g["band"] == "accept"),
-                 "street_clusters_with_band": len(street_bands)})
+                 "street_clusters_with_band": len(street_bands),
+                 # acceptance check: the veto must not cost right top guesses overall
+                 "unsure_right_not_lower": on_counts["unsure_right_person"] >= counts["unsure_right_person"]})
     return {
         "model_version": pm.MODEL_VERSION, "alpha": cfg.alpha, "top_k": cfg.top_k,
         "fallback_channel": cfg.fallback_channel, "people": len(album), "clusters": len(clusters),
@@ -194,7 +197,8 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
         "street_accepts": sum(street_accepts.values()), "street_accepts_by_person": street_accepts,
         "street_unsure": sum(1 for g in street_guess if g["band"] == "unsure"),
         "age_veto": veto,
-        "gate_passed": counts["wrong_accept"] == 0 and on_counts["wrong_accept"] == 0,
+        "gate_passed": (counts["wrong_accept"] == 0 and on_counts["wrong_accept"] == 0
+                        and veto["unsure_right_not_lower"]),
     }
 
 
@@ -250,7 +254,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         not_people = pm.not_a_person_names(conn) if cfg.alpha_split_people_only else frozenset()
         person_bands = ({} if args.no_age_veto else
                         pm.load_person_age_bands(conn, datetime.now(timezone.utc), cfg.age_answer_max_age_days))
-        exempt = frozenset(pm._camera_priors())   # live: no veto on a camera with a prior
+        exempt = pm.veto_exempt_streams(pm._camera_priors())   # live: no veto on a camera with a prior
         metrics = evaluate(album, cfg, street, face_street, not_people, person_bands, exempt)
         metrics["album"] = {**stats, "exemplars": len(ex)}
         metrics["vs_previous"] = compare_previous(conn, metrics)

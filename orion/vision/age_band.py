@@ -93,19 +93,36 @@ def cluster_age_band(reads: Iterable[Optional[float]], conf: float = DEFAULT_CON
     return None
 
 
-_YEARS = re.compile(r"(\d{1,3})")
+_NUM = re.compile(r"(\d+)\s*(months?|mos?\b|weeks?|wks?\b|years?|yrs?\b|y/?o\b)?")
+_NEGATED_ADULT = re.compile(r"\b(not|isn'?t|no|never)\b[^.;,]*\b(adult|grown)")
+_CHILD_WORDS = re.compile(r"\b(baby|toddler|infant|kid|child|preschool\w*|kindergart\w*)\b")
 
 
-def band_from_age_answer(text: Optional[str]) -> Optional[str]:
-    """Juniper's free-text age answer -> band, or None when it does not say.
-    "8 years old" / "Esme is 7" -> child; "Adult, early 20s" / "late 40's" -> adult.
-    The first number decides; the word "adult" alone means adult."""
+def band_from_age_answer(text: Optional[str], years_since: float = 0.0) -> Optional[str]:
+    """Juniper's free-text age answer -> band, or None when it does not clearly say.
+
+    - "8 years old" / "Esme is 7" / "about 7 or 8?" -> child; "early 30s" -> adult.
+      The first number decides, as years, plus ``years_since`` (time since the
+      answer was given: a "12" from two years ago is 14 now).
+    - "18 months" / "3 weeks" -> child (converted to years first).
+    - a 4-digit number ("born 2015") or the word "born" -> None (a year, not an age).
+    - "adult" / "grown" -> adult, unless negated ("not an adult") -> None.
+    - "toddler", "baby", "kid", "child" with no number -> child.
+    Anything else -> None: an unparsed answer never vetoes."""
     if not text:
         return None
     t = text.strip().lower()
-    m = _YEARS.search(t)
+    if "born" in t or re.search(r"\d{4}", t):
+        return None
+    m = _NUM.search(t)
     if m:
-        return "child" if int(m.group(1)) < CHILD_UNDER_YEARS else "adult"
+        n, unit = int(m.group(1)), (m.group(2) or "")
+        years = n / 12.0 if unit.startswith("mo") else n / 52.0 if unit.startswith(("w", "wk")) else float(n)
+        return "child" if years + max(0.0, years_since) < CHILD_UNDER_YEARS else "adult"
+    if _NEGATED_ADULT.search(t):
+        return None
     if "adult" in t or "grown" in t:
         return "adult"
+    if _CHILD_WORDS.search(t):
+        return "child"
     return None

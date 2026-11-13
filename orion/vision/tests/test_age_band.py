@@ -47,6 +47,11 @@ def test_band_from_age_answer() -> None:
         "8 years old": "child", "Someone is 9 years old; 10 in January.": "child", "about 7 or 8?": "child",
         "Adult": "adult", "Adult, early 20s": "adult", "early 30s": "adult", "late 40's early 50's?": "adult",
         "13": "adult", "12": "child", "": None, None: None, "I don't know": None,
+        "18 months": "child", "3 weeks old": "child", "born 2015": None, "2015": None,
+        "not an adult": None, "isn't grown up yet": None, "a toddler": "child", "just a kid": "child",
     }
     for text, want in cases.items():
         assert ab.band_from_age_answer(text) == want, text
+    # an old answer ages: "12" given two years ago is 14 now
+    assert ab.band_from_age_answer("12", years_since=2.0) == "adult"
+    assert ab.band_from_age_answer("8 years old", years_since=1.0) == "child"

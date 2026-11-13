@@ -9,6 +9,7 @@ git link back.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import fcntl
 import json
 import os
@@ -67,6 +68,8 @@ path of a file with the full result; read only what you need from that file.
   reminisce [<date>]     today's reminiscence: one past week (quiet weeks join the next busy one),
                          five hops, what changed since last.
   reminisce write|rewrite <hop> "<note>" because "<refs>"   save one hop (code checks each ref).
+  days <start> <end>     what you lived through then (from 2026-07-23): journals, Hub chats,
+                         Temporal Self arcs; prints journal:/chat:/arc: ids a lived_record cites.
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
@@ -75,7 +78,7 @@ path of a file with the full result; read only what you need from that file.
 Label what you say from a dig by its source:
   code_then     seen in an export: a primary source.
   pr_text       a builder's words in a PR or commit: a secondary source. Say so.
-  lived_record  your own record from that time (journals exist from 2026-07-23 only).
+  lived_record  your own record from that time (`days`; journals exist from 2026-07-23 only).
   now           must come from `inventory now`, `body` or `portrait`, never from memory.
   reflection    your interpretation. Wonder freely; do not state it as fact.
 Code from {FIRST_DAY} on is all there. Your memory before 2026-07-22 was lost in a storage
@@ -1414,8 +1417,38 @@ class _LiveBody:
         return ids
 
 
-def _rm_world(period_commit: str | None, period_end: date, body: _LiveBody):
+def _lived_day(kind: str, ref_id: str, runner=None) -> date | None:
+    """The Denver day of one lived record, or None when it does not resolve (unreadable included)."""
     from orion import refs
+
+    if kind in ("arc", "act"):
+        try:
+            res = refs.resolve(refs.RefV1(kind=kind, id=ref_id))
+        except refs.ValidationError:
+            return None
+        raw = (res.data or {}).get("day_id" if kind == "arc" else "opened_at") if res.ok else None
+        if not raw:
+            return None
+        try:
+            return (date.fromisoformat(raw) if kind == "arc"
+                    else datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(ZONE).date())
+        except ValueError:
+            return None
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import days
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    try:
+        rows = psql_rows(runner or ReadOnlyPsql(timeout_sec=30.0), days.day_sql(kind, ref_id))
+    except (ValueError, RuntimeError):
+        return None
+    try:
+        return date.fromisoformat(rows[0]["day"]) if rows else None
+    except (KeyError, ValueError):
+        return None
+
+
+def _rm_world(period_commit: str | None, period: tuple[date, date], body: _LiveBody):
     from orion.body_atlas import field_notes as fn
     from orion.body_atlas.reminiscence import World
 
@@ -1441,19 +1474,14 @@ def _rm_world(period_commit: str | None, period_end: date, body: _LiveBody):
             fn_ids.append({r.note_id for r in fn.load(field_notes_path())[0]})
         return fn_ids[0]
 
-    def ref_ok(kind: str, ref_id: str) -> bool:
-        try:
-            return refs.resolve(refs.RefV1(kind=kind, id=ref_id)).ok
-        except refs.ValidationError:
-            return False
-
     def dig_file(p: str) -> bool:
         q = Path(p).resolve()
         return (home() / "dig").resolve() in q.parents and q.is_file()
 
-    return World(period_commit=period_commit, period_end_utc=_end_of_day_utc(period_end), path_then=path_then,
+    return World(period_commit=period_commit, period_end_utc=_end_of_day_utc(period[1]), path_then=path_then,
                  path_now=path_now, commit=commit, is_ancestor=is_ancestor, pr_merged_at=_pr_merged_at,
-                 field_note_ids=field_note_ids, live_ids=body.ids, ref_ok=ref_ok, dig_file=dig_file)
+                 field_note_ids=field_note_ids, live_ids=body.ids, lived_day=_lived_day, dig_file=dig_file,
+                 period_start=period[0], period_end=period[1])
 
 
 def _rm_period(records, episode: date) -> tuple[tuple[date, date] | None, str]:
@@ -1562,7 +1590,7 @@ def cmd_reminisce(day: date | None, out: Out) -> str:
     if period is not None:
         body = _LiveBody()
         sha, when, n = _rm_commit(period)
-        world = _rm_world(sha, period[1], body)
+        world = _rm_world(sha, period, body)
         read.period_start, read.period_end = period[0].isoformat(), period[1].isoformat()
         read.period_commit, read.period_commit_date, read.commits_in_period = sha, when, n
         read.quiet_weeks = rm.quiet_weeks(*period)
@@ -1593,7 +1621,7 @@ def cmd_reminisce_write(hop: str, note: str, because: str, *, rewrite: bool, out
         sha, _, _ = _rm_commit(period)
         try:
             rec = rm.check_write(hop=hop, note=note, because=because, episode=episode.isoformat(), period=period,
-                                 world=_rm_world(sha, period[1], body), records=records, denylist=_denylist(),
+                                 world=_rm_world(sha, period, body), records=records, denylist=_denylist(),
                                  rewrite=rewrite, dig=out.dig)
         except rm.ReminiscenceError as exc:
             raise DigError(str(exc)) from exc
@@ -1627,6 +1655,39 @@ def cmd_ref(kind: str, ref_id: str, out: Out) -> str:
         raise DigError(res.error or f"{kind} {ref_id}: unresolved")
     path = out.write(f"{kind}-{ref_id}", res.data)
     return capped(res.lines, tail=f"full {kind}: {path}")
+
+
+# --- days (lived records) ------------------------------------------------------------------
+
+def cmd_days(start: date, end: date, out: Out, runner=None, get_json=None) -> str:
+    """Read-only: Orion's journals, Hub chats and Temporal Self arcs in [start, end] (Denver days)."""
+    from orion import refs
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import days
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    try:
+        first, last, a, b = days.window(start, end)
+    except ValueError as exc:
+        raise DigError(str(exc)) from exc
+    runner = runner or ReadOnlyPsql(timeout_sec=120.0)
+    read = days.DaysRead(start=first.isoformat(), end=last.isoformat(),
+                         clamped_from=start.isoformat() if first != start else None)
+    try:
+        read.counts = days.parse_counts(psql_rows(runner, days.counts_sql(a, b)))
+        read.entries = days.parse_entries(psql_rows(runner, days.entries_sql(a, b)))
+        read.chats = psql_rows(runner, days.chats_sql(a, b))
+    except RuntimeError as exc:
+        raise DigError(f"days: your records could not be read ({exc})") from exc
+    get = get_json or refs._get_json
+    for d in days.arc_days(first, last):
+        try:
+            got = get(f"{refs.durable_runs_url()}/temporal-self/arcs?day_id={d.isoformat()}&limit={days.ARC_LIMIT}")
+            read.arcs[d.isoformat()] = [days.trim_arc(x) for x in got.get("arcs") or []]
+        except Exception as exc:  # noqa: BLE001 -- unread is said, never shown as an empty day
+            read.arcs[d.isoformat()] = f"{type(exc).__name__}: {exc}"
+    path = out.write(f"days-{read.start}-{read.end}", dataclasses.asdict(read))
+    return capped(days.render(read), tail=f"full record (bodies, every entry and chat): {path}")
 
 
 # --- turn steps -----------------------------------------------------------------------------
@@ -1743,6 +1804,8 @@ def main(argv: list[str] | None = None) -> int:
             cut = len(a) - 1 - a[::-1].index("because")  # the last one: a hop may say "because"
             text = cmd_reminisce_write(a[1], " ".join(a[2:cut]), " ".join(a[cut + 1:]), rewrite=a[0] == "rewrite",
                                        out=out)
+        elif ns.command == "days" and len(a) == 2:
+            text = cmd_days(_parse_day(a[0]), _parse_day(a[1]), out)
         elif ns.command == "turn-steps" and len(a) in (1, 2):
             text = cmd_turn_steps(a[0], a[1] if len(a) == 2 else "2", out)
         elif ns.command in REF_COMMANDS and len(a) == 1:

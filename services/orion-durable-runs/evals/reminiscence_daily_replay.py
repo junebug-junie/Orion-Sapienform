@@ -18,6 +18,10 @@ Gates (each one a property the design states):
 7. each run's admission deadline is 09:00 Denver of its own day;
 8. a week with no commit on main is never visited alone: every period ends on a week with a commit, and
    holds no earlier week with one (the replay's history is main's real shape: weeks 2-4, 6-10, 12 quiet).
+9. across the day Orion's records start (2026-07-23, week 57), the shipped what_it_was_like hop prompt for
+   each week 54-60 says "no lived record" before it, and from it on names `dig days <first> <end>` for
+   exactly that period's lived days (week 57 starts at 07-23, partway through) and refuses a record from
+   outside them.
 
 Gate 3 counts weeks covered by complete periods: a joined period covers every week inside it.
 
@@ -27,7 +31,9 @@ Mutations (each must break at least one gate, or the eval itself is broken):
 * "partial counts as visited": a week with any hop counts as complete (week 1 is skipped after a failed day);
 * "no retry gate": a failed run is retried at once, any number of times;
 * "quiet week visited alone": the tick picks the oldest open week whatever its commits (the old rule);
-* "join runs past the first busy week": a quiet run is joined onto the second week with a commit.
+* "join runs past the first busy week": a quiet run is joined onto the second week with a commit;
+* "lived hop reads the old arc pointer": the lived what_it_was_like prompt names `dig arc <id>`, not `dig days`;
+* "dig days window not clamped": week 57's prompt reads `dig days` from 07-21, before the records start.
 
     python -P services/orion-durable-runs/evals/reminiscence_daily_replay.py
 """
@@ -45,9 +51,10 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(ROOT), str(Path(__file__).resolve().parents[1])]
 
+import app.reminiscence_graph as rgraph  # noqa: E402
 import app.reminiscence_poll as poll  # noqa: E402
 from app.reminiscence_ledger import PeriodRefused, ReminiscenceLedger, WeekPick  # noqa: E402
-from orion.schemas.reminiscence_run import REMINISCENCE_HOPS  # noqa: E402
+from orion.schemas.reminiscence_run import REMINISCENCE_HOPS, ReminiscenceRunBriefV1  # noqa: E402
 
 START = date(2026, 10, 25)          # 21 days, across the 2026-11-01 DST change
 DAYS = 21
@@ -249,9 +256,50 @@ def gates(sim: dict) -> list[str]:
     return fails
 
 
+RECORDS_FROM = date(2026, 7, 23)  # hardcoded: a mutation of the module's constant must not move the oracle
+
+
+def lived_gate(mutation: str | None = None) -> list[str]:
+    """Gate 9: the shipped hop prompt for weeks 54-60, the stretch where Orion's records begin."""
+    real = rgraph._what_to_read
+    if mutation == "lived hop reads the old arc pointer":
+        def what(hop, brief):
+            if hop == "what_it_was_like" and brief.period_end >= RECORDS_FROM:
+                return "what that week was like (`python -P -m orion.dig arc <id>`). Needs [lived_record]."
+            return real(hop, brief)
+        rgraph._what_to_read = what
+    elif mutation == "dig days window not clamped":
+        def what(hop, brief):
+            got = real(hop, brief)
+            return got.replace(f"days {RECORDS_FROM}", f"days {brief.period_start}") if hop == "what_it_was_like" else got
+        rgraph._what_to_read = what
+    fails = []
+    try:
+        for week in range(54, 61):
+            start = FIRST + timedelta(days=7 * (week - 1))
+            end = start + timedelta(days=6)
+            b = ReminiscenceRunBriefV1.model_validate({
+                "reminiscence": "reminiscence.episode", "episode": "2026-12-20", "period_start": start.isoformat(),
+                "period_end": end.isoformat(), "weeks_complete": week - 1, "weeks_total": 77, "timeout_sec": 900})
+            p = rgraph.build_hop_prompt(b, "what_it_was_like")
+            if end < RECORDS_FROM:
+                if "no lived record" not in p or "orion.dig days" in p:
+                    fails.append(f"9 lived: week {week} ({start}..{end}) is before the records but its prompt "
+                                 "does not say so")
+                continue
+            first = max(start, RECORDS_FROM)
+            if f"python -P -m orion.dig days {first} {end}`" not in p:
+                fails.append(f"9 lived: week {week} ({start}..{end}) prompt does not read `dig days {first} {end}`")
+            if f"outside {first}..{end} is refused" not in p:
+                fails.append(f"9 lived: week {week} prompt does not say a record outside {first}..{end} is refused")
+    finally:
+        rgraph._what_to_read = real
+    return fails
+
+
 def main() -> int:
     sim = simulate()
-    fails = gates(sim)
+    fails = gates(sim) + lived_gate()
     days = len({e["episode"] for e in sim["log"]})
     complete = sorted({(ln["period_start"], ln["period_end"]) for ln in sim["lines"]})
     joined = [f"{s}..{e}" for s, e in complete if (date.fromisoformat(e) - date.fromisoformat(s)).days > 6]
@@ -267,6 +315,10 @@ def main() -> int:
         caught = bool(got)
         print(f"mutation {m!r}: {'CAUGHT' if caught else 'MISSED'}" + (f" ({got[0][:90]})" if got else ""))
         ok = ok and caught
+    for m in ("lived hop reads the old arc pointer", "dig days window not clamped"):
+        got = lived_gate(m)
+        print(f"mutation {m!r}: {'CAUGHT' if got else 'MISSED'}" + (f" ({got[0][:90]})" if got else ""))
+        ok = ok and bool(got)
     return 0 if ok else 1
 
 

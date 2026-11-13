@@ -369,11 +369,10 @@ class Settings(BaseSettings):
     @classmethod
     def _empty_envelope_is_none(cls, v):
         return None if v is None or (isinstance(v, str) and not v.strip()) else v
-    # Personality graph loop (spec 2026-10-16-orion-dynamic-personality-graph-design.md rev 2): a
-    # periodic reducer folds Orion's own output (dream, journal, reverie, reading, day letter, chat,
-    # outreach, curiosity picks, self-inquiry seeds) into personality_* tables
-    # (services/orion-sql-db/manual_migration_personality_graph_v1.sql); GET /personality/frame is
-    # what chat stance / reverie / curiosity / outreach read back. Kill switch: PERSONALITY_ENABLED.
+    # Personality graph loop (spec 2026-10-16-orion-dynamic-personality-graph-design.md rev 4): a
+    # periodic reducer folds ONLY personality_choice rows (bus orion:personality:choice + the curiosity
+    # sync) into personality_* tables (manual_migration_personality_{graph,naming,choice}_v1.sql).
+    # Kill switch: PERSONALITY_ENABLED (also drops bus choices).
     personality_enabled: bool = Field(True, alias="PERSONALITY_ENABLED")
     personality_tick_sec: float = Field(600.0, gt=0.0, alias="PERSONALITY_TICK_SEC")
     # Self-naming (docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-design.md):

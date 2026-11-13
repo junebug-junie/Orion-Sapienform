@@ -23,7 +23,7 @@ def _iso(dt: datetime) -> str:
 NOW = datetime.now(timezone.utc)
 NODE = {"disposition_id": "d1", "label": "the gap between what I predicted and what arrived",
         "origin": "recurrence", "status": "active", "weight": 2.4, "evidence_count": 7,
-        "lane_counts": {"dream": 4, "journal": 3}, "chosen_count": 1,
+        "lane_counts": {"curiosity": 4, "prime": 3}, "chosen_count": 1,
         "first_seen_at": _iso(NOW - timedelta(hours=6)), "last_reinforced_at": _iso(NOW - timedelta(minutes=5))}
 FRAME = {"schema_version": "personality.frame.v1", "generated_at": _iso(NOW - timedelta(minutes=2)),
          "dispositions": [NODE], "choice_style": {"window_days": 7, "choices": 5, "took_top": 2, "went_own_way": 3},
@@ -154,7 +154,7 @@ def test_cue_renders_what_the_lanes_get_at_their_default_settings(wire):
     body = wire(up).get("/api/personality/cue").json()
     expected = project_personality_cue(FRAME)
     assert body["cue"]["text"] == expected.text
-    assert body["cue"]["text"].startswith("Things you keep coming back to")
+    assert body["cue"]["text"].startswith("Choices you keep making")
     assert NODE["label"] in body["cue"]["text"]
     assert body["cue"]["disposition_ids"] == ["d1"]
     assert body["cue"]["skip_reason"] is None
@@ -357,7 +357,7 @@ def test_personality_page_browser_smoke(scenario):
             assert "went their own way 3 of 5" in page.inner_text("#pChoiceStyle")
             page.wait_for_selector("#pActive tr.node")
             row = page.inner_text("#pActive tr.node")
-            assert NODE["label"] in row and "2.400" in row and "dream: 4, journal: 3" in row
+            assert NODE["label"] in row and "2.400" in row and "curiosity: 4, prime: 3" in row
             assert page.locator("#pActive tr.node svg.spark polyline").count() == 1
             page.wait_for_selector("#pCandidates tr.node", state="attached")       # collapsed by default
             assert page.inner_text("#pCandidateCount") == "(1 of 2)"                    # frame says 2
@@ -431,4 +431,4 @@ def test_named_frame_renders_the_name_in_the_hub_cue(wire):
     frame = {**FRAME, "dispositions": [{**NODE, "name": "the gap", "name_sentence": "why"}]}
     body = wire(Upstream({"/personality/frame": (200, frame)})).get("/api/personality/cue").json()
     assert body["cue"]["text"].split("\n")[1].startswith(
-        '- you call this "the gap": "the gap between what I predicted and what arrived" (dreams, journal; 7 times')
+        '- you call this "the gap": "the gap between what I predicted and what arrived" (curiosity, Prime; 7 times')

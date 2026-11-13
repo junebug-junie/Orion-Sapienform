@@ -29,12 +29,10 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from orion.personality.graph import (
     DEFAULT_PARAMS,
-    SEED_LANE,
     GraphParams,
     Node,
     cosine,
     node_cosine,
-    source_key,
 )
 from orion.schemas.personality import (
     DISPOSITION_LABEL_MAX_CHARS,
@@ -77,16 +75,10 @@ def usable(row: Any) -> bool:
 
 
 def _shown_sources(row: Any) -> set[str]:
-    """Source keys the node had when this row's packet was shown (from the packet's lane counts).
-    A journal lane may be metacog (one source with reverie), so it maps to both keys: a source is
-    only "new" when no shown lane could have been it."""
+    """Choice lanes the node had when this row's packet was shown (from the packet's lane counts)."""
     shown = _json(_get(row, "shown")) or {}
-    out: set[str] = set()
-    for lane in (shown.get("lane_counts") or {}) if isinstance(shown, Mapping) else ():
-        out.add(source_key(lane, None))
-        if lane == "journal":
-            out.add(source_key("journal", {"source_kind": "metacog"}))
-    return out
+    lanes = (shown.get("lane_counts") or {}) if isinstance(shown, Mapping) else {}
+    return {str(lane) for lane in lanes} if isinstance(lanes, Mapping) else set()
 
 
 def _shown_count(row: Any) -> Optional[int]:
@@ -96,7 +88,7 @@ def _shown_count(row: Any) -> Optional[int]:
 
 
 def _promoting_sources(node: Node, params: GraphParams) -> set[str]:
-    return {k for k, r in node.lane_recent.items() if k != SEED_LANE and r >= params.promote_lane_min_recent}
+    return {k for k, r in node.lane_recent.items() if r >= params.promote_lane_min_recent}
 
 
 def naming_due(nodes: Sequence[Node], naming_log: Iterable[Any], now: datetime, *,

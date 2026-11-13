@@ -19,16 +19,15 @@ What it does:
   un-mixed (A * n_A - B * n_B, renormalised); weight re-derived.
 - One history row for each at now.
 
-APPROXIMATE for A, and the plan says so: the merge clamped ``lane_recent`` at the per-lane cap, so
-the subtraction cannot recover what the clamp cut, and evidence folded into A after the merge stays
-on A (B's evidence rows always kept ``disposition_id = B``). The naming log row is never touched.
+APPROXIMATE for A, and the plan says so: evidence folded into A after the merge stays on A (B's
+evidence rows always kept ``disposition_id = B``), and A's label keeps the counts it had (the next
+fold into A recomputes them). The naming log row is never touched.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import os
 import sys
 from dataclasses import replace
@@ -65,12 +64,10 @@ def unmerge_plan(a: Node, b: Node, b_prev_status: str, now: datetime) -> tuple[N
             na.lane_counts.pop(lane, None)
     na.evidence_count = max(0, a.evidence_count - b.evidence_count)
     na.chosen_count = max(0, a.chosen_count - b.chosen_count)
+    na.opposed_count = max(0, a.opposed_count - b.opposed_count)
     dt = (a.updated_at - b.updated_at).total_seconds() / 86400.0 if a.updated_at and b.updated_at else 0.0
     factor = 0.5 ** (max(0.0, dt) / params.half_life_days) if params.half_life_days > 0 else 1.0
-    cap = math.expm1(params.lane_cap)
     for k, v in b.lane_recent.items():
-        if na.lane_recent.get(k, 0.0) >= cap - 1e-9:
-            notes.append(f"lane_recent[{k}] was at the cap: the clamp cut part of the merge, A's value is a floor")
         left = na.lane_recent.get(k, 0.0) - v * factor
         if left > 1e-9:
             na.lane_recent[k] = left

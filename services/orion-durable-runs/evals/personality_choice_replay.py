@@ -7,7 +7,7 @@ nothing stored), folds them with ``orion.personality.graph.fold`` and prints wha
 Writes nothing anywhere.
 
     python3 services/orion-durable-runs/evals/personality_choice_replay.py \\
-        --dsn postgresql://postgres:postgres@localhost:55432/conjourney --embed-url http://localhost:8320/embedding
+        --dsn "$POSTGRES_URI" --embed-url http://localhost:8320/embedding
 
 Checks (exit 1 when one fails; the metric quality gate's "live-data sanity" step, run on real rows):
   * choices exist, and at least one departs from the market's order (rank != 1): revealed preference

@@ -44,77 +44,60 @@ h2 { font-size: 14px; margin: 0 0 8px; }
 button, input { font: inherit; color: var(--ink); background: var(--plane); border: 1px solid var(--axis); border-radius: 8px; padding: 4px 10px; }
 button { cursor: pointer; }
 button:hover { border-color: var(--ink-2); }
-.scroll { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
-th, td { text-align: left; padding: 3px 6px; border-bottom: 1px solid var(--hairline); vertical-align: top; }
-th { color: var(--ink-2); font-weight: 600; }
-td.time, td.num { white-space: nowrap; font-variant-numeric: tabular-nums; }
-td.num, th.num { text-align: right; }
-td.label, td.excerpt { word-break: break-word; }
-td.lanes { color: var(--ink-2); }
-tr.node { cursor: pointer; }
-tr.node:hover td, tr.node.open td { background: var(--plane); }
-button.label-btn { all: unset; cursor: pointer; word-break: break-word; }
-button.label-btn:focus-visible { outline: 2px solid var(--series-1); outline-offset: 2px; border-radius: 4px; }
-tr.evidence-row > td { background: var(--plane); padding: 6px 10px 10px 24px; }
-table.evidence td.excerpt { white-space: pre-wrap; }
-td.name { word-break: break-word; min-width: 120px; }
-.node-name { font-weight: 600; }
-.badge.naming-named { border-color: var(--series-1); }
-.badge.naming-rejected { border-color: var(--critical); }
-.badge.naming-unshown, .badge.naming-unknown { color: var(--ink-muted); }
-.name-sentence { font-style: italic; margin-bottom: 6px; word-break: break-word; }
-.naming-history h4 { margin: 4px 0; font-size: 12px; }
-pre.packet { white-space: pre-wrap; word-break: break-word; max-height: 240px; overflow: auto; font-size: 11px; }
-.echo { margin: 6px 0; }
-.spark-wrap { display: inline-block; vertical-align: middle; color: var(--series-1); }
-.spark { display: block; }
-pre.cue { white-space: pre-wrap; word-break: break-word; margin: 0; padding: 10px; border-radius: 8px;
-  background: var(--plane); border: 1px solid var(--hairline); font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; }
-details.group { border: 1px solid var(--hairline); border-radius: 8px; padding: 6px 8px; }
-details.group + details.group { margin-top: 8px; }
+.choice, .tendency { border-top: 1px solid var(--hairline); padding: 8px 0; }
+.choice:first-child, .tendency:first-child { border-top: 0; }
+.picked { font-weight: 600; margin: 2px 0; word-break: break-word; }
+.picked.declined { color: var(--ink-2); font-style: italic; }
+.passed, .tendency-label { word-break: break-word; }
+.tendency-label { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+.badge.prime { border-color: var(--series-1); color: var(--series-1); }
+ul.examples, details.more ul { margin: 4px 0; padding-left: 18px; }
+ul.examples li, details.more li { word-break: break-word; }
+details.more summary { cursor: pointer; color: var(--ink-2); font-size: 12px; }
+.verdict-row { margin-top: 6px; }
+button.verdict.no:hover { border-color: var(--critical); }
+button:disabled { opacity: 0.5; cursor: default; }
+.tendency.retired { opacity: 0.6; }
+.arm { margin: 2px 0; }
+details.group { border: 1px solid var(--hairline); border-radius: 8px; padding: 6px 8px; margin-top: 8px; }
 details.group summary { cursor: pointer; font-weight: 600; }
 </style>
 </head>
 <body>
 <main id="personalityRoot">
   <header>
-    <h1>What Orion keeps returning to</h1>
-    <span class="muted" id="pGeneratedAt"></span>
+    <h1>Orion's personality</h1>
+    <span class="muted">Built only from choices Orion makes: what Orion picked, and what Orion passed over.</span>
     <span class="row" style="margin-left:auto">
       <button id="pRefresh" type="button">Refresh</button>
     </span>
   </header>
   <div id="pStatus" class="muted" role="status"></div>
-  <div id="pWarnings" class="muted"></div>
 
   <section class="panel">
-    <h2>What Orion sees right now <span class="muted" id="pCueMeta"></span></h2>
-    <div class="muted" style="margin-bottom:6px">The text chat, reverie, curiosity and outreach are handed, rendered here by the same function they use. <span id="pCueParams"></span></div>
-    <pre class="cue" id="pCueText" hidden></pre>
-    <div class="muted" id="pCueSkip"></div>
+    <h2>Recent choices</h2>
+    <div class="muted">The last 30 choices, newest first. Before Orion picks, the market (Orion's own ranking of what is worth doing next) puts the options in order: "ranked #1" is its first pick.</div>
+    <div id="pChoices"></div>
   </section>
 
   <section class="panel">
-    <div class="row"><strong id="pCounts">—</strong></div>
-    <div id="pChoiceStyle" style="margin-top:4px"></div>
-  </section>
-
-  <section class="panel">
-    <h2>Active <span class="muted" id="pActiveCount"></span></h2>
-    <div class="muted">Strongest first. Click a row for the evidence behind it and Orion's naming history.</div>
-    <div id="pActive"></div>
-  </section>
-
-  <section class="panel">
-    <details class="group">
-      <summary>Candidates <span class="muted" id="pCandidateCount"></span></summary>
-      <div id="pCandidates"></div>
+    <h2>Tendencies</h2>
+    <div class="muted">Kinds of choice Orion keeps making. A "No" retires the tendency: Orion stops leaning on it. You can take it back below.</div>
+    <div class="muted err" id="pTendencyWarn"></div>
+    <div class="muted" id="pTendencyFlash" role="status"></div>
+    <div id="pTendencies"></div>
+    <details class="group" id="pSaidNoGroup">
+      <summary>You said no to <span class="muted" id="pSaidNoCount"></span></summary>
+      <div class="muted">Tendencies you retired. "Changed my mind" brings one back as a new, still-forming tendency.</div>
+      <div id="pSaidNo"></div>
     </details>
-    <details class="group">
-      <summary>Retired <span class="muted" id="pRetiredCount"></span></summary>
-      <div id="pRetired"></div>
-    </details>
+  </section>
+
+  <section class="panel">
+    <h2>Is it changing anything?</h2>
+    <div class="muted">The market decides some things with Orion's tendencies counted and some without them, so the two groups can be compared.</div>
+    <div id="pArmsSummary"></div>
+    <div id="pArms"></div>
   </section>
 </main>
 <script src="/static/js/personality.js?v={{HUB_UI_ASSET_VERSION}}"></script>

@@ -1415,7 +1415,7 @@ Spec: `docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.
 reducer: `orion/personality/graph.py`. Code here: `app/personality_sources.py` (reads),
 `app/personality_store.py` (writes), `app/personality_driver.py` (the tick and the bus intake).
 This service is the single writer of `personality_choice`, `personality_disposition`,
-`personality_evidence`, `personality_weight_history` and `personality_cursor`
+`personality_evidence`, `personality_weight_history`, `personality_cursor` and `personality_juniper_verdict`
 (`services/orion-sql-db/manual_migration_personality_graph_v1.sql`, `..._naming_v1.sql` and
 `..._choice_v1.sql`; apply them before deploy).
 
@@ -1460,7 +1460,21 @@ both containers are on `app-net`), concurrency 4, timeout 15 s.
 
 Routes: `GET /personality/frame` (`PersonalityFrameV1`), `GET /personality/dispositions?status=
 active|candidate|retired|all&limit=50` (each with its last 60 weight-history points),
-`GET /personality/evidence?disposition_id=&limit=50` (newest first). Each answers 503 when
+`GET /personality/evidence?disposition_id=&limit=50` (newest first). For the Hub Personality tab
+(rev 4 move 4): `GET /personality/choices?limit=30` (newest choices, every lane: picked, passed over
+with market rank, declines, the tendency each counted toward), `GET /personality/tendencies?limit=20`
+(choice-built, not retired, each with its 3 newest choices and Juniper's latest answer),
+`GET /personality/arms?days=7` (`want_ledger` decisions with a `personality:arm=` trace line, by arm
+and outcome), and `POST /personality/tendencies/{id}/verdict` `{"verdict": "yes"|"no"}`: one row in
+`personality_juniper_verdict` (`manual_migration_personality_juniper_verdict_v1.sql`); a "no" also
+retires the tendency in the same transaction, under the reducer's tick lock so a tick in flight
+cannot write the old status back. A "yes" on a tendency Juniper retired herself (her latest answer is
+a retiring "no") revives it: status candidate, `retired_at` cleared, `last_folded_at` now (`updated_at`
+stays at the retire time, so the next tick fades the weight across the retired time), plus a
+weight-history row (the reducer's own revive, #3336). `/personality/tendencies` also returns
+`said_no` (those tendencies, newest no first). 404: no such choice-built tendency. 409: retired but
+not by her latest no (it faded), or a second no. Log
+line: `personality_juniper_verdict disposition=... verdict=... retired=...`. Each answers 503 when
 `PERSONALITY_ENABLED=false` or the tables are missing. `/health` has a `personality` block (ticks,
 last tick, last error, evidence last tick, choices read, curiosity rows synced, bus choices
 inserted/invalid, held, nodes by status). Log lines: `personality_choice_received choice_id=...`,

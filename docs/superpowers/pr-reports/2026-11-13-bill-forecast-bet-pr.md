@@ -55,7 +55,7 @@ bill bet"). Now there is one, with a stated confidence, settled by the world. Th
 - `orion/schemas/self_monitor.py`: `answer_key`.
 - `orion/self_monitor/record.py`: units, slow-source window.
 - `orion/self_monitor/adapters.py`, `collect.py`, `catalog.py`, `names.py`: adapters, sources, catalog, names.
-- `orion/self_monitor/tests/test_self_monitor_bill.py` (+ `test_cue.py`, `test_self_monitor_host.py`): effective-n, window, adapter.
+- `orion/self_monitor/tests/test_self_monitor_bill.py` (+ `test_cue.py`, `test_self_monitor_host.py`): effective-n, window, adapter, cue ranking.
 - `.github/workflows/orion-prediction-tests.yml`: run on energy / self-monitor changes too.
 - `docs/superpowers/handoffs/2026-11-04-handoff-B-self-monitor-followups.md`: Step 3 item marked built.
 
@@ -66,7 +66,7 @@ bill bet"). Now there is one, with a stated confidence, settled by the world. Th
 - Renamed: none.
 - Behavior changed: the self-monitor collapses bets sharing an `answer_key` into one unit. Bets with no
   key reduce exactly as before (each bet is its own unit; all 139 existing self-monitor tests pass
-  unchanged except two that list sources/names).
+  unchanged except two that list sources/names). For keyed faculties `n_graded` counts answers; `n_bets` keeps bets.
 - Compatibility notes: `SettledBetV1` is built and reduced in-process (durable-runs host, report); it is
   not published on the bus, so the optional field needs no consumer-first migration. No bus channel
   added.
@@ -156,8 +156,8 @@ have settled (~10 months, first live bill ~11-20).
 ## Tests run
 
 ```text
-pytest orion/self_monitor/tests -q                                   -> 145 passed
-pytest services/orion-prediction/tests/test_bill_forecast.py -q      -> 14 passed
+pytest orion/self_monitor/tests -q                                   -> 146 passed
+pytest services/orion-prediction/tests/test_bill_forecast.py -q      -> 18 passed
 pytest services/orion-prediction/tests -q                            -> 345 passed, 20 failed; main fails the
                                                                         same 20 in this venv (331 passed): pins
                                                                         differ from requirements.txt; CI is the gate
@@ -186,7 +186,25 @@ Live service: UNVERIFIED (not deployed).
 
 ## Review findings fixed
 
-(filled after review)
+Review: code-review subagent on `git diff origin/main...HEAD`. No must-fix; all 3 should-fix and the
+material nits fixed.
+
+- Finding: the daily spread, replay lag and replay days mixed every meter (usage point) in the table.
+  - Fix: `tick` keeps only the chosen meter's hours after `pick_usage_point`.
+  - Evidence: `test_a_second_meter_never_leaks_into_the_spread_or_the_replay` fails with the filter removed, passes with it.
+- Finding: one invalid energy row in 400 days would raise on every tick (no bets, no settlement).
+  - Fix: rows validated one by one; bad ones skipped and counted in `last_pass.skipped_rows` + a log line.
+  - Evidence: `test_a_bad_row_is_skipped_and_counted_not_fatal`.
+- Finding: the stance/reverie cue ranked faculties by bet count, so 300 guesses on 10 bills would rank as "hundreds".
+  - Fix: for bets sharing an `answer_key`, `FacultyRecordV1.n_graded` now counts answers (bills); `n_bets` keeps the raw count. No bus-schema change. Field descriptions updated.
+  - Evidence: `test_cue_ranks_a_bill_faculty_by_its_answers_not_its_guesses` (tier 2, not 3).
+- Finding (nit): day counts used plain datetime subtraction. Fix: `reconcile._duration_seconds`, same as `project_period`. Evidence: `test_days_into_cycle_are_real_hours_across_the_fall_back_change`.
+- Finding (nit): identical days give a zero-width range. Fix: no range, `range_reason = zero daily spread`. Evidence: `test_identical_days_give_no_range_rather_than_a_zero_width_one`.
+- Finding (nit): mean $ miss mixed pre-tax and with-tax bills. Fix: pre-tax bills only.
+- Finding (nit): replay sees sql-writer's overwritten (corrected) values. Fix: stated in the module docstring (replays are never graded).
+- Not changed: the per-bet streak (~30x long for one bill) only drives `broken`, and bill bets never fail to execute; commented in `record.py`.
+- UNVERIFIED: that orion-prediction's DB role can SELECT `energy_usage_interval` / `energy_bill_actual`. The dry run read both tables with the same `postgres` URI the service uses.
+- Found during my own testing: `daily_totals` measured a local day with same-tzinfo subtraction, so a 25-hour DST day read as 24 h and was dropped. Fixed (UTC bounds); `test_daily_totals_count_a_25_hour_dst_day_as_complete`.
 
 ## Restart required
 

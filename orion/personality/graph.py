@@ -83,6 +83,11 @@ LABEL_MAX_NAMED_DECLINED = 2
 VERDICT_NAMED = "named"
 VERDICT_REJECTED = "rejected"
 VERDICT_MERGED = "merged"
+# Juniper's answer on a tendency (Hub Personality tab, ``personality_juniper_verdict``; rev 4 move 4). The
+# reducer is handed the latest answer for each retired node Juniper retired: "no" keeps it retired and
+# absorbing (``_Tick.absorb``), "yes" after a "no" revives it.
+JUNIPER_NO = "no"
+JUNIPER_YES = "yes"
 
 _FRAME_MAX_WARNINGS = 20
 _COUNT_SUFFIX = re.compile(r", \d+ of \d+$")
@@ -118,6 +123,8 @@ class GraphParams:
     retire_below_weight: float = 0.25
     centroid_n_cap: int = 50  # running-mean memory, lets a node drift slowly
     history_min_rel_change: float = 0.01
+    # A fade-only weight change is written once it moved this much from the stored weight (``_must_write``).
+    fade_write_min_rel_change: float = 0.01
     # MERGE (B into A) by Orion's own verdict only when the two centroids are at least this close.
     merge_min_cosine: float = 0.85
 
@@ -357,23 +364,37 @@ def _must_write(before: _Snap, after: _Snap, params: GraphParams) -> bool:
     node every tick (live 2026-11-13: ``nodes_written: 118`` with ``choices_read: 0``). The stored row
     (weight, lane_recent, updated_at) stays self-consistent when a fade-only change is NOT written: the
     next tick fades from the stored ``updated_at`` and reaches the same value. So a fade-only change is
-    written only once the weight moved ``history_min_rel_change`` (1%) from the stored weight -- about
+    written only once the weight moved ``fade_write_min_rel_change`` (1%) from the stored weight -- about
     every 5 h at a 14-day half-life -- which bounds how stale a reader of the raw ``weight`` column (the
     market's tendency read) can be. Any other change (evidence, status, label, oppose) is always written."""
     if replace(after, weight=before.weight) != before:
         return True
     if before.weight == 0.0:
         return after.weight != 0.0
-    return abs(after.weight - before.weight) / abs(before.weight) >= params.history_min_rel_change
+    return abs(after.weight - before.weight) / abs(before.weight) >= params.fade_write_min_rel_change
 
 
 class _Tick:
     """Working copies of the input nodes plus nodes born this tick, with before-snapshots."""
 
-    def __init__(self, nodes: Sequence[Node], now: datetime):
+    def __init__(self, nodes: Sequence[Node], now: datetime, juniper: Optional[Mapping[str, str]] = None):
         self.now = now
         self.nodes: list[Node] = [_copy(n) for n in nodes]
         self.before: dict[int, Optional[_Snap]] = {id(n): _snap(n) for n in self.nodes}
+        # Juniper's answers (``JUNIPER_NO`` / ``JUNIPER_YES``), only for retired nodes she retired.
+        # "no": the node stays retired and still matches, so a choice in its direction counts as evidence on
+        # it instead of founding a new tendency she would be asked about again. It never comes back by
+        # itself (fade and status rules skip retired). "yes" after her "no": revived as a candidate, and the
+        # usual rules take it from there (it may promote at once, or fade out like any other).
+        self.vetoed: set[int] = set()
+        for node in self.nodes:
+            answer = (juniper or {}).get(node.disposition_id)
+            if node.status != "retired":
+                continue
+            if answer == JUNIPER_NO:
+                self.vetoed.add(id(node))
+            elif answer == JUNIPER_YES:
+                node.status, node.retired_at, node.last_folded_at = "candidate", None, now
         self.dim: Optional[int] = next((len(n.centroid) for n in self.nodes if n.centroid), None)
         self.unit_centroids: dict[int, Optional[list[float]]] = {}
         self.evidence_rows: list[EvidenceRow] = []
@@ -399,7 +420,7 @@ class _Tick:
     def sims(self, emb: list[float]) -> list[tuple[Node, float]]:
         out = []
         for node in self.nodes:
-            if node.status == "retired":
+            if node.status == "retired" and id(node) not in self.vetoed:
                 continue
             c = self.centroid(node)
             if c is None or len(c) != len(emb):
@@ -433,6 +454,18 @@ class _Tick:
             base, node.label_similarity = ev.excerpt, sim
         node.label = choice_label(base, node.evidence_count, node.evidence_count + node.opposed_count)
         return gain
+
+    def absorb(self, node: Node, ev: Evidence, lane: str) -> None:
+        """A choice in the direction of a tendency Juniper said No to: counted on it (the evidence row
+        names it), with no weight, no centroid move and no status change. Her No was about that
+        direction, so the node neither drifts nor revives."""
+        node.evidence_count += 1
+        node.chosen_count += 1
+        node.lane_counts[lane] = node.lane_counts.get(lane, 0) + 1
+        last = _aware(node.last_reinforced_at)
+        node.last_reinforced_at = ev.occurred_at if last is None else max(last, ev.occurred_at)
+        node.label = choice_label(label_base(node.label), node.evidence_count,
+                                  node.evidence_count + node.opposed_count)
 
     def oppose(self, node: Node) -> None:
         node.opposed_count += 1
@@ -561,7 +594,11 @@ def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params:
         sims = tick.sims(emb)
         best, best_sim = max(sims, key=lambda t: t[1], default=(None, -2.0))
         meta = dict(ev.meta) if isinstance(ev.meta, Mapping) else {}
-        if best is not None and best_sim >= params.match_threshold:
+        if best is not None and best_sim >= params.match_threshold and id(best) in tick.vetoed:
+            tick.absorb(best, ev, lane)
+            meta["juniper_no"] = True
+            delta, disp_id, similarity = 0.0, best.disposition_id, best_sim
+        elif best is not None and best_sim >= params.match_threshold:
             echo = cites_own_name(best, ev)
             if echo:
                 meta["cites_own_name"] = True
@@ -570,8 +607,9 @@ def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params:
         else:
             best = tick.create(ev, emb, lane, w, now, params)
             delta, disp_id, similarity = best.weight, best.disposition_id, 1.0
-        opposed = sorted(n.disposition_id for n, s in sims if s <= -params.oppose_threshold and n is not best)
-        for node, s in sims:
+        live = [(n, s) for n, s in sims if id(n) not in tick.vetoed]
+        opposed = sorted(n.disposition_id for n, s in live if s <= -params.oppose_threshold and n is not best)
+        for node, s in live:
             if node is not best and s <= -params.oppose_threshold:
                 tick.oppose(node)
         if opposed:
@@ -586,19 +624,23 @@ def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params:
 # --- public API -------------------------------------------------------------------------------
 
 
-def apply_fade(nodes: list[Node], *, now: datetime, params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
-    """Fade every non-retired node to ``now`` and apply status rules. Inputs are not mutated."""
-    tick = _Tick(nodes, now)
+def apply_fade(nodes: list[Node], *, now: datetime, params: GraphParams = DEFAULT_PARAMS,
+               juniper: Optional[Mapping[str, str]] = None) -> FoldResult:
+    """Fade every non-retired node to ``now`` and apply status rules. Inputs are not mutated.
+    ``juniper``: disposition_id -> Juniper's latest answer, for retired nodes she retired (``_Tick``)."""
+    tick = _Tick(nodes, now, juniper)
     tick.fade(now, params)
     tick.statuses(now, params)
     return tick.result(now, params)
 
 
 def fold(nodes: list[Node], evidence: Sequence[Evidence], *, now: datetime,
-         params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
+         params: GraphParams = DEFAULT_PARAMS, juniper: Optional[Mapping[str, str]] = None) -> FoldResult:
     """Fade to ``now``, fold choices in occurred_at order, then apply status rules. Only
-    ``origin='choice'`` nodes take part; any other node passed in is left untouched."""
-    tick = _Tick([n for n in nodes if n.origin == ORIGIN_CHOICE], now)
+    ``origin='choice'`` nodes take part; any other node passed in is left untouched. ``juniper``:
+    disposition_id -> Juniper's latest answer, for retired nodes she retired: a "no" node absorbs
+    choices in its direction, a "yes" after a "no" revives it (``_Tick``)."""
+    tick = _Tick([n for n in nodes if n.origin == ORIGIN_CHOICE], now, juniper)
     tick.fade(now, params)
     _ingest(tick, evidence, now=now, params=params)
     tick.statuses(now, params)

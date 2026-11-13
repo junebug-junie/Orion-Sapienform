@@ -148,3 +148,8 @@ def test_care_funded_only_when_care_alone_made_the_net_positive():
     assert care_funded("funded", "exploration_floor", -0.2, lifted) is False  # the floor funds without care
     assert care_funded("deferred", "price", 0.05, lifted) is False
     assert care_funded("funded", "net_positive", None, lifted) is False
+    # The market's own line wins: it counts the exploration floor (funded anyway without care).
+    floor = lifted + ["personality:funded_without_care=1"]
+    assert care_funded("funded", "net_positive", 0.05, floor) is False
+    assert care_funded("funded", "net_positive", 0.05, ["personality:funded_without_care=0"]) is True
+    assert care_funded("deferred", "price", 0.05, ["personality:funded_without_care=0"]) is False

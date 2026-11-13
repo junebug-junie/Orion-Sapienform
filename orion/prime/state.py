@@ -99,6 +99,12 @@ class PrimeConcernV1(BaseModel):
     # Event mode (PRIME_CONCERNS_FROM_EVENT_WANTS, attention as the want competition patch 2): the funded
     # event want (its event_ref) this concern came from. Left out of the saved state when None.
     event_ref: Optional[str] = Field(default=None, max_length=500)
+    # Personality rev 4 (orion/prime/choice.py): the event want's family and whether it was on the list only
+    # through care, as the list stood when this concern opened. The choice point keys the option by this family
+    # and marks a pick care_promoted from this flag, so a concern that outlives its want's place on the list
+    # keeps both. Left out of the saved state when None (a rollback still loads the state).
+    event_family: Optional[str] = Field(default=None, max_length=200)
+    event_care_promoted: Optional[bool] = None
     opened_at: AwareDatetime
     # When a thought last kept it (or opened it). Name kept for the persisted state's schema.
     last_evidence_at: AwareDatetime
@@ -118,8 +124,9 @@ class PrimeConcernV1(BaseModel):
     def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A concern with no event saves byte-for-byte as before (a rollback still loads the state).
         out = handler(self)
-        if out.get("event_ref", 0) is None:
-            del out["event_ref"]
+        for key in ("event_ref", "event_family", "event_care_promoted"):
+            if out.get(key, 0) is None:
+                del out[key]
         return out
 
 

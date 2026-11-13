@@ -1232,16 +1232,26 @@ Orion's choices set what Orion values. `app/personality_values.py` (reads) + `or
   `personality:rank_without_care=`, `personality:net_without_care=`. `GET /physiology/reservations` -> `market.personality_values`.
 - Replay (read-only): `python3 services/orion-durable-runs/evals/personality_values_replay.py --dsn ... --hours 72`.
 - **Loop wiring (2026-11-13, PR "personality loop wiring").** Producers now feed the term:
-  - `GET /physiology/event-wants` marks each listed want `care_promoted` (`FundedEventWantV1`, additive) when it is
-    in the top `limit` by net only through care, or funded only through care (net without care <= 0). Computed
-    over every funded, unexpired event want from `want_ledger.decision` (`reason`, `warnings`). Prime keys each
-    concern option `<want family>::<concern_id>` and copies the flag onto a choice of that concern.
-  - Hub outreach sends the shown topics' text with its binding bid (`object_text`) and marks its choice
-    `care_promoted` when the want was funded only through care (`personality_values.care_funded`).
+  - `GET /physiology/event-wants?care=1` marks each listed want `care_promoted` (`FundedEventWantV1`, additive)
+    when it is in the top `limit` by net only through care, or funded only through care. Computed over every
+    funded, unexpired event want from `want_ledger.decision` (`reason`, `warnings`). Without `care=1` the field
+    is left out, so an orion-mind built before it (the model is `extra="forbid"`) still reads the list. Prime
+    records the want's family and flag on a concern when it opens, keys the option `<want family>::<concern_id>`,
+    and copies the flag onto a choice of that concern.
+  - Hub outreach sends the shown topics' text with its binding bid (`object_text`, each topic an equal share of
+    400 chars) and marks its choice `care_promoted` when the want was funded only through care
+    (`personality_values.care_funded`).
+  - A funded decision with a personality term carries `personality:funded_without_care=0|1` (it counts the
+    exploration floor); `care_funded` reads it.
   - Curiosity choices use each offered prior's claim (stored on `curiosity_offer_decisions.offered[].claim`) as
     option text; rows from before 2026-11-13 keep the de-slugged prior id.
+- **Juniper's No holds.** The reducer loads every retired choice node Juniper retired
+  (`personality_juniper_verdict`, Hub Personality tab) with her latest answer. On "no" the node stays retired
+  but still matches: a choice in its direction is counted on it (evidence row `meta.juniper_no`, no weight, no
+  centroid move) instead of founding a new tendency she would be asked about again. It never comes back by
+  itself. A later "yes" revives it as a candidate. Missing table: no answers (logged once).
 - **Reducer writes.** A tick writes a node only when its evidence, status, label or counts moved, or when fade
-  moved its weight >= 1% (`history_min_rel_change`) from the stored weight (about every 5 h at the 14-day
+  moved its weight >= 1% (`fade_write_min_rel_change`) from the stored weight (about every 5 h at the 14-day
   half-life). Before this, fade rewrote every live node every tick (`nodes_written: 118`, `choices_read: 0`).
   The stored `(weight, lane_recent, updated_at)` stays exact: the next tick fades from the stored `updated_at`.
 

@@ -226,10 +226,17 @@ def care_promoted_keys(scores_with_care: Mapping[str, float], scores_without_car
 def care_funded(outcome: Optional[str], reason: Optional[str], net: Optional[float],
                 warnings: Sequence[str]) -> bool:
     """For a producer whose choice point opens only when ONE want is funded (Hub outreach: one bid per
-    compose, then Orion picks among topics): True when that want was funded on its net (``net_positive``)
-    and its net WITHOUT care is not positive, so the whole shown set reached Orion only through care. Set
-    ``care_promoted`` on that choice. An exploration-floor fund, or no trace, is never care-promoted."""
-    if outcome != "funded" or reason != "net_positive" or net is None:
+    compose, then Orion picks among topics): True when that want was funded and would NOT have been funded
+    without the care term, so the whole shown set reached Orion only through care. Set ``care_promoted``
+    on that choice. Reads the market's ``personality:funded_without_care=0|1`` (it counts the exploration
+    floor); a decision from before that line falls back to: funded on its net, net without care <= 0.
+    No personality trace (flag off): never care-promoted."""
+    if outcome != "funded":
+        return False
+    fwc = _trace_value(warnings, "funded_without_care")
+    if fwc is not None:
+        return fwc.strip() == "0"
+    if reason != "net_positive" or net is None:
         return False
     nwc = net_without_care(warnings, net)
     return nwc is not None and nwc <= 0.0 < net

@@ -10,7 +10,7 @@ from orion.prime.state import PrimeStateV1
 from orion.prime.thought import FrameInputs, build_frame, system_prompt
 from test_prime_loop import STATE_KEY, T0, runtime
 
-EVENTS_URL = "http://dr:8121/physiology/event-wants?hours=24&limit=8"
+EVENTS_URL = "http://dr:8121/physiology/event-wants?hours=24&limit=8&care=1"
 EVENTS = {"schema_version": "physiology.funded_event_wants.v1", "as_of": T0.isoformat(), "considered": 5, "funded_open": 3,
           "wants": [
               {"want_id": "w1", "family": "vision.ask", "event_ref": "orion_ask:k1", "salience": 0.95, "value_rank": 0.9,

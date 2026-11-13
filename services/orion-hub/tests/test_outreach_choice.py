@@ -594,14 +594,18 @@ def test_choice_prompt_leaves_out_material_with_no_subject_id() -> None:
 
 
 def test_outreach_object_text_joins_shown_topics_and_caps() -> None:
+    from orion.physiology.personality_values import OBJECT_TEXT_MAX as MARKET_CAP
     from scripts.outreach_choice import OBJECT_TEXT_MAX, outreach_object_text
+
+    assert OBJECT_TEXT_MAX == MARKET_CAP
 
     topics = [_topic("daydream:d", kind="daydream"), _topic("reading:s1")]
     text = outreach_object_text(topics)
     assert text == "; ".join(t.option_text for t in topics)
     assert outreach_object_text([]) is None
     long = [OutreachTopic(subject=f"s{i}", kind="reading", option_text="w " * 300, prompt_text="p") for i in range(3)]
-    assert len(outreach_object_text(long)) <= OBJECT_TEXT_MAX
+    joined = outreach_object_text(long)
+    assert len(joined) <= OBJECT_TEXT_MAX and joined.count("; ") == 2  # every topic keeps a share
 
 
 def test_build_choice_carries_care_promoted() -> None:

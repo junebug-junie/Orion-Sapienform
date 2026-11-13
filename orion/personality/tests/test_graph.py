@@ -321,3 +321,46 @@ def test_a_fold_still_writes_the_node_it_touched_and_only_that_node():
              node(disposition_id="d1", centroid=axis(3), updated_at=NOW - timedelta(minutes=1))]
     res = fold(nodes, [ev(axis(0), weight=1.0)], now=NOW)
     assert [n.disposition_id for n in res.nodes] == ["d0"]
+
+
+# --- Juniper's No (Hub Personality tab, personality_juniper_verdict) ----------------------------
+
+
+def test_a_choice_in_the_direction_juniper_said_no_to_counts_on_that_node_and_founds_nothing():
+    """Regression: Juniper's No retires a tendency. Orion keeps making the same kind of choice, and before
+    this the reducer founded a fresh tendency on the same direction, so she was asked again."""
+    no = node(disposition_id="dno", status="retired", retired_at=NOW - timedelta(days=1), centroid=axis(0),
+              evidence_count=5, lane_counts={"prime": 5}, updated_at=NOW - timedelta(days=1))
+    later = NOW + timedelta(days=30)
+    res = fold([no], [ev(axis(0, 0.1), at=later), ev(axis(0, 0.05), at=later)], now=later,
+               juniper={"dno": g.JUNIPER_NO})
+    assert [n.disposition_id for n in res.nodes] == ["dno"]  # no new node
+    out = res.nodes[0]
+    assert out.status == "retired" and out.retired_at == no.retired_at
+    assert out.evidence_count == 7 and out.lane_counts["prime"] == 7
+    assert out.weight == no.weight and out.centroid == no.centroid  # no weight, no drift
+    assert all(e.disposition_id == "dno" and e.weight_delta == 0.0 and e.meta.get("juniper_no")
+               for e in res.evidence_rows)
+    # Without her answer the same choices found a new tendency (the old behaviour).
+    fresh = fold([no], [ev(axis(0, 0.1), at=later)], now=later)
+    assert [n.disposition_id for n in fresh.nodes if n.disposition_id != "dno"]
+
+
+def test_juniper_no_never_comes_back_by_itself_and_a_later_yes_revives_it():
+    no = node(disposition_id="dno", status="retired", retired_at=NOW, centroid=axis(0),
+              lane_recent={"prime": 4.0}, evidence_count=5, updated_at=NOW)
+    much_later = NOW + timedelta(days=60)
+    quiet = apply_fade([no], now=much_later, juniper={"dno": g.JUNIPER_NO})
+    assert quiet.nodes == []  # untouched: still retired, no fade, no status rule
+    # A live node nearer the choice still takes it: Juniper's No only claims what would found a new node.
+    no_off = node(disposition_id="dno", status="retired", retired_at=NOW, centroid=axis(0, 0.4),
+                  lane_recent={"prime": 4.0}, evidence_count=5, updated_at=NOW)
+    live = node(disposition_id="dlive", centroid=axis(0), updated_at=much_later)
+    res = fold([no_off, live], [ev(axis(0), at=much_later)], now=much_later, juniper={"dno": g.JUNIPER_NO})
+    assert res.evidence_rows[0].disposition_id == "dlive"
+    # A later Yes from her reverses it: revived as a candidate, then the usual rules.
+    yes = apply_fade([no], now=NOW + timedelta(hours=1), juniper={"dno": g.JUNIPER_YES})
+    (out,) = yes.nodes
+    assert out.status in ("candidate", "active") and out.retired_at is None
+    # A Yes on a node that was never retired by her changes nothing (the map only holds her retirements).
+    assert apply_fade([node(disposition_id="x", updated_at=NOW)], now=NOW, juniper={"x": g.JUNIPER_YES}).nodes == []

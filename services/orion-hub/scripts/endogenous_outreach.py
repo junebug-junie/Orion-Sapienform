@@ -2571,7 +2571,7 @@ class EndogenousOutreach:
         # The compose point. The want's id IS this compose's correlation id, so the decision joins
         # the outreach act (grammar_acts.correlation_id).
         # What this compose would talk about, for the market's care term (personality rev 4): the shown
-        # topics' option texts, or the one-topic prompt's retrieval query. The client cuts it to 400 chars.
+        # topics' option texts. None with no topics (the choice point off): care 0, as before.
         from scripts.outreach_choice import outreach_object_text
 
         bid_object_text = outreach_object_text(topics)

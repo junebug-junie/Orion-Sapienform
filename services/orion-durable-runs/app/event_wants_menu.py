@@ -26,7 +26,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from orion.physiology.choice import SYNTHETIC_PRODUCERS
 from orion.physiology.families import FamiliesConfig
-from orion.physiology.personality_values import care_promoted_keys, net_without_care
+from orion.physiology.personality_values import care_funded, care_promoted_keys, net_without_care
 from orion.schemas.physiology_want import FundedEventWantsV1, FundedEventWantV1
 
 READ_PREFIX = "world_pulse_read_seed:"
@@ -119,10 +119,12 @@ def _without_care(row: Mapping[str, Any]) -> Optional[float]:
             warnings = json.loads(warnings)
         except ValueError:
             warnings = []
-    nwc = net_without_care([str(w) for w in warnings or [] if isinstance(w, str)], float(net))
+    lines = [str(w) for w in warnings or [] if isinstance(w, str)]
+    nwc = net_without_care(lines, float(net))
     if nwc is None:
         return float(net)
-    if row.get("reason") == "net_positive" and nwc <= 0.0 < float(net):
+    # Funded only through care (counts the exploration floor; personality_values.care_funded).
+    if care_funded("funded", row.get("reason"), float(net), lines):
         return None
     return nwc
 
@@ -146,6 +148,14 @@ def _care_promoted(keep: Sequence[FundedEventWantV1], without_care: Mapping[str,
     out = care_promoted_keys(with_c, without, limit)
     shown = {w.want_id for w in keep[:limit]}
     return ({w.want_id for w in keep if key(w) in out} | care_only) & shown
+
+
+def menu_payload(menu: FundedEventWantsV1, *, include_care: bool) -> dict:
+    """The HTTP body. ``care_promoted`` only when the caller asked (``?care=1``): ``FundedEventWantV1`` is
+    ``extra="forbid"``, so an orion-mind built before the field would reject every list it sees."""
+    if include_care:
+        return menu.model_dump(mode="json")
+    return menu.model_dump(mode="json", exclude={"wants": {"__all__": {"care_promoted"}}})
 
 
 async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datetime, hours: float,
@@ -185,4 +195,5 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
     return menu_from_rows(rows, labels=labels, gone=gone, families=families, now=now, limit=limit)
 
 
-__all__ = ["LATEST_EVENT_DECISIONS_SQL", "OFFICE_LABELS_SQL", "OFFICE_TABLE_SQL", "expires_at", "menu_from_rows", "read_menu"]
+__all__ = ["LATEST_EVENT_DECISIONS_SQL", "OFFICE_LABELS_SQL", "OFFICE_TABLE_SQL", "expires_at", "menu_from_rows",
+           "menu_payload", "read_menu"]

@@ -205,17 +205,22 @@ def parse_pick(text: str, n_options: int, *, is_pass: Callable[[str], bool]) -> 
     return Pick("missing", None, raw, "none")
 
 
-# The care term's object text cap (orion.physiology.personality_values.OBJECT_TEXT_MAX).
+# The care term's object text cap (orion.physiology.personality_values.OBJECT_TEXT_MAX; this pure module
+# imports nothing from the body economy). tests/test_outreach_choice.py fails if the two drift.
 OBJECT_TEXT_MAX = 400
 
 
 def outreach_object_text(topics: Sequence[OutreachTopic]) -> Optional[str]:
     """What this compose would talk about, for the market's care term (personality rev 4): the shown
-    topics' option texts in shown order, joined with "; " and cut to ``OBJECT_TEXT_MAX``. None when no
-    topic has text (the bid then prices care 0, as before)."""
-    parts = [clip(getattr(t, "option_text", "") or "", OBJECT_TEXT_MAX) for t in topics or ()]
-    text = "; ".join(p for p in parts if p)
-    return clip(text, OBJECT_TEXT_MAX) or None
+    topics' option texts in shown order, joined with "; ". Each topic gets an equal share of
+    ``OBJECT_TEXT_MAX`` before the join, so the freshest topic does not fill what care embeds. None when
+    no topic has text (the bid then prices care 0, as before)."""
+    texts = [str(getattr(t, "option_text", "") or "").strip() for t in topics or ()]
+    texts = [t for t in texts if t]
+    if not texts:
+        return None
+    share = max(1, (OBJECT_TEXT_MAX - 2 * (len(texts) - 1)) // len(texts))
+    return clip("; ".join(clip(t, share) for t in texts), OBJECT_TEXT_MAX) or None
 
 
 def _option(t: OutreachTopic, rank: int) -> ChoiceOptionV1:

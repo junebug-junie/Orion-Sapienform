@@ -550,10 +550,13 @@ def regulate_refusal(move: RegulateMoveV1, state: PrimeStateV1,
 def apply_answer(
     state: PrimeStateV1, answer: PrimeAnswerV1, *, now: datetime, arc_ids: list[str], focus_pending: Optional[bool],
     receptors: Optional[Mapping[str, Sequence[str]]] = None, event_ids: Optional[list[str]] = None,
+    event_wants: Optional[Mapping[str, Mapping[str, Any]]] = None,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
     ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
-    ``event_ids``: event mode is on; a new concern must name one of these funded events (else not added)."""
+    ``event_ids``: event mode is on; a new concern must name one of these funded events (else not added).
+    ``event_wants``: event_ref -> its listed want (``orion.prime.choice.listed_wants``); a new concern records
+    the want's family and ``care_promoted`` (personality rev 4 choice point)."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -586,8 +589,11 @@ def apply_answer(
             if any(c.event_ref == add.event_id for c in concerns):
                 warnings.append(f"concern not added, a concern already holds event {add.event_id!r}: {add.text[:80]!r}")
                 continue
+            listed = (event_wants or {}).get(add.event_id) or {}
+            family = str(listed.get("family") or "").strip()[:200] or None
+            promoted = listed.get("care_promoted") if isinstance(listed.get("care_promoted"), bool) else None
             concern = PrimeConcernV1(concern_id=new_id(), text=add.text, event_ref=add.event_id, opened_at=now,
-                                     last_evidence_at=now)
+                                     last_evidence_at=now, event_family=family, event_care_promoted=promoted)
             concerns.append(concern)
             added.append(concern.concern_id)
             continue

@@ -60,6 +60,7 @@ from orion.curiosity.value import (
 )
 from orion.curiosity.replica.plan import PlanRowV1
 from orion.curiosity.worldview import Prior, WorldviewReader, WorldviewUnavailable, build_prior
+from orion.schemas.personality import CHOICE_OPTION_TEXT_MAX
 
 logger = logging.getLogger("orion-hub.curiosity_offer_decisions")
 
@@ -73,9 +74,8 @@ REPLICA_MIGRATION = "services/orion-sql-db/manual_migration_curiosity_replica_pl
 # dropped after this long. Durable retries land within hours.
 SNAPSHOT_RETENTION_DAYS = 14.0
 
-# The offered prior's claim, as stored on the offer row (``offered_rows``). Matches the personality
-# option text cap (orion.schemas.personality.CHOICE_OPTION_TEXT_MAX).
-OFFERED_CLAIM_MAX = 400
+# The offered prior's claim, as stored on the offer row (``offered_rows``): the personality option text cap.
+OFFERED_CLAIM_MAX = CHOICE_OPTION_TEXT_MAX
 
 # asyncpg's UndefinedTableError. Matched on the SQLSTATE, not the message: a
 # missing COLUMN also says "does not exist", and that is schema drift to

@@ -738,9 +738,10 @@ def decide_priced(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketC
         parts[f"prime:{prime.direction}"] = prime_part
         charge += prime_part
     net = value - charge
+    net_no_care = net - weight * (rank - rank_no_care)
     if personality is not None:
         warnings += trace_warnings(personality, rank=rank, rank_without_care=rank_no_care, net=net,
-                                   net_without_care=net - weight * (rank - rank_no_care))
+                                   net_without_care=net_no_care)
     cost_frac = {k: round(v[0], 6) for k, v in items.items()}
     common = dict(intensity=round(inten, 6), value_rank=round(rank, 6), graded=app.graded, value_basis=vbasis,
                   family_weight=round(weight, 6), weight_basis=wbasis, prices_seen=prices_seen, cost_frac=cost_frac,
@@ -792,6 +793,10 @@ def decide_priced(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketC
                    and (floor_share is None or floor_share < EXPLORATION_FLOOR))
     if net > 0 or under_floor:
         reason = "net_positive" if net > 0 else "exploration_floor"
+        if personality is not None:
+            # Would it be funded with no care term (its own net, or the exploration floor)? The runaway guard
+            # reads this (personality_values.care_funded): a fund that needed care marks its choice care_promoted.
+            warnings.append(f"{TRACE_PREFIX}funded_without_care={1 if (net_no_care > 0 or under_floor) else 0}")
         if reason == "exploration_floor":
             what = "acts started" if book.counts_acts else "funded wants"
             fs = (f"no {what} in its tier this week" if floor_share is None

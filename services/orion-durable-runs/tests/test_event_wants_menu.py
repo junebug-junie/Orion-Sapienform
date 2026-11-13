@@ -240,6 +240,28 @@ def test_care_promoted_marks_a_want_on_the_menu_only_through_care():
     assert FundedEventWantsV1.model_validate_json(menu.model_dump_json()) == menu
 
 
-def test_the_menu_sql_reads_the_decision_reason_and_warnings():
-    assert "decision->>'reason' AS reason" in LATEST_EVENT_DECISIONS_SQL
-    assert "decision->'warnings' AS warnings" in LATEST_EVENT_DECISIONS_SQL
+def test_read_menu_passes_reason_and_jsonb_warnings_through_to_care_promoted():
+    rows = [
+        dict(_row("a", "world_pulse_read_seed:s1", net=0.50), reason="net_positive",
+             warnings=json.dumps(_care(0.10))),
+        dict(_row("b", "world_pulse_read_seed:s2", net=0.40), reason="net_positive", warnings=None),
+        dict(_row("c", "world_pulse_read_seed:s3", net=0.30), reason="net_positive", warnings=_care(0.30)),
+    ]
+    pool = _Pool({LATEST_EVENT_DECISIONS_SQL: rows})
+    menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=2))
+    assert "decision->>'reason' AS reason" in pool.seen[0][0] and "decision->'warnings' AS warnings" in pool.seen[0][0]
+    assert [(w.want_id, w.care_promoted) for w in menu.wants] == [("a", True), ("b", False)]
+
+
+def test_the_payload_leaves_care_promoted_out_unless_asked():
+    """``FundedEventWantV1`` is extra="forbid": an orion-mind built before the field must still validate the
+    list, whatever the deploy order. Prime asks with ``care=1``."""
+    from app.event_wants_menu import menu_payload
+
+    rows = [dict(_row("a", "world_pulse_read_seed:s1", net=0.05), reason="net_positive", warnings=_care(-0.02))]
+    menu = menu_from_rows(rows, labels={}, gone=set(), families=FAMS, now=NOW, limit=8)
+    plain = menu_payload(menu, include_care=False)
+    assert "care_promoted" not in plain["wants"][0]
+    asked = menu_payload(menu, include_care=True)
+    assert asked["wants"][0]["care_promoted"] is True
+    assert FundedEventWantsV1.model_validate(plain).wants[0].care_promoted is False

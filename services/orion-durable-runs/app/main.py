@@ -937,10 +937,12 @@ async def physiology_bid(want: dict, object_text: Optional[str] = Query(default=
 
 
 @app.get("/physiology/event-wants")
-async def physiology_event_wants(hours: float = 24.0, limit: int = 8) -> dict:
+async def physiology_event_wants(hours: float = 24.0, limit: int = 8, care: int = 0) -> dict:
     """Read-only ``FundedEventWantsV1``: event wants whose latest decision is funded and whose event has
     not expired, highest net first (attention as the want competition, patch 2). Orion Prime reads it as
-    its concern source. From want_ledger; no scoring here."""
+    its concern source. From want_ledger; no scoring here. ``care=1``: include each want's
+    ``care_promoted`` (personality rev 4). Without it the field is left out, so a reader built before the
+    field existed (``extra="forbid"``) still validates the payload whatever the deploy order."""
     from datetime import datetime, timezone
 
     from app.event_wants_menu import read_menu
@@ -949,7 +951,9 @@ async def physiology_event_wants(hours: float = 24.0, limit: int = 8) -> dict:
         raise HTTPException(503, "no database pool yet (service starting or durable runs disabled)")
     menu = await read_menu(_checkpointer_cm, market.families if market is not None else None,
                            now=datetime.now(timezone.utc), hours=hours, limit=limit)
-    return menu.model_dump(mode="json")
+    from app.event_wants_menu import menu_payload
+
+    return menu_payload(menu, include_care=bool(care))
 
 
 @app.post("/physiology/bid/{want_id}/release")

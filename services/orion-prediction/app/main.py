@@ -60,11 +60,37 @@ _stop = asyncio.Event()
 _last_tick: dict[str, Any] = {"at": None, "ok": None, "error": None}
 
 
+async def _publish_turn_surprise() -> int:
+    """Publish the chat-turn surprise events of the last settle pass. Never raises; a failed publish
+    drops that event (the settled rows are the record) and keeps going."""
+    pending = turn_self_bets.take_pending_surprise()
+    if not pending or _bus is None or not _settings.publish_enabled:
+        return 0
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.prediction import PREDICTION_TURN_SURPRISE_CHANNEL, PREDICTION_TURN_SURPRISE_KIND
+
+    source = ServiceRef(name=_settings.service_name, version=_settings.service_version, node=_settings.node_name)
+    sent = 0
+    for ev in pending:
+        try:
+            await _bus.publish(PREDICTION_TURN_SURPRISE_CHANNEL, BaseEnvelope(
+                kind=PREDICTION_TURN_SURPRISE_KIND, source=source, payload=ev.model_dump(mode="json")))
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            turn_self_bets.surprise_counts["publish_failed"] += 1
+            logger.error("turn_surprise_publish_failed correlation_id=%s err=%s", ev.correlation_id, exc)
+    turn_self_bets.surprise_counts["published"] += sent
+    if sent:
+        logger.info("turn_surprise_published n=%d z=%s", sent, [round(ev.z, 2) for ev in pending])
+    return sent
+
+
 async def _settle_self_bets_forever() -> None:
     while not _stop.is_set():
         try:
             await asyncio.to_thread(turn_self_bets.settle_pending)
             _last_settle.update(at=datetime.now(timezone.utc), ok=True, error=None)
+            await _publish_turn_surprise()
         except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
             _last_settle.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
             logger.exception("turn_self_bets_settle_failed")
@@ -136,7 +162,7 @@ async def lifespan(app: FastAPI):
     effects = Effects(engine)
     action_bets = ActionBets(_store, shadow=(WorldModelShadow(_settings.world_model_weights)
                                              if _settings.world_model_shadow_enabled else None))
-    turn_self_bets = TurnSelfBets(_store)
+    turn_self_bets = TurnSelfBets(_store, surprise_events_enabled=_settings.turn_surprise_events_enabled)
     reachable = Reachable(_store)
     logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
                 [s.series_id for s in registry.targets()])
@@ -245,7 +271,11 @@ async def health() -> dict[str, Any]:
             {"ok": False, "error": "weather off (PREDICTION_WEATHER_ENABLED or ORION_SITUATION_WEATHER_LAT/LON unset)"},
             "series": series, "action_bets": await _action_bets_health(),
             "turn_self_bets": {"enabled": _settings.turn_self_bets_enabled, **_jsonable(_last_settle),
-                               "last_pass": _jsonable(turn_self_bets.last_pass if turn_self_bets else {})},
+                               "last_pass": _jsonable(turn_self_bets.last_pass if turn_self_bets else {}),
+                               "turn_surprise": {
+                                   "enabled": _settings.turn_surprise_events_enabled,
+                                   "counts": dict(turn_self_bets.surprise_counts) if turn_self_bets else {},
+                                   "last_error": turn_self_bets.last_surprise_error if turn_self_bets else None}},
             "reachable": {"enabled": _settings.reachable_enabled, **_jsonable(_last_reachable),
                           "last_pass": _jsonable(reachable.last_pass if reachable else {})},
             "experiment_runner": runner.status() if runner else {"enabled": False}}

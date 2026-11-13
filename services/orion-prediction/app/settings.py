@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # reads what was settled).
     turn_self_bets_enabled: bool = Field(True, alias="PREDICTION_TURN_SELF_BETS_ENABLED")
     turn_self_bets_settle_sec: float = Field(60.0, ge=5, alias="PREDICTION_TURN_SELF_BETS_SETTLE_SEC")
+    # Publish prediction.turn_surprise.v1 on orion:prediction:turn_surprise for each settled chat turn
+    # (app/turn_surprise.py). substrate-runtime folds it into node:prediction.chat_turn (successor of
+    # node:substrate.chat). false = kill switch: the node goes stale (absent), never calm.
+    turn_surprise_events_enabled: bool = Field(True, alias="PREDICTION_TURN_SURPRISE_EVENTS_ENABLED")
 
     # Juniper reachable (app/reachable.py): an hourly forecast of "Juniper messages Orion in the next
     # hour", settled against chat_message and graded vs a base rate. false = no issue/settle loop.

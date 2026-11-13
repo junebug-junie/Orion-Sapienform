@@ -8,6 +8,7 @@ on:
       - "orion/schemas/registry.py"
       - "orion/bus/channels.yaml"
       - "orion/substrate/prediction_surprise.py"
+      - "orion/substrate/prediction_turn_surprise.py"
       - "orion/weather/**"
       - "orion/prediction/**"
       - "config/prediction/**"
@@ -22,6 +23,7 @@ on:
       - "orion/schemas/registry.py"
       - "orion/bus/channels.yaml"
       - "orion/substrate/prediction_surprise.py"
+      - "orion/substrate/prediction_turn_surprise.py"
       - "orion/weather/**"
       - "orion/prediction/**"
       - "config/prediction/**"
@@ -51,3 +53,5 @@ jobs:
         run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py
       - name: "Replay eval (committed real cabinet history, 40 windows as production: full zoo incl. covariates, per-horizon gate, blend never loses to baseline)"
         run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py
+      - name: "Chat-turn surprise gate eval (real settled chat bets: used kinds beat the base rate held out, calm rests at 0)"
+        run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_turn_surprise_replay_eval.py --fixture evals/fixtures/turn_self_bets_chat_2026-11-13.json --check

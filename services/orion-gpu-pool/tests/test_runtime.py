@@ -23,8 +23,7 @@ PROFILES = load_profiles()
 LIVE = {  # what circe's llama.cpp servers report today (see spec, "The machine")
     "chat": ("qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition", "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf", 1, 65536),
     "agent": ("qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex", "Qwen3.8-27B-UD-Q4_K_XL.gguf", 1, 131072),
-    "metacog": ("qwen3-8b-q5km-v100-16gb-atlas-metacog-16k", "Qwen_Qwen3-8B-Q5_K_M.gguf", 4, 4096),
-    "fast": ("qwen3-8b-q4km-v100-16gb-balanced", "Qwen_Qwen3-8B-Q4_K_M.gguf", 4, 4096),
+    "fast": ("qwen35-9b-udq5kxl-v100-32gb-circe-shared-32k", "Qwen3.5-9B-UD-Q5_K_XL.gguf", 10, 32768),
 }
 
 
@@ -136,11 +135,11 @@ def test_discovery_confirms_live_roles_and_grants_with_the_discovered_model():
         rt, _ = make()
         await boot(rt)
         status = {d.role: d.status for d in rt.discovered}
-        assert status["metacog"] == "confirmed" and status["agent-gpu2"] == "unloaded"
+        assert status["fast"] == "confirmed" and status["agent-gpu2"] == "unloaded"
         r = await rt.acquire(acq("metacog"))
-        assert r.status == "granted" and r.grant.role == "metacog"
-        assert r.grant.model_file == "Qwen_Qwen3-8B-Q5_K_M.gguf" and r.grant.ctx_per_slot == 4096
-        assert r.grant.url == "http://100.112.254.99:8012"
+        assert r.status == "granted" and r.grant.role == "fast"
+        assert r.grant.model_file == "Qwen3.5-9B-UD-Q5_K_XL.gguf" and r.grant.ctx_per_slot == 32768
+        assert r.grant.url == "http://100.112.254.99:8013"
     run(go())
 
 
@@ -308,11 +307,11 @@ def test_mismatched_worker_gets_no_grants_and_is_reported():
     async def go():
         rt, _ = make()
         await boot(rt)
-        await rt.on_announce(LlmWorkerAnnounceV1(host="circe", role="metacog", profile_name=LIVE["fast"][0],
-                                                 port=8012, announced_at=rt.now()))
+        await rt.on_announce(LlmWorkerAnnounceV1(host="circe", role="fast", profile_name="no-such-profile",
+                                                 port=8013, announced_at=rt.now()))
         await rt.tick()
-        assert {d.role: d.status for d in rt.discovered}["metacog"] == "mismatch"
-        assert (await rt.acquire(acq("metacog"))).grant.role == "fast"
+        assert {d.role: d.status for d in rt.discovered}["fast"] == "mismatch"
+        assert (await rt.acquire(acq("metacog"))).grant.role in {"agent", "agent-gpu2", "agent-deep", "chat"}
         assert rt.bus.events("discovery_mismatch")
     run(go())
 
@@ -487,7 +486,7 @@ def test_grant_served_by_keeps_the_node_worker_shape():
         rt, _ = make()
         await boot(rt)
         r = await rt.acquire(acq("metacog"))
-        assert r.grant.served_by == "circe-worker-metacog"
+        assert r.grant.served_by == "circe-worker-fast"
         assert r.grant.served_by.split("-worker")[0] == "circe"      # cortex-exec node attribution
     run(go())
 

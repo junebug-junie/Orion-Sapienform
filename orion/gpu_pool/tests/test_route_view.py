@@ -51,13 +51,13 @@ def test_config_round_trips_from_the_pool_payload():
 
 
 def test_view_from_state_uses_the_config_the_pool_sent():
-    view = build_route_view(_state([_role("chat"), _role("fast", vision=True), _role("metacog", "down")]))
+    view = build_route_view(_state([_role("chat"), _role("fast", vision=True)]))
     assert view["source"] == SOURCE_POOL
     routes = _by_id(view)
     assert set(routes) == set(CFG.routes)
     chat = routes["chat"]
     assert (chat["status"], chat["model"], chat["n_ctx"], chat["role"]) == ("up", "chat.gguf", 8192, "chat")
-    # metacog's own role is down, so the route lands on the first up role it may use (fast).
+    # Both classes now use the same fast role; the route still retains metacog priority.
     assert routes["metacog"]["status"] == "up" and routes["metacog"]["role"] == "fast"
     assert routes["quick"]["vision"] is True
     assert routes["quick_background"]["priority"] == "background" and routes["harness"]["priority"] == "system"
@@ -76,6 +76,7 @@ ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
                              "operator_agent_deep", "operator_metacog", "operator_fast"}
 # Roles whose server type changed after the freeze report the current one wherever they serve.
 BACKEND_CHANGED_AFTER_GOLDEN = {"chat": "strata", "agent": "strata"}   # Strata on gpu0 10-30, gpu1 10-31
+MIGRATED_ROUTES = {"metacog", "metacog_background", "metacog_turn"}  # all now share fast
 _GOLDEN = json.loads((Path(__file__).parent / "fixtures_routes_compat_golden.json").read_text())
 
 
@@ -97,7 +98,8 @@ def test_view_matches_the_old_gateway_generator_output(case):
     # served_by is "<host>-worker-<role>", the role whose backend the entry reports (route_view._entry)
     expected = [{**r, "backend": BACKEND_CHANGED_AFTER_GOLDEN.get(r["served_by"].rsplit("-worker-", 1)[1], r["backend"])}
                 if r["backend"] else r for r in golden["routes"]]
-    assert [r for r in got if r["id"] in frozen] == expected
+    assert [r for r in got if r["id"] in frozen - MIGRATED_ROUTES] == [
+        r for r in expected if r["id"] not in MIGRATED_ROUTES]
 
 
 def test_down_route_carries_no_model_ctx_or_vision():
@@ -235,7 +237,7 @@ def test_judge_route_is_agent_work_that_never_lands_on_the_gpu2_seat():
 
 def test_operator_routes_are_background_and_land_only_on_their_pinned_role():
     """Leased evals (2026-11-12): every operator route is background; a pinned one names one role."""
-    routes = _by_id(build_route_view(_state([_role(r) for r in ("chat", "agent", "agent-gpu2", "metacog", "fast")],
+    routes = _by_id(build_route_view(_state([_role(r) for r in ("chat", "agent", "agent-gpu2", "fast")],
                                             gpu0_lent=True)))
     from orion.gpu_pool.config import load_pool_config
 

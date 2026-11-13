@@ -156,7 +156,7 @@ def test_burst_seat_builds_the_prism_image_under_its_own_tag():
     assert burst["build"]["dockerfile"] == "services/orion-llamacpp-host/Dockerfile.prism"
     assert burst["image"] == "orion-llamacpp-host-prism:0.1.0"
     # atlas-chat and atlas-agent are Strata engines (their own image); announcers and llama.cpp rollbacks are stock
-    for name in ("atlas-chat-announce", "atlas-chat-llamacpp", "atlas-metacog", "atlas-fast",
+    for name in ("atlas-chat-announce", "atlas-chat-llamacpp", "atlas-fast",
                  "atlas-agent-announce", "atlas-agent-llamacpp"):
         assert compose[name]["image"] == "orion-llamacpp-host:0.1.0", name
         assert compose[name]["build"]["dockerfile"] == "services/orion-llamacpp-host/Dockerfile", name

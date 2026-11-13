@@ -19,7 +19,7 @@ from orion.core.bus.async_service import OrionBusAsync
 
 from . import lane_senders, pool_placement, upstream_cancel
 from .ctx_overflow import CONTEXT_OVERFLOW_ERROR, is_context_overflow
-from .fast_thinking import with_thinking_off_default
+from .fast_thinking import GPU3_WORK_CLASSES, with_gpu3_route_defaults
 from .models import ChatBody, ChatMessage
 from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
@@ -1653,12 +1653,11 @@ def run_llm_chat(body: ChatBody, plan: Optional[ChatDispatchPlan] = None) -> Dic
     route, route_target, route_source = plan.route, plan.route_target, plan.route_source
     effective_profile_name = body.profile_name
     if (
-        route in METACOG_LLM_ROUTES
+        route in METACOG_LLM_ROUTES | {"operator_metacog"}
         and not effective_profile_name
         and settings.atlas_metacog_profile_name
     ):
-        # Keep metacog lane deterministic even when callers omit profile (both `metacog` and
-        # `metacog_background` share circe-worker-2 -- see METACOG_LLM_ROUTES).
+        # Keep metacog model identity deterministic when callers omit a profile.
         effective_profile_name = settings.atlas_metacog_profile_name
     profile = _select_profile(effective_profile_name)
     backend = _pick_backend(body.options, profile)
@@ -1681,8 +1680,9 @@ def run_llm_chat(body: ChatBody, plan: Optional[ChatDispatchPlan] = None) -> Dic
         base_url = route_target.url
         route_url = base_url
         served_by = route_target.served_by
-        if plan.work_class == "fast" and backend == "llamacpp":
-            body = body.model_copy(update={"options": with_thinking_off_default(body.options or {})})
+        if plan.work_class in GPU3_WORK_CLASSES and backend == "llamacpp":
+            body = body.model_copy(update={"options": with_gpu3_route_defaults(
+                body.options or {}, plan.work_class)})
         if backend == "vllm":
             model = route_target.model or _normalize_model_for_vllm(model)
         if backend == "ollama":

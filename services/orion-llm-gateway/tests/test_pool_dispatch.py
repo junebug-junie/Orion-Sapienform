@@ -124,7 +124,7 @@ async def test_context_overflow_re_leases_once_with_a_bigger_min_ctx(fake_pool, 
     # fast (4096/slot) overflowed; the first fast-class role with ctx >= 4097 is agent (131072).
     assert result["text"] == "hello" and result["url"] == "http://pool-agent:8015"
     assert fake_pool.calls[0]["min_ctx_tokens"] == 10
-    assert fake_pool.calls[1]["min_ctx_tokens"] == 4096 + 1  # the overflowed role's ctx_per_slot + 1
+    assert fake_pool.calls[1]["min_ctx_tokens"] == 32768 + 1  # the overflowed role's ctx_per_slot + 1
     assert fake_pool.releases == ["ok", "ok"]  # an overflow is not the GPU's failure
 
 
@@ -243,7 +243,7 @@ def _by_id(payload):
 
 
 def test_routes_compat_view_statuses_from_pool_state():
-    state = _state([_role("chat"), _role("agent"), _role("agent-gpu2", "unloaded"), _role("metacog", "down"),
+    state = _state([_role("chat"), _role("agent"), _role("agent-gpu2", "unloaded"),
                     _role("fast", vision=True)])
     routes = _by_id(pool_placement.build_routes_compat(state))
     assert set(routes) == set(pool_placement.pool_routes())
@@ -251,7 +251,7 @@ def test_routes_compat_view_statuses_from_pool_state():
     assert chat["status"] == "up" and chat["upstream"] == "http://100.112.254.99:8011"
     assert (chat["n_ctx"], chat["model"], chat["served_by"], chat["backend"]) == (8192, "chat.gguf", "circe-worker-chat", "strata")
     assert chat["latency_ms"] is None and chat["reserved_free_slots"] is None
-    # metacog's own role is down: the first up role of its class that it may use (fast)
+    # Metacog and quick share the fast role.
     assert routes["metacog"]["status"] == "up" and routes["metacog"]["upstream"].endswith(":8013")
     assert routes["quick"]["vision"] is True
     # burst compat: chat-burst closed while gpu0 is not lent; agent-burst follows agent-gpu2 only

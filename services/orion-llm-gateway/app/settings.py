@@ -128,8 +128,6 @@ class Settings(BaseSettings):
         True, alias="LLM_GATEWAY_OPENAI_PASSTHROUGH_ENABLED"
     )
     atlas_metacog_profile_name: Optional[str] = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")
-    atlas_metacog_cuda_visible_devices: Optional[str] = Field(None, alias="ATLAS_METACOG_CUDA_VISIBLE_DEVICES")
-    atlas_metacog_host_port: int = Field(8012, alias="ATLAS_METACOG_HOST_PORT")
 
     # Default structured-output method when options.structured_output_method is auto/unset
     llm_structured_output_method: str = Field(

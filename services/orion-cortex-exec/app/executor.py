@@ -26,7 +26,6 @@ from pydantic import BaseModel, ValidationError
 from orion.llm.routes import (
     CORTEX_OVERRIDE_SYSTEM_ROUTES,
     LLM_ROUTE_ALIASES,
-    METACOG_LLM_ROUTES,
     normalize_llm_route,
 )
 from orion.core.bus.async_service import OrionBusAsync
@@ -3441,7 +3440,7 @@ async def call_step_services(
                 else:
                     request_object = ChatRequestPayload(
                         model=req_model,
-                        profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
+                        profile=ctx.get("profile_name"),
                         messages=messages_payload,
                         raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                         # metacog_background (2026-09-07, not plain metacog): the daily
@@ -4445,10 +4444,7 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
-                    profile=(
-                        ctx.get("profile_name")
-                        or (settings.atlas_metacog_profile_name if llm_route in METACOG_LLM_ROUTES else None)
-                    ),
+                    profile=ctx.get("profile_name"),
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=llm_route,

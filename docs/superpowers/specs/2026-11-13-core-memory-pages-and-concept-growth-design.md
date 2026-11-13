@@ -134,9 +134,11 @@ It is already a versioned, insert-only page store: `concept_id`, `version`, `con
 
 A durable run in `orion-durable-runs`, so retries and a GPU lease come for free:
 
-1. Load the current page version and the memories added since that version.
-2. The LLM rewrites the page. Every sentence must cite at least one `memory_id`,
-   `person_fact` id, or `chat_history_log` id.
+1. Load the current page version and the current Graphiti facts about the page's entity
+   (only facts not marked no-longer-true), plus any memories added since that version.
+2. The LLM rewrites the page. Every sentence must cite at least one fact edge, `memory_id`,
+   `person_fact` id, or `chat_history_log` id. If the Graphiti trial fails, it folds from
+   `episode_memory` directly.
 3. A deterministic validator rejects the write if any sentence has no cite, any cite does not
    resolve, or the page is over its size cap (about 350 words for a core page).
 4. Write the result as the new live version. There is no approval step (Decision 1).
@@ -199,6 +201,7 @@ verbatim. Covered by a test.
 
 - **A page states something false as Orion's identity, and it goes live with no gate.**
   Mitigation:
+  - facts come from Graphiti, where contradicted facts are already marked no longer true;
   - every sentence must cite a real record;
   - a correction from Juniper outranks what it corrects;
   - versions are insert-only, so rollback means pointing at an earlier version;
@@ -300,29 +303,90 @@ arcs, and notes. **It has no command for anything Orion read or concluded.**
 5. **Topic foundry concepts: retire from the substrate graph.** Word labels over AI Town
    chatter. Check `orion/signals/adapters/topic_foundry.py` readers first.
 
-### Graphiti: do not turn on the full engine. Retire it.
+### Graphiti: turn on the full engine, as the fact layer under the pages
 
-What the full engine would do: on every episode, run several LLM calls to pull out entities
-and facts, merge them with ones already in the graph, and mark old facts as no longer true.
+**Revised 2026-11-13 after Juniper's challenge.** An earlier draft said retire. That was
+wrong on three counts.
 
-Why not:
+**1. Graphiti is the answer to the page risks this design named.** Pages written by an LLM rot
+in three ways:
 
-- It would be another parallel knowledge store next to pages, coined concepts, and news
-  concepts. That repeats the "15 stores, no reader" problem this design exists to end.
-- Its extraction pulls entities out of text with an LLM. The 08-28 spec
-  (`2026-08-28-concept-induction-topic-model-rebuild-design.md`) measured that approach at a
-  28% ceiling on this corpus, and 0% actual.
-- It costs several LLM calls per episode on GPU lanes Orion already pays for, and Orion
-  counts that cost as their own (body economy).
-- Its one unique strength, tracking when a fact stops being true, is covered by pages. A fold
-  rewrites the sentence, and the old version stays in history with its date.
+- **Contradictions pile up.** Two versions of a fact both stay "true".
+- **Duplicates.** "el Coco", "Coco" and "the dog" become three things.
+- **Stale facts never retire.** A fact that was true for three days stays true forever.
 
-What it holds is safe. Its 32 episodes are copies of stance crystallizations that stay in
-Postgres and feed `page:origin`.
+Graphiti's full engine exists to fix exactly these. It resolves each new entity against the
+ones it already has. It stores each fact as its own edge with a time it became true. When a
+new fact contradicts an old one, it marks the old edge no longer true. A prose rewrite hides
+all of that. Graphiti makes it a row anyone can query.
 
-If Juniper wants the full engine anyway, the smallest honest trial is this: run `add_episode`
-on those 32 episodes through a local model. Then compare the facts it pulls out against
-`page:origin` by hand, before anything reads it.
+**2. Live proof the rot is already here.** `episode_memory` holds all of these as `active`
+right now, with nothing marking any of them old:
+
+- "Juniper is staying at the Wade… in Chicago" (10-05)
+- "Juniper is in Chicago for a team meeting" (10-05)
+- "Juniper corrected me that she lives in Ogden, Utah, not Chicago"
+- the el Coco correction: dog, not cat (11-11)
+
+A trip became a home address, then a correction sat beside the error.
+
+**3. The cost and quality objections were overstated.**
+
+- **Cost.** The input is `episode_memory`, which is already distilled. That is about 11.6 rows a
+  day, not every chat turn. Several LLM calls on ~12 short statements a day is small next to
+  what the body already spends.
+- **Quality.** The "28% ceiling" in the 08-28 spec measured LLM entity extraction over raw
+  chat text, used to link topic clusters. That is a different job. Graphiti here reads
+  one-sentence, first-person, already-validated statements, which is the easiest input it
+  could get.
+
+**How it fits:**
+
+```text
+chat -> episode_memory (distill, exists)
+     -> Graphiti add_episode (entities resolved, facts as timed edges, old facts invalidated)
+     -> page fold reads the CURRENT facts about an entity, and cites fact edges
+     -> core pages in every prompt
+```
+
+The graph has a reader (the page fold) from its first day, so it cannot become a keyword
+cathedral by construction. Ontology rule: no custom entity or edge types at first. Use
+Graphiti's defaults, and add a type only when a page needs it.
+
+**What exists:**
+
+- `graphiti-core[falkordb]==0.19.0` is installed in the adapter.
+- It ships `openai_generic_client` (for an OpenAI-compatible local server) and
+  `falkordb_driver`.
+- What changes: the adapter calls `add_episode()` with a real LLM client pointed at the local
+  model, instead of writing fixed text templates through a no-op client.
+- Source changes from stance crystallizations to `episode_memory`. The 44 high-salience stance
+  messages are backfilled as episodes too.
+- Backfill is all 469 `episode_memory` rows in time order, then live.
+
+**Trial before any page reads it (go/no-go):**
+
+1. Run the backfill into a fresh graph (`graphiti_trial`) with the local model.
+2. **Pass** if all of these hold:
+   - "lives in Chicago" is absent or invalidated, and "lives in Ogden" is current;
+   - the Chicago stay is dated 10-05..10-07 as a stay, not a home;
+   - "el Coco is a cat" is invalidated or absent, and "el Coco is a dog" is current;
+   - "el Coco"/"Coco" and "Amanda"/"my wife" each resolve to one entity;
+   - fewer than 10% of entities are duplicates, judged by hand on a sample of 50;
+   - wall time and GPU-seconds per episode are recorded.
+3. **Fail** if the local model cannot satisfy Graphiti's structured-output prompts reliably
+   (llama.cpp `json_schema` support with Graphiti 0.19 is UNVERIFIED), or the checks above
+   fail. On fail, pages fold straight from `episode_memory` and the "corrections outrank"
+   rule carries the load alone.
+
+**Residual risks:**
+
+- **The local model is the weak link.** Graphiti's prompts are tuned for frontier models.
+  Mitigation: the trial. The agent lane (27B/35B class) is the candidate, not the fast lane.
+- **Invalidation can be wrong.** Graphiti might mark a true fact as no longer true.
+  Mitigation: an invalidation edge cites the episode that caused it, the fold shows both, and
+  Juniper's corrections still outrank.
+- **Flattening** stays a page-rewrite risk. Graphiti does not fix it; verbatim quotes do.
 
 ## Retirements (separate PRs, each with readers cut, kill means kill)
 
@@ -333,9 +397,8 @@ on those 32 episodes through a local model. Then compare the facts it pulls out 
 | World-pulse learning deltas | Headlines, not learning. | Readers of `world_pulse_learning_delta`. |
 | Verbatim `memory_cards` (`operator_distiller`) and the `active_packet` "durable beliefs" digest | 75% verbatim; the digest shows unrelated old messages. | `page:lately` must be live and verified first. |
 | Vector memory recall backend | 0 hits in 16,168 recalls. | — |
-| Graphiti adapter | See above. | Recall `active_packet` collector reads it. Cut that reader in the same PR. |
 
-**Not retired:** news/reading concepts (they get a reader and a fair trial), Orion's coined
+**Not retired:** Graphiti (full engine turned on), news/reading concepts (they get a reader and a fair trial), Orion's coined
 concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concept_history`
 (they are the foundation).
 
@@ -343,7 +406,7 @@ concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concep
 
 1. **News concepts.** Keep, rank, and make them reachable through `orion.dig know` with a
    fair trial, as recommended? Or retire them now?
-2. **Graphiti.** Retire, as recommended? Or run the 32-episode trial first?
+2. **Graphiti.** Turn on the full engine behind the trial above, as now recommended?
 
 ## Proposed schema / API changes
 
@@ -398,6 +461,9 @@ concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concep
    invented facts.
 3. The validator rejects an uncited sentence and an unresolvable cite. Covered by tests.
 4. The metric gate on `matters` passes on the 44 + 44 set before the grade drives any page.
+5. **Graphiti trial passes before any page reads Graphiti.** Ogden current and Chicago
+   invalidated or dated as a stay; el Coco a dog and current; el Coco/Coco and Amanda/my wife
+   each one entity; under 10% duplicate entities on a hand-checked sample of 50.
 
 **Phase 2**
 
@@ -413,9 +479,18 @@ concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concep
 
 ## Recommended next patch
 
-Phase 1a, the smallest slice that moves the live path:
+**Patch 0, the Graphiti trial**, runs alongside 1a:
 
-1. Build `page:juniper` only.
+- Backfill all 469 `episode_memory` rows plus the 44 stance messages into `graphiti_trial`,
+  using the local agent-lane model.
+- Score it against the pass checks in the Graphiti section (Chicago, el Coco, entity
+  duplicates, cost).
+- Nothing reads the trial graph until it passes.
+
+**Phase 1a**, the smallest slice that moves the live path:
+
+1. Build `page:juniper` only. It folds from `episode_memory` directly at first, and switches
+   to Graphiti's current facts once Patch 0 passes.
 2. Fold existing `person_fact` and `about_juniper` memories through the cite validator.
 3. Write v1 live (no gate).
 4. Render it in RELATIONSHIP on every mesh surface, with the mesh-edge check on GitHub and

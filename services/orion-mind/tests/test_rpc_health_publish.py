@@ -148,6 +148,7 @@ async def test_lifespan_starts_and_stops_publisher_bus(monkeypatch) -> None:
     # Prime has its own bus (tests/test_prime_loop.py covers its lifespan); this test is the publisher's.
     monkeypatch.setattr(main_mod.settings, "PRIME_ENABLED", False)
     monkeypatch.setattr(main_mod.settings, "CURIOSITY_REPLICA_ENABLED", False)
+    monkeypatch.setattr(main_mod.settings, "PRIME_CONSENT_ENABLED", False)
 
     async with main_mod.lifespan(FastAPI()):
         # connect_bus=True: the publisher task connects (with retry), not the lifespan.

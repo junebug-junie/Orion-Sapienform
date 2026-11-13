@@ -16,6 +16,7 @@ from orion.mindloop.turns import JUNIPER_TURNS
 
 from .engine import carries_live_turn, run_mind
 from .llm_client import RPC_HEALTH_SINK, MindLLMClient
+from .prime_consent import PrimeConsentResponder
 from .prime_loop import PrimeRuntime
 from .replica_loop import ReplicaRuntime
 from .settings import settings
@@ -30,6 +31,8 @@ prime_bus: OrionBusAsync | None = None
 prime_runtime: PrimeRuntime | None = None
 replica_bus: OrionBusAsync | None = None
 replica_runtime: ReplicaRuntime | None = None
+consent_bus: OrionBusAsync | None = None
+consent_responder: PrimeConsentResponder | None = None
 
 
 def build_heartbeat_chassis() -> HeartbeatOnly:
@@ -157,6 +160,37 @@ async def _stop_replica() -> None:
         replica_bus = None
 
 
+async def _start_consent() -> None:
+    """Orion's consent to a Claude tool call (app/prime_consent.py) on its own bus connection. A failed
+    start is logged; every consent ask then finds no listener and the broker reads it as a no."""
+    global consent_bus, consent_responder
+    if not (settings.PRIME_CONSENT_ENABLED and settings.ORION_BUS_ENABLED):
+        logger.info("prime_consent_disabled PRIME_CONSENT_ENABLED=%s ORION_BUS_ENABLED=%s",
+                    settings.PRIME_CONSENT_ENABLED, settings.ORION_BUS_ENABLED)
+        return
+    try:
+        bus = OrionBusAsync(url=settings.ORION_BUS_URL, enabled=True)
+        consent_bus = bus
+        consent_responder = PrimeConsentResponder(settings=settings, bus=bus, llm=MindLLMClient(rpc_health=False))
+        await consent_responder.start()
+    except Exception as exc:
+        logger.warning("prime_consent_start_failed error=%s", exc)
+        consent_responder = None
+
+
+async def _stop_consent() -> None:
+    global consent_bus, consent_responder
+    if consent_responder is not None:
+        await consent_responder.stop()
+        consent_responder = None
+    if consent_bus is not None:
+        try:
+            await consent_bus.close()
+        except Exception as exc:
+            logger.warning("prime_consent_bus_close_error error=%s", exc)
+        consent_bus = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global heartbeat_chassis
@@ -174,9 +208,11 @@ async def lifespan(app: FastAPI):
     await _start_rpc_health()
     await _start_prime()
     await _start_replica()
+    await _start_consent()
     try:
         yield
     finally:
+        await _stop_consent()
         await _stop_replica()
         await _stop_prime()
         await _stop_rpc_health()

@@ -71,6 +71,7 @@ ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
                              "prime",               # Orion Prime's thoughts, 2026-10-30 (pinned below)
                              "prime_starved",       # Prime after a try that got no seat, 2026-11-03 (pinned below)
                              "judge",               # finalize 5b judge off a gpu2 hold, 2026-11-12 (pinned below)
+                             "prime_consent",       # Orion's consent to a Claude tool, 2026-11-13 (pinned below)
                              # operator work (evals), 2026-11-12 (pinned below)
                              "operator", "operator_chat", "operator_agent", "operator_agent_gpu2",
                              "operator_agent_deep", "operator_metacog", "operator_fast"}
@@ -220,6 +221,22 @@ def test_prime_routes_are_the_chat_worker_at_system_and_starved():
         assert r["priority"] == "system"   # definitional: hidden from the picker
         assert route in SYSTEM_LLM_ROUTES and route not in BACKGROUND_LLM_ROUTES
         assert route not in METACOG_LLM_ROUTES
+
+
+def test_prime_consent_route_is_the_chat_worker_at_interactive():
+    """Orion's consent to a Claude tool call (2026-11-13): the warm chat worker Prime uses, at
+    interactive priority (Juniper waits on Claude's reply), never fast or metacog, system-only."""
+    from orion.llm.routes import BACKGROUND_LLM_ROUTES, METACOG_LLM_ROUTES, SYSTEM_LLM_ROUTES
+    view = build_route_view(None, CFG)
+    [chat] = [e for e in view["routes"] if e["id"] == "chat"]
+    [r] = [e for e in view["routes"] if e["id"] == "prime_consent"]
+    same = lambda e: {k: v for k, v in e.items() if k not in ("id", "priority")}  # noqa: E731
+    assert same(r) == same(chat)
+    spec = CFG.routes["prime_consent"]
+    assert (spec.work_class, spec.priority) == ("chat", "interactive")
+    assert r["priority"] == "system"   # definitional: hidden from the picker
+    assert "prime_consent" in SYSTEM_LLM_ROUTES and "prime_consent" not in BACKGROUND_LLM_ROUTES
+    assert "prime_consent" not in METACOG_LLM_ROUTES
 
 
 def test_judge_route_is_agent_work_that_never_lands_on_the_gpu2_seat():

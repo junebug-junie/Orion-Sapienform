@@ -77,6 +77,12 @@ LIB_HOPS = 1
 #: on an entry that no longer matches anything unresolved.
 DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # Cross-service writers code cannot see (validate-then-persist, HTTP API).
+    "orion.claude_tools.grants:ClaudeGrantLineV1": (
+        "orion-harness-governor",
+        "Orion's turns write $ORION_DIG_HOME/self/claude_grants.jsonl with `dig claude-grants set` (orion/dig, "
+        "run by Bash in the governor); the governor's Claude tools broker and Hub's /api/claude-tools/grants read "
+        "it from the shared /mnt/orion-fcc mount",
+    ),
     "orion.prime.state:PrimeStateV1": (
         "orion-mind",
         "app/prime_loop.py writes Redis orion:prime:state every tick; hub's room_claude_context reads it "

@@ -76,6 +76,7 @@ from app.models import (
     GpuPoolStateSQL,
     PhysiologyStateSQL,
     WantLedgerSQL,
+    ClaudeToolCallLogSQL,
     LlmCallUsageSQL,
     TransportBaselineHourlySQL,
     SelfSignalHourSQL,
@@ -142,6 +143,7 @@ from orion.schemas.self_signal_outcome import SelfSignalHourV1, SelfSignalOutcom
 from orion.schemas.telemetry.field_channel_anomaly_score import FieldChannelAnomalyScoreV1
 from orion.schemas.chat_stance_belief import ChatStanceBeliefLogV1
 from orion.schemas.self_concept_history import SelfConceptHistoryV1
+from orion.schemas.claude_tools import ClaudeToolCallV1
 from orion.schemas.personality import DispositionNamingV1
 from orion.schemas.self_sense import SelfSenseEvalV1
 
@@ -279,6 +281,7 @@ INSERT_ONLY_MODELS = {
     GpuPoolStateSQL,
     PhysiologyStateSQL,
     WantLedgerSQL,
+    ClaudeToolCallLogSQL,
     LlmCallUsageSQL,
     TransportBaselineHourlySQL,
     SelfSignalOutcomeAssociationSQL,
@@ -569,6 +572,7 @@ MODEL_MAP: Dict[str, Tuple[Type[Any], Optional[Type[BaseModel]]]] = {
     "GpuPoolStateSQL": (GpuPoolStateSQL, GpuPoolStateV1),
     "PhysiologyStateSQL": (PhysiologyStateSQL, PhysiologyStateV1),
     "WantLedgerSQL": (WantLedgerSQL, WantDecisionV1),
+    "ClaudeToolCallLogSQL": (ClaudeToolCallLogSQL, ClaudeToolCallV1),
     "LlmCallUsageSQL": (LlmCallUsageSQL, LlmCallUsageV1),
     "TransportBaselineHourlySQL": (TransportBaselineHourlySQL, TransportBaselineHourlyV1),
     "SelfSignalHourSQL": (SelfSignalHourSQL, SelfSignalHourV1),

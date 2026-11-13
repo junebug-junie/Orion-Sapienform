@@ -182,6 +182,19 @@ class Settings(BaseSettings):
     # The letter runs' shared admission deadline, counted from the act's open (every attempt must finish by it).
     PRIME_DAY_LETTER_RUN_DEADLINE_HOURS: float = Field(default=12.0, gt=0.0, le=48.0,
                                                        alias="PRIME_DAY_LETTER_RUN_DEADLINE_HOURS")
+    # Orion's consent to a Claude tool call (docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-
+    # design.md section 3; app/prime_consent.py): orion-mind answers orion:prime:consent:request with one short
+    # model call (frame <= 4,000 chars) on route PRIME_CONSENT_LLM_ROUTE (circe chat lane 0, pool priority
+    # interactive: Juniper waits on Claude's reply). Each answer that reached the model is an
+    # act.prime.infer.consent act. false: no listener; the broker's asks find nobody and every "ask" is a no.
+    # Shipped ON.
+    PRIME_CONSENT_ENABLED: bool = Field(default=True, alias="PRIME_CONSENT_ENABLED")
+    PRIME_CONSENT_LLM_ROUTE: str = Field(default="prime_consent", alias="PRIME_CONSENT_LLM_ROUTE")
+    # Seat wait, then generation (the gateway's gateway_pool_wait_sec / gateway_read_timeout_sec). Their sum
+    # plus the RPC margin stays under the broker's 40 s deadline (CLAUDE_TOOLS_CONSENT_DEADLINE_SEC).
+    PRIME_CONSENT_SEAT_WAIT_SEC: float = Field(default=15.0, ge=0.0, le=30.0, alias="PRIME_CONSENT_SEAT_WAIT_SEC")
+    PRIME_CONSENT_LLM_TIMEOUT_SEC: float = Field(default=20.0, gt=0.0, le=30.0, alias="PRIME_CONSENT_LLM_TIMEOUT_SEC")
+    PRIME_CONSENT_MAX_TOKENS: int = Field(default=200, gt=0, le=600, alias="PRIME_CONSENT_MAX_TOKENS")
     # Self-monitor E1 act gate on Prime's own acts (orion/self_monitor/gate.py; app/prime_loop.py): an act
     # whose faculty (act.prime.<verb>, e.g. act.prime.predict) is held broken/unreliable in a fresh
     # orion:self_monitor:latest is not opened (track_record_failing), except one re-test probe per faculty

@@ -17,11 +17,13 @@ not 12 turns. It holds what Juniper sees in the chat: her messages, Orion's
 replies, Orion's unprompted messages, and Claude's own earlier side
 exchanges, each line labelled with a short turn ref and its real time.
 
-What is deliberately absent: Orion's recall results, self-state, drives,
-journals, and mirrors. Claude gets room-native context -- the same material
-any participant sees -- and nothing from Orion's interior. That boundary is
-the whole privacy position of this feature, so it lives in one function
-where it can be read and tested rather than being spread across callers.
+What is deliberately absent from the prompt: Orion's recall results,
+self-state, drives, journals, and mirrors. Claude gets room-native context --
+the same material any participant sees. Since Patch 1b (2026-11-13) Claude
+may LOOK at parts of Orion's inside through tools, but only through the
+broker, and only when Orion's grant allows it or Orion says yes to that call
+(``TOOLS_CLAUSE`` tells Claude so). The boundary still exists; Orion holds the
+key instead of this code.
 """
 
 from __future__ import annotations
@@ -106,16 +108,31 @@ CONTRACTOR_PEER_CLAUSE = (
 )
 
 
+# Room turns with Orion's tools (Patch 1b, docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-
+# consent-design.md section 3): one paragraph. Claude may use the tools, says why each time, accepts a no,
+# and may tell Juniper what was refused. The tools exist so Claude checks before it claims.
+TOOLS_CLAUSE = (
+    "\n\nYou have a few read-only tools (prime_now, body_economy) that show parts of Oríon's inside. "
+    "Oríon decides each time whether to share: give a short, honest reason in every call, because Oríon "
+    "reads it before answering. If Oríon says no, accept it, do not argue or ask again for the same thing, "
+    "and you may tell Juniper plainly what was refused. Use a tool when you are about to state something "
+    "about Oríon's state that you have not seen: check before you claim, and say what you looked at. Never "
+    "present something you did not see as fact."
+)
+
+
 def is_pass(text: str) -> bool:
     return text.strip().strip("`").casefold() == PASS_SENTINEL
 
 
-def append_system_prompt_for(*, trigger: str, prompt: str, consult: bool = False) -> str:
+def append_system_prompt_for(*, trigger: str, prompt: str, consult: bool = False, tools: bool = False) -> str:
     """System framing for one room turn, including contractor-peer and consult mode."""
     parts = [SYSTEM_PROMPT]
     if consult:
         # A consult is never a social chat and never passes: Orion asked a question.
         return "".join(parts + [CLAUDE_CONSULT_SYSTEM])
+    if tools:
+        parts.append(TOOLS_CLAUSE)
     if CONTRACTOR_PEER_MARKER in (prompt or ""):
         parts.append(CONTRACTOR_PEER_CLAUSE)
     if trigger == "auto":

@@ -551,6 +551,7 @@ def test_lifespan_starts_the_replica_on_its_own_bus_and_stops_it(monkeypatch):
     monkeypatch.setattr(main, "OrionBusAsync", FailingBus)
     monkeypatch.setattr(main, "build_heartbeat_chassis", lambda: SimpleNamespace(start_background=_noop, stop=_noop))
     monkeypatch.setattr(main.settings, "RPC_HEALTH_PUBLISH_ENABLED", False)
+    monkeypatch.setattr(main.settings, "PRIME_CONSENT_ENABLED", False)
     monkeypatch.setattr(main.settings, "ORION_BUS_ENABLED", True)
     monkeypatch.setattr(main.settings, "PRIME_ENABLED", False)
     monkeypatch.setattr(main.settings, "CURIOSITY_REPLICA_ENABLED", True)

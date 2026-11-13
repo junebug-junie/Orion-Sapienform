@@ -297,6 +297,17 @@ async def prime_concern_count_line(bus: Any) -> Optional[str]:
         return None
 
 
+def tool_settings_line() -> Optional[str]:
+    """Which tool categories Orion allows, asks or denies (Patch 1b): names only, never content."""
+    try:
+        from orion.claude_tools.grants import grants_path, settings_line
+
+        return settings_line(grants_path())
+    except Exception:  # noqa: BLE001 -- the index is best-effort
+        logger.debug("room_claude_hub_index_grants_failed", exc_info=True)
+        return None
+
+
 def render_hub_index(lines: List[str]) -> Optional[str]:
     lines = [ln for ln in lines if ln]
     if not lines:
@@ -333,6 +344,9 @@ async def build_room_claude_context(
         prime = await prime_concern_count_line(bus)
         if prime:
             index_lines.append(prime)
+    grants = await asyncio.to_thread(tool_settings_line)
+    if grants:
+        index_lines.append(grants)
     logger.info(
         "room_claude_context session=%s lines=%d chars=%d earlier=%s index_lines=%d",
         session_id, len(entries), sum(len(e["text"]) for e in entries), bool(note), len(index_lines),

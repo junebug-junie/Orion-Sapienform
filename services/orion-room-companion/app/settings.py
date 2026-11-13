@@ -102,6 +102,25 @@ class Settings(BaseSettings):
     ROOM_COMPANION_CONSULT_TOOLS: str = Field(default="Read,Grep,Glob")
     ROOM_COMPANION_CONSULT_REPO: str = Field(default="/consult-src/current")
 
+    # ── Orion's tools (Patch 1b, orion/claude_tools/) ─────────────────
+    # Room turns (never consults) get one MCP server, `orion_room`, whose only
+    # power is one bus request per call to the broker in orion-harness-governor.
+    # The broker checks Orion's grant and asks Orion when it is "ask"; limits
+    # per turn (6 calls, 3 asks) are enforced there, not here. false: argv is
+    # back to `--tools ""` with no MCP. Shipped ON.
+    ROOM_COMPANION_TOOLS_ENABLED: bool = Field(default=True)
+    # Per-turn MCP config and call log (for the footer), on the /data volume.
+    ROOM_COMPANION_TOOLS_STATE_DIR: str = Field(default="/data/state/claude_tools")
+    # How the MCP server is started inside this container (the image has /app/orion).
+    ROOM_COMPANION_TOOLS_PYTHON: str = Field(default="/usr/local/bin/python")
+    ROOM_COMPANION_TOOLS_PYTHONPATH: str = Field(default="/app")
+    # Claude Code's own MCP tool timeout (ms). Above the server's 58 s bus wait,
+    # which covers Orion's 40 s consent deadline plus the slowest reader.
+    ROOM_COMPANION_TOOLS_MCP_TIMEOUT_MS: int = Field(default=70000)
+    # Whole-turn timeout when tools are on (instead of ROOM_COMPANION_TIMEOUT_SEC): 3 asks x 41 s +
+    # 6 reads x 15 s + Claude's own generation can pass 180 s, and a timed-out turn loses the reply.
+    ROOM_COMPANION_TOOLS_TURN_TIMEOUT_SEC: float = Field(default=360.0)
+
     # ── Room participant identity ─────────────────────────────────────
     ROOM_COMPANION_PARTICIPANT_ID: str = Field(default="claude")
     ROOM_COMPANION_PARTICIPANT_NAME: str = Field(default="Claude")

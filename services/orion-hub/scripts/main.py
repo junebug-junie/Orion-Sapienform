@@ -23,6 +23,7 @@ from scripts.crystallization_routes import router as crystallization_router
 from scripts.mind_routes import router as mind_router
 from scripts.ask_routes import router as ask_router
 from scripts.consult_routes import router as consult_router
+from scripts.claude_tools_routes import router as claude_tools_router
 from scripts.motion_story_routes import router as motion_story_router
 from scripts.people_routes import router as people_router
 from scripts.walkway_rollup_routes import router as walkway_rollup_router
@@ -1955,6 +1956,7 @@ app.include_router(crystallization_router)
 app.include_router(mind_router)
 app.include_router(ask_router)
 app.include_router(consult_router)
+app.include_router(claude_tools_router)
 # Orion's Day: Prime's letter orders (GET letter status, POST letter-run). The only path that
 # submits an orion_day.letter run; gated by HUB_ORION_DAY_ENABLED inside the desk.
 orion_day_order_desk = OrionDayOrderDesk(

@@ -4062,6 +4062,60 @@ channels:
     since: "2026-11-11"
     description: "One scored forecast outcome as surprise: conformal p of the actual under the stored quantiles, surprisal -ln p, and excess over the calibrated calm point (1 - 0.05 = 0.95). Published only when the row passes the issue-time gate: champion, issued by a non-baseline model for that horizon (prediction_model_run.assignment of the ISSUING run), adaptive range (interval_source = adaptive: 5 and 15 min), real actual. A missing bucket never publishes. substrate-runtime folds it into node:prediction.room (office.temp_c) and node:prediction.body (athena.cabinet_temp_c). Kill switch PREDICTION_SURPRISE_EVENTS_ENABLED. docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md"
 
+  # Claude's read-only tools in Hub chat, gated by Orion's consent (2026-11-13, Patch 1b of
+  # docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md).
+  - name: "orion:claude:tool:request"
+    kind: "request"
+    schema_id: "ClaudeToolRequestV1"
+    message_kind: "claude.tool.request.v1"
+    producer_services: ["orion-room-companion"]
+    consumer_services: ["orion-harness-governor"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-11-13"
+    description: "One Claude tool call from the companion's MCP server (orion/claude_tools/mcp_server.py) to the broker in orion-harness-governor. The broker checks Orion's grant (asking Orion when it is 'ask'), runs a fixed reader, caps and redacts, audits, and replies on orion:claude:tool:result:<correlation_id>. Read-only tools only."
+
+  - name: "orion:claude:tool:result:*"
+    kind: "result"
+    schema_id: "ClaudeToolResultV1"
+    message_kind: "claude.tool.result.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-room-companion"]
+    stability: "experimental"
+    since: "2026-11-13"
+    description: "The broker's answer to one Claude tool call: the text Claude sees, whether data was shared, and how it was decided. No reply means nothing was shared."
+
+  - name: "orion:claude:tool:audit"
+    kind: "event"
+    schema_id: "ClaudeToolCallV1"
+    message_kind: "claude.tool.call.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-11-13"
+    description: "Audit of Claude's tool calls: one event per phase (ask, answer, result) of each call. orion-sql-writer stores them in claude_tool_call_log; Hub serves GET /api/claude-tools/audit."
+
+  - name: "orion:prime:consent:request"
+    kind: "request"
+    schema_id: "PrimeConsentRequestV1"
+    message_kind: "prime.consent.request.v1"
+    producer_services: ["orion-harness-governor"]
+    consumer_services: ["orion-mind"]
+    single_consumer: true
+    stability: "experimental"
+    since: "2026-11-13"
+    description: "The broker asks Orion whether Claude may use one tool. orion-mind answers in one short model call on route prime_consent (circe chat lane 0, interactive; frame capped at 4,000 characters), an act.prime.infer.consent act. Reply on orion:prime:consent:result:<correlation_id>."
+
+  - name: "orion:prime:consent:result:*"
+    kind: "result"
+    schema_id: "PrimeConsentAnswerV1"
+    message_kind: "prime.consent.answer.v1"
+    producer_services: ["orion-mind"]
+    consumer_services: ["orion-harness-governor"]
+    stability: "experimental"
+    since: "2026-11-13"
+    description: "Orion's consent answer: yes or no, once or for this conversation, with a reason. Any path but a parsed model answer is a no. No reply within 40 s means no."
+
   - name: "orion:prediction:turn_surprise"
     kind: "event"
     schema_id: "PredictionTurnSurpriseV1"

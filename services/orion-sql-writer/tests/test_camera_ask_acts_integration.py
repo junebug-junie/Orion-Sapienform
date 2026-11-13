@@ -41,7 +41,9 @@ CREATE TABLE orion_ask (
     expires_at TIMESTAMPTZ, source_kind TEXT NOT NULL, source_ref TEXT NOT NULL,
     image_refs JSONB NOT NULL DEFAULT '[]'::jsonb, answer_detail JSONB);
 CREATE UNIQUE INDEX orion_ask_open_source_uidx ON orion_ask (source_kind, source_ref) WHERE status = 'open';
-CREATE TABLE vision_individual (individual_id TEXT PRIMARY KEY, kind TEXT NOT NULL)
+CREATE TABLE vision_individual (individual_id TEXT PRIMARY KEY, kind TEXT NOT NULL);
+CREATE TABLE vision_individual_sighting (sighting_id TEXT PRIMARY KEY, individual_id TEXT, started_at TIMESTAMPTZ,
+    stationary BOOLEAN NOT NULL DEFAULT false)
 """
 
 NOW = datetime.now(timezone.utc).replace(microsecond=0)
@@ -182,7 +184,11 @@ def test_withdrawn_by_orion_is_expired_not_graded_and_the_backfill_opens_older_a
     assert summary.closed_asks_withdrawn == 1
     a = _act(sess, "ask-same")
     assert (a["outcome_value"], a["outcome_source"]) == (0.0, "expired")
-    assert sess.execute(text("SELECT count(*) FROM substrate_action_outcomes")).scalar() == 1   # recorded, not graded
+    # Not a grade anywhere: no outcome row and no posterior update (patch 4a review).
+    assert sess.execute(text("SELECT count(*) FROM substrate_action_outcomes")).scalar() == 0
+    assert sess.execute(text("SELECT coalesce(max(posterior_n), 0) FROM substrate_action_effect_posterior "
+                             "WHERE target_id='vision.ask'")).scalar() == 0
+    assert a["outcome_note"].startswith("abandoned:")
     rows = sess.execute(text(GRADES_SQL), {"actor": "vision.ask", "since": NOW - timedelta(days=30)}).fetchall()
     assert rows == []                                  # not a grade: the expected outcome ignores it
 
@@ -221,3 +227,18 @@ def test_backfill_script_dry_run_reads_only_then_apply_opens_and_grades(sess, tm
     # A second run finds nothing to do.
     assert mod.main(["--dsn", sess.info["dsn"], "--job-dir", str(tmp_path / "again")]) == 0
     assert json.loads((tmp_path / "again" / "dry_run.json").read_text())["targets"] == 0
+
+
+def test_the_want_producers_asks_sql_runs_and_excludes_juniper_cards(sess):
+    """ask_event_wants.ASKS_SQL (with its individual_kind subquery) against Postgres."""
+    from app.ask_event_wants import ASKS_SQL, plan_asks
+
+    _seed(sess)
+    sess.execute(text("INSERT INTO vision_individual_sighting VALUES ('s1', 'veh1', :t, false), ('s2', 'veh1', :t, true)"),
+                 {"t": NOW - timedelta(days=1)})
+    rows = sess.execute(text(ASKS_SQL), {"since": NOW - timedelta(days=31), "until": NOW}).mappings().all()
+    by = {r["ask_id"]: r for r in rows}
+    assert set(by) == {"ask-confirm", "ask-vehicle", "ask-same", "ask-old"}
+    assert by["ask-vehicle"]["individual_kind"] == "vehicle" and by["ask-vehicle"]["sightings"] == 1
+    plan = plan_asks(rows, now=NOW, lookback=timedelta(hours=24), outcomes={"vehicle": 0.1, "confirm": 0.9, "same": 0.8})
+    assert {p["ask_id"]: p["rule"] for p in plan} == {"ask-confirm": "confirm", "ask-vehicle": "vehicle", "ask-same": "same"}

@@ -3,8 +3,8 @@
 
 Each mutant breaks one guard -- Juniper's own story cards excluded (both clauses of the SQL filter and of
 the Python twin), the grade mapping (answered 1, dismissed / don't know 0, silence at expiry a 0 grade,
-withdrawn not a grade) and the Laplace prior -- and the tests must FAIL on every one. The file is restored
-afterwards whatever happens.
+withdrawn not a grade) and the Laplace prior -- and the tests must FAIL on every one. The file is rewritten IN
+PLACE and restored in a ``finally``; a SIGKILL mid-run would leave a mutant in the tree (``git diff`` shows it).
 
 Needs a throwaway Postgres for the lifecycle tests (they create and drop their own schema):
 
@@ -36,8 +36,12 @@ MUTANTS = {
     "grade: expiry not graded": ('''        return AskGrade(0.0, "resolver", expires_at or now, "unanswered at expiry")''',
                                  '''        return AskGrade(0.0, "expired", expires_at or now, "unanswered at expiry")'''),
     "grade: open past expiry stays open": ('''        if expires_at is not None and now >= expires_at:\n            return AskGrade(0.0, "resolver", expires_at, "unanswered at expiry")\n''', ""),
-    "grade: withdrawn graded": ('''            return AskGrade(0.0, "expired", now, "withdrawn by orion before expiry")''',
+    "grade: withdrawn graded": ('''            return AskGrade(0.0, "expired", now, WITHDRAWN_NOTE + " before expiry")''',
                                 '''            return AskGrade(0.0, "resolver", now, "withdrawn by orion before expiry")'''),
+    "grade: stamped withdrawal graded": ('''            return AskGrade(0.0, "expired", answered_at, WITHDRAWN_NOTE + " before expiry")''',
+                                         '''            return AskGrade(0.0, "resolver", answered_at, "x")'''),
+    "grade: moot card counts as answered": ('''        if "resolved_by" in _as_dict(ask.get("answer_detail")):''',
+                                            '''        if False:'''),
     "laplace: no prior": ('return {r: (answered[r] + 1) / (closed[r] + 2) for r in RULES}',
                           'return {r: (answered[r] / closed[r]) if closed[r] else 0.5 for r in RULES}'),
 }

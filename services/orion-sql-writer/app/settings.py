@@ -889,7 +889,9 @@ class Settings(BaseSettings):
     # Attention patch 4a (docs/superpowers/specs/2026-11-12-attention-camera-asks-bind-design.md): each resolver
     # tick opens a vision.ask act for every camera ask Orion made in the last 24 h that has none
     # (app/ask_acts.py); the resolver grades it from Juniper's answer. Juniper's own story-naming cards never
-    # open one. Off: no new ask acts (open ones still close), and the ask want's per-rule outcome stays at its prior.
+    # open one. Off: no new ask acts (open ones still close) and the ask want carries no per-rule outcome (a graded
+    # family then uses its family mean). Only the last 24 h are opened: after an outage or off->on longer than that,
+    # run services/orion-sql-writer/scripts/backfill_camera_ask_acts.py.
     sql_writer_act_camera_asks_enabled: bool = Field(True, alias="SQL_WRITER_ACT_CAMERA_ASKS_ENABLED")
     # Settle-time scoring of world-action episodes (attend-to-act loop; app/world_settlement_loop.py),
     # moved here from orion-feedback-runtime 2026-11-04. Record-only. 0 disables (episodes then stay

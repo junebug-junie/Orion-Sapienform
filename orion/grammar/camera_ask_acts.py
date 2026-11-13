@@ -12,9 +12,10 @@ The grade (``ask_grade``), read from the ask row by the act ledger's horizon res
 * dismissed, or "I don't know" (a dismissal with ``answer_detail.dont_know``) -> 0, ``resolver``;
 * expired unanswered (still open at ``expires_at``, or expired by the clock) -> 0, ``resolver``:
   seven days of silence is an answer, as for outreach (Juniper confirmed, PR #3213 question 3);
-* withdrawn by Orion (``status = 'withdrawn'``, or ``status = 'expired'`` set BEFORE ``expires_at``:
-  a split undo or a merge made the question moot) -> 0, ``expired``: not a grade
-  (``orion.physiology.appetite.GRADED_SOURCES``);
+* withdrawn by Orion (``status = 'withdrawn'``; ``status = 'expired'`` with ``answered_at`` before
+  ``expires_at``, which a split undo stamps; or a card closed as moot, ``answer_detail.resolved_by``)
+  -> ``expired`` with an ``abandoned:`` note: not a grade for the market (``GRADED_SOURCES``), the
+  self-monitor (``failed_to_execute``) or the effect posterior (skipped in ``close_act``);
 * still open before its expiry -> no close yet.
 
 Juniper's OWN cards are not Orion's asks and never open an act or count in any ask statistic: a
@@ -57,6 +58,11 @@ RULES = ("confirm", "same", "face", "office", "vehicle", "sighting")
 
 # Used when an ask row has no expires_at (none live): VISION_ASK_EXPIRY_DAYS' default.
 DEFAULT_EXPIRY = timedelta(days=7)
+UNKNOWN_STATUS_GRACE = timedelta(seconds=120)
+# A withdrawn ask is not a grade anywhere: the "abandoned" prefix makes orion.self_monitor.adapters.act_outcome
+# read it as failed_to_execute (not refuted), and the act ledger skips the posterior for it.
+WITHDRAWN_PREFIX = "abandoned:"
+WITHDRAWN_NOTE = "abandoned: withdrawn by orion"
 OUTCOME_WINDOW = timedelta(days=30)
 
 # SQL predicate (alias ``a`` on orion_ask): an ask ORION made with a camera opener. Juniper's own
@@ -146,22 +152,32 @@ def ask_grade(ask: Optional[Mapping[str, Any]], *, now: datetime,
     answered_at = _utc(ask.get("answered_at"))
     expires_at = _utc(ask.get("expires_at")) or _utc(horizon_at)
     if status == "answered":
+        if "resolved_by" in _as_dict(ask.get("answer_detail")):
+            # Closed by Orion because a name Juniper typed elsewhere made this card moot: not her answer to it.
+            return AskGrade(0.0, "expired", answered_at or now, WITHDRAWN_NOTE + " (moot: resolved elsewhere)")
         return AskGrade(1.0, "resolver", answered_at or now, "juniper answered")
     if status == "dismissed":
         dont_know = bool(_as_dict(ask.get("answer_detail")).get("dont_know"))
         return AskGrade(0.0, "resolver", answered_at or now,
                         "juniper said she does not know" if dont_know else "juniper dismissed")
     if status == "withdrawn":
-        return AskGrade(0.0, "expired", now, "withdrawn by orion")
+        return AskGrade(0.0, "expired", answered_at or now, WITHDRAWN_NOTE)
     if status == "expired":
+        # A withdrawal (split undo) stamps answered_at before expires_at; the clock sweep leaves it NULL.
+        if answered_at is not None and (expires_at is None or answered_at < expires_at):
+            return AskGrade(0.0, "expired", answered_at, WITHDRAWN_NOTE + " before expiry")
         if expires_at is not None and now < expires_at:
-            return AskGrade(0.0, "expired", now, "withdrawn by orion before expiry")
+            return AskGrade(0.0, "expired", now, WITHDRAWN_NOTE + " before expiry")
         return AskGrade(0.0, "resolver", expires_at or now, "unanswered at expiry")
     if status == "open":
         if expires_at is not None and now >= expires_at:
             return AskGrade(0.0, "resolver", expires_at, "unanswered at expiry")
         return None
-    return None   # an unknown status: leave the act open, never guess a grade
+    # An unknown status is never guessed into a grade; past the horizon it is closed as not graded, so it cannot
+    # sit in the resolver's due set forever.
+    if expires_at is not None and now >= expires_at + UNKNOWN_STATUS_GRACE:
+        return AskGrade(0.0, "expired", now, f"{WITHDRAWN_PREFIX} unknown_status:{status[:40]}")
+    return None
 
 
 def rule_outcome_values(closes: Iterable[tuple[str, float]]) -> dict[str, float]:

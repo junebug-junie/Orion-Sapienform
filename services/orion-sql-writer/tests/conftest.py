@@ -123,7 +123,7 @@ _DB_DEPENDENT_MODULES = {
     # 2026-11-11 (patch 3e, reading's energy): same shape; runs in sql-writer-integration.
     "test_reading_energy_closure_integration",
     # 2026-11-13 (attention patch 4a, camera asks as graded acts): KeyError on the URI with no database
-    # (checked: 2 ERRORS); runs in sql-writer-integration.
+    # (every test errors on the fixture); runs in sql-writer-integration.
     "test_camera_ask_acts_integration",
 }
 

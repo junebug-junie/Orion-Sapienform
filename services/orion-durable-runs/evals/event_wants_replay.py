@@ -340,12 +340,13 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
             app = dataclasses.replace(app, last_close_at=max(closes) if closes else None,
                                       event_values=tuple(v for bt, v in history if t - SOURCE_HISTORY <= bt < t))
             h = hunger(app, t, opened_at=first_bid)
-            inten, _ = want_intensity(h.intensity, s)
+            inten, ibasis = want_intensity(h.intensity, s)
             graded = [(r, k.outcome_value) for k, r in known if k.graded and k.outcome_source == "resolver"
                       and k.closed_at is not None and t - OUTCOME_WINDOW <= k.closed_at <= t]
             outcome = rule_outcome_values(graded)[a["rule"]]
             rank, basis, _ = rank_value(app, inten, outcome, event=True)
-            bids.append({"at": t, "rank": rank, "basis": basis, "outcome": outcome, "intensity": inten})
+            bids.append({"at": t, "rank": rank, "basis": basis, "outcome": outcome, "intensity": inten,
+                         "intensity_basis": ibasis})
             if t == first_bid:
                 history.append((t, inten))
             if rank > 0:
@@ -355,6 +356,7 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
         rows.append({"ask_id": a["ask_id"], "rule": a["rule"], "answered": a["status"] == "answered",
                      "held_at_all": bids[0]["rank"] <= 0, "held_to_end": funded_at is None,
                      "first_rank": bids[0]["rank"], "first_basis": bids[0]["basis"], "outcome": bids[0]["outcome"],
+                     "first_by_hunger": bids[0]["intensity_basis"] == "hunger",
                      "delay_h": None if funded_at is None else round((funded_at - first_bid).total_seconds() / 3600, 2)})
     share = lambda xs, f: round(sum(1 for x in xs if f(x)) / len(xs), 4) if xs else None  # noqa: E731
     by_rule = {}
@@ -374,6 +376,9 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
         "answered_per_day": round(len(answered) / days, 3),
         "answered_per_day_under_4b": round((len(answered) - len(lost)) / days, 3),
         "answered_loss_share": share(answered, lambda x: x["held_to_end"]),
+        # Hunger now counts from the family's last ask close (4a gives it acts), not from the want's opened_at:
+        # the share of first bids whose intensity came from hunger rather than salience (review finding).
+        "first_bid_intensity_from_hunger_share": share(rows, lambda x: x["first_by_hunger"]),
         "graded_basis_share": share(rows, lambda x: x["first_basis"].endswith("graded") and "ungraded" not in x["first_basis"]),
     }
     out["checks"] = {
@@ -449,6 +454,8 @@ def _camera_live(days: int, out_json: Optional[str]) -> int:
 def _live(days: int, out_json: Optional[str]) -> int:
     import _body_economy_data as data_mod
 
+    from orion.grammar.camera_ask_acts import ORION_MADE_CAMERA_ASK_SQL   # Juniper's own cards are not asks
+
     q = data_mod.run_query
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
@@ -466,7 +473,7 @@ def _live(days: int, out_json: Optional[str]) -> int:
                (select count(*) from vision_individual_sighting v where v.individual_id = split_part(a.source_ref, '|', 1)
                   and v.started_at <= a.created_at and not v.stationary) as sightings
           from orion_ask a
-         where a.source_kind in ('vision_individual', 'vision_person_confirm', 'vision_same_individual')
+         where {ORION_MADE_CAMERA_ASK_SQL}
            and a.created_at >= '{iso(hs)}') r;""")
     acts_rows = q(f"""select coalesce(json_agg(r), '[]'::json) from (
         select act_id, actor, opened_at, closed_at, outcome_value, outcome_source

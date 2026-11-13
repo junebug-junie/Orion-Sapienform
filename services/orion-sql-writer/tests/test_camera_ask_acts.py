@@ -80,7 +80,36 @@ def test_withdrawn_by_orion_is_not_a_grade():
     g = ask_grade({**open_ask, "status": "withdrawn"}, now=CREATED + timedelta(days=2))
     assert g.source == "expired"
     assert ask_grade(None, now=CREATED).source == "expired"       # the row is gone
-    assert ask_grade({**open_ask, "status": "weird"}, now=EXPIRES + timedelta(days=1)) is None
+    # A split undo stamps answered_at: still a withdrawal when graded long after expiry (back-fill, outage).
+    late = ask_grade({**open_ask, "status": "expired", "answered_at": CREATED + timedelta(days=1)},
+                     now=EXPIRES + timedelta(days=20))
+    assert (late.source, late.observed_at) == ("expired", CREATED + timedelta(days=1))
+    # A card closed as moot by a name typed elsewhere is not Juniper's answer to it.
+    moot = ask_grade({**SAME_YES, "answer_detail": {"resolved_by": "ask-other"}}, now=EXPIRES)
+    assert moot.source == "expired"
+    # An unknown status is never graded; past the horizon it closes not-graded so it cannot stay due forever.
+    assert ask_grade({**open_ask, "status": "weird"}, now=EXPIRES) is None
+    weird = ask_grade({**open_ask, "status": "weird"}, now=EXPIRES + timedelta(days=1))
+    assert weird.source == "expired" and "unknown_status:weird" in weird.note
+
+
+def test_a_withdrawal_is_not_a_failure_the_self_monitor_counts():
+    from orion.self_monitor.adapters import act_outcome
+
+    for row in ({**SAME_YES, "status": "withdrawn"}, {**SAME_YES, "status": "expired", "answered_at": CREATED}):
+        g = ask_grade(row, now=EXPIRES + timedelta(days=1))
+        assert act_outcome({"outcome_source": g.source, "outcome_note": g.note, "outcome_value": g.value}) \
+            == "failed_to_execute"
+    g = ask_grade(VEHICLE_DONT_KNOW, now=EXPIRES)
+    assert act_outcome({"outcome_source": g.source, "outcome_note": g.note, "outcome_value": g.value}) != "failed_to_execute"
+
+
+def test_rule_markers_match_the_openers():
+    from app.vision_individuals import FACE_RULE_REF as face
+    from app.vision_office_sessions import OFFICE_RULE_REF as office
+    from orion.grammar.camera_ask_acts import FACE_RULE_REF, OFFICE_RULE_REF
+
+    assert (face, office) == (FACE_RULE_REF, OFFICE_RULE_REF)
 
 
 def test_answer_detail_may_arrive_as_json_text():

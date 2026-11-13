@@ -543,7 +543,9 @@ def close_act(
     nats = None
     outcome_row_id = None
     exp = act.expect
-    if exp is not None:
+    # A camera ask Orion withdrew (attention patch 4a) is not a grade: no outcome row, no posterior update.
+    not_graded = (exp is not None and exp.signal_id == "juniper_answered" and outcome.source == "expired")
+    if exp is not None and not not_graded:
         kind = act_dispatch_kind(act.verb)
         prior = _load_posterior_for_update(conn, kind, act.actor, exp.signal_id)
         predicted = predicted_at_open if predicted_at_open is not None else prior.mean
@@ -869,12 +871,12 @@ def _one_close(conn: Any, commit: Any, event: GrammarEventV1 | None, act: ActV1,
     """One close in its own savepoint, then commit (if given) so no locks outlive it."""
     nested = conn.begin_nested() if hasattr(conn, "begin_nested") else None
     try:
-        close_act(conn, event, act=act, outcome=outcome, close_event_id=close_event_id)
+        result = close_act(conn, event, act=act, outcome=outcome, close_event_id=close_event_id)
         if nested is not None:
             nested.commit()
         if commit is not None:
             commit()
-        return True
+        return bool(result.closed)
     except Exception:
         if nested is not None:
             nested.rollback()

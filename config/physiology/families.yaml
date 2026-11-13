@@ -247,6 +247,8 @@ families:
     # by her answer (orion/grammar/camera_ask_acts.py: answered 1; dismissed, don't know or unanswered at expiry 0;
     # withdrawn not a grade), and the want carries the ask rule's answered share as outcome_value. Juniper's own
     # walkway-story naming cards open no act and post no want. Still shadow: nothing obeys the decision (4b binds).
+    # Hunger now counts from the family's last act close (any ask answered/expired), with tau from the close rhythm,
+    # no longer from the want's own opened_at: intensity = max(hunger, salience) gains a hunger floor.
     # An ask is a card Juniper answers when she likes, not a message, so no fixed juniper_msgs cost
     # (Juniper, PR #3213 question 1: no attention cost in v1).
     # 86400: asks are opened in a daily batch; the want's own window ends when the ask expires.

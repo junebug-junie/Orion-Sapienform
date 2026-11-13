@@ -36,6 +36,9 @@ sys.path.insert(0, str(SERVICE.parents[1]))
 
 from orion.grammar.camera_ask_acts import ACTOR, SIGNAL, ask_grade, rule_outcome_values  # noqa: E402
 
+# Note: the closes are historically dated substrate_action_outcomes rows (observed_at = the ask's answer time);
+# Temporal Self's source reader sees them like any other act outcome.
+
 DEFAULT_JOB_DIR = Path("/tmp/camera-ask-acts-backfill")
 MAX_ROWS = 100_000          # section 14: past this, stop and ask Juniper
 
@@ -153,15 +156,18 @@ def main(argv=None) -> int:
         for r in rows:
             w.writerow([r["correlation_id"], r["act_id"], "no act", r["outcome_value"], r["outcome_source"],
                         r["outcome_note"], _iso(r["closed_at"])])
+    # Counted from the final rows, not this run's close counters: the live resolver may grade some of the
+    # just-opened acts first (same rule, so the same result).
     planned_grades = summary["would_grade_1"] + summary["would_grade_0"]
-    anomalies = [] if graded == planned_grades and len(opened) == len(plan) else [
-        f"planned {len(plan)} opens / {planned_grades} grades, did {len(opened)} / {graded}"]
+    final_graded = sum(1 for r in rows if r["outcome_source"] == "resolver")
+    anomalies = [] if final_graded == planned_grades and len(opened) == len(plan) else [
+        f"planned {len(plan)} opens / {planned_grades} grades, found {len(opened)} / {final_graded}"]
     ids_sql = ", ".join(f"'{i}'" for i in opened) or "''"
     (a.job_dir / "report.md").write_text(
         f"# Camera-ask acts back-fill ({now.isoformat()})\n\n"
         f"Verdict: {'OK' if not anomalies else 'CHECK ANOMALIES'}\n\n"
         f"- opened {len(opened)} `{ACTOR}` acts (signal `{SIGNAL}`) for asks since {since.isoformat()}\n"
-        f"- closed: graded {graded}, withdrawn {withdrawn}, still open {len(opened) - graded - withdrawn}\n"
+        f"- closed by this run: graded {graded}, withdrawn {withdrawn}; graded in the end: {final_graded}\n"
         f"- by rule: {summary['by_rule']}\n- expected outcome by rule: {summary['expected_outcome_by_rule']}\n"
         f"- errors: 0; anomalies: {anomalies or 'none'}\n- another pass needed: no (re-running skips asks with an act)\n\n"
         "## Rollback (not run by this script)\n\n```sql\n"

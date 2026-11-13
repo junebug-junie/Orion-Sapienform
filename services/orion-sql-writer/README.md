@@ -1201,7 +1201,8 @@ Producers publish `act_opened` / `act_closed` grammar events (`ActV1` on `Gramma
   (`orion/grammar/camera_ask_acts.py`): answered 1; dismissed / "don't know" / unanswered at expiry 0
   (`resolver`); withdrawn by Orion `expired` (not a grade). Juniper's own walkway-story naming cards
   (`rule:juniper_story_naming`, or `answer_detail.story_id` before the marker) never open one. Older asks:
-  `scripts/backfill_camera_ask_acts.py` (dry run by default).
+  `scripts/backfill_camera_ask_acts.py` (dry run by default; also the catch-up after an outage or the flag
+  being off for more than 24 h, since the live loop only looks back 24 h).
 
 Producers today: orion-thought paintings (`make`), hub chat reply (`say`), hub outreach
 (`say`/`ask`), hub world-pulse reading Stage 1 (`look`). Debug surface: `GET /act/ledger?days=7`.

@@ -340,6 +340,31 @@ FROM personality_juniper_verdict
 WHERE disposition_id = ANY(%(ids)s)
 ORDER BY disposition_id, created_at DESC, verdict_id
 """
+# Retired choice nodes whose latest answer from Juniper is a "no" that retired them ("You said no to").
+SAID_NO_SQL = f"""
+SELECT d.disposition_id, d.label, d.status, d.weight, d.evidence_count, d.opposed_count, d.name, d.orion_verdict,
+  d.first_seen_at, d.last_reinforced_at
+FROM personality_disposition d
+JOIN (
+  SELECT DISTINCT ON (disposition_id) disposition_id, verdict, retired, created_at
+  FROM personality_juniper_verdict
+  ORDER BY disposition_id, created_at DESC, verdict_id
+) v ON v.disposition_id = d.disposition_id
+WHERE d.{ORIGIN_FILTER} AND d.status = 'retired' AND v.verdict = 'no' AND v.retired
+ORDER BY v.created_at DESC, d.disposition_id
+LIMIT %(limit)s
+"""
+LATEST_VERDICT_ONE_SQL = """
+SELECT verdict, retired FROM personality_juniper_verdict WHERE disposition_id = %(d)s
+ORDER BY created_at DESC, verdict_id LIMIT 1
+"""
+# "Changed my mind": the same revive the reducer applies on a later yes (#3336, orion/personality/graph.py).
+REVIVED_STATUS = "candidate"
+REVIVE_BY_JUNIPER_SQL = f"""
+UPDATE personality_disposition SET status = %(status)s, retired_at = NULL, last_folded_at = %(now)s,
+  updated_at = %(now)s, history_weight = weight
+WHERE disposition_id = %(d)s AND {ORIGIN_FILTER}
+"""
 INSERT_VERDICT_SQL = """
 INSERT INTO personality_juniper_verdict (verdict_id, disposition_id, verdict, label_at_verdict, weight_at_verdict,
   n_at_verdict, m_at_verdict, status_before, retired, created_at)
@@ -618,35 +643,40 @@ class PersonalityStore:
 
     async def tendencies(self, limit: int = 20, examples: int = EXAMPLES_PER_TENDENCY) -> dict:
         """Choice-built tendencies that are not retired, strongest first, each with its newest
-        ``examples`` choices and Juniper's latest answer. A missing verdict table (migration not
-        applied yet) still lists the tendencies, with a warning and no answers."""
+        ``examples`` choices and Juniper's latest answer; and ``said_no``: the retired ones Juniper
+        retired herself (latest answer "no"), so the tab can offer "Changed my mind". A missing verdict
+        table (migration not applied yet) still lists the tendencies, with a warning and no answers."""
         warnings: list[str] = []
         async with self._pool.connection() as conn:
             nodes = [dict(r) for r in await (await conn.execute(TENDENCIES_SQL, {"limit": limit})).fetchall()]
-            ids = [n["disposition_id"] for n in nodes]
-            ex_rows = []
-            if ids:
-                ex_rows = await (await conn.execute(TENDENCY_EXAMPLES_SQL, {
-                    "ids": ids, "n": examples, "p": EVIDENCE_PREFIX})).fetchall()
+        said_no: list[dict] = []
         verdicts: dict[str, dict] = {}
-        if ids:
-            try:
-                async with self._pool.connection() as conn:
+        try:
+            async with self._pool.connection() as conn:
+                said_no = [dict(r) for r in await (await conn.execute(SAID_NO_SQL, {"limit": limit})).fetchall()]
+                ids = [n["disposition_id"] for n in [*nodes, *said_no]]
+                if ids:
                     for r in await (await conn.execute(LATEST_VERDICTS_SQL, {"ids": ids})).fetchall():
                         verdicts[r["disposition_id"]] = {"verdict": r["verdict"], "at": _iso(r["created_at"])}
-            except Exception as exc:  # noqa: BLE001 - answers are an annotation on the list, never a gate
-                from psycopg.errors import UndefinedTable
+        except Exception as exc:  # noqa: BLE001 - answers are an annotation on the list, never a gate
+            from psycopg.errors import UndefinedTable
 
-                if not isinstance(exc, UndefinedTable):
-                    raise
-                warnings.append("answers_table_missing: apply manual_migration_personality_juniper_verdict_v1.sql")
+            if not isinstance(exc, UndefinedTable):
+                raise
+            warnings.append("answers_table_missing: apply manual_migration_personality_juniper_verdict_v1.sql")
+        ids = [n["disposition_id"] for n in [*nodes, *said_no]]
+        ex_rows = []
+        if ids:
+            async with self._pool.connection() as conn:
+                ex_rows = await (await conn.execute(TENDENCY_EXAMPLES_SQL, {
+                    "ids": ids, "n": examples, "p": EVIDENCE_PREFIX})).fetchall()
         by_id: dict[str, list[dict]] = {}
         for r in ex_rows:
             by_id.setdefault(r["disposition_id"], []).append(choice_view(r))
-        out = []
-        for n in nodes:
+
+        def view(n: dict) -> dict:
             n_ways = int(n.get("evidence_count") or 0)
-            out.append({
+            return {
                 "disposition_id": n["disposition_id"], "label": n["label"], "status": n["status"],
                 "weight": float(n["weight"] or 0.0), "n": n_ways, "m": n_ways + int(n.get("opposed_count") or 0),
                 "name": n.get("name"), "orion_verdict": n.get("orion_verdict"),
@@ -654,15 +684,21 @@ class PersonalityStore:
                 "last_reinforced_at": _iso(n["last_reinforced_at"]),
                 "examples": by_id.get(n["disposition_id"], []),
                 "juniper": verdicts.get(n["disposition_id"]),
-            })
-        return {"tendencies": out, "warnings": warnings}
+            }
+
+        return {"tendencies": [view(n) for n in nodes], "said_no": [view(n) for n in said_no], "warnings": warnings}
 
     async def record_juniper_verdict(self, disposition_id: str, verdict: str, now: datetime) -> Optional[dict]:
         """Juniper's yes / no on one choice-built tendency, in one transaction: the answer row, and
         on "no" the tendency retired (with its weight-history row). None when there is no such
-        choice-built tendency. Raises ``TendencyRetired`` when it is already retired (retired is
-        terminal: a later yes cannot bring it back). Call it under the reducer's lock so a tick in
-        flight cannot write the old status back."""
+        choice-built tendency.
+
+        A retired tendency takes only one answer: a "yes" when Juniper retired it herself (her latest
+        answer is a "no" that retired it). That revives it as a candidate, the way the reducer revives
+        one on a later yes (#3336: status candidate, retired_at cleared, last_folded_at now), with its
+        weight-history row. Any other answer on a retired tendency (it faded out, or a second "no")
+        raises ``TendencyRetired``. Call it under the reducer's lock so a tick in flight cannot write
+        the old status back."""
         if verdict not in JUNIPER_VERDICTS:
             raise ValueError(f"verdict must be one of {', '.join(JUNIPER_VERDICTS)}")
         async with self._pool.connection() as conn:
@@ -676,8 +712,14 @@ class PersonalityStore:
                     node = await cur.fetchone()
                     if node is None:
                         return None
+                    revive = False
                     if node["status"] == "retired":
-                        raise TendencyRetired(disposition_id)
+                        await cur.execute(LATEST_VERDICT_ONE_SQL, {"d": disposition_id})
+                        last = await cur.fetchone()
+                        retired_by_her = last is not None and last["verdict"] == VERDICT_NO and bool(last["retired"])
+                        if not (retired_by_her and verdict == VERDICT_YES):
+                            raise TendencyRetired(disposition_id)
+                        revive = True
                     n_ways = int(node["evidence_count"] or 0)
                     retire = verdict == VERDICT_NO
                     row = {"verdict_id": f"jv-{uuid4().hex}", "d": disposition_id, "verdict": verdict,
@@ -685,13 +727,20 @@ class PersonalityStore:
                            "m": n_ways + int(node["opposed_count"] or 0), "status_before": node["status"],
                            "retired": retire, "now": now}
                     await cur.execute(INSERT_VERDICT_SQL, row)
+                    status = node["status"]
                     if retire:
+                        status = "retired"
                         await cur.execute(RETIRE_BY_JUNIPER_SQL, {"d": disposition_id, "now": now})
+                    elif revive:
+                        status = REVIVED_STATUS
+                        await cur.execute(REVIVE_BY_JUNIPER_SQL, {"d": disposition_id, "now": now,
+                                                                  "status": REVIVED_STATUS})
+                    if retire or revive:
                         await cur.execute(INSERT_HISTORY_SQL, {
                             "disposition_id": disposition_id, "at": now, "weight": row["weight"],
-                            "status": "retired", "evidence_count": n_ways})
+                            "status": status, "evidence_count": n_ways})
         return {"verdict_id": row["verdict_id"], "disposition_id": disposition_id, "verdict": verdict,
-                "status": "retired" if retire else node["status"], "retired": retire, "at": _iso(now)}
+                "status": status, "retired": retire, "revived": revive, "at": _iso(now)}
 
     async def arm_counts(self, since: datetime) -> dict:
         """Market decisions since ``since`` that carry a ``personality:arm=<arm>`` trace line (rev 4

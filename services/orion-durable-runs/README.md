@@ -1425,7 +1425,11 @@ with market rank, declines, the tendency each counted toward), `GET /personality
 and outcome), and `POST /personality/tendencies/{id}/verdict` `{"verdict": "yes"|"no"}`: one row in
 `personality_juniper_verdict` (`manual_migration_personality_juniper_verdict_v1.sql`); a "no" also
 retires the tendency in the same transaction, under the reducer's tick lock so a tick in flight
-cannot write the old status back. 404: no such choice-built tendency. 409: already retired. Log
+cannot write the old status back. A "yes" on a tendency Juniper retired herself (her latest answer is
+a retiring "no") revives it: status candidate, `retired_at` cleared, `last_folded_at` now, plus a
+weight-history row (the reducer's own revive, #3336). `/personality/tendencies` also returns
+`said_no` (those tendencies, newest no first). 404: no such choice-built tendency. 409: retired but
+not by her latest no (it faded), or a second no. Log
 line: `personality_juniper_verdict disposition=... verdict=... retired=...`. Each answers 503 when
 `PERSONALITY_ENABLED=false` or the tables are missing. `/health` has a `personality` block (ticks,
 last tick, last error, evidence last tick, choices read, curiosity rows synced, bus choices

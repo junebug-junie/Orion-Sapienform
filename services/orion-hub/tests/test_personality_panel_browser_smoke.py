@@ -39,10 +39,12 @@ TENDENCIES = {"count": 3, "warnings": [], "tendencies": [
     {"disposition_id": "disp-3", "label": "a over b, 4 of 4", "status": "candidate", "weight": 3.0, "n": 4, "m": 4,
      "name": None, "examples": [], "juniper": {"verdict": "yes", "at": "2026-11-12T10:00:00Z"}},
 ]}
+SAID_NO = {"disposition_id": "disp-9", "label": "the gap over a walk, 5 of 5", "status": "retired", "weight": 4.0,
+           "n": 5, "m": 5, "name": None, "examples": [], "juniper": {"verdict": "no", "at": "2026-11-12T09:00:00Z"}}
 ARMS_OFF = {"days": 7, "since": "2026-11-06T00:00:00Z", "arms": {}, "total": 0}
 
 
-@pytest.mark.parametrize("scenario", ["ok", "down", "no_table"])
+@pytest.mark.parametrize("scenario", ["ok", "down", "no_table", "changed_mind"])
 def test_personality_tab_yes_no_browser_smoke(scenario):
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
@@ -50,6 +52,9 @@ def test_personality_tab_yes_no_browser_smoke(scenario):
     template = (HUB / "templates" / "personality.html").read_text().replace("{{HUB_UI_ASSET_VERSION}}", "t")
     script = (HUB / "static" / "js" / "personality.js").read_text()
     posts: list[tuple[str, dict]] = []
+    # A stateful fake durable-runs: a "no" moves a card to said_no, a "yes" on a said-no card moves it back.
+    live = [dict(t) for t in TENDENCIES["tendencies"]]
+    said_no = [dict(SAID_NO)]
 
     def handle(route):
         req = route.request
@@ -66,18 +71,30 @@ def test_personality_tab_yes_no_browser_smoke(scenario):
             body = json.loads(req.post_data or "{}")
             posts.append((did, body))
             if did == "disp-3":
-                return route.fulfill(status=409, body=json.dumps({"detail": "tendency is already retired"}),
+                return route.fulfill(status=409, body=json.dumps({"detail": "tendency is retired and cannot take this answer"}),
                                      content_type="application/json")
-            retired = body.get("verdict") == "no"
-            return route.fulfill(body=json.dumps({"verdict_id": "jv-1", "disposition_id": did,
-                                                  "verdict": body.get("verdict"), "retired": retired,
-                                                  "status": "retired" if retired else "active"}),
+            verdict = body.get("verdict")
+            retired = verdict == "no"
+            revived = verdict == "yes" and any(t["disposition_id"] == did for t in said_no)
+            if retired:
+                card = next(t for t in live if t["disposition_id"] == did)
+                live.remove(card)
+                said_no.insert(0, {**card, "status": "retired", "juniper": {"verdict": "no", "at": None}})
+            if revived:
+                card = next(t for t in said_no if t["disposition_id"] == did)
+                said_no.remove(card)
+                live.append({**card, "status": "candidate", "juniper": {"verdict": "yes", "at": None}})
+            return route.fulfill(body=json.dumps({"verdict_id": "jv-1", "disposition_id": did, "verdict": verdict,
+                                                  "retired": retired, "revived": revived,
+                                                  "status": "retired" if retired else "candidate"}),
                                  content_type="application/json")
         if "/api/personality/choices" in url:
             return route.fulfill(body=json.dumps(CHOICES), content_type="application/json")
         if "/api/personality/tendencies" in url:
-            body = TENDENCIES if scenario == "ok" else {
-                **TENDENCIES, "warnings": ["answers_table_missing: apply manual_migration_personality_juniper_verdict_v1.sql"]}
+            body = {"count": len(live), "tendencies": live, "said_no": said_no, "warnings": []}
+            if scenario == "no_table":
+                body = {**body, "said_no": [],
+                        "warnings": ["answers_table_missing: apply manual_migration_personality_juniper_verdict_v1.sql"]}
             return route.fulfill(body=json.dumps(body), content_type="application/json")
         if "/api/personality/arms" in url:
             return route.fulfill(body=json.dumps(ARMS_OFF), content_type="application/json")
@@ -114,6 +131,22 @@ def test_personality_tab_yes_no_browser_smoke(scenario):
             assert errors == [], errors
             browser.close()
             return
+        if scenario == "changed_mind":                                  # take back an old no
+            assert page.inner_text("#pSaidNoCount") == "(1)"
+            page.click("#pSaidNoGroup summary")
+            card = page.locator('#pSaidNo .tendency[data-id="disp-9"]')
+            assert "You said no on" in card.inner_text()
+            card.locator("button.verdict.yes").click()                   # "Changed my mind": no dialog
+            page.wait_for_selector('#pTendencies .tendency[data-id="disp-9"]')
+            assert posts[-1] == ("disp-9", {"verdict": "yes"}) and dialogs == []
+            assert page.inner_text("#pTendencyFlash") == "Back. Orion can lean on this again as it grows."
+            assert page.locator('#pSaidNo .tendency').count() == 0
+            assert page.inner_text("#pSaidNoCount") == "(0)"
+            back = page.locator('#pTendencies .tendency[data-id="disp-9"]')
+            assert "Still forming" in back.inner_text() and back.locator("button.verdict.no").count() == 1
+            assert errors == [], errors
+            browser.close()
+            return
         # 1. Recent choices: a decline, then a pick with its rank and what it passed over.
         cards = page.locator("#pChoices .choice")
         assert cards.count() == 2
@@ -133,6 +166,7 @@ def test_personality_tab_yes_no_browser_smoke(scenario):
         assert "21 of 23 choices went this way" in text and "In Orion's Prime block now" in text
         assert "Example choices:" in text and "You have not answered yet." in text
         assert "You said yes on" in page.locator('#pTendencies .tendency[data-id="disp-3"]').inner_text()
+        assert page.locator("#pSaidNo button", has_text="Changed my mind").count() == 1
         # 3. Not live yet.
         assert page.inner_text("#pArmsSummary").startswith("Not live yet.")
 
@@ -145,21 +179,24 @@ def test_personality_tab_yes_no_browser_smoke(scenario):
         assert first.get_attribute("data-answered") == "yes"
         assert dialogs == []                                                         # yes never asks
 
-        # No: asks first, then retires the card and removes its buttons.
-        second = page.locator('#pTendencies .tendency[data-id="disp-2"]')
-        second.locator("button.verdict.no").click()
-        page.wait_for_selector('.tendency[data-id="disp-2"].retired')
+        # No: asks first, then the card moves to "You said no to" with a "Changed my mind" button.
+        page.locator('#pTendencies .tendency[data-id="disp-2"] button.verdict.no').click()
+        page.wait_for_selector('#pSaidNo .tendency[data-id="disp-2"]', state="attached")
         assert posts[-1] == ("disp-2", {"verdict": "no"})
         assert len(dialogs) == 1 and dialogs[0].startswith("Retire this tendency?")
-        assert "you will be asked again" in dialogs[0]
-        assert second.locator("button.verdict").count() == 0
-        assert second.locator(".verdict-msg").inner_text() == "Retired. Orion will not lean on this any more."
+        assert 'You said no to' in dialogs[0]
+        assert page.locator('#pTendencies .tendency[data-id="disp-2"]').count() == 0
+        assert page.inner_text("#pTendencyFlash").startswith("Retired. Orion will not lean on this any more.")
+        assert page.inner_text("#pSaidNoCount") == "(2)"
+        moved = page.locator('#pSaidNo .tendency[data-id="disp-2"]')
+        assert moved.locator("button.verdict").count() == 1
+        assert moved.locator("button.verdict").text_content() == "Changed my mind"
 
         # A refused save names the reason and gives the buttons back.
-        third = page.locator('#pTendencies .tendency[data-id="disp-3"]')
+        third = page.locator('#pTendencies .tendency[data-id="disp-3"]')  # re-rendered list after the move
         third.locator("button.verdict.yes").click()
         page.wait_for_selector('.tendency[data-id="disp-3"] .verdict-msg.err')
-        assert third.locator(".verdict-msg").inner_text() == "Not saved: tendency is already retired"
+        assert third.locator(".verdict-msg").inner_text() == "Not saved: tendency is retired and cannot take this answer"
         assert third.locator("button.verdict.yes").is_enabled()
 
         assert page.evaluate("window.__pwned") is None

@@ -223,7 +223,8 @@ def test_page_js_fetches_every_route_and_page_has_its_ids():
     for route in ("/api/personality/choices?limit=", "/api/personality/tendencies?limit=",
                   "/api/personality/arms?days=", "/api/personality/tendencies/${encodeURIComponent(id)}/verdict"):
         assert route in js, route
-    for el_id in ("pRefresh", "pStatus", "pChoices", "pTendencies", "pTendencyWarn", "pArms", "pArmsSummary"):
+    for el_id in ("pRefresh", "pStatus", "pChoices", "pTendencies", "pTendencyWarn", "pTendencyFlash", "pSaidNo",
+                  "pSaidNoCount", "pArms", "pArmsSummary"):
         assert f'id="{el_id}"' in page, el_id
         assert f'"{el_id}"' in js, el_id
     # The only write is Juniper's answer.

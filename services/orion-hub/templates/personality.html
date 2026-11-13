@@ -59,6 +59,8 @@ button.verdict.no:hover { border-color: var(--critical); }
 button:disabled { opacity: 0.5; cursor: default; }
 .tendency.retired { opacity: 0.6; }
 .arm { margin: 2px 0; }
+details.group { border: 1px solid var(--hairline); border-radius: 8px; padding: 6px 8px; margin-top: 8px; }
+details.group summary { cursor: pointer; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -80,9 +82,15 @@ button:disabled { opacity: 0.5; cursor: default; }
 
   <section class="panel">
     <h2>Tendencies</h2>
-    <div class="muted">Kinds of choice Orion keeps making. A "No" retires the tendency: Orion stops leaning on it.</div>
+    <div class="muted">Kinds of choice Orion keeps making. A "No" retires the tendency: Orion stops leaning on it. You can take it back below.</div>
     <div class="muted err" id="pTendencyWarn"></div>
+    <div class="muted" id="pTendencyFlash" role="status"></div>
     <div id="pTendencies"></div>
+    <details class="group" id="pSaidNoGroup">
+      <summary>You said no to <span class="muted" id="pSaidNoCount"></span></summary>
+      <div class="muted">Tendencies you retired. "Changed my mind" brings one back as a new, still-forming tendency.</div>
+      <div id="pSaidNo"></div>
+    </details>
   </section>
 
   <section class="panel">

@@ -1219,18 +1219,19 @@ async def personality_tendencies(limit: int = 20):
 @app.post("/personality/tendencies/{disposition_id}/verdict")
 async def personality_tendency_verdict(disposition_id: str, body: JuniperVerdictIn):
     """Juniper's yes / no. A no retires the tendency (it leaves the frame, the Prime tending line and
-    the market). 404: no such choice-built tendency. 409: already retired."""
+    the market). A yes on a tendency she retired herself revives it as a candidate ("Changed my mind").
+    404: no such choice-built tendency. 409: retired and not by her latest no (faded), or a second no."""
     from app.personality_store import TendencyRetired
 
     _personality_store()  # 503 when the loop is disabled
     try:
         out = await _personality_read(personality.juniper_verdict(disposition_id, body.verdict))
     except TendencyRetired as exc:
-        raise HTTPException(409, "tendency is already retired") from exc
+        raise HTTPException(409, "tendency is retired and cannot take this answer") from exc
     if out is None:
         raise HTTPException(404, "no such choice-built tendency")
-    logger.info("personality_juniper_verdict disposition=%s verdict=%s retired=%s",
-                disposition_id, out["verdict"], out["retired"])
+    logger.info("personality_juniper_verdict disposition=%s verdict=%s retired=%s revived=%s",
+                disposition_id, out["verdict"], out["retired"], out.get("revived", False))
     return out
 
 

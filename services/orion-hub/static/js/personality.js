@@ -21,8 +21,8 @@
   // (at most MAX_LINES, never one Orion rejected while naming it) reach Prime's block.
   const PRIME_MIN_WEIGHT = 10;
   const PRIME_MAX_LINES = 2;
-  const NO_CONFIRM = "Retire this tendency? Orion stops leaning on it. If Orion keeps choosing this way, "
-    + "a new tendency can form and you will be asked again.";
+  const NO_CONFIRM = "Retire this tendency? Orion stops leaning on it. "
+    + "You can change your mind later under \"You said no to\".";
 
   const LANE_TEXT = {
     prime: "Orion's own next move",
@@ -202,20 +202,25 @@
     return "Your answers can't be saved right now.";
   }
 
+  function saidNoFrom(body) {
+    return body && Array.isArray(body.said_no) ? body.said_no : [];
+  }
+
   function verdictUrl(id) {
     return `/api/personality/tendencies/${encodeURIComponent(id)}/verdict`;
   }
 
   // What the card says after an answer is saved.
   function afterVerdictText(result) {
-    if (result && result.retired) return "Retired. Orion will not lean on this any more.";
+    if (result && result.retired) return "Retired. Orion will not lean on this any more. It is now under \"You said no to\".";
+    if (result && result.revived) return "Back. Orion can lean on this again as it grows.";
     return "Saved. You said yes.";
   }
 
   const api = {
     laneText, rankText, optionText, choiceView, labelBase, verdictText, exampleText, tendencyView, tendencyViews,
     armsView, choicesFrom, tendenciesFrom, verdictUrl, afterVerdictText, answersBlockedText, PRIME_MIN_WEIGHT,
-    PRIME_MAX_LINES, NO_CONFIRM, LANE_TEXT,
+    PRIME_MAX_LINES, NO_CONFIRM, LANE_TEXT, saidNoFrom,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof document === "undefined") return;
@@ -292,19 +297,49 @@
         headers: { "Content-Type": "application/json", Accept: "application/json" },
         body: JSON.stringify({ verdict }),
       }));
-      msg.textContent = afterVerdictText(body);
-      if (body && body.retired) {
-        card.classList.add("retired");
-        card.querySelector(".verdict-row").remove();
-      } else {
-        card.dataset.answered = verdict;
-        buttons.forEach((b) => { b.disabled = false; });
+      if (body && (body.retired || body.revived)) {
+        // The tendency moved between "Tendencies" and "You said no to": redraw both lists.
+        $("pTendencyFlash").textContent = afterVerdictText(body);
+        await loadTendencies();
+        return;
       }
+      msg.textContent = afterVerdictText(body);
+      card.dataset.answered = verdict;
+      buttons.forEach((b) => { b.disabled = false; });
     } catch (err) {
       msg.textContent = `Not saved: ${err.message}`;
       msg.classList.add("err");
       buttons.forEach((b) => { b.disabled = false; });
     }
+  }
+
+  function tendencyCard(v) {
+    const card = el("div", "tendency");
+    card.dataset.id = v.id;
+    if (v.answered) card.dataset.answered = v.answered;
+    card.appendChild(el("div", "tendency-label", v.label));
+    if (v.name) card.appendChild(el("div", "muted", v.name));
+    const facts = el("div", "row");
+    facts.appendChild(el("span", "badge", v.status));
+    if (v.inPrime) facts.appendChild(el("span", "badge prime", "In Orion's Prime block now"));
+    if (v.count) facts.appendChild(el("span", "muted", v.count));
+    if (v.strength) facts.appendChild(el("span", "muted", v.strength));
+    card.appendChild(facts);
+    if (v.examples.length) {
+      card.appendChild(el("div", "muted", "Example choices:"));
+      const ul = el("ul", "examples");
+      for (const e of v.examples) ul.appendChild(el("li", null, e));
+      card.appendChild(ul);
+    }
+    return card;
+  }
+
+  function verdictButton(card, id, cls, label, verdict, blocked) {
+    const b = el("button", `verdict ${cls}`, label);
+    b.type = "button";
+    b.disabled = Boolean(blocked);
+    b.addEventListener("click", () => sendVerdict(card, id, verdict));
+    return b;
   }
 
   function renderTendencies(list, blocked) {
@@ -316,38 +351,43 @@
       return;
     }
     for (const v of tendencyViews(list)) {
-      const card = el("div", "tendency");
-      card.dataset.id = v.id;
-      if (v.answered) card.dataset.answered = v.answered;
-      card.appendChild(el("div", "tendency-label", v.label));
-      if (v.name) card.appendChild(el("div", "muted", v.name));
-      const facts = el("div", "row");
-      facts.appendChild(el("span", "badge", v.status));
-      if (v.inPrime) facts.appendChild(el("span", "badge prime", "In Orion's Prime block now"));
-      if (v.count) facts.appendChild(el("span", "muted", v.count));
-      if (v.strength) facts.appendChild(el("span", "muted", v.strength));
-      card.appendChild(facts);
-      if (v.examples.length) {
-        card.appendChild(el("div", "muted", "Example choices:"));
-        const ul = el("ul", "examples");
-        for (const e of v.examples) ul.appendChild(el("li", null, e));
-        card.appendChild(ul);
-      }
+      const card = tendencyCard(v);
       const row = el("div", "row verdict-row");
       row.appendChild(el("span", null, "Does this look like Orion?"));
-      const yes = el("button", "verdict yes", "Yes");
-      yes.type = "button";
-      const no = el("button", "verdict no", "No");
-      no.type = "button";
-      yes.disabled = no.disabled = Boolean(blocked);
-      yes.addEventListener("click", () => sendVerdict(card, v.id, "yes"));
-      no.addEventListener("click", () => sendVerdict(card, v.id, "no"));
-      row.appendChild(yes);
-      row.appendChild(no);
+      row.appendChild(verdictButton(card, v.id, "yes", "Yes", "yes", blocked));
+      row.appendChild(verdictButton(card, v.id, "no", "No", "no", blocked));
       card.appendChild(row);
       card.appendChild(el("div", "muted verdict-msg", v.verdict));
       host.appendChild(card);
     }
+  }
+
+  function renderSaidNo(list, blocked) {
+    const host = $("pSaidNo");
+    host.replaceChildren();
+    $("pSaidNoCount").textContent = `(${list.length})`;
+    if (!list.length) {
+      host.appendChild(el("div", "muted", "Nothing yet."));
+      return;
+    }
+    for (const v of list.map(tendencyView)) {
+      const card = tendencyCard(v);
+      card.classList.add("retired");
+      const row = el("div", "row verdict-row");
+      row.appendChild(verdictButton(card, v.id, "yes", "Changed my mind", "yes", blocked));
+      card.appendChild(row);
+      card.appendChild(el("div", "muted verdict-msg", v.verdict));
+      host.appendChild(card);
+    }
+  }
+
+  async function loadTendencies() {
+    const body = await getJson(`/api/personality/tendencies?limit=${TENDENCY_LIMIT}`);
+    const blocked = answersBlockedText(body && body.warnings);
+    renderTendencies(tendenciesFrom(body), blocked);
+    renderSaidNo(saidNoFrom(body), blocked);
+    $("pTendencyWarn").textContent = blocked;
+    $("pTendencyWarn").title = blocked ? String(((body && body.warnings) || []).join("; ")) : "";
   }
 
   function renderArms(body) {
@@ -367,9 +407,10 @@
     const status = $("pStatus");
     status.textContent = "loading…";
     status.classList.remove("err");
+    $("pTendencyFlash").textContent = "";
     const [choices, tendencies, arms] = await Promise.allSettled([
       getJson(`/api/personality/choices?limit=${CHOICE_LIMIT}`),
-      getJson(`/api/personality/tendencies?limit=${TENDENCY_LIMIT}`),
+      loadTendencies(),
       getJson(`/api/personality/arms?days=${ARM_DAYS}`),
     ]);
     const errors = [];
@@ -379,13 +420,9 @@
       $("pChoices").replaceChildren();
       errors.push(`choices: ${choices.reason.message}`);
     }
-    if (tendencies.status === "fulfilled") {
-      const blocked = answersBlockedText(tendencies.value && tendencies.value.warnings);
-      renderTendencies(tendenciesFrom(tendencies.value), blocked);
-      $("pTendencyWarn").textContent = blocked;
-      if (blocked) $("pTendencyWarn").title = String((tendencies.value.warnings || []).join("; "));
-    } else {
+    if (tendencies.status !== "fulfilled") {
       $("pTendencies").replaceChildren();
+      $("pSaidNo").replaceChildren();
       $("pTendencyWarn").textContent = "";
       errors.push(`tendencies: ${tendencies.reason.message}`);
     }

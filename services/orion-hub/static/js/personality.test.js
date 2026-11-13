@@ -86,9 +86,16 @@ test("a choice whose tendency was retired says so", () => {
   assert.strictEqual(v.tendency, "Counted toward: walkway misnaming over peer briefs, 3 of 3 (retired)");
 });
 
-test("the No confirm is honest: a new tendency can form again", () => {
-  assert.match(p.NO_CONFIRM, /a new tendency can form and you will be asked again/);
+test("the No confirm says the answer can be taken back", () => {
+  assert.match(p.NO_CONFIRM, /change your mind later under "You said no to"/);
   assert.doesNotMatch(p.NO_CONFIRM, /cannot come back/);
+});
+
+test("saidNoFrom reads the said_no list; afterVerdictText names a revive", () => {
+  assert.deepStrictEqual(p.saidNoFrom({ said_no: [1] }), [1]);
+  assert.deepStrictEqual(p.saidNoFrom({}), []);
+  assert.strictEqual(p.afterVerdictText({ revived: true, retired: false }),
+    "Back. Orion can lean on this again as it grows.");
 });
 
 test("answersBlockedText is plain words, never a file name", () => {
@@ -101,7 +108,7 @@ test("answersBlockedText is plain words, never a file name", () => {
 test("verdictText and afterVerdictText say what Juniper answered in plain words", () => {
   assert.match(p.verdictText({ verdict: "yes", at: "2026-11-13T10:00:00Z" }), /^You said yes on /);
   assert.strictEqual(p.verdictText({ verdict: "no", at: null }), "You said no.");
-  assert.strictEqual(p.afterVerdictText({ retired: true }), "Retired. Orion will not lean on this any more.");
+  assert.match(p.afterVerdictText({ retired: true }), /^Retired\. Orion will not lean on this any more\. It is now under "You said no to"\.$/);
   assert.strictEqual(p.afterVerdictText({ retired: false }), "Saved. You said yes.");
   assert.strictEqual(p.verdictUrl("disp-1:a.b"), "/api/personality/tendencies/disp-1%3Aa.b/verdict");
 });

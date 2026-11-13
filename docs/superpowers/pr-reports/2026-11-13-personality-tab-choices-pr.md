@@ -4,6 +4,7 @@
 - **Recent choices**: the last 30 choices across lanes. Each shows the lane in words, the time, what Orion picked (with its market rank), the top options Orion passed over (with rank), and "Said nothing" / "Made no move" declines.
 - **Tendencies**: choice-built tendencies only, each with "n of m choices went this way", strength, status in words, an "In Orion's Prime block now" badge, and 3 example choices. Each has **Does this look like Orion? Yes / No**.
 - A **No** retires the tendency in durable-runs (the single writer). A retired tendency leaves the frame, so it never reaches the Prime tending line or the market again.
+- **Changed my mind**: a tendency Juniper said No to sits in a collapsed "You said no to" list. Its button sends a Yes, which revives it as a candidate (same revive as the reducer in #3336) with a weight-history row. A tendency that faded out on its own still gets 409.
 - **Is it changing anything?**: market decisions with the care arm vs the holdback arm (from `want_ledger` `personality:arm=` lines). It reads "Not live yet" until #3332 deploys.
 - The old excerpt / recurrence panels and their Hub proxies (`/dispositions`, `/evidence`, `/naming`, `/cue`) are removed.
 
@@ -58,7 +59,7 @@ services/orion-durable-runs: test_personality_tab_postgres.py, test_personality_
 services/orion-durable-runs full tests folder (same DSN) -> 1041 passed, 3 skipped
 services/orion-hub: tests/test_personality_routes.py, test_hub_panel_reachability.py,
   test_personality_cue_reader.py -> 42 passed
-node --test services/orion-hub/static/js/personality.test.js -> 13 passed
+node --test services/orion-hub/static/js/personality.test.js -> 14 passed
 tests/test_sql_migration_drift_gate.py, tests/test_deploy_migration_gate.py -> 142 passed
 tests/test_no_personal_terms.py, tests/test_no_private_eval_artifacts.py -> 10 passed
 scripts/check_metric_lineage.py --gate -> PASS; scripts/check_definition_drift.py --gate -> PASS
@@ -67,7 +68,7 @@ scripts/check_metric_lineage.py --gate -> PASS; scripts/check_definition_drift.p
 ## Evals run
 
 ```text
-services/orion-hub/tests/test_personality_panel_browser_smoke.py (Playwright, Chromium) -> 3 passed
+services/orion-hub/tests/test_personality_panel_browser_smoke.py (Playwright, Chromium) -> 4 passed
   Real template + JS. Covers: choices render (pick, rank, passed over, decline, hostile text stays text),
   tendencies with examples, Yes (saved, card stays), No (confirm dialog, POST, card retired, buttons gone),
   a refused save (named error, buttons back), "Not live yet", and an upstream outage.
@@ -84,6 +85,8 @@ No Docker build run. Not deployed (per task).
 ```
 
 ## Review findings fixed
+
+Follow-up from the coordinator: Juniper could never undo her own No (any retired tendency got 409). Fixed: a Yes on a tendency she retired revives it; the tab keeps those under "You said no to" with "Changed my mind". Tests: `test_no_retires_the_tendency_and_the_next_tick_keeps_it_retired` (now also revives), `test_a_faded_tendency_cannot_be_revived_by_yes`, browser smoke `changed_mind` scenario.
 
 Review subagent (hand review of `origin/main...HEAD`): no blockers; tick race, retired-id return, prose-node isolation, SQL, migration allowlist and XSS checked sound.
 
@@ -129,7 +132,7 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 ## Risks / concerns
 
-- Severity: medium. Concern: a "no" retires that tendency, but a similar run of choices later founds a NEW one, and Juniper is asked again. Mitigation: the dialog says so. Real suppression (a tombstone the reducer folds matching choices into) needs a change in `orion/personality/graph.py`, which another agent is editing now; it should be done there.
+- Severity: low. Concern: on main alone, a "no" retires the tendency but a similar run of choices can found a NEW one. #3336 (feat/personality-loop-wiring) makes Juniper's No absorb those choices instead. Mitigation: merge #3336; until then she can say no again.
 - Severity: low. Concern: "Is it changing anything" reads "Not live yet" until #3332 deploys; its `personality:arm=care|holdback` format was checked against #3332's tests. Mitigation: it is labelled, not hidden.
 - Severity: low. Concern: UNVERIFIED live: the tab, the Yes/No write and the retire were not exercised on the live stack (not deployed).
 

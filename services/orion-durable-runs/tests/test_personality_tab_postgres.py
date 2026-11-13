@@ -184,11 +184,63 @@ def test_no_retires_the_tendency_and_the_next_tick_keeps_it_retired():
         (node,) = await q(pool, "SELECT status FROM personality_disposition WHERE disposition_id = %(d)s", {"d": did})
         assert node["status"] == "retired"
 
+        # It is listed under "You said no to", with her answer.
+        body = await store.tendencies()
+        assert [t["disposition_id"] for t in body["said_no"]] == [did]
+        assert body["said_no"][0]["juniper"]["verdict"] == "no" and body["said_no"][0]["examples"]
+
+        # A second no on it is refused; so is nonsense.
         with pytest.raises(TendencyRetired):
-            await drv.juniper_verdict(did, "yes")
+            await drv.juniper_verdict(did, "no")
         assert await drv.juniper_verdict("disp-nope", "yes") is None
         with pytest.raises(ValueError):
             await store.record_juniper_verdict(did, "maybe", clock.at)
+
+        # "Changed my mind": a yes revives it as a candidate, with a history row.
+        clock.at += timedelta(minutes=1)
+        back = await drv.juniper_verdict(did, "yes")
+        assert back["revived"] is True and back["retired"] is False and back["status"] == "candidate"
+        (node,) = await q(pool, "SELECT status, retired_at, last_folded_at FROM personality_disposition "
+                                "WHERE disposition_id = %(d)s", {"d": did})
+        assert node == {"status": "candidate", "retired_at": None, "last_folded_at": clock.at}
+        (h,) = await q(pool, "SELECT status, at FROM personality_weight_history WHERE disposition_id = %(d)s "
+                             "ORDER BY at DESC LIMIT 1", {"d": did})
+        assert h == {"status": "candidate", "at": clock.at}
+        (v,) = await q(pool, "SELECT verdict, retired, status_before FROM personality_juniper_verdict "
+                             "WHERE disposition_id = %(d)s ORDER BY created_at DESC LIMIT 1", {"d": did})
+        assert v == {"verdict": "yes", "retired": False, "status_before": "retired"}
+        body = await store.tendencies()
+        assert body["said_no"] == [] and did in [t["disposition_id"] for t in body["tendencies"]]
+        # Back in the reducer's working set, and a tick keeps it alive.
+        assert did in [n.disposition_id for n in await store.load_nodes()]
+        clock.at += timedelta(minutes=20)
+        await drv.tick()
+        (node,) = await q(pool, "SELECT status FROM personality_disposition WHERE disposition_id = %(d)s", {"d": did})
+        assert node["status"] != "retired"
+        # A yes on a live tendency is just recorded.
+        assert (await drv.juniper_verdict(did, "yes"))["revived"] is False
+
+    with_db(scenario)
+
+
+def test_a_faded_tendency_cannot_be_revived_by_yes():
+    """Retired by Orion's own rules (fade, candidate TTL), not by Juniper's no: 409, nothing written."""
+    async def scenario(pool):
+        clock = Clock(T0)
+        store, drv = await seed(pool, clock)
+        did = (await store.tendencies())["tendencies"][0]["disposition_id"]
+        await ex(pool, "UPDATE personality_disposition SET status = 'retired', retired_at = %(t)s "
+                       "WHERE disposition_id = %(d)s", {"t": clock.at, "d": did})
+        with pytest.raises(TendencyRetired):
+            await drv.juniper_verdict(did, "yes")
+        # An earlier yes (not a retiring no) does not count either.
+        await ex(pool, "INSERT INTO personality_juniper_verdict (verdict_id, disposition_id, verdict, label_at_verdict, "
+                       "retired, created_at) VALUES ('jv-x', %(d)s, 'yes', 'l', false, %(t)s)",
+                 {"d": did, "t": clock.at})
+        with pytest.raises(TendencyRetired):
+            await drv.juniper_verdict(did, "yes")
+        assert (await store.tendencies())["said_no"] == []
+        assert len(await q(pool, "SELECT 1 FROM personality_juniper_verdict")) == 1
 
     with_db(scenario)
 

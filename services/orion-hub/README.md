@@ -4427,9 +4427,11 @@ excerpts, naming log) are gone, and so are their proxies (`/dispositions`, `/evi
   3 example choices, and Juniper's last answer.
   **Does this look like Orion? Yes / No.** Yes is recorded. No asks first, then retires the
   tendency: it leaves the frame, so it never reaches the Prime tending line or the market's
-  tendency read again. If Orion keeps choosing the same way, a NEW tendency can form, and Juniper is
-  asked again (the dialog says so). The write goes to durable-runs, the single writer. While the
-  answer table is missing, the buttons are disabled and the tab says so in one plain sentence.
+  tendency read again. The card moves to a collapsed **You said no to** list, with a **Changed my
+  mind** button: that sends a Yes, and durable-runs revives the tendency as a candidate (the same
+  revive the reducer applies on a later yes, #3336). A tendency that faded out on its own, not by her
+  No, cannot be revived (409). The write goes to durable-runs, the single writer. While the answer
+  table is missing, the buttons are disabled and the tab says so in one plain sentence.
 - **Is it changing anything?**: market decisions over the last 7 days with a `personality:arm=care`
   or `personality:arm=holdback` trace line in `want_ledger` (written by #3332), by arm, with the share
   funded ("given the go-ahead"). "Not live yet" when there are none.

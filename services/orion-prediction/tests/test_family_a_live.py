@@ -217,14 +217,54 @@ def test_a_thin_calibration_pool_refuses_the_selection(monkeypatch):
     assert not live.store.runs
 
 
-def test_prefix_range_matches_exactly_the_prefix():
-    from app.store import _prefix_range
+def test_family_prefix_queries_are_collation_independent():
+    """Regression (2026-11-13): a ``series_id >= 'family_a:' AND series_id < 'family_a;'`` range matched 0
+    of 1,326 live rows under the database's en_US.utf8 collation (punctuation is ignored at the first sort
+    level), so no Family A reading, joint or shadow row was ever scored or pruned. Python's byte-order
+    comparison could not catch it. Every prefix query must use ``starts_with`` and pass the bare prefix."""
+    import inspect
+    import re
 
-    lo, hi = _prefix_range(fl.PREFIX)
-    inside = [fl.PREFIX + "athena.load_1m", fl.PREFIX + "zzz", fl.PREFIX]
-    outside = ["family_aX:athena", "family_a", "family_b:x", "athena.cabinet_temp_c", "office.temp_c"]
-    assert all(lo <= s < hi for s in inside)
-    assert not any(lo <= s < hi for s in outside)
+    from app import store as st
+
+    calls = []
+
+    class Cur:
+        rowcount = 0
+
+        def execute(self, sql, params=()):
+            calls.append((sql, params))
+            return self
+
+    class Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=()):
+            calls.append((sql, params))
+            return Cur()
+
+    class Pool:
+        def connection(self):
+            return Conn()
+
+    s = st.PostgresStore.__new__(st.PostgresStore)
+    s.pool = Pool()
+    s._all = lambda sql, params=(): calls.append((sql, params)) or []
+    now = datetime(2026, 11, 13, tzinfo=timezone.utc)
+    s.family_due(fl.FAMILY, fl.PREFIX, now)
+    s.family_due_shadow(fl.PREFIX, now)
+    s.prune_family(fl.PREFIX, now)
+    prefixed = [(sql, p) for sql, p in calls if "series_id" in sql and "FROM prediction_joint_surprise" not in sql]
+    assert len(prefixed) == 4  # due readings, due shadows, prune x2 tables
+    for sql, params in prefixed:
+        assert "starts_with(series_id, %s)" in sql, sql
+        assert not re.search(r"series_id\s*[<>]=?\s*%s", sql), sql
+        assert params[0] == fl.PREFIX
+    assert "series_id >=" not in inspect.getsource(st)
 
 
 def _calm_eval():

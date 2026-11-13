@@ -590,6 +590,22 @@ so the existing "Is this Juniper?" asks ask the right name, and the office line 
    `VISION_PERSON_FALLBACK_CHANNEL` (body). Accepted for two people = unsure;
    a person ruled out by a -1 crop in the cluster is never guessed. A guess
    never writes `vision_individual.label`.
+   **Age-band veto** (`VISION_PERSON_AGE_VETO_ENABLED`, on; 2026-11-13,
+   `docs/superpowers/specs/2026-11-13-person-age-band-soft-veto-design.md`).
+   Each cluster's stored SigLIP vectors are compared with "a photo of a child"
+   vs "a photo of an adult" (`orion/vision/age_band.py`; no model is loaded,
+   the text side is committed). When the mean read is confident (0.75, 2+
+   crops) and Juniper's stated age for a person (`person_fact` `age`, newer
+   than 2 years) is the other band, that person is left out of the
+   cluster's candidates. It only removes names, never adds one. It does
+   nothing on a camera with a prior (the office), for a person with no stated
+   age, or for vectors from another model. Nothing about age is stored:
+   `vision_person_attribution.age_veto` holds only `{"struck": [names],
+   "rule": "age_band_v1"}` and is cleared when the row is revoked. Cycle stats:
+   `person_age_vetoes`, `person_age_veto_all_struck` (every candidate struck:
+   no guess row, logged as `person_age_veto_all_struck`). Gender is never read.
+   Migration: `services/orion-sql-db/manual_migration_vision_person_age_veto_v1.sql`
+   (additive; the writer works without it).
 
 4. Asks *"Is this <name>?"* (`source_kind=vision_person_confirm`,
    `source_ref=<individual_id>|<name>`) about the strongest unsure guesses of

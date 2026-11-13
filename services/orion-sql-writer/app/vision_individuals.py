@@ -2520,8 +2520,8 @@ def _apply_person_confirm(conn, ask_id: str, ref: str, answer: Optional[str], at
                 {"e": exemplar_id(person, crop_id, source), "p": person, "c": crop_id, "pol": polarity,
                  "s": source, "a": ask_id, "t": at}).rowcount or 0
         conn.execute(text(
-            "UPDATE vision_person_attribution SET revoked_at=:t WHERE individual_id=:i AND person_label=:p "
-            "AND revoked_at IS NULL"), {"t": now, "i": iid, "p": person})
+            "UPDATE vision_person_attribution SET revoked_at=:t" + _age_veto_clear(conn) + " WHERE individual_id=:i "
+            "AND person_label=:p AND revoked_at IS NULL"), {"t": now, "i": iid, "p": person})
         logger.info("person_confirm_pictures ask_id=%s individual_id=%s verdicts=%s exemplars_added=%d",
                     ask_id, iid, ",".join(sorted(pictures.values())), added)
         return
@@ -2547,8 +2547,17 @@ def _apply_person_confirm(conn, ask_id: str, ref: str, answer: Optional[str], at
             "VALUES (:e, :p, :c, -1, 'confirm_no', :a, :t) ON CONFLICT (exemplar_id) DO NOTHING"),
             {"e": exemplar_id(person, crop_id, "confirm_no"), "p": person, "c": crop_id, "a": ask_id, "t": at})
     conn.execute(text(
-        "UPDATE vision_person_attribution SET revoked_at=:t WHERE individual_id=:i AND person_label=:p "
-        "AND revoked_at IS NULL"), {"t": now, "i": iid, "p": person})
+        "UPDATE vision_person_attribution SET revoked_at=:t" + _age_veto_clear(conn) + " WHERE individual_id=:i "
+        "AND person_label=:p AND revoked_at IS NULL"), {"t": now, "i": iid, "p": person})
+
+
+def _age_veto_clear(conn) -> str:
+    """SET-clause fragment that clears the age-veto trace in the same revoke
+    statement (retention: a strike lives only on a live guess). Empty before
+    manual_migration_vision_person_age_veto_v1.sql."""
+    from app.vision_person_model import attribution_has_age_veto
+
+    return ", age_veto = NULL" if attribution_has_age_veto(conn) else ""
 
 
 def _prune(conn, now: datetime, cfg: IndividualsConfig, summary: dict) -> None:

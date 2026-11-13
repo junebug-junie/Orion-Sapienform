@@ -45,6 +45,11 @@ families:
   perception:
     tier: 0
     note: retinas, vision-edge, frame-router, vision-host, window, scribe, percept-store.
+  orion.look:
+    tier: 0
+    note: >-
+      Orion opening a live camera frame from a turn (`dig look`, orion/dig/look.py, 2026-11-13). Perception
+      chosen inside a chat turn or curiosity run, never bid for on its own: the turn already won its slot.
 
   # --- Tier 1: critical upkeep, a reserved share of each lane. ---
   actions.journal:

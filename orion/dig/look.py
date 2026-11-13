@@ -11,9 +11,18 @@ asks the camera for anything.
 The frame is copied into ``$ORION_DIG_HOME/look/<day>/`` (the sandbox, outside the repo checkout,
 like chat attachments), so the retina's sweep cannot delete it mid-turn and the turn's Read tool
 can open it. Every look appends one line to ``look/looks.jsonl``: that is the trace.
+
+Every look is also an act on the act ledger (actor ``orion.look``, verb ``look``, object
+``camera:<stream>``; issue #3320, design docs/superpowers/specs/2026-11-13-look-acts-and-checks-design.md).
+Its expectation: a live frame (at most ``LIVE_MAX_AGE_SEC`` old) comes back. A look that finds the
+camera down, stale or mid-write closes 0. The act carries the turn's id as ``session_id`` (joinable)
+but no ``correlation_id``: the ledger charges an act every GPU lease of its correlation id, and a
+look is one image inside a turn, not the turn. Cost is left unmeasured, which the ledger reads as
+"not measured", never zero. A look refused by the hourly cap or an unknown camera word is no act.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -22,7 +31,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Sequence
 from zoneinfo import ZoneInfo
 
 from orion.situational.camera_eyes import describe_camera
@@ -37,6 +46,21 @@ LOG_NAME = "looks.jsonl"
 CAMERA_WORDS = {"office": "cam0", "walkway": "walkway", "doorbell": "doorbell", "door": "doorbell"}
 STREAMS = ("cam0", "walkway", "doorbell")
 _DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+ACTOR = "orion.look"
+ACT_SOURCE_SERVICE = "orion-harness-governor"  # where the dig runs (a registered grammar producer)
+ACT_SOURCE_COMPONENT = "dig.look"
+ACT_HORIZON_SEC = 60.0
+ACT_BASIS = (
+    "artifact_produced = a live frame (<= 5 s old) by the look itself; the retinas save one every 0.5 s, "
+    "so an older newest frame means the camera stopped (down, stale, or event-driven between events)"
+)
+PUBLISH_TIMEOUT_SEC = 3.0
+# == orion.harness.fcc_warm_relay.CORRELATION_HEADER (tests pin it): the motor puts the turn's id on
+# every model call through ANTHROPIC_CUSTOM_HEADERS, and the turn's Bash inherits that environment.
+TURN_ID_HEADER = "X-Orion-Correlation-Id"
+
+Publisher = Callable[[Sequence[Any]], None]
 
 
 class LookError(Exception):
@@ -155,8 +179,73 @@ def sweep(look_root: Path, today: date) -> int:
     return removed
 
 
-def look(word: str, *, home: Path, directory: Path | None = None, now: datetime | None = None) -> tuple[list[str], dict]:
+def turn_id(environ: dict[str, str] | None = None) -> str | None:
+    """The turn's correlation id, from the header the motor sets on every model call."""
+    env = os.environ if environ is None else environ
+    for line in (env.get("ANTHROPIC_CUSTOM_HEADERS") or "").splitlines():
+        name, _, value = line.partition(":")
+        if name.strip().lower() == TURN_ID_HEADER.lower() and value.strip():
+            return value.strip()
+    return None
+
+
+def _publish_bus(events: Sequence[Any]) -> None:
+    from orion.core.bus.async_service import OrionBusAsync
+    from orion.grammar.publish import publish_grammar_event
+
+    url = os.environ.get("ORION_BUS_URL")
+    if not url:
+        raise RuntimeError("ORION_BUS_URL is unset")
+
+    async def go() -> None:
+        bus = OrionBusAsync(url=url)
+        await bus.connect()
+        try:
+            for event in events:  # open, then close: one trace_id, so the writer keeps the order
+                await publish_grammar_event(bus, event, source_name=ACT_SOURCE_SERVICE)
+        finally:
+            await bus.close()
+
+    asyncio.run(asyncio.wait_for(go(), timeout=PUBLISH_TIMEOUT_SEC))
+
+
+def look_act_events(record: dict[str, Any], *, now: datetime, session_id: str | None) -> tuple[str, list[Any]]:
+    """act_opened at the look, act_closed with live (1) or not (0)."""
+    from orion.grammar.acts import act_closed_event, act_opened_event, build_act
+
+    camera = record["camera"]
+    act = build_act(
+        actor=ACTOR, verb="look", key=f"{camera}:{record['looked_at']}", signal_id="artifact_produced",
+        horizon_sec=ACT_HORIZON_SEC, basis=ACT_BASIS, object_ref=f"camera:{camera}",
+        test_before=f"newest_frame:{camera}",
+    )
+    common = dict(source_service=ACT_SOURCE_SERVICE, source_component=ACT_SOURCE_COMPONENT, session_id=session_id)
+    note = record.get("reason") or f"newest frame {record.get('age_sec')} s old, sha256 {str(record.get('sha256'))[:12]}"
+    opened = act_opened_event(act, at=now, **common)
+    closed = act_closed_event(act, produced=bool(record["live"]), note=note, at=now, **common)
+    return act.act_id, [opened, closed]
+
+
+def _record_look(log: Path, record: dict[str, Any], *, now: datetime, publish: Publisher) -> str:
+    """Append the look to looks.jsonl and put it on the act ledger. The act line for the printout."""
+    try:
+        act_id, events = look_act_events(record, now=now, session_id=turn_id())
+        publish(events)
+        record["act_id"] = act_id
+        line = f"act: {act_id} on your act ledger (open it: python -P -m orion.dig act {act_id})"
+    except Exception as exc:  # noqa: BLE001 -- the look stands; only its ledger entry is missing
+        record["act_error"] = f"{type(exc).__name__}: {exc}"[:300]
+        line = f"act: not recorded ({record['act_error']})"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record) + "\n")
+    return line
+
+
+def look(word: str, *, home: Path, directory: Path | None = None, now: datetime | None = None,
+         publish: Publisher | None = None) -> tuple[list[str], dict]:
     """Copy one camera's newest frame into ``home/look`` and say how to see it."""
+    publish = publish or _publish_bus
     stream_id = resolve_stream(word)
     now = now or datetime.now(timezone.utc)
     directory = directory or frames_dir()
@@ -166,9 +255,15 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
     if used >= LOOKS_PER_HOUR:
         raise LookError(f"{used} looks in the last hour; the cap is {LOOKS_PER_HOUR}. Look again later.")
     desc = describe_camera(stream_id)
+
+    def failed(reason: str) -> LookError:
+        record = {"looked_at": now.isoformat(), "camera": stream_id, "live": False, "reason": reason[:300]}
+        act_line = _record_look(log, record, now=now, publish=publish)
+        return LookError(f"{reason}\n{act_line}")
+
     candidates = newest_frames(directory, stream_id)
     if not candidates:
-        raise LookError(
+        raise failed(
             f"no saved frame for {desc.name} ({stream_id}) in {directory}. Frames are kept 5 minutes, "
             + ("and this camera only records after motion or a ring." if desc.event_driven
                else "so this camera has saved nothing for at least that long: it may be down.")
@@ -183,8 +278,8 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
             frame = candidate
             break
     if frame is None:
-        raise LookError(f"the newest {len(candidates)} frames of {desc.name} ({stream_id}) are incomplete or "
-                        "gone; look again in a second.")
+        raise failed(f"the newest {len(candidates)} frames of {desc.name} ({stream_id}) are incomplete or "
+                     "gone; look again in a second.")
     age = max(0.0, (now - frame.taken_at).total_seconds())
     day = frame.taken_at.astimezone(ZONE).date()
     dest_dir = look_root / day.isoformat()
@@ -204,8 +299,7 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
         "path": str(dest),
         "source": str(frame.path),
     }
-    with log.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(record) + "\n")
+    act_line = _record_look(log, record, now=now, publish=publish)
     sweep(look_root, now.astimezone(ZONE).date())
 
     when = frame.taken_at.astimezone(ZONE).strftime("%Y-%m-%d %H:%M:%S %Z")
@@ -222,6 +316,7 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
         "To see it, open that path with your Read tool. Say what you see in it, not what you expect.",
         "If Read gives a note instead of a picture, the model serving this turn cannot see images: say so.",
         f"looks in the last hour: {used + 1} of {LOOKS_PER_HOUR}",
+        act_line,
     ]
     return lines, record
 

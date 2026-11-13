@@ -21,6 +21,15 @@ def _frame(d: Path, camera: str, stream: str, ms: int, body: bytes = b"\xff\xd8j
     return p
 
 
+@pytest.fixture(autouse=True)
+def published(monkeypatch) -> list:
+    """Every test's look publishes into this list, never to a real bus."""
+    sent: list = []
+    monkeypatch.setattr(lk, "_publish_bus", lambda events: sent.extend(events))
+    monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
+    return sent
+
+
 @pytest.fixture()
 def dirs(tmp_path: Path) -> tuple[Path, Path]:
     frames, home = tmp_path / "frames", tmp_path / "home"
@@ -70,9 +79,11 @@ def test_doorbell_stale_frame_says_event_driven(dirs) -> None:
 
 def test_no_frame_is_an_error_not_an_empty_look(dirs) -> None:
     frames, home = dirs
-    with pytest.raises(lk.LookError, match="may be down"):
+    with pytest.raises(lk.LookError, match="may be down") as err:
         lk.look("office", home=home, directory=frames, now=NOW)
-    assert not (home / "look" / lk.LOG_NAME).exists()
+    assert "act: act_" in str(err.value)  # a look that found the camera down is still an act
+    (row,) = [json.loads(x) for x in (home / "look" / lk.LOG_NAME).read_text().splitlines()]
+    assert row["live"] is False and "path" not in row and row["act_id"].startswith("act_")
 
 
 def test_unreadable_frames_folder_names_the_mount(tmp_path: Path) -> None:
@@ -96,9 +107,11 @@ def test_hourly_cap(dirs) -> None:
     log.write_text("".join(json.dumps({"looked_at": t}) + "\n"
                            for t in [old] * 5 + [recent] * (lk.LOOKS_PER_HOUR - 1)))
     lines, _ = lk.look("office", home=home, directory=frames, now=NOW)  # the 20th this hour
-    assert lines[-1] == f"looks in the last hour: {lk.LOOKS_PER_HOUR} of {lk.LOOKS_PER_HOUR}"
+    assert f"looks in the last hour: {lk.LOOKS_PER_HOUR} of {lk.LOOKS_PER_HOUR}" in lines
+    rows_before = log.read_text()
     with pytest.raises(lk.LookError, match="cap is"):
         lk.look("office", home=home, directory=frames, now=NOW)
+    assert log.read_text() == rows_before  # a refused look is no look: no row, no act
 
 
 def test_sweep_only_old_day_folders(tmp_path: Path) -> None:
@@ -145,7 +158,8 @@ def test_all_newest_frames_cut_off_is_an_error(dirs) -> None:
         _frame(frames, "cam0", "cam0", NOW_MS - 100 * k, b"\xff\xd8partial")
     with pytest.raises(lk.LookError, match="incomplete"):
         lk.look("office", home=home, directory=frames, now=NOW)
-    assert not (home / "look" / lk.LOG_NAME).exists()
+    (row,) = [json.loads(x) for x in (home / "look" / lk.LOG_NAME).read_text().splitlines()]
+    assert row["live"] is False and "incomplete" in row["reason"]
 
 
 def test_malformed_log_rows_do_not_crash_the_cap(tmp_path: Path) -> None:
@@ -153,3 +167,67 @@ def test_malformed_log_rows_do_not_crash_the_cap(tmp_path: Path) -> None:
     log.write_text("not json\n" + json.dumps({"looked_at": "2026-11-13T20:59:00"}) + "\n"
                    + json.dumps({"looked_at": None}) + "\n" + json.dumps({"looked_at": NOW.isoformat()}) + "\n")
     assert lk.looks_in_last_hour(log, NOW) == 1
+
+
+# --- the act ledger (#3320) ---------------------------------------------------------------------
+
+def test_a_live_look_is_one_act_opened_then_closed_1(dirs, published, monkeypatch) -> None:
+    frames, home = dirs
+    _frame(frames, "walkway", "walkway", NOW_MS - 400)
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Orion-Lease: x\nX-Orion-Correlation-Id: turn-123")
+    lines, rec = lk.look("walkway", home=home, directory=frames, now=NOW)
+    opened, closed = published
+    assert [opened.event_kind, closed.event_kind] == ["act_opened", "act_closed"]
+    assert opened.trace_id == closed.trace_id == f"act:{rec['act_id']}"
+    act = closed.act
+    assert (act.actor, act.verb, act.object_ref) == ("orion.look", "look", "camera:walkway")
+    assert act.expect.signal_id == "artifact_produced" and act.outcome.value == 1.0
+    assert closed.session_id == "turn-123" and closed.correlation_id is None  # joinable, never billed the turn
+    assert act.cost is None  # not measured, never zero
+    assert opened.provenance.source_service == "orion-harness-governor"
+    assert f"python -P -m orion.dig act {rec['act_id']}" in lines[-1]
+
+
+def test_a_stale_look_closes_0(dirs, published) -> None:
+    frames, home = dirs
+    _frame(frames, "walkway", "walkway", NOW_MS - 240_000)
+    lk.look("walkway", home=home, directory=frames, now=NOW)
+    assert published[1].act.outcome.value == 0.0
+
+
+def test_two_looks_are_two_acts(dirs, published) -> None:
+    frames, home = dirs
+    _frame(frames, "cam0", "cam0", NOW_MS - 300)
+    _, a = lk.look("office", home=home, directory=frames, now=NOW)
+    _, b = lk.look("office", home=home, directory=frames, now=NOW + timedelta(seconds=1))
+    assert a["act_id"] != b["act_id"]
+
+
+def test_a_bus_failure_never_fails_the_look(dirs, monkeypatch) -> None:
+    frames, home = dirs
+    _frame(frames, "cam0", "cam0", NOW_MS - 300)
+
+    def down(events):
+        raise ConnectionError("bus down")
+
+    monkeypatch.setattr(lk, "_publish_bus", down)
+    lines, rec = lk.look("office", home=home, directory=frames, now=NOW)
+    assert Path(rec["path"]).exists() and "act_id" not in rec
+    assert lines[-1] == "act: not recorded (ConnectionError: bus down)"
+    (row,) = [json.loads(x) for x in (home / "look" / lk.LOG_NAME).read_text().splitlines()]
+    assert row["act_error"] == "ConnectionError: bus down"
+
+
+def test_turn_id_header_matches_the_motor() -> None:
+    from orion.harness.fcc_warm_relay import CORRELATION_HEADER
+
+    assert lk.TURN_ID_HEADER == CORRELATION_HEADER
+    assert lk.turn_id({"ANTHROPIC_CUSTOM_HEADERS": "x-orion-correlation-id:  t-9 "}) == "t-9"
+    assert lk.turn_id({}) is None
+
+
+def test_orion_look_has_a_family() -> None:
+    from orion.physiology.families import load_families
+
+    cfg, err = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
+    assert err is None and cfg.families[lk.ACTOR].tier == 0  # perception: never bids

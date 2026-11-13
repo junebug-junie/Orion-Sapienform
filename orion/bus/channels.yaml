@@ -3096,6 +3096,8 @@ channels:
       # services/orion-durable-runs/app/run_acts.py, gated by ORION_DURABLE_ACT_EMIT_ENABLED.
       - orion-durable-runs
       - orion-gpu-pool
+      # act ledger (2026-11-13, #3320): Orion's camera looks (`dig look`, actor orion.look, verb look),
+      # published from a turn's Bash in the governor container (orion/dig/look.py).
       - orion-harness-governor
       # settled H1 verdict transitions + one summary per hour (trace prefix
       # heartbeat.h1:), gated by HEARTBEAT_VERDICT_ATOMS_ENABLED --

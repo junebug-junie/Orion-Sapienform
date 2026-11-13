@@ -246,6 +246,6 @@ every issue, and re-run the 7-day live calm check on those stored rows. Only aft
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3267
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

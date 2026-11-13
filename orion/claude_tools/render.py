@@ -106,7 +106,8 @@ def footer_part(entry: Mapping[str, object]) -> str:
     if path in ("asked", "repeat_no") and answer in ("yes", "no"):
         return f'{label} (Orion: {answer}, "{reason}")' if reason else f"{label} (Orion: {answer})"
     if path == "asked":
-        return f"{label} (Orion did not answer)"
+        # No answer: a timeout is Orion not answering in time; anything else is the consent call being down.
+        return f"{label} (Orion did not answer)" if entry.get("error") == "timeout" else f"{label} (Orion could not be asked)"
     return f"{label} (not available)"
 
 

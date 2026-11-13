@@ -127,12 +127,13 @@ def test_footer_words():
     footer = render_footer([
         {"tool": "body_economy", "decision_path": "asked", "orion_answer": "yes", "orion_reason": "my costs are fine to share"},
         {"tool": "prime_now", "decision_path": "asked", "orion_answer": "no", "orion_reason": "not now"},
-        {"tool": "prime_now", "decision_path": "asked"},
+        {"tool": "prime_now", "decision_path": "asked", "error": "timeout"},
+        {"tool": "prime_now", "decision_path": "asked", "error": "orion-mind is not listening for consent asks"},
         {"tool": "body_economy", "decision_path": "standing_allow"},
         {"tool": "body_economy", "decision_path": "limit"},
     ])
     assert footer == ('Looked at: body economy (Orion: yes, "my costs are fine to share"); prime now (Orion: no, '
-                      '"not now"); prime now (Orion did not answer); body economy (Orion allows it); body economy '
+                      '"not now"); prime now (Orion did not answer); prime now (Orion could not be asked); body economy (Orion allows it); body economy '
                       '(not available).')
     assert render_footer([]) is None
 

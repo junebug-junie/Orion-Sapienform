@@ -134,6 +134,12 @@ SYNC_PREFIXES = (
     # mode. Neither prefix matched before, so the default run added none of their keys.
     "HUB_CONSULT_",
     "ROOM_COMPANION_CONSULT_",
+    # Claude's tools gated by Orion's consent (2026-11-13, Patch 1b): the companion's per-turn MCP server,
+    # the governor's broker (CLAUDE_TOOLS_*, CHANNEL_CLAUDE_TOOL_REQUEST). orion-mind's PRIME_CONSENT_* keys
+    # ride the PRIME_ prefix below. Without these the default run visited both services and added nothing.
+    "ROOM_COMPANION_TOOLS_",
+    "CLAUDE_TOOLS_",
+    "CHANNEL_CLAUDE_TOOL_",
     # Self-monitor effects (rung 6, 2026-11-03): E1 act gate in orion-thought (was dispatch-runtime) + orion-actions
     # (SELF_MONITOR_ACT_GATE_ENABLED, SELF_MONITOR_PROBE_INTERVAL_SEC) and E2 in Hub
     # (SELF_MONITOR_QUESTIONS_*). Without this the default run visited all three and added nothing.

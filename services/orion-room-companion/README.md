@@ -234,6 +234,25 @@ Juniper. Such a turn is different in five ways:
   (`orion.consult.core.CLAUDE_CONSULT_SYSTEM`).
 - **It never passes.** Orion asked a question, so `[pass]` is kept as text.
 
+## Orion's tools (2026-11-13, Patch 1b)
+
+Claude in Hub chat can look at parts of Orion's inside, if Orion says yes. Design:
+`docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md` sections 2-4.
+
+- **Argv.** A room turn keeps `--tools ""` (no Bash, no Read, no web) and adds one MCP server from a
+  per-turn config: `--mcp-config <file> --allowedTools mcp__orion_room --strict-mcp-config`. A consult
+  turn's argv is unchanged; consults never get these tools.
+- **The MCP server** (`orion/claude_tools/mcp_server.py`, started by the CLI as
+  `/usr/local/bin/python -P -m orion.claude_tools.mcp_server`) can only send one bus request per call, to
+  the broker in orion-harness-governor (`orion:claude:tool:request`). The turn's binding (room, Claude
+  session, the invite text) is written by this service into the server's env; Claude never supplies it.
+- **Footer.** The server appends one line per call to a per-turn file; after the turn this service adds
+  one footer line under Claude's reply: `Looked at: body economy (Orion: yes, "...")`. A `[pass]` stays
+  silent. Both per-turn files are deleted after the turn (a 24 h sweep catches a crashed turn's).
+- **No new mount.** The only new reach is the bus channel. Limits per turn (6 calls, 3 asks to Orion)
+  live in the broker, not here.
+- **Off:** `ROOM_COMPANION_TOOLS_ENABLED=false` puts the argv back to `--tools ""` with no MCP.
+
 ## Session continuity
 
 One room is one durable Claude session per Denver day. The first turn mints a

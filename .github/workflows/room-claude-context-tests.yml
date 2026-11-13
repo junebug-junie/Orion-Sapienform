@@ -10,6 +10,8 @@ on:
       - 'services/orion-room-companion/**'
       - 'services/orion-hub/scripts/room_claude_context.py'
       - 'services/orion-hub/scripts/room_claude_relay.py'
+      - 'services/orion-hub/scripts/claude_tools_routes.py'
+      - 'orion/claude_tools/**'
       - 'services/orion-hub/scripts/chat_history_rehydrate.py'
       - 'services/orion-hub/scripts/api_routes.py'
       - 'services/orion-hub/scripts/websocket_handler.py'
@@ -52,4 +54,5 @@ jobs:
           PYTHONPATH=${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
             tests/test_room_claude_full_context.py \
             tests/test_room_claude_relay.py \
+            tests/test_room_claude_tools_routes.py \
             tests/test_chat_history_rehydrate.py

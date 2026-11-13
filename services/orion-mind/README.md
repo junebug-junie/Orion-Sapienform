@@ -312,6 +312,24 @@ reads, self-sense evals, PR field notes, reminiscence and outreach are not.
 - Pub/sub is not durable: a turn that finishes while orion-mind is down is not handed back.
 - Replay eval (read-only, live Postgres): `python -m orion.prime.evals.run_turn_handback_replay --days 3`.
 
+### Orion's consent to a Claude tool call (2026-11-13, Patch 1b)
+
+`app/prime_consent.py` answers `orion:prime:consent:request` from the Claude tools broker
+(orion-harness-governor): may Claude in Hub chat read this part of you? Pure parts:
+`orion/prime/consent.py`. Design: `docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md`
+section 3.
+
+- One model call on `PRIME_CONSENT_LLM_ROUTE` (`prime_consent`: circe chat lane 0, pool priority
+  interactive; never fast or metacog), thinking off, 200 tokens, seat wait 15 s then 20 s generation. The
+  frame (Prime block, the ask, the invite text, the last five answers in that category, how to set a
+  standing grant) is capped at 4,000 characters in code.
+- The answer is one JSON object (yes/no, once/conversation, reason). Anything else is a no, and the answer's
+  `path` says which no (`unparsed`, `gate_refused`, `no_model`, `error`).
+- Each call that reached the model is an act: actor `prime`, verb `infer`, `object_ref`
+  `claude_tools:consent:<call_id>`, so the self-monitor faculty is `act.prime.infer.consent`, apart from
+  Prime's thoughts. The E1 gate on that faculty can refuse ("Orion's consent faculty is paused").
+- Its own bus connection and task per ask; `PRIME_CONSENT_ENABLED=false` = no listener (every ask is a no).
+
 ## Held turns run on their own GPU seat
 
 A `MindRunRequestV1` with `gpu_lease` set (orion-thought copies it from the stance request of a durable/background turn, e.g. a world-pulse read) runs all three LLM phases on route `agent` with the hold on `options.gpu_lease`, whatever `MIND_*_MODEL_ROUTE` / `MIND_TURN_MODEL_ROUTE` say (`app/engine.py`, `orion.llm.resource_lease.held_call_route`). Juniper's rule, 2026-11-12: world-pulse work never goes to the fast or the metacog lane. Unheld runs are unchanged. `MindRunRequestV1` ignores unknown fields, so orion-mind and orion-thought may deploy in either order.

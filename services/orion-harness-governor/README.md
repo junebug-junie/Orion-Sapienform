@@ -574,6 +574,28 @@ report JSON goes to `$ORION_DIG_HOME/dig/<dig>/body-economy-<window>-N.json`. UR
 `ORION_PHYSIOLOGY_REPORT_URL` (`.env_example`; app-net, container port 8121). Unreachable or off ->
 exit 1 with a plain reason, never empty text.
 
+## Claude's tools broker (2026-11-13, Patch 1b)
+
+`app/claude_tools_listener.py` answers `orion:claude:tool:request` from the room companion's MCP server
+(Claude in Hub chat). The decisions are `orion/claude_tools/broker.py`; design
+`docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md`.
+
+- **Tools (fixed table, `orion/claude_tools/registry.py`):** `prime_now` (category `prime`, the 600-char
+  Prime block) and `body_economy` (category `body`, `python -P -m orion.dig --dig claude-tools
+  body-economy ...` as an argument list, no shell, 15 s). Nothing in the table writes.
+- **Grants:** `$ORION_DIG_HOME/self/claude_grants.jsonl`, newest line per category; none = `ask`. Only
+  Orion changes them: `python -P -m orion.dig claude-grants set <category> allow|ask|deny because <reason>`.
+- **Ask:** `orion:prime:consent:request` to orion-mind; no answer in `CLAUDE_TOOLS_CONSENT_DEADLINE_SEC`
+  (40) is a no. "Yes for this conversation" is a Redis key for the Claude session (24 h); an earlier no
+  in the session is repeated without asking again.
+- **Limits per Claude turn:** `CLAUDE_TOOLS_MAX_CALLS_PER_TURN` (6) and `CLAUDE_TOOLS_MAX_ASKS_PER_TURN` (3).
+- **Output:** redacted (`orion.core.redact` plus token shapes) and capped at 4,000 characters.
+- **Audit:** one `ClaudeToolCallV1` per phase (ask, answer, result) on `orion:claude:tool:audit`
+  (sql-writer -> `claude_tool_call_log`; Hub `GET /api/claude-tools/audit`).
+- **Off:** `CLAUDE_TOOLS_ENABLED=false` refuses every call; it never grants.
+- **Health:** `/health` reports `claude_tools_alive` and `claude_tools_enabled`.
+- **Live smoke:** `scripts/smoke_claude_tools.py`; weekly numbers: `scripts/claude_tools_consent_report.py`.
+
 ## Admitted turns (GPU pool hold)
 
 `HarnessRunRequestV1.gpu_lease` (a durable run's GPU pool hold ref, `GpuLeaseRefV1`) and

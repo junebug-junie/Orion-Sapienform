@@ -2,7 +2,8 @@
 
 Status: approved 2026-11-12. Juniper answered yes to all ten open-question defaults and added question 11
 (section 9). Patch 1a (the whole conversation, plus question 11's light view for Orion) is built; Patch 1b
-(the consent rail and tools) is next.
+(the consent rail, `prime_now` and `body_economy`) is built 2026-11-13
+(`docs/superpowers/pr-reports/2026-11-13-claude-hub-consent-tools-pr.md`).
 
 Juniper's request, 2026-11-12, in her words: "claude should get all those tools. claude should get any of
 those things if they get orion's permission to do so... I want them to have general context of the

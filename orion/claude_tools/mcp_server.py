@@ -53,7 +53,7 @@ def log_call(path: Optional[str], result: ClaudeToolResultV1) -> None:
     if not path:
         return
     line = {k: getattr(result, k) for k in ("call_id", "tool", "category", "decision_path", "shared",
-                                            "orion_answer", "orion_reason")}
+                                            "orion_answer", "orion_reason", "error")}
     try:
         with Path(path).open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(line) + "\n")

@@ -22,6 +22,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
+from uuid import uuid4
 
 from orion.personality.situation import COMPANY_CLOSE_GRACE, SituationInputs
 from orion.personality.graph import (
@@ -294,6 +295,71 @@ def _iso(v: Any) -> Any:
     return v.isoformat() if isinstance(v, datetime) else v
 
 
+class TendencyRetired(Exception):
+    """The tendency is already retired; an answer cannot change it."""
+
+
+VERDICT_YES = "yes"
+VERDICT_NO = "no"
+JUNIPER_VERDICTS = (VERDICT_YES, VERDICT_NO)
+EXAMPLES_PER_TENDENCY = 3
+CHOICE_VIEW_COLUMNS = ("c.choice_id, c.lane, c.occurred_at, c.chosen, c.alternatives, c.chosen_market_rank, "
+                       "c.declined_all, c.care_promoted, c.picks_in_decision")
+RECENT_CHOICES_SQL = f"""
+SELECT {CHOICE_VIEW_COLUMNS}, d.disposition_id, d.label AS tendency_label, d.status AS tendency_status
+FROM personality_choice c
+LEFT JOIN personality_evidence e ON e.evidence_id = %(p)s || c.choice_id
+LEFT JOIN personality_disposition d ON d.disposition_id = e.disposition_id AND d.{ORIGIN_FILTER}
+ORDER BY c.occurred_at DESC, c.choice_id
+LIMIT %(limit)s
+"""
+TENDENCIES_SQL = f"""
+SELECT disposition_id, label, status, weight, evidence_count, opposed_count, name, first_seen_at, last_reinforced_at
+FROM personality_disposition
+WHERE {ORIGIN_FILTER} AND status <> 'retired'
+ORDER BY weight DESC, disposition_id
+LIMIT %(limit)s
+"""
+# A tendency's newest folded choices (evidence id ``choice:<choice_id>``), joined back to the choice.
+TENDENCY_EXAMPLES_SQL = f"""
+SELECT x.disposition_id, {CHOICE_VIEW_COLUMNS}
+FROM (
+  SELECT e.disposition_id, e.evidence_id,
+         row_number() OVER (PARTITION BY e.disposition_id ORDER BY e.occurred_at DESC, e.evidence_id) AS rn
+  FROM personality_evidence e
+  WHERE e.disposition_id = ANY(%(ids)s) AND starts_with(e.evidence_id, %(p)s)
+) x
+JOIN personality_choice c ON c.choice_id = substr(x.evidence_id, length(%(p)s) + 1)
+WHERE x.rn <= %(n)s
+ORDER BY x.disposition_id, c.occurred_at DESC
+"""
+LATEST_VERDICTS_SQL = """
+SELECT DISTINCT ON (disposition_id) disposition_id, verdict, created_at
+FROM personality_juniper_verdict
+WHERE disposition_id = ANY(%(ids)s)
+ORDER BY disposition_id, created_at DESC, verdict_id
+"""
+INSERT_VERDICT_SQL = """
+INSERT INTO personality_juniper_verdict (verdict_id, disposition_id, verdict, label_at_verdict, weight_at_verdict,
+  n_at_verdict, m_at_verdict, status_before, retired, created_at)
+VALUES (%(verdict_id)s, %(d)s, %(verdict)s, %(label)s, %(weight)s, %(n)s, %(m)s, %(status_before)s, %(retired)s,
+  %(now)s)
+"""
+RETIRE_BY_JUNIPER_SQL = f"""
+UPDATE personality_disposition SET status = 'retired', retired_at = %(now)s, updated_at = %(now)s,
+  history_weight = weight
+WHERE disposition_id = %(d)s AND {ORIGIN_FILTER}
+"""
+ARM_COUNTS_SQL = """
+SELECT substring(w FROM '^personality:arm=([a-z_]+)') AS arm, l.outcome, count(*) AS n
+FROM want_ledger l
+CROSS JOIN LATERAL jsonb_array_elements_text(
+  CASE WHEN jsonb_typeof(l.decision->'warnings') = 'array' THEN l.decision->'warnings' ELSE '[]'::jsonb END) w
+WHERE l.decided_at > %(since)s AND starts_with(w, 'personality:arm=')
+GROUP BY 1, 2
+"""
+
+
 class PersonalityStore:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
@@ -539,3 +605,128 @@ class PersonalityStore:
         async with self._pool.connection() as conn:
             rows = await (await conn.execute(sql, params)).fetchall()
         return [{k: _iso(v) for k, v in dict(r).items()} for r in rows]
+
+    # --- Hub Personality tab (rev 4 move 4): choices, tendencies, Juniper's yes / no -------------
+
+    async def recent_choices(self, limit: int = 30) -> list[dict]:
+        """The newest ``personality_choice`` rows, every lane, each with the tendency it was folded
+        into (if the reducer has folded it yet, and only a choice-built one)."""
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(RECENT_CHOICES_SQL, {"limit": limit, "p": EVIDENCE_PREFIX})).fetchall()
+        return [choice_view(r) for r in rows]
+
+    async def tendencies(self, limit: int = 20, examples: int = EXAMPLES_PER_TENDENCY) -> dict:
+        """Choice-built tendencies that are not retired, strongest first, each with its newest
+        ``examples`` choices and Juniper's latest answer. A missing verdict table (migration not
+        applied yet) still lists the tendencies, with a warning and no answers."""
+        warnings: list[str] = []
+        async with self._pool.connection() as conn:
+            nodes = [dict(r) for r in await (await conn.execute(TENDENCIES_SQL, {"limit": limit})).fetchall()]
+            ids = [n["disposition_id"] for n in nodes]
+            ex_rows = []
+            if ids:
+                ex_rows = await (await conn.execute(TENDENCY_EXAMPLES_SQL, {
+                    "ids": ids, "n": examples, "p": EVIDENCE_PREFIX})).fetchall()
+        verdicts: dict[str, dict] = {}
+        if ids:
+            try:
+                async with self._pool.connection() as conn:
+                    for r in await (await conn.execute(LATEST_VERDICTS_SQL, {"ids": ids})).fetchall():
+                        verdicts[r["disposition_id"]] = {"verdict": r["verdict"], "at": _iso(r["created_at"])}
+            except Exception as exc:  # noqa: BLE001 - answers are an annotation on the list, never a gate
+                from psycopg.errors import UndefinedTable
+
+                if not isinstance(exc, UndefinedTable):
+                    raise
+                warnings.append("answers_table_missing: apply manual_migration_personality_juniper_verdict_v1.sql")
+        by_id: dict[str, list[dict]] = {}
+        for r in ex_rows:
+            by_id.setdefault(r["disposition_id"], []).append(choice_view(r))
+        out = []
+        for n in nodes:
+            n_ways = int(n.get("evidence_count") or 0)
+            out.append({
+                "disposition_id": n["disposition_id"], "label": n["label"], "status": n["status"],
+                "weight": float(n["weight"] or 0.0), "n": n_ways, "m": n_ways + int(n.get("opposed_count") or 0),
+                "name": n.get("name"), "first_seen_at": _iso(n["first_seen_at"]),
+                "last_reinforced_at": _iso(n["last_reinforced_at"]),
+                "examples": by_id.get(n["disposition_id"], []),
+                "juniper": verdicts.get(n["disposition_id"]),
+            })
+        return {"tendencies": out, "warnings": warnings}
+
+    async def record_juniper_verdict(self, disposition_id: str, verdict: str, now: datetime) -> Optional[dict]:
+        """Juniper's yes / no on one choice-built tendency, in one transaction: the answer row, and
+        on "no" the tendency retired (with its weight-history row). None when there is no such
+        choice-built tendency. Raises ``TendencyRetired`` when it is already retired (retired is
+        terminal: a later yes cannot bring it back). Call it under the reducer's lock so a tick in
+        flight cannot write the old status back."""
+        if verdict not in JUNIPER_VERDICTS:
+            raise ValueError(f"verdict must be one of {', '.join(JUNIPER_VERDICTS)}")
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                    await cur.execute(
+                        "SELECT disposition_id, status, label, weight, evidence_count, opposed_count "
+                        f"FROM personality_disposition WHERE disposition_id = %(d)s AND {ORIGIN_FILTER} FOR UPDATE",
+                        {"d": disposition_id})
+                    node = await cur.fetchone()
+                    if node is None:
+                        return None
+                    if node["status"] == "retired":
+                        raise TendencyRetired(disposition_id)
+                    n_ways = int(node["evidence_count"] or 0)
+                    retire = verdict == VERDICT_NO
+                    row = {"verdict_id": f"jv-{uuid4().hex}", "d": disposition_id, "verdict": verdict,
+                           "label": node["label"], "weight": float(node["weight"] or 0.0), "n": n_ways,
+                           "m": n_ways + int(node["opposed_count"] or 0), "status_before": node["status"],
+                           "retired": retire, "now": now}
+                    await cur.execute(INSERT_VERDICT_SQL, row)
+                    if retire:
+                        await cur.execute(RETIRE_BY_JUNIPER_SQL, {"d": disposition_id, "now": now})
+                        await cur.execute(INSERT_HISTORY_SQL, {
+                            "disposition_id": disposition_id, "at": now, "weight": row["weight"],
+                            "status": "retired", "evidence_count": n_ways})
+        return {"verdict_id": row["verdict_id"], "disposition_id": disposition_id, "verdict": verdict,
+                "status": "retired" if retire else node["status"], "retired": retire, "at": _iso(now)}
+
+    async def arm_counts(self, since: datetime) -> dict:
+        """Market decisions since ``since`` that carry a ``personality:arm=<arm>`` trace line (rev 4
+        move 2), by arm and outcome. Empty until the personality values term is live."""
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(ARM_COUNTS_SQL, {"since": since})).fetchall()
+        arms: dict[str, dict[str, int]] = {}
+        for r in rows:
+            if not r["arm"]:
+                continue
+            arms.setdefault(r["arm"], {})[r["outcome"]] = int(r["n"])
+        return {"since": _iso(since), "arms": arms, "total": sum(sum(v.values()) for v in arms.values())}
+
+
+def _jsonish(v: Any) -> Any:
+    return json.loads(v) if isinstance(v, str) else v
+
+
+def _option(o: Any) -> Optional[dict]:
+    if not isinstance(o, Mapping):
+        return None
+    rank = o.get("market_rank")
+    return {"key": str(o.get("key") or ""), "text": str(o.get("text") or ""),
+            "market_rank": int(rank) if isinstance(rank, (int, float)) and not isinstance(rank, bool) else None}
+
+
+def choice_view(r: Mapping[str, Any]) -> dict:
+    """One choice for the Hub: what was picked, what was passed over (ranked options first, in the
+    market's order, then the unranked), and the tendency it counted toward, if any."""
+    chosen = _option(_jsonish(r.get("chosen")))
+    alts = [a for a in (_option(x) for x in (_jsonish(r.get("alternatives")) or [])) if a is not None]
+    alts.sort(key=lambda a: (a["market_rank"] is None, a["market_rank"] or 0))
+    out = {"choice_id": r["choice_id"], "lane": r["lane"], "occurred_at": _iso(r["occurred_at"]),
+           "chosen": chosen, "passed_over": alts, "chosen_market_rank": r.get("chosen_market_rank"),
+           "declined_all": bool(r.get("declined_all")), "care_promoted": bool(r.get("care_promoted")),
+           "picks_in_decision": int(r.get("picks_in_decision") or 1)}
+    if "tendency_label" in r:
+        out["tendency"] = ({"disposition_id": r["disposition_id"], "label": r["tendency_label"],
+                            "status": r["tendency_status"]} if r.get("disposition_id") else None)
+    return out

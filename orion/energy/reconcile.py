@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Iterable, Optional
 from zoneinfo import ZoneInfo
 
-from orion.energy.ledger import UsageLedger
+from orion.energy.ledger import UsageLedger, bridged_seconds
 from orion.energy.tariff import Tariff
 from orion.schemas.energy import (
     EnergyBillActualV1,
@@ -75,6 +75,9 @@ class PeriodProjection:
     projected_total_usd: float
     fixed_usd: float
     covered_through: datetime
+    # Hours inside [start, covered_through) with no meter reading (short holes the ledger stepped
+    # over). observed_kwh leaves them out; projected_kwh fills them at the run rate.
+    bridged_hours: float = 0.0
 
     @property
     def projected_energy_usd(self) -> float:
@@ -87,14 +90,16 @@ def project_period(
     prefix, covered = ledger.window_prefix(usage_point_id, start, end)
     if not prefix or covered is None:
         return None, _empty_prefix_gap(ledger, usage_point_id, start, end), None
-    covered_sec = _duration_seconds(start, covered)
-    if covered_sec < MIN_RUN_RATE_HOURS * 3600.0:
+    bridged_sec = bridged_seconds(prefix, start)
+    metered_sec = _duration_seconds(start, covered) - bridged_sec
+    if metered_sec < MIN_RUN_RATE_HOURS * 3600.0:
         return None, "usage_incomplete", covered
     tariff, tz = ledger.tariff, ledger.tz
     days = ledger.period_days(start, end)
     kwh, energy = price_intervals(tariff, prefix, tz=tz, period_days=days)
     period_sec = _duration_seconds(start, end)
-    projected_kwh = kwh if covered >= end else kwh * period_sec / covered_sec
+    # The run rate covers the unseen hours, bridged holes included, so a hole never reads as zero.
+    projected_kwh = kwh if covered >= end and bridged_sec == 0.0 else kwh * period_sec / metered_sec
     bill = tariff.itemize(projected_kwh, start=start.astimezone(tz).date(), end=end.astimezone(tz).date())
     return (
         PeriodProjection(
@@ -104,6 +109,7 @@ def project_period(
             projected_total_usd=bill.pre_tax_usd,
             fixed_usd=tariff.fixed_usd(days),
             covered_through=covered,
+            bridged_hours=bridged_sec / 3600.0,
         ),
         None,
         covered,
@@ -127,7 +133,8 @@ def reconcile_actual(
 ) -> EnergyReconcileV1:
     tariff = ledger.tariff
     start, end = period_bounds(bill.billing_period_start, bill.billing_period_end, ledger)
-    prefix, covered = ledger.window_prefix(usage_point_id, start, end)
+    # A billed total is compared only against a gap-free meter period: no bridging here.
+    prefix, covered = ledger.window_prefix(usage_point_id, start, end, bridge=False)
     utility_total, basis = _utility_pretax(bill)
     common = dict(
         reconcile_kind="actual",

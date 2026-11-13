@@ -73,6 +73,10 @@ not move the read date.
 
 The first drop must cover the **current billing cycle from day one** (`ENERGY_BILLING_CYCLE_START_DAY`, your meter-read day in `ENERGY_TIMEZONE`). Mid-cycle exports publish usage but accrual and run-cost stay unknown until a contiguous prefix from cycle start exists. Look for `energy_cycle_incomplete` in logs when coverage is partial.
 
+**Holes.** A hole of up to 3 hours (6 hours total per cycle) is stepped over: coverage, accrual and the run-rate projection continue past it. Its kWh stays unknown, never zero: metered sums (`cycle_accumulated_kwh`, accrual) leave it out, and the projection fills it at the run rate (`bridged_hours` on the projection, `bridged_gap_hours` on the bill bet). A longer hole still stops coverage. A billed-total reconcile (`reconcile_actual`) accepts only a gap-free period.
+
+**Clock changes.** RMP's fall-back file (2026-11-01, a 25-hour block) stamped two readings with the same hour, which left 2026-11-02 08:00 UTC empty (#3284). The parser now lays a block's readings end to end when it has a doubled stamp and the block's own length matches its readings (`espi_fold_collision_restamped` in logs). Otherwise the file is kept exactly as delivered (`espi_duplicate_reading_starts_kept`). To fix rows already in Postgres, copy the day's processed file back into the inbox with a name that starts with `rmp-portal` (it re-parses with a newer `retrieved_at`, which wins in sql-writer).
+
 Re-dropping an overlapping export is safe when the new file is **newer**: `retrieved_at` is the drop time, so dropping an **old** export after a newer one overwrites fresher data. Pending run-cost re-pricing state is in-memory and lost on restart. Bus publishing after a file moves to `processed/` is best-effort — re-drop the export to republish.
 
 Set `ENERGY_BILLING_CYCLE_START_DAY` to your bill's usual meter-read day; actual bills then pin the real read dates.

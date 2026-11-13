@@ -95,7 +95,7 @@ def test_mid_cycle_gap_blocks_pressure_on_stale_coverage() -> None:
     gap_at = 72
     now = S + timedelta(hours=hours - 2)
     led = make_test_ledger()
-    for iv in hourly(S, hours, skip=frozenset({gap_at})):
+    for iv in hourly(S, hours, skip=frozenset(range(gap_at, gap_at + 4))):  # 4 h: past MAX_BRIDGED_GAP
         led.upsert(iv)
     forecast = _forecast(80.0, as_of=now)
     importer = EnergyImporterStatusV1(state="healthy", reason="usage_fresh", source="file_drop", as_of=now)

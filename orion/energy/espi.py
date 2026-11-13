@@ -20,6 +20,7 @@ with the stdlib parser (expat does not fetch external entities).
 
 from __future__ import annotations
 
+import logging
 import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
@@ -31,6 +32,8 @@ from orion.schemas.energy import EnergySource, EnergyUsageIntervalV1
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ESPI = "{http://naesb.org/espi}"
+logger = logging.getLogger("orion.energy.espi")
+
 UOM_WATT_HOURS = 72
 FLOW_FORWARD = 1
 POW10_MIN = -9
@@ -74,6 +77,49 @@ def _reading_type(content: ET.Element, href: str) -> Optional[dict[str, Optional
     except (ValueError, OverflowError) as exc:
         raise EspiError(f"invalid ReadingType at {href!r}") from exc
     return {"uom": uom, "pow10": pow10 if pow10 is not None else 0, "flow": flow}
+
+
+def _block_seconds(block: ET.Element) -> Optional[int]:
+    interval = block.find(f"{ESPI}interval")
+    if interval is None:
+        return None
+    try:
+        return _int(interval.find(f"{ESPI}duration"))
+    except (ValueError, OverflowError):
+        return None
+
+
+def _restamp_fold_collision(
+    readings: list[tuple[int, int, int]], block_seconds: Optional[int], href: str
+) -> list[tuple[int, int, int]]:
+    """Undo a clock-change stamp collision inside one IntervalBlock.
+
+    RMP's 2026-11-01 file (the fall-back day, a 25-hour IntervalBlock) stamped two of its 25
+    hourly readings with the same start, so every later reading that day sat one hour early and
+    the hour where the next day's file begins was left empty. The readings are still in order and
+    the block's own duration says how many hours it holds, so when those agree the readings are
+    laid end to end from the first stamp. Anything else is left exactly as delivered.
+    """
+    starts = [r[0] for r in readings]
+    if len(set(starts)) == len(starts):
+        return readings
+    total = sum(r[1] for r in readings)
+    if block_seconds is None or total != block_seconds or starts != sorted(starts):
+        logger.warning(
+            "espi_duplicate_reading_starts_kept href=%s readings=%d block_seconds=%s reading_seconds=%d",
+            href, len(readings), block_seconds, total,
+        )
+        return readings
+    out: list[tuple[int, int, int]] = []
+    at = starts[0]
+    for _, duration, value in readings:
+        out.append((at, duration, value))
+        at += duration
+    logger.warning(
+        "espi_fold_collision_restamped href=%s readings=%d first=%s",
+        href, len(readings), datetime.fromtimestamp(starts[0], tz=timezone.utc).isoformat(),
+    )
+    return out
 
 
 def parse_espi(
@@ -149,14 +195,20 @@ def parse_espi(
             raise EspiError(f"unsupported uom {rt['uom']} (only 72 = Wh)")
         usage_point = up_match.group(1)
         scale = _scale(rt["pow10"])
+        readings: list[tuple[int, int, int]] = []
         for reading in block.findall(f"{ESPI}IntervalReading"):
             try:
                 period = reading.find(f"{ESPI}timePeriod")
                 start = _int(period.find(f"{ESPI}start")) if period is not None else None
                 duration = _int(period.find(f"{ESPI}duration")) if period is not None else None
                 value = _int(reading.find(f"{ESPI}value"))
-                if start is None or not duration or value is None:
-                    continue
+            except (ValueError, OverflowError) as exc:
+                raise EspiError(f"invalid reading in block {self_href!r}") from exc
+            if start is None or not duration or value is None:
+                continue
+            readings.append((start, duration, value))
+        for start, duration, value in _restamp_fold_collision(readings, _block_seconds(block), self_href):
+            try:
                 begin = datetime.fromtimestamp(start, tz=timezone.utc)
                 rows.append(
                     EnergyUsageIntervalV1(

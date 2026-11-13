@@ -294,3 +294,91 @@ def test_choice_style_counts_decisions_not_picks():
     # r1 counts once by its best rank (1); declined_all is "own way".
     assert (style.choices, style.took_top, style.went_own_way) == (5, 3, 2)
     assert choice_style_from_rows([], now=NOW) is None
+
+
+def test_a_quiet_tick_writes_no_node_and_a_fade_is_written_once_it_moves_one_percent():
+    """Regression (live 2026-11-13: ``nodes_written: 118`` with ``choices_read: 0`` on every tick). Fade
+    moved every live node's weight a hair each tick and the exact snapshot compare rewrote them all. A
+    fade-only change is now written only once the weight moved ``history_min_rel_change`` from the stored
+    weight; the stored (weight, updated_at) pair stays exact, so the next tick fades to the same value."""
+    nodes = [node(disposition_id=f"d{i}", updated_at=NOW - timedelta(minutes=1)) for i in range(118)]
+    quiet = apply_fade(nodes, now=NOW)
+    assert quiet.nodes == [] and quiet.history == []
+    # Many skipped ticks fade to exactly the value one tick would have reached.
+    later = NOW + timedelta(hours=1)
+    assert apply_fade(nodes, now=later).nodes == []
+    # About 5 h at a 14-day half-life is a 1% move: the fade is written (with its history row).
+    much_later = NOW + timedelta(hours=6)
+    res = apply_fade(nodes, now=much_later)
+    assert len(res.nodes) == 118 and len(res.history) == 118
+    one = res.nodes[0]
+    assert one.updated_at == much_later
+    assert one.weight == pytest.approx(nodes[0].weight * 0.5 ** ((6 * 60 + 1) / (60 * 24 * 14)))
+
+
+def test_a_fold_still_writes_the_node_it_touched_and_only_that_node():
+    nodes = [node(disposition_id="d0", centroid=axis(0), updated_at=NOW - timedelta(minutes=1)),
+             node(disposition_id="d1", centroid=axis(3), updated_at=NOW - timedelta(minutes=1))]
+    res = fold(nodes, [ev(axis(0), weight=1.0)], now=NOW)
+    assert [n.disposition_id for n in res.nodes] == ["d0"]
+
+
+# --- Juniper's No (Hub Personality tab, personality_juniper_verdict) ----------------------------
+
+
+def test_a_choice_in_the_direction_juniper_said_no_to_counts_on_that_node_and_founds_nothing():
+    """Regression: Juniper's No retires a tendency. Orion keeps making the same kind of choice, and before
+    this the reducer founded a fresh tendency on the same direction, so she was asked again."""
+    no = node(disposition_id="dno", status="retired", retired_at=NOW - timedelta(days=1), centroid=axis(0),
+              evidence_count=5, lane_counts={"prime": 5}, updated_at=NOW - timedelta(days=1))
+    later = NOW + timedelta(days=30)
+    res = fold([no], [ev(axis(0, 0.1), at=later), ev(axis(0, 0.05), at=later)], now=later,
+               juniper={"dno": g.JUNIPER_NO})
+    assert [n.disposition_id for n in res.nodes] == ["dno"]  # no new node
+    out = res.nodes[0]
+    assert out.status == "retired" and out.retired_at == no.retired_at
+    assert out.evidence_count == 7 and out.lane_counts["prime"] == 7
+    assert out.weight == no.weight and out.centroid == no.centroid  # no weight, no drift
+    assert all(e.disposition_id == "dno" and e.weight_delta == 0.0 and e.meta.get("juniper_no")
+               for e in res.evidence_rows)
+    # Without her answer the same choices found a new tendency (the old behaviour).
+    fresh = fold([no], [ev(axis(0, 0.1), at=later)], now=later)
+    assert [n.disposition_id for n in fresh.nodes if n.disposition_id != "dno"]
+
+
+def test_juniper_no_never_comes_back_by_itself_and_a_later_yes_revives_it():
+    no = node(disposition_id="dno", status="retired", retired_at=NOW, centroid=axis(0),
+              lane_recent={"prime": 4.0}, evidence_count=5, updated_at=NOW)
+    much_later = NOW + timedelta(days=60)
+    quiet = apply_fade([no], now=much_later, juniper={"dno": g.JUNIPER_NO})
+    assert quiet.nodes == []  # untouched: still retired, no fade, no status rule
+    # A live node nearer the choice still takes it: Juniper's No only claims what would found a new node.
+    no_off = node(disposition_id="dno", status="retired", retired_at=NOW, centroid=axis(0, 0.4),
+                  lane_recent={"prime": 4.0}, evidence_count=5, updated_at=NOW)
+    live = node(disposition_id="dlive", centroid=axis(0), updated_at=much_later)
+    res = fold([no_off, live], [ev(axis(0), at=much_later)], now=much_later, juniper={"dno": g.JUNIPER_NO})
+    assert res.evidence_rows[0].disposition_id == "dlive"
+    # A later Yes from her reverses it: revived as a candidate, then the usual rules.
+    yes = apply_fade([no], now=NOW + timedelta(hours=1), juniper={"dno": g.JUNIPER_YES})
+    (out,) = yes.nodes
+    assert out.status in ("candidate", "active") and out.retired_at is None
+    # A Yes on a node that was never retired by her changes nothing (the map only holds her retirements).
+    assert apply_fade([node(disposition_id="x", updated_at=NOW)], now=NOW, juniper={"x": g.JUNIPER_YES}).nodes == []
+
+
+def test_a_live_tendency_that_matches_keeps_the_choice_over_a_closer_juniper_no():
+    """Only a choice no live tendency matches is absorbed by a tendency Juniper said No to."""
+    no = node(disposition_id="dno", status="retired", retired_at=NOW, centroid=axis(0), updated_at=NOW)
+    live = node(disposition_id="dlive", centroid=axis(0, 0.3), updated_at=NOW)
+    res = fold([no, live], [ev(axis(0))], now=NOW, juniper={"dno": g.JUNIPER_NO})
+    assert res.evidence_rows[0].disposition_id == "dlive"
+
+
+def test_a_yes_revives_only_a_node_retired_before_it():
+    """After her yes revived it, Orion's own rules may retire it again; the old yes does not revive it again."""
+    t_yes = NOW - timedelta(days=20)
+    reretired = node(disposition_id="d", status="retired", retired_at=NOW - timedelta(days=1), updated_at=NOW)
+    assert apply_fade([reretired], now=NOW, juniper={"d": (g.JUNIPER_YES, t_yes)}).nodes == []
+    retired_by_her = node(disposition_id="d", status="retired", retired_at=t_yes - timedelta(days=1), updated_at=NOW)
+    (out,) = apply_fade([retired_by_her], now=NOW, juniper={"d": (g.JUNIPER_YES, t_yes)}).nodes
+    assert out.status in ("candidate", "active")

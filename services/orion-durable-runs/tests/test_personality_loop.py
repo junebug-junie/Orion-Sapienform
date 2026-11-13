@@ -176,9 +176,15 @@ class FakeStore:
         self.situation = SituationInputs()
         self.watermark = None  # None = "no chronicle" (company unknown, warned)
         self.fail_situation = False
+        self.juniper: dict[str, str] = {}  # disposition_id -> Juniper's latest answer (her retirements only)
 
     async def load_nodes(self):
         return [_copy(n) for n in self.nodes.values() if n.status != "retired" and n.origin == "choice"]
+
+    async def load_juniper_nodes(self):
+        """The JUNIPER_NODES_SQL shape: retired choice nodes with Juniper's latest answer."""
+        ids = [i for i, n in self.nodes.items() if n.status == "retired" and n.origin == "choice" and i in self.juniper]
+        return [_copy(self.nodes[i]) for i in ids], {i: self.juniper[i] for i in ids}
 
     async def load_cursors(self):
         return dict(self.cursors)
@@ -340,6 +346,77 @@ def test_tick_without_evidence_persists_fade():
     assert out["evidence"] == 0
     faded = store.nodes[n.disposition_id]
     assert faded.weight == pytest.approx(n.weight * 0.5 ** (7 / 14), rel=1e-3) and faded.updated_at == clock.at
+
+
+def test_a_quiet_tick_writes_no_node_and_a_one_percent_fade_writes_each_once():
+    """Live 2026-11-13: ``nodes_written: 118`` with ``choices_read: 0`` on every tick. A quiet tick now writes
+    no node (the heartbeat cursor still moves); once fade moved a weight 1% (about 5 h), it is written once."""
+    drv, store, reader, emb, clock = world()
+    for i in range(3):
+        publish(drv, choice(f"prime:t{i}", utc(minutes=1), chosen=f"people {i}", declined=(f"pipeline {i}",)))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    assert store.nodes
+    clock.at = utc(minutes=20)
+    commits = store.commits
+    out = asyncio.run(drv.tick())
+    assert out["choices_read"] == 0 and out["nodes_written"] == 0
+    assert store.commits == commits + 1  # the tick still commits (the real store writes its heartbeat cursor)
+    clock.at = utc(hours=6, minutes=10)
+    out = asyncio.run(drv.tick())
+    assert out["nodes_written"] == len([n for n in store.nodes.values() if n.status != "retired"])
+    clock.at = utc(hours=6, minutes=20)
+    assert asyncio.run(drv.tick())["nodes_written"] == 0
+
+
+def test_a_choice_like_one_juniper_said_no_to_lands_on_that_tendency_not_a_new_one():
+    """Juniper's No (Hub Personality tab) retires a tendency. Orion choosing the same way again counts on the
+    retired node; no new tendency forms for her to be asked about again. A store without the verdict table
+    (no ``load_juniper_nodes`` answers) behaves as before."""
+    drv, store, reader, emb, clock = world()
+    for i in range(4):
+        publish(drv, choice(f"prime:t{i}", utc(minutes=1)))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    (n,) = store.nodes.values()
+    store.nodes[n.disposition_id] = replace(n, status="retired", retired_at=clock.at)  # her "no"
+    store.juniper = {n.disposition_id: "no"}
+    publish(drv, choice("prime:again", utc(minutes=11)))
+    clock.at = utc(minutes=20)
+    asyncio.run(drv.tick())
+    assert list(store.nodes) == [n.disposition_id]
+    ev = store.evidence["choice:prime:again"]
+    assert ev.disposition_id == n.disposition_id and ev.meta["juniper_no"] is True
+    assert store.nodes[n.disposition_id].status == "retired"
+    assert store.nodes[n.disposition_id].evidence_count == n.evidence_count + 1
+    # Her later "yes" brings it back.
+    store.juniper = {n.disposition_id: "yes"}
+    clock.at = utc(minutes=30)
+    asyncio.run(drv.tick())
+    assert store.nodes[n.disposition_id].status in ("candidate", "active")
+
+
+def test_store_reads_no_answers_while_the_verdict_table_is_missing(caplog):
+    class Missing(Exception):
+        sqlstate = "42P01"
+
+    class Pool:
+        def connection(self):
+            class CM:
+                async def __aenter__(self_inner):
+                    class Conn:
+                        async def execute(self, sql, params=None):
+                            raise Missing("relation personality_juniper_verdict does not exist")
+                    return Conn()
+
+                async def __aexit__(self_inner, *a):
+                    return False
+            return CM()
+
+    store = PersonalityStore(Pool())
+    assert asyncio.run(store.load_juniper_nodes()) == ([], {})
+    assert asyncio.run(store.load_juniper_nodes()) == ([], {})
+    assert caplog.text.count("personality_juniper_verdicts_unread") == 1
 
 
 class Rejecting(Exception):

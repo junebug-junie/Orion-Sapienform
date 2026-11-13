@@ -69,6 +69,7 @@ from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from orion.physiology.binding import BindVerdict, bind_verdict
+from orion.physiology.personality_values import care_funded
 
 logger = logging.getLogger("orion-hub.outreach_bind")
 
@@ -147,13 +148,20 @@ class HeldWant:
     # The end of Juniper's waking day when the want opened (one attention budget, 2026-11-10): a want
     # held on the day's pace waits for the pace, at most until the day ends. None: no day bound.
     day_end: Optional[datetime] = None
+    # What the want's object says (the tick's candidate topics), sent with each bid for the market's care
+    # term (personality rev 4, orion.physiology.personality_values). None: care 0, as before.
+    object_text: Optional[str] = None
+    # The want was funded only through care (``personality_values.care_funded``): the outreach choice this
+    # compose shows Orion is ``care_promoted``.
+    care_promoted: bool = False
 
 
-async def _abid(want: Any, timeout_sec: float) -> Any:
-    """The client call, behind one name so tests can stub it. None on any failure."""
+async def _abid(want: Any, timeout_sec: float, **kw: Any) -> Any:
+    """The client call, behind one name so tests can stub it. None on any failure. ``kw``: ``object_text``
+    when the door has one."""
     from orion.physiology.client import abid
 
-    return await abid(want, timeout_sec=timeout_sec)
+    return await abid(want, timeout_sec=timeout_sec, **kw)
 
 
 async def _arelease(want_id: str) -> Any:
@@ -197,8 +205,10 @@ class OutreachBinder:
 
     async def bind(self, key: str, *, door: str, now: Optional[datetime] = None, cap_counted: bool = True,
                    forced: bool = False, window_s: Optional[float] = None,
-                   day_end: Optional[datetime] = None) -> BindVerdict:
+                   day_end: Optional[datetime] = None, object_text: Optional[str] = None) -> BindVerdict:
         """The verdict for this check. Never raises; any failure is an ``admit`` (today's behaviour).
+        ``object_text``: what this check would talk about (sent with the bid for the care term); the
+        latest non-empty text replaces the held want's.
 
         Serialized per process: the first check admitted on a want takes it until ``close``; another
         check on the same want meanwhile is refused (``duplicate``) and composes nothing."""
@@ -231,6 +241,8 @@ class OutreachBinder:
                 want = HeldWant(key=key, door=door, want_id=str(uuid4()), opened_at=now, window_s=window_s,
                                 day_end=_utc(day_end) if day_end is not None else None)
                 self.wants[key] = want
+            if isinstance(object_text, str) and object_text.strip():
+                want.object_text = object_text
             try:
                 v = await self._bind(want, now, cap_counted=cap_counted)
             except Exception:  # noqa: BLE001 -- never hold a message because this code failed
@@ -266,7 +278,8 @@ class OutreachBinder:
                      window=WantWindowV1(latest=end), cost=cost)
         decision = None
         try:
-            decision = await asyncio.wait_for(_abid(bid, self._timeout), self._timeout + 1.0)
+            kw = {"object_text": want.object_text} if want.object_text else {}
+            decision = await asyncio.wait_for(_abid(bid, self._timeout, **kw), self._timeout + 1.0)
         except Exception:  # noqa: BLE001 -- incl. timeout: compose as before
             logger.warning("physiology_bind_bid_failed family=%s want_id=%s", FAMILY, want.want_id, exc_info=True)
         if decision is None:
@@ -278,6 +291,9 @@ class OutreachBinder:
             want.bids += 1
         v = bind_verdict(decision, now, end)
         want.funded = bool(decision is not None and getattr(decision, "outcome", None) == "funded")
+        want.care_promoted = bool(decision is not None and care_funded(
+            getattr(decision, "outcome", None), getattr(decision, "reason", None), getattr(decision, "net", None),
+            list(getattr(decision, "warnings", None) or [])))
         if decision is not None and not want.funded:
             _release_soon(want.want_id)   # a held or pool-queued want reserves nothing
         why = str(v.detail.get("why") or "")
@@ -332,6 +348,8 @@ class OutreachBinder:
             out["retry_at"] = v.retry_at.isoformat()
         if want is not None:
             out.update(want_id=want.want_id, door=want.door, holds=want.holds, bids=want.bids)
+            if v.admit and want.care_promoted:
+                out["care_promoted"] = True
             if want.first_bid_at is not None:
                 out["first_bid_at"] = want.first_bid_at.isoformat()
                 out["held_sec"] = round(max(0.0, ((want.admitted_at or want.last_check_at or want.first_bid_at)

@@ -2243,7 +2243,7 @@ class EndogenousOutreach:
 
     async def _settle_pick(
         self, text: str, topics: Sequence[Any], *, decision_key: str, correlation_id: str, force: bool,
-        tension_reason: Any,
+        tension_reason: Any, care_promoted: bool = False,
     ) -> Tuple[str, Any, Dict[str, Any], Optional[Dict[str, Any]]]:
         """Read Orion's pick, publish the choice, and return ``(body, chosen_topic, row_fields,
         early)``. ``early`` is the decision-row result when nothing goes further this tick
@@ -2268,7 +2268,7 @@ class EndogenousOutreach:
             choice = build_choice(
                 decision_key=decision_key, topics=topics, pick=pick, occurred_at=datetime.now(timezone.utc),
                 situation=self._choice_situation(force=force, tension_reason=tension_reason, topics=topics),
-                act_id=decision_key, correlation_id=correlation_id,
+                act_id=decision_key, correlation_id=correlation_id, care_promoted=care_promoted,
             )
         except Exception as exc:  # noqa: BLE001 -- the tick never raises; the row still records the pick
             logger.warning("endogenous_outreach_choice_build_failed corr=%s err=%s", correlation_id, exc)
@@ -2570,6 +2570,11 @@ class EndogenousOutreach:
 
         # The compose point. The want's id IS this compose's correlation id, so the decision joins
         # the outreach act (grammar_acts.correlation_id).
+        # What this compose would talk about, for the market's care term (personality rev 4): the shown
+        # topics' option texts. None with no topics (the choice point off): care 0, as before.
+        from scripts.outreach_choice import outreach_object_text
+
+        bid_object_text = outreach_object_text(topics)
         if self.economy_binding:
             # Patch D: obey the binding bid (scripts/outreach_bind.py). Held -> no compose this tick;
             # the want re-bids at the market's relief time and composes by its window's end at the latest.
@@ -2578,7 +2583,7 @@ class EndogenousOutreach:
             # re-uses the last answer without a bid (outreach_bind ``waiting:``).
             try:
                 verdict = await self._binder.bind(TICK_KEY, door=TICK_KEY, cap_counted=True, forced=force,
-                                                  day_end=self._day_end())
+                                                  day_end=self._day_end(), object_text=bid_object_text)
             except Exception:  # noqa: BLE001 -- never hold a message because this code failed
                 logger.warning("outreach_economy_bind_failed", exc_info=True)
                 from orion.physiology.binding import BindVerdict
@@ -2595,6 +2600,7 @@ class EndogenousOutreach:
             correlation_id = str(economy.get("want_id") or uuid4())
         elif shadow is not None:
             correlation_id = shadow.want_id
+            shadow.object_text = bid_object_text
             shadow.place()
         else:
             correlation_id = str(uuid4())
@@ -2633,9 +2639,11 @@ class EndogenousOutreach:
         choice_fields: Dict[str, Any] = {}
         chosen_topic: Any = None
         if topics:
+            economy_now = _TICK_ECONOMY.get() or {}
             text, chosen_topic, choice_fields, early = await self._settle_pick(
                 text, topics, decision_key=decision_key, correlation_id=correlation_id, force=force,
-                tension_reason=tension_reason)
+                tension_reason=tension_reason,
+                care_promoted=bool(isinstance(economy_now, dict) and economy_now.get("care_promoted")))
             if early is not None:
                 return self._record({**choice_fields, **early, "generation": gen_debug}, forced=force,
                                     tension_reason=tension_reason, grounding=grounding)

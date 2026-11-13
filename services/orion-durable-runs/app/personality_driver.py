@@ -28,6 +28,7 @@ A failed tick logs ``personality_tick_failed`` with the exception type and write
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 import hashlib
 import logging
 from collections import OrderedDict
@@ -345,6 +346,9 @@ class PersonalityDriver:
         cursors = await self._store.load_cursors()
         synced = await self._sync_curiosity(cursors, now - self._lag)
         nodes = await self._store.load_nodes()
+        # Juniper's answers (Hub Personality tab): the retired nodes she retired, folded with the live ones.
+        loader = getattr(self._store, "load_juniper_nodes", None)
+        juniper_nodes, juniper = await loader() if loader is not None else ([], {})
         write_cursors: dict[str, Cursor] = {}
 
         rows = await self._reader.read_choices(cursors.get(CHOICE_CURSOR), hi)
@@ -378,16 +382,17 @@ class PersonalityDriver:
 
         evidence = await self._with_situation(evidence, warnings)
         # Pure and O(nodes x evidence x dim): off the event loop, which also runs admission and RPCs.
+        everything = nodes + juniper_nodes
         if evidence:
-            folded = await asyncio.to_thread(fold, nodes, evidence, now=now)
+            folded = await asyncio.to_thread(partial(fold, everything, evidence, now=now, juniper=juniper))
         else:
-            folded = await asyncio.to_thread(apply_fade, nodes, now=now)
+            folded = await asyncio.to_thread(partial(apply_fade, everything, now=now, juniper=juniper))
         named: Optional[NamingApplyResult] = None
         if self.naming_enabled:
             current = {n.disposition_id: n for n in nodes} | {n.disposition_id: n for n in folded.nodes}
             named = await self._apply_namings(list(current.values()), cursors, write_cursors, now, warnings)
         result = merge(folded, named)
-        loaded = {n.disposition_id: node_key(n) for n in nodes}
+        loaded = {n.disposition_id: node_key(n) for n in everything}
 
         await self._store.commit_tick(TickWrite(now=now, evidence=result.evidence_rows, nodes=result.nodes,
                                                 loaded=loaded, history=result.history, cursors=write_cursors))

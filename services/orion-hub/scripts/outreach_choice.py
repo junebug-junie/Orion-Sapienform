@@ -205,6 +205,24 @@ def parse_pick(text: str, n_options: int, *, is_pass: Callable[[str], bool]) -> 
     return Pick("missing", None, raw, "none")
 
 
+# The care term's object text cap (orion.physiology.personality_values.OBJECT_TEXT_MAX; this pure module
+# imports nothing from the body economy). tests/test_outreach_choice.py fails if the two drift.
+OBJECT_TEXT_MAX = 400
+
+
+def outreach_object_text(topics: Sequence[OutreachTopic]) -> Optional[str]:
+    """What this compose would talk about, for the market's care term (personality rev 4): the shown
+    topics' option texts in shown order, joined with "; ". Each topic gets an equal share of
+    ``OBJECT_TEXT_MAX`` before the join, so the freshest topic does not fill what care embeds. None when
+    no topic has text (the bid then prices care 0, as before)."""
+    texts = [str(getattr(t, "option_text", "") or "").strip() for t in topics or ()]
+    texts = [t for t in texts if t]
+    if not texts:
+        return None
+    share = max(1, (OBJECT_TEXT_MAX - 2 * (len(texts) - 1)) // len(texts))
+    return clip("; ".join(clip(t, share) for t in texts), OBJECT_TEXT_MAX) or None
+
+
 def _option(t: OutreachTopic, rank: int) -> ChoiceOptionV1:
     return ChoiceOptionV1(key=t.subject[:200], text=clip(t.option_text, CHOICE_OPTION_TEXT_MAX) or t.subject[:200],
                           market_rank=rank)
@@ -234,13 +252,18 @@ def build_choice(
     situation: Mapping[str, Any],
     act_id: Optional[str],
     correlation_id: Optional[str],
+    care_promoted: bool = False,
 ) -> Optional[PersonalityChoiceV1]:
     """The ``PersonalityChoiceV1`` for one compose decision, or None when there was no readable
     choice (missing / invalid pick). ``decision_key`` is unique per compose (the want id), so a
     re-publish is the same row (``choice_id = outreach:<decision_key>``).
 
     Declined: every shown topic is an alternative. Chosen: the others are. With one topic shown and
-    a pick, there is no turned-down topic, so "say nothing" is the alternative Orion turned down."""
+    a pick, there is no turned-down topic, so "say nothing" is the alternative Orion turned down.
+
+    ``care_promoted``: this compose's want was funded only through the care term
+    (``orion.physiology.personality_values.care_funded``), so every shown option reached Orion through
+    care. The shown topics are ranked by freshness, never by care, so no single topic is promoted alone."""
     if pick.kind not in ("chosen", "declined") or not topics:
         return None
     options = [_option(t, i) for i, t in enumerate(topics, start=1)]
@@ -261,6 +284,7 @@ def build_choice(
         chosen=chosen,
         alternatives=alternatives,
         declined_all=pick.kind == "declined",
+        care_promoted=bool(care_promoted),
         situation=_flat_situation(situation),
         act_id=(act_id or None) and str(act_id)[:300],
         correlation_id=(correlation_id or None) and str(correlation_id)[:300],

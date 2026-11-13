@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from orion.prime.block import BLOCK_CAP, check_prime_citations, render_prime_block
-from orion.prime.choice import ShownConcern, body_situation, market_ranks, prime_choice
+from orion.prime.choice import ShownConcern, body_situation, market_ranks, prime_choice, shown_concerns
 from orion.prime.state import PrimeConcernV1, PrimeStateV1
 from orion.prime.tending import TendingV1, tendencies_from_frame
 from orion.prime.thought import PrimeAnswerV1
@@ -207,3 +207,61 @@ def test_fetch_prime_block_awaits_a_tending_task_and_survives_its_failure():
 def test_no_tending_leaves_the_block_unchanged():
     assert _render(_state()).text == _render(_state(), []).text
     assert _render(_state()).tending == 0
+
+
+def test_options_are_keyed_by_their_event_wants_family_for_source_c():
+    """Rev 4 Move 2: a Prime choice of a reading concern counts for the reading family, not for
+    ``prime`` as a lump. A concern with no event in the list keeps its plain id (lane family)."""
+    from orion.physiology.weights import option_family
+    from orion.prime.choice import event_families
+
+    events = {"wants": [{"event_ref": "seed:1", "family": "hub.world_pulse_read"},
+                        {"event_ref": "ask:1", "family": "vision.ask"}, {"event_ref": "", "family": "x"}]}
+    fams = event_families(events)
+    assert fams == {"seed:1": "hub.world_pulse_read", "ask:1": "vision.ask"}
+    choice, _ = _choice({"pick": "c-a"}, families=fams)
+    assert choice.chosen.key == "hub.world_pulse_read::c-a"
+    assert [o.key for o in choice.alternatives] == ["vision.ask::c-b", "c-c"]
+    assert [option_family("prime", o.key) for o in [choice.chosen, *choice.alternatives]] == [
+        "hub.world_pulse_read", "vision.ask", "prime"]
+
+
+def test_care_promoted_follows_the_chosen_concerns_event():
+    from orion.prime.choice import care_promoted_events
+
+    promoted = care_promoted_events({"wants": [{"event_ref": "seed:1", "care_promoted": True},
+                                               {"event_ref": "ask:1", "care_promoted": False}]})
+    assert promoted == {"seed:1"}
+    assert _choice({"pick": "c-a"}, care_promoted=promoted)[0].care_promoted is True
+    assert _choice({"pick": "c-b"}, care_promoted=promoted)[0].care_promoted is False
+    assert _choice({"pick": "none"}, care_promoted=promoted)[0].care_promoted is False
+    assert care_promoted_events(None) == set()
+
+
+def test_a_new_event_concern_records_its_wants_family_and_care_flag_and_saves_without_them_when_unset():
+    """Review finding 2026-11-13: the guard is about the moment care put the option in front of Orion. The
+    concern records its want's family and care flag when it opens, so a concern that outlives its want's
+    place on the list keeps both. A concern with neither saves byte-for-byte as before."""
+    from orion.prime.choice import listed_wants
+    from orion.prime.thought import apply_answer
+
+    events = {"wants": [{"event_ref": "seed:1", "family": "hub.world_pulse_read", "care_promoted": True},
+                        {"event_ref": "seed:1", "family": "other", "care_promoted": False}]}
+    answer = PrimeAnswerV1.model_validate({"reading": "r", "concerns": {"add": [{"text": "the bee paper",
+                                                                                   "event_id": "seed:1"}]}})
+    applied = apply_answer(PrimeStateV1(), answer, now=NOW, arc_ids=[], focus_pending=False,
+                           event_ids=["seed:1"], event_wants=listed_wants(events))
+    (c,) = applied.state.concerns
+    assert (c.event_family, c.event_care_promoted) == ("hub.world_pulse_read", True)  # first (top) want wins
+    dumped = c.model_dump(mode="json")
+    assert dumped["event_family"] == "hub.world_pulse_read" and dumped["event_care_promoted"] is True
+    plain = PrimeConcernV1(concern_id="x", text="t", opened_at=NOW, last_evidence_at=NOW).model_dump(mode="json")
+    assert "event_family" not in plain and "event_care_promoted" not in plain
+
+    # The event later leaves the list: the choice still keys and flags it as recorded.
+    shown = shown_concerns([c, PrimeConcernV1(concern_id="c-b", text="whose car", event_ref="ask:1",
+                                              opened_at=NOW, last_evidence_at=NOW)])
+    choice, _ = prime_choice(PrimeAnswerV1.model_validate({"pick": c.concern_id}), shown, thought_id="t2",
+                             occurred_at=NOW, families={}, care_promoted=set())
+    assert choice.chosen.key == f"hub.world_pulse_read::{c.concern_id}" and choice.care_promoted is True
+    assert [o.key for o in choice.alternatives] == ["c-b"]  # nothing recorded, not on the live list: plain id

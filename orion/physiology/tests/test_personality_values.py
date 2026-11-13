@@ -136,3 +136,20 @@ def test_object_text_is_collapsed_and_cut():
 def test_unit_rejects_degenerate_vectors():
     assert pv.unit([]) is None and pv.unit([0.0, 0.0]) is None and pv.unit([float("nan")]) is None
     assert pv.unit([3.0, 4.0]) == pytest.approx((0.6, 0.8))
+
+
+def test_care_funded_only_when_care_alone_made_the_net_positive():
+    from orion.physiology.personality_values import care_funded
+
+    lifted = ["personality:arm=care", "personality:net_without_care=-0.010000"]
+    assert care_funded("funded", "net_positive", 0.05, lifted) is True
+    assert care_funded("funded", "net_positive", 0.05, ["personality:net_without_care=0.010000"]) is False
+    assert care_funded("funded", "net_positive", 0.05, []) is False          # no trace: flag off
+    assert care_funded("funded", "exploration_floor", -0.2, lifted) is False  # the floor funds without care
+    assert care_funded("deferred", "price", 0.05, lifted) is False
+    assert care_funded("funded", "net_positive", None, lifted) is False
+    # The market's own line wins: it counts the exploration floor (funded anyway without care).
+    floor = lifted + ["personality:funded_without_care=1"]
+    assert care_funded("funded", "net_positive", 0.05, floor) is False
+    assert care_funded("funded", "net_positive", 0.05, ["personality:funded_without_care=0"]) is True
+    assert care_funded("deferred", "price", 0.05, ["personality:funded_without_care=0"]) is False

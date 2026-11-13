@@ -676,6 +676,28 @@ def test_offered_rows_record_which_slot_each_prior_came_from() -> None:
     assert [(r["prior_id"], r["slot"]) for r in rows] == [("a", "order"), ("b", "coverage")]
 
 
+def test_offered_rows_store_each_priors_claim_for_the_personality_option_text() -> None:
+    """The personality reducer's curiosity option text is the prior's own claim (orion/personality/
+    choices.py); before 2026-11-13 the row stored only the id, so the option read as a de-slugged id."""
+    from orion.curiosity.worldview import Prior
+
+    class _Model:
+        def yield_for(self, prior_id):
+            return 1.0
+
+        def expected_nats(self, prior_id, confidence):
+            return 0.0
+
+    rows = spend.offered_rows(
+        [Prior("self:turn_start_context_is_stale_snapshot_20261110",
+               "The turn starts from a\n context  snapshot that is already stale.", 0.5, "open", 0),
+         Prior("long", "y" * 900, 0.5, "open", 0), Prior("blank", "   ", 0.5, "open", 0)], _Model())
+    assert rows[0]["claim"] == "The turn starts from a context snapshot that is already stale."
+    assert rows[1]["claim"] == "y" * spend.OFFERED_CLAIM_MAX
+    assert rows[2]["claim"] is None
+    json.dumps(rows, allow_nan=False)  # the jsonb write path
+
+
 def test_with_the_replica_arm_off_the_draw_is_the_old_two_arm_draw() -> None:
     """Rollback (HUB_CURIOSITY_REPLICA_ARM_ENABLED=false): the draw is three-way but the replica band
     has width 0, so a run is value or uncertainty exactly as before patch 3, and its row says

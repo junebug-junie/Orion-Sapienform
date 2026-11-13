@@ -52,11 +52,11 @@ def _enabled() -> bool:
         return True
 
 
-async def abid(want: Any) -> Any:
-    """The client call, behind one name so tests can stub it."""
+async def abid(want: Any, **kw: Any) -> Any:
+    """The client call, behind one name so tests can stub it. ``kw``: ``object_text`` when set."""
     from orion.physiology.client import abid as client_abid
 
-    return await client_abid(want)
+    return await client_abid(want, **kw)
 
 
 def _release_url(want_id: str) -> str:
@@ -95,6 +95,8 @@ class ShadowBid:
         self.enabled = _enabled() if enabled is None else bool(enabled)
         # Set by the producer when the real outcome is not the one settle() would derive.
         self.real: Optional[str] = None
+        # What the want's object says, for the market's care term (personality rev 4). None: care 0.
+        self.object_text: Optional[str] = None
         self._task: Optional[asyncio.Task] = None
         self._settled = False
 
@@ -114,7 +116,8 @@ class ShadowBid:
                 producer=f"{PRODUCER}.{self.component}" if self.component else PRODUCER,
                 verb=self.verb, tier=self.tier, object_ref=self.object_ref, correlation_id=self.want_id,
             )
-            self._task = asyncio.get_running_loop().create_task(abid(want))
+            kw = {"object_text": self.object_text} if self.object_text else {}
+            self._task = asyncio.get_running_loop().create_task(abid(want, **kw))
             _track(self._task)
         except Exception as exc:  # noqa: BLE001
             logger.info("physiology_shadow_bid_not_placed family=%s err=%s", self.family, type(exc).__name__)

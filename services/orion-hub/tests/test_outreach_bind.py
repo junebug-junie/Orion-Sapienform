@@ -23,13 +23,13 @@ T0 = datetime(2026, 11, 7, 18, 0, tzinfo=timezone.utc)
 
 
 def _decision(want: WantV1, outcome: str, reason: str, *, net: float = 0.3, retry: float | None = None,
-              binding: str | None = None) -> WantDecisionV1:
+              binding: str | None = None, warnings: list | None = None) -> WantDecisionV1:
     now = datetime.now(timezone.utc)
     return WantDecisionV1(
         decision_id=f"{want.want_id}@{now.isoformat()}", want_id=want.want_id, family=want.family,
         producer=want.producer, verb=want.verb, tier=want.tier, decided_at=now, outcome=outcome, reason=reason,
         net=net, charge=0.1, retry_after_sec=retry, binding_constraint=binding, want=want,
-        why=f"hub.outreach: test {reason}",
+        why=f"hub.outreach: test {reason}", warnings=list(warnings or []),
     )
 
 
@@ -41,9 +41,12 @@ class _Market:
         self.answers: list = [("funded", "net_positive", 0.3, None)]
         self.wants: list[WantV1] = []
         self.released: list[str] = []
+        self.object_texts: list = []
+        self.warnings: list[str] = []
 
-    async def abid(self, want, timeout_sec):
+    async def abid(self, want, timeout_sec, object_text=None):
         self.wants.append(want)
+        self.object_texts.append(object_text)
         a = self.answers[0] if len(self.answers) == 1 else self.answers.pop(0)
         if a is None:
             return None
@@ -54,7 +57,7 @@ class _Market:
             return None
         outcome, reason, net, retry = a
         return _decision(want, outcome, reason, net=net, retry=retry,
-                         binding="lane:agent" if reason == "capacity_reserved" else None)
+                         binding="lane:agent" if reason == "capacity_reserved" else None, warnings=self.warnings)
 
     async def arelease(self, want_id):
         self.released.append(want_id)
@@ -549,3 +552,28 @@ async def test_door_admit_holds_and_records_why(market, monkeypatch) -> None:
     o.economy_mode = "shadow"
     assert await o.economy_admit(door="reading_finding_outreach", key="b2") == (True, {})
     assert len(market.wants) == 1
+
+
+# --- personality rev 4: the care term's object text and care_promoted ---------------------------
+
+
+def test_the_bid_carries_the_topics_text_and_a_care_only_fund_is_care_promoted(market) -> None:
+    """Outreach wants had no object text (object_ref "juniper"), so care was always 0. The tick now
+    passes its candidate topics' text with the bid; a want funded only through care marks the
+    compose's choice ``care_promoted``."""
+    b = market.ob.OutreachBinder()
+    market.warnings = ["personality:arm=care", "personality:care=0.4000:tendency=d1:cos=0.8000",
+                       "personality:net_without_care=-0.020000"]
+    v = asyncio.run(b.bind("endogenous_tick", door="endogenous_tick", now=T0,
+                           object_text="A daydream: a bee on glass; a read finished: Bees learn"))
+    assert v.admit and market.object_texts == ["A daydream: a bee on glass; a read finished: Bees learn"]
+    rec = b.record("endogenous_tick", v)
+    assert rec["care_promoted"] is True
+
+
+def test_no_object_text_sends_none_and_a_fund_on_its_own_net_is_not_care_promoted(market) -> None:
+    b = market.ob.OutreachBinder()
+    market.warnings = ["personality:arm=care", "personality:net_without_care=0.250000"]
+    v = asyncio.run(b.bind("endogenous_tick", door="endogenous_tick", now=T0, object_text="   "))
+    assert v.admit and market.object_texts == [None]
+    assert "care_promoted" not in b.record("endogenous_tick", v)

@@ -17,9 +17,10 @@ One run can test several priors. Each tested prior is ONE choice row
 NOT test, with ``picks_in_decision`` = the number of tested priors, so the reducer weighs one run as
 one decision. A run whose every shown prior was tested has no alternative and yields no row.
 
-Option text is the prior's slug made readable (``self:peer_briefs_refused_budget_20260930`` ->
-``peer briefs refused budget``): the only text the offer row stores, and it describes the option,
-not Orion's prose about it.
+Option text is the prior's own claim, as Orion was shown it: the offer row stores it per offered prior
+(``claim``, from 2026-11-13; ``services/orion-hub/scripts/curiosity_offer_decisions.py offered_rows``).
+An older row (no ``claim``), or a tested prior that was not on the menu, falls back to the prior's
+slug made readable (``self:peer_briefs_refused_budget_20260930`` -> ``peer briefs refused budget``).
 
 Every function here never raises; ``explain_curiosity_choices`` also returns a reason bucket when
 it yields nothing.
@@ -98,24 +99,33 @@ def readable_prior(prior_id: Any) -> str:
     return _WS.sub(" ", s.replace("_", " ")).strip()[:CHOICE_OPTION_TEXT_MAX]
 
 
-def _option(prior_id: str, rank: Optional[int]) -> Optional[ChoiceOptionV1]:
-    text = readable_prior(prior_id)
+def claim_text(claim: Any) -> Optional[str]:
+    """A stored claim, whitespace-collapsed and cut to the option cap; None when empty."""
+    if not isinstance(claim, str):
+        return None
+    t = _WS.sub(" ", claim).strip()[:CHOICE_OPTION_TEXT_MAX]
+    return t or None
+
+
+def _option(prior_id: str, rank: Optional[int], claim: Optional[str] = None) -> Optional[ChoiceOptionV1]:
+    text = claim_text(claim) or readable_prior(prior_id)
     if not text:
         return None
     return ChoiceOptionV1(key=prior_id[:200], text=text, market_rank=rank)
 
 
-def _menu(rows: Any, *, ranked: bool) -> Dict[str, Optional[int]]:
-    """prior_id -> shown rank, first occurrence wins. Stale-section and coverage rows are shown as
-    unranked sections, so their rank is dropped (review 2026-10-16)."""
-    out: Dict[str, Optional[int]] = {}
+def _menu(rows: Any, *, ranked: bool) -> Dict[str, Tuple[Optional[int], Optional[str]]]:
+    """prior_id -> (shown rank, stored claim), first occurrence wins. Stale-section and coverage rows
+    are shown as unranked sections, so their rank is dropped (review 2026-10-16)."""
+    out: Dict[str, Tuple[Optional[int], Optional[str]]] = {}
     for row in _json(rows) or []:
         if not isinstance(row, Mapping):
             continue
         prior_id = _str(row.get("prior_id"))
         if prior_id is None or prior_id in out:
             continue
-        out[prior_id] = _rank(row.get("rank")) if ranked and row.get("slot") != "coverage" else None
+        rank = _rank(row.get("rank")) if ranked and row.get("slot") != "coverage" else None
+        out[prior_id] = (rank, claim_text(row.get("claim")))
     return out
 
 
@@ -149,10 +159,10 @@ def explain_curiosity_choices(
             return [], "formed_only" if formed else "nothing_tested"
 
         shown = _menu(offer.get("offered"), ranked=True)
-        for pid, rank in _menu(offer.get("stale_offered"), ranked=False).items():
-            shown.setdefault(pid, rank)
-        alternatives = [o for pid, rank in shown.items() if pid not in tested
-                        for o in [_option(pid, rank)] if o is not None][:MAX_CHOICE_LIST]
+        for pid, entry in _menu(offer.get("stale_offered"), ranked=False).items():
+            shown.setdefault(pid, entry)
+        alternatives = [o for pid, (rank, claim) in shown.items() if pid not in tested
+                        for o in [_option(pid, rank, claim)] if o is not None][:MAX_CHOICE_LIST]
         if not alternatives:
             return [], "no_alternative"
 
@@ -170,7 +180,8 @@ def explain_curiosity_choices(
         picks = min(len(tested), MAX_CHOICE_LIST)
         out: List[PersonalityChoiceV1] = []
         for pid in tested[:MAX_CHOICE_LIST]:
-            chosen = _option(pid, shown.get(pid))
+            rank, claim = shown.get(pid, (None, None))
+            chosen = _option(pid, rank, claim)
             if chosen is None:
                 continue
             try:

@@ -566,3 +566,21 @@ def test_holdback_arm_prices_no_care_and_reads_the_weights_without_source_c():
     assert care.family_weight == pytest.approx(1.4) and hold.family_weight == pytest.approx(0.9)
     assert hold.value_rank == care.value_rank            # care=1.0 on a holdback term is ignored
     assert "personality:arm=holdback" in hold.warnings
+
+
+def test_a_funded_decision_with_a_term_says_whether_it_is_funded_without_care():
+    """The runaway guard reads this line (personality_values.care_funded); it counts the exploration
+    floor, which the net-without-care number alone cannot see. Funded on its own net: 1, not care-promoted.
+    A deferred decision carries no such line."""
+    from orion.physiology.personality_values import PersonalityTerm, care_funded
+
+    term = PersonalityTerm(arm="care", care=1.0, tendency_id="t1", cosine=0.9)
+    st = body(lane("agent", p=0.2), lane("agent-gpu2", slots=2, p=0.2))
+    funded = decide(want(), st, ctx_for(SELF, st), ReservationBook(), NOW, personality=term)
+    plain = decide(want(), st, ctx_for(SELF, st), ReservationBook(), NOW)
+    assert funded.outcome == "funded" and "personality:funded_without_care=1" in funded.warnings
+    assert not care_funded(funded.outcome, funded.reason, funded.net, funded.warnings)
+    assert not any(w.startswith("personality:funded_without_care") for w in plain.warnings)
+    acts = history("durable.self_inquiry", n=12, gap_h=1.0, last_h=0.5, slot={"agent": 1800.0})
+    held = decide(want(), st, ctx_for(acts, st), ReservationBook(), NOW, personality=term)
+    assert held.outcome == "deferred" and not any("funded_without_care" in w for w in held.warnings)

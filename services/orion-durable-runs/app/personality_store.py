@@ -295,6 +295,25 @@ def _iso(v: Any) -> Any:
     return v.isoformat() if isinstance(v, datetime) else v
 
 
+# Juniper's answers (``personality_juniper_verdict``, written by the Hub Personality tab route): every
+# retired choice node SHE retired (some answer of hers retired it), with her latest answer. "no": it stays
+# retired and absorbs choices in its direction; "yes" after it: the reducer revives it
+# (``orion.personality.graph._Tick``). Only retired nodes: a live node's answer changes nothing here.
+JUNIPER_NODES_SQL = f"""
+WITH latest AS (
+  SELECT DISTINCT ON (disposition_id) disposition_id, verdict AS juniper_verdict, created_at AS juniper_at
+  FROM personality_juniper_verdict
+  ORDER BY disposition_id, created_at DESC, verdict_id
+), by_juniper AS (
+  SELECT disposition_id FROM personality_juniper_verdict GROUP BY disposition_id HAVING bool_or(retired)
+)
+SELECT {NODE_COLUMNS}, latest.juniper_verdict, latest.juniper_at
+FROM personality_disposition JOIN latest USING (disposition_id) JOIN by_juniper USING (disposition_id)
+WHERE status = 'retired' AND {ORIGIN_FILTER}
+"""
+_UNDEFINED_TABLE = "42P01"
+
+
 class TendencyRetired(Exception):
     """The tendency is already retired; an answer cannot change it."""
 
@@ -392,9 +411,29 @@ GROUP BY 1, 2
 class PersonalityStore:
     def __init__(self, pool: Any) -> None:
         self._pool = pool
+        self._warned_no_verdicts = False
+
+    async def load_juniper_nodes(self) -> tuple[list[Node], dict[str, tuple]]:
+        """(retired nodes Juniper retired, disposition_id -> (her latest answer, when)). The verdict table comes with
+        the Hub Personality tab migration (manual_migration_personality_juniper_verdict_v1.sql); while it is
+        missing there are no answers: ([], {}), logged once."""
+        try:
+            async with self._pool.connection() as conn:
+                rows = await (await conn.execute(JUNIPER_NODES_SQL)).fetchall()
+        except Exception as exc:  # noqa: BLE001 - only a missing table is "no answers"; anything else fails the tick
+            if getattr(exc, "sqlstate", None) != _UNDEFINED_TABLE:
+                raise
+            if not self._warned_no_verdicts:
+                self._warned_no_verdicts = True
+                logger.warning("personality_juniper_verdicts_unread: table personality_juniper_verdict missing "
+                               "(apply manual_migration_personality_juniper_verdict_v1.sql); no answers applied")
+            return [], {}
+        nodes = [node_from_row(r) for r in rows]
+        return nodes, {str(r["disposition_id"]): (str(r["juniper_verdict"]), r.get("juniper_at")) for r in rows}
 
     async def load_nodes(self) -> list[Node]:
-        """Every non-retired choice node (retired is terminal and never matched again)."""
+        """Every non-retired choice node. Retired nodes are not matched again, except the ones Juniper retired
+        (``load_juniper_nodes``)."""
         async with self._pool.connection() as conn:
             rows = await (await conn.execute(
                 f"SELECT {NODE_COLUMNS} FROM personality_disposition WHERE status <> 'retired' AND {ORIGIN_FILTER}"

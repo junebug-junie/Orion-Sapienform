@@ -169,7 +169,14 @@ from orion.prime.acts import (
 )
 from orion.prime import day_letter as dl
 from orion.prime import intention as it
-from orion.prime.choice import body_situation, prime_choice, shown_concerns
+from orion.prime.choice import (
+    body_situation,
+    care_promoted_events,
+    event_families,
+    listed_wants,
+    prime_choice,
+    shown_concerns,
+)
 from orion.prime.tending import FRAME_PATH as PERSONALITY_FRAME_PATH, tendencies_from_frame
 from orion.prime.handback import (
     HANDBACK_CHANNEL,
@@ -987,7 +994,9 @@ class PrimeRuntime(MindLoopRuntime):
                                                     organ_replies=shows_organ_replies(inputs),
                                                     take_on=inputs.take_on), frame)
         reply.context.update(curiosity=curiosity, receptors=receptors, shown_concerns=shown,
-                             ranked_event_ids=event_ids(inputs) if inputs.event_mode else [])
+                             ranked_event_ids=event_ids(inputs) if inputs.event_mode else [],
+                             event_families=event_families(inputs.events) if inputs.event_mode else {},
+                             care_promoted_events=care_promoted_events(inputs.events) if inputs.event_mode else set())
         return reply
 
     # --- personality (spec 2026-10-16 rev 4): the tending lines and the choice point ------------
@@ -1015,7 +1024,9 @@ class PrimeRuntime(MindLoopRuntime):
                 ranked_event_ids=reply.context.get("ranked_event_ids") or [],
                 situation=body_situation(inputs.body, self._binding(inputs.body), event_mode=inputs.event_mode),
                 # No model-call correlation id reaches here (ModelReply carries none); the act id names the call.
-                act_id=act.act_id, correlation_id=None)
+                act_id=act.act_id, correlation_id=None,
+                families=reply.context.get("event_families") or {},
+                care_promoted=reply.context.get("care_promoted_events") or ())
             if choice is None:
                 return why
             await self.bus.publish(PERSONALITY_CHOICE_CHANNEL, BaseEnvelope(
@@ -1045,7 +1056,7 @@ class PrimeRuntime(MindLoopRuntime):
         if self._event_mode():
             events, events_err = await self._read(
                 f"{base}/physiology/event-wants?hours={float(self.s.PRIME_EVENT_WANTS_HOURS):g}"
-                f"&limit={int(self.s.PRIME_EVENT_WANTS_LIMIT)}")
+                f"&limit={int(self.s.PRIME_EVENT_WANTS_LIMIT)}&care=1")
             if events is not None:
                 # Only the documented contract's fields reach the frame (FundedEventWantsV1).
                 try:
@@ -1186,6 +1197,7 @@ class PrimeRuntime(MindLoopRuntime):
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
         applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending,
                                receptors=receptors, event_ids=event_ids(inputs) if inputs.event_mode else None,
+                               event_wants=listed_wants(inputs.events) if inputs.event_mode else None,
                                take_on_check=self._take_on_check(now) if self._intentions_on() else None)
         if inputs.event_mode:
             new = set(applied.added)

@@ -22,9 +22,12 @@ Evidence sources, each a rate per act in 0..1 (never a count, so running more do
   choice point have NO source (c), never 0. Off unless the caller passes ``choices``.
 
   Which family an option belongs to (``option_family``): an option key ``<family>::<id>`` names it
-  (``endorsement_option_key``, for a producer whose options span families; NO producer uses it yet:
-  Prime keys its options by concern id, so a Prime choice counts toward the family ``prime``, i.e.
-  "Prime made a move" vs "no move"); else the lane's family (``LANE_FAMILIES``): outreach -> hub.outreach,
+  (``endorsement_option_key``, for a producer whose options span families). Prime uses it since
+  2026-11-13: a concern that came from a funded event want is keyed ``<want family>::<concern_id>``, so a
+  Prime pick of a reading concern counts for ``hub.world_pulse_read`` and a camera ask for ``vision.ask``.
+  A Prime "no move" (``declined_all``) is then a decline of every shown concern's family: Orion passed on
+  those events. Only a concern with no event (a turn promise, arc mode) keeps a plain key and counts for
+  ``prime``. Otherwise the lane's family (``LANE_FAMILIES``): outreach -> hub.outreach,
   reading -> hub.world_pulse_read, curiosity -> durable.curiosity_investigate, prime -> prime. The chat
   lane has none (Juniper's turns are Tier 0 and never bid).
 

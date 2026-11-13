@@ -389,6 +389,8 @@ sources:
     reason: personality rev 4 Move 2 reader for the market -- reads active tendencies + personality_choice rows and embeds want text, feeding care and source (c) into Market.bid. Gates nothing itself (care only lifts value; (c) is a weight source).
   - module: orion/physiology/prime_charge.py
     reason: pure contract for Prime's regulate signals (Orion Prime step 3, 2026-10-30) -- the Redis record, the bounded charge (<= 0.5 x family weight), and the effect classes. Defines a price input; gates nothing itself (Choice applies it, and a want can always outbid it).
+  - module: orion/prime/choice.py
+    reason: Prime's choice point (personality rev 4); imports only weights.endorsement_option_key to key each concern option by its event want's family for source (c). Reads no regulation or price state; gates nothing.
   - module: orion/prime/acts.py
     reason: Prime's acts; grades a regulate act from the market's per-bid record (prime_charge). Produces a signal, gates no organ's work.
   - module: orion/prime/thought.py

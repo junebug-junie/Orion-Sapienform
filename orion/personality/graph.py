@@ -28,8 +28,9 @@ recently". It fades with a half-life.
 **Opposition.** A choice whose direction points the other way (cosine <= -``oppose_threshold``) is
 counted against a node (``opposed_count``): Orion picked the declined side of it that time. The
 label carries both: "<chosen gist> over <declined gist>, n of m" with n = choices that went the
-node's way and m = n + choices that went against it. The label is computed, never an excerpt of
-prose, and no model writes it.
+node's way and m = n + choices that went against it. A gist is a few words of the option's plain
+text (``gist``); with three or more declined options only the chosen side is named (``pair_label``).
+The label is computed, never an excerpt of prose, and no model writes it.
 
 Status: born ``candidate``; ``active`` once weight >= ``promote_min_weight`` and it holds at least
 ``promote_min_evidence`` choices; ``retired`` when a candidate goes unreinforced past its TTL or an
@@ -71,7 +72,13 @@ VALID_LANES = frozenset(get_args(PersonalityLane))
 # The chosen side of a ``declined_all`` choice: the "none" option as each lane shows it.
 DECLINE_TEXT = {"prime": "no move", "outreach": "say nothing"}
 DECLINE_TEXT_DEFAULT = "none of these"
-GIST_WORDS = 7
+# Words kept from an option's text in a label. Six reads as a phrase; seven read as a sentence cut
+# off mid-thought, two of them side by side (live 2026-11-13: "turn start context is stale snapshot
+# over camera layer mediation not closeness (+13 more), 21 of 21").
+GIST_WORDS = 6
+# A label names the declined options only when there are at most this many. Past that, naming one
+# loser out of many is arbitrary and "(+k more)" tells the reader nothing.
+LABEL_MAX_NAMED_DECLINED = 2
 # Node.orion_verdict values (self-naming).
 VERDICT_NAMED = "named"
 VERDICT_REJECTED = "rejected"
@@ -79,6 +86,16 @@ VERDICT_MERGED = "merged"
 
 _FRAME_MAX_WARNINGS = 20
 _COUNT_SUFFIX = re.compile(r", \d+ of \d+$")
+# The pre-2026-11-13 label tail: "<chosen gist> over <declined gist> (+k more)".
+_MORE_SUFFIX = re.compile(r" \(\+\d+ more\)$")
+# A gist must not end on a word that needs the next one ("...is", "...in", "...not"). Trimmed off the
+# END of the cut only; the option's words are never rewritten or reordered.
+_DANGLING = frozenset({
+    "a", "an", "the", "and", "or", "but", "of", "in", "on", "at", "to", "for", "from", "by", "with",
+    "as", "is", "are", "was", "were", "be", "not", "no", "only", "than", "that", "this", "its", "my",
+    "your", "their", "vs", "over", "into", "via", "has", "have", "had", "does", "do",
+    "within", "without", "about", "between", "after", "before", "under", "per", "when", "while",
+})
 _WS = re.compile(r"\s+")
 
 
@@ -267,25 +284,46 @@ def decline_text(lane: str) -> str:
 
 
 def gist(text: Any, words: int = GIST_WORDS) -> str:
-    """The first ``words`` words of an option's text, whitespace collapsed."""
-    parts = _WS.sub(" ", text if isinstance(text, str) else "").strip().split(" ")
-    parts = [p for p in parts if p]
-    out = " ".join(parts[:words])
-    return out + ("…" if len(parts) > words else "")
+    """A few words of an option's plain text (what Orion saw): the first ``words`` words,
+    whitespace collapsed, with dangling function words trimmed off the end of a cut. No ellipsis."""
+    parts = [p for p in _WS.sub(" ", text if isinstance(text, str) else "").strip().split(" ") if p]
+    out = parts[:words]
+    if len(parts) > len(out):
+        while len(out) > 1 and out[-1].lower().strip(".,;:") in _DANGLING:
+            out.pop()
+    return " ".join(out).rstrip(".,;:-")
 
 
 def pair_label(chosen_text: str, declined_texts: Sequence[str]) -> str:
-    """"<chosen gist> over <first declined gist>[ (+k more)]". ``declined_texts`` in shown order
-    (best market rank first), so the gist names the option Orion passed over most visibly."""
+    """"<chosen> over <declined>[ and <declined>]" when Orion turned down one or two options, else
+    just "<chosen>". Each side is a ``gist`` of the option's text; ``declined_texts`` in shown order
+    (best market rank first)."""
     rest = [t for t in declined_texts if isinstance(t, str) and t.strip()]
-    if not rest:
-        return gist(chosen_text)[:DISPOSITION_LABEL_MAX_CHARS]
-    more = f" (+{len(rest) - 1} more)" if len(rest) > 1 else ""
-    return f"{gist(chosen_text)} over {gist(rest[0])}{more}"[:DISPOSITION_LABEL_MAX_CHARS]
+    chosen = gist(chosen_text)
+    if not rest or len(rest) > LABEL_MAX_NAMED_DECLINED:
+        return chosen[:DISPOSITION_LABEL_MAX_CHARS]
+    return f"{chosen} over {' and '.join(gist(t) for t in rest)}"[:DISPOSITION_LABEL_MAX_CHARS]
+
+
+def tidy_label(base: str) -> str:
+    """A stored label base in the pre-2026-11-13 shape, made readable: "<a 7-word gist…> over <a
+    7-word gist…> (+k more)" -> "<5-word gist>". Bases in the current shape pass through unchanged,
+    so this runs on every fold and live nodes read well without a backfill."""
+    s = (base or "").strip()
+    many = bool(_MORE_SUFFIX.search(s))
+    s = _MORE_SUFFIX.sub("", s)
+    if not many and "…" not in s:
+        return s
+    sides = s.split(" over ")
+    if many and len(sides) > 1:
+        # "(+k more)" meant 2+ declined: keep the chosen side. A gist was at most 7 words (+ "…"),
+        # so the declined side is the last " over " part; anything before it is the chosen side.
+        return gist(" over ".join(sides[:-1]).replace("…", ""))
+    return " over ".join(gist(side.replace("…", "")) for side in sides)
 
 
 def label_base(label: str) -> str:
-    return _COUNT_SUFFIX.sub("", label or "")
+    return tidy_label(_COUNT_SUFFIX.sub("", label or ""))
 
 
 def choice_label(base: str, n: int, m: int) -> str:

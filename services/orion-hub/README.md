@@ -408,6 +408,42 @@ nobody asked for. **Enabled** (`HUB_ENDOGENOUS_OUTREACH_ENABLED=true` in
 `False`, so a deploy that loses the key fails closed rather than silently
 reaching out.
 
+**Orion picks the topic, or says nothing** (2026-11-13, personality spec rev 4,
+`scripts/outreach_choice.py`). When the tick reaches its compose point, the one
+compose call shows Orion up to `HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS`
+(default 4, max 5) numbered topics, freshest first, plus "0. Say nothing".
+Topics today: the newest unused daydream, and reads waiting to be told (the
+readings door's pending bundles, offered through `ReadingFindingOutreach.outreach_topics`
+only while that door's spacing allows a reading message; reads with a resonance
+finding stay with that door). Orion's reply starts with `Pick: <n>`.
+
+- A pick sends the message about that topic (a read's article summary rides
+  under it, as the readings door delivers it). `Pick: 0` or PASS records
+  `orion_declined` and sends nothing. Two or more topics and no Pick line:
+  `no_pick`, not sent. A number not shown: `invalid_pick`, not sent. One topic
+  and a message with no Pick line counts as picking it.
+- Every readable pick publishes one `PersonalityChoiceV1` (lane `outreach`,
+  `choice_id = outreach:<want id>`) on `orion:personality:choice`; the decision
+  row stores it under `result_json.choice` (shown subjects, versions, pick).
+- **Subject ledger.** Each topic has a subject id (`daydream:<id>`,
+  `reading:<seed_id>`) and a version (a read's finding ids). A subject the tick
+  sent, or that Orion declined (or answered with no readable pick), in the last
+  7 days is not shown again unless its version changed. A read Orion declined
+  at the tick is told for the readings door too (the `orion_declined` row carries
+  its `finding_ids`), so that door does not send it afterwards. This replaced a gap: on 2026-11-11..12 the tick sent the same
+  "graph first" habit 3 times, because the habit came in through the personality
+  cue with no id while only the daydream was in the ledger. With the choice point
+  on, the personality cue is not read by the tick, and other material with no
+  subject id (priors, curiosity summaries) is not rendered in a choice prompt.
+- A read the tick shows is claimed while it composes, so the readings door skips
+  it (`claimed_by_tick`, not recorded) until the tick ends. A read the tick sends
+  is told for the readings door (its decision row carries `finding_ids`) and
+  starts that door's spacing wait.
+- Every gate before the compose point is unchanged (enabled, turn in flight,
+  recent chat, quiet hours, daily cap, cooldown, rest drive, arousal, the
+  body-economy bid). Kill switch: `HUB_ENDOGENOUS_OUTREACH_CHOICE_ENABLED=false`
+  restores the one-topic prompt.
+
 **The trigger is real** (2026-08-16, replacing a randomized-timer stub).
 Every `HUB_ENDOGENOUS_OUTREACH_TICK_SEC` (default **10s**, see caveat below)
 the loop asks `scripts/tension_outreach_trigger.py::current_run()`: has the

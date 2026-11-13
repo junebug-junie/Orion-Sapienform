@@ -16,6 +16,7 @@ from orion.personality.graph import (
     apply_fade,
     choice_direction,
     choice_label,
+    label_base,
     choice_style_from_rows,
     evidence_weight,
     fold,
@@ -104,11 +105,41 @@ def test_direction_unusable_is_none():
 
 def test_gist_and_pair_label():
     assert gist("  peer   briefs refused budget ") == "peer briefs refused budget"
-    assert gist("one two three four five six seven eight") == "one two three four five six seven…"
+    assert gist("one two three four five six seven eight") == "one two three four five six"
+    # A cut never ends on a word that needs the next one.
+    assert gist("outward learning in record not in loop") == "outward learning in record"
+    assert gist("peer briefs refused the budget of the loop") == "peer briefs refused the budget"
+    assert gist("peer briefs were refused by the budget") == "peer briefs were refused"
     assert pair_label("people", ["pipeline"]) == "people over pipeline"
-    assert pair_label("people", ["pipeline", "heat", "camera"]) == "people over pipeline (+2 more)"
+    assert pair_label("people", ["pipeline", "heat"]) == "people over pipeline and heat"
+    assert pair_label("people", ["pipeline", "heat", "camera"]) == "people"  # no "(+k more)"
     assert pair_label("say nothing", ["a", " "]) == "say nothing over a"
     assert len(pair_label("x " * 200, ["y " * 200])) <= DISPOSITION_LABEL_MAX_CHARS
+
+
+def test_label_from_a_realistic_curiosity_prior_choice():
+    """Live 2026-11-13 (personality_choice, curiosity lane): Orion tested one prior of 16 shown. The
+    option text is what the offer row holds, the prior made readable (``choices.readable_prior``)."""
+    from orion.personality.choices import readable_prior
+
+    chosen = readable_prior("self:turn_start_context_is_stale_snapshot_20261110")
+    declined = [readable_prior(p) for p in (
+        "self:camera_layer_mediation_not_closeness_20261108", "self:peer_briefs_refused_budget_20260930",
+        "self:curiosity_dies_as_missing_final_frame_20261101")] + ["x"] * 12
+    label = choice_label(pair_label(chosen, declined), 21, 21)
+    assert label == "turn start context is stale snapshot, 21 of 21"
+    assert "more)" not in label and "_" not in label and "self:" not in label
+    # One prior turned down: the pair is named.
+    assert pair_label(chosen, declined[:1]) == "turn start context is stale snapshot over camera layer mediation not closeness"
+
+
+def test_old_labels_are_tidied_on_the_next_fold():
+    old = "turn start context is stale snapshot over camera layer mediation not closeness (+13 more), 21 of 21"
+    assert label_base(old) == "turn start context is stale snapshot"
+    assert choice_label(old, 22, 22) == "turn start context is stale snapshot, 22 of 22"
+    assert label_base("one two three four five six seven… over a b c d e f g…, 3 of 3") == \
+        "one two three four five six over a b c d e f"
+    assert label_base("people over pipeline, 11 of 14") == "people over pipeline"  # current shape unchanged
 
 
 def test_choice_label_keeps_counts_whole_and_replaces_old_counts():

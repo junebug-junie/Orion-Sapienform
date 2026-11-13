@@ -20,8 +20,8 @@ Discipline (§0A / hard constraints):
 
 Consent ask and apply (attention patch 3d; apply wired 2026-11-13). After a delta is persisted, the pass
 awaits an injected `consent_asker(delta)`. This module never imports the applier (Phase F stays out of
-every mutation path). `POST /dreams/rem-preview` injects `ask_consent_and_apply(preview=True)` (asks, never
-writes); the sleep cycle (app.main `_rem`, which persists after this pass returns) calls
+every mutation path). `POST /dreams/rem-preview` injects `ask_consent_and_apply(preview=True)` (asks,
+never writes); the sleep cycle (app.main `_rem`, which persists after this pass returns) calls
 `app.compaction_consent.ask_consent_and_apply` after its own persist. The ask goes to the want market's consent gate; on `allow` (Juniper's standing consent
 `dream-compaction-downscale`) and `ORION_DREAM_COMPACTION_APPLY_ENABLED`, the applier snapshots and
 downscales through `app.compaction_store`. `DREAM_COMPACTION_CONSENT_ASK_ENABLED=false` skips the ask
@@ -98,10 +98,10 @@ def downscale_entries(
             if cur is None or orig is None or abs(float(cur) - float(orig)) > _SAME:
                 continue
             cur = float(cur)
-            if not (0.0 < cur <= 1.0):
+            new = round(cur * float(factor), 6)
+            if not (0.0 < cur <= 1.0) or not (0.0 < new < cur):  # too small to lower (or would zero): left alone
                 continue
-            out.append(DownscaleEntryV1(target_id=f"{THOUGHT_TARGET_PREFIX}{tid}", old_w=cur,
-                                        new_w=round(cur * float(factor), 6),
+            out.append(DownscaleEntryV1(target_id=f"{THOUGHT_TARGET_PREFIX}{tid}", old_w=cur, new_w=new,
                                         reason=f"settled; folded into theme {theme!r}"[:200]))
     return out
 

@@ -41,11 +41,13 @@ all 142 found, none already lowered, 0 prune entries.
 ## Files changed
 
 - `config/physiology/consent.yaml`: the standing consent; rule comment names the real store.
-- `services/orion-dream/app/compaction_store.py` (new): `ReverieSalienceStore`, `restore_snapshot_file`,
-  rollback CLI `python -m app.compaction_store restore <snapshot_before.json>`.
+- `services/orion-dream/app/compaction_store.py` (new): `ReverieSalienceStore` (`downscale_many` in one
+  transaction; restore compare-and-set on the planned value), `restore_snapshot_file`, rollback CLI
+  `python -m app.compaction_store restore <snapshot_before.json>`.
 - `services/orion-dream/app/compaction_applier.py`: honors `supports_gists = False` (skips consolidate,
   counts `cards_skipped_no_gist_store`); a delta with nothing the store runs is `empty`, not `applied`;
-  the applied log line names the snapshot and rule.
+  uses the store's batch downscale; new status `rollback_failed`; writes `receipt.json` next to the
+  snapshot; the applied log line names the snapshot and rule.
 - `services/orion-dream/app/rem_compaction.py`: `downscale_entries`, `consolidate_evidence_ids`, a
   `salience_loader` seam. A salience read failure still stages the gist delta.
 - `services/orion-dream/app/rem_store.py`: `load_thought_salience` (read-only).
@@ -62,7 +64,8 @@ all 142 found, none already lowered, 0 prune entries.
 
 ## Schema / bus / API changes
 
-- Added: `CompactionApplyReceiptV1.cards_skipped_no_gist_store` (not bus-published; returned and logged).
+- Added: `CompactionApplyReceiptV1.cards_skipped_no_gist_store` and status `rollback_failed` (not
+  bus-published; returned, logged, and written as `receipt.json`).
 - Removed: `app.compaction_consent.ask_consent_without_store` (replaced, no other callers).
 - Renamed: none.
 - Behavior changed: `MemoryCompactionDeltaV1.downscale` is now populated by REM;
@@ -71,7 +74,7 @@ all 142 found, none already lowered, 0 prune entries.
 
 ## Env/config changes
 
-- Added keys: `DREAM_COMPACTION_DOWNSCALE_FACTOR=0.8`.
+- Added keys: `DREAM_COMPACTION_DOWNSCALE_FACTOR=0.8` (validated in (0, 1); a bad value fails at boot).
 - Changed defaults: `ORION_DREAM_COMPACTION_APPLY_ENABLED` false -> true;
   `DREAM_COMPACTION_SNAPSHOT_DIR` `/tmp/dream-compaction-apply` -> `/app/logs/compaction-snapshots`.
 - Compose now passes `ORION_DREAM_COMPACTION_APPLY_ENABLED`, `ORION_DREAM_COMPACTION_DOWNSCALE_ONLY`,
@@ -102,7 +105,8 @@ reach fact-grade recall. The test fixture copies ids and salience values from li
   rule=dream.compaction.downscale_only`, then `rem compaction consent asked id=<id> status=applied ...`.
 - `want_ledger` row: `want_id = dream.compaction:compact:<delta_id>`, consent verdict `allow`,
   consent_ref `standing:dream-compaction-downscale`.
-- The snapshot file on the host.
+- The snapshot file and `receipt.json` (status `applied`) on the host, under
+  `/mnt/graphdb/logs/dream/logs/compaction-snapshots/<delta_id>/`.
 - SQL: `SELECT count(*) FROM substrate_reverie_thought WHERE salience < (thought_json->>'salience')::float`
   moves above 0.
 - Eval: `PYTHONPATH=. python services/orion-durable-runs/evals/consent_gate_fixture.py --live --days 3`
@@ -114,9 +118,11 @@ reach fact-grade recall. The test fixture copies ids and salience values from li
    for an irreversible rule), the consent ask for a pruning plan is verb `prune`, and the store raises on
    `prune`. Mutation-checked.
 2. Downscale compounds every sleep until salience collapses. Guarded: REM proposes a thought only while
-   its column equals the original in `thought_json`; the store's UPDATE is compare-and-set on the old value.
-3. A partial apply leaves memory half-changed. Guarded: snapshot first; any error restores it; a missing
-   target fails the snapshot and nothing is written.
+   its column equals the original in `thought_json`; the store's UPDATE is compare-and-set on the old value;
+   a value too small to lower (or that would round to 0) is skipped.
+3. A partial apply leaves memory half-changed. Guarded: snapshot first; all downscales of a delta run in
+   one transaction (a stale or missing row writes nothing); restore is compare-and-set, so it never undoes
+   another writer; a failed restore reads `rollback_failed`, never `rolled_back`.
 4. Salience is lowered on thoughts Orion still needs. Bounded: only thoughts of chains that reported
    `reverie_chain_settled`; lowered by 20%, not zeroed; restorable.
 
@@ -144,7 +150,7 @@ in every row.
 ## Tests run
 
 ```text
-pytest services/orion-dream/tests -q                                   379 passed, 9 skipped
+pytest services/orion-dream/tests -q                                   382 passed, 9 skipped
 pytest orion/physiology/tests -q                                       311 passed
 (cd services/orion-durable-runs) pytest tests/test_physiology_consent_market.py -q   8 passed
 python scripts/check_env_template_parity.py                            PASS
@@ -169,6 +175,11 @@ M4 prune plan disguised as compact                   dream 4 failed
 M5 store upscale guard removed                       dream 2 failed
 M6 compare-and-set removed                           dream 1 failed
 M7 missing standing consent -> allow (consent.py)    dream 2 failed | physiology 4 failed | eval FAIL (6)
+After review fixes:
+M8 restore compare-and-set removed                   dream 2 failed
+M9 batch downscale not atomic                        dream 1 failed
+M10 rollback_failed reported as rolled_back          dream 2 failed
+M2 (rerun) applier consent-required removed          dream 12 failed
 ```
 
 ## Evals run
@@ -178,7 +189,8 @@ PYTHONPATH=. python services/orion-durable-runs/evals/consent_gate_fixture.py   
 PYTHONPATH=. python services/orion-durable-runs/evals/consent_gate_fixture.py --live --days 3
   live 3 d: staged deltas=4 consent asks=5 (all needs_consent: pre-deploy)
   live downscale: lowered thoughts=0 raised=0 lowered without an allowed delta=0
-  UNVERIFIED: no applied downscale yet                                                    PASS
+  UNVERIFIED: no applied downscale yet
+  apply receipts in /mnt/graphdb/logs/dream/logs/compaction-snapshots: none               PASS
 ```
 
 ## Docker/build/smoke checks
@@ -195,7 +207,38 @@ plain build above was used instead.
 
 ## Review findings fixed
 
-See the section appended after the review subagent ran.
+A review subagent reviewed PR #3254 and found no blockers. It ran the new SQL (salience loader, snapshot)
+against live Postgres in a read-only session and confirmed it works. All 9 findings are fixed:
+
+- Finding: restore overwrote every snapshotted row, so an overlapping apply's rollback could undo another
+  writer's committed value.
+  - Fix: the snapshot records the planned value; restore is compare-and-set on it.
+  - Evidence: `test_a_failed_apply_never_undoes_another_writer`; mutation M8 caught.
+- Finding: each downscale committed on its own, so a killed container could leave half a delta.
+  - Fix: `downscale_many` runs the whole delta in one transaction; the applier prefers it.
+  - Evidence: `test_a_stale_target_writes_nothing_even_when_restore_cannot_run`; mutation M9 caught.
+- Finding: a failed restore still read `rolled_back`.
+  - Fix: new status `rollback_failed`, logged at error.
+  - Evidence: `test_never_raises_even_if_rollback_also_fails`; mutation M10 caught.
+- Finding: the outcome lived only in logs, and want_ledger cannot tell a preview's allow from an applied one.
+  - Fix: `receipt.json` next to each snapshot; the live eval reads receipts and fails on `rollback_failed`.
+    The want_ledger ambiguity remains (see Risks); the receipts are the durable record of what applied.
+  - Evidence: lifecycle test reads `receipt.json`; eval prints receipt counts.
+- Finding: the preview endpoint read salience synchronously on the event loop.
+  - Fix: it loads requests and salience in threads, like the sleep cycle.
+  - Evidence: `test_the_preview_endpoint_asks_with_no_store`.
+- Finding: tiny values could make no-op or zero proposals.
+  - Fix: REM skips unless 0 < new < old; the store requires new < old.
+  - Evidence: `test_downscale_entries_skip_unknown_lowered_and_bad_factor`, new `0.742 -> 0.742` refusal case.
+- Finding: the factor had no validation.
+  - Fix: `Field(gt=0, lt=1)`.
+  - Evidence: `test_apply_ships_on_with_a_persistent_snapshot_dir` checks 0, 1 and 8 fail.
+- Finding: source-string tests and an env-dependent settings test.
+  - Fix: behavioral tests drive the real `_rem` and `rem_preview_endpoint`; settings test reads code
+    defaults.
+  - Evidence: `test_the_sleep_cycle_loads_salience_stages_persists_then_applies`.
+- Finding: docs (docstring count, line length, two salience numbers, snapshot retention).
+  - Fix: README and docstrings updated.
 
 ## Restart required
 
@@ -221,7 +264,17 @@ docker logs orion-athena-dream 2>&1 | grep -E "compaction applied|rem compaction
   skipped, so the gap is visible. Mitigation: a gist-card store is a separate design (dream content into
   memory needs its own privacy review).
 - Severity: low. Concern: live apply is UNVERIFIED until both services rebuild and Orion sleeps.
+- Severity: low. Concern: `/dreams/rem-preview` records an `allow` in want_ledger that is never applied,
+  so "allowed" in want_ledger is a superset of "applied". Mitigation: `receipt.json` per real apply; the
+  live eval reports receipts.
+- Severity: low. Concern: snapshot directories accumulate (one small directory per applied sleep).
+  Mitigation: none yet; a retention rule can follow once real volume is known.
+- Severity: low. Concern: the Postgres SQL of `load_thought_salience` and the store has no CI test (CI
+  uses SQLite). Mitigation: both were run by hand against live Postgres, read-only, by the author and the
+  reviewer.
 
 ## PR link
 
-https://github.com/junebug-junie/Orion-Sapienform/pull/3254
+- https://github.com/junebug-junie/Orion-Sapienform/pull/3254 (merged 2026-11-13 01:03 UTC, before the
+  review fixes were pushed)
+- Review fixes: https://github.com/junebug-junie/Orion-Sapienform/pull/3273

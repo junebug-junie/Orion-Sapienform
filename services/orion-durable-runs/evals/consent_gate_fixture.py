@@ -54,6 +54,8 @@ from orion.schemas.physiology import PhysiologyConstraintReadingV1 as R, Physiol
 from orion.schemas.physiology_want import ConsentRequestV1, WantV1  # noqa: E402
 
 CONTAINER = "orion-athena-sql-db"
+# Host side of orion-dream's DREAM_COMPACTION_SNAPSHOT_DIR (/app/logs/compaction-snapshots).
+SNAPSHOT_HOST_DIR = "/mnt/graphdb/logs/dream/logs/compaction-snapshots"
 NOW = datetime(2026, 11, 11, 8, 0, tzinfo=timezone.utc)
 FAMS, _ = load_families(ROOT / "config/physiology/families.yaml")
 SHIPPED, ERR = load_consent(ROOT / "config/physiology/consent.yaml")
@@ -265,6 +267,19 @@ def live_downscale() -> list[str]:
         fails.append(f"{orphans} lowered reverie thought(s) are not the target of any allowed delta")
     if lowered == 0:
         print("UNVERIFIED: no applied downscale yet (dream and durable-runs not rebuilt, or no REM pass since)")
+    # The applier's receipt.json files (host side of the dream /app/logs mount): the durable outcome of each
+    # apply, so an allowed delta that never applied, rolled back, or failed its rollback is visible.
+    root = Path(SNAPSHOT_HOST_DIR)
+    statuses: dict[str, int] = {}
+    for f in sorted(root.glob("*/receipt.json")) if root.is_dir() else []:
+        try:
+            st = json.loads(f.read_text()).get("status", "?")
+        except (OSError, ValueError):
+            st = "unreadable"
+        statuses[st] = statuses.get(st, 0) + 1
+    print(f"apply receipts in {root}: {dict(sorted(statuses.items())) or 'none'}")
+    if statuses.get("rollback_failed"):
+        fails.append(f"{statuses['rollback_failed']} apply(s) failed their rollback: restore by hand from the snapshot")
     return fails
 
 

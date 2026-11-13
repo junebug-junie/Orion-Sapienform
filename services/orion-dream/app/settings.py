@@ -53,8 +53,8 @@ class Settings(BaseSettings):
     # `python -m app.compaction_store restore <dir>/<delta_id>/snapshot_before.json`.
     DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/app/logs/compaction-snapshots")
     # REM proposes new salience = salience x this factor for each settled reverie thought a consolidate
-    # entry folds in (once per thought). Must be in (0, 1); outside it, no downscale is proposed.
-    DREAM_COMPACTION_DOWNSCALE_FACTOR: float = Field(default=0.8)
+    # entry folds in (once per thought). Must be in (0, 1): any other value fails at boot.
+    DREAM_COMPACTION_DOWNSCALE_FACTOR: float = Field(default=0.8, gt=0.0, lt=1.0)
     # Attention patch 3d: after REM stages a delta, ask the want market's consent gate about it
     # (app/compaction_consent.py) and, on allow + apply on, apply it through the real store. Every
     # real delta leaves a verdict (want_ledger, producer orion-dream.compaction_applier.consent).

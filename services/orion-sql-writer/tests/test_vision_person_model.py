@@ -8,7 +8,7 @@ TRUNCATEs the walkway tables -- e.g.:
 
     docker run -d --rm --name pg -e POSTGRES_PASSWORD=t -p 127.0.0.1:55499:5432 postgres:16-alpine
     for f in walkway_camera_v1 walkway_privacy_v2 vision_confirm_asks_v1 vision_ask_names_v1 \\
-             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1 vision_person_basis_v1 person_record_v1; do
+             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1 vision_person_basis_v1 vision_person_age_veto_v1 person_record_v1; do
       docker exec -i pg psql -U postgres < services/orion-sql-db/manual_migration_$f.sql; done
     ORION_TEST_PG_URI=postgresql://postgres:t@127.0.0.1:55499/postgres pytest tests/test_vision_person_model.py
 """
@@ -1064,3 +1064,160 @@ def test_a_zero_office_cap_never_asks_office_guesses(pg) -> None:
             "model_version, decided_at, basis) VALUES ('off-z', 'Juniper', 'body', 0.4, 'unsure', :v, :t, 'prior')"),
             {"v": pm.MODEL_VERSION, "t": NOW})
         assert vi._open_person_confirm_asks(conn, NOW, ZONE, cfg) == []
+
+
+# --- age-band veto (2026-11-13, docs/superpowers/specs/2026-11-13-person-age-band-soft-veto-design.md) ---
+
+def _two_people():
+    """A (child) and B (adult) both near the cluster; A scores higher."""
+    bars = {("A", "body"): pm.Bar("A", "body", None, None, 19, 19),
+            ("B", "body"): pm.Bar("B", "body", None, None, 19, 19)}
+    album = {"A": {1: [_crop("a1", "ac", "2026-10-01", _vec(1, 0.05))]},
+             "B": {1: [_crop("b1", "bc", "2026-10-01", _vec(1, 0.4))]}}
+    cl = {"x": [_crop("x1", "x", "2026-10-09", _vec(1, 0.04))]}
+    return album, bars, cl
+
+
+def test_age_veto_removes_a_candidate_and_never_adds_one() -> None:
+    album, bars, cl = _two_people()
+    (off,) = pm.attribute(cl, album, bars, {}, CFG)
+    assert off["person_label"] == "A" and "age_veto" not in off
+    trace: dict = {}
+    (on,) = pm.attribute(cl, album, bars, {}, CFG, person_bands={"a": "child", "b": "adult"},
+                         cluster_bands={"x": "adult"}, veto_trace=trace)
+    assert on["person_label"] == "B" and on["age_veto"] == ["A"] and trace == {"x": ["A"]}
+
+
+def test_age_veto_without_a_band_changes_nothing() -> None:
+    album, bars, cl = _two_people()
+    base = pm.attribute(cl, album, bars, {}, CFG)
+    # no cluster band; no stated band for the guessed person; matching bands
+    for pb, cb in (({"a": "child"}, {}), ({"b": "adult"}, {"x": "adult"}), ({"a": "child"}, {"x": "child"})):
+        trace: dict = {}
+        assert pm.attribute(cl, album, bars, {}, CFG, person_bands=pb, cluster_bands=cb, veto_trace=trace) == base
+        assert trace == {}
+
+
+def test_age_veto_striking_everyone_leaves_no_guess_but_a_trace() -> None:
+    album, bars, cl = _two_people()
+    trace: dict = {}
+    got = pm.attribute(cl, album, bars, {}, CFG, person_bands={"a": "child", "b": "child"},
+                       cluster_bands={"x": "adult"}, veto_trace=trace)
+    assert got == [] and trace == {"x": ["A", "B"]}
+
+
+def test_age_veto_never_touches_a_camera_with_a_prior() -> None:
+    album, bars, office = _office_world()
+    base = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    trace: dict = {}
+    got = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS, person_bands={"juniper": "adult", "sibling": "adult"},
+                       cluster_bands={"o1": "child"}, veto_trace=trace)
+    assert got == base and got[0]["basis"] == "prior" and trace == {}
+
+
+def test_cluster_age_bands_read_only_the_pinned_model(monkeypatch) -> None:
+    from orion.vision import age_band as ab
+
+    tv = ab.text_vectors()
+    child = [_dc.replace(_crop(f"c{i}", "k", "2026-10-09", tv["child"]), body_model=ab.AGE_BAND_MODEL_ID) for i in range(2)]
+    adult = [_dc.replace(_crop(f"d{i}", "g", "2026-10-09", tv["adult"]), body_model=ab.AGE_BAND_MODEL_ID) for i in range(2)]
+    other = [_dc.replace(c, cluster="o", body_model="google/siglip2-so400m-patch14-384") for c in child]
+    null = [_dc.replace(c, cluster="n", body_model="") for c in child]
+    one = child[:1]
+    assert pm.cluster_age_bands({"k": child, "g": adult, "o": other, "n": null, "one": one}) == {"k": "child", "g": "adult"}
+
+
+def test_settings_ship_the_age_veto_on() -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import person_model_config
+
+    assert person_model_config(Settings()).age_veto_enabled is True
+    assert person_model_config(Settings(VISION_PERSON_AGE_VETO_ENABLED=False)).age_veto_enabled is False
+    env = (SERVICE / ".env_example").read_text()
+    assert "\nVISION_PERSON_AGE_VETO_ENABLED=true\n" in env
+
+
+def test_age_veto_migration_is_additive_and_auto_appliable() -> None:
+    sql = (REPO / "services/orion-sql-db/manual_migration_vision_person_age_veto_v1.sql").read_text()
+    assert sql.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer"
+    body = "\n".join(line for line in sql.splitlines() if not line.startswith("--")).strip().upper()
+    assert body == "ALTER TABLE VISION_PERSON_ATTRIBUTION ADD COLUMN IF NOT EXISTS AGE_VETO JSONB;"
+    rb = (REPO / "services/orion-sql-db/manual_migration_vision_person_age_veto_v1_rollback.sql").read_text()
+    assert "-- DESTRUCTIVE" in rb and "DROP COLUMN IF EXISTS age_veto" in rb
+
+
+def test_eval_scores_both_arms_in_one_pass() -> None:
+    sys.path.insert(0, str(SERVICE / "evals"))
+    import run_person_recognition_eval as ev
+
+    album, bars, _ = _two_people()
+    # held-out A cluster that reads adult while A's stated band is child: the on arm strikes A.
+    album = {"A": {1: _person("a", 0, 3)}, "B": {1: _person("b", 0, 3, seed=9)}}
+    import unittest.mock as um
+    with um.patch.object(pm, "cluster_age_bands", lambda cl: {c: "adult" for c in cl}):
+        m = ev.evaluate(album, CFG, _street(5), None, frozenset(), {"a": "child"}, frozenset())
+    v = m["age_veto"]
+    assert v["enabled"] and set(v["on"]) == {"correct_accept", "wrong_accept", "unsure", "unsure_right_person",
+                                              "reject", "no_album"}
+    assert v["clusters_struck"] >= 1 and v["right_to_wrong"] + v["struck_right_top_guess"] >= 1
+    assert m["gate_passed"] == (m["wrong_accept"] == 0 and v["on"]["wrong_accept"] == 0)
+
+
+@needs_pg
+def test_write_attributions_age_veto_resets_and_clears_on_revoke(pg) -> None:
+    import json as _json
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    now = datetime(2026, 11, 13, 2, 0, tzinfo=timezone.utc)
+    g = {"individual_id": "v1", "person_label": "B", "channel": "body", "score": 0.7, "band": "unsure",
+         "basis": "evidence", "age_veto": ["A"]}
+    q = "SELECT age_veto FROM vision_person_attribution WHERE individual_id='v1'"
+    with pg.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS age_veto jsonb"))
+        pm.write_attributions(conn, [g], now)
+        got = conn.execute(text(q)).scalar()
+        got = _json.loads(got) if isinstance(got, str) else got
+        assert got == {"struck": ["A"], "rule": "age_band_v1"}          # names only, no age read stored
+        pm.write_attributions(conn, [{k: v for k, v in g.items() if k != "age_veto"}], now)
+        assert conn.execute(text(q)).scalar() is None                   # a stale strike never stays
+        pm.write_attributions(conn, [g], now)
+        # revoked by another path (a confirm answer), then the next cycle clears it
+        conn.execute(text("UPDATE vision_person_attribution SET revoked_at = :t WHERE individual_id='v1'"), {"t": now})
+        pm.write_attributions(conn, [], now)
+        assert conn.execute(text(q)).scalar() is None
+    with pg.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_person_attribution DROP COLUMN age_veto"))
+        try:
+            pm.write_attributions(conn, [{**g, "individual_id": "v2"}], now)   # before the migration: still lands
+            assert conn.execute(text(
+                "SELECT count(*) FROM vision_person_attribution WHERE individual_id='v2'")).scalar() == 1
+        finally:
+            conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS age_veto jsonb"))
+
+
+@needs_pg
+def test_person_age_bands_come_only_from_stated_answers(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        if conn.execute(text("SELECT to_regclass('person_fact') IS NULL")).scalar():
+            pytest.skip("person_record_v1 not applied")
+        conn.execute(text("TRUNCATE person, person_link, person_fact CASCADE"))
+        for pid, name in (("p1", "Kid"), ("p2", "Grown"), ("p3", "NoAnswer"), ("p4", "Stale")):
+            conn.execute(text("INSERT INTO person (person_id, display_name, role, status, created_at, updated_at) "
+                              "VALUES (:p, :n, 'other', 'active', :t, :t)"), {"p": pid, "n": name, "t": NOW})
+        for fid, pid, val, age_days in (("f1", "p1", "8 years old", 1), ("f2", "p2", "Adult, early 20s", 1),
+                                        ("f3", "p4", "5 years old", 1000)):
+            conn.execute(text("INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, created_at) "
+                              "VALUES (:f, :p, 'age', :v, 'juniper', :t)"),
+                         {"f": fid, "p": pid, "v": val, "t": NOW - timedelta(days=age_days)})
+        bands = pm.load_person_age_bands(conn, NOW, 730.0)
+        assert bands == {"kid": "child", "grown": "adult"}
+        if conn.execute(text("SELECT 1 FROM information_schema.columns WHERE table_name = 'person' "
+                             "AND column_name = 'merged_into'")).scalar():
+            # a name merged into a person with a stated age carries that band
+            conn.execute(text("INSERT INTO person (person_id, display_name, role, status, created_at, updated_at, "
+                              "merged_into) VALUES ('p5', 'Kiddo', 'other', 'active', :t, :t, 'p1')"), {"t": NOW})
+            assert pm.load_person_age_bands(conn, NOW, 730.0)["kiddo"] == "child"

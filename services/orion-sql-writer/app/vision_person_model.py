@@ -50,6 +50,7 @@ Design: docs/superpowers/specs/2026-10-20-walkway-person-learning-design.md.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 from dataclasses import dataclass
@@ -91,6 +92,12 @@ class PersonModelConfig:
     # Split alpha only across labels that are one real person (not the
     # ``not_a_person`` names). False = split across every album label.
     alpha_split_people_only: bool = True
+    # Age-band veto (orion/vision/age_band.py): drop a candidate whose stated age
+    # band (Juniper's person_fact answer) confidently disagrees with the cluster's
+    # read. Never names anyone; never on a camera with a prior.
+    age_veto_enabled: bool = True
+    # Only age answers newer than this count: a child grows past the band.
+    age_answer_max_age_days: float = 730.0
 
 
 @dataclass(frozen=True)
@@ -100,6 +107,7 @@ class Crop:
     day: str                      # local date, "YYYY-MM-DD"
     vecs: Dict[str, np.ndarray]   # channel -> unit vector (channels the crop has)
     stream: str = ""              # camera stream id ("" = unknown)
+    body_model: str = ""          # embedding_model_id of the body vector ("" = unknown / NULL)
 
 
 @dataclass(frozen=True)
@@ -341,7 +349,10 @@ def album_has_stream(album: Dict[str, Dict[int, List[Crop]]], person: str, strea
 
 def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[Crop]]],
               bars: Dict[Tuple[str, str], Bar], blocked: Dict[str, set], cfg: PersonModelConfig,
-              priors: Optional[Dict[str, Dict[str, float]]] = None) -> List[dict]:
+              priors: Optional[Dict[str, Dict[str, float]]] = None,
+              person_bands: Optional[Dict[str, str]] = None,
+              cluster_bands: Optional[Dict[str, str]] = None,
+              veto_trace: Optional[Dict[str, List[str]]] = None) -> List[dict]:
     """One guess per unnamed cluster: its best-scoring person, banded. A
     cluster accepted for two people is downgraded to unsure. ``blocked``:
     cluster -> casefolded names Juniper said it is not.
@@ -360,8 +371,20 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
     - an ``accept`` (a calibrated, confident match) still wins.
 
     The guess carries ``basis``: ``prior`` when the prior chose the name,
-    ``evidence`` otherwise. Cameras without a prior are unchanged."""
+    ``evidence`` otherwise. Cameras without a prior are unchanged.
+
+    Age-band veto (``person_bands``: casefolded name -> child|adult from
+    Juniper's stated ages; ``cluster_bands``: cluster -> its read band). A
+    candidate whose band disagrees with the cluster's is left out of the
+    scored list -- after the prior pick, never through ``blocked`` -- so it
+    can only remove a name, never add one. Exempt: any cluster on a camera
+    with a prior (the office: its prior path and infrared reads were never
+    replayed), any cluster or person with no band. Names it struck land in
+    ``veto_trace[cluster]`` and, when a guess is still made, on the guess as
+    ``age_veto``. Design: docs/superpowers/specs/2026-11-13-person-age-band-soft-veto-design.md."""
     priors = priors or {}
+    person_bands = person_bands or {}
+    cluster_bands = cluster_bands or {}
     out: List[dict] = []
     persons = sorted(album)
     sides: Dict[Tuple[str, str, int], _Side] = {}
@@ -375,6 +398,8 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
         ruled_out = blocked.get(cid, set())
         top = max(((k, v) for k, v in prior.items() if k not in ruled_out), key=lambda kv: kv[1], default=(None, 0.0))
         dominant = top[0] if top[1] >= PRIOR_DOMINANCE else None
+        cband = None if prior else cluster_bands.get(cid)
+        struck: List[str] = []
         scored = []
         for p in persons:
             if p.strip().casefold() in ruled_out:
@@ -389,7 +414,13 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
             if b == "reject" and p.strip().casefold() == dominant and not album_has_stream(album, p, stream):
                 b = "unsure"  # a reject bound fitted on other cameras is not evidence here
             if b != "reject":
+                pband = person_bands.get(p.strip().casefold()) if cband else None
+                if pband is not None and pband != cband:
+                    struck.append(p)          # age-band veto: removes a candidate, never adds one
+                    continue
                 scored.append((b == "accept", s, p, ch, b))
+        if struck and veto_trace is not None:
+            veto_trace[cid] = sorted(struck)
         if not scored:
             continue
         accepted = [x for x in scored if x[0]]
@@ -401,8 +432,11 @@ def attribute(clusters: Dict[str, List[Crop]], album: Dict[str, Dict[int, List[C
             best = max(by_prior, key=lambda x: x[1])
             basis = "prior"
         b = "unsure" if len(accepted) > 1 else best[4]
-        out.append({"individual_id": cid, "person_label": best[2], "channel": best[3],
-                    "score": round(best[1], 4), "band": b, "basis": basis})
+        g = {"individual_id": cid, "person_label": best[2], "channel": best[3],
+             "score": round(best[1], 4), "band": b, "basis": basis}
+        if struck:
+            g["age_veto"] = sorted(struck)
+        out.append(g)
     return out
 
 
@@ -437,11 +471,12 @@ def _load_crops(conn, where: str, params: dict, tz: ZoneInfo) -> List[Crop]:
 
     out = []
     for r in conn.execute(text(
-            "SELECT crop_id, individual_id, observed_at, embedding, osnet_embedding, face_embedding, stream_id "
-            f"FROM vision_crop_observation c WHERE {where}"), params).fetchall():
+            "SELECT crop_id, individual_id, observed_at, embedding, osnet_embedding, face_embedding, stream_id, "
+            f"embedding_model_id FROM vision_crop_observation c WHERE {where}"), params).fetchall():
         vecs = {ch: unit(v) for ch, v in zip(("body", "osnet", "face"), (r[3], r[4], r[5])) if v}
         if vecs:
-            out.append(Crop(r[0], r[1] or "", r[2].astimezone(tz).date().isoformat(), vecs, r[6] or ""))
+            out.append(Crop(r[0], r[1] or "", r[2].astimezone(tz).date().isoformat(), vecs, r[6] or "",
+                            r[7] or ""))
     return out
 
 
@@ -655,6 +690,78 @@ def _blocked(conn) -> Dict[str, set]:
     return out
 
 
+def cluster_age_bands(clusters: Dict[str, List[Crop]]) -> Dict[str, str]:
+    """cluster -> "child" | "adult" read from its crops' stored body vectors
+    (orion/vision/age_band.py). Clusters with no confident read are absent.
+    The read is never stored: it lives for one guess cycle."""
+    from orion.vision.age_band import cluster_age_band, p_child
+
+    out: Dict[str, str] = {}
+    for cid, crops in clusters.items():
+        band = cluster_age_band(p_child(c.vecs.get("body"), c.body_model or None) for c in crops)
+        if band is not None:
+            out[cid] = band
+    return out
+
+
+def load_person_age_bands(conn, now: datetime, max_age_days: float) -> Dict[str, str]:
+    """casefolded album name -> "child" | "adult", ONLY from Juniper's stated
+    ages (``person_fact`` category ``age``, newer than ``max_age_days``). The
+    names are the person's display name, the names of people merged into it,
+    and the labels of the camera clusters linked to them. No album-consensus
+    fallback: a person without an answer is never vetoed. A person (or a name)
+    with answers in both bands gets no band. Empty when the person tables are
+    missing."""
+    from sqlalchemy import text
+
+    from orion.vision.age_band import band_from_age_answer
+
+    if conn.execute(text("SELECT to_regclass('person') IS NULL OR to_regclass('person_fact') IS NULL "
+                         "OR to_regclass('person_link') IS NULL")).scalar():
+        return {}
+    # person.merged_into arrives with manual_migration_person_merge_v1.sql; without it
+    # every person is its own root.
+    has_merge = bool(conn.execute(text(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
+        "AND table_name = 'person' AND column_name = 'merged_into'")).scalar())
+    root = "COALESCE(p.merged_into, p.person_id)" if has_merge else "p.person_id"
+    root_band: Dict[str, Optional[str]] = {}
+    for rid, value in conn.execute(text(
+            f"SELECT {root}, f.value_text FROM person_fact f "
+            "JOIN person p ON p.person_id = f.person_id WHERE f.category = 'age' AND f.removed_at IS NULL "
+            "AND f.created_at > :since AND p.status <> 'not_a_person'"),
+            {"since": now - timedelta(days=max_age_days)}).fetchall():
+        band = band_from_age_answer(value)
+        if band is None:
+            continue
+        root_band[rid] = band if root_band.get(rid, band) == band else None
+    roots = {r: b for r, b in root_band.items() if b}
+    if not roots:
+        return {}
+    name_band: Dict[str, Optional[str]] = {}
+    for rid, name in conn.execute(text(
+            f"SELECT {root}, p.display_name FROM person p WHERE {root} = ANY(:r) "
+            f"UNION SELECT {root}, i.label FROM person p "
+            "JOIN person_link l ON l.person_id = p.person_id AND l.revoked_at IS NULL "
+            "AND l.source_kind = 'vision_individual' JOIN vision_individual i ON i.individual_id = l.source_ref "
+            f"WHERE {root} = ANY(:r) AND i.label IS NOT NULL"),
+            {"r": list(roots)}).fetchall():
+        if not name or not name.strip():
+            continue
+        key, band = name.strip().casefold(), roots[rid]
+        name_band[key] = band if name_band.get(key, band) == band else None
+    return {k: v for k, v in name_band.items() if v}
+
+
+def attribution_has_age_veto(conn) -> bool:
+    """``vision_person_attribution.age_veto`` exists (manual_migration_vision_person_age_veto_v1.sql)."""
+    from sqlalchemy import text
+
+    return bool(conn.execute(text(
+        "SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
+        "AND table_name = 'vision_person_attribution' AND column_name = 'age_veto'")).scalar())
+
+
 def attribution_has_basis(conn) -> bool:
     """``vision_person_attribution.basis`` exists (manual_migration_vision_person_basis_v1.sql)."""
     from sqlalchemy import text
@@ -666,16 +773,26 @@ def attribution_has_basis(conn) -> bool:
 
 def write_attributions(conn, guesses: List[dict], now: datetime) -> Tuple[int, int]:
     """Upsert the guesses. ``basis`` (prior | evidence) is written when the
-    column exists; before the migration the guesses still land without it."""
+    column exists; before the migration the guesses still land without it.
+    ``age_veto`` (names the age-band veto struck, or NULL) likewise; it is
+    overwritten on every upsert (NULL included, so a stale strike never stays)
+    and cleared on every revoked row, whichever path revoked it."""
     from sqlalchemy import text
 
+    from orion.vision.age_band import AGE_BAND_RULE
+
     with_basis = attribution_has_basis(conn)
+    with_veto = attribution_has_age_veto(conn)
     cols, vals, upd = ("", "", "")
     if with_basis:
-        cols, vals, upd = (", basis", ", :basis", ", basis = EXCLUDED.basis")
+        cols, vals, upd = (cols + ", basis", vals + ", :basis", upd + ", basis = EXCLUDED.basis")
+    if with_veto:
+        cols, vals, upd = (cols + ", age_veto", vals + ", CAST(:age_veto AS jsonb)",
+                           upd + ", age_veto = EXCLUDED.age_veto")
     keep = []
     for g in guesses:
         keep.append(f"{g['individual_id']}|{g['person_label']}")
+        veto = json.dumps({"struck": list(g["age_veto"]), "rule": AGE_BAND_RULE}) if g.get("age_veto") else None
         conn.execute(text(
             "INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, band, "
             f"model_version, decided_at{cols}) VALUES (:i, :p, :c, :s, :b, :v, :t{vals}) "
@@ -683,11 +800,16 @@ def write_attributions(conn, guesses: List[dict], now: datetime) -> Tuple[int, i
             "score = EXCLUDED.score, band = EXCLUDED.band, decided_at = EXCLUDED.decided_at, "
             f"revoked_at = NULL{upd}"),
             {"i": g["individual_id"], "p": g["person_label"], "c": g["channel"], "s": g["score"], "b": g["band"],
-             "v": MODEL_VERSION, "t": now, "basis": g.get("basis") or "evidence"})
+             "v": MODEL_VERSION, "t": now, "basis": g.get("basis") or "evidence", "age_veto": veto})
     revoked = conn.execute(text(
         "UPDATE vision_person_attribution SET revoked_at = :t WHERE revoked_at IS NULL AND "
         "(model_version <> :v OR NOT ((individual_id || '|' || person_label) = ANY(:k)))"),
         {"t": now, "v": MODEL_VERSION, "k": keep}).rowcount or 0
+    if with_veto:
+        # Retention: a strike lives only on a live guess. Covers every revoke path
+        # (this one, and the confirm-answer revokes in vision_individuals.py).
+        conn.execute(text("UPDATE vision_person_attribution SET age_veto = NULL "
+                          "WHERE revoked_at IS NOT NULL AND age_veto IS NOT NULL"))
     return len(guesses), revoked
 
 
@@ -716,7 +838,25 @@ def run_person_model(conn, now: datetime, cfg: PersonModelConfig) -> dict:
     not_people = not_a_person_names(conn) if cfg.alpha_split_people_only else frozenset()
     bars = fit_all(album, cfg, street, face_street, not_people)
     _write_bars(conn, bars, fingerprint, now)
-    guesses = attribute(street, album, bars, _blocked(conn), cfg, priors=_camera_priors())
+    person_bands: Dict[str, str] = {}
+    cluster_bands: Dict[str, str] = {}
+    veto_trace: Dict[str, List[str]] = {}
+    age_veto_error = None
+    if cfg.age_veto_enabled:
+        # Fails open: an error here means no veto this cycle, never no guesses.
+        try:
+            with conn.begin_nested():
+                person_bands = load_person_age_bands(conn, now, cfg.age_answer_max_age_days)
+            cluster_bands = cluster_age_bands(street) if person_bands else {}
+        except Exception as exc:  # noqa: BLE001
+            person_bands, cluster_bands, age_veto_error = {}, {}, str(exc)[:200]
+            logger.warning("person_age_veto_skipped error=%s", exc)
+    guesses = attribute(street, album, bars, _blocked(conn), cfg, priors=_camera_priors(),
+                        person_bands=person_bands, cluster_bands=cluster_bands, veto_trace=veto_trace)
+    guessed = {g["individual_id"] for g in guesses}
+    all_struck = sorted(c for c in veto_trace if c not in guessed)
+    for cid in all_struck:
+        logger.info("person_age_veto_all_struck individual_id=%s struck=%s", cid, ",".join(veto_trace[cid]))
     n, gone = write_attributions(conn, guesses, now)
     return {
         "person_exemplars_added": added, "person_exemplars_revoked": revoked,
@@ -727,4 +867,7 @@ def run_person_model(conn, now: datetime, cfg: PersonModelConfig) -> dict:
         "person_accepts": sum(1 for g in guesses if g["band"] == "accept"),
         "person_prior_guesses": sum(1 for g in guesses if g.get("basis") == "prior"),
         "person_guesses_revoked": gone,
+        "person_age_bands_people": len(person_bands), "person_age_bands_clusters": len(cluster_bands),
+        "person_age_vetoes": len(veto_trace), "person_age_veto_all_struck": len(all_struck),
+        **({"person_age_veto_error": age_veto_error} if age_veto_error else {}),
     }

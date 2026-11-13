@@ -101,6 +101,7 @@ def person_model_config(settings: Settings) -> Optional[PersonModelConfig]:
         local_tz=str(settings.vision_local_tz),
         face_candidate_days=float(settings.vision_person_face_candidate_days),
         alpha_split_people_only=bool(settings.vision_person_alpha_split_people_only),
+        age_veto_enabled=bool(getattr(settings, "vision_person_age_veto_enabled", True)),
     )
 
 

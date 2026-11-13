@@ -730,7 +730,7 @@ class ThoughtSettings(BaseSettings):
     # not an instruction. Shown to stance_react (fetched alongside Mind) and reverie (alongside its
     # other reads). Missing / stale (> MAX_AGE_SEC) / empty frame or no reply within TIMEOUT_SEC
     # renders nothing. Kill switch: false = both prompts exactly as before.
-    personality_cue_enabled: bool = Field(True, alias="PERSONALITY_CUE_ENABLED")
+    personality_cue_enabled: bool = Field(False, alias="PERSONALITY_CUE_ENABLED")
     personality_frame_url: str = Field("http://durable-runs:8121", alias="PERSONALITY_FRAME_URL")
     personality_cue_timeout_sec: float = Field(0.5, gt=0.0, le=5.0, alias="PERSONALITY_CUE_TIMEOUT_SEC")
     personality_cue_max_age_sec: float = Field(3600.0, gt=0.0, alias="PERSONALITY_CUE_MAX_AGE_SEC")

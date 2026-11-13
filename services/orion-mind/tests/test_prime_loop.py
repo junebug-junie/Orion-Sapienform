@@ -298,6 +298,7 @@ def test_lifespan_starts_prime_on_its_own_bus_without_blocking_and_stops_it(monk
     monkeypatch.setattr(main, "build_heartbeat_chassis", lambda: SimpleNamespace(
         start_background=_anoop, stop=_anoop))
     monkeypatch.setattr(main.settings, "RPC_HEALTH_PUBLISH_ENABLED", False)
+    monkeypatch.setattr(main.settings, "PRIME_CONSENT_ENABLED", False)  # its own lifespan test: test_prime_consent_responder.py
     monkeypatch.setattr(main.settings, "ORION_BUS_ENABLED", True)
     monkeypatch.setattr(main.settings, "PRIME_ENABLED", True)
     # The curiosity replica has its own bus and its own lifespan test (tests/test_replica_loop.py).

@@ -29,6 +29,7 @@ from .room_prompt import (
     lines_after_mark,
     newest_created_at,
 )
+from .room_tools import TurnTools, footer_for, prepare_turn_tools, with_footer
 from .session_store import forget_session, peek_or_mint_session, remember_session
 from .settings import Settings, get_settings
 
@@ -90,7 +91,7 @@ _ENV_ALLOWLIST = frozenset(
 _ENV_DENY_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_OAUTH", "AWS_", "GOOGLE_", "GCP_")
 
 
-def build_subprocess_env(settings: Settings) -> Dict[str, str]:
+def build_subprocess_env(settings: Settings, *, tools: bool = False) -> Dict[str, str]:
     """Env for the `claude` subprocess, built from an allowlist.
 
     This is the load-bearing part, not hygiene. orion-hub's FCC lane sets
@@ -117,6 +118,9 @@ def build_subprocess_env(settings: Settings) -> Dict[str, str]:
     env["CLAUDE_CONFIG_DIR"] = settings.ROOM_COMPANION_CLAUDE_CONFIG_DIR
     if settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN.get_secret_value()
+    if tools:
+        # A consent ask may take 40 s; the CLI must not give up on the MCP call before the broker answers.
+        env["MCP_TOOL_TIMEOUT"] = str(int(settings.ROOM_COMPANION_TOOLS_MCP_TIMEOUT_MS))
     return env
 
 
@@ -177,10 +181,19 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
         hub_index=request.hub_index,
         transcript_note=request.transcript_note,
     )
+    # Orion's tools (Patch 1b): room turns only, never a consult. A failure to prepare them runs the turn
+    # without tools (the old `--tools ""` argv), never with anything wider.
+    turn_tools: Optional[TurnTools] = None
+    if settings.ROOM_COMPANION_TOOLS_ENABLED and not consult:
+        try:
+            turn_tools = prepare_turn_tools(settings, request, claude_session_id=session_id)
+        except Exception:
+            logger.warning("room_companion_tools_prepare_failed request=%s -- turn runs without tools",
+                           request.request_id, exc_info=True)
     logger.info(
-        "room_companion_prompt room=%s request=%s resume=%s minted=%s lines=%d/%d prompt_chars=%d",
+        "room_companion_prompt room=%s request=%s resume=%s minted=%s lines=%d/%d prompt_chars=%d tools=%s",
         key, request.request_id, resume, slot.minted_reason or "-",
-        len(transcript), len(request.transcript), len(prompt),
+        len(transcript), len(request.transcript), len(prompt), turn_tools is not None,
     )
 
     result = run_room_turn(
@@ -212,12 +225,18 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
             trigger=request.trigger,
             prompt=request.prompt,
             consult=consult,
+            tools=turn_tools is not None,
         ),
-        env=build_subprocess_env(settings),
+        env=build_subprocess_env(settings, tools=turn_tools is not None),
         cwd=settings.ROOM_COMPANION_CONSULT_REPO if consult else settings.ROOM_COMPANION_WORKSPACE,
         tools=settings.ROOM_COMPANION_CONSULT_TOOLS if consult else "",
         consult=consult,
+        mcp_config_path=turn_tools.mcp_config_path if turn_tools is not None else None,
     )
+    footer: Optional[str] = None
+    if turn_tools is not None:
+        footer = footer_for(turn_tools.call_log_path)
+        turn_tools.cleanup()
 
     # A resume against a session the CLI no longer holds fails identically on
     # every retry, so the room would be wedged forever. Drop the mapping and
@@ -245,7 +264,13 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
             sent_keys=[k for k in (line_key(e) for e in request.transcript) if k],
         )
 
-    return _to_utterance(settings, request, result)
+    utterance = _to_utterance(settings, request, result)
+    if footer:
+        logger.info("room_companion_tools_footer request=%s footer=%s", request.request_id, footer[:400])
+        if utterance.ok and not utterance.passed:
+            # Server-side text, so Juniper sees every lookup without any change to Hub's page.
+            utterance = utterance.model_copy(update={"text": with_footer(utterance.text, footer)})
+    return utterance
 
 
 def _looks_like_missing_session(error: Optional[str]) -> bool:

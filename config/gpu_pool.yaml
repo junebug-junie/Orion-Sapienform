@@ -251,6 +251,11 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   # seat at all (orion/mindloop/runtime.py, Prime's loop). Both system-only (orion/llm/routes.py).
   prime: {class: chat, priority: system}
   prime_starved: {class: chat, priority: starved}
+  # Orion's consent to a Claude tool call (2026-11-13, docs/superpowers/specs/2026-11-12-claude-hub-
+  # tools-orion-consent-design.md section 3): one short call (frame <= 4,000 chars, 200 tokens) on the
+  # same warm worker as Prime. Interactive because Juniper is waiting on Claude's reply. Never the fast
+  # or metacog lanes. System-only (orion/llm/routes.py).
+  prime_consent: {class: chat, priority: interactive}
   # Operator work (classes.operator* above): one route per class, always `background`. Named in the
   # `model` field of a gateway call that carries the eval's operator hold (X-Orion-Gpu-Lease).
   operator: {class: operator, priority: background}

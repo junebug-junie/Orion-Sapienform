@@ -68,6 +68,7 @@ path of a file with the full result; read only what you need from that file.
                          five hops, what changed since last.
   reminisce write|rewrite <hop> "<note>" because "<refs>"   save one hop (code checks each ref).
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
+  claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
@@ -1651,6 +1652,39 @@ def cmd_turn_steps(session_id: str, turns: str, out: Out, runner=None) -> str:
     return capped(turn_steps.render(steps, session_id), tail=f"full steps: {path}")
 
 
+# --- Claude's tools: Orion's standing grants (spec 2026-11-12-claude-hub-tools-orion-consent) -----
+
+def cmd_claude_grants(out: Out) -> str:
+    """Read-only: each category's standing setting for Claude's tools in Hub chat, with its reason."""
+    from orion.claude_tools import grants as g
+
+    view = g.grants_view(g.grants_path(home()))
+    lines = ["What Claude in Hub chat may see of you, by category (ask = Claude asks you each time):"]
+    for row in view["categories"]:
+        why = f' (set {row["set_at"][:10]}: "{row["reason"]}")' if row["reason"] else " (default)"
+        lines.append(f"  {row['category']}: {row['setting']}{why}")
+    if view["skipped_lines"]:
+        lines.append(f"{view['skipped_lines']} unreadable line(s) skipped")
+    lines.append("Tools now: prime_now (prime), body_economy (body). A change is one category at a time:")
+    lines.append("  python -P -m orion.dig claude-grants set <category> allow|ask|deny because <reason>")
+    return capped(lines, tail=f"grants ledger: {view['path']}")
+
+
+def cmd_claude_grants_set(category: str, setting: str, reason: str, out: Out) -> str:
+    """A lasting append to $ORION_DIG_HOME/self/claude_grants.jsonl. Only Orion runs this, in a turn."""
+    from orion.claude_tools import grants as g
+
+    try:
+        line = g.make_grant(category, setting, reason, dig=out.dig)
+    except g.GrantError as exc:
+        raise DigError(f"claude-grants: {exc}") from exc
+    path = g.grants_path(home())
+    before, _ = g.setting_for(g.current_grants(g.load_grant_lines(path)[0]), line.category)
+    g.append_grant(path, line)
+    return (f'claude-grants: {line.category} {before} -> {line.setting} ("{line.reason}"); Hub shows it at '
+            f"/api/claude-tools/grants\ngrants ledger: {path}")
+
+
 # --- notes ----------------------------------------------------------------------------------
 
 def cmd_notes(text: str | None, out: Out) -> str:
@@ -1745,6 +1779,10 @@ def main(argv: list[str] | None = None) -> int:
                                        out=out)
         elif ns.command == "turn-steps" and len(a) in (1, 2):
             text = cmd_turn_steps(a[0], a[1] if len(a) == 2 else "2", out)
+        elif ns.command == "claude-grants" and not a:
+            text = cmd_claude_grants(out)
+        elif ns.command == "claude-grants" and len(a) >= 5 and a[0] == "set" and a[3] == "because":
+            text = cmd_claude_grants_set(a[1], a[2], " ".join(a[4:]), out)
         elif ns.command in REF_COMMANDS and len(a) == 1:
             text = cmd_ref(ns.command, a[0], out)
         elif ns.command == "notes" and (not a or a[0] == "append"):

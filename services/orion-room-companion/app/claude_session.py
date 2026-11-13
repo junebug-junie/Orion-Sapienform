@@ -14,8 +14,14 @@ room does NOT re-stuff the whole transcript on every turn -- the transcript
 in `RoomClaudeRequestV1` is context for the *first* turn of a session and a
 recovery path if the CLI session is ever lost, not the memory mechanism.
 
-Tools stay off (`--tools ""`). v1 Claude is a companion to think with, not
-an agent: no filesystem, no repo, no network fetch.
+Built-in tools stay off (`--tools ""`): no Bash, no Read, no web, no
+filesystem, no repo. Since Patch 1b (2026-11-13,
+docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md
+section 4) a room turn may also get ONE MCP server, `orion_room`
+(orion/claude_tools/mcp_server.py), from a per-turn `--mcp-config` with
+`--strict-mcp-config` and `--allowedTools mcp__orion_room`: Orion's read-only
+tools, each gated by Orion's consent. That server's only power is one bus
+request to the broker in orion-harness-governor.
 
 The one exception is a CONSULT room (``orion.consult.core.CONSULT_ROOM_PREFIX``): Claude
 gets ``Read,Grep,Glob`` on a read-only ``git archive`` export of the deployed code (no ``.git``), and the normal
@@ -33,7 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from orion.fcc.claude_spawn import claude_permission_argv, setting_sources_argv
+from orion.fcc.claude_spawn import claude_permission_argv, extend_mcp_argv, setting_sources_argv
 
 
 @dataclass(frozen=True)
@@ -59,6 +65,7 @@ def build_argv(
     append_system_prompt: str | None = None,
     tools: str = "",
     consult: bool = False,
+    mcp_config_path: Path | None = None,
 ) -> list[str]:
     # The prompt is NOT in argv: it goes over stdin (run_room_turn). Linux
     # refuses any single argument over 131,072 bytes (MAX_ARG_STRLEN), and a
@@ -73,8 +80,13 @@ def build_argv(
         argv.extend(["--resume", session_id])
     else:
         argv.extend(["--session-id", session_id])
-    # Companion: no tools. Consult: read-only tools only -- see module docstring.
+    # Companion: no built-in tools. Consult: read-only tools only -- see module docstring.
     argv.extend(["--tools", tools if consult else ""])
+    # Orion's tools (room turns only, never a consult: the consult design promises "never Juniper's chat
+    # history"). Strict: no MCP server from any other config can load.
+    if mcp_config_path is not None and not consult:
+        extend_mcp_argv(argv, Path(mcp_config_path))
+        argv.append("--strict-mcp-config")
     if effort:
         argv.extend(["--effort", effort])
     if append_system_prompt:
@@ -173,6 +185,7 @@ def run_room_turn(
     cwd: str | Path | None = None,
     tools: str = "",
     consult: bool = False,
+    mcp_config_path: Path | None = None,
 ) -> ClaudeTurnResult:
     argv = build_argv(
         claude_bin=claude_bin,
@@ -184,6 +197,7 @@ def run_room_turn(
         append_system_prompt=append_system_prompt,
         tools=tools,
         consult=consult,
+        mcp_config_path=mcp_config_path,
     )
     started = time.monotonic()
 

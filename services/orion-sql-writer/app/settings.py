@@ -75,6 +75,8 @@ DEFAULT_ROUTE_MAP: dict[str, str] = {
     "physiology.want.decision.v1": "WantLedgerSQL",
     # Per-call token ledger (2026-10-29): one row per LLM call (llm-gateway, harness relay).
     "llm.call.usage.v1": "LlmCallUsageSQL",
+    # Claude's tools in Hub chat (Patch 1b): one row per phase of each tool call (governor broker).
+    "claude.tool.call.v1": "ClaudeToolCallLogSQL",
     "transport_baseline.hourly.v1": "TransportBaselineHourlySQL",
     "self_signal.hour.v1": "SelfSignalHourSQL",
     "self_signal.outcome_association.v1": "SelfSignalOutcomeAssociationSQL",
@@ -214,6 +216,7 @@ class Settings(BaseSettings):
             "orion:physiology:state",
             "orion:physiology:want:decision",
             "orion:llm:call:usage",
+            "orion:claude:tool:audit",
             "orion:equilibrium:transport_baseline:hourly",
             "orion:equilibrium:self_signal:hour",
             "orion:equilibrium:self_signal:outcome_association",
@@ -1060,6 +1063,10 @@ class Settings(BaseSettings):
         # channel llm_call_usage stays empty while the gateway publishes).
         if "orion:llm:call:usage" not in channels:
             channels.append("orion:llm:call:usage")
+        # Same guarantee, same reason (claude.tool.call.v1 is a code-default route; without the channel
+        # claude_tool_call_log stays empty while the broker publishes and Hub's audit reads nothing).
+        if "orion:claude:tool:audit" not in channels:
+            channels.append("orion:claude:tool:audit")
         # Same guarantee, same reason (transport_baseline.hourly.v1 is a
         # code-default route; SQL_WRITER_SUBSCRIBE_CHANNELS replaces).
         if "orion:equilibrium:transport_baseline:hourly" not in channels:

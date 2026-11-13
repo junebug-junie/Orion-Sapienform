@@ -213,6 +213,15 @@ from orion.schemas.social_chat import (
     TownContinuityReadV1,
     TownContinuityTurnV1,
 )
+from orion.schemas.claude_tools import (
+    ClaudeToolBindingV1,
+    ClaudeToolCallV1,
+    ClaudeToolRequestV1,
+    ClaudeToolResultV1,
+    PrimeConsentAnswerV1,
+    PrimeConsentPastAnswerV1,
+    PrimeConsentRequestV1,
+)
 from orion.schemas.room_claude import (
     ExternalRoomResponderV1,
     RoomClaudeRequestV1,
@@ -1149,6 +1158,15 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "RoomClaudeRequestV1": RoomClaudeRequestV1,
     "RoomClaudeUtteranceV1": RoomClaudeUtteranceV1,
     "RoomTranscriptEntryV1": RoomTranscriptEntryV1,
+    # Claude's read-only tools in Hub chat, gated by Orion's consent (2026-11-13, Patch 1b of
+    # docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md).
+    "ClaudeToolBindingV1": ClaudeToolBindingV1,
+    "ClaudeToolRequestV1": ClaudeToolRequestV1,
+    "ClaudeToolResultV1": ClaudeToolResultV1,
+    "ClaudeToolCallV1": ClaudeToolCallV1,
+    "PrimeConsentRequestV1": PrimeConsentRequestV1,
+    "PrimeConsentAnswerV1": PrimeConsentAnswerV1,
+    "PrimeConsentPastAnswerV1": PrimeConsentPastAnswerV1,
     "ExternalRoomResponderV1": ExternalRoomResponderV1,
     "SocialBridgeSummaryV1": SocialBridgeSummaryV1,
     "SocialClarifyingQuestionV1": SocialClarifyingQuestionV1,
@@ -1767,6 +1785,13 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=RoomClaudeUtteranceV1,
         kind="room.claude.utterance.v1",
     ),
+    # Claude's tools gated by Orion's consent (Patch 1b). ClaudeToolBindingV1 and
+    # PrimeConsentPastAnswerV1 are nested models: `_REGISTRY` only.
+    "ClaudeToolRequestV1": SchemaRegistration(model=ClaudeToolRequestV1, kind="claude.tool.request.v1"),
+    "ClaudeToolResultV1": SchemaRegistration(model=ClaudeToolResultV1, kind="claude.tool.result.v1"),
+    "ClaudeToolCallV1": SchemaRegistration(model=ClaudeToolCallV1, kind="claude.tool.call.v1"),
+    "PrimeConsentRequestV1": SchemaRegistration(model=PrimeConsentRequestV1, kind="prime.consent.request.v1"),
+    "PrimeConsentAnswerV1": SchemaRegistration(model=PrimeConsentAnswerV1, kind="prime.consent.answer.v1"),
     "SubstrateReadQueryV1": SchemaRegistration(
         model=SubstrateReadQueryV1,
         kind="substrate_read.query.v1",

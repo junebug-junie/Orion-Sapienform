@@ -415,3 +415,129 @@ def test_queries_bind_every_key_and_read_measurements_only():
 def test_purge_covers_longest_lag_and_lead():
     assert fa.purge_rows(3) >= max(fa.VAR_LAGS) + 3
     assert math.isfinite(fa.calm_point(1))
+
+
+# --- slice 2: the three slice 1 review items, adaptive calibration -----------------------------------
+
+def test_a_reading_missing_at_an_older_lag_is_flagged_at_that_lag():
+    # Slice 1 flagged lag 0 only: a reading missing 30 min ago read as the training mean.
+    z = np.ones((20, 2))
+    z[10, 0] = np.nan
+    idx = pd.date_range(T0, periods=20, freq="5min", tz="UTC")
+    X = fa.var_features(z, idx)
+    n_in, n_lags = 2, len(fa.VAR_LAGS)
+    lag6 = fa.VAR_LAGS.index(6)
+    mask_col = n_lags * n_in + lag6 * n_in + 0      # input 0's mask at lag 6
+    assert X[16, mask_col] == 1.0 and X[15, mask_col] == 0.0 and X[17, mask_col] == 0.0
+    assert X[16, lag6 * n_in + 0] == 0.0           # its value there reads as the mean, but flagged
+    assert X.shape[1] == 2 * n_lags * n_in + 2
+
+
+def test_backtest_screen_never_sees_held_out_rows():
+    # Slice 1 screened the whole window (held-out rows included). Blank one reading's held-out rows:
+    # the verdicts the backtest acts on must not move.
+    f = _lead_lag_frame(15, coupled=True)
+    _tr, he = fa.blocked_split(len(f), 1, seed=0)
+    g = f.copy()
+    g.iloc[he, 0] = np.nan
+    run_a, va = fa.backtest(f, _hyg(), 1, 5, seed=0)
+    run_b, vb = fa.backtest(g, _hyg(), 1, 5, seed=0)
+    assert {k: (v.status, v.stats) for k, v in va.items()} == {k: (v.status, v.stats) for k, v in vb.items()}
+    assert run_a.targets == run_b.targets
+    whole_a, whole_b = fa.screen_frame(f, _hyg()), fa.screen_frame(g, _hyg())
+    assert whole_a["s.x"].stats != whole_b["s.x"].stats    # the whole-window screen would have moved
+
+
+def test_bootstrap_blocks_never_join_two_held_out_stretches():
+    positions = np.r_[np.arange(0, 100), np.arange(500, 530), np.arange(900, 905)]
+    seg = fa.segments_of(positions)
+    assert seg.tolist().count(0) == 100 and seg.tolist().count(2) == 5
+    for c in fa.bootstrap_blocks(seg, 24):
+        assert len(set(seg[c])) == 1
+    assert any(len(c) == 5 for c in fa.bootstrap_blocks(seg, 24))   # a short stretch is one whole block
+
+
+def test_joint_cal_round_trips_through_json():
+    import json
+
+    f = _lead_lag_frame(16, coupled=True)
+    run = fa.run_horizon(f, ["s.x", "s.y"], ["s.x", "s.y"], 1, 5, seed=0)
+    cal0 = fa.joint_calibration(run.resid_fit, run.resid_val)
+    cal = fa.joint_calibration(run.resid_fit, run.resid_val, fa.run_difficulty(run, cal0)[run.val_rows])
+    back = fa.JointCal.from_json(json.loads(json.dumps(cal.to_json(), allow_nan=False)))
+    r = run.resid_held[:50]
+    a, b = fa.score_joint(r, cal, np.ones(50)), fa.score_joint(r, back, np.ones(50))
+    assert np.allclose(a.p_static, b.p_static, equal_nan=True)
+    assert np.allclose(a.p_adaptive, b.p_adaptive, equal_nan=True)
+    assert np.isfinite(a.p_adaptive).sum() > 40
+
+
+def _regime_frame(seed: int, days=14) -> pd.DataFrame:
+    """Two coupled readings whose noise is 4x larger in one 6-hour stretch of every day: calm and
+    busy hours, like the body (a load spike, an AC cycle)."""
+    rng = np.random.default_rng(seed)
+    n = days * 288
+    tod = np.arange(n) % 288
+    scale = np.where((tod >= 120) & (tod < 192), 4.0, 1.0)
+    x = np.zeros(n)
+    y = np.zeros(n)
+    for t in range(1, n):
+        x[t] = 0.9 * x[t - 1] + scale[t] * rng.standard_normal()
+        y[t] = 0.5 * y[t - 1] + 0.8 * x[t - 1] + 0.5 * scale[t] * rng.standard_normal()
+    return _frame({"s.x": x, "s.y": y})
+
+
+def test_static_joint_score_reads_calm_hours_too_calm_and_adaptive_fixes_it():
+    # The slice 1 failure in miniature: one covariance for calm and busy hours -> calm hours sit below 0
+    # (too many hours "at rest"); the hour-before difficulty puts them back near the null share.
+    rest_static, rest_adapt, p05 = [], [], []
+    for seed in (21, 22, 23):
+        f = _regime_frame(seed)
+        run = fa.run_horizon(f, ["s.x", "s.y"], ["s.x", "s.y"], 1, 5, seed=0)
+        s = fa.rest_summary(fa.joint_surprise(run).excess, f.index[run.held], 0)
+        ja = fa.joint_surprise(run, calibration=fa.ADAPTIVE)
+        a = fa.rest_summary(ja.excess, f.index[run.held], 0)
+        rest_static.append(s["share_hours_at_rest"] - s["null_share_hours_at_rest"])
+        rest_adapt.append(a["share_hours_at_rest"] - a["null_share_hours_at_rest"])
+        ok = np.isfinite(ja.p)
+        p05.append(float(np.mean(ja.p[ok] <= 0.05)))
+    # Measured: static +0.21 on every seed (every calm hour at rest, every busy hour above), adaptive
+    # -0.00..+0.05, p <= 0.05 share 0.04-0.05.
+    assert np.mean(rest_static) > 0.08                 # static: too calm
+    assert abs(np.mean(rest_adapt)) < np.mean(rest_static) / 2
+    assert 0.02 < np.mean(p05) < 0.09
+
+
+def test_no_calibration_rows_is_no_p_never_a_calm_p():
+    # Review finding: an empty pool gave p = 1 and calm point 0 -> excess 0, "calm" on no evidence.
+    assert np.isnan(fa.conformal_p(np.array([-1.0, -50.0]), np.zeros(0))).all()
+
+
+def test_extreme_misses_keep_their_order_instead_of_tying_at_zero():
+    # chi2.sf underflows to 0 for a huge d^2; the log tail keeps two extreme rows apart.
+    r = np.array([[60.0, 0.0], [90.0, 0.0]])
+    _d2, tail, _s = fa.mahalanobis_tail(r, np.eye(2), 1)
+    assert np.isfinite(tail).all() and tail[1] < tail[0] < -1000
+    cal = np.array([tail[0] - 1.0, -2.0, -1.0, -0.5])
+    p = fa.conformal_p(tail, cal)
+    assert p[1] < p[0]
+
+
+def test_a_thin_adaptive_pool_is_dropped_not_served():
+    f = _lead_lag_frame(17, coupled=True)
+    run = fa.run_horizon(f, ["s.x", "s.y"], ["s.x", "s.y"], 1, 5, seed=0)
+    cal0 = fa.joint_calibration(run.resid_fit, run.resid_val)
+    diff = fa.run_difficulty(run, cal0)[run.val_rows]
+    assert len(fa.joint_calibration(run.resid_fit, run.resid_val, diff).cal_tail_adaptive) >= fa.MIN_CAL
+    thin = fa.joint_calibration(run.resid_fit, run.resid_val, diff, min_cal=10 ** 6)
+    assert len(thin.cal_tail_adaptive) == 0
+    sc = fa.score_joint(run.resid_held[:20], thin, np.ones(20))
+    assert np.isnan(sc.p_adaptive).all() and np.isfinite(sc.p_static).sum() > 10
+
+
+def test_difficulty_reads_only_targets_known_at_the_origin():
+    ratio = np.arange(40, dtype=float)
+    d = fa.difficulty_rows(ratio, horizon_steps=3, window=12, min_n=6)
+    # origin 20, lead 3: targets known by then are origins <= 17 -> rows 6..17
+    assert d[20] == pytest.approx(np.mean(np.arange(6, 18)))
+    assert np.isnan(d[7])          # rows 0..4 only: under min_n

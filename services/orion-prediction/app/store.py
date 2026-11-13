@@ -42,6 +42,16 @@ TABLES = {
     "prediction_bill_forecast": ("bet_id", "origin", "period_start", "projected_kwh", "kwh_lo80", "usd_hi80",
                                  "settled_at", "kwh_in_80", "usd_in_80"),
 }
+# Checked at boot only when family A runs (PREDICTION_FAMILY_A_ENABLED): the kill switch removes the
+# dependency on the table (app/main.py).
+FAMILY_TABLES = {
+    "prediction_joint_surprise": ("joint_id", "family", "run_id", "status", "refusal", "difficulty", "d2",
+                                  "p_static", "p_adaptive", "excess", "top_shares"),
+}
+JOINT_ISSUE_COLS = ("family", "run_id", "horizon_min", "issued_at", "origin_ts", "target_ts", "status", "refusal",
+                    "n_forecast", "difficulty")
+JOINT_SCORE_COLS = ("scored_at", "status", "n_observed", "d2", "p_static", "p_adaptive", "p", "calibration",
+                    "calm_point", "excess", "top_shares")
 ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "action", "model", "p", "p_baseline",
                    "level", "counts", "chosen_rank", "session_id", "placed_at", "settled_at", "result", "outcome",
                    "detail", "shadow")
@@ -78,6 +88,12 @@ def _since(ts: datetime) -> str:
     return ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _prefix_range(prefix: str) -> tuple[str, str]:
+    """[lo, hi) such that lo <= s < hi exactly when s starts with ``prefix`` (byte order: the prefix
+    'family_a:' -> ['family_a:', 'family_a;'))."""
+    return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
+
+
 def _j(value: Any) -> str:
     return json.dumps(value, default=str, allow_nan=False)
 
@@ -99,9 +115,9 @@ class PostgresStore:
             cur = conn.execute(sql, args)
             return list(cur.fetchall()) if cur.description else []
 
-    def check_schema(self) -> None:
+    def check_schema(self, tables: dict | None = None) -> None:
         """Operator-applied migration (services/orion-sql-db/manual_migration_prediction_v1.sql)."""
-        for table, cols in TABLES.items():
+        for table, cols in (TABLES if tables is None else tables).items():
             self._all(f"SELECT {', '.join(cols)} FROM {table} LIMIT 0")
 
     # --- telemetry ------------------------------------------------------------------------
@@ -337,6 +353,108 @@ class PostgresStore:
             "WHERE s.series_id = %s AND s.scored_at IS NOT NULL AND s.abs_error IS NOT NULL "
             "AND b.score_status = 'scored' AND s.target_ts >= %s "
             "ORDER BY s.model, s.horizon_min, s.origin_ts", (series_id, since))
+
+    # --- multivariate families (app/family_a_live.py) -------------------------------------------
+    # Reading rows live in prediction_forecast / prediction_shadow_forecast under series_id
+    # '<family>:<reading id>'; ``prefix`` is that '<family>:' (matched with left(), never LIKE: '_' is a
+    # LIKE wildcard). Matched as a range [prefix, prefix with its last character + 1) so the
+    # (series_id, ...) indexes apply. The joint row per bucket and horizon lives in
+    # prediction_joint_surprise.
+    def run_metrics(self, run_id: Any) -> dict | None:
+        rows = self._all("SELECT run_id, metrics, assignment FROM prediction_model_run WHERE run_id = %s", (run_id,))
+        return rows[0] if rows else None
+
+    def family_last_origin(self, family: str) -> datetime | None:
+        rows = self._all("SELECT max(origin_ts) AS o FROM prediction_joint_surprise WHERE family = %s", (family,))
+        return rows[0]["o"] if rows else None
+
+    def insert_family_issue(self, forecast_rows: list[dict], joint_rows: list[dict]) -> None:
+        """One issue's reading rows and joint rows in ONE transaction (a failure leaves neither)."""
+        f_sql = ("INSERT INTO prediction_forecast (run_id, series_id, model, role, issued_at, origin_ts, target_ts, "
+                 "horizon_min, point, quantiles, interval_source) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s) "
+                 "ON CONFLICT (series_id, role, origin_ts, horizon_min) DO NOTHING")
+        j_sql = (f"INSERT INTO prediction_joint_surprise ({', '.join(JOINT_ISSUE_COLS)}) VALUES "
+                 f"({', '.join('%s::jsonb' if c == 'refusal' else '%s' for c in JOINT_ISSUE_COLS)}) "
+                 "ON CONFLICT (family, origin_ts, horizon_min) DO NOTHING")
+        with self.pool.connection() as conn, conn.transaction():
+            with conn.cursor() as cur:
+                if forecast_rows:
+                    cur.executemany(f_sql, [(r["run_id"], r["series_id"], r["model"], r["role"], r["issued_at"],
+                                             r["origin_ts"], r["target_ts"], r["horizon_min"], r["point"],
+                                             _j(r["quantiles"]), r.get("interval_source")) for r in forecast_rows])
+                if joint_rows:
+                    cur.executemany(j_sql, [tuple(_j(r.get(c)) if c == "refusal" and r.get(c) is not None
+                                                  else r.get(c) for c in JOINT_ISSUE_COLS) for r in joint_rows])
+
+    def family_due(self, family: str, prefix: str, before: datetime, limit: int = 2000) -> tuple[list[dict], list[dict]]:
+        """(joint rows still 'issued', reading rows unscored) whose target bucket started before ``before``."""
+        joints = self._all(
+            "SELECT joint_id, run_id, horizon_min, origin_ts, target_ts, difficulty FROM prediction_joint_surprise "
+            "WHERE family = %s AND status = 'issued' AND target_ts < %s ORDER BY target_ts LIMIT %s",
+            (family, before, limit))
+        readings = self._all(
+            "SELECT forecast_id, run_id, series_id, horizon_min, origin_ts, target_ts, point, quantiles "
+            "FROM prediction_forecast WHERE series_id >= %s AND series_id < %s AND scored_at IS NULL "
+            "AND target_ts < %s ORDER BY target_ts LIMIT %s", (*_prefix_range(prefix), before, limit * 100))
+        return joints, readings
+
+    def write_family_scores(self, reading_scores: list[dict], joint_scores: list[dict]) -> None:
+        r_sql = ("UPDATE prediction_forecast SET scored_at = %s, score_status = %s, actual = %s, abs_error = %s, "
+                 "in_80 = %s, in_95 = %s WHERE forecast_id = %s AND scored_at IS NULL")
+        j_sql = (f"UPDATE prediction_joint_surprise SET "
+                 f"{', '.join(c + (' = %s::jsonb' if c == 'top_shares' else ' = %s') for c in JOINT_SCORE_COLS)} "
+                 "WHERE joint_id = %s AND status = 'issued'")
+        with self.pool.connection() as conn, conn.transaction():
+            with conn.cursor() as cur:
+                if reading_scores:
+                    cur.executemany(r_sql, [(s["scored_at"], s["score_status"], s["actual"], s["abs_error"],
+                                             s["in_80"], s["in_95"], s["forecast_id"]) for s in reading_scores])
+                if joint_scores:
+                    cur.executemany(j_sql, [tuple(_j(s.get(c)) if c == "top_shares" and s.get(c) is not None
+                                                  else s.get(c) for c in JOINT_SCORE_COLS) + (s["joint_id"],)
+                                            for s in joint_scores])
+
+    def family_recent_scored(self, family: str, since: datetime) -> list[dict]:
+        """Scored joint rows with targets after ``since`` (the adaptive difficulty)."""
+        return self._all("SELECT horizon_min, target_ts, d2, n_observed FROM prediction_joint_surprise "
+                         "WHERE family = %s AND status = 'scored' AND target_ts > %s", (family, since))
+
+    def family_joint_rows(self, family: str, since: datetime) -> list[dict]:
+        """Every joint row with a target after ``since`` (the calm check and /health)."""
+        return self._all("SELECT * FROM prediction_joint_surprise WHERE family = %s AND target_ts >= %s "
+                         "ORDER BY horizon_min, target_ts", (family, since))
+
+    def family_due_shadow(self, prefix: str, before: datetime, limit: int = 200000) -> list[dict]:
+        return self._all("SELECT shadow_id, series_id, target_ts, point FROM prediction_shadow_forecast "
+                         "WHERE series_id >= %s AND series_id < %s AND scored_at IS NULL AND target_ts < %s "
+                         "ORDER BY target_ts LIMIT %s", (*_prefix_range(prefix), before, limit))
+
+    def write_family_shadow_scores(self, rows: list[dict]) -> None:
+        with self.pool.connection() as conn, conn.transaction():
+            with conn.cursor() as cur:
+                cur.executemany("UPDATE prediction_shadow_forecast SET scored_at = %s, actual = %s, abs_error = %s "
+                                "WHERE shadow_id = %s AND scored_at IS NULL",
+                                [(r["scored_at"], r["actual"], r["abs_error"], r["shadow_id"]) for r in rows])
+
+    def insert_family_shadow(self, rows: list[dict]) -> None:
+        """Own transaction, after the served issue committed (a shadow failure never costs it)."""
+        with self.pool.connection() as conn, conn.transaction():
+            with conn.cursor() as cur:
+                cur.executemany("INSERT INTO prediction_shadow_forecast (series_id, model, issued_at, origin_ts, "
+                                "target_ts, horizon_min, point) VALUES (%s,%s,%s,%s,%s,%s,%s) "
+                                "ON CONFLICT (series_id, model, origin_ts, horizon_min) DO NOTHING",
+                                [(r["series_id"], r["model"], r["issued_at"], r["origin_ts"], r["target_ts"],
+                                  r["horizon_min"], r["point"]) for r in rows])
+
+    def prune_family(self, prefix: str, before: datetime) -> int:
+        """Retention for one family's reading rows (forecast + shadow). Joint rows are kept."""
+        n = 0
+        with self.pool.connection() as conn:
+            for table in ("prediction_forecast", "prediction_shadow_forecast"):
+                cur = conn.execute(f"DELETE FROM {table} WHERE series_id >= %s AND series_id < %s "
+                                   "AND target_ts < %s", (*_prefix_range(prefix), before))
+                n += max(int(cur.rowcount or 0), 0)
+        return n
 
     # --- exceedance probabilities + outcomes ----------------------------------------------
     def insert_issue(self, forecast_rows: list[dict], exceedance_rows: list[dict]) -> None:

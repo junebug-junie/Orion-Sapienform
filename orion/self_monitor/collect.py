@@ -52,7 +52,9 @@ SOURCES: tuple[tuple[str, str, Adapter], ...] = (
      adapters.action_bet),
     ("prediction_forecast",
      "SELECT forecast_id, series_id, role, issued_at, scored_at, in_80 FROM prediction_forecast "
-     "WHERE scored_at >= :since AND role = 'champion'",
+     # Family A's per-reading rows (series_id 'family_a:<reading>', ~23k a day over 41 readings) are not
+     # graded here yet: their consumer and grading are a later patch (app/family_a_live.py).
+     "WHERE scored_at >= :since AND role = 'champion' AND left(series_id, 9) <> 'family_a:'",
      adapters.forecast),
     ("vision_percept_expectation",
      "SELECT expectation_id, emitted_at, scored_at, status, confidence FROM vision_percept_expectation "

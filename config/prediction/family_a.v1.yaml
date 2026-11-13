@@ -1,8 +1,8 @@
 # Family A (neural forecaster) candidate inputs and hygiene thresholds.
 # Spec: docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, "A. Neural forecaster".
-# Loaded by services/orion-prediction/app/family_a.py (parse_config). Read today by
-# services/orion-prediction/evals/run_family_a_baselines_eval.py only: slice 1 trains nothing live,
-# serves nothing, and publishes nothing.
+# Loaded by services/orion-prediction/app/family_a.py (parse_config). Read by the live loop
+# (app/family_a_live.py, PREDICTION_FAMILY_A_CONFIG_PATH; selects, issues and scores every 5 min) and by
+# evals/run_family_a_baselines_eval.py. Nothing is published on the bus yet.
 #
 # Raw readings in real units only. app/family_a.py refuses any source outside the five raw tables
 # below and any key that names a hint channel (*_pressure, prediction_error*, action_warrant, ...).

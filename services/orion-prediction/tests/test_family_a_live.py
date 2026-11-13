@@ -222,7 +222,6 @@ def test_family_prefix_queries_are_collation_independent():
     of 1,326 live rows under the database's en_US.utf8 collation (punctuation is ignored at the first sort
     level), so no Family A reading, joint or shadow row was ever scored or pruned. Python's byte-order
     comparison could not catch it. Every prefix query must use ``starts_with`` and pass the bare prefix."""
-    import inspect
     import re
 
     from app import store as st
@@ -264,7 +263,10 @@ def test_family_prefix_queries_are_collation_independent():
         assert "starts_with(series_id, %s)" in sql, sql
         assert not re.search(r"series_id\s*[<>]=?\s*%s", sql), sql
         assert params[0] == fl.PREFIX
-    assert "series_id >=" not in inspect.getsource(st)
+    from tests.conftest import SERVICE
+
+    for path in [*(SERVICE / "app").glob("*.py"), *(SERVICE / "evals").glob("*.py")]:
+        assert not re.search(r"series_id\s*>=", path.read_text()), f"byte-order range on series_id in {path.name}"
 
 
 def _calm_eval():

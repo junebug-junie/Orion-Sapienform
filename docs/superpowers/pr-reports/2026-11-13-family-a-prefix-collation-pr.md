@@ -21,7 +21,8 @@ Family A forecasts get scored, so the 7-day calm check (#3309) and the AC event 
 ## Files changed
 
 - `services/orion-prediction/app/store.py`: `_prefix_range` removed; three queries use `starts_with`.
-- `services/orion-prediction/tests/test_family_a_live.py`: byte-order test replaced by a SQL-shape regression test.
+- `services/orion-prediction/tests/test_family_a_live.py`: byte-order test replaced by a SQL-shape regression test, plus a source scan of `app/` and `evals/` for any `series_id >=` range.
+- `services/orion-prediction/evals/run_family_a_calm_live_eval.py`: same range bug in the calm check's reading query; now `starts_with`.
 - this report.
 
 ## Schema / bus / API changes
@@ -58,7 +59,16 @@ Tests run in the deployed orion-prediction image. No dependency change.
 
 ## Review findings fixed
 
-See PR comment / section below after review.
+Code review ran in a subagent (read-only).
+
+- Finding (material): the calm check (`evals/run_family_a_calm_live_eval.py`) used the same byte-order range, so #3309 would have reported 0 scored readings forever.
+  - Fix: `starts_with`; test now scans `app/` and `evals/` for `series_id >=`.
+  - Evidence: test suite below.
+- Finding: store comment still described the range/left() match.
+  - Fix: comment rewritten.
+- Finding: the post-deploy reset UPDATE was unbounded and would re-take joints the new code legitimately marked missing (double count).
+  - Fix: bounded by `scored_at < <container start>`.
+- Checked, no change: `orion/self_monitor/collect.py:57` uses `left(series_id, 9) <> 'family_a:'` (equality, byte-exact under en_US.utf8); other evals use `= ANY`/`=`.
 
 ## Restart required
 
@@ -66,10 +76,10 @@ See PR comment / section below after review.
 scripts/rebuild_services_from_git_diff.sh
 ```
 
-(rebuilds orion-prediction). Post-deploy: the 30 joint rows already marked `missing` with `n_observed=0` can be reset to `issued` so the next pass scores them (their readings are still unscored):
+(rebuilds orion-prediction). Post-deploy: joint rows the old code marked `missing` with `n_observed=0` (30 at ~10:00Z, more until deploy) can be reset to `issued` so the next pass scores them (their readings are still unscored). Bound it to rows scored before the new container started, so joints the new code legitimately marked missing are not re-taken. Check `calibration` counts first; include `no_run` rows if any.
 
 ```bash
-docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "UPDATE prediction_joint_surprise SET status='issued', scored_at=NULL, calibration=NULL, n_observed=NULL WHERE family='family_a' AND status='missing' AND calibration='too_few_readings' AND n_observed=0"
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "UPDATE prediction_joint_surprise SET status='issued', scored_at=NULL, calibration=NULL, n_observed=NULL WHERE family='family_a' AND status='missing' AND calibration='too_few_readings' AND n_observed=0 AND scored_at < '<orion-prediction container start, UTC>'"
 ```
 
 ## Risks / concerns

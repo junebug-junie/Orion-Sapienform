@@ -220,11 +220,10 @@ def main() -> int:
             conn.execute("SET TRANSACTION READ ONLY")
             joints = conn.execute("SELECT * FROM prediction_joint_surprise WHERE family = %s AND target_ts >= %s "
                                   "ORDER BY horizon_min, target_ts", (fl.FAMILY, since)).fetchall()
-            lo, hi = fl.PREFIX, fl.PREFIX[:-1] + chr(ord(fl.PREFIX[-1]) + 1)
             readings = conn.execute(
                 "SELECT series_id, score_status, in_80, in_95 FROM prediction_forecast "
-                "WHERE series_id >= %s AND series_id < %s AND target_ts >= %s AND scored_at IS NOT NULL",
-                (lo, hi, since)).fetchall()
+                "WHERE starts_with(series_id, %s) AND target_ts >= %s AND scored_at IS NOT NULL",
+                (fl.PREFIX, since)).fetchall()
         print(f"# Stored rows, last {args.hours:g} h: {len(joints)} joint rows, {len(readings)} scored reading rows")
     return print_report(summarize(joints, cfg.grain_min), coverage(readings), args.min_days)
 

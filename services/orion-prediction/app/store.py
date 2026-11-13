@@ -355,10 +355,10 @@ class PostgresStore:
 
     # --- multivariate families (app/family_a_live.py) -------------------------------------------
     # Reading rows live in prediction_forecast / prediction_shadow_forecast under series_id
-    # '<family>:<reading id>'; ``prefix`` is that '<family>:' (matched with left(), never LIKE: '_' is a
-    # LIKE wildcard). Matched as a range [prefix, prefix with its last character + 1) so the
-    # (series_id, ...) indexes apply. The joint row per bucket and horizon lives in
-    # prediction_joint_surprise.
+    # '<family>:<reading id>'; ``prefix`` is that '<family>:', matched with starts_with() (never LIKE: '_'
+    # is a LIKE wildcard; never a >=/< range: collation-dependent, see the note at the top). Due/prune
+    # queries use the partial unscored index via target_ts. The joint row per bucket and horizon lives
+    # in prediction_joint_surprise.
     def run_metrics(self, run_id: Any) -> dict | None:
         rows = self._all("SELECT run_id, metrics, assignment FROM prediction_model_run WHERE run_id = %s", (run_id,))
         return rows[0] if rows else None

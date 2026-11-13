@@ -358,11 +358,14 @@ LATEST_VERDICT_ONE_SQL = """
 SELECT verdict, retired FROM personality_juniper_verdict WHERE disposition_id = %(d)s
 ORDER BY created_at DESC, verdict_id LIMIT 1
 """
-# "Changed my mind": the same revive the reducer applies on a later yes (#3336, orion/personality/graph.py).
+# "Changed my mind": the same revive the reducer applies on a later yes (#3336, orion/personality/graph.py):
+# status, retired_at and last_folded_at only. updated_at stays at the retire time on purpose: weight is "as
+# of updated_at", so the next tick fades it across the whole time it was retired, exactly as the reducer's
+# revive does. Moving it would keep the full pre-No weight and could jump the node straight to active.
 REVIVED_STATUS = "candidate"
 REVIVE_BY_JUNIPER_SQL = f"""
 UPDATE personality_disposition SET status = %(status)s, retired_at = NULL, last_folded_at = %(now)s,
-  updated_at = %(now)s, history_weight = weight
+  history_weight = weight
 WHERE disposition_id = %(d)s AND {ORIGIN_FILTER}
 """
 INSERT_VERDICT_SQL = """

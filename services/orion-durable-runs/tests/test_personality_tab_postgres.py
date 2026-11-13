@@ -32,6 +32,7 @@ from psycopg_pool import AsyncConnectionPool  # noqa: E402
 from app.personality_driver import PersonalityDriver  # noqa: E402
 from app.personality_sources import PersonalitySourceReader  # noqa: E402
 from app.personality_store import PersonalityStore, TendencyRetired  # noqa: E402
+from orion.personality.graph import apply_fade  # noqa: E402
 from test_personality_loop import Clock, Embedder, choice  # noqa: E402
 
 SQL = REPO_ROOT / "services/orion-sql-db"
@@ -290,5 +291,48 @@ def test_arm_counts_read_personality_trace_lines_by_outcome():
         body = await store.arm_counts(T0 - timedelta(days=7))
         assert body["arms"] == {"care": {"funded": 1, "deferred": 1}, "holdback": {"funded": 1}}
         assert body["total"] == 3
+
+    with_db(scenario)
+
+
+def test_store_revive_fades_across_the_retired_time_like_the_reducer_revive():
+    """A Hub "Changed my mind" revive keeps updated_at at the retire time (weight is "as of updated_at"),
+    so the next tick fades the weight across the whole time it was retired. The reducer revive (#3336,
+    orion/personality/graph.py) sets status, retired_at and last_folded_at only; #3336 is not on this
+    branch, so the reference is main's fade rule (apply_fade) on the node revived the same way in memory."""
+    async def scenario(pool):
+        from dataclasses import replace
+
+        clock = Clock(T0)
+        store, drv = await seed(pool, clock)
+        people = next(t for t in (await store.tendencies())["tendencies"] if t["label"].startswith("people over"))
+        did = people["disposition_id"]
+        retired_at = clock.at
+        await drv.juniper_verdict(did, "no")
+        from app.personality_store import NODE_COLUMNS, node_from_row
+
+        (raw,) = await q(pool, f"SELECT {NODE_COLUMNS} FROM personality_disposition WHERE disposition_id = %(d)s",
+                         {"d": did})
+        retired = node_from_row(raw)
+        assert retired.updated_at == retired_at and retired.status == "retired"
+
+        clock.at = retired_at + timedelta(days=10)
+        await drv.juniper_verdict(did, "yes")
+        (row,) = await q(pool, "SELECT updated_at, weight FROM personality_disposition WHERE disposition_id = %(d)s",
+                         {"d": did})
+        assert row["updated_at"] == retired_at                       # not moved by the revive
+
+        # Reference: the reducer's revive in memory, then main's fade rule at the next tick.
+        reducer_revived = replace(retired, status="candidate", retired_at=None, last_folded_at=clock.at)
+        tick_at = clock.at + timedelta(minutes=20)
+        expected = next(n for n in apply_fade([reducer_revived], now=tick_at).nodes if n.disposition_id == did)
+
+        clock.at = tick_at
+        await drv.tick()
+        (after,) = await q(pool, "SELECT weight, status FROM personality_disposition WHERE disposition_id = %(d)s",
+                           {"d": did})
+        assert after["weight"] == pytest.approx(expected.weight, rel=1e-9)
+        assert after["status"] == expected.status
+        assert after["weight"] < row["weight"] * 0.65                # ~10 days of a 14-day half-life
 
     with_db(scenario)

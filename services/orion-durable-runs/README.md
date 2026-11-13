@@ -1426,7 +1426,8 @@ and outcome), and `POST /personality/tendencies/{id}/verdict` `{"verdict": "yes"
 `personality_juniper_verdict` (`manual_migration_personality_juniper_verdict_v1.sql`); a "no" also
 retires the tendency in the same transaction, under the reducer's tick lock so a tick in flight
 cannot write the old status back. A "yes" on a tendency Juniper retired herself (her latest answer is
-a retiring "no") revives it: status candidate, `retired_at` cleared, `last_folded_at` now, plus a
+a retiring "no") revives it: status candidate, `retired_at` cleared, `last_folded_at` now (`updated_at`
+stays at the retire time, so the next tick fades the weight across the retired time), plus a
 weight-history row (the reducer's own revive, #3336). `/personality/tendencies` also returns
 `said_no` (those tendencies, newest no first). 404: no such choice-built tendency. 409: retired but
 not by her latest no (it faded), or a second no. Log

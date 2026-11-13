@@ -125,17 +125,23 @@ def check_trip_city_not_home(edges: list[dict[str, Any]], t: dict[str, str]) -> 
 
 
 def check_trip_stay(edges: list[dict[str, Any]], t: dict[str, str]) -> Check:
-    """Pass when a trip-city stay fact starts inside the trip window and is closed (invalid_at)
-    inside it. The window carries a day of slack each side for local-time vs UTC dating."""
+    """Pass when a trip-city stay fact opens and closes (invalid_at) inside the trip window AND no
+    fact placing the subject in the trip city (or its hotel) is still current. An open-ended "is in
+    <trip city>" is exactly the stale fact that never retires. The window carries a day of slack
+    each side for local-time vs UTC dating."""
     lo, hi = _dt(t["trip_start"]), _dt(t["trip_end"])
     place = re.compile(word(t["trip_city"]) + "|" + word(t["trip_hotel"]), re.I)
+    subject = re.compile(word(t["subject"]), re.I)
     stays = [e for e in edges if _mentions(e, place) and STAY_RE.search(str(e.get("fact")))]
     dated = [e for e in stays if (v := _dt(e.get("valid_at"))) and lo <= v <= hi]
     closed = [e for e in dated if (i := _dt(e.get("invalid_at"))) and lo <= i <= hi]
-    return Check(f"[trip city] stay dated as a stay (window {t['trip_start']}..{t['trip_end']})", bool(closed),
-                 f"{len(closed)} stay facts opened and closed inside the window; "
-                 f"{len(dated)} opened inside it; {len(stays)} stay-shaped [trip city] facts",
-                 [_edge_line(e) for e in stays])
+    presence = [e for e in edges if _mentions(e, place) and subject.search(str(e.get("source") or ""))
+                and is_current(e) and (v := _dt(e.get("valid_at"))) and lo <= v <= hi]
+    return Check(f"[trip city] stay dated as a stay, none left open (window {t['trip_start']}..{t['trip_end']})",
+                 bool(closed) and not presence,
+                 f"{len(closed)} stay facts opened and closed inside the window; {len(presence)} [subject]-in-"
+                 f"[trip city] facts from the trip still current; {len(stays)} stay-shaped [trip city] facts",
+                 [_edge_line(e) for e in stays + [p for p in presence if p not in stays]])
 
 
 def check_pet_dog(edges: list[dict[str, Any]], t: dict[str, str]) -> Check:

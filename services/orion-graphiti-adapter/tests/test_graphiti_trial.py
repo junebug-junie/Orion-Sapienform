@@ -126,7 +126,7 @@ T = json.loads((Path(__file__).resolve().parents[1] / "scripts" / "graphiti_tria
 
 # --- scoring ----------------------------------------------------------------------------------
 
-def _edge(fact, valid=None, invalid=None, expired=None, source="Juniper", target="X"):
+def _edge(fact, valid=None, invalid=None, expired=None, source="Robin", target="X"):
     return {"fact": fact, "valid_at": valid, "invalid_at": invalid, "expired_at": expired,
             "source": source, "target": target, "name": "REL"}
 
@@ -157,6 +157,10 @@ def test_trip_stay_needs_open_and_close_inside_trip():
     open_ = _edge("Juniper is staying in Shelbyville", valid="2026-10-05T02:55:00")
     late = _edge("Juniper is staying in Shelbyville", valid="2026-10-05T02:55:00", invalid="2026-11-01T00:00:00")
     assert score.check_trip_stay([closed], T).passed
+    still_there = _edge("Robin is staying at a hotel in Shelbyville", valid="2026-10-05T03:07:00", source="Robin")
+    assert not score.check_trip_stay([closed, still_there], T).passed
+    meeting = _edge("The team meeting is in Shelbyville", valid="2026-10-05T02:55:00", source="team meeting")
+    assert score.check_trip_stay([closed, meeting], T).passed
     assert not score.check_trip_stay([open_], T).passed
     assert not score.check_trip_stay([late], T).passed
 

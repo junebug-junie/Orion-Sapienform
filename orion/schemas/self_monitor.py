@@ -101,10 +101,13 @@ class FacultyRecordV1(BaseModel):
     window_start: AwareDatetime
     window_end: AwareDatetime
     n_bets: int = Field(..., ge=0, description="All bets in the window, every outcome.")
-    n_graded: int = Field(..., ge=0, description="upheld + refuted, settled by the world or Juniper.")
+    n_graded: int = Field(..., ge=0, description=(
+        "upheld + refuted, settled by the world or Juniper. Counts independent answers: bets sharing "
+        "an answer_key (one power bill) count once; n_bets keeps the raw bet count."))
     n_failed_to_execute: int = Field(..., ge=0)
     n_expired: int = Field(..., ge=0)
-    weight_graded: float = Field(..., ge=0.0, description="Sum of decay weights over graded bets.")
+    weight_graded: float = Field(..., ge=0.0, description=(
+        "Sum of decay weights over graded answers (a bet, or one unit per shared answer_key)."))
     reliability: Optional[float] = Field(None, ge=0.0, le=1.0, description="Decay-weighted upheld share.")
     reliability_lo: Optional[float] = Field(None, ge=0.0, le=1.0)
     reliability_hi: Optional[float] = Field(None, ge=0.0, le=1.0)

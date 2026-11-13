@@ -31,7 +31,7 @@ def _one(bets):
 def test_thirty_guesses_on_one_bill_count_as_one_answer():
     bets = _guesses(0, 30, 30, settled=NOW - timedelta(days=1))
     rec = _one(bets)
-    assert rec.n_graded == 30
+    assert (rec.n_bets, rec.n_graded) == (30, 1)            # n_graded counts answers
     assert rec.gradeability == "ungradeable:too_few" and rec.status == "unknown"
     assert "1 so far" in rec.unlock and "30 bets on 1 answers" in " ".join(rec.reasons)
     # The interval is one answer's, not thirty's.
@@ -46,7 +46,7 @@ def test_ten_bills_grade_with_n_eff_about_ten_not_three_hundred():
     for b in range(MIN_GRADED):
         bets += _guesses(b, 30, 30 if b % 5 else 12, settled=NOW - timedelta(days=30 * b + 1))
     rec = _one(bets)
-    assert rec.gradeability == "graded" and rec.n_graded == 300
+    assert rec.gradeability == "graded" and (rec.n_bets, rec.n_graded) == (300, MIN_GRADED)
     weights = [0.5 ** ((30 * b + 1) / 180.0) for b in range(MIN_GRADED)]
     shares = [1.0 if b % 5 else 0.4 for b in range(MIN_GRADED)]
     rel = sum(w * s for w, s in zip(weights, shares)) / sum(weights)
@@ -68,10 +68,19 @@ def test_nine_bills_still_unknown():
 def test_bill_window_holds_a_year_while_other_sources_keep_seven_days():
     old = NOW - timedelta(days=300)
     rec = _one(_guesses(0, 3, 3, settled=old))
-    assert rec.n_graded == 3 and rec.window_end - rec.window_start == timedelta(days=BILL_WINDOW_DAYS)
+    assert rec.n_bets == 3 and rec.window_end - rec.window_start == timedelta(days=BILL_WINDOW_DAYS)
     other = _guesses(0, 3, 3, settled=old, source="prediction_forecast", key=False)
     (r,) = [x for x in reduce_bets(other, now=NOW) if x.faculty == "forecast.energy.bill_kwh"]
     assert r.n_bets == 0                                   # a fast source's 300-day-old bet is out of window
+
+
+def test_cue_ranks_a_bill_faculty_by_its_answers_not_its_guesses():
+    from orion.self_monitor.cue import _evidence_tier
+
+    bets = []
+    for b in range(MIN_GRADED):
+        bets += _guesses(b, 30, 30, settled=NOW - timedelta(days=30 * b + 1))
+    assert _evidence_tier(_one(bets)) == 2                  # 10 bills: the tens tier, not hundreds
 
 
 def test_bill_sources_read_live_rows_over_their_own_window():

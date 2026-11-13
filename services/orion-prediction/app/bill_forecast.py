@@ -22,6 +22,10 @@ Why not the run-rate error by days-into-cycle measured on past bills: only one c
 (2026-09-18 -> 10-19) has meter data at all (the feed has a hole 08-07 -> 09-17), and one period cannot
 give a range. The range above is a stated model; the bills grade it.
 
+sql-writer keeps one row per meter hour and per bill period, overwritten by the newest delivery, so a
+replay sees the final corrected values (a small leak of later corrections) and may treat a re-imported
+bill as unknown on days it was in fact known (only more cautious). Replays are never graded.
+
 Two kinds of row: ``live`` (made by this loop on that day) and ``replay`` (backfilled from stored
 meter history as of a past day, knowing only the intervals that would have arrived by then: the meter
 feed lags ~3 days, measured from ``retrieved_at``). Replays are reported, never graded by the
@@ -38,7 +42,7 @@ from typing import Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 from orion.energy.ledger import READ_SNAP_DAYS, UsageLedger
-from orion.energy.reconcile import _utility_pretax, project_period
+from orion.energy.reconcile import _duration_seconds, _utility_pretax, project_period
 from orion.energy.tariff import Tariff
 from orion.schemas.energy import EnergyBillActualV1, EnergyUsageIntervalV1
 
@@ -145,8 +149,8 @@ def make_bet(*, tariff: Tariff, tz: ZoneInfo, cycle_start_day: int, usage_point_
     projection, gap, covered = project_period(ledger, usage_point_id, start, end)
     if projection is None:
         return {"gap": gap or "no_projection", "period_start": start.astimezone(tz).date()}
-    observed_days = (projection.covered_through - start).total_seconds() / 86400.0
-    remaining_days = max(0.0, (end - projection.covered_through).total_seconds() / 86400.0)
+    observed_days = _duration_seconds(start, projection.covered_through) / 86400.0
+    remaining_days = max(0.0, _duration_seconds(projection.covered_through, end) / 86400.0)
     sp = spread(daily_totals(intervals, tz, until=projection.covered_through))
     p_start, p_end = start.astimezone(tz).date(), end.astimezone(tz).date()
     row = {
@@ -171,6 +175,10 @@ def make_bet(*, tariff: Tariff, tz: ZoneInfo, cycle_start_day: int, usage_point_
     }
     if sp is None:
         row["range_reason"] = f"fewer than {MIN_SPREAD_DAYS} complete meter days before the bet"
+        return row
+    if sp.s_kwh <= 0:
+        # Identical days (a stuck export) would give a zero-width range that can only be refuted.
+        row["range_reason"] = "zero daily spread over the trailing meter days"
         return row
     lo, hi, sd = kwh_range(projection.projected_kwh, projection.observed_kwh, remaining_days=remaining_days,
                            observed_days=observed_days, sp=sp)
@@ -247,6 +255,17 @@ def bills_for_point(bills: Iterable[EnergyBillActualV1], point: str) -> list[Ene
     return [b for b in bills if b.usage_point_id in (None, point)]
 
 
+def _valid(model, rows: Iterable[Mapping]) -> tuple[list, int]:
+    """Rows that validate, and how many did not: one bad row in 400 days must not stop every tick."""
+    out, bad = [], 0
+    for r in rows:
+        try:
+            out.append(model(**r))
+        except ValueError:
+            bad += 1
+    return out, bad
+
+
 class BillForecast:
     """Daily live bet, one-time replay backfill per process, settlement. Store: app/store.py (bill section)."""
 
@@ -298,10 +317,16 @@ class BillForecast:
 
     def tick(self, now: Optional[datetime] = None) -> dict:
         now = now or datetime.now(timezone.utc)
-        intervals = [EnergyUsageIntervalV1(**r) for r in self.store.energy_intervals(now - timedelta(days=HISTORY_DAYS))]
-        bills = [EnergyBillActualV1(**r) for r in self.store.energy_bills()]
+        intervals, bad_iv = _valid(EnergyUsageIntervalV1, self.store.energy_intervals(now - timedelta(days=HISTORY_DAYS)))
+        bills, bad_bill = _valid(EnergyBillActualV1, self.store.energy_bills())
         point, why = pick_usage_point(intervals, self.usage_point_id)
-        out: dict = {"at": now, "issued": None, "gap": None, "replay": None, "settled": 0}
+        out: dict = {"at": now, "issued": None, "gap": None, "replay": None, "settled": 0,
+                     "skipped_rows": {"energy_usage_interval": bad_iv, "energy_bill_actual": bad_bill}}
+        if bad_iv or bad_bill:
+            logger.warning("bill_forecast_rows_skipped intervals=%d bills=%d", bad_iv, bad_bill)
+        if point is not None:
+            # One meter's history only: the spread, the lag and the replay days must not mix meters.
+            intervals = [iv for iv in intervals if iv.usage_point_id == point]
         if point is None:
             out["gap"] = why
             self.last_pass = out
@@ -353,8 +378,10 @@ def grade_by_period(rows: Iterable[Mapping]) -> list[dict]:
             "usd_in_80_share": (sum(uin) / len(uin)) if uin else None,
             "mean_abs_kwh_miss": (statistics.fmean(abs(r["projected_kwh"] - r["billed_kwh"]) for r in settled)
                                   if settled else None),
-            "mean_abs_usd_miss": (statistics.fmean(abs(r["projected_usd"] - r["billed_usd"]) for r in settled)
-                                  if settled else None),
+            # Pre-tax bills only: projected_usd is pre-tax, a tax_unknown bill's total includes tax.
+            "mean_abs_usd_miss": (statistics.fmean(abs(r["projected_usd"] - r["billed_usd"]) for r in pretax)
+                                  if (pretax := [r for r in settled if r.get("billed_basis") == "pre_tax"])
+                                  else None),
         })
     return out
 

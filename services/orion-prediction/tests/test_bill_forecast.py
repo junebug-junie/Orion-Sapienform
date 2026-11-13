@@ -195,10 +195,50 @@ def test_lifecycle_daily_bets_settle_on_the_bill_and_grade_as_one_answer():
                         now=settled_at + timedelta(hours=1), window_days=7.0)
     rec = {f.faculty: f for f in state.faculties}
     kwh = rec["forecast.energy.bill_kwh"]
-    assert kwh.n_graded == 29 and kwh.status == "unknown" and kwh.gradeability == "ungradeable:too_few"
+    assert (kwh.n_bets, kwh.n_graded) == (29, 1)               # 29 guesses, ONE answer
+    assert kwh.status == "unknown" and kwh.gradeability == "ungradeable:too_few"
     assert "1 so far" in kwh.unlock and "29 bets on 1 answers" in " ".join(kwh.reasons)
     assert kwh.window_end - kwh.window_start == timedelta(days=400)
-    assert rec["forecast.energy.bill_usd"].n_graded == 29
+    assert rec["forecast.energy.bill_usd"].n_graded == 1
+
+
+def test_a_second_meter_never_leaks_into_the_spread_or_the_replay():
+    one = _rows(SEP1, OCT1 + timedelta(days=12))
+    other = [{**r, "usage_point_id": "UP2", "energy_kwh": r["energy_kwh"] * (5 + (r["interval_start"].day % 4))}
+             for r in one]
+    now = OCT1 + timedelta(days=12, hours=2)
+    a = B.MemoryBillStore(one)
+    b = B.MemoryBillStore(one + other)
+    for store in (a, b):
+        B.BillForecast(store, flat_test_tariff(), tz=UTC, cycle_start_day=1, usage_point_id="UP1").tick(now)
+    assert a.bill_bet_rows(SEP1) == b.bill_bet_rows(SEP1)
+
+
+def test_a_bad_row_is_skipped_and_counted_not_fatal():
+    rows = _rows(SEP1, OCT1 + timedelta(days=12))
+    rows.append({**rows[0], "interval_start": OCT1 + timedelta(days=20), "interval_end": OCT1 + timedelta(days=20),
+                 "energy_kwh": -1.0})
+    bf = B.BillForecast(B.MemoryBillStore(rows, [{"bogus": 1}]), flat_test_tariff(), tz=UTC, cycle_start_day=1)
+    out = bf.tick(OCT1 + timedelta(days=12, hours=2))
+    assert out["skipped_rows"] == {"energy_usage_interval": 1, "energy_bill_actual": 1}
+    assert out["issued"] is not None
+
+
+def test_identical_days_give_no_range_rather_than_a_zero_width_one():
+    rows = [{**r, "energy_kwh": 1.0} for r in _rows(SEP1, OCT1 + timedelta(days=12))]
+    row = _bet(rows, OCT1 + timedelta(days=12, hours=1))
+    assert row["coverage"] is None and row["range_reason"].startswith("zero daily spread")
+
+
+def test_days_into_cycle_are_real_hours_across_the_fall_back_change():
+    den = ZoneInfo("America/Denver")
+    start = datetime(2026, 10, 18, tzinfo=den).astimezone(timezone.utc)
+    rows = _rows(start - timedelta(days=10), start + timedelta(days=16))
+    row = B.make_bet(tariff=flat_test_tariff(), tz=den, cycle_start_day=18, usage_point_id="UP1",
+                     intervals=_ivs(rows), bills=[], as_of=start + timedelta(days=16, hours=1), origin="live")
+    # 10-18 -> 11-18 Denver is 31 days + 1 h (the 11-01 fall-back): 16 days seen, 15 days + 1 h left.
+    assert row["days_into_cycle"] == pytest.approx(16.0)
+    assert row["remaining_days"] == pytest.approx(15.0 + 1 / 24)
 
 
 def test_replayed_bets_are_backfilled_once_and_never_graded():

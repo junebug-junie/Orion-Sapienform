@@ -249,6 +249,8 @@ def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
             reasons.append(f"calibration not judged: confidence is pooled at {pooled_belief}")
     if shared:
         reasons.append(f"n counts answers, not bets: {len(graded)} bets on {len(units)} answers")
+    # Streak over bets is ~30x long for one bill; it only drives `broken`, and bill bets never fail to
+    # execute, so it is left per bet.
 
     return FacultyRecordV1(
         faculty=faculty,
@@ -259,7 +261,7 @@ def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
         window_start=start,
         window_end=now,
         n_bets=len(bets),
-        n_graded=len(graded),
+        n_graded=len(units),   # answers, not bets, when bets share one (n_bets keeps the raw count)
         n_failed_to_execute=len(failed),
         n_expired=len(expired),
         weight_graded=w_graded,

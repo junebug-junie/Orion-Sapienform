@@ -25,6 +25,16 @@ Candidate status, first match wins (``reasons`` names the rule that fired):
    not sufficient: always saying the base rate passes it).
 6. ``unknown``.
 
+Shared answers (``SettledBetV1.answer_key``): bets settled by one real-world answer (the ~30 daily
+guesses at one power bill) are not independent. Each key is one UNIT: its bets' upheld shares, stated
+confidences and weights are averaged into one, and ``MIN_GRADED``, the Wilson intervals (Kish over unit
+weights) and the calibration check all count units. A bet with no key is its own unit, so every other
+faculty reduces exactly as before. Brier skill is not computed over shared answers.
+
+Slow sources (``SLOW_SOURCE_WINDOWS``): a source that settles about once a month (the power bill) gets
+its own window and half-life, so ``MIN_GRADED`` answers can ever sit in the window together;
+``collect.py`` reads those sources that far back.
+
 Held status (``advance`` / ``advance_carry``): a new candidate replaces the held status only after it has held for
 ``HOLD`` consecutive evaluations, so one bad hour does not flip a faculty (trailing-window
 thresholds need hysteresis).
@@ -52,6 +62,15 @@ Z = 1.96
 
 _GRADING_SETTLERS = ("world", "juniper")
 
+# One power bill a month: MIN_GRADED (10) bills need ~10 months, so the window holds 13 and a bill
+# halves in weight every 6 months.
+BILL_WINDOW_DAYS = 400.0
+BILL_HALF_LIFE_DAYS = 180.0
+SLOW_SOURCE_WINDOWS: dict[str, tuple[float, float]] = {
+    "prediction_bill_forecast_kwh": (BILL_WINDOW_DAYS, BILL_HALF_LIFE_DAYS),
+    "prediction_bill_forecast_usd": (BILL_WINDOW_DAYS, BILL_HALF_LIFE_DAYS),
+}
+
 
 @dataclass(frozen=True)
 class Ungradeable:
@@ -78,9 +97,35 @@ def kish(weights: Sequence[float]) -> float:
     return (total * total / squares) if squares > 0 else 0.0
 
 
-def _weight(bet: SettledBetV1, now: datetime) -> float:
+def _weight(bet: SettledBetV1, now: datetime, half_life_days: float = HALF_LIFE_DAYS) -> float:
     age_days = max(0.0, (now - bet.settled_at).total_seconds() / 86400.0)
-    return 0.5 ** (age_days / HALF_LIFE_DAYS)
+    return 0.5 ** (age_days / half_life_days)
+
+
+@dataclass(frozen=True)
+class _Unit:
+    """One independent answer: a bet, or every bet sharing an ``answer_key`` averaged into one."""
+
+    weight: float
+    upheld: float                  # upheld share of the unit's graded bets
+    stated: Optional[float]        # mean stated confidence of the unit's bets that stated one
+    stated_upheld: Optional[float]  # upheld share over those same bets
+
+
+def _units(graded: Sequence[SettledBetV1], now: datetime, half_life_days: float) -> list[_Unit]:
+    groups: dict[str, list[SettledBetV1]] = defaultdict(list)
+    for bet in graded:
+        groups[bet.answer_key or f"bet:{bet.bet_id}"].append(bet)
+    out = []
+    for bets in groups.values():
+        stated = [b for b in bets if b.stated is not None]
+        out.append(_Unit(
+            weight=sum(_weight(b, now, half_life_days) for b in bets) / len(bets),
+            upheld=sum(b.outcome == "upheld" for b in bets) / len(bets),
+            stated=(sum(b.stated for b in stated) / len(stated)) if stated else None,
+            stated_upheld=(sum(b.outcome == "upheld" for b in stated) / len(stated)) if stated else None,
+        ))
+    return out
 
 
 def _streak(bets: Sequence[SettledBetV1]) -> tuple[Optional[str], int, Optional[datetime]]:
@@ -104,7 +149,8 @@ def _slack(p: float) -> float:
 
 
 def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
-                   window_days: float = WINDOW_DAYS, pooled_belief: Optional[str] = None) -> FacultyRecordV1:
+                   window_days: float = WINDOW_DAYS, pooled_belief: Optional[str] = None,
+                   half_life_days: float = HALF_LIFE_DAYS) -> FacultyRecordV1:
     """``pooled_belief``: the belief key this faculty shares with other faculties, if any (set by
     ``reduce_bets``). Calibration is not judged then (rule 4)."""
     start = now - timedelta(days=window_days)
@@ -116,10 +162,12 @@ def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
     kinds = sorted({b.claim_kind for b in bets})
     claim_kind = kinds[0] if len(kinds) == 1 else None
 
-    wg = [_weight(b, now) for b in graded]
-    wa = [_weight(b, now) for b in attempts]
+    units = _units(graded, now, half_life_days)
+    shared = any(b.answer_key for b in graded)
+    wg = [u.weight for u in units]
+    wa = [_weight(b, now, half_life_days) for b in attempts]
     w_graded = sum(wg)
-    w_upheld = sum(w for w, b in zip(wg, graded) if b.outcome == "upheld")
+    w_upheld = sum(u.weight * u.upheld for u in units)
     w_attempts = sum(wa)
     w_failed = sum(w for w, b in zip(wa, attempts) if b.outcome == "failed_to_execute")
 
@@ -133,20 +181,22 @@ def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
         exec_lo = wilson(exec_fail, kish(wa))[0]
 
     stated = [b for b in graded if b.stated is not None]
-    ws = [_weight(b, now) for b in stated]
+    stated_units = [u for u in units if u.stated is not None]
+    ws = [u.weight for u in stated_units]
     stated_mean = cal_rel = cal_lo = cal_hi = None
-    if stated and sum(ws) > 0:
-        stated_mean = sum(w * b.stated for w, b in zip(ws, stated)) / sum(ws)
-        cal_rel = sum(w for w, b in zip(ws, stated) if b.outcome == "upheld") / sum(ws)
+    if stated_units and sum(ws) > 0:
+        stated_mean = sum(u.weight * u.stated for u in stated_units) / sum(ws)
+        cal_rel = sum(u.weight * u.stated_upheld for u in stated_units) / sum(ws)
         cal_lo, cal_hi = wilson(cal_rel, kish(ws))
     brier = skill = None
-    if stated and claim_kind in ("success", "event") and pooled_belief is None:
+    # Brier per bet would count a shared answer once per guess: not computed over shared answers.
+    if stated and claim_kind in ("success", "event") and pooled_belief is None and not shared:
         g = grade([b.stated for b in stated], [b.outcome == "upheld" for b in stated])
         brier, skill = g["brier"], g["skill"]
 
     streak_kind, streak_len, streak_since = _streak(bets)
 
-    if graded and len(graded) >= MIN_GRADED and stated:
+    if graded and len(units) >= MIN_GRADED and stated:
         gradeability, unlock = "graded", None
     elif bets and all(b.settled_by == "self" for b in bets):
         gradeability, unlock = "ungradeable:self_graded", "settle against the world, not Orion's own re-judgment"
@@ -154,6 +204,10 @@ def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
         gradeability, unlock = "ungradeable:no_stated_confidence", "record a confidence before the outcome"
     elif bets and not graded and not failed:
         gradeability, unlock = "ungradeable:never_settled", "settle bets before they expire"
+    elif shared:
+        gradeability, unlock = "ungradeable:too_few", (
+            f"needs {MIN_GRADED} independent answers in {window_days:g} days: {len(units)} so far "
+            f"({len(graded)} bets; bets sharing one answer count once)")
     else:
         gradeability, unlock = "ungradeable:too_few", f"needs {MIN_GRADED} graded bets in {window_days:g} days"
 
@@ -193,6 +247,8 @@ def reduce_faculty(faculty: str, bets: Sequence[SettledBetV1], *, now: datetime,
             reasons.append(f"stated {stated_mean:.2f} matches {what} {cal_rel:.2f} [{cal_lo:.2f}, {cal_hi:.2f}]")
         if not judged:
             reasons.append(f"calibration not judged: confidence is pooled at {pooled_belief}")
+    if shared:
+        reasons.append(f"n counts answers, not bets: {len(graded)} bets on {len(units)} answers")
 
     return FacultyRecordV1(
         faculty=faculty,
@@ -249,8 +305,16 @@ def reduce_bets(bets: Iterable[SettledBetV1], *, now: datetime, window_days: flo
         shared = sorted({b.belief_key for b in fbets if b.belief_key and len(owners[b.belief_key]) > 1})
         return shared[0] if shared else None
 
-    records = [reduce_faculty(f, b, now=now, window_days=window_days, pooled_belief=pooled(b))
-               for f, b in sorted(by_faculty.items())]
+    def windowing(fbets: list[SettledBetV1]) -> tuple[float, float]:
+        slow = [SLOW_SOURCE_WINDOWS[b.source] for b in fbets if b.source in SLOW_SOURCE_WINDOWS]
+        if slow and len(slow) == len(fbets):
+            return max(window_days, max(w for w, _ in slow)), max(h for _, h in slow)
+        return window_days, HALF_LIFE_DAYS
+
+    records = []
+    for f, b in sorted(by_faculty.items()):
+        win, half = windowing(b)
+        records.append(reduce_faculty(f, b, now=now, window_days=win, pooled_belief=pooled(b), half_life_days=half))
     known = {r.faculty for r in records}
     start = now - timedelta(days=window_days)
     for u in ungradeable:

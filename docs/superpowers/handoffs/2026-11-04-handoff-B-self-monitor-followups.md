@@ -67,6 +67,9 @@ were never broken. They are miscalibrated, holding 5–8% of the time against a 
 In order of value:
 - **Power-bill forecast.** Orion makes no forward bill bet. Add a bill series to orion-prediction
   (predictions live there). That gives Orion a money bet.
+  *Built 2026-11-13 (feat/bill-forecast-bet): daily bet in orion-prediction `app/bill_forecast.py`,
+  graded as `forecast.energy.bill_kwh` / `_usd` with one answer per bill
+  (`SettledBetV1.answer_key`). Report: `docs/superpowers/pr-reports/2026-11-13-bill-forecast-bet-pr.md`.*
 - **Camera asks (`orion_ask`).** These are the system's most reliable loop: 495 answered and applied
   in 14 days, still ungraded. Add a self-monitor adapter. **Handoff A also wants this**, so build it
   once and tell that session.

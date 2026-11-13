@@ -51,7 +51,8 @@ def test_build_state_names_failed_missing_and_bad_sources():
     assert "vision_percept_expectation: not read" in errs
     assert "prediction_action_bet: adapter failed on 1/1 rows" in errs
     assert {f.faculty: f.n_bets for f in out.faculties}["forecast.athena.cabinet_temp_c"] == 3
-    assert erred_sources(out) == {"grammar_acts", "vision_percept_expectation", "prediction_action_bet", "orion_ask"}
+    assert erred_sources(out) == {"grammar_acts", "vision_percept_expectation", "prediction_action_bet", "orion_ask",
+                                  "prediction_bill_forecast_kwh", "prediction_bill_forecast_usd"}
     assert erred_sources(state(errors=["engine: OperationalError: refused"])) == {n for n, _, _ in SOURCES}
 
 

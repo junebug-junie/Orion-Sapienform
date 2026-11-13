@@ -62,8 +62,17 @@ UNGRADEABLE: tuple[Ungradeable, ...] = (
         "chat.reply_quality", "chat_response_feedback", "ungradeable:no_stated_confidence",
         "8 thumbs ever and no prediction; substrate_action_ratings.predicted_rating has 0 rows",
     ),
+    # 2026-11-13: the daily bill bet exists (orion-prediction app/bill_forecast.py). These entries show
+    # until a live bet's bill has settled inside the window. One bill a month, and the ~30 guesses at a
+    # bill count as one answer (record.py), so a status needs 10 bills: about 10 months of live bets.
     Ungradeable(
-        "energy.bill", "energy_reconcile", "ungradeable:no_stated_confidence",
-        "Orion makes no forward bill bet; add a bill series to orion-prediction",
+        "forecast.energy.bill_kwh", "prediction_bill_forecast_kwh", "ungradeable:too_few",
+        "one bill a month; status needs 10 settled bills with live bets (~10 months); the first live "
+        "bill (period from 2026-10-19) should land ~11-19..11-22",
+    ),
+    Ungradeable(
+        "forecast.energy.bill_usd", "prediction_bill_forecast_usd", "ungradeable:too_few",
+        "one bill a month; status needs 10 settled bills with live bets (~10 months); a bill without "
+        "a tax line cannot settle the pre-tax dollar range",
     ),
 )

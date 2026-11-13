@@ -72,6 +72,15 @@ class SettledBetV1(BaseModel):
             "is only judged where one faculty owns its belief."
         ),
     )
+    answer_key: Optional[str] = Field(
+        None,
+        description=(
+            "Bets that share ONE real-world answer carry the same key (every daily guess at one power "
+            "bill: they are settled by the same bill, so they are not independent trials). The organ "
+            "counts each key once: its bets are averaged into one unit, and the graded count, the "
+            "interval and the calibration check all run on units. None = the bet is its own answer."
+        ),
+    )
     outcome: BetOutcome = Field(
         ..., description="upheld = the claimed event happened (inside the range, for intervals)."
     )

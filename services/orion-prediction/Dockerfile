@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY orion /app/orion
 COPY config/prediction /app/config/prediction
+COPY config/energy /app/config/energy
 COPY services/orion-prediction /app
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8132"]

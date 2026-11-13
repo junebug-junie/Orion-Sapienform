@@ -410,12 +410,47 @@ cabinet 15 min -0.072 +-0.167, office 5 min -0.032 +-0.099, office 15 min -0.050
 `evals/run_surprise_node_replay_eval.py --hours 72` replays the event gate and the substrate fold
 over live rows: what the two nodes would have read.
 
-## Family A: every body and room reading at once (slice 1, eval only)
+## Family A: every body and room reading at once
 
 "What will my body and room read next?" for every raw reading together, 5 and 15 min ahead (spec:
 `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`, "A. Neural forecaster").
-Slice 1 builds the gate and the baselines and measures them. It serves nothing, stores nothing, and
-publishes nothing: no table, no bus event, no substrate node.
+Slice 1 (#3267) built the gate and the baselines and measured them. Slice 2 runs them live in this
+service's own select -> issue -> score loop as one multivariate series (`app/family_a_live.py`, own task,
+same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
+
+**Live loop** (`PREDICTION_FAMILY_A_ENABLED`, on):
+
+- **Select** at start and every `PREDICTION_SELECT_INTERVAL_SEC` (~15-30 s at host load ~150): 14 days,
+  screen every input, backtest `ridge_var` vs the better baseline on 2 seeds (inputs screened on each
+  seed's training rows only), serve `ridge_var` at a horizon only if it wins on both, else `ar`. Refit
+  the served rung on the whole window. A calibration pool under 200 rows refuses the selection (the
+  previous run keeps serving). Rows in `prediction_model_run` (`series_id = 'family_a'`): one
+  `model` row per rung (backtest per seed) and the served `champion_blend` (`assignment`: horizon ->
+  rung; `metrics`: manifest, targets, standardisation, whitening covariance, both calibration pools,
+  ~100 KB), so rows issued before a restart are scored with the run that issued them. Run rows are not
+  pruned (~4 a day). A selection longer than ~4 min makes the next bucket's 5 min horizon late (skipped).
+- **Issue** each completed 5-min bucket: the hygiene gate on the last 24 h of every named input. Refused
+  -> one `prediction_joint_surprise` row per horizon with `status = 'refused'` and the reasons
+  (`refusal`), a `family_a_issue_refused` log line, nothing forecast. Passed -> per reading a
+  `prediction_forecast` row (`series_id = 'family_a:<reading>'`, role `champion`, model = the rung,
+  80/95 % ranges from its validation residuals, `interval_source = 'validation'`), the other rung as a
+  `prediction_shadow_forecast` row, and per horizon one joint row (`status = 'issued'`, `difficulty` =
+  the hour-before miss size known now). A horizon whose target bucket already completed is skipped
+  (`late_horizons`), never back-filled. ~23k reading rows a day; reading rows are pruned after 35 days,
+  joint rows kept.
+- **Score** each tick, before issuing: reading rows get the real bucket mean or `missing`; each joint row
+  gets d^2 on the readings that arrived (whitened by the issuing run's covariance), `p_static`,
+  `p_adaptive`, the served `p` (`calibration` = `adaptive`, or `static:no_difficulty` when the last hour
+  holds < 6 scored rows, e.g. after a restart) and `excess` = -ln p - `calm_point`. Fewer than half the
+  usable readings -> `missing` (`too_few_readings`); a run with no calibration -> `missing`, never calm.
+  Tails are log tails, so two extreme misses never tie at 0.
+- `/health` -> `family_a`: served run and rungs, last select / issue / score, counters (issued, refused,
+  late horizons, scored, missing), errors. A missing `prediction_joint_surprise` table or a bad config
+  stops family A only (`family_a.error = "not started: ..."`), never the service.
+- BLAS (OpenBLAS) is held to 4 threads for the whole process from start (`family_a_live.limit_blas`):
+  its default of one thread per core made one family A fit take > 120 s on the loaded host vs 1.5 s.
+  The single-series loop's numpy calls run on the same 4 threads.
+- The self-monitor does not grade `family_a:` reading rows yet (`orion/self_monitor/collect.py`).
 
 - **Inputs**: `config/prediction/family_a.v1.yaml`, 45 candidates read as 5-min means from the raw tables
   only (`orion_biometrics_summary.measurements`, `orion_biometrics_cluster`, `home_cooling_sample`,
@@ -435,27 +470,42 @@ publishes nothing: no table, no bus event, no substrate node.
   (`orion/mood_arc/fit_encoder.py`), 5 blocks, purged by lag + lead, >= 2 seeds that move the block
   edges. A win needs the overlap-aware paired t (`backtest.paired_gap`) AND a 2-hour block bootstrap both
   at p < 0.05, against the better baseline per target.
-- **Joint surprise** (eval output only): ridge residuals whitened by their own covariance (shrunk,
+- **Joint surprise**: ridge residuals whitened by their own covariance (shrunk,
   eigen-clipped to stay positive definite; Mahalanobis
   d^2 on the observed readings, chi-square tail), then a conformal p against calibration rows that chose nothing (the ridge penalty is picked on a
   second split of the fit rows).
   surprisal = -ln p; calm point = E[-ln p] of a uniform conformal p (-> 1.0); excess rests at 0 by theory.
   One event moving four coupled readings scores about one miss, not four. The eval also names the
-  readings that carry each big miss (a hint, not a cause).
+  readings that carry each big miss (a hint, not a cause; stored per row as `top_shares`).
+- **Adaptive calibration** (served): d^2 is divided by the hour-before difficulty (mean d^2 / dof of the
+  rows whose target fell in the hour up to the origin, floored at the 5th percentile) and the conformal
+  p is taken against calibration rows scaled the same way (normalized conformal, as `app/adaptive.py`).
+  One covariance gave calm and busy hours the same yardstick: a calm day read below 0, a busy one far
+  above. A busy stretch reads as surprise for about an hour, then as the new normal.
 
-Live, 2026-10-30..11-13 (14 days, 3 seeds): 41 targets, 1 covariate (cabinet light), refused hecate watts
+Slice 1, 2026-10-30..11-13 (14 days, 3 seeds): 41 targets, 1 covariate (cabinet light), refused hecate watts
 (98.6 % one value), office TVOC (duplicate of eCO2), office sound dBA (only 38 % present: starts 11-07).
 `ridge_var` beats the best baseline at every seed: 5 min loss x0.94-0.96, 15 min x0.96-0.98 (paired t
 p <= 0.005, bootstrap p <= 0.001). The joint excess on the last 24 h (model trained before it) reads -0.03
 (5 min) and -0.18 (15 min), both 95 % intervals contain 0. Only 9 days hold every target (closet, PM and lux sensors
 started 11-05), so no neural rung yet: the spec asks for 21 days (2026-11-26 at the earliest).
 
+Slice 2, 2026-10-30 07:10..11-13 07:10 (masks at every lag, train-rows screen, gap-respecting bootstrap,
+log tails): `ridge_var` still wins at every seed (5 min x0.939-0.959, 15 min x0.968-0.981). Joint score,
+static vs adaptive on held-out blocks (6 runs): mean excess CI contains 0 in 5/6 vs 6/6, p <= 0.05
+0.057-0.097 vs 0.050-0.060, hours at rest 0.45-0.67 vs 0.56-0.65 (calibrated 0.54). On the last 24 h
+(busy: host load ~150): static +1.00 / +0.84 with 28-29 % of p <= 0.05, adaptive +0.04 / +0.04 (CIs
+contain 0), 7 %. Replay of the live loop itself over 11-12 07:11..11-13 07:11
+(`run_family_a_calm_live_eval.py --replay-hours 24`): 287 issues, 0 refused, 570 joint rows scored;
+served excess +0.07 [-0.07, +0.27] (5 min), +0.07 [-0.08, +0.29] (15 min); median per-reading 80 %
+coverage 0.80 (athena load / CPU watts 0.41 / 0.43: #3310). The 7-day live calm check is #3309.
+
 ## Contracts
 
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).
   Consumer: orion-hardware-watch shows the shed probability beside each reflex decision
   (observe-only).
-- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`, `manual_migration_prediction_action_bet_v1.sql`, `manual_migration_prediction_bill_forecast_v1.sql`.
+- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`, `manual_migration_prediction_action_bet_v1.sql`, `manual_migration_prediction_bill_forecast_v1.sql`, `manual_migration_prediction_joint_surprise_v1.sql` (family A).
   Reads (read-only, other services' tables): `orion_biometrics_summary`, `orion_biometrics_cluster`,
   `home_cooling_sample`, `office_env_sample` (index: `manual_migration_prediction_office_env_idx_v1.sql`), `energy_usage_interval`, `energy_bill_actual`.
 - Series registry: `config/prediction/series.v1.yaml` (baked into the image).
@@ -478,7 +528,9 @@ PYTHONPATH=../..:. python -m pytest tests -q
 PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py          # planted effects, many seeds
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_calm_live_eval.py --hours 24   # surprise calm check (live, read-only)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_node_replay_eval.py --hours 72  # gate + node fold replayed (live, read-only)
-POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 [--out <dir>]  # family A gate + rungs + joint surprise (read-only, ~40 s)
+OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 2 [--out <dir>]  # family A gate + rungs + static vs adaptive joint surprise (read-only, ~75 s)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --hours 168      # family A calm check on stored joint rows (PASS needs 7 days)
+OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --replay-hours 24  # dry run of the live loop in memory (read-only, ~4 min)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14   # adaptive ranges replayed (read-only, ~6 min)
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]

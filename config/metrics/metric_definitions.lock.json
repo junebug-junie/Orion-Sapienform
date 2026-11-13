@@ -1,10 +1,16 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 789,
+  "metric_count": 788,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 0,
+    "change_count": 7,
+    "high_severity_count": 6,
     "changes": [
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error (declared_consumers: ['orion.substrate.endogenous_curiosity:_prediction_error_ca\u2026 -> ['orion.attention.world_first:judge_candidate'])",
+      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error (declared_consumers: ['orion.substrate.endogenous_curiosity:_prediction_error_ca\u2026 -> ['orion.attention.world_first:judge_candidate'])",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error (meaning: TRIGGER: cabinet is warming unexpectedly -- fires on\u2026 -> ALARM, not a prediction error (PE suite rebuild 2026-11-13;\u2026\u2026)",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error (meaning: TRIGGER: strain new\u2026 -> NEWS, not a prediction error (PE suite rebuild 2026-11-13; \u2026\u2026)",
+      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error (meaning: TRIGGER: a street e\u2026 -> ALARM, not a prediction error (PE suite rebuild 2026-11-13;\u2026\u2026)",
       "medium added metric://bus_channel/orion-hub/orion:personality:choice"
     ]
   },
@@ -4740,7 +4746,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error": {
-      "meaning": "TRIGGER: cabinet is warming unexpectedly -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node only; not in FieldStateV1 node_vectors.",
+      "meaning": "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): cabinet is warming -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node only; not in FieldStateV1 node_vectors.",
       "value_kind": "trigger",
       "rest": "0.0 = not elevated, or elevated but not rising >= 0.5 C in 15 min. Mostly zero by design (97% live).",
       "rest_range": [
@@ -4750,32 +4756,12 @@
       "sparsity": "designed_sparse",
       "absent_means": "when the thermal reading is 'unknown' (older than the 300 s grace) the tick writes nothing and the node keeps its last value (worker.py:1434).",
       "declared_consumers": [
-        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+        "orion.attention.world_first:judge_candidate"
       ],
       "prompt_sites": [
         "orion.attention.self_readings:render_self_readings"
       ],
       "notes": "category=physical_substrate level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error": {
-      "meaning": "How unusual the latest codebase change event (git, PR, graph) was versus each source's own history: mean clipped z-score across the sub-domains, 3 sigma = 1.0.",
-      "value_kind": "level",
-      "rest": "0.0 = no sub-domain above its usual. Mostly zero by design (91% live).",
-      "rest_range": [
-        0.0,
-        0.0
-      ],
-      "sparsity": "designed_sparse",
-      "absent_means": "only written on a codebase delta event; carried forward in node_vectors between events.",
-      "polarity": "higher_is_worse",
-      "declared_consumers": [
-        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
-      ],
-      "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings"
-      ],
-      "notes": "category=self_monitoring level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error": {
@@ -4837,7 +4823,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error": {
-      "meaning": "TRIGGER: strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors.",
+      "meaning": "NEWS, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors.",
       "value_kind": "trigger",
       "rest": "0.0 = no strain news this tick (not strained, or strained with no event due). The strain level is not the value: a 54 h strain reads 0.0 between its news events.",
       "rest_range": [
@@ -4847,7 +4833,7 @@
       "sparsity": "designed_sparse",
       "absent_means": "only written as 1.0 at a strain news event, then carried unwritten for attention's 300 s orienting window; every other tick with a known regulation reading writes 0.0. An unknown, stale or missing regulation reading writes nothing and the node keeps its last value.",
       "declared_consumers": [
-        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+        "orion.attention.world_first:judge_candidate"
       ],
       "prompt_sites": [
         "orion.attention.self_readings:render_self_readings"
@@ -4856,7 +4842,7 @@
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error": {
-      "meaning": "TRIGGER: a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body.",
+      "meaning": "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body.",
       "value_kind": "trigger",
       "rest": "0.0 = the street listener is up, a street camera delivered a frame recently, and no event passed the gate in the last 90 s. Written as a real 0.0 every tick, never decayed to it.",
       "rest_range": [

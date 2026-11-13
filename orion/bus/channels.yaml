@@ -2894,8 +2894,10 @@ channels:
   # signal-design.md) -- sixth prediction_error domain, sensing git/GitHub/
   # graphify structural change. orion-cocreation-signals (not yet a live
   # service as of this contract patch) will own all external I/O for this
-  # domain; orion-substrate-runtime's existing fast tick reads this event and
-  # writes node:substrate.codebase via codebase_prediction_error() -- no
+  # domain; orion-substrate-runtime reads this event and scores it into
+  # substrate_codebase_delta_log + substrate_codebase_mass_baseline (the
+  # node:substrate.codebase prediction-error node was retired 2026-11-13: a
+  # churn z, not a forecast) -- no
   # external I/O added to orion-substrate-runtime itself. Each event carries
   # exactly one producer domain's real delta (git/pr_lifecycle/graph); see
   # orion/schemas/codebase_delta.py's own docstring for why the other two

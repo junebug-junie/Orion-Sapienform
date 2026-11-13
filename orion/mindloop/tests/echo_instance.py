@@ -119,12 +119,19 @@ SETTINGS = SimpleNamespace(
 )
 
 
-def echo_runtime(results, *, bus=None, outcome="funded", turns=None, requests=("hello",)) -> EchoRuntime:
+_DEFAULT = object()
+
+
+def echo_runtime(results, *, bus=None, outcome="funded", turns=None, requests=("hello",),
+                 decision: Any = _DEFAULT) -> EchoRuntime:
+    """``decision`` (when given, even None) is the market's whole answer; else one built from ``outcome``."""
     clock = {"now": T0}
     bids, released = [], []
 
     async def bid(want):
         bids.append(want)
+        if decision is not _DEFAULT:
+            return decision
         return SimpleNamespace(outcome=outcome, reason="test", binding_constraint=None)
 
     async def release(want_id):

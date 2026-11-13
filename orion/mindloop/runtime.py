@@ -11,7 +11,11 @@ One tick (every ``<prefix>TICK_SEC``):
 2. Juniper first: while a Juniper turn runs, no bid (``<name>_yield``).
 3. ``_wants_to_think(now)`` (instance), then the self-monitor gate on the thought (``infer``).
 4. The bid: a ``WantV1`` of the instance's family, tier and lane, priced at its cost ceiling (the
-   generation budget alone). Anything but ``funded`` waits: the loop never fails open.
+   generation budget alone). ``funded`` thinks. A ``capacity_reserved`` deferral with a positive net (the
+   lane is full, but the thought is worth its price) also thinks: the GPU pool's own queue holds the call,
+   bounded by the seat wait (the same rule as ``bind_verdict`` in orion/physiology/binding.py and
+   ``goes_ahead`` in orion/physiology/prime_charge.py). Anything else waits, and no answer is "not funded":
+   the loop never fails open.
 5. ``think``: one model call (``_ask``, instance-built frame, via ``_ask_model``), seat wait and generation
    budget kept apart. A try that never reached the model is not a thought (``orion/mindloop/backoff.py``):
    no act, no refractory, a bounded backoff, and after a no-seat try the starved route. Otherwise the
@@ -55,6 +59,8 @@ from orion.mindloop.backoff import TryKind, classify_try, note_model_reached, no
 from orion.mindloop.gate import GATE_RECHECK_SEC, build_act_gate, gate_why
 from orion.mindloop.instance import LoopIdentity
 from orion.mindloop.turns import JUNIPER_TURNS, JuniperTurns
+from orion.physiology.binding import consent_block
+from orion.physiology.prime_charge import goes_ahead
 from orion.schemas.grammar import ActV1
 from orion.self_monitor.adapters import act_faculty
 from orion.self_monitor.gate import FAILING_STATUSES, GateDecision
@@ -316,13 +322,24 @@ class MindLoopRuntime:
                       lanes=[self.cfg("BID_LANE")], cost=self._cost_ceiling(), **self._want_extras())
         decision = await self.bid(want)
         outcome = getattr(decision, "outcome", None)
-        if outcome != "funded":
-            # Never fail open: no answer is "not funded" (orion/physiology/client.py).
+        if not goes_ahead(decision) or (decision is not None and consent_block(decision) is not None):
+            # Never fail open: no answer is "not funded" (orion/physiology/client.py). A capacity deferral
+            # worth its price is NOT a refusal: it goes ahead and the GPU pool's queue holds it (bind_verdict,
+            # orion/physiology/binding.py). Live 10-30..11-03: 910 Prime thought bids were deferred
+            # capacity_reserved on lane:chat with a positive net and treated as refusals here. A consent block
+            # never goes ahead (bind_verdict's first rule), whatever the outcome says.
             self.log.info(f"{name}_bid_not_funded outcome=%s reason=%s binding=%s pending=%d",
                           outcome or "none", getattr(decision, "reason", None) or "-",
                           getattr(decision, "binding_constraint", None) or "-", self._pending_count())
             await self._on_not_funded(decision)
             return
+        if outcome != "funded":
+            # Queued at the pool, not funded: say so, with the market's own reason and net. The market made
+            # no reservation for a deferral, so the release below is a no-op for it (kept on one path).
+            self.log.info(f"{name}_bid_queued_at_pool outcome=%s reason=%s binding=%s net=%s pending=%d",
+                          outcome, getattr(decision, "reason", None) or "-",
+                          getattr(decision, "binding_constraint", None) or "-", getattr(decision, "net", None),
+                          self._pending_count())
         try:
             await self.think(inputs)
         finally:

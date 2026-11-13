@@ -84,7 +84,7 @@ A fourth piece, the consent gate, is a separate small contract whose first user 
 
 | Family | Bid site | Rule on capacity deferral | 14-day decisions |
 |---|---|---|---|
-| `prime` | `orion/mindloop/runtime.py` tick | Anything but `funded` waits. | 331 funded, 910 capacity (0 since 11-04) |
+| `prime` | `orion/mindloop/runtime.py` tick | Anything but `funded` waits. (2026-11-13: now `queued_at_pool` like the others, `goes_ahead`.) | 331 funded, 910 capacity (0 since 11-04) |
 | `durable.curiosity_investigate` | `services/orion-durable-runs/app/run_bids.py` `RunBidder.bind` | `capacity_reserved` with net > 0 is `queued_at_pool` (admitted) | 17 funded, 32 capacity (all admitted) |
 | `dream.cycle` | `services/orion-dream/app/physiology_bind.py` | same rule as curiosity | 14 funded |
 | `self_regulate.shed` | `services/orion-durable-runs/app/cooling_act.py` | only `funded` sheds | 0 wants in 14 days (no warming event qualified) |

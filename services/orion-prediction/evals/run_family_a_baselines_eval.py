@@ -8,7 +8,8 @@ tables, screens them (app/family_a.py), then at 5 and 15 min ahead:
 - tests ridge against the better baseline per target on the per-origin joint loss: overlap-aware
   paired t AND one-day block bootstrap, both p < 0.05 for a win;
 - computes the joint (whitened, conformal) surprise on held-out origins, and on the most recent
-  ``--live-hours`` with a model trained only on the data before them (the live rest check).
+  ``--live-hours`` with a model trained only on the data before them (the live rest check), with the
+  static and the adaptive calibration side by side (app/family_a.py ``ADAPTIVE``).
 
 Usage (from services/orion-prediction):
     POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 \
@@ -45,6 +46,13 @@ ALREADY_SCORED = ("athena.cabinet_temp_c", "office.temp_c")
 
 def _floor(ts: datetime, grain: int) -> datetime:
     return ts.replace(second=0, microsecond=0, minute=ts.minute - ts.minute % grain)
+
+
+def _p_shares(p: np.ndarray) -> dict:
+    ok = np.isfinite(p)
+    if not ok.any():
+        return {"share_p_le_0_05": float("nan"), "share_p_le_0_2": float("nan")}
+    return {"share_p_le_0_05": float(np.mean(p[ok] <= 0.05)), "share_p_le_0_2": float(np.mean(p[ok] <= 0.2))}
 
 
 def common_days(frame: pd.DataFrame, cols: list[str]) -> int:
@@ -121,7 +129,12 @@ def main() -> int:
     for h in cfg.horizons_min:
         for seed in args.seeds:
             t1 = time.time()
-            run = fa.run_horizon(train_frame, targets, inputs, h // g, g, seed)
+            # Inputs screened on this seed's TRAINING rows only (fa.backtest); the window-wide verdicts
+            # above are for the table and the live check.
+            run, _seed_verdicts = fa.backtest(train_frame, cfg.hygiene, h // g, g, seed)
+            if run is None:
+                print(f"| {h} min | {seed} | no input passed as a target on this seed's training rows |")
+                continue
             base, pick = fa.best_baseline(run)
             cmp_ = fa.compare(run, "ridge_var", base, g, seed)
             ar_vs_p = fa.compare(run, "ar", run.sq["persistence"], g, seed)
@@ -129,6 +142,8 @@ def main() -> int:
             la = float(np.nanmean(fa.joint_loss(run.sq["ar"])))
             js = fa.joint_surprise(run)
             rest = fa.rest_summary(js.excess, train_frame.index[run.held], seed)
+            jsa = fa.joint_surprise(run, calibration=fa.ADAPTIVE)
+            rest_a = fa.rest_summary(jsa.excess, train_frame.index[run.held], seed)
             per_t = fa.per_target_table(run, base, pick, g)
             wins.setdefault(h, []).append(cmp_["wins"])
             if cmp_["p_paired_t"] is None or rest.get("n", 0) == 0:
@@ -145,8 +160,9 @@ def main() -> int:
                                        "baseline_pick": pick, "alphas": run.alphas,
                                        "refused_targets": run.refused_targets, "per_target": per_t,
                                        "joint_surprise_heldout": {"n_cal": js.n_cal, "calm_point": js.calm,
-                                                                  "share_p_le_0_05": float(np.nanmean(js.p <= 0.05)),
-                                                                  **rest},
+                                                                  **_p_shares(js.p), **rest},
+                                       "joint_surprise_heldout_adaptive": {"n_cal": jsa.n_cal, "calm_point": jsa.calm,
+                                                                           **_p_shares(jsa.p), **rest_a},
                                        "seconds": round(time.time() - t1, 1)})
     # Per-target ratios of the first seed, for the PR table.
     print("\n## Per target (seed %d): ridge / best-baseline loss, Holm p\n" % args.seeds[0])
@@ -162,16 +178,19 @@ def main() -> int:
         print(f"| {t} | " + " | ".join(cells) + " |")
 
     print("\n## Joint surprise on held-out origins (excess = -ln p - calm point; calm = 0)\n")
-    print("| horizon | seed | n | n_cal | mean excess | 95% CI | share p<=0.05 | hours at rest (calibrated null) | "
-          "longest hours >0.5 |")
-    print("|---|---|---|---|---|---|---|---|---|")
+    print("Calibrated: mean excess CI contains 0; p<=0.05 ~0.05; p<=0.2 ~0.20; hours at rest ~ the null share.\n")
+    print("| horizon | seed | calibration | n | n_cal | mean excess | 95% CI | p<=0.05 | p<=0.2 | "
+          "hours at rest (calibrated null) | longest hours >0.5 |")
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
     for b in report["backtest"]:
-        j = b["joint_surprise_heldout"]
-        if not j.get("n"):
-            continue
-        print(f"| {b['horizon_min']} min | {b['seed']} | {j['n']} | {j['n_cal']} | {j['mean_excess']:+.3f} | "
-              f"[{j['mean_ci95'][0]:+.3f}, {j['mean_ci95'][1]:+.3f}] | {j['share_p_le_0_05']:.3f} | "
-              f"{j['share_hours_at_rest']:.2f} ({j['null_share_hours_at_rest']:.2f}) | {j['longest_hours_above_0_5']} |")
+        for label, key in (("static", "joint_surprise_heldout"), ("adaptive", "joint_surprise_heldout_adaptive")):
+            j = b.get(key) or {}
+            if not j.get("n"):
+                continue
+            print(f"| {b['horizon_min']} min | {b['seed']} | {label} | {j['n']} | {j['n_cal']} | {j['mean_excess']:+.3f} | "
+                  f"[{j['mean_ci95'][0]:+.3f}, {j['mean_ci95'][1]:+.3f}] | {j['share_p_le_0_05']:.3f} | "
+                  f"{j['share_p_le_0_2']:.3f} | {j['share_hours_at_rest']:.2f} ({j['null_share_hours_at_rest']:.2f}) | "
+                  f"{j['longest_hours_above_0_5']} |")
 
     # 3. Live rest check: train on everything before the last live window, gate, score the window.
     print(f"\n## Live rest check: last {args.live_hours} h, model trained only on data before it\n")
@@ -187,29 +206,32 @@ def main() -> int:
         print(f"live gate REFUSED: {exc}")
     report["live"]["gate"] = gate
     if gate == "pass":
-        print("| horizon | n | n_cal | mean excess | 95% CI | share p<=0.05 | hours at rest (calibrated null) | "
-              "hourly min..max | longest hours >0.5 |")
-        print("|---|---|---|---|---|---|---|---|---|")
+        print("| horizon | calibration | n | n_cal | mean excess | 95% CI | p<=0.05 | p<=0.2 | "
+              "hours at rest (calibrated null) | hourly min..max | longest hours >0.5 |")
+        print("|---|---|---|---|---|---|---|---|---|---|---|")
         for h in cfg.horizons_min:
             k = h // g
             train_idx = np.arange(0, train_end_i - k)
             held_idx = np.arange(len(frame) - live_rows, len(frame) - k)
             run = fa.run_horizon(frame, targets, inputs, k, g, 0, train_idx=train_idx, held_idx=held_idx)
-            js = fa.joint_surprise(run)
-            rest = fa.rest_summary(js.excess, frame.index[held_idx], 0)
-            if rest.get("n", 0) == 0:
-                print(f"| {h} min | 0 | {js.n_cal} | no scored origins |")
-                report["live"][str(h)] = {"n": 0}
-                continue
-            spikes = fa.top_spikes(js, frame.index[held_idx], run.targets)
-            share = float(np.nanmean(js.p <= 0.05))
-            report["live"][str(h)] = {"n_cal": js.n_cal, "calm_point": js.calm, "share_p_le_0_05": share,
-                                      **rest, "top_spikes": spikes, "mean_shares": fa.mean_shares(js, run.targets)}
-            print(f"| {h} min | {rest['n']} | {js.n_cal} | {rest['mean_excess']:+.3f} | "
-                  f"[{rest['mean_ci95'][0]:+.3f}, {rest['mean_ci95'][1]:+.3f}] | {share:.3f} | "
-                  f"{rest['share_hours_at_rest']:.2f} ({rest['null_share_hours_at_rest']:.2f}) | "
-                  f"{rest['hourly_min']:+.2f}..{rest['hourly_max']:+.2f} | "
-                  f"{rest['longest_hours_above_0_5']} |")
+            for label in (fa.STATIC, fa.ADAPTIVE):
+                js = fa.joint_surprise(run, calibration=label)
+                rest = fa.rest_summary(js.excess, frame.index[held_idx], 0)
+                key = str(h) if label == fa.STATIC else f"{h}_adaptive"
+                if rest.get("n", 0) == 0:
+                    print(f"| {h} min | {label} | 0 | {js.n_cal} | no scored origins |")
+                    report["live"][key] = {"n": 0}
+                    continue
+                spikes = fa.top_spikes(js, frame.index[held_idx], run.targets)
+                shares = _p_shares(js.p)
+                report["live"][key] = {"n_cal": js.n_cal, "calm_point": js.calm, **shares, **rest,
+                                       "top_spikes": spikes, "mean_shares": fa.mean_shares(js, run.targets)}
+                print(f"| {h} min | {label} | {rest['n']} | {js.n_cal} | {rest['mean_excess']:+.3f} | "
+                      f"[{rest['mean_ci95'][0]:+.3f}, {rest['mean_ci95'][1]:+.3f}] | {shares['share_p_le_0_05']:.3f} | "
+                      f"{shares['share_p_le_0_2']:.3f} | "
+                      f"{rest['share_hours_at_rest']:.2f} ({rest['null_share_hours_at_rest']:.2f}) | "
+                      f"{rest['hourly_min']:+.2f}..{rest['hourly_max']:+.2f} | "
+                      f"{rest['longest_hours_above_0_5']} |")
         for h in [h for h in cfg.horizons_min if report["live"][str(h)].get("n")]:
             print(f"\nTop joint misses, {h} min (readings carrying most of each; a hint, not a cause):")
             for s in report["live"][str(h)]["top_spikes"]:

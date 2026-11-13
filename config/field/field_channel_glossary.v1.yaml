@@ -398,10 +398,10 @@ channels:
     channel: prediction_error
     level: [node]
     category: physical_substrate
-    meaning: "TRIGGER: cabinet is warming unexpectedly -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node only; not in FieldStateV1 node_vectors."
+    meaning: "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): cabinet is warming -- fires only while the cabinet thermal state is 'elevated' (never while 'hot') and the temperature rose at least 0.5 C in the last 15 minutes; value is rise/1.0 C, so 0.5-1.0 when it fires. FalkorDB node only; not in FieldStateV1 node_vectors."
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.cabinet'"
     consumers:
-      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.attention.world_first:judge_candidate"
     semantics:
       value_kind: trigger
       rest: "0.0 = not elevated, or elevated but not rising >= 0.5 C in 15 min. Mostly zero by design (97% live)."
@@ -424,7 +424,7 @@ channels:
     channel: prediction_error
     level: [node]
     category: self_monitoring
-    meaning: "TRIGGER: a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body."
+    meaning: "ALARM, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): a street event passed the attention gate -- a doorbell ring (always), or a graded cross-camera handoff with p < 0.05 from a camera that is up, under the hourly cap. Value is the event's salience (ring 1.0), held 90 s, then 0.0. The outside world, not Orion's body."
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.street'"
     consumers:
       - "orion.substrate.attention_broadcast:world_first_signals"
@@ -447,10 +447,10 @@ channels:
     channel: prediction_error
     level: [node]
     category: physical_substrate
-    meaning: "TRIGGER: strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors."
+    meaning: "NEWS, not a prediction error (PE suite rebuild 2026-11-13; orion.substrate.prediction_error_freshness.ALARM_NODE_IDS): strain news -- fires 1.0 when Orion's regulation turns strained (onset), when a new strain cause joins the episode or the cabinet crosses critical 34 C (escalation), and as reminders at 30 min, 1 h, 2 h, 4 h, 8 h, then every 8 h while it lasts; at most 8 per local day, 30 min apart. The strain level itself never competes. FalkorDB node only; not in FieldStateV1 node_vectors."
     trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.strain'"
     consumers:
-      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.attention.world_first:judge_candidate"
     semantics:
       value_kind: trigger
       rest: "0.0 = no strain news this tick (not strained, or strained with no event due). The strain level is not the value: a 54 h strain reads 0.0 between its news events."
@@ -657,29 +657,14 @@ channels:
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
 
-  # orion/substrate/prediction_error.py:293 codebase: per sub-domain (git,
-  # pr, graph) _domain_zscore with negatives clipped (:290), score =
-  # min(1, mean(z)/3) (:366); 0.0 when no sub-domain fires (:363). One write
-  # per delta event (worker.py:2621). Excluded from the self-model domains
-  # (worker.py:163-174). Live: 91% exact zeros.
-  - node: "node:substrate.codebase"
-    producer: orion-substrate-runtime
-    channel: prediction_error
-    level: [node]
-    category: self_monitoring
-    meaning: "How unusual the latest codebase change event (git, PR, graph) was versus each source's own history: mean clipped z-score across the sub-domains, 3 sigma = 1.0."
-    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.codebase'"
-    consumers:
-      - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
-    semantics:
-      value_kind: level
-      rest: "0.0 = no sub-domain above its usual. Mostly zero by design (91% live)."
-      # rest_range live 2026-10-13: 91.5% exact 0.0, p50 0.0, p95 0.118, max 1.0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors)
-      rest_range: [0.0, 0.0]
-      sparsity: designed_sparse
-      absent_means: "only written on a codebase delta event; carried forward in node_vectors between events."
-      prompt_sites:
-        - "orion.attention.self_readings:render_self_readings"
+  # node:substrate.codebase RETIRED 2026-11-13 (PE suite rebuild,
+  # docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md):
+  # a clipped z of git/PR/graph churn per codebase delta event, not a
+  # forecast. It won 2.8% of attention frames and seeded 128 curiosity
+  # candidates in the 7 days before removal. No node write, no field receipt,
+  # no new history rows; a lingering node or row is fenced by
+  # RETIRED_PREDICTION_ERROR_NODE_IDS. The churn score stays in
+  # substrate_codebase_delta_log for the Hub co-creation tab and self-study.
 
   # node:substrate.route's entry removed 2026-11: route_prediction_error() and
   # the node were retired (PE suite rebuild step 5); the route reducer and

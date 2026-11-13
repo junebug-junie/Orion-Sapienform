@@ -34,7 +34,10 @@ from typing import Any, Sequence
 
 from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalV1
 from orion.schemas.attention_candidate import NO_CURIOSITY_CONSUMER_NODE_IDS
-from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
+from orion.substrate.prediction_error_freshness import (
+    is_alarm_node,
+    is_retired_prediction_error_node,
+)
 from orion.substrate.pressure import PressureConfig
 
 _TRUTHY = {"1", "true", "yes", "on"}
@@ -313,6 +316,13 @@ def _prediction_error_candidates(
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
             if not node_id or node_id in NO_CURIOSITY_CONSUMER_NODE_IDS:
+                continue
+            if is_alarm_node(node_id):
+                # An alarm (cabinet warming, strain news, street event) fired;
+                # its value is not a surprise size. It reaches curiosity through
+                # the attention open loop when it wins attention, not as
+                # "sustained prediction error" (PE suite rebuild, alarms move
+                # out of the PE group).
                 continue
             if is_retired_prediction_error_node(node_id) or not is_measurement(node_id):
                 # placeholder / bucket / no glossary entry: the stored number is

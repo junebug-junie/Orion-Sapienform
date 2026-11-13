@@ -68,14 +68,72 @@ PREDICTION_ERROR_MISSING_REASON_KEY = "prediction_error_missing_reason"
 # node:substrate.chat joined 2026-11-13 (retire step 6): an EWMA z of the change
 # in two chat pressure hints, negatives clipped -- not a forecast. Successor:
 # node:prediction.chat_turn (settled chat-turn self-bets, scored as surprise).
+#
+# node:substrate.codebase joined 2026-11-13: a clipped z of git/PR/graph churn
+# per codebase delta event, not a forecast. No successor. The churn score itself
+# stays in substrate_codebase_delta_log for the Hub co-creation tab and Orion's
+# self-study reader; only the prediction-error node, its field receipt and its
+# history rows are gone.
 RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
-    {"node:substrate.bus_synaptic", "node:substrate.route", "node:substrate.chat"}
+    {
+        "node:substrate.bus_synaptic",
+        "node:substrate.route",
+        "node:substrate.chat",
+        "node:substrate.codebase",
+    }
 )
+
+# Alarms and news, not prediction errors (PE suite rebuild, "Alarms move out of
+# the PE group"). Each fires on a fact (the cabinet rose >= 0.5 C in 15 min while
+# elevated; a strain news event; a doorbell ring or a graded street handoff), not
+# on a miss against a forecast. They still travel on the node's
+# ``prediction_error`` field and in substrate_node_prediction_error_history,
+# because that is the attention contest's input and strain news rebuilds its
+# budget from those rows after a restart. What changes is who may read them:
+#
+# - Alarm-aware readers keep them: the attention contests (a ``trigger`` value
+#   means "it fired"), the dynamics pressure seed that admits them to the
+#   workspace, self-readings (fires per hour), the hourly outcome rollup (on/off
+#   hours) and the metacog episode gate (judged by the same trigger rule).
+# - Readers that treat the value as a surprise SIZE skip them: endogenous
+#   curiosity's prediction-error seeds, the self-model's prediction-error
+#   domains, the Hub prediction-error domain panel.
+#
+# The glossary is the semantic owner: every ``prediction_error`` entry whose
+# value_kind is ``trigger`` is an alarm, and this set must equal that list
+# (tests/test_pe_alarm_refile.py). The set exists so readers need no glossary
+# I/O to ask the question.
+ALARM_NODE_IDS: frozenset[str] = frozenset(
+    {"node:substrate.cabinet", "node:substrate.strain", "node:substrate.street"}
+)
+
+# What each alarm is called where a person or Orion reads it. Never
+# "prediction error".
+ALARM_LABELS: dict[str, str] = {
+    "node:substrate.cabinet": "cabinet warming alarm",
+    "node:substrate.strain": "strain news",
+    "node:substrate.street": "street event alarm",
+}
 
 
 def is_retired_prediction_error_node(node_id: Any) -> bool:
     """True when ``node_id`` names a retired prediction-error node."""
     return str(node_id or "") in RETIRED_PREDICTION_ERROR_NODE_IDS
+
+
+def is_alarm_node(node_id: Any) -> bool:
+    """True when ``node_id`` is an alarm/news node, not a prediction error."""
+    return str(node_id or "") in ALARM_NODE_IDS
+
+
+def node_signal_label(node_id: Any, short_name: str | None = None) -> str:
+    """Display label for a node that carries a ``prediction_error`` field:
+    the alarm's own name for an alarm, else "<short name> prediction error"."""
+    nid = str(node_id or "")
+    if nid in ALARM_LABELS:
+        return ALARM_LABELS[nid]
+    name = short_name if short_name is not None else nid
+    return f"{name} prediction error"
 
 
 def missing_input_reason(node: Any) -> str | None:

@@ -183,8 +183,8 @@ def test_goal_set_is_not_widened_beyond_the_native_five() -> None:
     """Cabinet is a body node that can win world-first attention, but a goal
     on it would bias the broadcast toward a node a real self-reversible
     action binds to. Widening the goal set is a separate decision."""
-    frame = _frame([_node("node:substrate.cabinet", 0.99), _node("node:substrate.codebase", 0.98)])
-    assert {t.target_id for t in frame.node_targets} == {"node:substrate.cabinet", "node:substrate.codebase"}
+    frame = _frame([_node("node:substrate.cabinet", 0.99), _node("node:substrate.strain", 0.98)])
+    assert {t.target_id for t in frame.node_targets} == {"node:substrate.cabinet", "node:substrate.strain"}
     assert qualified_node_targets(frame) == []
 
 

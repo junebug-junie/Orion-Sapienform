@@ -159,7 +159,7 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "live_runtime_projection",
             "Body signals that are high or unusual for themselves right now: a fixed template (no "
             "LLM) over substrate_node_prediction_error_history, each line scored 0-10 against the "
-            "signal's own 7 days and citing [pe:<node>@<observed_at>]. Set by orion-thought for "
+            "signal's own 7 days and citing [pe:<node>@<observed_at>] ([alarm:...] for an alarm). Set by orion-thought for "
             "stance_react and reverie (app/self_readings_cue.py, orion/attention/self_readings.py).",
         ),
         _entry(

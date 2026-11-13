@@ -53,7 +53,10 @@ from sqlalchemy import create_engine, text
 
 from orion.graph.falkor_client import RedisGraphQueryClient
 from orion.substrate.attention_self_model import ACTIVE_INFERENCE_DOMAINS
-from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
+from orion.substrate.prediction_error_freshness import (
+    is_alarm_node,
+    is_retired_prediction_error_node,
+)
 
 from app.settings import settings
 
@@ -90,9 +93,11 @@ router = APIRouter(prefix="/api/attention-organ", tags=["attention-organ"])
 # `bus_synaptic` and `route` REMOVED 2026-11 (PE suite rebuild step 5), same
 # reasoning as transport above: producers, nodes and readers retired together.
 # `chat` REMOVED 2026-11-13 (step 6); successor node:prediction.chat_turn.
+# `codebase` REMOVED 2026-11-13 (PE suite rebuild): a churn z, not a
+# forecast; node retired. Alarm nodes (cabinet, strain, street) are not
+# prediction-error domains and are skipped below (ALARM_NODE_IDS).
 KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
     "biometrics",
-    "codebase",
     "execution",
 )
 
@@ -292,7 +297,7 @@ def build_domain_rows(
             continue
         # A retired node (2026-11: bus_synaptic, route) can linger in the
         # graph; its stored value is not a reading and is not shown.
-        if is_retired_prediction_error_node(node_id):
+        if is_retired_prediction_error_node(node_id) or is_alarm_node(node_id):
             continue
         domain = node_id[len(_NODE_ID_PREFIX) :]
         raw_value = row.get("prediction_error")

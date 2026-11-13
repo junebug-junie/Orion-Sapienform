@@ -4,9 +4,8 @@
 
 Uses the real OrionCodec to encode/decode a real CodebaseDeltaV1-carrying
 BaseEnvelope (genuine wire round-trip), with the store and
-_write_prediction_error_node mocked -- those are already covered by
-test_store_codebase_mass_baseline.py and test_worker_prediction_error_node.py
-respectively.
+_write_prediction_error_node mocked. Since 2026-11-13 the handler must never
+call the node writer or save a receipt: node:substrate.codebase is retired.
 """
 
 from __future__ import annotations
@@ -78,32 +77,15 @@ def test_git_domain_scores_and_persists() -> None:
     )
     worker._handle_codebase_delta_message(_encode(event))
 
-    fake_write.assert_called_once()
-    _, kwargs = fake_write.call_args
-    assert kwargs["node_id"] == "node:substrate.codebase"
-    assert kwargs["reducer_key"] == "codebase"
-    assert kwargs["error"] == pytest.approx(0.2 / 3.0)  # zscore (520-500)/sqrt(10000)=0.2
+    # node:substrate.codebase retired 2026-11-13 (PE suite rebuild): no graph
+    # node and no field receipt, ever. The score lives only in the delta log.
+    fake_write.assert_not_called()
+    fake_store.save_receipt.assert_not_called()
 
     fake_store.save_codebase_mass_baseline.assert_called_once()
     saved_baseline, save_kwargs = fake_store.save_codebase_mass_baseline.call_args
     assert saved_baseline[0].git.n == 6
     assert save_kwargs["retention_days"] == 30.0
-
-    # field-digester's state_deltas.py ingests ReductionReceiptV1 rows
-    # (target_kind="prediction_signal"), NOT the FalkorDB node written above --
-    # a real gap found live 2026-07-31: this call was originally missing
-    # entirely, then landed on a commit that got pushed to the flag-flip
-    # branch AFTER that PR (#1528) had already merged with only its first two
-    # commits -- so it silently never reached main or the live container.
-    # Confirmed live 2026-07-31 by diffing the running container's actual
-    # loaded source against origin/main: neither had it.
-    fake_store.save_receipt.assert_called_once()
-    receipt = fake_store.save_receipt.call_args[0][0]
-    assert receipt.state_deltas[0].target_kind == "prediction_signal"
-    assert receipt.state_deltas[0].target_id == "node:substrate.codebase"
-    assert receipt.state_deltas[0].after["pressure_hints"]["prediction_error"] == pytest.approx(
-        0.2 / 3.0, abs=1e-4
-    )
 
     # Raw-event history for a future Hub "cocreation signals" analytics tab
     # (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md
@@ -115,12 +97,9 @@ def test_git_domain_scores_and_persists() -> None:
     assert log_kwargs["retention_days"] == 180.0
 
 
-def test_calm_tick_writes_node_log_and_zero_receipt() -> None:
-    """A below-baseline (score == 0.0) tick must still write the FalkorDB
-    node, the raw-event log, AND a 0.0 receipt (2026-09-25): the receipt is
-    the only path into the field's node:substrate.codebase prediction_error
-    channel, so skipping it on a calm delta froze that channel at its last
-    non-zero score."""
+def test_calm_tick_writes_log_and_no_retired_node() -> None:
+    """A below-baseline (score == 0.0) tick still writes the raw-event log and
+    baseline, and (since 2026-11-13) neither the retired node nor a receipt."""
     worker, fake_store, fake_write = _make_worker(
         baseline=CodebaseMassBaseline(git=_DomainEwmaBaseline(ewma=5000.0, variance=1_000_000.0, n=10))
     )
@@ -135,11 +114,8 @@ def test_calm_tick_writes_node_log_and_zero_receipt() -> None:
     )
     worker._handle_codebase_delta_message(_encode(event))
 
-    fake_write.assert_called_once()
-    assert fake_write.call_args[1]["error"] == 0.0
-    fake_store.save_receipt.assert_called_once()
-    receipt = fake_store.save_receipt.call_args[0][0]
-    assert receipt.state_deltas[0].after["pressure_hints"]["prediction_error"] == 0.0
+    fake_write.assert_not_called()
+    fake_store.save_receipt.assert_not_called()
     fake_store.save_codebase_mass_baseline.assert_called_once()
     fake_store.save_codebase_delta_log.assert_called_once()
     assert fake_store.save_codebase_delta_log.call_args[1]["score"] == 0.0
@@ -156,7 +132,7 @@ def test_pr_lifecycle_domain_scores() -> None:
     )
     worker._handle_codebase_delta_message(_encode(event))
 
-    fake_write.assert_called_once()
+    fake_write.assert_not_called()  # node:substrate.codebase retired 2026-11-13
     fake_store.save_codebase_mass_baseline.assert_called_once()
     saved_baseline = fake_store.save_codebase_mass_baseline.call_args[0][0]
     assert saved_baseline.pr.n == 1
@@ -180,7 +156,7 @@ def test_graph_domain_scores_with_none_jaccard() -> None:
     )
     worker._handle_codebase_delta_message(_encode(event))
 
-    fake_write.assert_called_once()
+    fake_write.assert_not_called()  # node:substrate.codebase retired 2026-11-13
     fake_store.save_codebase_mass_baseline.assert_called_once()
     fake_store.save_codebase_delta_log.assert_called_once()
     assert fake_store.save_codebase_delta_log.call_args[0][0].domain == "graph"

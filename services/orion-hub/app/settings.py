@@ -1869,7 +1869,8 @@ class Settings(BaseSettings):
     # Personality rev 4 (orion/prime/tending.py): the Prime block gains at most 2 "tending: <label>
     # [disposition:<id>]" lines from HUB_CURIOSITY_DURABLE_RUNS_URL/personality/frame (choice-built tendencies
     # with >= 10 weighted choices), dropped first when over the 600-char cap. No shadow. false = kill switch.
-    PRIME_PERSONALITY_LINE_ENABLED: bool = Field(default=True, alias="PRIME_PERSONALITY_LINE_ENABLED")
+    # Off for now (2026-11-13): live choice-built labels still read as noise; on once a label fix lands.
+    PRIME_PERSONALITY_LINE_ENABLED: bool = Field(default=False, alias="PRIME_PERSONALITY_LINE_ENABLED")
     ORION_SITUATION_TTL_SECONDS: int = Field(default=300, alias="ORION_SITUATION_TTL_SECONDS")
     # 2026-08-30, Juniper's explicit request: previously hardcoded to a bare
     # 1200 inside orion.situational.context.hub_settings_to_runtime_namespace

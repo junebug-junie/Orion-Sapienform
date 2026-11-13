@@ -5,9 +5,16 @@ on:
     paths:
       - "services/orion-graphiti-adapter/scripts/**"
       - "services/orion-graphiti-adapter/tests/test_graphiti_trial.py"
+      - "orion/gpu_pool/client.py"
+      - "orion/llm/resource_lease.py"
+      - "orion/schemas/gpu_pool.py"
+      - "orion/schemas/vector/**"
       - ".github/workflows/graphiti-trial-tests.yml"
   push:
     branches: [main]
+    paths:
+      - "services/orion-graphiti-adapter/scripts/**"
+      - "services/orion-graphiti-adapter/tests/test_graphiti_trial.py"
 
 jobs:
   graphiti-trial:

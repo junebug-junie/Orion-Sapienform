@@ -130,6 +130,9 @@ def test_ogden_current_needs_a_live_residence_fact():
     assert score.check_ogden_current([_edge("Juniper lives in Ogden, Utah", target="Ogden")]).passed
     assert not score.check_ogden_current([_edge("Juniper lives in Ogden", invalid="2026-10-07")]).passed
     assert not score.check_ogden_current([_edge("Juniper visited Ogden once")]).passed
+    # the real correction row's shape: a negation that governs Chicago, not Ogden
+    assert score.check_ogden_current([_edge("Juniper lives in Ogden, Utah, not Chicago")]).passed
+    assert not score.check_ogden_current([_edge("Juniper no longer lives in Ogden")]).passed
 
 
 def test_chicago_home_fails_only_on_a_current_home_fact():
@@ -138,6 +141,9 @@ def test_chicago_home_fails_only_on_a_current_home_fact():
     assert score.check_chicago_home([_edge("Juniper lives in Chicago", invalid="2026-10-06T03:50:00")]).passed
     assert score.check_chicago_home([_edge("Juniper lives in Ogden, not Chicago")]).passed
     assert not score.check_chicago_home([_edge("Juniper lives in Chicago", target="Chicago")]).passed
+    assert not score.check_chicago_home([_edge("Juniper lives in Chicago, not Ogden")]).passed
+    assert not score.check_chicago_home([_edge("Juniper lives in Chicago instead of Utah")]).passed
+    assert score.check_chicago_home([_edge("Juniper flew home from Chicago to SLC")]).passed
 
 
 def test_chicago_stay_needs_open_and_close_inside_trip():
@@ -158,6 +164,9 @@ def test_coco_dog_current_and_cat_not():
     assert score.check_coco_dog([dog, {**cat, "invalid_at": "2026-11-11T20:30:00"}]).passed
     assert not score.check_coco_dog([dog, cat]).passed
     assert not score.check_coco_dog([correction | {"fact": "Juniper owns el Coco"}]).passed
+    assert score.check_coco_dog([dog, _edge("Juniper has two cats and a dog named el Coco")]).passed
+    assert score.check_coco_dog([dog, _edge("el Coco lives with the cats")]).passed
+    assert not score.check_coco_dog([dog, _edge("el Coco is Juniper's cat")]).passed
 
 
 def test_one_entity_counts_alias_nodes():
@@ -175,6 +184,8 @@ def test_duplicate_sample_and_rate():
     assert score.duplicate_rate(sample) == (None, 0, 0)
     judged = [{**s, "duplicate": i < 4} for i, s in enumerate(sample)]
     assert score.duplicate_rate(judged) == (4 / 50, 4, 50)
+    with pytest.raises(ValueError, match="true/false"):
+        score.duplicate_rate([{"name": "x", "duplicate": "yes"}])
 
 
 def test_run_checks_duplicate_gate_needs_full_judged_sample():
@@ -186,19 +197,14 @@ def test_run_checks_duplicate_gate_needs_full_judged_sample():
     assert score.run_checks(nodes, [], full)[-1].passed
 
 
-def test_cost_summary_totals():
-    rows = [{"ok": True, "wall_sec": 10, "lease_sec": 10, "llm": {"calls": 5, "llm_seconds": 8, "retries": 1}},
-            {"ok": False, "wall_sec": 30, "lease_sec": 30, "llm": {"calls": 3, "llm_seconds": 20, "failures": 2}}]
+def test_cost_summary_counts_every_attempt_but_last_outcome():
+    rows = [{"uuid": "a", "ok": False, "wall_sec": 30, "lease_sec": 30, "llm": {"calls": 3, "failures": 2}},
+            {"uuid": "a", "ok": True, "wall_sec": 10, "lease_sec": 10, "llm": {"calls": 5, "retries": 1}},
+            {"uuid": "b", "ok": True, "wall_sec": 20, "lease_sec": 20, "llm": {"calls": 4}}]
     c = score.cost_summary(rows)
-    assert c["episodes"] == 2 and c["failed"] == 1 and c["llm_calls"] == 8
-    assert c["wall_sec_per_episode_mean"] == 20 and c["graphiti_retries"] == 1 and c["llm_failures"] == 2
-
-
-def test_read_jsonl_keeps_last_attempt(tmp_path):
-    p = tmp_path / "r.jsonl"
-    p.write_text('{"uuid": "a", "ok": false}\n{"uuid": "a", "ok": true}\n{"uuid": "b", "ok": true}\n')
-    rows = score._read_jsonl(p)
-    assert len(rows) == 2 and all(r["ok"] for r in rows)
+    assert c["episodes"] == 2 and c["attempts"] == 3 and c["ok"] == 2 and c["failed"] == 0
+    assert c["wall_sec_total"] == 60 and c["llm_calls"] == 12 and c["llm_calls_per_episode"] == 6
+    assert c["graphiti_retries"] == 1 and c["llm_failures"] == 2
 
 
 # --- graphiti subclasses (run where graphiti-core is installed: CI and the adapter image) ------
@@ -232,7 +238,7 @@ def _bad_request():
     import httpx
     import openai
     req = httpx.Request("POST", "http://x/v1/chat/completions")
-    return openai.BadRequestError("schema", response=httpx.Response(400, request=req), body=None)
+    return openai.BadRequestError("json_schema not supported", response=httpx.Response(400, request=req), body=None)
 
 
 def test_llm_client_sends_json_schema_and_hold_header():
@@ -266,11 +272,195 @@ def test_llm_client_falls_back_to_json_object_when_schema_refused():
     assert fake.calls[1]["response_format"] == {"type": "json_object"} and stats.schema_fallbacks == 1
 
 
-def test_llm_client_counts_graphiti_retries_and_truncation():
+def test_llm_client_counts_graphiti_retries():
     pytest.importorskip("graphiti_core")
     from graphiti_core.prompts.models import Message
 
-    llm, fake, stats = _llm([{"content": "{}", "finish": "length"}, {"content": "not json"}, {"content": '{"a": 1}'}])
+    llm, fake, stats = _llm([{"content": "not json"}, {"content": '{"a": 1}'}])
     assert asyncio.run(llm.generate_response([Message(role="user", content="u")])) == {"a": 1}
-    assert stats.calls == 3 and stats.failures == 2 and stats.retries == 2
-    assert "truncated" in stats.errors[0]
+    assert stats.calls == 2 and stats.failures == 1 and stats.retries == 1
+
+
+def test_llm_client_does_not_retry_truncation_or_a_dead_hold():
+    pytest.importorskip("graphiti_core")
+    from graphiti_core.llm_client.errors import RefusalError
+    from graphiti_core.prompts.models import Message
+
+    llm, fake, stats = _llm([{"content": "{}", "finish": "length"}])
+    with pytest.raises(RefusalError):
+        asyncio.run(llm.generate_response([Message(role="user", content="u")]))
+    assert stats.calls == 1 and stats.retries == 0 and "truncated" in stats.errors[0]
+
+    from types import SimpleNamespace as NS
+    stats2 = clients.CallStats()
+    dead = clients.build_llm_client(base_url="http://x/v1", model="agent", header_box=clients.HeaderBox(),
+                                    stats=stats2, hold_usable=lambda: False)
+    dead.client = NS(chat=NS(completions=_FakeCompletions([])))
+    with pytest.raises(RefusalError):
+        asyncio.run(dead.generate_response([Message(role="user", content="u")]))
+    assert stats2.calls == 0
+
+
+def test_llm_client_does_not_fall_back_on_a_non_schema_400():
+    pytest.importorskip("graphiti_core")
+    import httpx
+    import openai
+    from graphiti_core.prompts.models import Message
+    from pydantic import BaseModel
+
+    class Out(BaseModel):
+        name: str
+
+    req = httpx.Request("POST", "http://x/v1/chat/completions")
+    ctx = openai.BadRequestError("exceeds the available context size", response=httpx.Response(400, request=req),
+                                 body=None)
+    llm, fake, stats = _llm([ctx, ctx, ctx])
+    with pytest.raises(openai.BadRequestError):
+        asyncio.run(llm.generate_response([Message(role="user", content="u")], Out))
+    assert stats.schema_fallbacks == 0
+
+
+# --- resume, isolation, schema refusal ----------------------------------------------------------
+
+def test_resume_plan_redoes_episodes_without_an_ok_row(tmp_path):
+    p = tmp_path / "results.jsonl"
+    p.write_text('{"uuid": "1", "name": "episode_memory:1", "ok": true}\n'
+                 '{"uuid": "2", "name": "episode_memory:2", "ok": false}\n')
+    ok = trial.ok_names_from_results(p)
+    done, partial = trial.resume_plan({"episode_memory:1": "u1", "episode_memory:2": "u2",
+                                       "episode_memory:3": "u3"}, ok)
+    assert done == {"episode_memory:1"}
+    assert sorted(partial) == ["u2", "u3"]
+    assert trial.ok_names_from_results(tmp_path / "missing.jsonl") == set()
+
+
+def test_isolation_verdict_flags_new_graphs_and_leaked_group_nodes():
+    before = {"graphs": ["graphiti_temporal", "orion_worldview"], "trial_group_nodes_elsewhere": {}}
+    clean = {"graphs": ["graphiti_temporal", "graphiti_trial", "orion_worldview"], "trial_group_nodes_elsewhere": {}}
+    assert trial.isolation_verdict(before, clean)["isolated"]
+    leaked = {**clean, "trial_group_nodes_elsewhere": {"graphiti_temporal": 3}}
+    assert not trial.isolation_verdict(before, leaked)["isolated"]
+    extra = {**clean, "graphs": clean["graphs"] + ["orion_trial"]}
+    v = trial.isolation_verdict(before, extra)
+    assert not v["isolated"] and v["new_graphs_other_than_trial"] == ["orion_trial"]
+
+
+def test_is_schema_refusal_only_for_structured_output_errors():
+    assert clients.is_schema_refusal("Error 400: failed to parse json_schema into grammar")
+    assert not clients.is_schema_refusal("Error 400: the request exceeds the available context size")
+
+
+# --- hold lifecycle (pool verbs monkeypatched) ---------------------------------------------------
+
+class _Reply:
+    def __init__(self, status, lease_id="L1", generation=1, role="agent"):
+        from orion.schemas.gpu_pool import GpuLeaseGrantV1
+        self.status, self.lease_id, self.reason, self.position, self.recall_by = status, lease_id, None, None, None
+        self.grant = (GpuLeaseGrantV1(lease_id=lease_id, generation=generation, role=role, cards=["gpu1"],
+                                      url="http://x", served_by="x")
+                      if status in ("granted", "recall") else None)
+
+
+@pytest.fixture
+def pool(monkeypatch, tmp_path):
+    import orion.gpu_pool.client as gpc
+    log = {"acquire": [], "status": [], "cancel": [], "release": []}
+    script = {"acquire": [], "status": []}
+
+    async def acquire_hold(bus, **kw):
+        log["acquire"].append(kw["request_id"])
+        r = script["acquire"].pop(0)
+        if isinstance(r, BaseException):
+            raise r
+        return r
+
+    async def lease_status(bus, lease_id, **kw):
+        log["status"].append(lease_id)
+        r = script["status"].pop(0)
+        if isinstance(r, BaseException):
+            raise r
+        return r
+
+    async def release_lease(bus, lease_id, **kw):
+        log["release"].append(lease_id)
+
+    async def cancel(bus, lease_id, *, source):
+        log["cancel"].append(lease_id)
+
+    async def fast_sleep(_s):
+        return None
+
+    monkeypatch.setattr(gpc, "acquire_hold", acquire_hold)
+    monkeypatch.setattr(gpc, "lease_status", lease_status)
+    monkeypatch.setattr(gpc, "release_lease", release_lease)
+    monkeypatch.setattr(trial, "cancel_lease", cancel)
+    monkeypatch.setattr(trial, "OUT_DIR", tmp_path)
+    real_sleep = asyncio.sleep
+    monkeypatch.setattr(trial.asyncio, "sleep", lambda s: real_sleep(0))
+    hold = trial.TrialHold(object(), "r1", clients.HeaderBox(), min_ctx_tokens=0, out_dir=tmp_path)
+    return hold, script, log, tmp_path
+
+
+def test_hold_granted_after_queue_then_released(pool):
+    hold, script, log, tmp = pool
+    script["acquire"] = [_Reply("queued")]
+    script["status"] = [_Reply("queued"), _Reply("granted")]
+
+    async def go():
+        await hold.acquire()
+        assert hold.lease_id == "L1" and "X-Orion-Gpu-Lease" in hold.box.headers
+        assert (tmp / "hold.json").exists()
+        await hold.release()
+    asyncio.run(go())
+    assert log["release"] == ["L1"] and log["cancel"] == []
+    assert not (tmp / "hold.json").exists() and hold.box.headers == {}
+
+
+def test_hold_cancelled_when_wait_is_cancelled(pool):
+    hold, script, log, tmp = pool
+    script["acquire"] = [_Reply("queued")]
+    script["status"] = [asyncio.CancelledError()]
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(hold.acquire())
+    assert log["cancel"] == ["L1"] and not (tmp / "hold.json").exists()
+
+
+def test_hold_cancelled_when_refused_or_released_elsewhere(pool):
+    hold, script, log, _ = pool
+    script["acquire"] = [_Reply("queued")]
+    script["status"] = [_Reply("ok")]
+    with pytest.raises(RuntimeError, match="hold_not_granted:ok"):
+        asyncio.run(hold.acquire())
+    assert log["cancel"] == ["L1"]
+
+
+def test_hold_learns_lease_id_when_first_acquire_rpc_fails(pool):
+    hold, script, log, _ = pool
+    script["acquire"] = [TimeoutError("rpc"), _Reply("queued", lease_id="L9")]
+    with pytest.raises(TimeoutError):
+        asyncio.run(hold.acquire())
+    assert log["acquire"] == ["r1:1", "r1:1"]  # same request_id: idempotent re-ask
+    assert log["cancel"] == ["L9"]
+
+
+def test_recall_reacquires_with_a_new_request_id(pool):
+    hold, script, log, _ = pool
+    script["acquire"] = [_Reply("granted"), _Reply("granted", lease_id="L2")]
+
+    async def go():
+        await hold.acquire()
+        hold.recalled.set()
+        assert not hold.usable()
+        await hold.release()
+        await hold.acquire()
+        assert hold.usable() and hold.lease_id == "L2"
+        await hold.release()
+    asyncio.run(go())
+    assert log["acquire"] == ["r1:1", "r1:2"] and log["release"] == ["L1", "L2"]
+
+
+def test_leftover_hold_file_is_cancelled(pool):
+    hold, _, log, tmp = pool
+    (tmp / "hold.json").write_text('{"lease_id": "OLD", "holder": "graphiti-trial:x"}')
+    asyncio.run(hold.cancel_leftover())
+    assert log["cancel"] == ["OLD"] and not (tmp / "hold.json").exists()

@@ -7,7 +7,7 @@ local agent lane, into the FalkorDB graph ``graphiti_trial`` ONLY. Nothing reads
 Runs inside the adapter image (graphiti-core 0.19 is installed there), never inside the live
 adapter container:
 
-    docker run --rm --network app-net --user 1000:1000 -e PYTHONDONTWRITEBYTECODE=1 \
+    docker run --rm --stop-timeout 60 --network app-net --user 1000:1000 -e PYTHONDONTWRITEBYTECODE=1 \
       -v <worktree>/services/orion-graphiti-adapter/scripts:/trial:ro -v <worktree>/orion:/app/orion:ro \
       -v /tmp/graphiti-trial:/tmp/graphiti-trial \
       orion-graphiti-adapter-graphiti-adapter python /trial/graphiti_trial.py run --limit 3
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -45,8 +46,6 @@ from graphiti_trial_clients import (  # noqa: E402
 logger = logging.getLogger("graphiti_trial")
 
 TRIAL_GRAPH = "graphiti_trial"
-# The live graphs this trial must never touch. Checked before and after a run (node counts).
-PROTECTED_GRAPHS = ("graphiti_temporal", "orion_worldview")
 GROUP_ID = "orion_trial"
 OUT_DIR = Path(os.environ.get("GRAPHITI_TRIAL_OUT", "/tmp/graphiti-trial"))
 
@@ -149,24 +148,61 @@ async def load_episodes(postgres_uri: str) -> list[TrialEpisode]:
 
 # --- graph guards -----------------------------------------------------------------------------
 
-async def graph_node_counts(falkor_host: str, falkor_port: int) -> dict[str, int]:
+async def isolation_snapshot(falkor_host: str, falkor_port: int) -> dict[str, Any]:
+    """Graph names, plus how many nodes carry the trial's group_id in every OTHER graph. Live
+    graphs (graphiti_temporal, orion_worldview) change during a run on their own, so node counts
+    prove nothing; a trial write anywhere else would show up here as a non-zero count."""
     from falkordb.asyncio import FalkorDB  # noqa: PLC0415
     db = FalkorDB(host=falkor_host, port=falkor_port)
-    names = set(await db.list_graphs())
-    out: dict[str, int] = {}
-    for g in PROTECTED_GRAPHS:
-        if g in names:
-            res = await db.select_graph(g).ro_query("MATCH (n) RETURN count(n)")
-            out[g] = int(res.result_set[0][0])
+    try:
+        names = sorted(await db.list_graphs())
+        leaked: dict[str, int] = {}
+        for g in names:
+            if g == TRIAL_GRAPH:
+                continue
+            res = await db.select_graph(g).ro_query("MATCH (n) WHERE n.group_id = $g RETURN count(n)",
+                                                    params={"g": GROUP_ID})
+            n = int(res.result_set[0][0])
+            if n:
+                leaked[g] = n
+        return {"graphs": names, "trial_group_nodes_elsewhere": leaked}
+    finally:
+        with contextlib.suppress(Exception):
+            await db.connection.aclose()
+
+
+def isolation_verdict(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
+    new = sorted(set(after["graphs"]) - set(before["graphs"]) - {TRIAL_GRAPH})
+    return {"new_graphs_other_than_trial": new, "trial_group_nodes_elsewhere": after["trial_group_nodes_elsewhere"],
+            "isolated": not new and not after["trial_group_nodes_elsewhere"]}
+
+
+async def graph_episode_names(driver: Any) -> dict[str, str]:
+    """name -> uuid of episodes in the graph. add_episode(uuid=...) LOADS an existing episode rather
+    than naming a new one, so the source row id rides in the episode name instead."""
+    rows, _, _ = await driver.execute_query(
+        "MATCH (e:Episodic) WHERE e.group_id = $g RETURN e.name AS name, e.uuid AS uuid", g=GROUP_ID)
+    return {r["name"]: r["uuid"] for r in rows or []}
+
+
+def ok_names_from_results(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    out: set[str] = set()
+    for line in path.read_text().splitlines():
+        if line.strip():
+            r = json.loads(line)
+            if r.get("ok") and r.get("name"):
+                out.add(r["name"])
     return out
 
 
-async def ingested_names(driver: Any) -> set[str]:
-    """Episode names already in the graph. add_episode(uuid=...) LOADS an existing episode rather
-    than naming a new one, so the source row id rides in the episode name instead."""
-    rows, _, _ = await driver.execute_query(
-        "MATCH (e:Episodic) WHERE e.group_id = $g RETURN e.name AS name", g=GROUP_ID)
-    return {r["name"] for r in rows or []}
+def resume_plan(graph_names: dict[str, str], ok_names: set[str]) -> tuple[set[str], list[str]]:
+    """(done, partial uuids to remove). Done = in the graph AND recorded ok. An episode in the graph
+    without an ok row was cut off mid-write (FalkorDB bulk save is not one transaction)."""
+    done = set(graph_names) & ok_names
+    partial = [uuid for name, uuid in graph_names.items() if name not in ok_names]
+    return done, partial
 
 
 # --- pool hold --------------------------------------------------------------------------------
@@ -175,19 +211,30 @@ async def cancel_lease(bus: Any, lease_id: str, *, source: str) -> None:
     from orion.gpu_pool.client import lease_rpc  # noqa: PLC0415
     from orion.schemas.gpu_pool import GpuLeaseRequestV1  # noqa: PLC0415
     try:
-        await lease_rpc(bus, GpuLeaseRequestV1(verb="cancel", lease_id=lease_id), source=source, timeout_sec=5)
+        await asyncio.shield(lease_rpc(bus, GpuLeaseRequestV1(verb="cancel", lease_id=lease_id),
+                                       source=source, timeout_sec=5))
         logger.info("hold cancelled lease=%s", lease_id)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("hold cancel failed lease=%s: %s", lease_id, exc)
+    except BaseException as exc:  # noqa: BLE001
+        logger.warning("hold cancel failed lease=%s: %r", lease_id, exc)
+
+
+HOLD_FILE = "hold.json"
 
 
 class TrialHold:
-    """One GPU pool hold for the run; heartbeats in the background; re-taken after a recall."""
+    """One GPU pool hold for the run; heartbeats in the background; re-taken after a recall.
 
-    def __init__(self, bus: Any, run_id: str, header_box: HeaderBox, *, min_ctx_tokens: int):
+    The live lease id is written to OUT_DIR/hold.json while held, so a run killed hard (SIGKILL)
+    leaves a record the next run cancels before asking again (``cancel_leftover``)."""
+
+    TERMINAL = ("unavailable", "unknown_lease", "ok")
+
+    def __init__(self, bus: Any, run_id: str, header_box: HeaderBox, *, min_ctx_tokens: int,
+                 out_dir: Path | None = None):
         self.bus, self.run_id, self.box = bus, run_id, header_box
         self.holder = f"graphiti-trial:{run_id}"
         self.min_ctx = min_ctx_tokens
+        self.out_dir = out_dir or OUT_DIR
         self.lease_id: str | None = None
         self.role: str | None = None
         self.granted_at: float | None = None
@@ -197,53 +244,88 @@ class TrialHold:
         self.lost = asyncio.Event()
         self._beat: asyncio.Task | None = None
 
-    async def acquire(self, wait_sec: float = 3600.0) -> None:
+    def _record(self, lease_id: str | None) -> None:
+        f = self.out_dir / HOLD_FILE
+        if lease_id:
+            f.write_text(json.dumps({"lease_id": lease_id, "holder": self.holder}))
+        elif f.exists():
+            f.unlink()
+
+    async def cancel_leftover(self) -> None:
+        f = self.out_dir / HOLD_FILE
+        if f.exists():
+            old = json.loads(f.read_text())
+            _log_progress(f"cancelling leftover hold from a killed run: {old}")
+            await cancel_lease(self.bus, old["lease_id"], source=old.get("holder") or self.holder)
+            f.unlink()
+
+    async def acquire(self, wait_sec: float = 4 * 3600.0) -> None:
         from orion.gpu_pool.client import acquire_hold, hold_ref, lease_status  # noqa: PLC0415
         from orion.llm.resource_lease import encode_gpu_lease_header  # noqa: PLC0415
         self.attempt += 1
-        reply = await acquire_hold(self.bus, holder=self.holder, work_class="agent",
-                                   request_id=f"{self.run_id}:{self.attempt}", priority="background",
-                                   min_ctx_tokens=self.min_ctx, source=self.holder)
-        deadline = time.monotonic() + wait_sec
-        last_log = 0.0
+        request_id = f"{self.run_id}:{self.attempt}"
+        lease_id: str | None = None
+
+        async def ask():
+            return await acquire_hold(self.bus, holder=self.holder, work_class="agent", request_id=request_id,
+                                      priority="background", min_ctx_tokens=self.min_ctx, source=self.holder)
         try:
+            reply = await ask()
+            lease_id = reply.lease_id
+            self._record(lease_id)
+            deadline = time.monotonic() + wait_sec
+            last_log = 0.0
             while reply.status not in ("granted", "recall"):
-                if reply.status in ("unavailable", "unknown_lease") or time.monotonic() > deadline:
+                if reply.status in self.TERMINAL or time.monotonic() > deadline:
                     raise RuntimeError(f"hold_not_granted:{reply.status}:{reply.reason}")
                 if time.monotonic() - last_log > 300:
                     _log_progress(f"hold waiting status={reply.status} lease={reply.lease_id}")
                     last_log = time.monotonic()
                 await asyncio.sleep(10)
-                reply = await lease_status(self.bus, reply.lease_id, source=self.holder)
+                reply = await lease_status(self.bus, lease_id, source=self.holder)
+            ref = hold_ref(reply, self.holder)
+            header = encode_gpu_lease_header(ref)
         except BaseException:
-            # Never leave a queued hold behind: the pool would grant it to nobody.
-            if reply.lease_id:
-                await cancel_lease(self.bus, reply.lease_id, source=self.holder)
+            # Never leave a hold behind: retryable holds re-queue and get granted to nobody.
+            if lease_id is None:
+                with contextlib.suppress(BaseException):  # idempotent on request_id: learn the id
+                    lease_id = (await asyncio.shield(ask())).lease_id
+            if lease_id:
+                await cancel_lease(self.bus, lease_id, source=self.holder)
+            self._record(None)
             raise
-        ref = hold_ref(reply, self.holder)
         self.lease_id, self.role = ref.lease_id, ref.role
-        self.box.set_hold(encode_gpu_lease_header(ref))
+        self.box.set_hold(header)
         self.granted_at = time.monotonic()
         self.recalled.clear()
         self.lost.clear()
         self._beat = asyncio.create_task(self._heartbeat())
-        logger.info("hold granted lease=%s role=%s generation=%s", ref.lease_id, ref.role, ref.generation)
+        _log_progress(f"hold granted lease={ref.lease_id} role={ref.role} generation={ref.generation}")
 
-    async def _heartbeat(self) -> None:
+    async def _heartbeat(self, every: float = 25.0, max_misses: int = 3) -> None:
         from orion.gpu_pool.client import heartbeat_lease  # noqa: PLC0415
+        misses = 0
         while True:
-            await asyncio.sleep(25)
+            await asyncio.sleep(every)
             try:
                 reply = await heartbeat_lease(self.bus, self.lease_id, source=self.holder)
-            except Exception as exc:  # noqa: BLE001 -- TTL is 90 s; one missed beat is survivable
-                logger.warning("hold heartbeat failed: %s", exc)
+            except Exception as exc:  # noqa: BLE001 -- TTL is 90 s: 3 misses at 25 s is the limit
+                misses += 1
+                logger.warning("hold heartbeat failed (%d/%d): %s", misses, max_misses, exc)
+                if misses >= max_misses:
+                    self.lost.set()
+                    return
                 continue
+            misses = 0
             if reply.status == "recall":
                 self.recalled.set()
             elif reply.status != "granted":
                 logger.warning("hold lost status=%s reason=%s", reply.status, reply.reason)
                 self.lost.set()
                 return
+
+    def usable(self) -> bool:
+        return not (self.recalled.is_set() or self.lost.is_set())
 
     async def release(self) -> None:
         from orion.gpu_pool.client import release_lease  # noqa: PLC0415
@@ -255,9 +337,10 @@ class TrialHold:
             self.granted_at = None
         if self.lease_id:
             try:
-                await release_lease(self.bus, self.lease_id, source=self.holder, outcome="ok")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("hold release failed: %s", exc)
+                await asyncio.shield(release_lease(self.bus, self.lease_id, source=self.holder, outcome="ok"))
+                self._record(None)
+            except BaseException as exc:  # noqa: BLE001 -- hold.json stays: the next run cancels it
+                logger.warning("hold release failed: %r", exc)
         self.lease_id = None
         self.box.set_hold(None)
 
@@ -297,50 +380,53 @@ async def run(args: argparse.Namespace) -> int:
     (OUT_DIR / "plan.json").write_text(json.dumps(
         {"source_total": total_source, "planned": len(episodes), "sample": args.sample, "limit": args.limit,
          "key_rows": sum(e.key_row() for e in episodes),
-         "uuids": [e.uuid for e in episodes]}, indent=1))
+         "names": [e.name for e in episodes]}, indent=1))
 
     host, port = args.falkor_host, args.falkor_port
-    guard_before = await graph_node_counts(host, port)
+    iso_before = await isolation_snapshot(host, port)
     driver = FalkorDriver(host=host, port=port, database=TRIAL_GRAPH)
     stats = CallStats()
     box = HeaderBox()
+    run_id = args.run_id or uuidlib.uuid4().hex[:12]
+    bus = OrionBusAsync(args.bus_url)
+    hold = TrialHold(bus, run_id, box, min_ctx_tokens=args.min_ctx)
     graphiti = Graphiti(
         graph_driver=driver,
         llm_client=build_llm_client(base_url=args.llm_base_url, model=args.llm_route, header_box=box,
-                                    stats=stats, max_tokens=args.max_tokens),
+                                    stats=stats, max_tokens=args.max_tokens, hold_usable=hold.usable),
         embedder=build_embedder(args.embed_url),
         cross_encoder=build_cross_encoder(),
         max_coroutines=args.max_coroutines,
     )
     await build_indices_and_constraints(driver)
-    done_names = await ingested_names(driver)
-
-    bus = OrionBusAsync(args.bus_url)
-    await bus.connect()
-    run_id = args.run_id or uuidlib.uuid4().hex[:12]
-    hold = TrialHold(bus, run_id, box, min_ctx_tokens=args.min_ctx)
-    await hold.acquire()
+    done_names, partial = resume_plan(await graph_episode_names(driver), ok_names_from_results(OUT_DIR / "results.jsonl"))
+    for uuid in partial:
+        _log_progress(f"removing partial episode {uuid} (in graph, no ok result row)")
+        await graphiti.remove_episode(uuid)
 
     total = len(episodes)
     done = skipped = errors = processed = 0
     started = time.monotonic()
     results = (OUT_DIR / "results.jsonl").open("a")
+    await bus.connect()
     try:
+        await hold.cancel_leftover()
+        await hold.acquire()
         for ep in episodes:
             if ep.name in done_names:
                 done += 1
                 skipped += 1
                 continue
-            if hold.recalled.is_set() or hold.lost.is_set():
+            if not hold.usable():
                 _log_progress(f"hold {'recalled' if hold.recalled.is_set() else 'lost'}: releasing and re-acquiring")
                 await hold.release()
                 await hold.acquire()
             before = stats.snapshot()
             held_before = hold.held_seconds()
             t0 = time.monotonic()
-            row: dict[str, Any] = {"uuid": ep.uuid, "origin": ep.origin, "reference_time": ep.reference_time.isoformat(),
-                                   "key_row": ep.key_row(), "run_id": run_id, "lease_id": hold.lease_id,
-                                   "role": hold.role}
+            row: dict[str, Any] = {"uuid": ep.uuid, "name": ep.name, "origin": ep.origin,
+                                   "reference_time": ep.reference_time.isoformat(), "key_row": ep.key_row(),
+                                   "run_id": run_id, "lease_id": hold.lease_id, "role": hold.role}
             try:
                 res = await asyncio.wait_for(graphiti.add_episode(
                     name=ep.name, episode_body=ep.body, source_description=ep.source_description,
@@ -350,6 +436,11 @@ async def run(args: argparse.Namespace) -> int:
             except Exception as exc:  # noqa: BLE001 -- one bad episode is a data point, not the end
                 errors += 1
                 row.update(ok=False, error=f"{type(exc).__name__}: {str(exc)[:500]}")
+                left = (await graph_episode_names(driver)).get(ep.name)
+                if left:  # cut off mid-write: drop the half-saved episode so a retry starts clean
+                    with contextlib.suppress(Exception):
+                        await graphiti.remove_episode(left)
+                        row["partial_removed"] = True
             row.update(wall_sec=round(time.monotonic() - t0, 2),
                        lease_sec=round(hold.held_seconds() - held_before, 2), llm=stats.diff(before))
             results.write(json.dumps(row) + "\n")
@@ -370,18 +461,15 @@ async def run(args: argparse.Namespace) -> int:
     finally:
         results.close()
         await hold.release()
-        await bus.close()
-        guard_after = await graph_node_counts(host, port)
-        changed = {g: (guard_before.get(g), guard_after.get(g)) for g in PROTECTED_GRAPHS
-                   if guard_before.get(g) != guard_after.get(g)}
+        with contextlib.suppress(BaseException):
+            await bus.close()
+        iso = isolation_verdict(iso_before, await isolation_snapshot(host, port))
         summary = {"run_id": run_id, "done": done, "skipped": skipped, "errors": errors, "processed": processed,
                    "wall_sec": round(time.monotonic() - started, 1), "lease_sec": round(hold.lease_seconds, 1),
-                   "llm": stats.snapshot(), "llm_error_samples": stats.errors[:20],
-                   "protected_graphs_before": guard_before, "protected_graphs_after": guard_after,
-                   "protected_graphs_changed": changed}
+                   "llm": stats.snapshot(), "llm_error_samples": stats.errors[:20], "isolation": iso}
         (OUT_DIR / f"run-{run_id}.json").write_text(json.dumps(summary, indent=1))
         _log_progress(f"run {run_id} finished: {json.dumps({k: summary[k] for k in ('done', 'errors', 'wall_sec', 'lease_sec')})}"
-                      f" protected_graphs_changed={changed or 'none'}")
+                      f" isolation={iso}")
     return 0 if errors == 0 else 2
 
 
@@ -405,7 +493,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--min-ctx", type=int, default=16384)
     r.add_argument("--max-tokens", type=int, default=8192)
     r.add_argument("--max-coroutines", type=int, default=4)
-    r.add_argument("--episode-timeout", type=float, default=1800.0)
+    # Under the pool's 600 s recall grace (config/gpu_pool.yaml hold_clawback_grace_sec), so a
+    # recalled hold is let go between episodes, never aborted under one.
+    r.add_argument("--episode-timeout", type=float, default=540.0)
     r.add_argument("--max-errors", type=int, default=0, help="stop after N failed episodes (0 = never)")
     args = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")

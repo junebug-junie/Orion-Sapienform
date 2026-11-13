@@ -31,9 +31,19 @@ DUP_SAMPLE_SIZE = 50
 DUP_PASS_RATE = 0.10
 
 LIVES_RE = re.compile(r"\b(lives?|living|resides?|residing|home|house|located|based)\b", re.I)
-STAY_RE = re.compile(r"\b(stay(?:s|ing|ed)?|hotel|trip|visit(?:s|ing)?|meeting|travel(?:s|ing|ed)?|fly|flight|night)\b", re.I)
-NEGATED_RE = re.compile(r"\bnot\b|n't\b|\bno longer\b|\binstead of\b|\brather than\b|\bcorrected\b", re.I)
-CAT_RE = re.compile(r"\bcats?\b", re.I)
+STAY_RE = re.compile(r"\b(stay(?:s|ing|ed)?|hotel|trip|visit(?:s|ing|ed)?|meeting|travel(?:s|ing|ed)?|fl(?:y|ew|ies|ying)|"
+                     r"flight|night|return(?:s|ed|ing)?|back|from|wake ?up)\b", re.I)
+
+
+def negated_before(place: str) -> re.Pattern:
+    """Negation that governs ``place``: "not Chicago", "no longer in Chicago", "instead of Chicago".
+    A negation elsewhere in the fact ("lives in Ogden, not Chicago") does not negate Ogden."""
+    return re.compile(r"(\bnot\b|n't\b|\bno longer\b|\binstead of\b|\brather than\b)[^.,;]{0,30}\b" + place, re.I)
+
+
+NOT_OGDEN_RE = negated_before("ogden")
+NOT_CHICAGO_RE = negated_before("chicago")
+COCO_IS_CAT_RE = re.compile(r"\bcoco\b[^.;]{0,20}\b(?:is|was|being)\s+(?:[\w']+\s+){0,2}cat\b", re.I)
 DOG_RE = re.compile(r"\bdogs?\b|\bpupp(?:y|ies)\b", re.I)
 NOT_CAT_RE = re.compile(r"\bnot\s+(?:a\s+)?cats?\b|\bisn't\s+(?:a\s+)?cats?\b", re.I)
 COCO_RE = re.compile(r"\bcoco\b", re.I)
@@ -77,7 +87,7 @@ def _mentions(e: dict[str, Any], pattern: re.Pattern) -> bool:
 
 def check_ogden_current(edges: list[dict[str, Any]]) -> Check:
     hits = [e for e in edges if _mentions(e, re.compile(r"ogden", re.I)) and LIVES_RE.search(str(e.get("fact")))]
-    current = [e for e in hits if is_current(e) and not re.search(r"\bnot\b", str(e.get("fact")), re.I)]
+    current = [e for e in hits if is_current(e) and not NOT_OGDEN_RE.search(str(e.get("fact")))]
     return Check("lives in Ogden is current", bool(current),
                  f"{len(current)} current of {len(hits)} Ogden-residence facts", [_edge_line(e) for e in hits])
 
@@ -86,7 +96,7 @@ def check_chicago_home(edges: list[dict[str, Any]]) -> Check:
     """Fail when a CURRENT fact says Juniper lives in Chicago (a stay is not a home)."""
     hits = [e for e in edges if _mentions(e, re.compile(r"chicago", re.I))]
     homes = [e for e in hits if LIVES_RE.search(str(e.get("fact")))
-             and not STAY_RE.search(str(e.get("fact"))) and not NEGATED_RE.search(str(e.get("fact")))]
+             and not STAY_RE.search(str(e.get("fact"))) and not NOT_CHICAGO_RE.search(str(e.get("fact")))]
     bad = [e for e in homes if is_current(e)]
     return Check("lives in Chicago absent or invalidated", not bad,
                  f"{len(bad)} current Chicago-home facts ({len(homes)} home-shaped, {len(hits)} Chicago facts)",
@@ -94,12 +104,14 @@ def check_chicago_home(edges: list[dict[str, Any]]) -> Check:
 
 
 def check_chicago_stay(edges: list[dict[str, Any]], start: str = "2026-10-04", end: str = "2026-10-09") -> Check:
-    """Pass when a Chicago stay fact starts inside the trip and is closed (invalid_at) by its end."""
+    """Pass when a Chicago stay fact starts inside the trip and is closed (invalid_at) by its end.
+    The trip is 10-05..10-07 (UTC stamps 10-05 02:55 .. 10-07 03:45); the window allows a day of
+    slack each side for local-time vs UTC dating."""
     lo, hi = _dt(start), _dt(end)
     stays = [e for e in edges if _mentions(e, re.compile(r"chicago|wade", re.I)) and STAY_RE.search(str(e.get("fact")))]
     dated = [e for e in stays if (v := _dt(e.get("valid_at"))) and lo <= v <= hi]
     closed = [e for e in dated if (i := _dt(e.get("invalid_at"))) and lo <= i <= hi]
-    return Check("Chicago stay dated 10-05..10-07 as a stay", bool(closed),
+    return Check("Chicago stay dated 10-05..10-07 as a stay (window 10-04..10-09)", bool(closed),
                  f"{len(closed)} stay facts opened and closed inside {start}..{end}; "
                  f"{len(dated)} opened inside it; {len(stays)} stay-shaped Chicago facts",
                  [_edge_line(e) for e in stays])
@@ -109,7 +121,7 @@ def check_coco_dog(edges: list[dict[str, Any]]) -> Check:
     coco = [e for e in edges if _mentions(e, COCO_RE)]
     dog_current = [e for e in coco if is_current(e) and DOG_RE.search(str(e.get("fact")))
                    and not re.search(r"\bnot\s+a\s+dog\b", str(e.get("fact")), re.I)]
-    cat_current = [e for e in coco if is_current(e) and CAT_RE.search(str(e.get("fact")))
+    cat_current = [e for e in coco if is_current(e) and COCO_IS_CAT_RE.search(str(e.get("fact")))
                    and not NOT_CAT_RE.search(str(e.get("fact")))]
     return Check("el Coco is a dog current, cat absent or invalidated", bool(dog_current) and not cat_current,
                  f"{len(dog_current)} current dog facts, {len(cat_current)} current cat facts, {len(coco)} Coco facts",
@@ -143,24 +155,32 @@ def duplicate_sample(nodes: list[dict[str, Any]], size: int = DUP_SAMPLE_SIZE, s
 def duplicate_rate(judged: list[dict[str, Any]]) -> tuple[float | None, int, int]:
     """(rate, duplicates, judged). Unjudged entries (duplicate=None) are not counted."""
     done = [j for j in judged if j.get("duplicate") is not None]
-    dups = sum(1 for j in done if j.get("duplicate"))
+    for j in done:
+        if not isinstance(j["duplicate"], bool):
+            raise ValueError(f"judgment for {j.get('name')!r} must be true/false, got {j['duplicate']!r}")
+    dups = sum(1 for j in done if j["duplicate"])
     return (dups / len(done) if done else None), dups, len(done)
 
 
 def cost_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
-    ok = [r for r in results if r.get("ok")]
+    """Cost over EVERY attempt (a failed-then-retried episode costs twice); ok/failed counts over
+    the last attempt per episode."""
+    last: dict[str, dict[str, Any]] = {}
+    for r in results:
+        last[r["uuid"]] = r
+    ok = [r for r in last.values() if r.get("ok")]
     walls = [float(r.get("wall_sec") or 0) for r in results]
     leases = [float(r.get("lease_sec") or 0) for r in results]
     llm_s = [float((r.get("llm") or {}).get("llm_seconds") or 0) for r in results]
     calls = sum(int((r.get("llm") or {}).get("calls") or 0) for r in results)
     return {
-        "episodes": len(results), "ok": len(ok), "failed": len(results) - len(ok),
+        "episodes": len(last), "attempts": len(results), "ok": len(ok), "failed": len(last) - len(ok),
         "wall_sec_total": round(sum(walls), 1),
         "wall_sec_per_episode_mean": round(statistics.mean(walls), 1) if walls else None,
         "wall_sec_per_episode_median": round(statistics.median(walls), 1) if walls else None,
         "lease_sec_per_episode_mean": round(statistics.mean(leases), 1) if leases else None,
-        "llm_sec_per_episode_mean": round(statistics.mean(llm_s), 1) if llm_s else None,
-        "llm_calls": calls, "llm_calls_per_episode": round(calls / len(results), 1) if results else None,
+        "llm_call_sec_summed_per_episode_mean": round(statistics.mean(llm_s), 1) if llm_s else None,
+        "llm_calls": calls, "llm_calls_per_episode": round(calls / len(last), 1) if last else None,
         "llm_failures": sum(int((r.get("llm") or {}).get("failures") or 0) for r in results),
         "graphiti_retries": sum(int((r.get("llm") or {}).get("retries") or 0) for r in results),
         "schema_fallbacks": sum(int((r.get("llm") or {}).get("schema_fallbacks") or 0) for r in results),
@@ -202,11 +222,7 @@ def dump_graph(host: str, port: int) -> dict[str, Any]:
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
-    rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
-    latest: dict[str, dict[str, Any]] = {}
-    for r in rows:  # a resumed run may retry a failed episode: keep the last attempt per episode
-        latest[r["uuid"]] = r
-    return list(latest.values())
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
 def render_report(dump: dict[str, Any], checks: list[Check], cost: dict[str, Any], plan: dict[str, Any],
@@ -223,8 +239,8 @@ def render_report(dump: dict[str, Any], checks: list[Check], cost: dict[str, Any
     lines += ["", "## Cost", "", "```json", json.dumps(cost, indent=1), "```", ""]
     if runs:
         lines += ["Runs:", ""] + [f"- run {r.get('run_id')}: done {r.get('done')}, errors {r.get('errors')}, "
-                                  f"wall {r.get('wall_sec')} s, lease {r.get('lease_sec')} s, protected graphs "
-                                  f"changed: {r.get('protected_graphs_changed') or 'none'}" for r in runs] + [""]
+                                  f"wall {r.get('wall_sec')} s, lease {r.get('lease_sec')} s, isolation "
+                                  f"{(r.get('isolation') or {}).get('isolated', 'not recorded')}" for r in runs] + [""]
     lines += ["## Evidence (every edge each check looked at)", ""]
     for c in checks:
         if c.evidence:
@@ -244,13 +260,21 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--falkor-host", default="orion-athena-falkordb")
     p.add_argument("--falkor-port", type=int, default=6379)
     p.add_argument("--judgments", default=str(OUT_DIR / "dup_sample.json"))
+    p.add_argument("--force", action="store_true", help="sample: overwrite a judgments file that has judgments")
     a = p.parse_args(argv)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     dump_path = OUT_DIR / "graph_dump.json"
+    if a.cmd == "sample" and Path(a.judgments).exists() and not a.force and any(
+            j.get("duplicate") is not None for j in json.loads(Path(a.judgments).read_text())):
+        print(f"refusing: {a.judgments} already holds hand judgments (use --force)", file=sys.stderr)
+        return 1
     if a.cmd in ("dump", "sample") or not dump_path.exists():
         dump = dump_graph(a.falkor_host, a.falkor_port)
         dump_path.write_text(json.dumps(dump, indent=1, default=str))
     dump = json.loads(dump_path.read_text())
+    print(f"graph dump {dump_path} ({dump['episodes']} episodes, {len(dump['nodes'])} entities, "
+          f"written {datetime.fromtimestamp(dump_path.stat().st_mtime, tz=timezone.utc).isoformat(timespec='seconds')})",
+          file=sys.stderr)
     if a.cmd == "sample":
         Path(a.judgments).write_text(json.dumps(duplicate_sample(dump["nodes"]), indent=1))
         print(f"wrote {a.judgments}: set each 'duplicate' to true/false by hand, then run report")

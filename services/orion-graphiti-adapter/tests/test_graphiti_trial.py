@@ -4,6 +4,7 @@ No graphiti-core, FalkorDB, Postgres or network needed.
 """
 from __future__ import annotations
 
+import asyncio
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -198,3 +199,78 @@ def test_read_jsonl_keeps_last_attempt(tmp_path):
     p.write_text('{"uuid": "a", "ok": false}\n{"uuid": "a", "ok": true}\n{"uuid": "b", "ok": true}\n')
     rows = score._read_jsonl(p)
     assert len(rows) == 2 and all(r["ok"] for r in rows)
+
+
+# --- graphiti subclasses (run where graphiti-core is installed: CI and the adapter image) ------
+
+class _FakeCompletions:
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+
+    async def create(self, **kw):
+        self.calls.append(kw)
+        r = self.replies.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        from types import SimpleNamespace as NS
+        return NS(choices=[NS(finish_reason=r.get("finish", "stop"), message=NS(content=r["content"]))],
+                  usage=NS(prompt_tokens=10, completion_tokens=5))
+
+
+def _llm(replies):
+    pytest.importorskip("graphiti_core")
+    from types import SimpleNamespace as NS
+    box, stats = clients.HeaderBox(), clients.CallStats()
+    box.headers["X-Orion-Gpu-Lease"] = "ref"
+    llm = clients.build_llm_client(base_url="http://x/v1", model="agent", header_box=box, stats=stats)
+    fake = _FakeCompletions(replies)
+    llm.client = NS(chat=NS(completions=fake))
+    return llm, fake, stats
+
+
+def _bad_request():
+    import httpx
+    import openai
+    req = httpx.Request("POST", "http://x/v1/chat/completions")
+    return openai.BadRequestError("schema", response=httpx.Response(400, request=req), body=None)
+
+
+def test_llm_client_sends_json_schema_and_hold_header():
+    pytest.importorskip("graphiti_core")
+    from graphiti_core.prompts.models import Message
+    from pydantic import BaseModel
+
+    class Out(BaseModel):
+        name: str
+
+    llm, fake, stats = _llm([{"content": '<think>x</think>{"name": "el Coco"}'}])
+    out = asyncio.run(llm.generate_response([Message(role="system", content="s"), Message(role="user", content="u")], Out))
+    assert out == {"name": "el Coco"}
+    call = fake.calls[0]
+    assert call["model"] == "agent" and call["response_format"]["type"] == "json_schema"
+    assert call["response_format"]["json_schema"]["schema"]["properties"]["name"]["type"] == "string"
+    assert call["extra_headers"] == {"X-Orion-Gpu-Lease": "ref"}
+    assert stats.calls == 1 and stats.prompt_tokens == 10 and stats.failures == 0
+
+
+def test_llm_client_falls_back_to_json_object_when_schema_refused():
+    pytest.importorskip("graphiti_core")
+    from graphiti_core.prompts.models import Message
+    from pydantic import BaseModel
+
+    class Out(BaseModel):
+        name: str
+
+    llm, fake, stats = _llm([_bad_request(), {"content": '{"name": "Amanda"}'}])
+    assert asyncio.run(llm.generate_response([Message(role="user", content="u")], Out)) == {"name": "Amanda"}
+    assert fake.calls[1]["response_format"] == {"type": "json_object"} and stats.schema_fallbacks == 1
+
+
+def test_llm_client_counts_graphiti_retries_and_truncation():
+    pytest.importorskip("graphiti_core")
+    from graphiti_core.prompts.models import Message
+
+    llm, fake, stats = _llm([{"content": "{}", "finish": "length"}, {"content": "not json"}, {"content": '{"a": 1}'}])
+    assert asyncio.run(llm.generate_response([Message(role="user", content="u")])) == {"a": 1}
+    assert stats.calls == 3 and stats.failures == 2 and stats.retries == 2
+    assert "truncated" in stats.errors[0]

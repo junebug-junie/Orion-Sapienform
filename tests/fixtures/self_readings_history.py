@@ -7,7 +7,8 @@ cabinet 98.4% zeros (a trigger); strain news one 1.0 row per event (a trigger); 
 than live so the tests stay fast; every node still clears the 200-reading history floor.
 
 2026-11: bus_synaptic and route were retired (PE suite rebuild step 5) and left
-this fixture; chat followed 2026-11-13 (step 6), replaced by node:prediction.chat_turn. The continuous body source that must be SUSTAINED to win
+this fixture; chat followed 2026-11-13 (step 6), replaced by node:prediction.chat_turn,
+and codebase the same day (a churn z, no successor). The continuous body source that must be SUSTAINED to win
 (orion/attention/sustained.py) is now biometrics, the remaining per-tick body
 node; it was bus_synaptic before.
 """
@@ -40,7 +41,6 @@ def calm_rows(now: datetime = NOW) -> list[Row]:
     # chat-turn surprise (node:prediction.chat_turn, 2026-11-13; replaced node:substrate.chat): one
     # write per settled chat turn, ~80% exact 0.0 (live replay shape).
     rows += _series("node:prediction.chat_turn", 15, lambda k: 0.0 if k % 5 else (k * 23 % 100) / 120.0, now=now)
-    rows += _series("node:substrate.codebase", 15, lambda k: 0.0 if k % 9 else (k % 10) / 10.0, now=now)
     # cabinet: a trigger. A few historical bursts (k in a 12-reading run), zero otherwise.
     rows += _series("node:substrate.cabinet", 5, lambda k: 0.7 if any(b <= k < b + 6 for b in _CABINET_BURSTS) else 0.0, now=now)
     rows += _series("node:substrate.harness_closure", 60, lambda k: 0.65, now=now)

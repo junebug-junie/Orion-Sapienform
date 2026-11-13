@@ -103,7 +103,6 @@ PROMPT_INVENTORY_URNS: frozenset[str] = frozenset(
         "metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error",
-        "metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error",
         # Forecast surprise (2026-11-11): self-readings render it like any body signal.
         "metric://field_channel/orion-substrate-runtime/node:prediction.room.prediction_error",

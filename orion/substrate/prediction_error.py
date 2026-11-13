@@ -266,6 +266,12 @@ def codebase_prediction_error(
     domains -- how much did this tick's git churn, GitHub PR activity, and/or
     graphify structural change deviate from each domain's own recent normal.
 
+    **Not a prediction-error node any more (2026-11-13, PE suite rebuild).**
+    The score is not a forecast, so ``node:substrate.codebase`` was retired
+    (``prediction_error_freshness.RETIRED_PREDICTION_ERROR_NODE_IDS``). Its only
+    remaining output is the ``score`` column of ``substrate_codebase_delta_log``
+    and the EWMA state in ``substrate_codebase_mass_baseline``.
+
     **Contract patch** (docs/superpowers/specs/2026-07-30-codebase-mass-signal-
     design.md) -- the scoring half of Phase 1's "measure first, register once MET"
     order; bus channel/schema registration and service/consumer wiring are separate,

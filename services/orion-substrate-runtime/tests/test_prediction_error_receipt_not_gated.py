@@ -42,8 +42,8 @@ _RECEIPT_NODE_IDS = {
     "node:substrate.execution",
     # node:substrate.route and node:substrate.bus_synaptic retired 2026-11
     # (PE suite rebuild step 5), node:substrate.chat 2026-11-13 (step 6): no
-    # receipt call site, asserted below.
-    "node:substrate.codebase",
+    # receipt call site, asserted below. node:substrate.codebase too (retired
+    # 2026-11-13: churn z, not a forecast).
     # node:substrate.vision's tick was retired 2026-10-02 (vision_organ lane).
     "node:substrate.perception",
     # Walkway camera's own surprise node (2026-10-15).
@@ -118,7 +118,7 @@ def test_every_domain_still_has_a_receipt_call() -> None:
     tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
     found = {_node_id(call) for call in (*_receipt_calls(tree), *_helper_calls(tree))}
     assert _RECEIPT_NODE_IDS <= found, _RECEIPT_NODE_IDS - found
-    assert not ({"node:substrate.route", "node:substrate.bus_synaptic", "node:substrate.chat"} & found)
+    assert not ({"node:substrate.route", "node:substrate.bus_synaptic", "node:substrate.chat", "node:substrate.codebase"} & found)
 
 
 def _grammar_event(event_id: str) -> GrammarEventV1:

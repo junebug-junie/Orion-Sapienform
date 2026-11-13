@@ -30,7 +30,9 @@ from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
 from orion.substrate.prediction_error_magnitude import compute_prediction_error_magnitude
 
 NOW = datetime(2026, 10, 10, 5, 51, 3, tzinfo=timezone.utc)
-CODEBASE = "node:substrate.codebase"
+# The live case was node:substrate.codebase (retired 2026-11-13); execution is the
+# same event-written level shape ("only written when a batch carried ...").
+CODEBASE = "node:substrate.execution"
 BIOMETRICS = "node:substrate.biometrics"
 
 # A codebase-shaped week: written every 15 min, 91% exact zeros.
@@ -64,7 +66,6 @@ def test_event_written_set_comes_from_glossary_semantics() -> None:
         "node:substrate.execution": True,   # designed_sparse, "only written when a batch carried..."
         # event_gated: one write per settled chat turn (2026-11-13; replaced node:substrate.chat).
         "node:prediction.chat_turn": True,
-        "node:substrate.codebase": True,    # designed_sparse, "only written on a codebase delta event"
         # designed_sparse, "only written as 1.0 at a strain news event, then carried unwritten"
         # for the orienting window: the 1.0's age is the event's age.
         "node:substrate.strain": True,

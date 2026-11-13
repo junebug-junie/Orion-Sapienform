@@ -270,6 +270,7 @@ class AttentionRuntimeWorker:
             logger.warning("attention_world_first_pe_history_failed err=%s", exc)
 
         from orion.schemas.attention_candidate import world_first_fenced
+        from orion.substrate.prediction_error_freshness import node_signal_label
 
         node_ids = {
             k for k in (set(magnitudes) | {
@@ -290,7 +291,12 @@ class AttentionRuntimeWorker:
             candidates.append(
                 node_candidate(
                     node_id=node_id,
-                    label=f"{node_id.removeprefix(SUBSTRATE_NODE_PREFIX).removeprefix('node:')} prediction error",
+                    # An alarm keeps its own name (cabinet warming alarm, strain
+                    # news, street event alarm): it competes, but it is not a
+                    # prediction error (prediction_error_freshness.ALARM_NODE_IDS).
+                    label=node_signal_label(
+                        node_id, node_id.removeprefix(SUBSTRATE_NODE_PREFIX).removeprefix("node:")
+                    ),
                     magnitude=mag,
                     observed_at=observed_at,
                     now=now,

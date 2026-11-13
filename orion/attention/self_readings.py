@@ -27,7 +27,9 @@ Rendering (``render_self_readings``): only unusual readings get a line, at most
 ``MAX_SHOWN`` and ``SELF_READINGS_MAX_CHARS``. A calm body renders nothing ("creatures notice
 chaos"); no reading, stale, or too-little-history signals never render as calm -- when a block is
 shown they are named as unreadable. Every line carries ``[pe:<name>@<observed_at>]`` naming the
-persisted row (``substrate_node_prediction_error_history`` primary key) its numbers came from.
+persisted row (``substrate_node_prediction_error_history`` primary key) its numbers came from;
+an alarm (cabinet, strain: ``prediction_error_freshness.ALARM_NODE_IDS``) says ``[alarm:...]``
+instead, because it counts firings, not prediction error.
 
 What it tends to lead to (spec section E): when the caller passes the signal's renderable
 ``self_signal_outcome_association`` row (``orion.attention.self_signal_outcomes.index_by_signal``:
@@ -91,7 +93,6 @@ def node_prediction_error_is_measurement(node_id: str) -> bool:
 _WORDS: dict[str, tuple[str, str]] = {
     "node:substrate.biometrics": ("how much my machines' load readings are moving", "share of a 0.30 swing"),
     "node:substrate.execution": ("surprise in how my task execution is going", "clipped z / 3"),
-    "node:substrate.codebase": ("how unusual the latest change to my own code was", "clipped z / 3"),
     "node:substrate.cabinet": ("my cabinet's warming alarm", "firings in the last hour"),
     "node:substrate.strain": ("news that I am under strain (heat or a GPU backlog)", "news events in the last hour"),
     "node:prediction.room": ("how much my office's temperature is surprising my own forecast",
@@ -331,7 +332,11 @@ def _reading(cache, node_id, mags, current, now, *, sustain: bool = True) -> Sel
     rank = verdict.rank_score if verdict.rank_score is not None else candidate.rank_percentile
     name = short_name(node_id)
     ref_ts = ref_at if is_rate else observed_at
-    ref = f"pe:{name}@{_z(ref_ts)}" if ref_ts is not None else ""
+    # An alarm's row is a firing, not a prediction error: its ref says alarm:.
+    from orion.substrate.prediction_error_freshness import is_alarm_node
+
+    ref_kind = "alarm" if is_alarm_node(node_id) else "pe"
+    ref = f"{ref_kind}:{name}@{_z(ref_ts)}" if ref_ts is not None else ""
     if observed_at is None:
         source_ref = ""
     elif is_rate:

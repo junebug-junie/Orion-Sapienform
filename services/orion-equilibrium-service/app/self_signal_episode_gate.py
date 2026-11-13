@@ -79,6 +79,9 @@ def observe_signals(
     (``ATTENTION_SUSTAINED_BODY_ENABLED``): a continuous body source carries
     its dwell over its own readings, so its episode confirms on the poll the
     attention contest first lets it compete. None = count hot polls."""
+    # Lazy, like self_signal_outcome_rollup: orion.substrate's package init is heavy.
+    from orion.substrate.prediction_error_freshness import node_signal_label
+
     mags = magnitudes or {}
     ids = {
         nid
@@ -98,7 +101,7 @@ def observe_signals(
             mag, observed_at, mid = None, None, None
         cand = node_candidate(
             node_id=node_id,
-            label=f"{node_id.removeprefix(SUBSTRATE_NODE_PREFIX)} prediction error",
+            label=node_signal_label(node_id, node_id.removeprefix(SUBSTRATE_NODE_PREFIX)),
             magnitude=mag,
             observed_at=observed_at,
             now=now,

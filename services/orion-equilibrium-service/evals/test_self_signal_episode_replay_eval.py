@@ -67,7 +67,11 @@ def test_daily_volume(result):
     per_day = {d: sum(c.values()) for d, c in result["per_day"].items()}
     print("per-day episode opens:", per_day)
     print("per-signal:", {k: v["episodes"] for k, v in result["per_signal"].items()})
-    assert 5.0 <= total / _days(result) <= 15.0, total
+    # Floor 4.0 since 2026-11-13: node:substrate.codebase (a churn z, not a
+    # forecast) left the fixture's readers and took its episodes with it --
+    # 32 opens over 7.03 days = 4.55/day without it. The band is a sanity
+    # range on volume, not a target.
+    assert 4.0 <= total / _days(result) <= 15.0, total
     assert max(per_day.values()) <= 15, per_day
 
 

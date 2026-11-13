@@ -582,48 +582,31 @@ same day this tick shipped). A table nothing else has ever written to makes that
 structurally impossible here, not just avoided by convention — see the design doc above for the full
 reasoning behind hosting this tick in this service instead of a separate one.
 
-**Seventh domain, codebase mass, wired and live as of 2026-07-31**
-(`docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md`;
-`orion/sentience_striving_program/README.md` §9b has the fuller cross-domain note). All external
-I/O for this domain (git/GitHub/graphify access) lives in a separate service,
-`orion-cocreation-signals`, which publishes `CodebaseDeltaV1` events (one of `git` / `pr_lifecycle` /
-`graph`) to the `orion:substrate:codebase_delta` bus channel (`orion/bus/channels.yaml`,
-`orion/schemas/codebase_delta.py`, PR #1515) — this service keeps doing zero external I/O of its
-own, same "read a cheap bus event, write a node" shape every domain above uses, just via a dedicated
-subscribe loop (`_codebase_delta_listener_loop()`) instead of the shared poll tick, since this
-domain's traffic isn't reducer-projection-shaped like the others.
+**Codebase delta listener (was the seventh prediction-error domain; node RETIRED 2026-11-13).**
+`orion-cocreation-signals` publishes `CodebaseDeltaV1` events (`git` / `pr_lifecycle` / `graph`)
+to `orion:substrate:codebase_delta`. `_codebase_delta_listener_loop()` (flag
+`SUBSTRATE_CODEBASE_DELTA_LISTENER_ENABLED`, default on; renamed from
+`SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE`) scores each event with
+`codebase_prediction_error()` and appends:
 
-Gated by its own dedicated flag `SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE` (default-on since
-2026-07-31; deliberately not reusing `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES` given this domain's
-different risk surface). On each event, `_handle_codebase_delta_message()`
-(`app/worker.py`) scores it via `codebase_prediction_error()` (`orion/substrate/prediction_error.py`,
-composites git/PR-lifecycle/graph structural deltas from `orion/structural_mass/`) and does four
-things every tick:
+1. the EWMA baseline to `substrate_codebase_mass_baseline`
+   (`SUBSTRATE_CODEBASE_MASS_BASELINE_RETENTION_DAYS`, default 30);
+2. the raw payload and the score to `substrate_codebase_delta_log`
+   (`SUBSTRATE_CODEBASE_DELTA_LOG_RETENTION_DAYS`, default 180).
 
-1. Writes `node:substrate.codebase` via the shared `_write_prediction_error_node()` upsert (same as
-   every other domain) — unconditional, every tick, including a genuine calm (score == 0.0) reading.
-2. If `score > 0.0`: emits a `ReductionReceiptV1` via `save_receipt()` (`target_kind=
-   "prediction_signal"`) — the only path `orion-field-digester`'s `state_deltas.py` actually ingests
-   into `field_channel_corpus.v1`; the FalkorDB node write above is a separate, parallel path that
-   does *not* by itself reach field-digester. Gated exactly like every sibling domain's own tick in
-   this file (a real gap here silently regressed for a full session in late July 2026 — caught by
-   diffing the live container's loaded source against `main`, not by trusting a prior PR's stated
-   scope).
-3. Appends the updated `CodebaseMassBaseline` (three independent EWMA sub-baselines: git/pr/graph)
-   to `substrate_codebase_mass_baseline` via `save_codebase_mass_baseline()` — this domain's only
-   persisted state across ticks, since (unlike every domain above) there is no reducer projection
-   object to carry it on. Retention: `SUBSTRATE_CODEBASE_MASS_BASELINE_RETENTION_DAYS` (default 30).
-4. Unconditionally appends the real per-tick payload (raw git churn / PR numbers / graph deltas, plus
-   this tick's score) to `substrate_codebase_delta_log` via `save_codebase_delta_log()` — a complete
-   real-event history distinct from the EWMA-only baseline table above, meant to back a future Hub
-   "cocreation signals" analytics tab. Not gated on score, unlike step 2 — the whole point is
-   accumulated history, not a curated audit trail. Retention:
-   `SUBSTRATE_CODEBASE_DELTA_LOG_RETENTION_DAYS` (default 180).
+It no longer writes `node:substrate.codebase` or a field receipt. PE suite rebuild
+(`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`): the churn z is not a
+forecast, yet in the 7 days before removal it won 2.8% of attention frames, seeded 128 curiosity
+candidates and opened 14 metacog episodes. The id is on
+`RETIRED_PREDICTION_ERROR_NODE_IDS` and the digester's `RETIRED_PSEUDO_NODES`. The score's
+remaining readers (Hub co-creation tab, cortex-exec self-study) read it as churn, not as
+prediction error.
 
-`node:substrate.codebase` is deliberately **not** added to this reducer's own
-`prediction_error_by_domain` (`_PREDICTION_ERROR_DOMAIN_NODE_IDS` in `app/worker.py`) — the design
-spec defers wiring any downstream consumer of that aggregate until Phase 1's replay reads land; see
-the comment at that dict's definition before adding it.
+**Alarms are not prediction errors (2026-11-13).** `node:substrate.cabinet`, `node:substrate.strain`
+and `node:substrate.street` still write the node's `prediction_error` field and history rows,
+because attention competes on them and strain news rebuilds its budget from those rows. They are
+listed in `orion.substrate.prediction_error_freshness.ALARM_NODE_IDS`: curiosity's
+prediction-error seeds and the PE domain panels skip them, and their labels say alarm / news.
 
 ## Unified turn bus listeners
 
@@ -1359,7 +1342,7 @@ way. Replay: `evals/run_world_chat_loop_id_replay.py --days 7`; after deploy add
 `ACTIVE_INFERENCE_DOMAINS` or any capability edge in `config/field/orion_field_topology.v1.yaml`
 in this patch (that file documents the node's existence in a comment only -- no `edges:` entry).
 Unlike `SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED`/`SUBSTRATE_VISION_CHANNEL_TICK_ENABLED`/
-`SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE` above, this flag has **not** been given Juniper's
+`SUBSTRATE_CODEBASE_DELTA_LISTENER_ENABLED` above, this flag has **not** been given Juniper's
 explicit go-ahead to flip true yet.
 
 **NOT YET VERIFIED -- required before flipping the flag or wiring any consumer** (metric quality

@@ -34,7 +34,7 @@ def test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_plac
     nodes = sr.prompt_reaching_nodes()
     assert nodes == sorted([
         "node:substrate.biometrics", "node:substrate.cabinet",
-        "node:substrate.codebase", "node:substrate.execution",
+        "node:substrate.execution",
         "node:substrate.strain",
         # forecast surprise (value_kind surprise_excess, 2026-11-11): a measurement, the body.
         "node:prediction.body", "node:prediction.room",
@@ -93,7 +93,8 @@ def test_trigger_reads_as_a_rate_never_a_magnitude() -> None:
     assert cab.unusual
     assert "went off 2 times in the last hour" in cab.plain
     # The ref names the newest ON row, not the trailing 0.0 write.
-    assert cab.ref == "pe:cabinet@2026-10-14T03:13:30Z"
+    # An alarm cites its firing as alarm:, never pe: (PE suite rebuild, 2026-11-13).
+    assert cab.ref == "alarm:cabinet@2026-10-14T03:13:30Z"
 
 
 def test_trigger_onsets_count_transitions_not_rows() -> None:
@@ -192,12 +193,12 @@ def test_unreadable_glossary_renders_nothing(monkeypatch) -> None:
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf")])
 def test_non_finite_latest_value_is_no_reading_never_a_measurement(bad) -> None:
-    rows = fx.busy_body_rows() + [("node:substrate.codebase", NOW - timedelta(seconds=3), bad)]
+    rows = fx.busy_body_rows() + [("node:substrate.execution", NOW - timedelta(seconds=3), bad)]
     block = sr.project_self_readings(_cache(rows), now=NOW)
-    codebase = _by_id(block.readings)["node:substrate.codebase"]
-    assert codebase.state == "no_reading" and codebase.value is None and not codebase.unusual
+    execution = _by_id(block.readings)["node:substrate.execution"]
+    assert execution.state == "no_reading" and execution.value is None and not execution.unusual
     assert "inf" not in block.text and "nan" not in block.text
-    assert "codebase (no reading)" in block.text
+    assert "execution (no reading)" in block.text
 
 
 def test_calm_with_unread_signals_is_not_logged_all_calm() -> None:

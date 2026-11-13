@@ -134,8 +134,8 @@ An option key of the form `<family>::<id>` (`weights.endorsement_option_key`) ov
 ## Tests run
 
 ```text
-pytest orion/physiology/tests orion/personality -q                       491 passed
-cd services/orion-durable-runs && pytest tests -q                          905 passed, 136 skipped
+pytest orion/physiology/tests orion/personality -q                       494 passed
+cd services/orion-durable-runs && pytest tests -q                          908 passed, 136 skipped
 ```
 
 ## Evals run
@@ -159,7 +159,37 @@ Not run. This patch is pure Python inside the existing durable-runs image. There
 
 ## Review findings fixed
 
-See the PR comment or the section below (filled in after the review subagent).
+The review ran in a subagent and returned 3 material findings and 8 should-fix findings. All of them are fixed.
+
+- Finding (material): the runaway guard counted today's partial day. At UTC midnight there are no shown options yet, so every cap lifted until the day's first choice landed.
+  - Fix: the guard now counts the 7 complete days ending yesterday.
+  - Evidence: `test_runaway_cap_survives_midnight_before_the_days_first_choice`.
+- Finding (material): an HTTP bid that carried `object_text` waited up to 1 s for a cold embed. The client's budget is 0.5 s, so the whole bid timed out and the producer fell back to its own gate.
+  - Fix: an HTTP bid waits at most 0.25 s (`HTTP_EMBED_WAIT_SEC`). The embed is shielded, so it still finishes and fills the cache for the next bid. The client docstring states this.
+  - Evidence: `PersonalityValues._care`, and `main.py` `HTTP_EMBED_WAIT_SEC`.
+- Finding (material): a failed guard embed counted as "matched nothing". A cold vector-host could therefore silently lower every share and lift every cap.
+  - Fix: guard embed failures are now counted. When more than 20% of shown options fail, the previous caps are kept. The counter appears in the refresh log and in `health()`. Guard concurrency dropped from 4 to 2, so the guard leaves room for the per-bid care embeds.
+  - Evidence: `test_guard_embed_failures_keep_the_previous_caps`.
+- Finding: while the database was down, every bid started a new refresh.
+  - Fix: the TTL now runs from the last attempt, not from the last success.
+  - Evidence: `test_a_failed_read_retries_once_per_ttl_not_on_every_bid`.
+- Finding: the weights replay is about 2x the CPU work and ran on the event loop.
+  - Fix: measured live first. 4,798 acts give 0.61 s for the base weights and 0.64 s for the added (c) work. The replay now runs in `asyncio.to_thread`.
+  - Evidence: `Market._ensure_weights`.
+- Finding: decisions that returned before pricing (unavailable, no lane, capacity) carried no arm line.
+  - Fix: `with_personality_arm` adds the arm and `care=0:reason=not_priced` to those decisions.
+  - Evidence: `test_a_decision_returned_before_pricing_still_names_its_arm`.
+- Finding: a `care_promoted` choice counted half in the rate but in full toward n.
+  - Fix: it now also counts half toward n.
+  - Evidence: `test_a_care_promoted_point_counts_half_toward_n_too`.
+- Finding: the docstring said Prime uses `endorsement_option_key`. No producer uses it.
+  - Fix: the docstring now says so.
+- Finding: the trace read `self._weights`, which a concurrent bid could swap, so the trace could disagree with the weights that priced the bid.
+  - Fix: the trace now reads `ctx.weights`, the weights that price this bid.
+- Finding: the embedder's HTTP client was never closed.
+  - Fix: `PersonalityValues.aclose()` closes it, and the lifespan shutdown calls it.
+- Finding: there was no market-level test of (c) with real choice rows.
+  - Fix: added `test_market_care_arm_reads_source_c_and_holdback_does_not`. It checks that the care arm's weight is below the holdback arm's, and that the holdback weight equals the flag-off weight.
 
 ## Restart required
 
@@ -186,6 +216,6 @@ Run it from the clean primary `main` checkout after merge. orion-durable-runs is
 
 ## PR link
 
-(see below)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3332
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

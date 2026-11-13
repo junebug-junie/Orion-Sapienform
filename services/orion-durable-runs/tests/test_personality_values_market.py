@@ -158,8 +158,9 @@ def test_holdback_want_gets_no_care_and_off_gets_no_term():
 
 def test_the_runaway_guard_caps_a_tendency_shown_above_sixty_percent_for_seven_days(caplog):
     rows = []
-    for d in range(7):
-        at = NOW - timedelta(days=d, minutes=1) if d else NOW - timedelta(minutes=1)
+    for d in range(1, 8):
+        at = datetime.combine((NOW - timedelta(days=d)).date(), datetime.min.time(), tzinfo=timezone.utc) \
+            + timedelta(hours=12)
         rows.append(_choice_row(d, at=at, chosen_text="street a", alt_texts=("street b", "street c", "pipeline")))
     v = _values(_Pool(tendencies=[_tendency_row()], choices=rows))
     with caplog.at_level("WARNING"):
@@ -235,3 +236,55 @@ def test_want_object_text_reads_the_question_or_the_title_never_the_prompt():
     assert want_object_text({"brief": {"title": "fix(hub): a thing"}}) == "fix(hub): a thing"
     assert want_object_text({"brief": {"prompt": "long instructions"}}) is None
     assert want_object_text({}) is None
+
+
+def test_a_failed_read_retries_once_per_ttl_not_on_every_bid():
+    async def run():
+        v = PersonalityValues(enabled=True, pool_getter=lambda: _Pool(fail=True), embed=_Embedder(), ttl_sec=600)
+        t1 = v.kick(NOW)
+        await t1
+        assert v.kick(NOW + timedelta(seconds=5)) is None
+        t2 = v.kick(NOW + timedelta(seconds=601))
+        await t2
+        return v.counts["refresh_failed"]
+
+    assert asyncio.run(run()) == 2
+
+
+def test_guard_embed_failures_keep_the_previous_caps():
+    rows = []
+    for d in range(1, 8):
+        at = datetime.combine((NOW - timedelta(days=d)).date(), datetime.min.time(), tzinfo=timezone.utc) \
+            + timedelta(hours=12)
+        rows.append(_choice_row(d, at=at, chosen_text="street a", alt_texts=("street b", "street c", "pipeline")))
+    emb = _Embedder()
+    v = _values(_Pool(tendencies=[_tendency_row()], choices=rows), embed=emb)
+    assert "t-street" in asyncio.run(v.refresh(NOW)).caps
+    v._vec.clear()
+    emb.fail = True
+    snap = asyncio.run(v.refresh(NOW + timedelta(minutes=20)))
+    assert snap.caps_kept and snap.guard_embed_failed == snap.shown_options and "t-street" in snap.caps
+
+
+def _outreach_rows(n, said):
+    return [_choice_row(100 + i, at=NOW - timedelta(days=1, minutes=i), declined=not said) for i in range(n)]
+
+
+def test_market_care_arm_reads_source_c_and_holdback_does_not():
+    acts = _acts() + [{"act_id": f"o{i}", "actor": "hub.outreach", "opened_at": NOW - timedelta(hours=5 + i),
+                       "closed_at": NOW - timedelta(hours=4 + i), "outcome_value": None, "outcome_source": None,
+                       "signal_id": None, "cost_json": "{}"} for i in range(3)]
+    pool = _Pool(tendencies=[_tendency_row()], choices=_outreach_rows(30, said=False), acts=acts)
+    values = _values(pool)
+    asyncio.run(values.refresh(NOW))
+    m, _ = _market(values, pool)
+    m_off, _ = _market(None, pool)
+    care = asyncio.run(m.bid(WantV1(want_id=_care_want_id("o"), family="hub.outreach", producer="unit",
+                                    verb="say", tier=2), NOW))
+    hold = asyncio.run(m.bid(WantV1(want_id=_holdback_want_id("o"), family="hub.outreach", producer="unit",
+                                    verb="say", tier=2), NOW))
+    off = asyncio.run(m_off.bid(WantV1(want_id="o-off", family="hub.outreach", producer="unit", verb="say",
+                                       tier=2), NOW))
+    assert "personality:endorsement=0.0000:n=30" in care.warnings
+    assert care.family_weight < hold.family_weight
+    assert hold.family_weight == off.family_weight

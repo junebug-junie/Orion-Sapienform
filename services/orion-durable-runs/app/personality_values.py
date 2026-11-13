@@ -41,7 +41,10 @@ EmbedFn = Callable[[str, str], Awaitable[list[float]]]
 CHOICE_WINDOW = timedelta(days=30)
 EMBED_CACHE_MAX = 4000
 GUARD_MAX_TEXTS = 2000           # shown options embedded per refresh (the cache keeps the rest)
-GUARD_EMBED_CONCURRENCY = 4
+GUARD_EMBED_CONCURRENCY = 2      # leaves vector-host room for the per-bid care embeds
+# More guard embeds failed than this share of shown options: the shares are unknown, so the last caps are kept
+# (a failed embed would otherwise read as "matched nothing" and silently lift every cap).
+GUARD_MAX_FAILED_SHARE = 0.2
 
 TENDENCIES_SQL = """
 SELECT disposition_id, label, centroid, weight
@@ -118,6 +121,8 @@ class Snapshot:
     caps: dict[str, pv.Cap] = field(default_factory=dict)
     shown_options: int = 0
     shown_matched: int = 0
+    guard_embed_failed: int = 0
+    caps_kept: bool = False      # the guard could not read this refresh; the previous caps stand
 
 
 class PersonalityValues:
@@ -134,6 +139,8 @@ class PersonalityValues:
         self.holdback_fraction = holdback_fraction
         self.snapshot: Optional[Snapshot] = None
         self._refreshing: Optional[asyncio.Task] = None
+        self._last_attempt: Optional[datetime] = None
+        self._close: Optional[Callable[[], Awaitable[None]]] = None
         self._vec: OrderedDict[str, tuple[float, ...]] = OrderedDict()
         self.counts = {"refresh_ok": 0, "refresh_failed": 0, "care": 0, "care_zero": 0, "holdback": 0,
                        "embed_failed": 0}
@@ -156,8 +163,10 @@ class PersonalityValues:
             return None
         if self._refreshing is not None and not self._refreshing.done():
             return None
-        if self.snapshot is not None and 0 <= (now - self.snapshot.at).total_seconds() <= self._ttl:
+        # The TTL runs from the last ATTEMPT: a database outage retries once per TTL, not on every bid.
+        if self._last_attempt is not None and 0 <= (now - self._last_attempt).total_seconds() <= self._ttl:
             return None
+        self._last_attempt = now
         try:
             self._refreshing = asyncio.get_running_loop().create_task(self.refresh(now))
         except RuntimeError:
@@ -178,6 +187,9 @@ class PersonalityValues:
         parsed = [p for p in (parse_choice_row(r) for r in c_rows) if p is not None]
         snap = Snapshot(at=now, tendencies=tendencies, choices=[p[0] for p in parsed])
         await self._guard(snap, [p[1] for p in parsed], now)
+        if snap.caps_kept and self.snapshot is not None:
+            live = {t.disposition_id for t in tendencies}
+            snap.caps = {k: v for k, v in self.snapshot.caps.items() if k in live}
         snap.tendencies = pv.apply_caps(tendencies, snap.caps)
         self.snapshot = snap
         self.counts["refresh_ok"] += 1
@@ -186,8 +198,9 @@ class PersonalityValues:
             label = next((t.label for t in tendencies if t.disposition_id == cap.disposition_id), "")
             logger.warning("personality_values_tendency_capped tendency=%s label=%r share_7d=%.3f factor=%.3f",
                            cap.disposition_id, label[:80], cap.mean_share, cap.factor)
-        logger.info("personality_values_refresh tendencies=%d choices=%d shown_options_7d=%d matched=%d capped=%d",
-                    len(tendencies), len(snap.choices), snap.shown_options, snap.shown_matched, len(snap.caps))
+        logger.info("personality_values_refresh tendencies=%d choices=%d shown_options_7d=%d matched=%d "
+                    "guard_embed_failed=%d caps_kept=%s capped=%d", len(tendencies), len(snap.choices),
+                    snap.shown_options, snap.shown_matched, snap.guard_embed_failed, snap.caps_kept, len(snap.caps))
         return snap
 
     async def _guard(self, snap: Snapshot, shown: Sequence[ShownChoice], now: datetime) -> None:
@@ -200,17 +213,26 @@ class PersonalityValues:
         texts = list(dict.fromkeys(t for s in recent for t in s.texts))[:GUARD_MAX_TEXTS]
         vecs = await self._embed_many(texts)
         entries = []
+        failed = 0
         for s in recent:
             d = s.occurred_at.astimezone(timezone.utc).date()
             for t in s.texts:
                 v = vecs.get(t)
                 tid = None
-                if v is not None:
+                if v is None:
+                    failed += 1
+                else:
                     best, _c, score = pv.best_tendency(v, snap.tendencies, with_cap=False)
                     tid = best.disposition_id if best is not None and score > 0 else None
                 entries.append((d, tid))
         snap.shown_options = len(entries)
         snap.shown_matched = sum(1 for _d, tid in entries if tid)
+        snap.guard_embed_failed = failed
+        if entries and failed / len(entries) > GUARD_MAX_FAILED_SHARE:
+            snap.caps_kept = True
+            logger.warning("personality_values_guard_unread failed=%d of %d shown options; previous caps kept",
+                           failed, len(entries))
+            return
         snap.caps = pv.runaway_caps(pv.daily_shown_shares(entries), now.astimezone(timezone.utc).date())
 
     # --- embedding -----------------------------------------------------------------------------------
@@ -245,7 +267,8 @@ class PersonalityValues:
     # --- per bid -------------------------------------------------------------------------------------
 
     async def term(self, want_id: str, text: Optional[str], *, endorsement_rate: Optional[float] = None,
-                   endorsement_n: int = 0, endorsement_excluded: str = "") -> Optional[pv.PersonalityTerm]:
+                   endorsement_n: int = 0, endorsement_excluded: str = "",
+                   embed_wait_sec: Optional[float] = None) -> Optional[pv.PersonalityTerm]:
         """The want's personality term, or None when the flag is off. Never raises."""
         if not self.enabled:
             return None
@@ -255,12 +278,12 @@ class PersonalityValues:
             return pv.PersonalityTerm(arm=arm, reason=pv.REASON_HOLDBACK, endorsement_excluded="holdback")
         endorse = dict(endorsement_rate=endorsement_rate, endorsement_n=endorsement_n,
                        endorsement_excluded=endorsement_excluded)
-        res = await self._care(pv.object_text(text))
+        res = await self._care(pv.object_text(text), embed_wait_sec)
         self.counts["care" if res.care > 0 else "care_zero"] += 1
         return pv.PersonalityTerm(arm=arm, care=res.care, reason=res.reason, tendency_id=res.tendency_id,
                                   cosine=res.cosine, **endorse)
 
-    async def _care(self, text: Optional[str]) -> pv.CareResult:
+    async def _care(self, text: Optional[str], wait: Optional[float] = None) -> pv.CareResult:
         if text is None:
             return pv.CareResult(0.0, pv.REASON_NO_TEXT)
         snap = self.snapshot
@@ -269,7 +292,12 @@ class PersonalityValues:
         if not snap.tendencies:
             return pv.CareResult(0.0, pv.REASON_NO_TENDENCY)
         try:
-            vec = await asyncio.wait_for(self._embed_one(text), self._embed_timeout)
+            wait = self._embed_timeout if wait is None else min(wait, self._embed_timeout)
+            # Shielded: a short wait gives up on THIS bid, but the embed finishes and fills the cache, so the
+            # same text's next bid has it (the embedder's own HTTP timeout bounds the background call).
+            task = asyncio.ensure_future(self._embed_one(text))
+            task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            vec = await asyncio.wait_for(asyncio.shield(task), wait)
         except Exception as exc:  # noqa: BLE001 -- fail-open: care 0, said on the decision and in the log
             self.counts["embed_failed"] += 1
             logger.warning("personality_values_care_embed_failed error=%s", type(exc).__name__)
@@ -279,11 +307,24 @@ class PersonalityValues:
             return pv.CareResult(0.0, pv.REASON_EMBED_FAILED)
         return pv.care_for(vec, snap.tendencies)
 
+    def set_closer(self, close: Optional[Callable[[], Awaitable[None]]]) -> None:
+        self._close = close
+
+    async def aclose(self) -> None:
+        if self._refreshing is not None and not self._refreshing.done():
+            self._refreshing.cancel()
+        if self._close is not None:
+            try:
+                await self._close()
+            except Exception:  # noqa: BLE001
+                logger.warning("personality_values_close_failed", exc_info=True)
+
     def health(self) -> dict:
         s = self.snapshot
         return {"enabled": self.enabled, "snapshot_at": s.at.isoformat() if s else None,
                 "tendencies": len(s.tendencies) if s else 0, "choices_30d": len(s.choices) if s else 0,
                 "shown_options_7d": s.shown_options if s else 0,
+                "guard_embed_failed": s.guard_embed_failed if s else 0, "caps_kept": s.caps_kept if s else False,
                 "capped": sorted(s.caps) if s else [], "last_error": self.last_error, **self.counts}
 
 

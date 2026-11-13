@@ -74,6 +74,12 @@ def test_endorsement_is_a_rate_per_offer_and_care_promoted_counts_half():
     assert endorsement_for("hub.outreach", rows2, since=SINCE, until=NOW)[0] == pytest.approx(0.5 / 1.5)
 
 
+def test_a_care_promoted_point_counts_half_toward_n_too():
+    rows = [_outreach(i, promoted=True) for i in range(20)]
+    ev = evidence_for("hub.outreach", [], [], since=SINCE, until=NOW, choices=rows)
+    assert ev.endorsement_n == 20 and ev.n == pytest.approx(10.0)
+
+
 def test_prime_options_spanning_families_endorse_the_chosen_family():
     k = endorsement_option_key
     rows = [choice_record(f"prime:{i}", "prime", NOW - timedelta(days=1), k("hub.world_pulse_read", f"c{i}"),

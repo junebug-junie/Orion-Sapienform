@@ -111,7 +111,7 @@ from orion.physiology.appetite import (
 )
 from orion.physiology.consent import ConsentRules, consent_verdict
 from orion.physiology.families import FamiliesConfig, FamilyConfig
-from orion.physiology.personality_values import ARM_HOLDBACK, PersonalityTerm, trace_warnings
+from orion.physiology.personality_values import TRACE_PREFIX, ARM_HOLDBACK, PersonalityTerm, trace_warnings
 from orion.physiology.prime_charge import PrimeChargeRefusalV1, PrimeRegulationV1
 from orion.physiology.prime_charge import amount as prime_amount
 from orion.physiology.prime_charge import refusal_for as prime_refusal_for
@@ -445,6 +445,15 @@ def consent_gate(want: WantV1, rules: Optional[ConsentRules], now: datetime, *,
                                   f"(rule {verdict.rule_id or 'none'}: {verdict.reason}); never admitted")
 
 
+def with_personality_arm(decision: WantDecisionV1, personality: Optional[PersonalityTerm]) -> WantDecisionV1:
+    """A decision that returned before pricing (unavailable, no lane, capacity) still names its arm, so a
+    care-vs-holdback readout sees deferrals in both arms. Unchanged when it already has a trace or no term."""
+    if personality is None or any(w.startswith(f"{TRACE_PREFIX}arm=") for w in decision.warnings):
+        return decision
+    return decision.model_copy(update={"warnings": [*decision.warnings, f"{TRACE_PREFIX}arm={personality.arm}",
+                                                    f"{TRACE_PREFIX}care=0:reason=not_priced"]})
+
+
 def with_consent(decision: WantDecisionV1, verdict: Optional[ConsentVerdictV1]) -> WantDecisionV1:
     """The decision with the gate's (allow) verdict stored on it; unchanged when there was no request."""
     return decision if verdict is None else decision.model_copy(update={"consent": verdict})
@@ -464,8 +473,9 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     verdict, deferral = consent_gate(want, consent_rules, now, families=ctx.families)
     if deferral is not None:
         return deferral
-    return with_consent(decide_priced(want, state, ctx, book, now, reserve_at_open=reserve_at_open, prime=prime,
-                                      prime_refusal=prime_refusal, personality=personality), verdict)
+    return with_personality_arm(with_consent(decide_priced(
+        want, state, ctx, book, now, reserve_at_open=reserve_at_open, prime=prime, prime_refusal=prime_refusal,
+        personality=personality), verdict), personality)
 
 
 def decide_priced(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
@@ -876,6 +886,7 @@ __all__ = [
     "consent_gate",
     "decide_priced",
     "with_consent",
+    "with_personality_arm",
     "EXPLORATION_FLOOR",
     "FLOOR_TIER",
     "FLOOR_WINDOW",

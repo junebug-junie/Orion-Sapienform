@@ -22,8 +22,9 @@ Evidence sources, each a rate per act in 0..1 (never a count, so running more do
   choice point have NO source (c), never 0. Off unless the caller passes ``choices``.
 
   Which family an option belongs to (``option_family``): an option key ``<family>::<id>`` names it
-  (a producer whose options span families, e.g. Prime's concerns from event wants, uses
-  ``endorsement_option_key``); else the lane's family (``LANE_FAMILIES``): outreach -> hub.outreach,
+  (``endorsement_option_key``, for a producer whose options span families; NO producer uses it yet:
+  Prime keys its options by concern id, so a Prime choice counts toward the family ``prime``, i.e.
+  "Prime made a move" vs "no move"); else the lane's family (``LANE_FAMILIES``): outreach -> hub.outreach,
   reading -> hub.world_pulse_read, curiosity -> durable.curiosity_investigate, prime -> prime. The chat
   lane has none (Juniper's turns are Tier 0 and never bid).
 
@@ -161,9 +162,16 @@ def choice_record(choice_id: str, lane: str, occurred_at: datetime, chosen_key: 
 def endorsement_for(family: str, choices: Sequence[ChoiceRecord], *, since: datetime, until: datetime
                     ) -> tuple[Optional[float], int, frozenset]:
     """(rate, n, ids) of source (c) for ``family`` in [since, until). No real choice point: (None, 0)."""
+    rate, n, weighted = _endorsement(family, choices, since=since, until=until)
+    return rate, n, frozenset(weighted)
+
+
+def _endorsement(family: str, choices: Sequence[ChoiceRecord], *, since: datetime, until: datetime
+                 ) -> tuple[Optional[float], int, dict[str, float]]:
+    """(rate, n, id -> weight): a ``care_promoted`` point weighs ``CARE_PROMOTED_WEIGHT`` in the rate AND in n."""
     num = den = 0.0
     n = 0
-    ids: set[str] = set()
+    ids: dict[str, float] = {}
     for c in choices:
         if family not in c.offered_families or not c.real_choice or not since <= c.occurred_at < until:
             continue
@@ -171,8 +179,9 @@ def endorsement_for(family: str, choices: Sequence[ChoiceRecord], *, since: date
         den += w
         num += w if c.chosen_family == family else 0.0
         n += 1
-        ids.add(c.act_id or f"choice:{c.choice_id}")
-    return (num / den if den > 0 else None), n, frozenset(ids)
+        key = c.act_id or f"choice:{c.choice_id}"
+        ids[key] = max(ids.get(key, 0.0), w)
+    return (num / den if den > 0 else None), n, ids
 
 
 @dataclass(frozen=True)
@@ -240,12 +249,15 @@ def evidence_for(family: str, acts: Sequence[ActRecord], uses: Sequence[UseRecor
         raise ValueError("reliability=True needs ActRecord.outcome_note read from grammar_acts")
     r = reliability_grades(family, acts, since=since, until=until, self_grades=self_grades) if reliability else []
     other_ids = {x.act_id for x in u} | {a.act_id for a in e}
-    c_rate, c_n, c_ids = endorsement_for(family, choices, since=since, until=until) if choices else (None, 0, frozenset())
-    other_ids |= set(c_ids)
+    c_rate, c_n, c_w = _endorsement(family, choices, since=since, until=until) if choices else (None, 0, {})
+    measured = set(other_ids) | {i for i, _, _ in r}
+    other_ids |= set(c_w)
     ids = frozenset(other_ids | {i for i, _, _ in r})
     r_weight = sum(w for _, _, w in r)
     # An act measured only by a half-weight self-grade counts half toward n (one grade per act).
     discount = sum(1.0 - w for i, _, w in r if i not in other_ids)
+    # A care_promoted choice point measured by nothing else counts half toward n, as it does in the rate.
+    discount += sum(1.0 - w for i, w in c_w.items() if i not in measured)
     return Evidence(use_rate=(sum(1 for x in u if x.used) / len(u)) if u else None, use_n=len(u),
                     engagement_rate=(sum(min(1.0, max(0.0, a.outcome_value)) for a in e) / len(e)) if e else None,
                     engagement_n=len(e),

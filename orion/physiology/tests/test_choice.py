@@ -540,6 +540,16 @@ def test_care_lifts_the_rank_and_the_trace_keeps_the_rank_without_it():
     assert "care 1.00 for tendency t1" in cared.why
 
 
+def test_a_decision_returned_before_pricing_still_names_its_arm():
+    from orion.physiology.personality_values import PersonalityTerm
+
+    d = decide(want(), None, ctx_for(SELF, body(lane("agent"))), ReservationBook(), NOW,
+               personality=PersonalityTerm(arm="holdback", reason="holdback"))
+    assert d.reason == "physiology_unavailable" and "personality:arm=holdback" in d.warnings
+    plain = decide(want(), None, ctx_for(SELF, body(lane("agent"))), ReservationBook(), NOW)
+    assert not any(w.startswith("personality:") for w in plain.warnings)
+
+
 def test_holdback_arm_prices_no_care_and_reads_the_weights_without_source_c():
     from orion.physiology.personality_values import PersonalityTerm
 

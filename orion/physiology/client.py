@@ -50,7 +50,9 @@ def bid(want: WantV1, *, url: Optional[str] = None, timeout_sec: Optional[float]
         object_text: Optional[str] = None) -> Optional[WantDecisionV1]:
     """The shadow decision, or None on ANY failure (the caller keeps its own gate). ``object_text``: what the
     want's object says (an outreach topic, a question), for the market's care term (personality rev 4,
-    ``orion.physiology.personality_values``); sent as a query parameter, never part of ``WantV1``."""
+    ``orion.physiology.personality_values``); sent as a query parameter, never part of ``WantV1``. The market
+    waits at most 0.25 s for a new text's embedding (then care 0 for this bid, cached for the next), so the
+    default 0.5 s timeout holds."""
     if not _enabled():
         return None
     target = url or os.environ.get("ORION_PHYSIOLOGY_BID_URL") or DEFAULT_URL

@@ -78,7 +78,7 @@ def test_care_enters_value_rank_before_the_percentile():
 
 
 def _shares(days_share, today):
-    return {today - timedelta(days=i): {"t": s} for i, s in enumerate(days_share)}
+    return {today - timedelta(days=i + 1): {"t": s} for i, s in enumerate(days_share)}
 
 
 def test_runaway_cap_needs_every_one_of_seven_days_above_sixty_percent():
@@ -88,6 +88,14 @@ def test_runaway_cap_needs_every_one_of_seven_days_above_sixty_percent():
     assert pv.runaway_caps(_shares([0.8] * 6 + [0.5], today), today) == {}
     assert pv.runaway_caps(_shares([0.8] * 6, today), today) == {}          # a day with nothing shown
     assert pv.runaway_caps(_shares([0.6] * 7, today), today) == {}          # at the line is not above it
+
+
+def test_runaway_cap_survives_midnight_before_the_days_first_choice():
+    today = date(2026, 11, 20)
+    shares = _shares([0.8] * 7, today)
+    assert today not in shares and "t" in pv.runaway_caps(shares, today)
+    shares[today] = {"t": 0.1}                      # today's partial day never lifts or sets a cap
+    assert "t" in pv.runaway_caps(shares, today)
 
 
 def test_daily_shown_shares_counts_unmatched_options_in_the_total():

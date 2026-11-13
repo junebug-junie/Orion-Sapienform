@@ -34,7 +34,7 @@ Orion's past choices. Three guards (spec):
   does source (c).
 * the holdback arm keeps showing options the tendencies would not pick;
 * ``runaway_caps``: a tendency whose share of SHOWN options (each shown option of a choice point is
-  matched to the tendency it most cares about) is above 60% on each of the last 7 days is capped:
+  matched to the tendency it most cares about) is above 60% on each of the last 7 complete days is capped:
   its care is scaled by ``0.6 / share``. The caller logs every cap; it is never silent.
 
 **Trace.** No schema change to ``WantV1`` or ``WantDecisionV1``: the arm, care and endorsement ride in
@@ -188,9 +188,10 @@ class Cap:
 
 
 def runaway_caps(shares: Mapping[date, Mapping[str, float]], today: date) -> dict[str, Cap]:
-    """Tendencies above ``SHOWN_SHARE_CAP`` of shown options on EACH of the ``CAP_DAYS`` days ending
-    ``today``. A day with no shown options breaks the run (nothing was shown, so nothing ran away)."""
-    days = [today - timedelta(days=i) for i in range(CAP_DAYS)]
+    """Tendencies above ``SHOWN_SHARE_CAP`` of shown options on EACH of the ``CAP_DAYS`` COMPLETE UTC days
+    ending yesterday (today's partial day is left out, so a cap does not lapse at midnight before the
+    day's first choice). A day with no shown options breaks the run (nothing was shown, nothing ran away)."""
+    days = [today - timedelta(days=i + 1) for i in range(CAP_DAYS)]
     if any(d not in shares for d in days):
         return {}
     ids = set(shares[days[0]])

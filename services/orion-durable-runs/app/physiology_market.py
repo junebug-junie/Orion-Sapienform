@@ -69,6 +69,7 @@ from orion.physiology.choice import (
     MarketContext,
     ReservationBook,
     acts_started,
+    with_personality_arm,
     SYNTHETIC_PRODUCERS,
     build_context,
     consent_gate,
@@ -246,7 +247,7 @@ class Market:
         except Exception:  # noqa: BLE001
             logger.warning("physiology_bid_history_read_failed", exc_info=True)
             return None
-        self._ensure_weights(hist, now)
+        await self._ensure_weights(hist, now)
         with_c, without_c = self._weights[1], self._weights[2]
         ctx = build_context(self.families, hist.acts, hist.uses, state, now, lane_window_sec=self._lane_window,
                             weights=with_c, event_history=hist.events)
@@ -255,20 +256,16 @@ class Market:
         return dataclasses.replace(ctx, stale_after_sec=self._stale,
                                    weights_holdback=without_c if with_c is not without_c else None)
 
-    def _ensure_weights(self, hist: "_Cached", now: datetime) -> None:
-        """Today's weights, with and without source (c), once per history snapshot, day and personality read."""
+    async def _ensure_weights(self, hist: "_Cached", now: datetime) -> None:
+        """Today's weights, with and without source (c), once per history snapshot, day and personality read.
+        The replay (~0.6 s each on a live 30-day history, 2026-11-13) runs in a worker thread, off the loop."""
         choices = self.personality.choices() if self.personality is not None else None
         key = (hist.at, now.astimezone(timezone.utc).date(),
                self.personality.snapshot_at() if self.personality is not None else None)
         if self._weights is not None and self._weights[0] == key:
             return
-        base = weights_now(self.families, hist.acts, hist.uses, now)
-        with_c, checks = base, {}
+        base, with_c, checks = await asyncio.to_thread(self._compute_weights, hist, now, choices)
         if choices is not None:
-            checks = endorsement_exclusions(self.families, hist.acts, choices, now)
-            excluded = frozenset(f for f, c in checks.items() if c.excluded)
-            with_c = weights_now(self.families, hist.acts, hist.uses, now, choices=choices,
-                                 endorsement_excluded=excluded)
             for f, w in sorted(with_c.items()):
                 chk = checks.get(f)
                 if w.evidence.endorsement_rate is None and chk is None:
@@ -280,26 +277,39 @@ class Market:
                             chk.paired_days if chk else 0, bool(chk and chk.excluded), w.weight, base[f].weight)
         self._weights = (key, with_c, base, checks)
 
-    async def _personality_term(self, want: WantV1, object_text: Optional[str], now: datetime) -> Optional[Any]:
-        """The want's personality term (arm, care, endorsement), or None (off). Never raises."""
+    def _compute_weights(self, hist: "_Cached", now: datetime, choices: Optional[list]) -> tuple[dict, dict, dict]:
+        base = weights_now(self.families, hist.acts, hist.uses, now)
+        if choices is None:
+            return base, base, {}
+        checks = endorsement_exclusions(self.families, hist.acts, choices, now)
+        excluded = frozenset(f for f, c in checks.items() if c.excluded)
+        with_c = weights_now(self.families, hist.acts, hist.uses, now, choices=choices,
+                             endorsement_excluded=excluded)
+        return base, with_c, checks
+
+    async def _personality_term(self, want: WantV1, object_text: Optional[str], ctx: MarketContext,
+                                checks: dict, embed_wait_sec: Optional[float] = None) -> Optional[Any]:
+        """The want's personality term (arm, care, endorsement), or None (off). Never raises. Reads the
+        weights that price THIS bid (``ctx``), so the trace matches the decision."""
         if self.personality is None or not self.personality.enabled:
             return None
         try:
-            fw = self._weights[1].get(want.family) if self._weights is not None else None
-            chk = self._weights[3].get(want.family) if self._weights is not None else None
+            fw = ctx.weights.get(want.family)
+            chk = checks.get(want.family)
             return await self.personality.term(
                 want.want_id, object_text,
                 endorsement_rate=fw.evidence.endorsement_rate if fw is not None else None,
                 endorsement_n=fw.evidence.endorsement_n if fw is not None else 0,
-                endorsement_excluded=chk.reason if chk is not None else "")
+                endorsement_excluded=chk.reason if chk is not None else "", embed_wait_sec=embed_wait_sec)
         except Exception:  # noqa: BLE001 -- never fail a bid on personality: decided as before
             logger.warning("personality_values_term_failed want=%s", want.want_id, exc_info=True)
             return None
 
     async def bid(self, want: WantV1, now: Optional[datetime] = None, *, reserve_at_open: bool = False,
-                  object_text: Optional[str] = None) -> WantDecisionV1:
+                  object_text: Optional[str] = None, embed_wait_sec: Optional[float] = None) -> WantDecisionV1:
         """``object_text``: what the want's object says (a curiosity question, a reading's query, an outreach
-        topic), for the care term. None: care 0 (``no_object_text``)."""
+        topic), for the care term. None: care 0 (``no_object_text``). ``embed_wait_sec``: the most this bid
+        waits for that text's embedding (HTTP callers have a short budget); past it, care 0."""
         now = now or datetime.now(timezone.utc)
         if self.personality is not None:
             self.personality.kick(now)
@@ -308,6 +318,7 @@ class Market:
         verdict, deferral = consent_gate(want, self.consent_rules, now, families=self.families)
         state = await self._state() if deferral is None else None
         ctx = await self.context(state, now) if deferral is None else None
+        checks = self._weights[3] if self._weights is not None else {}
         if deferral is not None:
             decision = deferral
         elif ctx is None:
@@ -317,7 +328,7 @@ class Market:
             decision = with_consent(unavailable(want, now, why=why, state=state), verdict)
         else:
             # Only an OBEYED bid takes Prime's charge (a shadow bid would grade Prime on holds that never happened).
-            term = await self._personality_term(want, object_text, now)
+            term = await self._personality_term(want, object_text, ctx, checks, embed_wait_sec)
             sig = await self._prime_signal(want.family, now) if want.producer in BINDING_PRODUCERS else None
             refusal = await self._prime_refusal(sig) if sig is not None else None
             applied = sig if sig is not None and sig.arm == "treated" and refusal is None else None
@@ -336,7 +347,7 @@ class Market:
                 decision = decide_priced(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open,
                                          prime=applied, personality=term)
             # The gate ran once, above, before any read: attach its (allow) verdict, if any.
-            decision = with_consent(decision, verdict)
+            decision = with_personality_arm(with_consent(decision, verdict), term)
             if sig is not None and other is not None:
                 await self._record_prime_effect(sig, want, decision, other, now, applied=applied is not None,
                                                 refusal=refusal)
@@ -456,7 +467,7 @@ class Market:
         if self.families is None:
             raise RuntimeError(f"families config unavailable ({self.families_error})")
         hist = await self._history(now)
-        self._ensure_weights(hist, now)
+        await self._ensure_weights(hist, now)
         return dict(self._weights[1])
 
     def health(self, now: Optional[datetime] = None) -> dict:

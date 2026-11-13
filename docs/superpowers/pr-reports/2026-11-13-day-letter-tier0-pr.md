@@ -44,8 +44,9 @@ Prime bid a `make` want (family `prime`, tier 2, priced at the turn ceiling). It
 ## Tests run
 
 ```text
-pytest orion/prime/tests orion/orion_day/tests -q     282 passed
-pytest services/orion-mind/tests -q                   269 passed
+pytest orion/prime/tests orion/orion_day/tests -q     285 passed
+pytest services/orion-mind/tests -q                   273 passed
+pytest services/orion-durable-runs/tests -k 'orion_day or admission'   126 passed
 pyflakes (changed files)                              clean
 check_env_template_parity.py                          PASS
 ```
@@ -68,7 +69,16 @@ The post-pull rebuild covers orion-mind, plus Hub and durable-runs for `orion/or
 
 ## Review findings fixed
 
-See the follow-up commit.
+- Finding (should-fix): a run that wrote the row and then ended failed or cancelled (the journal-publish retry, the driver deadline, an operator cancel) read as "nothing written". With retries, Hub then answers `already_written` naming our own run: the act closed at 0, the threads were lost, and the missed days that letter carried were reported again.
+  - Fix: `run_outcome` treats `persist_outcome == "written"` as written in any terminal state. An `already_written` naming one of this day's own attempts (`own_run`) closes the day written, with that run's threads. `next_attempt` keeps `missed_sent`.
+  - Evidence: `test_a_run_that_wrote_the_row_then_failed_is_written_and_not_retried`, `test_hub_naming_our_own_earlier_attempt_closes_the_day_written_and_tells_the_missed_days`, `test_a_row_written_before_the_run_failed_is_a_written_letter`.
+- Finding: retrying `cancelled` would re-order a run someone cancelled on purpose.
+  - Fix: only failed runs and completed-with-no-row runs are retried. Evidence: `test_a_cancelled_run_is_not_retried`, `test_a_completed_run_with_no_row_is_retried`.
+- Finding: the 300-character reason cap could cut off the attempt history.
+  - Fix: `attempts_note` puts the history first and applies it on every not-written close, including the deadline paths. Evidence: `test_the_attempt_history_leads_the_reason_so_the_cap_keeps_it`.
+- Finding: stale text. Updated: orion-mind README log names, durable-runs README (no bid, priority `system`), the `orion_day_order.py` docstring, the `MissedLetterV1`/`OrionDayLetterOrderV1` docstrings, and the system-priority producer comments in `resource_admission.py` and `admission_runtime.py`.
+- Finding: the local `services/orion-mind/.env` had a second copy of `PRIME_DAY_LETTER_BID_WINDOW_HOURS`. Fix: removed.
+- Confirmed clean by review: no Hub, durable-runs or mailer code assumes run `-1`; the `orion_day_letter` row stays one per day (`ON CONFLICT DO NOTHING`); `system` stays preemptible and sheddable under heat, and the letter does not hold the one system driver slot while it queues.
 
 ## Restart required
 

@@ -337,3 +337,51 @@ def test_an_order_whose_answer_was_lost_is_followed_when_the_run_exists():
     assert rt.day_letter.open.order_status == "unavailable"
     at(rt, 12 * 60 + 1)  # past the run deadline: Prime looks for the run before giving up
     assert rt.day_letter.done[-1].outcome == "written"
+
+
+def test_a_run_that_wrote_the_row_then_failed_is_written_and_not_retried():
+    run = {"status": "failed", "error": "journal publish", "orion_day": {"persist_outcome": "written",
+                                                                         "threads": ["a thread"]}}
+    rt = letter_rt(run=run)
+    asyncio.run(rt.tick())
+    at(rt, 6)
+    assert len(rt.orders) == 1 and rt.day_letter.done[-1].outcome == "written"
+
+
+def test_hub_naming_our_own_earlier_attempt_closes_the_day_written_and_tells_the_missed_days():
+    prior = DAY - timedelta(days=1)
+    rt = letter_rt(run=FAILED)
+    rt.day_letter = dl.finish(rt.day_letter, dl.PrimeDayLetterDoneV1(letter_date=prior, outcome="not_written",
+                                                                     reason="boom", closed_at=T0))
+    plain_post = rt.post_json
+
+    def post_json(url, body):
+        if body["run_id"].endswith("-2"):  # attempt 1 wrote the row although its run reads failed
+            rt.orders.append((url, body))
+            return {"letter_date": body["letter_date"], "run_id": dl.letter_run_id(DAY, 1), "status": "already_written"}
+        return plain_post(url, body)
+
+    rt.post_json = post_json
+    asyncio.run(rt.tick())
+    at(rt, 6)
+    done = rt.day_letter.done[-1]
+    assert done.outcome == "written" and done.run_id == dl.letter_run_id(DAY, 1)
+    assert {d.letter_date: d.told for d in rt.day_letter.done}[prior] is True
+    closed = [e.payload for c, e in rt.bus.published if c == "orion:grammar:event"
+              and e.payload["event_kind"] == "act_closed" and e.payload["act"]["verb"] == "make"]
+    assert [c["act"]["outcome"]["value"] for c in closed] == [1.0]
+
+
+def test_a_completed_run_with_no_row_is_retried():
+    rt = letter_rt(run={"status": "completed", "orion_day": {"persist_outcome": "skipped"}})
+    asyncio.run(rt.tick())
+    at(rt, 6)
+    assert rt.day_letter.open.attempt == 2 and len(rt.orders) == 2
+
+
+def test_a_cancelled_run_is_not_retried():
+    rt = letter_rt(run={"status": "cancelled", "orion_day": {}})
+    asyncio.run(rt.tick())
+    at(rt, 6)
+    assert rt.day_letter.open is None and len(rt.orders) == 1
+    assert rt.day_letter.done[-1].outcome == "not_written"

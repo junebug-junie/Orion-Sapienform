@@ -53,7 +53,8 @@ def test_next_attempt_is_a_fresh_order_for_the_same_act():
     nxt = dl.next_attempt(op, "the run ended failed: E2BIG")
     assert (nxt.attempt, nxt.run_id, nxt.act_id, nxt.deadline_at) == (2, "orion-day-2026-11-12-2", "a", op.deadline_at)
     assert nxt.correlation_id == dl.letter_correlation_id(DAY, 2)
-    assert nxt.order_status is None and nxt.order_detail is None and nxt.missed_sent == []
+    assert nxt.order_status is None and nxt.order_detail is None
+    assert nxt.missed_sent == [DAY - timedelta(1)]  # kept: an earlier attempt that did write still tells them
     assert nxt.failed_attempts == ["attempt 1: the run ended failed: E2BIG"]
 
 
@@ -113,3 +114,21 @@ def test_state_round_trips_and_keeps_only_recent_days():
     assert len(st.done) == dl.MAX_DONE
     assert dl.PrimeDayLetterStateV1.model_validate_json(st.model_dump_json()) == st
     assert dl.handled(st, DAY) and not dl.handled(st, DAY + timedelta(1))
+
+
+def test_a_row_written_before_the_run_failed_is_a_written_letter():
+    produced, note, _ = dl.run_outcome({"status": "failed", "orion_day": {"persist_outcome": "written"}})
+    assert produced is True and "then ended failed" in note
+
+
+def test_own_run_is_any_attempt_so_far():
+    op = _writing(2)
+    assert dl.own_run(op, "orion-day-2026-11-12-1") and dl.own_run(op, "orion-day-2026-11-12-2")
+    assert not dl.own_run(op, "orion-day-2026-11-12-3") and not dl.own_run(op, "orion-day-x-1")
+
+
+def test_the_attempt_history_leads_the_reason_so_the_cap_keeps_it():
+    op = dl.next_attempt(_writing(1), "boom")
+    text = dl.attempts_note(op, "x" * 400, max_attempts=3)
+    assert text.startswith("attempt 2 of 3; earlier: attempt 1: boom; last: ")
+    assert dl.attempts_note(_writing(1), "plain", max_attempts=3) == "plain"

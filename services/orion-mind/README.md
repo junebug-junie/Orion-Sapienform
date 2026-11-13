@@ -346,6 +346,9 @@ is retired, so off means no letters). Pure parts: `orion/prime/day_letter.py`; I
    adds the day before by itself when it has no row and Prime did not list it (Prime was down).
 
 - Record: Redis `orion:prime:day_letter` (`PrimeDayLetterStateV1`: the open day, the last 14 days).
-- Logs: `prime_day_letter_due`, `prime_day_letter_bid_not_funded`, `prime_day_letter_funded`,
-  `prime_day_letter_ordered`, `prime_day_letter_closed`, `prime_day_letter_not_written`.
+- Logs: `prime_day_letter_due`, `prime_day_letter_opened`, `prime_day_letter_act_open_failed`,
+  `prime_day_letter_ordered`, `prime_day_letter_retry`, `prime_day_letter_own_attempt_wrote_it`,
+  `prime_day_letter_closed`.
+- A run that wrote the row and then ended failed or cancelled (a later step failed) is a written letter. A cancelled
+  run with no row is not retried: a cancel is someone's decision.
 - Deploy order: orion-hub, then orion-durable-runs, then orion-mind (Prime orders only once both are live).

@@ -170,18 +170,32 @@ def letter_run_id(day: date, attempt: int = 1) -> str:
     return orion_day_run_id(day, attempt)
 
 
+def own_run(op: PrimeDayLetterOpenV1, run_id: Optional[str]) -> bool:
+    """``run_id`` is one of this day's own attempts (so a row it wrote is this act's letter)."""
+    return run_id is not None and any(run_id == letter_run_id(op.letter_date, k) for k in range(1, op.attempt + 1))
+
+
+def attempts_note(op: PrimeDayLetterOpenV1, note: str, *, max_attempts: int) -> str:
+    """The closing reason with the attempt history first, so the REASON_CAP cut drops the tail of an error, not
+    the history."""
+    if not op.failed_attempts:
+        return note
+    return f"attempt {op.attempt} of {int(max_attempts)}; earlier: {'; '.join(op.failed_attempts)}; last: {note}"
+
+
 def can_retry(op: PrimeDayLetterOpenV1, now: datetime, *, max_attempts: int) -> bool:
     """Another run may be ordered: attempts left and the shared deadline not passed."""
     return op.attempt < int(max_attempts) and op.deadline_at is not None and now < op.deadline_at
 
 
 def next_attempt(op: PrimeDayLetterOpenV1, why: str) -> PrimeDayLetterOpenV1:
-    """The same day and act, the next run: a fresh order (not answered yet), the reason kept."""
+    """The same day and act, the next run: a fresh order (not answered yet), the reason kept. ``missed_sent`` is kept:
+    the next order sends the list again, and an earlier attempt's letter that turns out written still tells them."""
     n = op.attempt + 1
     return op.model_copy(update={
         "attempt": n, "run_id": letter_run_id(op.letter_date, n),
         "correlation_id": letter_correlation_id(op.letter_date, n),
-        "order_status": None, "order_detail": None, "missed_sent": [],
+        "order_status": None, "order_detail": None,
         "failed_attempts": [*op.failed_attempts, f"attempt {op.attempt}: {why}"[:REASON_CAP]]})
 
 
@@ -224,8 +238,11 @@ def run_outcome(run: dict) -> tuple[Optional[bool], str, dict]:
     if status not in TERMINAL:
         return None, status or "unknown", detail
     outcome = detail.get("persist_outcome")
-    if status == "completed" and outcome == "written":
-        return True, "the run wrote the day's letter", detail
+    if outcome == "written":
+        # The row is written even when a later step (the journal publish's retry) ends the run failed or cancelled:
+        # the letter exists. Reading it as unwritten would retry into Hub's already_written and report a false
+        # missed day (review of #3251).
+        return True, "the run wrote the day's letter" + ("" if status == "completed" else f" (then ended {status})"), detail
     if status == "completed":
         return False, f"the run completed but did not write the row (persist_outcome {outcome})", detail
     err = str(run.get("error") or detail.get("error") or "no error recorded")
@@ -288,7 +305,7 @@ def status_lines(st: PrimeDayLetterStateV1, now: datetime) -> list[str]:
 __all__ = [
     "ACT_HORIZON_GRACE_SEC", "CHECK_INTERVAL_SEC", "DAY_LETTER_COMPONENT", "DAY_LETTER_KEY", "DEFAULT_MAX_ATTEMPTS",
     "LETTER_CONCERNS_MAX", "MAKE_BASIS", "PrimeDayLetterDoneV1", "PrimeDayLetterOpenV1", "PrimeDayLetterStateV1",
-    "can_retry", "finish", "handled", "letter_correlation_id", "letter_run_id", "make_act", "mark_told",
+    "attempts_note", "can_retry", "finish", "own_run", "handled", "letter_correlation_id", "letter_run_id", "make_act", "mark_told",
     "missed_for", "next_attempt", "run_outcome", "start", "status_lines", "thread_concern_id", "thread_concerns",
     "yesterday",
 ]

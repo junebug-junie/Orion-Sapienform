@@ -593,6 +593,19 @@ class PrimeRuntime(MindLoopRuntime):
                 "open": op.model_copy(update={"order_status": result.status, "order_detail": result.detail,
                                               "missed_sent": [m.letter_date for m in missed]})})
             return
+        if result.status == "already_written" and dl.own_run(op, result.run_id):
+            # An earlier attempt of ours wrote the row after all (a later step failed that run). It is this act's
+            # letter: close it written, with that run's threads when its detail is readable.
+            run, _err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/runs/{result.run_id}")
+            detail = run.get("orion_day") if isinstance(run, dict) and isinstance(run.get("orion_day"), dict) else {}
+            threads = [str(t) for t in (detail.get("threads") or []) if isinstance(t, str)]
+            turn = detail.get("turn_correlation_id")
+            logger.info("prime_day_letter_own_attempt_wrote_it day=%s run=%s", op.letter_date, result.run_id)
+            await self._close_letter(now, produced=True, outcome="written",
+                                     note=f"an earlier attempt's run ({result.run_id}) wrote the day's letter",
+                                     run_id=result.run_id, turn_correlation_id=str(turn) if turn else None,
+                                     threads=threads)
+            return
         outcome = {"already_written": "already_written", "empty_day": "empty"}.get(result.status, "not_written")
         note = {"already_written": f"a letter for this day already existed (run {result.run_id})",
                 "empty_day": "the day held nothing to write about"}.get(
@@ -619,7 +632,9 @@ class PrimeRuntime(MindLoopRuntime):
         turn = detail.get("turn_correlation_id")
         outcome = dl.done_outcome(produced, detail)
         max_attempts = int(self._letter_cfg("MAX_ATTEMPTS", float(dl.DEFAULT_MAX_ATTEMPTS)))
-        if outcome == "not_written" and dl.can_retry(op, now, max_attempts=max_attempts):
+        # A cancel is someone's decision: not retried. Failed, or completed with no row: the next attempt.
+        retryable = outcome == "not_written" and str(run.get("status") or "") != "cancelled"
+        if retryable and dl.can_retry(op, now, max_attempts=max_attempts):
             # Live 11-11: one failed run (E2BIG, fixed in #3248) ended the day. Order the next attempt.
             self.day_letter = self.day_letter.model_copy(update={"open": dl.next_attempt(op, note)})
             nxt = self.day_letter.open
@@ -627,9 +642,7 @@ class PrimeRuntime(MindLoopRuntime):
                         max_attempts, nxt.run_id, note)
             await self._order_letter(now)
             return
-        if op.failed_attempts:
-            note = f"{note} (attempt {op.attempt} of {max_attempts}; earlier: {'; '.join(op.failed_attempts)})"
-        await self._close_letter(now, produced=produced, outcome=outcome, note=note[:dl.REASON_CAP * 2],
+        await self._close_letter(now, produced=produced, outcome=outcome, note=note,
                                  run_id=op.run_id, turn_correlation_id=str(turn) if turn else None, threads=threads)
 
     async def _close_letter(self, now: datetime, *, produced: bool, outcome: dl.DoneOutcome, note: str,
@@ -639,6 +652,9 @@ class PrimeRuntime(MindLoopRuntime):
         concerns, record the day."""
         op = self.day_letter.open
         day = op.letter_date
+        if not produced:
+            note = dl.attempts_note(op, note, max_attempts=int(self._letter_cfg(
+                "MAX_ATTEMPTS", float(dl.DEFAULT_MAX_ATTEMPTS))))
         act = dl.make_act(day, horizon_sec=self._letter_cfg("RUN_DEADLINE_HOURS", 12.0) * 3600.0
                           + dl.ACT_HORIZON_GRACE_SEC)
         act_note = f"{note}; turn {turn_correlation_id}" if turn_correlation_id else note

@@ -1292,7 +1292,7 @@ class Settings(BaseSettings):
     # HUB_CURIOSITY_DURABLE_RUNS_URL /personality/frame into the curiosity kickoff (concurrently
     # with the today fact, same 1.5 s deadline) and the endogenous outreach prompt (next to the
     # situation block). No block on any failure or a stale/empty frame. scripts/personality_cue_reader.py.
-    HUB_PERSONALITY_CUE_ENABLED: bool = Field(default=True, alias="HUB_PERSONALITY_CUE_ENABLED")
+    HUB_PERSONALITY_CUE_ENABLED: bool = Field(default=False, alias="HUB_PERSONALITY_CUE_ENABLED")
     # Urgent curiosity runs (docs/superpowers/plans/2026-09-28-urgent-curiosity-plan-3-seeded-urgent-runs.md):
     # a seeded investigation from the Hub button or orion:curiosity:urgent:request,
     # admitted at `urgent` GPU priority, bypassing the curiosity gates. Needs
@@ -1346,7 +1346,7 @@ class Settings(BaseSettings):
     # (GET HUB_CURIOSITY_DURABLE_RUNS_URL/personality/naming/next) and names, rejects or merges
     # it. Uses an existing self-inquiry slot; never displaces an overdue pinned lived question.
     HUB_CURIOSITY_SELF_NAMING_ENABLED: bool = Field(
-        default=True, alias="HUB_CURIOSITY_SELF_NAMING_ENABLED"
+        default=False, alias="HUB_CURIOSITY_SELF_NAMING_ENABLED"
     )
     HUB_CURIOSITY_SELF_NAMING_DAILY_CAP: int = Field(
         default=1, alias="HUB_CURIOSITY_SELF_NAMING_DAILY_CAP"

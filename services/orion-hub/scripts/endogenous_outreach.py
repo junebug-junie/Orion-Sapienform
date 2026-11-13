@@ -1606,7 +1606,7 @@ class EndogenousOutreach:
         arousal_reader: Optional[ArousalReader] = None,
         # Personality read-back (scripts/personality_cue_reader.py): GET
         # {durable_runs_url}/personality/frame next to the situation read. Off here so bare
-        # constructions in tests never touch the network; settings ship it on
+        # constructions in tests never touch the network; settings ship it off since personality rev 3 R0
         # (HUB_PERSONALITY_CUE_ENABLED, base URL HUB_CURIOSITY_DURABLE_RUNS_URL).
         personality_cue_enabled: bool = False,
         durable_runs_url: str = "",

@@ -109,6 +109,22 @@ families:
     tier: 1
     deferrable_window_s: 900
     lanes: []
+  durable.intention:
+    # 2026-11-13, choice-as-EFE Step -1 (docs/superpowers/specs/2026-11-13-choice-as-expected-free-energy-design.md):
+    # the carry run of a concern Prime took on (intention.carry durable run, run act make:durable.intention,
+    # services/orion-durable-runs/app/run_acts.py; Prime's own act is make:prime intention:<concern_id>). ONE family
+    # for every intention source (split only on evidence: the weight needs ~10 evidenced acts to move off the prior).
+    # TIER 1 BY JUNIPER'S DECISION (2026-11-13), not the design's tier-2 default: once Orion chooses take_on, the
+    # whether is settled by Orion; follow-through is keeping its word, which is upkeep. The reserved share stops
+    # curiosity and consult runs crowding it out (live follow-through mean 0.10). Tier 1 still bids, so the economy
+    # still picks the time (unlike tier 0, reserved for the daily letter). Its bids BIND (app/run_bids.py
+    # BINDING_FAMILIES): a held run is admitted at its hold end, never dropped; hold end = min(opened + 86400 s, the
+    # concern's horizon - 1800 s). 86400 s: Juniper's accepted default; the horizon (promise + 72 h) still caps it.
+    # Agent lanes, like durable.consult_orion_turn. No receptors yet.
+    tier: 1
+    deferrable_window_s: 86400
+    lanes: [agent, agent-gpu2, agent-deep]
+    placement: one_of
 
   # --- Tier 2: discretionary, the open market. ---
   curiosity.replica:

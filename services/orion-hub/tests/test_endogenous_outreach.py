@@ -2503,6 +2503,52 @@ def test_offer_message_delivers_through_the_normal_rails(monkeypatch) -> None:
     assert sent[0]["source_tag"] == "curiosity_outreach"
 
 
+def test_offer_message_can_deliver_into_a_chosen_thread_with_every_gate_still_on(monkeypatch) -> None:
+    """Intentions Prime takes on (2026-11-13): the carry turn's reply answers in the thread where the promise
+    was made, not the newest socket's session. The gates are the same: quiet hours still block it."""
+    outreach = _outreach()
+    _delivered(outreach)
+    sent: list = []
+    monkeypatch.setattr(EndogenousOutreach, "_publish_history", lambda self, **kw: sent.append(kw) or asyncio.sleep(0))
+    monkeypatch.setattr(EndogenousOutreach, "_publish_notification", lambda self, **kw: asyncio.sleep(0))
+    result = asyncio.run(outreach.offer_message(text="I browsed the PRs", correlation_id="corr-2",
+                                                tag="intention_carry", session_id="thread-9c91"))
+    assert result["outreach"] is True and result["session_id"] == "thread-9c91"
+    assert sent[0]["session_id"] == "thread-9c91"
+    quiet = _outreach(quiet_start_hour=0, quiet_end_hour=24)
+    blocked = asyncio.run(quiet.offer_message(text="I browsed the PRs", correlation_id="corr-3",
+                                              tag="intention_carry", session_id="thread-9c91"))
+    assert blocked["outreach"] is False and blocked["reason"] == "quiet_hours"
+
+
+def test_record_in_thread_writes_history_only(monkeypatch) -> None:
+    import sys
+    import types
+
+    outreach = _outreach()
+    queue = _delivered(outreach)
+    captured: list = []
+
+    async def fake_publish(bus, envelopes):
+        captured.extend(envelopes)
+
+    fake = types.ModuleType("scripts.chat_history")
+    fake.publish_chat_history = fake_publish
+    fake.build_chat_history_envelope = lambda **kw: types.SimpleNamespace(payload=kw)
+    monkeypatch.setitem(sys.modules, "scripts.chat_history", fake)
+    outreach._bus = types.SimpleNamespace(enabled=True)
+    ok = asyncio.run(outreach.record_in_thread(text="the reply", session_id="thread-9c91", correlation_id="corr-4",
+                                               source_tag="intention_carry", meta={"concern_id": "abc"}))
+    [env] = captured
+    assert ok is True and env.payload["session_id"] == "thread-9c91" and env.payload["content"] == "the reply"
+    assert env.payload["client_meta"] == {"unsolicited": True, "source": "intention_carry", "delivered_live": False,
+                                          "concern_id": "abc"}
+    assert queue.empty()                       # no socket push
+    outreach._bus = None
+    assert asyncio.run(outreach.record_in_thread(text="x", session_id="s", correlation_id="c",
+                                                 source_tag="intention_carry")) is False
+
+
 def test_a_curiosity_message_is_still_tagged_as_outreach(monkeypatch) -> None:
     """One tag finds every unsolicited message however it was produced; the
     source tag is ADDITIVE so it can also be traced to its investigation."""

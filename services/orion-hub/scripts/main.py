@@ -95,6 +95,7 @@ from scripts.reading_event_wants import ReadingEventWants
 from scripts.self_monitor_questions import SelfMonitorQuestionMinter
 from scripts.orion_day_mailer import OrionDayMailer
 from scripts.orion_day_order import DurableRunsClient, OrionDayOrderDesk, build_orion_day_order_router
+from scripts.intention_order import IntentionDesk, build_intention_router
 from scripts.endogenous_outreach import EndogenousOutreach
 from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
 import scripts.tension_outreach_trigger as tension_outreach_trigger
@@ -1967,6 +1968,15 @@ orion_day_order_desk = OrionDayOrderDesk(
     prior_reader_provider=build_curiosity_reader,
 )
 app.include_router(build_orion_day_order_router(lambda: orion_day_order_desk))
+# Intentions Prime takes on (choice-as-EFE Step -1): Prime's carry orders and their delivery into the chat thread
+# (scripts/intention_order.py). The only path that submits an intention.carry run; Prime's
+# PRIME_INTENTION_TAKE_ON_ENABLED is the kill switch (no order is ever sent while it is off).
+intention_desk = IntentionDesk(
+    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+    durable=DurableRunsClient(settings.HUB_CURIOSITY_DURABLE_RUNS_URL),
+    outreach_provider=lambda: endogenous_outreach,
+)
+app.include_router(build_intention_router(lambda: intention_desk))
 app.include_router(motion_story_router)
 app.include_router(people_router)
 app.include_router(walkway_rollup_router)

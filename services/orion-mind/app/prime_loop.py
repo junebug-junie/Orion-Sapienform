@@ -103,6 +103,17 @@ attempts failed -> no letter that day, and the next order names the day. The run
 never past MAX_CONCERNS), so curiosity hears them only through Prime's own graded ``ask``. Its record lives in its
 own Redis key (orion:prime:day_letter). No thought is spent on it: the tick decides.
 
+Intentions Prime takes on (Step -1 of docs/superpowers/specs/2026-11-13-choice-as-expected-free-energy-design.md,
+PRIME_INTENTION_TAKE_ON_ENABLED; orion/prime/intention.py): a third move, ``take_on``, on a concern whose source has
+an adapter (today: promises Orion made in a chat). Prime opens a ``make`` act (``object_ref intention:<concern_id>``),
+holds the order until ``not_before`` itself, then orders ONE ``intention.carry`` run from Hub (POST
+/api/intention/run). The run binds in the body economy as family ``durable.intention`` (tier 1, Juniper 2026-11-13):
+the economy picks the time inside the concern's horizon. When the run is terminal, Prime asks Hub to deliver the reply
+(POST /api/intention/deliver: the originating chat thread's history, plus one outreach attempt through the normal
+gates) and closes the act: 1 = the reply was stored. Dropping the concern lets it go (the act closes 0, nothing is
+delivered). A concern taken on does not fade while its run is open; one never taken on ages out at its horizon. Own
+Redis key (orion:prime:intentions). Flag off: no move, no frame section, nothing watched.
+
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
 ``run_mind`` never waits on this loop: every blocking call runs in a worker thread.
 """
@@ -157,6 +168,7 @@ from orion.prime.acts import (
     treated_focus_gone,
 )
 from orion.prime import day_letter as dl
+from orion.prime import intention as it
 from orion.prime.choice import body_situation, prime_choice, shown_concerns
 from orion.prime.tending import FRAME_PATH as PERSONALITY_FRAME_PATH, tendencies_from_frame
 from orion.prime.handback import (
@@ -172,6 +184,7 @@ from orion.prime.handback import (
 from orion.prime.state import (
     MAX_RECENT_OUTCOMES,
     PRIME_CONCERNS_KEY,
+    PrimeConcernV1,
     PrimeNominationV1,
     PrimeRegulationOpenV1,
     PrimeSnapshotV1,
@@ -186,6 +199,7 @@ from orion.prime.state import (
 from orion.prime.thought import (
     FrameInputs,
     RegulateMoveV1,
+    TakeOnMoveV1,
     apply_answer,
     build_frame,
     event_ids,
@@ -213,6 +227,14 @@ from orion.schemas.orion_day import (
     OrionDayLetterOrderResultV1,
     OrionDayLetterOrderV1,
     OrionDayLetterStatusV1,
+)
+from orion.schemas.intention import (
+    INTENTION_DELIVER_PATH,
+    INTENTION_ORDER_PATH,
+    IntentionDeliverResultV1,
+    IntentionDeliverV1,
+    IntentionOrderResultV1,
+    IntentionOrderV1,
 )
 from orion.self_monitor.gate import GateDecision
 
@@ -286,6 +308,9 @@ class PrimeRuntime(MindLoopRuntime):
         # The day letter (Part 3): its own record, saved under dl.DAY_LETTER_KEY.
         self.day_letter = dl.PrimeDayLetterStateV1()
         self._day_letter_checked_at: Optional[datetime] = None
+        # Intentions (Step -1): its own record, saved under it.INTENTIONS_KEY. concern_id -> last look.
+        self.intentions = it.PrimeIntentionsStateV1()
+        self._intention_checked_at: dict[str, datetime] = {}
         # concern_id -> when its bet was last refused (re-check throttle; also: never a late bet for it).
         self._bet_refused_at: dict[str, datetime] = {}
         self._last_settle: Optional[datetime] = None
@@ -371,7 +396,9 @@ class PrimeRuntime(MindLoopRuntime):
             return
         signals = list(self._turn_inbox)
         self._turn_inbox.clear()
-        self.state, self.turn_record, folded = fold_turn_signals(self.state, self.turn_record, signals, now)
+        taken_on = frozenset(it.open_ids(self.intentions)) if self._intentions_on() else frozenset()
+        self.state, self.turn_record, folded = fold_turn_signals(self.state, self.turn_record, signals, now,
+                                                                 taken_on=taken_on)
         for t in folded:
             logger.info("prime_turn_handback corr=%s who=%s verdict=%s promises=%d opened=%s refused=%s settled=%s",
                         t.correlation_id, t.who, t.verdict, len(t.promise_refs), t.opened_concern_id or "-",
@@ -386,6 +413,13 @@ class PrimeRuntime(MindLoopRuntime):
                     self.day_letter = dl.PrimeDayLetterStateV1.model_validate_json(raw)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("prime_day_letter_load_failed err=%s (starting empty)", str(exc)[:200])
+        if self._intentions_on():
+            try:
+                raw = await self.bus.redis.get(it.INTENTIONS_KEY)
+                if raw:
+                    self.intentions = it.PrimeIntentionsStateV1.model_validate_json(raw)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("prime_intentions_load_failed err=%s (starting empty)", str(exc)[:200])
         if not self._handback_on():
             return
         try:
@@ -412,6 +446,11 @@ class PrimeRuntime(MindLoopRuntime):
                 await self.bus.redis.set(dl.DAY_LETTER_KEY, self.day_letter.model_dump_json())
             except Exception as exc:  # noqa: BLE001
                 logger.warning("prime_day_letter_save_failed err=%s", type(exc).__name__)
+        if self._intentions_on():
+            try:
+                await self.bus.redis.set(it.INTENTIONS_KEY, self.intentions.model_dump_json())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("prime_intentions_save_failed err=%s", type(exc).__name__)
         try:
             await self.bus.redis.set(PRIME_CONCERNS_KEY, concerns_view(self.state, now=self.clock()).model_dump_json())
         except Exception as exc:  # noqa: BLE001
@@ -427,12 +466,19 @@ class PrimeRuntime(MindLoopRuntime):
         """Read the body and attention, record what changed, settle what is due, publish concern acts."""
         snap, inputs = await self._read_body_and_attention()
         now = self.clock()
+        if self._intentions_on():
+            # Before observe(): a concern taken on does not fade while its run is open.
+            self.state = it.keep_taken_on(self.state, self.intentions, now)
         self.state = lapse_concerns(observe(self.state, snap, now), now)
+        if self._intentions_on():
+            self.state = it.age_out(self.state, self.intentions, now)
         if self._handback_on():
             self._fold_turns(now)
             inputs.turns = turn_lines(self.turn_record, now)
         if self._day_letter_on():
             await self._day_letter_upkeep(now)
+        if self._intentions_on():
+            await self._intention_upkeep(now)
         await self._maybe_settle(now)
         await self._settle_regulations(now)
         await self._flush_concern_acts()
@@ -686,6 +732,212 @@ class PrimeRuntime(MindLoopRuntime):
         self.state = note_outcome(self.state, f"my letter for {day} (act {op.act_id}): {note}{tail}")
 
 
+    # --- intentions Prime takes on (choice-as-EFE Step -1) -------------------------------------
+    def _intentions_on(self) -> bool:
+        return bool(getattr(self.s, "PRIME_INTENTION_TAKE_ON_ENABLED", False))
+
+    def _take_on_check(self, now: datetime) -> Callable[[TakeOnMoveV1, PrimeStateV1], Optional[str]]:
+        def check(move: TakeOnMoveV1, state: PrimeStateV1) -> Optional[str]:
+            refusal = it.take_on_refusal(move.concern_id, state, self.intentions, now, enabled=True)
+            if refusal is not None:
+                return refusal
+            concern = next(c for c in state.concerns if c.concern_id == move.concern_id)
+            return it.parse_not_before(move.not_before, now, it.horizon_for(concern))[1]
+        return check
+
+    async def _take_on(self, move: TakeOnMoveV1, *, thought_id: str, now: datetime) -> None:
+        concern: Optional[PrimeConcernV1] = next(
+            (c for c in self.state.concerns if c.concern_id == move.concern_id), None)
+        adapter = it.adapter_for(concern.event_ref if concern else None)
+        if concern is None or adapter is None:  # checked in apply_answer; a gate wait cannot change it
+            return
+        horizon = it.horizon_for(concern)
+        not_before, _ = it.parse_not_before(move.not_before, now, horizon)
+        hsec = it.act_horizon_sec(horizon, now)
+        act = it.make_act(concern.concern_id, source=adapter.SOURCE, horizon_sec=hsec)
+        if not await self._open(act, it.INTENTION_COMPONENT, at=now):
+            self._tell(f"my take-on of concern {concern.concern_id} was not recorded (the act ledger did not take "
+                       "it); nothing was ordered")
+            logger.info("prime_intention_open_failed concern=%s", concern.concern_id)
+            return
+        self.intentions = it.take_on(self.intentions, concern, why=move.why, thought_id=thought_id, act=act,
+                                     horizon_sec=hsec, not_before=not_before, now=now)
+        self.state = it.keep_taken_on(self.state, self.intentions, now)
+        logger.info("prime_intention_taken concern=%s act=%s source=%s not_before=%s horizon=%s why=%r",
+                    concern.concern_id, act.act_id, adapter.SOURCE, not_before.isoformat() if not_before else "-",
+                    horizon.isoformat(), move.why[:160])
+        when = f"not before {not_before.strftime('%Y-%m-%d %H:%MZ')}" if not_before else "now"
+        self._tell(f"I took on concern {concern.concern_id} (act {act.act_id}); it runs {when}")
+        op = it.find_open(self.intentions, concern.concern_id)
+        if it.order_due(op, now):
+            self._intention_checked_at[op.concern_id] = now
+            await self._order_intention(op, now)
+
+    async def _let_go_dropped(self, answer: Any, now: datetime) -> None:
+        """A concern Prime dropped while it was taken on: let go. Its act closes 0 with Prime's why, the run is
+        cancelled and its reply is never delivered. Not when the carry turn already answered it (the hand-back
+        settled the concern, or the run completed): dropping a settled concern is tidying up, so the reply is still
+        delivered and graded (review M2)."""
+        held = {c.concern_id for c in self.state.concerns}
+        for drop in answer.concerns.drop:
+            op = it.find_open(self.intentions, drop.concern_id)
+            if op is None or drop.concern_id in held or op.pending_close is not None:
+                continue
+            settled = any(r.concern_id == op.concern_id and r.end == "settled" for r in self.state.concern_record)
+            if settled or op.run_status == "completed":
+                self.intentions = it.update_open(self.intentions, op.model_copy(update={"detached": True}))
+                logger.info("prime_intention_detached concern=%s (dropped after its turn answered it)", op.concern_id)
+                continue
+            await self._close_intention(op, now, outcome="let_go", produced=False,
+                                        note=f"let go: {drop.why[:200] or 'no reason given'}")
+
+    async def _intention_upkeep(self, now: datetime) -> None:
+        """One step per open intention at most every CHECK_INTERVAL_SEC. Never raises into the tick."""
+        for op in list(self.intentions.open):
+            last = self._intention_checked_at.get(op.concern_id)
+            if last is not None and (now - last).total_seconds() < it.CHECK_INTERVAL_SEC:
+                continue
+            self._intention_checked_at[op.concern_id] = now
+            try:
+                await self._intention_step(op, now)
+            except Exception:  # noqa: BLE001
+                logger.warning("prime_intention_step_failed concern=%s", op.concern_id, exc_info=True)
+        live = {o.concern_id for o in self.intentions.open}
+        for cid in [k for k in self._intention_checked_at if k not in live]:
+            del self._intention_checked_at[cid]
+
+    async def _intention_step(self, op: it.PrimeIntentionOpenV1, now: datetime) -> None:
+        if op.pending_close is not None:
+            # The end is decided; only its act publish failed. Retry that alone (review M1).
+            pc_ = op.pending_close
+            await self._close_intention(op, now, outcome=pc_["outcome"], produced=bool(pc_["produced"]),
+                                        note=str(pc_["note"]), pinged=pc_.get("pinged"))
+            return
+        if op.order_status not in ("submitted", "exists"):
+            if it.past_horizon(op, now):
+                await self._close_intention(op, now, outcome="expired", produced=False,
+                                            note=f"never ordered before the horizon ({op.order_detail or 'no answer'})")
+            elif it.order_due(op, now):
+                await self._order_intention(op, now)
+            return
+        if op.run_status == "completed":
+            await self._deliver_intention(op, now)
+            return
+        run, err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/runs/{op.run_id}")
+        if run is None:
+            op = op.model_copy(update={"unread_reads": op.unread_reads + 1})
+            self.intentions = it.update_open(self.intentions, op)
+            if op.unread_reads >= it.MAX_UNREAD_READS:
+                await self._close_intention(op, now, outcome="not_carried", produced=False,
+                                            note=f"the carry run could not be read {op.unread_reads} times in a row "
+                                                 f"({err})")
+                return
+        elif op.unread_reads:
+            op = op.model_copy(update={"unread_reads": 0})
+            self.intentions = it.update_open(self.intentions, op)
+        status, note = it.run_terminal(run)
+        if status is None:
+            if it.past_horizon(op, now):
+                await self._close_intention(op, now, outcome="expired", produced=False,
+                                            note=f"the carry run was still {err or note} past the horizon")
+            elif run is not None:
+                self.intentions = it.update_open(self.intentions, op.model_copy(update={"run_status": note}))
+            return
+        if status != "completed":
+            await self._close_intention(op, now, outcome="not_carried", produced=False, note=note)
+            return
+        op = op.model_copy(update={"run_status": "completed"})
+        self.intentions = it.update_open(self.intentions, op)
+        await self._deliver_intention(op, now)
+
+    async def _order_intention(self, op: it.PrimeIntentionOpenV1, now: datetime) -> None:
+        order = IntentionOrderV1(concern_id=op.concern_id, event_ref=op.event_ref, run_id=op.run_id,
+                                 correlation_id=op.correlation_id, prime_act_id=op.act_id, why=op.why or "taken on")
+        data, err = await self._post(f"{self.s.PRIME_HUB_URL.rstrip('/')}{INTENTION_ORDER_PATH}",
+                                     order.model_dump(mode="json"))
+        result: Optional[IntentionOrderResultV1] = None
+        if data is not None:
+            try:
+                result = IntentionOrderResultV1.model_validate(data)
+            except Exception as exc:  # noqa: BLE001
+                err = f"unreadable answer: {str(exc)[:120]}"
+        if result is None or result.status == "unavailable":
+            detail = (err if result is None else (result.detail or "unavailable")) or "unavailable"
+            self.intentions = it.update_open(self.intentions, op.model_copy(update={
+                "order_status": "unavailable", "order_detail": detail[:500]}))
+            logger.info("prime_intention_order_unanswered concern=%s run=%s err=%s", op.concern_id, op.run_id, detail)
+            return
+        logger.info("prime_intention_ordered concern=%s run=%s status=%s detail=%s", op.concern_id, op.run_id,
+                    result.status, result.detail or "-")
+        if result.status == "refused":
+            await self._close_intention(op, now, outcome="not_carried", produced=False,
+                                        note=f"Hub refused the order: {result.detail or 'refused'}")
+            return
+        self.intentions = it.update_open(self.intentions, op.model_copy(update={
+            "order_status": result.status, "order_detail": result.detail, "ordered_at": now,
+            "horizon_at": result.horizon_at or op.horizon_at, "route": result.route,
+            "route_target": result.route_target}))
+
+    async def _deliver_intention(self, op: it.PrimeIntentionOpenV1, now: datetime) -> None:
+        req = IntentionDeliverV1(concern_id=op.concern_id, run_id=op.run_id, correlation_id=op.correlation_id,
+                                 route=op.route or "chat_thread", route_target=op.route_target)
+        data, err = await self._post(f"{self.s.PRIME_HUB_URL.rstrip('/')}{INTENTION_DELIVER_PATH}",
+                                     req.model_dump(mode="json"))
+        result: Optional[IntentionDeliverResultV1] = None
+        if data is not None:
+            try:
+                result = IntentionDeliverResultV1.model_validate(data)
+            except Exception as exc:  # noqa: BLE001
+                err = f"unreadable answer: {str(exc)[:120]}"
+        if result is None or result.status in ("unavailable", "not_ready", "published"):
+            # "published": the reply is on the bus; only the chat_history_log row closes the act 1 (review M3).
+            # Keep the first answer's ping facts: a later "already_delivered" does not repeat them.
+            detail = (err if result is None else (result.detail or result.status)) or "unavailable"
+            if it.past_horizon(op, now):
+                why = ("its chat history row never appeared" if op.deliver_status == "published"
+                       else f"it could not be delivered ({detail})")
+                await self._close_intention(op, now, outcome="not_carried", produced=False,
+                                            note=f"the reply was not stored before the horizon: {why}")
+                return
+            update: dict[str, Any] = {"deliver_status": "unavailable" if result is None else result.status,
+                                      "deliver_detail": detail[:500]}
+            if result is not None and result.status == "published":
+                ping = ("Juniper was told" if result.pinged
+                        else f"Juniper was not pinged ({result.ping_reason or 'no ping'})")
+                update["deliver_detail"] = f"{result.reply_chars} chars; {ping}"[:500]
+            self.intentions = it.update_open(self.intentions, op.model_copy(update=update))
+            return
+        stored = result.status == "already_delivered" and result.stored
+        told = op.deliver_detail if op.deliver_status == "published" else "delivered earlier"
+        note = (f"carried: the reply is in the chat thread {op.route_target} ({told})"
+                if stored else f"the reply was not stored: {result.status} ({result.detail or 'no detail'})")
+        pinged = bool(op.deliver_detail and "Juniper was told" in op.deliver_detail) if stored else None
+        await self._close_intention(op, now, outcome="carried" if stored else "not_carried", produced=stored,
+                                    note=note, pinged=pinged)
+
+    async def _close_intention(self, op: it.PrimeIntentionOpenV1, now: datetime, *, outcome: it.IntentionOutcome,
+                               produced: bool, note: str, pinged: Optional[bool] = None) -> None:
+        """Close the make act (kept open and retried next check if the publish fails), then record the end."""
+        act = it.make_act(op.concern_id, source=op.source, horizon_sec=op.act_horizon_sec)
+        if not await self._close(act, it.INTENTION_COMPONENT, produced=produced, note=note[:500]):
+            # Only the close is retried next check, never the lifecycle (review M1).
+            self.intentions = it.update_open(self.intentions, op.model_copy(update={"pending_close": {
+                "outcome": outcome, "produced": produced, "note": note[:500], "pinged": pinged}}))
+            logger.info("prime_intention_close_failed concern=%s (tried again next check)", op.concern_id)
+            return
+        if outcome in ("let_go", "expired") and op.order_status in ("submitted", "exists"):
+            # The run would hold tier-1 agent share for a reply nobody delivers (review m4). Best effort.
+            _data, err = await self._post(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/runs/{op.run_id}/cancel", {})
+            logger.info("prime_intention_run_cancel concern=%s run=%s err=%s", op.concern_id, op.run_id, err or "-")
+        self.intentions = it.finish(self.intentions, op, outcome=outcome, note=note, now=now, pinged=pinged)
+        if produced:
+            # The hand-back normally settled it when the carry turn completed; pub/sub is not durable.
+            self.state, _line = settle_concern(self.state, op.concern_id, arm="treated", produced=True, now=now,
+                                               note=f"carried by run {op.run_id}")
+        logger.info("prime_intention_closed concern=%s act=%s outcome=%s produced=%s note=%r", op.concern_id,
+                    op.act_id, outcome, produced, note)
+        self.state = note_outcome(self.state, f"what I took on (concern {op.concern_id}, act {op.act_id}): {note}")
+
     # --- organ replies (curiosity replica patch 4) --------------------------------------------
     def _organ_replies_on(self) -> bool:
         """The replica answers Prime in this process (its own two switches)."""
@@ -722,13 +974,18 @@ class PrimeRuntime(MindLoopRuntime):
                 rec = await self._read_regulation(reg.family, reg.signal_id)
                 inputs.regulation_effects[reg.signal_id] = (
                     None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
+        if self._intentions_on():
+            inputs.take_on = True
+            inputs.intentions = it.frame_lines(self.intentions, now)
+            inputs.no_take_on = it.no_take_on_ids(self.intentions)
         if self._personality_line_on():
             inputs.tending, inputs.tending_error = await self._read_tending(now)
         frame = build_frame(self.state, inputs)
         # The choice point's options: the concerns this frame shows, captured now (the answer may add or drop).
         shown = shown_concerns(self.state.concerns)
         reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
-                                                    organ_replies=shows_organ_replies(inputs)), frame)
+                                                    organ_replies=shows_organ_replies(inputs),
+                                                    take_on=inputs.take_on), frame)
         reply.context.update(curiosity=curiosity, receptors=receptors, shown_concerns=shown,
                              ranked_event_ids=event_ids(inputs) if inputs.event_mode else [])
         return reply
@@ -866,6 +1123,8 @@ class PrimeRuntime(MindLoopRuntime):
         holdback arm is drawn, so both arms are refused alike."""
         if isinstance(move, RegulateMoveV1):
             verb, ref = "regulate", f"physiology_family:{move.family}"
+        elif isinstance(move, TakeOnMoveV1):
+            verb, ref = "make", f"{it.OBJECT_PREFIX}{move.concern_id}"
         else:
             verb = "ask"
             ref = f"curiosity_focus:{prime_focus_id(question=move.question, why=move.why, thought_id=thought_id)}"
@@ -873,7 +1132,7 @@ class PrimeRuntime(MindLoopRuntime):
         if self._admit(d):
             return None
         logger.info("prime_act_refused verb=%s gate=%s", verb, d.label() if d else "-")
-        what = "signals" if verb == "regulate" else "questions"
+        what = {"regulate": "signals", "make": "take-ons"}.get(verb, "questions")
         return gate_why(d, self.gate.probe_interval_sec).replace("these", f"my {what}", 1)
 
     async def _flush_concern_acts(self) -> None:
@@ -926,13 +1185,16 @@ class PrimeRuntime(MindLoopRuntime):
         pending_focus = schedule.get("pending_focus") or {}
         focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
         applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending,
-                               receptors=receptors, event_ids=event_ids(inputs) if inputs.event_mode else None)
+                               receptors=receptors, event_ids=event_ids(inputs) if inputs.event_mode else None,
+                               take_on_check=self._take_on_check(now) if self._intentions_on() else None)
         if inputs.event_mode:
             new = set(applied.added)
             for c in applied.state.concerns:
                 if c.concern_id in new:
                     logger.info("prime_concern_added concern=%s event_ref=%s", c.concern_id, c.event_ref)
         self.state = applied.state.model_copy(update={"last_thought_id": thought_id})
+        if self._intentions_on():
+            await self._let_go_dropped(answer, now)
         if applied.move is not None and applied.refs:
             unopened = await self._unresolved(applied.refs)
             if unopened:
@@ -947,6 +1209,8 @@ class PrimeRuntime(MindLoopRuntime):
             self.state = _with_outcome_line(self.state, f"my move was not sent: {applied.move_refusal}")
         if isinstance(applied.move, RegulateMoveV1):
             await self._regulate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now)
+        elif isinstance(applied.move, TakeOnMoveV1):
+            await self._take_on(applied.move, thought_id=thought_id, now=now)
         elif applied.move is not None:
             await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now,
                                  refs=applied.refs)

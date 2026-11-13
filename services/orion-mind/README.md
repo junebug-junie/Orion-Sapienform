@@ -412,3 +412,39 @@ is retired, so off means no letters). Pure parts: `orion/prime/day_letter.py`; I
 - A run that wrote the row and then ended failed or cancelled (a later step failed) is a written letter. A cancelled
   run with no row is not retried: a cancel is someone's decision.
 - Deploy order: orion-hub, then orion-durable-runs, then orion-mind (Prime orders only once both are live).
+
+### Intentions Prime takes on or lets go (2026-11-13, choice-as-EFE Step -1)
+
+`PRIME_INTENTION_TAKE_ON_ENABLED` (default true). Design: `docs/superpowers/specs/2026-11-13-choice-as-expected-free-energy-design.md`
+(Step -1). Pure parts: `orion/prime/intention.py` and one adapter per source in `orion/prime/intention_sources/`
+(today: `turn_promise.py`); I/O: `app/prime_loop.py` `_take_on`, `_intention_*`.
+
+Today a promise Orion makes in chat becomes a Prime concern, and nothing could carry it out. Now Prime has three
+choices about such a concern:
+
+1. **Take it on.** A new move, `{"kind": "take_on", "concern_id", "why", "not_before"?}`, offered only on a concern
+   whose source has an adapter (the frame marks it "you can take this on"). Prime opens a `make` act (actor
+   `prime`, object `intention:<concern_id>`); that act is the graded bet, since a turn concern places none. Prime
+   holds the order until `not_before` itself, then POSTs `IntentionOrderV1` to Hub (`/api/intention/run`). Hub reads
+   the promise (the exact quote from `harness_turn_trace`, the one exchange from `chat_history_log`), builds the
+   brief and submits ONE `intention.carry` durable run (run id `intention-<concern_id>`; one per concern, no retry
+   in v1). The run binds in the body economy as family `durable.intention`, tier 1 (Juniper 2026-11-13: once Orion
+   chose, follow-through is keeping its word; the reserved share stops curiosity and consults crowding it out, and
+   the economy still picks the time). Its admission deadline is the concern's horizon: promise time + 72 h.
+2. **Let it go.** The existing concern `drop` with why. With an open take-on, the act closes 0 (`let go: <why>`)
+   and the reply is never delivered.
+3. **Not yet.** The existing `keep`, or no edit. A concern with an adapter that was never taken on ages out at its
+   horizon.
+
+The carry turn runs in session `orion_intention` with `prime_concern:<id>` first in its prompt, so the turn
+hand-back settles the concern when it completes (`classify_who` -> `intention`). Loop guard: a promise made inside
+that session opens no concern (and the adapter refuses a promise made in any `orion_*` session). When the run is
+terminal Prime POSTs `IntentionDeliverV1` (`/api/intention/deliver`): Hub writes the reply into the originating chat
+thread and makes one outreach attempt through the normal gates (quiet hours, the shared daily cap, the economy). A
+blocked attempt still leaves the reply in the thread. The act closes 1 when the reply is stored, else 0. A concern
+taken on does not fade while its run is open.
+
+- Record: Redis `orion:prime:intentions` (`PrimeIntentionsStateV1`; no quote text is ever stored in Prime's state).
+- Logs: `prime_intention_taken`, `prime_intention_ordered`, `prime_intention_order_unanswered`,
+  `prime_intention_closed`, `prime_intention_open_failed`, `prime_intention_step_failed`.
+- Deploy order: orion-sql-writer, orion-hub, orion-actions, orion-cortex-orch, orion-durable-runs, then orion-mind.

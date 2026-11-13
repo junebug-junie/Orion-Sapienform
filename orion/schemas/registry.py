@@ -822,6 +822,10 @@ from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
 from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.harness_step_run import HarnessEchoSmokeBriefV1
 from orion.schemas.consult_turn_run import ConsultOrionTurnBriefV1
+from orion.schemas.intention import (
+    IntentionCarryBriefV1, IntentionDeliverResultV1, IntentionDeliverV1, IntentionOrderResultV1, IntentionOrderV1,
+    IntentionSourceV1,
+)
 from orion.schemas.pr_field_note_run import PrFieldNoteBriefV1
 from orion.schemas.reminiscence_run import ReminiscenceRunBriefV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
@@ -1069,6 +1073,14 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JournalComposeRunBriefV1": JournalComposeRunBriefV1,
     "HarnessEchoSmokeBriefV1": HarnessEchoSmokeBriefV1,
     "ConsultOrionTurnBriefV1": ConsultOrionTurnBriefV1,
+    # Intentions Prime takes on (orion/schemas/intention.py): the carry run's brief (nested in DurableRunRequestV1),
+    # Prime's order and delivery calls to Hub and Hub's answers (HTTP, not bus kinds), and an adapter's output.
+    "IntentionCarryBriefV1": IntentionCarryBriefV1,
+    "IntentionOrderV1": IntentionOrderV1,
+    "IntentionOrderResultV1": IntentionOrderResultV1,
+    "IntentionDeliverV1": IntentionDeliverV1,
+    "IntentionDeliverResultV1": IntentionDeliverResultV1,
+    "IntentionSourceV1": IntentionSourceV1,
     "PrFieldNoteBriefV1": PrFieldNoteBriefV1,
     "ReminiscenceRunBriefV1": ReminiscenceRunBriefV1,
     "DurableRunReceiptV1": DurableRunReceiptV1,

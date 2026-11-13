@@ -2,15 +2,9 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 788,
   "_last_change": {
-    "change_count": 7,
-    "high_severity_count": 6,
+    "change_count": 1,
+    "high_severity_count": 0,
     "changes": [
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error",
-      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error (declared_consumers: ['orion.substrate.endogenous_curiosity:_prediction_error_ca\u2026 -> ['orion.attention.world_first:judge_candidate'])",
-      "high   routing_changed metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error (declared_consumers: ['orion.substrate.endogenous_curiosity:_prediction_error_ca\u2026 -> ['orion.attention.world_first:judge_candidate'])",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error (meaning: TRIGGER: cabinet is warming unexpectedly -- fires on\u2026 -> ALARM, not a prediction error (PE suite rebuild 2026-11-13;\u2026\u2026)",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error (meaning: TRIGGER: strain new\u2026 -> NEWS, not a prediction error (PE suite rebuild 2026-11-13; \u2026\u2026)",
-      "high   semantics_changed metric://field_channel/orion-substrate-runtime/node:substrate.street.prediction_error (meaning: TRIGGER: a street e\u2026 -> ALARM, not a prediction error (PE suite rebuild 2026-11-13;\u2026\u2026)",
       "medium added metric://bus_channel/orion-hub/orion:personality:choice"
     ]
   },

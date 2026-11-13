@@ -275,4 +275,6 @@ docker logs orion-athena-dream 2>&1 | grep -E "compaction applied|rem compaction
 
 ## PR link
 
-https://github.com/junebug-junie/Orion-Sapienform/pull/3254
+- https://github.com/junebug-junie/Orion-Sapienform/pull/3254 (merged 2026-11-13 01:03 UTC, before the
+  review fixes were pushed)
+- Review fixes: follow-up PR on branch `fix/dream-compaction-review-followups` (link below)

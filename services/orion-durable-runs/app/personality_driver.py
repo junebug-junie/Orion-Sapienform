@@ -10,7 +10,9 @@ cursors, so a restart resumes exactly. One tick, every ``PERSONALITY_TICK_SEC`` 
    cursor (bus producers and the curiosity sync alike), up to now minus the read lag, capped;
 3. drop evidence ids already in ``personality_evidence``; embed every distinct option text (bounded
    concurrency, cached across ticks); a failed embed stops the read at the previous row, so the
-   failed row is read again next tick (given up after ``EMBED_MAX_FAILURES`` ticks);
+   failed row is read again next tick, for as long as the embedder is down (choices are sparse and
+   are the graph's only evidence: an outage never consumes one). Only an HTTP 4xx (the embedder
+   refused the text) consumes the choice as skipped evidence;
 4. each choice -> one ``Evidence``: direction = unit(embed(chosen) - mean(embed(declined))), weight
    = revealed-preference weight, label = "<chosen gist> over <declined gist>";
 5. ``fold`` (fades, then folds) or, with no evidence, ``apply_fade``;
@@ -67,9 +69,13 @@ logger = logging.getLogger("orion-durable-runs.personality_driver")
 
 EMBED_CONCURRENCY = 4
 EMBED_TIMEOUT_SEC = 15.0
-# A choice whose embed fails this many ticks in a row (or that the embedder rejects with a 4xx) is
-# consumed as skipped evidence, so one bad row cannot hold the graph dark forever.
+# Self-naming grounding only: a NAME whose grounding embed fails this many ticks is applied ungrounded.
+# Choices never give up on a transient failure (see the module docstring).
 EMBED_MAX_FAILURES = 3
+# A bus choice dated further ahead than this is refused (a future time would never fade).
+MAX_FUTURE_SKEW_SEC = 300.0
+# Lanes durable-runs writes itself; a bus producer may not write them.
+SELF_WRITTEN_LANES = frozenset({"curiosity"})
 EMBED_CACHE_MAX = 4000  # option text -> vector, across ticks (curiosity priors repeat across runs)
 REJECTED: list[float] = []  # vector placeholder: the embedder refused this text
 
@@ -240,6 +246,10 @@ class PersonalityDriver:
         Returns ``inserted`` | ``duplicate`` | ``invalid``. Raises only on a DB failure."""
         try:
             choice = PersonalityChoiceV1.model_validate(payload)
+            if choice.lane in SELF_WRITTEN_LANES:
+                raise ValueError(f"lane {choice.lane!r} is written by durable-runs' own sync, not the bus")
+            if (choice.occurred_at - self._now()).total_seconds() > MAX_FUTURE_SKEW_SEC:
+                raise ValueError("occurred_at is in the future")
         except Exception as exc:  # noqa: BLE001 - a bad payload is logged and dropped, never retried
             self.stats.bus_choices_invalid += 1
             logger.warning("personality_choice_invalid error=%s", str(exc)[:300])
@@ -347,16 +357,11 @@ class PersonalityDriver:
                                          occurred_at=utc(r["occurred_at"]) or now, excerpt="invalid stored choice",
                                          embedding=[], meta={"choice_id": r["choice_id"]}))
             elif eid not in existing:
-                missing = [t for t in all_texts(c) if vectors.get(t) is None]
-                if missing:
-                    n = self._embed_failures.get(c.choice_id, 0) + 1
-                    self._embed_failures[c.choice_id] = n
-                    if n < EMBED_MAX_FAILURES:
-                        held = True
-                        warnings.append("embed_failed:choice")
-                        break
-                    warnings.append(f"embed_gave_up:{c.choice_id}"[:200])
-                self._embed_failures.pop(c.choice_id, None)
+                if any(vectors.get(t) is None for t in all_texts(c)):
+                    # Transient (embedder down or slow): hold here; never consume a real choice for it.
+                    held = True
+                    warnings.append(f"embed_failed:choice:{c.choice_id}"[:200])
+                    break
                 evidence.append(choice_evidence(c, vectors))
             last = r
         if last is not None:

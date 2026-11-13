@@ -474,10 +474,10 @@ class PersonalityStore:
 
     async def evidence(self, disposition_id: Optional[str] = None, limit: int = 50) -> list[dict]:
         sql = ("SELECT evidence_id, lane, source_ref, occurred_at, excerpt, disposition_id, similarity, weight_delta, "
-               "meta, created_at FROM personality_evidence")
-        params: dict = {"limit": limit}
+               "meta, created_at FROM personality_evidence WHERE starts_with(evidence_id, %(p)s)")
+        params: dict = {"limit": limit, "p": EVIDENCE_PREFIX}
         if disposition_id:
-            sql += " WHERE disposition_id = %(d)s"
+            sql += " AND disposition_id = %(d)s"
             params["d"] = disposition_id
         sql += " ORDER BY occurred_at DESC, evidence_id LIMIT %(limit)s"
         async with self._pool.connection() as conn:

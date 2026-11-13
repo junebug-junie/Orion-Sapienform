@@ -145,8 +145,11 @@ def test_full_loop_on_postgres():
         assert cur["cursor_ref"] == "prime:t1"
 
         # Re-upserted curiosity outcome: completed_at moves, the run is read again, nothing new.
-        await ex(pool, "UPDATE curiosity_run_outcomes SET completed_at = %(at)s WHERE run_id = 'run1'",
-                 {"at": t0 + timedelta(minutes=11)})
+        # Hub replaces per_prior on a re-upsert: a different tested set must not add a second decision.
+        await ex(pool, "UPDATE curiosity_run_outcomes SET completed_at = %(at)s, per_prior = %(p)s::jsonb "
+                       "WHERE run_id = 'run1'",
+                 {"at": t0 + timedelta(minutes=11),
+                  "p": json.dumps([{"kind": "tested", "prior_id": "self:a_thing_20261015"}])})
         clock.at = t0 + timedelta(minutes=20)
         out = await drv.tick()
         assert out["curiosity_synced"] == 0 and out["evidence"] == 0

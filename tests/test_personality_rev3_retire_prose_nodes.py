@@ -57,6 +57,12 @@ def test_progress_line_has_every_section_14_field(tmp_path):
     assert (tmp_path / "progress.log").read_text().strip() == line
 
 
+def test_each_run_gets_its_own_directory():
+    t = datetime(2026, 11, 13, 12, 0, 1, 5, tzinfo=timezone.utc)
+    assert retire.run_dir_for(Path("/x"), t, False).name == "20261113T120001000005Z-dry"
+    assert retire.run_dir_for(Path("/x"), t, True).name.endswith("-apply")
+
+
 def test_main_requires_a_dsn(monkeypatch):
     monkeypatch.delenv("POSTGRES_URI", raising=False)
     with pytest.raises(SystemExit):
@@ -85,25 +91,43 @@ def test_dry_run_then_apply_on_postgres(tmp_path):
                 conn.execute("INSERT INTO personality_disposition (disposition_id, origin, status, label, centroid, "
                              "weight, evidence_count, first_seen_at, last_reinforced_at, updated_at) VALUES "
                              "(%s, %s, %s, 'l', ARRAY[1]::real[], 2.0, 4, now(), now(), now())", (did, origin, status))
-        out = tmp_path / "dry"
+        def only_run(out):
+            (d,) = [p for p in out.iterdir() if p.is_dir()]
+            return d
+
+        out = tmp_path / "runs"
         assert retire.main(["--dsn", dsn, "--out", str(out)]) == 0
-        with (out / "before.csv").open() as fh:
-            assert sorted(r["disposition_id"] for r in csv.DictReader(fh)) == ["p1", "p2"]
-        assert "DRY RUN" in (out / "report.md").read_text() and (out / "before_after.csv").exists()
+        dry = only_run(out)
+        assert dry.name.endswith("-dry")
+        with (dry / "before.csv").open() as fh:
+            rows = list(csv.DictReader(fh))
+        assert sorted(r["disposition_id"] for r in rows) == ["p1", "p2"] and rows[0]["updated_at"]
+        assert "DRY RUN" in (dry / "report.md").read_text() and (dry / "before_after.csv").exists()
         with psycopg.connect(dsn) as conn:
             assert conn.execute("SELECT count(*) FROM personality_disposition WHERE status = 'retired'").fetchone()[0] == 1
 
-        out = tmp_path / "apply"
-        assert retire.main(["--dsn", dsn, "--out", str(out), "--apply"]) == 0
+        # Before the rev 4 reducer has ticked, --apply refuses and writes nothing.
+        refused = tmp_path / "refused"
+        assert retire.main(["--dsn", dsn, "--out", str(refused), "--apply"]) == 3
+        with psycopg.connect(dsn) as conn:
+            assert conn.execute("SELECT count(*) FROM personality_disposition WHERE status = 'retired'").fetchone()[0] == 1
+            conn.execute("INSERT INTO personality_cursor (source, cursor_at) VALUES ('curiosity_sync', now())")
+            conn.commit()
+
+        applied = tmp_path / "applied"
+        assert retire.main(["--dsn", dsn, "--out", str(applied), "--apply"]) == 0
         with psycopg.connect(dsn) as conn:
             st = dict(conn.execute("SELECT disposition_id, status FROM personality_disposition").fetchall())
             hist = conn.execute("SELECT disposition_id FROM personality_weight_history ORDER BY 1").fetchall()
         assert st == {"p1": "retired", "p2": "retired", "p3": "retired", "c1": "active"}
         assert [h[0] for h in hist] == ["p1", "p2"]
-        assert "verdict: APPLIED" in (out / "report.md").read_text()
-        # A second apply finds nothing left to do.
-        assert retire.main(["--dsn", dsn, "--out", str(tmp_path / "again"), "--apply"]) == 0
-        assert "target rows (non-retired, origin <> 'choice'): 0" in (tmp_path / "again" / "report.md").read_text()
+        run = only_run(applied)
+        assert "verdict: APPLIED" in (run / "report.md").read_text()
+        # A later run never overwrites the snapshot the apply was made from.
+        assert retire.main(["--dsn", dsn, "--out", str(applied), "--apply"]) == 0
+        assert len([p for p in applied.iterdir() if p.is_dir()]) == 2
+        with (run / "before.csv").open() as fh:
+            assert len(list(csv.DictReader(fh))) == 2
     finally:
         with psycopg.connect(DSN, autocommit=True) as conn:
             conn.execute(f'DROP SCHEMA "{schema}" CASCADE')

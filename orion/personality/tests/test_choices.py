@@ -328,3 +328,31 @@ def test_option_refuses_bad_rank_and_empty_text():
         ChoiceOptionV1(key="a", text="x", market_rank=0)
     with pytest.raises(ValueError):
         ChoiceOptionV1(key="a", text="")
+
+
+def test_contract_derives_the_top_level_rank_from_chosen():
+    c = PersonalityChoiceV1(choice_id="prime:t1", lane="prime", occurred_at=T, chosen=opt("a", 2),
+                            alternatives=[opt("b", 1)])
+    assert c.chosen_market_rank == 2
+
+
+@pytest.mark.parametrize("situation", [
+    {"nested": {"a": 1}}, {"list": [1, 2]}, {"long": "x" * 201}, {"k" * 65: 1},
+])
+def test_contract_situation_must_stay_small_and_flat(situation):
+    with pytest.raises(ValueError):
+        PersonalityChoiceV1(choice_id="prime:t1", lane="prime", occurred_at=T, chosen=opt("a", 2),
+                            alternatives=[opt("b", 1)], situation=situation)
+    ok = PersonalityChoiceV1(choice_id="prime:t1", lane="prime", occurred_at=T, chosen=opt("a", 2),
+                             alternatives=[opt("b", 1)], situation={"arousal": "engaged", "heat": 0.4, "company": True,
+                                                                    "binding": None})
+    assert ok.situation["heat"] == 0.4
+
+
+def test_contract_choice_id_lives_in_its_lane_namespace():
+    with pytest.raises(ValueError):
+        PersonalityChoiceV1(choice_id="curiosity:r1:p", lane="prime", occurred_at=T, chosen=opt("a"),
+                            alternatives=[opt("b")])
+    with pytest.raises(ValueError):  # declining all is one decision
+        PersonalityChoiceV1(choice_id="outreach:o1", lane="outreach", occurred_at=T, declined_all=True,
+                            alternatives=[opt("b")], picks_in_decision=2)

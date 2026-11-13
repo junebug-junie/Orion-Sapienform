@@ -20,7 +20,7 @@ from scripts.endogenous_outreach import (
     situation_lines,
 )
 
-CUE = HEADER + '\n- "the walkway camera sees presence without a person 0" (reverie, dreams; 7 times since Oct 16)'
+CUE = HEADER + '\n- "the walkway camera sees presence without a person 0" (curiosity, Prime; 7 times since Oct 16)'
 
 
 def frame() -> dict:
@@ -30,7 +30,7 @@ def frame() -> dict:
         "dispositions": [{
             "disposition_id": "d0", "label": "the walkway camera sees presence without a person",
             "origin": "recurrence", "status": "active", "weight": 10.0, "evidence_count": 7,
-            "lane_counts": {"reverie": 4, "dream": 2}, "first_seen_at": "2026-10-16T08:00:00+00:00",
+            "lane_counts": {"curiosity": 4, "prime": 2}, "first_seen_at": "2026-10-16T08:00:00+00:00",
             "last_reinforced_at": (now - timedelta(hours=1)).isoformat(),
         }],
     }

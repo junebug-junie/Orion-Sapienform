@@ -24,7 +24,7 @@ def test_summary_counts_departures_and_passes_checks_on_varied_choices():
     vecs = {t: vec_for(t) for c in choices for t in [c.chosen.text, *[o.text for o in c.alternatives]]}
     out = replay.summarize(choices, vecs, T0)
     assert out["choices"] == 6 and out["rank1"] == 2 and out["departed"] == 4
-    assert out["checks"] == {"has_choices": True, "has_departures": True, "directions_not_degenerate": True,
+    assert out["checks"] == {"has_choices": True, "departures_at_least_25pct": True, "directions_not_degenerate": True,
                              "labels_computed": True}
     assert all(label.endswith(" of 1") for _, _, label in out["top"])
 
@@ -33,4 +33,4 @@ def test_summary_fails_closed_on_no_choices_or_only_rank_one():
     assert replay.summarize([], {}, T0)["checks"]["has_choices"] is False
     only_top = [choice("prime:a", T0, rank=1)]
     vecs = {"people": vec_for("people"), "pipeline": vec_for("pipeline")}
-    assert replay.summarize(only_top, vecs, T0)["checks"]["has_departures"] is False
+    assert replay.summarize(only_top, vecs, T0)["checks"]["departures_at_least_25pct"] is False

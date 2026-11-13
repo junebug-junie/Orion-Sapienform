@@ -40,5 +40,8 @@ CREATE INDEX IF NOT EXISTS personality_choice_created_idx
     ON personality_choice (created_at, choice_id);
 CREATE INDEX IF NOT EXISTS personality_choice_lane_time_idx
     ON personality_choice (lane, occurred_at);
+-- The curiosity sync reads a run only while it has no row here (one decision, synced once).
+CREATE INDEX IF NOT EXISTS personality_choice_act_idx
+    ON personality_choice (act_id);
 
 ALTER TABLE personality_disposition ADD COLUMN IF NOT EXISTS opposed_count integer NOT NULL DEFAULT 0;

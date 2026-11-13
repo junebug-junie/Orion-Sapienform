@@ -17,14 +17,21 @@ What --apply does, in ONE transaction (``SELECT ... FOR UPDATE`` on the target r
   * ``status = 'retired'``, ``retired_at = now``, ``updated_at = now``;
   * one ``personality_weight_history`` row per node at now (weight, 'retired', evidence_count),
     ``ON CONFLICT DO NOTHING``, so the panel's history shows the retirement.
-The reducer (rev 4) no longer loads non-choice nodes, so it cannot race this write.
 
-CLAUDE.md section 14 (backfill protocol). Files under ``--out`` (default /tmp/personality-rev3-retire/):
+Run --apply only AFTER the rev 4 orion-durable-runs is deployed. The rev 2 reducer loads prose nodes
+at the start of a tick and writes their status from memory, so a rev 2 tick that spans this write
+would un-retire them. The rev 4 reducer never loads them. --apply therefore refuses unless the rev 4
+reducer has committed a tick: a ``curiosity_sync`` or ``choice`` cursor row exists (only rev 4
+writes those). ``--allow-before-rev4`` overrides it (only with PERSONALITY_ENABLED=false).
+
+CLAUDE.md section 14 (backfill protocol). Each run writes to its own timestamped directory
+``<--out>/<UTC run time>[-apply]/`` (default --out /tmp/personality-rev3-retire/), so a later dry run
+never overwrites the snapshot an apply was made from:
   before.csv        every target row as it was, written BEFORE any write (dry run too)
   progress.log      one line per step: title, percent, ETA, rows done/total, rate, errors, anomalies
   before_after.csv  disposition_id, origin, status before -> after, weight, evidence_count, label
   report.md         verdict, counts, examples, error count, files written
-Refuses (exit 2) when the snapshot would exceed 100k rows or 100 MB.
+Refuses (exit 2) when the snapshot would exceed 100k rows or 100 MB; --apply exits 3 before the rev 4 reducer ticked.
 
 DSN: ``--dsn`` or ``POSTGRES_URI`` (psycopg). Rollback: before.csv holds every prior status; set them
 back with one UPDATE per row (``status``, ``retired_at = NULL``).
@@ -45,7 +52,8 @@ DEFAULT_OUT = Path("/tmp/personality-rev3-retire")
 MAX_ROWS = 100_000
 MAX_BYTES = 100 * 1024 * 1024
 COLUMNS = ("disposition_id", "origin", "status", "weight", "evidence_count", "chosen_count", "lane_counts",
-           "first_seen_at", "last_reinforced_at", "retired_at", "name", "orion_verdict", "label")
+           "first_seen_at", "last_reinforced_at", "retired_at", "updated_at", "name", "orion_verdict", "label")
+REV4_TICKED_SQL = "SELECT count(*) AS n FROM personality_cursor WHERE source IN ('curiosity_sync', 'choice')"
 TARGET_SQL = (f"SELECT {', '.join(COLUMNS)} FROM personality_disposition "
               "WHERE status <> 'retired' AND origin <> 'choice' ORDER BY disposition_id")
 RETIRE_SQL = ("UPDATE personality_disposition SET status = 'retired', retired_at = %(now)s, updated_at = %(now)s "
@@ -139,11 +147,18 @@ def report(out: Path, *, applied: bool, rows: Sequence[dict], retired: int, erro
     return text
 
 
+def run_dir_for(out: Path, now: datetime, apply: bool) -> Path:
+    """One directory per run: a later run never overwrites an earlier snapshot."""
+    return out / (now.strftime("%Y%m%dT%H%M%S%fZ") + ("-apply" if apply else "-dry"))
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     ap.add_argument("--dsn", default=os.getenv("POSTGRES_URI", ""))
     ap.add_argument("--out", type=Path, default=DEFAULT_OUT)
     ap.add_argument("--apply", action="store_true", help="write (default: dry run)")
+    ap.add_argument("--allow-before-rev4", action="store_true",
+                    help="apply even though the rev 4 reducer has not ticked (only with PERSONALITY_ENABLED=false)")
     args = ap.parse_args(argv)
     if not args.dsn:
         ap.error("--dsn or POSTGRES_URI is required")
@@ -151,11 +166,17 @@ def main(argv: list[str] | None = None) -> int:
     import psycopg
     from psycopg.rows import dict_row
 
-    args.out.mkdir(parents=True, exist_ok=True)
+    run_dir = run_dir_for(args.out, datetime.now(timezone.utc), args.apply)
+    run_dir.mkdir(parents=True, exist_ok=False)
+    args.out = run_dir
     log = args.out / "progress.log"
     with psycopg.connect(args.dsn, row_factory=dict_row) as conn:
         with conn.transaction():
             conn.execute("SET LOCAL lock_timeout = '10s'")
+            if args.apply and not args.allow_before_rev4:
+                if not conn.execute(REV4_TICKED_SQL).fetchone()["n"]:
+                    Progress(log, 0).line("refused: the rev 4 reducer has not ticked yet (deploy it first)", 0)
+                    return 3
             lock = " FOR UPDATE" if args.apply else ""
             rows = [dict(r) for r in conn.execute(TARGET_SQL + lock).fetchall()]
             prog = Progress(log, len(rows))

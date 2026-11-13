@@ -28,6 +28,8 @@ PERSONALITY_CHOICE_CHANNEL = "orion:personality:choice"
 MAX_CHOICE_LIST = 50
 CHOICE_OPTION_TEXT_MAX = 400
 CHOICE_SITUATION_MAX_KEYS = 16
+CHOICE_SITUATION_KEY_MAX = 64
+CHOICE_SITUATION_TEXT_MAX = 200
 
 ChoiceLane = Literal["prime", "outreach", "curiosity", "reading", "chat"]
 
@@ -53,18 +55,20 @@ class PersonalityChoiceV1(BaseModel):
     * ``alternatives``: every other option shown. With ``declined_all`` these are the options
       Orion declined (at least one).
     * ``chosen_market_rank``: the chosen option's market rank (1 = Orion followed the order; it
-      weighs 0.25 in the reducer, any other rank or None weighs 1.0).
+      weighs 0.25 in the reducer, any other rank or None weighs 1.0). Left None, it is copied
+      from ``chosen.market_rank``; set, it must equal it.
     * ``declined_all``: Orion picked "none" / "no move" / "say nothing" although options existed.
     * ``care_promoted``: the option reached the shown set only because the care term (rev 4 move 2)
       lifted it. Counts at half weight (runaway guard).
     * ``picks_in_decision``: how many options this same decision picked (a curiosity run can test
       several priors; each pick is one row). The reducer divides the weight by it, so a decision
       weighs the same however many picks it made. Single-pick producers leave it at 1.
-    * ``situation``: a small flat dict of what Orion saw (arousal, binding constraint, company).
+    * ``situation``: a small FLAT dict of what Orion saw (arousal, binding constraint, company):
+      at most 16 keys of at most 64 chars, scalar values, strings at most 200 chars.
     * ``act_id`` / ``correlation_id``: the act and the model call that made the pick.
 
-    ``choice_id`` must be deterministic per decision (and pick), e.g. ``prime:<thought_id>``, so a
-    re-published choice is the same row.
+    ``choice_id`` must start with ``<lane>:`` and be deterministic per decision (and pick), e.g.
+    ``prime:<thought_id>``, so a re-published choice is the same row.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -85,20 +89,34 @@ class PersonalityChoiceV1(BaseModel):
 
     @model_validator(mode="after")
     def _a_real_choice(self) -> "PersonalityChoiceV1":
+        if not self.choice_id.startswith(f"{self.lane}:"):
+            raise ValueError(f"choice_id must start with '{self.lane}:' (the lane's id namespace)")
         if not self.alternatives:
             raise ValueError("a choice needs at least one alternative (declined option) Orion was shown")
         if self.declined_all:
             if self.chosen is not None or self.chosen_market_rank is not None:
                 raise ValueError("declined_all: chosen and chosen_market_rank must be None")
+            if self.picks_in_decision != 1:
+                raise ValueError("declined_all: picks_in_decision must be 1")
         elif self.chosen is None:
             raise ValueError("chosen is required unless declined_all")
         keys = [o.key for o in self.alternatives] + ([self.chosen.key] if self.chosen else [])
         if len(set(keys)) != len(keys):
             raise ValueError("option keys must be unique across chosen and alternatives")
-        if self.chosen is not None and self.chosen_market_rank != self.chosen.market_rank:
-            raise ValueError("chosen_market_rank must equal chosen.market_rank")
+        if self.chosen is not None:
+            if self.chosen_market_rank is None:
+                self.chosen_market_rank = self.chosen.market_rank
+            elif self.chosen_market_rank != self.chosen.market_rank:
+                raise ValueError("chosen_market_rank must equal chosen.market_rank")
         if len(self.situation) > CHOICE_SITUATION_MAX_KEYS:
             raise ValueError(f"situation holds at most {CHOICE_SITUATION_MAX_KEYS} keys")
+        for k, v in self.situation.items():
+            if not isinstance(k, str) or not k or len(k) > CHOICE_SITUATION_KEY_MAX:
+                raise ValueError(f"situation keys are 1-{CHOICE_SITUATION_KEY_MAX} char strings")
+            if v is not None and not isinstance(v, (str, int, float, bool)):
+                raise ValueError("situation values are scalars (str, int, float, bool, None): keep it flat")
+            if isinstance(v, str) and len(v) > CHOICE_SITUATION_TEXT_MAX:
+                raise ValueError(f"situation strings hold at most {CHOICE_SITUATION_TEXT_MAX} chars")
         return self
 
 

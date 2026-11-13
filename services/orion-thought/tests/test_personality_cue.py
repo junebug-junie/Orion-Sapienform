@@ -47,7 +47,7 @@ def _frame(generated_at: datetime = _NOW - timedelta(minutes=5)) -> dict:
         "dispositions": [{
             "disposition_id": f"d{i}", "label": f"{_LABEL} {i}", "origin": "recurrence", "status": "active",
             "weight": 10.0 - i, "evidence_count": 7 + i,
-            "lane_counts": {"reverie": 4, "dream": 2, "journal": 1},
+            "lane_counts": {"curiosity": 4, "prime": 2, "chat": 1},
             "first_seen_at": "2026-10-16T08:00:00+00:00", "last_reinforced_at": "2026-10-20T11:00:00+00:00",
         } for i in range(2)],
         "choice_style": {"window_days": 14, "choices": 40, "took_top": 16, "went_own_way": 24},
@@ -348,7 +348,7 @@ async def test_named_node_reaches_stance_and_reverie_beside_its_excerpt(monkeypa
 
     _mock(monkeypatch, lambda r: httpx.Response(200, json=_named_frame()))
     cue = await pc_mod.build_personality_cue("c-1", now=_NOW)
-    expected = f'- you call this "the empty <watch>": "{_LABEL} 0" (reverie, dreams, journal; 7 times since Oct 16)'
+    expected = f'- you call this "the empty <watch>": "{_LABEL} 0" (curiosity, Prime, conversation; 7 times since Oct 16)'
     assert expected in cue.text
     assert f'\n- "{_LABEL} 1" (' in cue.text  # the unnamed node is unchanged
     assert "It is what I watch" not in cue.text

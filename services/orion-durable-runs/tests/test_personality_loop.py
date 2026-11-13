@@ -142,8 +142,11 @@ class FakeReader:
         self.namings: list[dict] = []  # orion_disposition_naming rows
 
     async def read_curiosity(self, cursor, hi):
+        # Mirrors CURIOSITY_SQL's NOT EXISTS: a run already holding a row is never read again.
+        synced = {r["act_id"] for r in self.store.choices.values()}
         rows = sorted(self.curiosity, key=lambda r: (r["completed_at"], r["run_id"]))
-        return [r for r in rows if _after((r["completed_at"], r["run_id"]), cursor) and r["completed_at"] < hi][:200]
+        return [r for r in rows if _after((r["completed_at"], r["run_id"]), cursor) and r["completed_at"] < hi
+                and f"curiosity_run:{r['run_id']}" not in synced][:200]
 
     async def read_choices(self, cursor, hi):
         rows = sorted(self.store.choices.values(), key=lambda r: (r["created_at"], r["choice_id"]))
@@ -267,13 +270,16 @@ def test_curiosity_backfill_runs_on_the_first_tick_and_is_idempotent():
     age_days = (20 * 86400 + 40 * 60) / 86400  # occurred at the turn start (30 min before completion), read 10 min after T0
     assert ev.weight_delta == pytest.approx(0.125 * 0.5 ** (age_days / 14), rel=1e-6)
     assert all(n.origin == "choice" for n in store.nodes.values())
-    # The outcome is re-upserted: completed_at moves, the same run is read again -> nothing new.
-    reader.curiosity.append(_run_row("r1", utc(minutes=11)))
+    # The outcome is re-upserted with a DIFFERENT tested set (Hub replaces per_prior): the run is
+    # already synced, so nothing new is inserted or folded -- one run stays one decision.
+    reader.curiosity.append(_run_row("r1", utc(minutes=11), tested=("self:c_thing", "self:d_thing")))
     calls = len(emb.calls)
     clock.at = utc(minutes=20)
     out = asyncio.run(drv.tick())
     assert out["curiosity_synced"] == 0 and out["evidence"] == 0 and len(store.choices) == 3
+    assert not any("c_thing" in k for k in store.choices if k.startswith("curiosity:r1:"))
     assert len(emb.calls) == calls
+    assert "curiosity_run:' || o.run_id" in ps.CURIOSITY_SQL and "NOT EXISTS" in ps.CURIOSITY_SQL
 
 
 def test_bus_choice_is_inserted_once_and_folded_on_the_next_tick():
@@ -282,7 +288,11 @@ def test_bus_choice_is_inserted_once_and_folded_on_the_next_tick():
     c = choice("prime:t1", utc(minutes=1), rank=3)
     assert publish(drv, c) == "inserted" and publish(drv, c) == "duplicate"
     assert asyncio.run(drv.offer_choice({"choice_id": "x", "lane": "prime"})) == "invalid"
-    assert drv.stats.bus_choices_inserted == 1 and drv.stats.bus_choices_invalid == 1
+    # The curiosity lane is durable-runs' own sync: a bus producer may not write it.
+    assert publish(drv, choice("curiosity:r9:p", utc(minutes=1), lane="curiosity")) == "invalid"
+    # A choice dated in the future would never fade.
+    assert publish(drv, choice("prime:future", utc(hours=1))) == "invalid"
+    assert drv.stats.bus_choices_inserted == 1 and drv.stats.bus_choices_invalid == 3
     assert store.choices["prime:t1"]["written_by"] == "bus"
     clock.at = utc(minutes=10)
     asyncio.run(drv.tick())
@@ -338,7 +348,7 @@ class Rejecting(Exception):
         self.response = type("R", (), {"status_code": code})()
 
 
-def test_embed_failure_holds_the_cursor_then_gives_up_after_three_ticks():
+def test_embed_outage_holds_the_cursor_and_never_consumes_a_choice():
     drv, store, reader, emb, clock = world()
     publish(drv, choice("prime:a", utc(minutes=1), chosen="ok one"))
     clock.at = utc(seconds=61)
@@ -346,17 +356,17 @@ def test_embed_failure_holds_the_cursor_then_gives_up_after_three_ticks():
     clock.at = utc(seconds=62)
     publish(drv, choice("prime:c", utc(minutes=1), chosen="ok two"))
     emb.fail = {"always fails"}
-    for k in (1, 2):
+    for k in range(1, 7):  # an hour of outage
         clock.at = utc(minutes=10 * k)
         asyncio.run(drv.tick())
         assert "choice:prime:a" in store.evidence and "choice:prime:b" not in store.evidence
         assert "choice:prime:c" not in store.evidence and store.cursors["choice"].ref == "prime:a"
-        assert drv.stats.held and "embed_failed:choice" in drv.stats.warnings
-    clock.at = utc(minutes=30)
+        assert drv.stats.held and "embed_failed:choice:prime:b" in drv.stats.warnings
+    emb.fail = set()  # the embedder is back
+    clock.at = utc(minutes=70)
     asyncio.run(drv.tick())
-    bad = store.evidence["choice:prime:b"]
-    assert bad.disposition_id is None and bad.meta["skip_reason"] == "bad_direction"
-    assert "choice:prime:c" in store.evidence and store.cursors["choice"].ref == "prime:c"
+    assert store.evidence["choice:prime:b"].disposition_id is not None
+    assert "choice:prime:c" in store.evidence and store.cursors["choice"].ref == "prime:c" and not drv.stats.held
 
 
 def test_a_4xx_embed_is_consumed_at_once():
@@ -539,7 +549,7 @@ def test_insert_choices_is_one_insert_only_transaction_with_its_cursor():
     assert row["written_by"] == "curiosity_sync" and json.loads(row["chosen"])["key"] == "people"
     assert [o["key"] for o in json.loads(row["alternatives"])] == ["pipeline"]
     # A declined_all row stores chosen as SQL NULL.
-    assert choice_row(choice("o:1", T0, declined_all=True), "bus")["chosen"] is None
+    assert choice_row(choice("prime:o1", T0, declined_all=True), "bus")["chosen"] is None
 
 
 def test_choice_row_round_trips_through_the_reader():
@@ -829,3 +839,107 @@ def test_choice_window_covers_the_oldest_choice_held():
         window = choice_window_days(now, None, [r["occurred_at"] for r in rows])
         style = choice_style_from_rows(rows, now=now, window_days=window)
         assert style is not None and style.choices == 1, hours
+
+
+# --- bus intake (consumer) ----------------------------------------------------------------------
+
+
+def _envelope(c: PersonalityChoiceV1):
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+    from orion.schemas.personality import PERSONALITY_CHOICE_KIND
+
+    return BaseEnvelope(kind=PERSONALITY_CHOICE_KIND, source=ServiceRef(name="orion-mind", version="t", node="n"),
+                        correlation_id="00000000-0000-0000-0000-000000000001", payload=c.model_dump(mode="json"))
+
+
+def test_bus_handler_routes_a_choice_envelope_to_the_driver(main_mod, monkeypatch):
+    got = []
+
+    class Drv:
+        async def offer_choice(self, payload):
+            got.append(payload)
+            return "inserted"
+
+    monkeypatch.setattr(main_mod, "personality", Drv())
+    c = choice("prime:t1", T0)
+    asyncio.run(main_mod._handle_request(_envelope(c)))
+    assert len(got) == 1 and PersonalityChoiceV1.model_validate(got[0]) == c
+
+
+def test_bus_handler_drops_a_choice_when_the_loop_is_off_and_survives_a_db_error(main_mod, monkeypatch, caplog):
+    monkeypatch.setattr(main_mod, "personality", None)
+    asyncio.run(main_mod._handle_request(_envelope(choice("prime:t1", T0))))
+    assert "personality_choice_dropped" in caplog.text
+
+    class Broken:
+        async def offer_choice(self, payload):
+            raise ConnectionError("db gone")
+
+    monkeypatch.setattr(main_mod, "personality", Broken())
+    asyncio.run(main_mod._handle_request(_envelope(choice("prime:t2", T0))))  # never raises
+    assert "personality_choice_write_failed" in caplog.text
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_choice_channel_is_subscribed_only_with_the_loop_on(main_mod, monkeypatch, enabled):
+    import app.runner as runner_mod
+    from orion.schemas.personality import PERSONALITY_CHOICE_CHANNEL
+
+    patterns_seen = []
+
+    class Quiet:
+        def __init__(self, *a, **k):
+            if "patterns" in k:
+                patterns_seen.append(list(k["patterns"]))
+            self.active_run_ids = []
+
+        async def start_background(self):
+            pass
+
+        async def connect(self):
+            pass
+
+        def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def sweep_forever(self, stop):
+            await stop.wait()
+
+    class Drv:
+        async def start(self, stop):
+            pass
+
+        async def close(self):
+            pass
+
+    async def no_pool():
+        return object()
+
+    s = main_mod._settings
+    for k, v in dict(enabled=True, orion_bus_enabled=True, resume_on_boot=False, admission_enabled=False,
+                     situation_graph_enabled=False, temporal_self_enabled=False, physiology_bid_enabled=False,
+                     cooling_act_enabled=False, checkpoint_prune_mode="off", personality_enabled=enabled).items():
+        monkeypatch.setattr(s, k, v)
+    for name in ("HeartbeatOnly", "OrionBusAsync", "Hunter"):
+        monkeypatch.setattr(main_mod, name, Quiet)
+    monkeypatch.setattr(main_mod, "build_rpc_health_publisher", lambda: Quiet())
+    monkeypatch.setattr(main_mod, "_open_checkpointer", no_pool)
+    monkeypatch.setattr(main_mod, "_checkpointer_cm", None)
+    monkeypatch.setattr(main_mod, "claude_limits", None)
+    monkeypatch.setattr(runner_mod, "DurableRunner", Quiet)
+    monkeypatch.setattr(main_mod, "_build_personality", lambda: Drv())
+    monkeypatch.setattr(main_mod, "personality", None)
+
+    async def go():
+        async with main_mod.lifespan(main_mod.app):
+            pass
+
+    asyncio.run(go())
+    (patterns,) = patterns_seen
+    assert (PERSONALITY_CHOICE_CHANNEL in patterns) is enabled

@@ -27,7 +27,7 @@ def frame(nodes: int = 2) -> dict:
         "dispositions": [{
             "disposition_id": f"d{i}", "label": f"the walkway camera sees presence without a person {i}",
             "origin": "recurrence", "status": "active", "weight": 10.0 - i, "evidence_count": 7 + i,
-            "lane_counts": {"reverie": 4, "dream": 2}, "first_seen_at": "2026-10-16T08:00:00+00:00",
+            "lane_counts": {"curiosity": 4, "prime": 2}, "first_seen_at": "2026-10-16T08:00:00+00:00",
             "last_reinforced_at": "2026-10-20T11:00:00+00:00",
         } for i in range(nodes)],
     }
@@ -35,7 +35,7 @@ def frame(nodes: int = 2) -> dict:
 SOURCE = ServiceRef(name="orion-hub", version="0.1.0", node="athena")
 NOW = datetime(2026, 10, 20, 12, 0, tzinfo=timezone.utc)
 VIEW = WorldviewSnapshot(recent_runs=[RecentRun(run_id="r1")])
-CUE = HEADER + '\n- "the walkway camera sees presence without a person 0" (reverie, dreams; 7 times since Oct 16)'
+CUE = HEADER + '\n- "the walkway camera sees presence without a person 0" (curiosity, Prime; 7 times since Oct 16)'
 
 
 def _loop(*, enabled=True, url="http://durable.test") -> CuriosityInvestigation:

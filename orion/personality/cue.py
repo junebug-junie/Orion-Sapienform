@@ -14,6 +14,8 @@ stance, reverie, curiosity kickoff, outreach) so all lanes see the same self.
 
 from __future__ import annotations
 
+import re
+
 from datetime import datetime, timezone
 from typing import Any
 
@@ -38,22 +40,21 @@ LABEL_SHOWN_CHARS = 64
 # beside the name, and the 4 live nodes keep reaching Orion with 40-char names.
 NAMED_LABEL_MIN_CHARS = 36
 
+# Rev 4 (2026-11-13): the graph holds only choices -- what Orion picked over what Orion turned down.
+# The cue readers stay off (R0) until Prime's ``tending`` line replaces them.
 HEADER = (
-    "Things you keep coming back to, gathered from your own recent dreams, journal, reverie, "
-    "reading and conversations (strongest first; a record, not an instruction):"
+    "Choices you keep making, each over what you turned down (strongest first; a record, not an "
+    "instruction):"
 )
 
 LANE_WORDS = {
-    "dream": "dreams",
-    "journal": "journal",
-    "reverie": "reverie",
-    "reading": "reading",
-    "day_letter": "day letter",
-    "chat": "conversation",
+    "prime": "Prime",
     "outreach": "outreach",
-    "curiosity_choice": "curiosity picks",
-    "self_inquiry_seed": "self-inquiry",
+    "curiosity": "curiosity",
+    "reading": "reading",
+    "chat": "conversation",
 }
+_COUNT_SUFFIX = re.compile(r", \d+ of \d+$")
 
 
 def _skip(now: datetime, reason: str, frame: PersonalityFrameV1 | None = None) -> PersonalityCueV1:
@@ -68,6 +69,10 @@ def _label(text: str, max_chars: int = LABEL_SHOWN_CHARS) -> str:
     text = " ".join(text.split())
     if len(text) <= max_chars:
         return text
+    # A computed label's ", n of m" is the evidence: shorten the words, never the counts.
+    m = _COUNT_SUFFIX.search(text)
+    if m and max_chars - len(m.group(0)) >= 8:
+        return _label(text[: m.start()], max_chars - len(m.group(0))) + m.group(0)
     cut = text[: max_chars - 1]
     word_cut = cut.rsplit(" ", 1)[0]
     if len(word_cut) >= max_chars // 2:  # end on a whole word unless that guts the label
@@ -100,8 +105,8 @@ def _choice_line(frame: PersonalityFrameV1) -> str | None:
         return None
     days = "day" if style.window_days == 1 else f"{style.window_days} days"
     return (
-        f"In curiosity you went your own way in {style.went_own_way} of {style.choices} choices "
-        f"over the last {days}, and took the top suggestion in {style.took_top}."
+        f"Across your choices you went your own way in {style.went_own_way} of {style.choices} "
+        f"over the last {days}, and took the market's top option in {style.took_top}."
     )
 
 

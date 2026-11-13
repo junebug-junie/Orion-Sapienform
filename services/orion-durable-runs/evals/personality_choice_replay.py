@@ -10,8 +10,8 @@ Writes nothing anywhere.
         --dsn "$POSTGRES_URI" --embed-url http://localhost:8320/embedding
 
 Checks (exit 1 when one fails; the metric quality gate's "live-data sanity" step, run on real rows):
-  * choices exist, and at least one departs from the market's order (rank != 1): revealed preference
-    needs departures to read anything (spec rev 4 M1: >= 25% departures);
+  * choices exist, and at least 25% depart from the market's order (rank != 1): revealed preference
+    needs departures to read anything (spec rev 4 acceptance check M1);
   * directions are not degenerate: the median pairwise cosine of unrelated choices sits near 0
     (|median| < 0.2), so ``match_threshold`` separates real clusters from noise;
   * every node label is computed ("X over Y, n of m"), never a prose excerpt.
@@ -54,7 +54,7 @@ def summarize(choices: Sequence[PersonalityChoiceV1], vectors: dict[str, list[fl
     median = statistics.median(sims) if sims else None
     checks = {
         "has_choices": bool(choices),
-        "has_departures": departed > 0,
+        "departures_at_least_25pct": bool(choices) and departed / len(choices) >= 0.25,
         "directions_not_degenerate": median is not None and abs(median) < 0.2,
         "labels_computed": all(LABEL_SHAPE.match(n.label or "") for n in nodes),
     }

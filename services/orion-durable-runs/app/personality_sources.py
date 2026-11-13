@@ -53,6 +53,8 @@ def utc(value: Any) -> Optional[datetime]:
 
 
 # Keyset: (t, ref) > (cursor.at, cursor.ref) AND t < hi, written so the time index applies.
+# personality_choice.created_at is the inserting transaction's start (DEFAULT now()); every insert
+# is a short transaction, and READ_LAG_SEC (120 s) covers a late commit and DB/app clock skew.
 def _keyset(t: str, ref: str) -> str:
     return (f"{t} >= %(at)s AND ({t} > %(at)s OR {ref} > %(ref)s) AND {t} < %(hi)s "
             f"ORDER BY {t}, {ref} LIMIT %(limit)s")
@@ -62,7 +64,12 @@ CURIOSITY_SQL = ("SELECT d.run_id, d.offered, d.stale_offered, d.turn_started_at
                  "o.per_prior, o.completed_at, o.turn_ok "
                  "FROM curiosity_run_outcomes o JOIN curiosity_offer_decisions d USING (run_id) "
                  # A self-inquiry run's decision row offers nothing: no choice to read (choices.py skips it too).
-                 "WHERE d.arm <> 'self_inquiry' AND " + _keyset("o.completed_at", "o.run_id"))
+                 "WHERE d.arm <> 'self_inquiry' "
+                 # A run is synced ONCE. Hub re-upserts an outcome (completed_at = now(), per_prior
+                 # replaced), so a re-read run could carry a different tested set: new rows with a new
+                 # picks_in_decision next to the old ones would weigh one decision twice.
+                 "AND NOT EXISTS (SELECT 1 FROM personality_choice c WHERE c.act_id = 'curiosity_run:' || o.run_id) "
+                 "AND " + _keyset("o.completed_at", "o.run_id"))
 
 CHOICE_COLUMNS = ("choice_id, lane, occurred_at, chosen, alternatives, chosen_market_rank, declined_all, "
                   "care_promoted, picks_in_decision, situation, act_id, correlation_id, written_by, created_at")

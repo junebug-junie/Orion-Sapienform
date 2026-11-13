@@ -207,7 +207,7 @@ def test_build_domain_rows_flags_ceiling_and_floor_pins() -> None:
     rows = build_domain_rows(
         [
             {"node_id": "node:substrate.execution", "prediction_error": 1.0},
-            {"node_id": "node:substrate.chat", "prediction_error": 0.0},
+            {"node_id": "node:substrate.codebase", "prediction_error": 0.0},
             {"node_id": "node:substrate.biometrics", "prediction_error": 0.1},
         ],
         now=NOW,
@@ -216,33 +216,34 @@ def test_build_domain_rows_flags_ceiling_and_floor_pins() -> None:
 
     assert by_domain["execution"]["at_ceiling"] is True
     assert by_domain["execution"]["at_floor"] is False
-    assert by_domain["chat"]["at_floor"] is True
+    assert by_domain["codebase"]["at_floor"] is True
     assert by_domain["biometrics"]["at_ceiling"] is False
     assert by_domain["biometrics"]["at_floor"] is False
 
 
 def test_build_domain_rows_drops_retired_pe_nodes() -> None:
-    """bus_synaptic and route were retired 2026-11 (PE suite rebuild step 5).
-    A lingering graph node is not listed, as known or unknown domain."""
+    """bus_synaptic and route were retired 2026-11 (PE suite rebuild step 5), chat
+    2026-11-13 (step 6). A lingering graph node is not listed, as known or unknown domain."""
     rows = build_domain_rows(
         [
             {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
             {"node_id": "node:substrate.route", "prediction_error": 0.2},
             {"node_id": "node:substrate.chat", "prediction_error": 0.1},
+            {"node_id": "node:substrate.codebase", "prediction_error": 0.1},
         ],
         now=NOW,
     )
     domains = {r["domain"] for r in rows}
-    assert "bus_synaptic" not in domains and "route" not in domains
-    assert "chat" in domains
+    assert "bus_synaptic" not in domains and "route" not in domains and "chat" not in domains
+    assert "codebase" in domains
 
 
 def test_build_domain_rows_distinguishes_missing_node_from_zero_reading() -> None:
-    rows = build_domain_rows([{"node_id": "node:substrate.chat", "prediction_error": 0.0}], now=NOW)
+    rows = build_domain_rows([{"node_id": "node:substrate.codebase", "prediction_error": 0.0}], now=NOW)
     by_domain = {r["domain"]: r for r in rows}
 
-    assert by_domain["chat"]["present"] is True
-    assert by_domain["chat"]["prediction_error"] == 0.0
+    assert by_domain["codebase"]["present"] is True
+    assert by_domain["codebase"]["prediction_error"] == 0.0
     # A known domain whose node does not exist at all is a louder failure than
     # one reading zero, and must not be rendered as "0.0".
     assert by_domain["execution"]["present"] is False
@@ -284,15 +285,15 @@ def test_reconcile_confidence_matches_the_reducers_own_formula() -> None:
     """`1 - mean(prediction_error over ACTIVE_INFERENCE_DOMAINS)` is exactly
     what `_unconditional_prediction_error_confidence()` computes; verified
     live 2026-07-30 that the then-five live domain values reproduce the
-    persisted value exactly (three domains since 2026-11). If this ever stops
+    persisted value exactly (two domains since 2026-11-13). If this ever stops
     reconciling, the panel is showing two numbers that no longer describe the
     same thing."""
     domain_rows = build_domain_rows(
         [
             {"node_id": "node:substrate.execution", "prediction_error": 0.4},
-            {"node_id": "node:substrate.biometrics", "prediction_error": 0.1},
-            {"node_id": "node:substrate.chat", "prediction_error": 0.1},
+            {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
             # Retired 2026-11: never averaged in.
+            {"node_id": "node:substrate.chat", "prediction_error": 0.9},
             {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
             {"node_id": "node:substrate.route", "prediction_error": 1.0},
             # Excluded domains must not be averaged in, or the check would
@@ -304,7 +305,7 @@ def test_reconcile_confidence_matches_the_reducers_own_formula() -> None:
     )
     out = reconcile_confidence(domain_rows, 0.8, row_age_sec=1.0)
 
-    assert out["domains_used"] == 3
+    assert out["domains_used"] == 2
     assert out["recomputed"] == 0.8
     assert out["delta"] == 0.0
     assert out["verdict"] == "exact"
@@ -341,16 +342,15 @@ def test_reconcile_confidence_does_not_cry_divergence_on_ordinary_sampling_skew(
     rows = build_domain_rows(
         [
             # One domain has fully flipped since the row was written; the other
-            # two are unchanged. Aggregate moves by 1/3 -- entirely explicable
-            # by timing, not by a source mismatch.
+            # is unchanged. Aggregate moves by 1/2 (two live domains since
+            # 2026-11-13) -- entirely explicable by timing, not a source mismatch.
             {"node_id": "node:substrate.execution", "prediction_error": 1.0},
             {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
-            {"node_id": "node:substrate.chat", "prediction_error": 0.0},
         ],
         now=NOW,
     )
     out = reconcile_confidence(rows, 1.0, row_age_sec=14.0)
-    assert out["delta"] == -0.3333
+    assert out["delta"] == -0.5
     assert out["verdict"] == "within_drift"
 
 
@@ -665,7 +665,6 @@ _GOOD_ROW = {
 _GOOD_DOMAINS = [
     {"node_id": "node:substrate.execution", "prediction_error": 1.0},
     {"node_id": "node:substrate.biometrics", "prediction_error": 0.102157},
-    {"node_id": "node:substrate.chat", "prediction_error": 0.013468},
 ]
 
 

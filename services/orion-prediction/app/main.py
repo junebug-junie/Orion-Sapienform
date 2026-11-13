@@ -64,7 +64,10 @@ async def _publish_turn_surprise() -> int:
     """Publish the chat-turn surprise events of the last settle pass. Never raises; a failed publish
     drops that event (the settled rows are the record) and keeps going."""
     pending = turn_self_bets.take_pending_surprise()
-    if not pending or _bus is None or not _settings.publish_enabled:
+    if not pending:
+        return 0
+    if _bus is None or not _settings.publish_enabled:
+        turn_self_bets.surprise_counts["dropped_publish_disabled"] += len(pending)
         return 0
     from orion.core.bus.bus_schemas import BaseEnvelope
     from orion.schemas.prediction import PREDICTION_TURN_SURPRISE_CHANNEL, PREDICTION_TURN_SURPRISE_KIND

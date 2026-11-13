@@ -124,6 +124,18 @@ def _quiet_event_signal(reading) -> bool:
     return reading.rate_window_sec is None and _event_written(reading.source_id)
 
 
+def _quiet_event(reading) -> bool:
+    """An event-written level signal with no event to measure: stale (its last event aged out) or
+    no reading at all (no event in its whole history window, e.g. node:prediction.chat_turn after a
+    week with no chat). Quiet by design, never named unreadable and never called calm. A row that
+    exists but cannot be read (a non-finite value) is NOT quiet: it stays unreadable."""
+    if not _quiet_event_signal(reading):
+        return False
+    if reading.state == "stale":
+        return True
+    return reading.state == "no_reading" and reading.observed_at is None and not reading.n_readings_7d
+
+
 def short_name(node_id: str) -> str:
     if node_id.startswith(SUBSTRATE_NODE_PREFIX):
         return node_id[len(SUBSTRATE_NODE_PREFIX):]
@@ -391,13 +403,12 @@ def render_self_readings(
         live = any(r.state == "live" for r in readings)
         # "all_calm" only when every signal was actually read (an event signal with no recent
         # event counts as read): the skip log must not call a mostly-unread body calm.
-        unread = [r for r in readings if r.state != "live"
-                  and not (r.state == "stale" and _quiet_event_signal(r))]
+        unread = [r for r in readings if r.state != "live" and not _quiet_event(r)]
         reason = "no_history" if not live else ("calm_partial" if unread else "all_calm")
         return SelfReadingsBlockV1(rendered_at=now, readings=readings, skip_reason=reason)
     # An event-written signal past the staleness horizon had no event to measure (chat with no
     # turns): say so, not "can't read". A per-tick signal gone stale really is unread.
-    quiet_events = [r for r in readings if r.state == "stale" and _quiet_event_signal(r)]
+    quiet_events = [r for r in readings if _quiet_event(r)]
     # A trigger with too little history has simply not gone off often enough to judge: left out
     # of both lists (never called calm, not "unreadable" either).
     unreadable = [r for r in readings if r.state != "live" and r not in quiet_events

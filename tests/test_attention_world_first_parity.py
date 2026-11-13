@@ -8,7 +8,8 @@ at 1.0" frame (`all_calm`) that world-first exists to end.
 2026-11: the golden's "field" half was regenerated after node:substrate.route
 and node:substrate.bus_synaptic were retired (PE suite rebuild step 5): their
 baselines left the scenarios, and the field contest's relative salience moved
-with them. The "broadcast" half is unchanged from dc8eab06c.
+with them. Regenerated again 2026-11-13 when node:substrate.chat was retired (step 6).
+The "broadcast" half is unchanged from dc8eab06c.
 """
 from __future__ import annotations
 

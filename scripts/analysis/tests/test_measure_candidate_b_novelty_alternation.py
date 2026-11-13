@@ -83,7 +83,7 @@ def test_fixed_builder_frames_show_no_steady_novelty() -> None:
 
 
 def test_candidate_a_targets_are_ignored() -> None:
-    a_target = _target("node:substrate.chat", 0.5, 0.5, kind="node")
+    a_target = _target("node:substrate.execution", 0.5, 0.5, kind="node")
     frames = [{"node_targets": [a_target]}, {"node_targets": [a_target]}]
     report = mod.analyze(frames)
     assert report.targets == 0

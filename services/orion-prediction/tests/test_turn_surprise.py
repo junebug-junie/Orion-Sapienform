@@ -187,3 +187,16 @@ def test_surprise_is_off_unless_enabled_and_a_failure_never_costs_the_settle_pas
     svc = TurnSelfBets(store2, clock=lambda: NOW, surprise_events_enabled=True)
     assert svc.settle_pending()["rows_written"] == 6
     assert svc.pending_surprise == [] and "db down" in svc.last_surprise_error
+
+
+def test_heldout_skill_reads_only_bets_already_settled_when_this_one_settled():
+    """Review 2026-11-13: the skill table must hold out like the live producer does."""
+    base = _history(n=40, start=NOW - timedelta(days=2), p=0.1, rate=0.1)
+    scored = _row("t", ASK, NOW, 0.1, False, settled=NOW + timedelta(minutes=2))
+    clean = ts.heldout_skill(base + [scored], ASK, min_prior=40)
+    assert clean["n"] == 1
+    # 30 bets placed earlier but settled only after the scored bet: invisible to it.
+    late = [dict(r, correlation_id=f"late{i}", settled_at=NOW + timedelta(hours=3))
+            for i, r in enumerate(_history(n=30, start=NOW - timedelta(days=3), p=0.9, rate=1.0))]
+    held = ts.heldout_skill(base + late + [scored], ASK, min_prior=40)
+    assert held["n"] == 1 and held["gap"] == pytest.approx(clean["gap"])

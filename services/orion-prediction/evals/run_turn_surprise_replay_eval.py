@@ -16,8 +16,10 @@ Read-only. Prints, in order:
     # CI, on the committed real fixture (chat bets 2026-10-24 .. 2026-11-13, ids hashed):
     cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_turn_surprise_replay_eval.py --fixture evals/fixtures/turn_self_bets_chat_2026-11-13.json --check
 
-``--check`` exits 1 unless: every used kind has a positive held-out gap, the per-turn rest share is
->= 50 %, and the used kinds' mean excess sits within 3 SE of 0 (calm at 0 by theory, not tuning).
+``--check`` exits 1 unless: every used kind has a positive held-out gap and scored bets, the used
+kinds' mean excess sits within 3 SE of 0 (calm at 0 by theory, not tuning), the per-turn z sd sits
+in Z_SD_BAND around the calibrated 1.0, and the per-turn rest share is >= 50 %. Backlog turns
+(placed more than MAX_TURN_AGE before settling) are skipped, as the live producer skips them.
 """
 from __future__ import annotations
 
@@ -41,6 +43,7 @@ PROB_FACULTIES = ("turn.self.asks_question", "turn.self.fetches_outside",
                   "turn.self.more_steps_than_usual", "turn.self.longer_reply_than_usual")
 SQL = ("SELECT correlation_id, faculty, caller, placed_at, settled_at, status, stated_p, hit "
        "FROM prediction_turn_self_bet WHERE claim_kind = 'probability' AND placed_at >= %s ORDER BY placed_at")
+Z_SD_BAND = (0.8, 1.25)   # --check: per-turn z spread around the calibrated 1.0
 CHAT_NODE_SQL = ("SELECT observed_at, value FROM substrate_node_prediction_error_history "
                  "WHERE node_id = 'node:substrate.chat' AND observed_at >= %s ORDER BY observed_at")
 
@@ -116,6 +119,9 @@ def replay_turns(rows: list[dict]) -> list[ts.TurnSurprise]:
         by_turn[r["correlation_id"]].append(r)
     turns, reasons = [], defaultdict(int)
     for cid, trs in sorted(by_turn.items(), key=lambda kv: kv[1][0]["placed_at"]):
+        if trs[0]["settled_at"] - trs[0]["placed_at"] > ts.MAX_TURN_AGE:
+            reasons["stale_turn"] += 1      # the live producer never publishes a backlog turn
+            continue
         out, why = ts.score_turn(trs, history)
         reasons[why] += 1
         if out is not None:
@@ -142,15 +148,16 @@ def bet_calibration(turns) -> dict:
     return out
 
 
-def turn_stats(turns) -> float:
+def turn_stats(turns) -> tuple[float, float]:
+    """(rest share, z sd) over every replayed turn."""
     print("== 3. per turn ==")
-    rest = _turn_stats(turns, "all")
+    out = _turn_stats(turns, "all")
     last = max(t for t, _ in turns)
     _turn_stats([x for x in turns if x[0] >= last - timedelta(days=7)], "last 7 days")
-    return rest
+    return out
 
 
-def _turn_stats(turns, label: str) -> float:
+def _turn_stats(turns, label: str) -> tuple[float, float]:
     zs = [t.z for _, t in turns]
     print(f"  [{label}]")
     vals = [ts.node_value(z) for z in zs]
@@ -160,7 +167,7 @@ def _turn_stats(turns, label: str) -> float:
     print(f"  value: exact 0 (rest) {rest:.1%}  p50 {_q(vals, .5):.3f} p90 {_q(vals, .9):.3f} "
           f"p99 {_q(vals, .99):.3f}  share >= 0.55 {sum(v >= 0.55 for v in vals) / len(vals):.1%}  "
           f"share == 1.0 {sum(v >= 1.0 for v in vals) / len(vals):.1%}")
-    return rest
+    return rest, statistics.pstdev(zs)
 
 
 def node_replay(turns, fold) -> list[tuple[datetime, float, float]]:
@@ -186,6 +193,21 @@ def node_replay(turns, fold) -> list[tuple[datetime, float, float]]:
     return writes
 
 
+def _ranks(xs) -> list[float]:
+    """Average ranks (ties share the mean of their positions), for Spearman."""
+    order = sorted(range(len(xs)), key=lambda i: xs[i])
+    out = [0.0] * len(xs)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and xs[order[j + 1]] == xs[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            out[order[k]] = (i + j) / 2.0
+        i = j + 1
+    return out
+
+
 def independence(writes, chat_rows) -> None:
     print("== 5. independence from node:substrate.chat (its newest value <= 30 min before each write) ==")
     times = [r["observed_at"] for r in chat_rows]
@@ -201,8 +223,7 @@ def independence(writes, chat_rows) -> None:
         return
     a, b = zip(*pairs)
     r = statistics.correlation(a, b) if statistics.pstdev(b) > 0 else float("nan")
-    ra = [sorted(a).index(x) for x in a]
-    rb = [sorted(b).index(x) for x in b]
+    ra, rb = _ranks(a), _ranks(b)
     rs = statistics.correlation(ra, rb) if statistics.pstdev(rb) > 0 else float("nan")
     print(f"  pairs={len(pairs)}  pearson {r:+.3f}  spearman {rs:+.3f}  "
           f"old chat exact 0 at these moments {sum(x == 0 for x in b) / len(b):.1%}")
@@ -234,14 +255,22 @@ def main() -> int:
     print(f"rows={len(rows)} ({'live' if live else 'fixture'})  used={ts.USED_FACULTIES} caller={ts.SCOPE_CALLER}")
     skill = skill_table(rows, live)
     turns = replay_turns(rows)
+    if not turns:
+        print("CHECK FAIL no scored turn" if args.check else "no scored turn")
+        return 1 if args.check else 0
     cal = bet_calibration(turns)
-    rest = turn_stats(turns)
+    rest, z_sd = turn_stats(turns)
     writes = node_replay(turns, fold)
     if chat_rows is not None:
         independence(writes, chat_rows)
     if args.check:
         fails = [f"{f}: gap {skill[f]['gap']}" for f in ts.USED_FACULTIES if not (skill[f]["gap"] or 0) > 0]
+        fails += [f"{f}: no scored bet" for f in ts.USED_FACULTIES if f not in cal]
         fails += [f"{f}: mean excess {m:+.3f} > 3 SE" for f, (m, se) in cal.items() if abs(m) > 3 * se]
+        # Calibrated turns read z ~ N(0, 1). A wrong map (too narrow or too wide) moves the spread;
+        # the rest share alone would pass almost any map, since most low-p bets go the likely way.
+        if not Z_SD_BAND[0] <= z_sd <= Z_SD_BAND[1]:
+            fails.append(f"per-turn z sd {z_sd:.3f} outside {Z_SD_BAND}")
         if rest < 0.5:
             fails.append(f"rest share {rest:.1%} < 50%")
         print("CHECK", "FAIL " + "; ".join(fails) if fails else "PASS")

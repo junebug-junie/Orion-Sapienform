@@ -462,36 +462,15 @@
      "novelty_score": 0.0,
      "pressure_score": 0.029666666666666668,
      "reasons": [
-      "precision-weighted prediction-error salience (current error 0.0297, precision 19.90, n=31)",
+      "precision-weighted prediction-error salience (current error 0.0297, precision 14.60, n=31)",
       "stale reading: last error 0.0300 is 0 min old, weighted 0.99",
-      "variance-floor instability: near-constant recent error history"
-     ],
-     "salience_score": 0.06893393387453257,
-     "suggested_observation_mode": "ignore",
-     "target_id": "node:substrate.biometrics",
-     "target_kind": "node",
-     "urgency_score": 0.029666666666666668
-    },
-    {
-     "confidence_score": 1.0,
-     "dominant_channels": {
-      "prediction_error": 0.0
-     },
-     "evidence_refs": [
-      "field:tick_parity_1"
-     ],
-     "novelty_score": 0.0,
-     "pressure_score": 0.0,
-     "reasons": [
-      "precision-weighted prediction-error salience (current error 0.0000, precision 29.17, n=26)",
-      "stale reading: last error 0.4000 is 180 min old, weighted 0.00",
       "variance-floor instability: near-constant recent error history"
      ],
      "salience_score": 0.0,
      "suggested_observation_mode": "ignore",
-     "target_id": "node:substrate.chat",
+     "target_id": "node:substrate.biometrics",
      "target_kind": "node",
-     "urgency_score": 0.0
+     "urgency_score": 0.029666666666666668
     },
     {
      "confidence_score": 0.0,

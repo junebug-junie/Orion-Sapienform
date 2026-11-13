@@ -1,5 +1,6 @@
 """PE suite rebuild step 5 (2026-11): node:substrate.bus_synaptic and
-node:substrate.route are retired prediction-error nodes.
+node:substrate.route are retired prediction-error nodes; step 6 (2026-11-13):
+node:substrate.chat (successor node:prediction.chat_turn).
 
 Killing the producer is not enough: the FalkorDB node keeps its last value
 (and can be re-touched by the materializer), and history rows linger 7 days.
@@ -29,17 +30,20 @@ from orion.substrate.prediction_error_freshness import (
 REPO = Path(__file__).resolve().parents[1]
 NOW = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
 RETIRED = sorted(RETIRED_PREDICTION_ERROR_NODE_IDS)
-LIVE = "node:substrate.chat"
+LIVE = "node:substrate.execution"
 
 
-def test_deny_list_is_exactly_the_two_step5_nodes() -> None:
-    assert RETIRED_PREDICTION_ERROR_NODE_IDS == {"node:substrate.bus_synaptic", "node:substrate.route"}
+def test_deny_list_is_exactly_the_retired_nodes() -> None:
+    assert RETIRED_PREDICTION_ERROR_NODE_IDS == {
+        "node:substrate.bus_synaptic", "node:substrate.route", "node:substrate.chat",
+    }
     assert not is_retired_prediction_error_node(LIVE)
+    assert not is_retired_prediction_error_node("node:prediction.chat_turn")
     assert not is_retired_prediction_error_node(None)
 
 
-def test_active_inference_domains_are_the_three_live_ones() -> None:
-    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution", "biometrics", "chat"}
+def test_active_inference_domains_are_the_two_live_ones() -> None:
+    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution", "biometrics"}
 
 
 @pytest.mark.parametrize("node_id", RETIRED)
@@ -95,6 +99,9 @@ def test_retired_nodes_left_every_live_map() -> None:
 
     assert not RETIRED_PREDICTION_ERROR_NODE_IDS & set(_WORDS)
     assert not RETIRED_PREDICTION_ERROR_NODE_IDS & {sig for sig, _ in CIRCULAR_PAIRS}
+    from orion.grammar.act_ledger import ACT_ANSWERS_WORKSPACE_REFS
+
+    assert not RETIRED_PREDICTION_ERROR_NODE_IDS & {r for refs in ACT_ANSWERS_WORKSPACE_REFS.values() for r in refs}
 
 
 def test_glossary_and_topology_have_no_retired_node_entries() -> None:

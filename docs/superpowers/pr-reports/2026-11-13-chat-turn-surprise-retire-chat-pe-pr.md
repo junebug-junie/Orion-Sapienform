@@ -13,35 +13,36 @@ Spec: `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.m
 ## Outcome moved
 
 - The chat prediction error is now a scored forecast: stated before the turn, settled when the turn ends, surprise in one unit (nats), calm point set by theory. The old signal was 65 % exact 0 by clipping and spiked after quiet.
-- Replay over every settled chat turn (378 turns, 2026-10-24 .. 11-13): per-turn z mean -0.03, sd 1.00 (theory: 0 and 1). 86 % of turns rest at exactly 0.
+- Replay over every settled chat turn the live producer would have published (294 turns, 2026-10-24 .. 11-13): per-turn z mean -0.08, sd 0.95 (theory: 0 and 1). 85 % of turns rest at exactly 0.
 
 ## Metric quality gate
 
 1. **Provenance.** Stated p: `thought_decision.self_prediction` (stance, before the motor runs). Outcome: `services/orion-prediction/app/turn_self_bets.py::settle` from `harness_turn_trace.run_artifact` ("?" in the last 300 characters; step count > the caller's 7-day median). Surprise: `app/turn_surprise.py::score_turn` -> `bet_terms` / `turn_surprise`, run in `TurnSelfBets.surprise_events` after each settle pass. Node value: `orion/substrate/prediction_turn_surprise.py::TurnSurpriseState.reading`, written by `services/orion-substrate-runtime/app/worker.py::_process_prediction_turn_surprise`.
 2. **Independence.**
-   - vs `node:substrate.chat`: different input (stance's stated probabilities and the turn's own record, not chat pressure hints). Both move when there is chat, so they are not unrelated: at the 137 moments both had a reading, Pearson +0.11, Spearman +0.20. The old one is retired in this PR, so there is no double count.
+   - vs `node:substrate.chat`: different input (stance's stated probabilities and the turn's own record, not chat pressure hints). Both move when there is chat, so they are not unrelated: at the 133 moments both had a reading, Pearson +0.07, Spearman +0.14 (average ranks). The old one is retired in this PR, so there is no double count.
    - vs `node:prediction.room` / `.body`: no shared input (temperature forecasts). No causal chain.
    - vs `node:substrate.execution`: execution reads harness runs' failure/step pressure hints; the "more steps than usual" outcome reads the same run's step count. Short chain on that one bet. Execution is a hint-change z (not a forecast) and is itself scheduled for retirement in step 6; flagged here, not treated as new signal.
 3. **Theory anchor.** Surprisal of a stated probability (proper log score). For a calibrated forecast q, the excess `-ln q(y) - H(q) = -(y - q) logit(q)` has mean 0 and variance `q(1-q) logit(q)^2` exactly (tested). Summed over a turn's bets and divided by the summed variance, z is about N(0, 1); calm rests at 0 by math, not tuning. Stated numbers are not calibrated (more_steps: stated 0.17, happened 0.25), so each p goes through a held-out logistic recalibration first (Platt map, ridge toward the identity, fit only on earlier settled chat bets).
-4. **Live rest-state check.** Replayed every settled probability bet from Postgres (21 days, 12,766 rows; chat 1,622):
+4. **Live rest-state check.** Replayed every settled probability bet from Postgres (21 days, ~12,800 rows; chat 1,622), re-run 2026-11-13 after the review fixes:
 
-   Held-out skill (log-loss gap per bet over the chat caller's own trailing 7-day base rate; SE = larger of iid and by-day cluster; P(better) = Phi(gap / SE), no alpha line):
+   Held-out skill (log-loss gap per bet over the chat caller's own trailing 7-day base rate, both fit only on bets placed before and already settled; SE = larger of iid and by-day cluster; P(better) = Phi(gap / SE), no alpha line):
 
    | bet kind (chat) | n | gap (nats/bet) | SE | P(better) | used |
    |---|---|---|---|---|---|
    | asks_question | 378 | +0.155 | 0.035 | 1.000 | yes |
-   | more_steps_than_usual | 179 | +0.179 | 0.031 | 1.000 | yes |
+   | more_steps_than_usual | 178 | +0.179 | 0.031 | 1.000 | yes |
    | fetches_outside | 378 | -0.027 | 0.015 | 0.037 | no (chat never fetched: 0 of 378) |
-   | longer_reply_than_usual | 179 | -0.416 | 0.347 | 0.115 | no (worse than the base rate) |
+   | longer_reply_than_usual | 178 | -0.419 | 0.349 | 0.115 | no (worse than the base rate) |
 
-   Across all callers pooled (each against its own base rate) no kind beats the base rate (asks -0.027, P 0.30; fetches -0.51; more_steps +0.031, P 0.95; longer_reply +0.007, P 0.57). That is why the node is chat-only. The split is not near any line: the used kinds sit more than 4 SE above 0, the dropped kinds below 0. Caveat: the kinds were chosen on the same 21 days the rest numbers come from; with gaps this far apart the selection effect is small, and the CI eval re-checks the gap.
+   Across all callers pooled (each against its own base rate) no kind beats the base rate (asks -0.027, P 0.30; fetches -0.51; more_steps +0.030, P 0.94; longer_reply +0.007, P 0.57). That is why the node is chat-only. The split is not near any line: the used kinds sit more than 4 SE above 0, the dropped kinds below 0. Caveat: the kinds were chosen on the same 21 days the rest numbers come from; with gaps this far apart the selection effect is small, and the CI eval re-checks the gap.
 
-   Calibration after the held-out map (calm theory: mean excess 0): asks_question +0.002 (0.08 SE, sd 0.60 vs theory 0.58); more_steps -0.074 (-2.4 SE, sd 0.40 vs theory 0.52), so more_steps reads slightly calmer than theory (the map is a little under-confident there).
+   Calibration after the held-out map (calm theory: mean excess 0): asks_question -0.013 (-0.37 SE, sd 0.59 vs theory 0.58); more_steps -0.074 (-2.4 SE, sd 0.40 vs theory 0.52), so more_steps reads slightly calmer than theory (the map is a little under-confident there).
 
    Rest state:
-   - per turn, all 378: z mean -0.03, sd 1.00, p10 -0.52, p50 -0.31, p90 +0.92, max +7.6. Exact 0: **86.2 %**. Value >= 0.55 (curiosity's bar): 6.9 %. Saturated at 1.0: 2.1 %.
+   - Turns: 549 settled chat turns; 188 skipped as backlog (placed more than 60 min before they settled: the 10-29 bulk settle of the first A3 week; the live producer never publishes these); 67 with no graded used bet (failed or interrupted turns); 294 scored.
+   - per turn, all 294: z mean -0.08, sd 0.95, p10 -0.53, p50 -0.38, p90 +0.82, max +6.3. Exact 0: **85.4 %**. Value >= 0.55 (curiosity's bar): 6.8 %. Saturated at 1.0: 2.0 %.
    - per turn, last 7 days (140): z mean -0.06, sd 1.00; exact 0 **82.1 %**; >= 0.55 7.1 %.
-   - the node (30-min fold, written at each settle): 378 writes, median 2 turns per window, exact 0 **65.9 %**, p50 0.0, p90 0.44, >= 0.55 6.9 %. Fresh 27 % of the 13.9 days, absent (stale) otherwise.
+   - the node (30-min fold, written at each settle): 294 writes, median 2 turns per window, exact 0 **79.3 %**, p50 0.0, p90 0.53, >= 0.55 9.9 %. Fresh 27 % of the 13.9 days, absent (stale) otherwise.
    - Not a decayed-to-zero artifact: the node is written only by events, never by a decay loop (FalkorDB node only, no field receipt), and an exact 0 comes from a turn whose z <= 0, which the replay recovers from the raw bets.
 5. **Existing mechanism.** The bets, settle and grade already existed (PR #2976, #3042/#3044, #3077/#3083: `GET /turn-self-bets/live`). No surprise signal existed on them. Reuses the node writer, PE history (`node:prediction.*` prefix), attention, self-readings and curiosity readers (`surprise_excess`, #3202).
 6. **Reversibility.** Cheap: two flags off (`PREDICTION_TURN_SURPRISE_EVENTS_ENABLED`, `SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED`), then delete two modules, one glossary entry and one channel. No table, no migration. The retirement half is a `git revert`.
@@ -165,6 +166,7 @@ History rows in `substrate_node_prediction_error_history` age out by the 168 h p
 
 - Severity: medium. Concern: the node is fresh only ~27 % of the time (only after chat turns), against 91 % for the old one. Attention, goals and the confidence number shift at once. Mitigation: intended (absent is not calm); numbers above; re-measure goal mix and attention share 7 days after deploy.
 - Severity: medium. Concern: kind selection and rest numbers come from the same 21 days. Mitigation: gaps > 4 SE apart; the CI eval re-checks; re-run live weekly and after any stance prompt change.
+- Severity: low. Concern: world-model execution_context slot 1 (chat) is now always 0.0. The world-model consumer was trained with chat PE there. Mitigation: same decision as step 5 for slots 2-3; the publish tick is off live (`SUBSTRATE_WORLD_MODEL_PUBLISH_TICK_ENABLED=false`), so nothing reads it today; a retrain must treat the slot as padding.
 - Severity: low. Concern: "more steps than usual" shares the turn's step count with the execution PE. Mitigation: flagged in the gate; execution is next to retire.
 - Severity: low. Concern: a stance prompt change can read as surprise until the 7-day recalibration window catches up. Mitigation: the map refits per turn.
 - Severity: low. Concern: equilibrium's episode gate and outcome rollup still read `node:substrate.*` only, so chat surprise opens no metacog episodes yet. Mitigation: same decision as #3202; widen after a week of live rows.

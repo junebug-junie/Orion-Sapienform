@@ -16,7 +16,7 @@ own base rate from the 7 days strictly before it.
     asks_question            gap +0.155 nats/bet  SE 0.035  P(better) 1.000   used
     more_steps_than_usual    gap +0.179           SE 0.031  P(better) 1.000   used
     fetches_outside          gap -0.027           SE 0.015  P(better) 0.037   not used (chat never fetches: 0 of 378)
-    longer_reply_than_usual  gap -0.416           SE 0.347  P(better) 0.115   not used (worse than the base rate)
+    longer_reply_than_usual  gap -0.419           SE 0.349  P(better) 0.115   not used (worse than the base rate)
 
 The split is not near any line: the two used kinds sit more than 4 SE above the base rate, the two
 dropped ones below it. Across every caller (curiosity, world-pulse, self...) no kind beats the
@@ -42,7 +42,9 @@ the room/body nodes use, so one turn with two bets is one outcome, not two). A 5
 calm_var 0 and excess 0: it carries no surprise either way; a turn whose bets are all 50/50 has no z
 (no event). Rest: a turn that went the likely way reads z < 0, and the node stores
 ``clip(z / 3, 0, 1)``, so a calm turn rests at exactly 0. A turn where a 2 % event happened reads
-z ~ 7 -> 1.0.
+z ~ 7 -> 1.0. Known edge: one bet near (not at) 0.5 is a standardised coin flip, |z| ~ 1 whichever
+way it lands, so the node reads ~0.33 when the less likely side happens. Rare after recalibration
+(the used kinds happen 13 % and 25 % of the time).
 """
 from __future__ import annotations
 
@@ -222,7 +224,8 @@ def heldout_skill(rows: Sequence[Mapping], faculty: str, caller: str | None = SC
     """Per-bet log-loss gap of the (recalibrated) stated p over the caller's own trailing base rate.
 
     Positive gap = the bets know something the base rate does not. Both forecasts use only bets
-    placed strictly before (held out by time). SE: the larger of the iid SE and a by-day cluster SE
+    placed strictly before and already settled when this one settled (held out by time, as the live
+    producer reads them). SE: the larger of the iid SE and a by-day cluster SE
     (bets in one day or session are not independent). ``prob_better`` = Phi(gap / SE): reported, no
     alpha line. ``caller=None`` pools every caller, each against its own base rate."""
     graded = sorted((r for r in rows if r.get("faculty") == faculty
@@ -232,7 +235,9 @@ def heldout_skill(rows: Sequence[Mapping], faculty: str, caller: str | None = SC
     diffs: list[tuple[object, float]] = []
     hits = []
     for r in graded:
-        prior = [q for q in by_caller[r["caller"]] if r["placed_at"] - window <= q["placed_at"] < r["placed_at"]]
+        settled = r.get("settled_at")
+        prior = [q for q in by_caller[r["caller"]] if r["placed_at"] - window <= q["placed_at"] < r["placed_at"]
+                 and (settled is None or q.get("settled_at") is None or q["settled_at"] <= settled)]
         by_caller[r["caller"]].append(r)
         if len(prior) < min_prior:
             continue

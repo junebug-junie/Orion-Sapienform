@@ -426,7 +426,7 @@ EWMA z of the change in two chat pressure hints, not a forecast).
 - Folds the turns settled in the last 30 min (`orion/substrate/prediction_turn_surprise.py`):
   summed excess surprise over its calm variance (a z-score), stored as `clip(z / 3, 0, 1)` through
   `_write_prediction_error_node`. A turn that went the way the bets leaned reads z < 0, so the node
-  rests at exactly 0 (86 % of 378 replayed turns).
+  rests at exactly 0 (85 % of 294 replayed turns, 79 % of node writes).
 - No chat turn = no write: the node ages to stale (absent), never calm. FalkorDB node only.
 - Not an Active-Inference domain (absent between chats by design), so the self-model confidence
   averages execution and biometrics only.

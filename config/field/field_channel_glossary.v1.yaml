@@ -647,10 +647,10 @@ channels:
       - "orion.attention.world_first:judge_candidate"
     semantics:
       value_kind: surprise_excess
-      rest: "0.0 = the turns went no more surprisingly than calibrated bets expect (z <= 0). Reachable by theory (a turn that goes the likely way reads z < 0) and live: 86% of 378 settled chat turns rest at exactly 0.0, 66% of node writes (replay 2026-10-24..11-13, services/orion-prediction/evals/run_turn_surprise_replay_eval.py)."
+      rest: "0.0 = the turns went no more surprisingly than calibrated bets expect (z <= 0). Reachable by theory (a turn that goes the likely way reads z < 0) and live: 85% of 294 settled chat turns rest at exactly 0.0, 79% of node writes (replay 2026-10-24..11-13, backlog turns skipped as live, services/orion-prediction/evals/run_turn_surprise_replay_eval.py)."
       # rest_range: calm z within +1.65 sigma -> stored value in [0, 0.55]. Live replay
-      # 2026-11-13 (378 turns): per-turn z mean -0.03 sd 1.00; node p50 0.0 p90 0.44,
-      # 0.55 crossed on 6.9 % of writes.
+      # 2026-11-13 (294 turns): per-turn z mean -0.08 sd 0.95; node p50 0.0 p90 0.53,
+      # 0.55 crossed on 9.9 % of writes (a window of 2 turns crosses more often than one).
       rest_range: [0.0, 0.55]
       sparsity: event_gated
       absent_means: "written once per settled chat turn whose used bets carry information. No chat turn (or PREDICTION_TURN_SURPRISE_EVENTS_ENABLED / SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED off, or orion-prediction down) writes nothing: the node keeps its last value, current for up to 1800 s, then every reader treats it as stale, never as calm. Live replay: fresh 27% of the time."

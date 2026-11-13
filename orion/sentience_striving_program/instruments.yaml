@@ -538,7 +538,7 @@ instruments:
           ~N(0, 1), and do most turns rest at exactly 0?
           (services/orion-prediction/evals/run_turn_surprise_replay_eval.py --check)
         kind: manual
-        recorded: "PASS (asks gap +0.155 SE 0.035, more_steps +0.179 SE 0.031; z mean -0.03 sd 1.00; 86% of 378 turns at 0)"
+        recorded: "PASS (asks gap +0.155 SE 0.035, more_steps +0.179 SE 0.031; z mean -0.08 sd 0.95; 85% of 294 turns at 0)"
         recorded_at: 2026-11-13
         note: >-
           fetches_outside (chat never fetches) and longer_reply_than_usual (worse than the

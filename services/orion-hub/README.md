@@ -3678,6 +3678,19 @@ order and emails the result. Hub's old letter timer is retired.
   `already_written`, `empty_day`, `refused`, `unavailable`. The day before the letter is named
   in the brief's `missed_letters` when it has no row and Prime did not list it. Orders for one
   day are serialized. Hub never submits a letter on its own. Kill switch: `HUB_ORION_DAY_ENABLED`.
+- **Intentions Prime takes on** (`scripts/intention_order.py`, choice-as-EFE Step -1, 2026-11-13): when Prime takes
+  a concern on (today: a promise Orion made in chat), it calls two routes. `POST /api/intention/run`
+  (`IntentionOrderV1`): the promise adapter (`orion/prime/intention_sources/turn_promise.py`) reads the exact quote
+  (`harness_turn_trace`) and the one exchange (`chat_history_log`); Hub submits ONE `intention.carry` durable run with
+  the promise's horizon (promise + 72 h) as its admission deadline (`HUB_CURIOSITY_DURABLE_RUNS_URL`). Answers:
+  `submitted`, `exists`, `refused` (no adapter, the adapter refused, no room before the horizon, a 4xx),
+  `unavailable` (transient, incl. a 422 from an older durable-runs). `POST /api/intention/deliver`
+  (`IntentionDeliverV1`): one live send into the ORIGINATING thread through outreach (`offer_message(session_id=)`,
+  door `intention`, every gate on: quiet hours, the shared daily cap, recent chat, strain, the economy). Held for a
+  timing reason -> the reply is still written into that thread's history (`record_in_thread`). Refused by a content
+  guard (PASS, an ungrounded signal claim) -> nothing is written, `failed`. Answers `published` until the
+  `chat_history_log` row is visible, then `already_delivered` (the only answer that closes Prime's act 1). Kill
+  switch: Prime's `PRIME_INTENTION_TAKE_ON_ENABLED` (no order is sent while it is off).
 - **The run** (orion-durable-runs) writes the letter as one unified turn (session
   `orion_day_letter`; Hub does not frame it as a curiosity run) and persists the row.
 - **Email** (`scripts/orion_day_mailer.py` decides when; `scripts/orion_day_email.py`,

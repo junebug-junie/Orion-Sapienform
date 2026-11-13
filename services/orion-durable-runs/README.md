@@ -563,6 +563,20 @@ acked only after both publishes, deduped by sql-writer). Before this only
 `completed` was, so a waiter such as cortex-exec's self-study reflect never saw an
 admitted failure end the run.
 
+### Intention carry runs (`intention.carry`, 2026-11-13, choice-as-EFE Step -1)
+
+The carry run of a concern Prime took on (`orion/schemas/intention.py`; Prime: `services/orion-mind/README.md`). Hub
+submits it on Prime's order. It runs on the same single-step harness graph as consult turns
+(`app/harness_smoke_graph.py` `build_intention_carry_graph`): one unified turn in session `orion_intention`,
+`require_lookup=False`, prompt starting `prime_concern:<id>` (the turn hand-back settles the concern), a cut-short
+attempt retried with its findings. The full reply is checkpointed; Hub reads it from `GET /runs/{run_id}`
+(`harness_steps.carry.text`). Run id `intention-<concern_id>` (one per take-on). Run act: `make:durable.intention`
+(`app/run_acts.py`). Its bid BINDS (`app/run_bids.py` `BINDING_FAMILIES`) as family `durable.intention`, TIER 1
+(Juniper 2026-11-13; `config/physiology/families.yaml`, window 86400 s, agent lanes): hold end = min(opened +
+86400 s, the promise's horizon - 1800 s), admitted at hold end, never dropped. Prime cancels the run
+(`POST /runs/{id}/cancel`) when it lets the concern go or the horizon passes. ADDITIVE workflow value: deploy
+orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before this service, and orion-mind last.
+
 ### Admitted Orion's Day letter (`orion_day.letter`): Prime's end-of-day turn (2026-11-12)
 
 Orion's letter about yesterday (America/Denver). Since living Prime Part 3 (design #3224) the letter

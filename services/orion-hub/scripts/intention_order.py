@@ -17,11 +17,15 @@ Delivery (route ``chat_thread``). Hub reads the completed run's reply (``GET /ru
 1. tries ONE live send into the originating thread through outreach (``offer_message(session_id=...)``) after the
    body economy admits it (door ``intention``): quiet hours, the shared daily cap, recent chat and strain all apply,
    and a sent message counts on the cap. A send writes the thread's history itself.
-2. when the send is held for any reason, writes the reply into that thread's history anyway
-   (``record_in_thread``): it is there when Juniper opens that chat (acceptance S-1.6).
+2. when the send is held for a TIMING reason (``TIMING_HOLDS``: quiet hours, the cap, recent chat, the economy ...),
+   writes the reply into that thread's history anyway (``record_in_thread``): it is there when Juniper opens that
+   chat (acceptance S-1.6). When outreach's CONTENT guards refuse it (a PASS, an ungrounded internal-signal claim,
+   empty text), nothing is written and the answer is ``failed``: a guard's refusal is never bypassed.
 
-Idempotent: a chat_history_log row with this intention's correlation id in that session means already delivered.
-Other routes (``next_letter``, ``notes_only``) are refused until their adapter ships.
+Either way the answer is ``published``, not proof: Prime asks again, and only a ``chat_history_log`` row with this
+intention's correlation id in that session (``already_delivered``) closes its act 1. A repeat call after a publish
+never sends or writes again (in-process memo; after a restart the row, or ``already_told`` for the ping, stops it).
+Other routes (``next_letter``, ``notes_only``) are refused until their delivery ships.
 """
 
 from __future__ import annotations
@@ -55,6 +59,9 @@ DETAIL_MAX_CHARS = 500
 DOOR = "intention"
 DELIVERED_SQL = "SELECT 1 FROM chat_history_log WHERE correlation_id = $1 AND session_id = $2 LIMIT 1"
 FAILED_RUN = frozenset({"failed", "cancelled", "abandoned"})
+# Outreach reasons that only mean "not now": the reply still goes into the thread's history.
+TIMING_HOLDS = frozenset({"quiet_hours", "daily_cap", "recent_chat", "turn_in_flight", "already_sending", "cooldown",
+                          "disabled", "already_told", "economy_held", "arousal_strained", "rest_drive_cooldown"})
 
 
 def _clip(text: Any) -> str:
@@ -69,6 +76,8 @@ class IntentionDesk:
         self._outreach_provider = outreach_provider
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         self._locks: dict[str, asyncio.Lock] = {}
+        # run_id -> the ``published`` answer already given (no second send or write in this process).
+        self._published: dict[str, IntentionDeliverResultV1] = {}
 
     def _lock_for(self, concern_id: str) -> asyncio.Lock:
         lock = self._locks.get(concern_id)
@@ -108,14 +117,15 @@ class IntentionDesk:
         src = adapter.adapt(order.event_ref, row, why=order.why)
         if isinstance(src, str):
             return self._result(order, "refused", detail=src)
-        if self._clock() >= src.horizon_at - timedelta(seconds=MIN_RUN_ROOM_SEC):
-            return self._result(order, "refused", src=src,
-                                detail=f"the concern's horizon ({src.horizon_at.isoformat()}) leaves no room for a run")
         try:
+            # Before the horizon check: a re-sent order for a run that already exists must follow it (review m3).
             if await self.durable.get_run(order.run_id) is not None:
                 return self._result(order, "exists", src=src)
         except DurableUnavailable as exc:
             return self._result(order, "unavailable", detail=f"durable_runs: {exc}")
+        if self._clock() >= src.horizon_at - timedelta(seconds=MIN_RUN_ROOM_SEC):
+            return self._result(order, "refused", src=src,
+                                detail=f"the concern's horizon ({src.horizon_at.isoformat()}) leaves no room for a run")
         request = build_carry_request(order, src)
         try:
             status, body = await self.durable.submit(request.model_dump(mode="json"))
@@ -123,7 +133,8 @@ class IntentionDesk:
             return self._result(order, "unavailable", detail=f"durable_runs: {exc}")
         if status == 409:
             return self._result(order, "exists", src=src, detail=body or "http_409")
-        if status >= 500:
+        if status >= 500 or status == 422:
+            # 422: an orion-durable-runs older than this contract (deploy-order window): try again, never lose it.
             return self._result(order, "unavailable", detail=f"http_{status}: {body}")
         if status >= 400:
             return self._result(order, "refused", detail=f"http_{status}: {body}")
@@ -173,25 +184,38 @@ class IntentionDesk:
                     return self._deliver_result(req, "already_delivered", stored=True, reply_chars=len(text))
         except Exception as exc:  # noqa: BLE001
             return self._deliver_result(req, "unavailable", detail=f"store: {type(exc).__name__}: {exc}")
+        if req.run_id in self._published:
+            return self._published[req.run_id]
         outreach = self._outreach_provider()
         if outreach is None:
             return self._deliver_result(req, "unavailable", detail="outreach_not_ready")
         meta = {"concern_id": req.concern_id, "run_id": req.run_id, "door_policy": INTENTION_CARRY_TAG}
         pinged, reason = await self._ping(outreach, req, text, meta)
         if pinged:
-            return self._deliver_result(req, "delivered", stored=True, pinged=True, ping_reason=reason,
-                                        reply_chars=len(text))
+            return self._remember(req, self._deliver_result(req, "published", pinged=True, ping_reason=reason,
+                                                            reply_chars=len(text)))
+        if (reason or "") not in TIMING_HOLDS and not (reason or "").startswith("ping_error:"):
+            # A content guard refused the reply (PASS, ungrounded signal claim, empty): never written (review M4).
+            return self._deliver_result(req, "failed", ping_reason=reason,
+                                        detail=f"outreach refused the reply's content: {reason or 'no reason'}")
         try:
-            stored = await outreach.record_in_thread(text=text, session_id=req.route_target,
-                                                     correlation_id=req.correlation_id,
-                                                     source_tag=INTENTION_CARRY_TAG, meta=meta)
+            written = await outreach.record_in_thread(text=text, session_id=req.route_target,
+                                                      correlation_id=req.correlation_id,
+                                                      source_tag=INTENTION_CARRY_TAG, meta=meta)
         except Exception as exc:  # noqa: BLE001
             return self._deliver_result(req, "unavailable", ping_reason=reason,
                                         detail=f"history write: {type(exc).__name__}: {exc}")
-        if not stored:
-            return self._deliver_result(req, "unavailable", ping_reason=reason, detail="no bus to write history on")
-        return self._deliver_result(req, "delivered", stored=True, pinged=False, ping_reason=reason,
-                                    reply_chars=len(text))
+        if not written:
+            return self._deliver_result(req, "unavailable", ping_reason=reason,
+                                        detail="chat history is not published (no bus, or PUBLISH_CHAT_HISTORY_LOG off)")
+        return self._remember(req, self._deliver_result(req, "published", pinged=False, ping_reason=reason,
+                                                        reply_chars=len(text)))
+
+    def _remember(self, req: IntentionDeliverV1, result: IntentionDeliverResultV1) -> IntentionDeliverResultV1:
+        self._published[req.run_id] = result
+        while len(self._published) > 500:
+            self._published.pop(next(iter(self._published)))
+        return result
 
     async def _ping(self, outreach: Any, req: IntentionDeliverV1, text: str,
                     meta: dict[str, Any]) -> tuple[bool, Optional[str]]:

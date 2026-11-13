@@ -3481,12 +3481,20 @@ class EndogenousOutreach:
         """Write one message of Orion's into ONE chat thread's history and nothing else: no socket push, no
         notification, no outreach act, and it does not count on the daily cap. For a reply that must be in the
         thread when Juniper opens it even though the live send was held (intentions Prime takes on: the carry
-        turn's reply when quiet hours, the cap or the economy held the ping). False when there is no bus to
-        publish on. Raises when the publish fails (the caller reports it, never a silent success)."""
+        turn's reply when quiet hours, the cap or the economy held the ping). False when nothing would be
+        published (no bus, or PUBLISH_CHAT_HISTORY_LOG off). True means PUBLISHED, not stored: publish_chat_history
+        logs and swallows a failed publish, so the caller checks for the chat_history_log row itself."""
         from scripts.chat_history import build_chat_history_envelope, publish_chat_history
 
         if not self._bus or not getattr(self._bus, "enabled", False):
             return False
+        try:
+            from scripts.chat_history import settings as _history_settings
+
+            if not getattr(_history_settings, "PUBLISH_CHAT_HISTORY_LOG", True):
+                return False
+        except ImportError:
+            pass
         client_meta: Dict[str, Any] = {"unsolicited": True, "source": str(source_tag), "delivered_live": False,
                                        **dict(meta or {})}
         env = build_chat_history_envelope(

@@ -296,15 +296,19 @@ def turn_concern_id(correlation_id: str) -> str:
     return hashlib.sha256(f"{TURN_EVENT_PREFIX}{correlation_id}".encode()).hexdigest()[:16]
 
 
-def _open_turn_concerns(state: PrimeStateV1) -> int:
-    return sum(1 for c in state.concerns if c.graded is None and (c.event_ref or "").startswith(TURN_EVENT_PREFIX))
+def _open_turn_concerns(state: PrimeStateV1, exempt: frozenset[str] = frozenset()) -> int:
+    """Open turn concerns, leaving out ``exempt`` ones: a concern Prime took on is Prime's own commitment now
+    (orion/prime/intention.py) and must not hold the one turn-concern slot for up to its 72 h horizon."""
+    return sum(1 for c in state.concerns if c.graded is None and c.concern_id not in exempt
+               and (c.event_ref or "").startswith(TURN_EVENT_PREFIX))
 
 
-def thread_refusal(state: PrimeStateV1, turns: PrimeTurnsStateV1, now: datetime) -> Optional[str]:
+def thread_refusal(state: PrimeStateV1, turns: PrimeTurnsStateV1, now: datetime, *,
+                   exempt: frozenset[str] = frozenset()) -> Optional[str]:
     """Why a thread a turn opened may not become a concern now (the loop guard), or None."""
     if len(state.concerns) >= MAX_CONCERNS:
         return f"already holding {MAX_CONCERNS} concerns"
-    if _open_turn_concerns(state) >= TURN_CONCERNS_MAX_OPEN:
+    if _open_turn_concerns(state, exempt) >= TURN_CONCERNS_MAX_OPEN:
         return f"already holding {TURN_CONCERNS_MAX_OPEN} concern opened by a turn"
     recent = [t for t in turns.turn_concerns_opened_at if now - t < TURN_CONCERN_WINDOW]
     if len(recent) >= TURN_CONCERNS_PER_DAY:
@@ -317,10 +321,12 @@ def _push_seen(seen: list[str], corr: str) -> list[str]:
 
 
 def fold_turn_signals(
-    state: PrimeStateV1, turns: PrimeTurnsStateV1, signals: Sequence[TurnSignalV1], now: datetime,
+    state: PrimeStateV1, turns: PrimeTurnsStateV1, signals: Sequence[TurnSignalV1], now: datetime, *,
+    taken_on: frozenset[str] = frozenset(),
 ) -> tuple[PrimeStateV1, PrimeTurnsStateV1, list[PrimeTurnV1]]:
     """Fold hops, in arrival order, into Prime's state and the hand-back record. Returns the turns folded now.
-    Pure and deterministic; a hop seen twice, or a finalize with no ingress, changes nothing."""
+    Pure and deterministic; a hop seen twice, or a finalize with no ingress, changes nothing. ``taken_on``:
+    concerns Prime took on, which do not count toward ``TURN_CONCERNS_MAX_OPEN``."""
     pending = list(turns.pending)
     recent = list(turns.recent)
     seen = list(turns.seen)
@@ -361,7 +367,8 @@ def fold_turn_signals(
         if refs and start.who in NO_THREAD_WHO:
             refused = "a promise made inside a carry turn opens no concern (loop guard)"
         elif refs:
-            refused = thread_refusal(state, turns.model_copy(update={"turn_concerns_opened_at": opened_at}), now)
+            refused = thread_refusal(state, turns.model_copy(update={"turn_concerns_opened_at": opened_at}), now,
+                                     exempt=taken_on)
             if refused is None:
                 n = len(refs)
                 text = _cut(f"a thread I opened in a {words} ({n} promise{'s' if n != 1 else ''}, "

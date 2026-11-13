@@ -18,7 +18,9 @@ failed, Hub refused, the reply could not be stored, Prime let it go, or the hori
 open its concern is kept alive (``keep_taken_on``): Orion settled the whether; the run settles the concern.
 
 Adding a source: one adapter module in orion/prime/intention_sources/ (``PREFIX``, ``SOURCE``, ``HORIZON_SEC``,
-``horizon_from``, ``fetch``, ``adapt``) and one entry in ``ADAPTERS``. Nothing else changes (acceptance S-1.9).
+``horizon_from``, ``fetch``, ``adapt``) and one entry in ``ADAPTERS``. Prime, the order route, the workflow and the
+family do not change (acceptance S-1.9). A source whose ROUTE is new (the letter thread's ``next_letter``) also needs
+that route's delivery in Hub (scripts/intention_order.py refuses every route but ``chat_thread`` today).
 
 State lives in its own Redis key (``INTENTIONS_KEY``), apart from ``orion:prime:state``, so an older image still
 loads Prime's state after a rollback. It never holds a promise's quote: the quote reaches only the carry turn's
@@ -55,6 +57,8 @@ MIN_RUN_ROOM_SEC = 7200.0
 # How often the tick looks at an open intention (HTTP reads).
 CHECK_INTERVAL_SEC = 60.0
 MAX_DONE = 30
+# Consecutive failed reads of a submitted run (one per CHECK_INTERVAL_SEC) before it counts as gone.
+MAX_UNREAD_READS = 30
 NOTE_CAP = 300
 TERMINAL = frozenset({"completed", "failed", "cancelled", "abandoned"})
 
@@ -98,6 +102,12 @@ class PrimeIntentionOpenV1(BaseModel):
     run_status: Optional[str] = None
     deliver_status: Optional[str] = None
     deliver_detail: Optional[str] = Field(default=None, max_length=500)
+    # Consecutive failed reads of the run (it may be gone: pruned, or never registered).
+    unread_reads: int = 0
+    # A decided close whose act publish failed: only the close is retried, never the lifecycle (review M1).
+    pending_close: Optional[dict[str, Any]] = None
+    # Prime dropped the concern after the reply was already made: the reply is still delivered (review M2).
+    detached: bool = False
 
 
 class PrimeIntentionDoneV1(BaseModel):
@@ -223,6 +233,15 @@ def update_open(st: PrimeIntentionsStateV1, op: PrimeIntentionOpenV1) -> PrimeIn
     return st.model_copy(update={"open": [op if o.concern_id == op.concern_id else o for o in st.open]})
 
 
+def open_ids(st: PrimeIntentionsStateV1) -> set[str]:
+    return {o.concern_id for o in st.open}
+
+
+def no_take_on_ids(st: PrimeIntentionsStateV1) -> set[str]:
+    """Concerns the frame must not mark "you can take this on": already taken on, open or ended."""
+    return open_ids(st) | {d.concern_id for d in st.done}
+
+
 def finish(st: PrimeIntentionsStateV1, op: PrimeIntentionOpenV1, *, outcome: IntentionOutcome, note: str,
            now: datetime, pinged: Optional[bool] = None) -> PrimeIntentionsStateV1:
     done = PrimeIntentionDoneV1(concern_id=op.concern_id, source=op.source, outcome=outcome, note=note[:NOTE_CAP],
@@ -271,7 +290,8 @@ def keep_taken_on(state: PrimeStateV1, st: PrimeIntentionsStateV1, now: datetime
 
 def age_out(state: PrimeStateV1, st: PrimeIntentionsStateV1, now: datetime) -> PrimeStateV1:
     """"Not yet" has an end: a concern with an adapter whose horizon passed, not taken on, leaves Prime's list."""
-    taken = {o.concern_id for o in st.open}
+    taken = open_ids(st)
+    ended = {d.concern_id: d.outcome for d in st.done}
     kept: list[PrimeConcernV1] = []
     for c in state.concerns:
         horizon = horizon_for(c)
@@ -279,9 +299,10 @@ def age_out(state: PrimeStateV1, st: PrimeIntentionsStateV1, now: datetime) -> P
             kept.append(c)
             continue
         hours = (horizon - c.opened_at).total_seconds() / 3600.0
-        state = close_concern(state, c, end="lapsed", now=now,
-                              note=f"aged out: its {hours:.0f} h horizon passed and I never took it on")
-        state = note_change(state, f"a concern aged out at its horizon, never taken on: {c.text[:120]!r}")
+        why = (f"I took it on and it ended {ended[c.concern_id]}" if c.concern_id in ended
+               else "already settled" if c.graded == "settled" else "I never took it on")
+        state = close_concern(state, c, end="lapsed", now=now, note=f"aged out: its {hours:.0f} h horizon passed; {why}")
+        state = note_change(state, f"a concern aged out at its horizon ({why}): {c.text[:120]!r}")
     return state.model_copy(update={"concerns": kept})
 
 
@@ -313,8 +334,8 @@ def frame_lines(st: PrimeIntentionsStateV1, now: datetime) -> list[str]:
 
 __all__ = [
     "ACT_GRACE_SEC", "ADAPTERS", "CHECK_INTERVAL_SEC", "INTENTIONS_KEY", "INTENTION_COMPONENT", "MAKE_BASIS",
-    "MIN_RUN_ROOM_SEC", "OBJECT_PREFIX", "PrimeIntentionDoneV1", "PrimeIntentionOpenV1", "PrimeIntentionsStateV1",
+    "MAX_UNREAD_READS", "MIN_RUN_ROOM_SEC", "OBJECT_PREFIX", "PrimeIntentionDoneV1", "PrimeIntentionOpenV1", "PrimeIntentionsStateV1",
     "act_horizon_sec", "adapter_for", "age_out", "carry_prompt", "find_open", "finish", "frame_lines", "has_adapter",
-    "horizon_for", "keep_taken_on", "make_act", "order_due", "parse_not_before", "past_horizon", "run_terminal",
+    "horizon_for", "keep_taken_on", "make_act", "no_take_on_ids", "open_ids", "order_due", "parse_not_before", "past_horizon", "run_terminal",
     "take_on", "take_on_refusal", "update_open",
 ]

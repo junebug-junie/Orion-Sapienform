@@ -225,3 +225,19 @@ def test_a_second_source_plugs_in_with_one_adapter_and_one_map_entry(monkeypatch
 def test_the_live_concern_replay_eval_passes_on_its_fixture():
     out = replay.run(replay.load_fixture())
     assert out["ok"], out["checks"]
+
+
+def test_the_frame_does_not_mark_a_concern_already_taken_on():
+    state = PrimeStateV1(concerns=[turn_concern()])
+    frame = build_frame(state, FrameInputs(now=T0, take_on=True, no_take_on={"d8db9d7b1bba4cf7"}))
+    assert "you can take this on" not in frame
+
+
+def test_age_out_names_how_a_taken_on_concern_ended():
+    c = turn_concern()
+    act = it.make_act(c.concern_id, source="turn_promise", horizon_sec=3600)
+    st = it.take_on(it.PrimeIntentionsStateV1(), c, why="w", thought_id="t", act=act, horizon_sec=3600,
+                    not_before=None, now=T0)
+    st = it.finish(st, st.open[0], outcome="not_carried", note="run failed", now=T0)
+    aged = it.age_out(PrimeStateV1(concerns=[c]), st, T0 + timedelta(hours=73))
+    assert aged.concerns == [] and "ended not_carried" in aged.concern_record[-1].note

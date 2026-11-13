@@ -141,6 +141,7 @@ def test_orders_are_refused_with_a_reason_or_unavailable_when_transient():
     assert "no room" in asyncio.run(late.order(order())).detail
     assert asyncio.run(desk(submit_status=400).order(order())).status == "refused"
     assert asyncio.run(desk(submit_status=503).order(order())).status == "unavailable"
+    assert asyncio.run(desk(submit_status=422).order(order())).status == "unavailable"   # older durable-runs
     assert asyncio.run(desk(durable=Durable(down=True)).order(order())).status == "unavailable"
     no_pool = IntentionDesk(pool_provider=lambda: None, durable=Durable(), outreach_provider=lambda: None)
     assert asyncio.run(no_pool.order(order())).status == "unavailable"
@@ -151,7 +152,7 @@ def test_orders_are_refused_with_a_reason_or_unavailable_when_transient():
 def test_a_sent_reply_goes_into_the_originating_thread_through_the_normal_gates_once():
     out = Outreach()
     res = asyncio.run(desk(run=COMPLETED, outreach=out).deliver(deliver_req()))
-    assert res.status == "delivered" and res.stored and res.pinged and res.reply_chars > 0
+    assert res.status == "published" and not res.stored and res.pinged and res.reply_chars > 0
     [offer] = out.offers
     assert offer["session_id"] == SESSION and offer["text"] == "I browsed the PRs; two stand out."
     assert offer["skip_rate_gates"] is True and offer.get("skip_schedule_gates", False) is False   # quiet hours hold
@@ -163,7 +164,7 @@ def test_a_reply_held_by_quiet_hours_still_lands_in_the_thread_history():
     # S-1.6: a blocked ping does not lose the reply.
     out = Outreach(sent=False, reason="quiet_hours")
     res = asyncio.run(desk(run=COMPLETED, outreach=out).deliver(deliver_req()))
-    assert res.status == "delivered" and res.stored and not res.pinged and res.ping_reason == "quiet_hours"
+    assert res.status == "published" and not res.stored and not res.pinged and res.ping_reason == "quiet_hours"
     [rec] = out.recorded
     assert rec["session_id"] == SESSION and rec["text"] == "I browsed the PRs; two stand out."
     assert rec["correlation_id"] == intention_correlation_id(CID)
@@ -172,7 +173,7 @@ def test_a_reply_held_by_quiet_hours_still_lands_in_the_thread_history():
 def test_an_economy_hold_skips_the_ping_but_still_writes_the_thread():
     out = Outreach(admit=False)
     res = asyncio.run(desk(run=COMPLETED, outreach=out).deliver(deliver_req()))
-    assert res.stored and not res.pinged and res.ping_reason == "economy_held" and out.offers == []
+    assert res.status == "published" and not res.pinged and res.ping_reason == "economy_held" and out.offers == []
     assert len(out.recorded) == 1
 
 
@@ -197,3 +198,28 @@ def test_build_carry_request_is_a_valid_durable_request():
     assert req.admission.deadline_at == src.horizon_at == datetime(2026, 11, 15, 7, 8, 40, tzinfo=timezone.utc)
     assert DurableRunRequestV1.model_validate(req.model_dump(mode="json")).brief.route_target == SESSION
     assert src.horizon_at - NOW > timedelta(hours=40)
+
+
+def test_a_content_guard_refusal_is_never_written_into_the_thread():
+    # Review M4: a PASS or an ungrounded-signal claim is not bypassed through the history write.
+    for reason in ("orion_passed", "named_ungrounded_signal", "empty_generation"):
+        out = Outreach(sent=False, reason=reason)
+        res = asyncio.run(desk(run=COMPLETED, outreach=out).deliver(deliver_req()))
+        assert res.status == "failed" and not res.stored and out.recorded == [] and reason in res.detail
+
+
+def test_a_repeat_call_after_publishing_never_sends_or_writes_again():
+    out = Outreach(sent=False, reason="quiet_hours")
+    d = desk(run=COMPLETED, outreach=out)
+    first = asyncio.run(d.deliver(deliver_req()))
+    second = asyncio.run(d.deliver(deliver_req()))
+    assert first.status == second.status == "published" and len(out.recorded) == 1 and len(out.offers) == 1
+    d.conn.delivered = True                      # sql-writer wrote the row: now it is proof
+    assert asyncio.run(d.deliver(deliver_req())).status == "already_delivered"
+
+
+def test_a_re_sent_order_near_the_horizon_follows_the_existing_run():
+    # Review m3: Hub took the first order, Prime never heard; the re-send must not be refused at the horizon.
+    late = IntentionDesk(pool_provider=lambda: Pool(Conn(ROW)), durable=Durable(run={"status": "running"}),
+                         outreach_provider=lambda: None, clock=lambda: datetime(2026, 11, 15, 6, 0, tzinfo=timezone.utc))
+    assert asyncio.run(late.order(order())).status == "exists"

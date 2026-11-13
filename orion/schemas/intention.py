@@ -141,14 +141,17 @@ class IntentionDeliverV1(_Model):
     route_target: Optional[str] = Field(default=None, max_length=200)
 
 
-IntentionDeliverStatus = Literal["delivered", "already_delivered", "not_ready", "failed", "refused", "unavailable"]
+IntentionDeliverStatus = Literal["published", "already_delivered", "not_ready", "failed", "refused", "unavailable"]
 
 
 class IntentionDeliverResultV1(_Model):
-    """``stored``: the reply is in its route's record (the chat thread's history). ``pinged``: it was also sent
-    live through the normal outreach gates (quiet hours, the shared daily cap, the economy); ``ping_reason`` is
-    the outreach decision's reason either way. ``not_ready``: the run is not completed. ``failed``: the run ended
-    without a reply. ``unavailable``: transient, send again."""
+    """``already_delivered`` (``stored`` true): a ``chat_history_log`` row with this intention's correlation id is
+    in the thread. That row is the only proof that closes Prime's act 1. ``published``: the reply was published
+    on the bus (sent live, or written to the thread's history only) and its row is not visible yet: ask again.
+    ``pinged``: it was sent live through the normal outreach gates (quiet hours, the shared daily cap, the
+    economy); ``ping_reason`` is the outreach decision's reason either way. ``not_ready``: the run is not
+    completed. ``failed``: the run ended without a reply, or outreach's content guards refused the reply (a PASS,
+    an ungrounded internal-signal claim): it is never written into Juniper's thread. ``unavailable``: transient."""
 
     schema_version: Literal["intention.deliver_result.v1"] = "intention.deliver_result.v1"
     concern_id: str

@@ -393,7 +393,9 @@ class PrimeRuntime(MindLoopRuntime):
             return
         signals = list(self._turn_inbox)
         self._turn_inbox.clear()
-        self.state, self.turn_record, folded = fold_turn_signals(self.state, self.turn_record, signals, now)
+        taken_on = frozenset(it.open_ids(self.intentions)) if self._intentions_on() else frozenset()
+        self.state, self.turn_record, folded = fold_turn_signals(self.state, self.turn_record, signals, now,
+                                                                 taken_on=taken_on)
         for t in folded:
             logger.info("prime_turn_handback corr=%s who=%s verdict=%s promises=%d opened=%s refused=%s settled=%s",
                         t.correlation_id, t.who, t.verdict, len(t.promise_refs), t.opened_concern_id or "-",
@@ -769,12 +771,19 @@ class PrimeRuntime(MindLoopRuntime):
             await self._order_intention(op, now)
 
     async def _let_go_dropped(self, answer: Any, now: datetime) -> None:
-        """A concern Prime dropped while it was taken on: let go. Its act closes 0 with Prime's why, and the
-        run's reply (if any) is never delivered."""
+        """A concern Prime dropped while it was taken on: let go. Its act closes 0 with Prime's why, the run is
+        cancelled and its reply is never delivered. Not when the carry turn already answered it (the hand-back
+        settled the concern, or the run completed): dropping a settled concern is tidying up, so the reply is still
+        delivered and graded (review M2)."""
         held = {c.concern_id for c in self.state.concerns}
         for drop in answer.concerns.drop:
             op = it.find_open(self.intentions, drop.concern_id)
-            if op is None or drop.concern_id in held:
+            if op is None or drop.concern_id in held or op.pending_close is not None:
+                continue
+            settled = any(r.concern_id == op.concern_id and r.end == "settled" for r in self.state.concern_record)
+            if settled or op.run_status == "completed":
+                self.intentions = it.update_open(self.intentions, op.model_copy(update={"detached": True}))
+                logger.info("prime_intention_detached concern=%s (dropped after its turn answered it)", op.concern_id)
                 continue
             await self._close_intention(op, now, outcome="let_go", produced=False,
                                         note=f"let go: {drop.why[:200] or 'no reason given'}")
@@ -795,6 +804,12 @@ class PrimeRuntime(MindLoopRuntime):
             del self._intention_checked_at[cid]
 
     async def _intention_step(self, op: it.PrimeIntentionOpenV1, now: datetime) -> None:
+        if op.pending_close is not None:
+            # The end is decided; only its act publish failed. Retry that alone (review M1).
+            pc_ = op.pending_close
+            await self._close_intention(op, now, outcome=pc_["outcome"], produced=bool(pc_["produced"]),
+                                        note=str(pc_["note"]), pinged=pc_.get("pinged"))
+            return
         if op.order_status not in ("submitted", "exists"):
             if it.past_horizon(op, now):
                 await self._close_intention(op, now, outcome="expired", produced=False,
@@ -806,6 +821,17 @@ class PrimeRuntime(MindLoopRuntime):
             await self._deliver_intention(op, now)
             return
         run, err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/runs/{op.run_id}")
+        if run is None:
+            op = op.model_copy(update={"unread_reads": op.unread_reads + 1})
+            self.intentions = it.update_open(self.intentions, op)
+            if op.unread_reads >= it.MAX_UNREAD_READS:
+                await self._close_intention(op, now, outcome="not_carried", produced=False,
+                                            note=f"the carry run could not be read {op.unread_reads} times in a row "
+                                                 f"({err})")
+                return
+        elif op.unread_reads:
+            op = op.model_copy(update={"unread_reads": 0})
+            self.intentions = it.update_open(self.intentions, op)
         status, note = it.run_terminal(run)
         if status is None:
             if it.past_horizon(op, now):
@@ -860,30 +886,46 @@ class PrimeRuntime(MindLoopRuntime):
                 result = IntentionDeliverResultV1.model_validate(data)
             except Exception as exc:  # noqa: BLE001
                 err = f"unreadable answer: {str(exc)[:120]}"
-        if result is None or result.status in ("unavailable", "not_ready"):
+        if result is None or result.status in ("unavailable", "not_ready", "published"):
+            # "published": the reply is on the bus; only the chat_history_log row closes the act 1 (review M3).
+            # Keep the first answer's ping facts: a later "already_delivered" does not repeat them.
             detail = (err if result is None else (result.detail or result.status)) or "unavailable"
             if it.past_horizon(op, now):
+                why = ("its chat history row never appeared" if op.deliver_status == "published"
+                       else f"it could not be delivered ({detail})")
                 await self._close_intention(op, now, outcome="not_carried", produced=False,
-                                            note=f"the reply could not be delivered before the horizon ({detail})")
+                                            note=f"the reply was not stored before the horizon: {why}")
                 return
-            self.intentions = it.update_open(self.intentions, op.model_copy(update={
-                "deliver_status": "unavailable", "deliver_detail": detail[:500]}))
+            update: dict[str, Any] = {"deliver_status": "unavailable" if result is None else result.status,
+                                      "deliver_detail": detail[:500]}
+            if result is not None and result.status == "published":
+                ping = ("Juniper was told" if result.pinged
+                        else f"Juniper was not pinged ({result.ping_reason or 'no ping'})")
+                update["deliver_detail"] = f"{result.reply_chars} chars; {ping}"[:500]
+            self.intentions = it.update_open(self.intentions, op.model_copy(update=update))
             return
-        stored = result.status in ("delivered", "already_delivered") and result.stored
-        ping = ("and Juniper was told" if result.pinged
-                else f"Juniper was not pinged ({result.ping_reason or 'no ping'})")
-        note = (f"carried: the reply ({result.reply_chars} chars) is in the chat thread {op.route_target}, {ping}"
+        stored = result.status == "already_delivered" and result.stored
+        told = op.deliver_detail if op.deliver_status == "published" else "delivered earlier"
+        note = (f"carried: the reply is in the chat thread {op.route_target} ({told})"
                 if stored else f"the reply was not stored: {result.status} ({result.detail or 'no detail'})")
+        pinged = bool(op.deliver_detail and "Juniper was told" in op.deliver_detail) if stored else None
         await self._close_intention(op, now, outcome="carried" if stored else "not_carried", produced=stored,
-                                    note=note, pinged=result.pinged if stored else None)
+                                    note=note, pinged=pinged)
 
     async def _close_intention(self, op: it.PrimeIntentionOpenV1, now: datetime, *, outcome: it.IntentionOutcome,
                                produced: bool, note: str, pinged: Optional[bool] = None) -> None:
         """Close the make act (kept open and retried next check if the publish fails), then record the end."""
         act = it.make_act(op.concern_id, source=op.source, horizon_sec=op.act_horizon_sec)
         if not await self._close(act, it.INTENTION_COMPONENT, produced=produced, note=note[:500]):
+            # Only the close is retried next check, never the lifecycle (review M1).
+            self.intentions = it.update_open(self.intentions, op.model_copy(update={"pending_close": {
+                "outcome": outcome, "produced": produced, "note": note[:500], "pinged": pinged}}))
             logger.info("prime_intention_close_failed concern=%s (tried again next check)", op.concern_id)
             return
+        if outcome in ("let_go", "expired") and op.order_status in ("submitted", "exists"):
+            # The run would hold tier-1 agent share for a reply nobody delivers (review m4). Best effort.
+            _data, err = await self._post(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/runs/{op.run_id}/cancel", {})
+            logger.info("prime_intention_run_cancel concern=%s run=%s err=%s", op.concern_id, op.run_id, err or "-")
         self.intentions = it.finish(self.intentions, op, outcome=outcome, note=note, now=now, pinged=pinged)
         if produced:
             # The hand-back normally settled it when the carry turn completed; pub/sub is not durable.
@@ -932,6 +974,7 @@ class PrimeRuntime(MindLoopRuntime):
         if self._intentions_on():
             inputs.take_on = True
             inputs.intentions = it.frame_lines(self.intentions, now)
+            inputs.no_take_on = it.no_take_on_ids(self.intentions)
         frame = build_frame(self.state, inputs)
         reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
                                                     organ_replies=shows_organ_replies(inputs),

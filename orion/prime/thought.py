@@ -265,6 +265,8 @@ class FrameInputs:
     # adapter are marked. ``intentions``: lines for WHAT I TOOK ON (None: the section is not shown).
     take_on: bool = False
     intentions: Optional[list[str]] = None
+    # Concerns already taken on (open or ended): never marked "you can take this on".
+    no_take_on: set[str] = field(default_factory=set)
 
 
 def shows_organ_replies(inputs: "FrameInputs") -> bool:
@@ -405,9 +407,10 @@ def _curiosity_lines(inputs: FrameInputs) -> list[str]:
     return lines or ["(no recent investigate runs)"]
 
 
-def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False) -> str:
+def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
+                  no_take_on: frozenset[str] = frozenset()) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
-    if take_on and c.graded != "settled" and has_adapter(c):
+    if take_on and c.graded != "settled" and c.concern_id not in no_take_on and has_adapter(c):
         graded += "; you can take this on"
     ref = c.event_ref or ""
     about = (f"from turn {ref[len('turn:'):]}" if ref.startswith("turn:")
@@ -474,7 +477,8 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     """The user prompt: a few thousand characters, every section marked with its freshness."""
     sections = [
         "WHAT CHANGED SINCE YOUR LAST THOUGHT:\n" + "\n".join(f"- {c}" for c in state.pending_changes),
-        "YOUR CONCERNS:\n" + ("\n".join(_concern_line(c, inputs.now, take_on=inputs.take_on)
+        "YOUR CONCERNS:\n" + ("\n".join(_concern_line(c, inputs.now, take_on=inputs.take_on,
+                                                       no_take_on=frozenset(inputs.no_take_on))
                                          for c in state.concerns) or "(none)"),
         "HOW YOUR CONCERNS HAVE ENDED:\n" + track_record(state),
         "YOUR LAST READING:\n" + (state.last_reading or "(none yet)"),

@@ -98,19 +98,66 @@ No new metric. The three alarm values are unchanged in provenance (`cabinet_heat
 
 ## Tests run
 
-(filled below)
+```text
+PY=/mnt/scripts/Orion-Sapienform/.venv/bin/python, PYTHONDONTWRITEBYTECODE=1
+tests/test_pe_alarm_refile.py (new, 11)                                  11 passed
+orion/substrate/tests                                                    1147 passed, 4 failed
+      (felt_state x4: identical on origin/main)
+orion/attention orion/mood_arc/tests orion/metacog/tests tests/test_attention*.py
+      tests/test_self_signal*.py tests/test_retired*.py tests/test_pe_*.py
+      tests/test_metric*.py tests/test_rung3*.py ...                     1168 passed, 5 failed;
+      4 of those were codebase-example tests fixed after the run started (re-run: 21 passed);
+      test_metric_lineage blast-radius fails identically on origin/main
+orion/introspect/tests                                                   279 passed
+services/orion-substrate-runtime/tests (minus grammar integration)       same 23 pre-existing
+      failures as origin/main (cursor/quarantine/reducer-health/falkor-routed: local env);
+      codebase consumer, retired-PE, receipt-not-gated, cabinet/strain/street ticks pass
+services/orion-field-digester/tests (minus heartbeat chassis)            297 passed
+services/orion-equilibrium-service tests + evals                         283 passed
+services/orion-attention-runtime tests + evals                           59 passed
+services/orion-thought tests + evals                                     877 passed
+services/orion-hub attention organ, co-creation, glossary routes         79 passed
+scripts/check_definition_drift.py --gate                                 PASS (re-locked)
+scripts/check_metric_lineage.py --prompt-semantics                       PASS
+scripts/check_env_template_parity.py                                     PASS
+scripts/check_inner_state_registry.py                                    OK
+```
 
 ## Evals run
 
-(filled below)
+```text
+services/orion-equilibrium-service/evals (episode + outcome replay)      pass
+  episode volume floor lowered 5.0 -> 4.0 per day: codebase left the fixture's
+  readers, 32 opens / 7.03 days = 4.55/day. A sanity band, widened on purpose.
+services/orion-attention-runtime/evals/test_world_first_replay.py        pass (execution as the event-written example)
+services/orion-thought/evals (self-readings truth parser accepts [alarm:...])  pass
+```
 
 ## Docker/build/smoke checks
 
-(filled below)
+```text
+Not run: no Dockerfile, dependency or port change. Settings default and compose default
+for the renamed flag are both true, matching the live value.
+```
 
 ## Review findings fixed
 
-(filled below)
+Code review ran in a subagent on commit 2005c2b39.
+
+- Finding: stance prompt said only "[pe:...] refs are not evidence_refs".
+  - Fix: `orion/cognition/prompts/stance_react.j2` and orion-thought README name `[alarm:...]` too.
+  - Evidence: orion-thought 877 passed.
+- Finding: Orion's `node_history` introspect tool still called an alarm "prediction error".
+  - Fix: `orion/introspect/node_history.py` `_signal_noun`; new test `test_an_alarm_node_is_not_called_a_prediction_error`.
+  - Evidence: orion/introspect/tests 279 passed.
+- Finding: legacy (world-first off) broadcast path still typed an alarm as prediction error.
+  - Fix: `substrate_pressure_signals` uses the same alarm rule; test `test_legacy_pressure_signals_call_an_alarm_an_alarm`.
+- Finding: stale codebase readers: live PE sanity eval expected codebase and chat; self-readings live eval queried codebase; bus contract comment and cocreation README said the consumer writes the node; glossary comment said history rows are "gone".
+  - Fix: all four updated.
+- Finding: label change gives the alarms new open-loop ids, so a past dismissed verdict would stop applying.
+  - Fix: none needed. Checked live: 0 terminal verdicts on cabinet/strain/street loops in the last 14 days (96 verdicts total). Noted as a one-time reset in Risks.
+- Finding: old env key still in the live `.env`.
+  - Fix: left in place on purpose until deploy. If the container is recreated from the current image before this merges, that image reads the old key with a default of false, so deleting it now would switch the listener off. Listed in post-deploy cleanup.
 
 ## Restart required
 
@@ -128,7 +175,13 @@ docker stop orion-athena-substrate-runtime && docker exec orion-athena-falkordb 
 docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "DELETE FROM substrate_node_prediction_error_history WHERE node_id = 'node:substrate.codebase'"
 ```
 
-705 rows; they would also age out in 7 days, and every reader already skips them. No `substrate_node_prediction_error_baseline` row exists for codebase (checked). The field digester prunes the field vector by itself on its next reconcile.
+705 rows; they would also age out in 7 days, and every reader already skips them.
+
+Remove the renamed key from the local env file once the new image is live (it is ignored by then):
+
+```bash
+sed -i '/^SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE=true$/d' /mnt/scripts/Orion-Sapienform/services/orion-substrate-runtime/.env
+``` No `substrate_node_prediction_error_baseline` row exists for codebase (checked). The field digester prunes the field vector by itself on its next reconcile.
 
 Checks after deploy:
 
@@ -144,6 +197,9 @@ Pass: first stays at the pre-deploy time; second keeps growing (listener alive);
 
 - Severity: low. Concern: the alarms still travel on a field named `prediction_error` and in a table with that name. Mitigation: `ALARM_NODE_IDS` is the one place readers ask; moving storage to an alarm channel is a larger migration and is filed as a follow-up issue.
 - Severity: low. Concern: the codebase churn score (not a forecast) still feeds the Hub co-creation tab and the self-study reader. Mitigation: neither reads it as prediction error; whether to keep it is a separate decision, filed as an issue.
+- Severity: low. Concern: alarm graph labels changed, so their open-loop ids change once at deploy. Mitigation: no live terminal verdicts on those loops in 14 days.
+- Severity: low. Concern: the codebase graph node lingers until the cleanup command runs. Mitigation: every reader fences it (retired deny-list, digester prune).
+- Issues opened: #3307 (alarms still ride on the prediction_error field; design), #3308 (keep or kill the codebase churn score; needs-juniper). Issues closed: none.
 
 ## PR link
 

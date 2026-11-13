@@ -73,6 +73,11 @@ class Settings(BaseSettings):
     # use the phase routes above, `system`, and are shed with background work).
     MIND_TURN_MODEL_ROUTE: str = Field(default="metacog_turn", alias="MIND_TURN_MODEL_ROUTE")
     MIND_LLM_TIMEOUT_SEC: float = Field(default=60.0, alias="MIND_LLM_TIMEOUT_SEC")
+    # Per-phase LLM cap for a held run (req.gpu_lease set: world pulse, curiosity, journal, field
+    # notes), which runs on its own leased seat (agent / agent-gpu2). Bonsai-2-27B on agent-gpu2
+    # thinks first: a 2048-token semantic reply at its slow end (~14 tok/s) needs ~146 s. The run's
+    # wall still bounds the whole run.
+    MIND_LLM_HELD_TIMEOUT_SEC: float = Field(default=150.0, gt=0.0, alias="MIND_LLM_HELD_TIMEOUT_SEC")
     MIND_LLM_MAX_TOKENS_SEMANTIC: int = Field(default=2048, alias="MIND_LLM_MAX_TOKENS_SEMANTIC")
     MIND_LLM_MAX_TOKENS_APPRAISAL: int = Field(default=3072, alias="MIND_LLM_MAX_TOKENS_APPRAISAL")
     MIND_LLM_MAX_TOKENS_STANCE: int = Field(default=1536, alias="MIND_LLM_MAX_TOKENS_STANCE")

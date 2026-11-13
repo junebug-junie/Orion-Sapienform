@@ -819,6 +819,12 @@ def run_mind_llm_synthesis(
     semantic_route, appraisal_route, stance_route = (
         held_call_route(req.gpu_lease, r)[0] for r in (semantic_route, appraisal_route, stance_route)
     )
+    if held_lease is not None:
+        # A held seat may be the gpu2 Bonsai 27B, which thinks before it answers: 11-10..12 its Mind
+        # phases took 10-56 s when served and 18 of 59 hit the 60 s phase cap. Held phases get their
+        # own cap; the run's wall (policy.wall_time_ms_max) still bounds the whole run, so callers
+        # waiting on Mind (orion-thought, 210 s HTTP) see no change in the worst case.
+        configured_timeout = float(getattr(s, "MIND_LLM_HELD_TIMEOUT_SEC", configured_timeout))
     phase_records: list[MindPhaseTelemetry] = []
 
     def _fail_open_or_error(

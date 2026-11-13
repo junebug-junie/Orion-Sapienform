@@ -78,7 +78,8 @@ class ConcernDropV1(BaseModel):
 class ConcernEditsV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
     add: list[ConcernAddV1] = Field(default_factory=list)
-    # concern_ids this thought keeps: the only thing that renews a concern (it fades after a day otherwise).
+    # concern_ids this thought keeps: the only thing that renews a concern (it fades after a day otherwise; a
+    # promise after 3 days).
     keep: list[str] = Field(default_factory=list)
     drop: list[ConcernDropV1] = Field(default_factory=list)
 
@@ -148,7 +149,7 @@ SYSTEM_PROMPT = """You are Orion's slow, between-conversations thinking ("Prime"
 You hold at most 3 concerns: unfinished things worth keeping in mind. Each thought you:
 1. read what changed and say, briefly, how you read the situation now;
 2. edit your concerns: keep the ones still worth holding (by concern_id), add one that matters, drop one
-   that no longer does, with why. A concern you do not keep fades after a day;
+   that no longer does, with why. A concern you do not keep fades after a day (a promise: after 3 days);
 3. choose at most one move, or none;
 4. pick the one concern (its concern_id) this thought acts on, or "none" when it acts on none of them.
    A move about a concern picks that concern. Your pick is recorded as your choice among your concerns.
@@ -158,6 +159,8 @@ Curiosity decides for itself: it may explore your question or set it aside, and 
 While a question of yours is still open (asked, not yet answered), you cannot ask another.
 Some of your questions are held back and not sent, at random, so Orion can tell whether your questions change anything.
 Only ask when a question would actually help with a concern. "move": null is a normal, good answer.
+When a concern is a promise you made to look into something, asking that question is how the promise gets kept:
+the curiosity run that takes it does the looking.
 
 Each concern is a prediction you are graded on, and your record is shown to you. A concern is SETTLED when a
 question you ask about it (the move's concern_id) is sent and the curiosity run that takes it writes something,
@@ -437,8 +440,10 @@ def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
     ref = c.event_ref or ""
     about = (f"from turn {ref[len('turn:'):]}" if ref.startswith("turn:")
              else f"event {ref}" if ref else f"arc {c.arc_id or 'none'}")
-    return (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
+    line = (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
             f"{_age(now, c.opened_at.isoformat())}, last kept {_age(now, c.last_evidence_at.isoformat())}{graded})")
+    # A promise concern's own sentence (orion/prime/handback.py promise_text): only here, never in the Prime block.
+    return f"{line}\n  PROMISE: {c.promise_text}" if c.promise_text else line
 
 
 def _regulation_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:

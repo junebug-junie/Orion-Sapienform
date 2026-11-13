@@ -31,7 +31,8 @@ Two things can change Prime's state, and only these two wake a thought (the exis
 decides whether Prime actually thinks):
 
 * **A turn opened a thread** -- it made at least one promise (``promises_made`` with ``offer`` false). Prime
-  opens a concern whose ``event_ref`` is ``turn:<correlation_id>``. It fades after ``CONCERN_TTL`` unless a
+  opens a concern whose ``event_ref`` is ``turn:<correlation_id>``, with the promise sentence itself in
+  ``promise_text`` (Prime's frame only). It fades after ``PROMISE_CONCERN_TTL`` (72 h) unless a
   thought keeps it and counts toward ``MAX_CONCERNS``, like any concern, but it places NO bet
   (``act.prime.predict``): nothing can settle it yet (a kept promise has no act id until the intention ledger's
   D2), so every such bet would close 0 and feed a false failure into the self-monitor gate on Prime's real bets.
@@ -65,7 +66,8 @@ from typing import Any, Literal, Optional, Sequence
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from orion.prime.acts import settle_concern
-from orion.prime.state import MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, note_change
+from orion.prime.state import (MAX_CONCERNS, PROMISE_EVENT_PREFIX, PROMISE_TEXT_CAP, PrimeConcernV1, PrimeStateV1,
+                               note_change)
 
 TURNS_KEY = "orion:prime:turns"
 HANDBACK_CHANNEL = "orion:cockpit:hop"
@@ -91,7 +93,8 @@ NO_THREAD_WHO = frozenset({"intention"})
 # Orion's own system sessions are named orion_*; a Hub chat turn Juniper typed carries ``mode`` on ingress.
 SYSTEM_SESSION_PREFIX = "orion_"
 
-TURN_EVENT_PREFIX = "turn:"
+# A turn concern is a promise concern (orion/prime/state.py ``concern_ttl``: 72 h unkept, not 24 h).
+TURN_EVENT_PREFIX = PROMISE_EVENT_PREFIX
 CONCERN_REF = re.compile(r"prime_concern:([0-9a-f]{16})\b")
 COUNTED_VERDICTS = frozenset({"completed"})
 
@@ -108,6 +111,8 @@ MAX_PENDING_LINKS = 20
 PROMPT_EXCERPT_CAP = 300
 FINAL_EXCERPT_CAP = 600
 GIST_CAP = 200
+QUOTE_CAP = 240
+MAX_PROMISE_QUOTES = 3
 
 
 class TurnSignalV1(BaseModel):
@@ -127,6 +132,9 @@ class TurnSignalV1(BaseModel):
     verdict: Optional[str] = Field(default=None, max_length=40)
     # Indices into reflection.promises_made of the promises (offers left out), so a ref points at the promise.
     promise_indices: list[int] = Field(default_factory=list, max_length=10)
+    # The promise sentences themselves, in the same order (the judge's quotes, cut to QUOTE_CAP). Only the
+    # concern's ``promise_text`` holds them, which only Prime's own frame shows (orion/prime/state.py).
+    promise_quotes: list[str] = Field(default_factory=list, max_length=10)
     promises_kept: list[str] = Field(default_factory=list, max_length=3)
 
 
@@ -210,14 +218,16 @@ def _concern_ids(text: str) -> list[str]:
     return out[:MAX_PROMPT_CONCERN_IDS]
 
 
-def _counted_promises(reflection: Any) -> tuple[list[int], list[str]]:
-    """(indices of the promises in promises_made -- offers left out --, kept promise ids)."""
+def _counted_promises(reflection: Any) -> tuple[list[int], list[str], list[str]]:
+    """(indices of the promises in promises_made -- offers left out --, their quotes, kept promise ids)."""
     if not isinstance(reflection, dict):
-        return [], []
+        return [], [], []
     made = reflection.get("promises_made") or []
-    idx = [i for i, p in enumerate(made) if isinstance(p, dict) and p.get("quote") and p.get("offer") is not True]
+    idx = [i for i, p in enumerate(made)
+           if isinstance(p, dict) and str(p.get("quote") or "").strip() and p.get("offer") is not True][:10]
+    quotes = [_cut(" ".join(str(made[i]["quote"]).split()), QUOTE_CAP) for i in idx]
     kept = [str(k)[:200] for k in (reflection.get("promises_kept") or []) if isinstance(k, str) and k][:3]
-    return idx[:10], kept
+    return idx, quotes, kept
 
 
 def signal_from_hop(hop: dict[str, Any]) -> Optional[TurnSignalV1]:
@@ -236,12 +246,12 @@ def signal_from_hop(hop: dict[str, Any]) -> Optional[TurnSignalV1]:
         prompt = str(raw.get("user_message") or "")
         return TurnSignalV1(correlation_id=corr[:200], stage="ingress", at=at, who=who,
                             prompt_excerpt=prompt[:PROMPT_EXCERPT_CAP], prompt_concern_ids=_concern_ids(prompt))
-    indices, kept = _counted_promises(raw.get("reflection"))
+    indices, quotes, kept = _counted_promises(raw.get("reflection"))
     verdict = raw.get("compliance_verdict")
     return TurnSignalV1(correlation_id=corr[:200], stage="finalize", at=at,
                         final_excerpt=str(raw.get("final_text") or "")[:FINAL_EXCERPT_CAP],
                         verdict=str(verdict)[:40] if verdict else None, promise_indices=indices,
-                        promises_kept=kept)
+                        promise_quotes=quotes, promises_kept=kept)
 
 
 # --- the gist ----------------------------------------------------------------------------------------------
@@ -285,6 +295,27 @@ def turn_gist(who: TurnWho, prompt: str, final: str) -> str:
 
 
 # --- the fold ------------------------------------------------------------------------------------------------
+
+
+PROMISE_TO: dict[str, str] = {
+    "chat_juniper": "to Juniper in chat",
+    "curiosity": "in a curiosity run",
+    "consult": "in a consult with Claude",
+    "letter": "in a day letter",
+    "intention": "in a carry turn",
+}
+
+
+def promise_text(who: TurnWho, quotes: Sequence[str], at: datetime) -> Optional[str]:
+    """The promise sentence(s) Prime is shown for a promise concern, labelled with who and when. None with no
+    quote (an older signal, or a judge row with no quote text)."""
+    quotes = [q for q in quotes if q][:MAX_PROMISE_QUOTES]
+    if not quotes:
+        return None
+    said = " / ".join(f'"{q}"' for q in quotes)
+    more = len(quotes) > 1
+    return _cut(f"a promise{'s' if more else ''} I made {PROMISE_TO[who]} at {at.strftime('%Y-%m-%d %H:%MZ')}: "
+                f"{said}", PROMISE_TEXT_CAP)
 
 
 def promise_refs(correlation_id: str, indices: Sequence[int]) -> list[str]:
@@ -371,12 +402,16 @@ def fold_turn_signals(
                                      exempt=taken_on)
             if refused is None:
                 n = len(refs)
-                text = _cut(f"a thread I opened in a {words} ({n} promise{'s' if n != 1 else ''}, "
+                # Live 11-12 (concern d8db9d7b1bba4cf7) the old words "a thread I opened" read to Prime as "a new
+                # chat thread opened": say it is a promise. The sentence itself goes in promise_text (frame only).
+                text = _cut(f"a promise I made in a {words} ({n} promise{'s' if n != 1 else ''}, "
                             f"{refs[0]}{' ...' if n > 1 else ''}): {gist}", 300)
                 concern = PrimeConcernV1(concern_id=turn_concern_id(corr), text=text,
-                                         event_ref=f"{TURN_EVENT_PREFIX}{corr}", opened_at=now, last_evidence_at=now)
+                                         event_ref=f"{TURN_EVENT_PREFIX}{corr}", opened_at=now, last_evidence_at=now,
+                                         promise_text=promise_text(start.who, sig.promise_quotes, sig.at))
                 state = state.model_copy(update={"concerns": [*state.concerns, concern]})
-                state = note_change(state, f"a {words} turn ({corr}) opened a thread: {gist[:120]}")
+                state = note_change(state, f"a {words} turn ({corr}) made a promise, now concern "
+                                           f"{concern.concern_id}: {gist[:120]}")
                 opened = concern.concern_id
                 opened_at.append(now)
                 no_bet = [*no_bet, opened][-MAX_NO_BET_IDS:]
@@ -444,6 +479,7 @@ __all__ = [
     "fold_turn_signals",
     "link_started_turn",
     "promise_refs",
+    "promise_text",
     "signal_from_hop",
     "thread_refusal",
     "turn_concern_id",

@@ -177,10 +177,10 @@ def test_a_concern_taken_on_does_not_fade_while_its_run_is_open():
     act = it.make_act(c.concern_id, source="turn_promise", horizon_sec=3600)
     st = it.take_on(it.PrimeIntentionsStateV1(), c, why="w", thought_id="t", act=act, horizon_sec=3600,
                     not_before=None, now=T0)
-    later = T0 + timedelta(hours=30)
+    later = T0 + timedelta(hours=73)
     kept = observe(it.keep_taken_on(state, st, later), PrimeSnapshotV1(), later)
     assert [x.concern_id for x in kept.concerns] == [c.concern_id]
-    faded = observe(state, PrimeSnapshotV1(), later)          # without the take-on it fades at 24 h
+    faded = observe(state, PrimeSnapshotV1(), later)          # without the take-on a promise fades at 72 h
     assert faded.concerns == []
 
 

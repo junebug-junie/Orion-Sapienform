@@ -70,7 +70,7 @@ def test_a_chat_turn_that_opens_a_thread_is_a_concern_citing_its_correlation_id_
     # It places no bet: nothing can settle it yet, so a predict act would only ever close 0.
     assert not any(a["verb"] == "predict" for _, a in rt.bus.acts())
     # The thread woke a thought, and the frame showed the turn.
-    assert "opened a thread" in rt.llm.calls[0]["user_prompt"]
+    assert "made a promise, now concern" in rt.llm.calls[0]["user_prompt"]
     assert "TURNS THAT HANDED BACK TO YOU" in rt.llm.calls[0]["user_prompt"]
     saved = PrimeTurnsStateV1.model_validate_json(rt.bus.redis.kv[TURNS_KEY])
     assert saved.recent[0].correlation_id == "corr-7" and saved.recent[0].who == "chat_juniper"
@@ -159,7 +159,10 @@ def test_a_turn_concern_that_fades_closes_no_bet():
     for data in wire(*chat_turn()):
         rt.accept_hop(data)
     asyncio.run(rt.tick())
-    rt.clock_box["now"] = T0 + timedelta(hours=25)
+    rt.clock_box["now"] = T0 + timedelta(hours=25)       # a promise concern outlives the 24 h TTL
+    asyncio.run(rt.tick())
+    assert not [r for r in rt.state.concern_record if r.concern_id == rt.turn_record.no_bet_concern_ids[0]]
+    rt.clock_box["now"] = T0 + timedelta(hours=73)
     asyncio.run(rt.tick())
     rec = [r for r in rt.state.concern_record if r.concern_id == rt.turn_record.no_bet_concern_ids[0]]
     assert rec and rec[0].end == "faded" and rec[0].published

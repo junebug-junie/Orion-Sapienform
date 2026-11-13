@@ -83,6 +83,15 @@ def test_doubled_stamp_that_the_block_length_does_not_explain_is_left_as_deliver
     assert [int(r.interval_start.timestamp()) for r in rows] == stamps
 
 
+def test_doubled_stamp_plus_a_hole_elsewhere_is_left_as_delivered() -> None:
+    # Same reading count as the block, but 12:00 is skipped: which reading belongs there is unknowable.
+    stamps = _rmp_nov1_stamps()
+    stamps = stamps[:6] + [s + H for s in stamps[6:]]
+    xml = _feed([(NOV1_BLOCK, 25 * H, [(s, 3) for s in stamps])])
+    rows = parse_espi(xml, retrieved_at=RETRIEVED, source="file_drop")
+    assert [int(r.interval_start.timestamp()) for r in rows] == stamps
+
+
 def test_normal_block_is_untouched() -> None:
     readings = [(NOV2_BLOCK + H + h * H, 2) for h in range(24)]
     rows = parse_espi(_feed([(NOV2_BLOCK, 24 * H, readings)]), retrieved_at=RETRIEVED, source="file_drop")
@@ -139,6 +148,17 @@ def test_holes_past_the_per_hole_or_total_limit_still_stop_coverage() -> None:
     for iv in hourly(s, 40, skip=frozenset({*range(5, 8), *range(15, 18), *range(25, 28)})):
         led.upsert(iv)
     assert led.window_prefix("UP1", s, s + timedelta(hours=40))[1] == s + timedelta(hours=25)
+
+
+def test_a_short_hole_at_the_cycle_start_is_bridged_on_purpose() -> None:
+    s = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    led = make_test_ledger()
+    for iv in hourly(s, 48, skip=frozenset({0})):
+        led.upsert(iv)
+    prefix, covered = led.window_prefix("UP1", s, s + timedelta(hours=48))
+    assert covered == s + timedelta(hours=48) and bridged_seconds(prefix, s) == H
+    proj, gap, _ = project_period(led, "UP1", s, s + timedelta(hours=48))
+    assert gap is None and proj.projected_kwh == pytest.approx(48.0)      # 47 metered + 1 imputed
 
 
 # --- lifecycle: coverage walks past the hole as the feed delivers ------------------------------------

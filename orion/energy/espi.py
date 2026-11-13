@@ -104,7 +104,13 @@ def _restamp_fold_collision(
     if len(set(starts)) == len(starts):
         return readings
     total = sum(r[1] for r in readings)
-    if block_seconds is None or total != block_seconds or starts != sorted(starts):
+    steps = [b[0] - a[0] for a, b in zip(readings, readings[1:])]
+    # The fold shape exactly: one repeated stamp, every other step the previous reading's length.
+    # A repeat plus a hole elsewhere is ambiguous (which reading fills the hole?), so it is kept.
+    fold_shape = steps.count(0) == 1 and all(
+        step == 0 or step == readings[i][1] for i, step in enumerate(steps)
+    )
+    if block_seconds is None or total != block_seconds or not fold_shape:
         logger.warning(
             "espi_duplicate_reading_starts_kept href=%s readings=%d block_seconds=%s reading_seconds=%d",
             href, len(readings), block_seconds, total,

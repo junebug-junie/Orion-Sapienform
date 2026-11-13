@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import calendar
 from datetime import date, datetime, timedelta, timezone
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 from orion.energy.tariff import Tariff
@@ -35,7 +35,7 @@ MAX_BRIDGED_GAP = timedelta(hours=3)
 MAX_BRIDGED_TOTAL = timedelta(hours=6)
 
 
-def bridged_seconds(prefix: list[EnergyUsageIntervalV1], start: datetime) -> float:
+def bridged_seconds(prefix: Sequence[EnergyUsageIntervalV1 | EnergyCostAccruedV1], start: datetime) -> float:
     """Seconds inside [start, end of prefix) that no interval covers: the bridged holes."""
     if not prefix:
         return 0.0

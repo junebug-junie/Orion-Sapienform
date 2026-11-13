@@ -129,6 +129,6 @@ Hub needs a rebuild to pick this up. That happens through the normal post-pull r
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3339
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

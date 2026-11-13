@@ -73,9 +73,10 @@ def _frame_re(stream_id: str) -> re.Pattern[str]:
     return re.compile(rf"^[A-Za-z0-9._-]+_{re.escape(stream_id)}_(\d+)_[0-9a-f]{{8}}\.jpg$")
 
 
-def newest_frame(directory: Path, stream_id: str) -> Frame | None:
+def newest_frames(directory: Path, stream_id: str, limit: int = 3) -> list[Frame]:
+    """This stream's frames, newest first."""
     pattern = _frame_re(stream_id)
-    best: Frame | None = None
+    found: list[Frame] = []
     try:
         entries = list(os.scandir(directory))
     except OSError as exc:
@@ -87,10 +88,20 @@ def newest_frame(directory: Path, stream_id: str) -> Frame | None:
         m = pattern.match(entry.name)
         if m is None:
             continue
-        ms = int(m.group(1))
-        if best is None or ms > best.epoch_ms:
-            best = Frame(path=Path(entry.path), stream_id=stream_id, epoch_ms=ms)
-    return best
+        found.append(Frame(path=Path(entry.path), stream_id=stream_id, epoch_ms=int(m.group(1))))
+    found.sort(key=lambda f: f.epoch_ms, reverse=True)
+    return found[:limit]
+
+
+def newest_frame(directory: Path, stream_id: str) -> Frame | None:
+    frames = newest_frames(directory, stream_id, limit=1)
+    return frames[0] if frames else None
+
+
+def is_complete_jpeg(data: bytes) -> bool:
+    """The retina writes each frame in place (cv2.imwrite, no rename), so the newest file can be
+    caught mid-write: a whole JPEG starts with SOI and ends with EOI."""
+    return data[:2] == b"\xff\xd8" and data.rstrip(b"\x00")[-2:] == b"\xff\xd9"
 
 
 def _age_words(seconds: float) -> str:
@@ -119,10 +130,10 @@ def looks_in_last_hour(log: Path, now: datetime) -> int:
     for row in _read_log(log):
         try:
             at = datetime.fromisoformat(str(row.get("looked_at")))
-        except ValueError:
+            if at >= since:
+                n += 1
+        except (ValueError, TypeError):  # unparseable, or a naive time beside an aware one
             continue
-        if at >= since:
-            n += 1
     return n
 
 
@@ -155,23 +166,31 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
     if used >= LOOKS_PER_HOUR:
         raise LookError(f"{used} looks in the last hour; the cap is {LOOKS_PER_HOUR}. Look again later.")
     desc = describe_camera(stream_id)
-    frame = newest_frame(directory, stream_id)
-    if frame is None:
+    candidates = newest_frames(directory, stream_id)
+    if not candidates:
         raise LookError(
             f"no saved frame for {desc.name} ({stream_id}) in {directory}. Frames are kept 5 minutes, "
             + ("and this camera only records after motion or a ring." if desc.event_driven
                else "so this camera has saved nothing for at least that long: it may be down.")
         )
+    frame, data = None, b""
+    for candidate in candidates:
+        try:
+            data = candidate.path.read_bytes()
+        except OSError:
+            continue  # swept between the scan and the read
+        if is_complete_jpeg(data):
+            frame = candidate
+            break
+    if frame is None:
+        raise LookError(f"the newest {len(candidates)} frames of {desc.name} ({stream_id}) are incomplete or "
+                        "gone; look again in a second.")
     age = max(0.0, (now - frame.taken_at).total_seconds())
     day = frame.taken_at.astimezone(ZONE).date()
     dest_dir = look_root / day.isoformat()
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{stream_id}-{frame.epoch_ms}.jpg"
-    try:
-        shutil.copyfile(frame.path, dest)
-    except OSError as exc:
-        raise LookError(f"could not copy {frame.path}: {exc.strerror or exc}") from exc
-    data = dest.read_bytes()
+    dest.write_bytes(data)
     sha = hashlib.sha256(data).hexdigest()
     live = age <= LIVE_MAX_AGE_SEC
     record = {

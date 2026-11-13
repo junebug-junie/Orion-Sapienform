@@ -230,7 +230,10 @@ async def _images_for_lane(body: Dict[str, Any], lease: Lease, route_key: str,
     capability = await asyncio.to_thread(resolve_vision_capability, lease.grant.url)
     if capability.vision:
         return body
-    reason = capability.detail or capability.source
+    if capability.source == "props-unreachable":
+        reason = "could not confirm this lane can see images: its /props did not answer"
+    else:
+        reason = f"this model cannot see images: {capability.detail or capability.source}"
     body, n = replace_images_with_note(body, anthropic=anthropic, reason=reason)
     logger.warning("passthrough_images_blind_lane route=%s served_by=%s images=%s reason=%s corr=%s",
                    route_key, lease.grant.served_by, n, reason, correlation_id or "-")

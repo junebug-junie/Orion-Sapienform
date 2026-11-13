@@ -332,7 +332,7 @@ def build_multimodal_messages(
 # Design: docs/superpowers/specs/2026-11-13-camera-look-design.md.
 
 BLIND_IMAGE_NOTE = (
-    "[image not shown: the model serving this call cannot see images ({reason}). "
+    "[image not shown to the model serving this call ({reason}). "
     "Do not describe it; say you could not see it.]"
 )
 _IMAGE_TYPES = {True: "image", False: "image_url"}  # anthropic -> block type

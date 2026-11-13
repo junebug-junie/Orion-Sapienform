@@ -43,7 +43,7 @@ def test_count_and_replace_reach_inside_tool_results() -> None:
     assert n == 2 and body == original  # the input is never changed
     assert vision.count_images(out, anthropic=True) == 0
     note = out["messages"][2]["content"][0]["content"][0]
-    assert note["type"] == "text" and "cannot see images (no mmproj)" in note["text"]
+    assert note["type"] == "text" and "(no mmproj)" in note["text"] and "could not see it" in note["text"]
     assert out["messages"][1] is body["messages"][1]  # untouched messages pass as they were
 
 
@@ -107,4 +107,75 @@ def test_text_only_call_never_probes(mock_cls: MagicMock, client: TestClient) ->
         response = client.post("/v1/messages", json={"model": "agent", "max_tokens": 8,
                                                      "messages": [{"role": "user", "content": "hi"}]})
     assert response.status_code == 200
+    probe.assert_not_called()
+
+
+@patch("app.passthrough_proxy.httpx.AsyncClient")
+def test_unreachable_props_note_does_not_claim_the_lane_is_blind(mock_cls: MagicMock, client: TestClient) -> None:
+    upstream = _post_client()
+    mock_cls.return_value = upstream
+    cap = VisionCapability(vision=False, source="props-unreachable", detail="ConnectTimeout")
+    with patch("app.passthrough_proxy.resolve_vision_capability", return_value=cap):
+        client.post("/v1/messages", json=_read_step())
+    text = upstream.post.await_args.kwargs["json"]["messages"][2]["content"][0]["content"][0]["text"]
+    assert "could not confirm" in text and "cannot see images" not in text
+
+
+@patch("app.passthrough_proxy.httpx.AsyncClient")
+def test_retry_after_overflow_on_a_sighted_lane_gets_the_real_image(mock_cls: MagicMock, client: TestClient) -> None:
+    # metacog places on GPU3 (fast, blind) first; an overflow re-leases onto agent (sighted).
+    overflow = MagicMock(status_code=400, headers={"content-type": "application/json"},
+                         content=b'{"error":{"message":"the request exceeds the available context size"}}')
+    first = _post_client()
+    first.post = AsyncMock(return_value=overflow)
+    second = _post_client()
+    mock_cls.side_effect = [first, second]
+    sees = {"http://pool-fast:8013": False, "http://pool-agent:8015": True}
+    with patch("app.passthrough_proxy.resolve_vision_capability",
+               side_effect=lambda url: VisionCapability(vision=sees[url], source="props")):
+        response = client.post("/v1/messages", json={**_read_step(), "model": "metacog"})
+    assert response.status_code == 200
+    blind = first.post.await_args.kwargs["json"]["messages"][2]["content"][0]["content"][0]
+    sighted = second.post.await_args.kwargs["json"]["messages"][2]["content"][0]["content"][0]
+    assert blind["type"] == "text" and sighted == IMAGE
+
+
+@patch("app.passthrough_proxy.httpx.AsyncClient")
+def test_streaming_call_on_a_blind_lane_is_stripped_too(mock_cls: MagicMock, client: TestClient) -> None:
+    class _Up:
+        status_code = 200
+        headers = {"content-type": "text/event-stream"}
+
+        async def aiter_bytes(self):
+            yield b"event: message_stop\n\n"
+
+        async def aread(self) -> bytes:
+            return b""
+
+        async def aclose(self) -> None:
+            return None
+
+    stream_client = MagicMock()
+    stream_client.build_request = MagicMock(return_value=MagicMock())
+    stream_client.send = AsyncMock(return_value=_Up())
+    stream_client.aclose = AsyncMock()
+    mock_cls.return_value = stream_client
+    with patch("app.passthrough_proxy.resolve_vision_capability",
+               return_value=VisionCapability(vision=False, source="props", detail="blind")):
+        with client.stream("POST", "/v1/messages", json={**_read_step(), "stream": True}) as response:
+            b"".join(response.iter_bytes())
+    sent = stream_client.build_request.call_args.kwargs["json"]["messages"][2]["content"][0]["content"][0]
+    assert sent["type"] == "text"
+
+
+@patch("app.passthrough_proxy.httpx.AsyncClient")
+def test_vllm_grant_is_never_probed(mock_cls: MagicMock, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    # vLLM has no /props: a probe would read as blind and strip images it may accept.
+    from app import passthrough_proxy
+
+    monkeypatch.setattr(passthrough_proxy, "granted_backend", lambda grant: "vllm")
+    mock_cls.return_value = _post_client()
+    with patch("app.passthrough_proxy.resolve_vision_capability") as probe:
+        response = client.post("/v1/messages", json=_read_step())
+    assert response.status_code == 400 and response.json()["error"]["type"] == "unsupported_backend_protocol"
     probe.assert_not_called()

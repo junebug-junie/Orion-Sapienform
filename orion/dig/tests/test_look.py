@@ -14,7 +14,7 @@ NOW = datetime(2026, 11, 13, 21, 0, 0, tzinfo=timezone.utc)
 NOW_MS = int(NOW.timestamp() * 1000)
 
 
-def _frame(d: Path, camera: str, stream: str, ms: int, body: bytes = b"\xff\xd8jpeg") -> Path:
+def _frame(d: Path, camera: str, stream: str, ms: int, body: bytes = b"\xff\xd8jpeg\xff\xd9") -> Path:
     # The name frame_store.save_frame writes: <camera>_<stream>_<epoch_ms>_<sha8>.jpg
     p = d / f"{camera}_{stream}_{ms}_0a1b2c3d.jpg"
     p.write_bytes(body)
@@ -41,10 +41,10 @@ def test_newest_frame_for_that_stream_only(dirs) -> None:
 
 def test_look_copies_logs_and_says_live(dirs) -> None:
     frames, home = dirs
-    _frame(frames, "cam0", "cam0", NOW_MS - 500, b"\xff\xd8office")
+    _frame(frames, "cam0", "cam0", NOW_MS - 500, b"\xff\xd8office\xff\xd9")
     lines, rec = lk.look("office", home=home, directory=frames, now=NOW)
     dest = Path(rec["path"])
-    assert dest.read_bytes() == b"\xff\xd8office"
+    assert dest.read_bytes() == b"\xff\xd8office\xff\xd9"
     assert dest.parent.parent == home / "look"
     assert rec["camera"] == "cam0" and rec["live"] is True and rec["age_sec"] == 0.5
     text = "\n".join(lines)
@@ -129,3 +129,27 @@ def test_dig_cli_look(dirs, monkeypatch, capsys) -> None:
     assert "look: your outdoor camera (walkway)" in out and "full result:" in out
     assert dig.main(["look", "kitchen"]) == 1
     assert "unknown camera" in capsys.readouterr().err
+
+
+def test_half_written_newest_frame_falls_back_to_the_one_before(dirs) -> None:
+    frames, home = dirs
+    whole = _frame(frames, "cam0", "cam0", NOW_MS - 900, b"\xff\xd8whole\xff\xd9")
+    _frame(frames, "cam0", "cam0", NOW_MS - 300, b"\xff\xd8cut-off mid-wri")  # cv2 still writing
+    _, rec = lk.look("office", home=home, directory=frames, now=NOW)
+    assert rec["source"] == str(whole) and Path(rec["path"]).read_bytes() == b"\xff\xd8whole\xff\xd9"
+
+
+def test_all_newest_frames_cut_off_is_an_error(dirs) -> None:
+    frames, home = dirs
+    for k in range(3):
+        _frame(frames, "cam0", "cam0", NOW_MS - 100 * k, b"\xff\xd8partial")
+    with pytest.raises(lk.LookError, match="incomplete"):
+        lk.look("office", home=home, directory=frames, now=NOW)
+    assert not (home / "look" / lk.LOG_NAME).exists()
+
+
+def test_malformed_log_rows_do_not_crash_the_cap(tmp_path: Path) -> None:
+    log = tmp_path / lk.LOG_NAME
+    log.write_text("not json\n" + json.dumps({"looked_at": "2026-11-13T20:59:00"}) + "\n"
+                   + json.dumps({"looked_at": None}) + "\n" + json.dumps({"looked_at": NOW.isoformat()}) + "\n")
+    assert lk.looks_in_last_hour(log, NOW) == 1

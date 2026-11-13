@@ -104,6 +104,6 @@ orion-durable-runs bakes `families.yaml` into its image and loads it at boot (it
 
 ## PR link
 
-See the PR.
+https://github.com/junebug-junie/Orion-Sapienform/pull/3297
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

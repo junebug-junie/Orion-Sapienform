@@ -3141,8 +3141,13 @@ class EndogenousOutreach:
         require_why_juniper: bool = False,
         finding_key: Optional[str] = None,
         cap_exempt: bool = False,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Deliver a message ANOTHER loop composed, through this module's gates.
+
+        ``session_id`` (2026-11-13, intentions Prime takes on): deliver into this chat thread instead of the
+        newest connected socket's session (``_active_session_id``). The carry turn of a promise answers in the
+        thread where the promise was made. Every gate below still applies. None: unchanged behavior.
 
         Door policy (2026-11-10, ``scripts/outreach_door_policy.py``):
         ``require_why_juniper`` (curiosity, readings): the text must end with a
@@ -3276,7 +3281,7 @@ class EndogenousOutreach:
                     forced=False,
                     tension_reason=tension_reason,
                 )
-            session_id = self._active_session_id()
+            session_id = str(session_id) if session_id else self._active_session_id()
             appendix = str(record_appendix or "").strip()
             delivered = f"{body}\n\n{appendix}" if appendix else body
             await self._deliver(
@@ -3752,6 +3757,34 @@ class EndogenousOutreach:
             session_id=session_id,
             source_tag=source_tag,
         )
+
+    async def record_in_thread(self, *, text: str, session_id: str, correlation_id: str, source_tag: str,
+                               meta: Optional[Dict[str, Any]] = None) -> bool:
+        """Write one message of Orion's into ONE chat thread's history and nothing else: no socket push, no
+        notification, no outreach act, and it does not count on the daily cap. For a reply that must be in the
+        thread when Juniper opens it even though the live send was held (intentions Prime takes on: the carry
+        turn's reply when quiet hours, the cap or the economy held the ping). False when nothing would be
+        published (no bus, or PUBLISH_CHAT_HISTORY_LOG off). True means PUBLISHED, not stored: publish_chat_history
+        logs and swallows a failed publish, so the caller checks for the chat_history_log row itself."""
+        from scripts.chat_history import build_chat_history_envelope, publish_chat_history
+
+        if not self._bus or not getattr(self._bus, "enabled", False):
+            return False
+        try:
+            from scripts.chat_history import settings as _history_settings
+
+            if not getattr(_history_settings, "PUBLISH_CHAT_HISTORY_LOG", True):
+                return False
+        except ImportError:
+            pass
+        client_meta: Dict[str, Any] = {"unsolicited": True, "source": str(source_tag), "delivered_live": False,
+                                       **dict(meta or {})}
+        env = build_chat_history_envelope(
+            content=text, role="assistant", session_id=session_id, correlation_id=correlation_id, speaker="Orion",
+            tags=[OUTREACH_TAG, source_tag], message_id=str(uuid4()), client_meta=client_meta,
+        )
+        await publish_chat_history(self._bus, [env])
+        return True
 
     def _push_to_sockets(
         self,

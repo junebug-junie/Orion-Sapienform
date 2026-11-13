@@ -208,7 +208,10 @@ class PersonalityValues:
         shown option (matched to nothing), so a failed embed can only lower a share, never raise it."""
         if not snap.tendencies:
             return
-        since = now - timedelta(days=pv.CAP_DAYS)
+        # The guard judges CAP_DAYS COMPLETE UTC days ending yesterday (pv.runaway_caps), so read from the
+        # start of the oldest one. ``now - 7 days`` cut the oldest day short after noon and broke every run.
+        today = now.astimezone(timezone.utc).date()
+        since = datetime.combine(today - timedelta(days=pv.CAP_DAYS), datetime.min.time(), tzinfo=timezone.utc)
         recent = [s for s in shown if s.occurred_at >= since]
         texts = list(dict.fromkeys(t for s in recent for t in s.texts))[:GUARD_MAX_TEXTS]
         vecs = await self._embed_many(texts)

@@ -34,12 +34,13 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Annotated, Any, Literal, Mapping, Optional, Sequence, Union
+from typing import Annotated, Any, Callable, Literal, Mapping, Optional, Sequence, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import CONCERN_HORIZON_SEC, clamp_hours, describe_effects
+from orion.prime.intention import has_adapter
 from orion.prime.state import (
     CONCERN_TEXT_CAP,
     MAX_CONCERNS,
@@ -106,7 +107,19 @@ class RegulateMoveV1(BaseModel):
     hours: Any = None
 
 
-Move = Annotated[Union[CuriosityFocusMoveV1, RegulateMoveV1], Field(discriminator="kind")]
+class TakeOnMoveV1(BaseModel):
+    """Take a held concern on (Step -1, orion/prime/intention.py): Orion carries it out in one run of its own.
+    ``not_before`` is anything: a bad value is a visible refusal (apply_answer), never a parse error that loses
+    the thought."""
+
+    model_config = ConfigDict(extra="ignore")
+    kind: Literal["take_on"]
+    concern_id: str = Field(min_length=1, max_length=64)
+    why: str = Field(min_length=1, max_length=600)
+    not_before: Any = None
+
+
+Move = Annotated[Union[CuriosityFocusMoveV1, RegulateMoveV1, TakeOnMoveV1], Field(discriminator="kind")]
 
 
 class PrimeAnswerV1(BaseModel):
@@ -195,6 +208,16 @@ _ARC_REFS_JSON = '''"refs": [{"kind": "arc" | "act", "id": "..."}]'''
 _EVENT_REFS_JSON = '''"refs": [{"kind": "act", "id": "..."}]'''
 
 
+TAKE_ON_PROMPT = """
+
+Another kind of move: take a concern on. Some concerns are things you told Juniper you would do; those are marked
+"(you can take this on)". Taking one on means you will carry it out: one turn of your own runs it, and the reply goes
+back into the chat where you said it (Juniper is also told when the usual rules for messaging her allow). It is
+your choice. You may take it on now, set a time not before which it runs, keep it for later ("not yet"), or drop
+it with why ("let go"). Taking it on is graded on whether the reply got written. One move per thought:
+"move": {"kind": "take_on", "concern_id": "<concern_id>", "why": "...", "not_before": null | "<ISO time UTC>"}"""
+
+
 ORGAN_REPLIES_PROMPT = """
 
 Organs can answer you. Curiosity's own planner may challenge a question or signal of yours (it still happens,
@@ -204,16 +227,18 @@ organ, not a command: you may ask differently, wait, or drop the concern."""
 
 
 def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False,
-                  organ_replies: bool = False) -> str:
+                  organ_replies: bool = False, take_on: bool = False) -> str:
     """The base prompt, plus the regulate move only when regulation is on and some family receives it, plus
-    the organ-replies paragraph when that section is in the frame.
-    ``events``: concerns come from funded event wants (event_id), not arcs."""
+    the organ-replies paragraph when that section is in the frame, plus the take-on move when it is on
+    (PRIME_INTENTION_TAKE_ON_ENABLED). ``events``: concerns come from funded event wants (event_id), not arcs."""
     base = SYSTEM_PROMPT
     if events:
         base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
                 .replace(_ARC_REFS, _EVENT_REFS).replace(_ARC_REFS_JSON, _EVENT_REFS_JSON))
     if receptors and any(receptors.values()):
         base += REGULATE_PROMPT
+    if take_on:
+        base += TAKE_ON_PROMPT
     if organ_replies:
         base += ORGAN_REPLIES_PROMPT
     return base
@@ -254,6 +279,12 @@ class FrameInputs:
     # Turn hand-back (living Prime Part 2, orion/prime/handback.py turn_lines): the latest finished turns.
     # None: the hand-back is off and the section is not shown.
     turns: Optional[list[str]] = None
+    # Intentions (Step -1, PRIME_INTENTION_TAKE_ON_ENABLED): the take-on move is offered and concerns with an
+    # adapter are marked. ``intentions``: lines for WHAT I TOOK ON (None: the section is not shown).
+    take_on: bool = False
+    intentions: Optional[list[str]] = None
+    # Concerns already taken on (open or ended): never marked "you can take this on".
+    no_take_on: set[str] = field(default_factory=set)
     # Personality tendencies (orion/prime/tending.py): the same <= 2 ``tending:`` lines the Prime block shows.
     # None with no error: PRIME_PERSONALITY_LINE_ENABLED is off and the section is not shown.
     tending: Optional[list[str]] = None
@@ -398,8 +429,11 @@ def _curiosity_lines(inputs: FrameInputs) -> list[str]:
     return lines or ["(no recent investigate runs)"]
 
 
-def _concern_line(c: PrimeConcernV1, now: datetime) -> str:
+def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
+                  no_take_on: frozenset[str] = frozenset()) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
+    if take_on and c.graded != "settled" and c.concern_id not in no_take_on and has_adapter(c):
+        graded += "; you can take this on"
     ref = c.event_ref or ""
     about = (f"from turn {ref[len('turn:'):]}" if ref.startswith("turn:")
              else f"event {ref}" if ref else f"arc {c.arc_id or 'none'}")
@@ -474,10 +508,14 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     """The user prompt: a few thousand characters, every section marked with its freshness."""
     sections = [
         "WHAT CHANGED SINCE YOUR LAST THOUGHT:\n" + "\n".join(f"- {c}" for c in state.pending_changes),
-        "YOUR CONCERNS:\n" + ("\n".join(_concern_line(c, inputs.now) for c in state.concerns) or "(none)"),
+        "YOUR CONCERNS:\n" + ("\n".join(_concern_line(c, inputs.now, take_on=inputs.take_on,
+                                                       no_take_on=frozenset(inputs.no_take_on))
+                                         for c in state.concerns) or "(none)"),
         "HOW YOUR CONCERNS HAVE ENDED:\n" + track_record(state),
         "YOUR LAST READING:\n" + (state.last_reading or "(none yet)"),
         "WHAT HAPPENED TO YOUR EARLIER MOVES:\n" + ("\n".join(f"- {o}" for o in state.recent_outcomes) or "(none yet)"),
+        *(["WHAT YOU TOOK ON (concerns you chose to carry out):\n" + "\n".join(inputs.intentions)]
+          if inputs.intentions is not None else []),
         *(["TURNS THAT HANDED BACK TO YOU (finished chat, curiosity, consult and letter turns, newest first):\n"
            + "\n".join(inputs.turns)] if inputs.turns is not None else []),
         "QUESTIONS YOU ASKED THAT ARE STILL OPEN:\n" + ("\n".join(
@@ -518,7 +556,7 @@ class Applied:
     dropped: list[str]
     kept: list[str]
     warnings: list[str]
-    move: Optional[Union[CuriosityFocusMoveV1, RegulateMoveV1]]
+    move: Optional[Union[CuriosityFocusMoveV1, RegulateMoveV1, TakeOnMoveV1]]
     move_refusal: Optional[str]
     # The move's references, checked for shape; the runtime still resolves each before sending.
     refs: list[RefV1] = field(default_factory=list)
@@ -551,12 +589,16 @@ def apply_answer(
     state: PrimeStateV1, answer: PrimeAnswerV1, *, now: datetime, arc_ids: list[str], focus_pending: Optional[bool],
     receptors: Optional[Mapping[str, Sequence[str]]] = None, event_ids: Optional[list[str]] = None,
     event_wants: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    take_on_check: Optional[Callable[[TakeOnMoveV1, PrimeStateV1], Optional[str]]] = None,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
     ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
     ``event_ids``: event mode is on; a new concern must name one of these funded events (else not added).
     ``event_wants``: event_ref -> its listed want (``orion.prime.choice.listed_wants``); a new concern records
-    the want's family and ``care_promoted`` (personality rev 4 choice point)."""
+    the want's family and ``care_promoted`` (personality rev 4 choice point).
+
+    ``take_on_check(move, state after the concern edits)``: why a take-on cannot go, or None; None as the
+    argument = taking on is off (a take_on move is refused, and shown)."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -605,7 +647,13 @@ def apply_answer(
         added.append(concern.concern_id)
 
     move, refusal, refs = answer.move, None, []
-    if isinstance(move, RegulateMoveV1):
+    if isinstance(move, TakeOnMoveV1):
+        edited = state.model_copy(update={"concerns": concerns})
+        refusal = ("taking a concern on is switched off" if take_on_check is None
+                   else take_on_check(move, edited))
+        if refusal is None:
+            move = move.model_copy(update={"why": move.why[:600]})
+    elif isinstance(move, RegulateMoveV1):
         refusal = regulate_refusal(move, state, receptors, now)
         if refusal is None:
             move = move.model_copy(update={"hours": clamp_hours(move.hours), "why": move.why[:600]})
@@ -661,6 +709,10 @@ def summary_note(applied: Applied) -> str:
     if isinstance(applied.move, RegulateMoveV1):
         m = applied.move
         parts.append(f"move regulate {m.direction} {m.family} for {m.hours:g} h: {m.why[:120]!r}")
+    elif isinstance(applied.move, TakeOnMoveV1):
+        m = applied.move
+        when = f" not before {m.not_before}" if m.not_before else ""
+        parts.append(f"move take_on {m.concern_id}{when}: {m.why[:120]!r}")
     elif applied.move is not None:
         cites = f" refs {', '.join(f'{r.kind}:{r.id}' for r in applied.refs)}" if applied.refs else ""
         parts.append(f"move curiosity_focus {applied.move.question[:120]!r}{cites}")

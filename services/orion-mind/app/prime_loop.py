@@ -157,6 +157,8 @@ from orion.prime.acts import (
     treated_focus_gone,
 )
 from orion.prime import day_letter as dl
+from orion.prime.choice import body_situation, prime_choice, shown_concerns
+from orion.prime.tending import FRAME_PATH as PERSONALITY_FRAME_PATH, tendencies_from_frame
 from orion.prime.handback import (
     HANDBACK_CHANNEL,
     TURNS_KEY,
@@ -197,6 +199,7 @@ from orion.refs import RefV1, resolve as resolve_ref
 from orion.schemas.cockpit_sighting import CockpitHopV1
 from orion.schemas.curiosity_replica import REPLIES_KEY, CuriosityReplicaRepliesViewV1
 from orion.schemas.grammar import ActV1
+from orion.schemas.personality import PERSONALITY_CHOICE_CHANNEL, PERSONALITY_CHOICE_KIND
 from orion.schemas.physiology_want import FundedEventWantsV1
 from orion.schemas.introspect import (
     IntrospectRequestV1,
@@ -719,11 +722,50 @@ class PrimeRuntime(MindLoopRuntime):
                 rec = await self._read_regulation(reg.family, reg.signal_id)
                 inputs.regulation_effects[reg.signal_id] = (
                     None if rec is None or rec[0] is None or rec[0].signal_id != reg.signal_id else rec[1])
+        if self._personality_line_on():
+            inputs.tending, inputs.tending_error = await self._read_tending(now)
         frame = build_frame(self.state, inputs)
+        # The choice point's options: the concerns this frame shows, captured now (the answer may add or drop).
+        shown = shown_concerns(self.state.concerns)
         reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
                                                     organ_replies=shows_organ_replies(inputs)), frame)
-        reply.context.update(curiosity=curiosity, receptors=receptors)
+        reply.context.update(curiosity=curiosity, receptors=receptors, shown_concerns=shown,
+                             ranked_event_ids=event_ids(inputs) if inputs.event_mode else [])
         return reply
+
+    # --- personality (spec 2026-10-16 rev 4): the tending lines and the choice point ------------
+    def _personality_line_on(self) -> bool:
+        return bool(getattr(self.s, "PRIME_PERSONALITY_LINE_ENABLED", False))
+
+    async def _read_tending(self, now: datetime) -> tuple[Optional[list[str]], Optional[str]]:
+        """The same <= 2 ``tending:`` lines the Prime block shows (orion/prime/tending.py). Fail-open: a
+        failed or stale read is a gap line in the frame, never a failed thought."""
+        raw, err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}{PERSONALITY_FRAME_PATH}")
+        if raw is None:
+            return None, f"the personality frame could not be read ({err})"
+        tends, why = tendencies_from_frame(raw, now=now)
+        if why in ("invalid_frame", "stale"):
+            return None, f"the personality frame is {'stale' if why == 'stale' else 'unreadable'}"
+        return [t.line() for t in tends], None
+
+    async def _publish_choice(self, *, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime,
+                              reply: ModelReply, answer: Any) -> str:
+        """One PersonalityChoiceV1 for this thought, when it made one (orion/prime/choice.py). Fail-open:
+        a build or publish failure is logged and the thought goes on. Returns the outcome for the log line."""
+        try:
+            choice, why = prime_choice(
+                answer, reply.context.get("shown_concerns") or [], thought_id=thought_id, occurred_at=now,
+                ranked_event_ids=reply.context.get("ranked_event_ids") or [],
+                situation=body_situation(inputs.body, self._binding(inputs.body), event_mode=inputs.event_mode),
+                act_id=act.act_id, correlation_id=chat_correlation_id(thought_id))
+            if choice is None:
+                return why
+            await self.bus.publish(PERSONALITY_CHOICE_CHANNEL, BaseEnvelope(
+                kind=PERSONALITY_CHOICE_KIND, source=self.source, payload=choice.model_dump(mode="json")))
+            return f"{why}:published"
+        except Exception as exc:  # noqa: BLE001 -- a choice row must never break a thought
+            logger.warning("prime_choice_publish_failed thought=%s err=%s", thought_id, type(exc).__name__)
+            return "publish_failed"
 
     # --- reads -----------------------------------------------------------------------------
     async def _read(self, url: str) -> tuple[Optional[dict[str, Any]], Optional[str]]:
@@ -908,8 +950,11 @@ class PrimeRuntime(MindLoopRuntime):
             await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now,
                                  refs=applied.refs)
         note = summary_note(applied)
-        logger.info("prime_thought thought=%s route=%s %s reading=%r", thought_id, reply.route, note,
-                    answer.reading[:200])
+        # After the move: the pick is Orion's choice whether the move was sent, held back or refused.
+        choice = await self._publish_choice(act=act, thought_id=thought_id, inputs=inputs, now=now, reply=reply,
+                                            answer=answer)
+        logger.info("prime_thought thought=%s route=%s choice=%s %s reading=%r", thought_id, reply.route, choice,
+                    note, answer.reading[:200])
         return True, note
 
     async def _unresolved(self, refs: list[RefV1]) -> list[str]:

@@ -2116,7 +2116,14 @@ turns (`services/orion-mind/app/prime_loop.py`).
   `cockpit_turn_sighting` shows a block the motor did not get until the governor is rebuilt.
 - **Finalize judge:** the governor passes the block to the judge ahead of the Situation notes, so a
   correct "I'm holding X [prime_concern:..]" is grounded for the judge too.
-- **Eval:** `python orion/prime/evals/run_prime_block_eval.py [--live]`.
+- **Eval:** `python orion/prime/evals/run_prime_block_eval.py [--live [--durable-runs URL]]`.
+- **Tending lines (personality rev 4, 2026-11-13):** at most 2 lines `- tending: <label>
+  [disposition:<id>]` from `<HUB_CURIOSITY_DURABLE_RUNS_URL>/personality/frame` (orion/prime/tending.py):
+  active choice-built tendencies with at least 10 weighted choices, strongest first. They are dropped first
+  when the block is over its cap (the other lines' free text may be cut shorter for them, never dropped).
+  `disposition` is a Prime ref kind, so the citation gate judges them. The log line carries `tending=<n>`;
+  a skipped read logs `prime_block_tending_skipped reason=...`. 1 s timeout, fail-open. Kill switch
+  `PRIME_PERSONALITY_LINE_ENABLED=false`. No shadow (Juniper 2026-11-13).
 
 ## Draft-first chat replies (spec L8)
 

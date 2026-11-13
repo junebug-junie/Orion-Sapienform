@@ -913,3 +913,71 @@ async def test_unified_turn_prime_block_kill_switch_and_unreadable_redis():
 
     req, _ = await _run_turn_capturing_prime(enabled=True, redis=_Down())
     assert req.prime_block and "absent" in req.prime_block  # labelled absent, turn still ran
+
+
+@pytest.mark.asyncio
+async def test_unified_turn_prime_block_carries_tending_lines_and_logs_their_count(caplog):
+    """Personality rev 4: the block's tending line (orion/prime/tending.py) rides the same block, with a
+    disposition ref the citation gate judges, and the prime_block log line counts it (tending=<n>)."""
+    import logging
+
+    from orion.prime.tending import TendingV1
+
+    tend = TendingV1("disp-aaaa", "people over pipeline, 11 of 14", 12.0)
+    with (
+        caplog.at_level(logging.INFO, logger="orion.hub.turn_orchestrator"),
+        patch("orion.hub.turn_orchestrator._read_prime_tending", AsyncMock(return_value=([tend], None))),
+    ):
+        req, _ = await _run_turn_capturing_prime(enabled=True, redis=_live_prime_redis())
+    assert "- tending: people over pipeline, 11 of 14 [disposition:disp-aaaa]" in req.prime_block
+    logs = "\n".join(r.getMessage() for r in caplog.records)
+    assert "prime_block corr=" in logs and "tending=1" in logs
+
+
+@pytest.mark.asyncio
+async def test_read_prime_tending_is_fail_open():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from orion.hub import turn_orchestrator as to
+
+    assert await to._read_prime_tending(SimpleNamespace(PRIME_PERSONALITY_LINE_ENABLED=False)) == ([], "disabled")
+    assert await to._read_prime_tending(SimpleNamespace(HUB_CURIOSITY_DURABLE_RUNS_URL="")) == ([], "no_url")
+    now = datetime.now(timezone.utc).isoformat()
+    frame = {"schema_version": "personality.frame.v1", "generated_at": now, "dispositions": [
+        {"disposition_id": "disp-a", "label": "a over b, 10 of 12", "origin": "choice", "status": "active",
+         "weight": 10.0, "evidence_count": 12, "first_seen_at": now, "last_reinforced_at": now}]}
+
+    class _Resp:
+        def __init__(self, code, body):
+            self.status_code, self._body = code, body
+
+        def json(self):
+            return self._body
+
+    def _client(resp=None, exc=None):
+        class _C:
+            def __init__(self, *a, **k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def get(self, url):
+                assert url == "http://dr:8124/personality/frame"
+                if exc:
+                    raise exc
+                return resp
+        return _C
+
+    cfg = SimpleNamespace(HUB_CURIOSITY_DURABLE_RUNS_URL="http://dr:8124/")
+    with patch("httpx.AsyncClient", _client(_Resp(200, frame))):
+        tends, why = await to._read_prime_tending(cfg)
+    assert why is None and [t.disposition_id for t in tends] == ["disp-a"]
+    with patch("httpx.AsyncClient", _client(_Resp(503, {}))):
+        assert await to._read_prime_tending(cfg) == ([], "http_503")
+    with patch("httpx.AsyncClient", _client(exc=ConnectionError("down"))):
+        assert await to._read_prime_tending(cfg) == ([], "fetch_failed:ConnectionError")

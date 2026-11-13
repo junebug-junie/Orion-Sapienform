@@ -332,7 +332,7 @@ Spec: docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.m
   on. The `prime_thought` log line carries `choice=<outcome>` (`chosen:published`, `declined_all:published`,
   `no_concerns`, `one_concern_picked`, `pick_not_shown`, `pick_conflicts_move`, `no_pick`, `publish_failed`). Not behind a flag: it is
   the graph's evidence and costs nothing.
-- **Tending lines:** with `PRIME_PERSONALITY_LINE_ENABLED` (default true, kill switch) the frame gains WHAT YOU
+- **Tending lines:** with `PRIME_PERSONALITY_LINE_ENABLED` (ships false until the live labels read cleanly; a label fix is in progress) the frame gains WHAT YOU
   TEND TO CHOOSE, the same <= 2 `tending: <label> [disposition:<id>]` lines Hub's Prime block shows, read from
   `PRIME_DURABLE_RUNS_URL/personality/frame` (active choice nodes with >= 10 weighted choices). An unreadable
   or stale frame is a gap line; none yet reads "(none yet: ...)".

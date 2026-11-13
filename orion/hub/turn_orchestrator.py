@@ -996,7 +996,7 @@ async def _read_prime_tending(settings: Any) -> tuple[list[Any], str | None]:
     """The Prime block's personality ``tending`` lines (orion/prime/tending.py): one GET on durable-runs
     ``/personality/frame``. (tendencies, skip reason). Fail-open and bounded: off, no URL, unreachable,
     slow, non-200 or a stale/invalid frame -> no lines, never raises."""
-    if not bool(getattr(settings, "PRIME_PERSONALITY_LINE_ENABLED", True)):
+    if not bool(getattr(settings, "PRIME_PERSONALITY_LINE_ENABLED", False)):
         return [], "disabled"
     root = str(getattr(settings, "HUB_CURIOSITY_DURABLE_RUNS_URL", "") or "").strip().rstrip("/")
     if not root:

@@ -7,7 +7,7 @@
 - The Prime block in every unified turn gains up to 2 lines `- tending: <label> [disposition:<id>]`: what Orion's past choices show Orion tends to pick. Only choice-built tendencies with at least 10 weighted choices are shown. They are the first lines dropped when the block is over its 600-character cap.
 - Prime's own thought frame shows the same lines (section WHAT YOU TEND TO CHOOSE), so Prime picks with its tendencies in view.
 - `disposition` is now a Prime ref kind, so the existing citation gate judges `[disposition:<id>]` refs.
-- New flag `PRIME_PERSONALITY_LINE_ENABLED` (hub and orion-mind) ships `true`. No shadow (Juniper, 2026-11-13).
+- New flag `PRIME_PERSONALITY_LINE_ENABLED` (hub and orion-mind) ships `false` for now (coordinator, 2026-11-13): the live choice-built labels still read as noise ("turn start context is stale snapshot over camera layer mediation not closeness"). A label fix is in progress, and the line turns on once labels read cleanly. All line code and tests stay; tests turn the flag on explicitly. The Prime choice producer is not behind this flag and stays on.
 
 ## Outcome moved
 
@@ -54,9 +54,9 @@ Prime becomes the densest real choice lane for the personality graph (spec rev 4
 
 ## Env/config changes
 
-- Added keys: `PRIME_PERSONALITY_LINE_ENABLED=true` (orion-hub, orion-mind).
+- Added keys: `PRIME_PERSONALITY_LINE_ENABLED=false` (orion-hub, orion-mind; settings and compose defaults false too).
 - `.env_example` updated: yes (both services), and both `docker-compose.yml` files pass it.
-- local `.env` synced with `python scripts/sync_local_env_from_example.py`: yes (`orion-hub: +PRIME_PERSONALITY_LINE_ENABLED`, `orion-mind: +PRIME_PERSONALITY_LINE_ENABLED`).
+- local `.env` synced with `python scripts/sync_local_env_from_example.py`: yes (`orion-hub: +PRIME_PERSONALITY_LINE_ENABLED`, `orion-mind: +PRIME_PERSONALITY_LINE_ENABLED`); the local values were then set to `false` by hand, because the sync script keeps existing values.
 - skipped keys requiring operator action: none.
 
 ## How each choice is built
@@ -151,7 +151,7 @@ docker logs orion-athena-hub 2>&1 | grep 'prime_block corr' | tail -3   # tendin
 - Severity: medium. Concern: the model may ignore `pick` at first. Mitigation: the move's `concern_id` stands in; the `choice=no_pick` count on `prime_thought` lines shows how often the pick is missing.
 - Severity: medium. Concern: thoughts that hold 0 or 1 concern make few or no rows (the 2026-11-12 fixture held 0; live Redis on 2026-11-13 holds 2, thoughts_total 242). Mitigation: `declined_all` covers 1 concern + "none"; the rate is visible in the logs and in `personality_choice`. M1 (20 rows a day across lanes) is UNVERIFIED.
 - Severity: low. Concern: the Hub block now waits on one more GET (1 s cap). Mitigation: it runs concurrently with the Redis reads, so the worst case stays about 1 s.
-- Severity: low. Concern: no tendency has 10 weighted choices yet, so the tending line renders nothing at first. That is the intended rest state, not a fault.
+- Severity: low. Concern: the tending line ships off, so move 4 ("Juniper feels it") is not live yet. Mitigation: flip `PRIME_PERSONALITY_LINE_ENABLED=true` in both services once the label fix lands; the line also needs a tendency with 10 weighted choices before it shows anything.
 
 ## PR link
 

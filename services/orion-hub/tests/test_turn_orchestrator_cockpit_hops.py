@@ -942,7 +942,9 @@ async def test_read_prime_tending_is_fail_open():
     from orion.hub import turn_orchestrator as to
 
     assert await to._read_prime_tending(SimpleNamespace(PRIME_PERSONALITY_LINE_ENABLED=False)) == ([], "disabled")
-    assert await to._read_prime_tending(SimpleNamespace(HUB_CURIOSITY_DURABLE_RUNS_URL="")) == ([], "no_url")
+    assert await to._read_prime_tending(SimpleNamespace()) == ([], "disabled")  # ships off
+    assert await to._read_prime_tending(SimpleNamespace(PRIME_PERSONALITY_LINE_ENABLED=True,
+                                                        HUB_CURIOSITY_DURABLE_RUNS_URL="")) == ([], "no_url")
     now = datetime.now(timezone.utc).isoformat()
     frame = {"schema_version": "personality.frame.v1", "generated_at": now, "dispositions": [
         {"disposition_id": "disp-a", "label": "a over b, 10 of 12", "origin": "choice", "status": "active",
@@ -973,7 +975,7 @@ async def test_read_prime_tending_is_fail_open():
                 return resp
         return _C
 
-    cfg = SimpleNamespace(HUB_CURIOSITY_DURABLE_RUNS_URL="http://dr:8124/")
+    cfg = SimpleNamespace(PRIME_PERSONALITY_LINE_ENABLED=True, HUB_CURIOSITY_DURABLE_RUNS_URL="http://dr:8124/")
     with patch("httpx.AsyncClient", _client(_Resp(200, frame))):
         tends, why = await to._read_prime_tending(cfg)
     assert why is None and [t.disposition_id for t in tends] == ["disp-a"]

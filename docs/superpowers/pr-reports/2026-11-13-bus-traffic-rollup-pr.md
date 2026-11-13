@@ -147,6 +147,6 @@ scripts/safe_docker_build.sh orion-bus-mirror up -d --build
 
 ## PR link
 
-(filled in on the PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3282
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

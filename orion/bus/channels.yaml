@@ -3210,6 +3210,22 @@ channels:
     stability: "experimental"
     since: "2026-07-16"
 
+  - name: "orion:bus:traffic:rollup"
+    kind: "event"
+    schema_id: "BusTrafficRollupV1"
+    message_kind: "bus.traffic.rollup.v1"
+    # One closed 5-minute bucket of bus traffic (per-channel counts, cross-organ
+    # hops, decode failures) from orion-bus-mirror's rate_rollup accumulator.
+    # orion-sql-writer stores it as one row in bus_traffic_rollup_5m (insert-only,
+    # rollup_id = "<node>:<bucket_start>"). Patch 1 of
+    # docs/superpowers/specs/2026-11-11-causal-geometry-redesign.md; the reader is
+    # the Patch 2 replay eval. The mirror subscribes to orion:* and so also counts
+    # its own rollup message (one per bucket) -- expected, not a loop.
+    producer_services: ["orion-bus-mirror"]
+    consumer_services: ["orion-sql-writer"]
+    stability: "experimental"
+    since: "2026-11-13"
+
   # --- Unified turn (orion-thought + orion-harness-governor) ---
   - name: "orion:thought:request"
     kind: "request"

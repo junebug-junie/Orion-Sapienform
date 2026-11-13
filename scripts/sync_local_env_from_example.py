@@ -457,6 +457,9 @@ SYNC_PREFIXES = (
     # Neither matched a prefix: the default run visited the .env and added nothing.
     "PERSON_GRAPH_",
     "PERSON_SIGHTING_",
+    # Bus traffic rollup (orion-bus-mirror, 2026-11-13). The mirror's .env was not visited
+    # and no MIRROR_ prefix was synced, so the default run added nothing.
+    "MIRROR_TRAFFIC_",
     # Substrate dynamics tick (orion-substrate-runtime): propagation decay mode
     # (2026-11-03) matched no prefix, so the default run added nothing.
     "SUBSTRATE_DYNAMICS_",
@@ -579,6 +582,8 @@ SYNC_EXACT = frozenset(
 DEFAULT_SERVICES = (
     # Consult mode keys (ROOM_COMPANION_CONSULT_*, 2026-11-11). Not visited before.
     "orion-room-companion",
+    # Bus traffic rollup (MIRROR_TRAFFIC_*, 2026-11-13). Not visited before.
+    "orion-bus-mirror",
     "orion-memory-crystallizer",
     "orion-memory-consolidation",
     "orion-recall",

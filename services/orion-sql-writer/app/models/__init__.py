@@ -32,6 +32,7 @@ from .energy import (
 from .biometrics_summary import BiometricsSummarySQL
 from .biometrics_induction import BiometricsInductionSQL
 from .causal_geometry_snapshot import CausalGeometrySnapshotSQL
+from .bus_traffic_rollup import BusTrafficRollupSQL
 from .spark_introspection_log import SparkIntrospectionLogSQL
 from .spark_telemetry import SparkTelemetrySQL
 from .notify_models import (
@@ -151,6 +152,7 @@ __all__ = [
     "BiometricsSummarySQL",
     "BiometricsInductionSQL",
     "CausalGeometrySnapshotSQL",
+    "BusTrafficRollupSQL",
     "SparkIntrospectionLogSQL",
     "SparkTelemetrySQL",
     "BusFallbackLog",

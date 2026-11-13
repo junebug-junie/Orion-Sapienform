@@ -1,5 +1,6 @@
 import asyncio
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -9,10 +10,16 @@ from loguru import logger
 
 from orion.bus.census import load_channel_catalog_names
 from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.codec import DecodeResult, OrionCodec
 from orion.core.bus.resilience import run_subscription
 from orion.graph.falkor_client import RedisGraphQueryClient
+from orion.schemas.bus_traffic import (
+    BUS_TRAFFIC_ROLLUP_CHANNEL,
+    BUS_TRAFFIC_ROLLUP_KIND,
+    BusTrafficRollupV1,
+)
 
 from app.graph_writer import (
     BusSynapticGraphWriter,
@@ -22,11 +29,20 @@ from app.graph_writer import (
     summarize_chain_shapes,
     summarize_open_chains,
 )
+from app.rate_rollup import TrafficRollupAccumulator
 from app.settings import settings
 
 
 # Consecutive failed sqlite/graph writes before the mirror exits for a restart.
 MIRROR_MAX_CONSECUTIVE_WRITE_FAILURES = 50
+
+# Traffic rollup: how often the flush loop checks for closed 5-minute buckets, and
+# how many closed buckets it holds for retry while the bus refuses publishes (1 h).
+TRAFFIC_ROLLUP_FLUSH_CHECK_SEC = 10.0
+# A bucket is published this long after it ends, so a message stamped just before the
+# boundary (its SQLite commit still in flight) is counted in its own bucket.
+TRAFFIC_ROLLUP_FLUSH_GRACE_SEC = 5.0
+TRAFFIC_ROLLUP_MAX_PENDING = 12
 
 
 def _serialize_envelope(decoded: DecodeResult) -> str:
@@ -165,13 +181,19 @@ def _build_graph_writer() -> Optional[BusSynapticGraphWriter]:
 
 
 async def _record_graph_event(
-    writer: BusSynapticGraphWriter,
+    writer: Optional[BusSynapticGraphWriter],
     chain_tracker: ChainTracker,
     decoded: DecodeResult,
     channel: str,
     now_epoch: float,
     catalog_names: set[str],
+    rollup: Optional[TrafficRollupAccumulator] = None,
 ) -> None:
+    """Chain bookkeeping for one decoded envelope, then the graph writes.
+
+    ``writer`` is None when the graph is off but the traffic rollup is on: the
+    ChainTracker still runs so ``rollup`` gets cross-organ hops.
+    """
     try:
         fact = extract_bus_event_fact(
             decoded.envelope, channel=channel, now=now_epoch, catalog_names=catalog_names
@@ -184,6 +206,13 @@ async def _record_graph_event(
         # this correlation_id's "first sighting" entirely -- silently losing
         # the later leg's CAUSALLY_FOLLOWED_BY edge even once Falkor recovers.
         prior = chain_tracker.observe(fact)
+        if rollup is not None and prior is not None:
+            try:
+                rollup.observe_hop(prior[0], fact.organ_id, fact.observed_at_epoch - prior[1], now_epoch)
+            except Exception as exc:  # fail-open: the rollup never blocks the graph path
+                logger.warning("bus traffic rollup hop failed channel={} err={}", channel, exc)
+        if writer is None:
+            return
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, writer.record_publish, fact)
         if prior is not None:
@@ -250,6 +279,58 @@ async def _run_inflight_chain_summary_loop(chain_tracker: ChainTracker) -> None:
             logger.warning("bus synaptic graph in-flight chain summary failed: {}", exc)
 
 
+def _rollup_envelope(event: BusTrafficRollupV1) -> BaseEnvelope:
+    return BaseEnvelope(
+        kind=BUS_TRAFFIC_ROLLUP_KIND,
+        source=ServiceRef(name=settings.SERVICE_NAME, version=settings.SERVICE_VERSION, node=settings.NODE_NAME),
+        payload=event.model_dump(mode="json"),
+    )
+
+
+async def _flush_traffic_rollup_once(
+    bus: OrionBusAsync,
+    rollup: TrafficRollupAccumulator,
+    pending: "deque[BusTrafficRollupV1]",
+    now_epoch: float,
+) -> int:
+    """Moves closed buckets into ``pending`` and publishes them oldest first. Returns
+    the number published. Fail-open: a publish error logs a warning, leaves the rest
+    queued for the next tick, and never raises. ``pending`` is bounded
+    (TRAFFIC_ROLLUP_MAX_PENDING), so a long bus outage drops the oldest buckets.
+    """
+    for event in rollup.flush_closed(now_epoch, grace_sec=TRAFFIC_ROLLUP_FLUSH_GRACE_SEC):
+        if pending.maxlen is not None and len(pending) == pending.maxlen:
+            logger.warning("bus traffic rollup pending full; dropping bucket {}", pending[0].rollup_id)
+        pending.append(event)
+    published = 0
+    while pending:
+        event = pending[0]
+        try:
+            await bus.publish(BUS_TRAFFIC_ROLLUP_CHANNEL, _rollup_envelope(event))
+        except Exception as exc:
+            logger.warning(
+                "bus traffic rollup publish failed rollup_id={} pending={} err={}",
+                event.rollup_id, len(pending), exc,
+            )
+            break
+        pending.popleft()
+        published += 1
+    return published
+
+
+async def _run_traffic_rollup_loop(bus: OrionBusAsync, rollup: TrafficRollupAccumulator) -> None:
+    """Publishes each closed 5-minute bucket on orion:bus:traffic:rollup. The mirror
+    itself subscribes to orion:*, so each rollup message is also counted in the next
+    bucket (one message per bucket, on that channel) -- expected, not a feedback loop."""
+    pending: "deque[BusTrafficRollupV1]" = deque(maxlen=TRAFFIC_ROLLUP_MAX_PENDING)
+    while True:
+        await asyncio.sleep(TRAFFIC_ROLLUP_FLUSH_CHECK_SEC)
+        try:
+            await _flush_traffic_rollup_once(bus, rollup, pending, time.time())
+        except Exception as exc:  # fail-open, like the other background loops here
+            logger.warning("bus traffic rollup flush failed: {}", exc)
+
+
 def build_heartbeat_chassis() -> HeartbeatOnly:
     """Own, independent bus connection publishing SystemHealthV1 to orion:system:health
     every HEARTBEAT_INTERVAL_SEC. Deliberately separate from `bus` above (the mirror's own
@@ -291,13 +372,29 @@ async def mirror_bus() -> None:
     Path(settings.MIRROR_PARQUET_DIR).mkdir(parents=True, exist_ok=True)
 
     graph_writer = _build_graph_writer()
-    chain_tracker = ChainTracker(ttl_sec=settings.MIRROR_GRAPH_CHAIN_TTL_SEC) if graph_writer else None
     # Loaded once at startup, not per-message: channels.yaml is static for the
     # life of this process. Used to collapse dynamic reply channels (e.g.
     # "orion:exec:result:LLMGatewayService:<uuid>") to their catalog wildcard
-    # entry before they become graph nodes -- see extract_bus_event_fact's
-    # docstring for why this matters (a real, live-found ~9K-node inflation).
-    catalog_names = load_channel_catalog_names() if graph_writer else set()
+    # entry before they become graph nodes or rollup keys -- see
+    # extract_bus_event_fact's docstring for why this matters (a real,
+    # live-found ~9K-node inflation).
+    catalog_names = load_channel_catalog_names()
+    rollup: Optional[TrafficRollupAccumulator] = None
+    if settings.MIRROR_TRAFFIC_ROLLUP_ENABLED:
+        rollup = TrafficRollupAccumulator(
+            node=settings.NODE_NAME, catalog_names=catalog_names, started_at_epoch=time.time()
+        )
+        logger.info(
+            "Bus traffic rollup enabled: channel={} catalog_channels={}",
+            BUS_TRAFFIC_ROLLUP_CHANNEL,
+            len(catalog_names),
+        )
+    # The rollup needs hops too, so the tracker runs when either consumer is on.
+    chain_tracker = (
+        ChainTracker(ttl_sec=settings.MIRROR_GRAPH_CHAIN_TTL_SEC)
+        if (graph_writer is not None or rollup is not None)
+        else None
+    )
     if graph_writer:
         logger.info(
             "Bus synaptic graph writer enabled: graph={} alpha={} catalog_channels={}",
@@ -307,8 +404,13 @@ async def mirror_bus() -> None:
         )
 
     inflight_task: Optional[asyncio.Task] = None
-    if chain_tracker is not None:
+    if graph_writer is not None and chain_tracker is not None:
         inflight_task = asyncio.create_task(_run_inflight_chain_summary_loop(chain_tracker))
+
+    # The current open bucket is not published on shutdown: it is partial.
+    rollup_task: Optional[asyncio.Task] = None
+    if rollup is not None:
+        rollup_task = asyncio.create_task(_run_traffic_rollup_loop(bus, rollup))
 
     retention_task: Optional[asyncio.Task] = None
     try:
@@ -362,9 +464,18 @@ async def mirror_bus() -> None:
                 )
                 await conn.commit()
 
-                if graph_writer is not None and decoded.ok:
+                now_epoch = now.timestamp()
+                if rollup is not None:
+                    # Counted after the SQLite commit, so the rollup counts what the raw
+                    # log holds (acceptance check: hourly totals agree within 1%).
+                    try:
+                        rollup.observe_message(channel, now_epoch, decode_failed=not decoded.ok)
+                    except Exception as exc:  # fail-open: never break the mirror loop
+                        logger.warning("bus traffic rollup count failed channel={} err={}", channel, exc)
+
+                if chain_tracker is not None and decoded.ok:
                     await _record_graph_event(
-                        graph_writer, chain_tracker, decoded, channel, now.timestamp(), catalog_names
+                        graph_writer, chain_tracker, decoded, channel, now_epoch, catalog_names, rollup
                     )
 
             # A Redis drop (including a slow-consumer kill at the pubsub output
@@ -379,6 +490,8 @@ async def mirror_bus() -> None:
     finally:
         if inflight_task is not None:
             inflight_task.cancel()
+        if rollup_task is not None:
+            rollup_task.cancel()
         if retention_task is not None:
             retention_task.cancel()
         if heartbeat_chassis is not None:

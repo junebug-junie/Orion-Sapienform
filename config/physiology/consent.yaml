@@ -39,11 +39,11 @@
 version: 1
 
 rules:
-  # Dream compaction apply (services/orion-dream/app/compaction_applier.py): downscale edge weights and write
-  # dream-provenance gist cards. Every apply snapshots the before-state first and rolls back on any error,
-  # so it is snapshot_restorable. Needs Juniper's standing consent, which does not exist yet: until she
-  # merges `standing.dream-compaction-downscale`, every ask is needs_consent. Turning apply on
-  # (ORION_DREAM_COMPACTION_APPLY_ENABLED) is a separate decision of hers.
+  # Dream compaction apply (services/orion-dream/app/compaction_applier.py): lower the salience of reverie
+  # thoughts whose chain settled and was folded into a consolidate entry (store:
+  # services/orion-dream/app/compaction_store.py, column substrate_reverie_thought.salience only). Every
+  # apply snapshots the before-state first and rolls back on any error, so it is snapshot_restorable. The
+  # store writes no gist cards and refuses prune. Allowed by `standing.dream-compaction-downscale` below.
   dream.compaction.downscale_only:
     family: dream.compaction
     verb: compact
@@ -57,4 +57,12 @@ rules:
     reversibility: irreversible
     consent: refused
 
-standing: {}
+standing:
+  # Downscale only. This consent covers the `dream.compaction.downscale_only` rule and nothing else: prune
+  # (`dream.compaction.prune`) stays `refused` whatever is listed here. Delete this entry (and redeploy
+  # orion-durable-runs) to take it back: every ask goes back to needs_consent.
+  dream-compaction-downscale:
+    granted_by: juniper
+    granted_on: "2026-11-13"
+    pr: "feat/dream-compaction-downscale-consent"
+    note: "Dream compaction may lower reverie-thought salience (snapshot first, restorable). Never prune."

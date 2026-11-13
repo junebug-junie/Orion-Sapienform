@@ -36,6 +36,15 @@ def _market(raw, pool, published, *, rules=RULES, families=FAMS):
                   consent_rules=rules, consent_error=None if rules else "missing:consent.yaml")
 
 
+def _no_standing():
+    """The shipped rules without Juniper's standing consent (merged 2026-11-13): the needs_consent path."""
+    import yaml
+
+    doc = yaml.safe_load((REPO_ROOT / "config/physiology/consent.yaml").read_text())
+    doc["standing"] = {}
+    return parse_consent(doc)
+
+
 def _consent_want(i=0, verb="compact", rev="snapshot_restorable"):
     wid = f"dream.compaction:compaction-delta:{i}"
     return WantV1(want_id=wid, family="dream.compaction", producer="orion-dream.compaction_applier.consent", verb=verb,
@@ -44,10 +53,22 @@ def _consent_want(i=0, verb="compact", rev="snapshot_restorable"):
                                                            attests=["snapshot_dir_writable", "downscale_only"]))
 
 
-def test_the_shipped_gate_answers_needs_consent_publishes_it_and_logs_the_rule(caplog):
+def test_the_shipped_gate_allows_downscale_and_refuses_prune(caplog):
+    """The baked consent.yaml (Juniper's standing consent, 2026-11-13): downscale allowed, prune refused."""
+    caplog.set_level(logging.INFO, logger="orion-durable-runs.physiology_market")
+    m = _market(_state().model_dump_json(), _Pool(acts=_acts()), [])
+    d = asyncio.run(m.bid(_consent_want(), NOW))
+    assert d.reason != "consent" and d.consent.verdict == "allow"
+    assert d.consent.consent_ref == "standing:dream-compaction-downscale"
+    p = asyncio.run(m.bid(_consent_want(1, verb="prune", rev="irreversible"), NOW + timedelta(seconds=1)))
+    assert p.reason == "consent" and p.consent.verdict == "refuse" and p.consent.rule_id == "dream.compaction.prune"
+    assert m.health(NOW)["consent_standing"] == 1
+
+
+def test_without_the_standing_consent_the_gate_answers_needs_consent_publishes_it_and_logs_the_rule(caplog):
     caplog.set_level(logging.INFO, logger="orion-durable-runs.physiology_market")
     published: list = []
-    m = _market(_state().model_dump_json(), _Pool(acts=_acts()), published)
+    m = _market(_state().model_dump_json(), _Pool(acts=_acts()), published, rules=_no_standing())
     d = asyncio.run(m.bid(_consent_want(), NOW))
     assert d.outcome == "deferred" and d.reason == "consent" and d.consent.verdict == "needs_consent"
     assert published == [d] and m.book.snapshot(NOW) == []
@@ -67,7 +88,7 @@ def test_the_gate_answers_before_any_read_so_a_dead_market_cannot_admit():
     want, which a binding producer admits. A consent want is still refused, and nothing is read."""
     for raw, pool, fams in ((None, _Pool(acts=_acts()), FAMS), (_state().model_dump_json(), _Pool(fail=True), FAMS),
                             (_state().model_dump_json(), _Pool(acts=_acts()), None)):
-        d = asyncio.run(_market(raw, pool, [], families=fams).bid(_consent_want(), NOW))
+        d = asyncio.run(_market(raw, pool, [], families=fams, rules=_no_standing()).bid(_consent_want(), NOW))
         assert d.reason == "consent", (raw, fams)
         assert pool.calls == 0
 

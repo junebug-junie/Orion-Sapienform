@@ -1,7 +1,9 @@
 """Phase F store — read the compaction-request queue, persist staged deltas.
 
-Two seams only:
+Three seams only:
   - `load_pending_requests`: drains recent Phase-E compaction asks (read-only);
+  - `load_thought_salience`: the current and original salience of reverie thoughts (read-only),
+    so the REM pass can propose downscale entries;
   - `persist_compaction_delta`: writes the *staged* delta to `dream_compaction_delta`.
 
 Both are best-effort and never raise. Critically, this module writes to exactly
@@ -80,6 +82,38 @@ def load_pending_requests(limit: int, since=None) -> list[dict]:
     except Exception as exc:
         logger.debug("rem: pending request load failed: %s", exc)
         return []
+
+
+def load_thought_salience(thought_ids: list[str]) -> dict[str, tuple[float, float | None]]:
+    """{thought_id: (salience column, thought_json.salience or None)} for the given reverie thoughts.
+
+    Read-only. {} on no ids or any miss (the REM pass then proposes no downscale). The reverie writer
+    stores salience in both places; they differ only after a compaction apply lowered the column.
+    """
+    ids = [str(t) for t in dict.fromkeys(thought_ids or []) if str(t)]
+    if not ids:
+        return {}
+    try:
+        from sqlalchemy import text
+
+        engine = _get_engine()
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT thought_id, salience,
+                           CASE WHEN jsonb_typeof(thought_json->'salience') = 'number'
+                                THEN (thought_json->>'salience')::double precision END AS original
+                    FROM substrate_reverie_thought
+                    WHERE thought_id = ANY(:ids) AND salience IS NOT NULL
+                    """
+                ),
+                {"ids": ids},
+            ).all()
+        return {str(r[0]): (float(r[1]), None if r[2] is None else float(r[2])) for r in rows}
+    except Exception as exc:
+        logger.warning("rem: thought salience load failed: %s", exc)
+        return {}
 
 
 def persist_compaction_delta(delta: "MemoryCompactionDeltaV1") -> bool:

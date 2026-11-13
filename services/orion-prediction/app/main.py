@@ -56,6 +56,7 @@ _last_reachable: dict[str, Any] = {"at": None, "ok": None, "error": None}
 bill_forecast: BillForecast | None = None
 _last_bill: dict[str, Any] = {"at": None, "ok": None, "error": None}
 family_a: FamilyALive | None = None
+_blas_limit: list[Any] = []   # keeps the process-wide BLAS thread limit object alive
 _last_family_a: dict[str, Any] = {"at": None, "ok": None, "error": None}
 _last_settle: dict[str, Any] = {"at": None, "ok": None, "error": None}
 runner: ExperimentRunner | None = None
@@ -212,18 +213,28 @@ async def lifespan(app: FastAPI):
                                      cycle_start_day=_settings.energy_billing_cycle_start_day,
                                      usage_point_id=_settings.energy_usage_point_id)
     if _settings.family_a_enabled:
-        import yaml
+        # A missing table or a bad config stops family A only (logged, in /health), never the service.
+        try:
+            from pathlib import Path
 
-        from app import family_a as fa
-        from app.family_a_load import load_frame
+            import yaml
 
-        from pathlib import Path
+            from app import family_a as fa
+            from app.family_a_live import limit_blas
+            from app.family_a_load import load_frame
+            from app.store import FAMILY_TABLES
 
-        fa_cfg = fa.parse_config(yaml.safe_load(Path(_settings.family_a_config_path).read_text(encoding="utf-8")))
-        family_a = FamilyALive(
-            _store, fa_cfg,
-            lambda start, end: load_frame(_settings.postgres_uri, fa_cfg.inputs, fa_cfg.grain_min, start, end),
-            settle_sec=_settings.settle_sec, select_interval_sec=_settings.select_interval_sec)
+            await asyncio.to_thread(_store.check_schema, FAMILY_TABLES)
+            fa_cfg = fa.parse_config(yaml.safe_load(Path(_settings.family_a_config_path).read_text(encoding="utf-8")))
+            _blas_limit.append(limit_blas())   # once, process-wide (see limit_blas)
+            family_a = FamilyALive(
+                _store, fa_cfg,
+                lambda start, end: load_frame(_settings.postgres_uri, fa_cfg.inputs, fa_cfg.grain_min, start, end),
+                settle_sec=_settings.settle_sec, select_interval_sec=_settings.select_interval_sec)
+        except Exception as exc:  # noqa: BLE001
+            _last_family_a.update(at=datetime.now(timezone.utc), ok=False,
+                                  error=f"not started: {type(exc).__name__}: {exc}"[:300])
+            logger.error("family_a_not_started %s: %s", type(exc).__name__, exc)
     logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
                 [s.series_id for s in registry.targets()])
     if _settings.experiment_runner_enabled:

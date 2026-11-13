@@ -191,6 +191,42 @@ def test_prune_drops_old_reading_rows_and_keeps_joint_rows():
     assert not store.forecasts and store.joints
 
 
+def test_a_scoring_backlog_past_the_joint_limit_never_strands_a_joint_row():
+    # Review finding: readings past the joint limit were scored without their joint row, which later
+    # found no readings and was written missing ("too_few_readings") for good.
+    live, _l = _live()
+    live.due_limit = 5
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)                                  # select
+    for _ in range(15):                             # 15 buckets issued, scoring down
+        now += G
+        live.issue(now)
+    for _ in range(12):                             # recovery: 5 joint rows per pass
+        live.score(now + timedelta(minutes=20))
+    js = live.store.joints
+    assert js and all(j["status"] == "scored" for j in js), {j["status"] for j in js}
+    assert all(j["n_observed"] == 2 for j in js)
+
+
+def test_a_thin_calibration_pool_refuses_the_selection(monkeypatch):
+    monkeypatch.setattr(fa, "MIN_CAL", 10 ** 6)
+    live, _l = _live()
+    live.tick(DAY7 + timedelta(minutes=6))
+    assert live.served is None
+    assert "calibration pool" in live.state.errors["select"]
+    assert not live.store.runs
+
+
+def test_prefix_range_matches_exactly_the_prefix():
+    from app.store import _prefix_range
+
+    lo, hi = _prefix_range(fl.PREFIX)
+    inside = [fl.PREFIX + "athena.load_1m", fl.PREFIX + "zzz", fl.PREFIX]
+    outside = ["family_aX:athena", "family_a", "family_b:x", "athena.cabinet_temp_c", "office.temp_c"]
+    assert all(lo <= s < hi for s in inside)
+    assert not any(lo <= s < hi for s in outside)
+
+
 def _calm_eval():
     import importlib.util
     from tests.conftest import SERVICE

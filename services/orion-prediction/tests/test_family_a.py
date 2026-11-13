@@ -508,6 +508,33 @@ def test_static_joint_score_reads_calm_hours_too_calm_and_adaptive_fixes_it():
     assert 0.02 < np.mean(p05) < 0.09
 
 
+def test_no_calibration_rows_is_no_p_never_a_calm_p():
+    # Review finding: an empty pool gave p = 1 and calm point 0 -> excess 0, "calm" on no evidence.
+    assert np.isnan(fa.conformal_p(np.array([-1.0, -50.0]), np.zeros(0))).all()
+
+
+def test_extreme_misses_keep_their_order_instead_of_tying_at_zero():
+    # chi2.sf underflows to 0 for a huge d^2; the log tail keeps two extreme rows apart.
+    r = np.array([[60.0, 0.0], [90.0, 0.0]])
+    _d2, tail, _s = fa.mahalanobis_tail(r, np.eye(2), 1)
+    assert np.isfinite(tail).all() and tail[1] < tail[0] < -1000
+    cal = np.array([tail[0] - 1.0, -2.0, -1.0, -0.5])
+    p = fa.conformal_p(tail, cal)
+    assert p[1] < p[0]
+
+
+def test_a_thin_adaptive_pool_is_dropped_not_served():
+    f = _lead_lag_frame(17, coupled=True)
+    run = fa.run_horizon(f, ["s.x", "s.y"], ["s.x", "s.y"], 1, 5, seed=0)
+    cal0 = fa.joint_calibration(run.resid_fit, run.resid_val)
+    diff = fa.run_difficulty(run, cal0)[run.val_rows]
+    assert len(fa.joint_calibration(run.resid_fit, run.resid_val, diff).cal_tail_adaptive) >= fa.MIN_CAL
+    thin = fa.joint_calibration(run.resid_fit, run.resid_val, diff, min_cal=10 ** 6)
+    assert len(thin.cal_tail_adaptive) == 0
+    sc = fa.score_joint(run.resid_held[:20], thin, np.ones(20))
+    assert np.isnan(sc.p_adaptive).all() and np.isfinite(sc.p_static).sum() > 10
+
+
 def test_difficulty_reads_only_targets_known_at_the_origin():
     ratio = np.arange(40, dtype=float)
     d = fa.difficulty_rows(ratio, horizon_steps=3, window=12, min_n=6)

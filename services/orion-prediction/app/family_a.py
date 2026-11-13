@@ -770,7 +770,7 @@ def compare(run: HorizonRun, candidate: str, reference: np.ndarray, grain_min: i
     lc = joint_loss(run.sq[candidate])
     lr = joint_loss(reference)
     both = np.isfinite(lc) & np.isfinite(lr)
-    seg = segments_of(np.asarray(run.held))[both]
+    seg = segments_of(np.asarray(run.held)[both])
     lc, lr = lc[both], lr[both]
     d = lc - lr
     mean, se, n = paired_gap(lc, lr, overlap_lag(run.horizon_min, grain_min))
@@ -840,11 +840,26 @@ def shrunk_covariance(resid: np.ndarray, shrink: float = SHRINK) -> tuple[np.nda
     return out, usable
 
 
-def mahalanobis_tail(resid: np.ndarray, cov: np.ndarray, min_observed: int) -> tuple[np.ndarray, np.ndarray, list]:
-    """Per row: d^2 on the observed targets, its chi-square tail probability (dimension = observed
-    count), and per-target shares of d^2 (attribution hint). Rows with < min_observed targets -> NaN."""
-    from scipy import stats
+def chi2_logsf(x: np.ndarray, df: np.ndarray) -> np.ndarray:
+    """log P(chi2_df > x), finite far into the tail. scipy's logsf returns -inf once the tail underflows
+    (d^2 ~ 1500 on 2 dof); there the leading terms of the incomplete-gamma asymptotic series take over:
+    log Q(a, z) ~ (a - 1) ln z - z - ln Gamma(a) + ln(1 + (a - 1) / z), a = df / 2, z = x / 2."""
+    from scipy import special, stats
 
+    x = np.asarray(x, dtype=float)
+    df = np.broadcast_to(np.asarray(df, dtype=float), x.shape)
+    out = np.asarray(stats.chi2.logsf(x, df), dtype=float).copy()
+    bad = ~np.isfinite(out) & np.isfinite(x) & (x > 0)
+    if bad.any():
+        a, z = df[bad] / 2.0, x[bad] / 2.0
+        out[bad] = (a - 1) * np.log(z) - z - special.gammaln(a) + np.log1p((a - 1) / z)
+    return out
+
+
+def mahalanobis_tail(resid: np.ndarray, cov: np.ndarray, min_observed: int) -> tuple[np.ndarray, np.ndarray, list]:
+    """Per row: d^2 on the observed targets, the LOG of its chi-square tail probability (dimension =
+    observed count; log so a huge d^2 does not underflow to 0 and tie with every other extreme row), and
+    per-target shares of d^2 (attribution hint). Rows with < min_observed targets -> NaN."""
     n = len(resid)
     d2 = np.full(n, np.nan)
     tail = np.full(n, np.nan)
@@ -857,7 +872,7 @@ def mahalanobis_tail(resid: np.ndarray, cov: np.ndarray, min_observed: int) -> t
         w = np.linalg.solve(cov[np.ix_(o, o)], r)
         q = float(r @ w)
         d2[i] = q
-        tail[i] = float(stats.chi2.sf(q, df=int(o.sum())))
+        tail[i] = float(chi2_logsf(np.array([q]), np.array([float(o.sum())]))[0])
         s = np.full(resid.shape[1], np.nan)
         s[o] = (r * w) / q if q > 0 else 0.0
         shares[i] = s
@@ -866,9 +881,13 @@ def mahalanobis_tail(resid: np.ndarray, cov: np.ndarray, min_observed: int) -> t
 
 def conformal_p(tail: np.ndarray, cal_tail: np.ndarray) -> np.ndarray:
     """p = (1 + #{calibration tails <= this tail}) / (n_cal + 1): uniform when calibration and test are
-    exchangeable, whatever the residuals' real shape (heavy tails included)."""
+    exchangeable, whatever the residuals' real shape (heavy tails included). Tails may be log tails (any
+    monotone score works). No calibration rows -> NaN, never p = 1 (that would read as calm on no
+    evidence)."""
     cal = np.sort(cal_tail[np.isfinite(cal_tail)])
     out = np.full(len(tail), np.nan)
+    if not len(cal):
+        return out
     ok = np.isfinite(tail)
     out[ok] = (1 + np.searchsorted(cal, tail[ok], side="right")) / (len(cal) + 1)
     return out
@@ -884,6 +903,10 @@ DIFFICULTY_ROWS = 12          # one hour of 5-min targets
 MIN_DIFFICULTY_N = 6          # scored rows inside that hour, else no difficulty (adaptive p is NaN)
 DIFF_FLOOR_Q = 0.05           # floor: this quantile of the calibration difficulties (and >= 0.1 x median)
 STATIC, ADAPTIVE = "static", "adaptive"
+# Fewest calibration rows a p may come from. Under it p moves in steps coarser than 1/200 and the calm
+# point drifts from 1.0: a static pool this small refuses the selection, an adaptive pool this small is
+# dropped (rows fall back to the static p, labelled).
+MIN_CAL = 200
 
 
 @dataclass
@@ -914,7 +937,7 @@ class JointCal:
 
 
 def joint_d2(resid: np.ndarray, cal: JointCal) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
-    """(d2, dof, static chi-square tail, shares) per row on the usable targets observed there; rows with
+    """(d2, dof, static log chi-square tail, shares) per row on the usable targets observed there; rows with
     fewer than ``min_obs`` observed usable targets are NaN (dof 0)."""
     keep = np.where(cal.usable, 1.0, np.nan)
     r = np.asarray(resid, dtype=float) * keep
@@ -944,21 +967,19 @@ def _floor_of(difficulties: np.ndarray) -> float | None:
 
 
 def adaptive_tail(d2: np.ndarray, dof: np.ndarray, difficulty: np.ndarray, floor: float | None) -> np.ndarray:
-    """chi-square tail of d^2 / s on dof, s = the hour's difficulty floored (a flat hour must not blow a
-    score up). NaN where there is no difficulty."""
-    from scipy import stats
-
+    """Log chi-square tail of d^2 / s on dof, s = the hour's difficulty floored (a flat hour must not blow
+    a score up). NaN where there is no difficulty."""
     out = np.full(len(d2), np.nan)
     if floor is None:
         return out
     ok = np.isfinite(d2) & np.isfinite(difficulty) & (dof > 0)
     s = np.maximum(difficulty[ok], floor)
-    out[ok] = stats.chi2.sf(d2[ok] / s, df=dof[ok])
+    out[ok] = chi2_logsf(d2[ok] / s, dof[ok])
     return out
 
 
 def joint_calibration(resid_fit: np.ndarray, resid_val: np.ndarray, val_difficulty: np.ndarray | None = None,
-                      min_observed_frac: float = 0.5) -> JointCal:
+                      min_observed_frac: float = 0.5, min_cal: int = MIN_CAL) -> JointCal:
     """Covariance from fit-row residuals; static calibration tails from validation rows; adaptive tails
     from the same validation rows scaled by ``val_difficulty`` (their own hour-before difficulty)."""
     cov, usable = shrunk_covariance(resid_fit)
@@ -971,7 +992,8 @@ def joint_calibration(resid_fit: np.ndarray, resid_val: np.ndarray, val_difficul
     if val_difficulty is not None:
         cal.diff_floor = _floor_of(np.asarray(val_difficulty, dtype=float))
         at = adaptive_tail(d2, dof, np.asarray(val_difficulty, dtype=float), cal.diff_floor)
-        cal.cal_tail_adaptive = at[np.isfinite(at)]
+        at = at[np.isfinite(at)]
+        cal.cal_tail_adaptive = at if len(at) >= min_cal else np.zeros(0)
     return cal
 
 

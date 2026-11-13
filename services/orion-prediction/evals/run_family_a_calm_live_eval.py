@@ -44,10 +44,9 @@ CONFIG = HERE.parents[3] / "config" / "prediction" / "family_a.v1.yaml"
 REST_TOL = 0.10
 P05_BAND = (0.02, 0.09)
 MAX_HOURS_HIGH = 6
-
-
-def _excess(p: np.ndarray, n_cal: np.ndarray) -> np.ndarray:
-    return -np.log(p) - np.array([fa.calm_point(int(n)) for n in n_cal])
+# The served p falls back to the static p for the first hour after a restart or a refusal stretch
+# (calibration 'static:no_difficulty'); the verdict is about the adaptive score, so most rows must be it.
+MIN_ADAPTIVE_SHARE = 0.90
 
 
 def summarize(rows: list[dict], grain_min: int, seed: int = 0) -> dict:
@@ -65,13 +64,15 @@ def summarize(rows: list[dict], grain_min: int, seed: int = 0) -> dict:
                        "calibration": dict(Counter(r.get("calibration") for r in sc))}
         if sc:
             idx = pd.DatetimeIndex([pd.Timestamp(r["target_ts"]) for r in sc])
-            span_days = (idx.max() - idx.min()).total_seconds() / 86400.0 + grain_min / 1440.0
-            h_out["days_scored"] = round(span_days, 2)
+            # days OF scored rows (count x grain), not the first-to-last span: a week of gaps is not a week
+            h_out["days_scored"] = round(len(sc) * grain_min / 1440.0, 2)
+            h_out["adaptive_share"] = round(sum(r.get("calibration") == fa.ADAPTIVE for r in sc) / len(sc), 4)
             served = np.array([float(r["excess"]) for r in sc])
             p_served = np.array([float(r["p"]) for r in sc])
             stats = {"served": (served, p_served)}
-            # static / adaptive recomputed from the stored p with the calm point of the served pool size
-            # (the served row's calm point is from its own pool; both pools are the run's validation rows)
+            # static / adaptive recomputed from the stored p with the row's served calm point. Both pools
+            # are the same run's validation rows (adaptive drops the few without an hour-before
+            # difficulty), so the two calm points differ by < 0.001 at the ~900-row pools seen live.
             for name in ("p_static", "p_adaptive"):
                 p = np.array([np.nan if r.get(name) is None else float(r[name]) for r in sc])
                 calm = np.array([float(r["calm_point"]) for r in sc])
@@ -108,6 +109,9 @@ def verdict(summary: dict, min_days: float) -> tuple[str, list[str]]:
                        f"{sv['null_share_hours_at_rest']:.2f}")
         if sv["longest_hours_above_0_5"] > MAX_HOURS_HIGH:
             why.append(f"{h} min: {sv['longest_hours_above_0_5']} h in a row above +0.5")
+        if s.get("adaptive_share", 0.0) < MIN_ADAPTIVE_SHARE:
+            why.append(f"{h} min: only {s.get('adaptive_share', 0.0):.0%} of scored rows used the adaptive p "
+                       f"(< {MIN_ADAPTIVE_SHARE:.0%}): restarts or refusal stretches")
     failed = [w for w in why if "days scored" not in w]
     if failed:
         return ("FAIL" if ready else "NOT YET (and failing so far)"), why
@@ -127,7 +131,8 @@ def coverage(readings: list[dict]) -> dict:
 def print_report(summary: dict, cov: dict, min_days: float) -> int:
     for h, s in summary.items():
         print(f"\n## {h} min ahead\n")
-        print(f"rows: {s['status']}; served calibration: {s['calibration']}; days scored: {s.get('days_scored')}")
+        print(f"rows: {s['status']}; served calibration: {s['calibration']}; days of scored rows: "
+              f"{s.get('days_scored')}; adaptive share {s.get('adaptive_share')}")
         if s["refusal_reasons"]:
             print(f"refusal reasons (top): {s['refusal_reasons']}")
         print("\n| p | n | mean excess | 95% CI | p<=0.05 | p<=0.2 | hours at rest (calibrated) | hourly min..max | "
@@ -165,6 +170,7 @@ def replay(uri: str, hours: float, select_every_h: float) -> tuple[list[dict], l
     end = fl.floor_ts(now, g)
     t_start = end - timedelta(hours=hours)
     start = t_start - timedelta(days=fl.TRAIN_DAYS, hours=1)
+    fl.limit_blas()   # as the service does at start
     t0 = time.time()
     frame, _ = load_frame(uri, cfg.inputs, g, start, end)
     print(f"loaded {frame.shape} in {time.time() - t0:.0f}s", flush=True)
@@ -214,10 +220,11 @@ def main() -> int:
             conn.execute("SET TRANSACTION READ ONLY")
             joints = conn.execute("SELECT * FROM prediction_joint_surprise WHERE family = %s AND target_ts >= %s "
                                   "ORDER BY horizon_min, target_ts", (fl.FAMILY, since)).fetchall()
+            lo, hi = fl.PREFIX, fl.PREFIX[:-1] + chr(ord(fl.PREFIX[-1]) + 1)
             readings = conn.execute(
                 "SELECT series_id, score_status, in_80, in_95 FROM prediction_forecast "
-                "WHERE left(series_id, %s) = %s AND target_ts >= %s AND scored_at IS NOT NULL",
-                (len(fl.PREFIX), fl.PREFIX, since)).fetchall()
+                "WHERE series_id >= %s AND series_id < %s AND target_ts >= %s AND scored_at IS NOT NULL",
+                (lo, hi, since)).fetchall()
         print(f"# Stored rows, last {args.hours:g} h: {len(joints)} joint rows, {len(readings)} scored reading rows")
     return print_report(summarize(joints, cfg.grain_min), coverage(readings), args.min_days)
 

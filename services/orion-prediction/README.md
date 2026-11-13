@@ -423,10 +423,12 @@ same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
 - **Select** at start and every `PREDICTION_SELECT_INTERVAL_SEC` (~15-18 s at host load ~150): 14 days,
   screen every input, backtest `ridge_var` vs the better baseline on 2 seeds (inputs screened on each
   seed's training rows only), serve `ridge_var` at a horizon only if it wins on both, else `ar`. Refit
-  the served rung on the whole window. Rows in `prediction_model_run` (`series_id = 'family_a'`): one
+  the served rung on the whole window. A calibration pool under 200 rows refuses the selection (the
+  previous run keeps serving). Rows in `prediction_model_run` (`series_id = 'family_a'`): one
   `model` row per rung (backtest per seed) and the served `champion_blend` (`assignment`: horizon ->
-  rung; `metrics`: manifest, targets, standardisation, whitening covariance, both calibration pools), so
-  rows issued before a restart are scored with the run that issued them.
+  rung; `metrics`: manifest, targets, standardisation, whitening covariance, both calibration pools,
+  ~100 KB), so rows issued before a restart are scored with the run that issued them. Run rows are not
+  pruned (~4 a day). A selection longer than ~4 min makes the next bucket's 5 min horizon late (skipped).
 - **Issue** each completed 5-min bucket: the hygiene gate on the last 24 h of every named input. Refused
   -> one `prediction_joint_surprise` row per horizon with `status = 'refused'` and the reasons
   (`refusal`), a `family_a_issue_refused` log line, nothing forecast. Passed -> per reading a
@@ -440,10 +442,14 @@ same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
   gets d^2 on the readings that arrived (whitened by the issuing run's covariance), `p_static`,
   `p_adaptive`, the served `p` (`calibration` = `adaptive`, or `static:no_difficulty` when the last hour
   holds < 6 scored rows, e.g. after a restart) and `excess` = -ln p - `calm_point`. Fewer than half the
-  usable readings -> `missing`.
+  usable readings -> `missing` (`too_few_readings`); a run with no calibration -> `missing`, never calm.
+  Tails are log tails, so two extreme misses never tie at 0.
 - `/health` -> `family_a`: served run and rungs, last select / issue / score, counters (issued, refused,
-  late horizons, scored, missing), errors. BLAS runs on 4 threads during a tick (`BLAS_THREADS`):
-  OpenBLAS's default of one thread per core made one fit take > 120 s on the loaded host vs 1.5 s.
+  late horizons, scored, missing), errors. A missing `prediction_joint_surprise` table or a bad config
+  stops family A only (`family_a.error = "not started: ..."`), never the service.
+- BLAS (OpenBLAS) is held to 4 threads for the whole process from start (`family_a_live.limit_blas`):
+  its default of one thread per core made one family A fit take > 120 s on the loaded host vs 1.5 s.
+  The single-series loop's numpy calls run on the same 4 threads.
 - The self-monitor does not grade `family_a:` reading rows yet (`orion/self_monitor/collect.py`).
 
 - **Inputs**: `config/prediction/family_a.v1.yaml`, 45 candidates read as 5-min means from the raw tables

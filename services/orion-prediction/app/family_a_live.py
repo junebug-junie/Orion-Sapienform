@@ -59,12 +59,24 @@ RETRY_SELECT = timedelta(minutes=30)
 INTERVAL_SOURCE = "validation"      # per-reading ranges: the served rung's validation residuals
 TOP_SHARES = 5
 BLAS_THREADS = 4
+DUE_LIMIT = 2000                    # joint rows scored per pass (~3.5 days of backlog per pass)
 
 Loader = Callable[[datetime, datetime], "tuple[pd.DataFrame, dict[str, datetime | None]]"]
 
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def limit_blas(threads: int = BLAS_THREADS) -> Any:
+    """Hold OpenBLAS to ``threads`` for the whole process. Called ONCE at service start (and by the
+    replay eval), never per tick: OpenBLAS has one process-wide setting, and switching it while another
+    thread is inside a BLAS call is not documented as safe. Why: OpenBLAS defaults to one thread per
+    core (64 here); on the loaded host (load ~150 on 96 cores, 2026-11-13) one 42-reading fit took
+    > 120 s that way vs 1.5 s on 2 threads. The single-series engine's numpy calls share the limit."""
+    from threadpoolctl import threadpool_limits
+
+    return threadpool_limits(limits=threads, user_api="blas")
 
 
 def _finite(obj: Any) -> Any:
@@ -138,6 +150,7 @@ class FamilyALive:
         self.clock = clock
         self.seeds = tuple(seeds)
         self.train_days = train_days
+        self.due_limit = DUE_LIMIT
         self.served: Served | None = None
         self.next_select: datetime | None = None
         self.last_origin: datetime | None = None
@@ -153,18 +166,8 @@ class FamilyALive:
 
     # --- tick -------------------------------------------------------------------------------------
     def tick(self, now: datetime | None = None) -> dict:
-        """score -> issue -> select (if due) -> prune (daily). One failing stage never stops the others.
-
-        BLAS is held to BLAS_THREADS for the tick: OpenBLAS defaults to one thread per core (64 here),
-        and on a loaded host (load ~150 on 96 cores, 2026-11-13) one 42-reading fit took > 120 s that
-        way vs 1.5 s on 2 threads. The limit is process-wide while it holds (OpenBLAS has one setting),
-        so the single-series loop's numpy calls in that window run on BLAS_THREADS too."""
-        from threadpoolctl import threadpool_limits
-
-        with threadpool_limits(limits=BLAS_THREADS, user_api="blas"):
-            return self._tick(now or self.clock())
-
-    def _tick(self, now: datetime) -> dict:
+        """score -> issue -> select (if due) -> prune (daily). One failing stage never stops the others."""
+        now = now or self.clock()
         out: dict[str, Any] = {}
         for name, fn in (("score", self.score), ("issue", self.issue)):
             try:
@@ -236,6 +239,10 @@ class FamilyALive:
                 ratio = np.where(dof > 0, d2 / np.maximum(dof, 1), np.nan)
             diff = fa.difficulty_rows(ratio, k)
             cal = fa.joint_calibration(resid[hf.fit_rows], resid[hf.val_rows], diff[hf.val_rows])
+            if len(cal.cal_tail) < fa.MIN_CAL:
+                raise SelectRefused(f"{h} min: calibration pool {len(cal.cal_tail)} rows < {fa.MIN_CAL}")
+            # Score with exactly what is stored (6 significant digits), before and after a restart.
+            cal = fa.JointCal.from_json(cal.to_json())
             horizons[h] = ServedHorizon(fit=hf, rung=rung, cal=cal, q_offsets=residual_quantiles(resid[hf.val_rows]))
             backtest[h] = {"rung": rung, "seeds": seeds}
         selection_id, run_id = str(uuid.uuid4()), str(uuid.uuid4())
@@ -357,9 +364,10 @@ class FamilyALive:
                                     "point": float(mu + sd * (zt + dz2))})
             n_by_h[h] = n_f
             joints.append({**row, "status": "issued", "refusal": None, "n_forecast": n_f, "difficulty": diffs.get(h)})
-        self.store.insert_family_issue(forecasts, joints)
+        if joints:
+            self.store.insert_family_issue(forecasts, joints)
+            self.state.counts["issued"] += 1
         self.last_origin = origin
-        self.state.counts["issued"] += 1
         if shadows:
             try:
                 self.store.insert_family_shadow(shadows)
@@ -383,7 +391,12 @@ class FamilyALive:
 
     def score(self, now: datetime) -> dict:
         cutoff = self.latest_complete(now) + self.grain
-        joints, readings = self.store.family_due(FAMILY, PREFIX, cutoff)
+        joints, readings = self.store.family_due(FAMILY, PREFIX, cutoff, limit=self.due_limit)
+        # Only the readings of the joint rows taken this pass: a joint row scores from readings scored in
+        # the same pass, so a reading scored without its joint (a backlog past the joint limit) would
+        # leave that joint with nothing to score from later. The rest wait for the next pass.
+        keys = {(str(j["run_id"]), j["origin_ts"], int(j["horizon_min"])) for j in joints}
+        readings = [r for r in readings if (str(r["run_id"]), r["origin_ts"], int(r["horizon_min"])) in keys]
         shadows = self.store.family_due_shadow(PREFIX, cutoff)
         if not (joints or readings or shadows):
             return {"scored": 0}
@@ -431,6 +444,9 @@ class FamilyALive:
                 j_scores.append({**base, "status": "missing", "calibration": "too_few_readings"})
                 continue
             p_s, p_a = float(sc.p_static[0]), float(sc.p_adaptive[0])
+            if not np.isfinite(p_s):
+                j_scores.append({**base, "status": "missing", "calibration": "no_calibration"})
+                continue
             if SERVED_CALIBRATION == fa.ADAPTIVE and np.isfinite(p_a):
                 p, calib, n_cal = p_a, fa.ADAPTIVE, len(info.cal.cal_tail_adaptive)
             else:

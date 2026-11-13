@@ -41,6 +41,10 @@ TABLES = {
                                       "happened"),
     "prediction_bill_forecast": ("bet_id", "origin", "period_start", "projected_kwh", "kwh_lo80", "usd_hi80",
                                  "settled_at", "kwh_in_80", "usd_in_80"),
+}
+# Checked at boot only when family A runs (PREDICTION_FAMILY_A_ENABLED): the kill switch removes the
+# dependency on the table (app/main.py).
+FAMILY_TABLES = {
     "prediction_joint_surprise": ("joint_id", "family", "run_id", "status", "refusal", "difficulty", "d2",
                                   "p_static", "p_adaptive", "excess", "top_shares"),
 }
@@ -84,6 +88,12 @@ def _since(ts: datetime) -> str:
     return ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _prefix_range(prefix: str) -> tuple[str, str]:
+    """[lo, hi) such that lo <= s < hi exactly when s starts with ``prefix`` (byte order: the prefix
+    'family_a:' -> ['family_a:', 'family_a;'))."""
+    return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
+
+
 def _j(value: Any) -> str:
     return json.dumps(value, default=str, allow_nan=False)
 
@@ -105,9 +115,9 @@ class PostgresStore:
             cur = conn.execute(sql, args)
             return list(cur.fetchall()) if cur.description else []
 
-    def check_schema(self) -> None:
+    def check_schema(self, tables: dict | None = None) -> None:
         """Operator-applied migration (services/orion-sql-db/manual_migration_prediction_v1.sql)."""
-        for table, cols in TABLES.items():
+        for table, cols in (TABLES if tables is None else tables).items():
             self._all(f"SELECT {', '.join(cols)} FROM {table} LIMIT 0")
 
     # --- telemetry ------------------------------------------------------------------------
@@ -347,7 +357,9 @@ class PostgresStore:
     # --- multivariate families (app/family_a_live.py) -------------------------------------------
     # Reading rows live in prediction_forecast / prediction_shadow_forecast under series_id
     # '<family>:<reading id>'; ``prefix`` is that '<family>:' (matched with left(), never LIKE: '_' is a
-    # LIKE wildcard). The joint row per bucket and horizon lives in prediction_joint_surprise.
+    # LIKE wildcard). Matched as a range [prefix, prefix with its last character + 1) so the
+    # (series_id, ...) indexes apply. The joint row per bucket and horizon lives in
+    # prediction_joint_surprise.
     def run_metrics(self, run_id: Any) -> dict | None:
         rows = self._all("SELECT run_id, metrics, assignment FROM prediction_model_run WHERE run_id = %s", (run_id,))
         return rows[0] if rows else None
@@ -382,8 +394,8 @@ class PostgresStore:
             (family, before, limit))
         readings = self._all(
             "SELECT forecast_id, run_id, series_id, horizon_min, origin_ts, target_ts, point, quantiles "
-            "FROM prediction_forecast WHERE left(series_id, %s) = %s AND scored_at IS NULL AND target_ts < %s "
-            "ORDER BY target_ts LIMIT %s", (len(prefix), prefix, before, limit * 100))
+            "FROM prediction_forecast WHERE series_id >= %s AND series_id < %s AND scored_at IS NULL "
+            "AND target_ts < %s ORDER BY target_ts LIMIT %s", (*_prefix_range(prefix), before, limit * 100))
         return joints, readings
 
     def write_family_scores(self, reading_scores: list[dict], joint_scores: list[dict]) -> None:
@@ -414,8 +426,8 @@ class PostgresStore:
 
     def family_due_shadow(self, prefix: str, before: datetime, limit: int = 200000) -> list[dict]:
         return self._all("SELECT shadow_id, series_id, target_ts, point FROM prediction_shadow_forecast "
-                         "WHERE left(series_id, %s) = %s AND scored_at IS NULL AND target_ts < %s "
-                         "ORDER BY target_ts LIMIT %s", (len(prefix), prefix, before, limit))
+                         "WHERE series_id >= %s AND series_id < %s AND scored_at IS NULL AND target_ts < %s "
+                         "ORDER BY target_ts LIMIT %s", (*_prefix_range(prefix), before, limit))
 
     def write_family_shadow_scores(self, rows: list[dict]) -> None:
         with self.pool.connection() as conn, conn.transaction():
@@ -439,8 +451,8 @@ class PostgresStore:
         n = 0
         with self.pool.connection() as conn:
             for table in ("prediction_forecast", "prediction_shadow_forecast"):
-                cur = conn.execute(f"DELETE FROM {table} WHERE left(series_id, %s) = %s AND target_ts < %s",
-                                   (len(prefix), prefix, before))
+                cur = conn.execute(f"DELETE FROM {table} WHERE series_id >= %s AND series_id < %s "
+                                   "AND target_ts < %s", (*_prefix_range(prefix), before))
                 n += max(int(cur.rowcount or 0), 0)
         return n
 

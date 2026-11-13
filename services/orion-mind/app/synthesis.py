@@ -5,43 +5,25 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from typing import Any
+from typing import Any, get_args
 
 from pydantic import ValidationError
 
-from orion.mind.synthesis_v1 import MindEvidencePackV1, RecommendedEffectV1, SemanticSynthesisV1
+from orion.mind.synthesis_v1 import (
+    ClaimAnchorV1,
+    ClaimKindV1,
+    MindEvidencePackV1,
+    RecommendedEffectV1,
+    SemanticSynthesisV1,
+)
 
-_VALID_CLAIM_KINDS: frozenset[str] = frozenset(
-    {
-        "current_turn_claim",
-        "continuity_claim",
-        "relationship_claim",
-        "task_claim",
-        "identity_boundary_claim",
-        "autonomy_claim",
-        "social_claim",
-        "situation_claim",
-        "hazard_claim",
-        "curiosity_affordance_claim",
-        "uncertainty_claim",
-    }
-)
-_VALID_RECOMMENDED_EFFECTS: frozenset[str] = frozenset(
-    {
-        "answer_directly",
-        "receive_warmly",
-        "ask_one_situated_question",
-        "suppress_question",
-        "preserve_identity_boundary",
-        "avoid_identity_sermon",
-        "technical_triage",
-        "surface_uncertainty",
-        "no_effect",
-    }
-)
-_VALID_CLAIM_ANCHORS: frozenset[str] = frozenset(
-    {"orion", "juniper", "relationship", "none", "mixed", "unknown"}
-)
+# Read from the contract's Literal types so the prompt, the coercion, and the schema can never drift.
+_CLAIM_KIND_ORDER: tuple[str, ...] = get_args(ClaimKindV1)
+_RECOMMENDED_EFFECT_ORDER: tuple[str, ...] = get_args(RecommendedEffectV1)
+_CLAIM_ANCHOR_ORDER: tuple[str, ...] = get_args(ClaimAnchorV1)
+_VALID_CLAIM_KINDS: frozenset[str] = frozenset(_CLAIM_KIND_ORDER)
+_VALID_RECOMMENDED_EFFECTS: frozenset[str] = frozenset(_RECOMMENDED_EFFECT_ORDER)
+_VALID_CLAIM_ANCHORS: frozenset[str] = frozenset(_CLAIM_ANCHOR_ORDER)
 _RECOMMENDED_EFFECT_ALIASES: dict[str, RecommendedEffectV1] = {
     "acknowledge": "answer_directly",
     "ack": "answer_directly",
@@ -66,6 +48,10 @@ Identity background is not primary evidence unless the current turn explicitly i
 Prefer uncertainty over invention.
 Return strict JSON matching SemanticSynthesisV1 with schema_version mind.semantic_synthesis.v1.
 Each claim object MUST include: claim_id, label, summary, claim_kind, evidence_refs, source_kinds.
+claim_kind MUST be exactly one of: """ + ", ".join(_CLAIM_KIND_ORDER) + """.
+anchor MUST be exactly one of: """ + ", ".join(_CLAIM_ANCHOR_ORDER) + """.
+recommended_effect MUST be exactly one of: """ + ", ".join(_RECOMMENDED_EFFECT_ORDER) + """.
+Do not invent other values for these three fields (no event_claim, state_claim, technical, acknowledge, ...).
 Example claim:
 {"claim_id":"c1","label":"shared evening plan","summary":"User mentions watching a show with Robin.","claim_kind":"relationship_claim","evidence_refs":["current_turn:0"],"source_kinds":["current_turn"],"anchor":"relationship","confidence":0.85,"salience_hint":0.8,"recommended_effect":"receive_warmly"}
 Do NOT emit legacy shapes like {"claim":"...","evidence":[...]} without the required fields."""
@@ -326,6 +312,60 @@ def try_normalize_legacy_semantic_raw(raw: dict[str, Any]) -> tuple[dict[str, An
     return out, True
 
 
+OFF_VOCAB_METADATA_KEY = "off_vocab_fields"
+OFF_VOCAB_NOTE = "normalized_off_vocab_claim_fields"
+
+
+def try_coerce_off_vocab_claim_fields(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
+    """Map invented ``claim_kind`` / ``anchor`` / ``recommended_effect`` values onto the contract.
+
+    Held seats (Strata flash-next on gpu1, Bonsai 27B on gpu2; issue #3274) return complete claims
+    with real summaries and evidence refs, but make up the three label fields ("event_claim",
+    "technical", "acknowledge") -- the whole reply then failed schema validation and Mind gave the
+    turn nothing. Only those three advisory labels are mapped (same fallbacks as the singleton/array
+    paths and appraisal's own coercion); every original value is kept in the claim's metadata, so the
+    record stays honest. Everything else still has to be real: every claim must carry claim_id,
+    label, summary and claim_kind, or nothing is coerced and the reply fails as before. Evidence
+    refs are still checked by the guardrail filter afterwards."""
+    claims_in = raw.get("claims")
+    if not isinstance(claims_in, list) or not claims_in:
+        return None, False
+    out_claims: list[dict[str, Any]] = []
+    saw_off_vocab = False
+    for item in claims_in:
+        if not isinstance(item, dict) or not _has_current_claim_shape(item):
+            return None, False
+        claim = dict(item)
+        off_vocab: dict[str, Any] = {}
+        kind = claim.get("claim_kind")
+        if kind not in _VALID_CLAIM_KINDS:
+            off_vocab["claim_kind"] = kind
+            claim["claim_kind"] = "current_turn_claim" if _coerce_evidence_refs(claim) else "situation_claim"
+        if "anchor" in claim and claim.get("anchor") not in _VALID_CLAIM_ANCHORS:
+            off_vocab["anchor"] = claim.get("anchor")
+            claim["anchor"] = "unknown"
+        if "recommended_effect" in claim and claim.get("recommended_effect") not in _VALID_RECOMMENDED_EFFECTS:
+            effect = claim.get("recommended_effect")
+            off_vocab["recommended_effect"] = effect
+            claim["recommended_effect"] = _RECOMMENDED_EFFECT_ALIASES.get(str(effect or "").strip(), "no_effect")
+        if off_vocab:
+            saw_off_vocab = True
+            metadata = dict(claim.get("metadata") or {}) if isinstance(claim.get("metadata"), dict) else {}
+            metadata[OFF_VOCAB_METADATA_KEY] = off_vocab
+            claim["metadata"] = metadata
+        out_claims.append(claim)
+    if not saw_off_vocab:
+        return None, False
+    out = dict(raw)
+    out["claims"] = out_claims
+    diagnostics = dict(out.get("diagnostics") or {}) if isinstance(out.get("diagnostics"), dict) else {}
+    notes = list(diagnostics.get("notes") or [])
+    notes.append(OFF_VOCAB_NOTE)
+    diagnostics["notes"] = notes
+    out["diagnostics"] = diagnostics
+    return out, True
+
+
 def _validate_semantic_raw(raw: dict[str, Any]) -> tuple[SemanticSynthesisV1 | None, bool]:
     candidate = raw
     normalized_from_shape = False
@@ -353,10 +393,14 @@ def _validate_semantic_raw(raw: dict[str, Any]) -> tuple[SemanticSynthesisV1 | N
         normalized, did_normalize = try_normalize_legacy_semantic_raw(candidate)
         if not did_normalize or normalized is None:
             normalized, did_normalize = try_normalize_legacy_semantic_raw(raw)
-        if not did_normalize or normalized is None:
+        base = normalized if did_normalize and normalized is not None else candidate
+        coerced, did_coerce = try_coerce_off_vocab_claim_fields(base)
+        if did_coerce and coerced is not None:
+            base = coerced
+        if not did_normalize and not did_coerce:
             return None, False
         try:
-            return SemanticSynthesisV1.model_validate(normalized), True
+            return SemanticSynthesisV1.model_validate(base), True
         except ValidationError:
             return None, True
 

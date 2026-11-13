@@ -613,8 +613,9 @@ def _count_phrase(counts: dict[str, int]) -> str:
 def _naming_packet_section(packet: DispositionNamingPacketV1) -> list[str]:
     lines = [
         "This sitting has one question about something your own records keep showing. Your "
-        "personality graph groups moments you keep returning to into dispositions. Code grouped "
-        "this one; nobody has named it. You decide whether it is you.",
+        "personality graph groups the choices you make (what you picked over what you turned "
+        "down) into dispositions. Code grouped this one; nobody has named it. You decide whether "
+        "it is you.",
         "",
         f"    {NAMING_QUESTION}",
         "",

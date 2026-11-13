@@ -192,6 +192,12 @@ class Settings(BaseSettings):
     # (PRIME_HUB_URL); the reply goes back into the originating chat thread. false = no move, no frame section, no
     # order, nothing watched (runs already ordered finish or expire). Shipped ON.
     PRIME_INTENTION_TAKE_ON_ENABLED: bool = Field(default=True, alias="PRIME_INTENTION_TAKE_ON_ENABLED")
+    # Personality rev 4 (docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md): Prime's
+    # thought frame shows at most 2 "tending:" lines (orion/prime/tending.py), read from durable-runs
+    # PRIME_DURABLE_RUNS_URL/personality/frame: choice-built tendencies with >= 10 weighted choices. No shadow.
+    # false = kill switch (no read, no section). The choice point itself (one personality.choice.v1 per thought
+    # that chose among concerns) is not behind this flag: it is the graph's evidence and costs no model call.
+    PRIME_PERSONALITY_LINE_ENABLED: bool = Field(default=True, alias="PRIME_PERSONALITY_LINE_ENABLED")
     # Orion's consent to a Claude tool call (docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-
     # design.md section 3; app/prime_consent.py): orion-mind answers orion:prime:consent:request with one short
     # model call (frame <= 4,000 chars) on route PRIME_CONSENT_LLM_ROUTE (circe chat lane 0, pool priority

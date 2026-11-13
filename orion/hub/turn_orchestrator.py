@@ -989,6 +989,33 @@ async def _deliver_cockpit_frames(
         logger.warning("cockpit frame deliver failed", exc_info=True)
 
 
+PRIME_TENDING_TIMEOUT_SEC = 1.0
+
+
+async def _read_prime_tending(settings: Any) -> tuple[list[Any], str | None]:
+    """The Prime block's personality ``tending`` lines (orion/prime/tending.py): one GET on durable-runs
+    ``/personality/frame``. (tendencies, skip reason). Fail-open and bounded: off, no URL, unreachable,
+    slow, non-200 or a stale/invalid frame -> no lines, never raises."""
+    if not bool(getattr(settings, "PRIME_PERSONALITY_LINE_ENABLED", True)):
+        return [], "disabled"
+    root = str(getattr(settings, "HUB_CURIOSITY_DURABLE_RUNS_URL", "") or "").strip().rstrip("/")
+    if not root:
+        return [], "no_url"
+    try:
+        import httpx
+
+        from orion.prime.tending import FRAME_PATH, tendencies_from_frame
+
+        async with httpx.AsyncClient(timeout=PRIME_TENDING_TIMEOUT_SEC) as client:
+            resp = await asyncio.wait_for(client.get(f"{root}{FRAME_PATH}"), timeout=PRIME_TENDING_TIMEOUT_SEC)
+        if resp.status_code != 200:
+            return [], f"http_{resp.status_code}"
+        tends, why = tendencies_from_frame(resp.json())
+        return tends, why
+    except Exception as exc:  # noqa: BLE001 -- the tending lines must never break the block
+        return [], f"fetch_failed:{type(exc).__name__}"
+
+
 async def _build_prime_block(bus: Any, *, settings: Any, correlation_id: str) -> Any:
     """Prime's present for this turn (orion/prime/block.py, living Prime design Part 1), or None
     when HUB_PRIME_BLOCK_ENABLED is off. Fail-open: an unreadable Prime renders a labelled absent
@@ -1006,7 +1033,16 @@ async def _build_prime_block(bus: Any, *, settings: Any, correlation_id: str) ->
             block = absent_block("Hub's bus is not connected, so Prime's state could not be read")
         else:
             stale_min = float(getattr(settings, "HUB_PRIME_BLOCK_STALE_MIN", 10.0) or 10.0)
-            block = await fetch_prime_block(redis, stale_after=timedelta(minutes=stale_min))
+
+            async def _tending() -> list[Any]:
+                tends, skip = await _read_prime_tending(settings)
+                if skip:
+                    logger.info("prime_block_tending_skipped corr=%s reason=%s", correlation_id, skip)
+                return tends
+
+            # Started first so the HTTP read runs alongside the two Redis GETs (worst case ~1 s, not ~2 s).
+            tending_task = asyncio.create_task(_tending())
+            block = await fetch_prime_block(redis, stale_after=timedelta(minutes=stale_min), tending=tending_task)
         logger.info("prime_block corr=%s %s", correlation_id, block.log_fields())
         return block
     except Exception:  # noqa: BLE001 -- the Prime block must never break a turn
@@ -1508,7 +1544,7 @@ async def execute_unified_turn(
         reasons=list(thought.disposition_reasons),
     )
 
-    # The Prime read (two Redis GETs, <= 1 s) runs alongside the situation build, not after it.
+    # The Prime read (two Redis GETs plus the tending GET, concurrent, each <= 1 s) runs alongside the situation build, not after it.
     prime_task = asyncio.create_task(_build_prime_block(bus, settings=cfg, correlation_id=correlation_id))
     situation_bundle = await _build_situation_prompt_fragment(
         session_id=session_id,

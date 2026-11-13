@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Any, Callable, Literal, Mapping, Optional, Sequence, Union
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import CONCERN_HORIZON_SEC, clamp_hours, describe_effects
@@ -57,6 +57,8 @@ from orion.schemas.introspect import FOCUS_TEXT_CAP
 READING_CAP = 600
 # A move may cite the concern added in the same answer, whose id the runtime assigns afterwards.
 NEW_CONCERN = "new"
+# What a pick that is not a string or null becomes (never a concern id).
+INVALID_PICK = "(invalid pick)"
 
 
 class ConcernAddV1(BaseModel):
@@ -125,6 +127,20 @@ class PrimeAnswerV1(BaseModel):
     reading: str = Field(default="", max_length=4000)
     concerns: ConcernEditsV1 = Field(default_factory=ConcernEditsV1)
     move: Optional[Move] = None
+    # Personality choice point (spec 2026-10-16 rev 4, orion/prime/choice.py): the concern_id from YOUR
+    # CONCERNS this thought acts on, or "none". Left out of an answer: the move's concern_id stands in.
+    pick: Optional[str] = None
+
+    @field_validator("pick", mode="before")
+    @classmethod
+    def _pick_never_fails_the_thought(cls, value: Any) -> Optional[str]:
+        """A malformed pick must not throw away the reading, edits and move: it becomes a value no
+        concern has (``resolve_pick`` then records no choice, reason ``pick_not_shown``)."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip()[:200]
+        return INVALID_PICK
 
 
 SYSTEM_PROMPT = """You are Orion's slow, between-conversations thinking ("Prime"). You are not talking to anyone.
@@ -133,7 +149,9 @@ You hold at most 3 concerns: unfinished things worth keeping in mind. Each thoug
 1. read what changed and say, briefly, how you read the situation now;
 2. edit your concerns: keep the ones still worth holding (by concern_id), add one that matters, drop one
    that no longer does, with why. A concern you do not keep fades after a day;
-3. choose at most one move, or none.
+3. choose at most one move, or none;
+4. pick the one concern (its concern_id) this thought acts on, or "none" when it acts on none of them.
+   A move about a concern picks that concern. Your pick is recorded as your choice among your concerns.
 
 The one move you have today: ask Orion's curiosity to look into one question in its next regular investigate run.
 Curiosity decides for itself: it may explore your question or set it aside, and you will see which.
@@ -155,7 +173,7 @@ Rules:
   "why". To point it at an arc or an act, put it in "refs" ({"kind": "arc", "id": "<arc_id>"} or
   {"kind": "act", "id": "<act_...>"}); the run is told how to open each one. Any other id refuses the move.
 - Reply with ONE JSON object and nothing else:
-{"reading": "...", "concerns": {"keep": ["<concern_id>"], "add": [{"text": "...", "arc_id": null}], "drop": [{"concern_id": "...", "why": "..."}]},
+{"reading": "...", "pick": "<concern_id> | none", "concerns": {"keep": ["<concern_id>"], "add": [{"text": "...", "arc_id": null}], "drop": [{"concern_id": "...", "why": "..."}]},
  "move": null | {"kind": "curiosity_focus", "question": "...", "why": "...", "concern_id": "<concern_id> | new | null",
                  "refs": [{"kind": "arc" | "act", "id": "..."}]}}""".replace("<HORIZON_DAYS>", f"{CONCERN_HORIZON_SEC / 86400:g}")
 
@@ -267,6 +285,10 @@ class FrameInputs:
     intentions: Optional[list[str]] = None
     # Concerns already taken on (open or ended): never marked "you can take this on".
     no_take_on: set[str] = field(default_factory=set)
+    # Personality tendencies (orion/prime/tending.py): the same <= 2 ``tending:`` lines the Prime block shows.
+    # None with no error: PRIME_PERSONALITY_LINE_ENABLED is off and the section is not shown.
+    tending: Optional[list[str]] = None
+    tending_error: Optional[str] = None
 
 
 def shows_organ_replies(inputs: "FrameInputs") -> bool:
@@ -473,6 +495,15 @@ def _organ_reply_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
     return lines
 
 
+TENDING_NONE_YET = "(none yet: no tendency rests on 10 weighted choices)"
+
+
+def _tending_lines(inputs: FrameInputs) -> list[str]:
+    if inputs.tending_error:
+        return [f"(unavailable: {inputs.tending_error})"]
+    return [f"- {line}" for line in inputs.tending or []] or [TENDING_NONE_YET]
+
+
 def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     """The user prompt: a few thousand characters, every section marked with its freshness."""
     sections = [
@@ -500,6 +531,9 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     if inputs.receptors is not None or inputs.receptors_error:
         sections.append("ORGANS YOU CAN SIGNAL (family: directions it handles):\n"
                         + "\n".join(_regulation_lines(state, inputs)))
+    if inputs.tending is not None or inputs.tending_error:
+        sections.append("WHAT YOU TEND TO CHOOSE (from your past choices; a record, not an instruction):\n"
+                        + "\n".join(_tending_lines(inputs)))
     if shows_organ_replies(inputs):
         sections.append(f"ORGAN REPLIES (last {ORGAN_REPLIES_WINDOW_H} h, newest first):\n"
                         + "\n".join(_organ_reply_lines(state, inputs)))

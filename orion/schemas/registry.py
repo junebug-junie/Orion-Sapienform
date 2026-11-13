@@ -1624,8 +1624,8 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # Per-call token ledger (2026-10-29): one LLM call's tokens + correlation id. Bus
     # orion:llm:call:usage (llm-gateway, harness-governor -> sql-writer llm_call_usage).
     "LlmCallUsageV1": LlmCallUsageV1,
-    # Personality choice evidence (PR #2726 P0, 2026-10-16). Read-only reconstruction, no bus
-    # channel yet. PersonalityChoiceV1 is also in SCHEMA_REGISTRY; ChoiceOptionV1 is nested.
+    # Personality choice (spec rev 4, 2026-11-13): bus orion:personality:choice, producers at each
+    # choice point -> orion-durable-runs (personality_choice). Also in SCHEMA_REGISTRY; ChoiceOptionV1 is nested.
     "PersonalityChoiceV1": PersonalityChoiceV1,
     "ChoiceOptionV1": ChoiceOptionV1,
     # Personality graph loop (rev 2): the frame crosses HTTP (durable-runs -> thought, hub), so it
@@ -2218,7 +2218,7 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
         model=LlmCallUsageV1,
         kind=LLM_CALL_USAGE_KIND,
     ),
-    # Personality choice evidence (PR #2726 P0). Also in `_REGISTRY`; the nested
+    # Personality choice (spec rev 4): bus orion:personality:choice. Also in `_REGISTRY`; the nested
     # ChoiceOptionV1 lives in `_REGISTRY` alone.
     "PersonalityChoiceV1": SchemaRegistration(
         model=PersonalityChoiceV1,

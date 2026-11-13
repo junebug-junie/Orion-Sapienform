@@ -1,50 +1,55 @@
-"""Personality graph reducer (spec rev 2, bottom-up). PURE: no I/O, no logging, no numpy.
+"""Personality graph reducer (spec rev 4: choices only). PURE: no I/O, no logging, no numpy.
 
-Evidence (Orion's own words from each lane, plus curiosity picks) folds into nodes
-("dispositions": things Orion keeps returning to). Each node keeps ``lane_recent``: per lane, a
-hit counter that fades with a half-life. Its weight is DERIVED from it:
+Evidence is ONE thing: a ``PersonalityChoiceV1`` row from ``personality_choice`` (what Orion picked,
+and the options Orion turned down). Rev 2's grouping of Orion's own prose (reverie, journal, reading
+text, day letter, chat/outreach text, self-inquiry seeds) is retired: live 2026-11-13 it grouped job
+boilerplate (59% reverie), not personality. Kill means kill: no prose path remains here.
 
-    weight = sum over lanes of base(lane) * min(lane_cap, ln(1 + lane_recent[lane]))
+**Direction.** A choice becomes one unit vector, its *direction*::
 
-Log response with saturation (Weber-Fechner plus habituation): a lane's contribution grows with
-the log of its recent hits and stops growing after about four (the counter is clamped there),
-so one lane's volume buys nothing
-more and the weight reads as HOW MANY lanes keep returning to a theme. It fades because the
-counters fade. A lane counts toward promotion only with at least ``promote_lane_min_recent``
-recent hits, so one echo in a second lane cannot promote a single-lane flood.
+    direction = unit( embed(chosen text) - mean(embed(declined texts)) )
 
-History, measured on live data (2026-10-16, read-only dry runs): gain / sqrt(1 + lifetime hits)
-let reverie (~500 rows a day) crown a prediction-error theme at weight 37.9 from 244 reverie rows
-in 24 h; an uncapped base / (1 + recent) still grew like ln(hits) for weeks (a 2,600-hit
-reverie theme led the 7-day graph) and 6 of the top 8 nodes were one lane plus 1-4 echo hits.
-Weight fades with a half-life. Nodes are born as ``candidate``, promoted to ``active`` when
-at least ``promote_min_lanes`` distinct non-seed lanes back them, and ``retired`` when they
-fade out or are never backed. Retired is terminal and never matched again.
+The shared part of the options (they are all curiosity priors, or all outreach topics) cancels;
+what is left points from what Orion turned down toward what Orion took. A ``declined_all`` choice
+uses the lane's decline phrase ("no move", "say nothing", "none") as the chosen side, so it reads as
+a decline of every option. Nodes ("tendencies") are clusters of directions: a choice joins the node
+whose centroid is nearest when the cosine is at least ``match_threshold``, else it founds a node.
 
-Independence, not lane names: ``lane_recent`` is keyed by SOURCE (``source_key``), not by lane. Two
-lanes that narrate the same upstream signal are one source. Reverie narrates the attention
-broadcast coalition and the metacog journal is opened by the self-signal episode gate; both start
-from ``substrate_node_prediction_error_history`` through the same attention eligibility rule. Live
-2026-10-20: on the 3 active prediction-error nodes, 16 of 27 metacog journal hits had a reverie hit
-on the same node within 10 minutes (1 of 27 at a 6 h or 3 h offset), so "two lanes" was one source
-and promoted them. ``lane_counts`` stays per lane (what the panel shows). ``rekey_sources`` moves
-nodes stored under the old lane keys onto source keys, once.
+**Weight (revealed preference, Samuelson 1938).** A choice reveals a preference only to the extent
+it departs from the order it was offered in::
 
-Rows mirror ``services/orion-sql-db/manual_migration_personality_graph_v1.sql``:
-``Node`` -> personality_disposition, ``EvidenceRow`` -> personality_evidence,
-``HistoryRow`` -> personality_weight_history. Single writer: orion-durable-runs.
+    w = (0.25 if chosen_market_rank == 1 else 1.0) / picks_in_decision * (0.5 if care_promoted)
 
-Bad evidence (empty / wrong-dimension / non-finite / zero-norm embedding, unknown lane,
-empty excerpt, naive or missing timestamp) is skipped, never raised. Skipped evidence that
-still has a usable id and timestamp yields an ``EvidenceRow`` with ``disposition_id=None``,
-``weight_delta=0`` and ``meta["skip_reason"]`` so the writer can mark it consumed.
+``declined_all`` weighs 1.0. A choice folded after it happened (a backlog, the curiosity backfill)
+is first faded by its own age. A node's ``lane_recent[lane]`` is the faded sum of its choices'
+weights; its weight is their sum (``_derived_weight``), so weight reads as "weighted choices,
+recently". It fades with a half-life.
+
+**Opposition.** A choice whose direction points the other way (cosine <= -``oppose_threshold``) is
+counted against a node (``opposed_count``): Orion picked the declined side of it that time. The
+label carries both: "<chosen gist> over <declined gist>, n of m" with n = choices that went the
+node's way and m = n + choices that went against it. The label is computed, never an excerpt of
+prose, and no model writes it.
+
+Status: born ``candidate``; ``active`` once weight >= ``promote_min_weight`` and it holds at least
+``promote_min_evidence`` choices; ``retired`` when a candidate goes unreinforced past its TTL or an
+active node fades below ``retire_below_weight``. Retired is terminal and never matched again.
+
+Rows mirror ``services/orion-sql-db/manual_migration_personality_graph_v1.sql`` (+ the choice
+migration's ``opposed_count``): ``Node`` -> personality_disposition, ``EvidenceRow`` ->
+personality_evidence (one per folded choice, id ``choice:<choice_id>``), ``HistoryRow`` ->
+personality_weight_history. Single writer: orion-durable-runs.
+
+Bad evidence (unknown lane, unusable direction, naive timestamp) is skipped, never raised; when it
+still has an id and time it yields an ``EvidenceRow`` with ``disposition_id=None`` and
+``meta["skip_reason"]`` so the writer marks it consumed.
 """
 
 from __future__ import annotations
 
 import hashlib
-import json
 import math
+import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence, get_args
@@ -60,43 +65,43 @@ from orion.schemas.personality import (
     PersonalityLane,
 )
 
-CHOICE_LANE = "curiosity_choice"
-SEED_LANE = "self_inquiry_seed"
-ORIGIN_SEED = "seed_self_inquiry"
-ORIGIN_RECURRENCE = "recurrence"
-# One source: reverie plus the metacog journal (see module docstring).
-SUBSTRATE_NARRATION = "substrate_narration"
+ORIGIN_CHOICE = "choice"
+EVIDENCE_PREFIX = "choice:"  # personality_evidence.evidence_id = "choice:<choice_id>"
 VALID_LANES = frozenset(get_args(PersonalityLane))
+# The chosen side of a ``declined_all`` choice: the "none" option as each lane shows it.
+DECLINE_TEXT = {"prime": "no move", "outreach": "say nothing"}
+DECLINE_TEXT_DEFAULT = "none of these"
+GIST_WORDS = 7
 # Node.orion_verdict values (self-naming).
 VERDICT_NAMED = "named"
 VERDICT_REJECTED = "rejected"
 VERDICT_MERGED = "merged"
 
 _FRAME_MAX_WARNINGS = 20
+_COUNT_SUFFIX = re.compile(r", \d+ of \d+$")
+_WS = re.compile(r"\s+")
 
 
 @dataclass(frozen=True)
 class GraphParams:
-    match_threshold: float = 0.82  # cosine; bge-large-en-v1.5 1024-d unit vectors
+    # Cosine between two choice DIRECTIONS (differences of bge-large unit vectors). Unrelated
+    # directions sit near 0, unlike raw bge vectors (~0.6 baseline), so rev 2's 0.82 does not apply.
+    # Calibrated on the live curiosity backlog (PR report, "Metric quality gate").
+    match_threshold: float = 0.5
+    oppose_threshold: float = 0.5
     half_life_days: float = 14.0
-    lane_gain: float = 1.0
-    choice_gain: float = 2.0  # lane "curiosity_choice": a pick is stronger than a mention
-    seed_weight: float = 0.5  # lane "self_inquiry_seed"
-    lane_cap: float = 1.5  # max ln(1 + recent hits) one lane contributes (~4 recent hits)
-    promote_min_lanes: int = 2  # distinct lanes, NOT counting "self_inquiry_seed"
-    # A lane counts toward promotion with >= 2 hits, the older within one half-life (1 + 0.5).
-    # 2.0 was unreachable across ticks: the first hit fades before the second lands (1.9997).
-    promote_lane_min_recent: float = 1.5
+    follow_weight: float = 0.25  # picked the market's rank-1 option
+    depart_weight: float = 1.0  # picked another rank, an unranked option, or declined all
+    care_promoted_factor: float = 0.5  # runaway guard (rev 4 move 2)
+    promote_min_weight: float = 3.0
     promote_min_evidence: int = 3
-    candidate_ttl_days: float = 7.0  # candidate not reinforced for this long -> retired
-    retire_below_weight: float = 0.25  # active node faded below this -> retired
+    # A lane counts as a "source" of a node (self-naming re-ask rule) at this many recent weighted choices.
+    promote_lane_min_recent: float = 1.0
+    candidate_ttl_days: float = 14.0  # choices are sparse (a few a day): longer than rev 2's 7
+    retire_below_weight: float = 0.25
     centroid_n_cap: int = 50  # running-mean memory, lets a node drift slowly
     history_min_rel_change: float = 0.01
     # MERGE (B into A) by Orion's own verdict only when the two centroids are at least this close.
-    # The design's starting knob was 0.70; the P0 eval on live data (98 nodes, 2026-10-20) found
-    # pairwise centroid cosine median 0.633, p90 0.747, and 21% of all pairs >= 0.70, so 0.70 would
-    # let one in five arbitrary pairs merge. Nearest-neighbor cosine: median 0.827, p90 0.897. 0.85
-    # admits only pairs closer than a typical nearest neighbor (and above the 0.82 match threshold).
     merge_min_cosine: float = 0.85
 
 
@@ -105,15 +110,18 @@ DEFAULT_PARAMS = GraphParams()
 
 @dataclass(frozen=True)
 class Evidence:
+    """One folded choice. ``embedding`` is its direction (``choice_direction``); ``excerpt`` is its
+    pair label (``pair_label``); ``weight`` is its evidence weight (``evidence_weight``)."""
+
     evidence_id: str
     lane: str
     source_ref: str
     occurred_at: datetime  # aware UTC
-    excerpt: str  # <=160 chars, Orion's own words
+    excerpt: str
     embedding: Sequence[float]
+    weight: float = 1.0
     meta: Mapping[str, Any] = field(default_factory=dict)
-    # The full text that was embedded (the excerpt is only its first sentence). Read only by the
-    # own-name echo gate; never stored.
+    # The option texts (chosen + declined). Read only by the own-name echo gate; never stored.
     text: str = ""
 
 
@@ -134,13 +142,14 @@ class Node:  # mirrors personality_disposition
     last_reinforced_at: datetime
     retired_at: datetime | None
     updated_at: datetime  # weight is "as of updated_at"; fade uses now - updated_at
-    # Per-lane recent hits (habituation), faded with the weight, "as of updated_at".
+    # Per-lane faded sum of choice weights, "as of updated_at".
     lane_recent: dict[str, float] = field(default_factory=dict)
-    # When this graph last folded evidence into the node (wall clock, not the evidence's own time):
-    # the candidate TTL runs from here, so an old seed or a backlog row is not retired at birth.
+    # When this graph last folded evidence into the node (wall clock): the candidate TTL runs from here.
     last_folded_at: datetime | None = None
     # Weight at the last history row: history compares against it, so slow fade shows up.
     history_weight: float = 0.0
+    # Choices whose direction went against this node (Orion picked its declined side).
+    opposed_count: int = 0
     # Self-naming (design 2026-10-17-personality-orion-names-dispositions). Set only by
     # ``apply_namings``; a name never changes weight, fade or status.
     name: str | None = None
@@ -197,7 +206,7 @@ def _unit(vec: Sequence[Any]) -> Optional[list[float]]:
     if not vals or not all(math.isfinite(v) for v in vals):
         return None
     norm = math.sqrt(sum(v * v for v in vals))
-    if not math.isfinite(norm) or norm <= 0.0:
+    if not math.isfinite(norm) or norm <= 1e-12:
         return None
     return [v / norm for v in vals]
 
@@ -216,35 +225,13 @@ def _days(delta: timedelta) -> float:
     return delta.total_seconds() / 86400.0
 
 
-def _lane_base(lane: str, params: GraphParams) -> float:
-    if lane == CHOICE_LANE:
-        return params.choice_gain
-    if lane == SEED_LANE:
-        return params.seed_weight
-    return params.lane_gain
-
-
-def _derived_weight(lane_recent: Mapping[str, float], params: GraphParams) -> float:
-    return sum(
-        _lane_base(lane, params) * min(params.lane_cap, math.log1p(max(0.0, r)))
-        for lane, r in lane_recent.items()
-    )
-
-
-def source_key(lane: str, meta: Mapping[str, Any] | None) -> str:
-    """The ``lane_recent`` key: the independent source behind this evidence (module docstring)."""
-    if lane == "reverie" or (lane == "journal" and isinstance(meta, Mapping)
-                             and meta.get("source_kind") == "metacog"):
-        return SUBSTRATE_NARRATION
-    return lane
+def _derived_weight(lane_recent: Mapping[str, float], params: GraphParams = None) -> float:  # noqa: ARG001
+    """A node's weight: the faded sum of its choices' weights, over lanes."""
+    return sum(max(0.0, float(v)) for v in lane_recent.values())
 
 
 def _node_id(evidence_id: str) -> str:
     return "disp-" + hashlib.sha1(evidence_id.encode("utf-8")).hexdigest()[:16]
-
-
-def _clip_label(text: str) -> str:
-    return text.strip()[:DISPOSITION_LABEL_MAX_CHARS]
 
 
 def _copy(node: Node) -> Node:
@@ -252,10 +239,59 @@ def _copy(node: Node) -> Node:
                    lane_recent=dict(node.lane_recent))
 
 
-def _promoting_lanes(node: Node, params: GraphParams) -> int:
-    """Distinct non-seed SOURCES (``lane_recent`` keys) at or above the recent floor."""
-    return sum(1 for key, r in node.lane_recent.items()
-               if key != SEED_LANE and r >= params.promote_lane_min_recent)
+# --- choice -> evidence (pure helpers the driver calls) ---------------------------------------
+
+
+def evidence_weight(chosen_market_rank: Optional[int], *, declined_all: bool = False, care_promoted: bool = False,
+                    picks_in_decision: int = 1, params: GraphParams = DEFAULT_PARAMS) -> float:
+    """Revealed-preference weight of one choice (module docstring)."""
+    base = params.depart_weight if declined_all or chosen_market_rank != 1 else params.follow_weight
+    w = base / max(1, int(picks_in_decision or 1))
+    return w * params.care_promoted_factor if care_promoted else w
+
+
+def choice_direction(chosen: Sequence[float], declined: Sequence[Sequence[float]]) -> Optional[list[float]]:
+    """unit(unit(chosen) - mean(unit(declined))), or None when any vector is unusable, the
+    dimensions differ, or the two sides are the same point."""
+    c = _unit(chosen)
+    ds = [_unit(d) for d in declined]
+    if c is None or not ds or any(d is None or len(d) != len(c) for d in ds):
+        return None
+    n = float(len(ds))
+    mean = [sum(col) / n for col in zip(*ds)]
+    return _unit([ci - mi for ci, mi in zip(c, mean)])
+
+
+def decline_text(lane: str) -> str:
+    return DECLINE_TEXT.get(lane, DECLINE_TEXT_DEFAULT)
+
+
+def gist(text: Any, words: int = GIST_WORDS) -> str:
+    """The first ``words`` words of an option's text, whitespace collapsed."""
+    parts = _WS.sub(" ", text if isinstance(text, str) else "").strip().split(" ")
+    parts = [p for p in parts if p]
+    out = " ".join(parts[:words])
+    return out + ("…" if len(parts) > words else "")
+
+
+def pair_label(chosen_text: str, declined_texts: Sequence[str]) -> str:
+    """"<chosen gist> over <first declined gist>[ (+k more)]". ``declined_texts`` in shown order
+    (best market rank first), so the gist names the option Orion passed over most visibly."""
+    rest = [t for t in declined_texts if isinstance(t, str) and t.strip()]
+    if not rest:
+        return gist(chosen_text)[:DISPOSITION_LABEL_MAX_CHARS]
+    more = f" (+{len(rest) - 1} more)" if len(rest) > 1 else ""
+    return f"{gist(chosen_text)} over {gist(rest[0])}{more}"[:DISPOSITION_LABEL_MAX_CHARS]
+
+
+def label_base(label: str) -> str:
+    return _COUNT_SUFFIX.sub("", label or "")
+
+
+def choice_label(base: str, n: int, m: int) -> str:
+    """"<base>, n of m", the counts always kept whole (the base is cut to fit)."""
+    suffix = f", {max(0, int(n))} of {max(0, int(m))}"
+    return label_base(base)[: DISPOSITION_LABEL_MAX_CHARS - len(suffix)].rstrip() + suffix
 
 
 # --- tick state -------------------------------------------------------------------------------
@@ -268,10 +304,11 @@ class _Snap:
     evidence_count: int
     label: str
     centroid_n: int
+    opposed_count: int
 
 
 def _snap(node: Node) -> _Snap:
-    return _Snap(node.weight, node.status, node.evidence_count, node.label, node.centroid_n)
+    return _Snap(node.weight, node.status, node.evidence_count, node.label, node.centroid_n, node.opposed_count)
 
 
 class _Tick:
@@ -303,67 +340,59 @@ class _Tick:
                 node.weight = _derived_weight(node.lane_recent, params)
             node.updated_at = now
 
-    def best_match(self, emb: list[float], *, eligible) -> tuple[Optional[Node], float]:
-        best, best_sim = None, -2.0
+    def sims(self, emb: list[float]) -> list[tuple[Node, float]]:
+        out = []
         for node in self.nodes:
-            if node.status == "retired" or not eligible(node):
+            if node.status == "retired":
                 continue
             c = self.centroid(node)
             if c is None or len(c) != len(emb):
                 continue
-            sim = _dot(c, emb)
-            if sim > best_sim:
-                best, best_sim = node, sim
-        return best, best_sim
+            out.append((node, _dot(c, emb)))
+        return out
 
-    def reinforce(self, node: Node, ev: Evidence, emb: list[float], lane: str, key: str, sim: float,
-                  params: GraphParams, *, hit: bool = True) -> float:
-        """``hit=False`` (own-name echo): the evidence is counted and moves the centroid, but adds
-        no ``lane_recent`` hit, so no weight, and never becomes the label."""
+    def reinforce(self, node: Node, ev: Evidence, emb: list[float], lane: str, sim: float,
+                  w: float, params: GraphParams, *, hit: bool = True) -> float:
+        """``hit=False`` (own-name echo): the choice is counted and moves the centroid, but adds no
+        weight and never becomes the label."""
         c = self.centroid(node) or emb
         before = node.weight
         if hit:
-            # Clamp at the level where the lane's contribution caps: hits on a capped lane refresh it
-            # instead of piling up, so a theme that goes quiet fades out in weeks whatever its volume
-            # (unclamped, 2,600 reverie hits stayed above the cap ~134 days after the last one).
-            node.lane_recent[key] = min(node.lane_recent.get(key, 0.0) + 1.0, math.expm1(params.lane_cap))
-            node.weight = _derived_weight(node.lane_recent, params)
+            node.lane_recent[lane] = node.lane_recent.get(lane, 0.0) + w
+            node.weight = _derived_weight(node.lane_recent)
         gain = node.weight - before
         node.evidence_count += 1
+        node.chosen_count += 1
         node.lane_counts[lane] = node.lane_counts.get(lane, 0) + 1
         node.last_folded_at = self.now
-        if lane == CHOICE_LANE:
-            node.chosen_count += 1
         last = _aware(node.last_reinforced_at)
         node.last_reinforced_at = ev.occurred_at if last is None else max(last, ev.occurred_at)
         k = max(1, min(node.centroid_n, max(1, params.centroid_n_cap)))
-        mixed = [(ci * k + ei) / (k + 1) for ci, ei in zip(c, emb)]
-        new_c = _unit(mixed) or list(c)
+        new_c = _unit([(ci * k + ei) / (k + 1) for ci, ei in zip(c, emb)]) or list(c)
         node.centroid = new_c
         self.unit_centroids[id(node)] = new_c
         node.centroid_n += 1
-        if hit and sim > node.label_similarity:
-            label = _clip_label(ev.excerpt)
-            if label:
-                node.label, node.label_similarity = label, sim
+        base = label_base(node.label)
+        if hit and sim > node.label_similarity and ev.excerpt.strip():
+            base, node.label_similarity = ev.excerpt, sim
+        node.label = choice_label(base, node.evidence_count, node.evidence_count + node.opposed_count)
         return gain
 
-    def create(self, ev: Evidence, emb: list[float], lane: str, key: str, origin: str, now: datetime,
+    def oppose(self, node: Node) -> None:
+        node.opposed_count += 1
+        node.label = choice_label(node.label, node.evidence_count, node.evidence_count + node.opposed_count)
+
+    def create(self, ev: Evidence, emb: list[float], lane: str, w: float, now: datetime,
                params: GraphParams) -> Node:
-        gain = _derived_weight({key: 1.0}, params)
-        # A node born from self-inquiry alone is a seed whichever entry point created it.
-        origin = ORIGIN_SEED if lane == SEED_LANE else origin
         node = Node(
-            disposition_id=_node_id(ev.evidence_id), origin=origin, status="candidate",
-            # The founding excerpt starts as close as a typical member (the match threshold), so
-            # later evidence nearer the drifting centroid can take the label (at 1.0 it never could).
-            label=_clip_label(ev.excerpt), label_similarity=params.match_threshold, centroid=list(emb), centroid_n=1,
-            weight=gain, evidence_count=1, lane_counts={lane: 1},
-            chosen_count=1 if lane == CHOICE_LANE else 0, first_seen_at=ev.occurred_at,
-            last_reinforced_at=ev.occurred_at, retired_at=None, updated_at=now,
-            lane_recent={key: 1.0}, last_folded_at=now,
+            disposition_id=_node_id(ev.evidence_id), origin=ORIGIN_CHOICE, status="candidate",
+            # The founding choice starts as close as a typical member (the match threshold), so a later
+            # choice nearer the drifting centroid can take the label.
+            label=choice_label(ev.excerpt, 1, 1), label_similarity=params.match_threshold,
+            centroid=list(emb), centroid_n=1, weight=w, evidence_count=1, lane_counts={lane: 1},
+            chosen_count=1, first_seen_at=ev.occurred_at, last_reinforced_at=ev.occurred_at, retired_at=None,
+            updated_at=now, lane_recent={lane: w}, last_folded_at=now,
         )
-        # Id collision with an existing (e.g. retired) node: derive a distinct id deterministically.
         taken = {n.disposition_id for n in self.nodes}
         salt = 0
         while node.disposition_id in taken:
@@ -390,8 +419,7 @@ class _Tick:
         for node in self.nodes:
             if node.status == "retired":
                 continue
-            if (node.status == "candidate"
-                    and _promoting_lanes(node, params) >= params.promote_min_lanes
+            if (node.status == "candidate" and node.weight >= params.promote_min_weight
                     and node.evidence_count >= params.promote_min_evidence):
                 node.status = "active"
             if node.status == "candidate":
@@ -424,19 +452,17 @@ class _Tick:
 
 
 def cites_own_name(node: Node, ev: Evidence) -> bool:
-    """Own-name echo gate (design decision 2, 2026-10-20): the evidence's excerpt or text contains
-    the matched node's CURRENT name (case-insensitive exact substring). Only that node's own name;
-    no word lists, no other node's name."""
+    """Own-name echo gate (self-naming decision 2, 2026-10-20): the choice's option texts contain
+    the matched node's CURRENT name (case-insensitive exact substring)."""
     name = (node.name or "").strip().casefold()
     if not name:
         return False
     return any(name in (t or "").casefold() for t in (ev.excerpt, ev.text) if isinstance(t, str))
 
 
-def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params: GraphParams,
-            lane_override: Optional[str], origin: str, eligible) -> None:
+def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params: GraphParams) -> None:
     seen: set[str] = set()
-    valid: list[tuple[Evidence, list[float], str]] = []
+    valid: list[tuple[Evidence, list[float], str, float]] = []
     for ev in evidence:
         if not isinstance(ev, Evidence):
             continue
@@ -446,36 +472,54 @@ def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params:
         seen.add(eid)
         if _aware(ev.occurred_at) is None:
             continue
-        lane = lane_override or ev.lane
-        if lane not in VALID_LANES:
+        if ev.lane not in VALID_LANES:
             tick.skip(ev, "unknown_lane")
             continue
         if not isinstance(ev.excerpt, str) or not ev.excerpt.strip():
-            tick.skip(ev, "empty_excerpt")
+            tick.skip(ev, "empty_label")
             continue
+        try:
+            w = float(ev.weight)
+        except (TypeError, ValueError):
+            w = float("nan")
+        if not math.isfinite(w) or w <= 0.0:
+            tick.skip(ev, "bad_weight")
+            continue
+        # A choice older than ``now`` (a backlog, the curiosity backfill) is faded by its own age, so
+        # it weighs what it would weigh had it been folded when it happened.
+        age = _days(now - ev.occurred_at)
+        if age > 0 and params.half_life_days > 0:
+            w *= 0.5 ** (age / params.half_life_days)
         emb = _unit(ev.embedding) if ev.embedding is not None else None
         if emb is None:
-            tick.skip(ev, "bad_embedding")
+            tick.skip(ev, "bad_direction")
             continue
         if tick.dim is None:
             tick.dim = len(emb)
         elif len(emb) != tick.dim:
-            tick.skip(ev, "embedding_dim_mismatch")
+            tick.skip(ev, "direction_dim_mismatch")
             continue
-        valid.append((ev, emb, lane))
+        valid.append((ev, emb, ev.lane, w))
     valid.sort(key=lambda t: (t[0].occurred_at, t[0].evidence_id))
-    for ev, emb, lane in valid:
-        node, sim = tick.best_match(emb, eligible=eligible)
+    for ev, emb, lane, w in valid:
+        sims = tick.sims(emb)
+        best, best_sim = max(sims, key=lambda t: t[1], default=(None, -2.0))
         meta = dict(ev.meta) if isinstance(ev.meta, Mapping) else {}
-        if node is not None and sim >= params.match_threshold:
-            echo = cites_own_name(node, ev)
+        if best is not None and best_sim >= params.match_threshold:
+            echo = cites_own_name(best, ev)
             if echo:
                 meta["cites_own_name"] = True
-            delta = tick.reinforce(node, ev, emb, lane, source_key(lane, ev.meta), sim, params, hit=not echo)
-            disp_id, similarity = node.disposition_id, sim
+            delta = tick.reinforce(best, ev, emb, lane, best_sim, w, params, hit=not echo)
+            disp_id, similarity = best.disposition_id, best_sim
         else:
-            node = tick.create(ev, emb, lane, source_key(lane, ev.meta), origin, now, params)
-            delta, disp_id, similarity = node.weight, node.disposition_id, 1.0
+            best = tick.create(ev, emb, lane, w, now, params)
+            delta, disp_id, similarity = best.weight, best.disposition_id, 1.0
+        opposed = sorted(n.disposition_id for n, s in sims if s <= -params.oppose_threshold and n is not best)
+        for node, s in sims:
+            if node is not best and s <= -params.oppose_threshold:
+                tick.oppose(node)
+        if opposed:
+            meta["opposed"] = opposed[:20]
         tick.evidence_rows.append(EvidenceRow(
             evidence_id=ev.evidence_id, lane=lane, source_ref=str(ev.source_ref or ""),
             occurred_at=ev.occurred_at, excerpt=ev.excerpt[:DISPOSITION_LABEL_MAX_CHARS],
@@ -496,75 +540,13 @@ def apply_fade(nodes: list[Node], *, now: datetime, params: GraphParams = DEFAUL
 
 def fold(nodes: list[Node], evidence: Sequence[Evidence], *, now: datetime,
          params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
-    """Fade to ``now``, fold evidence in occurred_at order, then apply status rules."""
-    tick = _Tick(nodes, now)
+    """Fade to ``now``, fold choices in occurred_at order, then apply status rules. Only
+    ``origin='choice'`` nodes take part; any other node passed in is left untouched."""
+    tick = _Tick([n for n in nodes if n.origin == ORIGIN_CHOICE], now)
     tick.fade(now, params)
-    _ingest(tick, evidence, now=now, params=params, lane_override=None,
-            origin=ORIGIN_RECURRENCE, eligible=lambda n: True)
+    _ingest(tick, evidence, now=now, params=params)
     tick.statuses(now, params)
     return tick.result(now, params)
-
-
-def seed_nodes(seeds: Sequence[Evidence], *, now: datetime,
-               params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
-    """Each seed becomes a ``seed_self_inquiry`` candidate (lane ``self_inquiry_seed``), unless it
-    matches a seed node created earlier in this same call. Seeds never count toward promotion."""
-    tick = _Tick([], now)
-    _ingest(tick, seeds, now=now, params=params, lane_override=SEED_LANE,
-            origin=ORIGIN_SEED, eligible=lambda n: n.origin == ORIGIN_SEED)
-    tick.statuses(now, params)
-    return tick.result(now, params)
-
-
-# Lanes whose stored ``lane_recent`` key may hold another source's hits (before ``source_key``).
-REKEY_LANES = ("reverie", "journal")
-
-
-def rekey_sources(nodes: Sequence[Node], hits: Mapping[str, Sequence[tuple[str, Any, datetime]]], *,
-                  now: datetime, params: GraphParams = DEFAULT_PARAMS) -> FoldResult:
-    """One-time move of ``lane_recent`` from lane keys to source keys (``source_key``).
-
-    ``hits[disposition_id]`` lists that node's evidence in ``REKEY_LANES`` as (lane, meta,
-    occurred_at). Those keys are rebuilt by replaying the hits (fade by the half-life between hits,
-    +1 per hit, clamped as in ``reinforce``) up to the node's ``updated_at``; other keys are kept.
-    An active node that no longer has ``promote_min_lanes`` sources goes back to candidate: it was
-    promoted by one source counted twice; its candidate TTL restarts at ``now``. Returns every node whose ``lane_recent`` changed, with a
-    history row at ``now`` when weight or status moved. Inputs are not mutated."""
-    cap = math.expm1(params.lane_cap)
-    changed: list[Node] = []
-    history: list[HistoryRow] = []
-    for orig in nodes:
-        if orig.status == "retired":
-            continue
-        rebuilt: dict[str, float] = {}
-        last: dict[str, datetime] = {}
-        for lane, meta, at in sorted(hits.get(orig.disposition_id, ()), key=lambda h: h[2]):
-            if lane not in REKEY_LANES or _aware(at) is None:
-                continue
-            key = source_key(lane, meta)
-            r = rebuilt.get(key, 0.0)
-            if key in last and params.half_life_days > 0:
-                r *= 0.5 ** (max(0.0, _days(at - last[key])) / params.half_life_days)
-            rebuilt[key], last[key] = min(r + 1.0, cap), at
-        end = _aware(orig.updated_at)
-        for key, at in last.items():
-            if end is not None and params.half_life_days > 0:
-                rebuilt[key] *= 0.5 ** (max(0.0, _days(end - at)) / params.half_life_days)
-        node = _copy(orig)
-        node.lane_recent = {k: v for k, v in orig.lane_recent.items() if k not in REKEY_LANES} | rebuilt
-        if node.lane_recent == orig.lane_recent:
-            continue
-        node.weight = _derived_weight(node.lane_recent, params)
-        if node.status == "active" and _promoting_lanes(node, params) < params.promote_min_lanes:
-            # A fresh candidate window: the demotion is a recount, not neglect, so the candidate
-            # TTL must not retire (terminal) a long-quiet node in the same tick.
-            node.status, node.last_folded_at = "candidate", now
-        if node.status != orig.status or node.weight != orig.weight:
-            history.append(HistoryRow(node.disposition_id, now, node.weight, node.status,
-                                      node.evidence_count))
-            node.history_weight = node.weight
-        changed.append(node)
-    return FoldResult(nodes=changed, evidence_rows=[], history=history)
 
 
 def _clip(text: Optional[str], n: int) -> Optional[str]:
@@ -615,37 +597,29 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     return _aware(value)
 
 
-def _parse_meta(value: Any) -> Mapping[str, Any]:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except ValueError:
-            return {}
-    return value if isinstance(value, Mapping) else {}
-
-
 def choice_style_from_rows(rows: Sequence[Mapping[str, Any]], *, now: datetime,
                            window_days: int = 14) -> ChoiceStyleV1 | None:
-    """Distinct curiosity choices in ``(now - window_days, now]``: took the top-ranked option
-    (``chosen_best_rank == 1``) versus went their own way (any other rank, or off the list)."""
+    """Distinct decisions in ``(now - window_days, now]`` from ``personality_choice`` rows
+    (``act_id``, ``choice_id``, ``chosen_market_rank``, ``declined_all``, ``occurred_at``): took the
+    market's top option (rank 1) versus went their own way (another rank, unranked, or declined
+    all). A multi-pick decision (one ``act_id``) counts once, by its best rank."""
     window_days = max(1, int(window_days))
     start = now - timedelta(days=window_days)
     best: dict[str, Optional[int]] = {}
     for row in rows:
-        if not isinstance(row, Mapping) or row.get("lane", CHOICE_LANE) != CHOICE_LANE:
+        if not isinstance(row, Mapping):
             continue
         at = _parse_dt(row.get("occurred_at"))
         if at is None or at <= start or at > now:
             continue
-        meta = _parse_meta(row.get("meta"))
-        choice_id = meta.get("choice_id")
-        if not isinstance(choice_id, str) or not choice_id:
+        key = row.get("act_id") or row.get("choice_id")
+        if not isinstance(key, str) or not key:
             continue
-        rank = meta.get("chosen_best_rank")
+        rank = None if row.get("declined_all") else row.get("chosen_market_rank")
         rank = rank if isinstance(rank, int) and not isinstance(rank, bool) else None
-        prev = best.get(choice_id, None)
-        if choice_id not in best or (rank is not None and (prev is None or rank < prev)):
-            best[choice_id] = rank
+        prev = best.get(key)
+        if key not in best or (rank is not None and (prev is None or rank < prev)):
+            best[key] = rank
     if not best:
         return None
     took_top = sum(1 for r in best.values() if r == 1)
@@ -710,18 +684,19 @@ def node_cosine(a: Node, b: Node) -> Optional[float]:
 
 
 def _merge_into(a: Node, b: Node, now: datetime, params: GraphParams) -> None:
-    """Pool B's existing evidence into A. Per-key ``lane_recent`` is summed and clamped at the
-    per-lane cap, so a merge never exceeds what the same evidence would give one node."""
+    """Pool B's existing choices into A: per-lane ``lane_recent`` and the counts are summed, so A
+    weighs what the same choices would give one node."""
     _fade_to(a, now, params)
     _fade_to(b, now, params)
-    cap = math.expm1(params.lane_cap)
     for k, v in b.lane_recent.items():
-        a.lane_recent[k] = min(cap, a.lane_recent.get(k, 0.0) + v)
+        a.lane_recent[k] = a.lane_recent.get(k, 0.0) + v
     a.weight = _derived_weight(a.lane_recent, params)
     for lane, c in b.lane_counts.items():
         a.lane_counts[lane] = a.lane_counts.get(lane, 0) + c
     a.evidence_count += b.evidence_count
     a.chosen_count += b.chosen_count
+    a.opposed_count += b.opposed_count
+    a.label = choice_label(a.label, a.evidence_count, a.evidence_count + a.opposed_count)
     ua, ub = _unit(a.centroid), _unit(b.centroid)
     na, nb = max(1, a.centroid_n), max(1, b.centroid_n)
     if ua is not None and ub is not None and len(ua) == len(ub):

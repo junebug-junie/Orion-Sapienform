@@ -1866,6 +1866,10 @@ class Settings(BaseSettings):
     # tick is older than this renders only "Prime has not ticked since <time>".
     HUB_PRIME_BLOCK_ENABLED: bool = Field(default=True, alias="HUB_PRIME_BLOCK_ENABLED")
     HUB_PRIME_BLOCK_STALE_MIN: float = Field(default=10.0, gt=0.0, alias="HUB_PRIME_BLOCK_STALE_MIN")
+    # Personality rev 4 (orion/prime/tending.py): the Prime block gains at most 2 "tending: <label>
+    # [disposition:<id>]" lines from HUB_CURIOSITY_DURABLE_RUNS_URL/personality/frame (choice-built tendencies
+    # with >= 10 weighted choices), dropped first when over the 600-char cap. No shadow. false = kill switch.
+    PRIME_PERSONALITY_LINE_ENABLED: bool = Field(default=True, alias="PRIME_PERSONALITY_LINE_ENABLED")
     ORION_SITUATION_TTL_SECONDS: int = Field(default=300, alias="ORION_SITUATION_TTL_SECONDS")
     # 2026-08-30, Juniper's explicit request: previously hardcoded to a bare
     # 1200 inside orion.situational.context.hub_settings_to_runtime_namespace

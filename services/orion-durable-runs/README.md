@@ -1373,48 +1373,58 @@ shows only written rows); regulation and chronicle are unaffected. With arousal 
 `temporal_self.immune.skipped` says why. Kill switch: `TEMPORAL_SELF_IMMUNE_ENABLED=false`. Health: `/health` ->
 `temporal_self.immune`. Live dry run: `docs/superpowers/evidence/2026-10-13-immune-sweep/`.
 
-## Personality graph loop (2026-10-16, spec rev 2)
+## Personality graph loop (rev 4, 2026-11-13: choices only)
 
-What it does: every 10 minutes (and once at start) a reducer reads what Orion wrote in each lane
-since its last read, matches each piece to the themes Orion keeps returning to, and updates a small
-weighted graph of those themes ("dispositions"). A theme backed by several independent lanes becomes
-`active`; one that stops firing fades and is retired. Chat stance, reverie, curiosity and outreach
-read the strongest active themes back from `GET /personality/frame`.
+What it does: every 10 minutes (and once at start) a reducer reads the choices Orion made since its
+last read (what Orion picked at a choice point, and the options Orion turned down), turns each into a
+direction ("this over that"), and folds the directions into a small weighted graph of tendencies
+("dispositions"). A tendency backed by enough weighted choices becomes `active`; one that stops
+firing fades and is retired. Rev 2 grouped embeddings of Orion's own prose; the result was job
+boilerplate (live 2026-11-13: 59% reverie), so every prose source is deleted (kill means kill).
 
-Spec: `docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md` (rev 2). Pure
+Spec: `docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md` (rev 4). Pure
 reducer: `orion/personality/graph.py`. Code here: `app/personality_sources.py` (reads),
-`app/personality_store.py` (one transaction per tick), `app/personality_driver.py` (the tick).
-This service is the single writer of `personality_disposition`, `personality_evidence`,
-`personality_weight_history` and `personality_cursor`
-(`services/orion-sql-db/manual_migration_personality_graph_v1.sql`; apply it before deploy).
+`app/personality_store.py` (writes), `app/personality_driver.py` (the tick and the bus intake).
+This service is the single writer of `personality_choice`, `personality_disposition`,
+`personality_evidence`, `personality_weight_history` and `personality_cursor`
+(`services/orion-sql-db/manual_migration_personality_graph_v1.sql`, `..._naming_v1.sql` and
+`..._choice_v1.sql`; apply them before deploy).
 
-| Lane | Table, text, time column |
-|---|---|
-| `dream` | `dream_hypothesis` claim + why, `created_at` |
-| `journal` | `journal_entries` title + body, `created_at` (not `world_pulse`/`orion_day`: copies of reading and day letter) |
-| `reverie` | `substrate_reverie_thought.interpretation`, `created_at` |
-| `reading` | `world_pulse_read_seed` title + `stage2_result_json.summary` (Orion's read), `stage2_completed_at` |
-| `day_letter` | `orion_day_letter.note_md`, `created_at` |
-| `chat` / `outreach` | `chat_history_log.response` with / without a prompt, `created_at` (naive UTC) |
-| `curiosity_choice` | `curiosity_offer_decisions` JOIN `curiosity_run_outcomes`, one row per tested prior, `completed_at` |
-| `self_inquiry_seed` | `self_concept_history` (`curiosity_self_inquiry`) content, `created_at` |
+**Where choices come from.**
+
+| Lane | Producer | How it arrives |
+|---|---|---|
+| `curiosity` | this service's curiosity sync: `curiosity_offer_decisions` JOIN `curiosity_run_outcomes` (read-only), one row per tested prior, alternatives = the shown priors not tested | inserted by the tick |
+| `prime`, `outreach`, `reading`, `chat` | the act that made the pick (orion-mind Prime, Hub outreach, ...) | bus `orion:personality:choice` (`PersonalityChoiceV1`) |
+
+**Publishing a choice (producers).** Build `orion.schemas.personality.PersonalityChoiceV1` and
+publish it on `PERSONALITY_CHOICE_CHANNEL` (`orion:personality:choice`) with kind
+`PERSONALITY_CHOICE_KIND` (`personality.choice.v1`). `choice_id` must be deterministic per decision
+(e.g. `prime:<thought_id>`), so a re-publish is a no-op. Give every shown option (`key`, `text` as
+Orion saw it, `market_rank`); set `declined_all=true` and leave `chosen` empty for "no move" / "say
+nothing". A pick among one option, or a rule/cap/formula, is not a choice: the model refuses an
+empty `alternatives`. The channel is pub/sub: a choice published while this service is down is lost.
 
 Rules:
 
-- **No backfill.** A source with no cursor starts at the reducer's first boot. On that first tick
-  the latest version of each self-inquiry concept seeds low-weight candidate nodes (all or nothing;
-  the `seed` cursor marks it done).
-- **Exact resume.** Each source is read by `(time, pk)` keyset after its cursor, up to now minus
-  120 s, at most 200 rows per tick. Evidence, nodes, history and cursors commit in one transaction.
-- **No double count.** Evidence ids are `<lane>:<pk>` (`curiosity_choice:<run_id>:<prior_id>`). An
-  id already stored is dropped before the fold: a curiosity outcome re-upserted with a new
-  `completed_at` is read again and folds nothing.
-- **A failed embed holds its source** at the previous row; the row is retried next tick
-  (`held_sources`, warning `embed_failed:<source>` in `/health`). After 3 failed ticks for the same
-  row, or at once on an HTTP 4xx, the row is consumed as skipped evidence (`disposition_id` null,
-  `meta.embed_rejected`), so one bad row cannot keep a lane dark.
-- **Fold runs off the event loop** (`asyncio.to_thread`): it is pure and grows with nodes x evidence.
-- **Fade persists** even on a tick with no evidence (`apply_fade`).
+- **One choice, one evidence row** (`choice:<choice_id>`). Direction = unit(embed(chosen) -
+  mean(embed(declined))); a `declined_all` choice uses "no move" / "say nothing" / "none of these"
+  as the chosen side. Weight = 0.25 when Orion took the market's rank-1 option, else 1.0; halved when
+  `care_promoted`; divided by `picks_in_decision`; a backlog choice is faded by its own age.
+- **Labels are computed**: "<chosen gist> over <declined gist>, n of m" (m adds choices that went the
+  other way). Never a prose excerpt, no model.
+- **Backfill once, idempotently.** The curiosity sync starts at the epoch when it has no cursor:
+  every stored curiosity choice lands in `personality_choice` on the first ticks (200 runs a tick).
+  `choice_id` is deterministic, inserts are `ON CONFLICT DO NOTHING`, and a re-upserted outcome
+  folds nothing twice.
+- **Exact resume.** `personality_choice` is read by `(created_at, choice_id)` keyset after the
+  `choice` cursor, up to now minus 120 s (and the Temporal Self watermark), 200 rows a tick.
+  Evidence, nodes, history and cursors commit in one transaction.
+- **A failed embed holds the choice cursor** at the previous row; after 3 failed ticks, or at once on
+  an HTTP 4xx, the choice is consumed as skipped evidence. Option vectors are cached (4000 texts).
+- **Only `origin='choice'` nodes** are loaded, folded, counted or shown. The rev 2 nodes stay in the
+  table until `scripts/personality_rev3_retire_prose_nodes.py --apply` retires them (dry run by
+  default; a production write Juniper approves separately).
 
 Embeddings: `PERSONALITY_EMBED_URL` (vector-host `/embedding`, bge-large 1024-d, compute only;
 both containers are on `app-net`), concurrency 4, timeout 15 s.
@@ -1423,13 +1433,17 @@ Routes: `GET /personality/frame` (`PersonalityFrameV1`), `GET /personality/dispo
 active|candidate|retired|all&limit=50` (each with its last 60 weight-history points),
 `GET /personality/evidence?disposition_id=&limit=50` (newest first). Each answers 503 when
 `PERSONALITY_ENABLED=false` or the tables are missing. `/health` has a `personality` block (ticks,
-last tick, last error, evidence last tick, rows per source, held sources, nodes by status).
+last tick, last error, evidence last tick, choices read, curiosity rows synced, bus choices
+inserted/invalid, held, nodes by status). Log lines: `personality_choice_received choice_id=...`,
+`personality_tick {...}`.
 
 Failure: a bad tick logs `personality_tick_failed error_type=...` and writes nothing; the service
-keeps running. Kill switch: `PERSONALITY_ENABLED=false` (tables stay).
+keeps running. Kill switch: `PERSONALITY_ENABLED=false` (tables stay; bus choices are dropped with
+`personality_choice_dropped`).
 
 Tests: `tests/test_personality_loop.py` (fakes), `tests/test_personality_postgres.py` (real
-Postgres, needs `ORION_ADMISSION_TEST_DSN`).
+Postgres, needs `ORION_ADMISSION_TEST_DSN`). Eval: `evals/personality_choice_replay.py` (read-only
+replay of the live curiosity choices through the reducer; exits 1 if the data is degenerate).
 
 ### Orion names their own dispositions (2026-10-20)
 

@@ -22,7 +22,7 @@ def _node(i: int, *, status: str = "active", label: str | None = None) -> dict:
         "status": status,
         "weight": 12.0 - i,
         "evidence_count": 7 + i,
-        "lane_counts": {"reverie": 4, "dream": 2, "journal": 1},
+        "lane_counts": {"curiosity": 4, "prime": 2, "chat": 1},
         "first_seen_at": "2026-10-16T08:00:00+00:00",
         "last_reinforced_at": "2026-10-20T11:00:00+00:00",
     }
@@ -41,19 +41,19 @@ def test_renders_nodes_strongest_first_with_lanes_and_counts():
     assert cue.skip_reason is None
     assert cue.text.startswith(HEADER)
     assert cue.disposition_ids == ["d0", "d1", "d2"]
-    assert "(reverie, dreams, journal; 7 times since Oct 16)" in cue.text
+    assert "(curiosity, Prime, conversation; 7 times since Oct 16)" in cue.text
 
 
 def test_choice_style_line():
     style = {"window_days": 14, "choices": 40, "took_top": 16, "went_own_way": 24}
     cue = project_personality_cue(_frame(style=style), now=NOW)
-    assert "went your own way in 24 of 40 choices over the last 14 days" in cue.text
+    assert "went your own way in 24 of 40 over the last 14 days" in cue.text
 
 
 def test_only_choice_style_renders_without_header():
     style = {"window_days": 14, "choices": 6, "took_top": 2, "went_own_way": 4}
     cue = project_personality_cue(_frame(nodes=[], style=style), now=NOW)
-    assert cue.text.startswith("In curiosity")
+    assert cue.text.startswith("Across your choices")
     assert HEADER not in cue.text
 
 
@@ -89,7 +89,7 @@ def test_choice_line_needs_five_choices_and_names_the_real_window():
     assert project_personality_cue(_frame(nodes=[], style=one), now=NOW).skip_reason == "empty"
     five = {"window_days": 1, "choices": 5, "took_top": 2, "went_own_way": 3}
     cue = project_personality_cue(_frame(nodes=[], style=five), now=NOW)
-    assert "3 of 5 choices over the last day," in cue.text
+    assert "3 of 5 over the last day," in cue.text
     three_days = {"window_days": 3, "choices": 9, "took_top": 4, "went_own_way": 5}
     assert "over the last 3 days" in project_personality_cue(_frame(nodes=[], style=three_days), now=NOW).text
 
@@ -110,10 +110,10 @@ def test_all_live_active_nodes_fit_with_the_choice_line():
     ]
     nodes = [_node(i, label=label) for i, label in enumerate(labels)]
     live_lanes = [  # the live lane mixes of the 4 active nodes, then a fifth
-        {"dream": 3, "journal": 11, "reverie": 28, "outreach": 1},
-        {"dream": 1, "journal": 7, "reverie": 29},
-        {"journal": 11, "day_letter": 3, "self_inquiry_seed": 8},
-        {"journal": 9, "reverie": 35},
+        {"prime": 3, "chat": 11, "curiosity": 28, "outreach": 1},
+        {"prime": 1, "chat": 7, "curiosity": 29},
+        {"chat": 11, "reading": 3, "outreach": 8},
+        {"chat": 9, "curiosity": 35},
         {"reading": 4, "chat": 3},
     ]
     for n, lanes in zip(nodes, live_lanes):
@@ -146,7 +146,7 @@ def _named(i: int, name: str | None, **kw) -> dict:
 def test_named_node_keeps_the_excerpt_beside_the_name():
     cue = project_personality_cue(_frame(nodes=[_named(0, "the watched gap")]), now=NOW)
     assert ('- you call this "the watched gap": "the walkway camera sees presence without a person 0" '
-            "(reverie, dreams, journal; 7 times since Oct 16)") in cue.text
+            "(curiosity, Prime, conversation; 7 times since Oct 16)") in cue.text
     assert cue.text.startswith(HEADER)
     assert "I named it" not in cue.text  # the sentence is for the panel, not the cue
 
@@ -156,7 +156,7 @@ def test_unnamed_node_renders_exactly_as_before():
     null_name = project_personality_cue(_frame(nodes=[_named(0, None)]), now=NOW).text
     blank = project_personality_cue(_frame(nodes=[{**_node(0), "name": "   "}]), now=NOW).text
     assert plain == null_name == blank
-    assert '\n- "the walkway camera sees presence without a person 0" (reverie' in plain
+    assert '\n- "the walkway camera sees presence without a person 0" (curiosity' in plain
     assert "you call this" not in plain
 
 
@@ -235,3 +235,12 @@ def test_frame_from_older_durable_runs_without_name_fields_still_renders():
 def test_double_quote_in_a_name_does_not_break_the_quoted_framing():
     cue = project_personality_cue(_frame(nodes=[_named(0, 'the "gap"')]), now=NOW)
     assert "you call this \"the 'gap'\": \"the walkway" in cue.text
+
+
+def test_a_computed_label_keeps_its_counts_when_shortened():
+    from orion.personality.cue import _label
+
+    long = "turn start context is stale snapshot over camera layer mediation not closeness (+13 more), 21 of 21"
+    out = _label(long)
+    assert out.endswith(", 21 of 21") and len(out) <= 64 and "…" in out
+    assert _label("short over this, 2 of 3") == "short over this, 2 of 3"

@@ -42,6 +42,8 @@ on:
       - "orion/schemas/orion_day.py"
       # Intentions Prime takes on (choice-as-EFE Step -1) order and deliver through this contract.
       - "orion/schemas/intention.py"
+      # Prime's choice point publishes this contract (personality rev 4).
+      - "orion/schemas/personality.py"
       - ".github/workflows/orion-prime-tests.yml"
   push:
     branches: [main]
@@ -79,6 +81,8 @@ on:
       - "orion/schemas/orion_day.py"
       # Intentions Prime takes on (choice-as-EFE Step -1) order and deliver through this contract.
       - "orion/schemas/intention.py"
+      # Prime's choice point publishes this contract (personality rev 4).
+      - "orion/schemas/personality.py"
       - ".github/workflows/orion-prime-tests.yml"
 
 permissions:

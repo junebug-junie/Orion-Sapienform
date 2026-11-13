@@ -38,7 +38,11 @@ def test_recorded_tick_sequences_replay_identically():
     scenario is identical; the only difference is the two organ scenarios (which show both sections).
     Re-recorded 2026-11-12 (living Prime Part 2, turn hand-back): with the new CONCERN_BASIS text mapped back
     to the old one and ``last_thought_id`` removed from saved states, every part of every scenario equals the
-    previous golden (checked by script; 9 basis and 10 last_thought_id occurrences were the whole diff)."""
+    previous golden (checked by script; 9 basis and 10 last_thought_id occurrences were the whole diff).
+    Re-recorded 2026-11-13 (personality rev 4, Prime's choice point): with the system prompt's new step 4 and
+    "pick" key mapped back to the old text and the new ``choice=<outcome>`` field removed from prime_thought log
+    lines, every part of every scenario equals the previous golden (checked by script). No scenario holds two
+    concerns with a pick, so none publishes a choice (11 no_concerns, 4 no_pick)."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

@@ -1,10 +1,12 @@
-"""Personality graph loop (spec 2026-10-16 rev 2): sources, store transaction, driver tick, routes.
+"""Personality graph loop, rev 4 (choices only): store transaction, curiosity sync, bus intake,
+driver tick, routes. No database here.
 
-No database here. What is pinned: first boot reads nothing older than boot (no backfill) and seeds
-from self-inquiry once; a failed embed holds its source at the previous row and the row is folded
-next tick; a curiosity run re-read after its outcome is re-upserted is not weighted twice; a tick
-with no evidence still persists fade; a failing tick never raises; the frame route answers 503
-when the loop is disabled or its tables are missing; PERSONALITY_ENABLED=false starts nothing.
+What is pinned: the curiosity sync backfills every stored curiosity choice on its first tick and is
+idempotent (a re-read run inserts nothing, folds nothing twice); a bus choice is inserted once and
+folded on the next tick; each choice becomes ONE evidence row whose direction is chosen minus mean
+declined; a failed embed holds the choice cursor at the previous row and gives up after three ticks;
+a tick with no evidence still persists fade; rev 2 prose nodes are never loaded; a failing tick never
+raises; the routes answer 503 when the loop is disabled or its tables are missing.
 """
 
 from __future__ import annotations
@@ -24,13 +26,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 
+from orion.personality.graph import Node, choice_direction  # noqa: E402
 from orion.personality.situation import SituationInputs  # noqa: E402
-from orion.personality.graph import EvidenceRow, Node  # noqa: E402
+from orion.schemas.personality import ChoiceOptionV1, PersonalityChoiceV1  # noqa: E402
 
 from app import personality_sources as ps  # noqa: E402
-from app.personality_driver import PersonalityDriver, accept, embed_all  # noqa: E402
-from app.personality_sources import Candidate, Cursor, SourceItem  # noqa: E402
+from app.personality_driver import PersonalityDriver, choice_evidence, option_texts  # noqa: E402
+from app.personality_sources import Cursor  # noqa: E402
 from app.personality_store import (  # noqa: E402
+    INSERT_CHOICE_SQL,
     INSERT_EVIDENCE_SQL,
     INSERT_HISTORY_SQL,
     UPDATE_NODE_WEIGHT_SQL,
@@ -38,109 +42,391 @@ from app.personality_store import (  # noqa: E402
     UPSERT_NODE_SQL,
     PersonalityStore,
     TickWrite,
+    choice_row,
     node_key,
     split_nodes,
 )
 
-T0 = datetime(2026, 10, 16, 18, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 11, 13, 18, 0, tzinfo=timezone.utc)
 
 
 def utc(**kw) -> datetime:
     return T0 + timedelta(**kw)
 
 
-# --- sources (pure) ---------------------------------------------------------------------------
+def opt(key: str, rank=None, text=None) -> ChoiceOptionV1:
+    return ChoiceOptionV1(key=key, text=text or key, market_rank=rank)
 
 
-def test_readable_prior_strips_prefixes_and_date():
-    assert ps.readable_prior("curiosity_prior:self:reading_link_can_cross_region_boundary_20261015") == \
-        "reading link can cross region boundary"
-    assert ps.readable_prior("curiosity_prior:body_heat_tracks_gpu") == "body heat tracks gpu"
-    assert ps.readable_prior("self:top8_20261007") == "top8"
-    assert ps.readable_prior("curiosity_prior:self:keeps_2026_date_mid") == "keeps 2026 date mid"
+def choice(cid: str, at: datetime, *, chosen="people", declined=("pipeline",), rank=2, lane="prime",
+           declined_all=False, **kw) -> PersonalityChoiceV1:
+    alts = [opt(t, i + (1 if rank != 1 else 2)) for i, t in enumerate(declined)]
+    if declined_all:
+        return PersonalityChoiceV1(choice_id=cid, lane=lane, occurred_at=at, declined_all=True, alternatives=alts, **kw)
+    return PersonalityChoiceV1(choice_id=cid, lane=lane, occurred_at=at, chosen=opt(chosen, rank), alternatives=alts,
+                               chosen_market_rank=rank, act_id=kw.pop("act_id", f"act:{cid}"), **kw)
 
 
-def test_excerpt_first_sentence_collapsed_and_capped():
-    assert ps.excerpt("  I keep   returning\nto continuity. Then more text.") == "I keep returning to continuity."
-    # A bold title line is dropped when body text follows (the day letter's "**Note for <date>**").
-    assert ps.excerpt("**Note for 2026-10-15**\n\nToday felt like closing loops. More.") == "Today felt like closing loops."
-    # Short leading fragments ("Dr.") do not end the sentence.
-    assert ps.excerpt("Dr. X said the field was quiet today. Then.") == "Dr. X said the field was quiet today."
-    long = "word " * 100
-    out = ps.excerpt(long)
-    assert len(out) <= ps.EXCERPT_MAX and out.endswith("…")
-    assert ps.excerpt("") == "" and ps.excerpt(None) == ""
+def direction_of(chosen: str, declined) -> list[float]:
+    return choice_direction(vec_for(chosen), [vec_for(t) for t in declined])
 
 
-def test_embed_text_joins_and_caps():
-    assert ps.embed_text("Title", None, "  body ") == "Title\n\nbody"
-    assert len(ps.embed_text("x" * 5000)) == ps.EMBED_TEXT_MAX
+# --- sources + choice -> evidence (pure) --------------------------------------------------------
 
 
-def test_sql_is_keyset_capped_and_chat_is_naive_utc():
-    for spec in ps.SOURCES:
-        assert "%(at)s" in spec.sql and "%(ref)s" in spec.sql and "%(hi)s" in spec.sql
-        assert "LIMIT %(limit)s" in spec.sql and "ORDER BY" in spec.sql
-    by = {s.name: s for s in ps.SOURCES}
-    for lane in ("chat", "outreach"):
-        assert "AT TIME ZONE 'UTC'" in by[lane].sql
-    assert "btrim(coalesce(prompt, '')) <> ''" in by["chat"].sql
-    assert "btrim(coalesce(prompt, '')) = ''" in by["outreach"].sql
-    assert "o.completed_at" in by["curiosity_choice"].sql and "JOIN curiosity_offer_decisions" in by["curiosity_choice"].sql
-    # A self-inquiry run (arm self_inquiry, nothing offered) is not a choice: filtered in SQL, not just in choices.py.
-    assert "d.arm <> 'self_inquiry'" in by["curiosity_choice"].sql
-    assert "produced_by = 'curiosity_self_inquiry'" in by["self_inquiry_seed"].sql
-    assert "mirror_kinds" in by["journal"].sql and set(ps.JOURNAL_MIRROR_SOURCE_KINDS) == {"world_pulse", "orion_day"}
-    assert "DISTINCT ON (concept_id)" in ps.SEED_SQL
-    assert set(ps.SOURCE_NAMES) == {"dream", "journal", "reverie", "reading", "day_letter", "chat", "outreach",
-                                    "curiosity_choice", "self_inquiry_seed"}
+def test_sql_is_keyset_capped_and_reads_only_choices():
+    for sql in (ps.CURIOSITY_SQL, ps.CHOICE_SQL, ps.NAMING_SQL):
+        assert "LIMIT %(limit)s" in sql and "%(hi)s" in sql and "%(ref)s" in sql
+    assert "FROM personality_choice" in ps.CHOICE_SQL and "ORDER BY created_at, choice_id" in ps.CHOICE_SQL
+    assert "d.arm <> 'self_inquiry'" in ps.CURIOSITY_SQL
+    # Rev 2 prose sources are gone (kill means kill).
+    for gone in ("SOURCES", "SEED_SQL", "reverie_item", "journal_item", "excerpt"):
+        assert not hasattr(ps, gone)
 
 
-def test_row_builders_ids_lanes_and_naive_chat_time():
-    item = ps.chat_item("chat")({"id": "c1", "created_at": T0.replace(tzinfo=None), "response": "Hello there friend. Yes.",
-                                 "correlation_id": "k", "session_id": "s"})
-    (c,) = item.candidates
-    assert c.evidence_id == "chat:c1" and c.lane == "chat" and c.occurred_at == T0 and c.occurred_at.tzinfo is not None
-    assert item.at == T0 and item.ref == "c1"
-    j = ps.journal_item({"entry_id": "e1", "created_at": T0, "title": "Metacog", "body": "The field drifted all day.",
-                         "source_kind": "metacog", "mode": "x"})
-    assert j.candidates[0].meta["source_kind"] == "metacog" and j.candidates[0].text.startswith("Metacog\n\n")
-    assert j.candidates[0].excerpt == "The field drifted all day."
-    empty = ps.reverie_item({"thought_id": "t", "created_at": T0, "interpretation": "   "})
-    assert empty.candidates == () and empty.ref == "t"
-    r = ps.reading_item({"seed_id": "s1", "stage2_completed_at": T0, "title": "Art", "summary": "Orion's read of it."})
-    assert r.candidates[0].evidence_id == "reading:s1" and r.candidates[0].excerpt == "Orion's read of it."
+def test_choice_evidence_direction_weight_label():
+    c = choice("prime:t1", T0, chosen="people", declined=("pipeline", "heat"), rank=3)
+    vecs = {t: vec_for(t) for t in ("people", "pipeline", "heat")}
+    e = choice_evidence(c, vecs)
+    assert e.evidence_id == "choice:prime:t1" and e.lane == "prime" and e.source_ref == "act:prime:t1"
+    assert e.weight == 1.0 and e.excerpt == "people over pipeline (+1 more)"
+    assert e.embedding == pytest.approx(direction_of("people", ("pipeline", "heat")))
+    assert e.meta["chosen_market_rank"] == 3 and e.meta["alternatives"] == 2
+    top = choice_evidence(choice("prime:t2", T0, rank=1), {t: vec_for(t) for t in ("people", "pipeline")})
+    assert top.weight == 0.25
+
+
+def test_declined_all_reads_as_a_decline_of_every_option():
+    c = choice("outreach:o1", T0, lane="outreach", declined=("topic a", "topic b"), declined_all=True)
+    assert option_texts(c) == ("say nothing", ["topic a", "topic b"])
+    e = choice_evidence(c, {t: vec_for(t) for t in ("say nothing", "topic a", "topic b")})
+    assert e.excerpt == "say nothing over topic a (+1 more)" and e.weight == 1.0 and e.meta["declined_all"] is True
+    assert option_texts(choice("prime:x", T0, declined_all=True))[0] == "no move"
+
+
+def test_missing_vector_gives_an_empty_direction():
+    c = choice("prime:t1", T0)
+    assert choice_evidence(c, {"people": vec_for("people")}).embedding == []
+
+
+# --- driver (fakes) ---------------------------------------------------------------------------
+
+
+def vec_for(text: str, dim: int = 64) -> list[float]:
+    raw = hashlib.sha256(text.encode()).digest() * 2
+    v = [b - 127.5 for b in raw[:dim]]
+    n = math.sqrt(sum(x * x for x in v))
+    return [x / n for x in v]
+
+
+class Embedder:
+    def __init__(self):
+        self.fail: set[str] = set()
+        self.calls: list[str] = []
+
+    async def __call__(self, doc_id: str, text: str) -> list[float]:
+        self.calls.append(text)
+        if text in self.fail:
+            raise RuntimeError("embedder down")
+        return vec_for(text)
+
+
+def _after(key, cur):
+    return cur is None or key > (cur.at, cur.ref)
+
+
+class FakeReader:
+    def __init__(self, store):
+        self.store = store
+        self.curiosity: list[dict] = []  # joined curiosity rows
+        self.namings: list[dict] = []  # orion_disposition_naming rows
+
+    async def read_curiosity(self, cursor, hi):
+        # Mirrors CURIOSITY_SQL's NOT EXISTS: a run already holding a row is never read again.
+        synced = {r["act_id"] for r in self.store.choices.values()}
+        rows = sorted(self.curiosity, key=lambda r: (r["completed_at"], r["run_id"]))
+        return [r for r in rows if _after((r["completed_at"], r["run_id"]), cursor) and r["completed_at"] < hi
+                and f"curiosity_run:{r['run_id']}" not in synced][:200]
+
+    async def read_choices(self, cursor, hi):
+        rows = sorted(self.store.choices.values(), key=lambda r: (r["created_at"], r["choice_id"]))
+        return [dict(r) for r in rows if _after((r["created_at"], r["choice_id"]), cursor) and r["created_at"] < hi][:200]
+
+    async def read_namings(self, cursor, hi):
+        rows = sorted(self.namings, key=lambda r: (r["created_at"], r["naming_id"]))
+        return [r for r in rows if _after((r["created_at"], r["naming_id"]), cursor) and r["created_at"] < hi][:200]
+
+
+def _copy(n: Node) -> Node:
+    return replace(n, centroid=list(n.centroid), lane_counts=dict(n.lane_counts), lane_recent=dict(n.lane_recent))
+
+
+class FakeStore:
+    """In-memory personality_* tables with the SQL's conflict rules and origin filter."""
+
+    def __init__(self, clock):
+        self.clock = clock
+        self.nodes: dict[str, Node] = {}
+        self.evidence: dict[str, object] = {}
+        self.history: dict[tuple, object] = {}
+        self.cursors: dict[str, Cursor] = {}
+        self.choices: dict[str, dict] = {}
+        self.fail_commit = False
+        self.commits = 0
+        self.situation = SituationInputs()
+        self.watermark = None  # None = "no chronicle" (company unknown, warned)
+        self.fail_situation = False
+
+    async def load_nodes(self):
+        return [_copy(n) for n in self.nodes.values() if n.status != "retired" and n.origin == "choice"]
+
+    async def load_cursors(self):
+        return dict(self.cursors)
+
+    async def existing_evidence_ids(self, ids):
+        return {i for i in ids if i in self.evidence}
+
+    async def insert_choices(self, choices, *, written_by, cursor=None):
+        new = 0
+        for c in choices:
+            if c.choice_id not in self.choices:
+                self.choices[c.choice_id] = {**choice_row(c, written_by), "created_at": self.clock()}
+                new += 1
+        if cursor is not None:
+            self.cursors[cursor[0]] = cursor[1]
+        return new
+
+    async def commit_tick(self, w: TickWrite):
+        if self.fail_commit:
+            raise ConnectionError("db gone")
+        for e in w.evidence:
+            self.evidence.setdefault(e.evidence_id, e)
+        for n in w.nodes:
+            self.nodes[n.disposition_id] = _copy(n)
+        for h in w.history:
+            self.history.setdefault((h.disposition_id, h.at), h)
+        self.cursors.update(w.cursors)
+        self.commits += 1
+
+    async def chronicle_watermark(self):
+        return self.watermark
+
+    async def load_situation_inputs(self, since, until):
+        if self.fail_situation:
+            raise ConnectionError("temporal self tables gone")
+        return self.situation
+
+    async def status_counts(self):
+        out: dict[str, int] = {}
+        for n in self.nodes.values():
+            out[n.status] = out.get(n.status, 0) + 1
+        return out
+
+
+class Clock:
+    def __init__(self, at: datetime):
+        self.at = at
+
+    def __call__(self):
+        return self.at
+
+
+def world():
+    clock = Clock(T0)
+    store = FakeStore(clock)
+    reader, emb = FakeReader(store), Embedder()
+    drv = PersonalityDriver(store=store, reader=reader, embed=emb, now=clock, tick_sec=600, read_lag_sec=120)
+    return drv, store, reader, emb, clock
+
+
+def publish(drv, c: PersonalityChoiceV1) -> str:
+    """What the bus handler does with one orion:personality:choice payload."""
+    return asyncio.run(drv.offer_choice(c.model_dump(mode="json")))
 
 
 def _run_row(run_id="r1", completed=T0, tested=("self:a_thing_20261015", "self:b_thing")):
-    return {
-        "run_id": run_id, "turn_started_at": completed - timedelta(minutes=5), "decided_at": completed - timedelta(minutes=5),
-        "arm": "value", "material_ids": [],
-        "offered": [{"prior_id": "self:a_thing_20261015", "rank": 1, "slot": "order", "expected_nats": 0.1},
-                    {"prior_id": "self:c_other", "rank": 2, "slot": "order", "expected_nats": 0.05}],
-        "stale_offered": [],
-        "per_prior": [{"kind": "tested", "prior_id": p} for p in tested],
-        "completed_at": completed, "turn_ok": True, "realized_nats": 0.2,
-    }
+    return {"run_id": run_id, "arm": "value_order", "turn_started_at": completed - timedelta(minutes=30),
+            "decided_at": completed - timedelta(minutes=31), "completed_at": completed, "turn_ok": True,
+            "offered": [{"rank": 1, "prior_id": "self:a_thing_20261015"}, {"rank": 2, "prior_id": "self:c_thing"},
+                        {"rank": 3, "prior_id": "self:d_thing"}],
+            "stale_offered": [{"rank": 1, "prior_id": "self:b_thing"}],
+            "per_prior": [{"kind": "tested", "prior_id": p} for p in tested]}
 
 
-def test_curiosity_item_one_evidence_per_chosen_prior():
-    item = ps.curiosity_item(_run_row())
-    ids = [c.evidence_id for c in item.candidates]
-    assert ids == ["curiosity_choice:r1:self:a_thing_20261015", "curiosity_choice:r1:self:b_thing"]
-    a, b = item.candidates
-    assert a.text == "a thing" and a.lane == "curiosity_choice"
-    assert a.meta == {"choice_id": "curiosity_prior_selection:r1", "chosen_best_rank": 1, "rank": 1,
-                      "prior_id": "self:a_thing_20261015"}
-    assert b.meta["rank"] is None
-    nothing = ps.curiosity_item({**_run_row(), "per_prior": [{"kind": "formed", "prior_id": "self:new"}]})
-    assert nothing.candidates == () and nothing.ref == "r1"
+def test_curiosity_backfill_runs_on_the_first_tick_and_is_idempotent():
+    drv, store, reader, emb, clock = world()
+    reader.curiosity = [_run_row("r1", utc(days=-20)), _run_row("r2", utc(days=-3), tested=("self:c_thing",))]
+    out = asyncio.run(drv.tick())
+    assert out["curiosity_synced"] == 3 and set(store.choices) == {
+        "curiosity:r1:self:a_thing_20261015", "curiosity:r1:self:b_thing", "curiosity:r2:self:c_thing"}
+    assert {r["written_by"] for r in store.choices.values()} == {"curiosity_sync"}
+    assert store.cursors["curiosity_sync"] == Cursor(utc(days=-3), "r2")
+    assert out["evidence"] == 0  # inserted at T0: inside the read lag, folded next tick
+    clock.at = utc(minutes=10)
+    out = asyncio.run(drv.tick())
+    assert out["evidence"] == 3 and out["curiosity_synced"] == 0
+    ev = store.evidence["choice:curiosity:r1:self:a_thing_20261015"]
+    # rank 1 of a two-pick run, 20 days old: 0.25 / 2, faded by 20 of 14 days' half-life.
+    age_days = (20 * 86400 + 40 * 60) / 86400  # occurred at the turn start (30 min before completion), read 10 min after T0
+    assert ev.weight_delta == pytest.approx(0.125 * 0.5 ** (age_days / 14), rel=1e-6)
+    assert all(n.origin == "choice" for n in store.nodes.values())
+    # The outcome is re-upserted with a DIFFERENT tested set (Hub replaces per_prior): the run is
+    # already synced, so nothing new is inserted or folded -- one run stays one decision.
+    reader.curiosity.append(_run_row("r1", utc(minutes=11), tested=("self:c_thing", "self:d_thing")))
+    calls = len(emb.calls)
+    clock.at = utc(minutes=20)
+    out = asyncio.run(drv.tick())
+    assert out["curiosity_synced"] == 0 and out["evidence"] == 0 and len(store.choices) == 3
+    assert not any("c_thing" in k for k in store.choices if k.startswith("curiosity:r1:"))
+    assert len(emb.calls) == calls
+    assert "curiosity_run:' || o.run_id" in ps.CURIOSITY_SQL and "NOT EXISTS" in ps.CURIOSITY_SQL
 
+
+def test_bus_choice_is_inserted_once_and_folded_on_the_next_tick():
+    drv, store, reader, emb, clock = world()
+    asyncio.run(drv.tick())
+    c = choice("prime:t1", utc(minutes=1), rank=3)
+    assert publish(drv, c) == "inserted" and publish(drv, c) == "duplicate"
+    assert asyncio.run(drv.offer_choice({"choice_id": "x", "lane": "prime"})) == "invalid"
+    # The curiosity lane is durable-runs' own sync: a bus producer may not write it.
+    assert publish(drv, choice("curiosity:r9:p", utc(minutes=1), lane="curiosity")) == "invalid"
+    # A choice dated in the future would never fade.
+    assert publish(drv, choice("prime:future", utc(hours=1))) == "invalid"
+    assert drv.stats.bus_choices_inserted == 1 and drv.stats.bus_choices_invalid == 3
+    assert store.choices["prime:t1"]["written_by"] == "bus"
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    ev = store.evidence["choice:prime:t1"]
+    (n,) = store.nodes.values()
+    assert ev.disposition_id == n.disposition_id and ev.lane == "prime" and ev.weight_delta == pytest.approx(1.0, rel=1e-3)
+    assert n.label == "people over pipeline, 1 of 1" and n.origin == "choice" and n.status == "candidate"
+    assert ev.meta["choice_id"] == "prime:t1" and ev.meta["act_id"] == "act:prime:t1"
+    assert store.cursors["choice"].ref == "prime:t1"
+
+
+def test_repeated_departures_promote_a_tendency():
+    drv, store, reader, emb, clock = world()
+    for i in range(4):  # 4 x 1.0, faded a few minutes: past the 3.0 promotion line
+        publish(drv, choice(f"prime:t{i}", utc(minutes=1), rank=2))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    (n,) = store.nodes.values()
+    assert n.status == "active" and n.evidence_count == 4 and n.label.endswith(", 4 of 4")
+
+
+def test_prose_nodes_are_never_loaded_or_touched():
+    drv, store, reader, emb, clock = world()
+    prose = Node(disposition_id="disp-old", origin="recurrence", status="active", label="The perception error is high",
+                 label_similarity=0.9, centroid=vec_for("x"), centroid_n=9, weight=5.0, evidence_count=9,
+                 lane_counts={"reverie": 9}, chosen_count=0, first_seen_at=utc(days=-9), last_reinforced_at=utc(days=-1),
+                 retired_at=None, updated_at=utc(days=-1), lane_recent={"substrate_narration": 4.0})
+    store.nodes["disp-old"] = prose
+    publish(drv, choice("prime:t1", utc(minutes=1)))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    assert store.nodes["disp-old"] == prose
+    assert store.evidence["choice:prime:t1"].disposition_id != "disp-old"
+
+
+def test_tick_without_evidence_persists_fade():
+    drv, store, reader, emb, clock = world()
+    for i in range(3):
+        publish(drv, choice(f"prime:t{i}", utc(minutes=1)))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    (n,) = store.nodes.values()
+    clock.at = utc(days=7, minutes=10)
+    out = asyncio.run(drv.tick())
+    assert out["evidence"] == 0
+    faded = store.nodes[n.disposition_id]
+    assert faded.weight == pytest.approx(n.weight * 0.5 ** (7 / 14), rel=1e-3) and faded.updated_at == clock.at
+
+
+class Rejecting(Exception):
+    def __init__(self, code):
+        super().__init__(f"http {code}")
+        self.response = type("R", (), {"status_code": code})()
+
+
+def test_embed_outage_holds_the_cursor_and_never_consumes_a_choice():
+    drv, store, reader, emb, clock = world()
+    publish(drv, choice("prime:a", utc(minutes=1), chosen="ok one"))
+    clock.at = utc(seconds=61)
+    publish(drv, choice("prime:b", utc(minutes=1), chosen="always fails"))
+    clock.at = utc(seconds=62)
+    publish(drv, choice("prime:c", utc(minutes=1), chosen="ok two"))
+    emb.fail = {"always fails"}
+    for k in range(1, 7):  # an hour of outage
+        clock.at = utc(minutes=10 * k)
+        asyncio.run(drv.tick())
+        assert "choice:prime:a" in store.evidence and "choice:prime:b" not in store.evidence
+        assert "choice:prime:c" not in store.evidence and store.cursors["choice"].ref == "prime:a"
+        assert drv.stats.held and "embed_failed:choice:prime:b" in drv.stats.warnings
+    emb.fail = set()  # the embedder is back
+    clock.at = utc(minutes=70)
+    asyncio.run(drv.tick())
+    assert store.evidence["choice:prime:b"].disposition_id is not None
+    assert "choice:prime:c" in store.evidence and store.cursors["choice"].ref == "prime:c" and not drv.stats.held
+
+
+def test_a_4xx_embed_is_consumed_at_once():
+    drv, store, reader, emb, clock = world()
+
+    async def reject(doc_id, text):
+        raise Rejecting(400)
+
+    drv._embed = reject
+    publish(drv, choice("prime:a", utc(minutes=1)))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    assert store.evidence["choice:prime:a"].disposition_id is None and store.cursors["choice"].ref == "prime:a"
+
+
+def test_option_vectors_are_cached_across_ticks():
+    drv, store, reader, emb, clock = world()
+    publish(drv, choice("prime:a", utc(minutes=1)))
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    publish(drv, choice("prime:b", utc(minutes=11)))
+    clock.at = utc(minutes=20)
+    asyncio.run(drv.tick())
+    assert sorted(emb.calls) == ["people", "pipeline"]
+
+
+def test_an_invalid_stored_row_is_consumed_as_skipped():
+    drv, store, reader, emb, clock = world()
+    publish(drv, choice("prime:a", utc(minutes=1)))
+    store.choices["prime:a"]["alternatives"] = "[]"
+    clock.at = utc(minutes=10)
+    asyncio.run(drv.tick())
+    row = store.evidence["choice:prime:a"]
+    assert row.disposition_id is None and row.meta["skip_reason"] == "unknown_lane"
+    assert store.cursors["choice"].ref == "prime:a"
+
+
+def test_failed_tick_never_raises_and_writes_nothing():
+    drv, store, reader, emb, clock = world()
+    publish(drv, choice("prime:a", utc(minutes=-10)))
+    clock.at = utc(minutes=10)
+    store.fail_commit = True
+    assert asyncio.run(drv.run_once()) is None
+    assert drv.stats.failures == 1 and drv.stats.last_error.startswith("ConnectionError")
+    assert "choice" not in store.cursors and not store.nodes
+    assert any(w.startswith("last_tick_failed:ConnectionError") for w in drv.frame_warnings(utc(minutes=10)))
+
+
+def test_health_reports_choice_intake():
+    drv, store, reader, emb, clock = world()
+    publish(drv, choice("prime:a", utc(minutes=1)))
+    h = drv.health()
+    assert h["bus_choices_inserted"] == 1 and "choices_read_last_tick" in h and "curiosity_synced_last_tick" in h
 
 # --- store (fake connection) ------------------------------------------------------------------
 
 
 class FakeCursor:
+    rowcount = 1
+
     def __init__(self, log):
         self.log = log
 
@@ -198,7 +484,7 @@ class FakePool:
 
 
 def node(did="d1", *, status="candidate", weight=1.0, centroid_n=1, label="a label", updated=T0, lanes=None) -> Node:
-    return Node(disposition_id=did, origin="recurrence", status=status, label=label, label_similarity=1.0,
+    return Node(disposition_id=did, origin="choice", status=status, label=label, label_similarity=1.0,
                 centroid=[1.0, 0.0], centroid_n=centroid_n, weight=weight, evidence_count=centroid_n,
                 lane_counts=lanes or {"chat": 1}, chosen_count=0, first_seen_at=T0, last_reinforced_at=T0,
                 retired_at=None, updated_at=updated)
@@ -208,10 +494,10 @@ def test_commit_tick_is_one_transaction_in_migration_order():
     from orion.personality.graph import EvidenceRow, HistoryRow
 
     pool = FakePool()
-    ev = EvidenceRow("chat:c1", "chat", "chat_history_log:c1", T0, "x", "d2", 1.0, 1.0, {"a": 1})
+    ev = EvidenceRow("choice:prime:c1", "prime", "prime_thought:c1", T0, "x over y", "d2", 1.0, 1.0, {"a": 1})
     w = TickWrite(now=T0, evidence=[ev], nodes=[node("d1", weight=0.9), node("d2", centroid_n=1)],
                   loaded={"d1": node_key(node("d1"))}, history=[HistoryRow("d2", T0, 1.0, "candidate", 1)],
-                  cursors={"chat": Cursor(T0, "c1"), "dream": Cursor(T0, "")})
+                  cursors={"choice": Cursor(T0, "c1"), "naming": Cursor(T0, "")})
     asyncio.run(PersonalityStore(pool).commit_tick(w))
     kinds = [e[0] for e in pool.log]
     assert kinds[0] == "begin" and kinds[-1] == "commit" and kinds.count("begin") == 1
@@ -226,7 +512,7 @@ def test_commit_tick_is_one_transaction_in_migration_order():
     assert [r["disposition_id"] for r in by_sql[UPDATE_NODE_WEIGHT_SQL]] == ["d1"]
     assert json.loads(by_sql[INSERT_EVIDENCE_SQL][0]["meta"]) == {"a": 1}
     curs = {r["source"]: r for r in by_sql[UPSERT_CURSOR_SQL]}
-    assert curs["chat"]["ref"] == "c1" and curs["dream"]["ref"] is None
+    assert curs["choice"]["ref"] == "c1" and curs["naming"]["ref"] is None
 
 
 def test_split_nodes_rewrites_centroid_only_when_folded_or_new():
@@ -239,362 +525,38 @@ def test_split_nodes_rewrites_centroid_only_when_folded_or_new():
     assert "centroid" not in light[0] and light[0]["status"] == "retired"
     assert "lane_recent" in light[0] and "lane_recent" in UPDATE_NODE_WEIGHT_SQL
     # Any column the light UPDATE does not write forces a full upsert (here lane_counts alone).
-    full, light = split_nodes([replace(a, lane_counts={"chat": 1, "dream": 1})], loaded)
+    full, light = split_nodes([replace(a, lane_counts={"chat": 1, "prime": 1})], loaded)
+    assert [r["disposition_id"] for r in full] == ["a"] and light == []
+    # Opposition moves the label's counts: a full upsert too.
+    full, light = split_nodes([replace(a, opposed_count=1)], loaded)
     assert [r["disposition_id"] for r in full] == ["a"] and light == []
 
 
-# --- driver (fakes) ---------------------------------------------------------------------------
 
 
-def vec_for(text: str, dim: int = 64) -> list[float]:
-    raw = hashlib.sha256(text.encode()).digest() * 2
-    v = [b - 127.5 for b in raw[:dim]]
-    n = math.sqrt(sum(x * x for x in v))
-    return [x / n for x in v]
+def test_insert_choices_is_one_insert_only_transaction_with_its_cursor():
+    pool = FakePool()
+    c = choice("prime:t1", T0)
+    n = asyncio.run(PersonalityStore(pool).insert_choices([c, choice("prime:t2", T0)], written_by="curiosity_sync",
+                                                          cursor=("curiosity_sync", Cursor(T0, "r9"))))
+    assert n == 2
+    kinds = [e[0] for e in pool.log]
+    assert kinds[0] == "begin" and kinds[-1] == "commit" and kinds.count("begin") == 1
+    sqls = [e[1] for e in pool.log if e[0] == "execute"]
+    assert sqls[1:] == [INSERT_CHOICE_SQL, INSERT_CHOICE_SQL, UPSERT_CURSOR_SQL]
+    assert "ON CONFLICT (choice_id) DO NOTHING" in INSERT_CHOICE_SQL
+    row = next(e[2] for e in pool.log if e[0] == "execute" and e[1] == INSERT_CHOICE_SQL)
+    assert row["written_by"] == "curiosity_sync" and json.loads(row["chosen"])["key"] == "people"
+    assert [o["key"] for o in json.loads(row["alternatives"])] == ["pipeline"]
+    # A declined_all row stores chosen as SQL NULL.
+    assert choice_row(choice("prime:o1", T0, declined_all=True), "bus")["chosen"] is None
 
 
-class Embedder:
-    def __init__(self):
-        self.fail: set[str] = set()
-        self.calls: list[str] = []
-
-    async def __call__(self, doc_id: str, text: str) -> list[float]:
-        self.calls.append(text)
-        if text in self.fail:
-            raise RuntimeError("embedder down")
-        return vec_for(text)
-
-
-class FakeReader:
-    def __init__(self):
-        self.items: dict[str, list[SourceItem]] = {}
-        self.seeds: list[SourceItem] = []
-        self.seed_reads = 0
-        self.namings: list[dict] = []  # orion_disposition_naming rows
-
-    def add(self, source: str, item: SourceItem) -> None:
-        self.items.setdefault(source, []).append(item)
-        self.items[source].sort(key=lambda i: (i.at, i.ref))
-
-    async def read(self, cursors, hi):
-        out = {}
-        for name, cur in cursors.items():
-            if cur.at >= hi:
-                continue
-            out[name] = [i for i in self.items.get(name, []) if (i.at, i.ref) > (cur.at, cur.ref) and i.at < hi][:200]
-        return out
-
-    async def read_seeds(self, now):
-        self.seed_reads += 1
-        return [s for s in self.seeds if s.at <= now]
-
-    async def read_namings(self, cursor, hi):
-        cur = (cursor.at, cursor.ref) if cursor is not None else (datetime(1970, 1, 1, tzinfo=timezone.utc), "")
-        rows = sorted(self.namings, key=lambda r: (r["created_at"], r["naming_id"]))
-        return [r for r in rows if (r["created_at"], r["naming_id"]) > cur and r["created_at"] < hi][:200]
-
-
-def _copy(n: Node) -> Node:
-    return replace(n, centroid=list(n.centroid), lane_counts=dict(n.lane_counts), lane_recent=dict(n.lane_recent))
-
-
-class FakeStore:
-    """In-memory personality_* tables with the SQL's conflict rules."""
-
-    def __init__(self):
-        self.nodes: dict[str, Node] = {}
-        self.evidence: dict[str, object] = {}
-        self.history: dict[tuple, object] = {}
-        self.cursors: dict[str, Cursor] = {}
-        self.fail_commit = False
-        self.commits = 0
-        self.situation = SituationInputs()
-        self.watermark = None  # set per test; None = "no chronicle" (company unknown, warned)
-        self.fail_situation = False
-
-    async def load_nodes(self):
-        return [_copy(n) for n in self.nodes.values() if n.status != "retired"]
-
-    async def load_cursors(self):
-        return dict(self.cursors)
-
-    async def existing_evidence_ids(self, ids):
-        return {i for i in ids if i in self.evidence}
-
-    async def rekey_hits(self, ids):
-        want, hits = set(ids), {}
-        for e in self.evidence.values():
-            if e.disposition_id in want and e.lane in ("reverie", "journal"):
-                hits.setdefault(e.disposition_id, []).append((e.lane, e.meta, e.occurred_at))
-        return hits
-
-    async def commit_tick(self, w: TickWrite):
-        if self.fail_commit:
-            raise ConnectionError("db gone")
-        for e in w.evidence:
-            self.evidence.setdefault(e.evidence_id, e)
-        for n in w.nodes:
-            self.nodes[n.disposition_id] = _copy(n)
-        for h in w.history:
-            self.history.setdefault((h.disposition_id, h.at), h)
-        self.cursors.update(w.cursors)
-        self.commits += 1
-
-    async def chronicle_watermark(self):
-        # Default: the chronicle is caught up far past any test clock (no read bound, no warning).
-        return self.watermark
-
-    async def load_situation_inputs(self, since, until):
-        if self.fail_situation:
-            raise ConnectionError("temporal self tables gone")
-        return self.situation
-
-    async def status_counts(self):
-        out: dict[str, int] = {}
-        for n in self.nodes.values():
-            out[n.status] = out.get(n.status, 0) + 1
-        return out
-
-
-class Clock:
-    def __init__(self, at: datetime):
-        self.at = at
-
-    def __call__(self):
-        return self.at
-
-
-def cand(lane: str, ref: str, at: datetime, text: str, **meta) -> Candidate:
-    return Candidate(f"{lane}:{ref}", lane, f"src:{ref}", at, text, ps.excerpt(text), meta)
-
-
-def item(lane: str, ref: str, at: datetime, text: str) -> SourceItem:
-    return SourceItem(at, ref, (cand(lane, ref, at, text),))
-
-
-def world():
-    store, reader, emb, clock = FakeStore(), FakeReader(), Embedder(), Clock(T0)
-    drv = PersonalityDriver(store=store, reader=reader, embed=emb, now=clock, tick_sec=600, read_lag_sec=120)
-    return drv, store, reader, emb, clock
-
-
-def test_first_boot_starts_every_cursor_at_now_and_backfills_nothing():
-    drv, store, reader, emb, clock = world()
-    reader.add("chat", item("chat", "old", utc(hours=-3), "An old reply from before boot."))
-    reader.seeds = [item("self_inquiry_seed", "s1", utc(hours=-5), "I care about continuity in my own record.")]
-    out = asyncio.run(drv.tick())
-    assert set(store.cursors) == set(ps.SOURCE_NAMES) | {ps.SEED_CURSOR, ps.REKEY_CURSOR}
-    assert all(c.at == T0 for c in store.cursors.values())
-    assert "chat:old" not in store.evidence and out["rows"] == {}
-    (seed,) = store.nodes.values()
-    assert seed.origin == "seed_self_inquiry" and seed.status == "candidate" and seed.lane_counts == {"self_inquiry_seed": 1}
-    assert "self_inquiry_seed:s1" in store.evidence
-    # Second tick: the seed is not re-read, the pre-boot row is still never read.
-    clock.at = utc(minutes=10)
-    asyncio.run(drv.tick())
-    assert reader.seed_reads == 1 and "chat:old" not in store.evidence and len(store.nodes) == 1
-
-
-def test_seed_embed_failure_leaves_marker_unwritten_and_retries_whole_seed():
-    drv, store, reader, emb, clock = world()
-    reader.seeds = [item("self_inquiry_seed", "s1", utc(hours=-5), "Seed one text here."),
-                    item("self_inquiry_seed", "s2", utc(hours=-5), "Seed two text here.")]
-    emb.fail = {"Seed two text here."}
-    asyncio.run(drv.tick())
-    assert ps.SEED_CURSOR not in store.cursors and not store.nodes and "seed:embed_failed" in drv.stats.warnings
-    emb.fail = set()
-    clock.at = utc(minutes=10)
-    asyncio.run(drv.tick())
-    assert ps.SEED_CURSOR in store.cursors and len(store.nodes) == 2
-
-
-def test_retried_seed_never_folds_a_post_boot_self_inquiry_row_twice():
-    drv, store, reader, emb, clock = world()
-    reader.seeds = [item("self_inquiry_seed", "s1", utc(hours=-5), "Seed one text here.")]
-    emb.fail = {"Seed one text here."}
-    asyncio.run(drv.tick())  # first boot: seed fails, every source cursor starts at T0
-    assert ps.SEED_CURSOR not in store.cursors
-    after = item("self_inquiry_seed", "x", utc(minutes=1), "A self-inquiry answer written after boot.")
-    reader.seeds.append(after)  # the reader's seed query would also see it without the bound
-    reader.add("self_inquiry_seed", after)
-    emb.fail = set()
-    clock.at = utc(minutes=10)
-    asyncio.run(drv.tick())
-    x = [n for n in store.nodes.values() if n.label.startswith("A self-inquiry answer")]
-    assert len(x) == 1 and x[0].evidence_count == 1 and x[0].lane_counts == {"self_inquiry_seed": 1}
-    assert len(store.nodes) == 2 and ps.SEED_CURSOR in store.cursors
-
-
-class Rejecting(Exception):
-    def __init__(self, code):
-        super().__init__(f"http {code}")
-        self.response = type("R", (), {"status_code": code})()
-
-
-def test_a_row_that_never_embeds_is_consumed_after_three_ticks():
-    drv, store, reader, emb, clock = world()
-    asyncio.run(drv.tick())
-    reader.add("reverie", item("reverie", "bad", utc(minutes=1), "This text always fails."))
-    reader.add("reverie", item("reverie", "ok", utc(minutes=2), "This text is fine."))
-    emb.fail = {"This text always fails."}
-    for k in (1, 2):
-        clock.at = utc(minutes=10 * k)
-        asyncio.run(drv.tick())
-        assert "reverie:bad" not in store.evidence and drv.stats.held_sources == ["reverie"]
-    clock.at = utc(minutes=30)
-    asyncio.run(drv.tick())
-    bad = store.evidence["reverie:bad"]
-    assert bad.disposition_id is None and bad.weight_delta == 0.0 and bad.meta["embed_rejected"] is True
-    assert "reverie:ok" in store.evidence and store.cursors["reverie"].ref == "ok"
-
-
-def test_a_4xx_embed_is_consumed_at_once():
-    drv, store, reader, emb, clock = world()
-    asyncio.run(drv.tick())
-
-    async def reject(doc_id, text):
-        raise Rejecting(400)
-
-    drv._embed = reject
-    reader.add("dream", item("dream", "d", utc(minutes=1), "Rejected text."))
-    clock.at = utc(minutes=10)
-    asyncio.run(drv.tick())
-    assert store.evidence["dream:d"].disposition_id is None and store.cursors["dream"].ref == "d"
-
-
-def test_embed_failure_holds_that_source_at_the_previous_row():
-    drv, store, reader, emb, clock = world()
-    asyncio.run(drv.tick())  # first boot at T0
-    a, b, c = (item("reverie", r, utc(minutes=m), f"Reverie thought {r} about the cabinet.") for r, m in
-               (("a", 1), ("b", 2), ("c", 3)))
-    for it in (a, b, c):
-        reader.add("reverie", it)
-    reader.add("dream", item("dream", "d", utc(minutes=1), "A dream claim that stands alone."))
-    emb.fail = {"Reverie thought b about the cabinet."}
-    clock.at = utc(minutes=10)
-    asyncio.run(drv.tick())
-    assert "reverie:a" in store.evidence and "reverie:b" not in store.evidence and "reverie:c" not in store.evidence
-    assert store.cursors["reverie"] == Cursor(a.at, "a")
-    assert "dream:d" in store.evidence  # another source is not held
-    assert drv.stats.held_sources == ["reverie"] and "embed_failed:reverie" in drv.stats.warnings
-    emb.fail = set()
-    clock.at = utc(minutes=20)
-    asyncio.run(drv.tick())
-    assert {"reverie:b", "reverie:c"} <= set(store.evidence) and store.cursors["reverie"] == Cursor(c.at, "c")
-
-
-def test_reread_curiosity_run_is_not_weighted_twice():
-    drv, store, reader, emb, clock = world()
-    asyncio.run(drv.tick())
-    reader.add("curiosity_choice", ps.curiosity_item(_run_row(completed=utc(minutes=2))))
-    clock.at = utc(minutes=10)
-    asyncio.run(drv.tick())
-    assert {"curiosity_choice:r1:self:a_thing_20261015", "curiosity_choice:r1:self:b_thing"} <= set(store.evidence)
-    before = {k: (n.evidence_count, n.chosen_count, n.weight) for k, n in store.nodes.items()}
-    assert sum(v[1] for v in before.values()) == 2
-    # The outcome is re-upserted: completed_at moves, the same run is read again.
-    reader.add("curiosity_choice", ps.curiosity_item(_run_row(completed=utc(minutes=12))))
-    calls = len(emb.calls)
-    clock.at = utc(minutes=20)
-    asyncio.run(drv.tick())
-    after = {k: (n.evidence_count, n.chosen_count, n.weight) for k, n in store.nodes.items()}
-    assert {k: v[:2] for k, v in after.items()} == {k: v[:2] for k, v in before.items()}
-    assert all(after[k][2] <= before[k][2] for k in before)  # only fade moved it
-    assert len(emb.calls) == calls  # the existing ids were never re-embedded
-    assert store.cursors["curiosity_choice"] == Cursor(utc(minutes=12), "r1")
-
-
-def test_recurrence_across_lanes_promotes_and_tick_without_evidence_persists_fade():
-    drv, store, reader, emb, clock = world()
-    asyncio.run(drv.tick())
-    text = "Continuity in my own record is what I keep coming back to."
-    # One hit in each of three lanes is breadth without recurrence: not promoted (a promoting lane
-    # needs lane_recent >= 2). Two hits in each of two lanes, same tick, promotes. (Across ticks the
-    # first hit has faded below 1.0, so two hits never reach 2.0 -- reducer edge, reported.)
-    once = "A single passing mention in three lanes."
-    for lane, m in (("chat", 1), ("journal", 2), ("dream", 3)):
-        reader.add(lane, item(lane, f"{lane}1", utc(minutes=m), once))
-    for lane, m in (("chat", 4), ("journal", 5)):
-        reader.add(lane, item(lane, f"{lane}2", utc(minutes=m), text))
-        reader.add(lane, item(lane, f"{lane}3", utc(minutes=m + 1), text))
-    clock.at = utc(minutes=10)
-    asyncio.run(drv.tick())
-    by_label = {n.label: n for n in store.nodes.values()}
-    assert by_label[once].status == "candidate" and set(by_label[once].lane_counts) == {"chat", "journal", "dream"}
-    n = next(n for n in store.nodes.values() if n.label.startswith("Continuity"))
-    assert n.status == "active" and n.lane_counts == {"chat": 2, "journal": 2}
-    r0 = dict(n.lane_recent)
-    clock.at = utc(days=7, minutes=20)
-    out = asyncio.run(drv.tick())
-    assert out["evidence"] == 0
-    faded = store.nodes[n.disposition_id]
-    # Fade persists: lane_recent halves over 7 of 14 days and the weight is derived from it.
-    for lane, r in r0.items():
-        assert faded.lane_recent[lane] == pytest.approx(r * 0.5 ** (7 / 14), rel=1e-3)
-    assert 0 < faded.weight < n.weight
-    assert faded.updated_at == clock.at
-
-
-def test_rekey_runs_once_and_demotes_a_node_promoted_by_one_source_counted_twice():
-    # Live 2026-10-20: reverie + metacog journal narrate the same prediction-error signal and
-    # promoted 3 nodes as "two lanes". The first tick moves them to source keys, once.
-    drv, store, reader, emb, clock = world()
-    store.cursors = {name: Cursor(T0, "") for name in ps.SOURCE_NAMES} | {ps.SEED_CURSOR: Cursor(T0, "")}
-    legacy = Node(
-        disposition_id="disp-pe", origin="recurrence", status="active", label="The cabinet prediction error",
-        label_similarity=0.9, centroid=[1.0] + [0.0] * 7, centroid_n=8, weight=3.0, evidence_count=8,
-        lane_counts={"reverie": 4, "journal": 4}, chosen_count=0, first_seen_at=utc(hours=-6),
-        last_reinforced_at=utc(hours=-1), retired_at=None, updated_at=T0,
-        lane_recent={"reverie": 3.48, "journal": 3.48}, last_folded_at=utc(hours=-1), history_weight=3.0)
-    store.nodes[legacy.disposition_id] = legacy
-    for i in range(4):
-        for lane, meta in (("reverie", {}), ("journal", {"source_kind": "metacog"})):
-            eid = f"{lane}:{i}"
-            store.evidence[eid] = EvidenceRow(eid, lane, eid, utc(hours=-4, minutes=i), "x", "disp-pe", 0.9, 0.0, meta)
-    clock.at = utc(minutes=5)
-    asyncio.run(drv.tick())
-    n = store.nodes["disp-pe"]
-    assert set(n.lane_recent) == {"substrate_narration"} and n.status == "candidate"
-    assert n.lane_counts == {"reverie": 4, "journal": 4}  # the panel still shows lanes
-    assert ps.REKEY_CURSOR in store.cursors
-    assert any(h.disposition_id == "disp-pe" and h.status == "candidate" for h in store.history.values())
-    # Second tick: marker present, nothing is rebuilt (a fresh legacy key would stay as written).
-    store.nodes["disp-pe"] = replace(n, lane_recent={"reverie": 1.0})
-    clock.at = utc(minutes=10)
-    asyncio.run(drv.tick())
-    assert set(store.nodes["disp-pe"].lane_recent) == {"reverie"}
-
-
-def test_ongoing_self_inquiry_node_is_labelled_seed_origin():
-    drv, store, reader, emb, clock = world()
-    asyncio.run(drv.tick())
-    reader.add("self_inquiry_seed", item("self_inquiry_seed", "v2", utc(minutes=1), "A new self-inquiry answer."))
-    clock.at = utc(minutes=10)
-    asyncio.run(drv.tick())
-    (n,) = store.nodes.values()
-    assert n.origin == "seed_self_inquiry" and n.status == "candidate"
-
-
-def test_failed_tick_never_raises_and_writes_nothing():
-    drv, store, reader, emb, clock = world()
-    store.fail_commit = True
-    assert asyncio.run(drv.run_once()) is None
-    assert drv.stats.failures == 1 and drv.stats.last_error.startswith("ConnectionError")
-    assert not store.cursors and not store.nodes
-    assert any(w.startswith("last_tick_failed:ConnectionError") for w in drv.frame_warnings(T0))
-
-
-def test_accept_and_embed_all_unit():
-    a = SourceItem(T0, "a", (cand("chat", "a", T0, "x one"),))
-    b = SourceItem(utc(seconds=1), "b", (cand("chat", "b", utc(seconds=1), "x two"),))
-    ev, cur, held = accept([a, b], {"chat:a"}, {"chat:b": [1.0, 0.0]})
-    assert [e.evidence_id for e in ev] == ["chat:b"] and cur == Cursor(b.at, "b") and not held
-    ev, cur, held = accept([a, b], set(), {"chat:a": None})
-    assert ev == [] and cur is None and held
-    emb = Embedder()
-    emb.fail = {"x two"}
-    out = asyncio.run(embed_all(emb, [a.candidates[0], b.candidates[0]]))
-    assert out["chat:a"] is not None and out["chat:b"] is None
+def test_choice_row_round_trips_through_the_reader():
+    c = choice("prime:t1", T0, situation={"arousal": "engaged"})
+    row = {**choice_row(c, "bus"), "created_at": T0}
+    assert ps.choice_from_row(row) == c
+    assert ps.choice_from_row({**row, "alternatives": "[]"}) is None  # no longer a choice: skipped, not raised
 
 
 # --- routes / lifespan ------------------------------------------------------------------------
@@ -635,7 +597,7 @@ def test_frame_route_503_when_tables_missing(main_mod, monkeypatch):
     monkeypatch.setattr(PersonalityStore, "frame", missing)
     with pytest.raises(HTTPException) as exc:
         asyncio.run(main_mod.personality_frame())
-    assert exc.value.status_code == 503 and "manual_migration_personality_graph_v1.sql" in exc.value.detail
+    assert exc.value.status_code == 503 and "manual_migration_personality_choice_v1.sql" in exc.value.detail
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -703,14 +665,14 @@ def test_settings_defaults_ship_on(main_mod):
 
 def test_new_evidence_is_stamped_with_the_situation_at_its_own_time():
     drv, store, reader, emb, clock = world()
-    asyncio.run(drv.tick())
     store.situation = SituationInputs(arousal=[(utc(minutes=-30), "idle"), (utc(minutes=3), "engaged")],
                                       company=[(utc(minutes=4), None)])
-    reader.add("chat", item("chat", "a", utc(minutes=1), "A reply while idle and alone."))
-    reader.add("chat", item("chat", "b", utc(minutes=5), "A reply while engaged with company."))
+    publish(drv, choice("prime:a", utc(minutes=1), situation={"binding": "heat"}))
+    publish(drv, choice("prime:b", utc(minutes=5)))
     clock.at = utc(minutes=10)
     asyncio.run(drv.tick())
-    a, b = store.evidence["chat:a"].meta["situation"], store.evidence["chat:b"].meta["situation"]
+    a, b = store.evidence["choice:prime:a"].meta["situation"], store.evidence["choice:prime:b"].meta["situation"]
+    assert store.evidence["choice:prime:a"].meta["choice_situation"] == {"binding": "heat"}
     assert (a["arousal"], a["company"]) == ("idle", False)
     assert (b["arousal"], b["company"]) == ("engaged", True)
     assert set(a) == {"arousal", "day_phase", "company"}
@@ -718,13 +680,12 @@ def test_new_evidence_is_stamped_with_the_situation_at_its_own_time():
 
 def test_situation_lookup_failure_still_folds_the_evidence():
     drv, store, reader, emb, clock = world()
-    asyncio.run(drv.tick())
     store.fail_situation = True
-    reader.add("chat", item("chat", "a", utc(minutes=1), "A reply with no situation available."))
+    publish(drv, choice("prime:a", utc(minutes=1)))
     clock.at = utc(minutes=10)
     asyncio.run(drv.tick())
-    assert store.evidence["chat:a"].disposition_id is not None
-    assert "situation" not in store.evidence["chat:a"].meta
+    assert store.evidence["choice:prime:a"].disposition_id is not None
+    assert "situation" not in store.evidence["choice:prime:a"].meta
     assert "situation_unavailable:ConnectionError" in drv.stats.warnings
 
 
@@ -803,31 +764,34 @@ def test_dispositions_carry_situation_mix_from_one_query_bounded_to_returned_ids
     assert "jsonb_typeof(e.meta->'situation') = 'object'" in SITUATION_MIX_SQL
 
 
+def at_clock(drv, clock, when, c):
+    clock.at = when
+    publish(drv, c)
+
+
 def test_reads_wait_for_the_chronicle_so_company_is_final_when_stamped():
     drv, store, reader, emb, clock = world()
     store.watermark = utc(minutes=0)
-    asyncio.run(drv.tick())
-    reader.add("chat", item("chat", "early", utc(minutes=2), "A reply the chronicle has folded."))
-    reader.add("chat", item("chat", "late", utc(minutes=7), "A reply newer than the chronicle."))
+    at_clock(drv, clock, utc(minutes=2), choice("prime:early", utc(minutes=2)))
+    at_clock(drv, clock, utc(minutes=7), choice("prime:late", utc(minutes=7)))
     store.watermark = utc(minutes=6)  # read bound = watermark - COMPANY_CLOSE_GRACE (3 min) = 3
     clock.at = utc(minutes=10)
     asyncio.run(drv.tick())
-    assert "chat:early" in store.evidence and "chat:late" not in store.evidence
+    assert "choice:prime:early" in store.evidence and "choice:prime:late" not in store.evidence
     store.watermark = utc(minutes=12)
     clock.at = utc(minutes=20)
     asyncio.run(drv.tick())
-    assert "chat:late" in store.evidence
+    assert "choice:prime:late" in store.evidence
     assert not any(w.startswith("situation_chronicle_lagging") for w in drv.stats.warnings)
 
 
 def test_a_stalled_chronicle_does_not_stall_personality():
     drv, store, reader, emb, clock = world()
-    asyncio.run(drv.tick())
     store.watermark = utc(minutes=-60)  # chronicle an hour behind
-    reader.add("chat", item("chat", "a", utc(minutes=1), "A reply while the chronicle is stalled."))
+    publish(drv, choice("prime:a", utc(minutes=1)))
     clock.at = utc(minutes=10)
     asyncio.run(drv.tick())
-    assert "chat:a" in store.evidence
+    assert "choice:prime:a" in store.evidence
     assert "situation_chronicle_lagging:company_unknown_past_watermark" in drv.stats.warnings
 
 
@@ -838,21 +802,20 @@ def test_a_backdated_company_close_is_folded_before_rows_near_it_are_stamped():
     # inside that window used to be stamped "with company" for an arc that then closed earlier.
     drv, store, reader, emb, clock = world()
     store.watermark = utc(minutes=0)
-    asyncio.run(drv.tick())
     seen_last = utc(minutes=20)  # recent row: the person left here
-    reader.add("chat", item("chat", "after_leaving", utc(minutes=21), "A reply after Juniper left."))
+    at_clock(drv, clock, utc(minutes=21), choice("prime:after_leaving", utc(minutes=21)))
     # Chronicle has folded up to 22:00 but not the absent row (due ~22:00+): arc still open.
     store.situation = SituationInputs(company=[(utc(minutes=-30), None)], company_known_until=utc(minutes=19))
     store.watermark = utc(minutes=22)
     clock.at = utc(minutes=24)
     asyncio.run(drv.tick())
-    assert "chat:after_leaving" not in store.evidence  # held: bound is 22 - 3 = 19
+    assert "choice:prime:after_leaving" not in store.evidence  # held: bound is 22 - 3 = 19
     # The absent row is folded: the arc closes, backdated to the last sighting.
     store.situation = SituationInputs(company=[(utc(minutes=-30), seen_last)], company_known_until=utc(minutes=27))
     store.watermark = utc(minutes=30)
     clock.at = utc(minutes=32)
     asyncio.run(drv.tick())
-    assert store.evidence["chat:after_leaving"].meta["situation"]["company"] is False
+    assert store.evidence["choice:prime:after_leaving"].meta["situation"]["company"] is False
 
 
 def test_covered_days_is_the_graph_age_clamped_to_the_window():
@@ -865,16 +828,118 @@ def test_covered_days_is_the_graph_age_clamped_to_the_window():
     assert covered_days(born, None) == 1
 
 
-def test_a_choice_older_than_the_seed_never_drops_out_of_the_window():
+def test_choice_window_covers_the_oldest_choice_held():
     from app.personality_store import choice_window_days
     from orion.personality.graph import choice_style_from_rows
 
-    born = utc(minutes=0)
-    pre_birth = born - timedelta(hours=1, minutes=51)  # live: turn started 1h51m before the seed
-    rows = [{"lane": "curiosity_choice", "occurred_at": pre_birth,
-             "meta": {"choice_id": "c1", "chosen_best_rank": 2}}]
-    for hours in (1, 21, 22.5, 23.9, 24.5, 47):  # incl. 0.92-1.0 days, where it used to vanish
-        now = born + timedelta(hours=hours)
-        window = choice_window_days(now, born, [r["occurred_at"] for r in rows])
+    rows = [{"choice_id": "c1", "act_id": "a1", "chosen_market_rank": 2, "declined_all": False,
+             "occurred_at": utc(hours=-1, minutes=-51)}]
+    for hours in (1, 21, 22.5, 23.9, 24.5, 47):
+        now = T0 + timedelta(hours=hours)
+        window = choice_window_days(now, None, [r["occurred_at"] for r in rows])
         style = choice_style_from_rows(rows, now=now, window_days=window)
         assert style is not None and style.choices == 1, hours
+
+
+# --- bus intake (consumer) ----------------------------------------------------------------------
+
+
+def _envelope(c: PersonalityChoiceV1):
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+    from orion.schemas.personality import PERSONALITY_CHOICE_KIND
+
+    return BaseEnvelope(kind=PERSONALITY_CHOICE_KIND, source=ServiceRef(name="orion-mind", version="t", node="n"),
+                        correlation_id="00000000-0000-0000-0000-000000000001", payload=c.model_dump(mode="json"))
+
+
+def test_bus_handler_routes_a_choice_envelope_to_the_driver(main_mod, monkeypatch):
+    got = []
+
+    class Drv:
+        async def offer_choice(self, payload):
+            got.append(payload)
+            return "inserted"
+
+    monkeypatch.setattr(main_mod, "personality", Drv())
+    c = choice("prime:t1", T0)
+    asyncio.run(main_mod._handle_request(_envelope(c)))
+    assert len(got) == 1 and PersonalityChoiceV1.model_validate(got[0]) == c
+
+
+def test_bus_handler_drops_a_choice_when_the_loop_is_off_and_survives_a_db_error(main_mod, monkeypatch, caplog):
+    monkeypatch.setattr(main_mod, "personality", None)
+    asyncio.run(main_mod._handle_request(_envelope(choice("prime:t1", T0))))
+    assert "personality_choice_dropped" in caplog.text
+
+    class Broken:
+        async def offer_choice(self, payload):
+            raise ConnectionError("db gone")
+
+    monkeypatch.setattr(main_mod, "personality", Broken())
+    asyncio.run(main_mod._handle_request(_envelope(choice("prime:t2", T0))))  # never raises
+    assert "personality_choice_write_failed" in caplog.text
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_choice_channel_is_subscribed_only_with_the_loop_on(main_mod, monkeypatch, enabled):
+    import app.runner as runner_mod
+    from orion.schemas.personality import PERSONALITY_CHOICE_CHANNEL
+
+    patterns_seen = []
+
+    class Quiet:
+        def __init__(self, *a, **k):
+            if "patterns" in k:
+                patterns_seen.append(list(k["patterns"]))
+            self.active_run_ids = []
+
+        async def start_background(self):
+            pass
+
+        async def connect(self):
+            pass
+
+        def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+        async def close(self):
+            pass
+
+        async def sweep_forever(self, stop):
+            await stop.wait()
+
+    class Drv:
+        async def start(self, stop):
+            pass
+
+        async def close(self):
+            pass
+
+    async def no_pool():
+        return object()
+
+    s = main_mod._settings
+    for k, v in dict(enabled=True, orion_bus_enabled=True, resume_on_boot=False, admission_enabled=False,
+                     situation_graph_enabled=False, temporal_self_enabled=False, physiology_bid_enabled=False,
+                     cooling_act_enabled=False, checkpoint_prune_mode="off", personality_enabled=enabled).items():
+        monkeypatch.setattr(s, k, v)
+    for name in ("HeartbeatOnly", "OrionBusAsync", "Hunter"):
+        monkeypatch.setattr(main_mod, name, Quiet)
+    monkeypatch.setattr(main_mod, "build_rpc_health_publisher", lambda: Quiet())
+    monkeypatch.setattr(main_mod, "_open_checkpointer", no_pool)
+    monkeypatch.setattr(main_mod, "_checkpointer_cm", None)
+    monkeypatch.setattr(main_mod, "claude_limits", None)
+    monkeypatch.setattr(runner_mod, "DurableRunner", Quiet)
+    monkeypatch.setattr(main_mod, "_build_personality", lambda: Drv())
+    monkeypatch.setattr(main_mod, "personality", None)
+
+    async def go():
+        async with main_mod.lifespan(main_mod.app):
+            pass
+
+    asyncio.run(go())
+    (patterns,) = patterns_seen
+    assert (PERSONALITY_CHOICE_CHANNEL in patterns) is enabled

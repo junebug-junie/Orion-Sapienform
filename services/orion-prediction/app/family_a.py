@@ -1,11 +1,10 @@
-"""Family A, slice 1: input hygiene, baseline rungs, and joint (whitened) surprise. Pure numpy/pandas.
+"""Family A: input hygiene, baseline rungs, and joint (whitened) surprise. Pure numpy/pandas.
 
 Spec: docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, "A. Neural forecaster".
 Question: "what will my body and room read next?", every raw reading at 5 and 15 min ahead.
 
-Nothing here runs in the live service yet. ``evals/run_family_a_baselines_eval.py`` loads raw readings
-(``app/family_a_load.py``) and calls these functions. A later patch moves the gate and the winning rung
-into the select -> issue -> score loop.
+``app/family_a_live.py`` runs these in the service's select -> issue -> score loop (slice 2);
+``evals/run_family_a_baselines_eval.py`` runs them on live history for the ladder and calibration.
 
 1. **Hygiene gate** (``screen_series``, ``gate_named_inputs``). Refuse, never degrade. Each series must
    be present, vary (no value over 85 % of buckets, at least 50 distinct values) and return to rest
@@ -15,16 +14,19 @@ into the select -> issue -> score loop.
 2. **Standardisation** from training rows only (``fit_standardizer``), stored in the manifest.
 3. **Rungs**, all predicting the standardised change z[t+k] - z[t] (direct, one fit per lead):
    ``persistence`` (change 0), ``ar`` (one ridge per series on its own last 6 buckets), ``ridge_var``
-   (one ridge per target on lags 0,1,2,3,6,12 of every input + mask + time of day).
+   (one ridge per target on lags 0,1,2,3,6,12 of every input + its missing-mask at the same lags + time
+   of day). ``fit_horizon`` fits them; ``HorizonFit.predict`` serves them.
 4. **Split**: the repo's ``block_purged_temporal_split`` (orion/mood_arc/fit_encoder.py) over origin
    indices, purged by the longest lag + lead. Seeds move the block edges.
 5. **Significance**: per-origin joint loss (mean squared standardised error over targets), ridge vs the
    better baseline per target, tested with the overlap-aware paired test (``backtest.paired_gap``) AND a
-   one-day moving-block bootstrap. A lower average alone is not a win.
+   2-hour moving-block bootstrap whose blocks never straddle two held-out stretches. A lower average
+   alone is not a win. ``backtest`` screens inputs on the training rows only.
 6. **Joint surprise**: residuals whitened by their own covariance (Mahalanobis d^2, chi-square tail on
    the observed subset), then a conformal p against a held calibration set, so p is uniform when the
    model is calibrated. surprisal = -ln p; calm point = E[-ln p] for a discrete uniform p (``calm_point``)
-   -> excess rests at 0 by theory. An eval output only: no node, no bus event, no attention input.
+   -> excess rests at 0 by theory. ``ADAPTIVE`` calibration scales d^2 by the hour-before difficulty
+   (``score_joint``). Stored per bucket by the live loop; no node, no bus event, no attention input yet.
 """
 from __future__ import annotations
 
@@ -411,16 +413,20 @@ def _lagged(a: np.ndarray, lag: int) -> np.ndarray:
 
 
 def var_features(z_all: np.ndarray, index: pd.DatetimeIndex) -> np.ndarray:
-    """(n, f): every input's standardised value at lags VAR_LAGS (missing -> 0 = the training mean, with
-    the lag-0 mask channel saying it was missing), the mask, and time of day. Rows inside the first
-    max(VAR_LAGS) have no lag history: their lag columns read as missing (0) too."""
+    """(n, f): every input's standardised value at lags VAR_LAGS (missing -> 0 = the training mean), then
+    every input's missing-mask at the same lags (1 = no reading at that lag), then time of day. So a
+    reading missing 30 min ago is flagged at that lag, not read as an ordinary mean value (slice 1 had a
+    lag-0 mask only). Rows inside the first max(VAR_LAGS) have no lag history: those lags read as
+    missing (value 0, mask 1)."""
     filled = np.where(np.isfinite(z_all), z_all, 0.0)
     cols = [_lagged(filled, lag) for lag in VAR_LAGS]
     cols = [np.where(np.isfinite(c), c, 0.0) for c in cols]
     mask = (~np.isfinite(z_all)).astype(float)
+    masks = [_lagged(mask, lag) for lag in VAR_LAGS]
+    masks = [np.where(np.isfinite(c), c, 1.0) for c in masks]
     minutes = np.asarray(index.hour * 60 + index.minute, dtype=float)
     phase = 2 * np.pi * minutes / 1440.0
-    return np.column_stack(cols + [mask, np.sin(phase), np.cos(phase)])
+    return np.column_stack(cols + masks + [np.sin(phase), np.cos(phase)])
 
 
 def ar_features(z: np.ndarray) -> np.ndarray:
@@ -445,12 +451,44 @@ class RidgeFit:
         return X @ self.beta + self.intercept
 
 
-def ridge_path(X: np.ndarray, y: np.ndarray, alphas: Sequence[float] = ALPHAS) -> list[RidgeFit]:
-    """Closed-form ridge for several alphas (centered; intercept unpenalised)."""
-    xm, ym = X.mean(axis=0), float(y.mean())
-    Xc, yc = X - xm, y - ym
-    w, V = np.linalg.eigh(Xc.T @ Xc)
-    w = np.clip(w, 0.0, None)
+class GramCache:
+    """The eigendecomposition of a row subset's centred Gram matrix, shared by every target fitted on
+    the same rows. Most readings are present on the same rows, so ridge_var's ~500-column Gram is built
+    once per row set instead of once per target (the expensive part of a fit). Exact: same numbers."""
+
+    def __init__(self, X: np.ndarray, max_entries: int = 4):
+        self.X = X
+        self.max_entries = max_entries
+        self._c: dict[bytes, tuple] = {}
+
+    def get(self, rows: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        key = np.asarray(rows, dtype=np.int64).tobytes()
+        hit = self._c.get(key)
+        if hit is None:
+            Xr = self.X[rows]
+            xm = Xr.mean(axis=0)
+            Xc = Xr - xm
+            w, V = np.linalg.eigh(Xc.T @ Xc)
+            hit = (xm, Xc, np.clip(w, 0.0, None), V)
+            if len(self._c) >= self.max_entries:
+                self._c.pop(next(iter(self._c)))
+            self._c[key] = hit
+        return hit
+
+
+def ridge_path(X: np.ndarray, y: np.ndarray, alphas: Sequence[float] = ALPHAS,
+               gram: tuple | None = None) -> list[RidgeFit]:
+    """Closed-form ridge for several alphas (centered; intercept unpenalised). ``gram`` = a precomputed
+    (x mean, centred X, eigenvalues, eigenvectors) of these same rows (``GramCache.get``)."""
+    ym = float(y.mean())
+    yc = y - ym
+    if gram is None:
+        xm = X.mean(axis=0)
+        Xc = X - xm
+        w, V = np.linalg.eigh(Xc.T @ Xc)
+        w = np.clip(w, 0.0, None)
+    else:
+        xm, Xc, w, V = gram
     proj = V.T @ (Xc.T @ yc)
     fits = []
     for a in alphas:
@@ -460,21 +498,113 @@ def ridge_path(X: np.ndarray, y: np.ndarray, alphas: Sequence[float] = ALPHAS) -
 
 
 def fit_ridge_selected(X: np.ndarray, y: np.ndarray, sub_rows: np.ndarray, sel_rows: np.ndarray,
-                       fit_rows: np.ndarray) -> RidgeFit:
+                       fit_rows: np.ndarray, cache: GramCache | None = None) -> RidgeFit:
     """Choose alpha by fitting on ``sub_rows`` and scoring on ``sel_rows`` (both inside ``fit_rows``), then
     refit on all of ``fit_rows`` with that alpha. Rows outside ``fit_rows`` (conformal calibration,
-    held-out) never influence the choice."""
+    held-out) never influence the choice. ``cache`` (built on this same X) shares Gram matrices."""
     alpha = ALPHAS[len(ALPHAS) // 2]
     if len(sub_rows) >= 2 and len(sel_rows):
-        path = ridge_path(X[sub_rows], y[sub_rows])
+        path = ridge_path(X[sub_rows], y[sub_rows], gram=cache.get(sub_rows) if cache else None)
         losses = [float(np.mean((f.predict(X[sel_rows]) - y[sel_rows]) ** 2)) for f in path]
         alpha = path[int(np.argmin(losses))].alpha
-    return ridge_path(X[fit_rows], y[fit_rows], alphas=(alpha,))[0]
+    return ridge_path(X[fit_rows], y[fit_rows], alphas=(alpha,), gram=cache.get(fit_rows) if cache else None)[0]
 
 
-# --- backtest ------------------------------------------------------------------------------------
+# --- fit + backtest ------------------------------------------------------------------------------
 
 MIN_FIT_ROWS = 288   # one day of origins per target
+RUNGS = ("ridge_var", "ar")   # the rungs that can serve; persistence is the floor they are tested against
+
+
+@dataclass
+class TargetFit:
+    ar: RidgeFit
+    rv: RidgeFit
+
+
+@dataclass
+class HorizonFit:
+    """One lead's fitted rungs: train-only standardisation, AR + ridge_var per target, and the row sets
+    they came from. ``predict`` works on any frame laid out like the training one (same input columns,
+    a full grain grid), so the live loop calls it on the last day of readings."""
+    horizon_steps: int
+    targets: list[str]
+    inputs: list[str]
+    standardizer: dict[str, dict[str, float]]
+    fits: dict[str, TargetFit]
+    alphas: dict[str, dict[str, float]]
+    refused_targets: dict[str, str]
+    fit_rows: np.ndarray
+    val_rows: np.ndarray
+
+    def predict(self, frame: pd.DataFrame) -> dict[str, np.ndarray]:
+        """Per rung: (n, m) predicted standardised change z[t+k] - z[t] per row x target, NaN where the
+        target cannot be forecast (an AR lag missing, or the target refused at fit time). Also
+        ``z`` (n, m): the targets' standardised values, and ``y`` (n, m): the real change (NaN past
+        the end)."""
+        z_all = standardize(frame[self.inputs], self.standardizer)
+        X = var_features(z_all, frame.index)
+        col = {c: i for i, c in enumerate(self.inputs)}
+        n, m = len(frame), len(self.targets)
+        out = {r: np.full((n, m), np.nan) for r in RUNGS}
+        out["z"] = np.full((n, m), np.nan)
+        out["y"] = np.full((n, m), np.nan)
+        for j, t in enumerate(self.targets):
+            z = z_all[:, col[t]]
+            out["z"][:, j] = z
+            out["y"][:, j] = deltas(z, self.horizon_steps)
+            tf = self.fits.get(t)
+            if tf is None:
+                continue
+            A = ar_features(z)
+            ok = np.isfinite(A).all(axis=1)
+            ar_pred = np.full(n, np.nan)
+            ar_pred[ok] = tf.ar.predict(A[ok])
+            out["ar"][:, j] = ar_pred
+            out["ridge_var"][ok, j] = ar_pred[ok] + tf.rv.predict(X[ok])
+        return out
+
+
+def fit_horizon(frame: pd.DataFrame, targets: Sequence[str], inputs: Sequence[str], horizon_steps: int,
+                train_idx: np.ndarray) -> HorizonFit:
+    """Fit AR and ridge_var for every target at one lead on TRAIN origins only.
+
+    Standardisation uses the training origins' rows. Train origins are split again (purged) into fit
+    rows (the model) and validation rows (conformal calibration only); the fit rows are split once
+    more to choose each ridge penalty, so the calibration rows choose nothing."""
+    train_idx = np.sort(np.asarray(train_idx, dtype=int))
+    stats = fit_standardizer(frame.iloc[train_idx][list(inputs)])
+    z_all = standardize(frame[list(inputs)], stats)
+    X = var_features(z_all, frame.index)
+    fit_rows, val_rows = inner_split(train_idx, horizon_steps)
+    sub_rows, sel_rows = inner_split(fit_rows, horizon_steps)
+    n = len(frame)
+    col = {c: i for i, c in enumerate(inputs)}
+    cache = GramCache(X)
+    fits: dict[str, TargetFit] = {}
+    alphas: dict[str, dict[str, float]] = {}
+    refused: dict[str, str] = {}
+    for t in targets:
+        z = z_all[:, col[t]]
+        y = deltas(z, horizon_steps)
+        A = ar_features(z)
+        ok_ar = np.isfinite(A).all(axis=1) & np.isfinite(y)
+        f_ar = fit_rows[ok_ar[fit_rows]]
+        s_ar, e_ar = sub_rows[ok_ar[sub_rows]], sel_rows[ok_ar[sel_rows]]
+        if len(f_ar) < MIN_FIT_ROWS:
+            refused[t] = f"fit_rows={len(f_ar)} < {MIN_FIT_ROWS}"
+            continue
+        ar = fit_ridge_selected(A, y, s_ar, e_ar, f_ar)
+        # ridge_var is nested on AR: the AR forecast plus a ridge on every input's lags fitted to what AR
+        # missed. At a large alpha it IS the AR forecast, so the rung above can only win by what the
+        # other readings add -- the ladder's "keep a rung only if it beats the one below".
+        ar_pred = np.full(n, np.nan)
+        ar_pred[ok_ar] = ar.predict(A[ok_ar])
+        rv = fit_ridge_selected(X, y - np.where(ok_ar, ar_pred, 0.0), s_ar, e_ar, f_ar, cache=cache)
+        fits[t] = TargetFit(ar=ar, rv=rv)
+        alphas[t] = {"ar": ar.alpha, "ridge_var": rv.alpha}
+    return HorizonFit(horizon_steps=horizon_steps, targets=list(targets), inputs=list(inputs), standardizer=stats,
+                      fits=fits, alphas=alphas, refused_targets=refused, fit_rows=fit_rows, val_rows=val_rows)
 
 
 @dataclass
@@ -489,6 +619,12 @@ class HorizonRun:
     resid_held: np.ndarray            # (len(held), m) ridge residuals on held-out rows
     alphas: dict[str, dict[str, float]]
     refused_targets: dict[str, str] = field(default_factory=dict)
+    # (n, m) residuals of each serving rung at EVERY row the rung could forecast and the truth exists
+    # (in-sample on fit rows). The adaptive difficulty reads the hour before each origin from here.
+    resid_all: dict[str, np.ndarray] = field(default_factory=dict)
+    fit_rows: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))
+    val_rows: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=int))
+    horizon_steps: int = 1
 
 
 def run_horizon(frame: pd.DataFrame, targets: Sequence[str], inputs: Sequence[str], horizon_steps: int,
@@ -502,59 +638,42 @@ def run_horizon(frame: pd.DataFrame, targets: Sequence[str], inputs: Sequence[st
     n = len(frame)
     if train_idx is None or held_idx is None:
         train_idx, held_idx = blocked_split(n, horizon_steps, seed)
-    stats = fit_standardizer(frame.iloc[np.sort(train_idx)][list(inputs)])
-    z_all = standardize(frame[list(inputs)], stats)
-    X = var_features(z_all, frame.index)
-    # fit rows (model) | validation rows (conformal calibration only); fit rows split again for alpha.
-    fit_rows, val_rows = inner_split(np.sort(train_idx), horizon_steps)
-    sub_rows, sel_rows = inner_split(fit_rows, horizon_steps)
-    k = horizon_steps
+    hf = fit_horizon(frame, targets, inputs, horizon_steps, train_idx)
+    pr = hf.predict(frame)
+    y = pr["y"]
     m = len(targets)
+    resid_all = {r: y - pr[r] for r in RUNGS}
+    rv_res = resid_all["ridge_var"]
+    # Common scoring set: every rung can forecast this origin and the outcome is real.
+    ok = np.isfinite(rv_res) & np.isfinite(pr["ar"])
     sq = {name: np.full((len(held_idx), m), np.nan) for name in ("persistence", "ar", "ridge_var")}
-    resid_val = np.full((len(val_rows), m), np.nan)
-    resid_fit = np.full((len(fit_rows), m), np.nan)
-    resid_held = np.full((len(held_idx), m), np.nan)
-    alphas: dict[str, dict[str, float]] = {}
-    refused: dict[str, str] = {}
-    col = {c: i for i, c in enumerate(inputs)}
-    for j, t in enumerate(targets):
-        z = z_all[:, col[t]]
-        y = deltas(z, k)
-        A = ar_features(z)
-        ok_ar = np.isfinite(A).all(axis=1) & np.isfinite(y)
-        f_ar = fit_rows[ok_ar[fit_rows]]
-        s_ar, e_ar = sub_rows[ok_ar[sub_rows]], sel_rows[ok_ar[sel_rows]]
-        if len(f_ar) < MIN_FIT_ROWS:
-            refused[t] = f"fit_rows={len(f_ar)} < {MIN_FIT_ROWS}"
-            continue
-        ar = fit_ridge_selected(A, y, s_ar, e_ar, f_ar)
-        # ridge_var is nested on AR: the AR forecast plus a ridge on every input's lags fitted to what AR
-        # missed. At a large alpha it IS the AR forecast, so the rung above can only win by what the
-        # other readings add -- the ladder's "keep a rung only if it beats the one below".
-        ar_pred = np.full(n, np.nan)
-        ar_pred[ok_ar] = ar.predict(A[ok_ar])
-        rv = fit_ridge_selected(X, y - np.where(ok_ar, ar_pred, 0.0), s_ar, e_ar, f_ar)
-        alphas[t] = {"ar": ar.alpha, "ridge_var": rv.alpha}
+    h_ok = ok[held_idx]
+    yh = y[held_idx]
+    sq["persistence"][h_ok] = (yh ** 2)[h_ok]
+    sq["ar"][h_ok] = ((pr["ar"][held_idx] - yh) ** 2)[h_ok]
+    sq["ridge_var"][h_ok] = (rv_res[held_idx] ** 2)[h_ok]
+    resid_held = np.where(h_ok, rv_res[held_idx], np.nan)
+    return HorizonRun(horizon_min=horizon_steps * grain_min, seed=seed, targets=list(targets), held=held_idx, sq=sq,
+                      resid_val=rv_res[hf.val_rows], resid_fit=rv_res[hf.fit_rows], resid_held=resid_held,
+                      alphas=hf.alphas, refused_targets=hf.refused_targets, resid_all=resid_all,
+                      fit_rows=hf.fit_rows, val_rows=hf.val_rows, horizon_steps=horizon_steps)
 
-        def rv_pred(rows: np.ndarray) -> np.ndarray:
-            return ar_pred[rows] + rv.predict(X[rows])
 
-        # Common scoring set: every rung can forecast this origin and the outcome is real.
-        h_ok = ok_ar[held_idx]
-        hrows = held_idx[h_ok]
-        truth = y[hrows]
-        sq["persistence"][h_ok, j] = truth ** 2
-        sq["ar"][h_ok, j] = (ar_pred[hrows] - truth) ** 2
-        r = truth - rv_pred(hrows)
-        sq["ridge_var"][h_ok, j] = r ** 2
-        resid_held[h_ok, j] = r
-        vm = ok_ar[val_rows]
-        resid_val[vm, j] = y[val_rows[vm]] - rv_pred(val_rows[vm])
-        fm = ok_ar[fit_rows]
-        resid_fit[fm, j] = y[fit_rows[fm]] - rv_pred(fit_rows[fm])
-    return HorizonRun(horizon_min=k * grain_min, seed=seed, targets=list(targets), held=held_idx, sq=sq,
-                      resid_val=resid_val, resid_fit=resid_fit, resid_held=resid_held, alphas=alphas,
-                      refused_targets=refused)
+def backtest(frame: pd.DataFrame, hyg: Hygiene, horizon_steps: int, grain_min: int,
+             seed: int) -> tuple[HorizonRun | None, dict[str, SeriesVerdict]]:
+    """One seed of the backtest with the input screen on TRAINING rows only.
+
+    Slice 1 screened the whole window, so which readings became targets depended on the held-out rows'
+    shape. Here the held-out rows are dropped before the screen (shape, not predictability, but still a
+    decision the held-out rows must not touch). Returns (None, verdicts) when no input passes as a target."""
+    train_idx, held_idx = blocked_split(len(frame), horizon_steps, seed)
+    verdicts = screen_frame(frame.iloc[np.sort(train_idx)], hyg)
+    targets = [k for k, v in verdicts.items() if v.status == TARGET]
+    covs = [k for k, v in verdicts.items() if v.status == COVARIATE]
+    if not targets:
+        return None, verdicts
+    return run_horizon(frame, targets, targets + covs, horizon_steps, grain_min, seed,
+                       train_idx=train_idx, held_idx=held_idx), verdicts
 
 
 # --- significance --------------------------------------------------------------------------------
@@ -565,19 +684,56 @@ BOOT_N = 2000
 BOOT_BLOCK_MIN = 120
 
 
-def block_bootstrap_p(d: np.ndarray, block: int, seed: int, n_boot: int = BOOT_N) -> tuple[float, float, float]:
+def segments_of(positions: np.ndarray) -> np.ndarray:
+    """Segment id per element of a sorted position array: a new segment wherever the next position is
+    not the neighbour of the last (a held-out stretch ends, or a missing hour breaks a run)."""
+    positions = np.asarray(positions)
+    if not len(positions):
+        return np.zeros(0, dtype=int)
+    return np.concatenate([[0], np.cumsum(np.diff(positions) != 1)]).astype(int)
+
+
+def bootstrap_blocks(segments: np.ndarray, block: int) -> list[np.ndarray]:
+    """Candidate blocks (row positions): every window of ``block`` rows inside one segment, or a segment
+    shorter than that whole. No candidate holds rows of two segments."""
+    seg = np.asarray(segments)
+    cands: list[np.ndarray] = []
+    for sid in np.unique(seg):
+        pos = np.flatnonzero(seg == sid)
+        if len(pos) <= block:
+            cands.append(pos)
+        else:
+            cands.extend(pos[i:i + block] for i in range(len(pos) - block + 1))
+    return cands
+
+
+def block_bootstrap_p(d: np.ndarray, block: int, seed: int, n_boot: int = BOOT_N,
+                      segments: np.ndarray | None = None) -> tuple[float, float, float]:
     """One-sided p that mean(d) < 0, from a moving-block bootstrap of the centred series (the null
-    "true mean is 0"), plus the 95 % percentile interval of the mean. NaN rows dropped first."""
-    d = d[np.isfinite(d)]
+    "true mean is 0"), plus the 95 % percentile interval of the mean. NaN rows dropped first.
+
+    ``segments`` (same length as ``d``): a block never straddles two segments (two held-out stretches
+    hours apart are not neighbours; slice 1 let a block join them). A segment shorter than ``block``
+    contributes itself whole as one candidate block."""
+    d = np.asarray(d, dtype=float)
+    seg = np.zeros(len(d), dtype=int) if segments is None else np.asarray(segments)
+    keep = np.isfinite(d)
+    d, seg = d[keep], seg[keep]
     n = len(d)
     if n < 2 * block or n < 10:
         return float("nan"), float("nan"), float("nan")
+    cands = bootstrap_blocks(seg, block)
     rng = np.random.default_rng(seed)
-    nb = int(math.ceil(n / block))
-    starts = rng.integers(0, n - block + 1, size=(n_boot, nb))
-    idx = (starts[:, :, None] + np.arange(block)[None, None, :]).reshape(n_boot, -1)[:, :n]
-    means = d[idx].mean(axis=1)
     obs = float(d.mean())
+    means = np.empty(n_boot)
+    for b in range(n_boot):
+        tot, cnt = 0.0, 0
+        while cnt < n:
+            c = cands[int(rng.integers(0, len(cands)))]
+            take = c[:n - cnt]
+            tot += float(d[take].sum())
+            cnt += len(take)
+        means[b] = tot / cnt
     null = means - obs                                  # bootstrap distribution under mean 0
     p = float((1 + np.sum(null <= obs)) / (n_boot + 1))
     lo, hi = np.quantile(means, [0.025, 0.975])
@@ -614,11 +770,12 @@ def compare(run: HorizonRun, candidate: str, reference: np.ndarray, grain_min: i
     lc = joint_loss(run.sq[candidate])
     lr = joint_loss(reference)
     both = np.isfinite(lc) & np.isfinite(lr)
+    seg = segments_of(np.asarray(run.held))[both]
     lc, lr = lc[both], lr[both]
     d = lc - lr
     mean, se, n = paired_gap(lc, lr, overlap_lag(run.horizon_min, grain_min))
     p_t = None if mean is None else (float(stats.t.cdf(mean / se, df=n - 1)) if se else (0.0 if mean < 0 else 1.0))
-    p_b, lo, hi = block_bootstrap_p(d, block=max(1, BOOT_BLOCK_MIN // grain_min), seed=seed)
+    p_b, lo, hi = block_bootstrap_p(d, block=max(1, BOOT_BLOCK_MIN // grain_min), seed=seed, segments=seg)
     ratio = float(lc.mean() / lr.mean()) if len(lr) and lr.mean() > 0 else float("nan")
     return {"n": int(n), "loss_candidate": float(lc.mean()) if len(lc) else None,
             "loss_reference": float(lr.mean()) if len(lr) else None, "ratio": ratio,
@@ -717,6 +874,126 @@ def conformal_p(tail: np.ndarray, cal_tail: np.ndarray) -> np.ndarray:
     return out
 
 
+# Adaptive calibration (the over-calm fix; same method as app/adaptive.py, normalized split conformal,
+# Lei et al. 2018): each origin's d^2 is divided by how big the joint misses were in the hour before it
+# -- the mean d^2 / dof of the rows whose TARGET fell in that hour, all known at issue time -- and the
+# conformal p is taken against calibration rows scaled the same way. One covariance gives calm and busy
+# hours the same yardstick, so a calm day reads below 0 (slice 1: 68-72 % of hours at rest vs ~55 %);
+# a locally scaled covariance (s * Sigma) judges each hour against its own recent difficulty.
+DIFFICULTY_ROWS = 12          # one hour of 5-min targets
+MIN_DIFFICULTY_N = 6          # scored rows inside that hour, else no difficulty (adaptive p is NaN)
+DIFF_FLOOR_Q = 0.05           # floor: this quantile of the calibration difficulties (and >= 0.1 x median)
+STATIC, ADAPTIVE = "static", "adaptive"
+
+
+@dataclass
+class JointCal:
+    """Everything the joint score needs from a fit, small enough to store with the model run: the
+    whitening covariance (zero outside ``usable``), the "half the usable targets observed" bar, and the
+    calibration tails for the static and adaptive p."""
+    cov: np.ndarray
+    usable: np.ndarray
+    min_obs: int
+    cal_tail: np.ndarray
+    cal_tail_adaptive: np.ndarray
+    diff_floor: float | None
+
+    def to_json(self) -> dict:
+        def r6(a) -> list:
+            return [float(f"{v:.6g}") for v in np.asarray(a, dtype=float).ravel()]
+        return {"cov": [r6(row) for row in self.cov], "usable": [bool(u) for u in self.usable],
+                "min_obs": int(self.min_obs), "cal_tail": r6(self.cal_tail),
+                "cal_tail_adaptive": r6(self.cal_tail_adaptive), "diff_floor": self.diff_floor}
+
+    @classmethod
+    def from_json(cls, d: Mapping) -> "JointCal":
+        return cls(cov=np.asarray(d["cov"], dtype=float), usable=np.asarray(d["usable"], dtype=bool),
+                   min_obs=int(d["min_obs"]), cal_tail=np.asarray(d["cal_tail"], dtype=float),
+                   cal_tail_adaptive=np.asarray(d["cal_tail_adaptive"], dtype=float),
+                   diff_floor=None if d.get("diff_floor") is None else float(d["diff_floor"]))
+
+
+def joint_d2(resid: np.ndarray, cal: JointCal) -> tuple[np.ndarray, np.ndarray, np.ndarray, list]:
+    """(d2, dof, static chi-square tail, shares) per row on the usable targets observed there; rows with
+    fewer than ``min_obs`` observed usable targets are NaN (dof 0)."""
+    keep = np.where(cal.usable, 1.0, np.nan)
+    r = np.asarray(resid, dtype=float) * keep
+    d2, tail, shares = mahalanobis_tail(r, cal.cov, cal.min_obs)
+    dof = np.where(np.isfinite(d2), np.isfinite(r).sum(axis=1), 0).astype(int)
+    return d2, dof, tail, shares
+
+
+def difficulty_rows(ratio: np.ndarray, horizon_steps: int, window: int = DIFFICULTY_ROWS,
+                    min_n: int = MIN_DIFFICULTY_N) -> np.ndarray:
+    """Per origin row i: mean of ``ratio`` (d^2 / dof) over the origins whose target fell in the hour up
+    to origin i, i.e. rows [i - k - window + 1, i - k]. NaN where fewer than ``min_n`` are finite. Rows
+    are a full grain grid, so a gap is NaN rows, never neighbours."""
+    rolled = pd.Series(np.asarray(ratio, dtype=float)).rolling(window, min_periods=min_n).mean().to_numpy()
+    out = np.full(len(rolled), np.nan)
+    k = int(horizon_steps)
+    if k < len(rolled):
+        out[k:] = rolled[:len(rolled) - k]
+    return out
+
+
+def _floor_of(difficulties: np.ndarray) -> float | None:
+    d = difficulties[np.isfinite(difficulties) & (difficulties > 0)]
+    if not len(d):
+        return None
+    return max(float(np.quantile(d, DIFF_FLOOR_Q)), 0.1 * float(np.median(d)), 1e-9)
+
+
+def adaptive_tail(d2: np.ndarray, dof: np.ndarray, difficulty: np.ndarray, floor: float | None) -> np.ndarray:
+    """chi-square tail of d^2 / s on dof, s = the hour's difficulty floored (a flat hour must not blow a
+    score up). NaN where there is no difficulty."""
+    from scipy import stats
+
+    out = np.full(len(d2), np.nan)
+    if floor is None:
+        return out
+    ok = np.isfinite(d2) & np.isfinite(difficulty) & (dof > 0)
+    s = np.maximum(difficulty[ok], floor)
+    out[ok] = stats.chi2.sf(d2[ok] / s, df=dof[ok])
+    return out
+
+
+def joint_calibration(resid_fit: np.ndarray, resid_val: np.ndarray, val_difficulty: np.ndarray | None = None,
+                      min_observed_frac: float = 0.5) -> JointCal:
+    """Covariance from fit-row residuals; static calibration tails from validation rows; adaptive tails
+    from the same validation rows scaled by ``val_difficulty`` (their own hour-before difficulty)."""
+    cov, usable = shrunk_covariance(resid_fit)
+    m = int(usable.sum())   # refused targets (all-NaN columns) and unusable variances do not count
+    cov = np.where(np.isfinite(cov), cov, 0.0)
+    cal = JointCal(cov=cov, usable=usable, min_obs=max(1, int(math.ceil(min_observed_frac * m))),
+                   cal_tail=np.zeros(0), cal_tail_adaptive=np.zeros(0), diff_floor=None)
+    d2, dof, tail, _ = joint_d2(resid_val, cal)
+    cal.cal_tail = tail[np.isfinite(tail)]
+    if val_difficulty is not None:
+        cal.diff_floor = _floor_of(np.asarray(val_difficulty, dtype=float))
+        at = adaptive_tail(d2, dof, np.asarray(val_difficulty, dtype=float), cal.diff_floor)
+        cal.cal_tail_adaptive = at[np.isfinite(at)]
+    return cal
+
+
+@dataclass
+class JointScore:
+    d2: np.ndarray
+    dof: np.ndarray
+    p_static: np.ndarray
+    p_adaptive: np.ndarray
+    shares: list
+
+
+def score_joint(resid: np.ndarray, cal: JointCal, difficulty: np.ndarray | None = None) -> JointScore:
+    d2, dof, tail, shares = joint_d2(resid, cal)
+    p_static = conformal_p(tail, cal.cal_tail)
+    p_adaptive = np.full(len(d2), np.nan)
+    if difficulty is not None and len(cal.cal_tail_adaptive):
+        p_adaptive = conformal_p(adaptive_tail(d2, dof, np.asarray(difficulty, dtype=float), cal.diff_floor),
+                                 cal.cal_tail_adaptive)
+    return JointScore(d2=d2, dof=dof, p_static=p_static, p_adaptive=p_adaptive, shares=shares)
+
+
 @dataclass
 class JointSurprise:
     excess: np.ndarray        # per held-out origin (NaN = not scored)
@@ -726,21 +1003,29 @@ class JointSurprise:
     calm: float
 
 
-def joint_surprise(run: HorizonRun, min_observed_frac: float = 0.5) -> JointSurprise:
-    cov, usable = shrunk_covariance(run.resid_fit)
-    m = int(usable.sum())   # refused targets (all-NaN columns) and unusable variances do not count
-    min_obs = max(1, int(math.ceil(min_observed_frac * m)))
-    keep = np.where(usable, 1.0, np.nan)
-    cov = np.where(np.isfinite(cov), cov, 0.0)
-    _d2c, cal_tail, _ = mahalanobis_tail(run.resid_val * keep, cov, min_obs)
-    _d2, tail, shares = mahalanobis_tail(run.resid_held * keep, cov, min_obs)
-    n_cal = int(np.isfinite(cal_tail).sum())
-    p = conformal_p(tail, cal_tail)
+def run_difficulty(run: HorizonRun, cal: JointCal, rung: str = "ridge_var") -> np.ndarray:
+    """(n,) hour-before difficulty per row from the rung's residuals at every row (``resid_all``)."""
+    d2, dof, _t, _s = joint_d2(run.resid_all[rung], cal)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        ratio = np.where(dof > 0, d2 / np.maximum(dof, 1), np.nan)
+    return difficulty_rows(ratio, run.horizon_steps)
+
+
+def joint_surprise(run: HorizonRun, min_observed_frac: float = 0.5, calibration: str = STATIC) -> JointSurprise:
+    cal = joint_calibration(run.resid_fit, run.resid_val, min_observed_frac=min_observed_frac)
+    if calibration == ADAPTIVE:
+        diff = run_difficulty(run, cal)
+        cal = joint_calibration(run.resid_fit, run.resid_val, diff[run.val_rows], min_observed_frac)
+        sc = score_joint(run.resid_held, cal, diff[run.held])
+        p, n_cal = sc.p_adaptive, len(cal.cal_tail_adaptive)
+    else:
+        sc = score_joint(run.resid_held, cal)
+        p, n_cal = sc.p_static, len(cal.cal_tail)
     calm = calm_point(n_cal)
-    return JointSurprise(excess=-np.log(p) - calm, p=p, shares=shares, n_cal=n_cal, calm=calm)
+    return JointSurprise(excess=-np.log(p) - calm, p=p, shares=sc.shares, n_cal=n_cal, calm=calm)
 
 
-def rest_summary(excess: np.ndarray, index: pd.DatetimeIndex, seed: int = 0) -> dict:
+def rest_summary(excess: np.ndarray, index: pd.DatetimeIndex, seed: int = 0, grain_min: int | None = None) -> dict:
     """Does the joint excess sit at 0 and come back to it?
 
     - mean excess with a 2-hour moving-block bootstrap 95 % interval (calm: contains 0);
@@ -754,8 +1039,10 @@ def rest_summary(excess: np.ndarray, index: pd.DatetimeIndex, seed: int = 0) -> 
         return {"n": 0}
     groups = s.groupby(s.index.floor("1h"))
     hourly = groups.mean()
-    _p, lo, hi = block_bootstrap_p(s.to_numpy(), block=max(1, BOOT_BLOCK_MIN // int(_grain_min(index))),
-                                   seed=seed, n_boot=1000)
+    g = int(grain_min or _grain_min(index))
+    pos = ((s.index - s.index[0]).total_seconds() // (60 * g)).astype(int).to_numpy()
+    _p, lo, hi = block_bootstrap_p(s.to_numpy(), block=max(1, BOOT_BLOCK_MIN // g), seed=seed, n_boot=1000,
+                                   segments=segments_of(pos))
     run, longest = 0, 0
     for v in hourly.to_numpy():
         run = run + 1 if v > 0.5 else 0

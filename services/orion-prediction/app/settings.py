@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     energy_billing_cycle_start_day: int = Field(18, ge=1, le=31, alias="ENERGY_BILLING_CYCLE_START_DAY")
     energy_usage_point_id: str = Field("", alias="ENERGY_USAGE_POINT_ID")
 
+    # Family A (app/family_a_live.py): every raw body and room reading forecast at once, 5 and 15 min
+    # ahead, with the hygiene gate on every issue and one joint surprise per bucket
+    # (prediction_joint_surprise). Rides PREDICTION_TICK_SEC / _SETTLE_SEC / _SELECT_INTERVAL_SEC.
+    # false = no family A loop (the other forecasts are unaffected). No consumer reads it yet.
+    family_a_enabled: bool = Field(True, alias="PREDICTION_FAMILY_A_ENABLED")
+    family_a_config_path: str = Field("/app/config/prediction/family_a.v1.yaml", alias="PREDICTION_FAMILY_A_CONFIG_PATH")
+
     # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
     weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")
     weather_refresh_sec: float = Field(3600.0, ge=300, alias="PREDICTION_WEATHER_REFRESH_SEC")

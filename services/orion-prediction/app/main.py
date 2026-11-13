@@ -36,6 +36,7 @@ from app.engine import Engine
 from app.event_pair import MIN_A_EVENTS, EventPairRefused
 from app.heat_balance import HeatBalanceRefused
 from app.experiment_runner import ExperimentRunner, RouterProbe, RunnerRefused, recover as recover_experiments
+from app.family_a_live import FamilyALive
 from app.series import load_registry
 from app.settings import get_settings
 from app.store import PostgresStore
@@ -54,6 +55,8 @@ reachable: Reachable | None = None
 _last_reachable: dict[str, Any] = {"at": None, "ok": None, "error": None}
 bill_forecast: BillForecast | None = None
 _last_bill: dict[str, Any] = {"at": None, "ok": None, "error": None}
+family_a: FamilyALive | None = None
+_last_family_a: dict[str, Any] = {"at": None, "ok": None, "error": None}
 _last_settle: dict[str, Any] = {"at": None, "ok": None, "error": None}
 runner: ExperimentRunner | None = None
 _runner_redis: Any = None
@@ -136,6 +139,23 @@ async def _bill_forecast_forever() -> None:
             pass
 
 
+async def _family_a_forever() -> None:
+    """Family A (app/family_a_live.py): score -> issue -> select every tick, in a thread so a 6-hourly
+    selection (a few minutes of CPU) never blocks the single-series loop or the HTTP endpoints."""
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(family_a.tick)
+            _last_family_a.update(at=datetime.now(timezone.utc), ok=not family_a.state.errors,
+                                  error=None if not family_a.state.errors else dict(family_a.state.errors))
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_family_a.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("family_a_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=_settings.tick_sec)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def _sync(fn, *args):
     return await asyncio.to_thread(fn, *args)
 
@@ -156,7 +176,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, effects, action_bets, turn_self_bets, reachable, bill_forecast, runner, _runner_redis, _store, _bus
+    global engine, effects, action_bets, turn_self_bets, reachable, bill_forecast, family_a, runner, _runner_redis, _store, _bus
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -191,6 +211,19 @@ async def lifespan(app: FastAPI):
                                      tz=ZoneInfo(_settings.energy_timezone),
                                      cycle_start_day=_settings.energy_billing_cycle_start_day,
                                      usage_point_id=_settings.energy_usage_point_id)
+    if _settings.family_a_enabled:
+        import yaml
+
+        from app import family_a as fa
+        from app.family_a_load import load_frame
+
+        from pathlib import Path
+
+        fa_cfg = fa.parse_config(yaml.safe_load(Path(_settings.family_a_config_path).read_text(encoding="utf-8")))
+        family_a = FamilyALive(
+            _store, fa_cfg,
+            lambda start, end: load_frame(_settings.postgres_uri, fa_cfg.inputs, fa_cfg.grain_min, start, end),
+            settle_sec=_settings.settle_sec, select_interval_sec=_settings.select_interval_sec)
     logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
                 [s.series_id for s in registry.targets()])
     if _settings.experiment_runner_enabled:
@@ -218,6 +251,8 @@ async def lifespan(app: FastAPI):
         _tasks.append(asyncio.create_task(_reachable_forever()))
     if bill_forecast is not None:
         _tasks.append(asyncio.create_task(_bill_forecast_forever()))
+    if family_a is not None:
+        _tasks.append(asyncio.create_task(_family_a_forever()))
     try:
         yield
     finally:
@@ -309,6 +344,8 @@ async def health() -> dict[str, Any]:
                           "last_pass": _jsonable(reachable.last_pass if reachable else {})},
             "bill_forecast": {"enabled": _settings.bill_forecast_enabled, **_jsonable(_last_bill),
                               "last_pass": _jsonable(bill_forecast.last_pass if bill_forecast else {})},
+            "family_a": {"enabled": _settings.family_a_enabled, **_jsonable(_last_family_a),
+                         **(family_a.health() if family_a else {})},
             "experiment_runner": runner.status() if runner else {"enabled": False}}
 
 

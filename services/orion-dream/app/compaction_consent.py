@@ -36,7 +36,8 @@ from orion.physiology.binding import bind_verdict
 from orion.schemas.compaction import MemoryCompactionDeltaV1
 from orion.schemas.physiology_want import ConsentRequestV1, WantDecisionV1, WantV1
 
-from app.compaction_applier import CompactionApplyReceiptV1, CompactionConsent, ConsentAnswer, apply_compaction_delta
+from app.compaction_applier import (CompactionApplyReceiptV1, CompactionConsent, CompactionMemoryStore, ConsentAnswer,
+                                    apply_compaction_delta)
 
 logger = logging.getLogger("orion-dream.compaction_consent")
 
@@ -141,16 +142,29 @@ def market_consent(*, bid: Optional[Bid] = None, now_fn: Callable[[], datetime] 
     return ask
 
 
-async def ask_consent_without_store(delta: MemoryCompactionDeltaV1, *,
-                                    consent: Optional[CompactionConsent] = None) -> CompactionApplyReceiptV1:
-    """The REM pass's consent ask: the applier with the market's consent and NO memory store (``store=None``
-    is fixed here, never a parameter), so the verdict is logged and stored (want_ledger) and nothing can be
-    written. The bid is blocking HTTP, so it runs in a worker thread."""
-    receipt = await asyncio.to_thread(apply_compaction_delta, delta, consent or market_consent(), store=None)
-    logger.info("rem compaction consent asked id=%s status=%s verdict=%s rule=%s",
-                delta.delta_id, receipt.status, receipt.consent_verdict, receipt.consent_rule)
+async def ask_consent_and_apply(delta: MemoryCompactionDeltaV1, *,
+                                consent: Optional[CompactionConsent] = None,
+                                store: Optional[CompactionMemoryStore] = None,
+                                preview: bool = False) -> CompactionApplyReceiptV1:
+    """The REM pass's consent ask and apply: the applier with the market's consent and the real memory store
+    (``app.compaction_store.default_store()``, reverie-thought salience, downscale only). Every ask leaves a
+    verdict (want_ledger and a log line); only an ``allow`` with ``ORION_DREAM_COMPACTION_APPLY_ENABLED``
+    writes, snapshot first. ``preview=True`` (the ``/dreams/rem-preview`` endpoint) asks with NO store: the
+    verdict is recorded and nothing can be written. The bid and the writes are blocking, so they run in a
+    worker thread."""
+    if preview:
+        store = None
+    elif store is None:
+        from app.compaction_store import default_store
+
+        store = default_store()
+    receipt = await asyncio.to_thread(apply_compaction_delta, delta, consent or market_consent(), store=store)
+    logger.info("rem compaction consent asked id=%s status=%s verdict=%s rule=%s downscaled=%d "
+                "cards_skipped=%d snapshot=%s error=%s",
+                delta.delta_id, receipt.status, receipt.consent_verdict, receipt.consent_rule, receipt.downscaled,
+                receipt.cards_skipped_no_gist_store, receipt.snapshot_path, receipt.error)
     return receipt
 
 
-__all__ = ["ask_consent_without_store", "CONSENT_TIMEOUT_SEC", "FAMILY", "PRODUCER", "consent_want", "delta_digest", "judge", "market_consent",
+__all__ = ["ask_consent_and_apply", "CONSENT_TIMEOUT_SEC", "FAMILY", "PRODUCER", "consent_want", "delta_digest", "judge", "market_consent",
            "plan", "snapshot_dir_writable"]

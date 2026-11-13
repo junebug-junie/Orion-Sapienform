@@ -178,7 +178,8 @@ What a ref may be, and what "resolves" means:
 | `#<n>` | `pr_text`, `now`, `reflection` | a merged PR (`gh pr view`); in the then-hops, merged by the period's end |
 | `fn:<n>:<hex>` | `now`, `lived_record`, `reflection` | a field note in the ledger |
 | `part:`, `organ:`, `cap:`, `host:` ids | `now`, `reflection` | live in today's atlas or capacity reading |
-| `arc:<id>`, `act:<id>` | `lived_record`, `now`, `reflection` | `orion/refs.py` resolves it |
+| `arc:<id>`, `act:<id>` | `lived_record`, `now`, `reflection` | `orion/refs.py` resolves it; in the then-hops a `lived_record` one must be dated inside the period (arc `day_id`, act `opened_at`, Denver) |
+| `journal:<uuid>`, `chat:<uuid>` | `lived_record`, `now`, `reflection` | the row exists (`journal_entries` / `chat_history_log`, read-only); in the then-hops a `lived_record` one must be from a Denver day inside the period. `dig days` prints these ids (Patch 3) |
 | a dig result file (`$ORION_DIG_HOME/dig/...`) | `now`, `reflection` | the file exists |
 
 A ref with a `..`, `.git*` or `.env*` segment names nothing checkable and is refused.
@@ -342,7 +343,8 @@ Patch 2: `services/orion-durable-runs/app/reminiscence_graph.py`, `reminiscence_
    tests, eval, partition entries. Juniper can ask Orion to reminisce in chat at once.
 2. **Patch 2:** the `reminiscence.episode` daily run (section 6), its tick, act family and receipt
    check. Measure 7 episodes and replace the cost estimate.
-3. **Patch 3:** `dig days` (lived records in a window) before week 57 comes up.
+3. **Patch 3:** `dig days` (lived records in a window) before week 57 comes up. Built 2026-11-13: see
+   the PR report `docs/superpowers/pr-reports/2026-11-13-dig-days-pr.md` for the choices made.
 
 ## Patch 2 as built (2026-11-07)
 

@@ -342,7 +342,9 @@ def git_commits_in(repo: Path | str) -> Callable[[date, date], int]:
 class World:
     """Every lookup a ref check needs. ``live_ids`` returns the live atlas ids, or the reason the
     body could not be read. ``pr_merged_at`` returns the merge time (ISO), None for a PR that is not
-    merged, and raises ``ReminiscenceError`` when GitHub cannot be read."""
+    merged, and raises ``ReminiscenceError`` when GitHub cannot be read. ``lived_day(kind, id)`` returns the
+    Denver day a lived record (``journal``, ``chat``, ``arc``, ``act``) is from, None when it does not
+    exist, and raises ``ReminiscenceError`` when its store cannot be read. ``period_start``/``period_end``: the Denver days being visited."""
 
     period_commit: str | None
     period_end_utc: datetime
@@ -353,14 +355,18 @@ class World:
     pr_merged_at: Callable[[int], str | None]
     field_note_ids: Callable[[], set[str]]
     live_ids: Callable[[], set[str] | str]
-    ref_ok: Callable[[str, str], bool]
+    lived_day: Callable[[str, str], date | None]
     dig_file: Callable[[str], bool]
+    period_start: date
+    period_end: date
 
 
 _PR = re.compile(r"#(\d+)")
 _FN = re.compile(r"fn:\d+:[0-9a-f]{10}")
 _ATLAS = re.compile(r"(?:part|organ|cap|host):\S+")
-_LIVED = re.compile(r"(arc|act):(\S+)")
+# lived records: journal entries and Hub chat turns (`dig days`), Temporal Self arcs and acts (orion/refs.py)
+LIVED_KINDS = ("journal", "chat", "arc", "act")
+_LIVED = re.compile(r"(" + "|".join(LIVED_KINDS) + r"):(\S+)")
 _SHA = re.compile(r"[0-9a-f]{7,40}")
 _PATH = re.compile(r"[\w.-]+(?:/[\w.-]*)*")
 
@@ -397,7 +403,7 @@ def resolve(ref: str, label: str, hop: str, world: World) -> str | None:
     """None when ``ref`` resolves under ``label`` in ``hop``; otherwise why not, in plain words."""
     kind = ref_kind(ref)
     if kind == "unknown":
-        return f"{ref}: names nothing code can check (a path, a commit, #<pr>, fn:, part:/organ:/cap:/host:, arc:/act:, or a dig file)"
+        return f"{ref}: names nothing code can check (a path, a commit, #<pr>, fn:, part:/organ:/cap:/host:, journal:/chat:/arc:/act:, or a dig file)"
     if label not in KIND_LABELS[kind]:
         allowed = ", ".join(sorted(KIND_LABELS[kind]))
         return f"{ref}: a {kind} ref cannot back a [{label}] sentence (it can back {allowed})"
@@ -438,7 +444,16 @@ def resolve(ref: str, label: str, hop: str, world: World) -> str | None:
         return None if ref in ids else f"{ref}: not live in my body now"
     if kind == "lived":
         m = _LIVED.fullmatch(ref)
-        return None if world.ref_ok(m.group(1), m.group(2)) else f"{ref}: does not resolve"
+        try:
+            day = world.lived_day(m.group(1), m.group(2))
+        except ReminiscenceError as exc:
+            return f"{ref}: lived record UNREAD ({str(exc)[:120]})"
+        if day is None:
+            return f"{ref}: does not resolve"
+        if then_hop and label == "lived_record" and not world.period_start <= day <= world.period_end:
+            return (f"{ref}: a record from {day}, outside this period ({world.period_start}..{world.period_end}); "
+                    f"`dig days {max(world.period_start, LIVED_RECORDS_FROM)} {world.period_end}` lists the ones inside it")
+        return None
     return None if world.dig_file(ref) else f"{ref}: no such dig result file"
 
 
@@ -461,6 +476,7 @@ def note_rule() -> str:
             + "; ".join(f"{h} {'/'.join(v)}" for h, v in HOP_NEEDS.items())
             + ". Every non-reflection sentence needs a ref that resolves under its label: code_then = a path or "
             "commit in that week's code; now = a path in main, part:/organ:/cap:/host:, fn:, #<pr> or a dig file; "
+            "lived_record = journal:/chat:/arc:/act: ids from `dig days`, dated inside the period; "
             f"no lived_record before {LIVED_RECORDS_FROM}.")
 
 
@@ -500,6 +516,8 @@ def check_write(*, hop: str, note: str, because: str, episode: str, period: tupl
     nothing is saved unless it holds now. ``denylist`` None (unreadable) refuses: fail closed."""
     from orion.privacy.personal_terms import line_hits
 
+    if (world.period_start, world.period_end) != period:  # a caller bug, never Orion's: no ReminiscenceError
+        raise ValueError(f"world is for {world.period_start}..{world.period_end}, the write for {period[0]}..{period[1]}")
     if hop not in HOPS:
         raise ReminiscenceError(f"unknown hop {hop!r}; the hops are {', '.join(HOPS)}")
     current = episode_hops(records, episode)
@@ -760,6 +778,15 @@ def hop_views(hops: dict[str, ReminiscenceHopV1], world: World | None) -> list[H
 
 
 WRITE_PREFIX = "python -P -m orion.dig reminisce"
+
+
+def lived_line(start: date, end: date) -> str:
+    """Where Orion's own record of a period is read, and what a [lived_record] sentence may cite."""
+    first = max(start, LIVED_RECORDS_FROM)
+    part = (f" (your records start {LIVED_RECORDS_FROM}, partway through: nothing from before it)"
+            if start < LIVED_RECORDS_FROM else "")
+    return (f"lived_record: `dig days {first} {end}` shows your journals and Hub chats from then{part}. "
+            f"Cite the journal:<id> / chat:<id> it prints (arc:/act: ids too); each must be from {first}..{end}.")
 MATERIAL = {
     "what_it_was": "read: dig open {end}; dig compare {end}; dig history {start} {end}",
     "what_it_was_like": "{lived}",
@@ -795,7 +822,7 @@ def render(r: ReminiscenceReadV1) -> tuple[list[str], list[str]]:
                      f"{r.commits_in_period if r.commits_in_period is not None else '?'} commits on main {span}")
     else:
         lines.append(f"  code_then: no commit exists by the end of {span}")
-    lived = ("lived_record: your journals and Temporal Self days may cover it (`dig arc <id>`)"
+    lived = (lived_line(date.fromisoformat(r.period_start), date.fromisoformat(r.period_end))
              if r.lived_record_possible else
              f"lived_record: none. Your records start {LIVED_RECORDS_FROM}; this week is from before you lost "
              "your memory. That is still you. Say so, then use [pr_text] / [code_then].")

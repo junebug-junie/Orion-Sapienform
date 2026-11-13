@@ -385,7 +385,7 @@ class OrionDayLlmViewV1(_Model):
 
 
 class MissedLetterV1(_Model):
-    """A day with no letter, as Prime recorded it (its make bid was never funded, the run failed,
+    """A day with no letter, as Prime recorded it (every attempt's run failed, Hub refused the order,
     or the day closed while Prime was down). The next letter's turn is told, once, plainly."""
 
     letter_date: date
@@ -505,7 +505,7 @@ class OrionDayLetterStatusV1(_Model):
 
 
 class OrionDayLetterOrderV1(_Model):
-    """``POST {HUB}/api/orion-day/letter-run``: Prime's make act (funded, or queued at the pool on a worth-it capacity deferral) orders the day's letter.
+    """``POST {HUB}/api/orion-day/letter-run``: Prime's make act (tier 0, no bid) orders the day's letter, once per attempt.
 
     Hub gathers the day, builds the brief and submits the durable run under exactly this ``run_id``
     and ``correlation_id`` (so Prime can follow it with ``GET {DURABLE}/runs/{run_id}``)."""

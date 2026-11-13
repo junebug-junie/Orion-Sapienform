@@ -345,15 +345,36 @@ consent gate (`app/compaction_consent.py`): one bid for family `dream.compaction
 (verb `compact`, `snapshot_restorable`, attests `snapshot_dir_writable` and `downscale_only`; a plan that
 would prune asks verb `prune`, `irreversible`, always refused). Rules: `config/physiology/consent.yaml`.
 
-- Consent is asked first, even while `ORION_DREAM_COMPACTION_APPLY_ENABLED=false`. After each staged delta,
-  the REM pass asks through the applier with NO memory store, so nothing can be written. The live trace is
-  a `want_ledger` row (producer `orion-dream.compaction_applier.consent`) and a log line
-  `compaction_apply not_approved delta=... verdict=needs_consent rule=dream.compaction.downscale_only`.
-- Until Juniper merges the standing consent `dream-compaction-downscale` into `consent.yaml`, every ask is
-  `needs_consent`. Turning apply on is her separate decision; it also needs a real memory store, which is
-  not wired (`no_store`).
+- Consent is asked first, even while `ORION_DREAM_COMPACTION_APPLY_ENABLED=false`. The live trace is a
+  `want_ledger` row (producer `orion-dream.compaction_applier.consent`) and a log line
+  `rem compaction consent asked id=... status=... verdict=... rule=...`.
 - No market answer, a verdict for another delta, or any error is a no. `DREAM_COMPACTION_CONSENT_ASK_ENABLED=false`
-  stops the ask.
+  stops the ask (and so the apply).
+
+### Compaction apply downscales settled reverie thoughts (2026-11-13)
+
+Juniper merged the standing consent `dream-compaction-downscale` and apply is on
+(`ORION_DREAM_COMPACTION_APPLY_ENABLED=true`). What sleep now does to memory:
+
+- REM proposes one downscale entry for each reverie thought that a consolidate entry folds in (a thought
+  of a settled reverie chain): new salience = salience x `DREAM_COMPACTION_DOWNSCALE_FACTOR` (0.8). It
+  proposes a thought only once: only while its `salience` column still equals the original in
+  `thought_json.salience`. Prune is never proposed.
+- After the persist, the market's consent gate answers. On `allow`, the applier writes a snapshot of every
+  target's salience to `DREAM_COMPACTION_SNAPSHOT_DIR/<delta_id>/snapshot_before.json` (persistent, under
+  the `/app/logs` mount), then lowers each one through `app/compaction_store.py`. The store changes only
+  `substrate_reverie_thought.salience`, compare-and-set on the old value. Any error restores the snapshot.
+- Gist cards are not written: the store has no gist-card table. The receipt counts them in
+  `cards_skipped_no_gist_store`.
+- Who notices: Orion's day reading ranks reverie thoughts by salience (`orion/orion_day/budget.py`), so a
+  settled thought gives way to an unsettled one.
+- The proof line: `compaction applied delta=... downscaled=N ... snapshot=...`. In SQL:
+  `SELECT count(*) FROM substrate_reverie_thought WHERE salience < (thought_json->>'salience')::float`.
+- Roll back one apply: `docker exec orion-athena-dream python -m app.compaction_store restore
+  /app/logs/compaction-snapshots/<delta_id>/snapshot_before.json`. Stop all applies: set
+  `ORION_DREAM_COMPACTION_APPLY_ENABLED=false` and rebuild dream, or delete the standing consent and rebuild
+  durable-runs.
+- `POST /dreams/rem-preview` asks consent but never writes (no store).
 
 ### HTTP / bus behavior
 

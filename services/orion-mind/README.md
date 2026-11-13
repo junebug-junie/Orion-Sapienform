@@ -315,6 +315,8 @@ reads, self-sense evals, PR field notes, reminiscence and outreach are not.
 ## Held turns run on their own GPU seat
 
 A `MindRunRequestV1` with `gpu_lease` set (orion-thought copies it from the stance request of a durable/background turn, e.g. a world-pulse read) runs all three LLM phases on route `agent` with the hold on `options.gpu_lease`, whatever `MIND_*_MODEL_ROUTE` / `MIND_TURN_MODEL_ROUTE` say (`app/engine.py`, `orion.llm.resource_lease.held_call_route`). Juniper's rule, 2026-11-12: world-pulse work never goes to the fast or the metacog lane. Unheld runs are unchanged. `MindRunRequestV1` ignores unknown fields, so orion-mind and orion-thought may deploy in either order.
+
+A held run's phases each get `MIND_LLM_HELD_TIMEOUT_SEC` (150 s) instead of `MIND_LLM_TIMEOUT_SEC` (60 s). The held seat may be the agent-gpu2 Bonsai-2-27B, which thinks before it answers: on 11-10..12 its served Mind calls took 10-56 s and 18 of 59 hit the 60 s cap. 150 s covers a full 2048-token semantic reply at Bonsai's slow end (~14 tok/s). The run wall (`policy.wall_time_ms_max`, 180 s from orion-thought) still bounds the whole run, so orion-thought's 210 s HTTP wait and Hub's 400 s stance wait are unchanged; a slow first phase leaves later phases less time and they are skipped with `wall_budget_insufficient`.
 ### The day letter is Prime's end-of-day turn (2026-11-12, living Prime Part 3)
 
 `PRIME_DAY_LETTER_ENABLED` (default true; the kill switch for the whole end-of-day move -- Hub's letter timer
@@ -326,26 +328,29 @@ is retired, so off means no letters). Pure parts: `orion/prime/day_letter.py`; I
    and whether Hub has a letter for it (`GET {PRIME_HUB_URL}/api/orion-day/letters/<date>`). Closed with no
    letter: Prime holds it as its own end-of-day concern (`PrimeDayLetterOpenV1`), tracked apart from the
    3-slot concern list so a full list never crowds out the letter.
-2. **The bid.** One `WantV1` of family `prime`, verb `make`, lane `agent`, priced at the turn's ceiling
-   (`PRIME_DAY_LETTER_TURN_TIMEOUT_SEC`). Prime's self-monitor gate on `act.prime.make` is asked first.
-   Deferred: no act; re-bid after the market's `retry_after_sec` (at least 15 min) until
-   `PRIME_DAY_LETTER_BID_WINDOW_HOURS` (18) after the day was seen closed. Never funded: no letter that day
-   (Juniper's call: a living Orion is allowed not to write), recorded `not_written`.
-3. **The act and the order.** Funded: the `make` act opens (actor `prime`, object
-   `orion_day_letter:<date>`), and Prime POSTs `OrionDayLetterOrderV1` to Hub (`/api/orion-day/letter-run`):
-   run id `orion-day-<date>-1`, a correlation id derived from the date, the act id, the run deadline
-   (`PRIME_DAY_LETTER_RUN_DEADLINE_HOURS`, 12) and the missed days not yet told to a letter. Hub gathers the day
-   and submits ONE durable unified turn (`orion_day.letter`). An unanswered order is re-sent (Hub answers
+2. **No bid (tier 0).** Juniper, 2026-11-12: "It needs to happen each day." The letter is not priced, never
+   deferred by the market and not asked of the self-monitor gate. (Live 11-11: a tier-2 bid was deferred 10 h,
+   then one failed run ended the day.)
+3. **The act and the order.** The `make` act opens at once (actor `prime`, object `orion_day_letter:<date>`),
+   and Prime POSTs `OrionDayLetterOrderV1` to Hub (`/api/orion-day/letter-run`): run id
+   `orion-day-<date>-<attempt>`, a correlation id derived from the date and attempt, the act id, the run deadline
+   (`PRIME_DAY_LETTER_RUN_DEADLINE_HOURS`, 12, shared by every attempt) and the missed days not yet told to a
+   letter. Hub gathers the day and submits ONE durable unified turn (`orion_day.letter`) at GPU pool priority
+   `system` (above background work, below Juniper's chat). An unanswered order is re-sent (Hub answers
    `exists`); Hub's `already_written` / `empty_day` / `refused` close the act at 0.
-4. **Settle.** `GET {durable}/runs/<run_id>`: terminal -> the act closes (1 = this run wrote the row), the bid is
-   released, and the letter's threads (the run's finish detail) open up to 2 Prime concerns (never past 3 in
+4. **Settle.** `GET {durable}/runs/<run_id>`: a run that wrote nothing (failed, cancelled, no row) is ordered
+   again as the next attempt, up to `PRIME_DAY_LETTER_MAX_ATTEMPTS` (3), while the deadline holds. Otherwise
+   terminal -> the act closes (1 = a run wrote the row), and the letter's threads (the run's finish detail) open up to 2 Prime concerns (never past 3 in
    total; the rest are counted as without room). They place the usual concern bet, and the note wakes a
    thought, so curiosity hears the letter only through Prime's own graded `ask`. The letter turn's correlation
    id is linked onto the hand-back record.
-5. **Missed days** (never funded, run failed, Hub refused) ride on the next order's `missed_letters`, once; Hub
+5. **Missed days** (every attempt failed, Hub refused) ride on the next order's `missed_letters`, once; Hub
    adds the day before by itself when it has no row and Prime did not list it (Prime was down).
 
 - Record: Redis `orion:prime:day_letter` (`PrimeDayLetterStateV1`: the open day, the last 14 days).
-- Logs: `prime_day_letter_due`, `prime_day_letter_bid_not_funded`, `prime_day_letter_funded`,
-  `prime_day_letter_ordered`, `prime_day_letter_closed`, `prime_day_letter_not_written`.
+- Logs: `prime_day_letter_due`, `prime_day_letter_opened`, `prime_day_letter_act_open_failed`,
+  `prime_day_letter_ordered`, `prime_day_letter_retry`, `prime_day_letter_own_attempt_wrote_it`,
+  `prime_day_letter_closed`.
+- A run that wrote the row and then ended failed or cancelled (a later step failed) is a written letter. A cancelled
+  run with no row is not retried: a cancel is someone's decision.
 - Deploy order: orion-hub, then orion-durable-runs, then orion-mind (Prime orders only once both are live).

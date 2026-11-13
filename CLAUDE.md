@@ -320,6 +320,18 @@ Both heartbeats are best-effort and never fail the commit or the build they ride
 
 **A separate, previously-undiscovered bug in `scripts/hooks/session_start_agent_board.py`/`session_stop_agent_board.py`** (the Claude-Code-specific SessionStart/Stop hooks, distinct from the git hooks above): confirmed live that these run with a process `cwd` fixed to wherever the session originally started (its own stdin payload's `cwd` field reported the shared/primary checkout even while real git work had been happening in a linked worktree for many turns) — it does not track `cd` calls a Bash tool makes mid-session, so `git rev-parse --show-toplevel` from that same fixed cwd resolved to the same wrong worktree every time, and `render_checkin_context` was additionally *writing* a spurious presence row under that wrong path on every SessionStart. Fixed with `agent_board_lib.resolve_current_identity()`: both hooks now read `session_id` from their own stdin payload and look up the most recently heartbeated presence row tagged with that same session_id instead of trusting their own cwd — `scripts/git_hooks/post-commit` and `scripts/safe_docker_build.sh` tag their heartbeats with `$CLAUDE_CODE_SESSION_ID` (inherited from the Claude Code Bash tool's own subprocess environment) precisely so this lookup has something real to find. Falls back to the old cwd-based resolution when no matching session_id is on the board yet (e.g. the very first hook fire in a session, before any git-hook-driven heartbeat has landed).
 
+### Ticket board (GitHub Issues)
+
+Divergent paths get a ticket, not a memory file. GitHub Issues on this repo is the one place for real-but-deferred work. Agent memory and the agent board above are not ticket stores: Juniper can't see the first, and the second is host-local agent coordination.
+
+- **File it the moment you find it.** A finding you won't fix in this PR gets `gh issue create` right away: one plain sentence saying what's wrong, the evidence (query, log line, file:line), and how to check it's fixed. Small follow-ups still get fixed in the same PR, not ticketed.
+- **Search before filing.** `gh issue list --search "<words>"`. If one exists, add a comment. One issue per finding.
+- **Labels:** one kind (`bug`, `follow-up`, `verify-live` for shipped-but-unproven, `design`) plus `area:*` (`turns`, `energy`, `hub`, `infra`, `self-model`). Add `needs-juniper` when it waits on her decision, permission, or manual step. Don't invent new labels for one ticket.
+- **Close with evidence.** PRs say `Fixes #N`. A `verify-live` issue closes only with the live proof in a comment (section 0A).
+- **PR reports list issues opened and closed** in the Risks section.
+- **Session start:** `scripts/hooks/session_start_open_tickets.py` prints the open count and every `needs-juniper` ticket. Raise those with Juniper; don't wait to be asked.
+- **Board:** planned GitHub Project "Orion" (columns Inbox, Next, Doing, Waiting on Juniper, Done), with new issues auto-added to Inbox for Juniper to sort. Not created yet: the gh token lacks the `project` scope (#3268). Until then, labels are the board: `gh issue list -l needs-juniper`.
+
 Branch type examples:
 
 ```text
@@ -669,7 +681,7 @@ pytest services/<service_name>/evals -q
 python services/<service_name>/evals/run_<thing>_eval.py
 ```
 
-If the repo has no eval harness for the touched service, add the smallest useful one or report that the service lacks one and create a follow-up issue in the PR description.
+If the repo has no eval harness for the touched service, add the smallest useful one or report that the service lacks one and file a `follow-up` issue (`gh issue create`, see "Ticket board") and list it in the PR report.
 
 Do not claim eval coverage if only tests ran.
 

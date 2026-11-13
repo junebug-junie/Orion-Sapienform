@@ -11,8 +11,8 @@ Two lanes:
   Postgres and the bus):
   - ``irreversible`` (dream prune) is refused, even with a standing consent for downscale;
   - an unknown non-reversible act is refused; an unknown reversible act is allowed;
-  - a missing attest is refused; ``downscale_only`` with both attests is allowed once a standing consent
-    exists, and needs consent without one (the shipped state);
+  - a missing attest is refused; ``downscale_only`` with both attests is allowed by the shipped standing
+    consent (Juniper, 2026-11-13), and needs consent without one;
   - a ``consent`` deferral is never admitted by the binding rule, not at the window's end, not with no end,
     and a dead market (no body state, unreadable history) cannot turn it into "no answer";
   - with no consent request, every decision for the live want shapes (orion/physiology/tests/
@@ -22,7 +22,10 @@ Two lanes:
   (``dream_compaction_delta``) against consent asks (``want_ledger`` rows of family ``dream.compaction``).
   Gate: every ask carries a consent verdict, no ``dream.compaction`` decision is funded without ``allow``,
   and (after the dream deploy) at least one ask exists per staged delta. Before deploy it reports 0 asks:
-  that is the UNVERIFIED state, not a pass.
+  that is the UNVERIFIED state, not a pass. Applies (2026-11-13): every reverie thought whose salience
+  column sits below its original (``thought_json.salience``) must be a downscale target of a delta whose
+  ask was allowed; none may sit above it (downscale never raises). 0 downscaled thoughts after the deploy is
+  UNVERIFIED, not a pass.
 
     PYTHONPATH=. .venv/bin/python services/orion-durable-runs/evals/consent_gate_fixture.py [--live --days 3]
 """
@@ -57,6 +60,7 @@ SHIPPED, ERR = load_consent(ROOT / "config/physiology/consent.yaml")
 _DOC = yaml.safe_load((ROOT / "config/physiology/consent.yaml").read_text())
 GRANTED = parse_consent({**_DOC, "standing": {"dream-compaction-downscale": {"granted_by": "juniper",
                                                                              "granted_on": "2026-11-11"}}})
+NO_STANDING = parse_consent({**_DOC, "standing": {}})
 
 
 def _state():
@@ -152,6 +156,8 @@ BOTH = ("snapshot_dir_writable", "downscale_only")
 CASES = [
     # (name, rules, want, expected verdict, expected rule)
     ("prune is irreversible: refused", GRANTED, cwant("prune", "irreversible", BOTH), "refuse", "dream.compaction.prune"),
+    ("shipped: prune refused with the standing consent present", SHIPPED, cwant("prune", "irreversible", BOTH),
+     "refuse", "dream.compaction.prune"),
     ("unknown non-reversible act: refused", SHIPPED, cwant("compact", "snapshot_restorable", BOTH, "thought.painting"),
      "refuse", None),
     ("unknown reversible act: allowed", SHIPPED, cwant("make", "reversible", (), "thought.painting"), "allow", None),
@@ -159,7 +165,9 @@ CASES = [
      "dream.compaction.downscale_only"),
     ("downscale_only, both attests, standing consent: allowed", GRANTED, cwant("compact", "snapshot_restorable", BOTH),
      "allow", "dream.compaction.downscale_only"),
-    ("downscale_only, shipped (no standing consent): needs consent", SHIPPED,
+    ("downscale_only, shipped (Juniper's standing consent): allowed", SHIPPED,
+     cwant("compact", "snapshot_restorable", BOTH), "allow", "dream.compaction.downscale_only"),
+    ("downscale_only, no standing consent: needs consent", NO_STANDING,
      cwant("compact", "snapshot_restorable", BOTH), "needs_consent", "dream.compaction.downscale_only"),
     ("no rules read: refused", None, cwant("compact", "snapshot_restorable", BOTH), "refuse", None),
 ]
@@ -182,7 +190,7 @@ def fixture() -> list[str]:
                     fails.append(f"{name}: admitted by the binding rule at end={end}")
     # A dead market cannot turn a consent deferral into "no answer".
     for label, raw, pool in (("no body state", "", _Pool()), ("history unreadable", None, _Pool(fail=True))):
-        d = asyncio.run(market(SHIPPED, raw=raw, pool=pool).bid(cwant("compact", "snapshot_restorable", BOTH), NOW))
+        d = asyncio.run(market(NO_STANDING, raw=raw, pool=pool).bid(cwant("compact", "snapshot_restorable", BOTH), NOW))
         ok = d.reason == "consent" and not bind_verdict(d, NOW, NOW).admit and pool.calls == 0
         print(f"{'ok ' if ok else 'BAD'} dead market ({label}): reason={d.reason} reads={pool.calls}")
         if not ok:
@@ -233,6 +241,30 @@ def live(days: float) -> list[str]:
         print("UNVERIFIED: no consent asks yet (orion-dream and orion-durable-runs not rebuilt, or no REM delta staged)")
     elif asks < deltas:
         fails.append(f"fewer consent asks ({asks}) than staged deltas ({deltas})")
+    fails += live_downscale()
+    return fails
+
+
+def live_downscale() -> list[str]:
+    """Applied downscales (all time): each lowered thought is a target of an allowed delta; none raised."""
+    lowered_sql = ("FROM substrate_reverie_thought WHERE jsonb_typeof(thought_json->'salience') = 'number' "
+                   "AND salience {op} (thought_json->>'salience')::double precision {eps}")
+    lowered = int(_psql(f"SELECT count(*) {lowered_sql.format(op='<', eps='- 1e-9')}")[0][0])
+    raised = int(_psql(f"SELECT count(*) {lowered_sql.format(op='>', eps='+ 1e-9')}")[0][0])
+    orphans = int(_psql(
+        "WITH allowed AS (SELECT DISTINCT d.delta_json FROM dream_compaction_delta d JOIN want_ledger w "
+        "ON w.want_id = 'dream.compaction:compact:' || d.delta_id AND w.decision->'consent'->>'verdict' = 'allow'), "
+        "targets AS (SELECT DISTINCT substr(e->>'target_id', length('substrate_reverie_thought:') + 1) AS tid "
+        "FROM allowed, jsonb_array_elements(allowed.delta_json->'downscale') e) "
+        f"SELECT count(*) {lowered_sql.format(op='<', eps='- 1e-9')} AND thought_id NOT IN (SELECT tid FROM targets)")[0][0])
+    print(f"live downscale: lowered thoughts={lowered} raised={raised} lowered without an allowed delta={orphans}")
+    fails = []
+    if raised:
+        fails.append(f"{raised} reverie thought(s) sit ABOVE their original salience (downscale never raises)")
+    if orphans:
+        fails.append(f"{orphans} lowered reverie thought(s) are not the target of any allowed delta")
+    if lowered == 0:
+        print("UNVERIFIED: no applied downscale yet (dream and durable-runs not rebuilt, or no REM pass since)")
     return fails
 
 

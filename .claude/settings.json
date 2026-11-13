@@ -29,6 +29,11 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/check_rebuild_log.py\" --session-start",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/session_start_open_tickets.py\"",
+            "timeout": 12
           }
         ]
       }

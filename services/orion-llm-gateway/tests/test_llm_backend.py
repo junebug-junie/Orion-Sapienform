@@ -21,6 +21,7 @@ from app.llm_backend import (  # noqa: E402
     plan_llm_chat,
     run_llm_chat,
 )
+from app import strata_structured  # noqa: E402
 from app.models import ChatBody, ChatMessage  # noqa: E402
 from app.settings import settings  # noqa: E402
 
@@ -613,11 +614,16 @@ class StrataChatLaneTests(unittest.TestCase):
         self.assertEqual(url, "http://circe:8011/v1/chat/completions")
         self.assertEqual(payload["chat_template_kwargs"], {"enable_thinking": True})
         self.assertEqual((payload["logprobs"], payload["top_logprobs"]), (True, 3))
-        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        # Strata only prompts and validates, so the gateway does both (app/strata_structured.py): the
+        # format becomes Strata's own directive and never reaches Strata as response_format.
+        self.assertNotIn("response_format", payload)
+        self.assertEqual(payload["messages"][0], {"role": "system", "content": strata_structured.directive(
+            {"type": "object"})})
 
     @patch("app.llm_backend._common_http_client")
-    def test_schema_formats_become_the_openai_wrapper_strata_accepts(self, mock_client_factory):
-        """Strata drops a json_object schema and 400s the bare json_schema shapes (serve/structured.py)."""
+    def test_schema_formats_become_strata_s_directive_with_the_schema(self, mock_client_factory):
+        """Every schema-bearing shape reaches Strata as its own directive carrying the schema
+        (app/strata_structured.py take_over); other backends keep their response_format."""
         mock_client = MagicMock()
         mock_client_factory.return_value.__enter__.return_value = mock_client
         mock_client.post.return_value.status_code = 200
@@ -628,9 +634,9 @@ class StrataChatLaneTests(unittest.TestCase):
                             options={"structured_output_schema": schema, "structured_output_method": method,
                                      "structured_output_schema_name": "Reading"})
             _execute_openai_chat(body=body, model="chat", base_url="http://circe:8011", backend_name="strata")
-            rf = mock_client.post.call_args.kwargs["json"]["response_format"]
-            self.assertEqual(rf, {"type": "json_schema",
-                                  "json_schema": {"name": "Reading", "strict": True, "schema": schema}}, method)
+            sent = mock_client.post.call_args.kwargs["json"]
+            self.assertNotIn("response_format", sent, method)
+            self.assertEqual(sent["messages"][0]["content"], strata_structured.directive(schema), method)
         _execute_openai_chat(body=body, model="chat", base_url="http://x", backend_name="llamacpp")
         self.assertEqual(mock_client.post.call_args.kwargs["json"]["response_format"],
                          {"type": "json_schema", "json_schema": {"schema": schema}})

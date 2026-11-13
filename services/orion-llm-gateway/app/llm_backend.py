@@ -25,6 +25,7 @@ from .settings import settings
 from .profiles import LLMProfileRegistry, LLMProfile
 from .lane_routes import resolve_llm_lane_route
 from .structured_output import apply_structured_output_to_payload, response_format_for_backend
+from . import strata_structured
 from .llm_uncertainty import (
     extract_llm_uncertainty_from_native_completion,
     extract_llm_uncertainty_from_openai_response,
@@ -1283,6 +1284,11 @@ def _execute_openai_chat(
         payload["top_logprobs"] = max(1, min(top_k, 20))
     # Clean None values
     payload = {k: v for k, v in payload.items() if v is not None}
+    # Strata only prompts and validates (no constrained decoding): the gateway does both itself so a bad
+    # reply is repaired, retried once, or logged instead of vanishing in a 502 (app/strata_structured.py).
+    strata_json = False
+    if backend_name == "strata":
+        payload, strata_json = strata_structured.take_over(payload)
 
     # 3. Execute
     logger.info(f"[LLM-GW] {backend_name} req model={model} msgs={len(body.messages or [])} url={url}")
@@ -1296,22 +1302,48 @@ def _execute_openai_chat(
 
     try:
         with _common_http_client(body) as client:
-            r = client.post(url, json=payload)
-            overflow = _context_overflow_result(r, route=route, served_by=served_by, spark_meta=spark_meta)
-            if overflow is not None:
-                return overflow
+            send = payload
+            for attempt in (0, 1):  # the second pass only for one corrective Strata JSON retry
+                r = client.post(url, json=send)
+                overflow = _context_overflow_result(r, route=route, served_by=served_by, spark_meta=spark_meta)
+                if overflow is not None:
+                    return overflow
 
-            failed = _upstream_http_failure(
-                r, backend_name=backend_name, url=url, route=route, served_by=served_by,
-                spark_meta=spark_meta, trace_id=body.trace_id,
-            )
-            if failed is not None:
-                return failed
-            raw_data = r.json()
-            body_error = _error_body_message(raw_data)
-            if body_error is not None:
+                failed = _upstream_http_failure(
+                    r, backend_name=backend_name, url=url, route=route, served_by=served_by,
+                    spark_meta=spark_meta, trace_id=body.trace_id,
+                )
+                if failed is not None:
+                    return failed
+                raw_data = r.json()
+                body_error = _error_body_message(raw_data)
+                if body_error is not None:
+                    return _upstream_failure_result(
+                        backend_name=backend_name, url=url, status=r.status_code, message=body_error,
+                        route=route, served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id,
+                    )
+                if not strata_json:
+                    break
+                content, finish = strata_structured.first_content(raw_data)
+                verdict = strata_structured.check(content, finish)
+                if verdict.ok:
+                    if verdict.repaired or attempt:
+                        logger.warning(
+                            "[LLM-GW] strata_json_recovered corr=%s route=%s served_by=%s attempt=%s repaired=%s",
+                            body.trace_id, route, served_by, attempt, verdict.repaired)
+                    raw_data = strata_structured.with_content(raw_data, verdict.text)
+                    break
+                logger.warning(
+                    "[LLM-GW] strata_json_rejected corr=%s route=%s served_by=%s attempt=%s error=%r raw=%r",
+                    body.trace_id, route, served_by, attempt, verdict.error,
+                    content[:strata_structured.RAW_LOG_CHARS])
+                if attempt == 0 and verdict.retryable:
+                    send = {**payload, "messages": strata_structured.corrective_messages(
+                        payload["messages"], content, verdict.error)}
+                    continue
+                # Same message Strata's own 502 carried, so every caller's handling is unchanged.
                 return _upstream_failure_result(
-                    backend_name=backend_name, url=url, status=r.status_code, message=body_error,
+                    backend_name=backend_name, url=url, status=502, message=verdict.error,
                     route=route, served_by=served_by, spark_meta=spark_meta, trace_id=body.trace_id,
                 )
             raw_choices = raw_data.get("choices") if isinstance(raw_data, dict) else []

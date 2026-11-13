@@ -427,11 +427,14 @@ finding stay with that door). Orion's reply starts with `Pick: <n>`.
   row stores it under `result_json.choice` (shown subjects, versions, pick).
 - **Subject ledger.** Each topic has a subject id (`daydream:<id>`,
   `reading:<seed_id>`) and a version (a read's finding ids). A subject the tick
-  sent, or that Orion declined, in the last 7 days is not shown again unless its
-  version changed. This replaced a gap: on 2026-11-11..12 the tick sent the same
+  sent, or that Orion declined (or answered with no readable pick), in the last
+  7 days is not shown again unless its version changed. A read Orion declined
+  at the tick is told for the readings door too (the `orion_declined` row carries
+  its `finding_ids`), so that door does not send it afterwards. This replaced a gap: on 2026-11-11..12 the tick sent the same
   "graph first" habit 3 times, because the habit came in through the personality
   cue with no id while only the daydream was in the ledger. With the choice point
-  on, the personality cue is not read by the tick.
+  on, the personality cue is not read by the tick, and other material with no
+  subject id (priors, curiosity summaries) is not rendered in a choice prompt.
 - A read the tick shows is claimed while it composes, so the readings door skips
   it (`claimed_by_tick`, not recorded) until the tick ends. A read the tick sends
   is told for the readings door (its decision row carries `finding_ids`) and

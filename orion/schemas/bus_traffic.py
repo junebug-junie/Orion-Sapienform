@@ -55,6 +55,10 @@ class BusTrafficRollupV1(BaseModel):
     channel_counts: dict[str, int] = Field(default_factory=dict)
     hops: list[BusTrafficHopV1] = Field(default_factory=list)
     decode_failures: int = Field(default=0, ge=0)
+    # True when the mirror was not listening for part of the bucket (process start, or a
+    # silence longer than the mirror's gap threshold, e.g. a Redis drop and resubscribe).
+    # Counts in a partial bucket are an undercount, not a traffic dip: readers exclude them.
+    partial: bool = False
 
     @field_validator("bucket_start", "bucket_end")
     @classmethod
@@ -74,4 +78,5 @@ BUS_TRAFFIC_ROLLUP_SQL_COLUMNS: tuple[str, ...] = (
     "channel_counts",
     "hops",
     "decode_failures",
+    "partial",
 )

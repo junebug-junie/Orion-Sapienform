@@ -108,7 +108,7 @@ async def test_flush_publishes_closed_buckets_in_order() -> None:
     bus.publish = AsyncMock()
     pending: deque = deque(maxlen=12)
 
-    assert await _flush_traffic_rollup_once(bus, rollup, pending, T0 + 600) == 2
+    assert await _flush_traffic_rollup_once(bus, rollup, pending, T0 + 610) == 2
     channels = [c.args[0] for c in bus.publish.await_args_list]
     starts = [c.args[1].payload["bucket_start"] for c in bus.publish.await_args_list]
     assert channels == [BUS_TRAFFIC_ROLLUP_CHANNEL] * 2
@@ -124,11 +124,11 @@ async def test_publish_failure_is_fail_open_and_retried_next_tick() -> None:
     bus.publish = AsyncMock(side_effect=ConnectionError("bus down"))
     pending: deque = deque(maxlen=12)
 
-    assert await _flush_traffic_rollup_once(bus, rollup, pending, T0 + 300) == 0  # does not raise
+    assert await _flush_traffic_rollup_once(bus, rollup, pending, T0 + 310) == 0  # does not raise
     assert len(pending) == 1
 
     bus.publish = AsyncMock()
-    assert await _flush_traffic_rollup_once(bus, rollup, pending, T0 + 300) == 1
+    assert await _flush_traffic_rollup_once(bus, rollup, pending, T0 + 310) == 1
     assert not pending
 
 
@@ -140,7 +140,7 @@ async def test_pending_queue_is_bounded_during_a_long_outage() -> None:
     bus = MagicMock()
     bus.publish = AsyncMock(side_effect=ConnectionError("bus down"))
     pending: deque = deque(maxlen=3)
-    await _flush_traffic_rollup_once(bus, rollup, pending, T0 + 300 * 5)
+    await _flush_traffic_rollup_once(bus, rollup, pending, T0 + 300 * 5 + 10)
     assert len(pending) == 3
     assert pending[0].bucket_start.timestamp() == T0 + 600  # oldest two dropped
 
@@ -193,6 +193,7 @@ async def test_mirror_counts_messages_and_hops_and_publishes_the_rollup(tmp_path
     monkeypatch.setattr(settings, "MIRROR_GRAPH_ENABLED", False)
     monkeypatch.setattr(settings, "MIRROR_TRAFFIC_ROLLUP_ENABLED", True)
     monkeypatch.setattr(main_mod, "TRAFFIC_ROLLUP_FLUSH_CHECK_SEC", 0.02)
+    monkeypatch.setattr(main_mod, "TRAFFIC_ROLLUP_FLUSH_GRACE_SEC", 0.0)
 
     built: list[TrafficRollupAccumulator] = []
 

@@ -39,6 +39,9 @@ MIRROR_MAX_CONSECUTIVE_WRITE_FAILURES = 50
 # Traffic rollup: how often the flush loop checks for closed 5-minute buckets, and
 # how many closed buckets it holds for retry while the bus refuses publishes (1 h).
 TRAFFIC_ROLLUP_FLUSH_CHECK_SEC = 10.0
+# A bucket is published this long after it ends, so a message stamped just before the
+# boundary (its SQLite commit still in flight) is counted in its own bucket.
+TRAFFIC_ROLLUP_FLUSH_GRACE_SEC = 5.0
 TRAFFIC_ROLLUP_MAX_PENDING = 12
 
 
@@ -295,7 +298,7 @@ async def _flush_traffic_rollup_once(
     queued for the next tick, and never raises. ``pending`` is bounded
     (TRAFFIC_ROLLUP_MAX_PENDING), so a long bus outage drops the oldest buckets.
     """
-    for event in rollup.flush_closed(now_epoch):
+    for event in rollup.flush_closed(now_epoch, grace_sec=TRAFFIC_ROLLUP_FLUSH_GRACE_SEC):
         if pending.maxlen is not None and len(pending) == pending.maxlen:
             logger.warning("bus traffic rollup pending full; dropping bucket {}", pending[0].rollup_id)
         pending.append(event)

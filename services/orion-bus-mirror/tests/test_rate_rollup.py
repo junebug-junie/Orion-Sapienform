@@ -101,19 +101,84 @@ def test_hop_count_and_mean_latency() -> None:
     assert event.message_count == 0
 
 
-def test_partial_startup_bucket_is_dropped() -> None:
+def _steady(acc: TrafficRollupAccumulator, start: float, end: float, step: float = 10.0) -> None:
+    t = start
+    while t < end:
+        acc.observe_message("orion:system:health", t)
+        t += step
+
+
+def test_startup_bucket_is_flagged_partial_and_the_next_is_not() -> None:
     acc = _acc(started_at_epoch=T0 + 120)
-    acc.observe_message("orion:a", T0 + 130)  # startup bucket: partial
-    acc.observe_message("orion:a", T0 + 310)  # first full bucket
+    _steady(acc, T0 + 125, T0 + 600)
     events = acc.flush_closed(T0 + 600)
-    assert [e.bucket_start.timestamp() for e in events] == [T0 + 300]
+    assert [(e.bucket_start.timestamp(), e.partial) for e in events] == [(T0, True), (T0 + 300, False)]
 
 
-def test_start_exactly_on_a_boundary_keeps_that_bucket() -> None:
+def test_start_exactly_on_a_boundary_is_not_partial() -> None:
+    acc = _acc(started_at_epoch=T0)
+    _steady(acc, T0 + 1, T0 + 300)
+    [event] = acc.flush_closed(T0 + 300)
+    assert event.partial is False
+
+
+def test_slow_first_connect_flags_the_first_bucket_partial() -> None:
+    # Started on a boundary, but the first message only arrived 45 s later.
+    acc = _acc(started_at_epoch=T0)
+    _steady(acc, T0 + 45, T0 + 300)
+    [event] = acc.flush_closed(T0 + 300)
+    assert event.partial is True
+
+
+def test_silence_gap_flags_both_sides_and_skips_blind_buckets() -> None:
+    acc = _acc(started_at_epoch=T0)
+    _steady(acc, T0, T0 + 200)          # bucket T0 healthy until 190 s
+    _steady(acc, T0 + 1000, T0 + 1500)  # resubscribed at 1000 s (bucket T0+900)
+    events = acc.flush_closed(T0 + 1500)
+    assert [(e.bucket_start.timestamp(), e.partial) for e in events] == [
+        (T0, True), (T0 + 900, True), (T0 + 1200, False),
+    ]
+
+
+def test_short_silence_is_not_a_gap() -> None:
     acc = _acc(started_at_epoch=T0)
     acc.observe_message("orion:a", T0 + 1)
+    acc.observe_message("orion:a", T0 + 29)
     [event] = acc.flush_closed(T0 + 300)
-    assert event.bucket_start.timestamp() == T0
+    assert event.partial is False
+
+
+def test_grace_holds_a_just_closed_bucket() -> None:
+    acc = _acc()
+    acc.observe_message("orion:a", T0 + 299.5)
+    assert acc.flush_closed(T0 + 303, grace_sec=5.0) == []
+    assert len(acc.flush_closed(T0 + 305, grace_sec=5.0)) == 1
+
+
+def test_late_message_after_flush_goes_to_the_next_open_bucket() -> None:
+    # The mirror stamps `now` before its SQLite commit await; if the flush ran in
+    # between, the message must not recreate the published bucket (duplicate rollup_id
+    # -> dropped by the sql-writer -> message lost).
+    acc = _acc()
+    acc.observe_message("orion:a", T0 + 10)
+    [first] = acc.flush_closed(T0 + 300)
+    acc.observe_message("orion:a", T0 + 299.9)  # late, stamped in the published bucket
+    [second] = acc.flush_closed(T0 + 600)
+    assert first.message_count == 1
+    assert second.bucket_start.timestamp() == T0 + 300
+    assert second.message_count == 1
+    assert second.rollup_id != first.rollup_id
+
+
+def test_hop_overflow_key_and_negative_latency_clamp_together() -> None:
+    acc = _acc(max_hops_per_bucket=1)
+    acc.observe_hop("a", "b", 2.0, T0)
+    acc.observe_hop("c", "d", -5.0, T0)  # overflow + clamped to 0
+    acc.observe_hop("e", "f", 4.0, T0)   # overflow
+    acc.observe_hop("a", "b", 4.0, T0)   # existing key keeps counting
+    [event] = acc.flush_closed(T0 + 300)
+    hops = {(h.from_organ, h.to_organ): (h.count, h.latency_mean_sec) for h in event.hops}
+    assert hops == {("a", "b"): (2, 3.0), ("__overflow__", "__overflow__"): (2, 2.0)}
 
 
 def test_event_round_trips_through_json() -> None:

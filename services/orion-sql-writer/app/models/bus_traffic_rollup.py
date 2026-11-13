@@ -1,6 +1,6 @@
 import json
 
-from sqlalchemy import Column, DateTime, Integer, JSON, String
+from sqlalchemy import Boolean, Column, DateTime, Integer, JSON, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.types import TypeDecorator
 
@@ -46,3 +46,5 @@ class BusTrafficRollupSQL(Base):
     channel_counts = Column(_JSONSafe, nullable=False)
     hops = Column(_JSONSafe, nullable=False)
     decode_failures = Column(Integer, nullable=False)
+    # Mirror was not listening for part of the bucket: an undercount, excluded by readers.
+    partial = Column(Boolean, nullable=False, default=False)

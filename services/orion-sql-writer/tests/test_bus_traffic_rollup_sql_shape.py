@@ -140,3 +140,31 @@ def test_insert_only_redelivery_keeps_one_row_and_jsonb_round_trips() -> None:
         assert row.hops == [{"from_organ": "cortex-exec", "to_organ": "llm-gateway", "count": 3, "latency_mean_sec": 1.5}]
     finally:
         sess.close()
+
+
+def test_real_write_row_path_from_a_bus_json_payload(monkeypatch) -> None:
+    """Through the worker's own `_write_row` (field filter, schema_version drop, ISO string
+    -> tz-aware datetime, jsonb, INSERT_ONLY duplicate catch), fed the same JSON payload the
+    mirror puts on the bus. Re-delivery keeps one row."""
+    import app.worker as worker
+
+    engine = create_engine("sqlite://")
+    BusTrafficRollupSQL.__table__.create(bind=engine)
+    Session = sessionmaker(bind=engine)
+    monkeypatch.setattr(worker, "get_session", lambda: Session())
+    monkeypatch.setattr(worker, "remove_session", lambda: None, raising=False)
+
+    wire = _rollup(partial=True).model_dump(mode="json")  # what the bus envelope carries
+    data = BusTrafficRollupV1.model_validate(wire).model_dump()
+    worker._write_row(BusTrafficRollupSQL, data)
+    worker._write_row(BusTrafficRollupSQL, BusTrafficRollupV1.model_validate({**wire, "message_count": 1}).model_dump())
+
+    sess = Session()
+    try:
+        [row] = sess.query(BusTrafficRollupSQL).all()
+        assert row.message_count == 42  # first write wins
+        assert row.partial is True
+        assert row.bucket_start.replace(tzinfo=timezone.utc) == START
+        assert row.channel_counts == {"orion:exec:result:*": 40, "orion:bus:traffic:rollup": 2}
+    finally:
+        sess.close()

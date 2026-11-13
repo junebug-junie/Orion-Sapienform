@@ -32,6 +32,11 @@ DEFAULT_MAX_CHANNELS_PER_BUCKET = 2000
 # Same reason for organ pairs: organ ids come from envelope.source.name.
 OVERFLOW_ORGAN = "__overflow__"
 DEFAULT_MAX_HOPS_PER_BUCKET = 2000
+# The mirror hears its own 10 s heartbeat plus every other service's, so a healthy
+# subscription is never silent this long. A longer silence means the mirror was not
+# receiving (Redis drop + resubscribe backoff, slow first connect), and the buckets on
+# both sides of the gap are flagged `partial` instead of reading as a traffic dip.
+DEFAULT_SILENCE_GAP_SEC = 30.0
 
 
 def bucket_start_epoch(epoch: float, bucket_sec: int = BUS_TRAFFIC_ROLLUP_BUCKET_SEC) -> int:
@@ -62,34 +67,52 @@ class TrafficRollupAccumulator:
         max_channels_per_bucket: int = DEFAULT_MAX_CHANNELS_PER_BUCKET,
         max_hops_per_bucket: int = DEFAULT_MAX_HOPS_PER_BUCKET,
         started_at_epoch: float | None = None,
+        silence_gap_sec: float = DEFAULT_SILENCE_GAP_SEC,
     ) -> None:
         self._node = node
-        # The bucket the process started in saw only part of its 5 minutes. Emitting it
-        # would store an undercount that reads as a real traffic dip, so it is dropped.
-        self._first_full_bucket = (
-            None
-            if started_at_epoch is None
-            else bucket_start_epoch(started_at_epoch, bucket_sec) + (
-                0 if started_at_epoch % bucket_sec == 0 else bucket_sec
-            )
-        )
         self._catalog_names = catalog_names or set()
         self._bucket_sec = bucket_sec
         self._max_channels = max_channels_per_bucket
         self._max_hops = max_hops_per_bucket
+        self._silence_gap_sec = silence_gap_sec
         self._buckets: dict[int, _Bucket] = {}
+        # Bucket starts the mirror was not listening for in full (see DEFAULT_SILENCE_GAP_SEC).
+        self._partial_starts: set[int] = set()
+        # Everything before this epoch has been flushed. A message observed late (its
+        # timestamp was taken before an await, and the flush ran in between) is counted in
+        # the oldest still-open bucket instead of recreating an already-published one,
+        # which the sql-writer would drop as a duplicate rollup_id.
+        self._flushed_through: int | None = None
+        # The process started part-way through a bucket: that bucket is partial.
+        self._last_message_epoch: float | None = started_at_epoch
+        if started_at_epoch is not None and started_at_epoch % bucket_sec != 0:
+            self._partial_starts.add(bucket_start_epoch(started_at_epoch, bucket_sec))
 
     def __len__(self) -> int:
         return len(self._buckets)
 
-    def _bucket(self, now_epoch: float) -> _Bucket:
+    def _start_for(self, now_epoch: float) -> int:
         start = bucket_start_epoch(now_epoch, self._bucket_sec)
+        if self._flushed_through is not None and start < self._flushed_through:
+            start = self._flushed_through
+        return start
+
+    def _bucket(self, now_epoch: float) -> _Bucket:
+        start = self._start_for(now_epoch)
         bucket = self._buckets.get(start)
         if bucket is None:
             bucket = self._buckets[start] = _Bucket()
         return bucket
 
     def observe_message(self, channel: str | None, now_epoch: float, *, decode_failed: bool = False) -> None:
+        last = self._last_message_epoch
+        if last is not None and now_epoch - last > self._silence_gap_sec:
+            # Blind gap: flag the bucket the gap started in (if still open) and this one.
+            # Buckets wholly inside the gap get no row at all.
+            self._partial_starts.add(self._start_for(last))
+            self._partial_starts.add(self._start_for(now_epoch))
+        if last is None or now_epoch > last:
+            self._last_message_epoch = now_epoch
         bucket = self._bucket(now_epoch)
         bucket.message_count += 1
         if decode_failed:
@@ -113,19 +136,25 @@ class TrafficRollupAccumulator:
         # A wall-clock step backwards can give a negative gap; clamp rather than poison the mean.
         agg.latency_sum_sec += max(float(latency_sec), 0.0)
 
-    def flush_closed(self, now_epoch: float) -> list[BusTrafficRollupV1]:
-        """Pop and return every bucket whose end is at or before `now_epoch`, oldest first."""
+    def flush_closed(self, now_epoch: float, *, grace_sec: float = 0.0) -> list[BusTrafficRollupV1]:
+        """Pop and return every bucket whose end + `grace_sec` is at or before `now_epoch`,
+        oldest first. The grace lets an in-flight message stamped just before the boundary
+        land in its own bucket before that bucket is published."""
         out: list[BusTrafficRollupV1] = []
         for start in sorted(self._buckets):
-            if start + self._bucket_sec > now_epoch:
+            end = start + self._bucket_sec
+            if end + grace_sec > now_epoch:
                 break
             bucket = self._buckets.pop(start)
-            if self._first_full_bucket is not None and start < self._first_full_bucket:
-                continue  # partial startup bucket: dropped, see __init__
-            out.append(self._to_event(start, bucket))
+            out.append(self._to_event(start, bucket, partial=start in self._partial_starts))
+            self._partial_starts.discard(start)
+            self._flushed_through = max(self._flushed_through or end, end)
+        # Partial marks for buckets that never got a message are dropped with them.
+        if self._flushed_through is not None:
+            self._partial_starts = {s for s in self._partial_starts if s >= self._flushed_through}
         return out
 
-    def _to_event(self, start: int, bucket: _Bucket) -> BusTrafficRollupV1:
+    def _to_event(self, start: int, bucket: _Bucket, *, partial: bool) -> BusTrafficRollupV1:
         bucket_start = datetime.fromtimestamp(start, tz=timezone.utc)
         bucket_end = datetime.fromtimestamp(start + self._bucket_sec, tz=timezone.utc)
         hops = [
@@ -146,4 +175,5 @@ class TrafficRollupAccumulator:
             channel_counts=dict(sorted(bucket.channel_counts.items())),
             hops=hops,
             decode_failures=bucket.decode_failures,
+            partial=partial,
         )

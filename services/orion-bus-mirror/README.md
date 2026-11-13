@@ -263,16 +263,24 @@ What happens:
 
 Honest edges:
 
-- The bucket the process started in is dropped (it saw only part of its 5 minutes and
-  would read as a traffic dip). The open bucket at shutdown is also lost.
+- `partial = true` marks a bucket the mirror did not hear in full: the bucket the process
+  started in, and the buckets on both sides of any silence longer than 30 s (the mirror
+  hears its own 10 s heartbeat, so a healthy subscription is never that quiet; a longer
+  silence is a Redis drop and resubscribe, or a slow first connect). Its counts are an
+  undercount, not a traffic dip. Readers exclude partial rows. Buckets wholly inside a
+  gap get no row. The open bucket at shutdown is lost.
+- A bucket is published 5 s after it ends, so a message stamped just before the
+  boundary still lands in it. A message observed after its bucket was published is
+  counted in the next open bucket, never re-publishing the old one.
 - Publishing is fail-open: a failed publish logs `bus traffic rollup publish failed`
   and is retried on the next tick. Up to 12 closed buckets (1 h) wait; past that the
   oldest is dropped with a warning. The mirror loop never stops for the rollup.
 - The mirror subscribes to `orion:*`, so it also counts its own rollup message: one
   message per bucket on `orion:bus:traffic:rollup`. Expected, not a loop.
-- A quiet bucket (no messages and no hops) produces no row. Absence of a row with the
-  mirror healthy means zero traffic; absence with the mirror down means no data. Join
-  against the mirror's heartbeat to tell them apart.
+- A healthy mirror always counts its own heartbeat on `orion:system:health` and its
+  previous rollup message, so it never has an empty bucket. A missing row always means
+  no data (mirror down, or the bucket dropped after an hour of failed publishes), never
+  zero traffic.
 
 Config: `MIRROR_TRAFFIC_ROLLUP_ENABLED` (default `true`). Table:
 `services/orion-sql-db/manual_migration_bus_traffic_rollup_5m_v1.sql` (also created by
@@ -281,7 +289,7 @@ the sql-writer's boot `create_all`).
 Check it live:
 
 ```bash
-docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "SELECT bucket_start, message_count, decode_failures, jsonb_array_length(hops) FROM bus_traffic_rollup_5m ORDER BY bucket_start DESC LIMIT 5"
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "SELECT bucket_start, message_count, decode_failures, partial, jsonb_array_length(hops) FROM bus_traffic_rollup_5m ORDER BY bucket_start DESC LIMIT 5"
 ```
 
 ---

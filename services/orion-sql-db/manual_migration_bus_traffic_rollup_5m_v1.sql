@@ -6,7 +6,9 @@
 -- bus.traffic.rollup.v1; producer: orion-bus-mirror app/rate_rollup.py). Insert-only,
 -- PK rollup_id = "<node>:<bucket_start iso>". channel_counts maps catalog-normalized
 -- channel name -> message count; hops is a list of {from_organ, to_organ, count,
--- latency_mean_sec}. Reader: the Patch 2 replay eval.
+-- latency_mean_sec}. partial = the mirror was not listening for part of the bucket
+-- (process start, or a silence past its gap threshold); readers exclude those rows.
+-- Reader: the Patch 2 replay eval.
 -- sql-writer's create_all makes the same table at boot (index name matches SQLAlchemy's
 -- index=True default); this file is the jsonb-typed operator contract. Additive only.
 --
@@ -21,6 +23,7 @@ CREATE TABLE IF NOT EXISTS bus_traffic_rollup_5m (
     message_count    integer NOT NULL,
     channel_counts   jsonb NOT NULL,
     hops             jsonb NOT NULL,
-    decode_failures  integer NOT NULL
+    decode_failures  integer NOT NULL,
+    partial          boolean NOT NULL DEFAULT false
 );
 CREATE INDEX IF NOT EXISTS ix_bus_traffic_rollup_5m_bucket_start ON bus_traffic_rollup_5m (bucket_start);

@@ -162,7 +162,8 @@ PREEMPT_REQUEUE_MARGIN_SEC = 3.0
 MAX_CONCURRENT_DRIVERS = 4
 # "system" runs (memory.episode_distill, 2026-10-02) are also outside it, capped here: a system run
 # must not wait behind four background turns before it even asks the pool, where it then ranks
-# above background. One at a time: the distiller is the only system producer (~1-2 episodes/day).
+# above background. One at a time: the producers are the distiller (~1-2 episodes/day) and the day letter
+# (one turn/day, up to 3 attempts; it waits for its hold without holding this slot).
 MAX_CONCURRENT_SYSTEM_DRIVERS = 1
 # Which pool refusals fail the run is decided in one place: ``pool_hold.refusal_is_terminal``.
 # Any other unavailable (dead-lettered after expiries during a durable-runs outage, an abort) is

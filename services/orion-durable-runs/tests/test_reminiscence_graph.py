@@ -389,6 +389,15 @@ def test_a_week_after_memory_began_does_not_forbid_lived_records():
     p = build_prompt(b, "hop:what_it_was_like")
     assert "no lived record" not in p and "[lived_record]" in p
     assert "week 58 of the 71 weeks" in p and "visited 57 of them" in p
+    assert "python -P -m orion.dig days 2026-07-28 2026-08-03`" in p and "partway" not in p
+
+
+def test_the_week_records_began_reads_dig_days_from_the_first_record():
+    b = ReminiscenceRunBriefV1.model_validate(brief(period_start="2026-07-21", period_end="2026-07-27",
+                                                    weeks_complete=56))
+    p = build_prompt(b, "hop:what_it_was_like")
+    assert "python -P -m orion.dig days 2026-07-23 2026-07-27`" in p and "partway through" in p
+    assert "outside 2026-07-23..2026-07-27 is refused" in p and "no lived record" not in p
 
 
 def test_pending_step_and_the_restart_cancel_id(tmp_path):

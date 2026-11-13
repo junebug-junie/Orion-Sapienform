@@ -13,9 +13,9 @@ until three independent conditions all hold, asked in this order:
      No consent (no callable, no answer, refuse, needs_consent) -> `not_approved`. (Until
      2026-11-07 this was a policy-rung decision frame; the policy rung retired, ladder PR 6.);
   2. `ORION_DREAM_COMPACTION_APPLY_ENABLED` is true (the hot gate — default off) -> else `disabled`;
-  3. an injected `CompactionMemoryStore` is provided (there is no default
-     canonical-memory binding in this module — the real adapter is wired only in
-     a dedicated, signed-off change, so importing this module touches nothing) -> else `no_store`.
+  3. an injected `CompactionMemoryStore` is provided (this module binds none, so importing it touches
+     nothing; the REM pass injects `app.compaction_store.default_store()`, reverie-thought salience,
+     since 2026-11-13) -> else `no_store`.
 
 Safety invariants (§14 backfill protocol + §0A):
   - **snapshot precedes every apply**: the before-state of every target is
@@ -24,7 +24,9 @@ Safety invariants (§14 backfill protocol + §0A):
   - **downscale-renormalize first, prune last**: with `DOWNSCALE_ONLY` (default
     true) prune is skipped entirely — never prune before downscale is trusted;
   - **consolidate is dream-provenance**: gist cards are written with
-    `source_kind="dream"` and never promoted to fact;
+    `source_kind="dream"` and never promoted to fact. A store with
+    `supports_gists = False` (the live one) is never asked to write them: the
+    receipt counts them in `cards_skipped_no_gist_store` instead;
   - **caps**: the applier honors the schema caps already on the delta.
 
 Deterministic (§4): given (delta, consent answer, store) the applier is a pure control
@@ -86,6 +88,9 @@ class CompactionMemoryStore(Protocol):
         """Crystallize a gist card with source_kind='dream' (never promoted to fact)."""
         ...
 
+    # Optional attribute: ``supports_gists = False`` means the store has no gist-card table. The applier
+    # then skips consolidate entries (counted in the receipt) and never calls ``write_gist``. Absent: True.
+
 
 class CompactionApplyReceiptV1(BaseModel):
     """Inspectable trace of an apply attempt — proof the live path did (or didn't)
@@ -98,6 +103,7 @@ class CompactionApplyReceiptV1(BaseModel):
     pruned: int = 0
     cards_written: int = 0
     prune_skipped_downscale_only: int = 0
+    cards_skipped_no_gist_store: int = 0
     snapshot_path: str | None = None
     error: str | None = None
     # The consent gate's answer (attention patch 3d): allow | refuse | needs_consent, the consent.yaml
@@ -201,8 +207,16 @@ def apply_compaction_delta(
                        delta.delta_id, answer.rule_id)
         return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="no_store", **trace)
 
-    if delta.is_empty():
-        return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="empty", **trace)
+    supports_gists = bool(getattr(store, "supports_gists", True))
+    # Only ops this store will run count: a delta of gist cards alone, handed to a store without gists,
+    # is empty (no snapshot, no write), not a fake "applied".
+    runnable = len(delta.downscale) + (0 if downscale_only else len(delta.prune)) + (
+        len(delta.consolidate) if supports_gists else 0)
+    if runnable == 0:
+        return CompactionApplyReceiptV1(
+            delta_id=delta.delta_id, status="empty",
+            prune_skipped_downscale_only=len(delta.prune) if downscale_only else 0,
+            cards_skipped_no_gist_store=0 if supports_gists else len(delta.consolidate), **trace)
 
     # §14: snapshot the before-state BEFORE any write. A snapshot failure fails
     # closed — we do not apply what we cannot roll back.
@@ -215,7 +229,7 @@ def apply_compaction_delta(
             delta_id=delta.delta_id, status="rolled_back", error=f"snapshot_failed: {exc}", **trace
         )
 
-    downscaled = pruned = cards = prune_skipped = 0
+    downscaled = pruned = cards = prune_skipped = cards_skipped = 0
     try:
         # 1) downscale-renormalize (the safer subset — always first).
         for entry in delta.downscale:
@@ -231,9 +245,12 @@ def apply_compaction_delta(
                 pruned += 1
 
         # 3) consolidate — dream-provenance gist cards, never promoted to fact.
-        for entry in delta.consolidate:
-            store.write_gist(entry.gist_card, list(entry.evidence_refs), list(entry.supersedes))
-            cards += 1
+        if not supports_gists:
+            cards_skipped = len(delta.consolidate)
+        else:
+            for entry in delta.consolidate:
+                store.write_gist(entry.gist_card, list(entry.evidence_refs), list(entry.supersedes))
+                cards += 1
     except Exception as exc:
         logger.warning("compaction apply failed mid-flight for %s: %s — rolling back", delta.delta_id, exc)
         try:
@@ -256,8 +273,9 @@ def apply_compaction_delta(
         )
 
     logger.info(
-        "compaction applied delta=%s downscaled=%d pruned=%d cards=%d prune_skipped=%d",
-        delta.delta_id, downscaled, pruned, cards, prune_skipped,
+        "compaction applied delta=%s downscaled=%d pruned=%d cards=%d prune_skipped=%d cards_skipped=%d "
+        "snapshot=%s rule=%s",
+        delta.delta_id, downscaled, pruned, cards, prune_skipped, cards_skipped, snapshot_path, answer.rule_id,
     )
     return CompactionApplyReceiptV1(
         delta_id=delta.delta_id,
@@ -267,6 +285,7 @@ def apply_compaction_delta(
         pruned=pruned,
         cards_written=cards,
         prune_skipped_downscale_only=prune_skipped,
+        cards_skipped_no_gist_store=cards_skipped,
         snapshot_path=snapshot_path,
         **trace,
     )

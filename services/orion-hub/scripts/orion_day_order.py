@@ -1,7 +1,8 @@
 """Orion's Day: Prime's order for a day letter (living Prime design #3224, Part 3).
 
 Hub never decides when a letter is written. Prime (orion-mind) does: when yesterday is closed and
-has no letter, Prime bids a ``make`` act, and when the act goes ahead (funded, or a worth-it capacity deferral that queues at the pool) it orders the run here.
+has no letter, Prime opens a ``make`` act (tier 0, no bid) and orders the run here, once per attempt
+(``orion-day-<date>-<n>``; a later attempt follows a run that wrote nothing).
 
 ``GET  /api/orion-day/letters/{letter_date}`` -> OrionDayLetterStatusV1 (does the day have a letter)
 ``POST /api/orion-day/letter-run``            OrionDayLetterOrderV1 -> OrionDayLetterOrderResultV1
@@ -103,12 +104,14 @@ def _clip(text: Any) -> str:
     return str(text or "")[:DETAIL_MAX_CHARS]
 
 
-def missed_letters_for(order: OrionDayLetterOrderV1, *, previous_day_has_letter: bool) -> list[MissedLetterV1]:
-    """The order's own list, plus the day before the letter when it has no row and the order did
-    not name it (a day Prime was down for is still named). Newest last; at most 7, newest kept."""
-    out = list(order.missed_letters)
+def missed_letters_for(order: OrionDayLetterOrderV1, *, days_with_letter: set[date]) -> list[MissedLetterV1]:
+    """The order's own list minus the days that have a row by now, plus the day before the letter when it
+    has no row and the order did not name it (a day Prime was down for is still named). Newest last; at
+    most 7, newest kept. A day Prime recorded as missed can still get its letter later (a re-ordered
+    run, 2026-11-13 for 11-11): the next letter must not say it could not write that day."""
+    out = [m for m in order.missed_letters if m.letter_date not in days_with_letter]
     previous = order.letter_date - timedelta(days=1)
-    if not previous_day_has_letter and all(m.letter_date != previous for m in out):
+    if previous not in days_with_letter and all(m.letter_date != previous for m in out):
         out.append(MissedLetterV1(letter_date=previous, reason=AUTO_MISSED_REASON))
     out.sort(key=lambda m: m.letter_date)
     return out[-MAX_MISSED_LETTERS:]
@@ -185,7 +188,9 @@ class OrionDayOrderDesk:
                 letter = await fetch_letter(conn, day)
                 if letter is not None:
                     return self._result(order, "already_written", run_id=letter.run_id)
-                previous_has_letter = bool(await conn.fetchval(LETTER_EXISTS_SQL, day - timedelta(days=1)))
+                days_with_letter = {
+                    d for d in {day - timedelta(days=1), *(m.letter_date for m in order.missed_letters)}
+                    if await conn.fetchval(LETTER_EXISTS_SQL, d)}
         except Exception as exc:  # noqa: BLE001 -- missing table (migration not applied), DB down
             return self._result(order, "unavailable", detail=f"store: {type(exc).__name__}: {exc}")
         try:
@@ -193,7 +198,7 @@ class OrionDayOrderDesk:
                 return self._result(order, "exists")
         except DurableUnavailable as exc:
             return self._result(order, "unavailable", detail=f"durable_runs: {exc}")
-        missed = missed_letters_for(order, previous_day_has_letter=previous_has_letter)
+        missed = missed_letters_for(order, days_with_letter=days_with_letter)
         try:
             async with pool.acquire() as conn:
                 brief = await build_orion_day_brief(

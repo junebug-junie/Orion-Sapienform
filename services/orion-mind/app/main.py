@@ -214,10 +214,29 @@ def _log_timeout_hierarchy_warnings() -> None:
             orch_outer,
             settings.MIND_WALL_MS_DEFAULT,
         )
+    held = float(settings.MIND_LLM_HELD_TIMEOUT_SEC)
+    if float(settings.MIND_WALL_MS_DEFAULT) < held * 3.0 * 1000.0:
+        # Expected with the shipped values (150 s x 3 > 180 s): a held run's first phase may use most
+        # of the wall, and later phases are then skipped (wall_budget_insufficient). Logged so the
+        # trade is visible, not hidden.
+        logger.info(
+            "mind_held_wall_note MIND_LLM_HELD_TIMEOUT_SEC=%s MIND_WALL_MS_DEFAULT=%s: three full held "
+            "phases do not fit the wall; a slow early phase leaves later phases skipped",
+            held,
+            settings.MIND_WALL_MS_DEFAULT,
+        )
+    if orch_outer is not None and held >= float(orch_outer):
+        logger.warning(
+            "mind_timeout_hierarchy_invalid MIND_LLM_HELD_TIMEOUT_SEC=%s ORION_MIND_TIMEOUT_SEC=%s "
+            "(a held phase cap must be less than the caller's Mind HTTP timeout)",
+            held,
+            orch_outer,
+        )
     logger.info(
-        "mind_startup_config MIND_LLM_TIMEOUT_SEC=%s MIND_LLM_SYNTHESIS_ENABLED=%s "
+        "mind_startup_config MIND_LLM_TIMEOUT_SEC=%s MIND_LLM_HELD_TIMEOUT_SEC=%s MIND_LLM_SYNTHESIS_ENABLED=%s "
         "routes semantic=%s appraisal=%s stance=%s intake=%s reply_prefix=%s",
         mind_llm,
+        held,
         settings.MIND_LLM_SYNTHESIS_ENABLED,
         settings.MIND_SEMANTIC_MODEL_ROUTE,
         settings.MIND_APPRAISAL_MODEL_ROUTE,

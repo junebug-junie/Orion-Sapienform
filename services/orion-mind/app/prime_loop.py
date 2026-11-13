@@ -93,10 +93,10 @@ back. Flag off: no listener, no fold, no frame section.
 
 The day letter is Prime's end-of-day turn (living Prime design Part 3, PRIME_DAY_LETTER_ENABLED;
 orion/prime/day_letter.py): on the tick, when the temporal chronicle has closed yesterday and Hub has no letter for
-it, Prime bids a ``make`` act (family ``prime``, the letter turn's lane, priced at the turn's ceiling). Deferred:
-no act, re-bid later inside the bid window; never funded -> no letter that day, and the next order names the day.
-Funded, or a capacity deferral worth its price (it queues at the GPU pool, as in
-orion/physiology/binding.py bind_verdict): the act opens and Prime orders the run from Hub (one durable unified turn). The run's terminal state
+it, Prime opens a ``make`` act at once. Tier 0 (Juniper 2026-11-12, "It needs to happen each day"): no bid, no
+price, no self-monitor gate. Prime orders the run from Hub (one durable unified turn). A run that wrote nothing is
+ordered again as the next attempt (PRIME_DAY_LETTER_MAX_ATTEMPTS) while the first order's deadline holds; all
+attempts failed -> no letter that day, and the next order names the day. The run's terminal state
 (GET /runs/<run_id> on durable-runs) closes the act, and the letter's threads become Prime concerns (at most 2,
 never past MAX_CONCERNS), so curiosity hears them only through Prime's own graded ``ask``. Its record lives in its
 own Redis key (orion:prime:day_letter). No thought is spent on it: the tick decides.
@@ -511,17 +511,9 @@ class PrimeRuntime(MindLoopRuntime):
             await self._settle_letter(now)
             return
         if op is not None:
-            if dl.window_over(op, now):
-                reason = f"my make bid was never funded inside the bid window ({op.bids} bid(s); last: " \
-                         f"{op.last_refusal or 'no answer'})"
-                self.day_letter = dl.finish(self.day_letter, dl.PrimeDayLetterDoneV1(
-                    letter_date=op.letter_date, outcome="not_written", reason=reason[:dl.REASON_CAP], closed_at=now))
-                logger.info("prime_day_letter_not_written day=%s reason=%r", op.letter_date, reason)
-                self.state = note_outcome(self.state, f"I did not write my letter for {op.letter_date}: {reason}")
-                return
-            if op.next_bid_at is not None and now < op.next_bid_at:
-                return
-            await self._bid_letter(now)
+            # The act's open failed last time: try again (no bid; tier 0).
+            if self._letter_check_due(now):
+                await self._open_letter(now)
             return
         if not self._letter_check_due(now):
             return
@@ -550,65 +542,26 @@ class PrimeRuntime(MindLoopRuntime):
                 run_id=status.run_id))
             logger.info("prime_day_letter_already_written day=%s run=%s", day, status.run_id)
             return
-        self.day_letter = dl.start(self.day_letter, day, now, window_hours=self._letter_cfg("BID_WINDOW_HOURS", 18.0))
-        self._tell(f"yesterday ({day}) is closed and has no letter yet: I mean to write it")
-        logger.info("prime_day_letter_due day=%s bid_until=%s", day, self.day_letter.open.bid_until.isoformat())
-        await self._bid_letter(now)
+        self.day_letter = dl.start(self.day_letter, day, now)
+        self._tell(f"yesterday ({day}) is closed and has no letter yet: I am writing it")
+        logger.info("prime_day_letter_due day=%s", day)
+        await self._open_letter(now)
 
-    async def _bid_letter(self, now: datetime) -> None:
-        """Bid the make act. Deferred (or refused by the self-monitor gate): no act, try later. Funded: open the
-        act and order the run."""
-        from orion.schemas.physiology_want import WantV1
-
+    async def _open_letter(self, now: datetime) -> None:
+        """Tier 0 (Juniper 2026-11-12: "It needs to happen each day"): no bid, no price, no self-monitor gate.
+        Open the make act and order the first run. Live 11-11: a tier-2 bid was deferred for 10 h."""
         op = self.day_letter.open
         day = op.letter_date
-        ref = f"{dl.LETTER_EVENT_PREFIX}{day.isoformat()}"
-        d = await self._gate_decide("make", ref, job_key=ref)
-        if d is not None and not d.admit:
-            self.day_letter = self.day_letter.model_copy(update={"open": dl.deferred(
-                op, now, f"self-monitor gate: {gate_why(d, self.gate.probe_interval_sec)}", None)})
-            logger.info("prime_act_refused verb=make day=%s gate=%s", day, d.label())
-            return
-        bid_no = op.bids + 1
-        timeout = self._letter_cfg("TURN_TIMEOUT_SEC", 1800.0)
-        want = WantV1(want_id=dl.want_id(day, bid_no), family=FAMILY, producer=PRODUCER, verb="make",
-                      tier=self.identity.tier, lanes=[dl.DEFAULT_LANE], object_ref=ref,
-                      cost=dl.letter_cost(lane=dl.DEFAULT_LANE, turn_timeout_sec=timeout))
-        decision = await self.bid(want)
-        op = op.model_copy(update={"bids": bid_no})
-        outcome = getattr(decision, "outcome", None)
-        if not pc.goes_ahead(decision):
-            # Never fail open: no answer is "not funded" (orion/physiology/client.py). A capacity deferral
-            # worth its price DOES go ahead: the GPU pool's own queue holds it (orion/physiology/binding.py,
-            # bind_verdict). Live 11-12: treating it as a refusal deferred 20 of 20 letter bids (net +0.67,
-            # lane:agent full) for 9 h, and no letter was written.
-            why = str(getattr(decision, "why", "") or "")[:160]
-            reason = f"{outcome or 'no answer'} ({getattr(decision, 'reason', None) or '-'}" \
-                     f"{', ' + str(getattr(decision, 'binding_constraint', None)) if getattr(decision, 'binding_constraint', None) else ''})" \
-                     f"{': ' + why if why else ''}"
-            self.day_letter = self.day_letter.model_copy(update={"open": dl.deferred(
-                op, now, reason, getattr(decision, "retry_after_sec", None))})
-            logger.info("prime_day_letter_bid_not_funded day=%s bid=%d reason=%r next=%s", day, bid_no, reason,
-                        self.day_letter.open.next_bid_at.isoformat())
-            return
-        if not self._admit(d, job_key=ref):
-            await self.release(want.want_id)
-            self.day_letter = self.day_letter.model_copy(update={"open": dl.deferred(
-                op, now, "self-monitor: this window's re-test probe was already taken", None)})
-            return
         deadline_h = self._letter_cfg("RUN_DEADLINE_HOURS", 12.0)
         act = dl.make_act(day, horizon_sec=deadline_h * 3600.0 + dl.ACT_HORIZON_GRACE_SEC)
         if not await self._open(act, dl.DAY_LETTER_COMPONENT, at=now):
-            await self.release(want.want_id)
-            self.day_letter = self.day_letter.model_copy(update={"open": dl.deferred(
-                op, now, "the make act's open could not be published", None)})
+            logger.info("prime_day_letter_act_open_failed day=%s (tried again next check)", day)
             return
         self.day_letter = self.day_letter.model_copy(update={"open": op.model_copy(update={
-            "want_id": want.want_id, "act_id": act.act_id, "act_opened_at": now, "last_refusal": None,
-            "run_id": dl.letter_run_id(day), "correlation_id": dl.letter_correlation_id(day),
+            "act_id": act.act_id, "act_opened_at": now, "attempt": 1,
+            "run_id": dl.letter_run_id(day, 1), "correlation_id": dl.letter_correlation_id(day, 1),
             "deadline_at": now + timedelta(hours=deadline_h)})})
-        logger.info("prime_day_letter_funded day=%s bid=%d act=%s want=%s outcome=%s reason=%s", day, bid_no,
-                    act.act_id, want.want_id, outcome, getattr(decision, "reason", None))
+        logger.info("prime_day_letter_opened day=%s act=%s", day, act.act_id)
         self._day_letter_checked_at = now
         await self._order_letter(now)
 
@@ -640,6 +593,19 @@ class PrimeRuntime(MindLoopRuntime):
                 "open": op.model_copy(update={"order_status": result.status, "order_detail": result.detail,
                                               "missed_sent": [m.letter_date for m in missed]})})
             return
+        if result.status == "already_written" and dl.own_run(op, result.run_id):
+            # An earlier attempt of ours wrote the row after all (a later step failed that run). It is this act's
+            # letter: close it written, with that run's threads when its detail is readable.
+            run, _err = await self._read(f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/runs/{result.run_id}")
+            detail = run.get("orion_day") if isinstance(run, dict) and isinstance(run.get("orion_day"), dict) else {}
+            threads = [str(t) for t in (detail.get("threads") or []) if isinstance(t, str)]
+            turn = detail.get("turn_correlation_id")
+            logger.info("prime_day_letter_own_attempt_wrote_it day=%s run=%s", op.letter_date, result.run_id)
+            await self._close_letter(now, produced=True, outcome="written",
+                                     note=f"an earlier attempt's run ({result.run_id}) wrote the day's letter",
+                                     run_id=result.run_id, turn_correlation_id=str(turn) if turn else None,
+                                     threads=threads)
+            return
         outcome = {"already_written": "already_written", "empty_day": "empty"}.get(result.status, "not_written")
         note = {"already_written": f"a letter for this day already existed (run {result.run_id})",
                 "empty_day": "the day held nothing to write about"}.get(
@@ -664,23 +630,36 @@ class PrimeRuntime(MindLoopRuntime):
             return
         threads = [str(t) for t in (detail.get("threads") or []) if isinstance(t, str)]
         turn = detail.get("turn_correlation_id")
-        await self._close_letter(now, produced=produced, outcome=dl.done_outcome(produced, detail), note=note,
+        outcome = dl.done_outcome(produced, detail)
+        max_attempts = int(self._letter_cfg("MAX_ATTEMPTS", float(dl.DEFAULT_MAX_ATTEMPTS)))
+        # A cancel is someone's decision: not retried. Failed, or completed with no row: the next attempt.
+        retryable = outcome == "not_written" and str(run.get("status") or "") != "cancelled"
+        if retryable and dl.can_retry(op, now, max_attempts=max_attempts):
+            # Live 11-11: one failed run (E2BIG, fixed in #3248) ended the day. Order the next attempt.
+            self.day_letter = self.day_letter.model_copy(update={"open": dl.next_attempt(op, note)})
+            nxt = self.day_letter.open
+            logger.info("prime_day_letter_retry day=%s attempt=%d/%d run=%s why=%r", op.letter_date, nxt.attempt,
+                        max_attempts, nxt.run_id, note)
+            await self._order_letter(now)
+            return
+        await self._close_letter(now, produced=produced, outcome=outcome, note=note,
                                  run_id=op.run_id, turn_correlation_id=str(turn) if turn else None, threads=threads)
 
     async def _close_letter(self, now: datetime, *, produced: bool, outcome: dl.DoneOutcome, note: str,
                             run_id: Optional[str] = None, turn_correlation_id: Optional[str] = None,
                             threads: Optional[list[str]] = None) -> None:
-        """Close the make act (kept open and retried next check if the publish fails), release the bid, turn the
-        threads into concerns, record the day."""
+        """Close the make act (kept open and retried next check if the publish fails), turn the threads into
+        concerns, record the day."""
         op = self.day_letter.open
         day = op.letter_date
+        if not produced:
+            note = dl.attempts_note(op, note, max_attempts=int(self._letter_cfg(
+                "MAX_ATTEMPTS", float(dl.DEFAULT_MAX_ATTEMPTS))))
         act = dl.make_act(day, horizon_sec=self._letter_cfg("RUN_DEADLINE_HOURS", 12.0) * 3600.0
                           + dl.ACT_HORIZON_GRACE_SEC)
         act_note = f"{note}; turn {turn_correlation_id}" if turn_correlation_id else note
         if not await self._close(act, dl.DAY_LETTER_COMPONENT, produced=produced, note=act_note[:500]):
             return
-        if op.want_id:
-            await self.release(op.want_id)
         threads = threads or []
         concern_ids: list[str] = []
         no_room = 0

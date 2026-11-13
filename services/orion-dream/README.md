@@ -364,8 +364,15 @@ Juniper merged the standing consent `dream-compaction-downscale` and apply is on
   target's salience to `DREAM_COMPACTION_SNAPSHOT_DIR/<delta_id>/snapshot_before.json` (persistent, under
   the `/app/logs` mount), then lowers each one through `app/compaction_store.py`. The store changes only
   `substrate_reverie_thought.salience`, compare-and-set on the old value. Any error restores the snapshot.
+- The downscales of one delta run in ONE transaction: a stale or missing row aborts the batch and nothing
+  is written. Restore is compare-and-set on the value this apply wrote, so it never undoes another write.
+  Each apply leaves `receipt.json` (status `applied`, `rolled_back` or `rollback_failed`) next to its
+  snapshot. One small directory per applied sleep accumulates; nothing prunes them yet.
 - Gist cards are not written: the store has no gist-card table. The receipt counts them in
   `cards_skipped_no_gist_store`.
+- Two numbers after an apply: the `salience` column (lowered) is what the hub reverie panels, the chat
+  situation snippet, Orion's day reading and Orion's own dig (`self_inquiry`) see. `thought_json.salience`
+  keeps the original.
 - Who notices: Orion's day reading ranks reverie thoughts by salience (`orion/orion_day/budget.py`), so a
   settled thought gives way to an unsettled one.
 - The proof line: `compaction applied delta=... downscaled=N ... snapshot=...`. In SQL:

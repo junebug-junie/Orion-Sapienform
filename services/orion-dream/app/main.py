@@ -454,8 +454,12 @@ async def rem_preview_endpoint():
     if not settings.ORION_DREAM_REM_ENABLED:
         return {"status": "disabled", "reason": "ORION_DREAM_REM_ENABLED is false"}
 
-    from app.rem_compaction import run_rem_compaction_once
+    from app import rem_store
+    from app.rem_compaction import consolidate_evidence_ids, run_rem_compaction_once
 
+    # The DB reads run in threads, not on the event loop.
+    requests = await asyncio.to_thread(rem_store.load_pending_requests, settings.DREAM_REM_MAX_REQUESTS)
+    salience = await asyncio.to_thread(rem_store.load_thought_salience, consolidate_evidence_ids(requests))
     bus = OrionBusAsync(settings.ORION_BUS_URL) if settings.ORION_BUS_ENABLED else None
     try:
         if bus is not None:
@@ -463,7 +467,9 @@ async def rem_preview_endpoint():
         from app.compaction_consent import ask_consent_and_apply
 
         # A preview never writes memory: the consent is asked (and recorded) with no store.
-        delta = await run_rem_compaction_once(bus, consent_asker=lambda d: ask_consent_and_apply(d, preview=True))
+        delta = await run_rem_compaction_once(bus, request_loader=lambda _n: requests,
+                                              salience_loader=lambda _ids: salience,
+                                              consent_asker=lambda d: ask_consent_and_apply(d, preview=True))
     finally:
         if bus is not None:
             await bus.close()

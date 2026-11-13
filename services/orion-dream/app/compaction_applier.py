@@ -58,6 +58,7 @@ ApplyStatus = Literal[
     "empty",  # nothing to apply
     "applied",  # applied cleanly (snapshot taken first)
     "rolled_back",  # a failure mid-apply → restored from snapshot
+    "rollback_failed",  # a failure mid-apply AND the restore failed: memory may be partly changed
 ]
 
 
@@ -90,6 +91,8 @@ class CompactionMemoryStore(Protocol):
 
     # Optional attribute: ``supports_gists = False`` means the store has no gist-card table. The applier
     # then skips consolidate entries (counted in the receipt) and never calls ``write_gist``. Absent: True.
+    # Optional method: ``downscale_many(entries) -> int`` runs every downscale in one transaction (all or
+    # nothing). The applier prefers it over per-entry ``downscale``.
 
 
 class CompactionApplyReceiptV1(BaseModel):
@@ -168,6 +171,19 @@ def _write_snapshot_file(delta_id: str, snapshot: dict[str, Any]) -> str | None:
     return path
 
 
+def _write_receipt_file(receipt: "CompactionApplyReceiptV1") -> None:
+    """Persist the outcome next to the snapshot (receipt.json): a full, rolled-back and failed apply leave
+    different files, so the host keeps a durable record beyond the logs. Best-effort, never raises."""
+    if not receipt.snapshot_path:
+        return
+    try:
+        path = os.path.join(os.path.dirname(receipt.snapshot_path), "receipt.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(receipt.model_dump_json())
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("compaction receipt write failed delta=%s err=%s", receipt.delta_id, exc)
+
+
 def apply_compaction_delta(
     delta: MemoryCompactionDeltaV1,
     consent: CompactionConsent | None = None,
@@ -231,10 +247,14 @@ def apply_compaction_delta(
 
     downscaled = pruned = cards = prune_skipped = cards_skipped = 0
     try:
-        # 1) downscale-renormalize (the safer subset — always first).
-        for entry in delta.downscale:
-            store.downscale(entry.target_id, entry.old_w, entry.new_w)
-            downscaled += 1
+        # 1) downscale-renormalize (the safer subset — always first). All or nothing when the store can.
+        batch = getattr(store, "downscale_many", None)
+        if callable(batch):
+            downscaled = int(batch(list(delta.downscale)))
+        else:
+            for entry in delta.downscale:
+                store.downscale(entry.target_id, entry.old_w, entry.new_w)
+                downscaled += 1
 
         # 2) prune — only once downscale is trusted (downscale_only=false).
         if downscale_only:
@@ -257,27 +277,31 @@ def apply_compaction_delta(
             store.restore(snapshot)
         except Exception as rexc:
             logger.error("ROLLBACK FAILED for %s: %s (snapshot at %s)", delta.delta_id, rexc, snapshot_path)
-            return CompactionApplyReceiptV1(
+            failed = CompactionApplyReceiptV1(
                 delta_id=delta.delta_id,
-                status="rolled_back",
+                status="rollback_failed",
                 snapshot_path=snapshot_path,
                 error=f"apply_failed_and_rollback_failed: {exc} / {rexc}",
                 **trace,
             )
-        return CompactionApplyReceiptV1(
+            _write_receipt_file(failed)
+            return failed
+        rolled = CompactionApplyReceiptV1(
             delta_id=delta.delta_id,
             status="rolled_back",
             snapshot_path=snapshot_path,
             error=f"apply_failed_rolled_back: {exc}",
             **trace,
         )
+        _write_receipt_file(rolled)
+        return rolled
 
     logger.info(
         "compaction applied delta=%s downscaled=%d pruned=%d cards=%d prune_skipped=%d cards_skipped=%d "
         "snapshot=%s rule=%s",
         delta.delta_id, downscaled, pruned, cards, prune_skipped, cards_skipped, snapshot_path, answer.rule_id,
     )
-    return CompactionApplyReceiptV1(
+    receipt = CompactionApplyReceiptV1(
         delta_id=delta.delta_id,
         status="applied",
         applied=True,
@@ -289,3 +313,5 @@ def apply_compaction_delta(
         snapshot_path=snapshot_path,
         **trace,
     )
+    _write_receipt_file(receipt)
+    return receipt

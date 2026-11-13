@@ -122,9 +122,14 @@ def test_lifecycle_ask_allow_snapshot_downscale_restore(db):
         assert after[tid] == pytest.approx(sal * 0.8) and after[tid] < sal
     # Relative order among the downscaled is kept (proportional).
     assert sorted(LIVE_SALIENCE, key=LIVE_SALIENCE.get) == sorted(LIVE_SALIENCE, key=after.get)
+    # The outcome is on disk next to the snapshot, not only in the logs.
+    receipt = json.loads((Path(r.snapshot_path).parent / "receipt.json").read_text())
+    assert receipt["status"] == "applied" and receipt["downscaled"] == 10
     # restore -> every value back, from the file the applier wrote
     assert restore_snapshot_file(r.snapshot_path, store_for(db)) == 10
     assert salience_of(db) == before
+    # A second restore finds nothing at the planned values: it changes nothing.
+    assert restore_snapshot_file(r.snapshot_path, store_for(db)) == 0 and salience_of(db) == before
 
 
 def test_a_thought_already_downscaled_is_not_proposed_again(db):
@@ -139,6 +144,50 @@ def test_a_thought_already_downscaled_is_not_proposed_again(db):
     r2 = apply_compaction_delta(again, consent_for(SHIPPED), store=store_for(db), enabled=True)
     assert r2.status == "empty" and r2.snapshot_path is None and r2.cards_skipped_no_gist_store == 4
     assert salience_of(db) == lowered
+
+
+def test_a_failed_apply_never_undoes_another_writer(db):
+    """Review finding 1: A snapshots, then B lowers one of A's rows, then A fails on that row. A's rollback
+    must leave B's value, and A must have written nothing (one transaction)."""
+    from app.compaction_applier import apply_compaction_delta
+
+    before = salience_of(db)
+    a_delta = stage(db)
+    shared = a_delta.downscale[3]
+    tid = shared.target_id.split(":", 1)[1]
+    store = store_for(db)
+    real_snapshot = store.snapshot
+
+    def snapshot_then_b_writes(delta):
+        snap = real_snapshot(delta)
+        store_for(db).downscale(shared.target_id, shared.old_w, 0.1)  # writer B, after A's snapshot
+        return snap
+
+    store.snapshot = snapshot_then_b_writes
+    r = apply_compaction_delta(a_delta, consent_for(SHIPPED), store=store, enabled=True)
+    assert r.status == "rolled_back" and r.downscaled == 0
+    assert salience_of(db) == {**before, tid: 0.1}
+
+
+def test_a_stale_target_writes_nothing_even_when_restore_cannot_run(db):
+    """Review finding 2: the batch is one transaction. With restore broken, a stale row still leaves every
+    other row untouched (a killed container mid-apply leaves no half delta), and the status says so."""
+    from app.compaction_applier import apply_compaction_delta
+
+    before = salience_of(db)
+    delta = stage(db)
+    stale = delta.downscale[-1].target_id.split(":", 1)[1]
+    with db.begin() as c:
+        c.execute(text("UPDATE substrate_reverie_thought SET salience = 0.5 WHERE thought_id = :i"), {"i": stale})
+    store = store_for(db)
+
+    def broken_restore(snapshot):
+        raise RuntimeError("restore down")
+
+    store.restore = broken_restore
+    r = apply_compaction_delta(delta, consent_for(SHIPPED), store=store, enabled=True)
+    assert r.status == "rollback_failed" and r.downscaled == 0
+    assert salience_of(db) == {**before, stale: 0.5}
 
 
 def test_a_stale_target_rolls_the_whole_apply_back(db):
@@ -208,6 +257,7 @@ def test_apply_off_writes_nothing_even_with_consent(db):
 
 @pytest.mark.parametrize("target,old,new,why", [
     ("substrate_reverie_thought:9a411a3b-3eb6-488e-a92b-5cff3d2f0a08", 0.742, 0.9, "must lower"),
+    ("substrate_reverie_thought:9a411a3b-3eb6-488e-a92b-5cff3d2f0a08", 0.742, 0.742, "must lower"),
     ("substrate_reverie_thought:9a411a3b-3eb6-488e-a92b-5cff3d2f0a08", 0.742, -0.1, "must lower"),
     ("memory_cards:9a411a3b-3eb6-488e-a92b-5cff3d2f0a08", 0.742, 0.5, "not a reverie-thought target"),
     ("substrate_reverie_thought:", 0.742, 0.5, "empty reverie-thought id"),
@@ -216,25 +266,35 @@ def test_the_store_refuses_anything_but_a_reverie_downscale(db, target, old, new
     from app.compaction_store import StoreRefused
 
     before = salience_of(db)
+    from orion.schemas.compaction import DownscaleEntryV1
+
     with pytest.raises(StoreRefused, match=why):
         store_for(db).downscale(target, old, new)
+    ok = DownscaleEntryV1(target_id="substrate_reverie_thought:dff44679-0c55-4b64-8adc-4ea07401de3f",
+                          old_w=0.742, new_w=0.5)
+    bad = DownscaleEntryV1.model_construct(target_id=target, old_w=old, new_w=new, reason="")
+    with pytest.raises(StoreRefused, match=why):  # one bad entry refuses the whole batch
+        store_for(db).downscale_many([ok, bad])
     with pytest.raises(StoreRefused):
         store_for(db).write_gist("card", [], [])
     assert salience_of(db) == before
 
 
-def test_restore_refuses_a_foreign_snapshot(db):
-    from app.compaction_store import StoreRefused
+def test_restore_refuses_a_foreign_or_unplanned_snapshot(db):
+    from app.compaction_store import SNAPSHOT_SCHEMA, StoreRefused
 
     with pytest.raises(StoreRefused):
         store_for(db).restore({"schema": "other", "table": "memory_cards", "column": "salience", "rows": {}})
+    with pytest.raises(StoreRefused, match="planned"):
+        store_for(db).restore({"schema": SNAPSHOT_SCHEMA, "table": "substrate_reverie_thought",
+                               "column": "salience", "rows": {BYSTANDER: 0.9}})
 
 
 def test_downscale_entries_skip_unknown_lowered_and_bad_factor():
     from app.rem_compaction import downscale_entries
 
-    themed = [("t", ["a", "b", "c", "d", "a"])]
-    sal = {"a": (0.6, 0.6), "b": (0.48, 0.6), "c": (0.7, None), "d": (0.0, 0.0)}
+    themed = [("t", ["a", "b", "c", "d", "e", "a"])]
+    sal = {"a": (0.6, 0.6), "b": (0.48, 0.6), "c": (0.7, None), "d": (0.0, 0.0), "e": (1e-7, 1e-7)}
     out = downscale_entries(themed, sal, 0.5)
     assert [(e.target_id, e.old_w, e.new_w) for e in out] == [("substrate_reverie_thought:a", 0.6, 0.3)]
     assert downscale_entries(themed, sal, 1.0) == [] and downscale_entries(themed, sal, 0.0) == []
@@ -259,18 +319,72 @@ def test_a_salience_load_failure_still_stages_the_gist_delta(monkeypatch):
 # --- shipped defaults and wiring ---------------------------------------------------------------------------
 
 def test_apply_ships_on_with_a_persistent_snapshot_dir():
+    """Shipped code defaults (not this host's env)."""
+    from pydantic import ValidationError
+
     from app.settings import Settings
 
-    s = Settings()
-    assert s.ORION_DREAM_COMPACTION_APPLY_ENABLED is True and s.ORION_DREAM_COMPACTION_DOWNSCALE_ONLY is True
-    assert s.DREAM_COMPACTION_SNAPSHOT_DIR.startswith("/app/logs/")
-    assert 0.0 < s.DREAM_COMPACTION_DOWNSCALE_FACTOR < 1.0
+    f = Settings.model_fields
+    assert f["ORION_DREAM_COMPACTION_APPLY_ENABLED"].default is True
+    assert f["ORION_DREAM_COMPACTION_DOWNSCALE_ONLY"].default is True
+    assert f["DREAM_COMPACTION_SNAPSHOT_DIR"].default.startswith("/app/logs/")
+    assert f["DREAM_COMPACTION_DOWNSCALE_FACTOR"].default == 0.8
+    for bad in (0.0, 1.0, 8.0):
+        with pytest.raises(ValidationError):
+            Settings(DREAM_COMPACTION_DOWNSCALE_FACTOR=bad)
 
 
-def test_the_sleep_cycle_reads_salience_and_the_preview_never_writes():
-    src = (Path(__file__).resolve().parents[1] / "app" / "main.py").read_text(encoding="utf-8")
-    rem = src[src.index("async def _rem("):src.index("async def _start_story(")]
-    assert "rem_store.load_thought_salience" in rem and "salience_loader=" in rem
-    preview = src[src.index('@app.post("/dreams/rem-preview"'):]
-    preview = preview[:preview.index("\n@app.")] if "\n@app." in preview else preview
-    assert "ask_consent_and_apply(d, preview=True)" in preview
+def test_the_sleep_cycle_loads_salience_stages_persists_then_applies(monkeypatch):
+    """Behavior of app.main's real ``_rem``: salience is read for the requests' thoughts, the delta carries
+    downscale entries, and the apply comes after the persist, only for a stored delta."""
+    import asyncio
+
+    from app import compaction_consent, main, rem_store
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "ORION_DREAM_REM_ENABLED", True)
+    events: list = []
+
+    async def no_bus():
+        return None
+
+    async def apply(delta):
+        events.append(("apply", delta.delta_id))
+
+    monkeypatch.setattr(main, "_cycle_bus", no_bus)
+    monkeypatch.setattr(rem_store, "load_pending_requests", lambda n, since=None: LIVE_REQUESTS)
+    monkeypatch.setattr(rem_store, "load_thought_salience",
+                        lambda ids: events.append(("salience", len(ids))) or {t: (v, v) for t, v in LIVE_SALIENCE.items()})
+    monkeypatch.setattr(rem_store, "persist_compaction_delta",
+                        lambda d: events.append(("persist", d.delta_id, len(d.downscale))) or True)
+    monkeypatch.setattr(compaction_consent, "ask_consent_and_apply", apply)
+    delta_id = asyncio.run(main.build_cycle_deps().rem_compaction("dc-test", None))
+    assert events == [("salience", 10), ("persist", delta_id, 10), ("apply", delta_id)]
+    events.clear()
+    monkeypatch.setattr(rem_store, "persist_compaction_delta", lambda d: False)
+    asyncio.run(main.build_cycle_deps().rem_compaction("dc-test", None))
+    assert [e[0] for e in events] == ["salience"]  # not stored -> not applied
+
+
+def test_the_preview_endpoint_asks_with_no_store(monkeypatch):
+    import asyncio
+
+    from app import compaction_consent, main, rem_store
+    from app.settings import settings
+
+    monkeypatch.setattr(settings, "ORION_DREAM_REM_ENABLED", True)
+    monkeypatch.setattr(settings, "ORION_BUS_ENABLED", False)
+    seen: list = []
+
+    def spy(delta, consent=None, *, store, **kw):
+        seen.append(store)
+        from app.compaction_applier import CompactionApplyReceiptV1
+
+        return CompactionApplyReceiptV1(delta_id=delta.delta_id, status="no_store")
+
+    monkeypatch.setattr(rem_store, "load_pending_requests", lambda n, since=None: LIVE_REQUESTS)
+    monkeypatch.setattr(rem_store, "load_thought_salience", lambda ids: {t: (v, v) for t, v in LIVE_SALIENCE.items()})
+    monkeypatch.setattr(rem_store, "persist_compaction_delta", lambda d: True)
+    monkeypatch.setattr(compaction_consent, "apply_compaction_delta", spy)
+    out = asyncio.run(main.rem_preview_endpoint())
+    assert out["status"] == "staged" and out["applied"] is False and seen == [None]

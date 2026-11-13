@@ -6,7 +6,7 @@ Three seams only:
     so the REM pass can propose downscale entries;
   - `persist_compaction_delta`: writes the *staged* delta to `dream_compaction_delta`.
 
-Both are best-effort and never raise. Critically, this module writes to exactly
+All three are best-effort and never raise. Critically, this module writes to exactly
 one table (`dream_compaction_delta`, a staging table) and touches **no canonical
 memory** — the "applies nothing" invariant of Phase F lives here by construction.
 """

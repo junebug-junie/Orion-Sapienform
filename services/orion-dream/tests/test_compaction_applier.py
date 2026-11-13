@@ -292,8 +292,12 @@ def test_never_raises_even_if_rollback_also_fails(tmp_path, monkeypatch):
 
     store = DoubleFail(fail_on="downscale")
     r = ca.apply_compaction_delta(_delta(), _approval(), store=store, enabled=True)
-    assert r.status == "rolled_back"
+    # Review finding 3: a failed restore never reads as rolled back.
+    assert r.status == "rollback_failed" and r.applied is False
     assert r.error and "rollback_failed" in r.error
+    import json as _json
+    receipt = _json.loads((tmp_path / _delta().delta_id / "receipt.json").read_text())
+    assert receipt["status"] == "rollback_failed"
 
 
 def test_module_has_no_default_canonical_store():

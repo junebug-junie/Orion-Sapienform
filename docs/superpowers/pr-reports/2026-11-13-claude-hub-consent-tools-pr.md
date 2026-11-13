@@ -195,6 +195,14 @@ Static gates found two more, fixed: `ClaudeGrantLineV1` declared in `orion/schem
 so the portrait-ledger partition test does not see it. `config/metrics/metric_definitions.lock.json`
 re-locked for the five new bus channels.
 
+CI found three more after the merge of main, fixed: `dig help` grew past its 3,500 cap once main's `days`
+lines and `claude-grants` met (cap 3,750, one shared constant now read by both tests); Hub's abilities
+catalog needed an entry for `dig claude-grants`; the room-claude workflow no longer installs the
+companion's `mcp` pin next to Hub's pinned fastapi (it upgraded starlette and broke `Router(on_startup=...)`;
+`claude-tools-tests.yml` installs it with the companion and governor). One durable-runs test
+(`test_overhead_falls_back_to_the_2992_fit_and_says_so`) failed once and passed on rerun and locally
+(3/3); this PR does not touch durable-runs. Final CI: 46 of 46 checks pass.
+
 ## Restart required
 
 ```bash

@@ -5,6 +5,8 @@ ONE orion_day.letter run under Prime's run id and correlation id. Fake Postgres 
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import ast
 import asyncio
 from datetime import date, datetime, timedelta, timezone
@@ -131,6 +133,18 @@ def test_the_day_before_with_no_row_is_named_even_when_prime_did_not():
     [req] = durable.submitted
     [missed] = req["brief"]["missed_letters"]
     assert missed["letter_date"] == str(DAY - timedelta(days=1)) and missed["reason"] == odo.AUTO_MISSED_REASON
+
+
+def test_a_listed_missed_day_that_has_a_letter_by_now_is_not_named():
+    # Prime still records 11-11 as missed, but a re-ordered run wrote it: the next letter must not say it could not.
+    written_later = DAY - timedelta(days=1)
+    still_missed = DAY - timedelta(days=2)
+    durable = Durable()
+    conn = Conn({written_later: SimpleNamespace(run_id="orion-day-x-2")})
+    run(desk(conn, durable), order(missed_letters=[MissedLetterV1(letter_date=written_later, reason="failed"),
+                                                   MissedLetterV1(letter_date=still_missed, reason="failed")]))
+    [req] = durable.submitted
+    assert [m["letter_date"] for m in req["brief"]["missed_letters"]] == [str(still_missed)]
 
 
 def test_an_existing_letter_is_already_written_and_nothing_is_submitted():

@@ -1,6 +1,6 @@
 # Causal geometry redesign: structure Orion can see, then test
 
-Status: PROPOSAL. Docs only. It changes cognition inputs, so Juniper signs off before any build.
+Status: APPROVED 2026-11-13 (Juniper: "hit it with your recs" -- every default below accepted).
 Date: 2026-11-11. Follows the prediction-error suite rebuild (PR #3168) and the p-value floor fix (#3173).
 
 ## Arsonist summary
@@ -165,7 +165,19 @@ near-monotone copy of another (|Spearman| > 0.9).
 Out of scope. It reuses this channel set and the bus history, so building this first makes Φ*
 cheaper later.
 
-## Missing questions (for Juniper)
+## Decisions (2026-11-13, Juniper accepted the recommended defaults)
+
+1. Experiment freedom: up to 2 switchbacks per day on Family C actuators, behind the heat guard, no per-experiment OK.
+2. Office: same answer as #3202 -- body, until Juniper rules otherwise.
+3. Weight-patch proposer: kept, reads Layer 1; revisit after 30 days of the new table.
+4. Bus mirror 18.5 GB file: one-off `VACUUM` approved (operator command; needs ~2x file size free on /mnt/postgres).
+
+Patch 1 storage change: one row per 5-minute bucket with jsonb maps (`channel_counts`, `hops`) in
+`bus_traffic_rollup_5m`, published as `BusTrafficRollupV1` on `orion:bus:traffic:rollup` and stored
+by `orion-sql-writer`. One event = one row fits the sql-writer's generic path; a per-channel row
+table would need a fan-out writer for no reader benefit.
+
+## Missing questions (answered above)
 
 1. **Experiment freedom.** Default: Orion may start up to 2 switchbacks per day on Family C
    actuators, behind the heat guard, with no per-experiment OK. Should the first week need your

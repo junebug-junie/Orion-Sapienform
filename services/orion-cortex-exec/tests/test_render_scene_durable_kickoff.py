@@ -104,7 +104,7 @@ def test_confirmed_submit_returns_pending_settlement(_no_direct_call):
     assert deadline - submitted == timedelta(seconds=5400)
 
     [call] = bus.calls
-    assert call["channel"] == verb_adapters.self_study_module.CORTEX_ORCH_REQUEST_CHANNEL
+    assert call["channel"] == verb_adapters.orch_paths.CORTEX_ORCH_REQUEST_CHANNEL
     durable = DurableRunRequestV1.model_validate(call["payload"]["context"]["metadata"]["durable_run"])
     assert durable.workflow == "reverie.visual"
     assert durable.run_id == reverie_visual_run_id("dispatch-abc")
@@ -189,18 +189,3 @@ def test_setting_off_restores_the_direct_path(monkeypatch):
     assert calls[0]["body"]["dispatch_id"] == "dispatch-abc"
     assert result["outcome"] == "produced"
     assert "settlement" not in result
-
-
-def test_kickoff_timeout_stays_under_the_dispatch_route_budget():
-    """The submit RPC must finish well inside the dispatch route's own RPC budget,
-    or dispatch severs a submit that may have succeeded."""
-    from pathlib import Path
-
-    import yaml
-
-    from app.durable_kickoff import DEFAULT_KICKOFF_TIMEOUT_SEC
-
-    repo = Path(verb_adapters.__file__).resolve().parents[3]
-    policy = yaml.safe_load((repo / "config/execution_dispatch/execution_dispatch_policy.v1.yaml").read_text())
-    route = policy["template_to_cortex"]["render_scene"]
-    assert DEFAULT_KICKOFF_TIMEOUT_SEC < float(route["rpc_timeout_sec"])

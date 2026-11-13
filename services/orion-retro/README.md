@@ -1,15 +1,17 @@
 # Retro headless authority (P1)
 
-A persistent, operator-only NES service. One spawned child owns the libretro core;
+A persistent NES/SNES service with a private operator API. One spawned child owns the libretro core;
 HTTP/WebSocket handling never calls the native core. Browser access is provided by the separate Hub adapter below. The native service has no bus connection or global event schemas. Optional
 Hub goal planning runs outside the native process; see the bounded goal experiment below.
 
 The fixed catalog is imported from operator-owned local kits, including Pad Lab,
 Nova and Spacegulls when installed. ROMs, credentials, saves and evidence are never
 committed. The API cannot download a ROM, select a host path or upload native code.
-All games currently have save/load disabled. Nova's strict serialized-state replay
-fails with the pinned core; Spacegulls passed the existing short replay check.
-Neither claim establishes game competence or browser play.
+Save states are enabled when the `RETRO_SAVES_DIR` host directory is mounted
+writable at `/saves` (see "Save states" below). Nova's strict serialized-state
+replay fails with the pinned core (a load resumes play, but not bit-identical
+replay); Spacegulls passed the existing short replay check. Neither claim
+establishes game competence.
 
 ## Local setup and deployment
 
@@ -28,6 +30,65 @@ and nonempty env overrides; enables this explicitly requested installation. Defa
 compiles in a Docker build stage pinned to FCEUmm
 `ac0d00a7fc01166f84c7bac01d1084ebfd2b865e`. GPL license is retained in the image;
 matching source is https://github.com/libretro/libretro-fceumm/tree/ac0d00a7fc01166f84c7bac01d1084ebfd2b865e.
+
+SNES uses Snes9x pinned to `1bcc369e89f08243e0a462882fb1f3e42e51de3a`, built in a
+separate stage at `/opt/retro/snes9x.so`. Its license is retained as
+`/opt/retro/Snes9x-LICENSE.txt`; matching source is
+https://github.com/snes9xgit/snes9x/tree/1bcc369e89f08243e0a462882fb1f3e42e51de3a.
+The existing NES core path, pin and save identities are unchanged.
+
+### Adding operator-owned SNES ROMs
+
+Extract an operator-owned `.sfc` or `.smc` locally, then append it to the private
+catalog with the importer. It preserves every existing entry, refuses replacing
+a different ROM or game, and publishes complete catalog JSON atomically. Repeating
+the same import is a no-op. Run catalog installation/import one process at a time.
+The base kit installer also preserves operator-added entries.
+
+```sh
+PYTHONPATH=.:services/orion-retro python3 services/orion-retro/evals/import_rom.py \
+  --catalog ~/.local/share/orion/retro/service/catalog/catalog.json \
+  --rom '/path/to/Super Mario Kart (USA).sfc' \
+  --game-id super-mario-kart --title 'Super Mario Kart' --players 2
+```
+
+After the catalog is ready, restart `orion-retro` from clean synchronized primary
+main via `scripts/safe_docker_build.sh orion-retro up -d --build --force-recreate`.
+Catalogs are read at startup. Save any active game before restarting. Neither ROMs
+nor save states belong in git. Only the server's Save/Load system is persistent;
+an in-game save alone does not promise persistence across service restarts.
+
+Catalog contract: the existing six fields (`game_id`, `title`, `file`,
+`rom_sha256`, `ports`, `provenance`) plus optional `system: "nes" | "snes"`.
+Omitting `system` preserves legacy NES behavior. NES accepts `.nes`; SNES accepts
+`.sfc`/`.smc` (case-insensitive), inside the catalog mount, at most 32 MiB per ROM
+and 64 games total. A missing required core or a mismatched extension fails startup.
+`GET /games` and session responses add `system`; games retain raw titles, and Hub
+adds ` (SNES)` in its single dropdown. Save compatibility uses that game's exact
+ROM and selected core hashes, both in the API and worker.
+
+SNES accepts libretro bits 0–11 (B/Y/Select/Start/directions/A/X/L/R). NES keeps
+its original mask; triggers and stick clicks are not SNES buttons. Lease, neutral,
+opposing-direction and expiry rules remain the same. SNES does not gain a game
+observer, goal model, atlas or leisure eligibility from being playable.
+
+Real-core CI generates an original SNES controller diagnostic, verifies every
+button on both ports through emulated joypad registers, and checks restored input
+and video. No commercial ROM is required by CI:
+
+```sh
+python3 -m orion.retro.snes_pad_lab /tmp/pad-lab.sfc
+python3 -m orion.retro.snes_pad_eval --core /opt/retro/snes9x.so \
+  --rom /tmp/pad-lab.sfc --output /tmp/snes-pad-eval.json
+```
+
+For the actual operator catalog, the isolated browser eval exercises titles,
+video, nonzero audio, keyboard/gamepad buttons, saves and reconnects:
+
+```sh
+PYTHONPATH=. python3 services/orion-hub/evals/retro_browser.py \
+  --catalog /path/to/catalog --game super-mario-kart --output /tmp/retro-snes-browser
+```
 
 The operator client uses the private Unix socket at `service/ipc/retro.sock`
 (override `--socket` for isolated tests) and needs the service requirements (install in a venv). Run:
@@ -51,7 +112,7 @@ request fields cannot select identities. No Hub authentication is claimed.
 
 - GET `/health/live`: API process responds. Disabled service can still be live.
 - GET `/health/ready`: catalog/core ready, plus current session/frame status.
-- GET `/games`: hashes, supported ports, save capability; no filesystem paths.
+- GET `/games`: title, system, hashes, supported ports, save capability; no filesystem paths.
 - POST `/sessions`: `game_id`, `idempotency_key`; one active session, conflicts
   rejected. At most 256 keys per process; retrying a key returns its original ID.
 - GET `/sessions/{id}`: lifecycle, actual frame, callback counts, core identity.
@@ -63,6 +124,18 @@ request fields cannot select identities. No Hub authentication is claimed.
   If a reply is lost during timeout/shutdown, the result is `unknown`; inspect
   the retained evidence rather than assuming the action never happened.
 - POST pause/resume/stop endpoints: explicit lifecycle; resume requires new leases.
+- `/health/ready` advertises `capabilities.conditional_resume=true`. A recovery
+  `POST /sessions/{id}/resume` can supply `expected_pause_reason` (`disconnect`,
+  `no_controller`, or `deadline_overrun`). The worker compares that reason at the
+  moment it resumes; a newer explicit Pause returns `409 session_paused:pause`.
+  Empty bodies and `{}` preserve explicit Resume behavior. Other fields/reasons
+  are rejected with `422 invalid_resume`. Older services do not advertise this
+  capability; clients must not send automatic conditional resumes to them.
+- POST `/sessions/{id}/save`: worker serializes the core and writes a save state.
+- POST `/sessions/{id}/load` `{save_id}`: worker restores it in place (running or paused).
+- GET `/games/{game_id}/saves`: saves newest first, with frame, played frames,
+  UTC time and `compatible` (ROM and core SHA-256 both match).
+- POST `/sessions` with optional `save_id`: start a fresh session from a save.
 - GET `/sessions/{id}/evidence`: last 256 applied inputs and local artifact ID;
   full journal remains operator-local. Tokens are never journaled.
 
@@ -78,14 +151,40 @@ P2; this server requires no browser message to expire a lease.
 Native worker queues and HTTP/WS ingress are bounded. Three consecutive late
 frames pause, a silent/hung/crashed worker fails the session, and stop escalates
 from cooperative shutdown to termination/kill of only its child. Restart marks
-active persisted state failed (`service_restart`), never resumes play. Save/load
-is not offered. No raw A/V recording, model invocation or memory export occurs.
+active persisted state failed (`service_restart`), never resumes play by itself;
+start a new session from a save instead. No raw A/V recording, model invocation or memory export occurs.
+
+## Save states
+
+`RETRO_SAVES_DIR` (host) is bind-mounted at `/saves`. It must exist and be
+writable by `RETRO_UID`; otherwise `save_enabled` is false and save/load refuse
+with `saves_unavailable`. Layout: `<game_id>/<save_id>.state` (raw
+`retro_serialize` bytes) and `<save_id>.json` (game, ROM/core SHA-256, frame,
+played frames, UTC, state SHA-256). The JSON is written last, so a crash never
+lists a half-written save.
+
+- Only the worker process serializes, restores, writes and reads state files.
+  The API process lists metadata and pre-checks identity before a load.
+- A save made with a different ROM or core is refused (`save_identity_mismatch`);
+  a damaged state file is refused (`save_corrupt`). Both are checked twice:
+  in the API and again in the worker against the core it actually loaded.
+- Disk bound: at most 4 MiB per state and 20 saves per game; each new save
+  deletes the oldest beyond 20 (and any orphaned state file). An NES state is
+  normally under 100 KiB, so a game uses about 2 MiB at most
+  (catalog cap 64 games, so about 128 MiB worst case in practice).
+- No fsync: a blocked disk must not stall the frame loop (the API fails a worker
+  silent for 1 s). A save survives container restarts and rebuilds; a host power
+  loss within the kernel's writeback window can lose the newest save.
+- `frame` is the session's own frame clock; `played_frames` carries over through
+  loads, so it counts total play time across sessions.
+- Evidence records `save` (save_id, frame, played_frames, bytes) and `load`
+  (save_id, frame, save_frame, played_frames) events.
 
 ## Isolation and evidence
 
 Container: non-root UID/GID, read-only root, dropped capabilities, no-new-privileges,
 512 MiB RAM, 2 CPUs, 64 PIDs, journald, bounded tmpfs. Only catalog and credential
-are read-only mounts; dedicated evidence is writable. No Docker socket, host
+are read-only mounts; dedicated evidence and save-state directories are writable. No Docker socket, host
 credentials, production database or repo mount. Networking disabled; private Unix socket in a dedicated operator-only directory.
 No published TCP ports. Deployment validation must test actual egress denial.
 The container is the security boundary; a child process is fault isolation, not
@@ -148,9 +247,9 @@ owns any port cannot pause a fresh resume merely by closing.
 
 ## Bounded goal experiment (P3/P4)
 
-Enable `RETRO_COGNITION_ENABLED` and Hub's `HUB_RETRO_COGNITION_ENABLED` only for
-an explicit experiment, then choose **Try Orion goals · 60s** in More. Both gates
-are default-off. Start the game normally and reach the mechanic before handoff.
+`RETRO_COGNITION_ENABLED` and Hub's `HUB_RETRO_COGNITION_ENABLED` default on;
+set either to `false` to disable the experiment. Nothing runs until you choose
+**Try Orion goals · 60s** in More for a live session. Start the game normally and reach the mechanic before handoff.
 The verified Nova v1.0.6a/core pair supplies RAM-assisted position/health facts;
 all other fingerprints are unknown. The motor supports wait, walk left/right,
 and pulsed jump left/right; it does not support general goals like reach_exit.
@@ -167,3 +266,114 @@ The real-planner eval is `evals/cognitive_loop.py --core <pinned-core> --rom <no
 --bus-url <tailscale-Redis-URL> --output <private-report.json>`; use
 `--mechanic-only` only for a separately labeled fixture test. GPU admission
 refusals fail the real-planner gate; they are never replaced with scripted replies.
+
+
+## The Legend of Zelda: reader, navigator, atlas (Lane A)
+
+Design: [Orion plays Zelda](../../docs/superpowers/specs/2026-10-22-orion-plays-zelda-design.md).
+A Zelda session uses its own reader, motor and atlas only when the ROM+core
+fingerprint matches (PRG0 `8f72dc2e…`, PRG1 `89232edf…`, pinned FCEUmm `ac0d00a7`)
+**and** `RETRO_COGNITION_ENABLED=true`. Every other game, and Zelda with the gate
+off, keeps the Nova v1 path unchanged. No new env keys.
+
+**Reader (`app/zelda/observe.py`, `zelda-1-ram-v1`).** One RAM + save-RAM read per
+frame through `retro_get_memory_data`; nothing is written. Fields: `mode`
+(play/scroll/cave/stairs/death/menu/transition/other), `level`, `room`, `next_room`,
+`paused`, `link` (x, y, `tile`, facing, invincible_frames, `controllable`), `hearts`
+(current in 0.5 steps, containers), `items` (sword, rupees; bombs/keys/candle/raft
+read `unknown` until a live probe settles them), `enemies` (alive slots with type,
+x, y, tile, hp), `drops` (type-$60 item objects), `walls` (22x32, True = blocked; play
+and cave only) and `walls_hash`. `level` 1-9 also reads `unknown` (no dungeon probe
+yet). `VERDICTS` in the module is the live-settlement table. `controllable` is false
+during transitions, cave text (`$AD` 0/1/3/7), an item lift (`$506`) and pause.
+Tile convention (shared by motor, atlas and the planner's text map): column
+`(x+4)//8`, row `(y+11-64+4)//8`, i.e. the game's own collision hotspot.
+
+**Motor (`app/zelda/navigate.py`, `zelda-navigator-v1`).** Runs inside the worker at
+one decision per frame. When a script starts with `cognition: true` on a Zelda
+session, the worker offers a decision slot in status
+(`scripted[].cognition.attempt.decision_id`) whenever Link is controllable and no
+goal is active. The offered decision's observation carries the room map as
+`attempt.observation.terrain`: a list of 22 strings, 32 characters each. Row 0 is the top of the play area, and column/row use the same tile grid as `tile`. The characters are `#` blocked, `.` walkable, `x` a learned-blocked tile (a bump recorded on this exact room layout, matched by `walls_hash`; removed once Link stands on that position), and `C` a cave this lineage has entered (overworld only). It is about 790 bytes as JSON. Only the offered decision carries it; `status.zelda.observation` stays grid-free. `attempt.open_sides` lists the sides (`N`, `S`, `W`, `E`) whose screen edge Link can walk to from where he stands, by the motor's own search, counting only the atlas's learned blocks for this room (play mode, overworld and dungeons; `null` otherwise; in a dungeon a side counts when the floor reaches its doorway or bombed hole, 2 tiles short of the edge on N/S and 3 on W/E, because the opening's frame reads as collision (2026-10-30: bombed W/E holes stop 3 short, plain W/E walls 4); a locked or shuttered door has no gap and is not listed). An exit can only use one of these (2026-10-23: the planner asked "explore S" eight times against the start room's solid south wall). `POST /sessions/{id}/goal` takes a `GoalV2` (below) that echoes it.
+Goals: `exit{dir}`, `explore{dir}`, `enter{tile}`, `collect{tile}`,
+`fight{target: slot|nearest}`, `retreat`, `wait`. A* runs on the wall grid plus
+learned-blocked tiles. A press that leaves Link's position unchanged for 8 frames is
+a bump: the tile is marked learned-blocked in the atlas and the path is replanned.
+The combat reflex (face, swing when aligned, back off after a hit) runs only inside
+`fight`/`retreat`. A goal ends at the first of: prediction met, prediction refuted
+(another room), `death` (always refuted), `interrupted:hit` (not for fight/retreat), `interrupted:stuck`
+(2 s), `budget_expired`, goal completed, or `stopped:<reason>` (takeover, pause,
+sponsor loss, load). Each end writes one `goal_finished` journal row: decision_id,
+start/end digests, outcome, verdict (`met|refuted|unknown`), applied frames, bumps,
+`human_intervention`. Status shows it as `cognition.last_finished`.
+
+**Death recovery.** This happens only while a script grant is active; human play is never touched. A death ends any active goal with outcome `death` and verdict `refuted`. On the Continue/Save/Retry screen (mode 8), the motor reads the cursor from `GameSubmode $13` (low two bits: 0 Continue, 1 Save, 2 Retry; `$80` = START accepted). It never counts presses. It taps SELECT until the cursor is on Continue, then taps START. When play returns it writes a `death_recovered` row (`decision_id` or null, death `room`/`level`, `death_frame`, `room_after`; the journal stamps `frame`) and offers a new decision. The reader exposes the screen as `observation.menu = {kind: 'continue', cursor, activated}`.
+
+**GoalV2 body.** `connection_id` **or** `leisure_id` (exactly one), `generation`,
+`port`, `expected_epoch`, `decision_id`, `goal` (discriminated by `kind`),
+`prediction{kind: reach_room|enter_cave|item_gained|enemies_cleared|survive|unknown,
+value: room id for reach_room only}`, `rationale` (≤512), `planner_id`,
+`budget_seconds` (3-30). A retry with the same decision_id is idempotent and never
+extends the budget; any change is `goal_idempotency_conflict`.
+
+**Leisure sponsor (contract + arbiter hook only; Hub builds the runner).**
+`POST /control` and `/scripted` also accept `leisure_id` instead of `connection_id`,
+on Zelda sessions only. A leisure grant is preemptible: any human `acquire` or
+`takeover` replaces it at once (the reply carries `preempted_leisure: true` and the
+script stops with `human_takeover`). A leisure sponsor can never take a port from a
+human. A session paused for `no_controller` must be resumed before a leisure acquire.
+
+**Controller attribution.** Each `applied` journal row carries `controller: human|script|leisure`. It names the owner of that input's grant epoch: `script` is a browser-sponsored policy, and `leisure` is a leisure sponsor's policy or lease. `zelda.atlas.session.frames_by_controller = {human, script, leisure, none}` counts native frames by who held port 0 on that frame. `none` means no live lease. The atlas session row stores the same counts, next to `rooms_new` and `deaths`. Lane C derives the control share from these counts ("played together" when human/total > 0.5).
+
+**Atlas (`app/zelda/atlas.py`, `zelda-atlas-v1`).** One JSON file per save lineage at
+`RETRO_SAVES_DIR/atlas/<lineage_id>.json`, bounded at 1 MiB, written at most every 2 s
+and on save/stop. It records only observed room changes (exits seen both ways),
+caves entered and what was gained inside, item deltas, deaths, heart loss, enemy
+types, bumps, and one session row (rooms_new, deaths, decisions, met, refuted). It is
+never seeded. A save made in a Zelda session carries `lineage_id`; loading it
+continues that lineage. A fresh game, or a pre-atlas save loaded mid-session, starts
+a new one. A ROM/core mismatch never reuses another build's atlas. Atlas I/O faults
+disable the atlas for the session; the game keeps running. `GET /sessions/{id}/atlas`
+returns the current room's neighbourhood (adjacent rooms, unexplored exits, caves,
+deaths, and a compact map of the level). Delete the file to forget it.
+
+**Evals.** `evals/zelda_play.py --core <so> --rom <zelda.nes>` (no LLM, ~4 s,
+simulated clock): boot from power-on with real input, pause, enter the cave, bump the
+cave barrier, take the sword, exit S, exit E, kill an Octorok, die standing among the
+Octoroks and recover through Continue, then a second session
+on the same lineage from the save state. `evals/zelda_http_smoke.py --core <so>
+--catalog <catalog.json>` drives the real HTTP app and a spawned worker at real time,
+including the leisure preemption check. Both write evidence under `/tmp/zelda-play/`.
+
+## Zelda dojo: practice without a browser (`evals/zelda_dojo.py`)
+
+The dojo plays Zelda headless to make training data for a world model. It uses the real core, the real reader and the real goal motor, with no LLM and no Hub.
+
+**How it works.** The dojo keeps an archive of cells. A cell is the place, a coarse Link tile, the hearts and the items held; each cell stores a core snapshot. Each round it:
+1. picks a cell that has rarely been chosen;
+2. restores the cell's snapshot and idles a random 0-60 frames;
+3. waits for the decision the motor offers;
+4. runs every goal that decision supports (exit per open side, fight, wait, collect);
+5. writes one row per goal and adds each new cell to the archive.
+
+This is the Go-Explore method (Ecoffet et al. 2019).
+
+**Speed.** One process runs at about 12x real time. A restore takes about 0.04 ms. The start comes from power-on plus the sword opening from `zelda_play.py`.
+
+**Output.** In `--out`:
+- `transitions.jsonl`: `before`, `open_sides`, `goal`, `outcome`, `frames` and `after` (RAM-derived facts only), and `died`;
+- `archive.json`;
+- `progress.log`.
+
+A `dojo:*` outcome means the goal never ran cleanly. Such a row has no `after`.
+
+**Run.** Use the retro image, read-only catalog, one CPU per worker:
+
+```bash
+docker run --rm --cpus 1 -v "$PWD":/repo:ro -v <catalog>:/catalog:ro -v <out>:/out \
+  -e PYTHONPATH=/repo:/repo/services/orion-retro -w /repo --entrypoint python3 orion-retro-retro \
+  services/orion-retro/evals/zelda_dojo.py --core /opt/retro/core.so \
+  --rom /catalog/the-legend-of-zelda-prg1.nes --minutes 20 --out /out/w0 --seed 0
+```
+
+The ROM is operator-supplied and is never copied or printed. Train on the output with `services/orion-world-model/scripts/train_transition.py`.

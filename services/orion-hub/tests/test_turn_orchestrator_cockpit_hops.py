@@ -813,3 +813,103 @@ async def test_execute_unified_turn_streams_progress_before_thought_returns():
     assert failed_appraisal
     assert "FAILED" in failed_appraisal[0]["visor_line"]
     assert "appraisal_unavailable" in failed_appraisal[0]["visor_line"]
+
+
+async def _run_turn_capturing_prime(*, enabled: bool, redis):
+    """Run the real execute_unified_turn with a fake Redis behind bus.redis; return
+    (harness request, motor_boot hop prompt)."""
+    _ensure_hub_paths()
+    from types import SimpleNamespace
+
+    from orion.hub.turn_orchestrator import execute_unified_turn
+    from orion.schemas.harness_finalize import HarnessRunV1
+    import scripts.harness_governor_client as harness_governor_client
+    import scripts.thought_client as thought_client
+    import scripts.pre_turn_appraisal_client as pta_client_mod
+
+    corr = "00000000-0000-4000-8000-000000000301"
+    collected: list[dict] = []
+    seen: dict = {}
+
+    async def sink(frames: list[dict]) -> None:
+        collected.extend(frames)
+
+    async def react(*_a, **_k):
+        return thought_client.ThoughtReactResult(thought=_live_thought())
+
+    async def harness_run(_self, req, *_a, **_k):
+        seen["req"] = req
+        return HarnessRunV1(correlation_id=corr, final_text="I hold [prime_concern:c1aaaaaaaaaaaaaa].",
+                            finalize_ran=True, step_count=1, compliance_verdict="completed",
+                            grounding_status="grounded")
+
+    settings = SimpleNamespace(ENABLE_PRE_TURN_APPRAISAL=False, ENABLE_UNIFIED_TURN_CHAT_GRAMMAR=False,
+                               HUB_PRIME_BLOCK_ENABLED=enabled, HUB_PRIME_BLOCK_STALE_MIN=10.0)
+    bus = MagicMock()
+    bus.redis = redis
+    with (
+        patch("orion.hub.turn_orchestrator.build_hub_association_bundle", return_value=_live_association()),
+        patch.object(pta_client_mod.PreTurnAppraisalClient, "appraise", AsyncMock(return_value=None)),
+        patch.object(thought_client.ThoughtClient, "react", react),
+        patch.object(harness_governor_client.HarnessGovernorClient, "run", harness_run),
+        patch("orion.hub.turn_orchestrator._publish_unified_turn_chat_grammar", AsyncMock()),
+        patch("orion.hub.turn_orchestrator._publish_unified_turn_chat_history", AsyncMock()),
+        patch("orion.hub.turn_orchestrator._build_situation_prompt_fragment",
+              AsyncMock(return_value={"compact_text": "Situation: stub", "status": "ok"})),
+    ):
+        await execute_unified_turn(bus=bus, correlation_id=corr, session_id="sess-1", user_message="hello",
+                                   settings=settings, cockpit_sink=sink)
+    boot = [f["hop"] for f in collected if f.get("kind") == "cockpit_hop" and f["hop"].get("stage") == "motor_boot"]
+    return seen["req"], boot[0]["raw"]["prompt"]
+
+
+class _PrimeRedis:
+    def __init__(self, data):
+        self.data = data
+
+    async def get(self, key):
+        return self.data.get(key)
+
+
+def _live_prime_redis():
+    from datetime import datetime, timedelta, timezone
+
+    from orion.prime.block import PRIME_STATE_KEY
+    from orion.prime.state import PRIME_CONCERNS_KEY, PrimeConcernV1, PrimeStateV1, concerns_view
+
+    now = datetime.now(timezone.utc)
+    c = PrimeConcernV1(concern_id="c1aaaaaaaaaaaaaa", text="Is the cabinet heat real?",
+                       opened_at=now - timedelta(hours=2), last_evidence_at=now)
+    state = PrimeStateV1(concerns=[c], last_thought_at=now - timedelta(minutes=3), thoughts_total=7,
+                         last_reading="Heat is the thing.", seen_binding=[])
+    return _PrimeRedis({PRIME_STATE_KEY: state.model_dump_json(),
+                        PRIME_CONCERNS_KEY: concerns_view(state, now=now).model_dump_json()})
+
+
+@pytest.mark.asyncio
+async def test_unified_turn_sends_the_prime_block_and_records_it_in_the_motor_boot_hop(caplog):
+    """Living Prime Part 1: the block rides the harness request and is in the cockpit's motor_boot prompt
+    (cockpit_turn_sighting), for every unified turn (chat, curiosity, consult all run here)."""
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="orion.hub.turn_orchestrator"):
+        req, boot_prompt = await _run_turn_capturing_prime(enabled=True, redis=_live_prime_redis())
+    assert req.prime_block and "[prime_concern:c1aaaaaaaaaaaaaa]" in req.prime_block
+    assert req.prime_block in boot_prompt
+    assert boot_prompt.index("Situation: stub") < boot_prompt.index(req.prime_block)
+    logs = "\n".join(r.getMessage() for r in caplog.records)
+    assert "prime_block corr=" in logs and "status=ok" in logs
+    assert "prime_block_citations corr=" in logs and "label=verified" in logs
+
+
+@pytest.mark.asyncio
+async def test_unified_turn_prime_block_kill_switch_and_unreadable_redis():
+    req, boot_prompt = await _run_turn_capturing_prime(enabled=False, redis=_live_prime_redis())
+    assert req.prime_block is None and "PRIME (" not in boot_prompt
+
+    class _Down:
+        async def get(self, key):
+            raise ConnectionError("redis down")
+
+    req, _ = await _run_turn_capturing_prime(enabled=True, redis=_Down())
+    assert req.prime_block and "absent" in req.prime_block  # labelled absent, turn still ran

@@ -77,7 +77,7 @@ LINE_LABELS: dict[str, str] = {
 }
 LINES = tuple(LINE_LABELS)
 
-# Workflows that ARE curiosity. `self_study.reflect`, `reading.turn`,
+# Workflows that ARE curiosity. `reading.turn`,
 # `reverie.visual` and the rest land in the same tables and are not; `_group`
 # drops any run whose admission row names another workflow.
 CURIOSITY_WORKFLOWS = ("curiosity.investigate", "self_sense_eval")
@@ -151,6 +151,8 @@ EVENT_LEASE_RELEASED = "resource.lease_released"
 EVENT_LEASE_EXPIRED = "resource.lease_expired"
 # The GPU pool paused the run's hold for an urgent run; it kept its place in line (not a failure).
 EVENT_PREEMPTED = "run.preempted"
+# Body economy Patch D: a curiosity investigate run held by its binding bid (app/run_bids.py).
+EVENT_ECONOMY_HELD = "run.economy_held"
 EVENT_CHECKPOINT_RESUME_FAILED = "run.checkpoint_resume_failed"
 ANOMALY_EVENTS = (EVENT_CHECKPOINT_RESUME_FAILED,)
 
@@ -576,6 +578,16 @@ def _lifecycle_from_events(slot: dict[str, Any]) -> _Lifecycle:
         elif kind == EVENT_LEASE_EXPIRED:
             out.items.append(TimelineItem(at=at, kind="lifecycle", data={
                 "node": "", "status": "lease_expired", "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))
+        elif kind == EVENT_ECONOMY_HELD:
+            # One row per distinct reason: a held run re-bids every few minutes for up to 6 h.
+            reason = _text(detail.get("reason"), 60)
+            last = next((it for it in reversed(out.items) if it.kind == "lifecycle"), None)
+            if last is not None and last.data.get("status") == "economy_held" and last.data.get("reason") == reason:
+                continue
+            out.items.append(TimelineItem(at=at, kind="lifecycle", data={
+                "node": "", "status": "economy_held", "reason": reason,
+                "binding": _text(detail.get("binding_constraint"), 60), "why": _text(detail.get("why"), 500),
+                "next_node": "", "resumed_from": "", "error": ""}))
         elif kind == EVENT_PREEMPTED:
             out.items.append(TimelineItem(at=at, kind="lifecycle", data={
                 "node": "", "status": "preempted", "lane": _event_lane(detail), "next_node": "", "resumed_from": "", "error": ""}))

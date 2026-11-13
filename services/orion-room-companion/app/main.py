@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.consult.core import consult_id_from_room
 from orion.core.bus.resilience import run_subscription
 from orion.schemas.room_claude import (
     ExternalRoomResponderV1,
@@ -19,7 +20,16 @@ from orion.schemas.room_claude import (
 )
 
 from .claude_session import ClaudeTurnResult, run_room_turn
-from .room_prompt import append_system_prompt_for, build_turn_prompt, filtered_summary, is_pass
+from .room_prompt import (
+    append_system_prompt_for,
+    build_turn_prompt,
+    filtered_summary,
+    is_pass,
+    line_key,
+    lines_after_mark,
+    newest_created_at,
+)
+from .room_tools import TurnTools, footer_for, prepare_turn_tools, with_footer
 from .session_store import forget_session, peek_or_mint_session, remember_session
 from .settings import Settings, get_settings
 
@@ -81,7 +91,7 @@ _ENV_ALLOWLIST = frozenset(
 _ENV_DENY_PREFIXES = ("ANTHROPIC_", "CLAUDE_CODE_OAUTH", "AWS_", "GOOGLE_", "GCP_")
 
 
-def build_subprocess_env(settings: Settings) -> Dict[str, str]:
+def build_subprocess_env(settings: Settings, *, tools: bool = False) -> Dict[str, str]:
     """Env for the `claude` subprocess, built from an allowlist.
 
     This is the load-bearing part, not hygiene. orion-hub's FCC lane sets
@@ -108,6 +118,9 @@ def build_subprocess_env(settings: Settings) -> Dict[str, str]:
     env["CLAUDE_CONFIG_DIR"] = settings.ROOM_COMPANION_CLAUDE_CONFIG_DIR
     if settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = settings.ROOM_COMPANION_CLAUDE_OAUTH_TOKEN.get_secret_value()
+    if tools:
+        # A consent ask may take 40 s; the CLI must not give up on the MCP call before the broker answers.
+        env["MCP_TOOL_TIMEOUT"] = str(int(settings.ROOM_COMPANION_TOOLS_MCP_TIMEOUT_MS))
     return env
 
 
@@ -140,51 +153,96 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
     """
     ensure_runtime_dirs(settings)
     key = room_key(request)
-    session_id, resume = peek_or_mint_session(settings.ROOM_COMPANION_SESSION_STATE_PATH, key)
+    # A consult room (Hub's consult loop, orion.consult.core): Hub writes the whole user-role
+    # text itself, Claude reads the code read-only, thinks harder and gets more time.
+    consult = consult_id_from_room(request.room_id) is not None
+    slot = peek_or_mint_session(
+        settings.ROOM_COMPANION_SESSION_STATE_PATH, key, rotate_daily=not consult
+    )
+    session_id, resume = slot.session_id, slot.resume
 
-    prompt = build_turn_prompt(
+    # A resumed session gets only the lines it has not been sent: Hub sends the
+    # whole window on every invite and does not know this session's mark.
+    transcript = request.transcript if not resume else lines_after_mark(
+        request.transcript,
+        sent_up_to=slot.sent_up_to,
+        claude_participant_id=settings.ROOM_COMPANION_PARTICIPANT_ID,
+        sent_keys=slot.sent_keys,
+    )
+    prompt = request.prompt if consult else build_turn_prompt(
         prompt=request.prompt,
         invited_by_name=request.invited_by,
-        transcript=request.transcript,
+        transcript=transcript,
         # filtered_summary(), not the raw dict. This is the privacy boundary:
         # the summary is third-party-bound, so it goes through the allowlist
         # rather than whatever orion-social-memory happens to include today.
         social_memory_summary=filtered_summary(request.social_memory_summary),
         first_turn=not resume,
+        hub_index=request.hub_index,
+        transcript_note=request.transcript_note,
+    )
+    # Orion's tools (Patch 1b): room turns only, never a consult. A failure to prepare them runs the turn
+    # without tools (the old `--tools ""` argv), never with anything wider.
+    turn_tools: Optional[TurnTools] = None
+    if settings.ROOM_COMPANION_TOOLS_ENABLED and not consult:
+        try:
+            turn_tools = prepare_turn_tools(settings, request, claude_session_id=session_id)
+        except Exception:
+            logger.warning("room_companion_tools_prepare_failed request=%s -- turn runs without tools",
+                           request.request_id, exc_info=True)
+    logger.info(
+        "room_companion_prompt room=%s request=%s resume=%s minted=%s lines=%d/%d prompt_chars=%d tools=%s",
+        key, request.request_id, resume, slot.minted_reason or "-",
+        len(transcript), len(request.transcript), len(prompt), turn_tools is not None,
     )
 
-    result = run_room_turn(
-        prompt,
-        claude_bin=settings.ROOM_COMPANION_CLAUDE_BIN,
-        model=settings.ROOM_COMPANION_MODEL,
-        effort=settings.ROOM_COMPANION_EFFORT,
-        setting_sources_env_key=settings.ROOM_COMPANION_SETTING_SOURCES_ENV_KEY,
-        session_id=session_id,
-        resume=resume,
-        timeout_sec=settings.ROOM_COMPANION_TIMEOUT_SEC,
-        # EVERY turn, not just the first. An earlier version passed this only
-        # when minting a session, on the assumption that `--resume` carried the
-        # framing forward. It does not: verified live in this container with a
-        # marker instruction, a resumed turn WITHOUT the flag reverted to
-        # Claude Code's default CLI persona ("Goodbye! Let me know if you need
-        # anything else.") -- the assistant-taking-orders voice this room is
-        # explicitly not for. Re-passing it on resume restores the framing,
-        # 3/3 runs.
-        #
-        # Do NOT "fix" this by moving the framing into the user-role text
-        # instead: that was tried and Claude correctly refused it as a
-        # prompt-injection pattern ("it's embedded in a user-turn message
-        # formatted to look like a system directive"). System framing has to
-        # arrive as system framing.
-        # Auto-invites additionally get permission to stay quiet. A manual
-        # invite is someone actually asking, so passing there would be rude.
-        append_system_prompt=append_system_prompt_for(
-            trigger=request.trigger,
-            prompt=request.prompt,
-        ),
-        env=build_subprocess_env(settings),
-        cwd=settings.ROOM_COMPANION_WORKSPACE,
-    )
+    footer: Optional[str] = None
+    try:
+        result = run_room_turn(
+            prompt,
+            claude_bin=settings.ROOM_COMPANION_CLAUDE_BIN,
+            model=settings.ROOM_COMPANION_CONSULT_MODEL if consult else settings.ROOM_COMPANION_MODEL,
+            effort=settings.ROOM_COMPANION_CONSULT_EFFORT if consult else settings.ROOM_COMPANION_EFFORT,
+            setting_sources_env_key=settings.ROOM_COMPANION_SETTING_SOURCES_ENV_KEY,
+            session_id=session_id,
+            resume=resume,
+            # A turn with Orion's tools may wait on up to 3 consent asks (40 s each) and 6 reads (15 s each).
+            timeout_sec=(settings.ROOM_COMPANION_CONSULT_TIMEOUT_SEC if consult
+                         else settings.ROOM_COMPANION_TOOLS_TURN_TIMEOUT_SEC if turn_tools is not None
+                         else settings.ROOM_COMPANION_TIMEOUT_SEC),
+            # EVERY turn, not just the first. An earlier version passed this only
+            # when minting a session, on the assumption that `--resume` carried the
+            # framing forward. It does not: verified live in this container with a
+            # marker instruction, a resumed turn WITHOUT the flag reverted to
+            # Claude Code's default CLI persona ("Goodbye! Let me know if you need
+            # anything else.") -- the assistant-taking-orders voice this room is
+            # explicitly not for. Re-passing it on resume restores the framing,
+            # 3/3 runs.
+            #
+            # Do NOT "fix" this by moving the framing into the user-role text
+            # instead: that was tried and Claude correctly refused it as a
+            # prompt-injection pattern ("it's embedded in a user-turn message
+            # formatted to look like a system directive"). System framing has to
+            # arrive as system framing.
+            # Auto-invites additionally get permission to stay quiet. A manual
+            # invite is someone actually asking, so passing there would be rude.
+            append_system_prompt=append_system_prompt_for(
+                trigger=request.trigger,
+                prompt=request.prompt,
+                consult=consult,
+                tools=turn_tools is not None,
+            ),
+            env=build_subprocess_env(settings, tools=turn_tools is not None),
+            cwd=settings.ROOM_COMPANION_CONSULT_REPO if consult else settings.ROOM_COMPANION_WORKSPACE,
+            tools=settings.ROOM_COMPANION_CONSULT_TOOLS if consult else "",
+            consult=consult,
+            mcp_config_path=turn_tools.mcp_config_path if turn_tools is not None else None,
+        )
+    finally:
+        # The per-turn files hold the invite text: removed even when the turn raises.
+        if turn_tools is not None:
+            footer = footer_for(turn_tools.call_log_path)
+            turn_tools.cleanup()
 
     # A resume against a session the CLI no longer holds fails identically on
     # every retry, so the room would be wedged forever. Drop the mapping and
@@ -205,9 +263,20 @@ def run_turn(settings: Settings, request: RoomClaudeRequestV1) -> RoomClaudeUtte
             settings.ROOM_COMPANION_SESSION_STATE_PATH,
             key,
             result.claude_session_id or session_id,
+            day=slot.day,
+            # Every line Hub sent is now held by this session: the ones just
+            # sent, and the older ones it already had.
+            sent_up_to=newest_created_at(request.transcript),
+            sent_keys=[k for k in (line_key(e) for e in request.transcript) if k],
         )
 
-    return _to_utterance(settings, request, result)
+    utterance = _to_utterance(settings, request, result)
+    if footer:
+        logger.info("room_companion_tools_footer request=%s footer=%s", request.request_id, footer[:400])
+        if utterance.ok and not utterance.passed:
+            # Server-side text, so Juniper sees every lookup without any change to Hub's page.
+            utterance = utterance.model_copy(update={"text": with_footer(utterance.text, footer)})
+    return utterance
 
 
 def _looks_like_missing_session(error: Optional[str]) -> bool:
@@ -227,7 +296,7 @@ def _to_utterance(
     # It keeps ok=True and its true cost_usd -- suppressing the event would
     # hide that spend from the meter, and deciding not to speak costs the same
     # tokens as speaking.
-    passed = bool(result.ok and is_pass(result.text))
+    passed = bool(result.ok and is_pass(result.text) and consult_id_from_room(request.room_id) is None)
     return RoomClaudeUtteranceV1(
         request_id=request.request_id,
         correlation_id=request.correlation_id,

@@ -34,8 +34,33 @@ jobs:
           set -o pipefail
           pytest -q -rs services/orion-hub/tests/test_walkway_stories_browser_smoke.py | tee walkway_stories_smoke.out
           if grep -q "SKIPPED" walkway_stories_smoke.out; then echo "walkway stories smoke skipped -- playwright missing" >&2; exit 1; fi
+      - name: Run "People Orion knows" panel browser smoke (360 px)
+        run: |
+          set -o pipefail
+          pytest -q -rs services/orion-hub/tests/test_people_panel_browser_smoke.py | tee people_smoke.out
+          if grep -q "SKIPPED" people_smoke.out; then echo "people panel smoke skipped -- playwright missing" >&2; exit 1; fi
       - name: Run "Walkway history" panel browser smoke (360 px)
         run: |
           set -o pipefail
           pytest -q -rs services/orion-hub/tests/test_walkway_history_browser_smoke.py | tee walkway_history_smoke.out
           if grep -q "SKIPPED" walkway_history_smoke.out; then echo "walkway history smoke skipped -- playwright missing" >&2; exit 1; fi
+      - name: Run Body Economy tab browser smoke (deferred row, brushing, empty states)
+        run: |
+          set -o pipefail
+          pytest -q -rs services/orion-hub/tests/test_body_economy_browser_smoke.py | tee body_economy_smoke.out
+          if grep -q "SKIPPED" body_economy_smoke.out; then echo "body economy smoke skipped -- playwright missing" >&2; exit 1; fi
+      - name: Run Orion messages tray browser smoke
+        run: |
+          set -o pipefail
+          pytest -q -rs services/orion-hub/tests/test_orion_message_tray_browser_smoke.py | tee orion_tray_smoke.out
+          if grep -q "SKIPPED" orion_tray_smoke.out; then echo "orion message tray smoke skipped -- playwright missing" >&2; exit 1; fi
+      - name: Run "Ask Orion" modal browser smoke (insert, never send, 390 px)
+        run: |
+          set -o pipefail
+          pytest -q -rs services/orion-hub/tests/test_orion_abilities_browser_smoke.py | tee orion_abilities_smoke.out
+          if grep -q "SKIPPED" orion_abilities_smoke.out; then echo "ask orion modal smoke skipped -- playwright missing" >&2; exit 1; fi
+      - name: Run "@claude" chat-box routing browser smoke (never an Orion turn)
+        run: |
+          set -o pipefail
+          pytest -q -rs services/orion-hub/tests/test_claude_address_browser_smoke.py | tee claude_address_smoke.out
+          if grep -q "SKIPPED" claude_address_smoke.out; then echo "@claude routing smoke skipped -- playwright missing" >&2; exit 1; fi

@@ -204,11 +204,12 @@ def test_urns_are_unique_and_well_formed():
 
 
 def test_node_qualified_field_channel_gets_a_distinct_urn_from_the_bare_entry():
-    """bus_synaptic's qualified prediction_error entry (the real registry
-    content, 2026-09-03 glossary version 2) must not collide with the bare
-    prediction_error entry's URN."""
+    """A node-qualified prediction_error entry (the real registry content;
+    bus_synaptic's until its 2026-11 retirement, execution's now) must not
+    collide with the bare prediction_error entry's URN."""
     nodes = {n.name: n for n in resolve_field_channels()}
-    bus_name = "node:substrate.bus_synaptic.prediction_error"
+    assert "node:substrate.bus_synaptic.prediction_error" not in nodes  # retired 2026-11
+    bus_name = "node:substrate.execution.prediction_error"
     assert bus_name in nodes
     assert "prediction_error" in nodes
     assert nodes[bus_name].urn != nodes["prediction_error"].urn

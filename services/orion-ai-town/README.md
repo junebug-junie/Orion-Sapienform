@@ -303,11 +303,98 @@ git -C upstream diff -- data/characters.ts > patches/orion-character.patch
 git -C upstream diff -- convex/constants.ts convex/world.ts > patches/orion-human-juniper.patch
 ```
 
+## Living world: simulation core
+
+The town now has a world that changes on its own, in plain code with no model calls. It holds places, stock (coffee at the diner, parts at the workshop, everyone's cash), each resident's needs, trust between characters, facts, and quests. A Convex cron moves it forward once a minute, but only while the town world is running.
+
+**Game clock.** The town is open at most 2 real hours a day (Orion's sessions), so a real-time clock would need about 12 real days per game day. The clock runs 45 game minutes per real minute (`FAST_CLOCK_X` in `core.ts`) while no model call is needed. It drops to real time, 1 game minute per real minute, while any conversation is open or any NPC has a model call in flight (`townNeedsGpu`). On 10-31, chats held the GPU about 75% of each session, so a 2-hour day comes out at about one game day. The clock only moves in whole 5-minute steps; the remainder carries to the next tick. The `simState` row keeps `clock.busy_ticks` and `clock.fast_ticks`, so the real split shows in `sim/state:snapshot`. Design: `docs/superpowers/specs/2026-10-14-aitown-living-world-design.md` (PR #2666), sections 1–3 and 8. This is PR 2 of that design.
+
+What one tick does:
+- Needs drift by each resident's schedule. Needs are wants: 0 means satisfied, 1 means urgent. Rest builds up during work and recovers during sleep. Social builds up when awake. Purpose rises while the resident is in an open quest and slowly falls otherwise. Money is not drifted: it follows cash (no cash means 1, 40 cash or more means 0).
+- Routines run at the top of the hour: coffee at the diner at 8, 12 and 18 (the coffee leaves stock, the cash goes to the diner's owner), and a wage at the end of each shift.
+- Random events fire from a small template table (coffee and parts deliveries, the workshop generator breaking and getting fixed, gossip that moves trust, small loans). Each template has a rate per game-hour and fires as a seeded Poisson arrival.
+- Quests resolve: a quest succeeds when its goal holds and fails once its deadline passes. Either way its reward or penalty effects apply, and a `quest.<id>` fact records the outcome.
+
+Every random draw comes from a generator whose state is part of the saved world. The same world plus the same seed gives exactly the same next world (tested: one 24-hour tick equals 288 five-minute ticks with a save in between).
+
+**Files.** The code ships as whole new files in `overlay/convex/sim/`, copied into `upstream/` after the patches:
+- `core.ts`: the pure simulation (no imports at all, so CI runs it under Node).
+- `schema.ts`, `store.ts`, `tick.ts`, `events.ts`, `state.ts`: the thin Convex layer.
+- `seed.ts`: generated from the cards (see below).
+
+`patches/orion-sim-core-hooks.patch` is the only upstream edit: it registers the two tables in `convex/schema.ts` and the cron in `convex/crons.ts`.
+
+**Two tables, not ten.** The design listed ten tables. This PR uses two. `simState` holds one versioned document per world with the whole simulated world in it. `simEvents` is the append-only log of every event, with its kind, source, title, effects, generator seed, status and game-minute. One document means an event's effects (stock and trust and a fact together) commit in one write, and a replay starts from one value. The world is small (six characters, five places), so it fits one document easily. Scenes and predictions (PRs 3 and 4) are logs, so they get their own tables when they arrive.
+
+**One apply path.** Every change goes through `core.applyEvent`: tick templates, routines, quest results and Juniper's events. An event carries a closed set of effects:
+
+| op | target | value | rule |
+|---|---|---|---|
+| `stock_delta` | `<place or resident>.<item>` | integer | stock never goes below 0. A new key needs an item that owner kind already holds (places: coffee, parts; residents: cash), so `workshop.coffee` works and `diner.cash` is refused |
+| `need_delta` | `<resident>.rest` / `.social` / `.purpose` | number | clamped to 0..1 (money follows cash) |
+| `trust_delta` | `<from>\|<to>` | number | clamped to -1..1 |
+| `fact_set` | fact key, e.g. `generator.fixed` | number, string or boolean | `rumor.*` and `quest.*` are written by the sim only; at most 100 facts |
+| `place_flag` | `<place>.<flag>` | number, string or boolean | at most 16 flags per place |
+
+An event with an unknown op, an unknown target or a bad value is refused whole, and nothing in it applies. Each effect is stored as exactly `{op, target, value}`; extra keys are dropped. An event with no effects becomes a rumor fact (`rumor.<event id>`, the 20 newest are kept) and moves no numbers. The world has sources `sim` (the tick only) and `juniper` (the only source `inject` takes). `mirror` and `orion` arrive with PRs 4 and 5.
+
+**Size limits.** The whole world is one Convex document, so it stays bounded. New keys past a limit are refused with a reason, never evicted: 100 facts, 16 flags per place, 10 open quests, 16 effects per event, 15 per quest reward or penalty (the tick adds the `quest.<id>` result fact). Only the 20 newest rumors and the 20 newest resolved quests (with their `quest.<id>` facts) are kept.
+
+**A bad quest cannot stop the tick.** If resolving a quest throws, the tick marks it `abandoned` with the reason, logs a `rejected` row, and carries on.
+
+**The entity rule.** `core.checkEntities(state, names)` returns every name that is not a place, an item or a character in the world. The scene writer (PR 3) uses it to refuse a scene that names an invented person.
+
+**Inspect** (from `upstream/`, with the admin key in `.env.local`):
+
+```bash
+npx convex run sim/state:snapshot                 # the world + the 20 newest events
+npx convex run sim/state:snapshot '{"events": 100}'
+npx convex run sim/tick:run '{"minutes": 60, "force": true}'   # advance by hand, even while the town is stopped (at most 1440)
+```
+
+The cron does nothing while the town is not running (`stoppedByDeveloper` or `inactive`). Since 2026-10-30 the town is paused by default and runs only in sessions: one Orion chose (capped at 2 hours a day), or one Juniper opened with Unfreeze. orion-embodiment's session controller heartbeats the world only during Orion's own sessions (see `services/orion-embodiment/README.md`, "AI Town sessions"). Game time pauses with the world and does not catch up afterwards, so after any pause game hours drift away from wall-clock hours: game 08:00 (breakfast) is not 08:00 on the wall. The first tick or event creates the world from the card seed. To reset it to the seed (the event log stays, and the game clock carries on):
+
+```bash
+npx convex run sim/state:bootstrap '{"replace": true}'
+```
+
+**Add an event as Juniper** (CLI only for now; the Hub form and the bus path arrive with PR 4):
+
+```bash
+npx convex run sim/events:inject '{"event": {"source": "juniper", "kind": "delivery", "title": "A crate of parts turns up at the workshop.", "place": "workshop", "effects": [{"op": "stock_delta", "target": "workshop.parts", "value": 5}]}}'
+npx convex run sim/events:inject '{"event": {"source": "juniper", "kind": "rumor", "title": "Someone saw lights over the square."}}'
+npx convex run sim/events:inject '{"event": {"source": "juniper", "kind": "quest", "title": "Fix the generator", "quest": {"goal": [{"kind": "fact", "target": "generator.fixed", "cmp": "==", "value": true}], "participants": ["cam_lin", "orion"], "deadline_in_minutes": 1440, "reward": [{"op": "trust_delta", "target": "cam_lin|orion", "value": 0.2}], "penalty": [{"op": "trust_delta", "target": "cam_lin|orion", "value": -0.1}]}}}'
+```
+
+Each call writes one `simEvents` row with `source: "juniper"`. A refused event writes a row with `status: "rejected"` and the reason, and changes nothing. Any other source (including `sim`) is refused without a row. Quest goals are an AND of conditions: `kind` is `stock`, `fact`, `need` or `trust`, and `cmp` is one of `>= <= > < == !=`. Participants are character ids.
+
+**Cards to seed.** Each resident card in `cards/town_cards.yaml` has a `sim:` block: starting needs, schedule hours (0..23), work place, cash, wage per shift, purpose weights and lying rate. The work place decides who owns the diner (coffee money goes to them) and who fixes the workshop. Purpose weights pick who gossips (`trade_news` + `deceive`) and who asks for loans (`ask_favor`). Lying rate is how often gossip is a spun story, which can cost trust when caught. Every field is read by `core.ts`. The top-level `sim_world:` block holds the places, their starting stock, the starting facts and the seed. Juniper and Orion have no `sim:` block. They are visitors: they are valid names, quest participants and trust targets, but the tick never drifts them. `generate_descriptions.py` renders all of this into `overlay/convex/sim/seed.ts`. The committed copy renders the redacted example cards (a test fails when it drifts). `apply_upstream_patches.sh` renders it again into `upstream/` from `town_cards.local.yaml` when that file exists. A local cards file without `sim:` blocks borrows them from the example, because they hold no personal details.
+
+**Tests.** `tests/test_sim_core.py` runs the shipped `core.ts` and `seed.ts` under Node >= 22.6 with type stripping (`AITOWN_TEST_NODE` points at another node). It covers acceptance A1 (a seeded 24 game-hour run moves stock, needs and trust, and replays exactly), clamping, refused effects, rumors, quests that succeed and fail, the entity rule, and A7's Juniper half at the core. CI runs it in `.github/workflows/aitown-patch-chain.yml`.
+
 ## Orion embodiment
 
 `patches/orion-character.patch` is the tracked diff for AI Town's `Descriptions` array (applied by `scripts/apply_upstream_patches.sh` alongside the embed patch). **Live cards, `generate_descriptions.py`, and the checked-in patch seed four NPCs** — Mara Vale, Nico Sable, Sofia Bell, and Cam Lin. Retired cards (Dr. Elian Cross, Juno Park, Tessa Quinn, Vale Moreno) are archived at `cards/archived/2026-08-29-retired-cast.yaml`. Orion is **not** in `Descriptions`; Orion joins externally — its body created/updated by `services/orion-embodiment/scripts/bootstrap_orion_agent.py` (dry-run by default; `--write` persists `AITOWN_ORION_*` to `~/.fcc/.env`). Orion joins with its **authored town card** (`cards/generated/orion_town_card.txt`, from `town_cards.yaml`); if that file is unreachable the bootstrap falls back to the live self-model projection, then a minimal safe blurb. Juniper Feld is the **human player**, wired via `patches/orion-human-juniper.patch` (sets `DEFAULT_NAME = 'Juniper Feld'`, pins `character: 'f6'`, and her rich join description in `convex/world.ts`). Nico is `f2` (boy sheet). Orion and Cam stay on `f1`. A world wipe is still required after recasting (`testing:wipeAllTables` then `init`) — see Fresh game / reset below.
 
 > Note: `patches/orion-character.patch` and `patches/orion-human-juniper.patch` are generated from real diffs against the cloned `upstream/`. On a node where `upstream/` is not yet cloned, the apply script skips a patch (with a message) rather than failing; generate the patches on a node that has `upstream/` before relying on the cast. If `upstream/` already has an older apply of these two patches, `apply_upstream_patches.sh` will refuse the new hunks — restore vanilla `data/characters.ts` and `convex/world.ts` from the pin (or re-clone), then re-apply, **or** run `generate_descriptions.py` on the dirty tree (it pins Juniper's sprite and rewrites Nico from the cards) and refresh the two patch files.
+
+### Deploys: `scripts/pre_rebuild.sh` and `scripts/post_rebuild.sh`
+
+`scripts/rebuild_services_from_git_diff.sh` runs `scripts/pre_rebuild.sh` before every post-pull rebuild of this stack. It runs `scripts/post_rebuild.sh` only after every compose step passed. If either fails, the stack is marked failed. Before 2026-10-23 nothing did this. The frontend image builds from `upstream/`, and the Convex functions live outside compose, so a pull rebuilt only an unpatched frontend. The live town ran 2026-08-30 code for almost two months.
+
+`pre_rebuild.sh` does four things:
+1. It saves `upstream/`'s changes to `~/.orion/aitown-upstream-backup-<time>/`: the diff against HEAD, and the contents of untracked files. It keeps the last 10.
+2. It resets tracked files to `AITOWN_UPSTREAM_REF` from `.env_example` and deletes the files the patches create. It also deletes the files `overlay/` copies, and any overlay directory the pin does not have (`convex/sim/`) as a whole, so a file dropped from `overlay/` does not stay behind and deploy.
+3. It applies the chain from scratch, then copies `overlay/` over `upstream/` and renders `convex/sim/seed.ts` from the cards in use.
+4. It runs `npx convex codegen --typecheck disable`, which rewrites `convex/_generated/` for the patched tree. The image build type-checks against those files, and the pin's copy lacks every module the patches add: on 2026-10-29 the build failed because `crons.ts` called `internal.sim.tick.run`. Codegen does not change the deployment, but it reads the Convex backend, so the hook first starts the `backend` container (`up -d --wait backend`, a no-op when it runs).
+
+It refuses in two cases:
+- `cards/town_cards.local.yaml` is missing, because the Juniper join text would render from the redacted example. Copy that file from the operator host with owner-only permissions.
+- Upstream's HEAD isn't the pin. A pin bump also needs `npm ci`, so do it by hand.
+
+`post_rebuild.sh` pushes the functions with `npx convex dev --once`. Both hooks run Convex through `scripts/run_convex.sh`: on a host without Node (circe), it runs `npx convex` in `node:20-alpine`. `post_rebuild.sh` runs after `up`, so the backend is running, and `safe_docker_build.sh`'s main-checkout and migration gates have already passed.
+
+To deploy by hand: `bash scripts/pre_rebuild.sh`, rebuild the frontend, then `bash scripts/post_rebuild.sh`.
 
 ### Fresh game / reset
 
@@ -325,6 +412,10 @@ npx convex run testing:resume
 # re-bootstrap Orion's external body:
 cd ../../.. && python services/orion-embodiment/scripts/bootstrap_orion_agent.py --write
 ```
+
+### Session correlation id (`patches/orion-town-correlation-id.patch`)
+
+Every gateway call from `convex/util/llm.ts` (chat, embeddings, moderation) sends `X-Orion-Correlation-Id` when the Convex env var `ORION_TOWN_CORRELATION_ID` is set. orion-embodiment's session controller sets it to the open session's id and removes it when the session ends (the same admin call as `npx convex env set|remove`). The LLM gateway records it in `llm_call_usage.correlation_id`, so AI Town tokens join to the session (and to the `play:aitown.session` act, whose correlation id is the same). Before this the town's ~1,100 calls a day carried no correlation id. A deploy with no session open sends no header.
 
 ### Engine recovery (`patches/orion-engine-recovery.patch`)
 
@@ -383,6 +474,27 @@ When an NPC–NPC chat hits duration or message cap, leave immediately via `conv
 ### NPC no-self-repeat (`patches/orion-npc-no-self-repeat.patch`)
 
 Prompt anti-repetition was not enough: live 2026-09-15 Sofia↔Juniper posted the exact same line twice after a goodbye. Continue now rejects an exact (normalized) self-repeat against the last few own lines, retries once, then returns a sentinel; `agentGenerateMessage` turns that sentinel into a leave (ordinary empty continues are unchanged). Embodiment has the same class of gate for Orion (`is_self_repeat` + one retry, then mark that partner line exhausted so perception ticks do not storm cortex).
+
+### Walk-over across a wall (`patches/orion-walkover-meet.patch`)
+
+Live 2026-10-23: both NPC pairs stood on either side of a wall, `walkingOver`, for good. Their meeting spot was the midpoint, which was the wall tile. `findRoute` failed every tick, and only closes straight-line distance, so it never went around. `orion-conversation-proximity.patch` had removed the invite timeout for accepted walk-overs, so nothing ended it. Orion's own invites to those NPCs were then refused ("already in a conversation") about once a second. Now, when the midpoint is a wall or off the map, the player with the smaller id walks to a free tile next to the other, and the other waits. An accepted walk-over that hasn't met after `WALK_OVER_TIMEOUT` (3 minutes) is abandoned. On the live map, the rule gave reachable routes of 45 and 12 steps for the two stuck pairs. An agent never waits for a human (Juniper only moves when she clicks). The 3-minute limit also covers two cases the rule can't solve: a pair with no path between them, and a partner with all four neighboring tiles taken. Such a pair may re-invite after the 60 s cooldown.
+
+### Live-turn speaker roles and partner echo (`patches/orion-live-turn-roles.patch`)
+
+Upstream sent every chat line to the model as a `user` turn with a `Name to Name:` prefix. Live 2026-09-17 Sofia↔Mara (`c:578946`), both NPCs then copied each other's last line word for word for five turns. The self-repeat gate missed it, because it only compares a speaker with their own lines. Now the speaker's own lines go in as `assistant` turns and the partner's lines go in as `user` turns, as plain text. A reply that shares at least 70% of its words with the partner's last line (lines under 4 words are exempt) goes through the same retry-then-leave path as a self-repeat. After a question, only an exact copy counts, because a plain answer restates the question. The retry instruction goes in the system turn, so the model does not read it as the partner speaking. The threshold flags 2.0% of 9,391 live town turns. `tests/test_live_turn_roles_patch.py` runs the shipped check on the real transcript (Node >= 22.6). It also applies the whole patch chain to the pinned upstream. CI runs both in `.github/workflows/aitown-patch-chain.yml`.
+
+The same PR rebased `orion-npc-no-self-repeat.patch` onto the continuity/answer-first chain without changing its behavior. On `main`, a fresh apply had stopped at that patch.
+
+### Qwen3.5 NPC opener (`patches/orion-qwen35-user-turn.patch`)
+
+The fast worker's Qwen3.5 chat template requires a user turn. AI Town's NPC-to-NPC
+`startConversationMessage` sent only a system prompt, so the worker returned a
+Jinja 500 (`No user query found in messages.`) for those openers. The patch adds
+one user request to greet the other player. Continue and leave already supply
+user turns through `replyCue`; the human-first path still waits for Juniper.
+`scripts/smoke_llm_rail.sh` now tests the `quick_background` route with this
+system-plus-user shape. Check `llm_call_usage` for `http:openai` on that route
+after deployment; the ledger does not identify individual HTTP callers.
 
 ### No human idle kick (`patches/orion-no-human-idle-kick.patch`)
 

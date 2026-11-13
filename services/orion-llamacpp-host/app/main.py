@@ -667,6 +667,7 @@ def build_llama_server_cmd_and_env(profile: LLMProfile) -> Tuple[List[str], Dict
         cfg.chat_template_kwargs is not None
         and cfg.chat_template_kwargs.get("enable_thinking") is False
         and policy.effective_reasoning_budget is None
+        and cfg.reasoning != "auto"
         and supported_flags is not None
         and "--reasoning-budget" not in supported_flags
     ):
@@ -796,6 +797,17 @@ async def _main_async():
         settings.service_version,
         profile.name,
     )
+
+    if settings.llm_require_backend and profile.backend != settings.llm_require_backend:
+        raise SystemExit(
+            f"profile {profile.name} is backend={profile.backend}, LLM_REQUIRE_BACKEND={settings.llm_require_backend}"
+        )
+    if profile.backend == "strata":
+        # The Strata engine runs in its own container (docker-compose.atlas-workers.yml, atlas-chat).
+        # This process only heartbeats and announces it; the pool confirms it on the engine's /props.
+        logger.info("Profile backend=strata: announce-only, no llama-server launched")
+        await heartbeat_loop(settings)
+        return
 
     cmd, env = build_llama_server_cmd_and_env(profile)
     logger.info("Launching llama-server: %s", " ".join(cmd))

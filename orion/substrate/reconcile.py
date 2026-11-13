@@ -42,7 +42,9 @@ _CONCEPT_REGION_SCAN_LIMIT = 500
 # merge decision applied by their own projector. Producer: orion/memory/referents
 # (PR B). Consumers: canonical_node_key() and the embedding candidate scan below,
 # plus orion/substrate/eligibility.py.
-IDENTITY_FENCED_PRODUCERS: frozenset[str] = frozenset({"memory.referents"})
+# person.record: orion-substrate-runtime/app/person_graph_loop.py, one node per ``person`` row;
+# fenced so a camera person never merges into a same-named chat-mined entity by label.
+IDENTITY_FENCED_PRODUCERS: frozenset[str] = frozenset({"memory.referents", "person.record"})
 
 
 def is_identity_fenced(node: BaseSubstrateNodeV1) -> bool:

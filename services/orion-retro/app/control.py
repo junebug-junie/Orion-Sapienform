@@ -1,8 +1,9 @@
-"""Frame-authoritative NES leases, also exercised with a deterministic clock."""
+"""Frame-authoritative NES/SNES leases, exercised with a deterministic clock."""
 import secrets
 
-# libretro B, select, start, up/down/left/right, A. No SNES-only buttons.
+# libretro B, select, start, up/down/left/right, A; SNES adds Y, X, L, R.
 NES_MASK = sum(1 << bit for bit in (0, 2, 3, 4, 5, 6, 7, 8))
+SNES_MASK = NES_MASK | sum(1 << bit for bit in (1, 9, 10, 11))
 # How long a lease survives without input. Browsers throttle page timers to about
 # 1 Hz in some states (live 2026-10-20), so the heartbeat cannot be trusted at 50 ms.
 # Button changes still arrive at once; socket close or blur releases immediately.
@@ -10,8 +11,9 @@ LEASE_TTL = 2.0
 
 
 class Arbiter:
-    def __init__(self, ports):
+    def __init__(self, ports, system='nes'):
         self.ports = ports
+        self.button_mask = {'nes': NES_MASK, 'snes': SNES_MASK}[system]
         self.leases = {}
         self.epochs = {p: 0 for p in ports}
         self.neutral = set()
@@ -29,25 +31,34 @@ class Arbiter:
         self.neutral.update(released)
         return released
 
-    def control(self, connection, port, action, now):
+    def control(self, connection, port, action, now, leisure=False):
+        """leisure=True marks a server-side leisure grant (no browser). Any human
+        acquire or takeover preempts a live leisure lease at once; a leisure sponsor
+        can never take a port from a human."""
         if port not in self.ports:
             raise ValueError('unsupported_port')
         old = self.leases.get(port)
+        live = old is not None and old['expires'] > now
+        if leisure and action == 'takeover' and live and not old.get('leisure'):
+            raise ValueError('leisure_cannot_preempt_human')
         if action == 'release':
             if old and old['connection'] != connection:
                 raise ValueError('not_owner')
             self.leases.pop(port, None)
             self.neutral.add(port)
             return {'port': port, 'released': True}
-        if action == 'acquire' and old and old['expires'] > now:
+        if action == 'acquire' and live and (leisure or not old.get('leisure')):
             raise ValueError('port_owned')
         self.epochs[port] += 1
         self.neutral.add(port)
         item = dict(connection=connection, epoch=self.epochs[port],
                     token=secrets.token_urlsafe(32), expires=now+LEASE_TTL,
-                    seq=-1, mask=0, latch=0, pending=None)
+                    seq=-1, mask=0, latch=0, pending=None, leisure=bool(leisure))
         self.leases[port] = item
-        return {'port': port, 'lease': item['token'], 'epoch': item['epoch']}
+        result = {'port': port, 'lease': item['token'], 'epoch': item['epoch']}
+        if live and old.get('leisure') and not leisure: result['preempted_leisure'] = True
+        if leisure: result['leisure'] = True
+        return result
 
     def submit(self, connection, data, now):
         p = data['port']; item = self.leases.get(p)
@@ -57,7 +68,7 @@ class Arbiter:
             raise ValueError('invalid_or_expired_lease')
         if data['seq'] <= item['seq']:
             raise ValueError('stale_sequence')
-        if data['mask'] & ~NES_MASK:
+        if data['mask'] & ~self.button_mask:
             raise ValueError('unsupported_buttons')
         if data['mask'] & 48 == 48 or data['mask'] & 192 == 192:
             raise ValueError('opposing_directions')

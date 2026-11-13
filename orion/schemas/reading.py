@@ -261,7 +261,7 @@ class ReadingLifecycleV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
     request: ReadingRequestedV1
     seed_id: str
-    stage: Literal["started", "stage1_completed", "stage1_failed", "stage2_started", "stage2_completed", "stage2_failed", "landing_completed"]
+    stage: Literal["started", "stage1_completed", "stage1_failed", "stage2_started", "stage2_completed", "stage2_failed", "landing_completed", "resonance_started", "resonance_completed", "resonance_failed"]
     occurred_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     trace_id: str | None = None
     error: str | None = None

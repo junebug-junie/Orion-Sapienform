@@ -32,6 +32,32 @@ class SystemHealthV1(BaseModel):
         return v
 
 
+# SystemHealthV1.details[CONTAINER_RESTARTS_DETAIL_KEY]: a per-host Docker RestartCount census.
+# Producer: orion-gpu-lane-controller on circe (the one circe service that already holds the host
+# docker socket). Consumer: orion-mesh-guardian's crash-loop check, through the equilibrium snapshot
+# (which carries each service's last heartbeat details). The host is the heartbeat's own ``node``.
+CONTAINER_RESTARTS_DETAIL_KEY = "container_restarts"
+
+
+class ContainerRestartsV1(BaseModel):
+    """One read of a host's docker daemon. ``read_at`` is when the read was attempted; on a failed
+    read ``error`` is set and ``counts`` is empty, so a consumer can tell "could not look" from
+    "looked, nothing restarting"."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    read_at: datetime
+    counts: Dict[str, int] = Field(default_factory=dict)  # "<container name>@<id[:12]>" -> RestartCount
+    error: Optional[str] = None
+
+    @field_validator("read_at")
+    @classmethod
+    def _ensure_tz(cls, v: datetime) -> datetime:
+        if v.tzinfo is None:
+            return v.replace(tzinfo=timezone.utc)
+        return v
+
+
 class EquilibriumServiceState(BaseModel):
     """
     Current service state used by the Equilibrium snapshot publisher.

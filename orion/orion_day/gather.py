@@ -31,6 +31,12 @@ Sources:
   (``orion/temporal_self/day_block.py``). Read from the table directly, like every source here
   (same connection, same "a failed source names its gap" rule); a day that is not closed yet is
   ``empty`` and renders nothing.
+* juniper_chat -- Juniper's chat turns with Orion (``chat_history_log``, full prompt and response),
+  and Orion's unsolicited messages to her (empty prompt, ``client_meta.unsolicited``). The table's
+  ``created_at`` is UTC without a zone, so the window is compared in UTC.
+* temporal_core -- from the same closed ``temporal_self_day`` row: expectations, acts and their graded
+  outcomes, threads with Juniper, the body's day (``orion/orion_day/temporal_core.py``), with the
+  frame's event rows read from ``temporal_self_event`` (as recorded at close).
 * walkway_day -- the walkway camera's deterministic day rollup line (``vision_rollup``,
   grain ``day``, written by orion-sql-writer; orion/vision/walkway_rollup.py). Counts only.
 """
@@ -46,6 +52,7 @@ from orion.cognition.chat_history_compactor.digest import stable_chat_compactor_
 from orion.cognition.compactor.index import build_compactor_index
 from orion.cognition.github_compactor.digest import stable_github_compactor_journal_entry_id
 from orion.dream.introspect_sql import H_COLS, HYPOTHESIS_BLIND_WHERE, NARRATIVE_WINDOW_SQL
+from orion.orion_day.temporal_core import render_temporal_core
 from orion.orion_day.window import orion_day_window
 from orion.schemas.orion_day import (
     ORION_DAY_TIMEZONE,
@@ -54,6 +61,7 @@ from orion.schemas.orion_day import (
     DreamHypothesisV1,
     DreamNarrativeV1,
     JournalTextV1,
+    JuniperChatTurnV1,
     OrionDayCorrectionV1,
     OrionDayMaterialV1,
     OrionDaySourceStatusV1,
@@ -198,6 +206,29 @@ TEMPORAL_DAY_IMMUNE_SQL = """
 SELECT payload_json FROM temporal_self_event
 WHERE source_kind = 'immune_finding' AND day_id = $1 AND ingested_at <= $2
 ORDER BY occurred_at, event_id
+"""
+
+# The day's frame events (expectations, acts) as recorded at close, for the temporal core.
+TEMPORAL_CORE_EVENTS_SQL = """
+SELECT event_id, source_kind, verdict, occurred_at, payload_json FROM temporal_self_event
+WHERE day_id = $1 AND event_id = ANY($2::text[]) AND ingested_at <= $3
+"""
+
+# Juniper's turns and Orion's unsolicited messages to her. created_at is UTC with no zone.
+# Only rows that are hers: Hub chat sources, or a NULL source sent from her browser (client_meta has
+# an origin; live 07-31..09-28). Not an agent's rpc ping (source 'hub') nor a Collapse Mirror block.
+JUNIPER_CHAT_SOURCES = ["hub_orion", "hub_ws", "hub_http"]
+JUNIPER_CHAT_SQL = """
+SELECT id, correlation_id, created_at, prompt, response,
+       COALESCE((client_meta->>'unsolicited')::boolean, false) AS unsolicited
+FROM chat_history_log
+WHERE created_at >= ($1::timestamptz AT TIME ZONE 'UTC') AND created_at < ($2::timestamptz AT TIME ZONE 'UTC')
+  AND (
+    COALESCE((client_meta->>'unsolicited')::boolean, false)
+    OR (COALESCE(prompt, '') <> '' AND (source = ANY($3::text[])
+                                        OR (source IS NULL AND client_meta ? 'origin')))
+  )
+ORDER BY created_at, id
 """
 
 WALKWAY_DAY_STREAM = "walkway"
@@ -377,9 +408,13 @@ async def gather_reading_findings(
                       request_id=r.request_id or "", title=r.title or "", learned=r.learned,
                       article_summary=r.article_summary) for r in readings]
     result = await findings_for_reads(conn, refs, until=until, prior_lookup=prior_lookup)
+    if result.resonance_unchecked:
+        sources["reading_resonance"] = OrionDaySourceStatusV1(status="error", error=result.resonance_unchecked)
     if result.beliefs_unchecked:
         sources["reading_beliefs"] = OrionDaySourceStatusV1(status="error", error=result.beliefs_unchecked)
-    return [r.model_copy(update={"findings": result.by_seed.get(r.seed_id, [])}) for r in readings]
+    return [r.model_copy(update={"findings": result.by_seed.get(r.seed_id, []),
+        "article_summary": next((f.resonance_article_summary for f in result.by_seed.get(r.seed_id, [])
+                                  if f.resonance_article_summary), r.article_summary)}) for r in readings]
 
 
 async def gather_journals_by_prefix(conn: Any, start: datetime, end: datetime, prefix: str) -> list[JournalTextV1]:
@@ -492,12 +527,20 @@ async def gather_corrections(conn: Any, start: datetime, end: datetime) -> list[
     ) for r in await conn.fetch(CORRECTIONS_SQL, start, end)]
 
 
-async def gather_temporal_day(conn: Any, letter_date: date, tz_name: str) -> TemporalSelfDayBlockV1 | None:
+async def _closed_day(conn: Any, letter_date: date) -> TemporalSelfDayV1 | None:
     row = await conn.fetchrow(TEMPORAL_DAY_SQL, letter_date.isoformat())
     if row is None:
         return None
     day = TemporalSelfDayV1.model_validate(_obj(row["day_json"]))
     if day.day_id != letter_date.isoformat():  # never show another day's record as this one
+        return None
+    return day
+
+
+async def gather_temporal_day(conn: Any, letter_date: date, tz_name: str,
+                              day: TemporalSelfDayV1 | None = None) -> TemporalSelfDayBlockV1 | None:
+    day = day if day is not None else await _closed_day(conn, letter_date)
+    if day is None:
         return None
     findings = []
     try:
@@ -506,6 +549,28 @@ async def gather_temporal_day(conn: Any, letter_date: date, tz_name: str) -> Tem
     except Exception:  # noqa: BLE001 - the findings are an addendum; the day block stands without them
         logger.warning("orion_day_immune_findings_read_failed day=%s", day.day_id, exc_info=True)
     return render_closed_day_block(day, tz_name=tz_name, immune_findings=findings)
+
+
+async def gather_temporal_core(conn: Any, day: TemporalSelfDayV1, tz_name: str,
+                               block: TemporalSelfDayBlockV1 | None = None) -> TemporalSelfDayBlockV1 | None:
+    frame = day.frame
+    ids = sorted({x.event_id for x in frame.expectations_resolved_today} | set(frame.self_change_event_ids))
+    events: dict[str, dict[str, Any]] = {}
+    if ids:
+        for r in await conn.fetch(TEMPORAL_CORE_EVENTS_SQL, day.day_id, ids, day.closed_at):
+            at = _aware(r["occurred_at"])
+            events[str(r["event_id"])] = {"source_kind": r["source_kind"], "verdict": r["verdict"],
+                                          "occurred_at": at.isoformat() if at else None,
+                                          "payload": _obj(r["payload_json"]) or {}}
+    shown = frozenset(r[4:] for r in (block.records if block else {}) if r.startswith("arc:"))
+    return render_temporal_core(day, events, tz_name=tz_name, already_shown=shown)
+
+
+async def gather_juniper_chat(conn: Any, start: datetime, end: datetime) -> list[JuniperChatTurnV1]:
+    return [JuniperChatTurnV1(
+        turn_id=str(r["id"]), correlation_id=r["correlation_id"], at=_aware(r["created_at"]),
+        prompt=(r["prompt"] or "").strip(), response=(r["response"] or "").strip(), unsolicited=bool(r["unsolicited"]),
+    ) for r in await conn.fetch(JUNIPER_CHAT_SQL, start, end, JUNIPER_CHAT_SOURCES)]
 
 
 async def gather_orion_day(
@@ -548,9 +613,15 @@ async def gather_orion_day(
     digest = await _read(sources, "world_pulse_digest", lambda: gather_world_pulse_digest(conn, letter_date), None)
     corrections = await _read(sources, "corrections", lambda: gather_corrections(conn, start, end), [])
     walkway = await _read(sources, "walkway_day", lambda: gather_walkway_day(conn, letter_date, start), None)
+    juniper_chat = await _read(sources, "juniper_chat", lambda: gather_juniper_chat(conn, start, end), [])
     # Kill switch off: not read at all, so the letter is exactly what it was before patch 4.
-    day_block = (await _read(sources, "temporal_day", lambda: gather_temporal_day(conn, letter_date, tz_name), None)
-                 if temporal_day else None)
+    day_block = core = None
+    if temporal_day:
+        closed = await _read(sources, "temporal_day", lambda: _closed_day(conn, letter_date), None)
+        if closed is not None:
+            day_block = await _read(sources, "temporal_day",
+                                    lambda: gather_temporal_day(conn, letter_date, tz_name, day=closed), None)
+            core = await _read(sources, "temporal_core", lambda: gather_temporal_core(conn, closed, tz_name, day_block), None)
     return OrionDayMaterialV1(
         letter_date=letter_date,
         timezone=tz_name,
@@ -573,5 +644,7 @@ async def gather_orion_day(
         corrections=corrections,
         temporal_day=day_block,
         walkway_day=walkway,
+        juniper_chat=juniper_chat,
+        temporal_core=core,
         sources=sources,
     )

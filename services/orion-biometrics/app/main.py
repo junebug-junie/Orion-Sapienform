@@ -360,6 +360,9 @@ async def publish_metrics(bus: OrionBusAsync) -> None:
         pipeline_input["ilo"] = _ilo_poller.details()
         pipeline_input["pdu"] = _pdu_poller.details()
         pipeline_input["disk_capacity"] = collect_disk_capacity(settings.DISK_CAPACITY_MOUNTS)
+        # Per-container CPU (act energy cost, 2026-10-29). Same extra="ignore" trap as ilo/pdu:
+        # merged after validation, so it feeds measurements but never the published sample.
+        pipeline_input["containers"] = sample_data.get("containers")
         summary, induction = _pipeline.update(pipeline_input)
 
         raw_payload = BiometricsPayload(

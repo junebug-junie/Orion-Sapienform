@@ -179,3 +179,13 @@ def test_hub_card_gate_and_the_rollup_gate_are_the_same_gate() -> None:
     for counts in ({}, {"right": 49}, {"right": 40, "wrong_motion": 10}, {"right": 49, "wrong_name": 1},
                    {"right": 2, "cant_tell": 5}, {"right": 39, "wrong_other": 11}):
         assert card.tally_from_counts(counts, 1, 3) == shared.tally_from_counts(counts, 1, 3), counts
+
+
+def test_panel_shows_belongings_without_individual_ids() -> None:
+    row = _row()
+    rollup = json.loads(row["rollup"])
+    rollup["belongings"] = {"Sam": {"times": ["15:40"], "sightings": 1, "kinds": ["bicycle"],
+                                    "individual_ids": ["secret-bike"], "person_ids": ["person-sam"]}}
+    row["rollup"] = json.dumps(rollup)
+    panel = json.dumps(wrr.panel_row(row))
+    assert "secret-bike" not in panel and '"bicycle"' in panel and "15:40" in panel

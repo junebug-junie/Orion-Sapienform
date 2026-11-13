@@ -138,8 +138,7 @@ def build_channel_series(
     (unlike the `merged`-branch entries below), so its `stamps` entry is
     always None -- an honest "no producer write time to report" rather than
     a fabricated one, same convention `winning_write_time()`
-    (orion.field.pressure -- moved here from this module 2026-08-16 so
-    orion/field/credit_integrity.py could reuse it) already uses for
+    (orion.field.pressure -- moved there from this module 2026-08-16) already uses for
     capability winners.
 
     `unparsable_row_count` lets callers distinguish "this channel is genuinely

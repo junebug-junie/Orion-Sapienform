@@ -15,6 +15,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from pydantic.json_schema import SkipJsonSchema
+
+from orion.refs import MAX_REFS as REF_MAX, RefV1
+
 # MAX_ITEMS full-size items stay under ORION_FCC_MCP_TOOL_RESULT_MAX_CHARS
 # (12000), the budget the harness proxy enforces on wrapped servers (it cuts
 # the JSON mid-item). orion-introspect is not wrapped today; the bound is kept
@@ -43,11 +47,20 @@ CURIOSITY_RUN_ID_PATTERN = r"^[A-Za-z0-9_.:-]{1,64}$"
 
 IntrospectBusOperation = Literal[
     "dreams", "curiosity", "orion_day", "record_correction", "node_history", "queue_curiosity_focus",
+    "power_attribution",
 ]
 IntrospectOperation = Literal[
     "reading_result", "dreams", "curiosity", "orion_day", "record_correction", "node_history",
-    "queue_curiosity_focus",
+    "queue_curiosity_focus", "power_attribution",
 ]
+
+# power_attribution: heat archaeology over hourly watts (orion.physiology.heat_archaeology).
+# Raw per-node watts (orion_biometrics_cluster) are kept ~30 days, so the window may not start
+# earlier than that; a step needs 24 h on each side, so the window is at least 2 days.
+POWER_ATTRIBUTION_MAX_DAYS = 30
+POWER_ATTRIBUTION_MIN_DAYS = 2
+POWER_ATTRIBUTION_DEFAULT_DAYS = 14
+PowerNode = Literal["circe", "athena", "hecate", "cooling"]
 
 # node_history: a substrate node's prediction-error readings from
 # substrate_node_prediction_error_history. The writer prunes at
@@ -132,7 +145,9 @@ class IntrospectToolBindingV1(BaseModel):
     """Server-authored turn context; never part of model tool arguments."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
-    invocation_context: Literal["unified_chat", "curiosity"]
+    # "prime" (2026-10-30, Orion Prime 2A): Prime's resident loop in orion-mind, not a harness turn.
+    # Only Hub's queue_curiosity_focus responder accepts it (scripts/curiosity_focus_listener.py).
+    invocation_context: Literal["unified_chat", "curiosity", "prime"]
     parent_run_id: str
     parent_trace_id: str
     memory_allowed: bool
@@ -406,6 +421,12 @@ class QueueCuriosityFocusArguments(BaseModel):
     question: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
     why: str = Field(min_length=1, max_length=FOCUS_TEXT_CAP)
     origin: Literal["self", "juniper"] = "self"
+    # Ids the question cites, each one a kind with a resolver and a dig command (orion/refs.py). Added
+    # 2026-10-30 (Orion Prime step 1), optional and consumer-first: Hub accepts it before orion-mind
+    # sends it, and a caller that sends none is unchanged. Stored on the focus row and shown to the run.
+    # Prime only: its runtime opens every ref before sending (services/orion-mind/app/prime_loop.py). Hidden
+    # from the chat tool's schema (SkipJsonSchema), and the chat tool never forwards it (orion/introspect/tools.py).
+    refs: SkipJsonSchema[list[RefV1]] = Field(default_factory=list, max_length=REF_MAX)
 
     @field_validator("question", "why", mode="before")
     @classmethod
@@ -450,3 +471,38 @@ class NodeHistoryArguments(BaseModel):
         # `until` within the clock-skew slack of now is now.
         end = min(self.until, now) if self.until is not None else now
         return end - timedelta(hours=self.hours), end
+
+
+class PowerAttributionArguments(BaseModel):
+    """Model-supplied arguments for the ``power_attribution`` tool.
+
+    ``node`` given: that node only (``cooling`` is the cabinet AC plug). Omitted: every node
+    with wall watts in the window. The window ends at ``until`` (default now), reaches back
+    ``days``, and must start inside raw-watts retention.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    node: PowerNode | None = None
+    days: float = Field(
+        default=POWER_ATTRIBUTION_DEFAULT_DAYS, ge=POWER_ATTRIBUTION_MIN_DAYS, le=POWER_ATTRIBUTION_MAX_DAYS,
+    )
+    until: datetime | None = None
+
+    @model_validator(mode="after")
+    def _window(self):
+        _require_tz(self.until, "until")
+        if self.until is not None:
+            now = datetime.now(timezone.utc)
+            if self.until > now + NODE_HISTORY_FUTURE_SLACK:
+                raise ValueError("until is in the future: no readings exist there yet; omit it to end the window now")
+            start = self.until - timedelta(days=self.days)
+            if start < now - timedelta(days=POWER_ATTRIBUTION_MAX_DAYS) - NODE_HISTORY_EDGE_SLACK:
+                raise ValueError(
+                    f"the window must start within the last {POWER_ATTRIBUTION_MAX_DAYS} days: older "
+                    "per-node watts are pruned, so an earlier window would read as missing, not quiet"
+                )
+        return self
+
+    def window(self, now: datetime) -> tuple[datetime, datetime]:
+        end = min(self.until, now) if self.until is not None else now
+        return end - timedelta(days=self.days), end

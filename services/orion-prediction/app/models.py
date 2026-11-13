@@ -16,7 +16,7 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
-from app.direct import direct_ar, direct_arx
+from app.direct import direct_ar, direct_arx, direct_arx_overlap
 from app.series import Seasonality, SeriesSpec
 
 MIN_CYCLES = 2
@@ -137,6 +137,11 @@ def build_models(spec: SeriesSpec, usable: list[Seasonality]) -> dict[str, Forec
         Forecaster("prophet", _prophet(usable, spec.grain_min, spec.breaks), t),
         Forecaster("direct_ar", direct_ar(spec.grain_min), t),
     ]
-    if spec.covariates:
-        zoo.append(Forecaster("direct_arx", direct_arx(spec.grain_min), t, uses_covariates=True))
+    # Covariate columns arrive in spec.covariates order. direct_arx sees the ones with full history;
+    # direct_arx_overlap sees all of them on the rows where every one has readings (app/direct.py).
+    full = tuple(k for k, c in enumerate(spec.covariates) if c not in spec.overlap_covariates)
+    if full:
+        zoo.append(Forecaster("direct_arx", direct_arx(spec.grain_min, cols=full), t, uses_covariates=True))
+    if spec.overlap_covariates:
+        zoo.append(Forecaster("direct_arx_overlap", direct_arx_overlap(spec.grain_min), t, uses_covariates=True))
     return {f.name: f for f in zoo}

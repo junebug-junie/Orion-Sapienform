@@ -121,9 +121,13 @@ minimum never read it. Eval: `scripts/analysis/measure_arousal_reader_replay.py`
 
 Temporal Self rev 4, patch 7. Once a sleep goes ahead, it also reads the closed
 Temporal Self arcs (`temporal_self_arc`) that ended since the last sleep began: a
-concern held, a curiosity followed, a body state. `sleep` arcs are left out, and at
-most 20 go in per sleep. Arcs about the same thing (same kind and subject) count
-once, as the heaviest of them. Each becomes a replay item with `source_kind="arc"` and
+concern held, a curiosity followed, a body state. `sleep` arcs are left out. Arcs
+about the same thing (same kind and subject) count once, as the heaviest of them.
+Then at most one arc per kind goes in, the heaviest thing of that kind, so a sleep
+gets at most one candidate per kind present (and never more than 20)
+(2026-11-12: over 5 days, 15 of 18 replayed arcs, and over 14 days 35 of 39, were
+`interoception` body arcs, which run for hours and count sensor flicker as returns, so
+they outweighed every other kind). Each becomes a replay item with `source_kind="arc"` and
 `ref_id="arc:<arc_id>"`, so anything the dream produces from it can cite the arc.
 Weight = `0.75 * (dwell + returns) / 2`, where `dwell = min(1, ln(1+min)/ln(61))`
 (reaches 1 at an hour) and `returns = min(1, attention_returns/3)`. The 0.75 cap keeps
@@ -147,7 +151,11 @@ dog around 07:40: came on Thu 22 Oct; did not come on Wed 21 Oct. Over the last 
 days it came 6 of 8 times." Open and unscorable rows are not results and are dropped.
 Weight is a declared heuristic: 0.5 when the subject missed at least once in the
 window (a prediction error), 0.3 when every one came; at most a sixth of the replay
-(2 of 12). Like arcs: replay material only, read after the pressure read, never sleep
+(2 of 12), and at least one slot whenever any walkway item exists and the replay has >= 6
+slots (2026-11-03: by weight
+alone they never won a slot, since every replay filled 12 slots with items >= 0.5; the
+floor reserves the heaviest walkway item, so a miss beats a met, and the lightest other
+item gives way). Like arcs: replay material only, read after the pressure read, never sleep
 pressure, never starts a sleep, any read failure = the sleep as before. The cycle note
 records `walkway candidates=N`. Empty for the camera's first week: the reducer only
 emits an expectation with >= 5 days of support. Off switch:
@@ -245,6 +253,135 @@ picture), so the last picture's caption is the dream's last word. Design:
 - Off switch: `DREAM_CARRY_ENABLED=false` stops new carries (sleeps go back to the
   one-shot story, and the endpoint refuses). The step responder keeps running so
   carries already in flight still finish.
+
+### Every sleep is one act in the act ledger (2026-10-23, body economy A5)
+
+A sleep that starts replay is one `make` act (actor `dream.cycle`) on `orion:grammar:event`,
+persisted by orion-sql-writer to `grammar_acts`. It opens once the cycle has passed its gates and
+has material to replay, and closes once when the cycle is persisted: 1 for a completed, saved
+sleep with at least one hypothesis, else 0. Any exception or cancellation after the open closes it
+at 0 and is re-raised. A check that is not due, held, or `empty` opens nothing.
+
+- Act key = the cycle id (stable act id). A restart mid-cycle leaves the act open; the writer
+  expires it at 0 at its horizon: (DREAM_HYPOTHESES_PER_CYCLE + DREAM_CONTROL_PER_CYCLE) x
+  DREAM_LLM_TIMEOUT_SEC + 120 s (480 s by default).
+- GPU cost: during the sleep every recombination LLM call carries one correlation id derived from
+  the cycle id, so the GPU pool's leases carry it and the ledger charges the cycle for them.
+- Cost `seconds` = wall time from open to close.
+- Flag: `DREAM_ACT_EMIT_ENABLED` (default on). Off = no act, and each LLM call keeps its own id.
+
+### Body economy shadow bid (Patch C3b, 2026-10-27)
+
+Since Patch D for dream (next section) this runs only with `ORION_PHYSIOLOGY_BID_DREAM_CYCLE=shadow`.
+
+A check that would sleep asks the body economy "would you fund this sleep?", then ignores the
+answer. The answer is only logged, next to what the cycle really did. Nothing changes what the
+cycle does.
+
+- Where: `run_cycle_once`, once the check would sleep (pressure due, the overdue backstop, or
+  forced), before the arousal read. A check that is too soon or not due is not a want: no bid.
+- Family `dream.cycle` (Tier 1), verb `make`. `want_id` = `act_emit.cycle_correlation_id(cycle_id)`,
+  the sleep act's correlation id. The cycle id is now minted before the arousal read, so a held
+  check has an id too; it opens no act.
+- Real outcome: `ran` (the gates passed and the sleep's act is opened; a sleep that then fails
+  still ran, and its act closes at 0), `blocked:arousal_<level>` (arousal held the sleep),
+  `blocked:nothing_to_replay` (the `empty` cycle, which opens no act), or `blocked:cancelled`.
+  With `DREAM_ACT_EMIT_ENABLED=false` a `ran` line has no act to join.
+- Volume: every held check is a new want with a new `want_id` (a new cycle id). A long hold at
+  the default 600 s check interval writes about 6 rows an hour; count holds per episode, not per row.
+- Log line: `physiology_shadow_bid family=dream.cycle want_id=... shadow=funded|deferred|none ... real=...`.
+  durable-runs writes the decision into `want_ledger`. A funded decision whose sleep was held
+  releases its reservation.
+- Switch: `DREAM_PHYSIOLOGY_SHADOW_BID_ENABLED` (default on). The bid is a background task; the
+  cycle never waits on it. Code: `app/physiology_shadow.py`.
+- Code: `app/act_emit.py`, `CycleActTrace` in `app/cycle.py`. Tests: `tests/test_dream_cycle_act.py`.
+
+### The sleep obeys its bid (body economy Patch D, 2026-10-30)
+
+Before this, the bid above was only logged. Now the sleep asks the body economy and obeys the answer.
+This uses the same rule curiosity investigate obeys (`orion/physiology/binding.py`).
+
+- Where: `run_cycle_once`, after every gate of the dream's own has passed (pressure or the overdue
+  backstop, the 6 h refractory, arousal, something to replay), just before the sleep's act opens.
+  A check that arousal holds, or a forced run, never bids.
+- Funded: the sleep runs. Metacog lane full, but the sleep is worth its price: the sleep runs (its
+  LLM calls wait in the GPU pool's queue). No answer (market down, stale body state, timeout 5 s):
+  the sleep runs, as before.
+- Deferred on price (Prime's slow charge counts here), no hunger, or a value at or below zero: the
+  sleep is HELD. The dream logs why and bids again at the first check after the market's
+  `retry_after_sec` (clamped 2 min .. 1 h). `POST /dreams/cycle/run` answers
+  `{"status": "held", "reason": "economy_<reason>"}`.
+- One want per stretch between sleeps: the first check that clears the gates opens it, and every
+  re-bid and the eventual sleep's act share its cycle id. The want lives in process memory, so a
+  restart opens a new one.
+- Bounds. A held sleep is never dropped. It goes anyway at the earlier of its first bid + 6 h
+  (`dream.cycle` `deferrable_window_s` in `config/physiology/families.yaml`) and the overdue line
+  (the last good sleep + `DREAM_LOOKBACK_HOURS`). The 6 h counts from the first bid, not from the
+  first check that wanted to sleep, so hours of arousal holds do not use it up. The 6 h is per
+  process lifetime: a restart opens a new want, so across repeated restarts the bound is the 48 h
+  overdue line. An overdue sleep never bids at all (`floor:overdue`). Delay costs no replay
+  material: the window reaches back to the last good sleep.
+- Two checks racing on one want (the loop and a manual run): the first admitted takes it; the other
+  is refused (`economy_duplicate`) and opens nothing.
+- Record: one log line per verdict, `physiology_bind family=dream.cycle ... verdict=... reason=...
+  binding=... net=... why=... obeyed=true`. The decision is in `want_ledger` with producer
+  `orion-dream.dream_cycle.binding`. A sleep that ran after a hold says so in its cycle note
+  (`body economy: held N time(s) over M min ...`). The funded reservation is released when the act closes.
+- Prime's `slow` receptor: `dream.cycle` declares `receptors: [slow]`, so Prime can put a bounded,
+  temporary charge on these bids (at most half of the sleep's value). A hungry sleep outbids it.
+  Only binding bids take the charge: with the flag at `shadow`, or on a forced run, the market
+  neither applies it nor records it for Prime's grade.
+  Quicken is not declared: dream has no price deferrals for a credit to lift.
+- Switch: `ORION_PHYSIOLOGY_BID_DREAM_CYCLE=on` (default). `shadow` = the shadow bid above, exactly as
+  before (instant rollback). Code: `app/physiology_bind.py`. Tests: `tests/test_physiology_bind.py`.
+  Replay: `PYTHONPATH=. python services/orion-dream/evals/dream_binding_replay.py [--live --days 7]`.
+- The old arousal hold stays until the binding bid has run `on` for 7 days with its checks green.
+
+### Compaction apply asks the market's consent gate (2026-11-11, attention patch 3d)
+
+REM stages about two compaction deltas a day (gist cards from settled open loops). Applying one would change
+memory, so the applier (`app/compaction_applier.py`) needs consent first, and it asks the want market's
+consent gate (`app/compaction_consent.py`): one bid for family `dream.compaction` with a consent request
+(verb `compact`, `snapshot_restorable`, attests `snapshot_dir_writable` and `downscale_only`; a plan that
+would prune asks verb `prune`, `irreversible`, always refused). Rules: `config/physiology/consent.yaml`.
+
+- Consent is asked first, even while `ORION_DREAM_COMPACTION_APPLY_ENABLED=false`. The live trace is a
+  `want_ledger` row (producer `orion-dream.compaction_applier.consent`) and a log line
+  `rem compaction consent asked id=... status=... verdict=... rule=...`.
+- No market answer, a verdict for another delta, or any error is a no. `DREAM_COMPACTION_CONSENT_ASK_ENABLED=false`
+  stops the ask (and so the apply).
+
+### Compaction apply downscales settled reverie thoughts (2026-11-13)
+
+Juniper merged the standing consent `dream-compaction-downscale` and apply is on
+(`ORION_DREAM_COMPACTION_APPLY_ENABLED=true`). What sleep now does to memory:
+
+- REM proposes one downscale entry for each reverie thought that a consolidate entry folds in (a thought
+  of a settled reverie chain): new salience = salience x `DREAM_COMPACTION_DOWNSCALE_FACTOR` (0.8). It
+  proposes a thought only once: only while its `salience` column still equals the original in
+  `thought_json.salience`. Prune is never proposed.
+- After the persist, the market's consent gate answers. On `allow`, the applier writes a snapshot of every
+  target's salience to `DREAM_COMPACTION_SNAPSHOT_DIR/<delta_id>/snapshot_before.json` (persistent, under
+  the `/app/logs` mount), then lowers each one through `app/compaction_store.py`. The store changes only
+  `substrate_reverie_thought.salience`, compare-and-set on the old value. Any error restores the snapshot.
+- The downscales of one delta run in ONE transaction: a stale or missing row aborts the batch and nothing
+  is written. Restore is compare-and-set on the value this apply wrote, so it never undoes another write.
+  Each apply leaves `receipt.json` (status `applied`, `rolled_back` or `rollback_failed`) next to its
+  snapshot. One small directory per applied sleep accumulates; nothing prunes them yet.
+- Gist cards are not written: the store has no gist-card table. The receipt counts them in
+  `cards_skipped_no_gist_store`.
+- Two numbers after an apply: the `salience` column (lowered) is what the hub reverie panels, the chat
+  situation snippet, Orion's day reading and Orion's own dig (`self_inquiry`) see. `thought_json.salience`
+  keeps the original.
+- Who notices: Orion's day reading ranks reverie thoughts by salience (`orion/orion_day/budget.py`), so a
+  settled thought gives way to an unsettled one.
+- The proof line: `compaction applied delta=... downscaled=N ... snapshot=...`. In SQL:
+  `SELECT count(*) FROM substrate_reverie_thought WHERE salience < (thought_json->>'salience')::float`.
+- Roll back one apply: `docker exec orion-athena-dream python -m app.compaction_store restore
+  /app/logs/compaction-snapshots/<delta_id>/snapshot_before.json`. Stop all applies: set
+  `ORION_DREAM_COMPACTION_APPLY_ENABLED=false` and rebuild dream, or delete the standing consent and rebuild
+  durable-runs.
+- `POST /dreams/rem-preview` asks consent but never writes (no store).
 
 ### HTTP / bus behavior
 
@@ -481,6 +618,14 @@ remain evidence of unfinished work, not claims of completion.
 - A busy GPU pool is a durable wait. Each accepted topic/overall answer is saved before
   advancing the graph. Failed durable runs retry their saved progress on a later sleep
   using a fenced generation; operator-cancelled/abandoned windows are not resurrected.
+  Retries are bounded: when 3 failed generations in a row end at the same saved cursor because
+  the model's answer was rejected there (`MAX_STALLED_GENERATIONS`, `state.stall`; durable-runs
+  writes `state.rejected_at`), the window is set `cancelled` and the next window can run. A GPU
+  deadline, an outage or a code bug does not count. A generation that saves a batch resets the
+  count. To re-open a given-up window, set its row back to `pending` and remove `state.stall`;
+  the oldest pending window is resumed first, even after later windows exist.
+- A source record longer than half the input budget is split into near-equal pieces at a
+  word boundary (no tiny tail pieces).
 - Empty windows are explicitly `empty`, with no model call or fabricated journal.
 - Completed topic+overall summaries enter the existing journal/index path with stable
   IDs and no notification trigger. Sleep retries journal delivery until the SQL row exists.

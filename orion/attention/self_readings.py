@@ -27,7 +27,9 @@ Rendering (``render_self_readings``): only unusual readings get a line, at most
 ``MAX_SHOWN`` and ``SELF_READINGS_MAX_CHARS``. A calm body renders nothing ("creatures notice
 chaos"); no reading, stale, or too-little-history signals never render as calm -- when a block is
 shown they are named as unreadable. Every line carries ``[pe:<name>@<observed_at>]`` naming the
-persisted row (``substrate_node_prediction_error_history`` primary key) its numbers came from.
+persisted row (``substrate_node_prediction_error_history`` primary key) its numbers came from;
+an alarm (cabinet, strain: ``prediction_error_freshness.ALARM_NODE_IDS``) says ``[alarm:...]``
+instead, because it counts firings, not prediction error.
 
 What it tends to lead to (spec section E): when the caller passes the signal's renderable
 ``self_signal_outcome_association`` row (``orion.attention.self_signal_outcomes.index_by_signal``:
@@ -44,6 +46,8 @@ from typing import Iterable, Mapping
 
 from orion.attention.pe_history_cache import NodePeHistoryCache
 from orion.attention.world_first import (
+    MEASUREMENT_VALUE_KINDS,
+    PREDICTION_NODE_PREFIX,
     SUBSTRATE_NODE_PREFIX,
     chat_rate_reading,
     judge_candidate,
@@ -68,20 +72,35 @@ TRIGGER_RATE_WINDOW = timedelta(hours=1)
 # Fewer real firings than this in 7 days: "more than usual" has nothing to stand on.
 TRIGGER_MIN_FIRES_7D = 5
 
-_PERCENTILE_KINDS = frozenset({"level", "count"})
+_PERCENTILE_KINDS = frozenset({"level", "count", "surprise_excess"})
 _RATE_KINDS = frozenset({"trigger", "binary"})
+# Same set world-first attention judges by; everything else (placeholder, bucket,
+# or no glossary entry at all) is never read as a size.
+assert _PERCENTILE_KINDS | _RATE_KINDS == MEASUREMENT_VALUE_KINDS
+
+
+def node_prediction_error_is_measurement(node_id: str) -> bool:
+    """True only when the glossary says this node's prediction_error is a measurement.
+
+    Placeholder, bucket, and unknown (no glossary entry, or an unreadable glossary)
+    all read False. Shared by the self readings and endogenous curiosity."""
+    value_kind, _ = node_prediction_error_semantics(node_id)
+    return value_kind in MEASUREMENT_VALUE_KINDS
 
 # Plain words for the signals that can reach a prompt today. Cosmetic only: which signals render
 # is decided by the glossary's prompt_sites, and an unlisted node falls back to its short name.
 # Units go on the reading (schema), not in the line: the line's scale is the 0-10 score.
 _WORDS: dict[str, tuple[str, str]] = {
     "node:substrate.biometrics": ("how much my machines' load readings are moving", "share of a 0.30 swing"),
-    "node:substrate.bus_synaptic": ("how many of my message-bus links look abnormal", "fraction of links"),
     "node:substrate.execution": ("surprise in how my task execution is going", "clipped z / 3"),
-    "node:substrate.chat": ("surprise in how conversation load and repair are moving", "clipped z / 3"),
-    "node:substrate.route": ("how much my routing decisions are changing", "share of 4 decisions changed"),
-    "node:substrate.codebase": ("how unusual the latest change to my own code was", "clipped z / 3"),
     "node:substrate.cabinet": ("my cabinet's warming alarm", "firings in the last hour"),
+    "node:substrate.strain": ("news that I am under strain (heat or a GPU backlog)", "news events in the last hour"),
+    "node:prediction.room": ("how much my office's temperature is surprising my own forecast",
+                             "surprise z-score / 3, last 30 min"),
+    "node:prediction.body": ("how much my cabinet's temperature is surprising my own forecast",
+                             "surprise z-score / 3, last 30 min"),
+    "node:prediction.chat_turn": ("how much my recent chat turns surprised my own bets about them",
+                                  "surprise z-score / 3, last 30 min"),
 }
 
 _STATE_WORDS = {
@@ -99,8 +118,32 @@ def _event_written(node_id: str) -> bool:
     return node_prediction_error_event_written(node_id)
 
 
+def _quiet_event_signal(reading) -> bool:
+    """A stale event-written LEVEL signal had no event to measure (chat with no turns). A stale
+    rate (trigger/binary) signal did not: its freshness is its last write, and a trigger that
+    writes 0.0 every tick (strain news, cabinet) goes stale only when its source is unreadable."""
+    return reading.rate_window_sec is None and _event_written(reading.source_id)
+
+
+def _quiet_event(reading) -> bool:
+    """An event-written level signal with no event to measure: stale (its last event aged out) or
+    no reading at all (no event in its whole history window, e.g. node:prediction.chat_turn after a
+    week with no chat). Quiet by design, never named unreadable and never called calm. A row that
+    exists but cannot be read (a non-finite value) is NOT quiet: it stays unreadable."""
+    if not _quiet_event_signal(reading):
+        return False
+    if reading.state == "stale":
+        return True
+    return reading.state == "no_reading" and reading.observed_at is None and not reading.n_readings_7d
+
+
 def short_name(node_id: str) -> str:
-    return node_id[len(SUBSTRATE_NODE_PREFIX):] if node_id.startswith(SUBSTRATE_NODE_PREFIX) else node_id
+    if node_id.startswith(SUBSTRATE_NODE_PREFIX):
+        return node_id[len(SUBSTRATE_NODE_PREFIX):]
+    if node_id.startswith(PREDICTION_NODE_PREFIX):
+        # "prediction.room": keeps the family visible next to "cabinet", "chat", ...
+        return node_id[len("node:"):]
+    return node_id
 
 
 def prompt_reaching_nodes() -> list[str]:
@@ -127,7 +170,7 @@ def prompt_reaching_nodes() -> list[str]:
             continue
         if source_kind_for_node(entry.node) != "internal":
             continue
-        if sem.get("value_kind") not in (_PERCENTILE_KINDS | _RATE_KINDS):
+        if sem.get("value_kind") not in MEASUREMENT_VALUE_KINDS:
             continue
         out.append(entry.node)
     _NODES_CACHE = sorted(set(out))
@@ -237,8 +280,7 @@ def build_self_readings(
     current = cache.current()
     readings: list[SelfReadingV1] = []
     for node_id in node_ids:
-        value_kind, _ = node_prediction_error_semantics(node_id)
-        if value_kind not in (_PERCENTILE_KINDS | _RATE_KINDS):
+        if not node_prediction_error_is_measurement(node_id):
             # placeholder / bucket (or unknown): never rendered as a measurement.
             continue
         try:
@@ -290,7 +332,11 @@ def _reading(cache, node_id, mags, current, now, *, sustain: bool = True) -> Sel
     rank = verdict.rank_score if verdict.rank_score is not None else candidate.rank_percentile
     name = short_name(node_id)
     ref_ts = ref_at if is_rate else observed_at
-    ref = f"pe:{name}@{_z(ref_ts)}" if ref_ts is not None else ""
+    # An alarm's row is a firing, not a prediction error: its ref says alarm:.
+    from orion.substrate.prediction_error_freshness import is_alarm_node
+
+    ref_kind = "alarm" if is_alarm_node(node_id) else "pe"
+    ref = f"{ref_kind}:{name}@{_z(ref_ts)}" if ref_ts is not None else ""
     if observed_at is None:
         source_ref = ""
     elif is_rate:
@@ -362,13 +408,12 @@ def render_self_readings(
         live = any(r.state == "live" for r in readings)
         # "all_calm" only when every signal was actually read (an event signal with no recent
         # event counts as read): the skip log must not call a mostly-unread body calm.
-        unread = [r for r in readings if r.state != "live"
-                  and not (r.state == "stale" and _event_written(r.source_id))]
+        unread = [r for r in readings if r.state != "live" and not _quiet_event(r)]
         reason = "no_history" if not live else ("calm_partial" if unread else "all_calm")
         return SelfReadingsBlockV1(rendered_at=now, readings=readings, skip_reason=reason)
     # An event-written signal past the staleness horizon had no event to measure (chat with no
     # turns): say so, not "can't read". A per-tick signal gone stale really is unread.
-    quiet_events = [r for r in readings if r.state == "stale" and _event_written(r.source_id)]
+    quiet_events = [r for r in readings if _quiet_event(r)]
     # A trigger with too little history has simply not gone off often enough to judge: left out
     # of both lists (never called calm, not "unreadable" either).
     unreadable = [r for r in readings if r.state != "live" and r not in quiet_events

@@ -19,14 +19,14 @@ KW = dict(
 
 
 def test_new_session_uses_session_id_flag():
-    argv = build_argv("hi", session_id="abc-123", resume=False, **KW)
+    argv = build_argv(session_id="abc-123", resume=False, **KW)
     assert "--session-id" in argv
     assert argv[argv.index("--session-id") + 1] == "abc-123"
     assert "--resume" not in argv, "a brand-new session has nothing to resume"
 
 
 def test_resumed_session_uses_resume_flag():
-    argv = build_argv("hi", session_id="abc-123", resume=True, **KW)
+    argv = build_argv(session_id="abc-123", resume=True, **KW)
     assert "--resume" in argv
     assert argv[argv.index("--resume") + 1] == "abc-123"
     assert "--session-id" not in argv, (
@@ -37,13 +37,13 @@ def test_resumed_session_uses_resume_flag():
 def test_tools_are_disabled():
     """v1 Claude is a companion to think with, not an agent: no filesystem,
     no repo, no fetch."""
-    argv = build_argv("hi", session_id="s", resume=False, **KW)
+    argv = build_argv(session_id="s", resume=False, **KW)
     assert "--tools" in argv
     assert argv[argv.index("--tools") + 1] == ""
 
 
 def test_system_prompt_is_appended_when_given():
-    argv = build_argv("hi", session_id="s", resume=False, append_system_prompt="be a peer", **KW)
+    argv = build_argv(session_id="s", resume=False, append_system_prompt="be a peer", **KW)
     assert argv[argv.index("--append-system-prompt") + 1] == "be a peer"
 
 

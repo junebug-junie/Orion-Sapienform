@@ -300,14 +300,15 @@ def test_tick_zeroes_score_once_staleness_faults() -> None:
     assert kwargs["error"] == 0.0
     assert kwargs["extra_channels"]["embedding_staleness"] == 1.0
     # Receipt is unconditional every tick (review finding, fixed): the
-    # corrective 0.0 must reach orion-field-digester's field-node-vector
-    # perturbation path too, or that vector gets stuck at the last nonzero
-    # score forever -- gating this the way _bus_synaptic_tick's receipt is
-    # gated would reproduce the exact stuck-field-vector bug
-    # _vision_channel_tick's own receipt already documents fixing.
+    # field-node-vector must not stay stuck at the last nonzero score. Since
+    # 2026-11-10 (PE suite rebuild spec, retire step 8) a stale tick's receipt
+    # carries the missing reason and NO value, so the digester drops the
+    # channel (absent) instead of writing a 0.0 that reads as calm.
     fake_store.save_receipt.assert_called_once()
     receipt = fake_store.save_receipt.call_args.args[0]
-    assert receipt.state_deltas[0].after["pressure_hints"]["prediction_error"] == 0.0
+    after = receipt.state_deltas[0].after
+    assert "prediction_error" not in after["pressure_hints"]
+    assert after["prediction_error_missing_reason"] == "stale"
 
 
 def test_tick_fails_open_on_unexpected_error() -> None:

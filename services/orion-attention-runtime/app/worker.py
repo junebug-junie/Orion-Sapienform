@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -38,8 +38,10 @@ def _camera_absent_reason(field: FieldStateV1) -> str | None:
     """The field carries the vision organ's `vision_frame_staleness` (1.0 = no
     camera delivering; key dropped = unmeasured); the rule itself is the one
     shared with the broadcast (`perception_absent_reason`). Embedding-only
-    staleness is not visible here: perception then writes 0.0, reads quiet,
-    and cannot win either."""
+    staleness is not visible here. Perception still cannot win on it: its
+    candidate magnitude comes from the prediction-error history, which never
+    records a missing tick. (Since 2026-11-10 the field also drops perception's
+    `prediction_error` key while input is missing, instead of holding 0.0.)"""
     from orion.attention.world_first import perception_absent_reason
 
     vec = field.node_vectors.get(_VISION_ORGAN_NODE) or {}
@@ -71,6 +73,8 @@ class AttentionRuntimeWorker:
         # no magnitudes of its own, so it keeps a 7-day window of the
         # substrate's stored prediction-error readings.
         self._pe_history = NodePeHistoryCache()
+        self._world_reading_link_events_cache: list[tuple[datetime, str, str]] | None = None
+        self._world_reading_link_events_cache_at: datetime | None = None
         self._bus = None
         self._poll_task: asyncio.Task[None] | None = None
 
@@ -246,10 +250,13 @@ class AttentionRuntimeWorker:
         from orion.attention.world_first import (
             CHAT_RATE_WINDOW,
             PERCEPTION_NODE_ID,
+            PREDICTION_ERROR_NODE_PREFIXES,
+            READING_RATE_WINDOW,
             SUBSTRATE_NODE_PREFIX,
             chat_candidate,
             node_candidate,
             node_prediction_error_continuous,
+            reading_candidate,
         )
         from orion.substrate.prediction_error_magnitude import WINDOW_7D
 
@@ -262,12 +269,18 @@ class AttentionRuntimeWorker:
             history_error = f"prediction-error history unreadable ({type(exc).__name__})"
             logger.warning("attention_world_first_pe_history_failed err=%s", exc)
 
-        from orion.schemas.attention_candidate import NO_ATTENTION_CONSUMER_NODE_IDS
+        from orion.schemas.attention_candidate import world_first_fenced
+        from orion.substrate.prediction_error_freshness import node_signal_label
 
-        node_ids = (set(magnitudes) | {
-            k for k in field.node_vectors if k.startswith(SUBSTRATE_NODE_PREFIX)
-            and "prediction_error" in field.node_vectors[k]
-        }) - NO_ATTENTION_CONSUMER_NODE_IDS  # recorded, not yet admitted to attention (walkway camera)
+        node_ids = {
+            k for k in (set(magnitudes) | {
+                k for k in field.node_vectors if k.startswith(PREDICTION_ERROR_NODE_PREFIXES)
+                and "prediction_error" in field.node_vectors[k]
+            })
+            # Recorded but not admitted (fence), unless admitted under a per-node
+            # band floor (walkway camera: its own p99+ only).
+            if not world_first_fenced(k)
+        }
         sustain = bool(getattr(self._settings, "attention_sustained_body_enabled", True))
         candidates = []
         for node_id in sorted(node_ids):
@@ -278,7 +291,12 @@ class AttentionRuntimeWorker:
             candidates.append(
                 node_candidate(
                     node_id=node_id,
-                    label=f"{node_id.removeprefix(SUBSTRATE_NODE_PREFIX)} prediction error",
+                    # An alarm keeps its own name (cabinet warming alarm, strain
+                    # news, street event alarm): it competes, but it is not a
+                    # prediction error (prediction_error_freshness.ALARM_NODE_IDS).
+                    label=node_signal_label(
+                        node_id, node_id.removeprefix(SUBSTRATE_NODE_PREFIX).removeprefix("node:")
+                    ),
                     magnitude=mag,
                     observed_at=observed_at,
                     now=now,
@@ -302,6 +320,26 @@ class AttentionRuntimeWorker:
             logger.warning("attention_world_first_chat_read_failed err=%s", exc)
             turns = None
         candidates.append(chat_candidate(turns, now=now))
+        if not bool(getattr(self._settings, "attention_world_reading_enabled", False)):
+            return candidates
+
+        cache_at = getattr(self, "_world_reading_link_events_cache_at", None)
+        cached = getattr(self, "_world_reading_link_events_cache", None)
+        if cache_at is not None and now - cache_at < timedelta(minutes=1):
+            events = cached
+        else:
+            try:
+                events = list(self._store.fetch_accepted_reading_link_events(
+                    now - WINDOW_7D - READING_RATE_WINDOW
+                ))
+                self._world_reading_link_events_cache = events
+                self._world_reading_link_events_cache_at = now
+            except Exception as exc:  # noqa: BLE001 -- absent, not calm
+                logger.warning("attention_world_first_reading_read_failed err=%s", exc)
+                events = None
+                self._world_reading_link_events_cache = None
+                self._world_reading_link_events_cache_at = now
+        candidates.append(reading_candidate(events, now=now))
         return candidates
 
     def _maybe_build_goal(

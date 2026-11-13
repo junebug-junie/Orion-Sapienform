@@ -435,6 +435,7 @@ class Rabbit(BaseChassis):
                     await self.bus.connect()
                 async with self.bus.subscribe(self.request_channel) as pubsub:
                     backoff_sec = 1.0
+                    transport_failed = False
                     try:
                         async for msg in self.bus.iter_messages(pubsub):
                             if self._stop.is_set():
@@ -478,8 +479,13 @@ class Rabbit(BaseChassis):
                                 await self._handle_decoded_envelope(channel=str(channel), env=env)
                             except Exception as e:
                                 await self._publish_error(e, when="rabbit.handle", env=env)
+                    except Exception:
+                        # Transport failure (e.g. iter_messages found the socket dead): resubscribe,
+                        # but let in-flight handlers finish -- they publish on the command connection.
+                        transport_failed = True
+                        raise
                     finally:
-                        if self._inflight_tasks:
+                        if self._inflight_tasks and not transport_failed:
                             for task in list(self._inflight_tasks):
                                 if not task.done():
                                     task.cancel()
@@ -517,8 +523,9 @@ class Hunter(BaseChassis):
         patterns: Union[List[str], str, None] = None,
         pattern: Optional[str] = None,
         concurrent_handlers: bool = False,
+        heartbeat_details: Optional[HeartbeatDetailsProvider] = None,
     ):
-        super().__init__(cfg)
+        super().__init__(cfg, heartbeat_details=heartbeat_details)
         
         self.patterns: List[str] = []
         if patterns is not None:
@@ -604,6 +611,7 @@ class Hunter(BaseChassis):
                 async with self.bus.subscribe(*self.patterns, patterns=uses_glob) as pubsub:
                     backoff_sec = 1.0
                     first_after_subscribe = True
+                    transport_failed = False
                     try:
                         async for msg in self.bus.iter_messages(pubsub):
                             if self._stop.is_set():
@@ -659,8 +667,13 @@ class Hunter(BaseChassis):
                                 await self.handler(env)
                             except Exception as e:
                                 await self._publish_error(e, when="hunter.handle", env=env)
+                    except Exception:
+                        # Transport failure (e.g. iter_messages found the socket dead): resubscribe,
+                        # but let in-flight handlers finish -- they publish on the command connection.
+                        transport_failed = True
+                        raise
                     finally:
-                        if self._inflight_tasks:
+                        if self._inflight_tasks and not transport_failed:
                             for task in list(self._inflight_tasks):
                                 if not task.done():
                                     task.cancel()

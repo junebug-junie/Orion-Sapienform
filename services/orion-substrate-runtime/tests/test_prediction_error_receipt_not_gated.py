@@ -40,10 +40,10 @@ _NOW = datetime(2026, 9, 25, 0, 0, 0, tzinfo=timezone.utc)
 _RECEIPT_NODE_IDS = {
     "node:substrate.biometrics",
     "node:substrate.execution",
-    "node:substrate.chat",
-    "node:substrate.route",
-    "node:substrate.bus_synaptic",
-    "node:substrate.codebase",
+    # node:substrate.route and node:substrate.bus_synaptic retired 2026-11
+    # (PE suite rebuild step 5), node:substrate.chat 2026-11-13 (step 6): no
+    # receipt call site, asserted below. node:substrate.codebase too (retired
+    # 2026-11-13: churn z, not a forecast).
     # node:substrate.vision's tick was retired 2026-10-02 (vision_organ lane).
     "node:substrate.perception",
     # Walkway camera's own surprise node (2026-10-15).
@@ -118,6 +118,7 @@ def test_every_domain_still_has_a_receipt_call() -> None:
     tree = ast.parse(WORKER_PATH.read_text(encoding="utf-8"))
     found = {_node_id(call) for call in (*_receipt_calls(tree), *_helper_calls(tree))}
     assert _RECEIPT_NODE_IDS <= found, _RECEIPT_NODE_IDS - found
+    assert not ({"node:substrate.route", "node:substrate.bus_synaptic", "node:substrate.chat", "node:substrate.codebase"} & found)
 
 
 def _grammar_event(event_id: str) -> GrammarEventV1:
@@ -130,30 +131,51 @@ def _grammar_event(event_id: str) -> GrammarEventV1:
     )
 
 
-def test_route_tick_calm_error_saves_zero_receipt(monkeypatch) -> None:
-    """The exact live incident: route_prediction_error() returns 0.0 on a quiet
-    tick. The field-bound receipt must still be saved, carrying 0.0."""
+def test_route_tick_keeps_the_reducer_but_writes_no_prediction_error(monkeypatch) -> None:
+    """node:substrate.route was retired 2026-11 (PE suite rebuild step 5): the
+    route reducer/projection still runs, but the tick writes no
+    prediction-error receipt and no prediction-error node."""
     worker = BiometricsSubstrateWorker.__new__(BiometricsSubstrateWorker)
     worker._settings = MagicMock()
     worker._store = MagicMock()
     worker._store.fetch_route_grammar_events.return_value = [_grammar_event("gev-1")]
     worker._write_prediction_error_node = MagicMock()
+    reduced: list = []
 
-    monkeypatch.setattr(worker_module, "process_route_grammar_events", lambda **kwargs: None)
-    monkeypatch.setattr(worker_module, "route_prediction_error", lambda prev, curr: 0.0)
+    monkeypatch.setattr(
+        worker_module, "process_route_grammar_events", lambda **kwargs: reduced.append(kwargs["events"])
+    )
+    assert not hasattr(worker_module, "route_prediction_error")
 
-    worker._route_tick()
+    assert worker._route_tick() == "gev-1"
 
-    worker._store.save_receipt.assert_called_once()
-    receipt = worker._store.save_receipt.call_args[0][0]
-    delta = receipt.state_deltas[0]
-    assert delta.target_kind == "prediction_signal"
-    assert delta.target_id == "node:substrate.route"
-    assert delta.after["pressure_hints"]["prediction_error"] == 0.0
-    # Graph node still written too (the earlier, graph-only half of this fix).
-    worker._write_prediction_error_node.assert_called_once()
-    assert worker._write_prediction_error_node.call_args.kwargs["error"] == 0.0
+    assert reduced and [e.event_id for e in reduced[0]] == ["gev-1"]
+    worker._store.save_receipt.assert_not_called()
+    worker._write_prediction_error_node.assert_not_called()
 
+
+def test_chat_tick_keeps_the_reducer_but_writes_no_prediction_error(monkeypatch) -> None:
+    """node:substrate.chat was retired 2026-11-13 (PE suite rebuild step 6): the
+    chat reducer/projection still runs (repair appraisal reads it), but the tick
+    writes no prediction-error receipt, no node, and no extra projection save."""
+    worker = BiometricsSubstrateWorker.__new__(BiometricsSubstrateWorker)
+    worker._settings = MagicMock()
+    worker._store = MagicMock()
+    worker._store.fetch_chat_grammar_events.return_value = [_grammar_event("gev-1")]
+    worker._write_prediction_error_node = MagicMock()
+    reduced: list = []
+
+    monkeypatch.setattr(
+        worker_module, "process_chat_grammar_events", lambda **kwargs: reduced.append(kwargs["events"])
+    )
+    assert not hasattr(worker_module, "chat_prediction_error")
+
+    assert worker._chat_tick() == "gev-1"
+
+    assert reduced and [e.event_id for e in reduced[0]] == ["gev-1"]
+    worker._store.save_receipt.assert_not_called()
+    worker._store.save_chat_session_projection.assert_not_called()
+    worker._write_prediction_error_node.assert_not_called()
 
 
 def test_receipt_stamps_the_live_definition_version() -> None:
@@ -162,7 +184,8 @@ def test_receipt_stamps_the_live_definition_version() -> None:
     pressure_hints, not inside it, so the field digester never makes it a channel."""
     from orion.schemas.prediction_error_definitions import prediction_error_definition_version
 
-    for reducer_key, expected in (("route_arbitration", 2), ("chat_session", 3), ("execution_trajectory", 1)):
+    # chat_session left the version table 2026-11-13 (its PE was retired); unlisted keys read 1.
+    for reducer_key, expected in (("chat_session", 1), ("node_biometrics", 3), ("execution_trajectory", 1)):
         receipt = worker_module._prediction_error_receipt(
             reducer_key=reducer_key,
             node_id="node:substrate.x",

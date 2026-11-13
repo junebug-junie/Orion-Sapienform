@@ -234,6 +234,9 @@ PG_SQL = """
 SELECT o.realized_nats, d.arm, o.turn_ok, o.unknown_reason
 FROM curiosity_run_outcomes o
 LEFT JOIN curiosity_offer_decisions d USING (run_id)
+-- Investigation runs only: a self-inquiry run (arm self_inquiry, nothing offered) is measured since
+-- 2026-11-12, but this replay judges the investigation offer's measurement.
+WHERE d.arm IS DISTINCT FROM 'self_inquiry'
 ORDER BY o.completed_at ASC
 """
 

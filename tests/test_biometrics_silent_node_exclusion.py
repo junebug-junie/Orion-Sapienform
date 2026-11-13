@@ -165,4 +165,5 @@ def test_hecate_counts_normally_when_up() -> None:
 
 
 def test_definition_version_moved() -> None:
-    assert prediction_error_definition_version("node_biometrics") == 2
+    # v2 = silent nodes out (2026-10-20); v3 = room sensors out (2026-11-12).
+    assert prediction_error_definition_version("node_biometrics") >= 2

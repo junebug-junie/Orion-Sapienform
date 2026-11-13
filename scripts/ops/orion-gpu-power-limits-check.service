@@ -1,0 +1,11 @@
+# circe only. Run by orion-gpu-power-limits.timer: puts back any card that drifted off its target
+# (driver reload, GPU reset, a hand-typed nvidia-smi -pl). No ExecStop, so a check never undoes the cap.
+[Unit]
+Description=Orion: re-check circe's GPU power limits
+After=orion-gpu-power-limits.service
+RequiresMountsFor=/mnt/scripts
+
+[Service]
+Type=oneshot
+Environment=ORION_GPU_POWER_LIMITS_CHECK=1
+ExecStart=/usr/local/sbin/orion-gpu-power-limits apply

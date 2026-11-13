@@ -15,7 +15,12 @@ from unittest.mock import patch
 import pytest
 
 import orion.substrate.attention_broadcast as ab
-from orion.attention.world_first import WORLD_CHAT_SOURCE_ID, chat_candidate
+from orion.attention.world_first import (
+    WORLD_CHAT_SOURCE_ID,
+    WORLD_READING_SOURCE_ID,
+    chat_candidate,
+    reading_candidate,
+)
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
 
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
@@ -101,6 +106,98 @@ def test_chat_external_candidate_wins_on_a_calm_body() -> None:
     assert proj.selected_action_type == "watch"
 
 
+def test_reading_candidate_attends_recent_concepts() -> None:
+    old = [
+        (NOW - timedelta(days=d), f"sub-concept-old-{d}", f"sub-concept-old-{d}-obj")
+        for d in range(1, 7)
+    ]
+    burst = [
+        (NOW - timedelta(minutes=i), f"sub-concept-wp-read-{i}", f"sub-concept-wp-read-{i}-obj")
+        for i in range(6)
+    ]
+    candidate = reading_candidate(old + burst, now=NOW)
+    assert candidate.source_id == WORLD_READING_SOURCE_ID
+    assert candidate.unusualness.band in {"high", "unusual"}
+    assert candidate.absent is False
+    assert len(candidate.evidence_refs[1:]) <= 8
+    frame = _frame(
+        [_node("node:substrate.biometrics", "Bio PE")],
+        {"node:substrate.biometrics": _mag(0.4)},
+        external=[candidate],
+    )
+    attended = ab.broadcast_projection_from_frame(frame).attended_node_ids
+    assert attended[0] == WORLD_READING_SOURCE_ID
+    assert any(ref.startswith("sub-concept-wp-read-") for ref in attended)
+    loop = frame.open_loops[0]
+    assert any(ref.startswith("sub-concept-wp-read-") for ref in loop.source_refs)
+    from orion.substrate.endogenous_curiosity import EndogenousCuriosityConfig, endogenous_curiosity_candidates
+
+    curiosity = endogenous_curiosity_candidates(
+        attention_frame=frame,
+        config=EndogenousCuriosityConfig(enabled=True),
+    )
+    assert curiosity and curiosity[0].focal_node_refs[0].startswith("sub-concept-wp-read-")
+
+
+def test_reading_failure_is_absent_and_calm_reading_is_reachable() -> None:
+    failed = reading_candidate(None, now=NOW)
+    assert failed.absent is True
+    assert failed.absent_reason == "reading journal unreadable"
+
+    old = [
+        (NOW - timedelta(days=d), f"sub-concept-old-{d}", f"sub-concept-old-{d}-obj")
+        for d in range(1, 7)
+    ]
+    calm = reading_candidate(old, now=NOW)
+    assert calm.unusualness.value == 0.0
+    assert calm.unusualness.band == "quiet"
+    assert calm.absent is False
+    short_history = reading_candidate(old[:4], now=NOW)
+    assert short_history.unusualness.band == "insufficient_history"
+
+
+def test_malformed_reading_links_do_not_count_as_activity() -> None:
+    old = [
+        (NOW - timedelta(days=d), f"sub-concept-old-{d}", f"sub-concept-old-{d}-obj")
+        for d in range(1, 7)
+    ]
+    malformed = [
+        (NOW - timedelta(minutes=i), "", f"sub-concept-invalid-{i}")
+        for i in range(3)
+    ] + [
+        (NOW - timedelta(minutes=i), f"sub-concept-self-{i}", f"sub-concept-self-{i}")
+        for i in range(3, 6)
+    ]
+    candidate = reading_candidate(old + malformed, now=NOW)
+    assert candidate.unusualness.value == 0.0
+    assert candidate.evidence_refs == [WORLD_READING_SOURCE_ID]
+
+
+def test_chat_yields_over_reading() -> None:
+    old = [
+        (NOW - timedelta(days=d), f"sub-concept-wp-read-{d}", f"sub-concept-wp-read-{d}-obj")
+        for d in range(1, 7)
+    ]
+    burst = [
+        (NOW - timedelta(minutes=i), f"sub-concept-wp-read-burst-{i}", f"sub-concept-wp-read-burst-{i}-obj")
+        for i in range(6)
+    ]
+    turns = [NOW - timedelta(days=d, minutes=30) for d in range(1, 7)] + [NOW - timedelta(minutes=2)]
+    frame = _frame(
+        [],
+        {},
+        external=[chat_candidate(turns, now=NOW), reading_candidate(old + burst, now=NOW)],
+    )
+    projection = ab.broadcast_projection_from_frame(frame)
+    assert projection.attended_node_ids == [WORLD_CHAT_SOURCE_ID]
+    reading = next(
+        candidate for candidate in frame.debug["world_first"]["candidates"]
+        if candidate["source_id"] == WORLD_READING_SOURCE_ID
+    )
+    assert reading["eligible"] is False
+    assert reading["reason"] == "yields to Juniper (world:chat eligible)"
+
+
 def test_perception_is_external_and_absent_when_embeddings_stale() -> None:
     stale = _node("node:substrate.perception", "Perception PE", pe=0.0, embedding_staleness=1.0)
     frame = _frame([stale], {"node:substrate.perception": _mag(0.97)})
@@ -175,15 +272,87 @@ def test_unreadable_sources_are_named_in_the_trace() -> None:
     assert frame.debug["world_first"]["absent_sources"] == ["node:substrate.execution"]
 
 
-def test_walkway_perception_node_is_fenced_out_of_attention() -> None:
-    """node:substrate.perception_walkway is written and recorded but has no
-    cognition consumer until its live-data sanity check runs: neither the
-    world-first nor the legacy competition may rank it, however loud."""
+def test_walkway_wins_only_in_its_own_p99_band() -> None:
+    """node:substrate.perception_walkway competes in the world-first contest
+    only for its own p99+ tail (ATTENTION_MIN_BAND_BY_NODE_ID, 2026-10-21);
+    its p90-p99 band was at chance for street events. It stays out of the
+    legacy salience signals, which judge no band."""
     from orion.schemas.attention_candidate import PERCEPTION_WALKWAY_NODE_ID
 
     walkway = _node(PERCEPTION_WALKWAY_NODE_ID, "Walkway PE", pressure=1.0, pe=1.0, embedding_staleness=0.0)
     frame = _frame([walkway], {PERCEPTION_WALKWAY_NODE_ID: _mag(0.999, value=1.0)})
+    proj = ab.broadcast_projection_from_frame(frame)
+    assert proj.attended_node_ids == [PERCEPTION_WALKWAY_NODE_ID]
+    (cand,) = frame.debug["world_first"]["candidates"]
+    assert cand["source_kind"] == "external" and cand["band"] == "unusual" and cand["eligible"]
+
+    frame = _frame([walkway], {PERCEPTION_WALKWAY_NODE_ID: _mag(0.95, value=0.6)})
     assert frame.open_loops == []
-    wf = frame.debug["world_first"]
-    assert wf["candidates"] == [] and PERCEPTION_WALKWAY_NODE_ID not in wf.get("uncalibrated", [])
+    (cand,) = frame.debug["world_first"]["candidates"]
+    assert cand["band"] == "high" and not cand["eligible"]
+    assert "below this source's unusual floor" in cand["reason"]
     assert ab.substrate_pressure_signals([walkway], min_salience=0.0) == []
+
+
+def test_camera_placeholder_for_missing_input_is_absent_not_quiet() -> None:
+    from orion.schemas.attention_candidate import PERCEPTION_NODE_ID, PERCEPTION_WALKWAY_NODE_ID
+    from orion.substrate.prediction_error_freshness import PREDICTION_ERROR_MISSING_REASON_KEY
+
+    walkway = _node(PERCEPTION_WALKWAY_NODE_ID, "Walkway PE", pe=0.0, embedding_staleness=1.0)
+    room = _node(PERCEPTION_NODE_ID, "Room PE", pe=0.0, embedding_staleness=0.0,
+                 **{PREDICTION_ERROR_MISSING_REASON_KEY: "warming"})
+    frame = _frame([walkway, room], {
+        PERCEPTION_WALKWAY_NODE_ID: _mag(0.999, value=1.0), PERCEPTION_NODE_ID: _mag(0.999, value=1.0),
+    })
+    assert frame.open_loops == []
+    by_id = {c["source_id"]: c for c in frame.debug["world_first"]["candidates"]}
+    assert by_id[PERCEPTION_WALKWAY_NODE_ID]["absent"] is True
+    assert by_id[PERCEPTION_NODE_ID]["absent"] is True
+    assert sorted(frame.debug["world_first"]["absent_sources"]) == sorted(by_id)
+
+
+def _chat_frame(minutes_ago, latest=None):
+    turns = [NOW - timedelta(days=d, minutes=30) for d in range(1, 7)] + [
+        NOW - timedelta(minutes=m) for m in minutes_ago
+    ]
+    return _frame(
+        [_node("node:substrate.biometrics", "Bio PE")],
+        {"node:substrate.biometrics": _mag(0.4)},
+        external=[chat_candidate(turns, now=NOW, latest_turn=latest)],
+    )
+
+
+def test_chat_loop_id_is_stable_as_messages_arrive() -> None:
+    """Live bug 2026-11: 'Juniper is talking (N messages ...)' gave every N its own loop id."""
+    ids = set()
+    for minutes_ago in ([1], [1, 3], [1, 3, 5]):
+        proj = ab.broadcast_projection_from_frame(_chat_frame(minutes_ago))
+        assert proj.attended_node_ids == [WORLD_CHAT_SOURCE_ID]
+        ids.add(proj.selected_open_loop_id)
+    assert len(ids) == 1
+
+
+def test_chat_evidence_reaches_the_winning_loop_not_the_trace() -> None:
+    latest = ("turn-7", NOW - timedelta(minutes=1), "did the camera move?")
+    frame = _chat_frame([1, 3], latest=latest)
+    loop = frame.open_loops[0]
+    ev = loop.provenance["world_evidence"]
+    assert ev["message_excerpt"] == "did the camera move?"
+    assert ev["chat_turn_id"] == "turn-7" and ev["messages_in_window"] == 2
+    # No ranking side effect: the loop's refs are unchanged.
+    assert loop.source_refs == [WORLD_CHAT_SOURCE_ID]
+    assert "did the camera move?" not in str(frame.debug["world_first"])
+    no_ev = _chat_frame([1, 3]).open_loops[0]
+    assert "world_evidence" not in no_ev.provenance
+    assert no_ev.id == loop.id and no_ev.salience == loop.salience
+
+
+def test_a_human_dismiss_on_the_chat_loop_holds_across_conversations() -> None:
+    """Documented trade-off of the fixed label (2026-11-12): world:chat has ONE loop id for all
+    time, so a Hub resolve/dismiss on it excludes chat for the verdict TTL (48 h) in every later
+    conversation too -- as it already did for the old 1-message id, the most common one."""
+    chat_id = _chat_frame([1]).open_loops[0].id
+    with patch.object(ab, "load_terminal_verdict_loop_ids", return_value={chat_id}):
+        frame = _chat_frame([1, 3])
+    assert all(loop.id != chat_id for loop in frame.open_loops)
+    assert _chat_frame([2]).open_loops[0].id == chat_id  # any later burst maps to the same id

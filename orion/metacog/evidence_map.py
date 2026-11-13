@@ -257,12 +257,6 @@ TRANSPORT_LATENCY_RATIO_SATURATE = 12.0
 # call", not a percentile -- it may say degraded, never critical.
 TRANSPORT_MIN_CALLS_FOR_CRITICAL_LATENCY = 5
 
-# bus_synaptic prediction error / its gate threshold (0.15). Live 7d: median
-# 1.5x, max 4.9x.
-BUS_SYNAPTIC_RATIO_DEGRADED = 2.0
-BUS_SYNAPTIC_RATIO_CRITICAL = 3.0
-BUS_SYNAPTIC_RATIO_SATURATE = 5.0
-
 # transport_baseline (the new EWMA gate, spec A1-A4).
 TRANSPORT_Z_DEGRADED = 3.0
 TRANSPORT_Z_CRITICAL = 5.0
@@ -366,32 +360,6 @@ def _map_transport_rpc_timeout(reason: str, up: dict[str, Any]) -> EvidenceMappi
         evidence=evidence,
         touches=[channel] if channel else [],
         headline=f"RPC timeout on {channel or 'unknown channel'}",
-    )
-
-
-def _map_transport_bus_synaptic(reason: str, up: dict[str, Any]) -> EvidenceMapping:
-    err = _num(up.get("error"))
-    thr = _num(up.get("error_threshold"))
-    if err is None or not thr or thr <= 0:
-        return _no_evidence("transport", reason, "bus_synaptic without error/threshold")
-    ratio = err / thr
-    severity, magnitude = banded(
-        ratio, BUS_SYNAPTIC_RATIO_DEGRADED, BUS_SYNAPTIC_RATIO_CRITICAL, BUS_SYNAPTIC_RATIO_SATURATE
-    )
-    evidence = [f"bus prediction error {err:.3f} vs threshold {thr:.3f} ({ratio:.1f}x)"]
-    if up.get("transition"):
-        evidence.append(f"transition {up.get('transition')}")
-    edges = _int(up.get("edge_count"))
-    if edges is not None:
-        evidence.append(f"edges measured: {edges}")
-    return _build(
-        kind="transport",
-        severity=severity,
-        magnitude=magnitude,
-        basis=f"bus_synaptic error_ratio={ratio:.2f}",
-        evidence=evidence,
-        touches=["bus_mirror"],
-        headline=f"bus inter-arrival prediction error {ratio:.1f}x its threshold",
     )
 
 
@@ -510,8 +478,10 @@ def map_transport(reason: str, upstream: dict[str, Any]) -> EvidenceMapping:
         return _map_transport_rpc_health(reason, upstream)
     if source == "rpc_transport_timeout_grammar":
         return _map_transport_rpc_timeout(reason, upstream)
-    if source == "bus_synaptic_prediction_error":
-        return _map_transport_bus_synaptic(reason, upstream)
+    # evidence_source "bus_synaptic_prediction_error" (equilibrium's transport
+    # source, retired 2026-09-30; node:substrate.bus_synaptic itself retired
+    # 2026-11) now falls through to the unknown-source branch: historical
+    # rows read no_evidence instead of a severity from a dead instrument.
     return _no_evidence("transport", reason, f"unknown evidence_source={source or 'missing'}")
 
 

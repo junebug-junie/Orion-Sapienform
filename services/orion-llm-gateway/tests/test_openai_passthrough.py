@@ -65,6 +65,7 @@ class TestOpenAIPassthroughHTTP:
         async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
             assert url == "http://pool-fast:8013/v1/chat/completions"
             assert kwargs["json"]["model"] == "quick"
+            assert kwargs["json"]["chat_template_kwargs"] == {"enable_thinking": False}
             seen.append(pool.active)
             return mock_response
 
@@ -81,6 +82,40 @@ class TestOpenAIPassthroughHTTP:
         assert pool.calls[0]["holder"] == "http:openai"
         assert pool.calls[0]["min_ctx_tokens"] == 6 + 8  # ceil(24 chars / 4) + max_tokens
         assert pool.releases == ["ok"]
+
+    def test_explicit_thinking_on_survives_fast_http_default(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_routes: Any
+    ) -> None:
+        async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+            assert kwargs["json"]["chat_template_kwargs"] == {"enable_thinking": True}
+            return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+        response = client.post("/v1/chat/completions", json={
+            "model": "quick", "messages": [{"role": "user", "content": "hi"}],
+            "chat_template_kwargs": {"enable_thinking": True},
+        })
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["message"]["content"] == "OK"
+
+    def test_metacog_http_uses_shared_worker_defaults(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_routes: Any
+    ) -> None:
+        async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+            sent = kwargs["json"]
+            assert sent["chat_template_kwargs"] == {"enable_thinking": False}
+            assert sent["temperature"] == 0.35
+            assert sent["top_p"] == 0.90
+            assert sent["presence_penalty"] == 0.20
+            assert sent["max_tokens"] == 1024
+            return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+        response = client.post("/v1/chat/completions", json={
+            "model": "metacog", "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert response.status_code == 200
+        assert configured_routes.calls[0]["work_class"] == "metacog"
 
     def test_background_route_leases_with_background_priority(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_routes: Any

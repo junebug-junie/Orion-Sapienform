@@ -147,6 +147,11 @@ def _door_a_loop(monkeypatch):
     loop = _loop(_CortexBus(), kickoff_via_cortex=True)
     loop.outreach_enabled = True
     loop._outreach_provider = lambda: _Outreach()
+
+    async def _asked(run_id, line):  # door policy (2026-11-10): an investigate run Juniper asked for
+        return True, "asked_by_juniper"
+
+    loop._curiosity_door = _asked
     skips = []
     monkeypatch.setattr(loop, "_record_outreach_skip",
                         lambda outreach, reason, **kw: skips.append((reason, kw["run_id"])))

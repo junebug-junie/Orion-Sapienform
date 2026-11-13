@@ -1,7 +1,7 @@
 """Build Hub's substrate graph stores once, in the background, never on the event loop.
 
 Why this exists (2026-10-20): Hub built its three Falkor-backed concept graph
-stores (Orion, Self Atlas, AI Town) at import time in ``api_routes.py``. Each
+stores (Orion, Self Atlas, AI Town; Self Atlas retired 2026-11) at import time in ``api_routes.py``. Each
 ``FalkorSubstrateStore`` constructor scans its whole graph into memory, so
 uvicorn could not bind :8080 or start a single bus listener until every scan
 finished (measured live: ~19 s Orion, ~26 s Self, ~113 s AI Town).

@@ -10,8 +10,6 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Optional
-from urllib.parse import urlencode
-from urllib.request import urlopen
 from zoneinfo import ZoneInfo
 
 from .identity_ask_cooldown import try_claim_identity_ask
@@ -26,6 +24,7 @@ from .perception_reader import (
     presence_row_age_seconds,
 )
 from .cabinet_sound_reader import fetch_cabinet_sound_history
+from .office_sound_reader import fetch_office_sound
 from .camera_eyes import CAMERA_EYES_DEADLINE_SEC, build_senses, describe_camera, fetch_camera_eyes, senses_line, street_framing
 from .presence import companions_phrase, is_child, normalize_presence_context
 from .reverie_reader import fetch_recent_reverie_snippets
@@ -48,6 +47,7 @@ from orion.telemetry.cabinet_snapshot_merge import (
     device_label_from_sources,
     load_merged_cabinet_sensors,
 )
+from orion.weather import openmeteo
 from orion.schemas.situation import (
     AffectContextV1,
     AgendaContextV1,
@@ -57,7 +57,7 @@ from orion.schemas.situation import (
     CuriosityPriorContextV1,
     CuriosityPriorSummaryV1,
     EnvironmentContextV1,
-    LabContextV1,
+    OfficeSoundContextV1,
     PerceptionContextV1,
     PlaceContextV1,
     PresenceContextV1,
@@ -184,8 +184,6 @@ class SituationSettings:
     high_wind_mph_threshold: int
     hot_car_temp_f_threshold: int
     agenda_enabled: bool
-    lab_enabled: bool
-    lab_provider: str
     cabinet_enabled: bool
     cabinet_ttl_seconds: int
     cabinet_sensors_path: str
@@ -197,6 +195,9 @@ class SituationSettings:
     ambient_audio_path: str
     ambient_audio_stale_after_sec: float
     ambient_audio_history_node: str
+    # Office sound meter (dBA, office_env_sample). Empty node = off.
+    office_sound_node: str
+    office_sound_stale_after_sec: float
     perception_enabled: bool
     perception_max_age_seconds: int
     perception_stream_id: str
@@ -278,7 +279,6 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         high_wind_mph_threshold=int(getattr(settings, "orion_situation_high_wind_mph_threshold", 25)),
         hot_car_temp_f_threshold=int(getattr(settings, "orion_situation_hot_car_temp_f_threshold", 80)),
         agenda_enabled=bool(getattr(settings, "orion_situation_agenda_enabled", False)),
-        lab_enabled=bool(getattr(settings, "orion_situation_lab_context_enabled", True)),
         # Default OFF: this puts camera-derived content about a private home
         # into the prompt, so it is opt-in rather than opt-out.
         perception_enabled=bool(
@@ -310,7 +310,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         street_stream_ids=_split_stream_ids(
             getattr(settings, "orion_situation_street_stream_ids", None)
             if getattr(settings, "orion_situation_street_stream_ids", None) is not None
-            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway")
+            else os.getenv("ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway,cam0")
         ),
         # 1200s (20min): see identity_ask_cooldown.py's module docstring for
         # the reasoning -- long enough that "ask once per sit-down" is the
@@ -393,8 +393,7 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         reverie_ttl_seconds=int(
             getattr(settings, "orion_situation_reverie_ttl_seconds", 180)
         ),
-        lab_provider=str(getattr(settings, "orion_situation_lab_provider", "stub")),
-        # Conservative generic default (False), same as lab/perception above
+        # Conservative generic default (False), same as perception above
         # -- the file-based read below only works where `cabinet_sensors_
         # path` is actually mounted (orion-hub's `network_mode: host` +
         # `/run/orion-sensors:ro` bind), which
@@ -424,6 +423,12 @@ def settings_from_runtime(settings: Any) -> SituationSettings:
         ),
         ambient_audio_history_node=str(
             getattr(settings, "orion_situation_ambient_audio_history_node", "athena") or "athena"
+        ),
+        # Off ("") by default like cabinet; Hub turns it on with its own
+        # OFFICE_ENV_NODE in `hub_settings_to_runtime_namespace`.
+        office_sound_node=str(getattr(settings, "orion_situation_office_sound_node", "") or ""),
+        office_sound_stale_after_sec=float(
+            getattr(settings, "orion_situation_office_sound_stale_after_sec", 90.0)
         ),
         runtime_enabled=bool(getattr(settings, "orion_situation_runtime_enabled", True)),
         runtime_route=str(getattr(settings, "orion_situation_runtime_route", "chat")),
@@ -457,9 +462,6 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     they were hardcoded "Unknown", so the unified turn carried a timezone
     but no place and Orion resolved "the camera outside" against a travel
     city in recent chat (correlation 5063fb71).
-
-    Lab is turned off here on purpose (it has no real provider anywhere), not
-    left to `settings_from_runtime`'s own defaults to silently decide.
 
     Perception (2026-10-07) IS enabled here now, via Hub's own
     ORION_SITUATION_PERCEPTION_ENABLED (default ON, Juniper's standing flag
@@ -509,7 +511,7 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
     no new sensor-path keys, just a new `ORION_SITUATION_CABINET_*` on/off +
     TTL pair. This is Orion's own physical housing, not private-home
     content, same "no new dependency, no privacy concern" shape as affect/
-    curiosity/reverie above -- unlike lab, which stays off.
+    curiosity/reverie above.
     """
     return SimpleNamespace(
         orion_situation_enabled=bool(getattr(cfg, "ORION_SITUATION_ENABLED", True)),
@@ -541,8 +543,6 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_high_wind_mph_threshold=25,
         orion_situation_hot_car_temp_f_threshold=80,
         orion_situation_agenda_enabled=False,
-        orion_situation_lab_context_enabled=False,
-        orion_situation_lab_provider="stub",
         # 2026-08-31, same "no private-home content" call as curiosity/
         # reverie: default ON. Reuses Hub's EXISTING CABINET_SENSORS_PATH/
         # CABINET_SENSORS_B_PATH/CABINET_SENSORS_STALE_AFTER_SEC (already
@@ -578,6 +578,12 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         orion_situation_ambient_audio_history_node=str(
             getattr(cfg, "CABINET_AMBIENT_HISTORY_NODE", "athena")
         ),
+        # Office sound meter: Hub's EXISTING office-env keys (already used by
+        # office_env_routes.py), no new keys.
+        orion_situation_office_sound_node=str(getattr(cfg, "OFFICE_ENV_NODE", "pan-1")),
+        orion_situation_office_sound_stale_after_sec=float(
+            getattr(cfg, "OFFICE_ENV_STALE_AFTER_SEC", 90.0)
+        ),
         # 2026-10-07: was a literal False. Reads Hub's own
         # ORION_SITUATION_PERCEPTION_* keys (same names and defaults as
         # cortex-exec's) into the SAME shared builder cortex-exec uses --
@@ -596,15 +602,15 @@ def hub_settings_to_runtime_namespace(cfg: Any) -> SimpleNamespace:
         # Plain getattr, no `or` fallback: an explicit "" disables the
         # Street line (settings_from_runtime's own contract).
         orion_situation_street_stream_ids=getattr(
-            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway"
+            cfg, "ORION_SITUATION_STREET_STREAM_IDS", "doorbell,walkway,cam0"
         ),
         orion_situation_identity_ask_cooldown_seconds=1200,
         orion_situation_affect_enabled=bool(getattr(cfg, "ORION_SITUATION_AFFECT_ENABLED", True)),
         orion_situation_affect_max_age_seconds=int(
             getattr(cfg, "ORION_SITUATION_AFFECT_MAX_AGE_SECONDS", 300)
         ),
-        # 2026-08-30, Juniper's explicit call: default ON, unlike perception/
-        # lab above -- carries no private-home content. Reuses Hub's
+        # 2026-08-30, Juniper's explicit call: default ON, unlike perception
+        # above -- carries no private-home content. Reuses Hub's
         # EXISTING HUB_CURIOSITY_GRAPH_* connection config (already asserted
         # against `orion_worldview` by curiosity_investigation.py) rather
         # than a second, parallel set of graph keys.
@@ -792,10 +798,20 @@ def _cached_percept_outlived_gate(brief: Any, cached_age: float, cfg: SituationS
             ):
                 return True
         cabinet = brief.cabinet
-        return bool(
+        if (
             cabinet.sound_available
             and cabinet.sound_age_seconds is not None
             and cabinet.sound_age_seconds + cached_age > cfg.ambient_audio_stale_after_sec
+        ):
+            return True
+        # Office sound meter: a cached "it's 45 dBA" must not outlive the
+        # meter's own freshness window.
+        office = getattr(brief, "office_sound", None)
+        return bool(
+            office is not None
+            and office.available
+            and office.age_seconds is not None
+            and office.age_seconds + cached_age > cfg.office_sound_stale_after_sec
         )
     except Exception:  # noqa: BLE001 -- a malformed cache entry is just a miss
         return True
@@ -857,8 +873,8 @@ async def build_situation_for_ctx(
     place_ctx = _build_place_context(cfg)
     env_ctx = await _build_environment_context(cfg, diagnostics)
     agenda_ctx = AgendaContextV1(available=False, source="stub")
-    lab_ctx = _build_lab_context(cfg)
     cabinet_ctx = await _build_cabinet_context(cfg, diagnostics)
+    office_sound_ctx = await _build_office_sound_context(cfg, diagnostics)
     # Only a turn Juniper actually took may spend the shared identity-ask
     # cooldown (review finding, 2026-10-07): Hub also builds briefs for turns
     # Orion authors itself (endogenous outreach), and claiming the slot there
@@ -874,7 +890,7 @@ async def build_situation_for_ctx(
         cfg, diagnostics
     )
     surface_ctx = _build_surface_context(ctx)
-    affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, lab_ctx, surface_ctx, time_ctx)
+    affordances = _build_affordances(ctx, presence, phase_ctx, env_ctx, surface_ctx, time_ctx)
     diagnostics.relevance_reasons = [a.kind for a in affordances if a.trigger_relevance == "active"]
 
     brief = SituationBriefV1(
@@ -891,6 +907,7 @@ async def build_situation_for_ctx(
             "reverie": reverie_ctx.source,
             "runtime": runtime_ctx.source,
             "cabinet": cabinet_ctx.source,
+            "office_sound": "ok" if office_sound_ctx.available else "unavailable",
         },
         requestor=presence.requestor,
         presence=presence,
@@ -899,8 +916,8 @@ async def build_situation_for_ctx(
         place=place_ctx,
         environment=env_ctx,
         agenda=agenda_ctx,
-        lab=lab_ctx,
         cabinet=cabinet_ctx,
+        office_sound=office_sound_ctx,
         perception=perception_ctx,
         affect=affect_ctx,
         curiosity=curiosity_ctx,
@@ -1237,25 +1254,21 @@ def _fetch_weather(cfg: SituationSettings) -> EnvironmentContextV1:
         return EnvironmentContextV1(available=False, source=provider)
     if provider != "openmeteo" or cfg.weather_lat is None or cfg.weather_lon is None:
         return EnvironmentContextV1(available=False, source="misconfigured")
-    params = urlencode(
-        {
-            "latitude": cfg.weather_lat,
-            "longitude": cfg.weather_lon,
-            "current": "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,wind_gusts_10m",
-            "hourly": "precipitation_probability,temperature_2m,wind_speed_10m",
-            "forecast_days": 2,
-            "temperature_unit": "fahrenheit",
-            "wind_speed_unit": "mph",
-            "timezone": "auto",
-        }
+    payload = openmeteo.forecast(
+        cfg.weather_lat, cfg.weather_lon,
+        current=("temperature_2m", "apparent_temperature", "weather_code", "wind_speed_10m", "wind_gusts_10m"),
+        hourly=("precipitation_probability", "temperature_2m", "wind_speed_10m"),
+        forecast_days=2, tz="auto", timeout=4,
     )
-    with urlopen(f"https://api.open-meteo.com/v1/forecast?{params}", timeout=4) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
     current = payload.get("current") or {}
     hourly = payload.get("hourly") or {}
-    probs = hourly.get("precipitation_probability") or []
-    temps = hourly.get("temperature_2m") or []
-    winds = hourly.get("wind_speed_10m") or []
+    # Hourly arrays start at local midnight today, not now -- without this
+    # offset "next 6h" read 00:00-05:00 of the current day (seen live
+    # 2026-10-27: a 21:00 turn reported the overnight low as its window).
+    start = _current_hour_index(hourly.get("time") or [], current.get("time"))
+    probs = (hourly.get("precipitation_probability") or [])[start:]
+    temps = (hourly.get("temperature_2m") or [])[start:]
+    winds = (hourly.get("wind_speed_10m") or [])[start:]
     flag = WeatherPracticalFlagsV1(
         take_umbrella=_window_max(probs, 6) >= cfg.umbrella_prob_threshold,
         take_jacket=(current.get("temperature_2m") or 999) <= cfg.jacket_temp_f_threshold,
@@ -1305,6 +1318,19 @@ def _fetch_weather(cfg: SituationSettings) -> EnvironmentContextV1:
     return out
 
 
+def _current_hour_index(times: list[Any], current_time: Any) -> int:
+    """Index of the hourly slot containing `current_time` (both local ISO
+    strings from the same Open-Meteo response, e.g. "2026-10-26T21:15" vs
+    "2026-10-26T21:00"); 0 when either is missing."""
+    hour = str(current_time or "")[:13]
+    if not hour:
+        return 0
+    for i, t in enumerate(times):
+        if str(t)[:13] >= hour:
+            return i
+    return 0
+
+
 def _window_max(values: list[Any], count: int) -> int:
     nums = [_to_float(v) for v in values[:count] if _to_float(v) is not None]
     return int(max(nums)) if nums else 0
@@ -1325,10 +1351,6 @@ def _to_float(value: Any) -> float | None:
     return out
 
 
-def _build_lab_context(cfg: SituationSettings) -> LabContextV1:
-    if not cfg.lab_enabled:
-        return LabContextV1(available=False, source="disabled")
-    return LabContextV1(available=False, source=cfg.lab_provider, thermal_risk="unknown", power_risk="unknown")
 
 
 def _parse_cabinet_received_at(value: str) -> Optional[datetime]:
@@ -1503,9 +1525,8 @@ def _record_cabinet_sound_status(ctx: CabinetContextV1, diagnostics: SituationDi
 async def _build_cabinet_context(
     cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
 ) -> CabinetContextV1:
-    """Orion's own physical cabinet sensors -- the real read `LabContextV1`
-    was always a stub stand-in for. `LabContextV1` itself is untouched
-    (still its own distinct, still-unwired GPU-cluster concept).
+    """Orion's own physical cabinet sensors -- the real read the old lab
+    stub (removed 2026-10-27) was a stand-in for.
 
     Fail-open like every other provider here -- a missing/unreadable
     snapshot file, a stale frame, or an empty measurement set all yield
@@ -1534,6 +1555,64 @@ async def _build_cabinet_context(
         _CABINET_CACHE[cache_key] = (datetime.now(timezone.utc), ctx)
     diagnostics.provider_status["cabinet"] = "ok" if ctx.available else ctx.source
     _record_cabinet_sound_status(ctx, diagnostics)
+    return ctx
+
+
+def _fetch_office_sound_context(cfg: SituationSettings) -> OfficeSoundContextV1:
+    """Office sound meter level (dBA) and how it compares with the office's
+    last 24 h. Unavailable when the newest reading is older than
+    `office_sound_stale_after_sec`: an old number is history, not "now"."""
+    reading = fetch_office_sound(node=cfg.office_sound_node)
+    if reading is None:
+        return OfficeSoundContextV1()
+    age = float(percept_age_seconds(reading.received_at))
+    if age > cfg.office_sound_stale_after_sec:
+        return OfficeSoundContextV1()
+    ctx = OfficeSoundContextV1(
+        available=True,
+        age_seconds=age,
+        dba=round(reading.dba, 1),
+        recent_dba=(
+            round(reading.recent_median_dba, 1) if reading.recent_median_dba is not None else None
+        ),
+    )
+    if reading.median_dba is None:
+        return ctx
+    # Judged on the last-10-min median when there is one, like the cabinet
+    # mic: one door slam should not flip "louder than usual".
+    level = reading.recent_median_dba if reading.recent_median_dba is not None else reading.dba
+    return ctx.model_copy(
+        update={
+            "usual_low_dba": round(reading.p10_dba, 1),
+            "usual_dba": round(reading.median_dba, 1),
+            "usual_high_dba": round(reading.p90_dba, 1),
+            "vs_usual": (
+                "quieter" if level < reading.p10_dba
+                else "louder" if level > reading.p90_dba
+                else "usual"
+            ),
+        }
+    )
+
+
+async def _build_office_sound_context(
+    cfg: SituationSettings, diagnostics: SituationDiagnosticsV1
+) -> OfficeSoundContextV1:
+    """Fail-open: an unset node, a DB fault, or a stale meter all yield
+    available=False, never a guessed level. No provider cache: one indexed
+    query, and the brief cache already gates on the reading's age."""
+    if not cfg.office_sound_node:
+        diagnostics.provider_status["office_sound"] = "disabled"
+        return OfficeSoundContextV1()
+    try:
+        ctx = await asyncio.to_thread(_fetch_office_sound_context, cfg)
+    except Exception as exc:  # noqa: BLE001 -- provider contract is fail-open
+        diagnostics.provider_status["office_sound"] = "error"
+        diagnostics.provider_errors["office_sound"] = str(exc)
+        return OfficeSoundContextV1()
+    diagnostics.provider_status["office_sound"] = (
+        "ok" if ctx.usual_dba is not None else "no_history" if ctx.available else "unavailable"
+    )
     return ctx
 
 
@@ -1901,7 +1980,7 @@ async def _build_camera_senses(
             asyncio.to_thread(
                 fetch_camera_eyes,
                 streams,
-                count_individuals_for=cfg.street_stream_ids,
+                people_range_for=cfg.street_stream_ids,
                 tz_name=cfg.timezone,
                 now=now,
             ),
@@ -2069,7 +2148,6 @@ def _build_affordances(
     presence: PresenceContextV1,
     phase: ConversationPhaseContextV1,
     env: EnvironmentContextV1,
-    lab: LabContextV1,
     surface: SurfaceContextV1,
     time_ctx: TimeContextV1,
 ) -> list[SituationAffordanceV1]:
@@ -2448,14 +2526,14 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
     elif brief.surface.input_modality not in ("typed", "unknown"):
         lines.append(f"Input modality: {brief.surface.input_modality}.")
     if brief.environment.available:
+        now = brief.environment.current_weather
+        if now.temperature_f is not None:
+            feels = f" (feels like {now.feels_like_f:.0f}F)" if now.feels_like_f is not None else ""
+            lines.append(f"Outside temperature now: {now.temperature_f:.0f}F{feels}.")
         rain = brief.environment.forecast_next_6h.precipitation_probability_pct
         lines.append(f"Weather next 6h: precip_prob={rain}%, summary={brief.environment.forecast_next_6h.summary}.")
     else:
         lines.append("Weather: unavailable or low-confidence; do not infer.")
-    if brief.lab.available:
-        lines.append(f"Lab risk: thermal={brief.lab.thermal_risk}, power={brief.lab.power_risk}.")
-    else:
-        lines.append("Lab: unavailable/stub; do not infer.")
     # Cabinet sensors are deliberately OMITTED rather than rendered as an
     # "unavailable; do not infer" placeholder when there is nothing to show
     # -- same reasoning curiosity/reverie below already document, and the
@@ -2528,6 +2606,32 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
             " the last 24 hours. The mic isn't calibrated, so this tells you louder or quieter"
             " than usual, not how many decibels it is."
         )
+    # Office sound meter (2026-11-07). A calibrated dBA meter, so the number
+    # itself reaches the prompt, with a scale so Orion can say how loud the
+    # office is. Named as the office so it is never read as the cabinet.
+    office = brief.office_sound
+    if office.available and office.dba is not None:
+        heard = _recency_phrase(office.age_seconds)
+        line = (
+            f"Your office's sound (sound level meter in Juniper's office, not in your cabinet"
+            f" or the closet; read {heard}): {office.dba:.0f} dBA"
+        )
+        if office.recent_dba is not None:
+            line += f", {office.recent_dba:.0f} dBA typical over the last 10 minutes"
+        if office.vs_usual is not None:
+            vs = {
+                "usual": "about as loud as usual",
+                "louder": "louder than usual",
+                "quieter": "quieter than usual",
+            }[office.vs_usual]
+            line += (
+                f". That is {vs} for the office (usual range {office.usual_low_dba:.0f}-"
+                f"{office.usual_high_dba:.0f} dBA over the last 24 hours)"
+            )
+        lines.append(
+            line + ". Scale: about 30 dBA is a very quiet room, 40-50 a quiet office,"
+            " 60 normal conversation, 70+ loud (music, TV, a raised voice)."
+        )
     if brief.perception.available and brief.perception.scene_summary:
         seen = _recency_phrase(brief.perception.observation_age_seconds)
         lines.append(f"Room (seen {seen}): {brief.perception.scene_summary}")
@@ -2582,7 +2686,7 @@ def _build_prompt_fragment(brief: SituationBriefV1, max_chars: int) -> Situation
         lines.append(runtime_line)
     # Curiosity/reverie are deliberately OMITTED rather than rendered as an
     # "unavailable; do not infer" placeholder when there is nothing to show
-    # (unlike weather/lab/perception/affect/runtime above, which always emit
+    # (unlike weather/perception/affect/runtime above, which always emit
     # a line). Two reasons: (1) both are genuinely optional color, not a
     # standing claim about the world Orion needs reminding it lacks every
     # single turn -- unlike "I cannot see you", "I don't have an open prior

@@ -160,10 +160,14 @@ def repair_pressure_grammar_scalars(
     *,
     pre_turn_bundle: TurnAppraisalBundleV1 | None,
     substrate_summary: dict[str, Any] | None,
-) -> tuple[float, float]:
+) -> tuple[float | None, float | None]:
+    """(level, confidence) of this turn's repair-pressure reading, or (None, None) when there is
+    none -- appraisal skipped, failed, or its probe shed. Never 0.0 for "no reading": a 0.0 is a
+    measured calm turn, and until 2026-10-23 a shed probe was indistinguishable from one."""
     if pre_turn_bundle is not None:
         scalars = (pre_turn_bundle.grammar_scalars or {}).get("repair_pressure") or {}
-        return float(scalars.get("level", 0.0)), float(scalars.get("confidence", 0.0))
-    return float((substrate_summary or {}).get("level", 0.0)), float(
-        (substrate_summary or {}).get("confidence", 0.0)
-    )
+        if "level" in scalars:
+            return float(scalars["level"]), float(scalars.get("confidence", 0.0))
+    if substrate_summary is not None and substrate_summary.get("level") is not None:
+        return float(substrate_summary["level"]), float(substrate_summary.get("confidence") or 0.0)
+    return None, None

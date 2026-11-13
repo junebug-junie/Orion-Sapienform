@@ -6,6 +6,14 @@ It now supports **latent vector emission** for vLLM/llama-cola responses (when t
 
 For **llama.cpp** and **llama-cola** backends, `ChatRequestPayload.options` may include **`chat_template_kwargs`** (e.g. `{"enable_thinking": false}`). The gateway forwards that object to `/v1/chat/completions` so Qwen3-style thinking can be toggled **per request** without restarting the model host.
 
+For a llama.cpp grant in GPU pool class `fast` or `metacog`, both bus chat and
+OpenAI HTTP calls send `enable_thinking=false` when the caller omits it. An
+explicit `true` or `false` survives, except where structured-output policy
+disables thinking for an artifact. Metacog's old Qwen3 worker defaults now live
+in this request policy: temperature 0.35, top-p 0.90, presence penalty 0.20,
+and 1,024 output tokens. An explicit thinking-on metacog call without a token
+budget gets 4,096 tokens so reasoning can finish before the final answer.
+
 ### Spark metadata (v1)
 
 The gateway no longer runs tissue ingest on chat turns. Result `spark_meta` is thin metadata only:
@@ -33,6 +41,7 @@ Fix: `llm_backend.py`'s `_served_model()` now prefers the backend's own echoed m
 | Channel | Env Var | Kind | Description |
 | :--- | :--- | :--- | :--- |
 | (Caller-defined) | (via `reply_to`) | `llm.chat.result` | Chat completion result. |
+| `orion:llm:call:usage` | `LLM_GATEWAY_CALL_USAGE_ENABLED` | `llm.call.usage.v1` | One per call that reached a model: tokens + correlation id (see "Per-call token ledger"). |
 
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
@@ -45,6 +54,7 @@ Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 | `GPU_POOL_CONFIG_PATH` | `/app/config/gpu_pool.yaml` | Route -> pool class/priority map (`routes:`). A route not listed is refused (`route_not_in_gpu_pool`). |
 | `LLM_GATEWAY_POOL_WAIT_SEC` | `300` | Max wait for a pool grant (interactive/system); capped by the caller's own `gateway_read_timeout_sec`. |
 | `LLM_GATEWAY_POOL_BACKGROUND_WAIT_SEC` | `900` | Same, for background-priority routes. |
+| (option) `gateway_pool_wait_sec` | none | Per call, in a bus request's `options` (2026-11-03): the caller's own pool seat wait, **on top of** its `gateway_read_timeout_sec`. The pool wait is this number (capped at 900 s) instead of the priority's, and each upstream call still gets at most `gateway_read_timeout_sec`. Absent: the old rule (one budget for wait + generation). Caller today: Orion Prime (orion-mind `PRIME_SEAT_WAIT_SEC`). |
 | `LLM_GATEWAY_POOL_PASSTHROUGH_WAIT_SEC` | `60` | Max pool wait for the HTTP passthroughs (OpenAI/Anthropic); the queued acquire is withdrawn if the client disconnects. |
 | `LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE` | `8` | Threads per granted role URL (one executor per GPU role). |
 | `LLM_ROUTE_DEFAULT` | `quick` | Default routing key when none provided. |
@@ -283,7 +293,8 @@ docker compose -f services/orion-llm-gateway/docker-compose.yml up -d llm-gatewa
 > Atlas's IP based on that naming alone -- wrong; nothing was listening there, and the
 > gateway correctly reported `agent` as down until this was corrected the same day.
 >
-> **2026-08-21: Atlas is retired for good** (chassis reused for other hardware; the
+> **Historical 2026-08-21 snapshot; superseded by the [GPU3 consolidation](../../docs/operations/qwen35-gpu3-consolidation.md).**
+> Atlas is retired for good (chassis reused for other hardware; the
 > Atlas Tailscale node itself is offline for good). `metacog`/`quick`/`quick_background`
 > below have been repointed from Atlas's old IP (`100.121.214.30`) to Circe -- confirmed
 > live before the fix that every call through those three routes was hanging up to 700s
@@ -399,6 +410,26 @@ one-call minute read 1.0. The field digester (`ENABLE_LLM_INFERENCE_FIELD_DIGEST
 recorded in the projection for inspection and never reach the field. Replay what the
 channel would read from existing logs with
 `evals/run_inference_outcome_eval.py`.
+
+## Per-call token ledger (2026-10-29)
+
+One `llm.call.usage.v1` (`orion/schemas/llm_call_usage.py`) per call that reached a model: bus RPC,
+`/v1/chat/completions` and `/v1/messages`, streamed or not. It carries prompt tokens (cache reuse
+included), cached prompt tokens, completion tokens, route, model, served_by, the granted pool role,
+model time (grant -> reply) and pool wait, llama.cpp decode speed, and the caller's correlation id.
+orion-sql-writer stores it in `llm_call_usage`. No prompt or reply text.
+
+* Correlation id: bus envelope `correlation_id`; HTTP header `X-Orion-Correlation-Id` (then
+  `x-request-id`). FCC per-turn spawns send the header, so harness calls are no longer `corr=-`.
+* Streams: the first and last 4 KB are kept. An Anthropic stream has its prompt counts in
+  `message_start` (first event) and its completion count in `message_delta` (last). An OpenAI
+  stream from llama.cpp has no `usage` chunk; counts come from the last chunk's `timings`
+  (`token_source = 'timings'`).
+* Not recorded: a call the pool never granted that reported no tokens (a refusal). The grammar
+  windows still count it.
+* Telemetry never waits inside a reply: events go to a bounded in-memory queue (oldest dropped
+  and logged when full), drained every 2 s by `run_usage_publisher`.
+* Off switch: `LLM_GATEWAY_CALL_USAGE_ENABLED=false`.
 
 ## Calls under a durable run's GPU pool hold
 

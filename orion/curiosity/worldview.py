@@ -182,6 +182,7 @@ class Prior:
     # True when the pick came from a coverage slot, not from the uncertainty order. Recorded in
     # the offer log so the order experiment can tell the two apart.
     coverage: bool = False
+    strain_note: str = ""
 
     @property
     def uncertainty(self) -> float:
@@ -232,6 +233,8 @@ class Prior:
         # `tested 3x` is what made a shortened one look like a name in the
         # first place.
         line += f"\n      prior_id: {self.prior_id}"
+        if self.strain_note:
+            line += "\n      " + self.strain_note
         if self.formed_from:
             # `formed_from`, not "formed from": these labelled lines are now
             # load-bearing, and an earlier run scraped `prior_id: "curation
@@ -406,6 +409,11 @@ class WorldviewSnapshot:
     concept_total: int = 0
     continuation: Optional[TurnOutcome] = None
     unavailable_reason: Optional[str] = None
+    # The raw live-prior rows this snapshot was selected from, kept so the curiosity replica's validated
+    # plan can re-select the SAME read with its picks at the top (`with_head`) instead of a second graph
+    # read that could differ. Not part of equality or repr.
+    prior_rows: tuple = field(default=(), repr=False, compare=False)
+    strain_notes: dict = field(default_factory=dict, repr=False, compare=False)
 
     @property
     def is_unavailable(self) -> bool:
@@ -1010,6 +1018,8 @@ def select_priors(
     rotate_seed: str = "",
     expected_nats_for: Optional[Callable[[Prior], float]] = None,
     coverage_slots: int = 0,
+    head_ids: Sequence[str] = (),
+    strained: Optional[dict] = None,
 ) -> tuple[list[Prior], list[Prior], int]:
     """Split LIVE priors into (offered, stale, dropped_count).
 
@@ -1041,6 +1051,19 @@ def select_priors(
     float bit; 0.0 and 0.005 share one clamped entropy). The same tie-break
     keeps the uncertainty order among priors that are all worth zero -- the
     likely early state, when every scored test moved nothing.
+
+    `head_ids`, when given, are the curiosity replica's validated picks
+    (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md section 4).
+    They fill the first ordered slots in their own order; the rest of the
+    ordered slots continue the order above with the picks skipped; the
+    coverage slots draw exactly as on any other run, skipping the picks; the
+    stale bucket is unchanged. So the layout and the number of priors shown
+    are the same on every arm -- only the top differs. A head id that is not a
+    fresh live prior here (stale, unreadable, or gone) is skipped, never
+    padded in: Hub validates the plan against this same read before passing
+    it, so a skip only happens if a caller passes an unvalidated plan. At most
+    `sample - coverage_slots` picks are used. Empty (the default) changes
+    nothing, so every existing caller gets byte-identical output.
     """
     priors: list[Prior] = []
     dropped = 0
@@ -1055,6 +1078,15 @@ def select_priors(
     # live AND closed reads together -- `read_snapshot` owns the census.
     priors, _ = collapse_duplicate_priors(priors)
 
+    strain_picks = []
+    for p in priors:
+        note = (strained or {}).get(p.prior_id)
+        if note and (_stamp_ms(p.last_tested_at) or 0) < int(note.strained_at.timestamp() * 1000):
+            strain_picks.append(replace(p, strain_note=note.preview()))
+    strain_picks.sort(key=lambda p: (-(strained[p.prior_id].strained_at.timestamp()), p.prior_id))
+    strain_picks = strain_picks[:min(2, max(0, sample - max(0, coverage_slots)))]
+    strain_ids = {p.prior_id for p in strain_picks}
+    priors = [p for p in priors if p.prior_id not in strain_ids]
     stale = [p for p in priors if stale_after > 0 and p.times_tested >= stale_after]
     stale_ids = {p.prior_id for p in stale}
     fresh = [p for p in priors if p.prior_id not in stale_ids]
@@ -1080,6 +1112,17 @@ def select_priors(
     )
     sample = max(0, sample)
     k = min(max(0, coverage_slots), sample)
+    if head_ids:
+        by_id = {p.prior_id: p for p in fresh}
+        picks: list[Prior] = []
+        for prior_id in head_ids:
+            prior = by_id.get(str(prior_id))
+            if prior is not None and prior not in picks:
+                picks.append(prior)
+        picks = picks[: sample - k]
+        picked_ids = {p.prior_id for p in picks}
+        fresh = picks + [p for p in fresh if p.prior_id not in picked_ids]
+    fresh = strain_picks + fresh
     head, tail = fresh[: sample - k], fresh[sample - k :]
     # Coverage slots: the order above only ever reaches priors near 0.5, so a confident prior with
     # a few tests ranked past the sample is never shown and never re-checked (live 2026-10-16: 72
@@ -1145,6 +1188,7 @@ def read_snapshot(
     counts_cypher: str = COUNTS_CYPHER,
     expected_nats_for: Optional[Callable[[Prior], float]] = None,
     coverage_slots: int = 0,
+    strained: Optional[dict] = None,
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
 
@@ -1197,6 +1241,7 @@ def read_snapshot(
         rotate_seed=rotate_seed,
         expected_nats_for=expected_nats_for,
         coverage_slots=coverage_slots,
+        strained=strained,
     )
     if dropped:
         logger.warning(
@@ -1236,7 +1281,44 @@ def read_snapshot(
         live_total=live_total,
         closed_total=closed_total,
         concept_total=_as_int((concept_rows[0] if concept_rows else {}).get("n"), 0),
+        prior_rows=tuple(prior_rows),
+        strain_notes=strained or {},
     )
+
+
+def fresh_priors(view: WorldviewSnapshot, *, stale_after: int) -> list[Prior]:
+    """Every fresh (not stale) live prior in the read ``view`` was selected from, collapsed the same way
+    `select_priors` collapses forks: the curiosity replica's candidate pool
+    (orion/curiosity/replica/candidates.py). Unordered."""
+    priors = [p for p in (build_prior(r) for r in view.prior_rows) if p is not None]
+    priors, _ = collapse_duplicate_priors(priors)
+    return [p for p in priors if not (stale_after > 0 and p.times_tested >= stale_after)]
+
+
+def with_head(
+    view: WorldviewSnapshot,
+    head_ids: Sequence[str],
+    *,
+    sample: int,
+    stale_after: int,
+    rotate_seed: str,
+    coverage_slots: int,
+) -> WorldviewSnapshot:
+    """``view`` re-selected from its own rows with ``head_ids`` at the top (`select_priors` head_ids):
+    the offer a validated replica plan produces. Same rows, sample, seed and coverage draw as the rule
+    order it replaces, so only the top differs. Empty ``head_ids`` returns ``view`` unchanged."""
+    if not head_ids or view.is_unavailable:
+        return view
+    offered, stale, _ = select_priors(
+        list(view.prior_rows),
+        sample=sample,
+        stale_after=stale_after,
+        rotate_seed=rotate_seed,
+        coverage_slots=coverage_slots,
+        head_ids=head_ids,
+        strained=view.strain_notes,
+    )
+    return replace(view, live_priors=offered, stale_priors=stale)
 
 
 def read_turn_outcome(reader: WorldviewReader, run_id: str) -> Optional[TurnOutcome]:

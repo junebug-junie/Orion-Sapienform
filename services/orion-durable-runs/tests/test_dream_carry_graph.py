@@ -455,10 +455,6 @@ def _runtime():
             from app.self_sense_graph import Deps
             return Deps(run_turn=None, publish_rows=None)
 
-        def _reflect_deps(self):
-            from app.reflect_graph import Deps
-            return Deps(call_reflect_llm=None)
-
     settings = SimpleNamespace(service_name="orion-durable-runs", lease_heartbeat_sec=15, admission_tick_sec=1,
                                retry_max_attempts=1, hold_max_takebacks=12, retry_base_sec=1, retry_max_sec=300,
                                state_channel="orion:durable:state", dream_carry_finish_grace_sec=900.0)

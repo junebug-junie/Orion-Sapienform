@@ -48,8 +48,8 @@ def test_resolve_latest_frame_path_returns_none_for_empty_dir(tmp_path) -> None:
 
 
 def test_resolve_latest_frame_path_picks_newest_by_mtime(tmp_path) -> None:
-    older = tmp_path / "a.jpg"
-    newer = tmp_path / "b.jpg"
+    older = tmp_path / "cam0_cam0_a.jpg"
+    newer = tmp_path / "cam0_cam0_b.jpg"
     older.write_bytes(b"old")
     newer.write_bytes(b"new")
     now = time.time()
@@ -61,6 +61,22 @@ def test_resolve_latest_frame_path_picks_newest_by_mtime(tmp_path) -> None:
     os.utime(older, (now - 100, now - 100))
     os.utime(newer, (now, now))
     assert resolve_latest_frame_path(str(tmp_path)) == newer
+
+
+def test_resolve_latest_frame_path_is_the_office_cameras_not_the_newest_file(tmp_path) -> None:
+    """2026-11-04: every athena retina writes into the shared folder; the
+    probe must look through the office camera, not whichever wrote last."""
+    import os
+
+    office = tmp_path / "cam0_cam0_1.jpg"
+    walk = tmp_path / "walkway_walkway_2.jpg"
+    office.write_bytes(b"office")
+    walk.write_bytes(b"walkway")
+    now = time.time()
+    os.utime(office, (now - 5, now - 5))
+    os.utime(walk, (now, now))
+    assert resolve_latest_frame_path(str(tmp_path)) == office
+    assert resolve_latest_frame_path(str(tmp_path), "walkway") == walk
 
 
 def test_resolve_latest_frame_path_ignores_non_jpg_files(tmp_path) -> None:
@@ -272,7 +288,7 @@ def _settings(**overrides) -> SimpleNamespace:
 @pytest.mark.asyncio
 async def test_run_foveal_probe_refuses_when_percept_store_unconfigured(tmp_path) -> None:
     settings = _settings(FOVEAL_PERCEPT_STORE_URL="", FOVEAL_FRAMES_DIR=str(tmp_path))
-    (tmp_path / "frame.jpg").write_bytes(b"data")
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(b"data")
     bus = _FakeBus(reply_payload=_ok_reply("unused"))
     with pytest.raises(FovealNotConfiguredError):
         await run_foveal_probe(bus, settings)
@@ -285,7 +301,7 @@ async def test_run_foveal_probe_refuses_when_llm_route_unconfigured(tmp_path) ->
     fast rather than spend a real upload on every call before the gateway
     eventually replies with an embedded routing error."""
     settings = _settings(FOVEAL_LLM_ROUTE="", FOVEAL_FRAMES_DIR=str(tmp_path))
-    (tmp_path / "frame.jpg").write_bytes(b"data")
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(b"data")
     bus = _FakeBus(reply_payload=_ok_reply("unused"))
     with pytest.raises(FovealNotConfiguredError):
         await run_foveal_probe(bus, settings)
@@ -306,7 +322,7 @@ async def test_run_foveal_probe_raises_when_frame_is_empty(tmp_path) -> None:
     check, so a 0-byte frame (a truncated/partial capture) must be rejected
     before upload rather than silently sent as a 'successful' empty
     attachment."""
-    (tmp_path / "frame.jpg").write_bytes(b"")
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(b"")
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
     bus = _FakeBus(reply_payload={})
     with pytest.raises(NoFrameAvailableError):
@@ -318,7 +334,7 @@ async def test_run_foveal_probe_raises_when_frame_is_empty(tmp_path) -> None:
 async def test_run_foveal_probe_end_to_end_success(tmp_path) -> None:
     frame_bytes = b"a real jpeg would go here"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
-    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(frame_bytes)
 
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
     reply = _ok_reply("a person at a desk")
@@ -333,7 +349,7 @@ async def test_run_foveal_probe_end_to_end_success(tmp_path) -> None:
     assert result["sha256"] == real_sha
     assert result["caption"] == "a person at a desk"
     assert result["reply"] == reply
-    assert result["frame_path"] == str(tmp_path / "frame.jpg")
+    assert result["frame_path"] == str(tmp_path / "cam0_cam0_1.jpg")
 
     # The actual RPC target must be the gateway's existing chat-intake
     # channel -- the retired foveal-host channel is gone entirely, and this
@@ -351,7 +367,7 @@ async def test_run_foveal_probe_end_to_end_success(tmp_path) -> None:
 async def test_run_foveal_probe_vqa_mode_passes_question_through(tmp_path) -> None:
     frame_bytes = b"frame"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
-    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
     reply = _ok_reply("yes")
     bus = _FakeBus(reply_payload=reply)
@@ -370,7 +386,7 @@ async def test_run_foveal_probe_vqa_mode_passes_question_through(tmp_path) -> No
 
 @pytest.mark.asyncio
 async def test_run_foveal_probe_raises_when_upload_fails(tmp_path) -> None:
-    (tmp_path / "frame.jpg").write_bytes(b"data")
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(b"data")
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
     bus = _FakeBus(reply_payload={})
 
@@ -389,7 +405,7 @@ async def test_run_foveal_probe_raises_distinct_error_on_decode_failure(tmp_path
     percept-store connectivity when the upload had already succeeded."""
     frame_bytes = b"frame"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
-    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
     bus = _FakeBus(reply_payload={}, decode_ok=False, decode_error="schema mismatch")
 
@@ -410,7 +426,7 @@ async def test_run_foveal_probe_raises_when_response_is_empty(tmp_path) -> None:
     failure, not a blanket ok:true with an empty caption."""
     frame_bytes = b"frame"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
-    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
     bus = _FakeBus(reply_payload=_ok_reply(""))
 
@@ -431,7 +447,7 @@ async def test_run_foveal_probe_raises_on_embedded_error_content(tmp_path) -> No
     same reply contract."""
     frame_bytes = b"frame"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
-    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
     bus = _FakeBus(reply_payload=_ok_reply("[Error: no vision-capable route reachable]"))
 
@@ -453,7 +469,7 @@ async def test_run_foveal_probe_runs_blocking_io_off_the_event_loop(tmp_path) ->
     timeout every time this endpoint fires."""
     frame_bytes = b"frame"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
-    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
     bus = _FakeBus(reply_payload=_ok_reply("x"))
 
@@ -479,7 +495,7 @@ async def test_run_foveal_probe_names_a_typed_gateway_failure(tmp_path) -> None:
     and the worker's message in raw.details.message -- a gateway_error, not an empty response."""
     frame_bytes = b"frame"
     real_sha = hashlib.sha256(frame_bytes).hexdigest()
-    (tmp_path / "frame.jpg").write_bytes(frame_bytes)
+    (tmp_path / "cam0_cam0_1.jpg").write_bytes(frame_bytes)
     settings = _settings(FOVEAL_FRAMES_DIR=str(tmp_path))
     reply = {"content": "", "raw": {"error": "upstream_http_5xx",
                                     "details": {"reason": "http_500", "message": "No user query found in messages."}}}

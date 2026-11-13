@@ -8,7 +8,7 @@ TRUNCATEs the walkway tables -- e.g.:
 
     docker run -d --rm --name pg -e POSTGRES_PASSWORD=t -p 127.0.0.1:55499:5432 postgres:16-alpine
     for f in walkway_camera_v1 walkway_privacy_v2 vision_confirm_asks_v1 vision_ask_names_v1 \\
-             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1; do
+             vision_split_v1 vision_osnet_shadow_v1 vision_person_album_v1 vision_person_basis_v1 vision_person_age_veto_v1 person_record_v1; do
       docker exec -i pg psql -U postgres < services/orion-sql-db/manual_migration_$f.sql; done
     ORION_TEST_PG_URI=postgresql://postgres:t@127.0.0.1:55499/postgres pytest tests/test_vision_person_model.py
 """
@@ -286,6 +286,108 @@ def test_eval_mcnemar_is_exact_and_two_sided() -> None:
     assert auc([0.9, 0.8], [0.1, 0.2]) == 1.0 and auc([0.5], [0.5]) == 0.5
 
 
+# --- alpha split over real people, longer face street (2026-11-03) ---------------------------------------
+
+
+def _things(names, clusters: int = 2, seed: int = 11) -> dict:
+    """Album labels that are not one person (a decoration, a role): random directions."""
+    rng = np.random.default_rng(seed)
+    return {n: {1: [_crop(f"{n}-{k}-{j}", f"{n}-c{k}", f"2026-10-{k + 1:02d}", rng.normal(0, 1, 8))
+                    for k in range(clusters) for j in range(3)]} for n in names}
+
+
+def test_not_a_person_labels_do_not_widen_the_alpha_split() -> None:
+    """Live 2026-11-03: 16 album labels, 4 not one real person (a decoration, two
+    delivery roles, a pair). Counting them made a bar need 319 impostor clusters, not 259."""
+    people = {"Juniper": {1: _person("j", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    album = {**people, **_things(["skeleton", "Mail carrier", "UPS delivery", "A and B"])}
+    not_people = frozenset({"skeleton", "mail carrier", "ups delivery", "a and b"})
+    assert pm.people_count(album, CFG, not_people) == 8 and pm.people_count(album, CFG) == 12
+    # 170 street + 7 x 2 people + 4 x 2 things = 192 impostor clusters: alpha / 12
+    # needs 193 (no bar), alpha / 8 needs 192.
+    split_all = pm.fit_bar("Juniper", "body", album, CFG, _street())
+    split_people = pm.fit_bar("Juniper", "body", album, CFG, _street(), not_people)
+    assert len(split_people.impostor_clusters) == 192
+    assert split_all.bar.accept_at is None and split_people.bar.accept_at is not None
+    # The things keep their albums and bars, and still count as impostors.
+    bars = pm.fit_all(album, CFG, _street(), not_people=not_people)
+    assert ("skeleton", "body") in bars and bars[("Juniper", "body")].accept_at is not None
+    assert pm.people_count(album, CFG, frozenset({"SKELETON"})) == 12      # names arrive casefolded
+
+
+def test_a_not_a_person_label_never_gets_an_accept_bar() -> None:
+    """Review finding: "probably A and B" names known people. A label outside the
+    split must not be able to accept, or the split no longer bounds false accepts."""
+    album = {"A and B": {1: _person("ab", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    armed = pm.fit_bar("A and B", "body", album, CFG, _street())          # counted as a person: arms
+    assert armed.bar.accept_at is not None
+    fit = pm.fit_bar("A and B", "body", album, CFG, _street(), frozenset({"a and b"}))
+    assert fit.bar.accept_at is None and fit.genuine_clusters    # still scored, still asked about
+    bars = pm.fit_all(album, CFG, _street(), not_people=frozenset({"a and b"}))
+    near = [_crop(f"n{i}", "near", "2026-10-15", _vec(1, 0.02 * i)) for i in range(3)]
+    (g,) = pm.attribute({"near": near}, album, bars, {}, CFG)
+    assert g["person_label"] == "A and B" and g["band"] == "unsure"
+
+
+def test_split_people_only_off_is_the_old_split_over_every_label() -> None:
+    people = {"Juniper": {1: _person("j", 0, 4)}, **{f"p{i}": {1: _person(f"p{i}", i, 2)} for i in range(1, 8)}}
+    album = {**people, **_things(["skeleton", "Mail carrier", "UPS delivery", "A and B"])}
+    off = pm.PersonModelConfig(alpha_split_people_only=False)
+    not_people = frozenset({"skeleton", "mail carrier", "ups delivery", "a and b"})
+    assert pm.people_count(album, off, not_people) == len(album)
+    assert pm.fit_bar("Juniper", "body", album, off, _street(), not_people).bar.accept_at is None
+    # Off: not_people is ignored entirely, bars equal the old call's.
+    assert pm.fit_all(album, off, _street(), not_people=not_people) == pm.fit_all(album, off, _street())
+
+
+def test_missing_person_tables_mean_everyone_counts_as_a_person() -> None:
+    class _Conn:
+        def execute(self, *_a, **_k):
+            class _R:
+                def scalar(self):
+                    return True       # to_regclass(...) IS NULL
+            return _R()
+    assert pm.not_a_person_names(_Conn()) == frozenset()
+
+
+def _faced(cid: str, cluster: str, day: str, v) -> pm.Crop:
+    return _crop(cid, cluster, day, v, face=v)
+
+
+def test_face_bars_calibrate_on_the_longer_street_body_bars_do_not() -> None:
+    rng = np.random.default_rng(5)
+    album = {"J": {1: [_faced(f"j{k}{i}", f"jc{k}", f"2026-10-0{k + 1}", _vec(1, 0.01 * i)) for k in range(3)
+                       for i in range(3)]}}
+    st = lambda pre, n: {f"{pre}{i}": [_faced(f"{pre}{i}-{j}", f"{pre}{i}", "2026-10-12",  # noqa: E731
+                                              rng.normal(0, 1, 8)) for j in range(3)] for i in range(n)}
+    street = st("now", 10)
+    face_street = {**street, **st("old", 25)}
+    bars = pm.fit_all(album, CFG, street, face_street)
+    assert bars[("J", "face")].n_impostor == 35 and bars[("J", "body")].n_impostor == 10
+    old = pm.fit_all(album, CFG, street)          # no face street = the guess street, as before
+    assert old[("J", "face")].n_impostor == 10
+
+
+def test_face_window_not_longer_means_one_street(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(pm, "unnamed_clusters", lambda conn, now, cfg, tz, days=None: calls.append(days) or {"a": []})
+    street, face = pm.street_pools(None, NOW, pm.PersonModelConfig(face_candidate_days=30.0), ZONE)
+    assert street is face and calls == [None]
+
+
+def test_settings_ship_the_face_window_and_people_split_on() -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import person_model_config
+
+    cfg = person_model_config(Settings())
+    assert cfg.face_candidate_days == 90.0 and cfg.face_candidate_days > cfg.candidate_days
+    assert cfg.alpha_split_people_only is True
+    off = person_model_config(Settings(VISION_PERSON_FACE_CANDIDATE_DAYS=30, VISION_PERSON_ALPHA_SPLIT_PEOPLE_ONLY=False))
+    assert off.face_candidate_days == 30.0 and off.alpha_split_people_only is False
+    # The face window is pointless past the prune of unnamed clusters.
+    assert cfg.face_candidate_days <= Settings().vision_sighting_retention_days
+
+
 # --- the cycle against real Postgres --------------------------------------------------------------------
 
 PG = os.getenv("ORION_TEST_PG_URI", "")
@@ -488,22 +590,43 @@ def test_is_this_x_opens_for_the_best_unsure_guess_with_a_picture(pg) -> None:
     assert opened[0]["image_refs"] and opened[0]["question"].startswith("Is this Juniper?")
     with pg.begin() as conn:
         assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []   # already open
-        n = conn.execute(text(vi.ASKED_TODAY_SQL), {"d": vi.local_day_start(NOW, ZONE),
-                                                    "face": '["rule:face"]'}).scalar()
-    assert n == 1   # counted against ORION_ASK_DAILY_CAP with the slow rule
+        day = vi.local_day_start(NOW, ZONE)
+        slow = conn.execute(text(vi.ASKED_TODAY_SQL), {"d": day, "face": '["rule:face"]'}).scalar()
+        own = conn.execute(text(vi.PERSON_CONFIRM_ASKED_TODAY_SQL), {"d": day}).scalar()
+    assert (slow, own) == (0, 1)   # its own cap, not ORION_ASK_DAILY_CAP
 
 
 @needs_pg
-def test_is_this_x_waits_when_the_slow_rule_used_the_day(pg) -> None:
+def test_is_this_x_still_asks_when_the_slow_rule_used_the_day(pg) -> None:
+    """Regression 2026-10-22: the slow rule opens first and used the shared cap of 2
+    every day, so "Is this <name>?" was never asked."""
+    from sqlalchemy import text
+
     from app import vision_individuals as vi
 
-    cfg = vi.IndividualsConfig(ask_daily_cap=1, ask_face_min_faces=0)
+    cfg = vi.IndividualsConfig(ask_daily_cap=1, person_confirm_ask_daily_cap=1, ask_face_min_faces=0)
     with pg.begin() as conn:
         _confirm_world(conn)
-        conn.execute(__import__("sqlalchemy").text(
+        conn.execute(text(
             "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, created_at) "
             "VALUES ('ask-slow', 'q', 'vision_individual', 'someone', :t)"), {"t": NOW})
+        assert [a["source_ref"] for a in vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)] == ["unk-j|Juniper"]
+
+
+@needs_pg
+def test_is_this_x_stops_at_its_own_daily_cap(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(person_confirm_ask_daily_cap=1, ask_face_min_faces=0)
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        conn.execute(text(
+            "INSERT INTO orion_ask (ask_id, question, source_kind, source_ref, status, created_at) "
+            "VALUES ('ask-done', 'q', 'vision_person_confirm', 'other|Someone', 'answered', :t)"), {"t": NOW})
         assert vi._open_person_confirm_asks(conn, NOW, ZONE, cfg) == []
+        assert len(vi._open_person_confirm_asks(conn, NOW + timedelta(days=1), ZONE, cfg)) == 1
 
 
 @needs_pg
@@ -556,6 +679,63 @@ def test_no_rules_the_name_out_for_that_cluster(pg) -> None:
         # And never asks the same question again.
         later = vi._open_person_confirm_asks(conn, NOW + timedelta(days=1), ZONE, cfg)
         assert all(a["source_ref"] != "unk-j|Juniper" for a in later)
+
+
+def _answer_confirm_by_picture(conn, verdicts):
+    """Answer the open "Is this Juniper?" card about unk-j picture by picture:
+    verdicts[k] for the crop unk-j-<k> (its thumbnail is the picture)."""
+    import json
+
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    (ask,) = vi._open_person_confirm_asks(conn, NOW, ZONE, vi.IndividualsConfig(ask_face_min_faces=0))
+    pictures = []
+    for k, v in enumerate(verdicts):
+        ref = "thumb:" + f"{k:x}" * 64
+        conn.execute(text("UPDATE vision_crop_observation SET thumb_ref=:r WHERE crop_id=:c"),
+                     {"r": ref, "c": f"unk-j-{k}"})
+        pictures.append({"image_ref": ref, "index": k, "verdict": v})
+    answer = "yes" if "same" in verdicts else "no"
+    conn.execute(text("UPDATE orion_ask SET status='answered', answer=:ans, answered_at=:t, "
+                      "answer_detail=CAST(:d AS jsonb) WHERE ask_id=:a"),
+                 {"ans": answer, "t": NOW, "a": ask["ask_id"], "d": json.dumps({"pictures": pictures})})
+    vi._apply_answers(conn, NOW)
+    return ask
+
+
+@needs_pg
+def test_one_picture_of_three_is_the_person(pg) -> None:
+    """2026-10-23, Juniper: "one of the three is Emerald but I can't specify which".
+    Mixed answers never name the cluster (it holds more than one person); each
+    marked picture teaches its own crop, "not sure" teaches nothing."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        _answer_confirm_by_picture(conn, ["same", "different", "unsure"])
+        assert conn.execute(text("SELECT label FROM vision_individual WHERE individual_id='unk-j'")).scalar() is None
+        assert conn.execute(text("SELECT count(*) FROM vision_person_attribution WHERE individual_id='unk-j' "
+                                 "AND person_label='Juniper' AND revoked_at IS NULL")).scalar() == 0
+        pm.run_person_model(conn, NOW + timedelta(minutes=10), CFG)
+        ex = conn.execute(text("SELECT crop_id, polarity, source FROM vision_person_exemplar "
+                               "WHERE source LIKE 'confirm_pick%' AND revoked_at IS NULL ORDER BY crop_id")).fetchall()
+        # Both survive the album's reconciliation.
+        assert [tuple(r) for r in ex] == [("unk-j-0", 1, "confirm_pick_yes"), ("unk-j-1", -1, "confirm_pick_no")]
+
+
+@needs_pg
+def test_every_picture_is_the_person_still_names_the_cluster(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _confirm_world(conn)
+        ask = _answer_confirm_by_picture(conn, ["same", "same", "same"])
+        assert conn.execute(text("SELECT label, label_ask_id FROM vision_individual "
+                                 "WHERE individual_id='unk-j'")).one() == ("Juniper", ask["ask_id"])
+        assert conn.execute(text("SELECT count(*) FROM vision_person_exemplar "
+                                 "WHERE source LIKE 'confirm_pick%'")).scalar() == 0
 
 
 @needs_pg
@@ -646,3 +826,465 @@ def test_no_marks_only_the_crops_orion_guessed_on(pg) -> None:
         vi._apply_answers(conn, NOW)
         n = conn.execute(text("SELECT count(*) FROM vision_person_exemplar WHERE source='confirm_no'")).scalar()
     assert n == pm.ATTRIBUTION_CROPS
+
+
+@needs_pg
+def test_face_street_reaches_back_further_than_the_guess_street(pg) -> None:
+    with pg.begin() as conn:
+        _add_cluster(conn, "recent", None, [_vec(1)], day=5)
+        _add_cluster(conn, "old", None, [_vec(0, 1)], day=60)
+        _add_cluster(conn, "ancient", None, [_vec(0, 0, 1)], day=120)
+        street, face = pm.street_pools(conn, NOW, CFG, ZONE)
+    assert set(street) == {"recent"} and set(face) == {"recent", "old"}
+
+
+@needs_pg
+def test_not_a_person_names_come_from_the_person_record(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        if conn.execute(text("SELECT to_regclass('person') IS NULL")).scalar():
+            pytest.skip("manual_migration_person_record_v1.sql not applied")
+        conn.execute(text("TRUNCATE person_fact, person_link, person CASCADE"))
+        _add_cluster(conn, "deco", "Skeleton", [_vec(1)], day=1)
+        _add_cluster(conn, "jun", "Juniper", [_vec(0, 1)], day=1)
+        _add_cluster(conn, "gone", "Old name", [_vec(0, 0, 1)], day=1)
+        _add_cluster(conn, "lag", "PersonT", [_vec(0, 0, 0, 1)], day=1)
+        conn.execute(text(
+            "INSERT INTO person (person_id, display_name, status) VALUES "
+            "('p-deco', 'Halloween decor', 'not_a_person'), ('p-jun', 'Juniper', 'active'), "
+            "('p-ups', 'UPS delivery', 'not_a_person'), ('p-ted', 'PersonT', 'active')"))
+        conn.execute(text(
+            "INSERT INTO person_link (link_id, person_id, source_kind, source_ref, decided_by, revoked_at) VALUES "
+            "('l1', 'p-deco', 'vision_individual', 'deco', 'camera_name', NULL), "
+            "('l2', 'p-jun', 'vision_individual', 'jun', 'camera_name', NULL), "
+            "('l3', 'p-deco', 'vision_individual', 'gone', 'camera_name', now()), "
+            "('l4', 'p-deco', 'vision_individual', 'lag', 'camera_name', NULL)"))
+        names = pm.not_a_person_names(conn)
+        conn.execute(text("TRUNCATE person_fact, person_link, person CASCADE"))
+    # The linked label (not just the row's own name) counts; a revoked link and a
+    # name an active person also carries do not.
+    assert names == frozenset({"halloween decor", "skeleton", "ups delivery"})
+
+
+# --- camera priors (2026-11-04, the office camera: "99% of the time it is me in there") ---
+
+import dataclasses as _dc
+
+PRIORS = {"cam0": {"Juniper": 0.97, "Sibling": 0.01}}
+
+
+def _on(stream: str, crops):
+    return [_dc.replace(c, stream=stream) for c in crops]
+
+
+def _office_world():
+    """Juniper's and Sibling's albums are walkway crops; an office crop scores
+    higher against Sibling's (clothes and light), as on her first office visit."""
+    album = {
+        "Juniper": {1: _on("walkway", [_crop("j1", "jc", "2026-10-01", _vec(1, 0.6))])},
+        "Sibling": {1: _on("walkway", [_crop("s1", "sc", "2026-10-01", _vec(1, 0.1))])},
+    }
+    bars = {("Juniper", "body"): pm.Bar("Juniper", "body", None, None, 29, 1500),
+            ("Sibling", "body"): pm.Bar("Sibling", "body", None, None, 272, 1500)}
+    office = {"o1": _on("cam0", [_crop("o1a", "o1", "2026-11-05", _vec(1, 0.05))])}
+    return album, bars, office
+
+
+def test_office_guess_follows_the_prior_when_no_match_is_confident() -> None:
+    album, bars, office = _office_world()
+    (raw,) = pm.attribute(office, album, bars, {}, CFG)
+    assert raw["person_label"] == "Sibling" and raw["basis"] == "evidence"   # what happened on 11-05
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Juniper" and g["band"] == "unsure" and g["basis"] == "prior"
+
+
+def test_a_confident_match_beats_the_prior() -> None:
+    album, bars, office = _office_world()
+    bars[("Sibling", "body")] = pm.Bar("Sibling", "body", 0.5, None, 272, 1500)   # armed, and the crop clears it
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Sibling" and g["band"] == "accept" and g["basis"] == "evidence"
+
+
+def test_an_outdoor_reject_bound_cannot_rule_her_out_in_the_office() -> None:
+    album, bars, office = _office_world()
+    bars[("Juniper", "body")] = pm.Bar("Juniper", "body", None, 0.99, 29, 1500)   # learned outdoors
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Juniper" and g["basis"] == "prior"
+    # Once her album holds an office crop, the bound is in-camera and counts: she is
+    # ruled out, and the guess falls back to the scores (the 1% prior names nobody).
+    album["Juniper"][1].append(_on("cam0", [_crop("j2", "jo", "2026-11-05", _vec(0, 1))])[0])
+    (g2,) = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    assert g2["person_label"] == "Sibling" and g2["basis"] == "evidence"
+
+
+def test_prior_names_match_album_names_ignoring_case_and_other_cameras_are_unchanged() -> None:
+    album, bars, office = _office_world()
+    (g,) = pm.attribute(office, album, bars, {}, CFG, priors={"cam0": {"juniper ": 0.97}})
+    assert g["person_label"] == "Juniper" and g["basis"] == "prior"
+    walk = {"w1": _on("walkway", office["o1"])}
+    (w,) = pm.attribute(walk, album, bars, {}, CFG, priors=PRIORS)
+    assert w["person_label"] == "Sibling" and w["basis"] == "evidence"
+
+
+def test_after_her_no_a_small_prior_never_names_the_guess() -> None:
+    """Review finding: a "no" must not walk down the 1% names ("Is this <sibling>?")."""
+    album, bars, office = _office_world()
+    (g,) = pm.attribute(office, album, bars, {"o1": {"juniper"}}, CFG, priors=PRIORS)
+    assert g["person_label"] == "Sibling" and g["basis"] == "evidence"   # the scores', as on any camera
+
+
+def test_a_small_prior_relaxes_no_reject_and_a_misspelled_prior_changes_nothing() -> None:
+    album, bars, office = _office_world()
+    bars[("Sibling", "body")] = pm.Bar("Sibling", "body", None, 1.01, 272, 1500)   # rejects every crop
+    bars[("Juniper", "body")] = pm.Bar("Juniper", "body", None, 0.99, 29, 1500)
+    # Juniper ruled out: the 1% sibling's reject still counts, so there is no guess at all.
+    assert pm.attribute(office, album, bars, {"o1": {"juniper"}}, CFG, priors=PRIORS) == []
+    # A prior naming nobody in the album: the same guesses as with no prior.
+    assert pm.attribute(office, album, bars, {}, CFG, priors={"cam0": {"Junper": 0.97}}) == \
+        pm.attribute(office, album, bars, {}, CFG)
+
+
+def test_camera_priors_file_example_and_local_first(tmp_path) -> None:
+    from orion.person_model.camera_priors import load_camera_priors
+
+    ex = tmp_path / "camera_priors.example.yaml"
+    ex.write_text("streams:\n  cam0:\n    Juniper: 0.97\n")
+    assert load_camera_priors(ex) == {"cam0": {"Juniper": 0.97}}
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("streams:\n  cam0:\n    A: 0.8\n    B: 0.5\n")
+    with pytest.raises(ValueError):
+        load_camera_priors(bad)
+    dup = tmp_path / "dup.yaml"
+    dup.write_text("streams:\n  cam0:\n    Juniper: 0.5\n    juniper: 0.4\n")
+    with pytest.raises(ValueError):
+        load_camera_priors(dup)
+    assert load_camera_priors(tmp_path / "missing.yaml") == {}
+
+
+@needs_pg
+def test_write_attributions_stores_basis_and_works_without_the_column(pg) -> None:
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    now = datetime(2026, 11, 5, 2, 0, tzinfo=timezone.utc)
+    g = {"individual_id": "o1", "person_label": "Juniper", "channel": "body", "score": 0.7, "band": "unsure",
+         "basis": "prior"}
+    with pg.begin() as conn:
+        pm.write_attributions(conn, [g], now)
+        assert conn.execute(text("SELECT basis FROM vision_person_attribution WHERE individual_id='o1'")).scalar() == "prior"
+    with pg.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_person_attribution DROP COLUMN basis"))
+        try:
+            pm.write_attributions(conn, [{**g, "individual_id": "o2"}], now)   # before the migration: still lands
+            assert conn.execute(text(
+                "SELECT count(*) FROM vision_person_attribution WHERE individual_id='o2'")).scalar() == 1
+        finally:
+            conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS basis text"))
+
+
+@needs_pg
+def test_office_prior_asks_rank_last_and_one_is_open_per_name(pg) -> None:
+    """Review finding: one office visit splits into several records, each guessed
+    Juniper by the camera prior. They must not take the day's asks: evidence
+    guesses go first, and only one prior "Is this Juniper?" is open at a time."""
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=6, ask_face_min_faces=0)
+    with pg.begin() as conn:
+        for iid in ("off-1", "off-2", "off-3", "walk-1"):
+            _add_cluster(conn, iid, None, [_vec(1, 0.1)], 0)
+            _thumb(conn, iid)
+            conn.execute(text("UPDATE vision_individual SET sighting_count = 2 WHERE individual_id = :i"), {"i": iid})
+        for iid, person, score, basis in (("off-1", "Juniper", 0.9, "prior"), ("off-2", "Juniper", 0.8, "prior"),
+                                          ("off-3", "Juniper", 0.7, "prior"), ("walk-1", "Sibling", 0.5, "evidence")):
+            conn.execute(text(
+                "INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, band, "
+                "model_version, decided_at, basis) VALUES (:i, :p, 'body', :s, 'unsure', :v, :t, :b)"),
+                {"i": iid, "p": person, "s": score, "v": pm.MODEL_VERSION, "t": NOW, "b": basis})
+        opened = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+    assert [a["source_ref"] for a in opened] == ["walk-1|Sibling", "off-1|Juniper"]
+    assert "rule:camera_prior" in opened[1]["evidence_refs"] and "rule:camera_prior" not in opened[0]["evidence_refs"]
+    with pg.begin() as conn:   # the next cycle: her office ask is still open, so no second one
+        assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []
+
+
+@needs_pg
+def test_office_prior_asks_have_their_own_slots_when_the_walkway_used_the_shared_cap(pg) -> None:
+    """2026-11-07: walkway guesses used all 6 shared "Is this X?" slots every day, so office
+    (camera prior) guesses were never asked and her office album never grew."""
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=6, ask_face_min_faces=0, person_confirm_ask_daily_cap=1,
+                               person_confirm_prior_ask_daily_cap=2)
+    with pg.begin() as conn:
+        # An office ask already opened today (another name): it uses an office slot, never the shared one.
+        conn.execute(text(
+            "INSERT INTO orion_ask (ask_id, asked_of, question, evidence_refs, status, created_at, expires_at, "
+            "source_kind, source_ref) VALUES ('ask-earlier', 'juniper', 'Is this X?', "
+            "'[\"sighting:s0\", \"rule:camera_prior\"]'::jsonb, 'answered', :t, :e, 'vision_person_confirm', "
+            "'off-old|Other')"), {"t": NOW - timedelta(minutes=5), "e": NOW + timedelta(days=7)})
+        for iid in ("off-a", "walk-a", "walk-b"):
+            _add_cluster(conn, iid, None, [_vec(1, 0.1)], 0)
+            _thumb(conn, iid)
+            conn.execute(text("UPDATE vision_individual SET sighting_count = 2 WHERE individual_id = :i"), {"i": iid})
+        for iid, person, score, basis in (("walk-a", "Sibling", 0.9, "evidence"), ("walk-b", "Sibling2", 0.8, "evidence"),
+                                          ("off-a", "Juniper", 0.4, "prior")):
+            conn.execute(text(
+                "INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, band, "
+                "model_version, decided_at, basis) VALUES (:i, :p, 'body', :s, 'unsure', :v, :t, :b)"),
+                {"i": iid, "p": person, "s": score, "v": pm.MODEL_VERSION, "t": NOW, "b": basis})
+        opened = vi._open_person_confirm_asks(conn, NOW, ZONE, cfg)
+    # The shared slot goes to the best walkway guess (the earlier office ask did not use it); the
+    # office guess gets its own slot anyway.
+    assert sorted(a["source_ref"] for a in opened) == ["off-a|Juniper", "walk-a|Sibling"]
+    with pg.begin() as conn:   # both lanes are used up for today
+        assert vi._open_person_confirm_asks(conn, NOW + timedelta(minutes=1), ZONE, cfg) == []
+
+
+@needs_pg
+def test_a_zero_office_cap_never_asks_office_guesses(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    cfg = vi.IndividualsConfig(ask_daily_cap=6, ask_face_min_faces=0, person_confirm_ask_daily_cap=6,
+                               person_confirm_prior_ask_daily_cap=0)
+    with pg.begin() as conn:
+        _add_cluster(conn, "off-z", None, [_vec(1, 0.1)], 0)
+        _thumb(conn, "off-z")
+        conn.execute(text("UPDATE vision_individual SET sighting_count = 2 WHERE individual_id = 'off-z'"))
+        conn.execute(text(
+            "INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, band, "
+            "model_version, decided_at, basis) VALUES ('off-z', 'Juniper', 'body', 0.4, 'unsure', :v, :t, 'prior')"),
+            {"v": pm.MODEL_VERSION, "t": NOW})
+        assert vi._open_person_confirm_asks(conn, NOW, ZONE, cfg) == []
+
+
+# --- age-band veto (2026-11-13, docs/superpowers/specs/2026-11-13-person-age-band-soft-veto-design.md) ---
+
+def _two_people():
+    """A (child) and B (adult) both near the cluster; A scores higher."""
+    bars = {("A", "body"): pm.Bar("A", "body", None, None, 19, 19),
+            ("B", "body"): pm.Bar("B", "body", None, None, 19, 19)}
+    album = {"A": {1: [_crop("a1", "ac", "2026-10-01", _vec(1, 0.05))]},
+             "B": {1: [_crop("b1", "bc", "2026-10-01", _vec(1, 0.4))]}}
+    cl = {"x": [_crop("x1", "x", "2026-10-09", _vec(1, 0.04))]}
+    return album, bars, cl
+
+
+def test_age_veto_removes_a_candidate_and_never_adds_one() -> None:
+    album, bars, cl = _two_people()
+    (off,) = pm.attribute(cl, album, bars, {}, CFG)
+    assert off["person_label"] == "A" and "age_veto" not in off
+    trace: dict = {}
+    (on,) = pm.attribute(cl, album, bars, {}, CFG, person_bands={"a": "child", "b": "adult"},
+                         cluster_bands={"x": "adult"}, veto_trace=trace)
+    assert on["person_label"] == "B" and on["age_veto"] == ["A"] and trace == {"x": ["A"]}
+
+
+def test_age_veto_without_a_band_changes_nothing() -> None:
+    album, bars, cl = _two_people()
+    base = pm.attribute(cl, album, bars, {}, CFG)
+    # no cluster band; no stated band for the guessed person; matching bands
+    for pb, cb in (({"a": "child"}, {}), ({"b": "adult"}, {"x": "adult"}), ({"a": "child"}, {"x": "child"})):
+        trace: dict = {}
+        assert pm.attribute(cl, album, bars, {}, CFG, person_bands=pb, cluster_bands=cb, veto_trace=trace) == base
+        assert trace == {}
+
+
+def test_age_veto_striking_everyone_leaves_no_guess_but_a_trace() -> None:
+    album, bars, cl = _two_people()
+    trace: dict = {}
+    got = pm.attribute(cl, album, bars, {}, CFG, person_bands={"a": "child", "b": "child"},
+                       cluster_bands={"x": "adult"}, veto_trace=trace)
+    assert got == [] and trace == {"x": ["A", "B"]}
+
+
+def test_age_veto_never_touches_a_camera_with_a_prior() -> None:
+    album, bars, office = _office_world()
+    base = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS)
+    trace: dict = {}
+    got = pm.attribute(office, album, bars, {}, CFG, priors=PRIORS, person_bands={"juniper": "adult", "sibling": "adult"},
+                       cluster_bands={"o1": "child"}, veto_trace=trace)
+    assert got == base and got[0]["basis"] == "prior" and trace == {}
+
+
+def test_cluster_age_bands_read_only_the_pinned_model(monkeypatch) -> None:
+    from orion.vision import age_band as ab
+
+    tv = ab.text_vectors()
+    child = [_dc.replace(_crop(f"c{i}", "k", "2026-10-09", tv["child"]), body_model=ab.AGE_BAND_MODEL_ID) for i in range(2)]
+    adult = [_dc.replace(_crop(f"d{i}", "g", "2026-10-09", tv["adult"]), body_model=ab.AGE_BAND_MODEL_ID) for i in range(2)]
+    other = [_dc.replace(c, cluster="o", body_model="google/siglip2-so400m-patch14-384") for c in child]
+    null = [_dc.replace(c, cluster="n", body_model="") for c in child]
+    one = child[:1]
+    assert pm.cluster_age_bands({"k": child, "g": adult, "o": other, "n": null, "one": one}) == {"k": "child", "g": "adult"}
+
+
+def test_settings_ship_the_age_veto_on() -> None:
+    from app.settings import Settings
+    from app.vision_individuals_loop import person_model_config
+
+    assert person_model_config(Settings()).age_veto_enabled is True
+    assert person_model_config(Settings(VISION_PERSON_AGE_VETO_ENABLED=False)).age_veto_enabled is False
+    env = (SERVICE / ".env_example").read_text()
+    assert "\nVISION_PERSON_AGE_VETO_ENABLED=true\n" in env
+
+
+def test_age_veto_migration_is_additive_and_auto_appliable() -> None:
+    sql = (REPO / "services/orion-sql-db/manual_migration_vision_person_age_veto_v1.sql").read_text()
+    assert sql.splitlines()[0] == "-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer"
+    body = "\n".join(line for line in sql.splitlines() if not line.startswith("--")).strip().upper()
+    assert body == "ALTER TABLE VISION_PERSON_ATTRIBUTION ADD COLUMN IF NOT EXISTS AGE_VETO JSONB;"
+    rb = (REPO / "services/orion-sql-db/manual_migration_vision_person_age_veto_v1_rollback.sql").read_text()
+    assert "-- DESTRUCTIVE" in rb and "DROP COLUMN IF EXISTS age_veto" in rb
+
+
+def test_eval_scores_both_arms_in_one_pass() -> None:
+    sys.path.insert(0, str(SERVICE / "evals"))
+    import run_person_recognition_eval as ev
+
+    album, bars, _ = _two_people()
+    # held-out A cluster that reads adult while A's stated band is child: the on arm strikes A.
+    album = {"A": {1: _person("a", 0, 3)}, "B": {1: _person("b", 0, 3, seed=9)}}
+    import unittest.mock as um
+    with um.patch.object(pm, "cluster_age_bands", lambda cl: {c: "adult" for c in cl}):
+        m = ev.evaluate(album, CFG, _street(5), None, frozenset(), {"a": "child"}, frozenset())
+    v = m["age_veto"]
+    assert v["enabled"] and set(v["on"]) == {"correct_accept", "wrong_accept", "unsure", "unsure_right_person",
+                                              "reject", "no_album"}
+    assert v["clusters_struck"] >= 1 and v["right_to_wrong"] + v["struck_right_top_guess"] >= 1
+    assert m["gate_passed"] == (m["wrong_accept"] == 0 and v["on"]["wrong_accept"] == 0
+                                and v["unsure_right_not_lower"])
+
+
+@needs_pg
+def test_write_attributions_age_veto_resets_and_clears_on_revoke(pg) -> None:
+    import json as _json
+    from datetime import datetime, timezone
+
+    from sqlalchemy import text
+
+    now = datetime(2026, 11, 13, 2, 0, tzinfo=timezone.utc)
+    g = {"individual_id": "v1", "person_label": "B", "channel": "body", "score": 0.7, "band": "unsure",
+         "basis": "evidence", "age_veto": ["A"]}
+    q = "SELECT age_veto FROM vision_person_attribution WHERE individual_id='v1'"
+    with pg.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS age_veto jsonb"))
+        pm.write_attributions(conn, [g], now)
+        got = conn.execute(text(q)).scalar()
+        got = _json.loads(got) if isinstance(got, str) else got
+        assert got == {"struck": ["A"], "rule": "age_band_v1"}          # names only, no age read stored
+        pm.write_attributions(conn, [{k: v for k, v in g.items() if k != "age_veto"}], now)
+        assert conn.execute(text(q)).scalar() is None                   # a stale strike never stays
+        pm.write_attributions(conn, [g], now)
+        # revoked by another path (a confirm answer), then the next cycle clears it
+        conn.execute(text("UPDATE vision_person_attribution SET revoked_at = :t WHERE individual_id='v1'"), {"t": now})
+        pm.write_attributions(conn, [], now)
+        assert conn.execute(text(q)).scalar() is None
+    with pg.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_person_attribution DROP COLUMN age_veto"))
+        try:
+            pm.write_attributions(conn, [{**g, "individual_id": "v2"}], now)   # before the migration: still lands
+            assert conn.execute(text(
+                "SELECT count(*) FROM vision_person_attribution WHERE individual_id='v2'")).scalar() == 1
+        finally:
+            conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS age_veto jsonb"))
+
+
+@needs_pg
+def test_person_age_bands_come_only_from_stated_answers(pg) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        if conn.execute(text("SELECT to_regclass('person_fact') IS NULL")).scalar():
+            pytest.skip("person_record_v1 not applied")
+        conn.execute(text("TRUNCATE person, person_link, person_fact CASCADE"))
+        for pid, name in (("p1", "Kid"), ("p2", "Grown"), ("p3", "NoAnswer"), ("p4", "Stale")):
+            conn.execute(text("INSERT INTO person (person_id, display_name, role, status, created_at, updated_at) "
+                              "VALUES (:p, :n, 'other', 'active', :t, :t)"), {"p": pid, "n": name, "t": NOW})
+        for fid, pid, val, age_days in (("f1", "p1", "8 years old", 1), ("f2", "p2", "Adult, early 20s", 1),
+                                        ("f3", "p4", "5 years old", 1000)):
+            conn.execute(text("INSERT INTO person_fact (fact_id, person_id, category, value_text, voice, created_at) "
+                              "VALUES (:f, :p, 'age', :v, 'ask_answer', :t)"),
+                         {"f": fid, "p": pid, "v": val, "t": NOW - timedelta(days=age_days)})
+        bands = pm.load_person_age_bands(conn, NOW, 730.0)
+        assert bands == {"kid": "child", "grown": "adult"}
+        if conn.execute(text("SELECT 1 FROM information_schema.columns WHERE table_name = 'person' "
+                             "AND column_name = 'merged_into'")).scalar():
+            # a name merged into a person with a stated age carries that band
+            conn.execute(text("INSERT INTO person (person_id, display_name, role, status, created_at, updated_at, "
+                              "merged_into) VALUES ('p5', 'Kiddo', 'other', 'active', :t, :t, 'p1')"), {"t": NOW})
+            assert pm.load_person_age_bands(conn, NOW, 730.0)["kiddo"] == "child"
+
+
+def test_age_veto_never_promotes_a_double_accept_to_accept() -> None:
+    bars = {("A", "body"): pm.Bar("A", "body", 0.1, None, 19, 19), ("B", "body"): pm.Bar("B", "body", 0.1, None, 19, 19)}
+    album = {"A": {1: _person("a", 0, 2)}, "B": {1: _person("b", 0, 2, seed=7)}}
+    cl = {"x": [_crop("x", "x", "2026-10-09", _vec(1))]}
+    (off,) = pm.attribute(cl, album, bars, {}, CFG)
+    assert off["band"] == "unsure"                                   # accepted for two people
+    trace: dict = {}
+    (on,) = pm.attribute(cl, album, bars, {}, CFG, person_bands={"a": "child"}, cluster_bands={"x": "adult"},
+                         veto_trace=trace)
+    assert on["person_label"] == "B" and on["band"] == "unsure" and trace == {"x": ["A"]}
+
+
+def test_a_rejected_candidate_is_never_counted_as_struck() -> None:
+    bars = {("A", "body"): pm.Bar("A", "body", None, 1.01, 19, 19), ("B", "body"): pm.Bar("B", "body", None, None, 19, 19)}
+    album = {"A": {1: _person("a", 0, 2)}, "B": {1: _person("b", 0, 2, seed=7)}}
+    cl = {"x": [_crop("x", "x", "2026-10-09", _vec(1))]}
+    trace: dict = {}
+    (g,) = pm.attribute(cl, album, bars, {}, CFG, person_bands={"a": "child"}, cluster_bands={"x": "adult"},
+                        veto_trace=trace)
+    assert g["person_label"] == "B" and trace == {} and "age_veto" not in g   # A was rejected, not struck
+
+
+def test_veto_exempt_streams_match_attribute_rule() -> None:
+    assert pm.veto_exempt_streams({"cam0": {"Juniper": 0.97}, "walkway": {}}) == frozenset({"cam0"})
+    assert pm.veto_exempt_streams({}) == frozenset()
+
+
+@needs_pg
+def test_age_veto_fails_open_and_off_when_priors_are_broken(pg, monkeypatch) -> None:
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _world(conn)
+
+    def boom(*a, **k):
+        raise RuntimeError("bands down")
+
+    monkeypatch.setattr(pm, "load_person_age_bands", boom)
+    with pg.begin() as conn:
+        s = pm.run_person_model(conn, NOW, CFG)
+        assert "bands down" in s["person_age_veto_error"] and s["person_guesses"] >= 1
+        assert conn.execute(text("SELECT count(*) FROM vision_person_attribution WHERE revoked_at IS NULL")).scalar() >= 1
+    monkeypatch.setattr(pm, "_camera_priors_checked", lambda: ({}, False))
+    called = []
+    monkeypatch.setattr(pm, "load_person_age_bands", lambda *a, **k: called.append(1) or {"juniper": "child"})
+    with pg.begin() as conn:
+        s = pm.run_person_model(conn, NOW + timedelta(minutes=10), CFG)
+    assert called == [] and "priors" in s["person_age_veto_error"] and s["person_age_vetoes"] == 0
+
+
+@needs_pg
+def test_confirm_revokes_clear_the_age_veto_in_the_same_statement(pg) -> None:
+    from sqlalchemy import text
+
+    from app import vision_individuals as vi
+
+    with pg.begin() as conn:
+        conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS age_veto jsonb"))
+        assert vi._age_veto_clear(conn) == ", age_veto = NULL"
+        conn.execute(text("ALTER TABLE vision_person_attribution DROP COLUMN age_veto"))
+        try:
+            assert vi._age_veto_clear(conn) == ""
+        finally:
+            conn.execute(text("ALTER TABLE vision_person_attribution ADD COLUMN IF NOT EXISTS age_veto jsonb"))

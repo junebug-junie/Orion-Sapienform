@@ -186,7 +186,7 @@ def test_select_node_targets_observation_count_survives_a_pruned_window() -> Non
     assert "n=20" in targets[0].reasons[0]
 
 
-def test_select_node_targets_only_covers_the_confirmed_five_reducers() -> None:
+def test_select_node_targets_only_covers_the_confirmed_live_reducers() -> None:
     # Locks the real, live-confirmed mapping (services/orion-substrate-runtime/
     # app/worker.py's _prediction_error_receipt call sites) -- a silent
     # addition/removal here would change which real signals ground live
@@ -194,13 +194,11 @@ def test_select_node_targets_only_covers_the_confirmed_five_reducers() -> None:
     # deliberately excluded (code review, 2026-07-30): its write was
     # permanently retired 2026-07-26, superseded by bus_synaptic -- an
     # earlier draft's inclusion of it here was a real bug this test would
-    # have caught, and now does.
+    # have caught, and now does. route and bus_synaptic were retired 2026-11
+    # (PE suite rebuild step 5) the same way, and chat 2026-11-13 (step 6).
     assert set(PREDICTION_ERROR_NATIVE_TARGETS.keys()) == {
         "node:substrate.biometrics",
         "node:substrate.execution",
-        "node:substrate.chat",
-        "node:substrate.route",
-        "node:substrate.bus_synaptic",
     }
     assert "node:substrate.transport" not in PREDICTION_ERROR_NATIVE_TARGETS
 
@@ -221,7 +219,7 @@ def test_select_node_targets_multi_target_competition_normalizes_min_to_zero_max
     # makes: whichever of two DIFFERENT real raw scores is lower maps to
     # exactly 0.0, the higher to exactly 1.0.
     histories = {
-        "node:substrate.chat": [0.01, 0.01, 0.02, 0.01, 0.02],
+        "node:substrate.biometrics": [0.01, 0.01, 0.02, 0.01, 0.02],
         "node:substrate.execution": [0.02, 0.03, 0.02, 0.03, 0.95],
     }
     from orion.attention.field_attention.candidate_precision_weighted import (
@@ -650,14 +648,14 @@ def test_a_quiet_domain_stops_winning_on_its_last_reading() -> None:
         ewma=0.1, variance=0.02, observation_count=300, last_value=0.2,
         last_observed_at=now - timedelta(seconds=5),
     )
-    baselines = {"node:substrate.chat": stale_chat, "node:substrate.execution": fresh_exec}
+    baselines = {"node:substrate.biometrics": stale_chat, "node:substrate.execution": fresh_exec}
     unaged = {t.target_id: t for t in select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines)}
-    assert unaged["node:substrate.chat"].salience_score == 1.0  # the old behaviour
+    assert unaged["node:substrate.biometrics"].salience_score == 1.0  # the old behaviour
     aged = {t.target_id: t for t in select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines, now=now)}
     assert aged["node:substrate.execution"].salience_score == 1.0
-    assert aged["node:substrate.chat"].salience_score == 0.0
-    assert aged["node:substrate.chat"].dominant_channels == {"prediction_error": 0.0}
-    assert any("stale reading" in r and "45 min old" in r for r in aged["node:substrate.chat"].reasons)
+    assert aged["node:substrate.biometrics"].salience_score == 0.0
+    assert aged["node:substrate.biometrics"].dominant_channels == {"prediction_error": 0.0}
+    assert any("stale reading" in r and "45 min old" in r for r in aged["node:substrate.biometrics"].reasons)
 
 
 def test_build_attention_frame_ages_readings_against_its_own_clock() -> None:
@@ -667,7 +665,7 @@ def test_build_attention_frame_ages_readings_against_its_own_clock() -> None:
 
     now = BASE
     baselines = {
-        "node:substrate.chat": PrecisionEwmaBaseline(
+        "node:substrate.biometrics": PrecisionEwmaBaseline(
             ewma=0.1, variance=0.02, observation_count=300, last_value=0.8,
             last_observed_at=now - timedelta(minutes=15),
         )
@@ -676,7 +674,7 @@ def test_build_attention_frame_ages_readings_against_its_own_clock() -> None:
         field=_FIELD_FOR_NODE_TESTS, policy=POLICY, prediction_error_baselines=baselines, now=now
     )
     chat = next(
-        t for t in (*frame.node_targets, *frame.suppressed_targets) if t.target_id == "node:substrate.chat"
+        t for t in (*frame.node_targets, *frame.suppressed_targets) if t.target_id == "node:substrate.biometrics"
     )
     assert chat.dominant_channels["prediction_error"] == pytest.approx(0.4)
 
@@ -690,7 +688,7 @@ def test_a_fully_faded_set_reads_zero_salience_not_a_tie_at_the_top() -> None:
         ewma=0.1, variance=0.02, observation_count=300, last_value=0.8,
         last_observed_at=now - timedelta(minutes=45),
     )
-    baselines = {"node:substrate.chat": faded, "node:substrate.execution": faded}
+    baselines = {"node:substrate.biometrics": faded, "node:substrate.execution": faded}
     targets = select_node_targets(_FIELD_FOR_NODE_TESTS, POLICY, baselines, now=now)
     assert {t.target_id for t in targets} == set(baselines)
     assert all(t.salience_score == 0.0 for t in targets)

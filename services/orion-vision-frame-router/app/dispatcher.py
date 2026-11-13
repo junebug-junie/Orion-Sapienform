@@ -130,7 +130,7 @@ class FrameDispatcher:
                 dispatch_tier=decision.dispatch_tier,
                 percept_sha256=frame.sha256,
             )
-            self.metrics.record_dispatch()
+            self.metrics.record_dispatch(frame.stream_id, decision.dispatch_tier, decision.triggered_by)
             if organ_tasks is not None:
                 organ_tasks.record_dispatch(organ_stream)
 

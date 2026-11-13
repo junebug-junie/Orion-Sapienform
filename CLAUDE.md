@@ -320,6 +320,18 @@ Both heartbeats are best-effort and never fail the commit or the build they ride
 
 **A separate, previously-undiscovered bug in `scripts/hooks/session_start_agent_board.py`/`session_stop_agent_board.py`** (the Claude-Code-specific SessionStart/Stop hooks, distinct from the git hooks above): confirmed live that these run with a process `cwd` fixed to wherever the session originally started (its own stdin payload's `cwd` field reported the shared/primary checkout even while real git work had been happening in a linked worktree for many turns) — it does not track `cd` calls a Bash tool makes mid-session, so `git rev-parse --show-toplevel` from that same fixed cwd resolved to the same wrong worktree every time, and `render_checkin_context` was additionally *writing* a spurious presence row under that wrong path on every SessionStart. Fixed with `agent_board_lib.resolve_current_identity()`: both hooks now read `session_id` from their own stdin payload and look up the most recently heartbeated presence row tagged with that same session_id instead of trusting their own cwd — `scripts/git_hooks/post-commit` and `scripts/safe_docker_build.sh` tag their heartbeats with `$CLAUDE_CODE_SESSION_ID` (inherited from the Claude Code Bash tool's own subprocess environment) precisely so this lookup has something real to find. Falls back to the old cwd-based resolution when no matching session_id is on the board yet (e.g. the very first hook fire in a session, before any git-hook-driven heartbeat has landed).
 
+### Ticket board (GitHub Issues)
+
+Divergent paths get a ticket, not a memory file. GitHub Issues on this repo is the one place for real-but-deferred work. Agent memory and the agent board above are not ticket stores: Juniper can't see the first, and the second is host-local agent coordination.
+
+- **File it the moment you find it.** A finding you won't fix in this PR gets `gh issue create` right away: one plain sentence saying what's wrong, the evidence (query, log line, file:line), and how to check it's fixed. Small follow-ups still get fixed in the same PR, not ticketed.
+- **Search before filing.** `gh issue list --search "<words>"`. If one exists, add a comment. One issue per finding.
+- **Labels:** one kind (`bug`, `follow-up`, `verify-live` for shipped-but-unproven, `design`) plus `area:*` (`turns`, `energy`, `hub`, `infra`, `self-model`). Add `needs-juniper` when it waits on her decision, permission, or manual step. Don't invent new labels for one ticket.
+- **Close with evidence.** PRs say `Fixes #N`. A `verify-live` issue closes only with the live proof in a comment (section 0A).
+- **PR reports list issues opened and closed** in the Risks section.
+- **Session start:** `scripts/hooks/session_start_open_tickets.py` prints the open count and every `needs-juniper` ticket. Raise those with Juniper; don't wait to be asked.
+- **Board:** GitHub Project "Orion", https://github.com/users/junebug-junie/projects/1 (columns Inbox, Next, Doing, Waiting on Juniper, Done). After filing, add the issue: `gh project item-add 1 --owner junebug-junie --url <issue-url>` (safe to repeat). New items land in Inbox; Juniper sorts the Inbox.
+
 Branch type examples:
 
 ```text
@@ -556,6 +568,8 @@ Run docker compose builds/deploys through `scripts/safe_docker_build.sh <service
 
 The wrapper also refuses `up` while a SQL migration the service needs is unapplied (read-only check against the live DB; an unreachable DB reads as UNKNOWN and also refuses). A migration declares its consumers with a header line `-- ORION-MIGRATION-REQUIRED-BY: <svc>, <svc>` (or `none <reason>`; CI requires one on every new `manual_migration_*.sql`, and `-- DESTRUCTIVE` files are never dependencies). The refusal names the exact `docker exec ... psql` apply command; it never applies anything itself. Conscious per-command override: `ORION_ALLOW_UNAPPLIED_MIGRATION=1`. The post-pull rebuild (`scripts/rebuild_services_from_git_diff.sh`) applies a changed migration *before* its rebuilds when it is NOT APPLIED, has a valid REQUIRED-BY header, is not rollback/`-- DESTRUCTIVE`, and every statement is on an additive-DDL allowlist (create table/index/sequence, add column/constraint, ...) -- only from the clean primary main checkout synced with origin/main, with `lock_timeout=10s`, in filename order, stopping at the first file that fails or needs a human (`scripts/apply_post_pull_migrations.py`; log `~/.orion/applied_migrations.log`; kill switch `ORION_POST_PULL_APPLY_MIGRATIONS=0`). A running backup (a `pg_dump`/`pg_dumpall` session inside a transaction in `pg_stat_activity`) is waited for, never out-waited by raising `lock_timeout`: the first pass defers files behind it, every other rebuild proceeds, then the applier waits for the backup (max `ORION_MIGRATION_BACKUP_MAX_WAIT_S`, default 90 min), applies, and rebuilds the consumers the gate refused (`git pull` blocks until then); a `lock_timeout` is retried (3x, backoff) only when `pg_blocking_pids` shows the blocker was a backup and the file ran in one transaction -- any other blocker fails and holds as before. Anything else is still applied by hand.
 
+After a successful post-pull rebuild run (also when nothing needed a rebuild), the same clean primary main run resets Orion's FCC sandbox (`/mnt/orion-fcc/repo`) to `origin/main` through the Hub container's existing rescue-then-reset sync (`scripts/sync_fcc_sandbox_after_deploy.sh`, which runs `python3 -m orion.fcc.sandbox_sync`). Orion's turns import the sandbox's `orion/` before the image's, so a deploy is not live for Orion's own CLIs (dig, body atlas) until the sandbox moves. It never touches the tree during a turn: it waits up to 2 min for the turn lock (`ORION_SANDBOX_SYNC_WAIT_S`), and when a long turn outlasts that, a detached retry waits up to 90 min more (`ORION_SANDBOX_SYNC_RETRY_WAIT_S`) and logs its own `SANDBOX_SYNC retry` line (one pending retry at a time). `git pull` waits at most the first ~2 min. It never fails the run, and logs one `SANDBOX_SYNC ok|skipped|failed` line to `~/.orion/post_pull_rebuild.log`. Kill switch `ORION_POST_PULL_SANDBOX_SYNC=0`. Check it: `git -C /mnt/orion-fcc/repo log -1 --oneline`.
+
 The examples below show the equivalent raw `docker compose` invocation for reference (e.g. for one-off `logs`/`ps` commands the wrapper doesn't need to cover) — prefer the wrapper for anything that builds or brings services up.
 
 Example pattern:
@@ -667,7 +681,7 @@ pytest services/<service_name>/evals -q
 python services/<service_name>/evals/run_<thing>_eval.py
 ```
 
-If the repo has no eval harness for the touched service, add the smallest useful one or report that the service lacks one and create a follow-up issue in the PR description.
+If the repo has no eval harness for the touched service, add the smallest useful one or report that the service lacks one and file a `follow-up` issue (`gh issue create`, see "Ticket board") and list it in the PR report.
 
 Do not claim eval coverage if only tests ran.
 

@@ -18,6 +18,21 @@ Each tick, per stream in ``VISION_MOTION_STORY_STREAMS``:
    (``relink_stories``, null-only, stories that ended in the last 6 h).
 5. Prune stories older than ``VISION_MOTION_STORY_RETENTION_DAYS``.
 
+After each stream's stories, the caption motion cross-check
+(``app/vision_caption_motion.py``, ``VISION_CAPTION_MOTION_CHECK_ENABLED``) tags
+that stream's motion-claiming ``camera_caption`` rows ``motion_contradicted`` /
+``motion_supported`` from the stories of the caption's own boxes.
+
+Frame size and edges (2026-10-20,
+manual_migration_vision_motion_story_edges_v1.sql): crops are read with the
+detector's own frame size (``vision_crop_observation.frame_width/height``)
+when those columns exist; each stream's fallback size is its
+``VISION_MOTION_FRAME_SIZE_BY_STREAM`` entry, else the global
+``VISION_MOTION_FRAME_WIDTH/HEIGHT``. Stories get ``entry_edge``,
+``exit_edge``, ``exit_foot_x/y``, ``exit_speed_fw_per_sec``, ``frame_w/h``
+and ``frame_size_source`` when the story columns exist; without the
+migration the loop logs it each tick and writes the older columns only.
+
 Pictures of the moment (app/vision_story_strip.py, 2026-10-17), when
 ``VISION_STORY_STRIPS_ENABLED``: before step 1 every tick saves a padded crop
 and a small full frame for each new walker crop while its frame still exists
@@ -46,11 +61,12 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.settings import Settings
+from app.vision_caption_motion import caption_motion_step
 from app.vision_motion import PUBLISH_KINDS, MotionConfig, MotionCrop, Story, build_stories, link_passages
 from app.vision_story_strip import StripConfig
 
@@ -79,6 +95,29 @@ class LoopConfig:
     # VISION_STORY_STRIP_RETENTION_DAYS <= 0: pictures are kept forever, so story
     # retention never deletes a story that still has one -- even with strips off.
     strip_keep_forever: bool = True
+    # VISION_MOTION_FRAME_SIZE_BY_STREAM: the box pixel space per stream, used
+    # when a crop does not carry its own frame size.
+    frame_size_by_stream: Tuple[Tuple[str, Tuple[float, float]], ...] = ()
+    # Caption motion cross-check (app/vision_caption_motion.py): tag each
+    # camera_caption's motion claim against the story of its own box.
+    caption_check: bool = True
+    caption_lookback_sec: float = 21600.0
+    caption_min_iou: float = 0.5
+
+    def motion_for(self, stream_id: str) -> MotionConfig:
+        """The motion config for one stream: its configured frame size, if any."""
+        for sid, (w, h) in self.frame_size_by_stream:
+            if sid == stream_id:
+                return replace(self.motion, frame_w=w, frame_h=h, frame_source="stream_setting")
+        return self.motion
+
+    def strip_for(self, stream_id: str) -> Optional[StripConfig]:
+        """The strip config for one stream. Its frame size is only the fallback:
+        capture uses each crop's own frame size and assembly the story's."""
+        if self.strip is None:
+            return None
+        m = self.motion_for(stream_id)
+        return replace(self.strip, frame_w=m.frame_w, frame_h=m.frame_h)
 
 
 def parse_utc(value: str) -> Optional[datetime]:
@@ -89,6 +128,26 @@ def parse_utc(value: str) -> Optional[datetime]:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def parse_frame_sizes(value: str) -> Tuple[Tuple[str, Tuple[float, float]], ...]:
+    """``"doorbell=1920x1440,walkway=2560x1920"`` -> ((stream, (w, h)), ...).
+    A malformed entry is logged and skipped (that stream keeps the global size)."""
+    out: List[Tuple[str, Tuple[float, float]]] = []
+    for part in (value or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            sid, size = part.split("=", 1)
+            w, h = (float(v) for v in size.lower().split("x", 1))
+            if not sid.strip() or w <= 0 or h <= 0:
+                raise ValueError("empty stream or non-positive size")
+        except ValueError as exc:
+            logger.error("VISION_MOTION_FRAME_SIZE_BY_STREAM entry %r ignored (want stream=WxH): %s", part, exc)
+            continue
+        out.append((sid.strip(), (w, h)))
+    return tuple(out)
+
+
 def loop_config(settings: Settings) -> LoopConfig:
     return LoopConfig(
         motion=MotionConfig(
@@ -96,7 +155,9 @@ def loop_config(settings: Settings) -> LoopConfig:
             frame_h=float(settings.vision_motion_frame_height),
             link_gap_sec=float(settings.vision_motion_story_close_gap_sec),
             min_detections=int(settings.vision_motion_story_min_detections),
+            edge_zone_frac=float(settings.vision_motion_edge_zone_frac),
         ),
+        frame_size_by_stream=parse_frame_sizes(str(settings.vision_motion_frame_size_by_stream)),
         streams=tuple(s.strip() for s in str(settings.vision_motion_story_streams).split(",") if s.strip()),
         settle_sec=float(settings.vision_motion_story_settle_sec),
         initial_lookback_sec=float(settings.vision_motion_story_initial_lookback_sec),
@@ -114,6 +175,9 @@ def loop_config(settings: Settings) -> LoopConfig:
             frame_h=float(settings.vision_motion_frame_height),
         ) if bool(settings.vision_story_strips_enabled) else None,
         strip_keep_forever=float(settings.vision_story_strip_retention_days) <= 0,
+        caption_check=bool(getattr(settings, "vision_caption_motion_check_enabled", True)),
+        caption_lookback_sec=float(getattr(settings, "vision_caption_motion_lookback_sec", 21600.0)),
+        caption_min_iou=float(getattr(settings, "vision_caption_motion_min_iou", 0.5)),
     )
 
 
@@ -129,25 +193,47 @@ def is_missing_relation(exc: BaseException) -> bool:
 # ---------------------------------------------------------------------------
 
 CROPS_SQL = (
-    "SELECT crop_id, observed_at, label, score, box_xyxy, individual_id, thumb_ref "
+    "SELECT crop_id, observed_at, label, score, box_xyxy, individual_id, thumb_ref{frame} "
     "FROM vision_crop_observation WHERE stream_id = :s AND observed_at > :a AND observed_at <= :b "
     "AND label = ANY(:kinds) ORDER BY observed_at, crop_id"
 )
+CROP_FRAME_COLUMNS = ("frame_width", "frame_height")
+EDGE_COLUMNS = ("entry_edge", "exit_edge", "exit_foot_x", "exit_foot_y", "exit_speed_fw_per_sec",
+                "frame_w", "frame_h", "frame_size_source")
+EDGES_MIGRATION = "services/orion-sql-db/manual_migration_vision_motion_story_edges_v1.sql"
 
 
-def read_crops(conn, stream_id: str, after: datetime, until: datetime) -> List[MotionCrop]:
+def columns_missing(conn, table: str, cols: Sequence[str]) -> List[str]:
+    from sqlalchemy import text
+
+    have = {r[0] for r in conn.execute(text(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = current_schema() "
+        "AND table_name = :t AND column_name = ANY(:c)"), {"t": table, "c": list(cols)}).fetchall()}
+    return [c for c in cols if c not in have]
+
+
+def read_crops(conn, stream_id: str, after: datetime, until: datetime, *,
+               with_frame: Optional[bool] = None) -> List[MotionCrop]:
+    """Crops in observed_at order. ``with_frame`` reads each crop's detector
+    frame size (None: when the columns exist)."""
     from sqlalchemy import text
 
     from app.vision_motion import KINDS
 
-    rows = conn.execute(text(CROPS_SQL), {"s": stream_id, "a": after, "b": until, "kinds": list(KINDS)}).fetchall()
+    if with_frame is None:
+        with_frame = not columns_missing(conn, "vision_crop_observation", CROP_FRAME_COLUMNS)
+    sql = CROPS_SQL.format(frame=", frame_width, frame_height" if with_frame else "")
+    rows = conn.execute(text(sql), {"s": stream_id, "a": after, "b": until, "kinds": list(KINDS)}).fetchall()
     out = []
     for r in rows:
         box = r[4] or []
         if len(box) != 4:
             continue
+        fw = float(r[7]) if with_frame and r[7] else None
+        fh = float(r[8]) if with_frame and r[8] else None
         out.append(MotionCrop(crop_id=r[0], t=r[1], label=r[2], score=float(r[3] or 0.0),
-                              box=tuple(float(v) for v in box), individual_id=r[5], thumb_ref=r[6]))
+                              box=tuple(float(v) for v in box), individual_id=r[5], thumb_ref=r[6],
+                              frame_w=fw if fw and fh else None, frame_h=fh if fw and fh else None))
     return out
 
 
@@ -200,34 +286,43 @@ def close_window(crops: Sequence[MotionCrop], *, stream_id: str, processed_until
                  horizon: datetime, window_start: datetime, cfg: LoopConfig, zones,
                  context: Tuple[Dict[str, str], set, List[Tuple[str, List[float]]]]) -> Tuple[List[Story], datetime]:
     """Stories closed in this step and the new cursor."""
-    gap = cfg.motion.link_gap_sec
+    motion = cfg.motion_for(stream_id)
+    gap = motion.link_gap_sec
     new_cursor = horizon - timedelta(seconds=gap)
-    passages = link_passages(crops, cfg.motion)
+    passages = link_passages(crops, motion)
     emit = {i for i, p in enumerate(passages) if processed_until < p.last.t <= new_cursor}
     too_long = {i for i in emit if (passages[i].first.t - window_start).total_seconds() <= gap}
     labels, stationary, boxes = context
     stories = build_stories(
-        passages, stream_id=stream_id, zones=zones, cfg=cfg.motion, labels=labels,
+        passages, stream_id=stream_id, zones=zones, cfg=motion, labels=labels,
         stationary_ids=stationary, prop_ids=set(cfg.prop_individual_ids), prop_boxes=boxes,
         clean_since=cfg.clean_since, emit=emit, too_long=too_long)
     return stories, new_cursor
 
 
-INSERT_SQL = (
+_INSERT_TMPL = (
     "INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, detection_count, "
     "used_detections, edge_clipped_count, speed_class, speed_bh_per_sec, net_travel_bh, path_bh, dir_lateral, "
     "dir_depth, zone_path, individual_id, name_label, name_withheld, companion_kinds, together_story_ids, "
-    "published, drop_reason, clean, sentence, crop_ids, evidence, rules_version) VALUES (:story_id, :stream_id, "
-    ":kind, :started_at, :ended_at, :detection_count, :used_detections, :edge_clipped_count, :speed_class, "
-    ":speed_bh_per_sec, :net_travel_bh, :path_bh, :dir_lateral, :dir_depth, :zone_path, :individual_id, "
-    ":name_label, :name_withheld, :companion_kinds, :together_story_ids, :published, :drop_reason, :clean, "
-    ":sentence, :crop_ids, CAST(:evidence AS jsonb), :rules_version) ON CONFLICT (story_id) DO NOTHING"
+    "published, drop_reason, clean, sentence, crop_ids, evidence, rules_version{cols}) VALUES (:story_id, "
+    ":stream_id, :kind, :started_at, :ended_at, :detection_count, :used_detections, :edge_clipped_count, "
+    ":speed_class, :speed_bh_per_sec, :net_travel_bh, :path_bh, :dir_lateral, :dir_depth, :zone_path, "
+    ":individual_id, :name_label, :name_withheld, :companion_kinds, :together_story_ids, :published, "
+    ":drop_reason, :clean, :sentence, :crop_ids, CAST(:evidence AS jsonb), :rules_version{vals}) "
+    "ON CONFLICT (story_id) DO NOTHING"
 )
+# Before manual_migration_vision_motion_story_edges_v1.sql.
+INSERT_SQL_NO_EDGES = _INSERT_TMPL.format(cols="", vals="")
+INSERT_SQL = _INSERT_TMPL.format(cols="".join(", " + c for c in EDGE_COLUMNS),
+                                 vals="".join(", :" + c for c in EDGE_COLUMNS))
 
 
-def story_params(s: Story) -> Dict[str, Any]:
+def story_params(s: Story, *, edges: bool = True) -> Dict[str, Any]:
     d = dict(s.__dict__)
     d["evidence"] = json.dumps(s.evidence)
+    if not edges:
+        for c in EDGE_COLUMNS:
+            d.pop(c, None)
     return d
 
 
@@ -243,7 +338,8 @@ def _check_tables(conn) -> None:
             + " -- apply services/orion-sql-db/manual_migration_vision_motion_story_v1.sql")
 
 
-def _one_stream(engine, stream_id: str, ts: datetime, cfg: LoopConfig, zones, summary: Dict[str, Any]) -> None:
+def _one_stream(engine, stream_id: str, ts: datetime, cfg: LoopConfig, zones, summary: Dict[str, Any], *,
+                crop_frames: bool = True, story_edges: bool = True) -> None:
     from sqlalchemy import text
 
     with engine.begin() as conn:
@@ -256,15 +352,16 @@ def _one_stream(engine, stream_id: str, ts: datetime, cfg: LoopConfig, zones, su
             summary["streams_idle"] += 1
             return
         window_start = pu - timedelta(seconds=cfg.window_sec)
-        crops = read_crops(conn, stream_id, window_start, horizon)
+        crops = read_crops(conn, stream_id, window_start, horizon, with_frame=crop_frames)
         ids = sorted({c.individual_id for c in crops if c.individual_id})
         context = read_context(conn, stream_id, ids, cfg.prop_individual_ids)
         stories, new_cursor = close_window(
             crops, stream_id=stream_id, processed_until=pu, horizon=horizon, window_start=window_start,
             cfg=cfg, zones=zones, context=context)
         written = 0
+        insert = text(INSERT_SQL if story_edges else INSERT_SQL_NO_EDGES)
         for s in stories:
-            written += conn.execute(text(INSERT_SQL), story_params(s)).rowcount or 0
+            written += conn.execute(insert, story_params(s, edges=story_edges)).rowcount or 0
         conn.execute(text(
             "INSERT INTO vision_motion_story_cursor (stream_id, processed_until, updated_at) VALUES (:s, :p, now()) "
             "ON CONFLICT (stream_id) DO UPDATE SET processed_until = EXCLUDED.processed_until, updated_at = now()"),
@@ -313,7 +410,7 @@ _last_orphan_sweep: List[Optional[float]] = [None]
 # cursor (the pending files dedupe), and never reads the last second.
 CAPTURE_OVERLAP_SEC = 10.0
 CAPTURE_SQL = (
-    "SELECT crop_id, observed_at, label, box_xyxy, camera_id, created_at, individual_id "
+    "SELECT crop_id, observed_at, label, box_xyxy, camera_id, created_at, individual_id{frame} "
     "FROM vision_crop_observation WHERE stream_id = :s AND created_at > :a "
     "AND created_at <= now() - interval '1 second' AND label = ANY(:kinds) "
     "ORDER BY created_at, crop_id LIMIT 2000"
@@ -340,14 +437,16 @@ def capture_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> Dict[
 
     from app.vision_motion import box_iou
 
-    strip = cfg.strip
+    strip = cfg.strip_for(stream_id)
     assert strip is not None
     cursor = _capture_cursor.get(stream_id)
     after = (cursor - timedelta(seconds=CAPTURE_OVERLAP_SEC)) if cursor else \
         ts - timedelta(seconds=CAPTURE_FIRST_LOOKBACK_SEC)
     with engine.connect() as conn:
-        rows = conn.execute(text(CAPTURE_SQL), {"s": stream_id, "a": after,
-                                                "kinds": sorted(PUBLISH_KINDS)}).fetchall()
+        with_frame = not columns_missing(conn, "vision_crop_observation", CROP_FRAME_COLUMNS)
+        sql = CAPTURE_SQL.format(frame=", frame_width, frame_height" if with_frame else "")
+        rows = conn.execute(text(sql), {"s": stream_id, "a": after,
+                                        "kinds": sorted(PUBLISH_KINDS)}).fetchall()
         # Props (the patio skeleton, stationary things) are detected every frame and
         # never become stories. A fresh crop has no individual_id yet, so match by box.
         prop_boxes = read_context(conn, stream_id, [], cfg.prop_individual_ids)[2] if rows else []
@@ -360,7 +459,9 @@ def capture_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> Dict[
         if not r[3] or len(r[3]) != 4:
             continue
         box = tuple(float(v) for v in r[3])
-        c = PendingCrop(crop_id=r[0], t=r[1], label=r[2], box=box, camera_id=r[4])
+        fw, fh = (r[7], r[8]) if with_frame else (None, None)
+        c = PendingCrop(crop_id=r[0], t=r[1], label=r[2], box=box, camera_id=r[4],
+                        frame_w=float(fw) if fw and fh else None, frame_h=float(fh) if fw and fh else None)
         if r[6] in props or any(kind == r[2] and box_iou(box, b) >= cfg.motion.prop_iou for kind, b in prop_boxes):
             skipped += 1
             mark_skipped(c, "prop_overlap", strip)
@@ -377,18 +478,24 @@ def assemble_step(engine, stream_id: str, ts: datetime, cfg: LoopConfig) -> int:
 
     from app.vision_story_strip import assemble_strip, failed_record, remove_strip_dir
 
-    strip = cfg.strip
+    strip = cfg.strip_for(stream_id)
     assert strip is not None
     with engine.connect() as conn:
+        # The story's measured frame (edges migration) scales its boxes onto the saved frame.
+        frame_cols = "" if columns_missing(conn, "vision_motion_story", ("frame_w", "frame_h")) \
+            else ", frame_w, frame_h"
         rows = conn.execute(text(
-            "SELECT story_id, evidence, created_at FROM vision_motion_story WHERE stream_id = :s AND published "
-            "AND evidence_strip IS NULL AND created_at > :since ORDER BY created_at LIMIT :n"),
+            f"SELECT story_id, evidence, created_at{frame_cols} FROM vision_motion_story WHERE stream_id = :s "
+            "AND published AND evidence_strip IS NULL AND created_at > :since ORDER BY created_at LIMIT :n"),
             {"s": stream_id, "since": ts - timedelta(seconds=strip.pending_sec), "n": STRIPS_PER_TICK}).fetchall()
     done = 0
-    for story_id, evidence, created_at in rows:
+    for row in rows:
+        story_id, evidence, created_at = row[0], row[1], row[2]
+        fw, fh = (row[3], row[4]) if frame_cols else (None, None)
+        story_strip = replace(strip, frame_w=float(fw), frame_h=float(fh)) if fw and fh else strip
         ev = evidence if isinstance(evidence, list) else json.loads(evidence or "[]")
         try:
-            rec = assemble_strip(story_id, stream_id, ev, cfg=strip)
+            rec = assemble_strip(story_id, stream_id, ev, cfg=story_strip)
         except Exception as exc:
             logger.warning("story_strip_assemble_failed story_id=%s error=%s", story_id, exc)
             if created_at is None or created_at > ts - timedelta(seconds=strip.pending_sec * ASSEMBLE_GIVE_UP_SHARE):
@@ -576,6 +683,13 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
         with engine.begin() as conn:
             _check_tables(conn)
             missing = strip_columns_missing(conn)
+            edge_missing = columns_missing(conn, "vision_motion_story", EDGE_COLUMNS)
+            frame_missing = columns_missing(conn, "vision_crop_observation", CROP_FRAME_COLUMNS)
+            if edge_missing or frame_missing:
+                summary["edges"] = "migration missing: " + ",".join(edge_missing + frame_missing)
+                logger.error("[MOTION_STORY] missing columns %s -- apply %s; stories still run with the "
+                             "configured frame size and no edge columns", ",".join(edge_missing + frame_missing),
+                             EDGES_MIGRATION)
             strips_on = cfg.strip is not None
             if strips_on:
                 if missing:
@@ -596,7 +710,8 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
                     logger.warning("story_strip_capture_failed stream=%s error=%s", stream_id, exc)
         for stream_id in cfg.streams:
             try:
-                _one_stream(engine, stream_id, ts, cfg, zones_by_stream.get(stream_id, []), summary)
+                _one_stream(engine, stream_id, ts, cfg, zones_by_stream.get(stream_id, []), summary,
+                            crop_frames=not frame_missing, story_edges=not edge_missing)
             except Exception as exc:
                 if is_missing_relation(exc):
                     raise MigrationMissing(str(exc)) from exc
@@ -610,6 +725,22 @@ def run_one_motion_cycle(*, postgres_uri: str, cfg: LoopConfig, zones_by_stream:
                         engine, stream_id, ts, cfg)
                 except Exception as exc:
                     logger.warning("story_strip_assemble_step_failed stream=%s error=%s", stream_id, exc)
+            if cfg.caption_check:
+                # After the stories: a caption's frame is decided by the stories closed just now.
+                try:
+                    cc = caption_motion_step(
+                        engine, stream_id, ts, lookback_sec=cfg.caption_lookback_sec,
+                        settle_sec=cfg.window_sec + cfg.motion_for(stream_id).link_gap_sec,
+                        min_iou=cfg.caption_min_iou)
+                    for k, v in cc.items():
+                        summary["caption_" + k] = summary.get("caption_" + k, 0) + v
+                    if cc["checked"] - cc["pending"] > 0:
+                        logger.info(
+                            "[CAPTION_MOTION] stream=%s checked=%d tagged=%d contradicted=%d supported=%d "
+                            "undecided=%d pending=%d no_claim=%d", stream_id, cc["checked"], cc["tagged"],
+                            cc["contradicted"], cc["supported"], cc["undecided"], cc["pending"], cc["no_claim"])
+                except Exception as exc:
+                    logger.warning("caption_motion_step_failed stream=%s error=%s", stream_id, exc)
         try:
             with engine.begin() as conn:
                 linked = relink_stories(conn, ts - timedelta(seconds=RELINK_LOOKBACK_SEC), cfg.streams)

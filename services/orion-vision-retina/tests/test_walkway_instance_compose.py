@@ -40,7 +40,7 @@ def test_edge_no_longer_captures_the_walkway():
 def test_every_retina_instance_passes_the_rtsp_watchdog_keys_with_tcp_default():
     compose = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
     example = (ROOT / ".env_example").read_text()
-    for name in ("orion-vision-retina", "orion-vision-retina-walkway"):
+    for name in ("orion-vision-retina", "orion-vision-retina-walkway", "orion-vision-retina-office"):
         env = dict(e.split("=", 1) for e in compose["services"][name]["environment"])
         assert env["RETINA_RTSP_TRANSPORT"] == "${RETINA_RTSP_TRANSPORT:-tcp}"
         assert env["RETINA_RTSP_IO_TIMEOUT_SECONDS"].startswith("${RETINA_RTSP_IO_TIMEOUT_SECONDS:-")

@@ -4,6 +4,12 @@ Golden outputs were produced from origin/main (dc8eab06c, before world-first)
 by tests/fixtures/world_first_parity/scenarios.py. With world-first off, both
 contests must reproduce them byte for byte -- including the "always a winner
 at 1.0" frame (`all_calm`) that world-first exists to end.
+
+2026-11: the golden's "field" half was regenerated after node:substrate.route
+and node:substrate.bus_synaptic were retired (PE suite rebuild step 5): their
+baselines left the scenarios, and the field contest's relative salience moved
+with them. Regenerated again 2026-11-13 when node:substrate.chat was retired (step 6).
+The "broadcast" half is unchanged from dc8eab06c.
 """
 from __future__ import annotations
 

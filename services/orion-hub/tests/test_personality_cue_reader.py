@@ -140,7 +140,8 @@ def test_naive_now_is_treated_as_utc(monkeypatch):
     assert cue.skip_reason is None and cue.text
 
 
-def test_settings_ship_the_flag_on():
+def test_settings_ship_the_flag_off():
+    """Personality design rev 3 (R0): the frame held job boilerplate, so the cue ships off."""
     from app.settings import Settings
 
-    assert Settings.model_fields["HUB_PERSONALITY_CUE_ENABLED"].default is True
+    assert Settings.model_fields["HUB_PERSONALITY_CUE_ENABLED"].default is False

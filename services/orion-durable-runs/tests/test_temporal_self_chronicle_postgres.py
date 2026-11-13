@@ -195,6 +195,8 @@ def test_live_postgres_run_matches_in_memory_and_survives_a_restart():
         store = ChronicleStore(pool)
         arcs = await store.arcs("2026-10-10")
         assert {a["arc_id"]: canon(a) for a in arcs} == {k: canon(v) for k, v in mem.arcs.items()}
+        # By id (GET /temporal-self/arcs/{arc_id}, the resolver for orion/refs.py kind "arc").
+        assert canon(await store.arc(arcs[0]["arc_id"])) == canon(arcs[0]) and await store.arc("0" * 16) is None
         frame = await store.frame()
         assert canon(frame) == canon(mem.frame) and frame["skipped_at_or_before_watermark"] == 0
         cursors = {c["source_kind"]: c for c in await store.cursors()}
@@ -321,5 +323,247 @@ def test_arousal_rows_fold_into_one_strain_arc_and_are_never_copied():
         assert arc["status"] == "closed" and arc["closed_reason"] == "process_ended"
         _, off = await SourceReader(pool, TZ, exclude_kinds=("arousal_transition",)).read(lo, hi, ticks=False)
         assert not [e for e in off if e.source_kind == "arousal_transition"]  # the flag's off path
+
+    with_db(scenario_fn)
+
+
+def test_retro_play_rows_fold_into_one_play_arc_and_a_missing_table_reads_nothing():
+    """Orion plays Zelda (section F). The SQL source reads exactly what the adapter needs, one session is
+    one closed play arc, the flag's off path reads nothing, and a database without the table (its
+    migration not applied yet) skips the source instead of failing the whole read."""
+    async def scenario_fn(pool):
+        w = scenario()
+        start = T0 + timedelta(minutes=2)
+        w.add("retro_play", {
+            "session_id": "sess-1", "lineage_id": "lin-1", "game_id": "zelda-prg0", "game_title": "The Legend of Zelda",
+            "kind": "leisure", "dispatch_id": "d:1", "started_at": start, "ended_at": start + timedelta(minutes=22),
+            "duration_sec": 1320.0, "end_reason": "budget", "control": [{"port": 0, "human_frames": 0, "orion_frames": 79200}],
+            "control_basis": "frames",
+            "human_frames": 0, "orion_frames": 79200, "human_share": 0.0, "played_together": False, "rooms_new": 9,
+            "caves_new": 3, "items_gained": ["wooden sword"], "deaths": 2, "death_rooms": ["0:79"], "decisions": 31,
+            "predictions_met": 14, "predictions_refuted": 12, "predictions_unknown": 5, "human_interventions": 0,
+            "summary": "Played The Legend of Zelda solo for 22 min, 9 new rooms (3 caves), got the wooden sword, "
+                       "died twice, 14 of 31 predictions met."})
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["retro_play"])
+        assert [e.event_id for e in events] == ["retro_play:sess-1"]
+        assert events[0].label == "The Legend of Zelda solo, 14 of 31 predictions met, 5 unknown"
+        (arc,) = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10") if a["kind"] == "play"]
+        assert arc["status"] == "closed" and arc["subject_ref"] == "retro_session:sess-1"
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("retro_play",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "retro_play"]
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE retro_play_sessions")
+        _, gone = await SourceReader(pool, TZ).read(lo, hi, ticks=False)
+        assert not [e for e in gone if e.source_kind == "retro_play"]
+
+    with_db(scenario_fn)
+
+
+STORY_INSERT = """
+INSERT INTO vision_motion_story (story_id, stream_id, kind, started_at, ended_at, speed_class, dir_lateral,
+  dir_depth, name_label, individual_id, companion_kinds, together_story_ids, published, drop_reason, clean,
+  rules_version, sentence, created_at)
+VALUES (%(story_id)s, %(stream_id)s, %(kind)s, %(started_at)s, %(ended_at)s, 'walking', 1, -1, %(name_label)s,
+  'ind-1', %(companion_kinds)s, %(together)s, %(published)s, NULL, true, 1, 'A person walked.',
+  coalesce(%(created_at)s, %(ended_at)s + interval '50 seconds'))
+"""
+
+
+def test_street_rows_become_labelled_street_arcs_and_the_flag_restores_room_only():
+    """Episodes from the street (PR #2763 item 1) on real Postgres: the three street reads return only
+    notable events (a gated published story, one per walking-together group; a doorbell ring; a
+    handoff with p < 0.05), the chronicle folds them into street arcs whose evidence names the source
+    row, the flag's off path reads nothing, and a database without the verdict table skips the story
+    read instead of failing the whole read."""
+    async def scenario_fn(pool):
+        start = T0 + timedelta(minutes=2)
+
+        def story(sid, **kw):
+            base = {"story_id": sid, "stream_id": "walkway", "kind": "person", "started_at": start,
+                    "ended_at": start + timedelta(seconds=15), "name_label": None, "companion_kinds": [],
+                    "together": [], "published": True, "created_at": None}
+            base.update(kw)
+            return base
+
+        stories = [story("a1", companion_kinds=["person"], together=["a2"]),  # kept: lowest id of its group
+                   story("a2", companion_kinds=["person"], together=["a1"]),  # same group: skipped
+                   story("b1", published=False),                              # parked / glimpse: not published
+                   story("c1", kind="vehicle"),                               # traffic
+                   story("d1", stream_id="cam0")]                             # the room
+        checked = story("v", started_at=start - timedelta(days=3), ended_at=start - timedelta(days=3))
+        async with pool.connection() as conn:
+            for s in stories + [dict(checked, story_id=f"v{i}") for i in range(52)]:
+                await conn.execute(STORY_INSERT, s)
+            # Juniper's spot checks: 50 right of 52 on rules version 1 (the live 10-23 tally).
+            await conn.execute("INSERT INTO vision_motion_story_verdict (story_id, verdict, rules_version) "
+                               "SELECT story_id, CASE WHEN story_id IN ('v0', 'v1') THEN 'wrong_other' ELSE 'right' "
+                               "END, 1 FROM vision_motion_story WHERE story_id LIKE 'v%'")
+            # The ring is 5 min after story a1: a separate visit (more than 84 s apart).
+            await fdb.insert(conn, "vision_events", [
+                {"event_id": "ring-1", "stream_id": "doorbell", "event_type": "doorbell_ring",
+                 "entities": [], "created_at": start + timedelta(minutes=5)},
+                {"event_id": "motion-1", "stream_id": "doorbell", "event_type": "doorbell_motion",
+                 "entities": [], "created_at": start + timedelta(minutes=1)}])
+            good = (start + timedelta(minutes=3)).isoformat()
+            for eid, kind, p, occurred in (("e1", "handoff_missed", 0.01, good), ("e2", "handoff_met", 0.4, good),
+                                           ("e3", "approach_door", None, good),
+                                           ("e4", "handoff_late", 0.01, "not a time")):  # dropped, never fails the read
+                ev = {"event_id": eid, "kind": kind, "stream_ids": ["walkway", "doorbell"], "p_value": p,
+                      "occurred_at": occurred, "salience": 0.5, "correlation_id": "c"}
+                await fdb.insert(conn, "vision_handoff_street_outbox", [{
+                    "event_id": eid, "handoff_id": f"h-{eid}", "kind": kind, "event": ev,
+                    "created_at": start + timedelta(minutes=4)}])
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["street_event"])
+        assert sorted(e.event_id for e in events) == ["street_event:a1", "street_event:e1", "street_event:ring-1"]
+        (a1,) = [e for e in events if e.source_ref == "a1"]
+        assert a1.label == ("Outside (walkway camera): a person walked left to right, away from the house, with "
+                            "other people")  # no people count: the sentence's "1 other person" never leaks
+        assert all(e.payload["outside_world"] for e in events)
+
+        w = scenario()
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        arcs = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10")]
+        street = [a for a in arcs if a["kind"] == "street"]
+        assert sorted(a["evidence_refs"][0] for a in street) == [
+            "vision_events:ring-1", "vision_handoff_street_outbox:e1", "vision_motion_story:a1"]
+        assert all(a["subject_label"].startswith("Outside (") for a in street)
+        assert not [a for a in arcs if a["kind"] == "company"]  # the street never opens room company
+
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("street_event",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "street_event"]
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE vision_motion_story_verdict")
+        _, partial = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["street_event"])
+        assert sorted(e.source_ref for e in partial) == ["e1", "ring-1"]  # the story read skipped, not failed
+
+    with_db(scenario_fn)
+
+
+def test_one_visit_is_one_arc_late_written_stories_fold_and_names_say_where_they_came_from():
+    """Follow-up to PR #2876 on real Postgres: (a) a walkway story, the doorbell story the handoff loop
+    paired with it, and a ring inside the visit fold into ONE street arc; (b) a story written 20 min
+    after it ended (past the 300 s read lag) is read in the window it was written in and folded, not
+    stored late; (c) a written name reads "(a guess)" unless Juniper vouched for that story."""
+    async def scenario_fn(pool):
+        start = T0 + timedelta(minutes=2)
+
+        def story(sid, **kw):
+            base = {"story_id": sid, "stream_id": "walkway", "kind": "person", "started_at": start,
+                    "ended_at": start + timedelta(seconds=10), "name_label": None, "companion_kinds": [],
+                    "together": [], "published": True, "created_at": None}
+            base.update(kw)
+            return base
+
+        late_end = start + timedelta(minutes=20)
+        rows = [story("walk"), story("door", stream_id="doorbell", started_at=start + timedelta(seconds=1)),
+                story("named", started_at=start + timedelta(minutes=10), ended_at=start + timedelta(minutes=10, seconds=9),
+                      name_label="Robin"),
+                story("vouched", started_at=start + timedelta(minutes=14), ended_at=start + timedelta(minutes=14, seconds=9),
+                      name_label="Robin"),
+                story("late", started_at=late_end - timedelta(seconds=9), ended_at=late_end,
+                      created_at=late_end + timedelta(minutes=20))]
+        async with pool.connection() as conn:
+            for s in rows + [story(f"v{i}", started_at=start - timedelta(days=3), ended_at=start - timedelta(days=3))
+                             for i in range(50)]:
+                await conn.execute(STORY_INSERT, s)
+            await conn.execute("INSERT INTO vision_motion_story_verdict (story_id, verdict, rules_version) "
+                               "SELECT story_id, 'right', 1 FROM vision_motion_story "
+                               "WHERE story_id LIKE 'v%' OR story_id = 'vouched'")
+            await fdb.insert(conn, "vision_handoff", [
+                {"handoff_id": "h1", "portal_id": "central_walk", "portal_kind": "overlap", "status": "paired",
+                 "source_story_id": "door", "target_story_id": "walk"},
+                {"handoff_id": "h2", "portal_id": "central_walk", "portal_kind": "overlap", "status": "ambiguous",
+                 "source_story_id": "named", "target_story_id": "walk"}])  # ambiguous is not a link
+            await fdb.insert(conn, "vision_events", [
+                {"event_id": "ring-1", "stream_id": "doorbell", "event_type": "doorbell_ring",
+                 "entities": [], "created_at": start + timedelta(seconds=40)}])
+            # orion_ask's columns the read uses (the table lives outside the temporal-self export).
+            await conn.execute("CREATE TABLE orion_ask (ask_id text, source_kind text, source_ref text, status text, "
+                               "answer_detail jsonb, answered_at timestamptz, created_at timestamptz)")
+            await fdb.insert(conn, "orion_ask", [
+                {"ask_id": "a1", "source_kind": "vision_story_person", "source_ref": "ind-1", "status": "answered",
+                 "answer_detail": {"story_id": "late", "action": "name", "name": "Ana"},
+                 "answered_at": start, "created_at": start},
+                # About a companion on the "named" story's card: never names its walker.
+                {"ask_id": "a2", "source_kind": "vision_story_person", "source_ref": "companion-9",
+                 "status": "answered", "answer_detail": {"story_id": "named", "action": "name", "name": "Zed"},
+                 "answered_at": start, "created_at": start}])
+
+        w = scenario()
+        await run_pg(pool, w, T0 + timedelta(hours=1, minutes=10))
+        street = sorted((a for a in map(canon, await ChronicleStore(pool).arcs("2026-10-10")) if a["kind"] == "street"),
+                        key=lambda a: a["began_at"])
+        assert [sorted(a["evidence_refs"]) for a in street] == [
+            ["vision_events:ring-1", "vision_motion_story:door", "vision_motion_story:walk"],
+            ["vision_motion_story:named"], ["vision_motion_story:vouched"], ["vision_motion_story:late"]]
+        assert street[0]["subject_label"].startswith("Outside (walkway camera and doorbell camera): a person walked")
+        assert street[1]["subject_label"].startswith("Outside (walkway camera): Robin (a guess) walked")
+        assert street[2]["subject_label"].startswith("Outside (walkway camera): Robin (named by Juniper) walked")
+        assert street[3]["subject_label"].startswith("Outside (walkway camera): Ana (named by Juniper) walked")
+        async with pool.connection() as conn:
+            cur = await conn.execute("SELECT count(*) AS n FROM temporal_self_event "
+                                     "WHERE late_unfolded AND source_kind = 'street_event'")
+            assert (await cur.fetchone())["n"] == 0  # the late-written story folded, nothing stored late
+
+    with_db(scenario_fn)
+
+
+def test_office_session_labels_the_office_company_arc_and_the_flag_and_a_missing_table_read_nothing():
+    """Office sessions (office camera design PR #3127 step B) on real Postgres: the reader returns only
+    FINAL room rows (an open row and another camera's row stay out), the chronicle relabels the office
+    company arc of the same visit, the flag's off path reads nothing, and a database without the table
+    skips the source instead of failing the whole read."""
+    async def scenario_fn(pool):
+        w = scenario()
+        start = T0 + timedelta(minutes=2)
+        for n, (to, frm, m) in enumerate((("present", "absent", 0), ("recent", "present", 8), ("absent", "recent", 10))):
+            w.add("presence_transition", {"transition_id": f"tr-{n}", "presence_id": "cam0", "from_state": frm,
+                                          "to_state": to, "occurred_at": start + timedelta(minutes=m),
+                                          "identity_confirmed": False, "label": None})
+        label = "Juniper (probably) in the office: sitting at a desk, opening a box; reaching into a cabinet"
+        base = {"session_id": "cam0-tr-0", "stream_id": "cam0", "status": "closed", "started_at": start,
+                "last_seen_at": start + timedelta(minutes=8), "ended_at": start + timedelta(minutes=8),
+                "end_reason": "left", "closed_at": start + timedelta(minutes=19), "who_text": "Juniper (probably)",
+                "who": {"text": "Juniper (probably)"}, "unknown_people": 0, "timeline": [], "label": label,
+                "individual_ids": [], "image_refs": [], "evidence_refs": [], "ask_id": None}
+        w.add("office_session", base)
+        async with pool.connection() as conn:
+            await fdb.insert(conn, "vision_office_session", [
+                dict(base, session_id="cam0-open", status="open", closed_at=None, ended_at=None),
+                dict(base, session_id="walkway-x", stream_id="walkway")])
+        await run_pg(pool, w, T0 + timedelta(hours=1))
+        lo, hi = T0 - timedelta(minutes=5), T0 + timedelta(minutes=50)
+        _, events = await SourceReader(pool, TZ).read(lo, hi, ticks=False, kinds=["office_session"])
+        assert [e.event_id for e in events] == ["office_session:cam0-tr-0"]
+        (arc,) = [canon(a) for a in await ChronicleStore(pool).arcs("2026-10-10") if a["kind"] == "company"]
+        assert arc["subject_label"] == label and arc["status"] == "closed"
+        assert "vision_office_session:cam0-tr-0" in arc["related_refs"]
+        _, off = await SourceReader(pool, TZ, exclude_kinds=("office_session",)).read(lo, hi, ticks=False)
+        assert not [e for e in off if e.source_kind == "office_session"]
+        async with pool.connection() as conn:
+            await conn.execute("DROP TABLE vision_office_session")
+        _, gone = await SourceReader(pool, TZ).read(lo, hi, ticks=False)
+        assert not [e for e in gone if e.source_kind == "office_session"]
+
+    with_db(scenario_fn)
+
+
+def test_action_outcome_source_reads_act_rows_only():
+    """Ladder retirement PR 6 (2026-11-07): the dispatch ladder's own outcome kinds (summarize,
+    maintain, inspect) stopped with dispatch. The source reads only act rows: the act ledger's
+    ``act:<verb>`` and the cooling world act's ``self_regulate``."""
+    async def scenario_fn(pool):
+        at = T0 + timedelta(minutes=10)
+        rows = [{"id": n, "dispatch_id": f"d{n}", "dispatch_kind": kind, "target_id": "t", "observed_at": at,
+                 "created_at": at, "claim_upheld": True, "prediction_error": 0.1}
+                for n, kind in enumerate(("act:make", "self_regulate", "summarize", "maintain", "inspect"), start=1)]
+        async with pool.connection() as conn:
+            await fdb.load(conn, {"action_outcome": rows})
+        _, events = await SourceReader(pool, TZ).read(T0, T0 + timedelta(hours=1))
+        kinds = sorted(e.payload["dispatch_kind"] for e in events if e.source_kind == "action_outcome")
+        assert kinds == ["act:make", "self_regulate"]
 
     with_db(scenario_fn)

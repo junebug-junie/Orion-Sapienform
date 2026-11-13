@@ -133,6 +133,32 @@ def _decay_stamp_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     return {ACTIVATION_DECAYED_AT_KEY: raw} if raw is not None else {}
 
 
+# `label_set_at` (entity nodes, 2026-11-03): when a named camera cluster's name was
+# set. Writer: orion/substrate/adapters/vision_individual.py (naming, rename, and the
+# first sighting refresh, which backfills it from observed_at). Consumer: the
+# person-graph relabel guard (services/orion-substrate-runtime/app/person_graph_loop.py),
+# which used to compare against observed_at -- observed_at now follows sightings, so a
+# rename would have been refused forever. Native, because this codec keeps no free-form
+# entity metadata. Omitted from the SET clause when absent, so a writer that does not
+# carry it never clears it.
+LABEL_SET_AT_KEY = "label_set_at"
+
+
+def _label_set_at_properties_from_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
+    raw = (metadata or {}).get(LABEL_SET_AT_KEY)
+    if raw is None:
+        return {}
+    return {LABEL_SET_AT_KEY: _dt(raw) if isinstance(raw, datetime) else str(raw)}
+
+
+def _entity_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    metadata = _decay_stamp_metadata_from_row(row)
+    raw = row.get(LABEL_SET_AT_KEY)
+    if raw is not None:
+        metadata[LABEL_SET_AT_KEY] = raw
+    return metadata
+
+
 # Node kinds this codec can round-trip through durable Falkor storage.
 #
 # `entity` joined concept/evidence on 2026-08-29 after a live outage: the
@@ -174,6 +200,7 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
         props["label"] = getattr(node, "label")
         props["entity_type"] = getattr(node, "entity_type", "unknown")
         props["aliases_json"] = _json_list(getattr(node, "aliases", None))
+        props.update(_label_set_at_properties_from_metadata(node.metadata))
     elif node.node_kind == "assertion":
         # `assertion_predicate`/`assertion_revision`, not `predicate`/`revision`:
         # the neighborhood join reads a.assertion_revision next to
@@ -193,8 +220,10 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # scalar properties (concept nodes only). These are the only metadata keys
 # already-shipped consumers (SubstrateDynamicsEngine.tick(),
 # attention_broadcast._node_salience(), substrate_pressure_signals()'s
-# evidence_refs, and the AST/HOT reducer's optional harness_closure_signal
-# narrative -- orion/substrate/attention_self_model.py) actually read/write;
+# evidence_refs, and world-first attention's evidence_refs in
+# orion/substrate/attention_broadcast.py) actually read/write. (The AST/HOT
+# reducer's harness_closure_signal narrative was a consumer until 2026-11-11,
+# when node:substrate.harness_closure was retired);
 # see docs/superpowers/specs/2026-07-16-cypher-native-substrate-postgres-bus-split-design.md
 # item 3's "promote to first-class Cypher properties only with a second
 # consumer" escape hatch. `contributing_turn_ids` was added under this same
@@ -225,6 +254,15 @@ def encode_node_properties(node: BaseSubstrateNodeV1, identity_key: str | None) 
 # node:substrate.vision -> capability:vision edge maps perception_staleness to
 # pressure. Note `perception_yield` is a raw count mean (live: 6-8 objects per
 # frame), NOT a 0-1 pressure, and is encoded unbounded on purpose.
+# `embedding_staleness` / `prediction_error_missing_reason` added 2026-10-21,
+# caught the same way (review of fix/camera-surprise-honest-input): upsert_node
+# caches the DECODED durable row, so a key missing here is gone even inside the
+# writer's own process. Both camera surprise nodes write them every tick;
+# consumers: the history sampler (worker.py _node_prediction_error_reading,
+# skips a marked placeholder), the self-model freshness rule
+# (prediction_error_freshness.classify_reading) and the broadcast's camera
+# absence check (attention_broadcast.world_first_signals). The reason is
+# encoded as None when absent, so ON MATCH clears it on the next real reading.
 DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "dynamic_pressure",
     "dynamic_pressure_reason",
@@ -235,6 +273,8 @@ DYNAMICS_METADATA_KEYS: tuple[str, ...] = (
     "prediction_error_evidence_event_ids",
     "perception_staleness",
     "perception_yield",
+    "embedding_staleness",
+    "prediction_error_missing_reason",
 )
 
 # Native properties ONLY SubstrateDynamicsEngine.tick() writes on an existing
@@ -310,6 +350,8 @@ EXTERNALLY_OWNED_METADATA_KEYS: frozenset[str] = frozenset(
         "prediction_error_evidence_event_ids",
         "perception_staleness",
         "perception_yield",
+        "embedding_staleness",
+        "prediction_error_missing_reason",
     }
 )
 
@@ -398,6 +440,14 @@ def _dynamics_properties_from_metadata(metadata: Mapping[str, Any] | None) -> di
         # Raw count mean, not a 0-1 pressure -- live values run 6-8 objects per
         # frame. Encoded unbounded on purpose; see _write_prediction_error_node.
         "perception_yield": _safe_float(meta.get("perception_yield"), default=None),
+        # Camera surprise nodes (2026-10-21). None when absent: the reason is
+        # cleared by the next real reading, never carried forward.
+        "embedding_staleness": _safe_float(meta.get("embedding_staleness"), default=None),
+        "prediction_error_missing_reason": (
+            str(meta["prediction_error_missing_reason"]).strip() or None
+            if meta.get("prediction_error_missing_reason") is not None
+            else None
+        ),
     }
 
 
@@ -501,6 +551,12 @@ def _dynamics_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
     perception_yield = _safe_float(row.get("perception_yield"), default=None)
     if perception_yield is not None:
         metadata["perception_yield"] = perception_yield
+    embedding_staleness = _safe_float(row.get("embedding_staleness"), default=None)
+    if embedding_staleness is not None:
+        metadata["embedding_staleness"] = embedding_staleness
+    missing_reason = row.get("prediction_error_missing_reason")
+    if missing_reason:
+        metadata["prediction_error_missing_reason"] = str(missing_reason)
     # Fail-open, matching every other decode field in this function: a
     # malformed contributing_turn_ids_json value (corrupt JSON, wrong shape)
     # must not abort decoding the whole node -- treat it as absent rather
@@ -599,7 +655,7 @@ def decode_entity_node(row: Mapping[str, Any]) -> EntityNodeV1 | None:
         temporal=_temporal_from_row(row),
         signals=_signals_from_row(row),
         provenance=_provenance_from_row(row),
-        metadata=_decay_stamp_metadata_from_row(row),
+        metadata=_entity_metadata_from_row(row),
     )
 
 

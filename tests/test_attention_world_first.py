@@ -189,16 +189,26 @@ def test_polarity_and_value_kind_come_from_the_semantic_layer() -> None:
     assert node_prediction_error_semantics("node:substrate.biometrics") == ("level", "higher_is_worse")
     # A trigger has no polarity in the semantic layer; firing is the event.
     assert node_prediction_error_semantics("node:substrate.cabinet") == ("trigger", None)
-    assert node_prediction_error_semantics("node:substrate.harness_closure")[0] == "placeholder"
+    # harness_closure was retired 2026-11-11: no glossary entry, so no value_kind.
+    assert node_prediction_error_semantics("node:substrate.harness_closure")[0] is None
 
 
 def test_trigger_fires_into_eligibility() -> None:
     assert judge_candidate(body("node:substrate.cabinet", 0.97)).eligible
 
 
-def test_placeholder_is_never_a_measurement() -> None:
+@pytest.mark.parametrize("kind", ["placeholder", "bucket"])
+def test_placeholder_is_never_a_measurement(kind) -> None:
+    c = body("node:substrate.biometrics", 1.0).model_copy(update={"value_kind": kind})
+    v = judge_candidate(c)
+    assert not v.eligible and kind in v.reason
+
+
+def test_internal_node_without_glossary_entry_is_never_a_measurement() -> None:
+    """Retired harness_closure (no glossary entry) is refused even when FRESH:
+    unknown value kind is not a measurement, not merely stale."""
     v = judge_candidate(body("node:substrate.harness_closure", 1.0))
-    assert not v.eligible and "placeholder" in v.reason
+    assert not v.eligible and v.reason == "unknown: not a measurement"
 
 
 def test_higher_is_better_inverts_the_bad_direction() -> None:
@@ -216,11 +226,12 @@ def test_no_declared_polarity_cannot_interrupt() -> None:
 
 def test_rank_is_by_own_percentile_borda_only_breaks_ties() -> None:
     a = body("node:substrate.execution", 0.95)
-    b = body("node:substrate.route", 0.95)
-    c = body("node:substrate.chat", 0.97)
-    r = rank_candidates([a, b, c], tie_break={"node:substrate.route": 0.9, "node:substrate.execution": 0.1})
+    # route retired 2026-11 (#3201); biometrics is a live level measurement
+    b = body("node:substrate.biometrics", 0.95)
+    c = body("node:prediction.body", 0.97)
+    r = rank_candidates([a, b, c], tie_break={"node:substrate.biometrics": 0.9, "node:substrate.execution": 0.1})
     assert [v.candidate.source_id for v in r.eligible] == [
-        "node:substrate.chat", "node:substrate.route", "node:substrate.execution",
+        "node:prediction.body", "node:substrate.biometrics", "node:substrate.execution",
     ]
 
 
@@ -277,9 +288,12 @@ def test_ceiling_ties_rank_by_mid_rank_not_strict_below() -> None:
 def test_all_zero_history_with_current_zero_is_still_rest() -> None:
     assert midrank_percentile(0.0, [0.0] * 50) == 0.5  # why mid-rank never gates
     m = PredictionErrorMagnitudeV1(value=0.0, age_sec=1, percentile_now=0.0, n_readings_7d=500, band="quiet")
-    c = node_candidate(node_id="node:substrate.route", label="r", magnitude=m, observed_at=NOW, now=NOW,
+    # a live measurement (route, the original case, was retired 2026-11): refused for being at rest,
+    # not for being an unknown kind
+    c = node_candidate(node_id="node:substrate.biometrics", label="r", magnitude=m, observed_at=NOW, now=NOW,
                        history_values=[0.0] * 500)
-    assert not judge_candidate(c).eligible
+    v = judge_candidate(c)
+    assert not v.eligible and "not a measurement" not in v.reason
 
 
 def test_glossary_failure_is_not_cached(monkeypatch) -> None:
@@ -299,6 +313,100 @@ def test_glossary_failure_is_not_cached(monkeypatch) -> None:
 
 
 def test_trace_lists_absent_sources_so_failure_is_not_calm() -> None:
-    r = rank_candidates([chat_candidate(None, now=NOW), body("node:substrate.route", 0.1)])
+    r = rank_candidates([chat_candidate(None, now=NOW), body("node:substrate.biometrics", 0.1)])
     assert r.no_winner and r.trace()["absent_sources"] == [WORLD_CHAT_SOURCE_ID]
 
+
+
+# --- Per-node band floor (2026-10-21, walkway camera) -----------------------
+
+
+def test_walkway_is_world_and_needs_its_own_p99_band() -> None:
+    from orion.attention.world_first import below_band_floor, source_kind_for_node
+    from orion.schemas.attention_candidate import (
+        PERCEPTION_WALKWAY_NODE_ID,
+        is_world_source_id,
+        world_first_fenced,
+    )
+
+    assert is_world_source_id(PERCEPTION_WALKWAY_NODE_ID)
+    assert source_kind_for_node(PERCEPTION_WALKWAY_NODE_ID) == "external"
+    assert not world_first_fenced(PERCEPTION_WALKWAY_NODE_ID)
+    for pct, band, eligible in ((0.995, "unusual", True), (0.95, "high", False), (0.6, "usual", False)):
+        verdict = judge_candidate(body(PERCEPTION_WALKWAY_NODE_ID, pct))
+        assert (verdict.band, verdict.eligible) == (band, eligible), pct
+    assert below_band_floor(PERCEPTION_WALKWAY_NODE_ID, "high") == "unusual"
+    assert below_band_floor(PERCEPTION_WALKWAY_NODE_ID, "unusual") is None
+    # The room camera has no floor: its "high" band still competes.
+    assert below_band_floor(PERCEPTION_NODE_ID, "high") is None
+    assert judge_candidate(body(PERCEPTION_NODE_ID, 0.95)).eligible
+
+
+def test_walkway_floor_uses_mid_rank_so_ceiling_ties_can_reach_p99() -> None:
+    """The camera score saturates at 1.0 for ~1.3% of readings: strict-below
+    puts every 1.0 at ~p98.7 ("high"), which would make the p99+ floor
+    unreachable. The floor reads the mid-rank (ceiling ties counted half)."""
+    from orion.schemas.attention_candidate import PERCEPTION_WALKWAY_NODE_ID
+
+    history = [0.0] * 9870 + [1.0] * 130  # 1.3% at the ceiling
+    cand = node_candidate(
+        node_id=PERCEPTION_WALKWAY_NODE_ID, label="walkway",
+        magnitude=mag(0.987, value=1.0), observed_at=NOW, now=NOW, history_values=history,
+    )
+    verdict = judge_candidate(cand)
+    assert verdict.band == "high" and verdict.eligible  # mid-rank 0.9935 >= 0.99
+    # A 0.5 reading below the ties: mid-rank 0.987, under the floor.
+    cand = node_candidate(
+        node_id=PERCEPTION_WALKWAY_NODE_ID, label="walkway",
+        magnitude=mag(0.987, value=0.5), observed_at=NOW, now=NOW, history_values=history,
+    )
+    verdict = judge_candidate(cand)
+    assert not verdict.eligible and "below this source's unusual floor" in verdict.reason
+
+
+def test_walkway_trace_names_the_floor_it_met() -> None:
+    from orion.schemas.attention_candidate import PERCEPTION_WALKWAY_NODE_ID
+
+    history = [0.0] * 9870 + [1.0] * 130
+    cand = node_candidate(
+        node_id=PERCEPTION_WALKWAY_NODE_ID, label="walkway",
+        magnitude=mag(0.987, value=1.0), observed_at=NOW, now=NOW, history_values=history,
+    )
+    assert "mid-rank unusual meets its unusual floor" in judge_candidate(cand).reason
+
+
+# --- forecast surprise (node:prediction.*, value_kind surprise_excess, 2026-11-11) -------------------
+
+
+def test_surprise_excess_is_a_measurement_kind_read_from_the_real_glossary() -> None:
+    from orion.attention.self_readings import node_prediction_error_is_measurement
+    from orion.attention.world_first import (
+        MEASUREMENT_VALUE_KINDS,
+        PREDICTION_ERROR_NODE_PREFIXES,
+        node_prediction_error_semantics,
+        source_kind_for_node,
+    )
+
+    assert "surprise_excess" in MEASUREMENT_VALUE_KINDS
+    for node_id in ("node:prediction.room", "node:prediction.body"):
+        assert node_prediction_error_semantics(node_id) == ("surprise_excess", "higher_is_worse")
+        assert node_prediction_error_is_measurement(node_id)
+        assert source_kind_for_node(node_id) == "internal"   # Juniper 2026-11-11: body signals
+        assert node_id.startswith(PREDICTION_ERROR_NODE_PREFIXES)
+
+
+def test_a_high_forecast_surprise_competes_and_a_calm_one_does_not() -> None:
+    hot = judge_candidate(body("node:prediction.room", 0.97))
+    assert hot.eligible and hot.candidate.value_kind == "surprise_excess"
+    calm = judge_candidate(body("node:prediction.room", 0.40))
+    assert not calm.eligible
+
+
+def test_a_stale_forecast_surprise_is_stale_not_calm() -> None:
+    from orion.attention.world_first import INTERNAL_MAX_AGE_SEC
+
+    age = INTERNAL_MAX_AGE_SEC + 60
+    c = node_candidate(node_id="node:prediction.body", label="x", magnitude=mag(0.99, age=age),
+                       observed_at=NOW - timedelta(seconds=age), now=NOW)
+    v = judge_candidate(c)
+    assert not v.eligible and v.reason.startswith("stale")

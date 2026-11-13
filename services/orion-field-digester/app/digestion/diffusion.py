@@ -278,34 +278,42 @@ def apply_diffusion(state: FieldStateV1, *, diffusion_rate: float) -> None:
                 tgt.pop(tgt_ch, None)
                 provenance.pop(tgt_ch, None)
 
-        if "pressure" in channels:
-            # Per derived channel, the skip below gates on best_source (a real
-            # >0 contribution THIS tick), not on whether a direct edge is
-            # merely configured -- a capability can have
-            # "available_capacity"/"confidence" as configured targets yet
-            # receive no contribution some tick (e.g. its source is
-            # temporarily missing that field), in which case the derived
-            # fallback must still run instead of leaving the channel
-            # hard-floored at 0.0.
-            #
-            # The derived formula needs a MEASURED pressure. With pressure
-            # unmeasured (dropped above) it used to compute 1 - 0 = 1.0 --
-            # an unmeasured capability reading perfectly confident with full
-            # capacity. Now those derived channels are dropped too.
-            pressure_measured = "pressure" in tgt
-            for derived_ch, derive in (
-                ("available_capacity", lambda p: max(0.0, 1.0 - p)),
-                ("confidence", lambda p: max(0.0, 1.0 - 0.5 * p)),
-            ):
-                if (target_id, derived_ch) in best_source:
-                    continue  # direct diffusion contributed for real this tick
-                if pressure_measured:
-                    tgt[derived_ch] = derive(tgt["pressure"])
-                    # Derived from pressure, not from any direct edge that
-                    # measured exactly 0 -- do not leave that edge named.
-                    provenance.pop(derived_ch, None)
-                elif (target_id, derived_ch) in measured_zero_source:
-                    pass  # a direct edge really measured 0.0: keep it
-                else:
-                    tgt.pop(derived_ch, None)
-                    provenance.pop(derived_ch, None)
+        if "pressure" not in channels:
+            # No edge targets this capability's pressure at all, so nothing
+            # measures it: reconcile's seeded 0.0 must not survive as a calm
+            # reading, and the derived channels below must not be computed
+            # from it (2026-11: capability:transport after its only pressure
+            # source, node:substrate.bus_synaptic, was retired -- PE suite
+            # rebuild step 5).
+            tgt.pop("pressure", None)
+            provenance.pop("pressure", None)
+        # Per derived channel, the skip below gates on best_source (a real
+        # >0 contribution THIS tick), not on whether a direct edge is
+        # merely configured -- a capability can have
+        # "available_capacity"/"confidence" as configured targets yet
+        # receive no contribution some tick (e.g. its source is
+        # temporarily missing that field), in which case the derived
+        # fallback must still run instead of leaving the channel
+        # hard-floored at 0.0.
+        #
+        # The derived formula needs a MEASURED pressure. With pressure
+        # unmeasured (dropped above) it used to compute 1 - 0 = 1.0 --
+        # an unmeasured capability reading perfectly confident with full
+        # capacity. Now those derived channels are dropped too.
+        pressure_measured = "pressure" in tgt
+        for derived_ch, derive in (
+            ("available_capacity", lambda p: max(0.0, 1.0 - p)),
+            ("confidence", lambda p: max(0.0, 1.0 - 0.5 * p)),
+        ):
+            if (target_id, derived_ch) in best_source:
+                continue  # direct diffusion contributed for real this tick
+            if pressure_measured:
+                tgt[derived_ch] = derive(tgt["pressure"])
+                # Derived from pressure, not from any direct edge that
+                # measured exactly 0 -- do not leave that edge named.
+                provenance.pop(derived_ch, None)
+            elif (target_id, derived_ch) in measured_zero_source:
+                pass  # a direct edge really measured 0.0: keep it
+            else:
+                tgt.pop(derived_ch, None)
+                provenance.pop(derived_ch, None)

@@ -153,6 +153,9 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
         "- Output strict JSON only. No markdown fences, commentary, or prose.\n"
         "- salient_observations items MUST use the observation field (never narrative/event_type).\n"
         "- event_candidates items MUST use event_type + narrative (scribe events come from here).\n"
+        "- Each scene entities item MUST be an object with a non-empty string label; use a current "
+        "summary.evidence.hard_labels value for that label.\n"
+        "- Each event_candidates.entities item MUST be a string label, never an object.\n"
         "- Populate at least one event_candidates entry when anything salient happened.\n"
         "- Use empty arrays [] for missing list fields; do not omit required keys.\n"
         "- Do not invent identities, names, or facts not supported by the context.\n"
@@ -175,7 +178,7 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
 def build_interpretation_llm_options(
     *,
     structured_output_method: str = "json_object_schema",
-    max_tokens: int = 1024,
+    max_tokens: int = 2048,
 ) -> dict[str, Any]:
     """Gateway options for deterministic VisionSceneInterpretationV1 JSON."""
     return {
@@ -237,7 +240,10 @@ def _event_dict_from_item(item: dict[str, Any], window: VisionWindowPayload | No
     return {
         "event_type": str(event_type),
         "narrative": str(narrative),
-        "entities": _string_list(item.get("entities")),
+        # Preserve malformed entries for strict validation. Dropping object
+        # entries here would turn a bad answer into a false strict success and
+        # prevent the evidence-grounded salvage path from seeing them.
+        "entities": item.get("entities") if isinstance(item.get("entities"), list) else [],
         "tags": _string_list(item.get("tags")),
         "confidence": _clamp_float(item.get("confidence")),
         "salience": _clamp_float(item.get("salience")),
@@ -313,7 +319,100 @@ def _clamp_float(value: Any, default: float = 0.5) -> float:
 def _string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [str(item) for item in value if item is not None]
+    # Stringifying a model-produced object publishes Python dict syntax as a
+    # tag or entity name. That is neither a valid label nor useful evidence.
+    return [item for item in value if isinstance(item, str) and item.strip()]
+
+
+def _hard_evidence_labels(window: VisionWindowPayload | None) -> dict[str, str]:
+    if window is None or not isinstance(window.summary, dict):
+        return {}
+    evidence = window.summary.get("evidence")
+    if not isinstance(evidence, dict):
+        return {}
+    labels: dict[str, str] = {}
+    # Believed labels are transition-gate state and can outlive the current
+    # detector evidence; they cannot ground a new entity claim.
+    for key in ("hard_labels",):
+        values = evidence.get(key)
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                labels[value.casefold()] = value
+    return labels
+
+
+def _grounded_entity_label(item: dict[str, Any], window: VisionWindowPayload | None) -> str | None:
+    labels = _hard_evidence_labels(window)
+    for key in ("label", "type"):
+        value = item.get(key)
+        if isinstance(value, str) and value.casefold() in labels:
+            return labels[value.casefold()]
+    return None
+
+
+def _salvage_scene_entities(
+    value: Any, window: VisionWindowPayload | None, warnings: list[str]
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    entities: list[dict[str, Any]] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, dict):
+            warnings.append(f"skipped entities[{index}] non-object")
+            continue
+        if isinstance(item.get("label"), str) and item["label"].strip():
+            entities.append(item)
+            continue
+        label = _grounded_entity_label(item, window)
+        if label is None:
+            warnings.append(f"skipped entities[{index}] without grounded label")
+            continue
+        entity = dict(item)
+        entity["label"] = label
+        if isinstance(entity.get("id"), str) and not entity.get("entity_id"):
+            entity["entity_id"] = entity["id"]
+        if isinstance(entity.get("type"), str) and not entity.get("entity_type"):
+            entity["entity_type"] = entity["type"]
+        entities.append(entity)
+        warnings.append(f"coerced entities[{index}].type -> grounded label")
+    return entities
+
+
+def _salvage_event_entities(
+    value: Any, window: VisionWindowPayload | None, index: int, warnings: list[str]
+) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    labels: list[str] = []
+    for entity_index, item in enumerate(value):
+        if isinstance(item, str) and item.strip():
+            labels.append(item)
+        elif isinstance(item, dict):
+            label = _grounded_entity_label(item, window)
+            if label is not None:
+                labels.append(label)
+                warnings.append(
+                    f"coerced event_candidates[{index}].entities[{entity_index}] -> grounded label"
+                )
+            else:
+                warnings.append(
+                    f"skipped event_candidates[{index}].entities[{entity_index}] without grounded label"
+                )
+    return labels
+
+
+def _validation_issue_summary(exc: ValidationError) -> str:
+    """Log field paths and error types, never rejected camera/model content."""
+    errors = exc.errors()
+    issues = [
+        f"{'.'.join(map(str, error['loc']))}:{error['type']}"
+        for error in errors[:4]
+    ]
+    if len(errors) > 4:
+        issues.append(f"+{len(errors) - 4} more")
+    return ",".join(issues)
 
 
 def _default_evidence_refs(item: dict[str, Any], window: VisionWindowPayload | None) -> list[str]:
@@ -411,6 +510,16 @@ def _coerce_event_candidate_item(
         warnings.append(f"skipped event_candidates[{index}] uncoercible type")
         return None
 
+    raw_entities = item.get("entities")
+    if isinstance(raw_entities, list) and any(
+        isinstance(entity, dict) and _grounded_entity_label(entity, window) is None
+        for entity in raw_entities
+    ):
+        # The entity is part of the event's claim. Keeping its narrative after
+        # dropping an unsupported entity would still publish that claim.
+        warnings.append(f"skipped event_candidates[{index}] with ungrounded entity object")
+        return None
+
     event_type = item.get("event_type") or item.get("type") or item.get("label") or "observation"
     narrative = (
         item.get("narrative")
@@ -422,7 +531,7 @@ def _coerce_event_candidate_item(
     return {
         "event_type": str(event_type),
         "narrative": str(narrative),
-        "entities": _string_list(item.get("entities")),
+        "entities": _salvage_event_entities(item.get("entities"), window, index, warnings),
         "tags": _string_list(item.get("tags")),
         "confidence": _clamp_float(item.get("confidence")),
         "salience": _clamp_float(item.get("salience")),
@@ -492,6 +601,10 @@ def _legacy_outcome_from_data(
     window: VisionWindowPayload,
     raw_model_output: dict[str, Any] | None,
 ) -> InterpretationParseOutcome | None:
+    if isinstance(data, dict) and "event_candidates" in data:
+        # A rejected V2 event must not re-enter as a legacy flat event; that
+        # would publish the entire V2 object as an invented event.
+        return None
     legacy = try_legacy_fallback(content, window)
     if legacy is None:
         return None
@@ -529,6 +642,8 @@ def salvage_interpretation_dict(
         "evidence_refs",
     )
     salvaged: dict[str, Any] = {k: data[k] for k in preserved_keys if k in data}
+    if "entities" in salvaged:
+        salvaged["entities"] = _salvage_scene_entities(salvaged["entities"], window, warnings)
 
     if window:
         salvaged.setdefault("window_id", window.window_id)
@@ -562,6 +677,7 @@ def salvage_interpretation_dict(
     salvaged["uncertainties"] = coerced_uncertainties
 
     raw_events = data.get("event_candidates")
+    had_event_candidates = isinstance(raw_events, list) and bool(raw_events)
     coerced_events: list[dict[str, Any]] = []
     if isinstance(raw_events, list):
         for idx, item in enumerate(raw_events):
@@ -569,11 +685,11 @@ def salvage_interpretation_dict(
             if coerced is not None:
                 coerced_events.append(coerced)
 
-    if not coerced_events and coerced_salient:
+    if not coerced_events and not had_event_candidates and coerced_salient:
         coerced_events = _synthesize_event_candidates_from_observations(
             coerced_salient, window, warnings
         )
-    if not coerced_events and (
+    if not coerced_events and not had_event_candidates and (
         data.get("event_type") or data.get("narrative") or data.get("type")
     ):
         top_level = {
@@ -590,6 +706,10 @@ def salvage_interpretation_dict(
             warnings.append("promoted top-level event fields -> event_candidates[0]")
             coerced_events = [coerced]
     salvaged["event_candidates"] = coerced_events
+
+    if had_event_candidates and not coerced_events:
+        warnings.append("rejected all supplied event_candidates")
+        return None, warnings
 
     if not salvaged.get("window_id"):
         return None, warnings
@@ -728,10 +848,15 @@ def parse_llm_content(content: str, window: VisionWindowPayload) -> Interpretati
             except ValidationError as exc:
                 logger.warning(
                     f"[COUNCIL] interpretation_strict_failed window_id={window.window_id} "
-                    f"error_count={len(exc.errors())}"
+                    f"error_count={len(exc.errors())} issues={_validation_issue_summary(exc)}"
                 )
 
             salvaged, warnings = salvage_interpretation_dict(data, window=window)
+            if salvaged is None and "rejected all supplied event_candidates" in warnings:
+                logger.warning(
+                    f"[COUNCIL] interpretation_salvage_rejected window_id={window.window_id} "
+                    "reason=all_event_candidates_rejected"
+                )
             if salvaged is not None:
                 try:
                     interpretation = VisionSceneInterpretationV1.model_validate(salvaged)
@@ -748,7 +873,7 @@ def parse_llm_content(content: str, window: VisionWindowPayload) -> Interpretati
                 except ValidationError as exc:
                     logger.warning(
                         f"[COUNCIL] interpretation_salvage_failed window_id={window.window_id} "
-                        f"error_count={len(exc.errors())}"
+                        f"error_count={len(exc.errors())} issues={_validation_issue_summary(exc)}"
                     )
 
             outcome = _legacy_outcome_from_data(data, content, window, raw_model_output)
@@ -756,7 +881,10 @@ def parse_llm_content(content: str, window: VisionWindowPayload) -> Interpretati
                 _log_parse_outcome(outcome, window)
                 return outcome
 
-        logger.error(f"[COUNCIL] Unexpected LLM JSON type: {type(data).__name__}")
+        logger.error(
+            f"[COUNCIL] interpretation_parse_failed window_id={window.window_id} "
+            f"json_type={type(data).__name__}"
+        )
         return InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
     except json.JSONDecodeError as exc:
         snippet = repr(_coerce_llm_text(content)[:240])

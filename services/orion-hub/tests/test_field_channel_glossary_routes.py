@@ -91,9 +91,15 @@ def test_channels_endpoint_returns_38_raw_channels_plus_1_derived(client):
     # ...but the per-node meanings are nested, not lost.
     pe = next(c for c in body["channels"] if c["channel"] == "prediction_error")
     by_node = {v["node"]: v for v in pe["node_variants"]}
-    assert "node:substrate.bus_synaptic" in by_node
-    assert by_node["node:substrate.harness_closure"]["semantics"]["value_kind"] == "placeholder"
-    assert "does NOT prove" in by_node["node:substrate.perception"]["semantics"]["rest"]
+    assert "node:substrate.execution" in by_node
+    # Retired 2026-11 (PE suite rebuild step 5): no per-node meaning listed.
+    assert "node:substrate.bus_synaptic" not in by_node and "node:substrate.route" not in by_node
+    # harness_closure was retired 2026-11-11: no glossary entry, no variant.
+    assert "node:substrate.harness_closure" not in by_node
+    # The perception rest text keeps its caveat: a missing-input 0.0 is not calm.
+    # (Reworded 2026-10 when camera surprise moved to per-frame baselines; it
+    # used to say "does NOT prove".)
+    assert "is NOT a reading" in by_node["node:substrate.perception"]["semantics"]["rest"]
     assert "contract_pressure" not in {c["channel"] for c in body["channels"]}
     assert "observer_failure_pressure" not in {c["channel"] for c in body["channels"]}
     assert len(body["categories"]) == 7

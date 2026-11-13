@@ -15,7 +15,27 @@ An open ``company`` arc (seam S1: someone at the room camera) adds "Someone has 
 
 A strain arc (strain loop part 1) adds "Strained since Sat 12:07 (GPU jobs backed up, cabinet too
 hot) [arc:<id>]" while it is open, or "Was strained 12:07 to 14:30 (...) [arc:<id>]" for today's
-latest closed one. The time is when the episode began, even on an earlier day.
+latest closed one. The time is when the episode began, even on an earlier day. Once the arc knows
+which causes are present now, a cause that cleared is named as earlier: "(now: GPU jobs backed up;
+earlier: cabinet too hot)", or "(no cause right now, settling; earlier: ...)" while it holds.
+
+Binding arcs (felt state, body economy Organ 5) add one clause sibling to the strain clause:
+"Binding now: cabinet running hot (32.4 °C, line 31 °C) since 14:02 [arc:<id>]" for one constraint, or
+"Binding now: cabinet running hot since 14:02 [arc:<id>]; my agent GPU lane full since 13:10 [arc:<id>]
+(out of my hands: Claude limit reached [arc:<id>])." At most two
+constraints are named, the highest price / ceiling first; out-of-hands (``exogenous_bind``) ones
+follow in the trailing part. Energy's exogenous bind is the always-on body, not the room, so it is
+named rather than called out of Orion's hands (Juniper, 2026-10-30, ``orion/physiology/
+report_text.py``). With none open, the latest one that ended in the last 6 h reads "Was binding
+14:02 to 14:30: cabinet running hot [arc:<id>]" (or "Last read binding at 14:30: ..." when it went
+unread and the stale timeout closed it). To fit the 400-char cap, numbers are shown only when one
+constraint is named, and energy's standing bind only when nothing else binds.
+
+A play arc (Orion plays Zelda, section F) adds today's latest finished Retro session: "Played The
+Legend of Zelda solo, 14 of 31 predictions met (14:02 to 14:24) [arc:<id>]" ("together" when a human
+drove more than half of the frames). It ranks above the thread and sleep clauses: on the real
+2026-10-11 frames, as the last clause it was dropped by the length cap every time
+(orion/temporal_self/evals/run_play_cue_eval.py).
 """
 
 from __future__ import annotations
@@ -167,11 +187,136 @@ def _strain_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[
         local = as_utc(at).astimezone(tz)
         return local.strftime("%H:%M") if local.date().isoformat() == frame.day_id else local.strftime("%a %H:%M")
 
-    causes = strain_cause_text(arc.subject_label)
-    why = f" ({causes})" if causes else ""
+    if closed or arc.causes_now is None:
+        causes = strain_cause_text(arc.subject_label)
+        why = f" ({causes})" if causes else ""
+    else:
+        # Say what is true now: the label keeps every cause seen in the episode, and one that
+        # cleared (the cabinet cooled) must not read as present.
+        seen = [c for c in arc.subject_label.split("+") if c]
+        # In the order each cause joined the episode (the label's order), then any not in it.
+        now = strain_cause_text("+".join([c for c in seen if c in arc.causes_now]
+                                         + [c for c in arc.causes_now if c not in seen]))
+        earlier = strain_cause_text("+".join(c for c in seen if c not in arc.causes_now))
+        parts = ([f"now: {now}"] if now else ["no cause right now, settling"]) + (
+            [f"earlier: {earlier}"] if earlier else [])
+        why = f" ({now})" if now and not earlier else f" ({'; '.join(parts)})"
     if closed:
         return f"Was strained {clock(began)} to {clock(arc.ended_at or arc.began_at)}{why} {_ref(arc)}.", [arc]
     return f"Strained since {clock(began)}{why} {_ref(arc)}.", [arc]
+
+
+BINDING_PAST_SEC = 6 * 3600.0
+MAX_BINDING_NAMED = 2
+_LANE_PREFIX = "lane:"
+
+
+def _n(x: float | None, digits: int = 1) -> str:
+    if x is None:
+        return "?"
+    return f"{x:.{digits}f}".rstrip("0").rstrip(".") if digits else f"{x:.0f}"
+
+
+def binding_words(b: Any, *, short: bool = False) -> str:
+    """One binding constraint in plain words (``ArcBindingV1``). ``short``: without the numbers.
+    Every phrase says only what ``bind_state`` means (orion/physiology/budget.py): energy and the
+    Juniper cap bind on a forecast pace, not on spend already over the line. An unknown constraint
+    id stays as it is, never dropped."""
+    c, state = b.constraint, b.bind_state
+    exo = state == "exogenous_bind"
+    nums = ""
+    if c == "heat":
+        words = "cabinet hot without my load" if exo else "cabinet running hot"
+        nums = f" ({_n(b.level)} °C, line {_n(b.line)} °C)" if b.level is not None else ""
+    elif c == "energy":
+        words = ("my always-on body alone on pace to reach this month's electricity allowance" if exo
+                 else "on pace to go over this month's electricity allowance")
+    elif c.startswith(_LANE_PREFIX):
+        # exogenous_bind on a lane: a seat holding a lease with no live slot (budget.py lane_ask).
+        words = f"my {c[len(_LANE_PREFIX):]} GPU lane {'has no live slot' if exo else 'full'}"
+    elif c == "attention:juniper":
+        # Binding means the day-end pace is over the cap; the cap itself may not be reached yet.
+        spent = b.level is not None and b.line is not None and b.level >= b.line
+        words = "used today's messages to Juniper" if spent else "messages to Juniper over today's pace"
+        nums = (f" ({_n(b.level, 0)} of {_n(b.line, 0)} sent)" if b.level is not None and b.line is not None else "")
+    elif c == "claude":
+        words = "Claude limit reached"
+    else:
+        words = c
+    return words if short else words + nums
+
+
+def _standing(a: ArcSummaryV1) -> bool:
+    """Energy's always-on bind: open most of the month (86% of ticks over 10-27..11-03)."""
+    return a.binding is not None and a.binding.constraint == "energy" and a.binding.bind_state == "exogenous_bind"
+
+
+def _binding_rank(a: ArcSummaryV1) -> tuple:
+    b = a.binding
+    ratio = (b.price / b.ceiling) if b is not None and b.price is not None and b.ceiling else 0.0
+    # Energy's always-on bind sits at its ceiling all month: ranked after the constraints Orion's
+    # own load is pushing now, so it never crowds them out.
+    return (_standing(a), -ratio, a.arc_id)
+
+
+def _binding_clause(frame: TemporalSelfFrameV1, now: datetime, tz_name: str,
+                    limit: int = MAX_BINDING_NAMED) -> tuple[str, list[ArcSummaryV1]] | None:
+    tz = ZoneInfo(tz_name)
+
+    def clock(at) -> str:
+        local = as_utc(at).astimezone(tz)
+        if local.date().isoformat() == frame.day_id:
+            return local.strftime("%H:%M")
+        # A weekday is ambiguous past six days (a month-long energy bind): the date instead.
+        return local.strftime("%a %H:%M") if (now - as_utc(at)).total_seconds() < 6 * 86400 else local.strftime("%b %d %H:%M")
+
+    opened = {a.arc_id: a for a in frame.active_by_kind.values()
+              if a.kind == "binding" and a.status == "open" and a.binding is not None}
+    opened.update({a.arc_id: a for a in frame.arcs_today
+                   if a.kind == "binding" and a.status == "open" and a.binding is not None})
+    if opened:
+        arcs = list(opened.values())
+        out_of_hands = sorted((a for a in arcs if a.binding.bind_state == "exogenous_bind"
+                               and a.binding.constraint != "energy"), key=_binding_rank)
+        named_all = sorted((a for a in arcs if a not in out_of_hands), key=_binding_rank)
+        # The 400-char cap drops whole clauses: the standing energy bind is named only when nothing
+        # else binds, and numbers only when one constraint is named.
+        if any(not _standing(a) for a in named_all):
+            named = [a for a in named_all if not _standing(a)][:max(1, limit)]
+        else:
+            named = named_all[:max(1, limit)]
+        short = len(named) + len(out_of_hands) > 1
+        parts = [f"{binding_words(a.binding, short=short)} since {clock(a.episode_began_at or a.began_at)} {_ref(a)}"
+                 for a in named]
+        if len(named_all) > len(named):
+            parts.append(f"and {len(named_all) - len(named)} more")
+        text = "Binding now: " + "; ".join(parts) if parts else "Binding now"
+        if out_of_hands:
+            text += (" (out of my hands: " + ", ".join(f"{binding_words(a.binding, short=short)} {_ref(a)}"
+                                                       for a in out_of_hands) + ")")
+        return text + ".", named + out_of_hands
+    recent = [a for a in frame.arcs_today if a.kind == "binding" and a.status == "closed" and a.binding is not None
+              and a.ended_at is not None and 0.0 <= (now - as_utc(a.ended_at)).total_seconds() <= BINDING_PAST_SEC]
+    if not recent:
+        return None
+    arc = max(recent, key=lambda a: (as_utc(a.ended_at), a.arc_id))
+    began = arc.episode_began_at or arc.began_at
+    what = binding_words(arc.binding, short=True)
+    if arc.binding.released:
+        return f"Was binding {clock(began)} to {clock(arc.ended_at)}: {what} {_ref(arc)}.", [arc]
+    # Closed by the stale timeout (unread): when it stopped binding is not known.
+    return f"Last read binding at {clock(arc.ended_at)}: {what} {_ref(arc)}.", [arc]
+
+
+def _play_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[ArcSummaryV1]] | None:
+    plays = [a for a in frame.arcs_today if a.kind == "play" and a.subject_label.strip()]
+    if not plays:
+        return None
+    arc = max(plays, key=lambda a: (a.ended_at or a.began_at, a.arc_id))
+    tz = ZoneInfo(tz_name)
+    began = as_utc(arc.began_at).astimezone(tz).strftime("%H:%M")
+    ended = as_utc(arc.ended_at or arc.last_seen_at or arc.began_at).astimezone(tz).strftime("%H:%M")
+    return f"Played {arc.subject_label.strip()} ({began} to {ended}) {_ref(arc)}.", [arc]
 
 
 def _thread_arc(thread: OpenThreadV1, concern: dict[str, ArcSummaryV1]) -> ArcSummaryV1 | None:
@@ -280,6 +425,16 @@ def project_stance_cue(
     if company is not None:
         clauses.append(company)
 
+    play = _play_clause(frame, tz_name)
+    if play is not None:
+        clauses.append(play)
+
+    # Below company and play (rare, short, and play was dropped by the cap on every real 10-11 frame
+    # when it sat last), above threads and sleep. A busy cue drops threads and sleep first.
+    binding = _binding_clause(frame, now, tz_name)
+    if binding is not None:
+        clauses.append(binding)
+
     thread_clause = _threads_clause(frame)
     if thread_clause is not None:
         clauses.append(thread_clause)
@@ -295,12 +450,19 @@ def project_stance_cue(
 
     kept = list(clauses)
     thread_limit = MAX_THREAD_REFS
+    binding_limit = MAX_BINDING_NAMED
     while kept and len(" ".join([head] + [c for c, _ in kept])) > max_chars:
         if thread_clause is not None and kept[-1] is thread_clause and len(thread_clause[1]) > 1:
             # Cite fewer threads (the count stays true) before dropping the clause.
             thread_limit = len(thread_clause[1]) - 1
             thread_clause = _threads_clause(frame, thread_limit)
             kept[-1] = thread_clause
+            continue
+        if binding is not None and kept[-1] is binding and binding_limit > 1:
+            # Name one binding constraint (the rest counted as "and N more") before dropping it.
+            binding_limit -= 1
+            binding = _binding_clause(frame, now, tz_name, limit=binding_limit)
+            kept[-1] = binding
             continue
         kept.pop()
         dropped += 1

@@ -54,7 +54,7 @@ def _invoke(bus, name="reading_results", args=None):
 def test_tool_specs_list_reading_results_then_dreams_then_curiosity_then_orion_day():
     assert [s.name for s in IntrospectTools(ReplyBus(), BINDING).tool_specs()] == [
         "reading_results", "dreams", "curiosity", "orion_day", "record_correction", "queue_curiosity_focus",
-        "node_history",
+        "node_history", "power_attribution",
     ]
 
 
@@ -271,7 +271,7 @@ def test_node_history_validates_then_rpcs_to_its_own_channel():
         ok=True, operation="node_history", as_of=NOW, total_available=0,
     ).model_dump(mode="json"))
     out = asyncio.run(IntrospectTools(bus, BINDING).invoke(
-        "node_history", {"node_id": "node:substrate.bus_synaptic", "hours": 72},
+        "node_history", {"node_id": "node:substrate.biometrics", "hours": 72},
     ))
     assert out["ok"] is True and out["items"] == []
     [(channel, envelope, _reply, _timeout)] = bus.sent
@@ -280,7 +280,7 @@ def test_node_history_validates_then_rpcs_to_its_own_channel():
 
     request = IntrospectRequestV1.model_validate(envelope.payload)
     assert request.operation == "node_history"
-    assert request.args == {"node_id": "node:substrate.bus_synaptic", "hours": 72.0}
+    assert request.args == {"node_id": "node:substrate.biometrics", "hours": 72.0}
     assert "up to 7 days" in NODE_HISTORY_DESCRIPTION and "not zero" in NODE_HISTORY_DESCRIPTION
 
 
@@ -297,3 +297,36 @@ def test_brief_says_node_history_exists():
     text = " ".join(introspect_brief_lines(BINDING))
     assert NODE_HISTORY == "mcp__orion-introspect__node_history"
     assert "Substrate node history exists" in text and NODE_HISTORY in text
+
+
+def test_power_attribution_validates_then_rpcs_to_its_own_channel():
+    from orion.introspect.tools import POWER_ATTRIBUTION_DESCRIPTION
+    from orion.introspect.transport import POWER_ATTRIBUTION_REQUEST_CHANNEL
+    from orion.schemas.introspect import IntrospectRequestV1
+
+    bus = DreamBus(IntrospectResultV1(
+        ok=True, operation="power_attribution", as_of=NOW, total_available=0,
+    ).model_dump(mode="json"))
+    out = _invoke(bus, "power_attribution", {"node": "circe", "days": 10})
+    assert out["ok"] is True and out["items"] == []
+    [(channel, envelope, _reply, _timeout)] = bus.sent
+    assert channel == POWER_ATTRIBUTION_REQUEST_CHANNEL
+    request = IntrospectRequestV1.model_validate(envelope.payload)
+    assert request.operation == "power_attribution"
+    assert request.args == {"node": "circe", "days": 10.0}
+    assert "UNVERIFIED" in POWER_ATTRIBUTION_DESCRIPTION and "reservations" in POWER_ATTRIBUTION_DESCRIPTION
+
+
+def test_power_attribution_rejects_out_of_contract_window_before_transport():
+    bus = DreamBus()
+    with pytest.raises(ValueError):
+        _invoke(bus, "power_attribution", {"days": 90})
+    assert bus.sent == []
+
+
+def test_brief_says_where_power_went_is_answerable():
+    from orion.introspect.brief import POWER_ATTRIBUTION, introspect_brief_lines
+
+    text = " ".join(introspect_brief_lines(BINDING))
+    assert POWER_ATTRIBUTION == "mcp__orion-introspect__power_attribution"
+    assert "where your power or heat is going" in text and POWER_ATTRIBUTION in text

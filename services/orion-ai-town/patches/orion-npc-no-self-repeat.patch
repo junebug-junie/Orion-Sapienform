@@ -1,11 +1,11 @@
 diff --git a/convex/agent/conversation.ts b/convex/agent/conversation.ts
-index 1111111..2222222 100644
+index b2165b6..2a625b8 100644
 --- a/convex/agent/conversation.ts
 +++ b/convex/agent/conversation.ts
-@@ -93,6 +93,49 @@
+@@ -238,6 +238,50 @@ function trimContentPrefx(content: string, prompt: string) {
    return content;
  }
- 
+
 +// Returned from continueConversationMessage when an exact self-repeat is exhausted.
 +// agentGenerateMessage turns this into leaveConversationMessage + leave.
 +// Must not be a normal spoken line (clampTownReply never invents this token).
@@ -49,44 +49,21 @@ index 1111111..2222222 100644
 +  return ownLines.some((line) => normalizeTownLine(line) === norm);
 +}
 +
++
  export async function continueConversationMessage(
    ctx: ActionCtx,
    worldId: Id<'worlds'>,
-@@ -131,28 +174,56 @@
-     `Ground your reply in something specific and concrete -- a real object, task, or event -- rather than extended metaphor or abstract imagery. If the conversation is drifting into vague poetic language (light, shadows, glow, echoes, silence, and similar) without a concrete referent, name the actual thing you mean instead of continuing the metaphor.`,
-   );
- 
-+  const priorMessages = await previousMessages(
-+    ctx,
-+    worldId,
-+    player,
-+    otherPlayer,
-+    conversation.id as GameId<'conversations'>,
-+  );
-   const llmMessages: LLMMessage[] = [
-     {
-       role: 'system',
-       content: prompt.join('\n'),
-     },
--    ...(await previousMessages(
--      ctx,
--      worldId,
--      player,
--      otherPlayer,
--      conversation.id as GameId<'conversations'>,
--    )),
-+    ...priorMessages,
-   ];
+@@ -305,12 +349,39 @@ export async function continueConversationMessage(
    const lastPrompt = `${player.name} to ${otherPlayer.name}:`;
    llmMessages.push({ role: 'user', content: lastPrompt });
- 
+
 +  const ownLines = ownPriorLines(priorMessages, player.name);
    const { content } = await chatCompletion({
      messages: llmMessages,
      max_tokens: 120,
      stop: stopWords(otherPlayer.name, player.name),
    });
--  return clampTownReply(trimContentPrefx(content, lastPrompt));
+-  const response = clampTownReply(trimContentPrefx(content, lastPrompt));
 +  let response = clampTownReply(trimContentPrefx(content, lastPrompt));
 +  if (isSelfRepeat(response, ownLines)) {
 +    // Live 2026-09-15 Sofia↔Juniper: exact line reposted after goodbye.
@@ -113,15 +90,15 @@ index 1111111..2222222 100644
 +      return SELF_REPEAT_LEAVE_SENTINEL;
 +    }
 +  }
-+  return response;
- }
- 
- export async function leaveConversationMessage(
++
+   void ingestTownTurn({
+     speaker: player.name,
+     other: otherPlayer.name,
 diff --git a/convex/aiTown/agentOperations.ts b/convex/aiTown/agentOperations.ts
-index 3333333..4444444 100644
+index a8eb89d..5bca436 100644
 --- a/convex/aiTown/agentOperations.ts
 +++ b/convex/aiTown/agentOperations.ts
-@@ -6,6 +6,7 @@
+@@ -6,6 +6,7 @@ import { GameId, agentId, conversationId, playerId } from './ids';
  import {
    continueConversationMessage,
    leaveConversationMessage,
@@ -129,7 +106,7 @@ index 3333333..4444444 100644
    startConversationMessage,
  } from '../agent/conversation';
  import { assertNever } from '../util/assertNever';
-@@ -69,13 +70,28 @@
+@@ -69,13 +70,28 @@ export const agentGenerateMessage = internalAction({
        default:
          assertNever(args.type);
      }
@@ -156,10 +133,10 @@ index 3333333..4444444 100644
 +        text = 'Take care.';
 +      }
 +    }
- 
+
      await ctx.runMutation(internal.aiTown.agent.agentSendMessage, {
        worldId: args.worldId,
-@@ -84,7 +100,7 @@
+@@ -84,7 +100,7 @@ export const agentGenerateMessage = internalAction({
        playerId: args.playerId,
        text,
        messageUuid: args.messageUuid,

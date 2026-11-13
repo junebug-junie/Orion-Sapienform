@@ -47,7 +47,7 @@ ROLE_RE = re.compile(r"-\s*LLM_ROLE=([\w-]+)")
 PORT_RE = re.compile(r"-\s*LLM_ANNOUNCE_PORT=\$\{[A-Z0-9_]+:-(\d+)\}")
 SMALL_ROLES = {"metacog", "fast"}
 LEND_GATED_ROLES = {"chat", "agent-deep"}   # chat on circe gpu0, agent-deep on hecate
-BIG_CLASSES = {"chat", "agent"}
+BIG_CLASSES = {"chat", "agent", "judge"}
 
 
 def main() -> int:

@@ -8,8 +8,12 @@
 --    crops that never become an individual (no embedding, no-embed zone).
 -- 2. vision_individual_split: one row per split a "someone else" picture
 --    verdict caused (or refused / skipped, with the reason), with the exact
---    before/after state so scripts/undo_vision_split.py can put it back.
---    It holds crop ids and centroids, never pictures.
+--    before/after state, so one split can be reversed later. It holds crop
+--    ids and centroids, never pictures.
+--
+-- Undo tool, NOT the apply route: scripts/undo_vision_split.py reverses one
+-- split by reading its vision_individual_split row. It does not apply or roll
+-- back this migration. Apply this file with plain psql (the Apply line below).
 --
 -- Safe for the post-pull auto-apply (orion/sql_migration_drift.py
 -- auto_apply_refusals): a nullable column with no default or constraint on

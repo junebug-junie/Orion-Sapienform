@@ -56,7 +56,7 @@ def fake_repo(tmp_path, monkeypatch):
     (services_dir / "orion-widget").mkdir(parents=True)
     (services_dir / "orion-widget" / "docker-compose.yml").write_text("services: {}\n")
     (tmp_path / ".env").write_text("FOO=bar\n")
-    monkeypatch.setattr(verb_adapters.self_study_module, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(verb_adapters.orch_paths, "REPO_ROOT", tmp_path)
     monkeypatch.setattr(verb_adapters.settings, "skills_allow_docker_compose_bringup", True)
     monkeypatch.setattr(verb_adapters.settings, "skills_docker_compose_bringup_timeout_sec", 5.0)
     monkeypatch.setattr(verb_adapters.settings, "skills_docker_compose_bringup_health_poll_sec", 5.0)

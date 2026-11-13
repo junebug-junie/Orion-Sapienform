@@ -23,7 +23,7 @@ motor commands, not evidence of an LLM decision.
 ## Contracts
 
 - `ScriptControl.cognition`: optional boolean, default false; both service gate
-  and explicit handoff are required. Existing fixed baseline remains available.
+  (default on) and explicit handoff are required. Existing fixed baseline remains available.
 - `POST /sessions/{id}/goal`: live sponsoring connection, generation, port,
   exact controller epoch, current attempt ID, supported goal, bounded rationale
   and planner identity. Native authority rejects stale/replaced/expired grants.
@@ -87,8 +87,8 @@ no universal game-state detector or advertised pixels-only competence.
 
 Only small game-state facts and local action provenance reach the planner. No
 raw RAM, ROM, frames, chat, private recall, recordings or training export. New
-gates `RETRO_COGNITION_ENABLED` and `HUB_RETRO_COGNITION_ENABLED` default false;
-local ignored env files received these keys. Stop the session before disabling
+gates `RETRO_COGNITION_ENABLED` and `HUB_RETRO_COGNITION_ENABLED` shipped default
+false and were turned on by default 2026-10-21; per-session handoff still required. Stop the session before disabling
 and recreating services. Nothing deletes evidence or saves. No live deployment
 is part of this patch; restarting Retro can destroy the existing paused game.
 

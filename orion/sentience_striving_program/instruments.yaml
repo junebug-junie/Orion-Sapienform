@@ -285,7 +285,11 @@ instruments:
       Four live field-native domains (execution, biometrics, chat, route) replaced
       the deleted drives bucket-vote as the substrate for attributable self-
       initiation. transport was retired outright on 2026-07-31 rather than left
-      excluded-but-ticking, per CLAUDE.md's metric-retirement rule.
+      excluded-but-ticking, per CLAUDE.md's metric-retirement rule. route and its
+      2026-07 transport successor bus_synaptic were retired the same way 2026-11
+      (PE suite rebuild step 5), and chat 2026-11-13 (step 6; successor
+      node:prediction.chat_turn, a scored forecast): two live domains remain
+      (execution, biometrics).
     last_reviewed: 2026-09-02
     claims:
       - id: transport_retired
@@ -298,6 +302,36 @@ instruments:
           CLAUDE.md records transport as the canonical case of a known-bad metric
           that was excluded from one consumer while still ticking and still
           winning budget slots in another. This claim keeps it dead.
+      - id: chat_pe_retired
+        question: "Is node:substrate.chat's prediction error really gone, not just excluded?"
+        kind: absent_from_repo
+        target: "def chat_prediction_error"
+        recorded: 0
+        recorded_at: 2026-11-13
+        note: >-
+          PE suite rebuild step 6: an EWMA z of the change in two chat pressure hints,
+          negatives clipped (65% exact 0, spikes after quiet). Successor:
+          node:prediction.chat_turn (instrument chat_turn_surprise_node).
+      - id: bus_synaptic_pe_retired
+        question: "Is node:substrate.bus_synaptic's prediction error really gone, not just excluded?"
+        kind: absent_from_repo
+        target: "def bus_synaptic_prediction_error"
+        recorded: 0
+        recorded_at: 2026-11-11
+        note: >-
+          Retired 2026-11 (PE suite rebuild step 5): a lull-ending detector (the
+          fraction of bus edges with |z| >= 3), not a forecast. Producer, node,
+          readers and the mind recall line went together; the raw bus synaptic
+          graph stays.
+      - id: route_pe_retired
+        question: "Is node:substrate.route's prediction error really gone, not just excluded?"
+        kind: absent_from_repo
+        target: "def route_prediction_error"
+        recorded: 0
+        recorded_at: 2026-11-11
+        note: >-
+          Retired 2026-11 (PE suite rebuild step 5): a categorical decision-mismatch
+          rate, not a forecast. The route reducer and projection stay.
 
   - id: rpt_lamme_recurrence
     title: "Recurrent Processing Theory (Lamme) -- per-tick recurrence"
@@ -347,14 +381,16 @@ instruments:
     claims:
       - id: dominant_target_not_route
         question: >-
-          Is node:substrate.route still structurally winning the node-target slot
-          every tick, as it did before the PR #1774 variance-floor fix?
-        sql: >-
-          SELECT count(*) FROM substrate_goal_provenance_streak
-          WHERE target_id = 'node:substrate.route'
-        recorded: 0
-        recorded_at: 2026-09-02
+          HISTORICAL (retired 2026-11): Is node:substrate.route still structurally
+          winning the node-target slot every tick, as it did before the PR #1774
+          variance-floor fix?
+        kind: manual
+        recorded: "MOOT: node:substrate.route's prediction error was retired 2026-11 (PE suite rebuild step 5); the node can no longer compete"
+        recorded_at: 2026-11-11
         note: >-
+          Was a sql claim (substrate_goal_provenance_streak WHERE target_id =
+          'node:substrate.route', recorded 0 on 2026-09-02) until the node was
+          retired; kept as history. Original note follows.
           README.md marks this UNVERIFIED, pending real post-deploy observation.
           Live read on 2026-09-02 shows node:substrate.chat holding the slot at
           streak 17, so route is not winning at this instant. That is ONE sample
@@ -380,13 +416,15 @@ instruments:
     claims:
       - id: top1_concentration_root_caused
         question: >-
-          Has node:substrate.bus_synaptic's 36.31% top-1 concentration been
-          root-caused, the way node:substrate.route's was?
+          HISTORICAL (retired 2026-11): Has node:substrate.bus_synaptic's 36.31%
+          top-1 concentration been root-caused, the way node:substrate.route's was?
         kind: manual
-        recorded: "NOT ROOT-CAUSED"
-        recorded_at: 2026-09-02
-        blocks: O4
+        recorded: "MOOT, NOT ROOT-CAUSED: node:substrate.bus_synaptic was retired 2026-11 (PE suite rebuild step 5) before a root cause was written; it can no longer win a slot"
+        recorded_at: 2026-11-11
         note: >-
+          Recorded "NOT ROOT-CAUSED" on 2026-09-02 and blocked O4. The node was
+          retired, not explained, so path-back-open (a) is closed by removal, not
+          by an answer. Original note follows.
           Objective 7's named path-back-open (a), and the load-bearing one:
           36.31% sits in the same range as the killed drives system's own post-fix
           31.65%. No follow-up exists anywhere under docs/ as of 2026-09-02.
@@ -448,12 +486,96 @@ instruments:
       goal instead of a per-call synthetic GoalProposalV1 fabrication. O1 asks for
       a DEMONSTRATED, VERIFIED CEILING on the action budget -- no instrument in
       this program currently measures that, which is the honest reason O1 has the
-      least evidence behind it of the four outcomes.
-    last_reviewed: 2026-09-02
+      least evidence behind it of the four outcomes. Since 2026-11-10 readonly
+      fetch and recall also check what the goal is ABOUT (requires_world_goal):
+      only a goal naming a world source unlocks them.
+    last_reviewed: 2026-11-10
     claims:
+      - id: readonly_autonomy_needs_a_world_goal
+        question: >-
+          Which goals unlock autonomous web.fetch.readonly / recall.query.readonly?
+          (Decision 1, docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md)
+        kind: manual
+        recorded: "world goals only (chat, reading, camera surprise); body prediction-error goals are denied with goal_not_about_world"
+        recorded_at: 2026-11-10
+        note: >-
+          Baseline before the change, measured 2026-11-10: 6,005 of 6,005 goals in
+          the orion-athena-attention-runtime log window came from body signals
+          (execution 2,389, bus_synaptic 2,321, chat node 1,105, biometrics 190);
+          action_outcomes shows about 1 autonomous web.fetch.readonly per day for the
+          past month. Re-measure both 7 days after deploy: goal mix from the
+          field_goal_provenance_competition_read log line, decisions from the
+          goal_target field on substrate_policy_act / world_pulse_curiosity_gate.
       - id: synthetic_goal_stub_deleted
         question: "Is the synthetic goal fabrication really gone?"
         kind: absent_from_repo
         target: "def goal_proposal_from_episode_intent"
         recorded: 0
         recorded_at: 2026-09-02
+
+  - id: chat_turn_surprise_node
+    title: "Chat-turn surprise as a body signal (node:prediction.chat_turn)"
+    theory: "Predictive Processing (prediction error = surprisal of a stated, held-out-recalibrated forecast)"
+    program_ref: "docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, retire step 6"
+    module: orion/substrate/prediction_turn_surprise.py
+    outcome: O2
+    storage:
+      # Live check: SELECT count(*), max(observed_at) FROM substrate_node_prediction_error_history
+      #  WHERE node_id = 'node:prediction.chat_turn'
+      kind: derived
+      table: substrate_node_prediction_error_history
+      ts_column: observed_at
+    unlock: >-
+      Replaces node:substrate.chat (a hint-change z, not a forecast) with a real one: stance
+      bets placed before each chat turn (asks a question, more steps than usual), settled
+      when the turn ends, scored as excess surprise over the bets' own expectation after a
+      held-out recalibration. Rests at 0 by theory; absent between chat turns.
+    last_reviewed: 2026-11-13
+    claims:
+      - id: chat_turn_surprise_gate
+        question: >-
+          Do the used bet kinds beat the chat base rate held out, does per-turn z read
+          ~N(0, 1), and do most turns rest at exactly 0?
+          (services/orion-prediction/evals/run_turn_surprise_replay_eval.py --check)
+        kind: manual
+        recorded: "PASS (asks gap +0.155 SE 0.035, more_steps +0.179 SE 0.031; z mean -0.08 sd 0.95; 85% of 294 turns at 0)"
+        recorded_at: 2026-11-13
+        note: >-
+          fetches_outside (chat never fetches) and longer_reply_than_usual (worse than the
+          base rate) are not used. Re-run before trusting the node after any stance prompt
+          change.
+
+  - id: forecast_surprise_nodes
+    title: "Forecast surprise as body signals (node:prediction.room / node:prediction.body)"
+    theory: "Predictive Processing (prediction error = surprisal of a stored forecast)"
+    program_ref: "docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, build item 3"
+    module: orion/substrate/prediction_surprise.py
+    outcome: O2
+    storage:
+      # `derived`: the history table holds every PE node's readings; its freshness is not
+      # this instrument's liveness. Live check per node:
+      # SELECT node_id, max(observed_at), count(*) FROM substrate_node_prediction_error_history
+      #  WHERE node_id LIKE 'node:prediction.%' GROUP BY 1
+      kind: derived
+      table: substrate_node_prediction_error_history
+      ts_column: observed_at
+    unlock: >-
+      The first prediction-error signal in Orion that is a real forecast: stored before its
+      target time, scored when the clock says, surprise in one unit with a calm point set by
+      theory (1 - 0.05). Gated per row at issue time (real model, adaptive range, real actual).
+      Two nodes (office, cabinet) that attention, self-readings and curiosity accept as the
+      measurement kind surprise_excess.
+    last_reviewed: 2026-11-11
+    claims:
+      - id: forecast_surprise_calm_check
+        question: >-
+          Over a quiet 24 h, is mean excess surprise within its null band around 0 on every
+          adaptive horizon? (evals/run_surprise_calm_live_eval.py --hours 24 --source adaptive)
+        kind: manual
+        recorded: "PASS (cabinet 5 +0.004 +-0.230 n=52, cabinet 15 -0.072 +-0.167, office 5 -0.032 +-0.099, office 15 -0.050 +-0.179)"
+        recorded_at: 2026-11-11
+        note: >-
+          Re-run before trusting the nodes after any forecaster change. Live replay of the
+          node fold (evals/run_surprise_node_replay_eval.py --hours 72, 2026-11-11): exact 0
+          for 56-58 % of writes; the node crosses curiosity's 0.55 bar on 8-10 % of writes
+          (theory 5 %: consecutive outcomes in one window are mildly autocorrelated).

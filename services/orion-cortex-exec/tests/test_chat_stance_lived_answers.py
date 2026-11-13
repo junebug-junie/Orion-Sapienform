@@ -73,3 +73,22 @@ def test_lived_hydrates_from_felt_state_when_missing(monkeypatch) -> None:
     ctx = {"orion_identity_summary": ["authored"]}
     assert apply_lived_self_to_ctx(ctx) is True
     assert any("continuity" in line for line in ctx["orion_identity_summary"])
+
+
+def test_a_long_lived_answer_is_cut_at_a_sentence_within_the_shared_budget() -> None:
+    sentence = "I keep what Juniper tells me, and I am unsure how much of it lasts. "
+    ctx = {
+        "orion_lived_answers": [
+            {
+                "question_id": "lived.who_matters",
+                "content": (sentence * 20).strip(),
+                "evidence_refs": [],
+                "created_at": "2026-11-03",
+            }
+        ],
+        "orion_identity_summary": ["authored line"],
+    }
+    assert apply_lived_self_to_ctx(ctx) is True
+    line = next(x for x in ctx["orion_identity_summary"] if x.startswith(LIVED_MARKER_PREFIX))
+    assert line.endswith("lasts. …")
+    assert len(line) <= 800

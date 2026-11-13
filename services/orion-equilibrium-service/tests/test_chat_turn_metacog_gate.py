@@ -594,3 +594,39 @@ async def test_correlator_noop_on_empty_correlation_id():
     )
     assert thought is not None
     assert not redis.store
+
+
+# --- a failed 5b judge is not a misaligned reply (unified-turn spec A2) ------------------------------
+_FAILED_JUDGE = {"alignment_verdict": "misaligned", "strain_unresolved": False,
+                 "reflection_source": "degraded_llm_failure_fallback",
+                 "alignment_notes": ["reflect_llm_failed: 6 validation errors for FinalizeReflectionV1"]}
+
+
+def test_a_failed_judge_fires_reflection_failed_not_misaligned():
+    fired = evaluate_chat_turn_gate_conditions(
+        thought_event=_thought_event(), run_artifact=_run_artifact(reflection=_FAILED_JUDGE),
+        timed_out=False, surprise_threshold=0.7,
+    )
+    assert fired == ["reflection_failed=true"]
+
+
+def test_a_failed_judge_reaches_metacog_as_degraded_not_as_a_verdict():
+    trigger = build_chat_turn_metacog_trigger(
+        correlation_id="corr-1", thought_event=_thought_event(), run_artifact=_run_artifact(reflection=_FAILED_JUDGE),
+        timed_out=False, zen_state="calm", pressure=0.1, recall_enabled=False, surprise_threshold=0.7,
+    )
+    assert trigger is not None
+    assert trigger.upstream["alignment_verdict"] is None
+    assert trigger.upstream["finalize_degraded_reason"] == "reflection_failed"
+    from orion.metacog.evidence_map import map_chat_turn
+    evidence = map_chat_turn(trigger.reason, trigger.upstream).evidence
+    assert "alignment misaligned" not in evidence
+    assert "finalize degraded: reflection_failed" in evidence
+
+
+def test_the_failed_judge_marker_is_a_real_reflection_source():
+    from typing import get_args
+
+    from orion.schemas.harness_finalize import REFLECTION_SOURCE_JUDGE_FAILED, FinalizeReflectionV1
+    assert REFLECTION_SOURCE_JUDGE_FAILED in get_args(FinalizeReflectionV1.model_fields["reflection_source"].annotation)
+    assert REFLECTION_SOURCE_JUDGE_FAILED == _FAILED_JUDGE["reflection_source"]

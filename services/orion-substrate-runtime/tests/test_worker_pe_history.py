@@ -74,7 +74,7 @@ def _run_tick(worker, nodes):
 
 def test_flag_off_touches_no_history_and_attaches_nothing(monkeypatch):
     worker = _make_worker(monkeypatch, history_enabled=False)
-    projection = _run_tick(worker, [_pe_node("node:substrate.chat", 0.14, OBSERVED)])
+    projection = _run_tick(worker, [_pe_node("node:substrate.execution", 0.14, OBSERVED)])
     worker._store.fetch_prediction_error_history.assert_not_called()
     worker._store.save_prediction_error_history_samples.assert_not_called()
     worker._store.prune_prediction_error_history.assert_not_called()
@@ -86,9 +86,9 @@ def test_flag_off_touches_no_history_and_attaches_nothing(monkeypatch):
 
 def test_flag_on_records_sample_and_attaches_magnitude(monkeypatch):
     worker = _make_worker(monkeypatch, history_enabled=True)
-    projection = _run_tick(worker, [_pe_node("node:substrate.chat", 0.14, OBSERVED)])
+    projection = _run_tick(worker, [_pe_node("node:substrate.execution", 0.14, OBSERVED)])
     worker._store.save_prediction_error_history_samples.assert_called_once_with(
-        [("node:substrate.chat", OBSERVED, 0.14)]
+        [("node:substrate.execution", OBSERVED, 0.14)]
     )
     worker._store.prune_prediction_error_history.assert_called_once()
     loop = projection.frame.open_loops[0]
@@ -101,17 +101,17 @@ def test_flag_on_records_sample_and_attaches_magnitude(monkeypatch):
 def test_stale_node_adds_no_new_rows(monkeypatch):
     """Spec acceptance check 1: unchanged observed_at -> no new history row."""
     worker = _make_worker(monkeypatch, history_enabled=True)
-    node = _pe_node("node:substrate.chat", 0.14, OBSERVED)
+    node = _pe_node("node:substrate.execution", 0.14, OBSERVED)
     _run_tick(worker, [node])
     _run_tick(worker, [node])
     _run_tick(worker, [node])
     assert worker._store.save_prediction_error_history_samples.call_count == 1
 
-    moved = _pe_node("node:substrate.chat", 0.2, OBSERVED + timedelta(seconds=30))
+    moved = _pe_node("node:substrate.execution", 0.2, OBSERVED + timedelta(seconds=30))
     projection = _run_tick(worker, [moved])
     assert worker._store.save_prediction_error_history_samples.call_count == 2
     assert worker._store.save_prediction_error_history_samples.call_args.args[0] == [
-        ("node:substrate.chat", OBSERVED + timedelta(seconds=30), 0.2)
+        ("node:substrate.execution", OBSERVED + timedelta(seconds=30), 0.2)
     ]
     assert projection.frame.open_loops[0].magnitude.n_readings_7d == 2
 
@@ -119,10 +119,10 @@ def test_stale_node_adds_no_new_rows(monkeypatch):
 def test_node_already_in_seeded_history_is_not_rewritten(monkeypatch):
     worker = _make_worker(monkeypatch, history_enabled=True)
     worker._store.fetch_prediction_error_history.return_value = [
-        ("node:substrate.chat", OBSERVED - timedelta(minutes=1), 0.1),
-        ("node:substrate.chat", OBSERVED, 0.14),
+        ("node:substrate.execution", OBSERVED - timedelta(minutes=1), 0.1),
+        ("node:substrate.execution", OBSERVED, 0.14),
     ]
-    projection = _run_tick(worker, [_pe_node("node:substrate.chat", 0.14, OBSERVED)])
+    projection = _run_tick(worker, [_pe_node("node:substrate.execution", 0.14, OBSERVED)])
     worker._store.save_prediction_error_history_samples.assert_not_called()
     assert projection.frame.open_loops[0].magnitude.n_readings_7d == 2
 
@@ -132,7 +132,7 @@ def test_week_stale_node_is_not_rewritten_every_tick(monkeypatch):
     still read as already-recorded instead of re-writing every tick."""
     worker = _make_worker(monkeypatch, history_enabled=True)
     old = datetime.now(timezone.utc) - timedelta(days=9)
-    node = _pe_node("node:substrate.harness_closure", 0.65, old)
+    node = _pe_node("node:substrate.execution", 0.65, old)
     _run_tick(worker, [node])
     _run_tick(worker, [node])
     assert worker._store.save_prediction_error_history_samples.call_count == 1
@@ -148,15 +148,15 @@ def test_only_substrate_nodes_with_numeric_prediction_error_are_recorded(monkeyp
         signals=SimpleNamespace(confidence=0.8),
         temporal=SimpleNamespace(observed_at=OBSERVED),
     )
-    _run_tick(worker, [other, no_pe, _pe_node("node:substrate.chat", 0.0, OBSERVED)])
+    _run_tick(worker, [other, no_pe, _pe_node("node:substrate.execution", 0.0, OBSERVED)])
     samples = worker._store.save_prediction_error_history_samples.call_args.args[0]
-    assert samples == [("node:substrate.chat", OBSERVED, 0.0)]
+    assert samples == [("node:substrate.execution", OBSERVED, 0.0)]
 
 
 def test_write_failure_is_retried_next_tick_and_never_breaks_broadcast(monkeypatch):
     worker = _make_worker(monkeypatch, history_enabled=True)
     worker._store.save_prediction_error_history_samples.side_effect = [RuntimeError("db"), 1]
-    node = _pe_node("node:substrate.chat", 0.14, OBSERVED)
+    node = _pe_node("node:substrate.execution", 0.14, OBSERVED)
     _run_tick(worker, [node])
     _run_tick(worker, [node])
     assert worker._store.save_prediction_error_history_samples.call_count == 2
@@ -169,14 +169,14 @@ def test_seed_failure_fails_open_without_magnitude(monkeypatch):
     worker._store.fetch_prediction_error_history.side_effect = RuntimeError(
         'relation "substrate_node_prediction_error_history" does not exist'
     )
-    projection = _run_tick(worker, [_pe_node("node:substrate.chat", 0.14, OBSERVED)])
+    projection = _run_tick(worker, [_pe_node("node:substrate.execution", 0.14, OBSERVED)])
     worker._store.save_attention_broadcast.assert_called_once()
     assert all(loop.magnitude is None for loop in projection.frame.open_loops)
 
 
 def test_prune_is_throttled_and_uses_retention(monkeypatch):
     worker = _make_worker(monkeypatch, history_enabled=True)
-    node = _pe_node("node:substrate.chat", 0.14, OBSERVED)
+    node = _pe_node("node:substrate.execution", 0.14, OBSERVED)
     before = datetime.now(timezone.utc)
     _run_tick(worker, [node])
     _run_tick(worker, [node])
@@ -188,7 +188,7 @@ def test_prune_is_throttled_and_uses_retention(monkeypatch):
 def test_seed_failure_backs_off_instead_of_retrying_every_tick(monkeypatch):
     worker = _make_worker(monkeypatch, history_enabled=True)
     worker._store.fetch_prediction_error_history.side_effect = RuntimeError("no table")
-    node = _pe_node("node:substrate.chat", 0.14, OBSERVED)
+    node = _pe_node("node:substrate.execution", 0.14, OBSERVED)
     _run_tick(worker, [node])
     _run_tick(worker, [node])
     _run_tick(worker, [node])
@@ -205,11 +205,11 @@ def test_seed_failure_backs_off_instead_of_retrying_every_tick(monkeypatch):
 def test_far_future_reading_is_not_recorded_and_does_not_pin_last_observed(monkeypatch):
     worker = _make_worker(monkeypatch, history_enabled=True)
     future = datetime.now(timezone.utc) + timedelta(hours=2)
-    _run_tick(worker, [_pe_node("node:substrate.chat", 0.9, future)])
+    _run_tick(worker, [_pe_node("node:substrate.execution", 0.9, future)])
     worker._store.save_prediction_error_history_samples.assert_not_called()
-    _run_tick(worker, [_pe_node("node:substrate.chat", 0.1, OBSERVED)])
+    _run_tick(worker, [_pe_node("node:substrate.execution", 0.1, OBSERVED)])
     assert worker._store.save_prediction_error_history_samples.call_args.args[0] == [
-        ("node:substrate.chat", OBSERVED, 0.1)
+        ("node:substrate.execution", OBSERVED, 0.1)
     ]
 
 

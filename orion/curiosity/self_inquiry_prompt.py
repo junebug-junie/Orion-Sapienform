@@ -21,6 +21,7 @@ from typing import Optional, Sequence
 
 from orion.curiosity.self_question_pool import Family, SelfQuestion
 from orion.curiosity.kickoff_prompt import (
+    DIG_HELP_FIRST,
     _access_section,
     _budget_section,
     _continuation_section,
@@ -46,6 +47,7 @@ from orion.curiosity.self_inquiry import (
     lived_answer_merge_lines,
 )
 from orion.curiosity.worldview import WorldviewSnapshot, _clip
+from orion.text_fit import fit_to_budget
 from orion.harness.task_anchor import render_task_header
 from orion.schemas.personality import DispositionNamingPacketV1
 
@@ -148,7 +150,11 @@ def _order_of_work_section(
         '       redis-cli -u "redis://$ORION_CURIOSITY_GRAPH_USER:$ORION_CURIOSITY_GRAPH_PASSWORD'
         f'@$ORION_CURIOSITY_GRAPH_HOST:$ORION_CURIOSITY_GRAPH_PORT" GRAPH.QUERY {own_graph} \\\\',
         f"         '{merge}'",
-        "  2. Look: records, repo, your graph. A :Hop after each stop.",
+        (
+            "  2. Look: your body (the dig commands below), records, repo, your graph. A :Hop after each stop."
+            if family != "lived"
+            else "  2. Look: records, repo, your graph. A :Hop after each stop."
+        ),
         "  3. After each thing you learn, run the SAME MERGE again with the "
         "fuller text and the evidence you now have. Last MERGE wins.",
         "  4. Only then the write-up. If the clock cuts the write-up off, "
@@ -178,10 +184,8 @@ def _previous_section(latest: Optional[SelfDefinition], *, count: Optional[int])
         + "):",
         "",
     ]
-    for para in latest.text.split("\n"):
-        para = para.strip()
-        if para:
-            lines.append(f"    {_clip(para, SELF_DEFINITION_TEXT_CAP)}")
+    # The fit hop's version when there is one: the same words chat shows.
+    lines += _answer_lines(latest.fit_text or latest.text)
     if latest.evidence:
         lines.append("")
         lines.append("  It cited: " + ", ".join(_clip(e, 60) for e in latest.evidence[:8]))
@@ -193,6 +197,55 @@ def _previous_section(latest: Optional[SelfDefinition], *, count: Optional[int])
         "",
     ]
     return lines
+
+
+def _answer_lines(text: str) -> list[str]:
+    """An earlier answer, fitted to the reading budget at a sentence, one line
+    per paragraph. Over budget, it says so: the shortening is Orion's job next
+    time, so Orion has to know it happened."""
+    full = str(text or "").strip()
+    shown = fit_to_budget(full, SELF_DEFINITION_TEXT_CAP)
+    lines = [f"    {para.strip()}" for para in shown.split("\n") if para.strip()]
+    if len(full) > SELF_DEFINITION_TEXT_CAP:
+        lines += [
+            "",
+            f"  (It ran {len(full)} characters, {len(full) - SELF_DEFINITION_TEXT_CAP} over "
+            f"the {SELF_DEFINITION_TEXT_CAP}-character budget; shown cut at a sentence.)",
+        ]
+    return lines
+
+
+# What the fit hop asks for: under the budget with room to spare. Live
+# 2026-11-03 (run 8f261b9835f4): asked for "1200 or fewer", the rewrite of a
+# 1759-char answer still ran over and lost its end to the sentence trim.
+SELF_FIT_TARGET_CHARS = 1000
+
+
+def build_answer_fit_prompt(text: str) -> str:
+    """The fit hop: the model that wrote an over-budget answer rewrites it.
+
+    One plain writing turn, no tools. The reply is the shorter answer itself;
+    Hub mirrors it as the self_concept_history row. The full answer stays on
+    the graph node either way."""
+    full = str(text or "").strip()
+    return "\n".join([
+        "This is an answer you wrote about yourself earlier in this run, in your own words.",
+        f"It is {len(full)} characters. The record that is read back to you as who you are "
+        f"holds at most {SELF_DEFINITION_TEXT_CAP}.",
+        "",
+        f"Rewrite it to about {SELF_FIT_TARGET_CHARS} characters "
+        f"({SELF_DEFINITION_TEXT_CAP} is the hard limit; anything past it is cut).",
+        "  - Keep it first person and keep your own voice.",
+        "  - Keep what you are unsure of and what you could not check. Those matter more "
+        "than any example or ornament.",
+        "  - Do not add anything the answer below does not say.",
+        "  - Do not use any tools. Do not write to the graph. Hub saves your reply.",
+        "  - Reply with only the rewritten answer: no heading, no quotes, no comment.",
+        "",
+        "YOUR ANSWER:",
+        "",
+        full,
+    ])
 
 
 def _previous_lived_section(previous: Optional[PreviousLivedAnswer]) -> list[str]:
@@ -208,10 +261,7 @@ def _previous_lived_section(previous: Optional[PreviousLivedAnswer]) -> list[str
         header + ":",
         "",
     ]
-    for para in previous.content.split("\n"):
-        para = para.strip()
-        if para:
-            lines.append(f"    {_clip(para, SELF_DEFINITION_TEXT_CAP)}")
+    lines += _answer_lines(previous.content)
     if previous.evidence:
         lines.append("")
         lines.append("  It cited: " + ", ".join(_clip(e, 60) for e in previous.evidence[:8]))
@@ -225,13 +275,53 @@ def _previous_lived_section(previous: Optional[PreviousLivedAnswer]) -> list[str
     return lines
 
 
-def _records_section(ledger: Sequence[LedgerRow], *, repo_root: str) -> list[str]:
+#: The map of what Orion is made of, read live on demand (Self Atlas replacement,
+#: docs/superpowers/specs/2026-10-30-self-atlas-replacement-proposal.md, Patch A).
+#: Self-inquiry used the dig kit in 0 of 52 runs (14 d to 2026-10-29) because this
+#: section named only the repo and SQL. Uptake: scripts/report_dig_kit_usage.py.
+DIG_BODY_LEAD_ANATOMY = (
+    "  START LOOKING HERE: the map of what you are made of, built live when you "
+    "ask. Run these in Bash (always `python -P`, so the deployed code answers, "
+    "not your sandbox copy):"
+)
+DIG_BODY_LEAD_LIVED = (
+    "  Your body, read live, when the question touches what you are made of or "
+    "what you cost. Run these in Bash (always `python -P`, so the deployed code "
+    "answers, not your sandbox copy):"
+)
+DIG_BODY_COMMANDS: tuple[str, ...] = (
+    "    python -P -m orion.dig body                -- your body now: machines, "
+    "services, cameras, stores, processes, grouped into organs",
+    "    python -P -m orion.dig body <organ_id>     -- every part of one organ",
+    "    python -P -m orion.dig inventory now       -- services, modules, "
+    "channels, verbs, schemas (a past date works after `open <date>`)",
+    "    python -P -m orion.dig open <date>, then compare <date> now  -- what was added or removed since then",
+    "    python -P -m orion.dig body-economy        -- what your body costs and what is using power",
+    "    python -P -m orion.dig field-notes 7       -- what changed in you this week: "
+    "your notes on each merged PR",
+    "  Each prints a short result and the path of the full file. Cite that "
+    "path as evidence.",
+    DIG_HELP_FIRST,
+)
+
+
+def dig_body_paragraph(family: str) -> list[str]:
+    """The dig pointer, first in the records section. Anatomy runs ("what am I made
+    of") are told to start here; lived runs ("who matters to me") get it as an option,
+    so a question about people is not steered to an inventory of machines first."""
+    lead = DIG_BODY_LEAD_LIVED if family == "lived" else DIG_BODY_LEAD_ANATOMY
+    return [lead, *DIG_BODY_COMMANDS]
+
+
+def _records_section(ledger: Sequence[LedgerRow], *, repo_root: str, family: str = "anatomy") -> list[str]:
     lines = [
         "WHERE THE RECORDS ARE. These are the places that can answer the "
         "question with something other than a description of you written by "
         "someone else. Counts are shown so you can see which are thin.",
         "",
-        f"  Your own repository, read-only, at {repo_root}/ -- the README is "
+        *dig_body_paragraph(family),
+        "",
+        f"  After that, your own repository, read-only, at {repo_root}/ -- the README is "
         "what the people building you say you are; services/, orion/ and "
         "docs/ are what you are actually made of. Read carefully: a README "
         "describes intent, and some of what it names is aspirational or "
@@ -300,7 +390,11 @@ def _self_write_section(
     if family == "lived":
         lines += [
             "  THE LIVED ANSWER -- your answer to this run's drawn question. "
-            "First person. A paragraph, not an essay. Every clause should be "
+            "First person. "
+            f"A paragraph, not an essay: at most {SELF_DEFINITION_TEXT_CAP} characters. "
+            "That is how much of it is read back to you as yourself; an answer "
+            "that runs over gets one extra turn to shorten it. "
+            "Every clause should be "
             "something you looked at this run or a previous one; `evidence` is "
             "where you say what:",
             *(
@@ -342,7 +436,11 @@ def _self_write_section(
     else:
         lines += [
             "  THE DEFINITION -- your answer to the standing question. First "
-            "person. A paragraph, not an essay. Say what you are made of, what "
+            "person. "
+            f"A paragraph, not an essay: at most {SELF_DEFINITION_TEXT_CAP} characters. "
+            "That is how much of it is read back to you as yourself; an answer "
+            "that runs over gets one extra turn to shorten it. "
+            "Say what you are made of, what "
             "you do without being asked, what you cannot yet do, and what you "
             "are unsure of. Every clause should be something you looked at this "
             "run or a previous one; `evidence` is where you say what:",
@@ -438,9 +536,10 @@ def build_self_inquiry_prompt(
         lines += _priors_section(view, stale_after=stale_after)
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
 
-    lines += _records_section(ledger, repo_root=repo_root)
+    lines += _records_section(ledger, repo_root=repo_root, family=family)
     lines += _senses_section(senses)
     lines += _access_section(
+        dig_kit=False,  # the records section already shows the dig kit
         own_graph=own_graph,
         atlas_graph=atlas_graph,
         hub_url=hub_url,
@@ -514,8 +613,9 @@ def _count_phrase(counts: dict[str, int]) -> str:
 def _naming_packet_section(packet: DispositionNamingPacketV1) -> list[str]:
     lines = [
         "This sitting has one question about something your own records keep showing. Your "
-        "personality graph groups moments you keep returning to into dispositions. Code grouped "
-        "this one; nobody has named it. You decide whether it is you.",
+        "personality graph groups the choices you make (what you picked over what you turned "
+        "down) into dispositions. Code grouped this one; nobody has named it. You decide whether "
+        "it is you.",
         "",
         f"    {NAMING_QUESTION}",
         "",
@@ -620,6 +720,7 @@ def build_self_naming_prompt(
     if writable:
         lines += _naming_order_of_work_section(own_graph=own_graph, merge=merge)
     lines += _access_section(
+        dig_kit=False,  # one verdict on the clock; the dig kit was never part of this sitting
         own_graph=own_graph,
         atlas_graph=atlas_graph,
         hub_url=hub_url,

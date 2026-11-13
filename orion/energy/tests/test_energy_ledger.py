@@ -167,7 +167,7 @@ def test_cycle_kwh_before_none_on_mid_cycle_hole() -> None:
     led = _ledger()
     cycle_start, _ = led.cycle_bounds(datetime(2026, 9, 10, tzinfo=DENVER))
     first = cycle_start
-    second = cycle_start + timedelta(hours=2)
+    second = cycle_start + timedelta(hours=5)  # 4 h hole: longer than MAX_BRIDGED_GAP
     t = second + timedelta(hours=1)
     led.upsert(_span(cycle_start, first + timedelta(hours=1), 10.0))
     led.upsert(_iv(second, 20.0))
@@ -178,12 +178,12 @@ def test_cycle_kwh_before_returns_after_hole_filled() -> None:
     led = _ledger()
     cycle_start, _ = led.cycle_bounds(datetime(2026, 9, 10, tzinfo=DENVER))
     hole_start = cycle_start + timedelta(hours=1)
-    second = cycle_start + timedelta(hours=2)
+    second = cycle_start + timedelta(hours=5)
     t = second + timedelta(hours=1)
     led.upsert(_span(cycle_start, hole_start, 10.0))
     led.upsert(_iv(second, 20.0))
     assert led.cycle_kwh_before("UP123", t) is None
-    led.upsert(_iv(hole_start, 5.0))
+    led.upsert(_span(hole_start, second, 5.0))
     kwh, as_of = led.cycle_kwh_before("UP123", t)
     assert kwh == pytest.approx(35.0)
     assert as_of == second + timedelta(hours=1)
@@ -193,7 +193,7 @@ def test_accrue_cycle_stops_at_hole() -> None:
     led = _ledger()
     cycle_start, _ = led.cycle_bounds(datetime(2026, 9, 10, tzinfo=DENVER))
     hole_start = cycle_start + timedelta(hours=1)
-    second = cycle_start + timedelta(hours=2)
+    second = cycle_start + timedelta(hours=5)
     led.upsert(_span(cycle_start, hole_start, 10.0))
     led.upsert(_iv(second, 20.0))
     rows = led.accrue_cycle("UP123", cycle_start, computed_at=NOW)
@@ -275,7 +275,7 @@ def test_cycle_coverage_stops_at_hole() -> None:
     led = _ledger()
     cycle_start, _ = led.cycle_bounds(datetime(2026, 9, 10, tzinfo=DENVER))
     hole_start = cycle_start + timedelta(hours=1)
-    second = cycle_start + timedelta(hours=2)
+    second = cycle_start + timedelta(hours=5)
     led.upsert(_span(cycle_start, hole_start, 10.0))
     led.upsert(_iv(second, 20.0))
     priced, total, covered = led.cycle_coverage("UP123", cycle_start)
@@ -319,7 +319,7 @@ _S = datetime(2026, 9, 1, tzinfo=timezone.utc)
 
 def test_window_prefix_stops_at_the_first_hole() -> None:
     led = make_test_ledger()
-    for iv in hourly(_S, 10, skip=frozenset({4})):
+    for iv in hourly(_S, 10, skip=frozenset({4, 5, 6, 7})):
         led.upsert(iv)
     prefix, covered = led.window_prefix("UP1", _S, _S + timedelta(hours=10))
     assert len(prefix) == 4
@@ -328,9 +328,9 @@ def test_window_prefix_stops_at_the_first_hole() -> None:
 
 def test_window_prefix_empty_when_start_missing() -> None:
     led = make_test_ledger()
-    for iv in hourly(_S + timedelta(hours=1), 3):
+    for iv in hourly(_S + timedelta(hours=4), 3):
         led.upsert(iv)
-    assert led.window_prefix("UP1", _S, _S + timedelta(hours=5)) == ([], None)
+    assert led.window_prefix("UP1", _S, _S + timedelta(hours=8)) == ([], None)
 
 
 def test_latest_interval_end() -> None:
@@ -339,3 +339,31 @@ def test_latest_interval_end() -> None:
     for iv in hourly(_S, 5, skip=frozenset({2})):
         led.upsert(iv)
     assert led.latest_interval_end("UP1") == _S + timedelta(hours=5)
+
+
+def test_bill_read_dates_replace_the_scheduled_cycle_start() -> None:
+    """2026-10-20 bill: read Sep 18 -> Oct 19 while ENERGY_BILLING_CYCLE_START_DAY=18 said Oct 18."""
+    led = _ledger(day=18)
+    oct_18_noon = datetime(2026, 10, 18, 12, tzinfo=DENVER)
+    assert led.cycle_bounds(oct_18_noon) == (datetime(2026, 10, 18, tzinfo=DENVER), datetime(2026, 11, 18, tzinfo=DENVER))
+    led.upsert(_iv(oct_18_noon, 1.0))
+    moved = led.set_read_dates([date(2026, 9, 18), date(2026, 10, 19)])
+    assert moved == [("UP123", datetime(2026, 9, 18, tzinfo=DENVER))]
+    assert led.cycle_bounds(oct_18_noon) == (datetime(2026, 9, 18, tzinfo=DENVER), datetime(2026, 10, 19, tzinfo=DENVER))
+    assert led.cycle_bounds(datetime(2026, 10, 19, 0, 30, tzinfo=DENVER)) == (
+        datetime(2026, 10, 19, tzinfo=DENVER), datetime(2026, 11, 18, tzinfo=DENVER),
+    )
+    # Far from any read, the scheduled day still rules.
+    assert led.cycle_bounds(datetime(2027, 1, 5, tzinfo=DENVER))[0] == datetime(2026, 12, 18, tzinfo=DENVER)
+    assert led.set_read_dates([date(2026, 10, 19), date(2026, 9, 18)]) == []
+
+
+def test_read_date_across_a_month_boundary_still_brackets() -> None:
+    led = _ledger(day=1)
+    led.set_read_dates([date(2026, 1, 30)])  # replaces the scheduled Feb 1
+    assert led.cycle_bounds(datetime(2026, 1, 31, tzinfo=DENVER)) == (
+        datetime(2026, 1, 30, tzinfo=DENVER), datetime(2026, 3, 1, tzinfo=DENVER),
+    )
+    assert led.cycle_bounds(datetime(2026, 1, 29, tzinfo=DENVER)) == (
+        datetime(2026, 1, 1, tzinfo=DENVER), datetime(2026, 1, 30, tzinfo=DENVER),
+    )

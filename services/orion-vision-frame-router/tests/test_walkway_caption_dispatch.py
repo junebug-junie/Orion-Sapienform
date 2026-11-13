@@ -135,11 +135,29 @@ def test_real_config_turns_blip_off_for_walkway_only():
     assert "nothing notable" not in cfg["prompt"] and not cfg.get("null_answers")
     assert cfg["crop_to_detections"] is True
     assert set(cfg["labels"]) >= {"person", "dog", "bicycle", "stroller", "vehicle", "package", "mail truck"}
-    # cam0/carbon unchanged: BLIP caption, no VLM lane.
-    for stream in ("cam0", "carbon"):
-        merged = policy.resolve_stream_policy(stream, stream)[0]
-        assert merged["triggered"]["request"]["want_caption"] is True
-        assert policy.caption_dispatch_for(stream, stream) == {}
+    # carbon unchanged: BLIP caption, no VLM lane. (cam0 joined the VLM lane
+    # 2026-11-04 -- test_real_config_office_camera_has_walkway_parity.)
+    merged = policy.resolve_stream_policy("carbon", "carbon")[0]
+    assert merged["triggered"]["request"]["want_caption"] is True
+    assert policy.caption_dispatch_for("carbon", "carbon") == {}
+
+
+def test_real_config_office_camera_has_walkway_parity():
+    """2026-11-04 (Juniper: "it should do most of the things the walkway cam
+    does"): cam0 crops get body + face vectors in both tiers, captions come
+    from the VLM lane and name the activity, and the face check stays on."""
+    policy = FrameDispatchPolicy.load(Settings(ROUTER_POLICY_PATH=str(REAL_POLICY)))
+    room = policy.resolve_stream_policy("cam0", "cam0")[0]
+    for tier in ("baseline", "triggered"):
+        req = room[tier]["request"]
+        assert req["want_caption"] is False, tier
+        assert req["want_crop_embeddings"] is True and req["want_crop_faces"] is True, tier
+        assert "person" in req["crop_embedding_labels"], tier
+    assert room["triggered"]["identity_dispatch"]["enabled"] is True
+    cfg = policy.caption_dispatch_for("cam0", "cam0")
+    assert cfg["enabled"] is True and cfg["crop_to_detections"] is True
+    assert "doing" in cfg["prompt"] and "nothing notable" not in cfg["prompt"]
+    assert "person" in cfg["labels"]
 
 
 @pytest.mark.asyncio
@@ -204,12 +222,22 @@ async def test_baseline_tier_reply_does_not_caption():
 
 
 @pytest.mark.asyncio
-async def test_cam0_never_uses_the_qwen_lane():
+async def test_cam0_person_gets_an_activity_caption_from_the_qwen_lane():
+    """2026-11-04: the office camera moved from the host's BLIP caption (which
+    listed furniture: "Multiple tables, chairs, desks...") to the VLM lane,
+    asked what the person is doing."""
     d, bus = _make()
-    corr, env = await _triggered_primary(d, bus, stream="cam0")
-    assert env.payload["request"]["want_caption"] is True
-    await d.handle_reply_envelope(_reply(corr, stream="cam0", objects=[PERSON]))
-    assert all(ch != CAPTION_CHANNEL for ch, _ in bus.published)
+    d.state.record_activity("cam0", ["person"], now=time.time())
+    _ready(d, "cam0")
+    await d.handle_frame_envelope(_frame_env("cam0"))
+    # cam0 also publishes its identity_face check; take the primary task.
+    [primary] = [e for ch, e in bus.published if ch == HOST_CHANNEL and e.payload["task_type"] == "retina_fast"]
+    assert primary.payload["request"]["want_caption"] is False
+    await d.handle_reply_envelope(_reply(str(primary.correlation_id), stream="cam0", objects=[PERSON]))
+    captions = [e for ch, e in bus.published if ch == CAPTION_CHANNEL]
+    assert len(captions) == 1
+    assert captions[0].payload["meta"]["stream_id"] == "cam0"
+    assert "doing" in captions[0].payload["request"]["caption_prompt"]
 
 
 @pytest.mark.asyncio

@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import numpy as np
 import pytest
 
-from app.event_pair import CLAIM_KIND, EventPairRefused, event_pair_effect, pair_stat
+from app.event_pair import CLAIM_KIND, EventPairRefused, event_pair_effect, pair_stat, visits
 from app.effects import Effects, selector_key
 
 DAY = 86400.0
@@ -229,6 +229,45 @@ def test_overlapping_selectors_need_a_positive_lag_min(a_stream):
 
 def test_selector_key():
     assert selector_key({"source": "vision_events", "event_type": "x", "stream_id": None}) == "vision_events:x"
+    assert selector_key({"source": "vision_events", "event_type": "x", "stream_id": "cam0",
+                         "visit_gap_sec": 300}) == "vision_events:x@cam0~visit300s"
+    assert selector_key({"source": "vision_events", "event_type": "x", "visit_gap_sec": 0}) == "vision_events:x"
+
+
+def test_longest_allowed_selector_label_fits_the_120_char_columns():
+    from app.main import EventSelector
+    sel = EventSelector(event_type="e" * 50, stream_id="s" * 33, visit_gap_sec=3600).model_dump()
+    assert len(f"event_pair:{selector_key(sel)}") == 120
+    with pytest.raises(ValueError):
+        EventSelector(event_type="e", stream_id="s" * 34)
+    with pytest.raises(ValueError):
+        EventSelector(event_type="e", visit_gap_sec=300.5)
+
+
+def test_visits_keep_the_first_row_of_each_burst():
+    # Gaps are measured row to row: 0,10,20 chain into one visit even though 20 - 0 > 15.
+    assert visits(np.array([20.0, 0.0, 10.0, 100.0, 105.0, 400.0]), 15.0).tolist() == [0.0, 100.0, 400.0]
+    assert visits(np.array([5.0, 1.0]), 0.0).tolist() == [1.0, 5.0]
+    assert visits(np.array([]), 60.0).tolist() == []
+
+
+def test_visit_gap_turns_a_bursty_b_into_one_count_per_visit():
+    # Each A is followed 30 s later by a burst of 20 B rows, 5 s apart. Rows: ~20 B per A in the
+    # window. Visits: exactly one B per A, and the stored label says visits.
+    rng = np.random.default_rng(7)
+    start = NOW - timedelta(days=7)
+    a = _poisson(rng, 6, 7 * DAY - 600)
+    b = np.concatenate([a + 30 + 5 * k for k in range(20)])
+    ts = lambda xs: sorted(start + timedelta(seconds=float(x)) for x in xs)  # noqa: E731
+    fx = _fx({("doorbell_ring", None): ts(a), ("person_presence", "cam0"): ts(b)})
+    sa = {"source": "vision_events", "event_type": "doorbell_ring", "stream_id": None}
+    rows = {"source": "vision_events", "event_type": "person_presence", "stream_id": "cam0"}
+    fx.event_pair(sa, rows, start, NOW, 0.0, 300.0, n_placebo=199)
+    fx.event_pair(sa, {**rows, "visit_gap_sec": 60}, start, NOW, 0.0, 300.0, n_placebo=199)
+    by_rows, by_visits = (r["details"] for r in fx.store.inserted)
+    assert by_rows["n_b"] == 20 * len(a) and by_visits["n_b"] == len(a)
+    assert by_visits["observed_b_in_windows"] == len(a)
+    assert fx.store.inserted[1]["series_id"] == "vision_events:person_presence@cam0~visit60s"
 
 
 # --- endpoint ----------------------------------------------------------------------------------

@@ -221,7 +221,10 @@ def compute_pressure(
 
 
 def select_replay(
-    candidates: Iterable[ReplayItemV1], k: int, source_caps: Optional[Mapping[str, int]] = None
+    candidates: Iterable[ReplayItemV1],
+    k: int,
+    source_caps: Optional[Mapping[str, int]] = None,
+    source_floors: Optional[Mapping[str, int]] = None,
 ) -> list[ReplayItemV1]:
     """Top-k by weight, at most ceil(k/2) from any one source.
 
@@ -229,20 +232,44 @@ def select_replay(
     metacog during an outage) from turning the whole night into one topic --
     recombination needs material from different places to pair.
     `source_caps` tightens (never loosens) that cap for named sources.
+
+    `source_floors` reserves slots for named sources BEFORE the weight ranking
+    fills the rest: up to `n` of that source's heaviest items (ties: the order
+    the source produced them) are kept even when every other candidate outweighs
+    them. A floor never exceeds the source's cap, never exceeds k, and reserves
+    nothing when the source has no candidates. Output is ordered by weight.
+    Floor ties trust the caller's order (walkway_candidates sorts newest first), so
+    give a floor only to a source that orders its own output deterministically.
     """
     k = max(0, min(int(k), MAX_REPLAY_ITEMS))
     per_source = max(1, (k + 1) // 2)
     caps = {src: min(per_source, max(0, int(n))) for src, n in (source_caps or {}).items()}
-    ranked = sorted(candidates, key=lambda c: (-c.weight, c.ref_id))
+    pool = list(candidates)
     picked: list[ReplayItemV1] = []
     used: dict[str, int] = {}
-    for c in ranked:
+    taken: set[int] = set()
+    for src, n in sorted((source_floors or {}).items()):
+        want = min(max(0, int(n)), caps.get(src, per_source))
+        # Stable sort: equal weights keep the producer's own order (walkway: newest first).
+        own = sorted((i for i, c in enumerate(pool) if c.source_kind == src), key=lambda i: -pool[i].weight)
+        for i in own[:want]:
+            if len(picked) >= k:
+                break
+            taken.add(i)
+            used[src] = used.get(src, 0) + 1
+            picked.append(pool[i])
+    ranked = sorted(
+        (i for i in range(len(pool)) if i not in taken), key=lambda i: (-pool[i].weight, pool[i].ref_id)
+    )
+    for i in ranked:
+        c = pool[i]
         if len(picked) >= k:
             break
         if used.get(c.source_kind, 0) >= caps.get(c.source_kind, per_source):
             continue
         used[c.source_kind] = used.get(c.source_kind, 0) + 1
         picked.append(c)
+    picked.sort(key=lambda c: (-c.weight, c.ref_id))
     return picked
 
 
@@ -268,8 +295,11 @@ ARC_RETURNS_SATURATE = 3
 ARC_CANDIDATES_MAX = 20
 # A sleep never replays a sleep. A strain arc is a body state lasting hours to days: its dwell
 # would saturate the weight and put it in every replay while strained (strain loop part 1 keeps it
-# out of dreams until that is designed on purpose).
-ARC_EXCLUDED_KINDS = frozenset({"sleep", "strain"})
+# out of dreams until that is designed on purpose). A binding arc (felt state: a body-economy
+# constraint whose price binds) is the same kind of body state, several open at once for hours: out
+# of dreams for the same reason.
+# A faculty arc (self-monitor patch 2) is a days-long stretch of a track record: same reason.
+ARC_EXCLUDED_KINDS = frozenset({"sleep", "strain", "binding", "faculty"})
 
 
 def arc_replay_slots(k: int) -> int:
@@ -339,16 +369,24 @@ def candidate_from_arc(row: dict[str, Any]) -> Optional[ReplayItemV1]:
 
 
 def arc_candidates(
-    rows: Iterable[dict[str, Any]], since: datetime, until: datetime, *, cap: int = ARC_CANDIDATES_MAX
+    rows: Iterable[dict[str, Any]], since: datetime, until: datetime, *,
+    cap: int = ARC_CANDIDATES_MAX, one_per_kind: bool = True,
 ) -> list[ReplayItemV1]:
-    """Closed, non-sleep arcs that ENDED in [since, until), top `cap` by weight (ties:
-    newest end, then arc_id). The store filters the same way; this re-checks so a loose
+    """Closed, non-sleep arcs that ENDED in [since, until): one per subject, then one per
+    kind, then the top `cap` by weight (ties: newest end, then arc_id). The store filters the same way; this re-checks so a loose
     source can never widen the window.
 
     One candidate per THING, the same rule as every other source: arcs sharing
     (kind, subject_ref) are one candidate, the heaviest arc (its arc_id is the one cited).
     Live 10-12: node:substrate.bus_synaptic closed three interoception arcs in one window
-    and took 3 of the top 5 slots before this."""
+    and took 3 of the top 5 slots before this.
+
+    Then one candidate per KIND (the heaviest thing of that kind), before the cap, so a
+    flood of one kind cannot push the others out of the top `cap` either. Live 11-12: over
+    5 days 15 of 18 replayed arcs were interoception (14 days: 35 of 39) (substrate execution / perception /
+    chat / bus_synaptic as separate things): body arcs run for hours and their returns count
+    sensor flicker, so they outweigh every other kind. `one_per_kind=False` is the old rule,
+    kept only so the replay eval can rebuild what past sleeps really did."""
     best: dict[tuple[str, str], tuple[ReplayItemV1, Any]] = {}
     for row in rows or ():
         ended = row.get("ended_at")
@@ -365,8 +403,13 @@ def arc_candidates(
         kept = best.get(key)
         if kept is None or (item.weight, ended.timestamp(), item.ref_id) > (kept[0].weight, kept[1].timestamp(), kept[0].ref_id):
             best[key] = (item, ended)
-    ranked = sorted(best.values(), key=lambda t: (-t[0].weight, -t[1].timestamp(), t[0].ref_id))
-    return [item for item, _ in ranked[: max(0, int(cap))]]
+    ranked = [item for item, _ in sorted(best.values(), key=lambda t: (-t[0].weight, -t[1].timestamp(), t[0].ref_id))]
+    if one_per_kind:
+        heaviest: dict[str, ReplayItemV1] = {}
+        for item in ranked:  # ranked heaviest first: the first of a kind is its heaviest
+            heaviest.setdefault(item.tags[0], item)
+        ranked = list(heaviest.values())  # dicts keep insertion order: still ranked
+    return ranked[: max(0, int(cap))]
 
 
 # --- graded walkway predictions (2026-10-15) ----------------------------------
@@ -383,6 +426,14 @@ def arc_candidates(
 # a critical metacog (1.0), a 0.8-salience crystallization and ARC_WEIGHT_MAX,
 # and at most `walkway_replay_slots` of a replay are walkway items.
 #
+# Floor (2026-11-03): the weights alone never won a slot. Live 10-29..11-03,
+# 26 cycles had >= 1 walkway candidate and every replay filled all 12 slots
+# with metacog/arc/resonance/crystallization/compaction at >= 0.5, so 0
+# `dream_replay_item` rows ever had source_kind='walkway'. Raising the weights
+# would reorder every other source; instead `walkway_replay_floor` reserves one
+# slot in select_replay for the heaviest walkway item (a miss outweighs a met)
+# whenever one exists. The ceiling above still bounds it.
+#
 # Empty for the walkway camera's first week: the reducer emits an expectation
 # only after >= 5 days of support.
 
@@ -395,6 +446,13 @@ def walkway_replay_slots(k: int) -> int:
     """At most a sixth of the replay (2 of 12), never zero when k > 0."""
     k = max(0, int(k))
     return (k + 5) // 6
+
+
+def walkway_replay_floor(k: int) -> int:
+    """One slot is reserved for the best walkway item whenever one exists, once the
+    replay is big enough for a sixth to be a whole slot (k >= 6). Below that the floor
+    is 0, so a tiny replay is never handed to the street over a critical metacog."""
+    return min(1, max(0, int(k)) // 6)
 
 
 def walkway_candidates(

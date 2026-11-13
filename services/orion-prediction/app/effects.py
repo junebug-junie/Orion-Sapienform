@@ -3,6 +3,8 @@
 ``best_effect(action)`` is the Orion-facing answer to "if X happens, how much does the target
 move?": the newest experimental estimate if one exists, else the pooled observational estimates,
 else nothing plus the advice to run a switchback experiment. ``claim_kind`` always says which.
+An experimental answer on a heat-balance target also cites, beside it, what the newest stored
+heat-per-watt fit predicts from the watts that experiment actually moved (app/heat_balance.py).
 """
 from __future__ import annotations
 
@@ -21,9 +23,10 @@ from app.causal import (
     time_of_day_profile,
 )
 from app.engine import Engine, InputStale
-from app.event_pair import EventPairRefused, event_pair_effect
+from app.event_pair import EventPairRefused, event_pair_effect, visits
 from app.events import breaks_between
-from app.frame import mask_windows, to_grain, training_slice
+from app.frame import covariate_series, mask_windows, to_grain, training_slice
+from app.heat_balance import HEAT_BALANCE, HeatBalanceRefused, fit_heat_per_watt, predict_heat, store_fit
 from app.models import build_models, split_seasonalities
 from app.series import SeriesSpec
 
@@ -34,13 +37,15 @@ EVENT_PAIR_MAX_EVENTS = 200_000   # per selector; above this the read is refused
 
 def selector_key(sel: dict) -> str:
     """Stable label for one event selector, e.g. ``vision_events:person_presence@walkway``."""
-    return f"{sel['source']}:{sel['event_type']}" + (f"@{sel['stream_id']}" if sel.get("stream_id") else "")
+    key = f"{sel['source']}:{sel['event_type']}" + (f"@{sel['stream_id']}" if sel.get("stream_id") else "")
+    return key + (f"~visit{int(sel['visit_gap_sec'])}s" if sel.get("visit_gap_sec") else "")
 
 
 class Effects:
     def __init__(self, engine: Engine):
         self.engine = engine
         self.store = engine.store
+        self._manip_watts: dict[str, dict] = {}   # experiment_id -> measured watts (blocks never change)
 
     def _spec(self, series_id: str, role: str | None = None) -> SeriesSpec:
         spec = self.engine.registry.get(series_id)
@@ -65,7 +70,9 @@ class Effects:
         if spec.train_from and start < spec.train_from:
             start = spec.train_from
         y = training_slice(self._series(spec, start, end.to_pydatetime()), spec)
-        x = self._series(cov, start, end.to_pydatetime()).reindex(y.index)
+        # The same covariate view training uses (real buckets, derived rules, exclusions); scenario's own
+        # gap checks then refuse a covariate that is mostly missing instead of interpolating it.
+        x = mask_windows(covariate_series(self.store, cov, start, end.to_pydatetime(), y.index), spec.exclude)
         res = scenario(y, x, covariate_id, path, spec.grain_min)
         return {**res.__dict__, "series_id": series_id, "unit": spec.unit, "covariate_unit": cov.unit}
 
@@ -116,7 +123,8 @@ class Effects:
         if len(rows) > EVENT_PAIR_MAX_EVENTS:
             raise EventPairRefused(f"{selector_key(sel)} has more than {EVENT_PAIR_MAX_EVENTS} events in range; "
                                    "narrow the time range")
-        return np.array([(t - start).total_seconds() for t in rows], dtype=float)
+        return visits(np.array([(t - start).total_seconds() for t in rows], dtype=float),
+                      float(sel.get("visit_gap_sec") or 0.0))
 
     def event_pair(self, a: dict, b: dict, start: datetime, end: datetime, lag_min_sec: float, lag_max_sec: float,
                    n_placebo: int = 999, seed: int = 0, placebo: str = "same_time_of_day") -> dict:
@@ -158,7 +166,7 @@ class Effects:
         series = self.engine.load_series(spec, now, timedelta(minutes=spec.train_window_min + spec.grain_min))
         origin = self.engine.latest_complete_bucket(spec, now)
         try:
-            built = self.engine.build_forecast(spec, series, origin, now)
+            built = self.engine.build_forecast(spec, series, origin, now, adapt=False)   # reads exceedance only
         except InputStale as exc:
             return {"safe": False, "reason": f"input stale ({exc})", "checked_at": now.isoformat()}
         except Exception as exc:  # noqa: BLE001 -- no forecast means no permission
@@ -240,6 +248,67 @@ class Effects:
             raise CausalError("logged blocks do not follow the randomised design: " + "; ".join(bad[:5]))
         return sorted(out, key=lambda b: b["index"])
 
+    # --- heat per watt ------------------------------------------------------------------------
+    def experiment_watts(self, experiment_id: str) -> tuple[dict, float | None]:
+        """The watts an experiment's ON blocks moved (its manipulation check, recomputed from the logged
+        blocks) and its block length. Cached only once the experiment is finished (analyzed or
+        cancelled) AND every watts entry is a real estimate: a running experiment gains blocks, and a
+        read error must be retried, not remembered."""
+        hit = self._manip_watts.get(experiment_id)
+        if hit is not None:
+            return hit
+        from app.experiment_runner import manipulation_watts
+
+        exp = self.store.experiment(experiment_id)
+        if exp is None:
+            raise CausalError("unknown experiment")
+        logged = [r for r in self.store.interventions(experiment_id=experiment_id, limit=1000) if r["arm"]]
+        if not logged:
+            raise CausalError("no logged blocks for this experiment")
+        watts = manipulation_watts(self, self._match_design(exp, logged))
+        block_min = (exp.get("design") or {}).get("block_min")
+        out = (watts, float(block_min) if block_min is not None else None)
+        if exp.get("status") in ("analyzed", "cancelled") and not any("error" in v for v in watts.values()):
+            self._manip_watts[experiment_id] = out
+        return out
+
+    def heat_per_watt(self, series_id: str, days: float = 7.0, experiment_id: str | None = None,
+                      store: bool = False) -> dict:
+        """Fit cabinet-minus-room against machine watts; optionally convert an experiment's measured
+        watts into a predicted cabinet change, and store the fit (one row per machine)."""
+        self._spec(series_id, "target")
+        fit = fit_heat_per_watt(self, series_id, days)
+        out = fit.as_dict()
+        if experiment_id:
+            out["experiment"] = {"experiment_id": experiment_id,
+                                 "prediction": predict_heat(out, *self.experiment_watts(experiment_id))}
+        if store:
+            out["estimate_ids"] = [str(r["estimate_id"]) for r in store_fit(self.store, fit)]
+        return out
+
+    def latest_heat_fit(self, series_id: str) -> dict | None:
+        cfg = HEAT_BALANCE.get(series_id)
+        if cfg is None:
+            return None
+        rows = [r for w in cfg["watts"] for r in self.store.effects(f"heat_per_watt:{w}", series_id)[:1]]
+        return max(rows, key=lambda r: r["created_at"])["details"] if rows else None
+
+    def _heat_prediction(self, experiment_id: str, series_id: str) -> dict | None:
+        """Best effort: never costs the experimental answer it sits beside."""
+        if series_id not in HEAT_BALANCE:
+            return None
+        try:
+            fit = self.latest_heat_fit(series_id)
+            if fit is None:
+                return {"predicted_c": None, "reason": "no stored heat-per-watt fit; POST /effects/heat-per-watt"}
+            pred = predict_heat(fit, *self.experiment_watts(experiment_id))
+            return {**pred, "claim_kind": "observational_effect", "fit_end": fit.get("end"),
+                    "fit_r2": fit.get("r2")}
+        except (CausalError, HeatBalanceRefused) as exc:
+            return {"predicted_c": None, "reason": str(exc)[:300]}
+        except Exception as exc:  # noqa: BLE001
+            return {"predicted_c": None, "reason": f"{type(exc).__name__}: {exc}"[:300]}
+
     # --- the Orion-facing answer --------------------------------------------------------------
     def best_effect(self, action: str, series_id: str) -> dict:
         spec = self._spec(series_id, "target")
@@ -247,10 +316,20 @@ class Effects:
         exp = [r for r in rows if r["claim_kind"] == "experimental_effect"]
         if exp:
             r = exp[0]
-            return {"action": action, "series_id": series_id, "unit": spec.unit, "claim_kind": "experimental_effect",
-                    "effect": r["effect"], "ci_lo": r["ci_lo"], "ci_hi": r["ci_hi"], "p_value": r["p_value"],
-                    "n": r["n"], "estimate_ids": [str(r["estimate_id"])],
-                    "summary": f"randomised experiment: {action} changes {series_id} by {r['effect']:+.2f} {spec.unit}"}
+            out = {"action": action, "series_id": series_id, "unit": spec.unit, "claim_kind": "experimental_effect",
+                   "effect": r["effect"], "ci_lo": r["ci_lo"], "ci_hi": r["ci_hi"], "p_value": r["p_value"],
+                   "n": r["n"], "estimate_ids": [str(r["estimate_id"])],
+                   "summary": f"randomised experiment: {action} changes {series_id} by {r['effect']:+.2f} {spec.unit}"}
+            heat = self._heat_prediction(str(r["experiment_id"]), series_id) if r.get("experiment_id") else None
+            if heat is not None:
+                out["heat_balance_prediction"] = heat
+                if heat.get("predicted_c") is not None:
+                    where = ("room free to warm, 0-2 h" if heat.get("basis") == "total"
+                             else "room held fixed: the comparable basis for short blocks")
+                    out["summary"] += (f"; heat-per-watt predicts {heat['predicted_c']:+.2f} {spec.unit} "
+                                       f"(95% {heat['ci_lo']:+.2f}..{heat['ci_hi']:+.2f}, {where}) from the "
+                                       "watts it moved")
+            return out
         # Newest estimate per intervention only: re-estimating one occurrence must not count it twice.
         newest: dict[str, dict] = {}
         for r in rows:   # store.effects is newest-first

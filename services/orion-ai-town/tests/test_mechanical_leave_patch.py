@@ -22,9 +22,11 @@ def _apply_order() -> list[str]:
     ]
 
 
-def test_mechanical_leave_patch_registered_last():
+def test_mechanical_leave_patch_registered_after_self_repeat():
     order = _apply_order()
-    assert order[-1] == "orion-mechanical-leave.patch"
+    assert order.index("orion-npc-no-self-repeat.patch") < order.index(
+        "orion-mechanical-leave.patch"
+    )
     assert order.index("orion-town-chat-turns.patch") < order.index(
         "orion-mechanical-leave.patch"
     )

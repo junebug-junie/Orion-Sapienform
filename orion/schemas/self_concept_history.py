@@ -4,9 +4,9 @@ design doc (docs/superpowers/specs/2026-09-03-orion-endogenous-self-model-
 and-journal-design.md).
 
 Additive to identity.yaml, not a replacement of it (explicit non-goal in
-that doc). Two producers write here: Layer 3's real LLM reflection
-(SelfReflectiveFindingV1) and Self Atlas's per-cluster LLM-written
-descriptions (topic-foundry pointed at self-facts). Every claim is
+that doc). Producers: Orion's own self-inquiry definition (live). Retired, rows
+stay: Layer 3's LLM reflection (2026-10-30) and Self Atlas's per-cluster
+LLM-written descriptions (2026-11). Every claim is
 diffable/revertable against its evidence, unlike an in-place identity.yaml
 edit -- append-only means rollback never loses history, it only changes
 what "current" resolves to (latest row per concept_id by created_at).
@@ -24,6 +24,9 @@ from pydantic import BaseModel, ConfigDict, Field
 # self-inquiry curiosity run and mirrored here by Hub
 # (orion/curiosity/self_inquiry.py). The only producer whose content is
 # first-person and authored by Orion rather than induced from Orion's records.
+# "layer3_reflect" has had no writer since 2026-10-30 (self-study reflection retired) and
+# "self_atlas_cluster" none since 2026-11 (Self Atlas retired); both stay so their
+# historical rows still validate.
 SelfConceptHistoryProducer = Literal["layer3_reflect", "self_atlas_cluster", "curiosity_self_inquiry"]
 
 

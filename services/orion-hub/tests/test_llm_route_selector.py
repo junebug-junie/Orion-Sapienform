@@ -207,6 +207,8 @@ def test_debug_panel_is_single_card_wrapping_all_rows_in_one_modal() -> None:
     assert 'w-[75vw] h-[75vh]' in modal_shell
     assert 'id="runtimeDebugPanelBody"' in modal_shell
     for row_id in (
+        "recallModeToggle",
+        "recallModeOpenModal",
         "memoryPanelToggle",
         "agentTraceDebugToggle",
         "autonomyDebugToggle",

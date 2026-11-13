@@ -16,8 +16,11 @@ The socket-injection half is modelled on `endogenous_outreach.py`, which
 already solves the same problem (get an unsolicited message into an open
 chat) including the busy/idle guards that stop a bubble landing mid-turn.
 
-`invite()` has ONE caller as of 2026-09-08: the operator route
-(api_routes.py, a human clicking "Ask Claude").
+`invite()` has two callers: the operator route (api_routes.py), reached
+from the chat room only by a deliberate act of Juniper's -- clicking "Ask
+Claude", or sending a chat-box message that starts with "@claude"
+(static/js/claude-address.js) -- and the consult loop (consult_loop.py) for
+its own consult:* rooms.
 
 The post-turn auto-invite in websocket_handler.py is GONE -- removed on
 Juniper's call because it shipped every private Hub chat turn to Claude to
@@ -41,9 +44,10 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
+from orion.consult.core import consult_id_from_room
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.schemas.room_claude import (
     RoomClaudeRequestV1,
@@ -90,6 +94,14 @@ class RoomClaudeRelay:
         # request_id -> the session that asked, so a reply lands back in the
         # conversation it belongs to rather than being broadcast blindly.
         self._pending: Dict[str, Dict[str, Any]] = {}
+        # Consult rooms (room_id "consult:<id>") belong to the consult loop, not a
+        # chat session: their replies go to this handler instead (scripts/consult_loop.py).
+        self.consult_handler: Optional[Callable[[RoomClaudeUtteranceV1], Awaitable[None]]] = None
+        self._consult_tasks: Set[asyncio.Task] = set()
+
+    def connections(self) -> Dict[str, Dict[str, Any]]:
+        """Live chat sockets (connection_id -> {"queue", "session_id"}), for a broadcast."""
+        return self._connections
 
     # -- connection registry (called from websocket_handler) ---------------
 
@@ -118,6 +130,8 @@ class RoomClaudeRelay:
         )
 
     async def stop(self) -> None:
+        for task in list(self._consult_tasks):
+            task.cancel()
         if self._task is not None:
             self._task.cancel()
             try:
@@ -140,6 +154,8 @@ class RoomClaudeRelay:
         social_memory_summary: Optional[Dict[str, Any]] = None,
         trigger: str = "manual",
         connection_id: Optional[str] = None,
+        hub_index: Optional[str] = None,
+        transcript_note: Optional[str] = None,
     ) -> RoomClaudeRequestV1:
         """Ask the companion for one Claude turn. Returns the request so the
         caller can correlate; the reply arrives asynchronously on the bus.
@@ -166,11 +182,18 @@ class RoomClaudeRelay:
             trigger="auto" if trigger == "auto" else "manual",
             transcript=entries,
             social_memory_summary=social_memory_summary or {},
+            hub_index=hub_index,
+            transcript_note=transcript_note,
         )
         self._pending[request.request_id] = {
             "session_id": session_id,
             "connection_id": connection_id,
             "invited_at": _utcnow_iso(),
+            # Kept so the stored reply row also holds what asked for it (open
+            # question 11): Orion can read the side exchange, Claude's next
+            # session can see its own earlier exchanges in context.
+            "prompt": prompt,
+            "invited_by": invited_by,
         }
         await self._publish(self.request_channel, "room.claude.request.v1", request)
         logger.info(
@@ -217,6 +240,15 @@ class RoomClaudeRelay:
             return
 
         pending = self._pending.pop(utterance.request_id, None)
+        if consult_id_from_room(utterance.room_id) is not None:
+            # Never blocks this loop: an Orion consult turn after it can take minutes.
+            if self.consult_handler is not None:
+                task = asyncio.create_task(self.consult_handler(utterance))
+                self._consult_tasks.add(task)
+                task.add_done_callback(self._consult_tasks.discard)
+            else:
+                logger.warning("room_claude_relay_consult_unhandled room=%s", utterance.room_id)
+            return
         session_id = utterance.session_id or (pending or {}).get("session_id")
         target_connection_id = (pending or {}).get("connection_id")
 
@@ -273,7 +305,7 @@ class RoomClaudeRelay:
             text=utterance.text, utterance=utterance, session_id=session_id,
             connection_id=target_connection_id, ok=True,
         )
-        await self._publish_history(utterance, session_id=session_id)
+        await self._publish_history(utterance, session_id=session_id, pending=pending)
 
     def _push(
         self,
@@ -360,14 +392,27 @@ class RoomClaudeRelay:
                 )
 
     async def _publish_history(
-        self, utterance: RoomClaudeUtteranceV1, *, session_id: Optional[str]
+        self,
+        utterance: RoomClaudeUtteranceV1,
+        *,
+        session_id: Optional[str],
+        pending: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Persist Claude's turn with the responder identity attached.
 
         `external_responder` is the field this feature adds: every stored room
         turn until now named who spoke *to* Orion and assumed Orion answered,
         which cannot express a third participant replying directly.
+
+        The prompt that asked for the reply (2026-11-12, open question 11) goes
+        in ``client_meta.room_claude.prompt``, NOT in the row's ``prompt``
+        column. That column is what makes a row a Juniper turn everywhere
+        else: orion-sql-writer's ``_memory_turn_initiator`` turns any row with
+        a prompt into memory, and every reader of chat_history_log treats it as
+        something Juniper said to Orion. A side exchange with Claude is neither.
         """
+        prompt = str((pending or {}).get("prompt") or "").strip()
+        invited_by = str((pending or {}).get("invited_by") or "").strip()
         try:
             from scripts.chat_history import build_chat_history_envelope, publish_chat_history
 
@@ -388,6 +433,8 @@ class RoomClaudeRelay:
                         "claude_session_id": utterance.claude_session_id,
                         "cost_usd": utterance.cost_usd,
                         "duration_ms": utterance.duration_ms,
+                        **({"prompt": prompt} if prompt else {}),
+                        **({"invited_by": invited_by} if invited_by else {}),
                     },
                 },
             )

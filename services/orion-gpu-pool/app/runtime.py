@@ -35,8 +35,9 @@ from orion.gpu_pool.discovery import Probe, resolve_roles
 from orion.gpu_pool.lease_graph import FINAL, InvalidTransition, initial_state
 from orion.gpu_pool.scheduler import (
     Abort, Backlog, CardLive, DeadLetter, Expire, Grant, LeaseView, Recall, Requeue, RoleLive,
-    Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, hold_cap, schedule,
+    Reordered, Serialized, Shed, SwapBlocked, SwapLoad, SwapUnload, Unavailable, hold_cap, queue_position, schedule,
 )
+from orion.gpu_pool.value_order import ValueOrderConfig, is_operator_class
 from orion.gpu_pool.orion_shed import (
     SHED_DECISION_REASON as ORION_SHED_DECISION_REASON, MemoryOrionShedLedger, OrionShedCaps,
     OrionShedController, OrionShedLedger,
@@ -45,6 +46,7 @@ from orion.gpu_pool.shed import REFLEX_REASONS, ShedBoard, ShedSignal
 from orion.schemas.hardware_watch import HardwareWatchIncidentV1, HardwareWatchReflexShedV1
 from orion.gpu_pool.config import SWAP_GUARDS
 from orion.gpu_pool.controller_health import ControllerHealth
+from orion.gpu_pool.perception_load import PerceptionLoad
 from orion.schemas.gpu_pool import (
     GPU_ACTUATE_KIND, GPU_POOL_ACTUATE_REQUEST_CHANNEL, GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND,
     GPU_POOL_STATE_CHANNEL, GPU_POOL_STATE_KIND,
@@ -160,12 +162,20 @@ class PoolRuntime:
                  orion_shed_caps: OrionShedCaps | None = None, orion_shed_ledger: OrionShedLedger | None = None,
                  controller_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
                  fault_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
-                 fault_alert_after_sec: float = 1800.0, fault_realert_sec: float = 21600.0):
+                 fault_alert_after_sec: float = 1800.0, fault_realert_sec: float = 21600.0,
+                 perception_alert: Callable[[str, str, dict[str, Any]], Awaitable[Any]] | None = None,
+                 perception_alert_held_sec_per_hour: float = 3360.0,
+                 perception_realert_sec: float = 21600.0,
+                 value_order: ValueOrderConfig | None = None, operator_last: bool = True):
         if mode not in POOL_MODES:
             raise ValueError(f"GPU_POOL_MODE must be one of {POOL_MODES}, got {mode!r}")
 
         self.cfg, self.profiles, self.store, self.graph, self.bus = cfg, profiles, store, graph, bus
         self.prober, self.now, self.mode = prober, now, mode
+        # Attention patch 3b: the background class is served by value (None: arrival order).
+        self.value_order = value_order
+        # Leased evals (2026-11-12): operator-class background leases queue behind all of Orion's own.
+        self.operator_last = operator_last
         self.service_name = service_name
         self.announce_stale_sec, self.probe_interval_sec = announce_stale_sec, probe_interval_sec
         self.state_publish_sec, self.replay_payload_max_bytes = state_publish_sec, replay_payload_max_bytes
@@ -226,6 +236,12 @@ class PoolRuntime:
         self._fault_since: dict[str, datetime] = {}
         self._fault_alerted_at: dict[str, datetime] = {}
         self._fault_why: dict[str, dict[str, Any]] = {}
+        # Perception load alert (body-economy design A0): perception leases are never shed by heat, so
+        # their own GPU use is watched instead -- a card when the last hour's held slot-seconds pass
+        # the ceiling, again every perception_realert_sec while still high, info when back under.
+        self.perception_alert = perception_alert
+        self.perception_load = PerceptionLoad(perception_alert_held_sec_per_hour)
+        self.perception_realert_sec = perception_realert_sec
         self._started = False
         self._recent_actions: dict[str, list[str]] = {}
         self._ctx_saved: dict[str, int] = {}
@@ -394,6 +410,12 @@ class PoolRuntime:
         async with self._locked("acquire"):
             if not req.work_class or req.work_class not in self.cfg.classes:
                 return GpuLeaseReplyV1(status="unavailable", reason=f"unknown_class:{req.work_class}")
+            if is_operator_class(req.work_class) and req.want_net is not None:
+                # Operator work (evals) never bids in Orion's want market (leased-evals design, C2).
+                return GpuLeaseReplyV1(status="unavailable", reason="operator_class_never_bids")
+            if is_operator_class(req.work_class) and req.priority != "background":
+                # ...and never outranks Orion's background work (C2): background only.
+                return GpuLeaseReplyV1(status="unavailable", reason="operator_class_background_only")
             roles = self.cfg.classes[req.work_class].roles
             if any(self.cfg.roles[r].operator_only for r in roles) and not operator:
                 return GpuLeaseReplyV1(status="unavailable", reason="operator_only_class")
@@ -604,6 +626,7 @@ class PoolRuntime:
             await self._check_actuation()
             await self._clear_faults()
             self._check_fault_alerts()
+            self._check_perception_load()
             self._phase("actuation", t)
             await self._schedule_and_apply()
             if self._last_state is None or (now - self._last_state).total_seconds() >= self.state_publish_sec:
@@ -630,7 +653,8 @@ class PoolRuntime:
         t = time.monotonic()
         decisions = schedule(self.cfg, self.roles, self.cards, [self._view(r) for r in rows], self.now(),
                              seen_ctx=self._ctx_seen, guards=self.guard_states, shed=shed.blocked,
-                             frozen=(self.actuated if self.paused is not None else frozenset()) | set(self._reconciling))
+                             frozen=(self.actuated if self.paused is not None else frozenset()) | set(self._reconciling),
+                             value=self.value_order, operator_last=self.operator_last)
         self._phase("schedule", t)
         self._phases["decisions"] = self._phases.get("decisions", 0) + len(decisions)
         swaps: set[tuple] = set()
@@ -642,6 +666,9 @@ class PoolRuntime:
                 if isinstance(d, Shed):
                     shed_now.add((d.lease_id, d.reason))
                     await self._report_shed(d, by_id.get(d.lease_id), shed)
+                    continue
+                if isinstance(d, Reordered):
+                    await self._report_reordered(d, by_id.get(d.lease_id))
                     continue
                 if isinstance(d, Serialized):
                     serialized.add((d.lease_id, d.reason))
@@ -771,6 +798,23 @@ class PoolRuntime:
             attempt=row.get("attempt"), reason=d.reason,
             detail={"shed": True, "shed_reason": name, "sources": [s["source_id"] for s in sources]}))
         self._shed_reported.add(key)   # only once sent: a failed publish is retried next tick
+
+    async def _report_reordered(self, d: Reordered, row: dict | None) -> None:
+        """Attention patch 3b: one ``pool_queue_reordered`` event per grant the value order decided
+        (emitted on the grant's tick only, so never repeated). Both lease ids, both nets and families,
+        and the margin, so every reorder can be inspected in gpu_pool_events."""
+        if row is None:
+            return
+        vo = self.value_order
+        detail = {"jumped_lease_id": d.jumped_lease_id, "net": d.net, "jumped_net": d.jumped_net,
+                  "family": d.family, "jumped_family": d.jumped_family, "want_id": row.get("want_id"),
+                  "margin": vo.margin if vo else None, "aging_per_h": vo.aging_per_h if vo else None}
+        logger.info("gpu_pool_queue_reordered lease=%s family=%s net=%.3f jumped=%s jumped_family=%s jumped_net=%s role=%s",
+                    d.lease_id, d.family, d.net, d.jumped_lease_id, d.jumped_family, d.jumped_net, d.role)
+        await self._emit(GpuPoolEventV1(
+            event="pool_queue_reordered", lease_id=d.lease_id, holder=row["holder"], work_class=row["work_class"],
+            priority=row["priority"], role=d.role, cards=list(self.cfg.roles[d.role].cards),
+            turn_correlation_id=row.get("turn_correlation_id"), reason="value_order", detail=detail))
 
     async def _report_serialized(self, d: Serialized, row: dict | None) -> None:
         """serialize_with (stage 5 Z1): a ``queued`` event naming the blocking role, once per lease
@@ -1166,6 +1210,30 @@ class PoolRuntime:
                          name, view.get("seat"), age / 60, view.get("reason"))
             self._fire_fault_alert(name, "faulted", view)
 
+    def _check_perception_load(self) -> None:
+        """Called every tick: alert when perception's last-hour GPU hold passes its ceiling (see __init__)."""
+        now = self.now()
+        state = self.perception_load.check(now, timedelta(seconds=self.perception_realert_sec))
+        if state is None:
+            return
+        view = {"held_sec_last_hour": round(self.perception_load.held_last_hour(now)),
+                "ceiling_sec": round(self.perception_load.ceiling_sec), "at": now.isoformat()}
+        log = logger.error if state == "high" else logger.info
+        log("gpu_pool_perception_load state=%s held_sec_last_hour=%s ceiling_sec=%s",
+            state, view["held_sec_last_hour"], view["ceiling_sec"])
+        if self.perception_alert is None:
+            return
+
+        async def send() -> None:
+            try:
+                await self.perception_alert("perception", state, view)
+            except Exception:  # noqa: BLE001
+                logger.exception("gpu_pool_perception_alert_failed state=%s", state)
+
+        task = asyncio.create_task(send())
+        self._alert_tasks.add(task)
+        task.add_done_callback(self._alert_tasks.discard)
+
     def _fire_fault_alert(self, card: str, state: str, view: dict[str, Any]) -> None:
         """Fire-and-forget, like the controller alert. An undelivered "faulted" card is retried in
         ~10 min (not on every tick, and not only after fault_realert_sec)."""
@@ -1536,6 +1604,13 @@ class PoolRuntime:
                 names.append(outcome)
         for name in names:
             await self._emit_row(name, row, prior=prior, reason=row.get("reason") or event.get("reason"))
+        # Perception load (body-economy A0): once per transition -- one transition can emit two names
+        # (expired+released) -- and only when the lease actually leaves a slot it held. granted_at is
+        # never cleared, so a retry_wait lease being released must not count its old grant again.
+        if (row.get("priority") == "perception" and prior and prior.get("granted_at")
+                and prior.get("status") in ("granted", "recalling")
+                and row["status"] not in ("granted", "recalling")):
+            self.perception_load.record(self.now(), (self.now() - prior["granted_at"]).total_seconds())
         return row
 
     async def _sync_row(self, lease_id: str) -> dict | None:
@@ -1572,6 +1647,8 @@ class PoolRuntime:
             "parent_lease_id": parent_lease_id or request.get("parent_lease_id"),
             "hold_lease_id": request.get("hold_lease_id"),
             "reason": values.get("reason"), "updated_at": self.now(),
+            "want_id": request.get("want_id"), "want_net": request.get("want_net"),
+            "want_family": request.get("want_family"),
         }
 
     @staticmethod
@@ -1585,7 +1662,7 @@ class PoolRuntime:
             granted_at=row.get("granted_at"), expires_at=row.get("expires_at"),
             operator=bool(row.get("operator")), retryable=bool(row.get("retryable")),
             kind=row.get("kind") or "request", hold_lease_id=row.get("hold_lease_id"),
-            reason=row.get("reason"),
+            reason=row.get("reason"), want_net=row.get("want_net"), want_family=row.get("want_family"),
         )
 
     # --- replies ------------------------------------------------------------------------
@@ -1620,11 +1697,12 @@ class PoolRuntime:
         return GpuLeaseReplyV1(status="unavailable", lease_id=row["lease_id"], reason=row.get("reason") or status)
 
     async def _position(self, row: dict) -> int:
-        rank = self.cfg.priority_rank
-        mine = (rank(row["priority"]), row["created_at"])
-        return 1 + sum(1 for r in await self.store.live_leases()
-                       if r["status"] == "queued" and r["work_class"] == row["work_class"]
-                       and (rank(r["priority"]), r["created_at"]) < mine)
+        """Place among the queued leases of the row's class, in the grant pass's own order (by value
+        inside the background class when ``value_order`` is on)."""
+        peers = [self._view(r) for r in await self.store.live_leases()
+                 if r["status"] == "queued" and r["work_class"] == row["work_class"] and r["lease_id"] != row["lease_id"]]
+        return queue_position(self.cfg, peers + [self._view(row)], row["lease_id"], self.now(), self.value_order,
+                              self.operator_last) or 1
 
     # --- state + events ---------------------------------------------------------------
     async def snapshot(self, include_leases: bool = True, include_config: bool = False,

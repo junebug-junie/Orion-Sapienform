@@ -45,7 +45,7 @@ def make(store=None, saver=None, clock=None, world=None, bus=None, guards=CLEAR_
         _, file, slots, ctx = LIVE2[role]
         return Probe(True, {"model_path": f"/models/gguf/{file}", "total_slots": slots,
                             "default_generation_settings": {"n_ctx": ctx}, "modalities": {"vision": False}},
-                     checked_at=clock())
+                     checked_at=clock(), backend=CFG.roles[role].backend)
 
     cfg = cfg or CFG
     rt = PoolRuntime(cfg=cfg, profiles=PROFILES, store=store or MemoryStore(),

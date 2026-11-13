@@ -1,4 +1,4 @@
-"""PersonalityChoiceV1 (PR #2726 P0) is in both schema registries; the nested ChoiceOptionV1
+"""PersonalityChoiceV1 (personality rev 4) is in both schema registries and on its bus channel; the nested ChoiceOptionV1
 is in `_REGISTRY` only, per registry convention for nested payload models.
 
 Lives here, not in orion/personality/tests: importing the registry pulls every schema module,
@@ -24,3 +24,18 @@ def test_personality_frame_contracts_resolve():
     for name, model in (("DispositionV1", DispositionV1), ("ChoiceStyleV1", ChoiceStyleV1), ("PersonalityCueV1", PersonalityCueV1)):
         assert resolve(name) is model
         assert name not in SCHEMA_REGISTRY
+
+
+def test_choice_channel_is_catalogued():
+    """Rev 4: producers publish PersonalityChoiceV1 on orion:personality:choice; durable-runs consumes."""
+    from pathlib import Path
+
+    import yaml
+
+    from orion.schemas.personality import PERSONALITY_CHOICE_CHANNEL, PERSONALITY_CHOICE_KIND
+
+    doc = yaml.safe_load((Path(__file__).resolve().parents[1] / "orion/bus/channels.yaml").read_text())
+    entries = doc["channels"] if isinstance(doc, dict) else doc
+    (entry,) = [c for c in entries if c["name"] == PERSONALITY_CHOICE_CHANNEL]
+    assert entry["schema_id"] == "PersonalityChoiceV1" and entry["message_kind"] == PERSONALITY_CHOICE_KIND
+    assert entry["consumer_services"] == ["orion-durable-runs"]

@@ -46,24 +46,40 @@ def _decide(policy: FrameDispatchPolicy, state: RouterState, now: float = 100.0)
 
 
 class _FakePipe:
-    def __init__(self, keys: set[str], fail: bool = False) -> None:
-        self.keys, self.fail, self.asked = keys, fail, []
+    """exists/get/pttl over a key set (presence keys) and a value dict (key -> (value, pttl_ms))."""
+
+    def __init__(self, keys: set[str], fail: bool = False, values: dict | None = None) -> None:
+        self.keys, self.fail, self.values, self.asked = keys, fail, values or {}, []
 
     def exists(self, key: str) -> None:
-        self.asked.append(key)
+        self.asked.append(("exists", key))
+
+    def get(self, key: str) -> None:
+        self.asked.append(("get", key))
+
+    def pttl(self, key: str) -> None:
+        self.asked.append(("pttl", key))
 
     async def execute(self):
         if self.fail:
             raise ConnectionError("redis down")
-        return [1 if k in self.keys else 0 for k in self.asked]
+        out = []
+        for op, k in self.asked:
+            if op == "exists":
+                out.append(1 if k in self.keys or k in self.values else 0)
+            elif op == "get":
+                out.append(self.values[k][0] if k in self.values else None)
+            else:
+                out.append(self.values[k][1] if k in self.values else -2)
+        return out
 
 
 class _FakeRedis:
-    def __init__(self, keys: set[str], fail: bool = False) -> None:
-        self.keys, self.fail = keys, fail
+    def __init__(self, keys: set[str], fail: bool = False, values: dict | None = None) -> None:
+        self.keys, self.fail, self.values = keys, fail, values or {}
 
     def pipeline(self) -> _FakePipe:
-        return _FakePipe(self.keys, self.fail)
+        return _FakePipe(self.keys, self.fail, self.values)
 
 
 class _HangingPipe(_FakePipe):
@@ -104,8 +120,9 @@ def test_walkway_dog_triggers_captioned_tier() -> None:
     assert d.request_overrides["want_crop_faces"] is True
 
 
-def test_cam0_trigger_labels_unchanged() -> None:
-    assert _policy().trigger_labels_for("cam0", "cam0") == ["person"]
+def test_cam0_trigger_labels_are_person_and_dog() -> None:
+    # 2026-11-04 walkway parity: a dog in the room triggers like a person.
+    assert _policy().trigger_labels_for("cam0", "cam0") == ["person", "dog"]
 
 
 def test_open_expectation_selects_triggered_tier_and_is_traced() -> None:
@@ -153,14 +170,16 @@ def test_hung_redis_clears_open_expectations() -> None:
     assert not cache.is_open("walkway") and cache.refresh_failures == 1
 
 
-def test_room_cameras_never_ask_for_crop_faces() -> None:
+def test_only_named_cameras_ask_for_crop_faces() -> None:
     import yaml
 
     raw = yaml.safe_load(CFG.read_text(encoding="utf-8"))
     sections = {**(raw.get("streams") or {}), **(raw.get("cameras") or {}), "defaults": raw.get("defaults")}
-    # Outdoor cameras only: the walkway, and (2026-10-17) the Ring doorbell,
-    # which gets the walkway's treatment by Juniper's request.
-    outdoor = {"walkway", "doorbell"}
+    # The walkway, (2026-10-17) the Ring doorbell, and (2026-11-04) the room
+    # camera cam0 get the walkway's treatment, each by Juniper's request.
+    # Everything else -- carbon, Juniper's laptop webcam, and the defaults --
+    # never asks for faces.
+    outdoor = {"walkway", "doorbell", "cam0"}
     assert outdoor <= set(sections)
     for name, cfg in sections.items():
         if name in outdoor:

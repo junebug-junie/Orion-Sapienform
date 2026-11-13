@@ -27,9 +27,8 @@ description for this patch):
    removed from every domain's decay set 2026-07-26
    (`services/orion-field-digester/app/digestion/decay.py::NODE_DECAY_CHANNELS`)
    so it is an undecayed raw snapshot for every domain, not just
-   `node:substrate.bus_synaptic` -- the same `STALENESS_HORIZON_SEC` guard
-   `orion.substrate.bus_synaptic_surprise.latest_bus_synaptic_prediction_error`
-   already applies is reused here rather than re-derived.
+   `node:substrate.bus_synaptic` -- so a row older than `STALENESS_HORIZON_SEC`
+   (the field's own decay horizon) reads as unavailable, not as calm.
 
 2. `orion_biometrics_induction`'s per-channel windowed stats
    (`metrics.<channel>.{level, trend, spike_rate, volatility}`), one row per
@@ -50,7 +49,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from orion.substrate.bus_synaptic_surprise import STALENESS_HORIZON_SEC
+from orion.substrate.prediction_error_freshness import PE_STALENESS_HORIZON_SEC as STALENESS_HORIZON_SEC
 
 # Fixed per this patch's Tier-1 scope (design doc's own two named candidates) --
 # not operator-configurable, unlike the biometrics_induction node list below,
@@ -69,8 +68,7 @@ def latest_node_prediction_errors(
     """Latest real `prediction_error` value per requested `substrate_field_state`
     node id, read off the single most recent row.
 
-    Same undecayed-raw-snapshot staleness contract as
-    `latest_bus_synaptic_prediction_error`: a row older than
+    Undecayed-raw-snapshot staleness contract: a row older than
     `STALENESS_HORIZON_SEC` returns `None` for every requested node (all-or-
     nothing on row age, not per-node -- there is only one row to be stale),
     so "no real signal available" stays distinguishable from "genuinely calm".

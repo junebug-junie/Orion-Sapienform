@@ -13,12 +13,14 @@ PROCS_OUTFILE="$OUTDIR/${TIMESTAMP}.procs.csv"
 
 # temperature_gpu_c is the LAST column on purpose: readers that predate it (csv.DictReader by
 # header name) are unaffected. Added for orion-hardware-watch's GPU heat rule (2026-09-29).
-echo "timestamp,gpu_index,gpu_uuid,gpu_name,utilization_gpu,memory_used_mb,memory_total_mb,power_draw_watts,temperature_gpu_c" > "$OUTFILE"
+# power_limit_watts comes after it for the same reason: the card's enforced limit, so the cap held by
+# orion-gpu-power-limits (config/gpu_power_limits.json) can be checked next to the draw (2026-10-29).
+echo "timestamp,gpu_index,gpu_uuid,gpu_name,utilization_gpu,memory_used_mb,memory_total_mb,power_draw_watts,temperature_gpu_c,power_limit_watts" > "$OUTFILE"
 
-nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu \
+nvidia-smi --query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,power.draw,temperature.gpu,power.limit \
            --format=csv,noheader,nounits \
-| while IFS=',' read -r index uuid name util mem_used mem_total power temp; do
-    echo "$TIMESTAMP,$index,$uuid,$name,$util,$mem_used,$mem_total,$power,$temp" >> "$OUTFILE"
+| while IFS=',' read -r index uuid name util mem_used mem_total power temp limit; do
+    echo "$TIMESTAMP,$index,$uuid,$name,$util,$mem_used,$mem_total,$power,$temp,$limit" >> "$OUTFILE"
 done
 
 # Per-GPU compute-process list, joined back to the row above by gpu_uuid (not

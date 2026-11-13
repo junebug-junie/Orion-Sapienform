@@ -4,6 +4,7 @@ import threading
 
 import hashlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,6 +18,7 @@ import torch
 from orion.vision.caption_echo import CAPTION_PROMPT, strip_echoed_prompt_prefix
 
 from .artifacts import merge_result_inputs
+from .box_thresholds import apply_box_thresholds, resolve_box_thresholds
 from .caption_sanitize import sanitize_answer, sanitize_caption
 from .crop_embeddings import (
     ThumbRateLimiter,
@@ -25,7 +27,7 @@ from .crop_embeddings import (
     crop_faces,
     load_zones_fail_closed,
 )
-from .detections import cap_by_score, nms
+from .detections import cap_by_score, drop_undersized, nms
 from .gdino import detect_images
 from .tiling import (
     merge_tiled_detections,
@@ -95,25 +97,46 @@ def _thumb_store() -> ThumbStore | None:
     return _THUMB_STORE
 
 
-def _resolve_latest_frame_path() -> Path:
+# The camera "look now" means when the caller names none: the office camera.
+LATEST_FRAME_DEFAULT_STREAM = "cam0"
+
+
+def _latest_frame_prefix(stream_id: str) -> str:
+    """File prefix of one camera's frames: retina naming ``<camera>_<stream>_``
+    (orion-vision-retina app/frame_store.py; every camera's retina uses its
+    stream id as its camera id)."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stream_id).strip("_") or "unknown"
+    return f"{safe}_{safe}_"
+
+
+def _resolve_latest_frame_path(stream_id: str | None = None) -> Path:
     """The "on-demand capture" primitive P1's design doc calls for --
     docs/superpowers/specs/2026-08-12-perception-frontier-design.md names
     this explicitly as separate, larger work from the passive window/
     council pipeline ("bypassing window/council... a direct vision-host
-    RPC"). Doesn't trigger a NEW capture (vision-edge already captures
-    continuously regardless of any downstream consumer, confirmed live at
-    ~5s cadence) -- resolves to whatever it captured most recently, which
-    for a slow-moving room is the practical equivalent of "look now" without
-    inventing a second capture path. Raises (not a fabricated/empty result)
-    if the frames directory is empty or unreadable -- an honest "nothing to
-    look at" is the caller's problem to handle, not this function's to hide.
+    RPC"). Doesn't trigger a NEW capture (the camera's retina captures
+    continuously regardless of any downstream consumer) -- resolves to the
+    newest frame of ONE camera, ``stream_id`` (default: the office camera,
+    cam0), which for a slow-moving room is the practical equivalent of "look
+    now" without inventing a second capture path. Raises (not a
+    fabricated/empty result) if that camera has no frame -- an honest
+    "nothing to look at" is the caller's problem to handle, not this
+    function's to hide.
+
+    One camera, never "the newest file" (2026-11-04): the frames directory
+    is shared by every athena retina. The walkway writes 2 frames/s there,
+    so once the office camera moved from orion-vision-edge (15 frames/s) to
+    its own 2 frames/s retina, "look at the room" would have answered from
+    the walkway about half the time.
     """
     frames_dir = Path(settings.VISION_FRAMES_DIR)
     if not frames_dir.is_dir():
         raise FileNotFoundError(f"frames directory not found: {frames_dir}")
-    candidates = sorted(frames_dir.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    stream = str(stream_id or "").strip() or LATEST_FRAME_DEFAULT_STREAM
+    prefix = _latest_frame_prefix(stream)
+    candidates = sorted(frames_dir.glob(f"{prefix}*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
     if not candidates:
-        raise FileNotFoundError(f"no frames found in: {frames_dir}")
+        raise FileNotFoundError(f"no frames found for stream {stream!r} in: {frames_dir}")
     return candidates[0]
 
 
@@ -184,7 +207,8 @@ def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
       request.image_path (preferred)
       request.frame_path (alias)
       request.use_latest_frame: true -- resolves to the most recently
-        captured frame instead of a caller-supplied path (see
+        captured frame of request.stream_id (default cam0, the office camera)
+        instead of a caller-supplied path (see
         _resolve_latest_frame_path). Opt-in, not a silent fallback when
         image_path is merely absent -- every existing caller that relies on
         the prior "image_path is required" error for a genuinely missing
@@ -200,7 +224,7 @@ def _load_image_from_request(request: Dict[str, Any]) -> Image.Image:
             # percept store expires its own copy on its own schedule.
             return _load_image_from_percept_store(sha)
         if request.get("use_latest_frame"):
-            p = _resolve_latest_frame_path()
+            p = _resolve_latest_frame_path(request.get("stream_id"))
             img = Image.open(p).convert("RGB")
             return img
         raise ValueError(
@@ -808,9 +832,12 @@ class VisionRunner:
 
         # `score_threshold` is the historical spelling in vision_profiles.yaml and
         # was silently ignored; honour it as an alias so the documented knob works.
-        box_th = float(
-            p.params.get("box_threshold", p.params.get("score_threshold", 0.25))
-        )
+        # Per-stream, per-label cut-offs (app/box_thresholds.py): the detector
+        # runs at the lowest cut-off that applies, then each box must reach its
+        # own label's. box_th stays this stream's default (reported as before).
+        thresholds = resolve_box_thresholds(p.params, request.get("stream_id"))
+        box_th = thresholds.default
+        detect_th = thresholds.floor
         text_th = float(p.params.get("text_threshold", 0.25))
         max_det = int(p.params.get("max_detections", 30))
         nms_iou = float(p.params.get("nms_iou", 0.6))
@@ -825,8 +852,12 @@ class VisionRunner:
         def _cast(inputs: Dict[str, Any]) -> Dict[str, Any]:
             return self._cast_inputs_to_model_dtype(inputs, model, device)
 
+        def _detect(images: List[Any]) -> List[List[Dict[str, Any]]]:
+            raw = detect_images(model, processor, images, text, detect_th, text_th, device, _cast)
+            return [apply_box_thresholds(objs, thresholds) for objs in raw]
+
         t_full = time.perf_counter()
-        objects = detect_images(model, processor, [img], text, box_th, text_th, device, _cast)[0]
+        objects = _detect([img])[0]
         full_s = time.perf_counter() - t_full
 
         # Tiled full-resolution pass (walkway only: the router sets
@@ -845,7 +876,7 @@ class VisionRunner:
                 t_tiles = time.perf_counter()
                 budget = tp["time_budget_s"]
                 if tp["batch"]:
-                    per_tile = detect_images(model, processor, crops, text, box_th, text_th, device, _cast)
+                    per_tile = _detect(crops)
                 else:
                     # Sequential, with a wall-clock budget: once the tiles
                     # have used it up, the rest are skipped so a slow GPU
@@ -854,7 +885,7 @@ class VisionRunner:
                     for c in crops:
                         if budget > 0 and per_tile and time.perf_counter() - t_tiles >= budget:
                             break
-                        per_tile.append(detect_images(model, processor, [c], text, box_th, text_th, device, _cast)[0])
+                        per_tile.append(_detect([c])[0])
                 tiles_s = time.perf_counter() - t_tiles
                 tile_objs = [
                     to_frame_coords(o, t, img.width, img.height)
@@ -893,18 +924,25 @@ class VisionRunner:
             if tiling_stats and "tile_raw" in tiling_stats
             else len(objects)
         )
+        # Per-camera size floor (cam0: a desk photo of two people read as two
+        # tiny `person` boxes). See detections.drop_undersized.
+        floors = p.params.get("min_box_long_side_frac_by_stream") or {}
+        size_floor = floors.get(str(request.get("stream_id") or "")) if isinstance(floors, dict) else None
+        objects, undersized_dropped = drop_undersized(objects, size_floor or {}, img.width, img.height)
         objects = nms(objects, nms_iou)
         objects = cap_by_score(objects, max_det)
         if raw_count != len(objects):
             logger.debug(
-                f"[DETECT] profile={p.name} raw={raw_count} after_nms_and_cap={len(objects)} "
-                f"nms_iou={nms_iou} max_det={max_det}"
+                f"[DETECT] profile={p.name} raw={raw_count} undersized_dropped={undersized_dropped} "
+                f"after_nms_and_cap={len(objects)} nms_iou={nms_iou} max_det={max_det}"
             )
 
         crop_stats = None
         if request.get("want_crop_embeddings") is True and objects:
             try:
-                crop_stats = self._attach_crop_embeddings(p, objects, img, request, device, box_th)
+                # detect_th: every box that survived its own label's cut-off
+                # is eligible for a crop (equal to box_th when no label is lower).
+                crop_stats = self._attach_crop_embeddings(p, objects, img, request, device, detect_th)
             except Exception as exc:
                 # A crop-embedding failure must not cost the detection or the
                 # whole-frame embedding. Strip any partial vectors.
@@ -928,9 +966,11 @@ class VisionRunner:
             "model_id": model_id,
             "prompts": prompts,
             "box_threshold": box_th,
+            "box_threshold_by_label": dict(thresholds.by_label),
             "text_threshold": text_th,
             "nms_iou": nms_iou,
             "max_detections": max_det,
+            "undersized_dropped": undersized_dropped,
             # Crop vectors ride the bus inline (VisionObject.embedding); the
             # on-disk debug copy keeps the ref only, not a second vector store.
             "objects": [{k: v for k, v in o.items() if k not in ("embedding", "face_embedding", "osnet_embedding")}

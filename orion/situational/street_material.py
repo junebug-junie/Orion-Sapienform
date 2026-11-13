@@ -77,17 +77,96 @@ def detector_labels_from_tags(raw: Any) -> list[str]:
 CAPTION_LABELS_NAMED = 3
 
 
-def label_camera_caption(text: str, detector_labels: Sequence[str], *, at: str | None = None) -> str:
+# Motion cross-check tags (orion-sql-writer app/vision_caption_motion.py,
+# 2026-10-23): a later reducer compares a caption's motion claim with the motion
+# story of the caption's own box. One definition, writer and readers.
+CAPTION_MOTION_CONTRADICTED_TAG = "motion_contradicted"
+CAPTION_MOTION_SUPPORTED_TAG = "motion_supported"
+# "motion_check:<kind>:<claim word>:<speed_class>", contradicted claims first.
+CAPTION_MOTION_CHECK_TAG_PREFIX = "motion_check:"
+
+
+@dataclass(frozen=True)
+class CaptionMotionCheck:
+    """A camera caption's motion claim, checked against its motion story."""
+
+    contradicted: bool
+    kind: str  # story kind ("vehicle")
+    word: str  # the caption's claim word ("driving")
+    speed_class: str  # the story's speed class ("parked")
+
+
+def caption_motion_check_from_tags(raw: Any) -> CaptionMotionCheck | None:
+    """The row's motion cross-check, or None when it was not decided (no
+    verdict tag, or a verdict without a readable detail tag). The first
+    detail tag is the one the verdict rests on (the writer puts
+    contradicted claims first)."""
+    tags = _tags(raw)
+    if CAPTION_MOTION_CONTRADICTED_TAG in tags:
+        contradicted = True
+    elif CAPTION_MOTION_SUPPORTED_TAG in tags:
+        contradicted = False
+    else:
+        return None
+    for tag in tags:
+        if tag.startswith(CAPTION_MOTION_CHECK_TAG_PREFIX):
+            parts = [p.strip() for p in tag[len(CAPTION_MOTION_CHECK_TAG_PREFIX):].split(":")]
+            if len(parts) == 3 and all(parts):
+                return CaptionMotionCheck(contradicted, parts[0], parts[1], parts[2])
+    return None
+
+
+def caption_motion_phrase(check: CaptionMotionCheck | None) -> str:
+    """'caption said driving; the vehicle did not move' / '...; the person
+    did move'. 'motion not verified' when there is no decided check."""
+    if check is None:
+        return "motion not verified"
+    outcome = "did not move" if check.contradicted else "did move"
+    return f"caption said {check.word}; the {check.kind} {outcome}"
+
+
+# A people count in a street narrative ("Two persons are observed walking",
+# council row 2026-10-16) is what ONE frame showed, not how many people were
+# there or passed: the camera splits and merges people (PR #2781 range rule).
+# The detector is the rollup's own (`walkway_rollup.bare_people_counts`), so
+# the readers and the rollup's anti-invention guard agree on what a bare
+# people count is. No second word list.
+ONE_FRAME_COUNT_NOTE = "count from one frame"
+
+
+def one_frame_count_note(text: str) -> str:
+    """ONE_FRAME_COUNT_NOTE when `text` states a bare people count, else ""."""
+    from orion.vision.walkway_rollup import bare_people_counts
+
+    return ONE_FRAME_COUNT_NOTE if bare_people_counts(text or "") else ""
+
+
+def label_camera_caption(
+    text: str,
+    detector_labels: Sequence[str],
+    *,
+    at: str | None = None,
+    motion_check: CaptionMotionCheck | None = None,
+    count_note: str | None = None,
+) -> str:
     """'camera caption[ logged HH:MM] (one frame; detector saw person,
     stroller; motion not verified): "A person is pushing a stroller…"'.
-    `at` is the row's write time (seconds after the frame), hence "logged"."""
+    `at` is the row's write time (seconds after the frame), hence "logged".
+    With a decided `motion_check` the motion part says what the motion
+    story showed: "caption said driving; the vehicle did not move". A bare
+    people count in the text adds ONE_FRAME_COUNT_NOTE (`count_note`: the note
+    computed on the unclipped text; None = compute it from `text`)."""
     when = f" logged {at}" if at else ""
     labels = list(detector_labels)
     named = ", ".join(labels[:CAPTION_LABELS_NAMED])
     if len(labels) > CAPTION_LABELS_NAMED:
         named += f" +{len(labels) - CAPTION_LABELS_NAMED}"
     saw = f"detector saw {named}; " if labels else ""
-    return f'camera caption{when} (one frame; {saw}motion not verified): "{text}"'
+    count = one_frame_count_note(text) if count_note is None else count_note
+    count = f"; {count}" if count else ""
+    return f'camera caption{when} (one frame; {saw}{caption_motion_phrase(motion_check)}{count}): "{text}"'
+
+
 GRADED_STATUSES: tuple[str, ...] = ("met", "missed")
 CALIBRATION_LOOKBACK_DAYS = 14
 
@@ -121,6 +200,11 @@ def _norm_key(text: str) -> str:
     return "".join(ch for ch in text.lower() if ch.isalnum() or ch == " ").strip()
 
 
+def _note_council_count(text: str, note: str) -> str:
+    """A council narrative, with `note` (ONE_FRAME_COUNT_NOTE or "") appended."""
+    return f"{text.rstrip('.')} ({note})" if note else text
+
+
 def dedupe_street_captions(
     rows: Iterable[Mapping[str, Any]],
     *,
@@ -147,8 +231,12 @@ def dedupe_street_captions(
     filling the list with captions and pushing out the council's narrative.
 
     Returns `{narrative, observed_at, age_sec, stream_id, event_id,
-    event_type, caption_text, detector_labels}`, newest first; `caption_text`
-    and `detector_labels` are the unlabelled parts (camera captions only).
+    event_type, caption_text, detector_labels, motion_check, count_note,
+    plain_text}`, newest first;
+    `caption_text`, `detector_labels` and `motion_check` (the motion
+    cross-check, or None) are the unlabelled parts (camera captions only);
+    `plain_text` is the clipped text and `count_note` the one-frame count note
+    ("" when none) of any row.
     """
     if limit <= 0:
         return []
@@ -179,9 +267,13 @@ def dedupe_street_captions(
             camera_kept += 1
         seen.add(key)
         labels = detector_labels_from_tags(row.get("tags")) if is_caption else []
+        motion = caption_motion_check_from_tags(row.get("tags")) if is_caption else None
+        # On the unclipped text: a clip can cut a range phrase off a count, or the count itself.
+        count = one_frame_count_note(" ".join(str(row.get("narrative") or "").split()))
         out.append(
             {
-                "narrative": label_camera_caption(text, labels) if is_caption else text,
+                "narrative": (label_camera_caption(text, labels, motion_check=motion, count_note=count)
+                              if is_caption else _note_council_count(text, count)),
                 "observed_at": ts,
                 "age_sec": max(0.0, (now - ts).total_seconds()),
                 "stream_id": str(row.get("stream_id") or ""),
@@ -189,11 +281,24 @@ def dedupe_street_captions(
                 "event_type": event_type,
                 "caption_text": text if is_caption else None,
                 "detector_labels": labels,
+                "motion_check": motion,
+                "count_note": count,
+                "plain_text": text,
             }
         )
         if len(out) >= limit:
             break
     return out
+
+
+# _shrink never clips a text below this many characters.
+SHRINK_FLOOR_CHARS = 40
+
+
+def _shrink(text: str, by: int) -> str:
+    if by <= 0 or len(text) <= SHRINK_FLOOR_CHARS:
+        return text
+    return _clean(text, max(SHRINK_FLOOR_CHARS, len(text) - by))
 
 
 def street_caption_line(
@@ -204,12 +309,21 @@ def street_caption_line(
     renders with its frame's local time when `tz` is given."""
     texts: list[str] = []
     for c in captions or ():
+        note = str(c.get("count_note") or "")
         if c.get("event_type") == CAMERA_CAPTION_EVENT_TYPE and c.get("caption_text"):
             at = None
             observed = _utc(c.get("observed_at"))
             if observed is not None and tz is not None:
                 at = f"{observed.astimezone(tz):%H:%M}"
-            texts.append(label_camera_caption(str(c["caption_text"]), c.get("detector_labels") or [], at=at))
+            motion = c.get("motion_check")
+            # A longer label (motion verdict, count note) takes its room from
+            # the caption text, so the line keeps the brief's length budget.
+            extra = len(caption_motion_phrase(motion)) - len(caption_motion_phrase(None))
+            extra += len(note) + 2 if note else 0
+            texts.append(label_camera_caption(_shrink(str(c["caption_text"]), extra), c.get("detector_labels") or [],
+                                              at=at, motion_check=motion, count_note=note))
+        elif note and c.get("plain_text"):
+            texts.append(_note_council_count(_shrink(str(c["plain_text"]), len(note) + 3), note).rstrip("."))
         else:
             texts.append(str(c.get("narrative") or "").strip().rstrip("."))
     texts = [t for t in texts if t]

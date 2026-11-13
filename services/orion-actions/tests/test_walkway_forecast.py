@@ -317,6 +317,10 @@ def test_guard_replaces_prose_with_an_invented_number_and_keeps_honest_prose() -
     # Other journal kinds are never touched.
     other = trigger.model_copy(update={"trigger_kind": "daily_summary"})
     assert wf.guard_walkway_draft(invented, other) == (invented, [])
+    # Dogs are a range too (2026-10-29): one bare number of dogs is refused like people.
+    dogs = JournalEntryDraftV1(mode="digest", title="The street today", body="185 passings and 6 dogs today.")
+    _, bad = wf.guard_walkway_draft(dogs, trigger)
+    assert "6 dogs" in bad
 
 
 # A day row as rules_version 1 wrote it (before people became a range, 2026-10-20).
@@ -370,3 +374,24 @@ def test_days_watched_counts_frame_minutes_not_sightings_or_rollup_rows() -> Non
     assert "FROM vision_scene_inventory" in sql and "vision_individual_sighting" not in sql
     assert "vision_rollup" not in sql  # independent of how far the rollups were backfilled
     assert "up_minutes >= %(min_up)s" in sql and wf.WATCHED_MIN_UP_MINUTES == 60
+
+
+def test_compact_facts_carry_belongings_without_ids() -> None:
+    facts = wf.compact_rollup_facts({
+        "label": "2026-10-17", "named": {"Robin": {"times": ["09:03"], "individual_ids": ["r1"]}},
+        "belongings": {"Sam": {"times": ["17:09"], "sightings": 1, "kinds": ["bicycle"],
+                               "individual_ids": ["bike"], "person_ids": ["person-sam"]}}})
+    assert facts["belongings"] == {"Sam": {"times": ["17:09"], "sightings": 1, "kinds": ["bicycle"]}}
+    assert "bike" not in json.dumps(facts)
+
+
+def test_regulars_facts_give_no_number_for_people_or_dogs() -> None:
+    """2026-11-03: a regular is an unnamed cluster seen on 2+ days; one person splits into several,
+    so the journal facts say only that some people were regulars. Things keep their counts."""
+    row = _rollup_row()
+    row["rollup"]["regulars"] = {"count": 71, "by_kind": {"person": 9, "dog": 2, "vehicle": 60}, "ids": ["x"]}
+    facts = wf.compact_rollup_facts(row["rollup"])
+    assert facts["unnamed_regulars"] == {"things_by_kind": {"vehicle": 60},
+                                         "living_kinds_seen_before": ["dog", "person"]}
+    blob = json.dumps(facts["unnamed_regulars"])
+    assert "71" not in blob and "9" not in blob

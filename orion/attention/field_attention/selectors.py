@@ -40,13 +40,14 @@ ObservationMode = Literal["watch", "inspect", "summarize", "ignore"]
 # same "fake signal winning real budget slots" disease this whole patch
 # exists to stop, already killed once at the source. Adding it back here
 # would silently resurrect a signal that was correctly retired elsewhere,
-# not fill a real gap. `bus_synaptic` is its real successor and is included.
+# not fill a real gap. Its successor `bus_synaptic` and `route` were retired
+# 2026-11 (PE suite rebuild step 5) and left this map; the field digester
+# prunes both node ids (RETIRED_PSEUDO_NODES), so neither can come back as a
+# host novelty target through select_host_targets either.
+# node:substrate.chat left 2026-11-13 (retire step 6; pruned by the digester too).
 PREDICTION_ERROR_NATIVE_TARGETS: dict[str, str] = {
     "node:substrate.biometrics": "node_biometrics",
     "node:substrate.execution": "execution_trajectory",
-    "node:substrate.chat": "chat_session",
-    "node:substrate.route": "route_arbitration",
-    "node:substrate.bus_synaptic": "bus_synaptic",
 }
 
 # Same discipline as scripts/analysis/measure_precision_weighted_salience_probe.py's
@@ -529,9 +530,10 @@ def world_first_targets(
         SOURCE_KIND_REF_PREFIX,
         WORLD_CHAT_SOURCE_ID,
         rank_candidates,
+        yield_reading_to_chat,
     )
 
-    ranking = rank_candidates(candidates)
+    ranking = yield_reading_to_chat(rank_candidates(candidates))
     attended: list[FieldAttentionTargetV1] = []
     observed: list[FieldAttentionTargetV1] = []
     for verdict in (*ranking.eligible, *ranking.ineligible):

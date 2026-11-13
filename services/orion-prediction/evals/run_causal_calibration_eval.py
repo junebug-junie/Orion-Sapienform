@@ -38,6 +38,20 @@ def switchback_trial(effect: float, seed: int) -> tuple[bool, float]:
     return bool(est.ci_lo <= effect <= est.ci_hi), est.p_value
 
 
+def runner_trial(effect: float, seed: int) -> tuple[bool, float]:
+    """The vision focus runner's shape: 12 blocks x 20 min, 10 min burn-in, 5-min grain, a cabinet-like
+    random walk, and an effect that ramps in over ~10 min (thermal lag) after each ON switch."""
+    d = design_switchback(T0 + timedelta(days=14), 20, 12, seed=seed)
+    s = daily_series(15, amp=1.0, noise=0.05, walk=0.01, seed=seed)
+    for b in d["blocks"]:
+        if b["arm"] == "on":
+            m = (s.index >= pd.Timestamp(b["start"])) & (s.index < pd.Timestamp(b["end"]))
+            s[m] += effect * np.minimum(1.0, (np.arange(m.sum()) + 1) / 2)
+    prof = time_of_day_profile(s[s.index < pd.Timestamp(d["blocks"][0]["start"])], 5)
+    est = analyze_switchback(s, d["blocks"], 10, 5, prof, n_perm=1000, seed=seed)
+    return bool(est.ci_lo <= effect <= est.ci_hi), est.p_value
+
+
 def its_trial(effect: float, seed: int) -> bool | None:
     sp = spec()
     s = daily_series(14, amp=1.0, noise=0.08, walk=0.005, seed=seed)
@@ -66,6 +80,18 @@ def main() -> int:
         failures.append("switchback interval under-covers")
     if np.mean(fpr) > 0.12:
         failures.append("switchback null false-positive rate too high")
+    # The runner's own design (12 x 20 min): a planted 0.6 is detected, zero stays zero.
+    r_hit = [runner_trial(0.6, 2000 + s) for s in range(args.seeds)]
+    r_null = [runner_trial(0.0, 3000 + s)[1] < 0.05 for s in range(args.seeds)]
+    power = np.mean([p < 0.05 for _, p in r_hit])
+    print(f"runner design 12x20: coverage95={np.mean([c for c, _ in r_hit]):.2f} (>=0.85)  power={power:.2f} "
+          f"(>=0.80)  null FPR={np.mean(r_null):.2f} (<=0.12)")
+    if np.mean([c for c, _ in r_hit]) < 0.85:
+        failures.append("runner-design switchback interval under-covers")
+    if power < 0.80:
+        failures.append("runner-design switchback misses a planted effect")
+    if np.mean(r_null) > 0.12:
+        failures.append("runner-design switchback null false-positive rate too high")
     its = [its_trial(0.8, s) for s in range(args.its_seeds)]
     known = [x for x in its if x is not None]
     rate = np.mean(known) if known else 0.0

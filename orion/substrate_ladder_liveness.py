@@ -17,7 +17,9 @@ noticed for ~48h.
 Two deterministic checks, both pure over already-fetched readings so they can
 be replayed from a fixture:
 
-1. Ladder freshness -- ``evaluate_rung`` / ``evaluate_consolidation_empty``.
+1. Ladder freshness -- ``evaluate_rung`` (feedback and consolidation retired 2026-11-04; proposal,
+   policy and dispatch 2026-11-07: ``RETIRED_RUNGS``). The live ladder is the sensing half
+   (grammar lanes, receipts, camera input, field_state, attention).
 2. Schema/image skew -- every (schema file, writer, readers) triple found by
    ``orion.schema_skew_discovery.discover`` (an AST scan of call sites, not a
    hand list) + ``evaluate_skew`` over each container's own copy of the file.
@@ -36,6 +38,7 @@ from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
 from orion import schema_skew_discovery as ssd
+from orion import vision_detection_rate_watch as dr
 from orion.sql_migration_drift import DriftReport, alert_lines
 
 # ---------------------------------------------------------------------------
@@ -64,7 +67,20 @@ class Rung:
 
 
 _TICK = timedelta(minutes=15)
-_CHAIN = timedelta(minutes=45)
+# _CHAIN (45 min) was the proposal/policy/dispatch limit; those rungs retired 2026-11-07.
+
+# Camera input: how long a 24/7 camera may go without one scored embedding
+# before the watch cards it. Live 2026-10-14..21: cam0 delivers every ~5 s and
+# walkway ~2/s; every gap over 2 min in those 7 days was a real outage (cam0:
+# 49 h on 10-18, 1 h 47 m on 10-15; walkway: also 2 h 54 m, 1 h 29 m, 35 m),
+# and the next-longest gap was 3 m 14 s. 15 min = ~5x that, one cron tick
+# (10 min) of slack.
+CAMERA_INPUT_MAX_AGE = timedelta(minutes=15)
+# Streams expected to deliver around the clock. Not here on purpose: the Ring
+# doorbell (motion-triggered, its embeddings arrive only on events) and the
+# carbon webcam (a capture node that runs on demand, like hecate's
+# expected_online: false). Add a stream only once it runs 24/7.
+CAMERA_INPUT_STREAMS_EXPECTED_ONLINE: tuple[str, ...] = ("cam0", "walkway")
 
 RUNGS: tuple[Rung, ...] = (
     # Raw input lanes (the three grammar lanes the substrate consumes with a
@@ -78,7 +94,7 @@ RUNGS: tuple[Rung, ...] = (
     # route_arbitration) are deliberately excluded: quiet is legitimate for them.
     Rung("receipts:transport_bus_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "transport_bus_reducer"),
     Rung("receipts:biometrics_node_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "biometrics_node_reducer"),
-    Rung("receipts:substrate.bus_synaptic", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.bus_synaptic"),
+    # receipts:substrate.bus_synaptic removed 2026-11: producer retired (PE step 5).
     Rung("receipts:substrate.perception", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "substrate.perception"),
     # Walkway camera's own surprise node: same tick, writes every tick whether or
     # not the walkway camera delivers (0.0 when stale), so it is steady too.
@@ -87,14 +103,35 @@ RUNGS: tuple[Rung, ...] = (
     # silence receipt on a clock when the router goes quiet, so it is steady
     # either way. Replaced substrate.vision_channel (tick retired 2026-10-02).
     Rung("receipts:vision_organ_reducer", "substrate_reduction_receipts", "created_at", timedelta(minutes=20), "reducer_name", "vision_organ_reducer"),
+    # Camera INPUT, not the tick (2026-10-21). The perception receipts above
+    # keep arriving while the cameras are dead -- the tick writes a placeholder
+    # every 30 s -- so they could not see 2026-10-18 04:06 -> 10-20 05:51, when
+    # no embedding arrived for 49 h and nothing alarmed. These rungs read the
+    # per-frame baseline rows the scorer writes for each embedding (index
+    # idx_perception_embedding_baseline_stream_generated). Only cameras
+    # expected online 24/7 (CAMERA_INPUT_STREAMS_EXPECTED_ONLINE).
+    *(
+        Rung(f"camera_input:{stream}", "substrate_perception_embedding_baseline", "generated_at",
+             CAMERA_INPUT_MAX_AGE, "stream_id", stream)
+        for stream in CAMERA_INPUT_STREAMS_EXPECTED_ONLINE
+    ),
     # The ladder proper, bottom to top.
     Rung("field_state", "substrate_field_state", "generated_at", _TICK),
     Rung("attention", "substrate_attention_frames", "generated_at", _TICK),
-    Rung("proposal", "substrate_proposal_frames", "generated_at", _CHAIN),
-    Rung("policy", "substrate_policy_decision_frames", "generated_at", _CHAIN),
-    Rung("dispatch", "substrate_execution_dispatch_frames", "generated_at", _CHAIN),
-    Rung("feedback", "substrate_feedback_frames", "generated_at", _CHAIN),
-    Rung("consolidation", "substrate_consolidation_frames", "generated_at", timedelta(hours=2)),
+    # proposal, policy and dispatch retired 2026-11-07 (RETIRED_RUNGS below).
+)
+
+#: Rungs that no longer run, listed so the check says "retired" instead of silently
+#: skipping them (docs/superpowers/specs/2026-11-04-retire-feedback-and-consolidation-rungs.md,
+#: docs/superpowers/specs/2026-11-04-retire-proposal-policy-dispatch-rungs.md).
+#: (name, retired on, what does its job now). Their tables are never read.
+RETIRED_RUNGS: tuple[tuple[str, str, str], ...] = (
+    ("proposal", "2026-11-07", "each real act starts itself through the want market (cooling, painting, "
+                               "retro, AI Town, image prune)"),
+    ("policy", "2026-11-07", "its consent checks become the want market's consent gate (attention patch 3)"),
+    ("dispatch", "2026-11-07", "retired with proposals and policy; the act ledger grades every real act"),
+    ("feedback", "2026-11-04", "act ledger grades every real act; world-action scoring runs in orion-sql-writer"),
+    ("consolidation", "2026-11-04", "killed outright (Juniper, 2026-11-04)"),
 )
 
 #: Every freshness query is bounded to this window so Postgres does an index
@@ -156,36 +193,6 @@ def evaluate_rung(rung: Rung, newest: Optional[datetime], now: datetime) -> Rung
     return RungResult(rung.name, status, _as_utc(newest), round(age, 1), max_age_sec)
 
 
-#: Consolidation keeps writing hourly frames even when everything under it is
-#: dead -- it just writes them empty. Over 60 days of live frames the longest
-#: run of consecutive empty frames outside the incident was 1; the incident was
-#: 52. Three in a row is therefore both quiet in normal operation and catches an
-#: outage within ~3 hours.
-CONSOLIDATION_EMPTY_RUN = 3
-
-CONSOLIDATION_MOTIF_SQL = (
-    "SELECT CASE WHEN jsonb_typeof(consolidation_frame_json->'motif_observations') = 'array' "
-    "THEN jsonb_array_length(consolidation_frame_json->'motif_observations') ELSE 0 END "
-    "FROM substrate_consolidation_frames "
-    "WHERE generated_at > now() - make_interval(secs => %s) "
-    "ORDER BY generated_at DESC LIMIT %s"
-)
-
-
-def evaluate_consolidation_empty(
-    recent_motif_counts: Sequence[int], run: int = CONSOLIDATION_EMPTY_RUN
-) -> RungResult:
-    """``recent_motif_counts``: motif_observations lengths, newest first."""
-    empty = len(recent_motif_counts) >= run and all(n == 0 for n in recent_motif_counts[:run])
-    return RungResult(
-        "consolidation:motifs",
-        "empty" if empty else "fresh",
-        None,
-        None,
-        float(run),
-    )
-
-
 # ---------------------------------------------------------------------------
 # 2. Schema / image skew
 # ---------------------------------------------------------------------------
@@ -237,8 +244,8 @@ class StrictSchema:
 #: Pinned: (file, class, writer) facts discovery must keep finding. A test
 #: fails if any of these falls out of ``discover()``'s output.
 STRICT_SCHEMAS: tuple[StrictSchema, ...] = (
-    # orion-field-digester writes substrate_field_state; attention, proposal,
-    # feedback runtimes and the hub read it back with model_validate.
+    # orion-field-digester writes substrate_field_state; the attention and proposal
+    # runtimes and the hub read it back with model_validate.
     StrictSchema("orion/schemas/field_state.py", "FieldStateV1", "orion-field-digester", models=("FieldStateV1",)),
 )
 
@@ -438,6 +445,14 @@ class LadderReport:
     # Merged hand-applied SQL migrations vs the live schema (orion/sql_migration_drift.py).
     # None = the section did not run this tick (skipped or could not check).
     migrations: Optional[DriftReport] = None
+    # Blind-detector watch (orion/vision_detection_rate_watch.py), one per
+    # 24/7 camera. Red: collapsed / silent. Green: ok. "unknown" is reported
+    # via cannot_check by the caller; quiet / low are neither red nor green.
+    detection_rates: list[dr.DetectionRateResult] = field(default_factory=list)
+
+    @property
+    def red_detection_rates(self) -> list[dr.DetectionRateResult]:
+        return [d for d in self.detection_rates if d.red]
 
     @property
     def red_migrations(self) -> list:
@@ -453,13 +468,14 @@ class LadderReport:
 
     @property
     def red(self) -> bool:
-        return bool(self.red_rungs or self.red_skew or self.red_migrations)
+        return bool(self.red_rungs or self.red_skew or self.red_migrations or self.red_detection_rates)
 
     def red_keys(self) -> list[str]:
         """Stable identifiers for debounce: one per failing rung / skewed container."""
         keys = [f"rung:{r.rung}" for r in self.red_rungs]
         keys += [s.key for s in self.red_skew]
         keys += [f.key for f in self.red_migrations]
+        keys += [f"rung:{d.name}" for d in self.red_detection_rates]
         return sorted(set(keys))
 
     def green_keys(self) -> list[str]:
@@ -471,6 +487,10 @@ class LadderReport:
         card that was already delivered.
         """
         keys = [f"rung:{r.rung}" for r in self.rungs if not r.red]
+        # Only "ok" (>= rearm ratio): unknown, quiet (a night proves nothing
+        # about a blind detector) and low (hysteresis) must not re-arm a card
+        # that was already delivered.
+        keys += [f"rung:{d.name}" for d in self.detection_rates if d.green]
         # A key is green only if no row for it is red this tick: one reader
         # container is compared against every writer of the file, and the
         # same key can be red against one writer and ok against another.
@@ -490,16 +510,16 @@ class LadderReport:
 
     def severity(self) -> str:
         """critical when anything that stops cognition is red; warning when the
-        only finding is empty consolidation (a symptom, usually of a red rung)."""
-        return "warning" if self.red_keys() == ["rung:consolidation:motifs"] else "critical"
+        only findings are a blind detector (perception degraded, nothing stopped)."""
+        keys = self.red_keys()
+        warning_only = all(k.startswith("rung:detection_rate:") for k in keys)
+        return "warning" if keys and warning_only else "critical"
 
     def alert_message(self) -> str:
         lines = []
         if self.red_rungs:
             lines.append("Part of the substrate ladder has stopped writing:")
-            lines += [f"- {r.summary()}" if r.rung != "consolidation:motifs" else
-                      f"- consolidation: last {int(r.max_age_sec)} frames have zero motif observations (running, but on nothing)"
-                      for r in self.red_rungs]
+            lines += [f"- {r.summary()}" for r in self.red_rungs]
         if self.red_skew:
             lines.append("Containers cannot read a schema another service is writing (their copy is older or incompatible):")
             seen = set()
@@ -511,6 +531,9 @@ class LadderReport:
             lines.append("Rebuild/redeploy those readers; a forbid-model change is a consumer-first migration.")
         if self.red_migrations:
             lines += alert_lines(self.migrations)
+        if self.red_detection_rates:
+            lines.append("A camera's detector has gone blind or silent (frames keep arriving, detections collapsed or stopped vs the same hours on recent days):")
+            lines += [f"- {d.summary()}" for d in self.red_detection_rates]
         return "\n".join(lines)
 
     def to_dict(self) -> dict:
@@ -518,6 +541,7 @@ class LadderReport:
             "red": self.red,
             "red_keys": self.red_keys(),
             "cannot_check": list(self.cannot_check),
+            "retired_rungs": [{"rung": n, "retired_on": d, "replaced_by": why} for n, d, why in RETIRED_RUNGS],
             "rungs": [
                 {
                     "rung": r.rung,
@@ -539,6 +563,19 @@ class LadderReport:
                 }
                 for s in self.skew
             ],
+            "detection_rates": [
+                {
+                    "rung": d.name,
+                    "status": d.status,
+                    "windows": d.current.windows,
+                    "detected": d.current.detected,
+                    "share": d.current.share,
+                    "baseline_share": d.baseline_share,
+                    "baseline_days": d.baseline_days_used,
+                    "reason": d.reason,
+                }
+                for d in self.detection_rates
+            ],
             "migrations": None if self.migrations is None else [
                 {
                     "file": f.name,
@@ -559,10 +596,6 @@ def evaluate_ladder(
     newest_by_rung: Mapping[str, Optional[datetime]],
     now: datetime,
     *,
-    consolidation_motif_counts: Optional[Sequence[int]] = None,
     rungs: Sequence[Rung] = RUNGS,
 ) -> list[RungResult]:
-    out = [evaluate_rung(r, newest_by_rung.get(r.name), now) for r in rungs if r.name in newest_by_rung]
-    if consolidation_motif_counts is not None:
-        out.append(evaluate_consolidation_empty(consolidation_motif_counts))
-    return out
+    return [evaluate_rung(r, newest_by_rung.get(r.name), now) for r in rungs if r.name in newest_by_rung]

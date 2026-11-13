@@ -50,7 +50,7 @@ DIMENSIONS = ("arousal", "day_phase", "company")
 SQL = """
 SELECT e.disposition_id, d.status, d.label, e.lane, e.meta, e.occurred_at
 FROM personality_evidence e JOIN personality_disposition d USING (disposition_id)
-WHERE e.disposition_id IS NOT NULL AND e.meta ? 'situation'
+WHERE e.disposition_id IS NOT NULL AND e.meta ? 'situation' AND d.origin = 'choice'  -- rev 4: choice nodes only
 """
 
 

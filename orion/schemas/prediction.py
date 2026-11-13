@@ -63,3 +63,192 @@ class PredictionForecastV1(BaseModel):
     steps: list[PredictionStepV1]
     exceedance: list[PredictionExceedanceV1] = Field(default_factory=list)
 
+
+# --- Surprise (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md) --------
+
+PREDICTION_SURPRISE_CHANNEL = "orion:prediction:surprise"
+PREDICTION_SURPRISE_KIND = "prediction.surprise.v1"
+
+
+class PredictionSurpriseV1(BaseModel):
+    """One scored forecast outcome, as surprise (services/orion-prediction/app/surprise.py).
+
+    Published only when the outcome passes the issue-time gate (``surprise.event_gate``): a
+    champion row, issued by a real (non-baseline) forecaster for this horizon in the run that
+    ISSUED it, with a volatility-adaptive range (``interval_source == "adaptive"``), and a real
+    actual. A missing bucket never publishes: missing is "no data", never surprise and never calm.
+
+    ``excess`` = surprisal - calm_surprisal. It rests at 0 by theory when the forecaster is
+    calibrated (probability integral transform). ``p_censored``: the value fell outside the 95 %
+    range, so the true p is at or below the floor (0.05).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    forecast_id: str
+    series_id: str
+    horizon_min: int = Field(..., ge=1)
+    origin_ts: AwareDatetime
+    issued_at: AwareDatetime
+    target_ts: AwareDatetime
+    scored_at: AwareDatetime
+    issuing_model: str
+    interval_source: Literal["adaptive"]
+    point: float
+    actual: float
+    p_value: float = Field(..., ge=0.0, le=1.0)
+    p_censored: bool = False
+    surprisal: float = Field(..., ge=0.0)
+    calm_surprisal: float = Field(..., ge=0.0)
+    excess: float
+
+
+
+# --- Turn surprise (chat turns; services/orion-prediction/app/turn_surprise.py) -------------------
+
+PREDICTION_TURN_SURPRISE_CHANNEL = "orion:prediction:turn_surprise"
+PREDICTION_TURN_SURPRISE_KIND = "prediction.turn_surprise.v1"
+
+
+class PredictionTurnSurpriseBetV1(BaseModel):
+    """One stance bet of the turn, scored. ``calibrated_p`` = the stated p through a logistic map fit
+    on earlier settled chat bets only (held out by time). ``excess`` = surprisal - expected_surprisal
+    (mean 0 under calibration); ``calm_var`` = its variance under calibration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    faculty: Literal["turn.self.asks_question", "turn.self.more_steps_than_usual"]
+    stated_p: float = Field(..., ge=0.0, le=1.0)
+    calibrated_p: float = Field(..., gt=0.0, lt=1.0)
+    happened: bool
+    surprisal: float = Field(..., ge=0.0)
+    expected_surprisal: float = Field(..., ge=0.0)
+    excess: float
+    calm_var: float = Field(..., ge=0.0)
+
+
+class PredictionTurnSurpriseV1(BaseModel):
+    """How much one settled chat turn surprised Orion's own stance bets (successor of
+    ``node:substrate.chat``). Published by orion-prediction once per settled chat turn that has at least
+    one used bet with information; substrate-runtime folds it into ``node:prediction.chat_turn``.
+
+    ``z`` = excess / sqrt(calm_var), summed over the turn's bets: about N(0, 1) when the bets are
+    calibrated; a turn that went the likely way reads below 0 (the node stores clip(z / 3, 0, 1), so
+    calm rests at exactly 0). No turn = no event: the node goes stale, never calm. Carries no text.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    correlation_id: str = Field(..., min_length=1, max_length=128)
+    caller: Literal["chat"]
+    placed_at: AwareDatetime
+    settled_at: AwareDatetime
+    bets: list[PredictionTurnSurpriseBetV1] = Field(..., min_length=1, max_length=8)
+    excess: float
+    calm_var: float = Field(..., gt=0.0)
+    z: float
+
+
+# --- Action bets (docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md) -------
+#
+# HTTP contracts only (orion-prediction :8132, /action-bets/*); no bus channel in v1. A body asks for
+# a quote on its options, places a bet on the one it chose (the service computes ``p`` itself at
+# placing, so no caller can supply a probability after the fact) and settles it. ``skill`` and
+# ``context`` use the game-free vocabulary in orion/embodiment/skills.py; the service treats them
+# as opaque keys. Settled bets are graded with orion/prediction/grading.py like every other probability.
+
+ACTION_BET_MAX_OPTIONS = 20
+ActionBetResult = Literal["success", "failure", "void"]
+ActionBetLevel = Literal["place", "situation", "skill", "prior"]
+
+
+class ActionBetOptionV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    option_id: str = Field(..., min_length=1, max_length=64)
+    skill: str = Field(..., min_length=1, max_length=32)
+    context: dict[str, str] = Field(default_factory=dict, max_length=8)
+    place: str | None = Field(None, max_length=128)
+
+
+class ActionBetQuoteRequestV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    domain: str = Field(..., min_length=1, max_length=64)   # 'retro:zelda'
+    body: str = Field(..., min_length=1, max_length=32)     # 'retro'
+    options: list[ActionBetOptionV1] = Field(..., min_length=1, max_length=ACTION_BET_MAX_OPTIONS)
+
+
+class ActionBetCountsV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    level: ActionBetLevel
+    # Above the place level each place counts as ONE unit (its bets weigh 1/n each), so one stubborn
+    # wall cannot teach a body that a whole skill fails: these may be fractional there.
+    successes: float = Field(..., ge=0)
+    failures: float = Field(..., ge=0)
+
+
+class ActionBetQuoteV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    option_id: str
+    model: str                       # 'action_beta_backoff', or the baseline when the gate serves it
+    p: float = Field(..., ge=0.0, le=1.0)
+    p_baseline: float = Field(..., ge=0.0, le=1.0)
+    interval80: tuple[float, float]
+    eig_nats: float = Field(..., ge=0.0)
+    level: ActionBetLevel            # deepest level with at least one settled bet
+    counts: list[ActionBetCountsV1]  # skill first, then situation, then place (those that apply)
+
+
+class ActionBetPlaceV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    bet_id: str = Field(..., min_length=1, max_length=200)
+    domain: str = Field(..., min_length=1, max_length=64)
+    body: str = Field(..., min_length=1, max_length=32)
+    skill: str = Field(..., min_length=1, max_length=32)
+    context: dict[str, str] = Field(default_factory=dict, max_length=8)
+    place: str | None = Field(None, max_length=128)
+    action: dict = Field(default_factory=dict)       # the body's own goal, for inspection only
+    chosen_rank: int | None = Field(None, ge=1, le=ACTION_BET_MAX_OPTIONS)
+    session_id: str | None = Field(None, max_length=128)
+    # Body-level transition inputs (orion/embodiment/transition.py, zelda_features) for the world-model
+    # shadow; the service scores them only when feature_version matches its loaded weights.
+    features: list[float] | None = Field(None, max_length=64)
+    feature_version: str | None = Field(None, max_length=64)
+
+
+class ActionBetSettleV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    result: ActionBetResult
+    outcome: str = Field(..., min_length=1, max_length=64)   # the body's own words
+    detail: dict = Field(default_factory=dict)
+
+
+class ActionBetV1(BaseModel):
+    """One stored bet, as returned by place, settle and the list endpoints."""
+    model_config = ConfigDict(extra="forbid")
+
+    bet_id: str
+    domain: str
+    body: str
+    skill: str
+    context: dict[str, str]
+    place: str | None = None
+    action: dict
+    model: str
+    p: float = Field(..., ge=0.0, le=1.0)
+    p_baseline: float = Field(..., ge=0.0, le=1.0)
+    level: ActionBetLevel
+    counts: list[ActionBetCountsV1]
+    chosen_rank: int | None = None
+    session_id: str | None = None
+    placed_at: AwareDatetime
+    settled_at: AwareDatetime | None = None
+    result: ActionBetResult | None = None
+    shadow: dict | None = None       # world-model shadow at placing: {model, tag, p, heads}; never served
+    outcome: str | None = None
+    detail: dict = Field(default_factory=dict)

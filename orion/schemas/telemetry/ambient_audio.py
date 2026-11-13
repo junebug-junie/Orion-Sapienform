@@ -31,13 +31,30 @@ sample field stale when age exceeds `AMBIENT_AUDIO_STALE_AFTER_SEC`.
 Units are raw PCM magnitudes (RMS float, peak int16 abs max) -- this model
 does not normalize or judge. See `orion/telemetry/ambient_audio.py` for the
 raw->measurements/pressures step.
+
+Live-listen ring (also host-local, not a bus payload): the same reader
+writes every PCM window to `/run/orion-audio/live/slot-NN.pcm`, slot
+`seq % AMBIENT_AUDIO_LIVE_RING_SLOTS`. Each file is
+`AMBIENT_AUDIO_LIVE_SLOT_HEADER` (seq u64, sample_rate u32, channels u16,
+reserved u16) followed by raw S16_LE PCM. Hub tails the ring by seq and
+streams it to an operator's browser (`GET /api/cabinet/ambient/live`).
 """
 
+import struct
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
 AMBIENT_AUDIO_SCHEMA_V1 = "orion.ambient_audio.v1"
+
+# 16 slots x 0.5s window = 8s of history: enough for a reader that lags a few
+# polls, small enough that nothing resembling a recording sits on disk.
+AMBIENT_AUDIO_LIVE_RING_SLOTS = 16
+AMBIENT_AUDIO_LIVE_SLOT_HEADER = struct.Struct("<QIHH")
+
+
+def ambient_audio_live_slot_name(seq: int) -> str:
+    return f"slot-{seq % AMBIENT_AUDIO_LIVE_RING_SLOTS:02d}.pcm"
 
 
 class AmbientAudioSnapshotV1(BaseModel):

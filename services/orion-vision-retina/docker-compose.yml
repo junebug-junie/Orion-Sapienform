@@ -201,6 +201,89 @@ services:
     networks:
       - app-net
 
+  # The office camera, cam0 (2026-11-04, Juniper: "route through the vision
+  # retina, not the vision edge"). The indoor Reolink in the room where
+  # Juniper works (the office), read from its full-resolution MAIN stream (2560x1920, the
+  # same size as the walkway) so faces are big enough for person learning.
+  # orion-vision-edge used to capture this camera from the 640x480 substream
+  # and opened the main stream only for one still per face check. The edge
+  # is no longer used (kept in the repo, not run; see its README). stream_id/camera_id
+  # stay `cam0`, so presence, history and config/vision_frame_router.yaml
+  # `streams.cam0` / config/vision_zones.yaml `streams.cam0` keep their key.
+  # Behind the `office` profile for the walkway's reason: an empty
+  # OFFICE_RTSP_URL is refused at boot, and carbon runs a plain `up` of this
+  # file. Once started, the post-pull rebuild re-ups it like the walkway:
+  #   scripts/safe_docker_build.sh orion-vision-retina --profile office up -d --build orion-vision-retina-office
+  orion-vision-retina-office:
+    logging:
+      driver: journald
+      options:
+        tag: "{{.Name}}"
+    profiles: ["office"]
+    build:
+      context: ../..
+      dockerfile: services/orion-vision-retina/Dockerfile
+    container_name: orion-vision-retina-office
+    restart: unless-stopped
+    # On SIGTERM the RTSP reader's stop waits up to 12s (FFmpeg open timeout
+    # + 2s) for a blocked open/read so the reader itself releases the capture
+    # -- that release sends RTSP TEARDOWN. SIGKILL before it leaves the
+    # camera holding a stale session. Room for that plus the bus close.
+    stop_grace_period: 30s
+    environment:
+      - ORION_BUS_URL=${ORION_BUS_URL:-redis://100.92.216.81:6379/0}
+      - ORION_BUS_ENFORCE_CATALOG=${ORION_BUS_ENFORCE_CATALOG:-false}
+      - ORION_BUS_VELOCITY_TRACKING_ENABLED=${ORION_BUS_VELOCITY_TRACKING_ENABLED:-false}
+      - CHANNEL_RETINA_PUB=${CHANNEL_RETINA_PUB:-orion:vision:frames}
+      - CHANNEL_RETINA_ERROR=${CHANNEL_RETINA_ERROR:-orion:vision:retina:error}
+      - CHANNEL_SYSTEM_HEALTH=${CHANNEL_SYSTEM_HEALTH:-orion:system:health}
+      - SERVICE_NAME=vision-retina-office
+      - RETINA_SOURCE_TYPE=rtsp
+      # Empty is refused at boot (RtspFrameSource raises).
+      - RETINA_SOURCE=${OFFICE_RTSP_URL:-}
+      - RETINA_CAMERA_ID=cam0
+      - RETINA_STREAM_ID=cam0
+      - RETINA_FPS=${OFFICE_RETINA_FPS:-2.0}
+      - RETINA_WIDTH=
+      - RETINA_HEIGHT=
+      - FRAME_STORAGE_DIR=${FRAME_STORAGE_DIR:-/mnt/telemetry/vision/frames}
+      - RETINA_FRAME_MODE=local
+      # Each writer prunes only its own files (frame_store.owned_frame_pattern;
+      # the edge prunes only frame_/still_), so office frames live this long.
+      # Ample for router -> host (seconds) and story-strip capture.
+      - FRAME_RETENTION_SECONDS=${FRAME_RETENTION_SECONDS:-300}
+      - JPEG_QUALITY=${OFFICE_RETINA_JPEG_QUALITY:-88}
+      - HEALTH_INTERVAL_SECONDS=${HEALTH_INTERVAL_SECONDS:-10.0}
+      # Publisher watchdog: degraded health, then exit-for-restart (main.py).
+      - RETINA_PUBLISH_STALL_SECONDS=${RETINA_PUBLISH_STALL_SECONDS:-120.0}
+      - SOURCE_RECONNECT_SECONDS=${SOURCE_RECONNECT_SECONDS:-5.0}
+      # RTSP only: TCP transport, read timeout, stall watchdog (sources.py).
+      - RETINA_RTSP_TRANSPORT=${RETINA_RTSP_TRANSPORT:-tcp}
+      - RETINA_RTSP_IO_TIMEOUT_SECONDS=${RETINA_RTSP_IO_TIMEOUT_SECONDS:-5.0}
+      - RETINA_RTSP_STALL_SECONDS=${RETINA_RTSP_STALL_SECONDS:-30.0}
+      # Quiet period before every RTSP (re)connect + persisted last-session
+      # time + live corruption self-heal (sources.py RtspSessionGate).
+      - RETINA_RTSP_RECONNECT_QUIET_SECONDS=${RETINA_RTSP_RECONNECT_QUIET_SECONDS:-90.0}
+      - RETINA_RTSP_SESSION_STATE_DIR=${RETINA_RTSP_SESSION_STATE_DIR:-/var/lib/orion-vision-retina}
+      - RETINA_RTSP_HEAL_ENABLED=${RETINA_RTSP_HEAL_ENABLED:-true}
+      - RETINA_RTSP_HEAL_CHECK_EVERY=${RETINA_RTSP_HEAL_CHECK_EVERY:-10}
+      - RETINA_RTSP_HEAL_WINDOW_SECONDS=${RETINA_RTSP_HEAL_WINDOW_SECONDS:-120.0}
+      - RETINA_RTSP_HEAL_MIN_SHARE=${RETINA_RTSP_HEAL_MIN_SHARE:-0.8}
+      # No clip capture on this instance: clip requests target carbon.
+      - RETINA_CLIP_ENABLED=false
+    volumes:
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/services/orion-vision-retina/app:/app/app
+      - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}/orion:/app/orion
+      - /mnt/telemetry/vision/frames:/mnt/telemetry/vision/frames
+      # RTSP last-session time, survives container recreate (deploys), so a
+      # deploy restart waits the quiet period instead of corrupting the
+      # stream (2026-10-16). Per-stream file name; shared dir is fine.
+      - /mnt/telemetry/vision/retina_state:/var/lib/orion-vision-retina
+    ports:
+      - "127.0.0.1:${OFFICE_RETINA_HTTP_PORT:-8030}:8000"
+    networks:
+      - app-net
+
   # The Ring doorbell (battery, no Ring Protect plan): no RTSP and no saved
   # recordings, and it cannot take a snapshot while it records. On each Ring
   # motion/ding push event this instance opens a short live view

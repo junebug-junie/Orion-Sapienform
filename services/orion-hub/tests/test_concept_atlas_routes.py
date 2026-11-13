@@ -276,19 +276,48 @@ def test_summary_graph_param_aitown_switches_store(client: TestClient, monkeypat
     assert body["total_concepts"] == 0  # aitown_store is empty, orion_store is not
 
 
-def test_summary_graph_param_unrecognized_value_degrades_to_orion(
-    client: TestClient, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("bad", ["not-a-real-graph", "self", "SELF "])
+def test_summary_graph_param_unknown_value_is_an_error_not_a_silent_orion_fallback(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, bad: str
 ) -> None:
+    """Self Atlas retirement (2026-11): ``graph=self`` is gone. A stale caller
+    must get a 400, not Orion's main graph labelled as if it were what it asked for."""
     from scripts import concept_atlas_routes
 
+    served: list[str] = []
     orion_store = _build_store()
-    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: orion_store)
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: served.append("orion") or orion_store)
 
-    r = client.get("/api/substrate/concepts/summary", params={"graph": "not-a-real-graph"})
+    r = client.get("/api/substrate/concepts/summary", params={"graph": bad})
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["reason"] == "unknown_graph"
+    assert detail["graph"] == bad.strip().lower()
+    assert detail["valid"] == ["aitown", "orion"]
+    assert served == [], "the Orion store must not be resolved for an unknown graph"
+
+
+def test_network_graph_param_self_is_an_error(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: _build_store())
+    r = client.get("/api/substrate/concepts/network", params={"graph": "self"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["reason"] == "unknown_graph"
+
+
+def test_self_atlas_ingest_route_is_gone(client: TestClient) -> None:
+    r = client.post("/api/substrate/concepts/ingest-topic-foundry-self")
+    assert r.status_code in (404, 405)
+
+
+def test_empty_graph_param_still_means_orion(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from scripts import concept_atlas_routes
+
+    monkeypatch.setattr(concept_atlas_routes, "_get_substrate_store", lambda: _build_store())
+    r = client.get("/api/substrate/concepts/summary", params={"graph": ""})
     assert r.status_code == 200
-    body = r.json()
-    assert body["graph"] == "orion"
-    assert body["total_concepts"] == 3
+    assert r.json()["graph"] == "orion"
 
 
 def test_network_graph_param_aitown_switches_store(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

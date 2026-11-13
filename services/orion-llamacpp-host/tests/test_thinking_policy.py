@@ -33,3 +33,13 @@ def test_no_implicit_budget_when_flag_missing():
     pol = resolve_thinking_launch_policy(cfg, {"--chat-template-kwargs"})
     assert pol.effective_reasoning_budget is None
     assert pol.require_jinja is True
+
+
+def test_auto_reasoning_keeps_launch_default_request_overridable():
+    cfg = LlamaCppConfig(
+        reasoning="auto", chat_template_kwargs={"enable_thinking": False},
+    )
+    pol = resolve_thinking_launch_policy(cfg, {"--reasoning-budget", "--chat-template-kwargs"})
+    assert pol.intent_label == "off_kwargs_request_overridable"
+    assert pol.effective_reasoning_budget is None
+    assert pol.require_jinja is True

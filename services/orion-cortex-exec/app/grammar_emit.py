@@ -315,7 +315,19 @@ class CortexExecGrammarCollector:
             self._edge_specs.append((started.atom_id, atom.atom_id, "derived_from"))
         self._last_completed_atom_id = atom.atom_id
 
-    def record_step_failed(self, *, order: int, step_name: str, error_kind: str) -> None:
+    def record_step_failed(
+        self,
+        *,
+        order: int,
+        step_name: str,
+        error_kind: str,
+        shed_reason: str | None = None,
+    ) -> None:
+        """``shed_reason`` (e.g. ``cabinet_hot``) marks a step the GPU pool refused on purpose
+        (``gpu_pool_unavailable:shed:<name>``, see orion.gpu_pool.shed.shed_reason_from_error).
+        It rides as an extra ``shed_reason=<name>`` summary kv next to the unchanged
+        ``error_kind`` bucket, so the reducer (orion/substrate/execution_loop/grammar_extract.py)
+        can tell a deliberate shed from a real failure."""
         started_key = f"exec_step_started:{order}:{step_name}"
         key = f"exec_step_failed:{order}:{step_name}"
         ref = f"cortex.exec.step_result:{self.correlation_id}:{order}:{step_name}"
@@ -326,7 +338,10 @@ class CortexExecGrammarCollector:
             semantic_role="exec_step_failed",
             layer="step",
             dimensions=["execution", "failure", "step"],
-            summary=f"Step failed: step={step_name}, error_kind={error_kind}",
+            summary=(
+                f"Step failed: step={step_name}, error_kind={error_kind}"
+                + (f", shed_reason={shed_reason}" if shed_reason else "")
+            ),
             confidence=0.9,
             salience=0.9,
             source_event_id=f"{self.correlation_id}:{order}",
@@ -347,7 +362,11 @@ class CortexExecGrammarCollector:
         thinking_source: str,
         llm_serving_node: str | None = None,
         reasoning_char_count: int = 0,
+        shed_reason: str | None = None,
     ) -> None:
+        """``shed_reason`` is set only when the plan's own returned error is a deliberate
+        GPU-pool shed (``gpu_pool_unavailable:shed:<name>``): the plan failed *because* it
+        was shed. Any other plan failure leaves it unset and still reads as a failure."""
         ref = f"cortex.exec.result:{self.correlation_id}"
         summary = (
             f"Final result assembled: status={status}, "
@@ -358,6 +377,8 @@ class CortexExecGrammarCollector:
         )
         if llm_serving_node:
             summary += f", llm_serving_node={llm_serving_node}"
+        if shed_reason:
+            summary += f", shed_reason={shed_reason}"
         self._put_atom(
             "exec_result_assembled",
             GrammarAtomV1(
@@ -513,6 +534,7 @@ def record_assembled_grammar(
     thinking_source: str,
     llm_serving_node: str | None = None,
     reasoning_char_count: int = 0,
+    shed_reason: str | None = None,
 ) -> None:
     collector = ctx.get("_cortex_exec_grammar_collector")
     if collector is None:
@@ -524,6 +546,7 @@ def record_assembled_grammar(
         thinking_source=thinking_source,
         llm_serving_node=llm_serving_node,
         reasoning_char_count=reasoning_char_count,
+        shed_reason=shed_reason,
     )
 
 

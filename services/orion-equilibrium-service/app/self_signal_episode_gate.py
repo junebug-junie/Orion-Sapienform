@@ -79,22 +79,36 @@ def observe_signals(
     (``ATTENTION_SUSTAINED_BODY_ENABLED``): a continuous body source carries
     its dwell over its own readings, so its episode confirms on the poll the
     attention contest first lets it compete. None = count hot polls."""
+    # Lazy, like self_signal_outcome_rollup: orion.substrate's package init is heavy.
+    from orion.substrate.prediction_error_freshness import node_signal_label
+
     mags = magnitudes or {}
     ids = {
         nid
         for nid in mags
         if nid.startswith(SUBSTRATE_NODE_PREFIX) and source_kind_for_node(nid) == "internal"
     } | {nid for nid in known_signal_ids if source_kind_for_node(nid) == "internal"}
+    # A tracked signal that is no longer a body signal (the walkway camera
+    # became a world source on 2026-10-21) is observed as absent, so its
+    # episode closes went_silent instead of hanging open unobserved.
+    no_longer_body = {
+        nid for nid in known_signal_ids if source_kind_for_node(nid) != "internal"
+    }
     out: list[SignalObservation] = []
-    for node_id in sorted(ids):
+    for node_id in sorted(ids | no_longer_body):
         mag, observed_at, mid = mags.get(node_id, (None, None, None))
+        if node_id in no_longer_body:
+            mag, observed_at, mid = None, None, None
         cand = node_candidate(
             node_id=node_id,
-            label=f"{node_id.removeprefix(SUBSTRATE_NODE_PREFIX)} prediction error",
+            label=node_signal_label(node_id, node_id.removeprefix(SUBSTRATE_NODE_PREFIX)),
             magnitude=mag,
             observed_at=observed_at,
             now=now,
-            absent_reason=history_error,
+            absent_reason=(
+                "no longer a body signal (world source)" if node_id in no_longer_body
+                else history_error
+            ),
             rank_percentile=mid,
             # The attention contests' default (ATTENTION_EVENT_DECAY_ENABLED
             # ships on): event-written nodes are news for 300 s.

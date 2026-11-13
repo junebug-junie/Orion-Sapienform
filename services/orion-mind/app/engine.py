@@ -14,6 +14,7 @@ from uuid import uuid4
 import yaml
 
 from orion.mind.validation import hash_snapshot_inputs, validate_merged_stance_brief_optional
+from orion.llm.resource_lease import held_call_route
 from orion.mind.v1 import (
     MindControlDecisionV1,
     MindHandoffBriefV1,
@@ -730,18 +731,23 @@ TURN_LIFTED_ROUTE = "metacog"
 
 
 def carries_live_turn(req: MindRunRequestV1) -> bool:
-    """Is a human waiting on this run's answer?
+    """Is Juniper waiting on this run's answer?
 
-    Every Mind caller today is a turn path (enumerated 2026-10-06): cortex-orch runs Mind only
-    when the request's metadata has ``mind_enabled`` -- set solely by the Hub browser
-    (app.js, thought-process.js) -- and orion-thought runs it inside a unified turn. Both send
-    ``trigger="user_turn"`` (orch by default; no producer sets ``mind_trigger``). orion-thought
-    marks a turn Orion authored itself with ``utterance_origin="orion"``: nobody is waiting on
-    that one, so it stays on the sheddable route. ``scheduled``/``operator``/``replay`` runs are
-    not turns. Weakness: ``user_turn`` is the schema default, so a FUTURE background caller that
-    forgets to set ``trigger`` would be treated as a live turn (never shed) -- the safe direction
-    for a human, the wrong one for heat."""
-    return req.trigger == "user_turn" and req.utterance_origin != "orion"
+    Only a run positively marked as Juniper's turn is live: ``trigger="user_turn"`` AND
+    ``utterance_origin="juniper"``. Unknown (None) and ``"orion"`` are not live, so they stay on the
+    sheddable ``metacog`` route (system tier). Before 2026-10-23 the test was the inverse
+    (``!= "orion"``), and every caller that set nothing -- world-pulse reads, outreach, the
+    collapse-mirror reply -- rode Juniper's interactive tier (72 interactive orion-mind grants
+    10-22..23 with no Juniper chat).
+
+    Juniper paths that set the mark (enumerated 2026-10-23, tests pin each one):
+    * Hub websocket + HTTP unified turn (``mode`` orion/agent): ``execute_unified_turn(
+      utterance_origin="juniper")`` -> stance_inputs -> orion-thought ``build_light_mind_request``.
+    * Hub websocket + HTTP brain-mode chat with the Mind toggle: ``build_chat_request(
+      utterance_origin="juniper")`` writes ``metadata.utterance_origin``; cortex-orch
+      ``build_mind_run_request`` copies it onto this request.
+    A new Juniper-facing path must set the mark, or its Mind phases can be heat-shed."""
+    return req.trigger == "user_turn" and req.utterance_origin == "juniper"
 
 
 def run_mind_llm_synthesis(
@@ -793,10 +799,6 @@ def run_mind_llm_synthesis(
         max_recall_fragments=int(getattr(s, "MIND_EVIDENCE_MAX_RECALL_FRAGMENTS", 8)),
         max_projection_items=int(getattr(s, "MIND_EVIDENCE_MAX_PROJECTION_ITEMS", 16)),
         max_total_chars=int(getattr(s, "MIND_EVIDENCE_MAX_CHARS", 12_000)),
-        bus_synaptic_dsn=str(getattr(s, "RECALL_TRANSPORT_PG_DSN", "") or ""),
-        bus_synaptic_render_gate_threshold=float(
-            getattr(s, "RECALL_TRANSPORT_RENDER_GATE_THRESHOLD", 0.15)
-        ),
     )
     phases["evidence_pack_ms"] = _elapsed_ms_wall_clock(t_run_start)
 
@@ -811,6 +813,26 @@ def run_mind_llm_synthesis(
         semantic_route, appraisal_route, stance_route = (
             turn_route if r == TURN_LIFTED_ROUTE else r for r in (semantic_route, appraisal_route, stance_route)
         )
+    # A held turn (world-pulse read, curiosity, ...) runs every phase on its own GPU seat, never on
+    # the configured small lane (Juniper 2026-11-12; orion.llm.resource_lease.held_call_route).
+    _, held_lease = held_call_route(req.gpu_lease, "")
+    semantic_route, appraisal_route, stance_route = (
+        held_call_route(req.gpu_lease, r)[0] for r in (semantic_route, appraisal_route, stance_route)
+    )
+    if held_lease is not None:
+        # A held seat may be the gpu2 Bonsai 27B, which thinks before it answers: 11-10..12 its Mind
+        # phases took 10-56 s when served and 18 of 59 hit the 60 s phase cap. Held phases get their
+        # own cap; the run's wall (policy.wall_time_ms_max) still bounds the whole run, so callers
+        # waiting on Mind (orion-thought, 210 s HTTP) see no change in the worst case.
+        configured_timeout = float(getattr(s, "MIND_LLM_HELD_TIMEOUT_SEC", configured_timeout))
+    appraisal_thinking = bool(getattr(s, "MIND_LLM_THINKING_APPRAISAL", True))
+    if held_lease is not None:
+        # Issue #3294 (2026-11-13): on a held seat the judge's thinking ate the whole
+        # MIND_LLM_MAX_TOKENS_APPRAISAL budget. Bonsai-2-27B (agent-gpu2) used all 3072 tokens on
+        # reasoning and returned no answer (empty_llm_response); Strata flash-next (agent) thought to
+        # its 2304-token budget and then was cut off at 3072 mid-JSON (gateway: upstream_http_5xx).
+        # Semantic and stance already run with thinking off on these seats and answer.
+        appraisal_thinking = bool(getattr(s, "MIND_LLM_THINKING_APPRAISAL_HELD", False))
     phase_records: list[MindPhaseTelemetry] = []
 
     def _fail_open_or_error(
@@ -873,6 +895,7 @@ def run_mind_llm_synthesis(
             trace_id=req.trace_id,
             router_profile_id=req.policy.router_profile_id,
             trigger=str(req.trigger),
+            gpu_lease=held_lease,
         )
 
     if not budget.can_run_phase():
@@ -946,7 +969,7 @@ def run_mind_llm_synthesis(
             route=appraisal_route,
             model_id=appraisal_route,
             max_tokens=int(getattr(s, "MIND_LLM_MAX_TOKENS_APPRAISAL", 3072)),
-            thinking=bool(getattr(s, "MIND_LLM_THINKING_APPRAISAL", True)),
+            thinking=appraisal_thinking,
             context=_phase_context("active_frontier_judge"),
             timeout_sec=budget.phase_timeout_sec(configured_timeout),
         )
@@ -1115,10 +1138,11 @@ def _llm_fail_open_from_exception(
         error_code="llm_synthesis_exception",
         diagnostics=[str(exc)],
         failed_phase="unknown",
-        semantic_route=str(getattr(mind_settings, "MIND_SEMANTIC_MODEL_ROUTE", "quick")),
-        appraisal_route=str(getattr(mind_settings, "MIND_APPRAISAL_MODEL_ROUTE", "metacog")),
+        # A held run's phases ran (or would have run) on its seat: record that route, not the small lane.
+        semantic_route=held_call_route(req.gpu_lease, str(getattr(mind_settings, "MIND_SEMANTIC_MODEL_ROUTE", "quick")))[0],
+        appraisal_route=held_call_route(req.gpu_lease, str(getattr(mind_settings, "MIND_APPRAISAL_MODEL_ROUTE", "metacog")))[0],
         # chat is Juniper's reserved Hub lane; see scripts/check_chat_route_poachers.py
-        stance_route=str(getattr(mind_settings, "MIND_STANCE_MODEL_ROUTE", "metacog")),
+        stance_route=held_call_route(req.gpu_lease, str(getattr(mind_settings, "MIND_STANCE_MODEL_ROUTE", "metacog")))[0],
         fallback_reason=["llm_synthesis_exception", str(exc)],
     )
 

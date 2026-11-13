@@ -412,6 +412,30 @@ name:cols,rows,overlap[,x0,y0,x1,y1]] [--draw]`; see its docstring for the
 read-only docker command. Results: `docs/superpowers/pr-reports/
 2026-10-15-walkway-tiled-detection-pr.md`.
 
+## Detection cut-offs per camera and label (2026-10-29)
+
+The detector keeps a box only when its score reaches a cut-off. Before this
+change one cut-off (`score_threshold: 0.35`) served every camera and every
+label. Now `retina_detect_open_vocab` also reads `box_threshold_by_stream` in
+`config/vision_profiles.yaml`:
+
+```yaml
+box_threshold_by_stream:
+  walkway:
+    default: 0.35   # optional
+    vehicle: 0.35   # optional, one label
+```
+
+The request's `stream_id` picks the entry. The detector runs once at the
+lowest cut-off that applies, then each box must reach its own label's
+cut-off (`app/box_thresholds.py`). A label not listed gets the stream's
+`default`, else `score_threshold`. Invalid values are logged and ignored.
+Duplicate suppression is unchanged. The shipped values equal today's 0.35
+everywhere; the evidence for that is in
+`docs/superpowers/pr-reports/2026-10-29-vision-blind-detector-watch-pr.md`.
+The config is copied into the image, so a change needs a rebuild, not a
+restart.
+
 ## Crop embeddings (walkway individuals)
 
 Deploy steps, rebuild set, and the rule that editing `config/vision_zones.yaml`

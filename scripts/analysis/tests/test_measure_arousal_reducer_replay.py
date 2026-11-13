@@ -57,3 +57,41 @@ def test_missing_gpu_history_reads_unknown_not_idle():
 def test_export_sql_uses_the_juniper_rule_and_is_read_only():
     sql = export_sql(T0, T0 + timedelta(hours=1))
     assert "READ ONLY" in sql and "unsolicited" in sql and "queue_depth" in sql
+
+
+# --- deferrable self-work (2026-10-23) --------------------------------------------------------
+
+def _queue_day(deferrable=None):
+    rows = day_rows(queue_window=(T0 + timedelta(hours=2), T0 + timedelta(hours=3)), depth=3)
+    for r in rows:
+        if r["kind"] == "gpu_state" and r["queue_depth"] and deferrable is not None:
+            r["deferrable_depth"] = deferrable
+    return rows
+
+
+def test_saved_deferrable_depth_leaves_self_work_out_and_flag_restores_the_old_reading():
+    end = T0 + timedelta(hours=24)
+    assert replay(_queue_day({"agent": 3}), T0, end)["total_minutes"]["strained"] == 0
+    assert replay(_queue_day({"agent": 1}), T0, end)["total_minutes"]["strained"] > 60   # 2 left: load
+    assert replay(_queue_day({"agent": 3}), T0, end, gpu_deferrable=False)["total_minutes"]["strained"] > 60
+
+
+def test_reconstructed_deferrable_from_hold_events():
+    """Older rows (no column): the pool's own admitted/queued -> granted events for background holds."""
+    rows = _queue_day()
+    for lid in ("a", "b", "c"):
+        rows.append({"kind": "deferrable_event", "at": (T0 + timedelta(hours=1)).isoformat(),
+                     "event": "queued", "lease_id": lid, "work_class": "agent"})
+    rows.append({"kind": "deferrable_event", "at": (T0 + timedelta(hours=2, minutes=30)).isoformat(),
+                 "event": "granted", "lease_id": "a", "work_class": "agent"})
+    end = T0 + timedelta(hours=24)
+    assert replay(rows, T0, end)["total_minutes"]["strained"] > 60          # flag off: old reading
+    r = replay(rows, T0, end, reconstruct_deferrable=True)
+    # 2:00-2:30 all three deferrable (load 0); from 2:30 one is granted, load 1 < floor: never strained.
+    assert r["total_minutes"]["strained"] == 0
+
+
+def test_export_sql_reads_the_deferrable_column_and_hold_events():
+    sql = export_sql(T0, T0 + timedelta(hours=1))
+    assert "to_jsonb(h)->'deferrable_depth'" in sql
+    assert "l.priority = 'background' AND l.kind = 'hold' AND l.hold_lease_id IS NULL" in sql

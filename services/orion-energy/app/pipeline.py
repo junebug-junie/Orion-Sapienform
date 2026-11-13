@@ -13,7 +13,7 @@ from typing import Iterable, Optional, Union
 from pydantic import BaseModel
 
 from orion.energy.importer_status import PortalStatus, compute_importer_status
-from orion.energy.ledger import UsageLedger
+from orion.energy.ledger import UsageLedger, bridged_seconds
 from orion.energy.reconcile import period_bounds, reconcile_actual, reconcile_forecast
 from orion.energy.run_cost import estimate_run_cost
 from orion.energy.stakes import build_stakes_snapshot, current_forecast
@@ -129,6 +129,13 @@ class EnergyPipeline:
             old = self._actuals.get(key)
             if old is not None and old.retrieved_at > bill.retrieved_at:
                 return False
+            # A re-issued bill (same start, corrected end read) replaces the older one, so its
+            # stale end date stops acting as a meter read.
+            for other_key, other in list(self._actuals.items()):
+                if other_key != key and other.billing_period_start == bill.billing_period_start:
+                    if other.retrieved_at > bill.retrieved_at:
+                        return False
+                    del self._actuals[other_key]
             self._actuals[key] = bill
             return True
         fkey = (bill.billing_period_start, bill.as_of)
@@ -141,6 +148,15 @@ class EnergyPipeline:
     def replay_bills(self, bills: Iterable[Bill]) -> None:
         for bill in bills:
             self._store_bill(bill)
+        self._apply_read_dates(now=datetime.now(timezone.utc))
+
+    def _apply_read_dates(self, *, now: datetime) -> list[EnergyCostAccruedV1]:
+        """Move cycle bounds to the bills' meter-read dates and re-accrue every cycle that moved."""
+        reads = {d for bill in self._actuals.values() for d in (bill.billing_period_start, bill.billing_period_end)}
+        rows: list[EnergyCostAccruedV1] = []
+        for point, cycle_start in self._ledger.set_read_dates(reads):
+            rows.extend(self._accrue_cycle(point, cycle_start, computed_at=now))
+        return rows
 
     def ingest_bills(self, bills: Iterable[Bill], *, now: datetime) -> list[Outbound]:
         out: list[Outbound] = []
@@ -154,6 +170,8 @@ class EnergyPipeline:
             rec = self._reconcile(bill, now=now)
             if rec is not None:
                 out.append(rec)
+        for accrued in self._apply_read_dates(now=now):
+            out.append(Outbound(self._channels.accrued, ENERGY_ACCRUED_KIND, accrued))
         return out
 
     def _reconcile(self, bill: Bill, *, now: datetime) -> Optional[Outbound]:
@@ -213,6 +231,18 @@ class EnergyPipeline:
         self, point: str, cycle_start: datetime, *, computed_at: datetime
     ) -> list[EnergyCostAccruedV1]:
         accrued_rows = self._ledger.accrue_cycle(point, cycle_start, computed_at=computed_at)
+        if accrued_rows:
+            prefix_start, _ = self._ledger.cycle_bounds(cycle_start)
+            bridged = bridged_seconds(accrued_rows, prefix_start)
+            if bridged > 0.0:
+                # The hole's kWh is not in cycle_accumulated_kwh: say so, it no longer stops accrual.
+                logger.warning(
+                    "energy_cycle_bridged usage_point=%s cycle_start=%s bridged_hours=%.2f covered_through=%s",
+                    point,
+                    cycle_start.date(),
+                    bridged / 3600.0,
+                    accrued_rows[-1].interval_end.isoformat(),
+                )
         priced, total, covered_through = self._ledger.cycle_coverage(point, cycle_start)
         if priced < total:
             gap_at = covered_through if covered_through is not None else cycle_start

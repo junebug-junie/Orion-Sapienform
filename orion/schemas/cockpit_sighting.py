@@ -19,6 +19,7 @@ CockpitStageV1 = Literal[
     "harness_dispatch",
     "motor_boot",
     "motor_hop",
+    "working_notes",
     "draft_appraisal",
     "finalize",
     "closure",

@@ -94,27 +94,14 @@ class Settings(BaseSettings):
     # by full age every tick -- rollback only. Validated in
     # orion.substrate.activation.normalize_decay_mode (unknown value raises).
     dynamics_decay_mode: str = Field("since_last", alias="SUBSTRATE_DYNAMICS_DECAY_MODE")
+    # source (2026-11-03): activation propagated from a decaying neighbour is
+    # decayed once, by that neighbour's clock, not again by the receiver's age.
+    # receiver_age: the pre-2026-11-03 double decay -- rollback only. Ignored
+    # when SUBSTRATE_DYNAMICS_DECAY_MODE=legacy. Validated in
+    # orion.substrate.activation.normalize_propagation_decay_mode.
+    dynamics_propagation_decay_mode: str = Field("source", alias="SUBSTRATE_DYNAMICS_PROPAGATION_DECAY_MODE")
     enable_episodic_tick: bool = Field(False, alias="SUBSTRATE_EPISODIC_TICK_ENABLED")
     episodic_tick_interval_sec: float = Field(300.0, alias="SUBSTRATE_EPISODIC_TICK_INTERVAL_SEC")
-    # bus_synaptic_prediction_error: own explicit flag, not piggybacked on
-    # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES -- new kind of signal (reads FalkorDB
-    # directly, no grammar-event batch), not a sixth instance of the existing
-    # grammar-event-driven prediction-error shape. See
-    # docs/superpowers/specs/2026-07-23-transport-domain-rpc-health-redesign.md.
-    enable_bus_synaptic_tick: bool = Field(False, alias="SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED")
-    bus_synaptic_tick_interval_sec: float = Field(
-        30.0, alias="SUBSTRATE_BUS_SYNAPTIC_TICK_INTERVAL_SEC"
-    )
-    # Cold-start reliability floor, mirrors Hub's own min_count=5
-    # (services/orion-hub/scripts/bus_synaptic_graph_routes.py::anomalies()).
-    bus_synaptic_min_edge_count: int = Field(5, alias="SUBSTRATE_BUS_SYNAPTIC_MIN_EDGE_COUNT")
-    # Staleness floor (review finding, 2026-07-25): an edge from a
-    # decommissioned organ/channel keeps its frozen z-score forever once
-    # count clears the floor above -- exclude edges not updated in this
-    # window so a long-dead edge ages out of the aggregate.
-    bus_synaptic_max_edge_age_sec: float = Field(
-        3600.0, alias="SUBSTRATE_BUS_SYNAPTIC_MAX_EDGE_AGE_SEC"
-    )
     # The channel carrying the detector's real output, read by the perception
     # prediction-error listener (P2). (The vision-channel availability tick that
     # also read it was retired 2026-10-02: capability:vision is now fed by the
@@ -165,12 +152,76 @@ class Settings(BaseSettings):
     cabinet_heat_rise_threshold_c: float = Field(
         0.5, ge=0.0, alias="SUBSTRATE_CABINET_HEAT_RISE_THRESHOLD_C"
     )
+    # Street events -> the workspace competition (spec 2026-10-20 street
+    # continuity, section 6; gate in orion/substrate/street_attention.py).
+    # Subscribes to orion:vision:street:events, gates each StreetEventV1 (ring
+    # always; others p < 0.05, camera up, under the hourly cap) and writes
+    # node:substrate.street's prediction_error every tick: the held salience
+    # of a passed event, else 0.0. Also records the street_handoff Rung 6
+    # reading. Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill
+    # switch (no listener, no node writes).
+    street_attention_enabled: bool = Field(True, alias="SUBSTRATE_STREET_ATTENTION_ENABLED")
+    # Forecast surprise -> node:prediction.room (office.temp_c) and node:prediction.body
+    # (athena.cabinet_temp_c): mean excess surprise over the last 30 min of independent forecast
+    # outcomes (orion/substrate/prediction_surprise.py). Subscribes to orion:prediction:surprise.
+    # Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill switch (no listener, no writes;
+    # the nodes age to stale). Producer side: PREDICTION_SURPRISE_EVENTS_ENABLED.
+    prediction_surprise_nodes_enabled: bool = Field(
+        True, alias="SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED"
+    )
+    prediction_surprise_channel: str = Field(
+        "orion:prediction:surprise", alias="SUBSTRATE_PREDICTION_SURPRISE_CHANNEL"
+    )
+    # Chat-turn surprise -> node:prediction.chat_turn (successor of node:substrate.chat): how much
+    # the last 30 min of settled chat turns surprised stance's own bets
+    # (orion/substrate/prediction_turn_surprise.py). Subscribes to orion:prediction:turn_surprise.
+    # Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill switch (no listener, no writes; the
+    # node ages to stale). Producer side: PREDICTION_TURN_SURPRISE_EVENTS_ENABLED.
+    prediction_turn_surprise_node_enabled: bool = Field(
+        True, alias="SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED"
+    )
+    prediction_turn_surprise_channel: str = Field(
+        "orion:prediction:turn_surprise", alias="SUBSTRATE_PREDICTION_TURN_SURPRISE_CHANNEL"
+    )
+    street_events_channel: str = Field(
+        "orion:vision:street:events", alias="SUBSTRATE_STREET_EVENTS_CHANNEL"
+    )
+    # Gate passes allowed in any trailing hour (rings count toward it but are
+    # never refused). The cap on how often the street can take the top slot.
+    street_attention_max_per_hour: int = Field(
+        4, ge=0, alias="SUBSTRATE_STREET_ATTENTION_MAX_PER_HOUR"
+    )
+    # How long one passed event holds the node up. >= 2 broadcast intervals
+    # (30 s) so at least two attention cycles see it; at the cap that is 4 x
+    # 90 s = 10% of an hour, the top-decile edge, so a street at its cap all
+    # week habituates out of the "high" band on its own.
+    street_attention_hold_sec: float = Field(
+        90.0, gt=0.0, alias="SUBSTRATE_STREET_ATTENTION_HOLD_SEC"
+    )
+    street_attention_tick_interval_sec: float = Field(
+        30.0, gt=0.0, alias="SUBSTRATE_STREET_ATTENTION_TICK_INTERVAL_SEC"
+    )
+    # A camera is "up" when the runtime saw a frame from it on
+    # orion:vision:artifacts within this many seconds (the perception
+    # listener records it; with that listener off every non-ring event reads
+    # camera_unseen and is refused).
+    street_camera_up_max_age_sec: float = Field(
+        600.0, gt=0.0, alias="SUBSTRATE_STREET_CAMERA_UP_MAX_AGE_SEC"
+    )
+    # Strain news -> the workspace competition (docs/superpowers/specs/2026-10-20-strain-loop-design.md
+    # Part 2; orion/regulation/strain_news.py). Reads orion:regulation:latest every tick and writes
+    # node:substrate.strain's prediction_error = 1.0 on a strain news event (onset / escalation /
+    # reminder; <= 8 per local day, >= 30 min apart), held for attention's 300 s orienting window,
+    # else a calm 0.0. An unknown or stale regulation reading writes nothing. ON (ship flags on).
+    enable_strain_attention: bool = Field(True, alias="SUBSTRATE_STRAIN_ATTENTION_ENABLED")
+    strain_attention_tick_interval_sec: float = Field(
+        30.0, ge=5.0, alias="SUBSTRATE_STRAIN_ATTENTION_TICK_INTERVAL_SEC"
+    )
+    # Orion's local day for the strain news daily cap. Same key and default as orion-durable-runs.
+    orion_situation_timezone: str = Field("America/Denver", alias="ORION_SITUATION_TIMEZONE")
     rpc_health_snapshot_channel: str = Field(
         "orion:rpc_health:snapshot", alias="SUBSTRATE_RPC_HEALTH_SNAPSHOT_CHANNEL"
     )
-    # Same env var name services/orion-bus-mirror and services/orion-recall
-    # already use for the same graph -- not a new name.
-    falkordb_bus_graph: str = Field("orion_bus_synapse", alias="FALKORDB_BUS_GRAPH")
     # Window + tick interval must stay under receipt retention (default 30 min),
     # or completed windows will already be pruned when consolidated.
     episodic_window_seconds: int = Field(900, alias="SUBSTRATE_EPISODIC_WINDOW_SECONDS")
@@ -198,21 +249,6 @@ class Settings(BaseSettings):
     # broadcast loops. Default off: OpenLoopV1 is extra="forbid", so every
     # broadcast consumer must be rebuilt BEFORE this is turned on. Apply
     # manual_migration_node_prediction_error_history_v1.sql first.
-    # Rung 6 (orion/substrate/prediction_expectation.py): record each raw
-    # execution/chat reading before it becomes surprise, as the replay corpus
-    # Orion tunes their own expectation settings from. Retention must exceed
-    # the Hub tuner's window (SUBSTRATE_PREDICTION_EXPECTATION_WINDOW_HOURS,
-    # default 72) plus a 6 h post-adoption check.
-    prediction_raw_readings_enabled: bool = Field(True, alias="SUBSTRATE_PREDICTION_RAW_READINGS_ENABLED")
-    prediction_raw_reading_retention_hours: float = Field(
-        192.0, ge=84.0, alias="SUBSTRATE_PREDICTION_RAW_READING_RETENTION_HOURS"
-    )
-    # Use Orion's self-tuned expectation (control surface prediction_expectation.<domain>)
-    # instead of the calibrated constants. False = constants, i.e. rung 6 kill switch.
-    prediction_expectation_live_enabled: bool = Field(True, alias="SUBSTRATE_PREDICTION_EXPECTATION_LIVE_ENABLED")
-    prediction_expectation_refresh_sec: float = Field(
-        60.0, ge=5.0, alias="SUBSTRATE_PREDICTION_EXPECTATION_REFRESH_SEC"
-    )
     pe_history_enabled: bool = Field(True, alias="SUBSTRATE_PE_HISTORY_ENABLED")
     # Floor 25h: below that the prune would delete the readings the 24h and
     # prior-24h windows need (0 would delete every row just written). Below
@@ -232,6 +268,9 @@ class Settings(BaseSettings):
     # Needs SUBSTRATE_PE_HISTORY_ENABLED (without magnitudes every body node is
     # absent). false = the previous dynamic-pressure Borda competition exactly.
     attention_world_first_enabled: bool = Field(True, alias="ATTENTION_WORLD_FIRST_ENABLED")
+    # Accepted world-pulse reading links are one bounded external candidate in
+    # the world-first contest. Chat always yields reading on the same tick.
+    attention_world_reading_enabled: bool = Field(True, alias="ATTENTION_WORLD_READING_ENABLED")
     # Event-written body nodes (glossary semantics: one reading per event,
     # carried forward) compete only for 300 s after the event that wrote
     # them, fading in rank (orion.attention.world_first.
@@ -452,6 +491,14 @@ class Settings(BaseSettings):
     walkway_seen_interval_sec: float = Field(1800.0, gt=0.0, alias="WALKWAY_SEEN_INTERVAL_SEC")
     walkway_seen_streams: str = Field("walkway", alias="WALKWAY_SEEN_STREAMS")
     walkway_seen_lookback_days: int = Field(3, ge=1, alias="WALKWAY_SEEN_LOOKBACK_DAYS")
+    # person / person_link rows (PR #2852) -> one graph node per person and an instance_of
+    # claim per named camera cluster, via the journal (app/person_graph_loop.py). false = none written.
+    person_graph_enabled: bool = Field(True, alias="PERSON_GRAPH_ENABLED")
+    person_graph_interval_sec: float = Field(600.0, gt=0.0, alias="PERSON_GRAPH_INTERVAL_SEC")
+    # Same pass: move each named camera cluster node's observed_at to its newest sighting
+    # (vision_individual.last_seen_at) and give it a 6 h half-life, so "seen recently" rises
+    # and fades. false = no sighting writes (nodes fade to rest within a day).
+    person_sighting_refresh_enabled: bool = Field(True, alias="PERSON_SIGHTING_REFRESH_ENABLED")
     # Voluntary attention (ORION_ATTENTION_TOPDOWN_ENABLED) goal-context feed:
     # populates the in-memory active-goal store from GoalProposalV1 events.
     channel_goal_proposal: str = Field(
@@ -534,18 +581,14 @@ class Settings(BaseSettings):
     cabinet_ambient_spike_channel: str = Field(
         "orion:cabinet:ambient:spike", alias="CABINET_AMBIENT_SPIKE_CHANNEL"
     )
-    # codebase_prediction_error consumer (docs/superpowers/specs/2026-07-30-
-    # codebase-mass-signal-design.md, "Producer + consumer patch design").
-    # Own dedicated flag, not piggybacked on SUBSTRATE_WRITE_PREDICTION_ERROR_NODES
-    # -- same reasoning as SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED above: this
-    # domain has a materially different risk surface (external I/O lives in
-    # a separate service, orion-cocreation-signals, but the consumer side
-    # here adds a new Postgres table + a new bus subscription, not a
-    # reducer-projection read like the other five domains). Default-off,
-    # matching every other tick in this file -- flip only after a live-data
-    # sanity check against the new substrate_codebase_mass_baseline table.
-    enable_codebase_prediction_error_node: bool = Field(
-        False, alias="SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE"
+    # Codebase delta listener (orion:substrate:codebase_delta, producer
+    # orion-cocreation-signals). Scores each delta and appends it to
+    # substrate_codebase_mass_baseline + substrate_codebase_delta_log (Hub
+    # co-creation tab, self-study). Renamed 2026-11-13 from
+    # SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE: node:substrate.codebase
+    # was retired (PE suite rebuild), so this flag no longer writes a node.
+    enable_codebase_delta_listener: bool = Field(
+        True, alias="SUBSTRATE_CODEBASE_DELTA_LISTENER_ENABLED"
     )
     codebase_delta_channel: str = Field(
         "orion:substrate:codebase_delta", alias="CHANNEL_CODEBASE_DELTA"

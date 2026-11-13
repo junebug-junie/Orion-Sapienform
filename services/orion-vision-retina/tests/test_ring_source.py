@@ -344,6 +344,7 @@ def test_burst_delivers_frames_and_always_closes_the_session(tmp_path, fake_aior
 
     async def run():
         src = _burst_src(tmp_path, dev)
+        src.consecutive_failed_bursts = 2  # earlier views failed; a frame clears it
         seen = []
         task = asyncio.create_task(src._burst("ding"))
         while not task.done():
@@ -355,6 +356,7 @@ def test_burst_delivers_frames_and_always_closes_the_session(tmp_path, fake_aior
 
     src, seen = asyncio.run(run())
     assert seen and src.bursts_failed == 0 and src.last_error is None
+    assert src.consecutive_failed_bursts == 0 and src.blind is False
     assert dev.closed == dev.opened and len(dev.opened) == 1  # registered before Ring talks, closed after
     assert dev.keep_alive_timeout >= 30  # Ring keeps the view open for the whole burst
     pc = fake_aiortc.instances[0]
@@ -367,6 +369,10 @@ def test_no_answer_is_named_failed_and_still_closed(tmp_path, fake_aiortc):
     src = _burst_src(tmp_path, dev)
     asyncio.run(src._burst("motion"))
     assert src.bursts_failed == 1 and "no answer from Ring" in src.last_error
+    assert src.consecutive_failed_bursts == 1
+    asyncio.run(src._burst("motion"))
+    asyncio.run(src._burst("motion"))
+    assert src.consecutive_failed_bursts == 3 and src.blind is True
     assert dev.closed == dev.opened and fake_aiortc.instances[0].closed
 
 
@@ -844,3 +850,446 @@ def test_self_look_value_is_bounded(tmp_path):
         return src
 
     assert len(asyncio.run(run()).last_self_look_reason) == 80
+
+
+# --- 2026-10-23: blind doorbell (aiortc video buffer too small) -------------
+
+
+def _fu_a_frame(n_packets: int, seq0: int = 1000, ts: int = 90000):
+    """One H.264 IDR frame split into ``n_packets`` FU-A RTP packets."""
+    from aiortc.rtp import RtpPacket
+
+    out = []
+    for i in range(n_packets):
+        fu_header = 0x05 | (0x80 if i == 0 else 0) | (0x40 if i == n_packets - 1 else 0)
+        pkt = RtpPacket(
+            payload_type=99,
+            marker=1 if i == n_packets - 1 else 0,
+            sequence_number=(seq0 + i) & 0xFFFF,
+            timestamp=ts,
+            ssrc=1,
+            payload=bytes([0x7C, fu_header]) + b"\x00" * 1100,
+        )
+        pkt = RtpPacket.parse(pkt.serialize())  # as received off the wire
+        pkt._data = pkt.payload  # RTCRtpReceiver depayloads before the buffer
+        out.append(pkt)
+    return out
+
+
+def _assembles(packets) -> bool:
+    """True when the whole frame comes out of the buffer in one piece."""
+    import aiortc.rtcrtpreceiver as rr
+
+    buf = rr.JitterBuffer(capacity=128, is_video=True)  # what RTCRtpReceiver asks for
+    frames = [buf.add(p)[1] for p in packets]
+    # A frame is released when the next timestamp starts; send one more packet.
+    nxt = _fu_a_frame(1, seq0=packets[-1].sequence_number + 1, ts=packets[-1].timestamp + 3000)
+    frames.append(buf.add(nxt[0])[1])
+    # Complete = every packet's data, start included. Too small a buffer drops
+    # the keyframe's head to make room and hands the decoder the tail, which
+    # never decodes: that is the live failure, not "no frame object at all".
+    whole = sum(len(p._data) for p in packets)
+    return any(f is not None and len(f.data) == whole for f in frames)
+
+
+def test_a_250_packet_keyframe_never_assembles_in_aiortcs_default_buffer():
+    """The live failure, reproduced: Ring keyframes are ~250 packets."""
+    import aiortc.jitterbuffer as jb
+    import aiortc.rtcrtpreceiver as rr
+
+    saved = rr.JitterBuffer
+    rr.JitterBuffer = jb.JitterBuffer
+    try:
+        assert _assembles(_fu_a_frame(100)) is True  # small keyframes always worked
+        assert _assembles(_fu_a_frame(250)) is False
+    finally:
+        rr.JitterBuffer = saved
+
+
+def test_raised_video_capacity_assembles_a_250_packet_keyframe():
+    import aiortc.jitterbuffer as jb
+    import aiortc.rtcrtpreceiver as rr
+
+    from app.ring_source import VIDEO_JITTER_CAPACITY, ensure_video_jitter_capacity
+
+    saved = rr.JitterBuffer
+    rr.JitterBuffer = jb.JitterBuffer
+    try:
+        ensure_video_jitter_capacity()
+        ensure_video_jitter_capacity()  # idempotent: no subclass-of-subclass
+        assert rr.JitterBuffer(capacity=128, is_video=True).capacity == VIDEO_JITTER_CAPACITY
+        assert rr.JitterBuffer(capacity=16, prefetch=4).capacity == 16  # audio untouched
+        assert rr.JitterBuffer.__mro__[1] is jb.JitterBuffer
+        assert _assembles(_fu_a_frame(250)) is True
+    finally:
+        rr.JitterBuffer = saved
+
+
+def test_blind_after_three_failed_live_views_and_clears_on_a_frame(tmp_path):
+    from app.ring_source import BLIND_AFTER_FAILED_BURSTS
+
+    src = _connected(tmp_path)
+    src.consecutive_failed_bursts = BLIND_AFTER_FAILED_BURSTS - 1
+    assert src.blind is False
+    src.consecutive_failed_bursts = BLIND_AFTER_FAILED_BURSTS
+    assert src.blind is True
+    svc = _service_with(src)
+    asyncio.run(svc.capture_once())
+    assert svc.metrics.ring_blind is True
+    assert svc.metrics.ring_consecutive_failed_bursts == BLIND_AFTER_FAILED_BURSTS
+    from app.health import make_system_health_envelope
+
+    env = make_system_health_envelope(
+        service_name="vision-retina-doorbell", service_version="t", camera_id="doorbell",
+        stream_id="doorbell", source_type="ring", source_ok=True, metrics=svc.metrics,
+        fps_target=2.0, storage_dir=str(tmp_path), heartbeat_interval_sec=10.0,
+    )
+    payload = env.payload if isinstance(env.payload, dict) else env.payload.model_dump()
+    assert payload["status"] == "degraded"
+    assert payload["details"]["ring_blind"] is True
+
+
+def test_a_setup_failure_counts_toward_blind(tmp_path, fake_aiortc):
+    class _BadIce(_Device):
+        def get_ice_servers(self):
+            raise RuntimeError("no ice servers")
+
+    src = _burst_src(tmp_path, _BadIce())
+    asyncio.run(src._burst("motion"))
+    assert src.bursts_failed == 1 and src.consecutive_failed_bursts == 1
+    assert "setup: RuntimeError" in src.last_error
+
+
+# --- deaf doorbell: one unpadded FCM message killed every listener (2026-10-28..11-03) ---
+
+
+@pytest.fixture
+def fcm_client_class():
+    """The real FcmPushClient with its class attributes restored after the test
+    (ensure_fcm_push_tolerance patches the class, process-wide)."""
+    fpc = pytest.importorskip("firebase_messaging.fcmpushclient")
+    cls = fpc.FcmPushClient
+    names = ("_decrypt_raw_data", "_handle_data_message", "_orion_push_tolerant")
+    # Must start unpatched, or the "unpatched" test would test the patch.
+    assert not cls.__dict__.get("_orion_push_tolerant"), "FcmPushClient already patched by an earlier test"
+    saved = {n: cls.__dict__[n] for n in names if n in cls.__dict__}
+    skips = (rs._FcmSkips.count, rs._FcmSkips.consecutive, rs._FcmSkips.last_error)
+    rs._FcmSkips.consecutive = 0
+    yield cls
+    for n in names:
+        if n in cls.__dict__:
+            delattr(cls, n)
+    for n, v in saved.items():
+        setattr(cls, n, v)
+    rs._FcmSkips.count, rs._FcmSkips.consecutive, rs._FcmSkips.last_error = skips
+
+
+def _b64(raw: bytes) -> str:
+    import base64
+
+    return base64.urlsafe_b64encode(raw).decode("ascii")
+
+
+def _vapid_pub() -> bytes:
+    """A sender's VAPID public key (the ``p256ecdsa`` parameter), 65 bytes."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    return ec.generate_private_key(ec.SECP256R1()).public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+
+
+def _fcm_push(payload: dict, *, crypto_key_override: str | None = None,
+              crypto_key_header: str | None = None, encryption_header: str | None = None):
+    """A real aesgcm-encrypted FCM data message the way FCM sends it since
+    2026-10-28: crypto-key and salt WITHOUT base64 padding.
+    ``crypto_key_header``/``encryption_header``: format strings with ``{dh}``,
+    ``{vapid}`` / ``{salt}`` for the whole header (default ``dh={dh}`` / ``salt={salt}``)."""
+    import json as _json
+
+    import http_ece
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from firebase_messaging.proto.mcs_pb2 import AppData, DataMessageStanza
+
+    receiver = ec.generate_private_key(ec.SECP256R1())
+    sender = ec.generate_private_key(ec.SECP256R1())
+    auth_secret, salt = os.urandom(16), os.urandom(16)
+    receiver_pub = receiver.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    sender_pub = sender.public_key().public_bytes(
+        serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)
+    body = http_ece.encrypt(_json.dumps(payload).encode(), salt=salt, private_key=sender, dh=receiver_pub,
+                            auth_secret=auth_secret, version="aesgcm")
+    der = receiver.private_bytes(serialization.Encoding.DER, serialization.PrivateFormat.PKCS8,
+                                 serialization.NoEncryption())
+    credentials = {"gcm": {"app_id": "app"}, "keys": {"private": _b64(der).rstrip("="),
+                                                       "secret": _b64(auth_secret).rstrip("=")}}
+    crypto_key = crypto_key_override if crypto_key_override is not None else _b64(sender_pub).rstrip("=")
+    msg = DataMessageStanza(
+        persistent_id="pid-1", raw_data=body,
+        app_data=[AppData(key="crypto-key", value=(crypto_key_header or "dh={dh}").format(
+                      dh=crypto_key, vapid=_b64(_vapid_pub()).rstrip("="))),
+                  AppData(key="encryption", value=(encryption_header or "salt={salt}").format(
+                      salt=_b64(salt).rstrip("="))),
+                  AppData(key="subtype", value="app")])
+    assert not crypto_key.endswith("=") and len(crypto_key) % 4  # really unpadded
+    return credentials, msg
+
+
+def _client(cls, credentials, received):
+    """A real client; the selective ack is recorded instead of written to a socket."""
+    client = cls(lambda data, pid, ctx: received.append((data, pid)), SimpleNamespace(), credentials,
+                 config=None)
+    client.acks = []
+
+    async def _ack(pid):
+        client.acks.append(pid)
+
+    client._send_selective_ack = _ack
+    return client
+
+
+def test_unpatched_fcm_client_dies_on_an_unpadded_push(fcm_client_class):
+    """The live failure, reproduced: the library raises on the message itself,
+    so its catch-all shuts the client down before the ack (redelivered forever)."""
+    import binascii
+
+    credentials, msg = _fcm_push({"ding": 1})
+    client = _client(fcm_client_class, credentials, [])
+    with pytest.raises(binascii.Error):
+        client._handle_data_message(msg)
+
+
+def test_patched_fcm_client_decrypts_an_unpadded_push(fcm_client_class):
+    rs.ensure_fcm_push_tolerance()
+    rs.ensure_fcm_push_tolerance()  # idempotent: no wrapper around a wrapper
+    received = []
+    credentials, msg = _fcm_push({"ding": 1})
+    client = _client(fcm_client_class, credentials, received)
+    asyncio.run(client._handle_message(msg))
+    assert received == [({"ding": 1}, "pid-1")]
+    assert client.persistent_ids == ["pid-1"]
+
+
+def test_padded_headers_still_decrypt_after_the_patch(fcm_client_class):
+    """Unchanged behaviour for messages that already carry padding."""
+    rs.ensure_fcm_push_tolerance()
+    received = []
+    credentials, msg = _fcm_push({"motion": 1})
+    for ad in msg.app_data:
+        if ad.key in ("crypto-key", "encryption"):
+            prefix, val = ad.value.split("=", 1)
+            ad.value = f"{prefix}={rs._b64url_padded(val)}"
+    _client(fcm_client_class, credentials, received)._handle_data_message(msg)
+    assert received == [({"motion": 1}, "pid-1")]
+
+
+def test_a_message_that_still_fails_is_skipped_and_acknowledged(fcm_client_class, tmp_path):
+    """A malformed key (not a P-256 point) cannot be decrypted at all: the
+    listener must log, count and ack it, not die and get it redelivered."""
+    rs.ensure_fcm_push_tolerance()
+    before = rs._FcmSkips.count
+    received = []
+    credentials, msg = _fcm_push({"ding": 1}, crypto_key_override=_b64(b"\x04" + b"\x01" * 64).rstrip("="))
+    client = _client(fcm_client_class, credentials, received)
+    asyncio.run(client._handle_message(msg))
+    assert received == []
+    assert client.persistent_ids == ["pid-1"]          # acknowledged: MCS will not redeliver it
+    assert client.acks == ["pid-1"]
+    assert rs._FcmSkips.count == before + 1 and rs._FcmSkips.last_error
+    src = RingEventFrameSource("Front Door", state_dir=str(tmp_path))
+    assert src.push_messages_skipped == before + 1
+
+
+def test_every_message_failing_reads_deaf_and_one_good_message_clears_it(fcm_client_class, tmp_path):
+    """The listener stays up but nothing decodes (e.g. FCM changes encoding
+    again): the same silent deafness one layer down, so it must degrade too."""
+    rs.ensure_fcm_push_tolerance()
+    src = RingEventFrameSource("Front Door", state_dir=str(tmp_path))
+    bad_key = _b64(b"\x04" + b"\x01" * 64).rstrip("=")
+    for i in range(rs.DEAF_AFTER_SKIPPED_MESSAGES):
+        assert src.deaf is False
+        credentials, msg = _fcm_push({"ding": i}, crypto_key_override=bad_key)
+        asyncio.run(_client(fcm_client_class, credentials, [])._handle_message(msg))
+    assert src.deaf is True
+    received = []
+    credentials, msg = _fcm_push({"ding": 9})
+    asyncio.run(_client(fcm_client_class, credentials, received)._handle_message(msg))
+    assert received == [({"ding": 9}, "pid-1")] and src.deaf is False
+
+
+def test_b64url_padded():
+    assert rs._b64url_padded("abc") == "abc="
+    assert rs._b64url_padded("ab") == "ab=="
+    assert rs._b64url_padded("abcd") == "abcd"
+    assert rs._b64url_padded("ab==") == "ab=="
+    assert rs._b64url_padded(" abc\n") == "abc="
+
+
+def test_supervisor_reports_deaf_when_every_listener_dies(tmp_path, monkeypatch):
+    """2026-10-28..11-03: every reconnect cleared last_error and health read
+    "ok" while the listener died within a second of every start."""
+    monkeypatch.setattr(rs, "SUPERVISE_SECONDS", 0.01)
+
+    async def run():
+        src = _connected(tmp_path)
+        src._connected_at = time.time()
+        dead = lambda: SimpleNamespace(started=True, _receiver=SimpleNamespace(is_started=lambda: False))  # noqa: E731
+        src._listener = dead()
+        states = []
+
+        async def _noop():
+            return None
+
+        async def fake_disconnect():
+            src.ever_connected = False
+
+        async def fake_connect():
+            states.append(src.deaf)
+            src.ever_connected = True
+            src._connected_at = time.time()
+            src._listener = dead() if len(states) < 4 else SimpleNamespace(
+                started=True, _receiver=SimpleNamespace(is_started=lambda: True))
+            src.last_error = None
+            return True
+
+        src._disconnect = fake_disconnect
+        src._connect_once = fake_connect
+        task = asyncio.create_task(src._supervise())
+
+        async def settled():
+            while not (len(states) >= 4 and src.consecutive_listener_deaths == 0):
+                await asyncio.sleep(0.005)
+
+        try:
+            await asyncio.wait_for(settled(), timeout=5)
+        finally:
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return src, states
+
+    src, states = asyncio.run(run())
+    assert states[:4] == [False, False, True, True]   # deaf from the 3rd death in a row
+    assert src.listener_restarts == 4
+    assert src.consecutive_listener_deaths == 0 and src.deaf is False  # a listener that lives clears it
+
+
+def test_health_degrades_when_deaf(tmp_path):
+    src = _connected(tmp_path)
+    src.consecutive_listener_deaths, src.listener_restarts = rs.DEAF_AFTER_LISTENER_DEATHS, 7
+    svc = _service_with(src)
+    svc._copy_source_metrics()
+    env = svc.health_envelope(None).payload
+    d = env["details"]
+    assert (d["ring_deaf"], d["ring_listener_restarts"], d["ring_consecutive_listener_deaths"]) == (
+        True, 7, rs.DEAF_AFTER_LISTENER_DEATHS)
+    assert "ring_push_messages_skipped" in d
+    assert env["status"] == "degraded"
+
+
+def test_a_dead_listener_during_a_live_view_counts_once_and_is_not_a_restart(tmp_path, monkeypatch):
+    """The reconnect waits for the live view; the same dead listener is seen
+    every check and must not count as several deaths or as restarts."""
+    monkeypatch.setattr(rs, "SUPERVISE_SECONDS", 0.005)
+
+    async def run():
+        src = _connected(tmp_path)
+        src._connected_at = time.time()
+        src._listener = SimpleNamespace(started=True, _receiver=SimpleNamespace(is_started=lambda: False))
+        gate = asyncio.Event()
+        src._burst_task = asyncio.create_task(gate.wait())   # a live view that is still open
+        task = asyncio.create_task(src._supervise())
+        await asyncio.sleep(0.08)
+        task.cancel()
+        gate.set()
+        await asyncio.gather(task, src._burst_task, return_exceptions=True)
+        return src
+
+    src = asyncio.run(run())
+    assert src.consecutive_listener_deaths == 1
+    assert src.listener_restarts == 0
+
+
+# --- 2026-11-03 23:48: every push "Invalid EC key" after #3085 -----------------------
+# FCM's crypto-key header is `dh=<key>;p256ecdsa=<vapid key>`, both unpadded.
+# firebase-messaging strips "dh=" and decodes the rest as one value.
+
+LIVE_CRYPTO_KEY = "dh={dh};p256ecdsa={vapid}"
+
+
+def test_unpatched_library_fails_the_live_header_with_incorrect_padding(fcm_client_class):
+    """Stage 1 of the live failure (10-28 .. 11-03)."""
+    import binascii
+
+    credentials, msg = _fcm_push({"ding": 1}, crypto_key_header=LIVE_CRYPTO_KEY)
+    with pytest.raises(binascii.Error, match="Incorrect padding"):
+        _client(fcm_client_class, credentials, [])._handle_data_message(msg)
+
+
+def test_padding_the_whole_header_value_gives_invalid_ec_key():
+    """Stage 2 (the #3085 patch alone, live 11-03 23:48): padding "<key>;p256ecdsa=<vapid>"
+    as one value decodes 137 bytes, which is not a 65-byte P-256 point."""
+    from base64 import urlsafe_b64decode
+
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    _, msg = _fcm_push({"ding": 1}, crypto_key_header=LIVE_CRYPTO_KEY)
+    value = next(ad.value for ad in msg.app_data if ad.key == "crypto-key")[3:]
+    raw = urlsafe_b64decode(rs._b64url_padded(value).encode("ascii"))
+    assert len(raw) == 137
+    with pytest.raises(ValueError, match="Invalid EC key"):
+        ec.EllipticCurvePublicKey.from_encoded_point(ec.SECP256R1(), raw)
+
+
+@pytest.mark.parametrize("crypto_key_header,encryption_header", [
+    (LIVE_CRYPTO_KEY, None),
+    ("dh={dh},p256ecdsa={vapid}", None),
+    ("p256ecdsa={vapid};dh={dh}", None),
+    (" dh={dh} ; p256ecdsa={vapid} ", "salt={salt};rs=4096"),
+    ("keyid=p256dh;dh={dh};p256ecdsa={vapid}", "rs=4096;salt={salt}"),
+    ('dh="{dh}";p256ecdsa="{vapid}"', 'salt="{salt}"'),
+])
+def test_patched_client_delivers_multi_parameter_headers(fcm_client_class, crypto_key_header, encryption_header):
+    rs.ensure_fcm_push_tolerance()
+    received = []
+    credentials, msg = _fcm_push({"ding": 1}, crypto_key_header=crypto_key_header,
+                                 encryption_header=encryption_header)
+    client = _client(fcm_client_class, credentials, received)
+    asyncio.run(client._handle_message(msg))
+    assert received == [({"ding": 1}, "pid-1")]
+    assert client.acks == ["pid-1"] and rs._FcmSkips.consecutive == 0
+
+
+def test_header_param():
+    assert rs._header_param("dh=AAA;p256ecdsa=BBB", "dh") == "AAA"
+    assert rs._header_param("p256ecdsa=BBB;dh=AAA", "dh") == "AAA"
+    assert rs._header_param("dh=AAA,p256ecdsa=BBB", "dh") == "AAA"
+    assert rs._header_param("DH=AAA=", "dh") == "AAA="
+    assert rs._header_param("p256ecdsa=BBB", "dh") is None
+    assert rs._header_param("", "dh") is None
+    assert rs._header_param('dh="AAA";p256ecdsa=BBB', "dh") == "AAA"
+
+
+def test_header_shape_never_prints_a_bare_value():
+    msg = SimpleNamespace(app_data=[SimpleNamespace(key="crypto-key", value="BAREKEYVALUE"),
+                                    SimpleNamespace(key="encryption", value="salt=SSSS")])
+    assert rs._header_shape(msg) == "crypto-key=[?:12] encryption=[salt:4]"
+
+
+def test_skip_log_shows_header_layout_but_not_values(fcm_client_class):
+    """A future layout change must be readable from the skip line alone."""
+    from loguru import logger
+
+    rs.ensure_fcm_push_tolerance()
+    lines = []
+    sink = logger.add(lines.append, level="WARNING")
+    try:
+        credentials, msg = _fcm_push({"ding": 1}, crypto_key_header="p256ecdsa={vapid}")  # no dh at all
+        value = msg.app_data[0].value
+        asyncio.run(_client(fcm_client_class, credentials, [])._handle_message(msg))
+    finally:
+        logger.remove(sink)
+    line = "".join(str(x) for x in lines)
+    assert "skipped" in line and "crypto-key=[p256ecdsa:87]" in line and "encryption=[salt:22]" in line
+    assert value.split("=", 1)[1] not in line

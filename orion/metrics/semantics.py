@@ -51,8 +51,11 @@ from typing import Any, Iterable, Mapping
 # count       a small integer count, possibly scaled (few distinct values)
 # bucket      a few fixed tiers dressed as a number (e.g. 0.9 / 0.6 / 0.3)
 # placeholder a hard-coded constant standing in for a measurement not built yet
+# surprise_excess  mean excess surprise of scored forecasts (-ln p minus its calibrated
+#             calm point 0.95): rests at 0 by theory, positive = the world did what the
+#             forecast did not expect (node:prediction.*, 2026-11-11)
 VALUE_KINDS: frozenset[str] = frozenset(
-    {"level", "trigger", "binary", "count", "bucket", "placeholder"}
+    {"level", "trigger", "binary", "count", "bucket", "placeholder", "surprise_excess"}
 )
 
 # per_tick         a reading every producer tick; long zero runs mean calm
@@ -97,13 +100,15 @@ POLARITIES: frozenset[str] = frozenset({"higher_is_better", "higher_is_worse"})
 #     numbers behind it.
 PROMPT_INVENTORY_URNS: frozenset[str] = frozenset(
     {
-        "metric://field_channel/orion-field-digester/node:substrate.bus_synaptic.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.execution.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.biometrics.prediction_error",
         "metric://field_channel/orion-substrate-runtime/node:substrate.cabinet.prediction_error",
-        "metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error",
-        "metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error",
-        "metric://field_channel/orion-substrate-runtime/node:substrate.route.prediction_error",
+        "metric://field_channel/orion-substrate-runtime/node:substrate.strain.prediction_error",
+        # Forecast surprise (2026-11-11): self-readings render it like any body signal.
+        "metric://field_channel/orion-substrate-runtime/node:prediction.room.prediction_error",
+        "metric://field_channel/orion-substrate-runtime/node:prediction.body.prediction_error",
+        # Chat-turn surprise (2026-11-13), successor of node:substrate.chat.
+        "metric://field_channel/orion-substrate-runtime/node:prediction.chat_turn.prediction_error",
         "metric://inner_state/orion-field-digester/field_state.v1#queue_contention_score",
         "metric://inner_state/orion-substrate-runtime/attention_broadcast_projection.v1#coalition_stability_score",
         "metric://inner_state/orion-cortex-exec/attention_salience_trace.v1#salience",
@@ -111,6 +116,16 @@ PROMPT_INVENTORY_URNS: frozenset[str] = frozenset(
         "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#ratio",
         "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_high",
         "metric://inner_state/orion-equilibrium-service/self_signal_outcome_association.v1#rate_normal",
+        # Self-monitor track record (2026-11-03): the numbers the stance/reverie cue and the E2
+        # self-question print about one faculty (the E3 self-finding prompt was retired 2026-11-10,
+        # and with it reliability_lo's only prompt site).
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability",
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#reliability_hi",
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#execution_failure_lo",
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#stated_mean",
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_share",
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_lo",
+        "metric://inner_state/orion-durable-runs/self_monitor.faculty_record.v1#calibrated_hi",
     }
 )
 

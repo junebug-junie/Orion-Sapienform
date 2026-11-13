@@ -31,3 +31,10 @@ _ensure_dream_paths()
 def _dream_service_isolation() -> None:
     _ensure_dream_paths()
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_live_physiology_bid(monkeypatch):
+    """Unit tests must never POST a shadow bid to the live body economy (Patch C3b): the client
+    returns None without a call. Tests of the shadow seam stub app.physiology_shadow.abid."""
+    monkeypatch.setenv("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "false")

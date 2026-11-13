@@ -94,3 +94,9 @@ def test_findings_survive_the_durable_brief_round_trip():
     brief = brief_from_material(material)
     again = OrionDayRunBriefV1.model_validate_json(brief.model_dump_json())
     assert [f.kind for f in again.material.readings[0].findings] == ["link_made", "belief_moved"]
+
+
+def test_unavailable_resonance_store_is_visible_in_the_letter():
+    material = _gather(fx.FakeConn(fail={"reading_resonance"}, read_links=[]))
+    assert material.sources["reading_resonance"].status == "error"
+    assert "reading connections not checked" in reading_change_lines(material.readings[0], material)[0]

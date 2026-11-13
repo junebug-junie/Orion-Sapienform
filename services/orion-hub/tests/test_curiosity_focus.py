@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import json
 import logging
 from datetime import timedelta
 from pathlib import Path
@@ -577,3 +578,51 @@ def test_five_worst_case_run_items_with_a_focus_stay_under_the_mcp_cap():
                  for n in range(5)]
         result = IntrospectResultV1(ok=True, operation="curiosity", as_of=NOW, total_available=99999, items=items)
         assert _size(result) < MCP_TOOL_RESULT_MAX_CHARS, (_size(result), with_write_up)
+
+
+# --- Orion Prime 2A: the resident loop in orion-mind -----------------------------------------------
+
+PRIME = IntrospectToolBindingV1(
+    invocation_context="prime", parent_run_id="t1", parent_trace_id="prime:t1", memory_allowed=False,
+)
+
+
+def test_prime_queues_into_an_empty_slot_and_the_row_is_marked_prime():
+    listener, table = _listener()
+    out = _ask(listener, ARGS, binding=PRIME)
+    assert out.ok is True
+    [row] = table.rows
+    assert row["status"] == "pending" and row["origin"] == "self" and row["chat_correlation_id"] == "prime:t1"
+    # Prime can compute the id before Hub answers (orion/prime/acts.py prime_focus_id).
+    from orion.prime.acts import prime_focus_id
+    assert out.items[0].id == prime_focus_id(question=ARGS["question"], why=ARGS["why"], thought_id="t1")
+
+
+def test_prime_never_replaces_a_pending_focus():
+    listener, table = _listener()
+    chat = _ask(listener, ARGS)
+    mine = _ask(listener, {"question": "prime's own", "why": "a concern"}, binding=PRIME)
+    assert chat.ok and mine.ok is False and cf.PENDING_KEPT in mine.error
+    assert [r["status"] for r in table.rows] == ["pending"]
+
+
+def test_prime_can_never_claim_juniper_asked():
+    listener, table = _listener()
+    out = _ask(listener, {**ARGS, "origin": "juniper"}, binding=PRIME)
+    assert out.ok is False and "never juniper" in out.error and table.rows == []
+
+
+def test_prime_refs_are_stored_on_the_row_and_echoed_and_a_bad_ref_writes_nothing():
+    """Orion Prime step 1: refs travel Prime -> Hub -> the focus row (orion/refs.py kinds only)."""
+    listener, table = _listener()
+    refs = [{"kind": "arc", "id": "8d87adeca2ce06a5"}]
+    out = _ask(listener, {**ARGS, "refs": refs}, binding=PRIME)
+    assert out.ok is True and out.items[0].extra["refs"] == refs
+    [row] = table.rows
+    assert json.loads(row["refs"]) == refs
+    bad, empty = _listener()
+    out = _ask(bad, {**ARGS, "refs": [{"kind": "run", "id": "34d7345e36e7"}]}, binding=PRIME)
+    assert out.ok is False and "invalid queue_curiosity_focus request" in out.error and empty.rows == []
+    # A caller that cites nothing (every chat turn) is unchanged: no refs stored.
+    plain, plain_table = _listener()
+    assert _ask(plain, ARGS).ok is True and plain_table.rows[0]["refs"] is None

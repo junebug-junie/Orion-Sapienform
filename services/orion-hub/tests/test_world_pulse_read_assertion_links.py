@@ -136,6 +136,16 @@ def test_context_uses_the_stored_subject_id_and_existing_objects_named_in_the_re
     assert subject_id in section and OBJECT_ID in section and QUOTE in section
 
 
+def test_claim_instructions_are_fenced_but_retained_text_is_not():
+    from orion.world_pulse_read.reader_contract import stance_view_of_reading_prompt
+
+    _, subject_id, ctx, _, _ = _setup()
+    view = stance_view_of_reading_prompt(claim_prompt_section(ctx))
+    assert view is not None
+    assert "relationship_claims" not in view and subject_id not in view
+    assert QUOTE in view  # the source text the stance may use stays visible
+
+
 def test_subject_is_the_node_the_materializer_merged_into_not_a_recomputed_id():
     # A second read of the same label merges into the first read's node (identity index).
     store, first_id, _, conn, _ = _setup()

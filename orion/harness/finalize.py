@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -20,14 +22,24 @@ from orion.cognition.cortex_payload_extract import (
 )
 from orion.cognition.plan_loader import build_plan_for_verb
 from orion.core.llm_json import parse_json_object
+from orion.harness.structured_output import canonicalize_structured_output  # noqa: F401 -- re-exported
 from orion.embodiment.intents import build_intent
 from orion.harness.cut_short import ensure_cut_short_marked
+from orion.harness.promise_gate import (
+    PROMISE_FIELDS,
+    coerce_promise_fields,
+    gate_promises,
+    promise_ledger_enabled,
+    split_promise_fields,
+)
 from orion.harness.reading_receipts import enforce_reading_receipt_grounding
 from orion.schemas.embodiment import EmbodimentIntentV1
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.harness_finalize import (
+    REFLECTION_SOURCE_JUDGE_FAILED,
     FinalizeReflectionV1,
+    OpenPromiseRefV1,
     GrammarReceiptV1,
     HarnessDraftMoleculeV1,
     HarnessPostTurnClosureV1,
@@ -50,6 +62,11 @@ PublishFn = Callable[..., Awaitable[None]]
 
 logger = logging.getLogger("orion.harness.finalize")
 
+
+class FinalizeJudgeUpstreamError(ValueError):
+    """A failed Cortex/gateway call, distinct from an invalid judge payload."""
+
+
 DEFAULT_QUICK_GATE_EPSILON = 0.08
 OPEN_LOOP_PRESSURE_MAX = 0.2
 REPAIR_PRESSURE_MAX = 0.3
@@ -61,11 +78,6 @@ REPAIR_PRESSURE_MAX = 0.3
 # favors it, fewer when the turn is already expensive). Named here, not
 # built, so the idea isn't lost when that system exists.
 MAX_FINALIZE_LOOP_RETRIES = 1
-
-
-def canonicalize_structured_output(text: str) -> str:
-    """Return a compact JSON object or raise when a machine draft is not JSON."""
-    return json.dumps(parse_json_object(text), ensure_ascii=False)
 
 # Semantic verb names the reflect prompt is allowed to recommend. Kept in
 # lockstep with the TOOL RECOMMENDATION section of harness_finalize_reflect.j2
@@ -418,12 +430,170 @@ def resolve_finalize_llm_lane(
     A hold's calls attach to the hold's role whatever route they name, so the
     route only names the work class (``GPU_LEASE_ROUTE``, durable holds are
     agent class).
+
+    The repair uses this as-is. The 5b judge goes through
+    ``resolve_finalize_judge_placement``, which leaves a hold that is not on a
+    judge role (2026-11-12).
     """
     if gpu_lease is not None:
         return GPU_LEASE_ROUTE
     if is_agent_route_model_label(fcc_model_label):
         return "agent"
     return "chat"
+
+
+# --- 5b judge placement ----------------------------------------------------------
+# 2026-11-12: a hold's calls run on the hold's role, so the judge of a durable run
+# held on the gpu2 seat (pool role ``agent-gpu2``) ran on whatever model that seat
+# had loaded: 22 of 90 judge calls 11-11 05:29Z..11-12, the rest on Flash-Next.
+# With thinking off (PR #3195) that seat's judge caught 2 of 5 false claims in
+# replay (5 of 5 with thinking on, which burns 8000 tokens and returns nothing);
+# Flash-Next agent caught 6 of 9 vs 5 of 9. So the judge keeps its hold only on a
+# role it was checked on, and otherwise leaves the hold for ONE call: route
+# ``judge`` (config/gpu_pool.yaml classes.judge: gpu1, then chat's card only while
+# Juniper lends it), admitted by the pool like any call without a hold. The motor,
+# the repair and the run's other calls stay on the hold. The owner rule above
+# (corr 60f0e051) is untouched: a turn without a hold resolves exactly as before.
+FINALIZE_JUDGE_ROUTE = "judge"
+# Must equal config/gpu_pool.yaml classes.judge.roles (pinned by
+# orion/harness/tests/test_finalize_judge_placement.py). Pool role names, not models.
+FINALIZE_JUDGE_HOLD_ROLES: frozenset[str] = frozenset({"agent", "chat"})
+
+
+def resolve_finalize_judge_placement(
+    *,
+    gpu_lease: GpuLeaseRefV1 | None = None,
+    fcc_model_label: str | None = None,
+) -> tuple[str, str, GpuLeaseRefV1 | None]:
+    """(llm_route, llm_lane, gpu_lease to send) for the 5b judge call.
+
+    A hold on a judge role, or no hold: the owner rule (``resolve_finalize_llm_lane``)
+    and the hold ref, as before. A hold on any other role: route ``judge``, the
+    ``agent`` lane class, and NO hold ref -- with the ref the gateway would attach the
+    call to the hold's role whatever route it names.
+    """
+    if gpu_lease is not None and gpu_lease.role not in FINALIZE_JUDGE_HOLD_ROLES:
+        return FINALIZE_JUDGE_ROUTE, "agent", None
+    lane = resolve_finalize_llm_lane(gpu_lease=gpu_lease, fcc_model_label=fcc_model_label)
+    return lane, lane, gpu_lease
+
+
+# --- 5b judge output contract -------------------------------------------------
+# 2026-11-03..11 live (harness_turn_trace + cognition_traces): 46 of 74 judge
+# failures were the model not writing a FinalizeReflectionV1 at all -- Bonsai
+# thinking to the 8000-token cap and shipping its reasoning, Bonsai misspelling
+# keys ("imperial", "imprative"), and Flash-Next continuing the motor's reading
+# JSON ("what_i_learned", "summary"). The call had no schema and the whole
+# prompt was one system message with no turn asking for a grade, so the model
+# read the draft and user_message as the task. Fix: the gateway's existing
+# structured output (llama.cpp grammar; Strata validates and refuses), thinking
+# off like stance_react and the replay evals, the draft quoted as data, and a
+# user turn that asks for the grade.
+#
+# The model owns only the judgement. The four identity fields and the
+# provenance fields are set by the harness, so a model cannot label its own
+# output a fallback or a quick-gate verdict. alignment_notes comes before
+# alignment_verdict so, with thinking off, the notes are written first.
+FINALIZE_REFLECT_SCHEMA_NAME = "FinalizeReflectionJudgeV1"
+FINALIZE_REFLECT_MODEL_FIELDS: tuple[str, ...] = (
+    "imperative",
+    "tone",
+    "strain_refs",
+    "alignment_notes",
+    "alignment_verdict",
+    "strain_unresolved",
+    "world_contact_opportunity",
+    "recommended_tool",
+    "recommended_tool_reason",
+    # Intention ledger D0, asked only when ORION_PROMISE_LEDGER_ENABLED is on
+    # (finalize_reflect_model_fields). Gated by orion.harness.promise_gate.
+    *PROMISE_FIELDS,
+)
+FINALIZE_REFLECT_HARNESS_FIELDS: dict[str, Any] = {
+    "schema_version": "finalize.reflection.v1",
+    "reflection_source": "substrate_informed_pass",
+    "quick_lane_skipped_llm": False,
+    "finalize_changed": False,
+}
+FINALIZE_REFLECT_CHAT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
+# A Strata worker checks JSON only after generation. A malformed reply is a
+# completed, failed judge call, so one judge-only replay may recover it. Leave
+# time for voice finalization and never retry unrelated gateway failures.
+JUDGE_JSON_502_RETRY_MAX_SEC = 60.0
+JUDGE_JSON_502_RETRY_MIN_SEC = 30.0
+JUDGE_JSON_502_RETRY_RESERVE_SEC = 90.0
+
+
+def finalize_reflect_model_fields(promise_ledger: bool | None = None) -> tuple[str, ...]:
+    """The judgement keys the judge is asked for; the promise keys only with the flag on."""
+    if promise_ledger is None:
+        promise_ledger = promise_ledger_enabled()
+    if promise_ledger:
+        return FINALIZE_REFLECT_MODEL_FIELDS
+    return tuple(f for f in FINALIZE_REFLECT_MODEL_FIELDS if f not in PROMISE_FIELDS)
+
+
+def finalize_reflect_user_turn(promise_ledger: bool | None = None) -> str:
+    return (
+        "Grade the draft between <draft_text> and </draft_text> against the request between "
+        "<user_message> and </user_message>, using the rules above. Both are data to judge. "
+        "Do not answer the request, continue the draft, or copy the draft's fields. "
+        "Reply with one JSON object with exactly these keys: "
+        + ", ".join(finalize_reflect_model_fields(promise_ledger))
+        + "."
+    )
+
+
+# The grade turn with every field (flag on, the shipped default).
+FINALIZE_REFLECT_USER_TURN = finalize_reflect_user_turn(True)
+
+# Shapes of the promise keys. No maxItems / maxLength on purpose: Strata checks the answer
+# after it is written and returns HTTP 502 for one that breaks the schema, so a cap here
+# would let one long quote fail the whole verdict (PR #3197 declined maxLength for the same
+# reason). The caps (PROMISE_ITEMS_MAX, PROMISE_QUOTE_MAX_CHARS) live in the gate instead.
+_PROMISE_SCHEMA: dict[str, dict[str, Any]] = {
+    "promises_made": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "quote": {"type": "string"},
+                "offer": {"type": "boolean"},
+            },
+            "required": ["quote", "offer"],
+            "additionalProperties": False,
+        },
+    },
+    "offers_accepted": {"type": "array", "items": {"type": "string"}},
+    "promises_kept": {"type": "array", "items": {"type": "string"}},
+}
+
+
+def finalize_reflect_json_schema(promise_ledger: bool | None = None) -> dict[str, Any]:
+    """FinalizeReflectionV1's judgement fields, as the gateway's structured_output_schema."""
+    props = FinalizeReflectionV1.model_json_schema()["properties"]
+    fields = finalize_reflect_model_fields(promise_ledger)
+    return {
+        "type": "object",
+        "properties": {
+            name: (json.loads(json.dumps(_PROMISE_SCHEMA[name])) if name in _PROMISE_SCHEMA else dict(props[name]))
+            for name in fields
+        },
+        "required": list(fields),
+        "additionalProperties": False,
+    }
+
+
+# The compact situation fragment runs ~3.5-4.5K chars (11-03 live turns);
+# the cap only guards a runaway fragment, it is not a budget for the usual one.
+FINALIZE_SITUATION_NOTES_MAX_CHARS = 6000
+
+
+def _clip_situation_notes(notes: str | None) -> str:
+    text = (notes or "").strip()
+    if len(text) <= FINALIZE_SITUATION_NOTES_MAX_CHARS:
+        return text
+    return text[:FINALIZE_SITUATION_NOTES_MAX_CHARS].rstrip() + " [notes cut]"
 
 
 def build_finalize_reflect_context(
@@ -437,26 +607,57 @@ def build_finalize_reflect_context(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
+    pending_offers: list[str] | None = None,
+    open_promises: list[OpenPromiseRefV1] | None = None,
 ) -> dict[str, Any]:
-    lane = resolve_finalize_llm_lane(
+    promise_ledger = promise_ledger_enabled()
+    route, lane, judge_lease = resolve_finalize_judge_placement(
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
     )
     return {
         "draft_text": draft_text,
-        "thought_event": thought.model_dump(mode="json"),
+        # self_prediction is stance's private bet about this turn; the judge grading against it
+        # would turn the bet into an order (TurnSelfPredictionV1).
+        "thought_event": thought.model_dump(mode="json", exclude={"self_prediction"}),
         "substrate_appraisal": substrate_appraisal.model_dump(mode="json"),
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),
         "repair_overlay": repair_overlay.model_dump(mode="json"),
         "finalize_overlay": "",
         "user_message": user_message,
-        # Owner-lane finalize: hold route when admitted; else agent FCC label
-        # → agent; else chat. Cortex-exec honors top-level llm_route/llm_lane.
-        "llm_route": lane,
+        # The Situation block the motor saw (HarnessRunRequestV1.situation_prompt_fragment),
+        # so 5b can check what the draft says it perceived against what the notes
+        # actually said. 11-03: notes said "Rowan usually comes around 11:39", the
+        # draft said "Rowan right on her usual 11:39", and 5b had nothing to check it with.
+        "situation_notes": _clip_situation_notes(situation_notes),
+        # Intention ledger D0: the promise section renders only with the flag on.
+        # pending_offers / open_promises are empty on live turns until D1 carries them.
+        "promise_ledger": promise_ledger,
+        "pending_offers": list(pending_offers or []) if promise_ledger else [],
+        "open_promises": (
+            [p.model_dump(mode="json") for p in (open_promises or [])] if promise_ledger else []
+        ),
+        # Owner-lane finalize: hold route when admitted on a judge role; route
+        # `judge` and no hold ref when the hold is elsewhere (5b judge placement
+        # above); else agent FCC label → agent; else chat. Cortex-exec honors
+        # top-level llm_route/llm_lane.
+        "llm_route": route,
         "llm_lane": lane,
-        **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease else {}),
+        **({"gpu_lease": judge_lease.model_dump(mode="json")} if judge_lease else {}),
         "allow_chat_fallback": False,
+        # cortex-exec puts the rendered prompt in the system message and these after
+        # it, so the last turn asks for a grade instead of leaving the draft last.
+        "messages": [{"role": "user", "content": finalize_reflect_user_turn(promise_ledger)}],
+        # Keeps spark/raw_user_text on the turn's real request, not the grade ask.
+        "raw_user_text": user_message,
+        # Forwarded by cortex-exec to the gateway (executor.py _fwd_key loop).
+        "structured_output_schema": finalize_reflect_json_schema(promise_ledger),
+        "structured_output_schema_name": FINALIZE_REFLECT_SCHEMA_NAME,
+        "structured_output_method": "json_object_schema",
+        "structured_output_thinking_policy": "disabled_for_artifact",
+        "chat_template_kwargs": dict(FINALIZE_REFLECT_CHAT_TEMPLATE_KWARGS),
         "metadata": {
             "correlation_id": correlation_id,
             "mode": "brain",
@@ -475,6 +676,9 @@ def build_finalize_reflect_plan_request(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
+    pending_offers: list[str] | None = None,
+    open_promises: list[OpenPromiseRefV1] | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("harness_finalize_reflect", mode="brain")
     return PlanExecutionRequest(
@@ -494,6 +698,9 @@ def build_finalize_reflect_plan_request(
             grammar_receipts=grammar_receipts,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
+            situation_notes=situation_notes,
+            pending_offers=pending_offers,
+            open_promises=open_promises,
         ),
     )
 
@@ -501,6 +708,12 @@ def build_finalize_reflect_plan_request(
 def parse_finalize_reflection_payload(raw: dict[str, Any] | str) -> FinalizeReflectionV1:
     if isinstance(raw, str):
         raw = parse_json_object(raw)
+    if isinstance(raw, dict):
+        # A malformed promise list must not fail the verdict: parse it apart, leniently.
+        raw = dict(raw)
+        promise_raw = split_promise_fields(raw)
+        reflection = FinalizeReflectionV1.model_validate(raw)
+        return reflection.model_copy(update=coerce_promise_fields(promise_raw))
     return FinalizeReflectionV1.model_validate(raw)
 
 
@@ -522,8 +735,24 @@ def extract_finalize_reflection_payload(result: dict[str, Any]) -> dict[str, Any
 
     detail = cortex_exec_failure_detail(result)
     if detail:
-        raise ValueError(f"harness_finalize_reflect exec failed: {detail}")
+        raise FinalizeJudgeUpstreamError(f"harness_finalize_reflect exec failed: {detail}")
     raise ValueError("harness_finalize_reflect exec result missing reflection payload")
+
+
+def _is_judge_json_502(result: dict[str, Any]) -> bool:
+    if extract_cortex_payload_text(result):
+        return False
+    detail = (cortex_exec_failure_detail(result) or "").casefold()
+    return detail.startswith("upstream_http_5xx:http_502: model did not return valid json")
+
+
+def _judge_json_retry_limit(deadline_monotonic: float | None) -> float | None:
+    if deadline_monotonic is None:
+        return JUDGE_JSON_502_RETRY_MAX_SEC
+    available = deadline_monotonic - time.monotonic() - JUDGE_JSON_502_RETRY_RESERVE_SEC
+    if available < JUDGE_JSON_502_RETRY_MIN_SEC:
+        return None
+    return min(JUDGE_JSON_502_RETRY_MAX_SEC, available)
 
 
 async def run_finalize_reflection(
@@ -538,6 +767,10 @@ async def run_finalize_reflection(
     cortex_client: CortexClientFn | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
+    pending_offers: list[str] | None = None,
+    open_promises: list[OpenPromiseRefV1] | None = None,
+    deadline_monotonic: float | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
     if substrate_appraisal is None:
         raise ValueError("substrate_appraisal is required for harness finalize reflection")
@@ -566,9 +799,40 @@ async def run_finalize_reflection(
         grammar_receipts=grammar_receipts,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
+        pending_offers=pending_offers,
+        open_promises=open_promises,
     )
+    retried_json_502 = False
     try:
         exec_result = await cortex_client(plan_request)
+        if _is_judge_json_502(exec_result):
+            steps = plan_request.plan.steps
+            single_llm_step = len(steps) == 1 and steps[0].services == ["LLMGatewayService"]
+            retry_limit = _judge_json_retry_limit(deadline_monotonic) if single_llm_step else None
+            if retry_limit is None:
+                reason = "budget" if single_llm_step else "plan_shape"
+                logger.info(
+                    "harness_finalize_reflect_json_502_retry_skipped corr=%s reason=%s",
+                    correlation_id, reason,
+                )
+            else:
+                # This verb has one LLM step and no tools. A fresh request id
+                # separates its trace from the failed attempt while context
+                # metadata keeps the original turn correlation.
+                retry_request = plan_request.model_copy(deep=True)
+                retry_request.args.request_id = str(uuid.uuid4())
+                step_timeout_ms = int((retry_limit - 5.0) * 1000)
+                retry_request.plan.timeout_ms = step_timeout_ms
+                for step in retry_request.plan.steps:
+                    step.timeout_ms = step_timeout_ms
+                logger.warning(
+                    "harness_finalize_reflect_json_502_retry corr=%s timeout_sec=%.0f",
+                    correlation_id, retry_limit,
+                )
+                retried_json_502 = True
+                async with asyncio.timeout(retry_limit):
+                    exec_result = await cortex_client(retry_request)
         raw_payload = extract_finalize_reflection_payload(exec_result)
         # extract_finalize_reflection_payload() returns model TEXT on the normal
         # path (extract_cortex_payload_text() is str-typed), so normalize to a
@@ -593,8 +857,27 @@ async def run_finalize_reflection(
             raw_payload["thought_event_id"] = thought.event_id
             raw_payload["substrate_appraisal_id"] = substrate_appraisal.molecule_id
             raw_payload["draft_hash"] = substrate_appraisal.draft_hash
+            # Provenance is the harness's too: an LLM verdict is never a
+            # fallback or a quick-gate verdict, whatever the model wrote.
+            raw_payload.update(FINALIZE_REFLECT_HARNESS_FIELDS)
         reflection = parse_finalize_reflection_payload(raw_payload)
+        # Gate against the text the judge read. The chain gates again against the
+        # final text before the reflection is stored (run_harness_finalize_chain).
+        reflection = gate_promises(
+            reflection,
+            reply_text=draft_text,
+            pending_offers=pending_offers or [],
+            open_promises=open_promises or [],
+            correlation_id=correlation_id,
+        ).reflection
+        if retried_json_502:
+            logger.info("harness_finalize_reflect_json_502_retry_result corr=%s result=success", correlation_id)
     except Exception as exc:
+        if retried_json_502:
+            logger.warning(
+                "harness_finalize_reflect_json_502_retry_result corr=%s result=failed error_type=%s",
+                correlation_id, type(exc).__name__,
+            )
         degraded = maybe_quick_lane_verdict(
             correlation_id=correlation_id,
             thought=thought,
@@ -614,7 +897,7 @@ async def run_finalize_reflection(
         # caused by OUR bug (a FinalizeReflectionV1 field rename would degrade
         # every turn to misaligned instead of crashing loudly), so it must be
         # greppable on its own rather than hiding under an llm_failed label.
-        unparseable = isinstance(exc, (ValidationError, ValueError))
+        unparseable = isinstance(exc, (ValidationError, ValueError)) and not isinstance(exc, FinalizeJudgeUpstreamError)
         logger.warning(
             "%s corr=%s err=%s",
             (
@@ -637,7 +920,7 @@ async def run_finalize_reflection(
                 alignment_verdict="misaligned",
                 alignment_notes=[f"reflect_llm_failed: {_excerpt(str(exc), max_len=200)}"],
                 strain_unresolved=False,
-                reflection_source="degraded_llm_failure_fallback",
+                reflection_source=REFLECTION_SOURCE_JUDGE_FAILED,
                 quick_lane_skipped_llm=False,
                 finalize_changed=False,
             ),
@@ -666,6 +949,8 @@ async def maybe_run_finalize_tool_retry(
     grammar_publish_fn: Any = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
+    deadline_monotonic: float | None = None,
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
     """One bounded tool-recall retry (loop-back beat, "finalize 5b-prime").
 
@@ -833,6 +1118,8 @@ async def maybe_run_finalize_tool_retry(
             cortex_client=cortex_client,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
+            situation_notes=situation_notes,
+            deadline_monotonic=deadline_monotonic,
         )
     except Exception as exc:
         logger.warning(
@@ -914,6 +1201,7 @@ def build_response_repair_context(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> dict[str, Any]:
     lane = resolve_finalize_llm_lane(
         gpu_lease=gpu_lease,
@@ -922,6 +1210,10 @@ def build_response_repair_context(
     return {
         "draft_text": draft_text,
         "reflection": reflection.model_dump(mode="json"),
+        # Same notes 5b checked against: a repair of an unsupported perception
+        # claim needs the facts, not only "this was wrong" (eval 11-03: without
+        # them the repair kept the invented name story around a removed arrival).
+        "situation_notes": _clip_situation_notes(situation_notes),
         "grammar_receipts": grammar_receipt_summaries(grammar_receipts),
         "tool_execution": format_tool_execution_digest(grammar_receipts),
         "user_message": user_message,
@@ -950,6 +1242,7 @@ def build_response_repair_plan_request(
     grammar_receipts: list[GrammarReceiptV1] | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("orion_response_repair", mode="brain")
     return PlanExecutionRequest(
@@ -967,6 +1260,7 @@ def build_response_repair_plan_request(
             grammar_receipts=grammar_receipts,
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
+            situation_notes=situation_notes,
         ),
     )
 
@@ -998,6 +1292,46 @@ def extract_response_repair_text(result: dict[str, Any]) -> str:
     raise ValueError("orion_response_repair exec result missing final_text")
 
 
+# The repair step's answer when the draft needs no change (orion_response_repair.j2).
+REPAIR_NO_CHANGE = "NO_CHANGE"
+# Words from the repair prompt's own scaffolding. A reply that uses one the draft and
+# Juniper's message never used is the model talking about its task, not to Juniper:
+# live 2026-10-04 ("The rejected draft was actually aligned according to the reflection
+# verdict ... This is safe, aligned, and corrects the fabrication.", ~9.7k chars sent)
+# and 2026-10-09 ("The draft was already aligned and required no correction." opening
+# a reply). This is the prompt's own vocabulary, a fixed set, not a list of past misses.
+_REPAIR_SCAFFOLD_TERMS = (
+    "rejected draft", "draft reply", "alignment_verdict", "alignment verdict",
+    "strain_unresolved", "integrative reflection", "reflection verdict", "repaired reply",
+    "user-facing reply",
+)
+# "the draft" alone is everyday English (a letter's draft, a draft from the window), so it
+# counts only next to the task's own words, as in both live leaks.
+_THE_DRAFT_TASK_WORDS = ("aligned", "alignment", "correction", "reflection", "verdict", "repair")
+
+
+def repair_scaffold_echo(text: str, *, draft_text: str, user_message: str = "") -> str | None:
+    """The first scaffold term ``text`` uses that neither ``draft_text`` nor
+    ``user_message`` used, else None. Pure."""
+    low = (text or "").casefold()
+    context = f"{draft_text or ''}\n{user_message or ''}".casefold()
+    for term in _REPAIR_SCAFFOLD_TERMS:
+        if term in low and term not in context:
+            return term
+    if re.search(r"\bthe draft\b", low) and not re.search(r"\bthe draft\b", context) \
+            and any(w in low and w not in context for w in _THE_DRAFT_TASK_WORDS):
+        return "the draft"
+    return None
+
+
+def is_repair_no_change(text: str, *, draft_text: str) -> bool:
+    """The repair step's NO_CHANGE answer, in any decoration (``NO_CHANGE.``, backticks,
+    bold, quotes, a reason after it). The token never belongs in a reply to Juniper
+    unless the draft itself used it."""
+    token = REPAIR_NO_CHANGE.casefold()
+    return token in (text or "").casefold() and token not in (draft_text or "").casefold()
+
+
 def _response_repair_changed(
     draft_text: str,
     final_text: str,
@@ -1022,6 +1356,7 @@ async def run_orion_response_repair(
     cortex_client: CortexClientFn | None = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Orion capability: minimal post-reflection response repair.
 
@@ -1040,15 +1375,37 @@ async def run_orion_response_repair(
         grammar_receipts=grammar_receipts,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
     )
     exec_result = await cortex_client(plan_request)
     final_text = extract_response_repair_text(exec_result)
-    finalize_changed = _response_repair_changed(draft_text, final_text, reflection)
+    kept_draft: str | None = None
+    if is_repair_no_change(final_text, draft_text=draft_text):
+        kept_draft = "no_change"
+        logger.info("orion_response_repair_no_change corr=%s verdict=%s unsupported_claim=%s -- keeping the draft",
+                    correlation_id, reflection.alignment_verdict, has_unsupported_claim(reflection))
+    else:
+        echo = repair_scaffold_echo(final_text, draft_text=draft_text, user_message=user_message)
+        if echo:
+            # Commentary about the task, not a reply: Juniper gets the draft she would have
+            # got without repair, never the model's notes.
+            kept_draft = "scaffold_echo"
+            logger.warning(
+                "orion_response_repair_scaffold_echo corr=%s term=%r excerpt=%r -- keeping the draft",
+                correlation_id, echo, _excerpt(final_text, max_len=160),
+            )
+    if kept_draft:
+        if not (draft_text or "").strip():
+            raise ValueError(f"orion_response_repair kept an empty draft ({kept_draft})")
+        final_text = draft_text
+    finalize_changed = False if kept_draft else _response_repair_changed(draft_text, final_text, reflection)
     meta = {
         "finalize_changed": finalize_changed,
         "alignment_verdict": reflection.alignment_verdict,
         "cortex_trace_id": exec_result.get("trace_id") or exec_result.get("cortex_trace_id"),
     }
+    if kept_draft:
+        meta["repair_kept_draft"] = kept_draft
     return final_text, meta
 
 
@@ -1180,6 +1537,149 @@ def _outcome_molecule_id(molecule: HarnessTurnOutcomeMoleculeV1) -> str:
     )
 
 
+# The line format harness_finalize_reflect.j2's PERCEPTION CLAIMS CHECK asks
+# for: "unsupported claim: <what the draft said>; notes say: <...>". It is the
+# prompt's output contract, read only to know that check fired.
+UNSUPPORTED_CLAIM_PREFIX = "unsupported claim:"
+UNSUPPORTED_CLAIM_REASON = "unsupported_claim"
+UNSUPPORTED_CLAIM_TWICE_REASON = "unsupported_claim_repaired_twice"
+# The re-check still found the claim and the second repair kept the text (NO_CHANGE or
+# notes instead of a reply): the claim may still be in what Juniper reads.
+UNSUPPORTED_CLAIM_KEPT_REASON = "unsupported_claim_kept_after_recheck"
+# The first repair was sent without a passing re-check: the re-check failed,
+# degraded, or there was not enough reply budget left to run it.
+UNSUPPORTED_CLAIM_UNCHECKED_REASON = "unsupported_claim_unchecked"
+# Reply-budget turns (held curiosity runs): the re-check gets what is left
+# minus this, and is skipped below it, so finalize never runs out the budget
+# and falls back to the ORIGINAL draft, the one holding the false claim.
+RECHECK_BUDGET_MARGIN_SEC = 15.0
+RECHECK_MIN_SECONDS = 30.0
+
+
+def has_unsupported_claim_note(note: Any) -> bool:
+    return str(note).strip().lower().startswith(UNSUPPORTED_CLAIM_PREFIX)
+
+
+def has_unsupported_claim(reflection: FinalizeReflectionV1) -> bool:
+    return any(has_unsupported_claim_note(note) for note in (reflection.alignment_notes or []))
+
+
+async def _recheck_unsupported_claim_repair(
+    *,
+    correlation_id: str,
+    repaired_text: str,
+    thought: ThoughtEventV1,
+    substrate_appraisal: SubstrateFinalizeAppraisalV1,
+    repair_overlay: HarnessRepairOverlayV1,
+    user_message: str,
+    grammar_receipts: list[GrammarReceiptV1] | None,
+    cortex_client: CortexClientFn,
+    gpu_lease: GpuLeaseRefV1 | None,
+    fcc_model_label: str | None,
+    situation_notes: str,
+    voice_contract: AnswerContract | dict[str, Any] | None,
+    first_reflection: FinalizeReflectionV1,
+    deadline_monotonic: float | None = None,
+) -> tuple[str, str]:
+    """One bounded re-check of a repair that 5b asked for because of an
+    unsupported perception claim, and at most one more repair.
+
+    Eval 2026-11-03 (orion/harness/evals/perception_claims_replay_eval.py):
+    the first repair always dropped the false arrival but kept an invented
+    name story in 6 of 9 runs, and nothing looked at the repair again. Returns
+    (text to send, response_repair_reason). Fails open to the first repair:
+    a re-check problem never costs the turn.
+    """
+    limit: float | None = None
+    if deadline_monotonic is not None:
+        limit = deadline_monotonic - time.monotonic() - RECHECK_BUDGET_MARGIN_SEC
+        if limit < RECHECK_MIN_SECONDS:
+            logger.info("perception_claim_recheck corr=%s result=skipped_budget left=%.0fs", correlation_id, limit)
+            return repaired_text, UNSUPPORTED_CLAIM_UNCHECKED_REASON
+    try:
+        async with asyncio.timeout(limit):
+            return await _recheck_and_maybe_repair(
+                correlation_id=correlation_id, repaired_text=repaired_text, thought=thought,
+                substrate_appraisal=substrate_appraisal, repair_overlay=repair_overlay,
+                user_message=user_message, grammar_receipts=grammar_receipts, cortex_client=cortex_client,
+                gpu_lease=gpu_lease, fcc_model_label=fcc_model_label, situation_notes=situation_notes,
+                voice_contract=voice_contract, first_reflection=first_reflection,
+                deadline_monotonic=deadline_monotonic,
+            )
+    except Exception as exc:  # noqa: BLE001 -- incl. its own timeout: fail open to the first repair
+        logger.warning("perception_claim_recheck_failed corr=%s err=%s", correlation_id, exc or type(exc).__name__)
+        return repaired_text, UNSUPPORTED_CLAIM_UNCHECKED_REASON
+
+
+async def _recheck_and_maybe_repair(
+    *,
+    correlation_id: str,
+    repaired_text: str,
+    thought: ThoughtEventV1,
+    substrate_appraisal: SubstrateFinalizeAppraisalV1,
+    repair_overlay: HarnessRepairOverlayV1,
+    user_message: str,
+    grammar_receipts: list[GrammarReceiptV1] | None,
+    cortex_client: CortexClientFn,
+    gpu_lease: GpuLeaseRefV1 | None,
+    fcc_model_label: str | None,
+    situation_notes: str,
+    voice_contract: AnswerContract | dict[str, Any] | None,
+    first_reflection: FinalizeReflectionV1,
+    deadline_monotonic: float | None = None,
+) -> tuple[str, str]:
+    recheck, _quick, _trace = await run_finalize_reflection(
+        correlation_id=correlation_id,
+        draft_text=repaired_text,
+        thought=thought,
+        substrate_appraisal=substrate_appraisal,
+        repair_overlay=repair_overlay,
+        user_message=user_message,
+        grammar_receipts=grammar_receipts,
+        cortex_client=cortex_client,
+        gpu_lease=gpu_lease,
+        fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
+        deadline_monotonic=deadline_monotonic,
+    )
+    if recheck.reflection_source == "degraded_llm_failure_fallback":
+        # run_finalize_reflection degrades instead of raising; that is not a pass.
+        logger.info("perception_claim_recheck corr=%s result=recheck_degraded", correlation_id)
+        return repaired_text, UNSUPPORTED_CLAIM_UNCHECKED_REASON
+    if not has_unsupported_claim(recheck):
+        logger.info("perception_claim_recheck corr=%s result=clean", correlation_id)
+        return repaired_text, UNSUPPORTED_CLAIM_REASON
+    # Keep the first 5b's other notes (tone, strain) so the second repair
+    # does not undo what the first one fixed for them.
+    carried = [n for n in first_reflection.alignment_notes or [] if not has_unsupported_claim_note(n)]
+    recheck = recheck.model_copy(update={"alignment_notes": [*carried, *(recheck.alignment_notes or [])]})
+    second, second_meta = await run_orion_response_repair(
+        correlation_id=correlation_id,
+        draft_text=repaired_text,
+        thought=thought,
+        substrate_appraisal=substrate_appraisal,
+        reflection=recheck,
+        voice_contract=voice_contract,
+        repair_overlay=repair_overlay,
+        user_message=user_message,
+        grammar_receipts=grammar_receipts,
+        cortex_client=cortex_client,
+        gpu_lease=gpu_lease,
+        fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
+    )
+    if not second.strip():
+        raise ValueError("second repair returned empty text")
+    if second_meta.get("repair_kept_draft"):
+        # The re-check still found the claim and the second repair changed nothing: say so,
+        # never "repaired twice" for a text that holds the flagged claim.
+        logger.warning("perception_claim_recheck corr=%s result=kept_after_recheck kept=%s",
+                       correlation_id, second_meta.get("repair_kept_draft"))
+        return second, UNSUPPORTED_CLAIM_KEPT_REASON
+    logger.info("perception_claim_recheck corr=%s result=repaired_twice", correlation_id)
+    return second, UNSUPPORTED_CLAIM_TWICE_REASON
+
+
 def needs_response_repair(reflection: FinalizeReflectionV1) -> bool:
     return (
         reflection.alignment_verdict in {"misaligned", "uncertain"}
@@ -1190,6 +1690,9 @@ def needs_response_repair(reflection: FinalizeReflectionV1) -> bool:
 def response_repair_reason_for(reflection: FinalizeReflectionV1) -> str | None:
     if not needs_response_repair(reflection):
         return None
+    if reflection.reflection_source == REFLECTION_SOURCE_JUDGE_FAILED:
+        # The repair still runs (unchanged), but the reason says the judge failed, not the draft.
+        return "reflection_failed"
     if reflection.alignment_verdict == "misaligned":
         return "misaligned"
     if reflection.alignment_verdict == "uncertain":
@@ -1388,7 +1891,9 @@ async def run_harness_finalize_chain(
     grammar_publish_fn: Any = None,
     gpu_lease: GpuLeaseRefV1 | None = None,
     fcc_model_label: str | None = None,
+    situation_notes: str | None = None,
     cut_short: bool = False,
+    deadline_monotonic: float | None = None,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn reflection and conditional response repair.
 
@@ -1438,6 +1943,8 @@ async def run_harness_finalize_chain(
         cortex_client=cortex_client,
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
+        situation_notes=situation_notes,
+        deadline_monotonic=deadline_monotonic,
     )
 
     # Loop-back tool-recall retry (5b-prime). MAX_FINALIZE_LOOP_RETRIES bounds
@@ -1467,6 +1974,8 @@ async def run_harness_finalize_chain(
                 bus=bus,
                 grammar_channel=grammar_channel,
                 grammar_publish_fn=grammar_publish_fn,
+                situation_notes=situation_notes,
+                deadline_monotonic=deadline_monotonic,
             )
         )
         if not attempt_retried:
@@ -1534,7 +2043,35 @@ async def run_harness_finalize_chain(
                 cortex_client=cortex_client,
                 gpu_lease=gpu_lease,
                 fcc_model_label=fcc_model_label,
+                situation_notes=situation_notes,
             )
+            kept = voice_meta.get("repair_kept_draft")
+            if situation_notes and has_unsupported_claim(reflection):
+                kept = None   # the re-check's own reason says what happened
+                final_text, reason = await _recheck_unsupported_claim_repair(
+                    correlation_id=correlation_id,
+                    repaired_text=final_text,
+                    thought=thought,
+                    substrate_appraisal=substrate_appraisal,
+                    repair_overlay=repair_overlay,
+                    user_message=user_message,
+                    grammar_receipts=grammar_receipts,
+                    cortex_client=cortex_client,
+                    gpu_lease=gpu_lease,
+                    fcc_model_label=fcc_model_label,
+                    situation_notes=situation_notes,
+                    voice_contract=voice_contract,
+                    first_reflection=reflection,
+                    deadline_monotonic=deadline_monotonic,
+                )
+                voice_meta = {
+                    **voice_meta,
+                    "finalize_changed": bool(voice_meta.get("finalize_changed"))
+                    or final_text.strip() != draft_text.strip(),
+                }
+            if kept:
+                # Persisted in the run artifact: how often repair keeps the draft is measurable.
+                reason = f"{reason}_kept_draft:{kept}"
             voice_meta = {
                 **voice_meta,
                 "response_repair_ran": True,
@@ -1581,6 +2118,16 @@ async def run_harness_finalize_chain(
         grounded_final_text != draft_text
     )
     final_text = grounded_final_text
+    # Intention ledger D0: a promise counts only if Juniper saw it. Response repair can
+    # rewrite the draft, so the quotes are checked again against the final text.
+    # Offers and kept ids were already checked against what the judge was shown.
+    reflection = gate_promises(
+        reflection,
+        reply_text=final_text,
+        pending_offers=reflection.offers_accepted,
+        open_promises=reflection.promises_kept,
+        correlation_id=correlation_id,
+    ).reflection
     response_repair_ran = bool(voice_meta.get("response_repair_ran"))
     response_repair_reason = voice_meta.get("response_repair_reason")
     if response_repair_reason is not None:

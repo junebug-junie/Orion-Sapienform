@@ -33,6 +33,7 @@ from orion.core.schemas.reasoning_io import ReasoningWriteContextV1, ReasoningWr
 from orion.core.schemas.reasoning_summary import ReasoningSummaryRequestV1, ReasoningSummaryV1
 from orion.reasoning import InMemoryReasoningRepository, ReasoningSummaryCompiler
 from orion.schemas.chat_stance import ChatStanceBrief
+from orion.text_fit import fit_to_budget
 from orion.schemas.reverie import SpontaneousThoughtV1
 from orion.memory.voice_render import VoicedMemory, render_memory
 from orion.substrate.relational import (
@@ -404,8 +405,9 @@ def _unified_beliefs_for_stance(ctx: Dict[str, Any]) -> UnifiedRelationalBeliefS
 async def _publish_chat_stance_belief(ctx: Dict[str, Any], beliefs: UnifiedRelationalBeliefSetV1 | None) -> None:
     """Durable per-turn behavioral fact (self-model rebuild arc, 2026-09-05):
     beliefs used to be computed every turn and thrown away. Now logged for
-    real so self_study.py's Layer 1 _behavioral_items() has actual history
-    to read, not nothing.
+    real so the history is readable. Its reader now is curiosity
+    self-inquiry (chat_stance_belief_log); the Layer 1 scan that copied it
+    into Self Atlas was retired 2026-11.
 
     Review finding (2026-09-05): the underlying publish is a real blocking
     Redis call (connect/ping/publish), and unlike
@@ -817,10 +819,14 @@ from orion.substrate.relational.adapters.self_definition_ctx import (  # noqa: E
 
 strip_self_definition_lines = _strip_self_definition_lines
 
-_SELF_DEFINITION_CHAT_CAP = 900
+# Equal to orion/curiosity/self_inquiry.py SELF_DEFINITION_TEXT_CAP: the budget
+# Orion is told to write to, and the one the fit hop shortens to. A smaller cap
+# here would cut an answer Orion already fitted (was 900 until 2026-11-03).
+_SELF_DEFINITION_CHAT_CAP = 1200
 LIVED_ANSWERS_CTX_KEY = "orion_lived_answers"
 LIVED_MARKER_PREFIX = "In my own words (lived /"
 _LIVED_ANSWERS_CHAR_CAP = 800
+_LIVED_ANSWER_MIN_CHARS = 40
 
 
 def _lived_question_slug(question_id: str) -> str:
@@ -843,10 +849,13 @@ def _lived_answer_lines(answers: list[dict[str, Any]]) -> list[str]:
         slug = _lived_question_slug(str(answer.get("question_id") or ""))
         prefix = f"{LIVED_MARKER_PREFIX} {slug}): "
         remaining = _LIVED_ANSWERS_CHAR_CAP - total
-        if remaining <= len(prefix):
+        # Too little room for a real sentence: stop instead of emitting a stub.
+        if remaining - len(prefix) < _LIVED_ANSWER_MIN_CHARS:
             break
         if len(prefix) + len(content) > remaining:
-            content = content[: max(0, remaining - len(prefix) - 1)].rstrip() + "…"
+            content = fit_to_budget(content, remaining - len(prefix))
+            if not content:
+                break
         line = f"{prefix}{content}"
         lines.append(line)
         total += len(line)
@@ -891,8 +900,7 @@ def _self_definition_line(beliefs: UnifiedRelationalBeliefSetV1 | None, ctx: Dic
         version = 1
     evidence_n = len(meta.get("evidence_refs") or [])
     stamp = str(meta.get("created_at") or "")[:10]
-    if len(content) > _SELF_DEFINITION_CHAT_CAP:
-        content = content[:_SELF_DEFINITION_CHAT_CAP].rstrip() + "…"
+    content = fit_to_budget(content, _SELF_DEFINITION_CHAT_CAP)
     return (
         f"{SELF_DEFINITION_MARKER}, written during my own self-inquiry "
         f"(v{version}{', ' + stamp if stamp else ''}, {evidence_n} evidence refs): {content}"
@@ -2471,6 +2479,14 @@ def _mutation_cognition_from_ctx(ctx: Dict[str, Any]) -> Dict[str, Any]:
     return {}
 
 
+# The street clip in stance (2026-11-03, was 520): framing (~120 chars) + up to
+# two captions (~200) + who/rhythm (~200) + up to two spot-checked motion
+# stories (perception_reader.STREET_STORY_MAX x STREET_STORY_CHARS 160 + times
+# and label, ~380). Stories are the street summary's LAST line, so a cut drops
+# them first, never the camera framing, rhythm or patio head count.
+STREET_SUMMARY_CHARS = 900
+
+
 def _environmental_context(environment: Dict[str, Any]) -> str | None:
     """Weather, then the street -- so a turn at 07:45 when the dog did not
     come reads differently from one when it did (walkway spec idea 5)."""
@@ -2480,7 +2496,8 @@ def _environmental_context(environment: Dict[str, Any]) -> str | None:
     # rhythm/unresolved lines that follow them. 520 since it also opens with
     # what the camera is ("Your outdoor camera (walkway, since ...), looking
     # over ...: "), which is why there is no "Street:" prefix any more.
-    street = _compact(environment.get("street_summary"), limit=520)
+    # STREET_SUMMARY_CHARS since 2026-11-03: spot-checked motion stories.
+    street = _compact(environment.get("street_summary"), limit=STREET_SUMMARY_CHARS)
     parts = [p for p in (weather, street) if p]
     return "; ".join(parts) or None
 
@@ -2495,7 +2512,6 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
     time_ctx = brief.get("time") if isinstance(brief.get("time"), dict) else {}
     place = brief.get("place") if isinstance(brief.get("place"), dict) else {}
     environment = brief.get("environment") if isinstance(brief.get("environment"), dict) else {}
-    lab = brief.get("lab") if isinstance(brief.get("lab"), dict) else {}
     surface = brief.get("surface") if isinstance(brief.get("surface"), dict) else {}
     affordances_raw = brief.get("affordances") if isinstance(brief.get("affordances"), list) else []
     affordances = []
@@ -2543,7 +2559,7 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
         # Empty when there is nothing to say; walkway spec idea 5.
         "street_summary": _compact(
             (brief.get("perception") or {}).get("street_summary") if isinstance(brief.get("perception"), dict) else "",
-            limit=520,
+            limit=STREET_SUMMARY_CHARS,
         ),
     }
     relevance = "active" if has_active else ("background" if fragment else "none")
@@ -2584,15 +2600,6 @@ def _situation_summary_from_ctx(ctx: Dict[str, Any]) -> dict[str, Any]:
             "physical_location": _compact(place.get("physical_location"), limit=96),
         },
         "environment": environment_summary,
-        "lab": {
-            "available": bool(lab.get("available", False)),
-            "thermal_risk": _compact(lab.get("thermal_risk"), limit=20),
-            "power_risk": _compact(lab.get("power_risk"), limit=20),
-            "summary": _compact(
-                f"thermal={_compact(lab.get('thermal_risk'), limit=20)} power={_compact(lab.get('power_risk'), limit=20)}",
-                limit=80,
-            ),
-        },
         "surface": {
             "surface": _compact(surface.get("surface"), limit=40),
             "input_modality": _compact(surface.get("input_modality"), limit=24),
@@ -3074,7 +3081,6 @@ def build_chat_stance_debug_payload(
                 "time": situation.get("time") if isinstance(situation.get("time"), dict) else {},
                 "place": situation.get("place") if isinstance(situation.get("place"), dict) else {},
                 "environment": situation.get("environment") if isinstance(situation.get("environment"), dict) else {},
-                "lab": situation.get("lab") if isinstance(situation.get("lab"), dict) else {},
                 "surface": situation.get("surface") if isinstance(situation.get("surface"), dict) else {},
                 "affordances": list(situation.get("affordances") or []),
             },
@@ -3257,7 +3263,6 @@ def fallback_chat_stance_brief(ctx: Dict[str, Any]) -> ChatStanceBrief:
         temporal_context=_compact((situation.get("conversation_phase") or {}).get("phase_change"), limit=40) or None,
         audience_context=_compact((situation.get("presence") or {}).get("audience_mode"), limit=60) or None,
         environmental_context=_environmental_context(situation.get("environment") or {}),
-        operational_context=_compact((situation.get("lab") or {}).get("summary"), limit=120) or None,
         situation_response_guidance=_unique(situation_guidance, limit=6),
         answer_strategy=answer_strategy,
         stance_summary=(

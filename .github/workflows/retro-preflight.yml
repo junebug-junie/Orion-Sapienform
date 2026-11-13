@@ -6,13 +6,19 @@ on:
       - 'tests/retro/**'
       - 'services/orion-retro/**'
       - 'services/orion-hub/scripts/retro_routes.py'
+      - 'services/orion-hub/scripts/retro_transport.py'
       - 'services/orion-hub/scripts/retro_gateway.py'
+      - 'services/orion-hub/scripts/retro_planner.py'
+      - 'services/orion-hub/scripts/retro_leisure.py'
+      - 'services/orion-hub/scripts/retro_presence.py'
+      - 'services/orion-hub/scripts/retro_session_end.py'
       - 'services/orion-hub/docker-compose.yml'
       - 'services/orion-hub/static/js/retro-panel.js'
       - 'services/orion-hub/static/js/retro-tab.js'
       - 'services/orion-hub/templates/retro.html'
       - 'services/orion-hub/tests/retro/**'
       - 'services/orion-hub/evals/retro_browser*'
+      - 'services/orion-hub/evals/retro_play_panel*'
       - 'services/orion-hub/evals/retro_play.mjs'
       - '.github/workflows/retro-preflight.yml'
   push:
@@ -22,13 +28,19 @@ on:
       - 'tests/retro/**'
       - 'services/orion-retro/**'
       - 'services/orion-hub/scripts/retro_routes.py'
+      - 'services/orion-hub/scripts/retro_transport.py'
       - 'services/orion-hub/scripts/retro_gateway.py'
+      - 'services/orion-hub/scripts/retro_planner.py'
+      - 'services/orion-hub/scripts/retro_leisure.py'
+      - 'services/orion-hub/scripts/retro_presence.py'
+      - 'services/orion-hub/scripts/retro_session_end.py'
       - 'services/orion-hub/docker-compose.yml'
       - 'services/orion-hub/static/js/retro-panel.js'
       - 'services/orion-hub/static/js/retro-tab.js'
       - 'services/orion-hub/templates/retro.html'
       - 'services/orion-hub/tests/retro/**'
       - 'services/orion-hub/evals/retro_browser*'
+      - 'services/orion-hub/evals/retro_play_panel*'
       - 'services/orion-hub/evals/retro_play.mjs'
       - '.github/workflows/retro-preflight.yml'
 permissions:
@@ -42,6 +54,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
       - run: python -m pip install pytest==9.1.1 PyYAML==6.0.2 httpx==0.28.1 aiohttp==3.12.15 pydantic-settings==2.5.2 -r services/orion-retro/requirements.txt
       - run: python -m pytest tests/retro services/orion-retro/tests -q
       - run: python -m pytest services/orion-hub/tests/retro -q
@@ -94,17 +109,28 @@ jobs:
           from pathlib import Path
           p=Path('services/orion-retro/.env')
           s=p.read_text()
-          for key in ('RETRO_CATALOG_DIR','RETRO_EVIDENCE_DIR','RETRO_SOCKET_DIR','RETRO_TOKEN_FILE'):
+          for key in ('RETRO_CATALOG_DIR','RETRO_EVIDENCE_DIR','RETRO_SOCKET_DIR','RETRO_SAVES_DIR','RETRO_TOKEN_FILE'):
               s=s.replace(key+'=\n',key+'=/tmp/retro-ci-build-placeholder\n')
           p.write_text(s)
           PY
           scripts/safe_docker_build.sh orion-retro build
+      - name: Real SNES core, all buttons on both ports, save and restore
+        run: |
+          mkdir -p /tmp/retro-snes-ci
+          python -m orion.retro.snes_pad_lab /tmp/retro-snes-ci/pad-lab.sfc
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --user "$(id -u):$(id -g)" \
+            --memory 512m --cpus 2 -v /tmp/retro-snes-ci:/out \
+            --entrypoint python orion-retro-retro -m orion.retro.snes_pad_eval \
+            --core /opt/retro/snes9x.so --rom /out/pad-lab.sfc --output /out/result.json
       - name: Real service API, lifecycle failures and offline boundary
         run: PYTHONPATH=. python services/orion-retro/evals/container_smoke.py --output /tmp/retro-service-ci
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
       - run: npm ci --prefix services/orion-hub
+      - name: Browser media recovery, silent-picture safety and co-play
+        run: PYTHONPATH=. python services/orion-hub/evals/retro_play_panel.py --output /tmp/retro-play-panel-ci
       - name: Browser controls, real native media, blur and reconnect
         run: PYTHONPATH=. python services/orion-hub/evals/retro_browser.py --output /tmp/retro-browser-ci
       - name: Browser input remains live with delayed acknowledgments
@@ -119,3 +145,6 @@ jobs:
             /tmp/retro-browser-ci/browser.json
             /tmp/retro-browser-ci/browser.png
             /tmp/retro-browser-lag-ci/browser.json
+            /tmp/retro-play-panel-ci/play-panel.json
+            /tmp/retro-play-panel-ci/server.log
+            /tmp/retro-snes-ci/result.json

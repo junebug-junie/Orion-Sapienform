@@ -132,3 +132,16 @@ def test_no_request_option_can_reach_chat_through_a_lane_fallback() -> None:
     )
     assert d.route_table_key is None
     assert d.route_status == "missing_route"
+
+
+def test_agent_lane_keeps_the_judge_route() -> None:
+    # 2026-11-12: the finalize 5b judge off a gpu2-seat hold names route `judge` with lane `agent`.
+    # Rewriting it to `agent` would put it back in a class that lists the gpu2 seat.
+    d = _resolve(options={"llm_lane": "agent"}, body_route="judge", keys={"agent", "judge", "chat"})
+    assert (d.route_table_key, d.resolved_llm_lane, d.reason) == ("judge", "agent", "agent_lane_caller_route")
+
+
+def test_agent_lane_still_rewrites_other_routes_to_agent() -> None:
+    for route in ("chat", "quick", "harness", None):
+        d = _resolve(options={"llm_lane": "agent"}, body_route=route, keys={"agent", "judge", "chat", "quick", "harness"})
+        assert d.route_table_key == "agent", route

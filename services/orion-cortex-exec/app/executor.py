@@ -23,7 +23,11 @@ from jinja2 import Environment
 
 from pydantic import BaseModel, ValidationError
 
-from orion.llm.routes import LLM_ROUTE_ALIASES, METACOG_LLM_ROUTES, normalize_llm_route
+from orion.llm.routes import (
+    CORTEX_OVERRIDE_SYSTEM_ROUTES,
+    LLM_ROUTE_ALIASES,
+    normalize_llm_route,
+)
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import AttachmentRefV1, BaseEnvelope, ChatRequestPayload, LLMMessage, ServiceRef
 from orion.core.bus.rpc_degraded import note_degraded
@@ -465,31 +469,6 @@ def _resolve_llm_chat_max_tokens(step: ExecutionStep, ctx: Dict[str, Any]) -> Tu
     # siblings above, not a bespoke budget.
     if step.verb_name == "stance_react":
         return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_stance_react"
-
-    # self_study.reflect (Layer 3 real reflection, PR #2080): same disease as the
-    # six verbs above -- strict JSON output, and the agent-route model (Qwen3-27B)
-    # is a reasoning model that emits substantial reasoning_content before its
-    # real answer. Live-confirmed 2026-09-04, corr=871934fd-4095-55b6-82b0-
-    # a8784eda8998: payload_max_tokens=512 (this function's own un-special-cased
-    # default), completion_tokens=512, finish_reason=length, reasoning_content
-    # alone ran 2417 chars ("We need answer user's request... Need produce
-    # STRICT JSON only...") -- the model spent its entire budget thinking and
-    # never wrote a single character of the actual answer. Same fix as its six
-    # siblings above, not a bespoke budget.
-    if step.verb_name == "self_study.reflect" and step.step_name == "draft_self_study_reflection":
-        return int(settings.llm_chat_general_max_tokens), requested, "settings.llm_chat_general_max_tokens_self_study_reflect"
-
-    # Orion's Day (orion/schemas/orion_day.py): a LONG freeform note (plain markdown, not
-    # structured output) and a short list of carry-forward threads, both on the agent lane.
-    # Their own budgets: LLM_CHAT_GENERAL_MAX_TOKENS is tuned for chat replies and strict-JSON
-    # verbs, and the agent-lane model spends part of its budget on reasoning before the answer
-    # (the self_study.reflect incident above), so either would truncate the note mid-sentence.
-    if step.verb_name == "orion_day_note_v1":
-        return int(settings.llm_orion_day_note_max_tokens), requested, "settings.llm_orion_day_note_max_tokens"
-
-    if step.verb_name == "orion_day_carry_forward_v1":
-        return (int(settings.llm_orion_day_carry_forward_max_tokens), requested,
-                "settings.llm_orion_day_carry_forward_max_tokens")
 
     return int(settings.llm_chat_max_tokens_default), requested, "settings.llm_chat_max_tokens_default"
 
@@ -1765,7 +1744,8 @@ def _build_hop_messages(
                     pass
 
     guardrail = "If no memory is provided, do not claim prior work; say you don't know."
-    prompt_content = str(prompt or "").strip()
+    task_prompt = str(prompt or "").strip()
+    prompt_content = task_prompt
     if guardrail.lower() not in prompt_content.lower():
         prompt_content = f"{prompt_content}\n\n{guardrail}".strip()
 
@@ -1776,9 +1756,13 @@ def _build_hop_messages(
         else:
             normalized = [sys_msg] + normalized
 
-    if not normalized:
-        content = prompt_content or " "
-        normalized = [{"role": "user", "content": content}]
+    if not any(isinstance(msg, dict) and msg.get("role") == "user" for msg in normalized):
+        if not task_prompt:
+            raise ValueError("LLM gateway hop has no task prompt or user message")
+        # Autonomous verbs can have a full task in the system prompt but no
+        # human message. Qwen3.5's chat template requires a user turn; this
+        # service-authored instruction asks it to execute that existing task.
+        normalized.append({"role": "user", "content": "Carry out the task in the system message."})
 
     return normalized
 
@@ -2112,13 +2096,13 @@ def _resolve_llm_route_override(ctx: Dict[str, Any]) -> Tuple[Optional[str], Opt
         GpuLeaseRefV1.model_validate(ref_value)
         resolved = str(raw or "").strip().lower()
         attempted = LLM_ROUTE_ALIASES.get(resolved, resolved) or None
-        return normalize_llm_route(raw) or GPU_LEASE_ROUTE, attempted
+        return normalize_llm_route(raw, allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES) or GPU_LEASE_ROUTE, attempted
     # `attempted` keeps the alias-resolved spelling even when it is rejected, so a rejected
     # override stays visible in the llm_route_selected log line (see docstring).
     resolved = str(raw or "").strip().lower()
     resolved = LLM_ROUTE_ALIASES.get(resolved, resolved)
     attempted = resolved or None
-    accepted = normalize_llm_route(raw)
+    accepted = normalize_llm_route(raw, allow_system=CORTEX_OVERRIDE_SYSTEM_ROUTES)
     return accepted, attempted
 
 
@@ -2227,10 +2211,6 @@ def _default_llm_route_for_step(*, verb_name: Optional[str], step_name: Optional
     - metacog mode: METACOG lane
     """
     if verb_name in {"harness_finalize_reflect", "orion_response_repair"}:
-        return "agent"
-    # Orion's Day: the durable run always stamps llm_route="agent"; this default only keeps an
-    # unstamped caller off the quick lane, whose context a ~70k-token day digest overflows.
-    if verb_name in {"orion_day_note_v1", "orion_day_carry_forward_v1"}:
         return "agent"
     if verb_name == "stance_react":
         return "chat"
@@ -3465,7 +3445,7 @@ async def call_step_services(
                 else:
                     request_object = ChatRequestPayload(
                         model=req_model,
-                        profile=ctx.get("profile_name") or settings.atlas_metacog_profile_name,
+                        profile=ctx.get("profile_name"),
                         messages=messages_payload,
                         raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                         # metacog_background (2026-09-07, not plain metacog): the daily
@@ -4469,10 +4449,7 @@ async def call_step_services(
 
                 request_object = ChatRequestPayload(
                     model=req_model,
-                    profile=(
-                        ctx.get("profile_name")
-                        or (settings.atlas_metacog_profile_name if llm_route in METACOG_LLM_ROUTES else None)
-                    ),
+                    profile=ctx.get("profile_name"),
                     messages=messages_payload,
                     raw_user_text=ctx.get("raw_user_text") or _last_user_message(ctx),
                     route=llm_route,

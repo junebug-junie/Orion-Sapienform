@@ -823,6 +823,41 @@ class BiometricsSubstrateStore:
             ).fetchall()
         return [(str(r[0]), r[1], float(r[2])) for r in rows]
 
+    def fetch_prediction_error_event_times(
+        self, *, node_id: str, since: datetime
+    ) -> list[datetime]:
+        """observed_at of one node's non-zero readings since `since`, oldest
+        first. Strain news (orion/regulation/strain_news.py) rebuilds its
+        budget state from these after a restart."""
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT observed_at
+                    FROM substrate_node_prediction_error_history
+                    WHERE node_id = :node_id AND observed_at >= :since AND value > 0
+                    ORDER BY observed_at
+                    """
+                ),
+                {"node_id": node_id, "since": since},
+            ).fetchall()
+        return [r[0] if r[0].tzinfo is not None else r[0].replace(tzinfo=timezone.utc) for r in rows]
+
+    def count_prediction_error_history(self, *, node_id: str, since: datetime) -> int:
+        """How many readings one node has since `since` (attention's 7-day history size)."""
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM substrate_node_prediction_error_history
+                    WHERE node_id = :node_id AND observed_at >= :since
+                    """
+                ),
+                {"node_id": node_id, "since": since},
+            ).fetchone()
+        return int(row[0] or 0) if row else 0
+
     def fetch_chat_turn_times(self, *, since: datetime) -> list[datetime]:
         """Juniper's chat turns since `since`, for world-first attention's
         chat source (query shared via orion.attention.world_first so every
@@ -840,29 +875,67 @@ class BiometricsSubstrateStore:
             for r in rows
         ]
 
-    def save_prediction_raw_reading(self, *, domain: str, observed_at: datetime, raw_value: float) -> None:
-        """Rung 6 replay corpus: one raw per-tick reading of an EWMA-scored
-        prediction-error domain, before it becomes surprise
-        (manual_migration_prediction_raw_reading_v1.sql). Idempotent on the PK."""
-        with self._engine.begin() as conn:
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO substrate_prediction_raw_reading (domain, observed_at, raw_value)
-                    VALUES (:domain, :observed_at, :raw_value)
-                    ON CONFLICT (domain, observed_at) DO NOTHING
-                    """
-                ),
-                {"domain": domain, "observed_at": observed_at, "raw_value": float(raw_value)},
-            )
+    def fetch_latest_chat_turn(self, *, since: datetime) -> tuple[str, datetime, str] | None:
+        """Juniper's newest chat turn since `since` as (id, created_at, prompt),
+        or None. Same turn definition as fetch_chat_turn_times (shared WHERE in
+        orion.attention.world_first). Evidence for the world:chat candidate:
+        the text goes onto the candidate only, never into a log line."""
+        from orion.attention.world_first import CHAT_LATEST_TURN_SQL
 
-    def prune_prediction_raw_readings(self, *, older_than: datetime) -> int:
-        with self._engine.begin() as conn:
-            result = conn.execute(
-                text("DELETE FROM substrate_prediction_raw_reading WHERE observed_at < :older_than"),
-                {"older_than": older_than},
+        with self._engine.connect() as conn:
+            row = conn.execute(
+                text(CHAT_LATEST_TURN_SQL),
+                {"since": since.astimezone(timezone.utc).replace(tzinfo=None)},
+            ).fetchone()
+        if not row:
+            return None
+        created_at = row[1]
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        return (str(row[0]), created_at, str(row[2] or ""))
+
+    def fetch_accepted_reading_link_events(
+        self, *, since: datetime
+    ) -> list[tuple[datetime, str, str]]:
+        """Accepted reading-link materializations for world-first attention.
+
+        This is the same actor/state/materialization definition as the
+        unseeded-link curiosity query, without its idempotency filter. The
+        caller caches the bounded 7-day result for one minute.
+        """
+        from orion.substrate.link_accepted_seeds import (
+            ACCEPTED_READING_LINK_TIMES_SQL,
+            accepted_reading_link_events_params,
+            projection_edge_id,
+        )
+
+        lookback_hours = max(0.0, (datetime.now(timezone.utc) - since).total_seconds() / 3600.0)
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(ACCEPTED_READING_LINK_TIMES_SQL),
+                accepted_reading_link_events_params(lookback_hours=lookback_hours),
+            ).mappings().all()
+        events: list[tuple[datetime, str, str]] = []
+        for row in rows:
+            ts = row.get("materialized_at")
+            if ts is None:
+                continue
+            assertion_id = str(row.get("assertion_id") or "")
+            edge_ids = row.get("edge_ids") or []
+            if isinstance(edge_ids, str):
+                edge_ids = json.loads(edge_ids)
+            if not assertion_id or projection_edge_id(assertion_id) not in [str(e) for e in edge_ids]:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            subject = str(row.get("subject_node_id") or "")
+            obj = str(row.get("object_node_id") or "")
+            if not subject or not obj or subject == obj:
+                continue
+            events.append(
+                (ts, subject, obj)
             )
-            return int(result.rowcount or 0)
+        return events
 
     def prune_prediction_error_history(self, *, older_than: datetime) -> int:
         with self._engine.begin() as conn:
@@ -1263,6 +1336,14 @@ class BiometricsSubstrateStore:
                     """
                 ),
             )
+
+    def load_unseeded_reading_resonances(self, *, lookback_hours: float) -> list[dict[str, Any]]:
+        from orion.substrate.resonance_seeds import UNSEEDED_RESONANCE_SQL
+        with self._engine.connect() as conn:
+            return [dict(r) for r in conn.execute(text(UNSEEDED_RESONANCE_SQL), {
+                "lookback_hours": lookback_hours,
+                "marker": json.dumps([{"notes": ["source:reading_resonance"]}]),
+            }).mappings().all()]
 
     def load_unseeded_accepted_reading_links(
         self, *, lookback_hours: float, limit: int

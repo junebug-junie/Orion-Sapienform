@@ -1,0 +1,20 @@
+{"depth_target": 8000, "tag": "chain4", "want": "3553", "got": "3553", "ok": true, "finish": "stop", "prompt_tokens": 8870, "gen": 387, "tg": 96.14600593254214, "reasoning_chars": 721, "wall": 11.74}
+{"depth_target": 8000, "tag": "decoy", "want": "1392", "got": "1392", "ok": true, "finish": "stop", "prompt_tokens": 8870, "gen": 534, "tg": 97.67058853855038, "reasoning_chars": 1195, "wall": 12.63}
+{"depth_target": 8000, "tag": "arith", "want": "2656", "got": "2656", "ok": true, "finish": "stop", "prompt_tokens": 8877, "gen": 614, "tg": 104.83671389284802, "reasoning_chars": 722, "wall": 13.09}
+{"depth_target": 8000, "tag": "date", "want": "Saturday", "got": "Saturday", "ok": true, "finish": "stop", "prompt_tokens": 8868, "gen": 275, "tg": 98.67421963999737, "reasoning_chars": 748, "wall": 9.97}
+{"depth_target": 8000, "tag": "who", "want": "Mirela Cask", "got": "Mirela Cask", "ok": true, "finish": "stop", "prompt_tokens": 8869, "gen": 293, "tg": 96.92271644526606, "reasoning_chars": 532, "wall": 10.25}
+{"depth_target": 24000, "tag": "chain4", "want": "5493", "got": "5493", "ok": true, "finish": "stop", "prompt_tokens": 27148, "gen": 300, "tg": 93.41379329094978, "reasoning_chars": 461, "wall": 23.53}
+{"depth_target": 24000, "tag": "decoy", "want": "2000", "got": "2000", "ok": true, "finish": "stop", "prompt_tokens": 27148, "gen": 257, "tg": 86.29330592714756, "reasoning_chars": 484, "wall": 13.29}
+{"depth_target": 24000, "tag": "arith", "want": "1616", "got": "1616", "ok": true, "finish": "stop", "prompt_tokens": 27155, "gen": 637, "tg": 105.04684122379271, "reasoning_chars": 893, "wall": 16.4}
+{"depth_target": 24000, "tag": "date", "want": "Thursday", "got": "Thursday", "ok": true, "finish": "stop", "prompt_tokens": 27146, "gen": 580, "tg": 93.48365446298911, "reasoning_chars": 1574, "wall": 16.54}
+{"depth_target": 24000, "tag": "who", "want": "Ilse Marr", "got": "Ilse Marr", "ok": true, "finish": "stop", "prompt_tokens": 27147, "gen": 221, "tg": 84.34912602949245, "reasoning_chars": 590, "wall": 13.01}
+{"depth_target": 40000, "tag": "chain4", "want": "2290", "got": "2290", "ok": true, "finish": "stop", "prompt_tokens": 41495, "gen": 340, "tg": 94.1221622235635, "reasoning_chars": 644, "wall": 32.4}
+{"depth_target": 40000, "tag": "decoy", "want": "8944", "got": "8944", "ok": true, "finish": "stop", "prompt_tokens": 41495, "gen": 316, "tg": 91.45686158134953, "reasoning_chars": 675, "wall": 11.99}
+{"depth_target": 40000, "tag": "arith", "want": "2701", "got": "2701", "ok": true, "finish": "stop", "prompt_tokens": 41502, "gen": 651, "tg": 106.38572869878818, "reasoning_chars": 920, "wall": 14.6}
+{"depth_target": 40000, "tag": "date", "want": "Sunday", "got": "Sunday", "ok": true, "finish": "stop", "prompt_tokens": 41493, "gen": 260, "tg": 92.64509812583653, "reasoning_chars": 708, "wall": 11.4}
+{"depth_target": 40000, "tag": "who", "want": "Petra Lume", "got": "Petra Lume", "ok": true, "finish": "stop", "prompt_tokens": 41494, "gen": 220, "tg": 87.08891605962324, "reasoning_chars": 531, "wall": 11.1}
+{"depth_target": 50000, "tag": "chain4", "want": "4671", "got": "4671", "ok": true, "finish": "stop", "prompt_tokens": 50356, "gen": 271, "tg": 94.48482022378259, "reasoning_chars": 460, "wall": 39.96}
+{"depth_target": 50000, "tag": "decoy", "want": "4749", "got": "4749", "ok": true, "finish": "stop", "prompt_tokens": 50356, "gen": 324, "tg": 88.8241587305771, "reasoning_chars": 707, "wall": 8.38}
+{"depth_target": 50000, "tag": "arith", "want": "2388", "got": "2388", "ok": true, "finish": "stop", "prompt_tokens": 50363, "gen": 637, "tg": 99.83340165220518, "reasoning_chars": 806, "wall": 11.11}
+{"depth_target": 50000, "tag": "date", "want": "Tuesday", "got": "Tuesday", "ok": true, "finish": "stop", "prompt_tokens": 50354, "gen": 238, "tg": 88.29741905603974, "reasoning_chars": 550, "wall": 7.46}
+{"depth_target": 50000, "tag": "who", "want": "Oswin Hale", "got": "Oswin Hale", "ok": true, "finish": "stop", "prompt_tokens": 50355, "gen": 307, "tg": 83.50073230675065, "reasoning_chars": 733, "wall": 8.41}

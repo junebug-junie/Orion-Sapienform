@@ -19,6 +19,10 @@ SHED = {"content": "", "raw": {"error": "gpu_pool_unavailable",
                                "details": {"reason": "shed:cabinet_hot", "route": "metacog_background"}}}
 OK = {"content": "{\"ok\": true}", "raw": {}}
 OTHER = {"content": "", "raw": {"error": "gpu_pool_unavailable", "details": {"reason": "no_serviceable_role"}}}
+TRUNCATED = {"content": '{"scene_summary":"a vehicle', "raw": {
+    "choices": [{"finish_reason": "length", "message": {"content": '{"scene_summary":"a vehicle'}}],
+    "usage": {"completion_tokens": 1024},
+}}
 
 
 class FakeRpcBus:
@@ -76,3 +80,13 @@ async def test_non_shed_failure_is_not_backed_off():
     for _ in range(3):
         assert await svc._call_llm_raw("p", _src()) is None
     assert svc._rpc_bus.calls == 3
+
+
+@pytest.mark.asyncio
+async def test_length_reply_is_rejected_before_parsing_and_next_window_can_retry():
+    svc, _ = _svc()
+    svc._rpc_bus.reply = TRUNCATED
+    assert await svc._call_llm_raw("p", _src()) is None
+    svc._rpc_bus.reply = OK
+    assert await svc._call_llm_raw("p", _src()) == '{"ok": true}'
+    assert svc._rpc_bus.calls == 2

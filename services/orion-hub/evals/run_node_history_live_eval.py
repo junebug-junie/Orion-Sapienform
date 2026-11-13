@@ -6,7 +6,7 @@ Fails if any field disagrees, if the series has more than 48 points, or if the a
 not fit the 12k MCP result budget. Prints the item exactly as Orion would get it.
 
   POSTGRES_URI=postgresql://... python services/orion-hub/evals/run_node_history_live_eval.py \
-      --node node:substrate.bus_synaptic --hours 72
+      --node node:substrate.execution --hours 72
 
 Needs a live database, so it is not a CI step; the CI-safe checks are
 orion/introspect/tests/test_node_history.py and the Hub listener tests.
@@ -88,7 +88,7 @@ async def run(dsn: str, node: str, hours: float) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--node", default="node:substrate.bus_synaptic")
+    parser.add_argument("--node", default="node:substrate.execution")
     parser.add_argument("--hours", type=float, default=72)
     parser.add_argument("--dsn", default=os.environ.get("POSTGRES_URI") or os.environ.get("DATABASE_URL"))
     ns = parser.parse_args(argv)

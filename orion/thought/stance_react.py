@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Any, Literal, cast
 from uuid import uuid4
@@ -23,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 IMPERATIVE_MAX_LEN = 400
 TONE_MAX_LEN = 200
+# A stated 0 or 1 is never calibrated; clamp so one surprise cannot score infinite loss.
+SELF_PREDICTION_P_MIN = 0.02
+SELF_PREDICTION_P_MAX = 0.98
+_SELF_PREDICTION_P_KEYS = ("asks_question_p", "fetches_outside_p", "more_steps_than_usual_p", "longer_reply_than_usual_p")
 
 
 def _coerce_optional_str(value: Any) -> str | None:
@@ -89,6 +94,60 @@ def _coerce_and_clamp_str(
     return text
 
 
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            number = float(value)  # a huge JSON int raises OverflowError, not ValueError
+        elif isinstance(value, str):
+            number = float(value.strip())
+        else:
+            return None
+    except (ValueError, OverflowError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def normalize_self_prediction(value: Any) -> dict[str, Any] | None:
+    """Clean the stance LLM's self-prediction bet into a v2 bet. Drops what it cannot trust, never fills in.
+
+    A probability outside [0, 1] is dropped (not rescaled: "70" could mean 70% or nonsense),
+    one inside is clamped to [SELF_PREDICTION_P_MIN, SELF_PREDICTION_P_MAX]. Any other key,
+    including v1's size ranges (retired 2026-11-03, spec 2026-11-02-turn-self-bets-relative-size-
+    design.md), is dropped. Nothing usable -> None.
+    """
+    if not isinstance(value, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key in _SELF_PREDICTION_P_KEYS:
+        p = _finite_number(value.get(key))
+        if p is not None and 0.0 <= p <= 1.0:
+            out[key] = min(max(p, SELF_PREDICTION_P_MIN), SELF_PREDICTION_P_MAX)
+    return {"schema_version": "turn.self_prediction.v2", **out} if out else None
+
+
+# Ternary-Bonsai-2-27B (PQ2_0, 2-bit) writes the key "imperial" where it means
+# "imperative": 9 of its 59 non-empty stance outputs live 2026-10-22..29 (cognition_traces,
+# verb stance_react), on reading and chat turns alike. Its own reasoning shows it means
+# the right key and still cannot emit it ("Let's produce final now with correct spelling:
+# i m p e r a t i v e" -> "imperial", corr 998f5800). One misspelling with a known cause,
+# not a list of guesses. The value is used only when it is real text, so an empty or null
+# "imperial" still defers the turn as empty_imperative.
+_MISSPELLED_IMPERATIVE_KEY = "imperial"
+
+
+def _repair_imperative_key(data: dict[str, Any], *, correlation_id: str | None) -> None:
+    misspelled = data.pop(_MISSPELLED_IMPERATIVE_KEY, None)
+    if _coerce_optional_str(data.get("imperative")) is not None:
+        return
+    text = misspelled.strip() if isinstance(misspelled, str) else ""
+    if not text:
+        return
+    logger.warning("stance_react_imperative_key_repaired from=%s corr=%s", _MISSPELLED_IMPERATIVE_KEY, correlation_id)
+    data["imperative"] = text
+
+
 def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     """Coerce common LLM JSON mistakes before ThoughtEventV1 validation."""
     data = dict(raw)
@@ -101,6 +160,7 @@ def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     data["profile"] = _coerce_required_str(data.get("profile"), default="stance_react")
     data["producer"] = _coerce_required_str(data.get("producer"), default="stance_react_v1")
     data["llm_profile"] = _coerce_required_str(data.get("llm_profile"), default="brain")
+    _repair_imperative_key(data, correlation_id=correlation_id)
     data["imperative"] = _coerce_and_clamp_str(
         data.get("imperative"),
         default="",
@@ -131,6 +191,12 @@ def normalize_stance_react_raw(raw: dict[str, Any]) -> dict[str, Any]:
     sl["response_priorities"] = _coerce_str_list(sl.get("response_priorities"))
     sl["response_hazards"] = _coerce_str_list(sl.get("response_hazards"))
     data["stance_harness_slice"] = sl
+    try:
+        data["self_prediction"] = normalize_self_prediction(data.get("self_prediction"))
+    except Exception:
+        # The bet is optional: a malformed one must never fail or defer the stance turn.
+        logger.warning("stance_self_prediction_dropped corr=%s", correlation_id, exc_info=True)
+        data["self_prediction"] = None
     return data
 
 
@@ -206,6 +272,13 @@ def slim_repair_bundle_for_prompt(bundle: TurnAppraisalBundleV1 | None) -> dict[
     slim: dict[str, Any] = {
         "paradigms": paradigms,
     }
+    # A failed paradigm has no slice. Say so explicitly, so the stance does not read an empty
+    # `paradigms` as "no repair pressure": the level is unknown (e.g. the probe was shed by heat).
+    if bundle.failed_paradigms:
+        reasons = dict(bundle.failure_reasons or {})
+        slim["unmeasured"] = {
+            name: f"level unknown: {reasons.get(name) or 'failed'}" for name in bundle.failed_paradigms
+        }
     contract = (bundle.metadata_attachments or {}).get("repair_pressure_contract")
     if isinstance(contract, dict) and contract:
         slim["repair_pressure_contract"] = contract

@@ -7,7 +7,8 @@ Orion have sent Juniper, and what would the letter's "What I read" lines say?
 
 Runs the production code: ``reading_items_between`` (the verified reads), ``findings_for_reads``
 (links accepted + projected, beliefs moved by a run citing the read; priors read with
-GRAPH.RO_QUERY), ``pending_bundles`` (one message per read, unprojected links held). A read
+GRAPH.RO_QUERY), ``pending_bundles`` (one message per read, unprojected links held),
+``read_origins`` (how each read started: the chain of reads that led to it). A read
 whose findings landed in different 5-minute ticks is counted as one message per tick, as the
 live loop would send them. Gates that depend on the moment (quiet hours, recent chat, a turn
 in flight) only delay a message, so they do not change the count. Orion's own words are
@@ -46,9 +47,14 @@ def message_groups(bundle, tick_sec: float = TICK_SEC):
 
 
 async def replay(conn, *, days: int, prior_lookup, now: datetime) -> dict:
-    from orion.world_pulse_read.finding_prompt import article_appendix, build_reading_finding_prompt
+    from orion.world_pulse_read.finding_prompt import (
+        article_appendix,
+        build_reading_finding_prompt,
+        origin_lines,
+    )
     from orion.world_pulse_read.findings import ReadRefV1, findings_for_reads, first_sentences
     from orion.world_pulse_read.introspect import reading_items_between
+    from orion.world_pulse_read.origin import read_origins
 
     from orion.orion_day.budget import NOTHING_CHANGED_LINE
 
@@ -60,6 +66,8 @@ async def replay(conn, *, days: int, prior_lookup, now: datetime) -> dict:
                        learned=i.text, article_summary=i.extra.get("article_summary") or "") for i in items]
     result = await findings_for_reads(conn, reads, until=now, prior_lookup=prior_lookup)
     bundles = pending_bundles(reads, result.by_seed, told=set(), failures={}, max_attempts=3)
+    origins = await read_origins(conn, [b.seed_id for b in bundles])
+    bundles = [b.model_copy(update={"origin": origins.get(b.seed_id, [])}) for b in bundles]
     messages = [g for b in bundles for g in message_groups(b)]
     held = [f for fs in result.by_seed.values() for f in fs if f.kind == "link_made" and not f.projected]
     letter = []
@@ -82,6 +90,7 @@ async def replay(conn, *, days: int, prior_lookup, now: datetime) -> dict:
             "seed_id": m.seed_id, "title": m.title, "url": m.url,
             "at": min(f.observed_at for f in m.findings).isoformat(),
             "findings": [f.headline for f in m.findings],
+            "origin": origin_lines(m.origin),
             "appendix": article_appendix(m),
             "prompt": build_reading_finding_prompt(m),
         } for m in messages],
@@ -124,6 +133,8 @@ async def _main() -> int:
     print(f"messages that would have gone out: {len(out['messages'])}")
     for m in out["messages"]:
         print(f"\n- {m['at']}  {m['title']}  ({m['url']})")
+        for line in m["origin"]:
+            print(f"    started: {line}")
         for h in m["findings"]:
             print(f"    {h}")
         print(f"    appendix: {m['appendix']}")

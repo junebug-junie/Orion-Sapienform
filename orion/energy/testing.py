@@ -11,7 +11,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from orion.energy.ledger import UsageLedger
-from orion.energy.tariff import Block, Season, Tariff
+from orion.energy.tariff import Block, FixedCharge, Season, Tariff
 from orion.schemas.energy import EnergyUsageIntervalV1
 
 UTC = ZoneInfo("UTC")
@@ -30,6 +30,7 @@ def flat_test_tariff() -> Tariff:
         ),
         energy_multiplier=1.0,
         fixed_monthly_usd=10.0,
+        fixed_items=(FixedCharge(name="fixed", usd=10.0),),
     )
 
 

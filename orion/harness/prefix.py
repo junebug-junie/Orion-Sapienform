@@ -11,6 +11,7 @@ from orion.harness.operator_brief import (
     HARNESS_UNIFIED_OPERATOR_BRIEF,
     harness_motor_instruction as _stance_motor_instruction,
 )
+from orion.dig.brief import append_dig_harness_brief
 from orion.harness.situation_brief import append_situation_block_harness_brief
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.harness_finalize import HarnessRepairOverlayV1
@@ -34,6 +35,11 @@ HARNESS_STANCE_GUIDANCE_HEADER = (
     "anything here the task did not ask for is optional: do it only if it is cheap "
     "and directly serves the answer; a follow-up question the guidance asks you to "
     "pose is not extra work, so ask it after answering):"
+)
+PRIME_BLOCK_BRIEF = (
+    "PRIME block: your own slow loop's state, read from Redis this turn. When you say what you "
+    "are holding, last thought or asked for, keep the line's [prime_concern:...] / [thought:...] ref. "
+    "If it says absent or not ticked, say you cannot see it; do not guess."
 )
 HARNESS_TURN_RULES_HEADER = (
     "TURN RULES AND TOOLS (binding for the task above; each tool note says when it applies):"
@@ -258,7 +264,9 @@ def compile_harness_prefix(
     situation_prompt_fragment: str | None = None,
     reading_binding: ReadingToolBindingV1 | None = None,
     reading_only: bool = False,
+    working_notes_block: str | None = None,
     now: datetime | None = None,
+    prime_block: str | None = None,
 ) -> str:
     """Orion capability: motor-context assembly for the unified turn.
 
@@ -309,6 +317,13 @@ def compile_harness_prefix(
         # before this parameter existed.
         parts.append(situation_prompt_fragment)
 
+    if prime_block:
+        # Rendered by orion-hub before the request is built (orion/prime/block.py::fetch_prime_block,
+        # living Prime design Part 1): Prime's concerns, last thought, open asks and body read, each
+        # line cited. Same treatment as the situation fragment: verbatim, omitted when falsy (the
+        # HUB_PRIME_BLOCK_ENABLED kill switch, or an older Hub), so the prompt is then unchanged.
+        parts.append(prime_block)
+
     stance_lines: list[str] = [
         f"Imperative: {thought.imperative}",
         f"Tone: {thought.tone}",
@@ -335,6 +350,10 @@ def compile_harness_prefix(
     # for tests only.
     now_utc = now if now is not None else datetime.now(timezone.utc)
     parts.extend(format_recent_turns(recent_turns or [], now=now_utc))
+    if working_notes_block:
+        # Rendered by the runner (orion/harness/working_notes.py): carried step notes, quoted,
+        # plus where this turn writes its own. Omitted on non-chat turns.
+        parts.append(working_notes_block)
 
     if user_message.strip():
         parts.append(HARNESS_TASK_HEADER)
@@ -369,6 +388,9 @@ def compile_harness_prefix(
         trailing,
         situation_prompt_fragment=situation_prompt_fragment,
     )
+    if prime_block:
+        trailing.append(PRIME_BLOCK_BRIEF)
+    append_dig_harness_brief(trailing, reading_only=reading_only)
 
     if trailing and user_message.strip():
         parts.append(HARNESS_TURN_RULES_HEADER)

@@ -257,56 +257,26 @@
     {
      "confidence_score": 1.0,
      "dominant_channels": {
-      "prediction_error": 0.031
+      "prediction_error": 0.01
      },
      "evidence_refs": [
       "field:tick_parity_2"
      ],
      "novelty_score": 0.0,
-     "pressure_score": 0.031,
+     "pressure_score": 0.01,
      "reasons": [
-      "precision-weighted prediction-error salience (current error 0.0310, precision 39558.14, n=30)",
-      "variance-floor instability: near-constant recent error history"
+      "precision-weighted prediction-error salience (current error 0.0100, precision 39558.14, n=30)"
      ],
      "salience_score": 1.0,
      "suggested_observation_mode": "inspect",
-     "target_id": "node:substrate.bus_synaptic",
+     "target_id": "node:substrate.biometrics",
      "target_kind": "node",
-     "urgency_score": 0.031
+     "urgency_score": 0.01
     }
    ],
    "frame_id": "attention.frame:tick_parity_2:field_attention_policy.v1",
    "generated_at": "2026-10-09T12:00:00Z",
    "node_targets": [
-    {
-     "confidence_score": 1.0,
-     "dominant_channels": {
-      "prediction_error": 0.031
-     },
-     "evidence_refs": [
-      "field:tick_parity_2"
-     ],
-     "novelty_score": 0.0,
-     "pressure_score": 0.031,
-     "reasons": [
-      "precision-weighted prediction-error salience (current error 0.0310, precision 39558.14, n=30)",
-      "variance-floor instability: near-constant recent error history"
-     ],
-     "salience_score": 1.0,
-     "suggested_observation_mode": "inspect",
-     "target_id": "node:substrate.bus_synaptic",
-     "target_kind": "node",
-     "urgency_score": 0.031
-    }
-   ],
-   "overall_salience": 1.0,
-   "recent_perturbations": [
-    "state_delta:a"
-   ],
-   "schema_version": "field.attention.frame.v1",
-   "source_field_generated_at": "2026-10-09T12:00:00Z",
-   "source_field_tick_id": "tick_parity_2",
-   "suppressed_targets": [
     {
      "confidence_score": 1.0,
      "dominant_channels": {
@@ -320,12 +290,21 @@
      "reasons": [
       "precision-weighted prediction-error salience (current error 0.0100, precision 39558.14, n=30)"
      ],
-     "salience_score": 0.0,
-     "suggested_observation_mode": "ignore",
+     "salience_score": 1.0,
+     "suggested_observation_mode": "inspect",
      "target_id": "node:substrate.biometrics",
      "target_kind": "node",
      "urgency_score": 0.01
-    },
+    }
+   ],
+   "overall_salience": 1.0,
+   "recent_perturbations": [
+    "state_delta:a"
+   ],
+   "schema_version": "field.attention.frame.v1",
+   "source_field_generated_at": "2026-10-09T12:00:00Z",
+   "source_field_tick_id": "tick_parity_2",
+   "suppressed_targets": [
     {
      "confidence_score": 1.0,
      "dominant_channels": {},
@@ -422,26 +401,6 @@
     {
      "confidence_score": 1.0,
      "dominant_channels": {
-      "prediction_error": 0.20833333333333334
-     },
-     "evidence_refs": [
-      "field:tick_parity_1"
-     ],
-     "novelty_score": 0.0,
-     "pressure_score": 0.20833333333333334,
-     "reasons": [
-      "precision-weighted prediction-error salience (current error 0.2083, precision 51.78, n=24)",
-      "stale reading: last error 0.2500 is 5 min old, weighted 0.83"
-     ],
-     "salience_score": 1.0,
-     "suggested_observation_mode": "inspect",
-     "target_id": "node:substrate.route",
-     "target_kind": "node",
-     "urgency_score": 0.20833333333333334
-    },
-    {
-     "confidence_score": 1.0,
-     "dominant_channels": {
       "prediction_error": 0.5866666666666667
      },
      "evidence_refs": [
@@ -453,53 +412,11 @@
       "precision-weighted prediction-error salience (current error 0.5867, precision 14.60, n=31)",
       "stale reading: last error 0.6000 is 1 min old, weighted 0.98"
      ],
-     "salience_score": 0.7939142322237546,
+     "salience_score": 1.0,
      "suggested_observation_mode": "inspect",
      "target_id": "node:substrate.execution",
      "target_kind": "node",
      "urgency_score": 0.5866666666666667
-    },
-    {
-     "confidence_score": 1.0,
-     "dominant_channels": {
-      "prediction_error": 0.03933333333333333
-     },
-     "evidence_refs": [
-      "field:tick_parity_1"
-     ],
-     "novelty_score": 0.0,
-     "pressure_score": 0.03933333333333333,
-     "reasons": [
-      "precision-weighted prediction-error salience (current error 0.0393, precision 38.98, n=30)",
-      "stale reading: last error 0.0400 is 0 min old, weighted 0.98",
-      "variance-floor instability: near-constant recent error history"
-     ],
-     "salience_score": 0.14211677293085453,
-     "suggested_observation_mode": "watch",
-     "target_id": "node:substrate.bus_synaptic",
-     "target_kind": "node",
-     "urgency_score": 0.03933333333333333
-    },
-    {
-     "confidence_score": 1.0,
-     "dominant_channels": {
-      "prediction_error": 0.029666666666666668
-     },
-     "evidence_refs": [
-      "field:tick_parity_1"
-     ],
-     "novelty_score": 0.0,
-     "pressure_score": 0.029666666666666668,
-     "reasons": [
-      "precision-weighted prediction-error salience (current error 0.0297, precision 38.98, n=31)",
-      "stale reading: last error 0.0300 is 0 min old, weighted 0.99",
-      "variance-floor instability: near-constant recent error history"
-     ],
-     "salience_score": 0.10718976941394961,
-     "suggested_observation_mode": "watch",
-     "target_id": "node:substrate.biometrics",
-     "target_kind": "node",
-     "urgency_score": 0.029666666666666668
     }
    ],
    "frame_id": "attention.frame:tick_parity_1:field_attention_policy.v1",
@@ -508,26 +425,6 @@
     {
      "confidence_score": 1.0,
      "dominant_channels": {
-      "prediction_error": 0.20833333333333334
-     },
-     "evidence_refs": [
-      "field:tick_parity_1"
-     ],
-     "novelty_score": 0.0,
-     "pressure_score": 0.20833333333333334,
-     "reasons": [
-      "precision-weighted prediction-error salience (current error 0.2083, precision 51.78, n=24)",
-      "stale reading: last error 0.2500 is 5 min old, weighted 0.83"
-     ],
-     "salience_score": 1.0,
-     "suggested_observation_mode": "inspect",
-     "target_id": "node:substrate.route",
-     "target_kind": "node",
-     "urgency_score": 0.20833333333333334
-    },
-    {
-     "confidence_score": 1.0,
-     "dominant_channels": {
       "prediction_error": 0.5866666666666667
      },
      "evidence_refs": [
@@ -539,53 +436,11 @@
       "precision-weighted prediction-error salience (current error 0.5867, precision 14.60, n=31)",
       "stale reading: last error 0.6000 is 1 min old, weighted 0.98"
      ],
-     "salience_score": 0.7939142322237546,
+     "salience_score": 1.0,
      "suggested_observation_mode": "inspect",
      "target_id": "node:substrate.execution",
      "target_kind": "node",
      "urgency_score": 0.5866666666666667
-    },
-    {
-     "confidence_score": 1.0,
-     "dominant_channels": {
-      "prediction_error": 0.03933333333333333
-     },
-     "evidence_refs": [
-      "field:tick_parity_1"
-     ],
-     "novelty_score": 0.0,
-     "pressure_score": 0.03933333333333333,
-     "reasons": [
-      "precision-weighted prediction-error salience (current error 0.0393, precision 38.98, n=30)",
-      "stale reading: last error 0.0400 is 0 min old, weighted 0.98",
-      "variance-floor instability: near-constant recent error history"
-     ],
-     "salience_score": 0.14211677293085453,
-     "suggested_observation_mode": "watch",
-     "target_id": "node:substrate.bus_synaptic",
-     "target_kind": "node",
-     "urgency_score": 0.03933333333333333
-    },
-    {
-     "confidence_score": 1.0,
-     "dominant_channels": {
-      "prediction_error": 0.029666666666666668
-     },
-     "evidence_refs": [
-      "field:tick_parity_1"
-     ],
-     "novelty_score": 0.0,
-     "pressure_score": 0.029666666666666668,
-     "reasons": [
-      "precision-weighted prediction-error salience (current error 0.0297, precision 38.98, n=31)",
-      "stale reading: last error 0.0300 is 0 min old, weighted 0.99",
-      "variance-floor instability: near-constant recent error history"
-     ],
-     "salience_score": 0.10718976941394961,
-     "suggested_observation_mode": "watch",
-     "target_id": "node:substrate.biometrics",
-     "target_kind": "node",
-     "urgency_score": 0.029666666666666668
     }
    ],
    "overall_salience": 1.0,
@@ -599,22 +454,23 @@
     {
      "confidence_score": 1.0,
      "dominant_channels": {
-      "prediction_error": 0.0
+      "prediction_error": 0.029666666666666668
      },
      "evidence_refs": [
       "field:tick_parity_1"
      ],
      "novelty_score": 0.0,
-     "pressure_score": 0.0,
+     "pressure_score": 0.029666666666666668,
      "reasons": [
-      "precision-weighted prediction-error salience (current error 0.0000, precision 31.25, n=26)",
-      "stale reading: last error 0.4000 is 180 min old, weighted 0.00"
+      "precision-weighted prediction-error salience (current error 0.0297, precision 14.60, n=31)",
+      "stale reading: last error 0.0300 is 0 min old, weighted 0.99",
+      "variance-floor instability: near-constant recent error history"
      ],
      "salience_score": 0.0,
      "suggested_observation_mode": "ignore",
-     "target_id": "node:substrate.chat",
+     "target_id": "node:substrate.biometrics",
      "target_kind": "node",
-     "urgency_score": 0.0
+     "urgency_score": 0.029666666666666668
     },
     {
      "confidence_score": 0.0,

@@ -55,6 +55,7 @@ import hashlib
 import json
 import urllib.error
 import urllib.request
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Optional
@@ -136,16 +137,28 @@ class FovealNotConfiguredError(RuntimeError):
     """
 
 
-def resolve_latest_frame_path(frames_dir: str) -> Optional[Path]:
-    """Newest .jpg under frames_dir by mtime, or None if the directory is
-    missing or empty. Pure filesystem read, no upload, no bus -- mirrors
-    orion-vision-host's own runner.py::_resolve_latest_frame_path so both
-    services agree on "the current frame" without importing across the
-    service boundary."""
+# The camera the foveal probe looks through when none is named: the office
+# camera (cam0), the room where Juniper works.
+FOVEAL_DEFAULT_STREAM = "cam0"
+
+
+def resolve_latest_frame_path(frames_dir: str, stream_id: Optional[str] = None) -> Optional[Path]:
+    """Newest frame of ONE camera under frames_dir by mtime (default cam0), or
+    None if the directory is missing or that camera has no frame. Pure
+    filesystem read, no upload, no bus -- mirrors orion-vision-host's own
+    runner.py::_resolve_latest_frame_path so both services agree on "the
+    current frame" without importing across the service boundary.
+
+    One camera, never "the newest file" (2026-11-04): every athena retina
+    writes into this shared folder (walkway and office both at 2 frames/s),
+    so the newest file could be any camera's. Retina naming is
+    ``<camera>_<stream>_*.jpg`` (orion-vision-retina app/frame_store.py)."""
     d = Path(frames_dir)
     if not d.is_dir():
         return None
-    candidates = sorted(d.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+    stream = str(stream_id or "").strip() or FOVEAL_DEFAULT_STREAM
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", stream).strip("_") or "unknown"
+    candidates = sorted(d.glob(f"{safe}_{safe}_*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
     return candidates[0] if candidates else None
 
 

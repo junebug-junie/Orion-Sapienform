@@ -55,8 +55,7 @@ SOURCE = ServiceRef(name="durable-tests-gpu-pool")
 LIVE = {
     "chat": ("qwen36-35b-a3b-udq5km-2xv100-32gb-deep-cognition", "Qwen3.6-35B-A3B-UD-Q5_K_M.gguf", 1, 65536),
     "agent": ("qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex", "Qwen3.8-27B-UD-Q4_K_XL.gguf", 1, 131072),
-    "metacog": ("qwen3-8b-q5km-v100-16gb-atlas-metacog-16k", "Qwen_Qwen3-8B-Q5_K_M.gguf", 4, 4096),
-    "fast": ("qwen3-8b-q4km-v100-16gb-balanced", "Qwen_Qwen3-8B-Q4_K_M.gguf", 4, 4096),
+    "fast": ("qwen35-9b-udq5kxl-v100-32gb-circe-shared-32k", "Qwen3.5-9B-UD-Q5_K_XL.gguf", 10, 32768),
 }
 
 
@@ -107,7 +106,7 @@ class InProcessPool:
             _, file, slots, ctx = self.live[role]
             return Probe(True, {"model_path": f"/models/gguf/{file}", "total_slots": slots,
                                 "default_generation_settings": {"n_ctx": ctx}, "modalities": {"vision": False}},
-                         checked_at=self.clock())
+                         checked_at=self.clock(), backend=CFG.roles[role].backend)
 
         self.rt = PoolRuntime(cfg=CFG, profiles=PROFILES, store=MemoryStore(),
                               graph=build_lease_graph(lambda: CFG, MemorySaver()), bus=_PoolSideBus(self),
@@ -233,7 +232,7 @@ class PoolBus:
         self.pool, self.codec = pool, OrionCodec()
         self.fail_next: int = 0   # simulate an unreachable pool for the next N RPCs
 
-    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec, health_label=None):
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec, health_label=None, require_listener=False):
         assert channel == GPU_POOL_LEASE_REQUEST_CHANNEL and envelope.reply_to == reply_channel
         if self.fail_next:
             self.fail_next -= 1

@@ -216,13 +216,15 @@ def test_one_slot_one_hold_is_unchanged():
 # --- recall / drain with two holds on the seat -----------------------------------------------
 def test_owner_reclaim_recalls_both_runs_then_unloads_once_both_leave():
     """Diffusion (gpu2's owner) wants its card: the seat drains -- both holds recalled in the same
-    tick with the hold grace (two take-backs), nothing new lands, and the unload waits for both."""
+    tick (two take-backs), nothing new lands, and the unload waits for both. A background image
+    is the only demand, so the grace is the long H5 one: a running node finishes; an idle run gives
+    the seat back at its next node start (durable-runs `recalled_before_start`)."""
     a, b = two_idle_runs()
     img = lease("diffusion", priority="background", kind="hold", retryable=True, lease_id="img")
     decisions = sched(home_busy() + [a, b, img, hold("c")])
     recalls = sorted((r.lease_id, r.reason) for r in of(Recall, decisions))
-    assert recalls == [("a", "draining"), ("b", "draining")]
-    assert all(r.recall_by == T0 + timedelta(seconds=CFG.defaults.hold_clawback_grace_sec)
+    assert recalls == [("a", "draining_background"), ("b", "draining_background")]
+    assert all(r.recall_by == T0 + timedelta(seconds=CFG.defaults.background_drain_grace_sec)
                for r in of(Recall, decisions))
     assert "c" not in grants(decisions)
     assert not of(SwapUnload, decisions)

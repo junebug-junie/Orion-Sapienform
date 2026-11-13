@@ -8,10 +8,13 @@
 summary.json, report.md (verdict first), blind_sheet.md + blind_key.json + hand_grades.csv,
 transcripts/, results.jsonl (resumable with --out <that dir>), holds.jsonl (every pool hold taken).
 
-Per task it holds gpu1 (Q4, class memory_distill -> role agent) and gpu2 (Bonsai, class agent ->
-role agent-gpu2) through the pool's operator verbs, checks each grant's role and
-profile, runs both models side by side, and releases both holds -- also on error, Ctrl-C,
-SIGTERM and SIGHUP. After a SIGKILL: --release-leftovers <out dir>.
+Per task it holds gpu1 (Q4, class operator_agent -> role agent) and gpu2 (Bonsai, class
+operator_agent_gpu2 -> role agent-gpu2) at background priority, behind all of Orion's own work
+(leased evals, 2026-11-12), checks each grant's role and profile, runs both models side by side
+through orion-llm-gateway under those holds, and releases both holds -- also on error, Ctrl-C,
+SIGTERM and SIGHUP. When the pool takes a seat back, the run stops, writes a partial report and
+exits 3 (resume with --out). After a SIGKILL: --release-leftovers <out dir> (the pool also ends the
+holds itself at its heartbeat TTL).
 Design + no-write proof: orion/evals/model_replay/sandbox.py, docs/superpowers/pr-reports/2026-10-09-bonsai-replay-eval-pr.md.
 """
 from __future__ import annotations
@@ -29,9 +32,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from orion.evals.model_replay import runner  # noqa: E402
+from orion.evals.leased_llm import EXIT_RECALLED, gateway_url  # noqa: E402
 from orion.evals.model_replay.fixture import FIXTURE_PATH, load_tasks  # noqa: E402
 from orion.evals.model_replay.pool_hold import (  # noqa: E402
-    SEATS, BusControlTransport, HoldLedger, attach_factory, http_seat_check, http_sweeper, release_leftovers,
+    SEATS, HoldLedger, LeaseHoldTransport, http_seat_check, http_sweeper, release_leftovers,
 )
 
 PRIMARY_CHECKOUT = Path("/mnt/scripts/Orion-Sapienform")
@@ -125,13 +129,13 @@ async def live(args: argparse.Namespace, tasks) -> int:
         http = HostHttpGet()
         cfg = runner.ReplayConfig(out_dir=out, tasks=tasks, repo=args.repo, grant_timeout_sec=args.grant_timeout_sec)
         repo_path = Path(repo["path"])
-        async with BusControlTransport(bus_url) as transport:
+        async with LeaseHoldTransport(bus_url) as transport:
             loop = asyncio.get_running_loop()
             factory = runner.LiveRigFactory(repo=repo_path, run_tag=run_tag, sandbox_image=args.sandbox_image,
                                             graph_image=prod_falkordb_image(), graph_dumps=dumps,
                                             sql=ReadOnlyPsql(), http=http, docker_ro=DockerReadOnly(),
-                                            fetch_cache=FetchCache(http),
-                                            attach=lambda m, g: attach_factory(transport.bus, m, g), loop=loop)
+                                            fetch_cache=FetchCache(http), gateway=gateway_url(args.gateway),
+                                            on_hold_gone=lambda why: transport.mark_recalled(loop, why))
             runner.install_signal_unwind(loop, asyncio.current_task())
             summary = await runner.run_replay(cfg, transport, factory, seat_check=http_seat_check(args.pool_http),
                                               sweep=http_sweeper(args.pool_http))
@@ -142,6 +146,9 @@ async def live(args: argparse.Namespace, tasks) -> int:
             subprocess.run(["docker", "rm", "-f", *leftover], capture_output=True)
     print("\n" + summary["decision"]["verdict"])
     print(f"report: {out / 'report.md'}")
+    if summary.get("stopped"):
+        print(f"STOPPED (partial): {summary['stopped']}; resume later with --out {out}")
+        return EXIT_RECALLED
     return 0
 
 
@@ -150,7 +157,7 @@ async def leftovers(args: argparse.Namespace) -> int:
     if not bus_url:
         print("ORION_BUS_URL is not set")
         return 2
-    async with BusControlTransport(bus_url) as transport:
+    async with LeaseHoldTransport(bus_url) as transport:
         released = await release_leftovers(transport, HoldLedger(args.release_leftovers / "holds.jsonl"), ACTOR,
                                            sweep=http_sweeper(args.pool_http))
     print(f"released {len(released)} leftover hold(s): {released}")
@@ -168,6 +175,8 @@ def main() -> int:
     ap.add_argument("--repo", type=Path, default=PRIMARY_CHECKOUT if PRIMARY_CHECKOUT.exists()
                     else Path(__file__).resolve().parents[1])
     ap.add_argument("--pool-http", default=DEFAULT_POOL_HTTP)
+    ap.add_argument("--gateway", default=None, help="orion-llm-gateway base URL (default ORION_LLM_GATEWAY_URL "
+                                                     "or http://127.0.0.1:8210); every model call goes there")
     ap.add_argument("--prod-graph-url", default=DEFAULT_PROD_GRAPH)
     ap.add_argument("--sandbox-image", default="orion-harness-governor-harness-governor:latest")
     ap.add_argument("--grant-timeout-sec", type=float, default=1800.0)

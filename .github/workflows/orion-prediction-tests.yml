@@ -5,16 +5,44 @@ on:
     paths:
       - "services/orion-prediction/**"
       - "orion/schemas/prediction.py"
+      - "orion/schemas/registry.py"
+      - "orion/bus/channels.yaml"
+      - "orion/substrate/prediction_surprise.py"
+      - "orion/substrate/prediction_turn_surprise.py"
+      - "orion/weather/**"
+      - "orion/prediction/**"
       - "config/prediction/**"
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/energy/**"
+      - "orion/schemas/energy.py"
+      - "orion/self_monitor/**"
+      - "orion/schemas/self_monitor.py"
+      - "config/energy/**"
+      - "orion/mood_arc/fit_encoder.py"
       - "services/orion-sql-db/manual_migration_prediction_v1.sql"
+      - "services/orion-sql-db/manual_migration_prediction_bill_forecast_v1.sql"
       - ".github/workflows/orion-prediction-tests.yml"
   push:
     branches: [main]
     paths:
       - "services/orion-prediction/**"
       - "orion/schemas/prediction.py"
+      - "orion/schemas/registry.py"
+      - "orion/bus/channels.yaml"
+      - "orion/substrate/prediction_surprise.py"
+      - "orion/substrate/prediction_turn_surprise.py"
+      - "orion/weather/**"
+      - "orion/prediction/**"
       - "config/prediction/**"
+      - "orion/autonomy/thermal_gate.py"
+      - "orion/energy/**"
+      - "orion/schemas/energy.py"
+      - "orion/self_monitor/**"
+      - "orion/schemas/self_monitor.py"
+      - "config/energy/**"
+      - "orion/mood_arc/fit_encoder.py"
       - "services/orion-sql-db/manual_migration_prediction_v1.sql"
+      - "services/orion-sql-db/manual_migration_prediction_bill_forecast_v1.sql"
       - ".github/workflows/orion-prediction-tests.yml"
 
 jobs:
@@ -30,10 +58,14 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r services/orion-prediction/requirements.txt pytest
+          python -m pip install -r services/orion-prediction/requirements.txt pytest httpx
       - name: Unit tests
         run: cd services/orion-prediction && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider
       - name: "Causal calibration eval (planted effects, many seeds: intervals cover, nulls stay null)"
         run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py
+      - name: "Heat-per-watt eval (planted slope recovered, null stays null, unseen machine reads ~0, total fit covers local + room)"
+        run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py
       - name: "Replay eval (committed real cabinet history, 40 windows as production: full zoo incl. covariates, per-horizon gate, blend never loses to baseline)"
         run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py
+      - name: "Chat-turn surprise gate eval (real settled chat bets: used kinds beat the base rate held out, calm rests at 0)"
+        run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_turn_surprise_replay_eval.py --fixture evals/fixtures/turn_self_bets_chat_2026-11-13.json --check

@@ -58,5 +58,12 @@ class Settings(BaseSettings):
     # kept must hold more. Live 2026-10-20: the agent-gpu2 llama-server held 23828 MiB on gpu2.
     GPU_LANE_RESOLVE_EMPTY_MAX_MIB: float = 2048.0
 
+    # Container restart census (app/container_census.py): every N s, read RestartCount of every
+    # container on this host's docker daemon (read-only) and carry it on the heartbeat as
+    # details["container_restarts"], so orion-mesh-guardian (athena) can see circe crash loops.
+    # Added after orion-circe-affectgpt-worker restarted 601 times unseen (2026-10-14..23).
+    GPU_LANE_CONTAINER_CENSUS_ENABLED: bool = True
+    GPU_LANE_CONTAINER_CENSUS_INTERVAL_SEC: float = 30.0
+
 
 settings = Settings()

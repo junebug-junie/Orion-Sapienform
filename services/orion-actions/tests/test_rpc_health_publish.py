@@ -32,9 +32,16 @@ class _InlinePubSub:
     async def close(self) -> None:
         return None
 
-    async def listen(self):
-        while True:
-            yield await self.queue.get()
+    subscribed = True
+
+    async def get_message(self, ignore_subscribe_messages: bool = False, timeout: float | None = 0.0):
+        try:
+            return await asyncio.wait_for(self.queue.get(), timeout=timeout)
+        except asyncio.TimeoutError:
+            return None
+
+    async def ping(self) -> None:
+        self.queue.put_nowait({"type": "pong", "data": b""})
 
 
 class _InlineRedis:

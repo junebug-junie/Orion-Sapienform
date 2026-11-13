@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -152,10 +153,10 @@ def test_r2_rider_bases_give_hand_computed_multipliers() -> None:
 
 def test_r2_reproduces_the_2026_09_21_bill_to_the_cent() -> None:
     """Every printed line of the real bill: Aug 12 - Sep 18, 37 days, 3,772 kWh, $554.99."""
-    est = load_tariff(R2).itemize(3772, month=9, period_days=37)
+    est = load_tariff(R2).itemize(3772, start=date(2026, 8, 12), end=date(2026, 9, 18))
     assert dict(est.lines) == {
-        "energy_block_1": 48.48,  # 493 kWh x 0.0983320
-        "energy_block_2": 410.74,  # 3,279 kWh x 0.1252630
+        "energy_summer_block_1": 48.48,  # 493 kWh x 0.0983320
+        "energy_summer_block_2": 410.74,  # 3,279 kWh x 0.1252630
         "customer_charge_single_phase": 14.80,
         "schedule_91_home_electric_lifeline_program": 0.20,
         "schedule_98_renewable_energy_adjustment": -2.43,
@@ -228,3 +229,79 @@ def _r2_variant(tmp_path: Path, mutate) -> Path:
 def test_r2_rejects_malformed_riders_and_charges(tmp_path, mutate, match) -> None:
     with pytest.raises(TariffError, match=match):
         load_tariff(_r2_variant(tmp_path, mutate))
+
+
+R3 = ROOT / "config/energy/tariff.rmp_ut_sch1.2026-08-10.r3.yaml"
+BILL_2026_09_21 = {
+    "energy_summer_block_1": 48.48,
+    "energy_summer_block_2": 410.74,
+    "customer_charge_single_phase": 14.80,
+    "schedule_91_home_electric_lifeline_program": 0.20,
+    "schedule_98_renewable_energy_adjustment": -2.43,
+    "schedule_94_energy_balancing_account": 35.04,
+    "schedule_92_deferral": 5.55,
+    "customer_efficiency_services": 18.89,
+    "electric_vehicle_infrastructure": 0.84,
+    "paperless_bill_credit": -0.50,
+    "sales_tax": 23.38,
+}
+
+
+def test_r3_still_reproduces_the_2026_09_21_bill() -> None:
+    """37 days, outside normal_days [27, 33]: still prorated; all summer; Schedule 92 all at 1.17%."""
+    est = load_tariff(R3).itemize(3772, start=date(2026, 8, 12), end=date(2026, 9, 18))
+    assert dict(est.lines) == BILL_2026_09_21
+    assert (est.pre_tax_usd, est.taxes, est.total_usd) == (531.61, 23.38, 554.99)
+
+
+def test_r3_reproduces_the_2026_10_20_bill_to_the_cent() -> None:
+    """Every printed line: Sep 18 - Oct 19, 31 days (12 summer, 19 winter), 3,106 kWh, $427.39."""
+    est = load_tariff(R3).itemize(3106, start=date(2026, 9, 18), end=date(2026, 10, 19))
+    assert dict(est.lines) == {
+        "energy_summer_block_1": 15.24,  # 155 kWh (400 x 12/31) x 0.0983320
+        "energy_summer_block_2": 131.15,  # 1,047 kWh x 0.1252630 (summer share 3,106 x 12/31 = 1,202)
+        "energy_winter_block_1": 21.32,  # 245 kWh (400 x 19/31) x 0.0870200
+        "energy_winter_block_2": 183.90,  # 1,659 kWh x 0.1108520
+        "customer_charge_single_phase": 12.00,  # 31 days is a normal month: not prorated
+        "schedule_91_home_electric_lifeline_program": 0.16,
+        "schedule_98_renewable_energy_adjustment": -1.86,
+        "schedule_94_energy_balancing_account": 26.83,
+        "schedule_92_deferral@2026-08-10": 0.82,  # "for 6 day(s) 0.0117"
+        "schedule_92_deferral@2026-09-25": 5.22,  # "for 25 day(s) 0.0178"
+        "customer_efficiency_services": 14.46,
+        "electric_vehicle_infrastructure": 0.64,
+        "paperless_bill_credit": -0.50,
+        "sales_tax": 18.01,
+    }
+    assert (est.energy_charge, est.customer_charge, est.fees, est.credits) == (351.61, 12.00, 0.16, -0.50)
+    assert (est.pre_tax_usd, est.taxes, est.total_usd) == (409.38, 18.01, 427.39)
+
+
+def test_r2_misses_the_2026_10_20_bill_that_r3_fixes() -> None:
+    """The regression this file exists for: r2 priced the whole bill as winter and prorated 31/30."""
+    r2 = load_tariff(R2).itemize(3106, start=date(2026, 9, 18), end=date(2026, 10, 19))
+    assert r2.total_usd != 427.39
+    assert dict(r2.lines)["customer_charge_single_phase"] == 12.40
+
+
+def test_r3_normal_month_hourly_methods_do_not_prorate() -> None:
+    t = load_tariff(R3)
+    assert t.customer_charge_usd(31) == pytest.approx(12.00)
+    assert t.customer_charge_usd(37) == pytest.approx(14.80)
+    rate1, rate2 = 0.098332 * t.energy_multiplier, 0.125263 * t.energy_multiplier
+    assert t.marginal_usd_per_kwh(cycle_kwh=405.0, month=8, period_days=31) == pytest.approx(rate2)  # 400 block
+    assert t.marginal_usd_per_kwh(cycle_kwh=405.0, month=8, period_days=37) == pytest.approx(rate1)  # 493 block
+
+
+def test_dated_rider_rate_on_and_hourly_latest_rate() -> None:
+    rider = next(r for r in load_tariff(R3).riders if r.name == "schedule_92_deferral")
+    assert rider.rate_on(date(2026, 8, 1)) == (date(2026, 8, 10), 1.17)  # before the first: first rate
+    assert rider.rate_on(date(2026, 9, 24)) == (date(2026, 8, 10), 1.17)
+    assert rider.rate_on(date(2026, 9, 25)) == (date(2026, 9, 25), 1.78)
+    assert rider.pct == 1.78  # hourly multipliers use the latest rate (documented known gap)
+
+
+def test_r3_near_zero_kwh_across_a_season_change_does_not_overdraw() -> None:
+    """29/31 x 0.6 kWh rounds up to 1 whole kWh; the winter remainder must not go negative."""
+    est = load_tariff(R3).itemize(0.6, start=date(2026, 9, 1), end=date(2026, 10, 2))
+    assert est.energy_charge == pytest.approx(0.06, abs=0.01)

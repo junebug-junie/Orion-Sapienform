@@ -17,13 +17,29 @@ _OTHER_SERVICE_ROOTS = tuple(
 )
 
 
+def _is_hub_package(name: str) -> bool:
+    """True when ``sys.modules[name]`` is missing or is Hub's own package."""
+    module = sys.modules.get(name)
+    if module is None:
+        return True
+    hub_dir = (_HUB_ROOT / name).resolve()
+    # all(), not any(): Hub's `app` is a namespace package, so after another
+    # service's root was on sys.path its __path__ can hold both folders.
+    paths = list(getattr(module, "__path__", ()) or ())
+    return bool(paths) and all(Path(p).resolve() == hub_dir for p in paths)
+
+
 def _ensure_hub_paths() -> None:
-    # Drop cached imports so the corrected sys.path wins (repo-root `scripts/` namespace vs Hub package).
-    for key in list(sys.modules):
-        if key == "scripts" or key.startswith("scripts."):
-            del sys.modules[key]
-        if key == "app" or key.startswith("app."):
-            del sys.modules[key]
+    # Drop cached imports so the corrected sys.path wins (repo-root `scripts/` namespace,
+    # or another service's `app`, vs Hub's packages). Only when the wrong package is
+    # loaded: purging unconditionally made every test re-import Hub's whole app
+    # (scripts.main, ~2 s), which was most of this suite's CI time.
+    for pkg in ("scripts", "app"):
+        if _is_hub_package(pkg):
+            continue
+        for key in list(sys.modules):
+            if key == pkg or key.startswith(pkg + "."):
+                del sys.modules[key]
     # Remove stale entries so we can prepend Hub before cwd (`''`) and duplicate PYTHONPATH entries.
     for p in (str(_REPO_ROOT), str(_HUB_ROOT), *(str(p) for p in _OTHER_SERVICE_ROOTS)):
         try:
@@ -80,6 +96,21 @@ def _detach_control_plane_from_live_postgres() -> None:
     )
 
 
+# Hub's startup connects to ORION_BUS_URL, whose default is the live tailscale
+# bus. On circe that meant every TestClient(app) in this suite joined the LIVE
+# bus; on a GitHub runner the address goes nowhere, so each startup waited out
+# a ~30 s connect timeout (16 tests, ~8 of the job's ~10.5 min, measured
+# 2026-11-03). A closed local port refuses at once: startup takes the same
+# "bus unavailable" path CI always took, without the wait. Assignment, not
+# setdefault, so a shell or .env value cannot re-attach tests to the live bus.
+# Tests that need a bus install their own (monkeypatch / fakeredis).
+_TEST_BUS_URL = "redis://127.0.0.1:1/0"
+
+
+def _detach_from_live_bus() -> None:
+    os.environ["ORION_BUS_URL"] = _TEST_BUS_URL
+
+
 # Settings() has five fields with NO default (`Field(..., alias=...)`), so
 # constructing it raises unless these are in the environment. Any test that
 # reaches `scripts.chat_history` -> `app.settings.settings` therefore died at
@@ -106,6 +137,7 @@ def _supply_required_settings_env() -> None:
 
 def pytest_configure() -> None:
     _detach_control_plane_from_live_postgres()
+    _detach_from_live_bus()
     _supply_required_settings_env()
     _ensure_hub_paths()
 
@@ -135,10 +167,10 @@ def reading_dns(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_live_transport_threshold_state(monkeypatch):
-    """Unit tests must never read or write the live transport-threshold Redis
-    state. Tests that exercise it patch orion.field.transport_thresholds._client."""
-    monkeypatch.setenv("TRANSPORT_THRESHOLDS_DERIVED_ENABLED", "false")
+def _no_live_physiology_bid(monkeypatch):
+    """Unit tests must never POST a shadow bid to the live body economy (Patch C3b): the client
+    returns None without a call. Tests of the shadow seam stub scripts.physiology_shadow.abid."""
+    monkeypatch.setenv("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "false")
 
 
 @pytest.fixture
@@ -149,7 +181,7 @@ def pre_turn_appraisal_off(monkeypatch, request):
 
     The code default is True (aligned with .env_example and production
     2026-10-10). Every live Settings instance is patched, not just one:
-    ``_hub_service_isolation`` purges ``scripts.*``/``app.*`` per test, so a test
+    ``_hub_service_isolation`` can purge ``scripts.*``/``app.*`` between tests, so a test
     module's import-time ``api_routes.settings`` (a module no longer in
     sys.modules) and a call-time ``from scripts.settings import settings`` are
     different objects. So: every module in sys.modules, plus every module or

@@ -195,10 +195,10 @@ RETIRED_NODE_CHANNELS: dict[str, str | None] = {
     # stream_backlog_pressure was XLEN on two world_pulse streams (flat 0.0016
     # over 24,633 ticks). stream_backlog_health / delivery_confidence were the
     # bus observer's own PING, pinned at 1.0: a failed PING means the Redis it
-    # publishes to is down, so a 0.0 could never arrive. Mesh-wide transport
-    # health lives on capability:transport.pressure (node:substrate.bus_synaptic),
-    # catalog_drift_pressure and RPC health (observer_failure_pressure retired
-    # 2026-10-07).
+    # publishes to is down, so a 0.0 could never arrive. Transport health lives
+    # on catalog_drift_pressure and RPC health (capability:transport.
+    # reliability_pressure); observer_failure_pressure retired 2026-10-07 and
+    # capability:transport.pressure (node:substrate.bus_synaptic) 2026-11.
     "stream_backlog_pressure": None,
     "stream_backlog_health": None,
     "delivery_confidence": None,
@@ -286,8 +286,9 @@ RETIRED_PSEUDO_NODES: dict[str, str] = {
     # synaptic-successor-design.md). Still sitting in live node_vectors on
     # 2026-09-25 with prediction_error decayed to 0.0 -- retired in name,
     # still iterated by every generic node_vectors consumer.
-    # Successor: node:substrate.bus_synaptic.
-    "node:substrate.transport": "retired: successor node:substrate.bus_synaptic",
+    # Its 2026-07 successor, node:substrate.bus_synaptic, was itself retired
+    # 2026-11 (below); there is no live transport prediction-error node.
+    "node:substrate.transport": "retired 2026-07: world_pulse census, not bus traffic; no live successor",
     # Written by substrate-runtime's vision-channel artifact tick until
     # 2026-10-02, when the tick was killed. It pooled detect artifacts from
     # every camera, so one live camera hid every dead one: prediction_error was
@@ -295,6 +296,28 @@ RETIRED_PSEUDO_NODES: dict[str, str] = {
     # sent no frame at all. Successor: node:substrate.vision_organ (the frame
     # router's own per-stream report).
     "node:substrate.vision": "retired: successor node:substrate.vision_organ",
+    # PE suite rebuild step 5 (docs/superpowers/specs/2026-11-08-prediction-
+    # error-suite-rebuild-design.md). Producers killed in orion-substrate-
+    # runtime; kept in step with orion.substrate.prediction_error_freshness.
+    # RETIRED_PREDICTION_ERROR_NODE_IDS (tests/test_retired_pseudo_nodes.py
+    # asserts the two agree).
+    "node:substrate.bus_synaptic": (
+        "retired 2026-11 PE step 5: lull-ending detector, not a forecast; "
+        "successor = orion-prediction scored surprise"
+    ),
+    "node:substrate.route": "retired 2026-11 PE step 5: PE node removed, route reducer stays",
+    # PE suite rebuild step 6 (2026-11-13): chat_prediction_error deleted; the
+    # chat reducer stays. Same agreement with RETIRED_PREDICTION_ERROR_NODE_IDS.
+    "node:substrate.chat": (
+        "retired 2026-11-13 PE step 6: hint-change z, not a forecast; "
+        "successor = node:prediction.chat_turn"
+    ),
+    # 2026-11-13: codebase_prediction_error's node and field receipt removed
+    # (a churn z, not a forecast). Same agreement with
+    # RETIRED_PREDICTION_ERROR_NODE_IDS.
+    "node:substrate.codebase": (
+        "retired 2026-11-13 PE rebuild: git/PR/graph churn z, not a forecast; no successor"
+    ),
 }
 
 # Every node id reconcile drops wholesale (perturbation refusal covers only

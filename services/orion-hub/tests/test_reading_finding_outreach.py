@@ -53,6 +53,12 @@ PRIOR_TEXTS = {"world:nasa_outreach_is_spectacle": [{
            "the administrator himself flies a jet over an NFL game", "last_run_id": "e5eb9cfcf7ea"}]}
 
 
+# The read's own row: a world-pulse digest item, so the chain is the read alone.
+ORIGIN_ROWS = [{"leaf": SEED, "depth": 0, "seed_id": SEED, "kind": "digest_item", "url": URL,
+                "title": READ_ROW["title"], "requested_by": "world_pulse",
+                "invocation_context": "world_pulse", "why_now": "", "parent_request_id": None}]
+
+
 class _Conn:
     def __init__(self, state):
         self.s = state
@@ -60,6 +66,7 @@ class _Conn:
     async def fetch(self, sql, *args):
         from orion.world_pulse_read import findings as wf
         from orion.world_pulse_read import introspect
+        from orion.world_pulse_read import origin
 
         from scripts import reading_finding_outreach as rfo
 
@@ -71,6 +78,14 @@ class _Conn:
             return self.s["moves"]
         if sql == rfo.DECISIONS_SQL:
             return self.s["decisions"]
+        if sql == rfo.LAST_SENT_SQL:
+            self.s["last_sent_asked"].append(args[0])
+            return [_Rec({"last_sent": self.s.get("last_sent")})]
+        if sql == origin.ORIGIN_SQL:
+            self.s["origin_asked"].append(args[0])
+            if self.s.get("origin_fails"):
+                raise RuntimeError("statement timeout")
+            return [r for r in self.s["origin"] if r["leaf"] in args[0]]
         raise AssertionError(sql[:60])
 
 
@@ -97,7 +112,7 @@ class _Pool:
 
 
 def _setup(monkeypatch, *, links=None, moves=None, decisions=None, text="I read about NASA's flyover.",
-           **outreach_kw):
+           min_spacing_sec=0.0, last_sent=None, why=True, **outreach_kw):
     from scripts import endogenous_outreach as eo
     from scripts import endogenous_outreach_decisions as decisions_mod
     from scripts import reading_finding_outreach as rfo
@@ -108,8 +123,12 @@ def _setup(monkeypatch, *, links=None, moves=None, decisions=None, text="I read 
     composed: list[str] = []
     delivered: list[dict] = []
 
-    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None):
+    async def fake_generate(self, prompt, session_id, correlation_id, retrieval_query=None, lane="agent_first"):
         composed.append(prompt)
+        # Door policy (2026-11-10): a deliverable composition ends with the Why Juniper line
+        # (stripped before delivery). ``why=False`` leaves it off.
+        if why and text.strip() and text.strip() != "PASS":
+            return text + "\nWhy Juniper: it is what I read today.", {"fcc_model_label": "test"}
         return text, {"fcc_model_label": "test"}
 
     async def fake_deliver(self, **kw):
@@ -124,14 +143,16 @@ def _setup(monkeypatch, *, links=None, moves=None, decisions=None, text="I read 
     base.update(outreach_kw)
     outreach = eo.EndogenousOutreach(**base)
     state = {"reads": [READ_ROW], "links": [_link_row()] if links is None else links,
-             "moves": [] if moves is None else moves, "decisions": decisions or []}
+             "moves": [] if moves is None else moves, "decisions": decisions or [],
+             "origin": ORIGIN_ROWS, "origin_asked": [], "last_sent_asked": [],
+             "last_sent": last_sent}
 
     async def lookup(ids):
         return {i: PRIOR_TEXTS.get(i, []) for i in ids}
 
     loop = rfo.ReadingFindingOutreach(enabled=True, pool_provider=lambda: _Pool(state),
                                       outreach_provider=lambda: outreach, prior_lookup=lookup,
-                                      clock=lambda: NOW)
+                                      min_spacing_sec=min_spacing_sec, clock=lambda: NOW)
     return loop, outreach, state, rows, composed, delivered
 
 
@@ -142,7 +163,9 @@ def test_a_live_accepted_claim_and_a_moved_belief_become_one_message(monkeypatch
     assert len(composed) == 1 and len(delivered) == 1  # bundled: two changes, one message
     prompt = composed[0]
     assert "Per advisory M26-080" in prompt and LIVE_CLAIM["quote"] in prompt
-    assert "Belief moved (0.55 -> 0.70): NASA public outreach leans on spectacle" in prompt
+    # 2026-11-10 rewrite: the change in plain words, not the record line ("Belief moved (0.55 -> 0.70)").
+    assert "you hold it more firmly than before): NASA public outreach leans on spectacle" in prompt
+    assert "Belief moved (" not in prompt and "Link made:" not in prompt
     sent = [r for r in rows if r["reason"] == "sent"][0]
     assert sent["source"] == "reading_finding_outreach" and sent["seed_id"] == SEED
     assert sent["finding_ids"] == ["belief:world:nasa_outreach_is_spectacle@e5eb9cfcf7ea",
@@ -156,6 +179,25 @@ def test_a_live_accepted_claim_and_a_moved_belief_become_one_message(monkeypatch
     # Told once: the next tick (decision row now visible) sends nothing.
     loop2_summary = asyncio.run(loop.tick())
     assert loop2_summary["pending"] == 0 and len(delivered) == 1
+
+
+def test_a_message_without_why_juniper_is_not_sent_and_not_retried(monkeypatch):
+    """Door policy (2026-11-10): no ``Why Juniper:`` line -> not sent, recorded
+    ``no_why_juniper``, and the finding counts as decided (like PASS), so the next tick does not
+    compose it again."""
+    loop, _, _, rows, composed, delivered = _setup(monkeypatch, moves=[MOVE_ROW], why=False)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["no_why_juniper"]
+    assert delivered == [] and len(composed) == 1
+    assert [r["reason"] for r in rows] == ["no_why_juniper"]
+    assert asyncio.run(loop.tick())["pending"] == 0 and len(composed) == 1
+
+
+def test_sent_row_records_why_juniper(monkeypatch):
+    loop, _, _, rows, _, delivered = _setup(monkeypatch)
+    asyncio.run(loop.tick())
+    sent = [r for r in rows if r["reason"] == "sent"][0]
+    assert sent["why_juniper"] == "it is what I read today."
+    assert "Why Juniper" not in delivered[0]["text"]
 
 
 def test_no_message_when_nothing_changed(monkeypatch):
@@ -193,13 +235,24 @@ def test_recent_chat_and_turn_in_flight_still_block(monkeypatch):
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["turn_in_flight"]
 
 
-def test_no_daily_cap_and_no_cooldown_for_this_kind(monkeypatch):
-    loop, outreach, _, _, _, delivered = _setup(monkeypatch, daily_cap=0, min_cooldown_sec=86400.0)
+def test_no_cooldown_for_this_kind_but_it_counts_on_the_one_daily_cap(monkeypatch):
+    """One attention budget (2026-11-10): no cooldown for readings, but every send counts on the daily
+    cap, and a full cap holds the finding (it stays pending)."""
+    loop, outreach, _, _, _, delivered = _setup(monkeypatch, daily_cap=6, min_cooldown_sec=86400.0)
     import time
 
     outreach._last_outreach_at = time.time()
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
-    assert len(delivered) == 1 and outreach._sent_today == 0  # does not consume the background cap
+    assert len(delivered) == 1 and outreach._sent_today == 1  # counts on the one daily cap
+
+
+def test_a_full_daily_cap_holds_the_reading(monkeypatch):
+    loop, outreach, _, _, _, delivered = _setup(monkeypatch, daily_cap=6)
+    outreach._gate_inputs()                      # settle today's counter day first
+    outreach._sent_today = 6
+    outreach._sent_today_recovered = True
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["daily_cap"]
+    assert delivered == []
 
 
 def test_a_later_finding_of_a_told_read_is_a_new_bundle_with_only_the_new_change(monkeypatch):
@@ -222,11 +275,15 @@ def test_pass_is_final_and_empty_generation_gives_up_after_max_attempts(monkeypa
     assert asyncio.run(loop.tick())["pending"] == 0 and len(composed) == 3
 
 
-def test_count_sent_on_excludes_reading_findings():
+def test_count_sent_on_counts_reading_findings_with_every_door():
+    """One attention budget: the only exempt sources are the shared constant (the strain report)."""
     from scripts import endogenous_outreach_decisions as d
+    from orion.physiology.attention_pacing import CAP_EXEMPT_SOURCES
     import inspect
 
-    assert "'reading_finding_outreach'" in inspect.getsource(d.count_sent_on)
+    src = inspect.getsource(d.count_sent_on)
+    assert "CAP_EXEMPT_SOURCES" in src and "'reading_finding_outreach'" not in src and "NOT forced" in src
+    assert "reading_finding_outreach" not in CAP_EXEMPT_SOURCES
 
 
 def test_the_recorded_article_summary_is_delivered_under_orions_words(monkeypatch):
@@ -249,6 +306,10 @@ def test_rate_gate_skip_keeps_every_gate_that_protects_juniper():
     base = dict(enabled=True, turn_in_flight=False, local_hour=12, quiet_start_hour=-1, quiet_end_hour=-1,
                 seconds_since_last_outreach=10.0, min_cooldown_sec=3600.0, sent_today=9, daily_cap=4)
     assert outreach_block_reason(OutreachGateInputs(**base)) == "daily_cap"
+    # One attention budget (2026-11-10): neither skip flag skips the daily cap.
+    assert outreach_block_reason(OutreachGateInputs(**base), skip_rate_gates=True) == "daily_cap"
+    assert outreach_block_reason(OutreachGateInputs(**base), skip_schedule_gates=True) == "daily_cap"
+    base = {**base, "sent_today": 0}
     assert outreach_block_reason(OutreachGateInputs(**base), skip_rate_gates=True) is None
     assert outreach_block_reason(OutreachGateInputs(**{**base, "rest_drive_cooldown_sec": 9e9}),
                                  skip_rate_gates=True) is None
@@ -287,3 +348,162 @@ def test_a_restart_does_not_resend_a_told_read(monkeypatch):
     told = [{"reason": "sent", "finding_ids": json.dumps(["link:assertion-f29721db-52ae-5017-8b26-107fceafbd0d"])}]
     loop, _, _, _, composed, delivered = _setup(monkeypatch, decisions=told)  # fresh process, empty memory
     assert asyncio.run(loop.tick())["pending"] == 0 and composed == [] and delivered == []
+
+
+def test_the_prompt_says_how_the_read_started_from_the_queue_record(monkeypatch):
+    # Live 2026-10-26: the old prompt asserted "Nobody asked you to read it" and Orion wrote
+    # "not because a process scheduled it" about a read the daily digest had started.
+    loop, _, state, _, composed, _ = _setup(monkeypatch)
+    asyncio.run(loop.tick())
+    prompt = composed[0]
+    assert f"1. Your daily world-pulse news run put {URL} in your reading queue. This is the read below." in prompt
+    assert "Nobody asked" not in prompt and "it changed you" not in prompt
+    assert state["origin_asked"] == [[SEED]]  # looked up only for reads with a message to send
+
+
+def test_no_origin_lookup_when_nothing_to_send(monkeypatch):
+    loop, _, state, _, composed, _ = _setup(monkeypatch, links=[])
+    asyncio.run(loop.tick())
+    assert composed == [] and state["origin_asked"] == []
+
+
+def test_a_failed_origin_lookup_still_sends_the_message(monkeypatch):
+    loop, _, state, _, composed, delivered = _setup(monkeypatch)
+    state["origin_fails"] = True
+    summary = asyncio.run(loop.tick())
+    assert [r["reason"] for r in summary["results"]] == ["sent"] and len(delivered) == 1
+    assert "How this read started was not recorded." in composed[0]
+
+
+# Live 2026-10-28 15:08:09Z: Orion reasoned, ended on a PASS line, and the reasoning plus the
+# article summary reached Juniper as a chat message. 35 of 49 reading "sends" in 30 days had this
+# shape (the replies ended on a PASS line).
+LIVE_REASONED_PASS = (
+    "Let me assess whether this single graph link warrants a proactive message to Juniper.\n\n"
+    "The change to the graph is one link -- a conceptual refinement of how I think about evolution "
+    "strategies. It doesn't affect any running system, no prior needs testing, no action item emerges.\n\n"
+    "This is the kind of quiet internal reframe that happens constantly in the curiosity feed -- useful "
+    "for coherence, not worth interrupting Juniper for.\n\nPASS"
+)
+
+
+def test_a_reasoned_pass_is_told_as_passed_and_never_delivered(monkeypatch):
+    loop, _, _, rows, _, delivered = _setup(monkeypatch, text=LIVE_REASONED_PASS)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["orion_passed"]
+    assert delivered == []
+    passed = [r for r in rows if r["reason"] == "orion_passed"][0]
+    assert passed["pass_shape"] == "after_reasoning"
+    assert asyncio.run(loop.tick())["pending"] == 0  # told: never composed again
+
+
+def _two_reads(state):
+    other_seed = SEED + ":b"
+    state["reads"] = [READ_ROW, {**READ_ROW, "seed_id": other_seed, "url": URL + "b"}]
+    state["links"] = [_link_row(), {**_link_row(), "seed_id": other_seed, "claim": json.dumps(
+        {**LIVE_CLAIM, "receipt": {**LIVE_CLAIM["receipt"], "assertion_id": "assertion-second"}})}]
+    state["origin"] = ORIGIN_ROWS + [{**ORIGIN_ROWS[0], "leaf": other_seed, "seed_id": other_seed}]
+
+
+def test_a_morning_pile_goes_out_one_at_a_time(monkeypatch):
+    # Live 2026-10-28: findings held through quiet hours all went out between 14:11 and 15:08 UTC.
+    loop, _, state, rows, composed, delivered = _setup(monkeypatch, min_spacing_sec=5400.0)
+    _two_reads(state)
+    summary = asyncio.run(loop.tick())
+    assert [r["reason"] for r in summary["results"]] == ["sent", "reading_spacing"]
+    assert len(composed) == 1 and len(delivered) == 1  # the second is not even composed
+    held = [r for r in rows if r["reason"] == "reading_spacing"]
+    assert len(held) == 1 and held[0]["spacing_wait_sec"] == 5400.0
+    # Still held next tick, recorded once, and still pending (not dropped).
+    summary = asyncio.run(loop.tick())
+    assert summary["pending"] == 1 and [r["reason"] for r in summary["results"]] == ["reading_spacing"]
+    assert len([r for r in rows if r["reason"] == "reading_spacing"]) == 1
+    # The gap passes: the held read goes out.
+    loop._clock = lambda: NOW + timedelta(seconds=5401)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
+    assert len(delivered) == 2
+
+
+def test_a_pass_does_not_start_the_wait(monkeypatch):
+    loop, _, state, rows, composed, delivered = _setup(monkeypatch, min_spacing_sec=5400.0, text="PASS")
+    _two_reads(state)
+    summary = asyncio.run(loop.tick())
+    assert [r["reason"] for r in summary["results"]] == ["orion_passed", "orion_passed"]
+    assert len(composed) == 2 and delivered == []
+
+
+def test_the_gap_survives_a_restart(monkeypatch):
+    # Fresh process, empty memory; the decision log says a reading message went out 10 min ago.
+    loop, _, state, _, composed, delivered = _setup(
+        monkeypatch, min_spacing_sec=5400.0, last_sent=NOW - timedelta(minutes=10))
+    summary = asyncio.run(loop.tick())
+    assert [r["reason"] for r in summary["results"]] == ["reading_spacing"]
+    assert composed == [] and delivered == []
+    assert state["last_sent_asked"] == [NOW - timedelta(seconds=5400)]
+
+
+def test_zero_spacing_turns_the_wait_off_and_skips_the_query(monkeypatch):
+    loop, _, state, _, _, delivered = _setup(monkeypatch, min_spacing_sec=0.0)
+    _two_reads(state)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent", "sent"]
+    assert len(delivered) == 2 and state["last_sent_asked"] == []
+
+
+def test_the_last_sent_query_counts_only_reading_sends():
+    from scripts import reading_finding_outreach as rfo
+
+    sql = " ".join(rfo.LAST_SENT_SQL.split())
+    assert "reason = 'sent'" in sql and "result_json->>'source' = 'reading_finding_outreach'" in sql
+
+
+def _economy(monkeypatch, answers):
+    """Body economy Patch D: stub the binding bid. ``answers``: outcome/reason/net per bid (last repeats)."""
+    from orion.schemas.physiology_want import WantDecisionV1
+
+    import scripts.outreach_bind as ob
+    from scripts.settings import settings
+
+    monkeypatch.setattr(settings, "ORION_PHYSIOLOGY_BID_HUB_OUTREACH", "on", raising=False)
+    wants = []
+
+    async def abid(want, timeout_sec):
+        wants.append(want)
+        outcome, reason, net = answers[0] if len(answers) == 1 else answers.pop(0)
+        now = datetime.now(timezone.utc)
+        return WantDecisionV1(decision_id=f"{want.want_id}@{now.isoformat()}", want_id=want.want_id,
+                              family=want.family, producer=want.producer, verb=want.verb, tier=want.tier,
+                              decided_at=now, outcome=outcome, reason=reason, net=net, retry_after_sec=600.0,
+                              want=want, why=f"hub.outreach: {reason}")
+
+    async def arelease(want_id):
+        return 1
+
+    monkeypatch.setattr(ob, "_abid", abid)
+    monkeypatch.setattr(ob, "_arelease", arelease)
+    return wants
+
+
+def test_economy_price_hold_keeps_the_finding_pending_then_it_is_told(monkeypatch):
+    wants = _economy(monkeypatch, [("deferred", "price", -0.1), ("funded", "net_positive", 0.3)])
+    loop, outreach, _, rows, composed, delivered = _setup(monkeypatch)
+    for _ in range(3):
+        assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["economy_held"]
+    assert composed == [] and delivered == []
+    assert len(wants) == 1                       # held: no re-bid before the market's relief time
+    assert wants[0].cost is None                 # cap-counted: the family's fixed cost, 1 message
+    held = [r for r in rows if r["reason"] == "economy_held"]
+    assert len(held) == 1 and held[0]["economy"]["verdict"] == "deferred:price"
+    assert held[0]["economy"]["why"] == "hub.outreach: price" and held[0]["source"] == "reading_finding_outreach"
+    # The relief time passes: it bids again, is funded, and the finding is told.
+    for w in outreach._binder.wants.values():
+        w.retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
+    sent = [r for r in rows if r["reason"] == "sent"][0]
+    assert sent["economy"]["verdict"] == "funded" and sent["economy"]["holds"] == 1
+    assert len({w.want_id for w in wants}) == 1 and outreach._binder.wants == {}
+
+
+def test_economy_capacity_deferral_tells_now(monkeypatch):
+    _economy(monkeypatch, [("deferred", "capacity_reserved", 0.3)])
+    loop, _, _, rows, _, delivered = _setup(monkeypatch)
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1
+    assert [r for r in rows if r["reason"] == "sent"][0]["economy"]["verdict"] == "queued_at_pool"

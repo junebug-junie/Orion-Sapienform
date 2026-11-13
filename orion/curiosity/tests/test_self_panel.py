@@ -137,8 +137,7 @@ def test_history_query_is_bounded(monkeypatch) -> None:
 
 def test_evidence_refs_json_string_is_tolerated() -> None:
     """A raw-SQL read can hand back a generic JSON column as a string rather
-    than a deserialized list -- same tolerance as
-    self_atlas_cluster_history._coerce_evidence_refs, kept local here."""
+    than a deserialized list."""
     conn = _FakeConn(history=[_row(1, '["x", "y"]')])
     view = asyncio.run(read_self_panel(_FakePool(conn)))
     assert view.current.evidence_refs == ["x", "y"]

@@ -12,7 +12,22 @@ from orion.gpu_pool.scheduler import (
 )
 
 T0 = datetime(2026, 9, 24, 12, 0, tzinfo=timezone.utc)
-CFG = load_pool_config()
+def _legacy_two_worker_fixture():
+    """Retain the scheduler's generic two-resident cases after GPU3 consolidation."""
+    cfg = load_pool_config()
+    roles = dict(cfg.roles)
+    roles["metacog"] = roles["fast"].model_copy(update={"owner": ["metacog", "fast"], "port": 8012})
+    roles["fast"] = roles["fast"].model_copy(update={"owner": ["metacog", "fast"]})
+    classes = dict(cfg.classes)
+    classes["metacog"] = classes["metacog"].model_copy(
+        update={"roles": ["metacog", *classes["metacog"].roles]})
+    classes["fast"] = classes["fast"].model_copy(
+        update={"roles": ["fast", "metacog", *classes["fast"].roles[1:]]})
+    classes["operator_metacog"] = classes["operator_metacog"].model_copy(update={"roles": ["metacog"]})
+    return cfg.model_copy(update={"roles": roles, "classes": classes})
+
+
+CFG = _legacy_two_worker_fixture()
 
 
 def cold(cfg, seat="agent-gpu2"):

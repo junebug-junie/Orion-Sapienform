@@ -41,11 +41,15 @@ from orion.substrate.prediction_error_magnitude import (  # noqa: E402
 )
 
 # Domains that won the broadcast in the 7 days before 2026-10-02 (spec, live evidence).
+# harness_closure removed 2026-11-11: its producer was retired, so it has no history.
+# bus_synaptic and route removed 2026-11 (PE suite rebuild step 5); chat and
+# codebase 2026-11-13 (no history after retirement). cabinet stays: an alarm,
+# not a prediction error, but attention still judges it from this history.
 EXPECTED_NODES = tuple(
     f"node:substrate.{d}"
     for d in (
-        "execution", "chat", "bus_synaptic", "biometrics", "route",
-        "harness_closure", "perception", "codebase", "cabinet",
+        "execution", "biometrics",
+        "perception", "cabinet",
     )
 )
 MAX_TREND_SHARE = 0.90

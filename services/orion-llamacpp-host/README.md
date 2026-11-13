@@ -9,34 +9,41 @@ It exists to keep GGUF serving deterministic:
 - `config/llm_profiles.yaml` is the source of truth for model path / download spec / llama.cpp runtime knobs / GPU hints
 - `.env` should mostly contain **selection and safe overrides**, not model definitions
 
-**"Atlas" here is a naming convention, not live hardware.** The compose services, env var prefixes (`ATLAS_CHAT_*`, `ATLAS_METACOG_*`, etc.), and container names below all say "atlas" because that's the physical node this layout was originally built for. Atlas (an HP ProLiant DL380 Gen10) was decommissioned 2026-08-21 -- its disks were pulled and replaced with Athena's, and its GPUs moved into Circe (see `config/biometrics/node_catalog.yaml` and the root `README.md`'s Hardware Placement section). Every worker described below now runs on **Circe**, not a physical box named Atlas. Nothing in this doc's routes/commands is stale as *config* -- the route table (`orion-llm-gateway`) already points at Circe -- but if you're standing up new hardware from scratch, provision Circe, not a separate "Atlas" machine.
+**"Atlas" here is a naming convention, not live hardware.** The compose services, env var prefixes (`ATLAS_CHAT_*`, `ATLAS_FAST_*`, etc.), and container names below all say "atlas" because that's the physical node this layout was originally built for. Atlas (an HP ProLiant DL380 Gen10) was decommissioned 2026-08-21 -- its disks were pulled and replaced with Athena's, and its GPUs moved into Circe (see `config/biometrics/node_catalog.yaml` and the root `README.md`'s Hardware Placement section). Every worker described below now runs on **Circe**, not a physical box named Atlas. For the current GPU3 layout, use the consolidation runbook below; the dated history in this file describes earlier layouts.
 
-If you are standing up these llama.cpp workers for the current `chat` / `agent` (merged physical lane), `metacog`, and `quick` (Hub-facing) layout, start with the quickstart below and then use the repo-root [`postflight.md`](../../postflight.md) as the shareable operator runbook.
+For the current `chat` / `agent` layout and shared `quick` / `metacog` GPU3 worker, start with the quickstart below.
 
 ---
 
 ## TL;DR for Circe operators (compose/env names still say "Atlas")
 
-For the default merged gateway route layout, Circe should run **3 always-on `orion-llamacpp-host` containers** plus an optional split-agent worker (serving 4 logical routes in merged mode):
+Circe runs one GPU3 llama.cpp worker for both `quick` and `metacog` routes. Chat and agent use their own Strata workers; a split-agent llama.cpp worker is optional.
 
 | Route | Compose service | Worker `SERVICE_NAME` | Host port | Profile source | GPU binding env |
 | --- | --- | --- | --- | --- | --- |
 | `chat` | `atlas-chat` | `atlas-worker-1` | `8011` | `ATLAS_CHAT_PROFILE_NAME` | `ATLAS_CHAT_CUDA_VISIBLE_DEVICES` |
 | `agent` (logical) | routes to `chat` backend by default | `atlas-worker-1` | `8011` | same as chat | same as chat |
-| `metacog` | `atlas-metacog` | `atlas-worker-2` | `8012` | `ATLAS_METACOG_PROFILE_NAME` | `ATLAS_METACOG_CUDA_VISIBLE_DEVICES` |
-| `quick` (Hub-visible) | `atlas-fast` | `atlas-worker-fast-1` | `8013` | `ATLAS_FAST_PROFILE_NAME` | `ATLAS_FAST_CUDA_VISIBLE_DEVICES` |
+| `quick` and `metacog` | `atlas-fast` | `atlas-worker-fast-1` | `8013` | `ATLAS_FAST_PROFILE_NAME` | `ATLAS_FAST_CUDA_VISIBLE_DEVICES` |
 | `agent` (optional split mode) | `atlas-agent` | `atlas-worker-agent-1` | `8015` | `ATLAS_AGENT_PROFILE_NAME` | `ATLAS_AGENT_CUDA_VISIBLE_DEVICES` |
 
-`quick` is a distinct **logical gateway route** that uses the dedicated FAST physical lane (`atlas-fast`).
+`quick` and `metacog` remain distinct gateway classes and priorities, sharing `atlas-fast`'s ten slots.
 
 Use:
 
 - `services/orion-llamacpp-host/docker-compose.atlas-workers.yml`
 - `services/orion-llamacpp-host/.env_example`
 - `config/llm_profiles.yaml`
-- `../../postflight.md`
+- `../../docs/operations/qwen35-gpu3-consolidation.md`
 
 Key rule: each worker must keep a unique **service identity**, **published port**, **`LLM_PROFILE_NAME`**, and **GPU visibility binding**.
+
+The shared Circe worker profile is
+`qwen35-9b-udq5kxl-v100-32gb-circe-shared-32k`. It provides ten 32k slots.
+Fast and metacog requests default to thinking off; callers
+can send `options.chat_template_kwargs.enable_thinking=true` or `false` through
+the gateway. See [the consolidation runbook](../../docs/operations/qwen35-gpu3-consolidation.md)
+for deployment and live acceptance checks. The [initial fast-lane trial](../../docs/operations/qwen35-fast-lane-trial.md)
+records the earlier four-slot baseline.
 
 ---
 
@@ -67,14 +74,9 @@ ATLAS_CHAT_PROFILE_NAME=llama3-8b-instruct-q4km-athena-p4
 ATLAS_CHAT_CUDA_VISIBLE_DEVICES=0
 ATLAS_CHAT_HOST_PORT=8011
 
-ATLAS_METACOG_SERVICE_NAME=atlas-worker-2
-ATLAS_METACOG_PROFILE_NAME=
-ATLAS_METACOG_CUDA_VISIBLE_DEVICES=
-ATLAS_METACOG_HOST_PORT=8012
-
 ATLAS_FAST_SERVICE_NAME=atlas-worker-fast-1
-ATLAS_FAST_PROFILE_NAME=
-ATLAS_FAST_CUDA_VISIBLE_DEVICES=
+ATLAS_FAST_PROFILE_NAME=qwen35-9b-udq5kxl-v100-32gb-circe-shared-32k
+ATLAS_FAST_CUDA_VISIBLE_DEVICES=3
 ATLAS_FAST_HOST_PORT=8013
 
 ATLAS_AGENT_SERVICE_NAME=atlas-worker-agent-1
@@ -88,9 +90,9 @@ ATLAS_AGENT_HOST_PORT=8015
 Notes:
 
 - `ATLAS_CHAT_PROFILE_NAME` is intentionally operator-supplied; keep it pointed at the current Atlas chat profile.
-- `ATLAS_METACOG_PROFILE_NAME`, `ATLAS_FAST_PROFILE_NAME`, and `ATLAS_AGENT_PROFILE_NAME` are intentionally operator-supplied.
+- `ATLAS_AGENT_PROFILE_NAME` is intentionally operator-supplied. `ATLAS_FAST_PROFILE_NAME` selects the shared Qwen3.5 profile.
 - FAST (`ATLAS_FAST_*`) is shared by full-chat first pass and user-facing quick mode.
-- Do **not** let the default workers collide on host ports (`8011/8012/8013`).
+- Do **not** let the default workers collide on host ports (`8011/8013`).
 - Optional `atlas-agent` split mode is behind compose profile `agent-split`.
 
 ### 4. Ensure the Docker network exists
@@ -102,17 +104,14 @@ docker network create app-net >/dev/null 2>&1 || true
 ### 5. Launch the Atlas workers
 
 ```bash
-  docker compose \
-  --env-file services/orion-llamacpp-host/.env.atlas \
-  -f services/orion-llamacpp-host/docker-compose.atlas-workers.yml \
-  up -d --build atlas-chat atlas-metacog atlas-fast
+scripts/safe_docker_build.sh orion-llamacpp-host \
+  --compose-file docker-compose.atlas-workers.yml up -d --build atlas-chat atlas-fast
 ```
 
 ### 6. Verify each worker directly
 
 ```bash
 curl http://localhost:${ATLAS_CHAT_HOST_PORT}/health
-curl http://localhost:${ATLAS_METACOG_HOST_PORT}/health
 curl http://localhost:${ATLAS_FAST_HOST_PORT}/health
 ```
 
@@ -171,7 +170,7 @@ When working on this service, these are the main files that matter:
 - `config/llm_profiles.yaml` — model/profile registry
 - `services/orion-llamacpp-host/.env_example` — selection + override contract, plus Atlas `ATLAS_*` examples
 - `services/orion-llamacpp-host/docker-compose.yml` — single-worker compose
-- `services/orion-llamacpp-host/docker-compose.atlas-workers.yml` — Atlas merged-mode workers (`chat`, `metacog`, `fast`) where logical `quick` and chat pass-1 share the FAST physical lane, plus optional `agent-split` profile
+- `services/orion-llamacpp-host/docker-compose.atlas-workers.yml` — Circe workers, including the shared `quick` / `metacog` GPU3 worker and optional `agent-split` profile
 - `services/orion-llamacpp-host/app/settings.py` — env contract actually parsed by the wrapper
 - `services/orion-llamacpp-host/app/main.py` — model resolution, GPU binding, and llama-server launch logic
 - `../../postflight.md` — operator-facing Atlas runbook
@@ -294,7 +293,7 @@ Use `services/orion-llamacpp-host/docker-compose.atlas-workers.yml` for the curr
 
 Important characteristics of this compose file:
 
-- one compose service per active lane (`atlas-chat`, `atlas-metacog`, `atlas-fast`) plus optional `atlas-agent` split profile
+- one compose service per physical lane (`atlas-chat`, `atlas-fast`) plus optional `atlas-agent` split profile
 - one active profile per container
 - one published host port per container
 - one explicit GPU binding per container
@@ -319,6 +318,99 @@ curl -fsS http://100.87.202.68:8021/health
 
 `HECATE_AGENT_DEEP_HOST_PORT` must equal the pool role's port: discovery reports `mismatch` otherwise.
 The first boot downloads the 27B GGUF into `LLM_CACHE_DIR`.
+
+## Chat lane on Strata (circe gpu0, 2026-10-30)
+
+The `chat` role runs [Strata](https://github.com/Niko1221/Strata) serving Qwen3.8-Flash-Next IQ3_S on one V100,
+not llama.cpp. Bench: `docs/bench/2026-10-30-strata-hecate/` (PR #3015; hard set 20/20, 94 tok/s average output
+at 128K on hecate's single V100). 256K on circe is not benched yet.
+
+- `atlas-chat` is the Strata engine (`ghcr.io/niko1221/strata:0.2.7-cuda12`, `strata launch --no-api-key`), port 8011,
+  pinned to the CPUs of gpu0's socket. Model data: `ATLAS_CHAT_STRATA_DATA_DIR` (NVMe).
+- `atlas-chat-announce` is this image with a `backend: strata` profile: it heartbeats and announces, and launches nothing.
+- `config/gpu_pool.yaml` gives `chat` `backend: strata`. The pool confirms it through Strata's `/props` (same shape as
+  llama.cpp's). The gateway sends OpenAI/Anthropic calls but never llama.cpp's `/apply-template` + `/completion`.
+- One request at a time (`--parallel 1`) with a 262,144-token window, up from 65,536 on the llama.cpp lane.
+  The FCC harness (`HARNESS_FCC_MAX_CONTEXT_TOKENS`) moves with it.
+
+Env (`services/orion-llamacpp-host/.env` on circe): `ATLAS_CHAT_STRATA_PROFILE_NAME` names the strata profile the
+announcer uses (it refuses any other backend, `LLM_REQUIRE_BACKEND=strata`). `ATLAS_CHAT_PROFILE_NAME` keeps naming
+the llama.cpp profile, now used only by the rollback service.
+
+First start, from the clean primary `main` checkout on circe. Copy the model files into
+`$ATLAS_CHAT_STRATA_DATA_DIR` first, and merge the defaults into the run config before the server first answers, so no
+request is served with Strata's own defaults (thinking on). If there is no run config yet, start once, merge, restart.
+
+```bash
+set -a; . services/orion-llamacpp-host/.env; set +a
+docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v "$ATLAS_CHAT_STRATA_DATA_DIR:/data" \
+  -v "$PWD/services/orion-llamacpp-host:/svc:ro" "$ATLAS_CHAT_STRATA_IMAGE" \
+  /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/chat-defaults.json
+docker stop orion-circe-atlas-llamacpp-chat
+scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml up -d atlas-chat atlas-chat-announce
+```
+
+The merge puts the old lane's defaults into Strata's run config: thinking off unless a request asks, temperature 0.48,
+presence penalty 1.10. Setup keeps these keys on later starts. Check: `curl -s localhost:8011/props | jq .model_path`
+and the pool's `chat` role `confirmed`. The engine's container stays up only while `strata launch --status` reads
+ready (its compose wrapper); `docker stop` stops the server cleanly.
+
+Structured output: Strata checks JSON after generating it (no grammar), and takes only `json_object` or OpenAI's named
+`json_schema`. The gateway rewrites every schema shape to the named one for this lane (`response_format_for_backend`).
+
+Rollback to llama.cpp (same port and role): stop `atlas-chat` and `atlas-chat-announce`, then
+`scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile chat-llamacpp up -d atlas-chat-llamacpp`,
+and set `chat` back to `backend: llamacpp` in `config/gpu_pool.yaml` for the pool and gateway.
+
+### Agent lane on Strata (circe gpu1, 2026-10-31)
+
+The `agent` role (gpu1; also `memory_distill`) runs the same engine and model as the chat lane, at **131,072**
+tokens like `agent-gpu2`, so a curiosity run recalled on one lane can resume on the other. Thinking stays on at
+high effort, with the 27B lane's sampling (`strata/agent-defaults.json`).
+
+- Compose: `atlas-agent` (engine, profile `agent-split` as before) and `atlas-agent-announce`; both lanes share the
+  `x-strata-engine` / `x-strata-announce` blocks and differ by preset, context, CPUs, data folder, port and card.
+- CPUs: the other socket (`ATLAS_AGENT_STRATA_CPUS=18-35,54-71`), so the two engines do not compete.
+- Data: its own `ATLAS_AGENT_STRATA_DATA_DIR` for config, state and run config, plus the chat lane's model files
+  mounted at `/data/Strata-data`. Strata writes nothing there at run time, so the two engines share the ~28 GB of
+  mapped model pages; each holds ~57 GB of its own (circe 2026-10-31: ~118 GB available before this lane).
+- `ATLAS_AGENT_PROFILE_NAME` keeps naming the llama.cpp 27B profile (rollback, and the gpu2 burst worker's fallback).
+
+First start (clean primary `main` on circe), seeding the run config from the chat lane's so it never serves with
+Strata's defaults. `--context 131072` matters: Strata compares the config's `--max-context` with the launch's
+`--context` and runs setup again when they differ, which downloads llama.cpp and touches the shared model folder.
+
+```bash
+set -a; . services/orion-llamacpp-host/.env; set +a
+docker run --rm -v "$ATLAS_CHAT_STRATA_DATA_DIR:/src:ro" -v "$ATLAS_AGENT_STRATA_DATA_DIR:/dst" alpine \
+  sh -c 'mkdir -p /dst/install && cp /src/install/strata-iq3_s.json /dst/install/'
+docker run --rm --entrypoint /opt/strata/terminal/python/bin/python3 -v "$ATLAS_AGENT_STRATA_DATA_DIR:/data" \
+  -v "$PWD/services/orion-llamacpp-host:/svc:ro" "$ATLAS_CHAT_STRATA_IMAGE" \
+  /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/agent-defaults.json --context 131072
+# the announcer image bakes in config/llm_profiles.yaml: rebuild it when a profile was added
+scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-split build atlas-agent-announce
+docker stop orion-circe-atlas-llamacpp-agent
+scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-split up -d atlas-agent atlas-agent-announce
+```
+
+Rollback: stop `atlas-agent` and `atlas-agent-announce`, then
+`scripts/safe_docker_build.sh orion-llamacpp-host --compose-file docker-compose.atlas-workers.yml --profile agent-llamacpp up -d atlas-agent-llamacpp`,
+and drop `backend: strata` from `agent` in `config/gpu_pool.yaml`.
+
+### VRAM reserve (both Strata lanes, 2026-10-31)
+
+Strata's setup writes `--vram-reserve-mib 700` into the run config. On circe that left only 300-500 MiB of VRAM free
+on each V100, and the engine warned at each such request (under 512 MiB the driver can page VRAM to system RAM and
+decode falls to a few tok/s). Each launch now passes `--set vram-reserve-mib=$STRATA_VRAM_RESERVE_MIB`
+(`ATLAS_CHAT_STRATA_VRAM_RESERVE_MIB` / `ATLAS_AGENT_STRATA_VRAM_RESERVE_MIB`, default 1200). `strata launch` puts
+it over the run config's args for that launch only, so the installed run config and setup are not touched.
+Editing `--vram-reserve-mib` in the run config therefore has no effect; change the env key and recreate.
+
+The reserve comes out of the expert cache (`expert cache auto: ... MiB reserved` in the engine log): 500 MiB more
+is about 2% of the ~23 GiB cache. Context does not change: the KV cells kept in VRAM are fixed by `--kv-resident`, and
+Strata's setup-rerun check (`desc_matches`) compares only context, KV format and pictures. A changed reserve needs a
+container recreate (`up -d`), not a plain restart. Check: `strata serve: N MiB of VRAM free with everything loaded`
+in `state/strata/launch/<preset>.engine.log` should read about 1000.
 
 ## agent-gpu2 on Ternary-Bonsai (GPU pool stage 7.2)
 
@@ -388,7 +480,7 @@ Typical host-facing URL:
 http://<host-ip>:<host-port>
 ```
 
-For Atlas multi-worker bring-up, the relevant host ports are normally `8011`, `8012`, and `8015`.
+For Atlas multi-worker bring-up, the relevant host ports are normally `8011`, `8013`, and `8015`.
 
 ---
 
@@ -545,7 +637,7 @@ watch -n 1 nvidia-smi
 - treat `config/llm_profiles.yaml` as the authoritative model registry
 - switch workers by changing `LLM_PROFILE_NAME`, not by rewriting runtime flags
 - keep Atlas isolation explicit with route -> URL mapping, unique worker identity, unique host port, and unique GPU binding
-- use `../../postflight.md` when handing the procedure to another operator or another GPT session
+- use `../../docs/operations/qwen35-gpu3-consolidation.md` for the current GPU3 worker
 
 ---
 
@@ -553,7 +645,7 @@ watch -n 1 nvidia-smi
 
 `services/orion-llamacpp-host/Dockerfile` pins the base to:
 
-- `ghcr.io/ggml-org/llama.cpp:server-cuda-b8740` by default (override with `LLAMACPP_IMAGE_TAG` at build time)
+- `ghcr.io/ggml-org/llama.cpp:server-cuda-b8740` as the Dockerfile fallback; the current `.env_example` selects `server-cuda-b10398` for Qwen3.5
 
 Why this pin:
 

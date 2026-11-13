@@ -1,0 +1,13 @@
+# Who is usually in front of each camera, as prior probabilities (2026-11-04).
+# Read by orion-sql-writer's person model (app/vision_person_model.py, attribute):
+# on a camera listed here, when no album match is confident (no "accept"), the
+# guess is the most likely person on this camera, not the highest raw score. A
+# confident match still wins. The rest of the probability (1 - sum) is "someone
+# else". Names must match album labels (the names Juniper gave).
+#
+# The office camera (cam0): Juniper is almost always the one there. Other
+# household members' names are personal: they go in camera_priors.local.yaml
+# (gitignored, read first; orion.person_model.person.local_first).
+streams:
+  cam0:
+    Juniper: 0.97

@@ -212,6 +212,28 @@ def test_lost_worker_ack_is_unknown_not_a_definite_rejection(tmp_path):
             assert ws.receive_json()=={'unknown':'worker_unavailable','seq':1,'epoch':1,'port':0}
 
 
+def test_resume_contract_validates_and_forwards_conditional_pause_reason(tmp_path):
+    cfg = settings(tmp_path)
+    calls = []
+    class Manager:
+        session = {'session_id': 'a'*36, 'owner': 'operator'}
+        def require(self, sid): pass
+        async def command(self, op, **kwargs): calls.append((op, kwargs)); return {'state': 'running'}
+        async def stop(self, **kwargs): pass
+    app = create_app(cfg)
+    with TestClient(app) as c:
+        app.state.manager = Manager()
+        path = '/sessions/'+'a'*36+'/resume'
+        headers = {'Authorization': 'Bearer '+'a'*48}
+        assert c.post(path, json={'expected_pause_reason': 'disconnect'}, headers=headers).status_code == 200
+        assert calls[-1] == ('resume', {'data': {'expected_pause_reason': 'disconnect'}})
+        assert c.post(path, json={}, headers=headers).status_code == 200
+        assert calls[-1] == ('resume', {'data': {}})
+        for body in ({'expected_pause_reason': 'pause'}, {'unknown': True}, {'expected_pause_reason': 1}):
+            assert c.post(path, json=body, headers=headers).status_code == 422
+        assert len(calls) == 2
+
+
 def test_hub_credential_cannot_access_operator_session(tmp_path):
     from dataclasses import replace
     cfg=settings(tmp_path);hub=tmp_path/'hub.token';hub.write_text('b'*48)

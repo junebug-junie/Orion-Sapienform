@@ -16,6 +16,8 @@ SQL_DB = Path(__file__).resolve().parents[3] / "services/orion-sql-db"
 MIGRATION = SQL_DB / "manual_migration_gpu_pool_v1.sql"
 MIGRATION_V2 = SQL_DB / "manual_migration_gpu_pool_v2_holds.sql"   # stage 4.3
 MIGRATION_V3 = SQL_DB / "manual_migration_gpu_pool_v3_actuation_pause.sql"   # stage 5.7
+MIGRATION_V4 = SQL_DB / "manual_migration_gpu_pool_v4_value_order.sql"   # attention patch 3b
+V4_LEASE_COLUMNS = [("gpu_pool_leases", "want_id"), ("gpu_pool_leases", "want_net"), ("gpu_pool_leases", "want_family")]
 
 
 async def _apply(conn, path: Path) -> None:
@@ -45,6 +47,7 @@ async def _pool():
         await _apply(conn, MIGRATION)
         await _apply(conn, MIGRATION_V2)
         await _apply(conn, MIGRATION_V3)
+        await _apply(conn, MIGRATION_V4)
         await conn.execute("RESET lock_timeout")
         await AsyncPostgresSaver(conn).setup()          # durable-runs' tables, in public
     await ensure_checkpoint_schema(URI)
@@ -286,7 +289,7 @@ def test_v2_and_v3_migrations_are_additive_idempotent_and_seen_by_check_schema()
             await conn.execute("INSERT INTO gpu_pool_cards (card, swapped_in) VALUES ('gpu2', '{agent-gpu2}')")
         pool = await _v1_only_pool()
         try:
-            assert len(await PostgresStore(pool).check_schema()) == 9      # all of v2 + v3
+            assert len(await PostgresStore(pool).check_schema()) == 12     # all of v2 + v3 + v4
         finally:
             await pool.close()
         async with await psycopg.AsyncConnection.connect(URI, autocommit=True, row_factory=dict_row) as conn:
@@ -300,9 +303,9 @@ def test_v2_and_v3_migrations_are_additive_idempotent_and_seen_by_check_schema()
                                             "'gpu_pool_leases_hold_idx'::regclass")).fetchone()
             assert idx["indisvalid"]
         pool = await _v1_only_pool()
-        try:                                                       # stage 5.7: v3 still owed
-            assert await PostgresStore(pool).check_schema() == [
-                ("gpu_pool_cards", "actuation_paused_at"), ("gpu_pool_cards", "actuation_paused_by")]
+        try:                                                       # stage 5.7: v3 (and 3b's v4) still owed
+            assert sorted(await PostgresStore(pool).check_schema()) == sorted([
+                ("gpu_pool_cards", "actuation_paused_at"), ("gpu_pool_cards", "actuation_paused_by")] + V4_LEASE_COLUMNS)
         finally:
             await pool.close()
         async with await psycopg.AsyncConnection.connect(URI, autocommit=True, row_factory=dict_row) as conn:
@@ -311,6 +314,16 @@ def test_v2_and_v3_migrations_are_additive_idempotent_and_seen_by_check_schema()
             card = await (await conn.execute("SELECT * FROM gpu_pool_cards WHERE card='gpu2'")).fetchone()
             assert card["swapped_in"] == ["agent-gpu2"] and card["actuation_paused_at"] is None \
                 and card["actuation_paused_by"] is None           # additive: not paused by the migration
+        pool = await _v1_only_pool()
+        try:                                                       # attention 3b: v4 still owed
+            assert sorted(await PostgresStore(pool).check_schema()) == sorted(V4_LEASE_COLUMNS)
+        finally:
+            await pool.close()
+        async with await psycopg.AsyncConnection.connect(URI, autocommit=True, row_factory=dict_row) as conn:
+            await _apply(conn, MIGRATION_V4)
+            await _apply(conn, MIGRATION_V4)                      # idempotent
+            row = await (await conn.execute("SELECT * FROM gpu_pool_leases WHERE lease_id='old'")).fetchone()
+            assert row["status"] == "granted" and row["want_net"] is None   # additive: no bid on old rows
         pool = await _v1_only_pool()
         try:
             assert await PostgresStore(pool).check_schema() == []

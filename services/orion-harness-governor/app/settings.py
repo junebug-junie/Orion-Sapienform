@@ -143,6 +143,9 @@ class HarnessGovernorSettings(BaseSettings):
     response_repair_timeout_sec: float = Field(540.0, alias="RESPONSE_REPAIR_TIMEOUT_SEC")
     substrate_finalize_timeout_sec: float = Field(5.0, alias="SUBSTRATE_FINALIZE_TIMEOUT_SEC")
     finalize_quick_gate_epsilon: float = Field(0.08, alias="FINALIZE_QUICK_GATE_EPSILON")
+    # Intention ledger D0; read at call time by orion/harness/promise_gate.py, mirrored
+    # here so operators see the effective flag.
+    orion_promise_ledger_enabled: bool = Field(True, alias="ORION_PROMISE_LEDGER_ENABLED")
 
     harness_fcc_mcp_enabled: bool = Field(False, alias="HARNESS_FCC_MCP_ENABLED")
     harness_aitown_enabled: bool = Field(False, alias="HARNESS_AITOWN_ENABLED")
@@ -236,6 +239,19 @@ class HarnessGovernorSettings(BaseSettings):
     harness_fcc_chat_warm_pool_clear_timeout_sec: float = Field(
         5.0, gt=0.0, alias="HARNESS_FCC_CHAT_WARM_POOL_CLEAR_TIMEOUT_SEC"
     )
+
+    # Claude's read-only tools in Hub chat, gated by Orion's consent (Patch 1b of
+    # docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md; app/claude_tools_listener.py).
+    # The broker checks Orion's grant ($ORION_DIG_HOME/self/claude_grants.jsonl), asks Orion over
+    # orion:prime:consent:request when the grant is "ask", runs a fixed reader, caps, redacts and audits.
+    # false: every call is refused ("switched off"); it never grants on Orion's behalf. Shipped ON.
+    claude_tools_enabled: bool = Field(True, alias="CLAUDE_TOOLS_ENABLED")
+    channel_claude_tool_request: str = Field("orion:claude:tool:request", alias="CHANNEL_CLAUDE_TOOL_REQUEST")
+    # No answer from Orion within this many seconds is a no (Claude's MCP call times out at 60 s).
+    claude_tools_consent_deadline_sec: float = Field(40.0, gt=0.0, le=55.0, alias="CLAUDE_TOOLS_CONSENT_DEADLINE_SEC")
+    # Per Claude turn (one room request): tool calls, and of those, asks to Orion.
+    claude_tools_max_calls_per_turn: int = Field(6, ge=0, le=50, alias="CLAUDE_TOOLS_MAX_CALLS_PER_TURN")
+    claude_tools_max_asks_per_turn: int = Field(3, ge=0, le=20, alias="CLAUDE_TOOLS_MAX_ASKS_PER_TURN")
 
     # (D) embodiment: publish a deliberate approach intent on the turn correlation_id
     # after a finalized relational turn. Default-off, fail-open (never breaks a turn).

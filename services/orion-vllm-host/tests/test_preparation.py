@@ -28,11 +28,26 @@ def test_smoke_rejects_empty_reasoning_only_or_wrong_model(monkeypatch):
     def reply(*args, **kwargs):
         return {'model':'glm-5.3-flash','choices':[{'message':{'content':None,'reasoning_content':'still thinking'}}]}
     monkeypatch.setitem(evaluate.__globals__, 'chat', reply)
-    assert not any(x['passed'] for x in evaluate('http://unused', 'agent-deep', 'glm-5.3-flash'))
+    assert not any(x['passed'] for x in evaluate(object(), 'glm-5.3-flash'))
     def wrong(*args, **kwargs):
         return {'model':'wrong-model','choices':[{'message':{'content':'391'}}]}
     monkeypatch.setitem(evaluate.__globals__, 'chat', wrong)
-    assert not any(x['passed'] for x in evaluate('http://unused', 'agent-deep', 'glm-5.3-flash'))
+    assert not any(x['passed'] for x in evaluate(object(), 'glm-5.3-flash'))
+
+
+def test_smoke_calls_only_through_an_operator_lane_and_stops_on_recall():
+    """Leased evals (2026-11-12): no server URL; a recall propagates instead of counting a failure."""
+    import pytest
+    from orion.evals.leased_llm import LaneRecalled
+    src = (SERVICE/'evals/smoke_glm.py').read_text()
+    assert 'urllib' not in src and '--url' not in src
+    evaluate = runpy.run_path(str(SERVICE/'evals/smoke_glm.py'))['evaluate']
+
+    class Lane:
+        def chat(self, body, timeout_sec=None):
+            raise LaneRecalled('seat taken')
+    with pytest.raises(LaneRecalled):
+        evaluate(Lane(), 'glm-5.3-flash')
 
 
 def test_single_card_candidate_preserves_other_roles_and_routing():

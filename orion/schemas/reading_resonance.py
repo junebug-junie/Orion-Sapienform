@@ -16,7 +16,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from orion.schemas.reading import ReadingRequestedV1
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 ResonanceRefKind = Literal[
     "self_prior",
@@ -80,6 +82,7 @@ class ResonancePacketV1(_Base):
     read_summary: str = ""  # Stage 2 summary
     read_learned: str = ""  # Stage 1 what_i_learned: what the article itself says
     read_text_sha256: list[str] = Field(default_factory=list)
+    landed_concept_ids: list[str] = Field(default_factory=list, max_length=16)
     candidates: list[ResonanceCandidateV1] = Field(default_factory=list, max_length=24)
     built_at: datetime
 
@@ -122,3 +125,44 @@ class ReadingResonanceCheckV1(_Base):
     accepted: bool
     decision: Literal["share", "note", "none"]
     reasons: list[ResonanceRejectReason] = Field(default_factory=list)
+
+
+READING_RESONANCE_WORKFLOW = "reading.resonance"
+
+
+class ReadingResonanceRunBriefV1(_Base):
+    """Frozen evidence, retained quote sources and limits for one background judgment."""
+
+    packet: ResonancePacketV1
+    reading_request: ReadingRequestedV1 | None = None
+    retained_texts: list[tuple[str, str]] = Field(default_factory=list)
+    retrieval_basis: dict = Field(default_factory=dict)  # frozen mean/hub correction, never shown to judge
+    llm_route: str = Field(default="agent", min_length=1)
+    max_tokens: int = Field(default=900, ge=256, le=4096)
+    timeout_sec: float = Field(default=180, gt=0, le=600)
+
+
+class ReadingResonanceResultV1(_Base):
+    """Receipt for every judgment, including rejected and intentional none outcomes."""
+
+    resonance_id: str
+    seed_id: str
+    run_id: str
+    packet: ResonancePacketV1
+    judgment: ReadingResonanceJudgmentV1 | None
+    check: ReadingResonanceCheckV1
+    raw: str
+    model: str | None = None
+    lane: str
+    latency_ms: int = Field(ge=0)
+    completed_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def consistent_receipt(self):
+        if self.resonance_id != self.packet.packet_id or self.check.packet_id != self.resonance_id:
+            raise ValueError("resonance packet identity mismatch")
+        if self.seed_id != self.packet.seed_id:
+            raise ValueError("resonance seed identity mismatch")
+        if self.check.accepted and (self.judgment is None or self.check.decision != self.judgment.decision):
+            raise ValueError("accepted judgment missing or decision mismatch")
+        return self

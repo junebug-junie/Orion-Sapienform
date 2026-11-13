@@ -565,8 +565,8 @@ class TestTheParentTraceRowIsPrunedToo:
         # RELATIVE order, not "last in the tuple". The first version of this asserted
         # order[-1] == "grammar_traces", which is a different and weaker claim that happened
         # to hold when grammar_traces was the newest entry. It broke the moment an unrelated
-        # table (substrate_proposal_frames, different engine, no ordering relationship with
-        # the grammar lane at all) was appended -- a false failure that says nothing about
+        # table (substrate_proposal_frames, since retired; different engine, no ordering
+        # relationship with the grammar lane at all) was appended -- a false failure that says nothing about
         # the invariant this test exists to protect.
         for child in ("grammar_events", "grammar_atoms", "grammar_edges"):
             assert order.index(child) < order.index("grammar_traces"), child
@@ -688,213 +688,42 @@ class TestTheParentTraceRowIsPrunedToo:
         assert "concurrently" in sql, "a blocking index build on a live 143 MB table"
 
 
-class TestSubstrateProposalFramesIsBounded:
-    """substrate_proposal_frames had no retention at all until 2026-08-20.
-
-    Live at that point: 474,230 rows / 1,758 MB, oldest 2026-07-23, growing ~27k rows and
-    ~105 MB a day with nothing to stop it.
+class TestTheRetiredProposalChainIsNotPruned:
+    """substrate_proposal_frames was pruned here from 2026-08-20, floored on the proposal->policy and
+    policy->dispatch pending markers. Those rungs retired 2026-11-07 (ladder retirement PR 6) and the
+    tables are dropped by the follow-up migration. A probe against a dropped table raises, and the
+    floor would then refuse to prune forever; a probe on a marker nothing clears pins it forever.
     """
 
-    def test_it_is_in_the_retention_cycle(self):
+    def test_it_is_not_in_the_retention_cycle(self):
         tables = [name for name, _ in grammar_truth.GRAMMAR_RETENTION_TABLES]
-        assert "substrate_proposal_frames" in tables
+        assert "substrate_proposal_frames" not in tables
+        assert "substrate_proposal_frames" not in grammar_truth._EXTRA_RETENTION_TABLES
 
-    def test_it_is_floored_on_the_pipeline_markers_not_the_grammar_cursor(self, monkeypatch):
-        """The two floors are not interchangeable and must not be swapped by accident.
-
-        The grammar cursor floor probes substrate_reduction_cursor and grammar_events, which
-        say nothing at all about whether a substrate pipeline stage still owes work on a
-        proposal row. Wiring the wrong one here would report "nothing owed" and delete a live
-        backlog.
-        """
-        seen = {}
-
-        def capture(**kw):
-            seen.update(kw)
-            return GrammarRetentionState()
-
-        monkeypatch.setattr(grammar_truth, "_apply_bounded_table_retention", capture)
-        grammar_truth.apply_substrate_proposal_frames_retention(7)
-        assert seen.get("table") == "substrate_proposal_frames"
-        assert seen.get("id_column") == "frame_id"
-        assert seen.get("floor_resolver") is grammar_truth._substrate_chain_floor
-        assert seen.get("respect_cursor_floor", False) is False
-
-    def test_it_uses_the_plain_engine_not_the_grammar_engine(self, monkeypatch):
-        """Substrate data lives on the default engine; the grammar engine is a separate lane
-        with its own 10s statement timeout."""
-        seen = {}
-
-        def capture(**kw):
-            seen.update(kw)
-            return GrammarRetentionState()
-
-        monkeypatch.setattr(grammar_truth, "_apply_bounded_table_retention", capture)
-        grammar_truth.apply_substrate_proposal_frames_retention(7)
-        assert seen.get("engine") is grammar_truth.default_engine
-        assert seen.get("engine") is not grammar_truth.grammar_engine
-
-    def test_the_loop_actually_passes_a_window_for_it(self):
+    def test_the_loop_passes_no_window_and_settings_have_no_key(self):
         from app import grammar_retention_loop
 
-        days = grammar_retention_loop.retention_days_for(get_settings())
-        assert days.get("substrate_proposal_frames", 0) > 0, days
+        assert "substrate_proposal_frames" not in grammar_retention_loop.retention_days_for(get_settings())
+        assert "substrate_proposal_frames_retention_days" not in Settings.model_fields
 
-    def test_it_has_a_real_settings_window(self):
-        assert "substrate_proposal_frames_retention_days" in Settings.model_fields
+    def test_no_chain_floor_or_retired_marker_probe_remains(self):
+        assert not hasattr(grammar_truth, "_substrate_chain_floor")
+        assert not hasattr(grammar_truth, "_SUBSTRATE_CHAIN_PENDING")
+        assert not hasattr(grammar_truth, "apply_substrate_proposal_frames_retention")
+        import inspect
 
-
-class TestTheSubstrateChainFloor:
-    """The floor asks the pipeline's pending markers, not the clock.
-
-    manual_migration_substrate_pending_markers.sql records that a time-bounded version of
-    this idea was tried and REVERTED, because the dispatch->feedback hop legitimately ran
-    p50 34.6 hours and max 11.3 days behind. Retention must not put that bound back.
-    """
-
-    @staticmethod
-    def _probes():
-        seen = []
-
-        class _Conn:
-            def execute(self, stmt, *a, **kw):
-                seen.append(" ".join(str(stmt).split()))
-                return SimpleNamespace(scalar=lambda: None)
-
-        grammar_truth._substrate_chain_floor(_Conn(), datetime.now(timezone.utc))
-        assert seen, "floor made no probes at all"
-        return seen
-
-    def test_it_covers_every_stage_that_can_reach_back_into_the_table(self):
-        stages = {name for name, _ in grammar_truth._SUBSTRATE_CHAIN_PENDING}
-        assert stages == {"proposal->policy", "policy->dispatch", "dispatch->feedback"}
-        sql = " ".join(self._probes())
-        for table in (
-            "substrate_proposal_frames",
-            "substrate_policy_decision_frames",
-            "substrate_execution_dispatch_frames",
-        ):
-            assert table in sql, table
-
-    def test_every_probe_returns_a_proposal_timestamp_not_the_pending_rows_own(self):
-        """THE bug code review caught on the first version of this floor.
-
-        The delete removes substrate_proposal_frames rows by their own created_at. A pending
-        row in a DOWNSTREAM table is always NEWER than the proposal it needs -- it is a
-        child, written later -- so flooring at the child's timestamp leaves the parent below
-        the floor and deletable, which is backwards from the safety being claimed. Measured
-        live 2026-08-20 over 3 days: dispatch rows are created a mean 123.2s and max 920.2s
-        AFTER their parent proposal; 0 of 55,573 were created before it.
-
-        The two downstream probes must therefore JOIN back to substrate_proposal_frames
-        through source_proposal_frame_id and take MIN of the PARENT's created_at.
-        """
-        for stage, sql in grammar_truth._SUBSTRATE_CHAIN_PENDING:
-            flat = " ".join(sql.split())
-            if stage == "proposal->policy":
-                # The proposal row IS the parent here; no join needed.
-                assert "MIN(s.created_at)" in flat, flat
-                continue
-            assert "MIN(p.created_at)" in flat, stage
-            assert "JOIN substrate_proposal_frames p" in flat, stage
-            assert "p.frame_id = d.source_proposal_frame_id" in flat, stage
-
-    def test_it_probes_created_at_not_generated_at(self):
-        """Same clock as the delete predicate.
-
-        The delete keys on created_at. generated_at is when the stage produced the frame;
-        created_at is when the row was written. Measured live 2026-08-20 they diverge by up
-        to 724s, and 24 policy rows have created_at strictly BEFORE generated_at. A floor
-        read off one clock and compared to a cutoff on the other deletes rows it meant to
-        keep.
-        """
-        for sql in self._probes():
-            assert "MIN(" in sql and "created_at)" in sql, sql
-            assert "generated_at" not in sql, sql
-
-    def test_every_probe_fences_the_min_aggregate_with_offset_0(self):
-        """Without the fence this is a ~490ms near-full-table scan every 60 seconds.
-
-        Postgres rewrites a bare `SELECT MIN(created_at) ... WHERE dispatch_pending` into
-        `ORDER BY created_at LIMIT 1` over the FULL created_at index with the marker as a
-        filter. Pending rows are always the NEWEST rows, so the ascending scan discards the
-        entire table first -- measured live: 490 ms, 102,343 buffers, "Rows Removed by
-        Filter: 474,708". `OFFSET 0` is an optimisation fence that forces the tiny pending
-        set to be materialised through the partial index first. With it: 0.18/5.4/1.6 ms.
-
-        The cost of getting this wrong is invisible in the obvious place: it is HIGHEST when
-        the pipeline is caught up and falls as a backlog develops, so it would never look
-        like a backlog problem.
-        """
-        for sql in self._probes():
-            assert "OFFSET 0" in sql, sql
-
-    def test_the_oldest_pending_row_across_all_stages_wins(self):
-        oldest = datetime(2026, 8, 1, tzinfo=timezone.utc)
-        answers = [
-            datetime(2026, 8, 10, tzinfo=timezone.utc),
-            oldest,
-            datetime(2026, 8, 5, tzinfo=timezone.utc),
-        ]
-
-        class _Conn:
-            def __init__(self):
-                self.i = 0
-
-            def execute(self, stmt, *a, **kw):
-                value = answers[self.i]
-                self.i += 1
-                return SimpleNamespace(scalar=lambda: value)
-
-        floor, resolved = grammar_truth._substrate_chain_floor(
-            _Conn(), datetime.now(timezone.utc)
+        code = "\n".join(
+            line for line in inspect.getsource(grammar_truth).splitlines()
+            if not line.lstrip().startswith("#")
         )
-        assert resolved is True
-        assert floor == oldest
+        for marker in ("policy_pending", "dispatch_pending", "feedback_pending",
+                       "substrate_policy_decision_frames", "substrate_execution_dispatch_frames"):
+            assert marker not in code, marker
 
-    def test_all_stages_caught_up_imposes_no_floor(self):
-        """(None, True) means "nothing owed", which is NOT the same as "unknown"."""
 
-        class _Conn:
-            def execute(self, stmt, *a, **kw):
-                return SimpleNamespace(scalar=lambda: None)
-
-        floor, resolved = grammar_truth._substrate_chain_floor(
-            _Conn(), datetime.now(timezone.utc)
-        )
-        assert floor is None
-        assert resolved is True
-
-    def test_a_naive_timestamp_from_the_driver_is_treated_as_utc(self):
-        """A tz-naive datetime compared against a tz-aware cutoff raises TypeError at the
-        comparison, which would abort the whole retention run rather than floor it."""
-        naive = datetime(2026, 8, 1, 12, 0, 0)
-
-        class _Conn:
-            def execute(self, stmt, *a, **kw):
-                return SimpleNamespace(scalar=lambda: naive)
-
-        floor, resolved = grammar_truth._substrate_chain_floor(
-            _Conn(), datetime.now(timezone.utc)
-        )
-        assert resolved is True
-        assert floor is not None and floor.tzinfo is not None
-        assert floor < datetime.now(timezone.utc)  # the comparison the caller makes
-
-    def test_a_failed_probe_reports_unresolved_and_never_no_floor(self):
-        """The dangerous confusion is (None, False) collapsing into (None, True): "I could
-        not ask" must not read as "nothing is owed", or a database blip deletes the backlog.
-        """
-
-        class _Conn:
-            def execute(self, stmt, *a, **kw):
-                raise RuntimeError("connection reset")
-
-        floor, resolved = grammar_truth._substrate_chain_floor(
-            _Conn(), datetime.now(timezone.utc)
-        )
-        assert floor is None
-        assert resolved is False
+class TestTheGenericFloorResolver:
+    """The ``floor_resolver`` seam of _apply_bounded_table_retention outlived its first user (the
+    proposal chain floor). Its contract stays pinned for any future chained table."""
 
     def test_an_unresolved_floor_refuses_to_prune(self):
         """End to end through the real _apply_bounded_table_retention: an unresolved floor
@@ -921,7 +750,7 @@ class TestTheSubstrateChainFloor:
 
         state = grammar_truth._apply_bounded_table_retention(
             engine=_Engine(),
-            table="substrate_proposal_frames",
+            table="some_chained_table",
             id_column="frame_id",
             retention_days=7,
             batch_size=100,
@@ -960,7 +789,7 @@ class TestTheSubstrateChainFloor:
 
         state = grammar_truth._apply_bounded_table_retention(
             engine=_Engine(),
-            table="substrate_proposal_frames",
+            table="some_chained_table",
             id_column="frame_id",
             retention_days=7,
             batch_size=100,

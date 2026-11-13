@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""Host ALSA reader for Athena cabinet ambient audio levels.
+"""Host ALSA reader for Athena cabinet ambient audio levels + live listen.
 
-Captures short PCM windows via ``arecord``, computes RMS/peak over int16
-samples, and atomically writes ``/run/orion-audio/latest.json``. Failed
-captures never overwrite the last good levels on disk. No normalization,
-EWMA, pressures, or cognition — biometrics owns that downstream.
+Runs one long-lived ``arecord`` stream, cuts it into fixed PCM windows,
+computes RMS/peak over int16 samples, and atomically writes
+``/run/orion-audio/latest.json``. Failed captures never overwrite the last
+good levels on disk. No normalization, EWMA, pressures, or cognition —
+biometrics owns that downstream.
+
+Each window is also written to a small ring of slot files under
+``/run/orion-audio/live/`` (tmpfs, overwritten every few seconds, never
+persisted) so Hub can stream the cabinet mic to an operator's browser.
+Kill switch: ``ORION_AMBIENT_AUDIO_LIVE_ENABLED=0``.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import select
 import struct
 import subprocess
 import sys
@@ -18,9 +25,13 @@ import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Iterator, Literal, Optional
 
-from orion.schemas.telemetry.ambient_audio import AMBIENT_AUDIO_SCHEMA_V1
+from orion.schemas.telemetry.ambient_audio import (
+    AMBIENT_AUDIO_LIVE_RING_SLOTS,
+    AMBIENT_AUDIO_LIVE_SLOT_HEADER,
+    AMBIENT_AUDIO_SCHEMA_V1,
+)
 
 Status = Literal["ok", "stale", "error", "missing"]
 
@@ -31,6 +42,7 @@ DEFAULT_SAMPLE_RATE = 16000
 DEFAULT_CHANNELS = 1
 DEFAULT_STALE_AFTER_SEC = 10.0
 DEFAULT_LOOP_SEC = 1.0
+DEFAULT_LIVE_DIR = Path("/run/orion-audio/live")
 
 
 def datetime_to_iso(value: datetime) -> str:
@@ -94,6 +106,18 @@ def loop_interval_sec() -> float:
     return DEFAULT_LOOP_SEC
 
 
+def live_enabled() -> bool:
+    raw = os.environ.get("ORION_AMBIENT_AUDIO_LIVE_ENABLED", "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def live_dir() -> Path:
+    raw = os.environ.get("ORION_AMBIENT_AUDIO_LIVE_DIR", "").strip()
+    if raw:
+        return Path(raw)
+    return DEFAULT_LIVE_DIR
+
+
 def compute_levels_from_pcm(pcm: bytes) -> tuple[float, int]:
     """Compute RMS and peak from little-endian int16 PCM bytes."""
     peak = 0
@@ -133,6 +157,54 @@ def atomic_write_json(path: Path, data: dict[str, Any]) -> None:
         except OSError:
             pass
         raise
+
+
+def atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write bytes atomically (temp file + rename), mode ``0o644`` for Docker readers."""
+    fd, tmp_path = tempfile.mkstemp(prefix=".tmp-", suffix=".pcm", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.chmod(tmp_path, 0o644)
+        os.replace(tmp_path, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+class LiveRing:
+    """Fixed ring of PCM slot files Hub tails for live cabinet listening.
+
+    Layout is the host-local contract in ``orion/schemas/telemetry/ambient_audio.py``.
+    Readers find the newest slot by header seq; atomic replace means a reader
+    never sees a half-written chunk.
+    """
+
+    def __init__(self, directory: Path, *, slots: int = AMBIENT_AUDIO_LIVE_RING_SLOTS) -> None:
+        self.directory = directory
+        self.slots = slots
+        self.seq = 0
+        # seq restarts at 1 with this process, but the run dir survives
+        # restarts (RuntimeDirectoryPreserve): drop the previous run's slots so
+        # their higher seqs cannot shadow the new chunks.
+        for stale in directory.glob("slot-*.pcm"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+
+    def slot_path(self, seq: int) -> Path:
+        return self.directory / f"slot-{seq % self.slots:02d}.pcm"
+
+    def write(self, pcm: bytes, *, sample_rate: int, channels: int) -> int:
+        self.directory.mkdir(parents=True, exist_ok=True)
+        self.seq += 1
+        header = AMBIENT_AUDIO_LIVE_SLOT_HEADER.pack(self.seq, sample_rate, channels, 0)
+        atomic_write_bytes(self.slot_path(self.seq), header + pcm)
+        return self.seq
 
 
 def build_snapshot(
@@ -259,19 +331,33 @@ def write_snapshot_if_changed(
     write_snapshot(path, state, now)
 
 
-def capture_pcm_via_arecord(
+def stream_pcm_via_arecord(
     *,
     device: str,
     sample_rate: int,
     channels: int,
     duration_sec: float,
     arecord_bin: str = "arecord",
-) -> bytes:
-    """Capture raw S16_LE PCM from ALSA via arecord subprocess."""
-    samples = int(sample_rate * duration_sec)
-    if samples <= 0:
+    popen=subprocess.Popen,
+    wait_readable=None,
+) -> Iterator[bytes]:
+    """Yield fixed windows of raw S16_LE PCM from one continuous arecord stream.
+
+    Raises ``RuntimeError`` (with arecord's stderr) when the stream ends or no
+    audio arrives for 3 windows (hung device), so systemd-level retry happens.
+    stderr goes to a temp file: a long-lived arecord prints an overrun line per
+    xrun, and an undrained pipe would block it forever.
+    """
+    if wait_readable is None:
+        def wait_readable(stream, timeout):
+            return bool(select.select([stream], [], [], timeout)[0])
+    stall_sec = max(1.0, 3 * duration_sec)
+    frames = int(sample_rate * duration_sec)
+    if frames <= 0:
         raise ValueError("capture duration must produce at least one sample")
-    proc = subprocess.run(
+    chunk_bytes = frames * channels * 2
+    errlog = tempfile.TemporaryFile()
+    proc = popen(
         [
             arecord_bin,
             "-D",
@@ -284,20 +370,37 @@ def capture_pcm_via_arecord(
             str(channels),
             "-t",
             "raw",
-            "--samples",
-            str(samples),
             "-q",
             "-",
         ],
-        capture_output=True,
-        check=False,
+        stdout=subprocess.PIPE,
+        stderr=errlog,
     )
-    if proc.returncode != 0:
-        stderr = proc.stderr.decode("utf-8", errors="replace").strip()
-        raise RuntimeError(stderr or f"arecord exited {proc.returncode}")
-    if not proc.stdout:
-        raise RuntimeError("arecord returned no PCM data")
-    return proc.stdout
+
+    def fail(reason: str) -> RuntimeError:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()
+        errlog.seek(0)
+        tail = errlog.read()[-2000:].decode("utf-8", errors="replace").strip()
+        return RuntimeError(tail or f"{reason} (exit {proc.returncode})")
+
+    try:
+        while True:
+            chunk = b""
+            while len(chunk) < chunk_bytes:
+                if not wait_readable(proc.stdout, stall_sec):
+                    raise fail(f"arecord produced no audio for {stall_sec:.1f}s")
+                part = os.read(proc.stdout.fileno(), chunk_bytes - len(chunk))
+                if not part:
+                    raise fail("arecord stream ended")
+                chunk += part
+            yield chunk
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        errlog.close()
 
 
 def run_loop(
@@ -309,33 +412,46 @@ def run_loop(
     rate: int,
     channels: int,
     loop_sec: float = DEFAULT_LOOP_SEC,
+    live: Optional[LiveRing] = None,
     sleep_fn=time.sleep,
-    capture_fn=capture_pcm_via_arecord,
+    stream_fn=stream_pcm_via_arecord,
+    max_windows: Optional[int] = None,
 ) -> None:
-    while True:
-        received_at = utc_now_iso()
+    """Consume the PCM stream forever; ``loop_sec`` is the retry delay after a failure."""
+    windows = 0
+    while max_windows is None or windows < max_windows:
         try:
-            pcm = capture_fn(
+            for pcm in stream_fn(
                 device=device,
                 sample_rate=rate,
                 channels=channels,
                 duration_sec=window,
-            )
-            rms, peak = compute_levels_from_pcm(pcm)
-            state.ingest_good_capture(
-                rms=rms,
-                peak=peak,
-                device=device,
-                received_at=received_at,
-                window_sec=window,
-                sample_rate=rate,
-                channels=channels,
-            )
+            ):
+                rms, peak = compute_levels_from_pcm(pcm)
+                state.ingest_good_capture(
+                    rms=rms,
+                    peak=peak,
+                    device=device,
+                    received_at=utc_now_iso(),
+                    window_sec=window,
+                    sample_rate=rate,
+                    channels=channels,
+                )
+                write_snapshot_if_changed(output, state)
+                if live is not None:
+                    try:
+                        live.write(pcm, sample_rate=rate, channels=channels)
+                    except OSError:
+                        # Live listen is best-effort; levels must keep flowing.
+                        pass
+                windows += 1
+                if max_windows is not None and windows >= max_windows:
+                    return
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
             state.ingest_failed_capture(str(exc), device=device)
-
-        write_snapshot_if_changed(output, state)
-        sleep_fn(loop_sec)
+            write_snapshot_if_changed(output, state)
+            windows += 1
+            sleep_fn(loop_sec)
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -356,6 +472,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             rate=sample_rate(),
             channels=capture_channels(),
             loop_sec=loop_interval_sec(),
+            live=LiveRing(live_dir()) if live_enabled() else None,
         )
     except KeyboardInterrupt:
         return 0

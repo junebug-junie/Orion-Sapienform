@@ -71,6 +71,32 @@ def build_fault_request(card: str, state: str, view: dict[str, Any], *, source: 
                                 context=context, require_ack=require_ack)
 
 
+def build_perception_request(name: str, state: str, view: dict[str, Any], *, source: str) -> ChatAttentionRequest:
+    """Perception (vision-council) GPU load over its ceiling (runtime._check_perception_load). Perception is
+    never shed by heat (body-economy design A0), so its own load is the thing watched."""
+    if state == "high":
+        reason = (f"[GPU pool] Orion's sight used {view.get('held_sec_last_hour')} GPU slot-seconds in the last "
+                  f"hour (ceiling {view.get('ceiling_sec')})")
+        message = "\n".join([
+            "Perception leases (route metacog_perception: vision-council) are exempt from the heat shed.",
+            "Their last-hour GPU hold is above 2x their normal p90. Something may be calling the council in a loop,",
+            "or a new camera stream was added. Check: gpu_pool_events where priority='perception', by holder;",
+            "vision-council logs for [COUNCIL] transition reasons.",
+        ])
+        # warning, not error: the 3360 ceiling was measured while vision-council was being shed by heat
+        # (25,430 refusals in that week), so unshed load may run higher. A Hub card, no email, until the
+        # ceiling is re-baselined on a week of perception-priority data.
+        severity, require_ack = "warning", True
+    else:
+        reason = "[GPU pool] Orion's sight is back under its GPU ceiling"
+        message = f"Perception's last-hour GPU hold is {view.get('held_sec_last_hour')} s (ceiling {view.get('ceiling_sec')})."
+        severity, require_ack = "info", False
+    context = {"source_service": source, "event_kind": "orion.gpu_pool.perception_load.v1",
+               "event": f"perception_{state}", "reason": reason, **view}
+    return ChatAttentionRequest(source_service=source, reason=reason, severity=severity, message=message,
+                                context=context, require_ack=require_ack)
+
+
 def make_notify_alert(base_url: str, token: str | None, *, source: str, timeout: float = 10.0,
                       builder: Callable[..., ChatAttentionRequest] = build_request,
                       ) -> Callable[[str, str, dict[str, Any]], Awaitable[bool]]:

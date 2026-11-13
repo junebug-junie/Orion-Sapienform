@@ -117,6 +117,12 @@ def _latest(*values):
     return max((_aware(v) for v in values if v is not None), default=None)
 
 
+def _economy():
+    from app.physiology_bind import BINDER, bind_mode
+
+    return BINDER if bind_mode() == "on" else None
+
+
 def build_cycle_deps():
     """Real IO for the dream cycle. Tests build CycleDeps with fakes instead."""
     from app import cycle_store, llm, rem_store
@@ -150,14 +156,26 @@ def build_cycle_deps():
             bus = await _cycle_bus()
         except Exception:
             bus = None
+        from app.compaction_consent import ask_consent_and_apply
+        from app.rem_compaction import consolidate_evidence_ids
+
+        salience = await asyncio.to_thread(rem_store.load_thought_salience, consolidate_evidence_ids(requests))
         delta = await run_rem_compaction_once(
             bus,
             request_loader=lambda _n: requests,
             delta_persister=lambda d: staged.append(d) or True,
             dream_id=cycle_id,
+            salience_loader=lambda _ids: salience,
         )
         for d in staged:
-            await asyncio.to_thread(rem_store.persist_compaction_delta, d)
+            stored = await asyncio.to_thread(rem_store.persist_compaction_delta, d)
+            # Attention patch 3d: ask the consent gate only about a delta that is really stored (the
+            # want_ledger row names it), after the persist. On allow + apply on, the store downscales.
+            if stored and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED:
+                try:
+                    await ask_consent_and_apply(d)
+                except Exception as exc:  # noqa: BLE001 -- the ask is a trace; the sleep goes on
+                    logger.warning("rem compaction consent ask failed id=%s err=%s", d.delta_id, exc)
         return delta.delta_id if delta is not None else None
 
     async def _start_story(trigger):
@@ -203,6 +221,20 @@ def build_cycle_deps():
         # (e.g. durable-runs/cortex not ready for dream.carry yet).
         logger.warning("dream_carry_fallback_story trigger_id=%s err=%s", trigger.trigger_id, last_exc)
         await _start_story(trigger)
+
+    async def _publish_act(event):
+        # One dream cycle's act_opened/act_closed on orion:grammar:event (app/act_emit.py).
+        # Best effort; CycleActTrace logs a failure and the sleep carries on.
+        bus = await _cycle_bus()
+        if bus is None:
+            return
+        from app.act_emit import publish_grammar
+
+        try:
+            await publish_grammar(bus, event)
+        except Exception:
+            await _drop_cycle_bus()  # same as _complete: reconnect on the next use
+            raise
 
     async def _publish_drive_reading(reading):
         # Redis, read by Hub curiosity/outreach. TTL = their staleness bound,
@@ -294,6 +326,10 @@ def build_cycle_deps():
         load_arc_rows=cycle_store.load_arc_rows if settings.DREAM_REPLAY_ARC_CANDIDATES_ENABLED else None,
         load_walkway_rows=cycle_store.load_walkway_rows if settings.DREAM_REPLAY_WALKWAY_ENABLED else None,
         walkway_timezone=settings.DREAM_WALKWAY_TIMEZONE,
+        publish_act=_publish_act if settings.DREAM_ACT_EMIT_ENABLED else None,
+        # Body economy Patch D: the sleep obeys its bid (app/physiology_bind.py). One binder per process,
+        # shared by the loop and the manual endpoint. shadow -> None: the C3b shadow bid as before.
+        economy=_economy(),
     )
 
 
@@ -418,13 +454,22 @@ async def rem_preview_endpoint():
     if not settings.ORION_DREAM_REM_ENABLED:
         return {"status": "disabled", "reason": "ORION_DREAM_REM_ENABLED is false"}
 
-    from app.rem_compaction import run_rem_compaction_once
+    from app import rem_store
+    from app.rem_compaction import consolidate_evidence_ids, run_rem_compaction_once
 
+    # The DB reads run in threads, not on the event loop.
+    requests = await asyncio.to_thread(rem_store.load_pending_requests, settings.DREAM_REM_MAX_REQUESTS)
+    salience = await asyncio.to_thread(rem_store.load_thought_salience, consolidate_evidence_ids(requests))
     bus = OrionBusAsync(settings.ORION_BUS_URL) if settings.ORION_BUS_ENABLED else None
     try:
         if bus is not None:
             await bus.connect()
-        delta = await run_rem_compaction_once(bus)
+        from app.compaction_consent import ask_consent_and_apply
+
+        # A preview never writes memory: the consent is asked (and recorded) with no store.
+        delta = await run_rem_compaction_once(bus, request_loader=lambda _n: requests,
+                                              salience_loader=lambda _ids: salience,
+                                              consent_asker=lambda d: ask_consent_and_apply(d, preview=True))
     finally:
         if bus is not None:
             await bus.close()

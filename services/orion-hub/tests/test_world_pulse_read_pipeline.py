@@ -1273,6 +1273,32 @@ def test_stage1_prompt_tells_the_reader_to_fetch() -> None:
     assert "no successful fetch of this url is discarded" in prompt
 
 
+def test_stage1_stance_view_hides_the_reader_contract_only() -> None:
+    """The stance pass must not see the reader's JSON keys (live 2026-10-27/28: it wrote
+    them instead of its own); the reader still gets them, and the stance keeps the task."""
+    from orion.world_pulse_read.reader_contract import stance_view_of_reading_prompt
+    from scripts.world_pulse_read_pipeline import _build_document_stage1_prompt, _build_stage1_prompt
+
+    seed = _seed()
+    doc_seed = WorldPulseReadSeedV1(
+        seed_id="reading:doc", kind="reading", run_id="r1", url="file:///docs/spec.md"
+    )
+    for s, prompt in (
+        (seed, _build_stage1_prompt(seed, "tr-1")),
+        (doc_seed, _build_document_stage1_prompt(doc_seed, "tr-1", sha256="a" * 64, text="The document body.")),
+    ):
+        assert '"what_i_learned"' in prompt and "candidate_priors MUST" in prompt
+        view = stance_view_of_reading_prompt(prompt)
+        assert view is not None
+        for key in ("what_i_learned", "candidate_priors", "concept_candidates", "open_threads", "tr-1"):
+            assert key not in view, key
+        assert s.seed_id in view and "untrusted evidence" in view
+    assert "The document body." in stance_view_of_reading_prompt(
+        _build_document_stage1_prompt(doc_seed, "tr-1", sha256="a" * 64, text="The document body.")
+    )
+    assert "Fetch the url below with WebFetch" in stance_view_of_reading_prompt(_build_stage1_prompt(seed, "tr-1"))
+
+
 def test_model_cannot_supply_its_own_read_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     bus = _FakeBus()
     conn = _FakeConn()

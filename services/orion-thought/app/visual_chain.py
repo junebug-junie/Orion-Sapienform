@@ -61,6 +61,13 @@ quotes, confirmed by reading real bodies before writing any code.
 those four producers -- `source_kind='self_study'` also covers a sibling
 free-form "Curiosity" reflection confirmed live to quote sensitive personal
 content, which this allowlist deliberately excludes.
+2026-11-07 (ladder retirement PR 6): those four producers had one trigger,
+the retired dispatch rung, and stopped on 11-05. The seed now reads
+curiosity's self-inquiry answers (`self_concept_history`,
+`produced_by='curiosity_self_inquiry'`; see store.py's comment above
+`load_latest_self_study_reflection`). The allowlist is gone with its source:
+Juniper's standing rule (2026-10-07) is no privacy boundary between her and
+Orion.
 
 Patch 6 (design doc §17): a third context-seed, `memory_text` --
 `store.load_latest_memory_crystallization`, real shared-life content from
@@ -220,7 +227,7 @@ from orion.gpu_pool.client import LeaseUnavailable, PoolRpcTimeout
 from orion.reverie.visual_storage import StoredVisualArtifact, store_visual_artifact
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.gpu_pool import GpuLeaseRefV1
-from orion.autonomy.thermal_gate import ThermalVerdict, thermal_state
+from orion.autonomy.thermal_gate import DEFAULT_HOT_C, DEFAULT_HOT_REARM_C, ThermalVerdict, thermal_state
 from orion.schemas.reverie_visual import (
     ReverieVisualArtifactV1,
     ReverieVisualChainV1,
@@ -359,7 +366,7 @@ async def thermal_gate_snapshot() -> dict[str, Any]:
             verdict.reason,
         )
     return {"state": verdict.state, "temp_c": verdict.temp_c, "age_sec": verdict.age_sec,
-            "hot_c": settings.thermal_hot_c, "hot_rearm_c": settings.thermal_hot_rearm_c,
+            "hot_c": DEFAULT_HOT_C, "hot_rearm_c": DEFAULT_HOT_REARM_C,
             "reason": verdict.reason, "allows_gpu_work": verdict.allows_gpu_work,
             "degraded": verdict.degraded}
 
@@ -371,8 +378,8 @@ def _apply_thermal_reading(temp_c: float | None, age_sec: float | None) -> Therm
         temp_c=temp_c,
         age_sec=age_sec,
         previous_state=_thermal_state,  # type: ignore[arg-type]
-        hot_c=settings.thermal_hot_c,
-        hot_rearm_c=settings.thermal_hot_rearm_c,
+        hot_c=DEFAULT_HOT_C,  # the owner's line (thermal_gate.py); no local copy
+        hot_rearm_c=DEFAULT_HOT_REARM_C,
     )
     # `unknown` must not overwrite the last real state. Otherwise one failed
     # read drops the hysteresis, and the next good reading re-decides from

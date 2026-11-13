@@ -22,6 +22,7 @@ is the blocking DB write, called from a worker thread.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, Dict, List, Optional, Sequence
 
 from orion.schemas.vision import VisionCropObservationV1
@@ -151,23 +152,55 @@ def build_crop_rows(
             "embedding_model_id": crop.embedding_model_id if embedding is not None else None,
             "osnet_embedding": [float(v) for v in osnet_embedding] if osnet_embedding is not None else None,
             "osnet_model_id": crop.osnet_model_id if osnet_embedding is not None else None,
+            # The frame the detector saw (manual_migration_vision_motion_story_edges_v1.sql):
+            # the motion stories measure each box against its own camera's frame.
+            "frame_width": int(obs.frame_width) if obs.frame_width else None,
+            "frame_height": int(obs.frame_height) if obs.frame_height else None,
         })
     return rows
 
 
-_INSERT_SQL = """
+_INSERT_TMPL = """
     INSERT INTO vision_crop_observation
         (crop_id, observation_id, stream_id, camera_id, artifact_id, observed_at,
          label, score, box_xyxy, zone, embedding_ref, embedding, thumb_ref, zone_no_embed,
          face_embedding, face_score, face_thumb_ref,
-         embedding_model_id, osnet_embedding, osnet_model_id)
+         embedding_model_id, osnet_embedding, osnet_model_id{cols})
     VALUES
         (:crop_id, :observation_id, :stream_id, :camera_id, :artifact_id, :observed_at,
          :label, :score, :box_xyxy, :zone, :embedding_ref, :embedding, :thumb_ref, :zone_no_embed,
          :face_embedding, :face_score, :face_thumb_ref,
-         :embedding_model_id, :osnet_embedding, :osnet_model_id)
+         :embedding_model_id, :osnet_embedding, :osnet_model_id{vals})
     ON CONFLICT (crop_id) DO NOTHING
 """
+_INSERT_SQL = _INSERT_TMPL.format(cols=", frame_width, frame_height", vals=", :frame_width, :frame_height")
+# Before manual_migration_vision_motion_story_edges_v1.sql: the frame size is dropped.
+_INSERT_SQL_NO_FRAME = _INSERT_TMPL.format(cols="", vals="")
+
+# Whether vision_crop_observation has frame_width/frame_height. Present is
+# cached for the process; absent is re-checked every FRAME_COLUMNS_RECHECK_SEC,
+# so applying the migration takes effect without a restart.
+FRAME_COLUMNS_RECHECK_SEC = 300.0
+_frame_columns: Dict[str, Any] = {"present": None, "checked_at": 0.0}
+
+
+def _frame_columns_present(sess) -> bool:
+    from sqlalchemy import text
+
+    st = _frame_columns
+    if st["present"] is True:
+        return True
+    now = time.monotonic()
+    if st["present"] is False and now - st["checked_at"] < FRAME_COLUMNS_RECHECK_SEC:
+        return False
+    n = sess.execute(text(
+        "SELECT count(*) FROM information_schema.columns WHERE table_schema = current_schema() "
+        "AND table_name = 'vision_crop_observation' AND column_name IN ('frame_width', 'frame_height')")).scalar()
+    st["present"], st["checked_at"] = (int(n or 0) == 2), now
+    if not st["present"]:
+        logger.error("vision_crop_observation has no frame_width/frame_height -- apply services/orion-sql-db/"
+                     "manual_migration_vision_motion_story_edges_v1.sql; crops are written without frame size")
+    return bool(st["present"])
 
 
 def persist_crop_observation(payload: Dict[str, Any]) -> int:
@@ -183,7 +216,8 @@ def persist_crop_observation(payload: Dict[str, Any]) -> int:
         return 0
     sess = get_session()
     try:
-        sess.execute(text(_INSERT_SQL), rows)
+        sql = _INSERT_SQL if _frame_columns_present(sess) else _INSERT_SQL_NO_FRAME
+        sess.execute(text(sql), rows)
         sess.commit()
     except Exception:
         sess.rollback()

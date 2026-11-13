@@ -28,6 +28,26 @@ from app.models import ChatBody
 from app.settings import settings
 
 
+def _read_full_request(conn: socket.socket) -> None:
+    buf = b""
+    while b"\r\n\r\n" not in buf:
+        chunk = conn.recv(65536)
+        if not chunk:
+            return
+        buf += chunk
+    head, _, body = buf.partition(b"\r\n\r\n")
+    length = 0
+    for line in head.split(b"\r\n")[1:]:
+        name, _, value = line.partition(b":")
+        if name.strip().lower() == b"content-length":
+            length = int(value.strip())
+    while len(body) < length:
+        chunk = conn.recv(65536)
+        if not chunk:
+            return
+        body += chunk
+
+
 class _Upstream:
     """Accepts connections and reads the request. ``hang_up=False``: never answers (the gateway has
     to cancel). ``hang_up=True``: closes the connection without a response (a genuine worker-side
@@ -56,7 +76,9 @@ class _Upstream:
     def _handle(self, conn: socket.socket) -> None:
         try:
             if self.hang_up:
-                conn.recv(65536)
+                # Read the whole request first: closing with unread bytes sends RST, and the
+                # client then sees ReadError instead of a clean hang-up (flaked in CI on #3034).
+                _read_full_request(conn)
                 conn.close()
                 return
             while conn.recv(65536):

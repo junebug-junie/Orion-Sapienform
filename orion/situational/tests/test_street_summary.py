@@ -8,6 +8,10 @@ rides on every room-percept path.
 
 from __future__ import annotations
 
+import os
+
+import pytest
+
 import asyncio
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -53,7 +57,14 @@ def test_names_only_from_labels_otherwise_unfamiliar_or_counted_days() -> None:
     ])
     assert lines == [
         "On the walkway in the last 15 minutes: Biscuit, a dog I have seen on 9 days "
-        "but have no name for, and 2 unfamiliar people."
+        "but have no name for, and up to 2 unfamiliar people (the camera splits one person into several)."
+    ]
+    # With the window count read: at most one person stood in one window.
+    lines = _street(sightings=[_sighting("b", "person"), _sighting("c", "person")],
+                    people_windows=[{"counts": {"person": 1}}])
+    assert lines == [
+        "On the walkway in the last 15 minutes: at least 1, at most 2 unfamiliar people "
+        "(the camera splits one person into several)."
     ]
 
 
@@ -69,7 +80,7 @@ def test_expectation_outcomes_and_open_windows() -> None:
     (line,) = _street(expectations=exp)
     assert line == (
         "Walkway rhythm: the black dog did not come (usually around 07:40); "
-        "the mail truck came as expected around 07:20; the grey dog is usually here by now; "
+        "the mail truck came as expected (usually around 07:20); the grey dog is usually here by now; "
         "the jogger usually comes around 08:00."
     )
 
@@ -103,7 +114,7 @@ def test_patio_is_a_count_never_a_name_and_only_when_fresh() -> None:
     fresh = {"state": "present", "count": 3, "subject": "Juniper", "zone": "patio",
              "row_updated_at": datetime.now(timezone.utc)}
     (line,) = _street(patio=fresh)
-    assert line == "3 people are on the patio."
+    assert line == "At least 3 people are on the patio."
     assert "Juniper" not in line
     stale = dict(fresh, row_updated_at=datetime.now(timezone.utc) - timedelta(hours=2))
     assert _street(patio=stale) == []
@@ -171,8 +182,9 @@ def test_missing_tables_cost_only_their_own_line() -> None:
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
     assert got.read_ok is True
     assert got.lines == ["In the last hour I saw one thing on the walkway I could not name at 07:47: a shape."]
-    # sightings (stationary read + pre-stationary fallback) and expectations.
-    assert conn.rollbacks == 3
+    # sightings (stationary read + pre-stationary fallback), expectations and
+    # the stationary-people read (it joins vision_individual_sighting too).
+    assert conn.rollbacks == 4
 
 
 def test_patio_row_is_read_by_stream_and_stripped_of_identity() -> None:
@@ -209,7 +221,7 @@ def test_a_second_no_embed_zone_gets_its_own_line_named_from_its_row() -> None:
          "updated_at": now},
     ]})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
-    assert got.lines == ["2 people are on the garden.", "Someone is on the patio."]
+    assert got.lines == ["At least 2 people are on the garden.", "Someone is on the patio."]
 
 
 def test_like_prefix_escapes_wildcards() -> None:
@@ -248,7 +260,8 @@ def _stub_room(monkeypatch, percept=None):
 
 
 def test_street_defaults_to_walkway_and_empty_disables() -> None:
-    assert _cfg().street_stream_ids == ["doorbell", "walkway"]
+    # cam0 (the office camera) joined 2026-11-04: who is in the room, by name.
+    assert _cfg().street_stream_ids == ["doorbell", "walkway", "cam0"]
     cfg = situation_mod.settings_from_runtime(SimpleNamespace(orion_situation_street_stream_ids=""))
     assert cfg.street_stream_ids == []
 
@@ -318,10 +331,30 @@ def test_one_failed_street_read_does_not_hide_the_other(monkeypatch) -> None:
     monkeypatch.setattr(situation_mod, "fetch_street_summary", _fetch)
     diag = SituationDiagnosticsV1()
     ctx = asyncio.run(situation_mod._build_perception_context(_cfg(perception_enabled=True), diag))
-    assert ctx.street_stream_id == "walkway"
+    assert ctx.street_stream_id == "walkway"  # first camera after the failed doorbell
+    assert "Two people walked by." in (ctx.street_summary or "")
     # The error stays visible; it is not overwritten with "ok".
     assert diag.provider_status["perception_street"] == "error"
     assert diag.provider_errors["perception_street"] == "db hiccup"
+
+
+def test_office_camera_reads_as_a_word_not_an_id() -> None:
+    """2026-11-04: "On the cam0 just now" is not English; the summary's
+    camera word for cam0 is "office camera". Other ids are already words."""
+    from orion.situational.perception_reader import street_camera_word, summarize_street
+    from datetime import datetime, timezone
+
+    assert street_camera_word("cam0") == "office camera"
+    assert street_camera_word("walkway") == "walkway"
+    now = datetime(2026, 11, 4, 23, 15, tzinfo=timezone.utc)
+    lines = summarize_street(
+        sightings=[{"individual_id": "i1", "kind": "person", "label": "Juniper", "distinct_days": 3,
+                    "first_at": now, "last_at": now}],
+        expectations=[], unresolved=[], patio=[], now=now, tz=timezone.utc,
+        camera=street_camera_word("cam0"),
+    )
+    text = " ".join(lines)
+    assert "office camera" in text and "Juniper" in text and "cam0" not in text
 
 
 def test_quiet_or_unread_street_leaves_no_field(monkeypatch) -> None:
@@ -410,4 +443,215 @@ def test_patio_count_is_read_from_the_reducers_subject_shape() -> None:
          "updated_at": datetime.now(timezone.utc)},
     ]})
     got = fetch_street_summary("walkway", engine=_Engine(conn), now=NOW)
-    assert got.lines == ["3 people are on the patio."]
+    assert got.lines == ["At least 3 people are on the patio."]
+
+
+# --- Individual windows read back to the window start (2026-11-03) ----------
+# Live case: "Rowan" (named by Juniper 10-25) had an open 10:05-13:09 window,
+# peak 11:39, no match until 12:48 at the mailbox. At 12:00 the notes said
+# "Rowan usually comes around 11:39" and the reply said "Rowan right on her
+# usual 11:39"; asked where, the reply invented a vehicle "slot" it "started
+# calling Rowan".
+_ROWAN_NOW = datetime(2026, 11, 3, 19, 0, tzinfo=timezone.utc)  # 12:00 MST
+_ROWAN_ROW = {"subject_key": "individual:am", "subject_label": "Rowan", "status": "open",
+               "peak_minute": 699, "window_start": datetime(2026, 11, 3, 17, 5, tzinfo=timezone.utc),
+               "window_end": datetime(2026, 11, 3, 20, 9, tzinfo=timezone.utc)}
+_NAMED = {"individual_id": "am", "kind": "person", "named_by": "juniper",
+          "named_at": datetime(2026, 10, 26, 1, 54, tzinfo=timezone.utc), "matched_at": None, "caught_up": True}
+
+
+def _rowan(window, *, now=_ROWAN_NOW, row=_ROWAN_ROW):
+    (line,) = summarize_street(sightings=[], expectations=[row], unresolved=[], patio=None,
+                               now=now, tz=TZ, individual_windows={"am": window})
+    return line
+
+
+def test_open_window_past_peak_with_no_match_says_so() -> None:
+    line = _rowan(_NAMED)
+    assert "no match for Rowan (a person, name from Juniper, 10-25) yet today (usually around 11:39)" in line
+    assert "usually comes" not in line
+    assert "A person match is the camera's guess" in line
+
+
+def test_a_match_says_its_own_time_not_the_peak() -> None:
+    line = _rowan({**_NAMED, "matched_at": datetime(2026, 11, 3, 19, 48, tzinfo=timezone.utc)},
+                   now=datetime(2026, 11, 3, 19, 50, tzinfo=timezone.utc))
+    assert "Rowan (a person, name from Juniper, 10-25) matched at 12:48 (usually around 11:39)" in line
+    assert " came " not in line
+
+
+def test_peak_still_ahead_keeps_the_habit_wording() -> None:
+    line = _rowan(_NAMED, now=datetime(2026, 11, 3, 18, 0, tzinfo=timezone.utc))  # 11:00
+    assert "Rowan (a person, name from Juniper, 10-25) usually comes around 11:39" in line
+    assert "no match" not in line
+
+
+def test_missed_and_met_individuals_say_match_not_came() -> None:
+    missed = _rowan(_NAMED, row={**_ROWAN_ROW, "status": "missed"})
+    assert "no match for Rowan (a person, name from Juniper, 10-25) in the usual window (usually around 11:39)" in missed
+    met = _rowan(_NAMED, row={**_ROWAN_ROW, "status": "met"})
+    assert "Rowan (a person, name from Juniper, 10-25) matched inside the usual window" in met
+
+
+def test_no_name_origin_without_an_answered_ask_and_no_caveat_for_things() -> None:
+    line = _rowan({**_NAMED, "kind": "vehicle", "named_by": None, "named_at": None})
+    assert "name from" not in line
+    assert "person match" not in line
+
+
+def test_individual_windows_unread_keeps_the_old_guarded_wording() -> None:
+    (line,) = summarize_street(sightings=[], expectations=[_ROWAN_ROW], unresolved=[], patio=None,
+                               now=_ROWAN_NOW, tz=TZ, individual_windows=None)
+    assert line == "Walkway rhythm: Rowan usually comes around 11:39."
+
+
+def test_individual_windows_are_read_per_window_start_and_failures_degrade() -> None:
+    seen = {}
+
+    class _WinConn(_Conn):
+        def execute(self, stmt, params):
+            if "unnest(" in str(stmt):
+                seen.update(params)
+            return super().execute(stmt, params)
+
+    conn = _WinConn({
+        "unnest(": [{"individual_id": "am", **{k: v for k, v in _NAMED.items() if k != "individual_id"}}],
+        "vision_percept_expectation": [_ROWAN_ROW],
+    })
+    got = fetch_street_summary("walkway", engine=_Engine(conn), now=_ROWAN_NOW)
+    assert seen["ids"] == ["am"] and seen["starts"] == [_ROWAN_ROW["window_start"]]
+    assert seen["ends"] == [_ROWAN_ROW["window_end"]]
+    assert any("no match for Rowan" in line for line in got.lines)
+
+    broken = _Conn({"unnest(": RuntimeError("boom"), "vision_percept_expectation": [_ROWAN_ROW]})
+    got = fetch_street_summary("walkway", engine=_Engine(broken), now=_ROWAN_NOW)
+    assert "Walkway rhythm: Rowan usually comes around 11:39." in got.lines
+
+
+def test_no_absence_claim_while_the_individuals_reducer_lags() -> None:
+    # Review finding: "no match yet" from missing rows alone could be a crop
+    # the individuals reducer has not processed (vision_rhythm._individuals_caught_up).
+    for lag in ({**_NAMED, "caught_up": False}, {k: v for k, v in _NAMED.items() if k != "caught_up"}):
+        line = _rowan(lag)
+        assert "no match" not in line
+        assert "Rowan (a person, name from Juniper, 10-25) usually comes around 11:39" in line
+
+
+def test_person_caveat_only_when_a_person_phrase_is_shown() -> None:
+    # Review finding: a fifth outcome is cut by outcomes[:4]; its caveat must go too.
+    things = [{"subject_key": f"label:v{i}", "subject_label": f"vehicle {i}", "status": "met", "peak_minute": 600 + i}
+              for i in range(4)]
+    (line,) = summarize_street(sightings=[], expectations=things + [_ROWAN_ROW], unresolved=[], patio=None,
+                               now=_ROWAN_NOW, tz=TZ, individual_windows={"am": _NAMED})
+    assert "Rowan" not in line
+    assert "person match" not in line
+
+
+# --- office camera prior guesses (2026-11-04) -------------------------------------------------
+
+
+def _office_sighting(iid: str, guess, now):
+    return {"individual_id": iid, "kind": "person", "label": None, "distinct_days": 1,
+            "first_at": now, "last_at": now, "guess": guess}
+
+
+def test_office_prior_guess_reads_as_a_guess_not_as_unfamiliar_people() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import street_camera_word, summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    # One visit split into three records, all guessed Juniper by the office prior.
+    rows = [_office_sighting(f"o{k}", "Juniper", now) for k in range(3)]
+    lines = summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now, tz=timezone.utc,
+                             camera=street_camera_word("cam0"), people_windows=[{"counts": {"person": 1}}],
+                             stationary_people={})
+    text_ = " ".join(lines)
+    assert "probably Juniper (my guess from who is usually here, not confirmed)" in text_
+    assert "unfamiliar" not in text_
+    # Two people in one window: one is the guess, the other is still someone Orion does not know.
+    lines = summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now, tz=timezone.utc,
+                             camera=street_camera_word("cam0"), people_windows=[{"counts": {"person": 2}}],
+                             stationary_people={})
+    assert "unfamiliar" in " ".join(lines)
+
+
+def test_a_name_she_gave_wins_over_the_same_guess() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    rows = [{**_office_sighting("o1", None, now), "label": "Juniper"}, _office_sighting("o2", "Juniper", now)]
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera"))
+    assert "Juniper" in text_ and "probably Juniper" not in text_
+    # Review finding: the named record and the guess are one person, so a second
+    # person in the same window is still said.
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera",
+                                      people_windows=[{"counts": {"person": 2}}], stationary_people={}))
+    assert "unfamiliar" in text_
+
+
+def test_unread_window_counts_never_collapse_guessed_records_into_one() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    rows = [_office_sighting(f"o{k}", "Juniper", now) for k in range(3)]
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera"))
+    assert "probably Juniper" in text_ and "up to 2 unfamiliar people" in text_
+
+
+def test_a_stationary_prop_never_reads_as_up_to_zero_people() -> None:
+    from datetime import datetime, timezone
+
+    from orion.situational.perception_reader import summarize_street
+
+    now = datetime(2026, 11, 5, 1, 30, tzinfo=timezone.utc)
+    rows = [_office_sighting(f"o{k}", "Juniper", now) for k in range(2)]
+    text_ = " ".join(summarize_street(sightings=rows, expectations=[], unresolved=[], patio=[], now=now,
+                                      tz=timezone.utc, camera="office camera",
+                                      people_windows=[{"counts": {"person": 2}}], stationary_people={"person": 1}))
+    assert "up to 0" not in text_ and "unfamiliar" not in text_
+
+
+def test_prior_guess_read_fails_open() -> None:
+    from orion.situational import perception_reader as pr
+
+    class _Boom:
+        def execute(self, *a, **k):
+            raise RuntimeError("column basis does not exist")
+
+        def rollback(self):
+            pass
+
+    assert pr._read_prior_guesses(_Boom(), [{"individual_id": "o1", "label": None}]) == {}
+    assert pr._read_prior_guesses(_Boom(), [{"individual_id": "o1", "label": "Juniper"}]) == {}
+
+
+_PG = os.getenv("ORION_TEST_PG_URI", "")
+
+
+@pytest.mark.skipif(not _PG, reason="ORION_TEST_PG_URI not set (throwaway Postgres only)")
+def test_prior_guess_sql_reads_only_prior_unsure_unrevoked_guesses() -> None:
+    from sqlalchemy import create_engine, text as sql
+
+    from orion.situational import perception_reader as pr
+
+    eng = create_engine(_PG)
+    with eng.begin() as conn:
+        conn.execute(sql("TRUNCATE vision_person_attribution"))
+        for iid, band, basis, revoked in (("a", "unsure", "prior", None), ("b", "unsure", "evidence", None),
+                                          ("c", "accept", "prior", None), ("d", "unsure", "prior", "2026-11-05")):
+            conn.execute(sql("INSERT INTO vision_person_attribution (individual_id, person_label, channel, score, "
+                             "band, model_version, decided_at, basis, revoked_at) VALUES (:i, 'Juniper', 'body', "
+                             "0.7, :b, 'v', now(), :basis, CAST(:r AS timestamptz))"),
+                         {"i": iid, "b": band, "basis": basis, "r": revoked})
+    with eng.connect() as conn:
+        got = pr._read_prior_guesses(conn, [{"individual_id": i, "label": None} for i in "abcd"])
+    eng.dispose()
+    assert got == {"a": "Juniper"}

@@ -72,6 +72,7 @@ def test_stale_boot_world_id_recovers_after_fresh_game_wipe_without_restart(
         return [{"id": "p:24", "position": {"x": 63.0, "y": 27.0}}]
 
     with patch("app.worker.aitown_client.list_players", side_effect=list_players), \
+         patch("app.worker.aitown_client.engine_running", return_value=True), \
          patch("app.worker.aitown_client.list_conversations", return_value=[]), \
          patch("app.worker.publish_with_reconnect", new=AsyncMock()):
         stale_perception = asyncio.run(w._emit_perception_once())
@@ -83,6 +84,7 @@ def test_stale_boot_world_id_recovers_after_fresh_game_wipe_without_restart(
     w._refresh_aitown_runtime()
 
     with patch("app.worker.aitown_client.list_players", side_effect=list_players), \
+         patch("app.worker.aitown_client.engine_running", return_value=True), \
          patch("app.worker.aitown_client.list_conversations", return_value=[]), \
          patch("app.worker.publish_with_reconnect", new=AsyncMock()):
         live_perception = asyncio.run(w._emit_perception_once())

@@ -136,6 +136,11 @@ def test_prompt_carries_code_filled_ids_and_no_example_names() -> None:
     assert "weight" not in text.lower()
 
 
+def test_naming_sitting_gets_no_dig_kit() -> None:
+    """One verdict on the clock: no dig pointer competes with the write-first step."""
+    assert "orion.dig" not in build_self_naming_prompt(packet=_packet(), run_id=RUN)
+
+
 def test_prompt_refuses_ids_it_cannot_embed_safely() -> None:
     with pytest.raises(ValueError):
         build_self_naming_prompt(packet=_packet(disposition_id='disp"1'), run_id=RUN)
@@ -327,3 +332,16 @@ def test_dispatch_stores_the_packet_and_returns_dispatched() -> None:
     assert asyncio.run(loop.tick_self_inquiry()) == "dispatched"
     assert _namings(bus) == []
     assert any(k.startswith(_SELF_NAMING_PACKET_KEY_PREFIX) for k in bus.redis.values)
+
+
+def test_a_naming_sitting_writes_one_self_inquiry_decision_row() -> None:
+    """A naming sitting is a self-inquiry run: it gets the decision row its outcome needs."""
+    from scripts.curiosity_offer_decisions import INSERT_DECISION_SQL
+    from test_curiosity_self_inquiry import _RecordingGrantConn
+
+    bus = _FakeBus()
+    conn = _RecordingGrantConn()
+    loop = _naming_loop(bus, naming=GOOD, packet=_packet(), conn=conn)
+    assert asyncio.run(loop.tick_self_inquiry()) is None
+    rows = [args for sql, args in conn.writes if sql == INSERT_DECISION_SQL]
+    assert len(rows) == 1 and rows[0][1] == "self_inquiry"

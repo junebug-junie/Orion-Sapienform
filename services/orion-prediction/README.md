@@ -1,8 +1,8 @@
 # orion-prediction
 
 Forecasts Orion's telemetry, grades every forecast against what really happened, and estimates
-cause and effect ("if X happens, how much does the cabinet warm?"). First series: the Athena
-cabinet temperature.
+cause and effect ("if X happens, how much does the cabinet warm?"). Targets: the Athena cabinet
+temperature, and the office (room) temperature from the pan-1 SHT40 installed 2026-10-28.
 
 Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
 
@@ -12,13 +12,37 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
    distance (5 min, 15 min, 1 h, 6 h, 24 h), pick the model that beats the better of two
    baselines and whose error ranges are calibrated. If none does, serve the baseline there.
 2. **Issue** (every completed 5-minute bucket). Fit the chosen models, stitch their forecasts,
-   attach error ranges built from their own past errors (split-conformal), and compute the chance
-   of crossing each declared threshold (34 °C shed, 32 °C experiment guard). Store it, publish it.
-3. **Score**. When the real bucket arrives, write the actual value, the error, and whether it fell
+   attach error ranges built from their own past errors (split-conformal; adaptive from the
+   last 3 days of live scores scaled to how hard the last hour was, up to 15 min ahead -- see Surprise), and compute the chance
+   of crossing each declared threshold (34 °C shed, 32 °C experiment guard; the cabinet lines are read from `orion/autonomy/thermal_gate.py` via `value_from`, never restated in the registry). Store it, publish it.
+3. **Score** (each tick, before issuing). When the real bucket arrives, write the actual value, the error, and whether it fell
    inside the 80 % and 95 % ranges. A bucket with no readings is scored `missing`, never guessed.
 4. **Monitor**. Alerts in `/health` and `/series/{id}/live` (and one log line when they change):
    live coverage out of band, worse than baseline over 24 h, stale input, stale forecast,
    degenerate output (refused, never stored), failed selection.
+
+A **young series** (too little history for the backtest) gets no selection and no forecast. That is a
+lifecycle state, not a fault: `/health` shows `series.<id>.not_ready` with buckets held vs needed and
+`ready_at`, no alert fires, and selection is re-checked at `ready_at` (or every 6 h). The backtest needs
+2 days of training + the longest horizon + 10 origins 3 h apart: ~4.1 days for a 24 h horizon.
+
+## Targets
+
+| series | what | source |
+|---|---|---|
+| `athena.cabinet_temp_c` | cabinet air (Nano ESP32 in the cabinet) | `orion_biometrics_summary` (biometrics) |
+| `office.temp_c` | office air = the cabinet's intake (pan-1 SHT40, `orion-office-env`) | `office_env_sample` (office_env: stale/offline rows dropped) |
+
+`office.temp_c` has no thresholds and no covariates of its own. It is a cabinet covariate since
+2026-11-03, listed under `overlap_covariates`: younger than the cabinet's training window, so only
+`direct_arx_overlap` uses it (below). Move it out of `overlap_covariates` once its history covers the
+whole training window.
+
+Live coverage on a young series (2026-11-03: `office.temp_c` 80 % coverage 0.67 over 1069 scores) is
+a calibration-pool problem, not a code bug: the conformal pool is 10-18 backtest windows spanning
+30-54 h, the 80 % and 95 % levels both clip to the pool's min/max below 39 paths, and the room swings
+up to 2.5 C/h with weather and doors (11-03 00-03 UTC: -6 C in 3 h). Live 60-min coverage was 0.54.
+It closes as the pool reaches 40 windows (~5 days of origins); until then the alert is correct.
 
 ## Models
 
@@ -29,12 +53,58 @@ Spec: `docs/superpowers/specs/2026-10-15-orion-prediction-service-design.md`.
 | `mstl_ets`, `mstl_arima` | MSTL decomposition (cycles up to 1 day) + ETS / ARIMA trend |
 | `prophet` | changepoints + every declared seasonality as Fourier terms (incl. weekly, custom) |
 | `direct_ar` | one ridge regression per lead time from the temperature's own recent history (`app/direct.py`) |
-| `direct_arx` | the same plus the series' covariates (chassis watts, AC watts) as known at the origin -- never a future value |
+| `direct_arx` | the same plus the series' covariates with full history (chassis watts, AC watts) as known at the origin -- never a future value |
+| `direct_arx_overlap` | the same plus every covariate incl. `overlap_covariates` (the room), trained only on the rows where all of them read |
 
-`direct_ar` vs `direct_arx` is a standing ablation: the scoreboard shows what the covariates add.
+`direct_ar` vs `direct_arx` vs `direct_arx_overlap` is a standing ablation: the scoreboard shows what
+the covariates (and the room) add. The overlap model refuses windows whose overlap is too short
+(< ~3 days at the 24 h lead), so the gate only compares it with the baseline on windows it really
+forecast, and refuses it until it has a residual on 90 % of the baseline's windows -- by the live
+route too (GATE_VERSION 4). Earliest it can serve: ~2026-11-07.
+
+## Covariates
+
+| series | what | source |
+|---|---|---|
+| `athena.chassis_watts` | athena power (iLO) | biometrics |
+| `circe.chassis_watts` | circe power (PDU, read by athena) | `orion_biometrics_cluster` |
+| `hecate.chassis_watts` | hecate power (BMC, read by athena); 0 before 2026-10-04 | `orion_biometrics_cluster` |
+| `athena.cabinet_cooling_watts` | portable AC power (Shelly plug) | `home_cooling_sample` |
+| `athena.central_ac_proxy` | outdoor F above 75, 3 h earlier: the central AC's switch | `prediction_weather_hourly` |
+| `office.temp_c` | the room air the cabinet draws in (overlap covariate) | `office_env_sample` |
+
+A covariate's own registry exclusions are masked too (the room sensor's settling hour), and a 5-min
+bucket that straddles an exclusion's edge is masked whole.
+
+Weather comes from the shared Open-Meteo client (`orion/weather/openmeteo.py`, also used by the
+situation layer) at the situation layer's location (`ORION_SITUATION_WEATHER_LAT/LON`): refreshed hourly
+(past 7 days + next 48 h), backfilled from the archive on first start, observed values replacing
+forecasts. `evals/run_house_heat_balance_eval.py` re-checks the proxy against the house meter.
 
 A seasonality is used only when training holds 2 full cycles (monthly is refused today). MSTL
 skips cycles longer than a day: STL at the weekly period costs ~26 s per fit vs ~2.3 s.
+
+## Shadow scoring: live evidence for the gate
+
+Every model that beat the baseline somewhere in the backtest (plus whatever serves) also forecasts at
+every issue, unserved, into `prediction_shadow_forecast`; the reducer scores those rows like the served
+ones. Per model and horizon, `app/live.py` pairs them with the baseline forecast for the same origin,
+keeps one origin per horizon-long time block (independent, anchored to the clock), and with >= 20 of
+them gives a verdict: `better` (Holm-adjusted p < 0.05 across every model x horizon tested), `worse`
+(p < 0.05), `unclear`, or `pending`. Each horizon looks back long enough to collect 20 (25 horizons,
+at least 7 days: 24 h -> 25 days); shadow rows are kept 35 days. The gate then:
+
+- never serves a model that is live-`worse`;
+- serves a live-`better` model that also beats the baseline in the backtest, even on a borderline p;
+- otherwise uses the backtest: p < 0.05 to start serving, p < 0.10 to keep serving (no flicker);
+- ranks live winners before backtest-only winners.
+
+Shadow models are fitted after the served forecast is stored and saved in their own transaction, so
+they never delay or cost it; failures show in `/health` (`shadow_failed`).
+
+`worse_than_baseline` alerts on the SERVING model's own live verdict. `/live` lists every verdict.
+Cost: ~13 s of CPU per 5-minute issue with four contenders (measured 2026-10-22). Rollback lever:
+`PREDICTION_SHADOW_ENABLED=false` -- which also turns off `worse_than_baseline` (it reads live verdicts).
 
 ## Grading the overheat warning
 
@@ -56,8 +126,10 @@ Known moments the world changed under a series, stored in `prediction_change_eve
 
 `POST /change-events` (`scope` = a series id or `*`), `GET /change-events`; `/health` shows each
 series' pending and adopted breaks. Seeded 2026-10-20 with the athena T10 swap (break, 10-15 18:57 UTC)
-and the vision bring-up (cabinet open 10-16 21:30 -> 10-17 00:35 excluded; sensor geometry changed:
-break at 00:35).
+and the vision bring-up (cabinet open 10-16 21:30 -> 10-17 00:35 excluded; vision services
+brought up: break at 00:35). The 00:35 break is **real heat** (the cabinet reads ~2 C warmer
+after). It was first seeded as "cabinet sensor geometry changed"; that was wrong: the sensor never
+moved (Juniper, 10-29). The live row needs a one-time UPDATE (see the 10-29 PR report).
 
 ## Cause and effect: three levels, always labelled (`claim_kind`)
 
@@ -87,24 +159,355 @@ rhythm read as no effect (needs >= 7 days; the range is cut to whole days); `cir
 independent streams, ~5 % on rhythm-free ones). Too few A (< 5) or no B -> `422` with
 `detail.error = "refused"` and the counts. Each answer is stored in `prediction_effect_estimate`
 (`action = event_pair:<A>`, `series_id = <B>`, `effect` = rate ratio, details hold every count).
-Counts are rows, not visits.
+Counts are rows unless a selector sets `visit_gap_sec` (whole seconds 0-3600, default 0): then a row closer than that
+to the previous row of the same selector joins its visit, and only each visit's first row counts. Use it
+for bursty streams (cam0 `person_presence` logs one person as many rows). The stored label gains
+`~visit<gap>s`, e.g. `vision_events:person_presence@cam0~visit300s`, so row and visit answers stay apart.
 
 Live (2026-10-20, 14 days): no `doorbell_ring` rows exist yet, so the doorbell pair refuses;
 walkway presence -> walkway caption (0-60 s) 32x, p = 0.006.
 
-`GET /effects/{action}?series_id=` returns the best available level. `GET /experiments/guard`
+### How much cabinet heat is a watt? (`GET|POST /effects/heat-per-watt`)
+
+Two fits, same method (`app/heat_balance.py`; hourly means, lags 0-2 h summed = a load held ~2 h,
+AR(1) feasible GLS + Newey-West intervals):
+
+- **local**: `cabinet - room` on each machine's chassis watts -- how much warmer than its intake air
+  the cabinet runs, room held fixed;
+- **total**: `cabinet` on the same watts with outdoor air (`prediction_weather_hourly`, observed hours)
+  as a control -- the room is free to warm too, since the machines' heat goes into the office. A 0-2 h
+  response, not a steady state.
+
+Both fits run on the same hours, and a missing hour is a break: hours on either side of it are never
+treated as neighbours by the AR(1) step or the Newey-West kernel.
+
+Query: `series_id` (default `athena.cabinet_temp_c`), `days` (2-21, default 7), optional
+`experiment_id`: converts that experiment's measured watts (its manipulation check, recomputed from
+the logged blocks) into a predicted cabinet change. Both bases are returned; the headline
+`predicted_c` (`basis`) is `local` when the experiment's blocks are shorter than the 2 h fit window
+(the room cannot follow on/off blocks that fast) and `total` otherwise. The experiment watts are cached
+only once the experiment is finished and every reading succeeded. GET is read-only; POST stores rows in
+`prediction_effect_estimate`: `heat_per_watt:<watts id>` (local) and `heat_per_watt_total:<watts id>`
+(`effect` in C per W, the whole fit in `details`). Always `observational_effect`. The local fit is
+refused (`422`, `detail.error = "refused"`) with fewer than 48 complete hours, a flat gap, no machine
+whose watts vary (>= 10 % of hours 20 W from the median), or R^2 < 0.10; the total fit is refused on
+its own without refusing the local answer. A machine that does not vary (hecate; the AC in fan mode)
+is left out and named.
+
+Live (2026-11-03, 7 days, the same 129 h for both fits), C per 100 W: local athena **+0.09 (95 %
+-0.01..+0.19)**, circe -0.02 (-0.06..+0.02); total athena **+0.92 (+0.39..+1.46)**, circe **+0.32
+(+0.17..+0.47)** -- most of a machine's 0-2 h effect on the cabinet comes back through the room. (The older whole-cabinet fit in
+`config/physiology/heat_sensitivity.yaml`, 09-26..10-27: athena 0.64, circe 0.31.) A plain level fit of
+the local gap says +0.43 (R^2 0.90) -- it rests on one unlogged step (2026-10-30 02:20 UTC: gap -1.1 C
+with athena flat at ~740 W; athena's real 300 W drop at 04:00 moved it ~0.1 C), and the response says
+so (`levels_disagree`). The walkway focus experiment (20-minute blocks, so `basis = local`; +7.8 W
+athena, +50 W circe) converts to -0.00 C (-0.03..+0.02) local and +0.23 C (-0.04..+0.51) total,
+against its measured +0.21 (-0.16..+0.58): the experiment cannot tell these apart. The "95 %"
+interval covers ~90 % in simulation (`evals/run_heat_per_watt_eval.py`).
+
+`GET /effects/{action}?series_id=` returns the best available level. An experimental answer on the
+cabinet also carries `heat_balance_prediction`: what the newest stored heat-per-watt fit predicts from
+the watts that experiment moved (`predicted_c: null` + a reason when no fit is stored). `GET /experiments/guard`
 says whether it is safe to start an ON block (P(≥ 32 °C within 30 min) < 5 %).
 
-**No dispatcher exists.** Nothing here switches a workload on or off. Whoever performs the action
-logs each block (`POST /interventions` with `experiment_id` + `arm`) and re-checks the guard
-before each ON block. The 34 °C reflex in hardware-watch stays the hard stop.
+**One dispatcher exists: `POST /experiments/run`** (`app/experiment_runner.py`, 2026-10-29). It
+performs `vision.focus:<stream_id>` only: during ON blocks it holds Redis key
+`orion:vision:experiment:<stream_id> = on` (TTL `PREDICTION_EXPERIMENT_OVERRIDE_TTL_SEC`, refreshed
+every tick), and the vision frame router forces that stream's triggered tier. OFF blocks are normal
+operation. Body defaults: `series_id=athena.cabinet_temp_c`, `block_min=20`, `n_blocks=12`,
+`burn_in_min=10`, `start_delay_min=2` (blocks start on a 5-min boundary).
+
+- Refuses (409) unless the guard passes, and while another run holds `orion:prediction:experiment:runner`.
+- Re-checks the guard before every ON block and every `PREDICTION_EXPERIMENT_GUARD_EVERY_SEC`; any
+  raw cabinet reading at or above the guard line (32 °C), a missing reading, or a failed guard
+  aborts: key cleared, an abort row logged (`arm` NULL, so analysis ignores it), status `cancelled`.
+- Logs each finished block through the normal intervention path (`arm`, `experiment_id`, router
+  dispatch-count deltas in `notes`), then runs `analyze_experiment` plus a **manipulation check**:
+  ON-minus-OFF `athena.gpu_watts_total`, `athena.chassis_watts`, `circe.chassis_watts`, and the
+  router's triggered fraction per arm (verdict `tier_raised`, `no_lever_off_arm_already_triggered`
+  or `override_never_took_effect`).
+- Never auto-starts. On boot, a run the last process left half-done is marked `cancelled` and its
+  key deleted; a hard kill leaves focus on for at most the TTL.
+- `GET /experiments/runner` shows the live run; `POST /experiments/runner/abort` stops it.
+  `PREDICTION_EXPERIMENT_RUNNER_ENABLED=false` turns the endpoint off.
+
+Other actions still need a human or another service to log blocks by hand. The 34 °C reflex in
+hardware-watch stays the hard stop.
+
+## Action bets
+
+An action bet is a yes/no prediction about one of Orion's own body actions: "this action, in this
+situation, at this place, works with probability p". The body adapter (the Hub for Zelda) asks for a
+quote on each possible move, places a bet on the move it starts, and settles the bet when the move
+ends. The service only sees opaque strings (`skill`, `context` values, `place`); what a skill means
+and when it succeeded is the body's business. Spec:
+`docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md` ("the action bet").
+Contracts: `ActionBet*V1` in `orion/schemas/prediction.py` (HTTP only, no bus channel). Code:
+`app/action_bets.py`.
+
+| endpoint | does |
+|---|---|
+| `POST /action-bets/quote` | `{domain, body, options: [{option_id, skill, context, place?}]}` (at most 20) -> `{domain, body, served_model, quotes: [{option_id, model, p, p_baseline, interval80, eig_nats, level, counts}]}`. Read-only, one grouped count query. |
+| `POST /action-bets` | place: `{bet_id, domain, body, skill, context, place?, action, chosen_rank?, session_id?}` -> the stored bet. The service computes `p` and `p_baseline`; a caller cannot send them (422). Idempotent by `bet_id`: a repeat returns the stored bet unchanged. |
+| `POST /action-bets/{bet_id}/settle` | `{result: success\|failure\|void, outcome, detail?}` -> the stored bet. Open -> settled only: the same result again is 200, a different one 409 (`detail.bet` is the stored bet), an unknown bet 404. |
+| `GET /action-bets/live?domain=&body=` | per-skill and per-situation posteriors (counts, mean, interval80, eig), the top 20 place beliefs, grading of the served and baseline p, the live verdict, open / never-settled / void counts (24 h), the last 20 bets |
+| `GET /action-bets?session_id=` | that session's bets, oldest first, at most 500 |
+
+**Model** `action_beta_backoff` (served): a Beta-Bernoulli rate with three levels of backoff, strength
+k = 4, over settled `success` / `failure` bets (void never counts). Skill: `Beta(1+s, 1+f)` over every
+domain and body. Situation (same domain, skill, exact context): prior = the skill mean with strength k.
+Place (same domain, place): prior = the situation mean with strength k. `p` is the mean of the deepest
+level with at least one settled bet (`level`); no data -> `prior`, p = 0.5. `interval80` is the
+10 %/90 % Beta quantile of that level; `eig_nats` the expected information gain of one more try
+(0.193 at no data, 0.022 at 10 of 20). With k = 4, five failures at a place read p < 0.2 only when the
+situation mean is below about 0.45.
+
+**Baseline** `action_skill_rate`: the skill mean alone, stored on every bet as `p_baseline`. Each bet
+also stores its counts at placing, so the model's p is recomputable for every bet even while the
+baseline serves.
+
+**Gate**: squared error of the model's p vs the baseline's, one pair per session (a bet without a
+session is its own unit), the paired test from `app/live.py`/`backtest.paired_win_p`: `pending` under
+20 sessions, then `better` / `worse` / `unclear` at p < 0.05. Global over every domain, cached 60 s.
+When the model is live-`worse`, quotes and new bets serve the baseline (`model` / `served_model` say
+`action_skill_rate`). Grading of served and baseline p uses `orion/prediction/grading.py` `grade` (`enough` at
+n >= 50; `reportable` false under 10 bets).
+
+**World-model shadow** `transition_mlp` (never served). A bet can carry body-level `features` and a `feature_version`, from `orion/embodiment/transition.py`; the Hub sends them for every Zelda bet. When the version matches the loaded weights, the service runs the trained TransitionModel in numpy and stores the result on the bet as `shadow` = `{model, tag, p, heads}`. `p` is the model's chance of the skill's success:
+- traverse and enter: the place changes;
+- acquire: an item is gained;
+- hold: no heart is lost and the body lives;
+- engage and withdraw: no shadow, because no head predicts "completed".
+
+The weights are `PREDICTION_WORLD_MODEL_WEIGHTS` (default `/models/transition.npz`). The host directory `PREDICTION_WORLD_MODEL_DIR` is mounted read-only there, and the file is reloaded when it changes. A missing or bad file means no shadow; `/health` shows it under `action_bets.world_model_shadow`. `/action-bets/live` carries `shadow_verdict`: the shadow's p against the p each bet was actually served, on the same settled bets, with the same per-session paired test as the gate. Kill switch: `PREDICTION_WORLD_MODEL_SHADOW_ENABLED`. Migration: `manual_migration_prediction_action_bet_shadow_v1.sql` adds the nullable `shadow` column.
+
+**Expiry**: a bet still open 1 h after placing is closed `void` with outcome `never_settled` (checked
+at most every 30 s, on quote / place / live). Never graded; counted in `/health`
+(`action_bets: {open, never_settled_24h, served_model}`) and `/live`. Log lines: `action_bet_placed`,
+`action_bet_settled`, `action_bet_expired`.
+
+**Table** `prediction_action_bet`, operator migration (also auto-applied by the post-pull rebuild;
+the service checks it at boot like every other prediction table):
+
+```bash
+docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_prediction_action_bet_v1.sql
+```
+
+## Juniper reachable (`GET /reachable`)
+
+Every hour: "will Juniper send Orion a message in the next hour?" (`app/reachable.py`; spec
+`docs/superpowers/specs/2026-11-10-juniper-reachable-forecast-design.md`). Issued in the first 10 min
+of the hour from data before it, settled 10 min after the hour ends from `chat_message`
+(`role = 'user'`, outside `orion_*` sessions). Served model: ridge logistic on hours since her last
+message, her clock rules (asleep 03-08, weekend mornings, evenings, Mondays) and whether she typed to
+Claude Code recently (`juniper_affective_state_log`). Each of her rules starts as a prior on its
+coefficient and moves with the data; that model is always served. The state model alone and the base
+rate are graded beside it. Graded per local day against a recency-weighted
+base rate, for all hours and cold hours (no message in the prior 3 h), as a loss gap, its standard
+error and `prob_better` -- no alpha. Table `prediction_reachable_forecast`. Flag
+`PREDICTION_REACHABLE_ENABLED`. No consumer and no bus event yet.
+
+Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): 26 % lower loss than base overall
+(P 0.95), tied with the state model; cold hours about level with base (P 0.25); somewhat timid at the top.
+
+## Power-bill bet (`GET /bill-forecast`)
+
+Once a day: "this Rocky Mountain Power bill will come to X kWh and $Y before tax", each with an 80 %
+range (`app/bill_forecast.py`). Settled when RMP's bill for that period lands in `energy_bill_actual`.
+This is Orion's only money bet; the self-monitor grades it (`forecast.energy.bill_kwh`, `..._usd`).
+
+- **Point**: `orion.energy.reconcile.project_period`, the same run rate the stakes snapshot uses, priced
+  by `Tariff.itemize`. Nothing is re-priced here. The period is orion-energy's cycle (meter-read dates
+  from past bills, else `ENERGY_BILLING_CYCLE_START_DAY`), so the four `ENERGY_*` keys must equal
+  orion-energy's (a test checks); the tariff file is baked into this image.
+- **Range**: the run rate predicts R more days from a mean of n days. With daily kWh spread s and
+  day-to-day persistence rho (last 28 complete meter days before the bet), the miss has variance
+  `s^2 (1+rho)/(1-rho) (R + R^2/n)`: R future days plus the error of the mean, AR(1)-inflated. 80 % =
+  +-1.28 sd, never below the kWh already used; the $ range prices those two kWh numbers. Under 7
+  complete meter days: the bet is stored with no range (`range_reason`). Not covered: tariff error
+  (-0.9 % on the 2026-10-19 bill) and the meter-read date moving (the 09-18 bill ran one day past the
+  scheduled read).
+- **Why not past bills' errors**: only one completed bill period (09-18 -> 10-19) has meter data; the
+  feed has a hole 08-07 -> 09-17. One period cannot give a range. The bills will grade this one.
+- **Settle**: the bill whose start is within 10 days of the bet's period start (the ledger's read-snap
+  rule). kWh vs `kwh_billed`; $ vs `current_charges - taxes` (`reconcile._utility_pretax`). A bill with
+  no tax line settles kWh only.
+- **Replay**: on each boot, every past day without a row is backfilled as of 00:05 local, knowing only
+  the meter hours the feed would have delivered by then (its measured lag, ~70 h) and the bills already
+  retrieved. Stored with `origin = 'replay'`; never graded (the method was chosen on that history).
+- **Grading** (`orion/self_monitor`): one row per quantity per live bet, `claim_kind = interval`,
+  `stated = 0.8`, `answer_key` = the bill. The ~30 guesses at one bill are one answer: the organ averages
+  them into one unit and counts units, over its own 400-day window (half-life 180 days). Status stays
+  `unknown` until 10 bills have settled with live bets: about 10 months.
+
+Table `prediction_bill_forecast` (`manual_migration_prediction_bill_forecast_v1.sql`, auto-applied by
+the post-pull rebuild). Flag `PREDICTION_BILL_FORECAST_ENABLED` (on), tick
+`PREDICTION_BILL_FORECAST_TICK_SEC` (900). No bus event. Live dry run (writes nothing):
+`POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_bill_forecast_replay_eval.py`.
+
+## Surprise
+
+Each scored outcome becomes surprise (`app/surprise.py`; spec
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`):
+
+- **p** = two-sided p of the actual value under the forecast's stored quantiles (CDF linear
+  between levels). Outside the 95 % range p is censored at 0.05, never extrapolated.
+- **surprisal** = -ln p. **Calm point** = 1 - 0.05 = 0.95: the expected surprisal of a calibrated
+  forecaster. **excess** = surprisal - 0.95. Calm reads 0, a bad miss reads up to +2.05.
+- A bucket with no readings stays `missing` (scoring above), never calm.
+- **Display gate**, per horizon (`/series/{id}/surprise` only): the served model is not a baseline,
+  live 80 % coverage in 0.72-0.88 over >= 200 scores, not live-worse than the baseline.
+- **Bus event** `prediction.surprise.v1` on `orion:prediction:surprise` (2026-11-11, kill switch
+  `PREDICTION_SURPRISE_EVENTS_ENABLED`, on). One per scored row that passes `event_gate`, judged on
+  the row alone: champion; the model that served this horizon in the run that ISSUED the forecast
+  (`prediction_model_run.assignment`) is not a baseline; the range is adaptive
+  (`interval_source = 'adaptive'`, so 5 and 15 min only); a real actual. A missing bucket never
+  publishes. No monitor pass is needed, so outcomes scored right after a restart are not lost; an
+  error building events never costs the scores, exceedance or shadow scoring (`last_error` in
+  `/health` `series.<id>.surprise_events`, with published / refused-by-reason counters).
+  Consumer: orion-substrate-runtime folds it into `node:prediction.room` (office) and
+  `node:prediction.body` (cabinet) (`orion/substrate/prediction_surprise.py`).
+- **Chat-turn surprise** (2026-11-13, `app/turn_surprise.py`, kill switch
+  `PREDICTION_TURN_SURPRISE_EVENTS_ENABLED`, on). After each turn self-bet settle pass, every settled
+  chat turn (bare-UUID session) whose used bets carry information publishes one
+  `prediction.turn_surprise.v1` on `orion:prediction:turn_surprise`. Used bets: asks a question and
+  more steps than usual, the two kinds that beat the chat caller's own trailing base rate held out
+  (`evals/run_turn_surprise_replay_eval.py`; fetches and longer-reply do not and are left out). Each
+  stated p goes through a logistic map fit on the faculty's settled chat bets of the 7 days strictly
+  before the turn (ridge toward the identity map; fewer than 20 earlier bets: skipped). Per bet:
+  excess = -ln q(outcome) minus its expected value, calm variance q(1-q)logit(q)^2; per turn they are
+  summed into a z. A turn placed more than 60 min before it settles (a backlog) is never published.
+  Consumer: orion-substrate-runtime's `node:prediction.chat_turn` (replaces `node:substrate.chat`).
+  `/health` `turn_self_bets.turn_surprise` holds the counters.
+- `GET /series/{id}/surprise?hours=24`: mean excess per horizon vs its 95 % null band (independent
+  origins only), share of p <= 0.05 / 0.2, and each horizon's gate reason.
+
+**Calm check, 2026-11-10.** With one backtest width per horizon, a quiet 24 h read cabinet 15 min
+-0.28 and office 15 min -0.36 (7 days: -0.12 each, band +-0.06). The ranges were calibrated on
+average, but calm and busy hours got the same width, so calm days read too calm.
+
+**Adaptive ranges** (`app/adaptive.py`, kill switch `PREDICTION_ADAPTIVE_INTERVALS_ENABLED`, on by
+default). The champion's range at horizons up to 15 min is calibrated on the last 3 days of the
+live scores of the model serving that horizon now. Each miss is divided by how big the 5-min misses were in the hour before (normalized
+conformal), and the range is then multiplied by the current hour's value. Calm hours get narrow
+ranges and busy hours wide ones. Scaling by how fast the reading moved was tried first and
+overcorrects: smooth ramps the model tracks read as busy. Horizons past 15 min (60 min went too
+narrow in replay), thin pools (under one day of that model's scores), a stale last hour, steps served
+by the baseline after a model failure, and any error here keep the backtest range. Each stored
+forecast row records its source (`prediction_forecast.interval_source`, migration
+`manual_migration_prediction_forecast_interval_source_v1.sql`); `/health` shows the last one per
+horizon. Exceedance probabilities still use the backtest paths.
+
+Replay with this code (`evals/run_adaptive_interval_replay_eval.py --days 14`, same days and same
+forecasts), days calm at 5/15 min: cabinet 13/13, 12/13 (backtest ranges 2/13, 7/13); office 6/6,
+6/6 (backtest 1/6, 2/6). 80 % coverage 0.76-0.81.
+
+**Calm check, 2026-11-11 (passes)**, live forecasts issued with adaptive ranges, 24 h
+(`evals/run_surprise_calm_live_eval.py --hours 24 --source adaptive`): mean excess cabinet 5 min
++0.004 +-0.230 (n=52, thin: its 5-min model changed 11-10 13:08 and the adaptive pool refills),
+cabinet 15 min -0.072 +-0.167, office 5 min -0.032 +-0.099, office 15 min -0.050 +-0.179; all calm,
+80 % coverage 0.79-0.85. This is what let the bus event ship.
+`evals/run_surprise_node_replay_eval.py --hours 72` replays the event gate and the substrate fold
+over live rows: what the two nodes would have read.
+
+## Family A: every body and room reading at once
+
+"What will my body and room read next?" for every raw reading together, 5 and 15 min ahead (spec:
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`, "A. Neural forecaster").
+Slice 1 (#3267) built the gate and the baselines and measured them. Slice 2 runs them live in this
+service's own select -> issue -> score loop as one multivariate series (`app/family_a_live.py`, own task,
+same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
+
+**Live loop** (`PREDICTION_FAMILY_A_ENABLED`, on):
+
+- **Select** at start and every `PREDICTION_SELECT_INTERVAL_SEC` (~15-30 s at host load ~150): 14 days,
+  screen every input, backtest `ridge_var` vs the better baseline on 2 seeds (inputs screened on each
+  seed's training rows only), serve `ridge_var` at a horizon only if it wins on both, else `ar`. Refit
+  the served rung on the whole window. A calibration pool under 200 rows refuses the selection (the
+  previous run keeps serving). Rows in `prediction_model_run` (`series_id = 'family_a'`): one
+  `model` row per rung (backtest per seed) and the served `champion_blend` (`assignment`: horizon ->
+  rung; `metrics`: manifest, targets, standardisation, whitening covariance, both calibration pools,
+  ~100 KB), so rows issued before a restart are scored with the run that issued them. Run rows are not
+  pruned (~4 a day). A selection longer than ~4 min makes the next bucket's 5 min horizon late (skipped).
+- **Issue** each completed 5-min bucket: the hygiene gate on the last 24 h of every named input. Refused
+  -> one `prediction_joint_surprise` row per horizon with `status = 'refused'` and the reasons
+  (`refusal`), a `family_a_issue_refused` log line, nothing forecast. Passed -> per reading a
+  `prediction_forecast` row (`series_id = 'family_a:<reading>'`, role `champion`, model = the rung,
+  80/95 % ranges from its validation residuals, `interval_source = 'validation'`), the other rung as a
+  `prediction_shadow_forecast` row, and per horizon one joint row (`status = 'issued'`, `difficulty` =
+  the hour-before miss size known now). A horizon whose target bucket already completed is skipped
+  (`late_horizons`), never back-filled. ~23k reading rows a day; reading rows are pruned after 35 days,
+  joint rows kept.
+- **Score** each tick, before issuing: reading rows get the real bucket mean or `missing`; each joint row
+  gets d^2 on the readings that arrived (whitened by the issuing run's covariance), `p_static`,
+  `p_adaptive`, the served `p` (`calibration` = `adaptive`, or `static:no_difficulty` when the last hour
+  holds < 6 scored rows, e.g. after a restart) and `excess` = -ln p - `calm_point`. Fewer than half the
+  usable readings -> `missing` (`too_few_readings`); a run with no calibration -> `missing`, never calm.
+  Tails are log tails, so two extreme misses never tie at 0.
+- `/health` -> `family_a`: served run and rungs, last select / issue / score, counters (issued, refused,
+  late horizons, scored, missing), errors. A missing `prediction_joint_surprise` table or a bad config
+  stops family A only (`family_a.error = "not started: ..."`), never the service.
+- BLAS (OpenBLAS) is held to 4 threads for the whole process from start (`family_a_live.limit_blas`):
+  its default of one thread per core made one family A fit take > 120 s on the loaded host vs 1.5 s.
+  The single-series loop's numpy calls run on the same 4 threads.
+- The self-monitor does not grade `family_a:` reading rows yet (`orion/self_monitor/collect.py`).
+
+- **Inputs**: `config/prediction/family_a.v1.yaml`, 45 candidates read as 5-min means from the raw tables
+  only (`orion_biometrics_summary.measurements`, `orion_biometrics_cluster`, `home_cooling_sample`,
+  `office_env_sample` / `closet_env_sample` payload measurements; `app/family_a_load.py`). A key or id
+  that names a hint channel (`*_pressure`, `prediction_error*`, `action_warrant`, ...) or any other table
+  is refused when the config loads.
+- **Hygiene gate** (`app/family_a.py`, thresholds fixed in the config): present in >= 50 % of buckets; no
+  value over 85 %; >= 50 distinct values; >= 75 % of whole days touch the central 80 % band and daily
+  medians are not a monotone drift (a decay-to-zero fails); not a duplicate of an earlier input (|corr|
+  > 0.999). Resting on its floor > 50 % of the time = event-like = input only, never a target. Missing is
+  NaN plus a mask channel, never 0.0. Standardisation from training rows only, kept in the manifest. At
+  scoring time (windows < 7 days) every named input must be present, not stuck, inside its training band
+  and fresh (30 min), or the run refuses.
+- **Rungs**: persistence; per-series AR (ridge on the last 6 buckets); `ridge_var` = the AR forecast plus
+  a ridge on lags 0-12 of every input + masks + time of day (so at a large penalty it is AR, and it can
+  only win by what the other readings add). Backtest: the repo's `block_purged_temporal_split`
+  (`orion/mood_arc/fit_encoder.py`), 5 blocks, purged by lag + lead, >= 2 seeds that move the block
+  edges. A win needs the overlap-aware paired t (`backtest.paired_gap`) AND a 2-hour block bootstrap both
+  at p < 0.05, against the better baseline per target.
+- **Joint surprise**: ridge residuals whitened by their own covariance (shrunk,
+  eigen-clipped to stay positive definite; Mahalanobis
+  d^2 on the observed readings, chi-square tail), then a conformal p against calibration rows that chose nothing (the ridge penalty is picked on a
+  second split of the fit rows).
+  surprisal = -ln p; calm point = E[-ln p] of a uniform conformal p (-> 1.0); excess rests at 0 by theory.
+  One event moving four coupled readings scores about one miss, not four. The eval also names the
+  readings that carry each big miss (a hint, not a cause; stored per row as `top_shares`).
+- **Adaptive calibration** (served): d^2 is divided by the hour-before difficulty (mean d^2 / dof of the
+  rows whose target fell in the hour up to the origin, floored at the 5th percentile) and the conformal
+  p is taken against calibration rows scaled the same way (normalized conformal, as `app/adaptive.py`).
+  One covariance gave calm and busy hours the same yardstick: a calm day read below 0, a busy one far
+  above. A busy stretch reads as surprise for about an hour, then as the new normal.
+
+Slice 1, 2026-10-30..11-13 (14 days, 3 seeds): 41 targets, 1 covariate (cabinet light), refused hecate watts
+(98.6 % one value), office TVOC (duplicate of eCO2), office sound dBA (only 38 % present: starts 11-07).
+`ridge_var` beats the best baseline at every seed: 5 min loss x0.94-0.96, 15 min x0.96-0.98 (paired t
+p <= 0.005, bootstrap p <= 0.001). The joint excess on the last 24 h (model trained before it) reads -0.03
+(5 min) and -0.18 (15 min), both 95 % intervals contain 0. Only 9 days hold every target (closet, PM and lux sensors
+started 11-05), so no neural rung yet: the spec asks for 21 days (2026-11-26 at the earliest).
+
+Slice 2, 2026-10-30 07:10..11-13 07:10 (masks at every lag, train-rows screen, gap-respecting bootstrap,
+log tails): `ridge_var` still wins at every seed (5 min x0.939-0.959, 15 min x0.968-0.981). Joint score,
+static vs adaptive on held-out blocks (6 runs): mean excess CI contains 0 in 5/6 vs 6/6, p <= 0.05
+0.057-0.097 vs 0.050-0.060, hours at rest 0.45-0.67 vs 0.56-0.65 (calibrated 0.54). On the last 24 h
+(busy: host load ~150): static +1.00 / +0.84 with 28-29 % of p <= 0.05, adaptive +0.04 / +0.04 (CIs
+contain 0), 7 %. Replay of the live loop itself over 11-12 07:11..11-13 07:11
+(`run_family_a_calm_live_eval.py --replay-hours 24`): 287 issues, 0 refused, 570 joint rows scored;
+served excess +0.07 [-0.07, +0.27] (5 min), +0.07 [-0.08, +0.29] (15 min); median per-reading 80 %
+coverage 0.80 (athena load / CPU watts 0.41 / 0.43: #3310). The 7-day live calm check is #3309.
 
 ## Contracts
 
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).
   Consumer: orion-hardware-watch shows the shed probability beside each reflex decision
   (observe-only).
-- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`.
+- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`, `manual_migration_prediction_action_bet_v1.sql`, `manual_migration_prediction_bill_forecast_v1.sql`, `manual_migration_prediction_joint_surprise_v1.sql` (family A).
+  Reads (read-only, other services' tables): `orion_biometrics_summary`, `orion_biometrics_cluster`,
+  `home_cooling_sample`, `office_env_sample` (index: `manual_migration_prediction_office_env_idx_v1.sql`), `energy_usage_interval`, `energy_bill_actual`.
 - Series registry: `config/prediction/series.v1.yaml` (baked into the image).
 
 ## Run
@@ -123,7 +526,15 @@ curl -fsS http://localhost:8132/series/athena.cabinet_temp_c/models
 cd services/orion-prediction
 PYTHONPATH=../..:. python -m pytest tests -q
 PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py          # planted effects, many seeds
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_calm_live_eval.py --hours 24   # surprise calm check (live, read-only)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_node_replay_eval.py --hours 72  # gate + node fold replayed (live, read-only)
+OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 2 [--out <dir>]  # family A gate + rungs + static vs adaptive joint surprise (read-only, ~75 s)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --hours 168      # family A calm check on stored joint rows (PASS needs 7 days)
+OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --replay-hours 24  # dry run of the live loop in memory (read-only, ~4 min)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14   # adaptive ranges replayed (read-only, ~6 min)
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
+PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]
+PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py [--live --experiment-id <uuid>]  # planted slope, null
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_event_pair_live_eval.py  # live vision pairs, read-only
 python evals/export_cabinet_fixture.py --until <iso>                     # refresh the fixture
 ```

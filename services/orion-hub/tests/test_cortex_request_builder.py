@@ -1220,3 +1220,24 @@ def test_build_continuity_messages_carries_ts_only_for_the_harness_path() -> Non
         {"role": "user", "content": "night night"},
         {"role": "assistant", "content": "Night night"},
     ]
+
+
+def test_system_route_in_options_is_dropped_not_forwarded() -> None:
+    """Review 2026-10-23: the builder copies payload["options"], so a refused
+    `options.llm_route` used to ride on to cortex-exec, which now accepts
+    `quick_embodied` (orion.llm.routes.CORTEX_OVERRIDE_SYSTEM_ROUTES) as an override.
+    A raw POST /api/chat must not reach Orion's interactive town-speech route."""
+    from orion.llm.routes import SYSTEM_LLM_ROUTES
+
+    for route in sorted(SYSTEM_LLM_ROUTES):
+        req, _, _ = hub_builder.build_chat_request(
+            payload={"mode": "brain", "options": {"llm_route": route}},
+            session_id="sid-route",
+            user_id="user-route",
+            trace_id="trace-route",
+            default_mode="brain",
+            auto_default_enabled=False,
+            source_label="hub_http",
+            prompt="Hello",
+        )
+        assert (req.options or {}).get("llm_route") is None, route

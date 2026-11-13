@@ -437,7 +437,7 @@ def test_curate_gives_every_section_one_card_before_any_gets_two():
 
 def test_curiosity_drops_listing_page_findings(monkeypatch):
     monkeypatch.setenv("ORION_CAPABILITY_POLICY_AUTO_READONLY_ENABLED", "true")
-    monkeypatch.setattr(curiosity, "_gate_open", lambda run_id, surprise_source=None: True)
+    monkeypatch.setattr(curiosity, "_gate_open", lambda run_id: True)
 
     async def _backend(query, *, max_articles):
         arts = [
@@ -455,7 +455,6 @@ def test_curiosity_drops_listing_page_findings(monkeypatch):
         max_articles_per_section=5,
         max_sections=9,
         fetch_backend=_backend,
-        surprise_source=lambda: None,
     )
     assert [a.url for a in result[0].articles] == ["https://example.org/2026/10/real-gpu-story"]
 

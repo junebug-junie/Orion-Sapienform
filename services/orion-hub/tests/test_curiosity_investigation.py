@@ -121,6 +121,7 @@ class _FakeRedis:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
         self.lists: dict[str, list] = {}
+        self.hashes: dict[str, dict[str, str]] = {}
 
     async def get(self, key):
         return self.values.get(key)
@@ -144,6 +145,13 @@ class _FakeRedis:
 
     async def expire(self, key, ttl):
         return True
+
+    async def hset(self, key, field, value):
+        self.hashes.setdefault(key, {})[field] = value
+        return 1
+
+    async def hget(self, key, field):
+        return self.hashes.get(key, {}).get(field)
 
     async def rpush(self, key, *values):
         lst = self.lists.setdefault(key, [])
@@ -792,7 +800,7 @@ def test_live_priors_are_shown_with_the_ordering_disclosed() -> None:
     asyncio.run(loop.tick())
     assert "the foveal tier never runs on a schedule" in loop.seen_prompt
     assert "the order is not neutral" in loop.seen_prompt
-    assert "which one, if any, is worth your time is your call" in loop.seen_prompt
+    assert "Which one, if any, is worth your time is your call" in loop.seen_prompt
 
 
 def test_an_empty_graph_is_named_as_a_starting_point_not_a_failure() -> None:
@@ -812,7 +820,7 @@ class _FakeOutreach:
         self.offered: list[dict] = []
         self.recorded: list[dict] = []
 
-    def blocked_reason(self, *, skip_schedule_gates=False):
+    def blocked_reason(self, *, skip_schedule_gates=False, cap_exempt=False):
         return self.blocked
 
     def record_blocked(self, reason, *, correlation_id, source, extra=None):
@@ -822,7 +830,8 @@ class _FakeOutreach:
         return row
 
     async def offer_message(self, *, text, correlation_id, tag, model=None, meta=None,
-                            skip_schedule_gates=False):
+                            skip_schedule_gates=False, require_why_juniper=False, finding_key=None,
+                            cap_exempt=False):
         self.offered.append(
             {
                 "text": text,
@@ -830,9 +839,23 @@ class _FakeOutreach:
                 "correlation_id": correlation_id,
                 "meta": dict(meta or {}),
                 "skip_schedule_gates": skip_schedule_gates,
+                "require_why_juniper": require_why_juniper,
+                "finding_key": finding_key,
+                "cap_exempt": cap_exempt,
             }
         )
         return self.result
+
+
+def _juniper_asked(loop) -> None:
+    """Door policy (2026-11-10): an investigate run reaches Juniper only when she asked for it.
+    These tests exercise the composition path, so the run is one she asked for (the rule itself
+    is covered in tests/test_outreach_door_policy.py)."""
+
+    async def _door(run_id, line):
+        return True, "asked_by_juniper"
+
+    loop._curiosity_door = _door
 
 
 def _reach_out_reader(run_id_holder):
@@ -860,6 +883,7 @@ def test_a_finding_orion_wants_to_share_goes_through_a_second_turn() -> None:
         outreach_enabled=True,
         outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     prompts: list[str] = []
 
     async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
@@ -986,6 +1010,8 @@ def test_a_pre_check_block_writes_a_decision_row_with_run_id_and_line() -> None:
     assert outreach.offered == [], "a pre-check block must not spend a composition turn"
     assert outreach.recorded == [
         {
+            "door_policy": "line:self_inquiry",
+            "finding_key": "curiosity_run:run-blk",
             "run_id": "run-blk",
             "line": "self_inquiry",
             "outreach": False,
@@ -1002,6 +1028,7 @@ def test_the_sent_path_threads_run_id_and_line_into_offer_message() -> None:
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
 
     async def _gen(prompt, correlation_id, **kw):
         return "worth saying", {"fcc_model_label": "M"}
@@ -1016,7 +1043,10 @@ def test_the_sent_path_threads_run_id_and_line_into_offer_message() -> None:
     assert got is None
     assert outreach.recorded == []
     assert outreach.offered[0]["correlation_id"] == _expected_corr("run-sent")
-    assert outreach.offered[0]["meta"] == {"run_id": "run-sent", "line": "investigate"}
+    assert outreach.offered[0]["meta"] == {"run_id": "run-sent", "line": "investigate",
+                                           "door_policy": "asked_by_juniper"}
+    assert outreach.offered[0]["require_why_juniper"] is True
+    assert outreach.offered[0]["finding_key"] == "curiosity_run:run-sent"
     assert outreach.offered[0]["skip_schedule_gates"] is True
 
 
@@ -1026,6 +1056,7 @@ def test_an_empty_composition_writes_a_row_instead_of_only_logging() -> None:
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
 
     async def _gen(prompt, correlation_id, **kw):
         return "", {"raw_len": 0}
@@ -1095,6 +1126,7 @@ def test_a_failing_decision_write_never_reaches_the_investigation(monkeypatch) -
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     assert asyncio.run(
         loop._maybe_reach_out(
             outcome=_reach_out_outcome("r3"), finding_text="f", run_id="r3", hop_notes=[]
@@ -1164,6 +1196,7 @@ def test_the_composition_turn_is_not_held_to_the_lookup_gate() -> None:
         outreach_enabled=True,
         outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     seen: list[bool] = []
 
     async def _fake_generate(prompt, correlation_id, source=None, require_lookup=True, parent_run_id=None, **kwargs):
@@ -1197,8 +1230,8 @@ def test_the_lookup_gate_still_refuses_an_investigation_that_did_not_look() -> N
 
 
 def test_the_composition_prompt_asks_for_the_exact_token_the_gate_checks() -> None:
-    """`is_pass_response` is `stripped.upper() == "PASS"` -- the WHOLE reply
-    must be that word. A prompt that only says "say so plainly" gets a graceful
+    """`is_pass_response` needs PASS on a line of its own (the whole reply, or a
+    line after Orion's reasoning). A prompt that only says "say so plainly" gets a graceful
     decline in Orion's own words delivered to Juniper AS the message, which is
     the exact inverse of what the prompt promised. Lives in the Hub suite
     because `scripts.endogenous_outreach` is Hub-scoped."""
@@ -1241,6 +1274,7 @@ def test_maybe_reach_out_passes_hop_notes_into_composition_prompt(monkeypatch) -
         outreach_enabled=True,
         outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
 
     async def fake_generate(prompt, correlation_id, **kwargs):
         return "PASS", {}
@@ -2732,6 +2766,27 @@ def test_actual_curiosity_run_id_reaches_reading_binding(monkeypatch):
     assert captured["correlation_id"] == "trace-id"
 
 
+@pytest.mark.parametrize("source", ["orion_day_letter", "consult_orion_turn:t2"])
+def test_letter_and_consult_turns_are_not_framed_as_curiosity_runs(monkeypatch, source):
+    """The day letter (Prime's end-of-day turn) and a consult reply ride the durable turn seam
+    with a parent run id, but neither is a curiosity run: no curiosity reading framing."""
+    from orion.schemas.orion_day import ORION_DAY_LETTER_SOURCE_TAG
+
+    assert ORION_DAY_LETTER_SOURCE_TAG == "orion_day_letter"
+    captured = {}
+
+    async def turn(**kwargs):
+        captured.update(kwargs)
+        return [{"type": "final", "llm_response": "a letter", "harness_step_count": 9}]
+
+    monkeypatch.setattr("orion.hub.turn_orchestrator.execute_unified_turn", turn)
+    loop = _loop(_FakeBus(), text=None)
+    loop._generate = CuriosityInvestigation._generate.__get__(loop)
+    asyncio.run(loop._generate("prompt", "trace-id", parent_run_id="orion-day-2026-11-11-1", source=source))
+    assert captured["reading_context"] is None
+    assert captured["reading_parent_run_id"] is None
+
+
 # --- energy stakes hold (ORION_ENERGY_STAKES_ENABLED) ------------------------
 
 from orion.schemas.attention_schema import ATTENTION_SCHEMA_CHANNEL  # noqa: E402
@@ -2839,6 +2894,7 @@ def test_outreach_composition_recalls_about_the_finding_not_the_prompt() -> None
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     seen: list = []
 
     async def _gen(prompt, correlation_id, **kw):
@@ -2864,6 +2920,7 @@ def test_outreach_composition_with_no_finding_sends_no_query() -> None:
         _FakeBus(), reader=_reach_out_reader(None),
         outreach_enabled=True, outreach_provider=lambda: outreach,
     )
+    _juniper_asked(loop)
     seen: list = []
 
     async def _gen(prompt, correlation_id, **kw):

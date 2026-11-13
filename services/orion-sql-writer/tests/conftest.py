@@ -116,7 +116,16 @@ DB_REACHABLE = _database_is_reachable()
 
 # Measured, not guessed -- see the note above. Adding a module here must be
 # justified by showing it actually fails against an unreachable database.
-_DB_DEPENDENT_MODULES = {"test_grammar_ledger_integration", "test_act_ledger_integration"}
+_DB_DEPENDENT_MODULES = {
+    "test_grammar_ledger_integration", "test_act_ledger_integration", "test_act_workspace_binding_integration",
+    # 2026-11-10: 8 ERRORS (KeyError on the URI) with no database; runs in sql-writer-integration.
+    "test_act_reading_cost_integration",
+    # 2026-11-11 (patch 3e, reading's energy): same shape; runs in sql-writer-integration.
+    "test_reading_energy_closure_integration",
+    # 2026-11-13 (attention patch 4a, camera asks as graded acts): KeyError on the URI with no database
+    # (every test errors on the fixture); runs in sql-writer-integration.
+    "test_camera_ask_acts_integration",
+}
 
 _TESTS_DIR = Path(__file__).resolve().parent
 

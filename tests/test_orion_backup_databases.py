@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fcntl
-import gzip
 import io
 import shutil
 import subprocess
@@ -45,7 +44,7 @@ def test_postgres_dump_timeout_exceeds_shared_default() -> None:
 class _FakeProc:
     """Stand-in for a subprocess.Popen handle used by capture_postgres.
 
-    capture_postgres runs the dump as a real pipeline now (pg_dumpall | gzip),
+    capture_postgres runs the dump as a real pipeline now (pg_dumpall | zstd),
     so patching subprocess.run alone no longer intercepts it -- and an
     unpatched Popen in these tests fires a genuine `docker exec pg_dumpall`
     at the live database. Every test below patches Popen for that reason.
@@ -78,18 +77,22 @@ class _FakeProc:
 
 
 def _patch_dump_pipeline(
-    monkeypatch, *, dump_rc=0, gz_rc=0, dump_err=b"", gz_err=b"", gz_timeout=False
+    monkeypatch, *, dump_rc=0, comp_rc=0, dump_err=b"", comp_err=b"", comp_timeout=False, zstd_check_rc=0
 ):
     """Patch subprocess.Popen so the dump pipeline is simulated, and record
-    every command both Popen and run were asked to execute."""
+    every command both Popen and run were asked to execute.
+
+    The compressor runs inside the container (docker exec ... zstd), so both
+    pipeline halves start with `docker` -- they are told apart by whether the
+    command names pg_dumpall or zstd."""
     calls: list[list[str]] = []
     procs: dict[str, _FakeProc] = {}
 
     def _fake_popen(cmd, **kwargs):
         calls.append(cmd)
-        if cmd and cmd[0] == "gzip":
-            proc = _FakeProc(cmd, returncode=gz_rc, err=gz_err, timeout=gz_timeout)
-            procs["gzip"] = proc
+        if cmd and "zstd" in cmd:
+            proc = _FakeProc(cmd, returncode=comp_rc, err=comp_err, timeout=comp_timeout)
+            procs["comp"] = proc
         else:
             proc = _FakeProc(cmd, returncode=dump_rc, err=dump_err, stderr=kwargs.get("stderr"))
             procs["dump"] = proc
@@ -97,6 +100,9 @@ def _patch_dump_pipeline(
 
     def _fake_run(cmd, **kwargs):
         calls.append(cmd)
+        if cmd and "zstd" in cmd and "--version" in cmd:
+            # the pre-flight container zstd check
+            return subprocess.CompletedProcess(cmd, zstd_check_rc, stdout=b"", stderr=b"not found")
         return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(subprocess, "Popen", _fake_popen)
@@ -109,11 +115,34 @@ def test_capture_postgres_uses_dedicated_timeout(tmp_path: Path, monkeypatch: py
     dest = tmp_path / "postgres_snapshot"
     capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
 
-    assert procs["gzip"].timeout_seen == POSTGRES_DUMP_TIMEOUT_SEC
-    assert procs["dump"].timeout_seen == POSTGRES_DUMP_TIMEOUT_SEC
+    assert procs["comp"].timeout_seen == POSTGRES_DUMP_TIMEOUT_SEC
+    # The dump's wait gets the *remaining* slice of one shared deadline, not a
+    # second full timeout: two in series would allow 2x7200s = the whole
+    # TimeoutStartSec=4h unit window. With the fakes returning instantly the
+    # remainder is ~the full budget; pin it as a range so the assertion doesn't
+    # depend on test speed, and pin the arithmetic itself in
+    # test_capture_postgres_dump_wait_gets_only_the_remaining_deadline below.
+    assert POSTGRES_DUMP_TIMEOUT_SEC - 30 <= procs["dump"].timeout_seen <= POSTGRES_DUMP_TIMEOUT_SEC
 
 
-def test_capture_postgres_writes_gzipped_dump(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_capture_postgres_dump_wait_gets_only_the_remaining_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # One deadline across both waits: if the compressor consumed 6000s of the
+    # 7200s budget, pg_dumpall's wait may only claim the remaining 1200s --
+    # never a fresh full timeout on top. The clock is patched so the arithmetic
+    # is pinned exactly instead of depending on how fast the fakes return.
+    _, procs = _patch_dump_pipeline(monkeypatch)
+    ticks = iter([1_000.0, 7_000.0])  # dump_started, then the remaining-time read
+    monkeypatch.setattr("time.monotonic", lambda: next(ticks))
+
+    capture_postgres(tmp_path / "snap", container="orion-athena-sql-db", pg_user="postgres", log=[])
+
+    assert procs["comp"].timeout_seen == POSTGRES_DUMP_TIMEOUT_SEC
+    assert procs["dump"].timeout_seen == POSTGRES_DUMP_TIMEOUT_SEC - 6_000
+
+
+def test_capture_postgres_writes_zstd_compressed_dump(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # The dump is compressed on the way to disk: 14 retained *uncompressed*
     # cluster dumps is what filled /mnt/storage-warm to 0 bytes free and broke
     # every postgres backup from 2026-08-30 onward.
@@ -121,55 +150,111 @@ def test_capture_postgres_writes_gzipped_dump(tmp_path: Path, monkeypatch: pytes
     dest = tmp_path / "postgres_snapshot"
     capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
 
-    assert (dest / "pg_dumpall.sql.gz").exists()
-    assert not (dest / "pg_dumpall.sql").exists()
-    gzip_calls = [c for c in calls if c and c[0] == "gzip"]
-    assert len(gzip_calls) == 1
+    assert (dest / "pg_dumpall.sql.zst").exists()
+    assert not (dest / "pg_dumpall.sql.gz").exists()
+    # Pinned: the compressor must run inside the container, not on the host --
+    # athena has no zstd binary (confirmed live 2026-11-05), the postgres image does.
+    # Exact argv, not a prefix: `docker exec` without `-i` never forwards stdin,
+    # so the in-container zstd reads an empty stream, writes a 13-byte empty
+    # frame, exits 0, and pg_dumpall's client dies of SIGPIPE (rc -13). A
+    # `[:3] == ["docker","exec",container]` prefix check passed on that broken
+    # command; the `-i` is load-bearing. Reproduced live on athena 2026-11-05.
+    comp_calls = [c for c in calls if c and "zstd" in c and "-3" in c]
+    assert len(comp_calls) == 1
+    assert comp_calls[0] == [
+        "docker", "exec", "-i", "orion-athena-sql-db", "zstd", "-3", "-q", "-T0",
+    ]
 
 
-def test_capture_postgres_really_produces_readable_gzip(tmp_path: Path) -> None:
-    # Hand-checked round trip through the real gzip binary -- the fake Popen
+def test_capture_postgres_compresses_inside_the_container_not_as_one_shell_pipe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Two separate docker-exec processes piped at the OS level, deliberately
+    # not `sh -c 'pg_dumpall | zstd'`: a shell pipe inside the container would
+    # collapse both exit codes into the pipeline's tail and let a failed
+    # pg_dumpall hide behind zstd's 0 -- exactly the truncated-stream trap the
+    # double returncode check exists for.
+    calls, _ = _patch_dump_pipeline(monkeypatch)
+    capture_postgres(tmp_path / "snap", container="orion-athena-sql-db", pg_user="postgres", log=[])
+
+    popen_cmds = [c for c in calls if c and "pg_dumpall" in c] + [c for c in calls if c and "zstd" in c and "-3" in c]
+    assert len(popen_cmds) == 2
+    # Exact argv for both halves, not `"sh" not in cmd and "-c" not in cmd`:
+    # the token check would pass on `bash -lc 'pg_dumpall | zstd'`, which is
+    # exactly the exit-code-collapsing shell pipe this test exists to forbid.
+    assert popen_cmds[0] == ["docker", "exec", "orion-athena-sql-db", "pg_dumpall", "-U", "postgres"]
+    assert popen_cmds[1] == ["docker", "exec", "-i", "orion-athena-sql-db", "zstd", "-3", "-q", "-T0"]
+
+
+def test_capture_postgres_really_produces_readable_zstd(tmp_path: Path) -> None:
+    # Hand-checked round trip through the real zstd binary -- the fake Popen
     # above proves the wiring, this proves the artifact is actually a valid
-    # gzip stream that restores to the original bytes.
+    # zstd stream that restores to the original bytes. Skipped where no zstd
+    # binary exists (the athena host itself has none; CI runners do).
+    if shutil.which("zstd") is None:
+        pytest.skip("no zstd binary on this host")
     payload = b"-- orion cluster dump\nCREATE TABLE t (id int);\n" * 100
-    dest_file = tmp_path / "pg_dumpall.sql.gz"
+    dest_file = tmp_path / "pg_dumpall.sql.zst"
     with dest_file.open("wb") as fh:
         src = subprocess.Popen(["printf", "%s", payload.decode()], stdout=subprocess.PIPE)
-        gz = subprocess.Popen(["gzip"], stdin=src.stdout, stdout=fh)
+        comp = subprocess.Popen(["zstd", "-3", "-q"], stdin=src.stdout, stdout=fh)
         src.stdout.close()
-        gz.communicate()
+        comp.communicate()
         src.wait()
 
-    assert gzip.decompress(dest_file.read_bytes()) == payload
+    restored = subprocess.run(
+        ["zstd", "-dc", str(dest_file)], stdout=subprocess.PIPE, check=True
+    ).stdout
+    assert restored == payload
     assert dest_file.stat().st_size < len(payload)
 
 
-def test_capture_postgres_fails_when_dump_fails_even_if_gzip_succeeds(
+def test_capture_postgres_fails_when_dump_fails_even_if_compressor_succeeds(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # The whole reason both exit codes are checked: gzip compresses a
+    # The whole reason both exit codes are checked: the compressor compresses a
     # truncated stream perfectly happily and exits 0. If only the tail of the
     # pipe were trusted, a half-written dump would be stored as a good
     # snapshot and only discovered at restore time.
-    _patch_dump_pipeline(monkeypatch, dump_rc=1, gz_rc=0, dump_err=b"connection lost")
+    calls, _ = _patch_dump_pipeline(monkeypatch, dump_rc=1, comp_rc=0, dump_err=b"connection lost")
     dest = tmp_path / "postgres_snapshot"
 
     with pytest.raises(RuntimeError, match="pg_dumpall failed"):
         capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
 
-    assert not (dest / "pg_dumpall.sql.gz").exists()
+    assert not (dest / "pg_dumpall.sql.zst").exists()
+    # A dump that dies with a non-zero returncode *without* raising (e.g. the
+    # SIGPIPE -13 an early-exiting compressor causes) still leaves a live
+    # server-side pg_dump backend holding locks on every table -- the
+    # documented 2026-08-16/17/18 lock storm. The sweep must run here too, not
+    # only on the exception path: pre-flight + post-failure = 2.
+    terminate_calls = [c for c in calls if "pg_terminate_backend" in " ".join(c)]
+    assert len(terminate_calls) == 2
 
 
-def test_capture_postgres_fails_when_gzip_fails(
+def test_capture_postgres_sweeps_backends_when_compressor_exits_early(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _patch_dump_pipeline(monkeypatch, dump_rc=0, gz_rc=1, gz_err=b"No space left on device")
+    # Same storm guard from the compressor side: zstd dies mid-stream (rc!=0),
+    # pg_dumpall's client follows with SIGPIPE, both non-exception paths.
+    calls, _ = _patch_dump_pipeline(monkeypatch, dump_rc=-13, comp_rc=137, comp_err=b"killed")
+    with pytest.raises(RuntimeError, match="zstd failed"):
+        capture_postgres(tmp_path / "snap", container="orion-athena-sql-db", pg_user="postgres", log=[])
+
+    terminate_calls = [c for c in calls if "pg_terminate_backend" in " ".join(c)]
+    assert len(terminate_calls) == 2
+
+
+def test_capture_postgres_fails_when_compressor_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_dump_pipeline(monkeypatch, dump_rc=0, comp_rc=1, comp_err=b"No space left on device")
     dest = tmp_path / "postgres_snapshot"
 
-    with pytest.raises(RuntimeError, match="gzip failed"):
+    with pytest.raises(RuntimeError, match="zstd failed"):
         capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
 
-    assert not (dest / "pg_dumpall.sql.gz").exists()
+    assert not (dest / "pg_dumpall.sql.zst").exists()
 
 
 def test_capture_postgres_clears_stale_backend_before_dumping(
@@ -179,8 +264,12 @@ def test_capture_postgres_clears_stale_backend_before_dumping(
     dest = tmp_path / "postgres_snapshot"
     capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
 
-    assert calls[0][:4] == ["docker", "exec", "orion-athena-sql-db", "psql"]
-    cleanup_sql = " ".join(calls[0])
+    # order pinned: zstd pre-flight -> stale-backend sweep -> dump. The zstd
+    # check must come first so a missing compressor fails before pg_dumpall
+    # opens a cluster-wide read.
+    assert calls[0][:5] == ["docker", "exec", "orion-athena-sql-db", "zstd", "--version"]
+    assert calls[1][:4] == ["docker", "exec", "orion-athena-sql-db", "psql"]
+    cleanup_sql = " ".join(calls[1])
     assert "pg_terminate_backend" in cleanup_sql
     # Pinned deliberately: pg_dumpall's actual per-database lock-holding
     # connections show as application_name=pg_dump, not pg_dumpall (confirmed
@@ -188,7 +277,7 @@ def test_capture_postgres_clears_stale_backend_before_dumping(
     # would regress straight back to the incident this test guards against.
     assert "application_name IN ('pg_dump', 'pg_dumpall')" in cleanup_sql
     assert "pid <> pg_backend_pid()" in cleanup_sql
-    assert calls[1][:4] == ["docker", "exec", "orion-athena-sql-db", "pg_dumpall"]
+    assert calls[2][:4] == ["docker", "exec", "orion-athena-sql-db", "pg_dumpall"]
 
 
 def test_capture_postgres_terminates_orphaned_backend_on_timeout(
@@ -198,8 +287,8 @@ def test_capture_postgres_terminates_orphaned_backend_on_timeout(
     # `docker exec ... pg_dumpall` only kills the local client, leaving the
     # server-side backend orphaned and holding locks across every table. The
     # timeout must now trigger a cleanup call in addition to still propagating.
-    # With the pipeline, a hung dump surfaces as gzip still waiting on stdin.
-    calls, procs = _patch_dump_pipeline(monkeypatch, gz_timeout=True)
+    # With the pipeline, a hung dump surfaces as the compressor still waiting on stdin.
+    calls, procs = _patch_dump_pipeline(monkeypatch, comp_timeout=True)
     dest = tmp_path / "postgres_snapshot"
     with pytest.raises(subprocess.TimeoutExpired):
         capture_postgres(dest, container="orion-athena-sql-db", pg_user="postgres", log=[])
@@ -208,8 +297,8 @@ def test_capture_postgres_terminates_orphaned_backend_on_timeout(
     # pre-flight cleanup (before the dump attempt) + post-timeout cleanup
     assert len(terminate_calls) == 2
     # Both halves of the pipeline are killed, not just the one that timed out.
-    assert procs["dump"].killed and procs["gzip"].killed
-    assert not (dest / "pg_dumpall.sql.gz").exists()
+    assert procs["dump"].killed and procs["comp"].killed
+    assert not (dest / "pg_dumpall.sql.zst").exists()
 
 
 def test_terminate_stale_pg_dump_backends_is_best_effort_on_failure(
@@ -595,19 +684,20 @@ def test_retention_failure_on_a_successful_capture_still_fails_the_run(
     assert outcome.snapshot_path is not None
 
 
-def test_capture_postgres_kills_the_dump_when_gzip_cannot_start(
+def test_capture_postgres_kills_the_dump_when_compressor_cannot_start(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Review finding: only TimeoutExpired was handled. If starting gzip raised,
-    # pg_dumpall was already running and would be left behind -- and killing
-    # the local docker-exec client does not kill the server-side backend, which
-    # then holds locks on every table until the next night's pre-flight sweep.
+    # Review finding: only TimeoutExpired was handled. If starting the
+    # compressor raised, pg_dumpall was already running and would be left
+    # behind -- and killing the local docker-exec client does not kill the
+    # server-side backend, which then holds locks on every table until the
+    # next night's pre-flight sweep.
     procs: dict[str, _FakeProc] = {}
     calls: list[list[str]] = []
 
     def _fake_popen(cmd, **kwargs):
         calls.append(cmd)
-        if cmd and cmd[0] == "gzip":
+        if cmd and "zstd" in cmd:
             raise OSError("Cannot allocate memory")
         proc = _FakeProc(cmd, stderr=kwargs.get("stderr"))
         procs["dump"] = proc
@@ -627,29 +717,118 @@ def test_capture_postgres_kills_the_dump_when_gzip_cannot_start(
     assert procs["dump"].killed
     terminate_calls = [c for c in calls if "pg_terminate_backend" in " ".join(c)]
     assert len(terminate_calls) == 2  # pre-flight + post-failure cleanup
-    assert not (dest / "pg_dumpall.sql.gz").exists()
+    assert not (dest / "pg_dumpall.sql.zst").exists()
 
 
-def test_capture_postgres_fails_fast_when_gzip_is_missing(
+def test_capture_postgres_fails_fast_when_container_zstd_is_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # The dump is only useful if it can actually be compressed. Checking the
-    # binary up front means the run fails before pg_dumpall is started, rather
-    # than after it has already opened a cluster-wide read.
-    import scripts.backup.orion_backup_databases as mod
+    # binary inside the container up front means the run fails before
+    # pg_dumpall is started, rather than after it has already opened a
+    # cluster-wide read. (The old check was host-side shutil.which("gzip");
+    # zstd lives in the postgres image, not on the athena host.)
+    calls: list[list[str]] = []
 
-    monkeypatch.setattr(mod.shutil, "which", lambda name: None)
+    def _fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd and "zstd" in cmd and "--version" in cmd:
+            return subprocess.CompletedProcess(cmd, 127, stdout=b"", stderr=b"zstd: not found")
+        raise AssertionError("no backend cleanup or dump should start when zstd is missing")
 
-    def _must_not_run(*args, **kwargs):
-        raise AssertionError("no subprocess should start when gzip is missing")
+    def _must_not_popen(*args, **kwargs):
+        raise AssertionError("no subprocess should start when zstd is missing")
 
-    monkeypatch.setattr(subprocess, "Popen", _must_not_run)
-    monkeypatch.setattr(subprocess, "run", _must_not_run)
+    monkeypatch.setattr(subprocess, "Popen", _must_not_popen)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
 
-    with pytest.raises(RuntimeError, match="gzip binary not found"):
+    with pytest.raises(RuntimeError, match="zstd probe failed in container"):
         capture_postgres(
             tmp_path / "snap", container="orion-athena-sql-db", pg_user="postgres", log=[]
         )
+
+    # only the zstd probe ran -- no psql cleanup sweep, no pg_dumpall
+    assert len(calls) == 1
+
+
+def test_capture_postgres_zstd_probe_timeout_raises_runtime_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A wedged docker daemon hangs the probe. Without catching TimeoutExpired
+    # here, a bare subprocess error escapes where callers expect the same
+    # RuntimeError shape as every other pre-flight failure.
+    def _fake_run(cmd, **kwargs):
+        if cmd and "zstd" in cmd and "--version" in cmd:
+            raise subprocess.TimeoutExpired(cmd, 30)
+        raise AssertionError("no backend cleanup or dump should start when the probe timed out")
+
+    def _must_not_popen(*args, **kwargs):
+        raise AssertionError("no subprocess should start when the zstd probe failed")
+
+    monkeypatch.setattr(subprocess, "Popen", _must_not_popen)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="zstd probe .* timed out"):
+        capture_postgres(
+            tmp_path / "snap", container="orion-athena-sql-db", pg_user="postgres", log=[]
+        )
+
+
+def test_capture_postgres_zstd_probe_error_is_not_blamed_on_missing_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A stopped/restarting container fails the probe too ("No such container").
+    # Saying "zstd binary not found" sends the operator to install zstd in the
+    # wrong place; the message must name the probe, not one guessed cause.
+    def _fake_run(cmd, **kwargs):
+        if cmd and "zstd" in cmd and "--version" in cmd:
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout=b"", stderr=b"Error response from daemon: No such container: gone"
+            )
+        raise AssertionError("no backend cleanup or dump should start when the probe failed")
+
+    def _must_not_popen(*args, **kwargs):
+        raise AssertionError("no subprocess should start when the zstd probe failed")
+
+    monkeypatch.setattr(subprocess, "Popen", _must_not_popen)
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    with pytest.raises(RuntimeError, match="zstd probe failed") as excinfo:
+        capture_postgres(
+            tmp_path / "snap", container="orion-athena-sql-db", pg_user="postgres", log=[]
+        )
+    assert "not found" not in str(excinfo.value)
+    assert "No such container" in str(excinfo.value)
+
+
+def test_capture_postgres_docker_exec_i_forwards_stdin_smoke() -> None:
+    # The one property no fake can catch: Docker only forwards stdin to the
+    # in-container process when `exec -i` is used. Without it zstd reads an
+    # empty stream, emits a 13-byte empty frame, exits 0 -- and pg_dumpall's
+    # client dies of SIGPIPE. Skipped where docker or the postgres container
+    # is unavailable (CI); runs against the real container on athena.
+    container = "orion-athena-sql-db"
+    probe = subprocess.run(
+        ["docker", "exec", "-i", container, "zstd", "--version"],
+        capture_output=True, timeout=30,
+    )
+    if probe.returncode != 0:
+        pytest.skip("docker or the postgres container with zstd unavailable here")
+
+    payload = b"-- pinned docker exec -i stdin forwarding\n" * 200
+    comp = subprocess.Popen(
+        ["docker", "exec", "-i", container, "zstd", "-3", "-q", "-T0"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+    )
+    out, _ = comp.communicate(payload)
+    assert comp.returncode == 0
+    assert len(out) > 13  # more than an empty zstd frame -- the bytes went through
+
+    back = subprocess.run(
+        ["docker", "exec", "-i", container, "zstd", "-dc"],
+        input=out, stdout=subprocess.PIPE, check=True, timeout=60,
+    )
+    assert back.stdout == payload
 
 
 def test_container_mount_source_reads_the_live_mount(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -152,8 +152,9 @@ class Settings(BaseSettings):
     # (recon_loss vs. its own train-time recon_error_p95), this service owns
     # the trigger-sensitivity knob via its own threshold multiplier rather
     # than trusting the producer's embedded "anomalous" flag.
+    # OFF 2026-11 until the mood-arc encoder is retrained (see .env_example).
     metacog_telemetry_anomaly_trigger_enable: bool = Field(
-        True, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE"
+        False, alias="EQUILIBRIUM_METACOG_TELEMETRY_ANOMALY_TRIGGER_ENABLE"
     )
     # Matches fit_encoder.py detect-anomalies's own --threshold-multiplier
     # default (3.0x the encoder's held-out recon_error_p95).

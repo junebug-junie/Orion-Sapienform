@@ -499,7 +499,12 @@ def test_naming_a_person_is_a_who_is_this_answer_and_renames_the_story() -> None
         assert row["applied_at"] is None and row["answered_at"] is not None   # sql-writer applies it
         assert json.loads(row["answer_detail"]) == {"story_id": sid, "action": "name", "via": "motion_story",
                                                     "name": "Theo"}
-        assert json.loads(row["evidence_refs"]) == [f"motion_story:{sid}", "individual:ind-anon"]
+        # Marked as Juniper's own card (attention patch 4a): it opens no vision.ask act, counts in no ask stat.
+        assert json.loads(row["evidence_refs"]) == [f"motion_story:{sid}", "individual:ind-anon",
+                                                    "rule:juniper_story_naming"]
+        from orion.grammar.camera_ask_acts import is_juniper_card, is_orion_camera_ask
+        assert is_juniper_card(row["evidence_refs"], None)
+        assert not is_orion_camera_ask(row["source_kind"], row["evidence_refs"], None)
         assert row["image_ref"] == f"thumb:{THUMB}"
         # The substrate entity event, the same one a Hub "who is this?" answer publishes.
         assert [(e.ask_id, e.source_kind, e.source_ref, e.answer, e.status) for e in published] == [
@@ -643,3 +648,43 @@ def test_a_companion_from_a_story_walked_together_can_be_named_there() -> None:
         assert published[0].source_ref == "ind-friend"
 
     _run(body, published)
+
+
+# --- street continuity line (2026-10-20) ---------------------------------------------------------------
+
+HANDOFF_MIGRATION = REPO_ROOT / "services" / "orion-sql-db" / "manual_migration_vision_handoff_v1.sql"
+
+
+def test_handoff_info_says_which_camera_and_how_long() -> None:
+    row = {"source_story_id": "a", "target_story_id": "b", "source_stream": "doorbell", "target_stream": "walkway",
+           "transit_sec": 38.4, "status": "met"}
+    assert msr.handoff_info("b", row) == {"kind": "from", "camera": "door camera", "seconds": 38}
+    assert msr.handoff_info("a", row) == {"kind": "next", "camera": "walkway camera", "seconds": 38}
+    assert msr.handoff_info("z", row) is None
+    assert msr.handoff_info("b", {**row, "status": "paired", "transit_sec": -2})["kind"] == "same"
+    assert msr.handoff_info("b", {**row, "status": "missed"}) is None
+
+
+@needs_pg
+def test_list_shows_the_handoff_line_and_is_silent_without_the_table() -> None:
+    async def body(pool, client):
+        a = await _story(pool, 1, minute=1)
+        r = await client.get("/api/vision/motion-stories")
+        assert r.status_code == 200 and r.json()["stories"][0]["handoff"] is None   # no table yet: fail-open
+        for st in _statements(HANDOFF_MIGRATION.read_text()):
+            await pool.execute(st)
+        await pool.execute(
+            "INSERT INTO vision_handoff (handoff_id, portal_id, portal_kind, source_stream, target_stream, "
+            "source_story_id, target_story_id, status, transit_sec, scored_at) VALUES ('h1', 'door_to_walkway', "
+            "'gap', 'doorbell', 'walkway', 'door-story', $1, 'met', 38.0, now())", a)
+        r = await client.get("/api/vision/motion-stories")
+        assert r.json()["stories"][0]["handoff"] == {"kind": "from", "camera": "door camera", "seconds": 38}
+
+    _run(body)
+
+
+def test_the_juniper_card_marker_is_the_shared_one() -> None:
+    """Hub stamps the marker; sql-writer, the act ledger and the replay filter on it (patch 4a)."""
+    from orion.grammar.camera_ask_acts import JUNIPER_STORY_CARD_REF
+
+    assert msr.JUNIPER_STORY_CARD_REF == JUNIPER_STORY_CARD_REF

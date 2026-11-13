@@ -20,7 +20,6 @@ services:
       - "${HEALTH_HTTP_PORT:-8070}:${HEALTH_HTTP_PORT:-8070}"
 
     volumes:
-      - ${SELF_STUDY_GRAPH_HOST_PATH:-/mnt/storage-warm/orion-graphify}:/graphify:ro
       - ${ORION_HOST_TAILSCALE_BIN:-/usr/bin/tailscale}:${ORION_CONTAINER_TAILSCALE_BIN:-/usr/bin/tailscale}:ro
       - ${ORION_HOST_TAILSCALE_RUN:-/var/run/tailscale}:/var/run/tailscale:ro
       # Host Docker engine + CLI for skills.runtime.docker_prune_stopped_containers.v1 (and other docker skills).
@@ -57,41 +56,10 @@ services:
       # docker.sock bind above -- would otherwise construct its build context from that stale snapshot, not live
       # host code. This mount fixes that. MUST stay `:ro` -- do NOT change to a write mount under any framing
       # (env sync, log writes, etc.); Juniper does not want this container able to write into the host repo /
-      # main branch. Mounted at the SAME absolute path on both sides so ORION_REPO_ROOT / self_study's
+      # main branch. Mounted at the SAME absolute path on both sides so ORION_REPO_ROOT / orch_paths'
       # `_resolve_repo_root()` and any script-relative paths resolve identically inside and outside the
       # container. Override ORION_HOST_REPO_ROOT if this node's checkout lives elsewhere.
       - ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}:ro
-      # Read-only mount of orion-self-study-enrichment's cache volume (2026-08,
-      # self_study.py's _semantic_enrichment_concepts()). That service names
-      # its volume `${PROJECT}-self-study-enrichment-data` (see
-      # services/orion-self-study-enrichment/docker-compose.yml) and mounts it
-      # at /data; cortex-exec never writes into it, only reads cached
-      # enrichment JSON already written by that service. Mount target here
-      # MUST match SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR's default in
-      # self_study.py (currently /mnt/self_study_enrichment_data) -- if they
-      # diverge, the cache silently reads as "unreachable" with no error.
-      - self_study_enrichment_data:/mnt/self_study_enrichment_data:ro
-      # Small, writable volume (2026-08) so
-      # _structural_delta_concepts()'s "last observed graphify snapshot" can
-      # survive a container restart instead of resetting to cold start every
-      # time. Deliberately NOT the read-only host repo mount above -- that
-      # one stays read-only on purpose (see its own comment). This is a
-      # dedicated volume for exactly this purpose, same pattern as
-      # self_study_enrichment_data, and owned solely by this SERVICE (not
-      # external/cross-service, unlike the enrichment volume above).
-      # "Solely by this service" does NOT mean solely by one container,
-      # though (review finding, 2026-08-12): cortex-exec-chat/-spark/
-      # -background below all `extends: cortex-exec` with no volumes
-      # override, so all 4 containers share this same volume and can call
-      # the self_concept_induce/reflect verbs concurrently. self_study.py's
-      # append-only JSONL history log has no cross-process file lock, so a
-      # race there can produce a handful of duplicate entries around a
-      # restart or commit transition -- harmless (the log is read as
-      # "take the last entry", and a duplicate entry is byte-identical to
-      # the one before it), not corruption. Scoping this to a single lane
-      # was considered and rejected as more invasive than the problem
-      # warrants; documenting the real multi-writer shape here instead.
-      - self_study_structural_mass_data:/mnt/self_study_structural_mass_data
 
     # Block-device access for skills.storage.disk_health_snapshot.v1 (smartctl/nvme need host nodes).
     privileged: true
@@ -132,7 +100,6 @@ services:
       EXEC_RESULT_PREFIX: ${EXEC_RESULT_PREFIX}
       CORTEX_LOG_CHANNEL: ${CORTEX_LOG_CHANNEL}
       CHANNEL_LLM_INTAKE: ${CHANNEL_LLM_INTAKE}
-      ATLAS_METACOG_PROFILE_NAME: ${ATLAS_METACOG_PROFILE_NAME:-}
       CHANNEL_RECALL_INTAKE: ${CHANNEL_RECALL_INTAKE}
       RECALL_RPC_TIMEOUT_SEC: ${RECALL_RPC_TIMEOUT_SEC:-90}
       CHAT_QUICK_RECALL_TIMEOUT_SEC: ${CHAT_QUICK_RECALL_TIMEOUT_SEC:-30}
@@ -176,6 +143,8 @@ services:
       SKILLS_DOCKER_COMPOSE_BRINGUP_HEALTH_POLL_SEC: ${SKILLS_DOCKER_COMPOSE_BRINGUP_HEALTH_POLL_SEC:-60}
       BIOMETRICS_SERVICE_URL: ${BIOMETRICS_SERVICE_URL:-http://orion-athena-biometrics:8100}
       BIOMETRICS_HTTP_TIMEOUT_SEC: ${BIOMETRICS_HTTP_TIMEOUT_SEC:-5}
+      ORION_PHYSIOLOGY_REPORT_URL: ${ORION_PHYSIOLOGY_REPORT_URL:-http://orion-athena-durable-runs:8121}
+      ORION_PHYSIOLOGY_REPORT_TIMEOUT_SEC: ${ORION_PHYSIOLOGY_REPORT_TIMEOUT_SEC:-10}
       ORION_SITUATION_RUNTIME_ENABLED: ${ORION_SITUATION_RUNTIME_ENABLED:-true}
       ORION_SITUATION_RUNTIME_ROUTE: ${ORION_SITUATION_RUNTIME_ROUTE:-chat}
       ORION_SITUATION_RUNTIME_TTL_SECONDS: ${ORION_SITUATION_RUNTIME_TTL_SECONDS:-120}
@@ -213,10 +182,7 @@ services:
       ENDOGENOUS_RUNTIME_SQL_DATABASE_URL: ${ENDOGENOUS_RUNTIME_SQL_DATABASE_URL:-postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney}
       # Same value as the bind-mount source/target above (not the separate legacy ORION_REPO_ROOT key --
       # see .env_example for the 2026-08-12 rename note).
-      SELF_STUDY_GRAPH_PATH: ${SELF_STUDY_GRAPH_PATH:-/graphify/published/graphify-out}
       ORION_REPO_ROOT: ${ORION_HOST_REPO_ROOT:-/mnt/scripts/Orion-Sapienform}
-      SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR: ${SELF_STUDY_ENRICHMENT_CACHE_MOUNT_DIR:-/mnt/self_study_enrichment_data/cache/self_study_enrichment}
-      SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH: ${SELF_STUDY_STRUCTURAL_MASS_HISTORY_PATH:-/mnt/self_study_structural_mass_data/structural_mass_history.jsonl}
       CONCEPT_PROFILE_REPOSITORY_BACKEND: ${CONCEPT_PROFILE_REPOSITORY_BACKEND:-local}
       CONCEPT_PROFILE_GRAPHDB_ENDPOINT: ${CONCEPT_PROFILE_GRAPHDB_ENDPOINT:-}
       CONCEPT_PROFILE_GRAPHDB_URL: ${CONCEPT_PROFILE_GRAPHDB_URL:-}
@@ -282,8 +248,6 @@ services:
       LLM_CHAT_FALLBACK_MAX_TOKENS: ${LLM_CHAT_FALLBACK_MAX_TOKENS:-512}
       LLM_MEMORY_GRAPH_SUGGEST_MAX_TOKENS: ${LLM_MEMORY_GRAPH_SUGGEST_MAX_TOKENS:-4096}
       LLM_DREAM_MAX_TOKENS: ${LLM_DREAM_MAX_TOKENS:-32768}
-      LLM_ORION_DAY_NOTE_MAX_TOKENS: ${LLM_ORION_DAY_NOTE_MAX_TOKENS:-12000}
-      LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS: ${LLM_ORION_DAY_CARRY_FORWARD_MAX_TOKENS:-4000}
       CORTEX_CHAT_RETURN_LOGPROBS: ${CORTEX_CHAT_RETURN_LOGPROBS:-false}
       CORTEX_METACOG_DRAFT_WORKER_CTX_CHAR_BUDGET: ${CORTEX_METACOG_DRAFT_WORKER_CTX_CHAR_BUDGET:-8000}
 
@@ -340,15 +304,3 @@ services:
 networks:
   app-net:
     external: true
-
-volumes:
-  # External: owned/created by orion-self-study-enrichment's compose file,
-  # not this one. cortex-exec only reads from it (see the :ro mount above).
-  self_study_enrichment_data:
-    name: ${PROJECT}-self-study-enrichment-data
-    external: true
-  # Owned by THIS service (not external) -- nothing else reads or writes it.
-  # `docker compose up` creates it automatically on first bring-up; no
-  # separate provisioning step needed.
-  self_study_structural_mass_data:
-    name: ${PROJECT}-self-study-structural-mass-data

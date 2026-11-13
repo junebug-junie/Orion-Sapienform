@@ -1,0 +1,91 @@
+# Rocky Mountain Power, Utah Schedule 1 (Residential Service), standard non-TOU option.
+# r3 = r2 plus what the second real bill (billing date 2026-10-20, service Sep 18 - Oct 19,
+# 31 days, 3,106 kWh, $427.39) showed; this file reproduces BOTH bills to the cent
+# (orion/energy/tests/test_energy_tariff.py):
+#   - a 31-day bill is NOT prorated (400 kWh block, $12.00, $0.16 as printed); the 37-day
+#     bill was. normal_days [27, 33] is the common utility convention and fits both bills.
+#   - a bill spanning Oct 1 splits kWh and blocks by days per season (Utah Regulation No. 8:
+#     "prorated proportional to the number of days in the billing period within each season"):
+#     12 summer days of 31 -> 1,202 kWh with a 155 kWh first block; 19 winter days -> 1,904 / 245.
+#   - Schedule 92 changed rate mid-period: printed "for 6 day(s) 1.17%" and "for 25 day(s)
+#     1.78%". Original Sheet 92 (filed 2026-08-05) is 1.17% from 2026-08-10; RMP filed a
+#     revision 2026-08-25 still pending on 2026-09-18 (PSC docket 26-035-T08 reply comments),
+#     so the 6 days at 1.17% are first: 1.78% from 2026-09-25 is read off the bill, not a
+#     published sheet.
+# r2's notes: blocks and monthly charges prorate by days / 30 outside the normal range, block
+# size rounded to whole kWh; each rider's base found by dividing printed charge by printed rate;
+# Utah sales tax does not apply to the lifeline charge.
+# Changing any number means a NEW file with a NEW tariff_version -- old accruals keep
+# the version they were priced with.
+tariff_version: rmp-ut-sch1-2026-08-10-r3
+utility: rocky_mountain_power
+schedule: "Utah Schedule 1 - Residential Service (standard, non-TOU)"
+effective_from: "2026-08-10"
+sources:
+  - "https://www.rockymountainpower.net/content/dam/pcorp/documents/en/rockymountainpower/rates-regulation/utah/rates/001_Residential_Service.pdf"
+  - "https://www.rockymountainpower.net/content/dam/pcorp/documents/en/rockymountainpower/rates-regulation/utah/Utah_Price_Summary.pdf (In Effect as of August 10, 2026)"
+  - "RMP bill, billing date 2026-09-21 (line items and printed rates)"
+  - "RMP bill, billing date 2026-10-20 (season split, Schedule 92 rate change)"
+  - "https://pscdocs.utah.gov/electric/26docs/26035T08/346341Trf8-5-2026.pdf (Original Sheet 92)"
+cost_basis: pre_tax
+
+proration:
+  base_days: 30
+  normal_days: [27, 33]
+  round_block_kwh: true
+
+seasons:
+  summer:
+    months: [6, 7, 8, 9]
+    blocks:
+      - {up_to_kwh: 400, cents_per_kwh: 9.8332}
+      - {up_to_kwh: null, cents_per_kwh: 12.5263}
+  winter:
+    months: [10, 11, 12, 1, 2, 3, 4, 5]
+    blocks:
+      - {up_to_kwh: 400, cents_per_kwh: 8.7020}
+      - {up_to_kwh: null, cents_per_kwh: 11.0852}
+
+# In bill order. applies_to names base_energy (the block charges), customer_charge, or an
+# earlier rider. Bases checked on the 2026-09-21 bill (printed charge / printed rate):
+#   -2.43 / -0.53% = 458   base energy 459.22
+#   35.04 / 7.63%  = 459   base energy
+#    5.55 / 1.17%  = 474   base energy + customer charge (459.22 + 14.80)
+#   18.89 / 3.84%  = 492   base energy + EBA + renewable (459.22 + 35.04 - 2.43 = 491.83)
+#    0.84 / 0.17%  = 494   same base as efficiency (491.83 -> 0.836)
+riders:
+  - {name: schedule_98_renewable_energy_adjustment, pct: -0.53, applies_to: [base_energy]}
+  - {name: schedule_94_energy_balancing_account, pct: 7.63, applies_to: [base_energy]}
+  # 2026-10-20 bill: 363.61 x 1.17% x 6/31 = 0.82, 363.61 x 1.78% x 25/31 = 5.22.
+  - name: schedule_92_deferral
+    applies_to: [base_energy, customer_charge]
+    rates:
+      - {from: "2026-08-10", pct: 1.17}
+      - {from: "2026-09-25", pct: 1.78}
+  - name: customer_efficiency_services
+    pct: 3.84
+    applies_to: [base_energy, schedule_94_energy_balancing_account, schedule_98_renewable_energy_adjustment]
+  - name: electric_vehicle_infrastructure
+    pct: 0.17
+    applies_to: [base_energy, schedule_94_energy_balancing_account, schedule_98_renewable_energy_adjustment]
+
+fixed_monthly:
+  - {name: customer_charge_single_phase, usd: 12.00, component: customer_charge}
+  # Printed as "Home Electric Lifeline Program". Tax-exempt: only that reading of the bill
+  # makes 4.40% land on the printed $23.38 (531.41 x 4.4%); taxing it gives $23.39.
+  - {name: schedule_91_home_electric_lifeline_program, usd: 0.16, tax_exempt: true}
+
+# Account-level, not part of Schedule 1: this account is on paperless billing.
+per_bill:
+  - {name: paperless_bill_credit, usd: -0.50}
+
+# Used only by Tariff.itemize (a bill-shaped estimate). Ledger accruals stay pre-tax.
+sales_tax:
+  pct: 4.40
+
+known_gaps:
+  - "Hourly accrual and run cost price each hour by its own month and use a dated rider's latest rate; only itemize (the bill, the projection, reconcile) splits seasons by days and dates rider rates."
+  - "normal_days [27, 33] is fitted to two bills (31 not prorated, 37 prorated); RMP's Regulation No. 8 wording was not found."
+  - "Schedule 92's 1.78% from 2026-09-25 is read off the bill; the approved revised sheet was not found. Sheet 92 ends 2026-12-31."
+  - "Lifeline tax exemption fits both bills; Weber County's 2026-10-01 transit tax change did not move the printed 4.40%."
+  - "Negative half-cent lines round away from zero (-2.435 -> -2.44); RMP's rule for that case is not seen yet."

@@ -37,8 +37,10 @@ COVERAGE_BAND = (0.72, 0.88)
 # (window_average_1h @1 h, 1.57x; mstl_arima @15 min, 2.0x) had backtest p = 0.21 and 0.31 -- lower
 # averages by noise. No family correction across candidates; documented trade-off.
 GATE_ALPHA = 0.05
+# An incumbent keeps its horizon while its backtest win stays under this (hysteresis band 0.05..0.10).
+STAY_ALPHA = 0.10
 # Bumped when the gate rule changes; a stored selection from another gate version is not restored.
-GATE_VERSION = 2
+GATE_VERSION = 4   # 3: live verdicts + incumbent hysteresis; 4: live promotion needs window coverage too
 MAX_FILLED_SHARE = 0.10
 MIN_TRAIN_STEPS_DAYS = 2
 MIN_PATHS = 10
@@ -67,6 +69,16 @@ def origins_for(n: int, h: int, n_windows: int, step: int, min_train: int) -> li
     last = n - h
     out = [last - k * step for k in range(n_windows)]
     return sorted(o for o in out if o >= min_train)
+
+
+def min_backtest_steps(spec: SeriesSpec, step: int) -> int:
+    """Grain buckets (from the first reading, gaps included) a series needs before a backtest can
+    give every served step MIN_PATHS residuals: MIN_TRAIN_STEPS_DAYS of training behind the oldest
+    origin, MIN_PATHS origins ``step`` apart, and the longest horizon after the newest one. Fewer, and
+    every residual quantile is NaN, so nothing could be served (a young series, e.g. a sensor
+    installed days ago). Exact for gapless data; gaps can still reject windows (Engine.check_paths)."""
+    min_train = MIN_TRAIN_STEPS_DAYS * 1440 // spec.grain_min
+    return min_train + spec.max_horizon_steps + (MIN_PATHS - 1) * step
 
 
 def run_backtest(series: pd.Series, spec: SeriesSpec, name: str,
@@ -204,13 +216,24 @@ def paired_win_p(candidate: np.ndarray, reference: np.ndarray, lag: int = 1) -> 
     """
     from scipy import stats
 
+    mean, se, n = paired_gap(candidate, reference, lag)
+    if mean is None:
+        return None, n
+    if se == 0:
+        return (0.0 if mean < 0 else 1.0), n
+    return float(stats.t.cdf(mean / se, df=n - 1)), n
+
+
+def paired_gap(candidate: np.ndarray, reference: np.ndarray, lag: int = 1) -> tuple[float | None, float | None, int]:
+    """(mean of |candidate| - |reference|, its overlap-aware standard error, n) -- the numbers behind
+    ``paired_win_p``. se is 0 when every difference is equal; (None, None, n) below n = 2."""
     both = np.isfinite(candidate) & np.isfinite(reference)
     d = np.abs(candidate[both]) - np.abs(reference[both])
     n = len(d)
     if n < 2:
-        return None, n
+        return None, None, n
     if np.all(d == d[0]):
-        return (0.0 if d[0] < 0 else 1.0), n
+        return float(d[0]), 0.0, n
     e = d - d.mean()
     lrv = float(e @ e) / n
     for k in range(1, min(lag, n - 1) + 1):
@@ -219,8 +242,7 @@ def paired_win_p(candidate: np.ndarray, reference: np.ndarray, lag: int = 1) -> 
     r1 = float(e[1:] @ e[:-1]) / float(e @ e)
     r1 = min(0.95, max(0.0, r1) + (1 + 3 * max(0.0, r1)) / n)   # Kendall bias correction, then cap
     lrv = max(lrv, v * (1 + r1) / (1 - r1))
-    t = d.mean() / np.sqrt(lrv / n)
-    return float(stats.t.cdf(t, df=n - 1)), n
+    return float(d.mean()), float(np.sqrt(lrv / n)), n
 
 
 def overlap_lag(horizon_min: int, step_min: int | None) -> int:
@@ -259,7 +281,21 @@ def stitch(paths: dict[str, np.ndarray], owners: list[str], axis: int = -1) -> n
     return np.concatenate(cols, axis=axis)
 
 
-def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_min: int | None = None) -> Selection:
+def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_min: int | None = None,
+                    live: dict | None = None, incumbent: dict[int, str] | None = None) -> Selection:
+    """Per horizon, a candidate serves when (in order):
+
+    - its LIVE verdict (app/live.py, shadow forecasts vs the baseline) is ``worse``: never;
+    - it has a residual on fewer than MIN_WINDOW_SHARE of the reference's windows: never (no
+      comparable backtest; this applies to the live route too);
+    - its live verdict is ``better`` (Holm-adjusted) AND it beats the baseline in the backtest
+      (rel_mae < 1): yes, even on a borderline backtest p -- live can promote, not overrule a loss;
+    - otherwise the backtest decides: rel_mae < 1, enough windows, and a paired win at p < GATE_ALPHA --
+      or p < STAY_ALPHA if it already serves this horizon (hysteresis: a p hovering at 0.05 must not
+      flip the served model every selection; live 2026-10-21/22: direct_arx @15 min p 0.041..0.070).
+    """
+    live = live or {}
+    incumbent = incumbent or {}
     missing = [b for b in BASELINES if b not in results]
     if missing:
         raise ValueError(f"baselines must be backtested: {missing}")
@@ -291,11 +327,29 @@ def select_champion(results: dict[str, BacktestResult], spec: SeriesSpec, step_m
                 m["passed"] = name == best_base
                 continue
             m["p_win"], _ = paired_win_p(col, ref_col, overlap_lag(hm, step_min))
-            m["passed"] = bool(m["rel_mae"] is not None and m["rel_mae"] < 1.0
-                               and m["p_win"] is not None and m["p_win"] < GATE_ALPHA
-                               and m["n_paired"] >= max(MIN_PATHS + 1, math.ceil(MIN_WINDOW_SHARE * ref_n)))
+            lv = live.get((name, hm))
+            m["live"] = lv
+            alpha = STAY_ALPHA if incumbent.get(hm) == name else GATE_ALPHA
+            # Window coverage is a precondition for BOTH routes. A model with residuals on too few of
+            # the reference's windows has no comparable backtest, and its stitched residual column
+            # would leave the blend short of MIN_PATHS (live 2026-11-02, office.temp_c: direct_ar
+            # promoted by a live 'better' with 8 of 16 windows -> every reselect refused).
+            covered = m["n_paired"] >= max(MIN_PATHS + 1, math.ceil(MIN_WINDOW_SHARE * ref_n))
+            backtest_ok = bool(covered and m["rel_mae"] is not None and m["rel_mae"] < 1.0
+                               and m["p_win"] is not None and m["p_win"] < alpha)
+            verdict = lv["verdict"] if lv else "pending"
+            live_win = (covered and verdict == "better" and m["rel_mae"] is not None and m["rel_mae"] < 1.0
+                        and lv.get("rel_mae") is not None)
+            if verdict == "worse":
+                m["passed"], m["passed_by"] = False, None
+            elif live_win:
+                m["passed"], m["passed_by"] = True, "live"
+            else:
+                m["passed"], m["passed_by"] = backtest_ok, ("backtest" if backtest_ok else None)
             if m["passed"]:
-                winners[name] = m["rel_mae"]
-        assignment[hm] = min(winners, key=lambda n: (winners[n], n)) if winners else best_base
+                # One ordering, two tiers: proven-live winners first (by live error), then backtest-only
+                # winners (by backtest error) -- a backtest-only model can never unseat a live winner.
+                winners[name] = (0, lv["rel_mae"]) if live_win else (1, m["rel_mae"])
+        assignment[hm] = min(winners, key=lambda n: (*winners[n], n)) if winners else best_base
     served_baseline = all(v in BASELINES for v in assignment.values())
     return Selection(assignment, baseline_assignment, served_baseline, metrics)

@@ -28,8 +28,8 @@ services:
 
       # Authenticate `claude -p` as the operator's own Claude subscription --
       # never a separate ANTHROPIC_API_KEY billing path. Same pattern, for the
-      # same reasons, as orion-self-study-enrichment; see that service's
-      # README "Credential isolation (safety requirement)" and this one's
+      # same reasons, as the self-study enrichment service (deleted 2026-10-30; its
+      # README is in git history) "Credential isolation (safety requirement)" and this one's
       # README for why the credential lives here and NOT in orion-hub.
       #
       # These two lines and the volumes: entry below all interpolate the same
@@ -59,9 +59,23 @@ services:
       - ROOM_COMPANION_SETTING_SOURCES=${ROOM_COMPANION_SETTING_SOURCES:-user}
       - ROOM_COMPANION_WORKSPACE=${ROOM_COMPANION_WORKSPACE:-/data/workspace}
 
+      # Orion's tools (Patch 1b): one MCP server per room turn; no new mount. See .env_example.
+      - ROOM_COMPANION_TOOLS_ENABLED=${ROOM_COMPANION_TOOLS_ENABLED:-true}
+      - ROOM_COMPANION_TOOLS_STATE_DIR=${ROOM_COMPANION_TOOLS_STATE_DIR:-/data/state/claude_tools}
+      - ROOM_COMPANION_TOOLS_PYTHON=${ROOM_COMPANION_TOOLS_PYTHON:-/usr/local/bin/python}
+      - ROOM_COMPANION_TOOLS_PYTHONPATH=${ROOM_COMPANION_TOOLS_PYTHONPATH:-/app}
+      - ROOM_COMPANION_TOOLS_MCP_TIMEOUT_MS=${ROOM_COMPANION_TOOLS_MCP_TIMEOUT_MS:-70000}
+      - ROOM_COMPANION_TOOLS_TURN_TIMEOUT_SEC=${ROOM_COMPANION_TOOLS_TURN_TIMEOUT_SEC:-360}
+
       - ROOM_COMPANION_PARTICIPANT_ID=${ROOM_COMPANION_PARTICIPANT_ID:-claude}
       - ROOM_COMPANION_PARTICIPANT_NAME=${ROOM_COMPANION_PARTICIPANT_NAME:-Claude}
       - ROOM_COMPANION_SESSION_STATE_PATH=${ROOM_COMPANION_SESSION_STATE_PATH:-/data/state/room_companion_sessions.json}
+      # Consult rooms (orion.consult.core): Claude reads the code before Juniper is asked.
+      - ROOM_COMPANION_CONSULT_MODEL=${ROOM_COMPANION_CONSULT_MODEL:-claude-sonnet-5-5}
+      - ROOM_COMPANION_CONSULT_EFFORT=${ROOM_COMPANION_CONSULT_EFFORT:-high}
+      - ROOM_COMPANION_CONSULT_TIMEOUT_SEC=${ROOM_COMPANION_CONSULT_TIMEOUT_SEC:-900}
+      - ROOM_COMPANION_CONSULT_TOOLS=${ROOM_COMPANION_CONSULT_TOOLS:-Read,Grep,Glob}
+      - ROOM_COMPANION_CONSULT_REPO=${ROOM_COMPANION_CONSULT_REPO:-/consult-src/current}
     volumes:
       # Claude Code's own session store (CLAUDE_CONFIG_DIR) on a named volume.
       # No credential file lives here any more (see .env_example and
@@ -73,12 +87,19 @@ services:
       - room_companion_claude:${ROOM_COMPANION_CLAUDE_CONFIG_DIR:-/root/.claude}
       # Writable volume for the room->session map and the neutral workspace.
       - room_companion_data:/data
+      # Consult rooms only (2026-11-11): a `git archive` export of the deployed
+      # commit (scripts/export_consult_source.py, refreshed by the post-pull
+      # rebuild), READ-ONLY. Tracked files only: no .git (whose remote URL can
+      # carry a credential), no .env, nothing Orion wrote. The primary checkout
+      # and Orion's FCC sandbox are never mounted here.
+      - ${ORION_CONSULT_SOURCE_DIR:-/mnt/scripts/orion-consult-src}:/consult-src:ro
     # DELIBERATELY ABSENT, and a review should treat any of these appearing
     # here as a regression -- this container exists to be the one place the
     # Claude credential lives, so it must not also be a place worth breaking
-    # into: no repo mount, no ${HOME}/.ssh, no ${HOME}/.config/gh, no
-    # /var/run/docker.sock, no network_mode: host. orion-hub has all of
-    # those, which is exactly why the credential is not there.
+    # into: no primary-checkout or FCC-sandbox mount (.env secrets, a credentialed .git remote), no
+    # ${HOME}/.ssh, no ${HOME}/.config/gh, no /var/run/docker.sock, no
+    # network_mode: host. orion-hub has all of those, which is exactly why
+    # the credential is not there.
 
 networks:
   app-net:

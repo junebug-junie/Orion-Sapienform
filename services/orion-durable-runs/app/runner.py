@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
-from orion.core.bus.async_service import OrionBusAsync
+from orion.core.bus.async_service import OrionBusAsync, RpcPublishedToNobody
 from orion.core.bus.bus_schemas import BaseEnvelope, LLMMessage, ServiceRef
 from orion.core.bus.resilience import publish_with_reconnect
 from orion.curiosity.attention_schema import (
@@ -82,7 +82,6 @@ from orion.schemas.durable_run import (
     CURIOSITY_TURN_RESULT_KIND,
     DURABLE_RUN_STATE_KIND,
     SELF_SENSE_EVAL_NODES,
-    SELF_STUDY_REFLECT_NODES,
     CuriosityTurnRequestV1,
     CuriosityTurnResultV1,
     DurableRunRequestV1,
@@ -95,13 +94,6 @@ from orion.evals.self_sense_runner import envelope_correlation_id as self_sense_
 from app.graph import CuriosityRunState, Deps, build_curiosity_graph, failed_turn_correlation_id, finish_detail
 from app.self_sense_graph import Deps as SelfSenseDeps
 from app.self_sense_graph import build_self_sense_graph, finish_detail as self_sense_finish_detail
-from app.reflect_graph import (
-    SELF_STUDY_REFLECT_VERB,
-    Deps as ReflectDeps,
-    build_reflect_graph,
-    finish_detail as reflect_finish_detail,
-    parse_reflect_findings,
-)
 from app.settings import Settings
 from orion.schemas.reading_turn import (
     READING_TURN_CHANNEL, READING_TURN_REPLY_PREFIX, READING_TURN_REQUEST_KIND,
@@ -122,7 +114,6 @@ JOURNAL_WRITE_CHANNEL = "orion:journal:write"
 
 DEFAULT_WORKFLOW = "curiosity.investigate"
 SELF_SENSE_EVAL_WORKFLOW = "self_sense_eval"
-SELF_STUDY_REFLECT_WORKFLOW = "self_study.reflect"
 
 
 def incident_report_to_detail(report: IncidentReport | None) -> dict[str, Any] | None:
@@ -188,7 +179,7 @@ def strict_final_text(payload: dict[str, Any], verb: str) -> str:
 
     Deliberately NOT ``extract_cortex_payload_text``: when ``final_text`` is empty that falls back
     to step candidates including ``reasoning_content`` / think blocks, so a reasoning model that
-    spent its whole budget thinking (the self_study.reflect incident) would hand back its
+    spent its whole budget thinking (the retired self-study reflect incident, 2026-09-04) would hand back its
     reasoning as the answer -- a JSON verb's parser rejects that, a freeform one would store it.
     Raises (an attempt, never a success) on: empty final text, error text framed as prose
     (``looks_like_error_text``), and a completion cut off at max_tokens (finish_reason=length)."""
@@ -203,6 +194,10 @@ def strict_final_text(payload: dict[str, Any], verb: str) -> str:
     if "length" in _finish_reasons(payload) or diagnostics.get("truncation_detected") is True:
         raise RuntimeError(f"verb_truncated_at_max_tokens:{verb}")
     return text
+
+# Options ``_call_verb_text`` owns; a caller's ``options`` can never set them (even when unset here).
+_VERB_TEXT_FIXED_OPTIONS = frozenset({"policy_dispatch_only", "chat_template_kwargs", "llm_route", "gpu_lease"})
+
 
 class DurableRunner:
     _corr_for_admission = staticmethod(_corr_uuid)
@@ -228,12 +223,6 @@ class DurableRunner:
                 graph=build_self_sense_graph(self._self_sense_deps(), checkpointer),
                 nodes=list(SELF_SENSE_EVAL_NODES),
                 finish_detail=self_sense_finish_detail,
-            ),
-            SELF_STUDY_REFLECT_WORKFLOW: WorkflowSpec(
-                workflow=SELF_STUDY_REFLECT_WORKFLOW,
-                graph=build_reflect_graph(self._reflect_deps(), checkpointer),
-                nodes=list(SELF_STUDY_REFLECT_NODES),
-                finish_detail=reflect_finish_detail,
             ),
         }
         self._active: dict[str, asyncio.Task[None]] = {}
@@ -304,84 +293,6 @@ class DurableRunner:
                 failed += 1
         return published, failed
 
-    def _reflect_deps(self) -> ReflectDeps:
-        return ReflectDeps(call_reflect_llm=self._call_reflect_llm)
-
-    async def _call_reflect_llm(
-        self, self_study_reflect_input: dict[str, Any], llm_route: str, gpu_lease: GpuLeaseRefV1 | None = None,
-    ) -> list[dict[str, Any]] | None:
-        """The real verb-dispatch RPC to cortex-orch -- the exact same
-        request shape cortex-exec's own `_call_self_study_reflect_llm` built
-        directly before this patch (`verb="self_study.reflect"`,
-        `options={"policy_dispatch_only": True, ...}`); only WHERE it's sent
-        from moved, not its shape. Returns a list of raw finding dicts on
-        success, or None on ANY failure (bad input, RPC error/timeout,
-        non-ok result, empty/unparseable text, wrong JSON shape) -- same
-        "produce nothing on failure" contract, never raises for those.
-
-        ``gpu_lease`` (admitted reflect runs, stage 4.5): the run's GPU pool hold, sent as
-        ``options.gpu_lease`` so cortex-exec forwards it and the gateway attaches this call to the
-        hold. Without it the call would take a plain agent lease and queue behind the run's own
-        hold (spec, "Corrections from building 4.4" item 4). ``llm_route`` is unchanged by it."""
-        from orion.cognition.cortex_payload_extract import extract_cortex_payload_text
-
-        request = CortexClientRequest(
-            mode="brain",
-            route_intent="none",
-            verb=SELF_STUDY_REFLECT_VERB,
-            options={
-                "policy_dispatch_only": True,
-                **({"llm_route": llm_route} if llm_route else {}),
-                **({"gpu_lease": gpu_lease.model_dump(mode="json")} if gpu_lease is not None else {}),
-            },
-            recall=RecallDirective(enabled=False, required=False),
-            context=CortexClientContext(
-                messages=[LLMMessage(role="user", content="Reflect on self-study snapshot.")],
-                raw_user_text="Reflect on self-study snapshot.",
-                metadata={"self_study_reflect_input": self_study_reflect_input},
-            ),
-        )
-        rpc_correlation_id = uuid4()
-        reply_channel = f"orion:cortex:result:self-study-reflect:{rpc_correlation_id}"
-        envelope = BaseEnvelope(
-            kind="cortex.orch.request",
-            source=self._source(),
-            correlation_id=rpc_correlation_id,
-            reply_to=reply_channel,
-            payload=request.model_dump(mode="json"),
-        )
-        try:
-            msg = await self._bus.rpc_request(
-                self._settings.cortex_request_channel,
-                envelope,
-                reply_channel=reply_channel,
-                timeout_sec=self._settings.reflect_llm_call_timeout_sec,
-            )
-            decoded = self._bus.codec.decode(msg.get("data"))
-            if not decoded.ok or decoded.envelope is None:
-                logger.warning("self_study_reflect_llm_decode_failed corr=%s err=%s", rpc_correlation_id, decoded.error)
-                return None
-            payload = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
-        except Exception as exc:  # noqa: BLE001 -- construction/RPC/decode failure degrades to "no reflection"
-            logger.warning("self_study_reflect_llm_call_failed corr=%s err=%s", rpc_correlation_id, exc)
-            return None
-
-        if not payload.get("ok", False):
-            logger.warning(
-                "self_study_reflect_llm_not_ok corr=%s status=%s error=%s",
-                rpc_correlation_id, payload.get("status"), payload.get("error"),
-            )
-            return None
-        text = extract_cortex_payload_text(payload)
-        if not text:
-            logger.warning("self_study_reflect_llm_empty_text corr=%s", rpc_correlation_id)
-            return None
-        findings = parse_reflect_findings(text)
-        if findings is None:
-            logger.warning("self_study_reflect_llm_unparseable_or_bad_shape corr=%s", rpc_correlation_id)
-            return None
-        return findings
-
     async def _cortex_orch_rpc(self, request_payload: dict[str, Any], *, timeout_sec: float, label: str) -> dict[str, Any]:
         """compactor.digest (admitted): one cortex-orch request -- a digest verb call carrying the
         run's hold as ``options.gpu_lease``, or the finalize workflow request -- and its decoded
@@ -396,7 +307,8 @@ class DurableRunner:
         envelope = BaseEnvelope(kind="cortex.orch.request", source=self._source(), correlation_id=rpc_correlation_id,
                                 reply_to=reply_channel, payload=request.model_dump(mode="json"))
         msg = await self._bus.rpc_request(self._settings.cortex_request_channel, envelope,
-                                          reply_channel=reply_channel, timeout_sec=float(timeout_sec))
+                                          reply_channel=reply_channel, timeout_sec=float(timeout_sec),
+                                          require_listener=True)
         decoded = self._bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
             raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
@@ -435,7 +347,8 @@ class DurableRunner:
         envelope = BaseEnvelope(kind="cortex.orch.request", source=self._source(), correlation_id=rpc_correlation_id,
                                 reply_to=reply_channel, payload=request.model_dump(mode="json"))
         msg = await self._bus.rpc_request(self._settings.cortex_request_channel, envelope,
-                                          reply_channel=reply_channel, timeout_sec=float(brief.timeout_sec))
+                                          reply_channel=reply_channel, timeout_sec=float(brief.timeout_sec),
+                                          require_listener=True)
         decoded = self._bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
             raise RuntimeError(f"cortex_orch_decode_failed:{decoded.error}")
@@ -447,17 +360,10 @@ class DurableRunner:
         logger.info("journal_compose_drafted run=%s trigger_kind=%s", run_id, brief.trigger.trigger_kind)
         return draft
 
-    async def _call_memory_distill_llm(
-        self, prompt: str, *, brief: Any, run_id: str, correlation_id: str, gpu_lease: GpuLeaseRefV1,
+    async def _call_frozen_evidence_llm(
+        self, prompt: str, *, brief: Any, run_id: str, correlation_id: str, gpu_lease: GpuLeaseRefV1, purpose: str,
     ) -> dict[str, Any]:
-        """memory.episode_distill: ONE direct LLM gateway call under the run's GPU pool hold.
-
-        Direct, not through cortex-orch: orch would run recall and mix retrieved memories into
-        what the distiller treats as evidence (spec section A). ``options.gpu_lease`` attaches the
-        call to the hold; the route stays the brief's (``memory_distill``). JSON-object output,
-        thinking off (Qwen thinking spends max_tokens before the answer). Raises on transport,
-        a gateway error, or empty text -- each is one bounded attempt for the graph.
-        """
+        """Tool-free gateway call under the supplied hold; no recall changes frozen evidence."""
         import time
 
         from orion.core.bus.bus_schemas import ChatRequestPayload, LLMMessage
@@ -472,7 +378,7 @@ class DurableRunner:
                 "llm_route": brief.llm_route,
                 "max_tokens": int(brief.max_tokens),
                 "temperature": 0.2,
-                "purpose": "memory_episode_distill",
+                "purpose": purpose,
                 "structured_output_method": "json_object_only",
                 "chat_template_kwargs": {"enable_thinking": False},
                 "skip_spark_candidate_publish": True,
@@ -486,7 +392,8 @@ class DurableRunner:
                                 reply_to=reply_channel, payload=payload.model_dump(mode="json"))
         started = time.monotonic()
         msg = await self._bus.rpc_request(self._settings.llm_intake_channel, envelope,
-                                          reply_channel=reply_channel, timeout_sec=timeout + 30.0)
+                                          reply_channel=reply_channel, timeout_sec=timeout + 30.0,
+                                          require_listener=True)
         decoded = self._bus.codec.decode(msg.get("data"))
         if not decoded.ok or decoded.envelope is None:
             raise RuntimeError(f"gateway_decode_failed:{decoded.error}")
@@ -498,11 +405,30 @@ class DurableRunner:
         if not text.strip():
             raise RuntimeError("gateway_empty_text")
         usage = raw.get("usage") if isinstance(raw.get("usage"), dict) else {}
-        logger.info("memory_episode_distilled run=%s episode=%s chars=%s usage=%s", run_id, brief.episode_id,
-                    len(text), usage)
-        return {"text": text, "usage": {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens")},
+        choices = raw.get("choices") if isinstance(raw.get("choices"), list) else []
+        first = choices[0] if choices and isinstance(choices[0], dict) else {}
+        finish_reason = first.get("finish_reason") if isinstance(first.get("finish_reason"), str) else None
+        logger.info("frozen_evidence_judged purpose=%s run=%s chars=%s usage=%s finish_reason=%s",
+                    purpose, run_id, len(text), usage, finish_reason)
+        return {"text": text, "finish_reason": finish_reason,
+                "usage": {k: usage.get(k) for k in ("prompt_tokens", "completion_tokens")},
                 "model": raw.get("model") or result.get("model"),
                 "latency_ms": int((time.monotonic() - started) * 1000)}
+
+    async def _call_memory_distill_llm(self, prompt: str, **kwargs) -> dict[str, Any]:
+        return await self._call_frozen_evidence_llm(prompt, purpose="memory_episode_distill", **kwargs)
+
+    async def _call_reading_resonance_llm(self, prompt: str, **kwargs) -> dict[str, Any]:
+        await self._reading_resonance_lifecycle(kwargs["brief"], "resonance_started", kwargs["correlation_id"])
+        return await self._call_frozen_evidence_llm(prompt, purpose="reading_resonance", **kwargs)
+
+    async def _reading_resonance_lifecycle(self, brief, stage, correlation_id, error=None):
+        from orion.schemas.reading import ReadingLifecycleV1
+        if brief.reading_request is None:
+            return
+        await self._publish("orion:reading:lifecycle", "reading.lifecycle.v1", ReadingLifecycleV1(
+            request=brief.reading_request, seed_id=brief.packet.seed_id, stage=stage,
+            trace_id=correlation_id, error=error), self._corr_for_admission(correlation_id))
 
     async def _publish_journal_write(self, entry: JournalEntryWriteV1) -> bool:
         return await self._publish_journal(entry) is not None
@@ -513,7 +439,8 @@ class DurableRunner:
 
     async def _run_turn(self, request: CuriosityTurnRequestV1) -> CuriosityTurnResultV1:
         """RPC to Hub. Any transport failure surfaces as ok=False so the node
-        raises and the thread stays resumable at `harness_turn`."""
+        raises and the thread stays resumable at `harness_turn` -- except an admitted
+        turn published to nobody, which raises ``RpcPublishedToNobody`` for listener_wait."""
         if self._bus is None:
             return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error="no_bus")
         reply_channel = f"{CURIOSITY_TURN_REPLY_PREFIX}:{request.correlation_id}"
@@ -538,7 +465,19 @@ class DurableRunner:
                 envelope,
                 reply_channel=reply_channel,
                 timeout_sec=rpc_timeout,
+                # A turn published to nobody, or whose Hub restarted mid-turn, fails now instead of
+                # holding the GPU lane until rpc_timeout (2.5 h); the failed node releases and retries.
+                require_listener=True,
             )
+        except RpcPublishedToNobody:
+            if admitted:
+                # Nobody received it (Hub restarting): the admitted graph waits it out and replays
+                # without spending an attempt (admitted_graph.listener_wait). Typed, so it must raise.
+                raise
+            logger.warning("durable_run_turn_rpc_failed run=%s attempt=%s err=published_to_nobody",
+                           request.run_id, request.attempt)
+            return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False,
+                                         error="rpc:RpcNoListener")
         except Exception as exc:  # noqa: BLE001 -- surfaced as a failed node, retried by the sweep
             logger.warning("durable_run_turn_rpc_failed run=%s attempt=%s err=%s", request.run_id, request.attempt, exc)
             return CuriosityTurnResultV1(run_id=request.run_id, correlation_id=request.correlation_id, ok=False, error=f"rpc:{type(exc).__name__}")
@@ -566,7 +505,8 @@ class DurableRunner:
             correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
             payload=request.model_dump(mode="json"))
         raw = await self._bus.rpc_request(READING_TURN_CHANNEL, envelope,
-            reply_channel=reply, timeout_sec=max(self._settings.turn_rpc_timeout_sec, request.brief.timeout_sec))
+            reply_channel=reply, timeout_sec=max(self._settings.turn_rpc_timeout_sec, request.brief.timeout_sec),
+            require_listener=True)
         decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
         if not decoded.ok or decoded.envelope is None:
             raise ValueError("invalid reading turn reply envelope")
@@ -597,7 +537,8 @@ class DurableRunner:
             timeout = max(timeout, float(budget_sec))
         elif request.step == "abandon":
             timeout = min(timeout, 30.0)
-        raw = await self._bus.rpc_request(REVERIE_VISUAL_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout)
+        raw = await self._bus.rpc_request(REVERIE_VISUAL_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout,
+                                          require_listener=True)
         decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
         if not decoded.ok or decoded.envelope is None:
             raise ValueError("invalid reverie visual step reply envelope")
@@ -623,7 +564,8 @@ class DurableRunner:
             correlation_id=_corr_uuid(request.correlation_id), reply_to=reply,
             payload=request.model_dump(mode="json"))
         timeout = float(budget_sec or request.brief.timeout_sec)
-        raw = await self._bus.rpc_request(DREAM_CARRY_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout)
+        raw = await self._bus.rpc_request(DREAM_CARRY_STEP_CHANNEL, envelope, reply_channel=reply, timeout_sec=timeout,
+                                          require_listener=True)
         decoded = self._bus.codec.decode(raw.get("data") if isinstance(raw, dict) else raw)
         if not decoded.ok or decoded.envelope is None:
             raise ValueError("invalid dream carry step reply envelope")
@@ -740,11 +682,12 @@ class DurableRunner:
         gpu_lease: GpuLeaseRefV1 | None = None,
         timeout_sec: float,
         user_text: str,
+        options: dict[str, Any] | None = None,
     ) -> str:
         """One cortex verb call returning the model's final answer text (no JSON parsing), over
         ``_cortex_orch_rpc`` (shared with compactor.digest).
 
-        Same request shape as ``_call_reflect_llm`` (``policy_dispatch_only``; the verb's prompt
+        Same request shape as the other cortex-orch verb calls here (``policy_dispatch_only``; the verb's prompt
         reads ``context.metadata``), but it RAISES on every failure -- RPC error/timeout,
         undecodable reply, non-ok result, and anything ``strict_final_text`` refuses -- so an
         admitted graph node counts it as an attempt instead of finishing on it. ``gpu_lease``
@@ -755,12 +698,17 @@ class DurableRunner:
         switch): these are prose verbs whose answer IS the output, and hidden reasoning counts
         against ``max_tokens``. Live 2026-09-30, the first orion_day note spent all 12000 tokens
         (32k chars) planning and emitted no note -> ``verb_truncated_at_max`` on every attempt.
-        A future caller that needs reasoning must not reuse this helper as is."""
+        A future caller that needs reasoning must not reuse this helper as is.
+
+        ``options``: extra cortex options merged in, e.g. ``structured_output_*`` (cortex-exec
+        forwards them to the gateway, which builds llama.cpp's ``response_format``). They cannot
+        override thinking, the route or the lease."""
         request = CortexClientRequest(
             mode="brain",
             route_intent="none",
             verb=verb,
             options={
+                **{k: v for k, v in (options or {}).items() if k not in _VERB_TEXT_FIXED_OPTIONS},
                 "policy_dispatch_only": True,
                 "chat_template_kwargs": {"enable_thinking": False},
                 **({"llm_route": llm_route} if llm_route else {}),

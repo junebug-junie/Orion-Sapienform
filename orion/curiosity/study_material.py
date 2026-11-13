@@ -481,6 +481,7 @@ _REASON_PLAIN = {
     "council_uncertainty": "the vision council was unsure",
     "no_label": "no detector label was confident enough",
     "surprise": "it looked unlike what that camera usually sees",
+    "handoff_missed": "someone left one camera toward the other and never arrived",
 }
 
 
@@ -650,6 +651,9 @@ class StreetDayCard:
     day: str
     line: str
     complete: bool
+    # vision_rollup.computed_at as ISO text: the newest day row is upserted all day,
+    # so this pins WHICH version of the line Orion read. "" when the row lacks it.
+    computed_at: str = ""
 
     def preview(self) -> str:
         # The line already says "(so far, through HH:MM)" for a running day and names
@@ -669,7 +673,12 @@ def build_street_day_card(row: Any) -> Optional[StreetDayCard]:
         line = display_line(row["line"], rollup)
         if not line:
             return None
+        try:
+            computed = row["computed_at"]
+        except (KeyError, IndexError):
+            computed = None
+        computed_at = computed.isoformat() if hasattr(computed, "isoformat") else str(computed or "")
         return StreetDayCard(stream_id=str(row["stream_id"] or ""), day=str(row["label"] or ""), line=line,
-                             complete=bool(row["complete"]))
+                             complete=bool(row["complete"]), computed_at=computed_at)
     except (KeyError, IndexError, TypeError):
         return None

@@ -94,32 +94,39 @@ def test_temporal_features_session_elapsed_never_negative_or_unbounded():
 
 
 def test_build_execution_context_group_populates_real_slots_only():
-    scalars = ExecutionContextScalars(execution=0.4, chat=None, route=0.1, bus_synaptic=0.0)
+    scalars = ExecutionContextScalars(execution=0.4)
     group, real_domains = build_execution_context_group(16, scalars)
     assert group.dim == 16
     assert len(group.vector) == 16
     assert group.vector[0] == 0.4  # execution
-    assert group.vector[1] == 0.0  # chat: None -> left at 0.0
-    assert group.vector[2] == 0.1  # route
-    assert group.vector[3] == 0.0  # bus_synaptic: real 0.0, matches padding by coincidence
-    assert group.vector[4:] == [0.0] * 12
-    # chat excluded (None), bus_synaptic included (real 0.0 != "not available").
-    assert real_domains == ["execution", "route", "bus_synaptic"]
+    assert group.vector[1] == 0.0  # chat slot, retired 2026-11-13: padding
+    # Slots 2-3 held route/bus_synaptic until their retirement (2026-11);
+    # they are plain zero padding now, like every slot up to dim.
+    assert group.vector[2:] == [0.0] * 14
+    assert real_domains == ["execution"]
+
+
+def test_execution_context_has_no_retired_domains():
+    """route and bus_synaptic were retired 2026-11 (PE suite rebuild step 5), chat 2026-11-13 (step 6)."""
+    import dataclasses
+
+    names = {f.name for f in dataclasses.fields(ExecutionContextScalars)}
+    assert names == {"execution"}
 
 
 def test_build_execution_context_group_all_none_is_all_zero():
-    scalars = ExecutionContextScalars(execution=None, chat=None, route=None, bus_synaptic=None)
+    scalars = ExecutionContextScalars(execution=None)
     group, real_domains = build_execution_context_group(16, scalars)
     assert group.vector == [0.0] * 16
     assert real_domains == []
 
 
 def test_build_execution_context_group_handles_dim_smaller_than_domain_count():
-    scalars = ExecutionContextScalars(execution=1.0, chat=1.0, route=1.0, bus_synaptic=1.0)
-    group, real_domains = build_execution_context_group(2, scalars)
-    assert group.dim == 2
-    assert group.vector == [1.0, 1.0]
-    assert real_domains == ["execution", "chat"]
+    scalars = ExecutionContextScalars(execution=1.0)
+    group, real_domains = build_execution_context_group(1, scalars)
+    assert group.dim == 1
+    assert group.vector == [1.0]
+    assert real_domains == ["execution"]
 
 
 _NOW = datetime(2026, 8, 25, 12, 0, 0, tzinfo=timezone.utc)
@@ -211,7 +218,7 @@ def test_assemble_world_model_trajectory_step_validates_against_schema_all_zero(
         now=now,
         process_started_at=now,
         dims=_WM_DIMS,
-        execution_context=ExecutionContextScalars(None, None, None, None),
+        execution_context=ExecutionContextScalars(None),
         vision_embedding_vector=None,
         vision_embedding_at=None,
         vision_embedding_max_age_sec=120.0,
@@ -246,9 +253,7 @@ def test_assemble_world_model_trajectory_step_with_real_execution_and_vision():
         now=now,
         process_started_at=now - timedelta(seconds=120),
         dims=_WM_DIMS,
-        execution_context=ExecutionContextScalars(
-            execution=0.2, chat=0.0, route=0.05, bus_synaptic=0.1
-        ),
+        execution_context=ExecutionContextScalars(execution=0.2),
         vision_embedding_vector=[0.3] * 512,
         vision_embedding_at=now,
         vision_embedding_max_age_sec=120.0,
@@ -258,9 +263,9 @@ def test_assemble_world_model_trajectory_step_with_real_execution_and_vision():
     )
     # Must validate cleanly end to end.
     WorldModelTaskRequestPayload.model_validate(payload.model_dump(mode="json"))
-    assert step.execution_context.vector[:4] == [0.2, 0.0, 0.05, 0.1]
+    assert step.execution_context.vector[:4] == [0.2, 0.0, 0.0, 0.0]
     assert step.vision_embedding.vector == [0.3] * 512
-    assert meta["real_execution_context_domains"] == ["execution", "chat", "route", "bus_synaptic"]
+    assert meta["real_execution_context_domains"] == ["execution"]
     assert "vision_embedding" not in meta["zero_filled_groups"]
     assert set(meta["zero_filled_groups"]) == {"biometrics", "affect", "memory_pointers"}
 
@@ -271,7 +276,7 @@ def test_assemble_world_model_trajectory_step_stale_vision_is_zero_filled():
         now=now,
         process_started_at=now,
         dims=_WM_DIMS,
-        execution_context=ExecutionContextScalars(None, None, None, None),
+        execution_context=ExecutionContextScalars(None),
         vision_embedding_vector=[0.3] * 512,
         vision_embedding_at=now - timedelta(hours=21),  # e.g. a real vision-host outage
         vision_embedding_max_age_sec=120.0,

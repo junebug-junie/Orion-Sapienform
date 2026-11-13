@@ -129,3 +129,34 @@ def activation_decay_anchor(node: BaseSubstrateNodeV1) -> datetime:
     if stamp is None:
         return observed
     return max(stamp, observed)
+
+
+# --- Propagation decay (2026-11-03) -----------------------------------------
+#
+# Activation that reaches a node through an edge is sourced from the
+# neighbour's activation, which has already been decayed by the NEIGHBOUR's
+# own clock. ``receiver_age`` (the behaviour before 2026-11-03) then decays
+# that propagated term again by the RECEIVER's full age (now - observed_at),
+# so any old node reached by a fresh neighbour is muted: a walkway day node
+# (observed_at = start of the local day, 6 h half-life) took a 0.61 sighting
+# cluster as ~0.039 at 17:22. ``source`` propagates the neighbour's activation
+# as it stands this tick (seed decayed by the neighbour's age, stored value
+# decayed since its last decay) and does not decay it again by the receiver's
+# age. The receiver's own seed and stored value decay exactly as before.
+# Only applies with decay mode ``since_last``; ``legacy`` decay is unchanged.
+PROPAGATION_DECAY_MODE_SOURCE = "source"
+PROPAGATION_DECAY_MODE_RECEIVER_AGE = "receiver_age"
+PROPAGATION_DECAY_MODES: frozenset[str] = frozenset(
+    {PROPAGATION_DECAY_MODE_SOURCE, PROPAGATION_DECAY_MODE_RECEIVER_AGE}
+)
+
+
+def normalize_propagation_decay_mode(value: object) -> str:
+    """Return a valid propagation decay mode; raise on anything unknown (a typo
+    in the rollback flag must not silently pick a mode)."""
+    mode = str(value or PROPAGATION_DECAY_MODE_SOURCE).strip().lower()
+    if mode not in PROPAGATION_DECAY_MODES:
+        raise ValueError(
+            f"unknown substrate propagation decay mode {value!r}; expected one of {sorted(PROPAGATION_DECAY_MODES)}"
+        )
+    return mode

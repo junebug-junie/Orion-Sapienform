@@ -25,17 +25,17 @@ sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT), str(TESTS)]
 from orion.personality.graph import Node, apply_fade  # noqa: E402
 
 from app.personality_store import NAMING_CURSOR, PersonalityStore, node_key, split_nodes  # noqa: E402
-from test_personality_loop import T0, item, utc, vec_for, world  # noqa: E402
+from test_personality_loop import T0, choice, direction_of, publish, utc, vec_for, world  # noqa: E402
 
 NAME, SENTENCE = "The Long Watch", "I keep watching the field at night."
 
 
 def active(did: str, text: str, **kw) -> Node:
-    base = dict(disposition_id=did, origin="recurrence", status="active", label=f"label {did}", label_similarity=0.9,
+    base = dict(disposition_id=did, origin="choice", status="active", label=f"label {did}", label_similarity=0.9,
                 centroid=vec_for(text), centroid_n=5, weight=0.0, evidence_count=10,
-                lane_counts={"dream": 5, "journal": 5}, chosen_count=0, first_seen_at=T0 - timedelta(days=3),
+                lane_counts={"curiosity": 5, "prime": 5}, chosen_count=0, first_seen_at=T0 - timedelta(days=3),
                 last_reinforced_at=T0 - timedelta(hours=1), retired_at=None, updated_at=T0,
-                lane_recent={"dream": 3.0, "journal": 3.0}, last_folded_at=T0)
+                lane_recent={"curiosity": 3.0, "prime": 3.0}, last_folded_at=T0)
     base.update(kw)
     n = Node(**base)
     from orion.personality.graph import DEFAULT_PARAMS, _derived_weight
@@ -137,15 +137,17 @@ def test_naming_disabled_reads_nothing_and_keeps_the_cursor():
 
 def test_own_name_echo_folds_with_no_weight_end_to_end():
     drv, store, reader, emb, clock = booted()
-    text = f"{NAME} {SENTENCE}"  # embeds exactly onto d1's centroid
-    store.nodes["d1"] = replace(store.nodes["d1"], name=NAME, lane_recent={"dream": 3.0})
-    store.nodes["d1"].weight = store.nodes["d1"].history_weight = 1.386294361119890
-    reader.add("chat", item("chat", "c1", utc(minutes=1), text))
+    chosen = f"keep {NAME} tonight"  # the option names the node's own name
+    store.nodes["d1"] = replace(store.nodes["d1"], name=NAME, lane_recent={"curiosity": 3.0},
+                                centroid=direction_of(chosen, ("pipeline",)))  # the choice lands exactly on d1
+    store.nodes["d1"].weight = store.nodes["d1"].history_weight = 3.0
+    clock.at = utc(minutes=1)
+    publish(drv, choice("chat:c1", utc(minutes=1), lane="chat", chosen=chosen))
     clock.at = utc(minutes=10)
     before = apply_fade([store.nodes["d1"]], now=clock.at).nodes[0].weight
     asyncio.run(drv.tick())
     d1 = store.nodes["d1"]
-    ev = store.evidence["chat:c1"]
+    ev = store.evidence["choice:chat:c1"]
     assert ev.disposition_id == "d1" and ev.meta["cites_own_name"] is True and ev.weight_delta == 0.0
     assert d1.lane_counts["chat"] == 1 and "chat" not in d1.lane_recent
     assert d1.weight == pytest.approx(before)

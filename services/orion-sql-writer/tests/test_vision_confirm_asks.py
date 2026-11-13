@@ -69,6 +69,19 @@ def test_pair_ref_is_sorted_and_round_trips() -> None:
         assert vi.parse_pair_ref(bad) is None
 
 
+def test_face_cosine_from_refs_reads_the_guess_stored_on_the_ask() -> None:
+    refs = ["individual:a", "individual:b", "face_cosine:0.488"]
+    assert vi.face_cosine_from_refs(refs) == 0.488
+    assert vi.face_cosine_from_refs(json.dumps(refs)) == 0.488  # jsonb read back as text
+    # A handoff ask stores body_cosine only: no face guess, never a body number in its place.
+    assert vi.face_cosine_from_refs(["individual:a", "rule:handoff", "body_cosine:0.943"]) is None
+    # A face-channel handoff ask compares two stories' crops, not the two individuals: not the guess.
+    assert vi.face_cosine_from_refs(["individual:a", "individual:b", "handoff:x", "rule:handoff",
+                                     "face_cosine:0.71"]) is None
+    for bad in (None, "", "not json", [], ["face_cosine:"], ["face_cosine:nan"], ["face_cosine:1.5"], 7):
+        assert vi.face_cosine_from_refs(bad) is None
+
+
 def test_same_person_pairs_band_order_and_skips() -> None:
     a = vi.FaceCandidate("a", "person", _vec(1, 0), 10)
     b = vi.FaceCandidate("b", "person", _vec(1, 0.3), 10)          # ~0.96 to a
@@ -284,6 +297,57 @@ def test_end_to_end_pairs_faces_answers_and_learning(pg) -> None:
 
 
 @needs_pg
+def test_pair_verdict_keeps_the_cosine_stored_on_the_ask_when_a_centroid_is_gone(pg) -> None:
+    """Regression (2026-11-03): 8 of 30 live verdicts on asks that stored face_cosine had NULL,
+    because the verdict recomputed the cosine from the face centroids at answer time and one was
+    missing by then. The ask's stored value is Orion's guess before the answer; it must win."""
+    from sqlalchemy import text
+
+    cfg = vi.IndividualsConfig()
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 12, FACE("a"))
+        _add_person(conn, "bbb", _vec(1, 0.5), 19, FACE("b"))
+        opened = vi._open_asks(conn, NOW, TZ, cfg)
+    pair = next(a for a in opened if a["source_ref"] == "aaa|bbb")
+    stored = vi.face_cosine_from_refs(pair["evidence_refs"])
+    assert stored is not None
+    with pg.begin() as conn:
+        # Between the ask and the answer, one face centroid goes away (a split, a reset).
+        conn.execute(text("UPDATE vision_individual SET face_centroid=NULL WHERE individual_id='aaa'"))
+        # And the other drifts: a recompute would no longer match what Orion bet on.
+        conn.execute(text("UPDATE vision_individual SET face_centroid=:f WHERE individual_id='bbb'"),
+                     {"f": list(_vec(0, 1))})
+        _answer(conn, pair["ask_id"], "yes")
+        assert vi._apply_answers(conn, NOW) == 1
+        got = conn.execute(text(
+            "SELECT verdict, face_cosine FROM vision_individual_pair_verdict "
+            "WHERE individual_a='aaa' AND individual_b='bbb'")).one()
+    assert got[0] == "same"
+    assert got[1] is not None and abs(got[1] - stored) < 1e-6
+
+
+@needs_pg
+def test_handoff_pair_answer_still_recomputes_the_individuals_cosine(pg) -> None:
+    """A face-channel handoff ask stores face_cosine for the two STORIES; the verdict must keep
+    the individuals' own similarity (recomputed), not the story number (review of 2026-11-03)."""
+    from sqlalchemy import text
+
+    with pg.begin() as conn:
+        _add_person(conn, "aaa", _vec(1, 0.0), 12, FACE("a"))
+        _add_person(conn, "bbb", _vec(1, 0.5), 19, FACE("b"))
+        conn.execute(text(
+            "INSERT INTO orion_ask (ask_id, asked_of, question, evidence_refs, status, created_at, source_kind, "
+            "source_ref) VALUES ('ask-h', 'juniper', 'same?', CAST(:r AS jsonb), 'open', :t, :k, 'aaa|bbb')"),
+            {"r": json.dumps(["individual:aaa", "individual:bbb", "handoff:h1", "rule:handoff", "face_cosine:0.111"]),
+             "t": NOW, "k": vi.SOURCE_KIND_SAME})
+        _answer(conn, "ask-h", "yes")
+        assert vi._apply_answers(conn, NOW) == 1
+        got = conn.execute(text(
+            "SELECT face_cosine FROM vision_individual_pair_verdict WHERE individual_a='aaa'")).scalar()
+    assert got == pytest.approx(vi.cosine(_vec(1, 0.0), _vec(1, 0.5)), abs=1e-3)
+
+
+@needs_pg
 def test_face_cap_is_separate_from_the_slow_rule_cap(pg) -> None:
     from sqlalchemy import text
 
@@ -302,14 +366,15 @@ def test_face_cap_is_separate_from_the_slow_rule_cap(pg) -> None:
         assert len(vi._open_asks(conn, NOW + timedelta(days=1), TZ, cfg)) == 1
 
 
-def _add_regular(conn, iid: str, visits: int, *, thumbs: bool) -> None:
+def _add_regular(conn, iid: str, visits: int, *, thumbs: bool, kind: str = "person") -> None:
     """A body-only regular: one sighting a day for ``visits`` days (the slow rule)."""
     from sqlalchemy import text
 
     conn.execute(text(
         "INSERT INTO vision_individual (individual_id, stream_id, kind, centroid, centroid_n, first_seen_at, "
-        "last_seen_at, sighting_count, distinct_days) VALUES (:i, 'walkway', 'person', :c, :n, :a, :b, :n, :n)"),
-        {"i": iid, "c": list(_vec(1)), "n": visits, "a": NOW - timedelta(days=visits), "b": NOW - timedelta(hours=1)})
+        "last_seen_at, sighting_count, distinct_days) VALUES (:i, 'walkway', :k, :c, :n, :a, :b, :n, :n)"),
+        {"i": iid, "k": kind, "c": list(_vec(1)), "n": visits, "a": NOW - timedelta(days=visits),
+         "b": NOW - timedelta(hours=1)})
     for d in range(visits):
         t = NOW - timedelta(days=d, hours=1)
         conn.execute(text(
@@ -337,6 +402,52 @@ def test_no_picture_no_who_is_this_and_it_does_not_block_the_next(pg) -> None:
                           "WHERE individual_id='blank'"))
         later = vi._open_asks(conn, NOW + timedelta(days=1), TZ, cfg)
     assert [a["source_ref"] for a in later] == ["blank"]
+
+
+def _hub_dismiss(conn, ask_id: str, *, dont_know: bool, at=NOW) -> None:
+    """What the Hub's POST /api/asks/{id}/dismiss does to the row (CLOSE_ASK_SQL):
+    no answer; ``{"reason": "dont_know"}`` adds answer_detail.dont_know."""
+    from sqlalchemy import text
+
+    conn.execute(text("UPDATE orion_ask SET status='dismissed', answer=NULL, answered_at=:t, "
+                      "answer_detail=CAST(:d AS jsonb) WHERE ask_id=:i"),
+                 {"t": at, "i": ask_id, "d": json.dumps({"dont_know": True}) if dont_know else None})
+
+
+@needs_pg
+def test_i_dont_know_stores_no_name_and_asks_again_only_after_the_cooldown(pg) -> None:
+    """2026-10-27: "I don't know" on "Do you know whose vehicle this is?" closes the
+    card without a label (live: four vehicles were named "no" / "unsure" / "I do not
+    know whose vehicle this is." because typing was the only way to say it). It is
+    re-asked after the cooldown, counted from when she said it; plain Dismiss never."""
+    from sqlalchemy import text
+
+    cfg = vi.IndividualsConfig(ask_face_min_faces=0, ask_daily_cap=5)
+    with pg.begin() as conn:
+        _add_regular(conn, "car1", 10, thumbs=True, kind="vehicle")
+        _add_regular(conn, "car2", 10, thumbs=True, kind="vehicle")
+        opened = {a["source_ref"]: a for a in vi._open_asks(conn, NOW, TZ, cfg)}
+        assert sorted(opened) == ["car1", "car2"]
+        assert opened["car1"]["question"].endswith("Do you know whose vehicle this is?")
+        said_at = NOW + timedelta(days=5)   # answered late in the card's life
+        _hub_dismiss(conn, opened["car1"]["ask_id"], dont_know=True, at=said_at)
+        _hub_dismiss(conn, opened["car2"]["ask_id"], dont_know=False, at=said_at)
+        vi._apply_answers(conn, said_at)
+        assert _labels(conn) == {"car1": (None, False), "car2": (None, False)}
+
+        def reopened(at):
+            # Thumbs must still be young enough: move the sightings forward with the clock.
+            conn.execute(text("UPDATE vision_individual SET last_seen_at=:t"), {"t": at})
+            conn.execute(text("UPDATE vision_individual_sighting SET ended_at=:t, started_at=:t - "
+                              "(CAST(split_part(sighting_id, '-', 3) AS int) * interval '1 day')"), {"t": at})
+            return [a["source_ref"] for a in vi._open_asks(conn, at, TZ, cfg)]
+
+        assert reopened(said_at + timedelta(days=1)) == []
+        # Cooldown counted from created_at would have reopened it here; from the answer it does not.
+        assert reopened(NOW + timedelta(days=cfg.ask_cooldown_days + 1)) == []
+        assert reopened(said_at + timedelta(days=cfg.ask_cooldown_days + 1)) == ["car1"]
+        assert conn.execute(text(
+            "SELECT count(*) FROM orion_ask WHERE source_ref='car2' AND status='open'")).scalar() == 0
 
 
 @needs_pg

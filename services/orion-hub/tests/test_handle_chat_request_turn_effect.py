@@ -152,7 +152,16 @@ def test_handle_chat_request_preserves_brain_reasoning_trace() -> None:
     assert out["reasoning_content"] is None
 
 
-def test_handle_chat_request_retries_memory_graph_suggest_on_timeout() -> None:
+def test_memory_graph_suggest_already_runs_on_quick_so_a_timeout_is_not_retried() -> None:
+    """Since 2026-06-15 build_chat_request defaults every Hub request to
+    llm_route="quick" (cortex_request_builder.py). The timeout retry exists to
+    move a suggest from the default route ONTO quick, so with quick already the
+    default it no longer fires: one call, on quick, and no retry flag.
+
+    This used to assert the retry (first call with no route, second on quick).
+    The retry branch in api_routes._should_retry_memory_graph_quick is now
+    reachable only for an unrecognized llm_route; see the PR report follow-up.
+    """
     client = _MemoryGraphRetryClient()
     payload = {
         "mode": "brain",
@@ -162,12 +171,30 @@ def test_handle_chat_request_retries_memory_graph_suggest_on_timeout() -> None:
         "no_write": True,
     }
     out = asyncio.run(handle_chat_request(client, payload, "sid-mg-retry", no_write=True))
-    assert len(client.calls) == 2
-    assert client.calls[0].get("llm_route") is None
-    assert client.calls[1].get("llm_route") == "quick"
-    assert out["text"].startswith('{"ontology_version"')
-    assert out["routing_debug"]["memory_graph_retry_quick"] is True
+    assert len(client.calls) == 1
+    assert client.calls[0].get("llm_route") == "quick"
+    assert "memory_graph_retry_quick" not in out["routing_debug"]
     assert out["routing_debug"]["options"]["llm_route"] == "quick"
+
+
+def test_memory_graph_quick_retry_still_fires_when_no_route_is_set() -> None:
+    """The retry branch itself, driven directly: a suggest with no llm_route that
+    timed out is retried. Through handle_chat_request it is unreachable today
+    (every request defaults to quick), so it is covered here instead."""
+    from scripts.api_routes import _should_retry_memory_graph_quick
+    from orion.schemas.cortex.contracts import CortexChatRequest
+
+    req = CortexChatRequest(prompt="x", verb="memory_graph_suggest", options={})
+    should, hint = _should_retry_memory_graph_quick(
+        req, raw_result=None, text="[Error: llamacpp timed out after waiting]"
+    )
+    assert should is True
+    assert "timed out" in hint
+
+    req_routed = CortexChatRequest(prompt="x", verb="memory_graph_suggest", options={"llm_route": "quick"})
+    assert _should_retry_memory_graph_quick(
+        req_routed, raw_result=None, text="[Error: llamacpp timed out after waiting]"
+    ) == (False, "")
 
 
 def test_handle_chat_request_does_not_retry_memory_graph_with_explicit_llm_route() -> None:

@@ -16,6 +16,9 @@ COPY orion /app/orion
 COPY services/orion-vector-host/app ./app
 
 ENV PYTHONPATH="/app:${PYTHONPATH}"
+# torch defaults to one thread per physical core (48 here). Measured on athena
+# 2026-10-30, bge-large, 130 tokens: 48 threads = 4.6 s/embed, 8 = 0.36 s.
+ENV OMP_NUM_THREADS=8
 
 EXPOSE 8320
 

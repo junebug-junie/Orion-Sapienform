@@ -110,7 +110,7 @@ def reduce_chat_trace_events(
         # Keep the turn's first-reduction time. observed_at is "when this turn
         # happened" (endogenous curiosity ages repair pressure from it); a late
         # event or reprocess must not make an old turn look fresh again.
-        # last_updated_at still moves -- chat_prediction_error reads that.
+        # last_updated_at still moves (chat_prediction_error read that until its 2026-11-13 retirement).
         turn = turn.model_copy(update={"observed_at": existing.observed_at})
     updated.turns[turn_id] = turn
     updated.total_turn_count = len(updated.turns)

@@ -30,9 +30,10 @@ from orion.schemas.attention_frame import PredictionErrorMagnitudeV1
 from orion.substrate.prediction_error_magnitude import compute_prediction_error_magnitude
 
 NOW = datetime(2026, 10, 10, 5, 51, 3, tzinfo=timezone.utc)
-CODEBASE = "node:substrate.codebase"
+# The live case was node:substrate.codebase (retired 2026-11-13); execution is the
+# same event-written level shape ("only written when a batch carried ...").
+CODEBASE = "node:substrate.execution"
 BIOMETRICS = "node:substrate.biometrics"
-BUS = "node:substrate.bus_synaptic"
 
 # A codebase-shaped week: written every 15 min, 91% exact zeros.
 _WEEK = [NOW - timedelta(minutes=15 * i) for i in range(1, 672)]
@@ -63,15 +64,20 @@ def _level(node_id: str, pct: float, *, age: float = 20.0, value: float = 0.3):
 def test_event_written_set_comes_from_glossary_semantics() -> None:
     expected = {
         "node:substrate.execution": True,   # designed_sparse, "only written when a batch carried..."
-        "node:substrate.chat": True,        # designed_sparse, "only written when chat turns were touched"
-        "node:substrate.codebase": True,    # designed_sparse, "only written on a codebase delta event"
-        "node:substrate.route": True,       # designed_sparse, "only written when routing runs were touched"
-        "node:substrate.harness_closure": True,  # event_gated (a placeholder: never eligible anyway)
+        # event_gated: one write per settled chat turn (2026-11-13; replaced node:substrate.chat).
+        "node:prediction.chat_turn": True,
+        # designed_sparse, "only written as 1.0 at a strain news event, then carried unwritten"
+        # for the orienting window: the 1.0's age is the event's age.
+        "node:substrate.strain": True,
         "node:substrate.cabinet": False,    # designed_sparse but rewritten every 30 s tick
         "node:substrate.perception": False,  # "written as 0.0 every tick"
         "node:substrate.perception_walkway": False,  # walkway camera, same "written as 0.0 every tick"
+        "node:substrate.street": False,  # designed_sparse, "written every tick while measurable"
         "node:substrate.biometrics": False,  # per_tick
-        "node:substrate.bus_synaptic": False,  # per_tick
+        # per_tick, "written once per gated forecast outcome": a 30-min state, not an event, so no
+        # orienting-window fade (its ~5 min write gap would otherwise read as past the window).
+        "node:prediction.room": False,
+        "node:prediction.body": False,
     }
     from orion.field.channel_glossary import load_glossary
 
@@ -86,7 +92,7 @@ def test_event_written_set_comes_from_glossary_semantics() -> None:
 
 
 def test_carried_forward_alone_does_not_make_a_signal_event_written() -> None:
-    # bus_synaptic / biometrics say "carried forward" too, but are per_tick.
+    # biometrics says "carried forward" too, but is per_tick.
     assert not prediction_error_is_event_written("per_tick", "carried forward in node_vectors")
     assert not prediction_error_is_event_written("designed_sparse", "written as 0.0 every tick")
     assert not prediction_error_is_event_written(
@@ -169,7 +175,8 @@ def test_a_fresh_event_is_not_penalised_against_a_per_tick_rival() -> None:
     )
     ex = node_candidate(node_id="node:substrate.execution", label="x", magnitude=m, observed_at=NOW, now=NOW,
                         history_values=[0.0] * 900 + [0.5] * 65 + [1.0] * 35)
-    rival = _level(BUS, 0.975)
+    rival = _level(BIOMETRICS, 0.975)   # a live per-tick level (bus_synaptic retired 2026-11, #3201)
+    assert judge_candidate(rival).eligible   # the rival really competes
     assert rank_candidates([rival, ex]).winner.candidate.source_id == "node:substrate.execution"
 
 
@@ -240,7 +247,8 @@ def test_a_storm_still_wins_against_a_per_tick_rival_after_every_write() -> None
 # --- continuous level signals are unaffected -----------------------------------
 
 
-@pytest.mark.parametrize("node_id", [BIOMETRICS, BUS, "node:substrate.perception", "node:substrate.cabinet"])
+@pytest.mark.parametrize("node_id", [BIOMETRICS, "node:prediction.room", "node:substrate.perception",
+                                     "node:substrate.cabinet"])
 def test_level_and_per_tick_signals_do_not_fade(node_id: str) -> None:
     c = _level(node_id, 0.95, age=1500.0)
     assert c.event_window_sec is None

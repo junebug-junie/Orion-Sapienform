@@ -2,8 +2,8 @@
 
 WHY THIS EXISTS
 ---------------
-`orion/autonomy/quota_budget.py` denominates scarcity in dollars against an
-allowance. That allowance does not exist: no dollar threshold separates
+`orion/autonomy/quota_budget.py` (deleted in body economy Patch B) denominated
+scarcity in dollars against an allowance. That allowance does not exist: no dollar threshold separates
 limited from not-limited (see
 `docs/superpowers/specs/2026-08-27-quota-window-calibration-finding.md`).
 
@@ -40,7 +40,7 @@ THREE STATES, AND THE THIRD IS NOT A FAILURE
 --------------------------------------------
 `clear` / `limited` / `unknown`. `unknown` means no transcript activity was
 observable in the window at all, which is NOT "not limited" -- the same
-distinction `quota_budget.WindowSpend.observed` draws for spend. What to DO on
+distinction the deleted `quota_budget.WindowSpend.observed` drew for spend. What to DO on
 `unknown` is deliberately left to the caller: for a spend budget the safe
 direction was to refuse, but here `unknown` usually means nobody has used
 Claude recently, which is when the shared pool is least contended.

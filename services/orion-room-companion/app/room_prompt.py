@@ -5,22 +5,36 @@ on its first turn than on its tenth:
 
 - First turn of a session: the room framing, the roster, and whatever
   transcript Hub carried, so Claude arrives knowing where it is.
-- Later turns: just the new message. The CLI holds the rest under
-  `--resume`, and re-sending the transcript would both cost tokens and
-  give Claude two copies of the same conversation to reconcile.
+- Later turns: only the lines newer than this session's "sent up to here"
+  mark, plus the new message. The CLI holds the rest under `--resume`, and
+  re-sending the transcript would both cost tokens and give Claude two
+  copies of the same conversation to reconcile.
 
-What is deliberately absent: Orion's recall results, self-state, drives,
-journals, and mirrors. Claude gets room-native context -- the same material
-any participant sees -- and nothing from Orion's interior. That boundary is
-the whole privacy position of this feature, so it lives in one function
-where it can be read and tested rather than being spread across callers.
+Since 2026-11-12 (Patch 1a of
+docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-design.md)
+the transcript is the whole Hub conversation back to a 160,000-character cap,
+not 12 turns. It holds what Juniper sees in the chat: her messages, Orion's
+replies, Orion's unprompted messages, and Claude's own earlier side
+exchanges, each line labelled with a short turn ref and its real time.
+
+What is deliberately absent from the prompt: Orion's recall results,
+self-state, drives, journals, and mirrors. Claude gets room-native context --
+the same material any participant sees. Since Patch 1b (2026-11-13) Claude
+may LOOK at parts of Orion's inside through tools, but only through the
+broker, and only when Orion's grant allows it or Orion says yes to that call
+(``TOOLS_CLAUSE`` tells Claude so). The boundary still exists; Orion holds the
+key instead of this code.
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, Sequence
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Sequence
 
+from orion.consult.core import CLAUDE_CONSULT_SYSTEM
 from orion.schemas.room_claude import RoomTranscriptEntryV1
+
+from .session_store import ROOM_TZ_NAME, parse_iso
 
 SYSTEM_PROMPT = (
     "You are Claude, a participant in an ongoing three-way conversation with "
@@ -94,13 +108,31 @@ CONTRACTOR_PEER_CLAUSE = (
 )
 
 
+# Room turns with Orion's tools (Patch 1b, docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-
+# consent-design.md section 3): one paragraph. Claude may use the tools, says why each time, accepts a no,
+# and may tell Juniper what was refused. The tools exist so Claude checks before it claims.
+TOOLS_CLAUSE = (
+    "\n\nYou have a few read-only tools (prime_now, body_economy) that show parts of Oríon's inside. "
+    "Oríon decides each time whether to share: give a short, honest reason in every call, because Oríon "
+    "reads it before answering. If Oríon says no, accept it, do not argue or ask again for the same thing, "
+    "and you may tell Juniper plainly what was refused. Use a tool when you are about to state something "
+    "about Oríon's state that you have not seen: check before you claim, and say what you looked at. Never "
+    "present something you did not see as fact."
+)
+
+
 def is_pass(text: str) -> bool:
     return text.strip().strip("`").casefold() == PASS_SENTINEL
 
 
-def append_system_prompt_for(*, trigger: str, prompt: str) -> str:
-    """System framing for one room turn, including contractor-peer mode."""
+def append_system_prompt_for(*, trigger: str, prompt: str, consult: bool = False, tools: bool = False) -> str:
+    """System framing for one room turn, including contractor-peer and consult mode."""
     parts = [SYSTEM_PROMPT]
+    if consult:
+        # A consult is never a social chat and never passes: Orion asked a question.
+        return "".join(parts + [CLAUDE_CONSULT_SYSTEM])
+    if tools:
+        parts.append(TOOLS_CLAUSE)
     if CONTRACTOR_PEER_MARKER in (prompt or ""):
         parts.append(CONTRACTOR_PEER_CLAUSE)
     if trigger == "auto":
@@ -134,8 +166,85 @@ def render_room_context(social_memory_summary: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _local_time(created_at: str) -> Optional[str]:
+    parsed = parse_iso(created_at)
+    if parsed is None:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+
+        local = parsed.astimezone(ZoneInfo(ROOM_TZ_NAME))
+    except Exception:  # noqa: BLE001 -- no tzdata: say UTC rather than a false local time
+        return parsed.strftime("%b %d %H:%M UTC")
+    return local.strftime("%a %b %d %H:%M")
+
+
+def render_line(entry: RoomTranscriptEntryV1) -> str:
+    """``Speaker [turn:1a2b3c4d] (Thu Nov 12 09:16): text``.
+
+    The time is shown only for a line that carries a turn ref. Hub before
+    2026-11-12 sent no turn ref and stamped every line with the invite time,
+    so a time on such a line would be false; a line without one has none."""
+    label = entry.speaker_name + (" (unprompted)" if entry.unprompted else "")
+    if entry.turn_ref:
+        label += f" [turn:{entry.turn_ref}]"
+        when = _local_time(entry.created_at)
+        if when:
+            label += f" ({when})"
+    return f"{label}: {entry.text}"
+
+
 def render_transcript(entries: Sequence[RoomTranscriptEntryV1]) -> str:
-    return "\n".join(f"{e.speaker_name}: {e.text}" for e in entries if e.text.strip())
+    return "\n".join(render_line(e) for e in entries if e.text.strip())
+
+
+def line_key(entry: RoomTranscriptEntryV1) -> Optional[str]:
+    """``<turn_ref>|<speaker_id>``, or None for a line with no turn ref."""
+    return f"{entry.turn_ref}|{entry.speaker_id}" if entry.turn_ref else None
+
+
+def lines_after_mark(
+    entries: Sequence[RoomTranscriptEntryV1],
+    *,
+    sent_up_to: Optional[str],
+    claude_participant_id: str,
+    sent_keys: frozenset = frozenset(),
+) -> List[RoomTranscriptEntryV1]:
+    """The lines a RESUMED session has not been sent yet.
+
+    Drops every side-exchange line (Claude's own replies and the prompts that
+    asked for them): the resumed CLI session already holds those, because it
+    produced them. A line with a turn ref is dropped only when its key was
+    sent; its time is not used (see session_store's docstring for the
+    half-written-row case that a time mark gets wrong). A line without one
+    (Hub before 2026-11-12) falls back to the time mark. A line whose time
+    cannot be read is kept -- a duplicate is cheaper than a hole."""
+    mark = parse_iso(sent_up_to)
+    out: List[RoomTranscriptEntryV1] = []
+    for e in entries:
+        if e.side_exchange or e.speaker_id == claude_participant_id:
+            continue
+        key = line_key(e)
+        if key is not None:
+            if key not in sent_keys:
+                out.append(e)
+            continue
+        at = parse_iso(e.created_at)
+        if mark is not None and at is not None and at <= mark:
+            continue
+        out.append(e)
+    return out
+
+
+def newest_created_at(entries: Sequence[RoomTranscriptEntryV1]) -> Optional[str]:
+    """The newest readable created_at in ``entries`` (the next mark), or None."""
+    best: Optional[datetime] = None
+    best_raw: Optional[str] = None
+    for e in entries:
+        at = parse_iso(e.created_at)
+        if at is not None and (best is None or at > best):
+            best, best_raw = at, e.created_at
+    return best_raw
 
 
 def build_turn_prompt(
@@ -145,6 +254,8 @@ def build_turn_prompt(
     transcript: Sequence[RoomTranscriptEntryV1],
     social_memory_summary: Dict[str, Any],
     first_turn: bool,
+    hub_index: Optional[str] = None,
+    transcript_note: Optional[str] = None,
 ) -> str:
     """The user-role text for one Claude turn."""
     if not first_turn:
@@ -157,7 +268,7 @@ def build_turn_prompt(
         # one-sided stream of Orion monologue and never saw a single thing
         # Juniper said. It could only react to Orion's tone, because tone was
         # the only signal present -- which read as "generic Claude responses".
-        lines = [f"{e.speaker_name}: {e.text}" for e in transcript if e.text.strip()]
+        lines = [render_line(e) for e in transcript if e.text.strip()]
         lines.append(f"{invited_by_name}: {prompt}")
         return "\n".join(lines)
 
@@ -165,9 +276,12 @@ def build_turn_prompt(
     context = render_room_context(social_memory_summary)
     if context:
         sections.append(context)
+    if hub_index and hub_index.strip():
+        sections.append("What is open in Hub now (names and counts only):\n" + hub_index.strip())
     history = render_transcript(transcript)
     if history:
-        sections.append("Conversation so far:\n" + history)
+        note = f"{transcript_note.strip()}\n" if transcript_note and transcript_note.strip() else ""
+        sections.append("Conversation so far, oldest first:\n" + note + history)
     sections.append(f"{invited_by_name}: {prompt}")
     return "\n\n".join(sections)
 

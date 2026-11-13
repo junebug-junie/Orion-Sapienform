@@ -144,6 +144,9 @@ class PendingCrop:
     label: str
     box: Tuple[float, float, float, float]
     camera_id: Optional[str]
+    # The detector's frame size for this box (None: use cfg.frame_w/frame_h).
+    frame_w: Optional[float] = None
+    frame_h: Optional[float] = None
 
 
 def capture_pending(crops: Iterable[PendingCrop], *, stream_id: str, cfg: StripConfig,
@@ -182,8 +185,9 @@ def capture_pending(crops: Iterable[PendingCrop], *, stream_id: str, cfg: StripC
             if not fpath.exists():
                 small = im.resize((FRAME_W, max(1, round(H * FRAME_W / W))))
                 _atomic_save(small, fpath)
-            sx, sy = W / cfg.frame_w, H / cfg.frame_h
             for c in group:
+                fw, fh = (c.frame_w, c.frame_h) if c.frame_w and c.frame_h else (cfg.frame_w, cfg.frame_h)
+                sx, sy = W / fw, H / fh
                 b = (c.box[0] * sx, c.box[1] * sy, c.box[2] * sx, c.box[3] * sy)
                 x0, y0, x1, y1 = padded_box(b, W, H)
                 if x1 - x0 < 2 or y1 - y0 < 2:

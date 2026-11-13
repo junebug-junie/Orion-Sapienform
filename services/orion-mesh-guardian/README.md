@@ -68,6 +68,63 @@ Added after the 2026-10-09/10 incident: circe's `orion-gpu-lane-controller` ran 
 Eval: `evals/test_gpu_incident_replay.py` replays the real 155 refusals (exported from `gpu_pool_events`):
 first card within 0 s of the first refused swap, worst case 295 s from probes alone; 5 cards over 25.7 h.
 
+## Crash loops on other hosts (circe)
+
+Added after 2026-10-14..23: `orion-circe-affectgpt-worker` restarted 601 times on circe (CUDA OOM at
+model load, ~144 W for 9 days) and nothing alerted, because the crash-loop check read only athena's
+docker socket.
+
+- **Producer:** circe's `orion-gpu-lane-controller` (already holds circe's docker socket, already
+  heartbeats) reads every container's `RestartCount` every 30 s (read-only `docker ps -aq` +
+  `docker inspect`) and puts it on its heartbeat as `details["container_restarts"]`
+  (`ContainerRestartsV1`, `orion/schemas/telemetry/system_health.py`).
+- **Carrier:** orion-equilibrium-service already copies each heartbeat's `details` into the
+  equilibrium snapshot this guardian already consumes. No new channel, no SSH, no remote socket.
+- **Consumer:** `remote_restart_counts` (`app/stability.py`) folds every non-local host's fresh
+  census into the same `CrashLoopTracker` as athena's own. Every key is host-qualified
+  (`<host>/<container>@<id12>`), so the card is `crash_loop:circe/<container>`.
+- **Absence is not calm.** A host in `MESH_GUARDIAN_REMOTE_CONTAINER_HOSTS` (default `circe`) with no
+  census, a failed one, or one older than `MESH_GUARDIAN_REMOTE_CONTAINER_STALE_SEC` (300) raises a
+  `container_watch_blind:<host>` warning card (after a 300 s boot grace) and feeds nothing. A host
+  that cannot be read keeps its restart history. hecate is on-demand and has no reporter yet, so it
+  is not listed; a hecate census would still be watched if one appeared.
+- Disable with `MESH_GUARDIAN_REMOTE_CONTAINER_WATCH_ENABLED=false`.
+
+Eval: `evals/test_remote_crash_loop_incident_replay.py` replays the circe incident through the
+real hops (30 s census, 15 s equilibrium lag, 60 s cycle). At the conservative cadence (601 restarts
+over 235 h, one per 23.5 min) the first card lands at 72 min, inside the 2 h window; at the reported
+~22 s cadence, at cycle 2. The whole incident would have raised 40 cards (one per 6 h) instead of 0.
+A reporter that stops heartbeating reads blind 5 min later.
+
+## Stopped containers (athena)
+
+Added after 2026-10-29: a post-pull rebuild was killed inside `orion-harness-governor up -d --build`.
+Compose had stopped the old container and left its replacement "Created" under a temp name. No worker
+served `orion:harness:run:request` for ~9.5 h, and nothing alerted: the crash-loop check only sees
+restarts, and a container that is stopped cleanly never restarts.
+
+- **Rule:** a container whose restart policy is `always` or `unless-stopped`, in state `exited` or
+  `created`, for longer than `MESH_GUARDIAN_STOPPED_CONTAINER_GRACE_SEC` (600). A `<12 hex>_<name>`
+  container in `created` is a half-finished compose recreate and is flagged whatever its policy.
+  The clock is the container's own stop time (`FinishedAt`, or `Created` for a created one).
+- **Grouping:** by compose service. One outage (old container exited + temp replacement created)
+  is one card. A stopped leftover beside a running container of the same compose service is not
+  flagged.
+- **No nagging:** one card per stop episode (container id + stop time). A container that stays
+  stopped never re-cards; if it starts and stops again, that is a new card. Episodes live in
+  memory, so a guardian restart re-cards each still-stopped container once. To silence one you
+  stopped on purpose, `docker rm` it.
+- **Read:** one `/containers/json?all=true` call, then `inspect` only for the non-running ones.
+  Local docker only: the circe census carries restart counts, not state.
+- Cards go through `_publish_alerts` (AlertGate, then notify `attention_request`), the same Hub
+  Pending Attention surface as the other stability cards (`heartbeat: stability`,
+  `event: stopped_container`).
+- Disable with `MESH_GUARDIAN_STOPPED_CONTAINER_WATCH_ENABLED=false`.
+
+Live check, athena, 2026-10-29: 133 containers, 2 not running. One card: `orion-athena-kev`
+(`unless-stopped`, exited 2026-10-15; kev moved to circe). The other is a one-shot init job with
+restart `no`, not flagged.
+
 ## Tests
 
 ```bash

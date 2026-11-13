@@ -31,6 +31,169 @@ experiment dispatcher. Where the build departs from the design below, the build 
   max residual once (n+1)·q ≥ n, so at the default 40 windows the 95 % upper bound is the max
   observed error (conservative); at 14 the 80 % and 95 % ranges coincide.
 
+## Heat per watt, room covariate, young-series gate fix (2026-11-03, follow-up PR)
+
+1. **Young-series selection failure** (`office.temp_c`, every 6 h from 2026-11-02: "too few blend
+   residual paths at [5] min ... champion [8, 16, 16, 16, 16]"). `direct_ar` needs ~3 days of training
+   (288 complete rows at its 24 h lead after the one-day-lag feature); the backtest gives the oldest
+   windows 2. So on a young series it has residuals on half the windows. The backtest route already
+   refused that (90 % window share), but a live `better` verdict promoted it without the check; its
+   8-path column then failed `check_paths` and the whole reselect was refused. Fix: window coverage is a
+   precondition for the live route too (GATE_VERSION 4). Reproduced on the real fixture
+   (`tests/test_young_series.py`, fails on the old gate).
+   The 0.67 live coverage is a separate, expected effect of youth (10-18 overlapping windows over
+   30-54 h, 80 % and 95 % both clipped to the pool extremes, a room that moves up to 2.5 C/h); it
+   closes at ~40 windows. Not suppressed.
+2. **Room as a cabinet covariate now.** `office.temp_c` joins `athena.cabinet_temp_c.covariates`
+   and `overlap_covariates`. `direct_arx` keeps its full-history columns (unchanged results:
+   replay table identical with and without the room); `direct_arx_overlap` uses every covariate on
+   the overlap rows only, so it refuses windows with too little overlap rather than interpolating days
+   of room air. The gate compares it with the baseline on the windows it forecast and refuses it below
+   90 % window share; earliest serve ~2026-11-07. A covariate's own exclusions are now masked
+   (`covariate_series`), and a bucket straddling an exclusion edge is masked whole (the room's
+   exclusion starts 22:16, mid-bucket).
+3. **`GET|POST /effects/heat-per-watt`** (`app/heat_balance.py`): local fit (cabinet - room) and total
+   fit (cabinet, room free, outdoor air controlled) on each machine's chassis watts, hourly, lags 0-2 h
+   summed, AR(1) GLS + Newey-West. Stored as `observational_effect` rows (`heat_per_watt:<w>`,
+   `heat_per_watt_total:<w>`); no migration (the table fits). `best_effect` cites the newest stored
+   fit's prediction beside an experimental answer. Why two fits: the gap alone answered "how much
+   warmer than its intake", but the machines' heat warms the office too, and the room path is most of
+   the 0-2 h effect (live, same 129 h: athena local +0.09 vs total +0.92 C/100 W; circe -0.02 vs +0.32).
+   Both fits share their hours; a missing hour is a break for the AR(1) step and the kernel. The
+   walkway focus experiment (20-min blocks -> local basis) converts to -0.00 C local, +0.23 C total, vs
+   its measured +0.21 (-0.16..+0.58).
+
+Metric quality gate for the watts measure (2026-11-03, hourly 2026-10-29..11-03, 123-129 h):
+
+1. Provenance. `athena.chassis_watts`: athena's iLO `ilo_power_watts` (`orion/telemetry/biometrics_pipeline.py`
+   `extract_measurements`, BMC at the PSU). `circe.chassis_watts`: circe has no BMC; athena polls the
+   Panduit PDU outlets on its behalf (`services/orion-biometrics/app/main.py:_proxy_measurements`, wall
+   power, same number as `pdu_watts`). `hecate.chassis_watts`: hecate's BMC read remotely by athena.
+   `gpu_watts_total` / `cpu_watts_total`: nvidia-smi sum / RAPL packages, both CONTAINED in chassis.
+   Hub's `_WATTS_SQL` and `orion_energy_hourly` sum the same per-node chassis watts (+ cooling).
+2. Independence. GPU and CPU watts are parts of chassis watts (not independent: one of them, not
+   both). The fleet sum is chassis watts of three nodes forced onto one slope. `pdu_watts` (circe) is
+   the same reading as its chassis watts. athena vs circe chassis watts: different meters, different
+   machines, hourly corr -0.09.
+3. Theory. Steady-state air heat balance: outlet minus inlet = P / (m_dot c_p); all electrical power
+   ends as heat, so chassis (whole-node) watts is the anchored quantity, per machine (each machine's
+   exhaust reaches the sensor differently). Check of the gap form: cabinet on room + watts gives a room
+   coefficient 0.97 (0.94..0.99), so subtracting the room is justified.
+4. Live sanity. athena 396-784 W, sd 132 W; circe 582-1353 W, sd 203 W; hecate 0 W except ~2 hours
+   (refused: flat); AC 117-120 W (fan mode, refused: flat); athena GPU 98-126 W, sd 6 W (flat);
+   gap 0.23-2.30 C. Why the sum dropped R^2 to 0.18: circe's watts are 1.5x athena's variance and
+   the sensor does not see them (slope -0.01/100 W), so one shared slope dilutes athena's. And the
+   level R^2 0.89 itself is one step: 2026-10-30 02:20 UTC the gap fell 1.1 C in 10 min with athena
+   flat at ~740 W (cabinet humidity rose 22.8 -> 24.6 %: cooler air came in; no change event logged),
+   then athena fell 300 W at 04:00 and the gap moved ~0.1 C. The GLS (change-based) slope is the
+   local answer: +0.09 C/100 W (-0.01..+0.19); the level fit's +0.43 is reported as a disagreement.
+5. Existing mechanism. `scripts/analysis/fit_heat_sensitivity.py` -> `config/physiology/heat_sensitivity.yaml`
+   (body economy B2): whole-cabinet hourly first differences on per-host COMPUTE watts (CPU+GPU),
+   2 h step, day-block bootstrap, 09-26..10-27, offline, written to config (athena 0.64 [0.20, 1.03],
+   circe 0.31 [0.15, 0.48]). It predates the room sensor, so it cannot split local from room heat, and
+   it is not reachable from the prediction service or an experiment. The total fit here agrees with
+   it (athena 0.92, circe 0.32, wide intervals); this adds the room split, chassis (whole-node) watts, and the
+   experiment conversion. Not replaced: the budget organ keeps reading its config. Also `/scenario`
+   (ARX, levels, conditional) and the replay eval's scenario (+0.36/100 W, levels, same step).
+6. Reversibility. One module, two routes, rows in an existing table under new action names; no
+   schema, no training default. Removing the routes removes it; `best_effect` falls back to no
+   `heat_balance_prediction`.
+
+Winner: per-machine `chassis_watts` for athena and circe (both kept as regressors: circe's ~0 slope is
+the answer for loads that land on circe, e.g. vision captions), hecate and the AC as auto-refused
+candidates that enter when they vary. Rejected: fleet sum, GPU-only, CPU-only, `orion_energy_hourly`.
+
+## Switchback runner (2026-10-29, follow-up PR)
+
+The first dispatched experiment lives in orion-prediction itself (`app/experiment_runner.py`,
+`POST /experiments/run`), not orion-self-experiments: this service already owns the design, the
+guard, the intervention log and the analysis, and already has the bus Redis URL. The only actuator
+is `vision.focus:<stream_id>` (Redis key `orion:vision:experiment:<stream_id>` read by the vision
+frame router). The runner adds a manipulation check (router dispatch tiers per arm, GPU and chassis
+watts ON minus OFF) beside the temperature effect, so "no effect" can be told apart from "the
+switch did nothing". Abort = status `cancelled` plus an intervention row with `arm` NULL. Disable:
+`PREDICTION_EXPERIMENT_RUNNER_ENABLED=false` (the spec's earlier `PREDICTION_EXPERIMENTS_ENABLED`
+name was never built). PR report: `docs/superpowers/pr-reports/2026-10-29-vision-focus-experiment-pr.md`.
+
+## Shadow scoring (2026-10-22, follow-up PR)
+
+Live 2026-10-21/22: direct_arx served 15 min for 18 h (backtest p 0.041-0.049) and beat the baseline
+live (0.922x over 213 scored forecasts), then flickered off at p 0.054-0.070. Two problems: a hard
+p cut-off on a noisy number, and no live record for anything not served. Contenders (beat the baseline
+somewhere in the backtest, or serving) now forecast in the shadow every issue; `app/live.py` turns the
+scored shadow rows into per-horizon live verdicts (time-thinned to independent pairs, >= 20, overlap-
+aware paired test both ways; "better" Holm-corrected across the contender x horizon family, since an
+uncorrected 0.05 promoted a null model in ~1/3 of selections). Gate: live-worse never serves, live-better
+serves only if it also beats the baseline in the backtest, else backtest with hysteresis (enter
+p < 0.05, stay p < 0.10); live winners rank first. Per-horizon look-back = max(7 d, 25 horizons) so the
+24 h horizon can reach a verdict; shadow rows kept 35 days. GATE_VERSION 3 forces a reselect on deploy. The
+worse_than_baseline alert now judges the serving model's own live record instead of 7 days of champion
+rows (which kept alerting on a pick already dropped).
+
+## Office (room) temperature target (2026-10-29, follow-up PR)
+
+Missing question 1 below ("room vs cabinet") now has hardware: a pan-1 SHT40 in the office since
+2026-10-28 22:16 UTC. `office.temp_c` is a second target (source kind `office_env`, key allowlisted to
+`office_temp_c` / `office_humidity_pct`; rows with `sensor_online = false` or `stale = true` dropped).
+No thresholds, no covariates, not yet a cabinet covariate (~3 h of history: `direct_arx` would lose
+every older cabinet row) -- it joins once ~14 days exist (~2026-11-12). The placement hour is
+excluded (sensor moved, then cooled 28.2 -> 25.3 C while RH rose 21.7 -> 24.5 %: vapour pressure
+flat, so the sensor was warm, not the room).
+
+Young series: selection now refuses before running the zoo when the history is shorter than
+2 days + the longest horizon + 10 origins (`min_backtest_steps`; ~4.1 days here) and reports
+`not_ready` + `ready_at` in `/health` -- not `selection_failed`. The cabinet target is unaffected
+(tested side by side). Change events with scope `*` that predate its `train_from` are no-ops.
+
+Metric quality gate:
+
+1. Provenance: `services/orion-office-env/app/sample.py:build_sample` via `app/main.py:make_sample` (pan-1, serial frames from the
+   Nano ESP32 SHT40; stale frame -> no measurements, `sensor.online = not stale`), published on
+   `orion:office:env:sample` (`app/main.py:publish_sample`), flattened by orion-sql-writer
+   `app/worker.py:_normalize_office_env_sample_payload` into `office_env_sample`.
+2. Independence from `athena.cabinet_temp_c`: different sensor, different board, different host,
+   different table. Not causally independent, by design: the room is the cabinet's intake air.
+   First 80 min after placement: cabinet - room = 1.7..2.2 C, corr 0.94 over 8 ten-minute buckets
+   (too few to mean more than "they move together").
+3. Theory anchor: cabinet heat balance, dT_cab/dt ∝ P_in - UA (T_cab - T_room) - P_AC. T_room is the
+   boundary term the cabinet model has been missing (only outdoor weather stood in for it).
+4. Live sanity (2026-10-29 01:25 UTC): 299 usable raw rows (1 offline/stale dropped), 24.8..28.5 C raw;
+   after the placement exclude, 15 five-minute buckets, 24.9..26.0 C, SD 0.39 C, 15 distinct values,
+   no gaps, median |5-min step| 0.10 C. Not flat, not saturated; a calm room is a real rest state here
+   (the value is a temperature, not a deviation score).
+5. Existing mechanism: Hub's climate overlay (`services/orion-hub/scripts/cabinet_climate_routes.py`)
+   only charts it. Nothing forecasts it.
+6. Reversibility: one registry entry + one read-only source kind + one additive index. Removing the
+   entry stops it; its stored forecasts are keyed by series_id.
+
+## Weather + fleet inputs (2026-10-21, follow-up PR)
+
+New covariates for the cabinet target, and the shared weather seam. Metric quality gate:
+
+1. Provenance: `circe.chassis_watts` / `hecate.chassis_watts` = `orion_biometrics_cluster.measurements_by_node`
+   written by orion-biometrics on athena (circe via its PDU outlets, `services/orion-biometrics/app/pdu.py`;
+   hecate via its BMC read remotely, `app/ilo.py`). `athena.central_ac_proxy` = Open-Meteo hourly
+   `temperature_2m` via `orion/weather/openmeteo.py`, stored in `prediction_weather_hourly`.
+2. Independence: circe and hecate are separate machines on separate meters from athena (all three in the
+   cabinet). The proxy is an outdoor sensor, independent of every in-cabinet reading, but NOT of the
+   portable AC: with the central AC off the portable one works harder (845 vs 719 W), so the two overlap
+   by design -- the proxy carries the cause, the AC watts the response.
+3. Theory anchor: cabinet heat balance (electrical draw ~ heat in). For the proxy, the house meter:
+   household + central kWh/h rises +0.33 per F above 75 F outdoor, 3 h earlier (p ~1e-18; 508 h,
+   2026-09-26 -> 10-17), and hours with the central AC likely on run the cabinet ~1.3 C cooler.
+4. Live sanity (2026-10-21, 2 days): circe 700-1100 W (mean 927), hecate ~96 W standby with spikes, no gaps.
+   The proxy is 0 for this whole fall stretch (outside < 75 F since ~10-11): it carries no information until
+   it warms up, and ridge treats the flat column as zero-variance. Kept so spring data trains it; the eval
+   above is the retirement check.
+5. Existing mechanism: none in the forecaster; the situation layer fetched weather live and kept no
+   history -- its HTTP client is now the shared seam.
+6. Reversibility: registry entries; the gate decides whether `direct_arx` serves.
+
+Replay (40 windows ending 2026-10-20, all inside the post-T10 regime): `direct_arx` ~1.0x persistence
+(0.96 at 15 min, p 0.25) -- no significant gain yet; the gate serves the baseline. A 14-window smoke on
+10-19 -> 10-21 showed 0.73-0.89x (too few windows to pass). Weather is not committed to the eval
+fixture: an hourly temperature series from one spot narrows down where it is, and the repo is public.
+
 ## Grading the exceedance + the alert tie (2026-10-20, follow-up PR)
 
 The `shed` probability was shown beside every reflex decision but never stored, so its quality was

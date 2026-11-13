@@ -199,7 +199,9 @@ def test_build_models_list_payload_lists_every_pool_route(configured_routes: Any
     ids = [entry["id"] for entry in payload["data"]]
     assert ids == sorted(["chat", "harness", "agent", "metacog", "metacog_background", "quick",
                           "quick_background", "agent-burst", "chat-burst", "memory_distill", "agent-deep",
-                          "metacog_turn"])
+                          "metacog_turn", "quick_turn", "quick_embodied", "metacog_perception", "prime",
+                          "prime_starved", "prime_consent", "judge", "operator", "operator_chat", "operator_agent",
+                          "operator_agent_gpu2", "operator_agent_deep", "operator_metacog", "operator_fast"])
     # Placement is per call, so no static served_by claim.
     assert all(entry["served_by"] is None for entry in payload["data"])
 
@@ -371,15 +373,15 @@ class TestAnthropicPassthroughHTTP:
         ok = _post_client(200, b'{"id":"msg_2"}')
         mock_client_cls.side_effect = [overflow, ok]
 
-        # metacog (4096/slot) overflows -> the pool places ctx 4097 on the first bigger metacog-class
+        # Shared GPU3 (32768/slot) overflows -> the pool places the retry on agent.
         # role, agent (131072/slot).
         response = client.post("/v1/messages", json={
             "model": "metacog", "max_tokens": 8, "messages": [{"role": "user", "content": "hi"}]})
 
         assert response.status_code == 200
-        assert [c["min_ctx_tokens"] for c in pool.calls][1] == 4096 + 1
+        assert [c["min_ctx_tokens"] for c in pool.calls][1] == 32768 + 1
         assert pool.releases == ["ok", "ok"]  # an overflow is not the GPU's failure
-        assert overflow.post.await_args.args[0] == "http://pool-metacog:8012/v1/messages"
+        assert overflow.post.await_args.args[0] == "http://pool-fast:8013/v1/messages"
         assert ok.post.await_args.args[0] == "http://pool-agent:8015/v1/messages"
 
     def test_pool_unavailable_is_a_typed_503(self, client: TestClient, configured_routes: Any) -> None:

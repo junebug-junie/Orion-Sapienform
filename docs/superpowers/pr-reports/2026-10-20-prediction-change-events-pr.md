@@ -1,5 +1,7 @@
 ## Summary
 
+> **Correction (2026-10-29, Juniper):** the cabinet temperature sensor never moved. On 10-16/17 the vision services were brought up, so the ~2 °C rise in the cabinet reading after 2026-10-17 00:35 UTC is **real heat**, not a measurement offset. The lidar (116 → 94 mm) and magnetic (36 → 33.5 µT) changes came from something near the sensor changing (likely the new vision hardware), not from the sensor moving. The fixed 2 °C offset is removed from the fit and from the live heat price; the fit now estimates the 10-17 step as heat (+3.1 °C, CI +1.2..+4.1). PR: fix/cabinet-sensor-offset-was-real-heat (`docs/superpowers/pr-reports/2026-10-29-cabinet-sensor-offset-was-real-heat-pr.md`).
+
 - New table `prediction_change_event`. It records known moments the world changed under a series. Two effects:
   - `exclude`: masks a window out of training, actuals, covariates and the cause-and-effect paths.
   - `break`: a changepoint. Prophet fits a level shift there once a day of data exists after it. The break becomes every model's training start once enough data exists for the backtest (10 days at the default settings).

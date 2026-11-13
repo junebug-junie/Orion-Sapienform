@@ -319,3 +319,23 @@ def test_reducer_keeps_first_observed_at_on_re_reduction():
     assert receipt.state_deltas[0].operation == "update"
     assert second.turns["turn-77"].observed_at == t0
     assert second.turns["turn-77"].last_updated_at == t1
+
+
+def test_unknown_repair_level_carries_no_repair_hint() -> None:
+    """2026-10-23: a turn with no repair reading carries level None (not 0.0) and no
+    `repair_pressure` hint. (chat_prediction_error, which used to diff this hint, was retired
+    2026-11-13; the hint itself still feeds the chat receipt state.)"""
+    from datetime import datetime, timezone
+
+    from orion.schemas.chat_projection import ChatTurnStateV1
+    from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
+
+    t0 = datetime(2026, 10, 23, tzinfo=timezone.utc)
+
+    def turn(tid, level):
+        return ChatTurnStateV1(trace_id=f"hub.chat:athena:{tid}", turn_id=tid, session_id="s",
+                               node_id="athena", observed_at=t0, word_count=30,
+                               repair_pressure_level=level, last_updated_at=t0)
+
+    assert "repair_pressure" not in compute_chat_pressure_hints(turn("b", None))
+    assert compute_chat_pressure_hints(turn("b", 0.0))["repair_pressure"] == 0.0

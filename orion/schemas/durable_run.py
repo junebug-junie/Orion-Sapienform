@@ -40,12 +40,17 @@ from orion.schemas.curiosity_focus import CuriosityFocusAnchorV1
 from orion.schemas.curiosity_urgent import CuriosityUrgentSeedV1
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW, JournalComposeRunBriefV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_DISTILL_WORKFLOW, EpisodeDistillBriefV1
+from orion.schemas.reading_resonance import READING_RESONANCE_WORKFLOW, ReadingResonanceRunBriefV1
 from orion.schemas.reading_turn import ReadingRunBriefV1, READING_WORKFLOW
 from orion.schemas.reverie_visual_run import REVERIE_VISUAL_WORKFLOW, ReverieVisualRunBriefV1
 from orion.schemas.curiosity_compaction import CURIOSITY_COMPACTION_WORKFLOW, CuriosityCompactionBriefV1
 from orion.schemas.dream_carry import DREAM_CARRY_WORKFLOW, DreamCarryBriefV1
 from orion.schemas.gpu_pool import GpuLeaseRefV1
+from orion.schemas.harness_step_run import HARNESS_ECHO_SMOKE_WORKFLOW, HarnessEchoSmokeBriefV1
 from orion.schemas.orion_day import ORION_DAY_WORKFLOW, OrionDayRunBriefV1
+from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_WORKFLOW, PrFieldNoteBriefV1
+from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW, ReminiscenceRunBriefV1
+from orion.schemas.consult_turn_run import CONSULT_ORION_TURN_WORKFLOW, ConsultOrionTurnBriefV1
 from orion.schemas.resource_admission import ResourceRequirementV1
 
 DURABLE_RUN_REQUEST_CHANNEL = "orion:durable:run:request"
@@ -64,7 +69,9 @@ CURIOSITY_TURN_RESULT_KIND = "curiosity.turn.result.v1"
 # (and anything else that parses DurableRunRequestV1/DurableRunStateV1) before a producer
 # submits the new workflow. orion_day.letter: orion/schemas/orion_day.py.
 DurableWorkflowV1 = Literal[
-    "curiosity.investigate", "self_sense_eval", "self_study.reflect", "reading.turn", "reverie.visual",
+    "curiosity.investigate", "self_sense_eval", "reading.turn", "reading.resonance", "reverie.visual",
+    # (A self-study reflect workflow was removed 2026-10-30 with the reflect loop; zero runs
+    # of it ever reached durable_run_workflow, so no stored row carries it.)
     # ADDITIVE on extra="forbid"/Literal models: deploy orion-durable-runs before cortex-orch (orch
     # submits these), or an old validator rejects the request.
     "compactor.digest",
@@ -88,6 +95,22 @@ DurableWorkflowV1 = Literal[
     # dream_hop steps), orion-durable-runs, orion-cortex-orch, then orion-dream last.
     "dream.carry",
     "curiosity.compaction",
+    # Durable-run -> harness step seam smoke (2026-10-29, orion/schemas/harness_step_run.py).
+    # ADDITIVE on Literal/forbid, consumer-first: deploy orion-sql-writer, orion-hub, orion-actions
+    # and orion-cortex-orch before orion-durable-runs runs the first (hand-triggered) smoke.
+    "harness.echo_smoke",
+    # PR field notes Patch 2 (2026-11-04, orion/schemas/pr_field_note_run.py): submitted by
+    # orion-durable-runs' own GitHub poller. ADDITIVE on Literal/forbid, consumer-first: deploy
+    # orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+    "pr.field_note",
+    # Daily reminiscence Patch 2 (2026-11-07, orion/schemas/reminiscence_run.py): submitted by
+    # orion-durable-runs' own overnight tick. ADDITIVE on Literal/forbid, consumer-first: deploy
+    # orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+    "reminiscence.episode",
+    # Consults (2026-11-11, orion/schemas/consult_turn_run.py): one of Orion's consult turns, submitted
+    # by Hub's consult loop. ADDITIVE on Literal/forbid, consumer-first: deploy orion-sql-writer,
+    # orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
+    "consult.orion_turn",
 ]
 
 # The runner's node names, in order. `attention_reason` on the surface lane
@@ -105,16 +128,6 @@ CURIOSITY_NODES: tuple[str, ...] = (
 # questions, score and publish self_sense_eval_log rows, done.
 SELF_SENSE_EVAL_NODES: tuple[str, ...] = ("ask_questions", "publish", "finish")
 
-# self_study.reflect's own graph (services/orion-durable-runs/app/reflect_graph.py):
-# ONE LLM call, no publish -- finding validation and journal/self_concept_history
-# writes stay in cortex-exec (they need the full snapshot/concepts for
-# evidence-chain construction, not just the small input this graph carries),
-# unlike self_sense_eval's publish, which is simple enough to run here.
-# cortex-exec dispatches, awaits this run's completion synchronously, and
-# does the rest itself -- same external contract `_call_self_study_reflect_llm`
-# always had.
-SELF_STUDY_REFLECT_NODES: tuple[str, ...] = ("llm_call", "finish")
-
 DurableRunStatusV1 = Literal[
     "accepted", "queued", "waiting_resource", "admitted", "running", "paused",
     "resumed", "retrying", "completed", "failed", "cancelled", "abandoned",
@@ -122,7 +135,7 @@ DurableRunStatusV1 = Literal[
 
 
 # Additive optional keys an older `forbid` reader would reject even as null.
-_OPTIONAL_ADDITIVE_KEYS = ("retrieval_query", "focus")
+_OPTIONAL_ADDITIVE_KEYS = ("retrieval_query", "focus", "require_lookup")
 
 
 def _omit_none_keys(data: Any, keys: tuple[str, ...]) -> Any:
@@ -176,7 +189,7 @@ class CuriosityRunBriefV1(BaseModel):
     # orion-durable-runs before orion-hub, or an old runner rejects the
     # brief and Hub falls back to running the turn in-process (logged as
     # curiosity_durable_dispatch_fell_back).
-    line: Literal["investigate", "self_inquiry", "self_sense_eval", "reflect"] = "investigate"
+    line: Literal["investigate", "self_inquiry", "self_sense_eval"] = "investigate"
     # self_sense_eval only, additive: the fixed (question_key, question_text)
     # pairs to ask, in order -- Hub owns `orion.schemas.self_sense.SELF_SENSE_QUESTIONS`
     # as the source of truth and just carries a copy here so the runner
@@ -187,21 +200,15 @@ class CuriosityRunBriefV1(BaseModel):
     # above) so `build_row` can score each answer's self-report grounding.
     self_definition_version: int | None = None
     lived_answers: list[dict[str, Any]] | None = None
-    # reflect only, additive: cortex-exec's own
-    # `_self_study_reflect_input(snapshot, concepts)` dict (snapshot_id,
-    # counts_by_kind, concepts) -- the ENTIRE input the LLM call needs.
-    # Unlike self_sense_eval/investigate, reflect's downstream finding
-    # validation and publish (evidence-chain construction against the real
-    # snapshot/concepts) stay in cortex-exec, unmoved -- this brief only
-    # carries what the runner's `llm_call` node needs to make the actual
-    # LLM request; cortex-exec awaits the run's completion synchronously
-    # (see self_study.py's `_call_self_study_reflect_llm`) and does the
-    # rest itself, same as it always has.
-    self_study_reflect_input: dict[str, Any] | None = None
     llm_route: str | None = None
     # Additive, investigate only: set for an urgent run (orion/schemas/curiosity_urgent.py).
     # Producers dump with exclude_none=True, so an unset seed never reaches an old runner.
     urgent: CuriosityUrgentSeedV1 | None = None
+    # Additive (body economy Patch D, 2026-10-30): True only on an operator's forced run (Hub
+    # "Run now", tick(force=True)). Durable-runs never holds such a run on the economy: a forced run
+    # is the operator's call, not curiosity's want. Producers dump with exclude_none=True, so a
+    # scheduled run never carries the key and an old consumer never sees it from one.
+    operator_forced: bool | None = None
     # Additive: what recall searches for during this run's turn -- the run's
     # standing question (self-inquiry: the picked question; urgent: the seed's
     # question; investigate: the continuation note). Carried on the brief so it
@@ -231,11 +238,13 @@ class DurableRunRequestV1(BaseModel):
     workflow: DurableWorkflowV1
     correlation_id: str
     requested_at: datetime = Field(default_factory=_utc_now)
-    brief: CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1
+    brief: ReadingResonanceRunBriefV1 | CuriosityRunBriefV1 | ReadingRunBriefV1 | ReverieVisualRunBriefV1 | CompactorDigestRunBriefV1 | JournalComposeRunBriefV1 | OrionDayRunBriefV1 | EpisodeDistillBriefV1 | DreamCarryBriefV1 | CuriosityCompactionBriefV1 | HarnessEchoSmokeBriefV1 | PrFieldNoteBriefV1 | ReminiscenceRunBriefV1 | ConsultOrionTurnBriefV1
     admission: ResourceRequirementV1 | None = None
 
     @model_validator(mode="after")
     def reading_requires_admission(self):
+        if (self.workflow == READING_RESONANCE_WORKFLOW) != isinstance(self.brief, ReadingResonanceRunBriefV1):
+            raise ValueError("reading.resonance requires ReadingResonanceRunBriefV1")
         if (self.workflow == READING_WORKFLOW) != isinstance(self.brief, ReadingRunBriefV1):
             raise ValueError("workflow and reading brief must agree")
         if (self.workflow == REVERIE_VISUAL_WORKFLOW) != isinstance(self.brief, ReverieVisualRunBriefV1):
@@ -252,7 +261,15 @@ class DurableRunRequestV1(BaseModel):
             raise ValueError("dream.carry requires DreamCarryBriefV1")
         if (self.workflow == CURIOSITY_COMPACTION_WORKFLOW) != isinstance(self.brief, CuriosityCompactionBriefV1):
             raise ValueError("curiosity.compaction requires CuriosityCompactionBriefV1")
-        if self.workflow in (CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
+        if (self.workflow == HARNESS_ECHO_SMOKE_WORKFLOW) != isinstance(self.brief, HarnessEchoSmokeBriefV1):
+            raise ValueError("harness.echo_smoke requires HarnessEchoSmokeBriefV1")
+        if (self.workflow == PR_FIELD_NOTE_WORKFLOW) != isinstance(self.brief, PrFieldNoteBriefV1):
+            raise ValueError("pr.field_note requires PrFieldNoteBriefV1")
+        if (self.workflow == REMINISCENCE_WORKFLOW) != isinstance(self.brief, ReminiscenceRunBriefV1):
+            raise ValueError("reminiscence.episode requires ReminiscenceRunBriefV1")
+        if (self.workflow == CONSULT_ORION_TURN_WORKFLOW) != isinstance(self.brief, ConsultOrionTurnBriefV1):
+            raise ValueError("consult.orion_turn requires ConsultOrionTurnBriefV1")
+        if self.workflow in (CONSULT_ORION_TURN_WORKFLOW, READING_RESONANCE_WORKFLOW, REMINISCENCE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, HARNESS_ECHO_SMOKE_WORKFLOW, CURIOSITY_COMPACTION_WORKFLOW, READING_WORKFLOW, REVERIE_VISUAL_WORKFLOW, COMPACTOR_DIGEST_WORKFLOW, JOURNAL_COMPOSE_WORKFLOW, ORION_DAY_WORKFLOW, MEMORY_EPISODE_DISTILL_WORKFLOW, DREAM_CARRY_WORKFLOW) and self.admission is None:
             raise ValueError(f"{self.workflow} runs require durable resource admission")
         return self
 
@@ -337,6 +354,11 @@ class CuriosityTurnRequestV1(BaseModel):
     # MODEL: Hub must accept it before a runner sends it; the runner sends it only when a new Hub
     # put it on the brief, so deploying Hub last is safe.
     focus: CuriosityFocusAnchorV1 | None = None
+    # Additive (2026-11-11): False lets a writing-only turn succeed with fewer than Hub's
+    # MIN_HARNESS_STEPS tool steps (consult.orion_turn: Orion may just reply to Claude). None keeps
+    # Hub's default (lookup required). Omitted on the wire when None; only consult.orion_turn sends it,
+    # and only Hub (deployed first) submits that workflow.
+    require_lookup: bool | None = None
 
     @model_serializer(mode="wrap")
     def _omit_unset_retrieval_query(self, handler):

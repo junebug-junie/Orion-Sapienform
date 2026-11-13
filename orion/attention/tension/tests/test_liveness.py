@@ -18,10 +18,10 @@ def _decay(start: float, n: int, ratio: float = 0.92) -> list[float]:
 
 def test_the_biometrics_outage_shape_is_detected():
     """The defect this module exists for: `orion-biometrics` goes quiet, every
-    `resource_pressure` input decays untouched, the dimension reads calm, and
-    `feedback_policy.v1.yaml` credits the in-flight action with a positive
-    outcome for an outage. Nothing writes the channel; only the 0.92/tick decay
-    loop touches it."""
+    `resource_pressure` input decays untouched and the dimension reads calm (an
+    outage mistaken for calm; until 2026-11-04 the feedback rung also credited
+    the in-flight action for it). Nothing writes the channel; only the 0.92/tick
+    decay loop touches it."""
     assert classify_producer_liveness(_decay(0.7, 60)) == "silent_producer"
 
 

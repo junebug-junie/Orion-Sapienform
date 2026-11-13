@@ -288,10 +288,10 @@ class TestPredictedShift:
     def test_falling_trend_is_named_as_falling(self) -> None:
         model = reduce_attention_self_model(
             None, None, now=NOW,
-            prediction_error_trend_by_domain={"route": -0.3, "execution": 0.01},
+            prediction_error_trend_by_domain={"biometrics": -0.3, "execution": 0.01},
         )
 
-        assert "route" in model.predicted_shift
+        assert "biometrics" in model.predicted_shift
         assert "falling" in model.predicted_shift
 
     def test_no_trend_data_yields_no_prediction(self) -> None:
@@ -390,18 +390,17 @@ class TestUnconditionalPredictionErrorConfidence:
         assert model.prediction_error_confidence is not None
 
     def test_transport_excluded_from_domain_set(self) -> None:
-        # {execution: 0.0001, biometrics: 0.0459, chat: 0.0, route: 0.0}
-        # mean = 0.0115 -> confidence = 0.9885. If transport's guaranteed
-        # 0.0 were included (5 domains), the mean would instead be 0.0092
-        # (confidence 0.9908) -- this test would fail if transport leaked
-        # back into the filtered set.
+        # {execution: 0.0001, biometrics: 0.0459} (route and chat, also
+        # supplied, retired 2026-11) -> mean = 0.023 -> confidence = 0.977.
+        # If transport's guaranteed 0.0 leaked back in, the mean would drop
+        # -- this test would fail.
         model = reduce_attention_self_model(
             None, _field_frame(), now=NOW,
             prediction_error_by_domain=_prediction_error_by_domain(),
         )
-        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0115, abs=1e-4)
+        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.023, abs=1e-4)
         assert "transport" not in model.prediction_error_confidence_basis
-        assert "4 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
+        assert "2 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
 
     def test_only_transport_data_yields_honestly_absent_not_zero(self) -> None:
         # If the caller only ever has transport data (degenerate but
@@ -431,30 +430,26 @@ class TestUnconditionalPredictionErrorConfidence:
         # exclusion -- confirms they are computed independently, not aliased.
         assert model.confidence != model.prediction_error_confidence
 
-    def test_bus_synaptic_included_in_domain_set(self) -> None:
-        # 2026-07-25: bus_synaptic is the reversal condition for the old
-        # transport exclusion -- a real, bounded signal now exists. When
-        # present in the caller's dict, it must be counted (5 domains, not
-        # 4), unlike transport which stays excluded even when supplied.
-        # {execution: 0.0001, biometrics: 0.0459, chat: 0.0, route: 0.0,
-        #  bus_synaptic: 0.30} -> mean = 0.0692 -> confidence = 0.9308
+    def test_retired_bus_synaptic_and_route_are_excluded(self) -> None:
+        # 2026-11 (PE suite rebuild step 5): bus_synaptic and route were
+        # retired (chat 2026-11-13, step 6). Supplied anyway, they must not move the mean:
+        # {execution: 0.0001, biometrics: 0.0459} -> 0.977.
         model = reduce_attention_self_model(
             None, _field_frame(), now=NOW,
-            prediction_error_by_domain=_prediction_error_by_domain(bus_synaptic=0.30),
+            prediction_error_by_domain=_prediction_error_by_domain(bus_synaptic=0.30, route=0.9, chat=0.8),
         )
-        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.0692, abs=1e-4)
-        assert "bus_synaptic" in model.prediction_error_confidence_basis
-        assert "5 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
-        assert "transport" not in model.prediction_error_confidence_basis
+        assert model.prediction_error_confidence == pytest.approx(1.0 - 0.023, abs=1e-4)
+        assert "bus_synaptic" not in model.prediction_error_confidence_basis
+        assert "route" not in model.prediction_error_confidence_basis
+        assert "chat" not in model.prediction_error_confidence_basis
+        assert "2 ACTIVE_INFERENCE_DOMAINS" in model.prediction_error_confidence_basis
 
-    def test_only_bus_synaptic_data_is_sufficient_alone(self) -> None:
-        # Unlike transport (permanently excluded even alone), bus_synaptic
-        # alone must produce a real confidence value, not honestly-absent.
+    def test_only_retired_domain_data_yields_honestly_absent(self) -> None:
         model = reduce_attention_self_model(
             None, _field_frame(), now=NOW,
-            prediction_error_by_domain={"bus_synaptic": 0.5},
+            prediction_error_by_domain={"bus_synaptic": 0.5, "route": 0.5},
         )
-        assert model.prediction_error_confidence == pytest.approx(0.5, abs=1e-4)
+        assert model.prediction_error_confidence is None
 
 
 class TestPredictionErrorByDomainExposed:
@@ -472,8 +467,6 @@ class TestPredictionErrorByDomainExposed:
         assert model.prediction_error_by_domain == {
             "execution": 0.0001,
             "biometrics": 0.0459,
-            "chat": 0.0,
-            "route": 0.0,
         }
 
     def test_transport_excluded_even_when_supplied(self) -> None:
@@ -532,8 +525,6 @@ class TestPredictionErrorEvidenceByDomainExposed:
         assert model.prediction_error_evidence_by_domain == {
             "execution": ["gev_exec_1"],
             "biometrics": ["gev_bio_1", "gev_bio_2"],
-            "chat": [],
-            "route": [],
         }
 
     def test_transport_excluded_even_when_supplied(self) -> None:
@@ -571,13 +562,14 @@ class TestPredictionErrorEvidenceByDomainExposed:
         evidence must never claim to explain a scalar that isn't there."""
         model = reduce_attention_self_model(
             None, _field_frame(), now=NOW,
-            prediction_error_by_domain=_prediction_error_by_domain(chat=0.02),
+            prediction_error_by_domain=_prediction_error_by_domain(execution=0.02),
             prediction_error_evidence_by_domain={
+                "execution": ["gev_exec_1"],
                 "chat": ["gev_chat_1"],
                 "bus_synaptic": ["gev_bus_1"],
             },
         )
-        assert model.prediction_error_evidence_by_domain == {"chat": ["gev_chat_1"]}
+        assert model.prediction_error_evidence_by_domain == {"execution": ["gev_exec_1"]}
 
 
 def test_reference_tick_defaults_to_field_frame_generated_at() -> None:
@@ -594,83 +586,15 @@ def test_reference_tick_falls_back_to_broadcast_when_no_field_frame() -> None:
     assert model.generated_at == NOW
 
 
-class TestHarnessClosureSignal:
-    """harness_closure_signal only enriches the field_salience_only branch's
-    reason_narrative -- see reduce_attention_self_model's own docstring. Not
-    touched: top_down_override/bottom_up_salience branches, attention_reason
-    itself, or any other field."""
-
-    def test_harness_closure_signal_appends_narrative_clause(self) -> None:
-        model = reduce_attention_self_model(
-            None,
-            _field_frame(),
-            now=NOW,
-            harness_closure_signal={
-                "prediction_error": 0.42,
-                "contributing_turn_ids": ["turn-1", "turn-2", "turn-3"],
-            },
+def test_harness_closure_signal_argument_is_retired() -> None:
+    """Retire step 3 (2026-11-11): node:substrate.harness_closure is gone, and so
+    is the reducer argument that narrated it. No caller ever passed it."""
+    with pytest.raises(TypeError):
+        reduce_attention_self_model(  # type: ignore[call-arg]
+            None, _field_frame(), now=NOW, harness_closure_signal={"prediction_error": 0.65}
         )
-
-        assert model.attention_reason == "field_salience_only"
-        assert "sustained prediction-error surprise across 3 recent turn(s)" in model.reason_narrative
-        assert "current magnitude=0.42" in model.reason_narrative
-        # attention_reason itself must not change -- enrichment is narrative-only.
-        assert model.attention_reason == "field_salience_only"
-
-    def test_harness_closure_signal_absent_is_byte_identical_to_default(self) -> None:
-        """Regression guard: omitting harness_closure_signal (the default,
-        every existing caller) must reproduce today's narrative exactly."""
-        baseline = reduce_attention_self_model(None, _field_frame(), now=NOW)
-        with_none = reduce_attention_self_model(
-            None, _field_frame(), now=NOW, harness_closure_signal=None
-        )
-
-        assert baseline.reason_narrative == with_none.reason_narrative
-        assert "sustained prediction-error surprise" not in baseline.reason_narrative
-
-    def test_harness_closure_signal_zero_prediction_error_does_not_enrich(self) -> None:
-        model = reduce_attention_self_model(
-            None,
-            _field_frame(),
-            now=NOW,
-            harness_closure_signal={
-                "prediction_error": 0.0,
-                "contributing_turn_ids": ["turn-1"],
-            },
-        )
-
-        assert "sustained prediction-error surprise" not in model.reason_narrative
-
-    def test_harness_closure_signal_empty_contributing_turn_ids_does_not_enrich(self) -> None:
-        model = reduce_attention_self_model(
-            None,
-            _field_frame(),
-            now=NOW,
-            harness_closure_signal={
-                "prediction_error": 0.75,
-                "contributing_turn_ids": [],
-            },
-        )
-
-        assert "sustained prediction-error surprise" not in model.reason_narrative
-
-    def test_harness_closure_signal_ignored_outside_field_salience_only_branch(self) -> None:
-        """A fresh, non-stale broadcast with no override takes the
-        bottom_up_salience branch -- harness_closure_signal must not leak
-        its narrative clause in there even if it's provided."""
-        broadcast = _broadcast(override=None)
-        model = reduce_attention_self_model(
-            broadcast,
-            _field_frame(),
-            now=NOW,
-            harness_closure_signal={
-                "prediction_error": 0.9,
-                "contributing_turn_ids": ["turn-1"],
-            },
-        )
-
-        assert model.attention_reason == "bottom_up_salience"
-        assert "sustained prediction-error surprise" not in model.reason_narrative
+    model = reduce_attention_self_model(None, _field_frame(), now=NOW)
+    assert "sustained prediction-error surprise" not in model.reason_narrative
 
 
 class TestHeartbeatH1:

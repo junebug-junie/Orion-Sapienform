@@ -43,9 +43,15 @@ class FrameRouterService:
         self._expectation_task: Optional[asyncio.Task] = None
         self._organ_task: Optional[asyncio.Task] = None
         self._expectation_redis: Any = None
+        # One cache serves expectation steering and the experiment override;
+        # it runs when either is on and answers False for the one that is off.
         self.expectation: ExpectationCache | None = (
-            ExpectationCache(refresh_sec=self.settings.ROUTER_EXPECTATION_REFRESH_SEC)
-            if self.settings.ROUTER_EXPECTATION_STEERING_ENABLED
+            ExpectationCache(
+                refresh_sec=self.settings.ROUTER_EXPECTATION_REFRESH_SEC,
+                expectation_enabled=self.settings.ROUTER_EXPECTATION_STEERING_ENABLED,
+                experiment_enabled=self.settings.ROUTER_EXPERIMENT_OVERRIDE_ENABLED,
+            )
+            if self.settings.ROUTER_EXPECTATION_STEERING_ENABLED or self.settings.ROUTER_EXPERIMENT_OVERRIDE_ENABLED
             else None
         )
         self._shutdown = asyncio.Event()
@@ -181,6 +187,7 @@ class FrameRouterService:
             policy_path=self.settings.ROUTER_POLICY_PATH,
             metrics=self.metrics,
             state=self.state,
+            experiment_override_streams=self.expectation.experiment_streams() if self.expectation else [],
         )
 
     def metrics_snapshot(self) -> dict[str, Any]:
@@ -191,9 +198,14 @@ class FrameRouterService:
             "router_enabled": self.settings.ROUTER_ENABLED,
             "dry_run": self.settings.DRY_RUN,
             "policy_path": self.settings.ROUTER_POLICY_PATH,
-            "expectation_steering_enabled": self.expectation is not None,
+            "expectation_steering_enabled": self.settings.ROUTER_EXPECTATION_STEERING_ENABLED,
             "expectation_open_streams": self.expectation.open_streams() if self.expectation else [],
             "expectation_refresh_failures": self.expectation.refresh_failures if self.expectation else 0,
+            "experiment_override_enabled": self.settings.ROUTER_EXPERIMENT_OVERRIDE_ENABLED,
+            "experiment_override_streams": self.expectation.experiment_streams() if self.expectation else [],
+            "experiment_override_no_ttl_refusals": (
+                self.expectation.experiment_no_ttl_refusals if self.expectation else 0
+            ),
             "vision_organ_grammar_enabled": grammar_emit.get_recorder() is not None,
         }
 

@@ -295,6 +295,44 @@ class AttentionRuntimeStore:
             for r in rows
         ]
 
+    def fetch_accepted_reading_link_events(
+        self, since: datetime
+    ) -> list[tuple[datetime, str, str]]:
+        """Accepted reading-link materializations for world-first attention."""
+        from orion.substrate.link_accepted_seeds import (
+            ACCEPTED_READING_LINK_TIMES_SQL,
+            accepted_reading_link_events_params,
+            projection_edge_id,
+        )
+
+        lookback_hours = max(0.0, (datetime.now(timezone.utc) - since).total_seconds() / 3600.0)
+        with self._engine.connect() as conn:
+            rows = conn.execute(
+                text(ACCEPTED_READING_LINK_TIMES_SQL),
+                accepted_reading_link_events_params(lookback_hours=lookback_hours),
+            ).mappings().all()
+        events: list[tuple[datetime, str, str]] = []
+        for row in rows:
+            ts = row.get("materialized_at")
+            if ts is None:
+                continue
+            assertion_id = str(row.get("assertion_id") or "")
+            edge_ids = row.get("edge_ids") or []
+            if isinstance(edge_ids, str):
+                edge_ids = json.loads(edge_ids)
+            if not assertion_id or projection_edge_id(assertion_id) not in [str(e) for e in edge_ids]:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+            subject = str(row.get("subject_node_id") or "")
+            obj = str(row.get("object_node_id") or "")
+            if not subject or not obj or subject == obj:
+                continue
+            events.append(
+                (ts, subject, obj)
+            )
+        return events
+
     def load_prediction_error_history(self, *, reducer_key: str, limit: int) -> list[float]:
         """Real, ASC-by-time prediction-error history for one reducer (oldest
         first, most recent/"current" last), for Candidate A
@@ -729,7 +767,9 @@ class AttentionRuntimeStore:
                                     CASE WHEN jsonb_typeof(l->'source_refs') = 'array'
                                          THEN l->'source_refs' ELSE '[]'::jsonb END
                                 ) AS r
-                                WHERE r LIKE 'node:%'
+                                -- world:% too: a world goal (chat, reading) must be
+                                -- able to win precedence like a body node does.
+                                WHERE r LIKE 'node:%' OR r LIKE 'world:%'
                             ) AS refs
                         FROM substrate_attention_broadcast_projection
                         WHERE generated_at > now() - make_interval(secs => :max_age)

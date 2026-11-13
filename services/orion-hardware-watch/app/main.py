@@ -1,4 +1,5 @@
-"""orion-hardware-watch: AC failure and CPU/GPU heat -> alert, urgent investigation, pool shedding.
+"""orion-hardware-watch: AC failure and CPU/GPU heat -> alert, urgent investigation, pool shedding;
+a full docker volume -> one ask to cortex-exec's dangling-image prune (ladder retirement PR 4).
 
 Bus first: incidents go out on orion:hardware:watch:incident, investigations on
 orion:curiosity:urgent:request. HTTP is /health, the incident list, the operator resolve, and (only
@@ -22,6 +23,9 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hun
 from orion.notify.client import NotifyClient
 from orion.schemas.prediction import PREDICTION_FORECAST_CHANNEL, PredictionForecastV1
 
+from orion.hardware_watch.rules import ImagePruneRuleConfig
+
+from app.image_prune import ImagePruneRule, build_bus_ask
 from app.settings import get_settings
 from app.store import PostgresStore
 from app.watcher import Watcher
@@ -31,6 +35,7 @@ logging.basicConfig(level=getattr(logging, _settings.log_level.upper(), logging.
 logger = logging.getLogger("orion-hardware-watch.main")
 
 watcher: Watcher | None = None
+image_prune: ImagePruneRule | None = None
 _bus: OrionBusAsync | None = None
 _store: PostgresStore | None = None
 _tasks: list[asyncio.Task] = []
@@ -48,6 +53,11 @@ async def _tick_forever() -> None:
             await watcher.tick()
         except Exception:  # noqa: BLE001 -- one bad tick must not stop the watcher
             logger.exception("hardware_watch_tick_failed")
+        try:
+            if image_prune is not None:
+                await image_prune.tick()
+        except Exception:  # noqa: BLE001 -- the disk rule failing must not stop the heat rules
+            logger.exception("hardware_watch_image_prune_tick_failed")
         try:
             await asyncio.wait_for(_stop.wait(), timeout=_settings.tick_sec)
         except asyncio.TimeoutError:
@@ -68,7 +78,7 @@ async def _on_forecast(env: BaseEnvelope) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global watcher, _bus, _store
+    global watcher, image_prune, _bus, _store
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -81,9 +91,10 @@ async def lifespan(app: FastAPI):
     await _bus.connect()
     notify = NotifyClient(_settings.notify_base_url, api_token=_settings.notify_api_token or None)
     watcher = Watcher(settings=_settings, store=_store, publish=_bus.publish, notify=notify.send, source=_source())
-    logger.info("hardware_watch_ready enabled=%s controller=%s shed=%s urgent=%s test_hook=%s tick=%ss",
+    image_prune = build_image_prune_rule(_bus)
+    logger.info("hardware_watch_ready enabled=%s controller=%s shed=%s urgent=%s test_hook=%s image_prune=%s tick=%ss",
                 _settings.enabled, _settings.heat_controller, _settings.shed_enabled, _settings.urgent_enabled,
-                _settings.test_hook_enabled, _settings.tick_sec)
+                _settings.test_hook_enabled, image_prune.enabled, _settings.tick_sec)
     forecasts = Hunter(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -100,6 +111,8 @@ async def lifespan(app: FastAPI):
         for t in _tasks:
             t.cancel()
         await asyncio.gather(*_tasks, return_exceptions=True)
+        if image_prune is not None:
+            await image_prune.stop()
         for c in _chassis:
             try:
                 await c.stop()
@@ -109,6 +122,21 @@ async def lifespan(app: FastAPI):
             await _bus.close()
         if _store is not None:
             _store.close()
+
+
+def build_image_prune_rule(bus: Any) -> ImagePruneRule:
+    """The disk rule. Evaluated only when HARDWARE_WATCH_ENABLED (every rule) and
+    HARDWARE_WATCH_IMAGE_PRUNE_ENABLED (this one) are both on."""
+    return ImagePruneRule(
+        enabled=_settings.enabled and _settings.image_prune_enabled,
+        mount_path=_settings.image_prune_mount_path,
+        cfg=ImagePruneRuleConfig(cooldown_sec=_settings.image_prune_cooldown_sec,
+                                 retry_sec=_settings.image_prune_retry_sec,
+                                 start_delay_sec=_settings.image_prune_start_delay_sec),
+        ask=build_bus_ask(bus, request_channel=_settings.cortex_exec_channel,
+                          result_prefix=_settings.cortex_exec_result_prefix, source=_source(),
+                          timeout_sec=_settings.image_prune_rpc_timeout_sec),
+    )
 
 
 app = FastAPI(title="orion-hardware-watch", lifespan=lifespan)
@@ -134,6 +162,8 @@ async def health() -> dict[str, Any]:
         # D8) is refused only while this is active -- not by any open incident.
         "reflex_shed": watcher.reflex_snapshot() if watcher else None,
         "forecast": watcher.forecast_view(datetime.now(timezone.utc)) if watcher else None,
+        # Ladder retirement PR 4: the disk rule's last tick, ask in flight, last answer, counts.
+        "image_prune": image_prune.snapshot() if image_prune else None,
         "last_tick_at": last.at.isoformat() if last and last.at else None,
         "last_tick_ok": last.ok if last else None,
         "errors": last.errors if last else {},

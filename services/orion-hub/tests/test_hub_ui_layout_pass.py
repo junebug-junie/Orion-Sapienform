@@ -240,8 +240,14 @@ def test_attention_dismiss_all_stays_disabled_until_every_ack_settles() -> None:
 def test_notification_dismiss_all_is_scoped_to_the_active_filter() -> None:
     js = _js()
     body = _slice(js, "function dismissAllNotifications", "async function handleChatMessageReceipt")
-    assert "notificationFilter" in body
-    assert "isNotificationTrayItem" in body
+    # Same item set the tray renders from (filter + tray rule), so Dismiss all
+    # never touches rows the operator cannot see the card for.
+    assert "generalTrayItems().base" in body
+    scope = _slice(js, "function generalTrayItems", "async function loadOrionMessages")
+    assert "notificationFilter" in scope
+    assert "isNotificationTrayItem" in scope
+    # Orion's own messages wait for their own Dismiss or Reply.
+    assert "!isOrionTrayMessage(n)" in scope
 
 
 # --- Cognitive Loops scroll window -----------------------------------------
@@ -274,7 +280,7 @@ def test_the_actions_half_of_the_strip_wraps_independently() -> None:
     """Presence / Ask Claude / Solo sit in their own wrapping group so a long
     row breaks in a sensible place instead of one ragged line."""
     html = _html()
-    strip = _slice(html, 'for="recallToggle"', 'id="recallModeSelect"')
+    strip = _slice(html, 'for="recallToggle"', 'id="operatorToolsBar"')
     assert strip.count("flex-wrap") >= 1
     assert 'id="presenceStatusChip"' in strip
 

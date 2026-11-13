@@ -53,7 +53,7 @@ def run(args):
     import httpx
     from orion.retro.pad_lab import build_rom
     output=args.output.resolve();output.mkdir(mode=0o700,exist_ok=False,parents=True)
-    for d in ('auth','catalog','ipc','evidence'):(output/d).mkdir(mode=0o700)
+    for d in ('auth','catalog','ipc','evidence','saves'):(output/d).mkdir(mode=0o700)
     for name in ('hub.token','operator.token'):
         p=output/'auth'/name;p.write_text(secrets.token_urlsafe(48));p.chmod(0o600)
     if args.catalog: catalog=args.catalog.resolve()
@@ -65,7 +65,7 @@ def run(args):
     cmd=['docker','run','-d','--name',name,'--network','none','--read-only','--init',
         '--user',f'{os.getuid()}:{os.getgid()}','--cap-drop','ALL','--security-opt','no-new-privileges',
         '--pids-limit','64','--memory','512m','--memory-swap','512m','--cpus','2','--tmpfs','/tmp:rw,noexec,nosuid,size=16m','-e','RETRO_ENABLED=true','-e','RETRO_COGNITION_ENABLED=true']
-    for src,dst,ro in [(catalog,'/catalog',True),(output/'ipc','/ipc',False),(output/'evidence','/evidence',False),(output/'auth/operator.token','/run/secrets/retro_operator',True),(output/'auth/hub.token','/run/secrets/retro_hub',True)]:
+    for src,dst,ro in [(catalog,'/catalog',True),(output/'ipc','/ipc',False),(output/'evidence','/evidence',False),(output/'saves','/saves',False),(output/'auth/operator.token','/run/secrets/retro_operator',True),(output/'auth/hub.token','/run/secrets/retro_hub',True)]:
         cmd+=['--mount',f'type=bind,src={src},dst={dst}'+(',readonly' if ro else '')]
     process=None
     try:

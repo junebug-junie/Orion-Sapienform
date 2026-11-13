@@ -72,6 +72,27 @@ def test_flag_on_chat_read_failure_is_absent_and_no_winner(monkeypatch) -> None:
     assert chat["absent"] is True
 
 
+def test_reading_is_cached_and_can_win_when_chat_is_calm(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True)
+    w._store.fetch_chat_turn_times.return_value = []
+    now = datetime.now(timezone.utc)
+    w._store.fetch_accepted_reading_link_events.return_value = [
+        (now - timedelta(days=d), f"sub-concept-old-{d}", f"sub-concept-old-{d}-obj")
+        for d in range(1, 7)
+    ] + [
+        (now - timedelta(minutes=i), f"sub-concept-wp-read-{i}", f"sub-concept-wp-read-{i}-obj")
+        for i in range(6)
+    ]
+    first = w._world_first_external_candidates(now)
+    second = w._world_first_external_candidates(now + timedelta(seconds=30))
+    assert [candidate.source_id for candidate in first] == ["world:chat", "world:reading"]
+    assert second[1].evidence_refs == first[1].evidence_refs
+    w._store.fetch_accepted_reading_link_events.assert_called_once()
+    proj = _tick(w)
+    assert proj.attended_node_ids[0] == "world:reading"
+    assert any(ref.startswith("sub-concept-wp-read-") for ref in proj.attended_node_ids)
+
+
 def test_flag_off_never_reads_chat_and_keeps_the_pressure_winner(monkeypatch) -> None:
     w = _worker(monkeypatch, world_first=False)
     proj = _tick(w)
@@ -104,3 +125,39 @@ def test_event_decay_setting_reaches_the_broadcast(monkeypatch) -> None:
                 patch.object(ab, "build_substrate_attention_frame", spy):
             w._attention_broadcast_tick()
         assert seen[-1] is expected, env
+
+
+def _busy_turns(now):
+    return [now - timedelta(days=d, minutes=40) for d in range(1, 7)] + [now - timedelta(minutes=1)]
+
+
+def test_chat_winner_carries_juniper_latest_message(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True)
+    now = datetime.now(timezone.utc)
+    w._store.fetch_chat_turn_times.return_value = _busy_turns(now)
+    w._store.fetch_latest_chat_turn.return_value = ("turn-9", now - timedelta(minutes=1), "what did you see today?")
+    proj = _tick(w)
+    assert proj.attended_node_ids == ["world:chat"]
+    loop = next(l for l in proj.frame.open_loops if l.id == proj.selected_open_loop_id)
+    assert loop.description == "Juniper is talking"
+    assert loop.provenance["world_evidence"]["message_excerpt"] == "what did you see today?"
+    assert loop.provenance["world_evidence"]["chat_turn_id"] == "turn-9"
+
+
+def test_latest_message_read_failure_keeps_the_winner_without_evidence(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True)
+    now = datetime.now(timezone.utc)
+    w._store.fetch_chat_turn_times.return_value = _busy_turns(now)
+    w._store.fetch_latest_chat_turn.side_effect = RuntimeError("db down")
+    proj = _tick(w)
+    assert proj.attended_node_ids == ["world:chat"]
+    loop = next(l for l in proj.frame.open_loops if l.id == proj.selected_open_loop_id)
+    assert "world_evidence" not in loop.provenance
+
+
+def test_latest_message_not_read_when_no_turn_in_the_window(monkeypatch) -> None:
+    w = _worker(monkeypatch, world_first=True)
+    now = datetime.now(timezone.utc)
+    w._store.fetch_chat_turn_times.return_value = [now - timedelta(days=d, minutes=40) for d in range(1, 7)]
+    _tick(w)
+    w._store.fetch_latest_chat_turn.assert_not_called()

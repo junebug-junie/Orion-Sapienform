@@ -49,6 +49,18 @@ class Settings(BaseSettings):
     # (aligned 2026-10-10, scripts/check_settings_defaults.py --example-drift). false = the pool still
     # receives and shows shed signals (orion-hardware-watch cooling incidents) but blocks nothing.
     shed_enabled: bool = Field(True, alias="GPU_POOL_SHED_ENABLED")
+    # Attention patch 3b (docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md,
+    # section 1, decided 2026-11-10): the background class is served by the body-economy net its lease
+    # request carries, not arrival time. A later want goes first only when its net + aging beats the
+    # earlier one's by MARGIN; the same family and upkeep (no net) keep arrival order. ON by default;
+    # false = arrival order exactly as before. Only background is reordered, never started work.
+    value_order_enabled: bool = Field(True, alias="GPU_POOL_VALUE_ORDER_ENABLED")
+    value_margin: float = Field(0.10, ge=0.0, alias="GPU_POOL_VALUE_MARGIN")
+    value_aging_per_h: float = Field(0.10, ge=0.0, alias="GPU_POOL_VALUE_AGING_PER_H")
+    # Leased evals (docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md, Phase 1):
+    # operator-class leases (config/gpu_pool.yaml classes operator*, evals) wait behind every one of
+    # Orion's own background leases. false = arrival order for them too.
+    operator_last: bool = Field(True, alias="GPU_POOL_OPERATOR_LAST")
     # Orion's learned shed (attend-to-act loop A1): the lower-precedence ``orion_self_shed`` reason.
     # ON in code, .env_example and production (Juniper turned it on; code default aligned 2026-10-10).
     # false refuses every set and settles any active Orion shed ``cancelled`` at boot; it never
@@ -70,6 +82,12 @@ class Settings(BaseSettings):
     fault_alert_enabled: bool = Field(True, alias="GPU_POOL_FAULT_ALERT_ENABLED")
     fault_alert_after_sec: float = Field(1800.0, ge=0, alias="GPU_POOL_FAULT_ALERT_AFTER_SEC")
     fault_realert_sec: float = Field(21600.0, gt=0, alias="GPU_POOL_FAULT_REALERT_SEC")
+    # Perception load alert (runtime._check_perception_load, body-economy design A0): perception leases are
+    # never shed by heat, so a card fires when their last-hour held GPU slot-seconds pass the ceiling.
+    # 3360 = 2x the 14-day p90 (1,679) of vision-council's hourly hold on 2026-10-23.
+    perception_alert_enabled: bool = Field(True, alias="GPU_POOL_PERCEPTION_ALERT_ENABLED")
+    perception_alert_held_sec_per_hour: float = Field(3360.0, gt=0, alias="GPU_POOL_PERCEPTION_ALERT_HELD_SEC_PER_HOUR")
+    perception_realert_sec: float = Field(21600.0, gt=0, alias="GPU_POOL_PERCEPTION_REALERT_SEC")
     notify_base_url: str = Field("http://orion-athena-notify:7140", alias="NOTIFY_BASE_URL")
     notify_api_token: str | None = Field(None, alias="NOTIFY_API_TOKEN")
 

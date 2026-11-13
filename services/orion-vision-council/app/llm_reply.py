@@ -62,3 +62,19 @@ def extract_chat_result_text(payload: Any) -> str:
                 return text
 
     return ""
+
+
+def completion_finish_reason(payload: Any) -> str | None:
+    """Read the provider finish reason from the gateway's retained raw reply."""
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump(mode="json")
+    if not isinstance(payload, dict):
+        return None
+    raw = payload.get("raw")
+    if not isinstance(raw, dict):
+        return None
+    choices = raw.get("choices")
+    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+        return None
+    reason = choices[0].get("finish_reason")
+    return reason if isinstance(reason, str) else None

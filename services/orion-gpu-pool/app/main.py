@@ -19,6 +19,7 @@ from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly, Hunter, Rabbit
 from orion.core.bus.rpc_health_publish import RpcHealthPublisher
+from orion.gpu_pool.value_order import ValueOrderConfig
 from orion.gpu_pool.config import SWAP_GUARDS, PoolConfig, load_pool_config, ready_body_ok
 from orion.gpu_pool.discovery import Probe, load_profiles
 from orion.gpu_pool.lease_graph import build_lease_graph
@@ -37,7 +38,7 @@ from orion.schemas.hardware_watch import (
     HardwareWatchReflexShedV1,
 )
 
-from app.controller_alert import build_fault_request, make_notify_alert
+from app.controller_alert import build_fault_request, build_perception_request, make_notify_alert
 from app.guards import GuardReader
 from app.orion_shed_store import PostgresOrionShedLedger
 from app.runtime import SLOW_LOCK_MS, PoolRuntime
@@ -94,7 +95,7 @@ async def _probe(client: httpx.AsyncClient, role: str, url: str, kind: str, heal
         if kind == "llm":
             r = await client.get(f"{url}/props")
             r.raise_for_status()
-            return Probe(True, r.json(), checked_at=now)
+            return Probe(True, r.json(), checked_at=now, backend=backend)
         r = await client.get(f"{url}{health}")
         if strict:
             body = r.json() if r.is_success else None
@@ -328,6 +329,9 @@ async def lifespan(app: FastAPI):
         service_name=_settings.service_name, announce_stale_sec=_settings.announce_stale_sec,
         probe_interval_sec=_settings.probe_interval_sec, state_publish_sec=_settings.state_publish_sec,
         replay_payload_max_bytes=_settings.replay_payload_max_bytes,
+        value_order=ValueOrderConfig(enabled=_settings.value_order_enabled, margin=_settings.value_margin,
+                                     aging_per_h=_settings.value_aging_per_h),
+        operator_last=_settings.operator_last,
         shed_enabled=_settings.shed_enabled, orion_shed_enabled=_settings.orion_shed_enabled,
         orion_shed_caps=OrionShedCaps(max_ttl_sec=_settings.orion_shed_max_ttl_sec,
                                       max_sec_per_day=_settings.orion_shed_max_sec_per_day,
@@ -339,7 +343,12 @@ async def lifespan(app: FastAPI):
         fault_alert=(make_notify_alert(_settings.notify_base_url, _settings.notify_api_token,
                                        source=_settings.service_name, builder=build_fault_request)
                      if _settings.fault_alert_enabled else None),
-        fault_alert_after_sec=_settings.fault_alert_after_sec, fault_realert_sec=_settings.fault_realert_sec)
+        fault_alert_after_sec=_settings.fault_alert_after_sec, fault_realert_sec=_settings.fault_realert_sec,
+        perception_alert=(make_notify_alert(_settings.notify_base_url, _settings.notify_api_token,
+                                            source=_settings.service_name, builder=build_perception_request)
+                          if _settings.perception_alert_enabled else None),
+        perception_alert_held_sec_per_hour=_settings.perception_alert_held_sec_per_hour,
+        perception_realert_sec=_settings.perception_realert_sec)
     # Stage 5.7: every swap seat with a launch block is actuated; pause_actuation is the only stop.
     logger.info("gpu_pool_actuation mode=%s seats=%s", _settings.mode, sorted(runtime.actuated) or "none")
     # The actuator's replies are subscribed BEFORE start(): start() asks about a swap the previous

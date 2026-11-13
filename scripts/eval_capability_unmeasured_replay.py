@@ -32,7 +32,6 @@ input channels the way decay.py's expire_unrefreshed_channels() would.
 Downstream readers measured (the real functions, not copies):
   - orion.field.pressure.field_pressures_with_provenance: resource_pressure /
     reliability_pressure value and winning source (proposal arena, feedback)
-  - orion.field.credit_integrity.channel_write_backed: feedback credit gate
   - merged confidence / available_capacity (corpus, anomaly scorer, glossary)
   - orion.attention.field_attention.selectors._current_pressure_proxy: which
     capability reads most urgent to the attention selector
@@ -74,7 +73,6 @@ from app.graph.lattice import load_lattice  # noqa: E402
 from app.tensor.reconcile import reconcile_field_state_with_lattice  # noqa: E402
 
 from orion.attention.field_attention.selectors import _current_pressure_proxy  # noqa: E402
-from orion.field.credit_integrity import channel_write_backed  # noqa: E402
 from orion.field.pressure import collect_field_channel_pressures, field_pressures_with_provenance  # noqa: E402
 from orion.schemas.field_state import FieldStateV1  # noqa: E402
 
@@ -89,7 +87,6 @@ SCENARIOS["outage:all"] = {k: v for s in list(SCENARIOS.values()) for k, v in s.
 VARIANTS = ("legacy", "a", "b0", "b1")
 DIMS = ("resource_pressure", "reliability_pressure")
 DERIVED = ("confidence", "available_capacity")
-CREDIT_STALENESS_SEC = 120.0
 DECAY_RATE = 0.92  # BIOMETRICS_FIELD_DECAY_RATE, live value
 
 
@@ -198,7 +195,6 @@ def readout(state: FieldStateV1) -> dict:
     top = max(proxies, key=lambda c: (proxies[c], c)) if proxies else None
     return {
         "dims": {d: (round(dims.get(d, -1.0), 6), detail[d].winning_source_id if d in detail else None) for d in DIMS},
-        "backed": {d: channel_write_backed(state, d, max_staleness_seconds=CREDIT_STALENESS_SEC) for d in DIMS},
         "merged": {d: (round(merged.get(d, -1.0), 6), prov.get(d)) for d in (*DERIVED, "pressure", "reliability_pressure")},
         "top_cap": top,
         "proxies": proxies,
@@ -244,8 +240,6 @@ def run(dump: Path, limit: int | None = None) -> dict:
                     for d in DIMS:
                         c[f"{v}:{d}:value_differs"] += int(r["dims"][d][0] != base["dims"][d][0])
                         c[f"{v}:{d}:winner_differs"] += int(r["dims"][d][1] != base["dims"][d][1])
-                        c[f"{v}:{d}:credit_backed"] += int(r["backed"][d] is True)
-                        c[f"{v}:{d}:credit_differs"] += int(r["backed"][d] != base["backed"][d])
                     for d in r["merged"]:
                         c[f"{v}:merged_{d}:value_differs"] += int(r["merged"][d][0] != base["merged"][d][0])
                         c[f"{v}:merged_{d}:winner_differs"] += int(r["merged"][d][1] != base["merged"][d][1])

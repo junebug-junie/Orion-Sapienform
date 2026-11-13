@@ -17,8 +17,6 @@ for p in (str(REPO_ROOT), str(HUB_ROOT)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from scripts.memory_consolidation_draft_routes import router
-
 for key, value in {
     "CHANNEL_VOICE_TRANSCRIPT": "orion:voice:transcript",
     "CHANNEL_VOICE_LLM": "orion:voice:llm",
@@ -49,6 +47,11 @@ def _sample_row(*, draft_id: str = "draft-1") -> dict[str, Any]:
 
 @pytest.fixture
 def client(monkeypatch):
+    # Imported per test: conftest purges scripts.* before every test, so a
+    # module-level `router` belongs to a copy the string monkeypatches below no
+    # longer reach (the routes then 503 with no memory pool).
+    from scripts.memory_consolidation_draft_routes import router
+
     app = FastAPI()
     app.include_router(router)
     pool = MagicMock()

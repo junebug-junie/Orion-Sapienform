@@ -113,9 +113,13 @@ async def memory_graph_validate(
     from scripts.main import bus
 
     await ensure_session(x_orion_session_id, bus)
-    pool = _pool(request)
+    body_dict = body if isinstance(body, dict) else {}
+    # Validate is a read-only preview. It needs the memory store only to hydrate
+    # a consolidation draft's utterance text, so a plain draft must still
+    # validate while the store is down (it 503'd for every draft since fe17da9c3).
+    pool = _pool(request) if str(body_dict.get("consolidation_draft_id") or "").strip() else None
     try:
-        draft, supplemental = await _parse_draft_body_with_consolidation(pool, body if isinstance(body, dict) else {})
+        draft, supplemental = await _parse_draft_body_with_consolidation(pool, body_dict)
     except ValidationError as e:
         raise HTTPException(status_code=400, detail=e.errors()) from e
     ok, violations, preview = preview_validate_only(

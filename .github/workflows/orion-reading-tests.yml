@@ -8,9 +8,12 @@ on:
       - "orion/bus/channels.yaml"
       - "orion/fcc/**"
       - "orion/introspect/**"
+      - "orion/physiology/heat_archaeology.py"
+      - "orion/physiology/tests/heat_fixture.py"
       - "orion/core/bus/**"
       - "orion/harness/**"
       - "orion/hub/**"
+      - "orion/self_monitor/**"
       - "orion/grammar/acts.py"
       - "orion/curiosity/**"
       - "orion/personality/**"
@@ -65,11 +68,21 @@ jobs:
             services/orion-hub/tests/test_curiosity_introspect_listener.py \
             services/orion-hub/tests/test_curiosity_routes_runs.py \
             services/orion-hub/tests/test_curiosity_focus.py \
+            services/orion-hub/tests/test_curiosity_focus_refusal_listener.py \
+            services/orion-hub/tests/test_curiosity_replica_plan.py \
             services/orion-hub/evals/test_curiosity_focus_eval.py \
+            services/orion-hub/tests/test_power_attribution_introspect_listener.py \
+            services/orion-hub/evals/test_power_attribution_eval.py \
             orion/curiosity/tests/test_focus_lifecycle.py \
             orion/harness/tests/test_claim_gate.py \
             services/orion-hub/tests/test_reading_finding_outreach.py \
+            services/orion-hub/tests/test_reading_resonance_outreach.py \
+            services/orion-hub/tests/test_outreach_door_policy.py \
+            services/orion-hub/evals/test_outreach_door_policy_replay_eval.py \
+            services/orion-hub/evals/test_reading_message_rewrite_eval.py \
             services/orion-hub/tests/test_endogenous_outreach.py \
+            services/orion-hub/tests/test_strain_report_outreach.py \
+            services/orion-hub/evals/test_strain_report_replay_eval.py \
             services/orion-hub/tests/test_outreach_personality_cue.py \
             services/orion-hub/tests/test_curiosity_personality_cue.py \
             services/orion-hub/tests/test_personality_cue_reader.py \
@@ -95,7 +108,7 @@ jobs:
             services/orion-dream/tests/test_dream_search.py \
             services/orion-dream/tests/test_introspect_listener.py
       - name: Offline source handoff behavior eval
-        run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py services/orion-hub/evals/test_reading_receipt_truth_eval.py services/orion-hub/evals/test_reading_assertion_eval.py services/orion-hub/evals/test_reading_dead_url_eval.py services/orion-hub/evals/test_reading_finding_eval.py services/orion-hub/evals/test_reading_resonance_eval.py services/orion-hub/evals/test_reading_huge_page_eval.py -q
+        run: python -m pytest services/orion-hub/evals/test_reading_handoff_eval.py services/orion-hub/evals/test_reading_receipt_truth_eval.py services/orion-hub/evals/test_reading_assertion_eval.py services/orion-hub/evals/test_reading_dead_url_eval.py services/orion-hub/evals/test_reading_finding_eval.py services/orion-hub/evals/test_reading_resonance_eval.py services/orion-hub/evals/test_reading_huge_page_eval.py services/orion-hub/evals/test_reading_stance_prompt_eval.py -q
       - name: Checkpointed reading admission
         run: |
           python -m pip install langgraph==1.2.11

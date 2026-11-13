@@ -420,6 +420,14 @@ async def _maybe_publish_draft_preview(
     return text, None
 
 
+def _finalize_notes(request: Any) -> str | None:
+    """What the finalize judge is told the motor saw: the Prime block (living Prime Part 1) first, so
+    the judge's 6,000-char notes clip can never cut it, then the Situation block. Without the Prime
+    block a correct "I'm holding X [prime_concern:..]" would read as ungrounded to the judge."""
+    parts = [p for p in (getattr(request, "prime_block", None), request.situation_prompt_fragment) if p]
+    return "\n\n".join(parts) if parts else None
+
+
 async def handle_harness_run_request(
     bus: OrionBusAsync,
     request: HarnessRunRequestV1,
@@ -514,6 +522,7 @@ async def handle_harness_run_request(
             finalize_ran=False,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
             compliance_verdict="failed",
             grounding_status=INTERRUPTED_RESUMABLE,
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
@@ -534,6 +543,7 @@ async def handle_harness_run_request(
             finalize_ran=False,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
             compliance_verdict=motor.compliance_verdict if motor.compliance_verdict != "completed" else "failed",
             grounding_status=motor.grounding_status,
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
@@ -573,7 +583,14 @@ async def handle_harness_run_request(
             preserve_structured_output=bool(request.reading_only),
             gpu_lease=request.gpu_lease,
             fcc_model_label=request.fcc_model_label,
+            situation_notes=_finalize_notes(request),
             cut_short=bool(getattr(motor, "cut_short_reason", None)),
+            # The perception re-check (finalize._recheck_unsupported_claim_repair)
+            # stays inside the reply budget instead of running it out.
+            deadline_monotonic=(
+                received_monotonic + float(request.reply_budget_sec)
+                if getattr(request, "reply_budget_sec", None) is not None else None
+            ),
             repair_overlay=repair_overlay,
             user_message=request.user_message,
             voice_contract=request.answer_contract,
@@ -605,6 +622,7 @@ async def handle_harness_run_request(
             quick_lane_skipped_5b=partial.quick_lane_skipped_5b,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
             compliance_verdict="failed",
             grounding_status=str(exc),
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
@@ -673,6 +691,7 @@ async def handle_harness_run_request(
             finalize_degraded_reason=_SUBSTRATE_UNAVAILABLE_USER_REASON,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
             # Finalize/reflection genuinely did not complete for this turn even though the
             # motor stage did -- downgrade a "completed" motor verdict to "partial" so
             # compliance_verdict=="completed" never coexists with finalize_ran=False here,
@@ -700,6 +719,7 @@ async def handle_harness_run_request(
             finalize_ran=False,
             step_count=motor.step_count,
             exit_code=motor.exit_code,
+            stop_reason=getattr(motor, "stop_reason", None),
             compliance_verdict="failed",
             grounding_status=str(exc),
             grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),
@@ -736,6 +756,7 @@ async def handle_harness_run_request(
         quick_lane_skipped_5b=chain.quick_lane_skipped_5b,
         step_count=motor.step_count,
         exit_code=motor.exit_code,
+        stop_reason=getattr(motor, "stop_reason", None),
         compliance_verdict=motor.compliance_verdict,
         grounding_status=motor.grounding_status,
         grammar_event_ids=_grammar_event_ids(motor.grammar_receipts),

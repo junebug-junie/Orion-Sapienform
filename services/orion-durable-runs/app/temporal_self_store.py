@@ -26,6 +26,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfFrameV1,
     TemporalSelfStateV1,
 )
+from orion.temporal_self.arcs import AVAILABLE_AT_KINDS
 
 logger = logging.getLogger("orion-durable-runs.temporal_self_store")
 
@@ -169,15 +170,23 @@ class ChronicleStore:
 
     async def stored_available(self, event_ids: Iterable[str]) -> dict[str, datetime]:
         """Already-stored events -> the available time they were stored with (ended_at, else
-        occurred_at). Absent ids were never stored (the late probe's test)."""
+        occurred_at; a street event's or office session's ``available_at`` when later, the same rule as
+        ``arcs.event_available_at``). Absent ids were never stored (the late probe's test)."""
         ids = sorted(set(event_ids))
         if not ids:
             return {}
         async with self._pool.connection() as conn:
             rows = await (await conn.execute(
-                "SELECT event_id, occurred_at, payload_json->>'ended_at' AS ended_at FROM temporal_self_event "
+                "SELECT event_id, occurred_at, source_kind, payload_json->>'ended_at' AS ended_at, "
+                "payload_json->>'available_at' AS written FROM temporal_self_event "
                 "WHERE event_id = ANY(%(ids)s)", {"ids": ids})).fetchall()
-        return {r["event_id"]: (datetime.fromisoformat(r["ended_at"]) if r["ended_at"] else r["occurred_at"]) for r in rows}
+        out: dict[str, datetime] = {}
+        for r in rows:
+            t = datetime.fromisoformat(r["ended_at"]) if r["ended_at"] else r["occurred_at"]
+            if r["source_kind"] in AVAILABLE_AT_KINDS and r["written"]:
+                t = max(t, datetime.fromisoformat(r["written"]))
+            out[r["event_id"]] = t
+        return out
 
     async def deferrals(self, lo: datetime, hi: datetime) -> list[TemporalSelfEventV1]:
         """Stored visual deferrals in ``[lo, hi]`` (the body summary's ``thermal_refusals``)."""
@@ -252,6 +261,13 @@ class ChronicleStore:
             row = await (await conn.execute(
                 "SELECT day_json FROM temporal_self_day WHERE day_id = %(d)s", {"d": day_id})).fetchone()
         return row["day_json"] if row else None
+
+    async def arc(self, arc_id: str) -> Optional[dict]:
+        """One arc by id, any day still retained (orion/refs.py kind ``arc``)."""
+        async with self._pool.connection() as conn:
+            row = await (await conn.execute(
+                "SELECT arc_json FROM temporal_self_arc WHERE arc_id = %(a)s", {"a": arc_id})).fetchone()
+        return row["arc_json"] if row else None
 
     async def arcs(self, day_id: str, kind: Optional[str] = None, limit: int = 500) -> list[dict]:
         sql = "SELECT arc_json FROM temporal_self_arc WHERE day_id = %(d)s"

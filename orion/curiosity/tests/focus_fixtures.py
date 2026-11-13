@@ -20,6 +20,10 @@ class UniqueViolation(Exception):
     sqlstate = "23505"
 
 
+class CheckViolation(Exception):
+    sqlstate = "23514"
+
+
 class FocusTable:
     def __init__(self, now: datetime | None = None) -> None:
         self.rows: list[dict] = []
@@ -40,14 +44,24 @@ class FocusTable:
 
     def _eff(self, r: dict) -> dict:
         out = dict(r)
-        out["effective_status"] = (
-            cf.EXPIRED if r["status"] == cf.PENDING and r["expires_at"] <= self.now else r["status"]
-        )
+        if r["status"] == cf.PENDING and r["expires_at"] <= self.now:
+            out["effective_status"] = cf.EXPIRED
+        elif r["status"] == cf.CLEARED and r["refused_by"] is not None:
+            out["effective_status"] = cf.REFUSED_BY_ORGAN
+        else:
+            out["effective_status"] = r["status"]
         return out
 
     def _check(self) -> None:
         if sum(1 for r in self.rows if r["status"] == cf.PENDING) > 1:
             raise UniqueViolation("curiosity_focus_request_one_pending")
+        # The two NOT VALID checks REFUSED_MIGRATION adds.
+        for r in self.rows:
+            if (r["refused_by"] is None) != (r["refused_reason"] is None) or (
+                    r["refused_by"] is not None and r["status"] != cf.CLEARED):
+                raise CheckViolation("curiosity_focus_request_refusal_shape")
+            if r["refused_by"] is not None and r["origin"] != cf.ORIGIN_SELF:
+                raise CheckViolation("curiosity_focus_request_refusal_not_juniper")
 
     def _record(self, sql: str) -> None:
         self.statements.append(sql)
@@ -89,7 +103,7 @@ class FocusTable:
             found = [r for r in self.rows if r["status"] == cf.PENDING and r["expires_at"] > self.now]
             return self._eff(found[0]) if found else None
         if sql == cf.INSERT_SQL:
-            focus_id, question, why, origin, chat, ttl_sec = args
+            focus_id, question, why, origin, chat, ttl_sec, refs = args
             if any(r["focus_id"] == focus_id for r in self.rows):
                 raise UniqueViolation("pkey")
             # Each queue is its own transaction in Postgres, with its own now().
@@ -100,10 +114,23 @@ class FocusTable:
                 "expires_at": self.now + timedelta(seconds=ttl_sec), "status": cf.PENDING,
                 "status_at": self.now, "replaced_by": None, "offered_at": None, "offered_run_id": None,
                 "outcome_stamped_at": None, "turn_ok": None, "disposition": None, "disposition_raw": None,
+                "refs": refs,  # asyncpg hands jsonb back as text, as here
+                "refused_by": None, "refused_reason": None, "refused_act_id": None,
             }
             self.rows.append(row)
             self._check()
             return {**row, "effective_status": cf.PENDING}
+        if sql == cf.REFUSE_SQL:
+            focus_id, by, reason, act_id = args
+            for r in self.rows:
+                if (r["focus_id"] == focus_id and r["status"] == cf.PENDING and r["expires_at"] > self.now
+                        and r["origin"] == cf.ORIGIN_SELF
+                        and str(r["chat_correlation_id"] or "").startswith(cf.PRIME_CORRELATION_PREFIX)):
+                    r.update(status=cf.CLEARED, status_at=self.now, refused_by=by, refused_reason=reason,
+                             refused_act_id=act_id)
+                    self._check()
+                    return {**r, "effective_status": cf.REFUSED_BY_ORGAN}
+            return None
         raise AssertionError(sql[:80])
 
     async def fetch(self, sql: str, *args: Any):

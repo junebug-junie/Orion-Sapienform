@@ -8,17 +8,26 @@ name: orion-sql-writer-tests
 on:
   pull_request:
     paths:
+      # orion/** and config/**: the job runs the whole sql-writer tests folder,
+      # which imports far more of orion than the narrow list below named.
+      - "orion/**"
+      - "config/**"
       - "orion/bus/channels.yaml"
       - "orion/core/bus/**"
       - "orion/grammar/**"
+      - "orion/temporal_self/**"
       - "orion/schemas/**"
       - "orion/substrate/**"
       - "orion/autonomy/prediction.py"
       - "tests/test_act_ledger_contract.py"
       - "orion/vision/**"
       - "config/vision_zones.yaml"
+      - "config/vision_topology.yaml"
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
+      - "scripts/backfill_reading_act_cost.py"   # tested by test_act_reading_cost_integration.py
+      - "scripts/backfill_reading_act_energy.py"   # tested by test_reading_energy_closure_integration.py
+      - "orion/situational/street_material.py"
       - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
       - "tests/test_transport_*.py"
@@ -28,17 +37,26 @@ on:
   push:
     branches: [main]
     paths:
+      # orion/** and config/**: the job runs the whole sql-writer tests folder,
+      # which imports far more of orion than the narrow list below named.
+      - "orion/**"
+      - "config/**"
       - "orion/bus/channels.yaml"
       - "orion/core/bus/**"
       - "orion/grammar/**"
+      - "orion/temporal_self/**"
       - "orion/schemas/**"
       - "orion/substrate/**"
       - "orion/autonomy/prediction.py"
       - "tests/test_act_ledger_contract.py"
       - "orion/vision/**"
       - "config/vision_zones.yaml"
+      - "config/vision_topology.yaml"
       - "services/orion-sql-db/**"
       - "services/orion-sql-writer/**"
+      - "scripts/backfill_reading_act_cost.py"   # tested by test_act_reading_cost_integration.py
+      - "scripts/backfill_reading_act_energy.py"   # tested by test_reading_energy_closure_integration.py
+      - "orion/situational/street_material.py"
       - "services/orion-substrate-runtime/**"
       - "tests/test_sql_writer_*.py"
       - "tests/test_transport_*.py"
@@ -60,7 +78,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r services/orion-sql-writer/requirements.txt
           python -m pip install -r requirements-dev.txt
-          python -m pip install pytest-asyncio
+          # httpx: starlette.testclient (test_notify_attention_*); test-only.
+          python -m pip install pytest-asyncio "httpx>=0.27,<1"
       - name: Run transport reducer unit tests
         run: |
           PYTHONPATH=. python -m pytest -q \
@@ -71,34 +90,21 @@ jobs:
             tests/test_energy_bus_catalog.py \
             tests/test_storage_write_substrate_reducer.py
       - name: Run sql-writer unit tests
+        # The whole services/orion-sql-writer/tests folder, not a hand-kept list:
+        # the list let 14 tests rot unseen (2026-10-29). Tests needing a live
+        # Postgres skip here and run in sql-writer-integration.
         run: |
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q \
             orion/grammar/tests/test_ledger.py \
             orion/core/bus/tests/test_hunter_intake_log_quiet.py \
-            services/orion-sql-writer/tests/test_consumer_resilience.py \
-            services/orion-sql-writer/tests/test_route_map_completeness.py \
-            services/orion-sql-writer/tests/test_world_pulse_routing.py \
-            services/orion-sql-writer/tests/test_grammar_event_routing.py \
-            services/orion-sql-writer/tests/test_grammar_ledger_sql_shape.py \
-            services/orion-sql-writer/tests/test_juniper_multimodal_affect_sql_shape.py \
-            services/orion-sql-writer/tests/test_vision_walkway_persist.py \
-            services/orion-sql-writer/tests/test_vision_individuals.py \
-            services/orion-sql-writer/tests/test_vision_split.py \
-            services/orion-sql-writer/tests/test_vision_body_match.py \
-            services/orion-sql-writer/tests/test_vision_reanchor.py \
-            services/orion-sql-writer/tests/test_vision_osnet_shadow.py \
-            services/orion-sql-writer/tests/test_vision_walkway_faces_stationary.py \
-            services/orion-sql-writer/tests/test_vision_rollup.py \
+            orion/db/tests \
+            services/orion-sql-writer/tests \
             orion/vision/tests \
-            services/orion-sql-writer/tests/test_vision_rhythm.py \
-            services/orion-sql-writer/tests/test_vision_walkway_zones_thumbs_cursor.py \
-            services/orion-sql-writer/tests/test_vision_expect_refresh.py \
-            services/orion-sql-writer/tests/test_vision_event_sql_shape.py \
-            services/orion-sql-writer/tests/test_energy_sql_shape.py \
+            services/orion-sql-writer/evals/test_vision_handoff_replay_eval.py \
+            tests/test_street_event_bus_catalog.py \
             services/orion-sql-writer/evals/test_walkway_reducers_eval.py \
-            services/orion-sql-writer/tests/test_write_health.py \
+            services/orion-sql-writer/evals/test_walkway_count_estimator_eval.py \
             services/orion-sql-writer/evals/test_storage_write_replay_eval.py \
-            services/orion-sql-writer/tests/test_act_ledger_wiring.py \
             services/orion-sql-writer/evals/test_act_ledger_calibration_eval.py \
             tests/test_act_ledger_contract.py
 
@@ -154,8 +160,18 @@ jobs:
         run: |
           set -o pipefail
           PYTHONPATH=.:services/orion-sql-writer:services/orion-sql-writer/tests python -m pytest -q -rs -m integration \
-            services/orion-sql-writer/tests/test_act_ledger_integration.py | tee /tmp/act_ledger.log
+            services/orion-sql-writer/tests/test_act_ledger_integration.py \
+            services/orion-sql-writer/tests/test_act_reading_cost_integration.py \
+            services/orion-sql-writer/tests/test_reading_energy_closure_integration.py \
+            services/orion-sql-writer/tests/test_act_workspace_binding_integration.py \
+            services/orion-sql-writer/tests/test_camera_ask_acts_integration.py | tee /tmp/act_ledger.log
           if grep -q "SKIPPED" /tmp/act_ledger.log; then echo "act ledger integration tests skipped"; exit 1; fi
+      # Attention patch 4a: every mutant of the camera-ask guards (Juniper's own cards excluded, the grade
+      # mapping, the Laplace prior) must fail the tests.
+      - name: Camera-ask acts mutation check (must kill every mutant)
+        env:
+          ORION_SQL_WRITER_TEST_DATABASE_URI: postgresql://postgres:postgres@localhost:5432/conjourney
+        run: python services/orion-sql-writer/evals/camera_ask_acts_mutations.py
       # Visual confirmation asks against real Postgres: opener, answers, typed names, picture
       # verdicts, migration backfill. The tests TRUNCATE the walkway tables; this database is throwaway.
       - name: Run visual confirmation asks Postgres tests (must not skip)
@@ -174,7 +190,9 @@ jobs:
           import re
           conn.cursor().execute(pathlib.Path("services/orion-sql-db/manual_migration_vision_osnet_shadow_v1.sql").read_text())
           for f in ("vision_split_v1", "vision_reanchor_v1", "vision_motion_story_v1",
-                    "vision_motion_story_strip_v2"):
+                    "vision_motion_story_strip_v2", "vision_motion_story_edges_v1",
+                    "vision_person_album_v1", "vision_person_basis_v1", "vision_person_age_veto_v1", "vision_scene_inventory", "vision_handoff_v1",
+                    "vision_presence_transition_v1", "vision_office_session_v1", "person_record_v1"):
               body = re.sub(r"--[^\n]*", "", pathlib.Path(f"services/orion-sql-db/manual_migration_{f}.sql").read_text())
               for stmt in body.split(";"):
                   if stmt.strip():
@@ -182,14 +200,61 @@ jobs:
           PY
           PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -rs -p no:cacheprovider \
             services/orion-sql-writer/tests/test_vision_confirm_asks.py \
+            services/orion-sql-writer/tests/test_vision_person_model.py \
             services/orion-sql-writer/tests/test_vision_split.py \
             services/orion-sql-writer/tests/test_vision_osnet_shadow.py \
             services/orion-sql-writer/tests/test_vision_body_match.py \
             services/orion-sql-writer/tests/test_vision_reanchor.py \
             services/orion-sql-writer/tests/test_vision_motion.py \
+            services/orion-sql-writer/tests/test_vision_caption_motion.py \
+            services/orion-sql-writer/tests/test_vision_caption_motion_pg.py \
             services/orion-sql-writer/tests/test_vision_story_strip.py \
-            services/orion-sql-writer/tests/test_vision_rollup.py | tee vision_pg.out
+            services/orion-sql-writer/tests/test_vision_rollup.py \
+            services/orion-sql-writer/tests/test_vision_handoff_pg.py \
+            services/orion-sql-writer/tests/test_vision_hourly_frames_pg.py \
+            services/orion-sql-writer/tests/test_vision_office_sessions_pg.py \
+            tests/scripts/test_vision_detection_rate_watch_pg.py | tee vision_pg.out
           if grep -q "SKIPPED" vision_pg.out; then
             echo "visual confirmation Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
+            exit 1
+          fi
+      # Orion energy hourly rollup: integrates per-node and cabinet-cooling watts into kWh.
+      # The test drops and recreates the raw watt tables with only the columns it reads, so it
+      # gets its own database: no other step ever sees those narrowed tables.
+      - name: Run Orion energy rollup Postgres tests (must not skip)
+        env:
+          ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/energy_rollup_test
+        run: |
+          set -o pipefail
+          python - <<'PY'
+          import psycopg2
+          conn = psycopg2.connect("postgresql://postgres:postgres@localhost:5432/conjourney")
+          conn.autocommit = True
+          conn.cursor().execute("CREATE DATABASE energy_rollup_test")
+          PY
+          PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -rs \
+            services/orion-sql-writer/tests/test_orion_energy_rollup_pg.py \
+            services/orion-sql-writer/tests/test_orion_energy_attribution_pg.py | tee energy_rollup_pg.out
+          if grep -q "SKIPPED" energy_rollup_pg.out; then
+            echo "Orion energy rollup Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
+            exit 1
+          fi
+      # Act downstream use (body economy weight source (a)): act -> output -> cited arc -> decision.
+      # Drops and recreates narrowed source tables, so it gets its own database.
+      - name: Run act downstream use Postgres tests (must not skip)
+        env:
+          ORION_TEST_PG_URI: postgresql://postgres:postgres@localhost:5432/act_downstream_use_test
+        run: |
+          set -o pipefail
+          python - <<'PY'
+          import psycopg2
+          conn = psycopg2.connect("postgresql://postgres:postgres@localhost:5432/conjourney")
+          conn.autocommit = True
+          conn.cursor().execute("CREATE DATABASE act_downstream_use_test")
+          PY
+          PYTHONPATH=.:services/orion-sql-writer python -m pytest -q -rs \
+            services/orion-sql-writer/tests/test_act_downstream_use_pg.py | tee act_downstream_use_pg.out
+          if grep -q "SKIPPED" act_downstream_use_pg.out; then
+            echo "act downstream use Postgres tests skipped -- ORION_TEST_PG_URI wiring is broken" >&2
             exit 1
           fi

@@ -617,7 +617,10 @@ class VisionUnresolvedV1(BaseModel):
     camera_id: Optional[str] = None
     window_id: Optional[str] = None
     observed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    reason: Literal["council_uncertainty", "no_label", "surprise"]
+    # handoff_missed (2026-10-20): orion-sql-writer's handoff reducer -- someone
+    # left one camera toward the other, the target camera was watching, and no
+    # data explanation (late, turned back, detector miss, a place to go) held.
+    reason: Literal["council_uncertainty", "no_label", "surprise", "handoff_missed"]
     description: str
     what_was_tried: List[str] = Field(default_factory=list)
     evidence_refs: List[str] = Field(default_factory=list)
@@ -627,9 +630,10 @@ class VisionUnresolvedV1(BaseModel):
 # Street events (docs/superpowers/specs/2026-10-20-street-continuity-handoff-
 # design.md, section 6). One fact about the street that may compete for
 # Orion's attention: a doorbell press, a cross-camera handoff outcome, a known
-# person's arrival. Producer today: orion-vision-retina (doorbell_ring only).
-# The handoff kinds are produced by the handoff reducer (orion-sql-writer,
-# later PR); orion-substrate-runtime consumes the channel (later PR).
+# person's arrival. Producers: orion-vision-retina (doorbell_ring) and the
+# handoff reducer in orion-sql-writer (approach_door, handoff_met for a known
+# person, handoff_missed after its hypotheses settle unexplained,
+# overlap_pair). orion-substrate-runtime consumes the channel (later PR).
 StreetEventKind = Literal[
     "doorbell_ring",
     "handoff_met",
@@ -667,5 +671,12 @@ class StreetEventV1(BaseModel):
     person_guess: Optional[str] = None
     salience: float = Field(ge=0.0, le=1.0)
     p_value: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    # Log density, in nats per second, of the actual arrival time under the
+    # handoff's predicted arrival distribution (orion-sql-writer
+    # app/vision_handoff.py arrival_log_score). Set on handoff_met /
+    # handoff_late only; None for misses, unscorable and every other kind.
+    # Read by orion-substrate-runtime's Rung 6 street_handoff domain.
+    # Consumer-first: rebuild the consumer before a producer sends it.
+    arrival_log_score: Optional[float] = None
     evidence_refs: List[str] = Field(default_factory=list)
     correlation_id: str

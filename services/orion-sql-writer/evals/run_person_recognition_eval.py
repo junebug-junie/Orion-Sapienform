@@ -16,7 +16,9 @@ unnamed one. Outcomes:
 Also reported: street accepts, how many unnamed clusters get "probably X"
 with the full album. An armed bar lets about alpha / people of the street
 through by construction, so treat that number as likely wrong accepts until
-answers confirm them. Per channel: cross-day separation, the AUC of genuine CLUSTER
+answers confirm them. Alpha is split across labels that are one real person
+(``not_a_person`` names excluded); face bars calibrate on the longer face
+street (``face_candidate_days``). Per channel: cross-day separation, the AUC of genuine CLUSTER
 scores (each of a person's clusters held out with every album crop from its
 days) against impostor cluster scores (the street, other people, ruled-out
 clusters), the populations the accept bar is fitted on. 0.5 = no better than
@@ -31,6 +33,15 @@ just have a higher average.
 
     python evals/run_person_recognition_eval.py --live postgresql://postgres:...@localhost:55432/conjourney [--write]
 
+Age-band veto (2026-11-13, docs/superpowers/specs/2026-11-13-person-age-band-soft-veto-design.md):
+every held-out cluster is guessed twice in the same pass, veto off and veto on
+(``person_bands`` from Juniper's stated ages; clusters on prior cameras
+exempt, as live). The top-level counts are the veto-off arm (comparable with
+older rows); ``age_veto`` holds both arms, how many wrong / right top guesses
+the veto struck, and how many guesses it turned from wrong to right or right
+to wrong. The gate needs 0 wrong accepts in BOTH arms, and the veto-on arm
+must not name the right person less often than the veto-off arm.
+
 Exit: 0 = gate passed (no wrong accepts); 1 = wrong accepts; 2 = nothing to evaluate.
 """
 from __future__ import annotations
@@ -42,7 +53,7 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import AbstractSet, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 HERE = Path(__file__).resolve()
@@ -71,7 +82,10 @@ def mcnemar_p(b: int, c: int) -> float:
 
 
 def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConfig,
-             street: Dict[str, List[pm.Crop]]) -> dict:
+             street: Dict[str, List[pm.Crop]], face_street: Optional[Dict[str, List[pm.Crop]]] = None,
+             not_people: AbstractSet[str] = frozenset(), person_bands: Optional[Dict[str, str]] = None,
+             veto_exempt_streams: AbstractSet[str] = frozenset()) -> dict:
+    face_street = street if face_street is None else face_street
     clusters: Dict[str, Tuple[str, List[pm.Crop]]] = {}
     for person, pol in album.items():
         for c in pol.get(1, []):
@@ -79,6 +93,22 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
     per_cluster = {}
     counts = {"correct_accept": 0, "wrong_accept": 0, "unsure": 0, "unsure_right_person": 0,
               "reject": 0, "no_album": 0}
+    on_counts = dict(counts)
+    veto = {"clusters_with_band": 0, "clusters_struck": 0, "struck_wrong_top_guess": 0,
+            "struck_right_top_guess": 0, "wrong_to_right": 0, "right_to_wrong": 0, "all_struck": 0}
+
+    def bands_for(cl: Dict[str, List[pm.Crop]]) -> Dict[str, str]:
+        if not person_bands:
+            return {}
+        return {c: b for c, b in pm.cluster_age_bands(cl).items()
+                if pm.cluster_stream(cl[c]) not in veto_exempt_streams}
+
+    def outcome_of(guess: List[dict], truth: str) -> str:
+        if not guess:
+            return "reject"
+        if guess[0]["band"] == "accept":
+            return "correct_accept" if guess[0]["person_label"] == truth else "wrong_accept"
+        return "unsure"
     for cid, (truth, crops) in sorted(clusters.items()):
         # Hold out the cluster AND every crop of its person from the same days
         # (same clothes), as fit_bar's own gate does.
@@ -89,27 +119,46 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
         held = {p: pols for p, pols in held.items() if pols.get(1)}
         if truth not in held:
             counts["no_album"] += 1
+            on_counts["no_album"] += 1
             per_cluster[cid] = {"truth": truth, "outcome": "no_album"}
             continue
-        bars = pm.fit_all(held, cfg, street)
+        bars = pm.fit_all(held, cfg, street, face_street, not_people)
         newest = sorted(crops, key=lambda c: c.day, reverse=True)[:pm.ATTRIBUTION_CROPS]
         guess = pm.attribute({cid: newest}, held, bars, {}, cfg)
-        if not guess:
-            outcome = "reject"
-        elif guess[0]["band"] == "accept":
-            outcome = "correct_accept" if guess[0]["person_label"] == truth else "wrong_accept"
-        else:
-            outcome = "unsure"
+        outcome = outcome_of(guess, truth)
+        if outcome == "unsure":
             counts["unsure_right_person"] += guess[0]["person_label"] == truth
         counts[outcome] += 1
         per_cluster[cid] = {"truth": truth, "outcome": outcome,
                             "guess": guess[0] if guess else None}
+        # Veto-on arm: same held-out album and bars, only the age-band veto added.
+        cbands = bands_for({cid: newest})
+        trace: Dict[str, List[str]] = {}
+        g_on = pm.attribute({cid: newest}, held, bars, {}, cfg, person_bands=person_bands,
+                            cluster_bands=cbands, veto_trace=trace) if cbands else guess
+        o_on = outcome_of(g_on, truth)
+        if o_on == "unsure":
+            on_counts["unsure_right_person"] += g_on[0]["person_label"] == truth
+        on_counts[o_on] += 1
+        veto["clusters_with_band"] += bool(cbands)
+        if trace:
+            veto["clusters_struck"] += 1
+            veto["all_struck"] += not g_on
+            top = guess[0]["person_label"] if guess else None
+            if top in trace.get(cid, []):
+                veto["struck_right_top_guess" if top == truth else "struck_wrong_top_guess"] += 1
+            right_off = bool(guess) and guess[0]["person_label"] == truth
+            right_on = bool(g_on) and g_on[0]["person_label"] == truth
+            veto["wrong_to_right"] += (not right_off) and right_on
+            veto["right_to_wrong"] += right_off and not right_on
+            per_cluster[cid]["age_veto"] = {"struck": trace[cid], "outcome": o_on,
+                                            "guess": g_on[0]["person_label"] if g_on else None}
     separation = {}
     for ch in pm.CHANNELS:
         gen, imp, accept_bars = [], [], 0
         for person in album:
             if any(ch in c.vecs for c in album[person].get(1, [])):
-                fit = pm.fit_bar(person, ch, album, cfg, street)
+                fit = pm.fit_bar(person, ch, album, cfg, face_street if ch == "face" else street, not_people)
                 gen += fit.genuine_clusters
                 imp += fit.impostor_clusters
                 accept_bars += fit.bar.accept_at is not None
@@ -119,24 +168,37 @@ def evaluate(album: Dict[str, Dict[int, List[pm.Crop]]], cfg: pm.PersonModelConf
     # album. About alpha / people of the street clears an armed bar by
     # construction, so read this as the bar's likely wrong-accept count until
     # Juniper's answers say otherwise.
-    full_bars = pm.fit_all(album, cfg, street)
+    full_bars = pm.fit_all(album, cfg, street, face_street, not_people)
     street_guess = pm.attribute(street, album, full_bars, {}, cfg)
     street_accepts: Dict[str, int] = {}
     for g in street_guess:
         if g["band"] == "accept":
             street_accepts[g["person_label"]] = street_accepts.get(g["person_label"], 0) + 1
     scored = len(clusters) - counts["no_album"]
+    street_bands = bands_for(street)
+    street_on = pm.attribute(street, album, full_bars, {}, cfg, person_bands=person_bands,
+                             cluster_bands=street_bands) if street_bands else street_guess
+    veto.update({"enabled": bool(person_bands), "people_with_stated_band": len(person_bands or {}),
+                 "exempt_streams": sorted(veto_exempt_streams), "on": on_counts,
+                 "street_accepts_on": sum(1 for g in street_on if g["band"] == "accept"),
+                 "street_clusters_with_band": len(street_bands),
+                 # acceptance check: the veto must not cost right top guesses overall
+                 "unsure_right_not_lower": on_counts["unsure_right_person"] >= counts["unsure_right_person"]})
     return {
         "model_version": pm.MODEL_VERSION, "alpha": cfg.alpha, "top_k": cfg.top_k,
         "fallback_channel": cfg.fallback_channel, "people": len(album), "clusters": len(clusters),
-        "street_clusters": len(street),
+        "split_people": pm.people_count(album, cfg, not_people), "not_people": sorted(not_people),
+        "street_clusters": len(street), "face_street_clusters": len(face_street),
+        "face_candidate_days": cfg.face_candidate_days, "alpha_split_people_only": cfg.alpha_split_people_only,
         **counts,
         "correct_accept_rate": round(counts["correct_accept"] / scored, 4) if scored else None,
         "unsure_rate": round(counts["unsure"] / scored, 4) if scored else None,
         "separation": separation, "per_cluster": per_cluster,
         "street_accepts": sum(street_accepts.values()), "street_accepts_by_person": street_accepts,
         "street_unsure": sum(1 for g in street_guess if g["band"] == "unsure"),
-        "gate_passed": counts["wrong_accept"] == 0,
+        "age_veto": veto,
+        "gate_passed": (counts["wrong_accept"] == 0 and on_counts["wrong_accept"] == 0
+                        and veto["unsure_right_not_lower"]),
     }
 
 
@@ -170,9 +232,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--top-k", type=int, default=3)
     ap.add_argument("--fallback-channel", default="body")
     ap.add_argument("--tz", default="America/Denver")
+    ap.add_argument("--face-candidate-days", type=float, default=pm.PersonModelConfig.face_candidate_days)
+    ap.add_argument("--no-age-veto", action="store_true", help="skip the veto-on arm")
+    ap.add_argument("--split-all-labels", action="store_true",
+                    help="split alpha across every album label (the pre-v2 rule)")
     args = ap.parse_args(argv)
     cfg = pm.PersonModelConfig(alpha=args.alpha, top_k=args.top_k, fallback_channel=args.fallback_channel,
-                               local_tz=args.tz)
+                               local_tz=args.tz, face_candidate_days=args.face_candidate_days,
+                               alpha_split_people_only=not args.split_all_labels)
     tz = ZoneInfo(args.tz)
     engine = create_engine(args.live)
     with engine.connect() as conn:
@@ -183,8 +250,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if not album:
             print(json.dumps({"verdict": "nothing to evaluate", **stats}))
             return 2
-        street = pm.unnamed_clusters(conn, datetime.now(timezone.utc), cfg, tz)
-        metrics = evaluate(album, cfg, street)
+        street, face_street = pm.street_pools(conn, datetime.now(timezone.utc), cfg, tz)
+        not_people = pm.not_a_person_names(conn) if cfg.alpha_split_people_only else frozenset()
+        person_bands = ({} if args.no_age_veto else
+                        pm.load_person_age_bands(conn, datetime.now(timezone.utc), cfg.age_answer_max_age_days))
+        exempt = pm.veto_exempt_streams(pm._camera_priors())   # live: no veto on a camera with a prior
+        metrics = evaluate(album, cfg, street, face_street, not_people, person_bands, exempt)
         metrics["album"] = {**stats, "exemplars": len(ex)}
         metrics["vs_previous"] = compare_previous(conn, metrics)
     summary = {k: v for k, v in metrics.items() if k != "per_cluster"}

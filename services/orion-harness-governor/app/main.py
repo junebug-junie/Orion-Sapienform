@@ -16,6 +16,7 @@ from orion.harness.fcc_warm_pool import WarmPoolConfig, get_warm_pool, start_war
 
 from .bus_listener import run_bus_worker
 from .cancel_listener import run_cancel_worker
+from .claude_tools_listener import run_claude_tools_worker
 from .settings import settings
 
 logging.basicConfig(
@@ -145,6 +146,9 @@ async def lifespan(app: FastAPI):
     # draining, so this listener stops only after both lanes have finished draining.
     app.state.cancel_stop_event = asyncio.Event()
     app.state.cancel_task = asyncio.create_task(run_cancel_worker(app.state.cancel_stop_event))
+    # Claude's tools in Hub chat (Patch 1b, app/claude_tools_listener.py): its own bus connection and stop flag.
+    app.state.claude_tools_stop_event = asyncio.Event()
+    app.state.claude_tools_task = asyncio.create_task(run_claude_tools_worker(app.state.claude_tools_stop_event))
     # Warm Claude Code pool for chat replies (spec L5). Started in the background so
     # a slow MCP start-up never delays the governor's readiness; until a slot is
     # warm, chat turns simply spawn as before.
@@ -174,6 +178,12 @@ async def lifespan(app: FastAPI):
         task.cancel()
         with suppress(asyncio.CancelledError):
             await task
+    app.state.claude_tools_stop_event.set()
+    claude_tools_task = getattr(app.state, "claude_tools_task", None)
+    if claude_tools_task is not None:
+        claude_tools_task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await claude_tools_task
     app.state.cancel_stop_event.set()
     cancel_task = getattr(app.state, "cancel_task", None)
     if cancel_task is not None:
@@ -216,6 +226,10 @@ def _lane_alive(task: "asyncio.Task | None") -> bool | None:
     return task is not None and not task.done()
 
 
+def _task_alive(task: "asyncio.Task | None") -> bool:
+    return task is not None and not task.done()
+
+
 def _warm_pool_status() -> dict | None:
     pool = get_warm_pool()
     if pool is not None:
@@ -248,6 +262,10 @@ async def health() -> JSONResponse:
             # Warm chat pool (spec L5): slot states, hit/miss/respawn counters.
             # null = disabled or not started (chat turns spawn per turn).
             "fcc_warm_pool": _warm_pool_status(),
+            # Claude's tools broker (Patch 1b). null = bus disabled.
+            "claude_tools_alive": (None if not settings.orion_bus_enabled
+                                   else _task_alive(getattr(app.state, "claude_tools_task", None))),
+            "claude_tools_enabled": settings.claude_tools_enabled,
         }
     )
 

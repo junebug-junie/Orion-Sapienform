@@ -137,14 +137,6 @@ CIRCULAR_PAIRS: dict[tuple[str, str], str] = {
         "execution's surprise is computed from the same harness runs whose reply was repaired "
         "(orion/substrate/execution_loop/grammar_extract.py compute_pressure_hints: step and reasoning load)"
     ),
-    ("node:substrate.chat", "response_repair"): (
-        "chat's surprise includes repair_pressure_level, which also forces the reply judge and the "
-        "repair overlay (orion/harness/finalize.py sensitive_turn_reason)"
-    ),
-    ("node:substrate.bus_synaptic", "rpc_timeout"): (
-        "both read the same bus traffic: a timed-out RPC is a missing reply on a bus-synaptic edge "
-        "(orion/substrate/prediction_error.py bus_synaptic_prediction_error: inter-arrival gap z-scores)"
-    ),
 }
 
 _OUTCOME_WORDS = {
@@ -512,7 +504,7 @@ def _outcome(row: SelfSignalHourV1, outcome: str) -> OutcomeHourV1 | None:
 
 
 def short_signal(signal_id: str) -> str:
-    return signal_id.removeprefix("node:substrate.")
+    return signal_id.removeprefix("node:substrate.").removeprefix("node:")
 
 
 def clause_for(assoc: SelfSignalOutcomeAssociationV1) -> str:

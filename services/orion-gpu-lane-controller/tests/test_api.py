@@ -52,6 +52,8 @@ def client(monkeypatch):
     # The bus chassis talks to a real bus -- irrelevant to these HTTP
     # contract tests and not something to stand a real Redis up for.
     monkeypatch.setattr(main_module.settings, "ORION_BUS_ENABLED", False)
+    # Nor the container census: it shells out to the host's docker CLI.
+    monkeypatch.setattr(main_module.settings, "GPU_LANE_CONTAINER_CENSUS_ENABLED", False)
     with TestClient(main_module.app) as c:
         yield c
 

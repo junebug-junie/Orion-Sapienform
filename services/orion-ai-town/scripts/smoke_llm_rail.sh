@@ -15,12 +15,14 @@ fail() { echo "smoke_llm_rail FAIL: $*" >&2; exit 1; }
 echo "== gateway health =="
 curl -fsS "${GATEWAY_URL}/health" >/dev/null || fail "gateway unreachable at ${GATEWAY_URL}"
 
-echo "== gateway chat (chat lane -> llamacpp) =="
-CHAT="$(curl -fsS -X POST "${GATEWAY_URL}/v1/chat/completions" \
+echo "== gateway NPC opener (quick_background -> fast llama.cpp) =="
+if ! CHAT="$(curl -fsS -X POST "${GATEWAY_URL}/v1/chat/completions" \
   -H 'Content-Type: application/json' \
-  -d '{"model":"chat","messages":[{"role":"user","content":"Reply exactly: RAIL-OK"}],"max_tokens":16,"temperature":0}')"
-echo "${CHAT}" | python3 -c "import sys,json; d=json.load(sys.stdin); c=d['choices'][0]['message']['content']; assert 'RAIL' in c, c; print('chat:', c.strip())" \
-  || fail "chat completion"
+  -d '{"model":"quick_background","messages":[{"role":"system","content":"You are a friendly town resident. Give one short spoken greeting."},{"role":"user","content":"Greet your neighbor now."}],"max_tokens":120,"temperature":0}')"; then
+  fail "NPC opener HTTP request"
+fi
+echo "${CHAT}" | python3 -c "import sys,json; d=json.load(sys.stdin); m=d['choices'][0]['message']; c=m.get('content') or ''; assert c.strip(), d; assert not m.get('reasoning_content'), d; print('NPC opener:', c.strip())" \
+  || fail "NPC opener completion"
 
 echo "== gateway embeddings (-> vector-host) =="
 EMBED="$(curl -fsS -X POST "${GATEWAY_URL}/v1/embeddings" \

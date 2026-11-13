@@ -51,6 +51,31 @@ What is counted (and what is not):
   decision 6 is open). Rows written before version 2 have no ``count_range``:
   ``person_count_range`` derives it from their fields and ``display_line``
   re-renders their line, so a reader never shows the old bare count.
+* **Every living kind is a range (rules_version 4, 2026-10-29).** The matcher splits a dog
+  into several clusters too (live 2026-10-28 14:00 MDT: 6 dog clusters, never more than 3
+  dogs in one window). Every kind in ``RANGE_KINDS`` (the ``LIVING_KINDS`` the rollup counts:
+  person, dog) carries ``count_range`` and prints "dogs: at least 3, at most 6 (the camera
+  splits one dog into several)"; its window peak leaves the "most at once" phrase (it is the
+  range's low). A version 2/3 row whose stored line states a bare dog count is re-rendered by
+  ``display_line``; recent hours are rebuilt once by the writer (``RULES_VERSION`` moved).
+* **Regulars by kind, no number for a living kind (rules_version 5, 2026-11-03).** A regular is
+  an unnamed appearance cluster seen on 2+ days, so "68 unnamed regulars" was one bare cluster
+  count of every kind, people split into several. The line now says "unnamed regulars (...):
+  some people, some dogs, 40 vehicles" (``regulars_phrase``); ``regulars`` in the JSON is
+  unchanged. An older line holding the old clause is re-rendered by ``display_line``.
+* **Named people come from the person record (rules_version 3, 2026-10-24).** Juniper:
+  the day line should know people, not cluster names. ``named`` is keyed by the person's
+  ``display_name`` when the sighted individual has an active ``vision_individual`` link
+  (``person_link``, PR #2852) to an active ``person``; several clusters of one person merge
+  into one entry (times and sightings unioned, ``individual_ids`` kept, ``person_ids``
+  added). The record decides which clusters are one person; names are never re-matched
+  here. An individual linked to a ``not_a_person`` row is not named. A labelled non-person
+  cluster is not named either: when it has an active ``vision_belonging`` link to an active
+  person it goes under ``belongings`` (the line says "<name>'s bicycle"), else it is left
+  out (a vehicle answered "no"). An unlinked person cluster keeps its typed label. When the
+  person tables cannot be read, ``persons`` is None and the rollup groups by label as
+  before (rules_version 2 behavior). Hours store ``person_record`` (a digest of the links)
+  so a changed link rebuilds the recent hours once. Older rows keep their stored line.
 * **Camera minutes** come from ``vision_scene_inventory``: one row per vision
   window, written whether or not anything was seen, so a minute with no row is a
   minute the camera did not deliver frames. An hour the camera saw for fewer
@@ -74,21 +99,43 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 SCHEMA = "vision_rollup.v1"
-RULES_VERSION = 2
+RULES_VERSION = 5
+# The first rules_version whose ``named`` is keyed by the person record (person_link).
+PERSON_RECORD_RULES_VERSION = 3
 # The first rules_version whose stored ``line`` shows people as a range. Older rows are
 # re-rendered at read time (display_line).
 COUNT_RANGE_RULES_VERSION = 2
-# Kinds counted as a range. Vehicles keep their count until they are checked the same way.
-RANGE_KINDS = ("person",)
+# The first rules_version whose stored ``line`` shows EVERY living kind as a range (dogs too,
+# 2026-10-29, follow-up to PR #2875). A v2/v3 line that states a bare count of a living kind
+# ("6 dogs", "most at once 3 dogs") is re-rendered at read time (display_line); one without
+# any is shown as stored (it reads the same either way).
+LIVING_RANGE_RULES_VERSION = 4
+# The first rules_version whose stored ``line`` says unnamed regulars by kind, with no number
+# for a living kind (2026-11-03). Before it the line said "68 unnamed regulars": appearance
+# clusters of every kind, people split into several, as one bare number. An older line that
+# holds that clause is re-rendered at read time (display_line).
+REGULARS_RULES_VERSION = 5
+# Kinds that are someone rather than something (the street line orders them before things). The
+# individuals reducer splits one of these into several appearance clusters the way it splits a
+# person, so every one of them that has clusters is counted as a range.
+LIVING_KINDS = frozenset({"person", "dog", "cat", "bird", "horse", "animal"})
 METHOD_LOW = "most_in_one_window"            # vision_scene_inventory.counts, max per hour
 METHOD_LOW_LESS_PROP = "most_in_one_window_less_props"
 METHOD_LOW_SIGHTED = "one_sighting"          # no window count, but a person was sighted
 METHOD_LOW_UNCORRECTED = "most_in_one_window_uncorrected"  # pre-v2 row: props not taken out
 METHOD_HIGH = "appearance_clusters"          # individuals per hour (passings), summed
 METHOD_HIGH_RAISED = "raised_to_low"         # clusters below the window count (stationary)
-SPLIT_NOTE = "the camera splits one person into several"
+def split_note(kind: str = "person") -> str:
+    """Why a living kind is a range: "the camera splits one dog into several"."""
+    return f"the camera splits one {kind} into several"
+
+
+SPLIT_NOTE = split_note("person")
 GRAINS = ("hour", "day", "week", "month")
 KINDS = ("person", "dog", "bicycle", "stroller", "vehicle")
+# Kinds counted as a range: the living kinds the rollup counts (person, dog). Bicycles, strollers
+# and vehicles keep their count until they are checked the same way.
+RANGE_KINDS = tuple(k for k in KINDS if k in LIVING_KINDS)
 KIND_PLURAL = {"person": "people", "dog": "dogs", "bicycle": "bicycles", "stroller": "strollers",
                "vehicle": "vehicles", "other": "other"}
 KIND_SINGULAR = {"person": "person", "dog": "dog", "bicycle": "bicycle", "stroller": "stroller",
@@ -278,6 +325,54 @@ class StoryRow:
     name_label: Optional[str] = None
 
 
+SOURCE_INDIVIDUAL = "vision_individual"
+SOURCE_BELONGING = "vision_belonging"
+
+
+@dataclass(frozen=True)
+class PersonRef:
+    """One active ``person_link`` for an individual, with its person row."""
+    person_id: str
+    display_name: str
+    status: str = "active"            # active | not_a_person
+    source_kind: str = SOURCE_INDIVIDUAL
+
+
+def person_record_digest(persons: Optional[Mapping[str, PersonRef]],
+                         ids: Optional[Iterable[str]] = None) -> Optional[str]:
+    """Short digest of the links the rollup grouped by; None when the record was unreadable.
+    ``ids``: only the links of these individuals (an hour's own), so a link change for
+    someone the hour never saw does not make that hour stale."""
+    if persons is None:
+        return None
+    import hashlib
+
+    keep = None if ids is None else set(ids)
+    raw = "\n".join(f"{iid}|{r.person_id}|{r.display_name}|{r.status}|{r.source_kind}"
+                    for iid, r in sorted(persons.items()) if keep is None or iid in keep)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _name_bucket(iid: str, kind: str, label: Optional[str],
+                 persons: Optional[Mapping[str, PersonRef]]) -> Optional[tuple[str, str, Optional[str]]]:
+    """(bucket, key, person_id) for a sighted individual: bucket "named" or "belongings";
+    None when it is not named. ``persons`` None = no person record: group by label."""
+    if persons is None:
+        return ("named", label, None) if label else None
+    ref = persons.get(iid)
+    if ref is not None:
+        if ref.status != "active" or not ref.display_name:
+            return None
+        if ref.source_kind == SOURCE_INDIVIDUAL:
+            return "named", ref.display_name, ref.person_id
+        if ref.source_kind == SOURCE_BELONGING and kind != "person":
+            return "belongings", ref.display_name, ref.person_id
+        return None
+    if label and kind == "person":
+        return "named", label, None
+    return None
+
+
 @dataclass
 class HourInputs:
     stream_id: str
@@ -291,6 +386,8 @@ class HourInputs:
     parked_ids: frozenset = frozenset()
     prop_ids: frozenset = frozenset()
     baseline: Optional[Mapping[str, Any]] = None
+    # individual_id -> active person link. None: the person tables were unreadable.
+    persons: Optional[Mapping[str, PersonRef]] = None
 
 
 _VEHICLE_WORDS = ("vehicle", "car", "truck", "bus", "van", "motorcycle", "suv", "pickup")
@@ -333,6 +430,12 @@ def _peaks(raw: Mapping[str, Any] | None) -> dict[str, int]:
         if n > out.get(kind, 0):
             out[kind] = n
     return out
+
+
+def window_peak(counts: Mapping[str, Any] | None, kind: str = "person") -> int:
+    """How many of ``kind`` one vision window held (``vision_scene_inventory.counts``), with
+    compound detector labels mapped like the rollup does (max, never a sum)."""
+    return _peaks(counts).get(kind, 0)
 
 
 def _max_peaks(rows: Iterable[Mapping[str, Any] | None]) -> dict[str, int]:
@@ -397,15 +500,21 @@ def range_phrase(r: Mapping[str, Any] | None, kind: str = "person") -> str:
     if not r:
         return ""
     low, high = int(r.get("low", 0)), int(r.get("high", 0))
-    s = f"{KIND_PLURAL[kind]}: at least {low}, at most {high}"
-    return s + (f" ({SPLIT_NOTE})" if high > low else "")
+    s = f"{KIND_PLURAL.get(kind, kind + 's')}: at least {low}, at most {high}"
+    return s + (f" ({split_note(KIND_SINGULAR.get(kind, kind))})" if high > low else "")
+
+
+def range_phrases(rollup: Mapping[str, Any] | None) -> list[str]:
+    """One range phrase per living kind that passed, people first."""
+    return [p for p in (range_phrase(person_count_range(rollup, k), k) for k in RANGE_KINDS) if p]
 
 
 def display_line(line: Any, rollup: Any) -> str:
     """The line a reader may show. The stored line only when the row is known to be
-    rules_version COUNT_RANGE_RULES_VERSION or later; an older row is re-rendered from its own
-    fields; anything unreadable (no rollup, bad JSON, render error) is "" -- never the stored
-    line, which may hold a bare people count."""
+    rules_version COUNT_RANGE_RULES_VERSION or later, and (before LIVING_RANGE_RULES_VERSION)
+    states no bare count of a living kind; any other row is re-rendered from its own fields;
+    anything unreadable (no rollup, bad JSON, render error) is "" -- never the stored line,
+    which may hold a bare people or dog count."""
     import json as _json
 
     r = rollup
@@ -420,12 +529,64 @@ def display_line(line: Any, rollup: Any) -> str:
         version = int(r.get("rules_version") or 1)
     except (TypeError, ValueError):
         version = 1
-    if version >= COUNT_RANGE_RULES_VERSION:
-        return str(line or "").strip()
+    stored = str(line or "").strip()
+    if version >= REGULARS_RULES_VERSION:
+        return stored
+    if version >= LIVING_RANGE_RULES_VERSION or (
+            version >= COUNT_RANGE_RULES_VERSION and not bare_living_counts(stored)):
+        # Before v5 the line said "68 unnamed regulars": swap that clause in place, so the rest
+        # of the stored line reads exactly as before.
+        try:
+            return _fix_regulars_clause(stored, r)
+        except Exception:  # noqa: BLE001 -- malformed regulars: nothing, never the bare stored count
+            return ""
     try:
         return render_line(r)
     except Exception:  # noqa: BLE001 -- an unreadable old row shows nothing, not a bare count
         return ""
+
+
+# The pre-v5 regulars clause: "68 unnamed regulars (...)", one bare cluster count of all kinds.
+_REGULARS_CLAUSE_RE = re.compile(r"\b\d+ unnamed regulars? \((seen on [^)]*)\)")
+
+
+def _fix_regulars_clause(line: str, rollup: Mapping[str, Any]) -> str:
+    def _swap(m: "re.Match[str]") -> str:
+        phrase = regulars_phrase(rollup.get("regulars"), str(rollup.get("grain") or "day"))
+        return phrase or f"unnamed regulars ({m.group(1)})"
+    return _REGULARS_CLAUSE_RE.sub(_swap, line)
+
+
+def regulars_phrase(reg: Mapping[str, Any] | None, grain: str) -> str:
+    """"unnamed regulars (seen on another day this week too): some people, some dogs, 40 vehicles".
+    A living kind gets no number (the matcher splits one person or dog into several clusters, and
+    a regular is a cluster); a thing keeps its count, as everywhere else. A row with no
+    ``by_kind`` says no number at all."""
+    reg = reg if isinstance(reg, Mapping) else {}
+    try:
+        if not int(reg.get("count", 0) or 0):
+            return ""
+    except (TypeError, ValueError):
+        return ""
+    where = "seen on another day this week too" if grain == "day" else f"seen on 2+ days this {grain}"
+    raw = reg.get("by_kind")
+    by_kind: dict[str, int] = {}
+    for k, v in (raw.items() if isinstance(raw, Mapping) else ()):
+        try:
+            n = int(v or 0)
+        except (TypeError, ValueError):
+            continue
+        if n > 0:
+            by_kind[str(k)] = n
+    parts = [f"some {KIND_PLURAL.get(k, k + 's')}" for k in RANGE_KINDS if by_kind.get(k)]
+    parts += [f"some {KIND_PLURAL.get(k, k + 's')}" for k in sorted(by_kind)
+              if k in LIVING_KINDS and k not in RANGE_KINDS]
+    for k in (*KINDS, "other"):
+        n = by_kind.get(k, 0)
+        if n and k not in LIVING_KINDS:
+            parts.append(f"{n} {KIND_SINGULAR.get(k, k) if n == 1 else KIND_PLURAL.get(k, k + 's')}")
+    head = f"unnamed regulars ({where})"
+    return f"{head}: {', '.join(parts)}" if parts else head
 
 
 def _peak_phrase(peaks: Mapping[str, int]) -> str:
@@ -513,17 +674,33 @@ def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
         ind["sightings"] += 1
         ind["times"].append(at)
     kinds: dict[str, dict[str, int]] = {}
-    named: dict[str, dict[str, Any]] = {}
+    buckets: dict[str, dict[str, dict[str, Any]]] = {"named": {}, "belongings": {}}
     for iid, ind in per_ind.items():
         _add_kind(kinds, ind["kind"], passings=1, distinct=1, sightings=ind["sightings"])
-        if ind["label"]:
-            n = named.setdefault(ind["label"], {"times": [], "sightings": 0, "individual_ids": []})
-            n["times"].extend(ind["times"])
-            n["sightings"] += ind["sightings"]
-            n["individual_ids"].append(iid)
-    for n in named.values():
-        n["times"] = sorted(dict.fromkeys(n["times"]))[:MAX_NAMED_TIMES]
-        n["individual_ids"] = sorted(n["individual_ids"])
+        hit = _name_bucket(iid, ind["kind"], ind["label"], inp.persons)
+        if hit is None:
+            continue
+        bucket, name, pid = hit
+        n = buckets[bucket].setdefault(name, {"times": [], "sightings": 0, "individual_ids": []})
+        n["times"].extend(ind["times"])
+        n["sightings"] += ind["sightings"]
+        n["individual_ids"].append(iid)
+        if pid:
+            n.setdefault("person_ids", set()).add(pid)
+        elif inp.persons is not None:
+            # Typed but not (yet) linked: kept under its label, and listed so an entry that
+            # shares a person's name never reads as wholly confirmed by the record.
+            n.setdefault("unlinked_individual_ids", []).append(iid)
+        if bucket == "belongings":
+            n.setdefault("kinds", set()).add(ind["kind"])
+    for group in buckets.values():
+        for n in group.values():
+            n["times"] = sorted(dict.fromkeys(n["times"]))[:MAX_NAMED_TIMES]
+            n["individual_ids"] = sorted(n["individual_ids"])
+            for k in ("person_ids", "kinds", "unlinked_individual_ids"):
+                if k in n:
+                    n[k] = sorted(n[k])
+    named, belongings = buckets["named"], buckets["belongings"]
     individuals = {iid: {"kind": v["kind"], "label": v["label"], "sightings": v["sightings"], "first": v["first"]}
                    for iid, v in sorted(per_ind.items())}
 
@@ -551,7 +728,9 @@ def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
         "tz": tz.key, "local": local_fields(p, tz), "complete": True,
         "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
         "peak_at_once": peaks,
-        "named": named, "individuals": individuals,
+        "named": named, "belongings": belongings, "individuals": individuals,
+        "person_record": {"available": inp.persons is not None,
+                          "digest": person_record_digest(inp.persons, per_ind.keys())},
         "camera": {"up_minutes": up, "expected_minutes": 60, "status": status,
                    "down_spans": [f"{hhmm(p.start, tz)}–{hhmm(p.end, tz)}"] if status == "down" else []},
         "captions": captions,
@@ -601,6 +780,99 @@ def _merge_spans(children: Sequence[tuple[Period, Optional[Mapping[str, Any]]]],
     return out
 
 
+def _label_grouped(row: Mapping[str, Any]) -> bool:
+    """A row whose ``named`` is keyed by typed label: written before rules_version 3, or
+    built while the person record was unreadable."""
+    try:
+        if int(row.get("rules_version") or 1) < PERSON_RECORD_RULES_VERSION:
+            return True
+    except (TypeError, ValueError):
+        return True
+    return (row.get("person_record") or {}).get("available") is False
+
+
+def _regroup(row: Mapping[str, Any], persons: Mapping[str, PersonRef]) -> dict[str, dict[str, dict[str, Any]]]:
+    """A label-grouped child's entries re-keyed through the person record, from each listed
+    individual's kind and label. An entry whose individuals land in several places gives
+    each place its own ids and the entry's times (times are not kept per individual)."""
+    inds = row.get("individuals") or row.get("individual_days") or {}
+    out: dict[str, dict[str, dict[str, Any]]] = {"named": {}, "belongings": {}}
+    for label, v in (row.get("named") or {}).items():
+        v = v or {}
+        places: dict[tuple[str, str], dict[str, Any]] = {}
+        for iid in v.get("individual_ids") or []:
+            info = inds.get(iid) or {}
+            hit = _name_bucket(iid, _kind(info.get("kind") or "person"), info.get("label") or label, persons)
+            if hit is None:
+                continue
+            bucket, name, pid = hit
+            e = places.setdefault((bucket, name), {"individual_ids": [], "person_ids": set(), "kinds": set(),
+                                                   "unlinked_individual_ids": []})
+            e["individual_ids"].append(iid)
+            if pid:
+                e["person_ids"].add(pid)
+            else:
+                e["unlinked_individual_ids"].append(iid)
+            if bucket == "belongings":
+                e["kinds"].add(_kind(info.get("kind")))
+        for (bucket, name), e in places.items():
+            entry = {k: v[k] for k in ("times", "days", "sightings") if k in v}
+            entry.update({k: sorted(x) for k, x in e.items() if x})
+            out[bucket][name] = entry
+    return out
+
+
+def _merge_named(covered: Sequence[tuple[Period, Optional[Mapping[str, Any]]]], key: str, grain: str,
+                 tz: ZoneInfo, persons: Optional[Mapping[str, PersonRef]] = None) -> dict[str, dict[str, Any]]:
+    """Union the children's ``named`` (or ``belongings``) entries by name: sightings summed,
+    individual ids, person ids and kinds unioned; times (day) or days (week/month). With
+    ``persons``, a label-grouped child (older rules, or record unreadable then) is re-keyed
+    through the record first, so one parent never mixes labels and people."""
+    merged: dict[str, dict[str, Any]] = {}
+    for per, r in covered:
+        if r is None:
+            continue
+        day_key = local_date(per.start, tz).isoformat()
+        entries = (_regroup(r, persons)[key] if persons is not None and _label_grouped(r)
+                   else (r.get(key) or {}))
+        for label, v in entries.items():
+            v = v or {}
+            n = merged.setdefault(label, {"sightings": 0, "individual_ids": set(), "person_ids": set(),
+                                          "kinds": set(), "unlinked_individual_ids": set(), "times": [],
+                                          "days": []})
+            n["sightings"] += int(v.get("sightings", 0) or 0)
+            n["individual_ids"].update(v.get("individual_ids") or [])
+            n["person_ids"].update(v.get("person_ids") or [])
+            n["kinds"].update(v.get("kinds") or [])
+            n["unlinked_individual_ids"].update(v.get("unlinked_individual_ids") or [])
+            # Deduplicated by the "HH:MM" string; a repeated fall-back hour carries its zone
+            # name ("01:30 MDT" / "01:30 MST", hhmm), so those stay apart.
+            if grain == "day":
+                n["times"].extend(t for t in (v.get("times") or []) if t not in n["times"])
+            else:
+                for d in (v.get("days") or [day_key]):
+                    if d not in n["days"]:
+                        n["days"].append(d)
+    out: dict[str, dict[str, Any]] = {}
+    for label, n in sorted(merged.items()):
+        entry: dict[str, Any] = {"sightings": n["sightings"], "individual_ids": sorted(n["individual_ids"])}
+        for k in ("person_ids", "kinds", "unlinked_individual_ids"):
+            if n[k]:
+                entry[k] = sorted(n[k])
+        if grain == "day":
+            entry["times"] = sorted(n["times"])[:MAX_NAMED_TIMES]
+        else:
+            entry["days"] = sorted(n["days"])[:MAX_NAMED_DAYS]
+        out[label] = entry
+    return out
+
+
+def belonging_name(name: str, v: Mapping[str, Any]) -> str:
+    """"Emerald's bicycle"."""
+    kinds = [KIND_SINGULAR.get(k, str(k)) for k in (v.get("kinds") or [])] or ["thing"]
+    return f"{name}'s {' and '.join(kinds)}"
+
+
 def _mean(values: Sequence[float]) -> Optional[float]:
     return round(sum(values) / len(values), 2) if values else None
 
@@ -614,6 +886,7 @@ def build_parent(
     covered_until: Optional[datetime] = None,
     history: Sequence[Mapping[str, Any]] = (),
     story_gate: Optional[Mapping[str, Any]] = None,
+    persons: Optional[Mapping[str, PersonRef]] = None,
 ) -> dict[str, Any]:
     """Combine child rollups. ``children`` lists every child period of ``period`` up to
     ``covered_until`` (a partial parent stops there), each with its row or None when the
@@ -660,29 +933,8 @@ def build_parent(
         if int((kinds.get(k) or {}).get("passings", 0)) > 0:
             kinds[k]["count_range"] = _parent_range(rows, kinds[k]["passings"], k)
 
-    named: dict[str, dict[str, Any]] = {}
-    for per, r in covered:
-        if r is None:
-            continue
-        day_key = local_date(per.start, tz).isoformat()
-        for label, v in (r.get("named") or {}).items():
-            n = named.setdefault(label, {"sightings": 0, "individual_ids": set(), "times": [], "days": []})
-            n["sightings"] += int(v.get("sightings", 0) or 0)
-            n["individual_ids"].update(v.get("individual_ids") or [])
-            if grain == "day":
-                n["times"].extend(v.get("times") or [])
-            else:
-                for d in (v.get("days") or [day_key]):
-                    if d not in n["days"]:
-                        n["days"].append(d)
-    named_out: dict[str, dict[str, Any]] = {}
-    for label, n in sorted(named.items()):
-        entry: dict[str, Any] = {"sightings": n["sightings"], "individual_ids": sorted(n["individual_ids"])}
-        if grain == "day":
-            entry["times"] = n["times"][:MAX_NAMED_TIMES]
-        else:
-            entry["days"] = sorted(n["days"])[:MAX_NAMED_DAYS]
-        named_out[label] = entry
+    named_out = _merge_named(covered, "named", grain, tz, persons)
+    belongings_out = _merge_named(covered, "belongings", grain, tz, persons)
 
     # Regulars: unnamed individuals seen on 2+ days (day: this day plus an earlier day of
     # the trailing week, from earlier day rows; week/month: 2+ days inside the period).
@@ -816,7 +1068,8 @@ def build_parent(
         "covered_until": (min(covered_until, period.end) if covered_until else period.end).isoformat(),
         "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
         "peak_at_once": _max_peaks(rows),
-        "named": named_out, individuals_key: ind_out,
+        "named": named_out, "belongings": belongings_out, individuals_key: ind_out,
+        "person_record": {"available": persons is not None},
         "regulars": {"count": len(regular_ids), "by_kind": reg_by_kind, "ids": regular_ids},
         "camera": {"up_minutes": up, "expected_minutes": expected, "status": status,
                    "up_hours": round(up / 60.0, 1), "expected_hours": round(expected / 60.0, 1),
@@ -898,15 +1151,16 @@ def render_line(rollup: Mapping[str, Any]) -> str:
             kinds = rollup.get("kinds") or {}
             peak = _peak_phrase(rollup.get("peak_at_once") or {})
             others = _count_phrase(kinds, skip=RANGE_KINDS)
-            segs = [range_phrase(person_count_range(rollup))]
+            segs = range_phrases(rollup)
             if others:
                 segs.append(f"{others} passing" + (f" ({peak})" if peak else ""))
             elif peak:
                 segs.append(peak)
             body = "; ".join(x for x in segs if x)
-        named = rollup.get("named") or {}
+        named = [(name, v) for name, v in (rollup.get("named") or {}).items()]
+        named += [(belonging_name(name, v), v) for name, v in (rollup.get("belongings") or {}).items()]
         if named:
-            body += "; " + ", ".join(f"{name} at {', '.join(v.get('times') or [])}" for name, v in named.items())
+            body += "; " + ", ".join(f"{name} at {', '.join(v.get('times') or [])}" for name, v in named)
         base = (rollup.get("baseline") or {}).get("mean_passings")
         if base is not None and cam.get("status") == "ok":
             body += f" (usual for this hour at most {_fmt_num(base)} passing{'' if base == 1 else 's'})"
@@ -923,21 +1177,20 @@ def render_line(rollup: Mapping[str, Any]) -> str:
     else:
         kinds = rollup.get("kinds") or {}
         others = _count_phrase(kinds, skip=RANGE_KINDS, with_distinct=True)
-        parts = [x for x in (range_phrase(person_count_range(rollup)), f"{others} passing" if others else "") if x]
-    named = rollup.get("named") or {}
+        parts = [x for x in (*range_phrases(rollup), f"{others} passing" if others else "") if x]
+    named = [(name, v) for name, v in (rollup.get("named") or {}).items()]
+    named += [(belonging_name(name, v), v) for name, v in (rollup.get("belongings") or {}).items()]
     if named:
         if grain == "day":
             parts.append("named: " + ", ".join(f"{n} ({', '.join((v.get('times') or [])[:4])})"
-                                               for n, v in named.items()))
+                                               for n, v in named))
         else:
             parts.append("named: " + ", ".join(f"{n} on {len(v.get('days') or [])} "
                                                f"day{'s' if len(v.get('days') or []) != 1 else ''}"
-                                               for n, v in named.items()))
-    reg = rollup.get("regulars") or {}
-    if int(reg.get("count", 0)):
-        where = "seen on another day this week too" if grain == "day" else f"seen on 2+ days this {grain}"
-        n = int(reg["count"])
-        parts.append(f"{n} unnamed regular{'s' if n != 1 else ''} ({where})")
+                                               for n, v in named))
+    reg_phrase = regulars_phrase(rollup.get("regulars"), grain)
+    if reg_phrase:
+        parts.append(reg_phrase)
     b, q = rollup.get("busiest"), rollup.get("quietest")
     if b:
         s = f"busiest {_at_words(b['at'], grain)} ({_upper(b['passings'])}"
@@ -1100,12 +1353,29 @@ _RANGE_BEFORE_RE = re.compile(
 _RANGE_AFTER_RE = re.compile(r"^\s*(?:at most|or fewer|or less|at the most)\b", re.IGNORECASE)
 
 
-def bare_people_counts(prose: str) -> list[str]:
-    """People counts in ``prose`` stated as one number, not as a range."""
+def _bare(regex: "re.Pattern[str]", prose: str) -> list[str]:
     text = _strip_calendar(prose or "")
     out: list[str] = []
-    for m in _BARE_PEOPLE_RE.finditer(text):
+    for m in regex.finditer(text):
         if not (_RANGE_BEFORE_RE.search(text[max(0, m.start() - 40):m.start()])
                 or _RANGE_AFTER_RE.match(text[m.end():])):
             out.append(" ".join(m.group(0).split()))
     return out
+
+
+def bare_people_counts(prose: str) -> list[str]:
+    """People counts in ``prose`` stated as one number, not as a range."""
+    return _bare(_BARE_PEOPLE_RE, prose)
+
+
+# Every range kind's nouns, from the kind tables (never a hand list): people's, plus
+# "dog" / "dogs" for each other living kind the rollup counts.
+_LIVING_NOUN = "(?:" + "|".join([_PEOPLE_NOUN[3:-1]] + [
+    rf"{re.escape(KIND_SINGULAR[k])}s?|{re.escape(KIND_PLURAL[k])}" for k in RANGE_KINDS if k != "person"]) + ")"
+_BARE_LIVING_RE = re.compile(rf"\b(?:\d+|{_COUNT_WORD})\s+(?:[a-z-]+\s+)?{_LIVING_NOUN}\b", re.IGNORECASE)
+
+
+def bare_living_counts(prose: str) -> list[str]:
+    """Counts of any living kind (people, dogs) in ``prose`` stated as one number, not as a
+    range: "6 unfamiliar dogs", "40 people". The street line and the rollup lines must have none."""
+    return _bare(_BARE_LIVING_RE, prose)

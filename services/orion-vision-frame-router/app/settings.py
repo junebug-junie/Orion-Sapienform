@@ -57,6 +57,12 @@ class Settings(BaseSettings):
     # reads as "no expectation".
     ROUTER_EXPECTATION_STEERING_ENABLED: bool = True
     ROUTER_EXPECTATION_REFRESH_SEC: float = 5.0
+    # Experiment override (app/expectation.py): Redis key
+    # orion:vision:experiment:<stream_id> = "on" (with a TTL) forces the
+    # triggered tier, triggered_by="experiment". Written only by
+    # orion-prediction's switchback runner. Absent / "off" / no TTL / Redis
+    # down = today's behaviour. Read by the same cache and refresh period.
+    ROUTER_EXPERIMENT_OVERRIDE_ENABLED: bool = True
 
     # Vision organ self-report (app/grammar_emit.py): once per window, publish
     # what the eye did per stream (frames, tasks, failures by class, yield) as

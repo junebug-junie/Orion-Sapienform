@@ -45,6 +45,10 @@ class ThoughtDecisionSQL(Base):
     # own day (DayCitationCheckV1; label UNVERIFIED when a day sentence cited no arc). Needs
     # services/orion-sql-db/manual_migration_thought_decision_day_citations_v1.sql.
     day_citations = Column(_JSONB, nullable=True)
+    # Unified-turn self-prediction A1: stance's private bet about this turn's own behaviour
+    # (TurnSelfPredictionV1), settled later against harness_turn_trace by the self-monitor organ.
+    # Needs services/orion-sql-db/manual_migration_thought_decision_self_prediction_v1.sql.
+    self_prediction = Column(_JSONB, nullable=True)
 
     llm_profile = Column(String, nullable=True)
     producer = Column(String, nullable=True)

@@ -1,8 +1,9 @@
 """Phase G — compaction applier (memory mutation, hard-gated).
 
 Every safety invariant is exercised against an in-memory fake store: default-off,
-policy-gated (operator_review can't self-approve), snapshot-precedes-apply,
-downscale-first / prune-gated, rollback-on-error, never-raises.
+consent-gated (the want market's consent gate since attention patch 3d; a missing or negative
+answer fails closed, and consent is asked first, even while apply is off), snapshot-precedes-apply, downscale-first /
+prune-gated, rollback-on-error, never-raises.
 """
 from __future__ import annotations
 
@@ -16,7 +17,6 @@ from orion.schemas.compaction import (
     MemoryCompactionDeltaV1,
     PruneEntryV1,
 )
-from orion.schemas.policy_decision_frame import PolicyDecisionFrameV1, PolicyDecisionV1
 
 NOW = datetime(2026, 7, 6, tzinfo=timezone.utc)
 
@@ -72,27 +72,9 @@ def _delta(delta_id="d-1"):
     )
 
 
-def _approval(delta_id="d-1", *, execution_allowed=True, decision="approved_for_execution",
-              policy_gate="execution_policy"):
-    return PolicyDecisionFrameV1(
-        frame_id="pf-1",
-        generated_at=NOW,
-        source_proposal_frame_id="prop-frame-1",
-        source_field_tick_id="field.tick:1",
-        overall_risk=0.2,
-        execution_allowed=execution_allowed,
-        approved_decisions=[
-            PolicyDecisionV1(
-                decision_id="dec-1",
-                proposal_id=delta_id,
-                decision=decision,
-                policy_gate=policy_gate,
-                risk_score=0.2,
-                reversibility_score=1.0,
-                confidence_score=0.8,
-            )
-        ],
-    )
+def _approval(delta_id="d-1"):
+    """A consent that approves exactly one delta id, any plan (stands in for the market's consent gate)."""
+    return lambda delta, downscale_only: delta.delta_id == delta_id
 
 
 # --- gating -------------------------------------------------------------------
@@ -107,111 +89,106 @@ def test_disabled_gate_touches_nothing(tmp_path, monkeypatch):
     assert store.calls == []  # not even a snapshot
 
 
-def test_not_approved_when_operator_review_only():
+def test_consent_is_asked_first_even_while_apply_is_off():
+    """Patch 3d: the gate is asked before the hot gate, so a staged delta leaves a verdict while apply
+    stays off. No consent while off is not_approved (with the rule), and nothing is touched."""
+    from app import compaction_applier as ca
+
+    asked = []
+
+    def consent(delta, downscale_only):
+        asked.append((delta.delta_id, downscale_only))
+        return ca.ConsentAnswer(False, "needs_consent", "dream.compaction.downscale_only", "standing_consent_missing")
+
+    store = FakeStore()
+    r = ca.apply_compaction_delta(_delta(), consent, store=store, enabled=False)
+    assert asked == [("d-1", True)]
+    assert r.status == "not_approved"
+    assert (r.consent_verdict, r.consent_rule) == ("needs_consent", "dream.compaction.downscale_only")
+    assert store.calls == []
+
+
+def test_consented_but_no_store_writes_nothing():
+    """The REM pass asks with store=None: even consented and on, the best case is no_store."""
+    from app import compaction_applier as ca
+
+    r = ca.apply_compaction_delta(_delta(), _approval(), store=None, enabled=True)
+    assert r.status == "no_store" and r.applied is False
+
+
+def test_the_plan_reaches_consent():
+    """A consent to downscale is not a consent to prune: the callable sees which plan it is asked about."""
+    from app import compaction_applier as ca
+
+    seen = []
+    ca.apply_compaction_delta(_delta(), lambda d, only: seen.append(only) or False, store=FakeStore(),
+                              enabled=True, downscale_only=False)
+    assert seen == [False]
+
+
+def test_not_approved_without_a_consent_gate():
+    """No consent gate exists yet (Juniper decision 6, 2026-11-05): with the hot gate on and no
+    consent injected, nothing is applied and the store is never touched."""
     from app import compaction_applier as ca
 
     store = FakeStore()
-    # An operator_review proposal that was NOT execution-approved.
-    frame = _approval(execution_allowed=False, decision="requires_operator_review",
-                      policy_gate="operator_review")
-    r = ca.apply_compaction_delta(_delta(), frame, store=store, enabled=True)
+    r = ca.apply_compaction_delta(_delta(), store=store, enabled=True)
     assert r.status == "not_approved"
     assert store.calls == []
 
 
-def test_not_approved_when_frame_missing():
-    from app import compaction_applier as ca
-
-    store = FakeStore()
-    r = ca.apply_compaction_delta(_delta(), None, store=store, enabled=True)
-    assert r.status == "not_approved"
-    assert store.calls == []
-
-
-def test_not_approved_when_approval_references_other_delta():
+def test_not_approved_when_consent_is_for_another_delta():
     from app import compaction_applier as ca
 
     store = FakeStore()
     r = ca.apply_compaction_delta(_delta("d-1"), _approval("d-OTHER"), store=store, enabled=True)
     assert r.status == "not_approved"
+    assert store.calls == []
 
 
-def test_isolated_decision_guard_rejects_operator_review_decision():
-    """execution_allowed=True (frame approved for *something*) but this decision
-    is still requires_operator_review → must fail closed. Isolates the
-    decision-level guard so deleting it would fail this test."""
+def test_consent_is_asked_about_this_exact_delta():
+    """Approving delta A must not authorize delta B that merely shares a source request."""
     from app import compaction_applier as ca
 
-    frame = _approval(execution_allowed=True, decision="requires_operator_review",
-                      policy_gate="operator_review")
-    r = ca.apply_compaction_delta(_delta(), frame, store=FakeStore(), enabled=True)
-    assert r.status == "not_approved"
+    delta_a = MemoryCompactionDeltaV1(delta_id="dA", source_request_ids=["r1"],
+                                      downscale=[DownscaleEntryV1(target_id="e-1", old_w=0.9, new_w=0.4)])
+    delta_b = MemoryCompactionDeltaV1(delta_id="dB", source_request_ids=["r1"],
+                                      prune=[PruneEntryV1(episodic_id="ep-1", salience=0.01)])
+    asked = []
+
+    def consent(delta, downscale_only):
+        asked.append(delta.delta_id)
+        return delta.delta_id == "dA"
+
+    assert ca.consent_approves(delta_a, consent) is True
+    assert ca.consent_approves(delta_b, consent) is False
+    assert asked == ["dA", "dB"]
 
 
-def test_isolated_gate_guard_rejects_non_execution_gate():
-    """approved_for_execution but gated by operator_review (not execution_policy),
-    frame execution_allowed=True → must fail closed. Isolates the gate guard."""
+@pytest.mark.parametrize("answer", [None, 1, "yes", object()])
+def test_only_a_literal_true_is_consent(answer):
     from app import compaction_applier as ca
 
-    frame = _approval(execution_allowed=True, decision="approved_for_execution",
-                      policy_gate="operator_review")
-    r = ca.apply_compaction_delta(_delta(), frame, store=FakeStore(), enabled=True)
-    assert r.status == "not_approved"
+    assert ca.consent_approves(_delta(), lambda d, only: answer) is False
 
 
-def test_autonomy_policy_gate_is_not_accepted_for_memory_mutation():
-    """The autonomy engine's self-authorized gate must NOT authorize this rung —
-    a human is required. Fails closed even with approved_for_execution."""
+def test_a_raising_consent_fails_closed():
     from app import compaction_applier as ca
 
-    frame = _approval(execution_allowed=True, decision="approved_for_execution",
-                      policy_gate="autonomy_policy")
+    def boom(delta, downscale_only):
+        raise RuntimeError("consent store down")
+
     store = FakeStore()
-    r = ca.apply_compaction_delta(_delta(), frame, store=store, enabled=True)
+    r = ca.apply_compaction_delta(_delta(), boom, store=store, enabled=True)
     assert r.status == "not_approved"
-    assert store.calls == []  # not even a snapshot
+    assert store.calls == []
 
 
-def test_approval_does_not_leak_across_deltas_sharing_a_request():
-    """A human approving delta A must not authorize un-reviewed delta B that
-    merely shares a source_request_id. Regression for the request-fallback leak."""
-    from app import compaction_applier as ca
+def test_the_retired_policy_frame_is_not_imported():
+    from pathlib import Path
 
-    delta_a = MemoryCompactionDeltaV1(
-        delta_id="dA",
-        source_request_ids=["r1"],
-        downscale=[DownscaleEntryV1(target_id="e-1", old_w=0.9, new_w=0.4)],
-    )
-    delta_b = MemoryCompactionDeltaV1(
-        delta_id="dB",
-        source_request_ids=["r1"],  # same request, different (unseen) op set
-        prune=[PruneEntryV1(episodic_id="ep-1", salience=0.01)],
-    )
-    # Frame approves ONLY delta A (proposal_id + evidence ref name A / r1).
-    frame = PolicyDecisionFrameV1(
-        frame_id="pf", generated_at=NOW, source_proposal_frame_id="pfr",
-        source_field_tick_id="field.tick:ss", overall_risk=0.2, execution_allowed=True,
-        approved_decisions=[
-            PolicyDecisionV1(
-                decision_id="d", proposal_id="dA", decision="approved_for_execution",
-                policy_gate="execution_policy", risk_score=0.2, reversibility_score=1.0,
-                confidence_score=0.8, evidence_refs=["r1"],
-            )
-        ],
-    )
-    assert ca.policy_approves_execution(delta_a, frame) is True
-    assert ca.policy_approves_execution(delta_b, frame) is False  # no leak
-
-
-def test_malformed_frame_fails_closed():
-    """A duck-typed/malformed frame must fail closed, not raise."""
-    from app import compaction_applier as ca
-
-    class Bad:
-        execution_allowed = True
-        approved_decisions = None  # would AttributeError on iteration
-
-    assert ca.policy_approves_execution(_delta(), Bad()) is False
+    src = (Path(__file__).resolve().parents[1] / "app" / "compaction_applier.py").read_text(encoding="utf-8")
+    assert "orion.schemas.policy_decision_frame" not in src
 
 
 def test_empty_delta_is_empty(monkeypatch):
@@ -315,8 +292,12 @@ def test_never_raises_even_if_rollback_also_fails(tmp_path, monkeypatch):
 
     store = DoubleFail(fail_on="downscale")
     r = ca.apply_compaction_delta(_delta(), _approval(), store=store, enabled=True)
-    assert r.status == "rolled_back"
+    # Review finding 3: a failed restore never reads as rolled back.
+    assert r.status == "rollback_failed" and r.applied is False
     assert r.error and "rollback_failed" in r.error
+    import json as _json
+    receipt = _json.loads((tmp_path / _delta().delta_id / "receipt.json").read_text())
+    assert receipt["status"] == "rollback_failed"
 
 
 def test_module_has_no_default_canonical_store():

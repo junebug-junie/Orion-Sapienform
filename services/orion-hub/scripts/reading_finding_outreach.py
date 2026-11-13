@@ -6,10 +6,17 @@ belief a curiosity run moved while citing the read). Delivery: the EXISTING outr
 decision log, the closed-vocabulary grounding guard, sockets + chat history + notification) -- not
 a parallel one.
 
-Gates (Juniper, 2026-10-13: "reach out as much as they want while learning"): no daily cap and no
-cooldown for this kind (``skip_rate_gates``). Disabled, turn-in-flight, recent-chat, quiet hours and
+Gates (Juniper, 2026-10-13: "reach out as much as they want while learning"): no cooldown for this
+kind (``skip_rate_gates``). Since 2026-11-10 (one attention budget) the daily cap counts it like every
+door, and its bid waits for the day's pace. Disabled, turn-in-flight, recent-chat, quiet hours and
 arousal ``strained`` still apply. A finding blocked by them is retried on a later tick (it stays
 pending until told), so quiet hours delay a message instead of losing it.
+
+Spacing (2026-10-29): after a message reaches Juniper, the next one waits ``min_spacing_sec``. Reads
+run all night and their findings wait out quiet hours, so before this they all went out the moment
+quiet hours ended (live 2026-10-28: 14 messages between 14:11 and 15:08 UTC). A PASS is not a
+message, so it does not start the wait, and a held finding stays pending (it is not dropped). The
+last send time is read back from the decision log, so a restart does not reopen the gap.
 
 Dedupe: findings of one read are bundled into one message; a finding already told (decision row
 ``sent`` or ``orion_passed`` naming its ``finding_id``) is never told again. A later finding of the
@@ -28,6 +35,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 from uuid import NAMESPACE_URL, uuid4, uuid5
+from zoneinfo import ZoneInfo
 
 from orion.schemas.reading_finding import ReadingFindingBundleV1, ReadingFindingV1
 from orion.world_pulse_read.finding_prompt import article_appendix, build_reading_finding_prompt
@@ -38,13 +46,18 @@ from orion.world_pulse_read.findings import (
     first_sentences,
 )
 from orion.world_pulse_read.introspect import reading_items_between
+from orion.world_pulse_read.origin import read_origins
 
 logger = logging.getLogger("orion-hub.reading_finding_outreach")
 
 READING_FINDING_TAG = "reading_finding_outreach"
-TOLD_REASONS = frozenset({"sent", "orion_passed"})
+# ``no_why_juniper`` (door policy, 2026-11-10): Orion wrote a message but did not say why it is for
+# Juniper. A decision like PASS, not a failure to retry: re-composing would fish for a yes.
+TOLD_REASONS = frozenset({"sent", "orion_passed", "no_why_juniper"})
 # Composition failures that count toward ``max_attempts``. A gate block is not a failure.
 FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal"})
+
+SPACING_REASON = "reading_spacing"
 
 # Reads this old are still watched for a NEW finding (a belief a run moves days later).
 READ_WINDOW_DAYS = 7
@@ -57,6 +70,14 @@ WHERE decided_at >= $1 AND reason = ANY($2::text[])
 """
 
 
+LAST_SENT_SQL = """
+SELECT max(decided_at) AS last_sent
+FROM endogenous_outreach_decisions
+WHERE decided_at >= $1 AND reason = 'sent'
+  AND result_json->>'source' = 'reading_finding_outreach'
+"""
+
+
 def bundle_key(bundle: ReadingFindingBundleV1) -> str:
     """Stable id of one bundle, for joins. Never a correlation id: an abandoned compose attempt
     is cancelled by correlation id, and a retry reusing it would be killed on spawn."""
@@ -65,6 +86,8 @@ def bundle_key(bundle: ReadingFindingBundleV1) -> str:
 
 def reportable(finding: ReadingFindingV1) -> bool:
     """A link counts once it is in the graph (the Assertion projected); a moved belief always."""
+    if finding.kind == "resonance":
+        return finding.resonance_decision == "share"
     return finding.kind != "link_made" or finding.projected is True
 
 
@@ -83,7 +106,8 @@ def pending_bundles(
                  if reportable(f) and f.finding_id not in told and failures.get(f.finding_id, 0) < max_attempts]
         if fresh:
             out.append(ReadingFindingBundleV1(seed_id=read.seed_id, title=read.title, url=read.url,
-                                              learned=read.learned, article_summary=read.article_summary,
+                                              learned=read.learned, article_summary=next((f.resonance_article_summary for f in fresh
+                                                  if f.resonance_article_summary), read.article_summary),
                                               findings=fresh))
     return out
 
@@ -117,8 +141,16 @@ class ReadingFindingOutreach:
         tick_interval_sec: float = 300.0,
         lookback_hours: float = 48.0,
         max_attempts: int = 3,
+        resonance_timezone: str = "America/Denver",
+        resonance_share_enabled: bool = False,
+        resonance_daily_max: int = 12,
+        min_spacing_sec: float = 0.0,
         clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
+        self._resonance_tz = ZoneInfo(resonance_timezone)
+        self.resonance_share_enabled = resonance_share_enabled
+        self.resonance_daily_max = max(0, resonance_daily_max)
+        self._resonance_sent: list[tuple[datetime, str, str]] = []
         self.enabled = bool(enabled)
         self._pool_provider = pool_provider
         self._outreach_provider = outreach_provider
@@ -126,12 +158,17 @@ class ReadingFindingOutreach:
         self.tick_interval_sec = max(30.0, float(tick_interval_sec))
         self.lookback_hours = float(lookback_hours)
         self.max_attempts = max(1, int(max_attempts))
+        self.min_spacing_sec = max(0.0, float(min_spacing_sec))
         self._clock = clock or (lambda: datetime.now(timezone.utc))
         # Process-local mirror of the decision log: a row is written on a daemon thread, so the
         # next tick may not see it yet. Never the only record (restart -> the table answers).
         self._told: set[str] = set()
         self._failures: dict[str, int] = {}
         self._blocked_logged: set[tuple[str, str]] = set()
+        # Last reading message that reached Juniper: this process's own send, and the decision
+        # log's (read each tick, so a restart keeps the gap). The later of the two counts.
+        self._last_sent_at: Optional[datetime] = None
+        self._logged_last_sent_at: Optional[datetime] = None
         self._task: Optional[asyncio.Task] = None
         self.last_tick: dict[str, Any] = {}
 
@@ -140,8 +177,8 @@ class ReadingFindingOutreach:
             logger.info("reading_finding_outreach disabled")
             return
         self._task = asyncio.create_task(self._run())
-        logger.info("reading_finding_outreach started tick=%ss lookback_h=%s max_attempts=%s",
-                    self.tick_interval_sec, self.lookback_hours, self.max_attempts)
+        logger.info("reading_finding_outreach started tick=%ss lookback_h=%s max_attempts=%s spacing=%ss",
+                    self.tick_interval_sec, self.lookback_hours, self.max_attempts, self.min_spacing_sec)
 
     async def stop(self) -> None:
         if self._task is not None:
@@ -179,6 +216,22 @@ class ReadingFindingOutreach:
             by_seed = {seed: [f for f in fs if f.observed_at >= since] for seed, fs in result.by_seed.items()}
             rows = await conn.fetch(DECISIONS_SQL, now - timedelta(days=READ_WINDOW_DAYS + 7),
                                     sorted(TOLD_REASONS | FAILED_REASONS))
+            bundles = self._bundles(reads, by_seed, rows)
+            if bundles and self.min_spacing_sec > 0:
+                last = await conn.fetch(LAST_SENT_SQL, now - timedelta(seconds=self.min_spacing_sec))
+                self._logged_last_sent_at = last[0]["last_sent"] if last else None
+            # How each read started, so the prompt states it from the record instead of asserting it.
+            # A failed lookup degrades to "not recorded"; it never holds a message back.
+            origins = {}
+            if bundles:
+                try:
+                    origins = await read_origins(conn, [b.seed_id for b in bundles])
+                except Exception:  # noqa: BLE001
+                    logger.warning("reading_finding_origin_unavailable seeds=%d", len(bundles), exc_info=True)
+        return [b.model_copy(update={"origin": origins.get(b.seed_id, [])}) for b in bundles]
+
+    def _bundles(self, reads: list[ReadRefV1], by_seed: dict[str, list[ReadingFindingV1]],
+                 rows: list[Any]) -> list[ReadingFindingBundleV1]:
         told, logged_failures = set(self._told), {}
         for row in rows:
             for fid in _ids(row["finding_ids"]):
@@ -205,30 +258,95 @@ class ReadingFindingOutreach:
             summary["blocked"] = "no_outreach_loop"
             return summary
         for bundle in bundles:
+            wait = self.spacing_wait_sec(self._clock())
+            if wait > 0:
+                summary["results"].append(self._hold_for_spacing(outreach, bundle, wait))
+                break  # every later bundle waits for the same gap
             summary["results"].append(await self._tell(outreach, bundle))
+            if summary["results"][-1]["reason"] in {"resonance_share_disabled", "resonance_daily_max",
+                    "resonance_thread_already_shared", "resonance_citations_already_shared"}:
+                continue  # held/note-only resonance cannot starve later ordinary findings
             if summary["results"][-1]["reason"] not in TOLD_REASONS | FAILED_REASONS:
                 break  # a gate is closed: every later bundle would hit it too
         return summary
 
+    def spacing_wait_sec(self, now: datetime) -> float:
+        """Seconds until the next reading message may reach Juniper; 0 when it may now."""
+        if self.min_spacing_sec <= 0:
+            return 0.0
+        sent = [t for t in (self._last_sent_at, self._logged_last_sent_at) if t is not None]
+        if not sent:
+            return 0.0
+        return max(0.0, self.min_spacing_sec - (now - max(sent)).total_seconds())
+
+    def _hold_for_spacing(self, outreach: Any, bundle: ReadingFindingBundleV1, wait: float) -> dict[str, Any]:
+        meta = {**decision_meta(bundle, str(uuid4())), "spacing_wait_sec": round(wait, 1),
+                "min_spacing_sec": self.min_spacing_sec}
+        self._record_block_once(outreach, bundle, meta, SPACING_REASON, str(uuid4()))
+        return {"seed_id": bundle.seed_id, "reason": SPACING_REASON}
+
+    def _record_block_once(self, outreach: Any, bundle: ReadingFindingBundleV1, meta: dict[str, Any],
+                           reason: str, correlation_id: str) -> None:
+        """Retried next tick. Logged/recorded once per bundle+reason, not every tick of a
+        quiet-hours night."""
+        key = (meta["bundle_key"], reason)
+        if key in self._blocked_logged:
+            return
+        if len(self._blocked_logged) > 1000:
+            self._blocked_logged.clear()  # a log-spam guard, not state
+        self._blocked_logged.add(key)
+        logger.info("reading_finding_outreach_blocked seed=%s reason=%s findings=%d",
+                    bundle.seed_id, reason, len(bundle.findings))
+        outreach.record_blocked(reason, correlation_id=correlation_id, source=READING_FINDING_TAG, extra=meta)
+
     async def _tell(self, outreach: Any, bundle: ReadingFindingBundleV1) -> dict[str, Any]:
         correlation_id = str(uuid4())  # per attempt: see bundle_key
         decision_id = str(uuid4())
+        resonances = [f for f in bundle.findings if f.kind == "resonance"]
+        if resonances:
+            reason = await self._resonance_gate(resonances)
+            if reason:
+                if reason in {"resonance_thread_already_shared", "resonance_citations_already_shared"}:
+                    async with self._pool_provider().acquire() as conn:
+                        for f in resonances:
+                            await conn.execute("UPDATE reading_resonance SET outreach_note_reason=$2 "
+                                               "WHERE seed_id=$1 AND outreach_note_reason IS NULL", f.seed_id, reason)
+                    self._told.update(f.finding_id for f in resonances)
+                # Keep ordinary findings moving; a suppressed resonance is still in the letter.
+                rest = [f for f in bundle.findings if f.kind != "resonance"]
+                if not rest:
+                    return {"seed_id": bundle.seed_id, "reason": reason}
+                bundle = bundle.model_copy(update={"findings": rest})
+                resonances = []
         meta = decision_meta(bundle, decision_id)
+        if resonances:
+            meta.update(resonance_root=resonances[0].resonance_root,
+                        resonance_content_id=resonances[0].resonance_content_id)
         await outreach.refresh_human_gates()
-        blocked = outreach.blocked_reason(skip_rate_gates=True)
+        blocked = outreach.blocked_reason(skip_rate_gates=not bool(resonances))
         if blocked:
-            # Retried next tick. Logged/recorded once per bundle+reason, not every tick of a
-            # quiet-hours night.
-            key = (meta["bundle_key"], str(blocked))
-            if key not in self._blocked_logged:
-                if len(self._blocked_logged) > 1000:
-                    self._blocked_logged.clear()  # a log-spam guard, not state
-                self._blocked_logged.add(key)
-                logger.info("reading_finding_outreach_blocked seed=%s reason=%s findings=%d",
-                            bundle.seed_id, blocked, len(bundle.findings))
-                outreach.record_blocked(str(blocked), correlation_id=correlation_id,
-                                        source=READING_FINDING_TAG, extra=meta)
+            self._record_block_once(outreach, bundle, meta, str(blocked), correlation_id)
             return {"seed_id": bundle.seed_id, "reason": str(blocked)}
+        # Body economy Patch D (scripts/outreach_bind.py): obey the bid before composing. Held -> the
+        # bundle stays pending and is retried next tick (the hold waits for the day's pace, at most until
+        # Juniper's waking day ends). Cap-counted since 2026-11-10 (one attention budget).
+        key = str(meta["bundle_key"])
+        admit, economy = await outreach.economy_admit(door=READING_FINDING_TAG, key=key, cap_counted=True)
+        if economy:
+            meta = {**meta, "economy": economy}
+        if not admit:
+            self._record_block_once(outreach, bundle, meta, "economy_held", correlation_id)
+            return {"seed_id": bundle.seed_id, "reason": "economy_held"}
+        sent = False
+        try:
+            result = await self._compose_and_offer(outreach, bundle, meta, correlation_id, decision_id)
+            sent = result.get("reason") == "sent"
+            return result
+        finally:
+            await outreach.economy_done(door=READING_FINDING_TAG, key=key, sent=sent)
+
+    async def _compose_and_offer(self, outreach: Any, bundle: ReadingFindingBundleV1, meta: dict[str, Any],
+                                 correlation_id: str, decision_id: str) -> dict[str, Any]:
         prompt = build_reading_finding_prompt(bundle)
         text, debug = await outreach.compose(
             prompt, correlation_id, retrieval_query=first_sentences(bundle.learned, 2) or None)
@@ -248,10 +366,18 @@ class ReadingFindingOutreach:
         )
         result = await outreach.offer_message(
             text=text, correlation_id=correlation_id, tag=READING_FINDING_TAG,
-            model=debug.get("fcc_model_label"), meta=meta, skip_rate_gates=True, provenance=capsule,
-            record_appendix=article_appendix(bundle),
+            model=debug.get("fcc_model_label"), meta=meta,
+            skip_rate_gates=not any(f.kind == "resonance" for f in bundle.findings), provenance=capsule,
+            record_appendix=article_appendix(bundle) + "".join(
+                "\n\n" + f.evidence_text for f in bundle.findings if f.kind == "resonance"),
+            require_why_juniper=True,
         )
         reason = str(result.get("reason") or ("sent" if result.get("outreach") else "not_sent"))
+        if reason == "sent":
+            self._last_sent_at = self._clock()
+            for f in bundle.findings:
+                if f.kind == "resonance":
+                    self._resonance_sent.append((self._last_sent_at, f.resonance_root, f.resonance_content_id))
         if reason in TOLD_REASONS:
             self._told.update(bundle.finding_ids)
         elif reason in FAILED_REASONS:
@@ -259,6 +385,27 @@ class ReadingFindingOutreach:
         logger.info("reading_finding_outreach_result seed=%s reason=%s findings=%s",
                     bundle.seed_id, reason, ",".join(bundle.finding_ids))
         return {"seed_id": bundle.seed_id, "reason": reason, "text": text if reason == "sent" else None}
+
+    async def _resonance_gate(self, findings):
+        if not self.resonance_share_enabled:
+            return "resonance_share_disabled"
+        now = self._clock()
+        pool = self._pool_provider()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch("SELECT decided_at, result_json->>'resonance_root' AS root, "
+                "result_json->>'resonance_content_id' AS content_id FROM endogenous_outreach_decisions "
+                "WHERE decided_at >= $1 AND reason='sent' AND result_json->>'resonance_content_id' IS NOT NULL",
+                now - timedelta(days=7))
+        seen = [(r["decided_at"], r["root"], r["content_id"]) for r in rows] + self._resonance_sent
+        today = {(root, content) for at, root, content in seen if at.astimezone(self._resonance_tz).date() == now.astimezone(self._resonance_tz).date()}
+        if len(today) >= self.resonance_daily_max:
+            return "resonance_daily_max"
+        for f in findings:
+            if any(root == f.resonance_root for root, _ in today):
+                return "resonance_thread_already_shared"
+            if any(content == f.resonance_content_id for at, _, content in seen if at >= now - timedelta(days=7)):
+                return "resonance_citations_already_shared"
+        return None
 
     def _count_failure(self, bundle: ReadingFindingBundleV1) -> None:
         for fid in bundle.finding_ids:

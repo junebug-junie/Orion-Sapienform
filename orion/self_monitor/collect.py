@@ -1,0 +1,140 @@
+"""The organ's one read-and-adapt path, shared by the live host and the report.
+
+``SOURCES`` names every bet source: its SQL (bounded by ``:since``, the window start) and its pure
+adapter. The caller runs the SQL with whatever driver it has (the report: SQLAlchemy; orion-durable-runs:
+its psycopg pool, ``psycopg_sql``) and hands the rows, or the error, to ``build_state``. So there is one
+query text and one adapt rule, never two copies that drift.
+
+A source that cannot be read, or rows an adapter cannot shape, are named in ``source_errors``, never
+skipped silently.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Callable, Iterable, Mapping, Optional, Sequence, Union
+
+from orion.schemas.self_monitor import SelfMonitorStateV1, SettledBetV1
+from orion.self_monitor import adapters
+from orion.self_monitor.catalog import UNGRADEABLE
+from orion.self_monitor.record import BILL_WINDOW_DAYS, reduce_bets
+
+Adapter = Callable[[dict], Optional[SettledBetV1]]
+
+# A bill settles once a month: read its source back over its own window (record.SLOW_SOURCE_WINDOWS).
+_BILL_SQL = ("SELECT bet_id, usage_point_id, origin, as_of, settled_at, coverage, {col}, bill_period_start "
+             "FROM prediction_bill_forecast WHERE settled_at >= CAST(:since AS timestamptz) - interval "
+             f"'{int(BILL_WINDOW_DAYS)} days' AND origin = 'live'")
+
+# (source name, SQL with :since, adapter). Each query is bounded by the window.
+SOURCES: tuple[tuple[str, str, Adapter], ...] = (
+    ("grammar_acts",
+     "SELECT act_id, actor, verb, object_ref, signal_id, predicted, opened_at, closed_at, outcome_value, outcome_source, "
+     "outcome_note FROM grammar_acts WHERE closed_at >= :since",
+     adapters.grammar_act),
+    ("prediction_turn_self_bet",
+     "SELECT bet_id, faculty, claim_kind, placed_at, settled_at, status, void_reason, stated_p, coverage "
+     "FROM prediction_turn_self_bet WHERE settled_at >= :since",
+     adapters.turn_self_bet),
+    ("prediction_turn_run",
+     "SELECT correlation_id, min(placed_at) AS placed_at, max(settled_at) AS settled_at, "
+     "bool_and(status = 'void' AND void_reason = 'failed_to_execute') AS failed "
+     "FROM prediction_turn_self_bet WHERE settled_at >= :since AND correlation_id IS NOT NULL "
+     # 'interrupted': stopped from outside (Juniper's stop, a GPU recall) -- no bet on whether
+     # the turn runs, so neither failed nor upheld.
+     "AND NOT (status = 'void' AND void_reason IN ('ungradeable_no_stated', 'ungradeable_bad_record', "
+     "'expired_unsettled', 'interrupted')) "
+     "GROUP BY correlation_id",
+     adapters.turn_run),
+    ("prediction_action_bet",
+     "SELECT bet_id, domain, skill, p, placed_at, settled_at, result FROM prediction_action_bet "
+     "WHERE settled_at >= :since",
+     adapters.action_bet),
+    ("prediction_forecast",
+     "SELECT forecast_id, series_id, role, issued_at, scored_at, in_80 FROM prediction_forecast "
+     # Family A's per-reading rows (series_id 'family_a:<reading>', ~23k a day over 41 readings) are not
+     # graded here yet: their consumer and grading are a later patch (app/family_a_live.py).
+     "WHERE scored_at >= :since AND role = 'champion' AND left(series_id, 9) <> 'family_a:'",
+     adapters.forecast),
+    ("vision_percept_expectation",
+     "SELECT expectation_id, emitted_at, scored_at, status, confidence FROM vision_percept_expectation "
+     "WHERE scored_at >= :since",
+     adapters.percept_expectation),
+    ("orion_ask",
+     "SELECT ask_id, source_kind, status, answer, answer_detail, evidence_refs, created_at, answered_at "
+     "FROM orion_ask WHERE answered_at >= :since AND status = 'answered' "
+     "AND source_kind IN ('vision_person_confirm', 'vision_same_individual')",
+     adapters.camera_ask),
+    ("prediction_bill_forecast_kwh", _BILL_SQL.format(col="kwh_in_80"), adapters.bill_kwh),
+    ("prediction_bill_forecast_usd", _BILL_SQL.format(col="usd_in_80"), adapters.bill_usd),
+)
+
+# The host keeps a missing faculty's held status only when one of its sources erred (it cannot tell
+# "no bets in the window" from "unread").
+SOURCE_NAMES: tuple[str, ...] = tuple(name for name, _, _ in SOURCES)
+
+
+def psycopg_sql(sql: str) -> str:
+    """The same text in psycopg's parameter style (the only parameter is ``:since``)."""
+    return sql.replace(":since", "%(since)s")
+
+
+def first_line(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {(str(exc).splitlines() or [''])[0][:160]}"
+
+
+def adapt_rows(name: str, rows: Iterable[Mapping], adapt: Adapter) -> tuple[list[SettledBetV1], Optional[str]]:
+    """Adapt one source's rows. Returns the bets and an error line when any row failed."""
+    bets: list[SettledBetV1] = []
+    bad, total, example = 0, 0, ""
+    for row in rows:
+        total += 1
+        try:
+            bet = adapt(dict(row))
+        except Exception as exc:  # noqa: BLE001 -- counted and named below
+            bad += 1
+            example = example or first_line(exc)
+            continue
+        if bet is not None:
+            bets.append(bet)
+    return bets, (f"{name}: adapter failed on {bad}/{total} rows, e.g. {example}" if bad else None)
+
+
+SourceResult = Union[Sequence[Mapping], BaseException]
+
+
+def build_state(results: Mapping[str, SourceResult], *, now: datetime, window_days: float,
+                extra_errors: Sequence[str] = ()) -> SelfMonitorStateV1:
+    """Rows (or the read error) per source name -> the window's candidate state, before hysteresis.
+    A source missing from ``results`` is named as unread."""
+    bets: list[SettledBetV1] = []
+    errors: list[str] = list(extra_errors)
+    for name, _, adapt in SOURCES:
+        result = results.get(name)
+        if result is None:
+            errors.append(f"{name}: not read")
+            continue
+        if isinstance(result, BaseException):
+            errors.append(f"{name}: {first_line(result)}")
+            continue
+        got, err = adapt_rows(name, result, adapt)
+        bets.extend(got)
+        if err:
+            errors.append(err)
+    faculties = reduce_bets(bets, now=now, window_days=window_days, ungradeable=UNGRADEABLE)
+    return SelfMonitorStateV1(computed_at=now, window_days=window_days, faculties=faculties, source_errors=errors)
+
+
+def erred_sources(state: SelfMonitorStateV1) -> set[str]:
+    """Source names named in ``source_errors`` (a ``engine:`` error means every source)."""
+    out: set[str] = set()
+    for err in state.source_errors:
+        head = err.split(":", 1)[0]
+        if head in SOURCE_NAMES:
+            out.add(head)
+        else:
+            out.update(SOURCE_NAMES)
+    return out
+
+
+__all__ = ["SOURCES", "SOURCE_NAMES", "adapt_rows", "build_state", "erred_sources", "first_line", "psycopg_sql"]

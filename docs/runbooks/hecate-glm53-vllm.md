@@ -179,12 +179,10 @@ SM70 and EXL3 available. `/health`, `/v1/models` and `/orion/server-info` agree.
 The strict model smoke remains useful and currently exits nonzero for formatting:
 
 ```bash
-python3 services/orion-vllm-host/evals/smoke_glm.py \
-  --url http://100.87.202.68:8021 \
-  --route qwen3-4b-instruct --expected-model qwen3-4b-instruct
-# Gateway equivalent (may wait for a normal pool lease):
-python3 services/orion-vllm-host/evals/smoke_glm.py \
-  --url http://127.0.0.1:8210 --route agent-deep --expected-model qwen3-4b-instruct
+# Takes a GPU pool operator hold on agent-deep and calls through the gateway (2026-11-12,
+# orion/evals/leased_llm.py). hecate's card must be lent; there is no direct-URL mode any more.
+ORION_BUS_URL=redis://<bus-host>:6379/0 PYTHONPATH=. \
+python3 services/orion-vllm-host/evals/smoke_glm.py --lane agent-deep --expected-model qwen3-4b-instruct
 ```
 
 Committed synthetic evidence lives at

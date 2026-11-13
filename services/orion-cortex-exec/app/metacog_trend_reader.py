@@ -100,10 +100,8 @@ def _get_engine():
         # statement_timeout set as a per-connection GUC via connect_args
         # (applies to every statement on every connection this engine hands
         # out), not a per-transaction `SET LOCAL` -- the two reader functions
-        # below each open their own short-lived `engine.connect()` (matching
-        # `latest_bus_synaptic_prediction_error(engine)`'s own signature/
-        # testing convention in orion/substrate/bus_synaptic_surprise.py
-        # rather than threading a shared Connection through both), so there
+        # below each open their own short-lived `engine.connect()` (rather
+        # than threading a shared Connection through both), so there
         # is no single transaction to attach a `SET LOCAL` to.
         _ENGINE = create_engine(
             url,

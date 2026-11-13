@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True)
+    # env_ignore_empty: an empty ORION_SITUATION_WEATHER_LAT= (the template default) means "unset",
+    # not a float that fails to parse and stops the service at boot.
+    model_config = SettingsConfigDict(extra="ignore", populate_by_name=True, env_ignore_empty=True)
 
     service_name: str = Field("orion-prediction", alias="SERVICE_NAME")
     service_version: str = Field("0.1.0", alias="SERVICE_VERSION")
@@ -32,6 +34,80 @@ class Settings(BaseSettings):
     select_interval_sec: float = Field(21600.0, gt=0, alias="PREDICTION_SELECT_INTERVAL_SEC")
     backtest_windows: int = Field(40, ge=12, le=200, alias="PREDICTION_BACKTEST_WINDOWS")
     backtest_step_min: int = Field(180, ge=5, alias="PREDICTION_BACKTEST_STEP_MIN")
+
+    # Forecast every contender model in the shadow and grade it live; the gate uses the live verdicts.
+    shadow_enabled: bool = Field(True, alias="PREDICTION_SHADOW_ENABLED")
+    # Champion ranges from recent live scores, scaled by the last hour's miss size (app/adaptive.py).
+    adaptive_intervals_enabled: bool = Field(True, alias="PREDICTION_ADAPTIVE_INTERVALS_ENABLED")
+    # Publish prediction.surprise.v1 on orion:prediction:surprise for each scored row that passes the
+    # issue-time gate (app/surprise.py event_gate). Kill switch for Orion's node:prediction.room/.body
+    # (substrate-runtime folds these events into them). Needs PREDICTION_PUBLISH_ENABLED too.
+    surprise_events_enabled: bool = Field(True, alias="PREDICTION_SURPRISE_EVENTS_ENABLED")
+
+    # World-model shadow for action bets: the exported TransitionModel weights (written by
+    # services/orion-world-model/scripts/train_transition.py --publish). Scored, stored, graded; never served.
+    world_model_shadow_enabled: bool = Field(True, alias="PREDICTION_WORLD_MODEL_SHADOW_ENABLED")
+    world_model_weights: str = Field("/models/transition.npz", alias="PREDICTION_WORLD_MODEL_WEIGHTS")
+
+    # Turn self-bets (app/turn_self_bets.py, unified-turn spec A3): settle stance's private bets about
+    # its own turn against the turn record, and grade them. false = no settle loop (/turn-self-bets still
+    # reads what was settled).
+    turn_self_bets_enabled: bool = Field(True, alias="PREDICTION_TURN_SELF_BETS_ENABLED")
+    turn_self_bets_settle_sec: float = Field(60.0, ge=5, alias="PREDICTION_TURN_SELF_BETS_SETTLE_SEC")
+    # Publish prediction.turn_surprise.v1 on orion:prediction:turn_surprise for each settled chat turn
+    # (app/turn_surprise.py). substrate-runtime folds it into node:prediction.chat_turn (successor of
+    # node:substrate.chat). false = kill switch: the node goes stale (absent), never calm.
+    turn_surprise_events_enabled: bool = Field(True, alias="PREDICTION_TURN_SURPRISE_EVENTS_ENABLED")
+
+    # Juniper reachable (app/reachable.py): an hourly forecast of "Juniper messages Orion in the next
+    # hour", settled against chat_message and graded vs a base rate. false = no issue/settle loop.
+    reachable_enabled: bool = Field(True, alias="PREDICTION_REACHABLE_ENABLED")
+
+    # Power-bill bet (app/bill_forecast.py): once a day, Orion's projection of the current RMP bill (kWh,
+    # pre-tax $) with an 80 % range, settled when the bill lands (energy_bill_actual). false = no loop.
+    bill_forecast_enabled: bool = Field(True, alias="PREDICTION_BILL_FORECAST_ENABLED")
+    bill_forecast_tick_sec: float = Field(900.0, ge=60, alias="PREDICTION_BILL_FORECAST_TICK_SEC")
+    # Same keys and values as orion-energy's (services/orion-energy/.env_example): the bill is priced and
+    # its cycle cut exactly as orion-energy does. tests/test_bill_forecast.py checks the defaults agree.
+    energy_tariff_path: str = Field("/app/config/energy/tariff.rmp_ut_sch1.2026-08-10.r3.yaml",
+                                    alias="ENERGY_TARIFF_PATH")
+    energy_timezone: str = Field("America/Denver", alias="ENERGY_TIMEZONE")
+    energy_billing_cycle_start_day: int = Field(18, ge=1, le=31, alias="ENERGY_BILLING_CYCLE_START_DAY")
+    energy_usage_point_id: str = Field("", alias="ENERGY_USAGE_POINT_ID")
+
+    # Family A (app/family_a_live.py): every raw body and room reading forecast at once, 5 and 15 min
+    # ahead, with the hygiene gate on every issue and one joint surprise per bucket
+    # (prediction_joint_surprise). Rides PREDICTION_TICK_SEC / _SETTLE_SEC / _SELECT_INTERVAL_SEC.
+    # false = no family A loop (the other forecasts are unaffected). No consumer reads it yet.
+    family_a_enabled: bool = Field(True, alias="PREDICTION_FAMILY_A_ENABLED")
+    family_a_config_path: str = Field("/app/config/prediction/family_a.v1.yaml", alias="PREDICTION_FAMILY_A_CONFIG_PATH")
+
+    # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
+    weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")
+    weather_refresh_sec: float = Field(3600.0, ge=300, alias="PREDICTION_WEATHER_REFRESH_SEC")
+    # Same keys and values as the situation layer's location (orion-hub's .env); empty = weather off.
+    weather_lat: float | None = Field(None, alias="ORION_SITUATION_WEATHER_LAT")
+    weather_lon: float | None = Field(None, alias="ORION_SITUATION_WEATHER_LON")
+
+    # --- switchback experiment runner (app/experiment_runner.py, POST /experiments/run) ---
+    # Performs vision.focus:<stream_id> experiments: holds orion:vision:experiment:<stream_id> = on
+    # (bus Redis, ORION_BUS_URL) during ON blocks. false = POST /experiments/run answers 503; the
+    # design/log/analyze endpoints still work for hand-run experiments. Never starts on boot.
+    experiment_runner_enabled: bool = Field(True, alias="PREDICTION_EXPERIMENT_RUNNER_ENABLED")
+    # The frame router's /healthz (per-stream dispatch tier counts = the manipulation check).
+    vision_router_url: str = Field("http://orion-vision-frame-router:8010", alias="PREDICTION_VISION_ROUTER_URL")
+    # TTL on the override key, refreshed every tick: a dead runner leaves focus on for at most this long.
+    experiment_override_ttl_sec: int = Field(90, ge=30, le=600, alias="PREDICTION_EXPERIMENT_OVERRIDE_TTL_SEC")
+    experiment_tick_sec: float = Field(30.0, ge=5, le=60, alias="PREDICTION_EXPERIMENT_TICK_SEC")
+    # Re-run the experiment guard (a forecast build) this often during a run, and before every ON block.
+    experiment_guard_every_sec: float = Field(300.0, ge=60, le=1800, alias="PREDICTION_EXPERIMENT_GUARD_EVERY_SEC")
+
+    @model_validator(mode="after")
+    def _ttl_covers_two_ticks(self) -> "Settings":
+        # The runner refreshes the focus key once per tick; a TTL under two ticks lets it lapse mid-block.
+        if self.experiment_override_ttl_sec < 2 * self.experiment_tick_sec:
+            raise ValueError("PREDICTION_EXPERIMENT_OVERRIDE_TTL_SEC must be >= 2 x PREDICTION_EXPERIMENT_TICK_SEC")
+        return self
 
 
 @lru_cache(maxsize=1)

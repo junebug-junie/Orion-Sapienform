@@ -83,6 +83,31 @@ cp .env_example .env
 | `RETINA_RTSP_HEAL_WINDOW_SECONDS` | `120.0` | Corruption must persist this long before a heal |
 | `RETINA_RTSP_HEAL_MIN_SHARE` | `0.8` | Share of checks in the window that must be corrupt |
 
+### Office camera instance, cam0 (2026-11-04)
+
+`orion-vision-retina-office` (profile `office`) captures the indoor Reolink in the
+room where Juniper works, as stream/camera id `cam0`. It reads the camera's
+2560x1920 main stream (`OFFICE_RTSP_URL`) at `OFFICE_RETINA_FPS` (2), the same
+size and rate as the walkway. Before this, `orion-vision-edge` captured cam0
+from the 640x480 substream and opened the main stream only for one still per
+face check. The edge no longer captures anything.
+
+Downstream, cam0 now gets what the walkway gets: person crops with body and
+face vectors (`config/vision_frame_router.yaml` `streams.cam0`, the whole-frame
+`office` zone in `config/vision_zones.yaml`), individuals and naming asks
+(orion-sql-writer), activity captions from the Qwen lane, and the "who is
+around" summary in Orion's situation brief.
+
+First start (once; afterwards the post-pull rebuild re-ups it):
+
+```bash
+scripts/safe_docker_build.sh orion-vision-retina --profile office up -d --build orion-vision-retina-office
+```
+
+Live check: `curl -fsS http://127.0.0.1:8030/health` shows frames published,
+and `ls -t /mnt/telemetry/vision/frames | grep -m3 '^cam0_cam0'` shows new
+frames.
+
 ### Ring doorbell source (2026-10-17)
 
 `RETINA_SOURCE_TYPE=ring` (`app/ring_source.py`), deployed as
@@ -169,7 +194,35 @@ source checks for the token every 60 s, so no restart is needed after login.
 The push link is supervised every 60 s: firebase-messaging stops for good
 after 3 connection errors, and ring_doorbell refreshes its session only once.
 A stopped listener shows as `last_error = "ring push listener stopped"` and is
-rebuilt, and the whole connection is rebuilt every 12 h. Each live view is
+rebuilt, and the whole connection is rebuilt every 12 h. 3 dead listeners in a row,
+or 3 push messages in a row that could not be decoded, set `ring_deaf`
+(health `degraded`; also `ring_consecutive_listener_deaths`,
+`ring_listener_restarts`, `ring_push_messages_skipped`).
+
+**Deaf doorbell, 2026-10-28 21:15 UTC .. 2026-11-03 (fixed).** FCM began
+sending each push's `crypto-key`/`encryption` headers without base64 padding.
+firebase-messaging 0.4.5 decodes them strictly, raised
+`binascii.Error: Incorrect padding`, and shut its client down before
+acknowledging the message, so the same message came back on every reconnect:
+~1,440 dead listeners a day, 0 Ring events, 0 doorbell crops outside
+self-looks, health `ok`. `ring_source.ensure_fcm_push_tolerance()` (applied
+before every listener start) pads both headers, and a message that still
+cannot be handled is logged, counted (`ring_push_messages_skipped`,
+`ring_push_last_skip_error`) and acknowledged instead of killing the
+listener. **Second stage, 2026-11-03 23:48 .. 11-04 (fixed).** With only the padding
+fix deployed, every push was skipped with `ValueError: Invalid EC key`
+(health correctly `degraded`, `ring_deaf`). FCM's `crypto-key` header is
+`dh=<key>;p256ecdsa=<VAPID key>`; the library strips `dh=` and decodes the
+rest as one value. While FCM padded the key the decoder stopped at its `=`;
+unpadded it ran on into `p256ecdsa` and produced 137 bytes instead of a
+65-byte key. `ring_source._header_param` now takes only the `dh` (and
+`salt`) parameter, in any order, `;`- or `,`-separated. A skip line now
+also prints the header layout (parameter names and value lengths, never
+values), e.g. `headers crypto-key=[dh:87 p256ecdsa:87] encryption=[salt:22]`.
+Live check after a restart: `ring_events_seen` grows,
+`ring_push_messages_skipped` stays 0, and
+`docker logs orion-vision-retina-doorbell 2>&1 | grep -cE "Incorrect padding|Invalid EC key"`
+stops growing. Each live view is
 registered with Ring before it starts, so every exit path (no answer, error,
 shutdown) closes it -- an orphaned session keeps a battery camera streaming.
 

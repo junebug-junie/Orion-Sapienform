@@ -93,8 +93,18 @@ def test_dream_hypothesis_and_episode_copy_no_prose():
 
 
 def test_action_outcome_verdict_words():
-    assert S.action_outcome({"id": 1, "observed_at": T, "claim_upheld": None}).verdict == "claim_upheld=null"
-    assert S.action_outcome({"id": 2, "observed_at": T, "claim_upheld": False}).verdict == "claim_upheld=false"
+    assert S.action_outcome({"id": 1, "observed_at": T, "claim_upheld": None,
+                             "dispatch_kind": "act:make"}).verdict == "claim_upheld=null"
+    assert S.action_outcome({"id": 2, "observed_at": T, "claim_upheld": False,
+                             "dispatch_kind": "self_regulate"}).verdict == "claim_upheld=false"
+
+
+def test_action_outcome_reads_act_rows_only():
+    """Ladder retirement PR 6 (2026-11-07): the dispatch ladder's kinds stopped. The pure adapter drops
+    them too, so the replay over stored fixtures and the live SQL read the same events."""
+    for kind in ("summarize", "maintain", "inspect", None, ""):
+        assert S.action_outcome({"id": 3, "observed_at": T, "claim_upheld": True, "dispatch_kind": kind}) is None
+    assert S.action_outcome({"id": 4, "observed_at": T, "claim_upheld": True, "dispatch_kind": "act:look"})
 
 
 def test_event_ids_are_deterministic_and_validated():

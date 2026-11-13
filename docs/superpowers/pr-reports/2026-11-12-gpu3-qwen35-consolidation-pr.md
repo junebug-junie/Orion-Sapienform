@@ -60,6 +60,7 @@ PYTHONPATH=$PWD/services/orion-gpu-lane-controller:$PWD python3 -m pytest servic
 PYTHONPATH=$PWD/services/orion-cortex-exec:$PWD python3 -m pytest services/orion-cortex-exec/tests/test_metacog_route_profile.py: 3 passed
 python3 scripts/check_gpu_pool_config.py: PASS
 python3 scripts/check_circe_worker_refs.py: PASS
+python3 -m pytest tests/test_check_circe_worker_refs.py -q: 74 passed
 git diff --check: PASS
 ```
 
@@ -95,6 +96,9 @@ No production worker was restarted; live /health, /props, /slots, VRAM, and call
 - Finding: Post-pull does not rebuild the Atlas compose file; Athena's live gateway pin remains the old Qwen3 profile unless manually changed.
   - Fix: runbook orders Athena's env edit/pull first, retains the old fast profile as a transition alias, then requires explicit Circe worker restart and old-container removal.
   - Evidence: reviewer inspected the live post-pull helper and host env; no remaining material review findings.
+- Finding: CI's port-gate tests failed when the retired metacog hostnames were removed from the direct-address denylist.
+  - Fix: keep retired hostnames blocked even after their service is removed.
+  - Evidence: focused port-gate tests pass (74 passed); CI rerun pending.
 
 ## Restart required
 

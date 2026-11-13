@@ -81,6 +81,13 @@ it FIRST for a want that carries a ``consent_request`` (``consent_gate``). ``ref
 deferred, reason ``consent``, nothing priced or reserved. ``allow``: decided as any want, with the verdict
 stored on the decision. A want without a request never reaches the gate, so its decision is unchanged.
 
+Personality values (rev 4 Move 2, ``orion/physiology/personality_values.py``). ``decide(..., personality=term)``:
+the ``care`` arm multiplies the want's value by ``1 + 0.5 x care`` before the percentile and reads the family
+weight from ``ctx.weights`` (with source (c)); the ``holdback`` arm prices care 0 and reads
+``ctx.weights_holdback`` (without (c)). Both bind. The arm, care, endorsement, the rank and net WITHOUT care
+are appended to the decision's ``warnings`` as ``personality:...`` lines (``trace_warnings``). No term (flag
+off): decided exactly as before, with no ``personality:`` line.
+
 Pure apart from the ``ReservationBook`` it is handed (in-memory; durable-runs owns one).
 """
 
@@ -104,6 +111,7 @@ from orion.physiology.appetite import (
 )
 from orion.physiology.consent import ConsentRules, consent_verdict
 from orion.physiology.families import FamiliesConfig, FamilyConfig
+from orion.physiology.personality_values import ARM_HOLDBACK, PersonalityTerm, trace_warnings
 from orion.physiology.prime_charge import PrimeChargeRefusalV1, PrimeRegulationV1
 from orion.physiology.prime_charge import amount as prime_amount
 from orion.physiology.prime_charge import refusal_for as prime_refusal_for
@@ -306,6 +314,9 @@ class MarketContext:
     tier1_recent_use: Mapping[str, float] = field(default_factory=dict)
     lane_window_sec: float = 3600.0
     stale_after_sec: float = STALE_AFTER_SEC
+    # Personality values (rev 4): the family weights WITHOUT source (c), read by the holdback arm. None:
+    # the holdback arm reads ``weights`` (no (c) was computed, so both are the same).
+    weights_holdback: Optional[Mapping[str, FamilyWeight]] = None
 
 
 def tier1_reserved_share(acts: Sequence[ActRecord], families: FamiliesConfig, lane: str, capacity_slot_s: float,
@@ -443,7 +454,8 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
            now: datetime, *, reserve_at_open: bool = False,
            prime: Optional[PrimeRegulationV1] = None,
            prime_refusal: Optional[PrimeChargeRefusalV1] = None,
-           consent_rules: Optional[ConsentRules] = None) -> WantDecisionV1:
+           consent_rules: Optional[ConsentRules] = None,
+           personality: Optional[PersonalityTerm] = None) -> WantDecisionV1:
     """One shadow bid. Never raises on market data: every unknown is a named deferral or warning.
     ``prime``: a Prime regulate signal in force for this family, applied as a charge (module docstring).
     ``prime_refusal``: the organ refused ``prime``; the charge is then not applied, and ``why`` says so.
@@ -453,13 +465,14 @@ def decide(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext,
     if deferral is not None:
         return deferral
     return with_consent(decide_priced(want, state, ctx, book, now, reserve_at_open=reserve_at_open, prime=prime,
-                                      prime_refusal=prime_refusal), verdict)
+                                      prime_refusal=prime_refusal, personality=personality), verdict)
 
 
 def decide_priced(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketContext, book: ReservationBook,
                   now: datetime, *, reserve_at_open: bool = False,
                   prime: Optional[PrimeRegulationV1] = None,
-                  prime_refusal: Optional[PrimeChargeRefusalV1] = None) -> WantDecisionV1:
+                  prime_refusal: Optional[PrimeChargeRefusalV1] = None,
+                  personality: Optional[PersonalityTerm] = None) -> WantDecisionV1:
     """The pricing core, with NO consent gate. Only for a caller that has already run ``consent_gate`` for
     this want and got no deferral (the market process runs it once, before any read); it attaches the
     verdict with ``with_consent``. Everyone else calls ``decide``."""
@@ -508,10 +521,15 @@ def decide_priced(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketC
             warnings.append("salience_ignored:producer_intensity")
     else:
         inten, ibasis = want_intensity(h.intensity, want.salience)
-    rank, vbasis, _out = rank_value(app, inten, want.outcome_value, event=want.salience is not None)
+    holdback = personality is not None and personality.arm == ARM_HOLDBACK
+    care = personality.care if personality is not None and not holdback else 0.0
+    rank, vbasis, _out = rank_value(app, inten, want.outcome_value, event=want.salience is not None, care=care)
+    rank_no_care = rank if care <= 0.0 else rank_value(app, inten, want.outcome_value,
+                                                       event=want.salience is not None)[0]
     if want.value_rank is not None:
         warnings.append("value_rank_ignored:market_fills_it")
-    fw = ctx.weights.get(want.family)
+    weights = ctx.weights_holdback if holdback and ctx.weights_holdback is not None else ctx.weights
+    fw = weights.get(want.family)
     weight = fw.weight if fw is not None else cfg.prior_weight
     wbasis = fw.basis if fw is not None else "prior"
     value = weight * rank
@@ -710,6 +728,9 @@ def decide_priced(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketC
         parts[f"prime:{prime.direction}"] = prime_part
         charge += prime_part
     net = value - charge
+    if personality is not None:
+        warnings += trace_warnings(personality, rank=rank, rank_without_care=rank_no_care, net=net,
+                                   net_without_care=net - weight * (rank - rank_no_care))
     cost_frac = {k: round(v[0], 6) for k, v in items.items()}
     common = dict(intensity=round(inten, 6), value_rank=round(rank, 6), graded=app.graded, value_basis=vbasis,
                   family_weight=round(weight, 6), weight_basis=wbasis, prices_seen=prices_seen, cost_frac=cost_frac,
@@ -718,6 +739,8 @@ def decide_priced(want: WantV1, state: Optional[PhysiologyStateV1], ctx: MarketC
     hunger_s = f"hunger {h.unfunded_sec or 0:.0f} s ({h.basis}, tau {app.tau_sec:.0f} s {app.tau_basis})"
     if ibasis == "salience":
         hunger_s = f"event salience {inten:.2f} over {hunger_s}"
+    if care > 0.0:
+        hunger_s += f"; care {care:.2f} for tendency {personality.tendency_id}, rank {rank_no_care:.2f} without it"
     head = (f"{want.family}: weight {weight:.2f} ({wbasis}) x rank {rank:.2f} ({vbasis}; intensity {inten:.2f}, "
             f"{hunger_s}) - charge {charge:.3f} = net {net:+.3f}")
     if prime is not None and refused is not None:

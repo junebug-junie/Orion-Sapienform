@@ -46,11 +46,17 @@ def _enabled() -> bool:
     return os.environ.get("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "true").strip().lower() not in ("0", "false", "no", "off")
 
 
-def bid(want: WantV1, *, url: Optional[str] = None, timeout_sec: Optional[float] = None) -> Optional[WantDecisionV1]:
-    """The shadow decision, or None on ANY failure (the caller keeps its own gate)."""
+def bid(want: WantV1, *, url: Optional[str] = None, timeout_sec: Optional[float] = None,
+        object_text: Optional[str] = None) -> Optional[WantDecisionV1]:
+    """The shadow decision, or None on ANY failure (the caller keeps its own gate). ``object_text``: what the
+    want's object says (an outreach topic, a question), for the market's care term (personality rev 4,
+    ``orion.physiology.personality_values``); sent as a query parameter, never part of ``WantV1``."""
     if not _enabled():
         return None
     target = url or os.environ.get("ORION_PHYSIOLOGY_BID_URL") or DEFAULT_URL
+    text = " ".join(object_text.split())[:400] if isinstance(object_text, str) else ""
+    if text:
+        target = f"{target}{'&' if '?' in target else '?'}{urllib.parse.urlencode({'object_text': text})}"
     try:
         timeout = float(timeout_sec if timeout_sec is not None else os.environ.get("ORION_PHYSIOLOGY_BID_TIMEOUT_SEC", DEFAULT_TIMEOUT_SEC))
     except ValueError:
@@ -111,10 +117,11 @@ async def arelease(want_id: str, *, url: Optional[str] = None, timeout_sec: Opti
         return None
 
 
-async def abid(want: WantV1, *, url: Optional[str] = None, timeout_sec: Optional[float] = None) -> Optional[WantDecisionV1]:
+async def abid(want: WantV1, *, url: Optional[str] = None, timeout_sec: Optional[float] = None,
+               object_text: Optional[str] = None) -> Optional[WantDecisionV1]:
     """``bid`` for async callers (runs in a worker thread; same None-on-failure rule)."""
     try:
-        return await asyncio.to_thread(bid, want, url=url, timeout_sec=timeout_sec)
+        return await asyncio.to_thread(bid, want, url=url, timeout_sec=timeout_sec, object_text=object_text)
     except Exception:  # noqa: BLE001 -- never fail a producer because the economy could not answer
         return None
 

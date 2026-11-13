@@ -30,7 +30,7 @@ class _Market:
         self.families, self.net, self.delay = FAMS, net, delay
         self.bids, self.released, self.opened = [], [], []
 
-    async def bid(self, want, now=None, *, reserve_at_open=False):
+    async def bid(self, want, now=None, *, reserve_at_open=False, object_text=None):
         if self.delay:
             await asyncio.sleep(self.delay)
         self.bids.append(want)

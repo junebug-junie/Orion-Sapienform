@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -523,12 +523,26 @@ def _build_market():
             kind=WANT_DECISION_KIND, source=source, correlation_id=uuid4(),
             payload=decision.model_dump(mode="json")))
 
+    # Personality rev 4 Move 2: source (c) + care, binding (PHYSIOLOGY_PERSONALITY_VALUES).
+    from app.personality_values import PersonalityValues
+
+    values_on = str(getattr(s, "physiology_personality_values", "off")).strip().lower() == "on"
+    embed = None
+    if values_on:
+        from app.personality_driver import http_embedder
+
+        embed, _close = http_embedder(s.personality_embed_url, timeout_sec=s.physiology_personality_embed_timeout_sec)
+    personality = PersonalityValues(enabled=values_on, pool_getter=lambda: _checkpointer_cm, embed=embed,
+                                    ttl_sec=max(60.0, float(s.physiology_bid_history_ttl_sec)),
+                                    embed_timeout_sec=s.physiology_personality_embed_timeout_sec)
+    logger.info("personality_values_configured enabled=%s embed_url=%s", values_on,
+                s.personality_embed_url if values_on else None)
     return Market(families=families, families_error=err, pool_getter=lambda: _checkpointer_cm,
                   redis_getter=lambda: rpc_bus.redis if rpc_bus is not None else None, publish=publish,
                   history_ttl_sec=s.physiology_bid_history_ttl_sec, lane_window_sec=s.physiology_lane_window_sec,
                   stale_after_sec=s.physiology_bid_stale_after_sec,
                   prime_regulation=bool(getattr(s, "physiology_prime_regulation", False)),
-                  consent_rules=consent_rules, consent_error=consent_err)
+                  consent_rules=consent_rules, consent_error=consent_err, personality=personality)
 
 
 def _build_chronicle():
@@ -893,7 +907,7 @@ async def physiology_report(window: Optional[str] = "24h", sections: Optional[st
 
 
 @app.post("/physiology/bid")
-async def physiology_bid(want: dict):
+async def physiology_bid(want: dict, object_text: Optional[str] = Query(default=None, max_length=2000)):
     """Body economy Patch C1, SHADOW: one ``WantV1`` -> one ``WantDecisionV1`` (funded/deferred, lane,
     prices seen, net, binding constraint, displaced, retry_after, ``shadow=true``), priced against the
     latest physiology state and published to ``orion:physiology:want:decision`` (want_ledger). Callers
@@ -908,7 +922,9 @@ async def physiology_bid(want: dict):
         parsed = WantV1.model_validate(want)
     except ValidationError as exc:
         raise HTTPException(422, exc.errors(include_url=False, include_context=False)) from exc
-    decision = await market.bid(parsed)
+    # ``object_text`` (query, optional): what the want's object says (an outreach topic, ...), for the care
+    # term (personality rev 4). Not part of WantV1. Absent: care 0.
+    decision = await market.bid(parsed, object_text=object_text)
     return decision.model_dump(mode="json")
 
 

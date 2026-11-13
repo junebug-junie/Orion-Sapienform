@@ -44,7 +44,7 @@ class _Market:
         self.bids, self.opened, self.released = [], [], []
         self.delay, self.fail = delay, fail
 
-    async def bid(self, want, *, reserve_at_open=False):
+    async def bid(self, want, *, reserve_at_open=False, object_text=None):
         assert reserve_at_open is True       # durable runs reserve from the open, not the decision
         if self.delay:
             await asyncio.sleep(self.delay)

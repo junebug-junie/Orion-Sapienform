@@ -58,8 +58,9 @@ closes 0 at once with ``refused by curiosity.replica: <reason>`` (still the trea
 regulate act's note names a refusal of its signal (the market's record already shows the charge did nothing).
 
 Juniper first: a Juniper turn through run_mind (engine.carries_live_turn) is tracked by JUNIPER_TURNS.
-Today ``mind_run`` calls the synchronous run_mind on the event loop, so no tick runs during a turn at
-all; ``JUNIPER_TURNS.active()`` keeps that true if run_mind ever moves off the loop. What does the
+Since 2026-11-13 ``mind_run`` runs the synchronous run_mind in a worker thread (it used to freeze the
+event loop, and every tick with it), so ticks DO run during a turn; ``JUNIPER_TURNS.active()`` keeps
+Prime from bidding while one is live. What does the
 work today: a thought whose model call (in a worker thread) overlapped a turn is recorded ``preempted``
 and discarded, and the pool ranks Juniper's turn (interactive) ahead of both Prime routes (system,
 starved), so a Prime call does not START while Juniper's call waits for the slot. A call already

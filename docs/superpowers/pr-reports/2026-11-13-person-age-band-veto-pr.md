@@ -65,7 +65,23 @@ check_migration_required_by --base origin/main -> OK; env template parity PASS; 
 
 ## Evals run
 
-Full both-arm eval (`run_person_recognition_eval.py --live`, read-only, no `--write`) is running on the final code; numbers will be added here when it finishes (~100 min).
+`run_person_recognition_eval.py --live` on the final code (read-only, no `--write`; 06:13 -> 08:20 UTC), both arms in one pass:
+
+```text
+                         veto off   veto on
+held-out clusters           200       200
+no album                     24        24
+unsure guesses              176       176
+  ...naming the right person  77        80   (+3)
+correct / wrong accepts     0 / 0     0 / 0
+street accepts                0         0
+clusters with a confident band 81 (office exempt); clusters struck 81
+wrong top guesses struck 8; right top guesses struck 0
+wrong -> right 3; right -> wrong 0; all candidates struck 0
+gate_passed: true (0 wrong accepts in both arms; unsure_right_not_lower: true)
+```
+
+The gate itself cannot move yet: no accept bar is armed (expected ~12-08). The measurable gain is in the top guesses that feed "Is this X?" asks.
 
 ## Docker/build/smoke checks
 
@@ -80,7 +96,14 @@ top guess changed by the veto: 41; clusters left with no guess: 0
 ```
 
 So the first person-model cycle after deploy (every `VISION_PERSON_MODEL_INTERVAL_SEC` = 600 s) should write non-null `age_veto` rows. Post-deploy check:
-`docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "SELECT count(*) FROM vision_person_attribution WHERE revoked_at IS NULL AND age_veto IS NOT NULL"` (expect > 0 within ~10 min), and the sql-writer log summary keys `person_age_vetoes`, `person_age_veto_all_struck`. UNVERIFIED until deployed.
+`docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc "SELECT count(*) FROM vision_person_attribution WHERE revoked_at IS NULL AND age_veto IS NOT NULL"` (expect > 0 within ~10 min), and the sql-writer log summary keys `person_age_vetoes`, `person_age_veto_all_struck`. 
+
+**Live, after merge (#3300 merged 06:49 UTC; sql-writer restarted 06:55 UTC by the post-pull rebuild):** VERIFIED.
+- `vision_person_attribution` has 374 live rows with `age_veto` set: walkway 292, doorbell 82, office 0.
+- That matches the dry run exactly.
+- 0 revoked rows still carry a strike.
+- Each row holds only `{"rule": "age_band_v1", "struck": [...]}`.
+- The sql-writer cycle summary logs `person_age_vetoes: 374`.
 
 ## Review findings fixed
 
@@ -127,6 +150,6 @@ The post-pull rebuild auto-applies the migration first. If it does not, apply it
 
 ## PR link
 
-(this PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3300 (eval numbers and live check added after merge)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

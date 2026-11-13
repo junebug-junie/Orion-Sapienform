@@ -40,6 +40,8 @@ on:
       - "orion/consult/core.py"
       # The day letter as Prime's end-of-day turn (living Prime Part 3) orders through this contract.
       - "orion/schemas/orion_day.py"
+      # Prime's choice point publishes this contract (personality rev 4).
+      - "orion/schemas/personality.py"
       - ".github/workflows/orion-prime-tests.yml"
   push:
     branches: [main]
@@ -75,6 +77,8 @@ on:
       - "orion/consult/core.py"
       # The day letter as Prime's end-of-day turn (living Prime Part 3) orders through this contract.
       - "orion/schemas/orion_day.py"
+      # Prime's choice point publishes this contract (personality rev 4).
+      - "orion/schemas/personality.py"
       - ".github/workflows/orion-prime-tests.yml"
 
 permissions:

@@ -62,6 +62,7 @@ def sess():
     Base.metadata.create_all(bind=engine, tables=[GrammarActSQL.__table__, GrammarEventSQL.__table__,
                                                   GrammarTraceSQL.__table__])
     s = sessionmaker(bind=engine)()
+    s.info["dsn"] = f"{uri}{'&' if '?' in uri else '?'}options=-csearch_path%3D{schema}"
     try:
         yield s
     finally:
@@ -193,3 +194,30 @@ def test_withdrawn_by_orion_is_expired_not_graded_and_the_backfill_opens_older_a
     assert (graded, withdrawn) == (1, 0)
     assert (old["outcome_value"], old["outcome_source"]) == (1.0, "resolver")
     assert old["opened_at"] == NOW - timedelta(days=3)
+
+
+def test_backfill_script_dry_run_reads_only_then_apply_opens_and_grades(sess, tmp_path):
+    """scripts/backfill_camera_ask_acts.py (CLAUDE.md section 14): dry run writes nothing to the database."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "backfill_camera_ask_acts", Path(__file__).resolve().parents[1] / "scripts" / "backfill_camera_ask_acts.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    _seed(sess)
+    job = tmp_path / "job"
+    assert mod.main(["--dsn", sess.info["dsn"], "--job-dir", str(job)]) == 0
+    dry = json.loads((job / "dry_run.json").read_text())
+    assert (dry["mode"], dry["targets"], dry["would_grade_1"], dry["stays_open"]) == ("dry_run", 4, 1, 3)
+    assert dry["by_rule"] == {"confirm": 2, "vehicle": 1, "same": 1}
+    assert (job / "snapshot.jsonl").read_text().count("\n") == 4
+    assert sess.execute(text("SELECT count(*) FROM grammar_acts")).scalar() == 0      # read only
+    assert mod.main(["--dsn", sess.info["dsn"], "--job-dir", str(job), "--apply"]) == 0
+    sess.commit()
+    assert sess.execute(text("SELECT count(*) FROM grammar_acts WHERE actor='vision.ask'")).scalar() == 4
+    assert (job / "report.md").exists() and (job / "before_after.csv").read_text().count("\n") == 5
+    assert "DELETE FROM grammar_acts" in (job / "report.md").read_text()
+    assert _act(sess, "ask-old")["outcome_value"] == 1.0
+    # A second run finds nothing to do.
+    assert mod.main(["--dsn", sess.info["dsn"], "--job-dir", str(tmp_path / "again")]) == 0
+    assert json.loads((tmp_path / "again" / "dry_run.json").read_text())["targets"] == 0

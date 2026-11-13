@@ -421,6 +421,7 @@ async def run(args: argparse.Namespace) -> int:
     total = len(episodes)
     done = skipped = errors = processed = 0
     started = time.monotonic()
+    work_sec = 0.0  # time spent in episodes only: queue waits for the hold are not ingest rate
     results = (OUT_DIR / "results.jsonl").open("a")
     await bus.connect()
     try:
@@ -455,6 +456,7 @@ async def run(args: argparse.Namespace) -> int:
                     with contextlib.suppress(Exception):
                         await graphiti.remove_episode(left)
                         row["partial_removed"] = True
+            work_sec += time.monotonic() - t0
             row.update(wall_sec=round(time.monotonic() - t0, 2),
                        lease_sec=round(hold.held_seconds() - held_before, 2), llm=stats.diff(before))
             results.write(json.dumps(row) + "\n")
@@ -467,7 +469,7 @@ async def run(args: argparse.Namespace) -> int:
             elif row.get("edges", 0) == 0:
                 anomalies = "no_edges"
             _log_progress(progress_line(done=done, total=total, skipped=skipped, errors=errors,
-                                        elapsed=time.monotonic() - started, processed=processed,
+                                        elapsed=work_sec, processed=processed,
                                         title=ep.name, anomalies=anomalies))
             if args.max_errors and errors >= args.max_errors:
                 _log_progress(f"stopping: {errors} errors reached --max-errors")

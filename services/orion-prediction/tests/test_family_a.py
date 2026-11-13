@@ -64,6 +64,18 @@ def test_hint_channel_id_is_refused():
         fa.parse_config(_doc(id="field.thermal_pressure"))
 
 
+def test_two_names_for_one_source_are_refused():
+    doc = _doc()
+    doc["inputs"].append({**doc["inputs"][0], "id": "x.other_name"})
+    with pytest.raises(fa.FamilyAConfigError, match="same source"):
+        fa.parse_config(doc)
+
+
+def test_hint_channel_cooling_role_is_refused():
+    with pytest.raises(fa.FamilyAConfigError, match="hint channel"):
+        fa.parse_config(_doc(source={"table": "cooling", "role": "cooling_pressure"}))
+
+
 def test_non_raw_table_is_refused():
     # The mood-arc corpus (pressure / hint channels) is not a raw-reading table.
     with pytest.raises(fa.FamilyAConfigError, match="raw-reading"):
@@ -182,6 +194,14 @@ def test_short_scoring_window_passes_a_coarse_healthy_series():
     fa.gate_named_inputs({"gpu.t": fa.TARGET}, f, _hyg(), bands={"gpu.t": [55.0, 65.0]})
 
 
+def test_quiet_day_of_an_event_like_covariate_does_not_refuse_the_run():
+    f = _frame({"light.raw": np.zeros(288)}, start=T0 + timedelta(minutes=20))
+    fa.gate_named_inputs({"light.raw": fa.COVARIATE}, f, _hyg(), bands={"light.raw": [0.0, 40.0]},
+                         floors={"light.raw": 0.0})
+    with pytest.raises(fa.HygieneRefused, match="one_value"):   # the same day on a TARGET is stuck
+        fa.gate_named_inputs({"light.raw": fa.TARGET}, f, _hyg(), bands={"light.raw": [0.0, 40.0]})
+
+
 def test_short_scoring_window_refuses_stuck_and_out_of_regime_inputs():
     f = _frame({"stuck.x": np.full(288, 3.0), "moved.x": 100 + np.random.default_rng(6).standard_normal(288)})
     with pytest.raises(fa.HygieneRefused) as exc:
@@ -192,13 +212,27 @@ def test_short_scoring_window_refuses_stuck_and_out_of_regime_inputs():
 
 # --- standardisation + features --------------------------------------------------------------------
 
-def test_standardiser_uses_training_rows_only_and_missing_stays_nan():
-    f = _frame({"a.x": np.r_[np.zeros(100) + 1.0, np.zeros(100) + 50.0]})
+def test_standardize_keeps_missing_as_nan():
+    f = _frame({"a.x": np.linspace(0, 1, 200)})
     f.iloc[150, 0] = np.nan
-    stats = fa.fit_standardizer(f.iloc[:100].assign(**{"a.x": f["a.x"].iloc[:100] + np.linspace(0, 1, 100)}))
-    assert stats["a.x"]["mean"] < 2.0          # the 50.0 rows (not training) never touched the statistics
-    z = fa.standardize(f, stats)
+    z = fa.standardize(f, fa.fit_standardizer(f))
     assert np.isnan(z[150, 0])
+
+
+def test_held_out_rows_never_touch_any_training_decision():
+    # Shift ONLY the held-out origin rows by +1000: standardisation, alphas, fit residuals and the
+    # conformal calibration residuals must be bit-identical. Any leak (stats over all rows, features or
+    # targets reaching into held rows across the purge) changes them.
+    f = _lead_lag_frame(3, coupled=True)
+    tr, he = fa.blocked_split(len(f), 3, seed=0)
+    g = f.copy()
+    g.iloc[he] = g.iloc[he] + 1000.0
+    a = fa.run_horizon(f, ["s.x", "s.y"], ["s.x", "s.y"], 3, 5, seed=0)
+    b = fa.run_horizon(g, ["s.x", "s.y"], ["s.x", "s.y"], 3, 5, seed=0)
+    assert a.alphas == b.alphas
+    assert np.array_equal(a.resid_fit, b.resid_fit, equal_nan=True)
+    assert np.array_equal(a.resid_val, b.resid_val, equal_nan=True)
+    assert not np.array_equal(a.resid_held, b.resid_held, equal_nan=True)
 
 
 def test_missing_is_a_mask_channel_never_a_raw_zero():
@@ -250,13 +284,22 @@ def test_ridge_at_huge_alpha_is_the_ar_forecast():
     assert np.allclose(fit.predict(X), y.mean(), atol=1e-6)
 
 
-def test_split_is_purged_and_seeds_move_the_blocks():
+def _assert_purged(train: np.ndarray, held: np.ndarray, gap: int) -> None:
+    assert not set(train) & set(held)
+    for h in held:   # both directions: train before held AND held before train
+        assert not np.any((np.abs(train - h) > 0) & (np.abs(train - h) < gap))
+
+
+def test_split_is_purged_both_ways_and_seeds_move_the_blocks():
     tr0, he0 = fa.blocked_split(2000, 3, seed=0)
     tr1, he1 = fa.blocked_split(2000, 3, seed=1)
-    assert not set(tr0) & set(he0)
     gap = fa.purge_rows(3)
-    for h in he0:
-        assert not any(0 < h - t <= gap - 1 for t in tr0[(tr0 < h) & (tr0 > h - gap)])
+    _assert_purged(tr0, he0, gap)
+    _assert_purged(tr1, he1, gap)
+    fit, val = fa.inner_split(np.sort(tr0), 3)
+    _assert_purged(fit, val, gap)
+    sub, sel = fa.inner_split(fit, 3)
+    _assert_purged(sub, sel, gap)
     assert set(he0) != set(he1)
 
 
@@ -302,6 +345,38 @@ def test_joint_excess_rests_at_zero_on_a_calibrated_model():
         assert rest["longest_hours_above_0_5"] <= 6
     assert abs(float(np.mean(means))) < 0.06
     assert covered >= 3     # a 95 % band on 4 independent histories
+
+
+def test_covariance_stays_positive_definite_under_blocky_missingness():
+    # On-demand machines and late sensors leave pairwise-complete blocks; the raw estimate is not PSD.
+    rng = np.random.default_rng(13)
+    n, m = 3000, 6
+    base = rng.standard_normal((n, 1))
+    r = base + 0.3 * rng.standard_normal((n, m))
+    r[:1000, 0] = np.nan
+    r[1000:2000, 1] = np.nan
+    r[2000:, 2] = np.nan
+    r[:1500, 3] = np.nan
+    r[1500:, 4] = -r[1500:, 4]
+    r[:, 5] = np.nan          # a target with no fit rows
+    cov, usable = fa.shrunk_covariance(r)
+    assert usable.tolist() == [True] * 5 + [False]
+    assert np.linalg.eigvalsh(cov[np.ix_(usable, usable)]).min() > 0
+    d2, _t, _s = fa.mahalanobis_tail(r[:, usable], cov[np.ix_(usable, usable)], 1)
+    assert np.nanmin(d2) >= 0
+
+
+def test_joint_surprise_counts_only_usable_targets():
+    # Regression (review): refused targets counted toward "half observed" and blanked the joint score.
+    f = _lead_lag_frame(14, coupled=True)
+    run = fa.run_horizon(f, ["s.x", "s.y"], ["s.x", "s.y"], 1, 5, seed=0)
+    nan = np.full((len(run.resid_fit), 2), np.nan)
+    run.targets = ["s.x", "s.y", "dead.a", "dead.b"]
+    run.resid_fit = np.c_[run.resid_fit, nan]
+    run.resid_val = np.c_[run.resid_val, np.full((len(run.resid_val), 2), np.nan)]
+    run.resid_held = np.c_[run.resid_held, np.full((len(run.resid_held), 2), np.nan)]
+    js = fa.joint_surprise(run)
+    assert np.isfinite(js.excess).sum() > 500
 
 
 def test_conformal_p_is_bounded_and_monotone():

@@ -21,7 +21,9 @@ hygiene:
   # Drop a series with fewer distinct values than this (after rounding to 6 significant digits).
   min_distinct: 50
   # Event-like: the most common value is the series' floor (its minimum, usually 0) and covers more
-  # than this share. Kept as a covariate (an input), never forecast as a target.
+  # than this share. Kept as a covariate (an input), never forecast as a target. So event-like means a
+  # floor share in (0.50, 0.85]; above max_mode_share the spec's drop rule wins and it is refused. At
+  # scoring time a quiet day resting on that floor is not "stuck" for an event-like covariate.
   event_mode_share: 0.50
   # Can return to rest: at least this share of whole days touch the window's central 80 % band,
   # and the daily medians are not a monotone drift (|Spearman rho| below max_drift_rho, >= 5 days).

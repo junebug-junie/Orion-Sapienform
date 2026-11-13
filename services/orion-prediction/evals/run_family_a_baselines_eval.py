@@ -74,7 +74,7 @@ def main() -> int:
     g = cfg.grain_min
     end = datetime.fromisoformat(args.end.replace("Z", "+00:00")) if args.end else datetime.now(timezone.utc)
     end = _floor(end.astimezone(timezone.utc), g)
-    start = end - timedelta(days=args.days)
+    start = _floor(end - timedelta(days=args.days), g)   # a fractional --days must stay on the bucket grid
     t0 = time.time()
     frame, last_seen = load_frame(uri, cfg.inputs, g, start, end)
     print(f"loaded {frame.shape[0]} buckets x {frame.shape[1]} inputs {start:%Y-%m-%d %H:%M}..{end:%Y-%m-%d %H:%M} "
@@ -131,6 +131,12 @@ def main() -> int:
             rest = fa.rest_summary(js.excess, train_frame.index[run.held], seed)
             per_t = fa.per_target_table(run, base, pick, g)
             wins.setdefault(h, []).append(cmp_["wins"])
+            if cmp_["p_paired_t"] is None or rest.get("n", 0) == 0:
+                print(f"| {h} min | {seed} | {cmp_['n']} | too few scored origins (rest n={rest.get('n', 0)}) |")
+                report["backtest"].append({"horizon_min": h, "seed": seed, "ridge_vs_best_baseline": cmp_,
+                                           "refused_targets": run.refused_targets, "per_target": per_t,
+                                           "joint_surprise_heldout": {"n": 0}})
+                continue
             print(f"| {h} min | {seed} | {cmp_['n']} | {lp:.4f} | {la:.4f} | {cmp_['loss_reference']:.4f} | "
                   f"{cmp_['loss_candidate']:.4f} | {cmp_['ratio']:.3f} | {cmp_['p_paired_t']:.2g} | "
                   f"{cmp_['p_block_bootstrap']:.2g} | {cmp_['wins']} | {ar_vs_p['p_paired_t']:.2g} |", flush=True)
@@ -161,6 +167,8 @@ def main() -> int:
     print("|---|---|---|---|---|---|---|---|---|")
     for b in report["backtest"]:
         j = b["joint_surprise_heldout"]
+        if not j.get("n"):
+            continue
         print(f"| {b['horizon_min']} min | {b['seed']} | {j['n']} | {j['n_cal']} | {j['mean_excess']:+.3f} | "
               f"[{j['mean_ci95'][0]:+.3f}, {j['mean_ci95'][1]:+.3f}] | {j['share_p_le_0_05']:.3f} | "
               f"{j['share_hours_at_rest']:.2f} ({j['null_share_hours_at_rest']:.2f}) | {j['longest_hours_above_0_5']} |")
@@ -171,7 +179,8 @@ def main() -> int:
     report["live"] = {}
     try:
         bands = {k: verdicts[k].stats["band"] for k in named}
-        fa.gate_named_inputs(named, live_frame, cfg.hygiene, last_seen, end, bands=bands)
+        floors = {k: verdicts[k].stats["min"] for k in named}
+        fa.gate_named_inputs(named, live_frame, cfg.hygiene, last_seen, end, bands=bands, floors=floors)
         gate = "pass"
     except fa.HygieneRefused as exc:
         gate = exc.refusals
@@ -188,6 +197,10 @@ def main() -> int:
             run = fa.run_horizon(frame, targets, inputs, k, g, 0, train_idx=train_idx, held_idx=held_idx)
             js = fa.joint_surprise(run)
             rest = fa.rest_summary(js.excess, frame.index[held_idx], 0)
+            if rest.get("n", 0) == 0:
+                print(f"| {h} min | 0 | {js.n_cal} | no scored origins |")
+                report["live"][str(h)] = {"n": 0}
+                continue
             spikes = fa.top_spikes(js, frame.index[held_idx], run.targets)
             share = float(np.nanmean(js.p <= 0.05))
             report["live"][str(h)] = {"n_cal": js.n_cal, "calm_point": js.calm, "share_p_le_0_05": share,
@@ -197,7 +210,7 @@ def main() -> int:
                   f"{rest['share_hours_at_rest']:.2f} ({rest['null_share_hours_at_rest']:.2f}) | "
                   f"{rest['hourly_min']:+.2f}..{rest['hourly_max']:+.2f} | "
                   f"{rest['longest_hours_above_0_5']} |")
-        for h in cfg.horizons_min:
+        for h in [h for h in cfg.horizons_min if report["live"][str(h)].get("n")]:
             print(f"\nTop joint misses, {h} min (readings carrying most of each; a hint, not a cause):")
             for s in report["live"][str(h)]["top_spikes"]:
                 carried = ", ".join(f"{c['target']} {c['share']:.0%}" for c in s["carried_by"])

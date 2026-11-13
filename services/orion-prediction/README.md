@@ -388,17 +388,19 @@ publishes nothing: no table, no bus event, no substrate node.
   (`orion/mood_arc/fit_encoder.py`), 5 blocks, purged by lag + lead, >= 2 seeds that move the block
   edges. A win needs the overlap-aware paired t (`backtest.paired_gap`) AND a 2-hour block bootstrap both
   at p < 0.05, against the better baseline per target.
-- **Joint surprise** (eval output only): ridge residuals whitened by their own covariance (Mahalanobis
-  d^2 on the observed readings, chi-square tail), then a conformal p against held calibration rows.
+- **Joint surprise** (eval output only): ridge residuals whitened by their own covariance (shrunk,
+  eigen-clipped to stay positive definite; Mahalanobis
+  d^2 on the observed readings, chi-square tail), then a conformal p against calibration rows that chose nothing (the ridge penalty is picked on a
+  second split of the fit rows).
   surprisal = -ln p; calm point = E[-ln p] of a uniform conformal p (-> 1.0); excess rests at 0 by theory.
   One event moving four coupled readings scores about one miss, not four. The eval also names the
   readings that carry each big miss (a hint, not a cause).
 
 Live, 2026-10-30..11-13 (14 days, 3 seeds): 41 targets, 1 covariate (cabinet light), refused hecate watts
 (98.6 % one value), office TVOC (duplicate of eCO2), office sound dBA (only 38 % present: starts 11-07).
-`ridge_var` beats the best baseline at every seed: 5 min loss x0.94, 15 min x0.96 (paired t p <= 0.003,
-bootstrap p 0.0005). The joint excess on the last 24 h (model trained before it) reads -0.08 (5 min) and
--0.19 (15 min), both 95 % intervals contain 0. Only 9 days hold every target (closet, PM and lux sensors
+`ridge_var` beats the best baseline at every seed: 5 min loss x0.94-0.96, 15 min x0.96-0.98 (paired t
+p <= 0.005, bootstrap p <= 0.001). The joint excess on the last 24 h (model trained before it) reads -0.03
+(5 min) and -0.18 (15 min), both 95 % intervals contain 0. Only 9 days hold every target (closet, PM and lux sensors
 started 11-05), so no neural rung yet: the spec asks for 21 days (2026-11-26 at the earliest).
 
 ## Contracts

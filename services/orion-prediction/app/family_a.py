@@ -41,7 +41,8 @@ import pandas as pd
 
 RAW_TABLES = ("biometrics", "cluster", "cooling", "office_env", "closet_env")
 # Hint channels are never inputs (spec: the mood-arc encoder's main failure). Matched on id and key.
-HINT_PATTERN = re.compile(r"pressures?$|prediction_error|action_warrant|surprise|salience|_hint\b|warrant")
+HINT_PATTERN = re.compile(r"pressures?$|prediction_error|action_warrant|surprise|salience|hint|warrant|headroom|"
+                          r"composite|anomaly|_score")
 _ID = re.compile(r"^[a-z0-9_-]+(\.[a-z0-9_]+)+$")
 _KEY = re.compile(r"^[a-z0-9_]{1,40}$")
 _NODE = re.compile(r"^[a-z0-9_-]{1,40}$")
@@ -108,8 +109,8 @@ def _source(raw: Mapping, iid: str) -> InputSource:
     if table not in RAW_TABLES:
         raise FamilyAConfigError(f"{iid}: source table {table!r} is not a raw-reading table {RAW_TABLES}")
     if table == "cooling":
-        if not raw.get("role") or not _KEY.match(str(raw["role"])):
-            raise FamilyAConfigError(f"{iid}: cooling source needs a [a-z0-9_] role")
+        if not raw.get("role") or not _KEY.match(str(raw["role"])) or HINT_PATTERN.search(str(raw["role"])):
+            raise FamilyAConfigError(f"{iid}: cooling source needs a [a-z0-9_] role (not a hint channel)")
         return InputSource(table=table, role=str(raw["role"]))
     node, key = raw.get("node"), raw.get("key")
     if not node or not _NODE.match(str(node)) or not key or not _KEY.match(str(key)):
@@ -135,6 +136,7 @@ def parse_config(doc: Mapping) -> FamilyAConfig:
     except KeyError as exc:
         raise FamilyAConfigError(f"hygiene.{exc.args[0]} is required (thresholds are fixed in config)") from exc
     inputs, seen = [], set()
+    sources: dict[InputSource, str] = {}
     for raw in doc.get("inputs") or ():
         iid = str(raw.get("id", ""))
         if not _ID.match(iid):
@@ -144,7 +146,11 @@ def parse_config(doc: Mapping) -> FamilyAConfig:
         if iid in seen:
             raise FamilyAConfigError(f"duplicate input id {iid}")
         seen.add(iid)
-        inputs.append(InputSpec(id=iid, unit=str(raw.get("unit", "")), source=_source(raw.get("source") or {}, iid)))
+        src = _source(raw.get("source") or {}, iid)
+        if src in sources:
+            raise FamilyAConfigError(f"{iid}: same source as {sources[src]} (one reading, two names)")
+        sources[src] = iid
+        inputs.append(InputSpec(id=iid, unit=str(raw.get("unit", "")), source=src))
     if not inputs:
         raise FamilyAConfigError("no inputs")
     return FamilyAConfig(grain_min=grain, horizons_min=horizons, hygiene=hyg, inputs=tuple(inputs))
@@ -196,6 +202,7 @@ def screen_series(values: pd.Series, hyg: Hygiene, series_id: str = "") -> Serie
     # are not a one-way drift (a decay-to-zero or a counter fails here even while it keeps moving).
     lo, hi = np.quantile(x, [0.10, 0.90])
     stats["band"] = [float(lo), float(hi)]
+    stats["min"] = float(x.min())
     full_days, rest_share, rho = _rest_shape(values, lo, hi)
     stats.update(n_days=len(full_days), rest_day_share=round(rest_share, 4), drift_rho=round(rho, 4))
     if not full_days or rest_share < hyg.min_rest_day_share:
@@ -244,7 +251,7 @@ def screen_frame(frame: pd.DataFrame, hyg: Hygiene) -> dict[str, SeriesVerdict]:
         v = out[c]
         if v.status == REFUSED:
             continue
-        dup = next((k for k in kept if abs(float(frame[c].corr(frame[k], min_periods=50) or 0.0))
+        dup = next((k for k in kept if abs(float(np.nan_to_num(frame[c].corr(frame[k], min_periods=50))))
                     > hyg.max_duplicate_corr), None)
         if dup is not None:
             out[c] = SeriesVerdict(c, REFUSED, (f"duplicate_of:{dup}",), v.stats)
@@ -261,9 +268,14 @@ def stale_inputs(last_seen: Mapping[str, datetime | None], now: datetime, max_st
     return sorted(out)
 
 
-def _short_window_reasons(values: pd.Series, hyg: Hygiene, band: Sequence[float] | None) -> list[str]:
+def _short_window_reasons(values: pd.Series, hyg: Hygiene, band: Sequence[float] | None,
+                          status: str = TARGET, floor: float | None = None) -> list[str]:
     """Run-time checks for a scoring window shorter than FULL_SCREEN_MIN_DAYS: present, not stuck on one
-    value, and still inside the regime it was trained on (touches the TRAINING central 80 % band)."""
+    value, and still inside the regime it was trained on (touches the TRAINING central 80 % band).
+
+    An event-like covariate whose most common value is its training floor (``floor``) may sit there all
+    day -- a quiet day is its rest state, not a stuck sensor -- so ``one_value`` and the band check do
+    not apply to it; ``absent`` and stale still do."""
     v = values.to_numpy(dtype=float)
     present = np.isfinite(v)
     if not len(v) or present.mean() < hyg.min_present or present.sum() < 2:
@@ -271,6 +283,9 @@ def _short_window_reasons(values: pd.Series, hyg: Hygiene, band: Sequence[float]
     x = v[present]
     _u, counts = np.unique(np.array([float(f"{a:.6g}") for a in x]), return_counts=True)
     out = []
+    if status == COVARIATE and floor is not None and float(np.min(x)) >= floor - 1e-9 and \
+            float(_u[int(np.argmax(counts))]) <= floor + 1e-9:
+        return out
     if counts.max() / len(x) > hyg.max_mode_share:
         out.append("one_value")
     if band is not None and not bool(((x >= band[0]) & (x <= band[1])).any()):
@@ -280,13 +295,15 @@ def _short_window_reasons(values: pd.Series, hyg: Hygiene, band: Sequence[float]
 
 def gate_named_inputs(named: Mapping[str, str], frame: pd.DataFrame, hyg: Hygiene,
                       last_seen: Mapping[str, datetime | None] | None = None, now: datetime | None = None,
-                      bands: Mapping[str, Sequence[float]] | None = None) -> None:
+                      bands: Mapping[str, Sequence[float]] | None = None,
+                      floors: Mapping[str, float] | None = None) -> None:
     """Refuse (raise ``HygieneRefused``) unless every named input still passes, in the same role.
 
     ``named`` maps input id -> status in the manifest (target / covariate). Windows of at least
     FULL_SCREEN_MIN_DAYS get the full screen: an input now refused, or a named target that turned
     event-like, refuses the run. Shorter (scoring) windows get ``_short_window_reasons`` against the
-    training band in ``bands`` (manifest ``stats.band``). Any input missing from the frame, or stale,
+    training band in ``bands`` (manifest ``stats.band``; ``floors`` = ``stats.min`` for event-like
+    covariates). Any input missing from the frame, or stale,
     refuses either way.
     """
     span_days = (len(frame) * _grain_min(frame.index)) / 1440.0
@@ -296,7 +313,8 @@ def gate_named_inputs(named: Mapping[str, str], frame: pd.DataFrame, hyg: Hygien
             refusals[iid] = ["not_loaded"]
             continue
         if span_days < FULL_SCREEN_MIN_DAYS:
-            reasons = _short_window_reasons(frame[iid], hyg, (bands or {}).get(iid))
+            reasons = _short_window_reasons(frame[iid], hyg, (bands or {}).get(iid), status,
+                                            (floors or {}).get(iid))
             if reasons:
                 refusals[iid] = reasons
             continue
@@ -346,7 +364,8 @@ N_BLOCKS = 5
 
 
 def purge_rows(horizon_steps: int) -> int:
-    """Embargo between train and held-out origins: the longest feature lag plus the lead."""
+    """Embargo between train and held-out origins: the longest feature lag (VAR 12 or AR 5, summed here
+    -- more than needed, on purpose) plus the lead."""
     return max(VAR_LAGS) + max(AR_LAGS - 1, 0) + horizon_steps
 
 
@@ -440,13 +459,17 @@ def ridge_path(X: np.ndarray, y: np.ndarray, alphas: Sequence[float] = ALPHAS) -
     return fits
 
 
-def fit_ridge_selected(X: np.ndarray, y: np.ndarray, fit_rows: np.ndarray, val_rows: np.ndarray) -> RidgeFit:
-    """Fit on ``fit_rows`` for every alpha; keep the alpha with the lowest validation squared error."""
-    path = ridge_path(X[fit_rows], y[fit_rows])
-    if len(val_rows) == 0:
-        return path[len(path) // 2]
-    losses = [float(np.mean((f.predict(X[val_rows]) - y[val_rows]) ** 2)) for f in path]
-    return path[int(np.argmin(losses))]
+def fit_ridge_selected(X: np.ndarray, y: np.ndarray, sub_rows: np.ndarray, sel_rows: np.ndarray,
+                       fit_rows: np.ndarray) -> RidgeFit:
+    """Choose alpha by fitting on ``sub_rows`` and scoring on ``sel_rows`` (both inside ``fit_rows``), then
+    refit on all of ``fit_rows`` with that alpha. Rows outside ``fit_rows`` (conformal calibration,
+    held-out) never influence the choice."""
+    alpha = ALPHAS[len(ALPHAS) // 2]
+    if len(sub_rows) >= 2 and len(sel_rows):
+        path = ridge_path(X[sub_rows], y[sub_rows])
+        losses = [float(np.mean((f.predict(X[sel_rows]) - y[sel_rows]) ** 2)) for f in path]
+        alpha = path[int(np.argmin(losses))].alpha
+    return ridge_path(X[fit_rows], y[fit_rows], alphas=(alpha,))[0]
 
 
 # --- backtest ------------------------------------------------------------------------------------
@@ -482,7 +505,9 @@ def run_horizon(frame: pd.DataFrame, targets: Sequence[str], inputs: Sequence[st
     stats = fit_standardizer(frame.iloc[np.sort(train_idx)][list(inputs)])
     z_all = standardize(frame[list(inputs)], stats)
     X = var_features(z_all, frame.index)
+    # fit rows (model) | validation rows (conformal calibration only); fit rows split again for alpha.
     fit_rows, val_rows = inner_split(np.sort(train_idx), horizon_steps)
+    sub_rows, sel_rows = inner_split(fit_rows, horizon_steps)
     k = horizon_steps
     m = len(targets)
     sq = {name: np.full((len(held_idx), m), np.nan) for name in ("persistence", "ar", "ridge_var")}
@@ -497,17 +522,18 @@ def run_horizon(frame: pd.DataFrame, targets: Sequence[str], inputs: Sequence[st
         y = deltas(z, k)
         A = ar_features(z)
         ok_ar = np.isfinite(A).all(axis=1) & np.isfinite(y)
-        f_ar, v_ar = fit_rows[ok_ar[fit_rows]], val_rows[ok_ar[val_rows]]
+        f_ar = fit_rows[ok_ar[fit_rows]]
+        s_ar, e_ar = sub_rows[ok_ar[sub_rows]], sel_rows[ok_ar[sel_rows]]
         if len(f_ar) < MIN_FIT_ROWS:
             refused[t] = f"fit_rows={len(f_ar)} < {MIN_FIT_ROWS}"
             continue
-        ar = fit_ridge_selected(A, y, f_ar, v_ar)
+        ar = fit_ridge_selected(A, y, s_ar, e_ar, f_ar)
         # ridge_var is nested on AR: the AR forecast plus a ridge on every input's lags fitted to what AR
         # missed. At a large alpha it IS the AR forecast, so the rung above can only win by what the
         # other readings add -- the ladder's "keep a rung only if it beats the one below".
         ar_pred = np.full(n, np.nan)
         ar_pred[ok_ar] = ar.predict(A[ok_ar])
-        rv = fit_ridge_selected(X, y - np.where(ok_ar, ar_pred, 0.0), f_ar, v_ar)
+        rv = fit_ridge_selected(X, y - np.where(ok_ar, ar_pred, 0.0), s_ar, e_ar, f_ar)
         alphas[t] = {"ar": ar.alpha, "ridge_var": rv.alpha}
 
         def rv_pred(rows: np.ndarray) -> np.ndarray:
@@ -633,13 +659,28 @@ def calm_point(n_cal: int) -> float:
     return math.log(m) - math.lgamma(m + 1) / m
 
 
-def shrunk_covariance(resid: np.ndarray, shrink: float = SHRINK) -> np.ndarray:
-    """Pairwise-complete residual covariance, shrunk toward its diagonal so it inverts."""
+EIG_FLOOR = 1e-3   # x mean variance: the smallest eigenvalue the whitening may divide by
+
+
+def shrunk_covariance(resid: np.ndarray, shrink: float = SHRINK) -> tuple[np.ndarray, np.ndarray]:
+    """(cov, usable): pairwise-complete residual covariance, shrunk toward its diagonal, then
+    eigen-clipped so it is positive definite. Pairwise-complete estimates under blocky missingness are
+    not PSD on their own (min eigenvalue -0.20 seen in review), and a negative direction would make d^2
+    negative and read as calm. ``usable`` marks targets with a finite, positive variance from >= 10 fit
+    rows; the rest are left out of the joint score (never given a tiny variance that explodes d^2)."""
     df = pd.DataFrame(resid)
     cov = df.cov(min_periods=10).to_numpy()
-    d = np.diag(np.diag(cov))
-    out = (1 - shrink) * cov + shrink * d
-    return np.where(np.isfinite(out), out, 0.0) + np.eye(len(out)) * 1e-9
+    diag = np.diag(cov)
+    usable = np.isfinite(diag) & (diag > 0)
+    c = cov[np.ix_(usable, usable)]
+    c = np.where(np.isfinite(c), c, 0.0)
+    c = (1 - shrink) * c + shrink * np.diag(np.diag(c))
+    out = np.full_like(cov, np.nan)
+    if usable.any():
+        w, V = np.linalg.eigh(c)
+        w = np.maximum(w, EIG_FLOOR * float(np.mean(np.diag(c))))
+        out[np.ix_(usable, usable)] = (V * w) @ V.T
+    return out, usable
 
 
 def mahalanobis_tail(resid: np.ndarray, cov: np.ndarray, min_observed: int) -> tuple[np.ndarray, np.ndarray, list]:
@@ -686,11 +727,13 @@ class JointSurprise:
 
 
 def joint_surprise(run: HorizonRun, min_observed_frac: float = 0.5) -> JointSurprise:
-    m = len(run.targets)
+    cov, usable = shrunk_covariance(run.resid_fit)
+    m = int(usable.sum())   # refused targets (all-NaN columns) and unusable variances do not count
     min_obs = max(1, int(math.ceil(min_observed_frac * m)))
-    cov = shrunk_covariance(run.resid_fit)
-    _d2c, cal_tail, _ = mahalanobis_tail(run.resid_val, cov, min_obs)
-    _d2, tail, shares = mahalanobis_tail(run.resid_held, cov, min_obs)
+    keep = np.where(usable, 1.0, np.nan)
+    cov = np.where(np.isfinite(cov), cov, 0.0)
+    _d2c, cal_tail, _ = mahalanobis_tail(run.resid_val * keep, cov, min_obs)
+    _d2, tail, shares = mahalanobis_tail(run.resid_held * keep, cov, min_obs)
     n_cal = int(np.isfinite(cal_tail).sum())
     p = conformal_p(tail, cal_tail)
     calm = calm_point(n_cal)

@@ -81,12 +81,13 @@ def test_replay_covers_the_week_and_only_body_signals(replay) -> None:
     assert len(hours) >= 160
     assert "node:substrate.harness_closure" not in signals  # placeholder
     assert "node:substrate.perception" not in signals  # the world
-    # bus_synaptic and route rows are still in the fixture; both nodes were
-    # retired 2026-11 (PE suite rebuild step 5) and are not body signals.
+    # bus_synaptic, route and chat rows are still in the fixture; those nodes were
+    # retired 2026-11 (PE suite rebuild steps 5 and 6) and are not body signals.
     assert set(signals) == {
         "node:substrate.biometrics", "node:substrate.cabinet",
-        "node:substrate.chat", "node:substrate.codebase", "node:substrate.execution",
+        "node:substrate.codebase", "node:substrate.execution",
     }
+    assert "node:substrate.chat" not in signals
 
 
 def test_high_hours_are_the_sustained_minority(replay) -> None:
@@ -94,15 +95,14 @@ def test_high_hours_are_the_sustained_minority(replay) -> None:
     for s in signals:
         conds = [per[s][h].condition for h in hours]
         assert conds.count("high") < 0.25 * len(hours), s  # never "most hours are high"
-    chat = [per["node:substrate.chat"][h].condition for h in hours]
-    assert chat.count("high") == 0 and chat.count("unknown") > 40  # quiet hours are unknown, not calm
+    # (This used to pin chat's quiet hours as unknown; chat was retired 2026-11-13.)
 
 
 def test_every_association_recounts_from_the_hour_rows(replay) -> None:
     rows = replay[0]
     for min_hours in (24, 1):
         assocs = sso.associate_all(rows, computed_at=COMPUTED, min_hours=min_hours)
-        assert len(assocs) == 5 * 3
+        assert len(assocs) == 4 * 3
         fails = [f for a in assocs for f in check_association(a, rows)]
         by_id = {a.association_id: a for a in assocs}
         fails += [f for a in assocs if a.clause for f in check_clause(a.clause, by_id)]
@@ -114,7 +114,6 @@ def test_this_week_nothing_clears_so_nothing_renders(replay) -> None:
     assert [a for a in assocs if a.clause] == []
     verdicts = {(a.signal_id.removeprefix("node:substrate."), a.outcome): a.verdict for a in assocs}
     assert verdicts[("execution", "turn_failed")] == "excluded_circular"
-    assert verdicts[("chat", "response_repair")] == "excluded_circular"
     assert all(v in ("below_min_n", "excluded_circular", "no_clear_difference") for v in verdicts.values())
 
 

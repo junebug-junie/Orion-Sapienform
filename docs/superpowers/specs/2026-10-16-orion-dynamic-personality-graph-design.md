@@ -1,7 +1,7 @@
 # Orion's dynamic personality graph
 
 **Date:** 2026-10-16
-**Status:** Rev 4 (2026-11-13): one organ, choices in and values out. Awaits Juniper's sign-off. Rev 3 (2026-11-13). Juniper asked for it after she read the live Hub panel ("it is slop"). Rev 3 retires rev 2's recurrence stream and puts personality inside Orion Prime. Rev 2 was approved 2026-10-16 ("hit it"). P0/P1 merged in #2729.
+**Status:** Rev 4 (2026-11-13): one organ, choices in and values out, no shadow. Approved by Juniper 2026-11-13 ("no shadow"). Rev 3 (2026-11-13). Juniper asked for it after she read the live Hub panel ("it is slop"). Rev 3 retires rev 2's recurrence stream and puts personality inside Orion Prime. Rev 2 was approved 2026-10-16 ("hit it"). P0/P1 merged in #2729.
 **Related:** person model and identity cards (#2646, P0-P2 merged in #2649), Temporal Self (#2369 rev 4, arousal #2594, day use #2622), attention runtime and stance coalition (`orion/thought/coalition.py`), orion-prediction (`services/orion-prediction`), rung 6 self-tuning (#2715).
 
 ## Arsonist summary
@@ -20,7 +20,7 @@ This design builds one shared, weighted, temporal graph of Orion's dispositions.
           ^                                                                                  |
           +-------------- what wins attention offers Orion the next choice <-----------------+
 
-Rev 3's decisions still hold: choices only, no prose grouping, Prime holds the personality, and nothing reaches Orion without Juniper's yes. Rev 4 replaces rev 3's patch order.
+Rev 3's decisions still hold: choices only, no prose grouping, Prime holds the personality. One change: rev 3 decision 8 (the Prime line waits for Juniper's yes) is replaced by no shadow: the line lights at 10 weighted choices, and her no retires a tendency. Rev 4 replaces rev 3's patch order.
 
 #### Arsonist summary
 
@@ -56,7 +56,7 @@ The pick goes into a model call the act already makes, as a structured field. **
 
 #### Move 2: tendencies set what Orion values
 
-Two terms. Both start in shadow.
+Two terms. **No shadow (Juniper, 2026-11-13): both bind from the day they deploy.**
 
 1. **Family endorsement, source (c) in `weights.py`.** This is the share of choice points where Orion picked an option from family f when one was offered. It is a rate per offer, never a count. It joins (a) downstream use, (b) Juniper engagement and (d) reliability, with the same kappa = 30 shrinkage toward the prior. This is the organism-level temperament: reading over walkway, people over pipeline.
 2. **Care, inside a family.** For a want whose object has text (an outreach topic, a curiosity question, a reading link):
@@ -66,7 +66,7 @@ Two terms. Both start in shadow.
 
    It enters `value_rank` before the percentile. A want that matches no tendency has care = 0, which is exactly today's value. The rest point is 0 and can be reached.
 
-**Holdback.** 20% of wants are priced with care = 0 and endorsement left out: the narrator arm, the same pattern as Prime's `PRIME_HOLDBACK_FRACTION`. Without it, the loop cannot tell whether the tendencies changed anything.
+**Holdback (live control arm, not shadow).** 20% of wants are priced with care = 0 and endorsement left out, and those decisions bind too. It is the same pattern as Prime's `PRIME_HOLDBACK_FRACTION`. Without it, nobody can tell whether the tendencies changed anything.
 
 **The runaway guard.** Orion chooses from options the market supplied, and the market ranks options by Orion's past choices. That loop can lock onto itself. Three guards:
 
@@ -80,7 +80,7 @@ orion-prediction gains a categorical series: given the situation and the shown o
 
 #### Move 4: Juniper feels it
 
-- The Prime block line `tending: <label> [disposition:<id>]` (rev 3) goes live only after Juniper's recorded yes.
+- The Prime block line `tending: <label> [disposition:<id>]` (rev 3) goes live as soon as a tendency has at least 10 weighted choices. No shadow (Juniper, 2026-11-13). Her no in the Hub tab retires a tendency.
 - The Hub Personality tab is rebuilt around choices. It shows the last choices with their declined options, each tendency with its chosen-over-declined examples, and the care-versus-holdback difference.
 
 #### Metric quality gate (care and endorsement)
@@ -92,7 +92,7 @@ orion-prediction gains a categorical series: given the situation and the shown o
 3. **Theory anchor:** revealed preference (Samuelson 1938), which says a choice among available alternatives reveals preference. CAPS if-then signatures (Mischel & Shoda 1995), which say situation is recorded on every choice.
 4. **Live sanity:** care reads 0 for wants that match nothing. The check: at least 30% of shadow wants read exactly 0, and the distribution is not saturated at 1.
 5. **Existing mechanism:** source (c) is the reserved socket. The holdback reuses the Prime pattern. Embeddings come from the vector-host already used by the reducer.
-6. **Reversibility:** both terms sit behind one flag, `PHYSIOLOGY_PERSONALITY_VALUES` (shadow | on | off). Shadow logs the counterfactual net without changing a decision. No schema change to `WantV1`. The care factor is recorded in the decision trace.
+6. **Reversibility:** both terms sit behind one flag, `PHYSIOLOGY_PERSONALITY_VALUES` (on | off). It ships `on` and binds. `off` is the kill switch. No schema change to `WantV1`. The care factor and the arm are recorded in the decision trace.
 
 #### Files likely to touch
 
@@ -118,8 +118,7 @@ orion-prediction gains a categorical series: given the situation and the shown o
 
 - **M1:** at least 20 `personality_choice` rows a day, from at least 3 choice points, each with at least 1 alternative. At least 25% of choices depart from the market's top option.
 - **M1b:** after 7 days, at least 3 tendencies with at least 10 weighted choices each. Juniper reads their labels and records yes or no.
-- **M2 (shadow, 7 days):** the care arm's would-be funded mix differs from the holdback arm's, with a chi-square over families and topics at p < 0.05. Care reads 0 for at least 30% of wants. No tendency is capped by the runaway guard.
-- **M2 bind:** after Juniper's yes, the flag goes to `on`. Then check that the funded mix moved the way the shadow said it would.
+- **M2 (live, 7 days after deploy):** the care arm's funded mix differs from the holdback arm's, with a chi-square over families and topics at p < 0.05. Care reads 0 for at least 30% of wants. The runaway guard caps no tendency, or every cap is logged.
 - **M3:** the choice forecast beats both baselines on log loss in backtest. At least one surprise reaches self-inquiry with a row id.
 - **M4:** a live turn logs `prime_block ... tending=<n>`, and the Hub tab shows the same ids.
 
@@ -130,13 +129,11 @@ orion-prediction gains a categorical series: given the situation and the shown o
    - The choices table and reducer, with the old 180 nodes retired (snapshot first).
    - The Prime and outreach choice points.
    - The curiosity choices move over.
-2. **Week 2, the organ's output in shadow:**
-   - Source (c) and care, with holdback and trace.
-   - The Hub tab rebuilt.
-3. **Week 3:**
-   - Juniper reviews the tendencies and the shadow difference.
-   - On a yes: bind the values and light the Prime line.
-4. **From week 3:** Move 3 (prediction and surprise).
+2. **Week 2, the organ's output, live:**
+   - Source (c) and care, binding, with the holdback arm and trace.
+   - The Prime `tending` line.
+   - The Hub tab rebuilt, with a yes or no on each tendency.
+3. **Week 3:** the M2 check (care arm against holdback). Move 3 (prediction and surprise) starts.
 
 ### Rev 3 (2026-11-13): choices only, held by Prime
 

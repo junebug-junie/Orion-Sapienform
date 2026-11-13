@@ -64,8 +64,12 @@ PREDICTION_ERROR_MISSING_REASON_KEY = "prediction_error_missing_reason"
 # substrate_node_prediction_error_history rows linger for their 7-day
 # retention. Every generic prediction-error reader skips these ids so a stored
 # value is never read as a current reading (CLAUDE.md 0A: kill means kill).
+#
+# node:substrate.chat joined 2026-11-13 (retire step 6): an EWMA z of the change
+# in two chat pressure hints, negatives clipped -- not a forecast. Successor:
+# node:prediction.chat_turn (settled chat-turn self-bets, scored as surprise).
 RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
-    {"node:substrate.bus_synaptic", "node:substrate.route"}
+    {"node:substrate.bus_synaptic", "node:substrate.route", "node:substrate.chat"}
 )
 
 

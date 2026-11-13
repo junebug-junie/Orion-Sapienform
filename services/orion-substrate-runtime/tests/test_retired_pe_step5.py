@@ -42,6 +42,8 @@ def test_bus_synaptic_producer_is_gone() -> None:
         assert not hasattr(BiometricsSubstrateWorker, name), name
     assert not hasattr(worker_module, "bus_synaptic_prediction_error")
     assert not hasattr(worker_module, "route_prediction_error")
+    # Step 6 (2026-11-13): chat too.
+    assert not hasattr(worker_module, "chat_prediction_error")
     fields = set(settings_mod.Settings.model_fields)
     assert not {f for f in fields if "bus_synaptic" in f or f == "falkordb_bus_graph"}
 
@@ -54,7 +56,7 @@ def test_worker_source_writes_neither_retired_node() -> None:
 
 
 def test_active_inference_domains_match_the_worker_domain_map() -> None:
-    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution", "biometrics", "chat"}
+    assert set(ACTIVE_INFERENCE_DOMAINS) == {"execution", "biometrics"}
     assert set(worker_module._PREDICTION_ERROR_DOMAIN_NODE_IDS.values()) == set(
         ACTIVE_INFERENCE_DOMAINS
     )
@@ -80,19 +82,21 @@ def test_pe_magnitudes_skip_retired_nodes_and_their_history(monkeypatch) -> None
     worker._store.fetch_prediction_error_history.return_value = [
         ("node:substrate.bus_synaptic", NOW - timedelta(hours=1), 0.9),
         ("node:substrate.route", NOW - timedelta(hours=1), 0.5),
-        ("node:substrate.chat", NOW - timedelta(hours=1), 0.1),
+        ("node:substrate.chat", NOW - timedelta(hours=1), 0.7),
+        ("node:substrate.execution", NOW - timedelta(hours=1), 0.1),
     ]
     worker._store.prune_prediction_error_history.return_value = 0
 
     nodes = [
         _node("node:substrate.bus_synaptic", 0.9),
         _node("node:substrate.route", 0.5),
-        _node("node:substrate.chat", 0.2),
+        _node("node:substrate.chat", 0.7),
+        _node("node:substrate.execution", 0.2),
     ]
     magnitudes = worker._prediction_error_magnitudes(nodes=nodes, now=NOW)
 
-    assert set(magnitudes) == {"node:substrate.chat"}
-    assert set(worker._pe_history_cache) == {"node:substrate.chat"}
+    assert set(magnitudes) == {"node:substrate.execution"}
+    assert set(worker._pe_history_cache) == {"node:substrate.execution"}
     saved = worker._store.save_prediction_error_history_samples.call_args.args[0]
-    assert [n for n, _, _ in saved] == ["node:substrate.chat"]
+    assert [n for n, _, _ in saved] == ["node:substrate.execution"]
     settings_mod._settings = None

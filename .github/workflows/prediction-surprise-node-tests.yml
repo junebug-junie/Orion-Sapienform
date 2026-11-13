@@ -1,6 +1,7 @@
 name: prediction-surprise-node-tests
 
-# node:prediction.room / node:prediction.body: orion-prediction's gated surprise events folded
+# node:prediction.room / node:prediction.body (and node:prediction.chat_turn, 2026-11-13: settled
+# chat-turn self-bets as surprise): orion-prediction's gated surprise events folded
 # into two body nodes (docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md,
 # build item 3), and the attention/curiosity/self-readings readers that accept value_kind
 # surprise_excess.
@@ -9,6 +10,8 @@ on:
     paths:
       - "orion/substrate/prediction_surprise.py"
       - "orion/substrate/tests/test_prediction_surprise.py"
+      - "orion/substrate/prediction_turn_surprise.py"
+      - "orion/substrate/tests/test_prediction_turn_surprise.py"
       - "orion/schemas/prediction.py"
       - "orion/attention/world_first.py"
       - "orion/attention/self_readings.py"
@@ -22,6 +25,7 @@ on:
     branches: [main]
     paths:
       - "orion/substrate/prediction_surprise.py"
+      - "orion/substrate/prediction_turn_surprise.py"
       - "orion/schemas/prediction.py"
       - "orion/attention/world_first.py"
       - "services/orion-substrate-runtime/**"
@@ -45,6 +49,7 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider \
             orion/substrate/tests/test_prediction_surprise.py \
+            orion/substrate/tests/test_prediction_turn_surprise.py \
             orion/substrate/tests/test_endogenous_curiosity.py \
             tests/test_attention_world_first.py \
             tests/test_attention_self_readings.py
@@ -53,4 +58,5 @@ jobs:
           POSTGRES_URI: postgresql://unused/unused
         run: |
           PYTHONPATH=.:services/orion-substrate-runtime python -m pytest -q -p no:cacheprovider \
-            services/orion-substrate-runtime/tests/test_prediction_surprise_listener.py
+            services/orion-substrate-runtime/tests/test_prediction_surprise_listener.py \
+            services/orion-substrate-runtime/tests/test_prediction_turn_surprise_listener.py

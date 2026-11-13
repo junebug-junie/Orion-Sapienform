@@ -1,11 +1,14 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 782,
+  "metric_count": 783,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 0,
+    "change_count": 4,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-bus-mirror/orion:bus:traffic:rollup"
+      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error",
+      "medium added metric://bus_channel/orion-bus-mirror/orion:bus:traffic:rollup",
+      "medium added metric://bus_channel/orion-prediction/orion:prediction:turn_surprise",
+      "medium added metric://field_channel/orion-substrate-runtime/node:prediction.chat_turn.prediction_error"
     ]
   },
   "definitions": {
@@ -2780,6 +2783,17 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-prediction/orion:prediction:turn_surprise": {
+      "schema_id": "PredictionTurnSurpriseV1",
+      "all_producers": [
+        "orion-prediction"
+      ],
+      "declared_consumers": [
+        "orion-substrate-runtime"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-recall/orion:exec:result:RecallService:*": {
       "schema_id": "RecallReplyV1",
       "all_producers": [
@@ -4596,6 +4610,27 @@
       "notes": "category=physical_substrate level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
+    "metric://field_channel/orion-substrate-runtime/node:prediction.chat_turn.prediction_error": {
+      "meaning": "How much Orion's recent chat turns surprised Orion's own bets about them (will the reply ask a question; will it take more steps than usual), over the last 30 minutes: summed excess surprise in nats over what the recalibrated bets expected, divided by its calm spread (a z-score), 3 sigma = 1.0. 0 = the turns went the way the bets leaned.",
+      "value_kind": "surprise_excess",
+      "rest": "0.0 = the turns went no more surprisingly than calibrated bets expect (z <= 0). Reachable by theory (a turn that goes the likely way reads z < 0) and live: 85% of 294 settled chat turns rest at exactly 0.0, 79% of node writes (replay 2026-10-24..11-13, backlog turns skipped as live, services/orion-prediction/evals/run_turn_surprise_replay_eval.py).",
+      "rest_range": [
+        0.0,
+        0.55
+      ],
+      "sparsity": "event_gated",
+      "absent_means": "written once per settled chat turn whose used bets carry information. No chat turn (or PREDICTION_TURN_SURPRISE_EVENTS_ENABLED / SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED off, or orion-prediction down) writes nothing: the node keeps its last value, current for up to 1800 s, then every reader treats it as stale, never as calm. Live replay: fresh 27% of the time.",
+      "polarity": "higher_is_worse",
+      "declared_consumers": [
+        "orion.attention.world_first:judge_candidate",
+        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      ],
+      "prompt_sites": [
+        "orion.attention.self_readings:render_self_readings"
+      ],
+      "notes": "category=social_conversational level=node",
+      "registry_source": "config/field/field_channel_glossary.v1.yaml"
+    },
     "metric://field_channel/orion-substrate-runtime/node:prediction.room.prediction_error": {
       "meaning": "How much the office's temperature is surprising Orion's own forecast: the last 30 minutes of scored 5- and 15-minute forecast outcomes (office.temp_c), each as excess surprise (-ln p minus its calm point 0.95), summed and divided by the calm spread (a z-score), 3 sigma = 1.0. 0 = the temperature did what the forecast expected.",
       "value_kind": "surprise_excess",
@@ -4657,27 +4692,6 @@
         "orion.attention.self_readings:render_self_readings"
       ],
       "notes": "category=physical_substrate level=node",
-      "registry_source": "config/field/field_channel_glossary.v1.yaml"
-    },
-    "metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error": {
-      "meaning": "How much more the chat's load and repair pressure moved on the turns touched this batch than they usually move: clipped z-score versus its own running average, 3 sigma = 1.0.",
-      "value_kind": "level",
-      "rest": "0.0 = at or below the usual turn-to-turn movement, or no baseline yet. Mostly zero by design (69% live).",
-      "rest_range": [
-        0.0,
-        0.0
-      ],
-      "sparsity": "designed_sparse",
-      "absent_means": "only written when chat turns were touched; carried forward in node_vectors between turns, dropped from the self-model after 1800 s.",
-      "polarity": "higher_is_worse",
-      "declared_consumers": [
-        "orion.attention.field_attention.selectors:select_node_targets",
-        "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
-      ],
-      "prompt_sites": [
-        "orion.attention.self_readings:render_self_readings"
-      ],
-      "notes": "category=social_conversational level=node",
       "registry_source": "config/field/field_channel_glossary.v1.yaml"
     },
     "metric://field_channel/orion-substrate-runtime/node:substrate.codebase.prediction_error": {

@@ -242,8 +242,15 @@ families:
     # camera had seen that individual, as a percentile of the last 30 days of camera asks). Producer:
     # services/orion-sql-writer/app/ask_event_wants.py. Shadow: no caller obeys it; Prime reads the funded ones as
     # concerns (PRIME_CONCERNS_FROM_EVENT_WANTS). TIER 2 IS A PROPOSAL: Juniper signs off in PR review.
-    # No act-ledger actor yet (asks open no grammar act), so hunger counts from the want's own opened_at.
-    # An ask is a card Juniper answers when she likes, not a message, so no fixed juniper_msgs cost.
+    # 2026-11-13, attention patch 4a (docs/superpowers/specs/2026-11-12-attention-camera-asks-bind-design.md): GRADED.
+    # Each ask Orion made is a vision.ask act (services/orion-sql-writer/app/ask_acts.py) graded juniper_answered
+    # by her answer (orion/grammar/camera_ask_acts.py: answered 1; dismissed, don't know or unanswered at expiry 0;
+    # withdrawn not a grade), and the want carries the ask rule's answered share as outcome_value. Juniper's own
+    # walkway-story naming cards open no act and post no want. Still shadow: nothing obeys the decision (4b binds).
+    # Hunger now counts from the family's last act close (any ask answered/expired), with tau from the close rhythm,
+    # no longer from the want's own opened_at: intensity = max(hunger, salience) gains a hunger floor.
+    # An ask is a card Juniper answers when she likes, not a message, so no fixed juniper_msgs cost
+    # (Juniper, PR #3213 question 1: no attention cost in v1).
     # 86400: asks are opened in a daily batch; the want's own window ends when the ask expires.
     tier: 2
     deferrable_window_s: 86400

@@ -62,7 +62,8 @@ def _level(node_id: str, pct: float, *, age: float = 20.0, value: float = 0.3):
 def test_event_written_set_comes_from_glossary_semantics() -> None:
     expected = {
         "node:substrate.execution": True,   # designed_sparse, "only written when a batch carried..."
-        "node:substrate.chat": True,        # designed_sparse, "only written when chat turns were touched"
+        # event_gated: one write per settled chat turn (2026-11-13; replaced node:substrate.chat).
+        "node:prediction.chat_turn": True,
         "node:substrate.codebase": True,    # designed_sparse, "only written on a codebase delta event"
         # designed_sparse, "only written as 1.0 at a strain news event, then carried unwritten"
         # for the orienting window: the 1.0's age is the event's age.

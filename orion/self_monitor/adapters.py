@@ -25,6 +25,12 @@ Vocabulary found live (2026-11-03, 7 days), kept here so a reader can check the 
 * ``prediction_action_bet`` (``services/orion-prediction/app/action_bets.py``): ``result`` is
   ``success``/``failure``/``void``; ``p`` is the served probability at placing.
 * ``prediction_forecast``: champion rows; ``in_80`` is the outcome of the stated 80% range.
+* ``prediction_bill_forecast`` (``services/orion-prediction/app/bill_forecast.py``): one row per day,
+  Orion's projection of the current power bill with an 80 % range (``coverage``) on kWh and on pre-tax
+  dollars, settled when RMP's bill lands (``kwh_in_80`` / ``usd_in_80``; ``usd_in_80`` is NULL when the
+  bill has no tax line). Only ``origin = 'live'`` rows are bets: ``replay`` rows were backfilled from
+  history the method was chosen on. Every daily guess at one bill shares one answer, so each carries
+  ``answer_key`` = the bill (``record.py`` counts it once).
 * ``vision_percept_expectation`` (``services/orion-sql-writer/app/vision_rhythm.py``): ``status``
   ``met``/``missed``/``open``/``unscorable``; ``confidence`` stored at emit time.
 * ``orion_ask`` camera guesses (``services/orion-sql-writer/app/vision_individuals.py``,
@@ -234,6 +240,36 @@ def forecast(row: Row) -> Optional[SettledBetV1]:
         settled_by="world",
         evidence_ref=f"prediction_forecast:{row['forecast_id']}",
     )
+
+
+def _bill(row: Row, quantity: str) -> Optional[SettledBetV1]:
+    settled = _aware(row.get("settled_at"))
+    inside = row.get(f"{quantity}_in_80")
+    if settled is None or inside is None or row.get("origin") != "live" or row.get("coverage") is None:
+        return None
+    return SettledBetV1(
+        bet_id=f"prediction_bill_forecast:{row['bet_id']}:{quantity}",
+        faculty=f"forecast.energy.bill_{quantity}",
+        source=f"prediction_bill_forecast_{quantity}",
+        made_at=_aware(row["as_of"]),
+        settled_at=settled,
+        claim_kind="interval",
+        stated=_float(row.get("coverage")),
+        answer_key=f"energy_bill:{row.get('usage_point_id') or ''}:{row.get('bill_period_start')}",
+        outcome="upheld" if inside else "refuted",
+        settled_by="world",
+        evidence_ref=f"prediction_bill_forecast:{row['bet_id']}",
+    )
+
+
+def bill_kwh(row: Row) -> Optional[SettledBetV1]:
+    """One live daily bill bet's kWh range against the kWh RMP billed."""
+    return _bill(row, "kwh")
+
+
+def bill_usd(row: Row) -> Optional[SettledBetV1]:
+    """The same bet's pre-tax dollar range against the bill's pre-tax total."""
+    return _bill(row, "usd")
 
 
 def percept_expectation(row: Row) -> Optional[SettledBetV1]:

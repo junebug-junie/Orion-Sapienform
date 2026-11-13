@@ -963,7 +963,7 @@ class CuriosityInvestigation:
         # What Orion keeps coming back to, in Orion's own words, read from
         # `durable_runs_url` /personality/frame concurrently with the today fact and
         # under the same deadline. Off here so bare constructions in tests never touch
-        # the network; settings ship it on (HUB_PERSONALITY_CUE_ENABLED).
+        # the network; settings ship it off since personality rev 3 R0 (HUB_PERSONALITY_CUE_ENABLED).
         personality_cue_enabled: bool = False,
         # --- Orion's Day corrections (orion/orion_day/corrections.py) ------
         # The regular investigate line, on a writable graph only: claims up to

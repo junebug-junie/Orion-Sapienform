@@ -248,8 +248,11 @@ def rank_value(app: FamilyAppetite, want_intensity: float, outcome_value: Option
     if event and len(app.event_values) >= EVENT_HISTORY_MIN:
         # Past events carry no producer outcome of their own here: each is scaled by the family's
         # expected outcome (the mean, or 1 ungraded), the same multiplier a want without one gets.
-        # (A producer outcome_value on the current want is not applied to the history: neither event
-        # family is graded today, so both sides use the same multiplier.)
+        # (A producer outcome_value on the current want is not applied to the history: past events
+        # carry the family mean. vision.ask is graded from attention patch 4a, and its producer sends a
+        # per-rule outcome, so its current want's x uses that rule's answered share against a history
+        # scaled by the family's mean answered share: a rule answered less often than the family mean
+        # ranks lower, which is the point of the grade.)
         ref_out = app.mean_outcome if app.graded and app.mean_outcome is not None else 1.0
         ref = [v * ref_out for v in app.event_values]
         # Strict-below, the rule salience itself uses: an event no bigger than the smallest usual one

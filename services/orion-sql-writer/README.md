@@ -1195,6 +1195,15 @@ Producers publish `act_opened` / `act_closed` grammar events (`ActV1` on `Gramma
   turn without one falls back to its `created_at`; canonical `orion.regulation.juniper_turns`
   predicates; the act's own turn excluded by correlation id) or 0 at the horizon; producer-reported `artifact_produced` acts unclosed 120 s past their horizon
   close 0 as `expired`.
+- opens one `vision.ask` act (verb `ask`, `object_ref orion_ask:<ask_id>`, correlation id = the ask id,
+  horizon = the ask's `expires_at`, `test_before camera_ask:<rule>`) for each camera ask Orion made in the
+  last 24 h, at the start of each resolver tick (`app/ask_acts.py`, attention patch 4a,
+  `SQL_WRITER_ACT_CAMERA_ASKS_ENABLED`). The resolver grades it `juniper_answered` from the `orion_ask` row
+  (`orion/grammar/camera_ask_acts.py`): answered 1; dismissed / "don't know" / unanswered at expiry 0
+  (`resolver`); withdrawn by Orion `expired` (not a grade). Juniper's own walkway-story naming cards
+  (`rule:juniper_story_naming`, or `answer_detail.story_id` before the marker) never open one. Older asks:
+  `scripts/backfill_camera_ask_acts.py` (dry run by default; also the catch-up after an outage or the flag
+  being off for more than 24 h, since the live loop only looks back 24 h).
 
 Producers today: orion-thought paintings (`make`), hub chat reply (`say`), hub outreach
 (`say`/`ask`), hub world-pulse reading Stage 1 (`look`). Debug surface: `GET /act/ledger?days=7`.

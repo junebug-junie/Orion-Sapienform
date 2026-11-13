@@ -58,16 +58,20 @@ def event_want_id(source: str, key: str) -> str:
 
 def event_want(*, source: str, key: str, family: str, producer: str, verb: str, tier: int, event_ref: str,
                salience: float, opened_at: datetime, latest: Optional[datetime] = None,
-               object_ref: Optional[str] = None, cost: Optional[ActCostV2] = None) -> WantV1:
+               object_ref: Optional[str] = None, cost: Optional[ActCostV2] = None,
+               outcome_value: Optional[float] = None) -> WantV1:
     """The event want a source posts. ``latest``: when the event expires (the want's window end).
     ``cost``: what the act this want would run costs, when the source knows it better than the
-    family's history (patch 2: an event want carries "the act it would run ... and cost")."""
+    family's history (patch 2: an event want carries "the act it would run ... and cost").
+    ``outcome_value``: the act's expected outcome when the source knows it (camera asks, patch 4a: the
+    answered share of the ask's rule); the market uses it once the family is graded."""
     want_id = event_want_id(source, key)
     return WantV1(
         want_id=want_id, family=family, producer=producer, verb=verb, tier=tier,  # type: ignore[arg-type]
         object_ref=(object_ref or None) and object_ref[:500], opened_at=opened_at,
         window=WantWindowV1(latest=latest), correlation_id=want_id, event_ref=event_ref[:500],
         salience=min(1.0, max(0.0, float(salience))), cost=cost,
+        outcome_value=None if outcome_value is None else max(0.0, float(outcome_value)),
     )
 
 

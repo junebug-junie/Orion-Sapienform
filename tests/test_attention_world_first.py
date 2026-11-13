@@ -228,10 +228,10 @@ def test_rank_is_by_own_percentile_borda_only_breaks_ties() -> None:
     a = body("node:substrate.execution", 0.95)
     # route retired 2026-11 (#3201); biometrics is a live level measurement
     b = body("node:substrate.biometrics", 0.95)
-    c = body("node:substrate.chat", 0.97)
+    c = body("node:substrate.codebase", 0.97)
     r = rank_candidates([a, b, c], tie_break={"node:substrate.biometrics": 0.9, "node:substrate.execution": 0.1})
     assert [v.candidate.source_id for v in r.eligible] == [
-        "node:substrate.chat", "node:substrate.biometrics", "node:substrate.execution",
+        "node:substrate.codebase", "node:substrate.biometrics", "node:substrate.execution",
     ]
 
 

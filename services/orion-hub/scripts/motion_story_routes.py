@@ -171,6 +171,7 @@ class VerdictBody(BaseModel):
 
 WHO_IS_THIS_KIND = ask_routes.WHO_IS_THIS_KIND        # "vision_individual"
 STORY_PERSON_KIND = "vision_story_person"
+JUNIPER_STORY_CARD_REF = "rule:juniper_story_naming"   # == orion.grammar.camera_ask_acts (a test pins it)
 PERSON_ACTIONS = ("name", "someone_else", "unsure")
 _INDIVIDUAL_ID_RE = re.compile(r"[0-9A-Za-z_.:-]{1,128}")
 _THUMB_HEX_RE = re.compile(r"[0-9a-f]{64}")
@@ -597,9 +598,13 @@ async def record_story_person(story_id: str, individual_id: str, body: PersonBod
                         {"image_ref": f"crop:{cid}", "index": i, "verdict": verdict, "crop_id": cid,
                          "name": name or None}
                         for i, cid in enumerate(person["crop_ids"])]
+                refs = [f"motion_story:{story_id}", f"individual:{individual_id}"]
+                if body.action == "name":
+                    # Juniper's own card, not an ask Orion made: it opens no vision.ask act and counts in no
+                    # ask statistic (attention patch 4a, orion/grammar/camera_ask_acts.py).
+                    refs.append(JUNIPER_STORY_CARD_REF)
                 row = await conn.fetchrow(
-                    _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}", question,
-                    json.dumps([f"motion_story:{story_id}", f"individual:{individual_id}"]),
+                    _INSERT_STORY_ASK, f"ask-{uuid.uuid4().hex}", question, json.dumps(refs),
                     thumb, json.dumps([thumb] if thumb else []), answer, kind, individual_id, json.dumps(detail))
                 wrong_name = wrong_name_correction(story["name_label"], person["role"], body.action, name,
                                                    current["label"])

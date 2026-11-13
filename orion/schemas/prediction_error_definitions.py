@@ -32,6 +32,9 @@ UNSTAMPED_DEFINITION_VERSION = 1
 #   pressure hints -- it was ``1 - repair_pressure`` and double-weighted repair.
 # chat_session v3 (2026-09-29): the turn-change mean averages over only the
 #   turns a batch touched, not every turn ever stored (same fix as route v2).
+#   Removed 2026-11-13: chat_prediction_error and node:substrate.chat were
+#   retired (PE suite rebuild step 6); nothing writes a chat_session
+#   prediction-error receipt any more (the chat reducer's own receipts stay).
 # route_arbitration (v2 since 2026-09-25) removed 2026-11: route_prediction_error
 #   and node:substrate.route were retired (PE suite rebuild step 5); nothing
 #   writes a route_arbitration prediction-error receipt any more.
@@ -42,7 +45,6 @@ UNSTAMPED_DEFINITION_VERSION = 1
 #   vibration, ambient audio, climate, EM, UV, staleness) are left out of the mean.
 #   They read the room, not the machines (orion/substrate/biometrics_loop/room_hints.py).
 PREDICTION_ERROR_DEFINITION_VERSIONS: dict[str, int] = {
-    "chat_session": 3,
     "node_biometrics": 3,
 }
 

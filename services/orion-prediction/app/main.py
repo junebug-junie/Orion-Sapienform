@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
 import psycopg
@@ -28,6 +29,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from app.action_bets import ActionBets, ConflictError, WorldModelShadow
 from app.turn_self_bets import TurnSelfBets
 from app.reachable import Reachable
+from app.bill_forecast import BillForecast
 from app.causal import CausalError
 from app.effects import Effects
 from app.engine import Engine
@@ -37,6 +39,7 @@ from app.experiment_runner import ExperimentRunner, RouterProbe, RunnerRefused, 
 from app.series import load_registry
 from app.settings import get_settings
 from app.store import PostgresStore
+from orion.energy.tariff import load_tariff
 from orion.schemas.prediction import ActionBetPlaceV1, ActionBetQuoteRequestV1, ActionBetQuoteV1, ActionBetSettleV1, ActionBetV1
 
 _settings = get_settings()
@@ -49,6 +52,8 @@ action_bets: ActionBets | None = None
 turn_self_bets: TurnSelfBets | None = None
 reachable: Reachable | None = None
 _last_reachable: dict[str, Any] = {"at": None, "ok": None, "error": None}
+bill_forecast: BillForecast | None = None
+_last_bill: dict[str, Any] = {"at": None, "ok": None, "error": None}
 _last_settle: dict[str, Any] = {"at": None, "ok": None, "error": None}
 runner: ExperimentRunner | None = None
 _runner_redis: Any = None
@@ -60,11 +65,40 @@ _stop = asyncio.Event()
 _last_tick: dict[str, Any] = {"at": None, "ok": None, "error": None}
 
 
+async def _publish_turn_surprise() -> int:
+    """Publish the chat-turn surprise events of the last settle pass. Never raises; a failed publish
+    drops that event (the settled rows are the record) and keeps going."""
+    pending = turn_self_bets.take_pending_surprise()
+    if not pending:
+        return 0
+    if _bus is None or not _settings.publish_enabled:
+        turn_self_bets.surprise_counts["dropped_publish_disabled"] += len(pending)
+        return 0
+    from orion.core.bus.bus_schemas import BaseEnvelope
+    from orion.schemas.prediction import PREDICTION_TURN_SURPRISE_CHANNEL, PREDICTION_TURN_SURPRISE_KIND
+
+    source = ServiceRef(name=_settings.service_name, version=_settings.service_version, node=_settings.node_name)
+    sent = 0
+    for ev in pending:
+        try:
+            await _bus.publish(PREDICTION_TURN_SURPRISE_CHANNEL, BaseEnvelope(
+                kind=PREDICTION_TURN_SURPRISE_KIND, source=source, payload=ev.model_dump(mode="json")))
+            sent += 1
+        except Exception as exc:  # noqa: BLE001
+            turn_self_bets.surprise_counts["publish_failed"] += 1
+            logger.error("turn_surprise_publish_failed correlation_id=%s err=%s", ev.correlation_id, exc)
+    turn_self_bets.surprise_counts["published"] += sent
+    if sent:
+        logger.info("turn_surprise_published n=%d z=%s", sent, [round(ev.z, 2) for ev in pending])
+    return sent
+
+
 async def _settle_self_bets_forever() -> None:
     while not _stop.is_set():
         try:
             await asyncio.to_thread(turn_self_bets.settle_pending)
             _last_settle.update(at=datetime.now(timezone.utc), ok=True, error=None)
+            await _publish_turn_surprise()
         except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
             _last_settle.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
             logger.exception("turn_self_bets_settle_failed")
@@ -84,6 +118,20 @@ async def _reachable_forever() -> None:
             logger.exception("reachable_tick_failed")
         try:
             await asyncio.wait_for(_stop.wait(), timeout=60.0)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _bill_forecast_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(bill_forecast.tick)
+            _last_bill.update(at=datetime.now(timezone.utc), ok=True, error=None)
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_bill.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("bill_forecast_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=_settings.bill_forecast_tick_sec)
         except asyncio.TimeoutError:
             pass
 
@@ -108,7 +156,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, effects, action_bets, turn_self_bets, reachable, runner, _runner_redis, _store, _bus
+    global engine, effects, action_bets, turn_self_bets, reachable, bill_forecast, runner, _runner_redis, _store, _bus
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -136,8 +184,13 @@ async def lifespan(app: FastAPI):
     effects = Effects(engine)
     action_bets = ActionBets(_store, shadow=(WorldModelShadow(_settings.world_model_weights)
                                              if _settings.world_model_shadow_enabled else None))
-    turn_self_bets = TurnSelfBets(_store)
+    turn_self_bets = TurnSelfBets(_store, surprise_events_enabled=_settings.turn_surprise_events_enabled)
     reachable = Reachable(_store)
+    if _settings.bill_forecast_enabled:
+        bill_forecast = BillForecast(_store, load_tariff(_settings.energy_tariff_path),
+                                     tz=ZoneInfo(_settings.energy_timezone),
+                                     cycle_start_day=_settings.energy_billing_cycle_start_day,
+                                     usage_point_id=_settings.energy_usage_point_id)
     logger.info("prediction_ready enabled=%s publish=%s targets=%s", _settings.enabled, _settings.publish_enabled,
                 [s.series_id for s in registry.targets()])
     if _settings.experiment_runner_enabled:
@@ -163,6 +216,8 @@ async def lifespan(app: FastAPI):
         _tasks.append(asyncio.create_task(_settle_self_bets_forever()))
     if _settings.reachable_enabled:
         _tasks.append(asyncio.create_task(_reachable_forever()))
+    if bill_forecast is not None:
+        _tasks.append(asyncio.create_task(_bill_forecast_forever()))
     try:
         yield
     finally:
@@ -245,9 +300,15 @@ async def health() -> dict[str, Any]:
             {"ok": False, "error": "weather off (PREDICTION_WEATHER_ENABLED or ORION_SITUATION_WEATHER_LAT/LON unset)"},
             "series": series, "action_bets": await _action_bets_health(),
             "turn_self_bets": {"enabled": _settings.turn_self_bets_enabled, **_jsonable(_last_settle),
-                               "last_pass": _jsonable(turn_self_bets.last_pass if turn_self_bets else {})},
+                               "last_pass": _jsonable(turn_self_bets.last_pass if turn_self_bets else {}),
+                               "turn_surprise": {
+                                   "enabled": _settings.turn_surprise_events_enabled,
+                                   "counts": dict(turn_self_bets.surprise_counts) if turn_self_bets else {},
+                                   "last_error": turn_self_bets.last_surprise_error if turn_self_bets else None}},
             "reachable": {"enabled": _settings.reachable_enabled, **_jsonable(_last_reachable),
                           "last_pass": _jsonable(reachable.last_pass if reachable else {})},
+            "bill_forecast": {"enabled": _settings.bill_forecast_enabled, **_jsonable(_last_bill),
+                              "last_pass": _jsonable(bill_forecast.last_pass if bill_forecast else {})},
             "experiment_runner": runner.status() if runner else {"enabled": False}}
 
 
@@ -603,6 +664,19 @@ async def get_reachable() -> dict[str, Any]:
         return _jsonable(await asyncio.to_thread(reachable.live))
     except psycopg.Error as exc:
         raise HTTPException(503, "reachable store unavailable") from exc
+
+
+@app.get("/bill-forecast")
+async def get_bill_forecast() -> dict[str, Any]:
+    """The power-bill bet: today's projection of the current RMP bill (kWh, pre-tax $, 80 % ranges) and,
+    per bill period and origin (live / replay), how the bets came out once the bill landed."""
+    if bill_forecast is None:
+        raise HTTPException(503, "starting" if _settings.bill_forecast_enabled
+                            else "bill forecast off (PREDICTION_BILL_FORECAST_ENABLED=false)")
+    try:
+        return _jsonable(await asyncio.to_thread(bill_forecast.live))
+    except psycopg.Error as exc:
+        raise HTTPException(503, "bill forecast store unavailable") from exc
 
 
 # --- action bets ---------------------------------------------------------------------------------------

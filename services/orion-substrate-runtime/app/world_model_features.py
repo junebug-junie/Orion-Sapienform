@@ -11,11 +11,12 @@ Honesty split (CLAUDE.md "no empty-shell cognition" -- a schema-valid payload
 with meaningless content is not a success state, so this must be flagged, not
 hidden):
 
-- ``execution_context``: REAL. Two of this worker's existing per-domain
-  prediction-error scalars, cached on the worker instance by their own
-  ``_*_tick()`` methods (``_execution_tick``, ``_chat_tick``). ``route`` and
-  ``bus_synaptic`` filled slots 2-3 until 2026-11, when both prediction-error
-  nodes were retired (PE suite rebuild step 5); those slots are now 0.0 like
+- ``execution_context``: REAL. This worker's execution prediction-error
+  scalar, cached on the worker instance by ``_execution_tick``. ``chat``
+  (slot 1) was retired 2026-11-13 with node:substrate.chat (step 6), and
+  ``route`` and ``bus_synaptic`` filled slots 2-3 until 2026-11, when both
+  prediction-error nodes were retired (PE suite rebuild step 5); those slots
+  are now 0.0 like
   any other unused slot up to the configured dim (16), so the dim and the
   world-model consumer are unchanged. ``transport`` is deliberately
   EXCLUDED -- ``transport_prediction_error()`` is a retired metric (CLAUDE.md
@@ -69,7 +70,9 @@ ALWAYS_ZERO_FILLED_GROUPS: Tuple[str, ...] = ("biometrics", "affect", "memory_po
 # scalar lands in -- kept fixed so a downstream consumer's slot->domain
 # mapping stays stable across ticks even when a domain's cached scalar is
 # `None` this particular tick (its slot is simply left at 0.0).
-_EXECUTION_CONTEXT_DOMAINS: Tuple[str, ...] = ("execution", "chat")
+# "chat" (slot 1) left 2026-11-13 with node:substrate.chat (PE suite rebuild
+# retire step 6); slot 1 is now 0.0 padding like slots 2-3, dim unchanged.
+_EXECUTION_CONTEXT_DOMAINS: Tuple[str, ...] = ("execution",)
 
 
 @dataclass(frozen=True)
@@ -98,10 +101,9 @@ class ExecutionContextScalars:
     makes for its own domain, worker.py's ``still_warming`` branch)."""
 
     execution: Optional[float]
-    chat: Optional[float]
 
     def as_ordered_values(self) -> Tuple[Optional[float], ...]:
-        return (self.execution, self.chat)
+        return (self.execution,)
 
 
 def temporal_features(

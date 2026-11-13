@@ -60,7 +60,8 @@ settings `CURIOSITY_REPLICA_*`, logs `curiosity_replica_*`.
 
 - **Woken by Hub.** On a replica-arm curiosity run Hub publishes a plan request on
   `orion:curiosity:replica:plan:request`. The listener queues it and wakes the loop.
-- **Bids, then thinks once.** The loop bids `curiosity.replica` every tick until funded or until there is no
+- **Bids, then thinks once.** The loop bids `curiosity.replica` every tick until it goes ahead (funded, or a lane-full
+  `capacity_reserved` deferral with a positive net, which queues at the GPU pool) or until there is no
   time left for one model call before Hub's deadline (90 s, 5 s margin). Then it answers `unfunded` or
   `model_failed`, so Hub records the real reason. One call on route `prime` (the warm chat lane), seat wait cut
   so the answer lands in time.
@@ -133,7 +134,8 @@ but neither wakes Prime. Both drove concern churn (attention: 22 of 38 drops sai
 11-03: 26 thoughts in 12 h, 21 did nothing, all 4 drops said "lane X is no longer binding"). Replayed on live data the
 rate is about 5 thoughts a day. Every thought's act note starts with `woke: <what woke it>`.
 If something changed, the refractory interval has passed and no Juniper turn is running, Prime bids in the body
-economy (family `prime`, Tier 1, lane `chat`) and **obeys the answer**: funded thinks, deferred or no answer waits.
+economy (family `prime`, Tier 1, lane `chat`) and **obeys the answer**: funded thinks, and so does a `capacity_reserved` deferral with a positive net (the lane is full
+but the thought is worth its price; it queues at the GPU pool). Any other deferral, or no answer, waits.
 A thought is one model call on route `prime` (circe chat lane 0 at pool priority `system`; Juniper's call always
 starts first). Prime answers with how it reads things now, edits to its at most 3 concerns, and at most one move.
 

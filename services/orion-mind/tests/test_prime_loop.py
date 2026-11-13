@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -175,15 +176,18 @@ def test_no_thought_unless_the_bid_is_funded(outcome):
     assert rt.llm.calls == [] and rt.bus.acts() == [] and rt.state.pending_changes  # still hungry
 
 
-def test_a_capacity_deferral_worth_its_price_thinks():
+def test_a_capacity_deferral_worth_its_price_thinks(caplog):
     # Lane full, net positive: the thought queues at the GPU pool instead of waiting (bind_verdict's rule).
+    caplog.set_level(logging.INFO)
     rt = runtime(answer=MOVE, outcome="deferred", reason="capacity_reserved", net=0.67)
     asyncio.run(rt.tick())
     [want] = rt.bids
     assert len(rt.llm.calls) == 1 and rt.bus.acts() and rt.released == [want.want_id]
+    assert any(r.getMessage().startswith("prime_bid_queued_at_pool outcome=deferred reason=capacity_reserved "
+                                         "binding=lane:chat net=0.67") for r in caplog.records)
 
 
-@pytest.mark.parametrize("net", [0.0, -0.2, None])
+@pytest.mark.parametrize("net", [0.0, -0.2, None, float("nan")])
 def test_a_capacity_deferral_not_worth_its_price_waits(net):
     rt = runtime(answer=MOVE, outcome="deferred", reason="capacity_reserved", net=net)
     asyncio.run(rt.tick())

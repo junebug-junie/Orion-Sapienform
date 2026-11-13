@@ -185,14 +185,22 @@ def binomial_two_sided(k: int, n: int, q: float) -> float:
 
 
 def cadence(decisions: Iterable[dict[str, Any]], *, lane: str = "chat") -> dict[str, Any]:
-    buckets = {"unpriced": [0, 0], "priced": [0, 0]}   # [funded, total]
+    from types import SimpleNamespace
+
+    from orion.physiology.prime_charge import goes_ahead
+
+    buckets = {"unpriced": [0, 0, 0], "priced": [0, 0, 0]}   # [funded, total, went_ahead]
     for row in decisions:
         prices = ((row.get("decision") or {}).get("prices_seen") or {})
         priced = float(prices.get(f"lane:{lane}") or 0) > 0 or float(prices.get("heat") or 0) > 0
         b = buckets["priced" if priced else "unpriced"]
         b[1] += 1
         b[0] += int(row.get("outcome") == "funded")
-    return {k: {"funded": f, "bids": n, "funded_share": (f / n if n else None)} for k, (f, n) in buckets.items()}
+        # The thought also goes ahead on a lane-full deferral worth its price (orion/mindloop/runtime.py).
+        b[2] += int(goes_ahead(SimpleNamespace(outcome=row.get("outcome"), reason=row.get("reason"),
+                                               net=row.get("net"))))
+    return {k: {"funded": f, "bids": n, "funded_share": (f / n if n else None), "went_ahead": g,
+                "went_ahead_share": (g / n if n else None)} for k, (f, n, g) in buckets.items()}
 
 
 ACTS_SQL = """
@@ -207,7 +215,7 @@ SELECT actor, opened_at FROM grammar_acts
    AND opened_at > now() - make_interval(days => %s)
 """
 BIDS_SQL = """
-SELECT outcome, reason, decision FROM want_ledger
+SELECT outcome, reason, net, decision FROM want_ledger
  WHERE family = 'prime' AND decided_at > now() - make_interval(days => %s)
 """
 

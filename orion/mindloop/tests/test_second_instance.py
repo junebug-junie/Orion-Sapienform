@@ -202,3 +202,13 @@ def test_no_answer_from_the_market_waits(caplog):
     asyncio.run(rt.tick())
     assert len(rt.bids) == 1 and rt.llm.calls == [] and rt.bus.acts() == [] and rt.released == []
     assert any(r.getMessage().startswith("echo_bid_not_funded outcome=none reason=-") for r in caplog.records)
+
+
+def test_a_consent_block_never_goes_ahead_even_when_worth_its_price():
+    from types import SimpleNamespace
+
+    blocked = SimpleNamespace(outcome="deferred", reason="capacity_reserved", binding_constraint="lane:chat", net=0.9,
+                              consent=SimpleNamespace(verdict="refuse"))
+    rt = echo_runtime([ECHO], decision=blocked)
+    asyncio.run(rt.tick())
+    assert rt.llm.calls == [] and rt.bus.acts() == []

@@ -59,6 +59,7 @@ from orion.mindloop.backoff import TryKind, classify_try, note_model_reached, no
 from orion.mindloop.gate import GATE_RECHECK_SEC, build_act_gate, gate_why
 from orion.mindloop.instance import LoopIdentity
 from orion.mindloop.turns import JUNIPER_TURNS, JuniperTurns
+from orion.physiology.binding import consent_block
 from orion.physiology.prime_charge import goes_ahead
 from orion.schemas.grammar import ActV1
 from orion.self_monitor.adapters import act_faculty
@@ -321,11 +322,12 @@ class MindLoopRuntime:
                       lanes=[self.cfg("BID_LANE")], cost=self._cost_ceiling(), **self._want_extras())
         decision = await self.bid(want)
         outcome = getattr(decision, "outcome", None)
-        if not goes_ahead(decision):
+        if not goes_ahead(decision) or (decision is not None and consent_block(decision) is not None):
             # Never fail open: no answer is "not funded" (orion/physiology/client.py). A capacity deferral
             # worth its price is NOT a refusal: it goes ahead and the GPU pool's queue holds it (bind_verdict,
             # orion/physiology/binding.py). Live 10-30..11-03: 910 Prime thought bids were deferred
-            # capacity_reserved on lane:chat with a positive net and treated as refusals here.
+            # capacity_reserved on lane:chat with a positive net and treated as refusals here. A consent block
+            # never goes ahead (bind_verdict's first rule), whatever the outcome says.
             self.log.info(f"{name}_bid_not_funded outcome=%s reason=%s binding=%s pending=%d",
                           outcome or "none", getattr(decision, "reason", None) or "-",
                           getattr(decision, "binding_constraint", None) or "-", self._pending_count())

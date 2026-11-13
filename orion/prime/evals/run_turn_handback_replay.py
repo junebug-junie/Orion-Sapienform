@@ -11,8 +11,10 @@ Checks (exit 1 on any failure):
 * deterministic  -- two replays of the same rows give the same turns, concern ids included;
 * coverage       -- every finalize row of a handed-back session folds into a turn (none lost in the join);
 * not_hollow     -- every folded turn has a non-empty gist (no "(no reply text)" for a completed turn);
-* bounded        -- never more than TURN_CONCERNS_MAX_OPEN turn concerns held, never more than
-                    TURN_CONCERNS_PER_DAY opened in any 24 h;
+* bounded        -- never more than TURN_CONCERNS_MAX_OPEN turn concerns holding the slot (``holds_turn_slot``),
+                    never more than TURN_CONCERNS_PER_DAY opened in any 24 h;
+* promise_ttl_costs_no_thread -- the 72 h promise TTL (2026-11-13) opens at least as many threads as the same
+                    replay with promise concerns on the 24 h TTL: a longer life must not block later promises;
 * replay_safe    -- folding the same rows a second time into the result changes nothing.
 
 Reported, not checked: turns per kind, threads opened / refused (zero until the intention ledger's D0 judge
@@ -34,6 +36,7 @@ from datetime import datetime, timedelta
 from typing import Any, Sequence
 
 from orion.prime import handback as hb
+from orion.prime import state as ps
 from orion.prime.state import PrimeSnapshotV1, PrimeStateV1, observe
 
 DEFAULT_PSQL = "docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -Atq"
@@ -78,8 +81,7 @@ def replay(hops: Sequence[dict[str, Any]]) -> dict[str, Any]:
         state, turns, new = hb.fold_turn_signals(state, turns, [sig], now)
         folded.extend(new)
         opened_times.extend(now for t in new if t.opened_concern_id)
-        max_open = max(max_open, sum(1 for c in state.concerns
-                                     if c.graded is None and (c.event_ref or "").startswith(hb.TURN_EVENT_PREFIX)))
+        max_open = max(max_open, sum(1 for c in state.concerns if hb.holds_turn_slot(c, now)))
     max_day = max((sum(1 for u in opened_times if t <= u < t + hb.TURN_CONCERN_WINDOW) for t in opened_times),
                   default=0)
     return {"state": state, "turns": turns, "folded": folded, "max_open": max_open, "max_day": max_day}
@@ -91,8 +93,22 @@ def handed_back_finalize_ids(hops: Sequence[dict[str, Any]]) -> set[str]:
     return {h["correlation_id"] for h in hops if h["stage"] == "finalize" and h["correlation_id"] in started}
 
 
+def _replay_on_24h_promise_ttl(hops: Sequence[dict[str, Any]]) -> dict[str, Any]:
+    saved = ps.PROMISE_CONCERN_TTL
+    ps.PROMISE_CONCERN_TTL = ps.CONCERN_TTL
+    try:
+        return replay(hops)
+    finally:
+        ps.PROMISE_CONCERN_TTL = saved
+
+
+def _opened(r: dict[str, Any]) -> int:
+    return sum(1 for t in r["folded"] if t.opened_concern_id)
+
+
 def checks(hops: Sequence[dict[str, Any]]) -> tuple[dict[str, bool], dict[str, Any]]:
     a, b = replay(hops), replay(hops)
+    base = _replay_on_24h_promise_ttl(hops)
     strip = lambda r: [t.model_dump() for t in r["folded"]]  # noqa: E731 -- concern ids are derived, so exact
     expected = handed_back_finalize_ids(hops)
     got = {t.correlation_id for t in a["folded"]}
@@ -106,12 +122,14 @@ def checks(hops: Sequence[dict[str, Any]]) -> tuple[dict[str, bool], dict[str, A
                           if t.verdict in hb.COUNTED_VERDICTS),
         "bounded": a["max_open"] <= hb.TURN_CONCERNS_MAX_OPEN and a["max_day"] <= hb.TURN_CONCERNS_PER_DAY,
         "replay_safe": again == [] and again_state == a["state"] and again_turns.recent == a["turns"].recent,
+        "promise_ttl_costs_no_thread": _opened(a) >= _opened(base),
     }
     report = {
         "hops": len(hops),
         "turns_by_who": dict(Counter(t.who for t in a["folded"])),
         "missing": sorted(expected - got)[:10],
-        "threads_opened": sum(1 for t in a["folded"] if t.opened_concern_id),
+        "threads_opened": _opened(a),
+        "threads_opened_on_24h_promise_ttl": _opened(base),
         "threads_refused": sum(1 for t in a["folded"] if t.thread_refused),
         "turns_with_promises": sum(1 for t in a["folded"] if t.promise_refs),
         "concerns_answered": sum(len(t.settled_concern_ids) for t in a["folded"]),

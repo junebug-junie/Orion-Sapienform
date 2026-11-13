@@ -8,7 +8,8 @@ normal tick and costs nothing.
 What counts as a change (each one is a fact Prime can be shown, never a score):
 
 * one of Prime's own acts settled (written by the runtime when a nomination closes);
-* a concern faded: Prime has not kept it for ``CONCERN_TTL`` (a thought keeps a concern by naming it
+* a concern faded: Prime has not kept it for ``concern_ttl(concern)`` -- ``CONCERN_TTL`` (24 h), or
+  ``PROMISE_CONCERN_TTL`` (72 h) for a promise concern (a thought keeps a concern by naming it
   under ``concerns.keep``; nothing outside a thought renews it -- 2026-10-30, Juniper: an arc the model
   tied a concern to is not evidence for it; the first live concern, about energy, was tied to a
   conversation arc and was being renewed by that conversation);
@@ -85,6 +86,15 @@ CONCERN_TTL = timedelta(hours=24)
 # The quiet floor. Live 10-30..11-03, with attention moves removed, the longest stretch with no other
 # trigger was 12.3 h (p90 1.6 h): without a floor a concern could fade with no thought in between.
 QUIET_FLOOR = CONCERN_TTL / 4
+# A promise concern: one the turn hand-back opened because Orion promised something in a turn (orion/prime/handback.py,
+# event_ref ``turn:<correlation_id>``). It fades after 72 h, the horizon the intention ledger gives a promise
+# (docs/superpowers/specs/2026-11-11-intention-ledger-design.md; orion/prime/intention_sources/turn_promise.py
+# HORIZON_SEC, a test pins the two together). Juniper approved 2026-11-13. Live 11-12 a promise to "take a lazy
+# browse through the last 24 hours" faded after one day with no move. The kind is read from event_ref, so a
+# concern saved before this change gets the right TTL with no new field. QUIET_FLOOR stays CONCERN_TTL / 4.
+PROMISE_EVENT_PREFIX = "turn:"
+PROMISE_CONCERN_TTL = timedelta(hours=72)
+PROMISE_TEXT_CAP = 600
 
 Arm = Literal["treated", "control"]
 
@@ -107,6 +117,12 @@ class PrimeConcernV1(BaseModel):
     # rebuild Hub before orion-mind, and drop these keys from orion:prime:state before rolling mind back.
     event_family: Optional[str] = Field(default=None, max_length=200)
     event_care_promoted: Optional[bool] = None
+    # A promise concern (``is_promise_concern``): the promise sentence(s) the 5b judge quoted from Orion's reply,
+    # labelled with who it was made to and when (orion/prime/handback.py ``promise_text``). Shown only in Prime's
+    # own thinking frame (orion/prime/thought.py); never in ``text``, so it never reaches the Prime block in every
+    # turn's motor prefix or the published concerns view (choice-as-EFE acceptance S-1.8). Left out of the saved
+    # state when None; same rollback rule as event_family (rebuild Hub before orion-mind).
+    promise_text: Optional[str] = Field(default=None, max_length=PROMISE_TEXT_CAP)
     opened_at: AwareDatetime
     # When a thought last kept it (or opened it). Name kept for the persisted state's schema.
     last_evidence_at: AwareDatetime
@@ -126,10 +142,24 @@ class PrimeConcernV1(BaseModel):
     def _omit_unset_event(self, handler: SerializerFunctionWrapHandler) -> Any:
         # A concern with no event saves byte-for-byte as before (a rollback still loads the state).
         out = handler(self)
-        for key in ("event_ref", "event_family", "event_care_promoted"):
+        for key in ("event_ref", "event_family", "event_care_promoted", "promise_text"):
             if out.get(key, 0) is None:
                 del out[key]
         return out
+
+
+def is_promise_concern(concern: PrimeConcernV1) -> bool:
+    return (concern.event_ref or "").startswith(PROMISE_EVENT_PREFIX)
+
+
+def concern_ttl(concern: PrimeConcernV1) -> timedelta:
+    """How long ``concern`` lives unkept: 72 h for a promise concern, 24 h for every other."""
+    return PROMISE_CONCERN_TTL if is_promise_concern(concern) else CONCERN_TTL
+
+
+def _ttl_words(ttl: timedelta) -> str:
+    days = ttl / timedelta(days=1)
+    return "a day" if days == 1 else f"{days:g} days"
 
 
 ConcernEnd = Literal["settled", "dropped", "faded", "lapsed"]
@@ -341,7 +371,8 @@ def track_record(state: PrimeStateV1) -> str:
     quick = sum(1 for r in recs if r.end == "dropped" and r.closed_at - r.opened_at <= QUICK_DROP)
     return (f"last {len(recs)} concerns: {n['settled']} settled (a question about it got a run that wrote "
             f"something), {n['dropped']} dropped ({quick} of them within an hour of opening), "
-            f"{n['faded']} faded (not kept for a day), {n['lapsed']} lapsed (held past the horizon with no "
+            f"{n['faded']} faded (not kept for a day, or 3 days for a promise), {n['lapsed']} lapsed "
+            f"(held past the horizon with no "
             f"question about it settling)")
 
 
@@ -362,9 +393,11 @@ def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeS
 
     kept: list[PrimeConcernV1] = []
     for concern in state.concerns:
-        if now - concern.last_evidence_at > CONCERN_TTL:
-            state = note_change(state, f"concern faded, not kept for a day: {concern.text!r}")
-            state = close_concern(state, concern, end="faded", now=now, note="faded: not kept for a day")
+        ttl = concern_ttl(concern)
+        if now - concern.last_evidence_at > ttl:
+            words = _ttl_words(ttl)
+            state = note_change(state, f"concern faded, not kept for {words}: {concern.text!r}")
+            state = close_concern(state, concern, end="faded", now=now, note=f"faded: not kept for {words}")
         else:
             kept.append(concern)
     return state.model_copy(update={"concerns": kept})
@@ -387,6 +420,11 @@ def new_id() -> str:
 __all__ = [
     "Arm",
     "CONCERN_TTL",
+    "PROMISE_CONCERN_TTL",
+    "PROMISE_EVENT_PREFIX",
+    "PROMISE_TEXT_CAP",
+    "concern_ttl",
+    "is_promise_concern",
     "NO_MODEL_FREE_TRIES",
     "QUIET_FLOOR",
     "TryKind",

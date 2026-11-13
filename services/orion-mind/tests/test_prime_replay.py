@@ -42,7 +42,11 @@ def test_recorded_tick_sequences_replay_identically():
     Re-recorded 2026-11-13 (personality rev 4, Prime's choice point): with the system prompt's new step 4 and
     "pick" key mapped back to the old text and the new ``choice=<outcome>`` field removed from prime_thought log
     lines, every part of every scenario equals the previous golden (checked by script). No scenario holds two
-    concerns with a pick, so none publishes a choice (11 no_concerns, 4 no_pick)."""
+    concerns with a pick, so none publishes a choice (11 no_concerns, 4 no_pick).
+    Re-recorded 2026-11-13 (promise concerns: quote in the frame, 72 h TTL, how a promise gets kept): with the
+    CONCERN_BASIS fade words, the system prompt's fade sentence and new promise line, and the track record's fade
+    words mapped back to the old text, every part of every scenario equals the previous golden (checked by script;
+    22 parts changed, 0 after mapping). No scenario holds a promise concern."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

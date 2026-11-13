@@ -51,8 +51,10 @@ def test_a_pick_among_two_concerns_publishes_one_choice_with_market_ranks_and_si
     thought_id = rt.state.last_thought_id
     assert choice.choice_id == f"prime:{thought_id}" and choice.lane == "prime"
     # The market lists orion_ask:k1 (net 0.9) above the read seed (0.4): the car concern is rank 1.
-    assert (choice.chosen.key, choice.chosen.market_rank, choice.chosen.text) == ("c-car", 1, "whose car is it")
-    assert [(o.key, o.market_rank) for o in choice.alternatives] == [("c-read", 2)]
+    # Each option is keyed by its event want's family (source (c) counts it there, not as "prime").
+    assert (choice.chosen.key, choice.chosen.market_rank, choice.chosen.text) == (
+        "vision.ask::c-car", 1, "whose car is it")
+    assert [(o.key, o.market_rank) for o in choice.alternatives] == [("hub.world_pulse_read::c-read", 2)]
     assert choice.chosen_market_rank == 1 and not choice.declined_all and not choice.care_promoted
     assert choice.situation["strain"] == 0.3 and choice.situation["strain_constraint"] == "lane:agent"
     assert choice.situation["event_mode"] is True and choice.situation["body_read"] is True
@@ -66,7 +68,7 @@ def test_no_move_with_concerns_held_is_declined_all():
     [env] = _choices(rt)
     choice = PersonalityChoiceV1.model_validate(env.payload)
     assert choice.declined_all and choice.chosen is None
-    assert sorted(o.key for o in choice.alternatives) == ["c-car", "c-read"]
+    assert sorted(o.key for o in choice.alternatives) == ["hub.world_pulse_read::c-read", "vision.ask::c-car"]
 
 
 def test_a_held_back_question_still_records_the_choice():
@@ -75,7 +77,7 @@ def test_a_held_back_question_still_records_the_choice():
     asyncio.run(rt.tick())
     assert rt.bus.rpcs == [] and rt.state.open_nominations[0].arm == "control"
     [env] = _choices(rt)
-    assert env.payload["chosen"]["key"] == "c-car"
+    assert env.payload["chosen"]["key"] == "vision.ask::c-car"
 
 
 def test_one_concern_picked_is_no_choice_and_no_pick_key_falls_back_to_the_move():
@@ -86,7 +88,7 @@ def test_one_concern_picked_is_no_choice_and_no_pick_key_falls_back_to_the_move(
     rt = _rt(legacy)
     asyncio.run(rt.tick())
     [env] = _choices(rt)
-    assert env.payload["chosen"]["key"] == "c-car"
+    assert env.payload["chosen"]["key"] == "vision.ask::c-car"
 
 
 def test_a_publish_failure_never_breaks_the_thought(caplog):
@@ -136,3 +138,26 @@ def test_tending_read_failure_is_a_gap_and_flag_off_shows_nothing():
     rt = _rt(ASK_CAR, flag=False, pages={FRAME_URL: FRAME})
     asyncio.run(rt.tick())
     assert "WHAT YOU TEND TO CHOOSE" not in rt.llm.calls[0]["user_prompt"]
+
+
+def test_a_concern_whose_want_reached_the_list_only_through_care_is_care_promoted():
+    """durable-runs flags a funded event want that is on the list only through the care term; a Prime
+    choice of its concern carries ``care_promoted`` (the reducer and source (c) weigh it half)."""
+    events = {**EVENTS, "wants": [{**EVENTS["wants"][0], "care_promoted": True}, EVENTS["wants"][1]]}
+    rt = _rt(ASK_CAR, pages={EVENTS_URL: events})
+    asyncio.run(rt.tick())
+    [env] = _choices(rt)
+    assert env.payload["care_promoted"] is True
+    pick_read = {**ASK_CAR, "pick": "c-read", "move": {**ASK_CAR["move"], "concern_id": "c-read"}}
+    rt = _rt(pick_read, pages={EVENTS_URL: events})
+    asyncio.run(rt.tick())
+    [env] = _choices(rt)
+    assert env.payload["chosen"]["key"] == "hub.world_pulse_read::c-read" and env.payload["care_promoted"] is False
+
+
+def test_a_concern_with_no_event_in_the_list_keeps_its_plain_id():
+    held = [_concern("c-arc", "an arc worry"), HELD[1]]
+    rt = _rt({**ASK_CAR}, held=held)
+    asyncio.run(rt.tick())
+    [env] = _choices(rt)
+    assert [o["key"] for o in env.payload["alternatives"]] == ["c-arc"]

@@ -9,6 +9,7 @@ Design: docs/superpowers/specs/2026-10-17-personality-orion-names-dispositions-d
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 import sys
 from dataclasses import replace
@@ -22,7 +23,7 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 TESTS = Path(__file__).resolve().parent
 sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT), str(TESTS)]
 
-from orion.personality.graph import Node, apply_fade  # noqa: E402
+from orion.personality.graph import DEFAULT_PARAMS, Node, _fade_to, apply_fade  # noqa: E402
 
 from app.personality_store import NAMING_CURSOR, PersonalityStore, node_key, split_nodes  # noqa: E402
 from test_personality_loop import T0, choice, direction_of, publish, utc, vec_for, world  # noqa: E402
@@ -62,15 +63,20 @@ def test_name_row_is_applied_in_the_tick_grounded_and_never_twice(caplog):
     drv, store, reader, emb, clock = booted()
     reader.namings = [naming("n1", "d1", name=NAME, sentence=SENTENCE)]
     clock.at = utc(minutes=10)
-    fade_only = {n.disposition_id: n for n in apply_fade(list(store.nodes.values()), now=clock.at).nodes}
+    loaded = {k: copy.deepcopy(v) for k, v in store.nodes.items()}
     with caplog.at_level(logging.INFO, logger="orion-durable-runs.personality_driver"):
         asyncio.run(drv.tick())
     d1 = store.nodes["d1"]
     assert d1.name == NAME and d1.name_sentence == SENTENCE and d1.orion_verdict == "named"
     assert d1.naming_id == "n1" and d1.shown_count == 1 and d1.verdict_evidence_count == 10
     assert d1.name_grounding_rank == 1 and d1.name_grounding_margin > 0
-    # No weight jump at the apply tick: the weight is the fade-only value.
-    assert d1.weight == pytest.approx(fade_only["d1"].weight)
+    # No weight jump at the apply tick: the stored (weight, updated_at) pair fades to the fade-only value.
+    # A fade under 1% is not written (graph._must_write), so the row may still be as of its old updated_at.
+    as_of_now = copy.deepcopy(d1)
+    _fade_to(as_of_now, clock.at, DEFAULT_PARAMS)
+    fade_only = copy.deepcopy(loaded["d1"])
+    _fade_to(fade_only, clock.at, DEFAULT_PARAMS)
+    assert as_of_now.weight == pytest.approx(fade_only.weight)
     assert store.cursors[NAMING_CURSOR].ref == "n1"
     lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("personality_naming_applied")]
     assert lines == [f"personality_naming_applied naming=n1 verdict=name grounding_rank=1 "
@@ -144,13 +150,17 @@ def test_own_name_echo_folds_with_no_weight_end_to_end():
     clock.at = utc(minutes=1)
     publish(drv, choice("chat:c1", utc(minutes=1), lane="chat", chosen=chosen))
     clock.at = utc(minutes=10)
-    before = apply_fade([store.nodes["d1"]], now=clock.at).nodes[0].weight
+    before_node = copy.deepcopy(store.nodes["d1"])
+    _fade_to(before_node, clock.at, DEFAULT_PARAMS)
+    before = before_node.weight
     asyncio.run(drv.tick())
     d1 = store.nodes["d1"]
     ev = store.evidence["choice:chat:c1"]
     assert ev.disposition_id == "d1" and ev.meta["cites_own_name"] is True and ev.weight_delta == 0.0
     assert d1.lane_counts["chat"] == 1 and "chat" not in d1.lane_recent
-    assert d1.weight == pytest.approx(before)
+    faded = copy.deepcopy(d1)
+    _fade_to(faded, clock.at, DEFAULT_PARAMS)
+    assert faded.weight == pytest.approx(before)
 
 
 def test_naming_columns_force_a_full_upsert():

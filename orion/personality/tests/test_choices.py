@@ -356,3 +356,19 @@ def test_contract_choice_id_lives_in_its_lane_namespace():
     with pytest.raises(ValueError):  # declining all is one decision
         PersonalityChoiceV1(choice_id="outreach:o1", lane="outreach", occurred_at=T, declined_all=True,
                             alternatives=[opt("b")], picks_in_decision=2)
+
+
+def test_curiosity_option_text_is_the_offered_claim_when_the_row_stores_it():
+    """From 2026-11-13 Hub stores each offered prior's claim on the offer row (``offered_rows``). The
+    option text is that claim, not the de-slugged id; an old row (no claim) keeps the readable id."""
+    offer = copy.deepcopy(OFFER_ROW)
+    offer["offered"][0]["claim"] = "  The induction   ledger has dangling entries\nnobody closes. "
+    offer["offered"][1]["claim"] = "x" * 900
+    offer["stale_offered"][0]["claim"] = ""  # empty claim: falls back to the id
+    a, b = curiosity_choices_from_rows(offer, OUTCOME_ROW)
+    assert a.chosen.text == "The induction ledger has dangling entries nobody closes."
+    alt = {o.key: o.text for o in a.alternatives}
+    assert alt["self:camera_layer_mediation_not_closeness_20261007"] == "x" * 400
+    assert alt["self:ring_is_doorway_projection_20261007"] == "ring is doorway projection"  # old row shape
+    # Same choice ids as before: only the text changed.
+    assert [c.choice_id for c in (a, b)] == [c.choice_id for c in curiosity_choices_from_rows(OFFER_ROW, OUTCOME_ROW)]

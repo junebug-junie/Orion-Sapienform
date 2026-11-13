@@ -206,3 +206,40 @@ def test_a_failed_event_history_read_ranks_on_intensity_and_never_fails_the_bid(
     # No event history: ranked as any want, against the hunger history (intensity max(hunger 0.63, 0.4)).
     assert d.value_basis == "event_cold:ungraded" and d.outcome == "funded"
     assert d.intensity == pytest.approx(1 - 1 / 2.718281828, abs=1e-3)
+
+
+def _care(nwc):
+    return ["personality:arm=care", "personality:care=0.5000:tendency=d1:cos=0.9000",
+            f"personality:net_without_care={nwc:.6f}"]
+
+
+def test_care_promoted_marks_a_want_on_the_menu_only_through_care():
+    """Personality rev 4 runaway guard for Prime's concern source: a funded event want inside the top
+    ``limit`` by net that falls outside it by net without care, or that would not be funded at all
+    without care, is ``care_promoted``. Prime sets the flag on a choice of its concern."""
+    rows = [
+        dict(_row("a", "world_pulse_read_seed:s1", net=0.50), reason="net_positive", warnings=_care(0.10)),
+        dict(_row("b", "world_pulse_read_seed:s2", net=0.40), reason="net_positive", warnings=[]),
+        dict(_row("c", "world_pulse_read_seed:s3", net=0.30), reason="net_positive", warnings=_care(0.30)),
+        # Funded only because care lifted its net above 0: care-promoted wherever it ranks.
+        dict(_row("d", "world_pulse_read_seed:s4", net=0.05), reason="net_positive", warnings=_care(-0.02)),
+    ]
+    menu = menu_from_rows(rows, labels={}, gone=set(), families=FAMS, now=NOW, limit=2)
+    # Shown: a (0.50) and b (0.40). Without care a (0.10) drops below b and c: a is care-promoted.
+    assert [(w.want_id, w.care_promoted) for w in menu.wants] == [("a", True), ("b", False)]
+    menu = menu_from_rows(rows, labels={}, gone=set(), families=FAMS, now=NOW, limit=8)
+    assert {w.want_id: w.care_promoted for w in menu.wants} == {"a": False, "b": False, "c": False, "d": True}
+    # No personality trace (flag off, old rows): nothing is care-promoted.
+    plain = [{k: v for k, v in r.items() if k != "warnings"} for r in rows]
+    assert not any(w.care_promoted for w in menu_from_rows(plain, labels={}, gone=set(), families=FAMS,
+                                                           now=NOW, limit=2).wants)
+    # jsonb as text, and the contract round-trips.
+    as_text = [dict(r, warnings=json.dumps(r["warnings"])) for r in rows]
+    menu = menu_from_rows(as_text, labels={}, gone=set(), families=FAMS, now=NOW, limit=2)
+    assert [w.care_promoted for w in menu.wants] == [True, False]
+    assert FundedEventWantsV1.model_validate_json(menu.model_dump_json()) == menu
+
+
+def test_the_menu_sql_reads_the_decision_reason_and_warnings():
+    assert "decision->>'reason' AS reason" in LATEST_EVENT_DECISIONS_SQL
+    assert "decision->'warnings' AS warnings" in LATEST_EVENT_DECISIONS_SQL

@@ -294,3 +294,30 @@ def test_choice_style_counts_decisions_not_picks():
     # r1 counts once by its best rank (1); declined_all is "own way".
     assert (style.choices, style.took_top, style.went_own_way) == (5, 3, 2)
     assert choice_style_from_rows([], now=NOW) is None
+
+
+def test_a_quiet_tick_writes_no_node_and_a_fade_is_written_once_it_moves_one_percent():
+    """Regression (live 2026-11-13: ``nodes_written: 118`` with ``choices_read: 0`` on every tick). Fade
+    moved every live node's weight a hair each tick and the exact snapshot compare rewrote them all. A
+    fade-only change is now written only once the weight moved ``history_min_rel_change`` from the stored
+    weight; the stored (weight, updated_at) pair stays exact, so the next tick fades to the same value."""
+    nodes = [node(disposition_id=f"d{i}", updated_at=NOW - timedelta(minutes=1)) for i in range(118)]
+    quiet = apply_fade(nodes, now=NOW)
+    assert quiet.nodes == [] and quiet.history == []
+    # Many skipped ticks fade to exactly the value one tick would have reached.
+    later = NOW + timedelta(hours=1)
+    assert apply_fade(nodes, now=later).nodes == []
+    # About 5 h at a 14-day half-life is a 1% move: the fade is written (with its history row).
+    much_later = NOW + timedelta(hours=6)
+    res = apply_fade(nodes, now=much_later)
+    assert len(res.nodes) == 118 and len(res.history) == 118
+    one = res.nodes[0]
+    assert one.updated_at == much_later
+    assert one.weight == pytest.approx(nodes[0].weight * 0.5 ** ((6 * 60 + 1) / (60 * 24 * 14)))
+
+
+def test_a_fold_still_writes_the_node_it_touched_and_only_that_node():
+    nodes = [node(disposition_id="d0", centroid=axis(0), updated_at=NOW - timedelta(minutes=1)),
+             node(disposition_id="d1", centroid=axis(3), updated_at=NOW - timedelta(minutes=1))]
+    res = fold(nodes, [ev(axis(0), weight=1.0)], now=NOW)
+    assert [n.disposition_id for n in res.nodes] == ["d0"]

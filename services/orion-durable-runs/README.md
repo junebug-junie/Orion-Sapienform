@@ -1231,6 +1231,19 @@ Orion's choices set what Orion values. `app/personality_values.py` (reads) + `or
   or `personality:care=0:reason=<why>`, `personality:endorsement=<rate>:n=<n>|none|excluded:<why>`,
   `personality:rank_without_care=`, `personality:net_without_care=`. `GET /physiology/reservations` -> `market.personality_values`.
 - Replay (read-only): `python3 services/orion-durable-runs/evals/personality_values_replay.py --dsn ... --hours 72`.
+- **Loop wiring (2026-11-13, PR "personality loop wiring").** Producers now feed the term:
+  - `GET /physiology/event-wants` marks each listed want `care_promoted` (`FundedEventWantV1`, additive) when it is
+    in the top `limit` by net only through care, or funded only through care (net without care <= 0). Computed
+    over every funded, unexpired event want from `want_ledger.decision` (`reason`, `warnings`). Prime keys each
+    concern option `<want family>::<concern_id>` and copies the flag onto a choice of that concern.
+  - Hub outreach sends the shown topics' text with its binding bid (`object_text`) and marks its choice
+    `care_promoted` when the want was funded only through care (`personality_values.care_funded`).
+  - Curiosity choices use each offered prior's claim (stored on `curiosity_offer_decisions.offered[].claim`) as
+    option text; rows from before 2026-11-13 keep the de-slugged prior id.
+- **Reducer writes.** A tick writes a node only when its evidence, status, label or counts moved, or when fade
+  moved its weight >= 1% (`history_min_rel_change`) from the stored weight (about every 5 h at the 14-day
+  half-life). Before this, fade rewrote every live node every tick (`nodes_written: 118`, `choices_read: 0`).
+  The stored `(weight, lane_recent, updated_at)` stays exact: the next tick fades from the stored `updated_at`.
 
 ### Admission bids (2026-10-27, body economy Patch C3a, SHADOW)
 

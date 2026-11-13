@@ -9,17 +9,24 @@
    expired too (Juniper answered it);
 3. ordered by the market's net (highest first), then ``limit``.
 
+``care_promoted`` (personality rev 4 runaway guard): a want inside the top ``limit`` by net that would be
+outside it by its net WITHOUT the care term (the decision's ``personality:net_without_care`` trace). A
+want funded on its net whose net without care is not positive would not be funded at all without care, so it
+is care-promoted whatever its rank. Computed over every funded, unexpired want, before ``limit``.
+
 This is the same market's record, not a second menu: nothing here scores or re-decides a want. The
 label is the source row's own words (a read's title, an ask's question, an office visit's label), so Prime can say what the
 event is; a cooling-act want's label comes from its own ref (the cabinet reading's node and time).
 """
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Optional, Sequence
 
 from orion.physiology.choice import SYNTHETIC_PRODUCERS
 from orion.physiology.families import FamiliesConfig
+from orion.physiology.personality_values import care_promoted_keys, net_without_care
 from orion.schemas.physiology_want import FundedEventWantsV1, FundedEventWantV1
 
 READ_PREFIX = "world_pulse_read_seed:"
@@ -37,7 +44,9 @@ SELECT DISTINCT ON (want_id) want_id, family, outcome, decided_at, net,
        decision->'want'->>'event_ref' AS event_ref,
        (decision->'want'->>'salience')::float AS salience,
        decision->'want'->>'opened_at' AS opened_at,
-       decision->'want'->'window'->>'latest' AS latest
+       decision->'want'->'window'->>'latest' AS latest,
+       decision->>'reason' AS reason,
+       decision->'warnings' AS warnings
   FROM want_ledger
  WHERE decided_at >= %(since)s AND decision->'want' ? 'event_ref' AND NOT (producer = ANY(%(synthetic)s))
  ORDER BY want_id, decided_at DESC
@@ -78,6 +87,7 @@ def menu_from_rows(rows: Sequence[Mapping[str, Any]], *, labels: Mapping[str, st
     """Pure: the funded, unexpired event wants, highest net first. ``gone``: event refs whose source row
     says the event is over (an answered ask)."""
     keep: list[FundedEventWantV1] = []
+    without_care: dict[str, Optional[float]] = {}
     for r in rows:
         ref = str(r.get("event_ref") or "")
         if r.get("outcome") != "funded" or not ref or ref in gone:
@@ -89,8 +99,53 @@ def menu_from_rows(rows: Sequence[Mapping[str, Any]], *, labels: Mapping[str, st
             want_id=str(r["want_id"]), family=str(r["family"]), event_ref=ref,
             salience=r.get("salience"), value_rank=r.get("value_rank"), net=r.get("net"),
             decided_at=_ts(r["decided_at"]), expires_at=end, label=labels.get(ref, "")))
+        without_care[str(r["want_id"])] = _without_care(r)
     keep.sort(key=lambda w: (-(w.net if w.net is not None else float("-inf")), w.event_ref))
-    return FundedEventWantsV1(as_of=now, considered=len(rows), funded_open=len(keep), wants=keep[:limit])
+    promoted = _care_promoted(keep, without_care, limit)
+    shown = [w.model_copy(update={"care_promoted": True}) if w.want_id in promoted else w for w in keep[:limit]]
+    return FundedEventWantsV1(as_of=now, considered=len(rows), funded_open=len(keep), wants=shown)
+
+
+def _without_care(row: Mapping[str, Any]) -> Optional[float]:
+    """The row's score with no care term: its net without care. None when, without care, it would not
+    have been funded at all (funded on its net, net without care not positive): care alone put it on
+    the menu. A row with no net scores -inf (it sorts last either way)."""
+    net = row.get("net")
+    if net is None:
+        return float("-inf")
+    warnings = row.get("warnings")
+    if isinstance(warnings, str):
+        try:
+            warnings = json.loads(warnings)
+        except ValueError:
+            warnings = []
+    nwc = net_without_care([str(w) for w in warnings or [] if isinstance(w, str)], float(net))
+    if nwc is None:
+        return float(net)
+    if row.get("reason") == "net_positive" and nwc <= 0.0 < float(net):
+        return None
+    return nwc
+
+
+def _care_promoted(keep: Sequence[FundedEventWantV1], without_care: Mapping[str, Optional[float]],
+                   limit: int) -> set[str]:
+    """want ids in the shown top ``limit`` only through care: funded only through care, or in the top
+    ``limit`` by net and outside it by net without care. Keys sort ties the way the menu does (net,
+    then event_ref), so a tie never reads as a promotion."""
+    def key(w: FundedEventWantV1) -> str:
+        return f"{w.event_ref}\x00{w.want_id}"
+    with_c = {key(w): (w.net if w.net is not None else float("-inf")) for w in keep}
+    without: dict[str, float] = {}
+    care_only: set[str] = set()
+    for w in keep:
+        v = without_care.get(w.want_id, with_c[key(w)])
+        if v is None:
+            care_only.add(w.want_id)
+            v = float("-inf")
+        without[key(w)] = v
+    out = care_promoted_keys(with_c, without, limit)
+    shown = {w.want_id for w in keep[:limit]}
+    return ({w.want_id for w in keep if key(w) in out} | care_only) & shown
 
 
 async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datetime, hours: float,

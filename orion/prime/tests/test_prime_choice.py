@@ -207,3 +207,32 @@ def test_fetch_prime_block_awaits_a_tending_task_and_survives_its_failure():
 def test_no_tending_leaves_the_block_unchanged():
     assert _render(_state()).text == _render(_state(), []).text
     assert _render(_state()).tending == 0
+
+
+def test_options_are_keyed_by_their_event_wants_family_for_source_c():
+    """Rev 4 Move 2: a Prime choice of a reading concern counts for the reading family, not for
+    ``prime`` as a lump. A concern with no event in the list keeps its plain id (lane family)."""
+    from orion.physiology.weights import option_family
+    from orion.prime.choice import event_families
+
+    events = {"wants": [{"event_ref": "seed:1", "family": "hub.world_pulse_read"},
+                        {"event_ref": "ask:1", "family": "vision.ask"}, {"event_ref": "", "family": "x"}]}
+    fams = event_families(events)
+    assert fams == {"seed:1": "hub.world_pulse_read", "ask:1": "vision.ask"}
+    choice, _ = _choice({"pick": "c-a"}, families=fams)
+    assert choice.chosen.key == "hub.world_pulse_read::c-a"
+    assert [o.key for o in choice.alternatives] == ["vision.ask::c-b", "c-c"]
+    assert [option_family("prime", o.key) for o in [choice.chosen, *choice.alternatives]] == [
+        "hub.world_pulse_read", "vision.ask", "prime"]
+
+
+def test_care_promoted_follows_the_chosen_concerns_event():
+    from orion.prime.choice import care_promoted_events
+
+    promoted = care_promoted_events({"wants": [{"event_ref": "seed:1", "care_promoted": True},
+                                               {"event_ref": "ask:1", "care_promoted": False}]})
+    assert promoted == {"seed:1"}
+    assert _choice({"pick": "c-a"}, care_promoted=promoted)[0].care_promoted is True
+    assert _choice({"pick": "c-b"}, care_promoted=promoted)[0].care_promoted is False
+    assert _choice({"pick": "none"}, care_promoted=promoted)[0].care_promoted is False
+    assert care_promoted_events(None) == set()

@@ -26,6 +26,14 @@ among the shown concerns only (1 = the option the market valued most). A concern
 in the list (a turn promise, a day-letter thread, arc mode) has no rank (None). When fewer than 2
 shown concerns are in the list, the market ordered nothing among them: every rank is None.
 
+``key`` (personality rev 4 Move 2, source (c)): a concern whose event is in the funded event wants list is
+keyed ``<want family>::<concern_id>`` (``orion.physiology.weights.endorsement_option_key``), so a Prime
+choice of a reading concern counts for ``hub.world_pulse_read``, not for ``prime`` as a lump. A concern
+with no event in the list keeps its plain id (``option_family`` then reads the lane's family, ``prime``).
+
+``care_promoted``: the chosen concern's event want is in the list only through the care term (the list's
+own ``care_promoted`` flag, computed by durable-runs over every funded event want with and without care).
+
 ``situation``: what Prime's BODY section showed: the binding constraints and the strain dial (Prime's
 frame shows no arousal reading; strain is the body-state number it does see).
 
@@ -36,8 +44,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Optional, Sequence
+from typing import Any, Collection, Mapping, Optional, Sequence
 
+from orion.physiology.weights import endorsement_option_key
 from orion.schemas.personality import CHOICE_OPTION_TEXT_MAX, ChoiceOptionV1, PersonalityChoiceV1
 
 LANE = "prime"
@@ -70,6 +79,28 @@ def market_ranks(shown: Sequence[ShownConcern], ranked_event_ids: Sequence[str])
     for r, (_p, cid) in enumerate(placed, start=1):
         ranks[cid] = r
     return ranks
+
+
+def event_families(events: Optional[Mapping[str, Any]]) -> dict[str, str]:
+    """event_ref -> want family, from a ``FundedEventWantsV1`` dump (Prime's ``inputs.events``)."""
+    out: dict[str, str] = {}
+    for w in (events or {}).get("wants") or []:
+        if isinstance(w, Mapping) and w.get("event_ref") and w.get("family"):
+            out.setdefault(str(w["event_ref"]), str(w["family"]))
+    return out
+
+
+def care_promoted_events(events: Optional[Mapping[str, Any]]) -> set[str]:
+    """The event_refs whose funded want reached the list only through care (``care_promoted``)."""
+    return {str(w["event_ref"]) for w in (events or {}).get("wants") or []
+            if isinstance(w, Mapping) and w.get("event_ref") and w.get("care_promoted") is True}
+
+
+def option_key(concern: ShownConcern, families: Mapping[str, str]) -> str:
+    """The concern's option key: ``<family>::<concern_id>`` when its event names a funded want's family."""
+    family = families.get(concern.event_ref) if concern.event_ref else None
+    key = endorsement_option_key(family, concern.concern_id) if family else concern.concern_id
+    return key[:200]
 
 
 def _text(text: str) -> str:
@@ -110,17 +141,21 @@ def prime_choice(
     situation: Optional[dict[str, Any]] = None,
     act_id: Optional[str] = None,
     correlation_id: Optional[str] = None,
+    families: Optional[Mapping[str, str]] = None,
+    care_promoted: Collection[str] = (),
 ) -> tuple[Optional[PersonalityChoiceV1], str]:
     """(the choice, reason). The choice is None when this thought made no recordable choice; the
     reason then says why (``no_concerns``, ``one_concern_picked``, ``pick_not_shown``, ``pick_conflicts_move``,
-    ``no_pick``)."""
+    ``no_pick``). ``families``: event_ref -> want family (``event_families``). ``care_promoted``: event_refs
+    whose want reached the list only through care (``care_promoted_events``)."""
     if not shown:
         return None, "no_concerns"
     pick, why = resolve_pick(answer, shown)
     if pick is None:
         return None, why or "no_pick"
     ranks = market_ranks(shown, ranked_event_ids)
-    options = {c.concern_id: ChoiceOptionV1(key=c.concern_id[:200], text=_text(c.text),
+    fams = families or {}
+    options = {c.concern_id: ChoiceOptionV1(key=option_key(c, fams), text=_text(c.text),
                                             market_rank=ranks[c.concern_id]) for c in shown}
     common = dict(choice_id=f"{LANE}:{thought_id}", lane=LANE, occurred_at=occurred_at,
                   situation=dict(situation or {}), act_id=act_id, correlation_id=correlation_id)
@@ -129,7 +164,10 @@ def prime_choice(
     if len(shown) < 2:
         return None, "one_concern_picked"
     alternatives = [o for k, o in options.items() if k != pick]
-    return PersonalityChoiceV1(chosen=options[pick], alternatives=alternatives, **common), "chosen"
+    picked = next(c for c in shown if c.concern_id == pick)
+    promoted = bool(picked.event_ref) and picked.event_ref in set(care_promoted or ())
+    return PersonalityChoiceV1(chosen=options[pick], alternatives=alternatives, care_promoted=promoted,
+                               **common), "chosen"
 
 
 def body_situation(body: Optional[dict[str, Any]], binding: Optional[Sequence[str]], *,
@@ -149,5 +187,5 @@ def body_situation(body: Optional[dict[str, Any]], binding: Optional[Sequence[st
     return out
 
 
-__all__ = ["LANE", "PICK_NONE", "ShownConcern", "body_situation", "market_ranks", "prime_choice",
-           "resolve_pick", "shown_concerns"]
+__all__ = ["LANE", "PICK_NONE", "ShownConcern", "body_situation", "care_promoted_events", "event_families",
+           "market_ranks", "option_key", "prime_choice", "resolve_pick", "shown_concerns"]

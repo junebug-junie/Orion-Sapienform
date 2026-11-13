@@ -443,6 +443,18 @@ finding stay with that door). Orion's reply starts with `Pick: <n>`.
   recent chat, quiet hours, daily cap, cooldown, rest drive, arousal, the
   body-economy bid). Kill switch: `HUB_ENDOGENOUS_OUTREACH_CHOICE_ENABLED=false`
   restores the one-topic prompt.
+- **Care term (personality rev 4, 2026-11-13).** The binding bid carries the
+  shown topics' option texts (`object_text`, "; "-joined, <= 400 chars), so the
+  market's care term can price what the compose is about. Before this the want
+  carried only `object_ref="juniper"` and care was always 0. When the want was
+  funded only through care (`orion.physiology.personality_values.care_funded`:
+  funded on its net, net without care <= 0), the published choice is
+  `care_promoted` (the reducer and the market's source (c) weigh it half).
+  Shown topics are ranked by freshness, not by care, so no single topic is
+  promoted alone. Shadow mode sends the text too; it never sets the flag.
+- **Curiosity offer rows** store each offered prior's claim
+  (`curiosity_offer_decisions.offered[].claim`, JSON field, no migration), so the
+  personality reducer's curiosity option text is the prior's words, not its id.
 
 **The trigger is real** (2026-08-16, replacing a randomized-timer stub).
 Every `HUB_ENDOGENOUS_OUTREACH_TICK_SEC` (default **10s**, see caveat below)

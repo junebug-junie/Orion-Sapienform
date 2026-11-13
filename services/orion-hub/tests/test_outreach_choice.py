@@ -588,3 +588,68 @@ def test_choice_prompt_leaves_out_material_with_no_subject_id() -> None:
                           open_prior_previews=["an open claim"])
     prompt = build_outreach_prompt(ctx, topics=[_topic("reading:s1")])
     assert "repair pressure rising" not in prompt and "an open claim" not in prompt
+
+
+# --- personality rev 4: the bid carries the topics' text; a care-only fund is care_promoted -------
+
+
+def test_outreach_object_text_joins_shown_topics_and_caps() -> None:
+    from scripts.outreach_choice import OBJECT_TEXT_MAX, outreach_object_text
+
+    topics = [_topic("daydream:d", kind="daydream"), _topic("reading:s1")]
+    text = outreach_object_text(topics)
+    assert text == "; ".join(t.option_text for t in topics)
+    assert outreach_object_text([]) is None
+    long = [OutreachTopic(subject=f"s{i}", kind="reading", option_text="w " * 300, prompt_text="p") for i in range(3)]
+    assert len(outreach_object_text(long)) <= OBJECT_TEXT_MAX
+
+
+def test_build_choice_carries_care_promoted() -> None:
+    topics = [_topic("daydream:d", kind="daydream"), _topic("reading:s1")]
+    pick = parse_pick("Pick: 1\nmsg", 2, is_pass=is_pass_response)
+    kw = dict(decision_key="w", topics=topics, pick=pick, occurred_at=NOW, situation={}, act_id="w",
+              correlation_id="w")
+    assert build_choice(**kw).care_promoted is False
+    assert build_choice(**kw, care_promoted=True).care_promoted is True
+
+
+def test_tick_bid_sends_topics_text_and_a_care_only_fund_marks_the_choice(monkeypatch) -> None:
+    """Live gap 2026-11-13: outreach wants carried object_ref "juniper" and no text, so care was always 0.
+    The binding bid now carries the shown topics' text; when the want was funded only through care, the
+    published choice is ``care_promoted`` (the reducer and source (c) weigh it half)."""
+    import scripts.outreach_bind as ob
+    from orion.schemas.physiology_want import WantDecisionV1
+
+    seen: List[Any] = []
+
+    async def fake_abid(want, timeout_sec, object_text=None):
+        seen.append(object_text)
+        now = datetime.now(timezone.utc)
+        return WantDecisionV1(
+            decision_id=f"{want.want_id}@x", want_id=want.want_id, family=want.family, producer=want.producer,
+            verb=want.verb, tier=want.tier, decided_at=now, outcome="funded", reason="net_positive", net=0.05,
+            charge=0.1, want=want, why="hub.outreach: care lifted it",
+            warnings=["personality:arm=care", "personality:care=0.6000:tendency=d1:cos=0.9000",
+                      "personality:net_without_care=-0.010000"])
+
+    async def fake_release(want_id):
+        return 1
+
+    monkeypatch.setattr(ob, "_abid", fake_abid)
+    monkeypatch.setattr(ob, "_arelease", fake_release)
+    _Ledger(monkeypatch)
+    prompts: List[str] = []
+    delivered: List[str] = []
+    o = _choice_outreach()
+    o.economy_mode = "on"
+    o.topic_sources.append(_reading_source())
+    _stub_tick(monkeypatch, replies=["Pick: 1\nThe read moved a belief of mine.\nWhy Juniper: she asked."],
+               prompts=prompts, delivered=delivered)
+
+    result = asyncio.run(o.maybe_outreach())
+
+    assert result["outreach"] is True
+    assert len(seen) == 1 and seen[0] and 'A read, "Graphs first": belief moved' in seen[0]
+    assert "A daydream" in seen[0]
+    (choice,) = _choices(o)
+    assert choice.care_promoted is True

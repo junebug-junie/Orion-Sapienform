@@ -349,6 +349,24 @@ def _snap(node: Node) -> _Snap:
     return _Snap(node.weight, node.status, node.evidence_count, node.label, node.centroid_n, node.opposed_count)
 
 
+def _must_write(before: _Snap, after: _Snap, params: GraphParams) -> bool:
+    """Does a loaded node need its row rewritten this tick?
+
+    Fade moves every live node's weight a little on every tick (exact, deterministic: 0.5 ** (dt /
+    half_life) from the row's own ``updated_at``), so comparing snapshots exactly rewrote every live
+    node every tick (live 2026-11-13: ``nodes_written: 118`` with ``choices_read: 0``). The stored row
+    (weight, lane_recent, updated_at) stays self-consistent when a fade-only change is NOT written: the
+    next tick fades from the stored ``updated_at`` and reaches the same value. So a fade-only change is
+    written only once the weight moved ``history_min_rel_change`` (1%) from the stored weight -- about
+    every 5 h at a 14-day half-life -- which bounds how stale a reader of the raw ``weight`` column (the
+    market's tendency read) can be. Any other change (evidence, status, label, oppose) is always written."""
+    if replace(after, weight=before.weight) != before:
+        return True
+    if before.weight == 0.0:
+        return after.weight != 0.0
+    return abs(after.weight - before.weight) / abs(before.weight) >= params.history_min_rel_change
+
+
 class _Tick:
     """Working copies of the input nodes plus nodes born this tick, with before-snapshots."""
 
@@ -473,7 +491,7 @@ class _Tick:
         history: list[HistoryRow] = []
         for node in self.nodes:
             before = self.before.get(id(node))
-            if before is not None and _snap(node) == before:
+            if before is not None and not _must_write(before, _snap(node), params):
                 continue
             changed.append(node)
             w0 = node.history_weight if before is not None else 0.0

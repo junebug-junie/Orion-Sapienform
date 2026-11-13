@@ -269,6 +269,11 @@ class FundedEventWantV1(BaseModel):
     expires_at: Optional[AwareDatetime] = None
     # What the event is, in words, read from its source row (the read's title, the ask's question).
     label: str = ""
+    # Personality rev 4 runaway guard: this want is in the menu's top ``limit`` by net only because of the
+    # care term (``orion.physiology.personality_values.care_promoted_keys`` over every funded, unexpired
+    # event want, with and without care). Prime sets ``PersonalityChoiceV1.care_promoted`` on a choice of
+    # its concern. Additive: deploy the reader (orion-mind) before the writer (orion-durable-runs).
+    care_promoted: bool = False
 
 
 class FundedEventWantsV1(BaseModel):

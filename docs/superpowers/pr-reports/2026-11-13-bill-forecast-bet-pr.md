@@ -241,6 +241,6 @@ two that matter. Check after: `curl -fsS http://localhost:8132/bill-forecast`.
 
 ## PR link
 
-(filled after push)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3280
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

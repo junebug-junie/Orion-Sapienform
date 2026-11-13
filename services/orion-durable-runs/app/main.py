@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Any, Literal, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, ConfigDict
 
 from orion.core.bus.async_service import OrionBusAsync
@@ -55,6 +55,7 @@ situation: Any = None
 temporal_self: Any = None
 claude_limits: Any = None   # app.physiology_store.ClaudeLimitCache while the physiology node runs
 market: Any = None          # app.physiology_market.Market while ORION_PHYSIOLOGY_BID_ENABLED (Patch C1)
+HTTP_EMBED_WAIT_SEC = 0.25  # personality care: the most an HTTP bid waits for its object text's embedding
 cooling_act: Any = None     # app.cooling_act.CoolingAct while ORION_COOLING_ACT_ENABLED (ladder retirement PR 5)
 _cooling_act_task: asyncio.Task | None = None
 chronicle: Any = None
@@ -524,12 +525,29 @@ def _build_market():
             kind=WANT_DECISION_KIND, source=source, correlation_id=uuid4(),
             payload=decision.model_dump(mode="json")))
 
+    # Personality rev 4 Move 2: source (c) + care, binding (PHYSIOLOGY_PERSONALITY_VALUES).
+    from app.personality_values import PersonalityValues
+
+    values_on = str(getattr(s, "physiology_personality_values", "off")).strip().lower() == "on"
+    embed = None
+    if values_on:
+        from app.personality_driver import http_embedder
+
+        embed, close_embed = http_embedder(s.personality_embed_url,
+                                           timeout_sec=s.physiology_personality_embed_timeout_sec)
+    personality = PersonalityValues(enabled=values_on, pool_getter=lambda: _checkpointer_cm, embed=embed,
+                                    ttl_sec=max(60.0, float(s.physiology_bid_history_ttl_sec)),
+                                    embed_timeout_sec=s.physiology_personality_embed_timeout_sec)
+    if values_on:
+        personality.set_closer(close_embed)
+    logger.info("personality_values_configured enabled=%s embed_url=%s", values_on,
+                s.personality_embed_url if values_on else None)
     return Market(families=families, families_error=err, pool_getter=lambda: _checkpointer_cm,
                   redis_getter=lambda: rpc_bus.redis if rpc_bus is not None else None, publish=publish,
                   history_ttl_sec=s.physiology_bid_history_ttl_sec, lane_window_sec=s.physiology_lane_window_sec,
                   stale_after_sec=s.physiology_bid_stale_after_sec,
                   prime_regulation=bool(getattr(s, "physiology_prime_regulation", False)),
-                  consent_rules=consent_rules, consent_error=consent_err)
+                  consent_rules=consent_rules, consent_error=consent_err, personality=personality)
 
 
 def _build_chronicle():
@@ -716,6 +734,8 @@ async def lifespan(app: FastAPI):
             await temporal_self.close()
         if personality is not None:
             await personality.close()
+        if market is not None and getattr(market, "personality", None) is not None:
+            await market.personality.aclose()
         if _admission_task is not None:
             _admission_task.cancel()
             await asyncio.gather(_admission_task, return_exceptions=True)
@@ -894,7 +914,7 @@ async def physiology_report(window: Optional[str] = "24h", sections: Optional[st
 
 
 @app.post("/physiology/bid")
-async def physiology_bid(want: dict):
+async def physiology_bid(want: dict, object_text: Optional[str] = Query(default=None, max_length=2000)):
     """Body economy Patch C1, SHADOW: one ``WantV1`` -> one ``WantDecisionV1`` (funded/deferred, lane,
     prices seen, net, binding constraint, displaced, retry_after, ``shadow=true``), priced against the
     latest physiology state and published to ``orion:physiology:want:decision`` (want_ledger). Callers
@@ -909,7 +929,11 @@ async def physiology_bid(want: dict):
         parsed = WantV1.model_validate(want)
     except ValidationError as exc:
         raise HTTPException(422, exc.errors(include_url=False, include_context=False)) from exc
-    decision = await market.bid(parsed)
+    # ``object_text`` (query, optional): what the want's object says (an outreach topic, ...), for the care
+    # term (personality rev 4). Not part of WantV1. Absent: care 0.
+    # Producers call with a short budget (orion.physiology.client: 0.5 s), so a cold embed waits at most
+    # HTTP_EMBED_WAIT_SEC here; past it, care 0 for this bid (the embed is cached once it lands).
+    decision = await market.bid(parsed, object_text=object_text, embed_wait_sec=HTTP_EMBED_WAIT_SEC)
     return decision.model_dump(mode="json")
 
 

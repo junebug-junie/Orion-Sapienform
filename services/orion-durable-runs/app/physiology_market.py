@@ -42,6 +42,13 @@ decision (deferred, reason ``consent``); ``allow`` goes on to be priced, with th
 Every verdict is one ``physiology_consent verdict=... rule=... want=...`` log line. Rules:
 config/physiology/consent.yaml (``ORION_PHYSIOLOGY_CONSENT_PATH``); unread -> such a want is refused.
 
+Personality values (rev 4 Move 2, binding, no shadow; ``app.personality_values``). With
+``PHYSIOLOGY_PERSONALITY_VALUES=on``: family weights carry source (c), Orion's endorsement from
+``personality_choice`` (minus any family whose (c) correlates above 0.8 with Juniper's engagement, logged as
+``personality_values_endorsement``), and each bid gets an arm: ``care`` (care from the want's object text,
+``bid(..., object_text=...)``) or ``holdback`` (20%: care 0, weights without (c)). Both arms bind. The arm,
+care and endorsement are in the decision's ``warnings``. Off: no read, no term, decided exactly as before.
+
 Read-only on Postgres. A failed history read is ``physiology_unavailable`` for that bid, never a
 fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
 """
@@ -62,6 +69,7 @@ from orion.physiology.choice import (
     MarketContext,
     ReservationBook,
     acts_started,
+    with_personality_arm,
     SYNTHETIC_PRODUCERS,
     build_context,
     consent_gate,
@@ -73,7 +81,8 @@ from orion.physiology.consent import ConsentRules
 from orion.physiology import prime_charge as pc
 from orion.physiology.binding import BINDING_PRODUCERS
 from orion.physiology.families import FamiliesConfig
-from orion.physiology.weights import UseRecord, weights_now
+from orion.physiology.personality_values import trace_arm, trace_care
+from orion.physiology.weights import UseRecord, endorsement_exclusions, weights_now
 from orion.schemas.physiology import PhysiologyStateV1, parse_physiology_state
 from orion.schemas.physiology_want import WantDecisionV1, WantV1
 
@@ -169,7 +178,8 @@ class Market:
     def __init__(self, *, families: Optional[FamiliesConfig], families_error: Optional[str], pool_getter,
                  redis_getter, publish, history_ttl_sec: float = 300.0, lane_window_sec: float = 3600.0,
                  stale_after_sec: float = 360.0, prime_regulation: bool = False,
-                 consent_rules: Optional[ConsentRules] = None, consent_error: Optional[str] = None) -> None:
+                 consent_rules: Optional[ConsentRules] = None, consent_error: Optional[str] = None,
+                 personality: Optional[Any] = None) -> None:
         self.families = families
         self.families_error = families_error
         # The consent gate (attention patch 3d): config/physiology/consent.yaml. None (missing or malformed):
@@ -183,8 +193,11 @@ class Market:
         self._lane_window = lane_window_sec
         self._stale = stale_after_sec
         self._cache: Optional[_Cached] = None
-        # Weights are a 30-day daily replay: computed once per history snapshot and UTC day.
-        self._weights: Optional[tuple[tuple[datetime, Any], dict]] = None
+        # Weights are a 30-day daily replay: computed once per history snapshot, UTC day and personality
+        # snapshot. (key, with source (c), without it -- the holdback arm's, endorsement checks)
+        self._weights: Optional[tuple[Any, dict, dict, dict]] = None
+        # Personality values (rev 4 Move 2): app.personality_values.PersonalityValues, or None (off).
+        self.personality = personality
         self._lock = asyncio.Lock()
         self.book = ReservationBook()
         # Orion Prime step 3: apply Prime's regulate charges (ORION_PHYSIOLOGY_PRIME_REGULATION). Off: the
@@ -234,22 +247,78 @@ class Market:
         except Exception:  # noqa: BLE001
             logger.warning("physiology_bid_history_read_failed", exc_info=True)
             return None
-        key = (hist.at, now.astimezone(timezone.utc).date())
-        if self._weights is None or self._weights[0] != key:
-            self._weights = (key, weights_now(self.families, hist.acts, hist.uses, now))
+        await self._ensure_weights(hist, now)
+        with_c, without_c = self._weights[1], self._weights[2]
         ctx = build_context(self.families, hist.acts, hist.uses, state, now, lane_window_sec=self._lane_window,
-                            weights=self._weights[1], event_history=hist.events)
+                            weights=with_c, event_history=hist.events)
         # dataclasses.replace keeps every field (C1 rebuilt the context by hand and dropped
         # tier1_recent_use, so Tier 2's line forgot Tier 1's measured use).
-        return dataclasses.replace(ctx, stale_after_sec=self._stale)
+        return dataclasses.replace(ctx, stale_after_sec=self._stale,
+                                   weights_holdback=without_c if with_c is not without_c else None)
 
-    async def bid(self, want: WantV1, now: Optional[datetime] = None, *, reserve_at_open: bool = False) -> WantDecisionV1:
+    async def _ensure_weights(self, hist: "_Cached", now: datetime) -> None:
+        """Today's weights, with and without source (c), once per history snapshot, day and personality read.
+        The replay (~0.6 s each on a live 30-day history, 2026-11-13) runs in a worker thread, off the loop."""
+        choices = self.personality.choices() if self.personality is not None else None
+        key = (hist.at, now.astimezone(timezone.utc).date(),
+               self.personality.snapshot_at() if self.personality is not None else None)
+        if self._weights is not None and self._weights[0] == key:
+            return
+        base, with_c, checks = await asyncio.to_thread(self._compute_weights, hist, now, choices)
+        if choices is not None:
+            for f, w in sorted(with_c.items()):
+                chk = checks.get(f)
+                if w.evidence.endorsement_rate is None and chk is None:
+                    continue
+                logger.info("personality_values_endorsement family=%s rate=%s n=%d corr_with_engagement=%s "
+                            "paired_days=%s excluded=%s weight=%.3f weight_without=%.3f", f,
+                            None if w.evidence.endorsement_rate is None else round(w.evidence.endorsement_rate, 3),
+                            w.evidence.endorsement_n, chk.correlation if chk else None,
+                            chk.paired_days if chk else 0, bool(chk and chk.excluded), w.weight, base[f].weight)
+        self._weights = (key, with_c, base, checks)
+
+    def _compute_weights(self, hist: "_Cached", now: datetime, choices: Optional[list]) -> tuple[dict, dict, dict]:
+        base = weights_now(self.families, hist.acts, hist.uses, now)
+        if choices is None:
+            return base, base, {}
+        checks = endorsement_exclusions(self.families, hist.acts, choices, now)
+        excluded = frozenset(f for f, c in checks.items() if c.excluded)
+        with_c = weights_now(self.families, hist.acts, hist.uses, now, choices=choices,
+                             endorsement_excluded=excluded)
+        return base, with_c, checks
+
+    async def _personality_term(self, want: WantV1, object_text: Optional[str], ctx: MarketContext,
+                                checks: dict, embed_wait_sec: Optional[float] = None) -> Optional[Any]:
+        """The want's personality term (arm, care, endorsement), or None (off). Never raises. Reads the
+        weights that price THIS bid (``ctx``), so the trace matches the decision."""
+        if self.personality is None or not self.personality.enabled:
+            return None
+        try:
+            fw = ctx.weights.get(want.family)
+            chk = checks.get(want.family)
+            return await self.personality.term(
+                want.want_id, object_text,
+                endorsement_rate=fw.evidence.endorsement_rate if fw is not None else None,
+                endorsement_n=fw.evidence.endorsement_n if fw is not None else 0,
+                endorsement_excluded=chk.reason if chk is not None else "", embed_wait_sec=embed_wait_sec)
+        except Exception:  # noqa: BLE001 -- never fail a bid on personality: decided as before
+            logger.warning("personality_values_term_failed want=%s", want.want_id, exc_info=True)
+            return None
+
+    async def bid(self, want: WantV1, now: Optional[datetime] = None, *, reserve_at_open: bool = False,
+                  object_text: Optional[str] = None, embed_wait_sec: Optional[float] = None) -> WantDecisionV1:
+        """``object_text``: what the want's object says (a curiosity question, a reading's query, an outreach
+        topic), for the care term. None: care 0 (``no_object_text``). ``embed_wait_sec``: the most this bid
+        waits for that text's embedding (HTTP callers have a short budget); past it, care 0."""
         now = now or datetime.now(timezone.utc)
+        if self.personality is not None:
+            self.personality.kick(now)
         # The consent gate first (patch 3d): a refused or unconsented act is deferred before any read, so no
         # missing market ("no answer", which binding producers admit) can let it through.
         verdict, deferral = consent_gate(want, self.consent_rules, now, families=self.families)
         state = await self._state() if deferral is None else None
         ctx = await self.context(state, now) if deferral is None else None
+        checks = self._weights[3] if self._weights is not None else {}
         if deferral is not None:
             decision = deferral
         elif ctx is None:
@@ -259,6 +328,7 @@ class Market:
             decision = with_consent(unavailable(want, now, why=why, state=state), verdict)
         else:
             # Only an OBEYED bid takes Prime's charge (a shadow bid would grade Prime on holds that never happened).
+            term = await self._personality_term(want, object_text, ctx, checks, embed_wait_sec)
             sig = await self._prime_signal(want.family, now) if want.producer in BINDING_PRODUCERS else None
             refusal = await self._prime_refusal(sig) if sig is not None else None
             applied = sig if sig is not None and sig.arm == "treated" and refusal is None else None
@@ -268,16 +338,16 @@ class Market:
                 # count anything): what the charge changed is read from two real decisions, both arms alike.
                 # Refused: the "other way" is the charge as Prime sent it (what the refusal took away).
                 other = decide_priced(want, state, ctx, copy.deepcopy(self.book), now, reserve_at_open=reserve_at_open,
-                                      prime=None if applied is not None else sig)
+                                      prime=None if applied is not None else sig, personality=term)
             if refusal is not None and sig.arm == "treated":
                 # Not applied, and the decision says why (the refusal names the charge it removed).
                 decision = decide_priced(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open, prime=sig,
-                                         prime_refusal=refusal)
+                                         prime_refusal=refusal, personality=term)
             else:
                 decision = decide_priced(want, state, ctx, self.book, now, reserve_at_open=reserve_at_open,
-                                         prime=applied)
+                                         prime=applied, personality=term)
             # The gate ran once, above, before any read: attach its (allow) verdict, if any.
-            decision = with_consent(decision, verdict)
+            decision = with_personality_arm(with_consent(decision, verdict), term)
             if sig is not None and other is not None:
                 await self._record_prime_effect(sig, want, decision, other, now, applied=applied is not None,
                                                 refusal=refusal)
@@ -293,9 +363,10 @@ class Market:
         except Exception:  # noqa: BLE001 -- the caller still gets its decision; the ledger row is lost
             self.counts["publish_failed"] += 1
             logger.warning("physiology_bid_publish_failed want=%s", want.want_id, exc_info=True)
-        logger.info("physiology_bid family=%s outcome=%s reason=%s lane=%s net=%s binding=%s shadow=true",
-                    decision.family, decision.outcome, decision.reason, decision.lane, decision.net,
-                    decision.binding_constraint)
+        logger.info("physiology_bid family=%s outcome=%s reason=%s lane=%s net=%s binding=%s personality_arm=%s "
+                    "care=%s shadow=true", decision.family, decision.outcome, decision.reason, decision.lane,
+                    decision.net, decision.binding_constraint, trace_arm(decision.warnings),
+                    trace_care(decision.warnings))
         return decision
 
     async def _prime_signal(self, family: str, now: datetime) -> Optional[pc.PrimeRegulationV1]:
@@ -396,9 +467,7 @@ class Market:
         if self.families is None:
             raise RuntimeError(f"families config unavailable ({self.families_error})")
         hist = await self._history(now)
-        key = (hist.at, now.astimezone(timezone.utc).date())
-        if self._weights is None or self._weights[0] != key:
-            self._weights = (key, weights_now(self.families, hist.acts, hist.uses, now))
+        await self._ensure_weights(hist, now)
         return dict(self._weights[1])
 
     def health(self, now: Optional[datetime] = None) -> dict:
@@ -409,7 +478,9 @@ class Market:
                 "prime_regulation": self.prime_regulation,
                 "consent_rules": len(self.consent_rules.rules) if self.consent_rules else 0,
                 "consent_standing": len(self.consent_rules.standing) if self.consent_rules else 0,
-                "consent_error": self.consent_error, **self.counts}
+                "consent_error": self.consent_error,
+                "personality_values": self.personality.health() if self.personality is not None else {"enabled": False},
+                **self.counts}
 
 
 __all__ = ["Market", "act_from_row", "read_event_history", "read_history", "use_from_row"]

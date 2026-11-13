@@ -306,7 +306,7 @@ def fetch_recently_used_outreach_content_ids(
 
     Background-tick rows only. ``reason='sent'`` rows mark every lane's ids used:
     blocked ticks are not "already said." A tick Orion composed and declined
-    (``orion_passed``, ``no_why_juniper``; door policy review, 2026-11-10) marks
+    (``orion_passed``, ``orion_declined``, ``no_why_juniper``; door policy review, 2026-11-10) marks
     its DAYDREAM used too: otherwise the same picture is composed again on the
     next 10 s tick until a new daydream arrives (the readings door treats a
     decline as decided for the same reason).
@@ -329,7 +329,7 @@ def fetch_recently_used_outreach_content_ids(
                         """
                         SELECT reason, result_json->'grounding' AS grounding
                         FROM endogenous_outreach_decisions
-                        WHERE reason IN ('sent', 'orion_passed', 'no_why_juniper')
+                        WHERE reason IN ('sent', 'orion_passed', 'orion_declined', 'no_why_juniper')
                           AND decided_at >= now() - make_interval(days => :days)
                           AND result_json ? 'grounding'
                           AND coalesce(result_json->>'source', '') = ''
@@ -358,6 +358,59 @@ def fetch_recently_used_outreach_content_ids(
             "endogenous_outreach_used_content_ids_failed days=%s err=%s", days, exc
         )
         return empty
+
+
+def fetch_said_outreach_subjects(*, lookback_days: int = 7) -> Dict[str, Set[str]]:
+    """``{subject: {versions}}`` the background tick already decided about recently (sent, written
+    without a why, or declined at the choice point). See ``scripts.outreach_choice.fold_said_subjects``.
+
+    Background-tick rows only (no ``source``): the other doors keep their own told ledgers (the
+    readings door's finding ids, ``finding_key``). Fail-open to ``{}`` -- a broken ledger must not
+    invent silence; the tick's other gates (cooldown, daily cap, economy) still pace it."""
+    if not decision_log_enabled():
+        return {}
+    days = max(1, int(lookback_days))
+    try:
+        from scripts.outreach_choice import fold_said_subjects
+        from scripts.pg_engine import get_engine
+        from sqlalchemy import text
+
+        engine = get_engine()
+        if engine is None:
+            return {}
+        with engine.connect() as conn:
+            rows = (
+                conn.execute(
+                    text(
+                        """
+                        SELECT reason, result_json->'choice' AS choice,
+                               result_json->'grounding'->>'daydream_id' AS daydream_id
+                        FROM endogenous_outreach_decisions
+                        WHERE reason IN ('sent', 'orion_passed', 'orion_declined', 'no_why_juniper')
+                          AND decided_at >= now() - make_interval(days => :days)
+                          AND coalesce(result_json->>'source', '') = ''
+                        """
+                    ),
+                    {"days": days},
+                )
+                .mappings()
+                .all()
+            )
+        folded: List[Dict[str, Any]] = []
+        for row in rows:
+            choice = row.get("choice")
+            if isinstance(choice, str):
+                import json
+
+                try:
+                    choice = json.loads(choice)
+                except json.JSONDecodeError:
+                    choice = None
+            folded.append({"reason": row.get("reason"), "choice": choice, "daydream_id": row.get("daydream_id")})
+        return fold_said_subjects(folded)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("endogenous_outreach_said_subjects_failed days=%s err=%s", days, exc)
+        return {}
 
 
 def fetch_strain_report_history(*, lookback_days: int = 30) -> Optional[List[Dict[str, Any]]]:

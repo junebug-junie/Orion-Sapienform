@@ -49,8 +49,9 @@ TICK = "endogenous_tick"
 DOOR_SOURCES = ("reading_finding_outreach", "self_finding_outreach", "office_reach_out")
 BINDING_DOORS = (TICK,) + DOOR_SOURCES
 # Decision reasons that mean the attempt reached its compose point (the bid happens just before it).
+# orion_declined / no_pick / invalid_pick: the tick's choice point (services/orion-hub/scripts/outreach_choice.py).
 COMPOSED_REASONS = ("sent", "orion_passed", "empty_generation", "named_ungrounded_signal", "no_question",
-                    "claimed_recognition")
+                    "claimed_recognition", "orion_declined", "no_pick", "invalid_pick")
 MAX_BIDS = 1 + int(WINDOW_SEC // 120.0) + 1   # one bid per relief window of at least 2 min, plus the first
 
 

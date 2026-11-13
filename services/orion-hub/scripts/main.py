@@ -95,6 +95,7 @@ from scripts.reading_event_wants import ReadingEventWants
 from scripts.self_monitor_questions import SelfMonitorQuestionMinter
 from scripts.orion_day_mailer import OrionDayMailer
 from scripts.orion_day_order import DurableRunsClient, OrionDayOrderDesk, build_orion_day_order_router
+from scripts.intention_order import IntentionDesk, build_intention_router
 from scripts.endogenous_outreach import EndogenousOutreach
 from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
 import scripts.tension_outreach_trigger as tension_outreach_trigger
@@ -620,6 +621,9 @@ async def startup_event():
                 strain_report_enabled=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_ENABLED,
                 strain_report_min_episode_sec=settings.ENDOGENOUS_OUTREACH_STRAIN_REPORT_MIN_EPISODE_SEC,
                 strain_report_timezone=settings.ORION_SITUATION_TIMEZONE,
+                # The choice point: Orion picks among the tick's topics, or says nothing.
+                choice_enabled=settings.HUB_ENDOGENOUS_OUTREACH_CHOICE_ENABLED,
+                choice_max_options=settings.HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS,
                 daily_cap=JUNIPER_DAILY_CAP,
                 quiet_start_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_START_HOUR,
                 quiet_end_hour=settings.HUB_ENDOGENOUS_OUTREACH_QUIET_END_HOUR,
@@ -1020,6 +1024,9 @@ async def startup_event():
                     min_spacing_sec=settings.HUB_READING_FINDING_OUTREACH_MIN_SPACING_SEC,
                 )
                 await reading_finding_outreach.start()
+                # Reads waiting to be told are also topics at the tick's choice point.
+                if endogenous_outreach is not None and reading_finding_outreach.enabled:
+                    endogenous_outreach.topic_sources.append(reading_finding_outreach.outreach_topics)
             except Exception:  # noqa: BLE001 -- never blocks Hub boot
                 logger.exception("reading_finding_outreach_start_failed")
 
@@ -1967,6 +1974,15 @@ orion_day_order_desk = OrionDayOrderDesk(
     prior_reader_provider=build_curiosity_reader,
 )
 app.include_router(build_orion_day_order_router(lambda: orion_day_order_desk))
+# Intentions Prime takes on (choice-as-EFE Step -1): Prime's carry orders and their delivery into the chat thread
+# (scripts/intention_order.py). The only path that submits an intention.carry run; Prime's
+# PRIME_INTENTION_TAKE_ON_ENABLED is the kill switch (no order is ever sent while it is off).
+intention_desk = IntentionDesk(
+    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+    durable=DurableRunsClient(settings.HUB_CURIOSITY_DURABLE_RUNS_URL),
+    outreach_provider=lambda: endogenous_outreach,
+)
+app.include_router(build_intention_router(lambda: intention_desk))
 app.include_router(motion_story_router)
 app.include_router(people_router)
 app.include_router(walkway_rollup_router)

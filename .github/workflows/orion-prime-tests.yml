@@ -40,6 +40,8 @@ on:
       - "orion/consult/core.py"
       # The day letter as Prime's end-of-day turn (living Prime Part 3) orders through this contract.
       - "orion/schemas/orion_day.py"
+      # Intentions Prime takes on (choice-as-EFE Step -1) order and deliver through this contract.
+      - "orion/schemas/intention.py"
       # Prime's choice point publishes this contract (personality rev 4).
       - "orion/schemas/personality.py"
       - ".github/workflows/orion-prime-tests.yml"
@@ -77,6 +79,8 @@ on:
       - "orion/consult/core.py"
       # The day letter as Prime's end-of-day turn (living Prime Part 3) orders through this contract.
       - "orion/schemas/orion_day.py"
+      # Intentions Prime takes on (choice-as-EFE Step -1) order and deliver through this contract.
+      - "orion/schemas/intention.py"
       # Prime's choice point publishes this contract (personality rev 4).
       - "orion/schemas/personality.py"
       - ".github/workflows/orion-prime-tests.yml"
@@ -120,6 +124,8 @@ jobs:
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_block_eval.py
       - name: Wake replay on the live trigger timeline (attention is not a trigger; rate, daily wake, quiet floor)
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_wake_replay.py
+      - name: Take-on replay on the live promise concern d8db9d7b1bba4cf7 (frame, decision, adapter, request, ages out)
+        run: PYTHONPATH=${{ github.workspace }} python -m orion.prime.evals.run_intention_take_on_replay
       - name: orion-mind (resident loop + every existing Mind test)
         working-directory: services/orion-mind
         run: PYTHONPATH=${{ github.workspace }}/services/orion-mind:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests

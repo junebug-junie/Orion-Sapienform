@@ -89,7 +89,7 @@ def test_choice_evidence_direction_weight_label():
     vecs = {t: vec_for(t) for t in ("people", "pipeline", "heat")}
     e = choice_evidence(c, vecs)
     assert e.evidence_id == "choice:prime:t1" and e.lane == "prime" and e.source_ref == "act:prime:t1"
-    assert e.weight == 1.0 and e.excerpt == "people over pipeline (+1 more)"
+    assert e.weight == 1.0 and e.excerpt == "people over pipeline and heat"
     assert e.embedding == pytest.approx(direction_of("people", ("pipeline", "heat")))
     assert e.meta["chosen_market_rank"] == 3 and e.meta["alternatives"] == 2
     top = choice_evidence(choice("prime:t2", T0, rank=1), {t: vec_for(t) for t in ("people", "pipeline")})
@@ -100,7 +100,7 @@ def test_declined_all_reads_as_a_decline_of_every_option():
     c = choice("outreach:o1", T0, lane="outreach", declined=("topic a", "topic b"), declined_all=True)
     assert option_texts(c) == ("say nothing", ["topic a", "topic b"])
     e = choice_evidence(c, {t: vec_for(t) for t in ("say nothing", "topic a", "topic b")})
-    assert e.excerpt == "say nothing over topic a (+1 more)" and e.weight == 1.0 and e.meta["declined_all"] is True
+    assert e.excerpt == "say nothing over topic a and topic b" and e.weight == 1.0 and e.meta["declined_all"] is True
     assert option_texts(choice("prime:x", T0, declined_all=True))[0] == "no move"
 
 

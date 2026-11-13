@@ -408,6 +408,42 @@ nobody asked for. **Enabled** (`HUB_ENDOGENOUS_OUTREACH_ENABLED=true` in
 `False`, so a deploy that loses the key fails closed rather than silently
 reaching out.
 
+**Orion picks the topic, or says nothing** (2026-11-13, personality spec rev 4,
+`scripts/outreach_choice.py`). When the tick reaches its compose point, the one
+compose call shows Orion up to `HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS`
+(default 4, max 5) numbered topics, freshest first, plus "0. Say nothing".
+Topics today: the newest unused daydream, and reads waiting to be told (the
+readings door's pending bundles, offered through `ReadingFindingOutreach.outreach_topics`
+only while that door's spacing allows a reading message; reads with a resonance
+finding stay with that door). Orion's reply starts with `Pick: <n>`.
+
+- A pick sends the message about that topic (a read's article summary rides
+  under it, as the readings door delivers it). `Pick: 0` or PASS records
+  `orion_declined` and sends nothing. Two or more topics and no Pick line:
+  `no_pick`, not sent. A number not shown: `invalid_pick`, not sent. One topic
+  and a message with no Pick line counts as picking it.
+- Every readable pick publishes one `PersonalityChoiceV1` (lane `outreach`,
+  `choice_id = outreach:<want id>`) on `orion:personality:choice`; the decision
+  row stores it under `result_json.choice` (shown subjects, versions, pick).
+- **Subject ledger.** Each topic has a subject id (`daydream:<id>`,
+  `reading:<seed_id>`) and a version (a read's finding ids). A subject the tick
+  sent, or that Orion declined (or answered with no readable pick), in the last
+  7 days is not shown again unless its version changed. A read Orion declined
+  at the tick is told for the readings door too (the `orion_declined` row carries
+  its `finding_ids`), so that door does not send it afterwards. This replaced a gap: on 2026-11-11..12 the tick sent the same
+  "graph first" habit 3 times, because the habit came in through the personality
+  cue with no id while only the daydream was in the ledger. With the choice point
+  on, the personality cue is not read by the tick, and other material with no
+  subject id (priors, curiosity summaries) is not rendered in a choice prompt.
+- A read the tick shows is claimed while it composes, so the readings door skips
+  it (`claimed_by_tick`, not recorded) until the tick ends. A read the tick sends
+  is told for the readings door (its decision row carries `finding_ids`) and
+  starts that door's spacing wait.
+- Every gate before the compose point is unchanged (enabled, turn in flight,
+  recent chat, quiet hours, daily cap, cooldown, rest drive, arousal, the
+  body-economy bid). Kill switch: `HUB_ENDOGENOUS_OUTREACH_CHOICE_ENABLED=false`
+  restores the one-topic prompt.
+
 **The trigger is real** (2026-08-16, replacing a randomized-timer stub).
 Every `HUB_ENDOGENOUS_OUTREACH_TICK_SEC` (default **10s**, see caveat below)
 the loop asks `scripts/tension_outreach_trigger.py::current_run()`: has the
@@ -3685,6 +3721,19 @@ order and emails the result. Hub's old letter timer is retired.
   `already_written`, `empty_day`, `refused`, `unavailable`. The day before the letter is named
   in the brief's `missed_letters` when it has no row and Prime did not list it. Orders for one
   day are serialized. Hub never submits a letter on its own. Kill switch: `HUB_ORION_DAY_ENABLED`.
+- **Intentions Prime takes on** (`scripts/intention_order.py`, choice-as-EFE Step -1, 2026-11-13): when Prime takes
+  a concern on (today: a promise Orion made in chat), it calls two routes. `POST /api/intention/run`
+  (`IntentionOrderV1`): the promise adapter (`orion/prime/intention_sources/turn_promise.py`) reads the exact quote
+  (`harness_turn_trace`) and the one exchange (`chat_history_log`); Hub submits ONE `intention.carry` durable run with
+  the promise's horizon (promise + 72 h) as its admission deadline (`HUB_CURIOSITY_DURABLE_RUNS_URL`). Answers:
+  `submitted`, `exists`, `refused` (no adapter, the adapter refused, no room before the horizon, a 4xx),
+  `unavailable` (transient, incl. a 422 from an older durable-runs). `POST /api/intention/deliver`
+  (`IntentionDeliverV1`): one live send into the ORIGINATING thread through outreach (`offer_message(session_id=)`,
+  door `intention`, every gate on: quiet hours, the shared daily cap, recent chat, strain, the economy). Held for a
+  timing reason -> the reply is still written into that thread's history (`record_in_thread`). Refused by a content
+  guard (PASS, an ungrounded signal claim) -> nothing is written, `failed`. Answers `published` until the
+  `chat_history_log` row is visible, then `already_delivered` (the only answer that closes Prime's act 1). Kill
+  switch: Prime's `PRIME_INTENTION_TAKE_ON_ENABLED` (no order is sent while it is off).
 - **The run** (orion-durable-runs) writes the letter as one unified turn (session
   `orion_day_letter`; Hub does not frame it as a curiosity run) and persists the row.
 - **Email** (`scripts/orion_day_mailer.py` decides when; `scripts/orion_day_email.py`,

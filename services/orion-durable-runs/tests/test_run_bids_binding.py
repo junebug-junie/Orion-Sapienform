@@ -96,7 +96,8 @@ def test_hold_end_is_the_deferrable_window_or_before_the_runs_own_deadline():
 
 
 def test_only_curiosity_investigate_and_consult_turns_bind_and_only_with_the_flag_on():
-    assert BINDING_FAMILIES == frozenset({"durable.curiosity_investigate", "durable.consult_orion_turn"})
+    assert BINDING_FAMILIES == frozenset({"durable.curiosity_investigate", "durable.consult_orion_turn",
+                                          "durable.intention"})
     consult = FAMS.get("durable.consult_orion_turn")
     # Tier 2 (Juniper 2026-11-12); a short window, so a held consult turn waits at most half an hour.
     assert consult.tier == 2 and 0 < consult.deferrable_window_s <= 1800
@@ -129,7 +130,7 @@ class _Market:
         self.decision, self.fail, self.delay = decision, fail, delay
         self.bids, self.released, self.opened = [], [], []
 
-    async def bid(self, want, now=None, *, reserve_at_open=False):
+    async def bid(self, want, now=None, *, reserve_at_open=False, object_text=None):
         assert reserve_at_open is True
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -225,7 +226,7 @@ class _Switch(_Market):
     """Defers on price until ``fund`` is set."""
     fund = False
 
-    async def bid(self, want, now=None, *, reserve_at_open=False):
+    async def bid(self, want, now=None, *, reserve_at_open=False, object_text=None):
         self.bids.append((want, now))
         return _dec("funded", "net_positive", net=0.5) if self.fund else _dec(retry=600.0)
 

@@ -111,7 +111,10 @@ SEEN_MAX = 5000
 # to "funded by the economy" and never to "held forever".
 # Consult turns bind too (Juniper 2026-11-12, tier 2): an hour-long turn on the agent lane is exactly
 # what the market prices. The flag (ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE) gates every family here.
-BINDING_FAMILIES = frozenset({"durable.curiosity_investigate", "durable.consult_orion_turn"})
+# Intention carry runs bind too (Juniper 2026-11-13, TIER 1): once Orion took a concern on, the whether is settled;
+# the reserved share keeps curiosity and consults from crowding it out, and the economy still picks the time inside
+# the concern's horizon (hold end = min(opened + 86400 s, horizon - 1800 s); never dropped).
+BINDING_FAMILIES = frozenset({"durable.curiosity_investigate", "durable.consult_orion_turn", "durable.intention"})
 HOLD_DEADLINE_MARGIN_SEC = 1800.0   # a run with its own deadline is released this long before it
 HOLD_EVENT = "run.economy_held"
 # Patch 3b: reading's value-only bid (stage 1). The act is Hub's ``hub.world_pulse_read look``.
@@ -148,6 +151,22 @@ def want_for_run(request: dict[str, Any], tier: int, *, producer: str = PRODUCER
         object_ref=f"durable_run:{run_id}", tier=tier, opened_at=_aware(request.get("requested_at")),
         window=WantWindowV1(latest=_aware(admission.get("deadline_at"))),
         correlation_id=str(corr) if corr else None)
+
+
+# Personality rev 4 Move 2: the brief fields that say what a run is ABOUT, in the order tried. A curiosity
+# investigation's or self-inquiry's retrieval_query (its open question), a reading's (the item), a PR field
+# note's title. A prompt is never used: it is mostly instructions, which would match the instructions.
+OBJECT_TEXT_FIELDS = ("retrieval_query", "title")
+
+
+def want_object_text(request: dict[str, Any]) -> Optional[str]:
+    """What the run's object says, for the market's care term, or None (care 0, ``no_object_text``)."""
+    brief = request.get("brief") if isinstance(request.get("brief"), dict) else {}
+    for k in OBJECT_TEXT_FIELDS:
+        v = brief.get(k)
+        if isinstance(v, str) and v.strip():
+            return " ".join(v.split())[:400]
+    return None
 
 
 @dataclass(frozen=True)
@@ -302,7 +321,8 @@ class RunBidder:
     async def _bid(self, market: Any, want: WantV1, request: Optional[dict[str, Any]] = None, *,
                    value_only: bool = False) -> Any:
         try:
-            decision = await asyncio.wait_for(market.bid(want, reserve_at_open=True), self._timeout)
+            decision = await asyncio.wait_for(
+                market.bid(want, reserve_at_open=True, object_text=want_object_text(request or {})), self._timeout)
         except Exception:  # noqa: BLE001 -- incl. timeout: the run proceeds exactly as before
             self.counts["failed"] += 1
             logger.warning("physiology_shadow_bid_failed run=%s family=%s", want.want_id, want.family, exc_info=True)
@@ -400,7 +420,8 @@ class RunBidder:
         decision = None
         t0 = time.monotonic()
         try:
-            decision = await asyncio.wait_for(market.bid(want, now, reserve_at_open=True), self._bind_timeout)
+            decision = await asyncio.wait_for(
+                market.bid(want, now, reserve_at_open=True, object_text=want_object_text(request)), self._bind_timeout)
         except Exception:  # noqa: BLE001 -- incl. timeout: the run asks the pool as before
             logger.warning("physiology_bind_bid_failed run=%s family=%s", want.want_id, want.family, exc_info=True)
         elapsed_ms = round((time.monotonic() - t0) * 1000.0, 1)

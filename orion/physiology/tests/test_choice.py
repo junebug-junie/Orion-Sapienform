@@ -504,3 +504,65 @@ def test_pacing_sees_funded_messages_the_body_has_not_counted_yet():
     assert first.outcome == "funded" and first.reserved.get("attention:juniper") == 1.0
     assert second.charge > first.charge
     assert second.charge == pytest.approx(message_price(2 / allow), rel=1e-3)
+
+
+# --- personality rev 4 Move 2: care, holdback, trace ---------------------------------------------------
+
+def _fw(family, weight):
+    ev = Evidence(use_rate=None, use_n=0, engagement_rate=None, engagement_n=0)
+    return FamilyWeight(family=family, tier=2, weight=weight, target=weight, basis="evidence", evidence=ev)
+
+
+def test_no_personality_term_decides_exactly_as_before():
+    from orion.physiology.personality_values import PersonalityTerm
+
+    st = body(lane("agent"), lane("agent-gpu2", slots=2))
+    plain = decide(want(), st, ctx_for(SELF, st), ReservationBook(), NOW)
+    zero = decide(want(), st, ctx_for(SELF, st), ReservationBook(), NOW,
+                  personality=PersonalityTerm(arm="care", care=0.0, reason="no_match"))
+    assert not any(w.startswith("personality:") for w in plain.warnings)
+    assert zero.value_rank == plain.value_rank and zero.net == plain.net
+    assert "personality:arm=care" in zero.warnings and "personality:care=0:reason=no_match" in zero.warnings
+
+
+def test_care_lifts_the_rank_and_the_trace_keeps_the_rank_without_it():
+    from orion.physiology.personality_values import PersonalityTerm, net_without_care
+
+    st = body(lane("agent", p=0.2), lane("agent-gpu2", slots=2, p=0.2))
+    acts = history("durable.self_inquiry", n=12, gap_h=1.0, last_h=0.5, slot={"agent": 1800.0})
+    ctx = ctx_for(acts, st)
+    plain = decide(want(), st, ctx, ReservationBook(), NOW)
+    cared = decide(want(), st, ctx, ReservationBook(), NOW,
+                   personality=PersonalityTerm(arm="care", care=1.0, tendency_id="t1", cosine=0.9))
+    assert cared.value_rank >= plain.value_rank
+    assert f"personality:rank_without_care={plain.value_rank:.6f}" in cared.warnings
+    assert net_without_care(cared.warnings, cared.net) == pytest.approx(plain.net, abs=1e-6)
+    assert "care 1.00 for tendency t1" in cared.why
+
+
+def test_a_decision_returned_before_pricing_still_names_its_arm():
+    from orion.physiology.personality_values import PersonalityTerm
+
+    d = decide(want(), None, ctx_for(SELF, body(lane("agent"))), ReservationBook(), NOW,
+               personality=PersonalityTerm(arm="holdback", reason="holdback"))
+    assert d.reason == "physiology_unavailable" and "personality:arm=holdback" in d.warnings
+    plain = decide(want(), None, ctx_for(SELF, body(lane("agent"))), ReservationBook(), NOW)
+    assert not any(w.startswith("personality:") for w in plain.warnings)
+
+
+def test_holdback_arm_prices_no_care_and_reads_the_weights_without_source_c():
+    from orion.physiology.personality_values import PersonalityTerm
+
+    st = body(lane("agent"), lane("agent-gpu2", slots=2))
+    ctx = ctx_for(SELF, st, weights={"durable.self_inquiry": _fw("durable.self_inquiry", 1.4)})
+    import dataclasses
+
+    ctx = dataclasses.replace(ctx, weights_holdback={"durable.self_inquiry": _fw("durable.self_inquiry", 0.9)})
+    care = decide(want(), st, ctx, ReservationBook(), NOW, personality=PersonalityTerm(arm="care", care=0.0,
+                                                                                         reason="no_match"))
+    hold = decide(want(), st, ctx, ReservationBook(), NOW,
+                  personality=PersonalityTerm(arm="holdback", care=1.0, reason="holdback",
+                                              endorsement_excluded="holdback"))
+    assert care.family_weight == pytest.approx(1.4) and hold.family_weight == pytest.approx(0.9)
+    assert hold.value_rank == care.value_rank            # care=1.0 on a holdback term is ignored
+    assert "personality:arm=holdback" in hold.warnings

@@ -33,7 +33,7 @@ from orion.schemas.gpu_pool import GpuLeaseRefV1
 
 from . import call_usage_emit, grammar_emit
 from .ctx_overflow import is_context_overflow
-from .fast_thinking import with_thinking_off_default
+from .fast_thinking import GPU3_WORK_CLASSES, with_gpu3_route_defaults
 from .pool_placement import (
     POOL_RECALLED,
     POOL_UNAVAILABLE,
@@ -305,8 +305,8 @@ async def proxy_on_pool(
         try:
             dispatch_body = dict(forward_body)
             grant_backend = granted_backend(lease.grant)
-            if spec.work_class == "fast" and grant_backend == "llamacpp" and not anthropic:
-                dispatch_body = with_thinking_off_default(dispatch_body)
+            if spec.work_class in GPU3_WORK_CLASSES and grant_backend == "llamacpp" and not anthropic:
+                dispatch_body = with_gpu3_route_defaults(dispatch_body, spec.work_class)
             if grant_backend == "vllm":
                 if anthropic:
                     report.finish("unsupported_backend_protocol")

@@ -104,7 +104,6 @@ class Settings(BaseSettings):
     )
     # dream_cycle / dream_synthesis only (does not affect chat_quick / chat_general budgets)
     llm_dream_max_tokens: int = Field(32768, alias="LLM_DREAM_MAX_TOKENS")
-    atlas_metacog_profile_name: str | None = Field(None, alias="ATLAS_METACOG_PROFILE_NAME")
     cortex_chat_return_logprobs: bool = Field(
         False,
         alias="CORTEX_CHAT_RETURN_LOGPROBS",

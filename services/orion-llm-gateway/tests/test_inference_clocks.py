@@ -514,7 +514,7 @@ async def test_concurrent_bus_calls_see_each_other_at_grant_and_occupancy_never_
                 "served_by": plan.route_target.served_by}
 
     monkeypatch.setattr(gateway, "run_llm_chat", run)
-    fake_pool.choose = lambda kw: "metacog"
+    fake_pool.choose = lambda kw: "fast"
 
     def _env():
         return BaseEnvelope(
@@ -528,13 +528,13 @@ async def test_concurrent_bus_calls_see_each_other_at_grant_and_occupancy_never_
     await asyncio.sleep(0.1)
     second = asyncio.ensure_future(gateway.handle_chat(_env()))
     await asyncio.sleep(0.1)
-    assert pool_placement.role_in_flight() == {"metacog": 2}
+    assert pool_placement.role_in_flight() == {"fast": 2}
     gate.set()
     await asyncio.gather(first, second)
     assert pool_placement.role_in_flight() == {}  # released on every path, never leaks
 
     _, _, buckets = grammar_emit.get_recorder().drain()
-    role = buckets["circe"].roles["metacog"]
+    role = buckets["circe"].roles["fast"]
     assert sorted(role.busy) == [1, 2]
     assert role.decode_tps_solo == [20.0] and role.decode_tps_shared == [20.0]
 

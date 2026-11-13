@@ -140,7 +140,8 @@ _HOST_PORT_SOURCES = (
     "services/orion-gpu-lane-controller/.env_example",
 )
 _HOST_PORT_RE = re.compile(r"^([A-Z0-9_]*HOST_PORT)=\s*['\"]?(\d{2,5})['\"]?\s*(?:#.*)?$")
-# Fallback worker names if the compose files are unreadable.
+# Fallback worker names if the compose files are unreadable. Keep retired names
+# here too: direct callers of a removed worker still need to fail the gate.
 _DEFAULT_CONTAINERS = (
     "atlas-chat", "atlas-metacog", "atlas-fast", "atlas-agent", "atlas-agent-burst", "atlas-llamacpp-chat",
     "atlas-llamacpp-metacog", "atlas-llamacpp-fast", "atlas-llamacpp-agent", "atlas-llamacpp-agent-burst",

@@ -434,9 +434,9 @@ def _example_a() -> dict:
                    "profile_var": "ATLAS_VISION4_PROFILE_NAME", "profiles": [VISION_PROFILE],
                    "ready": "/health", "timeout_sec": 600},
         "swap": {"evicts": ["fast2"], "guards": ["thermal"]}}
-    data["classes"]["fast"] = {"roles": ["fast", "metacog", "fast2", "agent", "agent-gpu2", "chat"],
+    data["classes"]["fast"] = {"roles": ["fast", "fast2", "agent", "agent-gpu2", "chat"],
                                "on_unavailable": "wait"}
-    data["classes"]["metacog"] = {"roles": ["metacog", "fast", "fast2", "agent", "agent-gpu2", "chat"],
+    data["classes"]["metacog"] = {"roles": ["fast", "fast2", "agent", "agent-gpu2", "chat"],
                                   "on_unavailable": "backlog"}
     data["classes"]["vision"] = {"roles": ["vision4"], "on_unavailable": "backlog"}
     return data

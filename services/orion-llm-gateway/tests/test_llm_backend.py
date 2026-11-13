@@ -321,13 +321,33 @@ class TestLLMBackendExecution(unittest.TestCase):
         for route, options, expected in (
             ("quick_background", {"max_tokens": 24}, False),
             ("quick", {"chat_template_kwargs": {"enable_thinking": True}}, True),
-            ("metacog", {"max_tokens": 24}, None),
+            ("quick", {"chat_template_kwargs": {"enable_thinking": None}}, False),
+            ("metacog", {"max_tokens": 24}, False),
         ):
             body = ChatBody(route=route, messages=[ChatMessage(role="user", content="hello")], options=options)
             run_llm_chat(body, _granted(body))
             sent = mock_execute.call_args.args[0].options or {}
             assert (sent.get("chat_template_kwargs") or {}).get("enable_thinking") is expected
             assert body.options == options
+
+    @patch("app.llm_backend._execute_openai_chat")
+    def test_metacog_bus_uses_shared_worker_policy_and_preserves_thinking_choice(self, mock_execute):
+        mock_execute.return_value = {"text": "OK", "raw": {}}
+        for route, options, expected_budget in (
+            ("metacog", {}, 1024),
+            ("metacog_perception", {"temperature": 0.1, "max_tokens": 80}, 80),
+            ("metacog_background", {"chat_template_kwargs": {"enable_thinking": True}}, 4096),
+            ("operator_metacog", {}, 1024),
+        ):
+            body = ChatBody(route=route, messages=[ChatMessage(role="user", content="hello")], options=options)
+            run_llm_chat(body, _granted(body, url="http://pool-fast:8013"))
+            sent = mock_execute.call_args.args[0].options
+            assert sent["chat_template_kwargs"]["enable_thinking"] is (
+                route == "metacog_background")
+            assert sent["max_tokens"] == expected_budget
+            assert sent["temperature"] == options.get("temperature", 0.35)
+            assert sent["top_p"] == 0.90
+            assert sent["presence_penalty"] == 0.20
 
     @patch("app.llm_backend._common_http_client")
     def test_execute_openai_chat_forwards_logprobs_when_requested(self, mock_client_factory):

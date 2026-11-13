@@ -98,6 +98,25 @@ class TestOpenAIPassthroughHTTP:
         assert response.status_code == 200
         assert response.json()["choices"][0]["message"]["content"] == "OK"
 
+    def test_metacog_http_uses_shared_worker_defaults(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_routes: Any
+    ) -> None:
+        async def _fake_post(self: Any, url: str, **kwargs: Any) -> httpx.Response:
+            sent = kwargs["json"]
+            assert sent["chat_template_kwargs"] == {"enable_thinking": False}
+            assert sent["temperature"] == 0.35
+            assert sent["top_p"] == 0.90
+            assert sent["presence_penalty"] == 0.20
+            assert sent["max_tokens"] == 1024
+            return httpx.Response(200, json={"choices": [{"message": {"content": "OK"}}]})
+
+        monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+        response = client.post("/v1/chat/completions", json={
+            "model": "metacog", "messages": [{"role": "user", "content": "hi"}],
+        })
+        assert response.status_code == 200
+        assert configured_routes.calls[0]["work_class"] == "metacog"
+
     def test_background_route_leases_with_background_priority(
         self, client: TestClient, monkeypatch: pytest.MonkeyPatch, configured_routes: Any
     ) -> None:

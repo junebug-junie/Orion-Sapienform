@@ -36,6 +36,7 @@ Orion can choose to perceive. Before this, camera frames reached Orion only as c
 - `services/orion-llm-gateway/app/passthrough_proxy.py`: checks the granted lane's vision after placement, for llamacpp and Strata backends only.
 - `services/orion-llm-gateway/tests/test_blind_lane_images.py`: new tests.
 - `docs/superpowers/specs/2026-11-13-camera-look-design.md`: the design doc.
+- `services/orion-hub/static/catalog/orion-abilities.json`: "Look through a camera now" in Hub's Ask Orion catalog (CI requires every dig command to have an entry).
 
 ## Schema / bus / API changes
 

@@ -56,6 +56,16 @@
           "keywords": ["naming", "organ names"],
           "covers": {"dig": ["name-organs", "name"]},
           "source": "orion/dig/__main__.py:cmd_name_organs; orion/body_atlas/names.py"
+        },
+        {
+          "id": "camera-look",
+          "title": "Look through a camera now",
+          "description": "Orion opens the newest frame from the office, walkway or doorbell camera (under a second old while the camera is up) and sees the picture itself, not a caption. It says how old the frame is, and says so if the camera is not live.",
+          "message": "Please look through your walkway camera right now and tell me what you see. Or the office camera, if you'd rather.",
+          "hint": "(dig: `python -P -m orion.dig look walkway`, then Read the path it prints)",
+          "keywords": ["camera", "see", "look", "walkway", "office", "doorbell", "vision"],
+          "covers": {"dig": ["look"]},
+          "source": "orion/dig/look.py; orion/dig/__main__.py:cmd_look"
         }
       ]
     },

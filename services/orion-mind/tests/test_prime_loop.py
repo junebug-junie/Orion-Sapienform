@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import urllib.error
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -96,7 +97,7 @@ SETTINGS = SimpleNamespace(
 
 
 def runtime(*, answer, bus=None, outcome="funded", runs=(), pending=None, holdback=0.0, turns=None, on_call=None,
-            now=T0, extra_pages=None):
+            now=T0, extra_pages=None, reason="net_positive", net=None):
     clock = {"now": now}
     pages = {"http://dr:8121/physiology/state": BODY, "http://dr:8121/temporal-self/frame": TEMPORAL,
              **(extra_pages or {})}
@@ -112,7 +113,10 @@ def runtime(*, answer, bus=None, outcome="funded", runs=(), pending=None, holdba
 
     async def bid(want):
         bids.append(want)
-        return None if outcome is None else SimpleNamespace(outcome=outcome, reason="net_positive", binding_constraint=None)
+        if outcome is None:
+            return None
+        return SimpleNamespace(outcome=outcome, reason=reason, net=net,
+                               binding_constraint="lane:chat" if reason == "capacity_reserved" else None)
 
     async def release(want_id):
         released.append(want_id)
@@ -170,6 +174,24 @@ def test_no_thought_unless_the_bid_is_funded(outcome):
     rt = runtime(answer=MOVE, outcome=outcome)
     asyncio.run(rt.tick())
     assert rt.llm.calls == [] and rt.bus.acts() == [] and rt.state.pending_changes  # still hungry
+
+
+def test_a_capacity_deferral_worth_its_price_thinks(caplog):
+    # Lane full, net positive: the thought queues at the GPU pool instead of waiting (bind_verdict's rule).
+    caplog.set_level(logging.INFO)
+    rt = runtime(answer=MOVE, outcome="deferred", reason="capacity_reserved", net=0.67)
+    asyncio.run(rt.tick())
+    [want] = rt.bids
+    assert len(rt.llm.calls) == 1 and rt.bus.acts() and rt.released == [want.want_id]
+    assert any(r.getMessage().startswith("prime_bid_queued_at_pool outcome=deferred reason=capacity_reserved "
+                                         "binding=lane:chat net=0.67") for r in caplog.records)
+
+
+@pytest.mark.parametrize("net", [0.0, -0.2, None, float("nan")])
+def test_a_capacity_deferral_not_worth_its_price_waits(net):
+    rt = runtime(answer=MOVE, outcome="deferred", reason="capacity_reserved", net=net)
+    asyncio.run(rt.tick())
+    assert rt.llm.calls == [] and rt.bus.acts() == [] and rt.state.pending_changes
 
 
 def test_no_bid_while_a_juniper_turn_runs():

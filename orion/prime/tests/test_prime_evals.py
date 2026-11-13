@@ -33,10 +33,13 @@ def test_thoughts_and_cadence_buckets():
     assert rpt.thoughts(acts) == {"opened": 4, "produced": 1, "preempted": 1, "failed": 1, "open": 1}
     bids = [{"outcome": "funded", "decision": {"prices_seen": {"heat": 0.0, "lane:chat": 0.0}}},
             {"outcome": "deferred", "decision": {"prices_seen": {"heat": 0.4}}},
-            {"outcome": "funded", "decision": {"prices_seen": {"lane:chat": 0.2}}}]
+            {"outcome": "funded", "decision": {"prices_seen": {"lane:chat": 0.2}}},
+            {"outcome": "deferred", "reason": "capacity_reserved", "net": 0.6, "decision": {"prices_seen": {"heat": 0.1}}}]
     out = rpt.cadence(bids)
-    assert out["unpriced"] == {"funded": 1, "bids": 1, "funded_share": 1.0}
-    assert out["priced"]["bids"] == 2 and out["priced"]["funded_share"] == 0.5
+    assert out["unpriced"] == {"funded": 1, "bids": 1, "funded_share": 1.0, "went_ahead": 1, "went_ahead_share": 1.0}
+    assert out["priced"]["bids"] == 3 and out["priced"]["funded"] == 1
+    # A lane-full deferral worth its price is not funded, but the thought went ahead (queued at the pool).
+    assert out["priced"]["went_ahead"] == 2
 
 
 def test_frame_eval_passes_on_the_live_fixture():

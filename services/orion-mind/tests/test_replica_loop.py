@@ -118,13 +118,14 @@ class PG:
         raise AssertionError(f"unexpected SQL {sql[:60]}")
 
 
-def runtime(answer=PLAN, *, outcome="funded", err=None, gateway_error=None, pg=None, turns=None, bus=None):
+def runtime(answer=PLAN, *, outcome="funded", err=None, gateway_error=None, pg=None, turns=None, bus=None,
+            reason="net_positive", net=None):
     clock = {"now": T0}
     bids, released = [], []
 
     async def bid(want):
         bids.append(want)
-        return SimpleNamespace(outcome=outcome, reason="net_positive", binding_constraint=None)
+        return SimpleNamespace(outcome=outcome, reason=reason, net=net, binding_constraint=None)
 
     async def release(want_id):
         released.append(want_id)
@@ -571,3 +572,15 @@ def test_lifespan_starts_the_replica_on_its_own_bus_and_stops_it(monkeypatch):
             assert main.replica_runtime is None and made == []
 
     asyncio.run(off())
+
+
+def test_a_capacity_deferral_worth_its_price_plans_within_the_deadline():
+    # Lane full, net positive: the thought queues at the GPU pool; the seat wait still ends before the deadline.
+    rt = runtime(outcome="deferred", reason="capacity_reserved", net=0.5)
+    rt.accept(request_envelope())
+    asyncio.run(rt.tick())
+    [want] = rt.bids
+    [call] = rt.llm.calls
+    assert call["pool_wait_sec"] == 45.0 and rt.released == [want.want_id]
+    _, _, result = result_of(rt)
+    assert result.status == "ok"

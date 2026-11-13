@@ -32,7 +32,9 @@ empty, unparseable, out of generation time), stamped with the time the try start
 That keeps the act ledger honest: a ``prime`` infer act is a thought that happened, so queue failures
 neither count as failed thoughts nor reset the market's hunger for the ``prime`` family.
 
-Prime obeys its own bid: ``funded`` thinks, anything else (deferred, no answer, flag off) waits. It is
+Prime obeys its own bid: ``funded`` thinks, and so does a ``capacity_reserved`` deferral with a positive net
+(the lane is full but the thought is worth its price: it queues at the GPU pool, orion/mindloop/runtime.py).
+Anything else (another deferral, no answer, flag off) waits. It is
 the first producer whose decision binds (every other bid is still shadow); it never fails open.
 
 The move (2A): one question for curiosity's next regular investigate run, queued through Hub's

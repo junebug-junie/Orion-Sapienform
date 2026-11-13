@@ -1,24 +1,24 @@
-"""Single writer for Orion's personality graph (spec rev 2, bottom-up).
+"""Single writer for Orion's personality graph (spec rev 4: choices only).
 
 A plain periodic task (no LangGraph): all state lives in the ``personality_*`` tables and their
-per-source cursors, so a restart resumes exactly. One tick, every ``PERSONALITY_TICK_SEC`` and
-once on start:
+cursors, so a restart resumes exactly. One tick, every ``PERSONALITY_TICK_SEC`` and once on start:
 
-1. load non-retired nodes and the cursors; once (``rekey`` marker), move their ``lane_recent`` from
-   lane keys to source keys (``rekey_sources``), committed with this tick;
-2. first tick ever: write a start cursor (= now) for every source (no backfill) and seed nodes
-   from the latest version of each curiosity self-inquiry concept (all-or-nothing: a failed embed
-   leaves the ``seed`` marker unwritten, so the whole seed is retried next tick);
-3. read every source after its cursor, up to now minus the read lag, capped per source;
-4. drop evidence ids already in ``personality_evidence`` (a re-read curiosity run is not
-   re-weighted), embed the rest (bounded concurrency); a failed embed stops THAT source at the
-   previous row, so the failed row is read again next tick;
-5. ``fold`` (fades, then folds) or, with no evidence, ``apply_fade`` so fade and retirement still
-   persist;
-6. self-naming (``PERSONALITY_NAMING_APPLY_ENABLED``): read Orion's answers from
-   ``orion_disposition_naming`` after the ``naming`` cursor, embed each NAME's ``name + sentence`` for
-   the recorded grounding rank/margin, and ``apply_namings`` to the folded nodes;
+1. curiosity sync: read curiosity runs after the ``curiosity_sync`` cursor (from the epoch the first
+   time: the one-time backfill), turn each into its ``PersonalityChoiceV1`` rows and insert them into
+   ``personality_choice`` (insert-only) with the cursor, in one transaction;
+2. load the non-retired choice nodes and read ``personality_choice`` rows after the ``choice``
+   cursor (bus producers and the curiosity sync alike), up to now minus the read lag, capped;
+3. drop evidence ids already in ``personality_evidence``; embed every distinct option text (bounded
+   concurrency, cached across ticks); a failed embed stops the read at the previous row, so the
+   failed row is read again next tick (given up after ``EMBED_MAX_FAILURES`` ticks);
+4. each choice -> one ``Evidence``: direction = unit(embed(chosen) - mean(embed(declined))), weight
+   = revealed-preference weight, label = "<chosen gist> over <declined gist>";
+5. ``fold`` (fades, then folds) or, with no evidence, ``apply_fade``;
+6. self-naming (``PERSONALITY_NAMING_APPLY_ENABLED``): apply Orion's answers to the folded nodes;
 7. commit evidence, nodes, history and cursors in one transaction.
+
+``offer_choice`` is the bus intake (``orion:personality:choice``): it validates and inserts one
+choice. It does not fold; the next tick does.
 
 A failed tick logs ``personality_tick_failed`` with the exception type and writes nothing.
 """
@@ -26,12 +26,15 @@ A failed tick logs ``personality_tick_failed`` with the exception type and write
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from orion.personality.graph import (
+    EVIDENCE_PREFIX,
     Evidence,
     FoldResult,
     NamingApplyResult,
@@ -39,21 +42,24 @@ from orion.personality.graph import (
     Node,
     apply_fade,
     apply_namings,
+    choice_direction,
+    decline_text,
+    evidence_weight,
     fold,
-    rekey_sources,
-    seed_nodes,
+    pair_label,
 )
 from orion.personality.naming import grounding
 from orion.personality.situation import COMPANY_CLOSE_GRACE, situation_at
+from orion.schemas.personality import PersonalityChoiceV1
 
 from app.personality_sources import (
+    CHOICE_CURSOR,
+    CURIOSITY_CURSOR,
     READ_LAG_SEC,
-    REKEY_CURSOR,
-    SEED_CURSOR,
-    SOURCE_NAMES,
-    Candidate,
     Cursor,
-    SourceItem,
+    choice_from_row,
+    curiosity_run_choices,
+    utc,
 )
 from app.personality_store import NAMING_CURSOR, TickWrite, node_key
 
@@ -61,10 +67,11 @@ logger = logging.getLogger("orion-durable-runs.personality_driver")
 
 EMBED_CONCURRENCY = 4
 EMBED_TIMEOUT_SEC = 15.0
-# A row whose embed fails this many ticks in a row (or that the embedder rejects with a 4xx) is
-# consumed as skipped evidence, so one bad row cannot hold its lane dark forever.
+# A choice whose embed fails this many ticks in a row (or that the embedder rejects with a 4xx) is
+# consumed as skipped evidence, so one bad row cannot hold the graph dark forever.
 EMBED_MAX_FAILURES = 3
-REJECTED: list[float] = []  # vector placeholder: fold records it as skipped ("bad_embedding")
+EMBED_CACHE_MAX = 4000  # option text -> vector, across ticks (curiosity priors repeat across runs)
+REJECTED: list[float] = []  # vector placeholder: the embedder refused this text
 
 # (doc_id, text) -> unit vector; raises on failure.
 EmbedFn = Callable[[str, str], Awaitable[list[float]]]
@@ -91,58 +98,56 @@ def http_embedder(url: str, *, timeout_sec: float = EMBED_TIMEOUT_SEC) -> tuple[
 
 
 def _rejected(exc: BaseException) -> bool:
-    """The embedder refused this text (HTTP 4xx): retrying the same row cannot help."""
+    """The embedder refused this text (HTTP 4xx): retrying the same text cannot help."""
     resp = getattr(exc, "response", None)
     code = getattr(resp, "status_code", None)
     return isinstance(code, int) and 400 <= code < 500
 
 
-async def embed_all(embed: EmbedFn, cands: Sequence[Candidate], *,
-                    concurrency: int = EMBED_CONCURRENCY) -> dict[str, Optional[list[float]]]:
-    """evidence_id -> vector; None when that embed failed (retry later); ``REJECTED`` on a 4xx."""
-    sem = asyncio.Semaphore(max(1, concurrency))
-
-    async def one(c: Candidate) -> tuple[str, Optional[list[float]]]:
-        async with sem:
-            try:
-                return c.evidence_id, await embed(f"personality-{c.evidence_id}", c.text)
-            except Exception as exc:  # noqa: BLE001 - one failed embed holds its source, nothing more
-                logger.warning("personality_embed_failed evidence_id=%s error=%s", c.evidence_id, type(exc).__name__)
-                return c.evidence_id, (REJECTED if _rejected(exc) else None)
-
-    return dict(await asyncio.gather(*(one(c) for c in cands)))
+def option_texts(c: PersonalityChoiceV1) -> tuple[str, list[str]]:
+    """(chosen-side text, declined texts in shown order). ``declined_all`` uses the lane's decline
+    phrase as the chosen side: a decline of every option."""
+    chosen = decline_text(c.lane) if c.declined_all or c.chosen is None else c.chosen.text
+    declined = sorted(c.alternatives, key=lambda o: (o.market_rank is None, o.market_rank or 0))
+    return chosen, [o.text for o in declined]
 
 
-def to_evidence(c: Candidate, vec: list[float]) -> Evidence:
-    meta = dict(c.meta)
-    if not vec:
-        meta["embed_rejected"] = True
-    return Evidence(evidence_id=c.evidence_id, lane=c.lane, source_ref=c.source_ref, occurred_at=c.occurred_at,
-                    excerpt=c.excerpt, embedding=vec, meta=meta, text=c.text)
+def all_texts(c: PersonalityChoiceV1) -> list[str]:
+    chosen, declined = option_texts(c)
+    return [chosen, *declined]
 
 
-def accept(items: Sequence[SourceItem], existing: set[str], vectors: dict[str, Optional[list[float]]],
-           ) -> tuple[list[Evidence], Optional[Cursor], bool]:
-    """Walk one source's items in order. Returns (new evidence, cursor to persist or None when no
-    item was consumed, held) -- ``held`` means an embed failed and the source stopped before it."""
-    out: list[Evidence] = []
-    last: Optional[SourceItem] = None
-    for item in items:
-        new = [c for c in item.candidates if c.evidence_id not in existing]
-        if any(vectors.get(c.evidence_id) is None for c in new):
-            return out, (Cursor(last.at, last.ref) if last else None), True
-        out.extend(to_evidence(c, vectors[c.evidence_id]) for c in new)
-        last = item
-    return out, (Cursor(last.at, last.ref) if last else None), False
+def choice_evidence(c: PersonalityChoiceV1, vectors: dict[str, Optional[list[float]]]) -> Evidence:
+    """One choice -> one ``Evidence`` (a missing/rejected vector gives an empty direction, which
+    ``fold`` records as skipped ``bad_direction``)."""
+    chosen, declined = option_texts(c)
+    vc = vectors.get(chosen)
+    vds = [vectors.get(t) for t in declined]
+    direction = None
+    if vc and all(vds):
+        direction = choice_direction(vc, vds)  # type: ignore[arg-type]
+    meta = {
+        "choice_id": c.choice_id, "chosen_market_rank": c.chosen_market_rank, "declined_all": c.declined_all,
+        "care_promoted": c.care_promoted, "picks_in_decision": c.picks_in_decision,
+        "alternatives": len(c.alternatives), "act_id": c.act_id, "correlation_id": c.correlation_id,
+    }
+    if c.situation:
+        meta["choice_situation"] = dict(c.situation)
+    return Evidence(
+        evidence_id=f"{EVIDENCE_PREFIX}{c.choice_id}", lane=c.lane, source_ref=c.act_id or c.choice_id,
+        occurred_at=utc(c.occurred_at), excerpt=pair_label(chosen, declined), embedding=direction or [],
+        weight=evidence_weight(c.chosen_market_rank, declined_all=c.declined_all, care_promoted=c.care_promoted,
+                               picks_in_decision=c.picks_in_decision),
+        meta=meta, text="\n".join([chosen, *declined]),
+    )
 
 
-def merge(seeded: Optional[FoldResult], folded: FoldResult, input_ids: set[str],
-          rekeyed: Optional[FoldResult] = None, named: Optional[NamingApplyResult] = None) -> FoldResult:
-    """Rekey + seed + fold + naming results, deduped (the later step's copy of a node wins)."""
+def merge(folded: FoldResult, named: Optional[NamingApplyResult] = None) -> FoldResult:
+    """Fold + naming results, deduped (the naming step's copy of a node wins)."""
     nodes: dict[str, Node] = {}
     history: dict[tuple[str, datetime], Any] = {}
     evidence = []
-    for res in (rekeyed, seeded, folded, named):
+    for res in (folded, named):
         if res is None:
             continue
         for n in res.nodes:
@@ -161,11 +166,13 @@ class TickStats:
     last_error: Optional[str] = None
     evidence_last_tick: int = 0
     skipped_last_tick: int = 0
-    rows_last_tick: dict = field(default_factory=dict)
-    held_sources: list = field(default_factory=list)
+    choices_read_last_tick: int = 0
+    curiosity_synced_last_tick: int = 0  # new personality_choice rows from the curiosity sync
+    bus_choices_inserted: int = 0  # since start
+    bus_choices_invalid: int = 0  # since start
+    held: bool = False
     nodes_by_status: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
-    seeded: bool = False
     namings_last_tick: list = field(default_factory=list)  # [{naming, verdict, apply_status, ...}]
 
 
@@ -186,7 +193,8 @@ class PersonalityDriver:
         self._close_embedder = close_embedder
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
-        self._embed_failures: dict[str, int] = {}  # evidence_id -> consecutive failed ticks
+        self._embed_failures: dict[str, int] = {}  # choice_id / naming_id -> consecutive failed ticks
+        self._vec_cache: "OrderedDict[str, list[float]]" = OrderedDict()
         self.naming_enabled = naming_enabled
         self.stats = TickStats()
 
@@ -225,10 +233,29 @@ class PersonalityDriver:
         async with self._lock:
             return await self._tick()
 
+    # --- bus intake -------------------------------------------------------------------------------
+
+    async def offer_choice(self, payload: Any) -> str:
+        """One ``orion:personality:choice`` payload: validate, insert (no-op when already stored).
+        Returns ``inserted`` | ``duplicate`` | ``invalid``. Raises only on a DB failure."""
+        try:
+            choice = PersonalityChoiceV1.model_validate(payload)
+        except Exception as exc:  # noqa: BLE001 - a bad payload is logged and dropped, never retried
+            self.stats.bus_choices_invalid += 1
+            logger.warning("personality_choice_invalid error=%s", str(exc)[:300])
+            return "invalid"
+        new = await self._store.insert_choices([choice], written_by="bus")
+        if new:
+            self.stats.bus_choices_inserted += 1
+        logger.info("personality_choice_received choice_id=%s lane=%s rank=%s declined_all=%s new=%s",
+                    choice.choice_id, choice.lane, choice.chosen_market_rank, choice.declined_all, bool(new))
+        return "inserted" if new else "duplicate"
+
+    # --- tick -------------------------------------------------------------------------------------
+
     async def _with_situation(self, evidence: list[Evidence], warnings: list[str]) -> list[Evidence]:
-        """Stamp ``meta.situation`` (arousal, day phase, company at the row's own time) onto new
-        evidence. Recorded only (CAPS if-then data for later situation subnodes); fail-open: if the
-        Temporal Self tables cannot be read the evidence still folds, without a situation."""
+        """Stamp ``meta.situation`` (arousal, day phase, company at the choice's own time). Recorded
+        only; fail-open: if the Temporal Self tables cannot be read the evidence still folds."""
         if not evidence:
             return evidence
         try:
@@ -240,12 +267,52 @@ class PersonalityDriver:
             warnings.append(f"situation_unavailable:{type(exc).__name__}")
             return evidence
 
+    async def _sync_curiosity(self, cursors: dict, hi: datetime) -> int:
+        """Curiosity runs -> personality_choice rows, with the cursor, in one transaction."""
+        rows = await self._reader.read_curiosity(cursors.get(CURIOSITY_CURSOR), hi)
+        if not rows:
+            return 0
+        choices = [c for r in rows for c in curiosity_run_choices(r)]
+        last = rows[-1]
+        cur = Cursor(utc(last["completed_at"]), str(last["run_id"]))
+        new = await self._store.insert_choices(choices, written_by="curiosity_sync", cursor=(CURIOSITY_CURSOR, cur))
+        cursors[CURIOSITY_CURSOR] = cur
+        return new
+
+    async def _embed_texts(self, texts: Sequence[str]) -> dict[str, Optional[list[float]]]:
+        """text -> vector; None when the embed failed (retry later); ``REJECTED`` on a 4xx."""
+        out: dict[str, Optional[list[float]]] = {}
+        todo = []
+        for t in dict.fromkeys(texts):
+            if t in self._vec_cache:
+                self._vec_cache.move_to_end(t)
+                out[t] = self._vec_cache[t]
+            else:
+                todo.append(t)
+        sem = asyncio.Semaphore(EMBED_CONCURRENCY)
+
+        async def one(t: str) -> tuple[str, Optional[list[float]]]:
+            async with sem:
+                doc = "personality-opt-" + hashlib.sha1(t.encode("utf-8")).hexdigest()[:16]
+                try:
+                    return t, await self._embed(doc, t)
+                except Exception as exc:  # noqa: BLE001 - one failed embed holds its choice, nothing more
+                    logger.warning("personality_embed_failed error=%s", type(exc).__name__)
+                    return t, (REJECTED if _rejected(exc) else None)
+
+        for t, vec in await asyncio.gather(*(one(t) for t in todo)):
+            out[t] = vec
+            if vec:
+                self._vec_cache[t] = vec
+                while len(self._vec_cache) > EMBED_CACHE_MAX:
+                    self._vec_cache.popitem(last=False)
+        return out
+
     async def _tick(self) -> dict:
         now = self._now()
         hi = now - self._lag
-        # Read no newer than the Temporal Self chronicle has folded, so each row's situation
-        # (company arcs close ~5 min late) is final when stamped. A chronicle stalled past
-        # CHRONICLE_MAX_LAG does not stall personality: rows past its watermark get company=None.
+        # Read no newer than the Temporal Self chronicle has folded, so each choice's situation is
+        # final when stamped. A stalled chronicle does not stall personality.
         try:
             watermark = await self._store.chronicle_watermark()
         except Exception:  # noqa: BLE001 - the situation is an annotation, never a gate
@@ -256,94 +323,56 @@ class PersonalityDriver:
         warnings: list[str] = []
         if not chronicle_fresh:
             warnings.append("situation_chronicle_lagging:company_unknown_past_watermark")
-        nodes = await self._store.load_nodes()
         cursors = await self._store.load_cursors()
+        synced = await self._sync_curiosity(cursors, now - self._lag)
+        nodes = await self._store.load_nodes()
         write_cursors: dict[str, Cursor] = {}
 
-        rekeyed: Optional[FoldResult] = None
-        if REKEY_CURSOR not in cursors:
-            hits = await self._store.rekey_hits(n.disposition_id for n in nodes)
-            rekeyed = rekey_sources(nodes, hits, now=now)
-            by_id = {n.disposition_id: n for n in rekeyed.nodes}
-            demoted = [n.disposition_id for n in nodes
-                       if n.status == "active" and by_id.get(n.disposition_id, n).status != "active"]
-            nodes = [by_id.get(n.disposition_id, n) for n in nodes]
-            write_cursors[REKEY_CURSOR] = Cursor(now, "")
-            logger.info("personality_rekey nodes=%d demoted=%s", len(rekeyed.nodes), demoted)
-
-        # First boot (per source): start at now, no backfill. Not read this tick.
-        for name in SOURCE_NAMES:
-            if name not in cursors:
-                write_cursors[name] = Cursor(now, "")
-        readable = {k: v for k, v in cursors.items() if k in SOURCE_NAMES}
-
-        seeded: Optional[FoldResult] = None
-        seed_ids: set[str] = set()
-        if SEED_CURSOR not in cursors:
-            # Bounded by the ongoing self-inquiry source's start: a version written after boot is
-            # that source's row, never also a seed (a retried seed would otherwise fold it twice).
-            start = cursors.get("self_inquiry_seed")
-            seed_items = await self._reader.read_seeds(start.at if start is not None else now)
-            seed_cands = [c for it in seed_items for c in it.candidates]
-            seed_ids = {c.evidence_id for c in seed_cands}
-            vecs = await embed_all(self._embed, seed_cands)
-            if seed_cands and all(vecs.get(c.evidence_id) is not None for c in seed_cands):
-                # A rejected (4xx) seed text is dropped, not retried forever.
-                evs = [to_evidence(c, vecs[c.evidence_id]) for c in seed_cands if vecs[c.evidence_id]]
-                seeded = await asyncio.to_thread(seed_nodes, evs, now=now)
-                write_cursors[SEED_CURSOR] = Cursor(now, "")
-            elif not seed_cands:
-                write_cursors[SEED_CURSOR] = Cursor(now, "")
-                warnings.append("seed:no_self_inquiry_rows")
-            else:
-                warnings.append("seed:embed_failed")
-
-        by_source = await self._reader.read(readable, hi) if readable else {}
-        all_cands = [c for items in by_source.values() for it in items for c in it.candidates]
-        existing = await self._store.existing_evidence_ids(c.evidence_id for c in all_cands)
-        if seeded is not None:
-            existing |= seed_ids  # belt and braces: a seed row is never folded twice in one tick
-        vectors = await embed_all(self._embed, [c for c in all_cands if c.evidence_id not in existing])
-        for eid, vec in vectors.items():
-            if vec is None:
-                n = self._embed_failures.get(eid, 0) + 1
-                self._embed_failures[eid] = n
-                if n >= EMBED_MAX_FAILURES:
-                    vectors[eid] = REJECTED
-                    warnings.append(f"embed_gave_up:{eid}"[:200])
-            else:
-                self._embed_failures.pop(eid, None)
-        for eid, vec in vectors.items():
-            if vec is not None and not vec:
-                self._embed_failures.pop(eid, None)
+        rows = await self._reader.read_choices(cursors.get(CHOICE_CURSOR), hi)
+        parsed = [(r, choice_from_row(r)) for r in rows]
+        ids = [f"{EVIDENCE_PREFIX}{r['choice_id']}" for r in rows]
+        existing = await self._store.existing_evidence_ids(ids)
+        fresh = [c for (r, c) in parsed if c is not None and f"{EVIDENCE_PREFIX}{c.choice_id}" not in existing]
+        texts = [t for c in fresh for t in all_texts(c)]
+        vectors = await self._embed_texts(texts)
 
         evidence: list[Evidence] = []
-        held: list[str] = []
-        rows: dict[str, int] = {}
-        for name, items in by_source.items():
-            rows[name] = len(items)
-            ev, cur, was_held = accept(items, existing, vectors)
-            evidence.extend(ev)
-            if cur is not None:
-                write_cursors[name] = cur
-            if was_held:
-                held.append(name)
-                warnings.append(f"embed_failed:{name}")
+        held = False
+        last: Optional[dict] = None
+        for r, c in parsed:
+            eid = f"{EVIDENCE_PREFIX}{r['choice_id']}"
+            if c is None:
+                # Stored row no longer validates: consumed as skipped evidence, never folded.
+                evidence.append(Evidence(evidence_id=eid, lane="invalid", source_ref=str(r["choice_id"]),
+                                         occurred_at=utc(r["occurred_at"]) or now, excerpt="invalid stored choice",
+                                         embedding=[], meta={"choice_id": r["choice_id"]}))
+            elif eid not in existing:
+                missing = [t for t in all_texts(c) if vectors.get(t) is None]
+                if missing:
+                    n = self._embed_failures.get(c.choice_id, 0) + 1
+                    self._embed_failures[c.choice_id] = n
+                    if n < EMBED_MAX_FAILURES:
+                        held = True
+                        warnings.append("embed_failed:choice")
+                        break
+                    warnings.append(f"embed_gave_up:{c.choice_id}"[:200])
+                self._embed_failures.pop(c.choice_id, None)
+                evidence.append(choice_evidence(c, vectors))
+            last = r
+        if last is not None:
+            write_cursors[CHOICE_CURSOR] = Cursor(utc(last["created_at"]), str(last["choice_id"]))
 
         evidence = await self._with_situation(evidence, warnings)
-
-        input_ids = {n.disposition_id for n in nodes} | {n.disposition_id for n in (seeded.nodes if seeded else [])}
-        base = list(nodes) + (list(seeded.nodes) if seeded else [])
         # Pure and O(nodes x evidence x dim): off the event loop, which also runs admission and RPCs.
         if evidence:
-            folded = await asyncio.to_thread(fold, base, evidence, now=now)
+            folded = await asyncio.to_thread(fold, nodes, evidence, now=now)
         else:
-            folded = await asyncio.to_thread(apply_fade, base, now=now)
+            folded = await asyncio.to_thread(apply_fade, nodes, now=now)
         named: Optional[NamingApplyResult] = None
         if self.naming_enabled:
-            current = {n.disposition_id: n for n in base} | {n.disposition_id: n for n in folded.nodes}
+            current = {n.disposition_id: n for n in nodes} | {n.disposition_id: n for n in folded.nodes}
             named = await self._apply_namings(list(current.values()), cursors, write_cursors, now, warnings)
-        result = merge(seeded, folded, input_ids, rekeyed, named)
+        result = merge(folded, named)
         loaded = {n.disposition_id: node_key(n) for n in nodes}
 
         await self._store.commit_tick(TickWrite(now=now, evidence=result.evidence_rows, nodes=result.nodes,
@@ -370,13 +399,13 @@ class PersonalityDriver:
         s.last_error = None
         s.evidence_last_tick = sum(1 for e in result.evidence_rows if e.disposition_id is not None)
         s.skipped_last_tick = sum(1 for e in result.evidence_rows if e.disposition_id is None)
-        s.rows_last_tick = rows
-        s.held_sources = held
+        s.choices_read_last_tick = len(rows)
+        s.curiosity_synced_last_tick = synced
+        s.held = held
         s.nodes_by_status = status
         s.warnings = warnings
-        s.seeded = s.seeded or seeded is not None or SEED_CURSOR in cursors
-        summary = {"evidence": s.evidence_last_tick, "skipped": s.skipped_last_tick, "rows": rows, "held": held,
-                   "namings": len(applied),
+        summary = {"evidence": s.evidence_last_tick, "skipped": s.skipped_last_tick, "choices_read": len(rows),
+                   "curiosity_synced": synced, "held": held, "namings": len(applied),
                    "nodes_written": len(result.nodes), "history": len(result.history), "warnings": warnings}
         logger.info("personality_tick %s", summary)
         return summary
@@ -437,8 +466,10 @@ class PersonalityDriver:
         s = self.stats
         return {"ticks": s.ticks, "failures": s.failures, "last_tick_at": s.last_tick_at, "last_error": s.last_error,
                 "evidence_last_tick": s.evidence_last_tick, "skipped_last_tick": s.skipped_last_tick,
-                "rows_last_tick": s.rows_last_tick, "held_sources": s.held_sources,
-                "nodes_by_status": s.nodes_by_status, "warnings": s.warnings, "seeded": s.seeded,
+                "choices_read_last_tick": s.choices_read_last_tick,
+                "curiosity_synced_last_tick": s.curiosity_synced_last_tick,
+                "bus_choices_inserted": s.bus_choices_inserted, "bus_choices_invalid": s.bus_choices_invalid,
+                "held": s.held, "nodes_by_status": s.nodes_by_status, "warnings": s.warnings,
                 "tick_sec": self._tick_sec, "naming_enabled": self.naming_enabled,
                 "namings_last_tick": s.namings_last_tick}
 

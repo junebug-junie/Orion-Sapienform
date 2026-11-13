@@ -1,23 +1,22 @@
-"""Reducers over REAL stored row shapes (pulled from live Postgres 2026-10-16, unedited).
+"""Curiosity rows -> PersonalityChoiceV1 (rev 4), and the PersonalityChoiceV1 contract itself.
 
-OFFER_ROW/OUTCOME_ROW: curiosity run ee31d36e8bfe. Orion tested two priors: rank 1 of the
-ordered list, and one from the separate "tested repeatedly" (stale) section.
-OVERRIDE_ROW: substrate_attention_broadcast_log, open_loops trimmed to the fields the reducer
-reads (id, salience, source_refs) plus two for context.
+OFFER_ROW/OUTCOME_ROW: REAL stored rows (live Postgres 2026-10-16, unedited), curiosity run
+ee31d36e8bfe. Orion tested two priors: rank 1 of the ordered list, and one from the separate
+"tested repeatedly" (stale) section.
 """
 
 from __future__ import annotations
 
 import copy
 import json
+from datetime import datetime, timezone
 
 import pytest
 
 from orion.personality.choices import (
-    curiosity_choice_from_rows,
-    explain_curiosity_choice,
-    explain_voluntary_override_choice,
-    voluntary_override_choice_from_row,
+    curiosity_choices_from_rows,
+    explain_curiosity_choices,
+    readable_prior,
 )
 from orion.schemas.personality import MAX_CHOICE_LIST, ChoiceOptionV1, PersonalityChoiceV1
 
@@ -174,89 +173,52 @@ OUTCOME_ROW = {'run_id': 'ee31d36e8bfe',
                 'prior_id': 'self:turn_start_context_is_stale_snapshot_20260923',
                 'tested_delta': 1}]}
 
-OVERRIDE_ROW = {'log_id': 'broadcast-03864cdd93596bdf7d977f19',
- 'generated_at': '2026-10-16T13:33:26.504636+00:00',
- 'projection_json': {'correlation_id': None,
-                     'frame': {'correlation_id': None,
-                               'generated_at': '2026-10-16T13:33:26.504636Z',
-                               'voluntary_override': {'applied_bias': 0.944175,
-                                                      'beat_loop_id': 'open-loop-e91fa7e1c61e',
-                                                      'effort_spent': 0.944175,
-                                                      'beat_bottom_up': 0.9628696604600219,
-                                                      'chosen_loop_id': 'open-loop-7376a3da4050',
-                                                      'chosen_bottom_up': 0.9443178581600683,
-                                                      'goal_artifact_id': 'artifact-e0d711ed-d709-443c-887e-c74acad1c1b0',
-                                                      'goal_drive_origin': None},
-                               'open_loops': [{'id': 'open-loop-e91fa7e1c61e',
-                                               'salience': 0.9628696604600219,
-                                               'combined_salience': 0.9628696604600219,
-                                               'top_down_bias': 0.0,
-                                               'description': 'Perception prediction error',
-                                               'source_refs': ['node:substrate.perception']},
-                                              {'id': 'open-loop-7376a3da4050',
-                                               'salience': 0.9443178581600683,
-                                               'combined_salience': 1.0,
-                                               'top_down_bias': 0.944175,
-                                               'description': 'Execution prediction error',
-                                               'source_refs': ['node:substrate.execution']},
-                                              {'id': 'open-loop-08d23ba68a84',
-                                               'salience': 0.3936813747731397,
-                                               'combined_salience': 0.3936813747731397,
-                                               'top_down_bias': 0.0,
-                                               'description': 'Route prediction error',
-                                               'source_refs': ['node:substrate.route']}]}}}
 
-
-# ------------------------------------------------------------- curiosity lane
-
-
-def test_curiosity_real_rows():
-    c = curiosity_choice_from_rows(OFFER_ROW, OUTCOME_ROW)
-    assert c is not None
-    assert c.choice_id == "curiosity_prior_selection:ee31d36e8bfe"
-    assert c.source_ref == "curiosity_run:ee31d36e8bfe"
-    assert c.chooser == "orion_llm"
-    refs = [o.ref for o in c.chosen]
-    assert refs == [
-        "curiosity_prior:self:induction_ledger_dangling_20261008",
-        "curiosity_prior:self:turn_start_context_is_stale_snapshot_20260923",
+def test_curiosity_real_rows_one_row_per_tested_prior():
+    out = curiosity_choices_from_rows(OFFER_ROW, OUTCOME_ROW)
+    assert [c.choice_id for c in out] == [
+        "curiosity:ee31d36e8bfe:self:induction_ledger_dangling_20261008",
+        "curiosity:ee31d36e8bfe:self:turn_start_context_is_stale_snapshot_20260923",
     ]
-    # rank 1 from the ordered list; the stale-section pick has no rank in that order.
-    assert [o.rank for o in c.chosen] == [1, None]
-    assert c.chosen[1].score == pytest.approx(0.00895229232813061)
-    assert c.chosen_best_rank == 1
-    # 8 live + 8 stale shown, 2 picked.
-    assert len(c.alternatives) == 14
-    assert not set(refs) & {o.ref for o in c.alternatives}
-    assert c.cost_nats == pytest.approx(0.0012830495056959101)
-    assert c.cost_seconds == pytest.approx(3552.713093)
-    assert c.occurred_at.isoformat() == "2026-10-09T21:05:42.692508+00:00"
-    assert c.situation_refs[:2] == ["curiosity_arm:uncertainty_order", "curiosity_turn_ok:true"]
-    assert len(c.situation_refs) == 20
+    a, b = out
+    assert a.lane == "curiosity" and a.act_id == "curiosity_run:ee31d36e8bfe"
+    assert a.chosen.text == "induction ledger dangling" and a.chosen.market_rank == 1 and a.chosen_market_rank == 1
+    # The stale-section pick was shown unranked.
+    assert b.chosen.market_rank is None and b.chosen_market_rank is None
+    assert a.picks_in_decision == b.picks_in_decision == 2
+    # 8 ordered + 8 stale shown, 2 tested: the other 14 are what Orion turned down.
+    assert len(a.alternatives) == 14 and a.alternatives == b.alternatives
+    tested = {a.chosen.key, b.chosen.key}
+    assert not tested & {o.key for o in a.alternatives}
+    assert [o.market_rank for o in a.alternatives[:7]] == [2, 3, 4, 5, 6, 7, 8]
+    assert all(o.market_rank is None for o in a.alternatives[7:])
+    assert a.occurred_at.isoformat() == "2026-10-09T21:05:42.692508+00:00"
+    assert a.situation == {"curiosity_arm": "uncertainty_order", "turn_ok": True}
+    assert not a.declined_all and not a.care_promoted
 
 
-def test_curiosity_choice_id_is_deterministic():
-    a = curiosity_choice_from_rows(OFFER_ROW, OUTCOME_ROW)
-    b = curiosity_choice_from_rows(copy.deepcopy(OFFER_ROW), copy.deepcopy(OUTCOME_ROW))
-    assert a.model_dump() == b.model_dump()
+def test_curiosity_choices_are_deterministic():
+    a = curiosity_choices_from_rows(OFFER_ROW, OUTCOME_ROW)
+    b = curiosity_choices_from_rows(copy.deepcopy(OFFER_ROW), copy.deepcopy(OUTCOME_ROW))
+    assert [x.model_dump() for x in a] == [x.model_dump() for x in b]
 
 
 def test_curiosity_accepts_jsonb_as_text():
     offer = dict(OFFER_ROW, offered=json.dumps(OFFER_ROW["offered"]))
     outcome = dict(OUTCOME_ROW, per_prior=json.dumps(OUTCOME_ROW["per_prior"]))
-    assert curiosity_choice_from_rows(offer, outcome).chosen_best_rank == 1
+    assert curiosity_choices_from_rows(offer, outcome)[0].chosen_market_rank == 1
 
 
-def test_curiosity_deviation_rank_and_off_menu():
+def test_curiosity_deviation_and_off_menu():
     outcome = copy.deepcopy(OUTCOME_ROW)
     outcome["per_prior"] = [
         {"kind": "tested", "prior_id": "self:presence_ring_is_three_kinds_20260930"},  # rank 6
         {"kind": "tested", "prior_id": "self:not_on_any_menu"},
     ]
-    c = curiosity_choice_from_rows(OFFER_ROW, outcome)
-    assert c.chosen_best_rank == 6
-    assert c.chosen[1].rank is None and c.chosen[1].score is None
-    assert len(c.alternatives) == 15
+    six, off = curiosity_choices_from_rows(OFFER_ROW, outcome)
+    assert six.chosen_market_rank == 6 and off.chosen_market_rank is None
+    assert off.chosen.text == "not on any menu"
+    assert len(six.alternatives) == 15  # everything shown except the one tested from the menu
 
 
 def test_curiosity_formed_and_moved_untested_are_not_chosen():
@@ -265,10 +227,15 @@ def test_curiosity_formed_and_moved_untested_are_not_chosen():
         {"kind": "formed", "prior_id": "self:new_one"},
         {"kind": "moved_untested", "prior_id": "self:induction_ledger_dangling_20261008"},
     ]
-    choice, reason = explain_curiosity_choice(OFFER_ROW, outcome)
-    assert choice is None and reason == "formed_only"
+    assert explain_curiosity_choices(OFFER_ROW, outcome) == ([], "formed_only")
     outcome["per_prior"] = outcome["per_prior"][1:]
-    assert explain_curiosity_choice(OFFER_ROW, outcome) == (None, "nothing_tested")
+    assert explain_curiosity_choices(OFFER_ROW, outcome) == ([], "nothing_tested")
+
+
+def test_curiosity_every_option_tested_is_no_choice():
+    offer = dict(OFFER_ROW, offered=OFFER_ROW["offered"][:1], stale_offered=[])
+    outcome = dict(OUTCOME_ROW, per_prior=[{"kind": "tested", "prior_id": "self:induction_ledger_dangling_20261008"}])
+    assert explain_curiosity_choices(offer, outcome) == ([], "no_alternative")
 
 
 @pytest.mark.parametrize(
@@ -281,206 +248,83 @@ def test_curiosity_formed_and_moved_untested_are_not_chosen():
         (OFFER_ROW, dict(OUTCOME_ROW, per_prior="{not json"), "malformed_per_prior"),
         (OFFER_ROW, dict(OUTCOME_ROW, per_prior=[]), "nothing_tested"),
         (OFFER_ROW, dict(OUTCOME_ROW, per_prior=[None, 3, {"kind": "tested"}]), "nothing_tested"),
-        (
-            dict(OFFER_ROW, turn_started_at=None, decided_at=None),
-            dict(OUTCOME_ROW, completed_at="garbage"),
-            "no_timestamp",
-        ),
+        (dict(OFFER_ROW, turn_started_at=None, decided_at=None), dict(OUTCOME_ROW, completed_at="garbage"),
+         "no_timestamp"),
         ("not a mapping", OUTCOME_ROW, "no_offer_row"),
-        # A self-inquiry run's decision row offers nothing: its tested priors are not a choice.
         (dict(OFFER_ROW, arm="self_inquiry", offered=[], stale_offered=[]), OUTCOME_ROW, "self_inquiry_no_offer"),
     ],
 )
-def test_curiosity_malformed_returns_none(offer, outcome, reason):
-    assert explain_curiosity_choice(offer, outcome) == (None, reason)
-    assert curiosity_choice_from_rows(offer, outcome) is None
+def test_curiosity_malformed_yields_nothing(offer, outcome, reason):
+    assert explain_curiosity_choices(offer, outcome) == ([], reason)
+    assert curiosity_choices_from_rows(offer, outcome) == []
 
 
-def test_curiosity_garbage_menu_entries_are_skipped():
-    offer = dict(OFFER_ROW, offered=[None, "x", {"rank": "bad", "prior_id": "a"}], stale_offered=None)
-    outcome = dict(OUTCOME_ROW, per_prior=[{"kind": "tested", "prior_id": "a"}], realized_nats="nan")
-    c = curiosity_choice_from_rows(offer, outcome)
-    assert c.chosen[0].rank is None and c.chosen_best_rank is None
-    assert c.cost_nats is None and c.alternatives == []
+def test_curiosity_coverage_pick_is_unranked_and_garbage_skipped():
+    offer = dict(OFFER_ROW, offered=[None, "x", {"rank": "bad", "prior_id": "a_b"},
+                                     {"rank": 2, "slot": "coverage", "prior_id": "c_d"},
+                                     {"rank": 1, "prior_id": "e_f"}], stale_offered=None)
+    outcome = dict(OUTCOME_ROW, per_prior=[{"kind": "tested", "prior_id": "c_d"}])
+    (c,) = curiosity_choices_from_rows(offer, outcome)
+    assert c.chosen_market_rank is None and [(o.key, o.market_rank) for o in c.alternatives] == [("a_b", None), ("e_f", 1)]
 
 
-def test_curiosity_negative_duration_is_not_a_cost():
-    outcome = dict(OUTCOME_ROW, completed_at="2026-10-09T20:00:00+00:00")
-    assert curiosity_choice_from_rows(OFFER_ROW, outcome).cost_seconds is None
+def test_readable_prior():
+    assert readable_prior("curiosity_prior:self:reading_link_can_cross_region_boundary_20261015") == \
+        "reading link can cross region boundary"
+    assert readable_prior("self:top8_20261007") == "top8"
+    assert readable_prior("keeps_2026_date_mid") == "keeps 2026 date mid"
+    assert readable_prior(None) == ""
 
 
-def test_curiosity_caps_are_enforced():
-    offered = [{"rank": i, "prior_id": f"p{i}", "expected_nats": 0.1} for i in range(1, 201)]
-    per_prior = [{"kind": "tested", "prior_id": f"p{i}"} for i in range(1, 81)]
-    offer = dict(OFFER_ROW, offered=offered, stale_offered=[],
-                 material_ids=[f"crystallization:{i}" for i in range(200)])
-    c = curiosity_choice_from_rows(offer, dict(OUTCOME_ROW, per_prior=per_prior))
-    assert len(c.chosen) == MAX_CHOICE_LIST
-    assert len(c.alternatives) == MAX_CHOICE_LIST
-    assert len(c.situation_refs) == MAX_CHOICE_LIST
-    assert c.chosen_best_rank == 1
+# --- the contract -------------------------------------------------------------------------------
+
+T = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
 
 
-def test_model_refuses_uncapped_lists_and_extra_fields():
-    base = curiosity_choice_from_rows(OFFER_ROW, OUTCOME_ROW).model_dump()
-    with pytest.raises(Exception):
-        PersonalityChoiceV1(**dict(base, alternatives=base["chosen"] * 26))
-    with pytest.raises(Exception):
-        PersonalityChoiceV1(**dict(base, chosen=[]))
-    with pytest.raises(Exception):
-        PersonalityChoiceV1(**dict(base, surprise=1))
+def opt(key, rank=None, text=None):
+    return {"key": key, "text": text or f"option {key}", "market_rank": rank}
 
 
-# ------------------------------------------------------- attention override lane
+def test_contract_minimal_prime_choice_round_trips():
+    c = PersonalityChoiceV1(choice_id="prime:t1", lane="prime", occurred_at=T, chosen=opt("a", 2),
+                            alternatives=[opt("b", 1), opt("c", 3)], chosen_market_rank=2,
+                            situation={"arousal": "engaged"}, act_id="prime_thought:t1", correlation_id="corr-1")
+    again = PersonalityChoiceV1.model_validate_json(c.model_dump_json())
+    assert again == c and again.schema_version == "personality.choice.v1" and again.picks_in_decision == 1
 
 
-def test_override_real_row():
-    c = voluntary_override_choice_from_row(OVERRIDE_ROW)
-    assert c is not None
-    assert c.choice_id == "voluntary_attention_override:broadcast-03864cdd93596bdf7d977f19"
-    assert c.source_ref == "attention_broadcast:broadcast-03864cdd93596bdf7d977f19"
-    assert c.chooser == "goal_biased_formula"
-    assert [(o.ref, o.rank) for o in c.chosen] == [("open-loop-7376a3da4050", 2)]
-    assert c.chosen[0].score == pytest.approx(0.9443178581600683)
-    assert [(o.ref, o.rank) for o in c.alternatives] == [
-        ("open-loop-e91fa7e1c61e", 1),
-        ("open-loop-08d23ba68a84", 3),
-    ]
-    assert c.chosen_best_rank == 2
-    assert c.cost_effort == pytest.approx(0.944175)
-    assert c.cost_seconds is None and c.cost_nats is None
-    assert c.situation_refs == [
-        "artifact-e0d711ed-d709-443c-887e-c74acad1c1b0",
-        "node:substrate.execution",
-        "node:substrate.perception",
-    ]
-    assert c.correlation_id is None
+def test_contract_declined_all():
+    c = PersonalityChoiceV1(choice_id="outreach:o1", lane="outreach", occurred_at=T, declined_all=True,
+                            alternatives=[opt("t1", 1), opt("t2", 2)])
+    assert c.chosen is None and c.chosen_market_rank is None
+    with pytest.raises(ValueError):
+        PersonalityChoiceV1(choice_id="x", lane="outreach", occurred_at=T, declined_all=True, chosen=opt("a"),
+                            alternatives=[opt("b")])
+    with pytest.raises(ValueError):  # declining nothing is not a choice
+        PersonalityChoiceV1(choice_id="x", lane="outreach", occurred_at=T, declined_all=True, alternatives=[])
 
 
-def test_override_choice_id_is_deterministic():
-    a = voluntary_override_choice_from_row(OVERRIDE_ROW)
-    b = voluntary_override_choice_from_row(json.loads(json.dumps(OVERRIDE_ROW)))
-    assert a.model_dump() == b.model_dump()
+@pytest.mark.parametrize("kw", [
+    dict(alternatives=[]),  # no real alternative
+    dict(chosen=None),  # a pick must name what was picked
+    dict(chosen_market_rank=1),  # must equal chosen.market_rank (2)
+    dict(alternatives=[opt("a", 1)]),  # duplicate key
+    dict(lane="reverie"),  # prose lanes are retired
+    dict(occurred_at=datetime(2026, 11, 13, 12, 0)),  # naive time
+    dict(picks_in_decision=0),
+    dict(situation={f"k{i}": i for i in range(17)}),
+    dict(surprise=1),  # extra field
+    dict(alternatives=[opt(f"x{i}") for i in range(MAX_CHOICE_LIST + 1)]),
+])
+def test_contract_refuses(kw):
+    base = dict(choice_id="prime:t1", lane="prime", occurred_at=T, chosen=opt("a", 2),
+                alternatives=[opt("b", 1)], chosen_market_rank=2)
+    with pytest.raises(ValueError):
+        PersonalityChoiceV1(**{**base, **kw})
 
 
-def test_override_projection_as_text():
-    row = dict(OVERRIDE_ROW, projection_json=json.dumps(OVERRIDE_ROW["projection_json"]))
-    assert voluntary_override_choice_from_row(row).chosen_best_rank == 2
-
-
-def test_override_without_open_loops_falls_back_to_the_pair():
-    row = copy.deepcopy(OVERRIDE_ROW)
-    row["projection_json"]["frame"]["open_loops"] = []
-    c = voluntary_override_choice_from_row(row)
-    assert c.chosen_best_rank == 2
-    assert [(o.ref, o.rank) for o in c.alternatives] == [("open-loop-e91fa7e1c61e", 1)]
-
-
-def _with_override(vo):
-    row = copy.deepcopy(OVERRIDE_ROW)
-    row["projection_json"]["frame"]["voluntary_override"] = vo
-    return row
-
-
-@pytest.mark.parametrize(
-    "row,reason",
-    [
-        (None, "no_row"),
-        ({}, "no_log_id"),
-        ({"log_id": "x", "projection_json": "{bad"}, "malformed_projection"),
-        ({"log_id": "x", "projection_json": {}}, "no_frame"),
-        (_with_override(None), "no_override"),
-        (_with_override("oops"), "malformed_override"),
-        (_with_override({"chosen_loop_id": "a"}), "malformed_override"),
-        (_with_override({"chosen_loop_id": "a", "beat_loop_id": "a"}), "malformed_override"),
-    ],
-)
-def test_override_malformed_returns_none(row, reason):
-    assert explain_voluntary_override_choice(row) == (None, reason)
-    assert voluntary_override_choice_from_row(row) is None
-
-
-def test_override_alternatives_capped():
-    row = copy.deepcopy(OVERRIDE_ROW)
-    loops = row["projection_json"]["frame"]["open_loops"]
-    loops += [{"id": f"open-loop-x{i}", "salience": 0.01, "source_refs": []} for i in range(80)]
-    c = voluntary_override_choice_from_row(row)
-    assert len(c.alternatives) == MAX_CHOICE_LIST
-    assert c.alternatives[0].ref == "open-loop-e91fa7e1c61e"
-
-
-def test_override_salience_tie_ranks_the_beat_first():
-    row = copy.deepcopy(OVERRIDE_ROW)
-    loops = row["projection_json"]["frame"]["open_loops"]
-    loops[0]["salience"] = loops[1]["salience"] = 0.5
-    loops.reverse()  # chosen listed before the beat
-    c = voluntary_override_choice_from_row(row)
-    assert c.chosen_best_rank == 2
-    assert c.alternatives[0].ref == "open-loop-e91fa7e1c61e" and c.alternatives[0].rank == 1
-
-
-# Regressions from the 2026-10-16 review.
-
-def test_curiosity_coverage_pick_is_unranked():
-    # Coverage priors are shown as "DRAWN AT RANDOM, not ranked"; their stored rank only
-    # continues past the ordered head and is not an order Orion read.
-    offer = dict(
-        OFFER_ROW,
-        offered=[{"rank": i, "slot": "order", "prior_id": f"p{i}", "expected_nats": 0.1} for i in range(1, 7)]
-        + [{"rank": 7, "slot": "coverage", "prior_id": "pc", "expected_nats": 0.1}],
-        stale_offered=[],
-    )
-    outcome = dict(OUTCOME_ROW, per_prior=[{"kind": "tested", "prior_id": "pc"}])
-    c = curiosity_choice_from_rows(offer, outcome)
-    assert c.chosen_best_rank is None
-    assert c.chosen[0].rank is None
-
-
-def test_curiosity_overflowing_numbers_do_not_drop_the_row():
-    offer = dict(
-        OFFER_ROW,
-        offered='[{"rank": Infinity, "prior_id": "a", "expected_nats": 1e400}]',
-        stale_offered=[],
-    )
-    outcome = dict(OUTCOME_ROW, per_prior=[{"kind": "tested", "prior_id": "a"}])
-    c = curiosity_choice_from_rows(offer, outcome)
-    assert c is not None
-    assert c.chosen[0].rank is None and c.chosen[0].score is None
-
-
-def _override_row(loops, vo=None):
-    row = copy.deepcopy(OVERRIDE_ROW)
-    row["projection_json"]["frame"]["open_loops"] = loops
-    if vo is not None:
-        row["projection_json"]["frame"]["voluntary_override"].update(vo)
-    return row
-
-
-def test_override_string_source_refs_are_not_split_into_characters():
-    vo = OVERRIDE_ROW["projection_json"]["frame"]["voluntary_override"]
-    loops = [
-        {"id": vo["beat_loop_id"], "salience": 0.9, "source_refs": "abc"},
-        {"id": vo["chosen_loop_id"], "salience": 0.5, "source_refs": "xyz"},
-    ]
-    c = voluntary_override_choice_from_row(_override_row(loops))
-    assert not {"a", "b", "c", "x", "y", "z"} & set(c.situation_refs)
-
-
-def test_override_duplicate_loop_ids_keep_first_rank():
-    vo = OVERRIDE_ROW["projection_json"]["frame"]["voluntary_override"]
-    loops = [
-        {"id": vo["beat_loop_id"], "salience": 0.9},
-        {"id": vo["chosen_loop_id"], "salience": 0.5},
-        {"id": vo["chosen_loop_id"], "salience": 0.99},
-    ]
-    c = voluntary_override_choice_from_row(_override_row(loops))
-    assert c.chosen[0].rank == 2 and c.chosen[0].score == 0.5
-    assert [o.rank for o in c.alternatives] == [1]
-
-
-def test_override_missing_beat_does_not_duplicate_rank_one():
-    vo = OVERRIDE_ROW["projection_json"]["frame"]["voluntary_override"]
-    loops = [{"id": vo["chosen_loop_id"], "salience": 0.9}, {"id": "other", "salience": 0.5}]
-    c = voluntary_override_choice_from_row(_override_row(loops))
-    ranks = [o.rank for o in c.chosen + c.alternatives if o.rank is not None]
-    assert len(ranks) == len(set(ranks))
+def test_option_refuses_bad_rank_and_empty_text():
+    with pytest.raises(ValueError):
+        ChoiceOptionV1(key="a", text="x", market_rank=0)
+    with pytest.raises(ValueError):
+        ChoiceOptionV1(key="a", text="")

@@ -26,6 +26,7 @@ from orion.schemas.vision_sighting import IDENTITY_SIGHTING_KIND
 from orion.schemas.gpu_pool import GPU_POOL_EVENT_CHANNEL, GPU_POOL_EVENT_KIND
 from orion.schemas.resource_admission import RESOURCE_EVENT_CHANNEL, RESOURCE_EVENT_KIND, ResourceEventV1
 from orion.schemas.memory_episode import MEMORY_EPISODE_CLOSED_KIND
+from orion.schemas.personality import PERSONALITY_CHOICE_CHANNEL, PERSONALITY_CHOICE_KIND
 
 from app.settings import get_settings
 
@@ -129,6 +130,17 @@ async def _handle_request(env: BaseEnvelope) -> None:
         return
     if env.kind == MEMORY_EPISODE_CLOSED_KIND:
         await _submit_episode_distill(env)
+        return
+    if env.kind == PERSONALITY_CHOICE_KIND:
+        # Personality rev 4: a choice point's PersonalityChoiceV1. durable-runs is the single writer of
+        # personality_choice; the reducer folds it on its next tick.
+        if personality is None:
+            logger.warning("personality_choice_dropped reason=personality_disabled corr=%s", env.correlation_id)
+            return
+        try:
+            await personality.offer_choice(env.payload)
+        except Exception as exc:  # noqa: BLE001 - a DB failure loses this one choice, never the listener
+            logger.warning("personality_choice_write_failed corr=%s error=%s", env.correlation_id, type(exc).__name__)
         return
     if env.kind != DURABLE_RUN_REQUEST_KIND:
         logger.warning("durable_run_request_unexpected_kind kind=%s", env.kind)
@@ -551,8 +563,9 @@ def _build_chronicle():
 
 
 def _build_personality():
-    """Personality graph loop (spec 2026-10-16 rev 2): the single writer of personality_*, on the
-    checkpointer's pool. A plain periodic task: state lives in its own tables and cursors."""
+    """Personality graph loop (spec 2026-10-16 rev 4, choices only): the single writer of personality_*
+    (including personality_choice), on the checkpointer's pool. A plain periodic task: state lives in
+    its own tables and cursors."""
     from datetime import datetime, timezone
 
     from app.personality_driver import PersonalityDriver, http_embedder
@@ -670,6 +683,8 @@ async def lifespan(app: FastAPI):
                 patterns.append(_settings.chat_history_turn_channel)
             if claude_limits is not None and _settings.claude_limit_channel not in patterns:
                 patterns.append(_settings.claude_limit_channel)
+            if personality is not None:
+                patterns.append(PERSONALITY_CHOICE_CHANNEL)
             hunter = Hunter(_chassis_cfg(), handler=_handle_request, patterns=patterns)
             await hunter.start_background()
             logger.info("durable_runs_listening channel=%s", _settings.request_channel)
@@ -1112,7 +1127,7 @@ async def _personality_read(coro):
     except (UndefinedTable, UndefinedColumn) as exc:
         raise HTTPException(503, "personality tables missing: apply "
                                  "services/orion-sql-db/manual_migration_personality_graph_v1.sql and "
-                                 "manual_migration_personality_naming_v1.sql") from exc
+                                 "manual_migration_personality_naming_v1.sql and manual_migration_personality_choice_v1.sql") from exc
 
 
 @app.get("/personality/frame")

@@ -1,88 +1,119 @@
-"""Personality evidence: one choice Orion made, plus the options Orion did not pick.
+"""Personality evidence: one choice Orion made, plus the options Orion turned down.
 
-Dynamic personality graph design (PR #2726), section 1 "Evidence". The evidence unit is a
-choice: what was picked, what else was on the table, what situation it happened in, and what
-it cost. A tendency ("Orion goes off the suggested order", "Orion's goals pull attention
-toward the body") can only be read off many of these, never off one.
+Spec: docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md, rev 4 ("one
+organ: choices in, values out") and rev 3 ("only choices are evidence"). A choice point shows Orion
+the top options a funded act would take and Orion picks one, or declines them all ("no move", "say
+nothing"). Each pick is one ``PersonalityChoiceV1``.
 
-P0 scope: a READ-ONLY reconstruction from two lanes that already persist chosen + losers.
-No bus channel, no table, no writer yet. Producer: ``orion.personality.choices`` (pure
-reducers over stored rows). Consumer: ``scripts/analysis/measure_personality_choices.py``.
+Flow: a producer (orion-mind Prime, Hub outreach, ...) publishes the model on bus channel
+``orion:personality:choice`` (kind ``personality.choice.v1``). orion-durable-runs is the single
+writer: it inserts the row into ``personality_choice`` (``choice_id`` primary key, insert-only, a
+re-delivery is a no-op), and its personality reducer folds those rows, and only those, into the
+disposition graph. The curiosity lane is written by durable-runs itself from the curiosity
+offer/outcome tables (``orion.personality.choices``).
 
-* ``curiosity_prior_selection`` -- Orion (the LLM) picks which priors to test in a curiosity
-  investigation. Source rows: ``curiosity_offer_decisions`` + ``curiosity_run_outcomes``.
-* ``voluntary_attention_override`` -- Orion's active goal biases the attention formula and
-  flips the bottom-up winner. Source rows: ``substrate_attention_broadcast_log``
-  (``frame.voluntary_override``). The chooser is a formula, not the LLM; it is labelled so.
-
-Lists are capped at ``MAX_CHOICE_LIST``. The reducer truncates; the model refuses more.
+A rule, a gate, a cap or a formula is not a choice: only an act where Orion (the model) picked among
+real alternatives may write one.
 """
 
 from __future__ import annotations
 
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 PERSONALITY_CHOICE_SCHEMA_VERSION = "personality.choice.v1"
 PERSONALITY_CHOICE_KIND = "personality.choice.v1"
-CHOICE_OPTION_KIND = "personality.choice.option.v1"
+PERSONALITY_CHOICE_CHANNEL = "orion:personality:choice"
 MAX_CHOICE_LIST = 50
+CHOICE_OPTION_TEXT_MAX = 400
+CHOICE_SITUATION_MAX_KEYS = 16
 
-ChoiceLane = Literal["curiosity_prior_selection", "voluntary_attention_override"]
-ChoiceChooser = Literal["orion_llm", "goal_biased_formula"]
+ChoiceLane = Literal["prime", "outreach", "curiosity", "reading", "chat"]
 
 
 class ChoiceOptionV1(BaseModel):
-    """One option: picked or not. ``rank`` is its position in the order Orion was shown
-    (1 = first); None when it was not in that ordered list. ``score`` is the lane's own
-    number for the option (curiosity: ``expected_nats``; attention: bottom-up salience)."""
+    """One option Orion was shown. ``key`` is the producer's stable id for it (a concern id, a
+    topic id, a prior id). ``text`` is what the option says, as Orion saw it; the reducer embeds it,
+    so it must describe the option, not Orion's prose about it. ``market_rank`` is its position in
+    the order the market (or the producer's ranking) offered it, 1 = first; None when the option was
+    shown unranked."""
 
     model_config = ConfigDict(extra="forbid")
 
-    ref: str = Field(min_length=1)
-    rank: Optional[int] = Field(default=None, ge=1)
-    score: Optional[float] = None
+    key: str = Field(min_length=1, max_length=200)
+    text: str = Field(min_length=1, max_length=CHOICE_OPTION_TEXT_MAX)
+    market_rank: Optional[int] = Field(default=None, ge=1)
 
 
 class PersonalityChoiceV1(BaseModel):
-    """One choice and its alternatives. ``choice_id`` is ``f"{lane}:{source_id}"`` so a
-    re-run over the same rows yields the same ids."""
+    """One choice and the options turned down.
+
+    * ``chosen``: the option Orion picked. None only when ``declined_all``.
+    * ``alternatives``: every other option shown. With ``declined_all`` these are the options
+      Orion declined (at least one).
+    * ``chosen_market_rank``: the chosen option's market rank (1 = Orion followed the order; it
+      weighs 0.25 in the reducer, any other rank or None weighs 1.0).
+    * ``declined_all``: Orion picked "none" / "no move" / "say nothing" although options existed.
+    * ``care_promoted``: the option reached the shown set only because the care term (rev 4 move 2)
+      lifted it. Counts at half weight (runaway guard).
+    * ``picks_in_decision``: how many options this same decision picked (a curiosity run can test
+      several priors; each pick is one row). The reducer divides the weight by it, so a decision
+      weighs the same however many picks it made. Single-pick producers leave it at 1.
+    * ``situation``: a small flat dict of what Orion saw (arousal, binding constraint, company).
+    * ``act_id`` / ``correlation_id``: the act and the model call that made the pick.
+
+    ``choice_id`` must be deterministic per decision (and pick), e.g. ``prime:<thought_id>``, so a
+    re-published choice is the same row.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     schema_version: Literal["personality.choice.v1"] = PERSONALITY_CHOICE_SCHEMA_VERSION
-    choice_id: str = Field(min_length=1)
+    choice_id: str = Field(min_length=1, max_length=300)
     lane: ChoiceLane
-    chooser: ChoiceChooser
     occurred_at: AwareDatetime
-    chosen: List[ChoiceOptionV1] = Field(min_length=1, max_length=MAX_CHOICE_LIST)
+    chosen: Optional[ChoiceOptionV1] = None
     alternatives: List[ChoiceOptionV1] = Field(default_factory=list, max_length=MAX_CHOICE_LIST)
-    # Lowest shown rank among the chosen options. 1 = Orion took the first thing in the order;
-    # None = nothing chosen was in the ordered list (off-menu or from an unranked section).
-    chosen_best_rank: Optional[int] = Field(default=None, ge=1)
-    cost_seconds: Optional[float] = Field(default=None, ge=0.0)
-    cost_nats: Optional[float] = None
-    # Attention lane only: the effort budget the goal bias spent to flip the winner
-    # (``voluntary_override.effort_spent``). Not seconds and not nats, so it has its own field.
-    cost_effort: Optional[float] = None
-    situation_refs: List[str] = Field(default_factory=list, max_length=MAX_CHOICE_LIST)
-    correlation_id: Optional[str] = None
-    source_ref: str = Field(min_length=1)
+    chosen_market_rank: Optional[int] = Field(default=None, ge=1)
+    declined_all: bool = False
+    care_promoted: bool = False
+    picks_in_decision: int = Field(default=1, ge=1, le=MAX_CHOICE_LIST)
+    situation: Dict[str, Any] = Field(default_factory=dict)
+    act_id: Optional[str] = Field(default=None, max_length=300)
+    correlation_id: Optional[str] = Field(default=None, max_length=300)
+
+    @model_validator(mode="after")
+    def _a_real_choice(self) -> "PersonalityChoiceV1":
+        if not self.alternatives:
+            raise ValueError("a choice needs at least one alternative (declined option) Orion was shown")
+        if self.declined_all:
+            if self.chosen is not None or self.chosen_market_rank is not None:
+                raise ValueError("declined_all: chosen and chosen_market_rank must be None")
+        elif self.chosen is None:
+            raise ValueError("chosen is required unless declined_all")
+        keys = [o.key for o in self.alternatives] + ([self.chosen.key] if self.chosen else [])
+        if len(set(keys)) != len(keys):
+            raise ValueError("option keys must be unique across chosen and alternatives")
+        if self.chosen is not None and self.chosen_market_rank != self.chosen.market_rank:
+            raise ValueError("chosen_market_rank must equal chosen.market_rank")
+        if len(self.situation) > CHOICE_SITUATION_MAX_KEYS:
+            raise ValueError(f"situation holds at most {CHOICE_SITUATION_MAX_KEYS} keys")
+        return self
 
 
-# --- Personality graph loop (rev 2, bottom-up) -------------------------------------------------
-# Spec: docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md (rev 2).
-# Single writer: orion-durable-runs' personality reducer (Postgres personality_* tables).
-# Frame: GET /personality/frame on durable-runs. Readers render it with
-# ``orion.personality.cue.project_personality_cue`` (pure) into chat stance, reverie, curiosity
-# kickoff and outreach -- as Orion's own recurring concerns, with evidence, never tone rules.
+# --- Personality graph (rev 4: choices only) ---------------------------------------------------
+# Spec: docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md (rev 4).
+# Single writer: orion-durable-runs' personality reducer (Postgres personality_* tables), folding
+# only personality_choice rows. Frame: GET /personality/frame on durable-runs.
 
-PersonalityLane = Literal[
-    "dream", "journal", "reverie", "reading", "day_letter", "chat", "outreach",
-    "curiosity_choice", "self_inquiry_seed",
-]
-DispositionOrigin = Literal["seed_self_inquiry", "recurrence"]
+# Rev 4: the graph's evidence lanes are the choice lanes (``ChoiceLane``). Rev 2's prose lanes
+# (dream, journal, reverie, reading text, day letter, chat/outreach text, self-inquiry seeds) are
+# retired: their evidence rows stay in personality_evidence for audit, nothing folds them.
+PersonalityLane = ChoiceLane
+# "choice": a rev 4 node, born from a chosen-over-declined direction. The two rev 2 origins remain
+# only so retired rows still validate; the reducer never loads or creates them.
+DispositionOrigin = Literal["choice", "seed_self_inquiry", "recurrence"]
 DispositionStatus = Literal["candidate", "active", "retired"]
 PersonalityCueSkipReason = Literal["disabled", "fetch_failed", "invalid_frame", "stale", "empty", "render_failed"]
 DISPOSITION_LABEL_MAX_CHARS = 160
@@ -100,11 +131,12 @@ PERSONALITY_CUE_MAX_CHARS = 900
 
 
 class DispositionV1(BaseModel):
-    """One node of the graph: something Orion keeps returning to.
+    """One node of the graph: a tendency in what Orion picks over what Orion turns down.
 
-    ``label`` is a short excerpt of Orion's own words from the evidence closest to the node's
-    centroid (no model writes it). ``lane_counts`` is evidence per lane; a node seen in several
-    independent lanes is stronger than one repeated in one lane. ``weight`` already includes fade.
+    ``label`` is computed from the choices, never quoted from prose: "<chosen gist> over <declined
+    gist>, n of m" (``orion.personality.graph.choice_label``). ``lane_counts`` is choices per lane.
+    ``weight`` is the faded sum of the choices' evidence weights (0.25 for following the market's
+    order, 1.0 for departing from it). Rev 2 nodes (origin recurrence / seed) are retired.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -116,18 +148,18 @@ class DispositionV1(BaseModel):
     weight: float = Field(ge=0.0)
     evidence_count: int = Field(ge=0)
     lane_counts: dict[str, int] = Field(default_factory=dict)
-    chosen_count: int = Field(default=0, ge=0)  # curiosity picks that reinforced it
+    chosen_count: int = Field(default=0, ge=0)  # choices folded into it
     first_seen_at: AwareDatetime
     last_reinforced_at: AwareDatetime
     # Orion's own name for the node (self-naming, docs/.../2026-10-17-personality-orion-names-
-    # dispositions-design.md). None until Orion names it. ``label`` keeps its meaning (the excerpt).
+    # dispositions-design.md). None until Orion names it. ``label`` keeps its meaning (computed).
     name: Optional[str] = Field(default=None, max_length=NAMING_NAME_MAX_CHARS)
     name_sentence: Optional[str] = Field(default=None, max_length=NAMING_SENTENCE_MAX_CHARS)
 
 
 class ChoiceStyleV1(BaseModel):
-    """How Orion has been choosing in curiosity over ``window_days``: how often Orion took the
-    top-ranked suggestion versus going their own way (off the order, or off the list)."""
+    """How Orion has been choosing over ``window_days`` (every choice lane): how often Orion took
+    the market's top option versus going their own way (another rank, unranked, or none)."""
 
     model_config = ConfigDict(extra="forbid")
 

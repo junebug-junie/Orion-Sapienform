@@ -1,54 +1,51 @@
-"""Pure reducers: stored rows -> ``PersonalityChoiceV1`` (PR #2726, section 1 "Evidence").
+"""Pure reducer: curiosity offer/outcome rows -> ``PersonalityChoiceV1`` (spec rev 4).
 
-Two lanes already persist a choice together with the options that lost:
+The curiosity lane already stores a choice together with the options that lost.
+``curiosity_offer_decisions.offered`` is the live priors Orion was shown: an ordered head (``slot``
+``order``) followed by priors "DRAWN AT RANDOM, not ranked" (``slot`` ``coverage``;
+``orion/curiosity/worldview.py`` ``select_priors``). Only the ordered head keeps its rank.
+``stale_offered`` is the separate "tested repeatedly" section of the same prompt.
+``curiosity_run_outcomes.per_prior`` says what the run touched.
 
-1. ``curiosity_prior_selection``. ``curiosity_offer_decisions.offered`` is the live priors
-   Orion was shown: an ordered head (``slot`` ``order``) followed by priors "DRAWN AT RANDOM,
-   not ranked" (``slot`` ``coverage``; ``orion/curiosity/worldview.py`` ``select_priors``).
-   Only the ordered head keeps its rank. ``stale_offered`` is the separate "tested repeatedly"
-   section of the same prompt. ``curiosity_run_outcomes.per_prior`` says what the run touched.
+**Chosen = per_prior entries with kind ``tested`` only.** ``formed`` is a NEW prior Orion wrote
+during the run: it was never an option (live 2026-10-16: 0 of 30 appear in ``offered``).
+``moved_untested`` is protocol drift, not a declared test. A tested prior is chosen wherever it came
+from: the ordered list (has a rank), the stale section (rank None), or off-menu (rank None).
 
-   **Chosen = per_prior entries with kind ``tested`` only.** Live distinct kinds (2026-10-16,
-   all rows): ``tested`` 86, ``formed`` 30, ``moved_untested`` 0. ``formed`` is a NEW prior
-   Orion wrote during the run: it was never an option (0 of 30 appear in ``offered``), so it is
-   not a pick among alternatives. ``moved_untested`` is protocol drift (confidence moved without
-   ``times_tested + 1``; ``orion/curiosity/value.py``), not a declared test. A tested prior is
-   chosen wherever it came from: the ordered list (has a rank), the stale section (rank None),
-   or off-menu (rank None, score None). Live: of 86 tested, 54 were in ``offered``, 20 in
-   ``stale_offered``, 12 in neither.
+One run can test several priors. Each tested prior is ONE choice row
+(``choice_id = curiosity:<run_id>:<prior_id>``) whose alternatives are the shown priors the run did
+NOT test, with ``picks_in_decision`` = the number of tested priors, so the reducer weighs one run as
+one decision. A run whose every shown prior was tested has no alternative and yields no row.
 
-   ``cost_seconds`` is elapsed time from the turn's FIRST start to its LAST scoring:
-   ``turn_started_at`` keeps the first attempt and ``completed_at`` is reset on each outcome
-   upsert, so retries and queue waits are inside it. Summarize it by median, not mean.
+Option text is the prior's slug made readable (``self:peer_briefs_refused_budget_20260930`` ->
+``peer briefs refused budget``): the only text the offer row stores, and it describes the option,
+not Orion's prose about it.
 
-2. ``voluntary_attention_override``. ``frame.voluntary_override`` names the loop Orion's goal
-   bias picked (``chosen_loop_id``) and the bottom-up winner it beat (``beat_loop_id``).
-   ``frame.open_loops`` holds every candidate; bottom-up score is ``loop.salience``
-   (``orion/substrate/attention_broadcast.py`` ``_apply_voluntary_attention``). Rank is the
-   bottom-up order, so ``chosen_best_rank`` > 1 by construction: an override always departs
-   from the bottom-up order.
-
-Every function here never raises and returns None for absent or malformed input. The
-``explain_*`` variants also return a short reason bucket for the None case.
+Every function here never raises; ``explain_curiosity_choices`` also returns a reason bucket when
+it yields nothing.
 """
 
 from __future__ import annotations
 
 import json
-import math
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from orion.curiosity.value import ARM_SELF_INQUIRY  # a self-inquiry run's decision row (nothing offered)
-from orion.schemas.personality import MAX_CHOICE_LIST, ChoiceOptionV1, PersonalityChoiceV1
+from orion.schemas.personality import (
+    CHOICE_OPTION_TEXT_MAX,
+    MAX_CHOICE_LIST,
+    ChoiceOptionV1,
+    PersonalityChoiceV1,
+)
 
-LANE_CURIOSITY = "curiosity_prior_selection"
-LANE_OVERRIDE = "voluntary_attention_override"
+LANE_CURIOSITY = "curiosity"
 KIND_TESTED = "tested"
-PRIOR_REF_PREFIX = "curiosity_prior:"
+CURIOSITY_CHOICE_PREFIX = "curiosity:"
 
-
-# ------------------------------------------------------------------ helpers
+_WS = re.compile(r"\s+")
+_DATE_SUFFIX = re.compile(r"_\d{8}$")
 
 
 def _json(value: Any) -> Any:
@@ -73,16 +70,6 @@ def _dt(value: Any) -> Optional[datetime]:
     return None
 
 
-def _num(value: Any) -> Optional[float]:
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        out = float(value)
-    except (TypeError, ValueError, OverflowError):
-        return None
-    return out if math.isfinite(out) else None
-
-
 def _rank(value: Any) -> Optional[int]:
     if isinstance(value, bool):
         return None
@@ -99,250 +86,108 @@ def _str(value: Any) -> Optional[str]:
     return None
 
 
-def _dedupe(refs: List[str]) -> List[str]:
-    seen: set = set()
-    out: List[str] = []
-    for ref in refs:
-        if ref not in seen:
-            seen.add(ref)
-            out.append(ref)
-    return out
+def readable_prior(prior_id: Any) -> str:
+    """``self:reading_link_can_cross_region_boundary_20261015`` -> ``reading link can cross region
+    boundary``."""
+    s = _str(prior_id) or ""
+    if s.startswith("curiosity_prior:"):
+        s = s[len("curiosity_prior:"):]
+    if s.startswith("self:"):
+        s = s[len("self:"):]
+    s = _DATE_SUFFIX.sub("", s)
+    return _WS.sub(" ", s.replace("_", " ")).strip()[:CHOICE_OPTION_TEXT_MAX]
 
 
-def _build(**kwargs: Any) -> Tuple[Optional[PersonalityChoiceV1], Optional[str]]:
-    try:
-        return PersonalityChoiceV1(**kwargs), None
-    except Exception:  # noqa: BLE001 -- a reducer never raises
-        return None, "invalid_model"
+def _option(prior_id: str, rank: Optional[int]) -> Optional[ChoiceOptionV1]:
+    text = readable_prior(prior_id)
+    if not text:
+        return None
+    return ChoiceOptionV1(key=prior_id[:200], text=text, market_rank=rank)
 
 
-# ------------------------------------------------------------- curiosity lane
-
-
-def _menu(rows: Any, *, ranked: bool) -> Dict[str, ChoiceOptionV1]:
-    """prior_id -> option, first occurrence wins. Stale-section rows carry ranks within
-    their own list, and coverage rows carry ranks continuing past the ordered head, but the
-    prompt shows both as unranked sections, so their rank is dropped (review 2026-10-16)."""
-    out: Dict[str, ChoiceOptionV1] = {}
+def _menu(rows: Any, *, ranked: bool) -> Dict[str, Optional[int]]:
+    """prior_id -> shown rank, first occurrence wins. Stale-section and coverage rows are shown as
+    unranked sections, so their rank is dropped (review 2026-10-16)."""
+    out: Dict[str, Optional[int]] = {}
     for row in _json(rows) or []:
         if not isinstance(row, Mapping):
             continue
         prior_id = _str(row.get("prior_id"))
         if prior_id is None or prior_id in out:
             continue
-        out[prior_id] = ChoiceOptionV1(
-            ref=PRIOR_REF_PREFIX + prior_id,
-            rank=_rank(row.get("rank")) if ranked and row.get("slot") != "coverage" else None,
-            score=_num(row.get("expected_nats")),
-        )
+        out[prior_id] = _rank(row.get("rank")) if ranked and row.get("slot") != "coverage" else None
     return out
 
 
-def explain_curiosity_choice(
+def explain_curiosity_choices(
     offer: Optional[Mapping[str, Any]], outcome: Optional[Mapping[str, Any]]
-) -> Tuple[Optional[PersonalityChoiceV1], Optional[str]]:
-    """(choice, None) or (None, reason). Never raises."""
+) -> Tuple[List[PersonalityChoiceV1], Optional[str]]:
+    """(choices, None) or ([], reason). Never raises."""
     try:
         if not isinstance(offer, Mapping):
-            return None, "no_offer_row"
+            return [], "no_offer_row"
         if not isinstance(outcome, Mapping):
-            return None, "no_outcome_row"
+            return [], "no_outcome_row"
         run_id = _str(offer.get("run_id"))
         if run_id is None:
-            return None, "no_run_id"
+            return [], "no_run_id"
         if _str(offer.get("arm")) == ARM_SELF_INQUIRY:
-            # A self-inquiry run was offered nothing: a prior it tested was not a pick among options.
-            return None, "self_inquiry_no_offer"
+            return [], "self_inquiry_no_offer"
         out_run = _str(outcome.get("run_id"))
         if out_run is not None and out_run != run_id:
-            return None, "run_id_mismatch"
+            return [], "run_id_mismatch"
         per_prior = _json(outcome.get("per_prior"))
         if not isinstance(per_prior, list):
-            return None, "malformed_per_prior"
-        tested = _dedupe(
-            [
-                pid
-                for e in per_prior
-                if isinstance(e, Mapping) and e.get("kind") == KIND_TESTED
-                for pid in [_str(e.get("prior_id"))]
-                if pid is not None
-            ]
-        )
+            return [], "malformed_per_prior"
+        tested: List[str] = []
+        for e in per_prior:
+            pid = _str(e.get("prior_id")) if isinstance(e, Mapping) and e.get("kind") == KIND_TESTED else None
+            if pid is not None and pid not in tested:
+                tested.append(pid)
         if not tested:
             formed = any(isinstance(e, Mapping) and e.get("kind") == "formed" for e in per_prior)
-            return None, "formed_only" if formed else "nothing_tested"
+            return [], "formed_only" if formed else "nothing_tested"
 
-        live = _menu(offer.get("offered"), ranked=True)
-        stale = _menu(offer.get("stale_offered"), ranked=False)
-        chosen: List[ChoiceOptionV1] = []
-        for pid in tested:
-            opt = live.get(pid) or stale.get(pid) or ChoiceOptionV1(ref=PRIOR_REF_PREFIX + pid)
-            chosen.append(opt)
-        chosen_ids = set(tested)
-        alternatives = [o for pid, o in live.items() if pid not in chosen_ids]
-        alternatives += [o for pid, o in stale.items() if pid not in chosen_ids and pid not in live]
-        ranks = [o.rank for o in chosen if o.rank is not None]
+        shown = _menu(offer.get("offered"), ranked=True)
+        for pid, rank in _menu(offer.get("stale_offered"), ranked=False).items():
+            shown.setdefault(pid, rank)
+        alternatives = [o for pid, rank in shown.items() if pid not in tested
+                        for o in [_option(pid, rank)] if o is not None][:MAX_CHOICE_LIST]
+        if not alternatives:
+            return [], "no_alternative"
 
-        started = _dt(offer.get("turn_started_at"))
-        decided = _dt(offer.get("decided_at"))
-        completed = _dt(outcome.get("completed_at"))
-        occurred = started or decided or completed
+        occurred = (_dt(offer.get("turn_started_at")) or _dt(offer.get("decided_at"))
+                    or _dt(outcome.get("completed_at")))
         if occurred is None:
-            return None, "no_timestamp"
-        cost_seconds = None
-        if started is not None and completed is not None:
-            delta = (completed - started).total_seconds()
-            cost_seconds = delta if delta >= 0 else None
-
-        refs: List[str] = []
+            return [], "no_timestamp"
+        situation: Dict[str, Any] = {}
         arm = _str(offer.get("arm"))
         if arm:
-            refs.append(f"curiosity_arm:{arm}")
+            situation["curiosity_arm"] = arm
         if isinstance(outcome.get("turn_ok"), bool):
-            refs.append(f"curiosity_turn_ok:{str(outcome['turn_ok']).lower()}")
-        for mid in _json(offer.get("material_ids")) or []:
-            ref = _str(mid)
-            if ref:
-                refs.append(ref)
+            situation["turn_ok"] = outcome["turn_ok"]
 
-        return _build(
-            choice_id=f"{LANE_CURIOSITY}:{run_id}",
-            lane=LANE_CURIOSITY,
-            chooser="orion_llm",
-            occurred_at=occurred,
-            chosen=chosen[:MAX_CHOICE_LIST],
-            alternatives=alternatives[:MAX_CHOICE_LIST],
-            chosen_best_rank=min(ranks) if ranks else None,
-            cost_seconds=cost_seconds,
-            cost_nats=_num(outcome.get("realized_nats")),
-            situation_refs=_dedupe(refs)[:MAX_CHOICE_LIST],
-            correlation_id=None,
-            source_ref=f"curiosity_run:{run_id}",
-        )
+        picks = min(len(tested), MAX_CHOICE_LIST)
+        out: List[PersonalityChoiceV1] = []
+        for pid in tested[:MAX_CHOICE_LIST]:
+            chosen = _option(pid, shown.get(pid))
+            if chosen is None:
+                continue
+            try:
+                out.append(PersonalityChoiceV1(
+                    choice_id=f"{CURIOSITY_CHOICE_PREFIX}{run_id}:{pid}"[:300],
+                    lane=LANE_CURIOSITY, occurred_at=occurred, chosen=chosen,
+                    alternatives=alternatives, chosen_market_rank=chosen.market_rank,
+                    picks_in_decision=picks, situation=situation, act_id=f"curiosity_run:{run_id}"[:300],
+                ))
+            except Exception:  # noqa: BLE001 -- one bad pick never sinks the run's other picks
+                continue
+        return (out, None) if out else ([], "invalid_model")
     except Exception:  # noqa: BLE001
-        return None, "reducer_error"
+        return [], "reducer_error"
 
 
-def curiosity_choice_from_rows(
+def curiosity_choices_from_rows(
     offer: Optional[Mapping[str, Any]], outcome: Optional[Mapping[str, Any]]
-) -> Optional[PersonalityChoiceV1]:
-    return explain_curiosity_choice(offer, outcome)[0]
-
-
-# ------------------------------------------------------- attention override lane
-
-
-def explain_voluntary_override_choice(
-    row: Optional[Mapping[str, Any]],
-) -> Tuple[Optional[PersonalityChoiceV1], Optional[str]]:
-    """(choice, None) or (None, reason). ``row`` is a ``substrate_attention_broadcast_log``
-    row (``log_id``, ``generated_at``, ``projection_json``). Never raises."""
-    try:
-        if not isinstance(row, Mapping):
-            return None, "no_row"
-        log_id = _str(row.get("log_id"))
-        if log_id is None:
-            return None, "no_log_id"
-        projection = _json(row.get("projection_json"))
-        if not isinstance(projection, Mapping):
-            return None, "malformed_projection"
-        frame = projection.get("frame")
-        if not isinstance(frame, Mapping):
-            return None, "no_frame"
-        vo = frame.get("voluntary_override")
-        if vo is None:
-            return None, "no_override"
-        if not isinstance(vo, Mapping):
-            return None, "malformed_override"
-        chosen_id = _str(vo.get("chosen_loop_id"))
-        beat_id = _str(vo.get("beat_loop_id"))
-        if chosen_id is None or beat_id is None or chosen_id == beat_id:
-            return None, "malformed_override"
-
-        # First occurrence of a loop id wins, for both its option and its rank.
-        loops: List[Tuple[int, Mapping[str, Any]]] = []
-        seen_ids: set = set()
-        raw_loops = frame.get("open_loops")
-        for i, loop in enumerate(raw_loops if isinstance(raw_loops, list) else []):
-            lid = _str(loop.get("id")) if isinstance(loop, Mapping) else None
-            if lid is None or lid in seen_ids:
-                continue
-            seen_ids.add(lid)
-            loops.append((i, loop))
-        scored = sorted(
-            [(i, loop) for i, loop in loops if _num(loop.get("salience")) is not None],
-            # On a salience tie the beat goes first: the override record says it was the
-            # bottom-up winner (live 2026-10-10: one row with both loops at 0.5).
-            key=lambda t: (-_num(t[1].get("salience")), _str(t[1].get("id")) != beat_id, t[0]),
-        )
-        rank_of = {_str(loop.get("id")): r for r, (_, loop) in enumerate(scored, start=1)}
-        options: Dict[str, ChoiceOptionV1] = {}
-        source_refs: Dict[str, List[str]] = {}
-        for _, loop in loops:
-            lid = _str(loop.get("id"))
-            if lid in options:
-                continue
-            options[lid] = ChoiceOptionV1(
-                ref=lid, rank=rank_of.get(lid), score=_num(loop.get("salience"))
-            )
-            raw_refs = loop.get("source_refs")
-            source_refs[lid] = [s for s in raw_refs if _str(s)] if isinstance(raw_refs, list) else []
-        # The override record itself is the ground truth for the pair; open_loops only adds
-        # the rest of the field and the ranks. If the pair is missing from it, rank the pair
-        # from the record (the beat was the bottom-up winner by definition).
-        # Ranks 1/2 from the record only when open_loops gave nothing; otherwise a filled-in
-        # loop is unranked so it cannot collide with a rank open_loops already assigned.
-        if chosen_id not in options or beat_id not in options:
-            from_record = not options
-            options.setdefault(
-                beat_id,
-                ChoiceOptionV1(
-                    ref=beat_id, rank=1 if from_record else None, score=_num(vo.get("beat_bottom_up"))
-                ),
-            )
-            options.setdefault(
-                chosen_id,
-                ChoiceOptionV1(
-                    ref=chosen_id, rank=2 if from_record else None, score=_num(vo.get("chosen_bottom_up"))
-                ),
-            )
-        chosen = options[chosen_id]
-        alternatives = [o for lid, o in options.items() if lid != chosen_id]
-        alternatives.sort(key=lambda o: (o.rank is None, o.rank or 0))
-
-        occurred = _dt(row.get("generated_at")) or _dt(frame.get("generated_at"))
-        if occurred is None:
-            return None, "no_timestamp"
-
-        refs: List[str] = []
-        goal = _str(vo.get("goal_artifact_id"))
-        if goal:
-            refs.append(goal)
-        origin = _str(vo.get("goal_drive_origin"))
-        if origin:
-            refs.append(f"goal_drive_origin:{origin}")
-        refs += source_refs.get(chosen_id, []) + source_refs.get(beat_id, [])
-
-        return _build(
-            choice_id=f"{LANE_OVERRIDE}:{log_id}",
-            lane=LANE_OVERRIDE,
-            chooser="goal_biased_formula",
-            occurred_at=occurred,
-            chosen=[chosen],
-            alternatives=alternatives[:MAX_CHOICE_LIST],
-            chosen_best_rank=chosen.rank,
-            cost_seconds=None,
-            cost_nats=None,
-            cost_effort=_num(vo.get("effort_spent")),
-            situation_refs=_dedupe(refs)[:MAX_CHOICE_LIST],
-            correlation_id=_str(frame.get("correlation_id")) or _str(projection.get("correlation_id")),
-            source_ref=f"attention_broadcast:{log_id}",
-        )
-    except Exception:  # noqa: BLE001
-        return None, "reducer_error"
-
-
-def voluntary_override_choice_from_row(
-    row: Optional[Mapping[str, Any]],
-) -> Optional[PersonalityChoiceV1]:
-    return explain_voluntary_override_choice(row)[0]
+) -> List[PersonalityChoiceV1]:
+    return explain_curiosity_choices(offer, outcome)[0]

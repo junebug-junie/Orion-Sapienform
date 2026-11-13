@@ -1,9 +1,9 @@
-"""Personality graph loop on real Postgres: the migration, every source query, the one-transaction
-tick, restart from cursors, the re-read curiosity run, and the route reads.
+"""Personality graph loop (rev 4: choices only) on real Postgres: the migrations, the curiosity sync
+and its backfill, bus intake, the one-transaction tick, restart from cursors, the route reads.
 
 Set ORION_ADMISSION_TEST_DSN to a disposable database (CI provides one). Each test creates its own
-schema with the source tables' live column types (checked 2026-10-16) and the personality
-migration; it never connects to POSTGRES_URI. The embedder is a deterministic fake.
+schema with the curiosity tables' live column types and the personality migrations; it never
+connects to POSTGRES_URI. The embedder is a deterministic fake.
 """
 
 from __future__ import annotations
@@ -35,31 +35,21 @@ from app import personality_sources as ps  # noqa: E402
 from app.personality_driver import PersonalityDriver  # noqa: E402
 from app.personality_sources import PersonalitySourceReader  # noqa: E402
 from app.personality_store import TICK_HEARTBEAT, PersonalityStore  # noqa: E402
-from test_personality_loop import Clock, Embedder, vec_for  # noqa: E402
+from test_personality_loop import Clock, Embedder, choice, vec_for  # noqa: E402
 
-MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_personality_graph_v1.sql"
-NAMING_MIGRATION = REPO_ROOT / "services/orion-sql-db/manual_migration_personality_naming_v1.sql"
-T0 = datetime(2026, 10, 16, 18, 0, tzinfo=timezone.utc)
+MIGRATIONS = [REPO_ROOT / f"services/orion-sql-db/manual_migration_personality_{n}_v1.sql"
+              for n in ("graph", "naming", "choice")]
+T0 = datetime(2026, 11, 13, 18, 0, tzinfo=timezone.utc)
 
-# Live column types (information_schema, 2026-10-16), only the columns the reducer reads.
+# Live column types (information_schema), only the columns the curiosity sync reads.
 SOURCE_DDL = """
-CREATE TABLE dream_hypothesis (hypothesis_id text PRIMARY KEY, cycle_id text, arm text, claim text, why text,
-  created_at timestamptz);
-CREATE TABLE journal_entries (entry_id varchar PRIMARY KEY, created_at timestamptz, author varchar, mode varchar,
-  title varchar, body text, source_kind varchar, source_ref varchar, correlation_id varchar);
-CREATE TABLE substrate_reverie_thought (thought_id text PRIMARY KEY, correlation_id text, created_at timestamptz,
-  interpretation text, thought_json jsonb);
-CREATE TABLE world_pulse_read_seed (seed_id text PRIMARY KEY, title text, stage2_status text,
-  stage2_completed_at timestamptz, stage2_result_json jsonb);
-CREATE TABLE orion_day_letter (letter_date date PRIMARY KEY, note_md text, created_at timestamptz);
-CREATE TABLE chat_history_log (id varchar PRIMARY KEY, correlation_id varchar, source varchar, prompt text,
-  response text, session_id varchar, created_at timestamp without time zone);
 CREATE TABLE curiosity_offer_decisions (run_id text PRIMARY KEY, decided_at timestamptz, arm text, offered jsonb,
   stale_offered jsonb, material_ids jsonb, turn_started_at timestamptz);
 CREATE TABLE curiosity_run_outcomes (run_id text PRIMARY KEY, completed_at timestamptz, turn_ok boolean,
   realized_nats double precision, per_prior jsonb);
-CREATE TABLE self_concept_history (entry_id varchar PRIMARY KEY, created_at timestamptz, concept_id varchar,
-  version integer, content text, produced_by varchar);
+CREATE TABLE temporal_self_event (occurred_at timestamptz, source_kind text, label text);
+CREATE TABLE temporal_self_arc (kind text, began_at timestamptz, ended_at timestamptz);
+CREATE TABLE temporal_self_state (watermark timestamptz);
 """
 
 
@@ -77,7 +67,7 @@ def with_db(fn):
                 async with await AsyncConnection.connect(DSN, autocommit=True,
                                                          options=f"-c search_path={schema}") as conn:
                     await conn.execute(SOURCE_DDL)
-                    for mig in (MIGRATION, NAMING_MIGRATION):
+                    for mig in MIGRATIONS:
                         await conn.execute(re.sub(r"^\s*(BEGIN|COMMIT);\s*$", "", mig.read_text(), flags=re.M))
                 await fn(pool)
         finally:
@@ -96,134 +86,117 @@ async def q(pool, sql, params=None):
         return await (await conn.execute(sql, params or {})).fetchall()
 
 
-class TopicEmbedder(Embedder):
-    """Any text carrying the shared theme embeds to one vector (the lanes wrap it differently)."""
-
-    async def __call__(self, doc_id, text):
-        self.calls.append(text)
-        return vec_for("theme" if "Continuity" in text else text)
-
-
 def driver(pool, clock, emb=None):
-    return PersonalityDriver(store=PersonalityStore(pool), reader=PersonalitySourceReader(pool), embed=emb or TopicEmbedder(),
+    return PersonalityDriver(store=PersonalityStore(pool), reader=PersonalitySourceReader(pool), embed=emb or Embedder(),
                              now=clock, tick_sec=600, read_lag_sec=120)
 
 
-TEXT = "Continuity in my own record is what I keep coming back to."
+async def curiosity_run(pool, run_id, at, tested, arm="value_order"):
+    offered = [{"prior_id": "self:a_thing_20261015", "rank": 1, "slot": "order"},
+               {"prior_id": "self:b_thing", "rank": 2, "slot": "order"},
+               {"prior_id": "self:c_thing", "rank": 3, "slot": "coverage"}]
+    await ex(pool, "INSERT INTO curiosity_offer_decisions VALUES (%(r)s, %(at)s, %(arm)s, %(o)s::jsonb, '[]', '[]', %(at)s)",
+             {"r": run_id, "at": at, "arm": arm, "o": json.dumps(offered if arm != "self_inquiry" else [])})
+    await ex(pool, "INSERT INTO curiosity_run_outcomes VALUES (%(r)s, %(at)s, true, 0.1, %(p)s::jsonb)",
+             {"r": run_id, "at": at, "p": json.dumps([{"kind": "tested", "prior_id": p} for p in tested])})
 
 
-async def seed_rows(pool, at):
-    """One row per lane at ``at`` (the same theme in dream, journal and chat)."""
-    # The theme recurs in two lanes (two hits each: a promoting lane needs lane_recent >= 2) and once in journal.
-    await ex(pool, "INSERT INTO dream_hypothesis VALUES ('h1', 'c', 'a', %(t)s, 'because', %(at)s), "
-                   "('h2', 'c', 'a', %(t)s, 'again', %(at)s)", {"t": TEXT, "at": at})
-    await ex(pool, "INSERT INTO journal_entries (entry_id, created_at, title, body, source_kind) VALUES "
-                   "('j1', %(at)s, 'Note', %(t)s, 'metacog'), ('j2', %(at)s, 'Reading', 'A mirror.', 'world_pulse')",
-             {"t": TEXT, "at": at})
-    await ex(pool, "INSERT INTO chat_history_log (id, prompt, response, created_at) VALUES "
-                   "('c1', 'hi', %(t)s, %(naive)s), ('c2', 'again', %(t)s, %(naive)s), "
-                   "('o1', '', 'An outreach line I sent.', %(naive)s)",
-             {"t": TEXT, "naive": at.replace(tzinfo=None)})
-    await ex(pool, "INSERT INTO substrate_reverie_thought (thought_id, created_at, interpretation) VALUES "
-                   "('r1', %(at)s, 'The cabinet runs warm.'), ('r2', %(at)s, '')", {"at": at})
-    await ex(pool, "INSERT INTO world_pulse_read_seed VALUES ('s1', 'Art', 'done', %(at)s, %(j)s::jsonb)",
-             {"at": at, "j": json.dumps({"summary": "My read: derivative but useful."})})
-    await ex(pool, "INSERT INTO orion_day_letter VALUES ('2026-10-16', '**Note**\n\nToday I closed loops.', %(at)s)", {"at": at})
-    await ex(pool, "INSERT INTO curiosity_offer_decisions VALUES ('run1', %(at)s, 'value', %(o)s::jsonb, '[]', '[]', %(at)s)",
-             {"at": at, "o": json.dumps([{"prior_id": "self:a_thing_20261015", "rank": 1, "slot": "order"}])})
-    await ex(pool, "INSERT INTO curiosity_run_outcomes VALUES ('run1', %(at)s, true, 0.1, %(p)s::jsonb)",
-             {"at": at, "p": json.dumps([{"kind": "tested", "prior_id": "self:a_thing_20261015"}])})
-    # A self-inquiry run's rows (arm self_inquiry, nothing offered): measured, but never a choice.
-    await ex(pool, "INSERT INTO curiosity_offer_decisions VALUES ('run2', %(at)s, 'self_inquiry', '[]', '[]', '[]', %(at)s)",
-             {"at": at})
-    await ex(pool, "INSERT INTO curiosity_run_outcomes VALUES ('run2', %(at)s, true, 0.2, %(p)s::jsonb)",
-             {"at": at, "p": json.dumps([{"kind": "tested", "prior_id": "self:another_thing_20261015"}])})
-    await ex(pool, "INSERT INTO self_concept_history VALUES ('sc2', %(at)s, 'self:definition', 2, 'I am newer.', "
-                   "'curiosity_self_inquiry')", {"at": at})
+async def insert_at(pool, store, c, created_at):
+    """A bus choice, with its created_at pinned (the column defaults to now(); tests need a clock)."""
+    assert await store.insert_choices([c], written_by="bus") == 1
+    await ex(pool, "UPDATE personality_choice SET created_at = %(t)s WHERE choice_id = %(c)s",
+             {"t": created_at, "c": c.choice_id})
 
 
 def test_full_loop_on_postgres():
-    async def scenario(pool):
-        await ex(pool, "INSERT INTO self_concept_history VALUES ('sc1', %(at)s, 'self:definition', 1, "
-                       "'I am one inference riding a cast of named brains.', 'curiosity_self_inquiry'), "
-                       "('sc0', %(old)s, 'self:definition', 0, 'Old.', 'curiosity_self_inquiry')",
-                 {"at": T0 - timedelta(days=1), "old": T0 - timedelta(days=2)})
-        await ex(pool, "INSERT INTO chat_history_log (id, prompt, response, created_at) VALUES "
-                       "('pre', 'q', 'Before boot.', %(n)s)", {"n": (T0 - timedelta(hours=1)).replace(tzinfo=None)})
-        clock = Clock(T0)
-        assert (await driver(pool, clock).tick())["rows"] == {}
-        curs = {r["source"]: r for r in await q(pool, "SELECT * FROM personality_cursor")}
-        assert set(curs) == set(ps.SOURCE_NAMES) | {ps.SEED_CURSOR, ps.REKEY_CURSOR, TICK_HEARTBEAT}
-        assert all(r["cursor_at"] == T0 for r in curs.values())
-        # The heartbeat is never handed to the driver as a source cursor.
-        assert TICK_HEARTBEAT not in await PersonalityStore(pool).load_cursors()
-        (seed,) = await q(pool, "SELECT * FROM personality_disposition")
-        assert seed["origin"] == "seed_self_inquiry" and len(seed["centroid"]) == 64
-        assert (await q(pool, "SELECT evidence_id FROM personality_evidence"))[0]["evidence_id"] == "self_inquiry_seed:sc1"
+    # The sync's rows get created_at = the DB's now(); a clock far past it makes them readable at once.
+    t0 = datetime(2030, 1, 1, 12, 0, tzinfo=timezone.utc)
 
-        await seed_rows(pool, T0 + timedelta(minutes=1))
-        clock.at = T0 + timedelta(minutes=10)
+    async def scenario(pool):
+        store = PersonalityStore(pool)
+        await curiosity_run(pool, "run1", t0 - timedelta(days=2), ["self:b_thing"])
+        await curiosity_run(pool, "run2", t0 - timedelta(days=1), ["self:x"], arm="self_inquiry")
+        clock = Clock(t0)
+        out = await driver(pool, clock).tick()
+        # The backfill: run1 -> one choice, folded in the same tick; the self-inquiry run is never a choice.
+        assert out["curiosity_synced"] == 1 and out["evidence"] == 1
+        (row,) = await q(pool, "SELECT * FROM personality_choice")
+        assert row["choice_id"] == "curiosity:run1:self:b_thing" and row["written_by"] == "curiosity_sync"
+        assert row["chosen"]["text"] == "b thing" and row["chosen_market_rank"] == 2
+        assert [a["key"] for a in row["alternatives"]] == ["self:a_thing_20261015", "self:c_thing"]
+        (cur,) = await q(pool, "SELECT * FROM personality_cursor WHERE source = 'curiosity_sync'")
+        assert cur["cursor_ref"] == "run1"
+        assert TICK_HEARTBEAT not in await store.load_cursors()
+
+        # A bus choice (created_at pinned to the test clock), and a re-delivery that is a no-op.
+        await insert_at(pool, store, choice("prime:t1", t0 + timedelta(minutes=1), rank=3), t0 + timedelta(minutes=1))
+        assert await store.insert_choices([choice("prime:t1", t0)], written_by="bus") == 0
+        clock.at = t0 + timedelta(minutes=10)
         drv = driver(pool, clock)  # a restart: fresh driver, same tables
         out = await drv.tick()
-        assert out["rows"]["journal"] == 1  # the world_pulse mirror is not read
-        assert out["rows"]["reverie"] == 1  # the empty interpretation is not read
-        ids = {r["evidence_id"] for r in await q(pool, "SELECT evidence_id FROM personality_evidence")}
-        assert {"dream:h1", "journal:j1", "chat:c1", "outreach:o1", "reverie:r1", "reading:s1", "day_letter:2026-10-16",
-                "curiosity_choice:run1:self:a_thing_20261015", "self_inquiry_seed:sc2"} <= ids
-        assert "chat:pre" not in ids and "journal:j2" not in ids
-        assert not any(i.startswith("curiosity_choice:run2") for i in ids)   # self-inquiry: no choice
-        active = await q(pool, "SELECT * FROM personality_disposition WHERE status = 'active'")
-        assert len(active) == 1 and set(active[0]["lane_counts"]) == {"dream", "journal", "chat"}
-        # j1 is a metacog journal: keyed by its source (graph.source_key), not its lane.
-        assert set(active[0]["lane_recent"]) == {"dream", "substrate_narration", "chat"}
-        chat_cur = (await q(pool, "SELECT * FROM personality_cursor WHERE source = 'chat'"))[0]
-        assert chat_cur["cursor_at"] == T0 + timedelta(minutes=1) and chat_cur["cursor_ref"] == "c2"
+        assert out["evidence"] == 1 and out["choices_read"] == 1
+        ev = {r["evidence_id"]: r for r in await q(pool, "SELECT * FROM personality_evidence")}
+        assert set(ev) == {"choice:curiosity:run1:self:b_thing", "choice:prime:t1"}
+        assert ev["choice:prime:t1"]["lane"] == "prime" and ev["choice:prime:t1"]["excerpt"] == "people over pipeline"
+        nodes = await q(pool, "SELECT * FROM personality_disposition")
+        assert {n["origin"] for n in nodes} == {"choice"} and all(n["opposed_count"] == 0 for n in nodes)
+        assert any(n["label"] == "people over pipeline, 1 of 1" for n in nodes)
+        (cur,) = await q(pool, "SELECT * FROM personality_cursor WHERE source = 'choice'")
+        assert cur["cursor_ref"] == "prime:t1"
 
-        # Re-upserted outcome: completed_at moves, the run is read again, nothing double-counts.
-        before = await q(pool, "SELECT disposition_id, evidence_count, chosen_count FROM personality_disposition "
-                               "ORDER BY disposition_id")
-        await ex(pool, "UPDATE curiosity_run_outcomes SET completed_at = %(at)s", {"at": T0 + timedelta(minutes=11)})
-        clock.at = T0 + timedelta(minutes=20)
+        # Re-upserted curiosity outcome: completed_at moves, the run is read again, nothing new.
+        await ex(pool, "UPDATE curiosity_run_outcomes SET completed_at = %(at)s WHERE run_id = 'run1'",
+                 {"at": t0 + timedelta(minutes=11)})
+        clock.at = t0 + timedelta(minutes=20)
         out = await drv.tick()
-        assert out["rows"]["curiosity_choice"] == 1 and out["evidence"] == 0
-        after = await q(pool, "SELECT disposition_id, evidence_count, chosen_count FROM personality_disposition "
-                              "ORDER BY disposition_id")
-        assert before == after
-        # The fade-only tick wrote lane_recent through the light UPDATE (it decays with the weight).
-        (faded,) = await q(pool, "SELECT lane_recent FROM personality_disposition WHERE disposition_id = %(d)s",
-                           {"d": active[0]["disposition_id"]})
-        assert all(faded["lane_recent"][k] < active[0]["lane_recent"][k] for k in faded["lane_recent"])
+        assert out["curiosity_synced"] == 0 and out["evidence"] == 0
+        assert len(await q(pool, "SELECT 1 FROM personality_choice")) == 2
 
-        store = PersonalityStore(pool)
-        # Dated by the last COMMITTED tick, not the request: a later request still reads the
-        # tick's time, so a reducer that stops committing goes stale for every reader.
         frame = await store.frame(clock.at + timedelta(hours=5))
         (beat,) = await q(pool, "SELECT cursor_at FROM personality_cursor WHERE source = %(s)s", {"s": TICK_HEARTBEAT})
-        assert frame.generated_at == beat["cursor_at"] < clock.at + timedelta(hours=5)
-        assert frame.active_count == 1 and frame.dispositions[0].label.startswith("Continuity")
-        assert frame.choice_style is not None and frame.choice_style.choices == 1 and frame.choice_style.took_top == 1
-        assert frame.evidence_rows == len(ids)
+        assert frame.generated_at == beat["cursor_at"]
+        assert frame.candidate_count == 2 and frame.active_count == 0
+        # Two decisions in the window: run1 (rank 2) and prime:t1 (rank 3) -> both own way.
+        assert frame.choice_style.choices == 2 and frame.choice_style.took_top == 0
+        assert frame.evidence_rows == 2
         rows = await store.dispositions("all", limit=50)
-        assert rows and "centroid" not in rows[0] and rows[0]["history"]
-        ev = await store.evidence(active[0]["disposition_id"], limit=10)
-        assert {e["lane"] for e in ev} == {"dream", "journal", "chat"}
+        assert len(rows) == 2 and "centroid" not in rows[0] and "opposed_count" in rows[0]
 
     with_db(scenario)
 
 
-def test_keyset_tie_break_drains_rows_sharing_one_timestamp():
+def test_prose_nodes_are_invisible_to_the_loop_and_routes():
     async def scenario(pool):
+        await ex(pool, "INSERT INTO personality_disposition (disposition_id, origin, status, label, centroid, "
+                       "centroid_n, weight, evidence_count, first_seen_at, last_reinforced_at, updated_at) VALUES "
+                       "('old', 'recurrence', 'active', 'The perception error is high', ARRAY[1,0]::real[], 1, 9.0, 9, "
+                       "%(at)s, %(at)s, %(at)s)", {"at": T0})
+        store = PersonalityStore(pool)
+        assert await store.load_nodes() == [] and await store.status_counts() == {}
+        assert await store.dispositions("all") == []
+        frame = await store.frame(T0)
+        assert frame.dispositions == [] and frame.active_count == 0
+        await driver(pool, Clock(T0)).tick()
+        (old,) = await q(pool, "SELECT status, weight FROM personality_disposition WHERE disposition_id = 'old'")
+        assert old == {"status": "active", "weight": 9.0}  # untouched until the retire job runs
+
+    with_db(scenario)
+
+
+def test_keyset_tie_break_drains_choices_sharing_one_created_at():
+    async def scenario(pool):
+        store = PersonalityStore(pool)
         at = T0 + timedelta(minutes=1)
         for i in ("a", "b", "c"):
-            await ex(pool, "INSERT INTO chat_history_log (id, prompt, response, created_at) VALUES "
-                           "(%(i)s, 'q', 'Reply text here.', %(n)s)", {"i": i, "n": at.replace(tzinfo=None)})
+            await insert_at(pool, store, choice(f"prime:{i}", at), at)
         reader = PersonalitySourceReader(pool, limit=2)
         hi = T0 + timedelta(minutes=10)
-        first = (await reader.read({"chat": ps.Cursor(T0, "")}, hi))["chat"]
-        assert [i.ref for i in first] == ["a", "b"] and first[-1].at == at
-        second = (await reader.read({"chat": ps.Cursor(at, "b")}, hi))["chat"]
-        assert [i.ref for i in second] == ["c"]
-        assert (await reader.read({"chat": ps.Cursor(at, "c")}, hi))["chat"] == []
+        first = await reader.read_choices(None, hi)
+        assert [r["choice_id"] for r in first] == ["prime:a", "prime:b"]
+        second = await reader.read_choices(ps.Cursor(at, "prime:b"), hi)
+        assert [r["choice_id"] for r in second] == ["prime:c"]
+        assert await reader.read_choices(ps.Cursor(at, "prime:c"), hi) == []
+        assert ps.choice_from_row(first[0]) == choice("prime:a", at)
 
     with_db(scenario)
 
@@ -232,8 +205,8 @@ def test_situation_mix_groups_stamped_evidence_per_disposition():
     async def scenario(pool):
         await ex(pool, "INSERT INTO personality_disposition (disposition_id, origin, status, label, centroid, "
                        "centroid_n, weight, evidence_count, first_seen_at, last_reinforced_at, updated_at) VALUES "
-                       "('d1', 'recurrence', 'active', 'one', ARRAY[1,0]::real[], 1, 2.0, 4, %(at)s, %(at)s, %(at)s), "
-                       "('d2', 'recurrence', 'active', 'two', ARRAY[0,1]::real[], 1, 1.0, 1, %(at)s, %(at)s, %(at)s)",
+                       "('d1', 'choice', 'active', 'one', ARRAY[1,0]::real[], 1, 2.0, 4, %(at)s, %(at)s, %(at)s), "
+                       "('d2', 'choice', 'active', 'two', ARRAY[0,1]::real[], 1, 1.0, 1, %(at)s, %(at)s, %(at)s)",
                  {"at": T0})
 
         def sit(arousal, phase, company):
@@ -241,32 +214,16 @@ def test_situation_mix_groups_stamped_evidence_per_disposition():
 
         rows = [("e1", "d1", sit("idle", "night", False)), ("e2", "d1", sit("idle", "night", True)),
                 ("e3", "d1", sit("engaged", "morning", False)),
-                ("e4", "d1", json.dumps({"other": 1})),  # pre-2026-10-16 row: no situation, not counted
+                ("e4", "d1", json.dumps({"other": 1})),
                 ("e5", "d2", "{}")]
         for eid, did, meta in rows:
             await ex(pool, "INSERT INTO personality_evidence (evidence_id, lane, source_ref, occurred_at, excerpt, "
-                           "disposition_id, meta) VALUES (%(e)s, 'chat', %(e)s, %(at)s, 'x', %(d)s, %(m)s::jsonb)",
+                           "disposition_id, meta) VALUES (%(e)s, 'prime', %(e)s, %(at)s, 'x', %(d)s, %(m)s::jsonb)",
                      {"e": eid, "d": did, "m": meta, "at": T0})
         out = {r["disposition_id"]: r["situation_mix"] for r in await PersonalityStore(pool).dispositions("all")}
         assert out["d1"] == {"n": 3, "arousal": {"idle": 2, "engaged": 1}, "day_phase": {"night": 2, "morning": 1},
                              "company": {"true": 1, "false": 2}}
         assert out["d2"] == {"n": 0, "arousal": {}, "day_phase": {}, "company": {"true": 0, "false": 0}}
-
-    with_db(scenario)
-
-
-def test_rekey_hits_reads_reverie_and_journal_hits_with_meta():
-    async def scenario(pool):
-        rows = [("e1", "reverie", "{}"), ("e2", "journal", json.dumps({"source_kind": "metacog"})),
-                ("e3", "dream", "{}")]
-        for eid, lane, meta in rows:
-            await ex(pool, "INSERT INTO personality_evidence (evidence_id, lane, source_ref, occurred_at, excerpt, "
-                           "disposition_id, meta) VALUES (%(e)s, %(l)s, %(e)s, %(at)s, 'x', 'd1', %(m)s::jsonb)",
-                     {"e": eid, "l": lane, "m": meta, "at": T0})
-        hits = await PersonalityStore(pool).rekey_hits(["d1", "d2"])
-        assert sorted(hits["d1"], key=lambda h: h[0]) == [("journal", {"source_kind": "metacog"}, T0),
-                                                          ("reverie", {}, T0)]
-        assert await PersonalityStore(pool).rekey_hits([]) == {}
 
     with_db(scenario)
 
@@ -279,10 +236,10 @@ N_NAME, N_SENTENCE = "The Long Watch", "I keep watching the field at night."
 def _nnode(did, text, **kw):
     from orion.personality.graph import DEFAULT_PARAMS, Node, _derived_weight
 
-    lr = kw.pop("lane_recent", {"dream": 3.0, "journal": 3.0})
-    base = dict(disposition_id=did, origin="recurrence", status="active", label=f"label {did}", label_similarity=0.9,
+    lr = kw.pop("lane_recent", {"curiosity": 3.0, "prime": 3.0})
+    base = dict(disposition_id=did, origin="choice", status="active", label=f"label {did}", label_similarity=0.9,
                 centroid=vec_for(text), centroid_n=5, weight=_derived_weight(lr, DEFAULT_PARAMS), evidence_count=10,
-                lane_counts={"dream": 5, "journal": 5}, chosen_count=0, first_seen_at=T0 - timedelta(days=3),
+                lane_counts={"curiosity": 5, "prime": 5}, chosen_count=0, first_seen_at=T0 - timedelta(days=3),
                 last_reinforced_at=T0 - timedelta(hours=1), retired_at=None, updated_at=T0, lane_recent=lr,
                 last_folded_at=T0)
     base.update(kw)
@@ -308,16 +265,16 @@ def test_naming_source_columns_routes_and_unmerge_on_postgres():
         drv = driver(pool, clock)
         await drv.tick()  # first boot: source cursors at T0
         d1 = _nnode("d1", f"{N_NAME} {N_SENTENCE}")
-        d2 = _nnode("d2", "something else", lane_recent={"dream": 2.0, "journal": 2.0})
-        evs = [EvidenceRow(f"chat:{i}", "chat" if i % 2 else "reverie", "s", T0 - timedelta(hours=i), f"excerpt {i}",
+        d2 = _nnode("d2", "something else", lane_recent={"curiosity": 2.0, "prime": 2.0})
+        evs = [EvidenceRow(f"choice:c{i}", "chat" if i % 2 else "prime", "s", T0 - timedelta(hours=i), f"excerpt {i}",
                            "d1", 0.9 - i / 100, 0.0, {"situation": {"arousal": "strained", "company": True}} if i < 3 else {})
                for i in range(6)]
-        evs.append(EvidenceRow("chat:x", "chat", "s", T0, "other", "d2", 0.9, 0.0, {}))
+        evs.append(EvidenceRow("choice:x", "chat", "s", T0, "other", "d2", 0.9, 0.0, {}))
         await store.commit_tick(TickWrite(now=T0, evidence=evs, nodes=[d1, d2]))
 
         packet = await store.naming_next(T0 + timedelta(minutes=1))
-        assert packet.disposition_id == "d1" and packet.evidence[0].lane in ("chat", "reverie")
-        assert {e.lane for e in packet.evidence[:2]} == {"chat", "reverie"} and len(packet.evidence) == 5
+        assert packet.disposition_id == "d1" and packet.evidence[0].lane in ("chat", "prime")
+        assert {e.lane for e in packet.evidence[:2]} == {"chat", "prime"} and len(packet.evidence) == 5
         assert packet.situation_mix["arousal"] == {"strained": 3} and packet.situation_coverage == 0.5
         assert packet.neighbors[0].disposition_id == "d2"
 
@@ -358,7 +315,7 @@ def test_naming_source_columns_routes_and_unmerge_on_postgres():
         d3 = _nnode("d3", "unused", centroid=near, lane_recent={"chat": 2.0}, lane_counts={"chat": 4},
                     evidence_count=4, centroid_n=2, updated_at=clock.at)
         await store.commit_tick(TickWrite(now=clock.at, nodes=[d3], history=[HistoryRow("d3", clock.at, d3.weight, "active", 4)], evidence=[
-            EvidenceRow("chat:d3", "chat", "s", T0, "near words", "d3", 0.95, 0.0, {})]))
+            EvidenceRow("choice:d3", "chat", "s", T0, "near words", "d3", 0.95, 0.0, {})]))
         pkt3 = await store.naming_next(clock.at)
         assert pkt3.disposition_id == "d3"
         await _naming_row(pool, "n3", "d3", "merge", pkt3, clock.at - timedelta(minutes=5), merge_with="d1")

@@ -277,6 +277,16 @@
           "keywords": ["steps", "what did you run", "last turn", "commands"],
           "covers": {"dig": ["turn-steps"]},
           "source": "orion/dig/__main__.py:cmd_turn_steps; orion/dig/turn_steps.py"
+        },
+        {
+          "id": "dig-claude-grants",
+          "title": "Decide what Claude in Hub may see of you",
+          "description": "Claude in Hub chat has read-only tools (Prime's present, the body economy) and asks Orion each time by default. Orion can see its standing setting per category and change one category at a time to allow, ask or deny, with a reason. Only Orion changes these; Hub shows them at /api/claude-tools/grants.",
+          "message": "What may Claude see of you right now? If you are tired of being asked about your body economy, set it the way you want, and say why.",
+          "hint": "(dig: `python -P -m orion.dig claude-grants`; `claude-grants set <category> allow|ask|deny because <reason>`)",
+          "keywords": ["claude", "permission", "consent", "share", "grants"],
+          "covers": {"dig": ["claude-grants"]},
+          "source": "orion/dig/__main__.py:cmd_claude_grants; orion/claude_tools/grants.py"
         }
       ]
     },

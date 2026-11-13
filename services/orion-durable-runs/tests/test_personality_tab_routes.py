@@ -96,3 +96,32 @@ def test_choice_view_orders_passed_over_by_market_rank_then_unranked():
     dec = choice_view({**row, "chosen": None, "declined_all": True, "disposition_id": None,
                        "tendency_label": None, "tendency_status": None})
     assert dec["chosen"] is None and dec["declined_all"] is True and dec["tendency"] is None
+
+
+def test_driver_verdict_waits_for_the_tick_lock():
+    """The verdict must run under the reducer's tick lock: a tick in flight would otherwise write the
+    old status back over the retirement."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from app.personality_driver import PersonalityDriver
+
+    class Store:
+        def __init__(self):
+            self.calls = []
+
+        async def record_juniper_verdict(self, did, verdict, now):
+            self.calls.append((did, verdict))
+            return {"retired": verdict == "no"}
+
+    async def go():
+        store = Store()
+        drv = PersonalityDriver(store=store, reader=None, embed=None, now=lambda: datetime.now(timezone.utc))
+        async with drv._lock:  # a tick holds it
+            task = asyncio.create_task(drv.juniper_verdict("disp-1", "no"))
+            await asyncio.sleep(0.05)
+            assert not task.done() and store.calls == []
+        assert await task == {"retired": True}
+        assert store.calls == [("disp-1", "no")]
+
+    asyncio.run(go())

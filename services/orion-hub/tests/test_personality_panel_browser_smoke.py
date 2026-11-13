@@ -42,7 +42,7 @@ TENDENCIES = {"count": 3, "warnings": [], "tendencies": [
 ARMS_OFF = {"days": 7, "since": "2026-11-06T00:00:00Z", "arms": {}, "total": 0}
 
 
-@pytest.mark.parametrize("scenario", ["ok", "down"])
+@pytest.mark.parametrize("scenario", ["ok", "down", "no_table"])
 def test_personality_tab_yes_no_browser_smoke(scenario):
     pytest.importorskip("playwright.sync_api")
     from playwright.sync_api import sync_playwright
@@ -76,7 +76,9 @@ def test_personality_tab_yes_no_browser_smoke(scenario):
         if "/api/personality/choices" in url:
             return route.fulfill(body=json.dumps(CHOICES), content_type="application/json")
         if "/api/personality/tendencies" in url:
-            return route.fulfill(body=json.dumps(TENDENCIES), content_type="application/json")
+            body = TENDENCIES if scenario == "ok" else {
+                **TENDENCIES, "warnings": ["answers_table_missing: apply manual_migration_personality_juniper_verdict_v1.sql"]}
+            return route.fulfill(body=json.dumps(body), content_type="application/json")
         if "/api/personality/arms" in url:
             return route.fulfill(body=json.dumps(ARMS_OFF), content_type="application/json")
         return route.fulfill(status=404, body="")
@@ -106,13 +108,19 @@ def test_personality_tab_yes_no_browser_smoke(scenario):
             return
 
         assert page.inner_text("#pStatus") == ""
+        if scenario == "no_table":                                     # answers cannot be saved: say so plainly
+            assert page.inner_text("#pTendencyWarn") == "Your answers can't be saved until a database update is applied."
+            assert page.locator("#pTendencies button.verdict:enabled").count() == 0
+            assert errors == [], errors
+            browser.close()
+            return
         # 1. Recent choices: a decline, then a pick with its rank and what it passed over.
         cards = page.locator("#pChoices .choice")
         assert cards.count() == 2
         assert "Said nothing" in cards.nth(0).inner_text()
         assert "Reaching out to you" in cards.nth(0).inner_text()
         pick = cards.nth(1).inner_text()
-        assert "Picked: " in pick and "(market's #4)" in pick
+        assert "Picked: " in pick and "(ranked #4)" in pick
         assert "#1 peer briefs refused budget · #2 v2 relative switch · #3 wp read record grows" in pick
         assert "and 1 more" in pick
         assert "Counts toward: walkway misnaming over peer briefs, 3 of 3" in pick
@@ -143,6 +151,7 @@ def test_personality_tab_yes_no_browser_smoke(scenario):
         page.wait_for_selector('.tendency[data-id="disp-2"].retired')
         assert posts[-1] == ("disp-2", {"verdict": "no"})
         assert len(dialogs) == 1 and dialogs[0].startswith("Retire this tendency?")
+        assert "you will be asked again" in dialogs[0]
         assert second.locator("button.verdict").count() == 0
         assert second.locator(".verdict-msg").inner_text() == "Retired. Orion will not lean on this any more."
 

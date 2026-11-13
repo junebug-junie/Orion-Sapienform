@@ -17,8 +17,12 @@
   const TENDENCY_LIMIT = 20;
   const ARM_DAYS = 7;
   const PASSED_OVER_SHOWN = 3;
-  // orion/prime/tending.py MIN_WEIGHT: an active tendency at this weight reaches Prime's block.
+  // orion/prime/tending.py MIN_WEIGHT and MAX_LINES: the strongest active tendencies at this weight
+  // (at most MAX_LINES, never one Orion rejected while naming it) reach Prime's block.
   const PRIME_MIN_WEIGHT = 10;
+  const PRIME_MAX_LINES = 2;
+  const NO_CONFIRM = "Retire this tendency? Orion stops leaning on it. If Orion keeps choosing this way, "
+    + "a new tendency can form and you will be asked again.";
 
   const LANE_TEXT = {
     prime: "Orion's own next move",
@@ -60,7 +64,7 @@
 
   function rankText(rank) {
     const r = num(rank);
-    return r == null ? "not on the market's list" : `market's #${r}`;
+    return r == null ? "not ranked" : `ranked #${r}`;
   }
 
   function optionText(opt) {
@@ -84,7 +88,12 @@
     if (choice.care_promoted) notes.push("Orion's care for a tendency moved this up.");
     const picks = num(choice.picks_in_decision);
     if (picks != null && picks > 1) notes.push(`One of ${picks} picks in this decision.`);
-    const tendency = choice.tendency && choice.tendency.label ? `Counts toward: ${choice.tendency.label}` : "";
+    let tendency = "";
+    if (choice.tendency && choice.tendency.label) {
+      tendency = choice.tendency.status === "retired"
+        ? `Counted toward: ${choice.tendency.label} (retired)`
+        : `Counts toward: ${choice.tendency.label}`;
+    }
     return {
       id: String(choice.choice_id || ""),
       lane: laneText(choice.lane),
@@ -131,12 +140,24 @@
       name: tend.name ? `Orion calls this: ${tend.name}` : "",
       status: STATUS_TEXT[status] || status || "unknown",
       count: n != null && m != null ? `${n} of ${m} choices went this way` : "",
-      strength: weight == null ? "" : `Strength ${weight.toFixed(1)} (Prime sees it at ${PRIME_MIN_WEIGHT})`,
-      inPrime: status === "active" && weight != null && weight >= PRIME_MIN_WEIGHT,
+      strength: weight == null ? "" : `Strength ${weight.toFixed(1)} (Orion's Prime sees it from ${PRIME_MIN_WEIGHT})`,
+      primeEligible: status === "active" && weight != null && weight >= PRIME_MIN_WEIGHT
+        && tend.orion_verdict !== "rejected",
+      inPrime: false,
       examples: (Array.isArray(tend.examples) ? tend.examples : []).map(exampleText),
       verdict: verdictText(tend.juniper),
       answered: tend.juniper && tend.juniper.verdict ? String(tend.juniper.verdict) : "",
     };
+  }
+
+  // Views for a list sorted strongest first: only the first PRIME_MAX_LINES eligible reach Prime.
+  function tendencyViews(list) {
+    let left = PRIME_MAX_LINES;
+    return (Array.isArray(list) ? list : []).map((t) => {
+      const v = tendencyView(t);
+      if (v.primeEligible && left > 0) { v.inPrime = true; left -= 1; }
+      return v;
+    });
   }
 
   function armsView(body) {
@@ -146,7 +167,7 @@
     if (!total) {
       return {
         live: false,
-        summary: `Not live yet. No market decision in the last ${days} days carries a care or holdback mark.`,
+        summary: `Not live yet. In the last ${days} days no decision was made with or without Orion's tendencies counted.`,
         rows: [],
       };
     }
@@ -156,9 +177,9 @@
       const funded = num(outcomes.funded) || 0;
       const all = Object.values(outcomes).reduce((s, v) => s + (num(v) || 0), 0);
       const pct = all ? Math.round((100 * funded) / all) : 0;
-      return { arm: ARM_TEXT[arm] || arm, text: `${all} decisions, ${funded} funded (${pct}%)` };
+      return { arm: ARM_TEXT[arm] || arm, text: `${all} decisions, ${funded} given the go-ahead (${pct}%)` };
     });
-    return { live: true, summary: `${total} market decisions in the last ${days} days.`, rows };
+    return { live: true, summary: `${total} decisions in the last ${days} days.`, rows };
   }
 
   function choicesFrom(body) {
@@ -169,6 +190,16 @@
   function tendenciesFrom(body) {
     if (Array.isArray(body)) return body;
     return body && Array.isArray(body.tendencies) ? body.tendencies : [];
+  }
+
+  // The tendencies route's warnings, in plain words. Answers cannot be saved while one is set.
+  function answersBlockedText(warnings) {
+    const w = Array.isArray(warnings) ? warnings : [];
+    if (!w.length) return "";
+    if (w.some((x) => String(x).startsWith("answers_table_missing"))) {
+      return "Your answers can't be saved until a database update is applied.";
+    }
+    return "Your answers can't be saved right now.";
   }
 
   function verdictUrl(id) {
@@ -182,8 +213,9 @@
   }
 
   const api = {
-    laneText, rankText, optionText, choiceView, labelBase, verdictText, exampleText, tendencyView, armsView,
-    choicesFrom, tendenciesFrom, verdictUrl, afterVerdictText, PRIME_MIN_WEIGHT, LANE_TEXT,
+    laneText, rankText, optionText, choiceView, labelBase, verdictText, exampleText, tendencyView, tendencyViews,
+    armsView, choicesFrom, tendenciesFrom, verdictUrl, afterVerdictText, answersBlockedText, PRIME_MIN_WEIGHT,
+    PRIME_MAX_LINES, NO_CONFIRM, LANE_TEXT,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   if (typeof document === "undefined") return;
@@ -248,8 +280,7 @@
   async function sendVerdict(card, id, verdict) {
     const msg = card.querySelector(".verdict-msg");
     const buttons = card.querySelectorAll("button.verdict");
-    if (verdict === "no"
-        && !window.confirm("Retire this tendency? Orion stops leaning on it, and it cannot come back.")) {
+    if (verdict === "no" && !window.confirm(NO_CONFIRM)) {
       return;
     }
     buttons.forEach((b) => { b.disabled = true; });
@@ -276,7 +307,7 @@
     }
   }
 
-  function renderTendencies(list) {
+  function renderTendencies(list, blocked) {
     const host = $("pTendencies");
     host.replaceChildren();
     if (!list.length) {
@@ -284,8 +315,7 @@
         "No tendencies yet. One forms when Orion makes the same kind of choice a few times."));
       return;
     }
-    for (const t of list) {
-      const v = tendencyView(t);
+    for (const v of tendencyViews(list)) {
       const card = el("div", "tendency");
       card.dataset.id = v.id;
       if (v.answered) card.dataset.answered = v.answered;
@@ -309,6 +339,7 @@
       yes.type = "button";
       const no = el("button", "verdict no", "No");
       no.type = "button";
+      yes.disabled = no.disabled = Boolean(blocked);
       yes.addEventListener("click", () => sendVerdict(card, v.id, "yes"));
       no.addEventListener("click", () => sendVerdict(card, v.id, "no"));
       row.appendChild(yes);
@@ -349,9 +380,10 @@
       errors.push(`choices: ${choices.reason.message}`);
     }
     if (tendencies.status === "fulfilled") {
-      renderTendencies(tendenciesFrom(tendencies.value));
-      const warn = (tendencies.value && tendencies.value.warnings) || [];
-      $("pTendencyWarn").textContent = warn.length ? `Answers cannot be saved yet: ${warn.join("; ")}` : "";
+      const blocked = answersBlockedText(tendencies.value && tendencies.value.warnings);
+      renderTendencies(tendenciesFrom(tendencies.value), blocked);
+      $("pTendencyWarn").textContent = blocked;
+      if (blocked) $("pTendencyWarn").title = String((tendencies.value.warnings || []).join("; "));
     } else {
       $("pTendencies").replaceChildren();
       $("pTendencyWarn").textContent = "";

@@ -314,7 +314,8 @@ ORDER BY c.occurred_at DESC, c.choice_id
 LIMIT %(limit)s
 """
 TENDENCIES_SQL = f"""
-SELECT disposition_id, label, status, weight, evidence_count, opposed_count, name, first_seen_at, last_reinforced_at
+SELECT disposition_id, label, status, weight, evidence_count, opposed_count, name, orion_verdict, first_seen_at,
+  last_reinforced_at
 FROM personality_disposition
 WHERE {ORIGIN_FILTER} AND status <> 'retired'
 ORDER BY weight DESC, disposition_id
@@ -648,7 +649,8 @@ class PersonalityStore:
             out.append({
                 "disposition_id": n["disposition_id"], "label": n["label"], "status": n["status"],
                 "weight": float(n["weight"] or 0.0), "n": n_ways, "m": n_ways + int(n.get("opposed_count") or 0),
-                "name": n.get("name"), "first_seen_at": _iso(n["first_seen_at"]),
+                "name": n.get("name"), "orion_verdict": n.get("orion_verdict"),
+                "first_seen_at": _iso(n["first_seen_at"]),
                 "last_reinforced_at": _iso(n["last_reinforced_at"]),
                 "examples": by_id.get(n["disposition_id"], []),
                 "juniper": verdicts.get(n["disposition_id"]),

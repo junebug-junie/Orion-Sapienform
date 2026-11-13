@@ -4416,20 +4416,23 @@ excerpts, naming log) are gone, and so are their proxies (`/dispositions`, `/evi
 
 - **Recent choices**: the last 30 `personality_choice` rows, every lane, newest first. Each shows the
   lane in words ("What to look into", "Reaching out to you", "Orion's own next move", ...), the time,
-  what Orion picked and its market rank ("market's #4"), the top 3 options Orion passed over (ranked
+  what Orion picked and its market rank ("ranked #4"), the top 3 options Orion passed over (ranked
   first, in the market's order; the rest behind "and N more"), and the tendency it counted toward. A
   decline reads "Said nothing" (outreach), "Made no move" (Prime) or "Picked none of them".
 - **Tendencies**: choice-built tendencies (`origin = 'choice'`, not retired; rev 2 prose nodes never
   show), strongest first. Each shows the label without its count, "n of m choices went this way",
   status in words ("Orion leans on this now" / "Still forming"), strength, an "In Orion's Prime block
-  now" badge when it is active at weight >= 10 (`orion/prime/tending.py` `MIN_WEIGHT`; a node test
-  keeps the two equal), 3 example choices, and Juniper's last answer.
+  now" badge on at most the 2 strongest active tendencies at weight >= 10 that Orion did not reject
+  while naming them (`orion/prime/tending.py` `MIN_WEIGHT`/`MAX_LINES`; a node test keeps them equal),
+  3 example choices, and Juniper's last answer.
   **Does this look like Orion? Yes / No.** Yes is recorded. No asks first, then retires the
   tendency: it leaves the frame, so it never reaches the Prime tending line or the market's
-  tendency read again (retired is terminal). The write goes to durable-runs, the single writer.
+  tendency read again. If Orion keeps choosing the same way, a NEW tendency can form, and Juniper is
+  asked again (the dialog says so). The write goes to durable-runs, the single writer. While the
+  answer table is missing, the buttons are disabled and the tab says so in one plain sentence.
 - **Is it changing anything?**: market decisions over the last 7 days with a `personality:arm=care`
-  or `personality:arm=holdback` trace line in `want_ledger`, by arm, with the funded share. "Not live
-  yet" when there are none.
+  or `personality:arm=holdback` trace line in `want_ledger` (written by #3332), by arm, with the share
+  funded ("given the go-ahead"). "Not live yet" when there are none.
 
 Routes (proxies to orion-durable-runs at `HUB_CURIOSITY_DURABLE_RUNS_URL`, reused; no new key):
 `GET /api/personality/frame`, `GET /api/personality/choices?limit=` (1-200, default 30),

@@ -20,7 +20,7 @@ const CHOICE = {
 test("choiceView: what was picked, at which market rank, and the top passed-over options", () => {
   const v = p.choiceView(CHOICE);
   assert.strictEqual(v.lane, "What to look into");
-  assert.strictEqual(v.picked, "Picked: walkway vehicle reports are mainly my own misnaming (market's #4)");
+  assert.strictEqual(v.picked, "Picked: walkway vehicle reports are mainly my own misnaming (ranked #4)");
   assert.deepStrictEqual(v.passedOver, ["#1 peer briefs refused budget", "#2 v2 relative switch", "#3 wp read record grows"]);
   assert.strictEqual(v.more, 1);
   assert.strictEqual(v.allPassedOver[3], "four wiring points named");   // unranked: no number
@@ -45,7 +45,7 @@ test("choiceView notes: market's first pick, care, several picks; tolerates junk
   assert.deepStrictEqual(v.notes, ["Same as the market's first pick.", "Orion's care for a tendency moved this up.",
     "One of 2 picks in this decision."]);
   assert.strictEqual(p.choiceView({ ...CHOICE, chosen: { text: "x", market_rank: null } }).picked,
-    "Picked: x (not on the market's list)");
+    "Picked: x (not ranked)");
   const blank = p.choiceView(null);
   assert.strictEqual(blank.declined, true);
   assert.deepStrictEqual(blank.passedOver, []);
@@ -62,15 +62,40 @@ test("tendencyView: label without the count, n of m, status in words, Prime reac
   assert.strictEqual(v.label, "turn start context is stale over camera layer (+13 more)");
   assert.strictEqual(v.count, "21 of 23 choices went this way");
   assert.strictEqual(v.status, "Orion leans on this now");
-  assert.strictEqual(v.strength, "Strength 12.0 (Prime sees it at 10)");
-  assert.strictEqual(v.inPrime, true);
+  assert.strictEqual(v.strength, "Strength 12.0 (Orion's Prime sees it from 10)");
+  assert.strictEqual(v.primeEligible, true);
   assert.match(v.examples[0], /^Picked walkway vehicle reports .* over #1 peer briefs refused budget, #2 v2 relative switch, #3 wp read record grows and 1 more \(What to look into, /);
   assert.match(v.examples[1], /^Said nothing \(Reaching out to you/);
   assert.strictEqual(v.verdict, "You have not answered yet.");
-  assert.strictEqual(p.tendencyView({ ...t, status: "candidate" }).inPrime, false);   // only active reaches Prime
-  assert.strictEqual(p.tendencyView({ ...t, weight: 9.9 }).inPrime, false);
+  assert.strictEqual(p.tendencyView({ ...t, status: "candidate" }).primeEligible, false);   // only active
+  assert.strictEqual(p.tendencyView({ ...t, weight: 9.9 }).primeEligible, false);
+  assert.strictEqual(p.tendencyView({ ...t, orion_verdict: "rejected" }).primeEligible, false);
   assert.strictEqual(p.tendencyView({ ...t, status: "candidate" }).status, "Still forming");
   assert.strictEqual(p.tendencyView(null).label, "(no label)");
+});
+
+test("tendencyViews marks only the first PRIME_MAX_LINES eligible tendencies as in Prime", () => {
+  const t = (id, w, extra) => ({ disposition_id: id, label: id, status: "active", weight: w, n: 1, m: 1, ...extra });
+  const views = p.tendencyViews([t("a", 30, { orion_verdict: "rejected" }), t("b", 20), t("c", 15), t("d", 12)]);
+  assert.deepStrictEqual(views.map((v) => v.inPrime), [false, true, true, false]);
+  assert.strictEqual(p.PRIME_MAX_LINES, 2);
+});
+
+test("a choice whose tendency was retired says so", () => {
+  const v = p.choiceView({ ...CHOICE, tendency: { ...CHOICE.tendency, status: "retired" } });
+  assert.strictEqual(v.tendency, "Counted toward: walkway misnaming over peer briefs, 3 of 3 (retired)");
+});
+
+test("the No confirm is honest: a new tendency can form again", () => {
+  assert.match(p.NO_CONFIRM, /a new tendency can form and you will be asked again/);
+  assert.doesNotMatch(p.NO_CONFIRM, /cannot come back/);
+});
+
+test("answersBlockedText is plain words, never a file name", () => {
+  assert.strictEqual(p.answersBlockedText([]), "");
+  assert.strictEqual(p.answersBlockedText(["answers_table_missing: apply manual_migration_x.sql"]),
+    "Your answers can't be saved until a database update is applied.");
+  assert.strictEqual(p.answersBlockedText(["other"]), "Your answers can't be saved right now.");
 });
 
 test("verdictText and afterVerdictText say what Juniper answered in plain words", () => {
@@ -87,8 +112,8 @@ test("armsView: not live yet with no marks; per-arm funded share when live", () 
   const v = p.armsView({ days: 7, total: 6, arms: { care: { funded: 3, deferred: 1 }, holdback: { funded: 1, deferred: 1 } } });
   assert.strictEqual(v.live, true);
   assert.deepStrictEqual(v.rows, [
-    { arm: "With Orion's tendencies counted", text: "4 decisions, 3 funded (75%)" },
-    { arm: "Without them (the comparison group)", text: "2 decisions, 1 funded (50%)" },
+    { arm: "With Orion's tendencies counted", text: "4 decisions, 3 given the go-ahead (75%)" },
+    { arm: "Without them (the comparison group)", text: "2 decisions, 1 given the go-ahead (50%)" },
   ]);
 });
 
@@ -100,11 +125,14 @@ test("choicesFrom / tendenciesFrom accept the durable-runs wrapper or a bare lis
   assert.deepStrictEqual(p.tendenciesFrom({}), []);
 });
 
-test("PRIME_MIN_WEIGHT matches orion/prime/tending.py MIN_WEIGHT", () => {
+test("PRIME_MIN_WEIGHT / PRIME_MAX_LINES match orion/prime/tending.py", () => {
   const src = fs.readFileSync(path.join(__dirname, "../../../../orion/prime/tending.py"), "utf8");
   const m = src.match(/^MIN_WEIGHT = ([0-9.]+)$/m);
   assert.ok(m, "MIN_WEIGHT not found in orion/prime/tending.py");
   assert.strictEqual(Number(m[1]), p.PRIME_MIN_WEIGHT);
+  const lines = src.match(/^MAX_LINES = (\d+)$/m);
+  assert.ok(lines, "MAX_LINES not found in orion/prime/tending.py");
+  assert.strictEqual(Number(lines[1]), p.PRIME_MAX_LINES);
 });
 
 test("DOM layer never writes HTML: upstream text only via textContent", () => {

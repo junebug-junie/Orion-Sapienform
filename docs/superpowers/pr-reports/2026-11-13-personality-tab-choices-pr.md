@@ -55,9 +55,10 @@ Juniper can now see what Orion actually chose and turned down, and can say yes o
 services/orion-durable-runs: test_personality_tab_postgres.py, test_personality_tab_routes.py,
   test_personality_loop.py, test_personality_naming.py, test_personality_postgres.py,
   test_personality_choice_replay.py  -> 65 passed (throwaway postgres:16 container as ORION_ADMISSION_TEST_DSN)
+services/orion-durable-runs full tests folder (same DSN) -> 1041 passed, 3 skipped
 services/orion-hub: tests/test_personality_routes.py, test_hub_panel_reachability.py,
   test_personality_cue_reader.py -> 42 passed
-node --test services/orion-hub/static/js/personality.test.js -> 9 passed
+node --test services/orion-hub/static/js/personality.test.js -> 13 passed
 tests/test_sql_migration_drift_gate.py, tests/test_deploy_migration_gate.py -> 142 passed
 tests/test_no_personal_terms.py, tests/test_no_private_eval_artifacts.py -> 10 passed
 scripts/check_metric_lineage.py --gate -> PASS; scripts/check_definition_drift.py --gate -> PASS
@@ -66,7 +67,7 @@ scripts/check_metric_lineage.py --gate -> PASS; scripts/check_definition_drift.p
 ## Evals run
 
 ```text
-services/orion-hub/tests/test_personality_panel_browser_smoke.py (Playwright, Chromium) -> 2 passed
+services/orion-hub/tests/test_personality_panel_browser_smoke.py (Playwright, Chromium) -> 3 passed
   Real template + JS. Covers: choices render (pick, rank, passed over, decline, hostile text stays text),
   tendencies with examples, Yes (saved, card stays), No (confirm dialog, POST, card retired, buttons gone),
   a refused save (named error, buttons back), "Not live yet", and an upstream outage.
@@ -84,9 +85,33 @@ No Docker build run. Not deployed (per task).
 
 ## Review findings fixed
 
-(filled in after the review subagent)
+Review subagent (hand review of `origin/main...HEAD`): no blockers; tick race, retired-id return, prose-node isolation, SQL, migration allowlist and XSS checked sound.
+
+- Finding: the No dialog said "it cannot come back", but the reducer can found a NEW tendency from the same kind of choice.
+  - Fix: honest wording ("If Orion keeps choosing this way, a new tendency can form and you will be asked again."), in the dialog and README. A "remember my no" match would edit `orion/personality/graph.py`, which another agent owns right now.
+  - Evidence: node test `the No confirm is honest`; browser smoke checks the dialog text.
+- Finding: the "In Orion's Prime block now" badge ignored Prime's 2-line cap and Orion's own rejections.
+  - Fix: `orion_verdict` returned by `/personality/tendencies`; badge only on the first 2 eligible (active, weight >= 10, not rejected); node test pins `MIN_WEIGHT` and `MAX_LINES` to `orion/prime/tending.py`.
+  - Evidence: node test `tendencyViews marks only the first PRIME_MAX_LINES`.
+- Finding: a choice still said "Counts toward: X" after X was retired.
+  - Fix: "Counted toward: X (retired)".
+  - Evidence: node test `a choice whose tendency was retired says so`.
+- Finding: the arms readout depends on #3332, and "funded" in shadow rows.
+  - Fix: merge order stated below; wording is "given the go-ahead". `want_ledger.shadow` is true on every row by its own contract (`manual_migration_want_ledger_v1.sql`), so splitting by it would show nothing.
+  - Evidence: README + this report.
+- Finding: no test that the verdict waits for the tick lock.
+  - Fix: `test_driver_verdict_waits_for_the_tick_lock`.
+  - Evidence: passes; fails if `juniper_verdict` skips the lock.
+- Finding: raw migration file name on screen; jargon ("market's #3").
+  - Fix: one plain sentence ("Your answers can't be saved until a database update is applied."), file name only in a tooltip; "ranked #3"; the market glossed once on the page.
+  - Evidence: node test `answersBlockedText`; browser smoke `no_table` scenario.
+- Finding: Yes/No clickable while the answer table is missing.
+  - Fix: buttons disabled when that warning is set.
+  - Evidence: browser smoke `no_table` scenario.
 
 ## Restart required
+
+Merge order: independent of #3332. Before #3332 deploys, "Is it changing anything" reads "Not live yet".
 
 Deploy order: apply the migration, then durable-runs, then Hub. The post-pull rebuild applies the migration on its own (additive, allowlisted). By hand:
 
@@ -104,12 +129,12 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 ## Risks / concerns
 
-- Severity: low. Concern: a retired tendency is terminal, so a similar run of choices later founds a NEW tendency. Juniper may see the same kind of choice come back under a new card. Mitigation: she can say no again; a "remember my no" match is a follow-up only if it happens.
-- Severity: low. Concern: "Is it changing anything" reads "Not live yet" until #3332 deploys. Mitigation: it is labelled, not hidden.
+- Severity: medium. Concern: a "no" retires that tendency, but a similar run of choices later founds a NEW one, and Juniper is asked again. Mitigation: the dialog says so. Real suppression (a tombstone the reducer folds matching choices into) needs a change in `orion/personality/graph.py`, which another agent is editing now; it should be done there.
+- Severity: low. Concern: "Is it changing anything" reads "Not live yet" until #3332 deploys; its `personality:arm=care|holdback` format was checked against #3332's tests. Mitigation: it is labelled, not hidden.
 - Severity: low. Concern: UNVERIFIED live: the tab, the Yes/No write and the retire were not exercised on the live stack (not deployed).
 
 ## PR link
 
-(filled in after the PR is opened)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3335
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

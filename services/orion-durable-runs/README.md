@@ -1248,8 +1248,10 @@ Orion's choices set what Orion values. `app/personality_values.py` (reads) + `or
 - **Juniper's No holds.** The reducer loads every retired choice node Juniper retired
   (`personality_juniper_verdict`, Hub Personality tab) with her latest answer. On "no" the node stays retired
   but still matches: a choice in its direction is counted on it (evidence row `meta.juniper_no`, no weight, no
-  centroid move) instead of founding a new tendency she would be asked about again. It never comes back by
-  itself. A later "yes" revives it as a candidate. Missing table: no answers (logged once).
+  centroid move) instead of founding a new tendency she would be asked about again. A live tendency that
+  matches keeps the choice; only a choice no live tendency matches is absorbed. It never comes back by itself.
+  A "yes" newer than its retirement revives it as a candidate (#3335's route must accept that yes; it does
+  not yet). Missing table: no answers (logged once).
 - **Reducer writes.** A tick writes a node only when its evidence, status, label or counts moved, or when fade
   moved its weight >= 1% (`fade_write_min_rel_change`) from the stored weight (about every 5 h at the 14-day
   half-life). Before this, fade rewrote every live node every tick (`nodes_written: 118`, `choices_read: 0`).

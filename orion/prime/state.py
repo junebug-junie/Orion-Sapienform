@@ -102,7 +102,9 @@ class PrimeConcernV1(BaseModel):
     # Personality rev 4 (orion/prime/choice.py): the event want's family and whether it was on the list only
     # through care, as the list stood when this concern opened. The choice point keys the option by this family
     # and marks a pick care_promoted from this flag, so a concern that outlives its want's place on the list
-    # keeps both. Left out of the saved state when None (a rollback still loads the state).
+    # keeps both. Left out of the saved state when None, so a state with no such concern saves as before.
+    # A concern that HAS them cannot be read by an orion-mind or Hub built before them (extra="forbid"):
+    # rebuild Hub before orion-mind, and drop these keys from orion:prime:state before rolling mind back.
     event_family: Optional[str] = Field(default=None, max_length=200)
     event_care_promoted: Optional[bool] = None
     opened_at: AwareDatetime

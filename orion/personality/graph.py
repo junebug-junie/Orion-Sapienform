@@ -381,21 +381,31 @@ class _Tick:
         self.now = now
         self.nodes: list[Node] = [_copy(n) for n in nodes]
         self.before: dict[int, Optional[_Snap]] = {id(n): _snap(n) for n in self.nodes}
-        # Juniper's answers (``JUNIPER_NO`` / ``JUNIPER_YES``), only for retired nodes she retired.
+        # Juniper's answers (``JUNIPER_NO`` / ``JUNIPER_YES``, or ``(answer, answered_at)``), only for retired
+        # nodes she retired.
         # "no": the node stays retired and still matches, so a choice in its direction counts as evidence on
         # it instead of founding a new tendency she would be asked about again. It never comes back by
         # itself (fade and status rules skip retired). "yes" after her "no": revived as a candidate, and the
         # usual rules take it from there (it may promote at once, or fade out like any other).
         self.vetoed: set[int] = set()
         for node in self.nodes:
-            answer = (juniper or {}).get(node.disposition_id)
+            raw = (juniper or {}).get(node.disposition_id)
+            answer, answered_at = (raw if isinstance(raw, tuple) else (raw, None))
             if node.status != "retired":
+                continue
+            retired_at = _aware(node.retired_at)
+            # A "yes" revives only a node retired BEFORE it: a node her yes revived and Orion's own rules
+            # retired again (candidate TTL, fade) stays retired.
+            if answer == JUNIPER_YES and answered_at is not None and retired_at is not None \
+                    and _aware(answered_at) <= retired_at:
                 continue
             if answer == JUNIPER_NO:
                 self.vetoed.add(id(node))
             elif answer == JUNIPER_YES:
                 node.status, node.retired_at, node.last_folded_at = "candidate", None, now
-        self.dim: Optional[int] = next((len(n.centroid) for n in self.nodes if n.centroid), None)
+        live = [n for n in self.nodes if id(n) not in self.vetoed]
+        self.dim = next((len(n.centroid) for n in [*live, *self.nodes] if n.centroid), None)
+        self.dim: Optional[int] = None
         self.unit_centroids: dict[int, Optional[list[float]]] = {}
         self.evidence_rows: list[EvidenceRow] = []
 
@@ -592,7 +602,15 @@ def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params:
     valid.sort(key=lambda t: (t[0].occurred_at, t[0].evidence_id))
     for ev, emb, lane, w in valid:
         sims = tick.sims(emb)
-        best, best_sim = max(sims, key=lambda t: t[1], default=(None, -2.0))
+        # A live tendency that matches takes the choice; only a choice no live node matches goes to the
+        # nearest tendency Juniper said No to (``absorb``) instead of founding a new one.
+        live_sims = [(n, x) for n, x in sims if id(n) not in tick.vetoed]
+        best, best_sim = max(live_sims, key=lambda t: t[1], default=(None, -2.0))
+        if best is None or best_sim < params.match_threshold:
+            vetoed_best = max(((n, x) for n, x in sims if id(n) in tick.vetoed), key=lambda t: t[1],
+                              default=(None, -2.0))
+            if vetoed_best[0] is not None and vetoed_best[1] >= params.match_threshold:
+                best, best_sim = vetoed_best
         meta = dict(ev.meta) if isinstance(ev.meta, Mapping) else {}
         if best is not None and best_sim >= params.match_threshold and id(best) in tick.vetoed:
             tick.absorb(best, ev, lane)

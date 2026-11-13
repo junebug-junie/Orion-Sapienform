@@ -89,6 +89,8 @@ Stacks on #3331 (outreach choice point) and #3332 (market values). Merge those f
   for `prime`.
 - Behavior changed: the reducer matches retired nodes Juniper said No to (absorb only) and revives one on her
   later Yes.
+- Rollback: an orion-mind built before this PR cannot read a saved Prime state whose concerns carry
+  `event_family`/`event_care_promoted`; drop those keys from `orion:prime:state` before rolling mind back.
 - Compatibility: `care_promoted` is opt-in (`?care=1`), so any deploy order of orion-mind and orion-durable-runs
   is safe. `PrimeConcernV1` (`extra="forbid"`) gains two fields: Hub reads Prime state for a concern count
   (`parse_prime_redis`), so rebuild orion-hub before orion-mind (the post-pull run's alphabetical order already
@@ -154,6 +156,19 @@ Code review ran in a subagent on the first commit. No must-fix findings. Fixed:
 - Finding: duplicate event refs read inconsistently. Fix: one first-wins `listed_wants` pass for both maps.
 - Finding: no driver-level regression test. Fix: `test_a_quiet_tick_writes_no_node_and_a_one_percent_fade_writes_each_once`.
 - Finding: SQL test checked strings only. Fix: `test_read_menu_passes_reason_and_jsonb_warnings_through_to_care_promoted`.
+- Second review (Juniper's No commit):
+  - Finding: a "yes" revived a node on every tick even after Orion's own rules retired it again.
+    - Fix: revive only when her yes is newer than the node's retirement (`juniper_at` read with the answer).
+    - Evidence: `test_a_yes_revives_only_a_node_retired_before_it`.
+  - Finding: a vetoed node could take a choice a live tendency also matched.
+    - Fix: live tendencies first; absorb only what no live tendency matches.
+    - Evidence: `test_a_live_tendency_that_matches_keeps_the_choice_over_a_closer_juniper_no`.
+  - Finding: `PrimeConcernV1` comment overclaimed rollback safety. Fix: comment states the Hub-first order and
+    the rollback step.
+  - Finding: tie order differed from #3335's `LATEST_VERDICTS_SQL`. Fix: same order (`verdict_id` ascending).
+  - Finding: tick dimension could come from a vetoed node. Fix: live nodes first.
+  - Not fixed here (must, other PR): #3335's `record_juniper_verdict` refuses any answer on a retired node, so
+    the "later Yes" cannot be written yet. See risks.
 - CI: `Body economy contract` refused `orion/prime/choice.py` as an unregistered reader. Fix: registered in
   `config/physiology/contract.yaml` (imports only the key helper).
 

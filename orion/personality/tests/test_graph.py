@@ -364,3 +364,21 @@ def test_juniper_no_never_comes_back_by_itself_and_a_later_yes_revives_it():
     assert out.status in ("candidate", "active") and out.retired_at is None
     # A Yes on a node that was never retired by her changes nothing (the map only holds her retirements).
     assert apply_fade([node(disposition_id="x", updated_at=NOW)], now=NOW, juniper={"x": g.JUNIPER_YES}).nodes == []
+
+
+def test_a_live_tendency_that_matches_keeps_the_choice_over_a_closer_juniper_no():
+    """Only a choice no live tendency matches is absorbed by a tendency Juniper said No to."""
+    no = node(disposition_id="dno", status="retired", retired_at=NOW, centroid=axis(0), updated_at=NOW)
+    live = node(disposition_id="dlive", centroid=axis(0, 0.3), updated_at=NOW)
+    res = fold([no, live], [ev(axis(0))], now=NOW, juniper={"dno": g.JUNIPER_NO})
+    assert res.evidence_rows[0].disposition_id == "dlive"
+
+
+def test_a_yes_revives_only_a_node_retired_before_it():
+    """After her yes revived it, Orion's own rules may retire it again; the old yes does not revive it again."""
+    t_yes = NOW - timedelta(days=20)
+    reretired = node(disposition_id="d", status="retired", retired_at=NOW - timedelta(days=1), updated_at=NOW)
+    assert apply_fade([reretired], now=NOW, juniper={"d": (g.JUNIPER_YES, t_yes)}).nodes == []
+    retired_by_her = node(disposition_id="d", status="retired", retired_at=t_yes - timedelta(days=1), updated_at=NOW)
+    (out,) = apply_fade([retired_by_her], now=NOW, juniper={"d": (g.JUNIPER_YES, t_yes)}).nodes
+    assert out.status in ("candidate", "active")

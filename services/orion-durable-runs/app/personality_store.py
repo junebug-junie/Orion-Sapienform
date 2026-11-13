@@ -300,13 +300,13 @@ def _iso(v: Any) -> Any:
 # (``orion.personality.graph._Tick``). Only retired nodes: a live node's answer changes nothing here.
 JUNIPER_NODES_SQL = f"""
 WITH latest AS (
-  SELECT DISTINCT ON (disposition_id) disposition_id, verdict AS juniper_verdict
+  SELECT DISTINCT ON (disposition_id) disposition_id, verdict AS juniper_verdict, created_at AS juniper_at
   FROM personality_juniper_verdict
-  ORDER BY disposition_id, created_at DESC, verdict_id DESC
+  ORDER BY disposition_id, created_at DESC, verdict_id
 ), by_juniper AS (
   SELECT disposition_id FROM personality_juniper_verdict GROUP BY disposition_id HAVING bool_or(retired)
 )
-SELECT {NODE_COLUMNS}, latest.juniper_verdict
+SELECT {NODE_COLUMNS}, latest.juniper_verdict, latest.juniper_at
 FROM personality_disposition JOIN latest USING (disposition_id) JOIN by_juniper USING (disposition_id)
 WHERE status = 'retired' AND {ORIGIN_FILTER}
 """
@@ -318,8 +318,8 @@ class PersonalityStore:
         self._pool = pool
         self._warned_no_verdicts = False
 
-    async def load_juniper_nodes(self) -> tuple[list[Node], dict[str, str]]:
-        """(retired nodes Juniper retired, disposition_id -> her latest answer). The verdict table comes with
+    async def load_juniper_nodes(self) -> tuple[list[Node], dict[str, tuple]]:
+        """(retired nodes Juniper retired, disposition_id -> (her latest answer, when)). The verdict table comes with
         the Hub Personality tab migration (manual_migration_personality_juniper_verdict_v1.sql); while it is
         missing there are no answers: ([], {}), logged once."""
         try:
@@ -334,7 +334,7 @@ class PersonalityStore:
                                "(apply manual_migration_personality_juniper_verdict_v1.sql); no answers applied")
             return [], {}
         nodes = [node_from_row(r) for r in rows]
-        return nodes, {str(r["disposition_id"]): str(r["juniper_verdict"]) for r in rows}
+        return nodes, {str(r["disposition_id"]): (str(r["juniper_verdict"]), r.get("juniper_at")) for r in rows}
 
     async def load_nodes(self) -> list[Node]:
         """Every non-retired choice node. Retired nodes are not matched again, except the ones Juniper retired

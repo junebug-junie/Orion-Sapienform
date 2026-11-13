@@ -59,6 +59,18 @@ class Settings(BaseSettings):
     # hour", settled against chat_message and graded vs a base rate. false = no issue/settle loop.
     reachable_enabled: bool = Field(True, alias="PREDICTION_REACHABLE_ENABLED")
 
+    # Power-bill bet (app/bill_forecast.py): once a day, Orion's projection of the current RMP bill (kWh,
+    # pre-tax $) with an 80 % range, settled when the bill lands (energy_bill_actual). false = no loop.
+    bill_forecast_enabled: bool = Field(True, alias="PREDICTION_BILL_FORECAST_ENABLED")
+    bill_forecast_tick_sec: float = Field(900.0, ge=60, alias="PREDICTION_BILL_FORECAST_TICK_SEC")
+    # Same keys and values as orion-energy's (services/orion-energy/.env_example): the bill is priced and
+    # its cycle cut exactly as orion-energy does. tests/test_bill_forecast.py checks the defaults agree.
+    energy_tariff_path: str = Field("/app/config/energy/tariff.rmp_ut_sch1.2026-08-10.r3.yaml",
+                                    alias="ENERGY_TARIFF_PATH")
+    energy_timezone: str = Field("America/Denver", alias="ENERGY_TIMEZONE")
+    energy_billing_cycle_start_day: int = Field(18, ge=1, le=31, alias="ENERGY_BILLING_CYCLE_START_DAY")
+    energy_usage_point_id: str = Field("", alias="ENERGY_USAGE_POINT_ID")
+
     # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
     weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")
     weather_refresh_sec: float = Field(3600.0, ge=300, alias="PREDICTION_WEATHER_REFRESH_SEC")

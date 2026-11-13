@@ -188,6 +188,8 @@ def test_window_wording_follows_the_record_window() -> None:
     ("turn.self.mood", "guesses about my turns' mood"),
     ("turn.self", "turn self bets"),
     ("energy.bill", "energy bill bets"),
+    ("forecast.energy.bill_kwh", "power-bill kWh forecast ranges"),
+    ("forecast.energy.bill_usd", "power-bill dollar forecast ranges"),
     ("brand_new.thing", "brand new thing bets"),
     ("act.make", "make bets"),
     ("act.durable.run", "durable runs"),

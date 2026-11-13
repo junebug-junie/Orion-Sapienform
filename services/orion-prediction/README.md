@@ -310,6 +310,41 @@ error and `prob_better` -- no alpha. Table `prediction_reachable_forecast`. Flag
 Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): 26 % lower loss than base overall
 (P 0.95), tied with the state model; cold hours about level with base (P 0.25); somewhat timid at the top.
 
+## Power-bill bet (`GET /bill-forecast`)
+
+Once a day: "this Rocky Mountain Power bill will come to X kWh and $Y before tax", each with an 80 %
+range (`app/bill_forecast.py`). Settled when RMP's bill for that period lands in `energy_bill_actual`.
+This is Orion's only money bet; the self-monitor grades it (`forecast.energy.bill_kwh`, `..._usd`).
+
+- **Point**: `orion.energy.reconcile.project_period`, the same run rate the stakes snapshot uses, priced
+  by `Tariff.itemize`. Nothing is re-priced here. The period is orion-energy's cycle (meter-read dates
+  from past bills, else `ENERGY_BILLING_CYCLE_START_DAY`), so the four `ENERGY_*` keys must equal
+  orion-energy's (a test checks); the tariff file is baked into this image.
+- **Range**: the run rate predicts R more days from a mean of n days. With daily kWh spread s and
+  day-to-day persistence rho (last 28 complete meter days before the bet), the miss has variance
+  `s^2 (1+rho)/(1-rho) (R + R^2/n)`: R future days plus the error of the mean, AR(1)-inflated. 80 % =
+  +-1.28 sd, never below the kWh already used; the $ range prices those two kWh numbers. Under 7
+  complete meter days: the bet is stored with no range (`range_reason`). Not covered: tariff error
+  (-0.9 % on the 2026-10-19 bill) and the meter-read date moving (the 09-18 bill ran one day past the
+  scheduled read).
+- **Why not past bills' errors**: only one completed bill period (09-18 -> 10-19) has meter data; the
+  feed has a hole 08-07 -> 09-17. One period cannot give a range. The bills will grade this one.
+- **Settle**: the bill whose start is within 10 days of the bet's period start (the ledger's read-snap
+  rule). kWh vs `kwh_billed`; $ vs `current_charges - taxes` (`reconcile._utility_pretax`). A bill with
+  no tax line settles kWh only.
+- **Replay**: on each boot, every past day without a row is backfilled as of 00:05 local, knowing only
+  the meter hours the feed would have delivered by then (its measured lag, ~70 h) and the bills already
+  retrieved. Stored with `origin = 'replay'`; never graded (the method was chosen on that history).
+- **Grading** (`orion/self_monitor`): one row per quantity per live bet, `claim_kind = interval`,
+  `stated = 0.8`, `answer_key` = the bill. The ~30 guesses at one bill are one answer: the organ averages
+  them into one unit and counts units, over its own 400-day window (half-life 180 days). Status stays
+  `unknown` until 10 bills have settled with live bets: about 10 months.
+
+Table `prediction_bill_forecast` (`manual_migration_prediction_bill_forecast_v1.sql`, auto-applied by
+the post-pull rebuild). Flag `PREDICTION_BILL_FORECAST_ENABLED` (on), tick
+`PREDICTION_BILL_FORECAST_TICK_SEC` (900). No bus event. Live dry run (writes nothing):
+`POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_bill_forecast_replay_eval.py`.
+
 ## Surprise
 
 Each scored outcome becomes surprise (`app/surprise.py`; spec
@@ -408,9 +443,9 @@ started 11-05), so no neural rung yet: the spec asks for 21 days (2026-11-26 at 
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).
   Consumer: orion-hardware-watch shows the shed probability beside each reflex decision
   (observe-only).
-- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`, `manual_migration_prediction_action_bet_v1.sql`.
+- Tables: `services/orion-sql-db/manual_migration_prediction_v1.sql`, `manual_migration_prediction_change_events_v1.sql`, `manual_migration_prediction_action_bet_v1.sql`, `manual_migration_prediction_bill_forecast_v1.sql`.
   Reads (read-only, other services' tables): `orion_biometrics_summary`, `orion_biometrics_cluster`,
-  `home_cooling_sample`, `office_env_sample` (index: `manual_migration_prediction_office_env_idx_v1.sql`).
+  `home_cooling_sample`, `office_env_sample` (index: `manual_migration_prediction_office_env_idx_v1.sql`), `energy_usage_interval`, `energy_bill_actual`.
 - Series registry: `config/prediction/series.v1.yaml` (baked into the image).
 
 ## Run

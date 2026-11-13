@@ -3,6 +3,8 @@
 Compares Orion's pre-tax run-rate projection with RMP's forecast (which may include
 tax), so the ratio leans low -- a gate reading it holds less often, not more.
 Any missing or unhealthy input makes pressure `unknown`, and unknown never holds.
+cycle_accumulated_kwh is metered kWh only: a short hole the ledger bridged is left out of it
+(a lower bound), while the projection fills that hole at the run rate.
 """
 
 from __future__ import annotations

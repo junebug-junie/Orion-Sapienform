@@ -51,7 +51,8 @@ def metered_windows(intervals, tariff, tz, window_days: int = 30) -> dict:
     for first in days:
         start = datetime.combine(first, datetime.min.time(), tzinfo=tz)
         end = start + timedelta(days=window_days)
-        prefix, covered = ledger.window_prefix(point, start, end)
+        # Truth is metered kWh only: a window with any hole is not a pseudo-bill.
+        prefix, covered = ledger.window_prefix(point, start, end, bridge=False)
         if covered is None or covered < end:
             continue
         truth = sum(iv.energy_kwh for iv in prefix)

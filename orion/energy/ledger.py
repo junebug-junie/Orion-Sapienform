@@ -4,7 +4,10 @@ Rebuilt from the processed drop directory at boot, so it needs no database of it
 own. Accrual always recomputes a whole billing cycle in time order: a late interval
 earlier in the cycle moves every later interval's block position.
 
-Mid-cycle holes mean cycle position is UNKNOWN — never treated as zero usage.
+Mid-cycle holes mean cycle position is UNKNOWN — never treated as zero usage. A short hole
+(one dropped meter hour, e.g. at a clock change) is bridged: coverage continues past it, its kWh
+stays unknown (metered sums leave it out, projections impute it at the run rate). A long hole
+still stops coverage.
 
 Cycles start on ENERGY_BILLING_CYCLE_START_DAY until a bill says otherwise: every
 meter-read date from an actual bill replaces the scheduled start within READ_SNAP_DAYS
@@ -14,8 +17,8 @@ of it (RMP read on Oct 19, not the 18th, so the cycle is Sep 18 -> Oct 19).
 from __future__ import annotations
 
 import calendar
-from datetime import date, datetime, timezone
-from typing import Iterable, Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Iterable, Optional, Sequence
 from zoneinfo import ZoneInfo
 
 from orion.energy.tariff import Tariff
@@ -24,6 +27,21 @@ from orion.schemas.energy import EnergyCostAccruedV1, EnergyUsageIntervalV1
 # A read this close to a scheduled cycle start is that cycle's real start. Reads are ~30 days
 # apart, so one read can only ever match one scheduled start.
 READ_SNAP_DAYS = 10
+
+# Holes coverage steps over. One dropped hour froze every cost and bill number for 11 days after
+# the 2026-11-01 clock change (#3284). Per hole and per window, so a feed missing hours all over
+# still reads as incomplete instead of being stitched into a fiction.
+MAX_BRIDGED_GAP = timedelta(hours=3)
+MAX_BRIDGED_TOTAL = timedelta(hours=6)
+
+
+def bridged_seconds(prefix: Sequence[EnergyUsageIntervalV1 | EnergyCostAccruedV1], start: datetime) -> float:
+    """Seconds inside [start, end of prefix) that no interval covers: the bridged holes."""
+    if not prefix:
+        return 0.0
+    span = (prefix[-1].interval_end.astimezone(timezone.utc) - start.astimezone(timezone.utc)).total_seconds()
+    metered = sum((iv.interval_end - iv.interval_start).total_seconds() for iv in prefix)
+    return max(0.0, span - metered)
 
 
 def _month_offset(year: int, month: int, k: int) -> tuple[int, int]:
@@ -125,17 +143,23 @@ class UsageLedger:
         self,
         intervals: list[EnergyUsageIntervalV1],
         cycle_start: datetime,
+        *,
+        bridge: bool = True,
     ) -> list[EnergyUsageIntervalV1]:
-        if not intervals:
-            return []
-        expected = self._instant(cycle_start)
-        if self._instant(intervals[0].interval_start) != expected:
-            return []
-        prefix = [intervals[0]]
-        for iv in intervals[1:]:
-            if self._instant(iv.interval_start) != self._instant(prefix[-1].interval_end):
+        """Intervals that tile forward from `cycle_start`, stepping over short holes when `bridge`."""
+        max_gap = MAX_BRIDGED_GAP if bridge else timedelta(0)
+        budget = MAX_BRIDGED_TOTAL if bridge else timedelta(0)
+        prefix: list[EnergyUsageIntervalV1] = []
+        at = self._instant(cycle_start)
+        bridged = timedelta(0)
+        for iv in intervals:
+            gap = self._instant(iv.interval_start) - at
+            # Overlap (gap < 0) or a hole too long to step over ends coverage.
+            if gap < timedelta(0) or gap > max_gap or bridged + gap > budget:
                 break
+            bridged += gap
             prefix.append(iv)
+            at = self._instant(iv.interval_end)
         return prefix
 
     def cycle_coverage(
@@ -148,10 +172,16 @@ class UsageLedger:
         return len(prefix), len(in_cycle), covered
 
     def window_prefix(
-        self, usage_point_id: str, start: datetime, end: datetime
+        self, usage_point_id: str, start: datetime, end: datetime, *, bridge: bool = True
     ) -> tuple[list[EnergyUsageIntervalV1], Optional[datetime]]:
-        """Intervals contiguous from `start` inside [start, end), and where coverage stops."""
-        prefix = self._contiguous_from_cycle_start(self._in_cycle(usage_point_id, start, end), start)
+        """Intervals covering forward from `start` inside [start, end), and where coverage stops.
+
+        With `bridge`, short holes are stepped over (see MAX_BRIDGED_GAP); `bridged_seconds` says
+        how much of the covered span is unmetered. `bridge=False` is strictly gap-free.
+        """
+        prefix = self._contiguous_from_cycle_start(
+            self._in_cycle(usage_point_id, start, end), start, bridge=bridge
+        )
         return prefix, (prefix[-1].interval_end if prefix else None)
 
     def latest_interval_end(self, usage_point_id: str) -> Optional[datetime]:

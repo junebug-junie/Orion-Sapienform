@@ -13,7 +13,7 @@ from typing import Iterable, Optional, Union
 from pydantic import BaseModel
 
 from orion.energy.importer_status import PortalStatus, compute_importer_status
-from orion.energy.ledger import UsageLedger
+from orion.energy.ledger import UsageLedger, bridged_seconds
 from orion.energy.reconcile import period_bounds, reconcile_actual, reconcile_forecast
 from orion.energy.run_cost import estimate_run_cost
 from orion.energy.stakes import build_stakes_snapshot, current_forecast
@@ -231,6 +231,18 @@ class EnergyPipeline:
         self, point: str, cycle_start: datetime, *, computed_at: datetime
     ) -> list[EnergyCostAccruedV1]:
         accrued_rows = self._ledger.accrue_cycle(point, cycle_start, computed_at=computed_at)
+        if accrued_rows:
+            prefix_start, _ = self._ledger.cycle_bounds(cycle_start)
+            bridged = bridged_seconds(accrued_rows, prefix_start)
+            if bridged > 0.0:
+                # The hole's kWh is not in cycle_accumulated_kwh: say so, it no longer stops accrual.
+                logger.warning(
+                    "energy_cycle_bridged usage_point=%s cycle_start=%s bridged_hours=%.2f covered_through=%s",
+                    point,
+                    cycle_start.date(),
+                    bridged / 3600.0,
+                    accrued_rows[-1].interval_end.isoformat(),
+                )
         priced, total, covered_through = self._ledger.cycle_coverage(point, cycle_start)
         if priced < total:
             gap_at = covered_through if covered_through is not None else cycle_start

@@ -164,13 +164,13 @@ def test_tier1_pays_no_lane_price_inside_its_reserved_share():
         closed = NOW - timedelta(hours=h, minutes=30)
         journal.append(ActRecord(act_id=f"j{h}", family="actions.journal", opened_at=closed - timedelta(seconds=10),
                                  closed_at=closed, outcome_value=0.0, outcome_source="producer",
-                                 cost={"seconds": 10.0, "gpu_slot_s_by_lane": {"metacog": 360.0}}))
-    share = tier1_reserved_share(journal, FAMS, "metacog", 4 * 3600.0, NOW)
+                                 cost={"seconds": 10.0, "gpu_slot_s_by_lane": {"fast": 360.0}}))
+    share = tier1_reserved_share(journal, FAMS, "fast", 4 * 3600.0, NOW)
     assert share == pytest.approx(360.0 / 14400.0)
-    st = body(lane("metacog", slots=4, p=1.0, state="binding"))
+    st = body(lane("fast", slots=4, p=1.0, state="binding"))
     d = decide(want("actions.journal", tier=1, verb="make"), st, ctx_for(journal, st), ReservationBook(), NOW)
-    assert d.lane == "metacog" and d.charge == 0.0 and d.outcome == "funded"
-    assert tier1_reserved_share(journal * 50, FAMS, "metacog", 4 * 3600.0, NOW) == 0.5   # capped
+    assert d.lane == "fast" and d.charge == 0.0 and d.outcome == "funded"
+    assert tier1_reserved_share(journal * 50, FAMS, "fast", 4 * 3600.0, NOW) == 0.5   # capped
 
 
 def test_unloaded_swap_seat_is_priced_on_a_nominal_slot_and_warned():
@@ -285,18 +285,18 @@ def test_full_live_seat_does_not_spill_onto_an_unloaded_swap_seat():
 
 
 def test_tier2_line_does_not_subtract_tier1_share_twice():
-    """Finding 4: metacog 4 slots, Tier 1 share 0.5 and Tier 1 already using its share in the measured
+    """Finding 4: fast 4 slots, Tier 1 share 0.5 and Tier 1 already using its share in the measured
     level: Tier 2 may still use the free other half."""
     from orion.physiology.choice import MarketContext
-    tf = history("topic_foundry.run", slot={"metacog": 600.0})
-    st = body(lane("metacog", slots=4, level=7200.0))
+    tf = history("topic_foundry.run", slot={"fast": 600.0})
+    st = body(lane("fast", slots=4, level=7200.0))
     c = build_context(FAMS, tf, [], st, NOW, weights={})
-    c = MarketContext(families=c.families, appetite=c.appetite, weights={}, tier1_share={"metacog": 0.5},
-                      tier1_recent_use={"metacog": 7200.0})
+    c = MarketContext(families=c.families, appetite=c.appetite, weights={}, tier1_share={"fast": 0.5},
+                      tier1_recent_use={"fast": 7200.0})
     d = decide(want("topic_foundry.run", verb="maintain"), st, c, ReservationBook(), NOW)
-    assert d.outcome == "funded" and d.lane == "metacog"
+    assert d.outcome == "funded" and d.lane == "fast"
     # With Tier 1 idle, Tier 2 must leave Tier 1's 7,200 s free: 7,200 measured + 600 > 7,200 line.
-    c2 = MarketContext(families=c.families, appetite=c.appetite, weights={}, tier1_share={"metacog": 0.5},
+    c2 = MarketContext(families=c.families, appetite=c.appetite, weights={}, tier1_share={"fast": 0.5},
                        tier1_recent_use={})
     d2 = decide(want("topic_foundry.run", verb="maintain", i=2), st, c2, ReservationBook(), NOW)
     assert d2.reason == "capacity_reserved"

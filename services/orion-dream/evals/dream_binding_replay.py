@@ -101,13 +101,13 @@ def _fixture():
     for i, g in enumerate([9, 14, 7, 20, 11, 6, 16, 8, 13, 10, 18, 7, 12, 9, 15]):
         acts.append(ActRecord(act_id=f"d{i}", family=FAMILY, opened_at=t - timedelta(seconds=10), closed_at=t,
                               outcome_value=1.0, outcome_source="producer",
-                              cost={"seconds": 10.0, "gpu_slot_s_by_lane": {"metacog": 10.0}}))
+                              cost={"seconds": 10.0, "gpu_slot_s_by_lane": {"fast": 10.0}}))
         t -= timedelta(hours=g)
 
     def state(at):
         price = {"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 3600.0, "why": ""}
         return PhysiologyStateV1(tick_id=f"p:{at.isoformat()}", generated_at=at, constraints=[
-            R(constraint="lane:metacog", unit="slot_s", level=0.0, budget=3600.0, budget_kind="capacity",
+            R(constraint="lane:fast", unit="slot_s", level=0.0, budget=3600.0, budget_kind="capacity",
               detail={"slots": 1, "window_sec": 3600.0}, price=price)])
 
     def decide_at_for(want_at):

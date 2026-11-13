@@ -2,8 +2,9 @@
 """Body-economy gate: "every verb declares its physiology" (Phase 2 Gate 1 row, Patch C2).
 
 Every ``orion/cognition/verbs/*.yaml`` (except the ``active.yaml`` activation manifest) must
-carry a valid ``physiology`` block: tier 0/1/2, a family slug, lanes that are GPU pool roles or
-classes in ``config/gpu_pool.yaml``, and ``deferrable_window_s >= 0``. Tier 0 must use family
+carry a valid ``physiology`` block: tier 0/1/2, a family slug, lanes that are GPU pool ROLES in
+``config/gpu_pool.yaml`` (the lanes the body reads; a work class is not one), and
+``deferrable_window_s >= 0``. Tier 0 must use family
 ``turn`` or ``autonomic`` (it never bids), and those two families are tier 0 only. No verb may
 declare an ``operator*`` lane: those pool classes are Juniper's and agents' evals, which never bid in
 Orion's want market (leased-evals design 2026-11-12, Phase 1).

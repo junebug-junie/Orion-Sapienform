@@ -14,7 +14,9 @@
 #                        fades as the family's own evidence grows (kappa = 30 evidenced acts).
 #   deferrable_window_s  How long a want can wait and still be useful (0 = perishable). Also the
 #                        hunger time constant until the family has a measured rhythm.
-#   lanes                Acceptable pool roles. Empty: the family records no GPU lane cost.
+#   lanes                Acceptable pool roles: keys of `roles:` in config/gpu_pool.yaml, the only names the
+#                        body reads as lane:<role>. A work class (e.g. metacog) is not a lane. Gate:
+#                        orion/physiology/tests/test_family_lanes.py. Empty: the family records no GPU lane cost.
 #   placement            one_of: the act lands on ONE of `lanes` (Choice picks the cheapest).
 #                        fixed: the act's calls span its lanes by route; each is charged its own
 #                        historical cost and nothing is placed.
@@ -48,12 +50,12 @@ families:
   actions.journal:
     tier: 1
     deferrable_window_s: 3600
-    lanes: [metacog, fast, agent, agent-gpu2]
+    lanes: [fast, agent, agent-gpu2]
     placement: one_of
   dream.cycle:
     tier: 1
     deferrable_window_s: 21600
-    lanes: [metacog]
+    lanes: [fast]
     placement: one_of
     # Its bids bind (Patch D for dream, ORION_PHYSIOLOGY_BID_DREAM_CYCLE=on, services/orion-dream/app/
     # physiology_bind.py). Slow only. Live 7 days to 2026-10-30: of the 7 sleeps priced on dream's own
@@ -67,7 +69,7 @@ families:
   durable.journal_compose:
     tier: 1
     deferrable_window_s: 86400
-    lanes: [fast, metacog]
+    lanes: [fast]
     placement: one_of
   prime:
     # 2026-10-30, Orion Prime 2A (docs/superpowers/specs/2026-10-29-orion-prime-design.md section 7):
@@ -164,7 +166,7 @@ families:
     tier: 2
     deferrable_window_s: 21600
     # agent lanes only, on purpose: a self-inquiry is a long multi-step tool-using turn, which only the
-    # agent models run. metacog (gpu3, shared with fast) serves small single calls; bidding there would
+    # agent models run. fast (gpu3; the metacog work class also runs there) serves small single calls; bidding there would
     # move the contention, not remove it (Orion's review of #3152, 2026-11-06).
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
@@ -176,7 +178,7 @@ families:
   topic_foundry.run:
     tier: 2
     deferrable_window_s: 86400
-    lanes: [fast, metacog]
+    lanes: [fast]
     placement: one_of
   hub.world_pulse_read:
     tier: 2
@@ -188,7 +190,8 @@ families:
     # request_id), which no lease carries, so every read looked free. The fill now sums the read's
     # turns (orion/grammar/act_cost_ids.py). Chat (9%) is not declared: the spec bids on the agent
     # lanes, where reading's durable holds wait. Known: one_of charges the act's WHOLE lane time
-    # (chat, metacog and fast included, ~11%) against the agent lanes.
+    # (chat, metacog and fast included, ~11%) against the agent lanes. (metacog was its own seat until
+    # 2026-11-13; it now runs on the fast seat, c91a21fd8.)
     # Spec: docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md section 2.
     lanes: [agent, agent-gpu2]
     placement: one_of
@@ -205,7 +208,7 @@ families:
   hub.outreach:
     tier: 2
     deferrable_window_s: 3600
-    lanes: [agent, chat, fast, metacog]
+    lanes: [agent, chat, fast]
     placement: fixed
     fixed_cost: {juniper_msgs: 1}
   hub.retro_coplay:
@@ -214,7 +217,9 @@ families:
     # Each planner decision is one metacog_turn call on the GPU pool (live 10-28: 83 metacog
     # leases held by orion-hub-retro in 2 h). The act is charged them from 2026-10-29 (the
     # planner calls carry the act's correlation id, scripts/act_emit.py coplay_turn_id).
-    lanes: [metacog]
+    # Lane fast: metacog is a work class, not a seat, since c91a21fd8 (2026-11-13) put it on gpu3's fast
+    # seat. A lane here must be a role in config/gpu_pool.yaml (orion/physiology/tests/test_family_lanes.py).
+    lanes: [fast]
     placement: one_of
   hub.retro_leisure:
     tier: 2
@@ -288,13 +293,13 @@ families:
     tier: 1
     deferrable_window_s: 21600
     # verbs: daily_metacog_v1
-    lanes: [metacog]
+    lanes: [fast]
     placement: one_of
   actions.daily_pulse:
     tier: 1
     deferrable_window_s: 21600
     # verbs: daily_pulse_v1
-    lanes: [metacog]
+    lanes: [fast]
     placement: one_of
   compactor.digest:
     tier: 1
@@ -332,7 +337,7 @@ families:
     tier: 1
     deferrable_window_s: 3600
     # verbs: log_collapse_mirror, log_orion_metacognition
-    lanes: [metacog]
+    lanes: [fast]
     placement: one_of
   spark.introspect:
     tier: 1
@@ -361,5 +366,5 @@ families:
     tier: 2
     deferrable_window_s: 900
     # verbs: reverie_expectation_judge, reverie_narrate
-    lanes: [metacog]
+    lanes: [fast]
     placement: one_of

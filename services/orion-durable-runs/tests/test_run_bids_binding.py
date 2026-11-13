@@ -130,7 +130,7 @@ class _Market:
         self.decision, self.fail, self.delay = decision, fail, delay
         self.bids, self.released, self.opened = [], [], []
 
-    async def bid(self, want, now=None, *, reserve_at_open=False):
+    async def bid(self, want, now=None, *, reserve_at_open=False, object_text=None):
         assert reserve_at_open is True
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -226,7 +226,7 @@ class _Switch(_Market):
     """Defers on price until ``fund`` is set."""
     fund = False
 
-    async def bid(self, want, now=None, *, reserve_at_open=False):
+    async def bid(self, want, now=None, *, reserve_at_open=False, object_text=None):
         self.bids.append((want, now))
         return _dec("funded", "net_positive", net=0.5) if self.fund else _dec(retry=600.0)
 

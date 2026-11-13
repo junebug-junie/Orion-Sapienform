@@ -315,6 +315,15 @@ class Settings(BaseSettings):
     # config/physiology/families.yaml (today only durable.curiosity_investigate). false -> the market never
     # reads them; bids are exactly as before (instant rollback).
     physiology_prime_regulation: bool = Field(True, alias="ORION_PHYSIOLOGY_PRIME_REGULATION")
+    # Personality rev 4 Move 2 (spec 2026-10-16-orion-dynamic-personality-graph-design.md; Juniper 2026-11-13: no
+    # shadow, binds on deploy): family weights carry source (c), Orion's endorsement from personality_choice, and
+    # a want's value carries care, its object text's match to an active tendency (value x (1 + 0.5 x care)).
+    # 20% of wants are a binding holdback arm (care 0, no (c)). Embeddings: PERSONALITY_EMBED_URL. "off" -> no
+    # read, no term, decided exactly as before (kill switch).
+    physiology_personality_values: str = Field("on", alias="PHYSIOLOGY_PERSONALITY_VALUES")
+    # The most a bid waits for its want text's embedding; past it, care 0 (reason embed_failed). Cached by text.
+    physiology_personality_embed_timeout_sec: float = Field(
+        1.0, gt=0.0, le=10.0, alias="PHYSIOLOGY_PERSONALITY_EMBED_TIMEOUT_SEC")
     # The cooling world act (2026-11-05, ladder retirement PR 5; app/cooling_act.py). Every tick: when the
     # cabinet is warm and orion.autonomy.self_shed eligibility passes, post an event want (family
     # self_regulate.shed) and OBEY the market: funded -> the 0.5 treated/control draw, the precommitted

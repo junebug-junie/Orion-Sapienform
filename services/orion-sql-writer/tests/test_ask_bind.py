@@ -110,6 +110,8 @@ class FakeConn:
             return _Res(rows=self.history)
         if sql == GRADES_SQL:
             return _Res(rows=self.grades)
+        if "to_regclass('grammar_acts')" in sql:
+            return _Res(scalar=True)
         if "INSERT INTO orion_ask" in sql:
             if any(r["sk"] == params["sk"] and r["sr"] == params["sr"] for r in self.inserted):
                 return _Res(rows=[])                     # the open-card unique index

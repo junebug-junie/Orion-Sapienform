@@ -107,7 +107,8 @@ Stated approximations:
 ## Tests run
 
 ```text
-services/orion-sql-writer: pytest tests -> 1297 passed, 226 skipped
+services/orion-sql-writer: pytest tests (with a throwaway pg16) -> 1361 passed, 162 skipped
+CI's visual-confirmation Postgres step, reproduced locally (15 files, same migrations) -> 400 passed
 services/orion-durable-runs: pytest tests -> 931 passed, 144 skipped
 orion/grammar/tests orion/physiology/tests tests/test_act_ledger_contract.py tests/test_grammar_event_producer_catalog.py -> 399 passed
 ORION_SQL_WRITER_TEST_DATABASE_URI=<throwaway pg16> pytest -m integration (act ledger x5 + test_ask_bind_integration) -> 61 passed, 0 skipped
@@ -191,6 +192,11 @@ The code review ran in a subagent with an explicit target (`git diff origin/main
   - The shared `same` key between the face and handoff openers.
   - `HELD_FORGET` is measured from `retry_at`.
 - Nit fixed in code: the held log line now carries `history_n`, so a drift toward "no history, admit unbid" shows.
+- CI finding: the body-economy contract gate refused `ask_bind.py` as an unregistered state reader.
+  - Fix: registered as a `bidder` bid site in `config/physiology/contract.yaml`, as outreach and dream are.
+- CI finding: the existing visual-confirmation Postgres tests run the real openers on a database with no `grammar_acts`. Two person-confirm tests also lost cards to the bid budget, because tests share one process and one fixed clock.
+  - Fix: `ask_bind` checks `to_regclass('grammar_acts')` before reading grades. Only a real market call spends the budget. sql-writer's `conftest.py` resets `ask_bind` state before every test and disables the real market client (`ORION_PHYSIOLOGY_BID_CLIENT_ENABLED=false`).
+  - Evidence: that CI step's 15 files, run locally against a fresh pg16 with the same migrations: 400 passed.
 - Correction to the review: it said no held candidate was ever funded later in the replay. The rerun shows 6 confirm asks (after 11.2 h) and 1 face ask (after 44.2 h) opened later. Vehicles: 0.
 
 ## Restart required

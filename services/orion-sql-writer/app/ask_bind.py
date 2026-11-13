@@ -140,7 +140,10 @@ def _history_and_outcomes(conn, now: datetime, graded: bool) -> tuple[list[int],
             return _cache["history"], (_cache["outcomes"] if graded else None)
     rows = conn.execute(text(ASKS_SQL), {"since": now - SOURCE_HISTORY, "until": now}).mappings().all()
     history = [int(r["sightings"] or 0) for r in rows]
-    grades = conn.execute(text(GRADES_SQL), {"actor": ASK_ACTOR, "since": now - OUTCOME_WINDOW}).fetchall()
+    # No act ledger in this database (a test database with only the vision tables): no grades, every rule at its
+    # prior. Checked first, because a failed read would abort the opener's transaction.
+    has_acts = conn.execute(text("SELECT to_regclass('grammar_acts') IS NOT NULL")).scalar()
+    grades = conn.execute(text(GRADES_SQL), {"actor": ASK_ACTOR, "since": now - OUTCOME_WINDOW}).fetchall() if has_acts else []
     outcomes = rule_outcome_values((rule_from_test_before(g[0]) or "", float(g[1])) for g in grades)
     with _lock:
         _cache.update(at=mono, history=history, outcomes=outcomes)
@@ -186,14 +189,6 @@ def ask_bind(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any
     if held is not None and now < held.retry_at:
         return BindVerdict(False, "backoff", retry_at=held.retry_at, detail={"want_id": want_id, "rule": rule,
                                                                              "n_held": held.n_held})
-    with _lock:
-        _bids[:] = [t for t in _bids if now - t < BID_BUDGET_WINDOW]
-        over = len(_bids) >= BID_BUDGET
-        if not over:
-            _bids.append(now)
-    if over:
-        return BindVerdict(False, "bid_budget", retry_at=now + BID_BUDGET_WINDOW,
-                           detail={"want_id": want_id, "rule": rule})
     graded = _graded()
     history, outcomes = _history_and_outcomes(conn, now, graded)
     sightings = int(conn.execute(text(SIGHTINGS_SQL), {"i": iid, "t": now}).scalar() or 0) if iid else 0
@@ -203,6 +198,15 @@ def ask_bind(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any
         logger.info("camera_ask_bid ask=%s rule=%s want_id=%s verdict=admit why=no_answer:no_history history_n=%d",
                     ask.ask_id, rule, want_id, len(history))
         return BindVerdict(True, "no_answer:no_history", detail={"want_id": want_id, "rule": rule})
+    # Only a real market call spends the budget (no_history above opens with no bid).
+    with _lock:
+        _bids[:] = [t for t in _bids if now - t < BID_BUDGET_WINDOW]
+        over = len(_bids) >= BID_BUDGET
+        if not over:
+            _bids.append(now)
+    if over:
+        return BindVerdict(False, "bid_budget", retry_at=now + BID_BUDGET_WINDOW,
+                           detail={"want_id": want_id, "rule": rule})
     first_seen = held.first_seen if held is not None else now
     want = event_want(source=CANDIDATE_SOURCE, key=key, family=FAMILY, producer=PRODUCER, verb=VERB, tier=TIER,
                       event_ref=f"orion_ask:{ask.ask_id}", salience=salience, opened_at=first_seen,

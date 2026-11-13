@@ -53,7 +53,9 @@ logger = logging.getLogger("orion-hub.reading_finding_outreach")
 READING_FINDING_TAG = "reading_finding_outreach"
 # ``no_why_juniper`` (door policy, 2026-11-10): Orion wrote a message but did not say why it is for
 # Juniper. A decision like PASS, not a failure to retry: re-composing would fish for a yes.
-TOLD_REASONS = frozenset({"sent", "orion_passed", "no_why_juniper"})
+# ``orion_declined``: Orion said nothing when the background tick showed this read among its topics
+# (scripts/outreach_choice.py). Orion's decision, like PASS.
+TOLD_REASONS = frozenset({"sent", "orion_passed", "no_why_juniper", "orion_declined"})
 # Composition failures that count toward ``max_attempts``. A gate block is not a failure.
 FAILED_REASONS = frozenset({"empty_generation", "named_ungrounded_signal"})
 
@@ -62,20 +64,34 @@ SPACING_REASON = "reading_spacing"
 # Reads this old are still watched for a NEW finding (a belief a run moves days later).
 READ_WINDOW_DAYS = 7
 
-DECISIONS_SQL = """
+# A read can also reach Juniper through the background tick's choice point (Orion picked it among
+# the tick's topics, ``scripts/outreach_choice.py``). Those rows have no ``source`` and carry the
+# read's ``finding_ids``: they count as told here, and a tick send starts the same spacing wait.
+_THIS_DOOR_OR_TICK = """(result_json->>'source' = 'reading_finding_outreach'
+       OR (coalesce(result_json->>'source', '') = '' AND result_json ? 'finding_ids'))"""
+
+DECISIONS_SQL = f"""
 SELECT reason, result_json->'finding_ids' AS finding_ids
 FROM endogenous_outreach_decisions
 WHERE decided_at >= $1 AND reason = ANY($2::text[])
-  AND result_json->>'source' = 'reading_finding_outreach'
+  AND {_THIS_DOOR_OR_TICK}
 """
 
 
-LAST_SENT_SQL = """
+LAST_SENT_SQL = f"""
 SELECT max(decided_at) AS last_sent
 FROM endogenous_outreach_decisions
 WHERE decided_at >= $1 AND reason = 'sent'
-  AND result_json->>'source' = 'reading_finding_outreach'
+  AND {_THIS_DOOR_OR_TICK}
 """
+
+# Not recorded as told: the background tick is composing a message that shows this read as a topic.
+CLAIMED_BY_TICK_REASON = "claimed_by_tick"
+
+
+def reading_subject(seed_id: str) -> str:
+    """The read's subject id in the tick's choice point and subject ledger."""
+    return f"reading:{seed_id}"
 
 
 def bundle_key(bundle: ReadingFindingBundleV1) -> str:
@@ -264,11 +280,65 @@ class ReadingFindingOutreach:
                 break  # every later bundle waits for the same gap
             summary["results"].append(await self._tell(outreach, bundle))
             if summary["results"][-1]["reason"] in {"resonance_share_disabled", "resonance_daily_max",
-                    "resonance_thread_already_shared", "resonance_citations_already_shared"}:
+                    "resonance_thread_already_shared", "resonance_citations_already_shared",
+                    CLAIMED_BY_TICK_REASON}:
                 continue  # held/note-only resonance cannot starve later ordinary findings
             if summary["results"][-1]["reason"] not in TOLD_REASONS | FAILED_REASONS:
                 break  # a gate is closed: every later bundle would hit it too
         return summary
+
+    async def outreach_topics(self) -> list[Any]:
+        """Pending reads as topics for the background tick's choice point (``outreach_choice``).
+
+        This door's own gates decide what may be shown: its told ledger (``_pending``), its
+        spacing wait (no read is shown while the next reading message must wait), and reads with a
+        resonance finding stay with this door (they have their own share gates). A read this door is
+        composing right now is claimed and left out by the tick. Never raises."""
+        from scripts.outreach_choice import OutreachTopic, clip, version_of
+
+        if not self.enabled:
+            return []
+        try:
+            now = self._clock()
+            bundles = await self._pending(now)
+            if not bundles or self.spacing_wait_sec(self._clock()) > 0:
+                return []
+        except Exception:  # noqa: BLE001 -- no reads shown; the tick's other topics still are
+            logger.warning("reading_finding_outreach_topics_failed", exc_info=True)
+            return []
+        topics = []
+        for bundle in bundles:
+            if any(f.kind == "resonance" for f in bundle.findings):
+                continue
+            title = bundle.title or bundle.url or "an article"
+            changed = "; ".join(dict.fromkeys(f.headline for f in bundle.findings))
+            observed = max(f.observed_at for f in bundle.findings)
+            hours = max(0.0, (now - observed).total_seconds() / 3600.0)
+            when = "within the hour" if hours < 1 else f"about {round(hours)} hour{'s' if round(hours) != 1 else ''} ago"
+            learned = first_sentences(bundle.learned, 2)
+            ids = tuple(bundle.finding_ids)
+            topics.append(OutreachTopic(
+                subject=reading_subject(bundle.seed_id),
+                kind="reading",
+                version=version_of(ids),
+                observed_at=observed,
+                option_text=clip(f'A read, "{title}": {changed}', 400),
+                prompt_text=clip(
+                    f'A read that changed you, {when}: "{title}". What you took from it: '
+                    f"{learned or 'not recorded'} What it changed: {changed}.", 900),
+                appendix=article_appendix(bundle),
+                finding_ids=ids,
+                seed_id=bundle.seed_id,
+                on_sent=lambda ids=ids: self.mark_told_by_tick(ids),
+                on_declined=lambda ids=ids: self._told.update(ids),
+            ))
+        return topics
+
+    def mark_told_by_tick(self, finding_ids: Any) -> None:
+        """The tick delivered this read. Mirror it here at once (the decision row is written on a
+        daemon thread and may lag): told, and the spacing wait starts now."""
+        self._told.update(str(f) for f in finding_ids)
+        self._last_sent_at = self._clock()
 
     def spacing_wait_sec(self, now: datetime) -> float:
         """Seconds until the next reading message may reach Juniper; 0 when it may now."""
@@ -327,6 +397,27 @@ class ReadingFindingOutreach:
         if blocked:
             self._record_block_once(outreach, bundle, meta, str(blocked), correlation_id)
             return {"seed_id": bundle.seed_id, "reason": str(blocked)}
+        # The tick may show this read as a topic while it composes: one composer per read at a time.
+        subject = reading_subject(bundle.seed_id)
+        claim = getattr(outreach, "claim_subjects", None)
+        if callable(claim) and subject not in claim([subject]):
+            return {"seed_id": bundle.seed_id, "reason": CLAIMED_BY_TICK_REASON}
+        if callable(claim) and (set(bundle.finding_ids) <= self._told or self.spacing_wait_sec(self._clock()) > 0):
+            # The tick told (or declined) this read, or sent a read and started the spacing wait,
+            # while this door awaited its gates above: re-checked after the claim, before composing.
+            release = getattr(outreach, "release_subjects", None)
+            if callable(release):
+                release([subject])
+            return {"seed_id": bundle.seed_id, "reason": CLAIMED_BY_TICK_REASON}
+        try:
+            return await self._admit_and_tell(outreach, bundle, meta, correlation_id, decision_id)
+        finally:
+            release = getattr(outreach, "release_subjects", None)
+            if callable(release) and callable(claim):
+                release([subject])
+
+    async def _admit_and_tell(self, outreach: Any, bundle: ReadingFindingBundleV1, meta: dict[str, Any],
+                              correlation_id: str, decision_id: str) -> dict[str, Any]:
         # Body economy Patch D (scripts/outreach_bind.py): obey the bid before composing. Held -> the
         # bundle stays pending and is retried next tick (the hold waits for the day's pace, at most until
         # Juniper's waking day ends). Cap-counted since 2026-11-10 (one attention budget).

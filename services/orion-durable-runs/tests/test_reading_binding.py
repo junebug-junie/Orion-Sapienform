@@ -43,7 +43,7 @@ class _Market:
         self.answer = (outcome, reason, net, retry)
         self.bids, self.released, self.opened = [], [], []
 
-    async def bid(self, want, now=None, *, reserve_at_open=False):
+    async def bid(self, want, now=None, *, reserve_at_open=False, object_text=None):
         self.bids.append(want)
         return _Decision(want, *self.answer)
 

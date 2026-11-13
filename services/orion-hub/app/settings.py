@@ -1537,6 +1537,16 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC: float = Field(
         default=900.0, alias="HUB_ENDOGENOUS_OUTREACH_RECENT_CHAT_SEC"
     )
+    # The choice point (scripts/outreach_choice.py, personality spec rev 4): the tick's compose call
+    # shows Orion up to MAX_OPTIONS grounded topics (the daydream, pending reads) plus "say nothing";
+    # Orion picks one or declines, and each pick publishes a PersonalityChoiceV1. false = kill switch
+    # (back to the one-topic prompt; no choice is published).
+    HUB_ENDOGENOUS_OUTREACH_CHOICE_ENABLED: bool = Field(
+        default=True, alias="HUB_ENDOGENOUS_OUTREACH_CHOICE_ENABLED"
+    )
+    HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS: int = Field(
+        default=4, ge=1, le=5, alias="HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS"
+    )
     # The daily cap is orion.physiology.attention_pacing.JUNIPER_DAILY_CAP (2026-11-10, one owner for
     # this gate and the body's attention:juniper line; no env key).
     # Quiet window [start, end) in HUB_ENDOGENOUS_OUTREACH_TZ; equal values or

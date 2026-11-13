@@ -43,6 +43,9 @@ from orion.harness.cut_short import CUT_SHORT_CODES
 from orion.schemas.consult_turn_run import (
     CONSULT_ORION_TURN_STEP_KEY, CONSULT_ORION_TURN_TAG, ConsultOrionTurnBriefV1,
 )
+from orion.schemas.intention import (
+    INTENTION_CARRY_STEP_KEY, INTENTION_CARRY_TAG, INTENTION_SESSION_ID, IntentionCarryBriefV1,
+)
 from orion.schemas.harness_step_run import (
     HARNESS_ECHO_SMOKE_SESSION_ID, HARNESS_ECHO_SMOKE_STEP_KEY, HARNESS_ECHO_SMOKE_TAG, HarnessEchoSmokeBriefV1,
 )
@@ -119,6 +122,14 @@ def consult_turn_finish_detail(state: dict[str, Any]) -> dict[str, Any]:
     return _finish_detail(state, line="consult_orion_turn", step_key=CONSULT_ORION_TURN_STEP_KEY)
 
 
+def intention_carry_finish_detail(state: dict[str, Any]) -> dict[str, Any]:
+    """intention.carry's finish detail. Hub reads the full reply from ``GET /runs/{run_id}`` (harness_steps)."""
+    out = _finish_detail(state, line="intention_carry", step_key=INTENTION_CARRY_STEP_KEY)
+    brief = state.get("brief") or {}
+    out.update({k: brief.get(k) for k in ("concern_id", "source", "prime_act_id", "route")})
+    return out
+
+
 def _smoke_step(brief: HarnessEchoSmokeBriefV1) -> dict[str, Any]:
     return {"prompt": brief.prompt, "source_tag": HARNESS_ECHO_SMOKE_TAG, "session_id": HARNESS_ECHO_SMOKE_SESSION_ID}
 
@@ -130,6 +141,14 @@ def _consult_step(brief: ConsultOrionTurnBriefV1) -> dict[str, Any]:
             "session_id": brief.session_id, "retrieval_query": brief.retrieval_query, "require_lookup": False}
 
 
+def _intention_step(brief: IntentionCarryBriefV1) -> dict[str, Any]:
+    # Session orion_intention: Prime's hand-back reads it as "intention" and its promises open no concern (loop
+    # guard). require_lookup=False: a promise may be kept by writing alone. The prompt already starts with
+    # prime_concern:<id> (Hub builds it), so the hand-back settles the concern when the turn completes.
+    return {"prompt": brief.prompt, "source_tag": f"{INTENTION_CARRY_TAG}:{brief.concern_id}",
+            "session_id": INTENTION_SESSION_ID, "retrieval_query": brief.retrieval_query, "require_lookup": False}
+
+
 def build_harness_smoke_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any):
     return build_single_step_harness_graph(run_turn, admission, checkpointer, step_key=HARNESS_ECHO_SMOKE_STEP_KEY,
                                            brief_model=HarnessEchoSmokeBriefV1, step_args=_smoke_step)
@@ -139,6 +158,14 @@ def build_consult_turn_graph(run_turn: RunTurn, admission: AdmissionDeps, checkp
     """consult.orion_turn: the same one-step graph; the step is Orion's consult turn."""
     return build_single_step_harness_graph(run_turn, admission, checkpointer, step_key=CONSULT_ORION_TURN_STEP_KEY,
                                            brief_model=ConsultOrionTurnBriefV1, step_args=_consult_step,
+                                           retry_cut_short=True)
+
+
+def build_intention_carry_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any):
+    """intention.carry: the same one-step graph; the step is the carry turn of a concern Prime took on.
+    A cut-short attempt is retried with its findings, as for consults (a promise is a long-ish piece of work)."""
+    return build_single_step_harness_graph(run_turn, admission, checkpointer, step_key=INTENTION_CARRY_STEP_KEY,
+                                           brief_model=IntentionCarryBriefV1, step_args=_intention_step,
                                            retry_cut_short=True)
 
 

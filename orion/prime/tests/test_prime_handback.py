@@ -282,3 +282,29 @@ def test_a_run_that_settles_before_its_turn_hands_back_is_linked_when_it_does():
     assert turns.pending_links == {"late": "act_9"}
     _, turns, folded = _fold(PrimeStateV1(), turns, _ingress("late", "orion_curiosity"), _finalize("late"))
     assert folded[0].started_by_act == "act_9" and turns.pending_links == {}
+
+
+# --- intentions Prime takes on (choice-as-EFE Step -1) --------------------------------------------------------------
+
+
+def test_the_carry_session_is_handed_back_as_intention_and_pinned_to_the_contract():
+    from orion.schemas.intention import INTENTION_SESSION_ID
+
+    assert hb.INTENTION_SESSION_ID == INTENTION_SESSION_ID
+    assert hb.classify_who(INTENTION_SESSION_ID, {}) == "intention"
+
+
+def test_a_carry_turn_settles_its_concern_but_its_own_promises_open_no_concern():
+    # S-1.5: the carry turn's prompt cites prime_concern:<id> -> settled on completion.
+    # S-1.7 (loop guard): a promise made inside the carry turn opens no new concern.
+    state = PrimeStateV1(concerns=[_concern("d8db9d7b1bba4cf7", event_ref="turn:a129b72f")])
+    corr = "intention-carry-turn-1"
+    state, turns, [turn] = _fold(
+        state, hb.PrimeTurnsStateV1(),
+        _ingress(corr, "orion_intention", "prime_concern:d8db9d7b1bba4cf7\n\nI am carrying out something I told Juniper"),
+        _finalize(corr, "I browsed the last day's PRs. Next I'll write up the two that matter.",
+                  promises=[{"offer": False, "quote": "Next I'll write up the two that matter"}]))
+    assert turn.who == "intention" and turn.settled_concern_ids == ["d8db9d7b1bba4cf7"]
+    assert turn.opened_concern_id is None and "loop guard" in turn.thread_refused
+    assert [c.concern_id for c in state.concerns] == ["d8db9d7b1bba4cf7"] and state.concerns[0].graded == "settled"
+    assert turns.turn_concerns_opened_at == [] and turns.no_bet_concern_ids == []

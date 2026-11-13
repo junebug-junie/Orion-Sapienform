@@ -46,6 +46,7 @@ from orion.grammar.acts import act_closed_event, act_opened_event, build_act
 from orion.grammar.publish import GRAMMAR_EVENT_CHANNEL
 from orion.schemas.grammar import ActCostV1, ActV1, ActVerb, GrammarEventV1
 from orion.schemas.consult_turn_run import CONSULT_ORION_TURN_WORKFLOW
+from orion.schemas.intention import INTENTION_CARRY_WORKFLOW
 from orion.schemas.journal_compose_run import JOURNAL_COMPOSE_WORKFLOW
 from orion.schemas.pr_field_note_run import PR_FIELD_NOTE_WORKFLOW
 from orion.schemas.reminiscence_run import REMINISCENCE_WORKFLOW
@@ -131,6 +132,16 @@ FAMILIES: dict[str, RunActFamily] = {
         "artifact_produced (the durable run ends completed: Orion's consult turn text checkpointed for Hub) by "
         "43200s after its first GPU pool grant. ESTIMATE, not measured (one completed run, 2026-11-11): 3 "
         "attempts x 3600s turn + backoff fits in 11000s; the rest is GPU queue between attempts"),
+    # Intentions Prime takes on (2026-11-13, orion/schemas/intention.py). Tier 1 by Juniper's decision
+    # (config/physiology/families.yaml). The run's own act gives the family its history (weights, hunger); Prime's
+    # ``make intention:<concern_id>`` act grades the take-on itself. No run has completed, so the horizon is a bound:
+    # the run's admission deadline is the concern's horizon (promise + 72 h), so _horizon_sec gives deadline + 600 s;
+    # 43200 s is the floor, like a consult turn (3 attempts x 1800 s + backoff + agent-lane queues).
+    "intention_carry": RunActFamily(
+        "intention_carry", "durable.intention", "make", 43200.0,
+        "artifact_produced (the durable run ends completed: the carry turn's reply checkpointed for Hub) by 43200s "
+        "after its first GPU pool grant, or by the run's own admission deadline + 600s when that is later. "
+        "ESTIMATE, not measured (no completed runs yet, 2026-11-13)"),
 }
 
 
@@ -141,7 +152,7 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
     self_sense_eval (sense), journal.compose (make), reminiscence.episode (make; tier 2,
     design default 2026-11-07), pr.field_note (make; tier-1 upkeep, Juniper
     2026-11-04 -- named here so each note is an act with a measured cost), consult.orion_turn
-    (ask; tier 2, Juniper 2026-11-12). Excluded on purpose:
+    (ask; tier 2, Juniper 2026-11-12), intention.carry (make; tier 1, Juniper 2026-11-13). Excluded on purpose:
 
     * urgent curiosity runs (``brief.urgent`` set): an incident report a sensor alarm forced
       (cabinet AC, GPU heat), a reflex rather than a want;
@@ -172,6 +183,8 @@ def run_act_family(state: dict[str, Any]) -> RunActFamily | None:
         return FAMILIES["reminiscence"]
     if workflow == CONSULT_ORION_TURN_WORKFLOW:
         return FAMILIES["consult_orion_turn"]
+    if workflow == INTENTION_CARRY_WORKFLOW:
+        return FAMILIES["intention_carry"]
     return None
 
 

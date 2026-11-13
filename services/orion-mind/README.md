@@ -338,6 +338,18 @@ A held run's phases each get `MIND_LLM_HELD_TIMEOUT_SEC` (150 s) instead of `MIN
 
 Held seats invent claim labels (issue #3274, 2026-11-13). The `agent` seat (Strata flash-next) and the `agent-gpu2` seat (Bonsai 27B) return complete semantic claims with real summaries and evidence refs, but they make up `claim_kind` / `anchor` / `recommended_effect` values (`event_claim`, `technical`, `acknowledge`, ...). Until this fix every held semantic phase failed `semantic_schema_invalid` and the run ended `fallback_contract_only`. Two changes in `app/synthesis.py`: the semantic system prompt now lists the allowed values (read from the contract's `Literal` types), and `try_coerce_off_vocab_claim_fields` maps an invented value onto the contract (anchor -> `unknown`, effect -> alias or `no_effect`; kind -> `current_turn_claim` only when a ref cites `current_turn:`, else `situation_claim`). Each coerced claim keeps the original values in `metadata._orion_off_vocab_fields`, and the run notes `normalized_off_vocab_claim_fields`. Nothing else is rescued: a claim without a non-blank `claim_id`/`label`/`summary`/`claim_kind`, with non-dict `metadata`, or with an out-of-range number, still fails `semantic_schema_invalid`, and claims whose evidence refs are not in the pack are still dropped by the guardrail filter. Fixtures: `tests/fixtures/held_semantic_replies_2026-11-13.json`.
 
+The frontier judge runs with thinking off on a held seat (issue #3294, 2026-11-13). The judge is the only Mind phase that ran with thinking on (`MIND_LLM_THINKING_APPRAISAL=true`). On the held seats the reasoning used the whole `MIND_LLM_MAX_TOKENS_APPRAISAL` (3072) budget, and 12 of 13 held runs ended `invalid_handoff`:
+- Bonsai 27B (agent-gpu2) wrote ~9 KB of reasoning; the JSON was cut off (`json_parse_failed`) or never started (`empty_llm_response`).
+- Strata flash-next (agent) thought to its 2304-token thinking budget, the answer was cut at 3072, and Strata refused the incomplete structured output with HTTP 502. Mind saw `empty_llm_response` from model `Active-GGUF-Model` (the gateway's default label when no model answered).
+
+A held run now sends the judge `enable_thinking=false`, like the semantic and stance phases (`MIND_LLM_THINKING_APPRAISAL_HELD`, default false; true = rollback). Unheld runs are unchanged. The same captured requests, replayed on the same seats with thinking off, return complete frontiers in 357-846 tokens and 9-23 s. Smaller changes in `app/appraisal.py`:
+- The judge prompt lists the allowed `matter_kind` / `recommended_effect` values (from the contract `Literal`s).
+- A `matter_kind` that is a claim kind (`task_claim`, `uncertainty_claim`) maps like a claim kind instead of becoming `turn_anchor`. Each replaced value is kept in `metadata._orion_off_vocab_fields`, and the frontier notes `normalized_off_vocab_matter_fields`.
+- A `deferred` / `suppressed` entry that does not fit its contract (for example a free-text suppress reason) is dropped and counted (`dropped_invalid_deferred:N`, `dropped_invalid_suppressed:N`) instead of failing the whole reply. Object-shaped hazards use their own text field; an object without text is dropped.
+- Telemetry names the cause: an empty reply carries the gateway's reason (`empty_llm_response:upstream_http_5xx:http_502`), and a schema failure carries the field (`frontier_schema_invalid:selected.0.score`).
+
+A reply with no real matter (no label, summary, or claim id) or with an out-of-range number still fails. Fixtures: `tests/fixtures/held_frontier_judge_replies_2026-11-13.json`.
+
 ### The day letter is Prime's end-of-day turn (2026-11-12, living Prime Part 3)
 
 `PRIME_DAY_LETTER_ENABLED` (default true; the kill switch for the whole end-of-day move -- Hub's letter timer

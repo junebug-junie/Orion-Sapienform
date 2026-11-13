@@ -825,6 +825,14 @@ def run_mind_llm_synthesis(
         # own cap; the run's wall (policy.wall_time_ms_max) still bounds the whole run, so callers
         # waiting on Mind (orion-thought, 210 s HTTP) see no change in the worst case.
         configured_timeout = float(getattr(s, "MIND_LLM_HELD_TIMEOUT_SEC", configured_timeout))
+    appraisal_thinking = bool(getattr(s, "MIND_LLM_THINKING_APPRAISAL", True))
+    if held_lease is not None:
+        # Issue #3294 (2026-11-13): on a held seat the judge's thinking ate the whole
+        # MIND_LLM_MAX_TOKENS_APPRAISAL budget. Bonsai-2-27B (agent-gpu2) used all 3072 tokens on
+        # reasoning and returned no answer (empty_llm_response); Strata flash-next (agent) thought to
+        # its 2304-token budget and then was cut off at 3072 mid-JSON (gateway: upstream_http_5xx).
+        # Semantic and stance already run with thinking off on these seats and answer.
+        appraisal_thinking = bool(getattr(s, "MIND_LLM_THINKING_APPRAISAL_HELD", False))
     phase_records: list[MindPhaseTelemetry] = []
 
     def _fail_open_or_error(
@@ -961,7 +969,7 @@ def run_mind_llm_synthesis(
             route=appraisal_route,
             model_id=appraisal_route,
             max_tokens=int(getattr(s, "MIND_LLM_MAX_TOKENS_APPRAISAL", 3072)),
-            thinking=bool(getattr(s, "MIND_LLM_THINKING_APPRAISAL", True)),
+            thinking=appraisal_thinking,
             context=_phase_context("active_frontier_judge"),
             timeout_sec=budget.phase_timeout_sec(configured_timeout),
         )

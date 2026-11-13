@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     MIND_LLM_MAX_TOKENS_APPRAISAL: int = Field(default=3072, alias="MIND_LLM_MAX_TOKENS_APPRAISAL")
     MIND_LLM_MAX_TOKENS_STANCE: int = Field(default=1536, alias="MIND_LLM_MAX_TOKENS_STANCE")
     MIND_LLM_THINKING_APPRAISAL: bool = Field(default=True, alias="MIND_LLM_THINKING_APPRAISAL")
+    # Judge thinking on a held run's seat (agent / agent-gpu2). Off: with thinking on, both seat models
+    # spent the whole appraisal token budget reasoning and returned no answer (issue #3294). Unheld
+    # runs keep MIND_LLM_THINKING_APPRAISAL.
+    MIND_LLM_THINKING_APPRAISAL_HELD: bool = Field(default=False, alias="MIND_LLM_THINKING_APPRAISAL_HELD")
     MIND_LLM_FAIL_OPEN_LEGACY: bool = Field(default=True, alias="MIND_LLM_FAIL_OPEN_LEGACY")
     MIND_LLM_PHASE_SAFETY_MS: float = Field(default=50.0, alias="MIND_LLM_PHASE_SAFETY_MS")
     MIND_LLM_RETURN_LOGPROBS_SEMANTIC: bool = Field(default=False, alias="MIND_LLM_RETURN_LOGPROBS_SEMANTIC")

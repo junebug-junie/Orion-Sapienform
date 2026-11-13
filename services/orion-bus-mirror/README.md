@@ -234,6 +234,56 @@ RETURN o.organ_id, v.verb_name, e.node, e.latency_ewma_sec, e.latency_zscore
 ORDER BY abs(e.latency_zscore) DESC
 ```
 
+
+## Traffic rollup (5-minute history, 2026-11-13)
+
+The raw SQLite log keeps 24 h and the FalkorDB graph keeps only running averages, so
+no bus history survived past a day. The traffic rollup keeps a durable 5-minute
+history. It is Patch 1 of `docs/superpowers/specs/2026-11-11-causal-geometry-redesign.md`.
+Its reader is the Patch 2 replay eval (Layer 2 whole-body structure features); nothing
+in cognition reads it yet.
+
+What happens:
+
+1. Every message the mirror receives is counted after its SQLite commit, so the rollup
+   counts what the raw log holds. Undecodable messages count too, and also count as
+   `decode_failures`.
+2. The channel name is normalized against `orion/bus/channels.yaml` (dynamic reply
+   channels collapse onto their wildcard entry). Uncataloged channels keep their literal
+   name; past 2000 distinct names in one bucket the rest count under `__overflow__`.
+3. Every cross-organ hop the ChainTracker reports (same `correlation_id`, different
+   `source.name`) adds one to `hops[from_organ -> to_organ]`, with the mean gap in
+   seconds between the two messages. The ChainTracker now runs whenever the graph OR
+   the rollup is on.
+4. Buckets are wall-clock aligned: `bucket_start = floor(epoch / 300) * 300`. Every
+   10 s a background loop publishes each closed bucket as one `BusTrafficRollupV1` on
+   `orion:bus:traffic:rollup` (kind `bus.traffic.rollup.v1`). `orion-sql-writer` stores
+   it as one row in `bus_traffic_rollup_5m` (insert-only; `rollup_id =
+   "<node>:<bucket_start iso>"`, so a re-publish is a no-op).
+
+Honest edges:
+
+- The bucket the process started in is dropped (it saw only part of its 5 minutes and
+  would read as a traffic dip). The open bucket at shutdown is also lost.
+- Publishing is fail-open: a failed publish logs `bus traffic rollup publish failed`
+  and is retried on the next tick. Up to 12 closed buckets (1 h) wait; past that the
+  oldest is dropped with a warning. The mirror loop never stops for the rollup.
+- The mirror subscribes to `orion:*`, so it also counts its own rollup message: one
+  message per bucket on `orion:bus:traffic:rollup`. Expected, not a loop.
+- A quiet bucket (no messages and no hops) produces no row. Absence of a row with the
+  mirror healthy means zero traffic; absence with the mirror down means no data. Join
+  against the mirror's heartbeat to tell them apart.
+
+Config: `MIRROR_TRAFFIC_ROLLUP_ENABLED` (default `true`). Table:
+`services/orion-sql-db/manual_migration_bus_traffic_rollup_5m_v1.sql` (also created by
+the sql-writer's boot `create_all`).
+
+Check it live:
+
+```bash
+docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "SELECT bucket_start, message_count, decode_failures, jsonb_array_length(hops) FROM bus_traffic_rollup_5m ORDER BY bucket_start DESC LIMIT 5"
+```
+
 ---
 
 ## Quick start (copy/paste)

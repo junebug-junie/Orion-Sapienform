@@ -244,7 +244,6 @@ def test_resolve_live_enrichment_returns_latest_value_per_channel() -> None:
     assert result == {
         "heartbeat_mean_ratio": 0.97,
         "prediction_error_execution": 0.6,
-        "prediction_error_chat": 0.7,
         "prediction_error_biometrics": 0.8,
     }
 
@@ -273,10 +272,11 @@ def test_resolve_live_enrichment_never_reads_the_retired_proposal_table() -> Non
     assert "substrate_proposal_frames" not in " ".join(conn.queries)
 
 
-def test_resolve_live_enrichment_covers_all_five_live_channels() -> None:
+def test_resolve_live_enrichment_covers_every_live_channel() -> None:
     """Mirrors test_fetch_all_series_only_wires_dense_enough_signals()'s
-    channel-set assertion: the 4 prediction_error_* domains + heartbeat_mean_ratio
-    all round-trip when the source has a reading in-window."""
+    channel-set assertion: the live prediction_error_* domains (execution, biometrics;
+    bus_synaptic and chat retired 2026-11) + heartbeat_mean_ratio all round-trip when the
+    source has a reading in-window. A retired domain in the source row is ignored."""
     now = datetime(2026, 9, 3, 12, 0, 0, tzinfo=timezone.utc)
     conn = _SequencedFakeConn(
         [
@@ -289,7 +289,6 @@ def test_resolve_live_enrichment_covers_all_five_live_channels() -> None:
     assert set(result.keys()) == {
         "heartbeat_mean_ratio",
         "prediction_error_execution",
-        "prediction_error_chat",
         "prediction_error_biometrics",
     }
 
@@ -312,13 +311,12 @@ def test_fetch_all_series_only_wires_dense_enough_signals() -> None:
 
     series = fetch_all_series(conn, since, until)
 
-    # attention_self_model contributes 5 SEPARATE series (heartbeat_mean_ratio + 4
-    # prediction_error_{domain} channels), not one combined entry -- see
+    # attention_self_model contributes SEPARATE series (heartbeat_mean_ratio + one per
+    # live prediction_error_{domain} channel), not one combined entry -- see
     # fetch_attention_self_model()'s docstring for why (independent LOCF per field).
     assert set(series.keys()) == {
         "heartbeat_mean_ratio",
         "prediction_error_execution",
-        "prediction_error_chat",
         "prediction_error_biometrics",
     }
     joined_queries = " ".join(conn.queries).lower()

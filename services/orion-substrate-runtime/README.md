@@ -415,6 +415,26 @@ much the world is surprising Orion's own forecasts. Spec
 - `/health` `prediction_surprise`: per-node window (mean excess, value, n) and verdict counters.
 - Kill switch `SUBSTRATE_PREDICTION_SURPRISE_NODES_ENABLED` (producer: `PREDICTION_SURPRISE_EVENTS_ENABLED`).
 
+## Chat-turn surprise node (2026-11-13, default on)
+
+`node:prediction.chat_turn`: how much Orion's recent chat turns surprised Orion's own stance bets
+about them. It replaces `node:substrate.chat` (retired the same day, PE suite rebuild step 6: an
+EWMA z of the change in two chat pressure hints, not a forecast).
+
+- Listens on `orion:prediction:turn_surprise` (`prediction.turn_surprise.v1` from orion-prediction:
+  one per settled chat turn; `services/orion-prediction/app/turn_surprise.py`).
+- Folds the turns settled in the last 30 min (`orion/substrate/prediction_turn_surprise.py`):
+  summed excess surprise over its calm variance (a z-score), stored as `clip(z / 3, 0, 1)` through
+  `_write_prediction_error_node`. A turn that went the way the bets leaned reads z < 0, so the node
+  rests at exactly 0 (86 % of 378 replayed turns).
+- No chat turn = no write: the node ages to stale (absent), never calm. FalkorDB node only.
+- Not an Active-Inference domain (absent between chats by design), so the self-model confidence
+  averages execution and biometrics only.
+- `/health` `prediction_turn_surprise`; kill switch `SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED`
+  (producer: `PREDICTION_TURN_SURPRISE_EVENTS_ENABLED`).
+- `_chat_tick` still reduces chat grammar into the chat projection (repair appraisal and
+  `/projections/chat_session` read it); it no longer writes a prediction error.
+
 ## Prediction-error magnitude history (2026-10-02, default on)
 
 Spec: `docs/superpowers/specs/2026-10-02-reverie-prediction-error-magnitude-proposal.md` (step 1).
@@ -647,6 +667,7 @@ present on either side of a given node rather than a fixed list. See `docs/super
 specs/2026-07-21-biometrics-prediction-error-shadow-design.md` for the full metric-quality-
 gate writeup.
 
+(History: `node:substrate.chat` was retired 2026-11-13, successor `node:prediction.chat_turn`.)
 `node:substrate.chat` (`chat_prediction_error()`, wired into `_chat_tick()`) and
 `node:substrate.route` (`route_prediction_error()`, wired into `_route_tick()`) are the
 fourth and fifth instruments in this family, shadow-built 2026-07-21, closing charter §6
@@ -1633,6 +1654,9 @@ signal_drive_map.py` (the shared taxonomy config both used to import) is also
 deleted.
 
 ## Chat prediction error v3, gateway failure floor (2026-09-29)
+
+(History. `chat_prediction_error()` and its replay script were deleted 2026-11-13, PE suite rebuild
+step 6; see "Chat-turn surprise node" above.)
 
 - `chat_prediction_error()` averages over only the turns a batch touched (definition v3,
   same fix route got in v2). v2 averaged over every stored turn (~1,700, never evicted),

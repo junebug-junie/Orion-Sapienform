@@ -581,18 +581,14 @@ class Settings(BaseSettings):
     cabinet_ambient_spike_channel: str = Field(
         "orion:cabinet:ambient:spike", alias="CABINET_AMBIENT_SPIKE_CHANNEL"
     )
-    # codebase_prediction_error consumer (docs/superpowers/specs/2026-07-30-
-    # codebase-mass-signal-design.md, "Producer + consumer patch design").
-    # Own dedicated flag, not piggybacked on SUBSTRATE_WRITE_PREDICTION_ERROR_NODES
-    # -- same reasoning as SUBSTRATE_BUS_SYNAPTIC_TICK_ENABLED above: this
-    # domain has a materially different risk surface (external I/O lives in
-    # a separate service, orion-cocreation-signals, but the consumer side
-    # here adds a new Postgres table + a new bus subscription, not a
-    # reducer-projection read like the other five domains). Default-off,
-    # matching every other tick in this file -- flip only after a live-data
-    # sanity check against the new substrate_codebase_mass_baseline table.
-    enable_codebase_prediction_error_node: bool = Field(
-        False, alias="SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE"
+    # Codebase delta listener (orion:substrate:codebase_delta, producer
+    # orion-cocreation-signals). Scores each delta and appends it to
+    # substrate_codebase_mass_baseline + substrate_codebase_delta_log (Hub
+    # co-creation tab, self-study). Renamed 2026-11-13 from
+    # SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE: node:substrate.codebase
+    # was retired (PE suite rebuild), so this flag no longer writes a node.
+    enable_codebase_delta_listener: bool = Field(
+        True, alias="SUBSTRATE_CODEBASE_DELTA_LISTENER_ENABLED"
     )
     codebase_delta_channel: str = Field(
         "orion:substrate:codebase_delta", alias="CHANNEL_CODEBASE_DELTA"

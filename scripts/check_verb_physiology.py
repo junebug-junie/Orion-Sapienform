@@ -2,8 +2,9 @@
 """Body-economy gate: "every verb declares its physiology" (Phase 2 Gate 1 row, Patch C2).
 
 Every ``orion/cognition/verbs/*.yaml`` (except the ``active.yaml`` activation manifest) must
-carry a valid ``physiology`` block: tier 0/1/2, a family slug, lanes that are GPU pool roles or
-classes in ``config/gpu_pool.yaml``, and ``deferrable_window_s >= 0``. Tier 0 must use family
+carry a valid ``physiology`` block: tier 0/1/2, a family slug, lanes that are GPU pool ROLES in
+``config/gpu_pool.yaml`` (the lanes the body reads; a work class is not one), and
+``deferrable_window_s >= 0``. Tier 0 must use family
 ``turn`` or ``autonomic`` (it never bids), and those two families are tier 0 only. No verb may
 declare an ``operator*`` lane: those pool classes are Juniper's and agents' evals, which never bid in
 Orion's want market (leased-evals design 2026-11-12, Phase 1).
@@ -60,7 +61,8 @@ def check(verbs_dir: Path, pool_path: Path) -> tuple[list[str], dict[str, VerbPh
             errors.append(f"{rel}: not a YAML mapping")
             continue
         try:
-            block = parse_verb_physiology(data, known_lanes=lanes)
+            # Shape first, then operator lanes (a more specific refusal than "not a role"), then roles.
+            block = parse_verb_physiology(data)
         except ValueError as exc:
             errors.append(f"{rel}: invalid physiology block: {' '.join(str(exc).split())}")
             continue
@@ -71,6 +73,11 @@ def check(verbs_dir: Path, pool_path: Path) -> tuple[list[str], dict[str, VerbPh
         if operator_lanes:
             errors.append(f"{rel}: lanes {operator_lanes} are operator work classes (evals); a verb is Orion's "
                           "own act and never runs or bids on an operator lane")
+            continue
+        try:
+            parse_verb_physiology(data, known_lanes=lanes)
+        except ValueError as exc:
+            errors.append(f"{rel}: invalid physiology block: {' '.join(str(exc).split())}")
             continue
         parsed[path.stem] = block
     return errors, parsed

@@ -579,6 +579,10 @@ class Settings(BaseSettings):
     # (person rows marked not_a_person in the Hub do not count and never get an
     # accept bar). False = every label, as before.
     vision_person_alpha_split_people_only: bool = Field(True, alias="VISION_PERSON_ALPHA_SPLIT_PEOPLE_ONLY")
+    # Age-band veto (orion/vision/age_band.py): a guess never names a person whose
+    # age Juniper gave (child / adult) when the cluster's stored vectors confidently
+    # read as the other band. Removes candidates only; off on cameras with a prior.
+    vision_person_age_veto_enabled: bool = Field(True, alias="VISION_PERSON_AGE_VETO_ENABLED")
     # The person model runs inside the individuals tick at most this often.
     vision_person_model_interval_sec: float = Field(600.0, alias="VISION_PERSON_MODEL_INTERVAL_SEC")
     # Comma list of crop labels the retention prune never deletes (labelled

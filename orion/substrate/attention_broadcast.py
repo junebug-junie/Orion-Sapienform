@@ -37,7 +37,7 @@ from orion.schemas.attention_candidate import (
     WORLD_READING_SOURCE_ID,
     world_first_fenced,
 )
-from orion.substrate.prediction_error_freshness import missing_input_reason
+from orion.substrate.prediction_error_freshness import is_alarm_node, missing_input_reason
 from orion.substrate.attention.common import compact, stable_id
 from orion.substrate.attention.policy import select_actions
 from orion.substrate.attention.scoring import build_open_loops, merge_signals
@@ -151,6 +151,9 @@ def substrate_pressure_signals(
             if salience < min_salience:
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
+            if kind == "prediction_error" and is_alarm_node(node_id):
+                # Same rule as world_first_signals: an alarm's seed is a firing.
+                kind = "alarm"
             label = compact(str(getattr(node, "label", "") or node_id), 120)
             if not label:
                 continue
@@ -166,7 +169,7 @@ def substrate_pressure_signals(
                     signal_id=stable_id("substrate-signal", f"{node_id}|{kind}"),
                     source="substrate_broadcast",
                     target_text=label,
-                    target_type_hint="anomaly" if kind == "prediction_error" else "concept",
+                    target_type_hint="anomaly" if kind in ("prediction_error", "alarm") else "concept",
                     signal_kind=f"substrate_{kind}",
                     salience=salience,
                     confidence=confidence,
@@ -432,6 +435,13 @@ def world_first_signals(
             except (AttributeError, TypeError, ValueError):
                 pass
         internal = cand.source_kind == "internal"
+        # An alarm node (cabinet, strain, street) competes on its firing, not as
+        # a prediction error: its signal says so (ALARM_NODE_IDS).
+        driver = (
+            "world_activity" if node is None
+            else "alarm" if is_alarm_node(cand.source_id)
+            else "prediction_error"
+        )
         world_evidence = getattr(cand, "evidence", None)
         if not isinstance(world_evidence, dict):
             world_evidence = None
@@ -442,7 +452,7 @@ def world_first_signals(
                 source="substrate_broadcast",
                 target_text=cand.label,
                 target_type_hint="anomaly" if internal else "other",
-                signal_kind="substrate_prediction_error" if node is not None else "world_activity",
+                signal_kind=f"substrate_{driver}" if node is not None else "world_activity",
                 salience=score,
                 confidence=confidence,
                 evidence_refs=(
@@ -456,7 +466,7 @@ def world_first_signals(
                 ),
                 provenance={
                     "detector": "world_first",
-                    "signal_driver": "prediction_error" if node is not None else "world_activity",
+                    "signal_driver": driver,
                     SOURCE_KIND_KEY: cand.source_kind,
                     "world_first_band": verdict.band,
                     "world_first_score": round(score, 6),

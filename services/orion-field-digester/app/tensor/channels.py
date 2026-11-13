@@ -312,6 +312,12 @@ RETIRED_PSEUDO_NODES: dict[str, str] = {
         "retired 2026-11-13 PE step 6: hint-change z, not a forecast; "
         "successor = node:prediction.chat_turn"
     ),
+    # 2026-11-13: codebase_prediction_error's node and field receipt removed
+    # (a churn z, not a forecast). Same agreement with
+    # RETIRED_PREDICTION_ERROR_NODE_IDS.
+    "node:substrate.codebase": (
+        "retired 2026-11-13 PE rebuild: git/PR/graph churn z, not a forecast; no successor"
+    ),
 }
 
 # Every node id reconcile drops wholesale (perturbation refusal covers only

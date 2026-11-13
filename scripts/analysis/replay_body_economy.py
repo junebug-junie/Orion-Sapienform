@@ -606,6 +606,7 @@ def render_md(r: dict) -> str:
 
 # Pool seats and their slots (config/gpu_pool.yaml + discovery, 10-27). No physiology_state exists
 # before 10-23, so lanes are replayed at 0 use and price 0 ("not replayed"), stated in the output.
+# metacog was a seat until 2026-11-13 (c91a21fd8 folded it into fast); kept so pre-11-13 replays match.
 POOL_SLOTS = {"agent": 1, "agent-gpu2": 2, "agent-deep": 1, "metacog": 4, "fast": 4, "chat": 1, "diffusion": 1}
 REFLEX_ON_C, REFLEX_OFF_C = 34.0, 33.0     # the spinal heat reflex (orion/autonomy/thermal_gate.py)
 

@@ -1744,7 +1744,8 @@ def _build_hop_messages(
                     pass
 
     guardrail = "If no memory is provided, do not claim prior work; say you don't know."
-    prompt_content = str(prompt or "").strip()
+    task_prompt = str(prompt or "").strip()
+    prompt_content = task_prompt
     if guardrail.lower() not in prompt_content.lower():
         prompt_content = f"{prompt_content}\n\n{guardrail}".strip()
 
@@ -1755,9 +1756,13 @@ def _build_hop_messages(
         else:
             normalized = [sys_msg] + normalized
 
-    if not normalized:
-        content = prompt_content or " "
-        normalized = [{"role": "user", "content": content}]
+    if not any(isinstance(msg, dict) and msg.get("role") == "user" for msg in normalized):
+        if not task_prompt:
+            raise ValueError("LLM gateway hop has no task prompt or user message")
+        # Autonomous verbs can have a full task in the system prompt but no
+        # human message. Qwen3.5's chat template requires a user turn; this
+        # service-authored instruction asks it to execute that existing task.
+        normalized.append({"role": "user", "content": "Carry out the task in the system message."})
 
     return normalized
 

@@ -454,7 +454,7 @@ template, no LLM.
   route, codebase, cabinet). The world (camera perception) and placeholders (harness_closure) never.
 - **What renders:** only signals high or unusual for themselves, fresh, and (event-written ones)
   within the 300 s orienting window; max 3 lines / 600 chars, each citing
-  `[pe:<node>@<observed_at>]`. A calm body renders nothing. When a block shows, unreadable signals
+  `[pe:<node>@<observed_at>]` (`[alarm:<node>@...]` for an alarm: cabinet, strain). A calm body renders nothing. When a block shows, unreadable signals
   are named ("Can't read right now: ...") and event signals with no recent event say so.
 - **Triggers** (cabinet warming) read as times it went off (off->on transitions, not 30 s checks) in
   the last hour against their own week; the ref names the newest ON row.

@@ -207,8 +207,7 @@ def test_build_domain_rows_flags_ceiling_and_floor_pins() -> None:
     rows = build_domain_rows(
         [
             {"node_id": "node:substrate.execution", "prediction_error": 1.0},
-            {"node_id": "node:substrate.codebase", "prediction_error": 0.0},
-            {"node_id": "node:substrate.biometrics", "prediction_error": 0.1},
+            {"node_id": "node:substrate.biometrics", "prediction_error": 0.0},
         ],
         now=NOW,
     )
@@ -216,34 +215,37 @@ def test_build_domain_rows_flags_ceiling_and_floor_pins() -> None:
 
     assert by_domain["execution"]["at_ceiling"] is True
     assert by_domain["execution"]["at_floor"] is False
-    assert by_domain["codebase"]["at_floor"] is True
+    assert by_domain["biometrics"]["at_floor"] is True
     assert by_domain["biometrics"]["at_ceiling"] is False
-    assert by_domain["biometrics"]["at_floor"] is False
 
 
 def test_build_domain_rows_drops_retired_pe_nodes() -> None:
     """bus_synaptic and route were retired 2026-11 (PE suite rebuild step 5), chat
-    2026-11-13 (step 6). A lingering graph node is not listed, as known or unknown domain."""
+    and codebase 2026-11-13. A lingering graph node is not listed, as known or
+    unknown domain. Alarms (cabinet, strain, street) are not PE domains either."""
     rows = build_domain_rows(
         [
             {"node_id": "node:substrate.bus_synaptic", "prediction_error": 1.0},
             {"node_id": "node:substrate.route", "prediction_error": 0.2},
             {"node_id": "node:substrate.chat", "prediction_error": 0.1},
             {"node_id": "node:substrate.codebase", "prediction_error": 0.1},
+            {"node_id": "node:substrate.cabinet", "prediction_error": 0.7},
+            {"node_id": "node:substrate.strain", "prediction_error": 1.0},
+            {"node_id": "node:substrate.street", "prediction_error": 1.0},
+            {"node_id": "node:substrate.execution", "prediction_error": 0.1},
         ],
         now=NOW,
     )
     domains = {r["domain"] for r in rows}
-    assert "bus_synaptic" not in domains and "route" not in domains and "chat" not in domains
-    assert "codebase" in domains
+    assert domains == {"execution", "biometrics"}  # biometrics listed as missing
 
 
 def test_build_domain_rows_distinguishes_missing_node_from_zero_reading() -> None:
-    rows = build_domain_rows([{"node_id": "node:substrate.codebase", "prediction_error": 0.0}], now=NOW)
+    rows = build_domain_rows([{"node_id": "node:substrate.biometrics", "prediction_error": 0.0}], now=NOW)
     by_domain = {r["domain"]: r for r in rows}
 
-    assert by_domain["codebase"]["present"] is True
-    assert by_domain["codebase"]["prediction_error"] == 0.0
+    assert by_domain["biometrics"]["present"] is True
+    assert by_domain["biometrics"]["prediction_error"] == 0.0
     # A known domain whose node does not exist at all is a louder failure than
     # one reading zero, and must not be rendered as "0.0".
     assert by_domain["execution"]["present"] is False

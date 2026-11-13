@@ -75,6 +75,15 @@ def sig(value: Any) -> float | None:
     return float(f"{float(value):.4g}")
 
 
+def _signal_noun(node_id: str) -> str:
+    """What the stored value is: an alarm (cabinet, strain, street) is not a
+    prediction error (PE suite rebuild, 2026-11-13)."""
+    # Lazy: orion.substrate's package init is heavy.
+    from orion.substrate.prediction_error_freshness import ALARM_LABELS
+
+    return f"({ALARM_LABELS[node_id]}, an alarm, not a prediction error)" if node_id in ALARM_LABELS else "prediction error"
+
+
 def _iso(value: datetime) -> str:
     aware = value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
     return aware.astimezone(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
@@ -110,7 +119,7 @@ async def read_node_history(conn: Any, node_id: str, start: datetime, end: datet
     n = int(summary["n"])
     label = _hours_label(start, end)
     text = (
-        f"{node_id} prediction error over the {label} ending {_iso(end)}: {n} readings, "
+        f"{node_id} {_signal_noun(node_id)} over the {label} ending {_iso(end)}: {n} readings, "
         f"min {sig(summary['min_v'])}, median {sig(summary['median_v'])}, max {sig(summary['max_v'])}; "
         f"first {sig(summary['first_v'])} at {_iso(summary['first_at'])}, "
         f"last {sig(summary['last_v'])} at {_iso(summary['last_at'])}."
@@ -158,7 +167,8 @@ async def list_history_nodes(conn: Any, start: datetime, end: datetime) -> Intro
     nodes = [{"node_id": r["node_id"], "count": int(r["n"]), "last_at": _iso(r["last_at"])} for r in rows]
     label = _hours_label(start, end)
     text = (
-        f"{len(nodes)} nodes have prediction-error readings in the {label} ending {_iso(end)}: "
+        f"{len(nodes)} nodes have readings (prediction error, or an alarm for cabinet/strain/street) "
+        f"in the {label} ending {_iso(end)}: "
         + ", ".join(f"{n['node_id']} ({n['count']})" for n in nodes)
         + ". Pass node_id=<one of these> for its history."
     )

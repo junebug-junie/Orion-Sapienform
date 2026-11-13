@@ -241,6 +241,25 @@ def test_days_into_cycle_are_real_hours_across_the_fall_back_change():
     assert row["remaining_days"] == pytest.approx(15.0 + 1 / 24)
 
 
+def test_one_missing_meter_hour_does_not_freeze_the_bet_at_the_clock_change():
+    """#3284 live shape: RMP's feed has no 2026-11-02 08:00 UTC hour; the 11-13 bet stopped at 14.1 days."""
+    den = ZoneInfo("America/Denver")
+    start = datetime(2026, 10, 18, tzinfo=den).astimezone(timezone.utc)
+    hole = datetime(2026, 11, 2, 8, tzinfo=timezone.utc)
+    metered_to = datetime(2026, 11, 11, 9, tzinfo=timezone.utc)
+    rows = _rows(start - timedelta(days=10), metered_to, skip={hole})
+    row = B.make_bet(tariff=flat_test_tariff(), tz=den, cycle_start_day=18, usage_point_id="UP1",
+                     intervals=_ivs(rows), bills=[], as_of=datetime(2026, 11, 13, 7, tzinfo=timezone.utc),
+                     origin="live")
+    assert row["covered_through"] == metered_to
+    assert row["days_into_cycle"] == pytest.approx((metered_to - start).total_seconds() / 86400.0)
+    assert row["range_inputs"]["bridged_gap_hours"] == pytest.approx(1.0)
+    # The hole is filled at the run rate, so the projection is not short by an hour.
+    metered = sum(r["energy_kwh"] for r in rows if r["interval_start"] >= start)
+    assert row["observed_kwh"] == pytest.approx(metered)
+    assert row["projected_kwh"] > metered * (31 * 24 + 1) / ((metered_to - start).total_seconds() / 3600.0)
+
+
 def test_replayed_bets_are_backfilled_once_and_never_graded():
     feed = _rows(SEP1, NOV1 + timedelta(days=3), lag=timedelta(days=3))
     store = B.MemoryBillStore(feed, [_bill(date(2026, 9, 1), date(2026, 10, 1), 700.0)])

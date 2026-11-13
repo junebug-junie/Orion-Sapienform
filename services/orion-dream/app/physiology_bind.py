@@ -7,7 +7,7 @@ replay) asks the market just before the sleep opens its act, and obeys the answe
 curiosity investigate obeys (``orion.physiology.binding.bind_verdict``, #3010):
 
 * funded -> sleep now;
-* the metacog lane is full but the sleep is worth its price (``capacity_reserved``, net > 0) -> sleep
+* the fast lane is full but the sleep is worth its price (``capacity_reserved``, net > 0) -> sleep
   now: its LLM calls queue at the GPU pool, which is the queue;
 * deferred on price (Prime's slow charge counts here), no hunger yet, or net <= 0 -> HOLD: no sleep this
   check, and the want bids again at the first check at or after the market's ``retry_after_sec``

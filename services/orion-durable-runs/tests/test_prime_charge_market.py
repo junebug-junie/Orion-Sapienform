@@ -200,7 +200,7 @@ def test_the_market_charges_a_dream_bid_once_dream_declares_slow_and_refuses_qui
     D = "dream.cycle"
     base = _state()
     st = base.model_copy(update={"constraints": list(base.constraints) + [
-        R(constraint="lane:metacog", unit="slot_s", level=0.0, budget=3600.0, budget_kind="capacity",
+        R(constraint="lane:fast", unit="slot_s", level=0.0, budget=3600.0, budget_kind="capacity",
           detail={"slots": 1, "window_sec": 3600.0},
           price={"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 3600.0, "why": ""})]})
     r = Redis(st.model_dump_json())

@@ -170,7 +170,7 @@ def make_bet(*, tariff: Tariff, tz: ZoneInfo, cycle_start_day: int, usage_point_
         "projected_usd": projection.projected_total_usd,
         "coverage": None, "kwh_lo80": None, "kwh_hi80": None, "usd_lo80": None, "usd_hi80": None,
         "range_reason": None,
-        "range_inputs": {},
+        "range_inputs": {"bridged_gap_hours": projection.bridged_hours},
         "tariff_version": tariff.version,
     }
     if sp is None:
@@ -186,7 +186,7 @@ def make_bet(*, tariff: Tariff, tz: ZoneInfo, cycle_start_day: int, usage_point_
         coverage=COVERAGE, kwh_lo80=lo, kwh_hi80=hi,
         usd_lo80=tariff.itemize(lo, start=p_start, end=p_end).pre_tax_usd,
         usd_hi80=tariff.itemize(hi, start=p_start, end=p_end).pre_tax_usd,
-        range_inputs={"s_kwh_per_day": sp.s_kwh, "rho": sp.rho, "vif": sp.vif, "n_days": sp.n_days,
+        range_inputs={"bridged_gap_hours": projection.bridged_hours, "s_kwh_per_day": sp.s_kwh, "rho": sp.rho, "vif": sp.vif, "n_days": sp.n_days,
                       "n_pairs": sp.n_pairs, "sd_kwh": sd, "z": Z80},
     )
     return row

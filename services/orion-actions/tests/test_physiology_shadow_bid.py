@@ -24,7 +24,7 @@ def _decision(want: WantV1, outcome: str) -> WantDecisionV1:
     return WantDecisionV1(
         decision_id=f"{want.want_id}@{now.isoformat()}", want_id=want.want_id, family=want.family,
         producer=want.producer, verb=want.verb, tier=want.tier, decided_at=now, outcome=outcome,
-        reason="net_positive" if outcome == "funded" else "price", lane="metacog", want=want,
+        reason="net_positive" if outcome == "funded" else "price", lane="fast", want=want,
     )
 
 

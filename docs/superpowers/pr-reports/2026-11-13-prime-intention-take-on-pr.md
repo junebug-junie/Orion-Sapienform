@@ -1,6 +1,6 @@
 # PR: intentions Orion takes on or lets go (choice-as-EFE Step -1, promise adapter)
 
-PR: (link added after opening)
+PR: https://github.com/junebug-junie/Orion-Sapienform/pull/3329
 Design: PR #3317, `docs/superpowers/specs/2026-11-13-choice-as-expected-free-energy-design.md`, section "Step -1".
 Signed off by Juniper 2026-11-13: all defaults, with one change, the intention family is tier 1.
 

@@ -17,7 +17,7 @@ Delivery (route ``chat_thread``). Hub reads the completed run's reply (``GET /ru
 1. tries ONE live send into the originating thread through outreach (``offer_message(session_id=...)``) after the
    body economy admits it (door ``intention``): quiet hours, the shared daily cap, recent chat and strain all apply,
    and a sent message counts on the cap. A send writes the thread's history itself.
-2. when the send is held for a TIMING reason (``TIMING_HOLDS``: quiet hours, the cap, recent chat, the economy ...),
+2. when the send is held for a timing reason (anything but ``CONTENT_REFUSALS``: quiet hours, the cap, the economy),
    writes the reply into that thread's history anyway (``record_in_thread``): it is there when Juniper opens that
    chat (acceptance S-1.6). When outreach's CONTENT guards refuse it (a PASS, an ungrounded internal-signal claim,
    empty text), nothing is written and the answer is ``failed``: a guard's refusal is never bypassed.
@@ -59,9 +59,9 @@ DETAIL_MAX_CHARS = 500
 DOOR = "intention"
 DELIVERED_SQL = "SELECT 1 FROM chat_history_log WHERE correlation_id = $1 AND session_id = $2 LIMIT 1"
 FAILED_RUN = frozenset({"failed", "cancelled", "abandoned"})
-# Outreach reasons that only mean "not now": the reply still goes into the thread's history.
-TIMING_HOLDS = frozenset({"quiet_hours", "daily_cap", "recent_chat", "turn_in_flight", "already_sending", "cooldown",
-                          "disabled", "already_told", "economy_held", "arousal_strained", "rest_drive_cooldown"})
+# Outreach reasons that refuse the reply's CONTENT (endogenous_outreach.offer_message): never written into the
+# thread. Every other reason (quiet hours, the cap, recent chat, the economy, strain ...) only means "not now".
+CONTENT_REFUSALS = frozenset({"orion_passed", "named_ungrounded_signal", "empty_generation", "no_why_juniper"})
 
 
 def _clip(text: Any) -> str:
@@ -194,7 +194,7 @@ class IntentionDesk:
         if pinged:
             return self._remember(req, self._deliver_result(req, "published", pinged=True, ping_reason=reason,
                                                             reply_chars=len(text)))
-        if (reason or "") not in TIMING_HOLDS and not (reason or "").startswith("ping_error:"):
+        if (reason or "") in CONTENT_REFUSALS:
             # A content guard refused the reply (PASS, ungrounded signal claim, empty): never written (review M4).
             return self._deliver_result(req, "failed", ping_reason=reason,
                                         detail=f"outreach refused the reply's content: {reason or 'no reason'}")

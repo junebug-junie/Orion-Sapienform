@@ -158,7 +158,7 @@ Code review ran in a subagent against `git diff origin/main...HEAD`. Five materi
   - Evidence: `test_a_published_reply_whose_row_never_appears_closes_zero_at_the_horizon`,
     `test_a_repeat_call_after_publishing_never_sends_or_writes_again`.
 - Finding M4: the history fallback wrote replies that outreach's CONTENT guards refused (PASS, ungrounded signal claim).
-  - Fix: fallback only for timing holds (`TIMING_HOLDS`); a content refusal is `failed`, nothing written, act 0.
+  - Fix: fallback for every hold except the content refusals (`CONTENT_REFUSALS`: PASS, ungrounded signal, empty); a content refusal is `failed`, nothing written, act 0.
   - Evidence: `test_a_content_guard_refusal_is_never_written_into_the_thread`.
 - Finding M5: a taken-on concern held the only turn-concern slot for up to ~72 h, so every new promise was untracked.
   - Fix: concerns with an open intention are left out of the turn-concern count (`fold_turn_signals(taken_on=)`).

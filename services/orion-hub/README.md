@@ -2123,7 +2123,8 @@ turns (`services/orion-mind/app/prime_loop.py`).
   when the block is over its cap (the other lines' free text may be cut shorter for them, never dropped).
   `disposition` is a Prime ref kind, so the citation gate judges them. The log line carries `tending=<n>`;
   a skipped read logs `prime_block_tending_skipped reason=...`. 1 s timeout, fail-open. Kill switch
-  `PRIME_PERSONALITY_LINE_ENABLED=false`. No shadow (Juniper 2026-11-13).
+  `PRIME_PERSONALITY_LINE_ENABLED=false`. Ships false for now (2026-11-13): the live choice-built labels still
+  read as noise; it turns on once a label fix lands. The Prime choice producer stays on.
 
 ## Draft-first chat replies (spec L8)
 

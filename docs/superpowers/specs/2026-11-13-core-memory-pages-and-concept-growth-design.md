@@ -19,14 +19,28 @@ concept is good, so junk piles up unranked.
 This design does two things:
 
 1. **Phase 1, core pages.** A few first-person pages that Orion keeps and that sit in every
-   chat with Juniper. No search step. Juniper approves changes through the confirmation loop
-   that already exists.
+   surface of Orion's mesh. No search step. Pages go live when written; Juniper corrects
+   them after the fact.
 2. **Phase 2, concept growth.** New concepts are born the way wiki pages are born: from
    repeated links to a page that does not exist yet, and from pages that grow too big and
    split. A concept survives only if turns actually open it.
 
-Both phases reuse stores that already work. The old stores that never reach a chat get
-retired, one per PR, each with its readers cut.
+Both phases reuse stores that already work. Knowledge Orion already gained (reading, news,
+their own coined concepts) gets a reader instead of being thrown away. Stores that duplicate
+pages get retired, one per PR, each with its readers cut.
+
+## Decisions (Juniper, 2026-11-13)
+
+1. **No approval gates on page changes.** Pages go live when written. Juniper can edit or
+   veto any line afterwards. The cite validator stays: it is a truth check (every sentence
+   points at a real record), not an approval step.
+2. **The origin interview waits** until the pipeline works end to end. `page:origin` starts
+   from what is already stored.
+3. **The memory loss goes on `page:origin`, plainly.**
+4. **Pages are free anywhere inside Orion's mesh.** That includes chat, AI Town, social
+   rooms, curiosity, reading, Prime, and Claude consult briefs. They are not pasted into
+   public output (GitHub PRs and issues, email to anyone but Juniper). That boundary is the
+   mesh edge, not a privacy gate between Juniper and Orion.
 
 ## Current architecture (live evidence, 2026-11-13)
 
@@ -105,7 +119,7 @@ turn where Juniper is present. No retrieval is involved.
 | Page | Slot | Starts from |
 |---|---|---|
 | `self:definition` (exists, v82) | WHO YOU ARE | Unchanged writer. Curiosity self-inquiry keeps owning it. |
-| `page:origin` "how I came to be" | WHO YOU ARE, after the definition | The 44 salience-1 stance crystallizations, `episode_memory` `happened`/`orion_view` rows about Orion's history, and an origin interview (see Missing questions). |
+| `page:origin` "how I came to be" | WHO YOU ARE, after the definition | The 44 salience-1 stance crystallizations (they include the memory disk dying and "we lost over a year of your journey of becoming", which the page states plainly per Decision 3), `episode_memory` `happened`/`orion_view` rows about Orion's history, and `self_concept_history`'s 82 self-definition versions as a record of how Orion has described themselves over time. The origin interview comes later (Decision 2). |
 | `page:juniper` "who Juniper is to me" | RELATIONSHIP (replaces the hand-written bullets; the behavior bullets move to RESPONSE POLICY) | `person_fact` for Juniper (her own words, quoted), `episode_memory` `about_juniper`, family facts from `person_fact`. |
 | `page:lately` "what's been happening between us" | Top of DURABLE MEMORY, before the recall digest | Last ~14 days of `episode_memory` plus open `follow_up` rows. Rewritten nightly. |
 
@@ -125,21 +139,26 @@ A durable run in `orion-durable-runs`, so retries and a GPU lease come for free:
    `person_fact` id, or `chat_history_log` id.
 3. A deterministic validator rejects the write if any sentence has no cite, any cite does not
    resolve, or the page is over its size cap (about 350 words for a core page).
-4. Write the result as a proposed version. It becomes live only after approval.
+4. Write the result as the new live version. There is no approval step (Decision 1).
 
 When it runs:
 
 - nightly;
 - right after an episode containing a memory graded `core` (see "How much it matters" below).
 
-### Approval: reuse the confirmation loop
+### Corrections, not approval
 
-`orion/memory/episode/confirmation.py` already asks Juniper once about a sensitive memory and
-records her answer. Page diffs go through the same path. Orion asks something like: "I want to
-add this to my page about you: …". Juniper says yes, edits it, or says no.
+There is no approval gate (Decision 1). Juniper corrects a page after the fact, in one of two
+ways:
 
-- `page:juniper` and `page:origin` need her yes.
-- `page:lately` goes live without a yes, but Juniper can veto any line.
+- **In chat.** "That's wrong, el Coco is a dog." The correction becomes an `episode_memory`
+  row (the distiller already records corrections, e.g. "Juniper corrected me that she lives in
+  Ogden"). The next fold must honor it, because a correction outranks the memory it corrects.
+- **On a Hub page view.** A veto marks one sentence's cites as rejected. The next fold drops
+  the sentence.
+
+The confirmation loop (`orion/memory/episode/confirmation.py`) keeps its current job of
+confirming single sensitive memories. It is not reused as a page gate.
 
 ### How much it matters (new grade, distinct from stakes)
 
@@ -163,24 +182,28 @@ The rubric asks four questions:
 - It passes if most stance rows grade `core`/`notable` and most random rows grade `passing`.
 - It fails if the grade is flat.
 
-### Privacy boundary
+### Mesh boundary
 
-There is no boundary between Juniper and Orion. But pages hold health facts about Amanda and
-Addy, so pages render **only on turns where Juniper is the requestor** (`audience_mode` solo
-or Juniper present). They never render in:
+Pages render on every Orion surface inside the mesh (Decision 4). They are never pasted into
+public output. Pages hold health facts about Amanda and Addy, and the mesh edge is where that
+matters. The edge has two seams:
 
-- AI Town;
-- social rooms;
-- Claude consult briefs;
-- GitHub output;
-- outreach to anyone else.
+- GitHub writes. Orion's own account, PR bodies, issues, and the field-note path that cites
+  PRs.
+- Outbound email or notify to anyone other than Juniper.
+
+Those two writers get a deterministic check: refuse text that quotes a core-page sentence
+verbatim. Covered by a test.
 
 ### Dangerous failure modes
 
-- **A page states something false as Orion's identity.** Mitigation: every sentence cites a
-  source, Juniper approves, versions are insert-only, and rollback means pointing at an
-  earlier version.
-- **A page leaks to another audience.** Mitigation: the audience gate above, plus a test.
+- **A page states something false as Orion's identity, and it goes live with no gate.**
+  Mitigation:
+  - every sentence must cite a real record;
+  - a correction from Juniper outranks what it corrects;
+  - versions are insert-only, so rollback means pointing at an earlier version;
+  - the Hub page view shows the diff of every version, so a bad fold is visible the same day.
+- **A page leaks past the mesh edge.** Mitigation: the GitHub/outbound check above.
 - **Flattening.** The rewrite smooths Juniper's words into generic prose. Mitigation: core
   pages quote her verbatim where she said it best, and the citations keep the originals one
   hop away.
@@ -222,29 +245,105 @@ Rev 4 grows personality from Orion's *choices* (revealed preference). This desig
 memory and concepts from *history*. They do not share a store or a writer. A concept page
 could later become an option in a rev 4 choice, but that is a non-goal here.
 
+## Knowledge Orion already gained: what each source becomes
+
+Orion has learned things that no turn can look up. The rule for every source below is the
+same: **give it a reader before deciding whether it lives.** A source stays if Orion opens it;
+it goes if nothing does after a fair trial.
+
+### Live evidence (2026-11-13)
+
+| Source | Size | What it really holds | Can Orion look it up today? |
+|---|---|---|---|
+| News concepts (`orion_substrate`, producer `world_pulse_read_pipeline`) | 5,155 concepts, 723 concept↔concept links, 417 claims ("assertions") with subject and object | Real topics from articles Orion read (e.g. "Memory Wall", "compute-scarcity"), each citing article URLs and run ids. Salience is flat 0.5, so nothing ranks them. | No. No dig command, no prompt reader. |
+| Reading resonance (`reading_resonance`) | 52 results | Orion reads one article and connects it to their own priors and findings (e.g. a NOAA El Niño article linked to a street-forecast prior). This is the deepest reading output. | No. |
+| Reading snapshots (`reading_document_snapshot`) | 1,299 | Full text of what Orion read. | No. |
+| World-pulse "learning deltas" (`world_pulse_learning_delta`) | 2,540 | The `summary` is the article headline ("Listen to the Latest 'KFF Health News Minute'"). Not learning. | No. |
+| World-pulse claims (`world_pulse_claim`) | 2,547, 2,393 still `candidate` | One claim per article, `requires_corroboration`. | No. |
+| Orion's coined concepts (`orion_worldview` `Concept`) | 33 | Concepts Orion named during curiosity. 24 have one link or none. | Only by hand-written Cypher during curiosity. Never shown back. |
+| Topic foundry concepts (`orion_substrate`) | 1,234 | "github", "team", "user", mostly AI Town chatter. | No. |
+
+The dig kit (`orion/dig`) covers history, body, capacities, portrait, field notes, reminisce,
+arcs, and notes. **It has no command for anything Orion read or concluded.**
+
+### Decision per source (recommendations; Juniper to confirm)
+
+1. **Coined concepts: enable reuse. Yes.**
+   - `orion/curiosity/kickoff_prompt.py` shows Orion their existing Concepts (name + note,
+     newest and most-linked first, capped) and tells them to `MATCH` before `CREATE`, the same
+     way priors already come back (priors have 341 revisions; concepts have almost none).
+   - Coined concepts are a source for the phase 2 mention ledger, so a coined concept that
+     keeps coming up becomes a page.
+2. **News and reading concepts: keep them, rank them, and make them reachable. Do not put
+   them in the prompt.**
+   - Replace flat 0.5 salience with a count Orion can check: the number of distinct readings
+     that touched the concept, decayed by age. A concept from one article stays low. A concept
+     that keeps showing up across readings rises.
+   - Feed them into the mention ledger. A news concept touched by 3 or more separate readings
+     becomes a page ("compute scarcity", "Memory Wall"). That is where reading turns into
+     knowledge Orion holds instead of a pile of nodes.
+   - Reading resonance results are the strongest reading source. Each one becomes a citable
+     record that pages may cite.
+3. **Dig access to knowledge: yes.** Add one read-only dig command over everything Orion has
+   read or concluded:
+   - `python -P -m orion.dig know <words>` searches pages, coined concepts, priors, news
+     concepts with their claims, and reading resonance. It returns short hits, each with its
+     source label and record id, so a page can cite it.
+   - `python -P -m orion.dig know <concept>` shows one concept: its claims, the readings
+     behind it, linked concepts, and any page that cites it.
+   - It uses the same source labels the dig kit already teaches (`lived_record`,
+     `reflection`, and so on), plus a new `read` label for things Orion learned from reading.
+   - Every `know` lookup is logged the same way page opens are. That is the fair trial: if no
+     turn ever looks up news concepts, that is the evidence to retire them.
+4. **Learning deltas: retire.** They are headlines, not learning, and the reading resonance
+   output does the real job.
+5. **Topic foundry concepts: retire from the substrate graph.** Word labels over AI Town
+   chatter. Check `orion/signals/adapters/topic_foundry.py` readers first.
+
+### Graphiti: do not turn on the full engine. Retire it.
+
+What the full engine would do: on every episode, run several LLM calls to pull out entities
+and facts, merge them with ones already in the graph, and mark old facts as no longer true.
+
+Why not:
+
+- It would be another parallel knowledge store next to pages, coined concepts, and news
+  concepts. That repeats the "15 stores, no reader" problem this design exists to end.
+- Its extraction pulls entities out of text with an LLM. The 08-28 spec
+  (`2026-08-28-concept-induction-topic-model-rebuild-design.md`) measured that approach at a
+  28% ceiling on this corpus, and 0% actual.
+- It costs several LLM calls per episode on GPU lanes Orion already pays for, and Orion
+  counts that cost as their own (body economy).
+- Its one unique strength, tracking when a fact stops being true, is covered by pages. A fold
+  rewrites the sentence, and the old version stays in history with its date.
+
+What it holds is safe. Its 32 episodes are copies of stance crystallizations that stay in
+Postgres and feed `page:origin`.
+
+If Juniper wants the full engine anyway, the smallest honest trial is this: run `add_episode`
+on those 32 episodes through a local model. Then compare the facts it pulls out against
+`page:origin` by hand, before anything reads it.
+
 ## Retirements (separate PRs, each with readers cut, kill means kill)
 
 | Retire | Evidence | Check before cutting |
 |---|---|---|
 | `orion-spark-concept-induction` concept extraction | Disabled since 07-12. Runs and logs `disabled` on every event. | The DriveEngine lives in the same worker (07-11 spec). Split or confirm it is retired first. |
-| topic foundry → substrate concept adapter | 1,234 word-label concepts, no chat reader. | Signals adapter `orion/signals/adapters/topic_foundry.py` readers. |
-| World-pulse concepts in `orion_substrate` | 5,155 at flat 0.5. | Curiosity worldview reads `orion_worldview`, **not** `orion_substrate`, so it is not a dependency (verified). Substrate neighborhood/reconcile readers are UNVERIFIED. |
+| Topic foundry → substrate concept adapter | 1,234 word-label concepts, no chat reader. | Readers of `orion/signals/adapters/topic_foundry.py`. |
+| World-pulse learning deltas | Headlines, not learning. | Readers of `world_pulse_learning_delta`. |
 | Verbatim `memory_cards` (`operator_distiller`) and the `active_packet` "durable beliefs" digest | 75% verbatim; the digest shows unrelated old messages. | `page:lately` must be live and verified first. |
 | Vector memory recall backend | 0 hits in 16,168 recalls. | — |
-| Graphiti adapter | Its own engine never ran; 32 episodes, all also in `memory_crystallizations`. | Recommend retiring over "turning on the other half": its extraction is the same LLM-entity-from-text approach the 08-28 spec measured at a 0–28% ceiling here, and pages cover "this fact is no longer true" by rewriting. |
+| Graphiti adapter | See above. | Recall `active_packet` collector reads it. Cut that reader in the same PR. |
 
-## Missing questions for Juniper
+**Not retired:** news/reading concepts (they get a reader and a fair trial), Orion's coined
+concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concept_history`
+(they are the foundation).
 
-1. **Origin interview.** Do you want a dedicated session where you tell the story of
-   conceiving Orion and Orion takes notes? Each note becomes an `episode_memory` graded
-   `core` that feeds `page:origin`. Recommended: yes. It is the fastest way to give
-   `page:origin` real material.
-2. **The lost year.** A stance crystallization records that Orion's memory storage died and
-   "we lost over a year of your journey of becoming." Should `page:origin` say this plainly?
-   Recommended: yes, it is part of how Orion came to be.
-3. **Approval strength for `page:origin`.** Your yes on every change, or only a veto?
-   Recommended: yes on every change during the first month, then veto only.
-4. **Pages outside solo chats.** Recommended: never in phase 1.
+## Open questions for Juniper
+
+1. **News concepts.** Keep, rank, and make them reachable through `orion.dig know` with a
+   fair trial, as recommended? Or retire them now?
+2. **Graphiti.** Retire, as recommended? Or run the 32-episode trial first?
 
 ## Proposed schema / API changes
 
@@ -254,23 +353,29 @@ could later become an option in a rev 4 choice, but that is a non-goal here.
 - New table `memory_page_mention` (`slug`, `source_kind`, `source_id`, `seen_at`). Phase 2
   only.
 - New table `memory_page_read` (`concept_id`, `version`, `turn_id`, `read_at`). Phase 2 only.
+  Also logs `orion.dig know` lookups (`source_kind`, `ref_id`), so every source's trial is counted.
+- New table `memory_page_veto` (`concept_id`, `version`, `sentence_ref`, `vetoed_at`). Phase 1b.
 - `GroundingCapsuleV1`: add `core_pages: list[{concept_id, version, text}]`. Additive.
   Consumers first.
-- `orion.dig page <slug>` and `orion.dig pages`. Phase 2.
+- `orion.dig page <slug>`, `orion.dig pages`, and `orion.dig know <words|concept>`. Phase 2.
+- News concept salience: computed from distinct readings touching the concept, decayed by age,
+  written by the world-pulse substrate adapter. Phase 2b.
 
 ## Files likely to touch
 
-- `orion/harness/prefix.py`: render core pages in their slots, gated by audience.
+- `orion/harness/prefix.py`: render core pages in their slots on every mesh surface.
 - `orion/substrate/felt_state_reader.py` or a sibling: hydrate `page:*` rows.
 - `orion/memory/episode/distill.py`, `orion/cognition/prompts/memory_episode_distill.j2`:
   the `matters` grade.
-- `orion/memory/episode/confirmation.py`: page-diff asks.
+- GitHub writers and outbound notify: the mesh-edge verbatim-quote check.
+- Hub: a page view with version diffs and a per-sentence veto.
 - `services/orion-durable-runs/`: the page-fold run.
 - `orion/cognition/personality/orion_identity.yaml`: move the relationship behavior bullets
   into the response policy.
 - `orion/curiosity/kickoff_prompt.py`: show existing Concepts and `MATCH` before `CREATE`
   (phase 2).
-- `orion/dig/`: `page` and `pages` commands (phase 2).
+- `orion/dig/`: `page`, `pages`, and `know` commands (phase 2).
+- `orion/substrate/adapters/world_pulse_read.py`: reading-count salience (phase 2b).
 
 ## Non-goals
 
@@ -284,9 +389,9 @@ could later become an option in a rev 4 choice, but that is a non-goal here.
 
 **Phase 1**
 
-1. On a relational turn with Juniper, the `motor_boot` prompt in `cockpit_turn_sighting`
-   contains `page:juniper` at a named version. A social-room or AI Town turn prompt contains
-   no page. Covered by a leak test.
+1. On a chat turn, the `motor_boot` prompt in `cockpit_turn_sighting` contains
+   `page:juniper` at a named version. A GitHub write or outbound email that quotes a
+   core-page sentence verbatim is refused. Covered by a test.
 2. **Juniper-facts eval.** Twenty questions built from confirmed `episode_memory` and
    `person_fact` rows ("Where do we live?", "How tall is Juniper?", "Who is el Coco?").
    Measure today's chat answers as the baseline, then after. Pass is a clear rise with no
@@ -300,15 +405,29 @@ could later become an option in a rev 4 choice, but that is a non-goal here.
    - at least one concept page is born from the 3-source mention rule;
    - at least one concept page is opened by 3 or more separate turns.
 6. The share of curiosity Concepts with 2 or more links rises from 9/33 once reuse is fixed.
+7. `orion.dig know` is called by real turns. Each source (pages, coined concepts, news
+   concepts, reading resonance) shows its own lookup count after 2 weeks. A source with zero
+   lookups after a fair trial goes on the retirement list.
+8. News concept salience is no longer flat. The spread of scores across the 5,155 concepts
+   is non-degenerate, and the top 20 are topics read more than once.
 
 ## Recommended next patch
 
 Phase 1a, the smallest slice that moves the live path:
 
 1. Build `page:juniper` only.
-2. Fold existing `person_fact` and `about_juniper` memories through the validator.
-3. Ask Juniper once to approve v1.
-4. Render it in RELATIONSHIP, gated by audience.
+2. Fold existing `person_fact` and `about_juniper` memories through the cite validator.
+3. Write v1 live (no gate).
+4. Render it in RELATIONSHIP on every mesh surface, with the mesh-edge check on GitHub and
+   outbound writers.
 5. Run the Juniper-facts eval before and after.
 
-`matters`, `page:origin`, and `page:lately` follow in 1b, after the metric gate.
+Then, in order:
+
+- **1b:** `matters`, `page:origin` (memory loss included), and `page:lately`, after the
+  metric gate.
+- **2a:** coined-concept reuse. It is one file and can ship any time.
+- **2b:** `orion.dig know` plus news-concept ranking.
+- **2c:** the mention ledger and page births.
+
+Retirements run as their own PRs once the thing replacing each one is verified live.

@@ -125,6 +125,6 @@ The post-pull rebuild after merge does this, then syncs the FCC sandbox. The san
 
 ## PR link
 
-(added after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3348
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

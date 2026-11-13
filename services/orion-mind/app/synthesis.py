@@ -166,6 +166,15 @@ def _coerce_semantic_claim_item(item: dict[str, Any], *, index: int = 0) -> dict
     source_kinds = out.get("source_kinds")
     if not isinstance(source_kinds, list) or not source_kinds:
         out["source_kinds"] = ["current_turn"] if _coerce_evidence_refs(out) else []
+    # Same provenance record as try_coerce_off_vocab_claim_fields: keep any invented value we replaced.
+    off_vocab = {
+        field: item[field]
+        for field in ("claim_kind", "anchor", "recommended_effect")
+        if item.get(field) not in (None, "") and item.get(field) != out.get(field)
+    }
+    metadata = out.get("metadata")
+    if off_vocab and (metadata is None or isinstance(metadata, dict)):
+        out["metadata"] = {**(metadata or {}), OFF_VOCAB_METADATA_KEY: off_vocab}
     return out
 
 

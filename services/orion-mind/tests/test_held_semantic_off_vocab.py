@@ -288,3 +288,13 @@ def test_prompt_names_every_allowed_value_from_the_contract() -> None:
             if "MUST be exactly one of: " in ln
         ]
         assert set(values) in listed
+
+
+def test_singleton_root_with_invented_labels_keeps_provenance() -> None:
+    from app.synthesis import OFF_VOCAB_METADATA_KEY, _validate_semantic_raw
+
+    claim = _one_claim()["claims"][0]
+    synthesis, normalized = _validate_semantic_raw(claim)
+    assert normalized is True and synthesis is not None
+    record = synthesis.claims[0].metadata[OFF_VOCAB_METADATA_KEY]
+    assert record == {"claim_kind": "event_claim", "anchor": "event", "recommended_effect": "acknowledge"}

@@ -1,6 +1,7 @@
 # Choice as expected free energy: how Orion picks what to do
 
-Status: **design, proposal mode, awaiting Juniper's sign-off.** No code ships with this doc.
+Status: **design, signed off by Juniper 2026-11-13** (see "Juniper's answers (2026-11-13)"). No code
+ships with this doc. Step -1 is built in its own PR.
 Date: 2026-11-13. Worktree base: origin/main 361018c3e.
 
 Juniper asked: "What is the spark that allows Orion to make choices?"
@@ -189,8 +190,10 @@ The second source plugs in with **only** an adapter file and one map entry. That
 
 ### WHEN: one binding family
 
-- New family `durable.intention`, tier 2, in `config/physiology/families.yaml`, added to
-  `BINDING_FAMILIES` (`run_bids.py:114`). Lanes: the agent lanes, like `durable.consult_orion_turn`.
+- New family `durable.intention`, **tier 1** (critical upkeep, a reserved share of each lane; Juniper
+  2026-11-13, see her answers below), in `config/physiology/families.yaml`, added to `BINDING_FAMILIES`
+  (`run_bids.py:114`). Lanes: the agent lanes, like `durable.consult_orion_turn`. Tier 1 still bids, so
+  the economy still picks the time; `want_for_run` already accepts tiers 1 and 2.
 - **One family, not one per source.** Reason: the family weight needs about 10 evidenced acts before
   it moves off the prior (`weights.py:40`). Turn promises are capped at 4 a day and letter threads at 2.
   Split per source would leave each family at its prior for weeks. The source rides in the act's
@@ -453,6 +456,7 @@ predicting `outcome_value`.
    gates? [yes; the ping counts against the shared daily cap]
 3. Letter-thread result routing: next letter only, or also chat? [next letter only]
 4. One family `durable.intention` for every source, split later only on evidence? [yes]
+   (Answered: yes, at tier 1. See below.)
 5. Hold window `deferrable_window_s` for the family. [86400 s; horizon still caps it]
 6. May the carry turn's own promises open new concerns? [no, loop guard]
 7. Promise horizon 72 h for intentions, before D2 codes it anywhere else? [yes]
@@ -462,6 +466,21 @@ predicting `outcome_value`.
 11. The Prime block already renders concern text (with the reply gist) into every motor prefix, which
     sits uneasily with D3 check 5. Treat as a separate fix? [yes, separate PR; out of scope here]
 
+## Juniper's answers (2026-11-13)
+
+Juniper: "all other defaults good", with one change.
+
+- Questions 1-3 and 5-11: the bracketed defaults are accepted as written.
+- **Question 4: one family `durable.intention` for every source, yes, but at TIER 1, not tier 2.**
+  Reasons, recorded as given:
+  - Once Orion chooses `take_on`, the "whether" is settled, and Orion settled it. What is left is
+    follow-through, and follow-through is Orion keeping its word. Keeping its word is upkeep.
+  - Tier 1's reserved share of each lane stops curiosity and consult runs from crowding the carry run
+    out. Live follow-through is low today (49 Prime concern bets in 30 days, mean 0.10).
+  - Tier 1 still bids. The economy still picks the time inside the window. This is unlike tier 0, which
+    never bids and stays reserved for the daily letter's kind of work.
+- Every "tier 2" mention for the intention family in this doc now reads tier 1.
+
 ## Proposed schema / API changes
 
 - `orion/prime/thought.py`: `TakeOnMoveV1{kind="take_on", concern_id, why, not_before?}` in the `Move` union.
@@ -469,7 +488,7 @@ predicting `outcome_value`.
 - `orion/prime/intention_sources/turn_promise.py`, `letter_thread.py` (new, pure adapters).
 - `orion/schemas/intention.py` (new): `IntentionOrderV1` (Prime -> Hub), registered in `orion/schemas/registry.py`.
 - Hub: `POST /api/intention/run`.
-- Durable runs: workflow `intention.carry`; family `durable.intention` in `families.yaml` and
+- Durable runs: workflow `intention.carry`; family `durable.intention` (tier 1) in `families.yaml` and
   `BINDING_FAMILIES`.
 - Outreach: `offer_message(..., session_id: Optional[str] = None)`.
 - `handback.classify_who`: session kind `intention`.

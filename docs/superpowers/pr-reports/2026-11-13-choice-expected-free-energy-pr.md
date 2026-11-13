@@ -11,6 +11,10 @@ PR: https://github.com/junebug-junie/Orion-Sapienform/pull/3317
 - Step 2: the attention schema enters Prime's frame and `predicted_shift` becomes a graded bet, after the prediction rebuild replaces its inputs.
 - Step 3: small learned chooser (pragmatic + epistemic), shadow beside the formula, switched per family only on a held-out paired significance test.
 
+## Juniper's sign-off (2026-11-13)
+
+- All 11 bracketed defaults accepted, with one change: the `durable.intention` family is **tier 1** (upkeep with a reserved share), not tier 2. Recorded in the doc's "Juniper's answers (2026-11-13)" section with her reasons.
+
 ## Outcome moved
 
 No runtime change. Gives Juniper a sign-off artifact with a buildable first step.

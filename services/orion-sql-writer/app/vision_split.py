@@ -818,8 +818,10 @@ def undo_split(conn, split_id: str, *, now: Optional[datetime] = None) -> Dict[s
     # The new individual and its sightings (cascade). Its label goes with it.
     conn.execute(text("DELETE FROM vision_individual WHERE individual_id=:n"), {"n": new})
     asks = [r[0] for r in conn.execute(text(
-        "UPDATE orion_ask SET status='expired' WHERE status='open' AND (source_ref=:n OR source_ref LIKE :n || '|%' "
-        "OR source_ref LIKE '%|' || :n) RETURNING ask_id"), {"n": new}).fetchall()]
+        # answered_at records WHEN Orion withdrew it (the clock sweep leaves it NULL), so the ask's vision.ask act
+        # closes as withdrawn, not as Juniper's silence, whenever it is graded (orion/grammar/camera_ask_acts.py).
+        "UPDATE orion_ask SET status='expired', answered_at=:t WHERE status='open' AND (source_ref=:n "
+        "OR source_ref LIKE :n || '|%' OR source_ref LIKE '%|' || :n) RETURNING ask_id"), {"n": new, "t": now}).fetchall()]
     if asks:
         report["expired_open_asks_about_new_individual"] = asks
     conn.execute(text("UPDATE vision_individual_split SET undone_at=:t WHERE split_id=:s"), {"t": now, "s": split_id})

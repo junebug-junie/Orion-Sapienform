@@ -92,7 +92,7 @@ def test_episodes_from_rows_merges_sources_in_time_order():
     stance = [{"id": "s1", "body": "We live in Ogden, UT.", "at": "2026-08-15T02:38:40"}]
     eps = trial.episodes_from_rows(mem, stance)
     assert [e.origin for e in eps] == ["stance", "episode_memory", "episode_memory"]
-    assert eps[0].body == "Juniper: We live in Ogden, UT." and eps[0].source == "message"
+    assert eps[0].body == "Juniper (to Orion): We live in Ogden, UT." and eps[0].source == "message"
     assert eps[1].name == "episode_memory:00000000-0000-0000-0000-000000000002"
     assert eps[1].source == "text" and eps[0].reference_time.tzinfo is not None
 

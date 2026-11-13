@@ -95,7 +95,7 @@ def episodes_from_rows(memory_rows: list[dict[str, Any]], stance_rows: list[dict
         if not body:
             continue
         out.append(TrialEpisode(
-            uuid=str(r["id"]), name=f"stance:{r['id']}", body=f"Juniper: {body}", source="message",
+            uuid=str(r["id"]), name=f"stance:{r['id']}", body=f"Juniper (to Orion): {body}", source="message",
             source_description="Juniper's own chat message to Orion (verbatim, high-salience stance)",
             reference_time=_utc(r["at"]), origin="stance"))
     out.sort(key=lambda e: (e.reference_time, e.uuid))

@@ -71,7 +71,7 @@ def test_skips_empty_evidence_list() -> None:
     worker = _make_worker()
     nodes = [
         _node(
-            "node:substrate.chat",
+            "node:substrate.execution",
             {"prediction_error": 0.0, "prediction_error_evidence_event_ids": []},
         ),
     ]
@@ -85,7 +85,7 @@ def test_tolerates_malformed_evidence_value() -> None:
     worker = _make_worker()
     nodes = [
         _node(
-            "node:substrate.chat",
+            "node:substrate.execution",
             {"prediction_error": 0.1, "prediction_error_evidence_event_ids": "not-a-list"},
         ),
     ]
@@ -114,16 +114,17 @@ class TestCombinedSinglePassHelper:
                     "prediction_error_evidence_event_ids": ["gev_1", "gev_2"],
                 },
             ),
-            _node("node:substrate.chat", {"prediction_error": 0.0}),
-            # Retired 2026-11 (PE step 5): never read as a domain.
+            _node("node:substrate.execution", {"prediction_error": 0.0}),
+            # Retired 2026-11 (PE step 5, chat step 6): never read as a domain.
             _node("node:substrate.route", {"prediction_error": 0.9}),
+            _node("node:substrate.chat", {"prediction_error": 0.7}),
         ]
 
         pe_by_domain, evidence_by_domain = (
             worker._brain_frame_prediction_error_and_evidence_by_domain(nodes)
         )
 
-        assert pe_by_domain == {"biometrics": 0.4, "chat": 0.0}
+        assert pe_by_domain == {"biometrics": 0.4, "execution": 0.0}
         assert evidence_by_domain == {"biometrics": ["gev_1", "gev_2"]}
 
     def test_individual_methods_delegate_to_the_same_single_pass(self) -> None:

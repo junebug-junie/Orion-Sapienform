@@ -104,6 +104,51 @@ class PredictionSurpriseV1(BaseModel):
 
 
 
+# --- Turn surprise (chat turns; services/orion-prediction/app/turn_surprise.py) -------------------
+
+PREDICTION_TURN_SURPRISE_CHANNEL = "orion:prediction:turn_surprise"
+PREDICTION_TURN_SURPRISE_KIND = "prediction.turn_surprise.v1"
+
+
+class PredictionTurnSurpriseBetV1(BaseModel):
+    """One stance bet of the turn, scored. ``calibrated_p`` = the stated p through a logistic map fit
+    on earlier settled chat bets only (held out by time). ``excess`` = surprisal - expected_surprisal
+    (mean 0 under calibration); ``calm_var`` = its variance under calibration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    faculty: Literal["turn.self.asks_question", "turn.self.more_steps_than_usual"]
+    stated_p: float = Field(..., ge=0.0, le=1.0)
+    calibrated_p: float = Field(..., gt=0.0, lt=1.0)
+    happened: bool
+    surprisal: float = Field(..., ge=0.0)
+    expected_surprisal: float = Field(..., ge=0.0)
+    excess: float
+    calm_var: float = Field(..., ge=0.0)
+
+
+class PredictionTurnSurpriseV1(BaseModel):
+    """How much one settled chat turn surprised Orion's own stance bets (successor of
+    ``node:substrate.chat``). Published by orion-prediction once per settled chat turn that has at least
+    one used bet with information; substrate-runtime folds it into ``node:prediction.chat_turn``.
+
+    ``z`` = excess / sqrt(calm_var), summed over the turn's bets: about N(0, 1) when the bets are
+    calibrated; a turn that went the likely way reads below 0 (the node stores clip(z / 3, 0, 1), so
+    calm rests at exactly 0). No turn = no event: the node goes stale, never calm. Carries no text.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    correlation_id: str = Field(..., min_length=1, max_length=128)
+    caller: Literal["chat"]
+    placed_at: AwareDatetime
+    settled_at: AwareDatetime
+    bets: list[PredictionTurnSurpriseBetV1] = Field(..., min_length=1, max_length=8)
+    excess: float
+    calm_var: float = Field(..., gt=0.0)
+    z: float
+
+
 # --- Action bets (docs/superpowers/specs/2026-10-23-embodied-experience-learning-design.md) -------
 #
 # HTTP contracts only (orion-prediction :8132, /action-bets/*); no bus channel in v1. A body asks for

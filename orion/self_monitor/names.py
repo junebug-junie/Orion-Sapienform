@@ -29,6 +29,8 @@ _EXACT: dict[str, str] = {
     "act.hub.world_pulse_read.look": "world-pulse reads",
     "act.topic_foundry.run.maintain": "topic-foundry maintenance runs",
     "act.aitown.session.play": "AI Town sessions",
+    "forecast.energy.bill_kwh": "power-bill kWh forecast ranges",
+    "forecast.energy.bill_usd": "power-bill dollar forecast ranges",
 }
 # Act verbs -> the plural noun for one try of that act.
 _VERB_NOUNS: dict[str, str] = {

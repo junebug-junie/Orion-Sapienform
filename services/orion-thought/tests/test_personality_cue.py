@@ -30,6 +30,16 @@ GROUNDED_TEXT = (
     "deployment plan has not discharged and it is pulling attention."
 )
 
+@pytest.fixture(autouse=True)
+def _cue_on(monkeypatch):
+    """The cue ships OFF since personality rev 3 (R0). These tests exercise the reader itself, so turn it on."""
+    import importlib
+
+    # The test module and the live module can hold different settings objects (see _live); set both.
+    for obj in {id(o): o for o in (settings, importlib.import_module("app.personality_cue").settings)}.values():
+        monkeypatch.setattr(obj, "personality_cue_enabled", True)
+
+
 
 def _frame(generated_at: datetime = _NOW - timedelta(minutes=5)) -> dict:
     return {

@@ -4099,3 +4099,13 @@ channels:
     stability: "experimental"
     since: "2026-11-13"
     description: "Orion's consent answer: yes or no, once or for this conversation, with a reason. Any path but a parsed model answer is a no. No reply within 40 s means no."
+
+  - name: "orion:prediction:turn_surprise"
+    kind: "event"
+    schema_id: "PredictionTurnSurpriseV1"
+    message_kind: "prediction.turn_surprise.v1"
+    producer_services: ["orion-prediction"]
+    consumer_services: ["orion-substrate-runtime"]
+    stability: "experimental"
+    since: "2026-11-13"
+    description: "One settled chat turn scored against Orion's own stance bets (asks a question, more steps than usual: the two kinds that beat the chat base rate held out). Each stated p is recalibrated by a logistic map fit on earlier settled chat bets only; excess = surprisal - expected surprisal (0 under calibration), summed over the turn with its calm variance and z. Published only for turns placed <= 60 min before settling. substrate-runtime folds it into node:prediction.chat_turn (successor of node:substrate.chat). Kill switch PREDICTION_TURN_SURPRISE_EVENTS_ENABLED. Carries no turn text. services/orion-prediction/app/turn_surprise.py"

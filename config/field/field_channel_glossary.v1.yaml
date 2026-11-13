@@ -620,27 +620,40 @@ channels:
         - "services.orion-cortex-exec.app.metacog_trend_reader:fetch_recent_trend_signals"
         - "orion.attention.self_readings:render_self_readings"
 
-  # Same helper as execution (prediction_error.py:452-453); chat input
-  # (:607, v3) = mean |delta| of conversation_load and repair_pressure over
-  # touched turns only (:692-703). Event-gated (worker.py:4080). Live: 69%
-  # exact zeros.
-  - node: "node:substrate.chat"
+  # node:substrate.chat was RETIRED 2026-11-13 (PE suite rebuild retire step 6):
+  # an EWMA z of the change in two chat pressure hints, negatives clipped; not a
+  # forecast. Successor below. The id is on RETIRED_PREDICTION_ERROR_NODE_IDS and
+  # the field digester's RETIRED_PSEUDO_NODES.
+  #
+  # Chat-turn surprise (2026-11-13). orion-prediction settles stance's private bets
+  # on each chat turn (services/orion-prediction/app/turn_self_bets.py) and scores
+  # the two kinds that beat the chat base rate held out (asks a question, more steps
+  # than usual; app/turn_surprise.py): each stated p goes through a logistic map fit
+  # on earlier settled chat bets only, excess = -ln q(outcome) minus its expected
+  # value, z = summed excess / sqrt(summed calm variance). Published as
+  # prediction.turn_surprise.v1; services/orion-substrate-runtime/app/worker.py
+  # _process_prediction_turn_surprise folds the last 30 min of turns with
+  # orion/substrate/prediction_turn_surprise.py and stores clip(z / 3, 0, 1).
+  # FalkorDB node only; the field digester's decay never touches it.
+  - node: "node:prediction.chat_turn"
     producer: orion-substrate-runtime
     channel: prediction_error
     level: [node]
     category: social_conversational
-    meaning: "How much more the chat's load and repair pressure moved on the turns touched this batch than they usually move: clipped z-score versus its own running average, 3 sigma = 1.0."
-    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:substrate.chat'"
+    meaning: "How much Orion's recent chat turns surprised Orion's own bets about them (will the reply ask a question; will it take more steps than usual), over the last 30 minutes: summed excess surprise in nats over what the recalibrated bets expected, divided by its calm spread (a z-score), 3 sigma = 1.0. 0 = the turns went the way the bets leaned."
+    trend_source: "substrate_node_prediction_error_history WHERE node_id = 'node:prediction.chat_turn'"
     consumers:
-      - "orion.attention.field_attention.selectors:select_node_targets"
       - "orion.substrate.endogenous_curiosity:_prediction_error_candidates"
+      - "orion.attention.world_first:judge_candidate"
     semantics:
-      value_kind: level
-      rest: "0.0 = at or below the usual turn-to-turn movement, or no baseline yet. Mostly zero by design (69% live)."
-      # rest_range live 2026-10-13: 89.0% exact 0.0, p50 0.0, p95 0.726, max 1.0 over 41048 rows (24h to 2026-10-13, substrate_field_state node_vectors); 71% in substrate_node_prediction_error_history
-      rest_range: [0.0, 0.0]
-      sparsity: designed_sparse
-      absent_means: "only written when chat turns were touched; carried forward in node_vectors between turns, dropped from the self-model after 1800 s."
+      value_kind: surprise_excess
+      rest: "0.0 = the turns went no more surprisingly than calibrated bets expect (z <= 0). Reachable by theory (a turn that goes the likely way reads z < 0) and live: 85% of 294 settled chat turns rest at exactly 0.0, 79% of node writes (replay 2026-10-24..11-13, backlog turns skipped as live, services/orion-prediction/evals/run_turn_surprise_replay_eval.py)."
+      # rest_range: calm z within +1.65 sigma -> stored value in [0, 0.55]. Live replay
+      # 2026-11-13 (294 turns): per-turn z mean -0.08 sd 0.95; node p50 0.0 p90 0.53,
+      # 0.55 crossed on 9.9 % of writes (a window of 2 turns crosses more often than one).
+      rest_range: [0.0, 0.55]
+      sparsity: event_gated
+      absent_means: "written once per settled chat turn whose used bets carry information. No chat turn (or PREDICTION_TURN_SURPRISE_EVENTS_ENABLED / SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED off, or orion-prediction down) writes nothing: the node keeps its last value, current for up to 1800 s, then every reader treats it as stale, never as calm. Live replay: fresh 27% of the time."
       prompt_sites:
         - "orion.attention.self_readings:render_self_readings"
 

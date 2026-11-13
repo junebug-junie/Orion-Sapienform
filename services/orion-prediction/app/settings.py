@@ -54,10 +54,26 @@ class Settings(BaseSettings):
     # reads what was settled).
     turn_self_bets_enabled: bool = Field(True, alias="PREDICTION_TURN_SELF_BETS_ENABLED")
     turn_self_bets_settle_sec: float = Field(60.0, ge=5, alias="PREDICTION_TURN_SELF_BETS_SETTLE_SEC")
+    # Publish prediction.turn_surprise.v1 on orion:prediction:turn_surprise for each settled chat turn
+    # (app/turn_surprise.py). substrate-runtime folds it into node:prediction.chat_turn (successor of
+    # node:substrate.chat). false = kill switch: the node goes stale (absent), never calm.
+    turn_surprise_events_enabled: bool = Field(True, alias="PREDICTION_TURN_SURPRISE_EVENTS_ENABLED")
 
     # Juniper reachable (app/reachable.py): an hourly forecast of "Juniper messages Orion in the next
     # hour", settled against chat_message and graded vs a base rate. false = no issue/settle loop.
     reachable_enabled: bool = Field(True, alias="PREDICTION_REACHABLE_ENABLED")
+
+    # Power-bill bet (app/bill_forecast.py): once a day, Orion's projection of the current RMP bill (kWh,
+    # pre-tax $) with an 80 % range, settled when the bill lands (energy_bill_actual). false = no loop.
+    bill_forecast_enabled: bool = Field(True, alias="PREDICTION_BILL_FORECAST_ENABLED")
+    bill_forecast_tick_sec: float = Field(900.0, ge=60, alias="PREDICTION_BILL_FORECAST_TICK_SEC")
+    # Same keys and values as orion-energy's (services/orion-energy/.env_example): the bill is priced and
+    # its cycle cut exactly as orion-energy does. tests/test_bill_forecast.py checks the defaults agree.
+    energy_tariff_path: str = Field("/app/config/energy/tariff.rmp_ut_sch1.2026-08-10.r3.yaml",
+                                    alias="ENERGY_TARIFF_PATH")
+    energy_timezone: str = Field("America/Denver", alias="ENERGY_TIMEZONE")
+    energy_billing_cycle_start_day: int = Field(18, ge=1, le=31, alias="ENERGY_BILLING_CYCLE_START_DAY")
+    energy_usage_point_id: str = Field("", alias="ENERGY_USAGE_POINT_ID")
 
     # --- weather covariates (shared Open-Meteo client, orion/weather/openmeteo.py) ---
     weather_enabled: bool = Field(True, alias="PREDICTION_WEATHER_ENABLED")

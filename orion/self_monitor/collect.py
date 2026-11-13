@@ -17,9 +17,14 @@ from typing import Callable, Iterable, Mapping, Optional, Sequence, Union
 from orion.schemas.self_monitor import SelfMonitorStateV1, SettledBetV1
 from orion.self_monitor import adapters
 from orion.self_monitor.catalog import UNGRADEABLE
-from orion.self_monitor.record import reduce_bets
+from orion.self_monitor.record import BILL_WINDOW_DAYS, reduce_bets
 
 Adapter = Callable[[dict], Optional[SettledBetV1]]
+
+# A bill settles once a month: read its source back over its own window (record.SLOW_SOURCE_WINDOWS).
+_BILL_SQL = ("SELECT bet_id, usage_point_id, origin, as_of, settled_at, coverage, {col}, bill_period_start "
+             "FROM prediction_bill_forecast WHERE settled_at >= CAST(:since AS timestamptz) - interval "
+             f"'{int(BILL_WINDOW_DAYS)} days' AND origin = 'live'")
 
 # (source name, SQL with :since, adapter). Each query is bounded by the window.
 SOURCES: tuple[tuple[str, str, Adapter], ...] = (
@@ -58,6 +63,8 @@ SOURCES: tuple[tuple[str, str, Adapter], ...] = (
      "FROM orion_ask WHERE answered_at >= :since AND status = 'answered' "
      "AND source_kind IN ('vision_person_confirm', 'vision_same_individual')",
      adapters.camera_ask),
+    ("prediction_bill_forecast_kwh", _BILL_SQL.format(col="kwh_in_80"), adapters.bill_kwh),
+    ("prediction_bill_forecast_usd", _BILL_SQL.format(col="usd_in_80"), adapters.bill_usd),
 )
 
 # The host keeps a missing faculty's held status only when one of its sources erred (it cannot tell

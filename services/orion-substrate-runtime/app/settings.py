@@ -172,6 +172,17 @@ class Settings(BaseSettings):
     prediction_surprise_channel: str = Field(
         "orion:prediction:surprise", alias="SUBSTRATE_PREDICTION_SURPRISE_CHANNEL"
     )
+    # Chat-turn surprise -> node:prediction.chat_turn (successor of node:substrate.chat): how much
+    # the last 30 min of settled chat turns surprised stance's own bets
+    # (orion/substrate/prediction_turn_surprise.py). Subscribes to orion:prediction:turn_surprise.
+    # Needs SUBSTRATE_WRITE_PREDICTION_ERROR_NODES. false = kill switch (no listener, no writes; the
+    # node ages to stale). Producer side: PREDICTION_TURN_SURPRISE_EVENTS_ENABLED.
+    prediction_turn_surprise_node_enabled: bool = Field(
+        True, alias="SUBSTRATE_PREDICTION_TURN_SURPRISE_NODE_ENABLED"
+    )
+    prediction_turn_surprise_channel: str = Field(
+        "orion:prediction:turn_surprise", alias="SUBSTRATE_PREDICTION_TURN_SURPRISE_CHANNEL"
+    )
     street_events_channel: str = Field(
         "orion:vision:street:events", alias="SUBSTRATE_STREET_EVENTS_CHANNEL"
     )

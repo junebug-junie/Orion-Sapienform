@@ -104,8 +104,8 @@
       </div>
       <div class="text-[11px] text-gray-400 bg-gray-950 border border-gray-800 rounded p-2 mt-2">
         <b class="text-gray-300">Structurally impossible, not just rare:</b> the override can only
-        ever fire for 3 domains (biometrics, execution, chat; route and bus_synaptic were retired
-        2026-11). A competing loop outside those three is invisible to this decision entirely — most of the remaining
+        ever fire for 2 domains (biometrics, execution; route, bus_synaptic and chat were retired
+        2026-11). A competing loop outside those two is invisible to this decision entirely — most of the remaining
         "no override" share, by design, not a gap this mechanism is meant to close.
       </div>
       <div class="text-[11px] text-gray-500 mt-2">sample: ${data.sample_count} self-model rows, last ${Math.round(data.window_minutes / 60)}h${data.malformed_row_count ? ` (${data.malformed_row_count} unparseable, excluded)` : ''}</div>

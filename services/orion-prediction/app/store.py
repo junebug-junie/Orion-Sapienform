@@ -39,6 +39,8 @@ TABLES = {
                                  "reference"),
     "prediction_reachable_forecast": ("forecast_id", "origin", "p", "p_state", "p_baseline", "served", "features",
                                       "happened"),
+    "prediction_bill_forecast": ("bet_id", "origin", "period_start", "projected_kwh", "kwh_lo80", "usd_hi80",
+                                 "settled_at", "kwh_in_80", "usd_in_80"),
 }
 ACTION_BET_COLS = ("bet_id", "domain", "body", "skill", "context", "place", "action", "model", "p", "p_baseline",
                    "level", "counts", "chosen_rank", "session_id", "placed_at", "settled_at", "result", "outcome",
@@ -56,6 +58,20 @@ JUNIPER_MESSAGE_SQL = "role = 'user' AND coalesce(session_id, '') NOT LIKE 'orio
 REACHABLE_COLS = ("forecast_id", "origin", "window_end", "issued_at", "model", "p", "p_state", "p_baseline", "served",
                   "hours_since", "state_bucket", "local_hour", "n_messages", "features", "settled_at", "happened",
                   "n_in_window")
+
+BILL_BET_COLS = ("bet_id", "usage_point_id", "bet_date", "origin", "as_of", "model", "period_start", "period_end",
+                 "covered_through", "days_into_cycle", "remaining_days", "observed_kwh", "projected_kwh",
+                 "projected_usd", "coverage", "kwh_lo80", "kwh_hi80", "usd_lo80", "usd_hi80", "range_reason",
+                 "range_inputs", "tariff_version")
+BILL_SETTLE_COLS = ("settled_at", "bill_period_start", "bill_period_end", "billed_kwh", "billed_usd", "billed_basis",
+                    "kwh_in_80", "usd_in_80")
+# orion-energy's tables (written by orion-sql-writer), read-only here.
+ENERGY_INTERVAL_COLS = ("source", "usage_point_id", "interval_start", "interval_end", "energy_kwh", "quality",
+                        "retrieved_at", "source_file")
+ENERGY_BILL_COLS = ("source", "usage_point_id", "billing_period_start", "billing_period_end", "kwh_billed",
+                    "energy_charge", "customer_charge", "adjustments", "fees", "taxes", "credits", "current_charges",
+                    "amount_due", "due_date", "statement_artifact_id", "retrieved_at", "source_file")
+ENERGY_READ_TIMEOUT_MS = 10_000
 
 
 def _since(ts: datetime) -> str:
@@ -537,6 +553,14 @@ class PostgresStore:
                          "WHERE faculty IN ('turn.self.steps', 'turn.self.reply_length') AND observed IS NOT NULL "
                          "AND placed_at >= %s", (since,))
 
+    def turn_surprise_calibration_rows(self, caller: str, faculties: Sequence[str], since: datetime) -> list[dict]:
+        """Graded probability bets of one caller and the given faculties placed since ``since``: the
+        held-out calibration history for chat-turn surprise (app/turn_surprise.py)."""
+        return self._all("SELECT faculty, caller, placed_at, settled_at, status, stated_p, hit "
+                         "FROM prediction_turn_self_bet WHERE caller = %s AND faculty = ANY(%s) "
+                         "AND status IN ('happened', 'not_happened') AND stated_p IS NOT NULL AND placed_at >= %s "
+                         "ORDER BY placed_at", (caller, list(faculties), since))
+
     def turn_self_bets(self, since: datetime, limit: int = 20000) -> list[dict]:
         return self._all(f"SELECT {', '.join(TURN_SELF_BET_COLS)} FROM prediction_turn_self_bet "
                          "WHERE placed_at >= %s ORDER BY placed_at DESC LIMIT %s", (since, limit))
@@ -587,6 +611,45 @@ class PostgresStore:
         where = "origin >= %s" + (" AND settled_at IS NOT NULL" if settled_only else "")
         return self._all(f"SELECT {', '.join(REACHABLE_COLS)} FROM prediction_reachable_forecast WHERE {where} "
                          "ORDER BY origin", (since,))
+
+    # --- power-bill bet (manual_migration_prediction_bill_forecast_v1.sql) ------------------------
+    def energy_intervals(self, since: datetime) -> list[dict]:
+        """Metered hours (``energy_usage_interval``) starting at or after ``since``, read-only. The newest
+        retrieval wins a re-delivered hour, as in the ledger."""
+        cols = ", ".join(ENERGY_INTERVAL_COLS)
+        return self._read_only(f"SELECT DISTINCT ON (usage_point_id, interval_start) {cols} FROM energy_usage_interval "
+                               "WHERE interval_start >= %s ORDER BY usage_point_id, interval_start, retrieved_at DESC",
+                               (since,), ENERGY_READ_TIMEOUT_MS)
+
+    def energy_bills(self) -> list[dict]:
+        """Every RMP bill (``energy_bill_actual``), read-only."""
+        return self._read_only(f"SELECT {', '.join(ENERGY_BILL_COLS)} FROM energy_bill_actual ORDER BY retrieved_at",
+                               (), ENERGY_READ_TIMEOUT_MS)
+
+    def bill_bet_dates(self, usage_point_id: str) -> set:
+        rows = self._all("SELECT bet_date FROM prediction_bill_forecast WHERE usage_point_id = %s", (usage_point_id,))
+        return {r["bet_date"] for r in rows}
+
+    def insert_bill_bet(self, row: dict) -> str | None:
+        cols = BILL_BET_COLS
+        rows = self._all(f"INSERT INTO prediction_bill_forecast ({', '.join(cols)}) VALUES "
+                         f"({', '.join('%s::jsonb' if c == 'range_inputs' else '%s' for c in cols)}) "
+                         "ON CONFLICT DO NOTHING RETURNING bet_id",
+                         [_j(row[c]) if c == "range_inputs" else row[c] for c in cols])
+        return rows[0]["bet_id"] if rows else None
+
+    def pending_bill_bets(self) -> list[dict]:
+        return self._all(f"SELECT {', '.join(BILL_BET_COLS)} FROM prediction_bill_forecast WHERE settled_at IS NULL "
+                         "ORDER BY as_of")
+
+    def settle_bill_bet(self, bet_id: str, fields: dict) -> int:
+        sets = ", ".join(f"{c} = %s" for c in BILL_SETTLE_COLS)
+        return len(self._all(f"UPDATE prediction_bill_forecast SET {sets} WHERE bet_id = %s AND settled_at IS NULL "
+                             "RETURNING bet_id", [fields[c] for c in BILL_SETTLE_COLS] + [bet_id]))
+
+    def bill_bet_rows(self, since: datetime) -> list[dict]:
+        return self._all(f"SELECT {', '.join(BILL_BET_COLS + BILL_SETTLE_COLS)} FROM prediction_bill_forecast "
+                         "WHERE as_of >= %s ORDER BY as_of", (since,))
 
     def get_action_bet(self, bet_id: str) -> dict | None:
         rows = self._all("SELECT * FROM prediction_action_bet WHERE bet_id = %s", (bet_id,))

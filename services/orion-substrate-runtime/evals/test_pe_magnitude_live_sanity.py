@@ -25,9 +25,9 @@ def test_healthy_varied_node_passes():
     vals = []
     for block in range(48):
         vals += [0.0 if block % 2 else 0.3 + 0.001 * block] * 60
-    result = evaluate(_rows("node:substrate.chat", vals), now=NOW,
-                      expected_nodes=("node:substrate.chat",))
-    entry = result["nodes"]["node:substrate.chat"]
+    result = evaluate(_rows("node:substrate.execution", vals), now=NOW,
+                      expected_nodes=("node:substrate.execution",))
+    entry = result["nodes"]["node:substrate.execution"]
     assert entry["checks"]["coverage"] and entry["checks"]["not_flat"]
     assert entry["checks"]["trend_not_degenerate"], entry["trend"]
     assert result["ok"]

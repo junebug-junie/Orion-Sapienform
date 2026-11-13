@@ -438,7 +438,7 @@ def test_never_is_said_plainly_not_as_zero_x() -> None:
 
 def test_one_event_on_the_poll_grid_is_not_a_high_hour() -> None:
     """The seam drops an event at age >= 300 s: one hot event must not fill 11 polls (330 s)."""
-    chat = "node:substrate.chat"
+    chat = "node:substrate.codebase"   # an event-written body signal (was chat until 2026-11-13)
     h = T0 + timedelta(days=8)
     hist = [(T0 + timedelta(minutes=15 * k), 0.0 if k % 3 else 0.1 + (k % 9) / 10.0)
             for k in range(int(8 * 24 * 4))]

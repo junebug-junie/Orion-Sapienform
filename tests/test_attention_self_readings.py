@@ -34,13 +34,16 @@ def test_prompt_reaching_nodes_come_from_the_glossary_and_exclude_world_and_plac
     nodes = sr.prompt_reaching_nodes()
     assert nodes == sorted([
         "node:substrate.biometrics", "node:substrate.cabinet",
-        "node:substrate.chat", "node:substrate.codebase", "node:substrate.execution",
+        "node:substrate.codebase", "node:substrate.execution",
         "node:substrate.strain",
         # forecast surprise (value_kind surprise_excess, 2026-11-11): a measurement, the body.
         "node:prediction.body", "node:prediction.room",
+        # chat-turn surprise (2026-11-13), successor of node:substrate.chat.
+        "node:prediction.chat_turn",
     ])
-    # bus_synaptic and route retired 2026-11 (PE suite rebuild step 5).
+    # bus_synaptic and route retired 2026-11 (PE suite rebuild step 5), chat 2026-11-13 (step 6).
     assert "node:substrate.bus_synaptic" not in nodes and "node:substrate.route" not in nodes
+    assert "node:substrate.chat" not in nodes
     assert "node:substrate.perception" not in nodes  # the world, not the body
     assert "node:substrate.harness_closure" not in nodes  # placeholder
 
@@ -108,11 +111,24 @@ def test_placeholder_never_rendered_as_a_measurement() -> None:
 
 
 def test_absent_signal_is_named_unreadable_not_calm() -> None:
-    rows = [r for r in fx.busy_body_rows() if r[0] != "node:substrate.chat"]
+    rows = [r for r in fx.busy_body_rows() if r[0] != "node:prediction.room"]
     block = sr.project_self_readings(_cache(rows), now=NOW)
-    chat = _by_id(block.readings)["node:substrate.chat"]
-    assert chat.state == "no_reading" and not chat.unusual
-    assert "Can't read right now: chat (no reading)." in block.text
+    room = _by_id(block.readings)["node:prediction.room"]
+    assert room.state == "no_reading" and not room.unusual
+    assert "Can't read right now: prediction.room (no reading)." in block.text
+
+
+def test_event_signal_with_no_event_in_its_whole_history_is_quiet_not_unreadable() -> None:
+    """node:prediction.chat_turn is written only when a chat turn settles: a week with no chat
+    leaves it with no reading at all. That is quiet by design, not broken (review 2026-11-13)."""
+    rows = [r for r in fx.busy_body_rows() if r[0] != "node:prediction.chat_turn"]
+    block = sr.project_self_readings(_cache(rows), now=NOW)
+    turn = _by_id(block.readings)["node:prediction.chat_turn"]
+    assert turn.state == "no_reading" and not turn.unusual
+    assert "No recent events: prediction.chat_turn." in block.text
+    assert "prediction.chat_turn (no reading)" not in block.text
+    calm = [r for r in fx.calm_rows() if r[0] != "node:prediction.chat_turn"]
+    assert sr.project_self_readings(_cache(calm), now=NOW).skip_reason == "all_calm"
 
 
 def test_score_is_polarity_aware(monkeypatch) -> None:
@@ -201,11 +217,11 @@ def test_trigger_with_too_little_history_is_neither_calm_nor_unreadable() -> Non
 
 def test_event_signal_with_no_recent_event_is_not_called_unreadable() -> None:
     rows = [r for r in fx.busy_body_rows()
-            if not (r[0] == "node:substrate.chat" and r[1] > NOW - timedelta(hours=1))]
+            if not (r[0] == "node:prediction.chat_turn" and r[1] > NOW - timedelta(hours=1))]
     block = sr.project_self_readings(_cache(rows), now=NOW)
-    assert _by_id(block.readings)["node:substrate.chat"].state == "stale"
-    assert "No recent events: chat." in block.text
-    assert "chat (stale)" not in block.text
+    assert _by_id(block.readings)["node:prediction.chat_turn"].state == "stale"
+    assert "No recent events: prediction.chat_turn." in block.text
+    assert "prediction.chat_turn (stale)" not in block.text
 
 
 def test_per_tick_signal_gone_stale_is_unreadable() -> None:

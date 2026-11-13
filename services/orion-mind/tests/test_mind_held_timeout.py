@@ -1,7 +1,7 @@
 """A held run's Mind phases get MIND_LLM_HELD_TIMEOUT_SEC, not the small-lane MIND_LLM_TIMEOUT_SEC.
 
-Live 11-12..13: on the agent-gpu2 seat (Bonsai-2-27B, thinks first) Mind phases took 10-56 s when
-served and 18 of 65 calls hit the 60 s cap as `upstream_timeout`. The run wall still bounds a phase.
+Live 11-10..12: on the agent-gpu2 seat (Bonsai-2-27B, thinks first) Mind phases took 10-56 s when
+served and 18 of 59 calls hit the 60 s cap as `upstream_timeout`. The run wall still bounds a phase.
 """
 from __future__ import annotations
 

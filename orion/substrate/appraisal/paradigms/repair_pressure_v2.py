@@ -109,7 +109,8 @@ def build_repair_probe_prompt(window: list[TurnWindowMessageV1]) -> str:
     )
 
 
-_BARE_ANSWER_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])?\s*(YES|NO)\s*$", re.IGNORECASE)
+_BARE_ANSWER_RE = re.compile(r"^\s*(?:[-*•]|(\d+)[.)])?\s*(YES|NO)\.?\s*$", re.IGNORECASE)
+_THINK_OPEN = "<think>"
 _THINK_CLOSE = "</think>"
 
 
@@ -125,10 +126,13 @@ def probe_answer_spans(text: str) -> list[tuple[str, str, int]]:
       (agent) answered ``NO\nNO\nNO\nNO\nNO\nNO\nNO`` (14 tokens) and all four checks failed as
       ``probe_unparseable``. Line i is kind i of the prompt's list.
 
-    Anything else (prose, six lines, a mix of bare and labeled) answers nothing, and the caller
+    Numbered bare lines must be numbered 1..7 in order. Anything else (prose, six lines, reordered
+    numbers, a mix of bare and labeled, reasoning that never closed) answers nothing, and the caller
     fails the check as ``probe_unparseable``: never a guessed or default reading. Only the text after
     the last ``</think>`` is read, so reasoning that names a kind cannot count as its answer."""
     text = text or ""
+    if text.rfind(_THINK_OPEN) > text.rfind(_THINK_CLOSE):
+        return []   # reasoning cut off before it closed (e.g. at max_tokens): there is no answer yet
     cut = text.rfind(_THINK_CLOSE)
     base = cut + len(_THINK_CLOSE) if cut >= 0 else 0
     body = text[base:]
@@ -148,11 +152,15 @@ def probe_answer_spans(text: str) -> list[tuple[str, str, int]]:
     if len(lines) != len(_EVIDENCE_KINDS):
         return []
     spans: list[tuple[str, str, int]] = []
+    numbers: list[str | None] = []
     for kind, (line, at) in zip(_EVIDENCE_KINDS, lines):
         m = _BARE_ANSWER_RE.match(line.rstrip("\r\n"))
         if m is None:
             return []
-        spans.append((kind, m.group(1).upper(), base + at + m.start(1)))
+        numbers.append(m.group(1))
+        spans.append((kind, m.group(2).upper(), base + at + m.start(2)))
+    if any(n is not None for n in numbers) and numbers != [str(i) for i in range(1, len(_EVIDENCE_KINDS) + 1)]:
+        return []   # numbered lines must be 1..7 in order: a reordered list would map answers to the wrong kinds
     return spans
 
 

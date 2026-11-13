@@ -215,6 +215,16 @@ def _log_timeout_hierarchy_warnings() -> None:
             settings.MIND_WALL_MS_DEFAULT,
         )
     held = float(settings.MIND_LLM_HELD_TIMEOUT_SEC)
+    if float(settings.MIND_WALL_MS_DEFAULT) < held * 3.0 * 1000.0:
+        # Expected with the shipped values (150 s x 3 > 180 s): a held run's first phase may use most
+        # of the wall, and later phases are then skipped (wall_budget_insufficient). Logged so the
+        # trade is visible, not hidden.
+        logger.info(
+            "mind_held_wall_note MIND_LLM_HELD_TIMEOUT_SEC=%s MIND_WALL_MS_DEFAULT=%s: three full held "
+            "phases do not fit the wall; a slow early phase leaves later phases skipped",
+            held,
+            settings.MIND_WALL_MS_DEFAULT,
+        )
     if orch_outer is not None and held >= float(orch_outer):
         logger.warning(
             "mind_timeout_hierarchy_invalid MIND_LLM_HELD_TIMEOUT_SEC=%s ORION_MIND_TIMEOUT_SEC=%s "

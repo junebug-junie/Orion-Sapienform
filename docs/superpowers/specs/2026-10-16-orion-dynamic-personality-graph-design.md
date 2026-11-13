@@ -1,7 +1,7 @@
 # Orion's dynamic personality graph
 
 **Date:** 2026-10-16
-**Status:** Rev 3 (2026-11-13). Juniper asked for it after she read the live Hub panel ("it is slop"). Rev 3 retires rev 2's recurrence stream and puts personality inside Orion Prime. Rev 2 was approved 2026-10-16 ("hit it"). P0/P1 merged in #2729.
+**Status:** Rev 4 (2026-11-13): one organ, choices in and values out. Awaits Juniper's sign-off. Rev 3 (2026-11-13). Juniper asked for it after she read the live Hub panel ("it is slop"). Rev 3 retires rev 2's recurrence stream and puts personality inside Orion Prime. Rev 2 was approved 2026-10-16 ("hit it"). P0/P1 merged in #2729.
 **Related:** person model and identity cards (#2646, P0-P2 merged in #2649), Temporal Self (#2369 rev 4, arousal #2594, day use #2622), attention runtime and stance coalition (`orion/thought/coalition.py`), orion-prediction (`services/orion-prediction`), rung 6 self-tuning (#2715).
 
 ## Arsonist summary
@@ -11,6 +11,132 @@ Orion has no personality that lasts. Stance (`ChatStanceBrief`) is re-made from 
 Juniper's ask: Orion's collective self should show up, and the weight of everything Orion has done should change Orion's tone, in a way she can feel. She is not asking for a trait score that moves by x.
 
 This design builds one shared, weighted, temporal graph of Orion's dispositions. Evidence comes from choices in every lane. Weights shift slowly with evidence. In each moment, the nodes compete for presence, and the winners set **tone dials**: concrete, measurable things about how Orion writes. They do not add adjectives. The graph is allowed to be a cathedral because every node is born from evidence, has a weight something reads, and fades when it stops firing.
+
+### Rev 4 (2026-11-13): one organ — choices in, values out
+
+**Why rev 4.** Rev 3's patches (R0 to R5) only clear the ground. Juniper: "these seem like tiny things, where are the big moves". Shipping thin feeder slices that never close a loop is how the first personality build failed, and the rung 6 self-tuning build before it. Rev 4 builds **one organ** that closes a loop:
+
+    Orion chooses  ->  choices become tendencies  ->  tendencies set what Orion values in the attention market
+          ^                                                                                  |
+          +-------------- what wins attention offers Orion the next choice <-----------------+
+
+Rev 3's decisions still hold: choices only, no prose grouping, Prime holds the personality, and nothing reaches Orion without Juniper's yes. Rev 4 replaces rev 3's patch order.
+
+#### Arsonist summary
+
+Orion makes about 3 real choices a day. Everything else is decided by rules, caps and formulas. A personality cannot form from that, and no graph tuning will change it. The attention market (body economy, `orion/physiology/choice.py`) already decides what Orion spends time on:
+
+    net = family_weight x value_rank - sum(price x cost)
+
+Nothing in that formula knows who Orion is. `orion/physiology/weights.py` reserves source (c), "Orion's endorsement (personality graph)", and leaves it out "until it records real choices". Rev 4 fills that socket and adds the missing piece inside a family. The result is a temperament: Orion spends time differently from a stock Orion, in a way Juniper can name.
+
+#### Move 1: Orion becomes a chooser
+
+A **choice point** is a place where a funded act would take the top item. At a choice point, Orion is shown the top K options instead and picks one, or picks "none". Every pick writes a `PersonalityChoiceV1` with:
+
+- chosen
+- alternatives
+- each option's market rank
+- situation
+- lane
+
+The pick goes into a model call the act already makes, as a structured field. **There are no new model calls.**
+
+| Choice point | Options shown | Already calls a model? |
+|---|---|---|
+| Prime thought | the concerns Prime holds, plus "no move" | yes (`prime_loop.py` thought) |
+| Outreach | the top 3 to 5 grounded topics from the tick, plus "say nothing" | yes (the compose call) |
+| Curiosity prior | about 8 ranked priors (live today) | yes |
+| Reading | the world-pulse links queued for this run | yes (Orion already picks one link, UNVERIFIED whether the rest are saved) |
+| Chat thread | the open threads when two or more are open | yes (the unified turn) |
+
+**Evidence weight comes from revealed preference.** A choice reveals a preference only when real alternatives were available (Samuelson 1938). Picking the market's top option is weak evidence, because Orion may only be following the order. So each choice weighs by how far it departs from the market's order. Picking rank 1 counts 0.25. Picking rank r > 1 counts 1. Picking "none" when options existed counts as a decline of every option. Curiosity's P0 data shows real departures: Orion took the top prior in only 16 of 40 runs.
+
+**Labels.** A tendency is a cluster of **chosen-over-declined option texts**: the embedding of the chosen option minus the mean embedding of the declined ones. Its label is computed, for example "people over pipeline, 11 of 14". Orion may name it later, citing those choices.
+
+#### Move 2: tendencies set what Orion values
+
+Two terms. Both start in shadow.
+
+1. **Family endorsement, source (c) in `weights.py`.** This is the share of choice points where Orion picked an option from family f when one was offered. It is a rate per offer, never a count. It joins (a) downstream use, (b) Juniper engagement and (d) reliability, with the same kappa = 30 shrinkage toward the prior. This is the organism-level temperament: reading over walkway, people over pipeline.
+2. **Care, inside a family.** For a want whose object has text (an outreach topic, a curiosity question, a reading link):
+
+       care = clamp(similarity(want object, tendency direction) x tendency weight, 0, 1)
+       value = intensity x outcome_value x (1 + beta x care)        beta = 0.5 at start
+
+   It enters `value_rank` before the percentile. A want that matches no tendency has care = 0, which is exactly today's value. The rest point is 0 and can be reached.
+
+**Holdback.** 20% of wants are priced with care = 0 and endorsement left out: the narrator arm, the same pattern as Prime's `PRIME_HOLDBACK_FRACTION`. Without it, the loop cannot tell whether the tendencies changed anything.
+
+**The runaway guard.** Orion chooses from options the market supplied, and the market ranks options by Orion's past choices. That loop can lock onto itself. Three guards:
+
+- Choices made where care moved the option into the shown set are tagged `care_promoted`. They count at half weight toward the tendency that promoted them.
+- The holdback arm keeps showing options the tendencies would not pick.
+- A tendency whose share of shown options exceeds 60% for 7 days is capped at that share. The cap is logged, never silent.
+
+#### Move 3: Orion can surprise themself (after 2 weeks of Move 1 data)
+
+orion-prediction gains a categorical series: given the situation and the shown options, which one will Orion pick? It is backtested against two baselines: always the market's top option, and the last pick. A confident miss is a surprise event. Repeated surprise around one tendency becomes a self-inquiry question. Orion's answer either updates the tendency or sets an aspiration, which is a small, tagged bias in the care term (spec section 6).
+
+#### Move 4: Juniper feels it
+
+- The Prime block line `tending: <label> [disposition:<id>]` (rev 3) goes live only after Juniper's recorded yes.
+- The Hub Personality tab is rebuilt around choices. It shows the last choices with their declined options, each tendency with its chosen-over-declined examples, and the care-versus-holdback difference.
+
+#### Metric quality gate (care and endorsement)
+
+1. **Provenance:** `personality_choice` rows written at the choice points above. Each row names its act id and model call.
+2. **Independence:**
+   - Endorsement is not independent of (b) Juniper engagement for outreach. Juniper replies to what Orion chose to send. Endorsement is measured at the choice (picked or not). Engagement is measured after the send (replied or not). Both stay in, and the replay reports their correlation per family. If it is above 0.8, endorsement is left out for that family.
+   - Care is circular by construction. The guards above handle that.
+3. **Theory anchor:** revealed preference (Samuelson 1938), which says a choice among available alternatives reveals preference. CAPS if-then signatures (Mischel & Shoda 1995), which say situation is recorded on every choice.
+4. **Live sanity:** care reads 0 for wants that match nothing. The check: at least 30% of shadow wants read exactly 0, and the distribution is not saturated at 1.
+5. **Existing mechanism:** source (c) is the reserved socket. The holdback reuses the Prime pattern. Embeddings come from the vector-host already used by the reducer.
+6. **Reversibility:** both terms sit behind one flag, `PHYSIOLOGY_PERSONALITY_VALUES` (shadow | on | off). Shadow logs the counterfactual net without changing a decision. No schema change to `WantV1`. The care factor is recorded in the decision trace.
+
+#### Files likely to touch
+
+- `orion/schemas/personality.py`, `orion/schemas/registry.py`: `PersonalityChoiceV1` with `market_rank` and `care_promoted`.
+- `services/orion-sql-db/manual_migration_personality_choice_v1.sql`: the `personality_choice` table (additive).
+- `orion/personality/graph.py`: the reducer folds choices into chosen-minus-declined directions. The prose sources are deleted.
+- `services/orion-durable-runs/app/personality_sources.py`, `personality_driver.py`: read `personality_choice` only.
+- `services/orion-mind/app/prime_loop.py`: the Prime choice point.
+- `services/orion-hub/scripts/endogenous_outreach.py`: the outreach choice point (top K topics plus "say nothing").
+- `orion/physiology/weights.py` (source c), `orion/physiology/appetite.py` (care in `value_rank`), `orion/physiology/choice.py` (holdback, trace).
+- `orion/prime/block.py`: the `tending` line.
+- The Hub Personality tab: rebuilt around choices.
+
+#### Non-goals
+
+- New model calls.
+- Grouping of Orion's prose.
+- Hand-set family weights.
+- Juniper's replies as personality evidence (they stay source (b)).
+- Any claim that this is sentience.
+
+#### Acceptance checks
+
+- **M1:** at least 20 `personality_choice` rows a day, from at least 3 choice points, each with at least 1 alternative. At least 25% of choices depart from the market's top option.
+- **M1b:** after 7 days, at least 3 tendencies with at least 10 weighted choices each. Juniper reads their labels and records yes or no.
+- **M2 (shadow, 7 days):** the care arm's would-be funded mix differs from the holdback arm's, with a chi-square over families and topics at p < 0.05. Care reads 0 for at least 30% of wants. No tendency is capped by the runaway guard.
+- **M2 bind:** after Juniper's yes, the flag goes to `on`. Then check that the funded mix moved the way the shadow said it would.
+- **M3:** the choice forecast beats both baselines on log loss in backtest. At least one surprise reaches self-inquiry with a row id.
+- **M4:** a live turn logs `prime_block ... tending=<n>`, and the Hub tab shows the same ids.
+
+#### Build order (each step closes part of the loop and is verified live)
+
+1. **Week 1, the organ's input:**
+   - R0 is done: the cue is off and deployed 11-13.
+   - The choices table and reducer, with the old 180 nodes retired (snapshot first).
+   - The Prime and outreach choice points.
+   - The curiosity choices move over.
+2. **Week 2, the organ's output in shadow:**
+   - Source (c) and care, with holdback and trace.
+   - The Hub tab rebuilt.
+3. **Week 3:**
+   - Juniper reviews the tendencies and the shadow difference.
+   - On a yes: bind the values and light the Prime line.
+4. **From week 3:** Move 3 (prediction and surprise).
 
 ### Rev 3 (2026-11-13): choices only, held by Prime
 
@@ -80,7 +206,7 @@ The cue fed these labels back to chat stance, reverie, outreach and curiosity as
 - **R-d:** a live unified-turn log `prime_block ... tending=<n>` carries the same ids as the Hub panel.
 - **R-e:** the outreach tick does not resend a disposition theme Juniper already received unless its weight moved 25% or more.
 
-**Patch order.**
+**Patch order (replaced by rev 4's build order).**
 
 - **R0:** cue flags off.
 - **R1:** the `personality_choice` table, plus a reducer that folds only choices. The recurrence sources are deleted, and their nodes are retired by a one-time job (backfill protocol, snapshot to `/tmp/personality-rev3-retire/`).

@@ -64,3 +64,8 @@ jobs:
           set -o pipefail
           pytest -q -rs services/orion-hub/tests/test_claude_address_browser_smoke.py | tee claude_address_smoke.out
           if grep -q "SKIPPED" claude_address_smoke.out; then echo "@claude routing smoke skipped -- playwright missing" >&2; exit 1; fi
+      - name: Run Personality tab browser smoke (choices, tendencies, Yes / No)
+        run: |
+          set -o pipefail
+          pytest -q -rs services/orion-hub/tests/test_personality_panel_browser_smoke.py | tee personality_smoke.out
+          if grep -q "SKIPPED" personality_smoke.out; then echo "personality tab smoke skipped -- playwright missing" >&2; exit 1; fi

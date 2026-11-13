@@ -4406,45 +4406,40 @@ The page polls every 60 s only while viewing today and while the Hub panel is vi
 Code: `scripts/temporal_self_routes.py`, `templates/temporal_self.html`, `static/js/temporal_self.js`,
 `static/js/temporal_self_tab.js`.
 
-## Personality tab (what Orion keeps returning to)
+## Personality tab (Orion's choices)
 
-The **Personality** tab (`#personality`, standalone at `/personality`) is read-only observability for
-Orion's personality graph (spec `2026-10-16-orion-dynamic-personality-graph-design.md` rev 2,
-section 7). It shows, top to bottom:
+The **Personality** tab (`#personality`, standalone at `/personality`) is built from Orion's choices
+only (spec `2026-10-16-orion-dynamic-personality-graph-design.md` rev 4, move 4 "Juniper feels it").
+The rev 2 panels that listed excerpts of Orion's own prose (cue text, recurrence nodes, evidence
+excerpts, naming log) are gone, and so are their proxies (`/dispositions`, `/evidence`, `/naming`,
+`/cue`). It shows, top to bottom:
 
-- **What Orion sees right now**: the exact cue text chat stance, reverie, curiosity kickoff and
-  outreach are handed. The Hub renders it server-side with `orion.personality.cue.project_personality_cue`
-  (the same pure function the lanes call) at its default max age (3600 s) and top_k (5); the page
-  names those parameters. That matches the lanes while their own knobs (orion-thought
-  `PERSONALITY_CUE_MAX_AGE_SEC`/`_TOP_K`/`_ENABLED`) sit at the defaults; the Hub's 5 s fetch budget
-  is also longer than a lane's, so a lane can still get `fetch_failed` when the panel shows a cue.
-  When the cue is empty the skip reason is named (`stale`, `empty`, `fetch_failed`,
-  `invalid_frame`, `render_failed`). A frame that does not validate reads as unavailable, never as
-  an empty graph.
-- Counts (active / candidate / retired / evidence rows), the curiosity choice-style line, the
-  frame's `generated_at`, and any frame warnings.
-- **Active** nodes: label (Orion's own words), weight with an inline sparkline of its history,
-  evidence count, lanes (`lane: count`), chosen count, first seen, last reinforced. Click a row for
-  its evidence (lane, time, excerpt, similarity, weight delta).
-- A **When** column: the situations the node's evidence happened in, from durable-runs `situation_mix`.
-  Per dimension it shows the most common value and its share of the stamped rows, for example
-  "idle 70% · night 55% · alone 80% (n=20)". Tied values all show, by name ("engaged/idle 50%"). The
-  tooltip has the full counts. A node whose evidence all predates situation stamping (2026-10-16) reads
-  "no situation data yet". This is for watching CAPS if-then signatures form; nothing Orion reads uses it.
-- **Candidates** and **Retired**, collapsed, same columns.
-- An empty graph reads "The graph is empty — it starts from today and grows as Orion writes."; a
-  missing frame reads "durable-runs unavailable: <reason>".
+- **Recent choices**: the last 30 `personality_choice` rows, every lane, newest first. Each shows the
+  lane in words ("What to look into", "Reaching out to you", "Orion's own next move", ...), the time,
+  what Orion picked and its market rank ("market's #4"), the top 3 options Orion passed over (ranked
+  first, in the market's order; the rest behind "and N more"), and the tendency it counted toward. A
+  decline reads "Said nothing" (outreach), "Made no move" (Prime) or "Picked none of them".
+- **Tendencies**: choice-built tendencies (`origin = 'choice'`, not retired; rev 2 prose nodes never
+  show), strongest first. Each shows the label without its count, "n of m choices went this way",
+  status in words ("Orion leans on this now" / "Still forming"), strength, an "In Orion's Prime block
+  now" badge when it is active at weight >= 10 (`orion/prime/tending.py` `MIN_WEIGHT`; a node test
+  keeps the two equal), 3 example choices, and Juniper's last answer.
+  **Does this look like Orion? Yes / No.** Yes is recorded. No asks first, then retires the
+  tendency: it leaves the frame, so it never reaches the Prime tending line or the market's
+  tendency read again (retired is terminal). The write goes to durable-runs, the single writer.
+- **Is it changing anything?**: market decisions over the last 7 days with a `personality:arm=care`
+  or `personality:arm=holdback` trace line in `want_ledger`, by arm, with the funded share. "Not live
+  yet" when there are none.
 
 Routes (proxies to orion-durable-runs at `HUB_CURIOSITY_DURABLE_RUNS_URL`, reused; no new key):
-`/api/personality/frame`, `/api/personality/dispositions?status=active|candidate|retired|all&limit=`
-(1-200, default 50), `/api/personality/evidence?disposition_id=&limit=` (1-200, default 50), and
-`/api/personality/cue` (frame + rendered cue + `render_params`; fail-open: always 200, an upstream fault rides in
-`error`/`upstream_status`). Unset URL is a 503; upstream down, timed out, 5xx or non-JSON is a 502
-naming the reason; upstream 404/503 pass through. All upstream text is written with `textContent`
-(excerpts are Orion's raw words); the only `innerHTML` is the numeric sparkline with an escaped title.
-The page polls every 60 s while the Hub panel is visible and no evidence list is open.
-Code: `scripts/personality_routes.py`, `templates/personality.html`, `static/js/personality.js`,
-`static/js/personality_tab.js`.
+`GET /api/personality/frame`, `GET /api/personality/choices?limit=` (1-200, default 30),
+`GET /api/personality/tendencies?limit=` (1-100, default 20), `GET /api/personality/arms?days=`
+(1-30, default 7), and `POST /api/personality/tendencies/<id>/verdict` with `{"verdict": "yes"|"no"}`.
+Unset URL is a 503; upstream down, timed out, 5xx or non-JSON is a 502 naming the reason; upstream
+404/409/503 pass through. All upstream text is written with `textContent`; the page uses no
+`innerHTML`. Code: `scripts/personality_routes.py`, `templates/personality.html`,
+`static/js/personality.js`, `static/js/personality_tab.js`. Tests: `static/js/personality.test.js`,
+`tests/test_personality_routes.py`, `tests/test_personality_panel_browser_smoke.py`.
 
 ### Personality read-back in curiosity and outreach
 

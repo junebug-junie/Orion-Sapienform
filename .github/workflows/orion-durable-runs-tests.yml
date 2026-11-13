@@ -25,6 +25,7 @@ on:
       - "orion/schemas/personality.py"
       - "services/orion-sql-db/manual_migration_personality_graph_v1*.sql"
       - "services/orion-sql-db/manual_migration_personality_choice_v1*.sql"
+      - "services/orion-sql-db/manual_migration_personality_juniper_verdict_v1*.sql"
       - "orion/regulation/**"
       - "orion/schemas/regulation.py"
       - "orion/physiology/**"
@@ -153,6 +154,7 @@ on:
       - "orion/schemas/personality.py"
       - "services/orion-sql-db/manual_migration_personality_graph_v1*.sql"
       - "services/orion-sql-db/manual_migration_personality_choice_v1*.sql"
+      - "services/orion-sql-db/manual_migration_personality_juniper_verdict_v1*.sql"
       - "orion/schemas/durable_run.py"
       - "orion/schemas/harness_step_run.py"
       - "orion/schemas/pr_field_note_run.py"   # pr.field_note (PR field notes Patch 2)

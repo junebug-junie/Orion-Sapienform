@@ -2,17 +2,14 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 787,
   "_last_change": {
-    "change_count": 8,
-    "high_severity_count": 1,
+    "change_count": 5,
+    "high_severity_count": 0,
     "changes": [
-      "high   removed metric://field_channel/orion-substrate-runtime/node:substrate.chat.prediction_error",
       "medium added metric://bus_channel/orion-harness-governor/orion:claude:tool:audit",
       "medium added metric://bus_channel/orion-harness-governor/orion:claude:tool:result:*",
       "medium added metric://bus_channel/orion-harness-governor/orion:prime:consent:request",
       "medium added metric://bus_channel/orion-mind/orion:prime:consent:result:*",
-      "medium added metric://bus_channel/orion-prediction/orion:prediction:turn_surprise",
-      "medium added metric://bus_channel/orion-room-companion/orion:claude:tool:request",
-      "medium added metric://field_channel/orion-substrate-runtime/node:prediction.chat_turn.prediction_error"
+      "medium added metric://bus_channel/orion-room-companion/orion:claude:tool:request"
     ]
   },
   "definitions": {

@@ -217,7 +217,8 @@ Another kind of move: take a concern on. Some concerns are things you told Junip
 "(you can take this on)". Taking one on means you will carry it out: one turn of your own runs it, and the reply goes
 back into the chat where you said it (Juniper is also told when the usual rules for messaging her allow). It is
 your choice. You may take it on now, set a time not before which it runs, keep it for later ("not yet"), or drop
-it with why ("let go"). Taking it on is graded on whether the reply got written. One move per thought:
+it with why ("let go"). Taking it on is graded on whether the reply got written. A promise you have not taken on
+ends 3 days after you made it, even if you kept it. One move per thought:
 "move": {"kind": "take_on", "concern_id": "<concern_id>", "why": "...", "not_before": null | "<ISO time UTC>"}"""
 
 

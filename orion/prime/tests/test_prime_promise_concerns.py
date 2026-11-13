@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
+from typing import get_args
 
 from orion.prime import handback as hb
 from orion.prime.block import render_prime_block
@@ -24,17 +25,18 @@ PROMISED = datetime(2026, 11, 12, 7, 8, 40, tzinfo=timezone.utc)
 SESSION = "9c91d646-cbd0-4977-8cdd-d2c82045c7f9"
 
 
-def _hops(corr=CORR, session=SESSION, *, mode="orion", promises=({"offer": False, "quote": QUOTE},)):
+def _hops(corr=CORR, session=SESSION, *, mode="orion", promises=({"offer": False, "quote": QUOTE},), final=None,
+          at=PROMISED):
     ingress = {"session_id": session, "user_message": "ok im off to play zelda for a bit", "attachment_count": 0}
     if mode is not None:
         ingress["mode"] = mode
-    fin = {"correlation_id": corr, "final_text": f"Have fun!\n\n{QUOTE} and see what stands out.",
+    fin = {"correlation_id": corr, "final_text": final or f"Have fun!\n\n{QUOTE} and see what stands out.",
            "compliance_verdict": "completed",
            "reflection": {"promises_made": [dict(p) for p in promises], "promises_kept": []}}
-    return [CockpitHopV1(correlation_id=corr, seq=0, ts=PROMISED - timedelta(seconds=30), stage="ingress",
+    return [CockpitHopV1(correlation_id=corr, seq=0, ts=at - timedelta(seconds=30), stage="ingress",
                          visor_line="ingress", status="ok", summary={}, raw=ingress,
                          producer="orion-hub").model_dump(mode="json"),
-            CockpitHopV1(correlation_id=corr, seq=9, ts=PROMISED, stage="finalize", visor_line="finalize",
+            CockpitHopV1(correlation_id=corr, seq=9, ts=at, stage="finalize", visor_line="finalize",
                          status="ok", summary={}, raw=fin, producer="orion-hub").model_dump(mode="json")]
 
 
@@ -69,6 +71,19 @@ def test_the_promise_sentence_stays_out_of_the_prime_block_and_the_published_vie
     assert "d8db9d7b1bba4cf7" in block.text and QUOTE not in block.text and "Hyrule" not in block.text
     assert "Hyrule" not in concerns_view(state, now=now).model_dump_json()
     assert all("Hyrule" not in line for line in state.pending_changes)
+
+
+def test_a_reply_that_opens_with_the_promise_still_keeps_the_quote_out_of_the_block():
+    state, _, _ = _fold(_hops(final=f"{QUOTE}. Have fun!"))
+    c = state.concerns[0]
+    assert "Hyrule" not in c.text and c.text.endswith('Juniper: "ok im off to play zelda for a bit"')
+    now = PROMISED + timedelta(minutes=1)
+    assert "Hyrule" not in render_prime_block(state, ticked_at=now, now=now).text
+    assert QUOTE in c.promise_text
+
+
+def test_every_kind_of_turn_has_promise_words():
+    assert set(hb.PROMISE_TO) == set(get_args(hb.TurnWho)) == set(hb.WHO_WORDS)
 
 
 def test_a_promise_made_outside_a_chat_with_juniper_is_not_labelled_as_one_to_her():
@@ -116,6 +131,22 @@ def test_both_kinds_held_together_fade_on_their_own_clocks():
     state = promise.model_copy(update={"concerns": [*promise.concerns, _ordinary()]})
     at = PROMISED + timedelta(hours=30)
     assert [c.concern_id for c in observe(state, PrimeSnapshotV1(), at).concerns] == ["d8db9d7b1bba4cf7"]
+
+
+def test_an_unkept_promise_older_than_a_day_lives_on_but_does_not_block_the_next_promise():
+    state, turns, _ = _fold(_hops())
+    later = PROMISED + timedelta(hours=30)
+    signals = [hb.signal_from_hop(h) for h in _hops(corr="next-1", at=later)]
+    state = observe(state, PrimeSnapshotV1(), later)
+    assert [c.concern_id for c in state.concerns] == ["d8db9d7b1bba4cf7"]  # alive at 30 h (72 h TTL)
+    state, turns, folded = hb.fold_turn_signals(state, turns, signals, later + timedelta(seconds=15))
+    assert folded[0].opened_concern_id is not None and folded[0].thread_refused is None
+    assert len(state.concerns) == 2
+    # Within a day it still holds the one slot, as before.
+    early = PROMISED + timedelta(hours=20)
+    st0, t0, _ = _fold(_hops())
+    _, _, f2 = hb.fold_turn_signals(st0, t0, [hb.signal_from_hop(h) for h in _hops(corr="next-2", at=early)], early)
+    assert f2[0].thread_refused == "already holding 1 concern opened by a turn"
 
 
 def test_the_ttls_and_the_quiet_floor():

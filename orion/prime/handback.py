@@ -66,8 +66,8 @@ from typing import Any, Literal, Optional, Sequence
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 from orion.prime.acts import settle_concern
-from orion.prime.state import (MAX_CONCERNS, PROMISE_EVENT_PREFIX, PROMISE_TEXT_CAP, PrimeConcernV1, PrimeStateV1,
-                               note_change)
+from orion.prime.state import (CONCERN_TTL, MAX_CONCERNS, PROMISE_EVENT_PREFIX, PROMISE_TEXT_CAP, PrimeConcernV1,
+                               PrimeStateV1, note_change)
 
 TURNS_KEY = "orion:prime:turns"
 HANDBACK_CHANNEL = "orion:cockpit:hop"
@@ -327,11 +327,19 @@ def turn_concern_id(correlation_id: str) -> str:
     return hashlib.sha256(f"{TURN_EVENT_PREFIX}{correlation_id}".encode()).hexdigest()[:16]
 
 
-def _open_turn_concerns(state: PrimeStateV1, exempt: frozenset[str] = frozenset()) -> int:
-    """Open turn concerns, leaving out ``exempt`` ones: a concern Prime took on is Prime's own commitment now
-    (orion/prime/intention.py) and must not hold the one turn-concern slot for up to its 72 h horizon."""
-    return sum(1 for c in state.concerns if c.graded is None and c.concern_id not in exempt
-               and (c.event_ref or "").startswith(TURN_EVENT_PREFIX))
+def holds_turn_slot(c: PrimeConcernV1, now: datetime) -> bool:
+    """Whether an open turn concern holds the turn-concern slot (``TURN_CONCERNS_MAX_OPEN``). Only while it is
+    within ``CONCERN_TTL`` (24 h) of last being kept, exactly as long as it lived before promise concerns got 72 h
+    (2026-11-13): the longer life gives Prime more time to keep a promise, not one promise 3 days of blocking
+    every later one (on the live 3-day replay a slot held 72 h refused a thread that 24 h opened)."""
+    return (c.graded is None and (c.event_ref or "").startswith(TURN_EVENT_PREFIX)
+            and now - c.last_evidence_at <= CONCERN_TTL)
+
+
+def _open_turn_concerns(state: PrimeStateV1, now: datetime, exempt: frozenset[str] = frozenset()) -> int:
+    """Turn concerns holding the slot, leaving out ``exempt`` ones: a concern Prime took on is Prime's own
+    commitment now (orion/prime/intention.py) and must not hold the one turn-concern slot for up to its 72 h horizon."""
+    return sum(1 for c in state.concerns if c.concern_id not in exempt and holds_turn_slot(c, now))
 
 
 def thread_refusal(state: PrimeStateV1, turns: PrimeTurnsStateV1, now: datetime, *,
@@ -339,7 +347,7 @@ def thread_refusal(state: PrimeStateV1, turns: PrimeTurnsStateV1, now: datetime,
     """Why a thread a turn opened may not become a concern now (the loop guard), or None."""
     if len(state.concerns) >= MAX_CONCERNS:
         return f"already holding {MAX_CONCERNS} concerns"
-    if _open_turn_concerns(state, exempt) >= TURN_CONCERNS_MAX_OPEN:
+    if _open_turn_concerns(state, now, exempt) >= TURN_CONCERNS_MAX_OPEN:
         return f"already holding {TURN_CONCERNS_MAX_OPEN} concern opened by a turn"
     recent = [t for t in turns.turn_concerns_opened_at if now - t < TURN_CONCERN_WINDOW]
     if len(recent) >= TURN_CONCERNS_PER_DAY:
@@ -404,14 +412,18 @@ def fold_turn_signals(
                 n = len(refs)
                 # Live 11-12 (concern d8db9d7b1bba4cf7) the old words "a thread I opened" read to Prime as "a new
                 # chat thread opened": say it is a promise. The sentence itself goes in promise_text (frame only).
+                # No reply line here: a reply often opens with the promise, and ``text`` goes into every turn's
+                # Prime block (S-1.8). Juniper's opening line is kept for context; the sentence is promise_text.
+                asked = (f': Juniper: "{_cut(_first_line(start.prompt_excerpt), 120)}"'
+                         if start.who == "chat_juniper" and _first_line(start.prompt_excerpt) else "")
                 text = _cut(f"a promise I made in a {words} ({n} promise{'s' if n != 1 else ''}, "
-                            f"{refs[0]}{' ...' if n > 1 else ''}): {gist}", 300)
+                            f"{refs[0]}{' ...' if n > 1 else ''}){asked}", 300)
                 concern = PrimeConcernV1(concern_id=turn_concern_id(corr), text=text,
                                          event_ref=f"{TURN_EVENT_PREFIX}{corr}", opened_at=now, last_evidence_at=now,
                                          promise_text=promise_text(start.who, sig.promise_quotes, sig.at))
                 state = state.model_copy(update={"concerns": [*state.concerns, concern]})
                 state = note_change(state, f"a {words} turn ({corr}) made a promise, now concern "
-                                           f"{concern.concern_id}: {gist[:120]}")
+                                           f"{concern.concern_id}")
                 opened = concern.concern_id
                 opened_at.append(now)
                 no_bet = [*no_bet, opened][-MAX_NO_BET_IDS:]
@@ -480,6 +492,7 @@ __all__ = [
     "link_started_turn",
     "promise_refs",
     "promise_text",
+    "holds_turn_slot",
     "signal_from_hop",
     "thread_refusal",
     "turn_concern_id",

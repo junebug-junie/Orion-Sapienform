@@ -115,7 +115,24 @@ Plain version: Orion stops feeling chat as a near-constant body signal (fresh 91
 
 ## Tests run
 
-TESTS_PLACEHOLDER
+```text
+orion-prediction (its image, worktree :ro, after merging origin/main):  pytest tests -> 410 passed
+orion-substrate-runtime tests + evals:  599 passed; 14 failed + 10 errors, every one also failing on clean origin/main
+  (cursor_tail_seed, cursor_reset_auth, grammar_truth_reducer_health, quarantine_truth, reducer_health,
+   attention_self_model_tick x2, falkor_routed_store, worker_reducer; grammar_consumer_integration collection)
+orion/substrate, mood_arc, attention, metacog, temporal_self, prime, schemas:  same failures as main (4 felt_state)
+tests/ (repo root) 4,843 passed, 44 failed + 37 errors: the same set as clean origin/main, plus one order-dependent
+  flake (test_street_event_bus_catalog::test_retina_..., passes alone: 9 passed); scripts/analysis/tests 554 passed
+orion-field-digester 297 passed (heartbeat_chassis collection error pre-existing on main)
+orion-equilibrium-service tests + evals 283 passed; orion-thought 877 passed; orion-attention-runtime 59 passed
+orion-hub (attention_organ_page, outreach_vocabulary, act_ledger, lattice, node_history): 156 passed
+check_metric_lineage --gate PASS; --prompt-semantics PASS; check_definition_drift --gate PASS (after --update)
+check_env_template_parity PASS; check_env_key_single_source OK; check_service_env_compose_parity orion-prediction OK
+  (orion-substrate-runtime reports the same BRAIN_FRAME_* gap as main)
+check_sentience_instruments --static-only: all claims hold; check_inner_state_registry OK; git diff --check clean
+orion-static-gates commands run locally: all pass
+CI on the PR: 42 passed, 0 failed
+```
 
 ## Evals run
 
@@ -138,7 +155,32 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "SELECT max(ob
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent (read-only, against `git diff origin/main...HEAD`). It confirmed the math (excess sign, variance, coin-flip edge, clip), no leakage in the live producer path, no naive-datetime or Decimal hazard, the backlog guard, and absent-not-calm.
+
+- Finding (high): 15 CI failures in suites that still used `node:substrate.chat` as a live example (self-readings fixture, selectors, event decay, world-first rank, outcome classifier).
+  - Fix: fixtures moved to live nodes (`node:prediction.chat_turn` where the test is about event-gated behaviour, codebase/biometrics/execution elsewhere); expected sets updated; world-first parity "field" golden regenerated (broadcast half verified unchanged).
+  - Evidence: the five named workflows' suites pass; CI 42/42.
+- Finding (medium): self-readings would call the new node "Can't read right now (no reading)" after a week with no chat.
+  - Fix: `_quiet_event` in `orion/attention/self_readings.py`: an event-written signal with no row at all is "No recent events", like a stale one. A row that exists but is non-finite stays unreadable.
+  - Evidence: `test_event_signal_with_no_event_in_its_whole_history_is_quiet_not_unreadable`; the non-finite test still passes.
+- Finding (medium): the skill table's prior set ignored the settle-time rule the live producer uses.
+  - Fix: `heldout_skill` reads only bets already settled when the scored bet settled.
+  - Evidence: `test_heldout_skill_reads_only_bets_already_settled_when_this_one_settled`; numbers above re-run with it (asks gap +0.155 unchanged to 3 dp).
+- Finding (medium): the eval's `--check` rest-share gate passes almost any map.
+  - Fix: gate also on per-turn z sd in [0.8, 1.25] and on every used kind having scored bets; empty replay fails instead of crashing.
+  - Evidence: fixture check PASS (z sd 0.95).
+- Finding (medium): world-model slot 1 is now always 0.
+  - Fix: recorded as a risk (publish tick off live; same choice as step 5).
+- Finding (low): Spearman used min ranks for ties.
+  - Fix: average ranks (`_ranks`). Evidence: independence now Pearson +0.07 / Spearman +0.14.
+- Finding (low): eval replay did not skip backlog turns.
+  - Fix: skips turns placed more than 60 min before settling, as the producer does (188 of 549 were the 10-29 bulk settle). Numbers above are after the fix.
+- Finding (low): near-coin-flip bet reads |z| ~ 1.
+  - Fix: documented in the module docstring.
+- Finding (low): stale docstrings (mood-arc enrichment, field-digester tests).
+  - Fix: updated.
+- Finding (low): dropped events not counted when publishing is off.
+  - Fix: `dropped_publish_disabled` counter in `/health`.
 
 ## Restart required
 
@@ -173,6 +215,6 @@ History rows in `substrate_node_prediction_error_history` age out by the 168 h p
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3281
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

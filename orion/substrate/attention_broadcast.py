@@ -151,6 +151,9 @@ def substrate_pressure_signals(
             if salience < min_salience:
                 continue
             node_id = str(getattr(node, "node_id", "") or "")
+            if kind == "prediction_error" and is_alarm_node(node_id):
+                # Same rule as world_first_signals: an alarm's seed is a firing.
+                kind = "alarm"
             label = compact(str(getattr(node, "label", "") or node_id), 120)
             if not label:
                 continue
@@ -166,7 +169,7 @@ def substrate_pressure_signals(
                     signal_id=stable_id("substrate-signal", f"{node_id}|{kind}"),
                     source="substrate_broadcast",
                     target_text=label,
-                    target_type_hint="anomaly" if kind == "prediction_error" else "concept",
+                    target_type_hint="anomaly" if kind in ("prediction_error", "alarm") else "concept",
                     signal_kind=f"substrate_{kind}",
                     salience=salience,
                     confidence=confidence,

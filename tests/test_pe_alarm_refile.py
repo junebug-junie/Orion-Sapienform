@@ -154,3 +154,17 @@ def test_broadcast_signal_for_an_alarm_says_alarm() -> None:
     sig = next(s for s in signals if nid in s.evidence_refs)
     assert sig.signal_kind == "substrate_alarm"
     assert sig.provenance["signal_driver"] == "alarm"
+
+
+def test_legacy_pressure_signals_call_an_alarm_an_alarm() -> None:
+    import orion.substrate.attention_broadcast as ab
+
+    node = SimpleNamespace(
+        node_id="node:substrate.cabinet", label="Cabinet warming alarm", node_kind="concept",
+        metadata={"dynamic_pressure": 0.8, "dynamic_pressure_reason": "prediction_error_seed",
+                  "prediction_error": 0.7},
+        signals=SimpleNamespace(confidence=1.0),
+        temporal=SimpleNamespace(observed_at=NOW),
+    )
+    (sig,) = ab.substrate_pressure_signals([node])
+    assert sig.signal_kind == "substrate_alarm" and sig.target_type_hint == "anomaly"

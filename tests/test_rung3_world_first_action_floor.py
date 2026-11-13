@@ -16,8 +16,9 @@ from orion.schemas.attention_frame import CuriosityCandidateActionV1, OpenLoopV1
 
 NOW = datetime(2026, 10, 9, 12, 0, tzinfo=timezone.utc)
 # An event-written body node (glossary sparsity designed_sparse). Was
-# node:substrate.route until its retirement (2026-11, PE suite rebuild step 5).
-ROUTE = "node:substrate.codebase"
+# node:substrate.route until its retirement (2026-11, PE suite rebuild step 5),
+# then codebase (retired 2026-11-13).
+ROUTE = "node:substrate.execution"
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +28,7 @@ def _no_db(monkeypatch):
 
 def _route_node(age_sec: float):
     return SimpleNamespace(
-        node_id=ROUTE, label="codebase", node_kind="concept",
+        node_id=ROUTE, label="execution", node_kind="concept",
         metadata={"prediction_error": 0.5, "dynamic_pressure": 0.5},
         signals=SimpleNamespace(confidence=0.8),
         temporal=SimpleNamespace(observed_at=NOW - timedelta(seconds=age_sec)),

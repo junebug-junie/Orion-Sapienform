@@ -237,3 +237,12 @@ def test_index_lists_every_node_with_counts():
     names = [n["node_id"] for n in item.extra["nodes"]]
     assert names == ["node:substrate.biometrics", "node:substrate.cabinet"]
     assert "node_id=" in item.text
+
+
+def test_an_alarm_node_is_not_called_a_prediction_error():
+    """Cabinet, strain and street are alarms (PE suite rebuild, 2026-11-13)."""
+    cab = "node:substrate.cabinet"
+    item = run(nh.read_node_history(FakeConn(_rows(node=cab, hours=24)), cab, NOW - timedelta(hours=24), NOW))
+    assert "not a prediction error" in item.text and "cabinet warming alarm" in item.text
+    live = run(nh.read_node_history(FakeConn(_rows(hours=24)), NODE, NOW - timedelta(hours=24), NOW))
+    assert f"{NODE} prediction error over" in live.text

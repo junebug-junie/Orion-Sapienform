@@ -661,8 +661,9 @@ channels:
   # docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md):
   # a clipped z of git/PR/graph churn per codebase delta event, not a
   # forecast. It won 2.8% of attention frames and seeded 128 curiosity
-  # candidates in the 7 days before removal. The node, its field receipt and
-  # its history rows are gone; the churn score stays in
+  # candidates in the 7 days before removal. No node write, no field receipt,
+  # no new history rows; a lingering node or row is fenced by
+  # RETIRED_PREDICTION_ERROR_NODE_IDS. The churn score stays in
   # substrate_codebase_delta_log for the Hub co-creation tab and self-study.
 
   # node:substrate.route's entry removed 2026-11: route_prediction_error() and

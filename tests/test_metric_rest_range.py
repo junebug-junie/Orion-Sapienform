@@ -119,7 +119,8 @@ def test_real_glossary_rest_ranges_validate_and_round_trip_as_tuples():
     # +1 2026-10-20: node:substrate.street (street events -> attention).
     # -2 2026-11: node:substrate.bus_synaptic and node:substrate.route retired.
     # +2 2026-11-11: node:prediction.room and node:prediction.body (forecast surprise).
-    assert len(ranges) == 13
+    # -1 2026-11-13: node:substrate.codebase retired (churn z, not a forecast).
+    assert len(ranges) == 12
     assert ranges[("node:substrate.street", "prediction_error")] == ("trigger", (0.0, 0.0))
     assert ranges[("node:substrate.perception_walkway", "prediction_error")][1] == (0.0, 0.0)
     for key, (kind, rng) in ranges.items():

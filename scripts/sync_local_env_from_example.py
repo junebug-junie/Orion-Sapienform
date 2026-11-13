@@ -231,6 +231,9 @@ SYNC_PREFIXES = (
     "SUBSTRATE_RPC_DELIVERY_",
     # Reverie PE-magnitude history writer (spec 2026-10-02, step 1).
     "SUBSTRATE_PE_HISTORY_",
+    # Codebase delta listener (2026-11-13: renamed from SUBSTRATE_WRITE_CODEBASE_
+    # PREDICTION_ERROR_NODE when node:substrate.codebase was retired).
+    "SUBSTRATE_CODEBASE_",
     "SUBSTRATE_RPC_HEALTH_",
     "ENABLE_RPC_DELIVERY_",
     "ENABLE_PRE_TURN_",

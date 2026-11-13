@@ -48,7 +48,8 @@ def test_one_carried_event_holds_at_most_the_orienting_window_with_decay() -> No
     it holds until the next write (the 2026-10-10 05:51 live case)."""
     from orion.attention.world_first import EVENT_ORIENTING_WINDOW_SEC
 
-    node = "node:substrate.codebase"
+    # codebase (the live case) was retired 2026-11-13; execution is the same event-written shape.
+    node = "node:substrate.execution"
     rows = _calm_rows(node, 0.0, every_min=15)
     rows = [r for r in rows if r[1] < END - timedelta(minutes=40)]
     rows.append((node, END - timedelta(minutes=40), 0.988))

@@ -516,6 +516,13 @@ def _prediction_error_label(node_id: str) -> str:
     never returns an empty label (the schema requires one) and never invents a
     domain name that is not in the id.
     """
+    from orion.substrate.prediction_error_freshness import ALARM_LABELS
+
+    alarm = ALARM_LABELS.get(str(node_id or "").strip())
+    if alarm:
+        # An alarm is not a prediction error (cabinet warming alarm, strain
+        # news, street event alarm): the atlas and reverie read this label.
+        return f"{alarm[:1].upper()}{alarm[1:]}"
     domain = str(node_id or "").strip()
     for prefix in ("node:substrate.", "node:", "substrate."):
         if domain.startswith(prefix):
@@ -782,12 +789,10 @@ class BiometricsSubstrateWorker:
                     name="substrate-perception-prediction-error-listener",
                 )
             )
-        # codebase_prediction_error consumer (docs/superpowers/specs/2026-07-
-        # 30-codebase-mass-signal-design.md). Own dedicated flag, default off
-        # -- see SUBSTRATE_WRITE_CODEBASE_PREDICTION_ERROR_NODE's own comment
-        # in settings.py for why this doesn't reuse
-        # SUBSTRATE_WRITE_PREDICTION_ERROR_NODES.
-        if self._bus is not None and s.enable_codebase_prediction_error_node:
+        # Codebase delta listener (docs/superpowers/specs/2026-07-30-codebase-
+        # mass-signal-design.md): delta log + baseline only since 2026-11-13,
+        # when node:substrate.codebase was retired.
+        if self._bus is not None and s.enable_codebase_delta_listener:
             self._tasks.append(
                 asyncio.create_task(
                     self._codebase_delta_listener_loop(),
@@ -3306,40 +3311,12 @@ class BiometricsSubstrateWorker:
         result = codebase_prediction_error(
             git_delta=git_delta, pr_delta=pr_delta, graph_delta=graph_delta, baseline=baseline,
         )
-        now = datetime.now(timezone.utc)
-        # field-digester's state_deltas.py ingests ReductionReceiptV1 rows
-        # (target_kind="prediction_signal"), NOT the FalkorDB node written
-        # below -- a completely separate path every other prediction_error
-        # domain's own tick already feeds (confirmed by reading the
-        # biometrics tick in this same file). Written on every scored
-        # delta including score == 0.0, same as every sibling domain (see
-        # the comment on _prediction_error_receipt): a gated receipt left the
-        # field's node:substrate.codebase prediction_error frozen at its last
-        # non-zero score between deltas.
-        # caused_by_event_ids intentionally left at its default `()`
-        # (review finding, 2026-07-31, PR #1547 proposal) -- unlike
-        # biometrics/execution/chat/route above, this domain has its own
-        # explicit, dated Phase-3-deferral comment already on file
-        # (docs/superpowers/specs/2026-07-30-codebase-mass-signal-design.md,
-        # cited near _PREDICTION_ERROR_DOMAIN_NODE_IDS above) explaining
-        # why downstream consumer-wiring for `codebase` stays deferred
-        # until Phase 1's replay reads MET. Populating evidence here
-        # would be a drive-by fix on top of that deliberate scoping
-        # decision, not a completion of it.
-        self._store.save_receipt(
-            _prediction_error_receipt(
-                reducer_key="codebase",
-                node_id="node:substrate.codebase",
-                prediction_error=result.score,
-                now=now,
-            )
-        )
-        self._write_prediction_error_node(
-            node_id="node:substrate.codebase",
-            error=result.score,
-            now=now,
-            reducer_key="codebase",
-        )
+        # node:substrate.codebase RETIRED 2026-11-13 (PE suite rebuild): the
+        # churn z was never a forecast, yet it won 2.8% of attention frames and
+        # seeded 128 curiosity candidates in 7 days. No field receipt and no
+        # graph node any more (RETIRED_PREDICTION_ERROR_NODE_IDS). The score
+        # stays in this domain's own log for the Hub co-creation tab and the
+        # self-study reader, neither of which reads it as prediction error.
         self._store.save_codebase_mass_baseline(
             result.baseline, retention_days=self._settings.codebase_mass_baseline_retention_days,
         )

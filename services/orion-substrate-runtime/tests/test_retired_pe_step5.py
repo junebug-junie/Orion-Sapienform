@@ -100,3 +100,24 @@ def test_pe_magnitudes_skip_retired_nodes_and_their_history(monkeypatch) -> None
     saved = worker._store.save_prediction_error_history_samples.call_args.args[0]
     assert [n for n, _, _ in saved] == ["node:substrate.execution"]
     settings_mod._settings = None
+
+
+def test_codebase_listener_flag_no_longer_names_a_node() -> None:
+    """2026-11-13: node:substrate.codebase retired; the listener flag that
+    gated its node write was renamed, so nothing still says it writes one."""
+    fields = set(settings_mod.Settings.model_fields)
+    assert "enable_codebase_prediction_error_node" not in fields
+    assert settings_mod.Settings.model_fields["enable_codebase_delta_listener"].alias == (
+        "SUBSTRATE_CODEBASE_DELTA_LISTENER_ENABLED"
+    )
+
+
+def test_alarm_nodes_are_labelled_as_alarms() -> None:
+    """Cabinet, strain and street are alarms, not prediction errors: the graph
+    label (atlas, reverie open loops) says so."""
+    from orion.substrate.prediction_error_freshness import ALARM_NODE_IDS
+
+    for node_id in ALARM_NODE_IDS:
+        assert "prediction error" not in worker_module._prediction_error_label(node_id)
+    assert worker_module._prediction_error_label("node:substrate.cabinet") == "Cabinet warming alarm"
+    assert worker_module._prediction_error_label("node:substrate.execution") == "Execution prediction error"

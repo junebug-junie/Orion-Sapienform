@@ -29,8 +29,9 @@ default `false`, since only `swear_frequency` passed the replay's live-data
 sanity check (`typo_rate` did not, and is deliberately not on the wire
 schema at all -- see `orion/schemas/affective_state.py`).
 
-Not yet real: no consumer reads `codebase_delta`'s `node:substrate.codebase`
-in any live store, and nothing consumes `juniper_affective_state` at all.
+`codebase_delta` is scored by orion-substrate-runtime into
+`substrate_codebase_delta_log` (Hub co-creation tab, self-study); the
+`node:substrate.codebase` prediction-error node was retired 2026-11-13. Not yet real: and nothing consumes `juniper_affective_state` at all.
 This service running does not yet change any Orion-facing behavior -- it
 only proves the producer half of each arc works end-to-end (real bus
 publishes), per this program's "measure before minting" discipline.

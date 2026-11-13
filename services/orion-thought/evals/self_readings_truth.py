@@ -1,7 +1,7 @@
 """Truth-to-rows checker for the self-readings block (spec 2026-10-07 acceptance check 4).
 
 Independent of ``orion.attention.self_readings``: it parses the RENDERED text, finds the row each
-``[pe:<name>@<observed_at>]`` names among the persisted rows, and re-derives every number shown
+``[pe:<name>@<observed_at>]`` (``[alarm:...]`` for an alarm) names among the persisted rows, and re-derives every number shown
 from those rows with its own arithmetic. A number that does not resolve to a row, or does not
 match it, is a failure. Used by the fixture eval (test_self_readings_truth_eval.py) and the live
 replay (run_self_readings_live_eval.py).
@@ -25,7 +25,7 @@ WEEK = timedelta(days=7)
 HOUR = timedelta(hours=1)
 PREFIX = "node:substrate."
 
-_REF = r"\[pe:(?P<name>[a-z_]+)@(?P<ts>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]"
+_REF = r"\[(?:pe|alarm):(?P<name>[a-z_]+)@(?P<ts>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ)\]"
 _TREND = r"(?:, (?:rising|settling))?"
 # Optional "tends to" clause (spec section E), checked against its association row by
 # scripts/analysis/self_signal_outcome_truth.py:check_clause.

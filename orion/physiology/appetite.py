@@ -48,6 +48,7 @@ from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from orion.physiology.families import FamilyConfig
+from orion.physiology.personality_values import care_multiplier
 
 WINDOW = timedelta(days=30)
 GRADED_MIN_CLOSES = 30
@@ -234,17 +235,21 @@ def want_intensity(hunger_intensity: float, salience: Optional[float]) -> tuple[
 
 
 def rank_value(app: FamilyAppetite, want_intensity: float, outcome_value: Optional[float], *,
-               event: bool = False) -> tuple[float, str, float]:
+               event: bool = False, care: float = 0.0) -> tuple[float, str, float]:
     """(value_rank, value_basis, outcome used). Graded: rank of intensity x expected outcome (the
     producer's, else the family mean). Ungraded: outcome 1. No history: rank = intensity.
     ``event``: the want carries an event, so it ranks against the family's past event wants
-    (basis ``event:<graded|ungraded>``); under EVENT_HISTORY_MIN of them, as before (``event_cold:<basis>``)."""
+    (basis ``event:<graded|ungraded>``); under EVENT_HISTORY_MIN of them, as before (``event_cold:<basis>``).
+    ``care`` (personality rev 4, Move 2; ``orion.physiology.personality_values``): this want's value is
+    multiplied by ``1 + BETA x care`` BEFORE the percentile; the history is not. care 0 is exactly the
+    rank without it."""
+    mult = care_multiplier(care)
     if app.graded:
         out = outcome_value if outcome_value is not None else (app.mean_outcome if app.mean_outcome is not None else 1.0)
         basis = "graded"
     else:
         out, basis = 1.0, "ungraded"
-    x = want_intensity * out
+    x = want_intensity * out * mult
     if event and len(app.event_values) >= EVENT_HISTORY_MIN:
         # Past events carry no producer outcome of their own here: each is scaled by the family's
         # expected outcome (the mean, or 1 ungraded), the same multiplier a want without one gets.
@@ -262,7 +267,7 @@ def rank_value(app: FamilyAppetite, want_intensity: float, outcome_value: Option
     # Cold start: too few past events to rank against, so the rule every want had before (patch 1).
     cold = "event_cold:" if event else ""
     if not app.values:
-        return min(1.0, max(0.0, want_intensity)), f"{cold}no_history", out
+        return min(1.0, max(0.0, want_intensity * mult)), f"{cold}no_history", out
     return mid_rank(x, app.values), f"{cold}{basis}", out
 
 

@@ -385,6 +385,8 @@ sources:
     reason: pure Choice; prices a want against the posted prices with reservations and returns a SHADOW decision. Nobody obeys it yet.
   - module: services/orion-durable-runs/app/physiology_market.py
     reason: producer; POST /physiology/bid reads act history + the latest physiology state, decides (shadow) and publishes the decision. Gates nothing. Also reads Prime's regulate signal for a family with receptors and passes it to decide (Orion Prime step 3).
+  - module: services/orion-durable-runs/app/personality_values.py
+    reason: personality rev 4 Move 2 reader for the market -- reads active tendencies + personality_choice rows and embeds want text, feeding care and source (c) into Market.bid. Gates nothing itself (care only lifts value; (c) is a weight source).
   - module: orion/physiology/prime_charge.py
     reason: pure contract for Prime's regulate signals (Orion Prime step 3, 2026-10-30) -- the Redis record, the bounded charge (<= 0.5 x family weight), and the effect classes. Defines a price input; gates nothing itself (Choice applies it, and a want can always outbid it).
   - module: orion/prime/acts.py

@@ -322,9 +322,9 @@ error and `prob_better` (no alpha). Surprise = -log P(observed state); excess su
 the forecast's entropy, which is 0 on average when the forecast is calibrated. A replay sees only the
 rows that had landed (`created_at`) at each origin. No table, endpoint, bus event or consumer yet.
 
-Replay 10-30..11-13 (`evals/run_act_chain_replay_eval.py`, 1,422 buckets, 16 days): served loss 1.791
-nats vs 1.800 for the clock hour (gap -0.042/day ± 0.070, P 0.72) and 1.860 for the marginal
-(P 0.95); excess surprise +0.08 ± 0.08 overall, +0.18 ± 0.05 in the asleep block.
+Replay 10-29..11-13 (`evals/run_act_chain_replay_eval.py`, 1,423 buckets, 16 days): served loss 1.793
+nats vs 1.800 for the clock hour (gap -0.042/day ± 0.071, P 0.72) and 1.859 for the marginal
+(P 0.95); excess surprise +0.09 ± 0.08 overall, +0.19 ± 0.05 in the asleep block.
 
 ## Power-bill bet (`GET /bill-forecast`)
 

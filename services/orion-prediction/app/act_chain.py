@@ -77,8 +77,12 @@ _DAY = 86_400_000_000_000
 _IDX = {s: i for i, s in enumerate(STATES)}
 
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
 def _ns(ts: datetime) -> int:
-    return int(ts.astimezone(timezone.utc).timestamp() * 1e9)
+    """Exact integer ns (a float timestamp * 1e9 rounds to ~256 ns near a cutoff)."""
+    return (ts - _EPOCH) // timedelta(microseconds=1) * 1000
 
 
 def bucket_floor(ts: datetime) -> datetime:
@@ -139,16 +143,17 @@ class Stream:
         return (_ns(ts) - self.b0_ns) // _G
 
 
-def _level(key: np.ndarray, n_keys: int, y: np.ndarray, w: np.ndarray, parent: np.ndarray) -> tuple[np.ndarray, float]:
-    """One backoff level: (n_keys x K matrix of P(state | key), chosen K).
+def _level(key: np.ndarray, n_keys: int, y: np.ndarray, w: np.ndarray, par_i: np.ndarray) -> tuple[np.ndarray, float]:
+    """One backoff level: (n_keys x K weighted counts, chosen K).
 
-    ``parent``: P(state) of the coarser level for each transition (len(y) x K). K maximises the
-    weighted leave-one-out log likelihood of the training transitions (each one left out of its own
-    count); no held-out data is used."""
+    ``par_i``: the coarser level's P(observed state) for each transition, with that transition already
+    left out of the parent too (else a thin context's parent "knows" the held-out point and LOO picks
+    too large a K). K maximises the weighted leave-one-out log likelihood of the training transitions;
+    no held-out data is used."""
     K = K_STATES
     C = np.bincount(key * K + y, w, n_keys * K).reshape(n_keys, K)
     N = C.sum(axis=1)
-    c_i, n_i, par_i = C[key, y], N[key], parent[np.arange(len(y)), y]
+    c_i, n_i = C[key, y], N[key]
     best_k, best_ll = K_GRID[0], -np.inf
     for k in K_GRID:
         ll = float(w @ np.log((c_i - w + k * par_i) / (n_i - w + k)))
@@ -173,13 +178,15 @@ def predict(s: Stream, o: int) -> dict:
     if not len(t):
         return {"origin": datetime.fromtimestamp(o_ns / 1e9, tz=timezone.utc), "prev_state": STATES[prev_state],
                 "block": BLOCKS[blk], "n_train": 0, "k": {}, "probs": {m: marg for m in MODELS}}
-    flat = np.broadcast_to(marg, (len(t), K))
     post = lambda C, k, row, par: (C[row] + k * par) / (C[row].sum() + k)  # noqa: E731
-    C_h, k_h = _level(h, 24, y, w, flat)
-    C_b, k_b = _level(b, len(BLOCKS), y, w, flat)
-    C_a, k_a = _level(a, K, y, w, flat)
-    P_a = (C_a + k_a * marg) / (C_a.sum(axis=1, keepdims=True) + k_a)     # P(state | prev), every prev
-    C_ab, k_ab = _level(b * K + a, len(BLOCKS) * K, y, w, P_a[a])
+    marg_i = marg[y]          # the marginal is a near-flat prior with ALPHA; its own LOO shift is negligible
+    C_h, k_h = _level(h, 24, y, w, marg_i)
+    C_b, k_b = _level(b, len(BLOCKS), y, w, marg_i)
+    C_a, k_a = _level(a, K, y, w, marg_i)
+    N_a = C_a.sum(axis=1)
+    P_a = (C_a + k_a * marg) / (N_a[:, None] + k_a)                      # P(state | prev), every prev
+    pa_loo = (C_a[a, y] - w + k_a * marg_i) / (N_a[a] - w + k_a)          # same, transition i left out
+    C_ab, k_ab = _level(b * K + a, len(BLOCKS) * K, y, w, pa_loo)
     probs = {
         "act_marginal": marg,
         "act_clock_hour": post(C_h, k_h, hr, marg),

@@ -132,6 +132,6 @@ scripts/safe_docker_build.sh orion-mind up -d --build
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3340
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

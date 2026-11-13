@@ -72,6 +72,7 @@ path of a file with the full result; read only what you need from that file.
                          Temporal Self arcs; prints journal:/chat:/arc: ids a lived_record cites.
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
+  look [<camera>]        see a camera now (office, walkway, doorbell): Read the path it prints.
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
@@ -1666,6 +1667,23 @@ def cmd_ref(kind: str, ref_id: str, out: Out) -> str:
     return capped(res.lines, tail=f"full {kind}: {path}")
 
 
+def cmd_look(word: str | None, out: Out) -> str:
+    """`look`: each camera's newest frame age; `look <camera>`: copy its newest frame for Read."""
+    from orion.dig import look as lk
+
+    try:
+        if word is None:
+            lines, payload = lk.cameras()
+            name = "look"
+        else:
+            lines, payload = lk.look(word, home=home())
+            name = f"look-{payload['camera']}"
+    except lk.LookError as exc:
+        raise DigError(str(exc)) from exc
+    path = out.write(name, payload)
+    return capped(lines, tail=f"full result: {path}")
+
+
 # --- days (lived records) ------------------------------------------------------------------
 
 def cmd_days(start: date, end: date, out: Out, runner=None, get_json=None) -> str:
@@ -1854,6 +1872,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_claude_grants(out)
         elif ns.command == "claude-grants" and len(a) >= 5 and a[0] == "set" and a[3] == "because":
             text = cmd_claude_grants_set(a[1], a[2], " ".join(a[4:]), out)
+        elif ns.command == "look" and len(a) <= 1:
+            text = cmd_look(a[0] if a else None, out)
         elif ns.command in REF_COMMANDS and len(a) == 1:
             text = cmd_ref(ns.command, a[0], out)
         elif ns.command == "notes" and (not a or a[0] == "append"):

@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 
 DIG_BRIEF_LINE = (
-    "Dig kit: `python -P -m orion.dig <cmd>` in Bash. If Juniper asks, in any words, to look at, name, claim or write anything about your body, organs, capacities or past work, run `<cmd>` help first, use what it lists, and write the claims `capacities` asks for: Juniper can veto any. What is using your power, what your activity costs: `orion.dig body-economy hosts`. Recent PRs: `orion.dig history 2`, not the GitHub tool."
+    "Dig kit: `python -P -m orion.dig <cmd>` in Bash. If Juniper asks, in any words, to look at, name, claim or write anything about your body, organs, capacities or past work, run `<cmd>` help first, use what it lists, and write the claims `capacities` asks for: Juniper can veto any. What is using your power, what your activity costs: `orion.dig body-economy hosts`. Recent PRs: `orion.dig history 2`, not the GitHub tool. To see a camera now: `orion.dig look office` (or walkway), then Read the path it prints."
 )
 #: Raised 300 -> 400 (2026-10-30) for the power/cost pointer; still one short line per prompt.
 #: 2026-10-30: Juniper's "claim your capacities" got a prose self-portrait and no tool call (twice);
@@ -12,7 +12,9 @@ DIG_BRIEF_LINE = (
 #: 2026-11-04: raised 400 -> 420. Orion ran `capacities` on "what can you do" turns, then offered
 #: claims instead of writing them (ledger still empty). Since 2026-11-04 a claim holds its job while its
 #: evidence checks on each read; Juniper can veto any (vsm_confirmed.yaml `rejected`).
-MAX_BRIEF_CHARS = 420
+#: 2026-11-13: raised 420 -> 520 for the camera pointer (`look`, design 2026-11-13-camera-look-design.md):
+#: without it a "look at the walkway" turn has no way to learn the command exists.
+MAX_BRIEF_CHARS = 520
 
 
 def dig_brief_enabled() -> bool:

@@ -318,3 +318,60 @@ def build_multimodal_messages(
 
     messages[target_index] = {"role": messages[target_index].get("role", "user"), "content": parts}
     return messages
+
+
+# ───────────────────────────────────────────────────────────────
+# Images on a blind lane (passthrough routes)
+# ───────────────────────────────────────────────────────────────
+#
+# The passthrough routes forward a client's own messages (the Claude CLI's Read tool puts an image
+# block inside a tool_result). The pool may place such a call on a lane with no vision projector
+# (agent-gpu2, fast/metacog on 2026-11-13), where the worker rejects the request and a long
+# curiosity run dies on one picture. After placement, an image on a blind lane becomes a text note,
+# so the model is told it did not see instead of the call failing.
+# Design: docs/superpowers/specs/2026-11-13-camera-look-design.md.
+
+BLIND_IMAGE_NOTE = (
+    "[image not shown: the model serving this call cannot see images ({reason}). "
+    "Do not describe it; say you could not see it.]"
+)
+_IMAGE_TYPES = {True: "image", False: "image_url"}  # anthropic -> block type
+
+
+def _walk_images(content: Any, image_type: str, replace: Optional[Dict[str, Any]]) -> tuple[Any, int]:
+    """Count (and, given ``replace``, swap) image blocks in one content value, tool_result bodies included."""
+    if not isinstance(content, list):
+        return content, 0
+    out, n = [], 0
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == image_type:
+            n += 1
+            out.append(dict(replace) if replace is not None else block)
+        elif isinstance(block, dict) and block.get("type") == "tool_result" and isinstance(block.get("content"), list):
+            inner, k = _walk_images(block["content"], image_type, replace)
+            n += k
+            out.append({**block, "content": inner} if (replace is not None and k) else block)
+        else:
+            out.append(block)
+    return out, n
+
+
+def count_images(body: Dict[str, Any], *, anthropic: bool) -> int:
+    image_type = _IMAGE_TYPES[anthropic]
+    return sum(_walk_images(m.get("content"), image_type, None)[1]
+               for m in body.get("messages") or [] if isinstance(m, dict))
+
+
+def replace_images_with_note(body: Dict[str, Any], *, anthropic: bool, reason: str) -> tuple[Dict[str, Any], int]:
+    """A copy of ``body`` with every image block replaced by ``BLIND_IMAGE_NOTE``; the input is not changed."""
+    image_type = _IMAGE_TYPES[anthropic]
+    note = {"type": "text", "text": BLIND_IMAGE_NOTE.format(reason=reason)}
+    messages, total = [], 0
+    for message in body.get("messages") or []:
+        if not isinstance(message, dict):
+            messages.append(message)
+            continue
+        content, n = _walk_images(message.get("content"), image_type, note)
+        total += n
+        messages.append({**message, "content": content} if n else message)
+    return ({**body, "messages": messages} if total else body), total

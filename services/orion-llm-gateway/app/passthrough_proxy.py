@@ -52,6 +52,7 @@ from .pool_placement import (
     wait_lease_revoked,
 )
 from .settings import settings
+from .vision import count_images, replace_images_with_note, resolve_vision_capability
 
 logger = logging.getLogger("orion-llm-gateway.passthrough")
 
@@ -218,6 +219,24 @@ def _recalled_body(reason: str, route_key: str) -> Dict[str, Any]:
                       "the upstream call was stopped", reason=f"lease_{reason}", route=route_key)
 
 
+# Backends whose workers answer /props (llama.cpp and Strata). vLLM has no /props: probing it would
+# read as blind and strip images it may accept, so it is left as it was.
+BLIND_CHECK_BACKENDS = frozenset({"llamacpp", "strata"})
+
+
+async def _images_for_lane(body: Dict[str, Any], lease: Lease, route_key: str,
+                           correlation_id: Optional[str], anthropic: bool) -> Dict[str, Any]:
+    """Images reach a lane only if it can see them (vision.py, "Images on a blind lane")."""
+    capability = await asyncio.to_thread(resolve_vision_capability, lease.grant.url)
+    if capability.vision:
+        return body
+    reason = capability.detail or capability.source
+    body, n = replace_images_with_note(body, anthropic=anthropic, reason=reason)
+    logger.warning("passthrough_images_blind_lane route=%s served_by=%s images=%s reason=%s corr=%s",
+                   route_key, lease.grant.served_by, n, reason, correlation_id or "-")
+    return body
+
+
 async def proxy_on_pool(
     *,
     request: Request,
@@ -307,6 +326,8 @@ async def proxy_on_pool(
             grant_backend = granted_backend(lease.grant)
             if spec.work_class in GPU3_WORK_CLASSES and grant_backend == "llamacpp" and not anthropic:
                 dispatch_body = with_gpu3_route_defaults(dispatch_body, spec.work_class)
+            if grant_backend in BLIND_CHECK_BACKENDS and count_images(dispatch_body, anthropic=anthropic):
+                dispatch_body = await _images_for_lane(dispatch_body, lease, route_key, correlation_id, anthropic)
             if grant_backend == "vllm":
                 if anthropic:
                     report.finish("unsupported_backend_protocol")

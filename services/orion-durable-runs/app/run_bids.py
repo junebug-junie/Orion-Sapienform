@@ -111,7 +111,10 @@ SEEN_MAX = 5000
 # to "funded by the economy" and never to "held forever".
 # Consult turns bind too (Juniper 2026-11-12, tier 2): an hour-long turn on the agent lane is exactly
 # what the market prices. The flag (ORION_PHYSIOLOGY_BID_CURIOSITY_INVESTIGATE) gates every family here.
-BINDING_FAMILIES = frozenset({"durable.curiosity_investigate", "durable.consult_orion_turn"})
+# Intention carry runs bind too (Juniper 2026-11-13, TIER 1): once Orion took a concern on, the whether is settled;
+# the reserved share keeps curiosity and consults from crowding it out, and the economy still picks the time inside
+# the concern's horizon (hold end = min(opened + 86400 s, horizon - 1800 s); never dropped).
+BINDING_FAMILIES = frozenset({"durable.curiosity_investigate", "durable.consult_orion_turn", "durable.intention"})
 HOLD_DEADLINE_MARGIN_SEC = 1800.0   # a run with its own deadline is released this long before it
 HOLD_EVENT = "run.economy_held"
 # Patch 3b: reading's value-only bid (stage 1). The act is Hub's ``hub.world_pulse_read look``.

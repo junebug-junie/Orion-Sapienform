@@ -17,7 +17,8 @@ No new bus event: the hand-back is a second consumer of an existing one.
 The fold is deterministic: the same hops in the same order give the same state (a turn's concern id is derived
 from its correlation id, ``turn_concern_id``). Per finished turn Prime keeps:
 
-* who: ``chat_juniper`` (a turn Juniper typed), ``curiosity``, ``consult`` or ``letter``. Every other session
+* who: ``chat_juniper`` (a turn Juniper typed), ``curiosity``, ``consult``, ``letter`` or ``intention`` (the carry
+  turn of a concern Prime took on, orion/prime/intention.py; its promises open no concern). Every other session
   (world-pulse reads, self-sense evals, PR field notes, reminiscence, outreach) is not handed back: those are
   ~90% of turns (live 11-09..11-12) and are not threads of Orion's own life with anyone;
 * a one-line gist, cut from the prompt and the reply (code, not a model);
@@ -69,12 +70,13 @@ from orion.prime.state import MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, note_c
 TURNS_KEY = "orion:prime:turns"
 HANDBACK_CHANNEL = "orion:cockpit:hop"
 
-TurnWho = Literal["chat_juniper", "curiosity", "consult", "letter"]
+TurnWho = Literal["chat_juniper", "curiosity", "consult", "letter", "intention"]
 WHO_WORDS: dict[str, str] = {
     "chat_juniper": "chat with Juniper",
     "curiosity": "curiosity run",
     "consult": "consult with Claude",
     "letter": "day letter",
+    "intention": "carry turn for something I took on",
 }
 
 CURIOSITY_SESSION_ID = "orion_curiosity"
@@ -82,6 +84,10 @@ CURIOSITY_SESSION_ID = "orion_curiosity"
 CONSULT_SESSION_PREFIX = "consult-"
 # The day letter as Prime's end-of-day turn (design Part 3) runs under this session id. Nothing sends it yet.
 LETTER_SESSION_ID = "orion_day_letter"
+# The carry turn of an intention Prime took on (orion/schemas/intention.py INTENTION_SESSION_ID; a test pins the two).
+INTENTION_SESSION_ID = "orion_intention"
+# Loop guard (choice-as-EFE design Step -1, "Dangerous failure"): a carry turn's own promises open no concern.
+NO_THREAD_WHO = frozenset({"intention"})
 # Orion's own system sessions are named orion_*; a Hub chat turn Juniper typed carries ``mode`` on ingress.
 SYSTEM_SESSION_PREFIX = "orion_"
 
@@ -189,6 +195,8 @@ def classify_who(session_id: Optional[str], raw: dict[str, Any]) -> Optional[Tur
         return "consult"
     if sid == LETTER_SESSION_ID:
         return "letter"
+    if sid == INTENTION_SESSION_ID:
+        return "intention"
     if sid and "mode" in raw and not sid.startswith(SYSTEM_SESSION_PREFIX):
         return "chat_juniper"
     return None
@@ -350,7 +358,9 @@ def fold_turn_signals(
         refs = promise_refs(corr, sig.promise_indices)
         opened: Optional[str] = None
         refused: Optional[str] = None
-        if refs:
+        if refs and start.who in NO_THREAD_WHO:
+            refused = "a promise made inside a carry turn opens no concern (loop guard)"
+        elif refs:
             refused = thread_refusal(state, turns.model_copy(update={"turn_concerns_opened_at": opened_at}), now)
             if refused is None:
                 n = len(refs)

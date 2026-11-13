@@ -186,6 +186,12 @@ class Settings(BaseSettings):
     # The letter runs' shared admission deadline, counted from the act's open (every attempt must finish by it).
     PRIME_DAY_LETTER_RUN_DEADLINE_HOURS: float = Field(default=12.0, gt=0.0, le=48.0,
                                                        alias="PRIME_DAY_LETTER_RUN_DEADLINE_HOURS")
+    # Intentions Prime takes on (Step -1, docs/superpowers/specs/2026-11-13-choice-as-expected-free-energy-design.md;
+    # orion/prime/intention.py, app/prime_loop.py): the take_on move on a concern whose source has an adapter (today:
+    # a promise Orion made in chat). Prime opens a `make` act and orders ONE intention.carry run from Hub
+    # (PRIME_HUB_URL); the reply goes back into the originating chat thread. false = no move, no frame section, no
+    # order, nothing watched (runs already ordered finish or expire). Shipped ON.
+    PRIME_INTENTION_TAKE_ON_ENABLED: bool = Field(default=True, alias="PRIME_INTENTION_TAKE_ON_ENABLED")
     # Orion's consent to a Claude tool call (docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-
     # design.md section 3; app/prime_consent.py): orion-mind answers orion:prime:consent:request with one short
     # model call (frame <= 4,000 chars) on route PRIME_CONSENT_LLM_ROUTE (circe chat lane 0, pool priority

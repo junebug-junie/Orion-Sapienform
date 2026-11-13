@@ -312,8 +312,24 @@ def try_normalize_legacy_semantic_raw(raw: dict[str, Any]) -> tuple[dict[str, An
     return out, True
 
 
-OFF_VOCAB_METADATA_KEY = "off_vocab_fields"
+# Leading underscore: a key the model is not asked to write, so it cannot fake or clobber the record.
+OFF_VOCAB_METADATA_KEY = "_orion_off_vocab_fields"
 OFF_VOCAB_NOTE = "normalized_off_vocab_claim_fields"
+_CLAIM_CONTENT_KEYS: tuple[str, ...] = ("claim_id", "label", "summary", "claim_kind")
+
+
+def _has_real_claim_content(item: dict[str, Any]) -> bool:
+    return all(isinstance(item.get(k), str) and item[k].strip() for k in _CLAIM_CONTENT_KEYS)
+
+
+def _on_vocab(value: Any, vocab: frozenset[str]) -> bool:
+    return isinstance(value, str) and value in vocab
+
+
+def _kind_for_off_vocab_claim(claim: dict[str, Any]) -> str:
+    # current_turn_claim becomes a turn anchor in appraisal: only a claim that cites the current turn earns it.
+    refs = _coerce_evidence_refs(claim)
+    return "current_turn_claim" if any(r.startswith("current_turn:") for r in refs) else "situation_claim"
 
 
 def try_coerce_off_vocab_claim_fields(raw: dict[str, Any]) -> tuple[dict[str, Any] | None, bool]:
@@ -322,35 +338,38 @@ def try_coerce_off_vocab_claim_fields(raw: dict[str, Any]) -> tuple[dict[str, An
     Held seats (Strata flash-next on gpu1, Bonsai 27B on gpu2; issue #3274) return complete claims
     with real summaries and evidence refs, but make up the three label fields ("event_claim",
     "technical", "acknowledge") -- the whole reply then failed schema validation and Mind gave the
-    turn nothing. Only those three advisory labels are mapped (same fallbacks as the singleton/array
-    paths and appraisal's own coercion); every original value is kept in the claim's metadata, so the
-    record stays honest. Everything else still has to be real: every claim must carry claim_id,
-    label, summary and claim_kind, or nothing is coerced and the reply fails as before. Evidence
-    refs are still checked by the guardrail filter afterwards."""
+    turn nothing. Only those three advisory labels are mapped (kind -> current_turn_claim when a ref
+    cites the current turn, else situation_claim; anchor -> unknown; effect -> alias or no_effect);
+    every original value is kept in the claim's metadata, so the record stays honest. Everything
+    else still has to be real: every claim must carry non-blank string claim_id, label, summary and
+    claim_kind, and a dict (or absent) metadata, or nothing is coerced and the reply fails as before.
+    Evidence refs are still checked by the guardrail filter afterwards."""
     claims_in = raw.get("claims")
     if not isinstance(claims_in, list) or not claims_in:
         return None, False
     out_claims: list[dict[str, Any]] = []
     saw_off_vocab = False
     for item in claims_in:
-        if not isinstance(item, dict) or not _has_current_claim_shape(item):
+        if not isinstance(item, dict) or not _has_real_claim_content(item):
+            return None, False
+        if "metadata" in item and item["metadata"] is not None and not isinstance(item["metadata"], dict):
             return None, False
         claim = dict(item)
         off_vocab: dict[str, Any] = {}
-        kind = claim.get("claim_kind")
-        if kind not in _VALID_CLAIM_KINDS:
-            off_vocab["claim_kind"] = kind
-            claim["claim_kind"] = "current_turn_claim" if _coerce_evidence_refs(claim) else "situation_claim"
-        if "anchor" in claim and claim.get("anchor") not in _VALID_CLAIM_ANCHORS:
+        if not _on_vocab(claim.get("claim_kind"), _VALID_CLAIM_KINDS):
+            off_vocab["claim_kind"] = claim.get("claim_kind")
+            claim["claim_kind"] = _kind_for_off_vocab_claim(claim)
+        if "anchor" in claim and not _on_vocab(claim.get("anchor"), _VALID_CLAIM_ANCHORS):
             off_vocab["anchor"] = claim.get("anchor")
             claim["anchor"] = "unknown"
-        if "recommended_effect" in claim and claim.get("recommended_effect") not in _VALID_RECOMMENDED_EFFECTS:
+        if "recommended_effect" in claim and not _on_vocab(claim.get("recommended_effect"), _VALID_RECOMMENDED_EFFECTS):
             effect = claim.get("recommended_effect")
             off_vocab["recommended_effect"] = effect
-            claim["recommended_effect"] = _RECOMMENDED_EFFECT_ALIASES.get(str(effect or "").strip(), "no_effect")
+            alias_key = effect.strip() if isinstance(effect, str) else ""
+            claim["recommended_effect"] = _RECOMMENDED_EFFECT_ALIASES.get(alias_key, "no_effect")
         if off_vocab:
             saw_off_vocab = True
-            metadata = dict(claim.get("metadata") or {}) if isinstance(claim.get("metadata"), dict) else {}
+            metadata = dict(claim.get("metadata") or {})
             metadata[OFF_VOCAB_METADATA_KEY] = off_vocab
             claim["metadata"] = metadata
         out_claims.append(claim)

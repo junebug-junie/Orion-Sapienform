@@ -77,7 +77,7 @@ def test_captured_held_reply_passes_with_real_content(reply: dict[str, Any]) -> 
         # Real content passes through untouched.
         assert claim.summary == original["summary"] and claim.summary.strip()
         assert claim.label == original["label"]
-        assert claim.evidence_refs
+        assert claim.evidence_refs == original["evidence_refs"]
         # Every coerced label keeps its original value on the record.
         off_vocab = claim.metadata.get(OFF_VOCAB_METADATA_KEY) or {}
         for field, value in off_vocab.items():
@@ -101,15 +101,16 @@ def test_gpu2_claims_citing_refs_outside_the_pack_are_still_filtered() -> None:
     assert telemetry.filter_reasons_by_count.get("unsupported_or_weak") == 2
 
 
-def test_off_vocab_claim_without_content_still_fails() -> None:
-    """Kill means kill: a claim with no summary is not rescued by the enum coercion."""
+@pytest.mark.parametrize("summary", ["", "   ", None, ["a list"]])
+def test_off_vocab_claim_without_content_still_fails(summary: Any) -> None:
+    """Kill means kill: a claim with no real summary is not rescued by the enum coercion."""
     raw = {
         "schema_version": "mind.semantic_synthesis.v1",
         "claims": [
             {
                 "claim_id": "c1",
                 "label": "event",
-                "summary": "",
+                "summary": summary,
                 "claim_kind": "event_claim",
                 "evidence_refs": ["current_turn:0"],
                 "source_kinds": ["current_turn"],
@@ -147,7 +148,8 @@ def test_off_vocab_claim_without_evidence_is_filtered_not_ok() -> None:
     assert result is not None and not result.claims
 
 
-def test_out_of_range_confidence_still_fails() -> None:
+@pytest.mark.parametrize("confidence, ok", [(7, False), (0.7, True)])
+def test_out_of_range_confidence_still_fails(confidence: float, ok: bool) -> None:
     raw = {
         "schema_version": "mind.semantic_synthesis.v1",
         "claims": [
@@ -158,13 +160,90 @@ def test_out_of_range_confidence_still_fails() -> None:
                 "claim_kind": "event_claim",
                 "evidence_refs": ["current_turn:0"],
                 "source_kinds": ["current_turn"],
-                "confidence": 7,
+                "confidence": confidence,
             }
         ],
     }
     result, err, _ = _run(raw)
+    if ok:
+        assert err is None and result is not None and result.claims
+    else:
+        assert result is None
+        assert err == "semantic_schema_invalid"
+
+
+def _one_claim(**overrides: Any) -> dict[str, Any]:
+    claim = {
+        "claim_id": "c1",
+        "label": "update issue",
+        "summary": "An article reports Windows update install failures.",
+        "claim_kind": "event_claim",
+        "evidence_refs": ["current_turn:0"],
+        "source_kinds": ["current_turn"],
+        "anchor": "event",
+        "recommended_effect": "acknowledge",
+    }
+    claim.update(overrides)
+    return {"schema_version": "mind.semantic_synthesis.v1", "claims": [claim]}
+
+
+@pytest.mark.parametrize("field", ["claim_kind", "anchor", "recommended_effect"])
+@pytest.mark.parametrize("value", [["event_claim"], {"k": "v"}, 3])
+def test_non_string_label_values_do_not_crash(field: str, value: Any) -> None:
+    from app.synthesis import OFF_VOCAB_METADATA_KEY
+
+    result, err, telemetry = _run(_one_claim(**{field: value}))
+    if field == "claim_kind":
+        # claim_kind is required content: a non-string kind is not a real claim.
+        assert result is None and err == "semantic_schema_invalid"
+    else:
+        assert err is None and telemetry.status == "ok"
+        assert result is not None
+        assert result.claims[0].metadata[OFF_VOCAB_METADATA_KEY][field] == value
+
+
+def test_non_dict_metadata_still_fails() -> None:
+    result, err, _ = _run(_one_claim(metadata="keep me"))
     assert result is None
     assert err == "semantic_schema_invalid"
+
+
+def test_model_written_provenance_key_is_overwritten_by_the_real_record() -> None:
+    from app.synthesis import OFF_VOCAB_METADATA_KEY
+
+    result, err, _ = _run(_one_claim(metadata={"off_vocab_fields": "model wrote this", "x": 1}))
+    assert err is None and result is not None
+    meta = result.claims[0].metadata
+    assert meta["off_vocab_fields"] == "model wrote this"
+    assert meta["x"] == 1
+    assert meta[OFF_VOCAB_METADATA_KEY]["claim_kind"] == "event_claim"
+
+
+def test_off_vocab_claim_citing_only_situation_is_not_promoted_to_turn_anchor() -> None:
+    from app.synthesis import try_coerce_off_vocab_claim_fields
+
+    raw = _one_claim(claim_kind="state_claim", evidence_refs=["situation_compact:1"], source_kinds=["situation_compact"])
+    out, did = try_coerce_off_vocab_claim_fields(raw)
+    assert did and out is not None
+    assert out["claims"][0]["claim_kind"] == "situation_claim"
+    out2, _ = try_coerce_off_vocab_claim_fields(_one_claim())
+    assert out2 is not None and out2["claims"][0]["claim_kind"] == "current_turn_claim"
+
+
+def test_legacy_claim_with_invented_labels_is_normalized_then_coerced() -> None:
+    from app.synthesis import OFF_VOCAB_NOTE, _validate_semantic_raw
+
+    raw = {
+        "schema_version": "mind.semantic_synthesis.v1",
+        "claims": [{"claim": "An article reports update failures.", "evidence_refs": ["current_turn:0"],
+                    "anchor": "event", "recommended_effect": "follow"}],
+    }
+    synthesis, normalized = _validate_semantic_raw(raw)
+    assert normalized is True and synthesis is not None
+    assert "normalized_from_legacy_claim_shape" in synthesis.diagnostics.notes
+    assert OFF_VOCAB_NOTE in synthesis.diagnostics.notes
+    assert synthesis.claims[0].anchor == "unknown"
+    assert synthesis.claims[0].recommended_effect == "no_effect"
 
 
 def test_on_contract_reply_is_not_marked_off_vocab() -> None:
@@ -203,7 +282,9 @@ def test_prompt_names_every_allowed_value_from_the_contract() -> None:
     ):
         values = get_args(literal)
         assert set(values) == set(valid)
-        line = next(
-            ln for ln in synthesis._SEMANTIC_SYSTEM.splitlines() if ln.endswith(", ".join(values) + ".")
-        )
-        assert "MUST be exactly one of" in line
+        listed = [
+            {v.strip() for v in ln.split("one of: ", 1)[1].rstrip(".").split(",")}
+            for ln in synthesis._SEMANTIC_SYSTEM.splitlines()
+            if "MUST be exactly one of: " in ln
+        ]
+        assert set(values) in listed

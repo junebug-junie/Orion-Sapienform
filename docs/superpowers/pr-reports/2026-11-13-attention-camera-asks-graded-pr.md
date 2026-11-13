@@ -2,7 +2,7 @@
 
 ## Summary
 
-Orion now keeps score of its camera questions. Every card Orion opens to ask Juniper about something the camera saw ("Is this Teddy?", "Same person?", "Whose vehicle is this?") becomes one act on the act ledger, and Juniper's reply is its grade. Cards still open exactly as before: same openers, same caps, same timing.
+Orion now keeps score of its camera questions. Every card Orion opens to ask Juniper about something the camera saw ("Is this <name>?", "Same person?", "Whose vehicle is this?") becomes one act on the act ledger, and Juniper's reply is its grade. Cards still open exactly as before: same openers, same caps, same timing.
 
 - Each camera ask Orion makes opens a `vision.ask` act. The verb is `ask`, the object is `orion_ask:<id>`, the correlation id is the ask id, and the horizon is the ask's expiry. sql-writer opens it at the start of each act-resolver tick (`app/ask_acts.py`).
 - The act ledger's resolver grades it from the ask row (`orion/grammar/camera_ask_acts.py`, new signal `juniper_answered`):

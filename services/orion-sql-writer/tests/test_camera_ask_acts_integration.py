@@ -90,8 +90,8 @@ def _ask(s, ask_id, kind, ref, question, refs, *, created, status="open", answer
 def _seed(s):
     s.execute(text("INSERT INTO vision_individual VALUES ('veh1', 'vehicle'), ('p1', 'person'), ('p2', 'person')"))
     t = NOW - timedelta(hours=2)
-    _ask(s, "ask-confirm", "vision_person_confirm", "p1|Teddy",
-         "Is this Teddy? It is my best guess, but I am not sure. I have seen them 9 times over 4 days.",
+    _ask(s, "ask-confirm", "vision_person_confirm", "p1|Theo",
+         "Is this Theo? It is my best guess, but I am not sure. I have seen them 9 times over 4 days.",
          ["sighting:5625", "sighting:a121", "sighting:2ae8"], created=t)
     _ask(s, "ask-vehicle", "vision_individual", "veh1",
          "I have seen this same vehicle 30 times over 5 days, usually around 07:40.",
@@ -105,8 +105,8 @@ def _seed(s):
          answer="Amazon delivery person", answered=t, expires=None,
          detail={"story_id": "0255", "action": "name", "via": "motion_story", "name": "Amazon delivery person"})
     _ask(s, "ask-juniper-legacy", "vision_individual", "p1", "Who is this? (named on a walkway story)",
-         ["motion_story:0256", "individual:p1"], created=t, status="answered", answer="Teddy", answered=t, expires=None,
-         detail={"story_id": "0256", "action": "name", "via": "motion_story", "name": "Teddy"})
+         ["motion_story:0256", "individual:p1"], created=t, status="answered", answer="Theo", answered=t, expires=None,
+         detail={"story_id": "0256", "action": "name", "via": "motion_story", "name": "Theo"})
     # The marker alone also excludes a card (each clause of the filter must stand on its own).
     _ask(s, "ask-juniper-marker-only", "vision_individual", "veh1", "Who is this? (named on a walkway story)",
          ["motion_story:0257", "individual:veh1", "rule:juniper_story_naming"], created=t, status="answered",
@@ -114,7 +114,7 @@ def _seed(s):
     # Not a camera ask.
     _ask(s, "ask-memory", "memory_confirmation", "loop:1", "Is this still true?", [], created=t)
     # A camera ask older than the live loop's 24 h: the back-fill's, not the loop's.
-    _ask(s, "ask-old", "vision_person_confirm", "p2|Addy", "Is this Addy? It is my best guess, but I am not sure.",
+    _ask(s, "ask-old", "vision_person_confirm", "p2|Cora", "Is this Cora? It is my best guess, but I am not sure.",
          ["sighting:1"], created=NOW - timedelta(days=3), status="answered", answer="yes",
          answered=NOW - timedelta(days=3) + timedelta(hours=4))
     s.commit()

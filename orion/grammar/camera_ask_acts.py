@@ -1,7 +1,7 @@
 """Camera asks as graded acts (attention patch 4a, docs/superpowers/specs/2026-11-12-attention-camera-asks-bind-design.md).
 
 A camera ask is a card in ``orion_ask`` that asks Juniper about something the camera saw ("Is this
-Teddy?", "Are these the same person?", "Whose vehicle is this?"). From patch 4a each ask ORION made is
+Theo?", "Are these the same person?", "Whose vehicle is this?"). From patch 4a each ask ORION made is
 one act on the act ledger: actor ``vision.ask``, verb ``ask``, ``object_ref orion_ask:<ask_id>``,
 ``correlation_id`` the ask id, horizon the ask's ``expires_at``. Its grade is Juniper's answer
 (``juniper_answered``), so the ``vision.ask`` family learns which asks she can answer.

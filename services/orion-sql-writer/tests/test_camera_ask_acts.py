@@ -38,7 +38,7 @@ CONFIRM_NO = {"source_kind": "vision_person_confirm", "status": "answered", "ans
               "evidence_refs": ["sighting:e617", "sighting:ecc4", "sighting:9745"],
               "created_at": CREATED, "expires_at": EXPIRES, "answered_at": CREATED + timedelta(minutes=38)}
 SAME_YES = {"source_kind": "vision_same_individual", "status": "answered", "answer": "yes",
-            "answer_detail": {"names": {"a4e8": "Teddy", "f524": "Teddy"}},
+            "answer_detail": {"names": {"a4e8": "Theo", "f524": "Theo"}},
             "evidence_refs": ["individual:a4e8", "individual:f524", "face_cosine:0.558"],
             "created_at": CREATED, "expires_at": EXPIRES, "answered_at": CREATED + timedelta(hours=3, minutes=40)}
 JUNIPER_STORY_NAME = {"source_kind": "vision_individual", "status": "answered", "answer": "Amazon delivery person",

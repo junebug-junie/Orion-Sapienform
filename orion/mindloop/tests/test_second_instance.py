@@ -152,3 +152,53 @@ def test_a_state_model_without_the_loop_fields_is_refused_at_build():
 
     with pytest.raises(TypeError, match="no_model_streak"):
         Broken(settings=echo_runtime([]).s, bus=Bus(), llm=None, bid=lambda w: None, release=lambda i: None)
+
+
+def _full(net):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(outcome="deferred", reason="capacity_reserved", binding_constraint="lane:chat", net=net,
+                           retry_after_sec=60.0)
+
+
+def test_a_capacity_deferral_worth_its_price_thinks_and_queues_at_the_pool(caplog):
+    # The lane is full, but the thought is worth its price: the GPU pool's queue holds it (bind_verdict).
+    caplog.set_level(logging.INFO, logger="test.mindloop.echo")
+    rt = echo_runtime([ECHO], decision=_full(0.67))
+    asyncio.run(rt.tick())
+    [want] = rt.bids
+    assert len(rt.llm.calls) == 1 and rt.state.answers == ["hello back"]
+    assert [k for k, _ in rt.bus.acts()] == ["act_opened", "act_closed"]
+    assert rt.released == [want.want_id]
+    msgs = [r.getMessage() for r in caplog.records]
+    assert ("echo_bid_queued_at_pool outcome=deferred reason=capacity_reserved binding=lane:chat net=0.67 pending=1"
+            in msgs)
+    assert not any("bid_not_funded" in m for m in msgs)
+
+
+def test_a_capacity_deferral_not_worth_its_price_waits(caplog):
+    caplog.set_level(logging.INFO, logger="test.mindloop.echo")
+    for net in (0.0, -0.1, None, float("nan")):
+        rt = echo_runtime([ECHO], decision=_full(net))
+        asyncio.run(rt.tick())
+        assert rt.llm.calls == [] and rt.bus.acts() == [] and rt.released == [] and rt.state.requests == ["hello"]
+    assert any(r.getMessage().startswith("echo_bid_not_funded outcome=deferred reason=capacity_reserved")
+               for r in caplog.records)
+
+
+def test_another_deferral_with_a_positive_net_still_waits():
+    from types import SimpleNamespace
+
+    rt = echo_runtime([ECHO], decision=SimpleNamespace(outcome="deferred", reason="price", binding_constraint=None,
+                                                       net=0.5))
+    asyncio.run(rt.tick())
+    assert rt.llm.calls == [] and rt.bus.acts() == []
+
+
+def test_no_answer_from_the_market_waits(caplog):
+    # Never fail open: no answer is "not funded".
+    caplog.set_level(logging.INFO, logger="test.mindloop.echo")
+    rt = echo_runtime([ECHO], decision=None)
+    asyncio.run(rt.tick())
+    assert len(rt.bids) == 1 and rt.llm.calls == [] and rt.bus.acts() == [] and rt.released == []
+    assert any(r.getMessage().startswith("echo_bid_not_funded outcome=none reason=-") for r in caplog.records)

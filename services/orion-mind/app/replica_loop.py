@@ -16,7 +16,8 @@ What one plan looks like:
    lane chat). Not funded, a Juniper turn, a gate refusal or a try that never reached the model: it re-bids
    next tick, until there is no longer time for one model call before the deadline; then it answers
    ``unfunded`` or ``model_failed`` (so Hub's fallback reason is the real one, not ``timeout``).
-3. Funded: one model call on route CURIOSITY_REPLICA_LLM_ROUTE (``prime``, the warm chat lane). The seat wait
+3. Funded, or a ``capacity_reserved`` deferral with a positive net (it queues at the GPU pool; the seat wait
+   below still bounds it): one model call on route CURIOSITY_REPLICA_LLM_ROUTE (``prime``, the warm chat lane). The seat wait
    is cut so seat wait + generation end before the deadline. The frame: orion/curiosity/replica/frame.py.
 4. The answer is parsed, checked with the same ``validate_plan`` Hub runs, and sent back on
    ``orion:curiosity:replica:plan:result:<correlation_id>``. A stance on a PRIME focus or signal is delivered

@@ -102,11 +102,12 @@ def test_a_name_that_is_both_class_and_role_is_a_lane(tmp_path: Path) -> None:
     assert _run(tmp_path, {"v": text}) == (0, [])
 
 
-def test_an_operator_lane_fails_even_though_it_is_a_pool_class(tmp_path: Path) -> None:
-    """Leased evals (2026-11-12): operator classes are evals' seats; a verb never runs or bids there."""
+def test_an_operator_lane_fails_with_the_operator_reason(tmp_path: Path) -> None:
+    """Leased evals (2026-11-12): operator classes are evals' seats; a verb never runs or bids there.
+    Checked before the role check, so the refusal names the operator rule, not just "not a role"."""
     text = VALID.format(name="v").replace("[diffusion, agent-gpu2]", "[operator_agent]")
     rc, errors = _run(tmp_path, {"v": text})
-    assert rc == 1 and len(errors) == 1 and "operator" in errors[0]
+    assert rc == 1 and len(errors) == 1 and "operator work classes" in errors[0]
 
 
 def test_empty_lanes_means_no_gpu_and_passes(tmp_path: Path) -> None:

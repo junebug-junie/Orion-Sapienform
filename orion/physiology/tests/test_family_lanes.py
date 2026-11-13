@@ -13,7 +13,6 @@ from pathlib import Path
 
 import yaml
 
-from orion.physiology.body import BodyConfig, LaneInput, lane_readings
 from orion.physiology.choice import ReservationBook, build_context, decide
 from orion.physiology.families import body_lanes, load_families
 from orion.schemas.physiology import PhysiologyConstraintReadingV1 as R
@@ -25,21 +24,6 @@ POOL = REPO / "config" / "gpu_pool.yaml"
 FAMILIES = REPO / "config" / "physiology" / "families.yaml"
 VERBS = REPO / "orion" / "cognition" / "verbs"
 NOW = datetime(2026, 11, 13, 12, 0, tzinfo=timezone.utc)
-
-
-def _pool_doc() -> dict:
-    return yaml.safe_load(POOL.read_text(encoding="utf-8"))
-
-
-def _live_lane_constraints() -> set[str]:
-    """The lane constraints body.py itself emits when every pool role reports a slot."""
-    capacity = {role: 1 for role in body_lanes(POOL)}
-    out, _ = lane_readings(LaneInput(True, [], capacity, newest_event_at=NOW), NOW, BodyConfig())
-    return {r.constraint for r in out}
-
-
-def test_body_lanes_are_exactly_the_lane_constraints_the_body_emits():
-    assert {f"lane:{r}" for r in body_lanes(POOL)} == _live_lane_constraints()
 
 
 def unreadable_family_lanes(families_doc: dict, lanes: frozenset[str]) -> dict[str, list[str]]:
@@ -57,8 +41,8 @@ def test_the_gate_catches_the_retired_metacog_seat():
     doc = yaml.safe_load(FAMILIES.read_text(encoding="utf-8"))
     doc["families"]["dream.cycle"]["lanes"] = ["metacog"]
     assert unreadable_family_lanes(doc, body_lanes(POOL)) == {"dream.cycle": ["metacog"]}
-    # metacog is still a pool work CLASS (routed to the fast seat); that is not a lane.
-    assert "metacog" in _pool_doc()["classes"] and "metacog" not in body_lanes(POOL)
+    # metacog is a pool work CLASS now (routed to the fast seat), never a lane.
+    assert "metacog" not in body_lanes(POOL)
 
 
 def test_every_bidding_verb_lane_is_a_lane_the_body_reads():

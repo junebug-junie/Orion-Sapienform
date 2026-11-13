@@ -61,7 +61,8 @@ def check(verbs_dir: Path, pool_path: Path) -> tuple[list[str], dict[str, VerbPh
             errors.append(f"{rel}: not a YAML mapping")
             continue
         try:
-            block = parse_verb_physiology(data, known_lanes=lanes)
+            # Shape first, then operator lanes (a more specific refusal than "not a role"), then roles.
+            block = parse_verb_physiology(data)
         except ValueError as exc:
             errors.append(f"{rel}: invalid physiology block: {' '.join(str(exc).split())}")
             continue
@@ -72,6 +73,11 @@ def check(verbs_dir: Path, pool_path: Path) -> tuple[list[str], dict[str, VerbPh
         if operator_lanes:
             errors.append(f"{rel}: lanes {operator_lanes} are operator work classes (evals); a verb is Orion's "
                           "own act and never runs or bids on an operator lane")
+            continue
+        try:
+            parse_verb_physiology(data, known_lanes=lanes)
+        except ValueError as exc:
+            errors.append(f"{rel}: invalid physiology block: {' '.join(str(exc).split())}")
             continue
         parsed[path.stem] = block
     return errors, parsed

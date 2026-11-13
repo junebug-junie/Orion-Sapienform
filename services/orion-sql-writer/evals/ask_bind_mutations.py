@@ -5,7 +5,9 @@ Each mutant breaks one guard and the tests must FAIL on every one:
 
 * held does not open (open_camera_ask; the held branch of ask_bind; the rolling no-deadline end);
 * the backoff (a held candidate is not re-bid every tick);
-* no duplicate want (the shadow loop skips a card that bid at open; the stamp itself; no stamp without an answer);
+* no duplicate want (the shadow loop skips a card that bid at open, stamped or decided after a client timeout; the
+  stamp itself; no stamp without an answer);
+* the per-minute bid budget;
 * Juniper's own card never bids; ``shadow`` never bids;
 * every opener goes through the bid site (a direct ``_insert_ask`` in the handoff opener);
 * Prime's menu drops a funded want whose card never opened.
@@ -51,6 +53,9 @@ MUTANTS = {
                                   "    if False:"),
     "stamp without a market answer": (BIND, '    answered = decision is not None and str(getattr(decision, "reason", "") or "") not in NO_ANSWER_REASONS',
                                       "    answered = True"),
+    "bid budget removed": (BIND, "        over = len(_bids) >= BID_BUDGET", "        over = False"),
+    "shadow loop ignores a late-decided bid": (LOOP, """                    if f"orion_ask:{p['ask_id']}" in late:""",
+                                               "                    if False:"),
     "juniper card bids": (BIND, "    if is_juniper_card(ask.evidence_refs, None):", "    if False:"),
     "shadow mode bids": (BIND, "    if mode() != MODE_ON:", "    if False:"),
     "handoff opener skips the bid": (f"{SW}/app/vision_handoff_loop.py",

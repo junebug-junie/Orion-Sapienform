@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from app import ask_bind as ab
-from app.ask_event_wants import ASKS_SQL, GRADES_SQL, plan_asks, run_one_cycle
+from app.ask_event_wants import ASKS_SQL, BID_AT_OPEN_SQL, BINDING_PRODUCER, GRADES_SQL, plan_asks, run_one_cycle
 from app.settings import settings
 from orion.grammar.camera_ask_acts import (
     BID_WANT_REF_PREFIX, CANDIDATE_SOURCE, JUNIPER_STORY_CARD_REF, REBID_CAP_SEC, REBID_FIRST_SEC, bid_want_ref,
@@ -286,6 +286,41 @@ def test_rebid_backoff_doubles_to_the_cap_and_respects_the_markets_wait():
     assert rebid_after_sec(1, 99999.0) == REBID_CAP_SEC
 
 
+def test_in_backoff_is_true_only_while_a_held_candidates_next_bid_is_not_due():
+    conn = FakeConn()
+    assert not ab.in_backoff("vehicle", "vision_individual", VEHICLE, NOW)
+    ab.ask_bind(conn, vehicle_ask(), now=NOW, bid=Market(sated))
+    assert ab.in_backoff("vehicle", "vision_individual", VEHICLE, NOW + timedelta(seconds=599))
+    assert not ab.in_backoff("vehicle", "vision_individual", VEHICLE, NOW + timedelta(seconds=600))
+    assert not ab.in_backoff("sighting", "vision_individual", VEHICLE, NOW + timedelta(seconds=1))
+
+
+def test_a_known_kind_skips_the_kind_read():
+    conn, market = FakeConn(kinds={}), Market(funded)
+    ab.ask_bind(conn, vehicle_ask(), now=NOW, bid=market, individual_kind="vehicle")
+    assert market.wants[0].outcome_value == pytest.approx(6 / 47)          # vehicle rule, though kinds={} here
+
+
+def test_fresh_bids_are_capped_per_minute_and_the_rest_wait_without_a_backoff_step():
+    """After a restart ``_held`` is empty, and a held candidate no longer stops an opener's loop: the cap keeps one
+    tick from bidding every candidate inside the opener's transaction."""
+    conn, market = FakeConn(sightings={f"v{i:02d}": 86 for i in range(40)}, kinds={f"v{i:02d}": "vehicle" for i in range(40)}), Market(sated)
+    verdicts = []
+    for i in range(40):
+        a = vehicle_ask(ask_id=f"ask-{i}").model_copy(update={"source_ref": f"v{i:02d}"})
+        verdicts.append(ab.ask_bind(conn, a, now=NOW, bid=market))
+    assert len(market.wants) == ab.BID_BUDGET
+    assert [v.why for v in verdicts[ab.BID_BUDGET:]] == ["bid_budget"] * (40 - ab.BID_BUDGET)
+    assert len(ab.held_snapshot()) == ab.BID_BUDGET                         # over budget: no backoff entry
+    later = NOW + ab.BID_BUDGET_WINDOW
+    a = vehicle_ask(ask_id="ask-x").model_copy(update={"source_ref": "v30"})
+    assert ab.ask_bind(conn, a, now=later, bid=market).why == "deferred:sated"
+
+
+def test_the_binding_producer_name_is_one_name():
+    assert BINDING_PRODUCER == ab.PRODUCER
+
+
 # --- one want per ask: the shadow loop -----------------------------------------------------------
 
 def _row(ask_id, refs, at):
@@ -328,6 +363,38 @@ def test_the_shadow_loop_posts_no_second_want_for_a_card_that_bid_at_open():
     assert [w.event_ref for w in market.wants] == ["orion_ask:plain"]
 
 
+def test_the_shadow_loop_skips_an_unstamped_card_whose_bid_the_market_decided_after_the_client_timed_out():
+    hist = [_row(f"h{i}", [], NOW - timedelta(days=2, minutes=i)) for i in range(25)]
+    late = _row("late", ["sighting:1"], NOW - timedelta(minutes=5))
+    plain = _row("plain", ["sighting:2"], NOW - timedelta(minutes=4))
+    seen = {}
+
+    class Eng:
+        def connect(self):
+            class C:
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *a):
+                    return False
+
+                def execute(self, clause, params=None):
+                    sql = str(clause)
+                    if sql == ASKS_SQL:
+                        return _Res(rows=hist + [late, plain])
+                    if sql == BID_AT_OPEN_SQL:
+                        seen.update(params)
+                        return _Res(rows=[("orion_ask:late",)])
+                    return _Res(rows=[])
+            return C()
+
+    market = Market(funded)
+    summary = run_one_cycle(postgres_uri="x", lookback=timedelta(hours=24), posted=set(), bid=market, now=NOW,
+                            engine=Eng())
+    assert seen["producer"] == ab.PRODUCER and sorted(seen["refs"]) == ["orion_ask:late", "orion_ask:plain"]
+    assert summary["bid_at_open"] == 1 and [w.event_ref for w in market.wants] == ["orion_ask:plain"]
+
+
 # --- the one bid site ----------------------------------------------------------------------------
 
 def test_every_camera_opener_goes_through_the_bid_site():
@@ -342,6 +409,15 @@ def test_every_camera_opener_goes_through_the_bid_site():
                 if name == "_insert_ask":
                     callers.append(f.name)
     assert callers == ["ask_bind.py"]
+    # Nor may any module but vision_individuals.py (where _insert_ask lives) write a camera-kind card with raw SQL.
+    from orion.grammar.camera_ask_acts import CAMERA_ASK_KINDS
+    # person_record.py inserts only person_fact cards (source_kind=pf.SOURCE_KIND_PERSON_FACT); it names camera kinds
+    # in its reads. Pinned so a new raw insert elsewhere fails here.
+    raw = [f.name for f in sorted(app_dir.glob("*.py")) if f.name not in ("vision_individuals.py", "person_record.py")
+           and "INSERT INTO orion_ask" in f.read_text() and any(k in f.read_text() for k in CAMERA_ASK_KINDS)]
+    assert raw == []
+    pr = (app_dir / "person_record.py").read_text()
+    assert pr.count("INSERT INTO orion_ask") == 1 and "source_kind=pf.SOURCE_KIND_PERSON_FACT" in pr
     openers = {"vision_individuals.py": 4, "vision_handoff_loop.py": 1, "vision_office_sessions.py": 1}
     for name, n in openers.items():
         assert (app_dir / name).read_text().count("open_camera_ask(") == n, name

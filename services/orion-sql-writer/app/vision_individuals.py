@@ -2322,7 +2322,7 @@ def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -
 def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
     from sqlalchemy import text
 
-    from app.ask_bind import open_camera_ask
+    from app.ask_bind import in_backoff, open_camera_ask
     from orion.schemas.ask import OrionAskV1
 
     asked_today = conn.execute(text(ASKED_TODAY_SQL), {"d": local_day_start(now, tz),
@@ -2356,6 +2356,9 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
         if not should_ask(label=label, sighting_count=sc, distinct_days=dd,
                           min_sightings=cfg.ask_min_sightings, min_days=cfg.ask_min_days):
             continue
+        rule = "vehicle" if kind == "vehicle" else "sighting"     # camera_ask_acts.ask_rule for this opener
+        if in_backoff(rule, SOURCE_KIND_INDIVIDUAL, iid, now):
+            continue  # held by the market, next bid not due: skip the picture work (attention patch 4b)
         srows = _sighting_rows(conn, iid)
         minutes = [r[1].astimezone(tz).hour * 60 + r[1].astimezone(tz).minute for r in srows]
         mean, r = circular_mean_minute(minutes)
@@ -2370,7 +2373,7 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
             expires_at=now + timedelta(days=cfg.ask_expiry_days),
             source_kind=SOURCE_KIND_INDIVIDUAL, source_ref=iid,
         )
-        opened = open_camera_ask(conn, ask, now=now)
+        opened = open_camera_ask(conn, ask, now=now, individual_kind=kind)
         if opened is not None:
             out.append(opened.model_dump(mode="json"))
     return out

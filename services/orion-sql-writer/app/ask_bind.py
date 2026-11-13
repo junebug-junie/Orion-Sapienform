@@ -60,15 +60,22 @@ logger = logging.getLogger("sql-writer.ask_bind")
 FAMILY = "vision.ask"
 VERB = "ask"
 TIER = 2
-PRODUCER = "orion-sql-writer.ask_events.binding"
+PRODUCER = "orion-sql-writer.ask_events.binding"   # == app.ask_event_wants.BINDING_PRODUCER (tested)
 MODE_ON = "on"
 MODE_SHADOW = "shadow"
 # A rolling window end that never arrives: a held ask has no deadline (issue #3285).
 NO_DEADLINE = timedelta(days=1)
 # History (30 days of asks' sightings) and per-rule outcomes are re-read at most this often.
 CACHE_TTL_SEC = 300.0
-# A held entry not re-proposed for this long is forgotten (its candidate dropped).
+# A held entry whose retry_at is this long past is forgotten (its candidate dropped). Measured from retry_at, not
+# from the last proposal: a candidate back within the window resumes its backoff where it was (intended).
 HELD_FORGET = timedelta(days=2)
+# At most this many FRESH market bids per rolling BID_BUDGET_WINDOW, per process (review finding: the bids run inside
+# the opener's DB transaction, and a held candidate no longer stops an opener's loop, so after a restart, with
+# ``_held`` empty, one tick could bid ~130 candidates at up to 0.5 s each). Over budget, a candidate waits one
+# window with no bid and no backoff step (``bid_budget``); it is bid on a later tick, in the opener's own order.
+BID_BUDGET = 12
+BID_BUDGET_WINDOW = timedelta(seconds=60)
 
 SIGHTINGS_SQL = ("SELECT count(*) FROM vision_individual_sighting WHERE individual_id = :i AND started_at <= :t "
                  "AND NOT stationary")
@@ -85,12 +92,14 @@ class _Held:
 _lock = threading.Lock()
 _held: dict[str, _Held] = {}
 _cache: dict[str, Any] = {"at": None, "history": None, "outcomes": None}
+_bids: list[datetime] = []          # times of this process's fresh bids inside BID_BUDGET_WINDOW
 
 
 def reset_state() -> None:
     """Forget held candidates and the cache (tests; a process restart does the same)."""
     with _lock:
         _held.clear()
+        _bids.clear()
         _cache.update(at=None, history=None, outcomes=None)
 
 
@@ -123,6 +132,8 @@ def _history_and_outcomes(conn, now: datetime, graded: bool) -> tuple[list[int],
 
     from app.ask_event_wants import ASKS_SQL, GRADES_SQL
 
+    # Cached on the monotonic clock, not on ``now``: a test or replay with an old ``now`` reads today's cache. Two
+    # threads may both refresh at once; harmless (same reads, last write wins).
     mono = time.monotonic()
     with _lock:
         if _cache["at"] is not None and mono - _cache["at"] < CACHE_TTL_SEC and _cache["history"] is not None:
@@ -136,7 +147,17 @@ def _history_and_outcomes(conn, now: datetime, graded: bool) -> tuple[list[int],
     return history, (outcomes if graded else None)
 
 
-def ask_bind(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any]] = None) -> BindVerdict:
+def in_backoff(rule: str, source_kind: str, source_ref: str, now: datetime) -> bool:
+    """True while this candidate is held and its next bid is not due. Openers call it BEFORE their picture work,
+    so a held candidate costs no sighting reads on every 60 s tick (review finding)."""
+    want_id = event_want_id(CANDIDATE_SOURCE, candidate_key(rule, source_kind, source_ref))
+    with _lock:
+        held = _held.get(want_id)
+    return held is not None and now < held.retry_at
+
+
+def ask_bind(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any]] = None,
+             individual_kind: Optional[str] = None) -> BindVerdict:
     """Bid one candidate ask; admit (open the card) or hold. ``ask``: the ``OrionAskV1`` the opener built.
     ``bid``: the market call (default ``orion.physiology.client.bid``). Sync: openers run in worker threads."""
     from sqlalchemy import text
@@ -149,8 +170,13 @@ def ask_bind(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any
     if mode() != MODE_ON:
         return BindVerdict(True, "shadow")                 # the shadow loop posts the want after the card opens
     iid = _first_individual(ask.source_ref)
-    kind = conn.execute(text(KIND_SQL), {"i": iid}).scalar() if iid else None
+    kind = individual_kind
+    if kind is None and iid:
+        kind = conn.execute(text(KIND_SQL), {"i": iid}).scalar()
     rule = ask_rule(str(ask.source_kind), ask.evidence_refs, kind)
+    # The face same-person opener and the handoff opener share the ``same`` key for a pair: one backoff for both
+    # (intended: it is one question). Two openers bidding the same pair at once is a double bid at worst; the
+    # open-card unique index stops a double card.
     key = candidate_key(rule, str(ask.source_kind), str(ask.source_ref))
     want_id = event_want_id(CANDIDATE_SOURCE, key)
     with _lock:
@@ -160,6 +186,14 @@ def ask_bind(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any
     if held is not None and now < held.retry_at:
         return BindVerdict(False, "backoff", retry_at=held.retry_at, detail={"want_id": want_id, "rule": rule,
                                                                              "n_held": held.n_held})
+    with _lock:
+        _bids[:] = [t for t in _bids if now - t < BID_BUDGET_WINDOW]
+        over = len(_bids) >= BID_BUDGET
+        if not over:
+            _bids.append(now)
+    if over:
+        return BindVerdict(False, "bid_budget", retry_at=now + BID_BUDGET_WINDOW,
+                           detail={"want_id": want_id, "rule": rule})
     graded = _graded()
     history, outcomes = _history_and_outcomes(conn, now, graded)
     sightings = int(conn.execute(text(SIGHTINGS_SQL), {"i": iid, "t": now}).scalar() or 0) if iid else 0
@@ -199,19 +233,22 @@ def ask_bind(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any
     retry_at = now + timedelta(seconds=rebid_after_sec(n, market_wait))
     with _lock:
         _held[want_id] = _Held(retry_at=retry_at, n_held=n, first_seen=first_seen)
+    # history_n on the held path too: held asks open no card and so stop feeding the salience history; if it ever
+    # falls under 20, asks open unbid (no_history). Live: ~450 Orion asks in 30 days, far from it (review nit).
     logger.info("camera_ask_bid ask=%s rule=%s want_id=%s verdict=held why=%s salience=%.3f expected_answer=%s "
-                "n_held=%d retry_at=%s", ask.ask_id, rule, want_id, verdict.why, salience, want.outcome_value, n,
-                retry_at.isoformat())
+                "n_held=%d retry_at=%s history_n=%d", ask.ask_id, rule, want_id, verdict.why, salience,
+                want.outcome_value, n, retry_at.isoformat(), len(history))
     return BindVerdict(False, verdict.why, retry_at=retry_at, detail={**detail, "n_held": n})
 
 
-def open_camera_ask(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any]] = None) -> Optional[Any]:
+def open_camera_ask(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any]] = None,
+                    individual_kind: Optional[str] = None) -> Optional[Any]:
     """The one way a camera opener opens a card: bid, then insert only when admitted. Returns the inserted
     ``OrionAskV1`` (with its ``want:<id>`` stamp when the market answered), or None (held, or the insert lost
     to an open card for the same subject)."""
     from app.vision_individuals import _insert_ask
 
-    verdict = ask_bind(conn, ask, now=now, bid=bid)
+    verdict = ask_bind(conn, ask, now=now, bid=bid, individual_kind=individual_kind)
     if not verdict.admit:
         return None
     if verdict.detail.get("market_answered") and verdict.detail.get("want_id"):
@@ -220,5 +257,5 @@ def open_camera_ask(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[An
     return ask if _insert_ask(conn, ask) else None
 
 
-__all__ = ["FAMILY", "MODE_ON", "MODE_SHADOW", "PRODUCER", "ask_bind", "held_snapshot", "mode", "open_camera_ask",
+__all__ = ["BID_BUDGET", "FAMILY", "in_backoff", "MODE_ON", "MODE_SHADOW", "PRODUCER", "ask_bind", "held_snapshot", "mode", "open_camera_ask",
            "reset_state"]

@@ -47,7 +47,7 @@ rebuilt from the asks themselves (open at the ask, closed by ``ask_grade``) as t
 bid. 4b's rule, as decided on issue #3285 (no deadline): funded opens the card; held re-bids with the live
 backoff (``rebid_after_sec``: 600 s doubling to 3 h) until funded. Held means "re-bid later, may open later",
 not "dropped at a window end". An ask is followed ``LOSS_HORIZON`` (7 d) after its first bid, or to the replay's
-end. Gate: at least 70% of vehicle asks held (at their first bid); at most 10% of confirm and same-person asks
+end. Gate: at least 70% of vehicle asks held (at their first bid, and still unopened through the horizon); at most 10% of confirm and same-person asks
 held at all; answered asks per day fall by at most 10% (an answered ask not opened within the horizon is a lost
 answer). Approximations, stated: an ask held and opened later is assumed answered as it really was; Juniper's
 real answers decided the history every bid sees (4b would have changed some); a held candidate is assumed to
@@ -323,6 +323,7 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
     until funded or the candidate stops being one. When a real candidate stops is not in the data, so an ask is
     followed until ``LOSS_HORIZON`` after its first bid (the card's own answerable life) or the replay's end."""
     from orion.grammar.camera_ask_acts import OUTCOME_WINDOW, rebid_after_sec, rule_outcome_values
+    from orion.physiology.binding import REBID_DEFAULT_SEC
 
     cfg = families.get(ASK_FAMILY)
     assert cfg is not None and not cfg.lanes and not cfg.fixed_cost, "this replay assumes vision.ask has no charge"
@@ -362,7 +363,9 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
             if rank > 0:
                 break
             n_held += 1
-            t += timedelta(seconds=rebid_after_sec(n_held))
+            # The live wait is max(backoff, the market's own wait clamped by bind_verdict). Every replayed hold is
+            # ``sated`` (no charge, asserted above), which names no wait, so bind_verdict's is REBID_DEFAULT_SEC.
+            t += timedelta(seconds=rebid_after_sec(n_held, REBID_DEFAULT_SEC))
         funded_at = next((b["at"] for b in bids if b["rank"] > 0), None)
         rows.append({"ask_id": a["ask_id"], "rule": a["rule"], "answered": a["status"] == "answered",
                      "held_at_all": bids[0]["rank"] <= 0, "never_opened": funded_at is None,
@@ -408,6 +411,10 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
     out["checks"] = {
         "vehicle_held_at_least_70pct": (share(vehicle, lambda x: x["held_at_all"]) or 0) >= GATE_VEHICLE_HELD_MIN
         if vehicle else False,
+        # Held must mean held, not "held once, opened 10 minutes later" (review finding): the same share of vehicle
+        # asks must also stay unopened through the horizon.
+        "vehicle_never_opened_in_horizon_at_least_70pct": (share(vehicle, lambda x: x["never_opened"]) or 0)
+        >= GATE_VEHICLE_HELD_MIN if vehicle else False,
         "confirm_and_same_held_at_most_10pct": (share(answerable, lambda x: x["held_at_all"]) or 0) <= GATE_ANSWERABLE_HELD_MAX
         if answerable else False,
         "answered_per_day_falls_at_most_10pct": (out["answered_loss_share"] or 0) <= GATE_ANSWERED_LOSS_MAX,

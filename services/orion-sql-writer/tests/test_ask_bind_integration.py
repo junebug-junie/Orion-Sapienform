@@ -22,7 +22,7 @@ import pytest
 from sqlalchemy import create_engine, text
 
 from app import ask_bind as ab
-from app.ask_event_wants import ASKS_SQL, plan_asks
+from app.ask_event_wants import ASKS_SQL, plan_asks, run_one_cycle
 from app.models.grammar_trace import GrammarActSQL
 from app.db import Base
 from app.settings import settings
@@ -44,7 +44,9 @@ CREATE TABLE vision_individual (individual_id TEXT PRIMARY KEY, kind TEXT NOT NU
     stationary BOOLEAN NOT NULL DEFAULT false, sighting_count INT NOT NULL DEFAULT 0, distinct_days INT NOT NULL DEFAULT 0);
 CREATE TABLE vision_individual_sighting (sighting_id TEXT PRIMARY KEY, individual_id TEXT, started_at TIMESTAMPTZ,
     ended_at TIMESTAMPTZ, thumb_ref TEXT, zone_no_embed BOOLEAN NOT NULL DEFAULT false, face_thumb_ref TEXT,
-    stationary BOOLEAN NOT NULL DEFAULT false)
+    stationary BOOLEAN NOT NULL DEFAULT false);
+CREATE TABLE want_ledger (decision_id TEXT PRIMARY KEY, want_id TEXT NOT NULL, family TEXT, producer TEXT NOT NULL,
+    outcome TEXT, reason TEXT NOT NULL, decided_at TIMESTAMPTZ NOT NULL, decision JSONB NOT NULL)
 """
 
 TZ = ZoneInfo("America/Denver")
@@ -214,3 +216,21 @@ def test_market_down_opens_unstamped_so_the_shadow_loop_still_records_one_want(c
     plan = plan_asks(conn.execute(text(ASKS_SQL), {"since": NOW - timedelta(days=31), "until": NOW + timedelta(minutes=5)})
                      .mappings().all(), now=NOW + timedelta(minutes=5), lookback=timedelta(hours=24))
     assert len(plan) == 2 and all(p["bid_want"] is None for p in plan)
+
+
+def test_shadow_loop_sql_one_want_per_card_stamped_late_decided_or_neither(conn, monkeypatch):
+    """The shadow loop's reads against real Postgres: a stamped card posts nothing; an unstamped card whose
+    bid-at-open the market recorded anyway (client timeout) posts nothing; an unstamped card with no row posts one."""
+    _seed(conn)
+    _open(conn, NOW, lambda want: None, monkeypatch)                    # market down: both vehicles open unstamped
+    cards = _cards(conn)
+    late = cards[0]["ask_id"]
+    conn.execute(text("INSERT INTO want_ledger VALUES ('d1', 'w1', 'vision.ask', :p, 'funded', 'net_positive', :t, "
+                      "CAST(:d AS jsonb))"),
+                 {"p": ab.PRODUCER, "t": NOW, "d": json.dumps({"want": {"event_ref": f"orion_ask:{late}"}})})
+    conn.commit()
+    market = []
+    summary = run_one_cycle(postgres_uri="unused", lookback=timedelta(hours=24), posted=set(),
+                            bid=lambda w: market.append(w) or None, now=NOW + timedelta(minutes=5), engine=conn.engine)
+    assert summary["bid_at_open"] == 1
+    assert [w.event_ref for w in market] == [f"orion_ask:{cards[1]['ask_id']}"]

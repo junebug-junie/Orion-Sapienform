@@ -86,6 +86,15 @@ GRADES_SQL = (
     "AND closed_at >= :since AND outcome_value IS NOT NULL"
 )
 
+# Attention patch 4b: a card whose bid-at-open the market DID decide, though the client gave up (0.5 s) and opened it
+# unstamped. The binding producer's row names the card (event_ref orion_ask:<ask_id>): that is its one want.
+BID_AT_OPEN_SQL = (
+    "SELECT DISTINCT decision->'want'->>'event_ref' FROM want_ledger WHERE producer = :producer "
+    "AND reason <> 'physiology_unavailable' AND decided_at >= :since "
+    "AND decision->'want'->>'event_ref' = ANY(:refs)"
+)
+BINDING_PRODUCER = "orion-sql-writer.ask_events.binding"
+
 POSTED_SQL = "SELECT DISTINCT want_id FROM want_ledger WHERE reason <> 'physiology_unavailable' AND want_id = ANY(:ids) AND decided_at >= :since"
 
 
@@ -141,13 +150,21 @@ def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], b
             if fresh:
                 posted |= {str(r[0]) for r in conn.execute(text(POSTED_SQL), {"ids": fresh,
                                                                               "since": ts - lookback - timedelta(days=1)})}
+            unstamped = [f"orion_ask:{p['ask_id']}" for p, i in zip(plan, ids)
+                         if p.get("bid_want") is None and i not in posted]
+            if unstamped:
+                late = {str(r[0]) for r in conn.execute(text(BID_AT_OPEN_SQL), {
+                    "producer": BINDING_PRODUCER, "refs": unstamped, "since": ts - lookback - timedelta(days=1)})}
+                for p in plan:
+                    if f"orion_ask:{p['ask_id']}" in late:
+                        p["bid_want"] = "ledger"
     finally:
         if engine is None:
             eng.dispose()
     for p, want_id in zip(plan, ids):
         if p.get("bid_want") is not None:
-            # Attention patch 4b: this card opened on a market answer at open (app/ask_bind.py); its want is that
-            # bid. One want per ask, so the shadow loop posts none.
+            # Attention patch 4b: this card bid at open (app/ask_bind.py): stamped want:<id>, or the market's row for
+            # it is in want_ledger though the client timed out. Its want is that bid; one want per ask, so none here.
             summary["bid_at_open"] += 1
             continue
         if want_id in posted:

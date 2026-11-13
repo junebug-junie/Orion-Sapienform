@@ -189,7 +189,9 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
                 if r["status"] != "open":
                     gone.add(ref)
             # Attention patch 4b: a camera ask bids BEFORE its card is inserted, so a funded want can name a card that
-            # never opened (it lost the insert to an open card for the same subject). No card, no concern.
+            # never opened (it lost the insert to an open card for the same subject). No card, no concern. The funded row
+            # is written before the opener's transaction commits, so for that moment a card that WILL open reads as
+            # gone too: transient, the next read (every Prime thought) shows it.
             gone |= {f"{ASK_PREFIX}{i}" for i in ask_ids} - found
         present = (await (await conn.execute(OFFICE_TABLE_SQL)).fetchall()) if office_ids else []
         if present and present[0]["present"]:

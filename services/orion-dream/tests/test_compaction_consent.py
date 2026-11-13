@@ -32,6 +32,8 @@ CONSENT_DOC = yaml.safe_load((REPO / "config/physiology/consent.yaml").read_text
 SHIPPED = parse_consent(CONSENT_DOC)
 GRANTED = parse_consent({**CONSENT_DOC, "standing": {"dream-compaction-downscale": {
     "granted_by": "juniper", "granted_on": "2026-11-11", "pr": "fixture"}}})
+# Any host whose consent.yaml lacks Juniper's standing consent (merged 2026-11-13).
+NO_STANDING = parse_consent({**CONSENT_DOC, "standing": {}})
 
 
 def _state():
@@ -61,13 +63,22 @@ def consent_for(rules, *, writable=True, calls=None):
     return market_consent(bid=market_bid(rules, calls), now_fn=lambda: NOW, writable_fn=lambda: writable)
 
 
-def test_the_shipped_config_says_not_approved_with_the_rule_while_apply_is_off(caplog):
-    """Acceptance check 7's dream line: `not_approved` with `rule=` on the consent verdict, apply off."""
+def test_the_shipped_config_allows_downscale_only():
+    """Juniper's standing consent is in the shipped consent.yaml (2026-11-13): downscale is allowed."""
+    from app.compaction_applier import apply_compaction_delta
+
+    r = apply_compaction_delta(live_delta(), consent_for(SHIPPED), store=None, enabled=False)
+    assert r.status == "disabled" and r.consent_verdict == "allow"
+    assert r.consent_rule == "dream.compaction.downscale_only"
+
+
+def test_without_the_standing_consent_it_says_not_approved_with_the_rule(caplog):
+    """Acceptance check 7's dream line: `not_approved` with `rule=` on the consent verdict."""
     from app.compaction_applier import apply_compaction_delta
 
     caplog.set_level(logging.INFO)
     calls: list = []
-    r = apply_compaction_delta(live_delta(), consent_for(SHIPPED, calls=calls), store=None, enabled=False)
+    r = apply_compaction_delta(live_delta(), consent_for(NO_STANDING, calls=calls), store=FakeStore(), enabled=True)
     assert r.status == "not_approved" and r.applied is False
     assert (r.consent_verdict, r.consent_rule) == ("needs_consent", "dream.compaction.downscale_only")
     want = calls[0]
@@ -191,19 +202,24 @@ def test_the_digest_binds_the_exact_delta():
     assert delta_digest(a) != delta_digest(live_delta(cards=2))
 
 
-def test_the_rem_ask_never_hands_the_applier_a_store(monkeypatch):
+def test_the_rem_ask_hands_the_applier_the_real_store_and_a_preview_hands_none(monkeypatch):
     from app import compaction_applier as ca
     from app import compaction_consent as cc
+    from app.compaction_store import ReverieSalienceStore, default_store
 
-    seen = {}
+    seen = []
 
     def spy(delta, consent=None, *, store, **kw):
-        seen["store"] = store
+        seen.append(store)
         return ca.CompactionApplyReceiptV1(delta_id=delta.delta_id, status="not_approved")
 
     monkeypatch.setattr(cc, "apply_compaction_delta", spy)
-    r = asyncio.run(cc.ask_consent_without_store(live_delta(), consent=lambda d, o: False))
-    assert seen == {"store": None} and r.status == "not_approved"
+    r = asyncio.run(cc.ask_consent_and_apply(live_delta(), consent=lambda d, o: False))
+    assert r.status == "not_approved"
+    assert isinstance(seen[0], ReverieSalienceStore) and seen[0] is default_store()
+    asyncio.run(cc.ask_consent_and_apply(live_delta(), consent=lambda d, o: False, preview=True))
+    asyncio.run(cc.ask_consent_and_apply(live_delta(), consent=lambda d, o: False, store=FakeStore(), preview=True))
+    assert seen[1:] == [None, None]
 
 
 def test_the_rem_pass_asks_once_per_staged_delta_and_survives_a_failed_ask(monkeypatch):
@@ -277,5 +293,5 @@ def test_the_sleep_cycle_asks_after_its_own_persist():
     body = src[src.index("async def _rem("):src.index("async def _start_story(")]
     assert "consent_asker=" not in body
     persist_at = body.index("rem_store.persist_compaction_delta")
-    ask_at = body.index("await ask_consent_without_store(d)")
+    ask_at = body.index("await ask_consent_and_apply(d)")
     assert persist_at < ask_at and "if stored and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED" in body

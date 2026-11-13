@@ -156,21 +156,24 @@ def build_cycle_deps():
             bus = await _cycle_bus()
         except Exception:
             bus = None
-        from app.compaction_consent import ask_consent_without_store
+        from app.compaction_consent import ask_consent_and_apply
+        from app.rem_compaction import consolidate_evidence_ids
 
+        salience = await asyncio.to_thread(rem_store.load_thought_salience, consolidate_evidence_ids(requests))
         delta = await run_rem_compaction_once(
             bus,
             request_loader=lambda _n: requests,
             delta_persister=lambda d: staged.append(d) or True,
             dream_id=cycle_id,
+            salience_loader=lambda _ids: salience,
         )
         for d in staged:
             stored = await asyncio.to_thread(rem_store.persist_compaction_delta, d)
             # Attention patch 3d: ask the consent gate only about a delta that is really stored (the
-            # want_ledger row names it), after the persist. No memory store: nothing can be written.
+            # want_ledger row names it), after the persist. On allow + apply on, the store downscales.
             if stored and settings.DREAM_COMPACTION_CONSENT_ASK_ENABLED:
                 try:
-                    await ask_consent_without_store(d)
+                    await ask_consent_and_apply(d)
                 except Exception as exc:  # noqa: BLE001 -- the ask is a trace; the sleep goes on
                     logger.warning("rem compaction consent ask failed id=%s err=%s", d.delta_id, exc)
         return delta.delta_id if delta is not None else None
@@ -457,9 +460,10 @@ async def rem_preview_endpoint():
     try:
         if bus is not None:
             await bus.connect()
-        from app.compaction_consent import ask_consent_without_store
+        from app.compaction_consent import ask_consent_and_apply
 
-        delta = await run_rem_compaction_once(bus, consent_asker=ask_consent_without_store)
+        # A preview never writes memory: the consent is asked (and recorded) with no store.
+        delta = await run_rem_compaction_once(bus, consent_asker=lambda d: ask_consent_and_apply(d, preview=True))
     finally:
         if bus is not None:
             await bus.close()

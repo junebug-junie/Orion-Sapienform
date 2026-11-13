@@ -38,21 +38,27 @@ class Settings(BaseSettings):
     # Cap on requests drained per REM pass (§cap-all-collections).
     DREAM_REM_MAX_REQUESTS: int = Field(default=50)
 
-    # --- Compaction APPLIER (Phase G — the hot gate, hard-off) ---
-    # THIS MUTATES MEMORY. It stays off pending explicit proposal-mode sign-off +
-    # a live §14 backfill verification. Even when on it applies ONLY deltas the
-    # want market's consent gate allows (config/physiology/consent.yaml: downscale
-    # needs Juniper's standing consent; prune is always refused). Snapshot precedes every apply.
-    ORION_DREAM_COMPACTION_APPLY_ENABLED: bool = Field(default=False)
+    # --- Compaction APPLIER (Phase G — the hot gate) ---
+    # THIS MUTATES MEMORY: substrate_reverie_thought.salience only (app/compaction_store.py), downscale
+    # only, snapshot first. On since 2026-11-13 (Juniper's standing consent dream-compaction-downscale).
+    # Even when on it applies ONLY deltas the want market's consent gate allows
+    # (config/physiology/consent.yaml: downscale needs the standing consent; prune is always refused).
+    # false -> every consented delta reads `disabled`, nothing is written.
+    ORION_DREAM_COMPACTION_APPLY_ENABLED: bool = Field(default=True)
     # Safer subset first: apply downscale-renormalize only; prune stays gated
     # behind this flag being flipped false (never prune before downscale is trusted).
     ORION_DREAM_COMPACTION_DOWNSCALE_ONLY: bool = Field(default=True)
-    # §14 snapshot destination (before/after + rollback artifact).
-    DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/tmp/dream-compaction-apply")
+    # §14 snapshot destination (before-state + rollback artifact). Under /app/logs, the persistent host
+    # mount, so a snapshot outlives the container: restore with
+    # `python -m app.compaction_store restore <dir>/<delta_id>/snapshot_before.json`.
+    DREAM_COMPACTION_SNAPSHOT_DIR: str = Field(default="/app/logs/compaction-snapshots")
+    # REM proposes new salience = salience x this factor for each settled reverie thought a consolidate
+    # entry folds in (once per thought). Must be in (0, 1); outside it, no downscale is proposed.
+    DREAM_COMPACTION_DOWNSCALE_FACTOR: float = Field(default=0.8)
     # Attention patch 3d: after REM stages a delta, ask the want market's consent gate about it
-    # (app/compaction_consent.py) through the applier with NO memory store, so every real delta leaves a
-    # verdict (want_ledger, producer orion-dream.compaction_applier.consent) and nothing is written.
-    # false -> no ask (the gate is still asked by any real apply).
+    # (app/compaction_consent.py) and, on allow + apply on, apply it through the real store. Every
+    # real delta leaves a verdict (want_ledger, producer orion-dream.compaction_applier.consent).
+    # false -> no ask and no apply.
     DREAM_COMPACTION_CONSENT_ASK_ENABLED: bool = Field(default=True)
 
     # --- Dream cycle v2 (sleep pressure -> replay -> REM recombination) ---

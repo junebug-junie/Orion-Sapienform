@@ -217,6 +217,6 @@ The post-pull rebuild (`scripts/rebuild_services_from_git_diff.sh`) does this au
 
 ## PR link
 
-(filled after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3351
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

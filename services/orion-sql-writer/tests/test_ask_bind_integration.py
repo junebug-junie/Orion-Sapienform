@@ -170,7 +170,8 @@ def test_held_vehicle_gets_no_card_funded_person_opens_then_a_later_rebid_opens_
     opened = _open(conn, NOW, market, monkeypatch)
     # Candidates in the opener's order (moving sightings desc): VEHICLE (30), OTHER_VEHICLE (20), PERSON (12).
     assert [w.object_ref for w in market.wants] == [f"vision_individual:{x}" for x in (VEHICLE, OTHER_VEHICLE, PERSON)]
-    assert [round(w.outcome_value, 3) for w in market.wants] == [0.128, 0.128, 0.714]
+    m = 9 / 50                                   # the seeded family: vehicles 5 of 45 + people 4 of 5 answered
+    assert [w.outcome_value for w in market.wants] == pytest.approx([(5 + 2 * m) / 47] * 2 + [(4 + 2 * m) / 7])
     assert [o["source_ref"] for o in opened] == [PERSON]
     cards = _cards(conn)
     assert [r["source_ref"] for r in cards] == [PERSON]
@@ -188,7 +189,8 @@ def test_held_vehicle_gets_no_card_funded_person_opens_then_a_later_rebid_opens_
                      .mappings().all(), now=NOW + timedelta(minutes=5), lookback=timedelta(hours=24))
     assert [(p["ask_id"] == cards[0]["ask_id"], p["bid_want"]) for p in plan] == [(True, market.wants[2].want_id)]
 
-    # After the backoff the market has changed its mind (the line falls): the vehicle re-bids as the SAME want and
+    # After the backoff the market has changed its mind (the line falls under the vehicles' 0.114): the vehicle re-bids
+    # as the SAME want and
     # opens. The daily cap (2) is then full, so the other vehicle is not even bid.
     market.line = 0.1
     t = NOW + timedelta(seconds=601)
@@ -234,3 +236,36 @@ def test_shadow_loop_sql_one_want_per_card_stamped_late_decided_or_neither(conn,
                             bid=lambda w: market.append(w) or None, now=NOW + timedelta(minutes=5), engine=conn.engine)
     assert summary["bid_at_open"] == 1
     assert [w.event_ref for w in market] == [f"orion_ask:{cards[1]['ask_id']}"]
+
+
+def test_the_writers_family_share_is_the_markets_family_mean(conn):
+    """Review of #3350: GRADES_SQL must select the acts the market's build_family_appetite reads (opened in the last
+    30 days, producer or resolver outcome), or a rule with no closes would read a share the market does not use.
+    Seeded: an act opened 31 days ago and closed 29 days ago (counted by neither), a withdrawn ``expired`` close (not
+    a grade), a producer-graded close, and the 50 resolver closes of _seed."""
+    from app.ask_event_wants import GRADES_SQL
+    from orion.grammar.camera_ask_acts import rule_from_test_before, rule_outcome_values
+    from orion.physiology.appetite import ActRecord, build_family_appetite
+    from orion.physiology.families import parse_families
+
+    _seed(conn)
+    extra = [("old", NOW - timedelta(days=31), NOW - timedelta(days=29), 0.0, "resolver", "camera_ask:vehicle"),
+             ("wd", NOW - timedelta(days=3), NOW - timedelta(days=2), 0.0, "expired", "camera_ask:confirm"),
+             ("prod", NOW - timedelta(days=2), NOW - timedelta(days=1), 1.0, "producer", "camera_ask:confirm")]
+    for a, o, cl, v, src, tb in extra:
+        conn.execute(text("INSERT INTO grammar_acts (act_id, trace_id, actor, verb, level, signal_id, opened_at, "
+                          "closed_at, outcome_value, outcome_source, test_before, created_at, updated_at) VALUES (:a, :a, "
+                          "'vision.ask', 'ask', 'act', 'juniper_answered', :o, :cl, :v, :src, :tb, :o, :cl)"),
+                     {"a": a, "o": o, "cl": cl, "v": v, "src": src, "tb": tb})
+    conn.commit()
+    rows = conn.execute(text(GRADES_SQL), {"actor": "vision.ask", "since": NOW - timedelta(days=30), "now": NOW}).fetchall()
+    office = rule_outcome_values((rule_from_test_before(r[0]) or "", float(r[1])) for r in rows)["office"]  # no closes
+    acts = [ActRecord(act_id=r["act_id"], family="vision.ask", opened_at=r["opened_at"], closed_at=r["closed_at"],
+                      outcome_value=r["outcome_value"], outcome_source=r["outcome_source"])
+            for r in conn.execute(text("SELECT act_id, opened_at, closed_at, outcome_value, outcome_source "
+                                       "FROM grammar_acts WHERE actor = 'vision.ask'")).mappings()]
+    cfg = parse_families({"version": 1, "families": {"vision.ask": {"tier": 2, "deferrable_window_s": 86400,
+                                                                    "lanes": []}}}).get("vision.ask")
+    app = build_family_appetite(cfg, acts, NOW)
+    assert len(rows) == app.n_graded == 51
+    assert office == pytest.approx(app.mean_outcome) == pytest.approx(10 / 51)

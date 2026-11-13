@@ -352,8 +352,9 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
                                       event_values=tuple(v for bt, v in history if t - SOURCE_HISTORY <= bt < t))
             h = hunger(app, t, opened_at=first_bid)
             inten, ibasis = want_intensity(h.intensity, s)
-            graded = [(r, k.outcome_value) for k, r in known if k.graded and k.outcome_source == "resolver"
-                      and k.closed_at is not None and t - OUTCOME_WINDOW <= k.closed_at <= t]
+            # As GRADES_SQL and the market read them: graded acts OPENED in the 30 days before the bid (issue #3350).
+            graded = [(r, k.outcome_value) for k, r in known if k.graded and k.closed_at is not None
+                      and t - OUTCOME_WINDOW <= (k.opened_at or k.closed_at) <= t]
             outcome = rule_outcome_values(graded)[a["rule"]]
             rank, basis, _ = rank_value(app, inten, outcome, event=True)
             bids.append({"at": t, "rank": rank, "basis": basis, "outcome": outcome, "intensity": inten,

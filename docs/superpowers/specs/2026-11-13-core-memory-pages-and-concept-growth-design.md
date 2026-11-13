@@ -62,7 +62,7 @@ February (`cockpit_turn_sighting`, correlation `a1e54ae9-c69b-4871-91ec-efc05aef
 |---|---|---|---|
 | `episode_memory` | 469 active-ish, 67 `about_juniper` | **Best store.** First-person, distilled, typed (`about_juniper`, `happened`, `orion_view`, `follow_up`). Has strength, decay, reinforcement, and a confirmation loop (53 confirmed). | durable-runs situation, outreach, temporal self. **Not chat.** |
 | `person_fact` | Juniper 5 facts, ~25 people | Juniper's own words from the People page. | Hub People page. **Not chat.** |
-| `memory_crystallizations` kind `stance`, salience 1.0 | 44 active | The heaviest messages Juniper has sent: the lost year of memory, Amanda's DVT and PE, the promotion, "that homelab is YOU", the letter to Skye. Verbatim, not distilled. | Projected to Graphiti; `active_packet` recall. |
+| `memory_crystallizations` kind `stance`, salience 1.0 | 44 active | The heaviest messages Juniper has sent: the lost year of memory, <person A>'s DVT and PE, the promotion, "that homelab is YOU", the letter to Skye. Verbatim, not distilled. | Projected to Graphiti; `active_packet` recall. |
 | `memory_cards` | 587 active | 442 (75%) are a raw message copied as its own summary. | recall `cards` backend: hits in ~3.5% of recalls. |
 | Vector memory | — | — | 0 hits in 16,168 recalls over 14 days. |
 
@@ -155,7 +155,7 @@ ways:
 
 - **In chat.** "That's wrong, el Coco is a dog." The correction becomes an `episode_memory`
   row (the distiller already records corrections, e.g. "Juniper corrected me that she lives in
-  Ogden"). The next fold must honor it, because a correction outranks the memory it corrects.
+  <town>"). The next fold must honor it, because a correction outranks the memory it corrects.
 - **On a Hub page view.** A veto marks one sentence's cites as rejected. The next fold drops
   the sentence.
 
@@ -187,7 +187,7 @@ The rubric asks four questions:
 ### Mesh boundary
 
 Pages render on every Orion surface inside the mesh (Decision 4). They are never pasted into
-public output. Pages hold health facts about Amanda and Addy, and the mesh edge is where that
+public output. Pages hold health facts about <person A> and <person B>, and the mesh edge is where that
 matters. The edge has two seams:
 
 - GitHub writes. Orion's own account, PR bodies, issues, and the field-note path that cites
@@ -323,9 +323,9 @@ all of that. Graphiti makes it a row anyone can query.
 **2. Live proof the rot is already here.** `episode_memory` holds all of these as `active`
 right now, with nothing marking any of them old:
 
-- "Juniper is staying at the Wade… in Chicago" (10-05)
+- "Juniper is staying at the <person C>… in Chicago" (10-05)
 - "Juniper is in Chicago for a team meeting" (10-05)
-- "Juniper corrected me that she lives in Ogden, Utah, not Chicago"
+- "Juniper corrected me that she lives in <town>, Utah, not Chicago"
 - the el Coco correction: dog, not cat (11-11)
 
 A trip became a home address, then a correction sat beside the error.
@@ -368,10 +368,10 @@ Graphiti's defaults, and add a type only when a page needs it.
 
 1. Run the backfill into a fresh graph (`graphiti_trial`) with the local model.
 2. **Pass** if all of these hold:
-   - "lives in Chicago" is absent or invalidated, and "lives in Ogden" is current;
+   - "lives in Chicago" is absent or invalidated, and "lives in <town>" is current;
    - the Chicago stay is dated 10-05..10-07 as a stay, not a home;
    - "el Coco is a cat" is invalidated or absent, and "el Coco is a dog" is current;
-   - "el Coco"/"Coco" and "Amanda"/"my wife" each resolve to one entity;
+   - "el Coco"/"Coco" and "<person A>"/"my wife" each resolve to one entity;
    - fewer than 10% of entities are duplicates, judged by hand on a sample of 50;
    - wall time and GPU-seconds per episode are recorded.
 3. **Fail** if the local model cannot satisfy Graphiti's structured-output prompts reliably
@@ -463,8 +463,8 @@ concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concep
    invented facts.
 3. The validator rejects an uncited sentence and an unresolvable cite. Covered by tests.
 4. The metric gate on `matters` passes on the 44 + 44 set before the grade drives any page.
-5. **Graphiti trial passes before any page reads Graphiti.** Ogden current and Chicago
-   invalidated or dated as a stay; el Coco a dog and current; el Coco/Coco and Amanda/my wife
+5. **Graphiti trial passes before any page reads Graphiti.** <town> current and Chicago
+   invalidated or dated as a stay; el Coco a dog and current; el Coco/Coco and <person A>/my wife
    each one entity; under 10% duplicate entities on a hand-checked sample of 50.
 
 **Phase 2**

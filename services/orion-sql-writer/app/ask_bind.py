@@ -143,7 +143,8 @@ def _history_and_outcomes(conn, now: datetime, graded: bool) -> tuple[list[int],
     # No act ledger in this database (a test database with only the vision tables): no grades, every rule at its
     # prior. Checked first, because a failed read would abort the opener's transaction.
     has_acts = conn.execute(text("SELECT to_regclass('grammar_acts') IS NOT NULL")).scalar()
-    grades = conn.execute(text(GRADES_SQL), {"actor": ASK_ACTOR, "since": now - OUTCOME_WINDOW}).fetchall() if has_acts else []
+    grades = conn.execute(text(GRADES_SQL), {"actor": ASK_ACTOR, "since": now - OUTCOME_WINDOW,
+                                             "now": now}).fetchall() if has_acts else []
     outcomes = rule_outcome_values((rule_from_test_before(g[0]) or "", float(g[1])) for g in grades)
     with _lock:
         _cache.update(at=mono, history=history, outcomes=outcomes)

@@ -79,7 +79,9 @@ def _summary(plan: list[dict]) -> dict:
         "stays_open": sum(1 for p in plan if not p["grade"]),
         "graded_closes_by_rule": {r: [sum(1 for rr, v in graded if rr == r and v == 1.0), sum(1 for rr, _ in graded if rr == r)]
                                   for r in sorted({r for r, _ in graded})},
-        "expected_outcome_by_rule": {k: round(v, 4) for k, v in rule_outcome_values(graded).items()},
+        # Over the back-fill TARGETS only (a subset of the family): the family-share prior (issue #3350) is this
+        # subset's share here, not the live family's. The live value is the want's (app/ask_event_wants.py).
+        "expected_outcome_by_rule_targets_only": {k: round(v, 4) for k, v in rule_outcome_values(graded).items()},
     }
 
 
@@ -168,7 +170,7 @@ def main(argv=None) -> int:
         f"Verdict: {'OK' if not anomalies else 'CHECK ANOMALIES'}\n\n"
         f"- opened {len(opened)} `{ACTOR}` acts (signal `{SIGNAL}`) for asks since {since.isoformat()}\n"
         f"- closed by this run: graded {graded}, withdrawn {withdrawn}; graded in the end: {final_graded}\n"
-        f"- by rule: {summary['by_rule']}\n- expected outcome by rule: {summary['expected_outcome_by_rule']}\n"
+        f"- by rule: {summary['by_rule']}\n- expected outcome by rule (targets only): {summary['expected_outcome_by_rule_targets_only']}\n"
         f"- errors: 0; anomalies: {anomalies or 'none'}\n- another pass needed: no (re-running skips asks with an act)\n\n"
         "## Rollback (not run by this script)\n\n```sql\n"
         f"DELETE FROM substrate_action_outcomes WHERE dispatch_id IN ({ids_sql});\n"

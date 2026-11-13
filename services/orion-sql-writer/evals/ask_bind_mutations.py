@@ -56,6 +56,10 @@ MUTANTS = {
     "bid budget removed": (BIND, "        over = len(_bids) >= BID_BUDGET", "        over = False"),
     "shadow loop ignores a late-decided bid": (LOOP, """                    if f"orion_ask:{p['ask_id']}" in late:""",
                                                "                    if False:"),
+    # Issue #3350 review: the writer's family share must be the market's family mean (same acts, same window).
+    "grades windowed on close, not open": (LOOP, '''    "AND coalesce(opened_at, closed_at) >= :since AND coalesce(opened_at, closed_at) <= :now"''',
+                                           '''    "AND closed_at >= :since AND CAST(:now AS timestamptz) IS NOT NULL"'''),
+    "grades resolver-only": (LOOP, "AND outcome_source IN ('producer', 'resolver') ", "AND outcome_source = 'resolver' "),
     "juniper card bids": (BIND, "    if is_juniper_card(ask.evidence_refs, None):", "    if False:"),
     "shadow mode bids": (BIND, "    if mode() != MODE_ON:", "    if False:"),
     "handoff opener skips the bid": (f"{SW}/app/vision_handoff_loop.py",

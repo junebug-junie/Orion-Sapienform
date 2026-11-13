@@ -3,6 +3,9 @@
     python graphiti_trial_score.py dump            # graph -> /tmp/graphiti-trial/graph_dump.json
     python graphiti_trial_score.py sample          # 50 seeded entities -> dup_sample.json (to judge by hand)
     python graphiti_trial_score.py report          # dump + judgments + results.jsonl -> report.md
+                                                   #   + report.redacted.md (safe to commit)
+
+Needs graphiti_trial_terms.local.json (gitignored; see the .example.json) for the real names.
 
 The checks are read off fact edges (RELATES_TO: fact, valid_at, invalid_at, expired_at) and entity
 nodes. A fact is CURRENT when it has no invalid_at and no expired_at. Matching is regex over fact
@@ -33,21 +36,37 @@ DUP_PASS_RATE = 0.10
 LIVES_RE = re.compile(r"\b(lives?|living|resides?|residing|home|house|located|based)\b", re.I)
 STAY_RE = re.compile(r"\b(stay(?:s|ing|ed)?|hotel|trip|visit(?:s|ing|ed)?|meeting|travel(?:s|ing|ed)?|fl(?:y|ew|ies|ying)|"
                      r"flight|night|return(?:s|ed|ing)?|back|from|wake ?up)\b", re.I)
+DOG_RE = re.compile(r"\bdogs?\b|\bpupp(?:y|ies)\b", re.I)
+NOT_CAT_RE = re.compile(r"\bnot\s+(?:a\s+)?cats?\b|\bisn't\s+(?:a\s+)?cats?\b", re.I)
+
+# The real names these checks are about (home city, spouse, hotel...) are personal terms the public
+# repo's privacy gate refuses (tests/test_no_personal_terms.py). They live in a gitignored local file
+# next to this script; the committed example holds placeholders with the same keys.
+TERMS_LOCAL = Path(__file__).resolve().parent / "graphiti_trial_terms.local.json"
+TERMS_EXAMPLE = Path(__file__).resolve().parent / "graphiti_trial_terms.example.json"
+TERM_KEYS = ("subject", "home_city", "trip_city", "trip_hotel", "spouse", "spouse_alias", "pet",
+             "trip_start", "trip_end")
+
+
+def load_terms(path: Path | None = None) -> dict[str, str]:
+    p = path or (TERMS_LOCAL if TERMS_LOCAL.exists() else None)
+    if p is None:
+        raise SystemExit(f"missing {TERMS_LOCAL.name}: copy {TERMS_EXAMPLE.name} and fill in the real values")
+    terms = json.loads(Path(p).read_text())
+    missing = [k for k in TERM_KEYS if not str(terms.get(k) or "").strip()]
+    if missing:
+        raise SystemExit(f"{p}: missing keys {missing}")
+    return terms
+
+
+def word(term: str) -> str:
+    return r"\b" + re.escape(term) + r"\b"
 
 
 def negated_before(place: str) -> re.Pattern:
-    """Negation that governs ``place``: "not Chicago", "no longer in Chicago", "instead of Chicago".
-    A negation elsewhere in the fact ("lives in Ogden, not Chicago") does not negate Ogden."""
-    return re.compile(r"(\bnot\b|n't\b|\bno longer\b|\binstead of\b|\brather than\b)[^.,;]{0,30}\b" + place, re.I)
-
-
-NOT_OGDEN_RE = negated_before("ogden")
-NOT_CHICAGO_RE = negated_before("chicago")
-COCO_IS_CAT_RE = re.compile(r"\bcoco\b[^.;]{0,20}\b(?:is|was|being)\s+(?:[\w']+\s+){0,2}cat\b", re.I)
-DOG_RE = re.compile(r"\bdogs?\b|\bpupp(?:y|ies)\b", re.I)
-NOT_CAT_RE = re.compile(r"\bnot\s+(?:a\s+)?cats?\b|\bisn't\s+(?:a\s+)?cats?\b", re.I)
-COCO_RE = re.compile(r"\bcoco\b", re.I)
-AMANDA_ALIAS_RE = re.compile(r"\bamanda\b|\bwife\b", re.I)
+    """Negation that governs ``place``: "not <city>", "no longer in <city>", "instead of <city>".
+    A negation elsewhere in the fact ("lives in <home>, not <trip city>") does not negate <home>."""
+    return re.compile(r"(\bnot\b|n't\b|\bno longer\b|\binstead of\b|\brather than\b)[^.,;]{0,30}" + word(place), re.I)
 
 
 def _dt(value: Any) -> datetime | None:
@@ -85,47 +104,51 @@ def _mentions(e: dict[str, Any], pattern: re.Pattern) -> bool:
     return bool(pattern.search(" ".join(str(e.get(k) or "") for k in ("fact", "source", "target"))))
 
 
-def check_ogden_current(edges: list[dict[str, Any]]) -> Check:
-    hits = [e for e in edges if _mentions(e, re.compile(r"ogden", re.I)) and LIVES_RE.search(str(e.get("fact")))]
-    current = [e for e in hits if is_current(e) and not NOT_OGDEN_RE.search(str(e.get("fact")))]
-    return Check("lives in Ogden is current", bool(current),
-                 f"{len(current)} current of {len(hits)} Ogden-residence facts", [_edge_line(e) for e in hits])
+def check_home_current(edges: list[dict[str, Any]], t: dict[str, str]) -> Check:
+    home = t["home_city"]
+    hits = [e for e in edges if _mentions(e, re.compile(word(home), re.I)) and LIVES_RE.search(str(e.get("fact")))]
+    current = [e for e in hits if is_current(e) and not negated_before(home).search(str(e.get("fact")))]
+    return Check("lives in [home city] is current", bool(current),
+                 f"{len(current)} current of {len(hits)} [home city]-residence facts", [_edge_line(e) for e in hits])
 
 
-def check_chicago_home(edges: list[dict[str, Any]]) -> Check:
-    """Fail when a CURRENT fact says Juniper lives in Chicago (a stay is not a home)."""
-    hits = [e for e in edges if _mentions(e, re.compile(r"chicago", re.I))]
+def check_trip_city_not_home(edges: list[dict[str, Any]], t: dict[str, str]) -> Check:
+    """Fail when a CURRENT fact says the subject lives in the trip city (a stay is not a home)."""
+    city = t["trip_city"]
+    hits = [e for e in edges if _mentions(e, re.compile(word(city), re.I))]
     homes = [e for e in hits if LIVES_RE.search(str(e.get("fact")))
-             and not STAY_RE.search(str(e.get("fact"))) and not NOT_CHICAGO_RE.search(str(e.get("fact")))]
+             and not STAY_RE.search(str(e.get("fact"))) and not negated_before(city).search(str(e.get("fact")))]
     bad = [e for e in homes if is_current(e)]
-    return Check("lives in Chicago absent or invalidated", not bad,
-                 f"{len(bad)} current Chicago-home facts ({len(homes)} home-shaped, {len(hits)} Chicago facts)",
+    return Check("lives in [trip city] absent or invalidated", not bad,
+                 f"{len(bad)} current [trip city]-home facts ({len(homes)} home-shaped, {len(hits)} [trip city] facts)",
                  [_edge_line(e) for e in hits])
 
 
-def check_chicago_stay(edges: list[dict[str, Any]], start: str = "2026-10-04", end: str = "2026-10-09") -> Check:
-    """Pass when a Chicago stay fact starts inside the trip and is closed (invalid_at) by its end.
-    The trip is 10-05..10-07 (UTC stamps 10-05 02:55 .. 10-07 03:45); the window allows a day of
-    slack each side for local-time vs UTC dating."""
-    lo, hi = _dt(start), _dt(end)
-    stays = [e for e in edges if _mentions(e, re.compile(r"chicago|wade", re.I)) and STAY_RE.search(str(e.get("fact")))]
+def check_trip_stay(edges: list[dict[str, Any]], t: dict[str, str]) -> Check:
+    """Pass when a trip-city stay fact starts inside the trip window and is closed (invalid_at)
+    inside it. The window carries a day of slack each side for local-time vs UTC dating."""
+    lo, hi = _dt(t["trip_start"]), _dt(t["trip_end"])
+    place = re.compile(word(t["trip_city"]) + "|" + word(t["trip_hotel"]), re.I)
+    stays = [e for e in edges if _mentions(e, place) and STAY_RE.search(str(e.get("fact")))]
     dated = [e for e in stays if (v := _dt(e.get("valid_at"))) and lo <= v <= hi]
     closed = [e for e in dated if (i := _dt(e.get("invalid_at"))) and lo <= i <= hi]
-    return Check("Chicago stay dated 10-05..10-07 as a stay (window 10-04..10-09)", bool(closed),
-                 f"{len(closed)} stay facts opened and closed inside {start}..{end}; "
-                 f"{len(dated)} opened inside it; {len(stays)} stay-shaped Chicago facts",
+    return Check(f"[trip city] stay dated as a stay (window {t['trip_start']}..{t['trip_end']})", bool(closed),
+                 f"{len(closed)} stay facts opened and closed inside the window; "
+                 f"{len(dated)} opened inside it; {len(stays)} stay-shaped [trip city] facts",
                  [_edge_line(e) for e in stays])
 
 
-def check_coco_dog(edges: list[dict[str, Any]]) -> Check:
-    coco = [e for e in edges if _mentions(e, COCO_RE)]
-    dog_current = [e for e in coco if is_current(e) and DOG_RE.search(str(e.get("fact")))
+def check_pet_dog(edges: list[dict[str, Any]], t: dict[str, str]) -> Check:
+    pet_re = re.compile(word(t["pet"]), re.I)
+    is_cat = re.compile(word(t["pet"]) + r"[^.;]{0,20}\b(?:is|was|being)\s+(?:[\w']+\s+){0,2}cat\b", re.I)
+    pet = [e for e in edges if _mentions(e, pet_re)]
+    dog_current = [e for e in pet if is_current(e) and DOG_RE.search(str(e.get("fact")))
                    and not re.search(r"\bnot\s+a\s+dog\b", str(e.get("fact")), re.I)]
-    cat_current = [e for e in coco if is_current(e) and COCO_IS_CAT_RE.search(str(e.get("fact")))
+    cat_current = [e for e in pet if is_current(e) and is_cat.search(str(e.get("fact")))
                    and not NOT_CAT_RE.search(str(e.get("fact")))]
-    return Check("el Coco is a dog current, cat absent or invalidated", bool(dog_current) and not cat_current,
-                 f"{len(dog_current)} current dog facts, {len(cat_current)} current cat facts, {len(coco)} Coco facts",
-                 [_edge_line(e) for e in coco])
+    return Check("[pet] is a dog current, cat absent or invalidated", bool(dog_current) and not cat_current,
+                 f"{len(dog_current)} current dog facts, {len(cat_current)} current cat facts, {len(pet)} [pet] facts",
+                 [_edge_line(e) for e in pet])
 
 
 def check_one_entity(nodes: list[dict[str, Any]], pattern: re.Pattern, label: str) -> Check:
@@ -188,14 +211,16 @@ def cost_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def run_checks(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], judged: list[dict[str, Any]]) -> list[Check]:
+def run_checks(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], judged: list[dict[str, Any]],
+               t: dict[str, str]) -> list[Check]:
     checks = [
-        check_ogden_current(edges),
-        check_chicago_home(edges),
-        check_chicago_stay(edges),
-        check_coco_dog(edges),
-        check_one_entity(nodes, COCO_RE, "el Coco/Coco"),
-        check_one_entity(nodes, AMANDA_ALIAS_RE, "Amanda/my wife"),
+        check_home_current(edges, t),
+        check_trip_city_not_home(edges, t),
+        check_trip_stay(edges, t),
+        check_pet_dog(edges, t),
+        check_one_entity(nodes, re.compile(word(t["pet"]), re.I), "[pet] (all name forms)"),
+        check_one_entity(nodes, re.compile(word(t["spouse"]) + "|" + word(t["spouse_alias"]), re.I),
+                         "[spouse]/my [spouse alias]"),
     ]
     rate, dups, n = duplicate_rate(judged)
     checks.append(Check(f"duplicate entities under {int(DUP_PASS_RATE * 100)}% (hand-judged sample)",
@@ -254,6 +279,35 @@ def render_report(dump: dict[str, Any], checks: list[Check], cost: dict[str, Any
     return "\n".join(lines) + "\n"
 
 
+PLACEHOLDERS = {"subject": "[subject]", "home_city": "[home city]", "trip_city": "[trip city]",
+                "trip_hotel": "[trip hotel]", "spouse": "[spouse]", "spouse_alias": "[spouse alias]", "pet": "[pet]"}
+
+
+def _denylist_hashes() -> tuple[set[str], Any]:
+    """The repo's hashed personal-term denylist (config/privacy), or empty when not mounted."""
+    try:
+        import orion  # noqa: PLC0415
+        from orion.privacy import personal_terms as pt  # noqa: PLC0415
+    except ImportError:
+        return set(), None
+    path = Path(orion.__file__).resolve().parents[1] / pt.DENYLIST_REL
+    if not path.exists():
+        return set(), pt
+    return pt.load_denylist(path)[0], pt
+
+
+def redact(text: str, t: dict[str, str], hashes: set[str] | None = None, pt: Any = None) -> str:
+    """Term values -> role placeholders; then any other word on the denylist -> [name]."""
+    for key in sorted(PLACEHOLDERS, key=lambda k: -len(str(t.get(k) or ""))):
+        val = str(t.get(key) or "").strip()
+        if val:
+            text = re.sub(word(val), PLACEHOLDERS[key], text, flags=re.I)
+    if hashes and pt is not None:
+        text = pt._ascii_fold(text)
+        text = pt._TOKEN.sub(lambda m: "[name]" if pt._h(m.group(0).lower()) in hashes else m.group(0), text)
+    return text
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
     p.add_argument("cmd", choices=("dump", "sample", "report"))
@@ -261,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--falkor-port", type=int, default=6379)
     p.add_argument("--judgments", default=str(OUT_DIR / "dup_sample.json"))
     p.add_argument("--force", action="store_true", help="sample: overwrite a judgments file that has judgments")
+    p.add_argument("--terms", default="", help=f"terms file (default {TERMS_LOCAL.name})")
     a = p.parse_args(argv)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     dump_path = OUT_DIR / "graph_dump.json"
@@ -284,10 +339,20 @@ def main(argv: list[str] | None = None) -> int:
         results = _read_jsonl(OUT_DIR / "results.jsonl")
         plan = json.loads((OUT_DIR / "plan.json").read_text()) if (OUT_DIR / "plan.json").exists() else {}
         runs = [json.loads(f.read_text()) for f in sorted(OUT_DIR.glob("run-*.json"))]
-        checks = run_checks(dump["nodes"], dump["edges"], judged)
+        terms = load_terms(Path(a.terms) if a.terms else None)
+        checks = run_checks(dump["nodes"], dump["edges"], judged, terms)
         report = render_report(dump, checks, cost_summary(results), plan, runs, judged)
         (OUT_DIR / "report.md").write_text(report)
-        print(report)
+        hashes, pt = _denylist_hashes()
+        red = redact(report, terms, hashes, pt)
+        left = [n for n, line in enumerate(red.splitlines(), 1) if pt is not None and pt.line_hits(line, hashes)]
+        (OUT_DIR / "report.redacted.md").write_text(red)
+        print(red)
+        if not hashes:
+            print("WARNING: denylist not found; report.redacted.md only has term-file redaction", file=sys.stderr)
+        if left:
+            print(f"redaction left personal terms on lines {left}", file=sys.stderr)
+            return 1
     return 0
 
 

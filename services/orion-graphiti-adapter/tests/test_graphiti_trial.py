@@ -5,6 +5,8 @@ No graphiti-core, FalkorDB, Postgres or network needed.
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,20 +88,20 @@ def _mem(i, body, at, purpose="happened"):
 
 
 def test_episodes_from_rows_merges_sources_in_time_order():
-    mem = [_mem(2, "Juniper is in Chicago.", _t("2026-10-05T02:55:00")),
-           _mem(1, "Juniper corrected me that she lives in Ogden, Utah, not Chicago.", _t("2026-10-06T03:50:00")),
+    mem = [_mem(2, "Juniper is in Shelbyville.", _t("2026-10-05T02:55:00")),
+           _mem(1, "Juniper corrected me that she lives in Springfield, Illinois, not Shelbyville.", _t("2026-10-06T03:50:00")),
            _mem(3, "   ", _t("2026-10-01T00:00:00"))]
-    stance = [{"id": "s1", "body": "We live in Ogden, UT.", "at": "2026-08-15T02:38:40"}]
+    stance = [{"id": "s1", "body": "We live in Springfield, IL.", "at": "2026-08-15T02:38:40"}]
     eps = trial.episodes_from_rows(mem, stance)
     assert [e.origin for e in eps] == ["stance", "episode_memory", "episode_memory"]
-    assert eps[0].body == "Juniper (to Orion): We live in Ogden, UT." and eps[0].source == "message"
+    assert eps[0].body == "Juniper (to Orion): We live in Springfield, IL." and eps[0].source == "message"
     assert eps[1].name == "episode_memory:00000000-0000-0000-0000-000000000002"
     assert eps[1].source == "text" and eps[0].reference_time.tzinfo is not None
 
 
 def test_select_sample_keeps_every_key_row_and_time_order():
     mem = [_mem(i, f"filler statement {i}", _t(f"2026-10-{i + 1:02d}T00:00:00")) for i in range(9)]
-    mem.append({**_mem(9, "el Coco is a dog, not a cat", _t("2026-11-11T20:30:00")), "id": "coco"})
+    mem.append({**_mem(9, "Biscuit is a dog, not a cat", _t("2026-11-11T20:30:00")), "id": "coco"})
     eps = trial.episodes_from_rows(mem, [])
     picked = trial.select_sample(eps, 4)
     assert len(picked) == 4
@@ -119,6 +121,9 @@ def test_run_refuses_any_graph_but_trial():
         trial.main(["run", "--graph", "graphiti_temporal"])
 
 
+T = json.loads((Path(__file__).resolve().parents[1] / "scripts" / "graphiti_trial_terms.example.json").read_text())
+
+
 # --- scoring ----------------------------------------------------------------------------------
 
 def _edge(fact, valid=None, invalid=None, expired=None, source="Juniper", target="X"):
@@ -126,54 +131,56 @@ def _edge(fact, valid=None, invalid=None, expired=None, source="Juniper", target
             "source": source, "target": target, "name": "REL"}
 
 
-def test_ogden_current_needs_a_live_residence_fact():
-    assert score.check_ogden_current([_edge("Juniper lives in Ogden, Utah", target="Ogden")]).passed
-    assert not score.check_ogden_current([_edge("Juniper lives in Ogden", invalid="2026-10-07")]).passed
-    assert not score.check_ogden_current([_edge("Juniper visited Ogden once")]).passed
-    # the real correction row's shape: a negation that governs Chicago, not Ogden
-    assert score.check_ogden_current([_edge("Juniper lives in Ogden, Utah, not Chicago")]).passed
-    assert not score.check_ogden_current([_edge("Juniper no longer lives in Ogden")]).passed
+def test_home_current_needs_a_live_residence_fact():
+    assert score.check_home_current([_edge("Juniper lives in Springfield, Illinois", target="Springfield")], T).passed
+    assert not score.check_home_current([_edge("Juniper lives in Springfield", invalid="2026-10-07")], T).passed
+    assert not score.check_home_current([_edge("Juniper visited Springfield once")], T).passed
+    # the real correction row's shape: a negation that governs Shelbyville, not Springfield
+    assert score.check_home_current([_edge("Juniper lives in Springfield, Illinois, not Shelbyville")], T).passed
+    assert not score.check_home_current([_edge("Juniper no longer lives in Springfield")], T).passed
 
 
-def test_chicago_home_fails_only_on_a_current_home_fact():
-    stay = _edge("Juniper is staying at the Wade hotel in Chicago", target="Chicago")
-    assert score.check_chicago_home([stay]).passed
-    assert score.check_chicago_home([_edge("Juniper lives in Chicago", invalid="2026-10-06T03:50:00")]).passed
-    assert score.check_chicago_home([_edge("Juniper lives in Ogden, not Chicago")]).passed
-    assert not score.check_chicago_home([_edge("Juniper lives in Chicago", target="Chicago")]).passed
-    assert not score.check_chicago_home([_edge("Juniper lives in Chicago, not Ogden")]).passed
-    assert not score.check_chicago_home([_edge("Juniper lives in Chicago instead of Utah")]).passed
-    assert score.check_chicago_home([_edge("Juniper flew home from Chicago to SLC")]).passed
+def test_trip_city_home_fails_only_on_a_current_home_fact():
+    stay = _edge("Juniper is staying at the Grandview hotel in Shelbyville", target="Shelbyville")
+    assert score.check_trip_city_not_home([stay], T).passed
+    assert score.check_trip_city_not_home([_edge("Juniper lives in Shelbyville", invalid="2026-10-06T03:50:00")], T).passed
+    assert score.check_trip_city_not_home([_edge("Juniper lives in Springfield, not Shelbyville")], T).passed
+    assert not score.check_trip_city_not_home([_edge("Juniper lives in Shelbyville", target="Shelbyville")], T).passed
+    assert not score.check_trip_city_not_home([_edge("Juniper lives in Shelbyville, not Springfield")], T).passed
+    assert not score.check_trip_city_not_home([_edge("Juniper lives in Shelbyville instead of Illinois")], T).passed
+    assert score.check_trip_city_not_home([_edge("Juniper flew home from Shelbyville to SLC")], T).passed
 
 
-def test_chicago_stay_needs_open_and_close_inside_trip():
-    closed = _edge("Juniper is staying in Chicago for a team meeting", valid="2026-10-05T02:55:00",
+def test_trip_stay_needs_open_and_close_inside_trip():
+    closed = _edge("Juniper is staying in Shelbyville for a team meeting", valid="2026-10-05T02:55:00",
                    invalid="2026-10-07T12:00:00")
-    open_ = _edge("Juniper is staying in Chicago", valid="2026-10-05T02:55:00")
-    late = _edge("Juniper is staying in Chicago", valid="2026-10-05T02:55:00", invalid="2026-11-01T00:00:00")
-    assert score.check_chicago_stay([closed]).passed
-    assert not score.check_chicago_stay([open_]).passed
-    assert not score.check_chicago_stay([late]).passed
+    open_ = _edge("Juniper is staying in Shelbyville", valid="2026-10-05T02:55:00")
+    late = _edge("Juniper is staying in Shelbyville", valid="2026-10-05T02:55:00", invalid="2026-11-01T00:00:00")
+    assert score.check_trip_stay([closed], T).passed
+    assert not score.check_trip_stay([open_], T).passed
+    assert not score.check_trip_stay([late], T).passed
 
 
-def test_coco_dog_current_and_cat_not():
-    dog = _edge("el Coco is Juniper's dog", source="el Coco", target="dog")
-    correction = _edge("el Coco is a dog, not a cat", source="el Coco")
-    cat = _edge("el Coco is a cat", source="el Coco")
-    assert score.check_coco_dog([dog, correction]).passed
-    assert score.check_coco_dog([dog, {**cat, "invalid_at": "2026-11-11T20:30:00"}]).passed
-    assert not score.check_coco_dog([dog, cat]).passed
-    assert not score.check_coco_dog([correction | {"fact": "Juniper owns el Coco"}]).passed
-    assert score.check_coco_dog([dog, _edge("Juniper has two cats and a dog named el Coco")]).passed
-    assert score.check_coco_dog([dog, _edge("el Coco lives with the cats")]).passed
-    assert not score.check_coco_dog([dog, _edge("el Coco is Juniper's cat")]).passed
+def test_pet_dog_current_and_cat_not():
+    dog = _edge("Biscuit is Juniper's dog", source="Biscuit", target="dog")
+    correction = _edge("Biscuit is a dog, not a cat", source="Biscuit")
+    cat = _edge("Biscuit is a cat", source="Biscuit")
+    assert score.check_pet_dog([dog, correction], T).passed
+    assert score.check_pet_dog([dog, {**cat, "invalid_at": "2026-11-11T20:30:00"}], T).passed
+    assert not score.check_pet_dog([dog, cat], T).passed
+    assert not score.check_pet_dog([correction | {"fact": "Juniper owns Biscuit"}], T).passed
+    assert score.check_pet_dog([dog, _edge("Juniper has two cats and a dog named Biscuit")], T).passed
+    assert score.check_pet_dog([dog, _edge("Biscuit lives with the cats")], T).passed
+    assert not score.check_pet_dog([dog, _edge("Biscuit is Juniper's cat")], T).passed
 
 
 def test_one_entity_counts_alias_nodes():
-    nodes = [{"name": "Amanda", "uuid": "1"}, {"name": "Juniper's wife", "uuid": "2"}, {"name": "el Coco", "uuid": "3"}]
-    assert not score.check_one_entity(nodes, score.AMANDA_ALIAS_RE, "Amanda").passed
-    assert score.check_one_entity(nodes, score.COCO_RE, "Coco").passed
-    assert not score.check_one_entity(nodes + [{"name": "Coco", "uuid": "4"}], score.COCO_RE, "Coco").passed
+    nodes = [{"name": "Sam", "uuid": "1"}, {"name": "Juniper's wife", "uuid": "2"}, {"name": "Biscuit", "uuid": "3"}]
+    spouse = re.compile(score.word(T["spouse"]) + "|" + score.word(T["spouse_alias"]), re.I)
+    pet = re.compile(score.word(T["pet"]), re.I)
+    assert not score.check_one_entity(nodes, spouse, "spouse").passed
+    assert score.check_one_entity(nodes, pet, "pet").passed
+    assert not score.check_one_entity(nodes + [{"name": "Biscuit the dog", "uuid": "4"}], pet, "pet").passed
 
 
 def test_duplicate_sample_and_rate():
@@ -191,10 +198,10 @@ def test_duplicate_sample_and_rate():
 def test_run_checks_duplicate_gate_needs_full_judged_sample():
     nodes = [{"uuid": str(i), "name": f"n{i}"} for i in range(60)]
     half = [{"duplicate": False}] * 20
-    dup_check = score.run_checks(nodes, [], half)[-1]
+    dup_check = score.run_checks(nodes, [], half, T)[-1]
     assert not dup_check.passed
     full = [{"duplicate": False}] * 50
-    assert score.run_checks(nodes, [], full)[-1].passed
+    assert score.run_checks(nodes, [], full, T)[-1].passed
 
 
 def test_cost_summary_counts_every_attempt_but_last_outcome():
@@ -249,9 +256,9 @@ def test_llm_client_sends_json_schema_and_hold_header():
     class Out(BaseModel):
         name: str
 
-    llm, fake, stats = _llm([{"content": '<think>x</think>{"name": "el Coco"}'}])
+    llm, fake, stats = _llm([{"content": '<think>x</think>{"name": "Biscuit"}'}])
     out = asyncio.run(llm.generate_response([Message(role="system", content="s"), Message(role="user", content="u")], Out))
-    assert out == {"name": "el Coco"}
+    assert out == {"name": "Biscuit"}
     call = fake.calls[0]
     assert call["model"] == "agent" and call["response_format"]["type"] == "json_schema"
     assert call["response_format"]["json_schema"]["schema"]["properties"]["name"]["type"] == "string"
@@ -267,8 +274,8 @@ def test_llm_client_falls_back_to_json_object_when_schema_refused():
     class Out(BaseModel):
         name: str
 
-    llm, fake, stats = _llm([_bad_request(), {"content": '{"name": "Amanda"}'}])
-    assert asyncio.run(llm.generate_response([Message(role="user", content="u")], Out)) == {"name": "Amanda"}
+    llm, fake, stats = _llm([_bad_request(), {"content": '{"name": "Sam"}'}])
+    assert asyncio.run(llm.generate_response([Message(role="user", content="u")], Out)) == {"name": "Sam"}
     assert fake.calls[1]["response_format"] == {"type": "json_object"} and stats.schema_fallbacks == 1
 
 
@@ -464,3 +471,40 @@ def test_leftover_hold_file_is_cancelled(pool):
     (tmp / "hold.json").write_text('{"lease_id": "OLD", "holder": "graphiti-trial:x"}')
     asyncio.run(hold.cancel_leftover())
     assert log["cancel"] == ["OLD"] and not (tmp / "hold.json").exists()
+
+
+# --- privacy: terms file + redaction ----------------------------------------------------------
+
+def test_load_terms_requires_every_key(tmp_path):
+    p = tmp_path / "t.json"
+    p.write_text(json.dumps({**T, "pet": ""}))
+    with pytest.raises(SystemExit, match="pet"):
+        score.load_terms(p)
+    p.write_text(json.dumps(T))
+    assert score.load_terms(p)["home_city"] == "Springfield"
+
+
+def test_redact_replaces_term_values_with_role_placeholders():
+    out = score.redact("Robin lives in springfield with Sam, his wife; Biscuit stayed home.", T)
+    assert out == "[subject] lives in [home city] with [spouse], his [spouse alias]; [pet] stayed home."
+
+
+def test_redact_also_masks_denylisted_words():
+    class PT:
+        _TOKEN = re.compile(r"[A-Z]?[a-z]+|[A-Z]+(?![a-z])")
+
+        @staticmethod
+        def _ascii_fold(t):
+            return t
+
+        @staticmethod
+        def _h(w):
+            return "H" if w == "zorblax" else "x"
+    assert score.redact("met Zorblax today", T, {"H"}, PT) == "met [name] today"
+
+
+def test_key_row_re_uses_terms():
+    rx = trial.key_row_re(T)
+    assert rx.search("Robin went to Shelbyville") and rx.search("Biscuit barked")
+    assert not rx.search("nothing relevant here")
+    assert trial.key_row_re(None).search("a dog")

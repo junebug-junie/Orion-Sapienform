@@ -49,8 +49,19 @@ TRIAL_GRAPH = "graphiti_trial"
 GROUP_ID = "orion_trial"
 OUT_DIR = Path(os.environ.get("GRAPHITI_TRIAL_OUT", "/tmp/graphiti-trial"))
 
-# The rows the go/no-go checks are about. Any episode whose text matches is always in a sample.
-KEY_ROW_RE = re.compile(r"chicago|ogden|\bcoco\b|amanda|\bwife\b|\bcats?\b|\bdogs?\b", re.IGNORECASE)
+
+
+def key_row_re(terms: dict[str, str] | None) -> re.Pattern:
+    """The rows the go/no-go checks are about; any episode that matches is always in a sample. The
+    names come from the gitignored terms file (personal terms stay out of the public repo)."""
+    words = [r"\bcats?\b", r"\bdogs?\b"]
+    for k in ("home_city", "trip_city", "trip_hotel", "spouse", "spouse_alias", "pet"):
+        if terms and str(terms.get(k) or "").strip():
+            words.append(r"\b" + re.escape(str(terms[k]).strip()) + r"\b")
+    return re.compile("|".join(words), re.IGNORECASE)
+
+
+KEY_ROW_RE = key_row_re(None)
 
 EPISODE_SQL = """
 select memory_id::text as id, purpose, voice, statement as body,
@@ -374,6 +385,9 @@ async def run(args: argparse.Namespace) -> int:
     episodes = await load_episodes(args.postgres_uri)
     total_source = len(episodes)
     if args.sample:
+        global KEY_ROW_RE
+        from graphiti_trial_score import load_terms  # noqa: PLC0415
+        KEY_ROW_RE = key_row_re(load_terms())
         episodes = select_sample(episodes, args.sample)
     if args.limit:
         episodes = episodes[: args.limit]

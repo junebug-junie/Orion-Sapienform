@@ -1,3 +1,10 @@
+## Rev 3 (2026-11-13)
+
+- Retires rev 2's recurrence stream. The live panel showed 27 "dispositions" that were sentences repeated by automated jobs (reverie 59% of evidence; real choices 1.3%). Juniper: "it is slop".
+- Only choices (a pick plus the options turned down) are evidence. Labels describe the choice, never quote Orion's prose.
+- Personality moves into Orion Prime: one cited `tending` line in the Prime block replaces the separate cue readers in hub and thought. Prime's concern pick becomes a choice lane.
+- Patch order: R0 cue flags off, R1 choice-only reducer and retire old nodes, R2 Prime choice producer, R3 Prime block line behind Juniper's recorded yes, R4 outreach topic chooser, R5 chat thread chooser.
+
 ## Summary
 
 - Design only (proposal mode). Orion gets one shared personality graph that lasts. Every lane's choices feed it, and its weights change Orion's tone.

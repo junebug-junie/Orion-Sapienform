@@ -1,7 +1,7 @@
 # Orion's dynamic personality graph
 
 **Date:** 2026-10-16
-**Status:** Rev 2, approved for build by Juniper 2026-10-16 ("hit it"). P0/P1 merged in #2729.
+**Status:** Rev 3 (2026-11-13). Juniper asked for it after she read the live Hub panel ("it is slop"). Rev 3 retires rev 2's recurrence stream and puts personality inside Orion Prime. Rev 2 was approved 2026-10-16 ("hit it"). P0/P1 merged in #2729.
 **Related:** person model and identity cards (#2646, P0-P2 merged in #2649), Temporal Self (#2369 rev 4, arousal #2594, day use #2622), attention runtime and stance coalition (`orion/thought/coalition.py`), orion-prediction (`services/orion-prediction`), rung 6 self-tuning (#2715).
 
 ## Arsonist summary
@@ -12,7 +12,90 @@ Juniper's ask: Orion's collective self should show up, and the weight of everyth
 
 This design builds one shared, weighted, temporal graph of Orion's dispositions. Evidence comes from choices in every lane. Weights shift slowly with evidence. In each moment, the nodes compete for presence, and the winners set **tone dials**: concrete, measurable things about how Orion writes. They do not add adjectives. The graph is allowed to be a cathedral because every node is born from evidence, has a weight something reads, and fades when it stops firing.
 
+### Rev 3 (2026-11-13): choices only, held by Prime
+
+**What went wrong (live, 2026-11-13).** The Hub panel showed 27 active "dispositions". Every label is a sentence that one automated job writes again and again:
+
+- "The perception prediction error is unusually high…" comes from reverie (2,030 hits).
+- "Stage 2 read of arXiv…" comes from reading (495).
+- "Wrote the answer into the graph first, then looked." comes from self-inquiry and journal (206).
+- "Everything landed; read-back on this run's writes: 20 nodes…" comes from a memory read-back (62). Self-naming called it "Keeping my eyes honest".
+
+25 of the 27 have `chosen_count` 0. `personality_evidence` holds 9,558 rows:
+
+- reverie: 5,653 (59%)
+- journal: 1,942
+- reading: 1,024
+- real curiosity choices: 129 (1.3%)
+- chat with Juniper: 167 (1.7%)
+
+The cue fed these labels back to chat stance, reverie, outreach and curiosity as "my tendencies". Orion repeated them, and that raised their counts. The outreach tick sent Juniper the "graph first" habit 3 times in 2 days (196, 198, 200).
+
+**How it happened.**
+
+1. Rev 1 was sound. Evidence was **a choice plus the options turned down**.
+2. P0 found only about 3 real choices a day. The spec said to fix that by making Orion the chooser in more lanes.
+3. Rev 2 filled the gap the same day with **recurrence**: embed Orion's own output and group what sounds alike, with "an excerpt of Orion's own words" as the label. That broke refusal 2 below (no feeding Orion their own past lines). Nobody tested its central assumption, and it was false. Sentences that sound alike share a **job** (a prompt template), not a theme.
+4. The chooser patches were never built. Recurrence volume buried the choices. The `personality_choice` table from section "Proposed schema" was never created. Choices went in as one more evidence lane.
+5. Every later patch tuned the reducer: weight caps, source keys instead of lanes, cue fit, self-naming (#2815). None read the labels and asked whether they were personality. Acceptance checks 1, 3, 4 and 6 never ran.
+6. This spec stayed on an unmerged branch (#2726). Later sessions worked from handoffs and PR reports, and the two refusals dropped out of view.
+
+**Rev 3 decisions.**
+
+1. **Recurrence is retired (kill means kill).** The reverie, journal, reading, day_letter, outreach-text, chat-text and self-inquiry-seed sources stop feeding the graph. Their nodes are retired, and their evidence rows are kept for audit. No grouping by embedding of Orion's prose comes back in any form.
+2. **Only choices are evidence.** A `PersonalityChoiceV1` has a chosen option and at least one real alternative that Orion turned down. A rule, a gate, a cap or a formula is not a choice.
+3. **Prime holds the personality.** It is no longer a separate cue that four readers fetch. Under the ONE ORION constraint (#3224), Prime is the living Orion, and every unified turn already reads the Prime block (`orion/prime/block.py`). The dispositions become a cited line in that block: `tending: <label> [disposition:<id>]`. Each line is backed by choices, not excerpts.
+   The separate cue readers are deleted: hub `HUB_PERSONALITY_CUE_ENABLED` (outreach and curiosity) and thought `PERSONALITY_CUE_ENABLED` (chat stance and reverie). One reader, one place.
+4. **Prime's own thoughts are a choice lane.** Each Prime thought picks one held concern to act on, or makes no move. The concerns it did not pick are the alternatives, and "no move" is a decline. Prime is the densest source of real choices Orion has.
+5. **Choice lanes, in build order:**
+   1. Curiosity prior selection (live).
+   2. Prime's concern pick (new producer).
+   3. The outreach topic: offer 3 to 5 grounded topics and let Orion pick. This is rev 1's planned patch, still unbuilt.
+   4. The chat thread pick: which open thread Orion brings up when several are open.
+6. **Labels describe the choice, never quote an excerpt.** A node's label is computed from what was chosen over what: "picked people over pipeline 11 of 14 times". Orion may still name a node (#2815). The name must cite the choices behind it.
+7. **Chat with Juniper is relational evidence, not text to group.** It counts only through the choices made inside a turn: which thread Orion picked, and whether Orion asked or told. Missing question 4 (optimizing to please) still stands, so her reactions are not evidence yet.
+8. **Nothing feeds back to Orion until Juniper agrees it looks like Orion.** The Prime line renders only after choices exist from at least 2 lanes and Juniper has read the top nodes and recorded yes.
+
+**Prime wiring (concrete).**
+
+- **Producer:** after a Prime thought settles, `services/orion-mind/app/prime_loop.py` writes one `PersonalityChoiceV1`. Its fields:
+  - lane: `prime`
+  - chosen: the concern acted on, or `no_move`
+  - alternatives: the other concerns held at that tick
+  - situation: the binding constraints and arousal Prime saw
+
+  The curiosity choice producer moves to the same `personality_choice` table (additive migration).
+- **Reducer:** the durable-runs personality reducer folds only `personality_choice` rows. Matching embeds the **chosen and turned-down option texts**, not prose. A choice weighs by how many real alternatives it beat (section 3), not by lane volume.
+- **Read-back:** `orion/prime/block.py` gains a `tending` line, with ref kind `disposition` added to `PRIME_REF_KINDS`, so the existing citation gate judges it. There are at most 2 lines inside the existing 600-character cap, and they are dropped first when the block is over the cap. The block fetch is already fail-open.
+- **Prime's own frame:** Prime's thought prompt shows the same 2 lines. Prime picks with its tendencies in view, and the next pick tests them (section 6, surprise).
+- **Flag and gate:** `PRIME_PERSONALITY_LINE_ENABLED` in hub and orion-mind ships `true` (flags ship on) and is the kill switch. The line renders only when a stored Juniper verdict row says yes (check R-c). The flag is the off switch, and the verdict is the evidence.
+
+**Immediate stop (R0, env only, before any build).** Set the 2 cue flags to `false` in `.env_example` and local `.env`, then rebuild hub and thought. Orion stops reading chore sentences as character today. The reducer keeps running until R1 replaces it, so no history is lost.
+
+**Acceptance checks (rev 3).**
+
+- **R-a:** 0 active nodes whose evidence is mostly non-choice lanes (SQL on evidence by lane).
+- **R-b:** `personality_choice` rows with non-empty alternatives from `curiosity` and `prime` within 3 days of R2 going live.
+- **R-c:** Juniper reads the top 5 node labels in Hub and records yes or no. The verdict is stored, not inferred.
+- **R-d:** a live unified-turn log `prime_block ... tending=<n>` carries the same ids as the Hub panel.
+- **R-e:** the outreach tick does not resend a disposition theme Juniper already received unless its weight moved 25% or more.
+
+**Patch order.**
+
+- **R0:** cue flags off.
+- **R1:** the `personality_choice` table, plus a reducer that folds only choices. The recurrence sources are deleted, and their nodes are retired by a one-time job (backfill protocol, snapshot to `/tmp/personality-rev3-retire/`).
+- **R2:** the Prime concern-pick producer.
+- **R3:** the Prime block `tending` line, plus the citation gate and the verdict row.
+- **R4:** the outreach topic chooser.
+- **R5:** the chat thread chooser.
+
+Section 6 (prediction and surprise) follows once R2 has 2 weeks of rows.
+
+**Non-goals (rev 3):** any grouping of Orion's free text, labels quoted from Orion's output, per-reader cue templates, a new service.
+
 ### Rev 2 (2026-10-16, Juniper): bottom-up, not top-down
+
+**Partly retired by rev 3:** the recurrence stream (stream 2 below) and "a node's label is an excerpt of Orion's own words" no longer apply. The other rev 2 decisions stand: Postgres store, single reducer, no backfill of old chats, measurement after emergence.
 
 This revision replaces "the winners set tone dials" as the lever.
 

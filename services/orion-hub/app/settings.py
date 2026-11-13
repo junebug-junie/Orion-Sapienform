@@ -1346,7 +1346,7 @@ class Settings(BaseSettings):
     # (GET HUB_CURIOSITY_DURABLE_RUNS_URL/personality/naming/next) and names, rejects or merges
     # it. Uses an existing self-inquiry slot; never displaces an overdue pinned lived question.
     HUB_CURIOSITY_SELF_NAMING_ENABLED: bool = Field(
-        default=True, alias="HUB_CURIOSITY_SELF_NAMING_ENABLED"
+        default=False, alias="HUB_CURIOSITY_SELF_NAMING_ENABLED"
     )
     HUB_CURIOSITY_SELF_NAMING_DAILY_CAP: int = Field(
         default=1, alias="HUB_CURIOSITY_SELF_NAMING_DAILY_CAP"

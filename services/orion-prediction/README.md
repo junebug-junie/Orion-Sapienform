@@ -367,6 +367,18 @@ Each scored outcome becomes surprise (`app/surprise.py`; spec
   `/health` `series.<id>.surprise_events`, with published / refused-by-reason counters).
   Consumer: orion-substrate-runtime folds it into `node:prediction.room` (office) and
   `node:prediction.body` (cabinet) (`orion/substrate/prediction_surprise.py`).
+- **Chat-turn surprise** (2026-11-13, `app/turn_surprise.py`, kill switch
+  `PREDICTION_TURN_SURPRISE_EVENTS_ENABLED`, on). After each turn self-bet settle pass, every settled
+  chat turn (bare-UUID session) whose used bets carry information publishes one
+  `prediction.turn_surprise.v1` on `orion:prediction:turn_surprise`. Used bets: asks a question and
+  more steps than usual, the two kinds that beat the chat caller's own trailing base rate held out
+  (`evals/run_turn_surprise_replay_eval.py`; fetches and longer-reply do not and are left out). Each
+  stated p goes through a logistic map fit on the faculty's settled chat bets of the 7 days strictly
+  before the turn (ridge toward the identity map; fewer than 20 earlier bets: skipped). Per bet:
+  excess = -ln q(outcome) minus its expected value, calm variance q(1-q)logit(q)^2; per turn they are
+  summed into a z. A turn placed more than 60 min before it settles (a backlog) is never published.
+  Consumer: orion-substrate-runtime's `node:prediction.chat_turn` (replaces `node:substrate.chat`).
+  `/health` `turn_self_bets.turn_surprise` holds the counters.
 - `GET /series/{id}/surprise?hours=24`: mean excess per horizon vs its 95 % null band (independent
   origins only), share of p <= 0.05 / 0.2, and each horizon's gate reason.
 

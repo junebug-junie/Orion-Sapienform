@@ -194,6 +194,14 @@ def _prediction_surprise_status() -> dict | None:
         return None
 
 
+def _prediction_turn_surprise_status() -> dict | None:
+    try:
+        return worker.prediction_turn_surprise_status()
+    except Exception:  # noqa: BLE001 -- counters must never cost /health
+        logger.warning("prediction_turn_surprise_status_failed", exc_info=True)
+        return None
+
+
 @app.get("/health")
 async def health() -> dict:
     s = get_settings()
@@ -214,6 +222,8 @@ async def health() -> dict:
         "street_attention": _street_attention_status(),
         # node:prediction.room / .body windows (orion/substrate/prediction_surprise.py).
         "prediction_surprise": _prediction_surprise_status(),
+        # node:prediction.chat_turn window (orion/substrate/prediction_turn_surprise.py).
+        "prediction_turn_surprise": _prediction_turn_surprise_status(),
         "service": s.service_name,
         "version": s.service_version,
         "node": s.node_name,

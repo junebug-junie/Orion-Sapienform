@@ -73,7 +73,6 @@ from orion.substrate.prediction_error import (
     biometrics_prediction_error,
     perception_prediction_error,
     vision_channel_staleness_pressure,
-    chat_prediction_error,
     codebase_prediction_error,
     execution_prediction_error,
 )
@@ -184,10 +183,12 @@ _DRIVE_STATE_MAX_AGE_SEC = 300.0
 # against ACTIVE_INFERENCE_DOMAINS rather than a comment, because "the write is
 # dead but a reader still lists it" is exactly the partial retirement CLAUDE.md
 # §0A forbids, and a comment does not stop the next patch re-adding it.
+# node:substrate.chat left 2026-11-13 (PE suite rebuild retire step 6): its
+# successor, node:prediction.chat_turn, is a scored forecast that rests at 0
+# and is absent between chat turns, so it is not a self-model domain.
 _PREDICTION_ERROR_DOMAIN_NODE_IDS = {
     "node:substrate.execution": "execution",
     "node:substrate.biometrics": "biometrics",
-    "node:substrate.chat": "chat",
 }
 
 
@@ -658,7 +659,6 @@ class BiometricsSubstrateWorker:
         # retired transport_prediction_error() into a brand-new consumer
         # would repeat CLAUDE.md 0A's own documented mistake.
         self._last_execution_prediction_error: float | None = None
-        self._last_chat_prediction_error: float | None = None
         self._world_reading_link_events_cache: list[tuple[datetime, str, str]] | None = None
         self._world_reading_link_events_cache_at: datetime | None = None
         # RPC delivery bridge (orion/substrate/rpc_delivery.py): the listener
@@ -836,6 +836,16 @@ class BiometricsSubstrateWorker:
                 asyncio.create_task(
                     self._prediction_surprise_listener_loop(),
                     name="substrate-prediction-surprise-listener",
+                )
+            )
+        # Chat-turn surprise -> node:prediction.chat_turn
+        # (orion/substrate/prediction_turn_surprise.py). Event-driven only: no
+        # chat turn, no writes, and the node ages to stale (absent, never calm).
+        if self._bus is not None and s.prediction_turn_surprise_node_enabled:
+            self._tasks.append(
+                asyncio.create_task(
+                    self._prediction_turn_surprise_listener_loop(),
+                    name="substrate-prediction-turn-surprise-listener",
                 )
             )
         if s.enable_strain_attention:
@@ -1707,6 +1717,101 @@ class BiometricsSubstrateWorker:
             logger.exception("substrate_prediction_surprise_failed")
 
     # ------------------------------------------------------------------
+    # Chat-turn surprise -> node:prediction.chat_turn
+    # (orion/substrate/prediction_turn_surprise.py; successor of node:substrate.chat)
+    # ------------------------------------------------------------------
+
+    _PREDICTION_TURN_SURPRISE_LISTENER_NAME = "substrate_prediction_turn_surprise_listener"
+
+    def _prediction_turn_surprise_state(self):
+        # getattr: tests build the worker via __new__ and skip __init__.
+        state = getattr(self, "_prediction_turn_surprise", None)
+        if state is None:
+            from orion.substrate.prediction_turn_surprise import TurnSurpriseState
+
+            state = TurnSurpriseState()
+            self._prediction_turn_surprise = state
+        return state
+
+    def prediction_turn_surprise_status(self) -> dict[str, Any]:
+        """Counters and current window, for /health (``prediction_turn_surprise``)."""
+        from orion.substrate.prediction_turn_surprise import PREDICTION_TURN_SURPRISE_NODE_IDS
+
+        state = self._prediction_turn_surprise_state()
+        now = datetime.now(timezone.utc)
+        nodes: dict[str, Any] = {}
+        for node_id in sorted(PREDICTION_TURN_SURPRISE_NODE_IDS):
+            r = state.reading(node_id, now=now)
+            nodes[node_id] = None if r is None else {
+                "z": round(r.z, 4), "value": round(r.value, 4), "n": r.n,
+                "newest_settled_at": r.newest_settled_at.isoformat(),
+            }
+        return {
+            "enabled": bool(self._settings.prediction_turn_surprise_node_enabled),
+            "counts": state.counts_snapshot(),
+            "nodes": nodes,
+        }
+
+    async def _prediction_turn_surprise_listener_loop(self) -> None:
+        await run_subscription(
+            self._bus,
+            self._settings.prediction_turn_surprise_channel,
+            self._handle_prediction_turn_surprise_message,
+            stop_event=self._stop,
+            name=self._PREDICTION_TURN_SURPRISE_LISTENER_NAME,
+        )
+
+    async def _handle_prediction_turn_surprise_message(self, raw_msg: dict[str, Any]) -> None:
+        decoded = self._bus.codec.decode(raw_msg.get("data"))
+        if not decoded.ok:
+            self._prediction_turn_surprise_state().bump("invalid_total")
+            logger.warning("substrate_prediction_turn_surprise_decode_failed: %s", decoded.error)
+            return
+        await asyncio.to_thread(self._process_prediction_turn_surprise, decoded.envelope.payload or {})
+
+    def _process_prediction_turn_surprise(self, payload: Any, *, now: datetime | None = None) -> None:
+        """Fold one PredictionTurnSurpriseV1 into the chat-turn window and write the node. Fail-open.
+
+        One ``substrate_prediction_turn_surprise`` log line per event. Writes only on an accepted
+        event, so no chat (or a dead producer) leaves the node to age to stale = absent to every
+        reader. FalkorDB node only, no field receipt: the field digester's decay never touches it."""
+        from orion.schemas.prediction import PredictionTurnSurpriseV1
+        from orion.substrate.prediction_turn_surprise import REDUCER_KEY
+
+        state = self._prediction_turn_surprise_state()
+        try:
+            event = PredictionTurnSurpriseV1.model_validate(payload)
+        except ValueError as exc:
+            state.bump("invalid_total")
+            logger.error("substrate_prediction_turn_surprise_invalid err=%s", exc)
+            return
+        try:
+            now = now or datetime.now(timezone.utc)
+            node_id, verdict = state.add(event, now=now)
+            state.bump(verdict)
+            reading = state.reading(node_id, now=now) if verdict == "accepted" and node_id else None
+            logger.info(
+                "substrate_prediction_turn_surprise correlation_id=%s z=%+.3f bets=%d verdict=%s "
+                "node=%s window_z=%s n=%s",
+                event.correlation_id, event.z, len(event.bets), verdict, node_id or "none",
+                "none" if reading is None else f"{reading.z:+.3f}",
+                "none" if reading is None else reading.n,
+            )
+            if reading is None:
+                return
+            written = self._write_prediction_error_node(
+                node_id=reading.node_id,
+                error=reading.value,
+                now=now,
+                reducer_key=REDUCER_KEY,
+                evidence_event_ids=[f"prediction_turn_self_bet:{cid}" for cid in reading.correlation_ids],
+            )
+            state.bump("node_writes_total" if written else "node_write_skipped_total")
+        except Exception:
+            state.bump("failed_total")
+            logger.exception("substrate_prediction_turn_surprise_failed")
+
+    # ------------------------------------------------------------------
     # Street events -> node:substrate.street (orion/substrate/street_attention.py)
     # ------------------------------------------------------------------
 
@@ -2549,7 +2654,6 @@ class BiometricsSubstrateWorker:
             )
             scalars = ExecutionContextScalars(
                 execution=self._last_execution_prediction_error,
-                chat=self._last_chat_prediction_error,
             )
             step, meta = assemble_world_model_trajectory_step(
                 now=now,
@@ -4840,8 +4944,6 @@ class BiometricsSubstrateWorker:
         def _save_chat_projection(p: ChatSessionProjectionV1) -> None:
             self._store.save_chat_session_projection(p)
 
-        prev_projection = _load_chat_projection()
-
         def process_batch(batch: list[GrammarEventV1]) -> None:
             process_chat_grammar_events(
                 events=batch,
@@ -4859,60 +4961,12 @@ class BiometricsSubstrateWorker:
             quarantined_out=quarantined,
         )
 
-        if last_id is not None:
-            curr_projection = _load_chat_projection()
-            error = chat_prediction_error(prev_projection, curr_projection)
-            # chat_prediction_error mutates curr_projection's EWMA baseline
-            # fields in place (prediction_error_baseline_ewma/_var/_n) -- persist
-            # that regardless of whether error > 0.0 this tick, mirroring
-            # _execution_tick's identical save above it (execution_
-            # prediction_error has the same in-place-mutation contract). Without
-            # this, process_batch's own save above (of the turns-updated
-            # projection, before this mutation) is the only persist in scope, so
-            # the baseline never survives past this process's lifetime -- every
-            # tick reloads prediction_error_baseline_ewma_n=0 and re-takes the
-            # cold-start branch forever, reproducing this same patch's own bug
-            # (chat permanently reading near-zero) via a different mechanism.
-            # Found in code review, confirmed live-reproducible via the worker's
-            # own load/save call graph before this fix.
-            self._store.save_chat_session_projection(curr_projection)
-            # Cached for the world-model publish tick's execution_context
-            # group (world_model_features.py) -- see _execution_tick's
-            # identical comment above.
-            self._last_chat_prediction_error = error
-            evidence_event_ids = _prediction_error_evidence_event_ids(
-                events, quarantined_event_ids=quarantined
-            )
-            self._store.save_receipt(
-                _prediction_error_receipt(
-                    reducer_key="chat_session",
-                    node_id="node:substrate.chat",
-                    prediction_error=error,
-                    now=now,
-                    caused_by_event_ids=evidence_event_ids,
-                )
-            )
-            # Write the node on every tick, not just when error > 0.0 -- the
-            # same fix already applied to bus_synaptic (2026-07-30), extended
-            # here after `route` was found frozen at a stale 0.00025 while its
-            # tick kept running: a categorical/quiet domain returns error == 0.0
-            # on most ticks, so gating the node write left the node holding its
-            # last NON-ZERO value indefinitely. Consumers that poll this node's
-            # raw current value (orion-equilibrium-service, AST/HOT's
-            # prediction_error_by_domain) then read a stale high-water mark as
-            # if it were a current reading -- a value that can rise but never
-            # come back down to a genuine calm 0.0. The receipt above is
-            # likewise written every tick -- see the comment on
-            # _prediction_error_receipt for why it is not an audit-only write.
-            self._write_prediction_error_node(
-                node_id="node:substrate.chat",
-                error=error,
-                now=now,
-                reducer_key="chat_session",
-                contributing_id=last_id,
-                evidence_event_ids=evidence_event_ids,
-            )
-
+        # node:substrate.chat (chat_prediction_error) was retired 2026-11-13, PE
+        # suite rebuild retire step 6: this tick now only reduces chat grammar
+        # into the projection (repair appraisal and /projections/chat_session
+        # read it). The chat prediction error is node:prediction.chat_turn,
+        # written from orion-prediction's settled turn self-bets
+        # (_process_prediction_turn_surprise).
         return last_id
 
     def _route_tick(self) -> str | None:

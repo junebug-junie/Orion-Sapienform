@@ -157,7 +157,7 @@ def test_the_camera_nodes_stay_off_the_lattice() -> None:
     lattice = load_lattice(REPO / "config" / "field" / "orion_field_topology.v1.yaml")
     assert ROOM not in lattice.nodes
     assert WALKWAY not in lattice.nodes
-    assert "node:substrate.chat" not in lattice.nodes  # the hold test below relies on it
+    assert "node:substrate.codebase" not in lattice.nodes  # the hold test below relies on it
 
 
 def test_missing_stays_absent_through_a_full_tick() -> None:
@@ -186,9 +186,9 @@ def test_a_stopped_producer_expires_instead_of_holding_the_last_spike() -> None:
 
 
 def test_node_scoped_expiry_leaves_other_nodes_prediction_error_alone() -> None:
-    # node:substrate.chat writes on its own, much slower cadence; it must hold.
-    # (Was node:substrate.route until that node was retired, 2026-11.)
-    route = "node:substrate.chat"
+    # node:substrate.codebase writes on its own, much slower cadence; it must hold.
+    # (Was node:substrate.route, then node:substrate.chat, until each was retired, 2026-11.)
+    route = "node:substrate.codebase"
     field = _Field()
     route_delta = _delta(T0, value=0.3).model_copy(
         update={"target_id": route, "after": {"node_id": route, "pressure_hints": {"prediction_error": 0.3}}}

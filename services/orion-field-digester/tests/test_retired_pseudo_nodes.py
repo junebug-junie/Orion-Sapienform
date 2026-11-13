@@ -71,7 +71,7 @@ def test_live_field_shape_prunes_both_phantoms_and_keeps_real_nodes() -> None:
             },
             "node:substrate.transport": {"prediction_error": 0.0},
             "node:substrate.bus_synaptic": {"prediction_error": 0.2},
-            "node:substrate.chat": {"prediction_error": 0.1},
+            "node:substrate.codebase": {"prediction_error": 0.1},
         },
         node_vector_updated_at={
             "node:rpc_timeout": {"reliability_pressure": NOW - timedelta(hours=4)},
@@ -83,7 +83,7 @@ def test_live_field_shape_prunes_both_phantoms_and_keeps_real_nodes() -> None:
         assert gone not in out.node_vectors
         assert gone not in out.node_vector_updated_at
     # Live pseudo-nodes are untouched.
-    assert out.node_vectors["node:substrate.chat"]["prediction_error"] == 0.1
+    assert out.node_vectors["node:substrate.codebase"]["prediction_error"] == 0.1
     assert out.node_vectors["node:athena"]["cpu_pressure"] == 0.3
 
 
@@ -102,7 +102,7 @@ def test_pruned_set_is_the_union_and_never_a_live_lattice_node() -> None:
     assert PRUNED_NODE_IDS == frozenset(RETIRED_LATTICE_NODES) | frozenset(RETIRED_PSEUDO_NODES)
     assert not (PRUNED_NODE_IDS & set(_lattice().nodes))
     # Live prediction-error nodes must never be caught by this.
-    for live in ("node:substrate.chat", "node:substrate.execution", "node:substrate.biometrics"):
+    for live in ("node:substrate.codebase", "node:substrate.execution", "node:substrate.biometrics"):
         assert live not in PRUNED_NODE_IDS
 
 
@@ -137,19 +137,19 @@ def test_pe_step5_retired_nodes_refuse_perturbation_and_drop_tension_baselines()
         generated_at=NOW,
         tick_id="t",
         node_vectors={nid: {"prediction_error": 0.4} for nid in RETIRED_PREDICTION_ERROR_NODE_IDS}
-        | {"node:substrate.chat": {"prediction_error": 0.1}},
+        | {"node:substrate.codebase": {"prediction_error": 0.1}},
         tension_baseline_mu={f"{nid}{sep}prediction_error": 0.3 for nid in RETIRED_PREDICTION_ERROR_NODE_IDS}
-        | {f"node:substrate.chat{sep}prediction_error": 0.1},
+        | {f"node:substrate.codebase{sep}prediction_error": 0.1},
         tension_baseline_var={f"{nid}{sep}prediction_error": 0.01 for nid in RETIRED_PREDICTION_ERROR_NODE_IDS},
         tension_baseline_n={f"{nid}{sep}prediction_error": 40 for nid in RETIRED_PREDICTION_ERROR_NODE_IDS},
     )
     for node_id in RETIRED_PREDICTION_ERROR_NODE_IDS:
         assert delta_to_perturbations(_pe_delta(node_id)) == []
-    assert delta_to_perturbations(_pe_delta("node:substrate.chat"))
+    assert delta_to_perturbations(_pe_delta("node:substrate.codebase"))
 
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
     for node_id in RETIRED_PREDICTION_ERROR_NODE_IDS:
         assert node_id not in out.node_vectors
         for store in (out.tension_baseline_mu, out.tension_baseline_var, out.tension_baseline_n):
             assert f"{node_id}{sep}prediction_error" not in store
-    assert out.tension_baseline_mu == {f"node:substrate.chat{sep}prediction_error": 0.1}
+    assert out.tension_baseline_mu == {f"node:substrate.codebase{sep}prediction_error": 0.1}

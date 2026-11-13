@@ -1,7 +1,7 @@
 name: retired-pe-guards
 
 # PE suite rebuild step 5 (2026-11): node:substrate.bus_synaptic and
-# node:substrate.route are retired. These guards fail if a producer, a reader
+# node:substrate.route are retired; step 6 (2026-11-13): node:substrate.chat. These guards fail if a producer, a reader
 # or a stored-value path comes back (CLAUDE.md 0A "kill means kill"). The
 # mood-arc metacog trigger must stay off until the encoder is retrained.
 # No DB, bus or LLM.
@@ -14,6 +14,7 @@ on:
       - "orion/schemas/attention_candidate.py"
       - "orion/mood_arc/**"
       - "config/field/**"
+      - "services/orion-field-digester/app/tensor/channels.py"
       - "services/orion-substrate-runtime/**"
       - "services/orion-mind/**"
       - "services/orion-equilibrium-service/**"
@@ -57,7 +58,9 @@ jobs:
         run: |
           PYTHONPATH=services/orion-substrate-runtime:. python -m pytest -q -p no:cacheprovider \
             services/orion-substrate-runtime/tests/test_retired_pe_step5.py \
-            services/orion-substrate-runtime/tests/test_prediction_error_domain_map.py
+            services/orion-substrate-runtime/tests/test_prediction_error_domain_map.py \
+            services/orion-substrate-runtime/tests/test_prediction_error_receipt_not_gated.py \
+            services/orion-substrate-runtime/tests/test_prediction_error_node_write_not_gated.py
       - name: equilibrium body signals + quiet mood-arc trigger
         working-directory: services/orion-equilibrium-service
         run: |

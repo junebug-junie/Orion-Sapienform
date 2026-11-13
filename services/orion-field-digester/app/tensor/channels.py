@@ -306,6 +306,12 @@ RETIRED_PSEUDO_NODES: dict[str, str] = {
         "successor = orion-prediction scored surprise"
     ),
     "node:substrate.route": "retired 2026-11 PE step 5: PE node removed, route reducer stays",
+    # PE suite rebuild step 6 (2026-11-13): chat_prediction_error deleted; the
+    # chat reducer stays. Same agreement with RETIRED_PREDICTION_ERROR_NODE_IDS.
+    "node:substrate.chat": (
+        "retired 2026-11-13 PE step 6: hint-change z, not a forecast; "
+        "successor = node:prediction.chat_turn"
+    ),
 }
 
 # Every node id reconcile drops wholesale (perturbation refusal covers only

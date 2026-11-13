@@ -6,14 +6,12 @@ from typing import Any, Collection, Sequence
 
 from orion.bus.ewma import compute_ewma_update
 from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1
-from orion.schemas.chat_projection import ChatSessionProjectionV1
 from orion.schemas.execution_projection import ExecutionTrajectoryProjectionV1
 from orion.schemas.transport_projection import TransportBusProjectionV1
 from orion.structural_mass.git_delta import GitChurnDelta
 from orion.structural_mass.graph_delta import GraphStructuralDelta
 from orion.structural_mass.pr_lifecycle import PrLifecycleDelta
 from orion.substrate.biometrics_loop.room_hints import machine_body_hints
-from orion.substrate.chat_loop.grammar_extract import compute_chat_pressure_hints
 
 _THRESHOLD = 0.30
 
@@ -59,33 +57,6 @@ _EXECUTION_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
 # execution's real delta scale ever shifts by orders of magnitude.
 _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE = 1e-10
 
-# 2026-08-19: same fix, same reasoning, for chat_prediction_error -- found via a
-# live self-model audit (predicted_shift's per-domain argmax, see that function's
-# own docstring in attention_self_model.py): chat had won 0/19,426 ticks over a
-# real 7-day window despite having genuine, non-flat prediction-error deltas. Root
-# cause confirmed live: chat_prediction_error still used the module's fixed
-# `_THRESHOLD = 0.30` divisor -- the exact defect execution_prediction_error was
-# fixed for on 2026-07-28 -- and this instrument's own prior docstring already
-# grouped "execution/chat/route" together as reading near-zero for that reason.
-# Derived chat's real raw-delta scale from live `prediction_error_by_domain.chat`
-# (already-scaled output, nowhere near the 1.0 saturation ceiling so
-# raw = output * 0.30 recovers it exactly): 19,425 real ticks, stddev 0.0024 ->
-# derived raw-delta stddev ~7.24e-4, derived raw variance ~5.24e-7. One order of
-# magnitude below that (same convention as _EXECUTION_PREDICTION_ERROR_MIN_VARIANCE
-# above) is ~5.2e-8; using the round 5e-8 same as that convention's precedent.
-# Same alpha/saturation as execution -- no domain-specific reason found yet to
-# diverge from that already-established real-observation-cadence alpha and the
-# z>=3.0 "anomalous" convention shared by every other z-score domain in this module.
-_CHAT_PREDICTION_ERROR_EWMA_ALPHA = 0.2
-_CHAT_PREDICTION_ERROR_ZSCORE_SATURATION = 3.0
-# 2026-09-29 (chat definition v3, touched turns only): the 5e-8 above was derived
-# from v1/v2's diluted raw deltas (every stored turn in the denominator). Touched-
-# only raw deltas are ~300x larger; replayed over the live projection (1,691
-# turns), the warmed-up (n>=5) EWMA variance ranged min 2.9e-4, p1 6.4e-4,
-# median 3.4e-2. Re-set one order of magnitude below that minimum, the same
-# convention as the original derivation. It still never binds for real v3 data
-# past cold start; it only stops the floor being a v2 leftover.
-_CHAT_PREDICTION_ERROR_MIN_VARIANCE = 3e-5
 
 
 # 2026-07-30: codebase_prediction_error's EWMA baseline calibration (Phase 1 contract
@@ -403,7 +374,7 @@ def _score_and_update_ewma_prediction_error(
 ) -> float:
     """Shared EWMA-baseline scoring + update, factored out 2026-08-19 (code
     review, rule-of-three): `execution_prediction_error`'s 2026-07-28 fix and
-    `chat_prediction_error`'s 2026-08-19 fix had each independently hand-copied
+    `chat_prediction_error`'s 2026-08-19 fix (retired 2026-11-13) had each independently hand-copied
     this exact "score this tick's raw delta as a z-score against a live EWMA
     baseline, then update that baseline" sequence, with no shared helper.
     `biometrics_prediction_error` still uses the old fixed-`_THRESHOLD` divisor
@@ -624,123 +595,18 @@ def biometrics_prediction_error(
     return min(1.0, _mean(deltas) / _THRESHOLD) if deltas else 0.0
 
 
-def chat_prediction_error(
-    prev: ChatSessionProjectionV1,
-    curr: ChatSessionProjectionV1,
-) -> float:
-    """0-1 surprise score: how much did a chat turn's pressure hints change this batch?
-
-    **Fallback added 2026-07-22, same defect and same fix as
-    ``execution_prediction_error``/``route_prediction_error``.** The original docstring
-    claimed ``ChatTurnStateV1`` is "revised in place per ``turn_id``," implying an exact
-    ``turn_id`` match across successive projection snapshots would be meaningful the same
-    way execution's per-``trace_id`` comparison is. That's true at the schema level
-    (``reduce_chat_trace_events`` does overwrite ``updated.turns[turn_id]``), but it misses
-    the actual live behavior: hub emits a turn's entire event burst in one shot
-    (``build_chat_turn_grammar_events`` in ``services/orion-hub/scripts/grammar_emit.py``
-    shares one ``trace_id`` across every layer -- trace_started, chat root, context,
-    raw_input, repair_signal, stance_disposition, trace_ended), so a turn is created once
-    and never revisited. Since ``prev``/``curr`` are loaded moments apart around one tick,
-    a turn processed *this* tick is by definition new -- it cannot have a ``prev_turn``
-    (an exact match structurally never occurs), and every already-existing turn is
-    identical between ``prev``/``curr`` (delta 0 by construction). Live-confirmed
-    2026-07-22: ``node:substrate.chat`` had never been written despite
-    ``substrate_chat_session_projection`` holding 241 real turns accumulated since
-    2026-06-19 -- not a data-scarcity gap, a structurally-skipped-new-content gap.
-
-    Fix: when no exact ``turn_id`` match exists, diff against ``prev``'s most-recently-
-    updated turn instead (by ``last_updated_at``, via the shared ``_latest_run`` helper) --
-    "how does this turn compare to the last one we saw," not "how did this turn's own
-    content evolve" (which cannot be answered for a turn that never gets revised). Exact
-    matches still take priority, so a turn that genuinely were revised in place (schema-legal,
-    just unobserved in practice) is unaffected.
-
-    Unlike the other three instruments, the pressure hints themselves are not stored
-    on the projection -- ``compute_chat_pressure_hints()``
-    (``orion/substrate/chat_loop/grammar_extract.py:114``) is a pure function of a
-    ``ChatTurnStateV1`` that only gets called transiently, at reduction time, to build
-    a receipt's ``after`` payload. This function calls it directly on both the
-    previous and current turn state for each shared ``turn_id`` rather than reading a
-    persisted ``pressure_hints`` dict, since none exists on ``ChatTurnStateV1``.
-
-    **Definition v2 (2026-09-25): ``topic_coherence`` removed.** v1 diffed three
-    keys, but ``topic_coherence`` was defined as ``1 - repair_pressure_level`` -- the
-    same reading as ``repair_pressure``, flipped. Any repair change moved both by the
-    same amount, so v1's raw delta was ``(d_load + 2*d_repair) / 3``: repair carried
-    2/3 of the weight and conversation load 1/3, with no second signal behind the
-    extra repair share (CLAUDE.md metric-quality-gate step 2, independence). The
-    hint itself is deleted upstream in ``compute_chat_pressure_hints()`` (the only
-    other reader, the field digester, already dropped it), so this is now
-    ``(d_load + d_repair) / 2``: an even split between the two real readings.
-    Bumped ``orion.schemas.prediction_error_definitions`` for ``chat_session``.
-
-    **2026-08-19 baseline fix, same disease and same fix as
-    ``execution_prediction_error``.** Live-confirmed via a real self-model audit:
-    ``predicted_shift``'s per-domain argmax (`attention_self_model.py`) had never
-    once named ``chat`` across 19,426 real ticks over a 7-day window, despite chat
-    having genuine, non-flat deltas -- this function's own fixed ``_THRESHOLD =
-    0.30`` divisor (the exact defect fixed for execution on 2026-07-28) scaled
-    them down to a range execution/biometrics/bus_synaptic's much larger real
-    deltas could never lose to. Fixed the same way: track this domain's own EWMA
-    mean/variance of the raw per-tick ``_mean(deltas)`` (persisted on the
-    projection -- ``prediction_error_baseline_ewma``/``_var``/``_n``, see
-    ``ChatSessionProjectionV1``'s docstring) and score this tick's raw delta as a
-    z-score against that live baseline instead of the fixed divisor. See
-    ``_CHAT_PREDICTION_ERROR_MIN_VARIANCE``'s own comment for the live-data
-    derivation behind its value. Returns 0.0 on the first tick with any real
-    deltas, same reasoning as execution's identical cold-start case.
-
-    **Definition v3 (2026-09-29): average over the turns this batch touched, not
-    every turn in the projection.** Same defect and same fix as
-    ``route_prediction_error`` v2. The chat projection keeps every turn it has
-    ever seen (~1,700 on 2026-09-29, never evicted), and every turn the batch did
-    not touch is identical in ``prev``/``curr`` and added two 0.0 deltas. So the
-    raw mean was the new turn's change divided by ~1,700: replayed over the live
-    projection, raw mean 5.1e-4 (v2) vs 0.144 touched-only, and the variance
-    floor, not the data, set the z-score on 922 of 1,691 turns (55%). A turn is
-    touched when it is new or differs from its ``prev`` copy (``_touched_runs``;
-    the chat reducer rewrites a turn only when an event for it arrives). No
-    touched turns -> 0.0 and the EWMA is not advanced, as before. Bumped
-    ``orion.schemas.prediction_error_definitions`` (chat_session 2 -> 3) so
-    Candidate A's baseline restarts; the projection's own EWMA fields
-    (``prediction_error_baseline_*``) hold v2-scale numbers and must be zeroed at
-    deploy (see the 2026-09-29 PR report), or the first v3 turns all read 1.0.
-    ``_CHAT_PREDICTION_ERROR_MIN_VARIANCE`` re-derived on the v3 scale.
-    """
-    raw = chat_raw_reading(prev, curr)
-    if raw is None:
-        return 0.0
-    return _score_and_update_ewma_prediction_error(
-        prev,
-        curr,
-        raw_mean_delta=raw,
-        alpha=_CHAT_PREDICTION_ERROR_EWMA_ALPHA,
-        min_variance=_CHAT_PREDICTION_ERROR_MIN_VARIANCE,
-        zscore_saturation=_CHAT_PREDICTION_ERROR_ZSCORE_SATURATION,
-    )
-
-
-def chat_raw_reading(prev: ChatSessionProjectionV1, curr: ChatSessionProjectionV1) -> float | None:
-    """The raw per-tick value ``chat_prediction_error`` scores (mean absolute
-    pressure-hint change over touched turns), or ``None`` if no turn moved.
-    Pure."""
-    deltas: list[float] = []
-    prev_fallback = _latest_run(prev.turns)
-    for turn_id, curr_turn in _touched_runs(prev.turns, curr.turns):
-        prev_turn = prev.turns.get(turn_id)
-        if prev_turn is None:
-            prev_turn = prev_fallback
-        if prev_turn is None:
-            continue
-        prev_hints = compute_chat_pressure_hints(prev_turn)
-        curr_hints = compute_chat_pressure_hints(curr_turn)
-        for key in ("conversation_load", "repair_pressure"):
-            pv = prev_hints.get(key, 0.0)
-            cv = curr_hints.get(key, 0.0)
-            deltas.append(abs(cv - pv))
-    if not deltas:
-        return None
-    return _mean(deltas)
+# chat_prediction_error() and chat_raw_reading() were DELETED 2026-11-13 (PE suite
+# rebuild retire step 6, docs/superpowers/specs/2026-11-08-prediction-error-suite-
+# rebuild-design.md). Not a forecast: an EWMA z of the mean change in two chat
+# pressure hints (conversation_load, repair_pressure) over touched turns,
+# negatives clipped -- 65% exact 0 and spikes after quiet. Its successor is a
+# scored forecast: node:prediction.chat_turn, how much each settled chat turn
+# surprised stance's own bets (services/orion-prediction/app/turn_surprise.py,
+# orion/substrate/prediction_turn_surprise.py). node:substrate.chat is on
+# orion.substrate.prediction_error_freshness.RETIRED_PREDICTION_ERROR_NODE_IDS.
+# The chat reducer, projection and compute_chat_pressure_hints stay (repair
+# appraisal and the /projections/chat_session endpoint read them). Git history
+# keeps the function and its calibration notes.
 
 
 # route_prediction_error() and bus_synaptic_prediction_error() were DELETED

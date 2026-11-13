@@ -44,10 +44,10 @@ ObservationMode = Literal["watch", "inspect", "summarize", "ignore"]
 # 2026-11 (PE suite rebuild step 5) and left this map; the field digester
 # prunes both node ids (RETIRED_PSEUDO_NODES), so neither can come back as a
 # host novelty target through select_host_targets either.
+# node:substrate.chat left 2026-11-13 (retire step 6; pruned by the digester too).
 PREDICTION_ERROR_NATIVE_TARGETS: dict[str, str] = {
     "node:substrate.biometrics": "node_biometrics",
     "node:substrate.execution": "execution_trajectory",
-    "node:substrate.chat": "chat_session",
 }
 
 # Same discipline as scripts/analysis/measure_precision_weighted_salience_probe.py's

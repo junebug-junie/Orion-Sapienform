@@ -553,6 +553,14 @@ class PostgresStore:
                          "WHERE faculty IN ('turn.self.steps', 'turn.self.reply_length') AND observed IS NOT NULL "
                          "AND placed_at >= %s", (since,))
 
+    def turn_surprise_calibration_rows(self, caller: str, faculties: Sequence[str], since: datetime) -> list[dict]:
+        """Graded probability bets of one caller and the given faculties placed since ``since``: the
+        held-out calibration history for chat-turn surprise (app/turn_surprise.py)."""
+        return self._all("SELECT faculty, caller, placed_at, settled_at, status, stated_p, hit "
+                         "FROM prediction_turn_self_bet WHERE caller = %s AND faculty = ANY(%s) "
+                         "AND status IN ('happened', 'not_happened') AND stated_p IS NOT NULL AND placed_at >= %s "
+                         "ORDER BY placed_at", (caller, list(faculties), since))
+
     def turn_self_bets(self, since: datetime, limit: int = 20000) -> list[dict]:
         return self._all(f"SELECT {', '.join(TURN_SELF_BET_COLS)} FROM prediction_turn_self_bet "
                          "WHERE placed_at >= %s ORDER BY placed_at DESC LIMIT %s", (since, limit))

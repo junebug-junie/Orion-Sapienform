@@ -48,11 +48,11 @@ def test_retired_names_are_pruned_from_a_lattice_node() -> None:
 
 
 def test_retired_names_are_pruned_from_an_OFF_LATTICE_node() -> None:
-    """node:substrate.chat (an off-lattice pseudo-node) is not in the lattice, so _ensure_node_vector never
+    """node:substrate.codebase (an off-lattice pseudo-node) is not in the lattice, so _ensure_node_vector never
     runs for it. This is the gap the old pruning had."""
-    state = _state({"node:substrate.chat": {"bus_health": 1.0, "transport_pressure": 0.5}})
+    state = _state({"node:substrate.codebase": {"bus_health": 1.0, "transport_pressure": 0.5}})
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    assert out.node_vectors["node:substrate.chat"] == {}
+    assert out.node_vectors["node:substrate.codebase"] == {}
 
 
 def test_single_observer_channels_are_pruned_from_an_off_lattice_node(monkeypatch) -> None:
@@ -64,11 +64,11 @@ def test_single_observer_channels_are_pruned_from_an_off_lattice_node(monkeypatc
     """
     monkeypatch.setitem(SINGLE_OBSERVER_NODE_CHANNELS, "synthetic_health", "node:athena")
     state = _state({
-        "node:substrate.chat": {"synthetic_health": 0.5},
+        "node:substrate.codebase": {"synthetic_health": 0.5},
         "node:athena": {"synthetic_health": 1.0},
     })
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    assert out.node_vectors["node:substrate.chat"] == {}
+    assert out.node_vectors["node:substrate.codebase"] == {}
     # The declared owner keeps it.
     assert out.node_vectors["node:athena"]["synthetic_health"] == 1.0
 
@@ -93,12 +93,12 @@ def test_pruning_also_drops_the_orphaned_write_timestamp() -> None:
     """A stamp for a channel that no longer exists is a dangling fact -- and
     the staleness rule reads these."""
     state = _state(
-        {"node:substrate.chat": {"delivery_confidence": 0.5, "execution_load": 0.2672}},
-        {"node:substrate.chat": {"delivery_confidence": NOW - timedelta(seconds=774),
+        {"node:substrate.codebase": {"delivery_confidence": 0.5, "execution_load": 0.2672}},
+        {"node:substrate.codebase": {"delivery_confidence": NOW - timedelta(seconds=774),
                               "execution_load": NOW - timedelta(seconds=900)}},
     )
     out = reconcile_field_state_with_lattice(state, lattice=_lattice())
-    assert out.node_vector_updated_at["node:substrate.chat"] == {}
+    assert out.node_vector_updated_at["node:substrate.codebase"] == {}
 
 
 def test_undeclared_but_not_retired_keys_still_survive() -> None:

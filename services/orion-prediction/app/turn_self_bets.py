@@ -307,13 +307,19 @@ class TurnSelfBets:
     """Settle pass + live summary over a store (app/store.py PostgresStore or a fake)."""
 
     def __init__(self, store, clock: Callable[[], datetime] | None = None, *, verdict_ttl_sec: float = 60.0,
-                 monotonic: Callable[[], float] = time.monotonic):
+                 monotonic: Callable[[], float] = time.monotonic, surprise_events_enabled: bool = False):
         self.store = store
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.verdict_ttl_sec = verdict_ttl_sec
         self._mono = monotonic
         self._live: tuple[float, dict] | None = None
         self.last_pass: dict = {}
+        # Chat-turn surprise (app/turn_surprise.py): events built after each settle pass, published by
+        # main.py. PREDICTION_TURN_SURPRISE_EVENTS_ENABLED.
+        self.surprise_events_enabled = surprise_events_enabled
+        self.pending_surprise: list = []
+        self.surprise_counts: dict[str, int] = defaultdict(int)
+        self.last_surprise_error: str | None = None
 
     def settle_pending(self) -> dict:
         """One pass: read unsettled bets with their turn records, write rows for every bet that can settle."""
@@ -335,10 +341,59 @@ class TurnSelfBets:
         written = self.store.insert_turn_self_bets(rows) if rows else 0
         self.last_pass = {"at": now, "read": len(pending), "settled_turns": len(rows) // len(FACULTIES),
                           "waiting": waiting, "rows_written": written}
+        if self.surprise_events_enabled and written:
+            try:   # surprise never costs the settle pass (its rows are already written)
+                self.pending_surprise.extend(self.surprise_events(rows, now))
+                self.last_surprise_error = None
+            except Exception as exc:  # noqa: BLE001
+                self.last_surprise_error = f"{type(exc).__name__}: {exc}"[:300]
+                logger.warning("turn_surprise_failed err=%s", exc)
         if written:
             logger.info("turn_self_bets_settled turns=%s rows=%s waiting=%s", len(rows) // len(FACULTIES),
                         written, waiting)
         return self.last_pass
+
+    def surprise_events(self, rows: list[dict], now: datetime) -> list:
+        """One ``PredictionTurnSurpriseV1`` per chat turn settled in this pass whose used bets carry
+        information (app/turn_surprise.py). Calibration reads only bets already settled and placed
+        strictly before the turn. A turn placed more than MAX_TURN_AGE ago is a backlog: counted,
+        never published (the node would write an old turn as now)."""
+        from app import turn_surprise as tsur
+        from orion.schemas.prediction import PredictionTurnSurpriseBetV1, PredictionTurnSurpriseV1
+
+        by_turn: dict[str, list[dict]] = defaultdict(list)
+        for r in rows:
+            if r["caller"] == tsur.SCOPE_CALLER:
+                by_turn[r["correlation_id"]].append(r)
+        if not by_turn:
+            return []
+        earliest = min(r["placed_at"] for trs in by_turn.values() for r in trs)
+        history = tsur.CalibrationHistory(
+            dict(h, stated_p=float(h["stated_p"]))
+            for h in self.store.turn_surprise_calibration_rows(tsur.SCOPE_CALLER, tsur.USED_FACULTIES,
+                                                                earliest - tsur.CAL_WINDOW))
+        out = []
+        for cid, trs in by_turn.items():
+            placed = trs[0]["placed_at"]
+            if now - placed > tsur.MAX_TURN_AGE:
+                self.surprise_counts["stale_turn"] += 1
+                continue
+            scored, reason = tsur.score_turn(trs, history)
+            self.surprise_counts[reason] += 1
+            if scored is None:
+                continue
+            out.append(PredictionTurnSurpriseV1(
+                correlation_id=cid, caller=tsur.SCOPE_CALLER, placed_at=placed, settled_at=now,
+                bets=[PredictionTurnSurpriseBetV1(
+                    faculty=b.faculty, stated_p=b.stated_p, calibrated_p=b.calibrated_p, happened=b.happened,
+                    surprisal=b.surprisal, expected_surprisal=b.expected_surprisal, excess=b.excess,
+                    calm_var=b.calm_var) for b in scored.bets],
+                excess=scored.excess, calm_var=scored.calm_var, z=scored.z))
+        return out
+
+    def take_pending_surprise(self) -> list:
+        pending, self.pending_surprise = self.pending_surprise, []
+        return pending
 
     def live(self, force: bool = False, since: datetime | None = None) -> dict:
         """Grade of bets placed since ``since`` (default: the last LIVE_WINDOW). Cached for the default."""

@@ -86,8 +86,9 @@ EXPIRY_GRACE_SEC = 120.0
 # data rather than asserted: Juniper's chat activity (``world:chat``, and its substrate node) wins
 # the workspace when she is busier than her own week, and Orion's reply is the act that answers it
 # (live 2026-10-21: 11 of 20 hub.chat_reply acts opened while that winner was bindable).
+# node:substrate.chat left 2026-11-13 (prediction error retired, step 6).
 ACT_ANSWERS_WORKSPACE_REFS: dict[str, tuple[str, ...]] = {
-    "hub.chat_reply": ("world:chat", "node:substrate.chat"),
+    "hub.chat_reply": ("world:chat",),
 }
 
 _WORKSPACE_BINDING_ENABLED = True

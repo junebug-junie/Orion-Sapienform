@@ -99,9 +99,8 @@ def test_juniper_story_cards_are_not_orion_asks():
         assert is_orion_camera_ask(row["source_kind"], row["evidence_refs"], row["answer_detail"])
     assert not is_orion_camera_ask("vision_story_person", [], None)
     assert not is_orion_camera_ask("memory_confirmation", [], None)
-    # The SQL predicate says the same thing structurally, never by question text.
+    # The SQL predicate (tested against Postgres in test_camera_ask_acts_integration.py) never reads the text.
     assert "question" not in ORION_MADE_CAMERA_ASK_SQL
-    assert JUNIPER_STORY_CARD_REF in ORION_MADE_CAMERA_ASK_SQL and "story_id" in ORION_MADE_CAMERA_ASK_SQL
 
 
 @pytest.mark.parametrize("kind, refs, ikind, rule", [

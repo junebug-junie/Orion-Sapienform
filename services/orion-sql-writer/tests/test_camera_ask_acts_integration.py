@@ -104,6 +104,10 @@ def _seed(s):
     _ask(s, "ask-juniper-legacy", "vision_individual", "p1", "Who is this? (named on a walkway story)",
          ["motion_story:0256", "individual:p1"], created=t, status="answered", answer="Teddy", answered=t, expires=None,
          detail={"story_id": "0256", "action": "name", "via": "motion_story", "name": "Teddy"})
+    # The marker alone also excludes a card (each clause of the filter must stand on its own).
+    _ask(s, "ask-juniper-marker-only", "vision_individual", "veh1", "Who is this? (named on a walkway story)",
+         ["motion_story:0257", "individual:veh1", "rule:juniper_story_naming"], created=t, status="answered",
+         answer="Mail truck", answered=t, expires=None, detail={"name": "Mail truck"})
     # Not a camera ask.
     _ask(s, "ask-memory", "memory_confirmation", "loop:1", "Is this still true?", [], created=t)
     # A camera ask older than the live loop's 24 h: the back-fill's, not the loop's.
@@ -130,7 +134,7 @@ def test_lifecycle_open_answer_dont_know_expiry_and_juniper_cards(sess):
         assert rule_from_test_before(a["test_before"]) == rule
         assert a["opened_at"] == NOW - timedelta(hours=2) and a["horizon_at"] == NOW - timedelta(hours=2) + timedelta(days=7)
     # Juniper's cards, the memory card and the old ask opened nothing.
-    for ask_id in ("ask-juniper-new", "ask-juniper-legacy", "ask-memory", "ask-old"):
+    for ask_id in ("ask-juniper-new", "ask-juniper-legacy", "ask-juniper-marker-only", "ask-memory", "ask-old"):
         assert _act(sess, ask_id) is None
     assert open_ask_acts(sess, now=NOW) == []     # idempotent
 

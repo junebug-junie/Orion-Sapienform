@@ -59,7 +59,10 @@ from .caption_policy import (
     parse_caption_streams,
     window_for_council,
 )
-from .llm_reply import extract_chat_result_text as _extract_chat_result_text
+from .llm_reply import (
+    completion_finish_reason,
+    extract_chat_result_text as _extract_chat_result_text,
+)
 from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_error_reason as _gateway_error_reason, gateway_shed_refusal
 from .unresolved import UnresolvedRateLimiter, build_unresolved
 
@@ -481,6 +484,12 @@ class CouncilService:
                 self._shed_backoff.resolve(shed_key, shed[0], token=probe, hint_sec=shed[1])
                 return None
             self._shed_backoff.resolve(shed_key, _gateway_error_reason(res_env.payload), token=probe)
+            if completion_finish_reason(res_env.payload) == "length":
+                logger.warning(
+                    f"[COUNCIL] LLM incomplete correlation_id={envelope.correlation_id} "
+                    f"finish_reason=length max_tokens={settings.COUNCIL_LLM_MAX_TOKENS}"
+                )
+                return None
             content = _extract_chat_result_text(res_env.payload)
 
             if not content:

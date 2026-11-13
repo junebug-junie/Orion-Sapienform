@@ -1,15 +1,11 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 787,
+  "metric_count": 783,
   "_last_change": {
-    "change_count": 5,
+    "change_count": 1,
     "high_severity_count": 0,
     "changes": [
-      "medium added metric://bus_channel/orion-harness-governor/orion:claude:tool:audit",
-      "medium added metric://bus_channel/orion-harness-governor/orion:claude:tool:result:*",
-      "medium added metric://bus_channel/orion-harness-governor/orion:prime:consent:request",
-      "medium added metric://bus_channel/orion-mind/orion:prime:consent:result:*",
-      "medium added metric://bus_channel/orion-room-companion/orion:claude:tool:request"
+      "medium added metric://bus_channel/orion-bus-mirror/orion:bus:traffic:rollup"
     ]
   },
   "definitions": {
@@ -557,6 +553,17 @@
         "orion-sql-writer"
       ],
       "notes": "kind=telemetry stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
+    "metric://bus_channel/orion-bus-mirror/orion:bus:traffic:rollup": {
+      "schema_id": "BusTrafficRollupV1",
+      "all_producers": [
+        "orion-bus-mirror"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-closet-env/orion:closet:env:sample": {
@@ -1828,28 +1835,6 @@
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-harness-governor/orion:claude:tool:audit": {
-      "schema_id": "ClaudeToolCallV1",
-      "all_producers": [
-        "orion-harness-governor"
-      ],
-      "declared_consumers": [
-        "orion-sql-writer"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-harness-governor/orion:claude:tool:result:*": {
-      "schema_id": "ClaudeToolResultV1",
-      "all_producers": [
-        "orion-harness-governor"
-      ],
-      "declared_consumers": [
-        "orion-room-companion"
-      ],
-      "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-harness-governor/orion:harness:run:artifact": {
       "schema_id": "HarnessRunV1",
       "all_producers": [
@@ -1980,17 +1965,6 @@
       ],
       "declared_consumers": [
         "orion-hub"
-      ],
-      "notes": "kind=request stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-harness-governor/orion:prime:consent:request": {
-      "schema_id": "PrimeConsentRequestV1",
-      "all_producers": [
-        "orion-harness-governor"
-      ],
-      "declared_consumers": [
-        "orion-mind"
       ],
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
@@ -2729,17 +2703,6 @@
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
-    "metric://bus_channel/orion-mind/orion:prime:consent:result:*": {
-      "schema_id": "PrimeConsentAnswerV1",
-      "all_producers": [
-        "orion-mind"
-      ],
-      "declared_consumers": [
-        "orion-harness-governor"
-      ],
-      "notes": "kind=result stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
     "metric://bus_channel/orion-notify/orion:notify:config:preference": {
       "schema_id": "NotificationPreferencesUpdate",
       "all_producers": [
@@ -2850,17 +2813,6 @@
         "orion-sql-writer"
       ],
       "notes": "kind=telemetry stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-room-companion/orion:claude:tool:request": {
-      "schema_id": "ClaudeToolRequestV1",
-      "all_producers": [
-        "orion-room-companion"
-      ],
-      "declared_consumers": [
-        "orion-harness-governor"
-      ],
-      "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
     "metric://bus_channel/orion-room-companion/orion:room:claude:utterance": {

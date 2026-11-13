@@ -4,17 +4,23 @@ from __future__ import annotations
 
 import json
 import time
-from typing import Any
+from typing import Any, get_args
 
 from pydantic import ValidationError
 
-from orion.mind.synthesis_v1 import ActiveCognitiveFrontierV1, SemanticSynthesisV1
+from orion.mind.synthesis_v1 import (
+    ActiveCognitiveFrontierV1,
+    MatterKindV1,
+    RecommendedEffectV1,
+    SemanticSynthesisV1,
+)
 
 from .evidence import MindEvidencePackV1
 from .guardrails import filter_active_frontier
-from .llm_client import MindLLMClientProtocol
+from .llm_client import GATEWAY_ERROR_KEY, MindLLMClientProtocol
 from .llm_context import MindLLMRequestContext
 from .phase_telemetry import MindPhaseTelemetry, utc_now_iso
+from .synthesis import _RECOMMENDED_EFFECT_ALIASES, OFF_VOCAB_METADATA_KEY
 
 _FRONTIER_SCHEMA_VERSION = "mind.active_cognitive_frontier.v1"
 _SCHEMA_VERSION_ALIASES: dict[str, str] = {
@@ -69,6 +75,10 @@ _VALID_RECOMMENDED_EFFECTS: frozenset[str] = frozenset(
     }
 )
 
+OFF_VOCAB_MATTER_NOTE = "normalized_off_vocab_matter_fields"
+_MATTER_KIND_ORDER: tuple[str, ...] = get_args(MatterKindV1)
+_RECOMMENDED_EFFECT_ORDER: tuple[str, ...] = get_args(RecommendedEffectV1)
+
 _APPRAISAL_SYSTEM = """You judge which semantic claims should shape the next assistant response.
 Select a small active frontier (at most 6 matters). Defer or suppress the rest with reasons.
 Preserve hazards. Do not let background identity dominate ordinary turns.
@@ -76,6 +86,8 @@ Include feature scores for selected matters.
 Return strict JSON only (no prose) matching ActiveCognitiveFrontierV1 with schema_version mind.active_cognitive_frontier.v1.
 Use key "selected" (not active_cognitive_frontier) for chosen matters.
 Each selected item MUST include: matter_id, source_claim_id (from semantic claim_id), label, summary, matter_kind, score, features, evidence_refs, reason_selected, recommended_effect.
+matter_kind MUST be exactly one of: """ + ", ".join(_MATTER_KIND_ORDER) + """ (not a claim_kind).
+recommended_effect MUST be exactly one of: """ + ", ".join(_RECOMMENDED_EFFECT_ORDER) + """.
 Example:
 {"schema_version":"mind.active_cognitive_frontier.v1","selected":[{"matter_id":"m1","source_claim_id":"c1","label":"smoketest","summary":"User performed a smoketest.","matter_kind":"turn_anchor","score":0.85,"features":{"current_turn_relevance":0.9,"confidence":0.85},"evidence_refs":["current_turn:0"],"reason_selected":"grounded in current turn","recommended_effect":"answer_directly"}],"deferred":[],"suppressed":[],"hazards":[],"response_directives":[]}"""
 
@@ -87,10 +99,25 @@ def _float_field(item: dict[str, Any], key: str, default: float) -> float:
     return default
 
 
+_TEXT_KEYS_OF_OBJECT_ITEM = ("description", "text", "summary", "directive", "label")
+
+
+def _string_of_item(value: Any) -> str:
+    # Bonsai on agent-gpu2 writes hazards as objects ({"hazard_id","description","severity",...};
+    # issue #3294). str() of a dict gave stance a Python repr; use the object's own text field.
+    if isinstance(value, dict):
+        for key in _TEXT_KEYS_OF_OBJECT_ITEM:
+            text = value.get(key)
+            if isinstance(text, str) and text.strip():
+                return text.strip()
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value).strip()
+
+
 def _coerce_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
-    return [str(v).strip() for v in value if str(v).strip()]
+    return [text for text in (_string_of_item(v) for v in value) if text]
 
 
 def _resolve_source_claim_id(item: dict[str, Any], *, claim_ids: set[str]) -> str:
@@ -107,6 +134,10 @@ def _coerce_matter_kind(item: dict[str, Any]) -> str:
     matter_kind = str(item.get("matter_kind") or "").strip()
     if matter_kind in _VALID_MATTER_KINDS:
         return matter_kind
+    # Held seats often write the semantic claim's kind here ("uncertainty_claim", "task_claim";
+    # issue #3294): map it the same way as an explicit claim_kind instead of flattening it.
+    if matter_kind in _CLAIM_KIND_TO_MATTER_KIND:
+        return _CLAIM_KIND_TO_MATTER_KIND[matter_kind]
     claim_kind = str(item.get("claim_kind") or "").strip()
     return _CLAIM_KIND_TO_MATTER_KIND.get(claim_kind, "turn_anchor")
 
@@ -115,7 +146,18 @@ def _coerce_recommended_effect(item: dict[str, Any]) -> str:
     effect = str(item.get("recommended_effect") or "").strip()
     if effect in _VALID_RECOMMENDED_EFFECTS:
         return effect
-    return "no_effect"
+    return _RECOMMENDED_EFFECT_ALIASES.get(effect, "no_effect")
+
+
+def _off_vocab_matter_fields(item: dict[str, Any], *, matter_kind: str, effect: str) -> dict[str, Any]:
+    """The model's own matter_kind / recommended_effect values that were replaced (same record as
+    synthesis.try_coerce_off_vocab_claim_fields), so a mapped label never hides what the model said."""
+    off_vocab: dict[str, Any] = {}
+    if "matter_kind" in item and item.get("matter_kind") != matter_kind:
+        off_vocab["matter_kind"] = item.get("matter_kind")
+    if "recommended_effect" in item and item.get("recommended_effect") != effect:
+        off_vocab["recommended_effect"] = item.get("recommended_effect")
+    return off_vocab
 
 
 def _coerce_features(item: dict[str, Any]) -> dict[str, Any]:
@@ -145,18 +187,26 @@ def _coerce_matter_item(
     if not source_claim_id:
         return None
     matter_id = str(item.get("matter_id") or "").strip() or f"m{index + 1}"
+    matter_kind = _coerce_matter_kind(item)
+    effect = _coerce_recommended_effect(item)
+    metadata = dict(item.get("metadata") or {}) if isinstance(item.get("metadata"), dict) else {}
+    off_vocab = _off_vocab_matter_fields(item, matter_kind=matter_kind, effect=effect)
+    if off_vocab:
+        metadata[OFF_VOCAB_METADATA_KEY] = off_vocab
+    else:
+        metadata.pop(OFF_VOCAB_METADATA_KEY, None)
     return {
         "matter_id": matter_id,
         "source_claim_id": source_claim_id,
         "label": label,
         "summary": summary,
-        "matter_kind": _coerce_matter_kind(item),
+        "matter_kind": matter_kind,
         "score": _float_field(item, "score", _float_field(item, "salience_hint", 0.5)),
         "features": _coerce_features(item),
         "evidence_refs": _coerce_string_list(item.get("evidence_refs")),
         "reason_selected": str(item.get("reason_selected") or "llm_selected").strip() or "llm_selected",
-        "recommended_effect": _coerce_recommended_effect(item),
-        "metadata": dict(item.get("metadata") or {}) if isinstance(item.get("metadata"), dict) else {},
+        "recommended_effect": effect,
+        "metadata": metadata,
     }
 
 
@@ -215,6 +265,8 @@ def try_normalize_frontier_raw(
 
     if not selected:
         return None, False
+    if any(OFF_VOCAB_METADATA_KEY in m["metadata"] for m in selected):
+        notes.append(OFF_VOCAB_MATTER_NOTE)
 
     deferred_in = raw.get("deferred")
     suppressed_in = raw.get("suppressed")
@@ -302,6 +354,14 @@ def run_active_frontier_judge(
     )
     if raw is None:
         telemetry.status = "failed"
+        gateway_error = meta.get(GATEWAY_ERROR_KEY)
+        if err and isinstance(gateway_error, dict) and gateway_error.get("error"):
+            # An empty reply hid the gateway's reason (issue #3294: Strata's 502 "structured output was
+            # incomplete (finish_reason=length)" showed only as empty_llm_response). The returned code
+            # stays the client's; the telemetry row names the cause.
+            telemetry.error = ":".join(
+                str(part) for part in (err, gateway_error.get("error"), gateway_error.get("reason")) if part
+            )
         return None, err or "appraisal_failed", telemetry
     if not isinstance(raw, dict):
         telemetry.validation_ok = False

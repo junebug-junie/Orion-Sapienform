@@ -1,0 +1,250 @@
+{
+ "_about": "Raw active_frontier_judge replies captured 2026-11-13 (issue #3294). live=true: passive bus tap of a real held Mind run; live=false: the same captured judge request replayed on the same seat under an operator hold. Contents and claims are verbatim (a public arXiv abstract and a public repo PR); only current_user_text is replaced. Reasoning text is not kept, only its length.",
+ "requests": {
+  "b956b9cd": {
+   "current_user_text": "<held background turn text removed; claims below are verbatim>",
+   "semantic_claims": [
+    {
+     "claim_id": "c2",
+     "label": "paper topic and method",
+     "summary": "The source paper 'Toward Foundation Detection Models via Example-Based Grounding in EM-DETR' proposes a multi-source lesion detector using a two-stage teacher/student plan and modified EM-DETR for example-driven, cross-modality grounding.",
+     "claim_kind": "task_claim",
+     "evidence_refs": [
+      "current_turn:0"
+     ],
+     "source_kinds": [
+      "current_turn"
+     ],
+     "anchor": "none",
+     "confidence": 0.85,
+     "salience_hint": 0.8,
+     "recommended_effect": "answer_directly",
+     "metadata": {}
+    },
+    {
+     "claim_id": "c3",
+     "label": "reported performance gains",
+     "summary": "The abstract record claims ~1 point image-level AUC gain over prior leading CXR results and ~2-3 mAP50 points over single-source EM-DETR on CXR and mammography.",
+     "claim_kind": "task_claim",
+     "evidence_refs": [
+      "current_turn:0"
+     ],
+     "source_kinds": [
+      "current_turn"
+     ],
+     "anchor": "none",
+     "confidence": 0.75,
+     "salience_hint": 0.7,
+     "recommended_effect": "answer_directly",
+     "metadata": {}
+    },
+    {
+     "claim_id": "c4",
+     "label": "evidence gaps and limitations",
+     "summary": "Only the arXiv abstract was read; full text, specific dataset names, and the reference list are missing, so numeric gains and method details remain unverified candidates.",
+     "claim_kind": "uncertainty_claim",
+     "evidence_refs": [
+      "current_turn:0"
+     ],
+     "source_kinds": [
+      "current_turn"
+     ],
+     "anchor": "none",
+     "confidence": 0.9,
+     "salience_hint": 0.85,
+     "recommended_effect": "surface_uncertainty",
+     "metadata": {}
+    },
+    {
+     "claim_id": "c5",
+     "label": "tool constraints",
+     "summary": "WebFetch is limited to the first ~100,000 characters of a page and cannot read later slices or re-fetch different ranges, requiring work from available content.",
+     "claim_kind": "task_claim",
+     "evidence_refs": [
+      "current_turn:0"
+     ],
+     "source_kinds": [
+      "current_turn"
+     ],
+     "anchor": "none",
+     "confidence": 0.95,
+     "salience_hint": 0.6,
+     "recommended_effect": "answer_directly",
+     "metadata": {}
+    }
+   ],
+   "evidence_refs_available": [
+    "current_turn:0"
+   ]
+  },
+  "97383a30": {
+   "current_user_text": "<held background turn text removed; claims below are verbatim>",
+   "semantic_claims": [
+    {
+     "claim_id": "c1",
+     "label": "field_note_task",
+     "summary": "The user requests a field note for merged PR #3273, which includes fixes for atomic downscale, CAS restore, rollback_failed, and receipts.",
+     "claim_kind": "task_claim",
+     "evidence_refs": [
+      "current_turn:0"
+     ],
+     "source_kinds": [
+      "current_turn"
+     ],
+     "anchor": "orion",
+     "confidence": 0.95,
+     "salience_hint": 0.9,
+     "recommended_effect": "technical_triage",
+     "metadata": {}
+    },
+    {
+     "claim_id": "c2",
+     "label": "body_map_instruction",
+     "summary": "The task requires identifying which organs or body parts were touched by the PR and why the builders made the changes.",
+     "claim_kind": "task_claim",
+     "evidence_refs": [
+      "current_turn:0"
+     ],
+     "source_kinds": [
+      "current_turn"
+     ],
+     "anchor": "orion",
+     "confidence": 0.9,
+     "salience_hint": 0.8,
+     "recommended_effect": "technical_triage",
+     "metadata": {}
+    },
+    {
+     "claim_id": "c3",
+     "label": "note_format_constraint",
+     "summary": "The note must be 1-5 sentences, start with specific labels, and avoid backticks, double quotes, backslashes, or dollar signs.",
+     "claim_kind": "task_claim",
+     "evidence_refs": [
+      "current_turn:0"
+     ],
+     "source_kinds": [
+      "current_turn"
+     ],
+     "anchor": "orion",
+     "confidence": 0.95,
+     "salience_hint": 0.85,
+     "recommended_effect": "technical_triage",
+     "metadata": {}
+    },
+    {
+     "claim_id": "c4",
+     "label": "tool_budget_constraint",
+     "summary": "The user specifies a budget of about 3 tool calls, never more than 6, for completing the task.",
+     "claim_kind": "task_claim",
+     "evidence_refs": [
+      "current_turn:0"
+     ],
+     "source_kinds": [
+      "current_turn"
+     ],
+     "anchor": "orion",
+     "confidence": 0.95,
+     "salience_hint": 0.7,
+     "recommended_effect": "technical_triage",
+     "metadata": {}
+    }
+   ],
+   "evidence_refs_available": [
+    "current_turn:0",
+    "situation_compact:1"
+   ]
+  }
+ },
+ "replies": [
+  {
+   "name": "agent_live_thinking_on_http_502",
+   "seat": "agent",
+   "request": "b956b9cd",
+   "thinking": true,
+   "live": true,
+   "model_used": "Active-GGUF-Model",
+   "usage": {},
+   "reasoning_chars": 0,
+   "raw_error": {
+    "error": "upstream_http_5xx",
+    "details": {
+     "reason": "http_502",
+     "status_code": 502,
+     "message": "structured output was incomplete (finish_reason=length); increase the output budget",
+     "backend": "strata",
+     "route": "agent"
+    }
+   },
+   "content": "",
+   "expect": "empty_llm_response"
+  },
+  {
+   "name": "gpu2_live_thinking_on_truncated",
+   "seat": "agent-gpu2",
+   "request": "97383a30",
+   "thinking": true,
+   "live": true,
+   "model_used": "/models/gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+   "usage": {
+    "completion_tokens": 3072,
+    "prompt_tokens": 1246,
+    "total_tokens": 4318
+   },
+   "reasoning_chars": 9114,
+   "raw_error": null,
+   "content": "{\n  \"schema_version\": \"mind.active_cognitive_frontier.v1\",\n  \"selected\": [\n    {\n      \"matter_id\": \"m1\",\n      \"source_claim_id\": \"c1\",\n      \"label\": \"field_note_task\",\n      \"summary\": \"The user requests a field note for merged PR #3273, including atomic downscale, CAS restore, rollback_failed, and receipts.\",\n      \"matter_kind\": \"turn_anchor\",\n      \"score\": 0.95,\n      \"features\": {\n        \"current_turn_relevance\": 0.95,\n        \"confidence\": 0.95,\n        \"task_criticality\": 0.95,\n        \"execution_risk\": 0.8\n      },\n      \"evidence_refs\": [\n        \"current_turn:0\"\n      ],\n      \"reason_selected\": \"This is the primary task that determines the next response.\",\n      \"recommended_effect\": \"run_orion_field_note\"\n    },\n    {\n      \"matter_id\": \"m2\",\n      \"source_claim_id\": \"c2\",\n      \"label\": \"body_map_instruction\",\n      \"summary\": \"The note must identify which organs or body parts were touched by the PR and why the builders made the changes.\",\n      \"matter_kind\": \"task_anchor\",\n      \"score\": 0.85,\n      \"features\": {\n        \"current_turn_relevance\": 0.85,\n        \"confidence\": 0.9,\n        \"task_criticality\": 0.8,\n        \"execution_risk\": 0.6\n      },\n      \"evidence_refs\": [\n        \"current_turn:0\"\n      ],\n      \"reason_selected\": \"It shapes the content of the field note and prevents omitting required body-map details.\",\n      \"recommended_effect\": \"map_body_changes\"\n    },\n    {\n      \"matter_id\": \"m3\",\n      \"source_claim_id\": \"c3\",\n      \"label\": \"note_format_constraint\",\n      \"summary\": \"The note must be 1-5 sentences, start with labels, and avoid backticks, double quotes, backslashes, or dollar signs.\",\n      \"matter_kind\": \"format_constraint\",\n      \"score\": 0.95,\n      \"features\": {\n        \"current_turn_relevance\": 0.95,\n        \"confidence\": 0.95,\n        \"constraint_tightness\": 0.95,\n        \"execution_risk\": 0.9\n      },\n      \"evidence_refs\": [\n        \"current_turn:0\"\n      ],\n      \"reason_selected\": \"Violating the format can cause the write command to fail or alter the shell line.\",\n      \"recommended_effect\": \"enforce_note_format\"\n    },\n    {\n      \"matter_id\": \"m4\",\n      \"source_claim_id\": \"c4\",\n      \"label\": \"tool_budget_constraint\",\n      \"summary\": \"The user specifies a budget of about 3 tool calls, never more than 6, for completing the task.\",",
+   "expect": "json_parse_failed"
+  },
+  {
+   "name": "agent_probe_thinking_on_off_vocab",
+   "seat": "agent",
+   "request": "97383a30",
+   "thinking": true,
+   "live": false,
+   "model_used": "qwen3.8-flash-next-iq3_s",
+   "usage": {
+    "prompt_tokens": 1313,
+    "completion_tokens": 2724,
+    "total_tokens": 4037
+   },
+   "reasoning_chars": 8337,
+   "raw_error": null,
+   "content": "{\"schema_version\":\"mind.active_cognitive_frontier.v1\",\"selected\":[{\"matter_id\":\"m1\",\"source_claim_id\":\"c1\",\"label\":\"field_note_task\",\"summary\":\"The next response must produce a field note for merged PR 3273 about atomic downscale, CAS restore, rollback_failed, and receipts.\",\"matter_kind\":\"task_claim\",\"score\":0.95,\"features\":{\"current_turn_relevance\":0.95,\"confidence\":0.95,\"salience\":0.9,\"task_criticality\":0.95},\"evidence_refs\":[\"current_turn:0\"],\"reason_selected\":\"It defines the primary task and the PR subject.\",\"recommended_effect\":\"run_packet\"},{\"matter_id\":\"m2\",\"source_claim_id\":\"c2\",\"label\":\"body_map_instruction\",\"summary\":\"The note must identify which body parts or organs the PR touched and why the builders made the change.\",\"matter_kind\":\"task_claim\",\"score\":0.9,\"features\":{\"current_turn_relevance\":0.9,\"confidence\":0.9,\"salience\":0.8,\"task_criticality\":0.85},\"evidence_refs\":[\"current_turn:0\"],\"reason_selected\":\"It shapes the content of the field note.\",\"recommended_effect\":\"compose_note\"},{\"matter_id\":\"m3\",\"source_claim_id\":\"c3\",\"label\":\"note_format_constraint\",\"summary\":\"The note must be one to five sentences, use required labels, and avoid shell-breaking characters.\",\"matter_kind\":\"constraint\",\"score\":0.95,\"features\":{\"current_turn_relevance\":0.95,\"confidence\":0.95,\"salience\":0.85,\"task_criticality\":0.95},\"evidence_refs\":[\"current_turn:0\"],\"reason_selected\":\"It controls the exact note format and prevents write refusal.\",\"recommended_effect\":\"validate_format\"},{\"matter_id\":\"m4\",\"source_claim_id\":\"c4\",\"label\":\"tool_budget_constraint\",\"summary\":\"The task should use about three tool calls and never exceed six.\",\"matter_kind\":\"constraint\",\"score\":0.85,\"features\":{\"current_turn_relevance\":0.85,\"confidence\":0.95,\"salience\":0.7,\"task_criticality\":0.8},\"evidence_refs\":[\"current_turn:0\"],\"reason_selected\":\"It limits how much code inspection is allowed.\",\"recommended_effect\":\"budget_control\"}],\"deferred\":[],\"suppressed\":[],\"hazards\":[],\"response_directives\":[\"run the packet first\",\"compose the note from packet fields\",\"avoid forbidden characters in the note\",\"reply only with the saved receipt\"]}",
+   "expect": "ok"
+  },
+  {
+   "name": "agent_probe_thinking_off",
+   "seat": "agent",
+   "request": "b956b9cd",
+   "thinking": false,
+   "live": false,
+   "model_used": "qwen3.8-flash-next-iq3_s",
+   "usage": {
+    "prompt_tokens": 3235,
+    "completion_tokens": 753,
+    "total_tokens": 3988
+   },
+   "reasoning_chars": 0,
+   "raw_error": null,
+   "content": "{\"schema_version\":\"mind.active_cognitive_frontier.v1\",\"selected\":[{\"matter_id\":\"m1\",\"source_claim_id\":\"c2\",\"label\":\"paper topic and method\",\"summary\":\"The source paper 'Toward Foundation Detection Models via Example-Based Grounding in EM-DETR' proposes a multi-source lesion detector using a two-stage teacher/student plan and modified EM-DETR for example-driven, cross-modality grounding.\",\"matter_kind\":\"task_claim\",\"score\":0.85,\"features\":{\"current_turn_relevance\":0.9,\"confidence\":0.85},\"evidence_refs\":[\"current_turn:0\"],\"reason_selected\":\"Core subject matter of the reading task; establishes the primary hypothesis and methodological approach to be evaluated.\",\"recommended_effect\":\"answer_directly\"},{\"matter_id\":\"m2\",\"source_claim_id\":\"c4\",\"label\":\"evidence gaps and limitations\",\"summary\":\"Only the arXiv abstract was read; full text, specific dataset names, and the reference list are missing, so numeric gains and method details remain unverified candidates.\",\"matter_kind\":\"uncertainty_claim\",\"score\":0.9,\"features\":{\"current_turn_relevance\":0.95,\"confidence\":0.9},\"evidence_refs\":[\"current_turn:0\"],\"reason_selected\":\"Critical constraint on the validity of the claims; dictates the epistemic stance (treating claims as attributed candidates rather than settled truth).\",\"recommended_effect\":\"surface_uncertainty\"},{\"matter_id\":\"m3\",\"source_claim_id\":\"c3\",\"label\":\"reported performance gains\",\"summary\":\"The abstract record claims ~1 point image-level AUC gain over prior leading CXR results and ~2-3 mAP50 points over single-source EM-DETR on CXR and mammography.\",\"matter_kind\":\"task_claim\",\"score\":0.75,\"features\":{\"current_turn_relevance\":0.8,\"confidence\":0.75},\"evidence_refs\":[\"current_turn:0\"],\"reason_selected\":\"Specific quantitative claims that require careful attribution and qualification due to the lack of full-text verification.\",\"recommended_effect\":\"answer_directly\"},{\"matter_id\":\"m4\",\"source_claim_id\":\"c5\",\"label\":\"tool constraints\",\"summary\":\"WebFetch is limited to the first ~100,000 characters of a page and cannot read later slices or re-fetch different ranges, requiring work from available content.\",\"matter_kind\":\"task_claim\",\"score\":0.6,\"features\":{\"current_turn_relevance\":0.5,\"confidence\":0.95},\"evidence_refs\":[\"current_turn:0\"],\"reason_selected\":\"Explains why the evidence gaps (m2) exist and justifies the reliance on the abstract record; relevant for explaining the scope of the current analysis.\",\"recommended_effect\":\"answer_directly\"}],\"deferred\":[],\"suppressed\":[],\"hazards\":[],\"response_directives\":[\"Maintain epistemic humility: explicitly label performance metrics and method details as 'claimed' or 'reported in abstract' rather than verified facts.\",\"Acknowledge the limitation of having only the abstract record when discussing specific datasets or reference lists.\",\"Focus on the conceptual framework (teacher/student, EM-DETR modification) as the primary takeaway, given the lack of full-text verification.\"]}",
+   "expect": "ok"
+  },
+  {
+   "name": "gpu2_probe_thinking_off",
+   "seat": "agent-gpu2",
+   "request": "97383a30",
+   "thinking": false,
+   "live": false,
+   "model_used": "/models/gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf",
+   "usage": {
+    "completion_tokens": 846,
+    "prompt_tokens": 1210,
+    "total_tokens": 2056
+   },
+   "reasoning_chars": 0,
+   "raw_error": null,
+   "content": "{\n  \"schema_version\": \"mind.active_cognitive_frontier.v1\",\n  \"selected\": [\n    {\n      \"matter_id\": \"m1\",\n      \"source_claim_id\": \"c1\",\n      \"label\": \"field_note_task\",\n      \"summary\": \"Execute the field note workflow for PR #3273, including running the orion.dig command, writing the note, and returning the receipt.\",\n      \"matter_kind\": \"turn_anchor\",\n      \"score\": 0.95,\n      \"features\": {\n        \"current_turn_relevance\": 1.0,\n        \"confidence\": 0.95,\n        \"task_criticality\": 0.9\n      },\n      \"evidence_refs\": [\n        \"current_turn:0\"\n      ],\n      \"reason_selected\": \"This is the primary actionable task defined in the current turn.\",\n      \"recommended_effect\": \"execute_workflow\"\n    },\n    {\n      \"matter_id\": \"m2\",\n      \"source_claim_id\": \"c3\",\n      \"label\": \"note_format_constraint\",\n      \"summary\": \"The generated note must strictly adhere to 1-5 sentences, specific labels, and exclude backticks, double quotes, backslashes, or dollar signs.\",\n      \"matter_kind\": \"constraint\",\n      \"score\": 0.9,\n      \"features\": {\n        \"current_turn_relevance\": 0.95,\n        \"confidence\": 0.95,\n        \"compliance_risk\": 0.8\n      },\n      \"evidence_refs\": [\n        \"current_turn:0\"\n      ],\n      \"reason_selected\": \"Strict formatting rules are required to ensure the write command succeeds and the note is valid.\",\n      \"recommended_effect\": \"enforce_format\"\n    },\n    {\n      \"matter_id\": \"m3\",\n      \"source_claim_id\": \"c4\",\n      \"label\": \"tool_budget_constraint\",\n      \"summary\": \"The task must be completed within a budget of about 3 tool calls, with a hard limit of 6.\",\n      \"matter_kind\": \"constraint\",\n      \"score\": 0.85,\n      \"features\": {\n        \"current_turn_relevance\": 0.9,\n        \"confidence\": 0.95,\n        \"efficiency_pressure\": 0.85\n      },\n      \"evidence_refs\": [\n        \"current_turn:0\"\n      ],\n      \"reason_selected\": \"Resource limits dictate the strategy for executing the task efficiently.\",\n      \"recommended_effect\": \"optimize_tool_usage\"\n    }\n  ],\n  \"deferred\": [\n    {\n      \"matter_id\": \"m4\",\n      \"source_claim_id\": \"c2\",\n      \"label\": \"body_map_instruction\",\n      \"summary\": \"Identify which organs or body parts were touched by the PR and why the builders made the changes.\",\n      \"reason_deferred\": \"This is a sub-component of the main task (m1) and will be handled during the execution of the field note workflow.\"\n    }\n  ],\n  \"suppressed\": [],\n  \"hazards\": [\n    {\n      \"hazard_id\": \"h1\",\n      \"description\": \"Shell injection or syntax errors in the note text could cause the write command to fail or execute unintended commands.\",\n      \"severity\": \"high\",\n      \"mitigation\": \"Strictly follow the note_format_constraint (m2) to avoid special characters.\"\n    }\n  ],\n  \"response_directives\": [\n    \"Run python -P -m orion.dig field-note 3273 first.\",\n    \"Draft the note carefully to avoid forbidden characters.\",\n    \"Run the write command and verify the receipt.\"\n  ]\n}",
+   "expect": "ok"
+  }
+ ]
+}

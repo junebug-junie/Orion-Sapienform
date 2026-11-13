@@ -507,3 +507,59 @@ def test_economy_capacity_deferral_tells_now(monkeypatch):
     loop, _, _, rows, _, delivered = _setup(monkeypatch)
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1
     assert [r for r in rows if r["reason"] == "sent"][0]["economy"]["verdict"] == "queued_at_pool"
+
+
+# --- the background tick's choice point (scripts/outreach_choice.py) ------------------------------
+
+
+def test_pending_reads_become_tick_topics_with_a_stable_subject(monkeypatch):
+    from scripts.outreach_choice import version_of
+
+    loop, _, _, _, composed, _ = _setup(monkeypatch, moves=[MOVE_ROW])
+    (topic,) = asyncio.run(loop.outreach_topics())
+    assert topic.subject == f"reading:{SEED}" and topic.kind == "reading" and topic.seed_id == SEED
+    assert list(topic.finding_ids) == ["belief:world:nasa_outreach_is_spectacle@e5eb9cfcf7ea",
+                                       "link:assertion-f29721db-52ae-5017-8b26-107fceafbd0d"]
+    assert topic.version == version_of(topic.finding_ids)
+    assert len(topic.option_text) <= 400 and "NASA to Conduct Flyover" in topic.option_text
+    assert topic.appendix.startswith("Source: NASA to Conduct Flyover")
+    assert composed == []  # offering a topic composes nothing
+
+
+def test_no_read_is_offered_while_the_reading_spacing_waits(monkeypatch):
+    loop, _, _, _, _, _ = _setup(monkeypatch, min_spacing_sec=7200.0, last_sent=NOW - timedelta(minutes=10))
+    assert asyncio.run(loop.outreach_topics()) == []
+
+
+def test_a_read_the_tick_delivered_is_told_and_starts_the_spacing(monkeypatch):
+    loop, _, _, _, composed, delivered = _setup(monkeypatch, min_spacing_sec=7200.0)
+    (topic,) = asyncio.run(loop.outreach_topics())
+    topic.on_sent()
+    assert asyncio.run(loop.tick())["pending"] == 0
+    assert composed == [] and delivered == []
+    assert loop.spacing_wait_sec(NOW) == 7200.0
+
+
+def test_a_tick_sent_row_with_finding_ids_counts_as_told(monkeypatch):
+    """After a restart the in-process mirror is gone; the tick's decision row (no ``source``,
+    with ``finding_ids``) is what keeps the read from going out twice."""
+    from scripts import reading_finding_outreach as rfo
+
+    ids = ["link:assertion-f29721db-52ae-5017-8b26-107fceafbd0d"]
+    loop, _, _, _, composed, _ = _setup(monkeypatch, decisions=[_Rec({"reason": "sent", "finding_ids": ids})])
+    assert asyncio.run(loop.tick())["pending"] == 0 and composed == []
+    for sql in (rfo.DECISIONS_SQL, rfo.LAST_SENT_SQL):
+        assert "result_json ? 'finding_ids'" in sql and "'reading_finding_outreach'" in sql
+
+
+def test_a_read_the_tick_is_showing_is_not_composed_by_this_door(monkeypatch):
+    from scripts import reading_finding_outreach as rfo
+
+    loop, outreach, _, rows, composed, delivered = _setup(monkeypatch)
+    assert outreach.claim_subjects([f"reading:{SEED}"])
+    summary = asyncio.run(loop.tick())
+    assert [r["reason"] for r in summary["results"]] == [rfo.CLAIMED_BY_TICK_REASON]
+    assert composed == [] and delivered == [] and rows == []
+    outreach.release_subjects([f"reading:{SEED}"])
+    assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"]
+    assert outreach._claimed_subjects == set()  # this door releases its own claim

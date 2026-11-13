@@ -312,6 +312,6 @@ Issues opened: #3309 (verify-live, 7-day calm check), #3310 (follow-up, adaptive
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3318
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

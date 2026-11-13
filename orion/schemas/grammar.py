@@ -62,7 +62,13 @@ ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]
 #   artifact_produced -- the act produced its artifact (an image stored, a
 #                        reading with real content) before the horizon.
 #                        Reported by the producer on close.
-ActSignal = Literal["juniper_replied", "artifact_produced"]
+#   juniper_answered  -- Juniper answered the camera ask the act opened (a name,
+#                        yes/no, same/different) before it expired; dismissed,
+#                        "don't know" or unanswered at expiry is 0. Resolved by
+#                        orion-sql-writer from the orion_ask row
+#                        (orion/grammar/camera_ask_acts.py ask_grade, attention
+#                        patch 4a); producers never self-report it.
+ActSignal = Literal["juniper_replied", "artifact_produced", "juniper_answered"]
 
 # Who supplied an act's outcome.
 ActOutcomeSource = Literal["producer", "resolver", "expired"]

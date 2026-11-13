@@ -19,6 +19,13 @@ The want: family ``vision.ask`` (Tier 2, a proposal awaiting Juniper's sign-off)
 open, window end the ask's ``expires_at``. One want per ask (deterministic want id; an ask whose want
 is already in ``want_ledger`` is not posted again).
 
+Expected outcome (attention patch 4a, docs/superpowers/specs/2026-11-12-attention-camera-asks-bind-design.md):
+each ask is a ``vision.ask`` act graded by Juniper's answer (orion/grammar/camera_ask_acts.py), so the want
+carries ``outcome_value`` = the answered share of the same ask RULE (confirm, same, face, office, vehicle,
+sighting) over 30 days, ``(answered + 1) / (closed + 2)``. Once the family has 30 graded closes the market ranks
+``salience x outcome``: a vehicle ask Juniper cannot answer (live: 5 of 45) ranks low however often it was seen.
+Juniper's own walkway-story naming cards are not Orion's asks and are in neither the asks nor the history.
+
 SHADOW: nothing obeys the decision. Prime reads the funded ones as its concerns (orion-mind
 ``PRIME_CONCERNS_FROM_EVENT_WANTS``).
 
@@ -32,6 +39,14 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional, Sequence
 
+from orion.grammar.camera_ask_acts import (
+    ACTOR as ASK_ACTOR,
+    ORION_MADE_CAMERA_ASK_SQL,
+    OUTCOME_WINDOW,
+    ask_rule,
+    rule_from_test_before,
+    rule_outcome_values,
+)
 from orion.physiology.event_wants import SOURCE_HISTORY, event_want, event_want_id, source_salience
 
 logger = logging.getLogger("sql-writer.ask_event_wants")
@@ -42,19 +57,28 @@ VERB = "ask"
 TIER = 2
 PRODUCER = "orion-sql-writer.ask_events"
 UNAVAILABLE = "physiology_unavailable"
-CAMERA_ASK_KINDS = ("vision_individual", "vision_person_confirm", "vision_same_individual")
-
-# Camera asks opened in [:since, :until), each with the moving sightings of its individual up to its open.
-ASKS_SQL = """
+# Camera asks ORION opened in [:since, :until), each with the moving sightings of its individual up to its
+# open and that individual's kind (for the ask's rule). Juniper's own story-naming cards are not Orion's asks:
+# they are excluded from the asks AND from the salience history (attention patch 4a).
+ASKS_SQL = f"""
 WITH a AS (
-    SELECT ask_id, source_kind, status, created_at, expires_at, split_part(source_ref, '|', 1) AS iid
-      FROM orion_ask
-     WHERE source_kind = ANY(:kinds) AND created_at >= :since AND created_at < :until)
-SELECT a.ask_id, a.source_kind, a.status, a.created_at, a.expires_at, a.iid,
+    SELECT a.ask_id, a.source_kind, a.status, a.created_at, a.expires_at, a.evidence_refs,
+           split_part(a.source_ref, '|', 1) AS iid
+      FROM orion_ask a
+     WHERE {ORION_MADE_CAMERA_ASK_SQL} AND a.created_at >= :since AND a.created_at < :until)
+SELECT a.ask_id, a.source_kind, a.status, a.created_at, a.expires_at, a.evidence_refs, a.iid,
+       (SELECT i.kind FROM vision_individual i WHERE i.individual_id = a.iid) AS individual_kind,
        (SELECT count(*) FROM vision_individual_sighting v
          WHERE v.individual_id = a.iid AND v.started_at <= a.created_at AND NOT v.stationary) AS sightings
   FROM a ORDER BY a.created_at
 """
+
+# Juniper's grades of camera asks over the last 30 days (patch 4a): each closed vision.ask act's rule
+# (test_before camera_ask:<rule>) and outcome. Only resolver closes are grades (a withdrawn ask is not).
+GRADES_SQL = (
+    "SELECT test_before, outcome_value FROM grammar_acts WHERE actor = :actor AND outcome_source = 'resolver' "
+    "AND closed_at >= :since AND outcome_value IS NOT NULL"
+)
 
 POSTED_SQL = "SELECT DISTINCT want_id FROM want_ledger WHERE reason <> 'physiology_unavailable' AND want_id = ANY(:ids) AND decided_at >= :since"
 
@@ -65,12 +89,17 @@ def _utc(v: Any) -> Optional[datetime]:
     return v if v.tzinfo else v.replace(tzinfo=timezone.utc)
 
 
-def plan_asks(rows: Sequence[Any], *, now: datetime, lookback: timedelta) -> list[dict[str, Any]]:
+def plan_asks(rows: Sequence[Any], *, now: datetime, lookback: timedelta,
+              outcomes: Optional[dict[str, float]] = None) -> list[dict[str, Any]]:
     """The OPEN camera asks opened inside ``lookback``, each with its salience (None: too little
-    history). Each ask is ranked against the camera asks of the 30 days before it. Pure."""
+    history), its rule, and the rule's expected outcome (``outcomes``: rule -> answered share, from
+    ``rule_outcome_values``; None: no outcome on the want). Each ask is ranked against the camera asks of
+    the 30 days before it. Pure."""
     asks = sorted(({"ask_id": str(r["ask_id"]), "kind": str(r["source_kind"]), "status": str(r["status"]),
                     "at": _utc(r["created_at"]), "expires_at": _utc(r["expires_at"]), "iid": str(r["iid"] or ""),
-                    "sightings": int(r["sightings"] or 0)} for r in rows if r["created_at"] is not None),
+                    "sightings": int(r["sightings"] or 0),
+                    "rule": ask_rule(str(r["source_kind"]), r.get("evidence_refs"), r.get("individual_kind"))}
+                   for r in rows if r["created_at"] is not None),
                   key=lambda a: a["at"])
     out = []
     for a in asks:
@@ -79,13 +108,15 @@ def plan_asks(rows: Sequence[Any], *, now: datetime, lookback: timedelta) -> lis
         if a["expires_at"] is not None and a["expires_at"] <= now:
             continue
         history = [h["sightings"] for h in asks if a["at"] - SOURCE_HISTORY <= h["at"] < a["at"]]
-        out.append({**a, "salience": source_salience(a["sightings"], history), "history_n": len(history)})
+        out.append({**a, "salience": source_salience(a["sightings"], history), "history_n": len(history),
+                    "outcome_value": None if outcomes is None else outcomes.get(a["rule"])})
     return out
 
 
 def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], bid: Callable[[Any], Any],
-                  now: Optional[datetime] = None, engine: Any = None) -> dict[str, Any]:
-    """Read, plan and bid once (sync: runs in a worker thread). ``posted`` is updated in place."""
+                  now: Optional[datetime] = None, engine: Any = None, graded: bool = True) -> dict[str, Any]:
+    """Read, plan and bid once (sync: runs in a worker thread). ``posted`` is updated in place.
+    ``graded`` (SQL_WRITER_ACT_CAMERA_ASKS_ENABLED): each want carries its rule's expected outcome."""
     from sqlalchemy import create_engine, text
 
     ts = now or datetime.now(timezone.utc)
@@ -93,9 +124,12 @@ def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], b
     summary: dict[str, Any] = {"posted": 0, "no_history": 0, "already": 0, "unanswered": 0}
     try:
         with eng.connect() as conn:
-            rows = conn.execute(text(ASKS_SQL), {"kinds": list(CAMERA_ASK_KINDS),
-                                                  "since": ts - lookback - SOURCE_HISTORY, "until": ts}).mappings().all()
-            plan = plan_asks(rows, now=ts, lookback=lookback)
+            rows = conn.execute(text(ASKS_SQL), {"since": ts - lookback - SOURCE_HISTORY, "until": ts}).mappings().all()
+            outcomes = None
+            if graded:
+                grades = conn.execute(text(GRADES_SQL), {"actor": ASK_ACTOR, "since": ts - OUTCOME_WINDOW}).fetchall()
+                outcomes = rule_outcome_values((rule_from_test_before(g[0]) or "", float(g[1])) for g in grades)
+            plan = plan_asks(rows, now=ts, lookback=lookback, outcomes=outcomes)
             ids = [event_want_id(SOURCE, p["ask_id"]) for p in plan]
             fresh = [i for i in ids if i not in posted]
             if fresh:
@@ -115,16 +149,17 @@ def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], b
             continue
         want = event_want(source=SOURCE, key=p["ask_id"], family=FAMILY, producer=PRODUCER, verb=VERB, tier=TIER,
                           event_ref=f"orion_ask:{p['ask_id']}", salience=p["salience"], opened_at=p["at"],
-                          latest=p["expires_at"], object_ref=f"vision_individual:{p['iid']}" if p["iid"] else None)
+                          latest=p["expires_at"], object_ref=f"vision_individual:{p['iid']}" if p["iid"] else None,
+                          outcome_value=p["outcome_value"])
         decision = bid(want)
         if decision is None or decision.reason == UNAVAILABLE:
             summary["unanswered"] += 1       # no answer, or the market could not price it: retried next cycle
             continue
         posted.add(want_id)
         summary["posted"] += 1
-        logger.info("ask_event_want ask=%s kind=%s sightings=%d salience=%.3f outcome=%s reason=%s value_rank=%s want_id=%s",
-                    p["ask_id"], p["kind"], p["sightings"], p["salience"], decision.outcome, decision.reason,
-                    decision.value_rank, want_id)
+        logger.info("ask_event_want ask=%s kind=%s rule=%s sightings=%d salience=%.3f expected_answer=%s outcome=%s "
+                    "reason=%s value_rank=%s want_id=%s", p["ask_id"], p["kind"], p["rule"], p["sightings"],
+                    p["salience"], p["outcome_value"], decision.outcome, decision.reason, decision.value_rank, want_id)
     if len(posted) > 5000:
         posted.intersection_update(ids)
     return summary
@@ -141,6 +176,7 @@ async def ask_event_wants_loop(settings: Any) -> None:
     from orion.physiology.client import bid
 
     lookback = timedelta(hours=float(getattr(settings, "ask_event_wants_lookback_hours", 24.0)))
+    graded = bool(getattr(settings, "sql_writer_act_camera_asks_enabled", True))
     engine = create_engine(postgres_uri, pool_pre_ping=True, pool_size=1, max_overflow=0)
     posted: set[str] = set()
     logger.info("ask_event_wants_loop starting interval_sec=%.0f lookback_h=%.1f", interval,
@@ -148,7 +184,7 @@ async def ask_event_wants_loop(settings: Any) -> None:
     while True:
         try:
             summary = await asyncio.to_thread(run_one_cycle, postgres_uri=postgres_uri, lookback=lookback,
-                                              posted=posted, bid=bid, engine=engine)
+                                              posted=posted, bid=bid, engine=engine, graded=graded)
             if summary["posted"] or summary["no_history"] or summary["unanswered"]:
                 logger.info("[ASK_EVENT_WANTS] tick %s", summary)
         except asyncio.CancelledError:

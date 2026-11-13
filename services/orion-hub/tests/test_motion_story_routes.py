@@ -499,7 +499,12 @@ def test_naming_a_person_is_a_who_is_this_answer_and_renames_the_story() -> None
         assert row["applied_at"] is None and row["answered_at"] is not None   # sql-writer applies it
         assert json.loads(row["answer_detail"]) == {"story_id": sid, "action": "name", "via": "motion_story",
                                                     "name": "Theo"}
-        assert json.loads(row["evidence_refs"]) == [f"motion_story:{sid}", "individual:ind-anon"]
+        # Marked as Juniper's own card (attention patch 4a): it opens no vision.ask act, counts in no ask stat.
+        assert json.loads(row["evidence_refs"]) == [f"motion_story:{sid}", "individual:ind-anon",
+                                                    "rule:juniper_story_naming"]
+        from orion.grammar.camera_ask_acts import is_juniper_card, is_orion_camera_ask
+        assert is_juniper_card(row["evidence_refs"], None)
+        assert not is_orion_camera_ask(row["source_kind"], row["evidence_refs"], None)
         assert row["image_ref"] == f"thumb:{THUMB}"
         # The substrate entity event, the same one a Hub "who is this?" answer publishes.
         assert [(e.ask_id, e.source_kind, e.source_ref, e.answer, e.status) for e in published] == [
@@ -676,3 +681,10 @@ def test_list_shows_the_handoff_line_and_is_silent_without_the_table() -> None:
         assert r.json()["stories"][0]["handoff"] == {"kind": "from", "camera": "door camera", "seconds": 38}
 
     _run(body)
+
+
+def test_the_juniper_card_marker_is_the_shared_one() -> None:
+    """Hub stamps the marker; sql-writer, the act ledger and the replay filter on it (patch 4a)."""
+    from orion.grammar.camera_ask_acts import JUNIPER_STORY_CARD_REF
+
+    assert msr.JUNIPER_STORY_CARD_REF == JUNIPER_STORY_CARD_REF

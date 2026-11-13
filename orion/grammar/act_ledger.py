@@ -21,7 +21,10 @@ This module is the writer side, called by orion-sql-writer:
   horizon passes without one; see _JUNIPER_REPLY_SQL). Producer-reported
   signals (``artifact_produced``) that pass their horizon unclosed are closed
   at 0 as ``expired``: the signal is "produced BY the horizon", so a missing
-  close past it is a real 0, not a guess.
+  close past it is a real 0, not a guess. ``juniper_answered`` acts (camera
+  asks, attention patch 4a) are closed from their ``orion_ask`` row: Juniper's
+  answer is 1, her dismissal or her silence at the ask's expiry 0 (``resolver``),
+  and an ask Orion withdrew ``expired`` (orion/grammar/camera_ask_acts.py).
 
 Two notions of "how wrong" live on a closed act, on purpose: ``error`` is the
 outcome minus the ``predicted`` stamped at OPEN (what the act expected when it
@@ -750,7 +753,7 @@ _DUE_SQL = text(
            opened_at, horizon_at, correlation_id
       FROM grammar_acts
      WHERE closed_at IS NULL AND opened_at IS NOT NULL AND signal_id IS NOT NULL
-       AND (signal_id = 'juniper_replied' OR horizon_at < :expired_before)
+       AND (signal_id IN ('juniper_replied', 'juniper_answered') OR horizon_at < :expired_before)
      ORDER BY opened_at
      LIMIT :limit
     """
@@ -764,6 +767,56 @@ class ResolveSummary:
     closed_not_replied: int
     closed_expired: int
     recovered_producer_closes: int = 0
+    # juniper_answered (camera asks, attention patch 4a): graded by Juniper's answer or silence / withdrawn.
+    closed_asks_graded: int = 0
+    closed_asks_withdrawn: int = 0
+
+
+# A camera ask's act is graded from its orion_ask row (orion/grammar/camera_ask_acts.py ask_grade):
+# Juniper's answer, her dismissal, or her silence at the ask's expiry.
+_ASK_STATE_SQL = text(
+    "SELECT status, answer_detail, answered_at, expires_at FROM orion_ask WHERE ask_id = :a"
+)
+
+
+def _ask_outcome(conn: Any, row: Any, now: datetime) -> ActOutcomeV1 | None:
+    from orion.grammar.camera_ask_acts import ask_grade
+
+    ask = conn.execute(_ASK_STATE_SQL, {"a": row["correlation_id"]}).mappings().first()
+    grade = ask_grade(dict(ask) if ask is not None else None, now=now, horizon_at=_aware(row["horizon_at"]))
+    if grade is None:
+        return None
+    return ActOutcomeV1(value=grade.value, observed_at=grade.observed_at, source=grade.source,  # type: ignore[arg-type]
+                        note=grade.note)
+
+
+_ASK_ACTS_SQL = text(
+    """
+    SELECT act_id, level, actor, verb, signal_id, direction, horizon_sec, expect_basis,
+           opened_at, horizon_at, correlation_id
+      FROM grammar_acts
+     WHERE act_id = ANY(:ids) AND closed_at IS NULL AND opened_at IS NOT NULL AND signal_id = 'juniper_answered'
+     ORDER BY opened_at
+    """
+)
+
+
+def resolve_ask_acts(conn: Any, act_ids: list[str], *, now: datetime | None = None,
+                     commit: Any = None) -> tuple[int, int]:
+    """Close the given open camera-ask acts whose ask is settled (the back-fill uses this; the
+    horizon resolver closes the same acts by the same rule). Returns (graded, withdrawn)."""
+    now = _aware(now or _utc_now())
+    graded = withdrawn = 0
+    for row in conn.execute(_ASK_ACTS_SQL, {"ids": list(act_ids)}).mappings().all():
+        outcome = _ask_outcome(conn, row, now)
+        if outcome is None:
+            continue
+        if _one_close(conn, commit, None, _act_from_row(row), outcome, f"resolver:{row['act_id']}"):
+            if outcome.source == "expired":
+                withdrawn += 1
+            else:
+                graded += 1
+    return graded, withdrawn
 
 
 def _act_from_row(row: Any) -> ActV1:
@@ -846,11 +899,21 @@ def resolve_due_acts(
     rows = conn.execute(
         _DUE_SQL, {"expired_before": now - timedelta(seconds=EXPIRY_GRACE_SEC), "limit": limit}
     ).mappings().all()
-    replied = not_replied = expired = recovered = 0
+    replied = not_replied = expired = recovered = asks_graded = asks_withdrawn = 0
     for row in rows:
         act = _act_from_row(row)
         opened_at = _aware(row["opened_at"])
         horizon_at = _aware(row["horizon_at"])
+        if row["signal_id"] == "juniper_answered":
+            outcome = _ask_outcome(conn, row, now)
+            if outcome is None:
+                continue
+            if _one_close(conn, commit, None, act, outcome, f"resolver:{act.act_id}"):
+                if outcome.source == "expired":
+                    asks_withdrawn += 1
+                else:
+                    asks_graded += 1
+            continue
         if row["signal_id"] == "juniper_replied":
             first = conn.execute(
                 _JUNIPER_REPLY_SQL,
@@ -878,7 +941,7 @@ def resolve_due_acts(
                                    note=f"no producer close within horizon + {EXPIRY_GRACE_SEC:.0f}s grace")
             expired += 1
         _one_close(conn, commit, None, act, outcome, f"resolver:{act.act_id}")
-    return ResolveSummary(len(rows), replied, not_replied, expired, recovered)
+    return ResolveSummary(len(rows), replied, not_replied, expired, recovered, asks_graded, asks_withdrawn)
 
 
 # --- late cost fill (attention patch 3a, "reading's real cost") ------------------------------------

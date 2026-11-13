@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from app.ask_event_wants import ASKS_SQL, FAMILY, plan_asks, run_one_cycle
+from app.ask_event_wants import ASKS_SQL, FAMILY, GRADES_SQL, plan_asks, run_one_cycle
 from orion.physiology.event_wants import event_want_id
 from orion.physiology.families import load_families
 
@@ -48,10 +48,14 @@ class _Result:
     def __iter__(self):
         return iter(self.rows)
 
+    def fetchall(self):
+        return list(self.rows)
+
 
 class _Conn:
-    def __init__(self, ledger):
+    def __init__(self, ledger, grades=()):
         self.ledger = ledger
+        self.grades = list(grades)
 
     def __enter__(self):
         return self
@@ -61,17 +65,20 @@ class _Conn:
 
     def execute(self, stmt, params):
         if str(stmt) == ASKS_SQL:
-            assert params["kinds"] == ["vision_individual", "vision_person_confirm", "vision_same_individual"]
             return _Result(_rows())
+        if str(stmt) == GRADES_SQL:
+            assert params["actor"] == "vision.ask"
+            return _Result(self.grades)
         return _Result([(w,) for w in self.ledger if w in params["ids"]])
 
 
 class _Engine:
-    def __init__(self, ledger=()):
+    def __init__(self, ledger=(), grades=()):
         self.ledger = set(ledger)
+        self.grades = grades
 
     def connect(self):
-        return _Conn(self.ledger)
+        return _Conn(self.ledger, self.grades)
 
 
 def test_a_cycle_posts_each_open_ask_once():
@@ -124,3 +131,43 @@ def test_an_unpriced_decision_is_retried():
     for _ in range(2):
         run_one_cycle(postgres_uri="x", lookback=timedelta(hours=24), posted=posted, bid=bid, now=NOW, engine=_Engine())
     assert len(calls) == 4 and not posted and "reason <> 'physiology_unavailable'" in POSTED_SQL
+
+
+
+def test_juniper_story_cards_are_neither_asks_nor_history():
+    """Patch 4a: her "named on a walkway story" cards are filtered structurally in the SQL."""
+    from orion.grammar.camera_ask_acts import ORION_MADE_CAMERA_ASK_SQL
+
+    assert ORION_MADE_CAMERA_ASK_SQL in ASKS_SQL and "named on a walkway story" not in ASKS_SQL
+
+
+def test_each_want_carries_its_rules_expected_answer():
+    """Patch 4a: outcome_value = the rule's answered share (Laplace) from Juniper's graded closes."""
+    rows = _rows()
+    for r in rows:
+        r["individual_kind"] = "vehicle" if r["ask_id"] == "big" else "person"
+        r["evidence_refs"] = ["sighting:1"]
+    # Graded closes, as GRADES_SQL returns them: vehicle 1 of 10 answered; confirm 9 of 9.
+    grades = [("camera_ask:vehicle", 1.0)] + [("camera_ask:vehicle", 0.0)] * 9 + [("camera_ask:confirm", 1.0)] * 9
+
+    class _E(_Engine):
+        def connect(self):
+            c = _Conn(self.ledger, grades)
+            c.execute_orig = c.execute
+
+            def ex(stmt, params, _c=c):
+                return _Result(rows) if str(stmt) == ASKS_SQL else _c.execute_orig(stmt, params)
+            c.execute = ex
+            return c
+
+    bids = []
+    run_one_cycle(postgres_uri="x", lookback=timedelta(hours=24), posted=set(), now=NOW, engine=_E(),
+                  bid=lambda w: bids.append(w) or SimpleNamespace(outcome="funded", reason="net_positive", value_rank=0.5))
+    by = {b.event_ref: b for b in bids}
+    assert by["orion_ask:big"].outcome_value == 2 / 12          # vehicle: (1 + 1) / (10 + 2)
+    assert by["orion_ask:small"].outcome_value == 10 / 11       # confirm: (9 + 1) / (9 + 2)
+    # Off (SQL_WRITER_ACT_CAMERA_ASKS_ENABLED=false): no outcome on the want, as before patch 4a.
+    bids.clear()
+    run_one_cycle(postgres_uri="x", lookback=timedelta(hours=24), posted=set(), now=NOW, engine=_E(), graded=False,
+                  bid=lambda w: bids.append(w) or SimpleNamespace(outcome="funded", reason="net_positive", value_rank=0.5))
+    assert all(b.outcome_value is None for b in bids) and len(bids) == 2

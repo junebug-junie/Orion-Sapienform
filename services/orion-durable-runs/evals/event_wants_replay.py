@@ -37,7 +37,23 @@ Two lanes:
   and the starvation count on a constructed day.
 * ``--live --days 14``: the real tables.
 
+**Camera-asks gate** (``--camera-asks``, attention patch 4a; acceptance check 3 of
+docs/superpowers/specs/2026-11-12-attention-camera-asks-bind-design.md). Patch 4b (an ask bids BEFORE its
+card opens, and a held ask is not opened) may ship only if this replay passes. Over the real Orion-made
+camera asks (Juniper's own walkway-story naming cards excluded), each ask is bid at its real open time with
+4a's value: salience (moving sightings, as the producer) and ``outcome_value`` = its rule's answered share
+over the 30 days before the bid (``orion.grammar.camera_ask_acts.rule_outcome_values``), against acts
+rebuilt from the asks themselves (open at the ask, closed by ``ask_grade``) as the act history stood at the
+bid. 4b's rule: funded opens the card; held re-bids every ``ASK_RETRY`` until the family window
+(families.yaml ``vision.ask`` deferrable_window_s) ends, and an ask still held then is not opened. Gate:
+at least 70% of vehicle asks held to the window end; at most 10% of confirm and same-person asks held at
+all; answered asks per day fall by at most 10% (an answered ask held to the window end is a lost answer).
+Approximations, stated: an ask that would have been held and opened later is assumed answered as it really
+was; Juniper's real answers decided the history every bid sees (4b would have changed some); no Prime
+charge (camera asks carry none today).
+
     PYTHONPATH=. .venv/bin/python services/orion-durable-runs/evals/event_wants_replay.py [--live --days 14]
+    PYTHONPATH=. .venv/bin/python services/orion-durable-runs/evals/event_wants_replay.py --camera-asks [--live --days 30]
 """
 from __future__ import annotations
 
@@ -259,6 +275,175 @@ def _fixture() -> int:
     return 0 if all(checks.values()) else 1
 
 
+# --- camera-asks gate (patch 4a -> 4b) -------------------------------------------------------------
+
+ASK_RETRY = timedelta(hours=1)
+GATE_VEHICLE_HELD_MIN = 0.70
+GATE_ANSWERABLE_HELD_MAX = 0.10
+GATE_ANSWERED_LOSS_MAX = 0.10
+
+
+def ask_acts_from_asks(asks: Sequence[Mapping[str, Any]], *, now: datetime) -> list[tuple[ActRecord, str]]:
+    """(act, rule) per Orion-made ask, as 4a's ledger would hold it: opened at the ask, closed by
+    ``ask_grade`` (still open: no close)."""
+    from orion.grammar.camera_ask_acts import ask_grade
+
+    out = []
+    for a in asks:
+        g = ask_grade(a, now=now)
+        out.append((ActRecord(act_id=str(a["ask_id"]), family=ASK_FAMILY, opened_at=a["created_at"],
+                              closed_at=g.observed_at if g else None, outcome_value=g.value if g else None,
+                              outcome_source=g.source if g else None), str(a["rule"])))
+    return out
+
+
+def _as_of(acts: Sequence[tuple[ActRecord, str]], t: datetime) -> list[tuple[ActRecord, str]]:
+    """The act history as it stood at ``t``: acts opened by then, closes after ``t`` not yet known."""
+    out = []
+    for act, rule in acts:
+        if act.opened_at is None or act.opened_at > t:
+            continue
+        if act.closed_at is not None and act.closed_at > t:
+            act = dataclasses.replace(act, closed_at=None, outcome_value=None, outcome_source=None)
+        out.append((act, rule))
+    return out
+
+
+def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]], *, start: datetime,
+                     end: datetime) -> dict:
+    """Replay 4b's rule with 4a's value over ``asks`` (Orion-made only; each has ask_id, rule, created_at,
+    expires_at, status, answered_at, answer_detail, sightings). Pure."""
+    from orion.grammar.camera_ask_acts import OUTCOME_WINDOW, rule_outcome_values
+
+    cfg = families.get(ASK_FAMILY)
+    assert cfg is not None and not cfg.lanes and not cfg.fixed_cost, "this replay assumes vision.ask has no charge"
+    window = timedelta(seconds=cfg.deferrable_window_s)
+    asks = sorted(asks, key=lambda a: a["created_at"])
+    sal = saliences_over_own_history([(a["created_at"], float(a["sightings"] or 0)) for a in asks])
+    acts = ask_acts_from_asks(asks, now=end)
+    app_cache: dict[datetime, Any] = {}
+    history: list[tuple[datetime, float]] = []     # (bid_at, intensity) of earlier asks' first bids
+    rows = []
+    for a, s in zip(asks, sal):
+        if s is None or a["created_at"] < start or a["created_at"] > end:
+            continue
+        first_bid = a["created_at"]
+        bids = []
+        t = first_bid
+        while t < first_bid + window:
+            hour = t.replace(minute=0, second=0, microsecond=0)
+            if hour not in app_cache:
+                known = _as_of(acts, hour)
+                app_cache[hour] = (build_family_appetite(cfg, [k for k, _ in known], hour), known)
+            app, known = app_cache[hour]
+            closes = [k.closed_at for k, _ in known if k.closed_at is not None and k.closed_at <= t]
+            app = dataclasses.replace(app, last_close_at=max(closes) if closes else None,
+                                      event_values=tuple(v for bt, v in history if t - SOURCE_HISTORY <= bt < t))
+            h = hunger(app, t, opened_at=first_bid)
+            inten, _ = want_intensity(h.intensity, s)
+            graded = [(r, k.outcome_value) for k, r in known if k.graded and k.outcome_source == "resolver"
+                      and k.closed_at is not None and t - OUTCOME_WINDOW <= k.closed_at <= t]
+            outcome = rule_outcome_values(graded)[a["rule"]]
+            rank, basis, _ = rank_value(app, inten, outcome, event=True)
+            bids.append({"at": t, "rank": rank, "basis": basis, "outcome": outcome, "intensity": inten})
+            if t == first_bid:
+                history.append((t, inten))
+            if rank > 0:
+                break
+            t += ASK_RETRY
+        funded_at = next((b["at"] for b in bids if b["rank"] > 0), None)
+        rows.append({"ask_id": a["ask_id"], "rule": a["rule"], "answered": a["status"] == "answered",
+                     "held_at_all": bids[0]["rank"] <= 0, "held_to_end": funded_at is None,
+                     "first_rank": bids[0]["rank"], "first_basis": bids[0]["basis"], "outcome": bids[0]["outcome"],
+                     "delay_h": None if funded_at is None else round((funded_at - first_bid).total_seconds() / 3600, 2)})
+    share = lambda xs, f: round(sum(1 for x in xs if f(x)) / len(xs), 4) if xs else None  # noqa: E731
+    by_rule = {}
+    for r in sorted({x["rule"] for x in rows}):
+        mine = [x for x in rows if x["rule"] == r]
+        by_rule[r] = {"asks": len(mine), "held_at_all": share(mine, lambda x: x["held_at_all"]),
+                      "held_to_window_end": share(mine, lambda x: x["held_to_end"]),
+                      "answered": sum(1 for x in mine if x["answered"]),
+                      "mean_expected_answer": round(sum(x["outcome"] for x in mine) / len(mine), 4)}
+    vehicle = [x for x in rows if x["rule"] == "vehicle"]
+    answerable = [x for x in rows if x["rule"] in ("confirm", "same")]
+    answered = [x for x in rows if x["answered"]]
+    days = max(1e-9, (end - start).total_seconds() / 86400)
+    lost = [x for x in answered if x["held_to_end"]]
+    out = {
+        "asks": len(rows), "by_rule": by_rule,
+        "answered_per_day": round(len(answered) / days, 3),
+        "answered_per_day_under_4b": round((len(answered) - len(lost)) / days, 3),
+        "answered_loss_share": share(answered, lambda x: x["held_to_end"]),
+        "graded_basis_share": share(rows, lambda x: x["first_basis"].endswith("graded") and "ungraded" not in x["first_basis"]),
+    }
+    out["checks"] = {
+        "vehicle_held_to_window_end_at_least_70pct": (share(vehicle, lambda x: x["held_to_end"]) or 0) >= GATE_VEHICLE_HELD_MIN
+        if vehicle else False,
+        "confirm_and_same_held_at_most_10pct": (share(answerable, lambda x: x["held_at_all"]) or 0) <= GATE_ANSWERABLE_HELD_MAX
+        if answerable else False,
+        "answered_per_day_falls_at_most_10pct": (out["answered_loss_share"] or 0) <= GATE_ANSWERED_LOSS_MAX,
+    }
+    return out
+
+
+def _camera_fixture() -> int:
+    """Deterministic: 30 days of asks with the live answer pattern (vehicles mostly "don't know",
+    confirm/same nearly always answered). Checks the replay's mechanics, not the live verdict."""
+    fams = parse_families({"version": 1, "families": {ASK_FAMILY: {"tier": 2, "deferrable_window_s": 86400, "lanes": []}}})
+    t0 = datetime(2026, 10, 1, 7, tzinfo=timezone.utc)
+    asks = []
+    for d in range(60):
+        for j, rule in enumerate(("confirm", "confirm", "same", "vehicle")):
+            at = t0 + timedelta(days=d, minutes=10 * j)
+            vehicle = rule == "vehicle"
+            answered = not vehicle or d % 8 == 0
+            asks.append({"ask_id": f"{rule}{d}-{j}", "rule": rule, "created_at": at, "expires_at": at + timedelta(days=7),
+                         "status": "answered" if answered else "dismissed",
+                         "answered_at": at + timedelta(hours=4), "answer_detail": None if answered else {"dont_know": True},
+                         # Vehicles are seen most (the backwards value); people less.
+                         "sightings": 40 + d % 7 if vehicle else 3 + (d + j) % 9})
+    start = t0 + timedelta(days=30)
+    r = camera_asks_gate(fams, asks, start=start, end=t0 + timedelta(days=60))
+    br = r["by_rule"]
+    checks = {
+        "family_ranks_graded": (r["graded_basis_share"] or 0) == 1.0,
+        "vehicle_expected_answer_is_low": br["vehicle"]["mean_expected_answer"] < 0.3,
+        "confirm_expected_answer_is_high": br["confirm"]["mean_expected_answer"] > 0.9,
+        "vehicles_held_more_than_confirms": (br["vehicle"]["held_at_all"] or 0) > (br["confirm"]["held_at_all"] or 0),
+    }
+    print(json.dumps({"lane": "camera_asks_fixture", **r, "fixture_checks": checks}, indent=2, default=str))
+    return 0 if all(checks.values()) else 1
+
+
+def _camera_live(days: int, out_json: Optional[str]) -> int:
+    import _body_economy_data as data_mod
+
+    from orion.grammar.camera_ask_acts import ORION_MADE_CAMERA_ASK_SQL, ask_rule
+
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=days)
+    hs = start - SOURCE_HISTORY - timedelta(days=1)
+    rows = data_mod.run_query(f"""select coalesce(json_agg(r order by r.created_at), '[]'::json) from (
+        select a.ask_id, a.source_kind, a.evidence_refs, a.status, a.answer_detail, a.created_at, a.expires_at,
+               a.answered_at, (select i.kind from vision_individual i
+                                where i.individual_id = split_part(a.source_ref, '|', 1)) as individual_kind,
+               (select count(*) from vision_individual_sighting v where v.individual_id = split_part(a.source_ref, '|', 1)
+                  and v.started_at <= a.created_at and not v.stationary) as sightings
+          from orion_ask a
+         where {ORION_MADE_CAMERA_ASK_SQL} and a.created_at >= '{hs.strftime("%Y-%m-%dT%H:%M:%SZ")}') r;""")
+    asks = [{**r, "created_at": _ts(r["created_at"]), "expires_at": _ts(r.get("expires_at")),
+             "answered_at": _ts(r.get("answered_at")),
+             "rule": ask_rule(r["source_kind"], r.get("evidence_refs"), r.get("individual_kind"))} for r in rows]
+    families, _ = load_families(ROOT / "config" / "physiology" / "families.yaml")
+    r = camera_asks_gate(families, asks, start=start, end=end)
+    out = {"lane": "camera_asks_live", "window_days": days, "as_of": end.isoformat(), **r}
+    text = json.dumps(out, indent=2, default=str)
+    if out_json:
+        Path(out_json).write_text(text)
+    print(text)
+    return 0 if all(r["checks"].values()) else 1
+
+
 # --- live lane -----------------------------------------------------------------------------------
 
 def _live(days: int, out_json: Optional[str]) -> int:
@@ -323,7 +508,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--live", action="store_true")
     ap.add_argument("--days", type=int, default=14)
     ap.add_argument("--out-json")
+    ap.add_argument("--camera-asks", action="store_true", help="the 4b gate for camera asks (patch 4a)")
     a = ap.parse_args(argv)
+    if a.camera_asks:
+        return _camera_live(a.days, a.out_json) if a.live else _camera_fixture()
     return _live(a.days, a.out_json) if a.live else _fixture()
 
 

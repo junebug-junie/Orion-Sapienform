@@ -155,6 +155,6 @@ docker logs orion-athena-hub 2>&1 | grep 'prime_block corr' | tail -3   # tendin
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3330
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

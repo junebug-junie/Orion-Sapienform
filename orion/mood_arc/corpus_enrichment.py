@@ -60,7 +60,8 @@ TimeSeries = list[tuple[datetime, dict[str, float]]]
 # bus_synaptic removed 2026-11 (PE suite rebuild step 5): node retired, so a
 # retrain must not forward-fill its last pre-retirement value into fresh rows.
 # v4 still names the channel; the scorer 0.0-fills it (known, documented).
-_PREDICTION_ERROR_DOMAINS = ("execution", "chat", "biometrics")
+# chat removed 2026-11-13 (step 6) for the same reason: node:substrate.chat retired.
+_PREDICTION_ERROR_DOMAINS = ("execution", "biometrics")
 
 # substrate_codebase_delta_log.domain -> the channel name we train on. Kept
 # distinct from the raw domain string so `git_delta`/`pr_lifecycle_delta`/

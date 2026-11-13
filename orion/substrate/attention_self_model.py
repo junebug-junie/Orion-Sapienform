@@ -130,11 +130,15 @@ DEFAULT_BROADCAST_STALE_THRESHOLD_SEC = 60.0
 # removed together; their node ids sit on
 # orion.substrate.prediction_error_freshness.RETIRED_PREDICTION_ERROR_NODE_IDS.
 #
+# **2026-11-13: `chat` retired** (retire step 6). Its successor,
+# node:prediction.chat_turn, is a scored forecast that is absent between chat
+# turns by design, so it is not averaged into this always-on confidence.
+#
 # This constant does NOT affect the pre-existing branch-gated
 # `confidence`/`confidence_basis` fields below, which keep their original
 # (unfiltered, all-domains) formula unchanged -- additive only. It DOES now
 # gate `predicted_shift` (2026-07-31), which was previously unfiltered.
-ACTIVE_INFERENCE_DOMAINS = frozenset({"execution", "biometrics", "chat"})
+ACTIVE_INFERENCE_DOMAINS = frozenset({"execution", "biometrics"})
 
 
 def _round_or_none(value: float | None, digits: int = 4) -> float | None:

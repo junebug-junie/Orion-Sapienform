@@ -91,7 +91,6 @@ def node_prediction_error_is_measurement(node_id: str) -> bool:
 _WORDS: dict[str, tuple[str, str]] = {
     "node:substrate.biometrics": ("how much my machines' load readings are moving", "share of a 0.30 swing"),
     "node:substrate.execution": ("surprise in how my task execution is going", "clipped z / 3"),
-    "node:substrate.chat": ("surprise in how conversation load and repair are moving", "clipped z / 3"),
     "node:substrate.codebase": ("how unusual the latest change to my own code was", "clipped z / 3"),
     "node:substrate.cabinet": ("my cabinet's warming alarm", "firings in the last hour"),
     "node:substrate.strain": ("news that I am under strain (heat or a GPU backlog)", "news events in the last hour"),
@@ -99,6 +98,8 @@ _WORDS: dict[str, tuple[str, str]] = {
                              "surprise z-score / 3, last 30 min"),
     "node:prediction.body": ("how much my cabinet's temperature is surprising my own forecast",
                              "surprise z-score / 3, last 30 min"),
+    "node:prediction.chat_turn": ("how much my recent chat turns surprised my own bets about them",
+                                  "surprise z-score / 3, last 30 min"),
 }
 
 _STATE_WORDS = {

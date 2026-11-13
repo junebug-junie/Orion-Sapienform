@@ -137,10 +137,6 @@ CIRCULAR_PAIRS: dict[tuple[str, str], str] = {
         "execution's surprise is computed from the same harness runs whose reply was repaired "
         "(orion/substrate/execution_loop/grammar_extract.py compute_pressure_hints: step and reasoning load)"
     ),
-    ("node:substrate.chat", "response_repair"): (
-        "chat's surprise includes repair_pressure_level, which also forces the reply judge and the "
-        "repair overlay (orion/harness/finalize.py sensitive_turn_reason)"
-    ),
 }
 
 _OUTCOME_WORDS = {

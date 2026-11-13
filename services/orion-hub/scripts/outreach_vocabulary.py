@@ -79,8 +79,8 @@ The same compound requirement is applied a second time, at SCAN time, to
 every source -- including `ACTIVE_INFERENCE_DOMAINS` and node ids, which
 enter the registry unfiltered because they are small, explicitly-named sets
 rather than auto-generated ones. Concretely caught live while writing this
-patch: `ACTIVE_INFERENCE_DOMAINS` includes `"chat"`, `"route"`, and
-`"execution"` -- ordinary English words a plain outreach message uses
+patch: `ACTIVE_INFERENCE_DOMAINS` included `"chat"`, `"route"`, and
+`"execution"` (chat and route since retired) -- ordinary English words a plain outreach message uses
 constantly (`test_endogenous_outreach.py::
 test_successful_outreach_pushes_to_every_live_socket`'s own fixture text,
 "The execution node has been noisy all afternoon.", would otherwise have

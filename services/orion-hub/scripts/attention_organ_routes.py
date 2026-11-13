@@ -89,9 +89,9 @@ router = APIRouter(prefix="/api/attention-organ", tags=["attention-organ"])
 #
 # `bus_synaptic` and `route` REMOVED 2026-11 (PE suite rebuild step 5), same
 # reasoning as transport above: producers, nodes and readers retired together.
+# `chat` REMOVED 2026-11-13 (step 6); successor node:prediction.chat_turn.
 KNOWN_PREDICTION_ERROR_DOMAINS: tuple[str, ...] = (
     "biometrics",
-    "chat",
     "codebase",
     "execution",
 )

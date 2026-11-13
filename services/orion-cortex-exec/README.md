@@ -151,6 +151,10 @@ Exec sends requests to these channels and listens for replies on ephemeral `repl
 | **Recall** | `CHANNEL_RECALL_INTAKE` | `orion-exec:request:RecallService` | `recall.query.request` |
 | **Council** | `CHANNEL_COUNCIL_INTAKE` | `orion:agent-council:intake` | `council.request` |
 
+### LLM hop message shape
+
+`_build_hop_messages()` keeps the rendered verb task in the system message. When a verb has no user turn, Cortex Exec appends the service-authored user instruction `Carry out the task in the system message.` Existing user turns are left alone. A missing task and missing user turn fails locally. This is required by the shared Qwen3.5 fast/metacog worker's chat template: after the 2026-11-13 cutover, system-only `journal.compose`, `reverie_narrate`, and `visual_context_interpret` requests returned HTTP 500 (`No user query found in messages`) before inference. The outgoing `llm_request_message_shapes` log provides the role trace. Run `evals/smoke_system_only_metacog.py` under an operator lease to check the live worker without bypassing the GPU pool.
+
 ### Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 

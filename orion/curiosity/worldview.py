@@ -137,7 +137,7 @@ def _stamp_ms(value: Any) -> Optional[int]:
         return None
     try:
         return int(float(value))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):  # "inf" is a float, not an int
         pass
     try:
         parsed = datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
@@ -626,6 +626,10 @@ CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
 # same reason as LIVE_PRIORS_CYPHER: `written_at` is hand-written, sometimes ISO,
 # sometimes an int, and a Cypher ORDER BY over mixed types misorders or fails.
 CONCEPTS_SHOWN = 15
+# The last slots go to the newest concepts not already shown. Ranked by links
+# alone, the 9 concepts with 2+ links would hold their places forever and the
+# one-link concepts this read exists to rescue would never come back.
+CONCEPT_FRESH_SLOTS = 5
 CONCEPT_NOTE_CHARS = 200
 CONCEPTS_READ_LIMIT = 2000
 
@@ -642,22 +646,33 @@ CONCEPTS_CYPHER = (
 
 
 def build_concepts(
-    rows: Sequence[dict[str, Any]], *, limit: int = CONCEPTS_SHOWN
+    rows: Sequence[dict[str, Any]],
+    *,
+    limit: int = CONCEPTS_SHOWN,
+    fresh_slots: int = CONCEPT_FRESH_SLOTS,
 ) -> list[ConceptRecord]:
     """Group the per-(concept, outcome) rows into concepts, rank, and cap.
 
-    Order: most links first, then newest, then concept_id so a tie is stable.
+    Order: the first `limit - fresh_slots` by most links, then newest, then
+    concept_id so a tie is stable. The last `fresh_slots` are the newest of the
+    rest, so a new, barely-linked concept still gets seen and reused.
     A concept with no `concept_id` is dropped: the prompt asks Orion to MATCH on
     that id, and there is nothing to match. Two nodes sharing one id (a fork)
     show once, as the copy with the most links.
     """
     by_id: dict[str, ConceptRecord] = {}
+    # Rows repeat for one node when its run has several TurnOutcomes; a FORK is
+    # the same id with a different (run_id, name, note), i.e. a second node.
+    shapes: dict[str, set] = {}
     for row in rows:
         concept_id = str(row.get("concept_id") or "").strip()
         if not concept_id:
             continue
         own = _stamp_ms(row.get("concept_written_at"))
         newest = own if own is not None else _stamp_ms(row.get("concept_run_written_at"))
+        shapes.setdefault(concept_id, set()).add(
+            (str(row.get("run_id") or ""), str(row.get("name") or ""), str(row.get("note") or ""))
+        )
         record = ConceptRecord(
             concept_id=concept_id,
             name=str(row.get("name") or "").strip() or concept_id,
@@ -677,11 +692,27 @@ def build_concepts(
             default=None,
         )
         by_id[concept_id] = replace(best, newest_ms=newest_ms)
+    forks = {cid: len(v) for cid, v in shapes.items() if len(v) > 1}
+    for concept_id, copies in sorted(forks.items()):
+        logger.warning(
+            "curiosity_worldview_duplicate_concept concept_id=%s copies=%s -- one "
+            "concept is stored as several nodes; a MATCH on its id binds all of "
+            "them. Shown once. Needs a manual repair; Hub never writes this graph",
+            concept_id,
+            copies,
+        )
+    limit = max(0, limit)
+    by_links = max(0, limit - max(0, fresh_slots))
     ranked = sorted(
         by_id.values(),
         key=lambda c: (-c.degree, -(c.newest_ms or 0), c.concept_id),
     )
-    return ranked[: max(0, limit)]
+    head = ranked[:by_links]
+    rest = sorted(
+        ranked[by_links:],
+        key=lambda c: (-(c.newest_ms or 0), -c.degree, c.concept_id),
+    )
+    return head + rest[: limit - len(head)]
 
 # THE LAST FEW RUNS, SO ORION CAN SEE THE THREAD IT IS ON.
 #
@@ -1294,8 +1325,11 @@ def read_snapshot(
     expected_nats_for: Optional[Callable[[Prior], float]] = None,
     coverage_slots: int = 0,
     strained: Optional[dict] = None,
+    read_concepts: bool = True,
 ) -> WorldviewSnapshot:
     """One read of everything the next prompt needs. Never raises.
+
+    `read_concepts=False` skips the concept list (callers that never render it).
 
     `priors_cypher` selects WHICH live priors are offered -- the default is
     every live prior; the self-inquiry line passes its own
@@ -1313,11 +1347,17 @@ def read_snapshot(
         prior_rows = reader.query(priors_cypher)
         count_rows = reader.query(counts_cypher)
         concept_rows = reader.query(CONCEPT_COUNT_CYPHER)
-        concept_list_rows = reader.query(CONCEPTS_CYPHER)
+        concept_list_rows = reader.query(CONCEPTS_CYPHER) if read_concepts else []
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
         recent_rows = reader.query(RECENT_RUNS_CYPHER)
     except WorldviewUnavailable as exc:
         return WorldviewSnapshot(unavailable_reason=str(exc)[:200])
+    if len(concept_list_rows) >= CONCEPTS_READ_LIMIT:
+        logger.warning(
+            "curiosity_worldview_concepts_truncated limit=%s -- concept rows past "
+            "the limit are never ranked, so some concepts can never be shown",
+            CONCEPTS_READ_LIMIT,
+        )
     if len(prior_rows) >= LIVE_PRIORS_LIMIT:
         logger.warning(
             "curiosity_worldview_priors_truncated limit=%s -- the live pool has "
@@ -1387,7 +1427,7 @@ def read_snapshot(
         live_total=live_total,
         closed_total=closed_total,
         concept_total=_as_int((concept_rows[0] if concept_rows else {}).get("n"), 0),
-        concepts=build_concepts(concept_list_rows),
+        concepts=build_concepts(concept_list_rows) if read_concepts else [],
         prior_rows=tuple(prior_rows),
         strain_notes=strained or {},
     )

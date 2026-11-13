@@ -154,6 +154,8 @@ def test_fetch_curiosity_context_uses_non_self_priors_cypher(monkeypatch) -> Non
         _cfg(curiosity_enabled=True, curiosity_graph_host="127.0.0.1", curiosity_graph_port=6380)
     )
     assert captured.get("priors_cypher") == LIVE_NON_SELF_PRIORS_CYPHER
+    # The situation never renders the concept list, so it must not pay for the read.
+    assert captured.get("read_concepts") is False
     assert captured.get("priors_cypher") != LIVE_PRIORS_CYPHER
 
 

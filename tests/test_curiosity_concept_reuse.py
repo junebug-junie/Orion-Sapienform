@@ -15,6 +15,7 @@ from orion.curiosity.study_material import assemble_study_material
 from orion.curiosity.worldview import (
     CONCEPT_COUNT_CYPHER,
     CONCEPTS_CYPHER,
+    CONCEPT_FRESH_SLOTS,
     CONCEPTS_SHOWN,
     ConceptRecord,
     WorldviewReader,
@@ -71,8 +72,11 @@ def test_concepts_cypher_reads_only_and_counts_degree_before_the_outcome_join():
     # No server-side ORDER BY over hand-written timestamps (mixed ISO/int).
     assert "ORDER BY" not in q
     assert "LIMIT" in q
-    for col in ("concept_id", "name", "note", "concept_degree", "concept_run_written_at"):
-        assert f"AS {col}" in q or f", {col}," in q or q.endswith(col)
+    returned = q.split("RETURN", 1)[1]
+    for col in ("c.concept_id AS concept_id", "c.name AS name", "c.note AS note",
+                "c.written_at AS concept_written_at", ", concept_degree,",
+                "t.written_at AS concept_run_written_at"):
+        assert col in returned
 
 
 def test_read_snapshot_reads_concepts_through_the_same_reader():
@@ -135,6 +139,40 @@ def test_cap():
     assert out[0].concept_id == "c39"
 
 
+def test_a_fresh_one_link_concept_is_shown_even_when_many_are_better_linked():
+    # Ranked by links alone, the well-linked set would hold every slot forever.
+    rows = [_row(f"old{i:02d}", deg=3, own=1000 + i) for i in range(20)]
+    rows.append(_row("fresh", deg=1, own=10_000))
+    out = [c.concept_id for c in build_concepts(rows)]
+    assert len(out) == CONCEPTS_SHOWN
+    assert "fresh" in out
+    assert out[: CONCEPTS_SHOWN - CONCEPT_FRESH_SLOTS] == [
+        f"old{i:02d}" for i in range(19, 19 - (CONCEPTS_SHOWN - CONCEPT_FRESH_SLOTS), -1)
+    ]
+    assert out[CONCEPTS_SHOWN - CONCEPT_FRESH_SLOTS] == "fresh"
+
+
+def test_fewer_concepts_than_the_cap_are_all_shown():
+    rows = [_row(f"c{i}", deg=0) for i in range(4)]
+    assert len(build_concepts(rows)) == 4
+
+
+def test_a_hand_written_infinite_timestamp_does_not_crash_the_read():
+    [c] = build_concepts([_row("c", own="inf", run_at="1e400")])
+    assert c.newest_ms is None
+    reader = _Reader({CONCEPTS_CYPHER: [_row("c", own="inf")]})
+    view = read_snapshot(reader, sample=8, stale_after=3)
+    assert not view.is_unavailable
+    assert [x.concept_id for x in view.concepts] == ["c"]
+
+
+def test_read_concepts_false_skips_the_query():
+    reader = _Reader({CONCEPTS_CYPHER: [_row("c")]})
+    view = read_snapshot(reader, sample=8, stale_after=3, read_concepts=False)
+    assert CONCEPTS_CYPHER not in reader.queries
+    assert view.concepts == []
+
+
 def test_degree_as_string_still_reads_as_a_number():
     # FalkorDB with decode_responses=True can hand numbers back as strings.
     [c] = build_concepts([_row("c", deg="3")])
@@ -154,7 +192,7 @@ def test_prompt_shows_concepts_with_full_ids_and_clipped_notes():
         ],
     )
     text = _prompt(view)
-    assert "CONCEPTS YOU HAVE ALREADY COINED -- 35 in your graph, the 2 most linked shown" in text
+    assert "CONCEPTS YOU HAVE ALREADY COINED -- 35 in your graph, 2 shown" in text
     assert "concept_id: concept:served-brain-drift" in text
     assert "concept_id: frame-inside-frame-20261105" in text
     assert "[2 links] served-brain drift" in text
@@ -172,10 +210,18 @@ def test_concepts_appear_after_priors_and_before_the_write_instructions():
 def test_write_instruction_reuses_before_it_creates():
     text = _prompt(WorldviewSnapshot(concepts=[ConceptRecord("c-1", "one")], concept_total=1))
     assert "CREATE (:Concept" not in text
-    match = text.index('MATCH (c:Concept {concept_id: "<an id from your concept list>"})')
+    match = text.index(
+        'MATCH (c:Concept {concept_id: "<an id from your concept list>"}) RETURN c.name, c.note'
+    )
     merge = text.index('MERGE (c:Concept {concept_id: "<something unique>"})')
     assert match < merge
     assert "MERGE (f)-[e:ABOUT]->(c)" in text
+    assert "MERGE (p)-[e:ABOUT]->(c)" in text
+    # The id-rules paragraph must not read as "concept ids never go in a MATCH".
+    assert "it DOES go in a MATCH" in text
+    assert "`crystallization_id:` under a concept" not in text
+    # A MERGE that bound an existing concept is not a failed write.
+    assert "Do not coin a new id to make the count move" in text
     # The "connect it in the same breath" rule is kept.
     assert "THEN CONNECT IT, in the same breath" in text
 
@@ -188,7 +234,7 @@ def test_empty_graph_says_no_concepts_yet():
 
 def test_concepts_that_exist_but_cannot_be_read_are_not_called_none():
     text = _prompt(WorldviewSnapshot(concept_total=3, concepts=[]))
-    assert "YOUR GRAPH HOLDS 3 CONCEPTS THAT COULD NOT BE READ BACK" in text
+    assert "YOUR GRAPH HOLDS 3 CONCEPTS THAT COULD NOT BE READ BACK by id" in text
     assert "YOU HAVE NOT COINED A CONCEPT YET" not in text
 
 
@@ -208,3 +254,16 @@ def test_no_graph_configured_says_nothing_about_concepts():
     text = build_kickoff_prompt(material, graph_enabled=False, run_id=RUN_ID)
     assert "COINED A CONCEPT" not in text
     assert "CONCEPTS YOU HAVE ALREADY COINED" not in text
+    assert "YOUR OWN CONCEPTS COULD NOT BE READ" not in text
+
+
+def test_read_only_prompt_lists_concepts_without_asking_for_writes():
+    material = assemble_study_material(
+        now=datetime(2026, 11, 13, tzinfo=timezone.utc),
+        approved_counts=[], approved_rows=[],
+        relation_counts=[], relation_rows=[], relation_resolvable=0,
+    )
+    view = WorldviewSnapshot(concept_total=1, concepts=[ConceptRecord("c-1", "one")])
+    text = build_kickoff_prompt(material, view=view, run_id="")
+    assert "concept_id: c-1" in text
+    assert "reuse its concept_id" not in text

@@ -1,6 +1,6 @@
 """Structured output on Strata lanes, done in the gateway so a bad answer is repaired or explained.
 
-Why (2026-11-13, issue #3289): Strata 0.2.7 has no constrained decoding. Its capabilities say
+Why (2026-11-13; supersedes the finalize judge-only retry #3292, ticket #3289): Strata 0.2.7 has no constrained decoding. Its capabilities say
 ``"structured_output": {"method": "prompt_and_validate"}``: ``response_format`` only appends a
 "return one JSON object" directive to the system message, then runs a strict ``json.loads`` on the
 finished answer (``/opt/strata/terminal/serve/structured.py`` ``prepare_format`` /
@@ -23,10 +23,12 @@ So the gateway takes over the same two steps, keeping the text:
 1. ``take_over``: drop ``response_format`` and append Strata's own directive, word for word.
 2. ``check``: Strata's own extraction and strict parse (duplicate keys and NaN refused); a reply that
    did not finish (``finish_reason != "stop"``) is incomplete, as Strata says.
-3. ``_python_literal_text``: only when the strict error is the single-quote one, a reply that parses
-   as a Python literal dict with string keys is converted exactly (``ast.literal_eval`` evaluates
-   literals only). Adjacent strings and repeated keys are refused: Python would join or drop them.
-   No other guessing.
+3. ``_python_literal_text``: only when the strict error is the single-quote signature ("Expecting
+   property name enclosed in double quotes"), a reply that parses as a Python literal dict with string
+   keys is converted. That signature also covers a trailing comma, a tuple, a comment, a ``1_000``:
+   their meaning is the same in both. Anything whose meaning could differ is refused: adjacent
+   strings, escapes Python decodes differently, prefixed or triple-quoted strings, repeated keys.
+   ``ast.literal_eval`` evaluates literals only.
 4. One corrective retry (``corrective_messages``): the model sees its own reply and the parser's error.
 5. Still bad: the same 502 message shape callers already handle, and the raw text in the log.
 """
@@ -37,6 +39,7 @@ import ast
 import io
 import json
 import math
+import re
 import tokenize
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -75,8 +78,11 @@ def take_over(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], bool]:
     schema = _schema_of(rf)
     if schema is None:
         return payload, False
+    try:
+        text = directive(schema)
+    except ValueError:  # a schema json.dumps refuses (NaN): Strata answers that with its own 400
+        return payload, False
     messages = [dict(m) for m in payload.get("messages") or []]
-    text = directive(schema)
     if messages and messages[0].get("role") == "system":
         content = messages[0].get("content") or ""
         if isinstance(content, list):
@@ -153,10 +159,10 @@ def _python_literal_text(text: str) -> Optional[str]:
     if end == -1:
         return None
     source = candidate[:end + 1]
-    # Python accepts two things JSON does not, and both would silently change the meaning:
-    # adjacent strings join ("x" "b" -> "xb", which is exactly the bare-quote failure), and a
-    # repeated key keeps only its last value. Refuse both.
-    if _has_adjacent_strings(source) or _has_duplicate_keys(source):
+    # Python accepts things JSON does not that would silently change the meaning: adjacent strings
+    # join, escapes such as \a or \x41 decode differently, a repeated key keeps only its last value.
+    # All refused. Same-meaning extras (a trailing comma, a tuple, a comment) pass.
+    if _unsafe_strings(source) or _has_duplicate_keys(source):
         return None
     try:
         value = ast.literal_eval(source)
@@ -179,14 +185,32 @@ def _python_literal_text(text: str) -> Optional[str]:
     return json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
 
-def _has_adjacent_strings(source: str) -> bool:
+# Escapes Python and JSON read the same way. Any other backslash (\a, \x41, \0, \N{...}, \/, a line
+# continuation) means something else to Python, so a string holding one is never repaired.
+_SAME_ESCAPES = re.compile(r"""\\(?:[\\'"ntrbf]|u[0-9a-fA-F]{4})""")
+
+
+def _unsafe_strings(source: str) -> bool:
+    """True when Python could read a string differently from JSON: adjacent strings (joined: "x" "b"
+    -> "xb", the bare-quote failure turned into the wrong text), a prefixed (r/b/f/u) or triple-quoted
+    string, or an escape outside ``_SAME_ESCAPES``."""
     try:
         tokens = [t for t in tokenize.generate_tokens(io.StringIO(source).readline)
                   if t.type not in (tokenize.NL, tokenize.NEWLINE, tokenize.COMMENT, tokenize.INDENT,
                                     tokenize.DEDENT, tokenize.ENDMARKER)]
     except (tokenize.TokenError, SyntaxError, IndentationError):
         return True  # cannot tell: no repair
-    return any(a.type == tokenize.STRING and b.type == tokenize.STRING for a, b in zip(tokens, tokens[1:]))
+    if any(a.type == tokenize.STRING and b.type == tokenize.STRING for a, b in zip(tokens, tokens[1:])):
+        return True
+    for tok in tokens:
+        if tok.type != tokenize.STRING:
+            continue
+        text = tok.string
+        if text[0] not in ("'", '"') or text[:3] in ("'''", '"""'):
+            return True
+        if "\\" in _SAME_ESCAPES.sub("", text[1:-1]):
+            return True
+    return False
 
 
 def _has_duplicate_keys(source: str) -> bool:
@@ -229,7 +253,7 @@ def check(text: Any, finish_reason: Any) -> Verdict:
     try:
         value = _strict(extracted)
         if not isinstance(value, dict):
-            return Verdict(None, "model output failed the JSON Schema at /: not an object")
+            return Verdict(None, "model output failed the JSON Schema at /: the answer is not a JSON object")
         return Verdict(json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")), None)
     except (ValueError, TypeError) as exc:
         error = f"model did not return valid JSON: {exc}"

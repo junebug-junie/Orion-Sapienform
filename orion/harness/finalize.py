@@ -752,7 +752,6 @@ async def run_finalize_reflection(
     situation_notes: str | None = None,
     pending_offers: list[str] | None = None,
     open_promises: list[OpenPromiseRefV1] | None = None,
-    deadline_monotonic: float | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
     if substrate_appraisal is None:
         raise ValueError("substrate_appraisal is required for harness finalize reflection")
@@ -1066,7 +1065,6 @@ async def maybe_run_finalize_tool_retry(
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
             situation_notes=situation_notes,
-            deadline_monotonic=deadline_monotonic,
         )
     except Exception as exc:
         logger.warning(
@@ -1587,7 +1585,6 @@ async def _recheck_and_maybe_repair(
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
         situation_notes=situation_notes,
-        deadline_monotonic=deadline_monotonic,
     )
     if recheck.reflection_source == "degraded_llm_failure_fallback":
         # run_finalize_reflection degrades instead of raising; that is not a pass.
@@ -1891,7 +1888,6 @@ async def run_harness_finalize_chain(
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
         situation_notes=situation_notes,
-        deadline_monotonic=deadline_monotonic,
     )
 
     # Loop-back tool-recall retry (5b-prime). MAX_FINALIZE_LOOP_RETRIES bounds

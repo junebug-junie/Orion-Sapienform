@@ -1,4 +1,4 @@
-"""Strata structured output, done in the gateway (app/strata_structured.py, issue #3289).
+"""Strata structured output, done in the gateway (app/strata_structured.py; supersedes the judge-only retry #3292).
 
 Strata only prompts and validates; its 502 throws the text away. These tests pin: Strata's own
 directive and strict parse are reproduced, the one exact repair (Python-literal dicts), one
@@ -177,3 +177,89 @@ def test_other_backends_keep_response_format_and_one_call(monkeypatch) -> None:
     result = _run(backend="llamacpp")
     assert len(seen) == 1 and seen[0]["response_format"] == {"type": "json_object"}
     assert result["text"] == "{'not': 'checked here'}"
+
+
+# ── review findings (2026-11-13) ────────────────────────────────────────────────────────────
+
+# Strata 0.2.7's own words, copied from /opt/strata/terminal/serve/structured.py prepare_format. A
+# change to the gateway's copy that Strata did not make must fail here, not pass silently.
+STRATA_DIRECTIVE_HEAD = (
+    "OUTPUT FORMAT REQUIREMENT: Return exactly one JSON object matching the JSON Schema below. "
+    "No Markdown, headings, code fences, commentary, or text outside the JSON. "
+    "Use every required field, correct types, and only allowed fields. "
+    "Put all requested writing inside the appropriate JSON string fields.\nJSON Schema:\n"
+)
+
+
+def test_directive_is_strata_s_literal_text() -> None:
+    assert ss.directive({"type": "object"}) == STRATA_DIRECTIVE_HEAD + '{"type":"object"}'
+
+
+@pytest.mark.parametrize("text", [
+    r"{'formula': '\alpha + \beta'}",   # Python: \a is BEL; JSON: invalid
+    r"{'a': '\x41'}",                   # Python: "A"
+    r"{'a': '\101'}",                   # octal
+    r"{'a': 'x\/y'}",                   # JSON reads /, Python keeps the backslash
+    "{'a': r'raw'}",                    # prefixed string
+    "{'a': '''triple'''}",
+])
+def test_a_repair_never_changes_what_a_string_says(text) -> None:
+    assert not ss.check(text, "stop").ok
+
+
+def test_same_meaning_escapes_are_still_repaired() -> None:
+    v = ss.check(r"{'a': 'line\nnext \"q\" é tab\t it\'s'}", "stop")
+    assert v.ok and json.loads(v.text) == {"a": 'line\nnext "q" é tab\t it\'s'}
+
+
+def test_take_over_appends_to_list_system_content() -> None:
+    sent, taken = ss.take_over({"messages": [{"role": "system", "content": [{"type": "text", "text": "be"}]}],
+                                "response_format": {"type": "json_object"}})
+    assert taken and sent["messages"][0]["content"][-1] == {"type": "text", "text": ss.directive({"type": "object"})}
+
+
+def test_a_schema_json_cannot_hold_is_left_to_strata() -> None:
+    payload = {"messages": [], "response_format": {"type": "json_schema", "json_schema": {
+        "name": "N", "schema": {"type": "object", "properties": {"x": {"maximum": float("nan")}}}}}}
+    assert ss.take_over(payload) == (payload, False)
+
+
+def test_an_empty_reply_is_retried() -> None:
+    v = ss.check("", "stop")
+    assert not v.ok and v.retryable
+
+
+OVERFLOW_400 = {"error": {"message": "the request exceeds the available context size", "type": "invalid_request_error"}}
+
+
+def _strata_raw(monkeypatch, responses: List[httpx.Response]) -> List[dict]:
+    seen: List[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return responses[len(seen) - 1]
+
+    monkeypatch.setattr(upstream_cancel, "cancellable_transport", lambda: httpx.MockTransport(handler))
+    return seen
+
+
+@pytest.mark.parametrize("second", [
+    httpx.Response(400, json=OVERFLOW_400),
+    httpx.Response(503, json={"error": {"message": "engine starting"}}),
+])
+def test_a_failed_retry_hands_back_the_original_json_failure(monkeypatch, second) -> None:
+    seen = _strata_raw(monkeypatch, [httpx.Response(200, json=_reply('{"a": "x" "b"}')), second])
+    result = _run()
+    assert len(seen) == 2 and result["text"] == ""
+    details = result["raw"]["details"]
+    assert details["reason"] == "http_502" and details["message"].startswith("model did not return valid JSON")
+    assert result["raw"]["error"] == "upstream_http_5xx"  # never context_overflow: no re-lease of the whole call
+
+
+def test_no_retry_when_the_first_call_used_the_budget(monkeypatch) -> None:
+    from app import llm_backend
+
+    seen = _strata_raw(monkeypatch, [httpx.Response(200, json=_reply('{"a": "x" "b"}'))])
+    monkeypatch.setattr(llm_backend, "_resolve_http_read_timeout_sec", lambda body: 0.0)
+    result = _run()
+    assert len(seen) == 1 and result["raw"]["details"]["reason"] == "http_502"

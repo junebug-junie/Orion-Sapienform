@@ -272,7 +272,12 @@ families:
     # Each ask Orion made is a vision.ask act (services/orion-sql-writer/app/ask_acts.py) graded juniper_answered
     # by her answer (orion/grammar/camera_ask_acts.py: answered 1; dismissed, don't know or unanswered at expiry 0;
     # withdrawn not a grade), and the want carries the ask rule's answered share as outcome_value. Juniper's own
-    # walkway-story naming cards open no act and post no want. Still shadow: nothing obeys the decision (4b binds).
+    # walkway-story naming cards open no act and post no want.
+    # 2026-11-13, attention patch 4b: BINDS. Each camera ask bids before its card opens (producer
+    # orion-sql-writer.ask_events.binding, services/orion-sql-writer/app/ask_bind.py, flag ORION_PHYSIOLOGY_BID_CAMERA_ASKS):
+    # funded opens the card, held does not and re-bids later with a backoff (600 s doubling to 3 h). No deadline: a
+    # held ask waits until funded or its opener stops proposing it (issue #3285), so deferrable_window_s below does
+    # not end a hold. Rank stays the market's: family hunger x the rule's expected answer (issue #3286).
     # Hunger now counts from the family's last act close (any ask answered/expired), with tau from the close rhythm,
     # no longer from the want's own opened_at: intensity = max(hunger, salience) gains a hunger floor.
     # An ask is a card Juniper answers when she likes, not a message, so no fixed juniper_msgs cost

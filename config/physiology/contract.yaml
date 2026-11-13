@@ -54,6 +54,8 @@ protected_paths:
   - {glob: "services/orion-hub/scripts/outreach_bind.py", organ: "choice (Patch D bid site: Hub outreach binds)"}
   # 2026-11-11, attention patch 3d: dream compaction apply asks the market's consent gate here, listed below as bidder.
   - {glob: "services/orion-dream/app/compaction_consent.py", organ: "choice (consent gate bid site: dream compaction apply)"}
+  # 2026-11-13, attention patch 4b: every camera ask bids here before its card opens, listed below as bidder.
+  - {glob: "services/orion-sql-writer/app/ask_bind.py", organ: "choice (binding bid site: camera asks)"}
 
 readers:
   # --- spinal: hardware safety. The 34 C reflex and hardware-watch. ---
@@ -125,6 +127,10 @@ readers:
     role: bidder
     reason: Hub outreach's BINDING bid (Patch D) -- the background tick and the reading / office doors obey the market's decision (orion.physiology.binding) before composing; held at most to the end of Juniper's waking day (office visits 5 min).
     note: 2026-11-07, already the Patch D shape
+  - module: services/orion-sql-writer/app/ask_bind.py
+    role: bidder
+    reason: camera asks' BINDING bid (attention patch 4b) -- every camera opener obeys the market's decision (orion.physiology.binding) before a card opens; held re-bids with a backoff, no deadline (#3285). Reads no regulation or price state of its own.
+    note: 2026-11-13, already the Patch D shape
   - module: services/orion-dream/app/compaction_consent.py
     role: bidder
     reason: dream compaction apply's consent ask (attention patch 3d) -- one bid with a consent request per staged delta; approves only on the market's allow verdict (orion.physiology.binding never admits a consent deferral). Reads no regulation or price state of its own.

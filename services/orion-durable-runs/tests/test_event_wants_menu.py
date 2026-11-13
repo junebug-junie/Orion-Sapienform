@@ -101,6 +101,18 @@ def test_read_menu_labels_from_the_source_rows_and_drops_an_answered_ask():
                       "orion_ask:k1": "an open camera question to Juniper: Is this Jacob?"}
 
 
+def test_a_funded_ask_want_whose_card_never_opened_is_not_a_concern():
+    """Attention patch 4b: the ask bids before its card is inserted. A funded want naming a card that does not
+    exist (the insert lost to an open card for the same subject) is not shown to Prime."""
+    pool = _Pool({
+        LATEST_EVENT_DECISIONS_SQL: [_row("e", "orion_ask:k1", family="vision.ask", latest=NOW + timedelta(days=5)),
+                                     _row("g", "orion_ask:never", family="vision.ask", latest=NOW + timedelta(days=5))],
+        ASK_LABELS_SQL: [{"ask_id": "k1", "question": "Is this Jacob?", "status": "open"}],
+    })
+    menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=8))
+    assert [w.event_ref for w in menu.wants] == ["orion_ask:k1"]
+
+
 def test_a_cooling_act_want_is_labelled_from_its_own_reading_ref():
     ref = "cabinet_reading:athena:2026-11-05T18:00:00Z"
     pool = _Pool({LATEST_EVENT_DECISIONS_SQL: [_row("c", ref, family="self_regulate.shed",

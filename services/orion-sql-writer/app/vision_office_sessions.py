@@ -641,9 +641,9 @@ def open_office_ask(conn, row: dict, records: Sequence[Record], overlap: Mapping
     its own daily cap (``ask_daily_cap``), the shared cooldown and "no picture, no ask"."""
     from sqlalchemy import text
 
+    from app.ask_bind import open_camera_ask
     from app.vision_individuals import (
-        _NOT_ASKED_SQL, SOURCE_KIND_INDIVIDUAL, _images, _insert_ask, _sighting_rows, local_day_start,
-        remaining_ask_budget,
+        _NOT_ASKED_SQL, SOURCE_KIND_INDIVIDUAL, _images, _sighting_rows, local_day_start, remaining_ask_budget,
     )
     from orion.schemas.ask import OrionAskV1
 
@@ -681,10 +681,11 @@ def open_office_ask(conn, row: dict, records: Sequence[Record], overlap: Mapping
             expires_at=now + timedelta(days=icfg.ask_expiry_days),
             source_kind=SOURCE_KIND_INDIVIDUAL, source_ref=iid,
         )
-        if _insert_ask(conn, ask):
+        opened = open_camera_ask(conn, ask, now=now)   # bids first (attention patch 4b); held -> next candidate
+        if opened is not None:
             conn.execute(text(f"UPDATE {TABLE} SET ask_id = :a WHERE session_id = :s AND ask_id IS NULL"),
-                         {"a": ask.ask_id, "s": row["sid"]})
-            return ask.model_dump(mode="json")
+                         {"a": opened.ask_id, "s": row["sid"]})
+            return opened.model_dump(mode="json")
     return None
 
 

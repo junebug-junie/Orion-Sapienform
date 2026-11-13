@@ -2170,6 +2170,8 @@ _NOT_ASKED_SQL = (
 
 
 def _insert_ask(conn, ask) -> bool:
+    """The card's row. Camera openers never call this directly: they call ``app.ask_bind.open_camera_ask``,
+    which bids first (attention patch 4b); tests/test_ask_bind.py refuses any other caller."""
     from sqlalchemy import text
 
     inserted = conn.execute(text("""
@@ -2211,6 +2213,7 @@ def _open_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> Lis
 def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
     from sqlalchemy import text
 
+    from app.ask_bind import open_camera_ask
     from orion.schemas.ask import OrionAskV1
 
     if cfg.ask_face_min_faces <= 0:
@@ -2263,8 +2266,9 @@ def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -
             image_ref=faces[0], image_refs=faces, created_at=now, expires_at=expires,
             source_kind=SOURCE_KIND_SAME, source_ref=pair_ref(a, b),
         )
-        if _insert_ask(conn, ask):
-            out.append(ask.model_dump(mode="json"))
+        opened = open_camera_ask(conn, ask, now=now)   # bids first (attention patch 4b); held -> not opened
+        if opened is not None:
+            out.append(opened.model_dump(mode="json"))
 
     # 2. "Who is this?" for a face seen often enough, the same day. Not for
     # someone in an open "same person?" ask: the answer may make it one ask.
@@ -2308,8 +2312,9 @@ def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -
             image_ref=images[0], image_refs=images, created_at=now, expires_at=expires,
             source_kind=SOURCE_KIND_INDIVIDUAL, source_ref=iid,
         )
-        if _insert_ask(conn, ask):
-            out.append(ask.model_dump(mode="json"))
+        opened = open_camera_ask(conn, ask, now=now)
+        if opened is not None:
+            out.append(opened.model_dump(mode="json"))
             asked_groups.add(groups.get(iid, iid))
     return out
 
@@ -2317,6 +2322,7 @@ def _open_face_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -
 def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfig) -> List[dict]:
     from sqlalchemy import text
 
+    from app.ask_bind import in_backoff, open_camera_ask
     from orion.schemas.ask import OrionAskV1
 
     asked_today = conn.execute(text(ASKED_TODAY_SQL), {"d": local_day_start(now, tz),
@@ -2350,6 +2356,9 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
         if not should_ask(label=label, sighting_count=sc, distinct_days=dd,
                           min_sightings=cfg.ask_min_sightings, min_days=cfg.ask_min_days):
             continue
+        rule = "vehicle" if kind == "vehicle" else "sighting"     # camera_ask_acts.ask_rule for this opener
+        if in_backoff(rule, SOURCE_KIND_INDIVIDUAL, iid, now):
+            continue  # held by the market, next bid not due: skip the picture work (attention patch 4b)
         srows = _sighting_rows(conn, iid)
         minutes = [r[1].astimezone(tz).hour * 60 + r[1].astimezone(tz).minute for r in srows]
         mean, r = circular_mean_minute(minutes)
@@ -2364,8 +2373,9 @@ def _open_sighting_asks(conn, now: datetime, tz: ZoneInfo, cfg: IndividualsConfi
             expires_at=now + timedelta(days=cfg.ask_expiry_days),
             source_kind=SOURCE_KIND_INDIVIDUAL, source_ref=iid,
         )
-        if _insert_ask(conn, ask):
-            out.append(ask.model_dump(mode="json"))
+        opened = open_camera_ask(conn, ask, now=now, individual_kind=kind)
+        if opened is not None:
+            out.append(opened.model_dump(mode="json"))
     return out
 
 
@@ -2390,6 +2400,7 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
     picture, no ask; a skipped candidate never uses up a slot."""
     from sqlalchemy import text
 
+    from app.ask_bind import open_camera_ask
     from orion.schemas.ask import OrionAskV1
 
     if conn.execute(text("SELECT to_regclass('vision_person_attribution')")).scalar() is None:
@@ -2440,8 +2451,6 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
         images = _images(srows, now, cfg)
         if not images:
             continue  # no picture, no ask; it stays a candidate
-        if lane == "prior":
-            open_prior_names.add(str(person).casefold())
         refs = [f"sighting:{row[0]}" for row in srows[:5]]
         ask = OrionAskV1(
             ask_id=f"ask-{uuid.uuid4().hex}",
@@ -2451,9 +2460,13 @@ def _open_person_confirm_asks(conn, now: datetime, tz: ZoneInfo, cfg: Individual
             expires_at=now + timedelta(days=cfg.ask_expiry_days),
             source_kind=SOURCE_KIND_PERSON_CONFIRM, source_ref=f"{iid}{PAIR_SEP}{person}",
         )
-        if _insert_ask(conn, ask):
+        made = open_camera_ask(conn, ask, now=now)
+        if made is not None:
             opened[lane] += 1
-            out.append(ask.model_dump(mode="json"))
+            if lane == "prior":
+                # Only an OPENED card blocks this name's other prior guesses: a held one never showed.
+                open_prior_names.add(str(person).casefold())
+            out.append(made.model_dump(mode="json"))
     return out
 
 

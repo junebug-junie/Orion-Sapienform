@@ -8,7 +8,7 @@ Each verb YAML in ``orion/cognition/verbs/`` carries::
     physiology:
       tier: 2                      # 0 vital (never bids) | 1 critical upkeep | 2 discretionary
       family: thought.painting     # want family; matches the act-ledger actor where one exists
-      lanes: [diffusion, metacog]  # GPU pool roles/classes the verb's work lands on ([] = no GPU)
+      lanes: [diffusion, fast]     # GPU pool roles the verb's work lands on ([] = no GPU)
       deferrable_window_s: 5400    # how long it can wait and still be useful (0 = perishable)
 
 This module only parses and validates the block. Nothing acts on it yet: Patch C3 makes
@@ -18,10 +18,12 @@ runs only on Juniper's turn, or as autonomic plumbing, declares ``tier: 0`` with
 hatch for an Orion-chosen act (a tier-0 verb with any other family is rejected, and so is a
 ``turn``/``autonomic`` verb on tier 1 or 2). Tier 0 is never deferred, so its window is 0.
 
-Lanes: each name is a class in ``config/gpu_pool.yaml`` when one of that name exists (``fast`` the
-class spans every role that may serve fast work), otherwise a single role (``agent-gpu2``,
-``diffusion``). Class names come first because a verb reaches the pool through a route, and a
-route names a class.
+Lanes: each name is a ROLE (seat) in ``config/gpu_pool.yaml`` (``fast``, ``agent-gpu2``,
+``diffusion``). The body reads one ``lane:<role>`` constraint per role and Choice uses a dispatch
+bid's lanes in place of its family's, so a work-class-only name (``metacog``, ``memory_distill``)
+is never read and the bid is deferred ``no_acceptable_lane`` (2026-11-13: metacog stopped being a
+seat in c91a21fd8 and every dream.cycle bid stalled). Same set as families.yaml's gate
+(``orion.physiology.families.body_lanes``).
 
 Non-zero windows are authored priors (the act horizon where one exists, e.g. painting 5400 s),
 not measurements. C3 should calibrate them from the act ledger before pricing on them.
@@ -33,7 +35,6 @@ import re
 from pathlib import Path
 from typing import Any, Iterable, Literal, Optional
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
 
 #: Families that mean "never bids". Tier 0 must use one of these, and these only appear on tier 0.
@@ -78,7 +79,7 @@ class VerbPhysiologyV1(BaseModel):
     def _lanes_are_slugs(cls, value: list[str]) -> list[str]:
         for lane in value:
             if not isinstance(lane, str) or not _LANE_RE.match(lane):
-                raise ValueError(f"lane must be a GPU pool role or class name, got {lane!r}")
+                raise ValueError(f"lane must be a GPU pool role name, got {lane!r}")
         if len(set(value)) != len(value):
             raise ValueError(f"lanes must not repeat, got {value!r}")
         return value
@@ -115,18 +116,19 @@ def parse_verb_physiology(
         known = set(known_lanes)
         unknown = [lane for lane in block.lanes if lane not in known]
         if unknown:
-            raise ValueError(f"unknown lane(s) {unknown}: not a role or class in config/gpu_pool.yaml")
+            raise ValueError(f"unknown lane(s) {unknown}: not a role in config/gpu_pool.yaml (a work class is not a lane the body reads)")
     return block
 
 
 def load_pool_lanes(pool_path: Path) -> frozenset[str]:
-    """Every role and class name in ``config/gpu_pool.yaml``: the names a verb's lanes may use.
+    """Every role in ``config/gpu_pool.yaml``: the names a verb's lanes may use, because they are the
+    only lanes the body reads. A work class is not a lane. Same set as
+    ``orion.physiology.families.body_lanes`` (not imported: the body-economy contract gate treats any
+    orion.physiology import as a state reader; orion/physiology/tests/test_family_lanes.py pins them equal)."""
+    import yaml
 
-    One namespace on purpose: a name that is both a class and a role reads as the class (see the
-    module docstring)."""
     data = yaml.safe_load(pool_path.read_text(encoding="utf-8")) or {}
-    roles = data.get("roles") or {}
-    classes = data.get("classes") or {}
-    if not isinstance(roles, dict) or not isinstance(classes, dict) or not roles:
-        raise ValueError(f"{pool_path}: expected non-empty 'roles' and a 'classes' mapping")
-    return frozenset(str(name) for name in (*roles.keys(), *classes.keys()))
+    roles = data.get("roles") if isinstance(data, dict) else None
+    if not isinstance(roles, dict) or not roles:
+        raise ValueError(f"{pool_path}: expected a non-empty 'roles' mapping")
+    return frozenset(str(name) for name in roles)

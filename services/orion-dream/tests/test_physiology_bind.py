@@ -1,7 +1,7 @@
 """Body economy Patch D for the dream cycle: the sleep OBEYS its bid (app/physiology_bind.py).
 
 The contract: a sleep that clears every gate of the dream's own asks the market just before its act opens.
-Funded, or a full metacog lane worth its price -> it sleeps. Price (Prime's slow charge included), no hunger,
+Funded, or a full fast lane worth its price -> it sleeps. Price (Prime's slow charge included), no hunger,
 net <= 0 -> held, one want re-bid at later checks, never past the 6 h window or the overdue line; an overdue
 sleep never bids. No answer -> it sleeps as before. Forced runs and arousal holds never bid. Flag shadow -> the
 C3b shadow bid, exactly as before.
@@ -28,7 +28,7 @@ def _decision(want: WantV1, outcome: str, reason: str, *, net: float = 0.4, retr
     return WantDecisionV1(
         decision_id=f"{want.want_id}@{now.isoformat()}", want_id=want.want_id, family=want.family,
         producer=want.producer, verb=want.verb, tier=want.tier, decided_at=now, outcome=outcome, reason=reason,
-        lane="metacog", net=net, retry_after_sec=retry, binding_constraint="prime:slow" if reason == "price" else None,
+        lane="fast", net=net, retry_after_sec=retry, binding_constraint="prime:slow" if reason == "price" else None,
         why=why, want=want,
     )
 
@@ -290,11 +290,11 @@ def test_the_real_choice_holds_a_short_gap_sleep_under_primes_slow_charge_and_a_
     for i, g in enumerate([9, 14, 7, 20, 11, 6, 16, 8, 13, 10]):
         acts.append(ActRecord(act_id=f"d{i}", family=FAMILY, opened_at=t - timedelta(seconds=10), closed_at=t,
                               outcome_value=1.0, outcome_source="producer",
-                              cost={"seconds": 10.0, "gpu_slot_s_by_lane": {"metacog": 10.0}}))
+                              cost={"seconds": 10.0, "gpu_slot_s_by_lane": {"fast": 10.0}}))
         t -= timedelta(hours=g)
     price = {"value": 0.0, "ceiling": 1.0, "bind_state": "slack", "horizon_sec": 3600.0, "why": ""}
     state = PhysiologyStateV1(tick_id="p", generated_at=now, constraints=[
-        R(constraint="lane:metacog", unit="slot_s", level=0.0, budget=3600.0, budget_kind="capacity",
+        R(constraint="lane:fast", unit="slot_s", level=0.0, budget=3600.0, budget_kind="capacity",
           detail={"slots": 1, "window_sec": 3600.0}, price=price)])
     ctx = build_context(fams, acts, [], state, now, weights={})
     sig = pc.PrimeRegulationV1(signal_id="s", act_id="a", family=FAMILY, direction="slow", arm="treated",

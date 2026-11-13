@@ -31,5 +31,5 @@ steps:
 physiology:
   tier: 2
   family: thought.painting
-  lanes: [metacog]
+  lanes: [fast]
   deferrable_window_s: 5400

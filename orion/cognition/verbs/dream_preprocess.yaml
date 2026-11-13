@@ -57,5 +57,5 @@ safety_rules: []
 physiology:
   tier: 1
   family: dream.cycle
-  lanes: [metacog]
+  lanes: [fast]
   deferrable_window_s: 21600

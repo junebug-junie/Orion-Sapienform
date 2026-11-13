@@ -49,5 +49,5 @@ plan:
 physiology:
   tier: 2
   family: thought.painting
-  lanes: [diffusion, metacog]
+  lanes: [diffusion, fast]
   deferrable_window_s: 5400

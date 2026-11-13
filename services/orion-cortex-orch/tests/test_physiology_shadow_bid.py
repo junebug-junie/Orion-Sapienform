@@ -63,7 +63,7 @@ def test_want_carries_the_verbs_physiology_block_and_the_request_correlation():
     now = datetime(2026, 10, 27, 12, tzinfo=timezone.utc)
     w = pb.want_for_dispatch("dream_cycle", block, CORR, now)
     assert (w.family, w.tier, w.lanes, w.correlation_id, w.producer) == (
-        "dream.cycle", 1, ["metacog"], CORR, "orion-cortex-orch.dispatch")
+        "dream.cycle", 1, ["fast"], CORR, "orion-cortex-orch.dispatch")
     assert w.want_id == f"orch:{CORR}:dream_cycle" and w.opened_at == now
 
 
@@ -72,7 +72,7 @@ def _decision(want, outcome="funded"):
                           producer=want.producer, verb=want.verb, tier=want.tier,
                           decided_at=datetime.now(timezone.utc), outcome=outcome,
                           reason="net_positive" if outcome == "funded" else "price",
-                          reserved={"lane:metacog": 60.0} if outcome == "funded" else {}, want=want)
+                          reserved={"lane:fast": 60.0} if outcome == "funded" else {}, want=want)
 
 
 @pytest.fixture

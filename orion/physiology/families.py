@@ -120,4 +120,22 @@ def load_families(path: str | Path) -> tuple[Optional[FamiliesConfig], Optional[
         return None, f"malformed:{p.name}:{str(exc)[:160]}"
 
 
-__all__ = ["FamiliesConfig", "FamilyConfig", "RECEPTORS", "load_families", "parse_families"]
+def body_lanes(pool: Any) -> frozenset[str]:
+    """The lane names the body can read: every role in ``config/gpu_pool.yaml`` (a path or its parsed doc).
+
+    ``orion/physiology/body.py`` builds one ``lane:<role>`` constraint per pool role (leases and pool
+    state name roles, never work classes), and Choice prices a family's lane only through that
+    constraint. A lane that is not a role (e.g. the ``metacog`` work class, a seat until 2026-11-13)
+    is never read, so a want naming only such lanes is deferred ``no_acceptable_lane`` forever.
+    """
+    if isinstance(pool, (str, Path)):
+        import yaml
+
+        pool = yaml.safe_load(Path(pool).read_text(encoding="utf-8")) or {}
+    roles = pool.get("roles") if isinstance(pool, dict) else None
+    if not isinstance(roles, dict) or not roles:
+        raise ValueError("gpu pool config must have a non-empty 'roles' mapping")
+    return frozenset(str(r) for r in roles)
+
+
+__all__ = ["FamiliesConfig", "FamilyConfig", "RECEPTORS", "body_lanes", "load_families", "parse_families"]

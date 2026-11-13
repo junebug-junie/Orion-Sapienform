@@ -209,10 +209,14 @@ jobs:
       # Body economy "every verb declares its physiology" (Patch C2): every
       # orion/cognition/verbs/*.yaml carries a valid physiology block (tier, family, pool
       # lanes, deferrable window) so Patch C3's cortex-orch bid site has no untiered verb.
+      # test_family_lanes.py: every lane a family (config/physiology/families.yaml) or verb names is a
+      # config/gpu_pool.yaml ROLE, the only lanes the body reads. Here, not in the path-filtered
+      # body-economy job, because the 2026-11-13 break came from a gpu_pool.yaml-only change
+      # (c91a21fd8 retired the metacog seat; dream.cycle bids went no_acceptable_lane).
       - name: Body economy verb physiology (every verb declares tier/family/lanes)
         run: |
           python scripts/check_verb_physiology.py
-          python -m pytest tests/test_check_verb_physiology.py -q -p no:cacheprovider
+          python -m pytest tests/test_check_verb_physiology.py orion/physiology/tests/test_family_lanes.py -q -p no:cacheprovider
 
       # One owner per tuned env key, and no copy at all of a module-owned line (body economy
       # Patch B: the room's 32/30.5/34/33 C lines live only in orion/autonomy/thermal_gate.py).

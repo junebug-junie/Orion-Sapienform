@@ -45,7 +45,17 @@ The post-pull rebuild covers orion-hub.
 
 ## Review findings fixed
 
-See the review commit, if any.
+Review: no material findings. It confirmed:
+- the async set comprehension is valid, and errors become `unavailable`;
+- Prime converges, because `mark_told(missed_sent)` covers the day Hub dropped;
+- nothing downstream compares the brief's list with Prime's list.
+
+Nits fixed:
+- Finding: the test used the day before as the filled day, so a day-before-only filter would also have passed.
+  - Fix: the filled day is now 3 days back, and the test also asserts that the day before is still auto-named.
+- Finding: the test's import order. Fix: moved.
+
+Noted, not changed: Prime's own record keeps the filled day as `not_written`, and its status lines call it missed. Hub keeps that out of the letter; Prime's record is not corrected.
 
 ## Restart required
 

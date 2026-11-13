@@ -23,7 +23,7 @@ Expected outcome (attention patch 4a, docs/superpowers/specs/2026-11-12-attentio
 each ask is a ``vision.ask`` act graded by Juniper's answer (orion/grammar/camera_ask_acts.py), so the want
 carries ``outcome_value`` = the answered share of the same ask RULE (confirm, same, face, office, vehicle,
 sighting) over 30 days, shrunk toward the family's answered share ``m``: ``(answered + 2m) / (closed + 2)`` (issue #3350). Once the family has 30 graded closes the market ranks
-``salience x outcome``: a vehicle ask Juniper cannot answer (live: 5 of 45) ranks low however often it was seen.
+``salience x outcome``: a vehicle ask Juniper cannot answer (live 2026-11-13: 5 of 47) ranks low however often it was seen.
 Juniper's own walkway-story naming cards are not Orion's asks and are in neither the asks nor the history.
 
 SHADOW: nothing obeys the decision. Prime reads the funded ones as its concerns (orion-mind
@@ -79,11 +79,16 @@ SELECT a.ask_id, a.source_kind, a.status, a.created_at, a.expires_at, a.evidence
   FROM a ORDER BY a.created_at
 """
 
-# Juniper's grades of camera asks over the last 30 days (patch 4a): each closed vision.ask act's rule
-# (test_before camera_ask:<rule>) and outcome. Only resolver closes are grades (a withdrawn ask is not).
+# Juniper's grades of camera asks: each graded vision.ask act's rule (test_before camera_ask:<rule>) and outcome,
+# selected EXACTLY as the market selects the family's graded acts for its mean (orion/physiology/appetite.py
+# build_family_appetite: acts OPENED in the last 30 days, up to now, with a producer or resolver outcome). The rule's
+# expected answer shrinks toward that same family share (issue #3350), so the two must not drift: a rule with no
+# closes reads the family share and must tie the market's mean, not fall below it. A withdrawn ask (``expired``)
+# is not a grade.
 GRADES_SQL = (
-    "SELECT test_before, outcome_value FROM grammar_acts WHERE actor = :actor AND outcome_source = 'resolver' "
-    "AND closed_at >= :since AND outcome_value IS NOT NULL"
+    "SELECT test_before, outcome_value FROM grammar_acts WHERE actor = :actor "
+    "AND outcome_source IN ('producer', 'resolver') AND outcome_value IS NOT NULL "
+    "AND coalesce(opened_at, closed_at) >= :since AND coalesce(opened_at, closed_at) <= :now"
 )
 
 # Attention patch 4b: a card whose bid-at-open the market DID decide, though the client gave up (0.5 s) and opened it
@@ -142,7 +147,8 @@ def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], b
             rows = conn.execute(text(ASKS_SQL), {"since": ts - lookback - SOURCE_HISTORY, "until": ts}).mappings().all()
             outcomes = None
             if graded:
-                grades = conn.execute(text(GRADES_SQL), {"actor": ASK_ACTOR, "since": ts - OUTCOME_WINDOW}).fetchall()
+                grades = conn.execute(text(GRADES_SQL), {"actor": ASK_ACTOR, "since": ts - OUTCOME_WINDOW,
+                                                         "now": ts}).fetchall()
                 outcomes = rule_outcome_values((rule_from_test_before(g[0]) or "", float(g[1])) for g in grades)
             plan = plan_asks(rows, now=ts, lookback=lookback, outcomes=outcomes)
             ids = [event_want_id(SOURCE, p["ask_id"]) for p in plan]

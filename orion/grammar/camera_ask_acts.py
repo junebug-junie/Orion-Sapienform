@@ -37,6 +37,7 @@ eval share one copy.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -198,12 +199,20 @@ def rule_outcome_values(closes: Iterable[tuple[str, float]], *, k: float = PRIOR
     "don't know" below it. ``k`` = 2: the prior weighs as much as two of the rule's own closes, as Laplace did (two
     pseudo-closes), so a well-sampled rule barely moves. Live, 2026-11-13 (262 closes, m = 0.817): vehicle 5/47
     0.122 -> 0.135, confirm 147/152 0.961 -> 0.965, office 1/1 0.667 -> 0.878, face 5/5 0.857 -> 0.948, sighting
-    4/5 0.714 -> 0.805. In the live 30-day replay k = 1, 2, 4 and 8 open exactly the same asks (PR #3351 report).
-    ``closes``: (rule, outcome_value) of ``resolver`` closes; unknown rules are ignored. Every rule has a value."""
+    4/5 0.714 -> 0.805. In the live 30-day replay k = 1, 2, 4 and 8 open exactly the same asks
+    (docs/superpowers/pr-reports/2026-11-13-camera-ask-prior-family-share-pr.md).
+
+    ``m`` is the market's own family mean only if ``closes`` are the acts the market reads: services/orion-sql-writer
+    ``GRADES_SQL`` selects them the same way (opened in 30 days, producer or resolver outcome), tested against
+    ``build_family_appetite`` in tests/test_ask_bind_integration.py. A rule reading exactly ``m`` is rank-neutral: it
+    beats every past event whose hunger was below saturation and ties (strict-below: no credit) the saturated ones,
+    so it is funded unless EVERY past event was saturated (tests/test_camera_ask_acts.py pins both).
+    ``closes``: (rule, outcome_value) of graded closes; unknown rules and non-finite values are ignored (the market
+    skips them too). Every rule has a value."""
     answered = {r: 0 for r in RULES}
     closed = {r: 0 for r in RULES}
     for rule, value in closes:
-        if rule not in closed:
+        if rule not in closed or not math.isfinite(float(value)):
             continue
         closed[rule] += 1
         answered[rule] += 1 if float(value) >= 1.0 else 0

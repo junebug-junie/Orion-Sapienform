@@ -176,6 +176,39 @@ def test_a_rule_with_no_closes_reads_the_family_share_and_an_empty_family_reads_
     assert set(rule_outcome_values([]).values()) == {0.5}
 
 
+def test_a_rule_reading_the_family_share_is_rank_neutral_in_the_market():
+    """Review of #3350: a rule with no closes reads exactly the family share m. In the market's event rank (strict-
+    below, past events scaled by the family mean) it beats every past event below saturation and ties the saturated
+    ones: funded unless EVERY past event was saturated. Pinned so a change to either side shows here."""
+    import dataclasses
+    from datetime import timedelta as td
+
+    from orion.physiology.appetite import ActRecord, build_family_appetite, rank_value
+    from orion.physiology.families import parse_families
+
+    cfg = parse_families({"version": 1, "families": {"vision.ask": {"tier": 2, "deferrable_window_s": 86400,
+                                                                    "lanes": []}}}).get("vision.ask")
+    outs = [1.0] * 33 + [0.0] * 7
+    acts = [ActRecord(act_id=f"a{i}", family="vision.ask", opened_at=CREATED - td(days=5, hours=i),
+                      closed_at=CREATED - td(days=4, hours=i), outcome_value=v, outcome_source="resolver")
+            for i, v in enumerate(outs)]
+    app = build_family_appetite(cfg, acts, CREATED)
+    v = rule_outcome_values([("confirm", o) for o in outs])
+    assert app.graded and v["office"] == pytest.approx(app.mean_outcome)
+    saturated = dataclasses.replace(app, event_values=(1.0,) * 20)
+    assert rank_value(saturated, 1.0, v["office"], event=True)[0] == 0.0
+    mixed = dataclasses.replace(app, event_values=(1.0,) * 19 + (0.5,))
+    assert rank_value(mixed, 1.0, v["office"], event=True)[0] == pytest.approx(1 / 20)
+    # One answer lifts a rare rule above every saturated past event.
+    v1 = rule_outcome_values([("confirm", o) for o in outs] + [("office", 1.0)])
+    assert rank_value(saturated, 1.0, v1["office"], event=True)[0] == 1.0
+
+
+def test_a_non_finite_grade_counts_nowhere():
+    v = rule_outcome_values([("office", float("nan")), ("confirm", 1.0)])
+    assert v["office"] == pytest.approx(1.0) and v["confirm"] == pytest.approx(1.0)
+
+
 def test_the_act_and_its_open_event():
     act = ask_act("ask-1", rule="vehicle", created_at=CREATED, expires_at=EXPIRES)
     assert (act.actor, act.verb, act.expect.signal_id) == (ACTOR, "ask", SIGNAL)

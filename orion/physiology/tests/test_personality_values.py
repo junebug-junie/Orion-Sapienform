@@ -128,4 +128,3 @@ def test_object_text_is_collapsed_and_cut():
 def test_unit_rejects_degenerate_vectors():
     assert pv.unit([]) is None and pv.unit([0.0, 0.0]) is None and pv.unit([float("nan")]) is None
     assert pv.unit([3.0, 4.0]) == pytest.approx((0.6, 0.8))
-

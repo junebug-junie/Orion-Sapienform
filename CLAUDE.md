@@ -330,7 +330,7 @@ Divergent paths get a ticket, not a memory file. GitHub Issues on this repo is t
 - **Close with evidence.** PRs say `Fixes #N`. A `verify-live` issue closes only with the live proof in a comment (section 0A).
 - **PR reports list issues opened and closed** in the Risks section.
 - **Session start:** `scripts/hooks/session_start_open_tickets.py` prints the open count and every `needs-juniper` ticket. Raise those with Juniper; don't wait to be asked.
-- **Board:** planned GitHub Project "Orion" (columns Inbox, Next, Doing, Waiting on Juniper, Done), with new issues auto-added to Inbox for Juniper to sort. Not created yet: the gh token lacks the `project` scope (#3268). Until then, labels are the board: `gh issue list -l needs-juniper`.
+- **Board:** GitHub Project "Orion", https://github.com/users/junebug-junie/projects/1 (columns Inbox, Next, Doing, Waiting on Juniper, Done). After filing, add the issue: `gh project item-add 1 --owner junebug-junie --url <issue-url>` (safe to repeat). New items land in Inbox; Juniper sorts the Inbox.
 
 Branch type examples:
 

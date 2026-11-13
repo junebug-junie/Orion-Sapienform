@@ -1,7 +1,7 @@
 # Core memory pages and concept growth
 
 Date: 2026-11-13
-Status: DRAFT, proposal mode (touches memory and identity). No code in this PR.
+Status: APPROVED 2026-11-13 (Juniper). No code in this PR.
 Branch: `docs/memory-core-pages`
 
 ## Arsonist summary
@@ -402,11 +402,13 @@ Graphiti's defaults, and add a type only when a page needs it.
 concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concept_history`
 (they are the foundation).
 
-## Open questions for Juniper
+## Resolved (Juniper, 2026-11-13, "hit it")
 
-1. **News concepts.** Keep, rank, and make them reachable through `orion.dig know` with a
-   fair trial, as recommended? Or retire them now?
-2. **Graphiti.** Turn on the full engine behind the trial above, as now recommended?
+1. **News concepts:** keep, rank by distinct readings, reachable through `orion.dig know`,
+   two-week fair trial.
+2. **Graphiti:** full engine behind the Patch 0 trial.
+3. Build order: Patch 0 (Graphiti trial) and 2a (coined-concept reuse) in parallel, then 1a
+   (`page:juniper`).
 
 ## Proposed schema / API changes
 

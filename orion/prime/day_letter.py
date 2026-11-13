@@ -1,8 +1,9 @@
 """The day letter is Prime's end-of-day turn (living Prime design #3224, Part 3). Pure parts; CPU only.
 
-Design: docs/superpowers/specs/2026-11-12-living-prime-one-orion-design.md, "Part 3". Juniper's answers to the
-spec's missing questions: a refused letter is acceptable (no letter that day; the next letter says it could not
-write it); reminiscence is not part of this.
+Design: docs/superpowers/specs/2026-11-12-living-prime-one-orion-design.md, "Part 3". Reminiscence is not part of
+this. Tier 0 (Juniper 2026-11-12, after 11-11 went unwritten): "It needs to happen each day." The letter never bids
+and is never priced or gated; a failed run is retried. This reverses the spec's earlier answer that a refused letter
+was acceptable.
 
 What Prime does, on its tick (services/orion-mind/app/prime_loop.py ``_day_letter_upkeep``; this module decides,
 the runtime does the I/O):
@@ -12,19 +13,20 @@ the runtime does the I/O):
    (``GET {hub}/api/orion-day/letters/<date>``). Prime holds that as its own end-of-day concern
    (``PrimeDayLetterOpenV1``). It is tracked here, not in the 3-slot list of concerns a thought keeps or drops:
    the tick decides it, not a thought, and a full concern list must never crowd out the day's letter.
-2. **The bid.** One ``WantV1`` of Prime's family (``prime``), verb ``make``, on the letter turn's lane, priced at
-   the turn's enforced maximum (the same cost-ceiling rule as Prime's thought). Deferred: no act, re-bid after the
-   market's ``retry_after_sec`` (at least ``REBID_MIN_SEC``) until the bid window ends. A capacity deferral with a positive net is not a deferral here: it goes ahead (step 3). Never funded inside the
-   window -> no letter that day (``not_written`` with the last reason). Prime's self-monitor gate on
-   ``act.prime.make`` is asked first, the same way it is for Prime's other acts.
-3. **The act and the turn.** Funded, or a capacity deferral worth its price (queues at the GPU pool): Prime opens the ``make`` act (actor ``prime``) and orders the run from Hub
+2. **No bid (tier 0).** The letter is not a want: it is not priced, never deferred by the market and not asked of
+   the self-monitor gate. Live 11-11: a tier-2 bid was deferred for 10 h, then one failed run ended the day.
+3. **The act and the turn.** Prime opens the ``make`` act (actor ``prime``) at once and orders the run from Hub
    (``OrionDayLetterOrderV1``); Hub builds the day's input and submits ONE durable unified turn
-   (``orion_day.letter``). The run's correlation id is ``letter_correlation_id(letter_date)``.
+   (``orion_day.letter``) at GPU priority ``system`` (``orion/orion_day/brief.py``). The run's ids are
+   ``letter_run_id(letter_date, attempt)`` / ``letter_correlation_id(letter_date, attempt)``.
+3b. **Retry.** A run that ends without writing the row (failed, cancelled, completed with no row) is ordered again
+   as the next attempt (a new run id: the durable store refuses a second brief under one id), up to
+   ``max_attempts``, while the first order's deadline holds. One act covers every attempt of the day.
 4. **Settle.** The run's terminal state (``GET {durable}/runs/<run_id>``) closes the act: 1 = this run wrote the
    day's letter row, else 0. The letter's threads (the run's finish detail) become Prime concerns, at most
    ``LETTER_CONCERNS_MAX`` and never past ``MAX_CONCERNS``; each places the usual concern bet, so a later Prime
    ``ask`` about one (curiosity's only way to hear the letter) can settle it. Threads with no room are counted.
-5. **A missed day** (never funded, the run failed, or Hub refused) is recorded; the next order lists it in
+5. **A missed day** (every attempt failed, or Hub refused) is recorded; the next order lists it in
    ``missed_letters`` so the next letter says it could not write that day. Hub adds the day before on its own when
    it has no row and Prime did not list it (Prime was down).
 
@@ -40,20 +42,21 @@ from typing import Literal, Optional
 from uuid import NAMESPACE_URL, uuid5
 from zoneinfo import ZoneInfo
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from orion.grammar.acts import build_act
 from orion.prime.acts import ACTOR
 from orion.prime.state import MAX_CONCERNS, PrimeConcernV1, PrimeStateV1, note_change
-from orion.schemas.grammar import ActCostV2, ActV1
-from orion.schemas.orion_day import ORION_DAY_LLM_ROUTE, ORION_DAY_TIMEZONE, MissedLetterV1, orion_day_run_id
+from orion.schemas.grammar import ActV1
+from orion.schemas.orion_day import ORION_DAY_TIMEZONE, MissedLetterV1, orion_day_run_id
 
 DAY_LETTER_KEY = "orion:prime:day_letter"
 DAY_LETTER_COMPONENT = "prime.day_letter"
 LETTER_EVENT_PREFIX = "orion_day_letter:"
-# How often the tick looks at the day (HTTP reads), and the floor between two bids.
+# How often the tick looks at the day (HTTP reads).
 CHECK_INTERVAL_SEC = 300.0
-REBID_MIN_SEC = 900.0
+# Runs ordered for one day at most (PRIME_DAY_LETTER_MAX_ATTEMPTS default).
+DEFAULT_MAX_ATTEMPTS = 3
 # The act's horizon past the run's own deadline: the run's terminal lands inside it.
 ACT_HORIZON_GRACE_SEC = 3600.0
 LETTER_CONCERNS_MAX = 2
@@ -65,11 +68,15 @@ TERMINAL = frozenset({"completed", "failed", "cancelled"})
 MAKE_BASIS = (
     "artifact_produced = the orion_day.letter durable run this act ordered ended completed and wrote the day's "
     "orion_day_letter row (persist_outcome written; read from GET /runs/<run_id> on orion-durable-runs); 0 when "
-    "the run failed or was cancelled, a different run's row already existed, or Hub refused the order. horizon = "
-    "the run's admission deadline (PRIME_DAY_LETTER_RUN_DEADLINE_HOURS after the funded bid) + 3600s"
+    "every attempt's run failed or was cancelled, a different run's row already existed, or Hub refused the order. "
+    "One act covers every attempt of the day. horizon = the runs' shared admission deadline "
+    "(PRIME_DAY_LETTER_RUN_DEADLINE_HOURS after the act opened) + 3600s"
 )
 
 DoneOutcome = Literal["written", "not_written", "already_written", "empty"]
+
+
+_BID_FIELDS = frozenset({"bid_until", "bids", "next_bid_at", "last_refusal", "want_id"})
 
 
 class PrimeDayLetterOpenV1(BaseModel):
@@ -79,21 +86,29 @@ class PrimeDayLetterOpenV1(BaseModel):
 
     letter_date: date
     seen_at: AwareDatetime
-    bid_until: AwareDatetime
-    bids: int = 0
-    next_bid_at: Optional[AwareDatetime] = None
-    last_refusal: Optional[str] = Field(default=None, max_length=REASON_CAP)
-    # Set once a bid is funded and the act opened.
-    want_id: Optional[str] = None
+    # Set once the act opened (normally the same tick the day was seen; a failed open is tried again).
     act_id: Optional[str] = None
     act_opened_at: Optional[AwareDatetime] = None
     run_id: Optional[str] = None
     correlation_id: Optional[str] = None
     deadline_at: Optional[AwareDatetime] = None
+    # 1 for the first run; each retry after a run that wrote nothing adds one.
+    attempt: int = Field(default=1, ge=1)
+    # Why earlier attempts wrote nothing, oldest first.
+    failed_attempts: list[str] = Field(default_factory=list)
     # Hub's last answer to the order (None = not answered yet: send it again).
     order_status: Optional[str] = None
     order_detail: Optional[str] = Field(default=None, max_length=500)
     missed_sent: list[date] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_bid_fields(cls, data):
+        """A record saved by the tier-2 image (it bid) still loads: its bid fields mean nothing now. Without this,
+        a letter open across the deploy fails the whole state load, and the missed days it holds are lost."""
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if k not in _BID_FIELDS}
+        return data
 
 
 class PrimeDayLetterDoneV1(BaseModel):
@@ -138,46 +153,41 @@ def handled(st: PrimeDayLetterStateV1, day: date) -> bool:
 # --- the concern, the bid and the act ---------------------------------------------------------------------------
 
 
-def start(st: PrimeDayLetterStateV1, day: date, now: datetime, *, window_hours: float) -> PrimeDayLetterStateV1:
+def start(st: PrimeDayLetterStateV1, day: date, now: datetime) -> PrimeDayLetterStateV1:
     """Yesterday is closed and has no letter: Prime's own end-of-day concern opens."""
-    return st.model_copy(update={"open": PrimeDayLetterOpenV1(
-        letter_date=day, seen_at=now, bid_until=now + timedelta(hours=float(window_hours)), next_bid_at=now)})
+    return st.model_copy(update={"open": PrimeDayLetterOpenV1(letter_date=day, seen_at=now)})
 
 
-def want_id(day: date, bid_no: int) -> str:
-    return f"prime-day-letter-{day.isoformat()}-{int(bid_no)}"
+def letter_correlation_id(day: date, attempt: int = 1) -> str:
+    """The letter run's correlation id: derived from the day (and attempt), so a re-sent order is the same
+    request. Attempt 1 keeps the pre-retry id."""
+    suffix = "" if int(attempt) == 1 else f"#{int(attempt)}"
+    return str(uuid5(NAMESPACE_URL, f"orion:prime:day_letter:{day.isoformat()}{suffix}"))
 
 
-def letter_correlation_id(day: date) -> str:
-    """The letter run's correlation id: derived from the day, so a re-sent order is the same request."""
-    return str(uuid5(NAMESPACE_URL, f"orion:prime:day_letter:{day.isoformat()}"))
+def letter_run_id(day: date, attempt: int = 1) -> str:
+    """One durable run per attempt; the run's own step retries live inside it."""
+    return orion_day_run_id(day, attempt)
 
 
-def letter_run_id(day: date) -> str:
-    """One run per day (attempt 1). Prime orders at most one run for a day; its retries live inside the run."""
-    return orion_day_run_id(day, 1)
+def can_retry(op: PrimeDayLetterOpenV1, now: datetime, *, max_attempts: int) -> bool:
+    """Another run may be ordered: attempts left and the shared deadline not passed."""
+    return op.attempt < int(max_attempts) and op.deadline_at is not None and now < op.deadline_at
 
 
-def letter_cost(*, lane: str, turn_timeout_sec: float) -> ActCostV2:
-    """The letter turn at its enforced maximum on its lane (the mindloop cost-ceiling rule)."""
-    return ActCostV2(gpu_slot_s_by_lane={lane: float(turn_timeout_sec)},
-                     basis={"gpu_slot_s_by_lane": f"ceiling: PRIME_DAY_LETTER_TURN_TIMEOUT_SEC "
-                                                  f"{float(turn_timeout_sec):g} s per letter turn"})
+def next_attempt(op: PrimeDayLetterOpenV1, why: str) -> PrimeDayLetterOpenV1:
+    """The same day and act, the next run: a fresh order (not answered yet), the reason kept."""
+    n = op.attempt + 1
+    return op.model_copy(update={
+        "attempt": n, "run_id": letter_run_id(op.letter_date, n),
+        "correlation_id": letter_correlation_id(op.letter_date, n),
+        "order_status": None, "order_detail": None, "missed_sent": [],
+        "failed_attempts": [*op.failed_attempts, f"attempt {op.attempt}: {why}"[:REASON_CAP]]})
 
 
 def make_act(day: date, *, horizon_sec: float) -> ActV1:
     return build_act(actor=ACTOR, verb="make", key=f"orion_day:{day.isoformat()}", signal_id="artifact_produced",
                      horizon_sec=float(horizon_sec), basis=MAKE_BASIS, object_ref=f"{LETTER_EVENT_PREFIX}{day.isoformat()}")
-
-
-def deferred(op: PrimeDayLetterOpenV1, now: datetime, reason: str,
-             retry_after_sec: Optional[float]) -> PrimeDayLetterOpenV1:
-    wait = max(REBID_MIN_SEC, float(retry_after_sec or 0.0))
-    return op.model_copy(update={"last_refusal": reason[:REASON_CAP], "next_bid_at": now + timedelta(seconds=wait)})
-
-
-def window_over(op: PrimeDayLetterOpenV1, now: datetime) -> bool:
-    return op.act_id is None and now >= op.bid_until
 
 
 # --- missed days ------------------------------------------------------------------------------------------------
@@ -266,22 +276,19 @@ def status_lines(st: PrimeDayLetterStateV1, now: datetime) -> list[str]:
     op = st.open
     if op is not None:
         if op.act_id is None:
-            out.append(f"letter for {op.letter_date}: bidding ({op.bids} bid(s); last: {op.last_refusal or '-'})")
+            out.append(f"letter for {op.letter_date}: opening the act")
         else:
-            out.append(f"letter for {op.letter_date}: writing (act {op.act_id}, run {op.run_id}, "
-                       f"order {op.order_status or 'unanswered'})")
+            out.append(f"letter for {op.letter_date}: writing (act {op.act_id}, run {op.run_id}, attempt "
+                       f"{op.attempt}, order {op.order_status or 'unanswered'})")
     for d in st.done[-3:]:
         out.append(f"letter for {d.letter_date}: {d.outcome}" + (f" ({d.reason})" if d.reason else ""))
     return out
 
 
 __all__ = [
-    "ACT_HORIZON_GRACE_SEC", "CHECK_INTERVAL_SEC", "DAY_LETTER_COMPONENT", "DAY_LETTER_KEY", "LETTER_CONCERNS_MAX",
-    "MAKE_BASIS", "PrimeDayLetterDoneV1", "PrimeDayLetterOpenV1", "PrimeDayLetterStateV1", "REBID_MIN_SEC",
-    "deferred", "finish", "handled", "letter_correlation_id", "letter_cost", "letter_run_id", "make_act",
-    "mark_told", "missed_for", "run_outcome", "start", "status_lines", "thread_concern_id", "thread_concerns",
-    "want_id", "window_over", "yesterday",
+    "ACT_HORIZON_GRACE_SEC", "CHECK_INTERVAL_SEC", "DAY_LETTER_COMPONENT", "DAY_LETTER_KEY", "DEFAULT_MAX_ATTEMPTS",
+    "LETTER_CONCERNS_MAX", "MAKE_BASIS", "PrimeDayLetterDoneV1", "PrimeDayLetterOpenV1", "PrimeDayLetterStateV1",
+    "can_retry", "finish", "handled", "letter_correlation_id", "letter_run_id", "make_act", "mark_told",
+    "missed_for", "next_attempt", "run_outcome", "start", "status_lines", "thread_concern_id", "thread_concerns",
+    "yesterday",
 ]
-
-# The letter turn's lane (the durable run's admission route): the bid prices this lane.
-DEFAULT_LANE = ORION_DAY_LLM_ROUTE

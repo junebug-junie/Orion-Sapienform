@@ -29,13 +29,44 @@ def test_ids_are_derived_from_the_day():
     assert dl.thread_concern_id(DAY, 0) != dl.thread_concern_id(DAY, 1)
 
 
-def test_a_deferral_waits_at_least_the_floor_and_the_market_s_retry_when_longer():
-    op = dl.start(dl.PrimeDayLetterStateV1(), DAY, NOW, window_hours=18).open
-    assert dl.deferred(op, NOW, "deferred", 30.0).next_bid_at == NOW + timedelta(seconds=dl.REBID_MIN_SEC)
-    assert dl.deferred(op, NOW, "deferred", 7200.0).next_bid_at == NOW + timedelta(seconds=7200)
-    assert not dl.window_over(op, NOW + timedelta(hours=17))
-    assert dl.window_over(op, NOW + timedelta(hours=18))
-    assert not dl.window_over(op.model_copy(update={"act_id": "a"}), NOW + timedelta(hours=40))  # funded: run owns it
+def test_attempt_ids_keep_attempt_1_and_differ_per_attempt():
+    assert dl.letter_run_id(DAY, 2) == "orion-day-2026-11-12-2"
+    assert dl.letter_correlation_id(DAY, 1) == dl.letter_correlation_id(DAY)  # the pre-retry id is unchanged
+    assert len({dl.letter_correlation_id(DAY, n) for n in (1, 2, 3)}) == 3
+
+
+def _writing(attempt=1, deadline_h=12):
+    op = dl.start(dl.PrimeDayLetterStateV1(), DAY, NOW).open
+    return op.model_copy(update={"act_id": "a", "attempt": attempt, "run_id": dl.letter_run_id(DAY, attempt),
+                                 "correlation_id": dl.letter_correlation_id(DAY, attempt), "order_status": "submitted",
+                                 "deadline_at": NOW + timedelta(hours=deadline_h)})
+
+
+def test_a_retry_is_allowed_while_attempts_and_the_deadline_last():
+    assert dl.can_retry(_writing(1), NOW, max_attempts=3)
+    assert not dl.can_retry(_writing(3), NOW, max_attempts=3)
+    assert not dl.can_retry(_writing(1), NOW + timedelta(hours=12), max_attempts=3)
+
+
+def test_next_attempt_is_a_fresh_order_for_the_same_act():
+    op = _writing(1).model_copy(update={"missed_sent": [DAY - timedelta(1)], "order_detail": "x"})
+    nxt = dl.next_attempt(op, "the run ended failed: E2BIG")
+    assert (nxt.attempt, nxt.run_id, nxt.act_id, nxt.deadline_at) == (2, "orion-day-2026-11-12-2", "a", op.deadline_at)
+    assert nxt.correlation_id == dl.letter_correlation_id(DAY, 2)
+    assert nxt.order_status is None and nxt.order_detail is None and nxt.missed_sent == []
+    assert nxt.failed_attempts == ["attempt 1: the run ended failed: E2BIG"]
+
+
+def test_a_record_the_bidding_image_saved_still_loads():
+    raw = {"open": {"letter_date": "2026-11-12", "seen_at": NOW.isoformat(), "bid_until": NOW.isoformat(), "bids": 3,
+                    "next_bid_at": NOW.isoformat(), "last_refusal": "deferred", "want_id": "w", "act_id": "a",
+                    "run_id": "orion-day-2026-11-12-1"},
+           "done": [{"letter_date": "2026-11-11", "outcome": "not_written", "closed_at": NOW.isoformat()}]}
+    st = dl.PrimeDayLetterStateV1.model_validate(raw)
+    assert (st.open.act_id, st.open.attempt, st.done[0].outcome) == ("a", 1, "not_written")
+    import pytest
+    with pytest.raises(Exception):
+        dl.PrimeDayLetterOpenV1.model_validate({"letter_date": "2026-11-12", "seen_at": NOW.isoformat(), "typo": 1})
 
 
 def test_run_outcome_reads_terminal_states_only():

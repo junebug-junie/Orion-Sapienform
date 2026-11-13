@@ -1,0 +1,89 @@
+# Family A (neural forecaster) candidate inputs and hygiene thresholds.
+# Spec: docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, "A. Neural forecaster".
+# Loaded by services/orion-prediction/app/family_a.py (parse_config). Read today by
+# services/orion-prediction/evals/run_family_a_baselines_eval.py only: slice 1 trains nothing live,
+# serves nothing, and publishes nothing.
+#
+# Raw readings in real units only. app/family_a.py refuses any source outside the five raw tables
+# below and any key that names a hint channel (*_pressure, prediction_error*, action_warrant, ...).
+# orion_biometrics_summary.pressures / headroom / composites are never read -- only .measurements.
+#
+# The hygiene thresholds are fixed here on purpose (spec, "Recurring failure modes" #3: gates were
+# loosened to admit known-dead inputs). Changing one needs its own PR with the reason.
+version: 1
+grain: 5min
+horizons: [5min, 15min]
+hygiene:
+  # Share of grain buckets in the window that hold a real reading.
+  min_present: 0.50
+  # Drop a series when one value covers more than this share of its present buckets.
+  max_mode_share: 0.85
+  # Drop a series with fewer distinct values than this (after rounding to 6 significant digits).
+  min_distinct: 50
+  # Event-like: the most common value is the series' floor (its minimum, usually 0) and covers more
+  # than this share. Kept as a covariate (an input), never forecast as a target. So event-like means a
+  # floor share in (0.50, 0.85]; above max_mode_share the spec's drop rule wins and it is refused. At
+  # scoring time a quiet day resting on that floor is not "stuck" for an event-like covariate.
+  event_mode_share: 0.50
+  # Can return to rest: at least this share of whole days touch the window's central 80 % band,
+  # and the daily medians are not a monotone drift (|Spearman rho| below max_drift_rho, >= 5 days).
+  min_rest_day_share: 0.75
+  max_drift_rho: 0.90
+  # At gate time the newest reading must be at most this old.
+  max_stale_min: 30
+  # Independence: a series whose bucket means correlate above this with an earlier-listed passing
+  # series is the same reading twice and is refused (office eCO2 vs TVOC: 0.99999, one CCS811 value).
+  max_duplicate_corr: 0.999
+inputs:
+  # --- athena: cabinet sensors (Nano ESP32 in the cabinet) ---
+  - {id: athena.cabinet_temp_c, unit: C, source: {table: biometrics, node: athena, key: cabinet_temp_c}}
+  - {id: athena.cabinet_humidity_pct, unit: "%", source: {table: biometrics, node: athena, key: cabinet_humidity_pct}}
+  - {id: athena.cabinet_baro_hpa, unit: hPa, source: {table: biometrics, node: athena, key: cabinet_pressure_hpa}}
+  - {id: athena.cabinet_light_raw, unit: counts, source: {table: biometrics, node: athena, key: cabinet_als_raw}}
+  - {id: athena.cabinet_sound_rms, unit: counts, source: {table: biometrics, node: athena, key: cabinet_ambient_rms}}
+  - {id: athena.cabinet_vibration_g, unit: g, source: {table: biometrics, node: athena, key: cabinet_vibration_g}}
+  - {id: athena.cabinet_lidar_mm, unit: mm, source: {table: biometrics, node: athena, key: cabinet_lidar_mm}}
+  # --- athena: machine ---
+  - {id: athena.chassis_watts, unit: W, source: {table: biometrics, node: athena, key: chassis_watts}}
+  - {id: athena.cpu_watts, unit: W, source: {table: biometrics, node: athena, key: cpu_watts_total}}
+  - {id: athena.gpu0_watts, unit: W, source: {table: biometrics, node: athena, key: gpu0_watts}}
+  - {id: athena.gpu1_watts, unit: W, source: {table: biometrics, node: athena, key: gpu1_watts}}
+  - {id: athena.gpu0_temp_c, unit: C, source: {table: biometrics, node: athena, key: gpu0_temp_c}}
+  - {id: athena.gpu1_temp_c, unit: C, source: {table: biometrics, node: athena, key: gpu1_temp_c}}
+  - {id: athena.board_temp_c, unit: C, source: {table: biometrics, node: athena, key: board_temp_c_max}}
+  - {id: athena.cpu_temp_c_max, unit: C, source: {table: biometrics, node: athena, key: temp_c_max}}
+  - {id: athena.fan_pct, unit: "%", source: {table: biometrics, node: athena, key: fan_pct_max}}
+  - {id: athena.load_1m, unit: runnable, source: {table: biometrics, node: athena, key: load_1m}}
+  - {id: athena.net_bytes_s, unit: B/s, source: {table: biometrics, node: athena, key: net_bytes_per_sec}}
+  - {id: athena.disk_bytes_s, unit: B/s, source: {table: biometrics, node: athena, key: disk_bytes_per_sec}}
+  # --- circe ---
+  - {id: circe.chassis_watts, unit: W, source: {table: biometrics, node: circe, key: chassis_watts}}
+  - {id: circe.cpu_watts, unit: W, source: {table: biometrics, node: circe, key: cpu_watts_total}}
+  - {id: circe.gpu0_watts, unit: W, source: {table: biometrics, node: circe, key: gpu0_watts}}
+  - {id: circe.gpu1_watts, unit: W, source: {table: biometrics, node: circe, key: gpu1_watts}}
+  - {id: circe.gpu2_watts, unit: W, source: {table: biometrics, node: circe, key: gpu2_watts}}
+  - {id: circe.gpu3_watts, unit: W, source: {table: biometrics, node: circe, key: gpu3_watts}}
+  - {id: circe.gpu0_temp_c, unit: C, source: {table: biometrics, node: circe, key: gpu0_temp_c}}
+  - {id: circe.gpu1_temp_c, unit: C, source: {table: biometrics, node: circe, key: gpu1_temp_c}}
+  - {id: circe.gpu2_temp_c, unit: C, source: {table: biometrics, node: circe, key: gpu2_temp_c}}
+  - {id: circe.gpu3_temp_c, unit: C, source: {table: biometrics, node: circe, key: gpu3_temp_c}}
+  - {id: circe.board_temp_c, unit: C, source: {table: biometrics, node: circe, key: board_temp_c_max}}
+  - {id: circe.cpu_temp_c_max, unit: C, source: {table: biometrics, node: circe, key: temp_c_max}}
+  - {id: circe.fan_pct, unit: "%", source: {table: biometrics, node: circe, key: fan_pct_max}}
+  - {id: circe.load_1m, unit: runnable, source: {table: biometrics, node: circe, key: load_1m}}
+  # --- hecate (on demand; BMC read remotely by athena; orion_biometrics_cluster keeps 30 days) ---
+  - {id: hecate.chassis_watts, unit: W, source: {table: cluster, node: hecate, key: chassis_watts}}
+  # --- cabinet portable AC (Shelly plug) ---
+  - {id: athena.cabinet_cooling_watts, unit: W, source: {table: cooling, role: cabinet_cooling}}
+  # --- office (pan-1: SHT40, CCS811, PMS, light, sound meter) ---
+  - {id: office.temp_c, unit: C, source: {table: office_env, node: pan-1, key: office_temp_c}}
+  - {id: office.humidity_pct, unit: "%", source: {table: office_env, node: pan-1, key: office_humidity_pct}}
+  - {id: office.eco2_ppm, unit: ppm, source: {table: office_env, node: pan-1, key: office_eco2_ppm}}
+  - {id: office.tvoc_ppb, unit: ppb, source: {table: office_env, node: pan-1, key: office_tvoc_ppb}}
+  - {id: office.pm25_ug_m3, unit: ug/m3, source: {table: office_env, node: pan-1, key: office_pm25_ug_m3}}
+  - {id: office.lux, unit: lux, source: {table: office_env, node: pan-1, key: office_lux}}
+  - {id: office.sound_dba, unit: dBA, source: {table: office_env, node: pan-1, key: office_sound_dba}}
+  # --- server closet (pan-1: SCD40, real CO2) ---
+  - {id: closet.co2_ppm, unit: ppm, source: {table: closet_env, node: pan-1, key: closet_co2_ppm}}
+  - {id: closet.temp_c, unit: C, source: {table: closet_env, node: pan-1, key: closet_temp_c}}
+  - {id: closet.humidity_pct, unit: "%", source: {table: closet_env, node: pan-1, key: closet_humidity_pct}}

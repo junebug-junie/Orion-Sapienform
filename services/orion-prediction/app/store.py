@@ -88,10 +88,9 @@ def _since(ts: datetime) -> str:
     return ts.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _prefix_range(prefix: str) -> tuple[str, str]:
-    """[lo, hi) such that lo <= s < hi exactly when s starts with ``prefix`` (byte order: the prefix
-    'family_a:' -> ['family_a:', 'family_a;'))."""
-    return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
+# Prefix match on series_id. ``starts_with`` is collation-independent; a ``>= lo AND < hi`` range is not:
+# under the live en_US.utf8 collation punctuation is ignored at the first sort level, so the range
+# ['family_a:', 'family_a;') matched 0 of 1,326 live rows (2026-11-13) and nothing was ever scored or pruned.
 
 
 def _j(value: Any) -> str:
@@ -356,10 +355,10 @@ class PostgresStore:
 
     # --- multivariate families (app/family_a_live.py) -------------------------------------------
     # Reading rows live in prediction_forecast / prediction_shadow_forecast under series_id
-    # '<family>:<reading id>'; ``prefix`` is that '<family>:' (matched with left(), never LIKE: '_' is a
-    # LIKE wildcard). Matched as a range [prefix, prefix with its last character + 1) so the
-    # (series_id, ...) indexes apply. The joint row per bucket and horizon lives in
-    # prediction_joint_surprise.
+    # '<family>:<reading id>'; ``prefix`` is that '<family>:', matched with starts_with() (never LIKE: '_'
+    # is a LIKE wildcard; never a >=/< range: collation-dependent, see the note at the top). Due/prune
+    # queries use the partial unscored index via target_ts. The joint row per bucket and horizon lives
+    # in prediction_joint_surprise.
     def run_metrics(self, run_id: Any) -> dict | None:
         rows = self._all("SELECT run_id, metrics, assignment FROM prediction_model_run WHERE run_id = %s", (run_id,))
         return rows[0] if rows else None
@@ -394,8 +393,8 @@ class PostgresStore:
             (family, before, limit))
         readings = self._all(
             "SELECT forecast_id, run_id, series_id, horizon_min, origin_ts, target_ts, point, quantiles "
-            "FROM prediction_forecast WHERE series_id >= %s AND series_id < %s AND scored_at IS NULL "
-            "AND target_ts < %s ORDER BY target_ts LIMIT %s", (*_prefix_range(prefix), before, limit * 100))
+            "FROM prediction_forecast WHERE starts_with(series_id, %s) AND scored_at IS NULL "
+            "AND target_ts < %s ORDER BY target_ts LIMIT %s", (prefix, before, limit * 100))
         return joints, readings
 
     def write_family_scores(self, reading_scores: list[dict], joint_scores: list[dict]) -> None:
@@ -426,8 +425,8 @@ class PostgresStore:
 
     def family_due_shadow(self, prefix: str, before: datetime, limit: int = 200000) -> list[dict]:
         return self._all("SELECT shadow_id, series_id, target_ts, point FROM prediction_shadow_forecast "
-                         "WHERE series_id >= %s AND series_id < %s AND scored_at IS NULL AND target_ts < %s "
-                         "ORDER BY target_ts LIMIT %s", (*_prefix_range(prefix), before, limit))
+                         "WHERE starts_with(series_id, %s) AND scored_at IS NULL AND target_ts < %s "
+                         "ORDER BY target_ts LIMIT %s", (prefix, before, limit))
 
     def write_family_shadow_scores(self, rows: list[dict]) -> None:
         with self.pool.connection() as conn, conn.transaction():
@@ -451,8 +450,8 @@ class PostgresStore:
         n = 0
         with self.pool.connection() as conn:
             for table in ("prediction_forecast", "prediction_shadow_forecast"):
-                cur = conn.execute(f"DELETE FROM {table} WHERE series_id >= %s AND series_id < %s "
-                                   "AND target_ts < %s", (*_prefix_range(prefix), before))
+                cur = conn.execute(f"DELETE FROM {table} WHERE starts_with(series_id, %s) "
+                                   "AND target_ts < %s", (prefix, before))
                 n += max(int(cur.rowcount or 0), 0)
         return n
 

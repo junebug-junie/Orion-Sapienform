@@ -262,6 +262,15 @@ class PersonalityDriver:
                     choice.choice_id, choice.lane, choice.chosen_market_rank, choice.declined_all, bool(new))
         return "inserted" if new else "duplicate"
 
+    # --- Juniper's answer (Hub Personality tab) -------------------------------------------------
+
+    async def juniper_verdict(self, disposition_id: str, verdict: str) -> Optional[dict]:
+        """Record Juniper's yes / no on a tendency; a no retires it. Under the tick lock: a tick loads
+        the nodes and writes them back, so without the lock a tick in flight would write the old
+        status over the retirement."""
+        async with self._lock:
+            return await self._store.record_juniper_verdict(disposition_id, verdict, self._now())
+
     # --- tick -------------------------------------------------------------------------------------
 
     async def _with_situation(self, evidence: list[Evidence], warnings: list[str]) -> list[Evidence]:

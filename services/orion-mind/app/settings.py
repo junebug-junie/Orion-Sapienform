@@ -197,7 +197,8 @@ class Settings(BaseSettings):
     # PRIME_DURABLE_RUNS_URL/personality/frame: choice-built tendencies with >= 10 weighted choices. No shadow.
     # false = kill switch (no read, no section). The choice point itself (one personality.choice.v1 per thought
     # that chose among concerns) is not behind this flag: it is the graph's evidence and costs no model call.
-    PRIME_PERSONALITY_LINE_ENABLED: bool = Field(default=True, alias="PRIME_PERSONALITY_LINE_ENABLED")
+    # Off for now (2026-11-13): live choice-built labels still read as noise; on once a label fix lands.
+    PRIME_PERSONALITY_LINE_ENABLED: bool = Field(default=False, alias="PRIME_PERSONALITY_LINE_ENABLED")
     # Orion's consent to a Claude tool call (docs/superpowers/specs/2026-11-12-claude-hub-tools-orion-consent-
     # design.md section 3; app/prime_consent.py): orion-mind answers orion:prime:consent:request with one short
     # model call (frame <= 4,000 chars) on route PRIME_CONSENT_LLM_ROUTE (circe chat lane 0, pool priority

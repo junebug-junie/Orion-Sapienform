@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, ConfigDict
 
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -1155,7 +1156,8 @@ async def _personality_read(coro):
     except (UndefinedTable, UndefinedColumn) as exc:
         raise HTTPException(503, "personality tables missing: apply "
                                  "services/orion-sql-db/manual_migration_personality_graph_v1.sql and "
-                                 "manual_migration_personality_naming_v1.sql and manual_migration_personality_choice_v1.sql") from exc
+                                 "manual_migration_personality_naming_v1.sql and manual_migration_personality_choice_v1.sql "
+                                 "and manual_migration_personality_juniper_verdict_v1.sql") from exc
 
 
 @app.get("/personality/frame")
@@ -1214,6 +1216,62 @@ async def personality_naming(disposition_id: Optional[str] = None, limit: int = 
     rows = await _personality_read(_personality_store().namings(disposition_id or None,
                                                                 limit=max(1, min(limit, 500))))
     return {"disposition_id": disposition_id, "count": len(rows), "namings": rows}
+
+
+# --- Hub Personality tab (rev 4 move 4): choices, tendencies, Juniper's yes / no ---------------
+
+PERSONALITY_ARM_WINDOW_DAYS = 7
+
+
+class JuniperVerdictIn(BaseModel):
+    """Juniper's answer to "Does this look like Orion?" on one tendency."""
+
+    model_config = ConfigDict(extra="forbid")
+    verdict: Literal["yes", "no"]
+
+
+@app.get("/personality/choices")
+async def personality_choices(limit: int = 30):
+    """The newest choices across lanes: picked, passed over (with market rank), declines."""
+    rows = await _personality_read(_personality_store().recent_choices(limit=max(1, min(limit, 200))))
+    return {"count": len(rows), "choices": rows}
+
+
+@app.get("/personality/tendencies")
+async def personality_tendencies(limit: int = 20):
+    """Choice-built tendencies that are not retired, each with its newest choices and Juniper's answer."""
+    body = await _personality_read(_personality_store().tendencies(limit=max(1, min(limit, 100))))
+    return {"count": len(body["tendencies"]), **body}
+
+
+@app.post("/personality/tendencies/{disposition_id}/verdict")
+async def personality_tendency_verdict(disposition_id: str, body: JuniperVerdictIn):
+    """Juniper's yes / no. A no retires the tendency (it leaves the frame, the Prime tending line and
+    the market). A yes on a tendency she retired herself revives it as a candidate ("Changed my mind").
+    404: no such choice-built tendency. 409: retired and not by her latest no (faded), or a second no."""
+    from app.personality_store import TendencyRetired
+
+    _personality_store()  # 503 when the loop is disabled
+    try:
+        out = await _personality_read(personality.juniper_verdict(disposition_id, body.verdict))
+    except TendencyRetired as exc:
+        raise HTTPException(409, "tendency is retired and cannot take this answer") from exc
+    if out is None:
+        raise HTTPException(404, "no such choice-built tendency")
+    logger.info("personality_juniper_verdict disposition=%s verdict=%s retired=%s revived=%s",
+                disposition_id, out["verdict"], out["retired"], out.get("revived", False))
+    return out
+
+
+@app.get("/personality/arms")
+async def personality_arms(days: int = PERSONALITY_ARM_WINDOW_DAYS):
+    """Market decisions with a personality arm (care vs holdback), by outcome, over the last days."""
+    from datetime import datetime, timedelta, timezone
+
+    days = max(1, min(days, 30))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    body = await _personality_read(_personality_store().arm_counts(since))
+    return {"days": days, **body}
 
 
 @app.get("/runs/unfinished")

@@ -682,6 +682,15 @@ class PostgresStore:
         return self._all(f"SELECT {', '.join(TURN_SELF_BET_COLS)} FROM prediction_turn_self_bet "
                          "WHERE placed_at >= %s ORDER BY placed_at DESC LIMIT %s", (since, limit))
 
+    # --- Act chain (app/act_chain.py; read-only, grammar_acts is orion-sql-writer's) ---------------
+    def grammar_acts(self, start: datetime, end: datetime) -> list[tuple[datetime, datetime, str]]:
+        """(opened_at, created_at, verb) of Orion's acts opened in ``[start, end)``. ``created_at`` is
+        when the row landed; act_chain uses it so a replay sees only what was known at each origin."""
+        rows = self._all("SELECT opened_at AS o, created_at AS c, verb AS v FROM grammar_acts "
+                         "WHERE opened_at >= %s AND opened_at < %s AND verb IS NOT NULL ORDER BY opened_at",
+                         (start, end))
+        return [(r["o"], r["c"], r["v"]) for r in rows]
+
     # --- Juniper reachable (manual_migration_prediction_reachable_forecast_v1.sql) -----------------
     def juniper_messages(self, start: datetime, end: datetime) -> list[datetime]:
         """Times of Juniper's messages in ``[start, end)``, read-only (chat_message is the hub's)."""

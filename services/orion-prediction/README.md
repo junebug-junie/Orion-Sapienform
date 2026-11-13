@@ -310,6 +310,22 @@ error and `prob_better` -- no alpha. Table `prediction_reachable_forecast`. Flag
 Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): 26 % lower loss than base overall
 (P 0.95), tied with the state model; cold hours about level with base (P 0.25); somewhat timid at the top.
 
+## Act chain: what will Orion do in the next 15 minutes? (family B, eval only)
+
+`app/act_chain.py`; spec `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`,
+"B. Markov chains". Each 15-minute bucket's state is the main verb of Orion's acts in it
+(`grammar_acts`, written by orion-sql-writer), or `idle`. Served model: a first-order Markov chain
+conditioned on Juniper's clock blocks (asleep 03-08, weekend mornings, day, evening, Denver time). Each
+level backs off to the coarser one with a strength chosen from training data by leave-one-out. Graded
+per local day against the marginal, the clock hour and the clock block, as a loss gap, its standard
+error and `prob_better` (no alpha). Surprise = -log P(observed state); excess surprise = surprise minus
+the forecast's entropy, which is 0 on average when the forecast is calibrated. A replay sees only the
+rows that had landed (`created_at`) at each origin. No table, endpoint, bus event or consumer yet.
+
+Replay 10-29..11-13 (`evals/run_act_chain_replay_eval.py`, 1,423 buckets, 16 days): served loss 1.793
+nats vs 1.800 for the clock hour (gap -0.042/day ± 0.071, P 0.72) and 1.859 for the marginal
+(P 0.95); excess surprise +0.09 ± 0.08 overall, +0.19 ± 0.05 in the asleep block.
+
 ## Power-bill bet (`GET /bill-forecast`)
 
 Once a day: "this Rocky Mountain Power bill will come to X kWh and $Y before tax", each with an 80 %
@@ -536,5 +552,6 @@ PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real c
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]
 PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py [--live --experiment-id <uuid>]  # planted slope, null
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_event_pair_live_eval.py  # live vision pairs, read-only
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_act_chain_replay_eval.py [--since 2026-10-23]  # family B act chain, read-only, ~3 s
 python evals/export_cabinet_fixture.py --until <iso>                     # refresh the fixture
 ```

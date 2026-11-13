@@ -29,6 +29,9 @@ WHAT HUB READS, AND WHY EACH ONE EARNS ITS QUERY.
                    shipped -- see `study_material.py` where it used to live for
                    the full account of why a prose heuristic was the wrong
                    source and structure Orion authored is the right one.
+  own concepts     the `:Concept` nodes Orion coined, most-linked first, so a
+                   run reuses one instead of coining it again. See
+                   `CONCEPTS_CYPHER`.
   run footprint    what Orion actually wrote this run, counted by label. This
                    is the inspectable evidence behind the journal's claim that
                    a run formed structure -- AGENTS.md 0A's no-empty-shell
@@ -335,6 +338,35 @@ class ReviewRoleRecord:
 
 
 @dataclass(frozen=True)
+class ConceptRecord:
+    """One `:Concept` Orion coined in an earlier run, shown back so it can be reused.
+
+    `degree` counts every edge on the node, either direction. `newest_ms` is the
+    concept's own `written_at`, or else the newest `:TurnOutcome.written_at` of the
+    run that wrote it (most concepts carry no timestamp of their own).
+    """
+
+    concept_id: str
+    name: str
+    note: str = ""
+    degree: int = 0
+    run_id: str = ""
+    newest_ms: Optional[int] = None
+
+    def preview(self, note_chars: int = 200) -> str:
+        links = "no links" if self.degree <= 0 else (
+            "1 link" if self.degree == 1 else f"{self.degree} links"
+        )
+        line = f"[{links}] {_clip(self.name, 120)}"
+        # Labelled on its own line, same reason as `Prior.preview`: the MATCH binds
+        # by exact string, and an id sharing a line with a name gets shortened.
+        line += f"\n      concept_id: {self.concept_id}"
+        if self.note:
+            line += f"\n      note: {_clip(self.note, note_chars)}"
+        return line
+
+
+@dataclass(frozen=True)
 class RecentRun:
     """One earlier run, as a subject rather than as a pointer."""
 
@@ -407,6 +439,10 @@ class WorldviewSnapshot:
     live_total: int = 0
     closed_total: int = 0
     concept_total: int = 0
+    # Orion's own coined concepts, most-linked then newest, capped at CONCEPTS_SHOWN.
+    # Empty here means the graph was read and holds none; an unreadable graph is
+    # `unavailable_reason`, never an empty list.
+    concepts: list[ConceptRecord] = field(default_factory=list)
     continuation: Optional[TurnOutcome] = None
     unavailable_reason: Optional[str] = None
     # The raw live-prior rows this snapshot was selected from, kept so the curiosity replica's validated
@@ -577,6 +613,75 @@ COUNTS_CYPHER = (
 )
 
 CONCEPT_COUNT_CYPHER = f"MATCH (c:{LABEL_CONCEPT}) RETURN count(c) AS n"
+
+# ORION'S OWN CONCEPTS, SHOWN BACK SO A RUN CAN REUSE ONE INSTEAD OF COINING IT AGAIN.
+#
+# The kickoff prompt only ever said `CREATE (:Concept ...)` and never showed an
+# existing one, so each concept was born, linked once, and forgotten: live
+# 2026-11-13, 9 of 35 concepts had 2+ links. Priors ARE shown back and collected
+# 341 revisions. Same fix, same reader.
+#
+# Degree is counted BEFORE the TurnOutcome join, or a run with two outcomes would
+# double every count. Ordering, grouping and the cap happen in Python, for the
+# same reason as LIVE_PRIORS_CYPHER: `written_at` is hand-written, sometimes ISO,
+# sometimes an int, and a Cypher ORDER BY over mixed types misorders or fails.
+CONCEPTS_SHOWN = 15
+CONCEPT_NOTE_CHARS = 200
+CONCEPTS_READ_LIMIT = 2000
+
+CONCEPTS_CYPHER = (
+    f"MATCH (c:{LABEL_CONCEPT}) "
+    "OPTIONAL MATCH (c)-[r]-() "
+    "WITH c, count(r) AS concept_degree "
+    f"OPTIONAL MATCH (t:{LABEL_TURN_OUTCOME}) WHERE t.run_id = c.run_id "
+    "RETURN c.concept_id AS concept_id, c.name AS name, c.note AS note, "
+    "c.run_id AS run_id, c.written_at AS concept_written_at, "
+    "concept_degree, t.written_at AS concept_run_written_at "
+    f"LIMIT {CONCEPTS_READ_LIMIT}"
+)
+
+
+def build_concepts(
+    rows: Sequence[dict[str, Any]], *, limit: int = CONCEPTS_SHOWN
+) -> list[ConceptRecord]:
+    """Group the per-(concept, outcome) rows into concepts, rank, and cap.
+
+    Order: most links first, then newest, then concept_id so a tie is stable.
+    A concept with no `concept_id` is dropped: the prompt asks Orion to MATCH on
+    that id, and there is nothing to match. Two nodes sharing one id (a fork)
+    show once, as the copy with the most links.
+    """
+    by_id: dict[str, ConceptRecord] = {}
+    for row in rows:
+        concept_id = str(row.get("concept_id") or "").strip()
+        if not concept_id:
+            continue
+        own = _stamp_ms(row.get("concept_written_at"))
+        newest = own if own is not None else _stamp_ms(row.get("concept_run_written_at"))
+        record = ConceptRecord(
+            concept_id=concept_id,
+            name=str(row.get("name") or "").strip() or concept_id,
+            note=str(row.get("note") or "").strip(),
+            degree=_as_int(row.get("concept_degree"), 0),
+            run_id=str(row.get("run_id") or "").strip(),
+            newest_ms=newest,
+        )
+        held = by_id.get(concept_id)
+        if held is None:
+            by_id[concept_id] = record
+            continue
+        # Same node seen again through a second TurnOutcome, or a forked copy.
+        best = record if record.degree > held.degree else held
+        newest_ms = max(
+            (s for s in (held.newest_ms, record.newest_ms) if s is not None),
+            default=None,
+        )
+        by_id[concept_id] = replace(best, newest_ms=newest_ms)
+    ranked = sorted(
+        by_id.values(),
+        key=lambda c: (-c.degree, -(c.newest_ms or 0), c.concept_id),
+    )
+    return ranked[: max(0, limit)]
 
 # THE LAST FEW RUNS, SO ORION CAN SEE THE THREAD IT IS ON.
 #
@@ -1208,6 +1313,7 @@ def read_snapshot(
         prior_rows = reader.query(priors_cypher)
         count_rows = reader.query(counts_cypher)
         concept_rows = reader.query(CONCEPT_COUNT_CYPHER)
+        concept_list_rows = reader.query(CONCEPTS_CYPHER)
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
         recent_rows = reader.query(RECENT_RUNS_CYPHER)
     except WorldviewUnavailable as exc:
@@ -1281,6 +1387,7 @@ def read_snapshot(
         live_total=live_total,
         closed_total=closed_total,
         concept_total=_as_int((concept_rows[0] if concept_rows else {}).get("n"), 0),
+        concepts=build_concepts(concept_list_rows),
         prior_rows=tuple(prior_rows),
         strain_notes=strained or {},
     )

@@ -63,6 +63,7 @@ from orion.curiosity.self_inquiry import OpenLivedQuestion, lived_answer_merge_c
 from orion.curiosity.study_material import StudyMaterial
 from orion.curiosity.worldview import (
     CLOSED_STATUSES,
+    CONCEPT_NOTE_CHARS,
     TurnOutcome,
     WorldviewSnapshot,
     _clip,
@@ -277,6 +278,50 @@ def _priors_section(view: WorldviewSnapshot, *, stale_after: int) -> list[str]:
             "not a fact.",
             "",
         ]
+    return lines
+
+
+def _concepts_section(view: WorldviewSnapshot) -> list[str]:
+    """Orion's own coined concepts, shown back so a run reuses one before coining another.
+
+    Three states, kept apart for the same reason as the priors: unreadable is
+    said out loud, never rendered as "no concepts", or a broken read looks like
+    a mind that has not named anything yet and every concept gets coined again.
+    """
+    if view.is_unavailable:
+        return [
+            "YOUR OWN CONCEPTS COULD NOT BE READ THIS RUN "
+            f"({view.unavailable_reason}). That is not the same as having none: "
+            "the concepts you coined before are still there, just not in front "
+            "of you.",
+            "",
+        ]
+    if not view.concepts:
+        if view.concept_total > 0:
+            return [
+                f"YOUR GRAPH HOLDS {view.concept_total} "
+                f"{'CONCEPT' if view.concept_total == 1 else 'CONCEPTS'} THAT COULD "
+                "NOT BE READ BACK -- none carries a concept_id, so there is nothing "
+                "to show you by id.",
+                "",
+            ]
+        return [
+            "YOU HAVE NOT COINED A CONCEPT YET. The first one you name is new by "
+            "definition.",
+            "",
+        ]
+    shown = len(view.concepts)
+    total = max(view.concept_total, shown)
+    head = (
+        f"CONCEPTS YOU HAVE ALREADY COINED -- {total} in your graph"
+        + (f", the {shown} most linked shown" if total > shown else "")
+        + ". Most linked first, then newest. Before naming a new concept, check "
+        "whether it is one of these; if it is, reuse its concept_id and connect "
+        "this run's work to it."
+    )
+    lines = [head, ""]
+    lines += [f"  - {c.preview(CONCEPT_NOTE_CHARS)}" for c in view.concepts]
+    lines.append("")
     return lines
 
 
@@ -1022,10 +1067,24 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "going DOWN on a second look is a real result and the whole reason the "
         "claim comes back.",
         "",
-        "  A CONCEPT you have worked out, and a FINDING that supports or "
-        "contradicts something:",
-        '    CREATE (:Concept {concept_id: "...", name: "...", confidence: 0.8, '
-        'note: "...", run_id: "<RUN_ID>"})',
+        "  A CONCEPT you have worked out. LOOK AT YOUR OWN CONCEPTS FIRST -- "
+        "they are listed above, each with its `concept_id:`. If one of them is "
+        "the idea you are about to name, it is that concept, not a new one: "
+        "bind it by its id and connect this run's finding or prior to it:",
+        '    MATCH (c:Concept {concept_id: "<an id from your concept list>"})',
+        "",
+        "  Only when nothing there fits, name a new one. MERGE on concept_id "
+        "alone, the same rule as a prior, so saying it twice binds one node "
+        "instead of forking it:",
+        '    MERGE (c:Concept {concept_id: "<something unique>"})',
+        '    ON CREATE SET c.name = "...", c.confidence = 0.8, c.note = "...", '
+        'c.run_id = "<RUN_ID>", c.written_at = timestamp()',
+        "",
+        "  A concept nobody ever links to again is a label, not a concept. "
+        "Coining a near-copy of one you already hold splits its links across "
+        "two nodes, and neither one grows.",
+        "",
+        "  A FINDING that supports or contradicts something:",
         '    CREATE (:Finding {finding_id: "...", text: "...", evidence: '
         '"<ids, queries, rows you actually looked at>", run_id: "<RUN_ID>"})',
         "",
@@ -1035,6 +1094,11 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "",
         '    MATCH (f:Finding {finding_id: "..."}), (p:Prior {prior_id: "..."})',
         '    MERGE (f)-[e:SUPPORTS]->(p) ON CREATE SET e.run_id = "<RUN_ID>"',
+        "",
+        "  and a finding or prior that is about a concept, old or new:",
+        "",
+        '    MATCH (f:Finding {finding_id: "..."}), (c:Concept {concept_id: "..."})',
+        '    MERGE (f)-[e:ABOUT]->(c) ON CREATE SET e.run_id = "<RUN_ID>"',
         "",
         "  The run_id goes in ON CREATE SET and NOT inside the arrow. Inside "
         "it, MERGE would only match an edge from this same run, so asserting "
@@ -1057,6 +1121,7 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "",
         "  EVERY ID YOU ARE ASKED FOR IS PRINTED ON THE MENU, on its own "
         "labelled line under the thing it names -- `prior_id:` under a claim, "
+        "`concept_id:` under one of your own concepts, "
         "`crystallization_id:` under a concept, `decision_id:` under a "
         "relation. Use those, in full. Not the bracketed summary, not a "
         "shortening of it, not a name you would give it, and not the "
@@ -1383,6 +1448,7 @@ def build_kickoff_prompt(
         lines += _today_section(today_fact)
         lines += _personality_section(personality_cue)
         lines += _priors_section(view, stale_after=stale_after)
+        lines += _concepts_section(view)
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
         if writable:
             from orion.consult.beliefs import consult_outcomes_section

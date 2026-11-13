@@ -46,7 +46,7 @@ Prime bid a `make` want (family `prime`, tier 2, priced at the turn ceiling). It
 ```text
 pytest orion/prime/tests orion/orion_day/tests -q     285 passed
 pytest services/orion-mind/tests -q                   273 passed
-pytest services/orion-durable-runs/tests -k 'orion_day or admission'   126 passed
+pytest services/orion-durable-runs/tests -k 'orion_day or admission'   42 passed, 29 skipped (Postgres-only)
 pyflakes (changed files)                              clean
 check_env_template_parity.py                          PASS
 ```

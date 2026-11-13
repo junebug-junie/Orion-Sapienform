@@ -30,6 +30,12 @@ def test_market_rank_is_the_event_order_among_shown_concerns_only():
     assert market_ranks([A, B], []) == {"c-a": None, "c-b": None}
 
 
+def test_one_placed_concern_is_not_the_markets_top_over_unranked_ones():
+    assert market_ranks([B, C], RANKED) == {"c-b": None, "c-c": None}
+    choice, _ = _choice({"pick": "c-b"}, shown=(B, C))
+    assert choice.chosen_market_rank is None
+
+
 def test_explicit_pick_records_chosen_and_the_rest_as_alternatives():
     choice, why = _choice({"pick": "c-a"})
     assert why == "chosen" and choice.choice_id == "prime:t1"
@@ -62,10 +68,24 @@ def test_missing_pick_falls_back_to_the_move_concern():
     assert choice.chosen.key == "c-b" and choice.chosen_market_rank == 1
 
 
-def test_an_explicit_pick_wins_over_the_move():
+def test_a_pick_that_contradicts_the_move_records_nothing():
     move = {"kind": "curiosity_focus", "question": "q?", "why": "w", "concern_id": "c-b"}
-    choice, _ = _choice({"pick": "c-a", "move": move})
-    assert choice.chosen.key == "c-a"
+    assert _choice({"pick": "c-a", "move": move}) == (None, "pick_conflicts_move")
+    assert _choice({"pick": "none", "move": move}) == (None, "pick_conflicts_move")
+    choice, _ = _choice({"pick": "c-b", "move": move})
+    assert choice.chosen.key == "c-b"
+
+
+@pytest.mark.parametrize("bad", [2, ["c-a"], {"id": "c-a"}, True])
+def test_a_malformed_pick_never_fails_the_thought(bad):
+    answer = PrimeAnswerV1.model_validate({"reading": "r", "pick": bad, "concerns": {"keep": ["c-a"]}})
+    assert answer.reading == "r" and answer.concerns.keep == ["c-a"]
+    assert _choice({"pick": bad}) == (None, "pick_not_shown")
+
+
+def test_a_long_pick_is_cut_not_refused():
+    answer = PrimeAnswerV1.model_validate({"reading": "r", "pick": "x" * 900})
+    assert answer.reading == "r" and len(answer.pick) == 200
 
 
 def test_situation_is_flat_and_valid():
@@ -102,6 +122,11 @@ def test_tending_shows_only_choice_nodes_with_ten_weighted_choices_top_two():
     tends, why = tendencies_from_frame(frame, now=NOW)
     assert why is None and [t.disposition_id for t in tends] == ["d1", "d3"]
     assert tends[0].line() == "tending: d1 over other, 5 of 7 [disposition:d1]"
+
+
+def test_tending_label_carries_no_ref_shaped_text():
+    tends, _ = tendencies_from_frame(_frame(_disp("d1", 30, label="a [thought:x] over b, 5 of 7")), now=NOW)
+    assert tends[0].label == "a (thought:x) over b, 5 of 7"
 
 
 def test_tending_skips_stale_invalid_and_thin_frames():
@@ -149,6 +174,34 @@ def test_tending_lines_are_dropped_first_when_over_the_cap():
     kept_with = [ln.split("[")[-1] for ln in with_tending.text.splitlines()[1:] if "tending:" not in ln]
     assert kept_with == kept_without
     assert with_tending.dropped_lines - full.dropped_lines == 2 - with_tending.tending
+
+
+def test_fetch_prime_block_awaits_a_tending_task_and_survives_its_failure():
+    import asyncio
+
+    from orion.prime.block import PRIME_STATE_KEY, fetch_prime_block
+    from orion.prime.state import PRIME_CONCERNS_KEY, concerns_view
+
+    state = _state()
+    kv = {PRIME_STATE_KEY: state.model_dump_json(),
+          PRIME_CONCERNS_KEY: concerns_view(state, now=NOW).model_dump_json()}
+
+    class R:
+        async def get(self, key):
+            return kv.get(key)
+
+    async def good():
+        return [T1]
+
+    async def bad():
+        raise RuntimeError("down")
+
+    async def run(src):
+        return await fetch_prime_block(R(), now=NOW + timedelta(seconds=5), tending=asyncio.ensure_future(src()))
+
+    assert asyncio.run(run(good)).tending == 1
+    b = asyncio.run(run(bad))
+    assert b.status == "ok" and b.tending == 0
 
 
 def test_no_tending_leaves_the_block_unchanged():

@@ -981,3 +981,17 @@ async def test_read_prime_tending_is_fail_open():
         assert await to._read_prime_tending(cfg) == ([], "http_503")
     with patch("httpx.AsyncClient", _client(exc=ConnectionError("down"))):
         assert await to._read_prime_tending(cfg) == ([], "fetch_failed:ConnectionError")
+    with patch("httpx.AsyncClient", _client(_Resp(200, ["not", "a", "dict"]))):
+        assert await to._read_prime_tending(cfg) == ([], "invalid_frame")
+
+    class _Slow(_client(_Resp(200, frame))):
+        async def get(self, url):
+            await asyncio.sleep(5)
+
+    import asyncio
+    import time
+
+    t0 = time.monotonic()
+    with patch("httpx.AsyncClient", _Slow), patch.object(to, "PRIME_TENDING_TIMEOUT_SEC", 0.1):
+        tends, why = await to._read_prime_tending(cfg)
+    assert tends == [] and why == "fetch_failed:TimeoutError" and time.monotonic() - t0 < 1.0

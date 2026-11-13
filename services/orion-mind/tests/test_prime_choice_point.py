@@ -57,7 +57,7 @@ def test_a_pick_among_two_concerns_publishes_one_choice_with_market_ranks_and_si
     assert choice.situation["strain"] == 0.3 and choice.situation["strain_constraint"] == "lane:agent"
     assert choice.situation["event_mode"] is True and choice.situation["body_read"] is True
     infer = [a for k, a in rt.bus.acts() if a["verb"] == "infer"][0]
-    assert choice.act_id == infer["act_id"] and choice.correlation_id == f"prime:{thought_id}"
+    assert choice.act_id == infer["act_id"] and choice.correlation_id is None
 
 
 def test_no_move_with_concerns_held_is_declined_all():

@@ -38,6 +38,7 @@ calls ``render_prime_block`` on state it already holds.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -297,10 +298,11 @@ def render_prime_block(
     shown = list(tending)[:MAX_TENDING_LINES]
     for k in range(len(shown), 0, -1):
         extra = [_tending_line(t) for t in shown[:k]]
-        t_text, t_refs, t_dropped = _render(header, lines, cap - sum(len(e) + 1 for e in extra))
-        if t_dropped == dropped and len(t_text) + sum(len(e) + 1 for e in extra) <= cap:
+        t_text, t_refs, _t_dropped = _render(header, lines, cap - sum(len(e) + 1 for e in extra))
+        if set(t_refs) >= set(refs) and len(t_text) + sum(len(e) + 1 for e in extra) <= cap:
             return PrimeBlockV1(text="\n".join([t_text, *extra]), status="ok",
-                                refs=t_refs + tuple(t.ref for t in shown[:k]), ticked_at=_utc(ticked_at),
+                                refs=tuple(dict.fromkeys(t_refs + tuple(t.ref for t in shown[:k]))),
+                                ticked_at=_utc(ticked_at),
                                 dropped_lines=dropped + len(shown) - k, tending=k)
     return PrimeBlockV1(text=text, status="ok", refs=refs, ticked_at=_utc(ticked_at),
                         dropped_lines=dropped + len(shown), tending=0)
@@ -344,10 +346,17 @@ async def fetch_prime_block(
     stale_after: timedelta = DEFAULT_STALE_AFTER,
     cap: int = BLOCK_CAP,
     timeout_sec: float = FETCH_TIMEOUT_SEC,
-    tending: Iterable[TendingV1] = (),
+    tending: Any = (),
 ) -> PrimeBlockV1:
     """Read Prime's state and tick time from Redis and render the block. Fail-open: any read error or
-    timeout renders the labelled absent block, never raises."""
+    timeout renders the labelled absent block, never raises.
+
+    ``tending``: the tending lines, or an awaitable (e.g. an already-running task) that yields them, so the
+    caller's HTTP read runs alongside the Redis reads. A failed awaitable means no tending lines."""
+    if inspect.isawaitable(tending):
+        tending_src, tending = tending, ()
+    else:
+        tending_src = None
     try:
         raw_state, raw_view = await asyncio.wait_for(
             asyncio.gather(redis.get(PRIME_STATE_KEY), redis.get(PRIME_CONCERNS_KEY)), timeout=timeout_sec)
@@ -355,6 +364,11 @@ async def fetch_prime_block(
         return absent_block(f"Prime's state did not load within {timeout_sec:g} s")
     except Exception as exc:  # noqa: BLE001
         return absent_block(f"Prime's state could not be read ({type(exc).__name__})")
+    if tending_src is not None:
+        try:
+            tending = tuple(await tending_src)
+        except Exception:  # noqa: BLE001 -- the tending lines never break the block
+            tending = ()
     state, ticked_at, reason = parse_prime_redis(raw_state, raw_view)
     return render_prime_block(state, ticked_at=ticked_at, now=now or datetime.now(timezone.utc),
                               stale_after=stale_after, cap=cap, absent_reason=reason, tending=tending)

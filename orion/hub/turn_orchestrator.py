@@ -1033,10 +1033,16 @@ async def _build_prime_block(bus: Any, *, settings: Any, correlation_id: str) ->
             block = absent_block("Hub's bus is not connected, so Prime's state could not be read")
         else:
             stale_min = float(getattr(settings, "HUB_PRIME_BLOCK_STALE_MIN", 10.0) or 10.0)
-            tending, tending_skip = await _read_prime_tending(settings)
-            block = await fetch_prime_block(redis, stale_after=timedelta(minutes=stale_min), tending=tending)
-            if tending_skip:
-                logger.info("prime_block_tending_skipped corr=%s reason=%s", correlation_id, tending_skip)
+
+            async def _tending() -> list[Any]:
+                tends, skip = await _read_prime_tending(settings)
+                if skip:
+                    logger.info("prime_block_tending_skipped corr=%s reason=%s", correlation_id, skip)
+                return tends
+
+            # Started first so the HTTP read runs alongside the two Redis GETs (worst case ~1 s, not ~2 s).
+            tending_task = asyncio.create_task(_tending())
+            block = await fetch_prime_block(redis, stale_after=timedelta(minutes=stale_min), tending=tending_task)
         logger.info("prime_block corr=%s %s", correlation_id, block.log_fields())
         return block
     except Exception:  # noqa: BLE001 -- the Prime block must never break a turn
@@ -1538,7 +1544,7 @@ async def execute_unified_turn(
         reasons=list(thought.disposition_reasons),
     )
 
-    # The Prime read (two Redis GETs, <= 1 s) runs alongside the situation build, not after it.
+    # The Prime read (two Redis GETs plus the tending GET, concurrent, each <= 1 s) runs alongside the situation build, not after it.
     prime_task = asyncio.create_task(_build_prime_block(bus, settings=cfg, correlation_id=correlation_id))
     situation_bundle = await _build_situation_prompt_fragment(
         session_id=session_id,

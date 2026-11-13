@@ -46,7 +46,8 @@ class TendingV1:
 
 
 def _label(text: str) -> str:
-    text = " ".join((text or "").split())
+    # No ref-shaped text from the label: a "[thought:..]" inside it is not a ref the block showed.
+    text = " ".join((text or "").split()).replace("[", "(").replace("]", ")")
     return text if len(text) <= LABEL_CHARS else text[: LABEL_CHARS - 1].rstrip() + "…"
 
 

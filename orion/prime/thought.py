@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Annotated, Any, Literal, Mapping, Optional, Sequence, Union
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from orion.physiology import prime_charge as pc
 from orion.prime.acts import CONCERN_HORIZON_SEC, clamp_hours, describe_effects
@@ -56,6 +56,8 @@ from orion.schemas.introspect import FOCUS_TEXT_CAP
 READING_CAP = 600
 # A move may cite the concern added in the same answer, whose id the runtime assigns afterwards.
 NEW_CONCERN = "new"
+# What a pick that is not a string or null becomes (never a concern id).
+INVALID_PICK = "(invalid pick)"
 
 
 class ConcernAddV1(BaseModel):
@@ -114,7 +116,18 @@ class PrimeAnswerV1(BaseModel):
     move: Optional[Move] = None
     # Personality choice point (spec 2026-10-16 rev 4, orion/prime/choice.py): the concern_id from YOUR
     # CONCERNS this thought acts on, or "none". Left out of an answer: the move's concern_id stands in.
-    pick: Optional[str] = Field(default=None, max_length=200)
+    pick: Optional[str] = None
+
+    @field_validator("pick", mode="before")
+    @classmethod
+    def _pick_never_fails_the_thought(cls, value: Any) -> Optional[str]:
+        """A malformed pick must not throw away the reading, edits and move: it becomes a value no
+        concern has (``resolve_pick`` then records no choice, reason ``pick_not_shown``)."""
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value.strip()[:200]
+        return INVALID_PICK
 
 
 SYSTEM_PROMPT = """You are Orion's slow, between-conversations thinking ("Prime"). You are not talking to anyone.

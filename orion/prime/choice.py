@@ -11,6 +11,8 @@ same answer adds or drops does not change what Orion chose among). Rules, all de
 * pick = a shown concern and at least 2 concerns shown: chosen = that concern, alternatives = the
   others.
 * pick = "none" (or JSON null) and at least 1 concern shown: ``declined_all``, alternatives = all.
+* a pick that contradicts the move's ``concern_id`` (both naming shown concerns, or "none" with a move about
+  a shown concern): no row (``pick_conflicts_move``).
 * no ``pick`` key: the move's ``concern_id`` counts as the pick when it names a shown concern (a
   move about a concern is a choice of it). Otherwise no row: the answer did not say.
 * anything else (one concern and it was picked, an unknown id, "new", nothing held): no row, with
@@ -21,7 +23,8 @@ real order is the body economy's: in event mode (PRIME_CONCERNS_FROM_EVENT_WANTS
 a funded event want, and the frame lists those "highest value first" (durable-runs
 GET /physiology/event-wants). A concern's market rank is its event's position in that list, counted
 among the shown concerns only (1 = the option the market valued most). A concern whose event is not
-in the list (a turn promise, a day-letter thread, arc mode) has no rank (None).
+in the list (a turn promise, a day-letter thread, arc mode) has no rank (None). When fewer than 2
+shown concerns are in the list, the market ordered nothing among them: every rank is None.
 
 ``situation``: what Prime's BODY section showed: the binding constraints and the strain dial (Prime's
 frame shows no arousal reading; strain is the body-state number it does see).
@@ -57,10 +60,13 @@ def shown_concerns(concerns: Sequence[Any]) -> list[ShownConcern]:
 
 def market_ranks(shown: Sequence[ShownConcern], ranked_event_ids: Sequence[str]) -> dict[str, Optional[int]]:
     """concern_id -> its rank among the shown concerns by the market's event order (1 = highest value);
-    None when its event is not in the list."""
+    None when its event is not in the list. Fewer than 2 placed: the market ordered nothing among these
+    options, so every rank is None (a lone placed concern is not "the market's top" over unranked ones)."""
     pos = {e: i for i, e in enumerate(ranked_event_ids)}
     placed = sorted((pos[c.event_ref], c.concern_id) for c in shown if c.event_ref in pos)
     ranks: dict[str, Optional[int]] = {c.concern_id: None for c in shown}
+    if len(placed) < 2:
+        return ranks
     for r, (_p, cid) in enumerate(placed, start=1):
         ranks[cid] = r
     return ranks
@@ -75,16 +81,21 @@ def resolve_pick(answer: Any, shown: Sequence[ShownConcern]) -> tuple[Optional[s
     """(pick, why-not). pick is a shown concern_id or PICK_NONE; None with the reason when the answer
     made no usable pick."""
     ids = {c.concern_id for c in shown}
+    move_cid = getattr(getattr(answer, "move", None), "concern_id", None)
+    move_cid = move_cid if move_cid in ids else None
     if "pick" in getattr(answer, "model_fields_set", set()):
         raw = answer.pick
         pick = PICK_NONE if raw is None else str(raw).strip()
         if pick.lower() in (PICK_NONE, "null", "no_move", "no move"):
-            return PICK_NONE, None
-        if pick in ids:
-            return pick, None
-        return None, "pick_not_shown"
-    move_cid = getattr(getattr(answer, "move", None), "concern_id", None)
-    if move_cid in ids:
+            pick = PICK_NONE
+        elif pick not in ids:
+            return None, "pick_not_shown"
+        # The prompt says a move about a concern picks it: a pick that contradicts the act Orion took is
+        # not evidence either way (it would be a false decline or a false departure).
+        if move_cid is not None and pick != move_cid:
+            return None, "pick_conflicts_move"
+        return pick, None
+    if move_cid is not None:
         return move_cid, None
     return None, "no_pick"
 
@@ -101,7 +112,8 @@ def prime_choice(
     correlation_id: Optional[str] = None,
 ) -> tuple[Optional[PersonalityChoiceV1], str]:
     """(the choice, reason). The choice is None when this thought made no recordable choice; the
-    reason then says why (``no_concerns``, ``one_concern_picked``, ``pick_not_shown``, ``no_pick``)."""
+    reason then says why (``no_concerns``, ``one_concern_picked``, ``pick_not_shown``, ``pick_conflicts_move``,
+    ``no_pick``)."""
     if not shown:
         return None, "no_concerns"
     pick, why = resolve_pick(answer, shown)

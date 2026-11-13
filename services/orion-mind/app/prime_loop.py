@@ -757,7 +757,8 @@ class PrimeRuntime(MindLoopRuntime):
                 answer, reply.context.get("shown_concerns") or [], thought_id=thought_id, occurred_at=now,
                 ranked_event_ids=reply.context.get("ranked_event_ids") or [],
                 situation=body_situation(inputs.body, self._binding(inputs.body), event_mode=inputs.event_mode),
-                act_id=act.act_id, correlation_id=chat_correlation_id(thought_id))
+                # No model-call correlation id reaches here (ModelReply carries none); the act id names the call.
+                act_id=act.act_id, correlation_id=None)
             if choice is None:
                 return why
             await self.bus.publish(PERSONALITY_CHOICE_CHANNEL, BaseEnvelope(

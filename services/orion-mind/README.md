@@ -321,15 +321,16 @@ Spec: docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.m
 - **Choice point (orion/prime/choice.py):** the thought's answer gains `"pick": "<concern_id>" | "none"` in the
   same model call (no new call). After the thought settles, Prime publishes one `personality.choice.v1` on
   `orion:personality:choice` (lane `prime`, `choice_id` `prime:<thought_id>`, act id = the thought act,
-  correlation id `prime:<thought_id>`): chosen concern + the other held concerns when 2 or more were shown, or
-  `declined_all` over every shown concern on "none". The options are the concerns the frame showed. No `pick`
+  correlation id None): chosen concern + the other held concerns when 2 or more were shown, or
+  `declined_all` over every shown concern on "none". The options are the concerns the frame showed. A pick
+  that contradicts the move's concern records nothing. A malformed pick never fails the thought. No `pick`
   key: a move's `concern_id` stands in. `market_rank` = the concern's event's position in the body economy's
   funded-event list (highest net first), among the shown concerns; None when its event is not listed (turn
-  promises, day-letter threads, arc mode). `situation`: binding constraints and the strain dial from BODY
+  promises, day-letter threads, arc mode), and all None when fewer than 2 shown concerns are listed. `situation`: binding constraints and the strain dial from BODY
   (Prime sees no arousal reading). Holdback (PRIME_HOLDBACK_FRACTION) draws after the pick, so a held-back
   question still records its choice. A publish failure logs `prime_choice_publish_failed` and the thought goes
   on. The `prime_thought` log line carries `choice=<outcome>` (`chosen:published`, `declined_all:published`,
-  `no_concerns`, `one_concern_picked`, `pick_not_shown`, `no_pick`, `publish_failed`). Not behind a flag: it is
+  `no_concerns`, `one_concern_picked`, `pick_not_shown`, `pick_conflicts_move`, `no_pick`, `publish_failed`). Not behind a flag: it is
   the graph's evidence and costs nothing.
 - **Tending lines:** with `PRIME_PERSONALITY_LINE_ENABLED` (default true, kill switch) the frame gains WHAT YOU
   TEND TO CHOOSE, the same <= 2 `tending: <label> [disposition:<id>]` lines Hub's Prime block shows, read from

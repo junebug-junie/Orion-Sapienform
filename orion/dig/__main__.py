@@ -1418,30 +1418,38 @@ class _LiveBody:
 
 
 def _lived_day(kind: str, ref_id: str, runner=None) -> date | None:
-    """The Denver day of one lived record, or None when it does not resolve (unreadable included)."""
+    """The Denver day of one lived record; None when it does not exist. Raises ``ReminiscenceError``
+    when its store cannot be read, so an outage reads UNREAD, never "made up" (review 2026-11-13)."""
     from orion import refs
+    from orion.body_atlas.reminiscence import ReminiscenceError
 
     if kind in ("arc", "act"):
         try:
             res = refs.resolve(refs.RefV1(kind=kind, id=ref_id))
         except refs.ValidationError:
             return None
-        raw = (res.data or {}).get("day_id" if kind == "arc" else "opened_at") if res.ok else None
-        if not raw:
-            return None
+        if not res.ok:
+            if (res.error or "").endswith("not found"):
+                return None
+            raise ReminiscenceError(res.error or f"{kind} {ref_id}: unread")
+        raw = (res.data or {}).get("day_id" if kind == "arc" else "opened_at")
         try:
             return (date.fromisoformat(raw) if kind == "arc"
                     else datetime.fromisoformat(str(raw).replace("Z", "+00:00")).astimezone(ZONE).date())
-        except ValueError:
+        except (TypeError, ValueError):
             return None
     from orion.body_atlas.sources import psql_rows
     from orion.dig import days
     from orion.evals.model_replay.sandbox import ReadOnlyPsql
 
     try:
-        rows = psql_rows(runner or ReadOnlyPsql(timeout_sec=30.0), days.day_sql(kind, ref_id))
-    except (ValueError, RuntimeError):
-        return None
+        sql = days.day_sql(kind, ref_id)
+    except ValueError:
+        return None  # no row can have that id
+    try:
+        rows = psql_rows(runner or ReadOnlyPsql(timeout_sec=30.0), sql)
+    except RuntimeError as exc:
+        raise ReminiscenceError(f"{kind} records: {exc}") from exc
     try:
         return date.fromisoformat(rows[0]["day"]) if rows else None
     except (KeyError, ValueError):

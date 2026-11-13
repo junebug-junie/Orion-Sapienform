@@ -103,6 +103,16 @@ def test_a_fabricated_lived_record_is_refused():
               "felt heavy and slow to me.", period=WEEK57)
 
 
+def test_an_unreadable_lived_store_reads_unread_not_made_up():
+    def down(kind, ref_id):
+        raise rm.ReminiscenceError("journal records: psql could not connect")
+
+    w = world(period_start=WEEK57[0], period_end=WEEK57[1], lived_day=down)
+    with pytest.raises(rm.ReminiscenceError, match=r"lived record UNREAD \(journal records: psql could not connect"):
+        write("what_it_was_like", f"[lived_record {JOURNAL}] Juniper and I talked about the memory I had lost.",
+              period=WEEK57, w=w)
+
+
 def test_a_lived_ref_is_rechecked_on_read():
     rec = write("what_it_was_like", f"[lived_record {JOURNAL}] Juniper and I talked about the memory I had lost.",
                 period=WEEK57)

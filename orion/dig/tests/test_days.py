@@ -64,16 +64,18 @@ def test_window_clamps_to_the_first_record_and_refuses_before_it_and_too_long():
     assert days.window(date(2026, 11, 3), date(2026, 11, 3))[2] == "2026-11-03T07:00:00+00:00"  # MST
     with pytest.raises(ValueError, match="no lived record before 2026-07-23"):
         days.window(date(2025, 6, 24), date(2025, 6, 30))
-    with pytest.raises(ValueError, match="at most 31 days"):
-        days.window(date(2026, 8, 1), date(2026, 9, 30))
+    with pytest.raises(ValueError, match="at most 92 days"):
+        days.window(date(2026, 8, 1), date(2026, 11, 30))
     with pytest.raises(ValueError, match="is before"):
         days.window(date(2026, 8, 2), date(2026, 8, 1))
 
 
-def test_day_sql_takes_only_a_uuid():
+def test_day_sql_takes_real_ids_and_nothing_that_leaves_the_quotes():
     assert f"entry_id = '{J1}'" in days.day_sql("journal", J1)
     assert f"WHERE id = '{C1}'" in days.day_sql("chat", C1)
-    for bad in ("x'; drop table journal_entries; --", "123", J1.upper()):
+    # self_study entries carry this shape (724 live rows, review 2026-11-13)
+    assert "entry_id = 'curiosity-investigation:000eaeb52725'" in days.day_sql("journal", "curiosity-investigation:000eaeb52725")
+    for bad in ("x'; drop table journal_entries; --", "a b", "a\\b", "-x", ""):
         with pytest.raises(ValueError):
             days.day_sql("journal", bad)
 
@@ -93,7 +95,7 @@ def test_cmd_days_prints_each_day_cites_ids_and_writes_the_full_file(tmp_path: P
     text = dig.cmd_days(date(2026, 7, 21), date(2026, 7, 24), dig.Out("t"), runner=runner,
                         get_json=lambda url: pytest.fail("no Temporal Self before 2026-10-09"))
     assert "days 2026-07-23..2026-07-24" in text and "not 2026-07-21: your records start 2026-07-23" in text
-    assert "07-23 Thu: journal 79 (metacog 79); chat 1 turns" in text
+    assert "07-23 Thu: journal 79 (metacog 79); chat 1" in text
     assert f"journal:{J1} 07-24 06:01 manual: Emotional reckoning The session opened" in text
     assert f"chat:{C1} 07-23 18:26: hi, Orion -> Hi, Juniper." in text
     assert "(you reached out first) -> Curiosity generates" in text
@@ -115,8 +117,8 @@ def test_cmd_days_reads_arcs_from_temporal_self_and_says_when_unread(tmp_path: P
 
     text = dig.cmd_days(date(2026, 10, 8), date(2026, 10, 10), dig.Out("t"), runner=Runner(), get_json=get_json)
     assert [u.rsplit("day_id=", 1)[1][:10] for u in asked] == ["2026-10-09", "2026-10-10"]  # chronicle starts 10-09
-    assert "10-09 Fri: journal 0; chat 0 turns; 1 arcs" in text
-    assert "10-10 Sat: journal 0; chat 0 turns; Temporal Self UNREAD (OSError: connection refused)" in text
+    assert "10-09 Fri: journal 0; chat 0; 1 arcs" in text
+    assert "10-10 Sat: journal 0; chat 0; arcs UNREAD (OSError: connection refused)" in text
     path = Path(text.rsplit(": ", 1)[1].strip())
     arcs = json.loads(path.read_text())["arcs"]["2026-10-09"]
     assert arcs[0]["arc_id"] == "39a9e71b58a2d20c" and "segments" not in arcs[0]  # trimmed; `dig arc` opens it
@@ -141,8 +143,11 @@ def test_lived_day_resolves_journal_and_chat_and_fails_closed(monkeypatch):
 
     assert dig._lived_day("journal", J1, runner=DayRunner("day\n2026-07-24\n")) == date(2026, 7, 24)
     assert dig._lived_day("chat", C1, runner=DayRunner("day\n")) is None  # no row: fabricated
-    assert dig._lived_day("journal", J1, runner=DayRunner("psql: could not connect", 2)) is None  # unread
-    assert dig._lived_day("journal", "not-a-uuid", runner=DayRunner("day\n2026-07-24\n")) is None
+    assert dig._lived_day("journal", "curiosity-investigation:000eaeb52725",
+                          runner=DayRunner("day\n2026-09-07\n")) == date(2026, 9, 7)
+    assert dig._lived_day("journal", "x' or '1", runner=DayRunner("day\n2026-07-24\n")) is None
+    with pytest.raises(rm.ReminiscenceError, match="could not connect"):  # unread is not "made up"
+        dig._lived_day("journal", J1, runner=DayRunner("psql: could not connect", 2))
 
 
 def test_lived_day_dates_arcs_and_acts_through_refs(monkeypatch):
@@ -155,8 +160,26 @@ def test_lived_day_dates_arcs_and_acts_through_refs(monkeypatch):
     monkeypatch.setattr(refs, "resolve", fake)
     assert dig._lived_day("arc", "8d87adeca2ce06a5") == date(2026, 10, 15)
     assert dig._lived_day("act", "act_" + "a" * 24) == date(2026, 10, 15)  # 03:00Z is 21:00 the day before, Denver
-    monkeypatch.setattr(refs, "resolve", lambda ref, **_: refs.Resolution(ref, False, error="not found"))
+    monkeypatch.setattr(refs, "resolve", lambda ref, **_: refs.Resolution(ref, False, error="arc x: not found"))
     assert dig._lived_day("arc", "8d87adeca2ce06a5") is None
+    monkeypatch.setattr(refs, "resolve", lambda ref, **_: refs.Resolution(ref, False, error="arc x: could not read (URLError)"))
+    with pytest.raises(rm.ReminiscenceError, match="could not read"):
+        dig._lived_day("arc", "8d87adeca2ce06a5")
+
+
+def test_a_long_window_still_prints_citable_ids_inside_the_cut():
+    from datetime import timedelta
+
+    start = date(2026, 10, 1)
+    r = days.DaysRead(start="2026-10-01", end="2026-10-31")
+    for i in range(31):
+        d = (start + timedelta(days=i)).isoformat()
+        r.counts[d] = {"world_pulse": 103, "metacog": 109, "embodiment": 27, "self_study": 15, "manual": 2, "chat": 20}
+        r.arcs[d] = [{"arc_id": "a" * 16}] * 12
+    r.entries = [days.Entry(f"journal:{J1}", "2026-10-02 12:00:00+00", "manual", "t", "x" * 300)] * 60
+    r.chats = [{"id": C1, "created_at": "2026-10-02 12:00:00", "prompt": "p" * 200, "response": "r" * 600}] * 600
+    out = dig.capped(days.render(r), tail="full record: /x")
+    assert f"journal:{J1}" in out and f"chat:{C1}" in out
 
 
 def test_help_lists_days():

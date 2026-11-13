@@ -343,8 +343,8 @@ class World:
     """Every lookup a ref check needs. ``live_ids`` returns the live atlas ids, or the reason the
     body could not be read. ``pr_merged_at`` returns the merge time (ISO), None for a PR that is not
     merged, and raises ``ReminiscenceError`` when GitHub cannot be read. ``lived_day(kind, id)`` returns the
-    Denver day a lived record (``journal``, ``chat``, ``arc``, ``act``) is from, or None when it does not
-    resolve. ``period_start``/``period_end``: the Denver days being visited."""
+    Denver day a lived record (``journal``, ``chat``, ``arc``, ``act``) is from, None when it does not
+    exist, and raises ``ReminiscenceError`` when its store cannot be read. ``period_start``/``period_end``: the Denver days being visited."""
 
     period_commit: str | None
     period_end_utc: datetime
@@ -444,12 +444,15 @@ def resolve(ref: str, label: str, hop: str, world: World) -> str | None:
         return None if ref in ids else f"{ref}: not live in my body now"
     if kind == "lived":
         m = _LIVED.fullmatch(ref)
-        day = world.lived_day(m.group(1), m.group(2))
+        try:
+            day = world.lived_day(m.group(1), m.group(2))
+        except ReminiscenceError as exc:
+            return f"{ref}: lived record UNREAD ({str(exc)[:120]})"
         if day is None:
             return f"{ref}: does not resolve"
         if then_hop and label == "lived_record" and not world.period_start <= day <= world.period_end:
             return (f"{ref}: a record from {day}, outside this period ({world.period_start}..{world.period_end}); "
-                    f"`dig days {world.period_start} {world.period_end}` lists the ones inside it")
+                    f"`dig days {max(world.period_start, LIVED_RECORDS_FROM)} {world.period_end}` lists the ones inside it")
         return None
     return None if world.dig_file(ref) else f"{ref}: no such dig result file"
 

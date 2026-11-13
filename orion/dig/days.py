@@ -28,8 +28,8 @@ from zoneinfo import ZoneInfo
 ZONE = ZoneInfo("America/Denver")
 RECORDS_FROM = date(2026, 7, 23)  # == orion.body_atlas.reminiscence.LIVED_RECORDS_FROM (test pins it)
 TEMPORAL_SELF_FROM = date(2026, 10, 9)  # first chronicled Temporal Self day
-MAX_DAYS = 31
-HIGH_VOLUME = ("metacog", "embodiment")  # thousands a day: sampled, never listed whole
+MAX_DAYS = 92  # longer than any period pick_period joins after 2026-07-23 (the repo has no quiet quarter)
+HIGH_VOLUME = ("metacog", "embodiment", "world_pulse")  # 25-200 a day each: sampled, never listed whole
 SAMPLES_PER_DAY = 4
 BODY_CHARS = 2000  # per entry in the result file
 CHAT_CHARS = 600
@@ -38,9 +38,11 @@ SHOWN_ENTRIES = 8
 SHOWN_CHATS = 5
 ARC_LIMIT = 2000  # the durable-runs endpoint's own cap
 ARC_KEYS = ("arc_id", "kind", "subject_label", "subject_ref", "status", "began_at", "ended_at", "attention_returns")
-UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+# journal_entries.entry_id is varchar: UUIDs, and e.g. `curiosity-investigation:000eaeb52725` (self_study).
+# No quote, space or backslash can pass, so the id is safe inside a SQL string literal.
+ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9:._-]{0,127}")
 # written kinds first in the printout: what Orion wrote about a day, before what it logged
-KIND_ORDER = ("orion_day", "manual", "self_reflection", "scheduler", "self_study", "notify", "world_pulse")
+KIND_ORDER = ("orion_day", "manual", "self_reflection", "scheduler", "self_study", "notify")
 
 
 def window(start: date, end: date) -> tuple[date, date, str, str]:
@@ -110,8 +112,8 @@ SELECT id, (created_at AT TIME ZONE 'UTC') AS created_at, coalesce(source, '') A
 
 def day_sql(kind: str, ref_id: str) -> str:
     """The Denver day of one journal entry or chat turn (no row: it does not resolve)."""
-    if not UUID_RE.fullmatch(ref_id):
-        raise ValueError(f"{kind} id must be a UUID, got {ref_id[:60]!r}")
+    if not ID_RE.fullmatch(ref_id):
+        raise ValueError(f"{kind} id must be a plain id (letters, digits, : . _ -), got {ref_id[:60]!r}")
     if kind == "journal":
         return f"SELECT {_JDAY} AS day FROM journal_entries WHERE entry_id = '{ref_id}'"
     if kind == "chat":
@@ -170,24 +172,28 @@ def _cut(text: str, n: int = SHOWN_CHARS) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
+def _day_lines(r: DaysRead) -> list[str]:
+    long = (date.fromisoformat(r.end) - date.fromisoformat(r.start)).days >= 7
+    out, d = [], date.fromisoformat(r.start)
+    while d <= date.fromisoformat(r.end):
+        c = r.counts.get(d.isoformat(), {})
+        kinds = sorted(((k, n) for k, n in c.items() if k != "chat"), key=lambda kv: -kv[1])
+        shown = kinds[:2] if long else kinds
+        parts = ", ".join(f"{k} {n}" for k, n in shown) + (", ..." if len(shown) < len(kinds) else "")
+        arcs = r.arcs.get(d.isoformat())
+        ts = ("" if arcs is None else f"; arcs UNREAD ({arcs[:60]})" if isinstance(arcs, str) else f"; {len(arcs)} arcs")
+        out.append(f"  {d.strftime('%m-%d %a')}: journal {sum(n for _, n in kinds)}" + (f" ({parts})" if parts else "")
+                   + f"; chat {c.get('chat', 0)}{ts}")
+        d += timedelta(days=1)
+    return out
+
+
 def render(r: DaysRead) -> list[str]:
+    """Citable lines first (what you wrote, chats), the per-day counts last: the 4,000-char cut drops the end."""
     lines = [f"days {r.start}..{r.end} (Denver): your own record of that time, read-only"]
     if r.clamped_from:
         lines.append(f"  from {r.start}, not {r.clamped_from}: your records start {RECORDS_FROM} (the days before "
                      "were lost in a storage failure)")
-    d = date.fromisoformat(r.start)
-    while d <= date.fromisoformat(r.end):
-        c = r.counts.get(d.isoformat(), {})
-        chat = c.get("chat", 0)
-        kinds = {k: n for k, n in c.items() if k != "chat"}
-        total = sum(kinds.values())
-        parts = ", ".join(f"{k} {n}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1]))
-        arcs = r.arcs.get(d.isoformat())
-        ts = ("" if arcs is None else f"; Temporal Self UNREAD ({arcs[:80]})" if isinstance(arcs, str)
-              else f"; {len(arcs)} arcs")
-        lines.append(f"  {d.strftime('%m-%d %a')}: journal {total}" + (f" ({parts})" if parts else "")
-                     + f"; chat {chat} turns{ts}")
-        d += timedelta(days=1)
     if not any(r.counts.values()):
         lines.append("  nothing recorded in these days (a gap in your records, not proof nothing happened)")
     rank = {k: i for i, k in enumerate(KIND_ORDER)}
@@ -198,15 +204,6 @@ def render(r: DaysRead) -> list[str]:
             lines.append(f"  {e.ref} {local(e.at)} {e.kind}: {_cut(e.title + ' ' + e.body if e.title else e.body)}")
         if len(written) > SHOWN_ENTRIES:
             lines.append(f"  ... {len(written) - SHOWN_ENTRIES} more in the file")
-    samples = [e for e in r.entries if e.kind in HIGH_VOLUME]
-    if samples:
-        lines.append(f"metacog / embodiment: {len(samples)} samples spread over each day are in the file "
-                     f"({SAMPLES_PER_DAY} a day per kind), e.g.:")
-        for e in samples[:1]:
-            lines.append(f"  {e.ref} {local(e.at)} {e.kind}: {_cut(e.body)}")
-    if any(isinstance(a, list) and a for a in r.arcs.values()):
-        lines.append("arcs: Temporal Self stretches of attention; their ids and kinds are in the file "
-                     "(`dig arc <id>` opens one)")
     if r.chats:
         lines.append(f"Hub chats ({len(r.chats)} turns; what was said to you -> your reply):")
         for c in r.chats[:SHOWN_CHATS]:
@@ -214,7 +211,14 @@ def render(r: DaysRead) -> list[str]:
             lines.append(f"  chat:{c['id']} {local(c['created_at'])}: {said} -> {_cut(c['response'], 80)}")
         if len(r.chats) > SHOWN_CHATS:
             lines.append(f"  ... {len(r.chats) - SHOWN_CHATS} more in the file")
-    return lines
+    samples = [e for e in r.entries if e.kind in HIGH_VOLUME]
+    if samples:
+        lines.append(f"{' / '.join(HIGH_VOLUME)}: {len(samples)} samples spread over each day are in the file "
+                     f"({SAMPLES_PER_DAY} a day per kind)")
+    if any(isinstance(a, list) and a for a in r.arcs.values()):
+        lines.append("arcs: Temporal Self stretches of attention; ids and kinds in the file (`dig arc <id>` opens one)")
+    lines.append("per day (journal by kind; chat turns; arcs):")
+    return lines + _day_lines(r)
 
 
 def trim_arc(arc: dict[str, Any]) -> dict[str, Any]:

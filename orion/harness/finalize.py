@@ -516,12 +516,10 @@ FINALIZE_REFLECT_HARNESS_FIELDS: dict[str, Any] = {
     "finalize_changed": False,
 }
 FINALIZE_REFLECT_CHAT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
-# A Strata worker checks JSON only after generation. A malformed reply is a
-# completed, failed judge call, so one judge-only replay may recover it. Leave
-# time for voice finalization and never retry unrelated gateway failures.
-JUDGE_JSON_502_RETRY_MAX_SEC = 60.0
-JUDGE_JSON_502_RETRY_MIN_SEC = 30.0
-JUDGE_JSON_502_RETRY_RESERVE_SEC = 90.0
+# A Strata worker checks JSON only after generation. The gateway now does that check itself for
+# every caller (services/orion-llm-gateway/app/strata_structured.py: exact repair of a Python-literal
+# dict, one corrective retry), so the judge-only replay that lived here (#3292) is gone: kept, it
+# would stack a second retry on the gateway's and cost up to four calls for one verdict.
 
 
 def finalize_reflect_model_fields(promise_ledger: bool | None = None) -> tuple[str, ...]:
@@ -739,22 +737,6 @@ def extract_finalize_reflection_payload(result: dict[str, Any]) -> dict[str, Any
     raise ValueError("harness_finalize_reflect exec result missing reflection payload")
 
 
-def _is_judge_json_502(result: dict[str, Any]) -> bool:
-    if extract_cortex_payload_text(result):
-        return False
-    detail = (cortex_exec_failure_detail(result) or "").casefold()
-    return detail.startswith("upstream_http_5xx:http_502: model did not return valid json")
-
-
-def _judge_json_retry_limit(deadline_monotonic: float | None) -> float | None:
-    if deadline_monotonic is None:
-        return JUDGE_JSON_502_RETRY_MAX_SEC
-    available = deadline_monotonic - time.monotonic() - JUDGE_JSON_502_RETRY_RESERVE_SEC
-    if available < JUDGE_JSON_502_RETRY_MIN_SEC:
-        return None
-    return min(JUDGE_JSON_502_RETRY_MAX_SEC, available)
-
-
 async def run_finalize_reflection(
     *,
     correlation_id: str,
@@ -770,7 +752,6 @@ async def run_finalize_reflection(
     situation_notes: str | None = None,
     pending_offers: list[str] | None = None,
     open_promises: list[OpenPromiseRefV1] | None = None,
-    deadline_monotonic: float | None = None,
 ) -> tuple[FinalizeReflectionV1, bool, str | None]:
     if substrate_appraisal is None:
         raise ValueError("substrate_appraisal is required for harness finalize reflection")
@@ -803,36 +784,8 @@ async def run_finalize_reflection(
         pending_offers=pending_offers,
         open_promises=open_promises,
     )
-    retried_json_502 = False
     try:
         exec_result = await cortex_client(plan_request)
-        if _is_judge_json_502(exec_result):
-            steps = plan_request.plan.steps
-            single_llm_step = len(steps) == 1 and steps[0].services == ["LLMGatewayService"]
-            retry_limit = _judge_json_retry_limit(deadline_monotonic) if single_llm_step else None
-            if retry_limit is None:
-                reason = "budget" if single_llm_step else "plan_shape"
-                logger.info(
-                    "harness_finalize_reflect_json_502_retry_skipped corr=%s reason=%s",
-                    correlation_id, reason,
-                )
-            else:
-                # This verb has one LLM step and no tools. A fresh request id
-                # separates its trace from the failed attempt while context
-                # metadata keeps the original turn correlation.
-                retry_request = plan_request.model_copy(deep=True)
-                retry_request.args.request_id = str(uuid.uuid4())
-                step_timeout_ms = int((retry_limit - 5.0) * 1000)
-                retry_request.plan.timeout_ms = step_timeout_ms
-                for step in retry_request.plan.steps:
-                    step.timeout_ms = step_timeout_ms
-                logger.warning(
-                    "harness_finalize_reflect_json_502_retry corr=%s timeout_sec=%.0f",
-                    correlation_id, retry_limit,
-                )
-                retried_json_502 = True
-                async with asyncio.timeout(retry_limit):
-                    exec_result = await cortex_client(retry_request)
         raw_payload = extract_finalize_reflection_payload(exec_result)
         # extract_finalize_reflection_payload() returns model TEXT on the normal
         # path (extract_cortex_payload_text() is str-typed), so normalize to a
@@ -870,14 +823,7 @@ async def run_finalize_reflection(
             open_promises=open_promises or [],
             correlation_id=correlation_id,
         ).reflection
-        if retried_json_502:
-            logger.info("harness_finalize_reflect_json_502_retry_result corr=%s result=success", correlation_id)
     except Exception as exc:
-        if retried_json_502:
-            logger.warning(
-                "harness_finalize_reflect_json_502_retry_result corr=%s result=failed error_type=%s",
-                correlation_id, type(exc).__name__,
-            )
         degraded = maybe_quick_lane_verdict(
             correlation_id=correlation_id,
             thought=thought,
@@ -1119,7 +1065,6 @@ async def maybe_run_finalize_tool_retry(
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
             situation_notes=situation_notes,
-            deadline_monotonic=deadline_monotonic,
         )
     except Exception as exc:
         logger.warning(
@@ -1640,7 +1585,6 @@ async def _recheck_and_maybe_repair(
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
         situation_notes=situation_notes,
-        deadline_monotonic=deadline_monotonic,
     )
     if recheck.reflection_source == "degraded_llm_failure_fallback":
         # run_finalize_reflection degrades instead of raising; that is not a pass.
@@ -1944,7 +1888,6 @@ async def run_harness_finalize_chain(
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
         situation_notes=situation_notes,
-        deadline_monotonic=deadline_monotonic,
     )
 
     # Loop-back tool-recall retry (5b-prime). MAX_FINALIZE_LOOP_RETRIES bounds

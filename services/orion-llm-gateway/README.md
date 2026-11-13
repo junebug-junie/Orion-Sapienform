@@ -470,3 +470,31 @@ types; it is not a promise that every role supports Anthropic.
 No active route has been switched. See
 [Hecate rollout](../../docs/runbooks/hecate-glm53-vllm.md) for candidate config,
 reader rollout order and acceptance gates.
+
+## Structured output on Strata lanes (chat, agent)
+
+Strata 0.2.7 has no constrained decoding: its capabilities say `"method": "prompt_and_validate"`.
+A `response_format` only adds a "return one JSON object" instruction to the system message, then
+runs a strict `json.loads` on the finished reply; on failure it answers HTTP 502
+`structured_output_failed` and the reply is lost. Grammar fields (`grammar`, `guided_json`) are
+ignored (probed live 2026-11-13).
+
+So for Strata the gateway does both steps itself (`app/strata_structured.py`, wired in
+`_execute_openai_chat`):
+
+1. It sends Strata's own instruction, word for word, without `response_format`.
+2. It runs Strata's own extraction and strict parse, so a valid reply comes back exactly as before
+   (canonical JSON).
+3. A Python-style dict (`{'key': ...}`, the "Expecting property name enclosed in double quotes"
+   error) is converted only when the meaning cannot change: adjacent strings, escapes Python reads
+   differently (`\a`, `\x41`, ...), prefixed or triple-quoted strings and repeated keys are refused.
+4. Otherwise, one corrective retry: the model sees its own reply and the parser's error. It runs only
+   when the first call used at most half the read timeout. A cut-off reply (`finish_reason` other
+   than `stop`) is not retried.
+5. Still bad: the same 502 message callers handled before
+   (`upstream_http_5xx:http_502: model did not return valid JSON: ...`). If the retry itself fails
+   (overflow, 5xx), the caller still gets that original JSON failure.
+
+Logs: `strata_json_recovered` (repaired, or fixed by the retry), `strata_json_rejected` (with up to
+1,500 chars of the raw reply, so the prompts that cause bad JSON can be fixed),
+`strata_json_retry_failed`, `strata_json_retry_skipped`.

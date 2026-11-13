@@ -363,6 +363,44 @@ cabinet 15 min -0.072 +-0.167, office 5 min -0.032 +-0.099, office 15 min -0.050
 `evals/run_surprise_node_replay_eval.py --hours 72` replays the event gate and the substrate fold
 over live rows: what the two nodes would have read.
 
+## Family A: every body and room reading at once (slice 1, eval only)
+
+"What will my body and room read next?" for every raw reading together, 5 and 15 min ahead (spec:
+`docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`, "A. Neural forecaster").
+Slice 1 builds the gate and the baselines and measures them. It serves nothing, stores nothing, and
+publishes nothing: no table, no bus event, no substrate node.
+
+- **Inputs**: `config/prediction/family_a.v1.yaml`, 45 candidates read as 5-min means from the raw tables
+  only (`orion_biometrics_summary.measurements`, `orion_biometrics_cluster`, `home_cooling_sample`,
+  `office_env_sample` / `closet_env_sample` payload measurements; `app/family_a_load.py`). A key or id
+  that names a hint channel (`*_pressure`, `prediction_error*`, `action_warrant`, ...) or any other table
+  is refused when the config loads.
+- **Hygiene gate** (`app/family_a.py`, thresholds fixed in the config): present in >= 50 % of buckets; no
+  value over 85 %; >= 50 distinct values; >= 75 % of whole days touch the central 80 % band and daily
+  medians are not a monotone drift (a decay-to-zero fails); not a duplicate of an earlier input (|corr|
+  > 0.999). Resting on its floor > 50 % of the time = event-like = input only, never a target. Missing is
+  NaN plus a mask channel, never 0.0. Standardisation from training rows only, kept in the manifest. At
+  scoring time (windows < 7 days) every named input must be present, not stuck, inside its training band
+  and fresh (30 min), or the run refuses.
+- **Rungs**: persistence; per-series AR (ridge on the last 6 buckets); `ridge_var` = the AR forecast plus
+  a ridge on lags 0-12 of every input + masks + time of day (so at a large penalty it is AR, and it can
+  only win by what the other readings add). Backtest: the repo's `block_purged_temporal_split`
+  (`orion/mood_arc/fit_encoder.py`), 5 blocks, purged by lag + lead, >= 2 seeds that move the block
+  edges. A win needs the overlap-aware paired t (`backtest.paired_gap`) AND a 2-hour block bootstrap both
+  at p < 0.05, against the better baseline per target.
+- **Joint surprise** (eval output only): ridge residuals whitened by their own covariance (Mahalanobis
+  d^2 on the observed readings, chi-square tail), then a conformal p against held calibration rows.
+  surprisal = -ln p; calm point = E[-ln p] of a uniform conformal p (-> 1.0); excess rests at 0 by theory.
+  One event moving four coupled readings scores about one miss, not four. The eval also names the
+  readings that carry each big miss (a hint, not a cause).
+
+Live, 2026-10-30..11-13 (14 days, 3 seeds): 41 targets, 1 covariate (cabinet light), refused hecate watts
+(98.6 % one value), office TVOC (duplicate of eCO2), office sound dBA (only 38 % present: starts 11-07).
+`ridge_var` beats the best baseline at every seed: 5 min loss x0.94, 15 min x0.96 (paired t p <= 0.003,
+bootstrap p 0.0005). The joint excess on the last 24 h (model trained before it) reads -0.08 (5 min) and
+-0.19 (15 min), both 95 % intervals contain 0. Only 9 days hold every target (closet, PM and lux sensors
+started 11-05), so no neural rung yet: the spec asks for 21 days (2026-11-26 at the earliest).
+
 ## Contracts
 
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).
@@ -391,6 +429,7 @@ PYTHONPATH=../..:. python -m pytest tests -q
 PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py          # planted effects, many seeds
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_calm_live_eval.py --hours 24   # surprise calm check (live, read-only)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_node_replay_eval.py --hours 72  # gate + node fold replayed (live, read-only)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 [--out <dir>]  # family A gate + rungs + joint surprise (read-only, ~40 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14   # adaptive ranges replayed (read-only, ~6 min)
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]

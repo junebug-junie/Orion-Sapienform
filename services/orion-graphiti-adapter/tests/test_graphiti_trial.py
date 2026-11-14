@@ -110,6 +110,15 @@ def test_select_sample_keeps_every_key_row_and_time_order():
     assert trial.select_sample(eps, 4) == picked  # seeded
 
 
+def test_plan_episodes_reuses_the_exact_sample_and_refuses_missing_rows():
+    mem = [_mem(i, f"statement {i}", _t(f"2026-10-{i + 1:02d}T00:00:00")) for i in range(5)]
+    eps = trial.episodes_from_rows(mem, [])
+    names = [eps[3].name, eps[1].name]
+    assert [e.name for e in trial.plan_episodes(eps, names)] == [eps[1].name, eps[3].name]
+    with pytest.raises(SystemExit, match="no longer in the source"):
+        trial.plan_episodes(eps, names + ["episode_memory:gone"])
+
+
 def test_progress_line_has_rate_eta_and_errors():
     line = trial.progress_line(done=10, total=20, skipped=2, errors=1, elapsed=3600, processed=8, title="t")
     assert "50.0%" in line and "10/20 (skipped 2)" in line and "8.0 ep/h" in line

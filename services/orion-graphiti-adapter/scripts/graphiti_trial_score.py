@@ -324,6 +324,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--falkor-port", type=int, default=6379)
     p.add_argument("--judgments", default=str(OUT_DIR / "dup_sample.json"))
     p.add_argument("--force", action="store_true", help="sample: overwrite a judgments file that has judgments")
+    p.add_argument("--plan", default="", help="plan-<run>.json the report describes (default: newest)")
     p.add_argument("--terms", default="", help=f"terms file (default {TERMS_LOCAL.name})")
     a = p.parse_args(argv)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -346,7 +347,9 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "report":
         judged = json.loads(Path(a.judgments).read_text()) if Path(a.judgments).exists() else []
         results = _read_jsonl(OUT_DIR / "results.jsonl")
-        plan = json.loads((OUT_DIR / "plan.json").read_text()) if (OUT_DIR / "plan.json").exists() else {}
+        plan_path = Path(a.plan) if a.plan else max(OUT_DIR.glob("plan-*.json"), key=lambda f: f.stat().st_mtime,
+                                                         default=None)
+        plan = json.loads(plan_path.read_text()) if plan_path and plan_path.exists() else {}
         runs = [json.loads(f.read_text()) for f in sorted(OUT_DIR.glob("run-*.json"))]
         terms = load_terms(Path(a.terms) if a.terms else None)
         checks = run_checks(dump["nodes"], dump["edges"], judged, terms)

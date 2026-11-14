@@ -122,6 +122,16 @@ def select_sample(episodes: list[TrialEpisode], size: int, seed: int = 20261113)
     return [e for e in episodes if e.uuid in chosen]
 
 
+def plan_episodes(episodes: list[TrialEpisode], names: list[str]) -> list[TrialEpisode]:
+    """Exactly the planned episodes, in time order; refuses a plan naming rows that are gone."""
+    wanted = set(names)
+    out = [e for e in episodes if e.name in wanted]
+    missing = wanted - {e.name for e in out}
+    if missing:
+        raise SystemExit(f"plan names {len(missing)} episodes no longer in the source: {sorted(missing)[:5]}")
+    return out
+
+
 def _utc(value: Any) -> datetime:
     if isinstance(value, str):
         value = datetime.fromisoformat(value)
@@ -384,14 +394,19 @@ async def run(args: argparse.Namespace) -> int:
 
     episodes = await load_episodes(args.postgres_uri)
     total_source = len(episodes)
-    if args.sample:
+    if args.plan_file:
+        # A resumed sample must be the SAME sample: new rows land in episode_memory every day, which
+        # changes the seeded random fill, so a re-run of --sample would quietly pick other rows.
+        episodes = plan_episodes(episodes, json.loads(Path(args.plan_file).read_text())["names"])
+    elif args.sample:
         global KEY_ROW_RE
         from graphiti_trial_score import load_terms  # noqa: PLC0415
         KEY_ROW_RE = key_row_re(load_terms())
         episodes = select_sample(episodes, args.sample)
     if args.limit:
         episodes = episodes[: args.limit]
-    (OUT_DIR / "plan.json").write_text(json.dumps(
+    run_id = args.run_id or uuidlib.uuid4().hex[:12]
+    (OUT_DIR / f"plan-{run_id}.json").write_text(json.dumps(
         {"source_total": total_source, "planned": len(episodes), "sample": args.sample, "limit": args.limit,
          "key_rows": sum(e.key_row() for e in episodes),
          "names": [e.name for e in episodes]}, indent=1))
@@ -401,7 +416,6 @@ async def run(args: argparse.Namespace) -> int:
     driver = FalkorDriver(host=host, port=port, database=TRIAL_GRAPH)
     stats = CallStats()
     box = HeaderBox()
-    run_id = args.run_id or uuidlib.uuid4().hex[:12]
     bus = OrionBusAsync(args.bus_url)
     hold = TrialHold(bus, run_id, box, min_ctx_tokens=args.min_ctx)
     graphiti = Graphiti(
@@ -497,6 +511,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--limit", type=int, default=0, help="first N planned episodes (0 = all)")
     r.add_argument("--sample", type=int, default=0, help="key rows + seeded random fill to N (0 = all)")
     r.add_argument("--run-id", default="")
+    r.add_argument("--plan-file", default="", help="re-run exactly the episodes named in a plan-<run>.json")
     r.add_argument("--postgres-uri", default=os.environ.get(
         "POSTGRES_URI", "postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney"))
     r.add_argument("--falkor-host", default="orion-athena-falkordb")

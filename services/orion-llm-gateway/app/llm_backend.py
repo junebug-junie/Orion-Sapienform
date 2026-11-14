@@ -352,18 +352,20 @@ def _resolve_http_read_timeout_sec(body: Optional[ChatBody]) -> float:
     Callers (e.g. cortex-exec) may set options['gateway_read_timeout_sec'] so the
     gateway does not abort before the bus RPC timeout that wraps this request.
     """
-    default = float(getattr(settings, "read_timeout_sec", 60.0) or 60.0)
+    deep = getattr(body, "route", None) == "deep.thinker.v1"
+    cap = 1800.0 if deep else 900.0
+    default = 1800.0 if deep else float(getattr(settings, "read_timeout_sec", 60.0) or 60.0)
     if body is None:
-        return max(30.0, min(default, 900.0))
+        return max(30.0, min(default, cap))
     opts = getattr(body, "options", None) or {}
     raw = opts.get("gateway_read_timeout_sec")
     if raw is None:
-        return max(30.0, min(default, 900.0))
+        return max(30.0, min(default, cap))
     try:
         v = float(raw)
     except (TypeError, ValueError):
-        return max(30.0, min(default, 900.0))
-    return max(30.0, min(v, 900.0))
+        return max(30.0, min(default, cap))
+    return max(30.0, min(v, cap))
 
 
 def resolve_caller_budget_sec(body: Optional[ChatBody]) -> float:
@@ -373,6 +375,7 @@ def resolve_caller_budget_sec(body: Optional[ChatBody]) -> float:
     30s like the HTTP read: that floor protects the upstream client from a
     misconfigured tiny timeout, but an 8s caller (memory-consolidation classify)
     is gone at 8s, and queueing its request for 30s generates into the void."""
+    cap = 1800.0 if getattr(body, "route", None) == "deep.thinker.v1" else 900.0
     opts = getattr(body, "options", None) or {}
     raw = opts.get("gateway_read_timeout_sec")
     if raw is not None:
@@ -381,8 +384,8 @@ def resolve_caller_budget_sec(body: Optional[ChatBody]) -> float:
         except (TypeError, ValueError):
             v = None
         if v is not None and v > 0:
-            return max(1.0, min(v, 900.0))
-    return _resolve_http_read_timeout_sec(None)
+            return max(1.0, min(v, cap))
+    return _resolve_http_read_timeout_sec(body)
 
 
 def _common_http_client(body: Optional[ChatBody] = None) -> httpx.Client:

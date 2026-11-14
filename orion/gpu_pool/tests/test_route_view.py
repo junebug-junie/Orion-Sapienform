@@ -64,7 +64,7 @@ def test_view_from_state_uses_the_config_the_pool_sent():
     assert routes["chat-burst"]["status"] == "operator_closed" and routes["chat-burst"]["gate_open"] is False
 
 
-ROUTES_ADDED_AFTER_GOLDEN = {"agent-deep",          # hecate, 2026-10-08
+ROUTES_ADDED_AFTER_GOLDEN = {"deep.thinker.v1", "agent-deep",          # hecate, 2026-10-08
                              "metacog_perception",  # Orion's sight, 2026-10-23 (pinned below)
                              "quick_turn",          # repair-pressure probe, 2026-10-23 (pinned below)
                              "quick_embodied",      # Orion's town speech, 2026-10-23
@@ -265,3 +265,14 @@ def test_operator_routes_are_background_and_land_only_on_their_pinned_role():
         assert cfg.routes[rid].work_class == rid
     assert routes["operator_chat"]["role"] == "chat"
     assert routes["operator_agent_gpu2"]["role"] == "agent-gpu2"
+
+
+def test_deep_profile_exposes_actual_context_and_unmeasured_cost():
+    view = _by_id(build_route_view(_state([_role("agent-deep", model_file="deep.thinker.v1",
+                                                    ctx_per_slot=262144, slots=1)])))
+    deep = view["deep.thinker.v1"]
+    assert deep["n_ctx"] == 262144
+    assert deep["reasoning"]["usable_prompt_budget"] == 229376
+    assert deep["reasoning"]["output_token_budget"] == 32768
+    assert deep["reasoning"]["estimated_execution_cost"] is None
+    assert deep["reasoning"]["hardware_cards"] == ["hecate-gpu0", "hecate-gpu1"]

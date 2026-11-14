@@ -95,7 +95,7 @@ def test_only_hecate_chat_and_agent_change_backend_and_legacy_serialization_is_u
     cfg = load_pool_config()
     serialized = cfg.model_dump()['roles']
     assert cfg.roles['agent-deep'].backend == 'vllm'
-    assert cfg.roles['agent-deep'].cards == ['hecate-gpu0']
+    assert cfg.roles['agent-deep'].cards == ['hecate-gpu0', 'hecate-gpu1']
     assert serialized['agent-deep']['backend'] == 'vllm'
     assert serialized['chat']['backend'] == serialized['agent']['backend'] == 'strata'
     for name, role in cfg.roles.items():

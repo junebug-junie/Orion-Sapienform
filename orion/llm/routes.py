@@ -115,6 +115,7 @@ ACCEPTED_LLM_ROUTES: FrozenSet[str] = frozenset(
         "metacog_perception",
         # hecate's 27B (2026-10-08): its own GPU node, agent-class work a caller asks for by name.
         "agent-deep",
+        "deep.thinker.v1",
         # Orion Prime (2026-10-30): the chat worker, for Prime's thoughts. Pool priority `system`
         # since 2026-11-03 (Juniper's turn still goes first); `prime_starved` is the same call at
         # pool priority `starved`, after a try that got no seat. System-only: see SYSTEM_LLM_ROUTES.
@@ -156,6 +157,7 @@ LLM_ROUTE_DISPLAY_ORDER: tuple[str, ...] = (
     "metacog_background",
     "agent",
     "agent-deep",
+    "deep.thinker.v1",
     "harness",
     "agent-burst",
     "chat-burst",
@@ -285,7 +287,7 @@ SYSTEM_LLM_ROUTES: FrozenSet[str] = frozenset(
 #: (services/orion-llm-gateway/app/lane_routes.py) rewrites every agent-lane call without a
 #: hold to `agent`; a route here survives that. `judge` (2026-11-12): without this the 5b
 #: judge off a gpu2-seat hold was rewritten to `agent`, a class that still lists agent-gpu2.
-AGENT_LANE_ROUTES: FrozenSet[str] = frozenset({"agent", "judge"})
+AGENT_LANE_ROUTES: FrozenSet[str] = frozenset({"agent", "judge", "deep.thinker.v1"})
 
 #: System-only routes cortex-exec still accepts as a caller-supplied `ctx["llm_route"]`.
 #: This is the explicit decision SYSTEM_LLM_ROUTES asks for: Hub (its picker and its raw

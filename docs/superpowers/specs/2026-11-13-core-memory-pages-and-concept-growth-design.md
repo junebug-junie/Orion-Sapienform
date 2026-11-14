@@ -305,6 +305,27 @@ arcs, and notes. **It has no command for anything Orion read or concluded.**
 
 ### Graphiti: turn on the full engine, as the fact layer under the pages
 
+> **TRIAL RESULT 2026-11-14: NO-GO** (PR #3341). 100-episode sample, 94 ingested, local
+> agent model.
+>
+> - Structured JSON worked: 1,119 calls with 0 retries.
+> - Ogden, el Coco, and Amanda/"my wife" passed.
+>
+> It failed on what this section said it was for:
+>
+> - **Wrong invalidations.** 7 of the 15 facts it marked no longer true were still true,
+>   including "Juniper refers to Amanda as her wife".
+> - **Stays left open.** Two Chicago stay facts are still current.
+> - **Duplicates.** 14% duplicate entities ("Juniper's son" vs Teddy).
+> - **Misgendering.** 11 entity summaries call Juniper "he".
+> - **Junk entities.** "I", "Speaker", "fact", "people".
+> - **Cost.** About 254 s of held agent seat per episode, about 49 min a day live.
+>
+> Decision: the fail branch below applies. Pages fold straight from `episode_memory`, and the
+> "corrections outrank" rule carries the load. The Graphiti adapter moves back to the
+> retirement list. The section below is kept as the record of why it was tried.
+
+
 **Revised 2026-11-13 after Juniper's challenge.** An earlier draft said retire. That was
 wrong on three counts.
 
@@ -397,8 +418,9 @@ Graphiti's defaults, and add a type only when a page needs it.
 | World-pulse learning deltas | Headlines, not learning. | Readers of `world_pulse_learning_delta`. |
 | Verbatim `memory_cards` (`operator_distiller`) and the `active_packet` "durable beliefs" digest | 75% verbatim; the digest shows unrelated old messages. | `page:lately` must be live and verified first. |
 | Vector memory recall backend | 0 hits in 16,168 recalls. | — |
+| Graphiti adapter | Full-engine trial NO-GO (PR #3341): 7/15 wrong invalidations, 14% duplicates, misgendering. Template mode adds nothing pages don't. | Recall `active_packet` collector reads it; cut that reader in the same PR. Drop `graphiti_trial` and `graphiti_temporal` graphs only with Juniper's yes. |
 
-**Not retired:** Graphiti (full engine turned on), news/reading concepts (they get a reader and a fair trial), Orion's coined
+**Not retired:** news/reading concepts (they get a reader and a fair trial), Orion's coined
 concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concept_history`
 (they are the foundation).
 

@@ -108,12 +108,18 @@ def build_vllm_command_and_env() -> tuple[List[str], Dict[str, str]]:
     serving = settings.resolve_serving()
     if serving.get("pool_discovery") is True:
         cmd += ["--middleware", "app.discovery.pool_server_info"]
-    for key in ("served_model_name", "dtype", "kv_cache_dtype", "reasoning_parser", "tool_call_parser"):
+    for key in ("served_model_name", "dtype", "kv_cache_dtype", "reasoning_parser", "tool_call_parser",
+                "attention_backend", "block_size", "mamba_block_size", "mamba_cache_mode",
+                "prefix_cache_retention_interval"):
         if serving.get(key) is not None:
             cmd += ["--" + key.replace("_", "-"), str(serving[key])]
-    for key in ("trust_remote_code", "enable_auto_tool_choice"):
+    for key in ("trust_remote_code", "enable_auto_tool_choice", "enable_prefix_caching",
+                "enable_chunked_prefill", "enable_prompt_tokens_details", "language_model_only"):
         if serving.get(key) is True:
             cmd.append("--" + key.replace("_", "-"))
+    for key in ("override_generation_config", "default_chat_template_kwargs"):
+        if serving.get(key) is not None:
+            cmd += ["--" + key.replace("_", "-"), json.dumps(serving[key])]
     if serving.get("speculative_config"):
         cmd += ["--speculative-config", json.dumps(serving["speculative_config"])]
     for key, value in (serving.get("env") or {}).items():

@@ -7,11 +7,19 @@ from fastapi.responses import JSONResponse
 
 
 async def pool_server_info(request, call_next):
+    cfg = getattr(request.app.state, 'vllm_config', None)
+    names = getattr(getattr(cfg, 'model_config', None), 'served_model_name', []) or []
+    if isinstance(names, str):
+        names = [names]
+    if 'deep.thinker.v1' in names and request.method == 'POST' and request.url.path not in {'/tokenize', '/detokenize', '/v1/messages/count_tokens'}:
+        from .deep_budget import check_request
+        rejected = await check_request(request, cfg)
+        if rejected is not None:
+            return rejected
     if request.url.path != '/orion/server-info':
         return await call_next(request)
     if request.method != 'GET':
         return JSONResponse({'error': 'method_not_allowed'}, status_code=405)
-    cfg = getattr(request.app.state, 'vllm_config', None)
     if cfg is None:
         return JSONResponse({'error': 'engine_not_initialized'}, status_code=503)
     return JSONResponse({'vllm_config': {

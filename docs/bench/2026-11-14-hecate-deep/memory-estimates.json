@@ -1,0 +1,53 @@
+[
+  {
+    "tokens": 132000,
+    "status": "ESTIMATE",
+    "components_gib_total": {
+      "checkpoint_weights_and_quant_metadata": 19.147322826087475,
+      "attention_kv": 4.0283203125,
+      "gdn_states_with_retention_estimate": 2.53125,
+      "cuda_runtime_graphs_reserve": 4.0,
+      "attention_workspace_reserve": 2.0,
+      "temporary_prefill_reserve": 4.0,
+      "fragmentation_safety_reserve": 6.0,
+      "speculative_overhead": 0.0
+    },
+    "total_gib": 41.706893138587475,
+    "ideal_per_rank_gib": 20.853446569293737,
+    "caveats": "Weight replication/repacking and cache allocator padding require live profiling; draft disabled."
+  },
+  {
+    "tokens": 196608,
+    "status": "ESTIMATE",
+    "components_gib_total": {
+      "checkpoint_weights_and_quant_metadata": 19.147322826087475,
+      "attention_kv": 6.0,
+      "gdn_states_with_retention_estimate": 3.515625,
+      "cuda_runtime_graphs_reserve": 4.0,
+      "attention_workspace_reserve": 2.0,
+      "temporary_prefill_reserve": 4.0,
+      "fragmentation_safety_reserve": 6.0,
+      "speculative_overhead": 0.0
+    },
+    "total_gib": 44.662947826087475,
+    "ideal_per_rank_gib": 22.331473913043737,
+    "caveats": "Weight replication/repacking and cache allocator padding require live profiling; draft disabled."
+  },
+  {
+    "tokens": 262144,
+    "status": "ESTIMATE",
+    "components_gib_total": {
+      "checkpoint_weights_and_quant_metadata": 19.147322826087475,
+      "attention_kv": 8.0,
+      "gdn_states_with_retention_estimate": 4.640625,
+      "cuda_runtime_graphs_reserve": 4.0,
+      "attention_workspace_reserve": 2.0,
+      "temporary_prefill_reserve": 4.0,
+      "fragmentation_safety_reserve": 6.0,
+      "speculative_overhead": 0.0
+    },
+    "total_gib": 47.787947826087475,
+    "ideal_per_rank_gib": 23.893973913043737,
+    "caveats": "Weight replication/repacking and cache allocator padding require live profiling; draft disabled."
+  }
+]

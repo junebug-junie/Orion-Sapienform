@@ -13,7 +13,8 @@ scripts/safe_docker_build.sh orion-vllm-host --profile vllm-worker up -d
 The worker requires the explicit `vllm-worker` Compose profile and remains in
 Athena's pull/rebuild exclusion list. A routine pull must not start it.
 For the patched Hecate image, use `services/orion-vllm-host/scripts/hecate.sh build`
-and `services/orion-vllm-host/scripts/hecate.sh up -d` from Hecate's worktree.
+and `services/orion-vllm-host/scripts/hecate.sh up -d` from Hecate's clean primary main checkout synchronized with origin/main.
+Builds may run in a worktree.
 That wrapper checks the host and NVMe mount before selecting the SM70 override.
 
 Health: `GET http://localhost:${VLLM_HOST_PORT:-7000}/health`
@@ -54,3 +55,14 @@ python services/orion-vllm-host/scripts/stage_pool.py > /tmp/hecate-pool.candida
 endpoint; a passing CPU test is not evidence of model quality or GPU readiness.
 It takes a GPU pool operator hold on `--lane agent-deep` and calls only through
 orion-llm-gateway (`orion/evals/leased_llm.py`; needs `ORION_BUS_URL`).
+
+## Hecate deep thinker (two V100s)
+
+`deep.thinker.v1` uses pinned 1Cat 1.5.3 and QUASAR Qwen3.8 27B, TP2,
+262144 combined tokens, a 16K–32K reasoning/output reserve and one active request.
+Use `scripts/hecate-deep.sh` for this explicit alternative; preserve the old image
+for rollback. [Runbook and acceptance evidence](../../docs/runbooks/hecate-deep-thinking.md).
+The exact-token eval is `evals/deep_context.py`; `--endurance` must pass before
+claiming full-window residency. The engine's own renderer enforces the prompt
+budget for OpenAI Chat and Anthropic Messages. Unsupported generation APIs and
+silent prompt truncation are rejected. No env template changes.

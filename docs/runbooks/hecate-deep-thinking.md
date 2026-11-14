@@ -135,7 +135,9 @@ From clean synchronized Athena main, after reserving/draining `agent-deep`:
 
 ```bash
 mkdir -p .orion
-python services/orion-vllm-host/scripts/stage_pool.py --gpus 2 --commissioning > .orion/hecate-eval-pool.yaml
+docker run --rm --network none --entrypoint python -e PYTHONPATH=/repo -v "$PWD:/repo:ro" \
+  orion-gpu-pool-gpu-pool /repo/services/orion-vllm-host/scripts/stage_pool.py \
+  --gpus 2 --commissioning > .orion/hecate-eval-pool.yaml
 scripts/safe_docker_build.sh orion-gpu-pool -f services/orion-gpu-pool/docker-compose.hecate-eval.yml up -d --no-build
 ```
 
@@ -215,7 +217,9 @@ owner change; both cards remain un-lent):
 
 ```bash
 mkdir -p .orion
-python services/orion-vllm-host/scripts/stage_pool.py --gpus 2 --backend strata --commissioning > .orion/hecate-eval-pool.yaml
+docker run --rm --network none --entrypoint python -e PYTHONPATH=/repo -v "$PWD:/repo:ro" \
+  orion-gpu-pool-gpu-pool /repo/services/orion-vllm-host/scripts/stage_pool.py \
+  --gpus 2 --backend strata --commissioning > .orion/hecate-eval-pool.yaml
 scripts/safe_docker_build.sh orion-gpu-pool -f services/orion-gpu-pool/docker-compose.hecate-eval.yml up -d --no-build
 # Wait for a quiet Gateway request boundary before restarting the shared Gateway.
 scripts/safe_docker_build.sh orion-llm-gateway -f services/orion-llm-gateway/docker-compose.hecate-eval.yml up -d --no-build

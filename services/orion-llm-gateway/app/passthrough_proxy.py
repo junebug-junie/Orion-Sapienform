@@ -42,6 +42,7 @@ from .pool_placement import (
     busy_at_grant,
     granted_backend,
     granted_model,
+    deep_grant_ready,
     class_max_ctx,
     pool_node,
     mark_revoked,
@@ -265,6 +266,8 @@ async def proxy_on_pool(
     forwardable_request_headers, forwardable_response_headers, httpx_timeout = _http_helpers()
     headers = forwardable_request_headers(request)
     timeout = httpx_timeout()
+    if spec.work_class in {"agent-deep", "operator_agent_deep"}:
+        timeout.read = 1800.0  # long prefill; Circe keeps its existing timeout
     min_ctx = int(min_ctx_tokens)
     overflow_response: Optional[Response] = None
     clamped = False
@@ -325,6 +328,10 @@ async def proxy_on_pool(
         watch = asyncio.ensure_future(wait_lease_revoked(lease))
         stream_owns_lease = False
         try:
+            if route_key == "deep.thinker.v1" and not deep_grant_ready(lease.grant):
+                report.finish(POOL_UNAVAILABLE)
+                await handle.release()
+                return JSONResponse(error_body(POOL_UNAVAILABLE, "Verified deep worker is unavailable", reason="deep_thinker_not_ready"), status_code=503)
             dispatch_body = dict(forward_body)
             grant_backend = granted_backend(lease.grant)
             if spec.work_class in GPU3_WORK_CLASSES and grant_backend == "llamacpp" and not anthropic:
@@ -332,7 +339,7 @@ async def proxy_on_pool(
             if grant_backend in BLIND_CHECK_BACKENDS and count_images(dispatch_body, anthropic=anthropic):
                 dispatch_body = await _images_for_lane(dispatch_body, lease, route_key, correlation_id, anthropic)
             if grant_backend == "vllm":
-                if anthropic:
+                if anthropic and not deep_grant_ready(lease.grant):
                     report.finish("unsupported_backend_protocol")
                     await handle.release()
                     return JSONResponse(error_body(

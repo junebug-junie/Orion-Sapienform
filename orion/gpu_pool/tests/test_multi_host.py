@@ -35,7 +35,7 @@ def test_each_role_is_reached_at_its_own_nodes_address():
 def test_agent_deep_is_a_lendable_resident_with_no_actuator():
     spec = CFG.roles["agent-deep"]
     assert spec.launch is None and spec.swap is None and "agent-deep" in CFG.resident_roles()
-    assert CFG.lendable_cards("agent-deep") == ["hecate-gpu0"]
+    assert CFG.lendable_cards("agent-deep") == ["hecate-gpu0", "hecate-gpu1"]
     assert CFG.routes["agent-deep"].work_class == "agent-deep"
     for cls in ("agent", "metacog", "fast"):
         roles = CFG.classes[cls].roles
@@ -73,9 +73,11 @@ def test_existing_launch_digests_do_not_move():
     before = copy.deepcopy(RAW)
     before.pop("hosts")
     before["cards"].pop("hecate-gpu0")
+    before["cards"].pop("hecate-gpu1")
     before["roles"].pop("agent-deep")
     before["classes"].pop("agent-deep")
     before["routes"].pop("agent-deep")
+    before["routes"].pop("deep.thinker.v1")
     for cls in before["classes"].values():
         if "agent-deep" in cls["roles"]:
             cls["roles"].remove("agent-deep")
@@ -98,10 +100,16 @@ def _agent_elsewhere_busy():
 def test_agent_work_borrows_hecate_only_while_lent():
     q = lease("agent", lease_id="q")
     assert grants(schedule(CFG, _agent_elsewhere_busy(), cards(), [q], T0)) == {}
-    lent = cards(**{"hecate-gpu0": CardLive("hecate-gpu0", lent=True)})
+    lent = cards(**{name: CardLive(name, lent=True) for name in ("hecate-gpu0", "hecate-gpu1")})
     assert grants(schedule(CFG, _agent_elsewhere_busy(), lent, [q], T0)) == {"q": "agent-deep"}
 
 
 def test_agent_deep_route_owns_its_card_unlent():
     q = lease("agent-deep", lease_id="d")
     assert grants(schedule(CFG, live(), cards(), [q], T0)) == {"d": "agent-deep"}
+
+
+def test_one_lent_card_cannot_lend_half_the_tensor_parallel_role():
+    q = lease("agent", lease_id="half")
+    half = cards(**{"hecate-gpu0": CardLive("hecate-gpu0", lent=True)})
+    assert grants(schedule(CFG, _agent_elsewhere_busy(), half, [q], T0)) == {}

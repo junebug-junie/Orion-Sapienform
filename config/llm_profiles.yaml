@@ -2525,3 +2525,47 @@ profiles:
       Single-V100 validation model; no active pool role selects this profile.
       Pin Qwen/Qwen3-4B-Instruct-2507 at cdbee75f17c01a7cc42f958dc650907174af0554.
       See docs/runbooks/hecate-glm53-vllm.md for the explicit Hecate image build.
+
+  deep.thinker.v1:
+    display_name: "Hecate deep thinker — Qwen3.8 27B QUASAR NVFP4"
+    backend: vllm
+    task_type: analysis
+    model_id: /models/Qwen3.8-27B-QUASAR-NVFP4
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 2
+      device_ids: [0, 1]
+      max_model_len: 262144
+      max_batch_tokens: 4096
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.85
+    vllm:
+      pool_discovery: true
+      served_model_name: deep.thinker.v1
+      dtype: half
+      kv_cache_dtype: fp8_e4m3
+      attention_backend: FLASH_ATTN_V100
+      language_model_only: true
+      enable_prefix_caching: true
+      enable_chunked_prefill: true
+      enable_prompt_tokens_details: true
+      block_size: 2048
+      mamba_block_size: 2048
+      mamba_cache_mode: align
+      prefix_cache_retention_interval: 8192
+      reasoning_parser: qwen3
+      tool_call_parser: qwen3_coder
+      enable_auto_tool_choice: true
+      override_generation_config: {max_new_tokens: 32768}
+      default_chat_template_kwargs: {enable_thinking: true}
+      env:
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+    notes: >-
+      Candidate, UNVERIFIED until the long-context eval passes. Fixed resident agent-deep
+      at hecate:8021 through the Gateway; one request plus pool queue. 262144 combined
+      tokens, 229376 prompt tokens with a 32768 output reserve (reasoning included).
+      Pinned 1Cat 1.5.3; no CPU offload or speculative draft in the correctness baseline.
+      Readiness is live discovery, not this declaration. Execution cost is unmeasured.
+      See docs/runbooks/hecate-deep-thinking.md and scripts/deep-thinker.lock.json.

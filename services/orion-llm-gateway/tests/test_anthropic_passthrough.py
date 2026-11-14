@@ -198,7 +198,7 @@ def test_build_models_list_payload_lists_every_pool_route(configured_routes: Any
     payload = anthropic_passthrough.build_models_list_payload()
     ids = [entry["id"] for entry in payload["data"]]
     assert ids == sorted(["chat", "harness", "agent", "metacog", "metacog_background", "quick",
-                          "quick_background", "agent-burst", "chat-burst", "memory_distill", "agent-deep",
+                          "quick_background", "agent-burst", "chat-burst", "memory_distill", "agent-deep", "deep.thinker.v1",
                           "metacog_turn", "quick_turn", "quick_embodied", "metacog_perception", "prime",
                           "prime_starved", "prime_consent", "judge", "operator", "operator_chat", "operator_agent",
                           "operator_agent_gpu2", "operator_agent_deep", "operator_metacog", "operator_fast"])

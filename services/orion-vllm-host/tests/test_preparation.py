@@ -64,7 +64,7 @@ def test_single_card_candidate_preserves_other_roles_and_routing():
             assert cfg.roles[role] == live.roles[role]
     import pytest
     with pytest.raises(ValueError):
-        candidate(gpus=2)
+        candidate(gpus=3)
 
 
 def test_hecate_wrapper_rejects_other_host_before_docker(tmp_path):

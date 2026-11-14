@@ -161,6 +161,14 @@ and distributed inventory arithmetic must all be correct.
 sums to 262144, and tests recovery. It makes no reasoning-quality claim. Add
 representative architectural/code/planning tasks from the existing Hecate hard
 reasoning suite; the synthetic ledger alone cannot choose the best reasoner.
+`evals/deep_quality.py` runs four fixed code, resource-planning, memory-provenance
+and transaction-recovery problems with exact JSON answers, three repeats by
+default, through the same leased Gateway path. Pass `--tokenizer`, `--model`,
+`--gateway` and an exclusive `--out` JSONL file as above. This is a narrow
+deterministic suite, not evidence of general reasoning superiority. Preserve
+reasoning/final text for review and compare failures as well as latency/energy.
+The resource-plan gold is checked by enumerating all topological schedules;
+its final lexicographic tie-break avoids penalizing equally optimal schedules.
 Capture NVML memory/utilization/power and `/proc` CPU/RAM samples. NVLink byte
 traffic, memory bandwidth and KV residency remain null unless independently
 measured. Query actual engine metrics/logs for cache capacity, running/waiting

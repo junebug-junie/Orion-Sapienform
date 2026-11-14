@@ -1,5 +1,6 @@
 import copy
 import json
+import itertools
 from pathlib import Path
 import runpy
 
@@ -84,3 +85,23 @@ def test_memory_estimate_rejects_unaccounted_kv_head_replication():
     assert row['status'] == 'ESTIMATE'
     with pytest.raises(ValueError, match='replication'):
         module['budget'](cfg, 20559281336, 262144, tp=3)
+
+
+def test_planning_gold_is_optimal_over_all_topological_orders():
+    rows = [json.loads(line) for line in (ROOT / 'services/orion-vllm-host/evals/deep_tasks.jsonl').read_text().splitlines()]
+    gold = next(row['expected'] for row in rows if row['id'] == 'bounded-plan')
+    tasks = {'A': ('cpu', 3, ()), 'B': ('gpu', 8, ('A',)), 'C': ('cpu', 5, ('A',)),
+             'D': ('gpu', 4, ('B', 'C')), 'E': ('cpu', 2, ('D',)), 'F': ('cpu', 7, ('B',))}
+    scores = []
+    for order in itertools.permutations(tasks):
+        end, free = {}, {'cpu': 0, 'gpu': 0}
+        for name in order:
+            resource, duration, deps = tasks[name]
+            if not all(d in end for d in deps):
+                break
+            end[name] = max(free[resource], max((end[d] for d in deps), default=0)) + duration
+            free[resource] = end[name]
+        else:
+            scores.append((max(end.values()), end['E']))
+    assert (gold['makespan'], gold['E_start'] + 2) == min(scores)
+    assert gold == {'makespan': 20, 'B_start': 3, 'C_start': 3, 'D_start': 11, 'E_start': 18, 'F_start': 11}

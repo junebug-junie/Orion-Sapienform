@@ -71,6 +71,7 @@ def stream_chat(lane, body, timeout_sec):
     import httpx
     from orion.evals.leased_llm import LaneCallError
     lane.check()
+    started_at = time.time()
     start = time.monotonic()
     first = last = None
     result = {"content": "", "reasoning": "", "usage": None, "finish_reason": None}
@@ -108,6 +109,8 @@ def stream_chat(lane, body, timeout_sec):
                     if choice.get("finish_reason"):
                         result["finish_reason"] = choice["finish_reason"]
     lane.calls += 1
+    result["started_at_epoch_s"] = started_at
+    result["finished_at_epoch_s"] = time.time()
     result["elapsed_s"] = time.monotonic() - start
     result["ttft_s"] = first - start if first is not None else None
     usage = result.get("usage") or {}

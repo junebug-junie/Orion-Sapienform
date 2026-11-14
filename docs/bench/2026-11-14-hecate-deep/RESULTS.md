@@ -74,7 +74,16 @@ CPU utilization covers the whole host, including unrelated services. Peaks are
 sampled NVML observations, not allocator peaks. Host memory-bandwidth counters are
 permission-restricted; NVLink byte counters report unavailable. Connectivity/P2P
 support does not establish measured NVLink bandwidth. Raw results and deterministic
-resource summaries are stored alongside this report.
+resource summaries are stored alongside this report. Compressed raw baseline
+samples are `1cat-baseline-host-samples.jsonl.gz` and
+`1cat-baseline-engine-samples.jsonl.gz`. Reproduce resource summaries with:
+
+```bash
+gzip -cd docs/bench/2026-11-14-hecate-deep/1cat-baseline-host-samples.jsonl.gz > /tmp/hecate-host-raw.jsonl
+python services/orion-vllm-host/evals/summarize_deep.py --host /tmp/hecate-host-raw.jsonl \
+  --results docs/bench/2026-11-14-hecate-deep/1cat-hard-grid.jsonl \
+  --out /tmp/hecate-hard-recomputed.jsonl
+```
 
 DFlash2 and the Strata challenger are still being measured. No model
 ranking follows from capacity alone. Strata reserves eight internal tokens, so its

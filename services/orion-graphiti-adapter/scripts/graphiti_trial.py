@@ -394,20 +394,26 @@ async def run(args: argparse.Namespace) -> int:
 
     episodes = await load_episodes(args.postgres_uri)
     total_source = len(episodes)
+    global KEY_ROW_RE
+    from graphiti_trial_score import TERMS_LOCAL, load_terms  # noqa: PLC0415
+    if args.plan_file and args.sample:
+        raise SystemExit("--plan-file and --sample are exclusive: a plan already names its sample")
+    if args.sample or TERMS_LOCAL.exists():
+        KEY_ROW_RE = key_row_re(load_terms())  # --sample needs the real names; other paths use them if present
+    plan_from: dict[str, Any] = {}
     if args.plan_file:
+        plan_from = json.loads(Path(args.plan_file).read_text())
         # A resumed sample must be the SAME sample: new rows land in episode_memory every day, which
         # changes the seeded random fill, so a re-run of --sample would quietly pick other rows.
-        episodes = plan_episodes(episodes, json.loads(Path(args.plan_file).read_text())["names"])
+        episodes = plan_episodes(episodes, plan_from["names"])
     elif args.sample:
-        global KEY_ROW_RE
-        from graphiti_trial_score import load_terms  # noqa: PLC0415
-        KEY_ROW_RE = key_row_re(load_terms())
         episodes = select_sample(episodes, args.sample)
     if args.limit:
         episodes = episodes[: args.limit]
     run_id = args.run_id or uuidlib.uuid4().hex[:12]
     (OUT_DIR / f"plan-{run_id}.json").write_text(json.dumps(
-        {"source_total": total_source, "planned": len(episodes), "sample": args.sample, "limit": args.limit,
+        {"source_total": plan_from.get("source_total", total_source), "planned": len(episodes),
+         "sample": plan_from.get("sample", args.sample), "limit": args.limit, "from_plan": args.plan_file or None,
          "key_rows": sum(e.key_row() for e in episodes),
          "names": [e.name for e in episodes]}, indent=1))
 

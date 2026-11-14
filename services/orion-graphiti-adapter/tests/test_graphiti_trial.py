@@ -535,3 +535,61 @@ def test_render_report_lists_checks_cost_and_invalidated_facts():
     md = score.render_report(dump, checks, score.cost_summary([]), {"planned": 2}, [], [])
     assert "Verdict by the checks: **NO-GO**" in md
     assert "no longer true (1)" in md and "Robin is in Shelbyville" in md
+
+
+def test_redact_handles_punctuation_accents_whitespace_and_emails():
+    t = {**T, "trip_hotel": "Grand View", "home_city": "Springfield."}
+    out = score.redact("the Grand\nView hotel; Springfield. and Spríngfield. mail pat@example.org", t)
+    assert "[trip hotel] hotel" in out and out.count("[home city]") == 2 and "[email]" in out
+    assert score.redaction_leaks(out, t, set(), None) == []
+    assert score.redaction_leaks("still Grand View here", t, set(), None) == ["term:trip_hotel"]
+
+
+def test_trip_stay_presence_catches_open_facts_the_window_or_wording_would_hide():
+    closed = _edge("Robin is staying in Shelbyville for another night", valid="2026-10-07T00:25:00",
+                   invalid="2026-10-07T07:30:00")
+    assert score.check_trip_stay([closed], T).passed
+    undated = _edge("Robin is in Shelbyville", source="Robin")
+    as_target = _edge("Shelbyville hosts Robin for the week", valid="2026-10-05T00:00:00",
+                      source="Shelbyville", target="Robin")
+    other_negation = _edge("Robin is in Shelbyville and hasn't flown home yet", valid="2026-10-05T00:00:00")
+    for stale in (undated, as_target, other_negation):
+        assert not score.check_trip_stay([closed, stale], T).passed
+    meeting_only = _edge("The team meeting is in Shelbyville", valid="2026-10-05T00:00:00",
+                         invalid="2026-10-07T00:00:00", source="team meeting")
+    assert not score.check_trip_stay([meeting_only], T).passed  # a closed stay must be the subject's
+
+
+def _report_fixture(tmp_path, monkeypatch, hashes, pt):
+    monkeypatch.setattr(score, "OUT_DIR", tmp_path)
+    (tmp_path / "graph_dump.json").write_text(json.dumps({"nodes": [], "edges": [
+        _edge("Robin lives in Springfield", valid="2026-08-15T00:00:00")], "episodes": 1}))
+    terms = tmp_path / "terms.json"
+    terms.write_text(json.dumps(T))
+    monkeypatch.setattr(score, "_denylist_hashes", lambda: (hashes, pt))
+    return ["report", "--terms", str(terms)]
+
+
+def test_report_refuses_without_denylist_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    argv = _report_fixture(tmp_path, monkeypatch, set(), None)
+    assert score.main(argv) == 1
+    assert not (tmp_path / "report.redacted.md").exists()
+    assert score.main(argv + ["--allow-no-denylist"]) == 0
+    assert "Robin" not in (tmp_path / "report.redacted.md").read_text()
+
+
+def test_report_refuses_and_removes_file_when_a_denylisted_word_survives(tmp_path, monkeypatch, capsys):
+    class LeakyPT:  # a denylist hit redact() cannot mask (simulates a matcher/redactor mismatch)
+        _TOKEN = re.compile(r"(?!x)x")
+
+        @staticmethod
+        def _h(w):
+            return w
+
+        @staticmethod
+        def line_hits(line, hashes):
+            return {"h"} if "NO-GO" in line else set()
+    (tmp_path / "report.redacted.md").write_text("stale")
+    argv = _report_fixture(tmp_path, monkeypatch, {"h"}, LeakyPT)
+    assert score.main(argv) == 1
+    assert not (tmp_path / "report.redacted.md").exists()

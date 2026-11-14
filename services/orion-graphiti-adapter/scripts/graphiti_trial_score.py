@@ -135,11 +135,20 @@ def check_trip_stay(edges: list[dict[str, Any]], t: dict[str, str]) -> Check:
     stays = [e for e in edges if _mentions(e, place) and STAY_RE.search(str(e.get("fact")))]
     dated = [e for e in stays if (v := _dt(e.get("valid_at"))) and lo <= v <= hi]
     closed = [e for e in dated if (i := _dt(e.get("invalid_at"))) and lo <= i <= hi]
-    not_there = negated_before(t["trip_city"])
-    presence = [e for e in edges if _mentions(e, place) and subject.search(str(e.get("source") or ""))
-                and is_current(e) and (v := _dt(e.get("valid_at"))) and lo <= v <= hi
-                and not not_there.search(str(e.get("fact"))) and not re.search(r"\bnot\b|n't\b", str(e.get("name") or "")
-                                                                                 + " " + str(e.get("fact")), re.I)]
+    def about_subject(e: dict[str, Any]) -> bool:
+        return any(subject.search(str(e.get(k) or "")) for k in ("source", "target", "fact"))
+
+    def denied(e: dict[str, Any]) -> bool:
+        f = str(e.get("fact"))
+        return bool(negated_before(t["trip_city"]).search(f) or negated_before(t["trip_hotel"]).search(f))
+
+    closed = [e for e in closed if about_subject(e)]
+    # Presence: a current fact putting the subject in the trip city or hotel. valid_at may be null or
+    # misdated -- an open-ended stale fact is what this check exists to catch, so any current one
+    # counts unless it denies the place or predates the trip.
+    presence = [e for e in edges if _mentions(e, place) and is_current(e) and not denied(e)
+                and (subject.search(str(e.get("source") or "")) or subject.search(str(e.get("target") or "")))
+                and ((v := _dt(e.get("valid_at"))) is None or v >= lo)]
     return Check(f"[trip city] stay dated as a stay, none left open (window {t['trip_start']}..{t['trip_end']})",
                  bool(closed) and not presence,
                  f"{len(closed)} stay facts opened and closed inside the window; {len(presence)} [subject]-in-"
@@ -309,16 +318,45 @@ def _denylist_hashes() -> tuple[set[str], Any]:
     return pt.load_denylist(path)[0], pt
 
 
+def _fold(text: str) -> str:
+    import unicodedata  # noqa: PLC0415
+    return "".join(ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch))
+
+
+def _term_re(value: str) -> re.Pattern:
+    """Whole-term match that also works next to punctuation ("St. X", "X.") and across any
+    whitespace in multi-word values; both sides are accent-folded before matching."""
+    parts = [re.escape(p) for p in _fold(value).split()]
+    return re.compile(r"(?<!\w)" + r"\s+".join(parts) + r"(?!\w)", re.I)
+
+
+_EMAIL_RE = re.compile(r"[\w.+-]+(?:@|%40)[\w-]+(?:\.[\w-]+)+", re.I)
+
+
 def redact(text: str, t: dict[str, str], hashes: set[str] | None = None, pt: Any = None) -> str:
-    """Term values -> role placeholders; then any other word on the denylist -> [name]."""
+    """Term values -> role placeholders; emails -> [email]; any other denylisted word -> [name]."""
+    text = _fold(text)
     for key in sorted(PLACEHOLDERS, key=lambda k: -len(str(t.get(k) or ""))):
         val = str(t.get(key) or "").strip()
         if val:
-            text = re.sub(word(val), PLACEHOLDERS[key], text, flags=re.I)
+            text = _term_re(val).sub(PLACEHOLDERS[key], text)
+    text = _EMAIL_RE.sub("[email]", text)
     if hashes and pt is not None:
-        text = pt._ascii_fold(text)
         text = pt._TOKEN.sub(lambda m: "[name]" if pt._h(m.group(0).lower()) in hashes else m.group(0), text)
     return text
+
+
+def redaction_leaks(red: str, t: dict[str, str], hashes: set[str], pt: Any) -> list[str]:
+    """What is still in a redacted text that must not be: term values and denylisted words.
+    Names only the term KEY or line number, never the term itself."""
+    leaks = []
+    for key in PLACEHOLDERS:
+        val = str(t.get(key) or "").strip()
+        if val and _term_re(val).search(red):
+            leaks.append(f"term:{key}")
+    if pt is not None and hashes:
+        leaks += [f"denylist:line {n}" for n, line in enumerate(red.splitlines(), 1) if pt.line_hits(line, hashes)]
+    return leaks
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -328,6 +366,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--falkor-port", type=int, default=6379)
     p.add_argument("--judgments", default=str(OUT_DIR / "dup_sample.json"))
     p.add_argument("--force", action="store_true", help="sample: overwrite a judgments file that has judgments")
+    p.add_argument("--allow-no-denylist", action="store_true",
+                   help="write report.redacted.md with term-file redaction only (NOT safe to commit)")
     p.add_argument("--plan", default="", help="plan-<run>.json the report describes (default: newest)")
     p.add_argument("--terms", default="", help=f"terms file (default {TERMS_LOCAL.name})")
     a = p.parse_args(argv)
@@ -360,15 +400,21 @@ def main(argv: list[str] | None = None) -> int:
         report = render_report(dump, checks, cost_summary(results), plan, runs, judged)
         (OUT_DIR / "report.md").write_text(report)
         hashes, pt = _denylist_hashes()
-        red = redact(report, terms, hashes, pt)
-        left = [n for n, line in enumerate(red.splitlines(), 1) if pt is not None and pt.line_hits(line, hashes)]
-        (OUT_DIR / "report.redacted.md").write_text(red)
-        print(red)
-        if not hashes:
-            print("WARNING: denylist not found; report.redacted.md only has term-file redaction", file=sys.stderr)
-        if left:
-            print(f"redaction left personal terms on lines {left}", file=sys.stderr)
+        if not hashes and not a.allow_no_denylist:
+            print("refusing to write report.redacted.md: personal-term denylist not found "
+                  "(mount config/privacy, or pass --allow-no-denylist)", file=sys.stderr)
             return 1
+        red = redact(report, terms, hashes, pt)
+        leaks = redaction_leaks(red, terms, hashes, pt)
+        target = OUT_DIR / "report.redacted.md"
+        if leaks:
+            target.unlink(missing_ok=True)
+            print(f"refusing to write {target.name}: redaction left {leaks}", file=sys.stderr)
+            return 1
+        tmp = target.with_suffix(".tmp")
+        tmp.write_text(red)
+        tmp.replace(target)
+        print(red)
     return 0
 
 

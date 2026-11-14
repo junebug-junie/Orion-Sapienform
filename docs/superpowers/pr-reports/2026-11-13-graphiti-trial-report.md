@@ -145,7 +145,7 @@ all invalidations.
   duplicate sample and judgments, the invalidated-fact list, and the redacted report.
 - `services/orion-graphiti-adapter/scripts/graphiti_trial_terms.example.json`: placeholder names. The
   real ones live in a gitignored `.local.json`.
-- `services/orion-graphiti-adapter/tests/test_graphiti_trial.py`: 39 tests.
+- `services/orion-graphiti-adapter/tests/test_graphiti_trial.py`: 43 tests.
 - `.github/workflows/graphiti-trial-tests.yml`: a CI job for those tests.
 - `services/orion-graphiti-adapter/README.md`: how to run and score the trial.
 - `.gitignore`: `services/orion-graphiti-adapter/scripts/*.local.json`.
@@ -174,8 +174,8 @@ all invalidations.
 ## Tests run
 
 ```text
-pytest services/orion-graphiti-adapter/tests/test_graphiti_trial.py   # host venv: 34 passed, 5 skipped (graphiti-core absent)
-pytest services/orion-graphiti-adapter/tests/                        # adapter image + pytest-asyncio: 59 passed (incl. graphiti client subclass tests)
+pytest services/orion-graphiti-adapter/tests/test_graphiti_trial.py   # host venv: 38 passed, 5 skipped (graphiti-core absent)
+pytest services/orion-graphiti-adapter/tests/                        # adapter image + pytest-asyncio: 69 passed (incl. graphiti client subclass tests)
 python3 scripts/check_personal_terms.py                              # no personal terms in tracked files
 CI: graphiti-trial (pass), Static repo gates (pass after the privacy fix)
 ```
@@ -246,7 +246,34 @@ Issues found by the live run, not by review:
   - Fix: `--plan-file`. The 4 were removed with `remove_episode`.
   - Check: none of the 4 had invalidated any fact. No `expired_at` was set after the retry started.
 
-A second review covered the post-review commits. Its findings are listed in the PR body.
+A second review subagent covered the post-review commits. It returned 2 must and 7 should findings,
+all fixed:
+
+- Finding (must): the redacted report was written, with exit 0, when the denylist was missing.
+  - Fix: `report` refuses without the denylist. `--allow-no-denylist` is an explicit escape hatch.
+  - Evidence: `test_report_refuses_without_denylist_and_writes_nothing`.
+- Finding (must): nothing checked that a term value was actually gone. A value next to punctuation, a
+  multi-word value or an accented value could slip through.
+  - Fix:
+    - Fold accents before matching.
+    - Use `(?<!\w)`/`(?!\w)` boundaries and `\s+` between words.
+    - Mask emails.
+    - Run a post-redaction leak check over term values and the denylist.
+    - Write through a temp file. On a leak, refuse and remove the file.
+  - Evidence: two new tests.
+- Finding: the stay check could miss a stale presence fact:
+  - one with a null or misdated `valid_at`;
+  - one with the subject as the target;
+  - one with an unrelated "not" in it.
+  It could also count a closed stay that was not the subject's.
+  - Fix: presence counts every current subject fact for the trip city or hotel, unless the fact denies
+    the place or predates the trip. A closed stay must be about the subject.
+  - Evidence: `test_trip_stay_presence_catches_open_facts_the_window_or_wording_would_hide`. The live
+    result is unchanged: 2 stale facts.
+- Finding: `KEY_ROW_RE` used the real names only on the `--sample` path. A plan re-run lost
+  `sample`/`source_total`. `--plan-file` and `--sample` were silently combined.
+  - Fix: terms load on every path when the local file exists. A plan re-run carries the original
+    fields and `from_plan`. The two flags are now exclusive.
 
 ## Restart required
 

@@ -14,6 +14,14 @@ ROOT = Path(__file__).resolve().parents[3]
 EVAL = runpy.run_path(str(ROOT / 'services/orion-vllm-host/evals/deep_context.py'))
 
 
+def test_internal_reserve_does_not_change_comparison_questions():
+    seed = EVAL['trial_seed']
+    for output in (16384, 32768):
+        for repeat in range(3):
+            assert seed(20261114, 262144-output, repeat, output) == seed(20261114, 262136-output, repeat, output, 8)
+            assert seed(20261114, 132000, repeat, output) == seed(20261114, 132000, repeat, output, 8)
+
+
 def test_dflash_candidate_changes_only_speculation_and_keeps_full_context():
     import yaml
     original = yaml.safe_load((ROOT / 'config/llm_profiles.yaml').read_text())

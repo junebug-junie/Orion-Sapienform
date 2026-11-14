@@ -15,6 +15,13 @@ import time
 import uuid
 
 
+def trial_seed(base, prompt_tokens, repeat, output_budget, context_slack=0):
+    # Keep the same facts at the maximum boundary across runtimes whose internal
+    # reserve differs. Only filler length changes, not the reasoning problem.
+    boundary = 262144 - output_budget - context_slack
+    return base + prompt_tokens + repeat + (context_slack if prompt_tokens == boundary else 0)
+
+
 def build_messages(tokenizer, prompt_tokens: int, seed: int, suite="ledger"):
     rng = random.Random(seed)
     keys = [f"{rng.getrandbits(48):012x}" for _ in range(3)]
@@ -194,7 +201,7 @@ def main():
                                     gateway=args.gateway, queue_wait_sec=args.queue_wait) as lane:
                 for n in prompts:
                     for repeat in range(args.repeats):
-                        seed = args.seed + n + repeat
+                        seed = trial_seed(args.seed, n, repeat, args.output_budget, args.context_slack)
                         messages, expected = build_messages(tokenizer, n, seed, args.suite)
                         for mode in ("fresh_prefix", "exact_replay"):
                             row = {"prompt_tokens_requested": n, "output_budget": args.output_budget,

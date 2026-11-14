@@ -1,0 +1,12 @@
+{
+  "_comment": "Copy to graphiti_trial_terms.local.json (gitignored) and fill in the real names. Real values are personal terms the public repo refuses.",
+  "subject": "Robin",
+  "home_city": "Springfield",
+  "trip_city": "Shelbyville",
+  "trip_hotel": "Grandview",
+  "spouse": "Sam",
+  "spouse_alias": "wife",
+  "pet": "Biscuit",
+  "trip_start": "2026-10-04",
+  "trip_end": "2026-10-09"
+}

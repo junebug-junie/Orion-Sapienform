@@ -98,10 +98,11 @@ def test_commissioning_keeps_unvalidated_worker_private_and_heat_gated():
 def test_prompt_builder_hits_exact_tokens_and_changes_trial_prefix():
     class Tokenizer:
         def apply_chat_template(self, messages, **kwargs):
-            return messages[0]["content"].split() + ["assistant", "thinking"]
+            ids = messages[0]["content"].split() + ["assistant", "thinking"]
+            return ids if kwargs.get('return_dict') is False else {'input_ids': ids, 'attention_mask': [1] * len(ids)}
     a, expected = EVAL['build_messages'](Tokenizer(), 8192, 123)
     b, _ = EVAL['build_messages'](Tokenizer(), 8192, 124)
-    assert len(Tokenizer().apply_chat_template(a)) == 8192
+    assert len(Tokenizer().apply_chat_template(a, return_dict=False)) == 8192
     assert a != b
     assert all(expected[key] in a[0]['content'] for key in ('early', 'middle', 'late'))
 

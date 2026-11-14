@@ -39,14 +39,16 @@ No .env_example changes or new env-template keys. Local env sync is not required
 
 ## Evals run
 
-Pinned 1Cat real protocol boundary check and actual CLI parser passed. Its live startup reports TP2, one slot and 262144 configured context. Allocated KV capacity is a runtime sizing report, not request acceptance. Actual long-context, task-quality and Strata inference tests remain pending.
+Pinned 1Cat real protocol boundary check and actual CLI parser passed. Live tokenizer alignment matches 8192, 132000, 229376 and 245760 tokens after fixing the installed Transformers dictionary return default. Its live startup reports TP2, one slot and 262144 configured context. Allocated KV capacity is a runtime sizing report, not request acceptance. Actual long-context, task-quality and Strata inference tests remain pending.
 
 ## Docker/build/smoke checks
 
-1Cat and shared pool deployed from clean primary main after PR #3358. The shared Gateway update waits for a quiet request boundary. The separate Strata announcer image built and its real profile import passed; alternate Compose validates. Strata engine startup is UNVERIFIED.
+1Cat and shared pool deployed from clean primary main after PR #3358. No quiet boundary appeared in 15 minutes; Juniper approved a brief shared Gateway maintenance restart. The separate Strata announcer image built and its real profile import passed; alternate Compose validates. Strata engine startup is UNVERIFIED.
 
 ## Review findings fixed
 
+- CI requires explicit journald settings even in override files and absolute host mounts; both were corrected.
+- Transformers returns BatchEncoding by default: benchmark requests token IDs explicitly, with a regression and live alignment evidence.
 - Read-only data root prevented Strata startup: keep the data root writable and bind cached models/packs/mtp children read-only. Cached pack prerequisites and matching draft vocabulary were inspected in the pinned image.
 - Candidate profile must exist in the pool image: require rebuilding both pool and Gateway before applying backend overrides.
 - Commissioning isolation: scheduler regression proves operator-only use of un-lent Hecate and preserved heat shedding.
@@ -58,11 +60,11 @@ Build pool/Gateway and announcer from this revision, merge, then use clean synch
 ## Risks / concerns
 
 - Actual 132K/256K inference and quality comparison remain UNVERIFIED; mission work continues.
-- Gateway is shared and continuously busy; wait for a quiet boundary before recreation.
+- Gateway is shared and continuously busy; a brief maintenance restart is explicitly approved.
 - CPU pinning is not strict NUMA memory binding; measure residency and offload impact.
 - Existing cached Strata artifacts must be reused successfully in live preparation.
 - Issues opened/closed: none; remaining work is active, not deferred.
 
 ## PR link
 
-Pending creation.
+https://github.com/junebug-junie/Orion-Sapienform/pull/3359

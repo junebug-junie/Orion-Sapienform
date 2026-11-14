@@ -161,6 +161,10 @@ def test_trip_stay_needs_open_and_close_inside_trip():
     assert not score.check_trip_stay([closed, still_there], T).passed
     meeting = _edge("The team meeting is in Shelbyville", valid="2026-10-05T02:55:00", source="team meeting")
     assert score.check_trip_stay([closed, meeting], T).passed
+    denial = _edge("Robin does not live in Shelbyville", valid="2026-10-06T03:50:00", source="Robin")
+    correction = _edge("Robin corrected me that she lives in Springfield, not Shelbyville", valid="2026-10-06T03:50:00",
+                       source="Robin")
+    assert score.check_trip_stay([closed, denial, correction], T).passed
     assert not score.check_trip_stay([open_], T).passed
     assert not score.check_trip_stay([late], T).passed
 

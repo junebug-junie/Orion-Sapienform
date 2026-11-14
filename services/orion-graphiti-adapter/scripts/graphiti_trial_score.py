@@ -135,8 +135,11 @@ def check_trip_stay(edges: list[dict[str, Any]], t: dict[str, str]) -> Check:
     stays = [e for e in edges if _mentions(e, place) and STAY_RE.search(str(e.get("fact")))]
     dated = [e for e in stays if (v := _dt(e.get("valid_at"))) and lo <= v <= hi]
     closed = [e for e in dated if (i := _dt(e.get("invalid_at"))) and lo <= i <= hi]
+    not_there = negated_before(t["trip_city"])
     presence = [e for e in edges if _mentions(e, place) and subject.search(str(e.get("source") or ""))
-                and is_current(e) and (v := _dt(e.get("valid_at"))) and lo <= v <= hi]
+                and is_current(e) and (v := _dt(e.get("valid_at"))) and lo <= v <= hi
+                and not not_there.search(str(e.get("fact"))) and not re.search(r"\bnot\b|n't\b", str(e.get("name") or "")
+                                                                                 + " " + str(e.get("fact")), re.I)]
     return Check(f"[trip city] stay dated as a stay, none left open (window {t['trip_start']}..{t['trip_end']})",
                  bool(closed) and not presence,
                  f"{len(closed)} stay facts opened and closed inside the window; {len(presence)} [subject]-in-"

@@ -173,6 +173,12 @@ answer and finish reason. Empty final, wrong answer/model, missing usage,
 truncation and length-stop fail quality checks. Three distant random identifiers
 and distributed inventory arithmetic must all be correct.
 
+`--suite hard` replaces the ledger with six distant records: a keeper replacement,
+an unaffected decoy, pounds/kg arithmetic, two date updates and original-keeper
+recall. All five answers must match. This reproduces the reasoning families of
+the historical Hecate hard suite at exact token depths. Endurance and recovery
+remain separate ledger cases, even when the scored grid uses the hard suite.
+
 `--endurance` separately forces the full output reserve, verifies actual usage
 sums to 262144, and tests recovery. It makes no reasoning-quality claim. Add
 representative architectural/code/planning tasks from the existing Hecate hard

@@ -107,6 +107,19 @@ def test_prompt_builder_hits_exact_tokens_and_changes_trial_prefix():
     assert all(expected[key] in a[0]['content'] for key in ('early', 'middle', 'late'))
 
 
+def test_hard_context_gold_includes_reassignment_decoy_conversion_and_date_updates():
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return messages[0]['content'].split()
+    messages, expected = EVAL['build_messages'](Tokenizer(), 8192, 123, 'hard')
+    assert len(Tokenizer().apply_chat_template(messages)) == 8192
+    # Reference case: 2799 lb * .4536 + 686 kg + (686-67) kg = 2574.6264 kg;
+    # Monday moved 3+3 days is Sunday; the replacement has badge 8147, not 5016.
+    assert expected == {'current_badge': 8147, 'other_badge': 3683, 'total_kg': 2575,
+                        'review_day': 'Sunday', 'previous_keeper': 'Mirela Cask'}
+    assert '2799 pounds' in messages[0]['content'] and 'badge 5016' in messages[0]['content']
+
+
 def test_memory_estimate_rejects_unaccounted_kv_head_replication():
     module = runpy.run_path(str(ROOT / 'services/orion-vllm-host/scripts/deep_memory.py'))
     cfg = json.loads((ROOT / 'docs/bench/2026-11-14-hecate-deep/model-config.json').read_text())

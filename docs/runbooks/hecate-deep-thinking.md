@@ -1,10 +1,12 @@
 # Hecate deep thinker
 
-Status: **132000 input tokens VERIFIED** through Gateway on the pinned dense
-baseline, fresh and cached, with correct distributed retrieval/arithmetic and a
-16384-token output allowance. See `1cat-baseline-smoke.jsonl` and its resource
-summary in the dated benchmark directory. Full 262144-token residency, harder
-reasoning, operational failure checks and Strata comparison are still in progress.
+Status: **262144 actual user tokens VERIFIED** through Gateway on the pinned
+dense baseline: 245760 input + 16384 generated, followed by a correct recovery
+request. The hard distributed-reasoning grid passed **36/36** fresh/cached requests
+across six depths, including 132000 and the maximum prompt. See `1cat-hard-grid.jsonl`
+and its resource summary in the dated benchmark directory. All five operational checks passed, including serialized queueing, budget refusal,
+stream cancellation and client-timeout recovery. Task-quality checks, DFlash2 and
+Strata comparisons remain in progress.
 
 ## Hardware and compatibility (2026-11-14)
 

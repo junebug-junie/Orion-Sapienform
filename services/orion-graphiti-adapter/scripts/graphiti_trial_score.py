@@ -279,6 +279,10 @@ def render_report(dump: dict[str, Any], checks: list[Check], cost: dict[str, Any
     for c in checks:
         if c.evidence:
             lines += [f"### {c.name}", ""] + [f"- {x}" for x in c.evidence[:60]] + [""]
+    invalid = [e for e in dump["edges"] if not is_current(e)]
+    lines += [f"## Every fact the engine marked no longer true ({len(invalid)})", "",
+              "Invalidation can be wrong (spec residual risk). Judge each by hand.", ""]
+    lines += [f"- {_edge_line(e)}" for e in sorted(invalid, key=lambda e: str(e.get("valid_at")))] + [""]
     lines += ["## Duplicate sample (hand-judged)", ""]
     for j in judged:
         mark = {True: "DUP", False: "ok", None: "??"}[j.get("duplicate")]

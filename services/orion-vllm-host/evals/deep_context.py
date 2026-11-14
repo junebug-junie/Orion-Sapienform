@@ -34,7 +34,7 @@ def build_messages(tokenizer, prompt_tokens: int, seed: int):
         return [{"role": "user", "content": "".join(parts)}]
     def count(messages):
         return len(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
-                                                  enable_thinking=True))
+                                                  enable_thinking=True, return_dict=False))
     n = max(0, prompt_tokens - count(make(0)))
     for _ in range(12):
         messages = make(n)

@@ -2526,6 +2526,31 @@ profiles:
       Pin Qwen/Qwen3-4B-Instruct-2507 at cdbee75f17c01a7cc42f958dc650907174af0554.
       See docs/runbooks/hecate-glm53-vllm.md for the explicit Hecate image build.
 
+  qwen38-flash-next-iq3s-strata-2xv100-hecate-eval:
+    display_name: "Hecate challenger — Qwen3.8 Flash-Next IQ3_S / Strata"
+    backend: strata
+    task_type: analysis
+    model_id: qwen3.8-flash-next-iq3_s
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [0, 1]
+      max_model_len: 262144
+      max_concurrent_requests: 1
+    strata:
+      family: qwen
+      model: IQ3_S
+      model_file: Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+      ctx_size: 262144
+      defaults: services/orion-llamacpp-host/strata/agent-defaults.json
+    notes: >-
+      Commissioning comparison only, UNVERIFIED. Two-card layer split (not TP2),
+      int8 KV, one slot, MTP, existing cached IQ3_S. Requires the explicit pool
+      and Gateway Strata evaluation overrides; never selected by default.
+      CPU first-touch follows NUMA1 CPU pinning; actual residency must be measured.
+
   deep.thinker.v1:
     display_name: "Hecate deep thinker — Qwen3.8 27B QUASAR NVFP4"
     backend: vllm

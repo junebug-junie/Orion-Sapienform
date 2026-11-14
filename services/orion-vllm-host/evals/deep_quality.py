@@ -31,7 +31,7 @@ def main():
                     for task in tasks:
                         messages = [{'role': 'user', 'content': task['prompt'] + '\nReturn only the requested JSON.'}]
                         count = len(tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
-                                                            enable_thinking=True))
+                                                            enable_thinking=True, return_dict=False))
                         result = stream_chat(lane, {'messages': messages, 'temperature': 0,
                             'max_tokens': 32768, 'seed': 20261114 + repeat,
                             'chat_template_kwargs': {'enable_thinking': True}}, 1800)

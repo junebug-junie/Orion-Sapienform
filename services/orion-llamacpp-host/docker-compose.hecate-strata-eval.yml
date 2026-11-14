@@ -1,0 +1,78 @@
+# Standalone alternate stack. Stop the vLLM worker and reserve agent-deep before starting.
+services:
+  hecate-strata:
+    image: ghcr.io/niko1221/strata@sha256:04b696b7890b258adfcdbd813cd7eed9033764092c19f86c567452a20502206f
+    container_name: orion-hecate-strata-deep-eval
+    restart: unless-stopped
+    logging: {driver: journald, options: {tag: "{{.Name}}"}}
+    cpuset: 20-39,60-79
+    shm_size: 8gb
+    ulimits: {memlock: {soft: -1, hard: -1}}
+    stop_grace_period: 120s
+    entrypoint: ["/usr/bin/tini", "--", "/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mkdir -p /data/state /data/home /data/install/third_party /data/Strata-data
+        if [ ! -e /data/install/third_party/llama.cpp ]; then
+          ln -s /opt/strata/seed/third_party/llama.cpp /data/install/third_party/llama.cpp
+        fi
+        S=/opt/strata/terminal/bin/strata
+        trap '$$S launch --stop --preset hecate-deep-eval; exit 0' TERM INT
+        $$S launch --no-tui --access lan --no-api-key --port 8080 --data-dir /data/Strata-data \
+          --family qwen --model IQ3_S --model-path /data/Strata-data/models/IQ3_S \
+          --context 262144 --parallel 1 --kv int8 --vision off --gpu 0,1 \
+          --pool-cores 20-39 --drafting mtp --set vram-reserve-mib=1200 \
+          --save-preset hecate-deep-eval &
+        wait $$! || exit 1
+        bad=0
+        while :; do
+          sleep 10 & wait $$!
+          if $$S launch --status --output json 2>/dev/null | grep -q '"state": *"ready"'; then bad=0; else bad=$$((bad+1)); fi
+          [ "$$bad" -lt 3 ] || exit 1
+        done
+    ports: ["8021:8080"]
+    volumes:
+      - hecate-strata-eval-state:/data
+      - type: bind
+        source: /mnt/models/strata/Strata-data/models
+        target: /data/Strata-data/models
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /mnt/models/strata/Strata-data/packs
+        target: /data/Strata-data/packs
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /mnt/models/strata/Strata-data/mtp
+        target: /data/Strata-data/mtp
+        read_only: true
+        bind: {create_host_path: false}
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, device_ids: ["0", "1"], capabilities: [gpu]}]
+    networks: [app-net]
+  hecate-strata-announce:
+    build: {context: ../.., dockerfile: services/orion-llamacpp-host/Dockerfile.announce}
+    image: orion-llamacpp-host:hecate-strata-announce
+    container_name: orion-hecate-strata-deep-announce
+    restart: unless-stopped
+    logging: {driver: journald, options: {tag: "{{.Name}}"}}
+    environment:
+      SERVICE_NAME: hecate-strata-deep-eval
+      NODE_NAME: hecate
+      ORION_BUS_URL: redis://100.92.216.81:6379/0
+      LLM_PROFILE_NAME: qwen38-flash-next-iq3s-strata-2xv100-hecate-eval
+      LLM_PROFILES_CONFIG_PATH: /app/config/llm_profiles.yaml
+      LLM_REQUIRE_BACKEND: strata
+      LLM_ROLE: agent-deep
+      LLM_ANNOUNCE_HOST: hecate
+      LLM_ANNOUNCE_PORT: "8021"
+      CUDA_VISIBLE_DEVICES_OVERRIDE: "0,1"
+    networks: [app-net]
+volumes:
+  hecate-strata-eval-state:
+networks:
+  app-net: {external: true}

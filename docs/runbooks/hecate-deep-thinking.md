@@ -127,9 +127,25 @@ Never delete model volumes, containerd stores or graphify artifacts for rollback
 ## Acceptance and benchmarking
 
 Use `evals/deep_context.py` through `operator_lane_sync`; no direct inference
-URLs. Operator work waits behind Orion's work and exits on recall. During the
-planned isolated benchmark window, lend both Hecate cards and take the operator
-hold before inference. Restore original lending flags afterward.
+URLs. Operator work keeps its background priority, heartbeat, heat gate and
+recall behavior. During commissioning keep both Hecate cards **un-lent** and
+make their owner the existing `operator_agent_deep` class using a temporary
+candidate config. This prevents production spill onto an unvalidated model.
+From clean synchronized Athena main, after reserving/draining `agent-deep`:
+
+```bash
+mkdir -p .orion
+docker run --rm --network none --entrypoint python -e PYTHONPATH=/repo -v "$PWD:/repo:ro" \
+  orion-gpu-pool-gpu-pool /repo/services/orion-vllm-host/scripts/stage_pool.py \
+  --gpus 2 --commissioning > .orion/hecate-eval-pool.yaml
+scripts/safe_docker_build.sh orion-gpu-pool -f services/orion-gpu-pool/docker-compose.hecate-eval.yml up -d --no-build
+```
+
+Only the pool needs this ownership override for the vLLM baseline: Gateway
+routes/backend remain identical. Release the maintenance hold once discovery
+is confirmed; the benchmark takes its own background hold. After validation,
+recreate the pool from its base Compose file to restore owner `agent-deep`.
+Verify lending flags are still false and the production deep route works.
 
 In one Hecate host terminal, start sampling **before** inference:
 
@@ -182,6 +198,55 @@ never new detector inputs. Live rest points and unavailable counters must be
 recorded; all instrumentation is removable without changing cognition defaults.
 
 ## Strata and Legion comparison
+
+The explicit challenger stack is
+`services/orion-llamacpp-host/docker-compose.hecate-strata-eval.yml`. It uses the
+existing announce-only wrapper, a separate writable state volume, the cached
+model files read-only, both GPUs, CPU node 1, 262144 context, int8 KV, MTP and one
+slot. This is a layer split, not tensor parallelism. CPU pinning provides local
+first-touch placement; it does not enforce NUMA memory binding. Check actual
+`numastat`/`numa_maps` before interpreting offload performance.
+
+Build the announcer on Hecate and **both pool and Gateway images on Athena**
+from the same reviewed worktree revision first. The pool image must contain the
+new challenger entry in `llm_profiles.yaml`; mounting a candidate pool config
+alone cannot make that profile discoverable. Merge the source and synchronize
+clean primary main on Athena/Hecate. Reserve/drain `agent-deep`. On Athena render
+the candidate from that exact main (only Hecate's backend and commissioning
+owner change; both cards remain un-lent):
+
+```bash
+mkdir -p .orion
+docker run --rm --network none --entrypoint python -e PYTHONPATH=/repo -v "$PWD:/repo:ro" \
+  orion-gpu-pool-gpu-pool /repo/services/orion-vllm-host/scripts/stage_pool.py \
+  --gpus 2 --backend strata --commissioning > .orion/hecate-eval-pool.yaml
+scripts/safe_docker_build.sh orion-gpu-pool -f services/orion-gpu-pool/docker-compose.hecate-eval.yml up -d --no-build
+# Wait for a quiet Gateway request boundary before restarting the shared Gateway.
+scripts/safe_docker_build.sh orion-llm-gateway -f services/orion-llm-gateway/docker-compose.hecate-eval.yml up -d --no-build
+```
+
+On Hecate stop only vLLM, then start the alternate stack. The two wrappers refuse
+`up` while the competing engine is running; neither stops it automatically.
+
+```bash
+services/orion-vllm-host/scripts/hecate-deep.sh stop
+services/orion-llamacpp-host/scripts/hecate-strata-eval.sh up -d --no-build
+```
+
+Confirm pool discovery reports the challenger profile, both cards, one slot,
+actual model file and context before releasing the maintenance hold. Benchmark
+through `operator_agent_deep`; `deep.thinker.v1` intentionally refuses this
+unvalidated challenger. Do not substitute its model identifier in the dense
+profile. Use the Flash-Next tokenizer and verify its rendered count against
+actual provider usage before scoring context capacity. Record engine versions,
+cache hit/miss evidence, CPU RAM, and both cards' allocations; a populated card
+alone does not prove useful expert execution.
+
+To return to the dense baseline: reserve/drain, stop the Strata stack, start
+`hecate-deep.sh up -d --no-build`, then recreate pool and Gateway from their base
+Compose files without either Strata override. The generated local candidate and
+Strata state volume may remain for reproducibility; neither is a default input.
+Verify the original deep profile is confirmed before releasing the hold.
 
 Cached Strata `0.2.7-cuda12` digest
 `04b696b7890b258adfcdbd813cd7eed9033764092c19f86c567452a20502206f`

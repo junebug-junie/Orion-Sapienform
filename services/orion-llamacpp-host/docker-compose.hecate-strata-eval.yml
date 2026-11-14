@@ -18,6 +18,13 @@ services:
           ln -s /opt/strata/seed/third_party/llama.cpp /data/install/third_party/llama.cpp
         fi
         S=/opt/strata/terminal/bin/strata
+        P=/opt/strata/terminal/python/bin/python3
+        # Setup without serving, then reuse Orion's existing defaults merger.
+        # The pinned server otherwise silently shortens max_tokens near its limit.
+        $$P /opt/strata/terminal/setup.py --yes --no-start --family qwen --model IQ3_S \
+          --context 262144 --vision off --kv int8 --experimental-speed-projection off \
+          --mtp on --data-dir /data/Strata-data --gguf-dir /data/Strata-data/models/IQ3_S --gpus 0,1
+        $$P /svc/scripts/strata_apply_defaults.py /data/install/strata-iq3_s.json /svc/strata/hecate-deep-defaults.json
         trap '$$S launch --stop --preset hecate-deep-eval; exit 0' TERM INT
         $$S launch --no-tui --access lan --no-api-key --port 8080 --data-dir /data/Strata-data \
           --family qwen --model IQ3_S --model-path /data/Strata-data/models/IQ3_S \
@@ -34,6 +41,7 @@ services:
     ports: ["8021:8080"]
     volumes:
       - hecate-strata-eval-state:/data
+      - /mnt/scripts/Orion-Sapienform/services/orion-llamacpp-host:/svc:ro
       - type: bind
         source: /mnt/models/strata/Strata-data/models
         target: /data/Strata-data/models

@@ -1,7 +1,10 @@
 # Hecate deep thinker
 
-Status: **UNVERIFIED** until the live acceptance evidence below exists. Do not infer
-132K or 256K capacity from the profile or successful startup.
+Status: **132000 input tokens VERIFIED** through Gateway on the pinned dense
+baseline, fresh and cached, with correct distributed retrieval/arithmetic and a
+16384-token output allowance. See `1cat-baseline-smoke.jsonl` and its resource
+summary in the dated benchmark directory. Full 262144-token residency, harder
+reasoning, operational failure checks and Strata comparison are still in progress.
 
 ## Hardware and compatibility (2026-11-14)
 
@@ -35,6 +38,34 @@ was published November 14. Its four-card results do not establish TP2 capacity.
 CUDA Graphs, native MTP4 and DFlash2 are supported upstream; speculation starts
 disabled so its extra weights/KV and correctness can be measured separately.
 No CPU weight/KV offload is enabled. Do not add offload to hide an OOM.
+
+Optional DFlash2 experiment: the pinned draft is 3848817896 bytes (3.58 GiB),
+SHA256 `67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c`.
+Its five attention layers use a 2048-token sliding window. Runtime profiling must
+still measure weight sharding, target-feature buffers, draft KV and graph overhead.
+The optional override keeps the baseline context and sequence limits, uses seven
+speculative tokens, TP2 for the draft, and `kv_cache_dtype=auto` (FP16 with this
+target's FP16 compute). Preparation does not activate speculation:
+
+```bash
+python services/orion-vllm-host/scripts/prepare_deep_model.py /mnt/models --draft --download
+# On clean synchronized Hecate primary main, with the lane private and drained:
+mkdir -p .orion
+python services/orion-vllm-host/scripts/stage_dflash.py > .orion/hecate-dflash-profiles.yaml
+services/orion-vllm-host/scripts/hecate-deep.sh \
+  -f services/orion-vllm-host/docker-compose.dflash-eval.yml up -d --no-build
+```
+
+Use the same quality/context harness and record the speculative engine configuration.
+Restore baseline with `hecate-deep.sh up -d --no-build` (no DFlash override). Keep
+the candidate private until its own context and quality results pass.
+
+The first cold 132K ledger request took 98.08s total, 86.00s to first token,
+1574 uncached prompt tokens/s from provider prefill timing, and 42.79 generated
+tokens/s. Exact replay reached the first token in 2.57s with 131968 cached tokens.
+Both cards reached 100% utilization; sampled peak memory was 28699/28693 MiB.
+Sampled GPU board energy was 52.08 kJ cold and 5.98 kJ replay. These are one
+simple task each, not a broad reasoning score or a wall-plug energy measurement.
 
 The [dual PCIe benchmark #1202](https://github.com/1CatAI/1Cat-vLLM/issues/1202)
 used v1.5.1, TP2, QUASAR revision d9af17e, DFlash2 q7, E4M3 target KV, FP16
@@ -151,6 +182,9 @@ In one Hecate host terminal, start sampling **before** inference:
 
 ```bash
 python services/orion-vllm-host/evals/sample_host.py --seconds 7200 > /tmp/hecate-host.jsonl
+# Optional read-only engine gauges; vLLM names are not assumed for Strata.
+python services/orion-vllm-host/evals/sample_engine.py --worker http://127.0.0.1:8021 \
+  --seconds 7200 > /tmp/hecate-engine.jsonl
 ```
 
 In a second terminal, using the pinned image's Python dependencies and repository
@@ -164,6 +198,34 @@ PYTHONPATH=. python services/orion-vllm-host/evals/deep_context.py \
   --repeats 3 --output-budget 32768 --endurance
 ```
 
+`evals/deep_operations.py` requires an otherwise idle, privately owned Hecate lane.
+It observes a second hold queued behind a 132K request, then tests budget/n refusal,
+stream disconnect, and a five-second client timeout during forced long generation.
+Both cancellation cases require an idle engine within 30 seconds and a correct
+subsequent response. Use `--worker` only for read-only engine metrics and `--pool`
+for the existing read-only pool snapshot; all inference still uses Gateway.
+
+`evals/summarize_deep.py --host HOST.jsonl --results RESULTS.jsonl --out SUMMARY.jsonl`
+joins raw measurements to request timestamps. Power comes from `nvidia-smi` board
+power; trapezoidal integration gives sampled GPU energy (not independent of power,
+and not wall-plug energy). CPU busy time comes from `/proc/stat` counter differences,
+excluding duplicated guest counters; it includes unrelated host services. Gaps over
+six seconds or absent boundary coverage yield null energy. GPU utilization, memory,
+power and engine KV occupancy are related resource diagnostics, not independent
+quality signals. These offline artifacts reuse existing measurements and introduce
+no cognition metric, schema default or production telemetry channel.
+
+The pinned Strata server has `CTX_SLACK=8` and defaults to silently shrinking
+`max_tokens` near its limit. The challenger now runs setup without serving, then
+merges `hecate-deep-defaults.json` with `fit_max_tokens=false` before launch.
+For Strata use explicit `--context-slack 8`: its maximum tested prompt with a
+16384 output allowance is 245752, or 262136 user tokens total. This is an
+eight-token capacity difference from vLLM, not a 262144-token passing result.
+Strata lacks generation `min_tokens`/`ignore_eos`; its pinned server declares EOS
+IDs 248044 and 248046. `--endurance-eos-ban 248044 248046` uses its supported
+request-scoped `logit_bias` bans to force a capacity-only run, which must still
+report the full requested output count and a length stop to pass.
+
 The grid uses actual prompts 8192/32768/65536/132000/196608/229376 with a 32768
 output reserve. With reserve 16384 the last prompt is 245760. Fresh-prefix and
 exact-replay modes record actual cached-token counts; replay is not assumed to
@@ -172,6 +234,12 @@ speed. Repeat output includes model, usage, seeds, prompt hash, reasoning, final
 answer and finish reason. Empty final, wrong answer/model, missing usage,
 truncation and length-stop fail quality checks. Three distant random identifiers
 and distributed inventory arithmetic must all be correct.
+
+`--suite hard` replaces the ledger with six distant records: a keeper replacement,
+an unaffected decoy, pounds/kg arithmetic, two date updates and original-keeper
+recall. All five answers must match. This reproduces the reasoning families of
+the historical Hecate hard suite at exact token depths. Endurance and recovery
+remain separate ledger cases, even when the scored grid uses the hard suite.
 
 `--endurance` separately forces the full output reserve, verifies actual usage
 sums to 262144, and tests recovery. It makes no reasoning-quality claim. Add

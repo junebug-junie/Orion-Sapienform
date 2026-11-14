@@ -14,6 +14,16 @@ ROOT = Path(__file__).resolve().parents[3]
 EVAL = runpy.run_path(str(ROOT / 'services/orion-vllm-host/evals/deep_context.py'))
 
 
+def test_dflash_candidate_changes_only_speculation_and_keeps_full_context():
+    import yaml
+    original = yaml.safe_load((ROOT / 'config/llm_profiles.yaml').read_text())
+    candidate = runpy.run_path(str(ROOT / 'services/orion-vllm-host/scripts/stage_dflash.py'))['candidate']()
+    spec = candidate['profiles']['deep.thinker.v1']['vllm'].pop('speculative_config')
+    assert candidate == original
+    assert spec['method'] == 'dflash' and spec['num_speculative_tokens'] == 7
+    assert spec['draft_tensor_parallel_size'] == 2 and spec['kv_cache_dtype'] == 'auto'
+
+
 def test_launch_has_two_cards_full_context_and_one_sequence(monkeypatch):
     monkeypatch.setattr(main, 'settings', Settings(_env_file=None, VLLM_PROFILE_NAME='deep.thinker.v1',
                         LLM_PROFILES_CONFIG_PATH=ROOT / 'config/llm_profiles.yaml'))
@@ -105,6 +115,19 @@ def test_prompt_builder_hits_exact_tokens_and_changes_trial_prefix():
     assert len(Tokenizer().apply_chat_template(a, return_dict=False)) == 8192
     assert a != b
     assert all(expected[key] in a[0]['content'] for key in ('early', 'middle', 'late'))
+
+
+def test_hard_context_gold_includes_reassignment_decoy_conversion_and_date_updates():
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return messages[0]['content'].split()
+    messages, expected = EVAL['build_messages'](Tokenizer(), 8192, 123, 'hard')
+    assert len(Tokenizer().apply_chat_template(messages)) == 8192
+    # Reference case: 2799 lb * .4536 + 686 kg + (686-67) kg = 2574.6264 kg;
+    # Monday moved 3+3 days is Sunday; the replacement has badge 8147, not 5016.
+    assert expected == {'current_badge': 8147, 'other_badge': 3683, 'total_kg': 2575,
+                        'review_day': 'Sunday', 'previous_keeper': 'Mirela Cask'}
+    assert '2799 pounds' in messages[0]['content'] and 'badge 5016' in messages[0]['content']
 
 
 def test_memory_estimate_rejects_unaccounted_kv_head_replication():

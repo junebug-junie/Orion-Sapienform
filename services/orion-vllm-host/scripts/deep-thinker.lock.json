@@ -44,6 +44,10 @@
   "draft": {
     "repo_id": "incoai/Qwen3.8-27B-DFlash2",
     "revision": "dedf8df68adfb1afeaf7b7480c0a0243108177b4",
+    "directory": "Qwen3.8-27B-DFlash2",
+    "tensor_bytes": 3848817896,
+    "shards": [{"file": "model.safetensors", "bytes": 3848817896,
+                "sha256": "67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c"}],
     "enabled": false
   }
 }

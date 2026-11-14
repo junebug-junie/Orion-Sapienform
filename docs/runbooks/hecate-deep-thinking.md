@@ -213,7 +213,15 @@ joins raw measurements to request timestamps. Power comes from `nvidia-smi` boar
 power; trapezoidal integration gives sampled GPU energy (not independent of power,
 and not wall-plug energy). CPU busy time comes from `/proc/stat` counter differences,
 excluding duplicated guest counters; it includes unrelated host services. Gaps over
-six seconds or absent boundary coverage yield null energy. GPU utilization, memory,
+six seconds or absent boundary coverage yield null energy. For the pinned Strata
+server, `sample_engine.py --backend strata` reads its JSON `/metrics` instead of
+vLLM's Prometheus text. `serve/server.py:Service.metrics` supplies engine/live
+state and numeric request history; its history producer computes expert-cache
+hit frequency from engine hits/lookups and offload share from offloaded/routed
+counts. These are related cache/transfer diagnostics, not independent quality
+signals. Missing values stay null; cumulative counters need not return to zero
+when idle. The vLLM sampler also preserves `spec_decode_*` counters from
+`vllm/v1/spec_decode/metrics.py`; compare their deltas, not lifetime totals. GPU utilization, memory,
 power and engine KV occupancy are related resource diagnostics, not independent
 quality signals. These offline artifacts reuse existing measurements and introduce
 no cognition metric, schema default or production telemetry channel.

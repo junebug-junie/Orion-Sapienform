@@ -14,6 +14,16 @@ ROOT = Path(__file__).resolve().parents[3]
 EVAL = runpy.run_path(str(ROOT / 'services/orion-vllm-host/evals/deep_context.py'))
 
 
+def test_dflash_candidate_changes_only_speculation_and_keeps_full_context():
+    import yaml
+    original = yaml.safe_load((ROOT / 'config/llm_profiles.yaml').read_text())
+    candidate = runpy.run_path(str(ROOT / 'services/orion-vllm-host/scripts/stage_dflash.py'))['candidate']()
+    spec = candidate['profiles']['deep.thinker.v1']['vllm'].pop('speculative_config')
+    assert candidate == original
+    assert spec['method'] == 'dflash' and spec['num_speculative_tokens'] == 7
+    assert spec['draft_tensor_parallel_size'] == 2 and spec['kv_cache_dtype'] == 'auto'
+
+
 def test_launch_has_two_cards_full_context_and_one_sequence(monkeypatch):
     monkeypatch.setattr(main, 'settings', Settings(_env_file=None, VLLM_PROFILE_NAME='deep.thinker.v1',
                         LLM_PROFILES_CONFIG_PATH=ROOT / 'config/llm_profiles.yaml'))

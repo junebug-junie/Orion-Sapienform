@@ -39,6 +39,27 @@ CUDA Graphs, native MTP4 and DFlash2 are supported upstream; speculation starts
 disabled so its extra weights/KV and correctness can be measured separately.
 No CPU weight/KV offload is enabled. Do not add offload to hide an OOM.
 
+Optional DFlash2 experiment: the pinned draft is 3848817896 bytes (3.58 GiB),
+SHA256 `67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c`.
+Its five attention layers use a 2048-token sliding window. Runtime profiling must
+still measure weight sharding, target-feature buffers, draft KV and graph overhead.
+The optional override keeps the baseline context and sequence limits, uses seven
+speculative tokens, TP2 for the draft, and `kv_cache_dtype=auto` (FP16 with this
+target's FP16 compute). Preparation does not activate speculation:
+
+```bash
+python services/orion-vllm-host/scripts/prepare_deep_model.py /mnt/models --draft --download
+# On clean synchronized Hecate primary main, with the lane private and drained:
+mkdir -p .orion
+python services/orion-vllm-host/scripts/stage_dflash.py > .orion/hecate-dflash-profiles.yaml
+services/orion-vllm-host/scripts/hecate-deep.sh \
+  -f services/orion-vllm-host/docker-compose.dflash-eval.yml up -d --no-build
+```
+
+Use the same quality/context harness and record the speculative engine configuration.
+Restore baseline with `hecate-deep.sh up -d --no-build` (no DFlash override). Keep
+the candidate private until its own context and quality results pass.
+
 The first cold 132K ledger request took 98.08s total, 86.00s to first token,
 1574 uncached prompt tokens/s from provider prefill timing, and 42.79 generated
 tokens/s. Exact replay reached the first token in 2.57s with 131968 cached tokens.

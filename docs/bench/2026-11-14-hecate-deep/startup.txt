@@ -1,0 +1,13 @@
+(Worker pid=576) INFO 11-14 21:12:31 [cuda_communicator.py:388] Using ['CUSTOM', 'PYNCCL'] all-reduce backends (in dispatch order) for group 'tp:0' out of potential backends: ['NCCL_SYMM_MEM', 'SM70_RING', 'QUICK_REDUCE', 'FLASHINFER', 'CUSTOM', 'SYMM_MEM', 'PYNCCL'].
+(Worker_TP1 pid=575) INFO 11-14 21:12:34 [sm70_grouped_long.py:205] Using the shipped SM70 E4M3 long-context route (sm70_grouped_long_fwd): capability=262144 query_rows=(2, 3, 4, 5, 6, 7, 8); 80 splits, compensated FP32 state.
+(Worker_TP0 pid=576) INFO 11-14 21:12:34 [sm70_grouped_long.py:205] Using the shipped SM70 E4M3 long-context route (sm70_grouped_long_fwd): capability=262144 query_rows=(2, 3, 4, 5, 6, 7, 8); 80 splits, compensated FP32 state.
+(Worker_TP0 pid=576) INFO 11-14 21:12:48 [gpu_model_runner.py:11105] Model loading took 9.41 GiB memory and 14.411877 seconds
+(Worker_TP0 pid=576) INFO 11-14 21:19:10 [gpu_worker.py:868] Available KV cache memory: 15.08 GiB
+(EngineCore pid=459) INFO 11-14 21:19:10 [core.py:286] Available KV cache memory per worker: 15.08 GiB, 15.08 GiB
+(EngineCore pid=459) INFO 11-14 21:19:10 [kv_cache_utils.py:3058] GPU KV cache size: 942,935 tokens
+(EngineCore pid=459) INFO 11-14 21:19:10 [kv_cache_utils.py:3074] Maximum concurrency for 262,144 tokens per request: 3.60x
+(Worker_TP1 pid=575) INFO 11-14 21:19:25 [custom_all_reduce.py:576] Custom allreduce capture: 0 captured input(s) were not CUDA-IPC exportable (expandable segments) and were copied; 0 used the staging/NCCL fallback.
+(Worker_TP0 pid=576) INFO 11-14 21:19:25 [custom_all_reduce.py:576] Custom allreduce capture: 0 captured input(s) were not CUDA-IPC exportable (expandable segments) and were copied; 0 used the staging/NCCL fallback.
+(Worker_TP0 pid=576) INFO 11-14 21:19:26 [gpu_model_runner.py:12667] Graph capturing finished in 4 secs, took 0.67 GiB
+(EngineCore pid=459) INFO 11-14 21:19:26 [core.py:343] init engine (profile, create kv cache, warmup model) took 398.50 s (compilation: 279.90 s)
+(APIServer pid=71) INFO:     Application startup complete.

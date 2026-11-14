@@ -1,0 +1,9 @@
+# Explicit commissioning override; generated file is local-only, not the default routing config.
+services:
+  gpu-pool:
+    volumes:
+      - type: bind
+        source: ../../.orion/hecate-eval-pool.yaml
+        target: /app/config/gpu_pool.yaml
+        read_only: true
+        bind: {create_host_path: false}

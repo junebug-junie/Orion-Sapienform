@@ -66,6 +66,35 @@ def test_two_card_candidate_preserves_circe_and_routes():
             assert cfg.roles[role] == live.roles[role]
 
 
+def test_strata_candidate_changes_only_hecate_backend():
+    stage = runpy.run_path(str(ROOT / 'services/orion-vllm-host/scripts/stage_pool.py'))['candidate']
+    baseline, challenger = stage(2), stage(2, 'strata')
+    assert challenger.roles['agent-deep'].backend == 'strata'
+    challenger.roles['agent-deep'].backend = 'vllm'
+    assert challenger == baseline
+    with pytest.raises(ValueError):
+        stage(1, 'strata')
+    private = stage(2, 'vllm', commissioning=True)
+    assert private.roles['agent-deep'].owner == ['operator_agent_deep']
+    private.roles['agent-deep'].owner = baseline.roles['agent-deep'].owner
+    assert private == baseline
+
+
+def test_commissioning_keeps_unvalidated_worker_private_and_heat_gated():
+    from orion.gpu_pool.scheduler import schedule, RoleLive, CardLive
+    from orion.gpu_pool.tests.test_scheduler import lease, T0, grants
+    stage = runpy.run_path(str(ROOT / 'services/orion-vllm-host/scripts/stage_pool.py'))['candidate']
+    cfg = stage(2, 'vllm', commissioning=True)
+    roles = {name: RoleLive(name, name == 'agent-deep', 1, 262144, False) for name in cfg.roles}
+    cards = {name: CardLive(name) for name in cfg.cards}
+    for work_class in ('agent-deep', 'agent', 'metacog', 'fast', 'operator', 'operator_agent_deep'):
+        queued = lease(work_class, lease_id=work_class, priority='background', kind='hold')
+        actual = grants(schedule(cfg, roles, cards, [queued], T0))
+        assert actual == ({work_class: 'agent-deep'} if work_class == 'operator_agent_deep' else {})
+    queued = lease('operator_agent_deep', lease_id='op', priority='background', kind='hold')
+    assert grants(schedule(cfg, roles, cards, [queued], T0, shed={'background': 'cabinet_hot'})) == {}
+
+
 def test_prompt_builder_hits_exact_tokens_and_changes_trial_prefix():
     class Tokenizer:
         def apply_chat_template(self, messages, **kwargs):

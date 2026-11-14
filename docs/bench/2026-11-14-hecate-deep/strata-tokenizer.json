@@ -1,0 +1,30 @@
+{
+  "repo": "Qwen/Qwen3.8-Flash-Next",
+  "revision": "812d96e10a0dd82b69d749e68693698cf6c36daa",
+  "files": [
+    {
+      "name": "chat_template.jinja",
+      "bytes": 9004
+    },
+    {
+      "name": "config.json",
+      "bytes": 4745
+    },
+    {
+      "name": "merges.txt",
+      "bytes": 3353259
+    },
+    {
+      "name": "tokenizer.json",
+      "bytes": 12809320
+    },
+    {
+      "name": "tokenizer_config.json",
+      "bytes": 9984
+    },
+    {
+      "name": "vocab.json",
+      "bytes": 6722759
+    }
+  ]
+}

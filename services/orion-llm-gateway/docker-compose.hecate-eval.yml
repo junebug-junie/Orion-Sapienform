@@ -1,0 +1,9 @@
+# Must be applied together with the pool's matching commissioning override.
+services:
+  llm-gateway:
+    volumes:
+      - type: bind
+        source: ../../.orion/hecate-eval-pool.yaml
+        target: /app/config/gpu_pool.yaml
+        read_only: true
+        bind: {create_host_path: false}

@@ -425,6 +425,27 @@ async def test_queued_passthrough_times_out_on_its_own_wait(fake_pool, monkeypat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('stream', [False, True])
+async def test_granted_passthrough_closes_upstream_when_client_leaves_before_headers(
+        fake_pool, monkeypatch, silent_upstream, stream):
+    fake_pool.urls['fast'] = silent_upstream.url
+    monkeypatch.setattr(passthrough_proxy, '_DISCONNECT_POLL_SEC', 0.01)
+    class Request:
+        headers = {}
+        async def is_disconnected(self):
+            return silent_upstream.accepted.is_set()
+    task = asyncio.create_task(passthrough_proxy.proxy_on_pool(
+        request=Request(), route_key='quick', forward_body={'model': 'quick', 'stream': stream},
+        path='/v1/chat/completions', holder=pool_placement.HOLDER_OPENAI,
+        correlation_id='disconnect-after-grant', min_ctx_tokens=10, anthropic=False))
+    assert await asyncio.to_thread(silent_upstream.accepted.wait, 2)
+    response = await asyncio.wait_for(task, 1)
+    assert response.status_code == passthrough_proxy.CLIENT_CLOSED_STATUS
+    assert await asyncio.to_thread(silent_upstream.hung_up.wait, 2)
+    assert fake_pool.active == 0 and fake_pool.releases == ['cancelled']
+
+
+@pytest.mark.asyncio
 async def test_bus_wait_is_the_callers_budget_when_smaller(fake_pool, monkeypatch):
     monkeypatch.setattr(gateway, "run_llm_chat", _ok)
     await gateway._dispatch_chat(_body("quick_background", gateway_read_timeout_sec=20), correlation_id="c")

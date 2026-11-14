@@ -202,6 +202,9 @@ Every LLM call -- bus RPC, `/v1/chat/completions`, `/v1/messages` -- goes throug
 3. **Run on the grant.** The call goes to `grant.url` on a per-role thread pool
    (`LLM_GATEWAY_EXECUTOR_WORKERS_PER_ROLE`), never one executor shared across lanes. Streams
    hold the lease until the stream ends, errors, or the client leaves.
+   HTTP disconnects also cancel an in-flight non-streaming reply or the wait for initial
+   stream headers. The upstream connection closes before the lease is released as
+   `cancelled` with detail `http_client_disconnected` (499 in Gateway logs).
 4. **Release.** `ok` on success; `upstream_error` when the upstream failed (an exception, an HTTP
    error, or a returned `[Error: ...]`/`raw.error` result); `cancelled` when the gateway stopped
    the call because the pool took the lease back (below); `timeout` when the caller's budget ran

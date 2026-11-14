@@ -111,7 +111,7 @@ class _Revoked(Exception):
 
 
 class _ClientGone(Exception):
-    """The HTTP client disconnected while its acquire was still queued."""
+    """The HTTP client disconnected before its response was handed off."""
 
 
 # How much of a stream's end is kept to read llama.cpp's final ``timings``/``usage`` chunk.
@@ -180,6 +180,8 @@ async def _race(awaitable, watch: "asyncio.Future[str]"):
         await asyncio.wait({task, watch}, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError:
         task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
         raise
     if task.done():
         return task.result()
@@ -187,6 +189,34 @@ async def _race(awaitable, watch: "asyncio.Future[str]"):
     with contextlib.suppress(BaseException):
         await task
     raise _Revoked(watch.result())
+
+
+async def _race_response(awaitable, watch: "asyncio.Future[str]", request: Request):
+    """Also observe disconnects while awaiting a reply or initial stream headers.
+
+    Stop this receive-side watcher before LeaseStreamingResponse takes ownership;
+    two concurrent ASGI receive consumers could steal each other's disconnect.
+    """
+    async def disconnected():
+        while not await request.is_disconnected():
+            await asyncio.sleep(_DISCONNECT_POLL_SEC)
+
+    task = asyncio.ensure_future(_race(awaitable, watch))
+    gone = asyncio.create_task(disconnected())
+    try:
+        await asyncio.wait({task, gone}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            return task.result()
+        gone.result()  # do not misclassify a receive failure as client cancellation
+        raise _ClientGone()
+    finally:
+        gone.cancel()
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        with contextlib.suppress(BaseException):
+            await gone
 
 
 async def _withdraw(task: "asyncio.Future[Lease]", handle: PoolLease) -> None:
@@ -351,7 +381,7 @@ async def proxy_on_pool(
                 client = httpx.AsyncClient(timeout=timeout)
                 try:
                     upstream_request = client.build_request("POST", upstream_url, headers=headers, json=dispatch_body)
-                    upstream = await _race(client.send(upstream_request, stream=True), watch)
+                    upstream = await _race_response(client.send(upstream_request, stream=True), watch, request)
                 except BaseException:
                     await client.aclose()
                     raise
@@ -435,7 +465,7 @@ async def proxy_on_pool(
                 return streaming
 
             async with httpx.AsyncClient(timeout=timeout) as client:
-                upstream = await _race(client.post(upstream_url, headers=headers, json=dispatch_body), watch)
+                upstream = await _race_response(client.post(upstream_url, headers=headers, json=dispatch_body), watch, request)
             report.clock.replied()
             response = _plain_response(upstream.content, upstream)
             if upstream.status_code >= 400:
@@ -457,6 +487,13 @@ async def proxy_on_pool(
             report.finish(grammar_emit.classify_http_outcome(upstream.status_code),
                           body=body if isinstance(body, dict) else upstream.content)
             return response
+        except _ClientGone:
+            report.finish(grammar_emit.CLIENT_GONE)
+            lease.release_outcome, lease.release_detail = "cancelled", "http_client_disconnected"
+            await handle.release(asyncio.CancelledError())
+            logger.info("passthrough_client_gone_after_grant route=%s lease_id=%s corr=%s",
+                        route_key, lease.lease_id, correlation_id or "-")
+            return Response(status_code=CLIENT_CLOSED_STATUS)
         except _Revoked as exc:
             report.finish(POOL_RECALLED)
             mark_revoked(lease, exc.reason)

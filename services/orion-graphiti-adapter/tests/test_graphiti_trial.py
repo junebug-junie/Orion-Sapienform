@@ -525,3 +525,13 @@ def test_key_row_re_uses_terms():
     assert rx.search("Robin went to Shelbyville") and rx.search("Biscuit barked")
     assert not rx.search("nothing relevant here")
     assert trial.key_row_re(None).search("a dog")
+
+
+def test_render_report_lists_checks_cost_and_invalidated_facts():
+    edges = [_edge("Robin lives in Springfield", valid="2026-08-15T00:00:00"),
+             _edge("Robin is in Shelbyville", valid="2026-10-05T00:00:00", invalid="2026-10-07T00:00:00")]
+    dump = {"nodes": [{"uuid": "1", "name": "Robin"}], "edges": edges, "episodes": 2}
+    checks = score.run_checks(dump["nodes"], edges, [], T)
+    md = score.render_report(dump, checks, score.cost_summary([]), {"planned": 2}, [], [])
+    assert "Verdict by the checks: **NO-GO**" in md
+    assert "no longer true (1)" in md and "Robin is in Shelbyville" in md

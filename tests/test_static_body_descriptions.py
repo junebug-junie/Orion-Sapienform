@@ -25,14 +25,19 @@ def test_circe_is_not_called_a_burst_gpu() -> None:
     assert circe["expected_online"] is True
 
 
-def test_hecate_is_in_the_field_topology_and_on_demand() -> None:
+def test_hecate_is_in_the_field_topology_and_expected_online() -> None:
     topo = _load("config/field/orion_field_topology.v1.yaml")
     node_ids = [n["node_id"] for n in topo["nodes"]]
     assert "hecate" in node_ids
-    # No edge: an offline node must not feed any capability with seeded defaults.
+    # No edge yet: hecate still feeds no capability in the seeded lattice. Adding it
+    # is a scheduling change (config/gpu_pool.yaml still declares only hecate-gpu0),
+    # deliberately out of PR #3362, which only fixed the record.
     assert not [e for e in topo["edges"] if "node:hecate" in (e["source_id"], e["target_id"])]
+    # Flipped 2026-11-14 (PR #3362): orion-biometrics answers /health on hecate and is
+    # publishing rows again, so its silence is now an outage. Was `false` while the box
+    # was on-demand/offline (2026-10-15..2026-11-14).
     hecate = _load("config/biometrics/node_catalog.yaml")["nodes"]["hecate"]
-    assert hecate["expected_online"] is False
+    assert hecate["expected_online"] is True
 
 
 def test_hecate_reaches_field_digester_and_self_sense_loaders() -> None:

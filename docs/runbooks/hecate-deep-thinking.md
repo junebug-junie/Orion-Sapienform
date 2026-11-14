@@ -194,6 +194,17 @@ power and engine KV occupancy are related resource diagnostics, not independent
 quality signals. These offline artifacts reuse existing measurements and introduce
 no cognition metric, schema default or production telemetry channel.
 
+The pinned Strata server has `CTX_SLACK=8` and defaults to silently shrinking
+`max_tokens` near its limit. The challenger now runs setup without serving, then
+merges `hecate-deep-defaults.json` with `fit_max_tokens=false` before launch.
+For Strata use explicit `--context-slack 8`: its maximum tested prompt with a
+16384 output allowance is 245752, or 262136 user tokens total. This is an
+eight-token capacity difference from vLLM, not a 262144-token passing result.
+Strata lacks generation `min_tokens`/`ignore_eos`; its pinned server declares EOS
+IDs 248044 and 248046. `--endurance-eos-ban 248044 248046` uses its supported
+request-scoped `logit_bias` bans to force a capacity-only run, which must still
+report the full requested output count and a length stop to pass.
+
 The grid uses actual prompts 8192/32768/65536/132000/196608/229376 with a 32768
 output reserve. With reserve 16384 the last prompt is 245760. Fresh-prefix and
 exact-replay modes record actual cached-token counts; replay is not assumed to

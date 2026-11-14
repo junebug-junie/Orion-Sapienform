@@ -3,6 +3,7 @@
 - Add exact-depth reasoning and operational failure benchmarks for Hecate.
 - Record passing 8K/132K ledger requests and sampled resource use through Gateway.
 - Cancel upstream HTTP work when a granted caller disconnects before a reply.
+- Disable Strata output clamping and record its eight-token internal reserve explicitly.
 
 ## Outcome moved
 
@@ -44,8 +45,9 @@ existing Tailscale bus URL remains `redis://100.92.216.81:6379/0`.
 ## Tests run
 
 - Gateway: 545 passed, including two real-socket regressions that failed before the fix.
-- Hard-context construction/scoring: 10 focused tests passed; reviewer checked 1000 seeds.
+- Worker: 52 tests passed; reviewer checked hard-suite gold answers over 1000 seeds.
 - Resource-summary mathematics: four tests passed.
+- Strata defaults: eight tests passed; pinned setup CLI options verified from its help.
 - Independent reviews: no remaining findings; diff and syntax checks passed.
 
 ## Evals run
@@ -58,7 +60,7 @@ energy was 52.08 kJ cold and 5.98 kJ replay, not wall-plug energy. Full hard gri
 
 ## Docker/build/smoke checks
 
-Gateway image rebuild is required before live cancellation validation. Deployment
+Gateway image rebuilt successfully on Athena. Deployment
 must use clean synchronized primary main after merge. Current live baseline remains
 healthy and its active benchmark must finish before the approved maintenance restart.
 
@@ -67,6 +69,10 @@ healthy and its active benchmark must finish before the approved maintenance res
 The timeout benchmark initially allowed natural completion to look like cancellation.
 It now requires observed worker activity, forces 16384 output tokens, and demands idle
 within 30 seconds plus a correct recovery request. Energy gaps produce null, not zero.
+Pinned Strata source revealed default output clamping and eight internal context tokens;
+setup now merges the explicit no-clamp policy before serving, and benchmark rows record
+the reserve. Its capacity-only run uses supported EOS logit bans rather than unsupported
+generation min_tokens/ignore_eos options.
 
 ## Restart required
 

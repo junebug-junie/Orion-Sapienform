@@ -168,15 +168,22 @@ def main():
     parser.add_argument("--output-budget", type=int, choices=(16384, 32768), default=32768)
     parser.add_argument("--prompts", type=int, nargs="+", default=None)
     parser.add_argument("--endurance", action="store_true", help="also fill the entire context with forced output, then test recovery")
+    parser.add_argument("--context-slack", type=int, default=0,
+                        help="explicit engine-internal reserve; pinned Strata uses 8, vLLM uses 0")
+    parser.add_argument("--endurance-eos-ban", type=int, nargs='+', default=None,
+                        help="verified EOS IDs to ban via logit_bias when min_tokens/ignore_eos are unsupported")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20261114)
     parser.add_argument("--suite", choices=('ledger', 'hard'), default='ledger')
     parser.add_argument("--timeout", type=float, default=1800)
     parser.add_argument("--queue-wait", type=float, default=900)
     args = parser.parse_args()
-    prompts = args.prompts or [8192, 32768, 65536, 132000, 196608, 262144 - args.output_budget]
-    if args.repeats < 1 or any(n < 1024 or n + args.output_budget > 262144 for n in prompts):
+    capacity = 262144 - args.context_slack
+    prompts = args.prompts or [8192, 32768, 65536, 132000, 196608, capacity - args.output_budget]
+    if not 0 <= args.context_slack <= 1024 or args.repeats < 1 or any(n < 1024 or n + args.output_budget > capacity for n in prompts):
         parser.error("invalid repeats or prompt plus output reserve exceeds 262144")
+    if args.endurance_eos_ban and any(n < 0 for n in args.endurance_eos_ban):
+        parser.error('EOS IDs must be nonnegative')
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, local_files_only=True, trust_remote_code=False)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     passed = True
@@ -191,6 +198,7 @@ def main():
                         messages, expected = build_messages(tokenizer, n, seed, args.suite)
                         for mode in ("fresh_prefix", "exact_replay"):
                             row = {"prompt_tokens_requested": n, "output_budget": args.output_budget,
+                                   "engine_context_slack": args.context_slack,
                                    "total_budget": n + args.output_budget, "mode": mode, "seed": seed,
                                    "repeat": repeat, "suite": args.suite, "expected": expected, "seat": lane.summary(),
                                    "prompt_sha256": hashlib.sha256(json.dumps(messages).encode()).hexdigest()}
@@ -207,13 +215,17 @@ def main():
                             output.write(json.dumps(row) + "\n"); output.flush()
                             print(json.dumps({k: row.get(k) for k in ("prompt_tokens_requested", "mode", "ttft_s", "failures")}), flush=True)
                 if args.endurance:
-                    n = 262144 - args.output_budget
+                    n = capacity - args.output_budget
                     messages, _ = build_messages(tokenizer, n, args.seed + 999999)
                     row = {"mode": "capacity_endurance", "quality_claim": False,
                            "prompt_tokens_requested": n, "output_budget": args.output_budget,
+                           "engine_context_slack": args.context_slack,
                            "seat": lane.summary()}
+                    forcing = ({'logit_bias': {str(n): -100 for n in args.endurance_eos_ban}}
+                               if args.endurance_eos_ban else {'min_tokens': args.output_budget, 'ignore_eos': True})
+                    row['forcing_options'] = forcing
                     row.update(stream_chat(lane, {"messages": messages, "max_tokens": args.output_budget,
-                        "min_tokens": args.output_budget, "ignore_eos": True, "temperature": 0,
+                        **forcing, "temperature": 0,
                         "chat_template_kwargs": {"enable_thinking": True}}, args.timeout))
                     usage = row.get("usage") or {}
                     row["passed"] = (row.get("model") == args.model and usage.get("prompt_tokens") == n

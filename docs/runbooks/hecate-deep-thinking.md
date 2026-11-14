@@ -1,7 +1,10 @@
 # Hecate deep thinker
 
-Status: **UNVERIFIED** until the live acceptance evidence below exists. Do not infer
-132K or 256K capacity from the profile or successful startup.
+Status: **132000 input tokens VERIFIED** through Gateway on the pinned dense
+baseline, fresh and cached, with correct distributed retrieval/arithmetic and a
+16384-token output allowance. See `1cat-baseline-smoke.jsonl` and its resource
+summary in the dated benchmark directory. Full 262144-token residency, harder
+reasoning, operational failure checks and Strata comparison are still in progress.
 
 ## Hardware and compatibility (2026-11-14)
 
@@ -35,6 +38,13 @@ was published November 14. Its four-card results do not establish TP2 capacity.
 CUDA Graphs, native MTP4 and DFlash2 are supported upstream; speculation starts
 disabled so its extra weights/KV and correctness can be measured separately.
 No CPU weight/KV offload is enabled. Do not add offload to hide an OOM.
+
+The first cold 132K ledger request took 98.08s total, 86.00s to first token,
+1574 uncached prompt tokens/s from provider prefill timing, and 42.79 generated
+tokens/s. Exact replay reached the first token in 2.57s with 131968 cached tokens.
+Both cards reached 100% utilization; sampled peak memory was 28699/28693 MiB.
+Sampled GPU board energy was 52.08 kJ cold and 5.98 kJ replay. These are one
+simple task each, not a broad reasoning score or a wall-plug energy measurement.
 
 The [dual PCIe benchmark #1202](https://github.com/1CatAI/1Cat-vLLM/issues/1202)
 used v1.5.1, TP2, QUASAR revision d9af17e, DFlash2 q7, E4M3 target KV, FP16
@@ -151,6 +161,9 @@ In one Hecate host terminal, start sampling **before** inference:
 
 ```bash
 python services/orion-vllm-host/evals/sample_host.py --seconds 7200 > /tmp/hecate-host.jsonl
+# Optional read-only engine gauges; vLLM names are not assumed for Strata.
+python services/orion-vllm-host/evals/sample_engine.py --worker http://127.0.0.1:8021 \
+  --seconds 7200 > /tmp/hecate-engine.jsonl
 ```
 
 In a second terminal, using the pinned image's Python dependencies and repository
@@ -163,6 +176,23 @@ PYTHONPATH=. python services/orion-vllm-host/evals/deep_context.py \
   --gateway http://100.92.216.81:8210 --out /tmp/hecate-deep-results.jsonl \
   --repeats 3 --output-budget 32768 --endurance
 ```
+
+`evals/deep_operations.py` requires an otherwise idle, privately owned Hecate lane.
+It observes a second hold queued behind a 132K request, then tests budget/n refusal,
+stream disconnect, and a five-second client timeout during forced long generation.
+Both cancellation cases require an idle engine within 30 seconds and a correct
+subsequent response. Use `--worker` only for read-only engine metrics and `--pool`
+for the existing read-only pool snapshot; all inference still uses Gateway.
+
+`evals/summarize_deep.py --host HOST.jsonl --results RESULTS.jsonl --out SUMMARY.jsonl`
+joins raw measurements to request timestamps. Power comes from `nvidia-smi` board
+power; trapezoidal integration gives sampled GPU energy (not independent of power,
+and not wall-plug energy). CPU busy time comes from `/proc/stat` counter differences,
+excluding duplicated guest counters; it includes unrelated host services. Gaps over
+six seconds or absent boundary coverage yield null energy. GPU utilization, memory,
+power and engine KV occupancy are related resource diagnostics, not independent
+quality signals. These offline artifacts reuse existing measurements and introduce
+no cognition metric, schema default or production telemetry channel.
 
 The grid uses actual prompts 8192/32768/65536/132000/196608/229376 with a 32768
 output reserve. With reserve 16384 the last prompt is 245760. Fresh-prefix and

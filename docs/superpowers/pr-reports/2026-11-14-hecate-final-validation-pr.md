@@ -70,7 +70,10 @@ The dense baseline image/model are preserved for rollback. See the runbook.
 - Deliberate CUDA exhaustion and multi-request full-context batching were not run;
   admission is initially one request and tested invalid allocations fail closed.
 - Graphify refresh is unavailable on this host; existing graphs were not modified.
-- Issues opened/closed: none; remaining mission work is continuing here.
+  Follow-up: https://github.com/junebug-junie/Orion-Sapienform/issues/3363.
+- Issues opened: #3363 (Graphify storage/tooling). Closed: none. Project-board
+  placement is unavailable through the connected GitHub tools; `gh` is absent
+  locally and on Athena. Remaining mission work is continuing here.
 
 ## PR
 

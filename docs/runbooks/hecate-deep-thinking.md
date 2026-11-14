@@ -101,6 +101,20 @@ cache page rounding can invalidate a simple equal split. Runtime profiling and
 the full-output endurance test decide feasibility. Exact component output is
 committed in `memory-estimates.json`.
 
+Measured baseline startup reports 9.41 GiB model allocation, 15.08 GiB available
+KV budget and 0.67 GiB CUDA Graph memory per rank. Peak NVML residency during the
+full-output endurance test was 28719/28713 MiB, leaving about 4 GiB per card.
+The runtime preallocates a larger KV pool than the single-request planning
+minimum; this explains why measured residency exceeds that minimum. Startup
+component figures and a later sampled peak are different observations, not an
+exact allocator decomposition. No CPU weight or KV offload was enabled.
+
+The DFlash candidate reports 13.01 GiB model allocation, 10.99 GiB available KV
+budget and 1.21 GiB CUDA Graph memory per rank. Its initial resident memory is
+29041/29035 MiB. These are startup measurements only; the actual maximum-context
+run is still pending. In particular, do not estimate draft overhead by dividing
+its checkpoint size by TP2: the measured increase is about 3.60 GiB per rank.
+
 ## Orion integration and budgets
 
 Gateway OpenAI `model: deep.thinker.v1` maps to existing class/role `agent-deep`.

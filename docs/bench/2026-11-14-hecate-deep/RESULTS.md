@@ -85,6 +85,17 @@ python services/orion-vllm-host/evals/summarize_deep.py --host /tmp/hecate-host-
   --out /tmp/hecate-hard-recomputed.jsonl
 ```
 
+`process_memory_snapshot.py` captures per-process RSS, CPU/memory affinity and
+mapped resident pages by NUMA node from `/proc` inside the worker's PID namespace:
+
+```bash
+docker exec -i orion-hecate-vllm-host python - < docs/bench/2026-11-14-hecate-deep/process_memory_snapshot.py
+```
+
+Baseline TP workers each used about 3.38 GiB RSS, mostly on NUMA node 1, with zero
+swap. This includes shared mappings; do not sum process RSS as unique physical
+memory. The raw snapshot is `1cat-process-memory.json`.
+
 DFlash2 and the Strata challenger are still being measured. No model
 ranking follows from capacity alone. Strata reserves eight internal tokens, so its
 maximum comparison uses 245752 prompt + 16384 output = 262136 user tokens. The

@@ -49,3 +49,23 @@ def test_readout_accepts_json_text_and_no_rows():
     out = mod.summarize([{"decided_at": T0, "reason": "orion_declined",
                           "choice": '{"pick": "declined", "shown": [{"subject": "a"}]}'}], days=1)
     assert out["picks"] == {"declined": 1}
+
+
+def test_readout_counts_shown_and_picked_per_kind():
+    """Picked / shown per topic kind: the revealed-preference rate, including the new person and
+    chat_thread kinds (2026-11-15)."""
+    mod = _load()
+    shown = [{"subject": "daydream:d", "kind": "daydream"}, {"subject": "person:p", "kind": "person"},
+             {"subject": "chat_thread:c", "kind": "chat_thread"}]
+    rows = [
+        {"decided_at": T0, "reason": "sent",
+         "choice": {"pick": "chosen", "chosen_rank": 3, "chosen_subject": "chat_thread:c", "shown": shown}},
+        {"decided_at": T0 + timedelta(hours=1), "reason": "orion_declined",
+         "choice": {"pick": "declined", "shown": shown[:2]}},
+    ]
+    out = mod.summarize(rows, days=1)
+    assert out["kinds"] == {
+        "chat_thread": {"shown": 1, "picked": 1, "picked_per_shown": 1.0},
+        "daydream": {"shown": 2, "picked": 0, "picked_per_shown": 0.0},
+        "person": {"shown": 2, "picked": 0, "picked_per_shown": 0.0},
+    }

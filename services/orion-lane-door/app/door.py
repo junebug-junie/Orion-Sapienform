@@ -247,6 +247,27 @@ class Stats:
                 "unkeyed_by_source": dict(self.unkeyed_by_source), "unkeyed_by_path": dict(self.unkeyed_by_path)}
 
 
+JOURNAL_EVERY_SEC = 60.0
+DRAIN_MAX_BYTES = 1 << 20
+DRAIN_SEC = 2.0
+
+
+async def _drain(reader: asyncio.StreamReader) -> None:
+    """Read and drop what a refused caller is still sending, within limits."""
+    got, deadline = 0, time.monotonic() + DRAIN_SEC
+    while got < DRAIN_MAX_BYTES:
+        left = deadline - time.monotonic()
+        if left <= 0:
+            return
+        try:
+            data = await asyncio.wait_for(reader.read(CHUNK), left)
+        except (asyncio.TimeoutError, OSError):
+            return
+        if not data:
+            return
+        got += len(data)
+
+
 def _json_response(status: int, reason: str, body: dict[str, Any]) -> bytes:
     data = json.dumps(body).encode()
     return render_head(f"HTTP/1.1 {status} {reason}".encode(), [
@@ -265,6 +286,7 @@ class Door:
     def __init__(self, settings: Settings, log: Optional[RequestLog] = None):
         self.s = settings
         self.stats = Stats(lane=settings.lane, mode=settings.mode, key_hash=settings.key_hash)
+        self._journaled: dict[tuple[str, str], float] = {}
         self.log = log if log is not None else RequestLog(settings.log_dir, settings.lane,
                                                           settings.log_retention_days)
 
@@ -316,12 +338,18 @@ class Door:
             headers.insert(0, (b"Host", self.s.upstream_host_header.encode("latin-1")))
         headers.append((b"Connection", b"close"))
 
-        if self.s.mode == "enforce" and not exempt and state != "ok":
-            # Refused before any engine connection; the request body is not read (the connection closes).
+        refused = self.s.mode == "enforce" and not exempt and state != "ok"
+        if refused:
+            # Refused before any engine connection. Then the request body is read and dropped (up to
+            # DRAIN_MAX_BYTES / DRAIN_SEC): closing a socket with unread data sends a reset, and a caller still
+            # uploading would see a broken pipe instead of the 401 and its explanation.
             self.stats.refused += 1
             with contextlib.suppress(Exception):
                 writer.write(_json_response(401, "Unauthorized", REFUSAL))
                 await writer.drain()
+                if writer.can_write_eof():
+                    writer.write_eof()
+                await _drain(reader)
             status, err = 401, None
         else:
             status, err = await self._forward(reader, writer, Head(head.start, headers), version,
@@ -337,12 +365,24 @@ class Door:
                "status": status, "ms": round((time.monotonic() - started) * 1000.0, 1)}
         if err:
             row["error"] = err
-        if status == 401 and self.s.mode == "enforce" and state != "ok":
+        if refused:
             row["refused"] = True
         self.log.write(row)
-        if state != "ok":
-            # Rare and the whole point of the shadow phase: also in the container log (journald).
+        if state != "ok" and self._journal_due(source, path):
+            # Rare and the whole point of the shadow phase: also in the container log (journald), at most
+            # once a minute per source and path (a caller retrying against an enforcing door would flood it;
+            # the JSONL keeps every call).
             print("lane_door_unkeyed " + json.dumps(row, separators=(",", ":")), flush=True)
+
+    def _journal_due(self, source: str, path: str) -> bool:
+        now, key = time.monotonic(), (source, path)
+        last = self._journaled.get(key)
+        if last is not None and now - last < JOURNAL_EVERY_SEC:
+            return False
+        if len(self._journaled) > 4096:
+            self._journaled.clear()
+        self._journaled[key] = now
+        return True
 
     async def _forward(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, head: Head,
                        version: bytes, expect_continue: bool = False) -> tuple[int, Optional[str]]:

@@ -46,7 +46,8 @@ class Day:
     unkeyed_from: Counter = field(default_factory=Counter)   # "src path" -> n
     lease_ids: set = field(default_factory=set)
     no_lease_id: int = 0                                     # keyed calls without a lease id
-    refused: int = 0                                         # Phase 3: unkeyed calls an enforcing door refused
+    refused: int = 0                                         # Phase 3: keyless calls an enforcing door refused
+    refused_from: Counter = field(default_factory=Counter)
     unmatched_leases: Optional[int] = None                   # --dsn: keyed lease ids not in gpu_pool_events
     gateway_calls: Optional[int] = None                      # --dsn: llm_call_usage rows for this lane
 
@@ -85,9 +86,11 @@ def aggregate(lines: Iterable[str]) -> tuple[dict[str, dict[str, Day]], int]:
                 d.lease_ids.add(str(lease))
             else:
                 d.no_lease_id += 1
-        elif row.get("refused"):
-            d.refused += 1   # already refused (enforce): shown, not counted against the lane's readiness
-            d.unkeyed_from[f"REFUSED {row.get('src', '?')} {row.get('method', '?')} {row.get('path', '?')}"] += 1
+        elif row.get("refused") and key == "missing":
+            # Already refused by an enforcing door: shown, not counted against the lane. A refused WRONG
+            # key is not excused: that is what gateway key drift looks like after a flip.
+            d.refused += 1
+            d.refused_from[f"{row.get('src', '?')} {row.get('method', '?')} {row.get('path', '?')}"] += 1
         else:
             if key == "bad":
                 d.bad += 1
@@ -189,6 +192,8 @@ def render(report: dict[str, dict[str, Day]], verdicts: dict[str, tuple[bool, st
             lines.append(row)
             for who, n in d.unkeyed_from.most_common(5):
                 lines.append(f"      unkeyed x{n}: {who}")
+            for who, n in d.refused_from.most_common(3):
+                lines.append(f"      refused x{n}: {who}")
     return "\n".join(lines)
 
 
@@ -222,6 +227,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.json:
         print(json.dumps({"lanes": {lane: {"ready": verdicts[lane][0], "why": verdicts[lane][1], "days": {
             day: {"keyed": d.ok, "unkeyed": d.missing, "bad_key": d.bad, "refused": d.refused, "unkeyed_from": dict(d.unkeyed_from),
+                  "refused_from": dict(d.refused_from),
                   "unmatched_leases": d.unmatched_leases, "gateway_calls": d.gateway_calls}
             for day, d in sorted(days.items())}} for lane, days in report.items()},
             "unreadable_lines": bad_lines, "lease_join": joined}, indent=1))

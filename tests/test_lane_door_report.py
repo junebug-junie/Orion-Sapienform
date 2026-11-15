@@ -108,3 +108,14 @@ def test_calls_an_enforcing_door_already_refused_are_shown_but_do_not_block():
     report, _ = rep.aggregate(lines + [json.dumps(refused)])
     day = report["chat"]["2026-11-19"]
     assert (day.refused, day.missing) == (1, 0)
+
+
+def test_a_refused_wrong_key_still_blocks_it_is_gateway_key_drift():
+    """Review finding: after a flip, a drifted gateway key shows as refused key=bad rows; never excuse them."""
+    lines = [_line(d) for d in _days(15, 7)]
+    drift = json.loads(_line("2026-11-19", key="bad"))
+    drift.update(status=401, refused=True)
+    report, _ = rep.aggregate(lines + [json.dumps(drift)])
+    assert report["chat"]["2026-11-19"].bad == 1
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=False, today="2026-11-22")
+    assert not ok and "wrong-key" in why

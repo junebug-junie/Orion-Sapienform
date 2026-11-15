@@ -478,3 +478,31 @@ def test_shadow_still_refuses_nothing(tmp_path):
 
     door, r = run(go())
     assert r.status_code == 200 and door.stats.refused == 0
+
+
+def test_a_refused_large_upload_still_reads_the_401(tmp_path):
+    """Review finding: refusing without reading the body could reset a caller mid-upload."""
+    async def go():
+        engine = Engine()
+        door, server, port = await _door(tmp_path, await engine.start(), mode="enforce")
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
+            r = await c.post("/v1/chat/completions", content=b"x" * 3_000_000)
+        server.close()
+        return engine, r
+
+    engine, r = run(go())
+    assert r.status_code == 401 and r.json()["error"]["type"] == "lane_door_unleased" and engine.seen == []
+
+
+def test_the_journal_line_is_rate_limited_but_the_log_keeps_every_call(tmp_path, capsys):
+    async def go():
+        engine = Engine()
+        door, server, port = await _door(tmp_path, await engine.start(), mode="enforce")
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
+            for _ in range(5):
+                await c.post("/v1/chat/completions", json={})
+        server.close()
+
+    run(go())
+    assert capsys.readouterr().out.count("lane_door_unkeyed") == 1
+    assert len(_rows(tmp_path)) == 5

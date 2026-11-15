@@ -56,9 +56,9 @@ runbooks.
 ## Tests run
 
 ```text
-services/orion-lane-door/tests                          24 passed
+services/orion-lane-door/tests                          26 passed
 tests/test_lane_door_report.py, test_lane_door_exempt_parity.py, test_circe_llm_port_gate.py,
-  test_check_circe_worker_refs.py, services/orion-llm-gateway/tests (one session)   662 passed
+  test_check_circe_worker_refs.py, services/orion-llm-gateway/tests, test_leased_llm.py (one session)   688 passed
 check_circe_worker_refs PASS; git diff --check clean
 ```
 
@@ -79,7 +79,29 @@ for both iptables and ip6tables (test_circe_llm_port_gate.py).
 
 ## Review findings fixed
 
-(appended after review)
+A code-review subagent reviewed this PR's commits.
+
+- Finding (blocker for the agent-deep flip): the pool's vLLM probe reads `/orion/server-info`, which was
+  not exempt. In shadow agent-deep could never read READY; in enforce the pool would mark it down.
+  - Fix: exempt it (door and eval helper lists), in part 2 (#3417) where the list lives, plus a test that
+    reads every path the pool's `_probe` and the launch `ready` paths request and pins them to the list.
+  - Evidence: `test_every_path_the_pool_and_the_lane_controller_read_is_exempt`.
+- Finding: the flip command had no `--build`; a door image older than this PR rejects `enforce` and the
+  lane goes down.
+  - Fix: flip and rollback use `up -d --build`, then print the mode the door really runs.
+- Finding: the flip line did not fit agent-deep (hecate, `--profile hecate`).
+  - Fix: its own command.
+- Finding: refused wrong-key calls were excused by the report, hiding gateway key drift after a flip.
+  - Fix: only keyless refused calls are set aside; refused wrong-key calls block the verdict.
+  - Evidence: `test_a_refused_wrong_key_still_blocks_it_is_gateway_key_drift`.
+- Finding: no key-rotation procedure for an enforcing lane.
+  - Fix: runbook line (shadow, rotate both, check hash, flip back).
+- Finding: refusing without reading the body could reset a caller mid-upload.
+  - Fix: after the 401 the door half-closes and drains up to 1 MiB / 2 s.
+  - Evidence: `test_a_refused_large_upload_still_reads_the_401` (3 MB body).
+- Nits fixed: the `refused` flag comes from the refusal branch, not re-derived; the journald line is at
+  most once a minute per source and path (the JSONL keeps every call); the flip `sed` fails loudly if the
+  key line is missing; rollback wording aligned to `shadow`; refused callers in their own `refused_from` map.
 
 ## Restart required
 

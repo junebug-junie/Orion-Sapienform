@@ -43,7 +43,7 @@ Labelling: 17 new items were hand-labelled with the D0 rule (a real forward comm
 - Smoke 2026-11-15: hold `0c913a1d...` (holder `operator:promise-ledger-replay`, class `operator_agent`, priority background) admitted 00:21:58Z, queued behind Orion's own shed (`shed:orion_self_shed`), **granted 00:50:55Z** on gpu1 (Flash-Next agent worker, waited 29 min), released `ok` 00:51:40Z.
 - Gateway, same window: `gpu_pool_lease_granted route=operator_agent class=operator_agent priority=background ... hold=0c913a1d030d4a78a7ba204e09187ac6` then `openai_chat_passthrough route=operator_agent upstream=http://100.112.254.99:8015/v1/chat/completions served_by=circe-worker-agent`, once per call.
 - Recall path: 7 holds were recalled (`owner_waiting`); each time the eval wrote a partial report and exited 3, and the hold settled `cancelled operator_lane_recalled`. Example: lease `73844e78...` granted 00:57:14Z, recalled 01:05:32Z, cancelled 01:05:46Z.
-- Totals: 9 grants, 121 judge calls under holds, mean queue wait 31 min. One 6 h queue wait ran out with no seat (12:18-18:18Z).
+- Totals: 9 grants (the smoke, 7 replay parts, and 1 grant to an already-stopped client, #3407); 7 recalls (one per replay part); 121 judge calls under holds; mean queue wait 31 min. One 6 h queue wait ran out with no seat (12:18-18:18Z).
 - Found a pool bug: a hold whose eval was stopped while still queued was granted 45 min later to a dead client and held the seat 90 s until `heartbeat_lost` (issue #3407).
 
 ## Current architecture
@@ -110,7 +110,7 @@ Leased smoke: 3 turns, 3 calls, see "Leased seat".
 
 - Finding: requiring `doer` adds a way for Strata to 502 the whole verdict.
   - Fix: kept required (the enum guides the model) and measured it.
-  - Evidence: 2 schema 502s in 118 judge calls (1.7%) against the D0 baseline of 5 in 180 (2.8%, unrelated JSON escapes). No sign the new key adds failures.
+  - Evidence: 2 schema 502s in the 109 calls that reached Strata (1.8%) against the D0 baseline of 5 in 180 (2.8%, unrelated JSON escapes). No sign the new key adds failures.
 - Finding: a sentence with two subjects could lose a real promise.
   - Fix: prompt says to quote only Orion's clause, and that a promise waiting on Juniper is still Orion's.
 - Finding: unlabelled items counted as false in precision.
@@ -122,6 +122,16 @@ Leased smoke: 3 turns, 3 calls, see "Leased seat".
 - Finding: the judge-crash eval would count an unknown doer as a verdict crash.
   - Fix: it now parses like production.
 - Nits: docstring "four rules", per-row `dropped_not_orion`, spec rule 0. Fixed.
+- Second review (resume tooling): a later error row could overwrite a good row in `merge_reports`.
+  - Fix: a row without an error always wins. Test added.
+- Finding: `--out` equal to a `--skip-done` input would erase it.
+  - Fix: refused at start.
+- Finding: a merged report showed 0 promises counted.
+  - Fix: `None` for the ledger fields on merged reports.
+- Finding: a resumed part starts with no pending offers or open promises, so `offers_accepted` / `promises_kept` in a merged report are not comparable to an unbroken run.
+  - Fix: documented on `merge_reports`. `promises_made` (what this PR measures) is not affected.
+- Finding: the commit message for the resume commit says "9 recalls"; the pool shows 7.
+  - Fix: corrected here (7 recalls, 9 grants).
 
 ## Restart required
 

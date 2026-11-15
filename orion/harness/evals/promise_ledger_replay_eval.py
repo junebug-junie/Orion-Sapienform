@@ -237,6 +237,8 @@ def run(args: argparse.Namespace) -> int:
         if args.only:
             turns = [t for t in turns if t["correlation_id"].startswith(tuple(args.only.split(",")))]
         if args.skip_done:
+            if args.out.resolve() in {Path(p).resolve() for p in args.skip_done}:
+                raise SystemExit("--out must not be one of the --skip-done inputs (it would be overwritten)")
             # Error rows (a 503 while the hold was being recalled, a 502) are tried again.
             done = {r["correlation_id"] for r in merge_reports(args.skip_done)["turns"] if "error" not in r}
             turns = [t for t in turns if t["correlation_id"] not in done]
@@ -374,12 +376,17 @@ def ablate_doer_rule(reflection: Any, *, draft_text: str, final_text: str) -> li
 
 def merge_reports(paths: list[Path]) -> dict:
     """One report from several partial ones (a run the pool recalled, resumed with
-    --skip-done). Later files win for a turn in more than one. Ledger / keep-rate fields are
-    dropped: they only make sense for one unbroken run."""
+    --skip-done). For a turn in more than one file, a row without an error wins over an error
+    row, whatever the order; otherwise the later file wins. Ledger / keep-rate fields are
+    dropped: they only make sense for one unbroken run. A resumed part also starts with no
+    pending offers and no open promises, so offers_accepted / promises_kept in a merged
+    report are not comparable to an unbroken run; promises_made is."""
     turns: dict[str, dict] = {}
     for path in paths:
         for row in json.loads(Path(path).read_text()).get("turns", []):
-            turns[row["correlation_id"]] = row
+            old = turns.get(row["correlation_id"])
+            if old is None or "error" in old or "error" not in row:
+                turns[row["correlation_id"]] = row
     return {"turns": sorted(turns.values(), key=lambda r: r.get("at") or ""),
             "merged_from": [str(p) for p in paths]}
 
@@ -491,9 +498,10 @@ def score(report: dict, labels: dict) -> dict:
         "gate_dropped_that_were_real_quotes": len(real_quotes_dropped),
         "gate_dropped_unlabelled": sum(1 for d in drops if (d["correlation_id"], d["quote_sha"]) not in drop_labels),
         "recall_hand_found": {"found": sum(1 for f in found if f["extracted"]), "of": len(found), "items": found},
-        "promises_counted": len(report.get("ledger") or []),
+        "promises_counted": None if "merged_from" in report else len(report.get("ledger") or []),
         "offers_accepted": sum(len(r.get("offers_accepted") or []) for r in turns),
-        "turns_with_counted_promise": len({p["correlation_id"] for p in report.get("ledger") or []}),
+        "turns_with_counted_promise": (None if "merged_from" in report
+                                       else len({p["correlation_id"] for p in report.get("ledger") or []})),
         "outcomes": outcomes,
         # Beta(1, 1) on kept vs expired-after-being-shown. Censored and never-shown promises
         # are left out of the rate and reported beside it (outcomes).

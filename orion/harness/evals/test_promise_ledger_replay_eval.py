@@ -187,4 +187,9 @@ def test_merge_reports_joins_partial_runs_by_turn(tmp_path) -> None:
     merged = merge_reports([a, b])
     assert [r["correlation_id"] for r in merged["turns"]] == ["c0", "c1", "c2"]
     assert "error" not in merged["turns"][2]  # the later file wins
-    assert score(merged, {"labels": [], "hand_found": [], "dropped": []})["turns_judged"] == 3
+    scored = score(merged, {"labels": [], "hand_found": [], "dropped": []})
+    assert scored["turns_judged"] == 3 and scored["promises_counted"] is None
+    # A good row is never replaced by a later error row.
+    c = tmp_path / "c.json"
+    c.write_text(json.dumps({"turns": [{"correlation_id": "c1", "at": "2026-11-01T00:00:00", "error": "http 503"}]}))
+    assert "error" not in merge_reports([a, b, c])["turns"][1]

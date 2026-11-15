@@ -18,7 +18,10 @@ Subcommands:
   sheet  print every extracted promise (and every dropped quote) for hand-labelling.
   score  join the report with fixtures/promise_ledger_labels.json (correlation id +
          quote hash, no text) and print precision, gate drop rate, recall against the
-         design's hand-found statements, and the baseline keep rate with a 90% interval.
+         design's hand-found statements, pooled recall (every real promise any labelled run
+         found, by its ``key``), and the baseline keep rate with a 90% interval. Precision
+         and recall carry a 95% Wilson interval. ``precision_without_doer_gate`` scores the
+         same run with the items the doer rule dropped put back (an ablation of that rule).
 
 Inputs are read live from Postgres and are never stored in the repo. Lanes are the
 Flash-Next lanes (--lanes, default agent = GPU 1; chat = GPU 0 runs the same model but waits
@@ -32,6 +35,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -57,9 +61,9 @@ from orion.harness.finalize import (
     finalize_reflect_json_schema,
     parse_finalize_reflection_payload,
 )
-from orion.harness.promise_gate import gate_promises, normalize_for_quote_match
+from orion.harness.promise_gate import gate_promises, normalize_for_quote_match, quote_in_text
 from orion.harness.tests.fixtures import make_repair_overlay
-from orion.schemas.harness_finalize import PROMISE_ITEMS_MAX, OpenPromiseRefV1
+from orion.schemas.harness_finalize import PROMISE_DOER_ORION, PROMISE_ITEMS_MAX, OpenPromiseRefV1
 
 LABELS = Path(__file__).resolve().parent / "fixtures" / "promise_ledger_labels.json"
 OUT_DIR = Path("/tmp/promise-ledger-replay")
@@ -135,6 +139,17 @@ def beta_summary(successes: int, failures: int, *, draws: int = 200_000, seed: i
     xs = sorted(rng.betavariate(a, b) for _ in range(draws))
     return {"n": successes + failures, "kept": successes, "mean": a / (a + b),
             "lo90": xs[int(0.05 * draws)], "hi90": xs[int(0.95 * draws) - 1]}
+
+
+def wilson(successes: int, n: int, *, z: float = 1.96) -> dict[str, float | int | None]:
+    """Point estimate and 95% Wilson score interval for a proportion (stdlib only)."""
+    if n <= 0:
+        return {"k": successes, "n": n, "p": None, "lo95": None, "hi95": None}
+    p = successes / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return {"k": successes, "n": n, "p": p, "lo95": max(0.0, centre - half), "hi95": min(1.0, centre + half)}
 
 
 # --- live replay --------------------------------------------------------------------------
@@ -275,6 +290,11 @@ def run(args: argparse.Namespace) -> int:
                                        open_promises=first.reflection.promises_kept, enabled=True)
                 gated = second.reflection
                 row["dropped_not_in_draft"] = first.dropped_not_in_text
+                # Items the doer rule dropped, kept for the ablation score and for labelling.
+                row["not_orion"] = [
+                    {"quote": p.quote, "offer": p.offer, "doer": p.doer,
+                     "in_text": quote_in_text(p.quote, inputs["draft_text"]) and quote_in_text(p.quote, final_text)}
+                    for p in reflection.promises_made if p.doer != PROMISE_DOER_ORION]
                 row["dropped_not_in_final"] = second.dropped_not_in_text
                 row["dropped_other"] = (first.dropped_too_long + first.dropped_over_cap
                                         + len(first.dropped_unknown_offer) + len(first.dropped_unknown_kept))
@@ -327,14 +347,26 @@ def run(args: argparse.Namespace) -> int:
 
 # --- labelling and scoring ----------------------------------------------------------------
 
-def extracted_items(report: dict) -> list[dict]:
-    """Every gated promise_made item, one per (turn, quote)."""
+def extracted_items(report: dict, *, with_not_orion: bool = False) -> list[dict]:
+    """Every gated promise_made item, one per (turn, quote). with_not_orion adds back the
+    items the doer rule dropped that were literally in both texts (the ablation)."""
     out = []
     for r in report["turns"]:
-        for p in r.get("promises_made") or []:
-            out.append({"correlation_id": r["correlation_id"], "quote_sha": quote_hash(p["quote"]),
-                        "offer": p["offer"], "quote": p["quote"]})
+        seen: set[str] = set()
+        extra = [p for p in r.get("not_orion") or [] if p.get("in_text")] if with_not_orion else []
+        for p in (r.get("promises_made") or []) + extra:
+            sha = quote_hash(p["quote"])
+            if sha in seen:
+                continue
+            seen.add(sha)
+            out.append({"correlation_id": r["correlation_id"], "quote_sha": sha,
+                        "offer": p["offer"], "doer": p.get("doer"), "quote": p["quote"]})
     return out
+
+
+def not_orion_items(report: dict) -> list[dict]:
+    return [{"correlation_id": r["correlation_id"], "quote_sha": quote_hash(p["quote"]), **p}
+            for r in report["turns"] for p in r.get("not_orion") or []]
 
 
 def dropped_items(report: dict) -> list[dict]:
@@ -345,6 +377,28 @@ def dropped_items(report: dict) -> list[dict]:
                 out.append({"correlation_id": r["correlation_id"], "stage": key, "quote_sha": quote_hash(q),
                             "quote": q})
     return out
+
+
+def _precision(items: list[dict], by_key: dict) -> dict:
+    labs = [by_key.get((it["correlation_id"], it["quote_sha"])) for it in items]
+    tp = sum(1 for lab in labs if lab and lab["promise"])
+    return {**wilson(tp, len(items)), "unlabelled": sum(1 for lab in labs if lab is None)}
+
+
+def pooled_recall(report: dict, labels: dict) -> dict:
+    """Recall against every real promise any labelled run found (labels with promise=true and
+    a ``key``; two spans of one promise share a key), on the turns this report judged."""
+    judged = {r["correlation_id"] for r in report["turns"] if "promises_made" in r}
+    pool = {(lab["correlation_id"], lab["key"]) for lab in labels.get("labels", [])
+            if lab.get("promise") and lab.get("key") and lab["correlation_id"] in judged}
+    by_key = {(lab["correlation_id"], lab["quote_sha"]): lab for lab in labels.get("labels", [])}
+    found = set()
+    for it in extracted_items(report):
+        lab = by_key.get((it["correlation_id"], it["quote_sha"]))
+        if lab and lab.get("promise") and lab.get("key"):
+            found.add((it["correlation_id"], lab["key"]))
+    return {**wilson(len(found & pool), len(pool)),
+            "missed": sorted(f"{c[:8]}:{k}" for c, k in pool - found)}
 
 
 def score(report: dict, labels: dict) -> dict:
@@ -380,6 +434,17 @@ def score(report: dict, labels: dict) -> dict:
         "extracted_offers": sum(1 for it in items if it["offer"]),
         "unlabelled": len(unlabelled),
         "precision": precision,
+        "precision_wilson95": _precision(items, by_key),
+        "precision_without_doer_gate": _precision(extracted_items(report, with_not_orion=True), by_key),
+        "doer_dropped": {
+            "total": len(not_orion_items(report)),
+            "by_doer": {d: sum(1 for x in not_orion_items(report) if str(x.get("doer")) == d)
+                        for d in sorted({str(x.get("doer")) for x in not_orion_items(report)})},
+            "real_promises_dropped": sum(
+                1 for x in not_orion_items(report)
+                if (by_key.get((x["correlation_id"], x["quote_sha"])) or {}).get("promise")),
+        },
+        "recall_pooled": pooled_recall(report, labels),
         "precision_with_offer_flag": (tp_flag / len(items)) if items else None,
         "raw_quotes": sum(len((r.get("raw") or {}).get("promises_made") or []) for r in turns),
         "gate_dropped": len(drops),
@@ -417,7 +482,8 @@ def main() -> int:
         return run(args)
     report = json.loads(args.report.read_text())
     if args.cmd == "sheet":
-        print(json.dumps({"extracted": extracted_items(report), "dropped": dropped_items(report)}, indent=2))
+        print(json.dumps({"extracted": extracted_items(report), "not_orion": not_orion_items(report),
+                          "dropped": dropped_items(report)}, indent=2))
         return 0
     print(json.dumps(score(report, json.loads(args.labels.read_text())), indent=2))
     return 0

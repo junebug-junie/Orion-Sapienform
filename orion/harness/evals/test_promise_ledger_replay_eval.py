@@ -93,3 +93,50 @@ def test_label_fixture_holds_hashes_not_text() -> None:
     for entry in data["labels"] + data["dropped"]:
         assert "quote" not in entry
         assert len(entry["quote_sha"]) == 16
+
+
+def test_wilson_interval_matches_a_known_value_and_handles_empty() -> None:
+    from orion.harness.evals.promise_ledger_replay_eval import wilson
+
+    w = wilson(21, 29)  # the 11-12 baseline precision
+    assert abs(w["p"] - 21 / 29) < 1e-9
+    assert abs(w["lo95"] - 0.5428) < 1e-3 and abs(w["hi95"] - 0.8530) < 1e-3
+    assert wilson(0, 0)["p"] is None
+    assert wilson(5, 5)["hi95"] == 1.0
+
+
+def test_score_ablates_the_doer_rule_and_pools_recall_by_promise_key() -> None:
+    real, real_span, forecast, ask = ("I'll bring it back tomorrow.", "bring it back tomorrow, I promise",
+                                      "The queue should clear by noon.", "Text me when you land.")
+    report = {"turns": [
+        {"correlation_id": "c1", "promises_made": [{"quote": real_span, "offer": False, "doer": "orion"}],
+         "not_orion": [{"quote": forecast, "offer": False, "doer": "a_system", "in_text": True},
+                       {"quote": ask, "offer": True, "doer": "juniper", "in_text": True},
+                       {"quote": "not in the reply at all", "offer": False, "doer": "a_system",
+                        "in_text": False}]},
+        {"correlation_id": "c2", "promises_made": []},
+        {"correlation_id": "c3", "error": "http 502"},
+    ]}
+    labels = {"hand_found": [], "dropped": [], "labels": [
+        # An earlier run quoted a different span of the same promise: same key.
+        {"correlation_id": "c1", "quote_sha": quote_hash(real), "promise": True, "key": "bring-back"},
+        {"correlation_id": "c1", "quote_sha": quote_hash(real_span), "promise": True, "key": "bring-back"},
+        {"correlation_id": "c1", "quote_sha": quote_hash(forecast), "promise": False},
+        {"correlation_id": "c1", "quote_sha": quote_hash(ask), "promise": False},
+        {"correlation_id": "c2", "quote_sha": "0" * 16, "promise": True, "key": "missed-one"},
+        {"correlation_id": "c3", "quote_sha": "1" * 16, "promise": True, "key": "errored-turn"},
+    ]}
+    s = score(report, labels)
+    assert s["precision_wilson95"]["k"] == 1 and s["precision_wilson95"]["n"] == 1
+    # The ablation puts back only the dropped items that were literally in the reply.
+    assert s["precision_without_doer_gate"]["k"] == 1 and s["precision_without_doer_gate"]["n"] == 3
+    assert s["doer_dropped"]["by_doer"] == {"a_system": 2, "juniper": 1}
+    assert s["doer_dropped"]["real_promises_dropped"] == 0
+    # c3 errored, so its promise is not in this run's pool; c2's is, and was missed.
+    assert (s["recall_pooled"]["k"], s["recall_pooled"]["n"]) == (1, 2)
+    assert s["recall_pooled"]["missed"] == ["c2:missed-one"]
+
+
+def test_every_real_label_carries_a_promise_key() -> None:
+    data = json.loads(LABELS.read_text())
+    assert all(lab.get("key") for lab in data["labels"] if lab["promise"])

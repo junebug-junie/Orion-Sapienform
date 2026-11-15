@@ -22,6 +22,13 @@ intensities the market recorded for the family's past event wants (``want_ledger
 per want), not against the hunger-only act history, as a strict-below share (rest point 0). Against hunger history a salient event ranked
 near 1.0 almost every time (patch 1 review). Fewer than ``EVENT_HISTORY_MIN`` past events: there is
 no reference yet, so the want is ranked as every want was before (basis ``event_cold:<basis>``).
+**Same grading only (issue #3364).** A past event decided while the family was ungraded was ranked on intensity
+alone (and, before the family had acts, its hunger counted from the want's own open, so its intensity was just its
+salience). It is not comparable with an event ranked on intensity x expected outcome. A caller that knows how each
+past event was decided passes ``(intensity, graded)`` pairs; only the events decided with the family's grading NOW
+are its reference (a pair whose grading is unknown, ``None``, is dropped too). Plain floats (no grading known) are
+kept, as before. Live 2026-11-14: 120 ungraded camera-ask events (3 of them near 0) under 16 graded ones gave a
+vehicle ask (expected answer 0.135) rank 0.025, so it was funded.
 
 **value_rank** is the market's one common unit: this want's ``intensity x outcome_value`` as a
 percentile (mid-rank) of the SAME family's last 30 days of acts, each act's intensity
@@ -127,9 +134,10 @@ class FamilyAppetite:
 
 
 def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: datetime, *,
-                          event_intensities: Sequence[float] = ()) -> FamilyAppetite:
+                          event_intensities: Sequence[Any] = ()) -> FamilyAppetite:
     """The family's appetite state from its last 30 days of acts (acts of other families ignored).
-    ``event_intensities``: the intensities of the family's past event wants (event rank)."""
+    ``event_intensities``: the intensities of the family's past event wants (event rank), each a float or an
+    ``(intensity, graded)`` pair (``same_grading_events``)."""
     since = now - WINDOW
     mine = [a for a in acts if a.family == cfg.family]
     closes = sorted(a.closed_at for a in mine if a.closed_at is not None and a.closed_at <= now)
@@ -187,7 +195,22 @@ def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: dat
         cost_q={k: _quantile(v, COST_QUANTILE) for k, v in scal.items()},
         lane_slot_s_q={k: _quantile(v, COST_QUANTILE) for k, v in lanes.items()},
         total_slot_s_q=_quantile(totals, COST_QUANTILE) if totals else None, n_costed=n_costed,
-        event_values=tuple(float(v) for v in event_intensities if isinstance(v, (int, float)) and math.isfinite(v)))
+        event_values=same_grading_events(event_intensities, graded))
+
+
+def same_grading_events(events: Iterable[Any], graded: bool) -> tuple[float, ...]:
+    """The finite intensities of past events decided with grading ``graded`` (module docstring, issue #3364).
+    A float is kept (its grading is not known to the caller); an ``(intensity, graded)`` pair is kept only when
+    its ``graded`` is exactly ``graded`` (``None``, unknown, is dropped)."""
+    out: list[float] = []
+    for e in events:
+        if isinstance(e, tuple):
+            if len(e) != 2 or not isinstance(e[1], bool) or e[1] != graded:
+                continue
+            e = e[0]
+        if isinstance(e, (int, float)) and not isinstance(e, bool) and math.isfinite(e):
+            out.append(float(e))
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -357,5 +380,6 @@ __all__ = [
     "lane_hunger_seed",
     "mid_rank",
     "rank_value",
+    "same_grading_events",
     "want_intensity",
 ]

@@ -108,9 +108,12 @@ SELECT act_id, actor, started_at, link_status, used, window_closed
 """
 
 
-# The first decision per event want (a re-bid of the same want is not a new event).
+# The first decision per event want (a re-bid of the same want is not a new event), with the family's grading
+# when it was decided (``graded``; NULL when the decision did not say): a want ranks only against past events
+# decided with the same grading (``orion.physiology.appetite.same_grading_events``, issue #3364).
 EVENT_HISTORY_SQL = """
-SELECT DISTINCT ON (want_id) family, (decision->>'intensity')::float AS intensity
+SELECT DISTINCT ON (want_id) family, (decision->>'intensity')::float AS intensity,
+       CASE jsonb_typeof(decision->'graded') WHEN 'boolean' THEN (decision->>'graded')::boolean END AS graded
   FROM want_ledger
  WHERE decided_at >= %(since)s AND decision->'want' ? 'salience' AND decision->>'intensity' IS NOT NULL
    AND NOT (producer = ANY(%(synthetic)s))
@@ -152,15 +155,16 @@ async def read_history(pool: Any, now: datetime) -> tuple[list[ActRecord], list[
     return acts, uses
 
 
-async def read_event_history(pool: Any, now: datetime) -> dict[str, list[float]]:
-    """family -> intensities of its past event wants (30 days). Raises on a failed read."""
+async def read_event_history(pool: Any, now: datetime) -> dict[str, list[tuple[float, Optional[bool]]]]:
+    """family -> (intensity, graded) of its past event wants (30 days). Raises on a failed read."""
     async with pool.connection() as conn:
         rows = await (await conn.execute(EVENT_HISTORY_SQL, {"since": now - HISTORY_WINDOW,
                                                              "synthetic": sorted(SYNTHETIC_PRODUCERS)})).fetchall()
-    out: dict[str, list[float]] = {}
+    out: dict[str, list[tuple[float, Optional[bool]]]] = {}
     for r in rows:
         if r["intensity"] is not None:
-            out.setdefault(str(r["family"]), []).append(float(r["intensity"]))
+            g = r.get("graded")
+            out.setdefault(str(r["family"]), []).append((float(r["intensity"]), g if isinstance(g, bool) else None))
     return out
 
 
@@ -169,7 +173,7 @@ class _Cached:
     at: datetime
     acts: list[ActRecord]
     uses: list[UseRecord]
-    events: Optional[dict[str, list[float]]] = None
+    events: Optional[dict[str, list[tuple[float, Optional[bool]]]]] = None
 
 
 class Market:

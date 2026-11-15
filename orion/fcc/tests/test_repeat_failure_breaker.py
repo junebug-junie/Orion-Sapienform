@@ -354,6 +354,11 @@ def test_psql_regex_with_backslash_b_is_blocked_with_the_fix(tmp_path, sql):
     ("Bash", _PSQL + r""" "select count(*) from t where body like '%juniper%'" """),
     ("Bash", r"grep -rn '\bjuniper\b' ~/notes"),  # not psql: \b is right for grep
     ("Bash", _PSQL + r""" "select 1" && printf 'a\bc' """),  # \b, but no regex operator
+    # A correct Postgres regex piped to grep, where \\b is right.
+    ("Bash", _PSQL + r""" "select body from t where body ~* 'juniper'" | grep -P '\bjun\b' """),
+    ("Bash", "cd ~ && " + _PSQL + r""" "select body from t" | grep -P '\bjuniper\b' """),  # ~ is home
+    ("Bash", r"git diff HEAD~1 | grep -P '\bpsql\b'"),  # no psql call at all
+    ("Bash", _PSQL + r""" "select 1 from t where p ~~ 'C:\backup%'" """),  # ~~ is LIKE
     ("Read", _PSQL + r""" "select 1 where 'a' ~ '\bfoo'" """),  # not a Bash call
 ])
 def test_psql_guard_lets_everything_else_through(tmp_path, tool_name, command):

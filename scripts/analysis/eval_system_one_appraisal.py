@@ -246,6 +246,7 @@ def main() -> int:
                         FROM substrate_endogenous_curiosity_candidates
                         WHERE generated_at >= :cutoff
                           AND gate_json IS NOT NULL
+                          AND gate_json->>'gate_result' IS DISTINCT FROM 'idle_no_seeds'
                         ORDER BY generated_at ASC
                         LIMIT :limit
                         """

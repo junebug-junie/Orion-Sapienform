@@ -913,6 +913,8 @@ class _GraphLikeReader(_FakeReader):
         self.queries.append(cypher)
         if "MATCH (t:TurnOutcome)" in cypher:
             rows = list(self.outcomes)
+            if "WHERE t.written_at IS NOT NULL" in cypher:
+                rows = [r for r in rows if r["written_at"] is not None]
             if "OPTIONAL MATCH (p:Prior" in cypher:  # the old join shape
                 rows = [
                     {**o, "claim": p["claim"]}
@@ -922,7 +924,10 @@ class _GraphLikeReader(_FakeReader):
             if "ORDER BY t.written_at DESC" in cypher:
                 ints = sorted((r for r in rows if isinstance(r["written_at"], int)),
                               key=lambda r: r["written_at"], reverse=True)
-                rows = ints + [r for r in rows if not isinstance(r["written_at"], int)]
+                # Read live on FalkorDB: null first, then integers, then strings.
+                rest = [r for r in rows if not isinstance(r["written_at"], int)]
+                rows = ([r for r in rest if r["written_at"] is None] + ints
+                        + [r for r in rest if r["written_at"] is not None])
             limit = re.search(r"LIMIT (\d+)", cypher)
             return rows[: int(limit.group(1))] if limit else rows
         if "MATCH (p:Prior) WHERE p.run_id IN" in cypher:
@@ -985,7 +990,14 @@ def test_recent_runs_read_through_the_snapshot_and_an_iso_stamp_still_sorts() ->
     assert snap.recent_runs[0].claims == ["iso run"]  # no prior written: its note stands in
 
 
-def test_recent_runs_warn_when_the_outcome_read_is_cut(caplog) -> None:
+def test_the_order_clause_is_what_keeps_the_newest_run_when_the_read_is_cut(caplog) -> None:
+    """The one test that fails if `ORDER BY t.written_at DESC` is removed: under
+    the cap the Python sort alone is enough, past it the query order decides
+    which rows exist to sort."""
+    from orion.curiosity.worldview import RECENT_RUNS_CYPHER
+
+    assert "ORDER BY t.written_at DESC" in RECENT_RUNS_CYPHER
+
     from orion.curiosity.worldview import RECENT_RUNS_LIMIT, read_recent_runs
 
     outcomes, priors = _history(RECENT_RUNS_LIMIT + 5)
@@ -993,6 +1005,22 @@ def test_recent_runs_warn_when_the_outcome_read_is_cut(caplog) -> None:
         recent = read_recent_runs(_GraphLikeReader(outcomes, priors), limit=1)
     assert recent[0].run_id == f"{RECENT_RUNS_LIMIT + 4:06x}"  # still the newest
     assert any("curiosity_worldview_recent_runs_truncated" in m for m in caplog.messages)
+
+
+def test_outcomes_with_no_stamp_do_not_take_the_newest_slots_of_a_cut_read() -> None:
+    from orion.curiosity.worldview import RECENT_RUNS_LIMIT, read_recent_runs
+
+    outcomes, priors = _history(RECENT_RUNS_LIMIT)
+    outcomes += [{"run_id": f"dead{i:04x}", "written_at": None, "continue_note": ""} for i in range(50)]
+    recent = read_recent_runs(_GraphLikeReader(outcomes, priors), limit=1)
+    assert recent[0].run_id == f"{RECENT_RUNS_LIMIT - 1:06x}"
+    assert recent_run_claims_cypher_rejects_newline()
+
+
+def recent_run_claims_cypher_rejects_newline() -> bool:
+    from orion.curiosity.worldview import recent_run_claims_cypher
+
+    return recent_run_claims_cypher(["abc123\n"]) is None
 
 
 def test_a_run_id_that_is_not_hex_never_reaches_the_query_text() -> None:

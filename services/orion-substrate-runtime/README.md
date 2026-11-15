@@ -344,6 +344,8 @@ outside its ranking (design: `docs/plans/substrate/2026-10-10-curiosity-seed-nei
   mints one unscored seed (strength 0.0, note `source:reading_link_accepted`) on its
   two endpoints, once per assertion revision, stored in addition to the scored seeds.
   Receipt in `gate_json->'link_seeds'`.
+- **Idle tick:** a tick with no seeds stores an empty set with
+  `gate_json = {"gate_result": "idle_no_seeds"}`. No decision ran on that tick.
 
 **Deploy order:** cortex-exec (and Hub, for the new self-question) before
 substrate-runtime. cortex-exec's chat stance validates stored seeds with an

@@ -91,7 +91,24 @@ Live checks that stay UNVERIFIED until deploy:
 
 ## Review findings fixed
 
-REVIEW_PENDING
+A review subagent read the diff (hand review; the code-review skill was not available to it).
+
+- Finding: the SQL guard blocked valid commands. It checked for `psql`, `\b` and a regex operator anywhere in the command, so `psql ... | grep -P '\bfoo\b'`, a `~` home path, and `~~` (LIKE) were blocked.
+  - Fix: the `\b` must now sit inside the quoted pattern after the operator, in the same pipe segment.
+  - Evidence: four new pass-through cases in `orion/fcc/tests/test_repeat_failure_breaker.py`.
+- Finding: only one test failed when `ORDER BY` was removed, and its name said "warn".
+  - Fix: renamed it and added an explicit assert on the order clause.
+  - Evidence: removing `ORDER BY t.written_at DESC` fails `test_the_order_clause_is_what_keeps_the_newest_run_when_the_read_is_cut`.
+- Finding: the test reader put a null stamp last. The live graph puts null first under `DESC` (checked: `UNWIND [1, null, 'a', 3] ... ORDER BY x DESC` returns null, 3, 1, a).
+  - Fix: the read now skips outcomes with no stamp (0 exist today), and the test reader orders like the live graph.
+  - Evidence: `test_outcomes_with_no_stamp_do_not_take_the_newest_slots_of_a_cut_read`.
+- Finding: the calibration script's row cap would now count idle rows and drop the newest rows on a long window.
+  - Fix: the script's SQL leaves idle rows out.
+  - Evidence: `scripts/analysis/eval_system_one_appraisal.py` query.
+- Finding: a run id with a trailing newline passed the id check. Not an injection (hex only).
+  - Fix: `fullmatch`.
+  - Evidence: asserted in the same new test.
+- Also added: one README line for the idle gate value (`services/orion-substrate-runtime/README.md`).
 
 ## Restart required
 
@@ -114,4 +131,4 @@ Issues opened: none. Issues closed by this PR: #3398, #3394, #3401.
 
 ## PR link
 
-PR_LINK_PENDING
+https://github.com/junebug-junie/Orion-Sapienform/pull/3441

@@ -740,11 +740,15 @@ def build_concepts(
 # ahead of ISO strings under DESC (read live 2026-11-15: 543 integer, 8 string),
 # so a cut drops the oldest and the hand-written ISO ones, never the newest.
 # The real order is still decided in Python by `_stamp_ms`, which reads both.
+# A null stamp sorts FIRST under DESC (read live: `UNWIND [1, null, 'a', 3] ...
+# ORDER BY x DESC` gives null, 3, 1, a), so outcomes with no stamp are left out
+# of the read; they could only ever show last, and would take the newest slots
+# of a cut read. There are 0 of them today.
 # Read 2 fetches the claims of only the runs that will be shown.
 RECENT_RUNS_LIMIT = 2000
 
 RECENT_RUNS_CYPHER = (
-    f"MATCH (t:{LABEL_TURN_OUTCOME}) "
+    f"MATCH (t:{LABEL_TURN_OUTCOME}) WHERE t.written_at IS NOT NULL "
     "RETURN t.run_id AS run_id, t.written_at AS written_at, "
     "t.continue_note AS continue_note "
     f"ORDER BY t.written_at DESC LIMIT {RECENT_RUNS_LIMIT}"
@@ -758,7 +762,7 @@ def recent_run_claims_cypher(run_ids: Sequence[str]) -> Optional[str]:
     match `_RUN_ID_RE` (hex) are used; a run with any other id is shown by its
     continue note instead of its claims.
     """
-    safe = [r for r in run_ids if _RUN_ID_RE.match(r)]
+    safe = [r for r in run_ids if _RUN_ID_RE.fullmatch(r)]
     if not safe:
         return None
     id_list = ", ".join(f"'{r}'" for r in safe)

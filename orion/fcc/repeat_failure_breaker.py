@@ -263,17 +263,24 @@ def refetch_message(url: str, count: int) -> str:
 # (`\y` is the word boundary). A query written the other way matches nothing and
 # returns a clean 0. Orion reported two false zeros from it on 2026-11-12 and
 # 11-13 ("0 Juniper mentions in 7 days of reverie"; the real count was 111). #3401.
-_PG_REGEX_OPERATOR = re.compile(r"!?~\*?(?!/)|regexp_|similar\s+to", re.IGNORECASE)
+#
+# The backslash-b must sit inside the quoted pattern that follows the operator,
+# in the same pipe segment. `psql ... | grep -P '\bfoo\b'` is correct grep, a
+# `~` in a path is not an operator, and `~~` is LIKE.
+_PG_REGEX_WITH_BACKSPACE = re.compile(
+    r"(?:(?<![~!])!?~(?!~)\*?|regexp_\w+\s*\(|similar\s+to)[^|;]*?'[^']*\\b",
+    re.IGNORECASE,
+)
 
 
 def decide_psql_backspace(tool_name: str, tool_input: Any) -> bool:
-    """True when a Bash psql command has a backslash-b and a Postgres regex operator."""
+    """True when a Bash psql command has a backslash-b inside a Postgres regex pattern."""
     if tool_name != "Bash" or not isinstance(tool_input, dict):
         return False
     command = tool_input.get("command")
-    if not isinstance(command, str) or "psql" not in command or "\\b" not in command:
+    if not isinstance(command, str) or "psql" not in command:
         return False
-    return _PG_REGEX_OPERATOR.search(command) is not None
+    return _PG_REGEX_WITH_BACKSPACE.search(command) is not None
 
 
 def psql_backspace_message() -> str:

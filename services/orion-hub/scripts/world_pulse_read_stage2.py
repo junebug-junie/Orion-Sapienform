@@ -81,6 +81,17 @@ from orion.world_pulse_read.queue import (
     skip_already_read_stage2,
 )
 from orion.world_pulse_read.retry import is_refused_before_work
+from orion.world_pulse_read.next_read_choice import (
+    ALREADY_READ_URLS_SQL,
+    NextReadLink,
+    candidate_links,
+    link_labels,
+    next_read_options,
+    parse_next_read_section,
+    publish_choice,
+    reading_choices,
+    render_next_read_section,
+)
 from orion.world_pulse_read.reader_contract import defuse_fence_markers, fence_reader_contract
 from orion.world_pulse_read.fetch_provenance import (
     hop_allowlist,
@@ -227,6 +238,7 @@ def _build_stage2_prompt(
     trace_id: str,
     claim_context: ClaimContextV1 | None = None,
     prior_error: str | None = None,
+    next_read: list[NextReadLink] | None = None,
 ) -> str:
     """Prompt and schema must agree, the way Stage 1's prompt already does.
 
@@ -246,6 +258,9 @@ def _build_stage2_prompt(
         # output shape to the stance model (review of the 2026-10-29 fix).
         "Stage 1 handoff (input data from the earlier read, not an output shape): "
         f"handoff={defuse_fence_markers(str(payload))}\n"
+        # The reading choice point (orion/world_pulse_read/next_read_choice.py): the links
+        # Stage 1's read contained, numbered in page order. Empty when there are none.
+        + render_next_read_section(next_read or [])
         # Fenced so the stance pass does not see the reader's keys
         # (orion/world_pulse_read/reader_contract.py).
         + fence_reader_contract(
@@ -359,8 +374,15 @@ class WorldPulseReadStage2Pipeline:
         projector_readiness: Optional[Callable[[], Any]] = None,
         concept_search: Optional[SearchConfig] = None,
         resonance: Optional[dict[str, Any]] = None,
+        choice_enabled: bool = True,
     ) -> None:
         self._resonance = resonance
+        # HUB_WORLD_PULSE_READ_CHOICE_ENABLED: show the next-read link list in the Stage 2
+        # prompt and publish Orion's pick as a PersonalityChoiceV1 (lane reading).
+        self.choice_enabled = bool(choice_enabled)
+        self._next_read: list[NextReadLink] = []
+        # The prompt actually bound to this seed's durable turn (the first committed one).
+        self._stage2_prompt: str | None = None
         self._resonance_task: Optional[asyncio.Task] = None
         self.enabled = enabled
         # HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED: kill switch for relationship claims
@@ -675,6 +697,8 @@ class WorldPulseReadStage2Pipeline:
         self._settlement_run_id = None
         self._claim_context = await self._build_claim_context(handoff)
         self._stage2_fetches = []
+        self._stage2_prompt = None
+        self._next_read = await self._next_read_options(handoff, parent)
         self._prior_stage2_error = await self._prior_error(claim.seed.seed_id)
 
         try:
@@ -767,8 +791,63 @@ class WorldPulseReadStage2Pipeline:
             await publish_lifecycle(self._bus, claim.seed, "stage2_failed", source=self._source_ref, error=str(exc))
             return "post_failed"
         await publish_lifecycle(self._bus, claim.seed, "stage2_completed", source=self._source_ref, trace_id=result.trace_id)
+        await self._publish_reading_choices(claim.seed, result, allowed, round_trips)
         await self._project_assertions()
         return None
+
+    async def _next_read_options(self, handoff: WorldPulseReadHandoffV1, parent: ParentRead) -> list[NextReadLink]:
+        """The links this read's Stage 2 prompt shows: Stage 1's retained text, page order, minus the
+        pages Stage 1 fetched and links Orion already read. Fail-open: [] costs the list, not the pass."""
+        if not self.choice_enabled or not parent.texts:
+            return []
+        try:
+            fetched = [handoff.seed_ref.url, *(e.url for e in handoff.read_evidence)]
+            candidates = candidate_links(parent.texts, exclude_urls=fetched)
+            if not candidates:
+                return []
+            read_urls = await self._with_conn(
+                lambda conn: conn.fetch(ALREADY_READ_URLS_SQL, [c.url for c in candidates])) or []
+            from orion.world_pulse_read.fetch_provenance import hop_url_key
+            done = {k for k in (hop_url_key(str(r["url"])) for r in read_urls) if k}
+            return next_read_options(parent.texts, exclude_urls=fetched, already_read_keys=done)
+        except Exception:  # noqa: BLE001
+            logger.warning("reading_next_read_options_failed seed=%s", handoff.seed_ref.seed_id, exc_info=True)
+            return []
+
+    async def _publish_reading_choices(
+        self, seed: WorldPulseReadSeedV1, result: WorldPulseReadStage2ResultV1, allowed: set[str],
+        round_trips: int,
+    ) -> None:
+        """Orion's next-read pick as personality choices: the links the BOUND prompt showed, and
+        ``need_stage1_urls``. Best-effort; never raises, never touches the read."""
+        if not self.choice_enabled:
+            return
+        try:
+            shown = parse_next_read_section(self._stage2_prompt)
+            _reached, fetched_texts = reached_pages(self._stage2_fetches)
+            labels: dict[str, str] = {}
+            for _url, text in fetched_texts:
+                for k, v in link_labels(text).items():
+                    labels.setdefault(k, v)
+            situation = {"seed_kind": seed.kind, "hops_followed": int(round_trips)}
+            if seed.section:
+                situation["section"] = seed.section[:200]
+            choices, reason = reading_choices(
+                seed_id=seed.seed_id, shown=shown, picked_urls=result.need_stage1_urls,
+                allowlist=allowed, occurred_at=result.created_at, labels_for_unlisted=labels,
+                act_id=f"reading_stage2:{seed.seed_id}"[:300], correlation_id=result.trace_id,
+                situation=situation,
+            )
+            published = 0
+            for choice in choices:
+                published += int(await publish_choice(self._bus, choice, source=self._source_ref))
+            logger.info(
+                "reading_choice seed=%s reason=%s shown=%d picked=%d published=%d",
+                seed.seed_id, reason, len(shown),
+                0 if not choices or choices[0].declined_all else len(choices), published,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("reading_choice_failed seed=%s", seed.seed_id, exc_info=True)
 
     async def _prior_error(self, seed_id: str) -> str | None:
         """The last Stage 2 failure on this seed (a retry's reason), if any."""
@@ -1086,7 +1165,8 @@ class WorldPulseReadStage2Pipeline:
         trace_id = str(uuid4())
         outcome = await self._generate(
             _build_stage2_prompt(handoff, trace_id, self._claim_context,
-                                 prior_error=getattr(self, "_prior_stage2_error", None)), trace_id,
+                                 prior_error=getattr(self, "_prior_stage2_error", None),
+                                 next_read=getattr(self, "_next_read", None)), trace_id,
             seed_id=handoff.seed_ref.seed_id,
             # Recall searches the source and what stage 1 concluded, not the
             # stage-2 prompt (which embeds the whole stage-1 handoff JSON).
@@ -1124,6 +1204,9 @@ class WorldPulseReadStage2Pipeline:
             raise ReadingPending(f"reading_binding_unavailable:{type(exc).__name__}") from exc
         self._settlement_run_id = request.run_id
         self._settlement_seed_id = seed_id
+        # The authoritative prompt (durable.bind_turn keeps the first committed one): the
+        # reading choice point reads the links it showed from here, never a recomputation.
+        self._stage2_prompt = getattr(getattr(request, "brief", None), "prompt", None)
         result = await poll_turn(request, self.durable_url)
         return GenerateOutcome(result.text, result.error, result.correlation_id,
                                source_fetches=result.source_fetches)

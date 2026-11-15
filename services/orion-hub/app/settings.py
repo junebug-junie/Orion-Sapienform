@@ -968,6 +968,12 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED: bool = Field(
         default=True, alias="HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED"
     )
+    # Reading choice point (personality rev 4, Move 1): the Stage 2 prompt lists the links
+    # Stage 1's read contained, and Orion's need_stage1_urls pick (or picking none) is published
+    # as a PersonalityChoiceV1, lane reading. false = no list, no choice rows; hops unchanged.
+    HUB_WORLD_PULSE_READ_CHOICE_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_CHOICE_ENABLED"
+    )
 
     # --- Orion's own graph ------------------------------------------------
     # `orion_worldview` is Orion's alone: it reads AND writes there, nothing in

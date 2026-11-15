@@ -39,7 +39,18 @@ def _outreach(i, *, said=True, promoted=False, at=None):
 
 
 def test_declinable_lanes_match_the_reducers_decline_phrases():
-    assert DECLINABLE_LANES == frozenset(DECLINE_TEXT)
+    # Every lane with its own decline phrase is declinable. Reading is declinable too and uses the
+    # reducer's default phrase ("none of these"): Stage 2 may leave need_stage1_urls empty.
+    assert frozenset(DECLINE_TEXT) <= DECLINABLE_LANES
+    assert DECLINABLE_LANES - frozenset(DECLINE_TEXT) == {"reading"}
+
+
+def test_a_reading_pick_is_a_real_choice_for_the_reading_family():
+    rec = choice_record("reading:s1:a", "reading", NOW - timedelta(days=1), "hub.world_pulse_read::link:a",
+                        ["hub.world_pulse_read::link:b"])
+    assert rec.real_choice and rec.chosen_family == "hub.world_pulse_read"
+    rate, n, _ = endorsement_for("hub.world_pulse_read", [rec], since=SINCE, until=NOW)
+    assert rate == 1.0 and n == 1
 
 
 def test_option_family_reads_the_key_then_the_lane():

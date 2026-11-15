@@ -1452,3 +1452,102 @@ def test_prior_error_reads_the_seed_row_and_fails_open():
 
     pipe._with_conn = broken
     assert asyncio.run(pipe._prior_error("s1")) is None
+
+
+# --- Reading choice point (personality rev 4, Move 1) -----------------------------------------
+
+_PARENT_TEXT = (
+    "Fact checks:\n- [Stroke claim checked](https://politifact.com/a/stroke)\n"
+    "- Tariff refunds explained: https://ex.com/tariffs\n"
+)
+
+
+def _choice_pipe(bus, conn, picked, **over):
+    from scripts.world_pulse_read_stage2 import ParentRead
+
+    pipe = _pipeline(bus, conn, **over)
+    prompts: list[str] = []
+
+    async def _parent(handoff):
+        return ParentRead(texts=[("https://ex.com/a", _PARENT_TEXT)], dead=False)
+
+    async def _pass(handoff):
+        # What _generate does: the bound prompt is the one built from this read's list.
+        prompt = _build_stage2_prompt(handoff, "tr-s2", next_read=pipe._next_read)
+        prompts.append(prompt)
+        pipe._stage2_prompt = prompt
+        return _result(urls=picked)
+
+    async def _reenter(url, *, parent_seed):
+        return None
+
+    pipe._parent_read = _parent  # type: ignore[method-assign]
+    pipe._stage2_pass = _pass  # type: ignore[method-assign]
+    pipe._reenter_stage1 = _reenter  # type: ignore[method-assign]
+    return pipe, prompts
+
+
+def _choice_rows(bus):
+    from orion.schemas.personality import PERSONALITY_CHOICE_CHANNEL, PersonalityChoiceV1
+
+    return [PersonalityChoiceV1.model_validate(e.payload) for c, e in bus.published if c == PERSONALITY_CHOICE_CHANNEL]
+
+
+def test_stage2_shows_the_parent_links_and_publishes_orions_pick() -> None:
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, prompts = _choice_pipe(bus, conn, ["https://ex.com/tariffs"])
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert "[1] Stroke claim checked (politifact.com) -> https://politifact.com/a/stroke" in prompts[0]
+    assert "[2] Tariff refunds explained (ex.com) -> https://ex.com/tariffs" in prompts[0]
+    rows = _choice_rows(bus)
+    assert len(rows) == 1
+    assert rows[0].lane == "reading" and rows[0].chosen_market_rank == 2
+    assert [a.market_rank for a in rows[0].alternatives] == [1]
+    assert rows[0].act_id == "reading_stage2:finding:r1:x" and rows[0].correlation_id == "tr-s2"
+    assert rows[0].situation["seed_kind"] == "finding" and rows[0].situation["hops_followed"] == 1
+
+
+def test_stage2_empty_pick_is_a_decline_and_the_flag_turns_it_all_off() -> None:
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, _ = _choice_pipe(bus, conn, [])
+
+    async def _run(p):
+        await _ready_stage2(conn)
+        return await p.tick(force=True)
+
+    asyncio.run(_run(pipe))
+    rows = _choice_rows(bus)
+    assert len(rows) == 1 and rows[0].declined_all and len(rows[0].alternatives) == 2
+
+    bus2, conn2 = _FakeBus(), _FakeConn()
+    off, prompts = _choice_pipe(bus2, conn2, ["https://ex.com/tariffs"], choice_enabled=False)
+    conn = conn2
+    asyncio.run(_run(off))
+    assert "NEXT READ LINKS" not in prompts[0]
+    assert _choice_rows(bus2) == []
+
+
+def test_stage2_prompt_bound_before_the_list_existed_records_no_choice() -> None:
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, _ = _choice_pipe(bus, conn, ["https://ex.com/tariffs"])
+    inner = pipe._stage2_pass
+
+    async def _old_bound_prompt(handoff):
+        result = await inner(handoff)
+        pipe._stage2_prompt = "an older prompt with no link list"
+        return result
+
+    pipe._stage2_pass = _old_bound_prompt  # type: ignore[method-assign]
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert conn.rows["finding:r1:x"]["stage2_status"] == "done"
+    assert _choice_rows(bus) == []

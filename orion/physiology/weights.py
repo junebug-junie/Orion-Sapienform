@@ -98,7 +98,10 @@ LANE_FAMILIES: Mapping[str, str] = {
     "prime": "prime",
 }
 # Lanes whose choice point shows a "none" option (orion.personality.graph.DECLINE_TEXT's lanes).
-DECLINABLE_LANES = frozenset({"prime", "outreach"})
+# Reading: Stage 2 may leave need_stage1_urls empty ("or none", orion/world_pulse_read/
+# next_read_choice.py), so a pick is a real choice. Without it only reading DECLINES would count
+# for hub.world_pulse_read and the rate could only read 0.
+DECLINABLE_LANES = frozenset({"prime", "outreach", "reading"})
 OPTION_FAMILY_SEP = "::"
 CARE_PROMOTED_WEIGHT = 0.5
 ENDORSEMENT_CORR_EXCLUDE = 0.8

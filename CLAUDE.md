@@ -92,6 +92,19 @@ Disallowed path:
 vague theory -> huge taxonomy -> unused registry -> no runtime proof
 ```
 
+### Integration gate
+
+Orion is one mind, not a set of organs that share a database. Any change that adds a new producer of Orion experience must do two things in the same patch:
+
+1. **Emit through the experience contract.** The output lands in `temporal_self_event` through a `TemporalSourceKind` and a reader in `temporal_self_sources.py`.
+2. **Read the now back.** The organ's next run reads `GET /temporal-self/now` and records its cites with `record_use`.
+
+Register the organ in `config/integration/organs.yaml`. If an organ cannot do one of the two yet, write an exemption with a reason in the same file. A reviewer reads every new exemption.
+
+A new producer of experience is any of: a new family in `config/physiology/families.yaml`, a new `DurableWorkflowV1` value, a new intention source adapter, a new Prime concern source, or a new bus channel that carries an organ's output.
+
+`scripts/check_integration_seam.py` enforces this in CI. Do not argue with it in prose; fix the registry or write the exemption.
+
 ### Runtime truth beats config truth
 
 Config being set is not proof. Code existing is not proof. A container starting is not proof.

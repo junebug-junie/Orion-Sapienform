@@ -346,10 +346,13 @@ class TrialHold:
         self.lost = asyncio.Event()
         self._beat: asyncio.Task | None = None
 
-    def _record(self, lease_id: str | None) -> None:
+    def _record(self, lease_id: str | None, request_id: str | None = None) -> None:
+        """hold.json: the lease id once known, or before that the request id (so a run that dies
+        while the pool is unreachable still leaves enough to find and cancel what it asked for)."""
         f = self.out_dir / HOLD_FILE
-        if lease_id:
-            f.write_text(json.dumps({"lease_id": lease_id, "holder": self.holder}))
+        if lease_id or request_id:
+            f.write_text(json.dumps({"lease_id": lease_id, "request_id": request_id, "holder": self.holder,
+                                     "work_class": self.work_class}))
         elif f.exists():
             f.unlink()
 
@@ -358,8 +361,26 @@ class TrialHold:
         if f.exists():
             old = json.loads(f.read_text())
             _log_progress(f"cancelling leftover hold from a killed run: {old}")
-            await cancel_lease(self.bus, old["lease_id"], source=old.get("holder") or self.holder)
+            lease_id = old.get("lease_id")
+            if not lease_id and old.get("request_id"):
+                lease_id = await self._lookup_request(old["request_id"], old.get("holder") or self.holder,
+                                                      old.get("work_class") or self.work_class)
+            if lease_id:
+                await cancel_lease(self.bus, lease_id, source=old.get("holder") or self.holder)
             f.unlink()
+
+    async def _lookup_request(self, request_id: str, holder: str, work_class: str) -> str | None:
+        """Re-ask with the same request_id: the pool is idempotent on it and answers the lease id."""
+        from orion.gpu_pool.client import lease_rpc  # noqa: PLC0415
+        from orion.schemas.gpu_pool import GpuLeaseRequestV1  # noqa: PLC0415
+        try:
+            reply = await lease_rpc(self.bus, GpuLeaseRequestV1(
+                verb="acquire", request_id=request_id, holder=holder, work_class=work_class,
+                priority="background", kind="hold", min_ctx_tokens=self.min_ctx, retryable=False), source=holder)
+            return reply.lease_id
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("leftover request lookup failed request_id=%s: %r", request_id, exc)
+            return None
 
     async def acquire(self, wait_sec: float = 4 * 3600.0) -> None:
         from orion.gpu_pool.client import acquire_hold, hold_ref, lease_rpc, lease_status  # noqa: PLC0415
@@ -380,6 +401,7 @@ class TrialHold:
                 verb="acquire", request_id=request_id, holder=self.holder, work_class=self.work_class,
                 priority="background", kind="hold", min_ctx_tokens=self.min_ctx, retryable=False),
                 source=self.holder)
+        self._record(None, request_id)
         try:
             reply = await ask()
             lease_id = reply.lease_id
@@ -403,7 +425,8 @@ class TrialHold:
                     lease_id = (await asyncio.shield(ask())).lease_id
             if lease_id:
                 await cancel_lease(self.bus, lease_id, source=self.holder)
-            self._record(None)
+                self._record(None)
+            # else: the pool never answered -- hold.json keeps the request_id for the next run
             raise
         self.lease_id, self.role = ref.lease_id, ref.role
         self.box.set_hold(header)

@@ -829,3 +829,15 @@ def test_hold_gone_errors_are_recognised():
     assert trial.hold_gone_error("InternalServerError: Error code: 503 - {'error': {'type': 'gpu_pool_unavailable'}}")
     assert trial.hold_gone_error("RefusalError: gpu pool hold recalled or lost")
     assert not trial.hold_gone_error("TimeoutError: ")
+
+
+def test_unanswered_acquire_leaves_request_id_and_next_run_cancels_it(pool):
+    hold, script, log, tmp = pool
+    script["acquire"] = [TimeoutError("rpc"), TimeoutError("rpc again")]
+    with pytest.raises(TimeoutError):
+        asyncio.run(hold.acquire())
+    rec = json.loads((tmp / "hold.json").read_text())
+    assert rec["lease_id"] is None and rec["request_id"] == "r1:1" and log["cancel"] == []
+    script["acquire"] = [_Reply("queued", lease_id="L7")]
+    asyncio.run(hold.cancel_leftover())
+    assert log["cancel"] == ["L7"] and not (tmp / "hold.json").exists()

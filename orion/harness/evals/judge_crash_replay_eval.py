@@ -54,10 +54,10 @@ from orion.harness.finalize import (
     finalize_reflect_user_turn,
     build_finalize_reflect_context,
     finalize_reflect_json_schema,
+    parse_finalize_reflection_payload,
 )
 from orion.harness.tests.fixtures import make_repair_overlay
 from orion.schemas.harness_finalize import (
-    FinalizeReflectionV1,
     GrammarReceiptV1,
     SubstrateFinalizeAppraisalV1,
 )
@@ -107,7 +107,9 @@ def classify(raw: str | None, error: str | None = None) -> dict:
     payload = {**payload, "correlation_id": "eval", "thought_event_id": "eval",
                "substrate_appraisal_id": "eval", "draft_hash": "eval", **FINALIZE_REFLECT_HARNESS_FIELDS}
     try:
-        reflection = FinalizeReflectionV1.model_validate(payload)
+        # As production parses it: the promise fields apart and leniently, so a bad promise
+        # item (e.g. an unknown doer) is not counted as a verdict crash.
+        reflection = parse_finalize_reflection_payload(payload)
     except Exception:
         return {"ok": False, "failure": "validation", "keys": keys[:8]}
     return {"ok": True, "verdict": reflection.alignment_verdict, "notes": reflection.alignment_notes[:8]}

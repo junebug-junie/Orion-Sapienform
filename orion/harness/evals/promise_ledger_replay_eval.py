@@ -20,8 +20,11 @@ Subcommands:
          quote hash, no text) and print precision, gate drop rate, recall against the
          design's hand-found statements, pooled recall (every real promise any labelled run
          found, by its ``key``), and the baseline keep rate with a 90% interval. Precision
-         and recall carry a 95% Wilson interval. ``precision_without_doer_gate`` scores the
-         same run with the items the doer rule dropped put back (an ablation of that rule).
+         and recall carry a 95% Wilson interval over labelled items (unlabelled items are
+         reported beside it, not counted). ``precision_without_doer_gate`` scores the same
+         run with the items the doer rule dropped put back, through the gate's own other
+         rules: an ablation of that one rule on the new prompt. It is NOT the old prompt's
+         precision (the new prompt also changed what the judge lists); compare runs for that.
 
 Inputs are read live from Postgres and are never stored in the repo. Lanes are the
 Flash-Next lanes (--lanes, default agent = GPU 1; chat = GPU 0 runs the same model but waits
@@ -61,7 +64,7 @@ from orion.harness.finalize import (
     finalize_reflect_json_schema,
     parse_finalize_reflection_payload,
 )
-from orion.harness.promise_gate import gate_promises, normalize_for_quote_match, quote_in_text
+from orion.harness.promise_gate import gate_promises, normalize_for_quote_match
 from orion.harness.tests.fixtures import make_repair_overlay
 from orion.schemas.harness_finalize import PROMISE_DOER_ORION, PROMISE_ITEMS_MAX, OpenPromiseRefV1
 
@@ -290,11 +293,12 @@ def run(args: argparse.Namespace) -> int:
                                        open_promises=first.reflection.promises_kept, enabled=True)
                 gated = second.reflection
                 row["dropped_not_in_draft"] = first.dropped_not_in_text
-                # Items the doer rule dropped, kept for the ablation score and for labelling.
-                row["not_orion"] = [
-                    {"quote": p.quote, "offer": p.offer, "doer": p.doer,
-                     "in_text": quote_in_text(p.quote, inputs["draft_text"]) and quote_in_text(p.quote, final_text)}
-                    for p in reflection.promises_made if p.doer != PROMISE_DOER_ORION]
+                row["dropped_not_orion"] = len(first.dropped_not_orion)
+                # Items the doer rule dropped (for labelling) and the no-doer-rule ablation.
+                row["not_orion"] = [{"quote": p.quote, "offer": p.offer, "doer": p.doer}
+                                    for p in reflection.promises_made if p.doer != PROMISE_DOER_ORION]
+                row["ablation_kept"] = ablate_doer_rule(reflection, draft_text=inputs["draft_text"],
+                                                        final_text=final_text)
                 row["dropped_not_in_final"] = second.dropped_not_in_text
                 row["dropped_other"] = (first.dropped_too_long + first.dropped_over_cap
                                         + len(first.dropped_unknown_offer) + len(first.dropped_unknown_kept))
@@ -347,14 +351,33 @@ def run(args: argparse.Namespace) -> int:
 
 # --- labelling and scoring ----------------------------------------------------------------
 
+def ablate_doer_rule(reflection: Any, *, draft_text: str, final_text: str) -> list[dict]:
+    """What the gate would keep if the doer rule did not exist: every listed item treated as
+    Orion's, then the gate's other rules (quote in the draft and the final text, length,
+    duplicates, the per-turn cap). Runs the gate itself, so the ablation follows the gate
+    if the gate changes. Each kept item carries the doer the judge gave it."""
+    if not any(p.doer != PROMISE_DOER_ORION for p in reflection.promises_made):
+        return []  # the rule dropped nothing: the ablation equals promises_made
+    doers = {normalize_for_quote_match(p.quote): p.doer for p in reflection.promises_made}
+    as_orion = reflection.model_copy(update={
+        "promises_made": [p.model_copy(update={"doer": PROMISE_DOER_ORION}) for p in reflection.promises_made],
+        "offers_accepted": [], "promises_kept": []})
+    first = gate_promises(as_orion, reply_text=draft_text, enabled=True)
+    second = gate_promises(first.reflection, reply_text=final_text, enabled=True)
+    return [{"quote": p.quote, "offer": p.offer, "doer": doers.get(normalize_for_quote_match(p.quote))}
+            for p in second.reflection.promises_made]
+
+
 def extracted_items(report: dict, *, with_not_orion: bool = False) -> list[dict]:
-    """Every gated promise_made item, one per (turn, quote). with_not_orion adds back the
-    items the doer rule dropped that were literally in both texts (the ablation)."""
+    """Every gated promise_made item, one per (turn, quote). with_not_orion scores the
+    no-doer-rule ablation instead (``ablation_kept``, when the rule dropped anything)."""
     out = []
     for r in report["turns"]:
         seen: set[str] = set()
-        extra = [p for p in r.get("not_orion") or [] if p.get("in_text")] if with_not_orion else []
-        for p in (r.get("promises_made") or []) + extra:
+        kept = r.get("promises_made") or []
+        if with_not_orion and r.get("ablation_kept"):
+            kept = r["ablation_kept"]
+        for p in kept:
             sha = quote_hash(p["quote"])
             if sha in seen:
                 continue
@@ -381,8 +404,9 @@ def dropped_items(report: dict) -> list[dict]:
 
 def _precision(items: list[dict], by_key: dict) -> dict:
     labs = [by_key.get((it["correlation_id"], it["quote_sha"])) for it in items]
-    tp = sum(1 for lab in labs if lab and lab["promise"])
-    return {**wilson(tp, len(items)), "unlabelled": sum(1 for lab in labs if lab is None)}
+    labelled = [lab for lab in labs if lab is not None]
+    tp = sum(1 for lab in labelled if lab["promise"])
+    return {**wilson(tp, len(labelled)), "unlabelled": len(labs) - len(labelled)}
 
 
 def pooled_recall(report: dict, labels: dict) -> dict:

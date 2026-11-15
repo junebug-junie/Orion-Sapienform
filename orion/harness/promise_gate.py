@@ -125,7 +125,7 @@ def gate_promises(
     enabled: bool | None = None,
     correlation_id: str = "",
 ) -> PromiseGateResult:
-    """Apply the three rules. Returns a copy of the reflection with only surviving entries."""
+    """Apply the four rules. Returns a copy of the reflection with only surviving entries."""
     if enabled is None:
         enabled = promise_ledger_enabled()
     if not enabled:

@@ -110,10 +110,12 @@ def test_score_ablates_the_doer_rule_and_pools_recall_by_promise_key() -> None:
                                       "The queue should clear by noon.", "Text me when you land.")
     report = {"turns": [
         {"correlation_id": "c1", "promises_made": [{"quote": real_span, "offer": False, "doer": "orion"}],
-         "not_orion": [{"quote": forecast, "offer": False, "doer": "a_system", "in_text": True},
-                       {"quote": ask, "offer": True, "doer": "juniper", "in_text": True},
-                       {"quote": "not in the reply at all", "offer": False, "doer": "a_system",
-                        "in_text": False}]},
+         "not_orion": [{"quote": forecast, "offer": False, "doer": "a_system"},
+                       {"quote": ask, "offer": True, "doer": "juniper"},
+                       {"quote": "not in the reply at all", "offer": False, "doer": "a_system"}],
+         "ablation_kept": [{"quote": real_span, "offer": False, "doer": "orion"},
+                           {"quote": forecast, "offer": False, "doer": "a_system"},
+                           {"quote": ask, "offer": True, "doer": "juniper"}]},
         {"correlation_id": "c2", "promises_made": []},
         {"correlation_id": "c3", "error": "http 502"},
     ]}
@@ -128,9 +130,14 @@ def test_score_ablates_the_doer_rule_and_pools_recall_by_promise_key() -> None:
     ]}
     s = score(report, labels)
     assert s["precision_wilson95"]["k"] == 1 and s["precision_wilson95"]["n"] == 1
-    # The ablation puts back only the dropped items that were literally in the reply.
+    # The ablation scores what the gate would keep without the doer rule.
     assert s["precision_without_doer_gate"]["k"] == 1 and s["precision_without_doer_gate"]["n"] == 3
     assert s["doer_dropped"]["by_doer"] == {"a_system": 2, "juniper": 1}
+    # Unlabelled items are reported, not counted as false.
+    report["turns"][0]["promises_made"].append({"quote": "I'll write it up tonight.", "offer": False, "doer": "orion"})
+    s2 = score(report, labels)
+    assert (s2["precision_wilson95"]["k"], s2["precision_wilson95"]["n"]) == (1, 1)
+    assert s2["precision_wilson95"]["unlabelled"] == 1
     assert s["doer_dropped"]["real_promises_dropped"] == 0
     # c3 errored, so its promise is not in this run's pool; c2's is, and was missed.
     assert (s["recall_pooled"]["k"], s["recall_pooled"]["n"]) == (1, 2)
@@ -140,3 +147,28 @@ def test_score_ablates_the_doer_rule_and_pools_recall_by_promise_key() -> None:
 def test_every_real_label_carries_a_promise_key() -> None:
     data = json.loads(LABELS.read_text())
     assert all(lab.get("key") for lab in data["labels"] if lab["promise"])
+
+
+def test_ablation_runs_the_gate_without_the_doer_rule() -> None:
+    from orion.harness.evals.promise_ledger_replay_eval import ablate_doer_rule
+    from orion.harness.tests.test_promise_gate import _reflection
+    from orion.schemas.harness_finalize import PromiseV1
+
+    draft = ("The queue should clear by noon. Text me when you land. I'll send the summary tonight. "
+             "I'll also check the logs after lunch. I'll file the ticket tomorrow.")
+    final = draft.replace(" Text me when you land.", "")  # repair removed the ask
+    reflection = _reflection(promises_made=[
+        PromiseV1(quote="The queue should clear by noon.", doer="a_system"),
+        PromiseV1(quote="Text me when you land.", offer=True, doer="juniper"),
+        PromiseV1(quote="I'll send the summary tonight.", doer="orion"),
+        PromiseV1(quote="I'll also check the logs after lunch.", doer="orion"),
+        PromiseV1(quote="I'll file the ticket tomorrow.", doer="orion"),
+        PromiseV1(quote="not in the reply at all, invented", doer="a_system")])
+    kept = ablate_doer_rule(reflection, draft_text=draft, final_text=final)
+    # As the live gate: the cap of 3 applies on the draft pass (the ask takes a slot), then
+    # the final-text pass drops the ask that repair removed. Invented quotes never survive.
+    assert [(k["quote"], k["doer"]) for k in kept] == [
+        ("The queue should clear by noon.", "a_system"),
+        ("I'll send the summary tonight.", "orion")]
+    only_orion = _reflection(promises_made=[PromiseV1(quote="I'll send the summary tonight.", doer="orion")])
+    assert ablate_doer_rule(only_orion, draft_text=draft, final_text=final) == []

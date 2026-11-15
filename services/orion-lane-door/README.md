@@ -19,7 +19,7 @@ Runbook (deploy, check, roll back): `docs/runbooks/2026-11-14-lane-door.md`.
 - `GET /door/stats` returns counters since start and a hash of the key (`key_hash`, 16 hex characters),
   never the key itself. The gateway compares that hash with its own and logs `lane_door_key_mismatch`.
 - No-model reads always pass, with or without a key, and are only counted:
-  `GET /health /props /slots /v1/models /models /metrics`, `POST /tokenize /detokenize /apply-template`.
+  `GET /health /props /slots /v1/models /models /metrics /orion/server-info`, `POST /tokenize /detokenize /apply-template`.
   The GPU pool's probes and the lane controller's ready check use these.
 - It asks the GPU pool nothing per call. A pool lookup would sit on the chat path. The lease ids in the
   log are joined to `gpu_pool_events` later, by `scripts/lane_door_report.py`.

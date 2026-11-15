@@ -60,3 +60,25 @@ def test_door_and_gateway_hash_the_key_the_same_way_and_name_the_same_headers():
         assert ns["key_hash"](key) == door_settings.key_hash(key)
     assert 'KEY_HEADER = "X-Orion-Lane-Key"' in src and door.KEY_HEADER == b"x-orion-lane-key"
     assert 'LEASE_HEADER = "X-Orion-Lease-Id"' in src and door.LEASE_HEADER == b"x-orion-lease-id"
+
+
+def test_every_path_the_pool_and_the_lane_controller_read_is_exempt():
+    """Review finding: the pool's vLLM probe reads /orion/server-info; unexempt, agent-deep could never read
+    READY in shadow and would go down in enforce. Pin every probe path to the door's exempt list."""
+    import re
+
+    import yaml
+
+    door, _ = _door()
+    src = (REPO / "services" / "orion-gpu-pool" / "app" / "main.py").read_text()
+    probe = src[src.index("async def _probe"):]
+    probe = probe[:probe.index("\nasync def ", 10) if "\nasync def " in probe[10:] else len(probe)]
+    paths = set(re.findall(r'client\.get\(f"\{url\}(/[A-Za-z0-9_./-]+)"', probe))
+    assert {"/health", "/v1/models", "/orion/server-info", "/props"} <= paths, paths
+    cfg = yaml.safe_load((REPO / "config" / "gpu_pool.yaml").read_text())
+    for role in (cfg.get("roles") or {}).values():
+        if isinstance(role, dict) and role.get("kind") == "llm":
+            ready = (role.get("launch") or {}).get("ready")
+            if ready:
+                paths.add(ready)
+    assert paths <= door.EXEMPT_GET_PATHS, sorted(paths - door.EXEMPT_GET_PATHS)

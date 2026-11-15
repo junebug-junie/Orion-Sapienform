@@ -48,7 +48,8 @@ logger = logging.getLogger("lane-door")
 
 KEY_HEADER = b"x-orion-lane-key"
 LEASE_HEADER = b"x-orion-lease-id"
-EXEMPT_GET_PATHS = frozenset({"/health", "/props", "/slots", "/v1/models", "/models", "/metrics"})
+EXEMPT_GET_PATHS = frozenset({"/health", "/props", "/slots", "/v1/models", "/models", "/metrics",
+                              "/orion/server-info"})   # the pool's vLLM probe (orion-gpu-pool app/main.py _probe)
 EXEMPT_POST_PATHS = frozenset({"/tokenize", "/detokenize", "/apply-template"})
 STATS_PATH = "/door/stats"
 MAX_HEAD_BYTES = 64 * 1024

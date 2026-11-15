@@ -1,0 +1,1 @@
+{"vllm_config":{"model_config":{"model":"/models/Qwen3.8-27B-QUASAR-NVFP4","max_model_len":262144},"scheduler_config":{"max_num_seqs":1},"parallel_config":{"tensor_parallel_size":2,"pipeline_parallel_size":1,"data_parallel_size":1}}}

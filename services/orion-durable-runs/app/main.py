@@ -60,6 +60,7 @@ market: Any = None          # app.physiology_market.Market while ORION_PHYSIOLOG
 HTTP_EMBED_WAIT_SEC = 0.25  # personality care: the most an HTTP bid waits for its object text's embedding
 cooling_act: Any = None     # app.cooling_act.CoolingAct while ORION_COOLING_ACT_ENABLED (ladder retirement PR 5)
 _cooling_act_task: asyncio.Task | None = None
+_market_refresh_task: asyncio.Task | None = None   # keeps the bid market's history warm (issue #3382)
 chronicle: Any = None
 personality: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
@@ -606,7 +607,7 @@ async def lifespan(app: FastAPI):
     global field_notes, _field_notes_task, reminiscence, _reminiscence_task
     global rpc_health_publisher, situation, temporal_self, personality, market, cooling_act, _cooling_act_task
     global checkpoint_prune, _checkpoint_prune_task
-    global core_pages, _core_pages_task
+    global core_pages, _core_pages_task, _market_refresh_task
     from app.runner import DurableRunner
 
     try:
@@ -657,6 +658,9 @@ async def lifespan(app: FastAPI):
             await personality.start(_stop)
         if _settings.physiology_bid_enabled:
             market = _build_market()
+            # Warm the history + weights at boot and keep them warm, so no bid waits on a database read
+            # (issue #3382: the inline refresh made 0.5 s HTTP callers time out).
+            _market_refresh_task = asyncio.create_task(market.run_refresher(_stop))
         if _settings.cooling_act_enabled:
             if market is None or rpc_bus is None:
                 # Its bid binds: no market (or no bus for the shed RPC) means it could never act.
@@ -745,6 +749,11 @@ async def lifespan(app: FastAPI):
             _core_pages_task.cancel()
         if _cooling_act_task is not None:
             _cooling_act_task.cancel()
+        if _market_refresh_task is not None:
+            _market_refresh_task.cancel()
+            await asyncio.gather(_market_refresh_task, return_exceptions=True)
+        if market is not None:
+            await market.aclose()   # before the pool closes under an in-flight refresh
         if situation is not None:
             await situation.close()
         if temporal_self is not None:

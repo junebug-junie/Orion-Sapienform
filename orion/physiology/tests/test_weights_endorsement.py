@@ -39,7 +39,37 @@ def _outreach(i, *, said=True, promoted=False, at=None):
 
 
 def test_declinable_lanes_match_the_reducers_decline_phrases():
-    assert DECLINABLE_LANES == frozenset(DECLINE_TEXT)
+    # Every lane with its own decline phrase is declinable. Reading is declinable too and uses the
+    # reducer's default phrase ("none of these"): Stage 2 may leave need_stage1_urls empty.
+    assert frozenset(DECLINE_TEXT) <= DECLINABLE_LANES
+    assert DECLINABLE_LANES - frozenset(DECLINE_TEXT) == {"reading"}
+
+
+def test_reading_rows_are_real_choices_but_never_move_reading_endorsement():
+    at = NOW - timedelta(days=1)
+    pick = choice_record("reading:s1:a", "reading", at, "hub.world_pulse_read::link:a",
+                         ["hub.world_pulse_read::link:b"], act_id="reading_stage2:s1")
+    decline = choice_record("reading:s2:none", "reading", at, None, ["hub.world_pulse_read::link:c"],
+                            declined_all=True, act_id="reading_stage2:s2")
+    assert pick.real_choice and decline.real_choice  # declinable: tendencies may use them
+    assert endorsement_for("hub.world_pulse_read", [pick, decline], since=SINCE, until=NOW)[:2] == (None, 0)
+    # A Prime pick of a reading concern still counts for the family, and reading rows beside it change nothing.
+    prime = choice_record("prime:t1", "prime", at, endorsement_option_key("hub.world_pulse_read", "c1"),
+                          ["prime-c2"], act_id="prime:t1")
+    alone = endorsement_for("hub.world_pulse_read", [prime], since=SINCE, until=NOW)[:2]
+    assert alone == (1.0, 1)
+    assert endorsement_for("hub.world_pulse_read", [prime, pick, decline], since=SINCE, until=NOW)[:2] == alone
+    ev = evidence_for("hub.world_pulse_read", [], [], since=SINCE, until=NOW, choices=[pick, decline])
+    assert ev.endorsement_rate is None
+
+
+def test_a_multi_pick_decision_counts_once_per_offer():
+    at = NOW - timedelta(days=1)
+    picks = [choice_record(f"outreach:d1:{x}", "outreach", at, f"topic{x}", ["topicz"], act_id="outreach:d1")
+             for x in "abc"]
+    decline = choice_record("outreach:d2", "outreach", at, None, ["topicy"], declined_all=True, act_id="outreach:d2")
+    rate, n, _ = endorsement_for("hub.outreach", [*picks, decline], since=SINCE, until=NOW)
+    assert rate == 0.5 and n == 2
 
 
 def test_option_family_reads_the_key_then_the_lane():

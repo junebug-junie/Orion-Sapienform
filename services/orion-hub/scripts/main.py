@@ -991,6 +991,7 @@ async def startup_event():
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
                 assertions_enabled=settings.HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED,
                 meaning_target_links=settings.HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED,
+                choice_enabled=settings.HUB_WORLD_PULSE_READ_CHOICE_ENABLED,
                 # Claim objects by meaning: reading search's Chroma + embedder, own
                 # collection (orion/world_pulse_read/concept_search.py). Empty URLs = off.
                 concept_search=SearchConfig(

@@ -32,6 +32,23 @@ def coerce_journal_title(*, raw_title: Any, fallback_summary: str, correlation_i
     return f"Journal Pass · {seed[:64]} · {str(correlation_id)[:8]}"
 
 
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+
+def code_built_title(trigger: JournalTriggerV1, *, created_at: datetime) -> str:
+    """A title from the trigger kind and its date, for when the model gave none.
+
+    The compose prompt lets the model answer ``"title": null``, and it usually
+    does: 13 of 15 walkway entries from 2026-11-10 to 11-14 were stored with no
+    title (#3386). The date is the last one in ``source_ref`` (a walkway ref is
+    ``walkway_grade:walkway:2026-11-14``, the day the entry is about), else the
+    day the entry was written.
+    """
+    kind = str(trigger.trigger_kind or "journal").replace("_", " ").strip().capitalize()
+    dates = _ISO_DATE_RE.findall(str(trigger.source_ref or ""))
+    return f"{kind} · {dates[-1] if dates else created_at.date().isoformat()}"
+
+
 def stable_journal_entry_id_for_workflow_compose(
     *,
     correlation_id: str,
@@ -744,7 +761,7 @@ def build_write_payload(
         created_at=ts,
         author=author,
         mode=draft.mode,
-        title=draft.title,
+        title=str(draft.title or "").strip() or code_built_title(trigger, created_at=ts),
         body=draft.body,
         source_kind=trigger.source_kind,
         source_ref=trigger.source_ref,

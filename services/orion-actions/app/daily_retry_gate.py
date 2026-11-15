@@ -24,6 +24,10 @@ State (counts, last failure time, gave_up) is persisted to a small JSON file
 next to the scheduler cursors, so a restart neither resets the counts nor
 reopens retries for a date that already gave up. Timestamps are wall-clock
 epoch seconds for that reason.
+
+A caller may pass an ``AttemptPolicy`` instead (the walkway journal does,
+app/walkway_forecast.py): then every failure counts the same, whatever its
+class, against one flat cap with its own waits. Same store, same file.
 """
 
 from __future__ import annotations
@@ -80,6 +84,23 @@ def classify_daily_failure(reason: str | None) -> FailureClass:
     if any(m in text for m in _TRANSIENT_MARKERS):
         return "transient"
     return "unknown"
+
+
+@dataclass(frozen=True)
+class AttemptPolicy:
+    """A flat cap: ``max_attempts`` failures per date, of any class, then give up.
+
+    ``backoff_seconds[i]`` is the wait after failure ``i + 1``; the last value
+    repeats if the cap is higher than the list is long.
+    """
+
+    max_attempts: int
+    backoff_seconds: tuple[float, ...]
+
+    def wait_after(self, failures: int) -> float:
+        if not self.backoff_seconds:
+            return 0.0
+        return self.backoff_seconds[min(max(failures, 1), len(self.backoff_seconds)) - 1]
 
 
 @dataclass
@@ -152,6 +173,10 @@ class DailyAttemptGate:
         state = self._jobs.get(job_key)
         return bool(state and state.local_date == local_date and state.gave_up)
 
+    def last_failure_reason(self, job_key: str, local_date: str) -> str | None:
+        state = self._jobs.get(job_key)
+        return state.last_failure_reason if state and state.local_date == local_date else None
+
     def roll_over(self, job_key: str, local_date: str) -> GaveUp | None:
         """Start ``local_date``. Returns the previous date's give-up if it ended
         with failures that were never recorded (e.g. transient all evening)."""
@@ -165,14 +190,18 @@ class DailyAttemptGate:
         self._persist()
         return expired
 
-    def may_attempt(self, job_key: str, local_date: str, now: float) -> tuple[bool, str]:
+    def may_attempt(
+        self, job_key: str, local_date: str, now: float, policy: AttemptPolicy | None = None
+    ) -> tuple[bool, str]:
         state = self._jobs.get(job_key)
         if state is None or state.local_date != local_date:
             return True, "ok"
-        if state.gave_up:
+        if state.gave_up or (policy is not None and state.attempts >= policy.max_attempts):
             return False, "gave_up"
         if state.last_failure_at is not None:
-            if state.last_failure_class == "deterministic":
+            if policy is not None:
+                wait = policy.wait_after(state.attempts)
+            elif state.last_failure_class == "deterministic":
                 idx = min(state.deterministic - 1, len(DETERMINISTIC_BACKOFF_SECONDS) - 1)
                 wait = DETERMINISTIC_BACKOFF_SECONDS[max(0, idx)]
             else:
@@ -181,7 +210,9 @@ class DailyAttemptGate:
                 return False, "backoff"
         return True, "ok"
 
-    def record_failure(self, job_key: str, local_date: str, now: float, reason: str | None) -> GaveUp | None:
+    def record_failure(
+        self, job_key: str, local_date: str, now: float, reason: str | None, policy: AttemptPolicy | None = None
+    ) -> GaveUp | None:
         """Count one failure. Returns a GaveUp when this failure ends the date."""
         state = self._jobs.get(job_key)
         if state is None or state.local_date != local_date:
@@ -192,9 +223,11 @@ class DailyAttemptGate:
         state.last_failure_at = now
         state.last_failure_class = klass
         state.last_failure_reason = (reason or "")[:1000] or None
-        if not state.gave_up and (
-            state.deterministic >= MAX_DETERMINISTIC_ATTEMPTS or state.unknown >= MAX_UNKNOWN_ATTEMPTS
-        ):
+        if policy is not None:
+            spent = state.attempts >= policy.max_attempts
+        else:
+            spent = state.deterministic >= MAX_DETERMINISTIC_ATTEMPTS or state.unknown >= MAX_UNKNOWN_ATTEMPTS
+        if not state.gave_up and spent:
             state.gave_up = True
             self._persist()
             return GaveUp(local_date, state.attempts, state.last_failure_reason, klass)

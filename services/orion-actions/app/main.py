@@ -52,7 +52,13 @@ from . import act_emit
 from .vision_pg import fetch_rows_blocking as _fetch_ledger_rows_blocking
 from .capability_gap_journal import build_daily_seed_payload, collect_capability_gaps
 from .perception_gap_journal import collect_perception_gaps
-from .walkway_forecast import collect_walkway_jobs, guard_walkway_draft, run_walkway_tick
+from .walkway_forecast import (
+    NIGHT_RECORD_ACTION,
+    NIGHT_RECORDS_FILENAME,
+    collect_walkway_jobs,
+    guard_walkway_draft,
+    run_walkway_schedule,
+)
 from .world_pulse_journal import handle_world_pulse_run_result_journal, submit_durable_run_via_cortex
 from .logic import (
     ACTION_RESPOND_TO_JUNIPER_COLLAPSE_V1,
@@ -1286,8 +1292,9 @@ async def lifespan(app: FastAPI):
     notify = NotifyClient(base_url=settings.notify_url, api_token=settings.notify_api_token, timeout=10)
     src = _source_ref()
     last_daily_run: dict[str, str] = {}
-    # Read-failure attempts per local date for the walkway journal (bounded
-    # retry; see walkway_forecast.run_walkway_tick).
+    # Read-failure attempts per night for the walkway journal (bounded retry; see
+    # walkway_forecast.run_walkway_tick). Failed composes are capped in
+    # daily_attempt_gate below, which survives a restart.
     walkway_read_attempts: dict[str, int] = {}
     last_skill_run_monotonic: float | None = None
     last_journal_run: str | None = None
@@ -1324,8 +1331,9 @@ async def lifespan(app: FastAPI):
         else:
             last_daily_run[_ck] = _cv
     cursor_keys_at_startup = frozenset(scheduler_cursor_store.all().keys())
-    # Bounded nightly retries for daily_pulse_v1 / daily_metacog_v1, persisted
-    # next to the scheduler cursors (app/daily_retry_gate.py).
+    # Bounded nightly retries for daily_pulse_v1 / daily_metacog_v1 and for each
+    # walkway journal job, persisted next to the scheduler cursors
+    # (app/daily_retry_gate.py).
     daily_attempt_gate = DailyAttemptGate(
         state_path=scheduler_cursor_store.path.parent / DAILY_ATTEMPT_STATE_FILENAME,
     )
@@ -1544,9 +1552,24 @@ async def lifespan(app: FastAPI):
         dedupe_key: str,
         reason: str | None = None,
     ) -> bool:
+        result = await _dispatch_journal_attempt(
+            parent, trigger=trigger, audit_action=audit_action, dedupe_key=dedupe_key, reason=reason
+        )
+        return result.completed
+
+    async def _dispatch_journal_attempt(
+        parent: BaseEnvelope,
+        *,
+        trigger,
+        audit_action: str,
+        dedupe_key: str,
+        reason: str | None = None,
+    ) -> DailyAttemptResult:
+        """``attempted`` is False only when no compose ran and no act opened (disabled, refused by
+        the self-monitor gate, cooling down). The walkway retry cap counts attempted failures only."""
         if not settings.actions_journaling_enabled:
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason="journaling_disabled")
-            return False
+            return DailyAttemptResult(completed=False, attempted=False, failure_reason="journaling_disabled")
         gate_extra: dict = {}
         gate_probe = None
         gate = None
@@ -1559,7 +1582,7 @@ async def lifespan(app: FastAPI):
                 gate = None
             if gate is not None and not gate.admit:
                 await _audit_gate_refusal(parent, gate, dedupe_key=dedupe_key, audit_action=audit_action)
-                return False
+                return DailyAttemptResult(completed=False, attempted=False, failure_reason=TRACK_RECORD_FAILING_REASON)
             if gate is not None and gate.probe:
                 gate_probe = gate
                 gate_extra = {"self_monitor": gate.label(), "self_monitor_probe": True}
@@ -1567,7 +1590,7 @@ async def lifespan(app: FastAPI):
                 gate_extra = {"self_monitor": gate.label(), "self_monitor_same_job_retry": True}
         if not journal_deduper.try_acquire(dedupe_key):
             await _audit(parent, status="skipped", event_id=dedupe_key, action_name=audit_action, reason=reason or "journal_cooldown")
-            return False
+            return DailyAttemptResult(completed=False, attempted=False, failure_reason=reason or "journal_cooldown")
 
         acquired = False
         t0 = time.monotonic()
@@ -1595,7 +1618,7 @@ async def lifespan(app: FastAPI):
                 # Another handler started this window's probe first: this attempt is refused.
                 _settle_shadow(jshadow, f"blocked:{TRACK_RECORD_FAILING_REASON}")
                 await _audit_gate_refusal(parent, gate_probe, dedupe_key=dedupe_key, audit_action=audit_action)
-                return False
+                return DailyAttemptResult(completed=False, attempted=False, failure_reason=TRACK_RECORD_FAILING_REASON)
             if gate is not None and gate_probe is None:
                 # Started: its next retry is the same job even before this act's row lands.
                 _journal_gate.note_job_started(gate.faculty, job_key, now=datetime.now(timezone.utc))
@@ -1628,7 +1651,7 @@ async def lifespan(app: FastAPI):
                     **gate_extra,
                 },
             )
-            return True
+            return DailyAttemptResult(completed=True)
         except Exception as exc:
             dt_ms = int((time.monotonic() - t0) * 1000)
             _settle_shadow(jshadow, f"blocked:raised:{type(exc).__name__}")  # no-op once settled "ran"
@@ -1643,7 +1666,7 @@ async def lifespan(app: FastAPI):
                 extra={"duration_ms": dt_ms, **gate_extra},
             )
             logger.exception("Journal dispatch failed action=%s corr=%s", audit_action, parent.correlation_id)
-            return False
+            return DailyAttemptResult(completed=False, attempted=True, failure_reason=f"{type(exc).__name__}:{exc}")
         except BaseException as exc:  # cancellation: close at 0, then re-raise
             _settle_shadow(jshadow, f"blocked:raised:{type(exc).__name__}")  # no-op once settled "ran"
             await jact.close(False, f"raised:{type(exc).__name__}")
@@ -2416,6 +2439,102 @@ async def lifespan(app: FastAPI):
 
     app.state.scheduled_daily_tick = _scheduled_daily_tick
 
+    async def _walkway_journal_tick(*, now_utc: datetime) -> str:
+        """One scheduler pass for the nightly walkway journal. Returns run_walkway_schedule's word."""
+        if not (settings.actions_walkway_forecast_enabled and settings.actions_journaling_enabled):
+            return "disabled"
+        # Nightly: the walkway day rollup (plus week on Sunday, month on its last day), grade the
+        # day's expectations, then forecast the next day's (app/walkway_forecast.py). Never an entry
+        # about nothing. A failed compose is retried at most 4 times a night per job (#3384). A
+        # night still open at local midnight keeps going (#3385). Own try so a failure cannot cost
+        # the daily journal that runs after it.
+        walkway_corr = str(uuid4())
+
+        def _walkway_env(payload: dict[str, Any]) -> BaseEnvelope:
+            return BaseEnvelope(
+                kind="orion.actions.trigger.journal.v1",
+                source=src,
+                correlation_id=walkway_corr,
+                payload=payload,
+            )
+
+        async def _walkway_collect(night):
+            return await collect_walkway_jobs(
+                dsn=settings.postgres_uri,
+                stream_id=settings.actions_walkway_stream_id,
+                tz_name=settings.actions_daily_timezone,
+                now_utc=now_utc,
+                min_support_days=settings.actions_walkway_forecast_min_support_days,
+                node=settings.node_name,
+                night=night,
+            )
+
+        async def _walkway_dispatch(job) -> DailyAttemptResult:
+            return await _dispatch_journal_attempt(
+                _walkway_env(job.trigger.model_dump(mode="json")),
+                trigger=job.trigger,
+                audit_action=job.audit_action,
+                dedupe_key=job.dedupe_key,
+            )
+
+        def _walkway_mark(kind: str, local_date: str) -> None:
+            last_daily_run[kind] = local_date
+            scheduler_cursor_store.set_last_completed(kind, local_date)
+
+        async def _walkway_record(rec: dict[str, Any]) -> None:
+            # One "entry landed: yes or no" per night per job. The audit
+            # rail has no durable reader, so the same record is also a
+            # log line and a line in a file beside the cursors.
+            logger.info("walkway_night_record %s", json.dumps(rec, sort_keys=True))
+            try:
+                with (scheduler_cursor_store.path.parent / NIGHT_RECORDS_FILENAME).open("a") as fh:
+                    fh.write(json.dumps({**rec, "recorded_at": datetime.now(timezone.utc).isoformat()}, sort_keys=True) + "\n")
+            except Exception:
+                logger.warning("walkway_night_record_file_failed", exc_info=True)
+            await _audit(
+                _walkway_env(rec),
+                status="landed" if rec["landed"] else "not_landed",
+                event_id=f"walkway_night:{rec['kind']}:{settings.actions_walkway_stream_id}:{rec['night']}:{settings.node_name}",
+                action_name=NIGHT_RECORD_ACTION,
+                reason=rec["reason"],
+                extra={"night": rec["night"], "trigger_kind": rec["kind"], "landed": rec["landed"],
+                       "failed_attempts": rec["failed_attempts"]},
+            )
+
+        def _walkway_close(local_date: str, clean: bool) -> None:
+            last_daily_run[SCHEDULER_CURSOR_WALKWAY_KEY] = local_date
+            scheduler_cursor_store.set_last_completed(SCHEDULER_CURSOR_WALKWAY_KEY, local_date)
+            if clean:
+                _scheduler_daily_structured_log(
+                    job_key=SCHEDULER_CURSOR_WALKWAY_KEY,
+                    local_date=local_date,
+                    correlation_id=walkway_corr,
+                    restart_dedupe_source="durable" if SCHEDULER_CURSOR_WALKWAY_KEY in cursor_keys_at_startup else "memory",
+                )
+
+        try:
+            return await run_walkway_schedule(
+                now_utc=now_utc,
+                tz_name=settings.actions_daily_timezone,
+                hour_local=settings.actions_walkway_forecast_hour_local,
+                minute_local=settings.actions_walkway_forecast_minute_local,
+                night_closed_on=last_daily_run.get(SCHEDULER_CURSOR_WALKWAY_KEY),
+                collect=_walkway_collect,
+                dispatch=_walkway_dispatch,
+                job_done_on=last_daily_run.get,
+                mark_job_done=_walkway_mark,
+                read_attempts=walkway_read_attempts,
+                gate=daily_attempt_gate,
+                clock=time.time,
+                record=_walkway_record,
+                close_night=_walkway_close,
+            )
+        except Exception:
+            logger.exception("walkway_journal_schedule_failed")
+            return "error"
+
+    app.state.walkway_journal_tick = _walkway_journal_tick
+
     async def _scheduler_loop() -> None:
         nonlocal last_skill_run_monotonic, last_journal_run
         while True:
@@ -2590,76 +2709,7 @@ async def lifespan(app: FastAPI):
                     forced_date=forced_date,
                 )
 
-                walkway_should_run, walkway_local_date = should_run_daily(
-                    now_utc=now_utc,
-                    tz_name=settings.actions_daily_timezone,
-                    hour_local=settings.actions_walkway_forecast_hour_local,
-                    minute_local=settings.actions_walkway_forecast_minute_local,
-                    last_ran_date=last_daily_run.get(SCHEDULER_CURSOR_WALKWAY_KEY),
-                )
-                if (
-                    settings.actions_walkway_forecast_enabled
-                    and settings.actions_journaling_enabled
-                    and walkway_should_run
-                ):
-                    # Nightly: today's walkway day rollup (plus week on Sunday,
-                    # month on its last day), grade today's expectations, then
-                    # forecast tomorrow's (app/walkway_forecast.py). Never an
-                    # entry about nothing. Own try so a read
-                    # failure cannot cost the daily journal below it.
-                    walkway_corr = str(uuid4())
-
-                    async def _walkway_collect():
-                        return await collect_walkway_jobs(
-                            dsn=settings.postgres_uri,
-                            stream_id=settings.actions_walkway_stream_id,
-                            tz_name=settings.actions_daily_timezone,
-                            now_utc=now_utc,
-                            min_support_days=settings.actions_walkway_forecast_min_support_days,
-                            node=settings.node_name,
-                        )
-
-                    async def _walkway_dispatch(job) -> bool:
-                        walkway_env = BaseEnvelope(
-                            kind="orion.actions.trigger.journal.v1",
-                            source=src,
-                            correlation_id=walkway_corr,
-                            payload=job.trigger.model_dump(mode="json"),
-                        )
-                        return await _dispatch_journal(
-                            walkway_env,
-                            trigger=job.trigger,
-                            audit_action=job.audit_action,
-                            dedupe_key=job.dedupe_key,
-                        )
-
-                    def _walkway_mark(kind: str, local_date: str) -> None:
-                        last_daily_run[kind] = local_date
-                        scheduler_cursor_store.set_last_completed(kind, local_date)
-
-                    walkway_ok, walkway_skips = await run_walkway_tick(
-                        collect=_walkway_collect,
-                        dispatch=_walkway_dispatch,
-                        job_done_on=last_daily_run.get,
-                        mark_job_done=_walkway_mark,
-                        local_date=walkway_local_date,
-                        read_attempts=walkway_read_attempts,
-                    )
-                    logger.info(
-                        "walkway_journal_tick date=%s complete=%s skips=%s",
-                        walkway_local_date,
-                        walkway_ok,
-                        ",".join(walkway_skips) or "none",
-                    )
-                    if walkway_ok:
-                        last_daily_run[SCHEDULER_CURSOR_WALKWAY_KEY] = walkway_local_date
-                        scheduler_cursor_store.set_last_completed(SCHEDULER_CURSOR_WALKWAY_KEY, walkway_local_date)
-                        _scheduler_daily_structured_log(
-                            job_key=SCHEDULER_CURSOR_WALKWAY_KEY,
-                            local_date=walkway_local_date,
-                            correlation_id=walkway_corr,
-                            restart_dedupe_source="durable" if SCHEDULER_CURSOR_WALKWAY_KEY in cursor_keys_at_startup else "memory",
-                        )
+                await _walkway_journal_tick(now_utc=now_utc)
 
                 journal_should_run, journal_local_date = should_run_daily(
                     now_utc=now_utc,

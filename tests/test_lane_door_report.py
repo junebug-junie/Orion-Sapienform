@@ -10,10 +10,11 @@ sys.path.insert(0, str(REPO / "scripts"))
 import lane_door_report as rep  # noqa: E402
 
 
-def _line(day: str, key: str = "ok", lane: str = "chat", lease: str | None = "L1", src: str = "100.92.216.81",
+def _line(day: str, state: str = "leased", lane: str = "chat", lease: str | None = "L1", src: str = "100.92.216.81",
           path: str = "/v1/chat/completions") -> str:
     return json.dumps({"ts": f"{day}T12:00:00.000+00:00", "lane": lane, "src": src, "method": "POST", "path": path,
-                       "key": key, "lease_id": lease if key == "ok" else None, "status": 200, "ms": 3.0})
+                       "lease": state,
+                       "lease_id": lease if state == "leased" else ("invalid" if state == "invalid" else None), "status": 200, "ms": 3.0})
 
 
 def _days(start: int, n: int) -> list[str]:
@@ -31,10 +32,10 @@ def test_seven_clean_days_without_the_lease_join_are_not_ready():
     assert not ok and "lease join was not run" in why
 
 
-def test_one_unkeyed_call_in_the_window_is_not_ready_and_names_the_day():
-    lines = [_line(d) for d in _days(15, 7)] + [_line("2026-11-19", key="missing", src="100.92.216.81")]
+def test_one_unleased_call_in_the_window_is_not_ready_and_names_the_day():
+    lines = [_line(d) for d in _days(15, 7)] + [_line("2026-11-19", state="unleased", src="100.92.216.81")]
     ok, why = _verdict(lines)
-    assert not ok and why.startswith("2026-11-19") and "1 unkeyed" in why
+    assert not ok and why.startswith("2026-11-19") and "1 unleased" in why
 
 
 def test_a_missing_day_is_unknown_not_zero():
@@ -48,8 +49,8 @@ def test_today_is_partial_and_never_counts():
     assert not ok
 
 
-def test_wrong_key_calls_block_like_unkeyed_ones():
-    lines = [_line(d) for d in _days(15, 7)] + [_line("2026-11-21", key="bad")]
+def test_invalid_lease_calls_block_like_unleased_ones():
+    lines = [_line(d) for d in _days(15, 7)] + [_line("2026-11-21", state="invalid")]
     assert not _verdict(lines)[0]
 
 
@@ -60,12 +61,12 @@ def _ok_streak_joined():
     return report
 
 
-def test_a_day_with_no_keyed_traffic_proves_nothing():
-    lines = [_line(d) for d in _days(15, 7) if d != "2026-11-20"] + [_line("2026-11-20", path="/x", key="ok", lane="fast")]
+def test_a_day_with_no_leased_traffic_proves_nothing():
+    lines = [_line(d) for d in _days(15, 7) if d != "2026-11-20"] + [_line("2026-11-20", path="/x", lane="fast")]
     report, _ = rep.aggregate(lines)
     report["chat"]["2026-11-20"] = rep.Day()
     ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=False, today="2026-11-22")
-    assert not ok and "no keyed calls" in why
+    assert not ok and "no leased calls" in why
 
 
 def test_joined_gaps_and_unmatched_leases_block():
@@ -82,40 +83,32 @@ def test_joined_gaps_and_unmatched_leases_block():
     report["chat"]["2026-11-17"].gateway_calls = 1
     report["chat"]["2026-11-18"].unmatched_leases = 2
     ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
-    assert not ok and "no matching pool lease" in why
+    assert not ok and "not in gpu_pool_events" in why
 
 
-def test_keyed_calls_without_a_lease_id_count_as_unmatched_after_the_join(monkeypatch):
-    report, _ = rep.aggregate([_line("2026-11-15", lease=None), _line("2026-11-15", lease="invalid")])
-    assert report["chat"]["2026-11-15"].no_lease_id == 2
+def test_lease_ids_are_collected_for_the_join_and_rows_from_the_old_key_format_are_unreadable():
+    old = json.dumps({"ts": "2026-11-15T12:00:00.000+00:00", "lane": "chat", "key": "ok", "lease_id": "L9"})
+    report, bad = rep.aggregate([_line("2026-11-15", lease="L1"), _line("2026-11-15", lease="L2"), old])
+    assert report["chat"]["2026-11-15"].lease_ids == {"L1", "L2"} and bad == 1
 
 
-def test_render_names_who_sent_unkeyed_calls(capsys, tmp_path):
+def test_render_names_who_sent_unleased_calls(capsys, tmp_path):
     f = tmp_path / "chat-2026-11-15.jsonl"
-    f.write_text("\n".join([_line("2026-11-15"), _line("2026-11-15", key="missing", src="100.92.216.81",
+    f.write_text("\n".join([_line("2026-11-15"), _line("2026-11-15", state="unleased", src="100.92.216.81",
                                                          path="/v1/chat/completions"), "not json"]) + "\n")
     assert rep.main([str(tmp_path), "--today", "2026-11-16"]) == 0
     out = capsys.readouterr().out
-    assert "NOT READY" in out and "unkeyed x1: 100.92.216.81 POST /v1/chat/completions" in out
+    assert "NOT READY" in out and "unleased x1: 100.92.216.81 POST /v1/chat/completions" in out
     assert "1 unreadable lines skipped" in out
     assert "== lane agent-gpu2: NOT READY" in out and "no log lines for this lane" in out
 
 
 def test_calls_an_enforcing_door_already_refused_are_shown_but_do_not_block():
     lines = [_line(d) for d in _days(15, 7)]
-    refused = json.loads(_line("2026-11-19", key="missing"))
+    refused = json.loads(_line("2026-11-19", state="unleased"))
     refused.update(status=401, refused=True)
     report, _ = rep.aggregate(lines + [json.dumps(refused)])
     day = report["chat"]["2026-11-19"]
-    assert (day.refused, day.missing) == (1, 0)
-
-
-def test_a_refused_wrong_key_still_blocks_it_is_gateway_key_drift():
-    """Review finding: after a flip, a drifted gateway key shows as refused key=bad rows; never excuse them."""
-    lines = [_line(d) for d in _days(15, 7)]
-    drift = json.loads(_line("2026-11-19", key="bad"))
-    drift.update(status=401, refused=True)
-    report, _ = rep.aggregate(lines + [json.dumps(drift)])
-    assert report["chat"]["2026-11-19"].bad == 1
+    assert (day.refused, day.unleased) == (1, 0)
     ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=False, today="2026-11-22")
-    assert not ok and "wrong-key" in why
+    assert "lease join was not run" in why            # the refused call did not block the streak

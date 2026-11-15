@@ -82,7 +82,7 @@ def is_lane_door(base: str, timeout_s: float = 3.0) -> bool:
             body = json.load(resp)
     except (OSError, ValueError, http.client.HTTPException):
         return False
-    return isinstance(body, dict) and "lane" in body and "key_hash" in body
+    return isinstance(body, dict) and "lane" in body and "calls" in body
 
 
 class BenchAbort(RuntimeError):

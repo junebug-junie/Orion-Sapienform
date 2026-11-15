@@ -1,8 +1,8 @@
 name: lane door tests
 
 # Lane door (leased-evals Phase 2, services/orion-lane-door): the proxy against a real socket engine
-# stand-in, the exempt-path and key-hash parity with the eval helper and the gateway, the gateway's
-# door headers, the shadow report, and the latency eval. Nothing here talks to a real engine.
+# stand-in, the exempt-path and lease-header parity with the eval helper and the gateway, the gateway's
+# lease header, the engine-move deploy hook and the loopback ports it agrees on, the shadow report, and the latency eval. Nothing here talks to a real engine.
 
 on:
   pull_request:
@@ -16,6 +16,8 @@ on:
       - "orion/evals/leased_llm.py"
       - "scripts/lane_door_report.py"
       - "tests/test_lane_door_*.py"
+      - "services/orion-llamacpp-host/docker-compose.atlas-workers.yml"
+      - "services/orion-vllm-host/docker-compose.deep.yml"
       - ".github/workflows/lane-door-tests.yml"
   push:
     branches: [main]
@@ -29,6 +31,8 @@ on:
       - "orion/evals/leased_llm.py"
       - "scripts/lane_door_report.py"
       - "tests/test_lane_door_*.py"
+      - "services/orion-llamacpp-host/docker-compose.atlas-workers.yml"
+      - "services/orion-vllm-host/docker-compose.deep.yml"
       - ".github/workflows/lane-door-tests.yml"
 
 jobs:
@@ -44,13 +48,13 @@ jobs:
         run: python -m pip install pytest httpx pyyaml
       - name: Door
         run: cd services/orion-lane-door && python -m pytest tests -q -p no:cacheprovider
-      - name: Exempt paths and key hash agree with the eval helper and the gateway; shadow report
+      - name: Exempt paths and lease header agree with the eval helper and the gateway; shadow report
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest tests/test_lane_door_exempt_parity.py tests/test_lane_door_report.py -q -p no:cacheprovider
       - name: Latency eval (local engine stand-in; generous CI budget)
         run: cd services/orion-lane-door && python evals/measure_latency.py --n 200 --budget-ms 5
-      - name: Gateway sends the door headers on both paths
+      - name: Gateway sends the lease header on both paths
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: |

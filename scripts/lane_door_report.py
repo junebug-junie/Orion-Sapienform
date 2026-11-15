@@ -1,19 +1,25 @@
 #!/usr/bin/env python3
-"""Daily lane door report: is it safe to make a lane's door refuse unkeyed calls? (read-only)
+"""Daily lane door report: is it safe to make a lane's door refuse unleased calls? (read-only)
 
 Leased-evals design, Phase 2 -> Phase 3 (docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md;
 runbook docs/runbooks/2026-11-14-lane-door.md). Reads the doors' per-call JSON lines
 (``<lane>-YYYY-MM-DD.jsonl``, one line per model call; no prompt text) and prints, per lane per UTC day:
 
-* keyed calls (the gateway's), unkeyed calls (``missing`` key) and wrong-key calls (``bad``);
-* who sent the unkeyed ones (source address + path);
-* with ``--dsn``: keyed calls whose lease id is NOT in ``gpu_pool_events`` (a key used outside a grant), and
-  the gateway's own count of calls it sent to that lane (``llm_call_usage.pool_role``), with the gap in %.
+* leased calls (carry a lease id: the gateway's), unleased calls (no lease id) and invalid ones (a lease
+  header that is not a lease id);
+* who sent the unleased and invalid ones (source address + path);
+* with ``--dsn``: leased calls whose lease id is NOT in ``gpu_pool_events`` (a made-up id: the door itself
+  cannot tell), and the gateway's own count of calls it sent to that lane (``llm_call_usage.pool_role``),
+  with the gap in %.
+
+There is no shared secret: a lease id is what marks a gateway call, and the join to ``gpu_pool_events`` is
+the check that the id is real. The door catches accidental bypass by Orion's own evals and scripts.
 
 Then a verdict per lane. READY TO ENFORCE needs, for the last ``--streak-days`` (default 7) UTC days in a
 row, each day present in the log (a missing day is unknown, never zero) with:
-  unkeyed = 0, bad = 0, keyed > 0, and with --dsn: every keyed lease id found in gpu_pool_events and the
-  keyed count within --max-gap-pct (default 1 %) of the gateway's count.
+  unleased = 0, invalid = 0, leased > 0, and with --dsn: every leased call's id found in gpu_pool_events
+  and the leased count within --max-gap-pct (default 1 %) of the gateway's count. Calls an enforcing door
+  already refused are listed, not counted against the lane (they never reached the engine).
 Without --dsn the verdict says the lease join was not run.
 
     # on athena, logs copied from circe (read-only):
@@ -40,15 +46,14 @@ from typing import Any, Iterable, Iterator, Optional
 
 @dataclass
 class Day:
-    ok: int = 0
-    missing: int = 0
-    bad: int = 0
-    unkeyed_from: Counter = field(default_factory=Counter)   # "src path" -> n
+    leased: int = 0
+    unleased: int = 0
+    invalid: int = 0
+    unleased_from: Counter = field(default_factory=Counter)  # "src method path" -> n (unleased + invalid)
     lease_ids: set = field(default_factory=set)
-    no_lease_id: int = 0                                     # keyed calls without a lease id
-    refused: int = 0                                         # Phase 3: keyless calls an enforcing door refused
+    refused: int = 0                                         # Phase 3: calls an enforcing door refused
     refused_from: Counter = field(default_factory=Counter)
-    unmatched_leases: Optional[int] = None                   # --dsn: keyed lease ids not in gpu_pool_events
+    unmatched_leases: Optional[int] = None                   # --dsn: leased ids not in gpu_pool_events
     gateway_calls: Optional[int] = None                      # --dsn: llm_call_usage rows for this lane
 
 
@@ -74,29 +79,26 @@ def aggregate(lines: Iterable[str]) -> tuple[dict[str, dict[str, Day]], int]:
             continue
         try:
             row = json.loads(raw)
-            lane, day, key = str(row["lane"]), str(row["ts"])[:10], str(row["key"])
+            lane, day, state = str(row["lane"]), str(row["ts"])[:10], str(row["lease"])
         except (ValueError, KeyError, TypeError):
             bad_lines += 1
             continue
         d = out[lane].setdefault(day, Day())
-        if key == "ok":
-            d.ok += 1
-            lease = row.get("lease_id")
-            if lease and lease != "invalid":
-                d.lease_ids.add(str(lease))
-            else:
-                d.no_lease_id += 1
-        elif row.get("refused") and key == "missing":
-            # Already refused by an enforcing door: shown, not counted against the lane. A refused WRONG
-            # key is not excused: that is what gateway key drift looks like after a flip.
+        who = f"{row.get('src', '?')} {row.get('method', '?')} {row.get('path', '?')}"
+        if row.get("refused"):
+            # Already refused by an enforcing door: never reached the engine. Shown, not counted.
             d.refused += 1
-            d.refused_from[f"{row.get('src', '?')} {row.get('method', '?')} {row.get('path', '?')}"] += 1
+            d.refused_from[who] += 1
+        elif state == "leased":
+            d.leased += 1
+            if row.get("lease_id"):
+                d.lease_ids.add(str(row["lease_id"]))
         else:
-            if key == "bad":
-                d.bad += 1
+            if state == "invalid":
+                d.invalid += 1
             else:
-                d.missing += 1
-            d.unkeyed_from[f"{row.get('src', '?')} {row.get('method', '?')} {row.get('path', '?')}"] += 1
+                d.unleased += 1
+            d.unleased_from[who] += 1
     return out, bad_lines
 
 
@@ -116,7 +118,7 @@ def join_db(report: dict[str, dict[str, Day]], dsn: str) -> None:
                     cur.execute("SELECT DISTINCT lease_id FROM gpu_pool_events WHERE lease_id = ANY(%s)",
                                 (ids[i:i + 5000],))
                     found.update(r[0] for r in cur.fetchall())
-                d.unmatched_leases = len(set(ids) - found) + d.no_lease_id
+                d.unmatched_leases = len(set(ids) - found)
                 cur.execute("SELECT count(*) FROM llm_call_usage WHERE pool_role = %s "
                             "AND created_at >= (%s::date)::timestamp AT TIME ZONE 'UTC' "
                             "AND created_at < (%s::date + 1)::timestamp AT TIME ZONE 'UTC'", (lane, day, day))
@@ -136,20 +138,20 @@ def verdict(days: dict[str, Day], *, streak_days: int, max_gap_pct: float, joine
         d = days.get(day)
         if d is None:
             return False, f"{day}: no log (door down, or not deployed yet) -- unknown is not zero"
-        if d.missing or d.bad:
-            return False, f"{day}: {d.missing} unkeyed + {d.bad} wrong-key calls"
-        if d.ok == 0:
-            return False, f"{day}: no keyed calls (nothing proves the gateway's traffic passes)"
+        if d.unleased or d.invalid:
+            return False, f"{day}: {d.unleased} unleased + {d.invalid} invalid-lease calls"
+        if d.leased == 0:
+            return False, f"{day}: no leased calls (nothing proves the gateway's traffic passes)"
         if joined:
             if d.unmatched_leases:
-                return False, f"{day}: {d.unmatched_leases} keyed calls with no matching pool lease"
+                return False, f"{day}: {d.unmatched_leases} lease ids not in gpu_pool_events (made up?)"
             if not d.gateway_calls:
-                return False, (f"{day}: door saw {d.ok} keyed calls but the gateway recorded none for pool_role "
+                return False, (f"{day}: door saw {d.leased} leased calls but the gateway recorded none for pool_role "
                                "of the same name (a lane that does not match pool_role?)")
             else:
-                gap = abs(d.ok - d.gateway_calls) * 100.0 / d.gateway_calls
+                gap = abs(d.leased - d.gateway_calls) * 100.0 / d.gateway_calls
                 if gap > max_gap_pct:
-                    return False, f"{day}: door saw {d.ok} keyed calls, gateway sent {d.gateway_calls} ({gap:.1f} % apart)"
+                    return False, f"{day}: door saw {d.leased} leased calls, gateway sent {d.gateway_calls} ({gap:.1f} % apart)"
     if not joined:
         return False, (f"{streak_days} clean days ending {end.isoformat()} in the door log, but the lease join was "
                        "not run: add --dsn (READY needs the leases found and the gateway's own count)")
@@ -178,20 +180,20 @@ def render(report: dict[str, dict[str, Day]], verdicts: dict[str, tuple[bool, st
         if not report[lane]:
             lines.append("   no log lines for this lane (door not deployed, or no traffic)")
             continue
-        head = f"   {'day':10} {'keyed':>7} {'unkeyed':>8} {'badkey':>7} {'refused':>8}"
+        head = f"   {'day':10} {'leased':>7} {'unleased':>8} {'invalid':>7} {'refused':>8}"
         if joined:
             head += f" {'no-lease':>9} {'gateway':>8} {'gap%':>6}"
         lines.append(head)
         for day in sorted(report[lane]):
             d = report[lane][day]
-            row = f"   {day:10} {d.ok:7d} {d.missing:8d} {d.bad:7d} {d.refused:8d}"
+            row = f"   {day:10} {d.leased:7d} {d.unleased:8d} {d.invalid:7d} {d.refused:8d}"
             if joined:
-                gap = (f"{abs(d.ok - d.gateway_calls) * 100.0 / d.gateway_calls:6.1f}"
+                gap = (f"{abs(d.leased - d.gateway_calls) * 100.0 / d.gateway_calls:6.1f}"
                        if d.gateway_calls else "     -")
                 row += f" {d.unmatched_leases or 0:9d} {d.gateway_calls if d.gateway_calls is not None else '-':>8} {gap}"
             lines.append(row)
-            for who, n in d.unkeyed_from.most_common(5):
-                lines.append(f"      unkeyed x{n}: {who}")
+            for who, n in d.unleased_from.most_common(5):
+                lines.append(f"      unleased x{n}: {who}")
             for who, n in d.refused_from.most_common(3):
                 lines.append(f"      refused x{n}: {who}")
     return "\n".join(lines)
@@ -226,7 +228,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                 for lane, days in report.items()}
     if args.json:
         print(json.dumps({"lanes": {lane: {"ready": verdicts[lane][0], "why": verdicts[lane][1], "days": {
-            day: {"keyed": d.ok, "unkeyed": d.missing, "bad_key": d.bad, "refused": d.refused, "unkeyed_from": dict(d.unkeyed_from),
+            day: {"leased": d.leased, "unleased": d.unleased, "invalid": d.invalid, "refused": d.refused,
+                  "unleased_from": dict(d.unleased_from),
                   "refused_from": dict(d.refused_from),
                   "unmatched_leases": d.unmatched_leases, "gateway_calls": d.gateway_calls}
             for day, d in sorted(days.items())}} for lane, days in report.items()},

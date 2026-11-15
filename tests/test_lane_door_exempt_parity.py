@@ -1,9 +1,8 @@
 """The lane door, the eval helper and the gateway agree (leased-evals Phase 2):
 
-* what the door lets through without a key (no-model reads) is exactly what an eval may read from the
+* what the door lets through without a lease id (no-model reads) is exactly what an eval may read from the
   granted URL (orion/evals/leased_llm.py WORKER_READ_*), so a leased probe never trips the door;
-* the door and the gateway hash the key the same way, so the gateway's key check means something;
-* the header names match on both sides."""
+* the lease header name matches on both sides, and no shared-secret header is left on either."""
 from __future__ import annotations
 
 import importlib.util
@@ -50,16 +49,13 @@ def test_the_door_exempts_exactly_the_reads_an_eval_may_make():
     assert not (door.EXEMPT_GET_PATHS | door.EXEMPT_POST_PATHS) & leased_llm.INFERENCE_PATHS
 
 
-def test_door_and_gateway_hash_the_key_the_same_way_and_name_the_same_headers():
+def test_door_and_gateway_name_the_same_lease_header_and_no_key():
     door, door_settings = _door()
     src = (REPO / "services" / "orion-llm-gateway" / "app" / "lane_door.py").read_text()
-    # The gateway module imports its pydantic settings; compare its hash function by executing just it.
-    ns: dict = {}
-    exec("import hashlib\n" + src[src.index("def key_hash"):src.index("def _key")], ns)  # noqa: S102
-    for key in ("", "a", "k" * 64):
-        assert ns["key_hash"](key) == door_settings.key_hash(key)
-    assert 'KEY_HEADER = "X-Orion-Lane-Key"' in src and door.KEY_HEADER == b"x-orion-lane-key"
     assert 'LEASE_HEADER = "X-Orion-Lease-Id"' in src and door.LEASE_HEADER == b"x-orion-lease-id"
+    # Kill means kill: the shared secret is gone from both sides.
+    assert "Lane-Key" not in src and not hasattr(door, "KEY_HEADER")
+    assert not hasattr(door_settings, "key_hash")
 
 
 def test_every_path_the_pool_and_the_lane_controller_read_is_exempt():

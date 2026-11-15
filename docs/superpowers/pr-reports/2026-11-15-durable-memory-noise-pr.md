@@ -160,6 +160,6 @@ Run from the clean primary `main` checkout after merge. Then check the next chat
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3489
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

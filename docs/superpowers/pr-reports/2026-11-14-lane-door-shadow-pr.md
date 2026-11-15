@@ -150,6 +150,10 @@ A code-review subagent reviewed the door commits. No blocker on the gateway-to-e
   - Evidence: `test_a_truncated_request_body_is_the_callers_fault_not_the_engines`.
 - Finding: the parity test collided with the gateway's `app` package in one pytest session.
   - Fix: evict `app*` before and after the import. The combined run passes (706).
+- Finding (from the part 3 review): the pool's vLLM probe path `/orion/server-info` was not exempt, so
+  agent-deep would log an unkeyed call every probe tick and never read READY.
+  - Fix: exempt (door + eval helper lists); a test pins every pool probe and launch ready path.
+  - Evidence: `test_every_path_the_pool_and_the_lane_controller_read_is_exempt`.
 - Nits fixed: 30 s head timeout (`test_a_silent_caller_is_dropped_after_the_head_timeout`); both sides
   keyless reads `unkeyed`, not `mismatch`; per-lane `LANE_DOOR_MODE_*` keys in `.env_example`; the key
   goes to circe over ssh stdin, never on a command line, and the step stops if the gateway's `.env` lacks

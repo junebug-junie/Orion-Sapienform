@@ -69,7 +69,7 @@ organs:
     # producer change), so against its 30-day history every ordinary scene read >= 0.9 (88% live, 11-15).
     salience_magnitude:
       office_session: visit_seconds
-    families: [vision.council, perception, perception.office, orion.look, vision.ask]
+    families: [vision.council, perception, perception.office, orion.look, orion.look_check, vision.ask]
     reads_now: null
     exempt_read: "not yet migrated: the cameras' look acts read the now in integration patch 7"
   body:

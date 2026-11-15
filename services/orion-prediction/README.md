@@ -310,7 +310,7 @@ error and `prob_better` -- no alpha. Table `prediction_reachable_forecast`. Flag
 Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): 26 % lower loss than base overall
 (P 0.95), tied with the state model; cold hours about level with base (P 0.25); somewhat timid at the top.
 
-## Act chain: what will Orion do in the next 15 minutes? (family B, eval only)
+## Act chain: what will Orion do in the next 15 minutes? (`GET /act-chain`, family B)
 
 `app/act_chain.py`; spec `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`,
 "B. Markov chains". Each 15-minute bucket's state is the main verb of Orion's acts in it
@@ -320,7 +320,14 @@ level backs off to the coarser one with a strength chosen from training data by 
 per local day against the marginal, the clock hour and the clock block, as a loss gap, its standard
 error and `prob_better` (no alpha). Surprise = -log P(observed state); excess surprise = surprise minus
 the forecast's entropy, which is 0 on average when the forecast is calibrated. A replay sees only the
-rows that had landed (`created_at`) at each origin. No table, endpoint, bus event or consumer yet.
+rows that had landed (`created_at`) at each origin.
+
+Live: one forecast per bucket, issued in its first 3 min from rows landed before it, settled 20 min
+after it ends (late rows never count, however late the settle runs). Table
+`prediction_act_chain_forecast` (every model's distribution, the served model's surprise and excess;
+raw rows kept). `GET /act-chain`: the current forecast, issuance coverage, and the 14-day live grade in
+the replay's shape. Flag `PREDICTION_ACT_CHAIN_ENABLED`. No bus event, node or consumer: the asleep
+block reads overconfident in replay (#3344), so nothing reads this until that is explained.
 
 Replay 10-29..11-13 (`evals/run_act_chain_replay_eval.py`, 1,423 buckets, 16 days): served loss 1.793
 nats vs 1.800 for the clock hour (gap -0.042/day ± 0.071, P 0.72) and 1.859 for the marginal

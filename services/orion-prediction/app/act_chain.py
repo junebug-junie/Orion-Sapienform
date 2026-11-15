@@ -2,7 +2,9 @@
 
 Spec: docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, "B. Markov chains"
 (act-after-act sequences; the honest replacement for the retired ``route`` signal and the bus signal's
-"service rhythm"). Measurement and eval only: no table, node, bus event or consumer yet.
+"service rhythm"). Live: ``ActChain`` issues one forecast per bucket and settles it (table
+``prediction_act_chain_forecast``, ``GET /act-chain``). No node, bus event or consumer yet (#3344: the
+asleep block reads overconfident in replay; nothing reads this until that is explained).
 
 The stream is Orion's own acts, ``grammar_acts`` (written by orion-sql-writer through
 ``orion/grammar/act_ledger.py`` from every ``act_opened`` event). Time is cut into 15-minute buckets.
@@ -45,7 +47,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Sequence, get_args
+from typing import Any, Iterable, Sequence, get_args
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -320,3 +322,68 @@ def verdict(rows: Iterable[dict]) -> dict:
     out["calibration"] = calibration(rows) if rows else None
     out["rest"] = rest_check(rows) if rows else None
     return out
+
+
+# --- live: issue at each bucket start, settle after the grace ------------------------------------
+ISSUE_SLACK = timedelta(minutes=3)    # a forecast is issued only in the first 3 min of its bucket
+VERDICT_DAYS = 14
+
+
+def observe(acts: Sequence[tuple[datetime, datetime, str]], origin: datetime) -> tuple[str, int]:
+    """(final state, acts counted) of the bucket at ``origin``: acts opened in it that landed by its end +
+    SETTLE_GRACE, whenever the settle runs. Same rule as the replay's ``final`` view."""
+    b0 = _ns(bucket_floor(origin))
+    st = bucket_states(acts, b0, 1, np.array([b0 + _G + _GRACE], dtype=np.int64))
+    n = sum(1 for o, c, v in acts if v in _IDX and o is not None and c is not None
+            and b0 <= _ns(o) < b0 + _G and _ns(c) <= b0 + _G + _GRACE)
+    return STATES[int(st[0])], n
+
+
+def _row_for_verdict(r: dict) -> dict:
+    """A stored settled row in the shape ``verdict`` grades (probs as arrays in STATES order)."""
+    probs = {m: np.array([float(d.get(s, 0.0)) for s in STATES]) for m, d in r["probs"].items()}
+    obs = _IDX[r["observed"]]
+    row = {"origin": r["origin"], "block": r["block"], "probs": probs, "observed": r["observed"], "observed_i": obs}
+    return {**row, "scores": score(row, obs)}
+
+
+class ActChain:
+    """Issues the 15-min forecast and settles past ones. Store: app/store.py (act chain section)."""
+
+    def __init__(self, store: Any):
+        self.store = store
+        self.last_pass: dict = {}
+
+    def tick(self, now: datetime | None = None) -> dict:
+        now = now or datetime.now(timezone.utc)
+        origin = bucket_floor(now)
+        issued = None
+        if now - origin <= ISSUE_SLACK and not self.store.act_chain_exists(origin):
+            # opened before the origin only; forecast() further drops rows landed after each cutoff
+            f = forecast(self.store.grammar_acts(origin - LOOKBACK - GRAIN, origin), origin)
+            row = {"forecast_id": f"act_chain:{origin.strftime('%Y-%m-%dT%H:%M')}", "origin": origin,
+                   "window_end": origin + GRAIN, "issued_at": now, "model": MODEL, "served": MODEL,
+                   "prev_state": f["prev_state"], "block": f["block"], "n_train": f["n_train"],
+                   "k": {m: float(v) for m, v in f["k"].items()}, "probs": f["probs"]}
+            issued = self.store.insert_act_chain(row)
+        settled = 0
+        for r in self.store.pending_act_chain(now - SETTLE_GRACE):
+            state, n = observe(self.store.grammar_acts(r["origin"], r["window_end"]), r["origin"])
+            p = float(r["probs"][r["served"]][state])
+            ent = float(-sum(q * np.log(q) for q in r["probs"][r["served"]].values() if q > 0))
+            settled += self.store.settle_act_chain(r["forecast_id"], state, n, -np.log(p), -np.log(p) - ent, now)
+        self.last_pass = {"at": now, "issued": issued, "settled": settled}
+        return self.last_pass
+
+    def live(self, now: datetime | None = None) -> dict:
+        now = now or datetime.now(timezone.utc)
+        since = now - timedelta(days=VERDICT_DAYS)
+        rows = self.store.act_chain_rows(since, settled_only=False)
+        settled = [r for r in rows if r["settled_at"] is not None]
+        current = max(rows, key=lambda r: r["origin"]) if rows else None
+        lag = [(r["issued_at"] - r["origin"]).total_seconds() for r in rows]
+        expected = int((bucket_floor(now) - bucket_floor(min((r["origin"] for r in rows), default=now))) / GRAIN) + 1
+        return {"model": MODEL, "baselines": list(BASELINES), "current": current, "window_days": VERDICT_DAYS,
+                "issuance": {"issued": len(rows), "buckets_since_first": expected,
+                             "issue_lag_sec_max": max(lag) if lag else None},
+                "grade": verdict([_row_for_verdict(r) for r in settled])}

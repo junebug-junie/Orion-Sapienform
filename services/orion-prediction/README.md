@@ -478,8 +478,11 @@ same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
   medians are not a monotone drift (a decay-to-zero fails); not a duplicate of an earlier input (|corr|
   > 0.999). Resting on its floor > 50 % of the time = event-like = input only, never a target. Missing is
   NaN plus a mask channel, never 0.0. Standardisation from training rows only, kept in the manifest. At
-  scoring time (windows < 7 days) every named input must be present, not stuck, inside its training band
-  and fresh (30 min), or the run refuses.
+  scoring time (windows < 7 days) every named input must be present, inside its training band and fresh
+  (30 min), or the bucket refuses. The degeneracy checks (one value, few distinct, event-like) run only at
+  select time over 14 days, never per bucket: a reading resting flat at its floor for a day (office PM2.5
+  at 0 in clean air) is calm, not broken. A reading resting at its training minimum is in regime even
+  when that minimum sits below the band.
 - **Rungs**: persistence; per-series AR (ridge on the last 6 buckets); `ridge_var` = the AR forecast plus
   a ridge on lags 0-12 of every input + masks + time of day (so at a large penalty it is AR, and it can
   only win by what the other readings add). Backtest: the repo's `block_purged_temporal_split`
@@ -547,6 +550,7 @@ POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_node_replay_eval.p
 OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 2 [--out <dir>]  # family A gate + rungs + static vs adaptive joint surprise (read-only, ~75 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --hours 168      # family A calm check on stored joint rows (PASS needs 7 days)
 OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --replay-hours 24  # dry run of the live loop in memory (read-only, ~4 min)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_gate_replay_eval.py --hours 24 [--compare-module /tmp/fa_old.py]  # per-bucket gate replay vs stored refusals; FAIL on any degeneracy refusal (read-only, ~10 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14   # adaptive ranges replayed (read-only, ~6 min)
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]

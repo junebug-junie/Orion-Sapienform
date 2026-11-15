@@ -136,6 +136,6 @@ Live check after both are up: `docker exec orion-mind python3 -c "import urllib.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3440
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

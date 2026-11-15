@@ -989,6 +989,12 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
 }
 
 
+# Orion's now: kinds that are experiences only (no arc folds them), and the tables their events name.
+# A row of these tables is never arc evidence (orion-sql-writer act_downstream_use ARC_SOURCE_TABLES).
+EXPERIENCE_ONLY_KINDS = frozenset({"reading_turn", "prediction_surprise", "prime_thought"})
+EXPERIENCE_ONLY_TABLES = frozenset({"grammar_acts", "prediction_exceedance"})
+
+
 def adapt(kind: str, rows: Iterable[Row], tz_name: str = DEFAULT_TZ) -> list[TemporalSelfEventV1]:
     out = [ADAPTERS[kind](r, tz_name) for r in rows]
     return [e for e in out if e is not None]

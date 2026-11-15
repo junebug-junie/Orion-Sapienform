@@ -61,8 +61,16 @@ def test_registry_refuses_a_kind_claimed_twice_an_unknown_kind_and_an_unknown_ru
 
 
 def test_new_kinds_never_fold_into_an_arc():
-    for k in ("reading_turn", "prediction_surprise", "prime_thought"):
+    assert S.EXPERIENCE_ONLY_KINDS == {"reading_turn", "prediction_surprise", "prime_thought"}
+    for k in S.EXPERIENCE_ONLY_KINDS:
         assert k not in PROCESS_KINDS and k not in CONTEXT_KINDS and k not in CONSTRAINT_KINDS
+
+
+def test_experience_only_tables_are_exactly_the_new_kinds_tables():
+    base = {"act_id": "act_" + "c" * 24, "opened_at": T, "closed_at": T + timedelta(seconds=5), "object_ref": "x",
+            "exceedance_id": 1, "scored_at": T, "hit_raw": False, "probability": 0.1, "n_paths": 40}
+    tables = {S.ADAPTERS[k](base).source_table for k in S.EXPERIENCE_ONLY_KINDS}
+    assert tables == S.EXPERIENCE_ONLY_TABLES
 
 
 def test_now_models_are_registered():

@@ -36,7 +36,7 @@ from .llm_backend import (
 )
 from .anthropic_passthrough import register_anthropic_passthrough_routes
 from .openai_passthrough import register_openai_passthrough_routes
-from . import call_usage_emit, grammar_emit, lane_senders, pool_placement, routes_compat_reads, upstream_cancel
+from . import call_usage_emit, grammar_emit, lane_door, lane_senders, pool_placement, routes_compat_reads, upstream_cancel
 from .embed_publish import publish_assistant_embedding
 from .models import ChatBody
 from .resource_lease import ResourceLeaseRejected, gpu_lease_from_options
@@ -78,6 +78,7 @@ async def health() -> Dict[str, Any]:
         "service": settings.service_name,
         "node": settings.node_name,
         "routes": routes,
+        "lane_doors": lane_door.status(),
     }
 
 
@@ -340,7 +341,8 @@ async def _run_on_grant(plan: ChatDispatchPlan, lease: Lease, read_timeout_s: fl
                                  model=pool_placement.granted_model(grant), served_by=grant.served_by),
     )
     loop = asyncio.get_running_loop()
-    handle = upstream_cancel.UpstreamCancel()
+    handle = upstream_cancel.UpstreamCancel(lease_id=lease.lease_id)
+    lane_door.observe_grant(grant.url)
     future = loop.run_in_executor(pool_placement.executor_for(grant.url), upstream_cancel.run_cancellable,
                                   handle, run_llm_chat, run_body, run_plan)
     watch = asyncio.ensure_future(pool_placement.wait_lease_revoked(lease))

@@ -1,0 +1,81 @@
+# Lane doors (leased-evals design Phase 2; runbook docs/runbooks/2026-11-14-lane-door.md).
+# One door per model server. Each publishes the lane's port and forwards to the engine on app-net.
+# circe: `--profile circe up -d`. hecate: `--profile hecate up -d`.
+x-door: &door
+  logging:
+    driver: journald
+    options:
+      tag: "{{.Name}}"
+  build:
+    context: ../..
+    dockerfile: services/orion-lane-door/Dockerfile
+  image: orion-lane-door:0.1.0
+  restart: unless-stopped
+  env_file:
+    - .env
+  volumes:
+    - "${LANE_DOOR_LOG_HOST_DIR:-/mnt/telemetry/lane-door}:/var/log/lane-door"
+  networks:
+    - app-net
+
+services:
+  lane-door-chat:
+    <<: *door
+    profiles: ["circe"]
+    container_name: ${PROJECT:-orion}-lane-door-chat
+    environment:
+      - LANE_DOOR_LANE=chat
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_CHAT_UPSTREAM:-orion-atlas-strata-chat:8080}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_CHAT:-${LANE_DOOR_MODE:-shadow}}
+    ports:
+      - "${LANE_DOOR_CHAT_PORT:-8011}:8080"
+
+  lane-door-agent:
+    <<: *door
+    profiles: ["circe"]
+    container_name: ${PROJECT:-orion}-lane-door-agent
+    environment:
+      - LANE_DOOR_LANE=agent
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_AGENT_UPSTREAM:-orion-atlas-strata-agent:8080}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_AGENT:-${LANE_DOOR_MODE:-shadow}}
+    ports:
+      - "${LANE_DOOR_AGENT_PORT:-8015}:8080"
+
+  # agent-gpu2's engine comes and goes (the lane controller swaps it); the door stays up. While the
+  # engine is absent the door answers 502, so the pool sees the seat down, as it would without a door.
+  lane-door-agent-gpu2:
+    <<: *door
+    profiles: ["circe"]
+    container_name: ${PROJECT:-orion}-lane-door-agent-gpu2
+    environment:
+      - LANE_DOOR_LANE=agent-gpu2
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_AGENT_GPU2_UPSTREAM:-orion-atlas-llamacpp-agent-burst:8080}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_AGENT_GPU2:-${LANE_DOOR_MODE:-shadow}}
+    ports:
+      - "${LANE_DOOR_AGENT_GPU2_PORT:-8016}:8080"
+
+  lane-door-fast:
+    <<: *door
+    profiles: ["circe"]
+    container_name: ${PROJECT:-orion}-lane-door-fast
+    environment:
+      - LANE_DOOR_LANE=fast
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_FAST_UPSTREAM:-orion-atlas-llamacpp-fast:8080}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_FAST:-${LANE_DOOR_MODE:-shadow}}
+    ports:
+      - "${LANE_DOOR_FAST_PORT:-8013}:8080"
+
+  lane-door-agent-deep:
+    <<: *door
+    profiles: ["hecate"]
+    container_name: ${PROJECT:-orion}-lane-door-agent-deep
+    environment:
+      - LANE_DOOR_LANE=agent-deep
+      - LANE_DOOR_UPSTREAM=${LANE_DOOR_AGENT_DEEP_UPSTREAM:-orion-hecate-vllm-host:8000}
+      - LANE_DOOR_MODE=${LANE_DOOR_MODE_AGENT_DEEP:-${LANE_DOOR_MODE:-shadow}}
+    ports:
+      - "${LANE_DOOR_AGENT_DEEP_PORT:-8021}:8080"
+
+networks:
+  app-net:
+    external: true

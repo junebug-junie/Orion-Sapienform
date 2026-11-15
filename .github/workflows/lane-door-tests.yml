@@ -1,0 +1,58 @@
+name: lane door tests
+
+# Lane door (leased-evals Phase 2, services/orion-lane-door): the proxy against a real socket engine
+# stand-in, the exempt-path and key-hash parity with the eval helper and the gateway, the gateway's
+# door headers, the shadow report, and the latency eval. Nothing here talks to a real engine.
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-lane-door/**"
+      - "services/orion-llm-gateway/app/lane_door.py"
+      - "services/orion-llm-gateway/app/passthrough_proxy.py"
+      - "services/orion-llm-gateway/app/llm_backend.py"
+      - "services/orion-llm-gateway/app/upstream_cancel.py"
+      - "services/orion-llm-gateway/tests/test_lane_door_headers.py"
+      - "orion/evals/leased_llm.py"
+      - "scripts/lane_door_report.py"
+      - "tests/test_lane_door_*.py"
+      - ".github/workflows/lane-door-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-lane-door/**"
+      - "services/orion-llm-gateway/app/lane_door.py"
+      - "services/orion-llm-gateway/app/passthrough_proxy.py"
+      - "services/orion-llm-gateway/app/llm_backend.py"
+      - "services/orion-llm-gateway/app/upstream_cancel.py"
+      - "services/orion-llm-gateway/tests/test_lane_door_headers.py"
+      - "orion/evals/leased_llm.py"
+      - "scripts/lane_door_report.py"
+      - "tests/test_lane_door_*.py"
+      - ".github/workflows/lane-door-tests.yml"
+
+jobs:
+  lane-door:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install (the door itself needs nothing; tests need pytest + httpx)
+        run: python -m pip install pytest httpx
+      - name: Door
+        run: cd services/orion-lane-door && python -m pytest tests -q -p no:cacheprovider
+      - name: Exempt paths and key hash agree with the eval helper and the gateway; shadow report
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest tests/test_lane_door_exempt_parity.py tests/test_lane_door_report.py -q -p no:cacheprovider
+      - name: Latency eval (local engine stand-in; generous CI budget)
+        run: cd services/orion-lane-door && python evals/measure_latency.py --n 200 --budget-ms 5
+      - name: Gateway sends the door headers on both paths
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pip install -r services/orion-llm-gateway/requirements.txt -r requirements-dev.txt
+          python -m pytest services/orion-llm-gateway/tests/test_lane_door_headers.py -q -p no:cacheprovider

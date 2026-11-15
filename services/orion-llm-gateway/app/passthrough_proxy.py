@@ -33,7 +33,7 @@ from orion.gpu_pool.value_order import is_operator_class
 from orion.llm.call_usage import STREAM_HEAD_BYTES
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 
-from . import call_usage_emit, grammar_emit
+from . import call_usage_emit, grammar_emit, lane_door
 from .ctx_overflow import is_context_overflow
 from .fast_thinking import GPU3_WORK_CLASSES, with_gpu3_route_defaults
 from .pool_placement import (
@@ -374,6 +374,9 @@ async def proxy_on_pool(
 
         may_release = overflow_response is None and not clamped and hold is None
         upstream_url = f"{lease.grant.url.rstrip('/')}{path}"
+        # The lane door in front of the server: the key and THIS lease (a child's own id under a hold).
+        upstream_headers = {**headers, **lane_door.headers(lease.lease_id)}
+        lane_door.observe_grant(lease.grant.url)
         if on_dispatch is not None:
             on_dispatch(upstream_url, lease.grant.served_by, stream)
         watch = asyncio.ensure_future(wait_lease_revoked(lease))
@@ -401,7 +404,8 @@ async def proxy_on_pool(
             if stream:
                 client = httpx.AsyncClient(timeout=timeout)
                 try:
-                    upstream_request = client.build_request("POST", upstream_url, headers=headers, json=dispatch_body)
+                    upstream_request = client.build_request("POST", upstream_url, headers=upstream_headers,
+                                                          json=dispatch_body)
                     upstream = await _race_response(client.send(upstream_request, stream=True), watch, request)
                 except BaseException:
                     await client.aclose()
@@ -486,7 +490,8 @@ async def proxy_on_pool(
                 return streaming
 
             async with httpx.AsyncClient(timeout=timeout) as client:
-                upstream = await _race_response(client.post(upstream_url, headers=headers, json=dispatch_body), watch, request)
+                upstream = await _race_response(client.post(upstream_url, headers=upstream_headers, json=dispatch_body),
+                                                watch, request)
             report.clock.replied()
             response = _plain_response(upstream.content, upstream)
             if upstream.status_code >= 400:

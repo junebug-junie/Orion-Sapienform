@@ -335,3 +335,78 @@ def test_the_host_header_can_be_set_for_an_engine_that_needs_it(tmp_path):
         return engine
 
     assert run(go()).seen[0]["headers"]["host"] == "127.0.0.1:8080"
+
+
+class InterimEngine(Engine):
+    """Answers every request with an interim 100 Continue head before the real reply (llama.cpp does when
+    a caller sends Expect: 100-continue)."""
+
+    async def handle(self, reader, writer):
+        raw = await reader.readuntil(b"\r\n\r\n")
+        headers = {k.lower(): v.strip() for k, _, v in (l.partition(":") for l in raw.decode().split("\r\n")[1:] if l)}
+        self.seen.append({"headers": headers})
+        writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+        body = await reader.readexactly(int(headers.get("content-length", "0")))
+        data = json.dumps({"n": len(body)}).encode()
+        writer.write(b"HTTP/1.1 200 OK\r\nContent-Length: " + str(len(data)).encode() + b"\r\n\r\n" + data)
+        await writer.drain()
+        writer.close()
+
+
+def test_expect_100_continue_gets_the_final_reply_not_just_the_interim_one(tmp_path):
+    """Review finding: an interim 1xx ended the exchange; curl sends Expect on large POST bodies."""
+    async def go():
+        engine = InterimEngine()
+        door, server, port = await _door(tmp_path, await engine.start())
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nExpect: 100-continue\r\n"
+                     b"X-Orion-Lane-Key: " + KEY.encode() + b"\r\n\r\n")
+        await writer.drain()
+        first = await reader.readuntil(b"\r\n\r\n")
+        writer.write(b"{}")
+        await writer.drain()
+        rest = await reader.read()
+        server.close()
+        return engine, first, rest
+
+    engine, first, rest = run(go())
+    assert first == b"HTTP/1.1 100 Continue\r\n\r\n"           # the door's own
+    assert rest.startswith(b"HTTP/1.1 200 OK") and rest.endswith(b'{"n": 2}')
+    assert "expect" not in engine.seen[0]["headers"]
+    assert _rows(tmp_path)[0]["status"] == 200
+
+
+def test_a_truncated_request_body_is_the_callers_fault_not_the_engines(tmp_path):
+    async def go():
+        engine = Engine()
+        door, server, port = await _door(tmp_path, await engine.start())
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\n{}")
+        await writer.drain()
+        writer.close()
+        await asyncio.sleep(0.3)
+        server.close()
+        return door
+
+    door = run(go())
+    (row,) = _rows(tmp_path)
+    assert row["status"] in (400, 499) and door.stats.upstream_errors == 0
+
+
+def test_a_silent_caller_is_dropped_after_the_head_timeout(tmp_path, monkeypatch):
+    import app.door as door_mod
+
+    monkeypatch.setattr(door_mod, "HEAD_TIMEOUT_SEC", 0.2)
+
+    async def go():
+        engine = Engine()
+        door, server, port = await _door(tmp_path, await engine.start())
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"POST /v1/chat")
+        await writer.drain()
+        data = await asyncio.wait_for(reader.read(), 3.0)
+        server.close()
+        return door, data
+
+    door, data = run(go())
+    assert data.startswith(b"HTTP/1.1 400") and door.stats.bad_requests == 1

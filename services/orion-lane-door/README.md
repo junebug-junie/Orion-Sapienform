@@ -24,6 +24,13 @@ Runbook (deploy, check, roll back): `docs/runbooks/2026-11-14-lane-door.md`.
 - It asks the GPU pool nothing per call. A pool lookup would sit on the chat path. The lease ids in the
   log are joined to `gpu_pool_events` later, by `scripts/lane_door_report.py`.
 
+- `Expect: 100-continue` is answered by the door itself; an engine's interim 1xx is never relayed as the
+  reply. A caller that sends no complete request head in 30 s is dropped.
+- A caller on circe's own host reaches the door through docker's proxy and shows as the bridge gateway
+  address (172.x.0.1), not its real address.
+- When the engine is down the door answers 502 `lane_door_upstream_unreachable`. The gateway counts that
+  as an upstream HTTP error, where without a door it saw a connect error (telemetry only; nothing keys on it).
+
 Modes (`LANE_DOOR_MODE`, per lane `LANE_DOOR_MODE_<LANE>`): `off` (pure pass-through, nothing counted),
 `shadow` (count and log, refuse nothing).
 

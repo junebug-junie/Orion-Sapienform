@@ -125,7 +125,11 @@ Metric gate (CLAUDE.md 0A), short:
 3. **Replay gate before 4b ships** (live, 30 days, Orion-made asks, with 4a's value and 4b's rule):
    - at least 70% of vehicle asks held to the window end;
    - at most 10% of confirm and same-person asks held at all;
-   - answered asks per day fall by at most 10%.
+   - answered asks per day fall by at most 10%;
+   - (issue #3364) the replay re-decides every live 4b bid and matches each one (`replay_reproduces_live_bids`). The first
+     gate passed while the live market funded every vehicle ask: the replay ranked against its own bids, the market
+     against `want_ledger`, which still held 120 ungraded shadow-era events. Since #3364 a want ranks only against past
+     events decided with the same grading, and the replay reads the market's ledger through the market's 300 s snapshot.
 4. **4b live week:** `want_ledger` rows for `orion-sql-writer.ask_events.binding`; Juniper-made cards have no want; held-to-cooldown count per rule; answered asks per day within 10% of the week before.
 5. **Off switch:** `shadow` restores today's behaviour (open first, shadow want after).
 

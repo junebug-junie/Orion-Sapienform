@@ -62,6 +62,13 @@ class BadRequest(Exception):
     pass
 
 
+class ClientFailed(Exception):
+    """The caller's side failed while the door read its request (truncated body, hang-up mid-upload)."""
+
+
+HEAD_TIMEOUT_SEC = 30.0   # a caller that sends no complete request head in this long is dropped
+
+
 def is_exempt(method: str, path: str) -> bool:
     return ((method in ("GET", "HEAD") and path in EXEMPT_GET_PATHS)
             or (method == "POST" and path in EXEMPT_POST_PATHS))
@@ -272,10 +279,10 @@ class Door:
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, started: float,
                       source: str) -> None:
         try:
-            raw = await reader.readuntil(b"\r\n\r\n")
+            raw = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), HEAD_TIMEOUT_SEC)
             head = parse_head(raw[:-4])
             method_b, target_b, version = head.start.split(b" ", 2)
-        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, BadRequest, ValueError):
+        except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError, BadRequest, ValueError):
             self.stats.bad_requests += 1
             with contextlib.suppress(Exception):
                 writer.write(_json_response(400, "Bad Request", {"error": {"type": "lane_door_bad_request"}}))
@@ -294,13 +301,17 @@ class Door:
         lease = (head.get(LEASE_HEADER) or b"").decode("latin-1")
         lease_id = lease if _LEASE_RE.match(lease) else ("invalid" if lease else None)
 
-        headers = head.without(KEY_HEADER, LEASE_HEADER, *_HOP)
+        # Expect: 100-continue is answered by the door itself (below), never forwarded: an interim 1xx from
+        # the engine would otherwise have to be relayed as a second head on the same reply.
+        expect_continue = b"100-continue" in (head.get(b"expect") or b"").lower()
+        headers = head.without(KEY_HEADER, LEASE_HEADER, b"expect", *_HOP)
         if self.s.upstream_host_header:
             headers = [(k, v) for k, v in headers if k.lower() != b"host"]
             headers.insert(0, (b"Host", self.s.upstream_host_header.encode("latin-1")))
         headers.append((b"Connection", b"close"))
 
-        status, err = await self._forward(reader, writer, Head(head.start, headers), version)
+        status, err = await self._forward(reader, writer, Head(head.start, headers), version,
+                                          expect_continue=expect_continue)
         if self.s.mode == "off":
             return
         if exempt:
@@ -318,7 +329,7 @@ class Door:
             print("lane_door_unkeyed " + json.dumps(row, separators=(",", ":")), flush=True)
 
     async def _forward(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, head: Head,
-                       version: bytes) -> tuple[int, Optional[str]]:
+                       version: bytes, expect_continue: bool = False) -> tuple[int, Optional[str]]:
         """Relay the request to the engine and its reply back. Returns (status, error)."""
         try:
             up_r, up_w = await asyncio.wait_for(
@@ -337,16 +348,26 @@ class Door:
 
         async def exchange() -> int:
             up_w.write(render_head(head.start, head.headers))
-            await relay_body(reader, up_w, head, until_eof=False)
-            await up_w.drain()
-            # The client has sent its whole request. From here, EOF on its side means it hung up.
-            watch = asyncio.ensure_future(reader.read(1))
-            watch.add_done_callback(lambda f: client_gone.set() if not f.cancelled()
-                                    and f.exception() is None and f.result() == b"" else None)
+            if expect_continue:
+                writer.write(b"HTTP/1.1 100 Continue\r\n\r\n")
+                await writer.drain()
             try:
-                raw = await up_r.readuntil(b"\r\n\r\n")
-                rhead = parse_head(raw[:-4])
-                status = _status_of(rhead.start)
+                await relay_body(reader, up_w, head, until_eof=False)
+            except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, BadRequest) as exc:
+                raise ClientFailed(type(exc).__name__) from exc
+            await up_w.drain()
+            # The client has sent its whole request. From here, EOF or an error on its side means it hung
+            # up (a reset as much as a clean close); pipelined bytes are ignored (one request per connection).
+            watch = asyncio.ensure_future(reader.read(1))
+            watch.add_done_callback(lambda f: client_gone.set() if not f.cancelled() and (
+                f.exception() is not None or f.result() == b"") else None)
+            try:
+                while True:
+                    raw = await up_r.readuntil(b"\r\n\r\n")
+                    rhead = parse_head(raw[:-4])
+                    status = _status_of(rhead.start)
+                    if not (100 <= status < 200) or status == 101:
+                        break   # an interim 1xx from the engine is dropped; the caller gets the final reply
                 writer.write(render_head(rhead.start, rhead.without(*_HOP) + [(b"Connection", b"close")]))
                 await writer.drain()
                 if head.start.split(b" ", 1)[0].upper() != b"HEAD" and status not in (204, 304) \
@@ -367,6 +388,9 @@ class Door:
                 return 499, "client_gone"
             try:
                 return task.result(), None
+            except ClientFailed as exc:
+                self.stats.bad_requests += 1
+                return 400, f"client_request_incomplete:{exc}"
             except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, BadRequest, OSError) as exc:
                 if client_gone.is_set() or writer.is_closing():
                     return 499, "client_gone"   # a write to a client that left, not an engine fault

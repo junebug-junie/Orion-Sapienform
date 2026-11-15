@@ -70,3 +70,8 @@ orion-office-env
 # stream. A running edge would publish a second cam0 frame stream (640x480 substream)
 # on orion:vision:frames, so the rebuild and bring-up sweeps must not start it.
 orion-vision-edge
+
+# orion-lane-door (leased-evals Phase 2, 2026-11-14) runs on circe and hecate only, deployed by hand per
+# docs/runbooks/2026-11-14-lane-door.md: starting a door must happen together with moving its engine to
+# loopback, so it is also NOT in include_services_circe.txt (no automatic rebuild anywhere).
+orion-lane-door

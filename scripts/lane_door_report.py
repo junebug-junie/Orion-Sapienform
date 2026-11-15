@@ -111,7 +111,8 @@ def join_db(report: dict[str, dict[str, Day]], dsn: str) -> None:
                     found.update(r[0] for r in cur.fetchall())
                 d.unmatched_leases = len(set(ids) - found) + d.no_lease_id
                 cur.execute("SELECT count(*) FROM llm_call_usage WHERE pool_role = %s "
-                            "AND created_at >= %s::date AND created_at < %s::date + 1", (lane, day, day))
+                            "AND created_at >= (%s::date)::timestamp AT TIME ZONE 'UTC' "
+                            "AND created_at < (%s::date + 1)::timestamp AT TIME ZONE 'UTC'", (lane, day, day))
                 d.gateway_calls = int(cur.fetchone()[0])
 
 
@@ -135,12 +136,17 @@ def verdict(days: dict[str, Day], *, streak_days: int, max_gap_pct: float, joine
         if joined:
             if d.unmatched_leases:
                 return False, f"{day}: {d.unmatched_leases} keyed calls with no matching pool lease"
-            if d.gateway_calls is not None and d.gateway_calls > 0:
+            if not d.gateway_calls:
+                return False, (f"{day}: door saw {d.ok} keyed calls but the gateway recorded none for pool_role "
+                               "of the same name (a lane that does not match pool_role?)")
+            else:
                 gap = abs(d.ok - d.gateway_calls) * 100.0 / d.gateway_calls
                 if gap > max_gap_pct:
                     return False, f"{day}: door saw {d.ok} keyed calls, gateway sent {d.gateway_calls} ({gap:.1f} % apart)"
-    tail = "" if joined else " (lease join NOT run: add --dsn before flipping)"
-    return True, f"{streak_days} clean days ending {end.isoformat()}{tail}"
+    if not joined:
+        return False, (f"{streak_days} clean days ending {end.isoformat()} in the door log, but the lease join was "
+                       "not run: add --dsn (READY needs the leases found and the gateway's own count)")
+    return True, f"{streak_days} clean days ending {end.isoformat()}"
 
 
 def fetch_stats(urls: list[str]) -> list[dict[str, Any]]:
@@ -154,11 +160,17 @@ def fetch_stats(urls: list[str]) -> list[dict[str, Any]]:
     return out
 
 
+EXPECTED_LANES = ("chat", "agent", "agent-gpu2", "fast", "agent-deep")   # the door compose services
+
+
 def render(report: dict[str, dict[str, Day]], verdicts: dict[str, tuple[bool, str]], joined: bool) -> str:
     lines = []
     for lane in sorted(report):
         ok, why = verdicts[lane]
         lines.append(f"== lane {lane}: {'READY TO ENFORCE' if ok else 'NOT READY'} -- {why}")
+        if not report[lane]:
+            lines.append("   no log lines for this lane (door not deployed, or no traffic)")
+            continue
         head = f"   {'day':10} {'keyed':>7} {'unkeyed':>8} {'badkey':>7}"
         if joined:
             head += f" {'no-lease':>9} {'gateway':>8} {'gap%':>6}"
@@ -194,6 +206,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.sources:
             return 0
     report, bad_lines = aggregate(iter_lines(args.sources or ["-"]))
+    for lane in EXPECTED_LANES:   # a lane with no log line at all is reported, never silently absent
+        report.setdefault(lane, {})
     joined = bool(args.dsn)
     if joined:
         join_db(report, args.dsn)

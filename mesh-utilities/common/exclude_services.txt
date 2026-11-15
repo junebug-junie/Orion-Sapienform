@@ -71,7 +71,8 @@ orion-office-env
 # on orion:vision:frames, so the rebuild and bring-up sweeps must not start it.
 orion-vision-edge
 
-# orion-lane-door (leased-evals Phase 2, 2026-11-14) runs on circe and hecate only, deployed by hand per
-# docs/runbooks/2026-11-14-lane-door.md: starting a door must happen together with moving its engine to
-# loopback, so it is also NOT in include_services_circe.txt (no automatic rebuild anywhere).
+# orion-lane-door (leased-evals Phase 2) runs on circe and hecate only, never athena. circe's post-pull
+# rebuild deploys it (include_services_circe.txt); hecate's runs with the deep engine
+# (services/orion-vllm-host/scripts/hecate-deep.sh). Excluded here so athena's rebuild and bring-up
+# sweeps never start a door in front of nothing.
 orion-lane-door

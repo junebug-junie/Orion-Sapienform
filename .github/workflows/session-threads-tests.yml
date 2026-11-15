@@ -1,0 +1,106 @@
+name: session-threads-tests
+# Session threads: coding sessions write to Orion; Orion asks questions once an hour.
+# Design: docs/superpowers/specs/2026-11-15-session-threads-design.md.
+#
+# Runs what no other workflow runs: the store's REAL SQL against Postgres (the Hub
+# full suite runs the same lifecycle on an in-memory store only), and the two Claude
+# Code hooks + CLI as subprocesses (tests/scripts is not run as a folder anywhere).
+
+on:
+  pull_request:
+    paths:
+      - "orion/session_threads/**"
+      - "orion/schemas/session_roundup_run.py"
+      - "services/orion-hub/scripts/session_roundup_loop.py"
+      - "services/orion-hub/scripts/session_thread_routes.py"
+      - "services/orion-hub/static/js/session-threads.js"
+      - "services/orion-hub/tests/test_session_*.py"
+      - "services/orion-hub/tests/session_thread_fakes.py"
+      - "services/orion-sql-db/manual_migration_orion_session_thread_v1.sql"
+      - "scripts/orion_session_thread.py"
+      - "scripts/orion_session_thread_lib.py"
+      - "scripts/smoke_session_threads.py"
+      - "scripts/hooks/post_tool_pr_spec_to_orion.py"
+      - "scripts/hooks/session_pending_orion_questions.py"
+      - "scripts/agent_board_lib.py"
+      - ".claude/settings.json"
+      - "tests/scripts/test_orion_session_thread_hooks.py"
+      - ".github/workflows/session-threads-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/session_threads/**"
+      - "orion/schemas/session_roundup_run.py"
+      - "services/orion-hub/scripts/session_roundup_loop.py"
+      - "services/orion-hub/scripts/session_thread_routes.py"
+      - "services/orion-hub/static/js/session-threads.js"
+      - "services/orion-hub/tests/test_session_*.py"
+      - "services/orion-hub/tests/session_thread_fakes.py"
+      - "services/orion-sql-db/manual_migration_orion_session_thread_v1.sql"
+      - "scripts/orion_session_thread.py"
+      - "scripts/orion_session_thread_lib.py"
+      - "scripts/smoke_session_threads.py"
+      - "scripts/hooks/post_tool_pr_spec_to_orion.py"
+      - "scripts/hooks/session_pending_orion_questions.py"
+      - "scripts/agent_board_lib.py"
+      - ".claude/settings.json"
+      - "tests/scripts/test_orion_session_thread_hooks.py"
+      - ".github/workflows/session-threads-tests.yml"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  session-threads:
+    name: Session threads — Postgres store (must not skip), hooks, CLI
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: read
+    services:
+      postgres:
+        image: ghcr.io/junebug-junie/postgres:16  # private GHCR copy of postgres:16 (Docker Hub rate-limits shared runners)
+        credentials:
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: conjourney
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          grep -v '^faster-whisper' services/orion-hub/requirements.txt > /tmp/hub-requirements.txt
+          python -m pip install -r /tmp/hub-requirements.txt -r requirements-dev.txt "pytest-timeout>=2.3,<3"
+      - name: Hub — pure rules, lifecycle on the in-memory store AND on Postgres, routes, page
+        working-directory: services/orion-hub
+        env:
+          ORION_MEMORY_EPISODE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/conjourney
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-hub
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs -p no:cacheprovider --timeout=180 \
+            tests/test_session_threads_core.py tests/test_session_roundup_loop.py \
+            tests/test_session_thread_routes.py tests/test_session_threads_js.py | tee /tmp/session_threads.out
+          if grep -q "SKIPPED" /tmp/session_threads.out; then echo "session threads tests skipped (Postgres or node missing)" >&2; exit 1; fi
+      - name: Hooks and CLI (real subprocesses, stand-in Hub and gh)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python -m pytest -q -p no:cacheprovider --timeout=180 tests/scripts/test_orion_session_thread_hooks.py

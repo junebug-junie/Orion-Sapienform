@@ -11849,6 +11849,13 @@ let chatTurnTimer = null;
             if (window.OrionConsult) window.OrionConsult.onFrame(d);
             return;
           }
+          if (d.kind === 'session_thread_turn') {
+            // A coding session's message to Orion, Hub's receipt, or Orion's
+            // hourly questions (static/js/session-threads.js). Not an Orion
+            // chat turn: returns before the generic branch, like a consult.
+            if (window.OrionSessionThreads) window.OrionSessionThreads.onFrame(d);
+            return;
+          }
           if (d.kind === 'room_claude_utterance') {
             // Claude's turn in the room. Handled before the generic assistant
             // branch and returns early for the same reason orion_outreach does:

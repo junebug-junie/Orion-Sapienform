@@ -1,2 +1,2 @@
-# The lane door uses the Python standard library only (asyncio, hmac, json). Nothing to install.
+# The lane door uses the Python standard library only (asyncio, json). Nothing to install.
 # Tests: pytest and httpx (see .github/workflows/lane-door-tests.yml).

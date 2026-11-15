@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, Field
 
@@ -73,6 +73,12 @@ REFLECTION_SOURCE_JUDGE_FAILED = "degraded_llm_failure_fallback"
 # Max promise items the judge may list per field.
 PROMISE_ITEMS_MAX = 3
 PROMISE_QUOTE_MAX_CHARS = 240
+# Who carries out the future act a promise quote names. The judge fills it for every item;
+# the gate keeps only PROMISE_DOER_ORION. The other three are what the 11-12 replay listed
+# by mistake: an ask to Juniper, a hand-off to someone else, a forecast about a system.
+PromiseDoer = Literal["orion", "juniper", "someone_else", "a_system"]
+PROMISE_DOERS: tuple[str, ...] = get_args(PromiseDoer)
+PROMISE_DOER_ORION = "orion"
 
 
 class PromiseV1(BaseModel):
@@ -83,12 +89,19 @@ class PromiseV1(BaseModel):
     invent one. offer=True marks a promise that waits for Juniper's yes ("if you want,
     I'll ..."): it is recorded, but it counts as a promise only after a later judge call
     lists it in offers_accepted (Juniper's 2026-11-12 answer 1).
+
+    doer names who carries out the act. Only "orion" survives the gate: a forecast about a
+    queue or deploy (a_system), an ask for Juniper to act (juniper) and a hand-off to someone
+    else are not Orion's commitments (D0 replay, 2026-11-12: 5 of 8 false items).
     """
 
     # Length caps are enforced by the judge's JSON schema and by the gate, not here: a
     # malformed promise list must never fail validation and sink the alignment verdict.
     quote: str
     offer: bool = False
+    # Who does the act. None on rows written before the field existed (they were gated without
+    # it). The gate drops every item whose doer is not "orion", so a stored promise is Orion's.
+    doer: PromiseDoer | None = None
 
 
 class OpenPromiseRefV1(BaseModel):

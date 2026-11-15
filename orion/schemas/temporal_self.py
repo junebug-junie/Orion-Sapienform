@@ -425,6 +425,9 @@ class TemporalSelfStateV1(_Forbid):
     tick_winner_count_today: int = 0
     tick_source_gaps_today: int = 0
     tick_winner_refs_today: list[str] = Field(default_factory=list)  # distinct, capped
+    # The newest broadcast tick intervals in seconds, oldest first, capped (arcs.TICK_INTERVALS_CAP).
+    # The gap bar is 3 times their median (arcs.tick_gap_sec, #3400). Kept across midnight.
+    tick_recent_intervals_sec: list[float] = Field(default_factory=list)
     # Cross-day continuation: subject -> (arc_id, last_seen) for arcs closed at midnight.
     carry: dict[str, dict[str, str]] = Field(default_factory=dict)
     entered_day_with: list[str] = Field(default_factory=list)

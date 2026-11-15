@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""UserPromptSubmit / SessionStart hook: hand Orion's questions back to the coding session that
+sent the spec.
+
+Asks Hub for Orion's undelivered turns for this session id OR this session's branch (the agent
+board's identity: a hook's own cwd is not reliable), prints them as additionalContext with the
+thread id and how to answer, then marks them delivered.
+
+Silent and fast when nothing is pending or Hub is down (2 s timeout, exit 0, no output).
+Kill switch: ORION_SESSION_THREADS_HOOKS=0.
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+
+def main() -> None:
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except Exception:  # noqa: BLE001
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    import orion_session_thread_lib as lib
+
+    if not lib.hooks_enabled():
+        return
+    try:
+        session_id = lib.session_id_from(payload)
+        branch = lib.identity(session_id)["branch"]
+        if branch in ("main", "master", "HEAD"):
+            branch = ""   # the shared checkout's branch is not one session's
+        if session_id == "manual" and not branch:
+            return
+        rows = lib.pending(session_id=session_id, branch=branch, timeout=2.0)
+    except Exception:  # noqa: BLE001 -- Hub down or an older Hub: silent
+        return
+    text = lib.pending_text(rows)
+    if not text:
+        return
+    event = str(payload.get("hook_event_name") or "UserPromptSubmit")
+    sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}},
+                                ensure_ascii=False))
+    sys.stdout.flush()
+    try:
+        lib.delivered([str(r["turn_id"]) for r in rows], timeout=2.0)
+    except Exception as exc:  # noqa: BLE001 -- shown again next time rather than lost
+        lib.log(f"pending_hook delivered_failed err={type(exc).__name__}")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:  # noqa: BLE001 -- never a non-zero exit from this hook
+        pass

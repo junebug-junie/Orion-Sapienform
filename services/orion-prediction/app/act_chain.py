@@ -198,7 +198,7 @@ def predict(s: Stream, o: int) -> dict:
     # Parallel backoff (factored LMs, Bilmes & Kirchhoff 2003): a thin (block, prev) cell backs off to a
     # blend of both parents, so a night cell keeps the night mix. lam = weight on the prev-act parent.
     best = None
-    for lam in LAMBDA_GRID:
+    for lam in reversed(LAMBDA_GRID):                 # a tie keeps the higher weight (1.0 = prev-only)
         C_ab, k_ab, ll = _level(b * K + a, len(BLOCKS) * K, y, w, lam * pa_loo + (1 - lam) * pb_loo)
         if best is None or ll > best[3]:
             best = (lam, C_ab, k_ab, ll)

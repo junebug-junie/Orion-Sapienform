@@ -22,6 +22,9 @@ orion-gpu-lane-controller
 orion-juniper-affective-state
 # orion-kev moved here from athena's T10 2026-10-15 (PR #2695): circe GPU 3.
 orion-kev
+# orion-lane-door (leased-evals Phase 2): the four circe lane doors. Their post_rebuild.sh moves any engine
+# still on its public lane port to loopback (once), so one deploy starts the door and moves its engine.
+orion-lane-door
 orion-power-guard
 orion-world-model
 # orion-vision-host REMOVED 2026-09-21: this entry only ever meant the

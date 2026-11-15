@@ -86,14 +86,6 @@ NEVER_SYNC_KEYS = frozenset(
         # placeholder; --force must never overwrite a live URL with it.
         "REOLINK_URL",
         "WALKWAY_RTSP_URL",
-        # Real chat-time graph search gate (orion-recall). Both keys must change together by
-        # hand or the feature silently no-ops (enabled flag + empty/stale URL) -- the exact
-        # bug already hit twice this session with CONCEPT_RELATION_RESOLUTION_ENABLED and
-        # GRAPHITI_BACKEND. Belt-and-suspenders on top of these keys already not matching any
-        # SYNC_PREFIXES entry: this makes the protection an explicit decision, not an
-        # accident of the prefix list, and holds even under --all-keys --force.
-        "RECALL_GRAPHITI_IN_CHAT",
-        "RECALL_GRAPHITI_ADAPTER_URL",
         # Per-node BMC/iLO secret (orion-biometrics). .env_example intentionally
         # ships these empty; --force must never flatten a real per-node
         # credential back to that placeholder.

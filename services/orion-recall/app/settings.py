@@ -210,16 +210,6 @@ class Settings(BaseSettings):
     RECALL_ENABLE_CARDS: bool = Field(default=True, validation_alias=AliasChoices("RECALL_ENABLE_CARDS"))
     RECALL_CARDS_TIMEOUT_SEC: float = Field(default=8.0, validation_alias=AliasChoices("RECALL_CARDS_TIMEOUT_SEC"))
     RECALL_CARDS_MAX_NEIGHBORS: int = Field(default=6, validation_alias=AliasChoices("RECALL_CARDS_MAX_NEIGHBORS"))
-    # NOT removed despite the name: still consumed by
-    # collectors/active_packet.py as the generic Chroma-embedding host URL
-    # for the (unrelated) memory-crystallization active-packet retrieval rail
-    # (orion/memory/crystallization/retriever.py::retrieve_active_packet's
-    # embed_host_url param) -- confirmed via a repo-wide grep before removal,
-    # not assumed dead just because cards_adapter.py no longer reads it.
-    RECALL_CARDS_EMBEDDING_URL: Optional[str] = Field(
-        default=None,
-        validation_alias=AliasChoices("RECALL_CARDS_EMBEDDING_URL"),
-    )
     # Orphaned by this change: cards_adapter.py no longer does similarity
     # scoring, so this value is now read nowhere. Left in place (not on the
     # explicit removal list this PR was scoped to) -- safe to delete in a
@@ -249,9 +239,6 @@ class Settings(BaseSettings):
     RECALL_CONTINUITY_RENDER_BUDGET: int = Field(
         default=1200, validation_alias=AliasChoices("RECALL_CONTINUITY_RENDER_BUDGET")
     )
-    RECALL_ACTIVE_PACKET_ENABLED: bool = Field(
-        default=True, validation_alias=AliasChoices("RECALL_ACTIVE_PACKET_ENABLED")
-    )
     # Turn-scoped concept-region collector (services/orion-recall/app/collectors/
     # concept_region.py) -- cheap, self-gating label-substring match against the
     # substrate concept graph (golden Orion/Juniper/Claude/relationship concepts +
@@ -266,23 +253,11 @@ class Settings(BaseSettings):
     RECALL_BELIEF_RENDER_BUDGET: int = Field(
         default=128, validation_alias=AliasChoices("RECALL_BELIEF_RENDER_BUDGET")
     )
-    RECALL_GRAPHITI_IN_CHAT: bool = Field(
-        default=False, validation_alias=AliasChoices("RECALL_GRAPHITI_IN_CHAT")
-    )
-    RECALL_GRAPHITI_ADAPTER_URL: Optional[str] = Field(
-        default=None, validation_alias=AliasChoices("RECALL_GRAPHITI_ADAPTER_URL")
-    )
-    RECALL_GRAPHITI_FALKORDB_URI: Optional[str] = Field(
-        default=None, validation_alias=AliasChoices("RECALL_GRAPHITI_FALKORDB_URI")
-    )
-    RECALL_GRAPHITI_TIMEOUT_SEC: float = Field(
-        default=10.0, validation_alias=AliasChoices("RECALL_GRAPHITI_TIMEOUT_SEC")
-    )
     # Phase 4 of the recall RDF->Falkor cutover (docs/superpowers/specs/
     # 2026-07-17-recall-rdf-writer-falkor-cutover-phase2-spec.md). When true,
     # storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments SWAPS IN
     # for storage/rdf_adapter.py::fetch_rdf_chatturn_fragments in worker.py's
-    # _query_backends -- not additive like RECALL_GRAPHITI_IN_CHAT (that flag
+    # _query_backends -- not additive like the retired RECALL_GRAPHITI_IN_CHAT (that flag
     # merges an extra rail; this one replaces a rail, since the whole point of
     # this migration arc is retiring RDF/Fuseki). Independent of
     # RECALL_ENABLE_RDF/_rdf_enabled() -- Falkor chatturn fetch does not
@@ -424,10 +399,6 @@ class Settings(BaseSettings):
     RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED: bool = Field(
         default=False, validation_alias=AliasChoices("RECALL_ENTITY_RELATEDNESS_BOOST_ENABLED")
     )
-    RECALL_CRYSTALLIZATION_VECTOR_COLLECTION: str = Field(
-        default="orion_memory_crystallizations",
-        validation_alias=AliasChoices("RECALL_CRYSTALLIZATION_VECTOR_COLLECTION"),
-    )
 
     # ── RDF / GraphDB (recall-specific) ───────────────────────────────
     RECALL_RDF_ENDPOINT_URL: Optional[str] = Field(default=None, validation_alias=AliasChoices("RECALL_RDF_ENDPOINT_URL"))
@@ -531,7 +502,6 @@ class Settings(BaseSettings):
     @field_validator(
         "RECALL_VECTOR_BASE_URL",
         "RECALL_VECTOR_EMBEDDING_URL",
-        "RECALL_CARDS_EMBEDDING_URL",
         "RECALL_RDF_ENDPOINT_URL",
         "RECALL_RDF_QUERY_URL",
         "RECALL_COMPRESSION_PG_DSN",
@@ -572,9 +542,6 @@ class Settings(BaseSettings):
             elif (os.getenv("GRAPH_BACKEND") or "").strip().lower() == "graphdb" and (self.GRAPHDB_URL or "").strip():
                 base = self.GRAPHDB_URL.rstrip("/")
                 self.RECALL_RDF_ENDPOINT_URL = f"{base}/repositories/{self.GRAPHDB_REPO}"
-
-        if not self.RECALL_CARDS_EMBEDDING_URL and self.RECALL_VECTOR_EMBEDDING_URL:
-            self.RECALL_CARDS_EMBEDDING_URL = str(self.RECALL_VECTOR_EMBEDDING_URL).strip()
 
         return self
 

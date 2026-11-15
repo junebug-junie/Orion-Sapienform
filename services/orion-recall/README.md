@@ -189,7 +189,7 @@ Design: `docs/superpowers/specs/2026-09-29-recall-retrieval-query-architecture-d
 - **Deadline.** One budget for the fetch: 80% of the caller's `deadline_ms`, else `RECALL_DEADLINE_MS_DEFAULT`. On expiry, pending backends are cancelled, completed ones are kept, and the decision says `deadline_hit=true`. The entity boost and v2 shadow compare only use what is left of the budget. The shadow compare only runs when the bundle is empty or vector-topped (main's effective triggers).
 - **`mode=context_only`.** Feeds only: no retrievers, no expansion, no boost (for verbs with no user text, e.g. reverie).
 - **Telemetry.** `recall.decision.v1` and `recall_telemetry` carry `query_chars`, `retrieval_query_source`, `sub_query_count`, `candidates_fetched`, `candidates_kept`, `deadline_hit`, `timings_ms` (`intake`, `feeds`, `retrievers`, `fetch`, `windowing`, `suppression`, `pcr_collectors` with `pcr_active_packet`/`pcr_concept_region`, `boost`, `fusion`, `eligible_count`, `shadow_compare`, `total`; feeds/retrievers are the slowest unit in each group since units overlap, and the top-level stages add up to roughly `total`). `latency_ms` is now end-to-end.
-- **PCR collectors under the deadline.** For purposeful (belief) recall, `active_packet` and `concept_region` run concurrently inside what is left of the recall deadline; one still running at the deadline is dropped, `deadline_hit` is set, and the rest of the recall is kept. There is no substrate warm-up any more: since 2026-10-06 `concept_region` reads FalkorDB directly with bounded queries and never loads the substrate graph (see §15).
+- **PCR collectors under the deadline.** For purposeful (belief) recall, `concept_region` runs inside what is left of the recall deadline (the `active_packet` collector was retired, see §16); still running at the deadline, it is dropped, `deadline_hit` is set, and the rest of the recall is kept. There is no substrate warm-up any more: since 2026-10-06 `concept_region` reads FalkorDB directly with bounded queries and never loads the substrate graph (see §15).
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
@@ -216,7 +216,6 @@ Eval: `python services/orion-recall/evals/run_recall_bounded_retrieval_eval.py` 
 | `RECALL_ENABLE_CARDS` | `true` | When `true` and `RECALL_PG_DSN` is set, recall scores `memory_cards` rows as `source=cards`. |
 | `RECALL_CARDS_TIMEOUT_SEC` | `2.5` | Per-query cards rail budget (embedding + Postgres). |
 | `RECALL_CARDS_MAX_NEIGHBORS` | `6` | 1-hop graph neighbor fan-out cap. |
-| `RECALL_CARDS_EMBEDDING_URL` | derived | Defaults to `RECALL_VECTOR_EMBEDDING_URL` or `http://orion-athena-vector-host:8320/embedding`. |
 | `RECALL_CARDS_EMBED_TIMEOUT_SEC` | `5.0` | HTTP timeout per embed call to vector-host. |
 | `RECALL_CARDS_MIN_SIMILARITY` | `0.32` | Minimum cosine similarity vs query embedding. |
 | `RECALL_CARDS_EMBED_CONCURRENCY` | `4` | Parallel embed requests when warming card caches. |
@@ -451,10 +450,6 @@ If you see `rdf_chat` counts high but your desired quote didn’t appear in the 
 Vector is *always* 0 -- vector retrieval was removed from orion-recall in
 May 2026 (`RECALL_ENABLE_VECTOR` defaults `false`, `app/source_policy.py`
 always returns `allowed=False`). This is expected, not a bug to chase.
-
-### D) Verify what real chat turns actually recalled (crystallizations)
-
-`app/collectors/active_packet.py::fetch_active_packet_fragments()` (real `chat_general` PCR calls, not the Hub API route) logs every non-empty retrieval to `memory_crystallization_retrieval_events` — same table Hub's `/api/memory/active-packet` route writes to. Query by `session_id` to see exactly which `crystallization_ids` a given turn actually pulled in, and the fusion `trace` (rails, hit counts) that produced them. Empty-result retrievals are not logged (no empty-shell rows).
 
 ---
 
@@ -860,8 +855,8 @@ Note this only affects *scoring* (a continuous, soft decay) — it does not give
 
 ## 15) Concept-region collector (substrate concept graph in belief-lane recall)
 
-`app/collectors/concept_region.py::fetch_concept_region_fragment()` is a PCR collector
-alongside `active_packet`, wired into `process_recall`'s purposeful phase in `app/worker.py`.
+`app/collectors/concept_region.py::fetch_concept_region_fragment()` is the PCR collector
+wired into `process_recall`'s purposeful phase in `app/worker.py`.
 It matches the current turn's text against concept labels already materialized in the
 shared substrate graph (golden Orion/Juniper/Claude/relationship concepts seeded by `orion-hub`,
 plus organically-grown topic-foundry concepts) and, on a match, returns a bounded
@@ -964,3 +959,20 @@ that hash pattern again, that's this same failure mode recurring, not a new bug 
 `git log` for the responsible commit before assuming the running container is also affected
 (a running container built from an earlier good image is not automatically broken by a bad
 commit landing on `main` afterward, but the next rebuild would be).
+
+## 16) What the Juniper chat prompt's DURABLE MEMORY may carry (issue #3461)
+
+The two PCR phases (`recall_phase=continuity` and `purposeful`) are called only by
+`orion-cortex-exec`'s `pcr_chat_memory.py` and build the chat prompt's DURABLE MEMORY.
+Four sources were cut from that path on 2026-11-15, because live prompts showed only noise:
+
+| Cut | Where | How |
+|---|---|---|
+| AI Town NPC chatter | `sql_chat.fetch_chat_history_pairs` unions `aitown_chat_history_log` | `apply_chat_memory_exclusions()` sets `sql_chat_include_aitown=False`; the query scans `chat_history_log` only. |
+| Bus hop-latency z-scores | `bus_synaptic_anomaly` feed | `apply_chat_memory_exclusions()` sets `enable_bus_synaptic_anomaly=False`; the fetch never runs. |
+| `active_packet` "durable beliefs" | `app/collectors/active_packet.py` | Collector deleted, removed from every intent plan and belief profile, with its settings (`RECALL_ACTIVE_PACKET_ENABLED`, `RECALL_GRAPHITI_*`, `RECALL_CRYSTALLIZATION_VECTOR_COLLECTION`, `RECALL_CARDS_EMBEDDING_URL`). Crystallizations stay in Postgres; Hub's `/api/memory/active-packet` route is unchanged. |
+| Topic-foundry concepts | `concept_region` collector | Nodes with id prefix `sub-concept-topicfoundry-` and edges touching them are dropped before render and before reinforcement. |
+
+Other recall profiles (`reflect.v1`, `social.room.v1`, journals) still get the AI Town union
+and the bus anomaly feed. An empty continuity or belief digest now renders as an empty
+string, not a bare header.

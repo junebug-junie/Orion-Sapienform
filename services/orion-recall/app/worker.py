@@ -26,8 +26,7 @@ from orion.memory.crystallization.repository import count_eligible_active
 
 try:
     from .fusion import fuse_candidates, pcr_fuse_belief_candidates, render_continuity_bundle
-    from .pcr_collectors import apply_collector_plan, collectors_for_intent
-    from .collectors.active_packet import fetch_active_packet_fragments
+    from .pcr_collectors import apply_chat_memory_exclusions, apply_collector_plan, collectors_for_intent
     from .collectors.concept_region import fetch_concept_region_fragment_and_reinforce
     from .substrate_store import get_substrate_store
     from .profiles import get_profile
@@ -61,8 +60,7 @@ except ImportError as _e:  # pragma: no cover - fallback for runtime pathing
     try:
         # Container/package-safe absolute imports
         from app.fusion import fuse_candidates, pcr_fuse_belief_candidates, render_continuity_bundle  # type: ignore
-        from app.pcr_collectors import apply_collector_plan, collectors_for_intent  # type: ignore
-        from app.collectors.active_packet import fetch_active_packet_fragments  # type: ignore
+        from app.pcr_collectors import apply_chat_memory_exclusions, apply_collector_plan, collectors_for_intent  # type: ignore
         from app.collectors.concept_region import fetch_concept_region_fragment_and_reinforce  # type: ignore
         from app.substrate_store import get_substrate_store  # type: ignore
         from app.profiles import get_profile  # type: ignore
@@ -1584,7 +1582,7 @@ def _backend_units(
         # Swap, not additive: this replaces the RDF chatturn fetch below,
         # not a merge -- running both would double up the same turns in
         # fusion's candidate list (see settings.py's RECALL_FALKOR_IN_CHAT
-        # comment for why this differs from RECALL_GRAPHITI_IN_CHAT's
+        # comment for why this differs from the retired RECALL_GRAPHITI_IN_CHAT's
         # additive pattern). Recency-only (no query filter), so a feed.
 
         async def _falkor_chat():
@@ -1659,6 +1657,7 @@ def _backend_units(
                     since_minutes=int(profile.get("sql_since_minutes", settings.RECALL_SQL_SINCE_MINUTES)),
                     exclude_text=exclusion.get("active_turn_text"),
                     exclude_ids=exclusion.get("active_turn_ids"),
+                    include_aitown=bool(profile.get("sql_chat_include_aitown", True)),
                 )
                 counts["sql_chat_pairs"] = len(chat_pairs)
                 for item in chat_pairs:
@@ -2075,7 +2074,7 @@ async def _run_pcr_collectors(
     """Run the purposeful-recall PCR collectors under the recall deadline.
 
     Returns (candidates, backend_counts, elapsed_ms_per_collector,
-    deadline_hit). Both collectors run concurrently and share whatever is left
+    deadline_hit). The collectors run concurrently and share whatever is left
     of the overall recall deadline (``remaining_s``; None = no deadline). A
     collector still running at the deadline is cancelled and its result
     dropped; the recall never fails because of it. concept_region's work runs
@@ -2097,13 +2096,6 @@ async def _run_pcr_collectors(
     # reinforced as if they had been surfaced.
     cr_abandoned = threading.Event()
     on_cancel: Dict[str, threading.Event] = {"concept_region": cr_abandoned}
-    if pcr_backend_plan.get("active_packet") and settings.RECALL_ACTIVE_PACKET_ENABLED:
-        units.append(
-            (
-                "active_packet",
-                lambda: fetch_active_packet_fragments(q, pool=_recall_pg_pool, settings=settings),
-            )
-        )
     if pcr_backend_plan.get("concept_region") and settings.RECALL_CONCEPT_REGION_ENABLED:
         # fetch_concept_region_fragment_and_reinforce's Falkor reads/write
         # are blocking network calls (bounded by the socket timeouts in
@@ -2236,6 +2228,10 @@ async def process_recall(
         pcr_backend_plan = collectors_for_intent(retrieval_intent)
         profile = apply_collector_plan(profile, pcr_backend_plan)
         profile_name = str(profile.get("profile") or profile_name)
+    if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"}:
+        # Both PCR phases build the Juniper chat prompt's DURABLE MEMORY
+        # (issue #3461): bus anomalies and AI Town chatter never reach it.
+        profile = apply_chat_memory_exclusions(profile)
     intake = _intake_query(q, profile_name=profile_name)
     query_targeting = intake["query_targeting"]
     query_fragment = str(intake["search_text"] or "")
@@ -2758,7 +2754,6 @@ async def process_recall(
     if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"}:
         continuity_count = sum(1 for i in bundle.items if recall_phase == "continuity")
         belief_count = sum(1 for i in bundle.items if recall_phase == "purposeful")
-        active_refs = [i.id for i in bundle.items if str(i.source) == "active_packet"]
         pcr_debug = {
             "enabled": settings.RECALL_PCR_ENABLED,
             "phase": recall_phase,
@@ -2768,7 +2763,6 @@ async def process_recall(
             "backend_plan": list(pcr_backend_plan.keys()) if pcr_backend_plan else [],
             "continuity_item_count": continuity_count if recall_phase == "continuity" else 0,
             "belief_item_count": belief_count if recall_phase == "purposeful" else len(bundle.items),
-            "active_packet_refs": active_refs,
             "render_budget": {
                 "continuity": settings.RECALL_CONTINUITY_RENDER_BUDGET if recall_phase == "continuity" else 0,
                 "belief": (

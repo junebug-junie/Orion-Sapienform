@@ -52,7 +52,7 @@ from typing import Any, Collection, Mapping, Optional, Sequence
 
 from orion.physiology.weights import endorsement_option_key
 from orion.prime.day_letter import LETTER_EVENT_PREFIX
-from orion.prime.handback import PROMISE_TO, TURN_EVENT_PREFIX, WHO_WORDS
+from orion.prime.handback import TURN_EVENT_PREFIX, WHO_WORDS
 from orion.schemas.personality import CHOICE_OPTION_TEXT_MAX, ChoiceOptionV1, PersonalityChoiceV1
 
 LANE = "prime"
@@ -70,15 +70,12 @@ class ShownConcern:
     # not recorded (a concern from before 2026-11-13), the live list is read instead.
     family: Optional[str] = None
     care_promoted: Optional[bool] = None
-    # A promise concern's promise sentence(s) (``PrimeConcernV1.promise_text``), for the choice record's text.
-    promise_text: Optional[str] = None
 
 
 def shown_concerns(concerns: Sequence[Any]) -> list[ShownConcern]:
     """Snapshot of the concerns in the frame (``PrimeConcernV1``-like objects)."""
     return [ShownConcern(c.concern_id, c.text, getattr(c, "event_ref", None), getattr(c, "event_family", None),
-                         getattr(c, "event_care_promoted", None), getattr(c, "promise_text", None))
-            for c in concerns]
+                         getattr(c, "event_care_promoted", None)) for c in concerns]
 
 
 def market_ranks(shown: Sequence[ShownConcern], ranked_event_ids: Sequence[str]) -> dict[str, Optional[int]]:
@@ -144,15 +141,12 @@ def _text(text: str) -> str:
 # concern. Deterministic, no model.
 _MARKUP = re.compile(r"\*\*|__|`")
 # "[curiosity:7119b210c705]", "[juniper_chat:7a286bdd-acc]", "harness_turn_trace:<id>#promises_made[0]".
-_REF = re.compile(r"\s*\[[a-z_]+:[^\]]*\]|\s*\b[a-z_]+_trace:\S+")
+_REF = re.compile(r"\s*\[[a-z_]+:[0-9A-Za-z_-]{6,}[^\]]*\]|\s*\b[a-z_]+_trace:\S+")
 _LETTER = re.compile(r"^a thread from my letter for (?P<day>\d{4}-\d{2}-\d{2}):\s*(?P<thread>.*)$", re.S)
 # Old ("a thread I opened", before 11-12) and current ("a promise I made") promise concern text.
 _PROMISE = re.compile(r"^a (?:promise I made|thread I opened) in an? (?P<words>[^(]+?) \((?P<count>[^)]*)\)"
                       r"(?::\s*(?P<rest>.*))?$", re.S)
 _JUNIPER_LINE = re.compile(r'^Juniper: "(?P<line>.*?)"(?=\s*(?:/ me:|$))', re.S)
-# promise_text: 'a promise I made in a curiosity run at 2026-11-13 10:00Z: "I will ..." / "..."'.
-_PROMISE_AT = re.compile(r" at (?P<day>\d{4})-(?P<md>\d{2}-\d{2}) \d{2}:\d{2}Z: (?P<said>.*)$", re.S)
-_QUOTE = re.compile(r'"([^"]+)"')
 _SENTENCE_END = re.compile(r"(?<=[.!?])\s+")
 _WHO_BY_WORDS = {words: who for who, words in WHO_WORDS.items()}
 
@@ -178,33 +172,25 @@ def _letter_text(day: str, thread: str) -> str:
         head, rest = parts[0], (parts[1] if len(parts) > 1 else "")
     head = head.rstrip(".").strip() or "(no words)"
     tail = f"a thread from my letter for {_short_day(day)}"
+    # Cut the middle, never the tail: the record keeps where the thread came from.
+    room = CHOICE_OPTION_TEXT_MAX - len(head) - len(tail) - 6
+    if len(rest) > max(room, 0):
+        rest = rest[: max(room - 1, 0)].rstrip() + "…" if room > 1 else ""
     return f"{head} — {rest} ({tail})" if rest else f"{head} ({tail})"
 
 
-def _promise_said(promise_text: Optional[str]) -> tuple[list[str], Optional[str]]:
-    """(the promise sentence(s), 'MM-DD') from a concern's promise_text."""
-    m = _PROMISE_AT.search(promise_text or "")
-    if not m:
-        return [], None
-    return [_plain(q) for q in _QUOTE.findall(m["said"]) if _plain(q)], m["md"]
-
-
-def _promise_text(words: str, rest: str, promise_text: Optional[str]) -> str:
-    """Who the promise was made to, and what was promised. A chat promise leads with Juniper's own line (the
-    reply she is owed); any other leads with the promise sentence itself."""
+def _promise_text(words: str, rest: str) -> str:
+    """A promise option, built from the concern's public text only. The promise sentence itself
+    (``PrimeConcernV1.promise_text``) never goes in: it is shown only in Prime's own thinking frame, and the
+    record text becomes tendency labels that reach every turn's Prime block (choice-as-EFE acceptance S-1.8).
+    A chat promise leads with Juniper's own line, the reply she is owed; any other names where it was made."""
     who = _WHO_BY_WORDS.get(words.strip())
-    made = f"a promise I made {PROMISE_TO[who]}" if who else f"a promise I made in a {words.strip()}"
-    said, md = _promise_said(promise_text)
-    when = f", {md}" if md else ""
-    quoted = " / ".join(f'"{q}"' for q in said)
+    where = words.strip()
     line = _JUNIPER_LINE.match(rest or "")
     if who == "chat_juniper" or line:
         asked = _plain(line["line"]) if line else ""
-        head = f'Reply to Juniper\'s "{asked}"' if asked else "Reply to Juniper"
-        return f"{head} — {made}{when}" + (f": {quoted}" if quoted else "")
-    if said:
-        return f"{' / '.join(said).rstrip('.')} — {made}{when}"
-    return f"An unquoted promise — {made}{when}"
+        return f'"{asked}" — a reply I owe Juniper from chat' if asked else "A reply I owe Juniper from chat"
+    return f"{where[:1].upper()}{where[1:]} promise — the words stay in my own thinking"
 
 
 def option_text(concern: ShownConcern) -> str:
@@ -215,7 +201,7 @@ def option_text(concern: ShownConcern) -> str:
         return _text(_letter_text(m["day"], m["thread"]))
     p = _PROMISE.match(raw)
     if p and (not concern.event_ref or concern.event_ref.startswith(TURN_EVENT_PREFIX)):
-        return _text(_promise_text(p["words"], p["rest"] or "", concern.promise_text))
+        return _text(_promise_text(p["words"], p["rest"] or ""))
     return _text(_plain(raw))
 
 

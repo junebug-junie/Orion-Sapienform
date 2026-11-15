@@ -294,23 +294,28 @@ def test_letter_thread_option_leads_with_its_subject_without_markdown_or_refs():
     assert "juniper_chat:" not in ref and "[" not in ref
 
 
-def test_promise_option_says_what_was_promised_and_where_with_no_trace_ref():
+def test_promise_option_names_where_it_was_made_never_the_promise_sentence():
     from orion.prime.choice import option_text
-    text = option_text(ShownConcern("c3", LIVE_PROMISE, "turn:d98", promise_text=LIVE_PROMISE_TEXT))
-    assert text == "I left that in TurnOutcome.continue_note — a promise I made in a curiosity run, 11-14"
-    bare = option_text(ShownConcern("c3", LIVE_PROMISE, "turn:d98"))
-    assert bare == "An unquoted promise — a promise I made in a curiosity run"
-    assert "harness_turn_trace" not in bare
+    # The concern carries promise_text, but S-1.8 keeps it in Prime's frame only: never in the record text,
+    # which becomes tendency labels shown in every turn's Prime block.
+    text = option_text(ShownConcern("c3", LIVE_PROMISE, "turn:d98"))
+    assert text == "Curiosity run promise — the words stay in my own thinking"
+    assert "harness_turn_trace" not in text and "TurnOutcome" not in text
 
 
-def test_chat_promise_option_leads_with_the_reply_juniper_is_owed():
+def test_chat_promise_option_leads_with_the_line_juniper_is_owed_a_reply_to():
     from orion.prime.choice import option_text
-    text = option_text(ShownConcern("c4", LIVE_CHAT, "turn:a12",
-                                    promise_text='a promise I made to Juniper in chat at 2026-11-12 18:02Z: '
-                                                 '"I will send you the save file tonight."'))
-    assert text.startswith('Reply to Juniper\'s "howdy, just saying hi on my way to play Zelda')
-    assert '— a promise I made to Juniper in chat, 11-12: "I will send you the save file tonight."' in text
-    assert "/ me:" not in text and "harness_turn_trace" not in text
+    text = option_text(ShownConcern("c4", LIVE_CHAT, "turn:a12"))
+    assert text.startswith('"howdy, just saying hi on my way to play Zelda')
+    assert text.endswith("— a reply I owe Juniper from chat")
+    assert "/ me:" not in text and "harness_turn_trace" not in text and "fairy" not in text
+
+
+def test_letter_option_keeps_its_tail_when_the_thread_is_long():
+    from orion.prime.choice import option_text
+    long = "a thread from my letter for 2026-11-13: **Head line.** " + "word " * 200
+    text = option_text(ShownConcern("c6", long, "orion_day_letter:2026-11-13#thread2"))
+    assert len(text) <= 400 and text.endswith("(a thread from my letter for 11-13)")
 
 
 def test_choice_record_text_is_clean_but_prime_concern_text_is_untouched():
@@ -320,14 +325,18 @@ def test_choice_record_text_is_clean_but_prime_concern_text_is_untouched():
         PrimeConcernV1(concern_id="c3", text=LIVE_PROMISE, event_ref="turn:d98", promise_text=LIVE_PROMISE_TEXT,
                        opened_at=NOW, last_evidence_at=NOW),
     ])
-    assert shown[0].text == LIVE_LETTER and shown[1].promise_text == LIVE_PROMISE_TEXT
+    assert shown[0].text == LIVE_LETTER
     choice, _ = _choice({"pick": "c3"}, shown=shown)
     assert choice.chosen.key == "c3"  # the ref lives on the key and the concern, not the text
-    assert choice.chosen.text.startswith("I left that in TurnOutcome.continue_note")
+    assert choice.chosen.text.startswith("Curiosity run promise")
+    # S-1.8: the promise sentence reaches neither the record nor the label built from it.
+    from orion.personality.graph import pair_label
+    texts = [choice.chosen.text, *(o.text for o in choice.alternatives)]
+    assert not any("TurnOutcome" in t for t in [*texts, pair_label(texts[0], texts[1:])])
     assert choice.alternatives[0].text.startswith("The walkway render break")
     assert all(len(o.text) <= 400 for o in [choice.chosen, *choice.alternatives])
 
 
 def test_free_text_concern_keeps_its_words_minus_markup():
     from orion.prime.choice import option_text
-    assert option_text(ShownConcern("c5", "**agent lane** congestion [thought:abc]")) == "agent lane congestion"
+    assert option_text(ShownConcern("c5", "**agent lane** congestion [thought:abc123def]")) == "agent lane congestion"

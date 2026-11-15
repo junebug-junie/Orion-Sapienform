@@ -405,10 +405,10 @@ def test_gist_drops_a_leading_category_phrase():
 
 def test_gist_of_subject_first_prime_text_is_the_subject():
     from orion.personality.graph import gist
-    assert gist("I left that in TurnOutcome.continue_note — a promise I made in a curiosity run, 11-14") \
-        == "I left that in TurnOutcome.continue_note"
-    assert gist('Reply to Juniper\'s "howdy, just saying hi on my way" — a promise I made to Juniper in chat') \
-        == "Reply to Juniper's howdy, just saying"
+    assert gist("Curiosity run promise — the words stay in my own thinking") == "Curiosity run promise"
+    assert gist('"howdy, just saying hi on my way" — a reply I owe Juniper from chat') == "howdy, just saying hi"
+    # A dash inside the quoted line is prose, not the subject's end.
+    assert gist('"how are you — really?" — a reply I owe Juniper from chat') == "how are you — really?"
 
 
 def test_pair_label_names_subjects_not_categories():
@@ -430,8 +430,10 @@ def test_category_only_label_gives_way_to_the_next_subject_even_if_less_similar(
     # Live disp-fba9ebe96512f7f1: label_similarity ~1.0, so a closer choice could never replace it.
     old = "a thread from my letter over a promise I made and a thread from my letter, 2 of 2"
     n = node(label=old, label_similarity=0.9999)
-    res = fold([n], [ev(axis(0, 0.5), label="The walkway render break is unresolved over I left that")], now=NOW)
-    assert res.nodes[0].label == "The walkway render break is unresolved over I left that, 6 of 6"
+    res = fold([n], [ev(axis(0, 0.5), label="The walkway render break is unresolved over Curiosity run promise")],
+               now=NOW)
+    assert res.nodes[0].label == "The walkway render break is unresolved over Curiosity run promise, 6 of 6"
+    assert res.nodes[0].label_similarity == 0.9999  # the bar is not lowered by a stale swap
     # A subject label is not displaced by a less similar choice.
     n = node(label_similarity=0.9999)
     res = fold([n], [ev(axis(0, 0.5), label="further")], now=NOW)
@@ -440,3 +442,39 @@ def test_category_only_label_gives_way_to_the_next_subject_even_if_less_similar(
     n = node(label=old, label_similarity=0.9999)
     res = fold([n], [ev(axis(0, 0.5), label="a promise I made over a thread from my letter")], now=NOW)
     assert res.nodes[0].label == "a thread from my letter over a promise I made and a thread from my letter, 6 of 6"
+
+
+def test_subject_label_never_flaps_back_to_a_category():
+    # subject (low sim, stale swap) -> category excerpt (high sim) -> the label stays on the subject.
+    n = node(label="a thread from my letter over a promise I made, 2 of 2", label_similarity=0.6)
+    res = fold([n], [ev(axis(0, 0.5), label="walkway render break over chat memory")], now=NOW)
+    n2 = res.nodes[0]
+    assert n2.label.startswith("walkway render break over chat memory")
+    res = fold([n2], [ev(axis(0, 0.001), label="a promise I made over a thread from my letter")], now=NOW)
+    assert res.nodes[0].label.startswith("walkway render break over chat memory")
+
+
+@pytest.mark.parametrize("text", [
+    "A promise I made to fix the cache over no move",
+    "a promise I made in a curiosity run is still open",
+    "Whether caching helps over time", "Read about cats and dogs over Say nothing",
+])
+def test_real_subjects_are_not_read_as_categories(text):
+    from orion.personality.graph import category_led
+    assert not category_led(text) and label_base(text) == text
+
+
+@pytest.mark.parametrize("label", [
+    "a promise I made over a thread from my letter and a thread from my letter, 1 of 3",
+    'A read, "The Definitive Fine-Tuning Guide, 1 of 1', "A read, A daydream: cats, 1 of 1",
+    'A read, "Cats and dogs: a study, 1 of 1', "A daydream: an installation over Say nothing to Juniper this time, 1 of 1",
+])
+def test_label_base_is_idempotent(label):
+    once = label_base(label)
+    assert label_base(once) == once and '"' not in once
+
+
+def test_only_id_shaped_refs_are_removed():
+    from orion.personality.graph import subject_text
+    assert subject_text("See [note: the cache] for details") == "See [note: the cache] for details"
+    assert subject_text("chat memory [juniper_chat:7a286bdd-acc] stalls") == "chat memory stalls"

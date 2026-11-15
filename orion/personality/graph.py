@@ -109,12 +109,16 @@ _WS = re.compile(r"\s+")
 # (orion/prime/choice.py ``option_text``); this covers older records and lanes that still lead with a category.
 _CATEGORY_LEADS = (
     re.compile(r"^a thread from my letter(?: for \d{4}-\d{2}-\d{2})?\s*:?\s*", re.I),
-    re.compile(r"^a (?:promise I made|thread I opened)(?: in an? [^(:]*)?\s*(?:\([^)]*\)?)?\s*:?\s*", re.I),
+    # Only the real category shape: "a promise I made in a <where> (<n> promise, <ref>)[: ...]", or the bare
+    # phrase alone (a cut gist). "A promise I made to fix the cache" is a subject and is left alone.
+    re.compile(r"^a (?:promise I made|thread I opened)(?: in an? (?:chat with Juniper|curiosity run|consult with "
+               r"Claude|day letter|carry turn for something I took on|chat|consult))?"
+               r"\s*(?:\([^)]*\)?\s*:?\s*|:\s*|$)", re.I),
     re.compile(r"^a read\s*[,:]\s*", re.I),
     re.compile(r"^a daydream\s*[,:]\s*", re.I),
 )
 _LABEL_MARKUP = re.compile(r"\*\*|__|`")
-_LABEL_REF = re.compile(r"\s*\[[a-z_]+:[^\]]*\]|\s*\b[a-z_]+_trace:\S+")
+_LABEL_REF = re.compile(r"\s*\[[a-z_]+:[0-9A-Za-z_-]{6,}[^\]]*\]|\s*\b[a-z_]+_trace:\S+")
 _LEAD_QUOTED = re.compile(r'^["“](?P<q>[^"”]+)["”]')
 _QUOTE_CHARS = str.maketrans("", "", '"“”')
 
@@ -305,6 +309,18 @@ def decline_text(lane: str) -> str:
     return DECLINE_TEXT.get(lane, DECLINE_TEXT_DEFAULT)
 
 
+def _before_dash(text: str) -> str:
+    """The text before its first " — " that is outside double quotes (a dash inside a quoted line is prose)."""
+    i = 0
+    while True:
+        j = text.find(" — ", i)
+        if j < 0:
+            return text
+        if text.count('"', 0, j) % 2 == 0 and (text.count("“", 0, j) == text.count("”", 0, j)):
+            return text[:j]
+        i = j + 3
+
+
 def category_led(text: Any) -> bool:
     """Does the text (or any " over " side of a label base) lead with a category phrase?"""
     sides = (text if isinstance(text, str) else "").split(" over ")
@@ -316,11 +332,18 @@ def subject_text(text: Any) -> str:
     title stands alone ('A read, "The Guide": Link made: ...' -> 'The Guide'). "" when only the category is
     left ("a promise I made in a curiosity run (1 promise, <ref>)")."""
     s = _WS.sub(" ", _LABEL_REF.sub("", _LABEL_MARKUP.sub("", text if isinstance(text, str) else ""))).strip()
-    for rx in _CATEGORY_LEADS:
-        m = rx.match(s)
-        if m:
-            s = s[m.end():].strip()
-            break
+    stripped = True
+    while stripped and s:  # one lead behind another ("A read, A daydream: ...") strips to a fixed point
+        stripped = False
+        for rx in _CATEGORY_LEADS:
+            m = rx.match(s)
+            if m:
+                s, stripped = s[m.end():].strip(), True
+                break
+    # "<subject> — <about>" (orion/prime/choice.py ``option_text``): the subject is the part before the dash.
+    head = _before_dash(s)
+    if len(head.split()) >= 2:
+        s = head
     q = _LEAD_QUOTED.match(s)
     if q:
         s = q["q"].strip()
@@ -333,10 +356,6 @@ def gist(text: Any, words: int = GIST_WORDS) -> str:
     trimmed off the end of a cut. No ellipsis."""
     raw = text if isinstance(text, str) else ""
     subject = subject_text(raw) or raw
-    # "<subject> — <about>" (orion/prime/choice.py ``option_text``): the subject is the part before the dash.
-    head = subject.split(" — ", 1)[0]
-    if len(head.split()) >= 2:
-        subject = head
     parts = [p for p in _WS.sub(" ", subject).strip().split(" ") if p]
     out = parts[:words]
     if len(parts) > len(out):
@@ -361,7 +380,8 @@ def pair_label(chosen_text: str, declined_texts: Sequence[str]) -> str:
 def _tidy_side(side: str) -> str:
     """One " over " side of a category-led base; its " and "-joined declined gists one by one."""
     parts = side.split(" and ")
-    return " and ".join(gist(p) if category_led(p) and subject_text(p) else p for p in parts)
+    side = " and ".join(gist(p) if category_led(p) and subject_text(p) else p for p in parts)
+    return side.translate(_QUOTE_CHARS).strip()
 
 
 def tidy_label(base: str) -> str:
@@ -518,9 +538,12 @@ class _Tick:
         base = label_base(node.label)
         # A base that is still only a category ("a thread from my letter over a promise I made") gives way to
         # the next choice that names a subject, however similar: its words say nothing a closer match could.
+        # A category-only excerpt never displaces a base that names a subject (no flapping), and a stale swap
+        # keeps the similarity bar where it was, so a weak match does not lower it for later choices.
         stale = category_led(base) and not category_led(ev.excerpt)
-        if hit and (sim > node.label_similarity or stale) and ev.excerpt.strip():
-            base, node.label_similarity = ev.excerpt, sim
+        demotes = category_led(ev.excerpt) and not category_led(base)
+        if hit and ev.excerpt.strip() and not demotes and (sim > node.label_similarity or stale):
+            base, node.label_similarity = ev.excerpt, max(sim, node.label_similarity)
         node.label = choice_label(base, node.evidence_count, node.evidence_count + node.opposed_count)
         return gain
 

@@ -11,6 +11,8 @@ category-led labels stored on personality_disposition. For each it prints the la
 
 * prime_subject_first -- no label built from a Prime decision leads with a category phrase on any side;
 * no_refs_in_text     -- no Prime option text carries markdown or a trace ref;
+* promise_words_private -- no promise sentence (``promise_text``, Prime's frame only, S-1.8) reaches a record
+                         text or a label;
 * outreach_titles     -- an outreach read's label starts with the title, a daydream's with what it showed;
 * stored_tidy         -- stored labels whose subject survived are tidied now; category-only ones are flagged
                          so the reducer replaces them on their next choice (``reinforce``).
@@ -21,6 +23,7 @@ Run: ``PYTHONPATH=. python orion/prime/evals/run_choice_label_replay.py`` (exit 
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -32,12 +35,14 @@ FIXTURE = Path(__file__).parent / "fixtures" / "choice_labels_live_2026-11-14.js
 
 def main() -> int:
     data = json.loads(FIXTURE.read_text())
-    concerns = {c["concern_id"]: ShownConcern(c["concern_id"], c["text"], c.get("event_ref"),
-                                              promise_text=c.get("promise_text")) for c in data["concerns"]}
+    concerns = {c["concern_id"]: ShownConcern(c["concern_id"], c["text"], c.get("event_ref"))
+                for c in data["concerns"]}
+    # The promise sentences (frame only, S-1.8): none may reach a record text or a label.
+    quotes = [q for c in data["concerns"] for q in re.findall(r'"([^"]+)"', c.get("promise_text") or "")]
     checks: dict[str, bool] = {}
 
     print("Prime decisions (label from the concern text with today's label maker -> from the new record text):")
-    ok_subject, ok_refs = True, True
+    ok_subject, ok_refs, ok_private = True, True, bool(quotes)
     for chosen, declined in data["decisions"]:
         before = pair_label(concerns[chosen].text, [concerns[d].text for d in declined])
         texts = [option_text(concerns[chosen]), *(option_text(concerns[d]) for d in declined)]
@@ -45,11 +50,13 @@ def main() -> int:
         sides = after.replace(" and ", " over ").split(" over ")
         ok_subject &= not any(category_led(s) for s in sides)
         ok_refs &= not any(m in t for t in texts for m in ("**", "`", "_trace:", "[curiosity:", "[juniper_chat:"))
+        ok_private &= not any(q[:20] in t for q in quotes for t in [*texts, after])
         print(f"  concern text: {before}\n  record text:  {after}")
         for t in texts:
             print(f"    text: {t[:160]}")
     checks["prime_subject_first"] = ok_subject
     checks["no_refs_in_text"] = ok_refs
+    checks["promise_words_private"] = ok_private
 
     print("Outreach options:")
     reads = [t for t in data["outreach_options"] if t.startswith("A read")]

@@ -72,7 +72,7 @@ path of a file with the full result; read only what you need from that file.
                          Temporal Self arcs; prints journal:/chat:/arc: ids a lived_record cites.
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
-  look [<camera>]        see a camera now (office, walkway, doorbell): Read the path it prints.
+  look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
   --dig <id>             before the command: group results under one dig (default: today).
@@ -1667,6 +1667,18 @@ def cmd_ref(kind: str, ref_id: str, out: Out) -> str:
     return capped(res.lines, tail=f"full {kind}: {path}")
 
 
+def cmd_look_check(act_id: str, verdict: str, seen: str, record_id: str, out: Out) -> str:
+    """`look check`: one vision record against what Orion saw in that look's frame."""
+    from orion.dig import look as lk
+
+    try:
+        lines, entry = lk.check(act_id, verdict, seen, record_id, home=home())
+    except lk.LookError as exc:
+        raise DigError(str(exc)) from exc
+    path = out.write("look-check", entry)
+    return capped(lines, tail=f"full result: {path}")
+
+
 def cmd_look(word: str | None, out: Out) -> str:
     """`look`: each camera's newest frame age; `look <camera>`: copy its newest frame for Read."""
     from orion.dig import look as lk
@@ -1872,6 +1884,13 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_claude_grants(out)
         elif ns.command == "claude-grants" and len(a) >= 5 and a[0] == "set" and a[3] == "because":
             text = cmd_claude_grants_set(a[1], a[2], " ".join(a[4:]), out)
+        elif ns.command == "look" and a[:1] == ["check"] and len(a) >= 6 and "because" in a[4:]:
+            cut = len(a) - 1 - a[::-1].index("because")  # the last one: what you saw may say "because"
+            if cut != len(a) - 2:
+                raise DigError('look check: one record id after "because": look check <act> <verdict> "<seen>" because <id>')
+            text = cmd_look_check(a[1], a[2], " ".join(a[3:cut]), a[-1], out)
+        elif ns.command == "look" and a[:1] == ["check"]:
+            raise DigError('usage: look check <act> matches|differs|cannot-tell "<what you see>" because <record id>')
         elif ns.command == "look" and len(a) <= 1:
             text = cmd_look(a[0] if a else None, out)
         elif ns.command in REF_COMMANDS and len(a) == 1:

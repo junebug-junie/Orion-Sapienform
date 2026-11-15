@@ -50,6 +50,12 @@ families:
     note: >-
       Orion opening a live camera frame from a turn (`dig look`, orion/dig/look.py, 2026-11-13). Perception
       chosen inside a chat turn or curiosity run, never bid for on its own: the turn already won its slot.
+  orion.look_check:
+    tier: 0
+    note: >-
+      Orion filing whether a vision record matched what a look showed (`dig look check`, #3347 part 2a,
+      2026-11-15). Done inside the same turn as the look; never bids. A spot-check want that bids on its
+      own (tier 2, Juniper's call) comes later, once hand-filed checks show the rate is not pinned.
 
   # --- Tier 1: critical upkeep, a reserved share of each lane. ---
   actions.journal:

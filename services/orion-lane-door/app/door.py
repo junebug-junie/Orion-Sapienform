@@ -349,7 +349,6 @@ class Door:
                 await writer.drain()
                 if writer.can_write_eof():
                     writer.write_eof()
-                await _drain(reader)
             status, err = 401, None
         else:
             status, err = await self._forward(reader, writer, Head(head.start, headers), version,
@@ -373,6 +372,8 @@ class Door:
             # once a minute per source and path (a caller retrying against an enforcing door would flood it;
             # the JSONL keeps every call).
             print("lane_door_unkeyed " + json.dumps(row, separators=(",", ":")), flush=True)
+        if refused:
+            await _drain(reader)   # after the log row: the call is recorded whatever the caller does next
 
     def _journal_due(self, source: str, path: str) -> bool:
         now, key = time.monotonic(), (source, path)

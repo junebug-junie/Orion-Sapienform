@@ -51,6 +51,7 @@ Failures went from 2 to 0. The one "after" miss is an honest "I don't know" abou
 - `scripts/core_page_juniper_dry_run.py`: offline dry run against live data, writes nothing.
 - `scripts/sync_local_env_from_example.py`: sync prefixes `ORION_CORE_PAGES_`, `CORE_PAGE_FOLD_`.
 - `.github/workflows/core-memory-pages-tests.yml`: CI for all of the above.
+- `config/metrics/metric_definitions.lock.json`: re-locked (Static repo gates): the bus-channel metric for `orion:self_concept:history:write` is now keyed to orion-durable-runs instead of orion-hub; same channel and consumer.
 - Tests: `orion/memory/pages/tests/*`, `orion/harness/tests/test_core_page_relationship_block.py`, `orion/substrate/tests/test_felt_state_core_page_lane.py`, `services/orion-cortex-exec/tests/test_core_page_grounding.py`, `services/orion-durable-runs/tests/test_core_page_fold.py`, `services/orion-equilibrium-service/tests/test_metacog_gate_core_pages.py`.
 - `orion/substrate/tests/test_felt_state_self_definition_lane.py`: 3 tests already failing on main (they assumed one `self_concept_history` query); fixed and added to CI.
 

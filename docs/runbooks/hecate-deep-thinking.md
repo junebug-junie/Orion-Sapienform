@@ -6,7 +6,7 @@ request. The hard distributed-reasoning grid passed **36/36** fresh/cached reque
 across six depths, including 132000 and the maximum prompt. See `1cat-hard-grid.jsonl`
 and its resource summary in the dated benchmark directory. All five operational checks passed, including serialized queueing, budget refusal,
 stream cancellation and client-timeout recovery. The four task-quality cases passed all three
-repeats (12/12). DFlash2 and Strata comparisons remain in progress. Measured
+repeats (12/12). DFlash2 passed the same checks and is deployed (decode 104-190 tokens/s vs 38-48). The Strata comparison remains open. Measured
 latency/energy tables are in the dated benchmark directory’s `RESULTS.md`.
 
 ## Hardware and compatibility (2026-11-14)
@@ -42,26 +42,17 @@ CUDA Graphs, native MTP4 and DFlash2 are supported upstream; speculation starts
 disabled so its extra weights/KV and correctness can be measured separately.
 No CPU weight/KV offload is enabled. Do not add offload to hide an OOM.
 
-Optional DFlash2 experiment: the pinned draft is 3848817896 bytes (3.58 GiB),
-SHA256 `67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c`.
-Its five attention layers use a 2048-token sliding window. Runtime profiling must
-still measure weight sharding, target-feature buffers, draft KV and graph overhead.
-The optional override keeps the baseline context and sequence limits, uses seven
-speculative tokens, TP2 for the draft, and `kv_cache_dtype=auto` (FP16 with this
-target's FP16 compute). Preparation does not activate speculation:
-
-```bash
-python services/orion-vllm-host/scripts/prepare_deep_model.py /mnt/models --draft --download
-# On clean synchronized Hecate primary main, with the lane private and drained:
-mkdir -p .orion
-python services/orion-vllm-host/scripts/stage_dflash.py > .orion/hecate-dflash-profiles.yaml
-services/orion-vllm-host/scripts/hecate-deep.sh \
-  -f services/orion-vllm-host/docker-compose.dflash-eval.yml up -d --no-build
-```
-
-Use the same quality/context harness and record the speculative engine configuration.
-Restore baseline with `hecate-deep.sh up -d --no-build` (no DFlash override). Keep
-the candidate private until its own context and quality results pass.
+**DFlash2 is the deployed configuration (2026-11-15).** `deep.thinker.v1` in
+`config/llm_profiles.yaml` carries a `speculative_config`: the pinned DFlash2 draft
+(3848817896 bytes, SHA256
+`67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c`, five attention
+layers with a 2048-token sliding window), seven speculative tokens, draft TP2,
+`kv_cache_dtype=auto` (FP16 draft KV). Context and sequence limits are unchanged.
+It passed the same 36/36 context grid, the 262144-token endurance run and 12/12
+task-quality runs as the dense baseline, with 2.2-4x decode; prefill is unchanged.
+Fetch the draft with `prepare_deep_model.py /mnt/models --draft --download`.
+Rollback to the dense baseline: delete the `speculative_config` block, then
+`hecate-deep.sh up -d --no-build` from clean synchronized Hecate main.
 
 The first cold 132K ledger request took 98.08s total, 86.00s to first token,
 1574 uncached prompt tokens/s from provider prefill timing, and 42.79 generated

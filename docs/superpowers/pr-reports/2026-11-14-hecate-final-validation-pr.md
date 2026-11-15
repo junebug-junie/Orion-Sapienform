@@ -5,7 +5,13 @@ plus 16384 generated tokens, followed by a correct recovery request. The dense
 baseline passed all 36 distributed-context checks, all five operational checks,
 and all 12 runs of four task-quality problems.
 
-DFlash2 and Strata comparisons remain in progress; production promotion is pending.
+DFlash2 passed the same 36/36 context grid, the endurance run with recovery and
+12/12 task-quality runs, with 2.2-4x decode (104-190 vs 38-48 tokens/s) and
+unchanged prefill. This PR promotes it: `deep.thinker.v1` now carries the DFlash2
+`speculative_config`, and the commissioning-only overlay (`stage_dflash.py`,
+`docker-compose.dflash-eval.yml`) is retired. The Strata comparison stays open; it
+should run against a harder, discriminating task set, since both current suites
+are saturated.
 
 ## Architecture and changes
 
@@ -54,15 +60,23 @@ These are offline performance observations, not cognitive detector inputs.
 
 ## Config, deployment and rollback
 
-No env template changes. Ignored worker env files exist locally with the Tailscale
-bus URL and were synchronized. The optional DFlash profile/Compose override and
-isolated Strata stack were prepared in earlier merged PRs. Live activation must
-use clean synchronized primary main and the existing operator maintenance hold.
-The dense baseline image/model are preserved for rollback. See the runbook.
+No env template changes. After merge, deploy from clean synchronized primary main:
+
+1. Hecate: `services/orion-vllm-host/scripts/hecate-deep.sh up -d --no-build`
+   (base Compose, now DFlash2 from the committed profile; no overlay).
+2. Athena: recreate `orion-gpu-pool` from its base Compose file only, dropping
+   `docker-compose.hecate-eval.yml`, so `agent-deep` returns to owner `agent-deep`
+   and Orion's agent/metacog/fast classes can use the lane.
+
+Rollback to the dense baseline: delete the `speculative_config` block and redeploy
+step 1. The dense image and model are unchanged.
 
 ## Risks and remaining work
 
-- Candidate comparisons and production promotion are still pending.
+- Strata comparison is still pending.
+- DFlash2 decode speed depends on draft acceptance and varies with the text.
+  Reasoning length differed between engines on the same correct answers.
+- DFlash2 completed-task energy and the source-text distractor run were not measured.
 - Four task-quality problems and synthetic distributed reasoning are limited
   evidence; a perfect score does not establish broad reasoning superiority.
 - Energy is GPU board energy, not wall-plug energy. Whole-host CPU includes other
@@ -73,7 +87,7 @@ The dense baseline image/model are preserved for rollback. See the runbook.
   Follow-up: https://github.com/junebug-junie/Orion-Sapienform/issues/3363.
 - Issues opened: #3363 (Graphify storage/tooling). Closed: none. Project-board
   placement is unavailable through the connected GitHub tools; `gh` is absent
-  locally and on Athena. Remaining mission work is continuing here.
+  locally and on Athena. Codex session ran out; DFlash2 evidence recovered from Hecate and finished by Claude.
 
 ## PR
 

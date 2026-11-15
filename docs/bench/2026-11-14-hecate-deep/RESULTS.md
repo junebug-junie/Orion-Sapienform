@@ -1,7 +1,7 @@
 # Hecate deep-thinking measurements
 
 Commissioning date: 2026-11-14. All inference uses Orion Gateway and the existing
-operator admission lease. Candidate selection remains in progress.
+operator admission lease. DFlash2 selected and promoted 2026-11-15; Strata comparison open.
 
 ## Dense baseline: verified
 

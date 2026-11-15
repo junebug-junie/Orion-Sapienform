@@ -22,14 +22,19 @@ def test_internal_reserve_does_not_change_comparison_questions():
             assert seed(20261114, 132000, repeat, output) == seed(20261114, 132000, repeat, output, 8)
 
 
-def test_dflash_candidate_changes_only_speculation_and_keeps_full_context():
+def test_deep_thinker_ships_validated_dflash_draft(monkeypatch):
+    import json
     import yaml
-    original = yaml.safe_load((ROOT / 'config/llm_profiles.yaml').read_text())
-    candidate = runpy.run_path(str(ROOT / 'services/orion-vllm-host/scripts/stage_dflash.py'))['candidate']()
-    spec = candidate['profiles']['deep.thinker.v1']['vllm'].pop('speculative_config')
-    assert candidate == original
-    assert spec['method'] == 'dflash' and spec['num_speculative_tokens'] == 7
-    assert spec['draft_tensor_parallel_size'] == 2 and spec['kv_cache_dtype'] == 'auto'
+    lock = json.loads((ROOT / 'services/orion-vllm-host/scripts/deep-thinker.lock.json').read_text())
+    profile = yaml.safe_load((ROOT / 'config/llm_profiles.yaml').read_text())['profiles']['deep.thinker.v1']
+    spec = profile['vllm']['speculative_config']
+    assert spec == {'method': 'dflash', 'model': '/models/' + lock['draft']['directory'],
+                    'num_speculative_tokens': 7, 'draft_tensor_parallel_size': 2,
+                    'attention_backend': 'FLASH_ATTN_V100', 'kv_cache_dtype': 'auto'}
+    monkeypatch.setattr(main, 'settings', Settings(_env_file=None, VLLM_PROFILE_NAME='deep.thinker.v1',
+                        LLM_PROFILES_CONFIG_PATH=ROOT / 'config/llm_profiles.yaml'))
+    cmd, _ = main.build_vllm_command_and_env()
+    assert json.loads(cmd[cmd.index('--speculative-config') + 1]) == spec
 
 
 def test_launch_has_two_cards_full_context_and_one_sequence(monkeypatch):
@@ -42,7 +47,6 @@ def test_launch_has_two_cards_full_context_and_one_sequence(monkeypatch):
         assert cmd[cmd.index(flag) + 1] == value
     assert env['CUDA_VISIBLE_DEVICES'] == '0,1'
     assert '--enable-prefix-caching' in cmd and '--enable-chunked-prefill' in cmd
-    assert '--speculative-config' not in cmd
     assert json.loads(cmd[cmd.index('--override-generation-config') + 1]) == {'max_new_tokens': 32768}
 
 

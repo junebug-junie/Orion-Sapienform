@@ -127,6 +127,6 @@ Door flips: none now. Per lane, later, by the runbook's "Phase 3" one-liner.
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3422
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

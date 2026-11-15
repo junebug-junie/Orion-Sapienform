@@ -1,8 +1,13 @@
 """Intention ledger D0: plain-code gate on the 5b judge's promise fields.
 
 The judge names promises; this module decides which of them are real. Nothing here is a
-model call or a word list. Three rules (docs/superpowers/specs/2026-11-11-intention-ledger-design.md):
+model call or a word list. Four rules (docs/superpowers/specs/2026-11-11-intention-ledger-design.md):
 
+0. A ``promises_made`` item must name Orion as the one who does the act
+   (``PromiseV1.doer == "orion"``). The judge classifies every item it lists; an ask for
+   Juniper to act, a hand-off to someone else, and a forecast about a system are dropped
+   here, before the cap, so they cannot crowd out a real promise. A missing or unknown
+   doer is dropped too (fail closed).
 1. A ``promises_made`` quote must be literally in the reply, after whitespace and
    quote-mark normalization. A quote the judge paraphrased or invented is dropped.
 2. An ``offers_accepted`` entry must be one of the offer quotes the harness showed the
@@ -25,6 +30,8 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable
 
 from orion.schemas.harness_finalize import (
+    PROMISE_DOER_ORION,
+    PROMISE_DOERS,
     PROMISE_ITEMS_MAX,
     PROMISE_QUOTE_MAX_CHARS,
     FinalizeReflectionV1,
@@ -71,6 +78,8 @@ class PromiseGateResult:
     reflection: FinalizeReflectionV1
     kept_made: int = 0
     dropped_not_in_text: list[str] = field(default_factory=list)
+    # Items whose doer is not Orion, as (doer, quote); doer None = the judge gave none.
+    dropped_not_orion: list[tuple[str | None, str]] = field(default_factory=list)
     dropped_too_long: int = 0
     dropped_too_short: int = 0
     dropped_unknown_offer: list[str] = field(default_factory=list)
@@ -79,7 +88,7 @@ class PromiseGateResult:
 
     @property
     def dropped_total(self) -> int:
-        return (len(self.dropped_not_in_text) + self.dropped_too_long + self.dropped_too_short
+        return (len(self.dropped_not_in_text) + len(self.dropped_not_orion) + self.dropped_too_long + self.dropped_too_short
                 + len(self.dropped_unknown_offer)
                 + len(self.dropped_unknown_kept) + self.dropped_over_cap)
 
@@ -99,7 +108,9 @@ def coerce_promise_fields(raw: dict[str, Any]) -> dict[str, Any]:
     made: list[PromiseV1] = []
     for item in _list("promises_made"):
         if isinstance(item, dict) and isinstance(item.get("quote"), str):
-            made.append(PromiseV1(quote=item["quote"], offer=item.get("offer") is True))
+            doer = item.get("doer")
+            made.append(PromiseV1(quote=item["quote"], offer=item.get("offer") is True,
+                                  doer=doer if doer in PROMISE_DOERS else None))
     accepted = [x for x in _list("offers_accepted") if isinstance(x, str)]
     kept = [x for x in _list("promises_kept") if isinstance(x, str)]
     return {"promises_made": made, "offers_accepted": accepted, "promises_kept": kept}
@@ -114,7 +125,7 @@ def gate_promises(
     enabled: bool | None = None,
     correlation_id: str = "",
 ) -> PromiseGateResult:
-    """Apply the three rules. Returns a copy of the reflection with only surviving entries."""
+    """Apply the four rules. Returns a copy of the reflection with only surviving entries."""
     if enabled is None:
         enabled = promise_ledger_enabled()
     if not enabled:
@@ -125,6 +136,9 @@ def gate_promises(
     made: list[PromiseV1] = []
     seen: set[str] = set()
     for promise in reflection.promises_made:
+        if promise.doer != PROMISE_DOER_ORION:
+            result.dropped_not_orion.append((promise.doer, promise.quote))
+            continue
         norm = normalize_for_quote_match(promise.quote)
         if len(promise.quote) > PROMISE_QUOTE_MAX_CHARS:
             result.dropped_too_long += 1
@@ -166,10 +180,10 @@ def gate_promises(
     )
     if result.dropped_total or made or accepted or kept:
         logger.info(
-            "promise_gate corr=%s made=%d offers=%d accepted=%d kept=%d dropped_not_in_text=%d "
+            "promise_gate corr=%s made=%d offers=%d accepted=%d kept=%d dropped_not_in_text=%d dropped_not_orion=%d "
             "dropped_too_long=%d dropped_too_short=%d dropped_unknown_offer=%d dropped_unknown_kept=%d dropped_over_cap=%d",
             correlation_id, len(made), sum(1 for p in made if p.offer), len(accepted), len(kept),
-            len(result.dropped_not_in_text), result.dropped_too_long, result.dropped_too_short, len(result.dropped_unknown_offer),
+            len(result.dropped_not_in_text), len(result.dropped_not_orion), result.dropped_too_long, result.dropped_too_short, len(result.dropped_unknown_offer),
             len(result.dropped_unknown_kept), result.dropped_over_cap,
         )
     return result

@@ -750,7 +750,7 @@ bash services/orion-llamacpp-host/scripts/verify_qwen3_thinking_off_live.sh
 **Fast lane (live, no Docker):** one call to the **running** fast seat, through orion-llm-gateway under a
 GPU pool operator hold (`python -m orion.evals.leased_llm chat`). Per-request `chat_template_kwargs` is
 sent in the JSON body so thinking can be forced off **without** restarting the worker. There is no direct
-worker URL: the lane door refuses unkeyed model calls (leased-evals design,
+worker URL: the lane door refuses model calls with no lease id (leased-evals design,
 `docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md`).
 
 ```bash

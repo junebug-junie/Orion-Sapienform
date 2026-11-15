@@ -137,6 +137,9 @@ SYNC_PREFIXES = (
     # Consults (2026-11-11): Hub's loop (scripts/consult_loop.py) and the room companion's consult
     # mode. Neither prefix matched before, so the default run added none of their keys.
     "HUB_CONSULT_",
+    # Session threads (2026-11-15): Hub's hourly round-up of coding-session messages
+    # (scripts/session_roundup_loop.py).
+    "HUB_SESSION_ROUNDUP_",
     "ROOM_COMPANION_CONSULT_",
     # Claude's tools gated by Orion's consent (2026-11-13, Patch 1b): the companion's per-turn MCP server,
     # the governor's broker (CLAUDE_TOOLS_*, CHANNEL_CLAUDE_TOOL_REQUEST). orion-mind's PRIME_CONSENT_* keys

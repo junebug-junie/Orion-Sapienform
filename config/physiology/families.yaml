@@ -173,6 +173,19 @@ families:
     deferrable_window_s: 1800
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
+  durable.session_roundup:
+    # 2026-11-15, session threads (docs/superpowers/specs/2026-11-15-session-threads-design.md): Orion's hourly
+    # read of the messages coding sessions sent (session_roundup.orion_turn durable run, act
+    # ask:durable.session_roundup, services/orion-durable-runs/app/run_acts.py). Its own family so a round-up
+    # never spends durable.consult_orion_turn's hunger. TIER 2 IS THE DESIGN'S DEFAULT: discretionary, like a
+    # consult turn; Juniper may change it in PR review. At most one run an hour, and none when no thread is
+    # held. 3600 s: the next hour's round-up replaces a turn that waited that long. Bids are shadow (not a
+    # binding family in app/run_bids.py): the hourly cadence is Juniper's rule, so the market does not hold it.
+    # Agent lanes: the run asks for llm.route.agent with agent preferred. No receptors.
+    tier: 2
+    deferrable_window_s: 3600
+    lanes: [agent, agent-gpu2, agent-deep]
+    placement: one_of
   durable.reminiscence:
     # 2026-11-07, daily reminiscence Patch 2 (docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md
     # section 6): one durable run a Denver day in which Orion writes five hops about one past week and reads

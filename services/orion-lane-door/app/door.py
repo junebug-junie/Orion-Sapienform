@@ -1,27 +1,32 @@
 """The lane door: a thin HTTP/1.1 proxy in front of one model server (leased-evals design, Phase 2).
 
 docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md, "Phase 2". The gateway
-sends two headers on every call it dispatches under a pool grant:
+sends one header on every call it dispatches under a pool grant: ``X-Orion-Lease-Id``, the granted lease.
 
-* ``X-Orion-Lane-Key``: a per-deployment secret only the gateway and the doors hold;
-* ``X-Orion-Lease-Id``: the granted lease.
+The door reads it (``leased`` / ``unleased`` / ``invalid``), strips it, forwards the call byte-for-byte to
+the engine on circe's loopback, and logs ONE JSON line per model call: time, lane, source address,
+method, path, lease state, lease id, status, duration. Never prompt text. In ``shadow`` mode it refuses
+nothing. ``off`` = pure pass-through (header still stripped). In ``enforce`` mode (Phase 3, one lane at a
+time, Juniper's call after the shadow evidence) a model call without a lease id gets 401
+``lane_door_unleased`` and never reaches the engine; exempt reads still pass.
 
-The door checks the key (``ok`` / ``missing`` / ``bad``), strips both headers, forwards the call
-byte-for-byte to the engine on the docker network, and logs ONE JSON line per model call: time,
-lane, source address, method, path, key state, lease id, status, duration. Never prompt text, never
-the key. In ``shadow`` mode it refuses nothing. ``off`` = pure pass-through (headers still stripped).
-In ``enforce`` mode (Phase 3, one lane at a time, Juniper's call after the shadow evidence) a model call
-without a valid key gets 401 ``lane_door_unleased`` and never reaches the engine; exempt reads still pass.
+There is no shared secret. The door is there to catch ACCIDENTAL bypass: one of Orion's own evals or
+scripts calling a model server directly instead of the gateway. It does not fence a deliberate caller (a
+caller can send any lease id; and on athena the Hub holds the docker socket, so a secret would not stop a
+local caller either). A made-up lease id is caught offline: scripts/lane_door_report.py joins the logged
+lease ids to ``gpu_pool_events``.
 
 Not a model call, never refused in any mode, counted but not logged per line (the pool probes them
 every few seconds): ``GET /health /props /slots /v1/models /models /metrics`` and the no-model reads
 ``POST /tokenize /detokenize /apply-template``. Pinned by tests/test_door.py and kept equal to
 orion/evals/leased_llm.py's WORKER_READ_* by tests/test_lane_door_exempt_parity.py (repo root).
 
-The door asks the pool nothing per call: a pool RPC here would sit on Juniper's chat path. The proof
-that a keyed call was leased is indirect -- only the gateway holds the key, and it dispatches only under
-a grant -- and the trace closes it offline: scripts/lane_door_report.py joins the logged lease ids to
-``gpu_pool_events``.
+The door asks the pool nothing per call: a pool RPC here would sit on Juniper's chat path.
+
+Taking the lane port (``serve``): the door runs on the host network and binds the lane port only once its
+engine answers on the loopback upstream. Before that the engine still publishes the lane port itself, and
+the door waits (``lane_door_waiting``) instead of stealing the port from it. So a deploy can start the door
+before or after the engine moves, in any order, and an engine restart never loses its port to the door.
 
 One request per client connection: the door answers with ``Connection: close``. The gateway opens a
 new connection per call anyway (a new httpx client per request), so this costs nothing it pays today.
@@ -33,11 +38,12 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hmac
+import errno
 import json
 import logging
 import os
 import re
+import signal
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -48,7 +54,6 @@ from .settings import Settings
 
 logger = logging.getLogger("lane-door")
 
-KEY_HEADER = b"x-orion-lane-key"
 LEASE_HEADER = b"x-orion-lease-id"
 EXEMPT_GET_PATHS = frozenset({"/health", "/props", "/slots", "/v1/models", "/models", "/metrics",
                               "/orion/server-info"})   # the pool's vLLM probe (orion-gpu-pool app/main.py _probe)
@@ -61,7 +66,7 @@ MAX_HEAD_BYTES = 64 * 1024
 CHUNK = 64 * 1024
 _HOP = {b"connection", b"keep-alive", b"proxy-connection"}
 _LEASE_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
-MAX_SOURCES = 256   # distinct unkeyed sources kept in /door/stats
+MAX_SOURCES = 256   # distinct unleased sources kept in /door/stats
 
 
 class BadRequest(Exception):
@@ -80,13 +85,15 @@ def is_exempt(method: str, path: str) -> bool:
             or (method == "POST" and path in EXEMPT_POST_PATHS))
 
 
-def key_state(presented: Optional[bytes], key: str) -> str:
-    """ok | missing | bad. With no door key configured, any presented key is ``bad``."""
-    if presented is None:
-        return "missing"
-    if key and hmac.compare_digest(presented, key.encode("utf-8")):
-        return "ok"
-    return "bad"
+def lease_state(presented: Optional[bytes]) -> tuple[str, Optional[str]]:
+    """(state, lease id to log). ``leased``: a well-formed lease id; ``unleased``: no header (or an empty
+    one); ``invalid``: a header that is not a lease id (logged as ``"invalid"``, never echoed)."""
+    lease = (presented or b"").decode("latin-1").strip()
+    if not lease:
+        return "unleased", None
+    if _LEASE_RE.match(lease):
+        return "leased", lease
+    return "invalid", "invalid"
 
 
 @dataclass
@@ -222,29 +229,29 @@ class RequestLog:
 class Stats:
     lane: str
     mode: str
-    key_hash: Optional[str]
     started_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    calls: dict[str, int] = field(default_factory=lambda: {"ok": 0, "missing": 0, "bad": 0})
+    calls: dict[str, int] = field(default_factory=lambda: {"leased": 0, "unleased": 0, "invalid": 0})
     exempt: int = 0
     refused: int = 0
     upstream_errors: int = 0
     bad_requests: int = 0
-    unkeyed_by_source: dict[str, int] = field(default_factory=dict)
-    unkeyed_by_path: dict[str, int] = field(default_factory=dict)
+    unleased_by_source: dict[str, int] = field(default_factory=dict)
+    unleased_by_path: dict[str, int] = field(default_factory=dict)
 
     def count(self, state: str, source: str, path: str) -> None:
         self.calls[state] = self.calls.get(state, 0) + 1
-        if state != "ok":
-            if source in self.unkeyed_by_source or len(self.unkeyed_by_source) < MAX_SOURCES:
-                self.unkeyed_by_source[source] = self.unkeyed_by_source.get(source, 0) + 1
-            if path in self.unkeyed_by_path or len(self.unkeyed_by_path) < MAX_SOURCES:
-                self.unkeyed_by_path[path] = self.unkeyed_by_path.get(path, 0) + 1
+        if state != "leased":
+            if source in self.unleased_by_source or len(self.unleased_by_source) < MAX_SOURCES:
+                self.unleased_by_source[source] = self.unleased_by_source.get(source, 0) + 1
+            if path in self.unleased_by_path or len(self.unleased_by_path) < MAX_SOURCES:
+                self.unleased_by_path[path] = self.unleased_by_path.get(path, 0) + 1
 
     def as_dict(self) -> dict[str, Any]:
-        return {"lane": self.lane, "mode": self.mode, "key_hash": self.key_hash, "started_at": self.started_at,
+        return {"lane": self.lane, "mode": self.mode, "started_at": self.started_at,
                 "calls": dict(self.calls), "exempt": self.exempt, "refused": self.refused,
                 "upstream_errors": self.upstream_errors, "bad_requests": self.bad_requests,
-                "unkeyed_by_source": dict(self.unkeyed_by_source), "unkeyed_by_path": dict(self.unkeyed_by_path)}
+                "unleased_by_source": dict(self.unleased_by_source),
+                "unleased_by_path": dict(self.unleased_by_path)}
 
 
 JOURNAL_EVERY_SEC = 60.0
@@ -285,8 +292,9 @@ def _status_of(start: bytes) -> int:
 class Door:
     def __init__(self, settings: Settings, log: Optional[RequestLog] = None):
         self.s = settings
-        self.stats = Stats(lane=settings.lane, mode=settings.mode, key_hash=settings.key_hash)
+        self.stats = Stats(lane=settings.lane, mode=settings.mode)
         self._journaled: dict[tuple[str, str], float] = {}
+        self.active = 0   # requests in flight (serve() drains them on SIGTERM)
         self.log = log if log is not None else RequestLog(settings.log_dir, settings.lane,
                                                           settings.log_retention_days)
 
@@ -295,11 +303,15 @@ class Door:
         started = time.monotonic()
         peer = writer.get_extra_info("peername")
         source = str(peer[0]) if isinstance(peer, tuple) and peer else "unknown"
+        if source.startswith("::ffff:"):
+            source = source[len("::ffff:"):]   # an IPv4 caller on a dual-stack socket
+        self.active += 1
         try:
             await self._handle(reader, writer, started, source)
         except Exception:  # noqa: BLE001 -- one bad call never takes the door down
             logger.warning("lane_door_handler_error lane=%s src=%s", self.s.lane, source, exc_info=True)
         finally:
+            self.active -= 1
             with contextlib.suppress(Exception):
                 writer.close()
                 await writer.wait_closed()
@@ -325,20 +337,18 @@ class Door:
             return
 
         exempt = is_exempt(method, path)
-        state = key_state(head.get(KEY_HEADER), self.s.key)
-        lease = (head.get(LEASE_HEADER) or b"").decode("latin-1")
-        lease_id = lease if _LEASE_RE.match(lease) else ("invalid" if lease else None)
+        state, lease_id = lease_state(head.get(LEASE_HEADER))
 
         # Expect: 100-continue is answered by the door itself (below), never forwarded: an interim 1xx from
         # the engine would otherwise have to be relayed as a second head on the same reply.
         expect_continue = b"100-continue" in (head.get(b"expect") or b"").lower()
-        headers = head.without(KEY_HEADER, LEASE_HEADER, b"expect", *_HOP)
+        headers = head.without(LEASE_HEADER, b"expect", *_HOP)
         if self.s.upstream_host_header:
             headers = [(k, v) for k, v in headers if k.lower() != b"host"]
             headers.insert(0, (b"Host", self.s.upstream_host_header.encode("latin-1")))
         headers.append((b"Connection", b"close"))
 
-        refused = self.s.mode == "enforce" and not exempt and state != "ok"
+        refused = self.s.mode == "enforce" and not exempt and state != "leased"
         if refused:
             # Refused before any engine connection. Then the request body is read and dropped (up to
             # DRAIN_MAX_BYTES / DRAIN_SEC): closing a socket with unread data sends a reset, and a caller still
@@ -360,18 +370,18 @@ class Door:
             return
         self.stats.count(state, source, path)
         row = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), "lane": self.s.lane,
-               "src": source, "method": method, "path": path, "key": state, "lease_id": lease_id,
+               "src": source, "method": method, "path": path, "lease": state, "lease_id": lease_id,
                "status": status, "ms": round((time.monotonic() - started) * 1000.0, 1)}
         if err:
             row["error"] = err
         if refused:
             row["refused"] = True
         self.log.write(row)
-        if state != "ok" and self._journal_due(source, path):
+        if state != "leased" and self._journal_due(source, path):
             # Rare and the whole point of the shadow phase: also in the container log (journald), at most
             # once a minute per source and path (a caller retrying against an enforcing door would flood it;
             # the JSONL keeps every call).
-            print("lane_door_unkeyed " + json.dumps(row, separators=(",", ":")), flush=True)
+            print("lane_door_unleased " + json.dumps(row, separators=(",", ":")), flush=True)
         if refused:
             await _drain(reader)   # after the log row: the call is recorded whatever the caller does next
 
@@ -459,35 +469,110 @@ class Door:
                 up_w.close()
 
 
+WAIT_LOG_EVERY_SEC = 60.0
+STATE_FILE = os.environ.get("LANE_DOOR_STATE_FILE", "/tmp/lane-door.state")   # read by app/health.py
+
+
+def _set_state(state: str) -> None:
+    with contextlib.suppress(OSError):
+        Path(STATE_FILE).write_text(state + "\n", encoding="utf-8")
+
+
+async def _upstream_answers(settings: Settings) -> bool:
+    """True when the engine accepts a TCP connection on the loopback upstream (it has moved behind the door)."""
+    try:
+        _, w = await asyncio.wait_for(asyncio.open_connection(settings.upstream_host, settings.upstream_port),
+                                      settings.connect_timeout_sec)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    with contextlib.suppress(Exception):
+        w.close()
+        await w.wait_closed()
+    return True
+
+
+async def take_port(door: Door, settings: Settings, *, stop: Optional[asyncio.Event] = None
+                    ) -> Optional[asyncio.AbstractServer]:
+    """Bind the lane port, but only once the engine answers on the upstream. Polls every
+    ``bind_poll_sec``; logs ``lane_door_waiting`` at most once a minute. Returns None if ``stop`` is set
+    while waiting.
+
+    Why wait for the engine first: until an engine is moved to loopback it publishes the lane port itself.
+    A door that grabbed the port the moment it was free (an engine restart, a crash) would leave the
+    restarted engine unable to bind its old port -- the lane down until someone acts. Waiting for the
+    upstream means the door only takes the port from an engine that no longer wants it."""
+    last_log = -WAIT_LOG_EVERY_SEC
+    host = settings.listen_host or None   # None = every interface, IPv4 and IPv6 (what docker publishing did)
+    while stop is None or not stop.is_set():
+        reason = "engine_not_on_upstream"
+        if await _upstream_answers(settings):
+            try:
+                return await asyncio.start_server(door.handle, host, settings.listen_port,
+                                                  limit=MAX_HEAD_BYTES, backlog=512)
+            except OSError as exc:
+                if exc.errno != errno.EADDRINUSE:
+                    raise
+                reason = "port_in_use"
+        now = time.monotonic()
+        if now - last_log >= WAIT_LOG_EVERY_SEC:
+            last_log = now
+            print(f"lane_door_waiting lane={settings.lane} reason={reason} port={settings.listen_port} "
+                  f"upstream={settings.upstream_host}:{settings.upstream_port}", flush=True)
+        if stop is None:
+            await asyncio.sleep(settings.bind_poll_sec)
+        else:
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(stop.wait(), settings.bind_poll_sec)
+    return None
+
+
+async def drain(door: Door, seconds: float) -> int:
+    """Wait for in-flight calls to finish, at most ``seconds``. Returns how many were still running."""
+    deadline = time.monotonic() + seconds
+    while door.active > 0 and time.monotonic() < deadline:
+        await asyncio.sleep(0.2)
+    return door.active
+
+
 async def serve(settings: Settings, door: Optional[Door] = None) -> None:
     door = door or Door(settings)
-    server = await asyncio.start_server(door.handle, settings.listen_host, settings.listen_port,
-                                        limit=MAX_HEAD_BYTES, backlog=512)
+    stop = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        with contextlib.suppress(NotImplementedError, RuntimeError):
+            loop.add_signal_handler(sig, stop.set)
     print(f"lane_door_start lane={settings.lane} mode={settings.mode} upstream={settings.upstream_host}:"
-          f"{settings.upstream_port} listen={settings.listen_port} key_hash={settings.key_hash or 'none'}",
-          flush=True)
-    if not settings.key:
-        print("lane_door_no_key: LANE_DOOR_KEY is empty; every keyed call will read as 'bad'", flush=True)
+          f"{settings.upstream_port} listen={settings.listen_host or '*'}:{settings.listen_port}", flush=True)
 
     async def summaries() -> None:
         while True:
             await asyncio.sleep(settings.summary_interval_sec)
             s = door.stats
-            print(f"lane_door_summary lane={s.lane} mode={s.mode} ok={s.calls['ok']} missing={s.calls['missing']} "
-                  f"bad={s.calls['bad']} exempt={s.exempt} refused={s.refused} "
-                  f"upstream_errors={s.upstream_errors}", flush=True)
+            print(f"lane_door_summary lane={s.lane} mode={s.mode} leased={s.calls['leased']} "
+                  f"unleased={s.calls['unleased']} invalid={s.calls['invalid']} exempt={s.exempt} "
+                  f"refused={s.refused} upstream_errors={s.upstream_errors}", flush=True)
 
     ticker = asyncio.ensure_future(summaries())
     try:
-        async with server:
-            await server.serve_forever()
+        _set_state("waiting")
+        server = await take_port(door, settings, stop=stop)
+        if server is None:
+            return
+        _set_state("listening")
+        print(f"lane_door_listening lane={settings.lane} port={settings.listen_port}", flush=True)
+        await stop.wait()
+        # A stop (a redeploy of the door): no new calls, then let the ones in flight finish -- a Hub chat
+        # turn's stream must not be cut by a door image update.
+        server.close()
+        left = await drain(door, settings.drain_sec)
+        print(f"lane_door_stop lane={settings.lane} cut_in_flight={left}", flush=True)
     finally:
         ticker.cancel()
         door.log.close()
 
 
-__all__ = ["Door", "EXEMPT_GET_PATHS", "EXEMPT_POST_PATHS", "KEY_HEADER", "LEASE_HEADER", "RequestLog", "Stats",
-           "is_exempt", "key_state", "serve"]
+__all__ = ["Door", "EXEMPT_GET_PATHS", "EXEMPT_POST_PATHS", "LEASE_HEADER", "RequestLog", "Stats",
+           "drain", "is_exempt", "lease_state", "serve", "take_port"]
 
 
 if os.environ.get("LANE_DOOR_DEBUG"):

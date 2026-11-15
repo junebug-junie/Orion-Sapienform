@@ -371,11 +371,13 @@ def vision_percept(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 |
 
 
 def memory_episode(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
-    """episode_memory. Time: occurred_at. episode_id and purpose only; statement is prose."""
+    """episode_memory. Time: occurred_at, the moment the memory is about. Available at created_at
+    (``payload.available_at``): the row is distilled hours later, and the reducer folds it then (#3400).
+    episode_id and purpose only; statement is prose."""
     return _event(
         kind="memory_episode", table="episode_memory", ref=row.get("memory_id"),
         at=row.get("occurred_at"), tz_name=tz_name, related_refs=[str(row.get("episode_id"))],
-        payload={"purpose": row.get("purpose")},
+        payload={"purpose": row.get("purpose"), **_available_payload(row.get("created_at"))},
     )
 
 

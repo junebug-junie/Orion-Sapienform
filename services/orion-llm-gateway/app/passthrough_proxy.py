@@ -374,9 +374,8 @@ async def proxy_on_pool(
 
         may_release = overflow_response is None and not clamped and hold is None
         upstream_url = f"{lease.grant.url.rstrip('/')}{path}"
-        # The lane door in front of the server: the key and THIS lease (a child's own id under a hold).
+        # The lane door in front of the server: THIS lease's id (a child's own id under a hold).
         upstream_headers = {**headers, **lane_door.headers(lease.lease_id)}
-        lane_door.observe_grant(lease.grant.url)
         if on_dispatch is not None:
             on_dispatch(upstream_url, lease.grant.served_by, stream)
         watch = asyncio.ensure_future(wait_lease_revoked(lease))

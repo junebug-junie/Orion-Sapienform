@@ -52,11 +52,29 @@ GROUP_ID = "orion_trial"
 TRIAL_GRAPHS = {"graphiti_trial": "orion_trial", "graphiti_trial2": "orion_trial2"}
 
 
+# The input each trial graph takes: one graph never mixes trial 1 notes and trial 2 chat.
+GRAPH_SOURCE = {"graphiti_trial": "memory", "graphiti_trial2": "chat"}
+
+
 def configure_graph(graph: str) -> None:
-    global TRIAL_GRAPH, GROUP_ID
+    global TRIAL_GRAPH, GROUP_ID, OUT_DIR
     if graph not in TRIAL_GRAPHS:
         raise SystemExit(f"refusing graph {graph!r}: this trial writes only {sorted(TRIAL_GRAPHS)}")
     TRIAL_GRAPH, GROUP_ID = graph, TRIAL_GRAPHS[graph]
+    if "GRAPHITI_TRIAL_OUT" not in os.environ:  # one output folder per graph unless told otherwise
+        OUT_DIR = Path("/tmp") / graph.replace("_", "-")
+
+
+def settings_conflict(out_dir: Path, graph: str, settings: dict[str, Any]) -> str | None:
+    """A resume must use the settings the graph was built with, or the comparison is mixed."""
+    for f in sorted(out_dir.glob("plan-*.json")):
+        old = json.loads(f.read_text())
+        if old.get("graph", graph) != graph:
+            continue
+        diff = {k: (old.get(k), v) for k, v in settings.items() if k in old and old.get(k) != v}
+        if diff:
+            return f"{f.name} built {graph} with different settings {diff}"
+    return None
 OUT_DIR = Path(os.environ.get("GRAPHITI_TRIAL_OUT", "/tmp/graphiti-trial"))
 
 
@@ -448,6 +466,13 @@ def _log_progress(line: str) -> None:
 
 async def run(args: argparse.Namespace) -> int:
     configure_graph(args.graph)
+    if GRAPH_SOURCE[TRIAL_GRAPH] != args.source:
+        raise SystemExit(f"{TRIAL_GRAPH} takes --source {GRAPH_SOURCE[TRIAL_GRAPH]}, not {args.source}")
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    clash = settings_conflict(OUT_DIR, TRIAL_GRAPH, {"source": args.source, "thinking": args.thinking,
+                                                     "ontology": args.ontology})
+    if clash:
+        raise SystemExit(f"refusing to resume: {clash}")
     from graphiti_core import Graphiti  # noqa: PLC0415
     from graphiti_core.driver.falkordb_driver import FalkorDriver  # noqa: PLC0415
     from graphiti_core.nodes import EpisodeType  # noqa: PLC0415

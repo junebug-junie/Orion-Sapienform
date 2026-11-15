@@ -689,13 +689,19 @@ def test_ontology_is_small_and_excludes_generic_entity():
     assert "pronouns" in types["Person"].model_fields and "species" in types["Pet"].model_fields
 
 
-def test_install_redisearch_sanitizer_wraps_graphiti_once():
+def test_install_redisearch_sanitizer_wraps_fulltext_query(monkeypatch):
     pytest.importorskip("graphiti_core")
     from graphiti_core.search import search_utils
+    monkeypatch.setattr(search_utils, "fulltext_query", search_utils.fulltext_query)  # restored after
     t2.install_redisearch_sanitizer()
     t2.install_redisearch_sanitizer()
-    assert "%" not in search_utils.lucene_sanitize("38% outreach")
-    assert search_utils.lucene_sanitize._orion_safe
+    from types import SimpleNamespace as NS
+    from graphiti_core.driver.driver import GraphProvider
+    driver = NS(provider=GraphProvider.FALKORDB, fulltext_syntax="@")
+    q = search_utils.fulltext_query("38% outreach figure", ["g"], driver)
+    assert "%" not in q and "outreach" in q
+    assert search_utils.fulltext_query("…?!", ["g"], driver) == ""
+    assert search_utils.fulltext_query._orion_safe
 
 
 def test_pronoun_violations_flag_he_for_she_people_and_orion_only():
@@ -760,3 +766,42 @@ def test_default_route_and_class_are_operator():
         trial._run_with_sigterm = orig
     assert seen["work_class"] == "operator_agent" and seen["llm_route"] == "operator_agent"
     assert seen["max_hold_sec"] <= 1200
+
+
+def test_seed_body_omits_pronoun_clause_when_none_stated():
+    body = t2.seed_body([{"name": "Lee", "category": "relationship", "value_text": "a friend"}])
+    assert "Juniper: Lee: a friend" in body and "not stated" not in body
+
+
+def test_pronoun_violations_ignore_blank_he_names():
+    v = score.pronoun_violations([], [_edge("Robin says he is tired")], {**T, "he_names": ["", " "]})
+    assert len(v) == 1
+
+
+def test_trial2_graph_takes_chat_and_resume_refuses_changed_settings(tmp_path, monkeypatch):
+    (tmp_path / "plan-a.json").write_text(json.dumps({"graph": "graphiti_trial2", "source": "chat",
+                                                      "thinking": "off", "ontology": "orion"}))
+    same = {"source": "chat", "thinking": "off", "ontology": "orion"}
+    assert trial.settings_conflict(tmp_path, "graphiti_trial2", same) is None
+    assert "thinking" in trial.settings_conflict(tmp_path, "graphiti_trial2", {**same, "thinking": "on"})
+    assert trial.settings_conflict(tmp_path, "graphiti_trial", {**same, "thinking": "on"}) is None
+    monkeypatch.setenv("GRAPHITI_TRIAL_OUT", str(tmp_path))
+    try:
+        with pytest.raises(SystemExit, match="takes --source chat"):
+            asyncio.run(trial.run(trial_args(graph="graphiti_trial2", source="memory")))
+    finally:
+        trial.configure_graph("graphiti_trial")
+
+
+def trial_args(**kw):
+    import argparse
+    base = {"graph": "graphiti_trial", "source": "memory", "thinking": "on", "ontology": "none"}
+    return argparse.Namespace(**{**base, **kw})
+
+
+def test_scorer_refuses_a_dump_of_another_graph(tmp_path, monkeypatch):
+    monkeypatch.setenv("GRAPHITI_TRIAL_OUT", str(tmp_path))
+    monkeypatch.setattr(score, "OUT_DIR", tmp_path)
+    (tmp_path / "graph_dump.json").write_text(json.dumps({"nodes": [], "edges": [], "episodes": 0,
+                                                          "graph": "graphiti_trial"}))
+    assert score.main(["report", "--graph", "graphiti_trial2"]) == 1

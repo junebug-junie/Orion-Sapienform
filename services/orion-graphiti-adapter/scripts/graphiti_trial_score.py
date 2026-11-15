@@ -240,9 +240,10 @@ def pronoun_violations(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
     Other summaries and all facts: any sentence naming one of them, with a male pronoun and no
     he/him name in it.
     ``he_names`` (optional list in the terms file, plus the pet) are the people a "he" may be
-    about. Deterministic candidates; the report lists every one so a human confirms the count."""
+    about. A sentence that also names one of them is excused entirely, so a mixed sentence can hide
+    a real slip -- a known under-count, which is why the report lists every candidate. Deterministic candidates; the report lists every one so a human confirms the count."""
     not_he = [str(t["subject"]), str(t["spouse"]), "Orion"]
-    he = [str(x) for x in (t.get("he_names") or [])] + [str(t["pet"])]
+    he = [str(x).strip() for x in (t.get("he_names") or []) if str(x).strip()] + [str(t["pet"])]
     not_he_re = re.compile("|".join(word(n) for n in not_he), re.I)
     he_re = re.compile("|".join(word(n) for n in he), re.I) if he else re.compile(r"(?!x)x")
 
@@ -425,6 +426,7 @@ def redaction_leaks(red: str, t: dict[str, str], hashes: set[str], pt: Any) -> l
 
 
 def main(argv: list[str] | None = None) -> int:
+    global OUT_DIR
     p = argparse.ArgumentParser()
     p.add_argument("cmd", choices=("dump", "sample", "invalidations", "report"))
     p.add_argument("--graph", default=TRIAL_GRAPH, choices=TRIAL_GRAPHS)
@@ -438,6 +440,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--plan", default="", help="plan-<run>.json the report describes (default: newest)")
     p.add_argument("--terms", default="", help=f"terms file (default {TERMS_LOCAL.name})")
     a = p.parse_args(argv)
+    if "GRAPHITI_TRIAL_OUT" not in os.environ and a.graph != TRIAL_GRAPH:
+        OUT_DIR = Path("/tmp") / a.graph.replace("_", "-")
+        a.judgments = a.judgments.replace("/tmp/graphiti-trial/", f"{OUT_DIR}/")
+        a.invalidations = a.invalidations.replace("/tmp/graphiti-trial/", f"{OUT_DIR}/")
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     dump_path = OUT_DIR / "graph_dump.json"
     if a.cmd == "sample" and Path(a.judgments).exists() and not a.force and any(
@@ -452,6 +458,10 @@ def main(argv: list[str] | None = None) -> int:
         dump = dump_graph(a.falkor_host, a.falkor_port, a.graph)
         dump_path.write_text(json.dumps(dump, indent=1, default=str))
     dump = json.loads(dump_path.read_text())
+    if dump.get("graph", "graphiti_trial") != a.graph:
+        print(f"refusing: {dump_path} holds {dump.get('graph', 'graphiti_trial')}, not {a.graph} (run dump)",
+              file=sys.stderr)
+        return 1
     print(f"graph dump {dump_path} ({dump['episodes']} episodes, {len(dump['nodes'])} entities, "
           f"written {datetime.fromtimestamp(dump_path.stat().st_mtime, tz=timezone.utc).isoformat(timespec='seconds')})",
           file=sys.stderr)
@@ -465,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if a.cmd == "report":
         judged = json.loads(Path(a.judgments).read_text()) if Path(a.judgments).exists() else []
-        inval = json.loads(Path(a.invalidations).read_text()) if Path(a.invalidations).exists() else []
+        inval = json.loads(Path(a.invalidations).read_text()) if Path(a.invalidations).exists() else None
         results = _read_jsonl(OUT_DIR / "results.jsonl")
         plan_path = Path(a.plan) if a.plan else max(OUT_DIR.glob("plan-*.json"), key=lambda f: f.stat().st_mtime,
                                                          default=None)

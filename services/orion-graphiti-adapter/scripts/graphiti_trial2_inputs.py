@@ -27,6 +27,8 @@ ORION_HEAD, ORION_TAIL = 1100, 300
 JUNIPER_MAX_CHARS = 2500
 JUNIPER_HEAD, JUNIPER_TAIL = 2000, 400
 
+# Every chat_history_log row is a Hub turn (sources hub_orion / hub_ws / hub_http / hub, 2026-11-15),
+# so the prompt is Juniper's and the response Orion's. Re-check if another client starts writing it.
 CHAT_SQL = """
 select id::text as id, prompt, response, created_at as at
 from chat_history_log
@@ -76,9 +78,10 @@ def seed_body(facts: list[dict[str, Any]]) -> str:
         if name.lower() == "juniper":
             continue
         slot = people[name]
-        pron = ", ".join(slot.get("pronouns") or []) or "not stated"
+        pron = ", ".join(slot.get("pronouns") or [])
         rel = " ".join(slot.get("relationship") or [])
-        lines.append(f"Juniper: {name} uses {pron} pronouns." + (f" {rel}" if rel else ""))
+        first = f"{name} uses {pron} pronouns." if pron else f"{name}:"
+        lines.append(f"Juniper: {first}" + (f" {rel}" if rel else ""))
     return "\n".join(lines)
 
 
@@ -113,17 +116,23 @@ def redisearch_safe(query: str) -> str:
 
 
 def install_redisearch_sanitizer() -> None:
-    """Route graphiti's fulltext queries through ``redisearch_safe`` first (trial process only)."""
-    from graphiti_core.search import search_utils  # noqa: PLC0415
-    if getattr(search_utils.lucene_sanitize, "_orion_safe", False):
-        return
-    original = search_utils.lucene_sanitize
+    """Route graphiti's fulltext queries through ``redisearch_safe`` first (trial process only).
 
-    def safe(query: str) -> str:
-        return original(redisearch_safe(query))
+    Wraps ``search_utils.fulltext_query`` (its callers look it up at call time): a query that is
+    empty once sanitized returns '' -- graphiti's own "skip the fulltext search" value -- instead
+    of the bare ``()`` that RediSearch also rejects."""
+    from graphiti_core.search import search_utils  # noqa: PLC0415
+    if getattr(search_utils.fulltext_query, "_orion_safe", False):
+        return
+    original = search_utils.fulltext_query
+
+    def safe(query: str, group_ids, driver):
+        cleaned = redisearch_safe(query)
+        return original(cleaned, group_ids, driver) if cleaned else ""
 
     safe._orion_safe = True  # type: ignore[attr-defined]
-    search_utils.lucene_sanitize = safe
+    safe._orion_original = original  # type: ignore[attr-defined]
+    search_utils.fulltext_query = safe
 
 
 def ontology() -> tuple[dict[str, Any], list[str]]:

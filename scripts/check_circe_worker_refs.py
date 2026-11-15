@@ -99,7 +99,7 @@ DIRECT_CALLERS: dict[str, str] = {
         "the GPU power bench runs ON circe as root and needs llama.cpp's raw /completion timings, a pinned "
         "slot and an idle card: the gateway can give none of these. It keeps its interactive reservation "
         "(scripts/gpu_pool_clear_gpu2.py, started by hand like the Hub's experiment-seat button) and reads "
-        "the engine on circe's loopback (the lane door's engine port, 127.0.0.1:180xx), never a tailnet port"
+        "the engine on circe's own loopback (127.0.0.1), never a tailnet address"
     ),
 }
 

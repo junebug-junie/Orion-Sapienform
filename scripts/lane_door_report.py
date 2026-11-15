@@ -21,7 +21,7 @@ Without --dsn the verdict says the lease join was not run.
       python3 scripts/lane_door_report.py - --dsn postgresql://postgres:postgres@localhost:55432/conjourney
 
     python3 scripts/lane_door_report.py /path/to/lane-door/            # a folder of .jsonl files
-    python3 scripts/lane_door_report.py --stats http://100.112.254.99:8011 ...   # live /door/stats
+    python3 scripts/lane_door_report.py --stats http://<circe-address>:<lane-port> ...   # live /door/stats (the doors' own counters)
 
 Exit 0 always (a report, not a gate); ``--json`` for machine output.
 """

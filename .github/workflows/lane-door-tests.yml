@@ -41,7 +41,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install (the door itself needs nothing; tests need pytest + httpx)
-        run: python -m pip install pytest httpx
+        run: python -m pip install pytest httpx pyyaml
       - name: Door
         run: cd services/orion-lane-door && python -m pytest tests -q -p no:cacheprovider
       - name: Exempt paths and key hash agree with the eval helper and the gateway; shadow report

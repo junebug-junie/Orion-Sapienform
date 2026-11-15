@@ -101,6 +101,8 @@ HISTORY_WINDOW = timedelta(days=30)
 MAX_STALE_TTLS = 6.0
 REFRESH_FRACTION = 0.8
 RETRY_SEC = 60.0
+# A refresh that hangs (a stuck connection) is abandoned after this, so single-flight cannot wedge forever.
+REFRESH_TIMEOUT_SEC = 60.0
 
 ACTS_SQL = """
 SELECT act_id, actor, opened_at, closed_at, outcome_value, outcome_source, signal_id, cost_json
@@ -219,6 +221,7 @@ class Market:
         self._refresh_task: Optional[asyncio.Task] = None
         self._weights_task: Optional[asyncio.Task] = None
         self._last_attempt: Optional[datetime] = None
+        self._weights_last_attempt: Optional[datetime] = None
         self.book = ReservationBook()
         # Orion Prime step 3: apply Prime's regulate charges (ORION_PHYSIOLOGY_PRIME_REGULATION). Off: the
         # signal is never read; bids are exactly as before.
@@ -226,7 +229,8 @@ class Market:
         self.counts = {"funded": 0, "deferred": 0, "publish_failed": 0, "prime_applied": 0, "prime_control": 0,
                        "prime_refused": 0,
                        "prime_read_failed": 0, "consent_allow": 0, "consent_refuse": 0, "consent_needs_consent": 0,
-                       "history_served_stale": 0, "history_refresh_failed": 0}
+                       "history_served_stale": 0, "history_refresh_failed": 0,
+                       "weights_refresh_failed": 0}
 
     def _kick_refresh(self, now: datetime) -> asyncio.Task:
         """The one history refresh in flight, started if none is (issue #3382: never two at once).
@@ -235,7 +239,7 @@ class Market:
         if t is not None and not t.done():
             return t
         self._last_attempt = now
-        t = asyncio.create_task(self._refresh(now))
+        t = asyncio.create_task(asyncio.wait_for(self._refresh(now), timeout=min(REFRESH_TIMEOUT_SEC, self._ttl)))
         t.add_done_callback(self._refresh_done)
         self._refresh_task = t
         return t
@@ -277,13 +281,15 @@ class Market:
         c = self._cache
         if c is not None:
             age = (now - c.at).total_seconds()
-            if 0 <= age <= self._ttl:
+            # A negative age (a caller's ``now`` taken before the refresher stamped the snapshot) is fresh:
+            # refreshing on it would move the snapshot time backwards.
+            if age <= self._ttl:
                 return c
             if age <= self._ttl * MAX_STALE_TTLS:
                 self.counts["history_served_stale"] += 1
                 last = self._last_attempt
                 # After a failed refresh, retry at most once per RETRY_SEC from bids, not on every bid.
-                if last is None or not 0 <= (now - last).total_seconds() < min(RETRY_SEC, self._ttl):
+                if last is None or (now - last).total_seconds() >= min(RETRY_SEC, self._ttl):
                     self._kick_refresh(now)
                 return c
         # Nothing servable: wait on the refresh (shielded: a caller that gives up does not cancel it).
@@ -352,7 +358,9 @@ class Market:
         if self._weights is not None:
             self._kick_weights(hist, now)
             return
-        self._weights = await self._compute_weights_entry(hist, now)
+        w = await self._compute_weights_entry(hist, now)
+        if self._weights is None or self._cache is hist:    # never overwrite a newer snapshot's weights
+            self._weights = w
 
     def _kick_weights(self, hist: "_Cached", now: datetime) -> None:
         t = self._weights_task
@@ -360,6 +368,12 @@ class Market:
             return
         if self._refresh_task is not None and not self._refresh_task.done():
             return              # the refresh in flight computes fresh weights with its snapshot
+        if self._weights is not None and now.astimezone(timezone.utc).date() < self._weights[0][1]:
+            return              # a late caller's earlier day must not replace today's weights
+        last = self._weights_last_attempt
+        if last is not None and (now - last).total_seconds() < min(RETRY_SEC, self._ttl):
+            return              # after a failed replay, retry at most once per RETRY_SEC
+        self._weights_last_attempt = now
 
         async def run() -> None:
             w = await self._compute_weights_entry(hist, now)
@@ -372,6 +386,7 @@ class Market:
 
     def _weights_done(self, t: asyncio.Task) -> None:
         if not t.cancelled() and t.exception() is not None:
+            self.counts["weights_refresh_failed"] += 1
             logger.warning("physiology_bid_weights_refresh_failed err=%r (kept the last weights)", t.exception())
 
     async def _compute_weights_entry(self, hist: "_Cached", now: datetime) -> tuple[Any, dict, dict, dict]:
@@ -568,6 +583,13 @@ class Market:
         logger.info("prime_charge family=%s want=%s arm=%s direction=%s effect=%s net_with=%.3f net_without=%.3f "
                     "signal=%s act=%s", sig.family, want.want_id, sig.arm, sig.direction, eff, net_with, net_without,
                     sig.signal_id, sig.act_id)
+
+    async def aclose(self) -> None:
+        """Cancel the refresh and weights tasks in flight (shutdown, before the pool closes)."""
+        tasks = [t for t in (self._refresh_task, self._weights_task) if t is not None and not t.done()]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def release(self, want_id: str) -> int:
         return self.book.release(want_id)

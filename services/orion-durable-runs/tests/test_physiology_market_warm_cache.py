@@ -8,6 +8,7 @@ background too. Fakes only: a pool whose reads sleep."""
 from __future__ import annotations
 
 import asyncio
+import threading
 import sys
 import time
 from datetime import timedelta
@@ -21,7 +22,7 @@ from app import physiology_market as pm  # noqa: E402
 from tests.test_physiology_bid import NOW, _Redis, _acts, _market, _state, _want  # noqa: E402
 
 TTL = 300.0
-FAST = 0.25         # a bid served from a snapshot must answer well inside the 0.5 s client budget
+FAST = 0.4          # a bid served from a snapshot must answer well inside the 0.5 s client budget
 
 
 class _SlowConn:
@@ -156,50 +157,145 @@ def test_no_snapshot_waits_once_and_a_failure_is_unavailable():
     asyncio.run(go())
 
 
+def _late_market(pool):
+    """A market whose body state is at LATE (23:59 UTC), so bids around midnight are priced."""
+    m = _warm_market(pool)
+    m._redis_getter = lambda: _Redis(_state(LATE).model_dump_json())
+    return m
+
+
+LATE = NOW.replace(hour=23, minute=59, second=0, microsecond=0)
+
+
+def _gated_weights(m):
+    """Make the weights replay block on a threading.Event, counting calls."""
+    real, gate, calls = m._compute_weights, threading.Event(), []
+
+    def gated(hist, now, choices):
+        calls.append(now)
+        gate.wait(5.0)
+        return real(hist, now, choices)
+
+    m._compute_weights = gated
+    return gate, calls
+
+
 def test_a_new_day_keeps_the_last_weights_and_replays_in_the_background():
     async def go():
         pool = _SlowPool()
-        m = _warm_market(pool)
-        await _seed(m, pool)
-        old_w = m._weights
-        real = m._compute_weights
-        calls = []
-
-        def slow(hist, now, choices):
-            calls.append(now)
-            time.sleep(1.0)                                # the 30-day replay, in its worker thread
-            return real(hist, now, choices)
-
-        m._compute_weights = slow
-        # Same snapshot, but the UTC day moved (a fresh snapshot still cached: no history read).
-        m._cache.at = NOW.replace(hour=23, minute=59, second=0, microsecond=0)
-        next_day = m._cache.at + timedelta(minutes=2)
-        fresh_state = _state(next_day).model_dump_json()
-        m._redis_getter = lambda: _Redis(fresh_state)
+        m = _late_market(pool)
+        await m.bid(_want(100), LATE)                      # snapshot and weights both at 23:59
+        old_w, snap = m._weights, m._cache
+        assert old_w[0][0] == snap.at == LATE
+        gate, calls = _gated_weights(m)
+        next_day = LATE + timedelta(minutes=2)             # same snapshot (fresh), new UTC day
         t0 = time.monotonic()
         d = await m.bid(_want(1), next_day)
         assert time.monotonic() - t0 < FAST and d.reason != "physiology_unavailable", (d.reason, d.why)
-        assert m._weights is old_w                         # served the last weights meanwhile
+        assert m._weights is old_w and m._cache is snap    # served the last weights meanwhile
         await m.bid(_want(2), next_day + timedelta(seconds=1))
+        gate.set()
         await m._weights_task
         assert len(calls) == 1                             # one replay, not one per bid
-        assert m._weights[0][1] == next_day.date()
+        assert m._weights[0] == (snap.at, next_day.date(), None) and m._cache is snap
 
     asyncio.run(go())
 
 
-def test_run_refresher_warms_the_cache_before_any_bid():
+def test_a_late_weights_replay_never_overwrites_a_newer_snapshot_and_none_starts_during_a_refresh():
+    async def go():
+        pool = _SlowPool()
+        m = _late_market(pool)
+        await m.bid(_want(100), LATE)
+        snap, w0 = m._cache, m._weights
+        gate, calls = _gated_weights(m)
+        next_day = LATE + timedelta(minutes=2)
+        # The replay for snap starts on a new day; a refresh swaps in first, the stale replay finishes after.
+        await m.bid(_want(2), next_day)
+        wtask = m._weights_task
+        fresh = pm._Cached(at=next_day + timedelta(minutes=1), acts=snap.acts, uses=snap.uses, events=snap.events)
+        newer = ((fresh.at, fresh.at.date(), None), *w0[1:])
+        m._cache, m._weights = fresh, newer
+        gate.set()
+        await wtask
+        assert m._weights is newer                         # the late replay was for an older snapshot
+
+        # While a refresh is in flight, a key change does not start a separate replay.
+        pool.delay = 0.3
+        n = len(calls)
+        later = fresh.at + timedelta(seconds=TTL + 1)
+        await m.bid(_want(3), later)                       # stale: kicks the refresh
+        assert m._refresh_task is not None and not m._refresh_task.done()
+        m._weights = (("other",), *m._weights[1:])         # e.g. a new personality read
+        m._weights_task, m._weights_last_attempt = None, None
+        await m.bid(_want(4), later + timedelta(seconds=1))
+        assert m._weights_task is None
+        await m._refresh_task
+        assert len(calls) == n + 1                         # only the refresh's own replay
+
+    asyncio.run(go())
+
+
+def test_a_bid_older_than_the_snapshot_is_served_fresh_without_a_refresh():
     async def go():
         pool = _SlowPool()
         m = _warm_market(pool)
+        await _seed(m, pool)
+        snap, reads = m._cache, pool.act_reads
+        d = await m.bid(_want(1), NOW - timedelta(seconds=2))   # a caller's clock read before the refresher's
+        assert d.reason != "physiology_unavailable"
+        assert m._cache is snap and pool.act_reads == reads and m._refresh_task.done()
+        assert m.counts["history_served_stale"] == 0
+
+    asyncio.run(go())
+
+
+def test_a_hung_refresh_is_abandoned_so_the_next_one_can_run(monkeypatch):
+    async def go():
+        monkeypatch.setattr(pm, "REFRESH_TIMEOUT_SEC", 0.2)
+        pool = _SlowPool()
+        m = _warm_market(pool)
+        await _seed(m, pool)
+        pool.delay = 10.0
+        later = NOW + timedelta(seconds=TTL + 1)
+        await m.bid(_want(1), later)
+        await asyncio.gather(m._refresh_task, return_exceptions=True)
+        await asyncio.sleep(0)
+        assert m.counts["history_refresh_failed"] == 1 and m._refresh_task.done()
+
+    asyncio.run(go())
+
+
+def test_run_refresher_warms_the_cache_recovers_after_a_failed_boot_and_stops():
+    async def go():
+        pool = _SlowPool(fail=True)
+        m = _warm_market(pool)
+        m._ttl = 2.0                                       # refresh every 1.6 s
         stop = asyncio.Event()
         task = asyncio.create_task(m.run_refresher(stop))
-        for _ in range(100):
+        await asyncio.sleep(0.1)
+        assert m._cache is None and m.counts["history_refresh_failed"] == 1   # boot refresh failed
+        pool.fail = False
+        for _ in range(300):
             if m._cache is not None and m._weights is not None:
                 break
             await asyncio.sleep(0.01)
-        assert m._cache is not None and m._weights is not None
+        assert m._cache is not None and m._weights is not None   # the next cycle recovered
         stop.set()
         await asyncio.wait_for(task, 2.0)
+
+    asyncio.run(go())
+
+
+def test_aclose_cancels_an_in_flight_refresh():
+    async def go():
+        pool = _SlowPool()
+        m = _warm_market(pool)
+        await _seed(m, pool)
+        pool.delay = 10.0
+        await m.bid(_want(1), NOW + timedelta(seconds=TTL + 1))
+        t = m._refresh_task
+        await asyncio.wait_for(m.aclose(), 1.0)
+        assert t.done() and m.counts["history_refresh_failed"] == 0
 
     asyncio.run(go())

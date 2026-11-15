@@ -751,6 +751,9 @@ async def lifespan(app: FastAPI):
             _cooling_act_task.cancel()
         if _market_refresh_task is not None:
             _market_refresh_task.cancel()
+            await asyncio.gather(_market_refresh_task, return_exceptions=True)
+        if market is not None:
+            await market.aclose()   # before the pool closes under an in-flight refresh
         if situation is not None:
             await situation.close()
         if temporal_self is not None:

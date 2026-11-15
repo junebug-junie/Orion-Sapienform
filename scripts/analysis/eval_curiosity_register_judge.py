@@ -35,7 +35,18 @@ Results 2026-11-12 (263 reference runs, all inputs assembled, 0 judge errors). N
 
 The failure is one-sided: 34-39 of 161 operational findings are called philosophical (reflective,
 first-person plumbing: "the finding reflects on Orion's decision-making"), the dressing failure mode
-the design names. Not tested: the Flash-Next seats (chat 8011, agent 8015) and the Bonsai gpu2 seat
+the design names.
+
+Results 2026-11-15, Flash-Next (qwen3.8-flash-next-iq3_s, agent seat 8015 = same model as the chat
+seat that writes findings; max_tokens raised 160 -> 400 because 21 replies were cut mid-JSON):
+
+    lane                         kappa   agree  phil-agree  winners phil   phil-vs-not kappa
+    agent Flash-Next             0.734   0.861  0.87        5/6            0.856 (n=251)
+
+Three-way kappa fails mostly on operational -> no_finding (18), which does not change salience.
+On the yes/no question salience uses (philosophical or not) it clears 0.8. Still short on
+phil-agree (12 of 100 philosophical called operational) and on winner 91241b6d, which every
+lane calls operational. Not tested: the Flash-Next seats (chat 8011, agent 8015) and the Bonsai gpu2 seat
 write curiosity findings, so they are excluded; hecate (agent-deep) was offline.
 """
 from __future__ import annotations
@@ -119,7 +130,7 @@ async def judge_all(url: str, its: list[dict], concurrency: int, thinking: bool 
     import httpx
 
     sem = asyncio.Semaphore(concurrency)
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=300) as client:
         async def one(it: dict) -> dict:
             if it.get("missing") or not it.get("answer"):
                 return {**it, "label": None, "error": "no_input"}
@@ -127,7 +138,7 @@ async def judge_all(url: str, its: list[dict], concurrency: int, thinking: bool 
                 try:
                     r = await client.post(f"{url}/v1/chat/completions", json={
                         "messages": judge_messages(it["question"], it["answer"]), "temperature": 0,
-                        "max_tokens": 2048 if thinking else 160,
+                        "max_tokens": 2048 if thinking else 400,
                         "chat_template_kwargs": {"enable_thinking": thinking}})
                     r.raise_for_status()
                     body = r.json()

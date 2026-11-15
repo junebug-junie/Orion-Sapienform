@@ -136,12 +136,52 @@ def fake():
         s.close()
 
 
-def _run(fake_server, tmp_path, **kw):
+class FakeHold:
+    """Stands in for one leased_llm operator hold: model calls and reads both reach the fake worker
+    (in production the model calls go through the gateway; test_leased_llm.py pins that)."""
+
+    def __init__(self, url: str, n: int, recall_after: int | None = None, sent: list | None = None):
+        import httpx
+
+        self.worker_url, self.lease_id = url, f"own-{n}"
+        self._http = httpx.Client(base_url=url)
+        self.recall_after, self.sent, self.n = recall_after, sent if sent is not None else [], n
+
+    def http_client(self):
+        hold = self
+
+        class C:
+            def get(self, path, timeout=30):
+                return hold._http.get(path, timeout=timeout)
+
+            def post(self, path, json=None, timeout=60):
+                if path == "/v1/chat/completions":
+                    hold.sent.append(hold.n)
+                    if hold.recall_after is not None and len(hold.sent) > hold.recall_after:
+                        LaneRecalled = type("LaneRecalled", (RuntimeError,), {})
+                        raise LaneRecalled("the GPU pool took the seat back (recalled)")
+                return hold._http.post(path, json=json, timeout=timeout)
+        return C()
+
+
+def _holds(url, **kw):
+    import contextlib
+
+    sent: list = []
+
+    @contextlib.contextmanager
+    def holds(lane, n):
+        yield [FakeHold(url, i, sent=sent, **kw) for i in range(n)]
+    holds.sent = sent
+    return holds
+
+
+def _run(fake_server, tmp_path, holds=None, **kw):
     mod = _load()
-    args = ["--url", fake_server.url, "--pool-url", fake_server.url, "--out", str(tmp_path / "out"),
+    args = ["--pool-url", fake_server.url, "--out", str(tmp_path / "out"),
             "--rounds", "1", "--pace-sec", "0",
             "--idle-wait-sec", "0", "--seed", "7", *kw.pop("extra", [])]
-    code = mod.main(args)
+    code = mod.main(args, holds=holds or _holds(fake_server.url))
     summary = json.loads((tmp_path / "out" / "summary.json").read_text())
     return code, summary
 
@@ -216,12 +256,44 @@ def test_a_run_that_could_not_see_a_leak_is_inconclusive_not_pass(fake, tmp_path
 def test_an_unreadable_pool_is_refused(fake, tmp_path):
     server = fake()
     mod = _load()
-    code = mod.main(["--url", server.url, "--pool-url", "http://127.0.0.1:9", "--out", str(tmp_path / "o"),
-                     "--idle-wait-sec", "0"])
+    code = mod.main(["--pool-url", "http://127.0.0.1:9", "--out", str(tmp_path / "o"),
+                     "--idle-wait-sec", "0"], holds=_holds(server.url))
     assert code == 2 and server.bodies == []
 
 
 def test_an_unreachable_worker_is_refused(tmp_path):
     mod = _load()
-    code = mod.main(["--url", "http://127.0.0.1:9", "--out", str(tmp_path / "o"), "--idle-wait-sec", "0"])
+    code = mod.main(["--out", str(tmp_path / "o"), "--idle-wait-sec", "0"], holds=_holds("http://127.0.0.1:9"))
     assert code == 2
+
+
+def test_the_probes_own_holds_and_their_calls_are_not_real_work(fake, tmp_path):
+    server = fake(pool_leases=[
+        {"lease_id": "own-0", "role": "agent-gpu2", "status": "granted", "hold_lease_id": None},
+        {"lease_id": "own-1", "role": "agent-gpu2", "status": "granted", "hold_lease_id": None},
+        {"lease_id": "child-9", "role": "agent-gpu2", "status": "granted", "hold_lease_id": "own-1"},
+    ])
+    code, summary = _run(server, tmp_path)
+    assert (code, summary["verdict"]) == (0, "PASS"), summary
+    assert summary["holds"] == ["own-0", "own-1"]
+
+
+def test_simultaneous_pairs_ride_both_holds(fake, tmp_path):
+    server = fake()
+    holds = _holds(server.url)
+    _run(server, tmp_path, holds=holds)
+    assert set(holds.sent) == {0, 1}   # one conversation of each pair per hold (per slot)
+
+
+def test_a_recall_mid_run_is_inconclusive_and_stops(fake, tmp_path):
+    server = fake()
+    code, summary = _run(server, tmp_path, holds=_holds(server.url, recall_after=3))
+    assert (code, summary["verdict"]) == (3, "INCONCLUSIVE")
+    assert "took a hold back" in summary["why"]
+    assert summary["requests"] < 15
+
+
+def test_there_is_no_direct_url_mode():
+    mod = _load()
+    with pytest.raises(SystemExit):
+        mod.main(["--url", "http://100.112.254.99:8016"])

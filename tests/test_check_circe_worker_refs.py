@@ -33,6 +33,15 @@ def _write(root: Path, rel: str, text: str) -> None:
     p.write_text(text, encoding="utf-8")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_exemptions_in_tmp_trees(request, monkeypatch):
+    """A tmp tree has no llama.cpp scripts/ or power bench: the real lists would read as stale there.
+    The real-repo tests keep them."""
+    if not request.node.name.startswith("test_real_repo"):
+        monkeypatch.setattr(gate, "ZONE_EXCEPTIONS", {})
+        monkeypatch.setattr(gate, "DIRECT_CALLERS", {})
+
+
 def _tree(tmp_path: Path) -> Path:
     _write(tmp_path, "config/gpu_pool.yaml", _POOL_YAML)
     _write(tmp_path, "services/orion-gpu-lane-controller/.env_example", "GPU_LANE_CONTROLLER_HOST_PORT=8090\n")
@@ -188,3 +197,30 @@ def test_real_repo_fails_on_planted_settings_url(tmp_path: Path) -> None:
     settings = services / "orion-hub" / "app" / "settings.py"
     settings.write_text(settings.read_text() + '\nPLANTED = "http://100.112.254.99:8011"\n')
     assert gate.main(["--root", str(root)]) == 1
+
+
+def test_the_llama_cpp_hosts_own_probes_and_evals_are_scanned(tmp_path: Path, monkeypatch) -> None:
+    """Lane-door PR 1: probe_slot_bleed.py posted to circe:8016 from inside the worker's zone, so the
+    gate never saw it. Its scripts/ and evals/ are callers and are scanned; the worker's app is not."""
+    root = _tree(tmp_path)
+    monkeypatch.setattr(gate, "ZONES", {"services/orion-llamacpp-host/*": "worker"})
+    monkeypatch.setattr(gate, "ZONE_EXCEPTIONS", {"services/orion-llamacpp-host/scripts/*": "callers"})
+    _write(root, "services/orion-llamacpp-host/app/announce.py", 'URL = "http://100.112.254.99:8013"\n')
+    _write(root, "services/orion-llamacpp-host/scripts/probe.py", 'URL = "http://100.112.254.99:8013"\n')
+    hits = gate.scan_tree(root)
+    assert [h.path for h in hits if "llamacpp" in h.path] == ["services/orion-llamacpp-host/scripts/probe.py"]
+
+
+def test_a_direct_caller_exemption_for_a_missing_file_is_stale(tmp_path: Path, monkeypatch, capsys) -> None:
+    root = _tree(tmp_path)
+    monkeypatch.setattr(gate, "ZONES", {"services/orion-llm-gateway/*": "dispatch"})
+    monkeypatch.setattr(gate, "DIRECT_CALLERS", {"scripts/gone_bench.py": "was a bench"})
+    assert gate.main(["--root", str(root)]) == 1
+    assert "STALE direct-caller" in capsys.readouterr().out
+
+
+def test_real_repo_exempts_the_power_bench_by_name_with_a_reason() -> None:
+    """Juniper 2026-11-14: the bench keeps its interactive hold by design; the gate names it and why."""
+    why = gate.DIRECT_CALLERS["scripts/gpu_power_bench.py"]
+    assert "interactive" in why and "loopback" in why
+    assert (_REPO / "scripts" / "gpu_power_bench.py").is_file()

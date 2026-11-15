@@ -174,7 +174,7 @@ def check_one_entity(nodes: list[dict[str, Any]], pattern: re.Pattern, label: st
     """Name forms of one person/pet. A possessive name ("<spouse>'s surgery") is a different thing
     that belongs to them, not a duplicate of them."""
     hits = [n for n in nodes if pattern.search(str(n.get("name") or ""))
-            and not re.search(pattern.pattern + r"\s*['\u2019]s\s+\w", str(n.get("name") or ""), re.I)]
+            and not re.search("(?:" + pattern.pattern + ")" + r"\s*['\u2019]s\s+\w", str(n.get("name") or ""), re.I)]
     return Check(f"{label} is one entity", len(hits) == 1,
                  f"{len(hits)} entity nodes match: {[n.get('name') for n in hits]}",
                  [f"{n.get('name')} ({n.get('uuid')}): {str(n.get('summary') or '')[:200]}" for n in hits])

@@ -39,6 +39,7 @@ pinned that on purpose (`test_a_long_hold_on_the_home_seat_is_never_capped`, 202
 - `orion/gpu_pool/tests/test_lease_graph.py`: a capped hold nobody retries is released; a capped
   retryable hold is re-queued in place (these two pass on old code too; they pin the lease graph).
 - `services/orion-gpu-pool/README.md`: the rule and a live check.
+- `services/orion-gpu-pool/evals/run_controller_stale_eval.py`: runs with the cap off (see Evals).
 
 ## Schema / bus / API changes
 
@@ -110,10 +111,17 @@ Old code check: `test_a_background_hold_is_recalled_at_the_cap_and_not_before` a
 ## Evals run
 
 ```text
-None. The pool's day eval (services/orion-gpu-pool/evals/run_pool_day_eval.py) keeps its holds
-under 9,000 s by design (CONC_SEC = 8000). No eval covers a hold longer than the cap; the unit
-lifecycle tests above cover it.
+python services/orion-gpu-pool/evals/run_controller_stale_eval.py    7 of 7 PASS
+python services/orion-gpu-pool/evals/value_queue_replay.py           PASS (9/9 queues)
+services/orion-gpu-pool/evals/run_pool_day_eval.py                   passed in CI
+services/orion-durable-runs/evals/hold_fairness.py                   passed in CI (needs a test database; not run locally)
 ```
+
+CI finding: the stale-controller replay first failed ("B refusals replayed: 43", expected 136).
+That eval stands one background hold on the agent seat for 26 simulated hours to mean "agent is
+busy". The cap took that hold back at 9,000 s. The eval is about controller alerts, not hold
+length, so it now runs with the cap off (`REPLAY_CFG`). No eval runs a hold past the cap with the
+cap on; the unit lifecycle tests cover that.
 
 ## Docker/build/smoke checks
 

@@ -144,6 +144,8 @@ def test_pcr_chat_phases_never_fetch_bus_anomaly_or_aitown(monkeypatch, phase, p
     assert calls["bus"] == []
     assert "bus_synaptic_anomaly" not in bundle.rendered
     assert "bus_synaptic_anomaly" not in (decision.backend_counts or {})
+    if phase == "continuity":  # purposeful disables sql_chat in its collector plan
+        assert calls["pairs"], "sql_chat feed was never reached"
     for kw in calls["pairs"]:
         assert kw["include_aitown"] is False
 

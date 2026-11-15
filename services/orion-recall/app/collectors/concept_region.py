@@ -1,6 +1,7 @@
 """Turn-scoped concept-region collector (Phase 6, concept-atlas pipeline).
 
-Mirrors the salience/intent-gated shape of `active_packet.py`, not the
+Follows a salience/intent-gated, per-call shape (like the retired
+`active_packet.py` collector, #3461), not the
 always-on producer shape of `chat_stance.py`. This module never runs
 unconditionally and never registers a standing stance: it is a pure,
 per-call function that, only when the current turn's text cheaply and
@@ -82,7 +83,7 @@ def _is_topic_foundry_id(node_id: Any) -> bool:
 def _turn_text(query: Any) -> str:
     """Extract the current turn's text from `query`.
 
-    Mirrors `active_packet.py`'s `_intent`/fragment-extraction convention:
+    Uses the recall-query convention:
     `query` is typed loosely (`Any`) and the turn text lives on a
     `.fragment` attribute. A bare string is also accepted directly so
     callers that already have raw turn text don't need to wrap it.

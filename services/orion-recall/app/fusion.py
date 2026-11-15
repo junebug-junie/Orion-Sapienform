@@ -737,7 +737,8 @@ def render_continuity_bundle(
     )
     header = "[Recent thread — continuity only]\n"
     # No turns: no header (an empty shell in the chat prompt, #3461).
-    rendered = header + (bundle.rendered or "") if bundle.items else ""
+    body = (bundle.rendered or "").strip()
+    rendered = header + body if bundle.items and body else ""
     if bundle.stats:
         bundle.stats.profile = str(profile.get("profile") or "chat.continuity.v1")
     bundle.rendered = rendered.strip()
@@ -921,7 +922,9 @@ def _pcr_fuse_belief_with_entity_reserve(
         latency_ms=latency_ms,
         profile=str(profile.get("profile") or f"chat.belief.{retrieval_intent}.v1"),
     )
-    bundle = MemoryBundleV1(rendered=(header + rendered_body).strip(), items=items, stats=stats)
+    rendered_body = (rendered_body or "").strip()
+    rendered = (header + rendered_body).strip() if rendered_body else ""
+    bundle = MemoryBundleV1(rendered=rendered, items=items, stats=stats)
     return bundle, inj_ranking + rest_ranking
 
 
@@ -1004,7 +1007,7 @@ def pcr_fuse_belief_candidates(
             diagnostic=False,
             budget_indicator=False,
         )
-        bundle.rendered = header + rendered_body
+        bundle.rendered = header + rendered_body if (rendered_body or "").strip() else ""
     else:
         # No content: no header. A bare "[Durable beliefs ...]" line in the
         # chat prompt is an empty shell, not memory.

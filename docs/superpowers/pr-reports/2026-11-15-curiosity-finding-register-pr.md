@@ -106,7 +106,7 @@ The migration auto-applies on the post-pull rebuild (additive DDL, REQUIRED-BY o
 - Severity: medium. Concern: the judge shares the `agent` route with curiosity and other agent work; under load a label waits or fails after retries. Mitigation: retries, failures recorded as `call:` errors, never as labels.
 - Severity: medium. Concern: Orion could learn to dress plumbing findings as philosophical. Mitigation: insert-only labels, fixed hashed prompt; dressing eval still owed (ticket).
 - Severity: low. Concern: the first run after deploy embeds ~1,600 items (budget 600 s); if it times out, that run's novelty is NULL and the next run finishes the cache.
-- Issues: closes #3372 (judge decision). Opens: dressing eval ticket, live-verify ticket.
+- Issues: Fixes #3372 (judge decision). Opened: #3435 (dressing eval), #3436 (verify-live).
 
 ## PR link
 

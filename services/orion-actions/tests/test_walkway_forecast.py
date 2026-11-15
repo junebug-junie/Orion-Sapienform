@@ -14,6 +14,7 @@ from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo
 
 import app.walkway_forecast as wf
+from app.daily_retry_gate import DailyAttemptGate, DailyAttemptResult
 from app.walkway_forecast import (
     VERDICT_BY_STATUS,
     build_forecast_seed,
@@ -201,13 +202,17 @@ def _tick(jobs, skips, dispatch_ok, store, attempts):
 
     async def dispatch(job):
         sent.append(job.trigger.trigger_kind)
-        return dispatch_ok.get(job.trigger.trigger_kind, True)
+        ok = dispatch_ok.get(job.trigger.trigger_kind, True)
+        return DailyAttemptResult(completed=ok, failure_reason=None if ok else "boom")
 
-    done, _ = asyncio.run(wf.run_walkway_tick(
+    tick = asyncio.run(wf.run_walkway_tick(
         collect=collect, dispatch=dispatch, job_done_on=store.get,
         mark_job_done=store.__setitem__, local_date="2026-09-24", read_attempts=attempts,
+        # A fresh in-memory gate per tick: these tests are about the cursors, not the retry cap
+        # (test_walkway_journal_night.py covers the cap).
+        gate=DailyAttemptGate(), clock=lambda: 0.0,
     ))
-    return done, sent
+    return tick.closed, sent
 
 
 def test_tick_skips_complete_the_night() -> None:
@@ -239,11 +244,11 @@ def test_tick_collect_exception_is_a_bounded_read_failure() -> None:
     async def dispatch(job):
         raise AssertionError
 
-    done, skips = asyncio.run(wf.run_walkway_tick(
+    tick = asyncio.run(wf.run_walkway_tick(
         collect=collect, dispatch=dispatch, job_done_on={}.get, mark_job_done=lambda k, v: None,
-        local_date="d", read_attempts={},
+        local_date="d", read_attempts={}, gate=DailyAttemptGate(), clock=lambda: 0.0,
     ))
-    assert done is False and skips == ["collect_failed"]
+    assert tick.closed is False and tick.skips == ["collect_failed"]
 
 
 # --- day / week / month from the rollup (2026-10-18) ------------------------------------------

@@ -10,14 +10,17 @@ from orion.schemas.biometrics_projection import NodeBiometricsProjectionV1, Node
 from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenanceV1
 from orion.substrate.biometrics_loop.node_reducer import reduce_biometrics_node_event
 
+from tests._biometrics_catalog_fixture import ONDEMAND_BOX, make_catalog
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO_ROOT / "config" / "biometrics" / "node_catalog.yaml"
 FIXED_TS = datetime(2026, 5, 24, 12, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
 def catalog() -> NodeCatalog:
-    return NodeCatalog.load(CATALOG_PATH)
+    # Hermetic: the expected-offline arm must not depend on a real host's flag
+    # (PR #3362 flipped hecate's to true 2026-11-14 when the box came back up).
+    return make_catalog()
 
 
 @pytest.fixture
@@ -111,15 +114,17 @@ def test_prometheous_alias_resolves_to_prometheus(
     assert projection.nodes["prometheus"].node_id == "prometheus"
 
 
-def test_hecate_expected_offline_preserved(
+def test_expected_offline_flag_preserved(
     catalog: NodeCatalog, empty_projection: NodeBiometricsProjectionV1
 ) -> None:
-    trace_id = "biometrics.node:hecate:2026-05-24T12:00:00Z"
+    # Was `test_hecate_expected_offline_preserved` against the real hecate; the
+    # subject is now the fixture's ONDEMAND_BOX (see _biometrics_catalog_fixture).
+    trace_id = f"biometrics.node:{ONDEMAND_BOX}:2026-05-24T12:00:00Z"
     event = _atom_event(
         trace_id=trace_id,
         event_id="gev_avail",
         role="node_availability",
-        summary="hecate telemetry status OK (expected offline, known node)",
+        summary=f"{ONDEMAND_BOX} telemetry status OK (expected offline, known node)",
     )
     projection, _ = reduce_biometrics_node_event(
         event=event,
@@ -127,7 +132,7 @@ def test_hecate_expected_offline_preserved(
         catalog=catalog,
         now=FIXED_TS,
     )
-    state = projection.nodes["hecate"]
+    state = projection.nodes[ONDEMAND_BOX]
     assert state.expected_online is False
     assert state.availability_status == "offline_expected"
 

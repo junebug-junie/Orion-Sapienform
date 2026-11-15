@@ -15,7 +15,16 @@ whether the tick may compose at all. The per-topic gates below decide which topi
   daydream id, the read's seed id), never a hash of the message text. This is what the old tick
   lacked: on 2026-11-11..12 it sent the same "graph first" habit 3 times, because the habit rode in
   as free prompt material while only the daydream had an id in the ledger.
-* each topic source applies its own gates (the readings door's spacing, its told ledger).
+* each topic source applies its own gates (the readings door's spacing, its told ledger; the people
+  and chat-thread sources' own rules, ``scripts/outreach_world_topics.py``).
+
+Topic kinds (2026-11-15): ``daydream``, ``reading``, ``person`` (someone Juniper named for the cameras,
+seen in a new way), ``chat_thread`` (Orion's question that a chat with Juniper went quiet after).
+
+Order: freshest first (``rank_topics``), whatever the kind. Each topic's ``observed_at`` is when its
+material appeared: a daydream's image, a read's newest finding, a person's visit's last sighting, the
+chat reply that asked. No price orders the topics yet; the personality reducer weighs a pick of rank 1
+at 0.25, so the order itself is not read as Orion's preference.
 
 Pure: no DB, no bus, no clock reads (callers pass ``now``).
 """
@@ -62,7 +71,8 @@ DECLINED_SUBJECT_REASONS = frozenset({ORION_DECLINED_REASON, NO_PICK_REASON, INV
 class OutreachTopic:
     """One thing Orion could bring to Juniper this tick.
 
-    ``subject``: the source's stable id (``daydream:<id>``, ``reading:<seed_id>``). It is also the
+    ``subject``: the source's stable id (``daydream:<id>``, ``reading:<seed_id>``, ``person:<person_id>``,
+    ``chat_thread:<correlation_id>``). It is also the
     option key in the choice record. ``version``: what makes the same subject new again (a read's
     finding ids: a belief moved days later is a new version). "" when the subject never changes.
     ``option_text``: what the option says, as Orion saw it (<= 400 chars; the personality reducer
@@ -81,6 +91,10 @@ class OutreachTopic:
     appendix: str = ""
     finding_ids: Tuple[str, ...] = ()
     seed_id: str = ""
+    # The row this topic stands on (``vision_individual_sighting:<id>``, ``chat_history_log:<id>``):
+    # stored per shown topic on the decision row and in the choice's situation. "" when the subject
+    # id already is the row (a daydream, a read's seed).
+    evidence_ref: str = ""
     on_sent: Optional[Callable[[], None]] = field(default=None, compare=False, repr=False)
     # Called once when Orion declined every topic at the tick (the readings door marks the read told,
     # as it does for its own orion_passed).
@@ -223,6 +237,14 @@ def outreach_object_text(topics: Sequence[OutreachTopic]) -> Optional[str]:
     return clip("; ".join(clip(t, share) for t in texts), OBJECT_TEXT_MAX) or None
 
 
+def evidence_line(topics: Sequence[OutreachTopic]) -> Optional[str]:
+    """The shown topics' evidence rows as one flat situation value: ``"<rank>=<ref>"`` joined with
+    " "; None when no shown topic has one. Clipped to the situation's string cap; the decision row's
+    ``choice.shown`` keeps every ref whole."""
+    refs = [f"{i}={t.evidence_ref}" for i, t in enumerate(topics, start=1) if getattr(t, "evidence_ref", "")]
+    return clip(" ".join(refs), CHOICE_SITUATION_TEXT_MAX) if refs else None
+
+
 def _option(t: OutreachTopic, rank: int) -> ChoiceOptionV1:
     return ChoiceOptionV1(key=t.subject[:200], text=clip(t.option_text, CHOICE_OPTION_TEXT_MAX) or t.subject[:200],
                           market_rank=rank)
@@ -298,7 +320,8 @@ def choice_record(topics: Sequence[OutreachTopic], pick: Pick, choice_id: Option
     return {
         "choice_id": choice_id,
         "shown": [
-            {"subject": t.subject, "version": t.version, "kind": t.kind, "market_rank": i}
+            {"subject": t.subject, "version": t.version, "kind": t.kind, "market_rank": i,
+             **({"evidence_ref": t.evidence_ref} if getattr(t, "evidence_ref", "") else {})}
             for i, t in enumerate(topics, start=1)
         ],
         "pick": pick.kind,

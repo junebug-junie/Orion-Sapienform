@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -297,21 +298,37 @@ async def health() -> dict:
     }
 
 
-@app.post("/v1/mind/run", response_model=MindRunResultV1)
-async def mind_run(body: MindRunRequestV1) -> MindRunResultV1:
-    router_dir: Path = settings.router_profiles_dir
+# run_mind is synchronous and waits minutes on model calls. Called on the event loop it froze the
+# whole service for that time: /health timed out (container "unhealthy"), Prime's ticks and the
+# consent responder for Claude's tools stalled (an ask that arrived mid-run waited out its 40 s and
+# read as no). It runs in a worker thread now. One run at a time, as before: the old freeze also
+# serialized runs, and the LLM lanes behind them are sized for that. JUNIPER_TURNS is thread-safe and
+# Prime's loop already reads it for exactly this case (app/prime_loop.py "Juniper first").
+_MIND_RUN_LOCK = asyncio.Lock()
+
+
+def _run_mind_sync(body: MindRunRequestV1) -> MindRunResultV1:
+    kwargs = dict(
+        router_profiles_dir=settings.router_profiles_dir,
+        snapshot_max_bytes=settings.MIND_SNAPSHOT_MAX_BYTES,
+        mind_settings=settings,
+    )
     if not carries_live_turn(body):
-        return run_mind(
-            body,
-            router_profiles_dir=router_dir,
-            snapshot_max_bytes=settings.MIND_SNAPSHOT_MAX_BYTES,
-            mind_settings=settings,
-        )
+        return run_mind(body, **kwargs)
     # Juniper's turn: Prime does not bid while it runs and discards a thought it overlapped.
     with JUNIPER_TURNS.turn():
-        return run_mind(
-            body,
-            router_profiles_dir=router_dir,
-            snapshot_max_bytes=settings.MIND_SNAPSHOT_MAX_BYTES,
-            mind_settings=settings,
-        )
+        return run_mind(body, **kwargs)
+
+
+@app.post("/v1/mind/run", response_model=MindRunResultV1)
+async def mind_run(body: MindRunRequestV1) -> MindRunResultV1:
+    # The lock is released when the THREAD ends, not when this awaiter does: a cancelled request
+    # must not let the next run start beside a thread that is still calling models.
+    await _MIND_RUN_LOCK.acquire()
+    try:
+        fut = asyncio.ensure_future(asyncio.to_thread(_run_mind_sync, body))
+    except BaseException:
+        _MIND_RUN_LOCK.release()
+        raise
+    fut.add_done_callback(lambda _f: _MIND_RUN_LOCK.release())
+    return await asyncio.shield(fut)

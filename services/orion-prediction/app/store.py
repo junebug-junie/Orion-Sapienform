@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
-from app.series import OFFICE_ENV_KEYS, SeriesSpec
+from app.series import CLOSET_ENV_KEYS, OFFICE_ENV_KEYS, SeriesSpec
 
 # Event tables the event_pair estimator may read (read-only), keyed by selector ``source``.
 # Each entry: (table, timestamp column, event-type column, stream column). Add a table here and to
@@ -20,7 +20,8 @@ EVENT_SOURCES = {
     "vision_events": ("vision_events", "created_at", "event_type", "stream_id"),
 }
 EVENT_READ_TIMEOUT_MS = 10_000
-# office_env_sample is written by orion-sql-writer: read it read-only, bounded like the event tables.
+# office_env_sample and closet_env_sample are written by orion-sql-writer: read them read-only, bounded
+# like the event tables (one timeout for both).
 OFFICE_ENV_READ_TIMEOUT_MS = 10_000
 
 _KEY = re.compile(r"^[a-z0-9_]{1,40}$")
@@ -39,6 +40,7 @@ TABLES = {
                                  "reference"),
     "prediction_reachable_forecast": ("forecast_id", "origin", "p", "p_state", "p_baseline", "served", "features",
                                       "happened"),
+    "prediction_act_chain_forecast": ("forecast_id", "origin", "probs", "served", "observed", "surprise", "excess"),
     "prediction_bill_forecast": ("bet_id", "origin", "period_start", "projected_kwh", "kwh_lo80", "usd_hi80",
                                  "settled_at", "kwh_in_80", "usd_in_80"),
 }
@@ -68,6 +70,11 @@ JUNIPER_MESSAGE_SQL = "role = 'user' AND coalesce(session_id, '') NOT LIKE 'orio
 REACHABLE_COLS = ("forecast_id", "origin", "window_end", "issued_at", "model", "p", "p_state", "p_baseline", "served",
                   "hours_since", "state_bucket", "local_hour", "n_messages", "features", "settled_at", "happened",
                   "n_in_window")
+
+ACT_CHAIN_COLS = ("forecast_id", "origin", "window_end", "issued_at", "model", "served", "prev_state", "block",
+                  "n_train", "k", "probs", "settled_at", "observed", "n_acts", "surprise", "excess")
+_ACT_CHAIN_ISSUE = ACT_CHAIN_COLS[:11]
+_ACT_CHAIN_JSONB = {"k", "probs"}
 
 BILL_BET_COLS = ("bet_id", "usage_point_id", "bet_date", "origin", "as_of", "model", "period_start", "period_end",
                  "covered_through", "days_into_cycle", "remaining_days", "observed_kwh", "projected_kwh",
@@ -159,6 +166,18 @@ class PostgresStore:
             # A stale or offline sample is not a reading (the producer already NULLs its values;
             # the flags are checked too so a future producer change cannot leak one in).
             sql = (f"SELECT ts, {src.key} AS v FROM office_env_sample WHERE node = %s AND ts >= %s "
+                   f"AND sensor_online AND NOT stale AND {src.key} IS NOT NULL")
+            args = [src.node, since]
+            if until is not None:
+                sql += " AND ts < %s"
+                args.append(until)
+            return [(r["ts"], r["v"]) for r in self._read_only(sql + " ORDER BY 1", args, OFFICE_ENV_READ_TIMEOUT_MS)]
+        elif src.kind == "closet_env":
+            # Same producer and table shape as office_env (orion-office-env with ENV_ROOM=closet ->
+            # sql-writer). Column from the allowlist; stale/offline samples never read.
+            if src.key not in CLOSET_ENV_KEYS:
+                raise ValueError(f"bad closet_env key {src.key!r}")
+            sql = (f"SELECT ts, {src.key} AS v FROM closet_env_sample WHERE node = %s AND ts >= %s "
                    f"AND sensor_online AND NOT stale AND {src.key} IS NOT NULL")
             args = [src.node, since]
             if until is not None:
@@ -681,6 +700,41 @@ class PostgresStore:
     def turn_self_bets(self, since: datetime, limit: int = 20000) -> list[dict]:
         return self._all(f"SELECT {', '.join(TURN_SELF_BET_COLS)} FROM prediction_turn_self_bet "
                          "WHERE placed_at >= %s ORDER BY placed_at DESC LIMIT %s", (since, limit))
+
+    # --- Act chain (app/act_chain.py; read-only, grammar_acts is orion-sql-writer's) ---------------
+    def grammar_acts(self, start: datetime, end: datetime) -> list[tuple[datetime, datetime, str]]:
+        """(opened_at, created_at, verb) of Orion's acts opened in ``[start, end)``. ``created_at`` is
+        when the row landed; act_chain uses it so a replay sees only what was known at each origin."""
+        rows = self._all("SELECT opened_at AS o, created_at AS c, verb AS v FROM grammar_acts "
+                         "WHERE opened_at >= %s AND opened_at < %s AND verb IS NOT NULL ORDER BY opened_at",
+                         (start, end))
+        return [(r["o"], r["c"], r["v"]) for r in rows]
+
+    def act_chain_exists(self, origin: datetime) -> bool:
+        return bool(self._all("SELECT 1 FROM prediction_act_chain_forecast WHERE origin = %s", (origin,)))
+
+    def insert_act_chain(self, row: dict) -> str | None:
+        cols = _ACT_CHAIN_ISSUE
+        rows = self._all(f"INSERT INTO prediction_act_chain_forecast ({', '.join(cols)}) VALUES "
+                         f"({', '.join('%s::jsonb' if c in _ACT_CHAIN_JSONB else '%s' for c in cols)}) "
+                         "ON CONFLICT (forecast_id) DO NOTHING RETURNING forecast_id",
+                         [_j(row[c]) if c in _ACT_CHAIN_JSONB else row[c] for c in cols])
+        return rows[0]["forecast_id"] if rows else None
+
+    def pending_act_chain(self, window_ended_before: datetime) -> list[dict]:
+        return self._all("SELECT forecast_id, origin, window_end, served, probs FROM prediction_act_chain_forecast "
+                         "WHERE settled_at IS NULL AND window_end <= %s ORDER BY origin", (window_ended_before,))
+
+    def settle_act_chain(self, forecast_id: str, observed: str, n_acts: int, surprise: float, excess: float,
+                         now: datetime) -> int:
+        return len(self._all("UPDATE prediction_act_chain_forecast SET observed = %s, n_acts = %s, surprise = %s, "
+                             "excess = %s, settled_at = %s WHERE forecast_id = %s AND settled_at IS NULL "
+                             "RETURNING forecast_id", (observed, n_acts, surprise, excess, now, forecast_id)))
+
+    def act_chain_rows(self, since: datetime, settled_only: bool) -> list[dict]:
+        where = "origin >= %s" + (" AND settled_at IS NOT NULL" if settled_only else "")
+        return self._all(f"SELECT {', '.join(ACT_CHAIN_COLS)} FROM prediction_act_chain_forecast WHERE {where} "
+                         "ORDER BY origin", (since,))
 
     # --- Juniper reachable (manual_migration_prediction_reachable_forecast_v1.sql) -----------------
     def juniper_messages(self, start: datetime, end: datetime) -> list[datetime]:

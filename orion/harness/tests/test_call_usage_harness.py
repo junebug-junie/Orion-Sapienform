@@ -23,3 +23,13 @@ def test_spawn_env_without_a_correlation_id_drops_an_inherited_one(monkeypatch):
     # A header-injection attempt is refused, not forwarded.
     env = _build_subprocess_env(fcc_server_url="http://f", auth_token="t", correlation_id="a\nEvil: 1")
     assert "ANTHROPIC_CUSTOM_HEADERS" not in env
+
+
+def test_spawn_env_carries_the_turn_id_for_bash() -> None:
+    env = _build_subprocess_env(fcc_server_url="http://fcc:8082", auth_token="tok", correlation_id="turn-7")
+    assert env["ORION_TURN_CORRELATION_ID"] == "turn-7"
+
+
+def test_spawn_env_never_inherits_another_turns_id(monkeypatch) -> None:
+    monkeypatch.setenv("ORION_TURN_CORRELATION_ID", "stale-turn")
+    assert "ORION_TURN_CORRELATION_ID" not in _build_subprocess_env(fcc_server_url="http://f", auth_token="t")

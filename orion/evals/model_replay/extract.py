@@ -24,7 +24,8 @@ import ast
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from jinja2 import Environment
+from orion.cognition.prompt_render import prompt_environment
+
 
 from orion.evals.model_replay.fixture import (
     HARNESS_TOOLS,
@@ -125,9 +126,9 @@ def lived_answer_lines(answers: Sequence[Mapping[str, Any]], cap: int = 800) -> 
 
 def render_stance_prompt(user_message: str, *, lived_answers: Sequence[Mapping[str, Any]] = ()) -> str:
     """The production stance template, rendered the way cortex-exec's _render_prompt does
-    (jinja2 Environment(autoescape=False)), with the inputs that are reproducible offline."""
+    (orion.cognition.prompt_render.prompt_environment: dicts and lists print as JSON), with the inputs that are reproducible offline."""
     orion_lines, juniper_lines = fallback_identity()
-    env = Environment(autoescape=False)
+    env = prompt_environment()
     tmpl = env.from_string(STANCE_TEMPLATE.read_text(encoding="utf-8"))
     return tmpl.render(
         user_message=user_message,

@@ -101,6 +101,18 @@ def test_read_menu_labels_from_the_source_rows_and_drops_an_answered_ask():
                       "orion_ask:k1": "an open camera question to Juniper: Is this Jacob?"}
 
 
+def test_a_funded_ask_want_whose_card_never_opened_is_not_a_concern():
+    """Attention patch 4b: the ask bids before its card is inserted. A funded want naming a card that does not
+    exist (the insert lost to an open card for the same subject) is not shown to Prime."""
+    pool = _Pool({
+        LATEST_EVENT_DECISIONS_SQL: [_row("e", "orion_ask:k1", family="vision.ask", latest=NOW + timedelta(days=5)),
+                                     _row("g", "orion_ask:never", family="vision.ask", latest=NOW + timedelta(days=5))],
+        ASK_LABELS_SQL: [{"ask_id": "k1", "question": "Is this Jacob?", "status": "open"}],
+    })
+    menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=8))
+    assert [w.event_ref for w in menu.wants] == ["orion_ask:k1"]
+
+
 def test_a_cooling_act_want_is_labelled_from_its_own_reading_ref():
     ref = "cabinet_reading:athena:2026-11-05T18:00:00Z"
     pool = _Pool({LATEST_EVENT_DECISIONS_SQL: [_row("c", ref, family="self_regulate.shed",
@@ -153,7 +165,8 @@ def _acts():
 
 
 def test_the_market_ranks_an_event_want_against_its_event_history():
-    history = [{"family": "hub.world_pulse_read", "intensity": v} for v in [0.05] * 30 + [0.9] * 10]
+    # The fake acts carry no outcome, so the family is ungraded: its past events were decided ungraded too.
+    history = [{"family": "hub.world_pulse_read", "intensity": v, "graded": False} for v in [0.05] * 30 + [0.9] * 10]
     pool = _Pool({EVENT_HISTORY_SQL: history, "grammar_acts": _acts(), "act_downstream_use": [],
                   "outcome = 'funded'": []})
     published = []
@@ -168,6 +181,43 @@ def test_the_market_ranks_an_event_want_against_its_event_history():
     assert d.value_basis.startswith("event:") and d.outcome == "funded"
     assert any(sql == EVENT_HISTORY_SQL for sql, _ in pool.seen)
     assert json.loads(published[0].model_dump_json())["want"]["salience"] == 0.9
+
+
+def test_the_market_ranks_only_against_past_events_decided_with_the_same_grading():
+    """Issue #3364: the family is ungraded here, so 40 rows decided graded (or with no grading) are not its
+    reference; under EVENT_HISTORY_MIN same-grading rows the want ranks cold. With the same rows labelled ungraded
+    it ranks against them."""
+    rows = [0.05] * 30 + [0.9] * 10
+
+    def bid(graded):
+        hist = [{"family": "hub.world_pulse_read", "intensity": v, "graded": graded} for v in rows]
+        pool = _Pool({EVENT_HISTORY_SQL: hist, "grammar_acts": _acts(), "act_downstream_use": [],
+                      "outcome = 'funded'": []})
+
+        async def publish(d):
+            pass
+
+        m = Market(families=FAMS, families_error=None, pool_getter=lambda: pool, redis_getter=lambda: _Redis(),
+                   publish=publish)
+        want = WantV1(want_id="w", family="hub.world_pulse_read", producer="orion-hub.reading_events", verb="look",
+                      tier=2, opened_at=NOW, event_ref="world_pulse_read_seed:s", salience=0.9)
+        return asyncio.run(m.bid(want, NOW))
+
+    assert bid(False).value_basis == "event:ungraded"
+    assert bid(True).value_basis.startswith("event_cold:")
+    assert bid(None).value_basis.startswith("event_cold:")     # grading unknown: not this family's reference
+
+
+def test_the_event_history_read_carries_each_rows_grading():
+    from app.physiology_market import read_event_history
+
+    pool = _Pool({EVENT_HISTORY_SQL: [{"family": "f", "intensity": 0.5, "graded": True},
+                                      {"family": "f", "intensity": 0.7, "graded": False},
+                                      {"family": "f", "intensity": 0.9, "graded": None},
+                                      {"family": "f", "intensity": None, "graded": True}]})
+    assert asyncio.run(read_event_history(pool, NOW)) == {"f": [(0.5, True), (0.7, False), (0.9, None)]}
+    sql = " ".join(EVENT_HISTORY_SQL.split())
+    assert "CASE jsonb_typeof(decision->'graded') WHEN 'boolean' THEN (decision->>'graded')::boolean END AS graded FROM want_ledger" in sql
 
 
 def test_a_failed_event_history_read_ranks_on_intensity_and_never_fails_the_bid():

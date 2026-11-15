@@ -470,3 +470,32 @@ def test_lock_is_taken_before_the_limit_is_read(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(bench, "read_limits", limits)
     assert bench.main(_argv(tmp_path) + ["--limits-config", str(tmp_path / "none")]) == 2
     assert seen == ["held"]  # orion-gpu-power-limits cannot change it between our read and our run
+
+
+def test_the_bench_refuses_a_lane_door_port(monkeypatch, capsys):
+    """Leased-evals Phase 2: the lane port is a door; the bench must point at the engine's loopback port."""
+    calls = []
+    monkeypatch.setattr(bench, "is_lane_door", lambda base, timeout_s=3.0: calls.append(base) or True)
+    monkeypatch.setattr(bench, "read_limits", lambda gpu: (_ for _ in ()).throw(AssertionError("touched the card")))
+    assert bench.main(["--gpu", "2", "--port", "8016"]) == 2
+    assert calls == ["http://127.0.0.1:8016"]
+    assert "lane door" in capsys.readouterr().err
+
+
+def test_is_lane_door_reads_door_stats(monkeypatch):
+    import io
+    import json as _json
+
+    class R(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    monkeypatch.setattr(bench.urllib.request, "urlopen",
+                        lambda url, timeout: R(_json.dumps({"lane": "agent-gpu2", "calls": {"leased": 0}}).encode()))
+    assert bench.is_lane_door("http://127.0.0.1:8016") is True
+    monkeypatch.setattr(bench.urllib.request, "urlopen",
+                        lambda url, timeout: (_ for _ in ()).throw(OSError("404")))
+    assert bench.is_lane_door("http://127.0.0.1:18016") is False

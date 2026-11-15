@@ -112,6 +112,16 @@ def _entry(route_id: str, *, cfg: PoolConfig, role: str, status: str, discovered
         "gate_open": gate_open,
         # The pool role a call for this route would land on right now (the one whose model is shown).
         "role": role if live else None,
+        **({"reasoning": {
+            "output_token_budget": 32768,
+            "minimum_output_reserve": 16384,
+            "usable_prompt_budget": max(0, int(discovered.get("ctx_per_slot") or 0) - 32768) if live else None,
+            "timeout_sec": 1800,
+            "max_concurrent_requests": (discovered or {}).get("slots") if live else None,
+            "hardware_cards": list(cfg.roles[role].cards),
+            "estimated_execution_cost": None,
+            "cost_status": "UNMEASURED",
+        }} if route_id == "deep.thinker.v1" else {}),
     }
 
 

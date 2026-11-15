@@ -917,7 +917,8 @@ def step_asks(ctx: Ctx) -> int:
     """Strong met / paired pairs -> capped "same person?" asks. Never a label or a merge."""
     from sqlalchemy import text
 
-    from app.vision_individuals import _insert_ask, ask_image_refs, local_day_start, pair_ref, same_groups
+    from app.ask_bind import open_camera_ask
+    from app.vision_individuals import ask_image_refs, local_day_start, pair_ref, same_groups
     from orion.schemas.ask import OrionAskV1
 
     rules = ctx.cfg.rules
@@ -976,7 +977,7 @@ def step_asks(ctx: Ctx) -> int:
             image_ref=imgs[0], image_refs=imgs, created_at=ctx.now,
             expires_at=ctx.now + timedelta(days=rules.ask_expiry_days),
             source_kind=SOURCE_KIND_SAME, source_ref=ref)
-        if _insert_ask(ctx.conn, ask):
+        if open_camera_ask(ctx.conn, ask, now=ctx.now) is not None:   # bids first (attention patch 4b)
             _update_handoff(ctx.conn, r["handoff_id"], ask_id=ask.ask_id)
             skip.add(ref)
             n += 1

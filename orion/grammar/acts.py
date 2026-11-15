@@ -133,6 +133,9 @@ def _provenance(source_service: str, source_component: str) -> GrammarProvenance
         return GrammarProvenanceV1(source_service="orion-embodiment", source_component=source_component)
     if source_service == "orion-mind":
         return GrammarProvenanceV1(source_service="orion-mind", source_component=source_component)
+    if source_service == "orion-harness-governor":
+        # Orion's own camera looks (`dig look`, orion/dig/look.py), run from a turn's Bash.
+        return GrammarProvenanceV1(source_service="orion-harness-governor", source_component=source_component)
     raise ValueError(f"unregistered act producer {source_service!r}")
 
 

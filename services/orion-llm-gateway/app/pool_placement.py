@@ -93,6 +93,14 @@ def granted_backend(grant: Any) -> str:
     return pool_config().roles[grant.role].backend
 
 
+def deep_grant_ready(grant: Any) -> bool:
+    """A named deep route must never silently serve the 8K rollback worker."""
+    return (getattr(grant, "model_file", None) == "deep.thinker.v1"
+            and getattr(grant, "profile_name", None) == "deep.thinker.v1"
+            and int(getattr(grant, "ctx_per_slot", None) or 0) >= 132000 + 16384
+            and len(getattr(grant, "cards", [])) == 2)
+
+
 def granted_model(grant: Any) -> Optional[str]:
     if granted_backend(grant) != "vllm":
         return None

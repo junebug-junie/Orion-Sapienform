@@ -89,10 +89,16 @@ nodes:
       - hecate
       - hecate.tail348bbe.ts.net
     role: gpu_server
-    # Offline since 2026-10-15; from its last biometrics row (1 GPU, 80 CPU threads) and
-    # config/gpu_pool.yaml hecate-gpu0. CPU model and RAM not recorded.
-    hardware: Inspur NF5288M5 (product NF5288M5-G3GPU01, AGX-2, 8 SXM2 slots), 2x Xeon Gold 6148 (2.4 GHz, 80 threads), 183 GB RAM, 1x V100-SXM2-32GB installed (deep inference and training node)
-    expected_online: false
+    # Offline 2026-10-15..2026-11-14; back up 2026-11-14 with a SECOND V100-SXM2-32GB added by
+    # Juniper (deep-thinker lane bring-up). Card count confirmed live: orion_biometrics_summary
+    # rows for hecate on 2026-11-14 report gpu_count=2.0 with gpu0_temp_c and gpu1_temp_c both
+    # present (50C / 46-47C, ~119W total). CPU model and RAM from the pre-outage rows.
+    # config/gpu_pool.yaml still declares only hecate-gpu0 -- adding hecate-gpu1 is a separate
+    # scheduling change, not part of this record fix.
+    hardware: Inspur NF5288M5 (product NF5288M5-G3GPU01, AGX-2, 8 SXM2 slots), 2x Xeon Gold 6148 (2.4 GHz, 80 threads), 183 GB RAM, 2x V100-SXM2-32GB installed (deep inference and training node)
+    # Flipped to true 2026-11-14: HECATE_BIOMETRICS_BASE_URL (http://100.87.202.68:8100) answers
+    # /health with ok=true, node=hecate, and is publishing rows again.
+    expected_online: true
     capabilities:
       local_llm_heavy: false
       local_llm_quick: false

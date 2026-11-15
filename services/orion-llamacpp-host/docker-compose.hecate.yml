@@ -38,7 +38,7 @@ services:
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:
-      - "${HECATE_AGENT_DEEP_HOST_PORT:-8021}:8080"
+      - "${HECATE_AGENT_DEEP_ENGINE_PUBLISH:-${HECATE_AGENT_DEEP_HOST_PORT:-8021}}:8080"   # public 8021; stop lane-door-agent-deep (hecate-deep.sh stop) first
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s

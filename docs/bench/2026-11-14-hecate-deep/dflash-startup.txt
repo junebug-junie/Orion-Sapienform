@@ -1,0 +1,65 @@
+[VLLM] INFO - orion-vllm-host - vLLM command: /opt/venv/bin/python -m vllm.entrypoints.openai.api_server --host 0.0.0.0 --port 8000 --model /models/Qwen3.8-27B-QUASAR-NVFP4 --gpu-memory-utilization 0.85 --tensor-parallel-size 2 --max-model-len 262144 --max-num-batched-tokens 4096 --max-num-seqs 1 --download-dir /models --middleware app.discovery.pool_server_info --served-model-name deep.thinker.v1 --dtype half --kv-cache-dtype fp8_e4m3 --reasoning-parser qwen3 --tool-call-parser qwen3_coder --attention-backend FLASH_ATTN_V100 --block-size 2048 --mamba-block-size 2048 --mamba-cache-mode align -
+(APIServer pid=71) INFO 11-14 23:14:19 [utils.py:278] non-default args: {'default_chat_template_kwargs': {'enable_thinking': True}, 'enable_auto_tool_choice': True, 'tool_call_parser': 'qwen3_coder', 'enable_prompt_tokens_details': True, 'host': '0.0.0.0', 'middleware': ['app.discovery.pool_server_info'], 'model': '/models/Qwen3.8-27B-QUASAR-NVFP4', 'dtype': 'half', 'max_model_len': 262144, 'served_model_name': ['deep.thinker.v1'], 'override_generation_config': {'max_new_tokens': 32768}, 'download_dir': '/models', 'attention_backend': 'FLASH_ATTN_V100', 'reasoning_parser': 'qwen3', 'tensor_par
+(APIServer pid=71) INFO 11-14 23:14:42 [model.py:650] Resolved architecture: DFlash2DraftModel
+(APIServer pid=71) INFO 11-14 23:14:42 [acceleration.py:1037] SM70 acceleration status: profile=qwen38_27b_nvfp4_dflash2 sm70=True scope=configured_capabilities failures=1
+(EngineCore pid=469) INFO 11-14 23:15:13 [core.py:121] Initializing a V1 LLM engine (v1.5.3) with config: model='/models/Qwen3.8-27B-QUASAR-NVFP4', speculative_config=SpeculativeConfig(method='dflash', model='/models/Qwen3.8-27B-DFlash2', num_spec_tokens=7), tokenizer='/models/Qwen3.8-27B-QUASAR-NVFP4', skip_tokenizer_init=False, tokenizer_mode=auto, revision=None, tokenizer_revision=None, trust_remote_code=False, dtype=torch.float16, max_seq_len=262144, download_dir='/models', load_format=auto, tensor_parallel_size=2, pipeline_parallel_size=1, data_parallel_size=1, decode_context_parallel_siz
+(Worker_TP0 pid=580) INFO 11-14 23:15:38 [qwen_gdn_linear_attn.py:1579] SM70 DFlash2 packed GDN target-verification route enabled.
+(Worker_TP0 pid=580) INFO 11-14 23:15:38 [qwen_gdn_linear_attn.py:1584] SM70 DFlash2 one-pass GDN output RMSNorm route enabled.
+(Worker_TP0 pid=580) INFO 11-14 23:15:38 [qwen_gdn_linear_attn.py:1589] SM70 DFlash2 fused GDN z/b/a materialization route enabled.
+(Worker_TP0 pid=580) INFO 11-14 23:15:38 [attention_policy.py:67] FLASH_ATTN_V100 DFlash single-request window split pages=(832, 1024, 1648, 2048); page832 policy=enabled; dtype/query/window guards apply at dispatch.
+(Worker_TP0 pid=580) INFO 11-14 23:15:50 [sm70.py:311] SM70 DFlash2 QPN8 rerank layout prepared: 2 vocabulary chunks, 128 candidates (FP32 logits).
+(Worker_TP1 pid=581) INFO 11-14 23:15:51 [acceleration.py:1037] SM70 acceleration status: profile=qwen38_27b_nvfp4_dflash2 sm70=True scope=internal_draft_config failures=0
+(Worker_TP0 pid=580) INFO 11-14 23:15:51 [acceleration.py:1037] SM70 acceleration status: profile=qwen38_27b_nvfp4_dflash2 sm70=True scope=internal_draft_config failures=0
+(Worker_TP0 pid=580) INFO 11-14 23:15:51 [qwen3_dflash.py:244] DFlash draft RoPE layout resolved from its own config: neox=True.
+(Worker_TP0 pid=580) INFO 11-14 23:15:51 [qwen3_dflash2.py:542] Using range-preserving BF16 DFlash2 arithmetic on SM70 (FP32 residual, BF16 RNE, scaled FP16 projections).
+(Worker_TP1 pid=581) INFO 11-14 23:15:55 [utils.py:113] DFlash auxiliary snapshot compaction uses projection dtype torch.float16.
+(Worker_TP0 pid=580) INFO 11-14 23:15:55 [shared_weights.py:205] DFlash shared-weight contract on the final PP stage: embedding=True lm_head=True draft_has_own_embedding=False draft_has_own_lm_head=False
+(Worker_TP0 pid=580) INFO 11-14 23:15:55 [utils.py:113] DFlash auxiliary snapshot compaction uses projection dtype torch.float16.
+(Worker_TP1 pid=581) INFO 11-14 23:15:56 [model_runner.py:475] Model loading took 13.01 GiB and 20.408092 seconds
+(Worker_TP0 pid=580) INFO 11-14 23:15:56 [model_runner.py:475] Model loading took 13.01 GiB and 20.430066 seconds
+(Worker_TP0 pid=580) INFO 11-14 23:15:56 [mamba_hybrid.py:118] DFlash2 shared GDN batch metadata fast path enabled.
+(Worker_TP0 pid=580) INFO 11-14 23:19:19 [qwen3_dflash.py:730] Using the fused per-layer DFlash context K RMSNorm fast path on SM70.
+(Worker_TP0 pid=580) INFO 11-14 23:19:28 [backends.py:1097] Using cache directory: /cache/vllm/torch_compile_cache/88af0e4af0/rank_0_0/dflash_head for vLLM's torch.compile
+(Worker_TP0 pid=580) INFO 11-14 23:20:05 [sm70.py:635] SM70 DFlash2 FP32 candidate logits enabled.
+(Worker_TP0 pid=580) INFO 11-14 23:20:05 [sm70.py:684] SM70 DFlash2 QPN8 top-64 per vocabulary chunk plus FP32 candidate rerank path enabled (chunks=2, dense_order=True).
+(Worker_TP0 pid=580) INFO 11-14 23:20:05 [qwen3_dflash2.py:95] DFlash2 disables FlashInfer top-k below SM80; using torch.topk.
+(Worker_TP0 pid=580) INFO 11-14 23:20:05 [backends.py:1097] Using cache directory: /cache/vllm/torch_compile_cache/88af0e4af0/rank_0_0/dflash2_candidate_selector for vLLM's torch.compile
+(Worker_TP0 pid=580) INFO 11-14 23:20:21 [gpu_worker.py:868] Available KV cache memory: 10.99 GiB
+(EngineCore pid=469) INFO 11-14 23:20:21 [core.py:286] Available KV cache memory per worker: 10.99 GiB, 10.99 GiB
+(EngineCore pid=469) INFO 11-14 23:20:21 [kv_cache_utils.py:3058] GPU KV cache size: 574,103 tokens
+(EngineCore pid=469) INFO 11-14 23:20:21 [kv_cache_utils.py:3074] Maximum concurrency for 262,144 tokens per request: 2.19x
+(Worker_TP0 pid=580) INFO 11-14 23:20:21 [builder.py:117] SM70 DFlash2 fused Flash-V100 small-query metadata active.
+(Worker_TP0 pid=580) INFO 11-14 23:20:21 [cudagraph_utils.py:246] Capturing SM70 DFlash2 target tail query lengths (8, 7, 6, 5, 4, 3, 2, 1).
+(Worker_TP0 pid=580) INFO 11-14 23:20:35 [qwen_gdn_linear_attn.py:378] SM70 DFlash2 conv/gating/zero route hit.
+(Worker_TP0 pid=580) INFO 11-14 23:20:37 [qwen_gdn_linear_attn.py:378] SM70 DFlash2 packed GDN target-verification route hit.
+(Worker_TP0 pid=580) INFO 11-14 23:20:37 [verifier.py:262] FLASH_ATTN_V100 DFlash2 grouped verifier gate rejected: op=True marker=True max_model_len=262144 min_model_len=32768 causal=True window=(-1, -1) reqs=1 max_q=8 actual=8 native_max_q=16 q=(8, 12, 256)/torch.float16 k=(703, 2048, 2, 256)/torch.uint8 v=(703, 2048, 2, 256)/torch.uint8 kv_dtype=fp8_e4m3 block_table=(1, 128)/torch.int32 seq_lens=(1,)/torch.int32.
+(Worker_TP1 pid=581) INFO 11-14 23:20:37 [verifier.py:262] FLASH_ATTN_V100 DFlash2 grouped verifier gate rejected: op=True marker=True max_model_len=262144 min_model_len=32768 causal=True window=(-1, -1) reqs=1 max_q=8 actual=8 native_max_q=16 q=(8, 12, 256)/torch.float16 k=(703, 2048, 2, 256)/torch.uint8 v=(703, 2048, 2, 256)/torch.uint8 kv_dtype=fp8_e4m3 block_table=(1, 128)/torch.int32 seq_lens=(1,)/torch.int32.
+(Worker_TP1 pid=581) INFO 11-14 23:20:47 [speculator.py:313] Capturing model for DFlash2 speculator...
+(Worker_TP0 pid=580) INFO 11-14 23:20:47 [speculator.py:313] Capturing model for DFlash2 speculator...
+(Worker_TP1 pid=581) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.64.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP1 pid=581) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.65.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP1 pid=581) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.66.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP1 pid=581) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.67.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP0 pid=580) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.64.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP1 pid=581) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.68.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP0 pid=580) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.65.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP0 pid=580) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.66.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP0 pid=580) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.67.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP0 pid=580) INFO 11-14 23:20:48 [contracts.py:65] FLASH_ATTN_V100 DFlash attention contract: layer=model.layers.68.self_attn.attn causal=False window=(2047, 2047) rope_neox=True.
+(Worker_TP0 pid=580) Capturing dflash2 CUDA graphs (FULL):   0%|          | 0/1 [00:00<?, ?it/s]Capturing dflash2 CUDA graphs (FULL): 100%|██████████| 1/1 [00:02<00:00,  2.50s/it]Capturing dflash2 CUDA graphs (FULL): 100%|██████████| 1/1 [00:02<00:00,  2.50s/it]
+(Worker_TP1 pid=581) INFO 11-14 23:20:50 [speculator.py:868] SM70 DFlash2 context KV CUDA graphs captured for token counts [8]; pre-sampling projection=True.
+(Worker_TP1 pid=581) INFO 11-14 23:20:50 [speculator.py:920] SM70 DFlash2 paged graph metadata refresh captured: [(1, 8)].
+(Worker_TP1 pid=581) INFO 11-14 23:20:50 [model_runner.py:998] Graph capturing finished in 24 secs, took 1.21 GiB
+(Worker_TP0 pid=580) INFO 11-14 23:20:50 [speculator.py:868] SM70 DFlash2 context KV CUDA graphs captured for token counts [8]; pre-sampling projection=True.
+(Worker_TP1 pid=581) INFO 11-14 23:20:50 [gpu_worker.py:1043] CUDA graph pool memory: 1.21 GiB (actual), 0.8 GiB (estimated), difference: 0.41 GiB (33.7%).
+(Worker_TP0 pid=580) INFO 11-14 23:20:50 [speculator.py:920] SM70 DFlash2 paged graph metadata refresh captured: [(1, 8)].
+(Worker_TP0 pid=580) INFO 11-14 23:20:50 [model_runner.py:998] Graph capturing finished in 24 secs, took 1.21 GiB
+(Worker_TP0 pid=580) INFO 11-14 23:20:50 [gpu_worker.py:1043] CUDA graph pool memory: 1.21 GiB (actual), 0.8 GiB (estimated), difference: 0.41 GiB (33.7%).
+(Worker_TP0 pid=580) INFO 11-14 23:21:10 [mamba_hybrid.py:469] Fused speculative GDN metadata active for 6 cache groups (DFlash2).
+(Worker_TP1 pid=581) INFO 11-14 23:21:10 [mamba_hybrid.py:469] Fused speculative GDN metadata active for 6 cache groups (DFlash2).
+(Worker_TP0 pid=580) INFO 11-14 23:21:10 [mamba_hybrid.py:502] DFlash2 grouped small-query metadata active for 3 full-attention cache groups.
+(Worker_TP1 pid=581) INFO 11-14 23:21:10 [mamba_hybrid.py:502] DFlash2 grouped small-query metadata active for 3 full-attention cache groups.
+(Worker_TP0 pid=580) INFO 11-14 23:21:10 [speculator.py:961] Using SM70 DFlash2 context pipeline before target sampling.
+(EngineCore pid=469) INFO 11-14 23:21:21 [core.py:343] init engine (profile, create kv cache, warmup model) took 325.20 s (compilation: 151.07 s)
+(EngineCore pid=469) INFO 11-14 23:21:24 [acceleration.py:1037] SM70 acceleration status: profile=qwen38_27b_nvfp4_dflash2 sm70=True scope=configured_capabilities failures=1
+(APIServer pid=71) INFO:     Application startup complete.

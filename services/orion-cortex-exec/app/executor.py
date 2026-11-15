@@ -19,7 +19,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, get_args, get_origin
 from uuid import uuid4
 
-from jinja2 import Environment
+from orion.cognition.prompt_render import prompt_environment
 
 from pydantic import BaseModel, ValidationError
 
@@ -1532,7 +1532,8 @@ def _enforce_daily_metacog_prompt_budget(
 
 
 def _render_prompt(template_str: str, ctx: Dict[str, Any]) -> str:
-    env = Environment(autoescape=False)
+    # Dicts and lists print as JSON (orion/cognition/prompt_render.py, issue #3289).
+    env = prompt_environment()
 
     # [FIX] Defensive coding: Prevent Jinja crash on missing globals
     render_ctx = _prompt_render_ctx(ctx)

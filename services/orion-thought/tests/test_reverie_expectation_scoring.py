@@ -450,8 +450,13 @@ async def test_scoring_malformed_pending_row_is_logged_not_silent(monkeypatch, c
     assert any("missing thought_id/expectation" in r.message for r in caplog.records)
 
 
+_T0 = datetime(2026, 11, 13, 18, 0, tzinfo=timezone.utc)
+_PENDING = {"thought_id": "t1", "expectation": "the door will still be closed", "created_at": _T0,
+            "expectation_checkable_by": _T0 + timedelta(seconds=1800)}
+
+
 @pytest.mark.asyncio
-async def test_scoring_pending_no_fresh_percept_persists_unscored_no_llm_call(monkeypatch):
+async def test_scoring_pending_no_caption_in_window_persists_unscored_no_llm_call(monkeypatch):
     from app import reverie, vision_reader
     from app.settings import settings
 
@@ -459,9 +464,9 @@ async def test_scoring_pending_no_fresh_percept_persists_unscored_no_llm_call(mo
     monkeypatch.setattr(
         reverie,
         "load_pending_expectations",
-        lambda limit: [{"thought_id": "t1", "expectation": "the door will still be closed"}],
+        lambda limit: [_PENDING],
     )
-    monkeypatch.setattr(vision_reader, "read_recent_vision_events", lambda **kwargs: [])
+    monkeypatch.setattr(vision_reader, "read_vision_events_between", lambda **kwargs: [])
     persisted = []
     monkeypatch.setattr(
         reverie, "persist_expectation_verdict", lambda tid, v, ts: persisted.append((tid, v))
@@ -486,12 +491,12 @@ async def test_scoring_pending_fresh_percept_calls_judge_and_persists_verdict(mo
     monkeypatch.setattr(
         reverie,
         "load_pending_expectations",
-        lambda limit: [{"thought_id": "t1", "expectation": "the door will still be closed"}],
+        lambda limit: [_PENDING],
     )
     monkeypatch.setattr(
         vision_reader,
-        "read_recent_vision_events",
-        lambda **kwargs: [{"narrative": "the door is closed", "age_sec": 5.0}],
+        "read_vision_events_between",
+        lambda **kwargs: [{"narrative": "the door is closed", "created_at": _T0 + timedelta(seconds=605)}],
     )
     persisted = []
     monkeypatch.setattr(
@@ -507,7 +512,7 @@ async def test_scoring_pending_fresh_percept_calls_judge_and_persists_verdict(mo
     cortex.execute_plan.assert_awaited_once()
     plan_request = cortex.execute_plan.call_args.kwargs["req"]
     assert plan_request.context["expectation"] == "the door will still be closed"
-    assert plan_request.context["percept_narrative"] == "the door is closed"
+    assert plan_request.context["percept_narrative"] == "+10:05  the door is closed"
 
 
 @pytest.mark.asyncio
@@ -519,12 +524,12 @@ async def test_scoring_judge_failure_persists_unscored_never_raises(monkeypatch)
     monkeypatch.setattr(
         reverie,
         "load_pending_expectations",
-        lambda limit: [{"thought_id": "t1", "expectation": "the door will still be closed"}],
+        lambda limit: [_PENDING],
     )
     monkeypatch.setattr(
         vision_reader,
-        "read_recent_vision_events",
-        lambda **kwargs: [{"narrative": "the door is closed", "age_sec": 5.0}],
+        "read_vision_events_between",
+        lambda **kwargs: [{"narrative": "the door is closed", "created_at": _T0 + timedelta(seconds=605)}],
     )
     persisted = []
     monkeypatch.setattr(

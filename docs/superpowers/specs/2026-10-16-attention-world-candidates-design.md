@@ -177,7 +177,14 @@ never win attention as if it were a thought (no empty-shell cognition).
   never "operational by default").
 - Run once per finished run. Insert-only (`ON CONFLICT DO NOTHING`). Stored with
   `judge_model`, `prompt_sha256`, `judged_at`, raw `reason`.
-- Model: must not be the seat that wrote the finding. Which local lane serves it
+- Model: DECIDED 2026-11-15 (Juniper): the curiosity lane that wrote the finding judges it
+  (route `HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE`, today `agent` = Flash-Next). A label is kept only
+  when the served model passed the eval below (`orion/curiosity/register.py` `PASSED_JUDGE_MODELS`).
+  Flash-Next result (263 runs): three-way kappa 0.734, philosophical-or-not kappa 0.856,
+  phil-agree 0.87, winners 5/6 (91241b6d, which every lane calls operational). Juniper accepted the
+  0.87 (about 1 in 8 philosophical findings read as operational). The original rule below
+  ("must not be the seat that wrote the finding") is superseded; the dressing eval still applies.
+  Earlier text: must not be the seat that wrote the finding. Which local lane serves it
   is open (Missing questions). Before the flag can turn on, that model must
   pass three checks against `reference_labels_2026-10-20.jsonl` (263 runs, Sonnet
   as judge, Haiku as second rater, both from this revision): kappa >= 0.8 over
@@ -642,8 +649,7 @@ recorded finding.
 
 ## Missing questions
 
-1. Which local lane runs the judge? It must not be the seat that wrote the
-   finding, and it must reach kappa >= 0.8 against the reference labels.
+1. ANSWERED 2026-11-15: the curiosity lane's own route (Flash-Next), see "The judge".
 2. Is "one run every 2.7 days, at most one a day" the size Juniper wants? The
    near-miss list (two "Am I alive?" answers) is the evidence for deciding. The
    knob is this source's cut, not the shared band cuts.

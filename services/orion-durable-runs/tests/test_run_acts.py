@@ -51,6 +51,7 @@ def test_workflow_strings_match_the_runtime():
     ("pr.field_note", None, "durable.pr_field_note", "make"),   # PR field notes Patch 2
     ("reminiscence.episode", None, "durable.reminiscence", "make"),   # daily reminiscence Patch 2
     ("consult.orion_turn", None, "durable.consult_orion_turn", "ask"),   # consult turns, tier 2 (2026-11-12)
+    ("session_roundup.orion_turn", None, "durable.session_roundup", "ask"),   # session threads (2026-11-15)
 ])
 def test_want_families_map_to_their_fixed_verb(workflow, line, actor, verb):
     family = run_act_family(_state(workflow, line))

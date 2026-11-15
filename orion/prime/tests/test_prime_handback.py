@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 from orion.prime import handback as hb
-from orion.prime.state import CONCERN_TTL, MAX_CONCERNS, PrimeConcernV1, PrimeSnapshotV1, PrimeStateV1, observe
+from orion.prime.state import (CONCERN_TTL, MAX_CONCERNS, PROMISE_CONCERN_TTL, PrimeConcernV1, PrimeSnapshotV1,
+                               PrimeStateV1, concern_ttl, is_promise_concern, observe)
 from orion.prime.thought import FrameInputs, build_frame
 from orion.schemas.cockpit_sighting import CockpitHopV1
 
@@ -112,7 +113,7 @@ def test_a_promise_opens_a_concern_citing_the_turn_correlation_id():
     assert "harness_turn_trace:corr-7#promises_made[0]" in concern.text
     assert folded[0].opened_concern_id == concern.concern_id
     assert folded[0].promise_refs == ["harness_turn_trace:corr-7#promises_made[0]"]
-    assert any("opened a thread" in c and "corr-7" in c for c in state.pending_changes)
+    assert any("made a promise, now concern" in c and "corr-7" in c for c in state.pending_changes)
     frame = build_frame(state, FrameInputs(now=T0, turns=hb.turn_lines(turns, T0 + timedelta(minutes=5))))
     assert "from turn corr-7" in frame and "TURNS THAT HANDED BACK TO YOU" in frame
 
@@ -200,10 +201,15 @@ def test_at_most_four_turn_concerns_a_day():
     assert folded[0].opened_concern_id is not None
 
 
-def test_a_turn_concern_fades_on_the_existing_ttl():
+def test_a_turn_concern_is_a_promise_and_fades_after_72h_not_24h():
     state, _, _ = _fold(PrimeStateV1(), hb.PrimeTurnsStateV1(), *_promise_turn("t1"))
-    later = observe(state, PrimeSnapshotV1(binding=[], body_ok=True), T0 + CONCERN_TTL + timedelta(minutes=10))
+    assert is_promise_concern(state.concerns[0]) and concern_ttl(state.concerns[0]) == PROMISE_CONCERN_TTL
+    snap = PrimeSnapshotV1(binding=[], body_ok=True)
+    assert observe(state, snap, T0 + CONCERN_TTL + timedelta(minutes=10)).concerns == state.concerns
+    assert observe(state, snap, T0 + timedelta(hours=48)).concerns == state.concerns
+    later = observe(state, snap, T0 + PROMISE_CONCERN_TTL + timedelta(minutes=10))
     assert later.concerns == [] and later.concern_record[-1].end == "faded"
+    assert later.concern_record[-1].note == "faded: not kept for 3 days"
 
 
 # --- dedupe / replay safety -------------------------------------------------------------------------------

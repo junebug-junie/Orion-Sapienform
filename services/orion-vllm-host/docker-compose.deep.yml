@@ -1,0 +1,39 @@
+# Explicit alternative to docker-compose.hecate.yml, not layered on its old build.
+services:
+  vllm-host:
+    logging:
+      driver: journald
+      options: {tag: "{{.Name}}"}
+    build:
+      dockerfile: services/orion-vllm-host/Dockerfile.deep
+    image: orion-vllm-host:deep-1cat-1.5.3
+    container_name: orion-hecate-vllm-host
+    cpuset: 20-39,60-79
+    shm_size: 8gb
+    ulimits:
+      memlock: {soft: -1, hard: -1}
+    environment:
+      NODE_NAME: hecate
+      VLLM_PROFILE_NAME: deep.thinker.v1
+      VLLM_MODEL_ID: ""
+      VLLM_ENFORCE_EAGER: "false"
+      LLM_ROLE: agent-deep
+      LLM_ANNOUNCE_HOST: hecate
+      LLM_ANNOUNCE_PORT: "8021"
+      XDG_CACHE_HOME: /cache
+    ports: !override
+      # Loopback only: the lane door (services/orion-lane-door, lane-door-agent-deep, started by
+      # scripts/hecate-deep.sh) takes 8021. VLLM_ENGINE_PUBLISH=8021 puts it back (stop the door first).
+      - "${VLLM_ENGINE_PUBLISH:-127.0.0.1:18021}:8000"
+    volumes: !override
+      - type: bind
+        source: /mnt/models
+        target: /models
+        read_only: true
+        bind: {create_host_path: false}
+      - deep-thinker-cache:/cache
+    healthcheck:
+      start_period: 1200s
+    stop_grace_period: 120s
+volumes:
+  deep-thinker-cache:

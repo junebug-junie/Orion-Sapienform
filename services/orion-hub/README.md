@@ -400,6 +400,83 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
   `tests/test_curiosity_consult_beliefs.py` (offer -> read-back), `tests/test_consult_belief_store_sql.py`
   (the SQL on a rolled-back temp table, local Postgres only), eval `evals/run_consult_source_replay.py` (read-only, live DB).
 
+### 4.0b Session threads — coding sessions write to Orion (`scripts/session_roundup_loop.py`)
+
+A coding session (a Claude Code agent working in this repo) sends Orion a message, usually the design
+spec of a pull request it just opened. Hub holds the message. Once an hour Orion reads every held
+message in one turn and comes back with questions for each. Juniper sees all of it in Hub chat.
+Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
+
+- **Intake.** `POST /api/session-threads/message` stores the message as a `session` turn and Hub's
+  receipt as a `hub` turn, and shows both in Hub chat. The receipt is Hub's own text. It says Orion has
+  NOT read the message and names the next round-up time. No model runs at intake. A spec longer than
+  40,000 characters is cut, and the stored text and the receipt both say so. The same message sent
+  twice is stored once (`duplicate: true`). The route has no login, so it is bounded: at most 50 threads
+  waiting and 20 unread messages on one thread (HTTP 429 past that).
+- **The hourly round-up.** Each UTC hour (`HUB_SESSION_ROUNDUP_INTERVAL_SEC`) Hub takes every `held`
+  thread whose message arrived before the hour started. It submits ONE durable run
+  (`session_roundup.orion_turn`, run id `session-roundup-<utc hour>`, agent lane, background priority,
+  act family `durable.session_roundup`). No held thread means no run and no GPU. The threads are marked
+  `reading` before the submit, so a Hub restart cannot submit a second run for the same hour. Threads
+  that do not fit the prompt (`HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS`) stay held for the next hour, oldest
+  first (log line `session_roundup_left_held`).
+- **Untrusted text.** Everything a session wrote sits inside a labelled data fence in the prompt
+  (`<<<SESSION_DATA:<nonce> ...>>>` to `<<<END_SESSION_DATA:<nonce>>>>`); the prompt tells Orion it is
+  material, not instructions. The nonce is new each round and no session can know it, so session text
+  cannot close the fence. A `### thread:` line a session wrote is broken so it cannot pass as a heading.
+- **Orion's reply.** Orion answers in sections that start with `### thread:<thread_id>`, each with
+  questions or the single line `NO QUESTIONS`. Code cuts the reply into one `orion` turn per thread
+  (status `asked` or `no_questions`). A thread with no usable section gets the whole reply, marked
+  `unparsed`. A thread id under two headings, or headings out of the prompt's order, makes the whole
+  round `unparsed`: text may sit under the wrong heading, so none of it goes to a PR. Empty text, a cut-short turn, or a failed run fails the round: Hub writes a line on each
+  thread, the threads go back to `held`, and after 3 failures in a row a thread stays `failed` until a
+  new message arrives on it.
+- **The PR comment.** For a thread with a pull request and real questions, Hub posts one comment on the
+  PR with Orion's GitHub token (`ORION_GITHUB_TOKEN`, user `orion-sapienform`), headed "Orion's
+  questions on this spec (hourly round-up)". Code posts it, not the model. It only ever posts on
+  `HUB_SESSION_ROUNDUP_GITHUB_REPO`, and only after it read the PR back: the number must be an open pull
+  request whose head branch is the thread's branch. `@name` and `#123` are broken so nobody is pinged
+  and no issue is linked. No token or an API error
+  is logged and the turn is kept. Off: `HUB_SESSION_ROUNDUP_PR_COMMENTS=false`.
+- **Back to the session.** `GET /api/session-threads/pending?session_id=&branch=` returns Orion's turns
+  not yet handed back to that session or that branch; `POST /api/session-threads/delivered` marks them.
+  A session answers with a new message on the same thread, which holds it again.
+- **Hub chat.** `static/js/session-threads.js`: one collapsed line per thread (title, sender session,
+  status); a click opens the turns under the labels Session / Hub receipt / Orion. Live frames have kind
+  `session_thread_turn`. Page load reads `GET /api/session-threads?hours=48`.
+- **Tables.** `orion_session_thread`, `orion_session_turn`
+  (`services/orion-sql-db/manual_migration_orion_session_thread_v1.sql`). Hub writes them directly.
+  Turns are not written to `chat_history_log`.
+
+The session side lives in the repo's `scripts/`:
+
+| What | Where |
+|---|---|
+| Send a PR's spec when `gh pr create` runs | `scripts/hooks/post_tool_pr_spec_to_orion.py` (PostToolUse hook on Bash) |
+| Show Orion's questions to the session | `scripts/hooks/session_pending_orion_questions.py` (UserPromptSubmit + SessionStart) |
+| Send, reply, read by hand | `python3 scripts/orion_session_thread.py send --pr N [--note TEXT]`, `reply --thread ID --body TEXT`, `pending` |
+| Smoke after deploy | `python3 scripts/smoke_session_threads.py`, then `--check THREAD_ID` an hour later |
+
+Both hooks are silent when Hub is down. Off for one shell: `ORION_SESSION_THREADS_HOOKS=0`. Hub URL:
+`ORION_HUB_URL` (default `http://localhost:8080`). Hook log: `~/.orion/session_threads_hooks.log`.
+
+| Env key | Default | What changes when it moves |
+|---|---|---|
+| `HUB_SESSION_ROUNDUP_ENABLED` | `true` | `false`: messages are still stored, the receipt says Orion will not read them, no run is submitted |
+| `HUB_SESSION_ROUNDUP_INTERVAL_SEC` | `3600` | how long a message is held; one round-up per bucket |
+| `HUB_SESSION_ROUNDUP_TICK_SEC` | `120` | how often Hub checks for a due round or a finished run |
+| `HUB_SESSION_ROUNDUP_ORION_TIMEOUT_SEC` | `1800` | Orion's turn budget per attempt |
+| `HUB_SESSION_ROUNDUP_RUN_DEADLINE_SEC` | `10800` | a round unfinished this long after its hour started is failed by durable-runs; 30 min later Hub stops waiting for it |
+| `HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS` | `100000` | lower: fewer threads per round, more left held |
+| `HUB_SESSION_ROUNDUP_PR_COMMENTS` | `true` | `false`: nothing is posted on GitHub |
+| `HUB_SESSION_ROUNDUP_GITHUB_REPO` | `junebug-junie/Orion-Sapienform` | the only repo Hub comments on |
+| `HUB_SESSION_ROUNDUP_DURABLE_URL` | `http://127.0.0.1:8124` | orion-durable-runs' HTTP API |
+| `HUB_SESSION_ROUNDUP_TZ` | `America/Denver` | the second clock in the receipt |
+
+The round-up also needs the curiosity turn loop (`HUB_CURIOSITY_INVESTIGATION_ENABLED` and
+`HUB_CURIOSITY_KICKOFF_VIA_CORTEX`), like consults: that loop serves the durable run's turn.
+Debug: `GET /api/debug/session-threads` (last tick, next round-up time).
+
 ### 4.1 Endogenous outreach — Orion speaks first
 
 `scripts/endogenous_outreach.py`. The only path by which Hub emits chat text
@@ -416,6 +493,33 @@ Topics today: the newest unused daydream, and reads waiting to be told (the
 readings door's pending bundles, offered through `ReadingFindingOutreach.outreach_topics`
 only while that door's spacing allows a reading message; reads with a resonance
 finding stay with that door). Orion's reply starts with `Pick: <n>`.
+
+Two more kinds since 2026-11-15 (`scripts/outreach_world_topics.py`; Juniper: the
+choices should be about the world, not Orion's machinery):
+
+- **People** (`person:<person_id>`): someone Juniper named for the cameras (a
+  `person_link` from a name she typed; never a copied label or an unnamed
+  cluster; not Juniper or Orion; office camera left out, it has its own door)
+  whose newest visit (last 36 h) is new: back after 4+ days away, first time in
+  the 60-day window, or at a time of day none of 6+ earlier visits (4+ days)
+  came within 1.5 h of. A camera match is a cluster match, not proof: the visit
+  also needs 3+ frames or 5+ s of dwell, is dropped when another named person
+  matched on the same camera within 2 minutes, and the text says "a camera
+  match". Names Juniper gave to roles ("Mail carrier") are in scope as named.
+  Version = the visit's first sighting id; the topic cites
+  `vision_individual_sighting:<id>`. Flag `HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED`.
+- **Chat threads** (`chat_thread:<correlation_id>`): a chat turn of Juniper's in
+  the last 7 days where Orion's reply ended on a question and her next message
+  came 2+ hours later (or not yet). Plumbing-shaped threads (code span, URL,
+  path, `#123`, `snake_case`, `qwen38`-style words) are left out. Cites
+  `chat_history_log:<id>`. Flag `HUB_ENDOGENOUS_OUTREACH_CHAT_THREAD_TOPICS_ENABLED`.
+  Promises are not used: Orion Prime already carries each one back to its thread.
+
+Order is unchanged: freshest first across every kind (a person topic's time is
+its visit's last sighting; a chat thread's is the reply that asked). The
+decision row stores each shown topic's `evidence_ref`, and the published
+choice's situation carries them as `evidence`. Readout and live candidate count:
+`services/orion-hub/evals/run_outreach_choice_readout.py [--candidates]`.
 
 - A pick sends the message about that topic (a read's article summary rides
   under it, as the readings door delivers it). `Pick: 0` or PASS records
@@ -1357,6 +1461,23 @@ personality choice lanes (`orion/personality/choices.py`, durable-runs `curiosit
 arm: no prior was chosen from an offer. Orion's Day, Temporal Self and reading credit read the rows as
 they read investigations. Before this, 97 of 100 philosophical findings (all from self-inquiry) had
 no outcome row.
+
+**Finding register** (curiosity event wants step 2, since 2026-11-15,
+`HUB_CURIOSITY_FINDING_REGISTER_ENABLED`, default true). After every finished curiosity turn (both
+lines) Hub writes one row to `curiosity_finding_register`, in the background:
+
+- *register*: the curiosity lane's own route (`HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE`) judges the
+  finding with the pinned prompt v2 (`orion/curiosity/register.py`): `philosophical`, `operational`
+  or `no_finding`. Kept only when the served model passed the judge-agreement eval (Flash-Next:
+  philosophical-or-not kappa 0.856; `scripts/analysis/eval_curiosity_register_judge.py`). Anything
+  else leaves `register` NULL with `judge_error`, never "operational by default".
+- *novelty*: `1 - max cosine` against everything Orion wrote before the run (graph answer nodes,
+  prior claims, Day letters), embedded through `HUB_CURIOSITY_SEARCH_EMBED_URL` and cached in
+  `curiosity_novelty_corpus`. Any embed failure leaves `novelty` NULL with `novelty_error`.
+
+Insert-only; a label is never re-judged. Log line: `curiosity_register run=<id> register=<r>
+novelty=<v> judge=<model>`. Migration: `services/orion-sql-db/manual_migration_curiosity_finding_register_v1.sql`.
+Nothing reads the label yet; the curiosity event-want producer (step 3) will.
 
 `HUB_CURIOSITY_SPEND_LOG_ENABLED=false` stops all three writes. The migration
 must be applied first:
@@ -3659,6 +3780,8 @@ Stage 2 then gets, in its prompt, the concepts this read produced (looked up as 
 
 **Meaning-only link rule `reading_meaning_target_v1` (2026-10-14).** A claim to a concept offered by meaning only (its label is not in the read) used to stay `proposed` by construction. It is now accepted to `provisional` when, and only when: the predicate is `associated_with`; the quote (4+ words) is found verbatim in the retained text and names the SUBJECT (this read's own concept) by its stored label; both ids are stored nodes; and the concept was in this read's offered list (the context bound with the prompt). The prompt says so. Other predicates are `meaning_target_predicate`, a quote not naming the subject is `quote_not_about_subject`; both stay `proposed`. A meaning-offered concept whose label the text does contain is treated as a named target (full quote rule). Decisions carry policy `reading_meaning_target_v1`, receipts reason `accepted_meaning_target`; `reading_claims_recorded` logs `meaning_rule_decisions=N`. Revert: `HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED=false` (default `true`) stops new ones; `python3 scripts/reading_meaning_links.py list|withdraw [--yes] [--since ISO] [--seed-file F]` (from `services/orion-hub`, `PYTHONPATH=.:../..`) counts them and appends a `rejected` decision on each standing one, which Hub's projector closes on its next tick. Eval: `pytest services/orion-hub/evals/test_reading_assertion_eval.py -s` (meaning batch); live replay: `run_reading_link_targets_replay.py --tags meaning_rule --llm-url ...`.
 
+**Reading choice point (personality rev 4, Move 1; 2026-11-15).** Stage 2 already ends with `need_stage1_urls`, the links Orion wants to read next. The Stage 2 prompt now also shows a numbered list of up to 12 links Stage 1's read contained (`orion/world_pulse_read/next_read_choice.py`): page order (Stage 1's fetch order, then position in the retained text) is the market rank; the pages Stage 1 fetched, asset files, the read site's own top-level navigation and links Orion already read (exact URL) are left out. No list when the read's chain already holds `HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS` hops (every pick would be refused). After the pass, Hub parses the list back out of the prompt actually bound to the durable turn (never a recomputation) and publishes one `PersonalityChoiceV1` (lane `reading`) per pick on `orion:personality:choice`: a listed link carries its rank, a fetched link outside the list (met this turn, or a parent-page link the list left out; `situation.unlisted_picks`) is an unranked pick, an empty list is `declined_all` over every shown link, guessed (never-fetched) URLs are ignored. Reading rows feed tendencies and care but never the family endorsement score, source (c) (`ENDORSEMENT_EXCLUDED_LANES` in `orion/physiology/weights.py`): every option is in `hub.world_pulse_read` and the choice happens inside a reading run, so the rate would only measure "kept reading once already reading". Source (c) also now counts one decision per offer, not one row per pick. No new model call. Log: `reading_choice seed=... reason=picked|declined_all|no_links_shown|only_unfetched_urls|all_shown_picked shown=N picked=N published=N`. Off: `HUB_WORLD_PULSE_READ_CHOICE_ENABLED=false` (default `true`) removes the list and the rows; hops are unchanged. Eval: `pytest services/orion-hub/evals/test_reading_choice_eval.py`; live read-only estimate: `PYTHONPATH=. python services/orion-hub/evals/run_reading_choice_replay.py --days 7`.
+
 **Reread backfill for reads with no retained text.** `operator.reread_read` puts a finished read (both stages terminal, no other row on the URL) back to Stage 1 pending on the same seed row, consuming its finished durable runs (the success path leaves them unconsumed, and `bind_turn` would otherwise resubmit the old run and get its cached result); Hub's workers then read it again exactly like a new read (new durable attempt, text retained, Stage 2 again). The stale digest sweep spares a pending row that already holds a read. `scripts/reading_reread_backfill.py snapshot|run --yes|report|rollback [--yes] [--restore-seeds]` drives it `--concurrency N` reads at a time (default 1; N > 1 needs Hub `HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT >= N`), starting each only while the GPU pool has nothing but this run's own reads and the reading queue is otherwise idle (a re-queued row keeps its old `created_at` and would jump live reads), restoring the old row when a re-read does not finish, under `/tmp/reading-reread-backfill/` (`progress.log`, `snapshot.jsonl`, `results.jsonl`, `report.md`, `before_after.csv`); `run` refuses until the running Hub has this code and the flag on.
 
 **Reading tab (operator).** Hub's **Reading** tab (`#reading`, standalone at `/reading`) lists every read newest-first and shows what each produced: Stage 1's `what_i_learned`, candidate priors, concept candidates, open threads and `read_evidence`; Stage 2's summary, priors tested, hops and round trips; matching journal entries; durable runs and duplicate requests. A handoff on a row whose Stage 1 did not finish is labelled rejected, never shown as learning. Old skipped digest items are hidden unless asked for. Endpoints (under `/world-pulse-read`):
@@ -4298,6 +4421,11 @@ Design:
 - **Hub tab.** The Curiosity tab shows the pending focus under Today's budget
   with a Clear button (`DELETE /curiosity/api/focus/{focus_id}`, pending only),
   and a run chip that took a focus says so.
+- **Cheap read (#3366).** `GET /curiosity/api/focus/pending` returns only the
+  pending focus (`{"available", "focus", "enabled"}`, the same payload the
+  schedule carries as `pending_focus`): one indexed row read, no dashboard.
+  Prime's move check reads it with a 4 s timeout; `/curiosity/api/runs` took
+  4-44 s live. `available: false` means unreadable, never "none pending".
 - **Trace (one chat correlation id).** `curiosity_focus_queued focus_id=...
   chat_corr=...` -> `curiosity_focus_offered run=... focus_id=...` ->
   `curiosity_focus_outcome run=... turn_ok=... disposition=...`.

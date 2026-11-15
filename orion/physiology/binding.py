@@ -6,6 +6,8 @@ Pure. Shared by every producer whose bid binds, so they all obey the same rule:
   GPU pool for a hold;
 * orion-dream (``app.physiology_bind``: the dream cycle), before a sleep opens its act;
 * orion-hub outreach (``scripts.outreach_bind``: hub.outreach), before a door composes a message;
+* orion-sql-writer camera asks (``app.ask_bind``: vision.ask, attention patch 4b), before a card opens. A held
+  ask keeps bidding with no deadline (issue #3285), so it passes a rolling ``end`` that never arrives;
 * orion-dream's compaction applier (``app.compaction_consent``, attention patch 3d), with the hold ending now:
   it is one-shot, so only consent decides; a consent block is never admitted;
 * orion-durable-runs' cooling world act (``app.cooling_act``, via ``orion.autonomy.shed_act.shed_verdict``),
@@ -37,6 +39,7 @@ BINDING_PRODUCERS = frozenset({
     "orion-dream.dream_cycle.binding",          # the dream cycle, services/orion-dream/app/physiology_bind.py
     "orion-durable-runs.cooling_act.binding",   # the cooling world act, services/orion-durable-runs/app/cooling_act.py
     "orion-hub.outreach.binding",               # Hub outreach (hub.outreach), services/orion-hub/scripts/outreach_bind.py
+    "orion-sql-writer.ask_events.binding",      # camera asks (vision.ask, attention 4b), services/orion-sql-writer/app/ask_bind.py
 })
 # The market could not decide: these are "no answer", not deferrals.
 NO_ANSWER_REASONS = frozenset({"physiology_unavailable", "unknown_family", "family_never_bids"})

@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from typing import Any, AsyncIterator, Callable, Dict, Optional
 
 import httpx
@@ -28,10 +29,11 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
 from orion.gpu_pool.client import Lease, LeaseUnavailable
+from orion.gpu_pool.value_order import is_operator_class
 from orion.llm.call_usage import STREAM_HEAD_BYTES
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 
-from . import call_usage_emit, grammar_emit
+from . import call_usage_emit, grammar_emit, lane_door
 from .ctx_overflow import is_context_overflow
 from .fast_thinking import GPU3_WORK_CLASSES, with_gpu3_route_defaults
 from .pool_placement import (
@@ -42,6 +44,7 @@ from .pool_placement import (
     busy_at_grant,
     granted_backend,
     granted_model,
+    deep_grant_ready,
     class_max_ctx,
     pool_node,
     mark_revoked,
@@ -55,6 +58,25 @@ from .settings import settings
 from .vision import count_images, replace_images_with_note, resolve_vision_capability
 
 logger = logging.getLogger("orion-llm-gateway.passthrough")
+
+
+# An eval's one-off call on an operator route (orion/evals/leased_llm.gateway_call) names its holder here,
+# so gpu_pool_events records which eval ran (``operator:<eval>``), not the passthrough's default holder.
+# Honoured only for operator classes and only in the ``operator:<name>`` shape: Orion's own routes keep
+# their holders.
+OPERATOR_HOLDER_HEADER = "x-orion-operator-holder"
+_OPERATOR_HOLDER_RE = re.compile(r"operator:[A-Za-z0-9_.:-]{1,64}")
+
+
+def holder_for(request: Request, route_key: str, default: str) -> str:
+    raw = (request.headers.get(OPERATOR_HOLDER_HEADER) or "").strip()
+    if not raw or not _OPERATOR_HOLDER_RE.fullmatch(raw):
+        return default
+    try:
+        work_class = route_spec(route_key).work_class
+    except Exception:  # noqa: BLE001 -- an unknown route is refused later, with its own error
+        return default
+    return raw if is_operator_class(work_class) else default
 
 
 class _UpstreamStatus(Exception):
@@ -110,7 +132,7 @@ class _Revoked(Exception):
 
 
 class _ClientGone(Exception):
-    """The HTTP client disconnected while its acquire was still queued."""
+    """The HTTP client disconnected before its response was handed off."""
 
 
 # How much of a stream's end is kept to read llama.cpp's final ``timings``/``usage`` chunk.
@@ -179,6 +201,8 @@ async def _race(awaitable, watch: "asyncio.Future[str]"):
         await asyncio.wait({task, watch}, return_when=asyncio.FIRST_COMPLETED)
     except asyncio.CancelledError:
         task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
         raise
     if task.done():
         return task.result()
@@ -186,6 +210,34 @@ async def _race(awaitable, watch: "asyncio.Future[str]"):
     with contextlib.suppress(BaseException):
         await task
     raise _Revoked(watch.result())
+
+
+async def _race_response(awaitable, watch: "asyncio.Future[str]", request: Request):
+    """Also observe disconnects while awaiting a reply or initial stream headers.
+
+    Stop this receive-side watcher before LeaseStreamingResponse takes ownership;
+    two concurrent ASGI receive consumers could steal each other's disconnect.
+    """
+    async def disconnected():
+        while not await request.is_disconnected():
+            await asyncio.sleep(_DISCONNECT_POLL_SEC)
+
+    task = asyncio.ensure_future(_race(awaitable, watch))
+    gone = asyncio.create_task(disconnected())
+    try:
+        await asyncio.wait({task, gone}, return_when=asyncio.FIRST_COMPLETED)
+        if task.done():
+            return task.result()
+        gone.result()  # do not misclassify a receive failure as client cancellation
+        raise _ClientGone()
+    finally:
+        gone.cancel()
+        if not task.done():
+            task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        with contextlib.suppress(BaseException):
+            await gone
 
 
 async def _withdraw(task: "asyncio.Future[Lease]", handle: PoolLease) -> None:
@@ -265,6 +317,8 @@ async def proxy_on_pool(
     forwardable_request_headers, forwardable_response_headers, httpx_timeout = _http_helpers()
     headers = forwardable_request_headers(request)
     timeout = httpx_timeout()
+    if spec.work_class in {"agent-deep", "operator_agent_deep"}:
+        timeout.read = 1800.0  # long prefill; Circe keeps its existing timeout
     min_ctx = int(min_ctx_tokens)
     overflow_response: Optional[Response] = None
     clamped = False
@@ -320,11 +374,17 @@ async def proxy_on_pool(
 
         may_release = overflow_response is None and not clamped and hold is None
         upstream_url = f"{lease.grant.url.rstrip('/')}{path}"
+        # The lane door in front of the server: THIS lease's id (a child's own id under a hold).
+        upstream_headers = {**headers, **lane_door.headers(lease.lease_id)}
         if on_dispatch is not None:
             on_dispatch(upstream_url, lease.grant.served_by, stream)
         watch = asyncio.ensure_future(wait_lease_revoked(lease))
         stream_owns_lease = False
         try:
+            if route_key == "deep.thinker.v1" and not deep_grant_ready(lease.grant):
+                report.finish(POOL_UNAVAILABLE)
+                await handle.release()
+                return JSONResponse(error_body(POOL_UNAVAILABLE, "Verified deep worker is unavailable", reason="deep_thinker_not_ready"), status_code=503)
             dispatch_body = dict(forward_body)
             grant_backend = granted_backend(lease.grant)
             if spec.work_class in GPU3_WORK_CLASSES and grant_backend == "llamacpp" and not anthropic:
@@ -332,7 +392,7 @@ async def proxy_on_pool(
             if grant_backend in BLIND_CHECK_BACKENDS and count_images(dispatch_body, anthropic=anthropic):
                 dispatch_body = await _images_for_lane(dispatch_body, lease, route_key, correlation_id, anthropic)
             if grant_backend == "vllm":
-                if anthropic:
+                if anthropic and not deep_grant_ready(lease.grant):
                     report.finish("unsupported_backend_protocol")
                     await handle.release()
                     return JSONResponse(error_body(
@@ -343,8 +403,9 @@ async def proxy_on_pool(
             if stream:
                 client = httpx.AsyncClient(timeout=timeout)
                 try:
-                    upstream_request = client.build_request("POST", upstream_url, headers=headers, json=dispatch_body)
-                    upstream = await _race(client.send(upstream_request, stream=True), watch)
+                    upstream_request = client.build_request("POST", upstream_url, headers=upstream_headers,
+                                                          json=dispatch_body)
+                    upstream = await _race_response(client.send(upstream_request, stream=True), watch, request)
                 except BaseException:
                     await client.aclose()
                     raise
@@ -428,7 +489,8 @@ async def proxy_on_pool(
                 return streaming
 
             async with httpx.AsyncClient(timeout=timeout) as client:
-                upstream = await _race(client.post(upstream_url, headers=headers, json=dispatch_body), watch)
+                upstream = await _race_response(client.post(upstream_url, headers=upstream_headers, json=dispatch_body),
+                                                watch, request)
             report.clock.replied()
             response = _plain_response(upstream.content, upstream)
             if upstream.status_code >= 400:
@@ -450,6 +512,13 @@ async def proxy_on_pool(
             report.finish(grammar_emit.classify_http_outcome(upstream.status_code),
                           body=body if isinstance(body, dict) else upstream.content)
             return response
+        except _ClientGone:
+            report.finish(grammar_emit.CLIENT_GONE)
+            lease.release_outcome, lease.release_detail = "cancelled", "http_client_disconnected"
+            await handle.release(asyncio.CancelledError())
+            logger.info("passthrough_client_gone_after_grant route=%s lease_id=%s corr=%s",
+                        route_key, lease.lease_id, correlation_id or "-")
+            return Response(status_code=CLIENT_CLOSED_STATUS)
         except _Revoked as exc:
             report.finish(POOL_RECALLED)
             mark_revoked(lease, exc.reason)

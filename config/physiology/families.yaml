@@ -45,6 +45,17 @@ families:
   perception:
     tier: 0
     note: retinas, vision-edge, frame-router, vision-host, window, scribe, percept-store.
+  orion.look:
+    tier: 0
+    note: >-
+      Orion opening a live camera frame from a turn (`dig look`, orion/dig/look.py, 2026-11-13). Perception
+      chosen inside a chat turn or curiosity run, never bid for on its own: the turn already won its slot.
+  orion.look_check:
+    tier: 0
+    note: >-
+      Orion filing whether a vision record matched what a look showed (`dig look check`, #3347 part 2a,
+      2026-11-15). Done inside the same turn as the look; never bids. A spot-check want that bids on its
+      own (tier 2, Juniper's call) comes later, once hand-filed checks show the rate is not pinned.
 
   # --- Tier 1: critical upkeep, a reserved share of each lane. ---
   actions.journal:
@@ -162,6 +173,19 @@ families:
     deferrable_window_s: 1800
     lanes: [agent, agent-gpu2, agent-deep]
     placement: one_of
+  durable.session_roundup:
+    # 2026-11-15, session threads (docs/superpowers/specs/2026-11-15-session-threads-design.md): Orion's hourly
+    # read of the messages coding sessions sent (session_roundup.orion_turn durable run, act
+    # ask:durable.session_roundup, services/orion-durable-runs/app/run_acts.py). Its own family so a round-up
+    # never spends durable.consult_orion_turn's hunger. TIER 2 IS THE DESIGN'S DEFAULT: discretionary, like a
+    # consult turn; Juniper may change it in PR review. At most one run an hour, and none when no thread is
+    # held. 3600 s: the next hour's round-up replaces a turn that waited that long. Bids are shadow (not a
+    # binding family in app/run_bids.py): the hourly cadence is Juniper's rule, so the market does not hold it.
+    # Agent lanes: the run asks for llm.route.agent with agent preferred. No receptors.
+    tier: 2
+    deferrable_window_s: 3600
+    lanes: [agent, agent-gpu2, agent-deep]
+    placement: one_of
   durable.reminiscence:
     # 2026-11-07, daily reminiscence Patch 2 (docs/superpowers/specs/2026-11-07-daily-reminiscence-design.md
     # section 6): one durable run a Denver day in which Orion writes five hops about one past week and reads
@@ -267,7 +291,12 @@ families:
     # Each ask Orion made is a vision.ask act (services/orion-sql-writer/app/ask_acts.py) graded juniper_answered
     # by her answer (orion/grammar/camera_ask_acts.py: answered 1; dismissed, don't know or unanswered at expiry 0;
     # withdrawn not a grade), and the want carries the ask rule's answered share as outcome_value. Juniper's own
-    # walkway-story naming cards open no act and post no want. Still shadow: nothing obeys the decision (4b binds).
+    # walkway-story naming cards open no act and post no want.
+    # 2026-11-13, attention patch 4b: BINDS. Each camera ask bids before its card opens (producer
+    # orion-sql-writer.ask_events.binding, services/orion-sql-writer/app/ask_bind.py, flag ORION_PHYSIOLOGY_BID_CAMERA_ASKS):
+    # funded opens the card, held does not and re-bids later with a backoff (600 s doubling to 3 h). No deadline: a
+    # held ask waits until funded or its opener stops proposing it (issue #3285), so deferrable_window_s below does
+    # not end a hold. Rank stays the market's: family hunger x the rule's expected answer (issue #3286).
     # Hunger now counts from the family's last act close (any ask answered/expired), with tau from the close rhythm,
     # no longer from the want's own opened_at: intensity = max(hunger, salience) gains a hunger floor.
     # An ask is a card Juniper answers when she likes, not a message, so no fixed juniper_msgs cost

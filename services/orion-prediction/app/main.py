@@ -29,6 +29,7 @@ from orion.core.bus.bus_service_chassis import ChassisConfig, HeartbeatOnly
 from app.action_bets import ActionBets, ConflictError, WorldModelShadow
 from app.turn_self_bets import TurnSelfBets
 from app.reachable import Reachable
+from app.act_chain import ActChain
 from app.bill_forecast import BillForecast
 from app.causal import CausalError
 from app.effects import Effects
@@ -53,6 +54,8 @@ action_bets: ActionBets | None = None
 turn_self_bets: TurnSelfBets | None = None
 reachable: Reachable | None = None
 _last_reachable: dict[str, Any] = {"at": None, "ok": None, "error": None}
+act_chain: ActChain | None = None
+_last_act_chain: dict[str, Any] = {"at": None, "ok": None, "error": None}
 bill_forecast: BillForecast | None = None
 _last_bill: dict[str, Any] = {"at": None, "ok": None, "error": None}
 family_a: FamilyALive | None = None
@@ -108,6 +111,20 @@ async def _settle_self_bets_forever() -> None:
             logger.exception("turn_self_bets_settle_failed")
         try:
             await asyncio.wait_for(_stop.wait(), timeout=_settings.turn_self_bets_settle_sec)
+        except asyncio.TimeoutError:
+            pass
+
+
+async def _act_chain_forever() -> None:
+    while not _stop.is_set():
+        try:
+            await asyncio.to_thread(act_chain.tick)
+            _last_act_chain.update(at=datetime.now(timezone.utc), ok=True, error=None)
+        except Exception as exc:  # noqa: BLE001 -- one bad pass must not stop the loop
+            _last_act_chain.update(at=datetime.now(timezone.utc), ok=False, error=f"{type(exc).__name__}: {exc}"[:300])
+            logger.exception("act_chain_tick_failed")
+        try:
+            await asyncio.wait_for(_stop.wait(), timeout=30.0)
         except asyncio.TimeoutError:
             pass
 
@@ -177,7 +194,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, effects, action_bets, turn_self_bets, reachable, bill_forecast, family_a, runner, _runner_redis, _store, _bus
+    global engine, effects, action_bets, turn_self_bets, reachable, act_chain, bill_forecast, family_a, runner, _runner_redis, _store, _bus
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -207,6 +224,7 @@ async def lifespan(app: FastAPI):
                                              if _settings.world_model_shadow_enabled else None))
     turn_self_bets = TurnSelfBets(_store, surprise_events_enabled=_settings.turn_surprise_events_enabled)
     reachable = Reachable(_store)
+    act_chain = ActChain(_store)
     if _settings.bill_forecast_enabled:
         bill_forecast = BillForecast(_store, load_tariff(_settings.energy_tariff_path),
                                      tz=ZoneInfo(_settings.energy_timezone),
@@ -260,6 +278,8 @@ async def lifespan(app: FastAPI):
         _tasks.append(asyncio.create_task(_settle_self_bets_forever()))
     if _settings.reachable_enabled:
         _tasks.append(asyncio.create_task(_reachable_forever()))
+    if _settings.act_chain_enabled:
+        _tasks.append(asyncio.create_task(_act_chain_forever()))
     if bill_forecast is not None:
         _tasks.append(asyncio.create_task(_bill_forecast_forever()))
     if family_a is not None:
@@ -353,6 +373,8 @@ async def health() -> dict[str, Any]:
                                    "last_error": turn_self_bets.last_surprise_error if turn_self_bets else None}},
             "reachable": {"enabled": _settings.reachable_enabled, **_jsonable(_last_reachable),
                           "last_pass": _jsonable(reachable.last_pass if reachable else {})},
+            "act_chain": {"enabled": _settings.act_chain_enabled, **_jsonable(_last_act_chain),
+                          "last_pass": _jsonable(act_chain.last_pass if act_chain else {})},
             "bill_forecast": {"enabled": _settings.bill_forecast_enabled, **_jsonable(_last_bill),
                               "last_pass": _jsonable(bill_forecast.last_pass if bill_forecast else {})},
             "family_a": {"enabled": _settings.family_a_enabled, **_jsonable(_last_family_a),
@@ -624,8 +646,9 @@ async def _heat(series_id: str, days: float, experiment_id: uuid.UUID | None, st
 async def get_heat_per_watt(series_id: str = "athena.cabinet_temp_c", days: float = Query(7.0, ge=2, le=21),
                             experiment_id: uuid.UUID | None = None) -> dict[str, Any]:
     """How much warmer than the room each machine's sustained watts make the cabinet (C per W, HAC 95% CI),
-    fitted now on hourly data; ``experiment_id`` converts that experiment's measured watts into a predicted
-    cabinet change. Read-only (POST stores). Too little data or a degenerate fit -> 422 ``refused``."""
+    fitted now on hourly data. ``series_id=closet.top_temp_c``: the closet top instead (a separate fit,
+    stored under its own series_id). ``experiment_id`` converts that experiment's measured watts into a
+    predicted target change. Read-only (POST stores). Too little data or a degenerate fit -> 422 ``refused``."""
     return await _heat(series_id, days, experiment_id, False)
 
 
@@ -700,6 +723,18 @@ async def get_turn_self_bets_live(force: bool = False, since: datetime | None = 
         return _jsonable(await asyncio.to_thread(turn_self_bets.live, force, since))
     except psycopg.Error as exc:
         raise HTTPException(503, "turn self-bet store unavailable") from exc
+
+
+@app.get("/act-chain")
+async def get_act_chain() -> dict[str, Any]:
+    """Act chain (family B): the current 15-min forecast of Orion's next act, issuance coverage and the
+    live grade vs the marginal / clock-hour / clock-block baselines over 14 days (app/act_chain.py)."""
+    if act_chain is None:
+        raise HTTPException(503, "starting")
+    try:
+        return _jsonable(await asyncio.to_thread(act_chain.live))
+    except psycopg.Error as exc:
+        raise HTTPException(503, "act chain store unavailable") from exc
 
 
 @app.get("/reachable")

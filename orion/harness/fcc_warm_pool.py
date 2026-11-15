@@ -444,7 +444,11 @@ class WarmPool:
 
         slot.stderr_tail.clear()
         try:
-            write_turn_env_file(slot.env_file, turn_env)
+            from orion.harness.fcc_motor import TURN_CORRELATION_ENV
+
+            # The warm process env predates this turn; the env file is sourced by every Bash call.
+            write_turn_env_file(slot.env_file, {**turn_env, TURN_CORRELATION_ENV: correlation_id}
+                                if correlation_id else turn_env)
             if slot.reading_tools:
                 write_slot_bindings(slot, reading_binding)
             await self._clear(slot, timeout=self.config.clear_timeout_sec)

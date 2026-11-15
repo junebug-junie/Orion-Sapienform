@@ -72,6 +72,7 @@ route too (GATE_VERSION 4). Earliest it can serve: ~2026-11-07.
 | `athena.cabinet_cooling_watts` | portable AC power (Shelly plug) | `home_cooling_sample` |
 | `athena.central_ac_proxy` | outdoor F above 75, 3 h earlier: the central AC's switch | `prediction_weather_hourly` |
 | `office.temp_c` | the room air the cabinet draws in (overlap covariate) | `office_env_sample` |
+| `closet.top_temp_c` | the closet top (pan-1 SCD40, above the cabinet: circe/hecate exhaust); heat per watt ONLY, never forecast, not a cabinet covariate | `closet_env_sample` |
 
 A covariate's own registry exclusions are masked too (the room sensor's settling hour), and a 5-min
 bucket that straddles an exclusion's edge is masked whole.
@@ -167,7 +168,7 @@ for bursty streams (cam0 `person_presence` logs one person as many rows). The st
 Live (2026-10-20, 14 days): no `doorbell_ring` rows exist yet, so the doorbell pair refuses;
 walkway presence -> walkway caption (0-60 s) 32x, p = 0.006.
 
-### How much cabinet heat is a watt? (`GET|POST /effects/heat-per-watt`)
+### How much cabinet (or closet-top) heat is a watt? (`GET|POST /effects/heat-per-watt`)
 
 Two fits, same method (`app/heat_balance.py`; hourly means, lags 0-2 h summed = a load held ~2 h,
 AR(1) feasible GLS + Newey-West intervals):
@@ -209,6 +210,23 @@ interval covers ~90 % in simulation (`evals/run_heat_per_watt_eval.py`).
 cabinet also carries `heat_balance_prediction`: what the newest stored heat-per-watt fit predicts from
 the watts that experiment moved (`predicted_c: null` + a reason when no fit is stored). `GET /experiments/guard`
 says whether it is safe to start an ON block (P(≥ 32 °C within 30 min) < 5 %).
+
+**Second target: the closet top** (`series_id=closet.top_temp_c`; air-path design
+`docs/superpowers/specs/2026-11-12-orion-air-path-design.md`, #3234). The closet-top board (pan-1,
+`sensor_id` scd40-closet, `closet_env_sample`; stale or offline samples never read) sits above the
+cabinet, where circe's and hecate's exhaust goes. The cabinet sensor cannot see circe (local slope ~0);
+the closet top can. Same fits, same refusals, room = `office.temp_c`, watts circe / hecate / athena,
+control the portable AC. The series is a `covariate` (never forecast, never a cabinet covariate: it does
+not lead the cabinet); `heat_per_watt` accepts any registered series declared in `HEAT_BALANCE`. Stored
+rows go under `series_id = closet.top_temp_c` (`details.what` = "closet top minus room" / "closet top,
+room free"), so nothing that reads the cabinet fit -- the experiment conversion above,
+`heat_sensitivity.yaml`, the heat quote (#3194) -- ever sees them. Do not use a closet-top slope as a
+cabinet slope (it is ~18x larger for circe). Use slopes, not the gap's level: the SCD40 and the office
+SHT40 may differ by a fixed offset. Live 2026-11-15 (21 d window, 238 h): circe **+0.27 C per 100 W
+(95 % +0.21..+0.33)**; hecate refused as flat (on only since 2026-11-14 20:00 UTC) until it runs >= 10 %
+of the window's hours -- then the same GET returns its slope with no code change.
+`evals/run_air_path_eval.py --days 30` (read-only) re-checks lead/lag, the one-hour cabinet forecast
+with and without closet heat (paired test), these slopes, and the daily residual (stuck-air watch).
 
 **One dispatcher exists: `POST /experiments/run`** (`app/experiment_runner.py`, 2026-10-29). It
 performs `vision.focus:<stream_id>` only: during ON blocks it holds Redis key
@@ -309,6 +327,32 @@ error and `prob_better` -- no alpha. Table `prediction_reachable_forecast`. Flag
 
 Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): 26 % lower loss than base overall
 (P 0.95), tied with the state model; cold hours about level with base (P 0.25); somewhat timid at the top.
+
+## Act chain: what will Orion do in the next 15 minutes? (`GET /act-chain`, family B)
+
+`app/act_chain.py`; spec `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`,
+"B. Markov chains". Each 15-minute bucket's state is the main verb of Orion's acts in it
+(`grammar_acts`, written by orion-sql-writer), or `idle`. Served model: a first-order Markov chain
+conditioned on Juniper's clock blocks (asleep 03-08, weekend mornings, day, evening, Denver time). Each
+level backs off to the coarser one with a strength chosen from training data by leave-one-out; the
+served cell backs off to a blend of "what follows the last act" and "what happens in this clock block"
+(parallel backoff), so a thin night cell keeps the night mix. Graded
+per local day against the marginal, the clock hour and the clock block, as a loss gap, its standard
+error and `prob_better` (no alpha). Surprise = -log P(observed state); excess surprise = surprise minus
+the forecast's entropy, which is 0 on average when the forecast is calibrated. A replay sees only the
+rows that had landed (`created_at`) at each origin.
+
+Live: one forecast per bucket, issued in its first 3 min from rows landed before it, settled 20 min
+after it ends (late rows never count, however late the settle runs). Table
+`prediction_act_chain_forecast` (every model's distribution, the served model's surprise and excess;
+raw rows kept). `GET /act-chain`: the current forecast, issuance coverage, and the 14-day live grade in
+the replay's shape. Flag `PREDICTION_ACT_CHAIN_ENABLED`. No bus event, node or consumer: the asleep
+block reads overconfident in replay (#3344), so nothing reads this until that is explained.
+
+Replay 10-30..11-15 (`evals/run_act_chain_replay_eval.py`, 1,535 buckets, 17 days): served loss 1.770
+nats vs 1.795 for the clock hour (gap -0.061/day ± 0.063, P 0.83) and 1.855 for the marginal
+(P 0.98); excess surprise +0.05 ± 0.07 overall, +0.16 ± 0.05 in the asleep block (rarer acts --
+ask, sense, infer, say -- are more common at night than forecast; #3344).
 
 ## Power-bill bet (`GET /bill-forecast`)
 
@@ -462,8 +506,11 @@ same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
   medians are not a monotone drift (a decay-to-zero fails); not a duplicate of an earlier input (|corr|
   > 0.999). Resting on its floor > 50 % of the time = event-like = input only, never a target. Missing is
   NaN plus a mask channel, never 0.0. Standardisation from training rows only, kept in the manifest. At
-  scoring time (windows < 7 days) every named input must be present, not stuck, inside its training band
-  and fresh (30 min), or the run refuses.
+  scoring time (windows < 7 days) every named input must be present, inside its training band and fresh
+  (30 min), or the bucket refuses. The degeneracy checks (one value, few distinct, event-like) run only at
+  select time over 14 days, never per bucket: a reading resting flat at its floor for a day (office PM2.5
+  at 0 in clean air) is calm, not broken. A reading resting at its training minimum is in regime even
+  when that minimum sits below the band.
 - **Rungs**: persistence; per-series AR (ridge on the last 6 buckets); `ridge_var` = the AR forecast plus
   a ridge on lags 0-12 of every input + masks + time of day (so at a large penalty it is AR, and it can
   only win by what the other readings add). Backtest: the repo's `block_purged_temporal_split`
@@ -531,10 +578,13 @@ POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_node_replay_eval.p
 OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 2 [--out <dir>]  # family A gate + rungs + static vs adaptive joint surprise (read-only, ~75 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --hours 168      # family A calm check on stored joint rows (PASS needs 7 days)
 OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --replay-hours 24  # dry run of the live loop in memory (read-only, ~4 min)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_gate_replay_eval.py --hours 24 [--compare-module /tmp/fa_old.py]  # per-bucket gate replay vs stored refusals; FAIL on any degeneracy refusal (read-only, ~10 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14   # adaptive ranges replayed (read-only, ~6 min)
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]
 PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py [--live --experiment-id <uuid>]  # planted slope, null
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_air_path_eval.py --days 30  # closet top: lead/lag, forecast gain, slopes, residual (read-only, ~45 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_event_pair_live_eval.py  # live vision pairs, read-only
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_act_chain_replay_eval.py [--since 2026-10-23]  # family B act chain, read-only, ~3 s
 python evals/export_cabinet_fixture.py --until <iso>                     # refresh the fixture
 ```

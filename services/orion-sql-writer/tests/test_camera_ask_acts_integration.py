@@ -169,9 +169,12 @@ def test_lifecycle_open_answer_dont_know_expiry_and_juniper_cards(sess):
         0.0, "resolver", NOW - timedelta(hours=2) + timedelta(days=7))
 
     # The want's per-rule expected outcome reads exactly these grades.
-    rows = sess.execute(text(GRADES_SQL), {"actor": "vision.ask", "since": NOW - timedelta(days=30)}).fetchall()
+    rows = sess.execute(text(GRADES_SQL), {"actor": "vision.ask", "since": NOW - timedelta(days=30),
+                                         "now": NOW + timedelta(days=8)}).fetchall()
     v = rule_outcome_values((rule_from_test_before(r[0]) or "", float(r[1])) for r in rows)
-    assert (v["confirm"], v["vehicle"], v["same"], v["face"]) == (2 / 3, 1 / 3, 1 / 3, 0.5)
+    m = 1 / 3                                     # 1 answered of 3 closed in the family (issue #3350)
+    assert [v[r] for r in ("confirm", "vehicle", "same", "face")] == pytest.approx(
+        [(1 + 2 * m) / 3, (2 * m) / 3, (2 * m) / 3, m])
 
 
 def test_withdrawn_by_orion_is_expired_not_graded_and_the_backfill_opens_older_asks(sess):
@@ -189,7 +192,8 @@ def test_withdrawn_by_orion_is_expired_not_graded_and_the_backfill_opens_older_a
     assert sess.execute(text("SELECT coalesce(max(posterior_n), 0) FROM substrate_action_effect_posterior "
                              "WHERE target_id='vision.ask'")).scalar() == 0
     assert a["outcome_note"].startswith("abandoned:")
-    rows = sess.execute(text(GRADES_SQL), {"actor": "vision.ask", "since": NOW - timedelta(days=30)}).fetchall()
+    rows = sess.execute(text(GRADES_SQL), {"actor": "vision.ask", "since": NOW - timedelta(days=30),
+                                         "now": NOW + timedelta(days=8)}).fetchall()
     assert rows == []                                  # not a grade: the expected outcome ignores it
 
     # The back-fill's path: open the 30-day window, then grade just those acts.

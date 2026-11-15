@@ -5,12 +5,19 @@ Question it answers (body economy, 2026-10-29): does capping a card's watts buy 
 without costing much speed? If joules per generated token barely moves, power caps are not worth
 building. Run it on the card's own host, as root (setting a power limit needs root):
 
-    sudo python3 scripts/gpu_power_bench.py --gpu 2 --port 8016
+    sudo python3 scripts/gpu_power_bench.py --gpu 2 --port 18016
+
+--port is the ENGINE's port on this host. With the lane door deployed (leased-evals Phase 2, runbook
+docs/runbooks/2026-11-14-lane-door.md) the lane port (8016) is the door, and the engine is on circe's
+loopback (127.0.0.1:18016, ATLAS_AGENT_BURST_ENGINE_PUBLISH); the bench refuses a port that answers as a
+door. It is the one by-design direct caller (scripts/check_circe_worker_refs.py DIRECT_CALLERS): it needs
+llama.cpp's raw /completion timings and a pinned slot, which the gateway cannot give, and it keeps the
+interactive card reservation of scripts/gpu_pool_clear_gpu2.py.
 
 Shaped like real agent work (gpu2 72 h median: 6.5k new prompt tokens, 2.5k written, top tenth 16k/13.6k,
 often both slots at once), compare only the caps that matter:
 
-    sudo python3 scripts/gpu_power_bench.py --gpu 2 --port 8016 --caps 250,150 \
+    sudo python3 scripts/gpu_power_bench.py --gpu 2 --port 18016 --caps 250,150 \
         --prompt-sentences 480 --n-predict 4096 --slots 0,1
 
 Stdlib only, so it runs with the host's python3 and no Orion venv.
@@ -66,6 +73,16 @@ SAMPLE_STALE_S = 5.0  # no fresh power reading for this long = the sampler is de
 FINISH_GRACE_S = 1.0
 LIMITS_CONFIG = Path(__file__).resolve().parents[1] / "config" / "gpu_power_limits.json"
 HANDLED_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT)
+
+
+def is_lane_door(base: str, timeout_s: float = 3.0) -> bool:
+    """True when ``base`` answers /door/stats like a lane door (services/orion-lane-door): not an engine."""
+    try:
+        with urllib.request.urlopen(base + "/door/stats", timeout=timeout_s) as resp:
+            body = json.load(resp)
+    except (OSError, ValueError, http.client.HTTPException):
+        return False
+    return isinstance(body, dict) and "lane" in body and "calls" in body
 
 
 class BenchAbort(RuntimeError):
@@ -524,7 +541,8 @@ def run_caps(args: argparse.Namespace, base: str, caps: list[int], sampler: Samp
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--gpu", type=int, required=True, help="nvidia-smi index of the card")
-    ap.add_argument("--port", type=int, required=True, help="llama-server port on this host")
+    ap.add_argument("--port", type=int, required=True,
+                    help="the engine's llama-server port on this host (its loopback port behind a lane door)")
     ap.add_argument("--caps", default="250,200,150,100", help="watts, comma separated, highest first")
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--n-predict", type=int, default=512)  # ~11 s of writing at 46 tok/s
@@ -545,6 +563,10 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     base = f"http://127.0.0.1:{args.port}"
+    if is_lane_door(base):
+        print(f"port {args.port} is a lane door, not an engine: bench the engine on its loopback port "
+              f"(127.0.0.1:18016 for agent-gpu2; services/orion-llamacpp-host/.env *_ENGINE_PUBLISH)", file=sys.stderr)
+        return 2
     caps = [int(c) for c in args.caps.split(",")]
     try:
         args.slot_ids = tuple(int(s) for s in args.slots.split(","))

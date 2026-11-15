@@ -468,3 +468,24 @@ async def test_without_a_seat_wait_the_old_single_budget_rule_holds(fake_pool, m
     asyncio.get_running_loop().call_later(0.6, free)
     await gateway._dispatch_chat(_body("prime", gateway_read_timeout_sec=1), correlation_id="c")
     assert seen["read"] < 0.5
+
+
+def test_deep_route_gets_long_budget_without_changing_circe(monkeypatch):
+    from app.llm_backend import resolve_caller_budget_sec, _resolve_http_read_timeout_sec
+    monkeypatch.setattr(settings, "read_timeout_sec", 60)
+    assert resolve_caller_budget_sec(_body("deep.thinker.v1")) == 1800
+    assert _resolve_http_read_timeout_sec(_body("deep.thinker.v1")) == 1800
+    assert resolve_caller_budget_sec(_body("deep.thinker.v1", gateway_read_timeout_sec=8)) == 8
+    assert resolve_caller_budget_sec(_body("deep.thinker.v1", gateway_read_timeout_sec=9999)) == 1800
+    assert resolve_caller_budget_sec(_body("quick")) == 60
+    assert resolve_caller_budget_sec(_body("quick", gateway_read_timeout_sec=9999)) == 900
+
+
+def test_deep_grant_refuses_rollback_or_incomplete_hardware():
+    from types import SimpleNamespace
+    good = dict(model_file="deep.thinker.v1", profile_name="deep.thinker.v1", ctx_per_slot=262144,
+                cards=["hecate-gpu0", "hecate-gpu1"])
+    assert pool_placement.deep_grant_ready(SimpleNamespace(**good))
+    for field, value in (("model_file", "qwen3-4b-instruct"), ("ctx_per_slot", 131072),
+                         ("profile_name", "other"), ("cards", ["hecate-gpu0"])):
+        assert not pool_placement.deep_grant_ready(SimpleNamespace(**{**good, field: value}))

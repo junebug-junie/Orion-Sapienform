@@ -44,8 +44,7 @@ MAX_WINDOW_SEC = 3600.0       # one window reads at most an hour of rows
 MAX_WINDOWS_PER_STEP = 48     # first-boot backfill (~1.5 days) finishes in one step
 LATE_PROBE_SEC = 1800.0       # rows written up to 30 min after their window was read are counted
 LATE_PROBE_OVERRIDES = {
-    # episode_memory rows land a median 13 h (max 48 h) after occurred_at (live 10-10).
-    "memory_episode": 3 * 86400.0,
+    # episode_memory needs none: it is read by its write time and folds when it lands (#3400).
     # A visual attempt reads `active` until it finishes; `abandoned` lands a median 5,398 s
     # (max 5,408 s, 31 of 31 live) after started_at, its time column. Review finding: with a
     # 30-min probe these vanished uncounted.

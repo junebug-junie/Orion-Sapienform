@@ -509,6 +509,11 @@ class Settings(BaseSettings):
     # the lookback is not posted.
     ask_event_wants_interval_sec: float = Field(300.0, alias="ASK_EVENT_WANTS_INTERVAL_SEC")
     ask_event_wants_lookback_hours: float = Field(24.0, alias="ASK_EVENT_WANTS_LOOKBACK_HOURS")
+    # Attention patch 4b (app/ask_bind.py): a camera ask BIDS before its card opens and obeys the market. on: funded
+    # opens the card; held does not (it re-bids later with a backoff, no deadline: issues #3285/#3286); the shadow
+    # loop above posts no second want for a card that bid. shadow: the behaviour before 4b (open first, shadow
+    # want after). The daily ask caps stay a hard ceiling either way.
+    orion_physiology_bid_camera_asks: str = Field("on", alias="ORION_PHYSIOLOGY_BID_CAMERA_ASKS")
     # Re-identification line: body cosine to the nearest same-kind centroid
     # (any time, anywhere) needed to count as the same individual. 0.90 since
     # 2026-10-16 (docs/superpowers/specs/2026-10-16-vision-body-match-proposal.md):

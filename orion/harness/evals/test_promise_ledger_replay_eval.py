@@ -93,3 +93,103 @@ def test_label_fixture_holds_hashes_not_text() -> None:
     for entry in data["labels"] + data["dropped"]:
         assert "quote" not in entry
         assert len(entry["quote_sha"]) == 16
+
+
+def test_wilson_interval_matches_a_known_value_and_handles_empty() -> None:
+    from orion.harness.evals.promise_ledger_replay_eval import wilson
+
+    w = wilson(21, 29)  # the 11-12 baseline precision
+    assert abs(w["p"] - 21 / 29) < 1e-9
+    assert abs(w["lo95"] - 0.5428) < 1e-3 and abs(w["hi95"] - 0.8530) < 1e-3
+    assert wilson(0, 0)["p"] is None
+    assert wilson(5, 5)["hi95"] == 1.0
+
+
+def test_score_ablates_the_doer_rule_and_pools_recall_by_promise_key() -> None:
+    real, real_span, forecast, ask = ("I'll bring it back tomorrow.", "bring it back tomorrow, I promise",
+                                      "The queue should clear by noon.", "Text me when you land.")
+    report = {"turns": [
+        {"correlation_id": "c1", "promises_made": [{"quote": real_span, "offer": False, "doer": "orion"}],
+         "not_orion": [{"quote": forecast, "offer": False, "doer": "a_system"},
+                       {"quote": ask, "offer": True, "doer": "juniper"},
+                       {"quote": "not in the reply at all", "offer": False, "doer": "a_system"}],
+         "ablation_kept": [{"quote": real_span, "offer": False, "doer": "orion"},
+                           {"quote": forecast, "offer": False, "doer": "a_system"},
+                           {"quote": ask, "offer": True, "doer": "juniper"}]},
+        {"correlation_id": "c2", "promises_made": []},
+        {"correlation_id": "c3", "error": "http 502"},
+    ]}
+    labels = {"hand_found": [], "dropped": [], "labels": [
+        # An earlier run quoted a different span of the same promise: same key.
+        {"correlation_id": "c1", "quote_sha": quote_hash(real), "promise": True, "key": "bring-back"},
+        {"correlation_id": "c1", "quote_sha": quote_hash(real_span), "promise": True, "key": "bring-back"},
+        {"correlation_id": "c1", "quote_sha": quote_hash(forecast), "promise": False},
+        {"correlation_id": "c1", "quote_sha": quote_hash(ask), "promise": False},
+        {"correlation_id": "c2", "quote_sha": "0" * 16, "promise": True, "key": "missed-one"},
+        {"correlation_id": "c3", "quote_sha": "1" * 16, "promise": True, "key": "errored-turn"},
+    ]}
+    s = score(report, labels)
+    assert s["precision_wilson95"]["k"] == 1 and s["precision_wilson95"]["n"] == 1
+    # The ablation scores what the gate would keep without the doer rule.
+    assert s["precision_without_doer_gate"]["k"] == 1 and s["precision_without_doer_gate"]["n"] == 3
+    assert s["doer_dropped"]["by_doer"] == {"a_system": 2, "juniper": 1}
+    # Unlabelled items are reported, not counted as false.
+    report["turns"][0]["promises_made"].append({"quote": "I'll write it up tonight.", "offer": False, "doer": "orion"})
+    s2 = score(report, labels)
+    assert (s2["precision_wilson95"]["k"], s2["precision_wilson95"]["n"]) == (1, 1)
+    assert s2["precision_wilson95"]["unlabelled"] == 1
+    assert s["doer_dropped"]["real_promises_dropped"] == 0
+    # c3 errored, so its promise is not in this run's pool; c2's is, and was missed.
+    assert (s["recall_pooled"]["k"], s["recall_pooled"]["n"]) == (1, 2)
+    assert s["recall_pooled"]["missed"] == ["c2:missed-one"]
+
+
+def test_every_real_label_carries_a_promise_key() -> None:
+    data = json.loads(LABELS.read_text())
+    assert all(lab.get("key") for lab in data["labels"] if lab["promise"])
+
+
+def test_ablation_runs_the_gate_without_the_doer_rule() -> None:
+    from orion.harness.evals.promise_ledger_replay_eval import ablate_doer_rule
+    from orion.harness.tests.test_promise_gate import _reflection
+    from orion.schemas.harness_finalize import PromiseV1
+
+    draft = ("The queue should clear by noon. Text me when you land. I'll send the summary tonight. "
+             "I'll also check the logs after lunch. I'll file the ticket tomorrow.")
+    final = draft.replace(" Text me when you land.", "")  # repair removed the ask
+    reflection = _reflection(promises_made=[
+        PromiseV1(quote="The queue should clear by noon.", doer="a_system"),
+        PromiseV1(quote="Text me when you land.", offer=True, doer="juniper"),
+        PromiseV1(quote="I'll send the summary tonight.", doer="orion"),
+        PromiseV1(quote="I'll also check the logs after lunch.", doer="orion"),
+        PromiseV1(quote="I'll file the ticket tomorrow.", doer="orion"),
+        PromiseV1(quote="not in the reply at all, invented", doer="a_system")])
+    kept = ablate_doer_rule(reflection, draft_text=draft, final_text=final)
+    # As the live gate: the cap of 3 applies on the draft pass (the ask takes a slot), then
+    # the final-text pass drops the ask that repair removed. Invented quotes never survive.
+    assert [(k["quote"], k["doer"]) for k in kept] == [
+        ("The queue should clear by noon.", "a_system"),
+        ("I'll send the summary tonight.", "orion")]
+    only_orion = _reflection(promises_made=[PromiseV1(quote="I'll send the summary tonight.", doer="orion")])
+    assert ablate_doer_rule(only_orion, draft_text=draft, final_text=final) == []
+
+
+def test_merge_reports_joins_partial_runs_by_turn(tmp_path) -> None:
+    from orion.harness.evals.promise_ledger_replay_eval import merge_reports
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json.dumps({"partial": True, "turns": [
+        {"correlation_id": "c1", "at": "2026-11-01T00:00:00", "promises_made": []},
+        {"correlation_id": "c2", "at": "2026-11-02T00:00:00", "error": "http 502"}]}))
+    b.write_text(json.dumps({"turns": [
+        {"correlation_id": "c2", "at": "2026-11-02T00:00:00", "promises_made": []},
+        {"correlation_id": "c0", "at": "2026-10-31T00:00:00", "promises_made": []}]}))
+    merged = merge_reports([a, b])
+    assert [r["correlation_id"] for r in merged["turns"]] == ["c0", "c1", "c2"]
+    assert "error" not in merged["turns"][2]  # the later file wins
+    scored = score(merged, {"labels": [], "hand_found": [], "dropped": []})
+    assert scored["turns_judged"] == 3 and scored["promises_counted"] is None
+    # A good row is never replaced by a later error row.
+    c = tmp_path / "c.json"
+    c.write_text(json.dumps({"turns": [{"correlation_id": "c1", "at": "2026-11-01T00:00:00", "error": "http 503"}]}))
+    assert "error" not in merge_reports([a, b, c])["turns"][1]

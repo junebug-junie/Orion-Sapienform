@@ -2324,6 +2324,8 @@ def _fetch_curiosity_context(cfg: SituationSettings) -> CuriosityPriorContextV1:
         # for "what does Orion currently believe."
         stale_after=0,
         priors_cypher=LIVE_NON_SELF_PRIORS_CYPHER,
+        # The situation never renders Orion's concept list; skip the read.
+        read_concepts=False,
     )
     if snapshot.is_unavailable:
         return CuriosityPriorContextV1(available=False, source="error")

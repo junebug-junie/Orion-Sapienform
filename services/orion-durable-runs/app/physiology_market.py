@@ -5,7 +5,9 @@
 1. the latest ``PhysiologyStateV1`` from Redis ``orion:physiology:latest`` (the posted prices);
 2. the act history: ``grammar_acts`` for the last 30 days plus each actor's newest close, and
    ``act_downstream_use`` for the same window -- cached for ``ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC``
-   (default 300 s; weights move at most 0.1 per day, appetite by minutes);
+   (default 300 s; weights move at most 0.1 per day, appetite by minutes). The cache is kept warm in the
+   background (``Market.run_refresher``) and served stale-while-revalidate, so a bid never waits on these
+   reads or the weights replay while any snapshot is servable (issue #3382);
 3. the pure decision (``orion.physiology.choice.decide_priced``, after the consent gate) against the in-memory reservation book;
 4. the decision published on ``orion:physiology:want:decision`` (sql-writer -> ``want_ledger``).
 
@@ -49,8 +51,8 @@ Personality values (rev 4 Move 2, binding, no shadow; ``app.personality_values``
 ``bid(..., object_text=...)``) or ``holdback`` (20%: care 0, weights without (c)). Both arms bind. The arm,
 care and endorsement are in the decision's ``warnings``. Off: no read, no term, decided exactly as before.
 
-Read-only on Postgres. A failed history read is ``physiology_unavailable`` for that bid, never a
-fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
+Read-only on Postgres. A failed history refresh keeps the last snapshot (up to ``MAX_STALE_TTLS`` TTLs old);
+with no servable snapshot, a failed read is ``physiology_unavailable`` for that bid, never a fund. SHADOW: the decision is returned and logged; nobody obeys it yet.
 """
 
 from __future__ import annotations
@@ -90,6 +92,18 @@ logger = logging.getLogger("orion-durable-runs.physiology_market")
 
 HISTORY_WINDOW = timedelta(days=30)
 
+# History cache (issue #3382). A bid never waits on a database read while a snapshot is servable: past the
+# TTL the last one is served and one background refresh runs. A snapshot older than MAX_STALE_TTLS TTLs
+# (30 min at the 300 s default: five missed refreshes in a row) is not served; the bid waits on the
+# refresh and a failure is physiology_unavailable, as before. run_refresher refreshes every
+# REFRESH_FRACTION of the TTL so a bid after a quiet gap finds a fresh snapshot. After a failed refresh,
+# bids retry it at most once per RETRY_SEC.
+MAX_STALE_TTLS = 6.0
+REFRESH_FRACTION = 0.8
+RETRY_SEC = 60.0
+# A refresh that hangs (a stuck connection) is abandoned after this, so single-flight cannot wedge forever.
+REFRESH_TIMEOUT_SEC = 60.0
+
 ACTS_SQL = """
 SELECT act_id, actor, opened_at, closed_at, outcome_value, outcome_source, signal_id, cost_json
   FROM grammar_acts
@@ -108,9 +122,12 @@ SELECT act_id, actor, started_at, link_status, used, window_closed
 """
 
 
-# The first decision per event want (a re-bid of the same want is not a new event).
+# The first decision per event want (a re-bid of the same want is not a new event), with the family's grading
+# when it was decided (``graded``; NULL when the decision did not say): a want ranks only against past events
+# decided with the same grading (``orion.physiology.appetite.same_grading_events``, issue #3364).
 EVENT_HISTORY_SQL = """
-SELECT DISTINCT ON (want_id) family, (decision->>'intensity')::float AS intensity
+SELECT DISTINCT ON (want_id) family, (decision->>'intensity')::float AS intensity,
+       CASE jsonb_typeof(decision->'graded') WHEN 'boolean' THEN (decision->>'graded')::boolean END AS graded
   FROM want_ledger
  WHERE decided_at >= %(since)s AND decision->'want' ? 'salience' AND decision->>'intensity' IS NOT NULL
    AND NOT (producer = ANY(%(synthetic)s))
@@ -152,15 +169,16 @@ async def read_history(pool: Any, now: datetime) -> tuple[list[ActRecord], list[
     return acts, uses
 
 
-async def read_event_history(pool: Any, now: datetime) -> dict[str, list[float]]:
-    """family -> intensities of its past event wants (30 days). Raises on a failed read."""
+async def read_event_history(pool: Any, now: datetime) -> dict[str, list[tuple[float, Optional[bool]]]]:
+    """family -> (intensity, graded) of its past event wants (30 days). Raises on a failed read."""
     async with pool.connection() as conn:
         rows = await (await conn.execute(EVENT_HISTORY_SQL, {"since": now - HISTORY_WINDOW,
                                                              "synthetic": sorted(SYNTHETIC_PRODUCERS)})).fetchall()
-    out: dict[str, list[float]] = {}
+    out: dict[str, list[tuple[float, Optional[bool]]]] = {}
     for r in rows:
         if r["intensity"] is not None:
-            out.setdefault(str(r["family"]), []).append(float(r["intensity"]))
+            g = r.get("graded")
+            out.setdefault(str(r["family"]), []).append((float(r["intensity"]), g if isinstance(g, bool) else None))
     return out
 
 
@@ -169,7 +187,7 @@ class _Cached:
     at: datetime
     acts: list[ActRecord]
     uses: list[UseRecord]
-    events: Optional[dict[str, list[float]]] = None
+    events: Optional[dict[str, list[tuple[float, Optional[bool]]]]] = None
 
 
 class Market:
@@ -198,34 +216,103 @@ class Market:
         self._weights: Optional[tuple[Any, dict, dict, dict]] = None
         # Personality values (rev 4 Move 2): app.personality_values.PersonalityValues, or None (off).
         self.personality = personality
-        self._lock = asyncio.Lock()
+        # Stale-while-revalidate (issue #3382): the one history refresh / weights replay in flight, and
+        # when the last refresh was started (bid-path retries after a failure are spaced by RETRY_SEC).
+        self._refresh_task: Optional[asyncio.Task] = None
+        self._weights_task: Optional[asyncio.Task] = None
+        self._last_attempt: Optional[datetime] = None
+        self._weights_last_attempt: Optional[datetime] = None
         self.book = ReservationBook()
         # Orion Prime step 3: apply Prime's regulate charges (ORION_PHYSIOLOGY_PRIME_REGULATION). Off: the
         # signal is never read; bids are exactly as before.
         self.prime_regulation = bool(prime_regulation)
         self.counts = {"funded": 0, "deferred": 0, "publish_failed": 0, "prime_applied": 0, "prime_control": 0,
                        "prime_refused": 0,
-                       "prime_read_failed": 0, "consent_allow": 0, "consent_refuse": 0, "consent_needs_consent": 0}
+                       "prime_read_failed": 0, "consent_allow": 0, "consent_refuse": 0, "consent_needs_consent": 0,
+                       "history_served_stale": 0, "history_refresh_failed": 0,
+                       "weights_refresh_failed": 0}
+
+    def _kick_refresh(self, now: datetime) -> asyncio.Task:
+        """The one history refresh in flight, started if none is (issue #3382: never two at once).
+        Its failure is logged here and keeps the last snapshot."""
+        t = self._refresh_task
+        if t is not None and not t.done():
+            return t
+        self._last_attempt = now
+        t = asyncio.create_task(asyncio.wait_for(self._refresh(now), timeout=min(REFRESH_TIMEOUT_SEC, self._ttl)))
+        t.add_done_callback(self._refresh_done)
+        self._refresh_task = t
+        return t
+
+    def _refresh_done(self, t: asyncio.Task) -> None:
+        if t.cancelled():
+            return
+        exc = t.exception()       # retrieved here, so a background failure is never "never retrieved"
+        if exc is not None:
+            self.counts["history_refresh_failed"] += 1
+            logger.warning("physiology_bid_history_refresh_failed kept_snapshot_at=%s err=%r",
+                           self._cache.at.isoformat() if self._cache is not None else None, exc)
+
+    async def _refresh(self, now: datetime) -> _Cached:
+        """Read the history and compute its weights, then swap both in together. Raises on a failed act
+        read or weights replay: the last snapshot (and its weights) stays."""
+        acts, uses = await read_history(self._pool_getter(), now)
+        if not acts:
+            # An act ledger read that returns nothing is not "no hunger anywhere": unknown.
+            raise RuntimeError("grammar_acts returned no rows")
+        try:
+            events = await read_event_history(self._pool_getter(), now)
+        except Exception:  # noqa: BLE001 -- keep the last one; none yet: event wants rank as any want
+            logger.warning("physiology_bid_event_history_read_failed", exc_info=True)
+            events = self._cache.events if self._cache is not None else None
+        hist = _Cached(at=now, acts=acts, uses=uses, events=events)
+        weights = await self._compute_weights_entry(hist, now)
+        self._cache, self._weights = hist, weights
+        # Attention patch 3b: the exploration floor counts acts started (this same act read),
+        # not funded bids. No separate query, so no separate failure: no history, no bid.
+        self.book.seed_started(acts_started(acts, self.families, now), now)
+        return hist
 
     async def _history(self, now: datetime) -> _Cached:
-        async with self._lock:
-            c = self._cache
-            if c is not None and 0 <= (now - c.at).total_seconds() <= self._ttl:
+        """The history snapshot for a bid. Stale-while-revalidate (issue #3382): past the TTL the last
+        snapshot is served at once and ONE background refresh starts; a bid waits on a database read only
+        when there is no servable snapshot (none yet, or older than ``MAX_STALE_TTLS`` TTLs because every
+        refresh since has failed -- then it waits on the refresh, and a failure is physiology_unavailable)."""
+        c = self._cache
+        if c is not None:
+            age = (now - c.at).total_seconds()
+            # A negative age (a caller's ``now`` taken before the refresher stamped the snapshot) is fresh:
+            # refreshing on it would move the snapshot time backwards.
+            if age <= self._ttl:
                 return c
-            acts, uses = await read_history(self._pool_getter(), now)
-            if not acts:
-                # An act ledger read that returns nothing is not "no hunger anywhere": unknown.
-                raise RuntimeError("grammar_acts returned no rows")
+            if age <= self._ttl * MAX_STALE_TTLS:
+                self.counts["history_served_stale"] += 1
+                last = self._last_attempt
+                # After a failed refresh, retry at most once per RETRY_SEC from bids, not on every bid.
+                if last is None or (now - last).total_seconds() >= min(RETRY_SEC, self._ttl):
+                    self._kick_refresh(now)
+                return c
+        # Nothing servable: wait on the refresh (shielded: a caller that gives up does not cancel it).
+        return await asyncio.shield(self._kick_refresh(now))
+
+    async def run_refresher(self, stop: asyncio.Event) -> None:
+        """Keep the snapshot warm (issue #3382): refresh at boot, then every ``REFRESH_FRACTION`` of the
+        TTL, so a bid after a quiet gap finds a fresh snapshot instead of paying a cold read. A failed
+        refresh keeps the last snapshot and is retried next interval."""
+        if self.families is None:
+            return
+        interval = max(1.0, self._ttl * REFRESH_FRACTION)
+        while not stop.is_set():
             try:
-                events = await read_event_history(self._pool_getter(), now)
-            except Exception:  # noqa: BLE001 -- keep the last one; none yet: event wants rank as any want
-                logger.warning("physiology_bid_event_history_read_failed", exc_info=True)
-                events = self._cache.events if self._cache is not None else None
-            self._cache = _Cached(at=now, acts=acts, uses=uses, events=events)
-            # Attention patch 3b: the exploration floor counts acts started (this same act read),
-            # not funded bids. No separate query, so no separate failure: no history, no bid.
-            self.book.seed_started(acts_started(acts, self.families, now), now)
-            return self._cache
+                await asyncio.shield(self._kick_refresh(datetime.now(timezone.utc)))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 -- logged by _refresh_done; keep the loop alive
+                pass
+            try:
+                await asyncio.wait_for(stop.wait(), timeout=interval)
+            except asyncio.TimeoutError:
+                pass
 
     async def _state(self) -> Optional[PhysiologyStateV1]:
         from orion.schemas.physiology import PHYSIOLOGY_STATE_REDIS_KEY
@@ -256,14 +343,57 @@ class Market:
         return dataclasses.replace(ctx, stale_after_sec=self._stale,
                                    weights_holdback=without_c if with_c is not without_c else None)
 
+    def _weights_key(self, hist: "_Cached", now: datetime) -> tuple:
+        return (hist.at, now.astimezone(timezone.utc).date(),
+                self.personality.snapshot_at() if self.personality is not None else None)
+
     async def _ensure_weights(self, hist: "_Cached", now: datetime) -> None:
         """Today's weights, with and without source (c), once per history snapshot, day and personality read.
-        The replay (~0.6 s each on a live 30-day history, 2026-11-13) runs in a worker thread, off the loop."""
-        choices = self.personality.choices() if self.personality is not None else None
-        key = (hist.at, now.astimezone(timezone.utc).date(),
-               self.personality.snapshot_at() if self.personality is not None else None)
+        A bid never waits on the replay when weights exist (issue #3382): a changed key (a new UTC day, a new
+        personality read) keeps the last weights and recomputes them in the background. Only the very
+        first weights (none at all) are computed inline."""
+        key = self._weights_key(hist, now)
         if self._weights is not None and self._weights[0] == key:
             return
+        if self._weights is not None:
+            self._kick_weights(hist, now)
+            return
+        w = await self._compute_weights_entry(hist, now)
+        if self._weights is None or self._cache is hist:    # never overwrite a newer snapshot's weights
+            self._weights = w
+
+    def _kick_weights(self, hist: "_Cached", now: datetime) -> None:
+        t = self._weights_task
+        if t is not None and not t.done():
+            return
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return              # the refresh in flight computes fresh weights with its snapshot
+        if self._weights is not None and now.astimezone(timezone.utc).date() < self._weights[0][1]:
+            return              # a late caller's earlier day must not replace today's weights
+        last = self._weights_last_attempt
+        if last is not None and (now - last).total_seconds() < min(RETRY_SEC, self._ttl):
+            return              # after a failed replay, retry at most once per RETRY_SEC
+        self._weights_last_attempt = now
+
+        async def run() -> None:
+            w = await self._compute_weights_entry(hist, now)
+            if self._cache is hist:         # a refresh that landed meanwhile brought its own weights
+                self._weights = w
+
+        t = asyncio.create_task(run())
+        t.add_done_callback(self._weights_done)
+        self._weights_task = t
+
+    def _weights_done(self, t: asyncio.Task) -> None:
+        if not t.cancelled() and t.exception() is not None:
+            self.counts["weights_refresh_failed"] += 1
+            logger.warning("physiology_bid_weights_refresh_failed err=%r (kept the last weights)", t.exception())
+
+    async def _compute_weights_entry(self, hist: "_Cached", now: datetime) -> tuple[Any, dict, dict, dict]:
+        """(key, with source (c), without it, endorsement checks). The replay (~0.6 s each on a live
+        30-day history, 2026-11-13) runs in a worker thread, off the loop."""
+        choices = self.personality.choices() if self.personality is not None else None
+        key = self._weights_key(hist, now)
         base, with_c, checks = await asyncio.to_thread(self._compute_weights, hist, now, choices)
         if choices is not None:
             for f, w in sorted(with_c.items()):
@@ -275,7 +405,7 @@ class Market:
                             None if w.evidence.endorsement_rate is None else round(w.evidence.endorsement_rate, 3),
                             w.evidence.endorsement_n, chk.correlation if chk else None,
                             chk.paired_days if chk else 0, bool(chk and chk.excluded), w.weight, base[f].weight)
-        self._weights = (key, with_c, base, checks)
+        return (key, with_c, base, checks)
 
     def _compute_weights(self, hist: "_Cached", now: datetime, choices: Optional[list]) -> tuple[dict, dict, dict]:
         base = weights_now(self.families, hist.acts, hist.uses, now)
@@ -453,6 +583,13 @@ class Market:
         logger.info("prime_charge family=%s want=%s arm=%s direction=%s effect=%s net_with=%.3f net_without=%.3f "
                     "signal=%s act=%s", sig.family, want.want_id, sig.arm, sig.direction, eff, net_with, net_without,
                     sig.signal_id, sig.act_id)
+
+    async def aclose(self) -> None:
+        """Cancel the refresh and weights tasks in flight (shutdown, before the pool closes)."""
+        tasks = [t for t in (self._refresh_task, self._weights_task) if t is not None and not t.done()]
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     def release(self, want_id: str) -> int:
         return self.book.release(want_id)

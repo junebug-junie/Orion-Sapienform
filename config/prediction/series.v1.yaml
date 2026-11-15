@@ -32,8 +32,9 @@ series:
       - {name: shed, value_from: thermal_gate.critical, window: 30min}
       # Switchback experiments may start only while this probability is under max_probability (hot, 32 C).
       - {name: experiment_guard, value_from: thermal_gate.hot, window: 30min, max_probability: 0.05}
-    # The three machines in the cabinet, the portable AC, the central-AC proxy, and the room air the
-    # cabinet draws in (metric gate in the spec). Room-to-cabinet hourly corr 0.97 (2026-10-29..11-03).
+    # The three machines (athena inside the cabinet; circe and hecate above it, in the closet's top
+    # half), the portable AC, the central-AC proxy, and the room air the cabinet draws in (metric gate
+    # in the spec). Room-to-cabinet hourly corr 0.97 (2026-10-29..11-03).
     covariates: [athena.chassis_watts, circe.chassis_watts, hecate.chassis_watts, athena.cabinet_cooling_watts,
                  athena.central_ac_proxy, office.temp_c]
     # Younger than the training window (room sensor from 2026-10-29, cabinet history from 2026-10-23):
@@ -71,6 +72,24 @@ series:
       - {start: "2026-10-28T22:16:00Z", end: "2026-10-29T00:10:00Z"}
     horizons: [5min, 15min, 1h, 6h, 24h]
     consumers: [prediction-scoreboard, causal-effects, heat-per-watt]
+
+  # The closet top: the pan-1 SCD40 board (node pan-1, sensor_id scd40-closet; orion-office-env with
+  # ENV_ROOM=closet -> closet_env_sample) in the top half of the server closet, ABOVE the cabinet, where
+  # circe's (and hecate's) exhaust goes. It is not in the cabinet and not on athena. The only sensor that
+  # sees circe's heat (+0.25 C per 100 W, 95% +0.16..+0.32, hourly fit 2026-11-05..12; the cabinet reads
+  # ~0). Read ONLY by GET/POST /effects/heat-per-watt?series_id=closet.top_temp_c (heat_balance.HEAT_BALANCE),
+  # as a second target beside the cabinet. Not forecast and not a cabinet covariate: it does not lead the
+  # cabinet (one-hour cabinet MAE 0.581 -> 0.583 C with it, 2026-11-05..12). Use slopes, not the level (possible SCD40 vs SHT40
+  # offset). Metric gate + rollback: docs/superpowers/specs/2026-11-12-orion-air-path-design.md (#3234).
+  - series_id: closet.top_temp_c
+    role: covariate
+    source: {kind: closet_env, node: pan-1, key: closet_temp_c}
+    unit: C
+    grain: 5min
+    agg: mean
+    max_fill: 15min
+    train_from: "2026-11-05T00:45:00Z"
+    consumers: [heat-per-watt]
 
   - series_id: athena.chassis_watts
     role: covariate

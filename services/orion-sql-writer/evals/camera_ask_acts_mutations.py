@@ -3,7 +3,7 @@
 
 Each mutant breaks one guard -- Juniper's own story cards excluded (both clauses of the SQL filter and of
 the Python twin), the grade mapping (answered 1, dismissed / don't know 0, silence at expiry a 0 grade,
-withdrawn not a grade) and the Laplace prior -- and the tests must FAIL on every one. The file is rewritten IN
+withdrawn not a grade) and the prior toward the family's answered share (issue #3350) -- and the tests must FAIL on every one. The file is rewritten IN
 PLACE and restored in a ``finally``; a SIGKILL mid-run would leave a mutant in the tree (``git diff`` shows it).
 
 Needs a throwaway Postgres for the lifecycle tests (they create and drop their own schema):
@@ -42,8 +42,10 @@ MUTANTS = {
                                          '''            return AskGrade(0.0, "resolver", answered_at, "x")'''),
     "grade: moot card counts as answered": ('''        if "resolved_by" in _as_dict(ask.get("answer_detail")):''',
                                             '''        if False:'''),
-    "laplace: no prior": ('return {r: (answered[r] + 1) / (closed[r] + 2) for r in RULES}',
-                          'return {r: (answered[r] / closed[r]) if closed[r] else 0.5 for r in RULES}'),
+    # Issue #3350: the per-rule value shrinks toward the FAMILY's answered share, not toward 0.5.
+    "prior back to 0.5 (Laplace)": ('    m = sum(answered.values()) / n if n else EMPTY_FAMILY_PRIOR', '    m = 0.5'),
+    "no prior": ('return {r: (answered[r] + k * m) / (closed[r] + k) for r in RULES}',
+                 'return {r: (answered[r] / closed[r]) if closed[r] else 0.5 for r in RULES}'),
 }
 orig = F.read_text()
 results = {}

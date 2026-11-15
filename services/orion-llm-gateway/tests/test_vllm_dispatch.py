@@ -120,3 +120,34 @@ def test_streamed_completion_over_real_http_releases_lease(local_vllm, vllm_pool
         assert response.status_code == 200 and '391' in body and '[DONE]' in body
     assert local_vllm[0]['model'] == 'glm-5.3-flash'
     assert vllm_pool.active == 0 and vllm_pool.releases == ['ok']
+
+
+def test_deep_route_refuses_rollback_before_network(vllm_pool):
+    pool_placement.pool_config().classes["agent-deep"].roles = ["agent"]
+    with patch('httpx.AsyncClient.post', side_effect=AssertionError('must not call rollback')):
+        response = TestClient(main.app).post('/v1/chat/completions', json={
+            'model': 'deep.thinker.v1', 'messages': [{'role': 'user', 'content': 'hi'}]})
+    assert response.status_code == 503
+    assert response.json()['error']['type'] == 'gpu_pool_unavailable'
+    assert response.json()['error']['reason'] == 'deep_thinker_not_ready'
+    assert vllm_pool.active == 0
+
+
+def test_deep_anthropic_uses_verified_worker_and_releases(vllm_pool):
+    pool_placement.pool_config().classes["agent-deep"].roles = ["agent"]
+    old = vllm_pool.grant
+    vllm_pool.grant = lambda role, n: old(role, n).model_copy(update={
+        'model_file': 'deep.thinker.v1', 'profile_name': 'deep.thinker.v1',
+        'ctx_per_slot': 262144, 'cards': ['hecate-gpu0', 'hecate-gpu1']})
+    seen = []
+    async def post(self, url, **kwargs):
+        seen.append((url, kwargs['json']))
+        return httpx.Response(200, json={'type': 'message', 'content': [{'type': 'text', 'text': 'ready'}]})
+    with patch('httpx.AsyncClient.post', post):
+        response = TestClient(main.app).post('/v1/messages', json={
+            'model': 'deep.thinker.v1', 'max_tokens': 32768,
+            'messages': [{'role': 'user', 'content': 'hi'}]})
+    assert response.status_code == 200
+    assert seen[0][0].endswith('/v1/messages')
+    assert seen[0][1]['model'] == 'deep.thinker.v1'
+    assert vllm_pool.active == 0

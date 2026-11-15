@@ -2525,3 +2525,81 @@ profiles:
       Single-V100 validation model; no active pool role selects this profile.
       Pin Qwen/Qwen3-4B-Instruct-2507 at cdbee75f17c01a7cc42f958dc650907174af0554.
       See docs/runbooks/hecate-glm53-vllm.md for the explicit Hecate image build.
+
+  qwen38-flash-next-iq3s-strata-2xv100-hecate-eval:
+    display_name: "Hecate challenger — Qwen3.8 Flash-Next IQ3_S / Strata"
+    backend: strata
+    task_type: analysis
+    model_id: qwen3.8-flash-next-iq3_s
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 1
+      device_ids: [0, 1]
+      max_model_len: 262144
+      max_concurrent_requests: 1
+    strata:
+      family: qwen
+      model: IQ3_S
+      model_file: Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf
+      ctx_size: 262144
+      defaults: services/orion-llamacpp-host/strata/agent-defaults.json
+    notes: >-
+      Commissioning comparison only, UNVERIFIED. Two-card layer split (not TP2),
+      int8 KV, one slot, MTP, existing cached IQ3_S. Requires the explicit pool
+      and Gateway Strata evaluation overrides; never selected by default.
+      CPU first-touch follows NUMA1 CPU pinning; actual residency must be measured.
+
+  deep.thinker.v1:
+    display_name: "Hecate deep thinker — Qwen3.8 27B QUASAR NVFP4"
+    backend: vllm
+    task_type: analysis
+    model_id: /models/Qwen3.8-27B-QUASAR-NVFP4
+    supports_tools: true
+    supports_embeddings: false
+    gpu:
+      num_gpus: 2
+      tensor_parallel_size: 2
+      device_ids: [0, 1]
+      max_model_len: 262144
+      max_batch_tokens: 4096
+      max_concurrent_requests: 1
+      gpu_memory_fraction: 0.85
+    vllm:
+      pool_discovery: true
+      served_model_name: deep.thinker.v1
+      dtype: half
+      kv_cache_dtype: fp8_e4m3
+      attention_backend: FLASH_ATTN_V100
+      language_model_only: true
+      enable_prefix_caching: true
+      enable_chunked_prefill: true
+      enable_prompt_tokens_details: true
+      block_size: 2048
+      mamba_block_size: 2048
+      mamba_cache_mode: align
+      prefix_cache_retention_interval: 8192
+      reasoning_parser: qwen3
+      tool_call_parser: qwen3_coder
+      enable_auto_tool_choice: true
+      override_generation_config: {max_new_tokens: 32768}
+      default_chat_template_kwargs: {enable_thinking: true}
+      # DFlash2 draft: 2.2-4x decode, same target answers. Rollback = delete this block.
+      speculative_config:
+        method: dflash
+        model: /models/Qwen3.8-27B-DFlash2
+        num_speculative_tokens: 7
+        draft_tensor_parallel_size: 2
+        attention_backend: FLASH_ATTN_V100
+        kv_cache_dtype: auto
+      env:
+        VLLM_WORKER_MULTIPROC_METHOD: spawn
+    notes: >-
+      VERIFIED 2026-11-15 with DFlash2: 36/36 context checks to 245760 prompt tokens,
+      245760+16384 endurance with correct recovery, 12/12 task-quality runs; decode
+      104-190 tokens/s (dense baseline 38-48). Fixed resident agent-deep at hecate:8021
+      through the Gateway; one request plus pool queue. 262144 combined tokens, 229376
+      prompt tokens with a 32768 output reserve (reasoning included). Pinned 1Cat 1.5.3;
+      no CPU offload. See docs/bench/2026-11-14-hecate-deep/RESULTS.md,
+      docs/runbooks/hecate-deep-thinking.md and scripts/deep-thinker.lock.json.

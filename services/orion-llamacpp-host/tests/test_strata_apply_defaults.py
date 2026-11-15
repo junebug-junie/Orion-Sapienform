@@ -38,6 +38,19 @@ def test_agent_defaults_keep_the_27b_lanes_thinking_and_sampling(tmp_path):
     assert got["reasoning_effort"] == "high" and got["sampling"]["temperature"] == 1.0
 
 
+def test_hecate_refuses_output_clamping_before_serving(tmp_path):
+    import yaml
+    cfg = tmp_path / 'strata-iq3_s.json'
+    cfg.write_text(json.dumps({'args': ['--max-context', '262144'], 'fit_max_tokens': True}))
+    assert run(cfg, SERVICE / 'strata/hecate-deep-defaults.json').returncode == 0
+    got = json.loads(cfg.read_text())
+    assert got['fit_max_tokens'] is False and got['args'] == ['--max-context', '262144']
+    assert got['reasoning_effort'] == 'high'
+    compose = yaml.safe_load((SERVICE / 'docker-compose.hecate-strata-eval.yml').read_text())
+    script = compose['services']['hecate-strata']['command'][0]
+    assert script.index('--no-start') < script.index('strata_apply_defaults.py') < script.index('launch --no-tui')
+
+
 def test_context_sets_max_context_so_a_seeded_config_needs_no_new_setup(tmp_path):
     """A config copied from the 262144 chat lane must read 131072 for the agent launch (desc_matches)."""
     cfg = tmp_path / "strata-iq3_s.json"

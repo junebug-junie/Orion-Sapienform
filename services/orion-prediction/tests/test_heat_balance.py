@@ -44,7 +44,7 @@ def planted(n: int = 168, slope_a: float = 0.0043, slope_c: float = 0.0, noise: 
     for i in range(1, n):
         r[i] = 0.7 * r[i - 1] + rng.normal(0, 0.05)
     room = 10 + 0.2 * outdoor + room_a * a + 0.003 * c + r
-    return pd.DataFrame({"gap": gap, "room": room, "cabinet": room + gap, "outdoor.temp_f": outdoor,
+    return pd.DataFrame({"gap": gap, "room": room, "target": room + gap, "outdoor.temp_f": outdoor,
                          "athena.chassis_watts": a, "circe.chassis_watts": c,
                          "hecate.chassis_watts": h, "athena.cabinet_cooling_watts": 118.0 + rng.normal(0, 0.3, n)},
                         index=idx)
@@ -236,7 +236,7 @@ def test_a_confounded_step_is_flagged_not_believed():
     idx = pd.date_range(T, periods=n, freq="60min")
     a = np.where(np.arange(n) < 28, 740.0, 430.0) + rng.normal(0, 15, n)
     gap = np.where(np.arange(n) < 26, 1.9, 0.7) + 0.0005 * (a - 430) + rng.normal(0, 0.05, n)
-    f = pd.DataFrame({"gap": gap, "cabinet": 25 + gap, "athena.chassis_watts": a, "circe.chassis_watts": 1000 + rng.normal(0, 200, n),
+    f = pd.DataFrame({"gap": gap, "target": 25 + gap, "athena.chassis_watts": a, "circe.chassis_watts": 1000 + rng.normal(0, 200, n),
                       "hecate.chassis_watts": 0.0, "athena.cabinet_cooling_watts": 118.0}, index=idx)
     fit = _fit(f)
     s = fit.slopes["athena.chassis_watts"]
@@ -255,8 +255,8 @@ def test_a_mid_window_gap_is_a_break_not_two_neighbouring_hours():
     """A 12 h outage with a level jump across it: rows on either side are never quasi-differenced or
     kernel-paired together; the planted slope is still recovered."""
     f = planted(n=168, seed=4)
-    f.loc[f.index[80:92], ["cabinet", "gap", "room"]] = np.nan
-    f.loc[f.index[92]:, ["gap", "cabinet"]] += 0.8      # an unlogged shift during the outage
+    f.loc[f.index[80:92], ["target", "gap", "room"]] = np.nan
+    f.loc[f.index[92]:, ["gap", "target"]] += 0.8      # an unlogged shift during the outage
     fit = _fit(f)
     a = fit.slopes["athena.chassis_watts"]
     assert a["ci_lo"] < 0.0043 < a["ci_hi"]

@@ -61,10 +61,11 @@ cards:
   gpu1: {vram_gb: 32, index: 1}
   gpu2: {vram_gb: 32, index: 2}         # PG500-216 (a V100); the actuator sets the launch roles' device from it
   gpu3: {vram_gb: 32, index: 3}
-  # hecate's one V100-SXM2-32GB (2026-10-08). No actuator on hecate: agent-deep is a fixed resident,
+  # Hecate's two V100-SXM2-32GB, NV2 verified 2026-11-14. No actuator on hecate: agent-deep is a fixed resident,
   # and lending is a pool flag, not a docker action. Lendable like gpu0: agent/metacog/fast borrow it
   # only while Juniper has it lent (Hub GPU pool panel: "Lend hecate-gpu0").
   hecate-gpu0: {vram_gb: 32, lendable: true, index: 0, host: hecate}
+  hecate-gpu1: {vram_gb: 32, lendable: true, index: 1, host: hecate}
 
 roles:
   # chat runs Strata (Qwen3.8-Flash-Next, 2026-10-30): llama.cpp's /props shape, no /completion endpoint.
@@ -122,9 +123,9 @@ roles:
                         profiles: [ternary-bonsai2-27b-pq2-v100-32gb-circe-agent,
                                    qwen3.8-27b-udq4kxl-v100-32gb-circe-agent-flex],
                         ready: /health, timeout_sec: 900}}
-  # hecate: services/orion-vllm-host/docker-compose.hecate.yml; the single-card
-  # Qwen validation profile is selected by that service's VLLM_PROFILE_NAME.
-  agent-deep: {kind: llm, backend: vllm, cards: [hecate-gpu0], owner: agent-deep, port: 8021}
+  # Hecate: explicit docker-compose.deep.yml; fixed resident, one full-context request.
+  # Both cards must be lent before foreign classes can borrow this role.
+  agent-deep: {kind: llm, backend: vllm, cards: [hecate-gpu0, hecate-gpu1], owner: agent-deep, port: 8021}
   fast:       {kind: llm, cards: [gpu3], owner: [fast, metacog], port: 8013}
   # Kev (services/orion-kev), System One appraisal for orion-substrate-runtime, moved off athena's
   # T10 2026-10-15. Substrate calls it directly, not through the gateway, so no class or route names
@@ -241,6 +242,7 @@ routes:    # what llm-gateway callers say -> class (+ priority). Every gateway r
   judge: {class: judge, priority: system}
   # hecate's 27B (2026-10-08): its own card, always this route's; others borrow it only while lent.
   agent-deep: {class: agent-deep, priority: system}
+  deep.thinker.v1: {class: agent-deep, priority: system}
   # Orion Prime's between-conversations thinking (2026-10-30, docs/superpowers/specs/2026-10-29-orion-
   # prime-design.md section 7.1, Juniper: circe chat lane 0 by default). Same worker as `chat` (warm, no
   # cold start). `system` since 2026-11-03: at `background` it queued behind every system call on the

@@ -165,6 +165,13 @@ def test_personality_tab_yes_no_browser_smoke(scenario):
         assert "walkway misnaming over peer briefs (+14 more)" in text and ", 21 of 23" not in text
         assert "21 of 23 choices went this way" in text and "In Orion's Prime block now" in text
         assert "Example choices:" in text and "You have not answered yet." in text
+        # "About": collapsed by default; opened, it shows the full chosen and passed-over words as text.
+        about = first.locator("details.about")
+        assert about.count() == 1 and about.get_attribute("open") is None
+        about.locator("summary").click()
+        opened = about.inner_text()
+        assert "Chose:" in opened and HOSTILE in about.text_content() and "four wiring points named" in opened
+        assert first.locator("img").count() == 0
         assert "You said yes on" in page.locator('#pTendencies .tendency[data-id="disp-3"]').inner_text()
         assert page.locator("#pSaidNo button", has_text="Changed my mind").count() == 1
         # 3. Not live yet.

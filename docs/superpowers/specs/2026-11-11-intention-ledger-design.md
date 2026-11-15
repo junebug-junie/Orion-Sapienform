@@ -128,6 +128,11 @@ class FinalizeReflectionV1(...):
 - **Deterministic gate (code, not model):** a `promises_made` quote must be a substring of
   `final_text` after whitespace normalization. A `promises_kept` entry is accepted only when
   it names an open act. Anything else is dropped and counted in the log.
+- **Doer (added 2026-11-14, after D0 measured precision 0.72):** each `promises_made` item
+  also carries `doer` (`orion`, `juniper`, `someone_else`, `a_system`): who carries out the
+  future act. The gate keeps only `orion`, before the cap, and drops a missing doer. This
+  removes forecasts about a system and asks for Juniper to act, the two biggest false
+  classes in the D0 replay, without a word list.
 - The field rides the judge call that already runs. It adds no new model call. It does not
   run on the quick deterministic gate. The 9 quick-gate turns are a known blind spot, and
   the log records them.

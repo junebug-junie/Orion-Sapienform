@@ -12,7 +12,9 @@ are history: those producers were removed, and the context fields stay only as t
 
 CHOICE POINT (2026-11-13, personality spec rev 4, ``scripts/outreach_choice.py``). At the compose
 point the same compose call shows Orion up to HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS topics (the
-daydream; reads waiting to be told, from ``topic_sources``) plus "say nothing". Orion answers
+daydream; reads waiting to be told, people Juniper named seen in a new way, and chat threads that went
+quiet after Orion's question -- the last three from ``topic_sources``, see
+``scripts/outreach_world_topics.py``) plus "say nothing". Orion answers
 ``Pick: <n>``; ``Pick: 0`` / PASS is ``orion_declined`` and nothing is sent. Each readable pick
 publishes one ``PersonalityChoiceV1``. A subject sent or declined in the last 7 days is not shown
 again unless its version changed. With the choice point on, the personality cue is not read: it was
@@ -2229,6 +2231,8 @@ class EndogenousOutreach:
 
     def _choice_situation(self, *, force: bool, tension_reason: Any, topics: Sequence[Any]) -> Dict[str, Any]:
         """What Orion saw around the pick (flat, small): why the tick fired, the moment, the options."""
+        from scripts.outreach_choice import evidence_line
+
         inp = self._gate_inputs()
         spoke = inp.seconds_since_juniper_spoke
         return {
@@ -2239,6 +2243,8 @@ class EndogenousOutreach:
             "local_hour": inp.local_hour,
             "sent_today": inp.sent_today,
             "juniper_spoke_min_ago": None if spoke is None else int(round(float(spoke) / 60.0)),
+            # The rows the shown person / chat-thread topics stand on ("<rank>=<ref> ...").
+            "evidence": evidence_line(topics),
         }
 
     async def _settle_pick(

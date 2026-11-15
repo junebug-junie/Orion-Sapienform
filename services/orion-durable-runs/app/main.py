@@ -49,6 +49,8 @@ _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
 field_notes: Any = None     # app.pr_field_note_poll.FieldNotePoller while PR_FIELD_NOTES_ENABLED (Patch 2)
 _field_notes_task: asyncio.Task | None = None
+core_pages: Any = None      # app.core_page_fold.CorePageFolder while ORION_CORE_PAGES_ENABLED
+_core_pages_task: asyncio.Task | None = None
 reminiscence: Any = None    # app.reminiscence_poll.ReminiscenceTicker while REMINISCENCE_ENABLED (Patch 2)
 _reminiscence_task: asyncio.Task | None = None
 situation: Any = None
@@ -58,6 +60,7 @@ market: Any = None          # app.physiology_market.Market while ORION_PHYSIOLOG
 HTTP_EMBED_WAIT_SEC = 0.25  # personality care: the most an HTTP bid waits for its object text's embedding
 cooling_act: Any = None     # app.cooling_act.CoolingAct while ORION_COOLING_ACT_ENABLED (ladder retirement PR 5)
 _cooling_act_task: asyncio.Task | None = None
+_market_refresh_task: asyncio.Task | None = None   # keeps the bid market's history warm (issue #3382)
 chronicle: Any = None
 personality: Any = None
 rpc_health_publisher: RpcHealthPublisher | None = None
@@ -604,6 +607,7 @@ async def lifespan(app: FastAPI):
     global field_notes, _field_notes_task, reminiscence, _reminiscence_task
     global rpc_health_publisher, situation, temporal_self, personality, market, cooling_act, _cooling_act_task
     global checkpoint_prune, _checkpoint_prune_task
+    global core_pages, _core_pages_task, _market_refresh_task
     from app.runner import DurableRunner
 
     try:
@@ -654,6 +658,9 @@ async def lifespan(app: FastAPI):
             await personality.start(_stop)
         if _settings.physiology_bid_enabled:
             market = _build_market()
+            # Warm the history + weights at boot and keep them warm, so no bid waits on a database read
+            # (issue #3382: the inline refresh made 0.5 s HTTP callers time out).
+            _market_refresh_task = asyncio.create_task(market.run_refresher(_stop))
         if _settings.cooling_act_enabled:
             if market is None or rpc_bus is None:
                 # Its bid binds: no market (or no bus for the shed RPC) means it could never act.
@@ -665,6 +672,18 @@ async def lifespan(app: FastAPI):
                 cooling_act = CoolingAct(settings=_settings, store=CoolingActStore.from_uri(_settings.postgres_uri),
                                          market_getter=lambda: market, bus_getter=lambda: rpc_bus)
                 _cooling_act_task = asyncio.create_task(cooling_act.run(_stop))
+        if _settings.orion_core_pages_enabled:
+            if rpc_bus is None:
+                logger.warning("core_page_fold_not_started reason=no_bus")
+            else:
+                # Core memory pages Phase 1a: Orion's page:juniper, folded overnight (app/core_page_fold.py).
+                from app.core_page_fold import CorePageFolder, bus_llm_caller, bus_publisher, service_source
+
+                source = service_source(_settings)
+                core_pages = CorePageFolder(
+                    settings=_settings, pool=_checkpointer_cm,
+                    call_llm=bus_llm_caller(rpc_bus, _settings, source), publish=bus_publisher(rpc_bus, source))
+                _core_pages_task = asyncio.create_task(core_pages.run_forever(_stop))
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -726,8 +745,15 @@ async def lifespan(app: FastAPI):
             _field_notes_task.cancel()
         if _reminiscence_task is not None:
             _reminiscence_task.cancel()
+        if _core_pages_task is not None:
+            _core_pages_task.cancel()
         if _cooling_act_task is not None:
             _cooling_act_task.cancel()
+        if _market_refresh_task is not None:
+            _market_refresh_task.cancel()
+            await asyncio.gather(_market_refresh_task, return_exceptions=True)
+        if market is not None:
+            await market.aclose()   # before the pool closes under an in-flight refresh
         if situation is not None:
             await situation.close()
         if temporal_self is not None:
@@ -785,10 +811,23 @@ async def health() -> dict[str, Any]:
         "field_note_poll": field_notes.health() if field_notes is not None else None,
         # Daily reminiscence Patch 2: the last tick's decision (episode, week, run submitted or why not).
         "reminiscence_tick": reminiscence.health() if reminiscence is not None else None,
+        # Core memory pages Phase 1a: the last page:juniper fold tick (decision, version, check; no text).
+        "core_page_fold": core_pages.health() if core_pages is not None else None,
         # LangGraph checkpoint pruning: mode (dry_run ships), last pass's totals / deletions.
         "checkpoint_prune": (checkpoint_prune.health() if checkpoint_prune is not None
                              else {"mode": _settings.checkpoint_prune_mode}),
     }
+
+
+@app.post("/core-pages/juniper/fold")
+async def core_page_juniper_fold(dry_run: bool = True) -> dict[str, Any]:
+    """Fold page:juniper now, at any hour, skipping the once-a-day and no-change gates. ``dry_run``
+    (the default) returns the page and its cite check and publishes nothing; ``dry_run=false``
+    publishes a passing page as the next live version."""
+    if core_pages is None:
+        raise HTTPException(503, "core pages are off (ORION_CORE_PAGES_ENABLED / bus)")
+    result = await core_pages.tick_once(dry_run=dry_run, force=True)
+    return result.as_dict()
 
 
 @app.get("/reminiscence/plan")

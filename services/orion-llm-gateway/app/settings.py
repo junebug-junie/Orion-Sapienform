@@ -118,6 +118,7 @@ class Settings(BaseSettings):
     # model (bus RPC and HTTP passthroughs), with its correlation id, on orion:llm:call:usage ->
     # sql-writer llm_call_usage. Counts and clocks only, no text. Independent of the grammar flag.
     llm_gateway_call_usage_enabled: bool = Field(True, alias="LLM_GATEWAY_CALL_USAGE_ENABLED")
+
     llm_gateway_anthropic_passthrough_enabled: bool = Field(
         True, alias="LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_ENABLED"
     )

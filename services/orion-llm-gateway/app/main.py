@@ -329,6 +329,8 @@ async def _run_on_grant(plan: ChatDispatchPlan, lease: Lease, read_timeout_s: fl
     cancelled. Stopping = shutting down the worker's upstream sockets (upstream_cancel.py): the
     blocked read fails, the worker returns, and the slot the pool now counts as free is free."""
     grant = lease.grant
+    if plan.route == "deep.thinker.v1" and not pool_placement.deep_grant_ready(grant):
+        return {"text": "", "raw": {"error": "gpu_pool_unavailable", "reason": "deep_thinker_not_ready"}, "route": plan.route}
     run_body = plan.body.model_copy(update={"options": {
         **(plan.body.options or {}), "gateway_read_timeout_sec": read_timeout_s,
     }})
@@ -338,7 +340,7 @@ async def _run_on_grant(plan: ChatDispatchPlan, lease: Lease, read_timeout_s: fl
                                  model=pool_placement.granted_model(grant), served_by=grant.served_by),
     )
     loop = asyncio.get_running_loop()
-    handle = upstream_cancel.UpstreamCancel()
+    handle = upstream_cancel.UpstreamCancel(lease_id=lease.lease_id)
     future = loop.run_in_executor(pool_placement.executor_for(grant.url), upstream_cancel.run_cancellable,
                                   handle, run_llm_chat, run_body, run_plan)
     watch = asyncio.ensure_future(pool_placement.wait_lease_revoked(lease))

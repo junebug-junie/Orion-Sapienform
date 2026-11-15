@@ -70,3 +70,9 @@ orion-office-env
 # stream. A running edge would publish a second cam0 frame stream (640x480 substream)
 # on orion:vision:frames, so the rebuild and bring-up sweeps must not start it.
 orion-vision-edge
+
+# orion-lane-door (leased-evals Phase 2) runs on circe and hecate only, never athena. circe's post-pull
+# rebuild deploys it (include_services_circe.txt); hecate's runs with the deep engine
+# (services/orion-vllm-host/scripts/hecate-deep.sh). Excluded here so athena's rebuild and bring-up
+# sweeps never start a door in front of nothing.
+orion-lane-door

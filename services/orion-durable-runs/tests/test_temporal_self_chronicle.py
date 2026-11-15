@@ -28,7 +28,7 @@ from app.temporal_self_chronicle import ChronicleConfig, Chronicler  # noqa: E40
 from orion.temporal_self import ReducerConfig, advance_clock, fold, initial_state  # noqa: E402
 from orion.temporal_self.sources import ADAPTERS  # noqa: E402
 from orion.temporal_self.broadcast import tick_from_log_row  # noqa: E402
-from temporal_self_world import TZ, FakeReader, FakeStore, World, event_ids, utc  # noqa: E402
+from temporal_self_world import TZ, FakeReader, FakeStore, Row, World, broadcast_row, event_ids, utc  # noqa: E402
 
 T0 = utc(2026, 10, 10, 15, 0)  # 09:00 America/Denver
 STEP = timedelta(seconds=120)
@@ -271,6 +271,44 @@ def test_thread_without_chronicle_is_unchanged():
 
 
 # --- review findings (2026-10-10) ------------------------------------------------------------
+
+
+def test_memory_that_lands_hours_after_its_moment_is_folded_into_that_moments_arc():
+    """#3400: episode_memory rows are distilled hours after ``occurred_at``. The reader had long
+    passed that time, so every one was stored late and never joined an arc (27 of 30 late rows on
+    11-13). Read by write time, the row folds in the window it lands in and binds by occurred_at."""
+    w, store = World(T0), FakeStore()
+    w.ticks(T0, ["A"] * 30, every=137.0)   # A holds 15:00 to 16:06
+    occurred, created = T0 + timedelta(minutes=20), T0 + timedelta(hours=3)
+    # The row does not exist until it is written: visible from created_at, whatever the reader keys on.
+    w.rows.append(Row("memory_episode", {"memory_id": "mem-1", "episode_id": "ep-1", "purpose": "happened",
+                                         "occurred_at": occurred, "created_at": created}, created + timedelta(seconds=1)))
+    run(chronicler(w, store), w, T0 + timedelta(hours=3, minutes=30))
+    assert event_ids(store, late=True) == set()
+    assert "memory_episode:mem-1" in event_ids(store, late=False)
+    (arc,) = [json.loads(v) for v in store.arcs.values() if json.loads(v)["kind"] == "attention"]
+    assert arc["context_event_ids"] == ["memory_episode:mem-1"]
+    assert json.loads(store.frame)["skipped_at_or_before_watermark"] == 0
+
+
+def test_live_tick_jitter_is_not_reported_as_a_gap_and_a_real_hole_is():
+    """#3400 through the driver: ticks at the live pace (median 137 s, some past 180 s) raise no
+    gap warning and leave one arc; a 20-minute hole is still reported, without the word outage."""
+    w, store = World(T0), FakeStore()
+    t, i = T0, 0
+    for sec in [118.0, 137.0, 150.0, 190.0, 137.0, 110.0, 224.0, 137.0, 140.0, 310.0, 125.0, 137.0, 335.0, 131.0] * 2:
+        w.add("broadcast", broadcast_row(i, t, "A"))
+        t, i = t + timedelta(seconds=sec), i + 1
+    ch = chronicler(w, store)
+    run(ch, w, t + timedelta(minutes=6))
+    frame = json.loads(store.frame)
+    assert not [x for x in frame["warnings"] if "gap" in x]
+    (arc,) = [json.loads(v) for v in store.arcs.values() if json.loads(v)["kind"] == "attention"]
+    assert len(arc["segments"]) == 1 and arc["source_gap_resumes"] == 0
+    w.ticks(t + timedelta(minutes=20), ["A"] * 4, every=137.0, first=i)
+    run(ch, w, t + timedelta(minutes=40))
+    (line,) = [x for x in json.loads(store.frame)["warnings"] if "gaps today" in x]
+    assert line.startswith("broadcast log gaps today: 1 ") and "outage" not in line
 
 
 def test_abandoned_deferral_finalised_ninety_minutes_later_is_counted_late():

@@ -87,6 +87,10 @@ for _root in (SERVICE_ROOT, REPO_ROOT):
 # hide, so it holds exactly one entry and each entry is justified by
 # measurement, not by the module's name.
 
+# Attention patch 4b: camera openers bid the body-economy market before a card opens. No test may call the real
+# market over HTTP; tests that need a market pass or patch their own. Disabled client = no answer = admit.
+os.environ.setdefault("ORION_PHYSIOLOGY_BID_CLIENT_ENABLED", "false")
+
 _TEST_DB_ENV_VAR = "ORION_SQL_WRITER_TEST_DATABASE_URI"
 _test_db_uri = os.environ.get(_TEST_DB_ENV_VAR)
 
@@ -125,6 +129,8 @@ _DB_DEPENDENT_MODULES = {
     # 2026-11-13 (attention patch 4a, camera asks as graded acts): KeyError on the URI with no database
     # (every test errors on the fixture); runs in sql-writer-integration.
     "test_camera_ask_acts_integration",
+    # 2026-11-13 (attention patch 4b, camera asks bid before they open): same shape.
+    "test_ask_bind_integration",
 }
 
 _TESTS_DIR = Path(__file__).resolve().parent
@@ -146,3 +152,14 @@ def pytest_collection_modifyitems(config, items) -> None:
         # module belonging to a different service in a combined run.
         if path.parent == _TESTS_DIR and path.stem in _DB_DEPENDENT_MODULES:
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _reset_camera_ask_bid_state():
+    """app.ask_bind keeps held candidates and a per-minute bid budget in process memory; tests share one process and
+    often one fixed clock, so each test starts clean (otherwise one test's bids spend the next one's budget)."""
+    from app import ask_bind
+
+    ask_bind.reset_state()
+    yield
+    ask_bind.reset_state()

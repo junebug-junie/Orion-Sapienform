@@ -1,0 +1,22 @@
+# Release wheel, separate from the preserved GLM/4B rollback image.
+FROM nvidia/cuda:12.8.1-devel-ubuntu24.04@sha256:520292dbb4f755fd360766059e62956e9379485d9e073bbd2f6e3c20c270ed66
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.12 python3.12-venv python3.12-dev gcc g++ curl ca-certificates \
+    libnuma1 libglib2.0-0 libgl1 && apt-get clean
+RUN python3.12 -m venv /opt/venv
+ENV PATH=/opt/venv/bin:${PATH} CUDA_HOME=/usr/local/cuda
+RUN curl -fL --retry 3 -o /tmp/1cat_vllm-1.5.3+cu128-cp312-cp312-linux_x86_64.whl \
+    'https://github.com/1CatAI/1Cat-vLLM/releases/download/v1.5.3/1cat_vllm-1.5.3%2Bcu128-cp312-cp312-linux_x86_64.whl' \
+    && echo '0558021651c41ab111609d121cef029c09224de4b6e6f8fd362754dfdd84990f  /tmp/1cat_vllm-1.5.3+cu128-cp312-cp312-linux_x86_64.whl' | sha256sum -c - \
+    && pip install --no-cache-dir /tmp/1cat_vllm-1.5.3+cu128-cp312-cp312-linux_x86_64.whl \
+    && rm /tmp/1cat_vllm-1.5.3+cu128-cp312-cp312-linux_x86_64.whl
+WORKDIR /app
+COPY services/orion-vllm-host/requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+COPY services/orion-vllm-host/app /app/app
+COPY config/llm_profiles.yaml /app/config/llm_profiles.yaml
+COPY orion /app/orion
+ENV PYTHONPATH=/app
+EXPOSE 8000
+ENTRYPOINT ["python", "-m", "app.main"]

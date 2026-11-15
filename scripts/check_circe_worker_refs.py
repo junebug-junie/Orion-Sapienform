@@ -77,10 +77,35 @@ ZONES: dict[str, str] = {
     "services/orion-llamacpp-host/*": "the llama.cpp workers themselves",
     "services/orion-llamacpp-bonsai-host/*": "the bonsai llama.cpp worker itself",
     "services/orion-diffusion-host/*": "the diffusion worker itself",
+    "services/orion-lane-door/*": "the lane door: the front door of each worker, it names the engines it fronts",
     # Operator tooling for the port gate itself: it must name the addresses it guards.
     "scripts/check_circe_worker_refs.py": "this gate (its docstring and ALLOW keys name the addresses)",
     "scripts/ops/circe_llm_port_gate.sh": "the circe firewall for the same ports (runbook 2026-10-01)",
     "scripts/ops/orion-llm-port-gate.service": "its systemd unit",
+}
+
+# Paths inside a zone that are still scanned: the worker service's own operator probes and evals are
+# CALLERS of the worker, not the worker (leased-evals lane-door PR 1, 2026-11-14). Before this they sat
+# in the llama.cpp host's zone and the gate never saw them post straight to circe.
+ZONE_EXCEPTIONS: dict[str, str] = {
+    "services/orion-llamacpp-host/scripts/*": "operator probes: they call the worker, so they are scanned",
+    "services/orion-llamacpp-host/evals/*": "evals: they call the worker, so they are scanned",
+}
+
+# Known scripts that talk to a model server WITHOUT the gateway, on purpose. Documentation with a stale
+# check (the file must exist), not an exemption the scan applies: these call circe's own loopback, which
+# the address scan never matches (nor would it match an SSH tunnel on 127.0.0.1). The runtime fence for
+# those is the lane door. Nothing else may: an eval or probe calls a model through
+# orion/evals/leased_llm.py (a GPU pool operator hold + the gateway).
+DIRECT_CALLERS: dict[str, str] = {
+    "scripts/gpu_power_bench.py": (
+        "the GPU power bench runs ON circe as root and needs llama.cpp's raw /completion timings, a pinned "
+        "slot and an idle card: the gateway can give none of these. It keeps its interactive reservation "
+        "(scripts/gpu_pool_clear_gpu2.py, started by hand like the Hub's experiment-seat button) and reads "
+        "the engine on circe's own loopback (127.0.0.1), never a tailnet address. With the lane door deployed "
+        "that is the engine's loopback port (127.0.0.1:18016 for agent-gpu2), behind no door; the bench refuses "
+        "a port that answers as a lane door"
+    ),
 }
 
 # Hits outside the zones. Keys: "<repo-relative path>:<host>:<port>"; fnmatch globs allowed.
@@ -129,6 +154,7 @@ _WORKER_COMPOSE_FILES = (
     "services/orion-llamacpp-bonsai-host/docker-compose.yml",
     "services/orion-diffusion-host/docker-compose.yml",
     "services/orion-gpu-lane-controller/docker-compose.yml",
+    "services/orion-lane-door/docker-compose.yml",
 )
 
 # Default worker identity if config/gpu_pool.yaml is unreadable (keeps the gate fail-closed).
@@ -262,6 +288,8 @@ def _excluded(rel: pathlib.PurePath) -> bool:
 
 
 def _zone_for(rel: str) -> str | None:
+    if any(fnmatch.fnmatchcase(rel, pattern) for pattern in ZONE_EXCEPTIONS):
+        return None
     for pattern in ZONES:
         if rel == pattern or fnmatch.fnmatchcase(rel, pattern):
             return pattern
@@ -393,8 +421,9 @@ def main(argv: list[str] | None = None) -> int:
     ident = load_identity(root)
     hits = scan_tree(root, ident)
     unallowed, allowed, stale = classify(hits, ALLOW)
-    dead_zones = stale_zones(root, ZONES)
-    ok = not unallowed and not stale and not dead_zones
+    dead_zones = stale_zones(root, ZONES) + stale_zones(root, ZONE_EXCEPTIONS)
+    missing_direct = [p for p in DIRECT_CALLERS if not (root / p).is_file()]
+    ok = not unallowed and not stale and not dead_zones and not missing_direct
     live = scan_live_env(root, ident) if args.live_env else []
 
     if args.json:
@@ -405,6 +434,8 @@ def main(argv: list[str] | None = None) -> int:
             "allowed": [{**asdict(h), "reason": r} for h, r in allowed],
             "stale_allow": stale,
             "stale_zones": dead_zones,
+            "direct_callers": DIRECT_CALLERS,
+            "stale_direct_callers": missing_direct,
             "live_env": [asdict(h) for h in live],
         }, indent=2))
         return 0 if ok else 1
@@ -424,6 +455,10 @@ def main(argv: list[str] | None = None) -> int:
         print("circe worker port gate: STALE zones (match no file; fix or remove them):")
         for z in dead_zones:
             print(f"    {z}")
+    if missing_direct:
+        print("circe worker port gate: STALE direct-caller exemptions (file gone; remove them):")
+        for p in missing_direct:
+            print(f"    {p}")
     if live:
         print(f"live .env keys holding a direct circe worker address ({len(live)}; report only):")
         for hit in live:
@@ -434,6 +469,9 @@ def main(argv: list[str] | None = None) -> int:
         f"circe worker port gate: PASS (circe={ident.name}/{ident.address}, ports {ports}; "
         f"{len(allowed)} allowed hit(s), {len(ALLOW)} allow entries, {len(ZONES)} zones)"
     )
+    for p, why in DIRECT_CALLERS.items():
+        print(f"  known direct caller, by design (loopback on circe; not matched by this scan): {p}\n"
+              f"      why: {why}")
     return 0
 
 

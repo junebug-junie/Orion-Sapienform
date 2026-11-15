@@ -222,7 +222,7 @@ resource_request -> resource_wait -> hop:what_it_was -> hop:what_it_was_like -> 
 - The receipt checker is the second named exception in the partition test, returning ids and
   booleans only, like `pr_field_note_ledger.py`.
 
-### 7. Cost (estimate, from field-note measurements)
+### 7. Cost (measured over 7 episodes, 2026-11-07..11-13)
 
 A field-note turn (one read, one write, measured over 44 runs): median 5.0 Wh above rest (p90
 14.9), 159k prompt tokens (two thirds cached), 296 s of GPU slot (p90 1,035 s). A hop has the same
@@ -235,8 +235,19 @@ context. Six turns a day (five hops and one cross-read):
 | prompt tokens | about 1.0M/day | about 1.9M/day |
 | agent-lane GPU slot | about 30 min/day | about 100 min/day |
 
-ESTIMATE until Patch 2 measures 7 episodes. The real cost is lane time, which is why it runs
-overnight. A first full pass of the 71 weeks takes about 71 days.
+That was the estimate. Measured (`pr_field_note_cost.py --workflow reminiscence.episode`, 7 runs, all
+completed, 0 retries, 6 turns each):
+
+| | median | p90 |
+|---|---|---|
+| energy at the wall above rest | 24 Wh/day, about 0.7 kWh/month | 31 Wh/day, about 0.9 kWh/month |
+| prompt tokens | about 1.3M/day (1.04M cached) | about 1.5M/day |
+| completion tokens | about 30k/day | about 32k/day |
+| agent-lane GPU slot | about 22 min/day | about 30 min/day |
+
+Close to the median estimate (tokens about 30% higher, energy and lane time lower) and far under the
+estimated p90: no run needed a retry. The real cost is lane time, which is why it runs overnight. Quiet
+weeks are joined, so a first full pass takes fewer than 71 nights (7 nights covered 13 weeks).
 
 ### 8. Metric gate
 
@@ -372,7 +383,7 @@ Built as section 6 says, on the `pr.field_note` seams (no parallel runner). Wher
   so the prompt names it. The dig still decides at write time, and the receipt check does not depend on
   the brief's week.
 - **Cost measurement:** `scripts/pr_field_note_cost.py --workflow reminiscence.episode` (the field-note
-  script, generalized). Section 7's table stays an ESTIMATE until it reports 7 completed episodes.
+  script, generalized). Section 7 now holds the 7-episode measurement (2026-11-13).
 
 The privacy gate is unchanged: the partition test's reader allowlist is the same. The receipt checker
 (`services/orion-durable-runs/app/reminiscence_ledger.py`) is the second named exception, read-only, and

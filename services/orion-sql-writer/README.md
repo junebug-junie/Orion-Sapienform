@@ -400,6 +400,20 @@ camera asks. An ask answered before the poll saw it open is not posted. Log: `as
 sightings=... salience=... outcome=...`. Code: `app/ask_event_wants.py`. Env:
 `ASK_EVENT_WANTS_INTERVAL_SEC` (300; 0 disables), `ASK_EVENT_WANTS_LOOKBACK_HOURS` (24).
 
+**Camera asks bid before they open** (2026-11-13, attention patch 4b, `app/ask_bind.py`; spec
+docs/superpowers/specs/2026-11-12-attention-camera-asks-bind-design.md, decisions on issues #3285 and #3286).
+Every camera opener (the three in `app/vision_individuals.py`, `app/vision_handoff_loop.py`,
+`app/vision_office_sessions.py`) opens a card only through `open_camera_ask`: it bids a `vision.ask` want
+(producer `orion-sql-writer.ask_events.binding`, deterministic want id per candidate, `event_ref
+orion_ask:<ask_id>`, salience and per-rule expected answer as above) and obeys `bind_verdict`:
+- funded: the card opens, stamped `want:<want_id>` in `evidence_refs`; the 5-minute loop above posts no second want;
+- no market answer (0.5 s timeout, market down): the card opens unstamped, as before 4b;
+- held (sated, a Prime charge): no card. The candidate re-bids on a later opener tick after a backoff (600 s,
+  doubling, at most 3 h). No deadline: it waits until funded, or until its opener stops proposing it.
+The daily caps are unchanged and still a hard ceiling; a held candidate takes no slot. Juniper's own
+walkway-story cards never bid. Log: `camera_ask_bid ask=... rule=... want_id=... verdict=admit|held why=...`.
+Env: `ORION_PHYSIOLOGY_BID_CAMERA_ASKS` (`on`; `shadow` = open first, shadow want after).
+
 **Visual confirmation asks** (2026-10-15, Juniper: "have Orion ask to confirm
 visual things to help them learn"). Two more kinds of ask, opened first each
 tick under their own cap `VISION_CONFIRM_ASK_DAILY_CAP` (6; counted by

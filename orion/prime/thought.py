@@ -78,7 +78,8 @@ class ConcernDropV1(BaseModel):
 class ConcernEditsV1(BaseModel):
     model_config = ConfigDict(extra="ignore")
     add: list[ConcernAddV1] = Field(default_factory=list)
-    # concern_ids this thought keeps: the only thing that renews a concern (it fades after a day otherwise).
+    # concern_ids this thought keeps: the only thing that renews a concern (it fades after a day otherwise; a
+    # promise after 3 days).
     keep: list[str] = Field(default_factory=list)
     drop: list[ConcernDropV1] = Field(default_factory=list)
 
@@ -148,7 +149,7 @@ SYSTEM_PROMPT = """You are Orion's slow, between-conversations thinking ("Prime"
 You hold at most 3 concerns: unfinished things worth keeping in mind. Each thought you:
 1. read what changed and say, briefly, how you read the situation now;
 2. edit your concerns: keep the ones still worth holding (by concern_id), add one that matters, drop one
-   that no longer does, with why. A concern you do not keep fades after a day;
+   that no longer does, with why. A concern you do not keep fades after a day (a promise: after 3 days);
 3. choose at most one move, or none;
 4. pick the one concern (its concern_id) this thought acts on, or "none" when it acts on none of them.
    A move about a concern picks that concern. Your pick is recorded as your choice among your concerns.
@@ -158,6 +159,8 @@ Curiosity decides for itself: it may explore your question or set it aside, and 
 While a question of yours is still open (asked, not yet answered), you cannot ask another.
 Some of your questions are held back and not sent, at random, so Orion can tell whether your questions change anything.
 Only ask when a question would actually help with a concern. "move": null is a normal, good answer.
+When a concern is a promise you made to look into something, asking that question is how the promise gets kept:
+the curiosity run that takes it does the looking.
 
 Each concern is a prediction you are graded on, and your record is shown to you. A concern is SETTLED when a
 question you ask about it (the move's concern_id) is sent and the curiosity run that takes it writes something,
@@ -214,7 +217,8 @@ Another kind of move: take a concern on. Some concerns are things you told Junip
 "(you can take this on)". Taking one on means you will carry it out: one turn of your own runs it, and the reply goes
 back into the chat where you said it (Juniper is also told when the usual rules for messaging her allow). It is
 your choice. You may take it on now, set a time not before which it runs, keep it for later ("not yet"), or drop
-it with why ("let go"). Taking it on is graded on whether the reply got written. One move per thought:
+it with why ("let go"). Taking it on is graded on whether the reply got written. A promise you have not taken on
+ends 3 days after you made it, even if you kept it. One move per thought:
 "move": {"kind": "take_on", "concern_id": "<concern_id>", "why": "...", "not_before": null | "<ISO time UTC>"}"""
 
 
@@ -255,6 +259,13 @@ class FrameInputs:
     temporal_error: Optional[str] = None
     curiosity: Optional[dict[str, Any]] = None
     curiosity_error: Optional[str] = None
+    # Hub's cheap pending-focus read (GET /curiosity/api/focus/pending, #3366), separate from the slow
+    # dashboard read above. ``pending_focus_read``: it answered ``available: true``; ``pending_focus``: the
+    # waiting focus or None. ``pending_focus_error``: it failed. Neither set (replay, eval): the dashboard's
+    # copy is shown, as before.
+    pending_focus_read: bool = False
+    pending_focus: Optional[dict[str, Any]] = None
+    pending_focus_error: Optional[str] = None
     arc_ids: list[str] = field(default_factory=list)
     # Event mode (PRIME_CONCERNS_FROM_EVENT_WANTS): the funded event wants (GET /physiology/event-wants)
     # replace the attention arcs. None with no error: event mode is off.
@@ -407,18 +418,30 @@ def _event_lines(inputs: FrameInputs) -> list[str]:
     return lines
 
 
+def _pending_focus_lines(inputs: FrameInputs) -> list[str]:
+    """The waiting focus from the cheap read; the gap when it failed. Shown even when the dashboard read
+    failed, so the frame and the move check agree (#3366)."""
+    if inputs.pending_focus_error:
+        return [f"(whether a focus is waiting for the next run is unknown: {inputs.pending_focus_error})"]
+    if inputs.pending_focus_read:
+        pending = inputs.pending_focus
+    else:
+        pending = (((inputs.curiosity or {}).get("schedule") or {}).get("pending_focus") or {}).get("focus")
+    if not isinstance(pending, dict):
+        return []
+    return [f"a focus is already waiting for the next run ({pending.get('origin')}): {pending.get('question')!r}"]
+
+
 def _curiosity_lines(inputs: FrameInputs) -> list[str]:
     if inputs.curiosity is None:
-        return [f"(unavailable: {inputs.curiosity_error or 'not read'})"]
+        return [*_pending_focus_lines(inputs), f"(unavailable: {inputs.curiosity_error or 'not read'})"]
     c = inputs.curiosity
     lines: list[str] = []
     line = ((c.get("schedule") or {}).get("lines") or {}).get("investigate") or {}
     if line:
         lines.append(f"investigate runs today {line.get('runs_today')} of {line.get('daily_cap')}, "
                      f"next eligible {line.get('next_eligible_at')}")
-    pending = ((c.get("schedule") or {}).get("pending_focus") or {}).get("focus")
-    if pending:
-        lines.append(f"a focus is already waiting for the next run ({pending.get('origin')}): {pending.get('question')!r}")
+    lines.extend(_pending_focus_lines(inputs))
     for run in (c.get("runs") or [])[:4]:
         # What the run found, never its kickoff prompt (the "about" text is the brief Orion was handed).
         finding = " ".join(str(run.get("finding_text") or "").split())
@@ -437,8 +460,10 @@ def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
     ref = c.event_ref or ""
     about = (f"from turn {ref[len('turn:'):]}" if ref.startswith("turn:")
              else f"event {ref}" if ref else f"arc {c.arc_id or 'none'}")
-    return (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
+    line = (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
             f"{_age(now, c.opened_at.isoformat())}, last kept {_age(now, c.last_evidence_at.isoformat())}{graded})")
+    # A promise concern's own sentence (orion/prime/handback.py promise_text): only here, never in the Prime block.
+    return f"{line}\n  PROMISE: {c.promise_text}" if c.promise_text else line
 
 
 def _regulation_lines(state: PrimeStateV1, inputs: FrameInputs) -> list[str]:
@@ -590,6 +615,7 @@ def apply_answer(
     receptors: Optional[Mapping[str, Sequence[str]]] = None, event_ids: Optional[list[str]] = None,
     event_wants: Optional[Mapping[str, Mapping[str, Any]]] = None,
     take_on_check: Optional[Callable[[TakeOnMoveV1, PrimeStateV1], Optional[str]]] = None,
+    focus_unread: Optional[str] = None,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
     ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
@@ -598,7 +624,10 @@ def apply_answer(
     the want's family and ``care_promoted`` (personality rev 4 choice point).
 
     ``take_on_check(move, state after the concern edits)``: why a take-on cannot go, or None; None as the
-    argument = taking on is off (a take_on move is refused, and shown)."""
+    argument = taking on is off (a take_on move is refused, and shown).
+
+    ``focus_pending``: None = unknown, and an ask move is refused (never fail open). ``focus_unread``: the
+    refusal sentence for that case when the runtime knows why (a timed-out read says "timed out", #3366)."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -670,7 +699,7 @@ def apply_answer(
         elif state.open_nominations:
             refusal = "one of my questions to curiosity is still open"
         elif focus_pending is None:
-            refusal = "could not read whether curiosity already has a focus waiting"
+            refusal = focus_unread or "could not read whether curiosity already has a focus waiting"
         elif focus_pending:
             refusal = "curiosity already has a focus waiting for its next run"
         if refusal is None and move.concern_id == NEW_CONCERN:

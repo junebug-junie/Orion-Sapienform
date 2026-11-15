@@ -101,8 +101,8 @@ NOMINATION_BASIS = (
 # A concern's horizon: two question horizons. Only one question is open at a time, so a fresh concern
 # may first wait out another concern's open question (up to NOMINATION_HORIZON_SEC, 72 h: the 48 h focus
 # TTL, measured from the investigate line's longest gap of 21.1 h over 30 days, plus the run act's 24 h)
-# and then its own (another 72 h). 144 h. An unkept concern fades after CONCERN_TTL (24 h) long before
-# this, so the horizon only binds concerns Prime keeps holding. Live 2026-10-30 there were 2 Prime
+# and then its own (another 72 h). 144 h. An unkept concern fades after concern_ttl (24 h; 72 h for a
+# promise) long before this, so the horizon only binds concerns Prime keeps holding. Live 2026-10-30 there were 2 Prime
 # questions in total, too few to measure a settle time from Prime's own record; re-derive once there are.
 CONCERN_HORIZON_SEC = 2 * NOMINATION_HORIZON_SEC
 CONCERN_COMPONENT = "prime.concern"
@@ -111,7 +111,8 @@ CONCERN_BASIS = (
     "settled produced (its investigate run wrote something), or a unified turn whose prompt cited "
     "prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; "
     "0 when dropped unresolved, "
-    "faded (not kept for 24h) or lapsed. horizon = 2 x the question horizon (one question open at a time: "
+    "faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon "
+    "(one question open at a time: "
     "another concern's question may be open first), 2 x 259200s"
 )
 THOUGHT_MARGIN_SEC = 120.0

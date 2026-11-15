@@ -68,6 +68,7 @@ services:
       PRIME_HOLDBACK_FRACTION: ${PRIME_HOLDBACK_FRACTION:-0.2}
       PRIME_DURABLE_RUNS_URL: ${PRIME_DURABLE_RUNS_URL:-http://orion-athena-durable-runs:8121}
       PRIME_HUB_URL: ${PRIME_HUB_URL:-http://100.92.216.81:8080}
+      PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC: ${PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC:-30}
       PRIME_REGULATE_ENABLED: ${PRIME_REGULATE_ENABLED:-true}
       PRIME_FAMILIES_PATH: ${PRIME_FAMILIES_PATH:-/repo/config/physiology/families.yaml}
       # Prime's concerns from funded event wants (app/prime_loop.py); see .env_example.

@@ -22,12 +22,17 @@ is already in ``want_ledger`` is not posted again).
 Expected outcome (attention patch 4a, docs/superpowers/specs/2026-11-12-attention-camera-asks-bind-design.md):
 each ask is a ``vision.ask`` act graded by Juniper's answer (orion/grammar/camera_ask_acts.py), so the want
 carries ``outcome_value`` = the answered share of the same ask RULE (confirm, same, face, office, vehicle,
-sighting) over 30 days, ``(answered + 1) / (closed + 2)``. Once the family has 30 graded closes the market ranks
-``salience x outcome``: a vehicle ask Juniper cannot answer (live: 5 of 45) ranks low however often it was seen.
+sighting) over 30 days, shrunk toward the family's answered share ``m``: ``(answered + 2m) / (closed + 2)`` (issue #3350). Once the family has 30 graded closes the market ranks
+``salience x outcome``: a vehicle ask Juniper cannot answer (live 2026-11-13: 5 of 47) ranks low however often it was seen.
 Juniper's own walkway-story naming cards are not Orion's asks and are in neither the asks nor the history.
 
 SHADOW: nothing obeys the decision. Prime reads the funded ones as its concerns (orion-mind
 ``PRIME_CONCERNS_FROM_EVENT_WANTS``).
+
+Attention patch 4b (app/ask_bind.py, ``ORION_PHYSIOLOGY_BID_CAMERA_ASKS=on``): the ask bids BEFORE its card opens,
+and a card opened on a market answer carries ``want:<want_id>`` in ``evidence_refs``. This loop posts nothing for
+such a card (one want per ask). It still posts for a card with no stamp: everything under ``shadow``, and under
+``on`` a card the market could not answer at open (down or timed out) or one opened before 4b.
 
 Env: ``ASK_EVENT_WANTS_INTERVAL_SEC`` (default 300; 0 disables), ``ASK_EVENT_WANTS_LOOKBACK_HOURS``
 (default 24: an open ask older than this is not posted).
@@ -41,6 +46,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from orion.grammar.camera_ask_acts import (
     ACTOR as ASK_ACTOR,
+    bid_want_ref,
     ORION_MADE_CAMERA_ASK_SQL,
     OUTCOME_WINDOW,
     ask_rule,
@@ -73,12 +79,26 @@ SELECT a.ask_id, a.source_kind, a.status, a.created_at, a.expires_at, a.evidence
   FROM a ORDER BY a.created_at
 """
 
-# Juniper's grades of camera asks over the last 30 days (patch 4a): each closed vision.ask act's rule
-# (test_before camera_ask:<rule>) and outcome. Only resolver closes are grades (a withdrawn ask is not).
+# Juniper's grades of camera asks: each graded vision.ask act's rule (test_before camera_ask:<rule>) and outcome,
+# selected EXACTLY as the market selects the family's graded acts for its mean (orion/physiology/appetite.py
+# build_family_appetite: acts OPENED in the last 30 days, up to now, with a producer or resolver outcome). The rule's
+# expected answer shrinks toward that same family share (issue #3350), so the two must not drift: a rule with no
+# closes reads the family share and must tie the market's mean, not fall below it. A withdrawn ask (``expired``)
+# is not a grade.
 GRADES_SQL = (
-    "SELECT test_before, outcome_value FROM grammar_acts WHERE actor = :actor AND outcome_source = 'resolver' "
-    "AND closed_at >= :since AND outcome_value IS NOT NULL"
+    "SELECT test_before, outcome_value FROM grammar_acts WHERE actor = :actor "
+    "AND outcome_source IN ('producer', 'resolver') AND outcome_value IS NOT NULL "
+    "AND coalesce(opened_at, closed_at) >= :since AND coalesce(opened_at, closed_at) <= :now"
 )
+
+# Attention patch 4b: a card whose bid-at-open the market DID decide, though the client gave up (0.5 s) and opened it
+# unstamped. The binding producer's row names the card (event_ref orion_ask:<ask_id>): that is its one want.
+BID_AT_OPEN_SQL = (
+    "SELECT DISTINCT decision->'want'->>'event_ref' FROM want_ledger WHERE producer = :producer "
+    "AND reason <> 'physiology_unavailable' AND decided_at >= :since "
+    "AND decision->'want'->>'event_ref' = ANY(:refs)"
+)
+BINDING_PRODUCER = "orion-sql-writer.ask_events.binding"
 
 POSTED_SQL = "SELECT DISTINCT want_id FROM want_ledger WHERE reason <> 'physiology_unavailable' AND want_id = ANY(:ids) AND decided_at >= :since"
 
@@ -97,7 +117,7 @@ def plan_asks(rows: Sequence[Any], *, now: datetime, lookback: timedelta,
     the 30 days before it. Pure."""
     asks = sorted(({"ask_id": str(r["ask_id"]), "kind": str(r["source_kind"]), "status": str(r["status"]),
                     "at": _utc(r["created_at"]), "expires_at": _utc(r["expires_at"]), "iid": str(r["iid"] or ""),
-                    "sightings": int(r["sightings"] or 0),
+                    "sightings": int(r["sightings"] or 0), "bid_want": bid_want_ref(r.get("evidence_refs")),
                     "rule": ask_rule(str(r["source_kind"]), r.get("evidence_refs"), r.get("individual_kind"))}
                    for r in rows if r["created_at"] is not None),
                   key=lambda a: a["at"])
@@ -121,13 +141,14 @@ def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], b
 
     ts = now or datetime.now(timezone.utc)
     eng = engine or create_engine(postgres_uri, pool_pre_ping=True)
-    summary: dict[str, Any] = {"posted": 0, "no_history": 0, "already": 0, "unanswered": 0}
+    summary: dict[str, Any] = {"posted": 0, "no_history": 0, "already": 0, "unanswered": 0, "bid_at_open": 0}
     try:
         with eng.connect() as conn:
             rows = conn.execute(text(ASKS_SQL), {"since": ts - lookback - SOURCE_HISTORY, "until": ts}).mappings().all()
             outcomes = None
             if graded:
-                grades = conn.execute(text(GRADES_SQL), {"actor": ASK_ACTOR, "since": ts - OUTCOME_WINDOW}).fetchall()
+                grades = conn.execute(text(GRADES_SQL), {"actor": ASK_ACTOR, "since": ts - OUTCOME_WINDOW,
+                                                         "now": ts}).fetchall()
                 outcomes = rule_outcome_values((rule_from_test_before(g[0]) or "", float(g[1])) for g in grades)
             plan = plan_asks(rows, now=ts, lookback=lookback, outcomes=outcomes)
             ids = [event_want_id(SOURCE, p["ask_id"]) for p in plan]
@@ -135,10 +156,23 @@ def run_one_cycle(*, postgres_uri: str, lookback: timedelta, posted: set[str], b
             if fresh:
                 posted |= {str(r[0]) for r in conn.execute(text(POSTED_SQL), {"ids": fresh,
                                                                               "since": ts - lookback - timedelta(days=1)})}
+            unstamped = [f"orion_ask:{p['ask_id']}" for p, i in zip(plan, ids)
+                         if p.get("bid_want") is None and i not in posted]
+            if unstamped:
+                late = {str(r[0]) for r in conn.execute(text(BID_AT_OPEN_SQL), {
+                    "producer": BINDING_PRODUCER, "refs": unstamped, "since": ts - lookback - timedelta(days=1)})}
+                for p in plan:
+                    if f"orion_ask:{p['ask_id']}" in late:
+                        p["bid_want"] = "ledger"
     finally:
         if engine is None:
             eng.dispose()
     for p, want_id in zip(plan, ids):
+        if p.get("bid_want") is not None:
+            # Attention patch 4b: this card bid at open (app/ask_bind.py): stamped want:<id>, or the market's row for
+            # it is in want_ledger though the client timed out. Its want is that bid; one want per ask, so none here.
+            summary["bid_at_open"] += 1
+            continue
         if want_id in posted:
             summary["already"] += 1
             continue

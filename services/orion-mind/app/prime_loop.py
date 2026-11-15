@@ -58,8 +58,9 @@ closes 0 at once with ``refused by curiosity.replica: <reason>`` (still the trea
 regulate act's note names a refusal of its signal (the market's record already shows the charge did nothing).
 
 Juniper first: a Juniper turn through run_mind (engine.carries_live_turn) is tracked by JUNIPER_TURNS.
-Today ``mind_run`` calls the synchronous run_mind on the event loop, so no tick runs during a turn at
-all; ``JUNIPER_TURNS.active()`` keeps that true if run_mind ever moves off the loop. What does the
+Since 2026-11-13 ``mind_run`` runs the synchronous run_mind in a worker thread (it used to freeze the
+event loop, and every tick with it), so ticks DO run during a turn; ``JUNIPER_TURNS.active()`` keeps
+Prime from bidding while one is live. What does the
 work today: a thought whose model call (in a worker thread) overlapped a turn is recorded ``preempted``
 and discarded, and the pool ranks Juniper's turn (interactive) ahead of both Prime routes (system,
 starved), so a Prime call does not START while Juniper's call waits for the slot. A call already
@@ -121,8 +122,10 @@ Everything here is best-effort: a failed read, publish or save is logged and the
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
+import urllib.error
 import urllib.request
 from collections import deque
 from datetime import datetime, timedelta
@@ -130,6 +133,7 @@ from typing import Any, Awaitable, Callable, Optional
 from uuid import uuid4
 
 from orion.core.bus.bus_schemas import BaseEnvelope
+from orion.curiosity.focus import PENDING_FOCUS_PATH
 from orion.introspect.transport import (
     QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL,
     REQUEST_KIND,
@@ -251,6 +255,10 @@ STATE_KEY = "orion:prime:state"
 FAMILY = "prime"
 PRODUCER = "orion-mind.prime"
 HTTP_TIMEOUT_SEC = 4.0
+# Hub's curiosity dashboard (/curiosity/api/runs) builds runs, stores and reach-outs and took 4-44 s live
+# (#3366); the frame and settling read it with this longer timeout (PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC).
+# The move check never waits on it: it reads PENDING_FOCUS_PATH with HTTP_TIMEOUT_SEC.
+CURIOSITY_DASHBOARD_TIMEOUT_SEC = 30.0
 # Hub gathers the day before it answers an order (read-only SQL, seconds); a timed-out order is re-sent and Hub
 # answers ``exists`` for a run it already submitted.
 ORDER_HTTP_TIMEOUT_SEC = 45.0
@@ -273,9 +281,15 @@ PRIME_IDENTITY = LoopIdentity(
 __all__ = ["JUNIPER_TURNS", "JuniperTurns", "PRIME_IDENTITY", "PrimeRuntime", "STATE_KEY", "build_act_gate"]
 
 
-def _get_json(url: str) -> Any:
-    with urllib.request.urlopen(url, timeout=HTTP_TIMEOUT_SEC) as resp:  # noqa: S310 -- internal service URL
+def _get_json(url: str, timeout: float = HTTP_TIMEOUT_SEC) -> Any:
+    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 -- internal service URL
         return json.loads(resp.read())
+
+
+def _timed_out(exc: BaseException) -> bool:
+    """A client timeout (read or connect), as urllib raises it."""
+    return isinstance(exc, TimeoutError) or (
+        isinstance(exc, urllib.error.URLError) and isinstance(getattr(exc, "reason", None), TimeoutError))
 
 
 def _post_json(url: str, body: dict[str, Any]) -> Any:
@@ -302,6 +316,7 @@ class PrimeRuntime(MindLoopRuntime):
         bus: Any,
         llm: Any,
         get_json: Callable[[str], Any] = _get_json,
+        get_json_long: Optional[Callable[[str], Any]] = None,
         post_json: Callable[[str, dict[str, Any]], Any] = _post_json,
         bid: Optional[Callable[[Any], Awaitable[Any]]] = None,
         release: Optional[Callable[[str], Awaitable[Any]]] = None,
@@ -311,6 +326,13 @@ class PrimeRuntime(MindLoopRuntime):
         super().__init__(settings=settings, bus=bus, llm=llm, bid=bid, release=release, clock=clock, turns=turns)
         self.state: PrimeStateV1
         self.get_json = get_json
+        # The curiosity dashboard read (frame, settling): its own longer timeout. An injected get_json (tests)
+        # serves it too unless a separate one is given.
+        if get_json_long is None:
+            get_json_long = (functools.partial(_get_json, timeout=float(getattr(
+                settings, "PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC", CURIOSITY_DASHBOARD_TIMEOUT_SEC)))
+                if get_json is _get_json else get_json)
+        self.get_json_long = get_json_long
         self.post_json = post_json
         # The day letter (Part 3): its own record, saved under dl.DAY_LETTER_KEY.
         self.day_letter = dl.PrimeDayLetterStateV1()
@@ -966,7 +988,10 @@ class PrimeRuntime(MindLoopRuntime):
 
     async def _ask(self, inputs: FrameInputs, now: datetime) -> ModelReply:
         """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
-        curiosity, curiosity_err = await self._read_curiosity()
+        # The move check depends on the cheap pending-focus read, never on the dashboard (#3366). Both reads run
+        # at once, so the funded window waits for the slower one only (the dashboard, up to its own timeout).
+        (focus_pending, focus_unread), (curiosity, curiosity_err) = await asyncio.gather(
+            self._read_pending_focus(inputs), self._read_curiosity())
         inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
         # Once per thought, never per tick: the report takes ~1.5 s to build.
         inputs.energy, inputs.energy_error = await self._read(
@@ -993,7 +1018,8 @@ class PrimeRuntime(MindLoopRuntime):
         reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
                                                     organ_replies=shows_organ_replies(inputs),
                                                     take_on=inputs.take_on), frame)
-        reply.context.update(curiosity=curiosity, receptors=receptors, shown_concerns=shown,
+        reply.context.update(curiosity=curiosity, focus_pending=focus_pending, focus_unread=focus_unread,
+                             receptors=receptors, shown_concerns=shown,
                              ranked_event_ids=event_ids(inputs) if inputs.event_mode else [],
                              event_families=event_families(inputs.events) if inputs.event_mode else {},
                              care_promoted_events=care_promoted_events(inputs.events) if inputs.event_mode else set())
@@ -1087,8 +1113,44 @@ class PrimeRuntime(MindLoopRuntime):
                 if isinstance(prices, dict) else None)
 
     async def _read_curiosity(self) -> tuple[Optional[dict[str, Any]], Optional[str]]:
+        """Hub's curiosity dashboard (runs, schedule) for the frame and settling, with the long timeout."""
         base = self.s.PRIME_HUB_URL.rstrip("/")
-        return await self._read(f"{base}/curiosity/api/runs?days={CURIOSITY_RUNS_DAYS}&line=investigate")
+        url = f"{base}/curiosity/api/runs?days={CURIOSITY_RUNS_DAYS}&line=investigate"
+        try:
+            data = await asyncio.to_thread(self.get_json_long, url)
+        except Exception as exc:  # noqa: BLE001
+            return None, f"{type(exc).__name__}: {str(exc)[:120]}"
+        if not isinstance(data, dict):
+            return None, "not a JSON object"
+        return data, None
+
+    async def _read_pending_focus(self, inputs: FrameInputs) -> tuple[Optional[bool], Optional[str]]:
+        """(is a focus waiting, the refusal sentence when unknown) from Hub's cheap pending-focus read, with
+        the short timeout. Fills the frame's pending-focus fields. Never fails open: a timed-out, failed,
+        malformed or ``available: false`` read is None (unknown), and an ask move is refused."""
+        url = f"{self.s.PRIME_HUB_URL.rstrip('/')}{PENDING_FOCUS_PATH}"
+        try:
+            data = await asyncio.to_thread(self.get_json, url)
+        except Exception as exc:  # noqa: BLE001
+            if _timed_out(exc):
+                inputs.pending_focus_error = f"Hub did not answer in {HTTP_TIMEOUT_SEC:g} s"
+                logger.warning("prime_pending_focus_unread reason=timeout url=%s", url)
+                return None, ("timed out reading whether curiosity already has a focus waiting "
+                              f"(no answer from Hub in {HTTP_TIMEOUT_SEC:g} s)")
+            why = f"{type(exc).__name__}: {str(exc)[:120]}"
+            inputs.pending_focus_error = why
+            logger.warning("prime_pending_focus_unread reason=%s url=%s", why, url)
+            return None, f"could not read whether curiosity already has a focus waiting ({why})"
+        focus = data.get("focus") if isinstance(data, dict) else None
+        if not isinstance(data, dict) or data.get("available") is not True or not (
+                focus is None or isinstance(focus, dict)):
+            why = ("Hub could not read the focus table" if isinstance(data, dict) and data.get("available") is False
+                   else "not a pending-focus payload")
+            inputs.pending_focus_error = why
+            logger.warning("prime_pending_focus_unread reason=%r url=%s", why, url)
+            return None, f"could not read whether curiosity already has a focus waiting ({why})"
+        inputs.pending_focus_read, inputs.pending_focus = True, focus
+        return focus is not None, None
 
     # --- self-monitor act gate (E1): Prime's own acts -------------------------------------
     async def _concern_bet(self, concern_id: str, text: str, now: datetime) -> tuple[bool, Optional[GateDecision]]:
@@ -1191,11 +1253,11 @@ class PrimeRuntime(MindLoopRuntime):
 
     async def _conclude(self, act: ActV1, thought_id: str, inputs: FrameInputs, now: datetime,
                         reply: ModelReply, answer: Any) -> tuple[bool, str]:
-        curiosity, receptors = reply.context.get("curiosity"), reply.context.get("receptors")
-        schedule = (curiosity or {}).get("schedule") or {}
-        pending_focus = schedule.get("pending_focus") or {}
-        focus_pending = bool(pending_focus.get("focus")) if pending_focus.get("available") else None
+        receptors = reply.context.get("receptors")
+        # From the cheap pending-focus read (_read_pending_focus), never the dashboard (#3366).
+        focus_pending = reply.context.get("focus_pending")
         applied = apply_answer(self.state, answer, now=now, arc_ids=inputs.arc_ids, focus_pending=focus_pending,
+                               focus_unread=reply.context.get("focus_unread"),
                                receptors=receptors, event_ids=event_ids(inputs) if inputs.event_mode else None,
                                event_wants=listed_wants(inputs.events) if inputs.event_mode else None,
                                take_on_check=self._take_on_check(now) if self._intentions_on() else None)

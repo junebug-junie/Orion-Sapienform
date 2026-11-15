@@ -94,6 +94,21 @@ class HubAssociationBundleV1(BaseModel):
     read_source: Literal["felt_state_reader", "hub_sql_fallback"]
 
 
+class CorePageV1(BaseModel):
+    """One core memory page carried on the grounding capsule (e.g. ``page:juniper``).
+
+    ``text`` is the page as the prompt shows it (cites removed; the stored row in
+    ``self_concept_history`` keeps them). Spec: docs/superpowers/specs/
+    2026-11-13-core-memory-pages-and-concept-growth-design.md, Phase 1a.
+    """
+
+    concept_id: str
+    version: int = 0
+    text: str
+    written_at: str | None = None
+    evidence_count: int = 0
+
+
 class GroundingCapsuleV1(BaseModel):
     """Bounded self-context for the unified turn: identity + relationship + policy + PCR digests."""
 
@@ -110,6 +125,10 @@ class GroundingCapsuleV1(BaseModel):
     # any downstream check) tell live substrate signal apart from retrieved
     # memory, static identity config, or the user's own message.
     context_provenance: dict[str, str] = Field(default_factory=dict)
+    # Core memory pages (Phase 1a: page:juniper only). ADDITIVE on a model that ignores unknown
+    # fields (no extra="forbid"), so an old reader drops it and an old producer sends none; the
+    # harness prefix renders today's RELATIONSHIP bullets whenever this is empty.
+    core_pages: list[CorePageV1] = Field(default_factory=list)
 
 
 class AutonomySliceV1(BaseModel):

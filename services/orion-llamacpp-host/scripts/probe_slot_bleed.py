@@ -7,13 +7,20 @@ GPU pool stage 7.2 (docs/superpowers/specs/2026-09-30-gpu-pool-stage7-concurrenc
 agent lanes. This runs the same detectors against the LIVE agent-gpu2 worker once it serves
 Ternary-Bonsai-2-27B with 2 x 131K slots, with prompts >= 4.5K tokens and tool-call turns.
 
+Leased (leased-evals design, docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md):
+the probe takes TWO operator holds on the lane (default agent-gpu2, class operator_agent_gpu2,
+background priority) -- one per llama.cpp slot, so the simultaneous phases really run side by side
+and none of Orion's work shares the seat while they run. Every model call goes through
+orion-llm-gateway under one of the holds (orion/evals/leased_llm.py); request fields (id_slot,
+cache_prompt) and the reply's timings pass through unchanged. /props, /slots, /apply-template and
+/tokenize are read from the URL the pool granted (they run no model). When the pool takes a hold
+back (an owner waits), the run stops INCONCLUSIVE. There is no direct-URL mode.
+
 What it does (read-only toward server config; synthetic prompts only):
   - Refuses to start unless /props shows the expected model and >= 2 slots, /slots shows every
     slot idle, AND the GPU pool (athena, --pool-url) shows no granted or recalling lease on the
-    role. The pool check matters: a durable run between tool steps leaves every slot idle while it
-    still holds the seat, and these calls (straight to the worker; athena is allowed through
-    circe's port gate, no pool lease) would evict its cached prefix. Re-checks both before and
-    after every phase; work that overlapped a phase makes the run INCONCLUSIVE and stops it.
+    role other than the probe's own holds and their calls. Re-checks both before and after every
+    phase; work that overlapped a phase makes the run INCONCLUSIVE and stops it.
   - Every conversation carries its own random codeword (canary). Phases: seed, sequential
     unrelated (the sequential repro), id_slot-pinned pairs (stale live slot), simultaneous pairs
     (the original repro), simultaneous tool-call conversations (assistant tool_call + tool result
@@ -30,13 +37,14 @@ computed, prompts under --min-prompt-tokens, or the model never repeating its ow
 detector that cannot see its own canary cannot see a foreign one either). INCONCLUSIVE is never a pass.
 Evidence is written owner-only (0700 dir, 0600 files): a real leak would put private text in it.
 
-Run from athena after the 7.2 deploy (nothing for Juniper to run):
-  python3 services/orion-llamacpp-host/scripts/probe_slot_bleed.py --url http://100.112.254.99:8016
+Run from athena (nothing for Juniper to run):
+  ORION_BUS_URL=redis://100.92.216.81:6379/0 python3 services/orion-llamacpp-host/scripts/probe_slot_bleed.py
 Writes <out>/requests.jsonl and <out>/summary.json (default /tmp/slot-bleed-probe/<utc>/).
 """
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import random
@@ -73,10 +81,16 @@ def filler(rng: random.Random, n_words: int) -> str:
     return " ".join(rng.choice(WORDS) for _ in range(n_words))
 
 
+HOLDER = "operator:probe-slot-bleed"
+REPO = Path(__file__).resolve().parents[3]
+
+
 @dataclass
 class Probe:
-    url: str
+    url: str                       # the granted worker URL (display + evidence only)
     out: Path
+    clients: list[Any] = field(default_factory=list)   # one httpx-shaped client per hold (leased_llm.LaneClient)
+    own_leases: frozenset[str] = frozenset()            # the probe's holds: never "real work"
     pool_url: str = "http://127.0.0.1:8127"
     role: str = "agent-gpu2"
     expect_model: str = "Ternary-Bonsai"
@@ -92,6 +106,8 @@ class Probe:
     records: list[dict[str, Any]] = field(default_factory=list)
     expected: int = 0                                        # requests dispatched by phases
     tainted: str | None = None                               # why real work overlapped the probe
+    recalled: str | None = None                              # the pool took a hold back
+    overlap_check: str = "before_after_only"
     _prompts: list[tuple[str, list[int]]] = field(default_factory=list)   # (conv, tokens) sent so far
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _n: int = 0
@@ -100,15 +116,24 @@ class Probe:
         self.rng = random.Random(self.seed) if self.seed is not None else random.SystemRandom()
 
     # --- HTTP -------------------------------------------------------------------------------
-    def _get(self, url: str) -> Any:
-        with urllib.request.urlopen(url, timeout=30) as resp:
+    def _pool(self) -> Any:
+        with urllib.request.urlopen(self.pool_url.rstrip("/") + "/v1/pool", timeout=30) as resp:
             return json.load(resp)
 
-    def _post(self, path: str, body: dict[str, Any], timeout: float | None = None) -> dict[str, Any]:
-        req = urllib.request.Request(self.url + path, data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(req, timeout=timeout or self.timeout_sec) as resp:
-            return json.load(resp)
+    def _client(self, n: int = 0) -> Any:
+        if not self.clients:
+            raise RuntimeError("no operator hold: the probe calls the worker only under a pool hold")
+        return self.clients[n % len(self.clients)]
+
+    def _get(self, path: str) -> Any:
+        r = self._client().get(path, timeout=30)
+        r.raise_for_status()
+        return r.json()
+
+    def _post(self, path: str, body: dict[str, Any], timeout: float | None = None, hold: int = 0) -> dict[str, Any]:
+        r = self._client(hold).post(path, json=body, timeout=timeout or self.timeout_sec)
+        r.raise_for_status()
+        return r.json()
 
     # --- evidence (owner-only) -----------------------------------------------------------------
     def _mkout(self) -> None:
@@ -125,7 +150,7 @@ class Probe:
     def precheck(self) -> str | None:
         """None when the worker is the expected multi-slot model, else why the probe refuses."""
         try:
-            props = self._get(self.url + "/props")
+            props = self._get("/props")
         except Exception as exc:  # noqa: BLE001
             return f"/props unreachable: {exc!r}"
         model = str(props.get("model_path") or "")
@@ -141,27 +166,58 @@ class Probe:
         """None when the seat is quiet: every llama.cpp slot idle and no active pool lease on the role.
         Any failure to read either counts as busy -- quiet must be proven, not assumed."""
         try:
-            slots = self._get(self.url + "/slots")
+            slots = self._get("/slots")
         except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ == "LaneRecalled":
+                self.recalled = str(exc)
+                return f"recalled: {exc}"
             return f"/slots unreadable: {exc!r}"
         if not (isinstance(slots, list) and slots and all(
                 isinstance(s, dict) and s.get("is_processing") is False for s in slots)):
             return "a llama.cpp slot is processing"
         try:
-            state = self._get(self.pool_url.rstrip("/") + "/v1/pool")
+            state = self._pool()
         except Exception as exc:  # noqa: BLE001
             return f"pool state unreadable at {self.pool_url}: {exc!r}"
         active = [l.get("lease_id") for l in state.get("leases") or []
-                  if l.get("role") == self.role and l.get("status") in ACTIVE_LEASE]
+                  if l.get("role") == self.role and l.get("status") in ACTIVE_LEASE
+                  and l.get("lease_id") not in self.own_leases and l.get("hold_lease_id") not in self.own_leases]
         return f"pool leases active on {self.role}: {active}" if active else None
 
     def wait_quiet(self) -> str | None:
         deadline = time.monotonic() + self.idle_wait_sec
         while True:
             why = self.busy_reason()
-            if why is None or time.monotonic() >= deadline:
+            if why is None or self.recalled or time.monotonic() >= deadline:
                 return why
             time.sleep(min(10.0, self.idle_wait_sec))
+
+    def check_holds(self) -> None:
+        """A recall of ANY hold (not just the one the next read uses) stops the run."""
+        for client in self.clients:
+            lane = getattr(client, "lane", None)
+            if lane is None:
+                continue
+            try:
+                lane.check()
+            except Exception as exc:  # noqa: BLE001
+                if type(exc).__name__ != "LaneRecalled":
+                    raise
+                self.recalled = str(exc)
+                return
+
+    def prompt_tokens_total(self) -> float | None:
+        """llama.cpp's /metrics counter of prompt tokens it processed, or None without --metrics."""
+        try:
+            r = self._client().get("/metrics", timeout=10)
+            if r.status_code != 200:
+                return None
+            for line in r.text.splitlines():
+                if line.startswith("llamacpp:prompt_tokens_total"):
+                    return float(line.split()[-1])
+        except Exception:  # noqa: BLE001
+            return None
+        return None
 
     # --- conversations ------------------------------------------------------------------------
     def _cid(self, tag: str) -> str:
@@ -224,7 +280,7 @@ class Probe:
 
     def send(self, phase: str, cid: str, own: str, messages: list[dict[str, Any]], *,
              id_slot: int | None = None, tools: bool = False, tokens: list[int] | None = None,
-             registered: bool = False) -> dict[str, Any]:
+             registered: bool = False, hold: int = 0) -> dict[str, Any]:
         t0 = time.time()
         rec: dict[str, Any] = {"t": t0, "phase": phase, "conv": cid, "own_canary": own, "id_slot": id_slot,
                                "tools": tools, "error": None, "reply": "", "own_found": False,
@@ -237,7 +293,7 @@ class Probe:
                     "cache_prompt": True}
             if id_slot is not None:
                 body["id_slot"] = id_slot
-            resp = self._post("/v1/chat/completions", body)
+            resp = self._post("/v1/chat/completions", body, hold=hold)
             msg = (resp.get("choices") or [{}])[0].get("message") or {}
             seen = " ".join([str(msg.get("content") or ""), str(msg.get("reasoning_content") or ""),
                              *(json.dumps(tc) for tc in msg.get("tool_calls") or [])])
@@ -252,6 +308,8 @@ class Probe:
                        cache_over_lcp=bool(cache_n is not None and lcp is not None and cache_n > lcp + LCP_SLACK))
         except Exception as exc:  # noqa: BLE001
             rec["error"] = repr(exc)
+            if type(exc).__name__ == "LaneRecalled":   # leased_llm: the pool took a hold back
+                self.recalled = str(exc)
         rec["elapsed_s"] = round(time.time() - t0, 2)
         with self._lock:
             self.records.append(rec)
@@ -271,8 +329,8 @@ class Probe:
         self.expected += len(convs)
         pre = [self.register(cid, m, tools) for cid, _c, m in convs]
         threads = [threading.Thread(target=self.send, args=(phase, cid, c, m),
-                                    kwargs={"tools": tools, "tokens": toks, "registered": True})
-                   for (cid, c, m), toks in zip(convs, pre)]
+                                    kwargs={"tools": tools, "tokens": toks, "registered": True, "hold": i})
+                   for i, ((cid, c, m), toks) in enumerate(zip(convs, pre))]
         for t in threads:
             t.start()
         for t in threads:
@@ -288,11 +346,29 @@ class Probe:
                   self._shared_prefix]
         for _ in range(rounds):
             for phase in phases:
-                busy = self.wait_quiet()
+                self.check_holds()
+                busy = None if self.recalled else self.wait_quiet()
+                if self.recalled:
+                    self.tainted = f"the GPU pool took a hold back before {phase.__name__.lstrip('_')}: {self.recalled}"
+                    return self.summarize()
                 if busy is not None:
                     self.tainted = f"before {phase.__name__.lstrip('_')}: {busy}"
                     return self.summarize()
+                tokens_before, first = self.prompt_tokens_total(), len(self.records)
                 phase()
+                tokens_after = self.prompt_tokens_total()
+                if tokens_before is not None and tokens_after is not None:
+                    self.overlap_check = "metrics"
+                    ours = sum(int(r["prompt_n"] or 0) for r in self.records[first:])
+                    extra = tokens_after - tokens_before - ours
+                    if extra > LCP_SLACK * max(1, len(self.records) - first):
+                        self.tainted = (f"during {phase.__name__.lstrip('_')}: the worker processed {extra:.0f} "
+                                        "prompt tokens the probe did not send")
+                        return self.summarize()
+                self.check_holds()
+                if self.recalled:
+                    self.tainted = f"the GPU pool took a hold back during {phase.__name__.lstrip('_')}: {self.recalled}"
+                    return self.summarize()
                 busy = self.busy_reason()
                 if busy is not None:
                     self.tainted = f"during {phase.__name__.lstrip('_')}: {busy}"
@@ -358,6 +434,7 @@ class Probe:
             verdict, why = "PASS", "no foreign canary, no cache reuse past the true common prefix"
         summary = {
             "verdict": verdict, "why": why, "url": self.url, "pool_url": self.pool_url,
+            "holds": sorted(self.own_leases), "overlap_check": self.overlap_check,
             "requests": len(recs), "expected": self.expected, "ok": len(ok),
             "leaks": [{k: r[k] for k in ("phase", "conv", "foreign_convs", "id_slot")} for r in leaks],
             "cache_over_lcp": [{k: r[k] for k in ("phase", "conv", "cache_n", "true_lcp", "prompt_n")}
@@ -377,11 +454,23 @@ class Probe:
 EXIT = {"PASS": 0, "LEAK": 1, "REFUSED": 2, "INCONCLUSIVE": 3}
 
 
-def main(argv: list[str] | None = None) -> int:
+@contextlib.contextmanager
+def operator_holds(lane: str, n: int):
+    """``n`` operator holds on ``lane`` (one per slot), released on every exit."""
+    if str(REPO) not in sys.path:
+        sys.path.insert(0, str(REPO))
+    from orion.evals.leased_llm import operator_lane_sync
+
+    with contextlib.ExitStack() as stack:
+        yield [stack.enter_context(operator_lane_sync(lane, holder=HOLDER)) for _ in range(n)]
+
+
+def main(argv: list[str] | None = None, holds=operator_holds) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
-    ap.add_argument("--url", default="http://100.112.254.99:8016", help="worker base URL (agent-gpu2)")
+    ap.add_argument("--lane", default="agent-gpu2", help="operator lane to hold (leased_llm.OPERATOR_LANES)")
+    ap.add_argument("--holds", type=int, default=2, help="operator holds to take (one per slot)")
     ap.add_argument("--pool-url", default="http://127.0.0.1:8127",
-                    help="GPU pool HTTP (athena); the seat must show no active lease")
+                    help="GPU pool HTTP (athena); the seat must show no active lease but the probe's own")
     ap.add_argument("--role", default="agent-gpu2", help="pool role the worker serves")
     ap.add_argument("--out", default=None, help="evidence dir (default /tmp/slot-bleed-probe/<utc>)")
     ap.add_argument("--expect-model", default="Ternary-Bonsai", help="substring /props model_path must contain")
@@ -393,11 +482,22 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seed", type=int, default=None)
     args = ap.parse_args(argv)
     out = Path(args.out or f"/tmp/slot-bleed-probe/{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}")
-    probe = Probe(url=args.url.rstrip("/"), out=out, pool_url=args.pool_url, role=args.role,
-                  expect_model=args.expect_model,
-                  min_prompt_tokens=args.min_prompt_tokens, words=args.words,
-                  idle_wait_sec=args.idle_wait_sec, pace_sec=args.pace_sec, seed=args.seed)
-    return EXIT[probe.run(rounds=args.rounds)["verdict"]]
+    try:
+        with holds(args.lane, max(1, args.holds)) as lanes:
+            probe = Probe(url=lanes[0].worker_url, out=out, clients=[l.http_client() for l in lanes],
+                          own_leases=frozenset(l.lease_id for l in lanes), pool_url=args.pool_url,
+                          role=args.role, expect_model=args.expect_model,
+                          min_prompt_tokens=args.min_prompt_tokens, words=args.words,
+                          idle_wait_sec=args.idle_wait_sec, pace_sec=args.pace_sec, seed=args.seed)
+            return EXIT[probe.run(rounds=args.rounds)["verdict"]]
+    except Exception as exc:  # noqa: BLE001 -- LaneUnavailable (no seat) or a recall at release
+        if type(exc).__name__ == "LaneRecalled":
+            print(f"INCONCLUSIVE: {exc}", file=sys.stderr)
+            return EXIT["INCONCLUSIVE"]
+        if type(exc).__name__ == "LaneUnavailable":
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return EXIT["REFUSED"]
+        raise
 
 
 if __name__ == "__main__":

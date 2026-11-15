@@ -25,7 +25,7 @@ def orion_hold(status="queued", role=None, **kw):
 def _hecate_lent_agent_busy():
     """gpu1 (agent) already carries a run's hold, gpu2's seat is not loaded, hecate is lent: both an
     Orion agent hold and an operator hold can only borrow agent-deep."""
-    crds = cards(**{"hecate-gpu0": CardLive("hecate-gpu0", lent=True)})
+    crds = cards(**{name: CardLive(name, lent=True) for name in ("hecate-gpu0", "hecate-gpu1")})
     busy = orion_hold("granted", "agent", lease_id="busy", age=500)
     return crds, busy
 
@@ -70,7 +70,7 @@ def test_operator_hold_is_granted_when_no_orion_background_lease_waits():
 
 
 def test_an_owner_waiting_recalls_a_granted_operator_hold():
-    crds = cards(**{"hecate-gpu0": CardLive("hecate-gpu0", lent=True)})
+    crds = cards(**{name: CardLive(name, lent=True) for name in ("hecate-gpu0", "hecate-gpu1")})
     op = op_hold(status="granted", role="agent-deep", lease_id="op", granted_at=T0 - timedelta(minutes=5))
     owner = lease("agent-deep", priority="system", lease_id="owner")
     recalls = [(r.lease_id, r.reason) for r in of(Recall, _run([op, owner], crds))]

@@ -160,6 +160,7 @@ def evaluate_curiosity_gates(gate_rows: list[dict[str, Any]]) -> dict[str, Any]:
     fallback_reasons: Counter[str] = Counter()
     evaluator_by_level: dict[str, Counter[str]] = defaultdict(Counter)
     seeded = 0
+    idle = 0
 
     for row in gate_rows:
         gate = row.get("gate_json")
@@ -167,8 +168,12 @@ def evaluate_curiosity_gates(gate_rows: list[dict[str, Any]]) -> dict[str, Any]:
             gate = json.loads(gate)
         if not isinstance(gate, dict):
             continue
-        seeded += 1
         result = str(gate.get("gate_result") or "")
+        if result == "idle_no_seeds":
+            # Idle tick: no seeds, so System One never ran. Not a gate decision.
+            idle += 1
+            continue
+        seeded += 1
         level = str(gate.get("selected_level") if gate.get("selected_level") is not None else "")
         by_result[result] += 1
         if level:
@@ -183,6 +188,7 @@ def evaluate_curiosity_gates(gate_rows: list[dict[str, Any]]) -> dict[str, Any]:
 
     return {
         "seeded_ticks_with_gate": seeded,
+        "idle_ticks_no_seeds": idle,
         "gate_results": dict(by_result),
         "selected_level_counts": dict(by_level),
         "fallback_reasons": dict(fallback_reasons),

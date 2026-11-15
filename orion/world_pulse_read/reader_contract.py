@@ -28,6 +28,10 @@ from __future__ import annotations
 
 READER_CONTRACT_BEGIN = "<<<READER OUTPUT CONTRACT>>>"
 READER_CONTRACT_END = "<<<END READER OUTPUT CONTRACT>>>"
+# The Stage 2 next-read link list (orion/world_pulse_read/next_read_choice.py) is parsed back out
+# of the bound prompt, so untrusted text must not carry its markers either.
+NEXT_READ_BEGIN = "<<<NEXT READ LINKS>>>"
+NEXT_READ_END = "<<<END NEXT READ LINKS>>>"
 
 STANCE_CONTRACT_PLACEHOLDER = (
     "[Here the reader gets its required JSON output shape. That shape is for the "
@@ -38,10 +42,10 @@ STANCE_CONTRACT_PLACEHOLDER = (
 def defuse_fence_markers(untrusted: str) -> str:
     """Untrusted text (a page, a document, a Stage 1 echo) must not carry a fence
     marker: one would make the stance view fail closed (full two-contract prompt) or
-    hide that text from the stance. Swaps the marker's ``<<<`` for look-alike
+    hide that text from the stance, or fake the next-read link list. Swaps the marker's ``<<<`` for look-alike
     guillemets; nothing else changes."""
     text = str(untrusted or "")
-    for marker in (READER_CONTRACT_BEGIN, READER_CONTRACT_END):
+    for marker in (READER_CONTRACT_BEGIN, READER_CONTRACT_END, NEXT_READ_BEGIN, NEXT_READ_END):
         text = text.replace(marker, marker.replace("<<<", "\u2039\u2039\u2039"))
     return text
 

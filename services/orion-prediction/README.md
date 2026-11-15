@@ -310,21 +310,31 @@ error and `prob_better` -- no alpha. Table `prediction_reachable_forecast`. Flag
 Replay 07-31..11-10 (`evals/run_reachable_replay_eval.py`): 26 % lower loss than base overall
 (P 0.95), tied with the state model; cold hours about level with base (P 0.25); somewhat timid at the top.
 
-## Act chain: what will Orion do in the next 15 minutes? (family B, eval only)
+## Act chain: what will Orion do in the next 15 minutes? (`GET /act-chain`, family B)
 
 `app/act_chain.py`; spec `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`,
 "B. Markov chains". Each 15-minute bucket's state is the main verb of Orion's acts in it
 (`grammar_acts`, written by orion-sql-writer), or `idle`. Served model: a first-order Markov chain
 conditioned on Juniper's clock blocks (asleep 03-08, weekend mornings, day, evening, Denver time). Each
-level backs off to the coarser one with a strength chosen from training data by leave-one-out. Graded
+level backs off to the coarser one with a strength chosen from training data by leave-one-out; the
+served cell backs off to a blend of "what follows the last act" and "what happens in this clock block"
+(parallel backoff), so a thin night cell keeps the night mix. Graded
 per local day against the marginal, the clock hour and the clock block, as a loss gap, its standard
 error and `prob_better` (no alpha). Surprise = -log P(observed state); excess surprise = surprise minus
 the forecast's entropy, which is 0 on average when the forecast is calibrated. A replay sees only the
-rows that had landed (`created_at`) at each origin. No table, endpoint, bus event or consumer yet.
+rows that had landed (`created_at`) at each origin.
 
-Replay 10-29..11-13 (`evals/run_act_chain_replay_eval.py`, 1,423 buckets, 16 days): served loss 1.793
-nats vs 1.800 for the clock hour (gap -0.042/day ± 0.071, P 0.72) and 1.859 for the marginal
-(P 0.95); excess surprise +0.09 ± 0.08 overall, +0.19 ± 0.05 in the asleep block.
+Live: one forecast per bucket, issued in its first 3 min from rows landed before it, settled 20 min
+after it ends (late rows never count, however late the settle runs). Table
+`prediction_act_chain_forecast` (every model's distribution, the served model's surprise and excess;
+raw rows kept). `GET /act-chain`: the current forecast, issuance coverage, and the 14-day live grade in
+the replay's shape. Flag `PREDICTION_ACT_CHAIN_ENABLED`. No bus event, node or consumer: the asleep
+block reads overconfident in replay (#3344), so nothing reads this until that is explained.
+
+Replay 10-30..11-15 (`evals/run_act_chain_replay_eval.py`, 1,535 buckets, 17 days): served loss 1.770
+nats vs 1.795 for the clock hour (gap -0.061/day ± 0.063, P 0.83) and 1.855 for the marginal
+(P 0.98); excess surprise +0.05 ± 0.07 overall, +0.16 ± 0.05 in the asleep block (rarer acts --
+ask, sense, infer, say -- are more common at night than forecast; #3344).
 
 ## Power-bill bet (`GET /bill-forecast`)
 
@@ -478,8 +488,11 @@ same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
   medians are not a monotone drift (a decay-to-zero fails); not a duplicate of an earlier input (|corr|
   > 0.999). Resting on its floor > 50 % of the time = event-like = input only, never a target. Missing is
   NaN plus a mask channel, never 0.0. Standardisation from training rows only, kept in the manifest. At
-  scoring time (windows < 7 days) every named input must be present, not stuck, inside its training band
-  and fresh (30 min), or the run refuses.
+  scoring time (windows < 7 days) every named input must be present, inside its training band and fresh
+  (30 min), or the bucket refuses. The degeneracy checks (one value, few distinct, event-like) run only at
+  select time over 14 days, never per bucket: a reading resting flat at its floor for a day (office PM2.5
+  at 0 in clean air) is calm, not broken. A reading resting at its training minimum is in regime even
+  when that minimum sits below the band.
 - **Rungs**: persistence; per-series AR (ridge on the last 6 buckets); `ridge_var` = the AR forecast plus
   a ridge on lags 0-12 of every input + masks + time of day (so at a large penalty it is AR, and it can
   only win by what the other readings add). Backtest: the repo's `block_purged_temporal_split`
@@ -547,6 +560,7 @@ POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_node_replay_eval.p
 OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 2 [--out <dir>]  # family A gate + rungs + static vs adaptive joint surprise (read-only, ~75 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --hours 168      # family A calm check on stored joint rows (PASS needs 7 days)
 OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_calm_live_eval.py --replay-hours 24  # dry run of the live loop in memory (read-only, ~4 min)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_gate_replay_eval.py --hours 24 [--compare-module /tmp/fa_old.py]  # per-bucket gate replay vs stored refusals; FAIL on any degeneracy refusal (read-only, ~10 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_eval.py --days 14   # adaptive ranges replayed (read-only, ~6 min)
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]

@@ -1030,6 +1030,22 @@ async def startup_event():
             except Exception:  # noqa: BLE001 -- never blocks Hub boot
                 logger.exception("reading_finding_outreach_start_failed")
 
+            # People Juniper named, seen in a new way, and chat threads that went quiet after Orion's
+            # question: two more topic kinds at the tick's choice point (scripts/outreach_world_topics.py).
+            try:
+                if endogenous_outreach is not None and endogenous_outreach.choice_enabled:
+                    from scripts.outreach_world_topics import chat_thread_source, people_source
+
+                    _topic_pool = lambda: getattr(app.state, "memory_pg_pool", None)  # noqa: E731
+                    if settings.HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED:
+                        endogenous_outreach.topic_sources.append(
+                            people_source(_topic_pool, tz_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ))
+                    if settings.HUB_ENDOGENOUS_OUTREACH_CHAT_THREAD_TOPICS_ENABLED:
+                        endogenous_outreach.topic_sources.append(
+                            chat_thread_source(_topic_pool, tz_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ))
+            except Exception:  # noqa: BLE001 -- never blocks Hub boot
+                logger.exception("outreach_world_topics_start_failed")
+
             # Each finished read posts an event want into the body economy (attention as the want
             # competition, patch 2): salience = the links it made, as a percentile of 30 days of reads.
             try:

@@ -2,7 +2,9 @@
 
 Spec: docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, "B. Markov chains"
 (act-after-act sequences; the honest replacement for the retired ``route`` signal and the bus signal's
-"service rhythm"). Measurement and eval only: no table, node, bus event or consumer yet.
+"service rhythm"). Live: ``ActChain`` issues one forecast per bucket and settles it (table
+``prediction_act_chain_forecast``, ``GET /act-chain``). No node, bus event or consumer yet (#3344: the
+asleep block reads overconfident in replay; nothing reads this until that is explained).
 
 The stream is Orion's own acts, ``grammar_acts`` (written by orion-sql-writer through
 ``orion/grammar/act_ledger.py`` from every ``act_opened`` event). Time is cut into 15-minute buckets.
@@ -28,7 +30,8 @@ shrinkage compounded across levels, and a rare act got p ~ 1e-6 (excess surprise
     act_clock_hour     baseline. P(state | local hour), backed off to the marginal.
     act_clock_block    baseline. P(state | Juniper's clock block), backed off to the marginal.
     act_markov         P(state | previous bucket's state), backed off to the marginal.
-    act_markov_block   SERVED. P(state | previous state, clock block), backed off to act_markov.
+    act_markov_block   SERVED. P(state | previous state, clock block), backed off to a blend of
+                       act_markov and act_clock_block (weight chosen by LOO; parallel backoff).
 
 Clock blocks are Juniper's own rules (America/Denver; the hosts run UTC): asleep 03-08, weekend
 morning (Sat/Sun 08-12), day 08-18, evening 18-03. They are the structure of the served model, so
@@ -45,8 +48,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, Sequence, get_args
+from typing import Any, Iterable, Sequence, get_args
 from zoneinfo import ZoneInfo
+
+import logging
 
 import numpy as np
 import pandas as pd
@@ -69,12 +74,14 @@ LOOKBACK = timedelta(days=28)
 HALF_LIFE_DAYS = 14.0
 ALPHA = 0.5          # additive smoothing on the marginal (Jeffreys)
 K_GRID = tuple(2.0 ** np.arange(0, 13))   # backoff strengths tried by LOO: 1 .. 4096
+LAMBDA_GRID = (0.0, 0.25, 0.5, 0.75, 1.0)  # served cell's parent: weight on P(state | prev) vs P(state | block)
 MIN_DAYS = 7         # settled local days before a gap is reported
 TOP_BINS = (0.0, 0.2, 0.4, 0.6, 0.8, 1.0000001)
 _G = int(GRAIN.total_seconds() * 1e9)
 _GRACE = int(SETTLE_GRACE.total_seconds() * 1e9)
 _DAY = 86_400_000_000_000
 _IDX = {s: i for i, s in enumerate(STATES)}
+logger = logging.getLogger("orion-prediction.act_chain")
 
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -143,8 +150,8 @@ class Stream:
         return (_ns(ts) - self.b0_ns) // _G
 
 
-def _level(key: np.ndarray, n_keys: int, y: np.ndarray, w: np.ndarray, par_i: np.ndarray) -> tuple[np.ndarray, float]:
-    """One backoff level: (n_keys x K weighted counts, chosen K).
+def _level(key: np.ndarray, n_keys: int, y: np.ndarray, w: np.ndarray, par_i: np.ndarray) -> tuple[np.ndarray, float, float]:
+    """One backoff level: (n_keys x K weighted counts, chosen K, its LOO log likelihood).
 
     ``par_i``: the coarser level's P(observed state) for each transition, with that transition already
     left out of the parent too (else a thin context's parent "knows" the held-out point and LOO picks
@@ -159,7 +166,7 @@ def _level(key: np.ndarray, n_keys: int, y: np.ndarray, w: np.ndarray, par_i: np
         ll = float(w @ np.log((c_i - w + k * par_i) / (n_i - w + k)))
         if ll > best_ll:
             best_k, best_ll = k, ll
-    return C, best_k
+    return C, best_k, best_ll
 
 
 def predict(s: Stream, o: int) -> dict:
@@ -180,23 +187,33 @@ def predict(s: Stream, o: int) -> dict:
                 "block": BLOCKS[blk], "n_train": 0, "k": {}, "probs": {m: marg for m in MODELS}}
     post = lambda C, k, row, par: (C[row] + k * par) / (C[row].sum() + k)  # noqa: E731
     marg_i = marg[y]          # the marginal is a near-flat prior with ALPHA; its own LOO shift is negligible
-    C_h, k_h = _level(h, 24, y, w, marg_i)
-    C_b, k_b = _level(b, len(BLOCKS), y, w, marg_i)
-    C_a, k_a = _level(a, K, y, w, marg_i)
-    N_a = C_a.sum(axis=1)
+    C_h, k_h, _ = _level(h, 24, y, w, marg_i)
+    C_b, k_b, _ = _level(b, len(BLOCKS), y, w, marg_i)
+    C_a, k_a, _ = _level(a, K, y, w, marg_i)
+    N_a, N_b = C_a.sum(axis=1), C_b.sum(axis=1)
     P_a = (C_a + k_a * marg) / (N_a[:, None] + k_a)                      # P(state | prev), every prev
+    P_b = (C_b + k_b * marg) / (N_b[:, None] + k_b)                      # P(state | block), every block
     pa_loo = (C_a[a, y] - w + k_a * marg_i) / (N_a[a] - w + k_a)          # same, transition i left out
-    C_ab, k_ab = _level(b * K + a, len(BLOCKS) * K, y, w, pa_loo)
+    pb_loo = (C_b[b, y] - w + k_b * marg_i) / (N_b[b] - w + k_b)
+    # Parallel backoff (factored LMs, Bilmes & Kirchhoff 2003): a thin (block, prev) cell backs off to a
+    # blend of both parents, so a night cell keeps the night mix. lam = weight on the prev-act parent.
+    best = None
+    for lam in reversed(LAMBDA_GRID):                 # a tie keeps the higher weight (1.0 = prev-only)
+        C_ab, k_ab, ll = _level(b * K + a, len(BLOCKS) * K, y, w, lam * pa_loo + (1 - lam) * pb_loo)
+        if best is None or ll > best[3]:
+            best = (lam, C_ab, k_ab, ll)
+    lam, C_ab, k_ab, _ = best
     probs = {
         "act_marginal": marg,
         "act_clock_hour": post(C_h, k_h, hr, marg),
         "act_clock_block": post(C_b, k_b, blk, marg),
         "act_markov": P_a[prev_state],
-        MODEL: post(C_ab, k_ab, blk * K + prev_state, P_a[prev_state]),
+        MODEL: post(C_ab, k_ab, blk * K + prev_state, lam * P_a[prev_state] + (1 - lam) * P_b[blk]),
     }
     return {"origin": datetime.fromtimestamp(o_ns / 1e9, tz=timezone.utc), "prev_state": STATES[prev_state],
             "block": BLOCKS[blk], "n_train": int(len(t)),
-            "k": {"act_clock_hour": k_h, "act_clock_block": k_b, "act_markov": k_a, MODEL: k_ab}, "probs": probs}
+            "k": {"act_clock_hour": k_h, "act_clock_block": k_b, "act_markov": k_a, MODEL: k_ab, "lambda_prev": lam},
+            "probs": probs}
 
 
 def score(row: dict, observed: int) -> dict:
@@ -317,6 +334,87 @@ def verdict(rows: Iterable[dict]) -> dict:
         out["vs"]["act_markov_vs_act_clock_hour"] = _vs(rows, "act_markov", "act_clock_hour")
         out["vs"][f"{MODEL}_vs_act_markov"] = _vs(rows, MODEL, "act_markov")
     out["excess"] = {m: excess(rows, m) for m in MODELS}
+    out["excess_by_block"] = {blk: excess([r for r in rows if r["block"] == blk]) for blk in BLOCKS}
     out["calibration"] = calibration(rows) if rows else None
     out["rest"] = rest_check(rows) if rows else None
     return out
+
+
+# --- live: issue at each bucket start, settle after the grace ------------------------------------
+ISSUE_SLACK = timedelta(minutes=3)    # a forecast is issued only in the first 3 min of its bucket
+# Margins after each cutoff before reading: created_at is stamped by the writer before its commit, so a
+# row stamped just before a cutoff can commit just after it. Waiting keeps live equal to the replay.
+COMMIT_MARGIN = timedelta(seconds=30)
+VERDICT_DAYS = 14
+
+
+def observe(acts: Sequence[tuple[datetime, datetime, str]], origin: datetime) -> tuple[str, int]:
+    """(final state, acts counted) of the bucket at ``origin``: acts opened in it that landed by its end +
+    SETTLE_GRACE, whenever the settle runs. Same rule as the replay's ``final`` view."""
+    b0 = _ns(bucket_floor(origin))
+    st = bucket_states(acts, b0, 1, np.array([b0 + _G + _GRACE], dtype=np.int64))
+    n = sum(1 for o, c, v in acts if v in _IDX and o is not None and c is not None
+            and b0 <= _ns(o) < b0 + _G and _ns(c) <= b0 + _G + _GRACE)
+    return STATES[int(st[0])], n
+
+
+def _row_for_verdict(r: dict) -> dict | None:
+    """A stored settled row in the shape ``verdict`` grades (probs as arrays in STATES order). None when
+    the row was issued under another verb vocabulary (ActVerb changed): it cannot be graded on this one."""
+    if r["observed"] not in _IDX or any(set(d) != set(STATES) for d in r["probs"].values()):
+        return None
+    probs = {m: np.array([float(d[s]) for s in STATES]) for m, d in r["probs"].items()}
+    obs = _IDX[r["observed"]]
+    row = {"origin": r["origin"], "block": r["block"], "probs": probs, "observed": r["observed"], "observed_i": obs}
+    return {**row, "scores": score(row, obs)}
+
+
+class ActChain:
+    """Issues the 15-min forecast and settles past ones. Store: app/store.py (act chain section)."""
+
+    def __init__(self, store: Any):
+        self.store = store
+        self.last_pass: dict = {}
+
+    def tick(self, now: datetime | None = None) -> dict:
+        now = now or datetime.now(timezone.utc)
+        origin = bucket_floor(now)
+        settled, failed = 0, 0
+        # settle first, one row at a time: a bad row (or a failing issue) must not block the others
+        for r in self.store.pending_act_chain(now - SETTLE_GRACE - COMMIT_MARGIN):
+            try:
+                state, n = observe(self.store.grammar_acts(r["origin"], r["window_end"]), r["origin"])
+                dist = r["probs"][r["served"]]
+                p = float(dist[state])
+                ent = float(-sum(q * np.log(q) for q in dist.values() if q > 0))
+                settled += self.store.settle_act_chain(r["forecast_id"], state, n, -np.log(p), -np.log(p) - ent, now)
+            except Exception:  # noqa: BLE001 -- e.g. a row issued under another verb vocabulary
+                failed += 1
+                logger.exception("act_chain_settle_failed %s", r.get("forecast_id"))
+        issued = None
+        if COMMIT_MARGIN <= now - origin <= ISSUE_SLACK and not self.store.act_chain_exists(origin):
+            # opened before the origin only; forecast() further drops rows landed after each cutoff
+            f = forecast(self.store.grammar_acts(origin - LOOKBACK - GRAIN, origin), origin)
+            row = {"forecast_id": f"act_chain:{origin.strftime('%Y-%m-%dT%H:%M')}", "origin": origin,
+                   "window_end": origin + GRAIN, "issued_at": now, "model": MODEL, "served": MODEL,
+                   "prev_state": f["prev_state"], "block": f["block"], "n_train": f["n_train"],
+                   "k": {m: float(v) for m, v in f["k"].items()}, "probs": f["probs"]}
+            issued = self.store.insert_act_chain(row)
+        self.last_pass = {"at": now, "issued": issued, "settled": settled, "settle_failed": failed}
+        return self.last_pass
+
+    def live(self, now: datetime | None = None) -> dict:
+        now = now or datetime.now(timezone.utc)
+        since = now - timedelta(days=VERDICT_DAYS)
+        rows = self.store.act_chain_rows(since, settled_only=False)
+        settled = [r for r in rows if r["settled_at"] is not None]
+        newest = max(rows, key=lambda r: r["origin"]) if rows else None
+        current = newest if newest is not None and newest["origin"] == bucket_floor(now) else None
+        lag = [(r["issued_at"] - r["origin"]).total_seconds() for r in rows]
+        expected = int((bucket_floor(now) - bucket_floor(min((r["origin"] for r in rows), default=now))) / GRAIN) + 1
+        graded = [g for g in map(_row_for_verdict, settled) if g is not None]
+        return {"model": MODEL, "baselines": list(BASELINES), "current": current,
+                "newest_origin": newest["origin"] if newest else None, "window_days": VERDICT_DAYS,
+                "issuance": {"issued": len(rows), "buckets_since_first": expected,
+                             "issue_lag_sec_max": max(lag) if lag else None},
+                "ungradable_rows": len(settled) - len(graded), "grade": verdict(graded)}

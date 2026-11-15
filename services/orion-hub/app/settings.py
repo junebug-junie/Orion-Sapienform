@@ -1547,6 +1547,15 @@ class Settings(BaseSettings):
     HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS: int = Field(
         default=4, ge=1, le=5, alias="HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS"
     )
+    # Two more topic kinds at the choice point (scripts/outreach_world_topics.py, 2026-11-15): people
+    # Juniper named for the cameras, seen in a new way (back after days away, or at an unusual time),
+    # and chat threads that went quiet after Orion's question. Both need the choice point on.
+    HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED: bool = Field(
+        default=True, alias="HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED"
+    )
+    HUB_ENDOGENOUS_OUTREACH_CHAT_THREAD_TOPICS_ENABLED: bool = Field(
+        default=True, alias="HUB_ENDOGENOUS_OUTREACH_CHAT_THREAD_TOPICS_ENABLED"
+    )
     # The daily cap is orion.physiology.attention_pacing.JUNIPER_DAILY_CAP (2026-11-10, one owner for
     # this gate and the body's attention:juniper line; no env key).
     # Quiet window [start, end) in HUB_ENDOGENOUS_OUTREACH_TZ; equal values or

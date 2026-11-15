@@ -1,5 +1,10 @@
 # Stream of consciousness: interruptible multi-hop reasoning as a proposal-arena citizen — design spec
 
+> **Rev 2 (2026-10-14):** `2026-10-14-stream-of-consciousness-rev2-design.md` supersedes this doc's
+> current-architecture and next-patch sections. Hop 0 below was built, fired once in 7 days, and
+> ended in a review decision nothing reads; rev 2 moves the stream to a durable-runs thread fed by
+> world-first attention and self-signal episodes. Kept as written for the history.
+
 Status: **design mode, not implemented.** Touches metacog, reverie, and the proposal/policy/execution
 cognition loop, which CLAUDE.md §0A requires explicit proposal mode for before implementation. This
 document proposes and names a hard blocker; it does not build.

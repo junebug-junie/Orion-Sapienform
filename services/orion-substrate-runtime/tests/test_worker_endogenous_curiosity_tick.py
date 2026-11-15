@@ -145,6 +145,9 @@ def test_endogenous_curiosity_noop_tick_persists_empty_heartbeat(monkeypatch):
     args, kwargs = worker._store.save_endogenous_curiosity_candidates.call_args
     assert args == ([],)
     assert kwargs.get("retention_hours") == worker._settings.endogenous_curiosity_candidate_retention_hours
+    # #3394: an idle tick says it was idle. No gate made these rows read as
+    # decisions with no trace.
+    assert kwargs.get("gate") == {"gate_result": "idle_no_seeds"}
 
 
 def test_endogenous_curiosity_noop_persist_failure_does_not_break_tick(monkeypatch):

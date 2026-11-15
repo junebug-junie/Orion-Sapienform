@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -258,6 +259,32 @@ def refetch_message(url: str, count: int) -> str:
     )
 
 
+# Postgres reads `\b` in a regex as a backspace character, not a word boundary
+# (`\y` is the word boundary). A query written the other way matches nothing and
+# returns a clean 0. Orion reported two false zeros from it on 2026-11-12 and
+# 11-13 ("0 Juniper mentions in 7 days of reverie"; the real count was 111). #3401.
+_PG_REGEX_OPERATOR = re.compile(r"!?~\*?(?!/)|regexp_|similar\s+to", re.IGNORECASE)
+
+
+def decide_psql_backspace(tool_name: str, tool_input: Any) -> bool:
+    """True when a Bash psql command has a backslash-b and a Postgres regex operator."""
+    if tool_name != "Bash" or not isinstance(tool_input, dict):
+        return False
+    command = tool_input.get("command")
+    if not isinstance(command, str) or "psql" not in command or "\\b" not in command:
+        return False
+    return _PG_REGEX_OPERATOR.search(command) is not None
+
+
+def psql_backspace_message() -> str:
+    return (
+        f"{BLOCK_MARKER} Blocked: this psql command uses \\b in a regex. In Postgres \\b is a "
+        "backspace character, not a word boundary, so the pattern matches nothing and the "
+        "count reads as 0 when the true count is not 0. Use \\y for a word boundary "
+        "(\\m = start of word, \\M = end of word) and run the query again."
+    )
+
+
 def tool_window_state(env: Dict[str, str], *, fraction: float, now: float) -> Optional[Tuple[int, int]]:
     """``(elapsed_sec, budget_sec)`` once ``fraction`` of the turn budget has passed, else None.
     None too when the clock env is missing or unparseable (fail-open)."""
@@ -309,11 +336,13 @@ def run_hook(
     )
     if window is not None:
         return tool_window_message(tool_name, *window)
+    tool_input = payload.get("tool_input")
+    if decide_psql_backspace(tool_name, tool_input):
+        return psql_backspace_message()
     transcript = payload.get("transcript_path")
     if not transcript:
         return None
     history = CallHistory().feed_all(read_transcript(transcript))
-    tool_input = payload.get("tool_input")
     refetch = decide_refetch(history, tool_name, tool_input, limit=refetch_limit)
     if refetch is not None:
         return refetch_message(*refetch)

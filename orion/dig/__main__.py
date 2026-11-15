@@ -1889,6 +1889,8 @@ def main(argv: list[str] | None = None) -> int:
             if cut != len(a) - 2:
                 raise DigError('look check: one record id after "because": look check <act> <verdict> "<seen>" because <id>')
             text = cmd_look_check(a[1], a[2], " ".join(a[3:cut]), a[-1], out)
+        elif ns.command == "look" and a[:1] == ["check"]:
+            raise DigError('usage: look check <act> matches|differs|cannot-tell "<what you see>" because <record id>')
         elif ns.command == "look" and len(a) <= 1:
             text = cmd_look(a[0] if a else None, out)
         elif ns.command in REF_COMMANDS and len(a) == 1:

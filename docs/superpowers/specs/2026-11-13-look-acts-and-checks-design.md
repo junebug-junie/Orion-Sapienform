@@ -145,21 +145,30 @@ Part 2a: the records section in `dig look` and `look check` (acts plus log only,
 
 ## Part 2a as built (2026-11-15)
 
-- `dig look` reads `vision_events` for the stream from 90 s before to 60 s after the frame (records are
-  written after their frames), nearest 6, as `orion_readonly` (which may read `vision_events`; see #3390
+- `dig look` reads `vision_events` for the stream in the 90 s before the frame (records are written after
+  their frames; nothing later exists yet when Orion looks), nearest 6, only frame claims
+  (`visual_observation`, `camera_caption`, `person_presence`; rhythm and handoff verdicts are not
+  checkable from a frame), as `orion_readonly` (which may read `vision_events`; see #3390
   for the other vision tables). They print under the frame with a ready `look check` line and are kept on
   the `looks.jsonl` row; `look check` accepts only a record that look showed (full id or an 8+ char prefix).
   A records read that fails is said (`records: unread (...)`) and never fails the look.
 - `look check <act> matches|differs|cannot-tell "<what I see>" because <record id>`: matches/differs is an
-  act (actor `orion.look_check`, verb `infer`, `parent_act_id` = the look, object `vision_event:<id>`,
+  act (actor `orion.look_check`, verb `infer`, `parent_act_id` = the look,
+  object `vision_record:<camera>_<type>:<id>` so the self-monitor grades one faculty per camera and type,
+  e.g. `act.orion.look_check.infer.walkway_visual_observation`; note `<verdict>: <seen> (look check)`,
+  fixed text at both ends so no wording of Orion's reads as a failed run;
   signal `artifact_produced`, outcome 1 = the record matched). cannot-tell is logged only. One check per
-  record per look. Every check goes to `look/checks.jsonl` with the frame path and sha256 for audit.
+  record per look (a check whose act failed to publish may be filed again); a look over 2 h old cannot be
+  checked. Every check goes to `look/checks.jsonl` with the frame path and sha256 for audit.
+- Known limit: a record is up to 90 s older than the frame, so a passer-by the record saw may be gone;
+  "cannot-tell" exists for this. Coverage of a record in that window (live, 24 h): walkway 65%, office 27%,
+  doorbell 7%.
 - **Correction, foveal:** the design said checks must refuse "foveal" records (same model as the look).
   Live: the foveal probe is debug-only and wrote 0 `vision_events` rows in 30 days. Every current record
   type (council `visual_observation` on the fast lane, BLIP `camera_caption`, rhythm verdicts, motion) is
   from a different source than the look, so no refusal was built.
 - **Self-monitor:** its generic `grammar_acts` adapter grades every actor, so `orion.look_check` gets a
-  faculty (`act.orion.look_check.infer`) with no new adapter. What it grades is calibration of Orion's
+  faculty per camera and record type with no new adapter. What it grades is calibration of Orion's
   expected agreement (the cell's `predicted` vs outcome); the agreement rate itself is the cell's mean.
 - Family `orion.look_check`, tier 0 (never bids). 2b's spot-check want would be tier 2 (Juniper's call).
 - Live smoke 2026-11-15 05:00Z (publishing stubbed): walkway frame 0.2 s old; one record 70 s earlier,

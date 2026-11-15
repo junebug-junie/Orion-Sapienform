@@ -261,7 +261,10 @@ def look_act_events(record: dict[str, Any], *, opened_at: datetime, closed_at: d
 # --- what Orion's vision records said about this frame (#3347 part 2a) --------------------------
 
 RECORDS_BEFORE_SEC = 90   # a record is written after its frames: council windows run ~20 s behind
-RECORDS_AFTER_SEC = 60
+# Only records that claim what one frame shows. Rhythm and handoff verdicts (expected_absent,
+# arrived_as_expected, handoff_*), attention_worthy and doorbell_motion are not checkable from a frame.
+FRAME_RECORD_TYPES = ("visual_observation", "camera_caption", "person_presence")
+CHECK_MAX_AGE_SEC = 2 * 3600  # a verdict is filed in the turn that looked, not days later
 RECORDS_SHOWN = 6
 RECORD_TEXT_CHARS = 160
 
@@ -278,8 +281,9 @@ def records_sql(stream_id: str, frame_at: datetime) -> str:
         f"left(regexp_replace(coalesce(narrative, ''), '[[:space:]]+', ' ', 'g'), {RECORD_TEXT_CHARS}) AS narrative, "
         f"round(extract(epoch FROM created_at - timestamptz '{ts}')::numeric, 1) AS offset_sec "
         f"FROM vision_events WHERE stream_id = '{stream_id}' "
+        f"AND event_type IN ({', '.join(repr(t) for t in FRAME_RECORD_TYPES)}) "
         f"AND created_at BETWEEN timestamptz '{ts}' - interval '{RECORDS_BEFORE_SEC} seconds' "
-        f"AND timestamptz '{ts}' + interval '{RECORDS_AFTER_SEC} seconds' "
+        f"AND timestamptz '{ts}' + interval '5 seconds' "
         f"ORDER BY abs(extract(epoch FROM created_at - timestamptz '{ts}')) LIMIT {RECORDS_SHOWN}"
     )
 
@@ -290,6 +294,14 @@ def read_records(stream_id: str, frame_at: datetime) -> list[dict[str, Any]]:
     from orion.evals.model_replay.sandbox import ReadOnlyPsql
 
     return psql_rows(ReadOnlyPsql(timeout_sec=20.0), records_sql(stream_id, frame_at))
+
+
+def _num(value: Any) -> float | None:
+    """psql CSV gives every field as text."""
+    try:
+        return None if value in (None, "") else float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _record_line(r: dict[str, Any]) -> str:
@@ -409,8 +421,8 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
     near: list[dict[str, Any]] = []
     if live:
         try:
-            near = [{"id": str(r.get("event_id")), "type": r.get("event_type"), "confidence": r.get("confidence"),
-                     "entities": r.get("entities"), "text": r.get("narrative"), "offset_sec": r.get("offset_sec")}
+            near = [{"id": str(r.get("event_id")), "type": r.get("event_type"), "confidence": _num(r.get("confidence")),
+                     "entities": r.get("entities"), "text": r.get("narrative"), "offset_sec": _num(r.get("offset_sec"))}
                     for r in records(stream_id, frame.taken_at)]
             record["records"] = near
         except Exception as exc:  # noqa: BLE001 -- the look stands without them
@@ -436,13 +448,16 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
     if record.get("records_error"):
         lines.append(f"records: unread ({record['records_error']})")
     elif live and not near:
-        lines.append(f"records: none for this camera within {RECORDS_BEFORE_SEC} s before / {RECORDS_AFTER_SEC} s after the frame")
+        lines.append(f"records: none for this camera in the {RECORDS_BEFORE_SEC} s before the frame")
     elif near:
-        lines.append("What your vision records said about this moment (your pipeline's words, not yours):")
+        lines.append(f"What your vision records said in the {RECORDS_BEFORE_SEC} s before this frame (your pipeline's "
+                     "words, not yours; someone may have left since):")
         lines.extend(_record_line(r) for r in near)
         if record.get("act_id"):
             lines.append(f'Check one against the picture: python -P -m orion.dig look check {record["act_id"]} '
                          'matches|differs|cannot-tell "<what you see>" because <record id>')
+        else:
+            lines.append("These cannot be checked: this look is not on your act ledger (see the act line).")
     lines += [f"looks in the last hour: {used + 1} of {LOOKS_PER_HOUR}", act_line]
     return lines, record
 
@@ -512,8 +527,16 @@ def check(act_id: str, verdict: str, seen: str, record_id: str, *, home: Path,
         raise LookError(f"record {record_id!r} is not one this look showed (shown: {ids})")
     rec = matches[0]
     log = root / CHECK_LOG
-    if any(c.get("look_act_id") == act_id and c.get("record_id") == rec["id"] for c in _read_log(log)):
+    # A check whose act never reached the ledger may be filed again (same act id: the ledger upserts).
+    if any(c.get("look_act_id") == act_id and c.get("record_id") == rec["id"]
+           and (c.get("act_id") or c.get("verdict") == "cannot-tell") for c in _read_log(log)):
         raise LookError(f"record {rec['id']} was already checked against look {act_id}")
+    try:
+        looked = datetime.fromisoformat(str(row.get("looked_at")))
+    except ValueError:
+        looked = None
+    if looked is not None and (now - looked).total_seconds() > CHECK_MAX_AGE_SEC:
+        raise LookError(f"look {act_id} is over {CHECK_MAX_AGE_SEC // 3600} h old: check what you see now in a new look")
     entry = {
         "checked_at": now.isoformat(), "look_act_id": act_id, "record_id": rec["id"], "record_type": rec.get("type"),
         "record_confidence": rec.get("confidence"), "record_text": rec.get("text"), "verdict": verdict,
@@ -526,11 +549,15 @@ def check(act_id: str, verdict: str, seen: str, record_id: str, *, home: Path,
         def build() -> tuple[str, list[Any]]:
             act = build_act(
                 actor=CHECK_ACTOR, verb="infer", key=f"{act_id}:{rec['id']}", signal_id="artifact_produced",
-                horizon_sec=ACT_HORIZON_SEC, basis=CHECK_BASIS, object_ref=f"vision_event:{rec['id']}",
+                horizon_sec=ACT_HORIZON_SEC, basis=CHECK_BASIS,
+                # The middle part names the self-monitor faculty: one per camera and record type.
+                object_ref=f"vision_record:{camera_word(str(row.get('camera')))}_{rec.get('type')}:{rec['id']}",
                 test_before=f"record:{rec.get('type')}", parent_act_id=act_id,
             )
             common = dict(source_service=ACT_SOURCE_SERVICE, source_component=CHECK_COMPONENT, session_id=turn_id())
-            note = f"{verdict}: {seen}"
+            # Fixed text at both ends: self-monitor reads a note starting "abandoned"/"failed:"/... or
+            # ending " died" as a run that never happened (orion/self_monitor/adapters.py act_outcome).
+            note = f"{verdict}: {seen} (look check)"
             return act.act_id, [act_opened_event(act, at=now, **common),
                                 act_closed_event(act, produced=verdict == "matches", note=note,
                                                  at=max(now, clock()), **common)]

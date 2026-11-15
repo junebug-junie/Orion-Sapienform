@@ -988,9 +988,10 @@ class PrimeRuntime(MindLoopRuntime):
 
     async def _ask(self, inputs: FrameInputs, now: datetime) -> ModelReply:
         """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
-        # The cheap pending-focus read first: the move check depends on it, never on the dashboard (#3366).
-        focus_pending, focus_unread = await self._read_pending_focus(inputs)
-        curiosity, curiosity_err = await self._read_curiosity()
+        # The move check depends on the cheap pending-focus read, never on the dashboard (#3366). Both reads run
+        # at once, so the funded window waits for the slower one only (the dashboard, up to its own timeout).
+        (focus_pending, focus_unread), (curiosity, curiosity_err) = await asyncio.gather(
+            self._read_pending_focus(inputs), self._read_curiosity())
         inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
         # Once per thought, never per tick: the report takes ~1.5 s to build.
         inputs.energy, inputs.energy_error = await self._read(

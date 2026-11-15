@@ -21,15 +21,15 @@ def _load(name: str, path: Path):
     return mod
 
 
-def _evict_app() -> None:
-    for k in [k for k in sys.modules if k == "app" or k.startswith("app.")]:
-        del sys.modules[k]
+def _evict_app() -> dict:
+    gone = {k: sys.modules.pop(k) for k in [k for k in sys.modules if k == "app" or k.startswith("app.")]}
+    return gone
 
 
 def _door():
-    """Import the door's ``app`` package without colliding with another service's ``app`` already loaded
-    in the same pytest session (the gateway's): evict before and after."""
-    _evict_app()
+    """Import the door's ``app`` package without colliding with another service's ``app`` loaded in the same
+    pytest session (the gateway's): set that one aside, import, then put it back exactly as it was."""
+    saved = _evict_app()
     sys.path.insert(0, str(REPO / "services" / "orion-lane-door"))
     try:
         import app.door as door  # noqa: PLC0415
@@ -38,6 +38,7 @@ def _door():
     finally:
         sys.path.pop(0)
         _evict_app()
+        sys.modules.update(saved)
 
 
 def test_the_door_exempts_exactly_the_reads_an_eval_may_make():

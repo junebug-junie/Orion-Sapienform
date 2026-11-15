@@ -172,3 +172,19 @@ def test_ablation_runs_the_gate_without_the_doer_rule() -> None:
         ("I'll send the summary tonight.", "orion")]
     only_orion = _reflection(promises_made=[PromiseV1(quote="I'll send the summary tonight.", doer="orion")])
     assert ablate_doer_rule(only_orion, draft_text=draft, final_text=final) == []
+
+
+def test_merge_reports_joins_partial_runs_by_turn(tmp_path) -> None:
+    from orion.harness.evals.promise_ledger_replay_eval import merge_reports
+
+    a, b = tmp_path / "a.json", tmp_path / "b.json"
+    a.write_text(json.dumps({"partial": True, "turns": [
+        {"correlation_id": "c1", "at": "2026-11-01T00:00:00", "promises_made": []},
+        {"correlation_id": "c2", "at": "2026-11-02T00:00:00", "error": "http 502"}]}))
+    b.write_text(json.dumps({"turns": [
+        {"correlation_id": "c2", "at": "2026-11-02T00:00:00", "promises_made": []},
+        {"correlation_id": "c0", "at": "2026-10-31T00:00:00", "promises_made": []}]}))
+    merged = merge_reports([a, b])
+    assert [r["correlation_id"] for r in merged["turns"]] == ["c0", "c1", "c2"]
+    assert "error" not in merged["turns"][2]  # the later file wins
+    assert score(merged, {"labels": [], "hand_found": [], "dropped": []})["turns_judged"] == 3

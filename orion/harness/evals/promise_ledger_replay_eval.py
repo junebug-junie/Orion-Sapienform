@@ -236,6 +236,9 @@ def run(args: argparse.Namespace) -> int:
         conn.rollback()
         if args.only:
             turns = [t for t in turns if t["correlation_id"].startswith(tuple(args.only.split(",")))]
+        if args.skip_done:
+            done = {r["correlation_id"] for r in merge_reports(args.skip_done)["turns"]}
+            turns = [t for t in turns if t["correlation_id"] not in done]
         for i, t in enumerate(turns, 1):
             corr, at = t["correlation_id"], t["created_at"]
             art = t["run_artifact"] or {}
@@ -368,6 +371,18 @@ def ablate_doer_rule(reflection: Any, *, draft_text: str, final_text: str) -> li
             for p in second.reflection.promises_made]
 
 
+def merge_reports(paths: list[Path]) -> dict:
+    """One report from several partial ones (a run the pool recalled, resumed with
+    --skip-done). Later files win for a turn in more than one. Ledger / keep-rate fields are
+    dropped: they only make sense for one unbroken run."""
+    turns: dict[str, dict] = {}
+    for path in paths:
+        for row in json.loads(Path(path).read_text()).get("turns", []):
+            turns[row["correlation_id"]] = row
+    return {"turns": sorted(turns.values(), key=lambda r: r.get("at") or ""),
+            "merged_from": [str(p) for p in paths]}
+
+
 def extracted_items(report: dict, *, with_not_orion: bool = False) -> list[dict]:
     """Every gated promise_made item, one per (turn, quote). with_not_orion scores the
     no-doer-rule ablation instead (``ablation_kept``, when the rule dropped anything)."""
@@ -494,17 +509,20 @@ def main() -> int:
     r.add_argument("--until", help="UTC naive ISO time; default now")
     r.add_argument("--out", type=Path, default=OUT_DIR / "report.json")
     r.add_argument("--only", help="comma-separated correlation id prefixes (smoke runs)")
+    r.add_argument("--skip-done", type=Path, nargs="+", default=[],
+                   help="partial reports of a recalled run: skip the turns they already hold")
     r.add_argument("--lanes", default=DEFAULT_LANES,
                    help="comma-separated, alternated per turn: agent, chat (chat waits until gpu0 is lent)")
     s = sub.add_parser("sheet")
-    s.add_argument("--report", type=Path, default=OUT_DIR / "report.json")
+    s.add_argument("--report", type=Path, nargs="+", default=[OUT_DIR / "report.json"])
     c = sub.add_parser("score")
-    c.add_argument("--report", type=Path, default=OUT_DIR / "report.json")
+    c.add_argument("--report", type=Path, nargs="+", default=[OUT_DIR / "report.json"],
+                   help="one report, or the partial reports of a resumed run (merged)")
     c.add_argument("--labels", type=Path, default=LABELS)
     args = ap.parse_args()
     if args.cmd == "run":
         return run(args)
-    report = json.loads(args.report.read_text())
+    report = json.loads(args.report[0].read_text()) if len(args.report) == 1 else merge_reports(args.report)
     if args.cmd == "sheet":
         print(json.dumps({"extracted": extracted_items(report), "not_orion": not_orion_items(report),
                           "dropped": dropped_items(report)}, indent=2))

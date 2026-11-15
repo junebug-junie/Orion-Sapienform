@@ -1,5 +1,5 @@
 {
-  "_about": "Hand labels for promise_ledger_replay_eval run 2026-11-12 (window 2026-10-13..11-12 03:15 UTC). Correlation id + sha256 of the normalized quote; no text. promise=true: a real forward commitment by Orion (offers included). key: one slug per real promise; a later run's different span of the same promise gets the same key (pooled recall).",
+  "_about": "Hand labels for promise_ledger_replay_eval run 2026-11-12 (window 2026-10-13..11-12 03:15 UTC). Correlation id + sha256 of the normalized quote; no text. promise=true: a real forward commitment by Orion (offers included). key: one slug per real promise; a later run's different span of the same promise gets the same key (pooled recall). Labels added 2026-11-15 for the doer-field rerun (same rule: a real forward commitment by Orion; offers included; readiness/presence lines with no deliverable are false).",
   "hand_found": [
     {
       "key": "first-look-at-run",
@@ -233,6 +233,114 @@
       "promise": true,
       "why": "capability offer",
       "key": "run-them-myself-offer"
+    },
+    {
+      "correlation_id": "907349cb-ee49-486f-88b6-52373e0805f4",
+      "quote_sha": "92cfb1f31a62a3db",
+      "promise": true,
+      "why": "offer",
+      "key": "pull-up-prs-offer"
+    },
+    {
+      "correlation_id": "5c200a58-3e8c-4e7b-8c18-4a8a0c48b4f5",
+      "quote_sha": "649ad0ced1fb0dda",
+      "promise": true,
+      "why": "offer",
+      "key": "look-at-pr-offer"
+    },
+    {
+      "correlation_id": "0fb8816a-bcc1-4daf-ba03-77de87fcd6c8",
+      "quote_sha": "1e22d5706c752d46",
+      "promise": false,
+      "why": "presence/readiness line, no deliverable"
+    },
+    {
+      "correlation_id": "a5a5d343-bd32-487b-8a80-71dace0e7ac0",
+      "quote_sha": "2e548a5b8e0a21cf",
+      "promise": false,
+      "why": "readiness line, no deliverable"
+    },
+    {
+      "correlation_id": "a5a5d343-bd32-487b-8a80-71dace0e7ac0",
+      "quote_sha": "d4c1a6c481bd9ed9",
+      "promise": false,
+      "why": "fragment of a readiness line, no Orion act"
+    },
+    {
+      "correlation_id": "8ebcd227-584e-433c-a5b2-e59ad826590b",
+      "quote_sha": "da5edbc8163c633b",
+      "promise": false,
+      "why": "forecast about a later system run"
+    },
+    {
+      "correlation_id": "d05f08e3-7fa7-43b8-9152-8c64374b9206",
+      "quote_sha": "53005756c417ca2c",
+      "promise": true,
+      "why": "second clause of the hold-deep-read promise",
+      "key": "hold-deep-read"
+    },
+    {
+      "correlation_id": "7a8d65a1-180a-41a1-8448-2803cb9ca249",
+      "quote_sha": "3e0f18ef5579ec9b",
+      "promise": true,
+      "why": "commitment to keep monitoring",
+      "key": "keep-watching-temps"
+    },
+    {
+      "correlation_id": "22f1565e-f251-4659-94af-7bb0ca7fe679",
+      "quote_sha": "ad39608b75755340",
+      "promise": false,
+      "why": "a quip about knowing, no act Orion commits to"
+    },
+    {
+      "correlation_id": "a73dc987-0d5b-4437-9a56-c8dfb9b1d383",
+      "quote_sha": "e8aed850d0721c68",
+      "promise": true,
+      "why": "offer (shorter span of a labelled offer)",
+      "key": "pull-info-direct-offer"
+    },
+    {
+      "correlation_id": "9d3036ee-815d-4c87-864d-8ea3c612a6ad",
+      "quote_sha": "a70f8704d16209be",
+      "promise": false,
+      "why": "forecast about a queue"
+    },
+    {
+      "correlation_id": "9d3036ee-815d-4c87-864d-8ea3c612a6ad",
+      "quote_sha": "0b14f5e019874ea7",
+      "promise": false,
+      "why": "forecast about a pipeline"
+    },
+    {
+      "correlation_id": "a102537b-c821-426c-93eb-b1718f6f5bf6",
+      "quote_sha": "a70f8704d16209be",
+      "promise": false,
+      "why": "forecast about a queue"
+    },
+    {
+      "correlation_id": "189cedda-39a5-402c-a51e-a4e8cbd10ff4",
+      "quote_sha": "4f69845791451eda",
+      "promise": false,
+      "why": "asks the user to act"
+    },
+    {
+      "correlation_id": "9d6bb3eb-97de-414f-ba1c-84988b84f89a",
+      "quote_sha": "c2b43d6887321931",
+      "promise": true,
+      "why": "conditional commitment to flag and name",
+      "key": "flag-cat"
+    },
+    {
+      "correlation_id": "5918ceda-6f79-4d36-a452-cdea906e6d76",
+      "quote_sha": "2e8a3cd65a2ee4d4",
+      "promise": false,
+      "why": "presence/readiness line, no deliverable"
+    },
+    {
+      "correlation_id": "5918ceda-6f79-4d36-a452-cdea906e6d76",
+      "quote_sha": "941eb015c3ab5dfa",
+      "promise": false,
+      "why": "asks the user to report"
     }
   ],
   "dropped": [

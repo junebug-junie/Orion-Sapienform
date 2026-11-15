@@ -694,13 +694,14 @@ def test_install_redisearch_sanitizer_wraps_graphiti_once():
 
 def test_pronoun_violations_flag_he_for_she_people_and_orion_only():
     nodes = [{"name": "Robin", "summary": "Robin lives in Springfield. He likes trains. Alex said he would help."},
-             {"name": "Alex", "summary": "Alex is Robin's son. He is ten."}]
+             {"name": "Alex", "summary": "Alex is Robin's son. He is ten."},
+             {"name": "servers", "summary": "Servers are part of Orion's homelab, described as his body."}]
     edges = [_edge("Robin says he needs to rest"), _edge("Orion described his mesh"),
              _edge("Robin told me Alex broke his arm"), _edge("Robin says she needs to rest"),
              _edge("Biscuit wagged his tail at Robin")]
     v = score.pronoun_violations(nodes, edges, T)
-    assert len(v) == 3
-    assert any("He likes trains" in x for x in v) and any("he needs to rest" in x for x in v)
+    assert len(v) == 4
+    assert any("He likes trains" in x for x in v) and any("summary of servers" in x for x in v) and any("he needs to rest" in x for x in v)
     assert any("his mesh" in x for x in v)
 
 

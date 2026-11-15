@@ -236,8 +236,9 @@ WRONG_INVALIDATION_LIMIT = 2
 def pronoun_violations(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], t: dict[str, Any]) -> list[str]:
     """Sentences that call a she/her person ([subject], [spouse]) or Orion (they/them) "he/him/his".
 
-    Node summaries of those people: any sentence with a male pronoun and no he/him name in it.
-    Facts: any sentence naming one of them, with a male pronoun and no he/him name in it.
+    Their own node summaries: any sentence with a male pronoun and no he/him name in it.
+    Other summaries and all facts: any sentence naming one of them, with a male pronoun and no
+    he/him name in it.
     ``he_names`` (optional list in the terms file, plus the pet) are the people a "he" may be
     about. Deterministic candidates; the report lists every one so a human confirms the count."""
     not_he = [str(t["subject"]), str(t["spouse"]), "Orion"]
@@ -250,10 +251,11 @@ def pronoun_violations(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
 
     out = []
     for n in nodes:
-        if not_he_re.fullmatch(str(n.get("name") or "").strip()):
-            for sent in re.split(r"(?<=[.!?;])\s+", str(n.get("summary") or "")):
-                if bad(sent):
-                    out.append(f"summary of {n.get('name')}: \"{sent.strip()}\"")
+        own = bool(not_he_re.fullmatch(str(n.get("name") or "").strip()))
+        for sent in re.split(r"(?<=[.!?;])\s+", str(n.get("summary") or "")):
+            # their own summary: any "he" sentence; any other summary: a "he" sentence that names them
+            if (own or not_he_re.search(sent)) and bad(sent):
+                out.append(f"summary of {n.get('name')}: \"{sent.strip()}\"")
     for e in edges:
         for sent in re.split(r"(?<=[.!?;])\s+", str(e.get("fact") or "")):
             if not_he_re.search(sent) and bad(sent):

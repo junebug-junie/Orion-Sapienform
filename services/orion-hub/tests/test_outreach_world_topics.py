@@ -91,8 +91,20 @@ def test_a_visit_older_than_the_fresh_window_is_not_a_topic() -> None:
 
 
 def test_first_sighting_in_the_whole_window_says_since_when() -> None:
-    (t,) = person_topics([_sighting("s1", NOW - timedelta(hours=2))], NOW, tz_name=TZ, history_days=60)
-    assert "the first time the cameras saw Amanda since at least Sep 16" in t.option_text
+    # Someone else was seen 80 days ago: the records reach past the 60-day window, so the window
+    # start (Sep 16) is the honest date.
+    rows = [_sighting("s1", NOW - timedelta(hours=2)),
+            _sighting("o1", NOW - timedelta(days=80), pid="person-other", name="Teddy")]
+    (t,) = person_topics(rows, NOW, tz_name=TZ, history_days=60)
+    assert "the first time the cameras saw Amanda since Sep 16" in t.option_text
+
+
+def test_first_sighting_date_never_predates_the_camera_records() -> None:
+    """Live: sightings begin 2026-10-15. Saying "since Sep 16" would claim the cameras watched then."""
+    rows = [_sighting("s1", NOW - timedelta(hours=2)),
+            _sighting("o1", NOW - timedelta(days=30), pid="person-other", name="Teddy")]
+    amanda = [t for t in person_topics(rows, NOW, tz_name=TZ) if t.subject == f"person:{AMANDA}"]
+    assert "since Oct 16" in amanda[0].option_text
 
 
 def test_no_unnamed_people() -> None:

@@ -18,7 +18,8 @@ What is new about the person, from real rows only (``person_topics``):
 * sightings less than ``VISIT_GAP`` apart are one visit;
 * the newest visit must have started in the last ``FRESH_HOURS``;
 * "back": the visit before it ended at least ``RETURN_GAP_DAYS`` ago, or the person had no visit in the
-  whole ``HISTORY_DAYS`` window;
+  whole ``HISTORY_DAYS`` window (said as "since <date>", the date clamped to the oldest named sighting the
+  rows hold, so it never claims the cameras watched before their records begin);
 * "unusual time": at least ``MIN_PRIOR_VISITS`` earlier visits on ``MIN_PRIOR_DAYS`` days, and none of
   them started within ``UNUSUAL_HOUR_MARGIN`` hours (time of day, local) of this one.
 
@@ -182,15 +183,20 @@ def person_topics(rows: Iterable[Mapping[str, Any]], now: datetime, *, tz_name: 
     ``started_at``, ``ended_at``). The SQL keeps out unnamed clusters; a row with no ``person_id`` or
     no ``display_name`` is skipped here too."""
     tz = _zone(tz_name)
+    rows_list = list(rows)
     by_person: Dict[str, List[Mapping[str, Any]]] = {}
     names: Dict[str, str] = {}
-    for r in rows:
+    for r in rows_list:
         pid, name = str(r.get("person_id") or "").strip(), " ".join(str(r.get("display_name") or "").split())
         if not pid or not name:
             continue
         by_person.setdefault(pid, []).append(r)
         names[pid] = name
-    window_start = now - timedelta(days=history_days)
+    # "First time since <date>": the later of the window start and the oldest named sighting in the rows.
+    # The camera records only reach back so far (live: 2026-10-15); a date older than the oldest
+    # record would claim the cameras watched when they did not.
+    oldest = min((a for a in (_aware(r.get("started_at")) for r in rows_list) if a is not None), default=None)
+    window_start = max(now - timedelta(days=history_days), oldest) if oldest else now - timedelta(days=history_days)
     topics: List[OutreachTopic] = []
     for pid in sorted(by_person):
         visits = _visits(by_person[pid])
@@ -204,7 +210,7 @@ def person_topics(rows: Iterable[Mapping[str, Any]], now: datetime, *, tz_name: 
         when = _when(visit.start, now, tz)
         if not prior:
             ws = window_start.astimezone(tz)
-            what = f"the first time the cameras saw {name} since at least {ws.strftime('%b')} {ws.day}"
+            what = f"the first time the cameras saw {name} since {ws.strftime('%b')} {ws.day}"
         elif visit.start - prior[-1].end >= timedelta(days=RETURN_GAP_DAYS):
             what = f"the first time the cameras saw {name} in {_days(visit.start - prior[-1].end)}"
         else:

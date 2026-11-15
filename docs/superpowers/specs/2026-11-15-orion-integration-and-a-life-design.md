@@ -1,6 +1,6 @@
 # Orion integration and a life: one "now" every organ reads back, hunger with content, and projects
 
-Status: DESIGN, for Juniper's sign-off. Nothing here is built.
+Status: DESIGN, answered by Juniper on 2026-11-15 (see "Juniper's answers" below). Nothing here is built.
 Date: 2026-11-15. All live numbers were read on 2026-11-15 between 00:30Z and 05:00Z unless a line says otherwise.
 
 ## Juniper's words (2026-11-15)
@@ -255,8 +255,9 @@ Dreams, paintings, cameras' look acts and memory follow in patch 7.
 - Prime's 6-hour quiet floor (`QUIET_FLOOR`), when hunger needs ship (Part B).
 - Prime's dashboard read of curiosity for its frame (`_read_curiosity` of `/curiosity/api/runs`): curiosity items arrive through the now. The cheap pending-focus check stays (patch 0).
 - The separate arc-path computation in `act_downstream_use`: it becomes the `chat_stance` site of `experience_use`, after a replay shows equal counts on the same week [default: retire the table once the replay matches].
-- The notify-digest "Orion Daily Digest" email, replaced by the daily roundup (A.7) [Juniper decides].
-- The curiosity weekly and monthly compaction digest, if Juniper agrees (A.7).
+- The notify-digest "Orion Daily Digest" email, replaced by the daily roundup (A.7). Juniper said yes (Q7).
+
+Not retired: the curiosity weekly and monthly compaction digests. Juniper keeps them (Q8). The roundup sits beside them; it does not replace them.
 
 ### Proposal-mode checklist (Part A)
 
@@ -348,8 +349,9 @@ Alternative [not default]: a separate tier-1 durable run, one unified turn a day
 
 **What it replaces** (kill means kill):
 
-- The notify-digest "Orion Daily Digest" email [default: retire it when the roundup ships]. Its delivery-failure and critical-event counts move into the roundup's footer, so nothing operational is lost.
-- The curiosity weekly and monthly compaction [default: retire both after 14 days of roundups]. The monthly only reads the weeklies (`orion/curiosity/compaction_store.py`), and the journals are read only by `dig days` and the letter's gather (UNVERIFIED that no other reader exists; the gate's registry check will name any). If Juniper wants a weekly read, it is 7 roundups joined by `dig organs <start> <end>`, still with quotes and refs.
+- The notify-digest "Orion Daily Digest" email: retire it when the roundup ships (Juniper: yes, Q7). Its delivery-failure and critical-event counts move into the roundup's footer, so nothing operational is lost.
+
+**What it does not replace:** the curiosity weekly and monthly compaction digests stay (Juniper, Q8). The `curiosity.compaction` workflow, its journal entries and the `curiosity_compaction` rows keep running as they do today. The roundup is a daily record with quotes and refs; the digests stay as the weekly and monthly read. `dig organs <start> <end>` (7 roundups joined) is available beside them, not instead of them.
 
 ---
 
@@ -506,6 +508,14 @@ Orion chooses [default: no veto by Juniper; she sees every project in the roundu
 - The letter reads nearly every organ once a day (`orion/orion_day/day_input.py`), and its threads become Prime concerns.
 - Use is measured by `act_downstream_use` for one site.
 
+## Juniper's answers (2026-11-15)
+
+Juniper accepted all 12 bracketed defaults below, with one exception:
+
+- **Q8: no.** The curiosity weekly and monthly digests are kept. They are not retired after 14 days of roundups. Every place in this document that planned that retirement now says so (the "Retired" list, Part A.7 "What it replaces", "Files likely to touch", the patch 4 acceptance checks, the patch order).
+- **Q7: yes, unchanged.** The notify-digest "Orion Daily Digest" email still retires when the roundup ships.
+- All other questions (1-6, 9-12): the bracketed default stands. The other bracketed `[default]` values in the body of this document (now caps, roundup placement, the 30 s dashboard timeout in patch 0, the hunger threshold and budget, 3 active projects, no veto) are accepted with them.
+
 ## Missing questions (for Juniper; bracketed defaults apply if she says nothing)
 
 1. Retire Prime's 6-hour quiet floor when the horizon need ships? [yes]
@@ -515,7 +525,7 @@ Orion chooses [default: no veto by Juniper; she sees every project in the roundu
 5. Should the Prime block in every chat turn carry 2 lines from the now? [yes]
 6. Roundup form: a dig report placed in the letter's input and in the letter email, no separate run? [yes; a separate daily turn only if the letter ignores it]
 7. Retire the "Orion Daily Digest" email when the roundup ships? [yes]
-8. Retire the curiosity weekly and monthly compaction after 14 days of roundups? [yes]
+8. Retire the curiosity weekly and monthly compaction after 14 days of roundups? [yes] **Answer: no, keep both.**
 9. Who approves an integration-gate exemption? [any PR reviewer; Orion's own PRs follow the same rule]
 10. Projects: Orion chooses with no veto, at most 3 active? [yes, 3]
 11. Target for Prime: at least 2 meaningful moves a day? [yes]
@@ -541,7 +551,7 @@ Orion chooses [default: no veto by Juniper; she sees every project in the roundu
 - `services/orion-thought/app/temporal_self_cue.py`, `services/orion-hub/scripts/curiosity_investigation.py`
 - `orion/dig/__main__.py`, `orion/dig/organs.py` (new), `orion/dig/project.py` (new), `orion/orion_day/day_input.py`
 - `services/orion-sql-writer/app/act_downstream_use.py` (fold into `experience_use`)
-- `services/orion-notify-digest/`, `orion/curiosity/compaction*.py`, `services/orion-dream/app/curiosity_compaction_submit.py` (retirements, after sign-off)
+- `services/orion-notify-digest/` (Daily Digest retirement, patch 4). The curiosity compaction files (`orion/curiosity/compaction*.py`, `services/orion-dream/app/curiosity_compaction_submit.py`) are not touched: Juniper keeps the digests (Q8).
 
 ## Non-goals
 
@@ -579,7 +589,8 @@ Each patch is done only when the live path moved. "Config set" and "container up
 **Patch 4 (daily roundup):**
 - `dig organs <yesterday>` runs in under 30 s and every line is a count, a quote or a ref; a test refuses an unquoted summary line.
 - Live: the next letter email has the "What each organ did" section, and the letter turn cites at least one roundup ref.
-- The "Orion Daily Digest" email stops (after Juniper's yes): no `orion.digest.daily` row in `notify_requests` for 2 days.
+- The "Orion Daily Digest" email stops (Juniper said yes, Q7): no `orion.digest.daily` row in `notify_requests` for 2 days.
+- The curiosity weekly digest still runs: a `curiosity_compaction` row for the week after the roundup ships (Juniper keeps it, Q8).
 
 **Patch 5 (hunger needs):**
 - Unit: each need's drive is 0 at rest; the planted never-falling need is dampened and the budget holds.
@@ -603,7 +614,7 @@ Each patch is done only when the live path moved. "Config set" and "container up
 4. **Daily dig roundup** in the letter; retire the Daily Digest email.
 5. **Hunger needs** fed by the now; retire the quiet floor.
 6. **Ask Orion; projects** as the next intention source.
-7. **Widen** organ coverage; fold `act_downstream_use`; retire curiosity compaction if Juniper agrees.
+7. **Widen** organ coverage; fold `act_downstream_use`. (Curiosity compaction is kept, Q8.)
 8. Later: Φ (#3296), once #3290 says the organs are stable.
 
 ## Recommended next patch

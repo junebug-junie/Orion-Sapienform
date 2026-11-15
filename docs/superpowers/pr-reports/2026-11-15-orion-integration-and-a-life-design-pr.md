@@ -3,13 +3,14 @@
 - Design spec for Juniper's sign-off: `docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md`. No code.
 - Part A maps 15 organs with live numbers, checks the existing integration seams, and proposes one primitive built on Temporal Self: every organ's output is an experience, every organ reads "Orion's now" and cites what it used, and the cite is checked against what it was shown.
 - Part A.6 turns that into a deterministic gate: a proposed `CLAUDE.md` "Integration gate" section, `scripts/check_integration_seam.py`, and a live coverage report.
-- Part A.7 designs a daily dig roundup (`dig organs <date>`) that replaces the glossing digests.
+- Part A.7 designs a daily dig roundup (`dig organs <date>`) that replaces the "Orion Daily Digest" email. The curiosity weekly and monthly digests are kept (Juniper, Q8).
+- Juniper answered the 12 questions on 2026-11-15: all bracketed defaults accepted except Q8 (keep the curiosity weekly and monthly digests). New spec section "Juniper's answers (2026-11-15)"; the retire list, A.7, files list, patch 4 checks and patch order now say the digests stay.
 - Part B rebuilds Prime hunger as needs with content, and gives the root cause of #3366 (a 4-second timeout against a 4-44 second dashboard endpoint).
 - Part C proposes projects as the next intention source, with the exact question to ask Orion.
 
 ## Outcome moved
 
-A signed-off design and patch order. Four defects found and ticketed; #3366 root-caused and reproduced.
+A signed-off design (Juniper's answers recorded 2026-11-15) and patch order. Four defects found and ticketed; #3366 root-caused and reproduced.
 
 ## Current architecture
 

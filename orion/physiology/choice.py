@@ -353,11 +353,12 @@ def tier1_reserved_share(acts: Sequence[ActRecord], families: FamiliesConfig, la
 def build_context(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Sequence[Any],
                   state: Optional[PhysiologyStateV1], now: datetime, *, lane_window_sec: float = 3600.0,
                   weights: Optional[Mapping[str, FamilyWeight]] = None,
-                  event_history: Optional[Mapping[str, Sequence[float]]] = None) -> MarketContext:
+                  event_history: Optional[Mapping[str, Sequence[Any]]] = None) -> MarketContext:
     """Everything a bid reads besides the want, the prices and the book: per-family appetite,
     today's weights and Tier 1's reserved share per lane. (The floor's weekly funded shares live on
     the ReservationBook: they come from want_ledger, not act history.) ``event_history``: family ->
-    the intensities of its past event wants (want_ledger), an event want's rank reference."""
+    the intensities of its past event wants (want_ledger), an event want's rank reference: floats, or
+    ``(intensity, graded)`` pairs, of which only the family's current grading counts (issue #3364)."""
     from orion.physiology.appetite import build_family_appetite
     from orion.physiology.weights import weights_now
 

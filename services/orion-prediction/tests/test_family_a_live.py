@@ -157,6 +157,30 @@ def test_gate_refuses_a_stale_input_and_stores_why_never_a_degraded_forecast():
     assert min(origins) >= DAY7 + timedelta(minutes=65)
 
 
+def test_a_target_resting_flat_inside_its_band_is_issued_and_scored_not_refused():
+    # Regression, live 2026-11-14: office PM2.5 resting at 0 for 24 h refused every bucket ("one_value").
+    # Flatten s.x for the last 23 h before selection and on: its 24 h gate window is ~96 % one value.
+    f = _frame()
+    f.loc[DAY7 - timedelta(hours=23):, "s.x"] = 20.0
+    live, _l = _live(f)
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    assert live.served is not None and live.served.named["s.x"] == fa.TARGET
+    for _ in range(14):
+        now += G
+        live.tick(now)
+    js = live.store.joints
+    assert js and not [j for j in js if j["status"] == "refused"]
+    assert live.state.counts["refused"] == 0
+    scored = [j for j in js if j["status"] == "scored"]
+    assert scored
+    # scoring standardises by the TRAINING std, so a flat reading never divides by zero
+    for j in scored:
+        assert j["n_observed"] == 2 and np.isfinite(j["d2"]) and np.isfinite(j["excess"]) and 0 < j["p"] <= 1
+    flat = [r for r in live.store.forecasts if r["series_id"] == fl.PREFIX + "s.x" and r.get("score_status") == "scored"]
+    assert flat and all(r["actual"] == 20.0 and np.isfinite(r["abs_error"]) for r in flat)
+
+
 def test_a_horizon_whose_target_already_completed_is_skipped():
     live, _l = _live()
     live.tick(DAY7 + timedelta(minutes=6))                    # select + first issue (origin day7 + 0)

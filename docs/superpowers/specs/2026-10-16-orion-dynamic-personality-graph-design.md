@@ -47,7 +47,7 @@ The pick goes into a model call the act already makes, as a structured field. **
 | Prime thought | the concerns Prime holds, plus "no move" | yes (`prime_loop.py` thought) |
 | Outreach | the top 3 to 5 grounded topics from the tick, plus "say nothing" | yes (the compose call) |
 | Curiosity prior | about 8 ranked priors (live today) | yes |
-| Reading | the world-pulse links queued for this run | yes (Orion already picks one link, UNVERIFIED whether the rest are saved) |
+| Reading | the links Stage 1's read contained, up to 12, in page order (built 2026-11-15: `orion/world_pulse_read/next_read_choice.py`) | yes (Stage 2 already returns `need_stage1_urls`; empty = none) |
 | Chat thread | the open threads when two or more are open | yes (the unified turn) |
 
 **Evidence weight comes from revealed preference.** A choice reveals a preference only when real alternatives were available (Samuelson 1938). Picking the market's top option is weak evidence, because Orion may only be following the order. So each choice weighs by how far it departs from the market's order. Picking rank 1 counts 0.25. Picking rank r > 1 counts 1. Picking "none" when options existed counts as a decline of every option. Curiosity's P0 data shows real departures: Orion took the top prior in only 16 of 40 runs.

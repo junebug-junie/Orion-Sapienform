@@ -57,6 +57,12 @@ def test_duration(value, expected):
     ({"source": {"kind": "office_env", "node": "pan-1", "key": "office_temp_c; DROP TABLE x"}}, "office_env source"),
     ({"source": {"kind": "office_env", "node": "pan 1;", "key": "office_temp_c"}}, "office_env source"),
     ({"source": {"kind": "office_env", "key": "office_temp_c"}}, "office_env source"),
+    # closet_env: temperature only (the closet CO2 follows the house, not Orion); the key is a column name.
+    ({"source": {"kind": "closet_env", "node": "pan-1", "key": "closet_co2_ppm"}}, "closet_env source"),
+    ({"source": {"kind": "closet_env", "node": "pan-1", "key": "office_temp_c"}}, "closet_env source"),
+    ({"source": {"kind": "closet_env", "node": "pan-1", "key": "closet_temp_c; DROP TABLE x"}}, "closet_env source"),
+    ({"source": {"kind": "closet_env", "node": "pan 1;", "key": "closet_temp_c"}}, "closet_env source"),
+    ({"source": {"kind": "closet_env", "key": "closet_temp_c"}}, "closet_env source"),
     ({"thresholds": [{"name": "hot", "value": 31.0, "window": "12h"}]}, "longer than the longest horizon"),
 ])
 def test_bad_registry_refused(over, msg):
@@ -122,3 +128,17 @@ def test_repo_registry_declares_the_young_office_target_as_an_overlap_covariate_
 def test_overlap_covariates_must_be_declared_covariates(over, msg):
     with pytest.raises(SeriesConfigError, match=msg):
         parse_registry(spec_doc(**over))
+
+
+def test_repo_registry_declares_the_closet_top_as_a_heat_per_watt_covariate_only():
+    """Air-path Patch 1 (docs/superpowers/specs/2026-11-12-orion-air-path-design.md): the closet top is
+    read for heat per watt only -- never forecast, never a covariate of the cabinet forecast."""
+    reg = load_registry(REGISTRY_PATH)
+    c = reg.get("closet.top_temp_c")
+    assert c.role == "covariate" and c.source.kind == "closet_env"
+    assert (c.source.node, c.source.key) == ("pan-1", "closet_temp_c")
+    assert c.grain_min == 5 and c.agg == "mean" and c.max_fill_min == 15
+    assert c.train_from.isoformat() == "2026-11-05T00:45:00+00:00"
+    assert c.consumers == ("heat-per-watt",) and c.horizons_min == () and c.thresholds == ()
+    assert c not in reg.targets()
+    assert not any("closet.top_temp_c" in s.covariates for s in reg.series.values())

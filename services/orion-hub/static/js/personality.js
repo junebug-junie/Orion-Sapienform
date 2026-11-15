@@ -128,6 +128,25 @@
     return `${head}${over} (${v.lane}${v.when ? ", " + v.when : ""})`;
   }
 
+  // "About": the full words of the options behind a tendency, as stored (no model writes them): what Orion
+  // chose and what Orion passed over in its example choices, each text once. A declined-all choice's chosen
+  // side is the lane's "made no move" words.
+  function aboutView(examples) {
+    const chose = [];
+    const over = [];
+    const add = (list, text) => {
+      const t = String(text || "").trim();
+      if (t && !list.includes(t)) list.push(t);
+    };
+    for (const e of Array.isArray(examples) ? examples : []) {
+      if (!e || typeof e !== "object") continue;
+      if (e.declined_all || !e.chosen) add(chose, DECLINE_TEXT[e.lane] || DECLINE_TEXT_DEFAULT);
+      else add(chose, e.chosen.text);
+      for (const o of Array.isArray(e.passed_over) ? e.passed_over : []) add(over, o && o.text);
+    }
+    return { chose, over };
+  }
+
   function tendencyView(t) {
     const tend = t && typeof t === "object" ? t : {};
     const weight = num(tend.weight);
@@ -145,6 +164,7 @@
         && tend.orion_verdict !== "rejected",
       inPrime: false,
       examples: (Array.isArray(tend.examples) ? tend.examples : []).map(exampleText),
+      about: aboutView(tend.examples),
       verdict: verdictText(tend.juniper),
       answered: tend.juniper && tend.juniper.verdict ? String(tend.juniper.verdict) : "",
     };
@@ -218,7 +238,7 @@
   }
 
   const api = {
-    laneText, rankText, optionText, choiceView, labelBase, verdictText, exampleText, tendencyView, tendencyViews,
+    laneText, rankText, optionText, choiceView, labelBase, verdictText, exampleText, aboutView, tendencyView, tendencyViews,
     armsView, choicesFrom, tendenciesFrom, verdictUrl, afterVerdictText, answersBlockedText, PRIME_MIN_WEIGHT,
     PRIME_MAX_LINES, NO_CONFIRM, LANE_TEXT, saidNoFrom,
   };
@@ -325,6 +345,19 @@
     if (v.count) facts.appendChild(el("span", "muted", v.count));
     if (v.strength) facts.appendChild(el("span", "muted", v.strength));
     card.appendChild(facts);
+    if (v.about.chose.length || v.about.over.length) {
+      // Collapsed by default: the full option words behind the label.
+      const det = el("details", "more about");
+      det.appendChild(el("summary", null, "About"));
+      for (const [head, list] of [["Chose", v.about.chose], ["Passed over", v.about.over]]) {
+        if (!list.length) continue;
+        det.appendChild(el("div", "muted", `${head}:`));
+        const ul = el("ul");
+        for (const t of list) ul.appendChild(el("li", null, t));
+        det.appendChild(ul);
+      }
+      card.appendChild(det);
+    }
     if (v.examples.length) {
       card.appendChild(el("div", "muted", "Example choices:"));
       const ul = el("ul", "examples");

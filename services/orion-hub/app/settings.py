@@ -968,6 +968,12 @@ class Settings(BaseSettings):
     HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED: bool = Field(
         default=True, alias="HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED"
     )
+    # Reading choice point (personality rev 4, Move 1): the Stage 2 prompt lists the links
+    # Stage 1's read contained, and Orion's need_stage1_urls pick (or picking none) is published
+    # as a PersonalityChoiceV1, lane reading. false = no list, no choice rows; hops unchanged.
+    HUB_WORLD_PULSE_READ_CHOICE_ENABLED: bool = Field(
+        default=True, alias="HUB_WORLD_PULSE_READ_CHOICE_ENABLED"
+    )
 
     # --- Orion's own graph ------------------------------------------------
     # `orion_worldview` is Orion's alone: it reads AND writes there, nothing in
@@ -1053,6 +1059,12 @@ class Settings(BaseSettings):
     # docs/superpowers/specs/2026-10-16-attention-world-candidates-design.md, "The self-inquiry gap".
     HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED"
+    )
+    # Curiosity event wants step 2: after each finished curiosity turn, the curiosity lane judges the
+    # finding (philosophical / operational / no_finding) and Hub scores how new it is to Orion, one row
+    # in curiosity_finding_register. Embeds through HUB_CURIOSITY_SEARCH_EMBED_URL.
+    HUB_CURIOSITY_FINDING_REGISTER_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_FINDING_REGISTER_ENABLED"
     )
     # ON since 2026-11-04: the replay reported the measurement usable (see .env_example).
     HUB_CURIOSITY_VALUE_ORDER_ENABLED: bool = Field(
@@ -1546,6 +1558,15 @@ class Settings(BaseSettings):
     )
     HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS: int = Field(
         default=4, ge=1, le=5, alias="HUB_ENDOGENOUS_OUTREACH_CHOICE_MAX_OPTIONS"
+    )
+    # Two more topic kinds at the choice point (scripts/outreach_world_topics.py, 2026-11-15): people
+    # Juniper named for the cameras, seen in a new way (back after days away, or at an unusual time),
+    # and chat threads that went quiet after Orion's question. Both need the choice point on.
+    HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED: bool = Field(
+        default=True, alias="HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED"
+    )
+    HUB_ENDOGENOUS_OUTREACH_CHAT_THREAD_TOPICS_ENABLED: bool = Field(
+        default=True, alias="HUB_ENDOGENOUS_OUTREACH_CHAT_THREAD_TOPICS_ENABLED"
     )
     # The daily cap is orion.physiology.attention_pacing.JUNIPER_DAILY_CAP (2026-11-10, one owner for
     # this gate and the body's attention:juniper line; no env key).

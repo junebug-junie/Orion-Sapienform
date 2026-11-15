@@ -10,14 +10,16 @@ from orion.schemas.grammar import GrammarAtomV1, GrammarEventV1, GrammarProvenan
 from orion.substrate.biometrics_loop.grammar_extract import extract_node_state_from_events
 from orion.substrate.biometrics_loop.ids import parse_biometrics_trace_id, parse_pressure_trace_id
 
+from tests._biometrics_catalog_fixture import ONDEMAND_BOX, make_catalog
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO_ROOT / "config" / "biometrics" / "node_catalog.yaml"
 FIXED_TS = datetime(2026, 5, 24, 12, 0, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
 def catalog() -> NodeCatalog:
-    return NodeCatalog.load(CATALOG_PATH)
+    # Hermetic: the offline arm must not depend on a real host's flag (PR #3362).
+    return make_catalog()
 
 
 def _provenance() -> GrammarProvenanceV1:
@@ -229,15 +231,19 @@ def test_extract_availability_online_when_fresh(catalog: NodeCatalog) -> None:
     assert state.availability_status == "online"
 
 
-def test_extract_hecate_offline_expected(catalog: NodeCatalog) -> None:
-    trace_id = "biometrics.node:hecate:2026-05-24T12:00:00Z"
+def test_extract_expected_offline_node(catalog: NodeCatalog) -> None:
+    # Was `test_extract_hecate_offline_expected`, against the real hecate. Hecate's
+    # production flag went true 2026-11-14 (PR #3362, box back up with 2x V100), which
+    # broke a parse test that has nothing to do with fleet state -- so the expected-
+    # offline subject is now the synthetic ONDEMAND_BOX from the shared fixture.
+    trace_id = f"biometrics.node:{ONDEMAND_BOX}:2026-05-24T12:00:00Z"
     events = [
         _atom_event(
             trace_id=trace_id,
             event_id="gev_avail",
             role="node_availability",
             observed_at=FIXED_TS,
-            summary="hecate telemetry status OK (expected offline, known node)",
+            summary=f"{ONDEMAND_BOX} telemetry status OK (expected offline, known node)",
         ),
     ]
     state = extract_node_state_from_events(events, catalog, stale_after_sec=180, now=FIXED_TS)

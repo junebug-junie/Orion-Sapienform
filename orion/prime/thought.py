@@ -259,6 +259,13 @@ class FrameInputs:
     temporal_error: Optional[str] = None
     curiosity: Optional[dict[str, Any]] = None
     curiosity_error: Optional[str] = None
+    # Hub's cheap pending-focus read (GET /curiosity/api/focus/pending, #3366), separate from the slow
+    # dashboard read above. ``pending_focus_read``: it answered ``available: true``; ``pending_focus``: the
+    # waiting focus or None. ``pending_focus_error``: it failed. Neither set (replay, eval): the dashboard's
+    # copy is shown, as before.
+    pending_focus_read: bool = False
+    pending_focus: Optional[dict[str, Any]] = None
+    pending_focus_error: Optional[str] = None
     arc_ids: list[str] = field(default_factory=list)
     # Event mode (PRIME_CONCERNS_FROM_EVENT_WANTS): the funded event wants (GET /physiology/event-wants)
     # replace the attention arcs. None with no error: event mode is off.
@@ -411,18 +418,30 @@ def _event_lines(inputs: FrameInputs) -> list[str]:
     return lines
 
 
+def _pending_focus_lines(inputs: FrameInputs) -> list[str]:
+    """The waiting focus from the cheap read; the gap when it failed. Shown even when the dashboard read
+    failed, so the frame and the move check agree (#3366)."""
+    if inputs.pending_focus_error:
+        return [f"(whether a focus is waiting for the next run is unknown: {inputs.pending_focus_error})"]
+    if inputs.pending_focus_read:
+        pending = inputs.pending_focus
+    else:
+        pending = (((inputs.curiosity or {}).get("schedule") or {}).get("pending_focus") or {}).get("focus")
+    if not isinstance(pending, dict):
+        return []
+    return [f"a focus is already waiting for the next run ({pending.get('origin')}): {pending.get('question')!r}"]
+
+
 def _curiosity_lines(inputs: FrameInputs) -> list[str]:
     if inputs.curiosity is None:
-        return [f"(unavailable: {inputs.curiosity_error or 'not read'})"]
+        return [*_pending_focus_lines(inputs), f"(unavailable: {inputs.curiosity_error or 'not read'})"]
     c = inputs.curiosity
     lines: list[str] = []
     line = ((c.get("schedule") or {}).get("lines") or {}).get("investigate") or {}
     if line:
         lines.append(f"investigate runs today {line.get('runs_today')} of {line.get('daily_cap')}, "
                      f"next eligible {line.get('next_eligible_at')}")
-    pending = ((c.get("schedule") or {}).get("pending_focus") or {}).get("focus")
-    if pending:
-        lines.append(f"a focus is already waiting for the next run ({pending.get('origin')}): {pending.get('question')!r}")
+    lines.extend(_pending_focus_lines(inputs))
     for run in (c.get("runs") or [])[:4]:
         # What the run found, never its kickoff prompt (the "about" text is the brief Orion was handed).
         finding = " ".join(str(run.get("finding_text") or "").split())
@@ -596,6 +615,7 @@ def apply_answer(
     receptors: Optional[Mapping[str, Sequence[str]]] = None, event_ids: Optional[list[str]] = None,
     event_wants: Optional[Mapping[str, Mapping[str, Any]]] = None,
     take_on_check: Optional[Callable[[TakeOnMoveV1, PrimeStateV1], Optional[str]]] = None,
+    focus_unread: Optional[str] = None,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
     ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
@@ -604,7 +624,10 @@ def apply_answer(
     the want's family and ``care_promoted`` (personality rev 4 choice point).
 
     ``take_on_check(move, state after the concern edits)``: why a take-on cannot go, or None; None as the
-    argument = taking on is off (a take_on move is refused, and shown)."""
+    argument = taking on is off (a take_on move is refused, and shown).
+
+    ``focus_pending``: None = unknown, and an ask move is refused (never fail open). ``focus_unread``: the
+    refusal sentence for that case when the runtime knows why (a timed-out read says "timed out", #3366)."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -676,7 +699,7 @@ def apply_answer(
         elif state.open_nominations:
             refusal = "one of my questions to curiosity is still open"
         elif focus_pending is None:
-            refusal = "could not read whether curiosity already has a focus waiting"
+            refusal = focus_unread or "could not read whether curiosity already has a focus waiting"
         elif focus_pending:
             refusal = "curiosity already has a focus waiting for its next run"
         if refusal is None and move.concern_id == NEW_CONCERN:

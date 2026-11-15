@@ -314,6 +314,10 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python services/orion-durable-runs/evals/event_wants_replay.py --camera-asks
+      - name: Event rank grading + camera-asks replay parity mutation check (issue #3364 -- must kill every mutant)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: python services/orion-durable-runs/evals/event_rank_grading_mutations.py
       - name: Camera-ask bid mutation check, Prime's menu lane (attention patch 4b -- must kill every mutant)
         run: python services/orion-sql-writer/evals/ask_bind_mutations.py --lane durable-runs
       - name: Cooling world act eval (ladder retirement PR 5 -- the market decides, only funded sheds, the scorer scores every episode)

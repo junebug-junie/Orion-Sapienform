@@ -371,7 +371,11 @@ def fetch_said_outreach_subjects(*, lookback_days: int = 7) -> Dict[str, Set[str
         return {}
     days = max(1, int(lookback_days))
     try:
-        from scripts.outreach_choice import fold_said_subjects
+        from scripts.outreach_choice import (
+            CHOSEN_SUBJECT_REASONS,
+            DECLINED_SUBJECT_REASONS,
+            fold_said_subjects,
+        )
         from scripts.pg_engine import get_engine
         from sqlalchemy import text
 
@@ -386,12 +390,16 @@ def fetch_said_outreach_subjects(*, lookback_days: int = 7) -> Dict[str, Set[str
                         SELECT reason, result_json->'choice' AS choice,
                                result_json->'grounding'->>'daydream_id' AS daydream_id
                         FROM endogenous_outreach_decisions
-                        WHERE reason IN ('sent', 'orion_passed', 'orion_declined', 'no_why_juniper')
+                        WHERE reason = ANY(:reasons)
                           AND decided_at >= now() - make_interval(days => :days)
                           AND coalesce(result_json->>'source', '') = ''
                         """
                     ),
-                    {"days": days},
+                    # Every reason fold_said_subjects reads. Before 2026-11-15 this list left out
+                    # no_pick / invalid_pick, so a reply with no readable pick did not keep its
+                    # topics out for 7 days as the fold's docstring says.
+                    {"days": days, "reasons": sorted(CHOSEN_SUBJECT_REASONS | DECLINED_SUBJECT_REASONS
+                                                     | {"orion_passed"})},
                 )
                 .mappings()
                 .all()

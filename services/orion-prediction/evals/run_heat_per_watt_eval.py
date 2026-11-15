@@ -54,7 +54,7 @@ def frame(seed: int, slope_a: float, n: int = 120, phi: float = 0.6, noise: floa
     for i in range(1, n):
         r[i] = phi * r[i - 1] + rng.normal(0, noise)
     room = 10 + 0.2 * outdoor + ROOM_A * a + ROOM_C * c + r
-    return pd.DataFrame({"gap": gap, "cabinet": room + gap, "outdoor.temp_f": outdoor, "athena.chassis_watts": a,
+    return pd.DataFrame({"gap": gap, "target": room + gap, "outdoor.temp_f": outdoor, "athena.chassis_watts": a,
                          "circe.chassis_watts": c, "hecate.chassis_watts": h,
                          "athena.cabinet_cooling_watts": 118.0 + rng.normal(0, 0.3, n)},
                         index=pd.date_range(T, periods=n, freq="60min"))

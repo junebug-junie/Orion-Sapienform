@@ -417,6 +417,33 @@ readings door's pending bundles, offered through `ReadingFindingOutreach.outreac
 only while that door's spacing allows a reading message; reads with a resonance
 finding stay with that door). Orion's reply starts with `Pick: <n>`.
 
+Two more kinds since 2026-11-15 (`scripts/outreach_world_topics.py`; Juniper: the
+choices should be about the world, not Orion's machinery):
+
+- **People** (`person:<person_id>`): someone Juniper named for the cameras (a
+  `person_link` from a name she typed; never a copied label or an unnamed
+  cluster; not Juniper or Orion; office camera left out, it has its own door)
+  whose newest visit (last 36 h) is new: back after 4+ days away, first time in
+  the 60-day window, or at a time of day none of 6+ earlier visits (4+ days)
+  came within 1.5 h of. A camera match is a cluster match, not proof: the visit
+  also needs 3+ frames or 5+ s of dwell, is dropped when another named person
+  matched on the same camera within 2 minutes, and the text says "a camera
+  match". Names Juniper gave to roles ("Mail carrier") are in scope as named.
+  Version = the visit's first sighting id; the topic cites
+  `vision_individual_sighting:<id>`. Flag `HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED`.
+- **Chat threads** (`chat_thread:<correlation_id>`): a chat turn of Juniper's in
+  the last 7 days where Orion's reply ended on a question and her next message
+  came 2+ hours later (or not yet). Plumbing-shaped threads (code span, URL,
+  path, `#123`, `snake_case`, `qwen38`-style words) are left out. Cites
+  `chat_history_log:<id>`. Flag `HUB_ENDOGENOUS_OUTREACH_CHAT_THREAD_TOPICS_ENABLED`.
+  Promises are not used: Orion Prime already carries each one back to its thread.
+
+Order is unchanged: freshest first across every kind (a person topic's time is
+its visit's last sighting; a chat thread's is the reply that asked). The
+decision row stores each shown topic's `evidence_ref`, and the published
+choice's situation carries them as `evidence`. Readout and live candidate count:
+`services/orion-hub/evals/run_outreach_choice_readout.py [--candidates]`.
+
 - A pick sends the message about that topic (a read's article summary rides
   under it, as the readings door delivers it). `Pick: 0` or PASS records
   `orion_declined` and sends nothing. Two or more topics and no Pick line:
@@ -1357,6 +1384,23 @@ personality choice lanes (`orion/personality/choices.py`, durable-runs `curiosit
 arm: no prior was chosen from an offer. Orion's Day, Temporal Self and reading credit read the rows as
 they read investigations. Before this, 97 of 100 philosophical findings (all from self-inquiry) had
 no outcome row.
+
+**Finding register** (curiosity event wants step 2, since 2026-11-15,
+`HUB_CURIOSITY_FINDING_REGISTER_ENABLED`, default true). After every finished curiosity turn (both
+lines) Hub writes one row to `curiosity_finding_register`, in the background:
+
+- *register*: the curiosity lane's own route (`HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE`) judges the
+  finding with the pinned prompt v2 (`orion/curiosity/register.py`): `philosophical`, `operational`
+  or `no_finding`. Kept only when the served model passed the judge-agreement eval (Flash-Next:
+  philosophical-or-not kappa 0.856; `scripts/analysis/eval_curiosity_register_judge.py`). Anything
+  else leaves `register` NULL with `judge_error`, never "operational by default".
+- *novelty*: `1 - max cosine` against everything Orion wrote before the run (graph answer nodes,
+  prior claims, Day letters), embedded through `HUB_CURIOSITY_SEARCH_EMBED_URL` and cached in
+  `curiosity_novelty_corpus`. Any embed failure leaves `novelty` NULL with `novelty_error`.
+
+Insert-only; a label is never re-judged. Log line: `curiosity_register run=<id> register=<r>
+novelty=<v> judge=<model>`. Migration: `services/orion-sql-db/manual_migration_curiosity_finding_register_v1.sql`.
+Nothing reads the label yet; the curiosity event-want producer (step 3) will.
 
 `HUB_CURIOSITY_SPEND_LOG_ENABLED=false` stops all three writes. The migration
 must be applied first:
@@ -3659,6 +3703,8 @@ Stage 2 then gets, in its prompt, the concepts this read produced (looked up as 
 
 **Meaning-only link rule `reading_meaning_target_v1` (2026-10-14).** A claim to a concept offered by meaning only (its label is not in the read) used to stay `proposed` by construction. It is now accepted to `provisional` when, and only when: the predicate is `associated_with`; the quote (4+ words) is found verbatim in the retained text and names the SUBJECT (this read's own concept) by its stored label; both ids are stored nodes; and the concept was in this read's offered list (the context bound with the prompt). The prompt says so. Other predicates are `meaning_target_predicate`, a quote not naming the subject is `quote_not_about_subject`; both stay `proposed`. A meaning-offered concept whose label the text does contain is treated as a named target (full quote rule). Decisions carry policy `reading_meaning_target_v1`, receipts reason `accepted_meaning_target`; `reading_claims_recorded` logs `meaning_rule_decisions=N`. Revert: `HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED=false` (default `true`) stops new ones; `python3 scripts/reading_meaning_links.py list|withdraw [--yes] [--since ISO] [--seed-file F]` (from `services/orion-hub`, `PYTHONPATH=.:../..`) counts them and appends a `rejected` decision on each standing one, which Hub's projector closes on its next tick. Eval: `pytest services/orion-hub/evals/test_reading_assertion_eval.py -s` (meaning batch); live replay: `run_reading_link_targets_replay.py --tags meaning_rule --llm-url ...`.
 
+**Reading choice point (personality rev 4, Move 1; 2026-11-15).** Stage 2 already ends with `need_stage1_urls`, the links Orion wants to read next. The Stage 2 prompt now also shows a numbered list of up to 12 links Stage 1's read contained (`orion/world_pulse_read/next_read_choice.py`): page order (Stage 1's fetch order, then position in the retained text) is the market rank; the pages Stage 1 fetched, asset files, the read site's own top-level navigation and links Orion already read (exact URL) are left out. No list when the read's chain already holds `HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS` hops (every pick would be refused). After the pass, Hub parses the list back out of the prompt actually bound to the durable turn (never a recomputation) and publishes one `PersonalityChoiceV1` (lane `reading`) per pick on `orion:personality:choice`: a listed link carries its rank, a fetched link outside the list (met this turn, or a parent-page link the list left out; `situation.unlisted_picks`) is an unranked pick, an empty list is `declined_all` over every shown link, guessed (never-fetched) URLs are ignored. Reading rows feed tendencies and care but never the family endorsement score, source (c) (`ENDORSEMENT_EXCLUDED_LANES` in `orion/physiology/weights.py`): every option is in `hub.world_pulse_read` and the choice happens inside a reading run, so the rate would only measure "kept reading once already reading". Source (c) also now counts one decision per offer, not one row per pick. No new model call. Log: `reading_choice seed=... reason=picked|declined_all|no_links_shown|only_unfetched_urls|all_shown_picked shown=N picked=N published=N`. Off: `HUB_WORLD_PULSE_READ_CHOICE_ENABLED=false` (default `true`) removes the list and the rows; hops are unchanged. Eval: `pytest services/orion-hub/evals/test_reading_choice_eval.py`; live read-only estimate: `PYTHONPATH=. python services/orion-hub/evals/run_reading_choice_replay.py --days 7`.
+
 **Reread backfill for reads with no retained text.** `operator.reread_read` puts a finished read (both stages terminal, no other row on the URL) back to Stage 1 pending on the same seed row, consuming its finished durable runs (the success path leaves them unconsumed, and `bind_turn` would otherwise resubmit the old run and get its cached result); Hub's workers then read it again exactly like a new read (new durable attempt, text retained, Stage 2 again). The stale digest sweep spares a pending row that already holds a read. `scripts/reading_reread_backfill.py snapshot|run --yes|report|rollback [--yes] [--restore-seeds]` drives it `--concurrency N` reads at a time (default 1; N > 1 needs Hub `HUB_WORLD_PULSE_READ_MAX_IN_FLIGHT >= N`), starting each only while the GPU pool has nothing but this run's own reads and the reading queue is otherwise idle (a re-queued row keeps its old `created_at` and would jump live reads), restoring the old row when a re-read does not finish, under `/tmp/reading-reread-backfill/` (`progress.log`, `snapshot.jsonl`, `results.jsonl`, `report.md`, `before_after.csv`); `run` refuses until the running Hub has this code and the flag on.
 
 **Reading tab (operator).** Hub's **Reading** tab (`#reading`, standalone at `/reading`) lists every read newest-first and shows what each produced: Stage 1's `what_i_learned`, candidate priors, concept candidates, open threads and `read_evidence`; Stage 2's summary, priors tested, hops and round trips; matching journal entries; durable runs and duplicate requests. A handoff on a row whose Stage 1 did not finish is labelled rejected, never shown as learning. Old skipped digest items are hidden unless asked for. Endpoints (under `/world-pulse-read`):
@@ -4298,6 +4344,11 @@ Design:
 - **Hub tab.** The Curiosity tab shows the pending focus under Today's budget
   with a Clear button (`DELETE /curiosity/api/focus/{focus_id}`, pending only),
   and a run chip that took a focus says so.
+- **Cheap read (#3366).** `GET /curiosity/api/focus/pending` returns only the
+  pending focus (`{"available", "focus", "enabled"}`, the same payload the
+  schedule carries as `pending_focus`): one indexed row read, no dashboard.
+  Prime's move check reads it with a 4 s timeout; `/curiosity/api/runs` took
+  4-44 s live. `available: false` means unreadable, never "none pending".
 - **Trace (one chat correlation id).** `curiosity_focus_queued focus_id=...
   chat_corr=...` -> `curiosity_focus_offered run=... focus_id=...` ->
   `curiosity_focus_outcome run=... turn_ok=... disposition=...`.

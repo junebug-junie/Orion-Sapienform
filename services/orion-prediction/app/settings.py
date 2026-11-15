@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     # hour", settled against chat_message and graded vs a base rate. false = no issue/settle loop.
     reachable_enabled: bool = Field(True, alias="PREDICTION_REACHABLE_ENABLED")
 
+    # Act chain (app/act_chain.py, family B): every 15 min, a forecast of which act Orion does next,
+    # settled from grammar_acts. GET /act-chain. false = no issue/settle loop.
+    act_chain_enabled: bool = Field(True, alias="PREDICTION_ACT_CHAIN_ENABLED")
+
     # Power-bill bet (app/bill_forecast.py): once a day, Orion's projection of the current RMP bill (kWh,
     # pre-tax $) with an 80 % range, settled when the bill lands (energy_bill_actual). false = no loop.
     bill_forecast_enabled: bool = Field(True, alias="PREDICTION_BILL_FORECAST_ENABLED")

@@ -44,7 +44,9 @@ def main() -> None:
     v["most_surprising"] = [{"origin": r["origin"].isoformat(), "block": r["block"], "prev": r["prev_state"],
                              "observed": r["observed"], "p_observed": float(r["probs"][C.MODEL][r["observed_i"]]),
                              "surprise": r["scores"][C.MODEL]["surprise"]} for r in top]
-    v["chosen_k_median"] = {m: float(np.median([r["k"][m] for r in rows if m in r["k"]])) for m in rows[-1]["k"]} if rows else {}
+    v["chosen_k_median"] = ({m: float(np.median([r["k"][m] for r in rows if m in r["k"]]))
+                             for m in rows[-1]["k"] if m != "lambda_prev"} if rows else {})
+    v["lambda_prev_median"] = float(np.median([r["k"]["lambda_prev"] for r in rows if "lambda_prev" in r["k"]])) if rows else None
     v["daily_excess"] = {str(d): x for d, x in sorted(C._by_day(rows, C.MODEL, "excess").items())}
     v["replay"] = {"from": start.isoformat(), "to": end.isoformat(), "acts": len(acts),
                    "acts_landed_35min_plus_after_open": sum(1 for o, c, _ in acts if c - o > C.SETTLE_GRACE + C.GRAIN)}

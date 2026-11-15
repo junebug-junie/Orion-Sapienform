@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from typing import Any, AsyncIterator, Callable, Dict, Optional
 
 import httpx
@@ -28,10 +29,11 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
 from orion.gpu_pool.client import Lease, LeaseUnavailable
+from orion.gpu_pool.value_order import is_operator_class
 from orion.llm.call_usage import STREAM_HEAD_BYTES
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 
-from . import call_usage_emit, grammar_emit
+from . import call_usage_emit, grammar_emit, lane_door
 from .ctx_overflow import is_context_overflow
 from .fast_thinking import GPU3_WORK_CLASSES, with_gpu3_route_defaults
 from .pool_placement import (
@@ -56,6 +58,25 @@ from .settings import settings
 from .vision import count_images, replace_images_with_note, resolve_vision_capability
 
 logger = logging.getLogger("orion-llm-gateway.passthrough")
+
+
+# An eval's one-off call on an operator route (orion/evals/leased_llm.gateway_call) names its holder here,
+# so gpu_pool_events records which eval ran (``operator:<eval>``), not the passthrough's default holder.
+# Honoured only for operator classes and only in the ``operator:<name>`` shape: Orion's own routes keep
+# their holders.
+OPERATOR_HOLDER_HEADER = "x-orion-operator-holder"
+_OPERATOR_HOLDER_RE = re.compile(r"operator:[A-Za-z0-9_.:-]{1,64}")
+
+
+def holder_for(request: Request, route_key: str, default: str) -> str:
+    raw = (request.headers.get(OPERATOR_HOLDER_HEADER) or "").strip()
+    if not raw or not _OPERATOR_HOLDER_RE.fullmatch(raw):
+        return default
+    try:
+        work_class = route_spec(route_key).work_class
+    except Exception:  # noqa: BLE001 -- an unknown route is refused later, with its own error
+        return default
+    return raw if is_operator_class(work_class) else default
 
 
 class _UpstreamStatus(Exception):
@@ -353,6 +374,9 @@ async def proxy_on_pool(
 
         may_release = overflow_response is None and not clamped and hold is None
         upstream_url = f"{lease.grant.url.rstrip('/')}{path}"
+        # The lane door in front of the server: the key and THIS lease (a child's own id under a hold).
+        upstream_headers = {**headers, **lane_door.headers(lease.lease_id)}
+        lane_door.observe_grant(lease.grant.url)
         if on_dispatch is not None:
             on_dispatch(upstream_url, lease.grant.served_by, stream)
         watch = asyncio.ensure_future(wait_lease_revoked(lease))
@@ -380,7 +404,8 @@ async def proxy_on_pool(
             if stream:
                 client = httpx.AsyncClient(timeout=timeout)
                 try:
-                    upstream_request = client.build_request("POST", upstream_url, headers=headers, json=dispatch_body)
+                    upstream_request = client.build_request("POST", upstream_url, headers=upstream_headers,
+                                                          json=dispatch_body)
                     upstream = await _race_response(client.send(upstream_request, stream=True), watch, request)
                 except BaseException:
                     await client.aclose()
@@ -465,7 +490,8 @@ async def proxy_on_pool(
                 return streaming
 
             async with httpx.AsyncClient(timeout=timeout) as client:
-                upstream = await _race_response(client.post(upstream_url, headers=headers, json=dispatch_body), watch, request)
+                upstream = await _race_response(client.post(upstream_url, headers=upstream_headers, json=dispatch_body),
+                                                watch, request)
             report.clock.replied()
             response = _plain_response(upstream.content, upstream)
             if upstream.status_code >= 400:

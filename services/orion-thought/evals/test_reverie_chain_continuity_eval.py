@@ -21,7 +21,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
-from jinja2 import Environment
+from orion.cognition.prompt_render import prompt_environment
 
 from orion.schemas.attention_frame import (
     AttentionBroadcastProjectionV1,
@@ -34,7 +34,7 @@ from orion.schemas.thought import CoalitionSnapshotV1
 
 _FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "reverie_chains_2026-10-16.json").read_text())
 _PROMPT = Path(__file__).resolve().parents[3] / "orion" / "cognition" / "prompts" / "reverie_narrate.j2"
-_TEMPLATE = Environment().from_string(_PROMPT.read_text())
+_TEMPLATE = prompt_environment().from_string(_PROMPT.read_text())
 
 
 def _broadcast() -> AttentionBroadcastProjectionV1:

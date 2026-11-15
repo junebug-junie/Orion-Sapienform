@@ -18,8 +18,9 @@ from orion.substrate.biometrics_loop.candidate_events import build_pressure_cand
 from orion.substrate.biometrics_loop.emission_validator import validate_organ_emission
 from orion.substrate.biometrics_loop.pressure_organ import invoke_biometrics_pressure
 
+from tests._biometrics_catalog_fixture import ONDEMAND_BOX, make_catalog
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
-CATALOG_PATH = REPO_ROOT / "config" / "biometrics" / "node_catalog.yaml"
 FIXED_TS = datetime(2026, 5, 24, 12, 0, 0, tzinfo=timezone.utc)
 
 ALLOWED_ROLES = {
@@ -45,7 +46,9 @@ def _group_traces(events: list[GrammarEventV1]) -> list[list[GrammarEventV1]]:
 
 @pytest.fixture
 def catalog() -> NodeCatalog:
-    return NodeCatalog.load(CATALOG_PATH)
+    # Hermetic: the expected-offline arm must not depend on a real host's flag
+    # (PR #3362 flipped hecate's to true 2026-11-14 when the box came back up).
+    return make_catalog()
 
 
 def _trigger_event(node_id: str = "circe") -> GrammarEventV1:
@@ -109,21 +112,23 @@ def _active_pressure(
 
 
 def test_expected_offline_node_emits_suppression_candidate(catalog: NodeCatalog) -> None:
-    """Rule A. Names `hecate`, which the catalog declares `expected_online: false`
-    (on-demand box, no biometrics service running). Previously named `atlas`, which is now a
+    """Rule A. Names `ONDEMAND_BOX`, which the fixture catalog declares
+    `expected_online: false`. It named the real `hecate` until 2026-11-14, when the box
+    came back up with a second V100 and its production flag went true (PR #3362) -- see
+    tests/_biometrics_catalog_fixture.py. Previously it named `atlas`, which is now a
     RETIRED host (catalog `retired_nodes:`) and gets no candidates at all -- see
     tests/test_retired_biometrics_node.py::test_organ_emits_nothing_for_a_retired_host. Before that it named `circe`, whose entry was
     flipped to `true` on 2026-07-18."""
     stale_ts = FIXED_TS - timedelta(seconds=300)
     emission = invoke_biometrics_pressure(
-        trigger_event=_trigger_event("hecate"),
+        trigger_event=_trigger_event(ONDEMAND_BOX),
         node_bio=_node_bio(
-            node_id="hecate",
+            node_id=ONDEMAND_BOX,
             availability_status="offline_expected",
             last_seen_at=stale_ts,
             expected_online=False,
         ),
-        active_pressure=_active_pressure(node_id="hecate"),
+        active_pressure=_active_pressure(node_id=ONDEMAND_BOX),
         catalog=catalog,
         stale_after_sec=180,
         now=FIXED_TS,

@@ -146,3 +146,18 @@ test("DOM layer never writes HTML: upstream text only via textContent", () => {
   const src = fs.readFileSync(path.join(__dirname, "personality.js"), "utf8");
   assert.deepStrictEqual(src.match(/\.(innerHTML|outerHTML|insertAdjacentHTML)\b/g), null);
 });
+
+test("aboutView: full chosen and passed-over words from the examples, each once, declines in words", () => {
+  const long = "The walkway render break is unresolved and still live each morning — 59 http_500 compose failures "
+    + "in 81 minutes on 11-13 (a thread from my letter for 11-13)";
+  const ex = [
+    { ...CHOICE, chosen: { text: long, market_rank: null }, passed_over: [{ text: "Chat memory has never been promoted" }] },
+    { ...CHOICE, chosen: { text: long, market_rank: null }, passed_over: [{ text: "Chat memory has never been promoted" }, null] },
+    { ...CHOICE, lane: "prime", chosen: null, declined_all: true, passed_over: [{ text: long }] },
+  ];
+  const a = p.aboutView(ex);
+  assert.deepStrictEqual(a.chose, [long, "Made no move"]);   // full text, never cut
+  assert.deepStrictEqual(a.over, ["Chat memory has never been promoted", long]);
+  assert.deepStrictEqual(p.aboutView(null), { chose: [], over: [] });
+  assert.deepStrictEqual(p.tendencyView({ examples: ex }).about, a);
+});

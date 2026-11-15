@@ -13,7 +13,8 @@ select -> issue -> score loop, as one multivariate series, on the service's own 
   ``metrics`` hold everything scoring needs later (targets, standardisation, covariance, calibration
   tails), so rows issued before a restart are scored with the run that issued them.
 - **issue** (each completed 5-min bucket): the hygiene gate runs on the last 24 h of every named input
-  (present, not stuck, inside its training band, fresh). A refusal stores one ``refused`` joint row per
+  (present, inside its training band, fresh; a flat reading at rest is not refused -- degeneracy is a
+  select-time decision). A refusal stores one ``refused`` joint row per
   horizon with the reasons and logs them; nothing is forecast (refuse, never degrade). Otherwise each
   forecastable reading gets a ``prediction_forecast`` row (``series_id = 'family_a:<id>'``, role
   champion, 80/95 % ranges from its validation residuals), the other rung a shadow row, and each horizon

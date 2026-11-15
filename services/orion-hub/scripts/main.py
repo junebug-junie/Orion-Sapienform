@@ -724,6 +724,10 @@ async def startup_event():
                 stale_prior_tests=settings.HUB_CURIOSITY_STALE_PRIOR_TESTS,
                 spend_log_enabled=settings.HUB_CURIOSITY_SPEND_LOG_ENABLED,
                 self_inquiry_outcomes_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED,
+                finding_register_enabled=settings.HUB_CURIOSITY_FINDING_REGISTER_ENABLED,
+                finding_register_embed_url=settings.HUB_CURIOSITY_SEARCH_EMBED_URL,
+                llm_intake_channel=settings.CHANNEL_LLM_INTAKE,
+                llm_gateway_service=settings.LLM_GATEWAY_SERVICE_NAME,
                 value_order_enabled=settings.HUB_CURIOSITY_VALUE_ORDER_ENABLED,
                 value_order_propensity=settings.HUB_CURIOSITY_VALUE_ORDER_PROPENSITY,
                 replica_arm_enabled=settings.HUB_CURIOSITY_REPLICA_ARM_ENABLED,
@@ -991,6 +995,7 @@ async def startup_event():
                 store_provider=concept_atlas_routes_runtime._get_substrate_store,
                 assertions_enabled=settings.HUB_WORLD_PULSE_READ_ASSERTIONS_ENABLED,
                 meaning_target_links=settings.HUB_WORLD_PULSE_READ_MEANING_TARGET_LINKS_ENABLED,
+                choice_enabled=settings.HUB_WORLD_PULSE_READ_CHOICE_ENABLED,
                 # Claim objects by meaning: reading search's Chroma + embedder, own
                 # collection (orion/world_pulse_read/concept_search.py). Empty URLs = off.
                 concept_search=SearchConfig(
@@ -1029,6 +1034,22 @@ async def startup_event():
                     endogenous_outreach.topic_sources.append(reading_finding_outreach.outreach_topics)
             except Exception:  # noqa: BLE001 -- never blocks Hub boot
                 logger.exception("reading_finding_outreach_start_failed")
+
+            # People Juniper named, seen in a new way, and chat threads that went quiet after Orion's
+            # question: two more topic kinds at the tick's choice point (scripts/outreach_world_topics.py).
+            try:
+                if endogenous_outreach is not None and endogenous_outreach.choice_enabled:
+                    from scripts.outreach_world_topics import chat_thread_source, people_source
+
+                    _topic_pool = lambda: getattr(app.state, "memory_pg_pool", None)  # noqa: E731
+                    if settings.HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED:
+                        endogenous_outreach.topic_sources.append(
+                            people_source(_topic_pool, tz_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ))
+                    if settings.HUB_ENDOGENOUS_OUTREACH_CHAT_THREAD_TOPICS_ENABLED:
+                        endogenous_outreach.topic_sources.append(
+                            chat_thread_source(_topic_pool, tz_name=settings.HUB_ENDOGENOUS_OUTREACH_TZ))
+            except Exception:  # noqa: BLE001 -- never blocks Hub boot
+                logger.exception("outreach_world_topics_start_failed")
 
             # Each finished read posts an event want into the body economy (attention as the want
             # competition, patch 2): salience = the links it made, as a percentile of 30 days of reads.

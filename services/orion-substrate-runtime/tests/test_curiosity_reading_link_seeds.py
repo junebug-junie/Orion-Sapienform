@@ -202,13 +202,14 @@ def test_idle_tick_stores_only_the_link_seed_and_runs_no_decision(monkeypatch):
     assert "evaluator_outcome" not in gate and "seed_count" not in gate
 
 
-def test_idle_tick_without_links_is_unchanged(monkeypatch):
+def test_idle_tick_without_links_says_it_was_idle(monkeypatch):
     worker = _worker(monkeypatch, rows=[])
     with patch("orion.substrate.graphdb_store.build_substrate_store_from_env", return_value=_graph()), \
             patch("orion.substrate.endogenous_curiosity.endogenous_curiosity_candidates", return_value=[]):
         worker._endogenous_curiosity_tick()
     call = worker._store.save_endogenous_curiosity_candidates.call_args
-    assert call.args[0] == [] and "gate" not in call.kwargs
+    # #3394: no link gate, and not a bare row either -- the row says no decision ran.
+    assert call.args[0] == [] and call.kwargs["gate"] == {"gate_result": "idle_no_seeds"}
 
 
 def test_link_seeds_never_reach_admission_or_the_evaluator(monkeypatch):

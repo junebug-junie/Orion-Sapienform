@@ -32,10 +32,12 @@ set -euo pipefail
 
 ATHENA_V4="${ORION_PORT_GATE_ALLOW_V4:-100.92.216.81}"
 ATHENA_V6="${ORION_PORT_GATE_ALLOW_V6:-fd7a:115c:a1e0::733:d851}"   # athena `tailscale ip -6`
-# chat 8011, metacog 8012, fast 8013, diffusion 8014, agent 8015, agent-burst 8016, bonsai 8017;
-# lane controller 8090; experiment 8099. tests/test_circe_llm_port_gate.py keeps this in step
-# with the CI gate (config/gpu_pool.yaml + the worker services' *_HOST_PORT keys).
-PORTS="8011:8017,8090,8099"
+# kev 8009 (System One appraisal; called directly by substrate-runtime on athena, no pool lease, no lane
+# door -- leased-evals design answer 7, 2026-11-12); chat 8011, metacog 8012, fast 8013, diffusion 8014,
+# agent 8015, agent-burst 8016, bonsai 8017; lane controller 8090; experiment 8099.
+# tests/test_circe_llm_port_gate.py keeps this in step with the CI gate (config/gpu_pool.yaml + the worker
+# services' *_HOST_PORT keys) and pins kev.
+PORTS="8009,8011:8017,8090,8099"
 CHAIN=ORION-LLM-GATE
 
 run() {

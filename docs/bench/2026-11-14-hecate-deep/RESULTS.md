@@ -117,9 +117,25 @@ in 322.11 s (baseline 643.48 s), TTFT 200.67 s, decode 134.94 tokens/s, followed
 correct 8192-token recovery. Prefill is unchanged; the gain is decode only. Decode
 speed depends on draft acceptance, so it varies with the text being generated.
 
-Not yet measured for DFlash2: the 12-run task-quality suite, completed-task energy,
-and the source-text distractor run (`deep_context.py --filler-file`, added in this
-patch). DFlash2 is not promoted until task quality matches the baseline.
+### DFlash2 task quality: 12/12 passed
+
+Same `deep_quality.py` suite, three repeats, run 2026-11-15 in a throwaway container
+from the worker image through the leased Gateway. Raw: `dflash-quality.jsonl`.
+
+| Task | Baseline pass | DFlash2 pass | Median seconds (base / DFlash2) | Median output tokens | Median decode tokens/s |
+| --- | :---: | :---: | ---: | ---: | ---: |
+| lease-generation | 3/3 | 3/3 | 51.1 / 28.0 | 2450 / 2977 | 48.8 / 108.3 |
+| bounded-plan | 3/3 | 3/3 | 102.7 / 70.3 | 4967 / 7686 | 48.7 / 110.1 |
+| memory-provenance | 3/3 | 3/3 | 86.4 / 20.5 | 4179 / 2512 | 48.7 / 126.3 |
+| retry-transaction | 3/3 | 3/3 | 19.9 / 7.2 | 943 / 972 | 48.9 / 157.4 |
+
+Decode is 2.2-3.2x faster on these tasks. Reasoning length differs between engines
+(+55% on bounded-plan, -40% on memory-provenance) with identical correct answers,
+so per-task time savings partly reflect different sampled reasoning paths, not only
+speed. Four problems cannot show a quality difference in either direction.
+
+Not yet measured for DFlash2: completed-task energy and the source-text distractor
+run (`deep_context.py --filler-file`, added in this patch).
 
 The Strata challenger is still unmeasured. No model
 ranking follows from capacity alone. Strata reserves eight internal tokens, so its

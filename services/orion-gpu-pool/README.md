@@ -212,6 +212,12 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
   one-off calls have no free slot: they wait for a run's gap (the shortest of the running calls).
 - **Two holds on a swap seat**: an owner reclaim or `max_hold_sec` drain recalls both holds in the
   same tick (two take-backs, each with the 600 s grace); the seat unloads once both have left.
+- **Background hold cap** (H6, #3391): a background-priority hold that has been granted for
+  `defaults.background_max_hold_sec` (code default 9000 s, 2.5 h) without a break is recalled with
+  reason `background_max_hold`, on any role and for any work class, then gets the normal 600 s grace.
+  A retryable hold (every durable run) is re-queued in its place; a hold nobody retries is released.
+  Operator holds are exempt. Check: `select holder, role, held_ms/1000 from gpu_pool_events where
+  event in ('released','aborted') and held_ms > 9700000` returns no background hold after deploy.
 - **Recall**: a hold borrowing another class's role is recalled as soon as that owner has demand
   there; a swap seat with `max_hold_sec` (agent-gpu2: 9000 s, ~2.5 h since stage 5.1) drains after being loaded that long.
   A recalled hold gets `hold_clawback_grace_sec` (600 s) to finish its current node, then is

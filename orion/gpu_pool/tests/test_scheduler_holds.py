@@ -147,9 +147,59 @@ def test_children_are_never_recalled_on_their_own():
     assert {r.lease_id for r in of(Recall, run([h, c], crds=crds))} == {"h"}
 
 
-def test_a_long_hold_on_the_home_seat_is_never_capped():
-    h = hold("granted", "agent", lease_id="h", granted_at=T0 - timedelta(hours=8))
+def test_a_long_system_hold_on_the_home_seat_is_never_capped():
+    # Only background holds have a clock (H6); the home seat itself has no max_hold_sec.
+    h = hold("granted", "agent", lease_id="h", priority="system", granted_at=T0 - timedelta(hours=8))
     assert not of(Recall, run([h]))
+
+
+# --- H6: a background hold is taken back at defaults.background_max_hold_sec (#3391) -------
+CAP = CFG.defaults.background_max_hold_sec
+
+
+def test_the_background_hold_cap_ships_on_above_orions_own_longest_hold():
+    # 11-05..11-15, 1,650 durable-run holds: max 8,545 s. The trial that prompted this: 25,126 s.
+    assert CAP == 9000 and 8545 < CAP < 25126
+
+
+def test_a_background_hold_is_recalled_at_the_cap_and_not_before():
+    under = hold("granted", "agent", lease_id="h", granted_at=T0 - timedelta(seconds=CAP - 1))
+    assert not of(Recall, run([under]))
+    at = hold("granted", "agent", lease_id="h", granted_at=T0 - timedelta(seconds=CAP))
+    [r] = of(Recall, run([at]))
+    assert (r.lease_id, r.reason) == ("h", "background_max_hold")
+    assert r.recall_by == T0 + timedelta(seconds=CFG.defaults.hold_clawback_grace_sec)
+
+
+def test_the_cap_is_for_any_work_class_and_a_hold_nobody_retries():
+    # The 11-13 trial: a plain background hold on the agent lane, not retryable, 7 h long.
+    trial = lease("operator_agent", "granted", "agent", priority="background", kind="hold",
+                  lease_id="trial", granted_at=T0 - timedelta(seconds=25126))
+    assert [(r.lease_id, r.reason) for r in of(Recall, run([trial]))] == [("trial", "background_max_hold")]
+
+
+def test_the_capped_hold_is_aborted_after_its_grace_and_the_waiting_run_gets_the_seat():
+    waiting = hold(lease_id="q")
+    recalling = hold("recalling", "agent", lease_id="h", reason="background_max_hold",
+                     granted_at=T0 - timedelta(seconds=CAP + 600), recall_by=T0 - timedelta(seconds=1))
+    decisions = run([recalling, waiting])
+    assert [a.lease_id for a in of(Abort, decisions)] == ["h"]
+    # Next tick the seat is free: the waiting run is granted it.
+    assert grants(run([waiting])) == {"q": "agent"}
+
+
+def test_operator_and_non_background_holds_are_not_capped_by_it():
+    long_ago = T0 - timedelta(seconds=CAP * 3)
+    operator = lease("agent", "granted", "agent", priority="background", kind="hold", operator=True,
+                     lease_id="op", granted_at=long_ago)
+    interactive = hold("granted", "agent", lease_id="i", priority="interactive", granted_at=long_ago)
+    assert not of(Recall, run([operator])) and not of(Recall, run([interactive]))
+
+
+def test_no_cap_when_the_default_is_none():
+    cfg = CFG.model_copy(update={"defaults": CFG.defaults.model_copy(update={"background_max_hold_sec": None})})
+    h = hold("granted", "agent", lease_id="h", granted_at=T0 - timedelta(hours=8))
+    assert not of(Recall, run([h], cfg=cfg))
 
 
 def test_seat_loaded_past_max_hold_drains_recalls_then_unloads():
@@ -166,7 +216,8 @@ def test_seat_loaded_past_max_hold_drains_recalls_then_unloads():
 
 def test_observed_seat_without_loaded_at_is_never_max_held():
     observed = cards(gpu2=CardLive("gpu2", swapped_in={"agent-gpu2"}))
-    h = hold("granted", "agent-gpu2", lease_id="h", granted_at=T0 - timedelta(hours=5))
+    # Granted 2 h ago: under the background hold cap (H6), so only the seat clock is in play.
+    h = hold("granted", "agent-gpu2", lease_id="h", granted_at=T0 - timedelta(hours=2))
     assert not of(Recall, run([h], crds=observed))
 
 

@@ -26,6 +26,7 @@ A prompt with no section (bound before this shipped, or the flag off) yields no 
 from __future__ import annotations
 
 import hashlib
+import html
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -113,6 +114,7 @@ def option_text(label: str, url: str) -> str:
 def link_labels(text: str) -> dict[str, str]:
     """hop key -> the words a page wrote for a link: markdown anchor text, else its line."""
     out: dict[str, str] = {}
+    text = html.unescape(text)  # as urls_in_text does, so the hop keys agree
     for m in _MD_LINK.finditer(text):
         k = hop_url_key(m.group(2))
         if k and k not in out and _clean(m.group(1)):
@@ -136,20 +138,34 @@ def _is_asset(url: str) -> bool:
     return path.endswith(_ASSET_EXT)
 
 
+def _is_site_nav(url: str, page_host: str) -> bool:
+    """A link back into the read page's own site at path depth 0-1 (home, /about, /newshour):
+    navigation a fetch digest lists first, not a piece to read. Links to other sites always stay."""
+    if not page_host or _host(url) != page_host:
+        return False
+    try:
+        parts = [p for p in urlsplit(url).path.split("/") if p]
+    except ValueError:
+        return True
+    return len(parts) <= 1 and not urlsplit(url).query
+
+
 def candidate_links(
     texts: Iterable[tuple[str, str]], *, exclude_urls: Iterable[str] = ()
 ) -> list[NextReadLink]:
     """Every link written in Stage 1's retained texts, in fetch order then page order, deduplicated
-    by hop identity. The pages Stage 1 itself fetched (``exclude_urls``) and asset files are left out.
+    by hop identity. The pages Stage 1 itself fetched (``exclude_urls``), asset files and the read
+    site's own top-level navigation (``_is_site_nav``) are left out.
     Ranks are 1.. in that order. Pure."""
     skip = {k for k in (hop_url_key(u) for u in exclude_urls) if k}
     seen: set[str] = set()
     out: list[NextReadLink] = []
     for page_url, text in texts:
         labels = link_labels(text or "")
+        page_host = _host(page_url or "")
         for url in urls_in_text(text, page_url):
             k = hop_url_key(url)
-            if not k or k in skip or k in seen or _is_asset(url):
+            if not k or k in skip or k in seen or _is_asset(url) or _is_site_nav(url, page_host):
                 continue
             seen.add(k)
             out.append(NextReadLink(url=url, label=labels.get(k, ""), rank=len(out) + 1))
@@ -223,8 +239,10 @@ def reading_choices(
     """Shown links + Orion's ``need_stage1_urls`` -> choice rows, and a reason label for the log.
 
     * A picked URL that matches a shown link is that option (its market rank).
-    * A picked URL Orion found itself this turn (in the hop allowlist, not in the list) is a chosen
-      option with no market rank: Orion went past the list.
+    * A picked URL outside the shown list but in the hop allowlist is a chosen option with no market
+      rank: Orion went past the list. That is a link Orion fetched or met this turn, or a parent-page
+      link the list left out (past the cap, navigation, already read). ``situation["unlisted_picks"]``
+      counts them.
     * A picked URL outside the allowlist (guessed, never fetched) is not an option and is ignored.
     * Nothing picked at all, with links shown: ``declined_all`` (one row, every shown link declined).
     * Guessed URLs only: no row (Orion wanted more but named nothing real; not a decline).
@@ -258,12 +276,13 @@ def reading_choices(
         return [], "all_shown_picked"
     sit = dict(situation or {})
     sit["links_shown"] = len(shown)
+    sit["unlisted_picks"] = sum(1 for c in chosen if c.market_rank is None)
     if not chosen:
         if any_named:
             return [], "only_unfetched_urls"
         try:
             return [PersonalityChoiceV1(
-                choice_id=f"reading:{seed_id}:none"[:300], lane="reading", occurred_at=occurred_at,
+                choice_id=f"reading:{seed_id[:250]}:none", lane="reading", occurred_at=occurred_at,
                 alternatives=alternatives, declined_all=True, situation=sit,
                 act_id=act_id, correlation_id=correlation_id)], "declined_all"
         except Exception:  # noqa: BLE001 - a bad row never touches the read
@@ -273,7 +292,7 @@ def reading_choices(
     for c in chosen[:MAX_CHOICE_LIST]:
         try:
             out.append(PersonalityChoiceV1(
-                choice_id=f"reading:{seed_id}:{c.key.rsplit(':', 1)[-1]}"[:300], lane="reading",
+                choice_id=f"reading:{seed_id[:250]}:{c.key.rsplit(':', 1)[-1]}", lane="reading",
                 occurred_at=occurred_at, chosen=c, alternatives=alternatives, picks_in_decision=picks,
                 situation=sit, act_id=act_id, correlation_id=correlation_id))
         except Exception:  # noqa: BLE001 - one bad pick never sinks the others
@@ -281,6 +300,8 @@ def reading_choices(
     return (out, "picked") if out else ([], "invalid_model")
 
 
+# Exact URL match, as READ_URL_SQL: a www/slash/scheme variant of a read page is still shown, and
+# picking it is a no-op hop (ALREADY_READ). Pending reads are shown too.
 ALREADY_READ_URLS_SQL = """
 SELECT DISTINCT r.url FROM world_pulse_read_seed r
 WHERE r.url = ANY($1::text[]) AND r.duplicate_of IS NULL AND r.status = 'done'

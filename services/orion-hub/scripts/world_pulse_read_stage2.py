@@ -156,6 +156,13 @@ class GenerateOutcome(NamedTuple):
     source_fetches: Optional[list[SourceFetchEvidenceV1]] = None
 
 
+# The same count enqueue_reading's round_trip_cap reads (orion/world_pulse_read/queue.py).
+CHAIN_HOPS_SQL = (
+    "SELECT count(*) FROM world_pulse_read_seed WHERE root_request_id = $1 "
+    "AND request_id <> $1 AND duplicate_of IS NULL"
+)
+
+
 class ParentRead(NamedTuple):
     """What the Stage 1 read behind this handoff actually retained."""
 
@@ -798,9 +805,18 @@ class WorldPulseReadStage2Pipeline:
     async def _next_read_options(self, handoff: WorldPulseReadHandoffV1, parent: ParentRead) -> list[NextReadLink]:
         """The links this read's Stage 2 prompt shows: Stage 1's retained text, page order, minus the
         pages Stage 1 fetched and links Orion already read. Fail-open: [] costs the list, not the pass."""
-        if not self.choice_enabled or not parent.texts:
+        if not self.choice_enabled or not parent.texts or self.max_round_trips <= 0:
             return []
         try:
+            req = request_for_seed(handoff.seed_ref)
+            root = req.root_request_id or req.request_id
+            hops = await self._with_conn(lambda conn: conn.fetchval(CHAIN_HOPS_SQL, root))
+            if hops is not None and int(hops) >= self.max_round_trips:
+                # enqueue_reading refuses every further hop in this chain (round_trip_cap), so
+                # "read next" is not on offer: no list, and no choice is recorded.
+                logger.info("reading_next_read_chain_full seed=%s hops=%s cap=%s",
+                            handoff.seed_ref.seed_id, hops, self.max_round_trips)
+                return []
             fetched = [handoff.seed_ref.url, *(e.url for e in handoff.read_evidence)]
             candidates = candidate_links(parent.texts, exclude_urls=fetched)
             if not candidates:

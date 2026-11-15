@@ -174,20 +174,24 @@ def endorsement_for(family: str, choices: Sequence[ChoiceRecord], *, since: date
 
 def _endorsement(family: str, choices: Sequence[ChoiceRecord], *, since: datetime, until: datetime
                  ) -> tuple[Optional[float], int, dict[str, float]]:
-    """(rate, n, id -> weight): a ``care_promoted`` point weighs ``CARE_PROMOTED_WEIGHT`` in the rate AND in n."""
-    num = den = 0.0
-    n = 0
+    """(rate, n, id -> weight): a ``care_promoted`` point weighs ``CARE_PROMOTED_WEIGHT`` in the rate AND in n.
+
+    One DECISION is one offer: a decision that picked several options (a reading pass that queued
+    three links writes three rows sharing one ``act_id``) counts once, as chosen when any of its rows
+    chose the family, at the largest weight among its rows. Counting rows would read one 3-pick pass
+    and one decline as 0.75 instead of 0.5."""
+    chose: dict[str, bool] = {}
     ids: dict[str, float] = {}
     for c in choices:
         if family not in c.offered_families or not c.real_choice or not since <= c.occurred_at < until:
             continue
         w = CARE_PROMOTED_WEIGHT if c.care_promoted else 1.0
-        den += w
-        num += w if c.chosen_family == family else 0.0
-        n += 1
         key = c.act_id or f"choice:{c.choice_id}"
         ids[key] = max(ids.get(key, 0.0), w)
-    return (num / den if den > 0 else None), n, ids
+        chose[key] = chose.get(key, False) or c.chosen_family == family
+    den = sum(ids.values())
+    num = sum(w for k, w in ids.items() if chose[k])
+    return (num / den if den > 0 else None), len(ids), ids
 
 
 @dataclass(frozen=True)

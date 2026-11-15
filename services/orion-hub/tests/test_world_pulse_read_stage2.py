@@ -54,6 +54,10 @@ from scripts.world_pulse_read_stage2 import (
     _build_stage2_prompt,
 )
 
+# The production _generate, kept before the autouse fixture swaps it out (the reading choice
+# point reads the bound prompt there).
+_REAL_GENERATE = WorldPulseReadStage2Pipeline._generate
+
 SOURCE = ServiceRef(name="orion-hub", version="0.1.0", node="test")
 NOW = datetime(2026, 9, 6, 15, 0, tzinfo=timezone.utc)
 
@@ -1458,7 +1462,7 @@ def test_prior_error_reads_the_seed_row_and_fails_open():
 
 _PARENT_TEXT = (
     "Fact checks:\n- [Stroke claim checked](https://politifact.com/a/stroke)\n"
-    "- Tariff refunds explained: https://ex.com/tariffs\n"
+    "- Tariff refunds explained: https://ex.com/news/tariffs\n"
 )
 
 
@@ -1495,7 +1499,7 @@ def _choice_rows(bus):
 
 def test_stage2_shows_the_parent_links_and_publishes_orions_pick() -> None:
     bus, conn = _FakeBus(), _FakeConn()
-    pipe, prompts = _choice_pipe(bus, conn, ["https://ex.com/tariffs"])
+    pipe, prompts = _choice_pipe(bus, conn, ["https://ex.com/news/tariffs"])
 
     async def _run():
         await _ready_stage2(conn)
@@ -1503,7 +1507,7 @@ def test_stage2_shows_the_parent_links_and_publishes_orions_pick() -> None:
 
     assert asyncio.run(_run()) is None
     assert "[1] Stroke claim checked (politifact.com) -> https://politifact.com/a/stroke" in prompts[0]
-    assert "[2] Tariff refunds explained (ex.com) -> https://ex.com/tariffs" in prompts[0]
+    assert "[2] Tariff refunds explained (ex.com) -> https://ex.com/news/tariffs" in prompts[0]
     rows = _choice_rows(bus)
     assert len(rows) == 1
     assert rows[0].lane == "reading" and rows[0].chosen_market_rank == 2
@@ -1525,7 +1529,7 @@ def test_stage2_empty_pick_is_a_decline_and_the_flag_turns_it_all_off() -> None:
     assert len(rows) == 1 and rows[0].declined_all and len(rows[0].alternatives) == 2
 
     bus2, conn2 = _FakeBus(), _FakeConn()
-    off, prompts = _choice_pipe(bus2, conn2, ["https://ex.com/tariffs"], choice_enabled=False)
+    off, prompts = _choice_pipe(bus2, conn2, ["https://ex.com/news/tariffs"], choice_enabled=False)
     conn = conn2
     asyncio.run(_run(off))
     assert "NEXT READ LINKS" not in prompts[0]
@@ -1534,7 +1538,7 @@ def test_stage2_empty_pick_is_a_decline_and_the_flag_turns_it_all_off() -> None:
 
 def test_stage2_prompt_bound_before_the_list_existed_records_no_choice() -> None:
     bus, conn = _FakeBus(), _FakeConn()
-    pipe, _ = _choice_pipe(bus, conn, ["https://ex.com/tariffs"])
+    pipe, _ = _choice_pipe(bus, conn, ["https://ex.com/news/tariffs"])
     inner = pipe._stage2_pass
 
     async def _old_bound_prompt(handoff):
@@ -1551,3 +1555,70 @@ def test_stage2_prompt_bound_before_the_list_existed_records_no_choice() -> None
     assert asyncio.run(_run()) is None
     assert conn.rows["finding:r1:x"]["stage2_status"] == "done"
     assert _choice_rows(bus) == []
+
+
+def test_stage2_choice_uses_the_bound_prompt_not_the_list_just_computed(monkeypatch) -> None:
+    """A turn bound earlier (restart, poll on a later tick) keeps its first committed prompt; the
+    choice must read the list THAT prompt showed, through the real _stage2_pass/_generate."""
+    import types
+
+    from orion.schemas.reading_turn import ReadingTurnResultV1
+    from orion.world_pulse_read.next_read_choice import NextReadLink, render_next_read_section
+
+    bound_list = [NextReadLink(url="https://bound.example/one/piece", label="Bound one", rank=1),
+                  NextReadLink(url="https://bound.example/two/piece", label="Bound two", rank=2)]
+    bound_prompt = "earlier bound prompt\n" + render_next_read_section(bound_list)
+
+    async def _bind(conn, brief, correlation_id):
+        return types.SimpleNamespace(run_id="run-1", brief=brief.model_copy(update={"prompt": bound_prompt}))
+
+    async def _poll(request, base_url):
+        text = json.dumps({"summary": "Read it.", "need_stage1_urls": ["https://bound.example/two/piece"]})
+        return types.SimpleNamespace(text=text, error=None, correlation_id="tr-bound", source_fetches=[
+            SourceFetchEvidenceV1(url="https://x.example/p", tool_name="WebFetch", content_chars=900,
+                                  content_text="links: https://bound.example/two/piece")])
+
+    # Patch the globals _REAL_GENERATE actually reads: another test may have reloaded the module.
+    monkeypatch.setitem(_REAL_GENERATE.__globals__, "bind_turn", _bind)
+    monkeypatch.setitem(_REAL_GENERATE.__globals__, "poll_turn", _poll)
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, _ = _choice_pipe(bus, conn, [])
+    del pipe._stage2_pass  # the real one
+    pipe._generate = types.MethodType(_REAL_GENERATE, pipe)
+
+    async def _run():
+        await _ready_stage2(conn)
+        return await pipe.tick(force=True)
+
+    assert asyncio.run(_run()) is None
+    assert pipe._next_read and pipe._next_read[0].url == "https://politifact.com/a/stroke"  # computed now
+    rows = _choice_rows(bus)
+    assert len(rows) == 1 and rows[0].chosen.text == "Bound two (bound.example)"
+    assert rows[0].chosen_market_rank == 2 and [a.text for a in rows[0].alternatives] == ["Bound one (bound.example)"]
+
+
+def test_stage2_shows_no_list_when_the_chain_is_full() -> None:
+    bus, conn = _FakeBus(), _FakeConn()
+    pipe, prompts = _choice_pipe(bus, conn, [], max_round_trips=0)
+    asyncio.run(_ready_stage2(conn))
+    asyncio.run(pipe.tick(force=True))
+    assert "NEXT READ LINKS" not in prompts[0] and _choice_rows(bus) == []
+
+    # The chain already holds max_round_trips hops: enqueue_reading would refuse every pick.
+    from scripts.world_pulse_read_stage2 import CHAIN_HOPS_SQL
+
+    bus2, conn2 = _FakeBus(), _FakeConn()
+    pipe2, prompts2 = _choice_pipe(bus2, conn2, [], max_round_trips=2)
+    real_fetchval = conn2.fetchval
+    asked: list = []
+
+    async def _fetchval(sql, *args):
+        if sql == CHAIN_HOPS_SQL:
+            asked.append(args)
+            return 2
+        return await real_fetchval(sql, *args)
+
+    conn2.fetchval = _fetchval  # type: ignore[method-assign]
+    asyncio.run(_ready_stage2(conn2))
+    asyncio.run(pipe2.tick(force=True))
+    assert asked and "NEXT READ LINKS" not in prompts2[0] and _choice_rows(bus2) == []

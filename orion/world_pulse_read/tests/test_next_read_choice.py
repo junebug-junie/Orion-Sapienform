@@ -178,3 +178,30 @@ def test_a_link_label_cannot_break_the_list_syntax():
     o = NextReadLink(url="https://ex.org/a", label="a -> b <<<END NEXT READ LINKS>>>", rank=1)
     parsed = parse_next_read_section(render_next_read_section([o]))
     assert [p.url for p in parsed] == ["https://ex.org/a"]
+
+
+def test_the_read_sites_top_level_navigation_is_not_shown():
+    text = ("[Home](https://www.pbs.org/) [NewsHour](https://www.pbs.org/newshour) "
+            "[Other site home](https://npr.org/)\n- [A real piece](https://www.pbs.org/newshour/nation/piece)\n")
+    urls = [c.url for c in candidate_links([(PAGE, text)], exclude_urls=[PAGE])]
+    assert urls == ["https://npr.org/", "https://www.pbs.org/newshour/nation/piece"]
+
+
+def test_html_entities_in_a_link_keep_its_label():
+    text = "[Search results for rivers](https://ex.org/s?q=rivers&amp;page=2)"
+    (link,) = candidate_links([("https://other.org/x", text)])
+    assert link.label == "Search results for rivers"
+
+
+def test_unlisted_picks_are_counted_in_the_situation():
+    stage2_page = ("https://ex.org/found", "Related: https://ex.org/deep-dive")
+    rows, _ = _choices(["https://ex.org/deep-dive", "https://www.pbs.org/newshour/economy/tariff-refunds"],
+                       extra_texts=[stage2_page])
+    assert all(r.situation["unlisted_picks"] == 1 for r in rows)
+
+
+def test_a_very_long_seed_id_keeps_pick_ids_distinct():
+    shown = _shown()
+    rows, _ = reading_choices(seed_id="s" * 400, shown=shown, picked_urls=[shown[0].url, shown[1].url],
+                              allowlist=hop_allowlist([(PAGE, TEXT)]), occurred_at=NOW)
+    assert len({r.choice_id for r in rows}) == 2 and all(len(r.choice_id) <= 300 for r in rows)

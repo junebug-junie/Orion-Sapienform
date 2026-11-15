@@ -53,6 +53,16 @@ def test_a_reading_pick_is_a_real_choice_for_the_reading_family():
     assert rate == 1.0 and n == 1
 
 
+def test_a_multi_pick_decision_counts_once_per_offer():
+    at = NOW - timedelta(days=1)
+    picks = [choice_record(f"reading:s1:{x}", "reading", at, f"hub.world_pulse_read::link:{x}",
+                           ["hub.world_pulse_read::link:z"], act_id="reading_stage2:s1") for x in "abc"]
+    decline = choice_record("reading:s2:none", "reading", at, None, ["hub.world_pulse_read::link:y"],
+                            declined_all=True, act_id="reading_stage2:s2")
+    rate, n, _ = endorsement_for("hub.world_pulse_read", [*picks, decline], since=SINCE, until=NOW)
+    assert rate == 0.5 and n == 2
+
+
 def test_option_family_reads_the_key_then_the_lane():
     assert option_family("prime", endorsement_option_key("hub.world_pulse_read", "c1")) == "hub.world_pulse_read"
     assert option_family("prime", "c1") == "prime"

@@ -7,7 +7,8 @@
 SELECT only, over world_pulse_read_seed, reading_document_snapshot and harness_turn_trace. For
 every Stage 2 pass that finished in the window it runs the production functions
 (orion/world_pulse_read/next_read_choice.py): the link list the prompt would show
-(``next_read_options`` over the parent's retained text, minus pages Stage 1 fetched and links read
+(``next_read_options`` over the parent's retained text, skipped when the read's chain already
+holds ``--max-round-trips`` hops as Stage 2 does, minus pages Stage 1 fetched and links read
 before the pass finished), then ``reading_choices`` against the model's stored ``need_stage1_urls``.
 
 This is an estimate, not a record: these passes ran without the list in their prompt, so Orion
@@ -31,10 +32,16 @@ from orion.world_pulse_read.next_read_choice import candidate_links, next_read_o
 from orion.world_pulse_read.read_evidence import parse_source_fetches
 
 SEEDS_SQL = """
-SELECT seed_id, url, stage2_trace_id, handoff_json, stage2_result_json, stage2_completed_at
-FROM world_pulse_read_seed
-WHERE stage2_status = 'done' AND stage2_completed_at > now() - make_interval(days => $1)
-ORDER BY stage2_completed_at
+SELECT s.seed_id, s.url, s.stage2_trace_id, s.handoff_json, s.stage2_result_json, s.stage2_completed_at,
+       -- Hops already in this read's chain when Stage 1 handed off (about when the Stage 2 prompt
+       -- is built): the count enqueue_reading's round_trip_cap reads.
+       (SELECT count(*) FROM world_pulse_read_seed r
+        WHERE r.root_request_id = coalesce(s.root_request_id, s.request_id)
+          AND r.request_id <> coalesce(s.root_request_id, s.request_id)
+          AND r.duplicate_of IS NULL AND r.created_at < s.handoff_at) AS chain_hops
+FROM world_pulse_read_seed s
+WHERE s.stage2_status = 'done' AND s.stage2_completed_at > now() - make_interval(days => $1)
+ORDER BY s.stage2_completed_at
 """
 TRACE_SQL = ("SELECT correlation_id, run_artifact->'source_fetches' AS f FROM harness_turn_trace "
              "WHERE correlation_id = ANY($1::text[])")
@@ -65,6 +72,8 @@ def summarize(rows: list[tuple[str, str, int]]) -> dict[str, dict[str, int]]:
 async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=7)
+    parser.add_argument("--max-round-trips", type=int, default=5,
+                        help="Hub HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS (chain cap)")
     parser.add_argument("--dsn", default=os.environ.get(
         "RECALL_PG_DSN", "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"))
     args = parser.parse_args()
@@ -77,6 +86,7 @@ async def main() -> int:
         return 2
     per_pass: list[tuple[str, str, int]] = []
     ranks: Counter = Counter()
+    unlisted: Counter = Counter()
     shown_sizes: list[int] = []
     try:
         seeds = await conn.fetch(SEEDS_SQL, args.days)
@@ -84,6 +94,9 @@ async def main() -> int:
                   for r in await conn.fetch(TRACE_SQL, [s["stage2_trace_id"] for s in seeds if s["stage2_trace_id"]])}
         for s in seeds:
             day = s["stage2_completed_at"].date().isoformat()
+            if int(s["chain_hops"] or 0) >= args.max_round_trips:
+                per_pass.append((day, "chain_full", 0))
+                continue
             handoff = _obj(s["handoff_json"])
             evidence = parse_source_fetches(handoff.get("read_evidence")) or []
             rows = await load_retained_texts(conn, evidence, drop_http_errors=False)
@@ -103,8 +116,13 @@ async def main() -> int:
             choices, reason = reading_choices(
                 seed_id=s["seed_id"], shown=shown, picked_urls=picked, allowlist=allow,
                 occurred_at=s["stage2_completed_at"])
+            parent_keys = {hop_url_key(c.url) for c in cands}
             for c in choices:
                 ranks["declined" if c.declined_all else (c.chosen_market_rank or "unlisted")] += 1
+            for url in picked:
+                k = hop_url_key(url)
+                if k and k in allow and k not in {hop_url_key(o.url) for o in shown}:
+                    unlisted["in_parent_not_shown" if k in parent_keys else "found_this_turn"] += 1
             per_pass.append((day, reason, len(choices)))
     finally:
         await conn.close()
@@ -119,6 +137,7 @@ async def main() -> int:
     if shown_sizes:
         print(f"links_shown: mean={sum(shown_sizes) / len(shown_sizes):.1f} zero={shown_sizes.count(0)}")
     print(f"chosen market ranks: {dict(ranks)}")
+    print(f"unlisted picks by where Orion met them: {dict(unlisted)}")
     return 0
 
 

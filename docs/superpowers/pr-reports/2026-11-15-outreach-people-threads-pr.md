@@ -75,7 +75,7 @@ run_outreach_choice_readout.py --candidates (live, read-only):
     chat_thread:a1e54ae9-... "So what's the plan for 44?"; the chat went quiet for 2 hours after.
 30-day replay of person_topics over live sightings (scratch script): 9 distinct visits, e.g.
   "Exterminator (a camera match for a name Juniper gave) at the front door, ...: the first camera match for Exterminator in 10 days."
-  "Teddy (a camera match for a name Juniper gave) at the walkway, ...: a time of day Teddy had not matched at in 14 earlier visits over 5 days."
+  "<name> (a camera match for a name Juniper gave) at the walkway, ...: a time of day <name> had not matched at in 14 earlier visits over 5 days."
 fetch_said_outreach_subjects against live Postgres (read-only): returns the 7-day ledger with the new reasons param.
 ```
 
@@ -90,7 +90,7 @@ Live tick path UNVERIFIED until Hub is rebuilt.
 
 Review ran in a subagent (read-only, with live SELECTs).
 
-- Finding (must-fix): person text claimed identity the data cannot prove; live 2026-11-14 the doorbell matched Addy, Exterminator and Emerald inside 81 s (almost surely one visitor).
+- Finding (must-fix): person text claimed identity the data cannot prove; live 2026-11-14 the doorbell matched three different named people inside 81 s (almost surely one visitor).
   - Fix: glimpse floor (3 frames or 5 s dwell), drop a visit when another named person matched on the same camera within 2 min, wording "a camera match for a name Juniper gave" / "first camera match", prompt says a match can be wrong.
   - Evidence: `test_a_glimpse_is_not_a_topic`, `test_two_named_people_matching_at_once_is_ambiguous`; replay 36 -> 9 visits.
 - Finding: "since <date>" could clamp to the person's own visit ("since Nov 15").
@@ -117,7 +117,7 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 
 ## Risks / concerns
 
-- Severity: low. Concern: a person topic is only as right as the camera cluster Juniper named; clusters have been impure before (Teddy/Juniper, 10-27). Mitigation: only typed-name links, the text says only "seen at <place>, <time>", and the prompt tells Orion not to invent what the person was doing.
+- Severity: low. Concern: a person topic is only as right as the camera cluster Juniper named; clusters have been impure before (10-27: one cluster held two people). Mitigation: only typed-name links, the text says "a camera match" at a place and time, and the prompt tells Orion not to invent what the person was doing.
 - Severity: low. Concern: "the chat went quiet after" is a proxy; Juniper may have answered later in other words. Mitigation: the text says exactly the proxy, and the prompt tells Orion not to say she ignored it.
 - Severity: medium. Concern: the tick still fires only on a body spark or a novel daydream, but once it fires, open chat threads make it talkable far more often (before, a spark with no new daydream or read recorded `tension_without_content` and composed nothing). So compose calls per day will rise. Every gate (daily cap, cooldown, quiet hours, bid) still holds. Mitigation: after deploy compare decision reasons per day (`tension_without_content` down, compose rows up) with the readout; flags turn each kind off.
 - Issues opened/closed: none.

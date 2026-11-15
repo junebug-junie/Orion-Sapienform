@@ -37,10 +37,10 @@ from scripts.outreach_world_topics import (
 
 NOW = datetime(2026, 11, 15, 20, 0, tzinfo=timezone.utc)  # 1 pm in Denver
 TZ = "America/Denver"
-AMANDA = "person-amanda"
+ROBIN = "person-robin"
 
 
-def _sighting(sid: str, at: datetime, *, pid: str = AMANDA, name: str = "Amanda", stream: str = "walkway",
+def _sighting(sid: str, at: datetime, *, pid: str = ROBIN, name: str = "Robin", stream: str = "walkway",
               minutes: float = 2.0, observations: int = 5, dwell: float = 30.0) -> Dict[str, Any]:
     return {"person_id": pid, "display_name": name, "sighting_id": sid, "stream_id": stream,
             "started_at": at, "ended_at": at + timedelta(minutes=minutes),
@@ -55,12 +55,12 @@ def test_person_back_after_days_away_is_a_topic_citing_the_visit() -> None:
             _sighting("s-new-1", NOW - timedelta(hours=3)),
             _sighting("s-new-2", NOW - timedelta(hours=3) + timedelta(minutes=20))]
     (t,) = person_topics(rows, NOW, tz_name=TZ)
-    assert t.kind == PERSON_KIND and t.subject == f"person:{AMANDA}"
+    assert t.kind == PERSON_KIND and t.subject == f"person:{ROBIN}"
     # One visit (sightings 20 min apart): the version and the evidence are its FIRST sighting.
     assert t.version == "s-new-1" and t.evidence_ref == "vision_individual_sighting:s-new-1"
     assert t.option_text.startswith(
-        "Amanda (a camera match for a name Juniper gave) at the walkway, today 10:00 am:")
-    assert "the first camera match for Amanda in 9 days" in t.option_text
+        "Robin (a camera match for a name Juniper gave) at the walkway, today 10:00 am:")
+    assert "the first camera match for Robin in 9 days" in t.option_text
     assert "A match can be wrong" in t.prompt_text
     assert len(t.option_text) <= 400
     assert t.observed_at == NOW - timedelta(hours=3) + timedelta(minutes=22)
@@ -79,7 +79,7 @@ def test_person_at_an_unusual_time_is_a_topic() -> None:
     rows.append(_sighting("s-late", late))
     (t,) = person_topics(rows, NOW, tz_name=TZ)
     assert t.version == "s-late"
-    assert "a time of day Amanda had not matched at in 8 earlier visits over 8 days" in t.option_text
+    assert "a time of day Robin had not matched at in 8 earlier visits over 8 days" in t.option_text
 
 
 def test_unusual_time_needs_enough_history() -> None:
@@ -97,24 +97,24 @@ def test_first_sighting_in_the_whole_window_says_since_when() -> None:
     # Someone else was seen 80 days ago: the records reach past the 60-day window, so the window
     # start (Sep 16) is the honest date.
     rows = [_sighting("s1", NOW - timedelta(hours=2)),
-            _sighting("o1", NOW - timedelta(days=80), pid="person-other", name="Teddy")]
+            _sighting("o1", NOW - timedelta(days=80), pid="person-other", name="Quinn")]
     (t,) = person_topics(rows, NOW, tz_name=TZ, history_days=60)
-    assert "the first camera match for Amanda since Sep 16" in t.option_text
+    assert "the first camera match for Robin since Sep 16" in t.option_text
 
 
 def test_first_sighting_date_never_predates_the_camera_records() -> None:
     """Live: sightings begin 2026-10-15. Saying "since Sep 16" would claim the cameras watched then."""
     rows = [_sighting("s1", NOW - timedelta(hours=2)),
-            _sighting("o1", NOW - timedelta(days=30), pid="person-other", name="Teddy")]
-    amanda = [t for t in person_topics(rows, NOW, tz_name=TZ) if t.subject == f"person:{AMANDA}"]
-    assert "since Oct 16" in amanda[0].option_text
+            _sighting("o1", NOW - timedelta(days=30), pid="person-other", name="Quinn")]
+    robin = [t for t in person_topics(rows, NOW, tz_name=TZ) if t.subject == f"person:{ROBIN}"]
+    assert "since Oct 16" in robin[0].option_text
 
 
 def test_first_sighting_with_no_other_records_has_no_since_date() -> None:
     """Review 2026-11-15: with only this person in the rows the date clamped to their own visit
     ("since Nov 15"). No other record before the visit: no date."""
     (t,) = person_topics([_sighting("s1", NOW - timedelta(hours=2))], NOW, tz_name=TZ)
-    assert "the first camera match for Amanda on record" in t.option_text and "since" not in t.option_text
+    assert "the first camera match for Robin on record" in t.option_text and "since" not in t.option_text
 
 
 def test_a_glimpse_is_not_a_topic() -> None:
@@ -124,16 +124,16 @@ def test_a_glimpse_is_not_a_topic() -> None:
 
 
 def test_two_named_people_matching_at_once_is_ambiguous() -> None:
-    """Live 2026-11-14: Addy, Exterminator and Emerald matched on the doorbell inside 81 s."""
+    """Live 2026-11-14: three different named people matched on the doorbell inside 81 s."""
     at = NOW - timedelta(hours=3)
     rows = [_sighting("a-old", NOW - timedelta(days=9), stream="doorbell"),
             _sighting("a-new", at, stream="doorbell"),
-            _sighting("e-old", NOW - timedelta(days=9, hours=5), pid="person-em", name="Emerald", stream="doorbell"),
-            _sighting("e-new", at + timedelta(seconds=81), pid="person-em", name="Emerald", stream="doorbell")]
+            _sighting("e-old", NOW - timedelta(days=9, hours=5), pid="person-sa", name="Sasha", stream="doorbell"),
+            _sighting("e-new", at + timedelta(seconds=81), pid="person-sa", name="Sasha", stream="doorbell")]
     assert person_topics(rows, NOW, tz_name=TZ) == []
     # On another camera at the same moment: not the same visitor, both stand.
-    rows[3] = _sighting("e-new", at + timedelta(seconds=81), pid="person-em", name="Emerald", stream="walkway")
-    assert {t.subject for t in person_topics(rows, NOW, tz_name=TZ)} == {f"person:{AMANDA}", "person:person-em"}
+    rows[3] = _sighting("e-new", at + timedelta(seconds=81), pid="person-sa", name="Sasha", stream="walkway")
+    assert {t.subject for t in person_topics(rows, NOW, tz_name=TZ)} == {f"person:{ROBIN}", "person:person-sa"}
 
 
 def test_a_future_dated_sighting_does_not_hide_the_real_visit() -> None:
@@ -164,8 +164,8 @@ def test_person_dedupe_by_subject_and_a_new_visit_comes_back() -> None:
     # Juniper got this visit: the ledger holds person:<id> at version s-new.
     record = choice_record([t], parse_pick("Pick: 1\nmsg", 1, is_pass=is_pass_response), "outreach:w")
     said = fold_said_subjects([{"reason": "sent", "choice": record}])
-    assert said == {f"person:{AMANDA}": {"s-new"}}
-    assert filter_unsaid([t], said) == ([], [f"person:{AMANDA}"])
+    assert said == {f"person:{ROBIN}": {"s-new"}}
+    assert filter_unsaid([t], said) == ([], [f"person:{ROBIN}"])
     # A later visit that is new again (back after another long gap) is a new version: shown again.
     later = NOW + timedelta(days=6)
     rows2 = rows + [_sighting("s-next", later - timedelta(hours=1))]
@@ -284,7 +284,7 @@ def test_evidence_rides_on_the_decision_row_and_the_situation() -> None:
     assert evidence_line(shown) == "2=vision_individual_sighting:s-new"
     assert evidence_line([daydream]) is None
     # The binding bid's object_text carries the person topic's text (#3336's seam).
-    assert "Amanda (a camera match for a name Juniper gave) at the walkway" in (outreach_object_text(shown) or "")
+    assert "Robin (a camera match for a name Juniper gave) at the walkway" in (outreach_object_text(shown) or "")
 
 
 # --- the sources (I/O seam) ---------------------------------------------------------------------
@@ -325,7 +325,7 @@ def test_sources_read_their_sql_and_build_topics() -> None:
 
     pconn = _Conn([_sighting("s-old", NOW - timedelta(days=9)), _sighting("s-new", NOW - timedelta(hours=3))])
     topics = asyncio.run(people_source(lambda: _Pool(pconn), tz_name=TZ, clock=lambda: NOW)())
-    assert [t.subject for t in topics] == [f"person:{AMANDA}"]
+    assert [t.subject for t in topics] == [f"person:{ROBIN}"]
     assert pconn.calls[0][0] == PEOPLE_SQL
 
 

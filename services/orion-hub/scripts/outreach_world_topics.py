@@ -80,7 +80,7 @@ UNUSUAL_HOUR_MARGIN = 1.5
 # A camera match is a cluster match, not proof of who it was (clusters are impure: PR #2859). A visit
 # counts only when the camera held it (MIN_VISIT_OBSERVATIONS frames or MIN_VISIT_DWELL_SEC), and not
 # when another named person matched on the same camera within AMBIGUOUS_WINDOW of it (live 2026-11-14:
-# Addy, Exterminator and Emerald matched on the doorbell inside 81 s, almost surely one visitor).
+# three different named people matched on the doorbell inside 81 s, almost surely one visitor).
 MIN_VISIT_OBSERVATIONS = 3
 MIN_VISIT_DWELL_SEC = 5.0
 AMBIGUOUS_WINDOW = timedelta(minutes=2)

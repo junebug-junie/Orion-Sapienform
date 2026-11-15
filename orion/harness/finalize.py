@@ -37,6 +37,7 @@ from orion.schemas.embodiment import EmbodimentIntentV1
 from orion.schemas.cognition.answer_contract import AnswerContract
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
 from orion.schemas.harness_finalize import (
+    PROMISE_DOERS,
     REFLECTION_SOURCE_JUDGE_FAILED,
     FinalizeReflectionV1,
     OpenPromiseRefV1,
@@ -557,8 +558,9 @@ _PROMISE_SCHEMA: dict[str, dict[str, Any]] = {
             "properties": {
                 "quote": {"type": "string"},
                 "offer": {"type": "boolean"},
+                "doer": {"type": "string", "enum": list(PROMISE_DOERS)},
             },
-            "required": ["quote", "offer"],
+            "required": ["quote", "offer", "doer"],
             "additionalProperties": False,
         },
     },

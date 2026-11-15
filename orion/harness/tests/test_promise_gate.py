@@ -83,7 +83,7 @@ def _ctx(**kw: object) -> dict:
 
 def test_quote_not_in_reply_is_dropped_and_real_quote_survives() -> None:
     paraphrase = "I will bring the deep read back once the pipeline has digested it."
-    reflection = _reflection(promises_made=[PromiseV1(quote=paraphrase), PromiseV1(quote=FIRM)])
+    reflection = _reflection(promises_made=[PromiseV1(quote=paraphrase, doer="orion"), PromiseV1(quote=FIRM, doer="orion")])
     result = gate_promises(reflection, reply_text=REPLY, enabled=True)
     assert [p.quote for p in result.reflection.promises_made] == [FIRM]
     assert result.dropped_not_in_text == [paraphrase]
@@ -101,7 +101,7 @@ def test_quote_match_tolerates_whitespace_and_curly_quotes_only() -> None:
 
 
 def test_short_quote_is_counted_as_too_short_not_as_missing() -> None:
-    result = gate_promises(_reflection(promises_made=[PromiseV1(quote="I'll do it.")]),
+    result = gate_promises(_reflection(promises_made=[PromiseV1(quote="I'll do it.", doer="orion")]),
                            reply_text="Sure. I'll do it.", enabled=True)
     assert result.reflection.promises_made == []
     assert result.dropped_too_short == 1 and result.dropped_not_in_text == []
@@ -109,8 +109,8 @@ def test_short_quote_is_counted_as_too_short_not_as_missing() -> None:
 
 def test_over_long_duplicate_and_over_cap_quotes_are_dropped() -> None:
     long_reply = "x" * 300
-    reflection = _reflection(promises_made=[PromiseV1(quote=long_reply), PromiseV1(quote=FIRM),
-                                            PromiseV1(quote=" " + FIRM)])
+    reflection = _reflection(promises_made=[PromiseV1(quote=long_reply, doer="orion"), PromiseV1(quote=FIRM, doer="orion"),
+                                            PromiseV1(quote=" " + FIRM, doer="orion")])
     result = gate_promises(reflection, reply_text=long_reply + " " + REPLY, enabled=True)
     assert [p.quote for p in result.reflection.promises_made] == [FIRM]
     assert result.dropped_too_long == 1
@@ -120,8 +120,8 @@ def test_over_long_duplicate_and_over_cap_quotes_are_dropped() -> None:
 async def test_judge_paraphrase_never_reaches_the_reflection() -> None:
     async def _judge(_req: object) -> dict[str, object]:
         return {"final_text": json.dumps({**JUDGEMENT, "promises_made": [
-            {"quote": "I promise to finish the paper tomorrow.", "offer": False},
-            {"quote": FIRM, "offer": False}]})}
+            {"quote": "I promise to finish the paper tomorrow.", "offer": False, "doer": "orion"},
+            {"quote": FIRM, "offer": False, "doer": "orion"}]})}
 
     reflection, quick, _ = await run_finalize_reflection(
         correlation_id="c-gate", draft_text=REPLY, thought=make_thought(repair_pressure_level=0.9),
@@ -134,7 +134,7 @@ async def test_judge_paraphrase_never_reaches_the_reflection() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad", [
-    {"promises_made": ["not an object", {"offer": True}], "promises_kept": [7]},
+    {"promises_made": ["not an object", {"offer": True, "doer": "orion"}], "promises_kept": [7]},
     {"promises_made": 7, "offers_accepted": True, "promises_kept": "act_1"},
 ])
 async def test_malformed_promise_list_does_not_sink_the_verdict(bad: dict) -> None:
@@ -154,7 +154,7 @@ async def test_malformed_promise_list_does_not_sink_the_verdict(bad: dict) -> No
 def test_string_false_offer_is_not_an_offer() -> None:
     from orion.harness.promise_gate import coerce_promise_fields
 
-    made = coerce_promise_fields({"promises_made": [{"quote": FIRM, "offer": "false"}]})["promises_made"]
+    made = coerce_promise_fields({"promises_made": [{"quote": FIRM, "offer": "false", "doer": "orion"}]})["promises_made"]
     assert made[0].offer is False
 
 
@@ -168,7 +168,7 @@ def test_kept_entry_that_is_not_an_open_promise_is_dropped() -> None:
 
 def test_regate_against_final_text_drops_a_promise_repair_removed() -> None:
     """The chain gates again on the text Juniper saw; accepted offers and kept ids survive."""
-    reflection = _reflection(promises_made=[PromiseV1(quote=FIRM)], offers_accepted=[OFFER],
+    reflection = _reflection(promises_made=[PromiseV1(quote=FIRM, doer="orion")], offers_accepted=[OFFER],
                              promises_kept=["act_open"])
     repaired = "The read is still queued."
     result = gate_promises(reflection, reply_text=repaired, enabled=True,
@@ -178,10 +178,88 @@ def test_regate_against_final_text_drops_a_promise_repair_removed() -> None:
     assert result.reflection.promises_kept == ["act_open"]
 
 
+# --- doer: only Orion's own future act is a promise (2026-11-14 exclusions) ----------------
+# The D0 replay listed forecasts about a system and asks for Juniper to act as promises
+# (5 of 8 false items). The judge now says who does the act; plain code keeps only Orion.
+
+DOER_REPLY = (
+    "The backfill is third in line, so it should finish overnight. Send me the log when it "
+    "finishes. I'll compare the two runs tomorrow and tell you which one drifted."
+)
+FORECAST = "so it should finish overnight"
+ASK = "Send me the log when it finishes."
+REAL = "I'll compare the two runs tomorrow and tell you which one drifted."
+
+
+@pytest.mark.asyncio
+async def test_forecast_and_ask_are_dropped_and_the_real_promise_is_kept() -> None:
+    async def _judge(_req: object) -> dict[str, object]:
+        return {"final_text": json.dumps({**JUDGEMENT, "promises_made": [
+            {"quote": FORECAST, "offer": False, "doer": "a_system"},
+            {"quote": ASK, "offer": True, "doer": "juniper"},
+            {"quote": REAL, "offer": False, "doer": "orion"}]})}
+
+    reflection, _, _ = await run_finalize_reflection(
+        correlation_id="c-doer", draft_text=DOER_REPLY, thought=make_thought(repair_pressure_level=0.9),
+        substrate_appraisal=make_appraisal(surprise_level=0.5), repair_overlay=make_repair_overlay(),
+        user_message=USER, cortex_client=_judge)
+    assert [(p.quote, p.doer) for p in reflection.promises_made] == [(REAL, "orion")]
+    assert counted_promise_quotes(reflection) == [REAL]
+
+
+def test_gate_reports_what_it_dropped_for_the_doer() -> None:
+    reflection = _reflection(promises_made=[
+        PromiseV1(quote=FORECAST, doer="a_system"), PromiseV1(quote=ASK, offer=True, doer="juniper"),
+        PromiseV1(quote=REAL, doer="someone_else"), PromiseV1(quote=REAL, doer="orion")])
+    result = gate_promises(reflection, reply_text=DOER_REPLY, enabled=True)
+    assert [p.quote for p in result.reflection.promises_made] == [REAL]
+    assert result.dropped_not_orion == [("a_system", FORECAST), ("juniper", ASK), ("someone_else", REAL)]
+    assert result.dropped_total == 3
+
+
+@pytest.mark.parametrize("doer", [None, "Orion", "me", 3])
+def test_missing_or_unknown_doer_fails_closed(doer: object) -> None:
+    from orion.harness.promise_gate import coerce_promise_fields
+
+    item: dict[str, object] = {"quote": REAL, "offer": False}
+    if doer is not None:
+        item["doer"] = doer
+    made = coerce_promise_fields({"promises_made": [item]})["promises_made"]
+    assert made[0].doer is None
+    result = gate_promises(_reflection(promises_made=made), reply_text=DOER_REPLY, enabled=True)
+    assert result.reflection.promises_made == [] and result.dropped_not_orion == [(None, REAL)]
+
+
+def test_non_orion_items_do_not_use_up_the_cap() -> None:
+    """Dropped before the cap: three forecasts listed first must not crowd out the promise."""
+    reflection = _reflection(promises_made=[PromiseV1(quote=FORECAST, doer="a_system")] * 3
+                             + [PromiseV1(quote=REAL, doer="orion")])
+    result = gate_promises(reflection, reply_text=DOER_REPLY, enabled=True)
+    assert [p.quote for p in result.reflection.promises_made] == [REAL]
+    assert result.dropped_over_cap == 0
+
+
+def test_schema_requires_a_doer_from_the_closed_set_and_the_prompt_defines_each() -> None:
+    schema = finalize_reflect_json_schema(True)
+    item = schema["properties"]["promises_made"]["items"]
+    assert "doer" in item["required"]
+    assert set(item["properties"]["doer"]["enum"]) == {"orion", "juniper", "someone_else", "a_system"}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": REAL, "offer": False}]}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": REAL, "offer": False, "doer": "me"}]},
+                            schema)
+    rendered = _render(_ctx())
+    section = rendered.split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
+    for doer in item["properties"]["doer"]["enum"]:
+        assert f'- "{doer}":' in section
+    assert 'Plain code keeps only items with doer "orion".' in section
+
+
 # --- the offer rule -----------------------------------------------------------------------
 
 def test_offer_is_recorded_but_counts_only_after_acceptance() -> None:
-    reflection = _reflection(promises_made=[PromiseV1(quote=FIRM), PromiseV1(quote=OFFER, offer=True)])
+    reflection = _reflection(promises_made=[PromiseV1(quote=FIRM, doer="orion"), PromiseV1(quote=OFFER, offer=True, doer="orion")])
     gated = gate_promises(reflection, reply_text=REPLY, enabled=True).reflection
     assert [p.offer for p in gated.promises_made] == [False, True]
     assert counted_promise_quotes(gated) == [FIRM]
@@ -209,11 +287,11 @@ def test_acceptance_is_asked_from_the_next_user_message_not_a_word_list() -> Non
 def test_flag_on_schema_asks_for_promise_fields_and_validates_them() -> None:
     schema = finalize_reflect_json_schema(True)
     assert list(schema["properties"])[-3:] == list(PROMISE_FIELDS)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False}]}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "doer": "orion"}]}, schema)
     # No caps in the schema: Strata 502s an answer that breaks it, which would sink the
     # verdict. Four promises or a long quote must pass the schema; the gate caps them.
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False}] * 4}, schema)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False}]}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "doer": "orion"}] * 4}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False, "doer": "orion"}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM}]}, schema)
     rendered = _render(_ctx())
@@ -245,7 +323,7 @@ async def test_chain_regates_promises_against_the_final_text() -> None:
         correlation_id="c-regate", thought=thought, draft_text=REPLY, grammar_receipts=[],
         coalition_snapshot=build_coalition_snapshot(thought), repair_overlay=make_repair_overlay())
     judged = {**JUDGEMENT, "alignment_verdict": "misaligned",
-              "promises_made": [{"quote": FIRM, "offer": False}]}
+              "promises_made": [{"quote": FIRM, "offer": False, "doer": "orion"}]}
 
     async def substrate_client(_mol: object):
         return make_appraisal(surprise_level=0.5)
@@ -276,7 +354,7 @@ def test_flag_off_judge_is_not_asked_and_gate_clears(monkeypatch: pytest.MonkeyP
     rendered = _render(ctx)
     # The draft itself holds both quotes; the promise section and its lists are absent.
     assert "PROMISES (" not in rendered and f'- "{OFFER}"' not in rendered and "[a1]" not in rendered
-    gated = gate_promises(_reflection(promises_made=[PromiseV1(quote=FIRM)]), reply_text=REPLY).reflection
+    gated = gate_promises(_reflection(promises_made=[PromiseV1(quote=FIRM, doer="orion")]), reply_text=REPLY).reflection
     assert gated.promises_made == []
 
 

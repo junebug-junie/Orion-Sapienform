@@ -42,9 +42,10 @@ SERVICE = Path(__file__).resolve().parents[1]
 REPO = SERVICE.parents[1]
 sys.path[:0] = [str(SERVICE), str(REPO)]
 
+from orion.autonomy.thermal_gate import DEFAULT_HOT_C as HOT_C  # noqa: E402  (the cabinet's 32 C line, one owner)
+
 CLOSET, CABINET, ROOM = "closet.top_temp_c", "athena.cabinet_temp_c", "office.temp_c"
 WATTS = ("athena.chassis_watts", "circe.chassis_watts", "hecate.chassis_watts", "athena.cabinet_cooling_watts")
-HOT_C = 32.0
 STUCK_C = 0.5
 
 
@@ -160,7 +161,10 @@ def residual(eng, start: datetime, end: datetime, f5: pd.DataFrame) -> tuple[str
     fx.engine, fx.store = eng, eng.store
     frame, cfg = load_frame(fx, CLOSET, start, end)
     seen = frame["gap"].notna()             # judge each machine only on the hours the closet top has data
-    names = [w for w in (*cfg["watts"], *cfg["controls"]) if identifiable(frame[w][seen]) is None]
+    names = [w for w in cfg["watts"] if identifiable(frame[w][seen]) is None]
+    # A control stays in whenever it moved at all: the portable AC ran only ~1.5 days, under the slope
+    # gate's 10% of hours, and leaving it out would read those days as negative "stuck air" residuals.
+    names += [c for c in cfg["controls"] if float(frame[c][seen].std()) > 1.0]
     X, _ = _lagged(frame, names)
     data = pd.concat([frame["gap"].rename("y"), X], axis=1).dropna()
     if len(data) < 24:

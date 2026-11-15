@@ -68,13 +68,13 @@ evals/run_causal_calibration_eval.py       -> RESULT: PASS
 evals/run_heat_per_watt_eval.py            -> RESULT: PASS
 evals/run_cabinet_replay_eval.py           -> RESULT: PASS
 evals/run_turn_surprise_replay_eval.py --fixture evals/fixtures/turn_self_bets_chat_2026-11-13.json --check -> CHECK PASS
-evals/run_air_path_eval.py --days 30 (live DB, read-only, 2026-11-15 00:30 UTC):
-WINDOW 2026-10-16 00:00..2026-11-15 00:00 UTC asked (30 d); closet-top readings from 2026-11-05 00:45 (2871 5-min buckets)
-LEAD_LAG closet top vs cabinet (+ = closet top first): 5-min changes peak at lag +0 min (r 0.54; lag 0 r 0.54; -5/+5 min r 0.27/0.43; n 2870); 15-min changes peak at lag +0 min (r 0.75; lag 0 r 0.75; -15/+15 min r 0.46/0.56; n 956)
-FORECAST one-hour cabinet change, test 11-12 00:50..11-14 22:55 UTC (842 points): MAE without closet heat 0.632 C, with 0.632 C; paired one-sided p (with < without) 0.197
-SLOPES closet top minus office (21 d window, 238 h, R^2 0.60): circe +0.27 C per 100 W (95% +0.21..+0.33, p 1.64e-17, mean 982 W); hecate refused: flat: only 2% of hours more than 20 W from its median 0 W (need 10%)
-RESIDUAL daily mean of the closet-top gap fit (C; * = above +0.5 C, the stuck-air watch; fit on circe, athena, athena.cabinet_cooling_watts, 238 h): 11-05 -0.00, 11-06 -0.40, 11-07 +0.87*, 11-08 +0.05, 11-09 -0.08, 11-10 -0.14, 11-11 -0.19, 11-12 -0.17, 11-13 +0.04, 11-14 +0.06. Cabinet 32 C crossing days: 2, residual high in the 6 h before: 1
-GATE second patch (closet heat into the cabinet forecast / cooling act): NOT MET (paired p 0.197 vs < 0.05; residual-led 32 C days 1 vs >= 3)
+evals/run_air_path_eval.py --days 30 (live DB, read-only, 2026-11-15 ~04:00 UTC, final code):
+WINDOW 2026-10-16 04:00..2026-11-15 04:00 UTC asked (30 d); closet-top readings from 2026-11-05 00:45 (2919 5-min buckets)
+LEAD_LAG closet top vs cabinet (+ = closet top first): 5-min changes peak at lag +0 min (r 0.52; lag 0 r 0.52; -5/+5 min r 0.26/0.42; n 2918); 15-min changes peak at lag +0 min (r 0.73; lag 0 r 0.73; -15/+15 min r 0.45/0.53; n 972)
+FORECAST one-hour cabinet change, test 11-12 03:40..11-15 02:55 UTC (856 points): MAE without closet heat 0.659 C, with 0.659 C; paired one-sided p (with < without) 0.122
+SLOPES closet top minus office (21 d window, 242 h, R^2 0.60): circe +0.27 C per 100 W (95% +0.21..+0.33, p 2.13e-17, mean 982 W); hecate refused: flat: only 3% of hours more than 20 W from its median 0 W (need 10%)
+RESIDUAL daily mean of the closet-top gap fit (C; * = above +0.5 C, the stuck-air watch; fit on circe, athena, athena.cabinet_cooling_watts, 242 h): 11-05 -0.00, 11-06 -0.41, 11-07 +0.86*, 11-08 +0.04, 11-09 -0.09, 11-10 -0.15, 11-11 -0.19, 11-12 -0.19, 11-13 +0.02, 11-14 +0.04. Cabinet 32 C crossing days: 2, residual high in the 6 h before: 1
+GATE second patch (closet heat into the cabinet forecast / cooling act): NOT MET (paired p 0.122 vs < 0.05; residual-led 32 C days 1 vs >= 3)
 ```
 
 These numbers agree with the design. The closet top does not lead the cabinet. It does not improve the cabinet forecast. circe's slope sits inside the design's +0.16..+0.32 range. 11-07 is still the only stuck-air day. The window asked for 30 days, but closet data starts 2026-11-05, so about 10 days are real. The office-sound line from the design is dropped, because Juniper said office noise is not a cost.
@@ -97,6 +97,10 @@ The code review ran in a subagent. No must-fix findings.
   - Fix: only hours that end by the crossing count.
 - Finding: README sentence about `/experiments/guard` was spliced onto the new paragraph.
   - Fix: moved back.
+- CI finding (Static repo gates): the eval copied the 32 C line (`HOT_C = 32.0`) owned by `orion/autonomy/thermal_gate.py`.
+  - Fix: imports `DEFAULT_HOT_C`. `scripts/check_env_key_single_source.py` -> OK.
+- Self-found: as the window grows, the portable AC (on ~1.5 days) falls under the slope gate's 10 % of hours, so the residual fit dropped it and read the AC days as false negative "stuck air" (11-05 -1.05).
+  - Fix: the residual fit keeps a control whenever it moved at all. 11-05 back to -0.00.
 - Nits fixed: the forecast test skips 12 rows after the train/test cut (no target leak). The Newey-West lag is documented as approximate. A day that starts hot is no longer a "crossing". RESIDUAL exits non-zero with under 24 complete hours, and the docstring matches. The `main.py` docstring says "target". The yaml numbers carry their window. The 422-body change is listed above.
 
 ## Restart required

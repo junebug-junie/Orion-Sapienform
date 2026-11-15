@@ -27,6 +27,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfStateV1,
 )
 from orion.temporal_self.arcs import AVAILABLE_AT_KINDS
+from orion.integration.coverage import RATE_CITES_MADE_SQL, RATE_KINDS_SQL, RATE_USES_SQL
 from orion.temporal_self.now import stored_payload_surprise
 
 logger = logging.getLogger("orion-durable-runs.temporal_self_store")
@@ -358,23 +359,6 @@ INSERT_USE_SQL = """
 INSERT INTO experience_use (use_id, event_id, citing_organ, citing_ref, shown_id, cited_at)
 VALUES (%(use_id)s, %(event_id)s, %(citing_organ)s, %(citing_ref)s, %(shown_id)s, %(cited_at)s)
 ON CONFLICT (use_id) DO NOTHING
-"""
-# The metric's two reads: experiences recorded in the window (by when they happened), and valid uses
-# of those experiences made within 24 h of when they could first be read (ended_at, else occurred_at);
-# plus cites each organ made in the window.
-RATE_KINDS_SQL = """
-SELECT source_kind, count(*) AS n FROM temporal_self_event
-WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s GROUP BY source_kind
-"""
-RATE_USES_SQL = """
-SELECT DISTINCT u.event_id, e.source_kind, u.citing_organ
-FROM experience_use u JOIN temporal_self_event e ON e.event_id = u.event_id
-WHERE e.occurred_at >= %(lo)s AND e.occurred_at < %(hi)s
-  AND u.cited_at < COALESCE((e.payload_json->>'ended_at')::timestamptz, e.occurred_at) + interval '24 hours'
-"""
-RATE_CITES_MADE_SQL = """
-SELECT citing_organ, count(*) AS n FROM experience_use
-WHERE cited_at >= %(lo)s AND cited_at < %(hi)s GROUP BY citing_organ
 """
 
 

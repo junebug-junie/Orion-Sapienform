@@ -26,9 +26,10 @@ The efference copy
     about the median for the effect's standard error (``shifted``); read as a CDF by ``pit`` (linear
     between quantiles, Gaussian tails). Two-sided p, surprisal ``-ln p``, excess ``-ln p - 1``
     (E[-ln U] = 1 for a uniform p, so a calibrated score rests at 0 by theory, the unit Family A uses).
-    The same reading is also scored against the forecast alone (no effect). ``gain`` = baseline
-    surprisal minus efference surprisal: positive when knowing the act's effect made the forecast
-    better. ``gate()`` asks whether that gain is real across acts (gap, SE, prob_better; no alpha
+    The same reading is also scored against the forecast alone (no effect). ``gain`` = log
+    predictive density with the effect minus without it (a proper score): positive when knowing the
+    act's effect made the forecast better. Not the surprisal difference: two-sided-p surprisal is
+    lowered by any widening, so a table that only added uncertainty would have "won". ``gate()`` asks whether that gain is real across acts (gap, SE, prob_better; no alpha
     line).
 
 Slice 1 is eval/replay only: no bus event, no substrate node, no consumer reads the miss score.
@@ -87,6 +88,15 @@ class EffectRow:
     reason: str | None = None
     profile_adjusted: bool = False
 
+    @property
+    def eff_se(self) -> float | None:
+        """SE read off the row's own 95 % interval. With ~6 blocks per arm the Welch interval uses
+        t(dof) ~ 2.2, so this is wider than the raw ``se`` -- the honest spread for widening a
+        forecast and for pooling."""
+        if self.ci_lo is None or self.ci_hi is None:
+            return self.se
+        return (self.ci_hi - self.ci_lo) / (2 * 1.96)
+
     def covers(self, offset_min: float) -> bool:
         return self.window_start_min <= offset_min < self.window_end_min
 
@@ -115,7 +125,12 @@ def rows_from_experiment(exp: Mapping[str, Any], blocks: Sequence[Mapping[str, A
 
     ``blocks``: the experiment's design blocks as run ({index, arm, start, end}), already checked
     against the design (``Effects._match_design``). ``frame``: grain-bucket means on a regular UTC
-    grid covering ``PROFILE_DAYS`` before the first block through the last block."""
+    grid covering ``PROFILE_DAYS`` before the first block through the last block.
+
+    The time-of-day profile is variance reduction only; randomisation is what keeps the estimate
+    unbiased. Unlike ``Effects.analyze_experiment`` it does not cut the history at change events or
+    mask registry exclusions (Family A's readings have no registry spec), so for the experiment's own
+    target the interval can differ from the stored ``/effects`` row."""
     if not blocks:
         raise ValueError("no blocks")
     burn = int(exp["burn_in_min"])
@@ -151,7 +166,7 @@ def pool_rows(rows: Iterable[EffectRow]) -> list[EffectRow]:
     out = []
     for key, rs in sorted(groups.items()):
         ids = tuple(sorted({e for r in rs for e in r.experiment_ids}))
-        good = [r for r in rs if r.estimate is not None and r.se is not None and r.se > 0]
+        good = [r for r in rs if r.estimate is not None and r.eff_se is not None and r.eff_se > 0]
         if len(rs) == 1:
             out.append(rs[0])
             continue
@@ -160,7 +175,7 @@ def pool_rows(rows: Iterable[EffectRow]) -> list[EffectRow]:
                                  sum(r.n_on for r in rs), sum(r.n_off for r in rs), None, ids,
                                  reason="; ".join(sorted({r.reason or "no estimate" for r in rs}))))
             continue
-        w = np.array([1.0 / r.se ** 2 for r in good])
+        w = np.array([1.0 / r.eff_se ** 2 for r in good])
         est = float(np.sum(w * np.array([r.estimate for r in good])) / np.sum(w))
         se = float(math.sqrt(1.0 / np.sum(w)))
         p = math.erfc(abs(est / se) / math.sqrt(2)) if se > 0 else None
@@ -180,10 +195,10 @@ def choose(table: Sequence[EffectRow], actuator: str, target: str, offset_min: f
     if not usable:
         kinds = sorted({r.method for r in hits})
         raise NotChoosable(f"{actuator} -> {target}: only {kinds} rows; never used to choose an action")
-    r = usable[0]
-    if r.estimate is None or r.se is None:
-        raise NotChoosable(f"{actuator} -> {target}: randomised row has no estimate ({r.reason})")
-    return r
+    measured = [r for r in usable if r.estimate is not None and r.eff_se is not None]
+    if not measured:
+        raise NotChoosable(f"{actuator} -> {target}: randomised row has no estimate ({usable[0].reason})")
+    return min(measured, key=lambda r: (r.eff_se, r.window_end_min - r.window_start_min))
 
 
 # --------------------------------------------------------------------------------------------
@@ -211,6 +226,9 @@ def _levels(quantiles: Mapping[str, float]) -> tuple[np.ndarray, np.ndarray]:
         raise EfferenceRefused("forecast has no 80 % range (quantiles 0.1 and 0.9)")
     if not np.all(np.isfinite(val)) or np.any(np.diff(val) < 0) or val[-1] <= val[0]:
         raise EfferenceRefused("forecast range is not finite and increasing")
+    # Equal neighbouring quantiles (a flat stretch) would make np.interp undefined: nudge them apart
+    # by a negligible fraction of the range, keeping order.
+    val = val + np.arange(len(val)) * (val[-1] - val[0]) * 1e-9
     return lv, val
 
 
@@ -265,22 +283,36 @@ class Efference:
     experiment_ids: tuple[str, ...]
 
 
-def efference_copy(act_id: str, actuator: str, act_start: datetime, forecast: Mapping[str, Any],
-                   table: Sequence[EffectRow]) -> Efference:
-    """``forecast``: a Family A reading forecast {target, origin_ts, target_ts, point, quantiles}."""
-    origin, target_ts = pd.Timestamp(forecast["origin_ts"]), pd.Timestamp(forecast["target_ts"])
-    start = pd.Timestamp(act_start)
-    if origin > start:
-        raise EfferenceRefused(f"forecast origin {origin.isoformat()} is after the act started; it saw the act")
+def _utc(v: Any) -> pd.Timestamp:
+    t = pd.Timestamp(v)
+    return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+
+
+def efference_copy(act_id: str, actuator: str, act_start: datetime, act_end: datetime,
+                   forecast: Mapping[str, Any], table: Sequence[EffectRow], grain_min: int = 5) -> Efference:
+    """``forecast``: a Family A reading forecast {target, origin_ts, target_ts, point, quantiles}.
+
+    Family A's ``origin_ts`` is the START of the last complete bucket, so the forecast saw data up to
+    ``origin_ts + grain``: that must be at or before the act started. The effect was measured with the
+    act held for the whole block, so the act must still be on at ``target_ts``."""
+    origin, target_ts = _utc(forecast["origin_ts"]), _utc(forecast["target_ts"])
+    start, end = _utc(act_start), _utc(act_end)
+    if origin + pd.Timedelta(minutes=grain_min) > start:
+        raise EfferenceRefused(f"forecast origin {origin.isoformat()} (+{grain_min} min of data) reaches past "
+                               "the act start; it saw the act")
+    if target_ts > end:
+        raise EfferenceRefused(f"the act ended at {end.isoformat()}, before the target {target_ts.isoformat()}; "
+                               "the table's effect is for an act held through the window")
     offset = (target_ts - start).total_seconds() / 60.0
     row = choose(table, actuator, str(forecast["target"]), offset)
     q = {str(k): float(v) for k, v in forecast["quantiles"].items()}
-    expected_q = shifted(q, float(row.estimate), float(row.se))
+    expected_q = shifted(q, float(row.estimate), float(row.eff_se))
     point = float(forecast["point"])
     return Efference(act_id=act_id, actuator=actuator, target=str(forecast["target"]),
                      act_start=start.to_pydatetime(), target_ts=target_ts.to_pydatetime(), offset_min=offset,
                      forecast_origin=origin.to_pydatetime(), baseline_point=point, baseline_quantiles=q,
-                     effect=float(row.estimate), effect_se=float(row.se), expected=point + float(row.estimate),
+                     effect=float(row.estimate), effect_se=float(row.eff_se),
+                     expected=float(np.interp(0.5, *_levels(expected_q))),
                      expected_quantiles=expected_q, experiment_ids=row.experiment_ids)
 
 
@@ -293,6 +325,20 @@ def null_efference(act_id: str, forecast: Mapping[str, Any]) -> Efference:
     point = float(forecast["point"])
     return Efference(act_id, "none", str(forecast["target"]), t, tt, (tt - t).total_seconds() / 60.0, t, point, q,
                      0.0, 0.0, point, q, ())
+
+
+def log_density(quantiles: Mapping[str, float], x: float) -> float:
+    """ln of the density ``pit`` integrates: flat between stored quantiles, Gaussian beyond the outer
+    pair. The log score is proper, so unlike two-sided-p surprisal it cannot be won by a forecast
+    that is merely wider (that is why ``gain`` uses it)."""
+    lv, val = _levels(quantiles)
+    s = (val[-1] - val[0]) / (_N.inv_cdf(lv[-1]) - _N.inv_cdf(lv[0]))
+    if x < val[0] or x > val[-1]:
+        edge, z_edge = (val[0], _N.inv_cdf(lv[0])) if x < val[0] else (val[-1], _N.inv_cdf(lv[-1]))
+        z = (x - edge) / s + z_edge
+        return -0.5 * z * z - 0.5 * math.log(2 * math.pi) - math.log(s)
+    i = min(int(np.searchsorted(val, x, side="right")) - 1, len(val) - 2)
+    return math.log((lv[i + 1] - lv[i]) / (val[i + 1] - val[i]))
 
 
 def _p_two_sided(u: float) -> float:
@@ -310,9 +356,10 @@ def score(eff: Efference, actual: float | None) -> dict:
     u, ub = pit(eff.expected_quantiles, a), pit(eff.baseline_quantiles, a)
     p, pb = _p_two_sided(u), _p_two_sided(ub)
     s, sb = -math.log(p), -math.log(pb)
+    ld, ldb = log_density(eff.expected_quantiles, a), log_density(eff.baseline_quantiles, a)
     return {**out, "status": "scored", "actual": a, "miss": a - eff.expected, "pit": u, "p": p, "surprisal": s,
             "excess": s - CALM_SURPRISAL, "baseline_pit": ub, "baseline_p": pb, "baseline_surprisal": sb,
-            "gain": sb - s}
+            "log_density": ld, "baseline_log_density": ldb, "gain": ld - ldb}
 
 
 # --------------------------------------------------------------------------------------------
@@ -342,7 +389,7 @@ def gate(scores: Sequence[Mapping[str, Any]]) -> dict:
         return {**out, "gap": float(g[0]) if len(g) else None, "se": None, "prob_better": None,
                 "reason": "need >= 2 acts for a standard error"}
     gap, se = float(g.mean()), float(g.std(ddof=1) / math.sqrt(len(g)))
-    prob = 0.5 * math.erfc(-(gap / se) / math.sqrt(2.0)) if se > 0 else (1.0 if gap > 0 else 0.0)
+    prob = 0.5 * math.erfc(-(gap / se) / math.sqrt(2.0)) if se > 0 else (1.0 if gap > 0 else 0.0 if gap < 0 else 0.5)
     return {**out, "gap": gap, "se": se, "prob_better": prob}
 
 
@@ -378,9 +425,12 @@ class EffectTable:
             raise CausalError(f"experiment is {exp['status']}; only finished (analyzed) experiments enter the table")
         logged = [r for r in self.store.interventions(experiment_id=experiment_id, limit=1000) if r["arm"]]
         blocks = Effects._match_design(exp, logged)
-        first = min(pd.Timestamp(b["start"]) for b in blocks).to_pydatetime()
-        last = max(pd.Timestamp(b["end"]) for b in blocks).to_pydatetime()
-        frame, _ = self.loader(first - timedelta(days=PROFILE_DAYS), last)
+        grain = f"{self.grain_min}min"
+        # The loader's grid starts at ``start``; its SQL buckets sit on grain boundaries. An unaligned
+        # start (logged blocks may be up to 2 min off the design) would leave every column NaN.
+        first = (min(pd.Timestamp(b["start"]) for b in blocks) - pd.Timedelta(days=PROFILE_DAYS)).floor(grain)
+        last = max(pd.Timestamp(b["end"]) for b in blocks).ceil(grain)
+        frame, _ = self.loader(first.to_pydatetime(), last.to_pydatetime())
         rows = rows_from_experiment(exp, blocks, frame, self.units, self.grain_min, self.n_perm)
         self._cache[experiment_id] = rows
         return rows

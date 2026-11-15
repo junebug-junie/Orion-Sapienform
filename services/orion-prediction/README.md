@@ -561,20 +561,22 @@ logged blocks and the raw readings (cached per experiment). Several experiments 
 pool by inverse variance. `family_c.choose()` is the only reader for acting or forecasting, and it
 refuses any row whose method is not `randomised`.
 
-**The efference copy.** Before an act: take the family A forecast issued at or before the act started
-(it has not seen the act) whose target falls in the row's window. Move its quantiles by the effect,
-and widen them for the effect's SE. After the act: score the real reading in family A's unit (excess
-= -ln p - 1, calm 0 by theory). The same reading is also scored against the forecast alone. `gain`
-(forecast-alone surprisal minus efference surprisal) is positive when knowing the effect helped.
+**The efference copy.** Before an act: take a family A forecast whose bucket closed at or before the
+act started (it has not seen the act) and whose target falls in the row's window, while the act is
+still on. Move its quantiles by the effect, and widen them for the effect's SE (read off the row's own
+t interval). After the act: score the real reading in family A's unit (excess = -ln p - 1, calm 0 by
+theory). The same reading is also scored against the forecast alone. `gain` is the log predictive
+density with the effect minus without it. That is a proper score: a table that only adds uncertainty
+loses. It is positive when knowing the effect helped.
 `family_c.gate()` reports the mean gain over acts, its SE and prob_better. There is no alpha line.
 
 Live state, 2026-11-15 (`evals/run_family_c_live_eval.py`): one experiment ever ran
 (`vision.focus:walkway`, 2026-10-29, 12 x 20-min blocks). 45 rows, 31 with an estimate. 1 of 31 rows
 has p <= 0.05, which is about what chance gives with 31 rows. Cabinet temperature: +0.29 C, 95 %
 -0.47..+1.04. The other 14 readings had no data during that experiment. No act has been scored live. Rest
-check with no act (48 h of scored family A forecasts): mean excess +0.115 (5 min) and +0.037
+check with no act (48 h of scored family A forecasts): mean excess +0.099 (5 min) and -0.030
 (15 min); both 95 % intervals contain 0. A single Gaussian read off the 80 % range did not rest
-(+0.375 / +0.165), so the scorer reads all 9 stored quantiles.
+(+0.614 / +0.257), so the scorer reads all 9 stored quantiles.
 
 ## Contracts
 

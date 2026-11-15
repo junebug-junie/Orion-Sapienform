@@ -9,7 +9,8 @@ Checks (nominal values in brackets):
 - table 95 % interval covers the planted effect in >= 88 % of seeds [95 %];
 - table right: efference mean excess within 0.20 of 0 [0], share p <= 0.05 in 0.02..0.10 [0.05],
   and the gate prefers the efference copy over the forecast alone (gap > 0, prob_better >= 0.9);
-- null actuator (no planted effect): gap within 2 SE of 0 (knowing "no effect" costs nothing);
+- null actuator (no planted effect): -0.25 < gap <= 2 SE (the log score charges a small, honest cost
+  for the table's own uncertainty about an effect that is really 0; it must never read as a gain);
 - wrong-sign table: mean excess > 0.5 and gap < 0 (a broken self-model is visible as surprise).
 
     cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_family_c_synthetic_eval.py
@@ -77,12 +78,13 @@ def trial(effect: float, seed: int, table_sign: float = 1.0, n_acts: int = 40) -
     after = np.where(idx >= last + pd.Timedelta(hours=1))[0]
     for i, o in enumerate(rng.choice(after[:-k - 1], n_acts, replace=False)):
         origin = idx[o]
-        act_start = origin
+        act_start = origin + pd.Timedelta(minutes=GRAIN)   # the origin bucket is complete before the act
         target_ts = origin + pd.Timedelta(minutes=H)
         actual = y[o + k] + effect   # the act moves this reading by the true effect
         f = {"target": "r", "origin_ts": origin, "target_ts": target_ts, "point": float(y[o]),
              "quantiles": {f"{lv:g}": float(y[o] + v) for lv, v in zip(levels, dq)}}
-        eff = fc.efference_copy(f"{seed}-{i}", "synthetic.act", act_start.to_pydatetime(), f, table)
+        eff = fc.efference_copy(f"{seed}-{i}", "synthetic.act", act_start.to_pydatetime(),
+                                (act_start + pd.Timedelta(minutes=20)).to_pydatetime(), f, table)
         scores.append(fc.score(eff, actual))
     return covered, scores
 
@@ -109,7 +111,7 @@ def main(argv=None) -> int:
     gn = fc.gate(null)
     print(f"null act     : excess {gn['mean_excess']:+.3f}  gap {gn['gap']:+.3f} se {gn['se']:.3f} "
           f"prob_better {gn['prob_better']:.3f}")
-    ok &= abs(gn["gap"]) <= 2 * gn["se"] + 0.02
+    ok &= -0.25 < gn["gap"] <= 2 * gn["se"]
 
     wrong = [x for s in range(args.seeds) for x in trial(0.4, 2000 + s, table_sign=-1.0)[1]]
     gw = fc.gate(wrong)

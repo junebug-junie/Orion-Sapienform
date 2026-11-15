@@ -611,9 +611,9 @@ instruments:
           With no act, does the miss score rest at 0 on live Family A forecasts (48 h), and does a
           planted act separate "expected" from "surprise"? (evals/run_family_c_live_eval.py --hours 48)
         kind: manual
-        recorded: "PASS rest (5 min +0.115, 95% -0.073..+0.340; 15 min +0.037, 95% -0.132..+0.262); planted act: table knows it -0.20/-0.11 excess vs blind +1.77/+1.91"
+        recorded: "PASS rest (5 min +0.099, 95% -0.067..+0.323; 15 min -0.030, 95% -0.132..+0.087); planted act: table knows it -0.18/-0.19 excess vs blind +1.60/+1.80"
         recorded_at: 2026-11-15
         note: >-
           The rest point is inherited from Family A's per-reading calibration. A single Gaussian
-          read off the 80 % range did NOT rest (+0.375 / +0.165): the scorer reads all 9 stored
+          read off the 80 % range did NOT rest (+0.614 / +0.257): the scorer reads all 9 stored
           quantiles instead. Re-run after any Family A forecaster change.

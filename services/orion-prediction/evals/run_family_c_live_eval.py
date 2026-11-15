@@ -149,7 +149,8 @@ def main(argv=None) -> int:
             delta = 2.0 * sigma
             row = fc.EffectRow("planted", r["series_id"], None, 0, int(h) + 1, fc.METHOD_RANDOMISED, delta,
                                None, None, 0.25 * sigma, 6, 6, None, ("planted",))
-            eff = fc.efference_copy(str(fid), "planted", r["origin_ts"], _fc(r), [row])
+            act_start = r["origin_ts"] + timedelta(minutes=cfg.grain_min)   # origin bucket complete first
+            eff = fc.efference_copy(str(fid), "planted", act_start, r["target_ts"], _fc(r), [row], cfg.grain_min)
             actual = float(r["actual"]) + delta
             knows.append(fc.score(eff, actual))
             blind.append(fc.score(_null_eff(r), actual))

@@ -554,9 +554,9 @@ class PostgresStore:
 
     def experiments(self, status: str | None = None, limit: int = 500) -> list[dict]:
         if status:
-            return self._all("SELECT * FROM prediction_experiment WHERE status = %s ORDER BY created_at LIMIT %s",
+            return self._all("SELECT * FROM prediction_experiment WHERE status = %s ORDER BY created_at DESC LIMIT %s",
                              (status, limit))
-        return self._all("SELECT * FROM prediction_experiment ORDER BY created_at LIMIT %s", (limit,))
+        return self._all("SELECT * FROM prediction_experiment ORDER BY created_at DESC LIMIT %s", (limit,))
 
     def set_experiment_status(self, experiment_id: str, status: str) -> None:
         self._all("UPDATE prediction_experiment SET status = %s WHERE experiment_id = %s", (status, experiment_id))

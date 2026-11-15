@@ -155,8 +155,8 @@ def test_build_now_refuses_an_unregistered_reader_and_never_shows_an_unregistere
 
 def test_labels_are_code_written_and_capped():
     assert len(now_label("prime_thought", "x" * 500, None, {})) == NOW_LABEL_MAX
-    assert now_label("curiosity_run", "", None, {"n_tested": 3, "n_moved": 1, "n_formed": 0, "arm": "a"}) == \
-        "curiosity run (a): tested 3, moved 1, formed 0"
+    assert now_label("curiosity_run", "", None, {"n_tested": 3, "n_moved": 1, "n_formed": 0, "arm": "value_order"}) == \
+        "curiosity run: tested 3, moved 1, formed 0"
     assert now_label("visual_run", "", "done", {}) == "visual run [done]"
     TemporalNowV1.model_validate(build_now([row("chat_turn:1", "chat_turn", label="L" * 400)], "prime", since=T,
                                            as_of=T, shown_id="s", registry=REG).model_dump())
@@ -259,3 +259,54 @@ def test_record_use_counts_cites_already_stored_for_the_shown_row_against_the_ca
     r = record_use(shown_id="s", reader_organ="prime", shown_event_ids=shown, cites=shown, citing_ref="x",
                    cited_at=T, already_used=shown[:2])
     assert [u.event_id for u in r.uses] == ["gpu_wait:2"] and r.rejected_over_cap == ["gpu_wait:3", "gpu_wait:4"]
+
+
+# --------------------------------------------------------------------------- blinding (#3458)
+
+
+def _now_from(events):
+    from orion.temporal_self.now import stored_payload_surprise
+
+    rows = []
+    for e in events:
+        payload = dict(e.payload, ended_at=e.ended_at.isoformat() if e.ended_at else None)
+        rows.append({"event_id": e.event_id, "source_kind": e.source_kind, "occurred_at": e.occurred_at,
+                     "label": e.label, "verdict": e.verdict, "payload": payload, "related_refs": e.related_refs,
+                     "salience": 0.5, "surprise_nats": stored_payload_surprise(payload)})
+    return build_now(rows, "prime", since=T - timedelta(days=1), as_of=T + timedelta(days=1), shown_id="s",
+                     registry=REG, max_per_organ=12)
+
+
+def test_the_now_never_shows_a_blinded_experiment_arm():
+    """The three-arm curiosity test (#3183) and the dream/control hypothesis test are blinded. Their arms are
+    derived from the code that assigns them, never listed by hand: a new arm is covered automatically."""
+    from orion.curiosity.value import OFFER_ARMS
+    from orion.schemas.dream_cycle import HypothesisArm
+
+    assert set(OFFER_ARMS) >= {"value_order", "replica_order", "uncertainty_order"}
+    curiosity = [S.curiosity_run({"run_id": f"r{i}", "turn_started_at": T, "completed_at": T + timedelta(minutes=5),
+                                  "arm": arm, "n_tested": 2, "n_moved": 1, "n_formed": 0, "offered": []})
+                 for i, arm in enumerate(OFFER_ARMS)]
+    dream_arms = get_args(HypothesisArm)
+    dreams = [S.dream_hypothesis({"hypothesis_id": f"h{i}", "cycle_id": "c", "arm": arm, "created_at": T})
+              for i, arm in enumerate(dream_arms)]
+    assert all(e.payload.get("arm") for e in curiosity + dreams)  # stored for the analysis scripts
+    now = _now_from(curiosity + dreams)
+    text = now.model_dump_json()
+    assert len(now.items) == len(curiosity) + len(dreams)
+    for arm in OFFER_ARMS:
+        assert arm not in text
+    assert '"arm"' not in text
+    labels = {i.source_kind: set() for i in now.items}
+    for i in now.items:
+        labels[i.source_kind].add(i.label)
+    # the same outcome under any arm renders the same words
+    assert labels == {"curiosity_run": {"curiosity run: tested 2, moved 1, formed 0"},
+                      "dream_hypothesis": {"dream hypothesis"}}
+    assert "control" not in text
+
+
+def test_self_inquiry_is_a_line_not_an_arm_and_keeps_its_name():
+    e = S.curiosity_run({"run_id": "s", "turn_started_at": T, "completed_at": T + timedelta(minutes=5),
+                         "arm": "self_inquiry", "n_tested": 0, "n_moved": 0, "n_formed": 3, "offered": []})
+    assert _now_from([e]).items[0].label == "self-inquiry run: tested 0, moved 0, formed 3"

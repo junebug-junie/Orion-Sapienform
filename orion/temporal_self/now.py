@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, get_args
 
+from orion.curiosity.value import ARM_SELF_INQUIRY
 from orion.physiology.event_wants import MIN_SOURCE_HISTORY, SOURCE_HISTORY, source_salience
 from orion.schemas.temporal_self import (
     NOW_LABEL_MAX,
@@ -195,11 +196,14 @@ def salience_of(mag: Optional[float], at: datetime, history: Iterable[tuple[date
 # --------------------------------------------------------------------------- labels
 
 _TEMPLATES: dict[str, Callable[[Mapping[str, Any]], str]] = {
-    "curiosity_run": lambda p: (f"curiosity run ({p.get('arm') or 'run'}): tested {p.get('n_tested')}, "
-                                f"moved {p.get('n_moved')}, formed {p.get('n_formed')}"),
+    # Never the experiment arm (#3458): the three-arm curiosity test (#3183) and the dream/control hypothesis
+    # test are blinded, and the now is read by Prime, every chat turn's Prime block and the roundup. The arm
+    # stays in the stored payload for the analysis scripts only. self_inquiry is a line, not an offer arm.
+    "curiosity_run": lambda p: (f"{'self-inquiry run' if p.get('arm') == ARM_SELF_INQUIRY else 'curiosity run'}: "
+                                f"tested {p.get('n_tested')}, moved {p.get('n_moved')}, formed {p.get('n_formed')}"),
     "dream_cycle": lambda p: (f"dream cycle: {p.get('hypothesis_count')} hypotheses from "
                               f"{p.get('replay_count')} replayed items"),
-    "dream_hypothesis": lambda p: f"dream hypothesis ({p.get('arm') or 'arm unknown'})",
+    "dream_hypothesis": lambda p: "dream hypothesis",
     "gpu_wait": lambda p: f"{p.get('holder') or 'a background lease'} waited {_num(p.get('waited_ms')) or 0:.0f} ms for a GPU",
     "action_outcome": lambda p: f"act outcome {p.get('target_id')} ({p.get('dispatch_kind')})",
     "vision_percept": lambda p: "saw " + ", ".join(str(x) for x in (p.get("entities") or [])[:6]),

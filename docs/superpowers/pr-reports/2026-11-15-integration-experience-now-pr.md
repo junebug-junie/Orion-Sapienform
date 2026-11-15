@@ -238,7 +238,15 @@ scripts/safe_docker_build.sh orion-durable-runs up -d --build
   reads closed days.
 - Severity: info. `prediction_surprise` adds ~570 rows a day to `temporal_self_event` (one series, two
   thresholds), 99% at the rest point.
-- Issues: refs #3423. Opened: none. Closed: none (live proof after deploy).
+- Severity: high, fixed here (#3458). Concern: the now's labels rendered the curiosity experiment arm
+  ("curiosity run (<arm>): ... moved M") and the dream hypothesis arm. Prime, every chat turn's Prime block
+  and the roundup read the now, so per-arm outcomes would unblind the pre-registered three-arm test
+  (#3183) and the dream/control test. Fix: no label or now item carries an arm (self-inquiry keeps its
+  line name). The arm stays in the stored payload for the analysis scripts. Evidence:
+  `test_the_now_never_shows_a_blinded_experiment_arm` derives the arms from `orion.curiosity.value.OFFER_ARMS`
+  and `HypothesisArm`, so a new arm is covered automatically. Existing readers on main were audited on #3458.
+- Issues: refs #3423, refs #3458 (the now's part fixed; the issue stays open for the payload and SQL
+  exposure noted there). Opened: none in this PR (#3457 opened in patch 2). Closed: none (live proof after deploy).
 
 ## PR link
 

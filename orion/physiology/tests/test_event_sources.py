@@ -178,3 +178,64 @@ def test_an_ordinary_event_is_sated_once_there_is_event_history():
 def test_n_stays_an_integer_in_the_default_mode():
     ev = evidence_for("reading", _closes(), [], since=SINCE, until=UNTIL, reliability=True)
     assert isinstance(ev.n, int)
+
+
+# --- issue #3364: a want ranks only against past events decided with the same grading ------------------------
+
+def _graded_acts(n=40):
+    """A graded family: n closes, every second answered (mean outcome 0.5), closes 30 min apart."""
+    return [ActRecord(act_id=f"g{k}", family="camera", opened_at=NOW - timedelta(minutes=30 * k + 5),
+                      closed_at=NOW - timedelta(minutes=30 * k), outcome_value=float(k % 2), outcome_source="resolver")
+            for k in range(1, n + 1)]
+
+
+def test_same_grading_events_keeps_floats_and_only_matching_pairs():
+    from orion.physiology.appetite import same_grading_events
+
+    mixed = [0.4, (0.1, False), (0.9, True), (0.2, None), (float("nan"), True), ("x", True), (0.3, True, 1), True]
+    assert same_grading_events(mixed, True) == (0.4, 0.9)
+    assert same_grading_events(mixed, False) == (0.4, 0.1)
+    # A pair that went through JSON comes back as a list: still a pair, not dropped.
+    assert same_grading_events([[0.5, True], [0.6, False], [0.7, None]], True) == (0.5,)
+
+
+def test_live_shape_3364_a_low_value_event_ranks_zero_against_graded_events_only():
+    """The live shape of issue #3364 (2026-11-14): a graded family whose ledger held 120 ungraded shadow-era events,
+    three of them near 0, and saturated graded events since. A vehicle ask (intensity 1.0, expected answer 0.135)
+    ranked 3/120 = 0.025 against all of them, so it was funded. Against the graded ones only it ranks 0 (sated);
+    a confirm ask (0.965, above the family mean) still ranks 1."""
+    acts = _graded_acts()
+    ungraded = [(0.001, False), (0.001, False), (0.004, False)] + [(0.3, False)] * 105 + [(1.0, False)] * 12
+    graded_rows = [(1.0, True)] * 16
+    before = build_family_appetite(FAMS.get("camera"), acts, NOW, event_intensities=[v for v, _ in ungraded])
+    after = build_family_appetite(FAMS.get("camera"), acts, NOW, event_intensities=ungraded + graded_rows)
+    assert before.graded and after.graded and after.event_values == (1.0,) * 16
+    assert after.mean_outcome == 0.5          # 0.817 live; vehicle 0.135 and confirm 0.965 sat either side of it
+    vehicle, confirm = 0.08, 0.9
+    assert rank_value(before, 1.0, vehicle, event=True)[0] == pytest.approx(3 / 120)
+    assert rank_value(after, 1.0, vehicle, event=True) == (0.0, "event:graded", vehicle)
+    assert rank_value(after, 1.0, confirm, event=True)[0] == 1.0
+
+
+def test_a_grading_flip_ranks_cold_until_enough_same_grading_events():
+    acts = _graded_acts()
+    hist = [(0.2, False)] * 50 + [(1.0, True)] * (EVENT_HISTORY_MIN - 1)
+    app = build_family_appetite(FAMS.get("camera"), acts, NOW, event_intensities=hist)
+    assert rank_value(app, 1.0, 0.1, event=True)[1].startswith("event_cold:")
+    app = build_family_appetite(FAMS.get("camera"), acts, NOW, event_intensities=hist + [(1.0, True)])
+    assert rank_value(app, 1.0, 0.1, event=True)[1] == "event:graded"
+
+
+def test_decide_sates_a_low_value_event_once_the_reference_is_same_grading():
+    """End to end through Choice (no charge): funded on the mixed reference, sated on the graded one."""
+    acts = _graded_acts()
+    want = WantV1(want_id="w", family="camera", producer="p", verb="ask", tier=2, opened_at=NOW,
+                  event_ref="orion_ask:a", salience=0.99, outcome_value=0.08)
+    mixed = [0.001, 0.001, 0.004] + [0.3] * 117
+    graded = [(v, False) for v in mixed] + [(1.0, True)] * 16
+    d0 = decide(want, _state(), build_context(FAMS, acts, [], _state(), NOW, event_history={"camera": mixed}),
+                ReservationBook(), NOW)
+    d1 = decide(want, _state(), build_context(FAMS, acts, [], _state(), NOW, event_history={"camera": graded}),
+                ReservationBook(), NOW)
+    assert d0.outcome == "funded" and d0.value_rank == pytest.approx(0.025)
+    assert d1.outcome == "deferred" and d1.reason == "sated" and d1.value_rank == 0.0

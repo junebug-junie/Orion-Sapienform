@@ -1,6 +1,8 @@
 """Organ names Orion gives: an append-only ledger, carried across rebuilds by member overlap.
 
-An organ id is a hash of its members, so it changes whenever one part joins or leaves. A name
+An organ id was a hash of its members until 2026-11-15, so it changed whenever one part joined or
+left, and names given before then sit under such ids. The live body's ids are now carried by the
+same overlap rule (``organ_ids.py``, #3402). A name
 belongs to the organ Orion looked at. A later organ inherits it only when the member sets overlap
 enough (Jaccard >= ``CARRY_MIN_OVERLAP``), one name per organ, and ``named_by`` says it was
 carried. A rename records which earlier names it ``replaces``, so a replaced name never comes back

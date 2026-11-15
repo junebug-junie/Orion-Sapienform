@@ -687,8 +687,9 @@ def _jaccard(a: set[str], b: set[str]) -> float:
 
 
 def body_diff(old: BodySnapshotV1, atlas: BodyAtlasV1) -> BodyDiffV1:
-    """The live body against an earlier snapshot. Organ ids are member hashes, so organs are matched
-    by member overlap (Jaccard >= 0.5, best first, one to one), the organ-name carry rule."""
+    """The live body against an earlier snapshot. Organs are matched by member overlap (Jaccard >=
+    0.5, best first, one to one), the organ-name carry rule: snapshots from before 2026-11-15 hold
+    member-hash ids, which changed with every part that moved (#3402)."""
     new = snapshot(atlas, "now")
     out = BodyDiffV1(since_episode=old.episode, since_atlas=old.atlas_as_of,
                      parts_added=sorted(set(new.parts) - set(old.parts)),

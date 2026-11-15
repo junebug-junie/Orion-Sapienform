@@ -82,8 +82,14 @@ Live check, 2026-10-27, in orion-athena-harness-governor:
 Tests: `pytest orion/dig/tests` (a temporary git repo with dated commits; the Denver end-of-day
 rule is tested exactly).
 
-**Organ names (patch 1b).** An organ id is a hash of its members, so it changes when one part
-joins or leaves. `body` carries a name to the new organ only when the member sets overlap by at
+**Organ ids (#3402).** An organ of the live body takes the id of the earlier organ it overlaps
+most (Jaccard ≥ 0.5, one to one), so an id stays put when a part joins or leaves; a new id is made
+only when nothing matches. The ledger is `$ORION_DIG_HOME/self/organ_ids.jsonl` (one line per organ
+per change of membership). The member hash, which was the id until 2026-11-15, is kept on each
+organ as `member_hash`. A past day's body (`body <date>`) keeps member-hash ids.
+
+**Organ names (patch 1b).** Names given before 2026-11-15 sit under member-hash ids, which changed
+when one part joined or left. `body` carries a name to the new organ only when the member sets overlap by at
 least half (Jaccard ≥ 0.5), one name per organ, and the full atlas JSON says "carried from …".
 A rename stores which earlier names it `replaces`, so a replaced name never returns when a part
 drifts back out, and never lands on the other half of a split organ. An unreadable ledger line is

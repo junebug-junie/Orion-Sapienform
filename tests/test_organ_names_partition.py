@@ -42,6 +42,12 @@ def test_only_the_atlas_and_dig_read_the_organ_names_ledger():
     assert [h for h in hits if not h.startswith(ALLOWED)] == []
 
 
+def test_only_the_atlas_and_dig_read_the_organ_id_ledger():
+    hits = _readers("organ_ids.jsonl", "body_atlas.organ_ids", "body_atlas import organ_ids", "organ_ids_path")
+    assert "orion/body_atlas/organ_ids.py" in hits and "orion/dig/__main__.py" in hits  # the grep really ran
+    assert [h for h in hits if not h.startswith(ALLOWED)] == []
+
+
 def test_only_the_atlas_and_dig_read_the_capacity_ledgers():
     hits = _readers("capacity_claims", "capacities.jsonl", "body_atlas.claims", "body_atlas import claims",
                     "import capacities, claims", "claims_path", "capacities_path")
@@ -70,7 +76,7 @@ def test_only_the_atlas_and_dig_read_the_reminiscence_ledgers():
     assert [h for h in hits if not h.startswith(ALLOWED) and h != REMINISCENCE_READER] == []
 
 
-LEDGER_MODULES = ("names", "claims", "field_notes", "portrait", "reminiscence")  # orion.body_atlas.<module> reads a self ledger
+LEDGER_MODULES = ("names", "claims", "field_notes", "portrait", "reminiscence", "organ_ids")  # orion.body_atlas.<module> reads a self ledger
 
 
 def _ledger_imports(tree) -> list[str]:

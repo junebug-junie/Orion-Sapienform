@@ -467,6 +467,14 @@ def cmd_history(start: date, end: date, out: Out) -> str:
 # --- body -----------------------------------------------------------------------------------
 
 def _live_atlas():
+    """The live body with ids that stay put when a part moves (the id ledger, #3402). Every
+    reader of the live body goes through here."""
+    from orion.body_atlas import organ_ids
+
+    return organ_ids.carry(_build_live_atlas(), organ_ids_path())
+
+
+def _build_live_atlas():
     from orion.body_atlas.__main__ import _RoGraphReader
     from orion.body_atlas.build import build_atlas, fetch_observed, load_catalog
     from orion.body_atlas.sources import default_live_readers, gather_body
@@ -495,6 +503,10 @@ def _live_atlas():
 
 def names_path() -> Path:
     return home() / "self" / "organ_names.jsonl"
+
+
+def organ_ids_path() -> Path:
+    return home() / "self" / "organ_ids.jsonl"
 
 
 DATE_LIKE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")

@@ -179,13 +179,26 @@ def test_the_cap_is_for_any_work_class_and_a_hold_nobody_retries():
 
 
 def test_the_capped_hold_is_aborted_after_its_grace_and_the_waiting_run_gets_the_seat():
+    # A hold nobody retries (the 11-13 trial): the abort ends it, so it is not in the next tick.
     waiting = hold(lease_id="q")
-    recalling = hold("recalling", "agent", lease_id="h", reason="background_max_hold",
-                     granted_at=T0 - timedelta(seconds=CAP + 600), recall_by=T0 - timedelta(seconds=1))
+    recalling = lease("operator_agent", "recalling", "agent", priority="background", kind="hold", lease_id="h",
+                      reason="background_max_hold", granted_at=T0 - timedelta(seconds=CAP + 600),
+                      recall_by=T0 - timedelta(seconds=1))
     decisions = run([recalling, waiting])
     assert [a.lease_id for a in of(Abort, decisions)] == ["h"]
-    # Next tick the seat is free: the waiting run is granted it.
     assert grants(run([waiting])) == {"q": "agent"}
+
+
+def test_a_capped_retryable_hold_keeps_its_place_in_the_queue():
+    # A durable run cut mid-node is re-queued in place (lease_graph: same created_at), and the queue
+    # is priority then age. So it wins the seat back from a YOUNGER background hold; anything of
+    # higher priority goes first. The cap frees the seat for others, it does not send Orion's own
+    # run to the back.
+    capped = hold(lease_id="capped", age=CAP + 1000)
+    younger = hold(lease_id="younger", age=3000)
+    assert grants(run([capped, younger])) == {"capped": "agent"}
+    chat_turn = lease("agent", priority="interactive", lease_id="i", age=10)
+    assert grants(run([capped, chat_turn])) == {"i": "agent"}
 
 
 def test_operator_and_non_background_holds_are_not_capped_by_it():
@@ -197,6 +210,9 @@ def test_operator_and_non_background_holds_are_not_capped_by_it():
 
 
 def test_no_cap_when_the_default_is_none():
+    from orion.gpu_pool.config import Defaults
+
+    assert Defaults.model_validate({"background_max_hold_sec": None}).background_max_hold_sec is None
     cfg = CFG.model_copy(update={"defaults": CFG.defaults.model_copy(update={"background_max_hold_sec": None})})
     h = hold("granted", "agent", lease_id="h", granted_at=T0 - timedelta(hours=8))
     assert not of(Recall, run([h], cfg=cfg))

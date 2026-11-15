@@ -37,7 +37,7 @@ pinned that on purpose (`test_a_long_hold_on_the_home_seat_is_never_capped`, 202
 - `config/gpu_pool.yaml`: a comment only. See "Contradiction with the spec" below.
 - `orion/gpu_pool/tests/test_scheduler_holds.py`: lifecycle tests for the cap.
 - `orion/gpu_pool/tests/test_lease_graph.py`: a capped hold nobody retries is released; a capped
-  retryable hold is re-queued in place.
+  retryable hold is re-queued in place (these two pass on old code too; they pin the lease graph).
 - `services/orion-gpu-pool/README.md`: the rule and a live check.
 
 ## Schema / bus / API changes
@@ -92,7 +92,7 @@ that says when the key can be added. The cap still ships ON.
 ```text
 cd /mnt/scripts/Orion-Sapienform-background-hold-cap
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$PWD /mnt/scripts/Orion-Sapienform/.venv/bin/python -m pytest orion/gpu_pool/tests -q -p no:cacheprovider
-  583 passed
+  584 passed
 (cd services/orion-gpu-pool && ... -m pytest tests -q -p no:cacheprovider)
   202 passed, 15 skipped
 (cd services/orion-gpu-lane-controller && ... -m pytest tests -q -p no:cacheprovider)
@@ -123,7 +123,29 @@ Not run. No deploy was allowed for this task. The live check is UNVERIFIED until
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Review ran in a subagent on the branch diff against `origin/main`. Verdict: nothing material.
+It confirmed by reading and by running the scheduler: no holder branches on the new reason; the
+grant clock restarts on every grant; no repeat recall each tick; system holds, child calls and the
+Hub button are untouched; keeping the default out of the YAML is still correct.
+
+- Finding: one new test said the waiting run gets the seat after a capped retryable hold. It
+  passed only because the capped hold was left out of the next tick. In truth a capped retryable
+  hold is re-queued in its old place and wins the seat back from a younger background hold.
+  - Fix: the test now uses a hold nobody retries (the trial case). A second test pins the real
+    behaviour: the re-queued hold beats a younger background hold and loses to a chat turn.
+  - Evidence: `test_a_capped_retryable_hold_keeps_its_place_in_the_queue`.
+- Finding: the README check query had no priority filter, no time filter, and a threshold that a
+  legal `draining_background` grace can pass.
+  - Fix: query filters on `priority = 'background'` and deploy time; threshold 12,700 s.
+- Finding: the "no cap" test skipped validation of `None`.
+  - Fix: it now also checks `Defaults.model_validate({"background_max_hold_sec": None})`.
+- Finding: the config comment said operator holds are bounded by their seat's own limit. Only two
+  seats have one.
+  - Fix: the comment now says operator holds are exempt, nothing more.
+- Finding (no code change): a hold in its 600 s cap grace makes an urgent run wait up to 600 s,
+  not 5 s. The same is already true for every other recall reason. Listed under risks.
+- Finding (no code change): the two new `test_lease_graph.py` cases pass on old code. They pin how
+  the lease graph treats the new reason; the scheduler tests are the regression tests.
 
 ## Restart required
 
@@ -142,14 +164,24 @@ lane controller on circe does not enforce the cap; it needs no restart for it.
 - Mitigation: 0 of 1,650 holds reached 9,000 s in 10 days. Rollback is one line (`None`).
 
 - Severity: low
+- Concern: the cap does not move Orion's own capped run to the back of the line. A retryable hold
+  keeps its old place and can be granted again at once when only younger background work waits.
+  The trial case (not retryable) does end for good.
+- Mitigation: none needed for #3391. If same-priority fairness is wanted, it is a separate change.
+
+- Severity: low
+- Concern: an urgent run that arrives while a hold is in its 600 s cap grace waits for that grace,
+  not for the 5 s urgent grace. Existing behaviour for every other recall reason.
+- Mitigation: rare (a hold at the cap plus an urgent arrival inside 600 s). Not changed here.
+
+- Severity: low
 - Concern: UNVERIFIED live. Acceptance check: start a trial hold longer than the cap and see it
   released at the cap; Orion's day shows no "agent lane full" arc from it.
-- Mitigation: after deploy run
-  `select holder, role, round(held_ms/1000) from gpu_pool_events e join gpu_pool_leases l using (lease_id) where l.kind='hold' and l.priority='background' and not l.operator and e.held_ms > 9700000 and e.generated_at > '<deploy time>'`.
-  It must return no row.
+- Mitigation: after deploy run the check query in `services/orion-gpu-pool/README.md`
+  (Background hold cap). It must return no row.
 
 - Issues opened: none. Issues closed: Fixes #3391.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3480

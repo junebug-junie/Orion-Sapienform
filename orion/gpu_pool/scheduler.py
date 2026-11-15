@@ -41,8 +41,10 @@ Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-ac
      hold_clawback_grace_sec counted from its recall, then is aborted
   H6 a background-priority hold granted for defaults.background_max_hold_sec without a break is
      recalled (``background_max_hold``) with the normal hold grace, on any role and for any work
-     class: a trial hold kept the agent lane 7 h on 2026-11-13 (#3391). Operator holds are exempt
-     (their seat's max_hold_sec bounds them). A retryable hold is re-queued in place, as in H4
+     class: a trial hold kept the agent lane 7 h on 2026-11-13 (#3391). Operator holds are exempt.
+     A retryable hold is re-queued in its old place, as in H4, so it may be granted again at once
+     when nothing of higher priority waits; a hold nobody retries is released. If another recall
+     reason fires in the same tick (a drain), that reason and its grace win: the hold still leaves
   S1 a seat load is blocked -- reported as SwapBlocked, never silent -- by min residency after an
      unload, cooldown after a failed load, or a failing guard (thermal)
   S2 a card in "fault" grants nothing on any of its roles; a card mid-swap grants nothing on the

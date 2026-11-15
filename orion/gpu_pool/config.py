@@ -70,8 +70,9 @@ class Defaults(BaseModel):
     # while 215 of Orion's acts waited; before this only the gpu2 swap seat had a clock. 9000 s is
     # that seat's own limit (2.5 h, Juniper 2026-09-29) and sits above every hold Orion's own work
     # took 11-05..11-15 (1,650 durable-run holds: p50 337 s, p99 5,761 s, max 8,545 s). A
-    # retryable hold (every durable run) is re-queued in its place, not failed. Operator holds are
-    # bounded by their seat's own max_hold_sec, not by this. None = no cap (rollback).
+    # retryable hold (every durable run) is re-queued in its old place, not failed, so it may be
+    # granted again at once when nothing of higher priority waits. Operator holds (the Hub button,
+    # interactive) are exempt. None = no cap (rollback).
     background_max_hold_sec: float | None = Field(9000, gt=0)
     swap_min_residency_sec: float = Field(600, ge=0)    # after a seat unloads, evicted residents stay this long
     actuate_ack_sec: float = Field(10, gt=0)            # no "accepted" within this -> actuator_unreachable

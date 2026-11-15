@@ -215,9 +215,12 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
 - **Background hold cap** (H6, #3391): a background-priority hold that has been granted for
   `defaults.background_max_hold_sec` (code default 9000 s, 2.5 h) without a break is recalled with
   reason `background_max_hold`, on any role and for any work class, then gets the normal 600 s grace.
-  A retryable hold (every durable run) is re-queued in its place; a hold nobody retries is released.
-  Operator holds are exempt. Check: `select holder, role, held_ms/1000 from gpu_pool_events where
-  event in ('released','aborted') and held_ms > 9700000` returns no background hold after deploy.
+  A hold nobody retries is released. A retryable hold (every durable run) is re-queued in its old
+  place, so it may be granted again at once when nothing of higher priority waits. Operator holds
+  are exempt. If a drain recalls the hold in the same tick, the drain's reason and grace apply
+  (up to 3600 s for `draining_background`). Check after deploy, expect no row:
+  `select holder, role, held_ms/1000, reason from gpu_pool_events where event in ('released','aborted')
+  and priority = 'background' and held_ms > 12700000 and generated_at > '<deploy time>'`.
 - **Recall**: a hold borrowing another class's role is recalled as soon as that owner has demand
   there; a swap seat with `max_hold_sec` (agent-gpu2: 9000 s, ~2.5 h since stage 5.1) drains after being loaded that long.
   A recalled hold gets `hold_clawback_grace_sec` (600 s) to finish its current node, then is

@@ -245,3 +245,32 @@ def test_office_env_store_refuses_a_key_outside_the_allowlist_even_if_the_spec_w
     with pytest.raises(ValueError, match="office_env key"):
         st.points(bad, T0)
     assert st.pool.log == []
+
+
+def test_closet_env_source_reads_only_live_fresh_rows_read_only_with_a_timeout():
+    reg = parse_registry(spec_doc(source={"kind": "closet_env", "node": "pan-1", "key": "closet_temp_c"}))
+    sp = reg.get("test.temp")
+    st = _office_store([{"ts": T0, "v": 27.4}])
+    assert st.points(sp, T0, T0 + timedelta(hours=1)) == [(T0, 27.4)]
+    sqls = [s for s, _ in st.pool.log]
+    assert sqls[0] == "SET TRANSACTION READ ONLY" and sqls[1].startswith("SET LOCAL statement_timeout = ")
+    sql, args = st.pool.log[2]
+    assert "FROM closet_env_sample" in sql and "closet_temp_c AS v" in sql
+    # A stale or offline sample is never a reading.
+    assert "sensor_online AND NOT stale AND closet_temp_c IS NOT NULL" in sql
+    assert args == ["pan-1", T0, T0 + timedelta(hours=1)]
+
+
+def test_closet_env_store_refuses_a_key_outside_the_allowlist_even_if_the_spec_was_built_by_hand():
+    import dataclasses
+
+    import pytest
+
+    from app.series import Source
+    sp = parse_registry(spec_doc(source={"kind": "closet_env", "node": "pan-1", "key": "closet_temp_c"})).get("test.temp")
+    st = _office_store([])
+    for key in ("closet_co2_ppm", "payload_json", "office_temp_c"):
+        bad = dataclasses.replace(sp, source=Source(kind="closet_env", node="pan-1", key=key))
+        with pytest.raises(ValueError, match="closet_env key"):
+            st.points(bad, T0)
+    assert st.pool.log == []

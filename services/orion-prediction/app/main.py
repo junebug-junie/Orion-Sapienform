@@ -646,8 +646,9 @@ async def _heat(series_id: str, days: float, experiment_id: uuid.UUID | None, st
 async def get_heat_per_watt(series_id: str = "athena.cabinet_temp_c", days: float = Query(7.0, ge=2, le=21),
                             experiment_id: uuid.UUID | None = None) -> dict[str, Any]:
     """How much warmer than the room each machine's sustained watts make the cabinet (C per W, HAC 95% CI),
-    fitted now on hourly data; ``experiment_id`` converts that experiment's measured watts into a predicted
-    cabinet change. Read-only (POST stores). Too little data or a degenerate fit -> 422 ``refused``."""
+    fitted now on hourly data. ``series_id=closet.top_temp_c``: the closet top instead (a separate fit,
+    stored under its own series_id). ``experiment_id`` converts that experiment's measured watts into a
+    predicted target change. Read-only (POST stores). Too little data or a degenerate fit -> 422 ``refused``."""
     return await _heat(series_id, days, experiment_id, False)
 
 

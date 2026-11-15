@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
-from app.series import OFFICE_ENV_KEYS, SeriesSpec
+from app.series import CLOSET_ENV_KEYS, OFFICE_ENV_KEYS, SeriesSpec
 
 # Event tables the event_pair estimator may read (read-only), keyed by selector ``source``.
 # Each entry: (table, timestamp column, event-type column, stream column). Add a table here and to
@@ -20,7 +20,8 @@ EVENT_SOURCES = {
     "vision_events": ("vision_events", "created_at", "event_type", "stream_id"),
 }
 EVENT_READ_TIMEOUT_MS = 10_000
-# office_env_sample is written by orion-sql-writer: read it read-only, bounded like the event tables.
+# office_env_sample and closet_env_sample are written by orion-sql-writer: read them read-only, bounded
+# like the event tables (one timeout for both).
 OFFICE_ENV_READ_TIMEOUT_MS = 10_000
 
 _KEY = re.compile(r"^[a-z0-9_]{1,40}$")
@@ -165,6 +166,18 @@ class PostgresStore:
             # A stale or offline sample is not a reading (the producer already NULLs its values;
             # the flags are checked too so a future producer change cannot leak one in).
             sql = (f"SELECT ts, {src.key} AS v FROM office_env_sample WHERE node = %s AND ts >= %s "
+                   f"AND sensor_online AND NOT stale AND {src.key} IS NOT NULL")
+            args = [src.node, since]
+            if until is not None:
+                sql += " AND ts < %s"
+                args.append(until)
+            return [(r["ts"], r["v"]) for r in self._read_only(sql + " ORDER BY 1", args, OFFICE_ENV_READ_TIMEOUT_MS)]
+        elif src.kind == "closet_env":
+            # Same producer and table shape as office_env (orion-office-env with ENV_ROOM=closet ->
+            # sql-writer). Column from the allowlist; stale/offline samples never read.
+            if src.key not in CLOSET_ENV_KEYS:
+                raise ValueError(f"bad closet_env key {src.key!r}")
+            sql = (f"SELECT ts, {src.key} AS v FROM closet_env_sample WHERE node = %s AND ts >= %s "
                    f"AND sensor_online AND NOT stale AND {src.key} IS NOT NULL")
             args = [src.node, since]
             if until is not None:

@@ -1,15 +1,18 @@
-"""Heat per watt: how much a sustained watt of machine power warms the cabinet, split in two.
+"""Heat per watt: how much a sustained watt of machine power warms a target sensor, split in two.
 
 Theory anchor -- steady-state air heat balance across a heat source: the air leaving a machine is
 warmer than the air entering it by ``P / (m_dot * c_p)`` (all electrical power ends as heat; m_dot is
-the air mass flow past the sensor). The room sensor (office.temp_c) reads the air the cabinet draws
-in; the cabinet sensor reads air the machines have heated. Two fits, same method:
+the air mass flow past the sensor). The room sensor (office.temp_c) reads the intake air; the target
+sensor reads air the machines have heated. Targets (``HEAT_BALANCE``): the cabinet
+(athena.cabinet_temp_c, athena's air) and the closet top (closet.top_temp_c, above the cabinet, where
+circe's and hecate's exhaust goes; docs/superpowers/specs/2026-11-12-orion-air-path-design.md). Each
+target is fitted on its own and stored under its own series_id. Two fits, same method:
 
-- **local** -- ``gap = cabinet - room`` on each machine's watts: how much warmer than its own intake
-  the cabinet runs, holding the room fixed. Each machine gets its OWN slope (a machine whose exhaust
+- **local** -- ``gap = target - room`` on each machine's watts: how much warmer than its own intake
+  the target runs, holding the room fixed. Each machine gets its OWN slope (a machine whose exhaust
   does not reach the sensor reads ~0: circe, 2026-11-03). A fleet SUM of watts fits badly (R^2 0.89 ->
   0.18): one shared slope on watts the sensor does not see.
-- **total** -- ``cabinet`` on the same watts, outdoor temperature as a control: the room is free to
+- **total** -- ``target`` on the same watts, outdoor temperature as a control: the room is free to
   warm too (the machines' heat goes into the office and comes back in through the intake). A 0-2 h
   response, not a steady state -- the room keeps warming after that. Both fits run on the SAME hours.
   Live 2026-11-03 (7 days, 129 h) most of the 0-2 h response is the room path (athena local +0.09 vs
@@ -60,7 +63,23 @@ HEAT_BALANCE = {
         "watts": ("athena.chassis_watts", "circe.chassis_watts", "hecate.chassis_watts"),
         "controls": ("athena.cabinet_cooling_watts",),
     },
+    # The closet top (air-path Patch 1, metric gate in docs/superpowers/specs/2026-11-12-orion-air-path-
+    # design.md, #3234). circe and hecate exhaust here; athena (in the cabinet below) stays in so its room
+    # effect is not pushed into circe's slope (live -0.15 C per 100 W). A different quantity from the
+    # cabinet fit (~18x the cabinet's circe slope): never feed it to heat_sensitivity.yaml or the heat quote.
+    "closet.top_temp_c": {
+        "room": "office.temp_c",
+        "watts": ("circe.chassis_watts", "hecate.chassis_watts", "athena.chassis_watts"),
+        "controls": ("athena.cabinet_cooling_watts",),
+    },
 }
+# How a target reads in the fit's text (summary, stored ``details.what``). The cabinet's words are
+# unchanged, so its stored rows and answers stay the same as before the closet target existed.
+TARGET_LABEL = {"athena.cabinet_temp_c": "cabinet", "closet.top_temp_c": "closet top"}
+
+
+def target_label(series_id: str) -> str:
+    return TARGET_LABEL.get(series_id, series_id)
 HOUR_MIN = 60
 MIN_BUCKETS_PER_HOUR = 6        # of 12 five-minute buckets: an hour mostly missing is not an hourly mean
 LAG_H = 2                       # lags 0..2 h
@@ -91,12 +110,12 @@ class HeatFit:
     r2: float
     hac_lags: int
     ar1_rho: float
-    slopes: dict            # LOCAL (cabinet - room): watts id -> {per_w, ci_lo, ci_hi, p_value, per_100w, ...}
+    slopes: dict            # LOCAL (target - room): watts id -> {per_w, ci_lo, ci_hi, p_value, per_100w, ...}
     controls: dict          # control id -> same shape, or {"refused": reason}
     refused: dict           # watts id -> reason it was left out
     cov: dict               # "a|b" -> covariance of the local per-W slopes (for conversions)
     gap_mean_c: float
-    total: dict             # TOTAL (cabinet, room free): {slopes, cov, r2, n_hours, ...} or {"refused": reason}
+    total: dict             # TOTAL (target, room free): {slopes, cov, r2, n_hours, ...} or {"refused": reason}
     claim_kind: str = "observational_effect"
     fit_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
@@ -257,19 +276,23 @@ def fit_frame(frame: pd.DataFrame, watts: list[str], controls: list[str], target
 
 
 def load_frame(effects, series_id: str, start: datetime, end: datetime) -> tuple[pd.DataFrame, dict]:
-    """Hourly cabinet, room, gap, watts, controls and outdoor air from the store. Exclusions: the
+    """Hourly target, room, gap, watts, controls and outdoor air from the store. Exclusions: the
     target's (registry + change events) everywhere, the room's own on the room; each watts series via
     covariate_series (derived rules, own exclusions, zero before a machine's first reading)."""
     engine, store = effects.engine, effects.store
     cfg = HEAT_BALANCE[series_id]
-    spec = engine.effective(engine.registry.get(series_id), engine.clock())
+    spec = engine.registry.get(series_id)
+    # Change events fold into a forecast target's spec; engine.effective also registers the series in the
+    # engine's forecast state (/health), so a covariate target (the closet top) skips it.
+    if spec.role == "target":
+        spec = engine.effective(spec, engine.clock())
     room = engine.registry.get(cfg["room"])
     idx5 = pd.date_range(pd.Timestamp(start), pd.Timestamp(end), freq=f"{spec.grain_min}min", inclusive="left")
-    cab = hourly(mask_windows(to_grain(store.points(spec, start, end), spec.grain_min, spec.agg, 0,
+    tgt = hourly(mask_windows(to_grain(store.points(spec, start, end), spec.grain_min, spec.agg, 0,
                                        start=start, end=end), spec.exclude).reindex(idx5))
     rm = hourly(mask_windows(to_grain(store.points(room, start, end), room.grain_min, room.agg, 0,
                                       start=start, end=end), (*room.exclude, *spec.exclude)).reindex(idx5))
-    frame = {"cabinet": cab, "room": rm, "gap": cab - rm}
+    frame = {"target": tgt, "room": rm, "gap": tgt - rm}
     for wid in (*cfg["watts"], *cfg["controls"]):
         w = engine.registry.get(wid)
         frame[wid] = hourly(mask_windows(covariate_series(store, w, start, end, idx5), spec.exclude))
@@ -294,20 +317,20 @@ def fit_heat_per_watt(effects, series_id: str, days: float = 7.0) -> HeatFit:
 
 
 def _common_rows(frame: pd.DataFrame, watts: list[str], controls: list[str], outdoor: bool) -> pd.Index:
-    """Hours where BOTH fits have everything (gap, cabinet, every lagged regressor, outdoor air when
+    """Hours where BOTH fits have everything (gap, target, every lagged regressor, outdoor air when
     used): the local and total slopes are then measured on the same hours, so they can be compared."""
     names = watts + controls + ([OUTDOOR_SPEC.series_id] if outdoor else [])
     X, _ = _lagged(frame, names)
-    need = pd.concat([frame[["gap", "cabinet"]], X], axis=1)
+    need = pd.concat([frame[["gap", "target"]], X], axis=1)
     return need.dropna().index
 
 
 def _total(frame: pd.DataFrame, watts: list[str], controls: list[str], rows: pd.Index, outdoor: bool) -> dict:
-    """Cabinet on the same machines with the room free to move; outdoor air as a control when present.
+    """Target on the same machines with the room free to move; outdoor air as a control when present.
     A 0-2 h response (lags summed), not a steady state: the room keeps warming after that."""
     ctl = list(controls) + ([OUTDOOR_SPEC.series_id] if outdoor else [])
     try:
-        f = fit_frame(frame, watts, ctl, target="cabinet", rows=rows)
+        f = fit_frame(frame, watts, ctl, target="target", rows=rows)
     except HeatBalanceRefused as exc:
         return {"refused": exc.reason}
     return {"slopes": {w: f["effects"][w] for w in watts}, "controls": {c: f["effects"][c] for c in ctl},
@@ -322,8 +345,8 @@ def fit_from_frame(frame: pd.DataFrame, cfg: dict, series_id: str, start: dateti
         raise HeatBalanceRefused("no machine's watts vary enough to identify a slope", {"refused": refused})
     ctrl_refused = {c: r for c in cfg["controls"] if (r := identifiable(frame[c])) is not None}
     controls = [c for c in cfg["controls"] if c not in ctrl_refused]
-    if "cabinet" not in frame:
-        raise HeatBalanceRefused("no cabinet column")
+    if "target" not in frame:
+        raise HeatBalanceRefused("no target column")
     od = OUTDOOR_SPEC.series_id
     outdoor = od in frame and len(_common_rows(frame, watts, controls, True)) >= MIN_HOURS
     rows = _common_rows(frame, watts, controls, outdoor)
@@ -352,7 +375,7 @@ def summarize(fit: HeatFit) -> str:
                      f"steady state), same {fit.total['n_hours']} h: {total}.")
     else:
         total_txt = f" Total (room free) fit refused: {fit.total.get('refused')}."
-    return (f"Over {fit.n_hours} h, C per 100 W held 2 h, cabinet minus room: {local}.{total_txt} "
+    return (f"Over {fit.n_hours} h, C per 100 W held 2 h, {target_label(fit.series_id)} minus room: {local}.{total_txt} "
             f"AR(1) GLS + Newey-West {fit.hac_lags} lags; the 95% interval covers ~90% in simulation. "
             "Observational: a common cause would look the same.")
 
@@ -386,8 +409,8 @@ CONVERT_NOTE = ("Watt-change variance is read off each estimate's 95% interval w
 
 
 def predict_heat(fit: dict, watts: dict, block_min: float | None = None) -> dict:
-    """Convert measured watt changes into a predicted cabinet change (C). Returns BOTH bases:
-    ``local`` (cabinet over its intake, room fixed) and ``total`` (room free; a 0-2 h response, not a
+    """Convert measured watt changes into a predicted target change (C). Returns BOTH bases:
+    ``local`` (target over its intake, room fixed) and ``total`` (room free; a 0-2 h response, not a
     steady state). ``fit``: HeatFit.as_dict() (or stored details). ``watts``: id -> {effect, ci_lo,
     ci_hi} (W), e.g. an experiment's manipulation check. Only ids with a slope are used; the variance
     combines the slopes' HAC covariance and each watt change's uncertainty (delta method).
@@ -412,14 +435,16 @@ def predict_heat(fit: dict, watts: dict, block_min: float | None = None) -> dict
 
 
 def store_fit(store, fit: HeatFit) -> list[dict]:
-    """prediction_effect_estimate rows per fitted machine: ``heat_per_watt:<watts id>`` (local, cabinet
-    minus room) and, when that fit exists, ``heat_per_watt_total:<watts id>`` (cabinet, room free).
-    Every row carries the whole fit in details so a conversion can be redone from the newest one."""
+    """prediction_effect_estimate rows per fitted machine: ``heat_per_watt:<watts id>`` (local, target
+    minus room) and, when that fit exists, ``heat_per_watt_total:<watts id>`` (target, room free), under
+    the target's own series_id. Every row carries the whole fit in details so a conversion can be redone
+    from the newest one."""
     d = fit.as_dict()
     rows = []
-    kinds = [("heat_per_watt", fit.slopes, "cabinet minus room")]
+    label = target_label(fit.series_id)
+    kinds = [("heat_per_watt", fit.slopes, f"{label} minus room")]
     if "slopes" in fit.total:
-        kinds.append(("heat_per_watt_total", fit.total["slopes"], "cabinet, room free"))
+        kinds.append(("heat_per_watt_total", fit.total["slopes"], f"{label}, room free"))
     for prefix, slopes, what in kinds:
         for w, s in slopes.items():
             rows.append(store.insert_effect({

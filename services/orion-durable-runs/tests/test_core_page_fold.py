@@ -1,0 +1,222 @@
+"""Core memory pages Phase 1a: the nightly page:juniper fold (app/core_page_fold.py).
+
+What must hold: only inside the Denver window; once a Denver day; no fold when nothing the page reads
+changed; at most CORE_PAGE_FOLD_MAX_ATTEMPTS_PER_DAY LLM calls a day; a page that fails the cite check is
+never published; a passing page is published as version max+1 to the self_concept channel; a dry run
+publishes nothing and spends no attempt; the manual trigger (force) folds at any hour.
+"""
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+
+import pytest
+
+from app.core_page_fold import SELF_CONCEPT_CHANNEL, SELF_CONCEPT_KIND, CorePageFolder, in_window
+from orion.memory.pages.juniper import PAGE_JUNIPER, PRODUCED_BY
+
+# 2026-11-15 01:30 Denver (MST = UTC-7): inside the default 01-03 window.
+NOW = datetime(2026, 11, 15, 8, 30, tzinfo=timezone.utc)
+OLD = datetime(2026, 11, 10, 9, 0, tzinfo=timezone.utc)
+
+PEOPLE = [{"fact_id": "f-pron", "display_name": "Juniper", "category": "pronouns", "voice": "authored_profile",
+           "value_text": "she/her", "created_at": OLD}]
+EPISODES = [
+    {"memory_id": "m-home", "purpose": "about_juniper", "confirmation_state": "confirmed", "at": OLD,
+     "statement": "Juniper corrected me that she lives in Millbrook, Vermont, not Boston."},
+    {"memory_id": "m-biscuit", "purpose": "happened", "confirmation_state": "auto", "at": OLD,
+     "statement": "Juniper told me that Biscuit is a dog, not a cat."},
+]
+GOOD = "Juniper uses she/her [S1]. She lives in Millbrook, Vermont [S2]. Our Biscuit is a dog [S3]."
+
+
+def settings(**kw):
+    base = dict(core_page_fold_hour_local=1, core_page_fold_end_hour_local=3, core_page_fold_poll_sec=600.0,
+                core_page_fold_max_attempts_per_day=3)
+    return SimpleNamespace(**{**base, **kw})
+
+
+class FakePool:
+    def __init__(self, *, current=None, newest=NOW - timedelta(hours=2), top=0):
+        self.current, self.newest, self.top = current, newest, top
+
+    @asynccontextmanager
+    async def connection(self):
+        pool = self
+
+        class Cur:
+            def __init__(self, rows):
+                self._rows = rows
+
+            async def fetchall(self):
+                return self._rows
+
+            async def fetchone(self):
+                return self._rows[0] if self._rows else None
+
+        class Conn:
+            async def execute(self, sql, params=None):
+                if "FROM person_fact f" in sql:
+                    return Cur(PEOPLE)
+                if "FROM episode_memory" in sql and "statement" in sql:
+                    return Cur(EPISODES)
+                if "AS newest" in sql:
+                    return Cur([{"newest": pool.newest}])
+                if "max(version)" in sql:
+                    assert params == {"cid": PAGE_JUNIPER, "by": PRODUCED_BY}
+                    return Cur([{"v": pool.top}])
+                if "FROM self_concept_history" in sql:
+                    return Cur([pool.current] if pool.current else [])
+                raise AssertionError(sql)
+
+        yield Conn()
+
+
+class Harness:
+    def __init__(self, *, pool=None, answer=GOOD, now=NOW, fail_llm=False, **kw):
+        self.calls: list[str] = []
+        self.published: list = []
+
+        async def call_llm(prompt):
+            self.calls.append(prompt)
+            if fail_llm:
+                raise RuntimeError("pool deadline")
+            return {"text": answer, "model": "test-27b"}
+
+        async def publish(channel, kind, model, corr):
+            self.published.append((channel, kind, model, corr))
+            return True
+
+        self.folder = CorePageFolder(settings=settings(**kw), pool=pool or FakePool(), call_llm=call_llm,
+                                     publish=publish, now=lambda: now)
+
+    def tick(self, **kw):
+        return asyncio.run(self.folder.tick_once(**kw))
+
+
+def test_window_is_denver_local_hours():
+    assert in_window(NOW, 1, 3)
+    assert not in_window(NOW - timedelta(hours=2), 1, 3)   # 23:30 Denver
+    assert not in_window(NOW + timedelta(hours=2), 1, 3)   # 03:30 Denver
+
+
+def test_first_fold_publishes_version_one_with_real_refs():
+    h = Harness()
+    result = h.tick()
+    assert result.decision == "folded" and result.version == 1
+    assert len(h.calls) == 1 and "[S2]" in h.calls[0]
+    ((channel, kind, row, _),) = h.published
+    assert (channel, kind) == (SELF_CONCEPT_CHANNEL, SELF_CONCEPT_KIND)
+    assert row.concept_id == PAGE_JUNIPER and row.produced_by == PRODUCED_BY and row.version == 1
+    assert row.evidence_refs == ["person_fact:f-pron", "episode_memory:m-home", "episode_memory:m-biscuit"]
+    assert "[episode_memory:m-home]" in row.content
+    assert h.folder.health()["decision"] == "folded"
+    assert "page_text" not in h.folder.health()
+
+
+def test_next_version_is_max_plus_one():
+    current = {"version": 4, "content": "Old page [person_fact:f-pron].", "created_at": OLD}
+    h = Harness(pool=FakePool(current=current, top=4))
+    assert h.tick().version == 5
+    assert "version 4" in h.calls[0]
+
+
+def test_outside_window_does_nothing():
+    h = Harness(now=NOW + timedelta(hours=3))
+    assert h.tick().decision == "outside_window"
+    assert h.calls == [] and h.published == []
+
+
+def test_once_a_denver_day():
+    today = {"version": 2, "content": "Page [person_fact:f-pron].", "created_at": NOW - timedelta(minutes=20)}
+    h = Harness(pool=FakePool(current=today, top=2))
+    assert h.tick().decision == "done_today"
+    assert h.calls == []
+
+
+def test_no_fold_when_nothing_changed_since_the_current_version():
+    current = {"version": 2, "content": "Page [person_fact:f-pron].", "created_at": OLD}
+    h = Harness(pool=FakePool(current=current, newest=OLD - timedelta(hours=1), top=2))
+    assert h.tick().decision == "no_new_sources"
+    assert h.calls == []
+
+
+def test_rejected_page_is_never_published_and_attempts_are_capped():
+    h = Harness(answer="Juniper uses she/her [S1]. She lives in Boston. She is great [S99].",
+                core_page_fold_max_attempts_per_day=2)
+    first = h.tick()
+    assert first.decision == "rejected"
+    assert any(e.startswith("uncited") for e in first.errors)
+    assert "unresolvable_cite: S99" in first.errors
+    assert h.tick().decision == "rejected"
+    assert h.tick().decision == "attempts_spent"
+    assert len(h.calls) == 2 and h.published == []
+
+
+def test_llm_failure_counts_an_attempt_and_publishes_nothing():
+    h = Harness(fail_llm=True, core_page_fold_max_attempts_per_day=1)
+    assert h.tick().decision == "llm_failed"
+    assert h.tick().decision == "attempts_spent"
+    assert h.published == []
+
+
+def test_dry_run_force_folds_at_any_hour_and_publishes_nothing():
+    today = {"version": 2, "content": "Page [person_fact:f-pron].", "created_at": NOW - timedelta(minutes=5)}
+    h = Harness(pool=FakePool(current=today, top=2), now=NOW + timedelta(hours=8),
+                core_page_fold_max_attempts_per_day=1)
+    result = h.tick(dry_run=True, force=True)
+    assert result.decision == "would_write" and result.version == 3
+    assert result.page_text.startswith("Juniper uses she/her. She lives in Millbrook, Vermont.")
+    assert h.published == []
+    assert h.folder.last is None           # a dry run is not the tick's state
+    # A dry run spends no attempt: a real manual fold still runs.
+    assert h.tick(force=True).decision == "folded"
+
+
+def test_settings_ship_on_and_refuse_small_lanes():
+    from app.settings import Settings
+
+    s = Settings(POSTGRES_URI="postgresql://x")
+    assert s.orion_core_pages_enabled is True
+    assert s.core_page_fold_route == "memory_distill"
+    for bad in ("fast", "metacog", "quick_background", "metacog_background"):
+        with pytest.raises(ValueError):
+            Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_ROUTE=bad)
+    with pytest.raises(ValueError):
+        Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_HOUR_LOCAL=3, CORE_PAGE_FOLD_END_HOUR_LOCAL=2)
+
+
+def test_published_envelope_passes_the_bus_catalog_validation():
+    """The row the fold publishes validates against orion/bus/channels.yaml's schema for the channel
+    (the same check OrionBusAsync.publish runs), and a publish error reads as False, not a crash."""
+    from app.core_page_fold import bus_publisher
+    from orion.core.bus.async_service import OrionBusAsync
+    from orion.core.bus.bus_schemas import ServiceRef
+
+    real = OrionBusAsync.__new__(OrionBusAsync)
+    sent = []
+
+    class Bus:
+        async def publish(self, channel, msg):
+            real._validate_payload(channel, msg)
+            sent.append((channel, msg))
+
+        async def reconnect(self):
+            pass
+
+    h = Harness()
+    h.folder.publish = bus_publisher(Bus(), ServiceRef(name="orion-durable-runs", version="t", node="athena"))
+    assert h.tick().decision == "folded"
+    ((channel, env),) = sent
+    assert channel == SELF_CONCEPT_CHANNEL and env.kind == SELF_CONCEPT_KIND
+    assert env.payload["produced_by"] == PRODUCED_BY
+
+    class Down(Bus):
+        async def publish(self, channel, msg):
+            raise ConnectionError("bus away")
+
+    h2 = Harness()
+    h2.folder.publish = bus_publisher(Down(), ServiceRef(name="orion-durable-runs", version="t", node="athena"))
+    assert h2.tick().decision == "publish_failed"

@@ -368,6 +368,23 @@ class Settings(BaseSettings):
             raise ValueError("REMINISCENCE_END_HOUR_LOCAL must be after REMINISCENCE_HOUR_LOCAL (same Denver day)")
         return v
 
+    @field_validator("core_page_fold_end_hour_local")
+    @classmethod
+    def _fold_window_has_room(cls, v: int, info):
+        start = info.data.get("core_page_fold_hour_local", 1)
+        if v <= start:
+            raise ValueError("CORE_PAGE_FOLD_END_HOUR_LOCAL must be after CORE_PAGE_FOLD_HOUR_LOCAL (same Denver day)")
+        return v
+
+    @field_validator("core_page_fold_route")
+    @classmethod
+    def _fold_route_not_small_lanes(cls, v: str):
+        route = str(v or "").strip()
+        if not route or route in {"fast", "quick", "quick_background", "metacog", "metacog_background"} \
+                or route.startswith(("fast", "metacog", "quick")):
+            raise ValueError(f"CORE_PAGE_FOLD_ROUTE={v!r}: the page fold never runs on the fast or metacog lanes")
+        return route
+
     @field_validator("field_note_not_before")
     @classmethod
     def _not_before_is_utc(cls, v: datetime) -> datetime:
@@ -436,6 +453,22 @@ class Settings(BaseSettings):
     # One step attempt's hard time bound, the same 900 s the field-note turn needs (Hub keeps a 330 s
     # finalize reserve out of it: 900 -> 540 s of motor, PR #3114). A cap, not a cost.
     reminiscence_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="REMINISCENCE_TURN_TIMEOUT_SEC")
+    # Core memory pages, Phase 1a (docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md):
+    # every CORE_PAGE_FOLD_POLL_SEC, inside the Denver window [CORE_PAGE_FOLD_HOUR_LOCAL, CORE_PAGE_FOLD_END_HOUR_LOCAL),
+    # fold Orion's page:juniper once (one LLM call, app/core_page_fold.py) when its records changed since the
+    # current version. A page that passes the cite check goes live (no approval step, Juniper's decision 1).
+    # The same key gates the RELATIONSHIP render in orion-cortex-exec. false -> no fold (rollback: false, restart).
+    orion_core_pages_enabled: bool = Field(True, alias="ORION_CORE_PAGES_ENABLED")
+    # The gateway route the fold calls. memory_distill = the agent seat on gpu1 only (config/gpu_pool.yaml),
+    # leased per call by the gateway. The fast and metacog lanes are refused (they share the small card).
+    core_page_fold_route: str = Field("memory_distill", alias="CORE_PAGE_FOLD_ROUTE")
+    core_page_fold_poll_sec: float = Field(600.0, ge=60.0, alias="CORE_PAGE_FOLD_POLL_SEC")
+    core_page_fold_hour_local: int = Field(1, ge=0, le=23, alias="CORE_PAGE_FOLD_HOUR_LOCAL")
+    core_page_fold_end_hour_local: int = Field(3, ge=1, le=24, alias="CORE_PAGE_FOLD_END_HOUR_LOCAL")
+    core_page_fold_timeout_sec: float = Field(600.0, ge=30.0, le=1800.0, alias="CORE_PAGE_FOLD_TIMEOUT_SEC")
+    core_page_fold_max_tokens: int = Field(3000, ge=500, le=16384, alias="CORE_PAGE_FOLD_MAX_TOKENS")
+    # Folds (LLM calls) per Denver day, failed ones included; a pass ends the day.
+    core_page_fold_max_attempts_per_day: int = Field(3, ge=1, le=10, alias="CORE_PAGE_FOLD_MAX_ATTEMPTS_PER_DAY")
     request_channel: str = DURABLE_RUN_REQUEST_CHANNEL
     state_channel: str = DURABLE_RUN_STATE_CHANNEL
 

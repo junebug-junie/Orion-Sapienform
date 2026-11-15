@@ -410,7 +410,9 @@ Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
 - **Intake.** `POST /api/session-threads/message` stores the message as a `session` turn and Hub's
   receipt as a `hub` turn, and shows both in Hub chat. The receipt is Hub's own text. It says Orion has
   NOT read the message and names the next round-up time. No model runs at intake. A spec longer than
-  40,000 characters is cut, and the stored text and the receipt both say so.
+  40,000 characters is cut, and the stored text and the receipt both say so. The same message sent
+  twice is stored once (`duplicate: true`). The route has no login, so it is bounded: at most 50 threads
+  waiting and 20 unread messages on one thread (HTTP 429 past that).
 - **The hourly round-up.** Each UTC hour (`HUB_SESSION_ROUNDUP_INTERVAL_SEC`) Hub takes every `held`
   thread whose message arrived before the hour started. It submits ONE durable run
   (`session_roundup.orion_turn`, run id `session-roundup-<utc hour>`, agent lane, background priority,
@@ -419,18 +421,22 @@ Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
   that do not fit the prompt (`HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS`) stay held for the next hour, oldest
   first (log line `session_roundup_left_held`).
 - **Untrusted text.** Everything a session wrote sits inside a labelled data fence in the prompt
-  (`<<<SESSION_DATA ...>>>` to `<<<END_SESSION_DATA>>>`); the prompt tells Orion it is material, not
-  instructions. Session text cannot close the fence.
+  (`<<<SESSION_DATA:<nonce> ...>>>` to `<<<END_SESSION_DATA:<nonce>>>>`); the prompt tells Orion it is
+  material, not instructions. The nonce is new each round and no session can know it, so session text
+  cannot close the fence. A `### thread:` line a session wrote is broken so it cannot pass as a heading.
 - **Orion's reply.** Orion answers in sections that start with `### thread:<thread_id>`, each with
   questions or the single line `NO QUESTIONS`. Code cuts the reply into one `orion` turn per thread
   (status `asked` or `no_questions`). A thread with no usable section gets the whole reply, marked
-  `unparsed`. Empty text, a cut-short turn, or a failed run fails the round: Hub writes a line on each
+  `unparsed`. A thread id under two headings, or headings out of the prompt's order, makes the whole
+  round `unparsed`: text may sit under the wrong heading, so none of it goes to a PR. Empty text, a cut-short turn, or a failed run fails the round: Hub writes a line on each
   thread, the threads go back to `held`, and after 3 failures in a row a thread stays `failed` until a
   new message arrives on it.
 - **The PR comment.** For a thread with a pull request and real questions, Hub posts one comment on the
   PR with Orion's GitHub token (`ORION_GITHUB_TOKEN`, user `orion-sapienform`), headed "Orion's
   questions on this spec (hourly round-up)". Code posts it, not the model. It only ever posts on
-  `HUB_SESSION_ROUNDUP_GITHUB_REPO`. `@name` is broken so nobody is pinged. No token or an API error
+  `HUB_SESSION_ROUNDUP_GITHUB_REPO`, and only after it read the PR back: the number must be an open pull
+  request whose head branch is the thread's branch. `@name` and `#123` are broken so nobody is pinged
+  and no issue is linked. No token or an API error
   is logged and the turn is kept. Off: `HUB_SESSION_ROUNDUP_PR_COMMENTS=false`.
 - **Back to the session.** `GET /api/session-threads/pending?session_id=&branch=` returns Orion's turns
   not yet handed back to that session or that branch; `POST /api/session-threads/delivered` marks them.
@@ -460,7 +466,7 @@ Both hooks are silent when Hub is down. Off for one shell: `ORION_SESSION_THREAD
 | `HUB_SESSION_ROUNDUP_INTERVAL_SEC` | `3600` | how long a message is held; one round-up per bucket |
 | `HUB_SESSION_ROUNDUP_TICK_SEC` | `120` | how often Hub checks for a due round or a finished run |
 | `HUB_SESSION_ROUNDUP_ORION_TIMEOUT_SEC` | `1800` | Orion's turn budget per attempt |
-| `HUB_SESSION_ROUNDUP_RUN_DEADLINE_SEC` | `10800` | a round unfinished this long after its hour started is failed |
+| `HUB_SESSION_ROUNDUP_RUN_DEADLINE_SEC` | `10800` | a round unfinished this long after its hour started is failed by durable-runs; 30 min later Hub stops waiting for it |
 | `HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS` | `100000` | lower: fewer threads per round, more left held |
 | `HUB_SESSION_ROUNDUP_PR_COMMENTS` | `true` | `false`: nothing is posted on GitHub |
 | `HUB_SESSION_ROUNDUP_GITHUB_REPO` | `junebug-junie/Orion-Sapienform` | the only repo Hub comments on |

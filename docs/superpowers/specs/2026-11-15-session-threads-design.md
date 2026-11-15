@@ -61,12 +61,18 @@ Rules that carry weight:
   the read of held threads.
 - One round per hour. The threads are marked `reading` before the run is submitted. A round id already
   on a thread is never submitted again.
-- Session text is quoted data inside a labelled fence. It cannot close the fence.
+- Session text is quoted data inside a labelled fence with a per-round nonce. It cannot close the fence.
 - Code cuts Orion's reply at `### thread:<id>` lines. No usable section for a thread: the whole reply
-  is stored on it, marked `unparsed`. Empty text is a failed round, never a stored turn.
+  is stored on it, marked `unparsed`. A repeated or out-of-order heading makes the whole round
+  `unparsed`. Empty text is a failed round, never a stored turn.
 - A failed round returns its threads to `held`. Three failures in a row leave a thread `failed`.
-- Code posts the PR comment. Only on the configured repo. `@name` is broken. `NO QUESTIONS` and
-  unparsed replies are never posted.
+- A run that has not ended 30 minutes after its deadline fails the round, so one stuck run cannot block
+  later rounds.
+- Code posts the PR comment. Only on the configured repo, and only on an open pull request whose head
+  branch is the thread's branch. `@name` and `#123` are broken. `NO QUESTIONS` and unparsed replies are
+  never posted.
+- Intake has no login (Hub is host-local). It is bounded: 50 waiting threads, 20 unread messages a
+  thread, the same message stored once.
 
 ## Files likely to touch
 

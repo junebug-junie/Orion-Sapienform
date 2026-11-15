@@ -47,18 +47,28 @@ logger = logging.getLogger("graphiti_trial")
 
 TRIAL_GRAPH = "graphiti_trial"
 GROUP_ID = "orion_trial"
+# Every graph this script may write, each with its own group_id. A run writes exactly one; the
+# others are protected like live graphs (their counts must not move during the run).
+TRIAL_GRAPHS = {"graphiti_trial": "orion_trial", "graphiti_trial2": "orion_trial2"}
+
+
+def configure_graph(graph: str) -> None:
+    global TRIAL_GRAPH, GROUP_ID
+    if graph not in TRIAL_GRAPHS:
+        raise SystemExit(f"refusing graph {graph!r}: this trial writes only {sorted(TRIAL_GRAPHS)}")
+    TRIAL_GRAPH, GROUP_ID = graph, TRIAL_GRAPHS[graph]
 OUT_DIR = Path(os.environ.get("GRAPHITI_TRIAL_OUT", "/tmp/graphiti-trial"))
 
 
 
-def key_row_re(terms: dict[str, str] | None) -> re.Pattern:
+def key_row_re(terms: dict[str, str] | None, generic_animals: bool = True) -> re.Pattern:
     """The rows the go/no-go checks are about; any episode that matches is always in a sample. The
     names come from the gitignored terms file (personal terms stay out of the public repo)."""
-    words = [r"\bcats?\b", r"\bdogs?\b"]
+    words = [r"\bcats?\b", r"\bdogs?\b"] if generic_animals else []
     for k in ("home_city", "trip_city", "trip_hotel", "spouse", "spouse_alias", "pet"):
         if terms and str(terms.get(k) or "").strip():
             words.append(r"\b" + re.escape(str(terms[k]).strip()) + r"\b")
-    return re.compile("|".join(words), re.IGNORECASE)
+    return re.compile("|".join(words) or r"(?!x)x", re.IGNORECASE)
 
 
 KEY_ROW_RE = key_row_re(None)
@@ -82,10 +92,11 @@ class TrialEpisode:
     source: str            # graphiti EpisodeType value: "text" | "message"
     source_description: str
     reference_time: datetime
-    origin: str            # "episode_memory" | "stance"
+    origin: str            # "episode_memory" | "stance" | "chat" | "seed"
+    trimmed_chars: int = 0
 
     def key_row(self) -> bool:
-        return bool(KEY_ROW_RE.search(self.body))
+        return self.origin == "seed" or bool(KEY_ROW_RE.search(self.body))
 
 
 def episodes_from_rows(memory_rows: list[dict[str, Any]], stance_rows: list[dict[str, Any]]) -> list[TrialEpisode]:
@@ -110,6 +121,24 @@ def episodes_from_rows(memory_rows: list[dict[str, Any]], stance_rows: list[dict
             source_description="Juniper's own chat message to Orion (verbatim, high-salience stance)",
             reference_time=_utc(r["at"]), origin="stance"))
     out.sort(key=lambda e: (e.reference_time, e.uuid))
+    return out
+
+
+SEED_NAME = "seed:person_fact"
+
+
+def episodes_from_chat(chat: list[dict[str, Any]], seed_text: str | None) -> list[TrialEpisode]:
+    """Trial 2: one chat exchange = one message episode; the person-fact seed goes first."""
+    out = [TrialEpisode(uuid=str(r["id"]), name=f"chat:{r['id']}", body=r["body"], source="message",
+                        source_description="One chat exchange between Juniper and Orion (verbatim, long replies trimmed)",
+                        reference_time=_utc(r["at"]), origin="chat", trimmed_chars=int(r.get("trimmed_chars") or 0))
+           for r in chat if str(r.get("body") or "").strip()]
+    out.sort(key=lambda e: (e.reference_time, e.uuid))
+    if seed_text and out:
+        from graphiti_trial2_inputs import seed_time  # noqa: PLC0415
+        out.insert(0, TrialEpisode(uuid="seed", name=SEED_NAME, body=seed_text, source="message",
+                                   source_description="Juniper's own answers about the people in her life (person_fact)",
+                                   reference_time=seed_time(out[0].reference_time), origin="seed"))
     return out
 
 
@@ -156,9 +185,17 @@ def progress_line(*, done: int, total: int, skipped: int, errors: int, elapsed: 
 
 # --- inputs -----------------------------------------------------------------------------------
 
-async def load_episodes(postgres_uri: str) -> list[TrialEpisode]:
+async def load_episodes(postgres_uri: str, source: str = "memory") -> list[TrialEpisode]:
     import asyncpg  # noqa: PLC0415
     conn = await asyncpg.connect(postgres_uri)
+    if source == "chat":
+        from graphiti_trial2_inputs import CHAT_SQL, PERSON_FACT_SQL, chat_rows_to_dicts, seed_body  # noqa: PLC0415
+        try:
+            chat = chat_rows_to_dicts([dict(r) for r in await conn.fetch(CHAT_SQL)])
+            seed = seed_body([dict(r) for r in await conn.fetch(PERSON_FACT_SQL)])
+        finally:
+            await conn.close()
+        return episodes_from_chat(chat, seed)
     try:
         mem = [dict(r) for r in await conn.fetch(EPISODE_SQL)]
         stance = [dict(r) for r in await conn.fetch(STANCE_SQL)]
@@ -178,15 +215,20 @@ async def isolation_snapshot(falkor_host: str, falkor_port: int) -> dict[str, An
     try:
         names = sorted(await db.list_graphs())
         leaked: dict[str, int] = {}
+        other_trials: dict[str, list[int]] = {}
         for g in names:
             if g == TRIAL_GRAPH:
                 continue
+            if g in TRIAL_GRAPHS:  # another trial's graph: nothing else writes it, so its counts must hold
+                nodes = (await db.select_graph(g).ro_query("MATCH (n) RETURN count(n)")).result_set[0][0]
+                edges = (await db.select_graph(g).ro_query("MATCH ()-[r]->() RETURN count(r)")).result_set[0][0]
+                other_trials[g] = [int(nodes), int(edges)]
             res = await db.select_graph(g).ro_query("MATCH (n) WHERE n.group_id = $g RETURN count(n)",
                                                     params={"g": GROUP_ID})
             n = int(res.result_set[0][0])
             if n:
                 leaked[g] = n
-        return {"graphs": names, "trial_group_nodes_elsewhere": leaked}
+        return {"graphs": names, "trial_group_nodes_elsewhere": leaked, "other_trial_graph_counts": other_trials}
     finally:
         with contextlib.suppress(Exception):
             await db.connection.aclose()
@@ -194,8 +236,12 @@ async def isolation_snapshot(falkor_host: str, falkor_port: int) -> dict[str, An
 
 def isolation_verdict(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
     new = sorted(set(after["graphs"]) - set(before["graphs"]) - {TRIAL_GRAPH})
+    moved = {g: (before.get("other_trial_graph_counts", {}).get(g), c)
+             for g, c in after.get("other_trial_graph_counts", {}).items()
+             if before.get("other_trial_graph_counts", {}).get(g) != c}
     return {"new_graphs_other_than_trial": new, "trial_group_nodes_elsewhere": after["trial_group_nodes_elsewhere"],
-            "isolated": not new and not after["trial_group_nodes_elsewhere"]}
+            "other_trial_graphs_changed": moved,
+            "isolated": not new and not after["trial_group_nodes_elsewhere"] and not moved}
 
 
 async def graph_episode_names(driver: Any) -> dict[str, str]:
@@ -380,8 +426,7 @@ def _log_progress(line: str) -> None:
 
 
 async def run(args: argparse.Namespace) -> int:
-    if args.graph != TRIAL_GRAPH:
-        raise SystemExit(f"refusing graph {args.graph!r}: this trial writes only {TRIAL_GRAPH!r}")
+    configure_graph(args.graph)
     from graphiti_core import Graphiti  # noqa: PLC0415
     from graphiti_core.driver.falkordb_driver import FalkorDriver  # noqa: PLC0415
     from graphiti_core.nodes import EpisodeType  # noqa: PLC0415
@@ -392,14 +437,16 @@ async def run(args: argparse.Namespace) -> int:
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-    episodes = await load_episodes(args.postgres_uri)
+    episodes = await load_episodes(args.postgres_uri, args.source)
     total_source = len(episodes)
     global KEY_ROW_RE
     from graphiti_trial_score import TERMS_LOCAL, load_terms  # noqa: PLC0415
     if args.plan_file and args.sample:
         raise SystemExit("--plan-file and --sample are exclusive: a plan already names its sample")
     if args.sample or TERMS_LOCAL.exists():
-        KEY_ROW_RE = key_row_re(load_terms())  # --sample needs the real names; other paths use them if present
+        # chat exchanges mention dogs/cats all the time (Arturo, the neighbours' dogs): key rows
+        # there are the named people/places/pet only
+        KEY_ROW_RE = key_row_re(load_terms(), generic_animals=args.source != "chat")  # --sample needs the real names; other paths use them if present
     plan_from: dict[str, Any] = {}
     if args.plan_file:
         plan_from = json.loads(Path(args.plan_file).read_text())
@@ -414,7 +461,10 @@ async def run(args: argparse.Namespace) -> int:
     (OUT_DIR / f"plan-{run_id}.json").write_text(json.dumps(
         {"source_total": plan_from.get("source_total", total_source), "planned": len(episodes),
          "sample": plan_from.get("sample", args.sample), "limit": args.limit, "from_plan": args.plan_file or None,
-         "key_rows": sum(e.key_row() for e in episodes),
+         "key_rows": sum(e.key_row() for e in episodes), "source": args.source, "graph": TRIAL_GRAPH,
+         "thinking": args.thinking, "ontology": args.ontology,
+         "trimmed_episodes": sum(1 for e in episodes if e.trimmed_chars),
+         "trimmed_chars": sum(e.trimmed_chars for e in episodes),
          "names": [e.name for e in episodes]}, indent=1))
 
     host, port = args.falkor_host, args.falkor_port
@@ -427,12 +477,19 @@ async def run(args: argparse.Namespace) -> int:
     graphiti = Graphiti(
         graph_driver=driver,
         llm_client=build_llm_client(base_url=args.llm_base_url, model=args.llm_route, header_box=box,
-                                    stats=stats, max_tokens=args.max_tokens, hold_usable=hold.usable),
+                                    stats=stats, max_tokens=args.max_tokens, hold_usable=hold.usable,
+                                    thinking=args.thinking == "on"),
         embedder=build_embedder(args.embed_url),
         cross_encoder=build_cross_encoder(),
         max_coroutines=args.max_coroutines,
     )
     await build_indices_and_constraints(driver)
+    from graphiti_trial2_inputs import install_redisearch_sanitizer, ontology  # noqa: PLC0415
+    install_redisearch_sanitizer()
+    types_kw: dict[str, Any] = {}
+    if args.ontology == "orion":
+        entity_types, excluded = ontology()
+        types_kw = {"entity_types": entity_types, "excluded_entity_types": excluded}
     done_names, partial = resume_plan(await graph_episode_names(driver), ok_names_from_results(OUT_DIR / "results.jsonl"))
     for uuid in partial:
         _log_progress(f"removing partial episode {uuid} (in graph, no ok result row)")
@@ -461,11 +518,13 @@ async def run(args: argparse.Namespace) -> int:
             t0 = time.monotonic()
             row: dict[str, Any] = {"uuid": ep.uuid, "name": ep.name, "origin": ep.origin,
                                    "reference_time": ep.reference_time.isoformat(), "key_row": ep.key_row(),
+                                   "trimmed_chars": ep.trimmed_chars,
                                    "run_id": run_id, "lease_id": hold.lease_id, "role": hold.role}
             try:
                 res = await asyncio.wait_for(graphiti.add_episode(
                     name=ep.name, episode_body=ep.body, source_description=ep.source_description,
-                    reference_time=ep.reference_time, source=EpisodeType(ep.source), group_id=GROUP_ID),
+                    reference_time=ep.reference_time, source=EpisodeType(ep.source), group_id=GROUP_ID,
+                    **types_kw),
                     timeout=args.episode_timeout)
                 row.update(ok=True, nodes=len(res.nodes), edges=len(res.edges))
             except Exception as exc:  # noqa: BLE001 -- one bad episode is a data point, not the end
@@ -513,7 +572,11 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
-    r.add_argument("--graph", default=TRIAL_GRAPH)
+    r.add_argument("--graph", default=TRIAL_GRAPH, help=f"one of {sorted(TRIAL_GRAPHS)}")
+    r.add_argument("--source", choices=("memory", "chat"), default="memory",
+                   help="memory = trial 1 (episode_memory + stance); chat = trial 2 (chat_history_log + seed)")
+    r.add_argument("--thinking", choices=("on", "off"), default="on")
+    r.add_argument("--ontology", choices=("none", "orion"), default="none")
     r.add_argument("--limit", type=int, default=0, help="first N planned episodes (0 = all)")
     r.add_argument("--sample", type=int, default=0, help="key rows + seeded random fill to N (0 = all)")
     r.add_argument("--run-id", default="")

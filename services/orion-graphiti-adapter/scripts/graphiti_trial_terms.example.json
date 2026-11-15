@@ -8,5 +8,9 @@
   "spouse_alias": "wife",
   "pet": "Biscuit",
   "trip_start": "2026-10-04",
-  "trip_end": "2026-10-09"
+  "trip_end": "2026-10-09",
+  "he_names": [
+    "Alex",
+    "Rex"
+  ]
 }

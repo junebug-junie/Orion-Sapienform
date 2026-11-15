@@ -229,8 +229,61 @@ def cost_summary(results: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+MALE_RE = re.compile(r"\b(he|him|his|himself)\b", re.I)
+WRONG_INVALIDATION_LIMIT = 2
+
+
+def pronoun_violations(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], t: dict[str, Any]) -> list[str]:
+    """Sentences that call a she/her person ([subject], [spouse]) or Orion (they/them) "he/him/his".
+
+    Node summaries of those people: any sentence with a male pronoun and no he/him name in it.
+    Facts: any sentence naming one of them, with a male pronoun and no he/him name in it.
+    ``he_names`` (optional list in the terms file, plus the pet) are the people a "he" may be
+    about. Deterministic candidates; the report lists every one so a human confirms the count."""
+    not_he = [str(t["subject"]), str(t["spouse"]), "Orion"]
+    he = [str(x) for x in (t.get("he_names") or [])] + [str(t["pet"])]
+    not_he_re = re.compile("|".join(word(n) for n in not_he), re.I)
+    he_re = re.compile("|".join(word(n) for n in he), re.I) if he else re.compile(r"(?!x)x")
+
+    def bad(sentence: str) -> bool:
+        return bool(MALE_RE.search(sentence)) and not he_re.search(sentence)
+
+    out = []
+    for n in nodes:
+        if not_he_re.fullmatch(str(n.get("name") or "").strip()):
+            for sent in re.split(r"(?<=[.!?;])\s+", str(n.get("summary") or "")):
+                if bad(sent):
+                    out.append(f"summary of {n.get('name')}: \"{sent.strip()}\"")
+    for e in edges:
+        for sent in re.split(r"(?<=[.!?;])\s+", str(e.get("fact") or "")):
+            if not_he_re.search(sent) and bad(sent):
+                out.append(f"fact {e.get('source')} -[{e.get('name')}]-> {e.get('target')}: \"{sent.strip()}\"")
+    return out
+
+
+def invalidation_sheet(edges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Every invalidated fact, to judge by hand: ``wrong`` = true when the fact was still true."""
+    return [{"uuid": e.get("uuid"), "line": _edge_line(e), "wrong": None, "note": ""}
+            for e in sorted((e for e in edges if not is_current(e)), key=lambda e: str(e.get("valid_at")))]
+
+
+def check_invalidations(sheet: list[dict[str, Any]], edges: list[dict[str, Any]]) -> Check:
+    invalid_ids = {e.get("uuid") for e in edges if not is_current(e)}
+    judged = [j for j in sheet if j.get("uuid") in invalid_ids and j.get("wrong") is not None]
+    for j in judged:
+        if not isinstance(j["wrong"], bool):
+            raise ValueError(f"invalidation judgment {j.get('uuid')} must be true/false, got {j['wrong']!r}")
+    wrong = [j for j in judged if j["wrong"]]
+    complete = len(judged) == len(invalid_ids)
+    return Check(f"wrong invalidations under {WRONG_INVALIDATION_LIMIT} (hand-judged, all of them)",
+                 complete and len(wrong) < WRONG_INVALIDATION_LIMIT,
+                 f"{len(wrong)} wrong of {len(judged)} judged / {len(invalid_ids)} invalidated"
+                 + ("" if complete else " (NOT all judged)"),
+                 [f"WRONG {j['line']}" + (f" -- {j['note']}" if j.get("note") else "") for j in wrong])
+
+
 def run_checks(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], judged: list[dict[str, Any]],
-               t: dict[str, str]) -> list[Check]:
+               t: dict[str, str], invalidations: list[dict[str, Any]] | None = None) -> list[Check]:
     checks = [
         check_home_current(edges, t),
         check_trip_city_not_home(edges, t),
@@ -244,14 +297,24 @@ def run_checks(nodes: list[dict[str, Any]], edges: list[dict[str, Any]], judged:
     checks.append(Check(f"duplicate entities under {int(DUP_PASS_RATE * 100)}% (hand-judged sample)",
                         rate is not None and n >= min(DUP_SAMPLE_SIZE, len(nodes)) and rate < DUP_PASS_RATE,
                         f"{dups}/{n} judged duplicates" + (f" = {rate:.0%}" if rate is not None else " (not judged)")))
+    misgendered = pronoun_violations(nodes, edges, t)
+    checks.append(Check("misgendered summaries/facts = 0 ([subject], [spouse] she/her; Orion they/them)",
+                        not misgendered, f"{len(misgendered)} sentences", misgendered))
+    if invalidations is not None:
+        checks.append(check_invalidations(invalidations, edges))
     return checks
 
 
 # --- graph I/O --------------------------------------------------------------------------------
 
-def dump_graph(host: str, port: int) -> dict[str, Any]:
+TRIAL_GRAPHS = ("graphiti_trial", "graphiti_trial2")
+
+
+def dump_graph(host: str, port: int, graph: str = TRIAL_GRAPH) -> dict[str, Any]:
     from falkordb import FalkorDB  # noqa: PLC0415
-    g = FalkorDB(host=host, port=port).select_graph(TRIAL_GRAPH)
+    if graph not in TRIAL_GRAPHS:
+        raise SystemExit(f"refusing to read {graph!r}: scorer reads only {TRIAL_GRAPHS}")
+    g = FalkorDB(host=host, port=port).select_graph(graph)
     nodes = [dict(zip(("uuid", "name", "summary", "created_at"), r)) for r in g.ro_query(
         "MATCH (n:Entity) RETURN n.uuid, n.name, n.summary, n.created_at").result_set]
     edges = [dict(zip(("uuid", "source", "name", "target", "fact", "valid_at", "invalid_at", "expired_at",
@@ -259,7 +322,7 @@ def dump_graph(host: str, port: int) -> dict[str, Any]:
         "MATCH (a:Entity)-[e:RELATES_TO]->(b:Entity) RETURN e.uuid, a.name, e.name, b.name, e.fact, "
         "e.valid_at, e.invalid_at, e.expired_at, e.created_at, e.episodes").result_set]
     episodes = g.ro_query("MATCH (e:Episodic) RETURN count(e)").result_set[0][0]
-    return {"nodes": nodes, "edges": edges, "episodes": int(episodes)}
+    return {"nodes": nodes, "edges": edges, "episodes": int(episodes), "graph": graph}
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -273,7 +336,7 @@ def render_report(dump: dict[str, Any], checks: list[Check], cost: dict[str, Any
     passed = all(c.passed for c in checks)
     lines = ["# Graphiti full-engine trial: scored", "",
              f"Verdict by the checks: **{'GO' if passed else 'NO-GO'}**", "",
-             f"Graph `{TRIAL_GRAPH}`: {dump['episodes']} episodes, {len(dump['nodes'])} entities, "
+             f"Graph `{dump.get('graph', TRIAL_GRAPH)}`: {dump['episodes']} episodes, {len(dump['nodes'])} entities, "
              f"{len(dump['edges'])} fact edges ({sum(is_current(e) for e in dump['edges'])} current).",
              f"Planned {plan.get('planned')} of {plan.get('source_total')} source episodes "
              f"(sample={plan.get('sample')}, key rows={plan.get('key_rows')}).", "", "## Checks", ""]
@@ -361,7 +424,9 @@ def redaction_leaks(red: str, t: dict[str, str], hashes: set[str], pt: Any) -> l
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser()
-    p.add_argument("cmd", choices=("dump", "sample", "report"))
+    p.add_argument("cmd", choices=("dump", "sample", "invalidations", "report"))
+    p.add_argument("--graph", default=TRIAL_GRAPH, choices=TRIAL_GRAPHS)
+    p.add_argument("--invalidations", default=str(OUT_DIR / "invalidation_judgments.json"))
     p.add_argument("--falkor-host", default="orion-athena-falkordb")
     p.add_argument("--falkor-port", type=int, default=6379)
     p.add_argument("--judgments", default=str(OUT_DIR / "dup_sample.json"))
@@ -377,8 +442,12 @@ def main(argv: list[str] | None = None) -> int:
             j.get("duplicate") is not None for j in json.loads(Path(a.judgments).read_text())):
         print(f"refusing: {a.judgments} already holds hand judgments (use --force)", file=sys.stderr)
         return 1
+    if a.cmd == "invalidations" and Path(a.invalidations).exists() and not a.force and any(
+            j.get("wrong") is not None for j in json.loads(Path(a.invalidations).read_text())):
+        print(f"refusing: {a.invalidations} already holds hand judgments (use --force)", file=sys.stderr)
+        return 1
     if a.cmd in ("dump", "sample") or not dump_path.exists():
-        dump = dump_graph(a.falkor_host, a.falkor_port)
+        dump = dump_graph(a.falkor_host, a.falkor_port, a.graph)
         dump_path.write_text(json.dumps(dump, indent=1, default=str))
     dump = json.loads(dump_path.read_text())
     print(f"graph dump {dump_path} ({dump['episodes']} episodes, {len(dump['nodes'])} entities, "
@@ -388,15 +457,20 @@ def main(argv: list[str] | None = None) -> int:
         Path(a.judgments).write_text(json.dumps(duplicate_sample(dump["nodes"]), indent=1))
         print(f"wrote {a.judgments}: set each 'duplicate' to true/false by hand, then run report")
         return 0
+    if a.cmd == "invalidations":
+        Path(a.invalidations).write_text(json.dumps(invalidation_sheet(dump["edges"]), indent=1))
+        print(f"wrote {a.invalidations}: set each 'wrong' to true/false by hand, then run report")
+        return 0
     if a.cmd == "report":
         judged = json.loads(Path(a.judgments).read_text()) if Path(a.judgments).exists() else []
+        inval = json.loads(Path(a.invalidations).read_text()) if Path(a.invalidations).exists() else []
         results = _read_jsonl(OUT_DIR / "results.jsonl")
         plan_path = Path(a.plan) if a.plan else max(OUT_DIR.glob("plan-*.json"), key=lambda f: f.stat().st_mtime,
                                                          default=None)
         plan = json.loads(plan_path.read_text()) if plan_path and plan_path.exists() else {}
         runs = [json.loads(f.read_text()) for f in sorted(OUT_DIR.glob("run-*.json"))]
         terms = load_terms(Path(a.terms) if a.terms else None)
-        checks = run_checks(dump["nodes"], dump["edges"], judged, terms)
+        checks = run_checks(dump["nodes"], dump["edges"], judged, terms, inval)
         report = render_report(dump, checks, cost_summary(results), plan, runs, judged)
         (OUT_DIR / "report.md").write_text(report)
         hashes, pt = _denylist_hashes()

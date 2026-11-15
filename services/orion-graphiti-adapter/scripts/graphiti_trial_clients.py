@@ -107,6 +107,11 @@ def embedding_from_response(data: Any, expected_dim: int) -> list[float]:
     return [float(v) for v in vector]
 
 
+def thinking_body(thinking: bool) -> dict[str, Any] | None:
+    """Request body extras for the thinking switch; None leaves the server default (thinking on)."""
+    return None if thinking else {"chat_template_kwargs": {"enable_thinking": False}}
+
+
 SCHEMA_REFUSAL_RE = re.compile(r"response_format|json_schema|grammar|schema", re.IGNORECASE)
 
 
@@ -118,11 +123,15 @@ def is_schema_refusal(message: str) -> bool:
 
 def build_llm_client(*, base_url: str, model: str, header_box: HeaderBox, stats: CallStats,
                      max_tokens: int = 8192, temperature: float = 0.0, timeout_sec: float = 600.0,
-                     hold_usable=None):
+                     hold_usable=None, thinking: bool = True):
     """OpenAIGenericClient that sends ``json_schema`` from Graphiti's response model.
 
     ``hold_usable``: callable; False once the pool recalled or lost the hold. Calls then stop at
-    once (RefusalError, which graphiti never retries) instead of hitting the gateway's 409."""
+    once (RefusalError, which graphiti never retries) instead of hitting the gateway's 409.
+
+    ``thinking=False`` sends ``chat_template_kwargs.enable_thinking=false`` (Qwen-family templates on
+    llama.cpp honour it; verified on the agent lane 2026-11-14: reasoning_content empty)."""
+    extra_body = thinking_body(thinking)
     import openai  # noqa: PLC0415
     from openai import AsyncOpenAI  # noqa: PLC0415
     from graphiti_core.llm_client.config import LLMConfig, ModelSize  # noqa: PLC0415
@@ -137,7 +146,7 @@ def build_llm_client(*, base_url: str, model: str, header_box: HeaderBox, stats:
             return await self.client.chat.completions.create(
                 model=self.model, messages=msgs, temperature=self.temperature,
                 max_tokens=max_tokens or self.max_tokens, response_format=fmt,
-                extra_headers=dict(header_box.headers))
+                extra_headers=dict(header_box.headers), **({"extra_body": extra_body} if extra_body else {}))
 
         async def _generate_response(self, messages, response_model=None, max_tokens: int = max_tokens,
                                      model_size=ModelSize.medium) -> dict[str, Any]:

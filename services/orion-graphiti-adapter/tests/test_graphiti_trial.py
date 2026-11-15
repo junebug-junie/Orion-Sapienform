@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import graphiti_trial as trial  # noqa: E402
 import graphiti_trial_clients as clients  # noqa: E402
 import graphiti_trial_score as score  # noqa: E402
+import graphiti_trial2_inputs as t2  # noqa: E402
 
 
 def _t(s: str) -> datetime:
@@ -215,10 +216,10 @@ def test_duplicate_sample_and_rate():
 def test_run_checks_duplicate_gate_needs_full_judged_sample():
     nodes = [{"uuid": str(i), "name": f"n{i}"} for i in range(60)]
     half = [{"duplicate": False}] * 20
-    dup_check = score.run_checks(nodes, [], half, T)[-1]
-    assert not dup_check.passed
-    full = [{"duplicate": False}] * 50
-    assert score.run_checks(nodes, [], full, T)[-1].passed
+    def dup(judged):
+        return next(c for c in score.run_checks(nodes, [], judged, T) if c.name.startswith("duplicate"))
+    assert not dup(half).passed
+    assert dup([{"duplicate": False}] * 50).passed
 
 
 def test_cost_summary_counts_every_attempt_but_last_outcome():
@@ -593,3 +594,128 @@ def test_report_refuses_and_removes_file_when_a_denylisted_word_survives(tmp_pat
     argv = _report_fixture(tmp_path, monkeypatch, {"h"}, LeakyPT)
     assert score.main(argv) == 1
     assert not (tmp_path / "report.redacted.md").exists()
+
+
+# --- trial 2: chat input, seed, ontology, sanitizer, thinking switch ---------------------------
+
+
+
+def test_trim_keeps_head_and_tail_and_reports_the_cut():
+    assert t2.trim("short", 10, 4, 2) == ("short", 0)
+    out, cut = t2.trim("a" * 50 + "TAIL", 20, 10, 4)
+    assert cut == 40 and out.startswith("a" * 10) and out.endswith("TAIL") and "[... 40 chars trimmed ...]" in out
+
+
+def test_exchange_body_is_speaker_labelled_and_bounded():
+    body, cut = t2.exchange_body("hi there", "x" * 5000)
+    assert body.startswith("Juniper: hi there\nOrion: ") and cut == 5000 - t2.ORION_HEAD - t2.ORION_TAIL
+    assert len(body) < t2.ORION_MAX_CHARS + 100
+
+
+def test_seed_body_states_pronouns_and_relations_once():
+    facts = [{"name": "Sam", "category": "pronouns", "value_text": "She / her"},
+             {"name": "Sam", "category": "pronouns", "value_text": "she/her"},
+             {"name": "Sam", "category": "relationship", "value_text": "Sam is my wife"},
+             {"name": "Mail carrier", "category": "pronouns", "value_text": "I don't know the pronouns"},
+             {"name": "Pat", "category": "pronouns", "value_text": "he / him"}]
+    body = t2.seed_body(facts)
+    assert "My pronouns are she/her" in body
+    assert "Juniper: Sam uses she/her pronouns. Sam is my wife" in body and body.count("Sam uses") == 1
+    assert "Pat uses he/him" in body and "Mail carrier" not in body
+    assert all(line.startswith("Juniper: ") for line in body.splitlines())
+
+
+def test_chat_episodes_put_the_seed_first_and_are_always_key_rows():
+    rows = t2.chat_rows_to_dicts([
+        {"id": "2", "prompt": "later", "response": "ok", "at": datetime(2026, 10, 5, 3, 0)},
+        {"id": "1", "prompt": "first", "response": "ok", "at": "2026-10-05T02:55:00"}])
+    eps = trial.episodes_from_chat(rows, "Juniper: seed")
+    assert [e.name for e in eps] == [trial.SEED_NAME, "chat:1", "chat:2"]
+    assert eps[0].reference_time < eps[1].reference_time and eps[1].reference_time.tzinfo is not None
+    assert eps[0].key_row() and all(e.source == "message" for e in eps)
+    assert trial.select_sample(eps, 1)[0].name == trial.SEED_NAME
+
+
+def test_redisearch_safe_strips_operators_that_crashed_trial_1():
+    assert t2.redisearch_safe("38% outreach figure") == "38 outreach figure"
+    assert t2.redisearch_safe("a@b $x; y.z, <q>='r'#") == "a b x y z q r"
+
+
+def test_key_row_re_can_drop_generic_animals_for_chat():
+    rx = trial.key_row_re(T, generic_animals=False)
+    assert rx.search("Biscuit barked") and not rx.search("the neighbours' dogs")
+    assert not trial.key_row_re(None, generic_animals=False).search("anything")
+
+
+def test_configure_graph_allows_only_trial_graphs_and_pairs_group_ids():
+    try:
+        trial.configure_graph("graphiti_trial2")
+        assert (trial.TRIAL_GRAPH, trial.GROUP_ID) == ("graphiti_trial2", "orion_trial2")
+        with pytest.raises(SystemExit, match="refusing graph"):
+            trial.configure_graph("orion_worldview")
+    finally:
+        trial.configure_graph("graphiti_trial")
+
+
+def test_isolation_verdict_fails_when_another_trial_graph_moves():
+    before = {"graphs": ["graphiti_trial"], "trial_group_nodes_elsewhere": {},
+              "other_trial_graph_counts": {"graphiti_trial": [100, 200]}}
+    after_ok = {**before, "graphs": ["graphiti_trial", "graphiti_trial2"]}
+    try:
+        trial.configure_graph("graphiti_trial2")
+        assert trial.isolation_verdict(before, after_ok)["isolated"]
+        moved = {**after_ok, "other_trial_graph_counts": {"graphiti_trial": [101, 200]}}
+        v = trial.isolation_verdict(before, moved)
+        assert not v["isolated"] and v["other_trial_graphs_changed"]
+    finally:
+        trial.configure_graph("graphiti_trial")
+
+
+def test_thinking_switch_body():
+    assert clients.thinking_body(True) is None
+    assert clients.thinking_body(False) == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_ontology_is_small_and_excludes_generic_entity():
+    pytest.importorskip("pydantic")
+    types, excluded = t2.ontology()
+    assert set(types) == {"Person", "Pet", "Place", "Event", "OrionPart"} and excluded == ["Entity"]
+    assert "pronouns" in types["Person"].model_fields and "species" in types["Pet"].model_fields
+
+
+def test_install_redisearch_sanitizer_wraps_graphiti_once():
+    pytest.importorskip("graphiti_core")
+    from graphiti_core.search import search_utils
+    t2.install_redisearch_sanitizer()
+    t2.install_redisearch_sanitizer()
+    assert "%" not in search_utils.lucene_sanitize("38% outreach")
+    assert search_utils.lucene_sanitize._orion_safe
+
+
+def test_pronoun_violations_flag_he_for_she_people_and_orion_only():
+    nodes = [{"name": "Robin", "summary": "Robin lives in Springfield. He likes trains. Alex said he would help."},
+             {"name": "Alex", "summary": "Alex is Robin's son. He is ten."}]
+    edges = [_edge("Robin says he needs to rest"), _edge("Orion described his mesh"),
+             _edge("Robin told me Alex broke his arm"), _edge("Robin says she needs to rest"),
+             _edge("Biscuit wagged his tail at Robin")]
+    v = score.pronoun_violations(nodes, edges, T)
+    assert len(v) == 3
+    assert any("He likes trains" in x for x in v) and any("he needs to rest" in x for x in v)
+    assert any("his mesh" in x for x in v)
+
+
+def test_invalidation_check_needs_every_invalidation_judged_and_under_two_wrong():
+    edges = [_edge("a", invalid="2026-10-07"), _edge("b", invalid="2026-10-08"), _edge("c")]
+    for i, e in enumerate(edges):
+        e["uuid"] = str(i)
+    sheet = score.invalidation_sheet(edges)
+    assert [j["uuid"] for j in sheet] == ["0", "1"]
+    assert not score.check_invalidations(sheet, edges).passed  # unjudged
+    sheet[0]["wrong"], sheet[1]["wrong"] = True, False
+    c = score.check_invalidations(sheet, edges)
+    assert c.passed and "1 wrong of 2" in c.detail
+    sheet[1]["wrong"] = True
+    assert not score.check_invalidations(sheet, edges).passed
+    sheet[1]["wrong"] = "yes"
+    with pytest.raises(ValueError):
+        score.check_invalidations(sheet, edges)

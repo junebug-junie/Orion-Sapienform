@@ -2,8 +2,8 @@
 """PostToolUse hook (Bash): when a session opens a pull request that carries a design spec, send
 the spec to Orion through Hub and tell the session Hub's receipt.
 
-Fires only for `gh pr create`. Finds the PR (its URL in the tool's output, else the session's
-branch from the agent board), and when its files include docs/superpowers/specs/*.md, POSTs the
+Fires only for `gh pr create` whose output holds the pull request's URL (so `--help`, a dry run or a
+failed create send nothing). When the PR's files include docs/superpowers/specs/*.md, POSTs the
 spec text to Hub (ORION_HUB_URL, default http://localhost:8080). Hub holds the message and answers
 with a receipt; Orion reads it at the next hourly round-up.
 
@@ -25,6 +25,16 @@ def main() -> None:
         return
     if not isinstance(payload, dict):
         return
+    try:
+        import signal
+
+        def _too_slow(*_a):
+            raise TimeoutError("hook budget spent")
+
+        signal.signal(signal.SIGALRM, _too_slow)
+        signal.alarm(20)   # the whole hook: well inside its 30 s timeout, whatever gh or git do
+    except Exception:  # noqa: BLE001
+        pass
     command = str((payload.get("tool_input") or {}).get("command") or "")
     if "gh" not in command or "pr" not in command:
         return   # the cheap exit: almost every Bash call
@@ -36,11 +46,13 @@ def main() -> None:
     try:
         session_id = lib.session_id_from(payload)
         ident = lib.identity(session_id)
+        # The PR's own URL in the tool's output is the proof a PR was made (or already exists). Without
+        # it (`--help`, `--dry-run`, an echoed string, a failed create) nothing is sent.
         found = lib.PR_URL_RE.search(json.dumps(payload.get("tool_response") or ""))
-        ref = found.group(1) if found else ident["branch"]
-        if not ref or ref in ("main", "master"):
-            lib.log(f"pr_spec_hook no_pr_ref session={session_id}")
+        if not found:
+            lib.log(f"pr_spec_hook no_pr_url_in_output session={session_id}")
             return
+        ref = found.group(1)
         pr = lib.pr_info(ref, cwd=ident["worktree"] or lib.REPO_ROOT, timeout=8.0)
         if pr is None:
             lib.log(f"pr_spec_hook pr_not_found ref={ref} session={session_id}")

@@ -25,7 +25,6 @@ from typing import Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 SESSION_ROUNDUP_WORKFLOW = "session_roundup.orion_turn"
-SESSION_ROUNDUP_NODES: tuple[str, ...] = ("harness_step", "finish")
 SESSION_ROUNDUP_STEP_KEY = "turn"
 # Hub's turn ``source`` for round-up turns.
 SESSION_ROUNDUP_TAG = "session_roundup"

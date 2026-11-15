@@ -26,10 +26,12 @@ family. Turns are NOT written to ``chat_history_log``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
 import re
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
@@ -49,6 +51,31 @@ _TURN_COLUMNS = (
     "turn_id, seq, thread_id, speaker, body, session_id, roundup_id, delivered_at, pr_comment_url, meta, created_at"
 )
 _CUT_SHORT_RE = re.compile(r"^\s*\[cut short\b", re.IGNORECASE)
+# Makes each round's data-fence lines unguessable for a session (core.fence_lines). Per process: after a
+# restart a resubmitted prompt differs by its fence only, and durable-runs keeps the run it already has.
+_FENCE_SECRET = secrets.token_hex(16)
+# A run with no end in sight this long after its own deadline: Hub stops waiting for it.
+OVERDUE_GRACE_SEC = 1800.0
+MIN_PROMPT_CHARS = 8000
+
+
+class IntakeRefused(ValueError):
+    """A message Hub will not store. ``too_many``: a cap was hit (HTTP 429), not a bad message."""
+
+    def __init__(self, detail: str, *, too_many: bool = False) -> None:
+        super().__init__(detail)
+        self.too_many = too_many
+
+
+def fence_nonce(roundup_id: str) -> str:
+    return hashlib.sha256(f"{_FENCE_SECRET}:{roundup_id}".encode()).hexdigest()[:12]
+
+
+def message_digest(body: str, specs: Sequence[Dict[str, Any]]) -> str:
+    h = hashlib.sha256(body.encode("utf-8"))
+    for spec in specs:
+        h.update(b"\0" + str(spec.get("path")).encode("utf-8") + b"\0" + str(spec.get("text")).encode("utf-8"))
+    return h.hexdigest()
 
 
 def _now() -> datetime:
@@ -80,6 +107,26 @@ def _turn(rec: Any) -> Dict[str, Any]:
 
 
 # --- store (asyncpg) ---------------------------------------------------------------------------
+
+
+async def intake_precheck(pool, *, thread_id: Optional[str], source_ref: str) -> Dict[str, Any]:
+    """What intake needs before it stores: how many threads Hub holds, and for the target thread (when
+    it exists) its row, its unread session messages and the digest of its newest session message."""
+    held = await pool.fetchrow(
+        "SELECT count(*) AS n FROM orion_session_thread WHERE status IN ('held', 'reading')")
+    rec = await pool.fetchrow(
+        f"SELECT {_THREAD_COLUMNS} FROM orion_session_thread WHERE thread_id = $1::text OR "
+        "($1::text IS NULL AND source_ref = $2)", thread_id, source_ref)
+    out: Dict[str, Any] = {"held_threads": int(held["n"]) if held else 0, "thread": _thread(rec) if rec else None,
+                           "unread": 0, "last_digest": None}
+    if rec is not None:
+        row = await pool.fetchrow(
+            "SELECT (SELECT count(*) FROM orion_session_turn t WHERE t.thread_id = $1 AND t.speaker = 'session' "
+            "AND t.roundup_id IS NULL) AS unread, (SELECT t.meta->>'digest' FROM orion_session_turn t "
+            "WHERE t.thread_id = $1 AND t.speaker = 'session' ORDER BY t.seq DESC LIMIT 1) AS last_digest",
+            rec["thread_id"])
+        out.update(unread=int(row["unread"]), last_digest=row["last_digest"])
+    return out
 
 
 async def add_message(pool, *, thread_id: Optional[str], source_ref: str, kind: str, title: str, session_id: str,
@@ -275,22 +322,29 @@ class GitHubCommenter:
         self.timeout_sec = timeout_sec
         self.api_base = api_base.rstrip("/")
 
-    async def post(self, pr_number: int, body: str) -> Optional[str]:
-        """The comment's URL, or None when it was not posted (no token, no repo, API error)."""
+    async def post(self, pr_number: int, body: str, *, branch: Optional[str] = None) -> Optional[str]:
+        """The comment's URL, or None when it was not posted (no token, no repo, API error, or the
+        number is not an OPEN pull request whose head branch is ``branch``: a session names the PR
+        number, so Hub checks it before Orion's account writes anywhere)."""
         import httpx
 
         token = (self._token_provider() or "").strip()
-        if not token or not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", self.repo):
+        if not token or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", self.repo):
             logger.warning("session_thread_pr_comment_skipped pr=%s why=%s", pr_number,
                            "no_token" if not token else "bad_repo")
             return None
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "orion-hub"}
         try:
             async with httpx.AsyncClient(timeout=self.timeout_sec) as client:
+                pull = await client.get(f"{self.api_base}/repos/{self.repo}/pulls/{int(pr_number)}", headers=headers)
+                why = self.target_refusal(pull.status_code, pull.json() if pull.status_code == 200 else {}, branch)
+                if why:
+                    logger.warning("session_thread_pr_comment_skipped pr=%s why=%s", pr_number, why)
+                    return None
                 resp = await client.post(
                     f"{self.api_base}/repos/{self.repo}/issues/{int(pr_number)}/comments",
-                    headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
-                             "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "orion-hub"},
-                    json={"body": body})
+                    headers=headers, json={"body": body})
         except Exception as exc:  # noqa: BLE001 -- the turn is already stored
             logger.warning("session_thread_pr_comment_failed pr=%s err=%s", pr_number, type(exc).__name__)
             return None
@@ -301,6 +355,19 @@ class GitHubCommenter:
             return str(resp.json().get("html_url") or "") or None
         except ValueError:
             return None
+
+
+    @staticmethod
+    def target_refusal(status_code: int, pull: Dict[str, Any], branch: Optional[str]) -> Optional[str]:
+        """Why this number must not get Orion's comment, or None when it may."""
+        if status_code != 200:
+            return f"not_a_pull_request:http_{status_code}"
+        if str(pull.get("state") or "") != "open":
+            return f"pull_request_{pull.get('state') or 'unknown'}"
+        head = str(((pull.get("head") or {}).get("ref")) or "")
+        if not branch or head != branch:
+            return "branch_mismatch"
+        return None
 
 
 # --- the loop ----------------------------------------------------------------------------------
@@ -334,7 +401,7 @@ class SessionRoundupLoop:
         self.tick_sec = tick_sec
         self.orion_timeout_sec = orion_timeout_sec
         self.run_deadline_sec = run_deadline_sec
-        self.prompt_max_chars = int(prompt_max_chars)
+        self.prompt_max_chars = max(MIN_PROMPT_CHARS, int(prompt_max_chars))
         self.tz_name = tz_name
         self._clock = clock
         self._lock = asyncio.Lock()
@@ -395,20 +462,36 @@ class SessionRoundupLoop:
         if len(list(spec or [])) > core.MAX_SPECS:
             notes.append(f"Hub kept the first {core.MAX_SPECS} spec files and dropped the rest.")
         if not body_text and not specs:
-            raise ValueError("empty_message")
+            raise IntakeRefused("empty_message")
         title = core.one_line(title, core.TITLE_MAX_CHARS)
         if not title:
-            raise ValueError("empty_title")
+            raise IntakeRefused("empty_title")
+        source_ref = f"pr:{int(pr_number)}" if pr_number else f"note:{_new_id()}"
+        digest = message_digest(body_text, specs)
+        before = await intake_precheck(pool, thread_id=thread_id, source_ref=source_ref)
+        existing = before["thread"]
+        if thread_id and existing is None:
+            return None
         now = self._clock()
         next_at = core.next_roundup_at(now, self.interval_sec)
+        if existing is not None and before["last_digest"] == digest:
+            # The same message again (a hook that fired twice, a retried send): nothing new to read.
+            text = (f"Hub already has this exact message as the newest one on thread {existing['thread_id']} "
+                    f"(status: {existing['status']}). Nothing new was stored.")
+            return {"thread": existing, "turn": None, "receipt": {"turn_id": None, "body": text}, "duplicate": True,
+                    "next_roundup_at": next_at, "roundup_enabled": self.enabled}
+        if existing is None and before["held_threads"] >= core.MAX_HELD_THREADS:
+            raise IntakeRefused(f"too_many_held_threads:{before['held_threads']}", too_many=True)
+        if before["unread"] >= core.MAX_UNREAD_TURNS_PER_THREAD:
+            raise IntakeRefused(f"too_many_unread_messages_on_thread:{before['unread']}", too_many=True)
         kind = core.KIND_PR_SPEC if pr_number else core.KIND_NOTE
         result = await add_message(
-            pool, thread_id=thread_id, source_ref=f"pr:{int(pr_number)}" if pr_number else f"note:{_new_id()}",
+            pool, thread_id=thread_id, source_ref=source_ref,
             kind=kind, title=title, session_id=core.one_line(session_id, 128) or "unknown",
             session_name=core.one_line(session_name, 200) or None, worktree=core.one_line(worktree, 500) or None,
             branch=core.one_line(branch, 300) or None, pr_number=int(pr_number) if pr_number else None,
             pr_url=core.one_line(pr_url, 300) or None, spec_paths=[s["path"] for s in specs], body=body_text,
-            meta={"spec": specs} if specs else {},
+            meta={"spec": specs, "digest": digest} if specs else {"digest": digest},
             receipt=lambda tid: core.receipt_text(thread_id=tid, next_at=next_at, roundup_enabled=self.enabled,
                                                   cut_notes=notes, tz_name=self.tz_name))
         if result is None:
@@ -416,9 +499,12 @@ class SessionRoundupLoop:
         thread = result["thread"]
         self._push_turn(thread, result["turn"])
         self._push_turn(thread, result["receipt"])
+        if existing is not None and existing["session_id"] != thread["session_id"]:
+            logger.info("session_thread_sender_changed thread=%s from=%s to=%s", thread["thread_id"],
+                        existing["session_id"], thread["session_id"])
         logger.info("session_thread_message thread=%s kind=%s session=%s pr=%s specs=%s", thread["thread_id"],
                     thread["kind"], thread["session_id"], thread.get("pr_number"), len(specs))
-        return {**result, "next_roundup_at": next_at, "roundup_enabled": self.enabled}
+        return {**result, "duplicate": False, "next_roundup_at": next_at, "roundup_enabled": self.enabled}
 
     # -- the tick -------------------------------------------------------------------------------
 
@@ -459,7 +545,7 @@ class SessionRoundupLoop:
         if await roundup_exists(pool, roundup_id):
             return {"skipped": "roundup_already_ran_this_hour", "roundup_id": roundup_id, "due": len(due)}
         due.sort(key=lambda c: (c[1][0]["created_at"], c[0]["thread_id"]))
-        selection = core.select_for_prompt(due, budget_chars=self.prompt_max_chars)
+        selection = core.select_for_prompt(due, budget_chars=self.prompt_max_chars, nonce=fence_nonce(roundup_id))
         if not selection.sections:
             logger.warning("session_roundup_nothing_fits roundup=%s due=%s budget=%s", roundup_id, len(due),
                            self.prompt_max_chars)
@@ -509,7 +595,8 @@ class SessionRoundupLoop:
             if threads:   # marked, but no turn of the round is left: nothing to ask Orion
                 await release_threads(pool, roundup_id, [t["thread_id"] for t in threads])
             return {"skipped": "round_has_no_turns", "roundup_id": roundup_id}
-        selection = core.select_for_prompt(cands, budget_chars=self.prompt_max_chars)
+        nonce = fence_nonce(roundup_id)
+        selection = core.select_for_prompt(cands, budget_chars=self.prompt_max_chars, nonce=nonce)
         if selection.left_held:
             await release_threads(pool, roundup_id, selection.left_held)
         if not selection.sections:
@@ -522,7 +609,7 @@ class SessionRoundupLoop:
                 correlation_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f"orion:session_roundup:{roundup_id}")),
                 brief=SessionRoundupBriefV1(
                     roundup="session_roundup.orion_turn", roundup_id=roundup_id, thread_ids=selection.thread_ids,
-                    prompt=core.roundup_prompt(selection.sections),
+                    prompt=core.roundup_prompt(selection.sections, nonce=nonce),
                     session_id=session_roundup_session_id(roundup_id), retrieval_query=titles[:1000] or None,
                     timeout_sec=self.orion_timeout_sec,
                 ),
@@ -545,9 +632,15 @@ class SessionRoundupLoop:
                 existing = await self._durable.get_run(roundup_id)
             except Exception:  # noqa: BLE001
                 existing = None
-            if existing is not None:
-                logger.info("session_roundup_run_adopted roundup=%s", roundup_id)
-                code = 202
+            if existing is None:
+                # Refused as a different request, and the run could not be read: ask again next tick
+                # rather than fail a round whose run may be live.
+                return {"waiting": roundup_id, "for": "durable_runs:conflict_unread"}
+            logger.info("session_roundup_run_adopted roundup=%s", roundup_id)
+            code = 202
+        if code >= 500:
+            logger.warning("session_roundup_submit_error roundup=%s http=%s", roundup_id, code)
+            return {"waiting": roundup_id, "for": f"durable_runs:http_{code}"}
         if code >= 400:
             logger.warning("session_roundup_run_refused roundup=%s http=%s body=%s", roundup_id, code, body)
             return await self._fail(pool, roundup_id, f"orion_run_refused:http_{code}")
@@ -566,10 +659,16 @@ class SessionRoundupLoop:
                 return await self._submit(pool, roundup_id)
             return {"waiting": roundup_id, "for": "orion_run_not_visible_yet"}
         status = str(run.get("status") or "")
-        if status in ("failed", "cancelled"):
+        if status in ("failed", "cancelled", "abandoned"):
             error = core.one_line(run.get("error") or status, 200)
             return await self._fail(pool, roundup_id, f"orion_run_{status}:{error}")
         if status != "completed":
+            # durable-runs fails a run at its admission deadline. A run still not ended well past it
+            # (paused, or a state Hub does not know) must not keep its threads in `reading`, which
+            # would block every later round: Hub stops waiting and holds the threads again.
+            overdue = self._overdue_sec(roundup_id)
+            if overdue is not None and overdue > 0:
+                return await self._fail(pool, roundup_id, f"orion_run_overdue:{status or 'unknown'}")
             return {"waiting": roundup_id, "for": f"orion_run:{status or 'unknown'}"}
         from orion.harness.cut_short import CUT_SHORT_CODES
         from orion.schemas.session_roundup_run import SESSION_ROUNDUP_STEP_KEY
@@ -583,12 +682,24 @@ class SessionRoundupLoop:
             return await self._fail(pool, roundup_id, "orion_turn_cut_short")
         return await self._apply(pool, roundup_id, text, model=debug.get("fcc_model_label"))
 
+    def _overdue_sec(self, roundup_id: str) -> Optional[float]:
+        """Seconds past the round's deadline plus grace (negative: not yet). None: id not a bucket."""
+        try:
+            bucket = datetime.strptime(roundup_id.rsplit("-", 1)[1], "%Y%m%dT%H%M").replace(tzinfo=timezone.utc)
+        except (IndexError, ValueError):
+            return None
+        return (self._clock() - bucket).total_seconds() - self.run_deadline_sec - OVERDUE_GRACE_SEC
+
     async def _apply(self, pool, roundup_id: str, text: str, *, model: Optional[str]) -> Dict[str, Any]:
-        threads = [t for t in await threads_with_status(pool, core.STATUS_READING) if t["last_roundup_id"] == roundup_id]
+        threads, cands = await self._round(pool, roundup_id)
         if not threads:
             return {"skipped": "round_already_applied", "roundup_id": roundup_id}
+        # The prompt's order (the parser trusts headings only in that order), then any thread of the
+        # round that has no turn left to show.
+        ordered = [c[0]["thread_id"] for c in cands]
+        ordered += [t["thread_id"] for t in threads if t["thread_id"] not in ordered]
         try:
-            answers = core.parse_roundup_reply(text, [t["thread_id"] for t in threads])
+            answers = core.parse_roundup_reply(text, ordered)
         except ValueError:
             return await self._fail(pool, roundup_id, "orion_run_completed_empty")
         by_id = {t["thread_id"]: t for t in threads}
@@ -616,8 +727,9 @@ class SessionRoundupLoop:
                 or answer.no_questions or answer.unparsed or turn.get("pr_comment_url")):
             return False
         try:
-            url = await self._commenter.post(int(thread["pr_number"]),
-                                             core.pr_comment_body(thread_id=thread["thread_id"], questions=answer.text))
+            url = await self._commenter.post(
+                int(thread["pr_number"]), core.pr_comment_body(thread_id=thread["thread_id"], questions=answer.text),
+                branch=thread.get("branch"))
             if not url:
                 return False
             await set_pr_comment_url(pool, turn["turn_id"], url)

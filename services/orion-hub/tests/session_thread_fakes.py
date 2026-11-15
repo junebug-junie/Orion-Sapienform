@@ -13,7 +13,7 @@ from typing import Any, Callable, Dict, List
 from orion.session_threads import core
 from scripts import session_roundup_loop as srl
 
-STORE_FUNCTIONS = ("add_message", "recent_threads", "get_thread", "thread_turns", "threads_with_status",
+STORE_FUNCTIONS = ("intake_precheck", "add_message", "recent_threads", "get_thread", "thread_turns", "threads_with_status",
                    "roundup_exists", "mark_round", "release_threads", "store_answer", "fail_round",
                    "set_pr_comment_url", "pending_for", "mark_delivered")
 
@@ -56,6 +56,17 @@ class FakeStore:
                     meta=copy.deepcopy(meta or {}), created_at=self.clock.now)
         self.turns.append(turn)
         return dict(turn)
+
+    async def intake_precheck(self, pool, *, thread_id, source_ref):
+        thread = self.threads.get(thread_id) if thread_id else next(
+            (t for t in self.threads.values() if t["source_ref"] == source_ref), None)
+        out = {"held_threads": sum(1 for t in self.threads.values() if t["status"] in ("held", "reading")),
+               "thread": dict(thread) if thread else None, "unread": 0, "last_digest": None}
+        if thread:
+            mine = [u for u in self.turns if u["thread_id"] == thread["thread_id"] and u["speaker"] == "session"]
+            out.update(unread=sum(1 for u in mine if u["roundup_id"] is None),
+                       last_digest=mine[-1]["meta"].get("digest") if mine else None)
+        return out
 
     async def add_message(self, pool, *, thread_id, source_ref, kind, title, session_id, session_name, worktree, branch,
                           pr_number, pr_url, spec_paths, body, meta, receipt):
@@ -230,9 +241,11 @@ class FakeDurable:
 class FakeCommenter:
     def __init__(self, *, fail=False):
         self.posts: List[tuple] = []
+        self.branches: List[Any] = []
         self.fail = fail
 
-    async def post(self, pr_number, body):
+    async def post(self, pr_number, body, *, branch=None):
+        self.branches.append(branch)
         self.posts.append((pr_number, body))
         if self.fail:
             return None

@@ -510,3 +510,146 @@ def test_threads_that_do_not_fit_stay_held_oldest_first(mode, monkeypatch, caplo
         assert w.durable.submits[1]["thread_ids"] == [ids[2]] and (await state(w, ids[2]))[0]["status"] == "asked"
 
     run(mode, monkeypatch, scenario, prompt_max_chars=9000)
+
+
+# --- review findings (2026-11-15) ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_the_same_message_twice_is_stored_once(mode, monkeypatch):
+    """A hook that fires twice (or a failed `gh pr create` that prints the existing PR) must not make
+    Orion read the same spec twice."""
+
+    async def scenario(w):
+        first = await send_pr(w)
+        frames(w)
+        again = await send_pr(w)
+        assert again["duplicate"] is True and again["turn"] is None and "Nothing new was stored" in again["receipt"]["body"]
+        assert again["thread"]["thread_id"] == first["thread"]["thread_id"] and frames(w) == []
+        _, turns = await state(w, first["thread"]["thread_id"])
+        assert [t["speaker"] for t in turns] == ["session", "hub"]
+        changed = await send_pr(w, spec=SPEC + "rev 2\n")
+        assert changed["duplicate"] is False
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_intake_is_bounded_per_thread_and_in_total(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        for i in range(core.MAX_UNREAD_TURNS_PER_THREAD - 1):
+            await w.loop.intake(session_id="s", title="reply", body=f"more {i}", thread_id=tid)
+        with pytest.raises(srl.IntakeRefused) as err:
+            await w.loop.intake(session_id="s", title="reply", body="one too many", thread_id=tid)
+        assert err.value.too_many and "too_many_unread_messages_on_thread" in str(err.value)
+        monkeypatch.setattr(core, "MAX_HELD_THREADS", 3)
+        await w.loop.intake(session_id="s", title="n1", body="note 1")
+        await w.loop.intake(session_id="s", title="n2", body="note 2")
+        with pytest.raises(srl.IntakeRefused) as err:
+            await w.loop.intake(session_id="s", title="n3", body="note 3")
+        assert err.value.too_many and "too_many_held_threads" in str(err.value)
+        # A full thread is still read: the round runs and clears it.
+        w.clock.to_next_hour()
+        w.durable.replies = ["no headings at all"]
+        tick = await w.loop.tick()
+        assert tick["unparsed"] == 3 and len(w.durable.submits[0]["prompt"]) <= 100000
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_a_run_that_never_ends_does_not_block_later_rounds(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        rid = (await w.loop.tick())["started"]
+        w.durable.runs[rid] = {"status": "paused"}
+        w.clock.advance(hours=3)
+        assert (await w.loop.tick())["for"] == "orion_run:paused"   # inside deadline + grace: wait
+        w.clock.advance(minutes=40)
+        tick = await w.loop.tick()
+        assert tick["why"] == "orion_run_overdue:paused"
+        thread, _ = await state(w, tid)
+        assert thread["status"] == "held" and thread["roundup_failures"] == 1
+        # An abandoned run is final too.
+        w.clock.to_next_hour()
+        w.durable.replies = [{"status": "abandoned", "error": "retired"}]
+        assert (await w.loop.tick())["why"] == "orion_run_abandoned:retired"
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_a_server_error_or_an_unreadable_conflict_waits_and_counts_no_failure(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        w.durable.refuse_with = 503
+        assert (await w.loop.tick())["for"] == "durable_runs:http_503"
+        w.durable.refuse_with = 409   # "different request", and the run cannot be read back
+        assert (await w.loop.tick())["for"] == "durable_runs:conflict_unread"
+        thread, _ = await state(w, tid)
+        assert thread["status"] == "reading" and thread["roundup_failures"] == 0
+        w.durable.refuse_with = 0
+        w.durable.replies = [answer((tid, "1. q?"))]
+        assert (await w.loop.tick())["asked"] == 1
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_the_comment_is_given_the_threads_branch_and_the_fence_is_not_guessable(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w, pr=77, branch="feat/seventy-seven"))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "1. q?"))]
+        await w.loop.tick()
+        assert w.commenter.branches == ["feat/seventy-seven"]
+        prompt, rid = w.durable.submits[0]["prompt"], w.durable.submits[0]["run_id"]
+        nonce = srl.fence_nonce(rid)
+        assert f"<<<END_SESSION_DATA:{nonce}>>>" in prompt and len(nonce) == 12
+        assert nonce != srl.fence_nonce(rid + "x") and "<<<END_SESSION_DATA>>>" not in prompt
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("status,pull,branch,why", [
+    (200, {"state": "open", "head": {"ref": "feat/a"}}, "feat/a", None),
+    (404, {}, "feat/a", "not_a_pull_request:http_404"),             # an issue number, or nothing
+    (200, {"state": "closed", "head": {"ref": "feat/a"}}, "feat/a", "pull_request_closed"),
+    (200, {"state": "open", "head": {"ref": "feat/other"}}, "feat/a", "branch_mismatch"),
+    (200, {"state": "open", "head": {"ref": "feat/a"}}, None, "branch_mismatch"),
+])
+def test_orion_only_comments_on_an_open_pr_of_the_threads_own_branch(status, pull, branch, why):
+    assert srl.GitHubCommenter.target_refusal(status, pull, branch) == why
+
+
+def test_the_commenter_checks_the_pull_request_before_it_posts_and_never_raises(monkeypatch):
+    import httpx
+
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path, request.headers.get("authorization")))
+        if request.method == "GET":
+            number = int(request.url.path.rsplit("/", 1)[1])
+            if number == 5:
+                return httpx.Response(200, json={"state": "open", "head": {"ref": "feat/a"}})
+            return httpx.Response(404, json={})
+        return httpx.Response(201, json={"html_url": "https://github.com/o/r/pull/5#issuecomment-9"})
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
+
+    async def go():
+        ok = srl.GitHubCommenter("o/r", token_provider=lambda: "tok")
+        assert await ok.post(5, "body", branch="feat/a") == "https://github.com/o/r/pull/5#issuecomment-9"
+        assert await ok.post(6, "body", branch="feat/a") is None            # not a pull request
+        assert await ok.post(5, "body", branch="feat/zzz") is None          # another branch's PR
+        assert await srl.GitHubCommenter("o/r", token_provider=lambda: "").post(5, "b", branch="feat/a") is None
+        assert await srl.GitHubCommenter("../evil", token_provider=lambda: "tok").post(5, "b", branch="feat/a") is None
+
+    asyncio.run(go())
+    assert calls == [("GET", "/repos/o/r/pulls/5", "Bearer tok"), ("POST", "/repos/o/r/issues/5/comments", "Bearer tok"),
+                     ("GET", "/repos/o/r/pulls/6", "Bearer tok"), ("GET", "/repos/o/r/pulls/5", "Bearer tok")]

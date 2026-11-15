@@ -130,3 +130,16 @@ def test_routes_are_registered_on_the_hub_app_and_pending_is_not_read_as_a_threa
     main_src = (HUB_ROOT / "scripts" / "main.py").read_text(encoding="utf-8")
     assert "app.include_router(session_thread_router)" in main_src
     assert "session_roundup_loop = SessionRoundupLoop(" in main_src and "await session_roundup_loop.start()" in main_src
+
+
+def test_a_repeat_is_said_to_be_a_repeat_and_a_full_thread_answers_429(world, monkeypatch):
+    client = world[0]
+    first = client.post("/api/session-threads/message", json=_msg()).json()
+    again = client.post("/api/session-threads/message", json=_msg())
+    assert again.status_code == 200 and again.json()["duplicate"] is True and again.json()["turn"] is None
+    assert first["duplicate"] is False and "Nothing new was stored" in again.json()["receipt"]["text"]
+    from orion.session_threads import core
+
+    monkeypatch.setattr(core, "MAX_UNREAD_TURNS_PER_THREAD", 1)
+    resp = client.post("/api/session-threads/message", json=_msg(body="another"))
+    assert resp.status_code == 429 and "too_many_unread_messages_on_thread" in resp.json()["detail"]

@@ -94,13 +94,15 @@ async def post_message(request: Request, body: MessageBody) -> dict:
             session_id=body.session_id, session_name=body.session_name, worktree=body.worktree, branch=body.branch,
             pr_number=body.pr_number, pr_url=body.pr_url, title=body.title, body=body.body,
             spec=[s.model_dump() for s in body.spec], thread_id=(body.thread_id or "").strip() or None)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except store.IntakeRefused as exc:
+        raise HTTPException(status_code=429 if exc.too_many else 422, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="thread_not_found")
     return {
         "thread": _public(result["thread"]),
-        "turn": _public(result["turn"]),
+        "turn": _public(result["turn"]) if result["turn"] else None,
+        # True: this exact message is already the newest on the thread; nothing new was stored.
+        "duplicate": bool(result.get("duplicate")),
         # Hub's receipt, not Orion's words: Orion has not read the message.
         "receipt": {"speaker": "hub", "text": result["receipt"]["body"], "turn_id": result["receipt"]["turn_id"]},
         "next_roundup_at": result["next_roundup_at"].isoformat(),

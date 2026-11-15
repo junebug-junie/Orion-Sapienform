@@ -66,3 +66,7 @@ CREATE TABLE IF NOT EXISTS orion_session_turn (
 CREATE INDEX IF NOT EXISTS orion_session_turn_thread_idx ON orion_session_turn (thread_id, seq);
 CREATE INDEX IF NOT EXISTS orion_session_turn_roundup_idx ON orion_session_turn (roundup_id);
 CREATE INDEX IF NOT EXISTS orion_session_turn_session_idx ON orion_session_turn (session_id);
+-- One orion turn per thread per round-up, whatever the code path.
+CREATE UNIQUE INDEX IF NOT EXISTS orion_session_turn_orion_round_uidx ON orion_session_turn (thread_id, roundup_id) WHERE speaker = 'orion';
+-- The pending read runs on every prompt of every coding session.
+CREATE INDEX IF NOT EXISTS orion_session_turn_undelivered_idx ON orion_session_turn (thread_id) WHERE speaker = 'orion' AND delivered_at IS NULL;

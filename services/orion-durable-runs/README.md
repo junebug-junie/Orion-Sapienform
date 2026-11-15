@@ -1021,9 +1021,10 @@ windows of at most an hour. Per window:
 1. `app/temporal_self_sources.py` reads every bound source (the reference for every query is
    `orion/temporal_self/evals/export_fixture_day.sql`): broadcast ticks by `generated_at`, and every
    event whose *available* time (a process at its end) is in `[lo, hi)`;
-2. a late-row probe re-reads the previous 30 min (memory episodes: 3 days; visual deferrals: 3 h,
-   because `abandoned` replaces `active` ~90 min after `started_at`) for rows that were not there
-   yet; they are folded as late (the reducer counts them in
+2. a late-row probe re-reads the previous 30 min (visual deferrals: 3 h, because `abandoned`
+   replaces `active` ~90 min after `started_at`; memory episodes need none: they are read by
+   `created_at` and fold in the window they land in, bound by `occurred_at`) for rows that were not
+   there yet; they are folded as late (the reducer counts them in
    `frame.skipped_at_or_before_watermark`, never folds them) and stored with
    `temporal_self_event.late_unfolded = true`, so each is counted once;
 3. ONE `fold` (ticks and events together), `advance_clock(hi)`, `build_frame`, `drain_closed_days`,

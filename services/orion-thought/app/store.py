@@ -214,7 +214,8 @@ def load_pending_expectations(limit: int = 1) -> list[dict[str, Any]]:
     -- nothing is re-filtered in Python after the row set comes back.
 
     Returns [{"thought_id": str, "expectation": str, "expectation_checkable_by":
-    datetime}], ordered `expectation_checkable_by ASC` -- the row whose window
+    datetime, "created_at": datetime}] (``created_at`` opens the check window the
+    judge reads captions from, #3403), ordered `expectation_checkable_by ASC` -- the row whose window
     closed longest ago (most overdue) sorts first.
     """
     limit = max(0, int(limit))
@@ -228,7 +229,7 @@ def load_pending_expectations(limit: int = 1) -> list[dict[str, Any]]:
             rows = (
                 conn.execute(
                     text(
-                        "SELECT thought_id, expectation, expectation_checkable_by "
+                        "SELECT thought_id, expectation, expectation_checkable_by, created_at "
                         "FROM substrate_reverie_thought "
                         "WHERE expectation IS NOT NULL "
                         "AND expectation_verdict IS NULL "

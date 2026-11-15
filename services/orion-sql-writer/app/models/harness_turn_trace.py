@@ -29,6 +29,12 @@ class HarnessTurnTraceSQL(Base):
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
+    # What kind of turn this was (HarnessRunV1.workflow: the Hub caller's ``source`` tag, else
+    # "reading"/"chat"). Filled from the run artifact only; NULL on older rows and on turns whose
+    # Hub or governor predates the field. Lets failures (run_artifact->>'stop_reason') be split by
+    # kind (#3255). Column added by manual_migration_harness_turn_trace_workflow_v1.sql.
+    workflow = Column(String, nullable=True)
+
     # HarnessRunV1: draft_text, substrate_appraisal, reflection, verdict_molecule_id,
     # finalize_ran/changed, quick_lane_skipped_5b, step_count, exit_code,
     # compliance_verdict, grounding_status, grammar_event_ids, final_text.

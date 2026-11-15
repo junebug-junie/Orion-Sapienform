@@ -1309,16 +1309,10 @@ async def run_status(run_id: str):
         raise HTTPException(404, "run not found") from exc
 
 
-@app.post("/runs/{run_id}/{action}")
-async def run_control(run_id: str, action: str):
-    if action not in {"pause", "resume", "cancel"}:
-        raise HTTPException(400, "action must be pause, resume or cancel")
-    try:
-        return await _admission().control(run_id, action)
-    except KeyError as exc:
-        raise HTTPException(404, "run not found") from exc
-
-
+# Declared BEFORE the generic ``/runs/{run_id}/{action}`` route on purpose: FastAPI matches in
+# declaration order, and the generic route answered this path with 400 ("action must be pause,
+# resume or cancel"), so no Door-A hold was ever released by Hub and each one sat idle until
+# DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC (#3255; tests/test_release_outreach_route.py).
 @app.post("/runs/{run_id}/release-outreach-lease")
 async def release_outreach_lease(run_id: str):
     """Hub Door-A finished composing: release the run's GPU pool hold kept past finish.
@@ -1333,3 +1327,12 @@ async def release_outreach_lease(run_id: str):
     except ValueError as exc:
         raise HTTPException(409, str(exc)) from exc
 
+
+@app.post("/runs/{run_id}/{action}")
+async def run_control(run_id: str, action: str):
+    if action not in {"pause", "resume", "cancel"}:
+        raise HTTPException(400, "action must be pause, resume or cancel")
+    try:
+        return await _admission().control(run_id, action)
+    except KeyError as exc:
+        raise HTTPException(404, "run not found") from exc

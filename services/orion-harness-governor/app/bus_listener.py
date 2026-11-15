@@ -474,7 +474,8 @@ async def handle_harness_run_request(
             recall_debug=recall_debug,
             mode=str(getattr(request, "mode", None) or "orion").strip().lower(),
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
 
     repair_overlay = map_repair_pressure_contract(request.repair_pressure_contract)
@@ -533,7 +534,8 @@ async def handle_harness_run_request(
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
     if not motor.draft_text or motor.draft_molecule is None:
         run = HarnessRunV1(
@@ -554,7 +556,8 @@ async def handle_harness_run_request(
             reading_receipts=motor.reading_receipts,
             source_fetches=motor.source_fetches,
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
 
     preview_text, preview_held = await _maybe_publish_draft_preview(
@@ -635,7 +638,8 @@ async def handle_harness_run_request(
             draft_preview_text=preview_text,
             draft_preview_held_reason=preview_held,
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
     except SubstrateAppraisalUnavailableError as exc:
         # Log the real exception (bus channel + correlation id) for operators only --
@@ -708,7 +712,8 @@ async def handle_harness_run_request(
             draft_preview_text=preview_text,
             draft_preview_held_reason=preview_held,
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
     except Exception as exc:
         logger.error("harness finalize chain error corr=%s err=%s", corr, exc)
@@ -732,7 +737,8 @@ async def handle_harness_run_request(
             draft_preview_text=preview_text,
             draft_preview_held_reason=preview_held,
         )
-        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+        await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                                  workflow=request.workflow)
         return run
 
     final_text = chain.final_text
@@ -794,7 +800,8 @@ async def handle_harness_run_request(
             context_gathering_step_count=motor.context_gathering_step_count,
             execution_step_count=motor.execution_step_count,
         )
-    await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality)
+    await _reply_and_artifact(bus, run, reply_to=reply_to, corr=corr, causality=causality,
+                              workflow=request.workflow)
 
     closure = await emit_post_turn_closure(
         correlation_id=corr,
@@ -824,7 +831,12 @@ async def _reply_and_artifact(
     reply_to: str,
     corr: str,
     causality: list[str],
+    workflow: str | None = None,
 ) -> None:
+    # The caller's own label for what kind of turn this was (HarnessRunRequestV1.workflow),
+    # copied onto the artifact so sql-writer can store it beside the stop reason (#3255).
+    if workflow and run.workflow is None:
+        run.workflow = workflow
     payload = run.model_dump(mode="json")
     envelope = BaseEnvelope(
         kind="harness.run.v1",
@@ -1042,4 +1054,5 @@ async def _handle_bus_message(bus: OrionBusAsync, raw_msg: dict[str, Any]) -> No
             reply_to=reply_channel,
             corr=corr,
             causality=causality,
+            workflow=request.workflow if request is not None else None,
         )

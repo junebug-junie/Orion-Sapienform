@@ -1,0 +1,15 @@
+{
+  "lane": "agent-deep",
+  "work_class": "operator_agent_deep",
+  "holder": "operator:hecate-maintenance-20261114b",
+  "lease_id": "5e58de8fd2a94d7da02206459b79a1a4",
+  "role": "agent-deep",
+  "priority": "background",
+  "calls": 0,
+  "recalled": null,
+  "queued_at_epoch_s": 1794694952.465403,
+  "granted_at_epoch_s": 1794696003.613239,
+  "purpose": "Gateway maintenance after baseline; queued behind full-context benchmark",
+  "wait_s": 1051.147835969925,
+  "released": true
+}

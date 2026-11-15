@@ -204,6 +204,6 @@ ssh -t circe@circe sudo /mnt/scripts/Orion-Sapienform/scripts/ops/circe_llm_port
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3470
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

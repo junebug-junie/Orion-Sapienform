@@ -1,0 +1,74 @@
+# Orion's organ registry: which organ every experience (temporal_self_event source kind) belongs to,
+# and what "bigger" means for each kind's salience.
+#
+# Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, Part A (A2, A5).
+# Consumers (the reason this file exists):
+#   * orion/temporal_self/now.py   -- GET /temporal-self/now: "at most 2 per organ", "never the
+#     reader's own organ", and the integration metric's per-organ split;
+#   * orion-durable-runs' chronicle -- salience per kind (salience_magnitude) at insert;
+#   * (patch 2) scripts/check_integration_seam.py and scripts/report_integration_coverage.py.
+#
+# Rules (tested in orion/temporal_self/tests/test_now.py):
+#   * every TemporalSourceKind belongs to exactly one organ;
+#   * salience_magnitude maps a kind of THIS organ to a rule in orion/temporal_self/now.py
+#     MAGNITUDE_RULES. A kind with no rule reads salience NULL (ranked after scored items).
+#   * salience is computed from the source's own magnitude only, never from use counts.
+
+organs:
+  reverie:
+    temporal_sources: [reverie_chain, expectation_verdict]
+    salience_magnitude:
+      reverie_chain: chain_thought_count
+  painting:
+    temporal_sources: [visual_run, visual_deferral]
+  dream:
+    temporal_sources: [dream_cycle, dream_hypothesis]
+    salience_magnitude:
+      dream_cycle: dream_hypothesis_count
+  curiosity:
+    temporal_sources: [curiosity_run]
+    salience_magnitude:
+      curiosity_run: curiosity_moved_formed
+  reading:
+    temporal_sources: [reading_turn]
+    salience_magnitude:
+      reading_turn: surprise_nats
+  camera:
+    temporal_sources: [vision_percept, presence_transition, street_event, office_session]
+    # vision_percept has no magnitude: entity count stepped from 1 to 4-5 per percept on 2026-11-09 (a
+    # producer change), so against its 30-day history every ordinary scene read >= 0.9 (88% live, 11-15).
+    salience_magnitude:
+      office_session: visit_seconds
+  body:
+    temporal_sources: [body_binding, gpu_wait, arousal_transition]
+    salience_magnitude:
+      gpu_wait: waited_ms
+  prediction:
+    # action_outcome: the act ledger's predicted-vs-observed outcome rows (substrate_action_outcomes),
+    # one per closed act of any organ. Scoring a prediction is this organ's work, whoever acted.
+    temporal_sources: [prediction_surprise, action_outcome]
+    salience_magnitude:
+      prediction_surprise: surprise_nats
+      action_outcome: surprise_nats
+  metacognition:
+    temporal_sources:
+      - metacog_observation
+      - faculty_status_changed
+      - attention_row
+      - attention_loop_raised
+      - attention_loop_verdict
+      - field_dominance_run
+    salience_magnitude:
+      metacog_observation: metacog_severity
+      field_dominance_run: dominance_ticks
+  memory:
+    temporal_sources: [memory_episode, consolidation_window_close]
+  chat:
+    temporal_sources: [chat_turn]
+  play:
+    temporal_sources: [retro_play]
+  prime:
+    # prime_thought has no magnitude yet: the act ledger's surprisal for a Prime thought drifts by
+    # 1e-6 per thought (0.000454 -> 0.000443 over 11-14..15) whatever the thought did, so it ranks by
+    # nothing. Unscored items rank after scored ones, newest first. Part B (hunger) gives Prime content.
+    temporal_sources: [prime_thought]

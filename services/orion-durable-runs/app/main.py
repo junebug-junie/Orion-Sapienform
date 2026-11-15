@@ -580,7 +580,22 @@ def _build_chronicle():
                                             ("street_event", s.temporal_self_street_episodes_enabled),
                                             ("office_session", s.temporal_self_office_sessions_enabled),
                                             ("faculty_status_changed", s.self_monitor_enabled)) if not on)),
-                      cfg=cfg, now=lambda: datetime.now(timezone.utc))
+                      cfg=cfg, now=lambda: datetime.now(timezone.utc), salience=_salience_book())
+
+
+def _salience_book():
+    """Orion's now (integration patch 1): salience at insert for every kind the organ registry gives a
+    magnitude. A registry that does not load is logged and salience stays NULL (never a crash)."""
+    from app.temporal_self_chronicle import SalienceBook
+    from app.temporal_self_store import ChronicleStore
+    from orion.integration.organs import load_organs
+
+    try:
+        rules = dict(load_organs().magnitude_rule)
+    except Exception:  # noqa: BLE001 - the chronicle runs without salience rather than not at all
+        logger.warning("organ_registry_load_failed: salience stays NULL", exc_info=True)
+        return None
+    return SalienceBook(rules, ChronicleStore(_checkpointer_cm).magnitude_history)
 
 
 def _build_personality():
@@ -1105,6 +1120,121 @@ async def temporal_self_arc(arc_id: str):
     if arc is None:
         raise HTTPException(404, f"arc {arc_id} is not in the chronicle (unknown, or past arc retention)")
     return arc
+
+
+# --- Orion's now (docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, A3/A4) ----
+
+
+def _now_store():
+    if not _settings.temporal_self_now_enabled:
+        raise HTTPException(404, "Orion's now is off (TEMPORAL_SELF_NOW_ENABLED=false)")
+    if _checkpointer_cm is None:
+        raise HTTPException(503, "no database pool yet (service starting or durable runs disabled)")
+    from app.temporal_self_store import ExperienceStore
+
+    return ExperienceStore(_checkpointer_cm)
+
+
+async def _now_read(coro):
+    """A missing table or column means the migration was not applied: 503 naming the file."""
+    from psycopg.errors import UndefinedColumn, UndefinedTable
+
+    try:
+        return await coro
+    except (UndefinedTable, UndefinedColumn) as exc:
+        raise HTTPException(503, "Orion's now tables missing: apply "
+                                 "services/orion-sql-db/manual_migration_experience_now_v1.sql") from exc
+
+
+NOW_DEFAULT_LOOKBACK_HOURS = 24.0  # a reader that never looked sees the last day
+NOW_MAX_LOOKBACK_DAYS = 30  # temporal_self_event retention
+
+
+@app.get("/temporal-self/now")
+async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Optional[str] = None):
+    """Orion's now for one reading organ: at most 12 experiences of OTHER organs recorded since ``since``
+    (default: when this organ last looked, else 24 h), at most 2 per organ, highest salience first.
+    Every call stores one ``experience_shown`` row; its ``shown_id`` is what cites are checked against."""
+    from datetime import datetime, timedelta, timezone
+    from uuid import uuid4
+
+    from orion.integration.organs import load_organs
+    from orion.schemas.temporal_self import NOW_MAX_PER_ORGAN
+    from orion.temporal_self.now import build_now
+
+    store = _now_store()
+    registry = load_organs()
+    if organ not in registry.organs:
+        raise HTTPException(422, f"unknown organ {organ!r}; registered: {', '.join(registry.organs)}")
+    as_of = datetime.now(timezone.utc)
+    if since:
+        try:
+            lo = datetime.fromisoformat(since.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise HTTPException(422, "since must be an ISO-8601 time") from exc
+        if lo.tzinfo is None:
+            raise HTTPException(422, "since must carry a time zone")
+    else:
+        lo = await _now_read(store.last_shown(organ)) or as_of - timedelta(hours=NOW_DEFAULT_LOOKBACK_HOURS)
+    lo = max(lo.astimezone(timezone.utc), as_of - timedelta(days=NOW_MAX_LOOKBACK_DAYS))
+    rows, total = await _now_read(store.candidates(since=lo, as_of=as_of, own_kinds=registry.kinds_of(organ),
+                                                   per_kind=NOW_MAX_PER_ORGAN))
+    now = build_now(rows, organ, since=lo, as_of=as_of, shown_id=uuid4().hex, registry=registry,
+                    reader_run_ref=(run_ref or None) and run_ref[:300], candidates_total=total)
+    await _now_read(store.insert_shown(shown_id=now.shown_id, reader_organ=organ, reader_run_ref=now.reader_run_ref,
+                                       event_ids=[i.event_id for i in now.items], since=lo, shown_at=as_of))
+    return now.model_dump(mode="json")
+
+
+@app.post("/temporal-self/now/use")
+async def temporal_self_now_use(body: dict):
+    """Record a reader's cites at its run's close (``ExperienceCitesV1``). Each cite is checked against the
+    ``experience_shown`` row it names; valid ones (at most 3) become ``experience_use`` rows, the rest are
+    counted and dropped (``ExperienceUseResultV1``). Idempotent per (shown_id, event_id)."""
+    from datetime import datetime, timezone
+
+    from pydantic import ValidationError
+
+    from orion.schemas.temporal_self import ExperienceCitesV1
+    from orion.temporal_self.now import record_use
+
+    store = _now_store()
+    try:
+        req = ExperienceCitesV1.model_validate(body)
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_url=False)) from exc
+    shown = await _now_read(store.shown(req.shown_id))
+    if shown is None:
+        raise HTTPException(404, f"no experience_shown row {req.shown_id!r}: cites are valid only against a shown now")
+    result = record_use(shown_id=req.shown_id, reader_organ=shown["reader_organ"],
+                        shown_event_ids=list(shown["event_ids"] or []), cites=req.cites,
+                        citing_ref=req.citing_ref, cited_at=datetime.now(timezone.utc))
+    await _now_read(store.insert_uses([u.model_dump() for u in result.uses]))
+    if result.rejected_not_shown or result.rejected_over_cap:
+        logger.info("experience_cites_dropped shown_id=%s organ=%s not_shown=%d over_cap=%d", req.shown_id,
+                    shown["reader_organ"], len(result.rejected_not_shown), len(result.rejected_over_cap))
+    return result.model_dump(mode="json")
+
+
+@app.get("/temporal-self/integration")
+async def temporal_self_integration(hours: float = 24.0):
+    """The integration metric (experience use rate) over the last ``hours`` (max 30 days): the share of
+    experiences recorded in the window that a different organ cited, validly, within 24 h, per organ and
+    in total; and the closed organs. Read-only."""
+    from datetime import datetime, timedelta, timezone
+
+    from orion.integration.organs import load_organs
+    from orion.temporal_self.now import use_rate
+
+    if _checkpointer_cm is None:
+        raise HTTPException(503, "no database pool yet (service starting or durable runs disabled)")
+    from app.temporal_self_store import ExperienceStore
+
+    hi = datetime.now(timezone.utc)
+    lo = hi - timedelta(hours=max(1.0, min(float(hours), 24.0 * 30)))
+    kinds, uses, made = await _now_read(ExperienceStore(_checkpointer_cm).rate_inputs(lo, hi))
+    return use_rate(kinds, uses, window_start=lo, window_end=hi, registry=load_organs(),
+                    cites_made=made).model_dump(mode="json")
 
 
 ACT_BY_ID_SQL = """

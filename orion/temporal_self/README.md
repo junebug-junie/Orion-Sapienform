@@ -222,3 +222,12 @@ open-thread counts), using the renderers' own phrasing; anything else is **undec
 counted, never guessed. No LLM judge. Output: per sentence match / mismatch / undecidable with
 reasons, and per ISO week `truth_rate = match / (match + mismatch)`. A measurement, not a gate.
 Calibration tests run it over the renderers' own output (`tests/test_citation_truth.py`).
+
+`now.py` (integration design 2026-11-15, Part A patch 1): Orion's now. Every `temporal_self_event`
+row is an experience owned by one organ (`config/integration/organs.yaml`, read by
+`orion/integration/organs.py`). `build_now` picks at most 12 experiences of OTHER organs, at most 2 per
+organ, by salience (the kind's own 30-day strictly-below percentile; NULL under 20 past events or with
+no declared magnitude, ranked last). `record_use` checks a reader's cites against what it was shown
+(at most 3 count); `use_rate` is the integration metric (share of experiences a different organ used
+within 24 h, and the closed organs). The three new kinds (`reading_turn`, `prediction_surprise`,
+`prime_thought`) fold into no arc. Served by orion-durable-runs `/temporal-self/now`.

@@ -1066,6 +1066,40 @@ deploy). Kill switch: `TEMPORAL_SELF_CHRONICLE_ENABLED=false`. Health: `/health`
 `temporal_self_chronicle`. Eval: `evals/temporal_self_live_replay.py` runs this code path over the
 10-09 fixture on a disposable Postgres (`--source-dsn` reads real tables read-only instead).
 
+## Orion's now: experiences, salience, cites (2026-11-15, integration design Part A patch 1)
+
+Spec: `docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md` (A1-A5). Every
+`temporal_self_event` row is an **experience**; its organ comes from the organ registry
+`config/integration/organs.yaml` (loaded by `orion/integration/organs.py`, rules in
+`orion/temporal_self/now.py`).
+
+- **Three new sources** (no arc folds them): `reading_turn` (a closed `hub.world_pulse_read` act;
+  the spec's `reading_durable_turn` is the stage request queue and holds no finished state),
+  `prediction_surprise` (a scored `prediction_exceedance`, surprisal `-ln P(observed)` Laplace-smoothed
+  over its paths, joint-surprise rows of the same window as related refs), `prime_thought` (a closed
+  `prime`/`infer` act, its outcome note as label). `action_outcome` now carries its row's `surprise_nats`.
+- **Salience at insert** (`SalienceBook` in the chronicle): the share of the same kind's events in the
+  30 days before that were strictly smaller by the kind's declared magnitude
+  (`orion.physiology.event_wants.source_salience`). NULL under 20 past events or for a kind with no
+  magnitude. `surprise_nats` is written only where the source carried a real prediction's surprisal.
+- `GET /temporal-self/now?organ=<id>[&since=<iso>][&run_ref=<ref>]` -> `TemporalNowV1`: at most 12
+  experiences of other organs ingested since `since` (default: this organ's last look, else 24 h), at
+  most 2 per organ, highest salience first (NULL last, newest first on ties). Every call writes one
+  `experience_shown` row.
+- `POST /temporal-self/now/use` (`ExperienceCitesV1`: `shown_id`, `citing_ref`, `cites`) ->
+  `ExperienceUseResultV1`. Cites are checked against the shown row; at most 3 valid ones are stored in
+  `experience_use` (idempotent per shown row and event); the rest are counted and dropped.
+- `GET /temporal-self/integration?hours=24` -> `ExperienceUseRateV1`: the integration metric, the share
+  of experiences recorded in the window that a different organ cited, validly, within 24 h, per organ;
+  and the closed organs.
+
+Readers (Prime, reveries, curiosity) are patch 3; until then nothing cites and the metric reads 0.
+Tables: `services/orion-sql-db/manual_migration_experience_now_v1.sql` (BEFORE deploy: the chronicle's
+INSERT names the new columns). Retention: `experience_shown`/`experience_use` follow the event horizon.
+Kill switch: `TEMPORAL_SELF_NOW_ENABLED=false` (both now routes 404; salience and the sources stay).
+Eval: `evals/experience_now_live_read.py` (read-only live read: new-source rows, salience distributions
+per kind, Prime's now, the metric's baseline).
+
 ## Body: the `physiology` node (2026-10-23, body economy Patch A3, no reader yet; prices Patch B2)
 
 Organ 1 of the body economy (`docs/superpowers/specs/2026-10-23-organism-body-economy-design.md`).
@@ -1656,6 +1690,10 @@ that submits the workflow.
 `situation.update` (2026-10-07, additive `DurableWorkflowV1` value): deploy orion-sql-writer
 first (it validates `DurableRunStateV1` rows; an old one drops them), then this service. Hub and
 orion-actions skip rows they cannot parse and filter by workflow, so their order does not matter.
+
+Orion's now (integration patch 1): apply `manual_migration_experience_now_v1.sql` first (the post-pull
+applier does this: additive, REQUIRED-BY orion-durable-runs), then deploy this service. No other service
+reads the new kinds or models yet, so no consumer has to go first.
 
 ## Checks
 

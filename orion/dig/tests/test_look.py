@@ -26,6 +26,7 @@ def published(monkeypatch) -> list:
     """Every test's look publishes into this list, never to a real bus."""
     sent: list = []
     monkeypatch.setattr(lk, "_publish_bus", lambda events: sent.extend(events))
+    monkeypatch.setattr(lk, "read_records", lambda stream, frame_at: [])  # never a real database
     monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
     return sent
 
@@ -277,3 +278,114 @@ def test_turn_id_env_wins_and_matches_the_motor() -> None:
     assert lk.TURN_ID_ENV == TURN_CORRELATION_ENV
     env = {"ORION_TURN_CORRELATION_ID": "warm-turn", "ANTHROPIC_CUSTOM_HEADERS": "X-Orion-Correlation-Id: old"}
     assert lk.turn_id(env) == "warm-turn"
+
+
+# --- records near the frame + look check (#3347 part 2a) ----------------------------------------
+
+REC = [
+    {"event_id": "a1b2c3d4-0000-0000-0000-000000000001", "event_type": "visual_observation", "confidence": 0.8,
+     "entities": '["vehicle"]', "narrative": "A vehicle is parked on the walkway.", "offset_sec": 12.0},
+    {"event_id": "ffff0000-0000-0000-0000-000000000002", "event_type": "camera_caption", "confidence": 0.4,
+     "entities": "[]", "narrative": "a porch at night", "offset_sec": -30.5},
+]
+
+
+def _look_with_records(frames: Path, home: Path, records=None):
+    _frame(frames, "walkway", "walkway", NOW_MS - 400)
+    return lk.look("walkway", home=home, directory=frames, now=NOW,
+                   records=(lambda s, t: REC) if records is None else records)
+
+
+def test_look_shows_the_records_near_the_frame_and_keeps_them(dirs) -> None:
+    frames, home = dirs
+    lines, rec = _look_with_records(frames, home)
+    text = "\n".join(lines)
+    assert "A vehicle is parked on the walkway." in text and 'entities ["vehicle"]' in text
+    assert f"look check {rec['act_id']}" in text
+    assert [r["id"] for r in rec["records"]] == [r["event_id"] for r in REC]
+    assert lines[-1].startswith("act: act_")  # the act line stays last
+
+
+def test_unread_records_never_fail_the_look(dirs) -> None:
+    frames, home = dirs
+
+    def boom(stream, at):
+        raise RuntimeError("db down")
+
+    lines, rec = _look_with_records(frames, home, records=boom)
+    assert Path(rec["path"]).exists() and "records: unread" in "\n".join(lines)
+
+
+def test_records_sql_is_read_only_and_backslash_free() -> None:
+    sql = lk.records_sql("walkway", NOW)
+    assert sql.startswith("SELECT ") and "\\" not in sql and "stream_id = 'walkway'" in sql
+    with pytest.raises(lk.LookError):
+        lk.records_sql("walkway'; drop table x; --", NOW)
+
+
+def test_check_differs_is_a_graded_0_child_of_the_look(dirs, published) -> None:
+    frames, home = dirs
+    _, look_rec = _look_with_records(frames, home)
+    published.clear()
+    lines, entry = lk.check(look_rec["act_id"], "differs", "porch, chair and lawn; no vehicle on the walkway",
+                            "a1b2c3d4", home=home, now=NOW, clock=lambda: NOW + timedelta(milliseconds=5))
+    opened, closed = published
+    act = closed.act
+    assert (act.actor, act.verb, act.parent_act_id) == ("orion.look_check", "infer", look_rec["act_id"])
+    assert act.object_ref == "vision_event:a1b2c3d4-0000-0000-0000-000000000001" and act.outcome.value == 0.0
+    assert act.outcome.note.startswith("differs: porch")
+    logged = [json.loads(x) for x in (home / "look" / lk.CHECK_LOG).read_text().splitlines()]
+    assert logged == [entry] and entry["frame_sha256"] == look_rec["sha256"]
+
+
+def test_check_matches_closes_1_and_cannot_tell_is_never_graded(dirs, published) -> None:
+    frames, home = dirs
+    _, look_rec = _look_with_records(frames, home)
+    published.clear()
+    lk.check(look_rec["act_id"], "matches", "a dark porch at night, as captioned", "ffff0000", home=home, now=NOW)
+    assert published[1].act.outcome.value == 1.0
+    published.clear()
+    lines, entry = lk.check(look_rec["act_id"], "cannot-tell", "the far half of the frame is too dark",
+                            "a1b2c3d4", home=home, now=NOW)
+    assert published == [] and "act_id" not in entry and "never graded" in lines[-1]
+
+
+@pytest.mark.parametrize("args, match", [
+    (("act_nope", "matches", "something long enough", "a1b2c3d4"), "no look with act"),
+    (("{act}", "maybe", "something long enough", "a1b2c3d4"), "verdict must be"),
+    (("{act}", "matches", "short", "a1b2c3d4"), "characters"),
+    (("{act}", "matches", "something long enough", "deadbeef"), "not one this look showed"),
+    (("{act}", "matches", "something long enough", "a1b"), "not one this look showed"),  # too short a prefix
+])
+def test_check_refuses(dirs, args, match) -> None:
+    frames, home = dirs
+    _, look_rec = _look_with_records(frames, home)
+    act, verdict, seen, rid = args
+    with pytest.raises(lk.LookError, match=match):
+        lk.check(act.format(act=look_rec["act_id"]), verdict, seen, rid, home=home, now=NOW)
+
+
+def test_a_record_is_checked_once_per_look(dirs) -> None:
+    frames, home = dirs
+    _, look_rec = _look_with_records(frames, home)
+    lk.check(look_rec["act_id"], "differs", "no vehicle anywhere in view", "a1b2c3d4", home=home, now=NOW)
+    with pytest.raises(lk.LookError, match="already checked"):
+        lk.check(look_rec["act_id"], "matches", "changed my mind entirely", "a1b2c3d4", home=home, now=NOW)
+
+
+def test_dig_cli_look_check(dirs, monkeypatch, capsys, published) -> None:
+    frames, home = dirs
+    monkeypatch.setenv("ORION_DIG_HOME", str(home))
+    _, look_rec = _look_with_records(frames, home)
+    assert dig.main(["look", "check", look_rec["act_id"], "differs", "no", "vehicle", "because", "it", "is",
+                     "dark", "because", "a1b2c3d4"]) == 0
+    out = capsys.readouterr().out
+    assert "check: differs" in out and "you saw: no vehicle because it is dark" in out
+    assert dig.main(["look", "check", look_rec["act_id"], "differs", "seen", "words", "because", "a1", "b2"]) == 1
+
+
+def test_orion_look_check_has_a_tier_0_family() -> None:
+    from orion.physiology.families import load_families
+
+    cfg, err = load_families(Path(__file__).resolve().parents[3] / "config/physiology/families.yaml")
+    assert err is None and cfg.families[lk.CHECK_ACTOR].tier == 0

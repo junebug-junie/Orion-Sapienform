@@ -1,7 +1,7 @@
 # Looks as acts, and a look that checks a record
 
-Status: part 1 built in this PR (#3320). Part 2 is a proposal and needs Juniper's sign-off
-(it changes how Orion grades their own perception).
+Status: part 1 built (#3348). Part 2a built 2026-11-15 after Juniper's go on #3347 ("hit it"):
+records section + `look check`, acts and log only. 2b (spot-check want) not built.
 
 ## Arsonist summary
 
@@ -142,3 +142,25 @@ Do not wire the adapter (part 2b); or remove `look check` from the dig.
 ## Recommended next patch
 
 Part 2a: the records section in `dig look` and `look check` (acts plus log only, no adapter).
+
+## Part 2a as built (2026-11-15)
+
+- `dig look` reads `vision_events` for the stream from 90 s before to 60 s after the frame (records are
+  written after their frames), nearest 6, as `orion_readonly` (which may read `vision_events`; see #3390
+  for the other vision tables). They print under the frame with a ready `look check` line and are kept on
+  the `looks.jsonl` row; `look check` accepts only a record that look showed (full id or an 8+ char prefix).
+  A records read that fails is said (`records: unread (...)`) and never fails the look.
+- `look check <act> matches|differs|cannot-tell "<what I see>" because <record id>`: matches/differs is an
+  act (actor `orion.look_check`, verb `infer`, `parent_act_id` = the look, object `vision_event:<id>`,
+  signal `artifact_produced`, outcome 1 = the record matched). cannot-tell is logged only. One check per
+  record per look. Every check goes to `look/checks.jsonl` with the frame path and sha256 for audit.
+- **Correction, foveal:** the design said checks must refuse "foveal" records (same model as the look).
+  Live: the foveal probe is debug-only and wrote 0 `vision_events` rows in 30 days. Every current record
+  type (council `visual_observation` on the fast lane, BLIP `camera_caption`, rhythm verdicts, motion) is
+  from a different source than the look, so no refusal was built.
+- **Self-monitor:** its generic `grammar_acts` adapter grades every actor, so `orion.look_check` gets a
+  faculty (`act.orion.look_check.infer`) with no new adapter. What it grades is calibration of Orion's
+  expected agreement (the cell's `predicted` vs outcome); the agreement rate itself is the cell's mean.
+- Family `orion.look_check`, tier 0 (never bids). 2b's spot-check want would be tier 2 (Juniper's call).
+- Live smoke 2026-11-15 05:00Z (publishing stubbed): walkway frame 0.2 s old; one record 70 s earlier,
+  `visual_observation` conf 0.80 entities ["vehicle"]: "A vehicle is observed on the walkway."

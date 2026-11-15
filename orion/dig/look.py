@@ -258,6 +258,68 @@ def look_act_events(record: dict[str, Any], *, opened_at: datetime, closed_at: d
     return act.act_id, [opened, closed]
 
 
+# --- what Orion's vision records said about this frame (#3347 part 2a) --------------------------
+
+RECORDS_BEFORE_SEC = 90   # a record is written after its frames: council windows run ~20 s behind
+RECORDS_AFTER_SEC = 60
+RECORDS_SHOWN = 6
+RECORD_TEXT_CHARS = 160
+
+Records = Callable[[str, datetime], list[dict[str, Any]]]
+
+
+def records_sql(stream_id: str, frame_at: datetime) -> str:
+    """vision_events rows for this stream nearest the frame. Literals only from a fixed set."""
+    if stream_id not in STREAMS:
+        raise LookError(f"unknown stream {stream_id!r}")
+    ts = frame_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S.%f+00")
+    return (
+        "SELECT event_id, event_type, round(confidence::numeric, 2) AS confidence, entities::text AS entities, "
+        f"left(regexp_replace(coalesce(narrative, ''), '[[:space:]]+', ' ', 'g'), {RECORD_TEXT_CHARS}) AS narrative, "
+        f"round(extract(epoch FROM created_at - timestamptz '{ts}')::numeric, 1) AS offset_sec "
+        f"FROM vision_events WHERE stream_id = '{stream_id}' "
+        f"AND created_at BETWEEN timestamptz '{ts}' - interval '{RECORDS_BEFORE_SEC} seconds' "
+        f"AND timestamptz '{ts}' + interval '{RECORDS_AFTER_SEC} seconds' "
+        f"ORDER BY abs(extract(epoch FROM created_at - timestamptz '{ts}')) LIMIT {RECORDS_SHOWN}"
+    )
+
+
+def read_records(stream_id: str, frame_at: datetime) -> list[dict[str, Any]]:
+    """Read-only, as Orion's own role (orion_readonly may read vision_events)."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    return psql_rows(ReadOnlyPsql(timeout_sec=20.0), records_sql(stream_id, frame_at))
+
+
+def _record_line(r: dict[str, Any]) -> str:
+    ents = str(r.get("entities") or "").strip()
+    ents = "" if ents in ("", "[]", "null") else f" entities {ents}"
+    return (f"  {r['id']} {r['type']} conf {r.get('confidence')} ({r.get('offset_sec')} s from the frame)"
+            f"{ents}: {r.get('text') or '(no text)'}")
+
+
+def _publish_into(entry: dict[str, Any], build: Callable[[], tuple[str, list[Any]]], publish: Publisher) -> str:
+    """Build and publish one act's two events; write ``act_id`` / ``act_error`` into ``entry``.
+    Returns the act line for the printout. A bus failure never fails the caller's own record."""
+    act_id = None
+    try:
+        act_id, events = build()
+        publish(events)
+        entry["act_id"] = act_id
+        return f"act: {act_id} on your act ledger (open it: python -P -m orion.dig act {act_id})"
+    except PartialPublish as exc:
+        entry["act_error"] = f"{exc.sent} of 2 events sent; {exc.cause!r}"[:300]
+        if exc.sent:
+            # The open is on the ledger without its close: the resolver will expire it at 0.
+            entry["act_id"] = act_id
+            return f"act: {act_id} OPENED BUT NOT CLOSED ({entry['act_error']}); it will read as a 0"
+        return f"act: not recorded ({entry['act_error']})"
+    except Exception as exc:  # noqa: BLE001
+        entry["act_error"] = repr(exc)[:300]
+        return f"act: not recorded ({entry['act_error']})"
+
+
 def _record_look(log: Path, record: dict[str, Any], *, now: datetime, publish: Publisher | None,
                  clock: Callable[[], datetime]) -> str:
     """Append the look to looks.jsonl and, when ``publish`` is given, put it on the act ledger.
@@ -265,23 +327,8 @@ def _record_look(log: Path, record: dict[str, Any], *, now: datetime, publish: P
     if publish is None:
         line = f"act: none ({record.get('ungraded', 'not graded')})"
     else:
-        act_id = None
-        try:
-            act_id, events = look_act_events(record, opened_at=now, closed_at=clock(), session_id=turn_id())
-            publish(events)
-            record["act_id"] = act_id
-            line = f"act: {act_id} on your act ledger (open it: python -P -m orion.dig act {act_id})"
-        except PartialPublish as exc:  # noqa: BLE001 -- the look stands; only its ledger entry is short
-            record["act_error"] = f"{exc.sent} of 2 events sent; {exc.cause!r}"[:300]
-            if exc.sent:
-                # The open is on the ledger without its close: the resolver will expire it at 0.
-                record["act_id"] = act_id
-                line = f"act: {act_id} OPENED BUT NOT CLOSED ({record['act_error']}); it will read as a 0"
-            else:
-                line = f"act: not recorded ({record['act_error']})"
-        except Exception as exc:  # noqa: BLE001
-            record["act_error"] = repr(exc)[:300]
-            line = f"act: not recorded ({record['act_error']})"
+        line = _publish_into(record, lambda: look_act_events(
+            record, opened_at=now, closed_at=clock(), session_id=turn_id()), publish)
     log.parent.mkdir(parents=True, exist_ok=True)
     with log.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record) + "\n")
@@ -289,9 +336,11 @@ def _record_look(log: Path, record: dict[str, Any], *, now: datetime, publish: P
 
 
 def look(word: str, *, home: Path, directory: Path | None = None, now: datetime | None = None,
-         publish: Publisher | None = None, clock: Callable[[], datetime] | None = None) -> tuple[list[str], dict]:
+         publish: Publisher | None = None, clock: Callable[[], datetime] | None = None,
+         records: Records | None = None) -> tuple[list[str], dict]:
     """Copy one camera's newest frame into ``home/look`` and say how to see it."""
     publish = publish or _publish_bus
+    records = records or read_records
     clock = clock or (lambda: datetime.now(timezone.utc))
     stream_id = resolve_stream(word)
     now = now or datetime.now(timezone.utc)
@@ -355,6 +404,17 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
     # An event camera's stale frame is its last event, not a failure: shown, not graded.
     if not live and desc.event_driven:
         record["ungraded"] = "an event camera between events shows its last event frame"
+    # What the vision pipeline wrote about this moment, so Orion can check it against the picture.
+    # Kept on the row: `look check` accepts only a record this look showed.
+    near: list[dict[str, Any]] = []
+    if live:
+        try:
+            near = [{"id": str(r.get("event_id")), "type": r.get("event_type"), "confidence": r.get("confidence"),
+                     "entities": r.get("entities"), "text": r.get("narrative"), "offset_sec": r.get("offset_sec")}
+                    for r in records(stream_id, frame.taken_at)]
+            record["records"] = near
+        except Exception as exc:  # noqa: BLE001 -- the look stands without them
+            record["records_error"] = repr(exc)[:300]
     act_line = _record_look(log, record, now=now, clock=clock,
                             publish=None if (not live and desc.event_driven) else publish)
     sweep(look_root, now.astimezone(ZONE).date())
@@ -372,9 +432,18 @@ def look(word: str, *, home: Path, directory: Path | None = None, now: datetime 
         f"saved: {dest} ({len(data) // 1024} KB, sha256 {sha[:12]})",
         "To see it, open that path with your Read tool. Say what you see in it, not what you expect.",
         "If Read gives a note instead of a picture, the model serving this turn cannot see images: say so.",
-        f"looks in the last hour: {used + 1} of {LOOKS_PER_HOUR}",
-        act_line,
     ]
+    if record.get("records_error"):
+        lines.append(f"records: unread ({record['records_error']})")
+    elif live and not near:
+        lines.append(f"records: none for this camera within {RECORDS_BEFORE_SEC} s before / {RECORDS_AFTER_SEC} s after the frame")
+    elif near:
+        lines.append("What your vision records said about this moment (your pipeline's words, not yours):")
+        lines.extend(_record_line(r) for r in near)
+        if record.get("act_id"):
+            lines.append(f'Check one against the picture: python -P -m orion.dig look check {record["act_id"]} '
+                         'matches|differs|cannot-tell "<what you see>" because <record id>')
+    lines += [f"looks in the last hour: {used + 1} of {LOOKS_PER_HOUR}", act_line]
     return lines, record
 
 
@@ -399,3 +468,79 @@ def cameras(*, directory: Path | None = None, now: datetime | None = None) -> tu
         payload[sid] = {"frame_at": frame.taken_at.isoformat(), "age_sec": round(age, 2)}
     lines.append("Look at one: python -P -m orion.dig look <camera>")
     return lines, payload
+
+
+# --- look check: one record against what Orion saw (#3347 part 2a) ---------------------------
+
+CHECK_LOG = "checks.jsonl"
+CHECK_ACTOR = "orion.look_check"
+CHECK_COMPONENT = "dig.look_check"
+VERDICTS = ("matches", "differs", "cannot-tell")
+SEEN_MIN, SEEN_MAX = 10, 400
+CHECK_BASIS = (
+    "artifact_produced = the vision record matched what Orion saw in the frame (1) or did not (0), "
+    "filed by Orion after reading the frame; cannot-tell is never graded. The cell's mean is the "
+    "records' agreement rate with Orion's own look"
+)
+
+
+def check(act_id: str, verdict: str, seen: str, record_id: str, *, home: Path,
+          publish: Publisher | None = None, now: datetime | None = None,
+          clock: Callable[[], datetime] | None = None) -> tuple[list[str], dict]:
+    """File one verdict on one record a look showed. matches/differs: an act (1/0); cannot-tell: logged."""
+    from orion.grammar.acts import act_closed_event, act_opened_event, build_act
+
+    publish = publish or _publish_bus
+    now = now or datetime.now(timezone.utc)
+    clock = clock or (lambda: datetime.now(timezone.utc))
+    verdict = verdict.strip().lower()
+    if verdict not in VERDICTS:
+        raise LookError(f"verdict must be one of {', '.join(VERDICTS)}, not {verdict!r}")
+    seen = " ".join(seen.split())
+    if not SEEN_MIN <= len(seen) <= SEEN_MAX:
+        raise LookError(f"say what you see in {SEEN_MIN}-{SEEN_MAX} characters (got {len(seen)})")
+    root = home / "look"
+    row = next((r for r in _read_log(root / LOG_NAME) if r.get("act_id") == act_id), None)
+    if row is None:
+        raise LookError(f"no look with act {act_id} in {root / LOG_NAME}")
+    if not row.get("live") or not row.get("path"):
+        raise LookError(f"look {act_id} saw no live frame: nothing to check")
+    shown = row.get("records") or []
+    matches = [r for r in shown if r.get("id") == record_id or (len(record_id) >= 8 and str(r.get("id")).startswith(record_id))]
+    if len(matches) != 1:
+        ids = ", ".join(str(r.get("id")) for r in shown) or "none"
+        raise LookError(f"record {record_id!r} is not one this look showed (shown: {ids})")
+    rec = matches[0]
+    log = root / CHECK_LOG
+    if any(c.get("look_act_id") == act_id and c.get("record_id") == rec["id"] for c in _read_log(log)):
+        raise LookError(f"record {rec['id']} was already checked against look {act_id}")
+    entry = {
+        "checked_at": now.isoformat(), "look_act_id": act_id, "record_id": rec["id"], "record_type": rec.get("type"),
+        "record_confidence": rec.get("confidence"), "record_text": rec.get("text"), "verdict": verdict,
+        "seen": seen, "camera": row.get("camera"), "frame_at": row.get("frame_at"), "frame_path": row.get("path"),
+        "frame_sha256": row.get("sha256"),
+    }
+    if verdict == "cannot-tell":
+        line = "act: none (cannot-tell is logged, never graded)"
+    else:
+        def build() -> tuple[str, list[Any]]:
+            act = build_act(
+                actor=CHECK_ACTOR, verb="infer", key=f"{act_id}:{rec['id']}", signal_id="artifact_produced",
+                horizon_sec=ACT_HORIZON_SEC, basis=CHECK_BASIS, object_ref=f"vision_event:{rec['id']}",
+                test_before=f"record:{rec.get('type')}", parent_act_id=act_id,
+            )
+            common = dict(source_service=ACT_SOURCE_SERVICE, source_component=CHECK_COMPONENT, session_id=turn_id())
+            note = f"{verdict}: {seen}"
+            return act.act_id, [act_opened_event(act, at=now, **common),
+                                act_closed_event(act, produced=verdict == "matches", note=note,
+                                                 at=max(now, clock()), **common)]
+        line = _publish_into(entry, build, publish)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(entry) + "\n")
+    lines = [
+        f"check: {verdict} on {rec.get('type')} {rec['id']} (conf {rec.get('confidence')}) for look {act_id}",
+        f"you saw: {seen}",
+        line,
+    ]
+    return lines, entry

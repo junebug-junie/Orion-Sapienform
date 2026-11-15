@@ -116,3 +116,9 @@ def test_the_door_upstreams_match_the_engine_loopback_defaults():
     example = (repo / "services/orion-lane-door/.env_example").read_text()
     for lane, port in upstream.items():
         assert f"LANE_DOOR_{lane}_UPSTREAM=127.0.0.1:{port}" in example
+
+
+def test_no_engines_under_the_project_is_a_loud_warning_not_silence(capsys):
+    docker = FakeDocker([], {})
+    assert mod.main([], runner=docker, host="circe") == 0
+    assert "WARNING no running engines under compose project orion-llamacpp-host" in capsys.readouterr().out

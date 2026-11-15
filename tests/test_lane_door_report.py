@@ -86,10 +86,12 @@ def test_joined_gaps_and_unmatched_leases_block():
     assert not ok and "not in gpu_pool_events" in why
 
 
-def test_lease_ids_are_collected_for_the_join_and_rows_from_the_old_key_format_are_unreadable():
+def test_lease_ids_are_collected_and_rows_from_the_old_keyed_door_are_counted_apart():
     old = json.dumps({"ts": "2026-11-15T12:00:00.000+00:00", "lane": "chat", "key": "ok", "lease_id": "L9"})
-    report, bad = rep.aggregate([_line("2026-11-15", lease="L1"), _line("2026-11-15", lease="L2"), old])
-    assert report["chat"]["2026-11-15"].lease_ids == {"L1", "L2"} and bad == 1
+    counts: dict = {}
+    report, bad = rep.aggregate([_line("2026-11-15", lease="L1"), _line("2026-11-15", lease="L2"), old], counts)
+    day = report["chat"]["2026-11-15"]
+    assert day.lease_ids == {"L1", "L2"} and day.leased == 2 and bad == 0 and counts == {"pre_revision": 1}
 
 
 def test_render_names_who_sent_unleased_calls(capsys, tmp_path):

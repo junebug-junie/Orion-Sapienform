@@ -61,7 +61,7 @@ services:
 
     ports:
       # Map to internal 8000
-      - "${VLLM_ENGINE_PUBLISH:-${VLLM_HOST_PORT:-7000}}:8000"   # lane door on hecate: 127.0.0.1:18021
+      - "${VLLM_ENGINE_PUBLISH:-${VLLM_HOST_PORT:-7000}}:8000"   # public; the lane door fronts only docker-compose.deep.yml
 
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]

@@ -137,6 +137,11 @@ def main(argv: Optional[list[str]] = None, *, runner: Runner = run, host: Option
         print(f"move_engines_behind_doors: host {host} is not circe; nothing to move")
         return 0
     to_move, lines = plan(runner)
+    if not lines:
+        # Nothing of the atlas-workers project is running: a renamed compose project, or the engines are
+        # down. Every door would wait forever while the deploy looks green -- say so.
+        print(f"move_engines_behind_doors: WARNING no running engines under compose project {PROJECT}; "
+              "the circe doors will wait until an engine answers on loopback")
     for line in lines:
         print(f"move_engines_behind_doors: {line}")
     if not to_move:

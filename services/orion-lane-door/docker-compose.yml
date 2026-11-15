@@ -49,9 +49,11 @@ services:
       - LANE_DOOR_UPSTREAM=${LANE_DOOR_AGENT_UPSTREAM:-127.0.0.1:18015}
       - LANE_DOOR_MODE=${LANE_DOOR_MODE_AGENT:-${LANE_DOOR_MODE:-shadow}}
 
-  # agent-gpu2's engine comes and goes (the lane controller swaps it). The door waits while it is unloaded,
-  # so the pool sees the seat down, as it would without a door. The controller's next load starts the engine
-  # on loopback (the compose default), and the door takes 8016.
+  # agent-gpu2's engine comes and goes (the lane controller swaps it). Before the engine's first loopback
+  # load the door waits (its old engine keeps 8016). The controller's next load starts the engine on
+  # loopback (the compose default) and the door takes 8016; after that it holds 8016 and answers 502 while
+  # the seat is unloaded (the pool sees the seat down either way). The seat is standby: warm, so that first
+  # load can be days away (the next swap, e.g. a diffusion lease).
   lane-door-agent-gpu2:
     <<: *door
     container_name: ${PROJECT:-orion}-lane-door-agent-gpu2

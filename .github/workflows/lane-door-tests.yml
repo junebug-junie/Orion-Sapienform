@@ -18,6 +18,7 @@ on:
       - "tests/test_lane_door_*.py"
       - "services/orion-llamacpp-host/docker-compose.atlas-workers.yml"
       - "services/orion-vllm-host/docker-compose.deep.yml"
+      - "services/orion-vllm-host/scripts/hecate-deep.sh"
       - ".github/workflows/lane-door-tests.yml"
   push:
     branches: [main]
@@ -33,6 +34,7 @@ on:
       - "tests/test_lane_door_*.py"
       - "services/orion-llamacpp-host/docker-compose.atlas-workers.yml"
       - "services/orion-vllm-host/docker-compose.deep.yml"
+      - "services/orion-vllm-host/scripts/hecate-deep.sh"
       - ".github/workflows/lane-door-tests.yml"
 
 jobs:

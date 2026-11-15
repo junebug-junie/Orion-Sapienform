@@ -69,16 +69,20 @@ def iter_lines(sources: list[str]) -> Iterator[str]:
                 yield from fh
 
 
-def aggregate(lines: Iterable[str]) -> tuple[dict[str, dict[str, Day]], int]:
+def aggregate(lines: Iterable[str], counts: Optional[dict] = None) -> tuple[dict[str, dict[str, Day]], int]:
     """lane -> UTC day (YYYY-MM-DD) -> Day. Returns also the number of unreadable lines."""
     out: dict[str, dict[str, Day]] = defaultdict(dict)
     bad_lines = 0
+    pre_revision = 0
     for raw in lines:
         raw = raw.strip()
         if not raw:
             continue
         try:
             row = json.loads(raw)
+            if "lease" not in row and "key" in row:
+                pre_revision += 1   # written by the first (keyed) door build; not evidence either way
+                continue
             lane, day, state = str(row["lane"]), str(row["ts"])[:10], str(row["lease"])
         except (ValueError, KeyError, TypeError):
             bad_lines += 1
@@ -99,6 +103,8 @@ def aggregate(lines: Iterable[str]) -> tuple[dict[str, dict[str, Day]], int]:
             else:
                 d.unleased += 1
             d.unleased_from[who] += 1
+    if counts is not None:
+        counts["pre_revision"] = pre_revision
     return out, bad_lines
 
 
@@ -216,7 +222,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(json.dumps(stats, indent=1))
         if not args.sources:
             return 0
-    report, bad_lines = aggregate(iter_lines(args.sources or ["-"]))
+    counts: dict = {}
+    report, bad_lines = aggregate(iter_lines(args.sources or ["-"]), counts)
     for lane in EXPECTED_LANES:   # a lane with no log line at all is reported, never silently absent
         report.setdefault(lane, {})
     joined = bool(args.dsn)
@@ -233,7 +240,8 @@ def main(argv: Optional[list[str]] = None) -> int:
                   "refused_from": dict(d.refused_from),
                   "unmatched_leases": d.unmatched_leases, "gateway_calls": d.gateway_calls}
             for day, d in sorted(days.items())}} for lane, days in report.items()},
-            "unreadable_lines": bad_lines, "lease_join": joined}, indent=1))
+            "unreadable_lines": bad_lines, "pre_revision_lines": counts.get("pre_revision", 0),
+            "lease_join": joined}, indent=1))
         return 0
     if not report:
         print("no lane door log lines read")
@@ -241,6 +249,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         print(render(report, verdicts, joined))
     if bad_lines:
         print(f"({bad_lines} unreadable lines skipped)")
+    if counts.get("pre_revision"):
+        print(f"({counts['pre_revision']} lines from the first, keyed door build skipped: not evidence either way)")
     return 0
 
 

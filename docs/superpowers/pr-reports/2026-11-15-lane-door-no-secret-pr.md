@@ -12,7 +12,7 @@
   `gpu_pool_events`.
 - Deploying the doors needs no runbook steps. circe's post-pull rebuild now starts the four circe doors.
   On the first deploy only, it also moves the running chat, agent and fast engines from their public lane
-  ports to loopback. hecate's `hecate-deep.sh up` starts the agent-deep door with its engine.
+  ports to loopback. hecate's `hecate-deep.sh up` starts the agent-deep door, then its engine.
 - A door takes its lane port only once its engine answers on loopback. So a door never steals a port an
   engine still publishes, and the deploy order does not matter.
 - Doors ship ON in shadow mode. On a redeploy, a door lets calls in flight finish (up to 100 s) before it
@@ -100,10 +100,11 @@ published their own ports.
 ## Tests run
 
 ```text
-services/orion-lane-door: pytest tests -q                        -> 39 passed
+services/orion-lane-door: pytest tests -q                        -> 45 passed
 services/orion-llm-gateway: pytest tests -q                      -> 558 passed
 tests/test_lane_door_report.py tests/test_lane_door_exempt_parity.py tests/test_gpu_power_bench.py
-  tests/scripts/test_host_allowlist_buildable.py                 -> 68 passed
+  tests/scripts/test_host_allowlist_buildable.py tests/test_compose_logging_journald.py -> 70 passed
+scripts/check_env_template_parity.py                             -> ok
 orion-static-gates.yml run steps, locally                        -> 40/40 passed
 scripts/rebuild_affected_services.py --base origin/main --host circe  -> orion-lane-door build (only)
 scripts/rebuild_affected_services.py --base origin/main --host athena -> orion-llm-gateway build (only)
@@ -133,7 +134,34 @@ circe (read-only): `config --format json` with ATLAS_CHAT_ENGINE_PUBLISH=127.0.0
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Code review ran in a subagent. It found nothing material (key fully removed; real pool lease ids are
+`uuid4().hex`, which the door reads as `leased`; the dual-stack bind retry, the drain, the deep.yml
+`!override`, the compose project label and the port gate coverage all check out). Minor findings, all fixed:
+
+- Finding: the docs said agent-gpu2's door "waits while the seat is unloaded". In fact it holds 8016 after
+  its first bind and answers 502. Also, the seat is standby warm, so its first move can take days.
+  - Fix: compose comment, README and runbook corrected.
+  - Evidence: `services/orion-lane-door/docker-compose.yml`, runbook step 4.
+- Finding: the engine-move hook was silent when no atlas-workers engines were found (doors would wait forever, deploy green).
+  - Fix: prints a WARNING line.
+  - Evidence: `test_no_engines_under_the_project_is_a_loud_warning_not_silence`.
+- Finding: no end-to-end `serve()` test, and the dual-stack default was never exercised.
+  - Fix: added `test_serve_on_sigterm_stops_listening_and_lets_the_call_in_flight_finish` and `test_take_port_on_every_interface_answers_ipv4_and_ipv6`.
+  - Evidence: 45 passed.
+- Finding: the door handling in hecate-deep.sh was untested and had no CI trigger. A foreground `up` would start the door only after Ctrl-C.
+  - Fix: the door now starts BEFORE the engine (safe, because it waits for the engine on loopback). Added
+    `tests/test_hecate_deep_script.py` (stubbed commands, asserts call order and `.env` creation). Added the script to the CI paths.
+  - Evidence: 3 tests pass.
+- Finding: stale "lane door: 127.0.0.1:18021" comments on hecate compose files the door does not front.
+  - Fix: reworded to "public; stop the door first".
+- Finding: the llamacpp-host `.env_example` had lost the chat/fast/agent `*_ENGINE_PUBLISH` lines its comment refers to.
+  - Fix: restored them as empty lines (empty = loopback default).
+- Finding: rows from the old keyed door read as "unreadable".
+  - Fix: counted apart as pre-revision lines and printed as such.
+  - Evidence: `test_lease_ids_are_collected_and_rows_from_the_old_keyed_door_are_counted_apart`.
+- Not changed (accepted trade-off, documented): a door redeploy closes all four listeners at once and
+  drains for up to 100 s, so new calls are refused at connect for that window. `LANE_DOOR_DRAIN_SEC` can
+  shorten it.
 
 ## Restart required
 

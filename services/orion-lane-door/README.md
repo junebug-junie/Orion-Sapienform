@@ -39,13 +39,15 @@ healthy while it waits. So:
 - the door never takes a port that an engine still publishes (an engine not moved yet, or restarting
   after a crash, keeps its port);
 - the deploy order does not matter;
-- agent-gpu2's door waits while the pool has that seat unloaded, and takes 8016 at the next load.
+- agent-gpu2's door waits until the pool next loads that seat (its old engine keeps 8016 until then; the
+  seat is standby warm, so that can be days). After it takes 8016 it keeps it and answers 502 while the seat
+  is unloaded; the pool sees the seat down either way.
 
 Deploy is automatic. On circe, the post-pull rebuild starts the four circe doors (`include_services_circe.txt`).
 `scripts/pre_rebuild.sh` creates `.env` from `.env_example` if it is missing. `scripts/post_rebuild.sh`
 runs `scripts/move_engines_behind_doors.py`. That recreates each running chat/agent/fast engine still on its
 public lane port, so it comes back on loopback. Each later deploy is a no-op for the engines. On hecate,
-`services/orion-vllm-host/scripts/hecate-deep.sh up` starts the agent-deep door after the engine, and
+`services/orion-vllm-host/scripts/hecate-deep.sh up` starts the agent-deep door, then the engine (the door waits for it), and
 `stop`/`down` stops it first.
 
 On a stop (a door redeploy) the door stops taking new calls and lets calls in flight finish, up to

@@ -622,3 +622,74 @@ def test_health_is_ok_while_waiting_and_needs_the_stats_once_listening(tmp_path,
     assert health.main() == 0
     state.write_text("listening\n")
     assert health.main() == 1          # nothing answers /door/stats on that port
+
+
+def test_take_port_on_every_interface_answers_ipv4_and_ipv6(tmp_path):
+    """The production default (listen_host "") binds IPv4 and IPv6, as docker's publishing did."""
+    import socket
+
+    if not socket.has_ipv6:
+        pytest.skip("no IPv6")
+    try:
+        with socket.socket(socket.AF_INET6) as s6:
+            s6.bind(("::1", 0))
+    except OSError:
+        pytest.skip("no IPv6 loopback")
+
+    async def go():
+        engine = Engine()
+        engine_port = await engine.start()
+        lane_port = _free_port()
+        settings = Settings(lane="chat", upstream_host="127.0.0.1", upstream_port=engine_port, listen_host="",
+                            listen_port=lane_port, log_dir=str(tmp_path / "logs"), bind_poll_sec=0.05)
+        server = await asyncio.wait_for(take_port(Door(settings), settings), 3.0)
+        codes = []
+        for host in ("127.0.0.1", "[::1]"):
+            async with httpx.AsyncClient(base_url=f"http://{host}:{lane_port}") as c:
+                codes.append((await c.get("/health")).status_code)
+        server.close()
+        return codes
+
+    assert run(go()) == [200, 200]
+
+
+def test_serve_on_sigterm_stops_listening_and_lets_the_call_in_flight_finish(tmp_path, capsys):
+    """A door redeploy (SIGTERM) must not cut a Hub chat turn's stream; new calls are refused."""
+    import os
+    import signal
+
+    from app.door import serve
+
+    async def go():
+        engine = Engine()
+        engine_port = await engine.start()
+        lane_port = _free_port()
+        settings = Settings(lane="chat", upstream_host="127.0.0.1", upstream_port=engine_port,
+                            listen_host="127.0.0.1", listen_port=lane_port, log_dir=str(tmp_path / "logs"),
+                            bind_poll_sec=0.05, drain_sec=10.0)
+        served = asyncio.ensure_future(serve(settings))
+        for _ in range(100):
+            if await _connects(lane_port):
+                break
+            await asyncio.sleep(0.05)
+        chunks = []
+
+        async def stream():
+            async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{lane_port}", timeout=10) as c:
+                async with c.stream("POST", "/v1/stream-slow", json={}, headers=LEASE) as r:
+                    async for chunk in r.aiter_text():
+                        chunks.append(chunk)
+
+        call = asyncio.ensure_future(stream())
+        await asyncio.sleep(0.5)                     # the stream is running (20 chunks, 0.2 s apart)
+        os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(0.3)
+        refused_new = not await _connects(lane_port)
+        await asyncio.wait_for(call, 10.0)
+        await asyncio.wait_for(served, 10.0)
+        return refused_new, "".join(chunks)
+
+    refused_new, text = run(go())
+    assert refused_new
+    assert text.count("data:") == 20                  # the stream finished, not cut
+    assert "lane_door_stop lane=chat cut_in_flight=0" in capsys.readouterr().out

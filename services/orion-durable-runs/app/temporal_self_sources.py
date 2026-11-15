@@ -19,8 +19,10 @@ Rows that change after insert (stated, so a live/replay difference is never a su
   ``temporal_self_event``, counted, never folded.
 * ``attention_salience_trace``'s ``chat_turn`` EXISTS becomes true when sql-writer lands the chat
   row: up to 141 s after the trace (live, 7 days to 10-10). The read lag covers it.
-* ``episode_memory`` rows are written a median 13 h after ``occurred_at`` (live 10-10), so live
-  they arrive late by construction and are counted, never bound. A replay binds them.
+* ``episode_memory`` rows are written 0.5 to 97 h after ``occurred_at`` (live 11-05 to 11-13). They
+  are read by ``created_at``, the write time, and fold in the window they land in (#3400); the
+  reducer still binds each by ``occurred_at``. Read by ``occurred_at`` they were always late:
+  counted, never bound.
 * ``vision_presence_transition`` ``unknown`` rows are written ~120 s (the producer's
   ``STALE_AFTER_MS``) after their ``occurred_at`` (the last observation); inside the 300 s read lag.
 """
@@ -175,9 +177,10 @@ FROM vision_events
 WHERE created_at >= %(lo)s AND created_at < %(hi)s
   AND jsonb_typeof(entities::jsonb) = 'array' AND jsonb_array_length(entities::jsonb) > 0
 """),
+    # Read by write time (idx_episode_memory_created): available at created_at, so no slack.
     SourceQuery("memory_episode", """
-SELECT memory_id::text AS memory_id, episode_id, purpose, occurred_at
-FROM episode_memory WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s
+SELECT memory_id::text AS memory_id, episode_id, purpose, occurred_at, created_at
+FROM episode_memory WHERE created_at >= %(lo)s AND created_at < %(hi)s AND occurred_at IS NOT NULL
 """),
     # Seam S1. The label column is selected only where identity was confirmed; the adapter
     # enforces the same rule again.

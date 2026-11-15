@@ -29,6 +29,8 @@ report (docs/superpowers/pr-reports/2026-10-10-temporal-self-chronology-reducer-
 from __future__ import annotations
 
 import hashlib
+import statistics
+from bisect import insort
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Iterable, Sequence
@@ -57,6 +59,12 @@ INTERRUPTIONS_CAP = 64
 DAY_LIST_CAP = 256
 CORRELATION_CAP = 256
 TICK_REFS_CAP = 64
+# The gap bar follows the broadcast's own pace (#3400): the newest intervals the bar is read from
+# (31 is about an hour at the live 137 s), and how many are needed before they are used. Two,
+# because an attention arc needs arc_min_ticks (3) ticks to open: after a cold start the pace is
+# known by the time there is an arc a gap could suspend.
+TICK_INTERVALS_CAP = 31
+TICK_INTERVALS_MIN = 2
 
 # Lanes whose open arc is exclusive: a new subject suspends the current one (rule 3).
 EXCLUSIVE_LANES = ("attention", "interoception", "conversation")
@@ -84,9 +92,14 @@ class ReducerConfig:
     arc_min_ticks: int = 3
     # R: a suspended arc may resume within this window, else it closes. 30 min, measured.
     return_window_sec: float = 1800.0
-    # A broadcast gap longer than this is a recorder outage/restart, not attention.
-    # Live 7-day tick gaps: median 37 s, p99 64 s.
+    # The gap bar: two broadcast rows further apart than this are a hole in the log, not attention.
+    # The bar is tick_gap_median_factor times the median of the newest tick intervals
+    # (``tick_gap_sec``), and never below max_tick_gap_sec, which also stands in until
+    # TICK_INTERVALS_MIN intervals were seen. A fixed 180 s was set when the broadcast ticked at a
+    # median 37 s (p99 64 s, 10-10). It ticks at a median 137 s now (p99 213 s, 11-14), so ordinary
+    # jitter crossed 180 s 83 times that day and each crossing suspended the active arc (#3400).
     max_tick_gap_sec: float = 180.0
+    tick_gap_median_factor: float = 3.0
     # Same bar the dream service uses for "Juniper has been quiet" (DREAM_IDLE_MINUTES=45).
     conversation_idle_sec: float = 2700.0
     # A conversation suspends after 45 min idle, so its return window must be longer than
@@ -191,6 +204,14 @@ def _return_window(kind: str, cfg: "ReducerConfig") -> float:
     return cfg.conversation_return_window_sec if kind == "conversation" else cfg.return_window_sec
 
 
+def tick_gap_sec(state: TemporalSelfStateV1, cfg: "ReducerConfig") -> float:
+    """How far apart two broadcast rows may be before the stretch between them is a gap."""
+    recent = state.tick_recent_intervals_sec
+    if len(recent) < TICK_INTERVALS_MIN:
+        return cfg.max_tick_gap_sec
+    return max(cfg.max_tick_gap_sec, cfg.tick_gap_median_factor * statistics.median(recent))
+
+
 def _add_capped(items: list[str], value: str, cap: int) -> bool:
     """Append if new and under cap. Returns False when the cap dropped it."""
     if value in items:
@@ -220,9 +241,11 @@ def _add_context(arc: TemporalSelfArcV1, event_id: str) -> None:
 
 
 # Kinds whose row is written well after it ends: the adapter puts the write time in
-# ``payload.available_at``. Street stories (median 49 s, p99 20 min on 10-23) and office sessions
-# (final VISION_OFFICE_SESSIONS_SETTLE_SEC, 660 s, after the visit ended).
-AVAILABLE_AT_KINDS = frozenset({"street_event", "office_session"})
+# ``payload.available_at``. Street stories (median 49 s, p99 20 min on 10-23), office sessions
+# (final VISION_OFFICE_SESSIONS_SETTLE_SEC, 660 s, after the visit ended) and episode memories
+# (distilled 0.5 to 97 h after the moment they are about, 11-05 to 11-13; #3400). A memory is
+# ordered by when it was written and still binds by ``occurred_at``, the moment it is about.
+AVAILABLE_AT_KINDS = frozenset({"street_event", "office_session", "memory_episode"})
 
 
 def event_available_at(e: TemporalSelfEventV1) -> datetime:
@@ -253,7 +276,7 @@ def _ref(e: TemporalSelfEventV1) -> str:
 
 
 def _suspend(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, by: str | None, *, gap: bool = False) -> None:
-    """``gap`` marks a broadcast-recorder outage: coming back from it is not a return."""
+    """``gap`` marks a hole in the broadcast log (``tick_gap_sec``): coming back from it is not a return."""
     if arc.status != "open":
         return
     arc.status = "suspended"
@@ -381,10 +404,10 @@ def _extend(arc: TemporalSelfArcV1, now: datetime, ref: str | None, *, accrue: b
 _FORWARD_KINDS = {"attention", "conversation"}
 
 
-def _forward_reach(arc: TemporalSelfArcV1, cfg: "ReducerConfig") -> float:
-    # How far past its last observation an open arc still covers time. Bounded so that an
-    # outage never binds context to an arc nobody observed, however late it is noticed.
-    return cfg.max_tick_gap_sec if arc.kind == "attention" else cfg.conversation_idle_sec
+def _forward_reach(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, cfg: "ReducerConfig") -> float:
+    # How far past its last observation an open arc still covers time. Bounded so that a hole in
+    # the log never binds context to an arc nobody observed, however late it is noticed.
+    return tick_gap_sec(state, cfg) if arc.kind == "attention" else cfg.conversation_idle_sec
 
 
 # Arcs that are threads or facts about the room, not stretches of Orion's own process: nothing
@@ -399,7 +422,7 @@ def _covers(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, at: datetime, cf
         return False
     if (
         arc.status == "open" and arc.kind in _FORWARD_KINDS and arc.segments
-        and at >= arc.segments[-1].began_at and _secs(arc.last_seen_at, at) <= _forward_reach(arc, cfg)
+        and at >= arc.segments[-1].began_at and _secs(arc.last_seen_at, at) <= _forward_reach(state, arc, cfg)
         # An attention arc reaches forward only while its subject won the latest tick. Once
         # another subject (or none) wins, those minutes belong to whoever opens next, so the
         # same context is never credited to two attention arcs.
@@ -471,19 +494,23 @@ def _retro_bind(state: TemporalSelfStateV1, arc: TemporalSelfArcV1, began: datet
 _DAY_CONTEXT_KINDS = {"metacog_observation", "memory_episode", "chat_turn"}
 
 
-def _flush_buffer(state: TemporalSelfStateV1, before: datetime | None) -> None:
+def _flush_buffer(state: TemporalSelfStateV1, before: datetime | None, cfg: "ReducerConfig") -> None:
     """Drop buffered items older than ``before`` (all when None). Context events that no arc
     took land in the day-level context list (rule 7: "or in the day when none is open")."""
-    # Context items carry no ended_at, so they arrive (and sit) in occurred_at order: if the
-    # oldest is still inside the horizon, nothing is due.
+    # The buffer is kept in occurred_at order (``_buffer``): if the oldest is still inside the
+    # horizon, nothing is due.
     if before is not None and (not state.context_buffer or state.context_buffer[0].at >= before):
         return
+    # An episode memory that lands today about an earlier day is not part of today: it stays an
+    # event row, in no arc and not in today's list (that day is closed and is not rewritten).
+    day_start = day_window(state.day_id, cfg.tz_name)[0] if state.day_id else None
     keep: list[TemporalSelfContextItemV1] = []
     for item in state.context_buffer:
         if before is not None and item.at >= before:
             keep.append(item)
             continue
-        if item.source_kind in _DAY_CONTEXT_KINDS and not item.bound_arc_ids:
+        if (item.source_kind in _DAY_CONTEXT_KINDS and not item.bound_arc_ids
+                and (day_start is None or item.at >= day_start)):
             _add_day_context(state, item.event_id)
     state.context_buffer = keep
 
@@ -507,13 +534,19 @@ def _fold_tick(state: TemporalSelfStateV1, tick: BroadcastTickView, cfg: Reducer
     t = tick.generated_at
     log_ref = f"substrate_attention_broadcast_log:{tick.log_id}"
     active = state.arcs.get(state.active.get("attention", ""))
-    if state.tick_prev_at is not None and _secs(state.tick_prev_at, t) > cfg.max_tick_gap_sec:
-        state.tick_source_gaps_today += 1
-        if active is not None:
-            _suspend(state, active, by=None, gap=True)
-            active = None
-        _reset_candidate(state)
-        state.tick_prev_ref = None
+    if state.tick_prev_at is not None:
+        interval = _secs(state.tick_prev_at, t)
+        # Judged against the pace seen BEFORE this interval, which then joins the window. A real
+        # hole joins it too: a median ignores a few, and leaving them out would make every
+        # interval a gap for good after a lasting change of pace.
+        if interval > tick_gap_sec(state, cfg):
+            state.tick_source_gaps_today += 1
+            if active is not None:
+                _suspend(state, active, by=None, gap=True)
+                active = None
+            _reset_candidate(state)
+            state.tick_prev_ref = None
+        state.tick_recent_intervals_sec = [*state.tick_recent_intervals_sec, round(interval, 3)][-TICK_INTERVALS_CAP:]
     state.tick_count_today += 1
     if tick.ref is not None:
         state.tick_winner_count_today += 1
@@ -1121,7 +1154,9 @@ def _buffer(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConf
         entities=list(e.payload.get("entities") or []), constraint=e.source_kind in CONSTRAINT_KINDS,
     )
     _bind_new_item(state, item, cfg)
-    state.context_buffer.append(item)
+    # Kept in ``at`` order (``_flush_buffer`` reads the oldest first). An episode memory is folded
+    # when it lands, hours after the moment it is about, so it does not always go last.
+    insort(state.context_buffer, item, key=lambda i: i.at)
 
 
 def _fold_event(state: TemporalSelfStateV1, e: TemporalSelfEventV1, cfg: ReducerConfig) -> None:
@@ -1167,7 +1202,7 @@ def _expire(state: TemporalSelfStateV1, at: datetime, cfg: ReducerConfig) -> Non
     """Time-driven transitions, applied identically by ``fold`` (at each item), by
     ``advance_clock`` and at midnight, so where a chunk boundary falls never matters."""
     active = state.arcs.get(state.active.get("attention", ""))
-    if active is not None and state.tick_prev_at is not None and _secs(state.tick_prev_at, at) > cfg.max_tick_gap_sec:
+    if active is not None and state.tick_prev_at is not None and _secs(state.tick_prev_at, at) > tick_gap_sec(state, cfg):
         _suspend(state, active, by=None, gap=True)  # the broadcast log went silent
     for arc in state.arcs.values():
         if arc.status == "closed":
@@ -1195,7 +1230,7 @@ def _roll_day(state: TemporalSelfStateV1, cfg: ReducerConfig) -> None:
     carried: list[str] = []
     continuations: list[TemporalSelfArcV1] = []
     next_day = day_id_for(day_end, cfg.tz_name)
-    _flush_buffer(state, before=None)
+    _flush_buffer(state, before=None, cfg=cfg)
     # The final frame is the day as of the instant before midnight: what was active then.
     frame = build_frame(state, day_end, cfg)
     for arc in list(state.arcs.values()):
@@ -1338,7 +1373,7 @@ def fold(
             continue
         _roll_to(s, at, cfg)
         _expire(s, at, cfg)
-        _flush_buffer(s, before=at - timedelta(seconds=cfg.context_buffer_sec))
+        _flush_buffer(s, before=at - timedelta(seconds=cfg.context_buffer_sec), cfg=cfg)
         if isinstance(item, BroadcastTickView):
             _fold_tick(s, item, cfg)
             s.cursors["broadcast_tick"] = f"{key[0]}|{item.log_id}"
@@ -1362,7 +1397,7 @@ def advance_clock(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig 
         return s
     _roll_to(s, now, cfg)
     _expire(s, now, cfg)
-    _flush_buffer(s, before=now - timedelta(seconds=cfg.context_buffer_sec))
+    _flush_buffer(s, before=now - timedelta(seconds=cfg.context_buffer_sec), cfg=cfg)
     s.watermark = now
     # Strictly before now is in the past; an item stamped exactly ``now`` may still arrive
     # (rank "" sorts before every real rank). Never move the key backwards: an item already

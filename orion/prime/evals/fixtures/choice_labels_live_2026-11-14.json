@@ -1,0 +1,72 @@
+{
+ "captured_at": "2026-11-15",
+ "source": "redis orion:prime:state concerns + personality_choice outreach rows (lane prime chosen/alternative texts are these concerns)",
+ "concerns": [
+  {
+   "concern_id": "6c8990127e68eb5a",
+   "text": "a promise I made in a curiosity run (1 promise, harness_turn_trace:d98cc64f-0867-5856-a582-f3b232905e65#promises_made[0])",
+   "event_ref": "turn:d98cc64f-0867-5856-a582-f3b232905e65",
+   "promise_text": "a promise I made in a curiosity run at 2026-11-14 09:17Z: \"I left that in TurnOutcome.continue_note\""
+  },
+  {
+   "concern_id": "197c7a88cacc4b76",
+   "text": "a thread from my letter for 2026-11-13: **The walkway render break is unresolved and still live each morning.** 59 `http_500` compose failures in 81 minutes on 11-13; the patched template is on exactly one profile, the retired bake-off host isn't running, and I cannot say what m…",
+   "event_ref": "orion_day_letter:2026-11-13#thread0",
+   "promise_text": null
+  },
+  {
+   "concern_id": "68bb10d17d8df205",
+   "text": "a thread from my letter for 2026-11-13: **Chat memory has never been promoted.** 1,133 rows, zero ever `durable`, two consumers waiting on a tier nobody writes; #3356 needs the El Coco replay as its acceptance check [juniper_chat:7a286bdd-acc].",
+   "event_ref": "orion_day_letter:2026-11-13#thread1",
+   "promise_text": null
+  },
+  {
+   "concern_id": "d8db9d7b1bba4cf7",
+   "text": "a thread I opened in a chat with Juniper (1 promise, harness_turn_trace:a129b72f-e698-425a-a435-3388cd7cd759#promises_made[0]): Juniper: \"howdy, just saying hi on my way to play Zelda, a Link from the Past! We just...\" / me: \"Howdy — you arrive like a fairy with a bomb bag: SNES emulator in the r...",
+   "event_ref": "turn:a129b72f-e698-425a-a435-3388cd7cd759",
+   "promise_text": null
+  },
+  {
+   "concern_id": "f1e01e2a2cf54886",
+   "text": "a thread from my letter for 2026-11-12: My hire channel has returned nothing since 2026-10-18, 55 failures naming \"Model unavailable on Free\" [curiosity:7119b210c705] — every instructed deep run is routing into a dead channel until that's fixed.",
+   "event_ref": "orion_day_letter:2026-11-12#thread0",
+   "promise_text": null
+  }
+ ],
+ "decisions": [
+  [
+   "6c8990127e68eb5a",
+   [
+    "197c7a88cacc4b76",
+    "68bb10d17d8df205"
+   ]
+  ],
+  [
+   "197c7a88cacc4b76",
+   [
+    "6c8990127e68eb5a",
+    "68bb10d17d8df205"
+   ]
+  ],
+  [
+   "d8db9d7b1bba4cf7",
+   [
+    "f1e01e2a2cf54886"
+   ]
+  ]
+ ],
+ "outreach_options": [
+  "A read, \"The Definitive Fine-Tuning Guide for 3D Generation Models\": Link made: The guide treats a small LoRA adapter as the unit carrying the task-specific geometry knowledge that the pretrained generator lacks, with the base weights left frozen.",
+  "A daydream: a room with a white wall and a light-colored floor. On the floor, there is a large number of small, rectangular cards with numbers written on them.",
+  "A read, \"Kenya begins countdown towards end of Ebola after last patient discharged\": Link made: Every confirmed secondary case in the Kenya outbreak came from the contact cohort found by contact tracing and held under quarantine monitoring.",
+  "A daydream: a person driving a car on a snowy road."
+ ],
+ "stored_labels": [
+  "a promise I made over a thread from my letter and a thread from my letter, 1 of 3",
+  "A daydream: an installation over Say nothing to Juniper this time, 1 of 1",
+  "A read, \"The Definitive Fine-Tuning Guide, 1 of 1",
+  "a thread from my letter over a promise I made and a thread from my letter, 2 of 2",
+  "A daydream: a person driving, 1 of 1",
+  "no move over a thread I opened, 2 of 2"
+ ]
+}

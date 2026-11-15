@@ -382,3 +382,61 @@ def test_a_yes_revives_only_a_node_retired_before_it():
     retired_by_her = node(disposition_id="d", status="retired", retired_at=t_yes - timedelta(days=1), updated_at=NOW)
     (out,) = apply_fade([retired_by_her], now=NOW, juniper={"d": (g.JUNIPER_YES, t_yes)}).nodes
     assert out.status in ("candidate", "active")
+
+
+# --- subject-first labels (live 2026-11-14) ---------------------------------------------------------------
+LIVE_LETTER = ("a thread from my letter for 2026-11-13: **The walkway render break is unresolved and still live "
+               "each morning.** 59 `http_500` compose failures in 81 minutes on 11-13")
+LIVE_PROMISE = ("a promise I made in a curiosity run (1 promise, "
+                "harness_turn_trace:d98cc64f-0867-5856-a582-f3b232905e65#promises_made[0])")
+LIVE_READ = ('A read, "The Definitive Fine-Tuning Guide for 3D Generation Models": Link made: The guide treats a '
+             'small LoRA adapter as the unit carrying the task-specific geometry knowledge')
+LIVE_DAYDREAM = "A daydream: a room with a white wall and a light-colored floor."
+
+
+def test_gist_drops_a_leading_category_phrase():
+    from orion.personality.graph import gist
+    assert gist(LIVE_LETTER) == "The walkway render break is unresolved"
+    assert gist(LIVE_READ) == "The Definitive Fine-Tuning Guide for 3D"
+    assert gist(LIVE_DAYDREAM) == "a room with a white wall"
+    # Only the category is left: the plain words stay rather than an empty label.
+    assert gist(LIVE_PROMISE) == "a promise I made"
+
+
+def test_gist_of_subject_first_prime_text_is_the_subject():
+    from orion.personality.graph import gist
+    assert gist("I left that in TurnOutcome.continue_note — a promise I made in a curiosity run, 11-14") \
+        == "I left that in TurnOutcome.continue_note"
+    assert gist('Reply to Juniper\'s "howdy, just saying hi on my way" — a promise I made to Juniper in chat') \
+        == "Reply to Juniper's howdy, just saying"
+
+
+def test_pair_label_names_subjects_not_categories():
+    from orion.personality.graph import pair_label
+    assert pair_label(LIVE_READ, [LIVE_DAYDREAM]) == "The Definitive Fine-Tuning Guide for 3D over a room with a white wall"
+
+
+def test_stored_category_labels_tidy_where_the_subject_is_still_there():
+    from orion.personality.graph import category_led, label_base
+    assert label_base('A read, "The Definitive Fine-Tuning Guide, 1 of 1') == "The Definitive Fine-Tuning Guide"
+    assert label_base("A daydream: an installation over Say nothing to Juniper this time, 1 of 1") \
+        == "an installation over Say nothing to Juniper this time"
+    old = "a thread from my letter over a promise I made and a thread from my letter"
+    assert label_base(old + ", 2 of 2") == old and category_led(old)  # nothing to recover from the label alone
+    assert label_base("turn start context is stale snapshot, 23 of 23") == "turn start context is stale snapshot"
+
+
+def test_category_only_label_gives_way_to_the_next_subject_even_if_less_similar():
+    # Live disp-fba9ebe96512f7f1: label_similarity ~1.0, so a closer choice could never replace it.
+    old = "a thread from my letter over a promise I made and a thread from my letter, 2 of 2"
+    n = node(label=old, label_similarity=0.9999)
+    res = fold([n], [ev(axis(0, 0.5), label="The walkway render break is unresolved over I left that")], now=NOW)
+    assert res.nodes[0].label == "The walkway render break is unresolved over I left that, 6 of 6"
+    # A subject label is not displaced by a less similar choice.
+    n = node(label_similarity=0.9999)
+    res = fold([n], [ev(axis(0, 0.5), label="further")], now=NOW)
+    assert res.nodes[0].label == "people over pipeline, 6 of 6"
+    # A category-only excerpt never displaces a category-only label by the stale rule.
+    n = node(label=old, label_similarity=0.9999)
+    res = fold([n], [ev(axis(0, 0.5), label="a promise I made over a thread from my letter")], now=NOW)
+    assert res.nodes[0].label == "a thread from my letter over a promise I made and a thread from my letter, 6 of 6"

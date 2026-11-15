@@ -265,3 +265,69 @@ def test_a_new_event_concern_records_its_wants_family_and_care_flag_and_saves_wi
                              occurred_at=NOW, families={}, care_promoted=set())
     assert choice.chosen.key == f"hub.world_pulse_read::{c.concern_id}" and choice.care_promoted is True
     assert [o.key for o in choice.alternatives] == ["c-b"]  # nothing recorded, not on the live list: plain id
+
+
+# --- option text: subject first (live 2026-11-14) ------------------------------------------------------------
+# Live concern texts from orion:prime:state and personality_choice (lane prime), 2026-11-14.
+LIVE_LETTER = ("a thread from my letter for 2026-11-13: **The walkway render break is unresolved and still live "
+               "each morning.** 59 `http_500` compose failures in 81 minutes on 11-13; the patched template is on "
+               "exactly one profile, the retired bake-off host isn't running, and I cannot say what m…")
+LIVE_LETTER_REF = ("a thread from my letter for 2026-11-13: **Chat memory has never been promoted.** 1,133 rows, "
+                   "zero ever `durable`, two consumers waiting on a tier nobody writes; #3356 needs the El Coco "
+                   "replay as its acceptance check [juniper_chat:7a286bdd-acc].")
+LIVE_PROMISE = ("a promise I made in a curiosity run (1 promise, "
+                "harness_turn_trace:d98cc64f-0867-5856-a582-f3b232905e65#promises_made[0])")
+LIVE_PROMISE_TEXT = 'a promise I made in a curiosity run at 2026-11-14 09:17Z: "I left that in TurnOutcome.continue_note"'
+LIVE_CHAT = ('a thread I opened in a chat with Juniper (1 promise, harness_turn_trace:a129b72f-e698-425a-a435-'
+             '3388cd7cd759#promises_made[0]): Juniper: "howdy, just saying hi on my way to play Zelda, a Link from '
+             'the Past! We just..." / me: "Howdy — you arrive like a fairy with a bomb bag"')
+
+
+def test_letter_thread_option_leads_with_its_subject_without_markdown_or_refs():
+    from orion.prime.choice import option_text
+    text = option_text(ShownConcern("c1", LIVE_LETTER, "orion_day_letter:2026-11-13#thread0"))
+    assert text.startswith("The walkway render break is unresolved and still live each morning — 59 http_500")
+    assert text.endswith("(a thread from my letter for 11-13)")
+    assert "**" not in text and "`" not in text
+    ref = option_text(ShownConcern("c2", LIVE_LETTER_REF, "orion_day_letter:2026-11-13#thread1"))
+    assert ref.startswith("Chat memory has never been promoted — 1,133 rows")
+    assert "juniper_chat:" not in ref and "[" not in ref
+
+
+def test_promise_option_says_what_was_promised_and_where_with_no_trace_ref():
+    from orion.prime.choice import option_text
+    text = option_text(ShownConcern("c3", LIVE_PROMISE, "turn:d98", promise_text=LIVE_PROMISE_TEXT))
+    assert text == "I left that in TurnOutcome.continue_note — a promise I made in a curiosity run, 11-14"
+    bare = option_text(ShownConcern("c3", LIVE_PROMISE, "turn:d98"))
+    assert bare == "An unquoted promise — a promise I made in a curiosity run"
+    assert "harness_turn_trace" not in bare
+
+
+def test_chat_promise_option_leads_with_the_reply_juniper_is_owed():
+    from orion.prime.choice import option_text
+    text = option_text(ShownConcern("c4", LIVE_CHAT, "turn:a12",
+                                    promise_text='a promise I made to Juniper in chat at 2026-11-12 18:02Z: '
+                                                 '"I will send you the save file tonight."'))
+    assert text.startswith('Reply to Juniper\'s "howdy, just saying hi on my way to play Zelda')
+    assert '— a promise I made to Juniper in chat, 11-12: "I will send you the save file tonight."' in text
+    assert "/ me:" not in text and "harness_turn_trace" not in text
+
+
+def test_choice_record_text_is_clean_but_prime_concern_text_is_untouched():
+    shown = shown_concerns([
+        PrimeConcernV1(concern_id="c1", text=LIVE_LETTER, event_ref="orion_day_letter:2026-11-13#thread0",
+                       opened_at=NOW, last_evidence_at=NOW),
+        PrimeConcernV1(concern_id="c3", text=LIVE_PROMISE, event_ref="turn:d98", promise_text=LIVE_PROMISE_TEXT,
+                       opened_at=NOW, last_evidence_at=NOW),
+    ])
+    assert shown[0].text == LIVE_LETTER and shown[1].promise_text == LIVE_PROMISE_TEXT
+    choice, _ = _choice({"pick": "c3"}, shown=shown)
+    assert choice.chosen.key == "c3"  # the ref lives on the key and the concern, not the text
+    assert choice.chosen.text.startswith("I left that in TurnOutcome.continue_note")
+    assert choice.alternatives[0].text.startswith("The walkway render break")
+    assert all(len(o.text) <= 400 for o in [choice.chosen, *choice.alternatives])
+
+
+def test_free_text_concern_keeps_its_words_minus_markup():
+    from orion.prime.choice import option_text
+    assert option_text(ShownConcern("c5", "**agent lane** congestion [thought:abc]")) == "agent lane congestion"

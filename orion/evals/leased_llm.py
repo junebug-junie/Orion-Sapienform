@@ -70,7 +70,8 @@ INFERENCE_PATHS = frozenset({"/v1/chat/completions", "/v1/messages"})
 # Reads a model server answers WITHOUT running the model (no slot, no generation). An eval may send
 # these to the URL the pool granted. The lane door (leased-evals Phase 2, in front of each model
 # server) lets exactly these through without a lane key, in every mode; its own list must match this.
-WORKER_READ_GET_PATHS = frozenset({"/health", "/props", "/slots", "/v1/models", "/models", "/metrics"})
+WORKER_READ_GET_PATHS = frozenset({"/health", "/props", "/slots", "/v1/models", "/models", "/metrics",
+                                   "/orion/server-info"})
 WORKER_READ_POST_PATHS = frozenset({"/tokenize", "/detokenize", "/apply-template"})
 
 

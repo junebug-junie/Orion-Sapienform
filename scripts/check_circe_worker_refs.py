@@ -77,6 +77,7 @@ ZONES: dict[str, str] = {
     "services/orion-llamacpp-host/*": "the llama.cpp workers themselves",
     "services/orion-llamacpp-bonsai-host/*": "the bonsai llama.cpp worker itself",
     "services/orion-diffusion-host/*": "the diffusion worker itself",
+    "services/orion-lane-door/*": "the lane door: the front door of each worker, it names the engines it fronts",
     # Operator tooling for the port gate itself: it must name the addresses it guards.
     "scripts/check_circe_worker_refs.py": "this gate (its docstring and ALLOW keys name the addresses)",
     "scripts/ops/circe_llm_port_gate.sh": "the circe firewall for the same ports (runbook 2026-10-01)",
@@ -101,7 +102,9 @@ DIRECT_CALLERS: dict[str, str] = {
         "the GPU power bench runs ON circe as root and needs llama.cpp's raw /completion timings, a pinned "
         "slot and an idle card: the gateway can give none of these. It keeps its interactive reservation "
         "(scripts/gpu_pool_clear_gpu2.py, started by hand like the Hub's experiment-seat button) and reads "
-        "the engine on circe's own loopback (127.0.0.1), never a tailnet address"
+        "the engine on circe's own loopback (127.0.0.1), never a tailnet address. With the lane door deployed "
+        "that is the engine's loopback port (127.0.0.1:18016 for agent-gpu2), behind no door; the bench refuses "
+        "a port that answers as a lane door"
     ),
 }
 
@@ -151,6 +154,7 @@ _WORKER_COMPOSE_FILES = (
     "services/orion-llamacpp-bonsai-host/docker-compose.yml",
     "services/orion-diffusion-host/docker-compose.yml",
     "services/orion-gpu-lane-controller/docker-compose.yml",
+    "services/orion-lane-door/docker-compose.yml",
 )
 
 # Default worker identity if config/gpu_pool.yaml is unreadable (keeps the gate fail-closed).

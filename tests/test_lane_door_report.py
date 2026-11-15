@@ -1,0 +1,101 @@
+"""scripts/lane_door_report.py: the evidence Juniper reads before a lane's door may refuse (Phase 3)."""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "scripts"))
+import lane_door_report as rep  # noqa: E402
+
+
+def _line(day: str, key: str = "ok", lane: str = "chat", lease: str | None = "L1", src: str = "100.92.216.81",
+          path: str = "/v1/chat/completions") -> str:
+    return json.dumps({"ts": f"{day}T12:00:00.000+00:00", "lane": lane, "src": src, "method": "POST", "path": path,
+                       "key": key, "lease_id": lease if key == "ok" else None, "status": 200, "ms": 3.0})
+
+
+def _days(start: int, n: int) -> list[str]:
+    return [f"2026-11-{d:02d}" for d in range(start, start + n)]
+
+
+def _verdict(lines, **kw):
+    report, _ = rep.aggregate(lines)
+    return rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=kw.pop("joined", False),
+                       today=kw.pop("today", "2026-11-22"))
+
+
+def test_seven_clean_days_without_the_lease_join_are_not_ready():
+    ok, why = _verdict([_line(d) for d in _days(15, 7)])
+    assert not ok and "lease join was not run" in why
+
+
+def test_one_unkeyed_call_in_the_window_is_not_ready_and_names_the_day():
+    lines = [_line(d) for d in _days(15, 7)] + [_line("2026-11-19", key="missing", src="100.92.216.81")]
+    ok, why = _verdict(lines)
+    assert not ok and why.startswith("2026-11-19") and "1 unkeyed" in why
+
+
+def test_a_missing_day_is_unknown_not_zero():
+    lines = [_line(d) for d in _days(15, 7) if d != "2026-11-18"]
+    ok, why = _verdict(lines)
+    assert not ok and "2026-11-18: no log" in why
+
+
+def test_today_is_partial_and_never_counts():
+    ok, _ = _verdict([_line(d) for d in _days(16, 7)], today="2026-11-22")   # 16..22, 22 is today
+    assert not ok
+
+
+def test_wrong_key_calls_block_like_unkeyed_ones():
+    lines = [_line(d) for d in _days(15, 7)] + [_line("2026-11-21", key="bad")]
+    assert not _verdict(lines)[0]
+
+
+def _ok_streak_joined():
+    report, _ = rep.aggregate([_line(d) for d in _days(15, 7)])
+    for d in report["chat"].values():
+        d.unmatched_leases, d.gateway_calls = 0, 1
+    return report
+
+
+def test_a_day_with_no_keyed_traffic_proves_nothing():
+    lines = [_line(d) for d in _days(15, 7) if d != "2026-11-20"] + [_line("2026-11-20", path="/x", key="ok", lane="fast")]
+    report, _ = rep.aggregate(lines)
+    report["chat"]["2026-11-20"] = rep.Day()
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=False, today="2026-11-22")
+    assert not ok and "no keyed calls" in why
+
+
+def test_joined_gaps_and_unmatched_leases_block():
+    report, _ = rep.aggregate([_line(d) for d in _days(15, 7)])
+    for d in report["chat"].values():
+        d.unmatched_leases, d.gateway_calls = 0, 1
+    assert rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")[0]
+    report["chat"]["2026-11-17"].gateway_calls = 3
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert not ok and "gateway sent 3" in why
+    report["chat"]["2026-11-17"].gateway_calls = 0
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert not ok and "recorded none" in why
+    report["chat"]["2026-11-17"].gateway_calls = 1
+    report["chat"]["2026-11-18"].unmatched_leases = 2
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert not ok and "no matching pool lease" in why
+
+
+def test_keyed_calls_without_a_lease_id_count_as_unmatched_after_the_join(monkeypatch):
+    report, _ = rep.aggregate([_line("2026-11-15", lease=None), _line("2026-11-15", lease="invalid")])
+    assert report["chat"]["2026-11-15"].no_lease_id == 2
+
+
+def test_render_names_who_sent_unkeyed_calls(capsys, tmp_path):
+    f = tmp_path / "chat-2026-11-15.jsonl"
+    f.write_text("\n".join([_line("2026-11-15"), _line("2026-11-15", key="missing", src="100.92.216.81",
+                                                         path="/v1/chat/completions"), "not json"]) + "\n")
+    assert rep.main([str(tmp_path), "--today", "2026-11-16"]) == 0
+    out = capsys.readouterr().out
+    assert "NOT READY" in out and "unkeyed x1: 100.92.216.81 POST /v1/chat/completions" in out
+    assert "1 unreadable lines skipped" in out
+    assert "== lane agent-gpu2: NOT READY" in out and "no log lines for this lane" in out

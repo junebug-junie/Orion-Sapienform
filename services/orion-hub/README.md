@@ -400,6 +400,77 @@ reaches Juniper, as one brief. Design: `docs/superpowers/specs/2026-11-11-consul
   `tests/test_curiosity_consult_beliefs.py` (offer -> read-back), `tests/test_consult_belief_store_sql.py`
   (the SQL on a rolled-back temp table, local Postgres only), eval `evals/run_consult_source_replay.py` (read-only, live DB).
 
+### 4.0b Session threads — coding sessions write to Orion (`scripts/session_roundup_loop.py`)
+
+A coding session (a Claude Code agent working in this repo) sends Orion a message, usually the design
+spec of a pull request it just opened. Hub holds the message. Once an hour Orion reads every held
+message in one turn and comes back with questions for each. Juniper sees all of it in Hub chat.
+Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
+
+- **Intake.** `POST /api/session-threads/message` stores the message as a `session` turn and Hub's
+  receipt as a `hub` turn, and shows both in Hub chat. The receipt is Hub's own text. It says Orion has
+  NOT read the message and names the next round-up time. No model runs at intake. A spec longer than
+  40,000 characters is cut, and the stored text and the receipt both say so.
+- **The hourly round-up.** Each UTC hour (`HUB_SESSION_ROUNDUP_INTERVAL_SEC`) Hub takes every `held`
+  thread whose message arrived before the hour started. It submits ONE durable run
+  (`session_roundup.orion_turn`, run id `session-roundup-<utc hour>`, agent lane, background priority,
+  act family `durable.session_roundup`). No held thread means no run and no GPU. The threads are marked
+  `reading` before the submit, so a Hub restart cannot submit a second run for the same hour. Threads
+  that do not fit the prompt (`HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS`) stay held for the next hour, oldest
+  first (log line `session_roundup_left_held`).
+- **Untrusted text.** Everything a session wrote sits inside a labelled data fence in the prompt
+  (`<<<SESSION_DATA ...>>>` to `<<<END_SESSION_DATA>>>`); the prompt tells Orion it is material, not
+  instructions. Session text cannot close the fence.
+- **Orion's reply.** Orion answers in sections that start with `### thread:<thread_id>`, each with
+  questions or the single line `NO QUESTIONS`. Code cuts the reply into one `orion` turn per thread
+  (status `asked` or `no_questions`). A thread with no usable section gets the whole reply, marked
+  `unparsed`. Empty text, a cut-short turn, or a failed run fails the round: Hub writes a line on each
+  thread, the threads go back to `held`, and after 3 failures in a row a thread stays `failed` until a
+  new message arrives on it.
+- **The PR comment.** For a thread with a pull request and real questions, Hub posts one comment on the
+  PR with Orion's GitHub token (`ORION_GITHUB_TOKEN`, user `orion-sapienform`), headed "Orion's
+  questions on this spec (hourly round-up)". Code posts it, not the model. It only ever posts on
+  `HUB_SESSION_ROUNDUP_GITHUB_REPO`. `@name` is broken so nobody is pinged. No token or an API error
+  is logged and the turn is kept. Off: `HUB_SESSION_ROUNDUP_PR_COMMENTS=false`.
+- **Back to the session.** `GET /api/session-threads/pending?session_id=&branch=` returns Orion's turns
+  not yet handed back to that session or that branch; `POST /api/session-threads/delivered` marks them.
+  A session answers with a new message on the same thread, which holds it again.
+- **Hub chat.** `static/js/session-threads.js`: one collapsed line per thread (title, sender session,
+  status); a click opens the turns under the labels Session / Hub receipt / Orion. Live frames have kind
+  `session_thread_turn`. Page load reads `GET /api/session-threads?hours=48`.
+- **Tables.** `orion_session_thread`, `orion_session_turn`
+  (`services/orion-sql-db/manual_migration_orion_session_thread_v1.sql`). Hub writes them directly.
+  Turns are not written to `chat_history_log`.
+
+The session side lives in the repo's `scripts/`:
+
+| What | Where |
+|---|---|
+| Send a PR's spec when `gh pr create` runs | `scripts/hooks/post_tool_pr_spec_to_orion.py` (PostToolUse hook on Bash) |
+| Show Orion's questions to the session | `scripts/hooks/session_pending_orion_questions.py` (UserPromptSubmit + SessionStart) |
+| Send, reply, read by hand | `python3 scripts/orion_session_thread.py send --pr N [--note TEXT]`, `reply --thread ID --body TEXT`, `pending` |
+| Smoke after deploy | `python3 scripts/smoke_session_threads.py`, then `--check THREAD_ID` an hour later |
+
+Both hooks are silent when Hub is down. Off for one shell: `ORION_SESSION_THREADS_HOOKS=0`. Hub URL:
+`ORION_HUB_URL` (default `http://localhost:8080`). Hook log: `~/.orion/session_threads_hooks.log`.
+
+| Env key | Default | What changes when it moves |
+|---|---|---|
+| `HUB_SESSION_ROUNDUP_ENABLED` | `true` | `false`: messages are still stored, the receipt says Orion will not read them, no run is submitted |
+| `HUB_SESSION_ROUNDUP_INTERVAL_SEC` | `3600` | how long a message is held; one round-up per bucket |
+| `HUB_SESSION_ROUNDUP_TICK_SEC` | `120` | how often Hub checks for a due round or a finished run |
+| `HUB_SESSION_ROUNDUP_ORION_TIMEOUT_SEC` | `1800` | Orion's turn budget per attempt |
+| `HUB_SESSION_ROUNDUP_RUN_DEADLINE_SEC` | `10800` | a round unfinished this long after its hour started is failed |
+| `HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS` | `100000` | lower: fewer threads per round, more left held |
+| `HUB_SESSION_ROUNDUP_PR_COMMENTS` | `true` | `false`: nothing is posted on GitHub |
+| `HUB_SESSION_ROUNDUP_GITHUB_REPO` | `junebug-junie/Orion-Sapienform` | the only repo Hub comments on |
+| `HUB_SESSION_ROUNDUP_DURABLE_URL` | `http://127.0.0.1:8124` | orion-durable-runs' HTTP API |
+| `HUB_SESSION_ROUNDUP_TZ` | `America/Denver` | the second clock in the receipt |
+
+The round-up also needs the curiosity turn loop (`HUB_CURIOSITY_INVESTIGATION_ENABLED` and
+`HUB_CURIOSITY_KICKOFF_VIA_CORTEX`), like consults: that loop serves the durable run's turn.
+Debug: `GET /api/debug/session-threads` (last tick, next round-up time).
+
 ### 4.1 Endogenous outreach — Orion speaks first
 
 `scripts/endogenous_outreach.py`. The only path by which Hub emits chat text

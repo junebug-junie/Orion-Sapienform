@@ -103,7 +103,7 @@ async def test_the_window_is_the_rows_own_times_not_the_ticks_clock(monkeypatch)
 async def test_the_verdict_time_is_taken_after_the_read(monkeypatch):
     """A slow read must not stamp the verdict before the evidence was read (clock after the read)."""
     t0 = _late_tick_start()
-    room = Room([(t0 + timedelta(seconds=60), "the door is closed")])
+    room = Room([])  # the no-caption path stamps the verdict with the one clock taken in the scorer
     seen: list[datetime] = []
     inner = room.between
 
@@ -115,7 +115,8 @@ async def test_the_verdict_time_is_taken_after_the_read(monkeypatch):
     room.between = slow
     reverie, cortex, persisted = _wire(monkeypatch, room, _pending(t0))
     await reverie._maybe_score_pending_expectation(AsyncMock(), cortex_client=cortex)
-    assert persisted and persisted[0][2] >= seen[0]
+    cortex.execute_plan.assert_not_awaited()
+    assert persisted and persisted[0][1] == "unscored" and persisted[0][2] >= seen[0]
 
 
 @pytest.mark.asyncio
@@ -224,5 +225,7 @@ def test_narrate_prompt_no_longer_asks_for_claims_the_room_camera_cannot_check()
     ctx = reverie.build_reverie_context(broadcast, recent_percepts=[{"narrative": "the door is closed", "age_sec": 40.0}])
     out = Environment(autoescape=False).from_string(_NARRATE_PROMPT.read_text(encoding="utf-8")).render(**ctx)
     assert "room camera will still show over the next 30 minutes" in " ".join(out.split())
+    from app.settings import settings as _s
+    assert ctx["expectation_window_minutes"] == round(_s.reverie_expectation_check_window_sec / 60)
     flat = " ".join(out.split())
     assert "not a temperature or other sensor reading" in flat and "leave it null" in flat

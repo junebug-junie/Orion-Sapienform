@@ -145,6 +145,31 @@ def test_context_inside_a_jitter_interval_binds_to_the_arc_that_held_it():
     assert arc.context_event_ids == ["metacog_observation:m1"]
 
 
+def test_the_bar_never_passes_the_return_window_however_slow_the_pace():
+    """A pace that keeps slowing must not raise the bar without limit (3 x 900 s would be 45 min)."""
+    s = fold(initial_state(), ticks_at([900.0] * 6), cfg=CFG)
+    assert tick_gap_sec(s, CFG) == CFG.return_window_sec == 1800.0
+
+
+def test_chunking_ticks_and_late_memories_together_does_not_change_the_state():
+    from orion.temporal_self.arcs import event_available_at
+
+    ticks = ticks_at(LIVE_INTERVALS * 4)
+    end = ticks[-1].generated_at
+    events = [S.memory_episode(memory_row(f"m{i}", T0 + timedelta(minutes=7 * i), T0 + timedelta(minutes=40 + 11 * i)))
+              for i in range(8)] + [metacog("mc", T0 + timedelta(minutes=33))]
+    assert all(event_available_at(e) < end for e in events)
+    whole = fold(initial_state(), ticks, events, CFG)
+    parts = initial_state()
+    for i in range(0, len(ticks), 5):
+        lo = ticks[i].generated_at
+        hi = ticks[i + 5].generated_at if i + 5 < len(ticks) else end + timedelta(seconds=1)
+        parts = fold(parts, ticks[i:i + 5], [e for e in events if lo <= event_available_at(e) < hi], CFG)
+    assert parts.model_dump_json() == whole.model_dump_json()
+    bound = {c for a in whole.arcs.values() for c in a.context_event_ids if c.startswith("memory_episode:")}
+    assert len(bound) == 8 and whole.skipped_today == 0
+
+
 def test_chunking_does_not_change_the_state():
     ticks = ticks_at(LIVE_INTERVALS * 4)
     whole = fold(initial_state(), ticks, cfg=CFG)
@@ -159,7 +184,8 @@ def test_the_gap_warning_does_not_claim_an_outage():
     before = ticks_at([137.0] * 8)
     s = fold(initial_state(), before + ticks_at([137.0], start=before[-1].generated_at + timedelta(minutes=20), prefix="M"), cfg=CFG)
     (line,) = [w for w in build_frame(s, T0 + timedelta(hours=1), CFG).warnings if "gap" in w]
-    assert line == "broadcast log gaps today: 1 (rows more than 3 times the usual interval apart; cause not recorded)"
+    assert line == ("broadcast log gaps today: 1 (rows more than 3 times the usual interval apart, "
+                    "and more than 180 s; cause not recorded)")
     assert "outage" not in line and "restart" not in line
 
 

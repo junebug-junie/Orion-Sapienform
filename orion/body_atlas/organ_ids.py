@@ -59,7 +59,11 @@ def load(path: Path) -> tuple[list[OrganIdV1], int]:
         return [], 0
     records, skipped = [], 0
     known = set(OrganIdV1.model_fields)
-    for ln in path.read_text(encoding="utf-8").splitlines():
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return [], 1
+    for ln in lines:
         if not ln.strip():
             continue
         try:
@@ -130,17 +134,25 @@ def append(path: Path, records: list[OrganIdV1]) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)  # concurrent turns: whole lines each
         fh.write("".join(r.model_dump_json() + "\n" for r in records))
 
 
 def carry(atlas: BodyAtlasV1, path: Path) -> BodyAtlasV1:
-    """The live body with its ledger ids, and the ledger brought up to date. A ledger that cannot be
-    written (a read-only home) still gives carried ids for this read; it only cannot learn from it."""
-    records, _ = load(path)
-    out, new = assign(atlas, records)
+    """The live body with its ledger ids, and the ledger brought up to date. Read, assign and
+    append run under one lock: two turns that see a new organ at the same moment, with members a
+    part apart, must not mint two ids for it (the second reads the first's line and carries it).
+    A ledger that cannot be locked or written (a read-only home) still gives carried ids for this
+    read; it only cannot learn from it."""
     try:
-        append(path, new)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        lock = (path.parent / f".{path.stem}.lock").open("a")
     except OSError:
-        pass
+        return assign(atlas, load(path)[0])[0]
+    with lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        out, new = assign(atlas, load(path)[0])
+        try:
+            append(path, new)
+        except OSError:
+            pass
     return out

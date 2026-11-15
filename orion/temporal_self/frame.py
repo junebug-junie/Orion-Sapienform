@@ -142,7 +142,8 @@ def _warnings(state: TemporalSelfStateV1, arcs: list[TemporalSelfArcV1], now: da
     if state.tick_source_gaps_today:
         # The log says only that rows were far apart, not why: no outage or restart is claimed (#3400).
         out.append(f"broadcast log gaps today: {state.tick_source_gaps_today} "
-                   f"(rows more than {cfg.tick_gap_median_factor:g} times the usual interval apart; cause not recorded)")
+                   f"(rows more than {cfg.tick_gap_median_factor:g} times the usual interval apart, "
+                   f"and more than {cfg.max_tick_gap_sec:g} s; cause not recorded)")
     if state.tick_prev_at is not None and (now - state.tick_prev_at).total_seconds() > tick_gap_sec(state, cfg):
         out.append(f"broadcast log silent for {int((now - state.tick_prev_at).total_seconds())} s")
     for a in arcs:

@@ -137,6 +137,47 @@ def test_a_name_stays_on_its_organ_by_id_once_ids_are_carried(tmp_path):
     assert rec.organ_id in change.organ and change.gained == ["part:orion-vision-ptz"]
 
 
+def test_a_name_stays_on_its_organ_while_the_organ_drifts_far_from_where_it_was_named(tmp_path):
+    """Review finding: the id was carried against the latest members but the name against the
+    members at naming time, so from 5 parts on (Jaccard 0.4) the organ kept its id and lost its
+    name. The same id is the same organ: the name stays."""
+    ledger = tmp_path / "organ_ids.jsonl"
+    day1 = _carry(_atlas(), ledger)
+    rec = names.check(day1, [], _organ(day1, "orion-vision-host").organ_id, "Eyes",
+                      "takes frames from orion-vision-edge, gives captions on", dig="t")
+    more = list(CATALOG)
+    for i in range(6):
+        more = more + [_ch(f"orion:vision:x{i}", [f"orion-vision-x{i}"], ["orion-vision-host"])]
+        eyes = _organ(names.apply_names(_carry(build_atlas(more, None, now=NOW), ledger), [rec]), "orion-vision-host")
+        assert eyes.organ_id == rec.organ_id and eyes.name == "Eyes" and eyes.named_by == "orion", i
+    named = names.apply_names(_carry(build_atlas(more, None, now=NOW), ledger), [rec])
+    assert [o.name for o in named.organs if o.name] == ["Eyes"]  # and on no other organ
+
+
+def test_read_assign_and_append_run_under_one_lock(tmp_path, monkeypatch):
+    """Two turns that see a new organ a part apart must not mint two ids: the ledger is read
+    inside the lock, so the second turn reads the first turn's line."""
+    import fcntl
+
+    ledger = tmp_path / "organ_ids.jsonl"
+    held: list[bool] = []
+    real_load = organ_ids.load
+
+    def load_and_probe(path):
+        with (tmp_path / ".organ_ids.lock").open("a") as probe:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held.append(False)
+            except BlockingIOError:
+                held.append(True)
+        return real_load(path)
+
+    monkeypatch.setattr(organ_ids, "load", load_and_probe)
+    a = _carry(_atlas(), ledger)
+    b = _carry(_atlas(CATALOG + PTZ), ledger)
+    assert held == [True, True] and _multi_ids(a) == _multi_ids(b)
+
+
 def test_an_unreadable_line_is_skipped_and_an_unwritable_ledger_still_gives_a_body(tmp_path):
     ledger = tmp_path / "organ_ids.jsonl"
     day1 = _carry(_atlas(), ledger)

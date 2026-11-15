@@ -88,7 +88,10 @@ def _overlap(organ_members: list[str], rec_members: list[str]) -> float:
 
 def _assign(atlas: BodyAtlasV1, records: list[OrganNameV1]) -> dict[str, tuple[OrganNameV1, float]]:
     """organ id -> (the record whose name it wears, overlap). The latest record per organ id wins;
-    a record a later rename replaced is dropped; then best overlap, newer on a tie, one-to-one."""
+    a record a later rename replaced is dropped. A record given to an organ id that is still in the
+    body stays on that organ, however far its members have drifted since (ids are carried,
+    ``organ_ids.py``: the same id is the same organ). The rest go by best overlap, newer on a tie,
+    one-to-one."""
     latest: dict[str, tuple[int, OrganNameV1]] = {}
     for i, rec in enumerate(records):
         latest[rec.organ_id] = (i, rec)
@@ -104,6 +107,12 @@ def _assign(atlas: BodyAtlasV1, records: list[OrganNameV1]) -> dict[str, tuple[O
     )
     out: dict[str, tuple[OrganNameV1, float]] = {}
     used: set[str] = set()
+    by_id = {rec.organ_id: rec for _, rec in live}
+    for organ in atlas.organs:
+        rec = by_id.get(organ.organ_id)
+        if rec is not None and len(organ.members) > 1:
+            used.add(rec.organ_id)
+            out[organ.organ_id] = (rec, _overlap(organ.members, rec.members))
     for overlap, _, organ, rec in pairs:
         if overlap < CARRY_MIN_OVERLAP or organ.organ_id in out or rec.organ_id in used:
             continue

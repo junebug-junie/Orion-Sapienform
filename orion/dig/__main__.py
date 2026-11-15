@@ -468,8 +468,9 @@ def cmd_history(start: date, end: date, out: Out) -> str:
 # --- body -----------------------------------------------------------------------------------
 
 def _live_atlas():
-    """The live body with ids that stay put when a part moves (the id ledger, #3402). Every
-    reader of the live body goes through here."""
+    """The live body with ids that stay put when a part moves (the id ledger, #3402). Every dig
+    command that reads the live body goes through here. The operator CLI (``python -m
+    orion.body_atlas``) does not: it prints member-hash ids, which are each organ's ``member_hash``."""
     from orion.body_atlas import organ_ids
 
     return organ_ids.carry(_build_live_atlas(), organ_ids_path())

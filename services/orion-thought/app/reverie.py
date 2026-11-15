@@ -533,6 +533,7 @@ def build_reverie_context(
         }
         if percepts:
             ctx["recent_percepts"] = percepts
+            ctx["expectation_window_minutes"] = _expectation_window_minutes()
         ctx.update(street)
         if recent_arcs:
             ctx["recent_arcs"] = recent_arcs
@@ -568,6 +569,7 @@ def build_reverie_context(
         }
     if percepts:
         ctx["recent_percepts"] = percepts
+        ctx["expectation_window_minutes"] = _expectation_window_minutes()
     ctx.update(street)
     if self_readings:
         # Self-calibration section C: body signals unusual for themselves (rendered, no LLM).
@@ -743,6 +745,11 @@ EXPECTATION_JUDGE_MAX_READ = 200
 EXPECTATION_JUDGE_MAX_LINES = 24
 EXPECTATION_JUDGE_MAX_CHARS = 3000
 EXPECTATION_JUDGE_CAPTION_CHARS = 240
+
+
+def _expectation_window_minutes() -> int:
+    """The check window in minutes, for both prompts (the narrate prompt states it, the judge reads it)."""
+    return max(1, round(float(settings.reverie_expectation_check_window_sec) / 60))
 
 
 def _offset(sec: float) -> str:
@@ -921,6 +928,10 @@ async def _maybe_score_pending_expectation(
                 "expectation scoring: percept fetch failed thought_id=%s err=%s", thought_id, exc
             )
             percepts = []
+    if len(percepts) >= EXPECTATION_JUDGE_MAX_READ:
+        # The read is oldest first, so the end of a window this busy was not read (live most: 47).
+        logger.warning("expectation scoring: window read hit its cap thought_id=%s cap=%d",
+                       thought_id, EXPECTATION_JUDGE_MAX_READ)
     window_text = render_window_captions(percepts, start=window_start) if percepts else ""
 
     # Taken after the reads: the time the verdict was reached, not the time the tick began.
@@ -944,7 +955,7 @@ async def _maybe_score_pending_expectation(
             expectation=expectation_text,
             percept_narrative=window_text,
             correlation_id=judge_correlation_id,
-            window_minutes=max(1, round(window_sec / 60)),
+            window_minutes=_expectation_window_minutes(),
         )
         exec_result = await judge_client.execute_plan(
             source=_source(),

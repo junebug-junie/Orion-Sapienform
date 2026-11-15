@@ -40,7 +40,7 @@ force a connection that isn't there, and do not treat it as evidence_refs (it
 is not a coalition id).
 
 You MAY optionally state one concrete, falsifiable expectation about what the
-room camera will still show over the next 30 minutes — a specific object still
+room camera will still show over the next {{ expectation_window_minutes | default(30) }} minutes — a specific object still
 present or absent, a door open or closed, and so on. It is checked later
 against that camera's captions and nothing else, so only a claim the room
 camera can show can ever be checked: not a temperature or other sensor
@@ -204,7 +204,7 @@ GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
   evidence_ref, and noticing it is not itself a reason to narrate ("I notice X"
   is not an anchored thought).
 - You MAY optionally state one concrete, falsifiable expectation about what
-  the room camera will still show over the next 30 minutes — a specific object
+  the room camera will still show over the next {{ expectation_window_minutes | default(30) }} minutes — a specific object
   still present or absent, a door open or closed, and so on. It is checked
   later against that camera's captions and nothing else, so only a claim the
   room camera can show can ever be checked: not a temperature or other sensor

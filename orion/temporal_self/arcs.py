@@ -94,7 +94,7 @@ class ReducerConfig:
     return_window_sec: float = 1800.0
     # The gap bar: two broadcast rows further apart than this are a hole in the log, not attention.
     # The bar is tick_gap_median_factor times the median of the newest tick intervals
-    # (``tick_gap_sec``), and never below max_tick_gap_sec, which also stands in until
+    # (``tick_gap_sec``), never above return_window_sec and never below max_tick_gap_sec, which also stands in until
     # TICK_INTERVALS_MIN intervals were seen. A fixed 180 s was set when the broadcast ticked at a
     # median 37 s (p99 64 s, 10-10). It ticks at a median 137 s now (p99 213 s, 11-14), so ordinary
     # jitter crossed 180 s 83 times that day and each crossing suspended the active arc (#3400).
@@ -209,7 +209,10 @@ def tick_gap_sec(state: TemporalSelfStateV1, cfg: "ReducerConfig") -> float:
     recent = state.tick_recent_intervals_sec
     if len(recent) < TICK_INTERVALS_MIN:
         return cfg.max_tick_gap_sec
-    return max(cfg.max_tick_gap_sec, cfg.tick_gap_median_factor * statistics.median(recent))
+    # Never above the return window: a pace that keeps slowing must not raise the bar for good,
+    # and a silence that long closes a suspended arc anyway.
+    return min(cfg.return_window_sec,
+               max(cfg.max_tick_gap_sec, cfg.tick_gap_median_factor * statistics.median(recent)))
 
 
 def _add_capped(items: list[str], value: str, cap: int) -> bool:

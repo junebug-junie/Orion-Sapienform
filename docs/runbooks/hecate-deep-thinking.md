@@ -51,8 +51,19 @@ layers with a 2048-token sliding window), seven speculative tokens, draft TP2,
 It passed the same 36/36 context grid, the 262144-token endurance run and 12/12
 task-quality runs as the dense baseline, with 2.2-4x decode; prefill is unchanged.
 Fetch the draft with `prepare_deep_model.py /mnt/models --draft --download`.
-Rollback to the dense baseline: delete the `speculative_config` block, then
-`hecate-deep.sh up -d --no-build` from clean synchronized Hecate main.
+The image copies `config/llm_profiles.yaml` at build time and the deep Compose
+file does not mount it, so a profile change needs a rebuild. From clean
+synchronized Hecate main (rollback: first delete the `speculative_config` block):
+
+```bash
+services/orion-vllm-host/scripts/hecate-deep.sh build
+services/orion-vllm-host/scripts/hecate-deep.sh up -d --no-build
+# Prints the draft config when DFlash2 is live; prints nothing on the dense baseline.
+docker top orion-hecate-vllm-host -o args | grep -o -- '--speculative-config.*'
+```
+
+The commissioning overlay's `.orion/hecate-dflash-profiles.yaml` on Hecate is no
+longer read by anything; delete it after the switch.
 
 The first cold 132K ledger request took 98.08s total, 86.00s to first token,
 1574 uncached prompt tokens/s from provider prefill timing, and 42.79 generated

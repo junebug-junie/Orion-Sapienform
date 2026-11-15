@@ -68,7 +68,7 @@ def build_messages(tokenizer, prompt_tokens: int, seed: int, suite="ledger", fil
         if not filler_ids:
             return " cedar" * n
         ids = (filler_ids * ((n + len(filler_ids) - 1) // len(filler_ids)))[:n]
-        return '\n' + tokenizer.decode(ids, skip_special_tokens=False) + '\n'
+        return '\n' + tokenizer.decode(ids, skip_special_tokens=True) + '\n'
     def make(n):
         parts = [intro]
         segment = n // (len(facts) + 1)

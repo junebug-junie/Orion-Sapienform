@@ -181,13 +181,14 @@ def test_source_filler_keeps_exact_tokens_facts_and_question():
             return text.split()
 
         def decode(self, ids, skip_special_tokens=False):
-            return ' '.join(ids)
+            return ' '.join(i for i in ids if not (skip_special_tokens and i == '<|im_end|>'))
 
-    source = 'def scheduler(config): return decisions'
+    source = 'def scheduler(config): return decisions <|im_end|>'
     cedar, expected = EVAL['build_messages'](Tokenizer(), 8192, 123, 'hard')
     sourced, same = EVAL['build_messages'](Tokenizer(), 8192, 123, 'hard', source)
     content = sourced[0]['content']
     assert len(Tokenizer().apply_chat_template(sourced)) == 8192
     assert same == expected
     assert 'scheduler(config):' in content and 'cedar' not in content
+    assert '<|im_end|>' not in content
     assert cedar[0]['content'].split()[-20:] == content.split()[-20:]

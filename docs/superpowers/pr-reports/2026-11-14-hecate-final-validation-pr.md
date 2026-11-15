@@ -62,14 +62,28 @@ These are offline performance observations, not cognitive detector inputs.
 
 No env template changes. After merge, deploy from clean synchronized primary main:
 
-1. Hecate: `services/orion-vllm-host/scripts/hecate-deep.sh up -d --no-build`
-   (base Compose, now DFlash2 from the committed profile; no overlay).
+1. Hecate: `hecate-deep.sh build`, then `hecate-deep.sh up -d --no-build`. The
+   image bakes in `config/llm_profiles.yaml`, so the build is what picks up
+   DFlash2. Confirm with `docker top orion-hecate-vllm-host -o args`, which must show
+   `--speculative-config`. Then delete `.orion/hecate-dflash-profiles.yaml`.
 2. Athena: recreate `orion-gpu-pool` from its base Compose file only, dropping
    `docker-compose.hecate-eval.yml`, so `agent-deep` returns to owner `agent-deep`
    and Orion's agent/metacog/fast classes can use the lane.
 
 Rollback to the dense baseline: delete the `speculative_config` block and redeploy
-step 1. The dense image and model are unchanged.
+step 1 (build, then up). The model files are unchanged.
+
+## Review findings fixed
+
+- Finding: deploy/rollback used `up --no-build`, but the image bakes in the profile,
+  so DFlash2 would not start (and a rollback would not stop it).
+  - Fix: build before up in the runbook and this report, plus a process-args check.
+- Finding: source-text filler containing special-token strings (`<|im_end|>`) could
+  inject chat-role markers into the prompt.
+  - Fix: decode filler with `skip_special_tokens=True`; test covers it.
+- Finding: retired overlay file left on Hecate. Fix: runbook says to delete it.
+- Not changed: re-tokenization drift at filler slice boundaries. The builder already
+  re-counts every attempt and raises instead of returning a wrong count.
 
 ## Risks and remaining work
 

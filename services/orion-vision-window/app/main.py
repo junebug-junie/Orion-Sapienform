@@ -587,6 +587,11 @@ class WindowService:
             payload = payload.model_copy(
                 update={"summary": {**(payload.summary or {}), "caption_gate": caption_gate_stats}}
             )
+        fixture_only = self._caption_gate.fixture_only_labels(stream_id)
+        if fixture_only:
+            summary = dict(payload.summary or {})
+            summary["evidence"] = {**(summary.get("evidence") or {}), "fixture_only_labels": fixture_only}
+            payload = payload.model_copy(update={"summary": summary})
         identity_hint: Optional[Dict[str, Any]] = None
         identity_confidence: Optional[str] = None
         if settings.WINDOW_BELIEF_ENABLED and settings.WINDOW_IDENTITY_ENABLED:

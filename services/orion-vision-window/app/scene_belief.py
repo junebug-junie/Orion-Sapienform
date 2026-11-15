@@ -63,7 +63,12 @@ class SceneBeliefTracker:
         for label in candidates:
             enter_count = enter_counts.get(label, 0)
             exit_count = exit_counts.get(label, 0)
-            can_enter = enter_count >= self._enter_votes and (
+            # A label needs one real sighting in the ring to enter. Empty
+            # slots inherit the last non-empty labels (flicker fix), so
+            # without this a scene with no detection at all re-entered the
+            # label it had just dropped, and dropped it again, on every
+            # window: 1,333 of 2,035 walkway belief flips in 24 h (#3387).
+            can_enter = enter_count >= self._enter_votes and exit_count >= 1 and (
                 len(self._ring) >= self._vote_n or (is_empty and enter_count >= self._enter_votes)
             )
             can_exit = len(self._ring) >= self._vote_n and exit_count <= self._exit_votes

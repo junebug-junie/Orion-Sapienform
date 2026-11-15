@@ -1,0 +1,39 @@
+# orion-vision-window and orion-vision-council: the scene belief tracker, the
+# evidence the window hands the council (detector scores, fixture-only labels),
+# the council's transition gate, and how a council row gets its confidence and
+# its serving model. Neither service had CI before the 2026-11-15 walkway
+# night-flood fix (#3387): 2,035 belief flips a day reached production unseen.
+name: orion-vision-council-window tests
+on:
+  pull_request:
+    paths:
+      - 'services/orion-vision-council/**'
+      - 'services/orion-vision-window/**'
+      - 'orion/schemas/vision.py'
+      - 'orion/schemas/vision_interpretation_contract.py'
+      - 'orion/vision/**'
+      - 'orion/gpu_pool/shed_backoff.py'
+      - 'config/vision_zones.yaml'
+      - '.github/workflows/orion-vision-council-window-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'services/orion-vision-council/**'
+      - 'services/orion-vision-window/**'
+      - 'orion/schemas/vision.py'
+      - 'orion/vision/**'
+      - '.github/workflows/orion-vision-council-window-tests.yml'
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # sqlalchemy: orion-vision-window presence transitions. spacy (in its requirements) is not imported by the tests.
+      - run: pip install -r services/orion-vision-council/requirements.txt sqlalchemy==2.0.35 pytest pytest-asyncio pyyaml
+      - name: orion-vision-council
+        run: cd services/orion-vision-council && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider
+      - name: orion-vision-window
+        run: cd services/orion-vision-window && PYTHONPATH=../..:. python -m pytest tests -q -p no:cacheprovider

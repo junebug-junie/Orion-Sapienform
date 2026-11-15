@@ -324,7 +324,12 @@ class VisionEventBundleItem(BaseModel):
     narrative: str
     entities: List[str]
     tags: List[str]
-    confidence: float
+    # None = no measurement stands behind this row. The council sets it from
+    # the detector's score for the labels the row names, and leaves it None
+    # when the detector saw none of them (2026-11-15, #3387). It was a
+    # required float, and 96% of council rows carried 0.8 copied from the
+    # prompt example.
+    confidence: Optional[float] = None
     salience: float
     evidence_refs: List[str]
     # Additive (2026-09-24, walkway camera). Which camera this narrative is
@@ -394,7 +399,8 @@ class VisionEventCandidateV1(BaseModel):
     narrative: str
     entities: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
-    confidence: float = 0.5
+    # None = not measured (see VisionEventBundleItem.confidence).
+    confidence: Optional[float] = None
     salience: float = 0.5
     evidence_refs: list[str] = Field(default_factory=list)
 

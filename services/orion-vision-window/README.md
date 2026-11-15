@@ -37,6 +37,8 @@ Window summaries include an `evidence` block used by Council for grounded interp
 | `hard_labels` | Detection labels above score threshold (factual tier) |
 | `believed_hard_labels` | Habituated labels (vote debounce over last N flushes; council gate input) |
 | `belief` | Metadata: `schema`, `vote_n`, `enter_votes`, `exit_votes`, `observation_count` |
+| `label_scores` | Best detector score per hard label in this window (`{label: score}`). The council uses it as the confidence of a row that names the label (2026-11-15, #3387) |
+| `fixture_only_labels` | Caption-gate labels whose every box, the last time the label was seen, was a stationary fixture (a parked car, a prop). Only on `WINDOW_STATIONARY_STREAMS`; absent when empty. The council's gate ignores a label change made only of these (#3387) |
 | `soft_labels` | Tokens from captions matching stoplist (YouTube, google, …) |
 | `edge_person_hits` | Always 0 (edge artifacts excluded from pipeline evidence) |
 | `host_person_hits` | Person detections from host `retina_fast` artifacts |
@@ -45,6 +47,8 @@ Window summaries include an `evidence` block used by Council for grounded interp
 Council treats `hard_labels` as admissible evidence; captions are soft hints only. Council gates on `believed_hard_labels` when `belief.schema == scene_belief.v1`.
 
 **Empty flicker:** Enter votes treat empty observations as carrying forward the last non-empty labels; exit votes count raw observations only. Tune `WINDOW_BELIEF_EXIT_VOTES` to control how quickly removed objects leave belief.
+
+**A label needs one real sighting in the ring to enter (2026-11-15, #3387).** Before this, a scene with no detection at all re-entered the label it had just dropped (the empty windows carried it forward) and dropped it again, every window. Walkway, 24 h: 2,035 belief flips, 1,333 of them after four or more empty windows in a row. Each flip made the council re-interpret. Tests: `tests/test_walkway_night_flood_evidence.py`.
 
 **Production defaults (2026-07-04 tuning):** `WINDOW_BELIEF_ENTER_VOTES=3`, `WINDOW_BELIEF_EXIT_VOTES=0` — blocks intermittent marginal detections (e.g. package) from belief ping-pong while keeping door/screen stable.
 

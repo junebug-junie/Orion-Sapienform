@@ -531,13 +531,13 @@ def display_line(line: Any, rollup: Any) -> str:
         version = 1
     stored = str(line or "").strip()
     if version >= REGULARS_RULES_VERSION:
-        return stored
+        return _stored_with_parked_note(stored, r)
     if version >= LIVING_RANGE_RULES_VERSION or (
             version >= COUNT_RANGE_RULES_VERSION and not bare_living_counts(stored)):
         # Before v5 the line said "68 unnamed regulars": swap that clause in place, so the rest
         # of the stored line reads exactly as before.
         try:
-            return _fix_regulars_clause(stored, r)
+            return _stored_with_parked_note(_fix_regulars_clause(stored, r), r)
         except Exception:  # noqa: BLE001 -- malformed regulars: nothing, never the bare stored count
             return ""
     try:
@@ -727,6 +727,7 @@ def build_hour(inp: HourInputs, tz: ZoneInfo) -> dict[str, Any]:
         "period_start": p.start.isoformat(), "period_end": p.end.isoformat(), "label": period_label(p, tz),
         "tz": tz.key, "local": local_fields(p, tz), "complete": True,
         "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
+        "parked_not_counted": _parked_sum(excluded),
         "peak_at_once": peaks,
         "named": named, "belongings": belongings, "individuals": individuals,
         "person_record": {"available": inp.persons is not None,
@@ -1067,6 +1068,7 @@ def build_parent(
         "complete": bool(complete),
         "covered_until": (min(covered_until, period.end) if covered_until else period.end).isoformat(),
         "kinds": kinds, "total": _totals(kinds), "excluded": excluded,
+        "parked_not_counted": _parked_sum(excluded),
         "peak_at_once": _max_peaks(rows),
         "named": named_out, "belongings": belongings_out, individuals_key: ind_out,
         "person_record": {"available": persons is not None},
@@ -1121,6 +1123,42 @@ def _parse(ts: str) -> datetime:
     return _utc(datetime.fromisoformat(ts))
 
 
+def parked_not_counted(rollup: Mapping[str, Any]) -> int:
+    """Sightings left out of the count because the subject was parked:
+    ``excluded.stationary`` plus ``excluded.parked_repeat``. Props and the
+    patio zone are other reasons and are not in this number."""
+    stored = rollup.get("parked_not_counted")
+    if isinstance(stored, int) and not isinstance(stored, bool):
+        return max(0, stored)
+    return _parked_sum(rollup.get("excluded") or {})  # a row from before the field existed
+
+
+def _parked_sum(excluded: Mapping[str, Any]) -> int:
+    n = 0
+    for key in ("stationary", "parked_repeat"):
+        try:
+            n += int(excluded.get(key) or 0)
+        except (TypeError, ValueError):
+            continue
+    return max(0, n)
+
+
+def _stored_with_parked_note(stored: str, rollup: Mapping[str, Any]) -> str:
+    """A line stored before the parked note existed (2026-11-15) gets it at read time, from
+    the row's own ``excluded`` tally. A line that already has it is returned unchanged."""
+    note = _parked_note(rollup).strip()
+    if not stored or not note or "not counted)" in stored:
+        return stored
+    return f"{stored} {note}"
+
+
+def _parked_note(rollup: Mapping[str, Any]) -> str:
+    """" (N parked sightings not counted)", or "" when there were none. Printed so
+    "nobody passed" beside a caption that names a vehicle is not a contradiction."""
+    n = parked_not_counted(rollup)
+    return f" ({n} parked sighting{'' if n == 1 else 's'} not counted)" if n else ""
+
+
 def render_line(rollup: Mapping[str, Any]) -> str:
     """One short plain-English line. Every number in it is a field of ``rollup``."""
     tz = ZoneInfo(str(rollup.get("tz") or "America/Denver"))
@@ -1164,6 +1202,7 @@ def render_line(rollup: Mapping[str, Any]) -> str:
         base = (rollup.get("baseline") or {}).get("mean_passings")
         if base is not None and cam.get("status") == "ok":
             body += f" (usual for this hour at most {_fmt_num(base)} passing{'' if base == 1 else 's'})"
+        body += _parked_note(rollup)
         if cam.get("status") == "partial":
             body += f". Camera up {up} of {expected} minutes"
         return f"{head}: {body}{unknown_note}."
@@ -1212,7 +1251,7 @@ def render_line(rollup: Mapping[str, Any]) -> str:
     base = (rollup.get("baseline") or {}).get("mean_passings")
     if base is not None:
         parts.append(f"usual {grain} at most {_fmt_num(base)} passing{'' if base == 1 else 's'}")
-    line = f"{head}: " + "; ".join(parts) + "."
+    line = f"{head}: " + "; ".join(parts) + _parked_note(rollup) + "."
     gaps = []
     for word, key in (("Camera down", "down_spans"), ("No record", "missing_spans")):
         spans = cam.get(key) or []

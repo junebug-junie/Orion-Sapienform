@@ -9,6 +9,7 @@ from orion.schemas.vision import (
 )
 
 from .caption_policy import CAPTIONS_WITHHELD_KEY
+from .interpretation import HOST_DETECT_TAG, detector_confidence
 
 ACTIVITY_PATTERN = re.compile(
     r"\b(watching|reading|using|talking|listening|playing|browsing)\b", re.I
@@ -151,7 +152,9 @@ def enforce_evidence_grounding(
             notes.append(f"dropped:{cand.event_type}:caption_slop")
             continue
         updated = cand
-        if mentions_activity and "person" in hard and cand.confidence > 0.4:
+        # No confidence (None) = no detector score behind the row; there is
+        # nothing to cap.
+        if mentions_activity and "person" in hard and cand.confidence is not None and cand.confidence > 0.4:
             summary = window.summary or {}
             if summary.get("captions"):
                 updated = cand.model_copy(
@@ -198,8 +201,9 @@ def ensure_grounded_person_presence(
         event_type="person_presence",
         narrative="A person was detected on camera.",
         entities=["person"],
-        tags=["host_detect"],
-        confidence=0.85,
+        tags=[HOST_DETECT_TAG],
+        # The detector's score for the person box, not a constant (#3387).
+        confidence=detector_confidence(window, ["person"]),
         salience=0.7,
         evidence_refs=refs,
     )
@@ -223,8 +227,8 @@ def build_person_presence_fallback(window: VisionWindowPayload) -> VisionSceneIn
                 event_type="person_presence",
                 narrative="A person was detected on camera.",
                 entities=["person"],
-                tags=["host_detect"],
-                confidence=0.85,
+                tags=[HOST_DETECT_TAG],
+                confidence=detector_confidence(window, ["person"]),
                 salience=0.7,
                 evidence_refs=refs,
             )

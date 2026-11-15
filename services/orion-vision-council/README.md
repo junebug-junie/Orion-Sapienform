@@ -20,12 +20,17 @@ VisionWindowPayload → evidence_transition (host label delta) → VisionSceneIn
    **Incident, 2026-08-23/25:** this defaulted to `0` and a home-office scene's coarse `hard_labels` (chair/clothing/desk/door/person/table) legitimately never changed turn to turn, so the gate correctly and deterministically read `stable_scene` on every single window for 44+ continuous hours — `orion:vision:events` went completely silent with no error anywhere in the pipeline (vision-host kept running inference the whole time; council kept ticking the whole time). The gate was working exactly as coded; it just had no ceiling. `600` bounds the worst case to comfortably inside the 900s staleness cutoff `orion/situational/context.py` uses to decide "stale" vs "live", well below the ~5.5min average cadence of genuine scene changes.
 
    **Known, accepted gap:** `orion-thought` (reverie)'s own percept-freshness gate is tighter (`reverie_perception_max_age_sec=180s`) than this 600s ceiling, so on a genuinely static scene reverie still sees "no fresh percept" ~70% of the time (420 of every 600s) — a real improvement over ~100%-blind, but not "always fresh." Not lowered to 180s on purpose: that would force an LLM reconfirmation every 3 minutes even when nothing is happening, more often than genuine changes occur naturally. See `app/settings.py`'s comment on `COUNCIL_TRANSITION_REFRESH_SEC` for the full reasoning.
+   **Stationary fixtures (2026-11-15, #3387):** a label change made only of labels in `summary.evidence.fixture_only_labels` (from orion-vision-window: every box of that label was a stationary fixture, such as a parked car) does not trigger. The gate logs `reason=fixture_only_change`, keeps the label set it last interpreted, and still refreshes on the TTL. At night the detector loses and re-finds far parked cars; each flip used to be one LLM call and one "a vehicle is observed" row. Known limit: a vehicle that arrives while a parked car is the remembered label set changes no label, so it does not trigger (the same was already true by day). Replay of real data: `evals/replay_walkway_gate.py`.
 3. **Interpretation** — `build_interpretation_prompt` shapes the LLM prompt (includes `summary.evidence` rules); the response is parsed into `VisionSceneInterpretationV1` via strict validation, salvage/coercion, then legacy fallback.
 4. **Grounding** — `CouncilService._finalize_interpretation()` calls `enforce_evidence_grounding()` on **both** intake and RPC paths:
    - Drop person/activity claims when `person` ∉ `summary.evidence.hard_labels`
    - Cap activity confidence when only captions support the claim
    - On parse failure + `host_person_hits > 0`: deterministic `person_presence` fallback (no YouTube hallucination)
 5. **Projection** — `project_interpretation_to_events` maps grounded `event_candidates` to `VisionEventBundleItem` entries.
+
+   **Confidence is measured, not asked for (2026-11-15, #3387).** The prompt example no longer holds a confidence number, and the model is told not to output one (it echoed the example: 0.8 on 96% of rows). `_finalize_interpretation()` first calls `apply_detector_confidence()`: a row's confidence is the detector's score (`summary.evidence.label_scores`, the best box score per label in the window) for the labels the row names, the lowest one when it names several; a row that names no label takes the lowest score in the window. It is `null` when the detector saw none of the named labels or saw nothing: no number is made up. The value is the detector's match score (about 0.25 to 0.65 on the walkway), not a probability, and never below the 0.25 detection threshold. The person fallback rows use the person score the same way (they were a fixed 0.85).
+
+   **Serving model.** Each row a model wrote carries `model:<name>` as the last `evidence_refs` entry. The name is what the gateway reports served the call (`ChatResultPayload.model_used`), not `COUNCIL_MODEL` (which is only what was asked for). Rows built from detector hits alone (tag `host_detect`) carry no model.
 6. **Publish** — the event bundle is published on `orion:vision:events` (and returned on RPC reply when applicable).
 
 **GPU heat shed:** when the gateway reply says the pool is shedding (`raw.details.reason` = `shed:<name>`), the council skips the LLM call for later windows (intake and RPC) for 30 s doubling to 180 s, or the gateway's `retry_after_sec` if longer; one window per backoff probes, and the first real answer ends it. A skipped window is handled exactly like a refused one (parse_failed / host fallback). Logs: one `gpu_shed_backoff_start` and one `gpu_shed_backoff_end ... skipped=N` line per episode. Code: `orion/gpu_pool/shed_backoff.py`, `CouncilService._call_llm_raw`.
@@ -154,10 +159,12 @@ From repo root:
 ```bash
 PYTHONPATH=services/orion-vision-council:. pytest services/orion-vision-council/tests -q
 PYTHONPATH=services/orion-vision-council:. python services/orion-vision-council/evals/replay_structured_output_cases.py
+# Replay real walkway data through the gate (export commands are in the file's docstring):
+python services/orion-vision-council/evals/replay_walkway_gate.py crops.csv windows.csv
 ```
 
-Key suites: `test_evidence_grounding.py`, `test_main_grounding_wiring.py` (intake/RPC parity via `_finalize_interpretation`), `test_caption_policy.py` (captions withheld outside `COUNCIL_CAPTION_STREAMS`).
+Key suites: `test_fixture_gate_and_detector_confidence.py` (fixture-only gate, measured confidence, serving model), `test_evidence_grounding.py`, `test_main_grounding_wiring.py` (intake/RPC parity via `_finalize_interpretation`), `test_caption_policy.py` (captions withheld outside `COUNCIL_CAPTION_STREAMS`).
 
-No eval harness exists for this service (`evals/` is absent).
+CI: `.github/workflows/orion-vision-council-window-tests.yml`.
 
 Design spec: `docs/plans/vision/2026-07-02-vision-grounded-pipeline-design.md`

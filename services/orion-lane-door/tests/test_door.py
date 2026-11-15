@@ -159,7 +159,7 @@ def test_the_exempt_list_is_pinned():
     """Spec Phase 2: GET /health /props /slots /v1/models /metrics never refused. Plus /models (llama.cpp's
     alias) and the three no-model POST reads the gateway and the probes use. A change here is a change to
     what the door lets through unkeyed: update the spec and this test together."""
-    assert EXEMPT_GET_PATHS == {"/health", "/props", "/slots", "/v1/models", "/models", "/metrics"}
+    assert EXEMPT_GET_PATHS == {"/health", "/props", "/slots", "/v1/models", "/models", "/metrics", "/orion/server-info"}
     assert EXEMPT_POST_PATHS == {"/tokenize", "/detokenize", "/apply-template"}
     assert not is_exempt("POST", "/slots") and not is_exempt("POST", "/completion")
     assert not is_exempt("GET", "/v1/chat/completions") and is_exempt("HEAD", "/health")

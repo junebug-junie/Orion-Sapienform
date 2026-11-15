@@ -297,10 +297,19 @@ class TrialHold:
     TERMINAL = ("unavailable", "unknown_lease", "ok")
 
     def __init__(self, bus: Any, run_id: str, header_box: HeaderBox, *, min_ctx_tokens: int,
-                 out_dir: Path | None = None):
+                 out_dir: Path | None = None, work_class: str = "operator_agent", max_hold_sec: float = 1200.0):
         self.bus, self.run_id, self.box = bus, run_id, header_box
         self.holder = f"graphiti-trial:{run_id}"
         self.min_ctx = min_ctx_tokens
+        # Issue #3391: trial 1 held Orion's own agent class for 7 h and Orion read it as its lane
+        # full (215 acts waited). Operator classes (config/gpu_pool.yaml classes.operator*) sort
+        # after all of Orion's background work, are recalled by any owner that waits, and the body
+        # economy books their load as sponsored (ORION_PHYSIOLOGY_OPERATOR_LOAD_SPONSORED).
+        # ``operator_agent`` also pins role ``agent``: the same model trial 1 ran on.
+        self.work_class = work_class
+        # Each hold is given back after this long (between episodes) and asked for again at the back
+        # of the queue, so Orion's own acts interleave instead of waiting out a whole run.
+        self.max_hold_sec = max_hold_sec
         self.out_dir = out_dir or OUT_DIR
         self.lease_id: str | None = None
         self.role: str | None = None
@@ -327,15 +336,24 @@ class TrialHold:
             f.unlink()
 
     async def acquire(self, wait_sec: float = 4 * 3600.0) -> None:
-        from orion.gpu_pool.client import acquire_hold, hold_ref, lease_status  # noqa: PLC0415
+        from orion.gpu_pool.client import acquire_hold, hold_ref, lease_rpc, lease_status  # noqa: PLC0415
+        from orion.schemas.gpu_pool import GpuLeaseRequestV1  # noqa: PLC0415
         from orion.llm.resource_lease import encode_gpu_lease_header  # noqa: PLC0415
         self.attempt += 1
         request_id = f"{self.run_id}:{self.attempt}"
         lease_id: str | None = None
 
         async def ask():
-            return await acquire_hold(self.bus, holder=self.holder, work_class="agent", request_id=request_id,
-                                      priority="background", min_ctx_tokens=self.min_ctx, source=self.holder)
+            if not self.work_class.startswith("operator"):
+                return await acquire_hold(self.bus, holder=self.holder, work_class=self.work_class,
+                                          request_id=request_id, priority="background",
+                                          min_ctx_tokens=self.min_ctx, source=self.holder)
+            # Operator hold, not retryable (like orion/evals/leased_llm.py): a recalled or expired
+            # hold ends instead of re-queueing for a process that may be gone.
+            return await lease_rpc(self.bus, GpuLeaseRequestV1(
+                verb="acquire", request_id=request_id, holder=self.holder, work_class=self.work_class,
+                priority="background", kind="hold", min_ctx_tokens=self.min_ctx, retryable=False),
+                source=self.holder)
         try:
             reply = await ask()
             lease_id = reply.lease_id
@@ -390,6 +408,9 @@ class TrialHold:
                 logger.warning("hold lost status=%s reason=%s", reply.status, reply.reason)
                 self.lost.set()
                 return
+
+    def over_cap(self) -> bool:
+        return self.granted_at is not None and time.monotonic() - self.granted_at >= self.max_hold_sec
 
     def usable(self) -> bool:
         return not (self.recalled.is_set() or self.lost.is_set())
@@ -473,7 +494,8 @@ async def run(args: argparse.Namespace) -> int:
     stats = CallStats()
     box = HeaderBox()
     bus = OrionBusAsync(args.bus_url)
-    hold = TrialHold(bus, run_id, box, min_ctx_tokens=args.min_ctx)
+    hold = TrialHold(bus, run_id, box, min_ctx_tokens=args.min_ctx, work_class=args.work_class,
+                     max_hold_sec=args.max_hold_sec)
     graphiti = Graphiti(
         graph_driver=driver,
         llm_client=build_llm_client(base_url=args.llm_base_url, model=args.llm_route, header_box=box,
@@ -509,8 +531,9 @@ async def run(args: argparse.Namespace) -> int:
                 done += 1
                 skipped += 1
                 continue
-            if not hold.usable():
-                _log_progress(f"hold {'recalled' if hold.recalled.is_set() else 'lost'}: releasing and re-acquiring")
+            if not hold.usable() or hold.over_cap():
+                why = "recalled" if hold.recalled.is_set() else "lost" if hold.lost.is_set() else "at its length cap"
+                _log_progress(f"hold {why}: releasing and re-acquiring")
                 await hold.release()
                 await hold.acquire()
             before = stats.snapshot()
@@ -588,7 +611,11 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--embed-url", default=os.environ.get(
         "CRYSTALLIZER_EMBED_HOST_URL", "http://orion-athena-vector-host:8320/embedding"))
     r.add_argument("--llm-base-url", default="http://orion-llm-gateway:8210/v1")
-    r.add_argument("--llm-route", default="agent")
+    # Issue #3391: operator class + route by default, so a trial is never booked as Orion's own load.
+    r.add_argument("--work-class", default="operator_agent", help="GPU pool class of the hold")
+    r.add_argument("--llm-route", default="operator_agent", help="gateway route (= the hold's class)")
+    r.add_argument("--max-hold-sec", type=float, default=1200.0,
+                   help="give the hold back between episodes after this long and re-queue")
     r.add_argument("--bus-url", default=os.environ.get("ORION_BUS_URL", "redis://100.92.216.81:6379/0"))
     r.add_argument("--min-ctx", type=int, default=16384)
     r.add_argument("--max-tokens", type=int, default=8192)

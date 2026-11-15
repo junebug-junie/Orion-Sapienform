@@ -399,6 +399,11 @@ def pool(monkeypatch, tmp_path):
             raise r
         return r
 
+    async def lease_rpc(bus, req, **kw):  # operator holds acquire through the raw verb
+        assert req.verb == "acquire" and req.kind == "hold" and req.retryable is False
+        log.setdefault("classes", []).append(req.work_class)
+        return await acquire_hold(bus, request_id=req.request_id)
+
     async def lease_status(bus, lease_id, **kw):
         log["status"].append(lease_id)
         r = script["status"].pop(0)
@@ -417,6 +422,7 @@ def pool(monkeypatch, tmp_path):
 
     monkeypatch.setattr(gpc, "acquire_hold", acquire_hold)
     monkeypatch.setattr(gpc, "lease_status", lease_status)
+    monkeypatch.setattr(gpc, "lease_rpc", lease_rpc)
     monkeypatch.setattr(gpc, "release_lease", release_lease)
     monkeypatch.setattr(trial, "cancel_lease", cancel)
     monkeypatch.setattr(trial, "OUT_DIR", tmp_path)
@@ -720,3 +726,37 @@ def test_invalidation_check_needs_every_invalidation_judged_and_under_two_wrong(
     sheet[1]["wrong"] = "yes"
     with pytest.raises(ValueError):
         score.check_invalidations(sheet, edges)
+
+
+def test_trial_holds_are_operator_class_and_capped(pool):
+    """Issue #3391: never Orion's own agent class; the hold is given back after its length cap."""
+    hold, script, log, _ = pool
+    script["acquire"] = [_Reply("granted")]
+
+    async def go():
+        await hold.acquire()
+        assert not hold.over_cap()
+        hold.max_hold_sec = 0
+        assert hold.over_cap() and hold.usable()
+        await hold.release()
+        assert not hold.over_cap()
+    asyncio.run(go())
+    assert log["classes"] == ["operator_agent"]
+
+
+def test_default_route_and_class_are_operator():
+    seen = {}
+
+    def fake_run(args):
+        seen.update(vars(args))
+        return 0
+    orig = trial._run_with_sigterm
+    try:
+        async def capture(args):
+            return fake_run(args)
+        trial._run_with_sigterm = capture
+        trial.main(["run"])
+    finally:
+        trial._run_with_sigterm = orig
+    assert seen["work_class"] == "operator_agent" and seen["llm_route"] == "operator_agent"
+    assert seen["max_hold_sec"] <= 1200

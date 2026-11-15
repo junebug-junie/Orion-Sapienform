@@ -101,7 +101,7 @@ curiosity 14, painting 12, memory 4, dream 2; reading, play, prime, intention, d
 missing tables (migration not applied yet): experience_shown, experience_use.
 ```
 
-Re-run after the review fixes and the merge of patch 1's fixes (2026-11-15, ~19:00Z): `0 / 4198 = 0.00%;
+Re-run after the review fixes and the merge of patch 1's fixes (2026-11-15, ~18:30Z): `0 / 4198 = 0.00%;
 closed organs: 0 of 16`, same missing tables.
 
 This is the gate's baseline. Reading and Prime read 0 because their kinds start with patch 1's deploy;

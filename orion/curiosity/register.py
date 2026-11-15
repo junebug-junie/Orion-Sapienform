@@ -9,14 +9,18 @@ experience, what it cares about, who matters) AND new to Orion.
   reference-label fixture), on the question and the first ``ANSWER_CHARS`` of the answer. The reply
   must be one JSON object with one of the three labels; anything else is a ``judge_error`` and the
   label is absent (never "operational by default").
+- **Judge model** (Juniper, 2026-11-15): the curiosity lane that wrote the finding judges it. Only a
+  model that passed the judge-agreement eval (``PASSED_JUDGE_MODELS``) may label; a reply served by
+  any other model is a ``judge_error``. Flash-Next passed on the yes/no question salience uses
+  (philosophical or not: kappa 0.856 on 251 reference runs; three-way kappa 0.734, phil-agree 0.87;
+  ``scripts/analysis/eval_curiosity_register_judge.py``). Juniper accepted the 0.87.
 - **Novelty**: ``1 - max cosine`` between the finding's embedding and everything Orion wrote before
-  the run started (earlier findings, timed prior claims, Day letters). An exact repeat reads 0.0.
-  No earlier writing: novelty is unknown (None), not 1.0.
+  the run: every answer node in the graph (``Finding``, ``LivedAnswer``, ``SelfDefinition``), every
+  prior claim, every Day letter, minus what this run itself wrote (``corpus_items``). An exact repeat
+  reads 0.0. No earlier writing: novelty is unknown (None), not 1.0.
 
-Today's only consumer is the judge-agreement eval (``scripts/analysis/eval_curiosity_register_judge.py``).
-The live register writer and the curiosity event wants are blocked on that eval: as of 2026-11-12 no local
-lane that is not a writer seat reaches kappa >= 0.8 against the reference labels (metacog 0.58, quick
-0.60), so nothing labels live findings yet.
+Live writer: ``services/orion-hub/scripts/curiosity_finding_register.py`` (one row per finished turn in
+``curiosity_finding_register``).
 """
 from __future__ import annotations
 
@@ -60,7 +64,18 @@ ANSWER_CHARS = 700          # the reference labels were made on exactly this hea
 QUESTION_CHARS = 400
 REASON_CHARS = 300
 EMBED_CHARS = 2000          # bge-large reads ~512 tokens; the rest is cut by the model anyway
-CORPUS_VERSION = "full_v1"  # earlier findings + timed prior claims + Day letters
+CORPUS_VERSION = "graph_v1"  # every graph answer node + prior claims + Day letters, minus this run's own
+
+# Models that passed the judge-agreement eval. Matched on the served model's file/name, lower case.
+PASSED_JUDGE_MODELS = ("qwen3.8-flash-next",)
+
+# Read-only Cypher for the novelty corpus (static, no parameters).
+CORPUS_CYPHER = {
+    "finding": "MATCH (n:Finding) RETURN n.run_id AS run_id, n.text AS text",
+    "lived_answer": "MATCH (n:LivedAnswer) RETURN n.run_id AS run_id, n.text AS text",
+    "self_definition": "MATCH (n:SelfDefinition) RETURN n.run_id AS run_id, n.text AS text",
+    "prior": "MATCH (p:Prior) RETURN p.prior_id AS prior_id, p.run_id AS run_id, p.claim AS text",
+}
 
 _THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.I)
@@ -133,6 +148,59 @@ def novelty(vec: Sequence[float], corpus: Sequence[tuple[str, Sequence[float]]])
     return round(max(0.0, 1.0 - best), 6), best_ref
 
 
+def judge_model_passed(model: Optional[str]) -> bool:
+    """Whether the served model is one that passed the judge-agreement eval."""
+    name = str(model or "").strip().lower().rsplit("/", 1)[-1]
+    return bool(name) and any(m in name for m in PASSED_JUDGE_MODELS)
+
+
+def text_sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def corpus_items(
+    graph_rows: Mapping[str, Sequence[Mapping[str, Any]]], letters: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Every piece of Orion's writing the novelty corpus holds: ``{ref, kind, run_id, text, sha}``.
+
+    ``graph_rows`` maps a ``CORPUS_CYPHER`` kind to its rows; ``letters`` are Day letter rows
+    ``{run_id, created_at, note_md}``. Text is cleaned and cut to ``EMBED_CHARS`` (what is embedded);
+    empty text is dropped. Answer nodes are keyed by their run (one run may write several: the sha
+    keeps them apart); a prior by its id; a letter by its run id."""
+    out: list[dict[str, Any]] = []
+    for kind, rows in graph_rows.items():
+        for r in rows:
+            text = clean(r.get("text"))[:EMBED_CHARS]
+            run = str(r.get("run_id") or "") or None
+            if not text:
+                continue
+            key = r.get("prior_id") if kind == "prior" else run
+            if not key:
+                continue
+            out.append({"ref": f"{kind}:{key}", "kind": kind, "run_id": run, "text": text,
+                        "sha": text_sha256(text), "written_at": None})
+    for r in letters:
+        text = clean(r.get("note_md"))[:EMBED_CHARS]
+        if text and r.get("run_id"):
+            out.append({"ref": f"letter:{r['run_id']}", "kind": "letter", "run_id": None, "text": text,
+                        "sha": text_sha256(text), "written_at": r.get("created_at")})
+    return out
+
+
+def corpus_before(items: Sequence[Mapping[str, Any]], *, run_id: str, started_at: Any = None) -> list[Mapping[str, Any]]:
+    """The items written before this run: drop what the run wrote itself (its answer nodes, the priors
+    it formed) and letters written after the run started. A letter with no time is kept."""
+    keep = []
+    for it in items:
+        if it.get("run_id") == run_id:
+            continue
+        at = it.get("written_at")
+        if started_at is not None and at is not None and at >= started_at:
+            continue
+        keep.append(it)
+    return keep
+
+
 def run_question_and_answer(
     detail: Mapping[str, Any], *, per_prior: Sequence[Mapping[str, Any]] = (),
     questions: Mapping[str, str] | None = None, prior_claims: Mapping[str, str] | None = None,
@@ -170,6 +238,7 @@ def run_question_and_answer(
     return clean(question) or "(question not recorded)", qref, answer
 
 
-__all__ = ["ANSWER_CHARS", "CORPUS_VERSION", "EMBED_CHARS", "JUDGE_PROMPT_SHA256", "JUDGE_PROMPT_V2",
-           "PHILOSOPHICAL", "PROMPT_VERSION", "REGISTERS", "clean", "judge_input", "judge_messages", "novelty",
-           "parse_judge_reply", "prompt_sha256", "run_question_and_answer"]
+__all__ = ["ANSWER_CHARS", "CORPUS_CYPHER", "CORPUS_VERSION", "EMBED_CHARS", "JUDGE_PROMPT_SHA256", "JUDGE_PROMPT_V2",
+           "PASSED_JUDGE_MODELS", "PHILOSOPHICAL", "PROMPT_VERSION", "REGISTERS", "clean", "corpus_before",
+           "corpus_items", "judge_input", "judge_messages", "judge_model_passed", "novelty", "parse_judge_reply",
+           "prompt_sha256", "run_question_and_answer", "text_sha256"]

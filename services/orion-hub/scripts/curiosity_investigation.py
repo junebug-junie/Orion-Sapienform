@@ -112,6 +112,20 @@ from .energy_stakes_gate import (
     hold_attention_row,
 )
 from .curiosity_replica_plan import plan_offer
+from orion.curiosity.register import (
+    CORPUS_CYPHER as REGISTER_CORPUS_CYPHER,
+    corpus_items as register_corpus_items,
+    run_question_and_answer,
+)
+from .curiosity_finding_register import (
+    LETTERS_SQL as REGISTER_LETTERS_SQL,
+    PER_PRIOR_SQL as REGISTER_PER_PRIOR_SQL,
+    QUESTIONS_SQL as REGISTER_QUESTIONS_SQL,
+    http_embedder,
+    judge_finding,
+    per_prior_list,
+    score_and_record,
+)
 from .curiosity_offer_decisions import (
     load_prior_test_history,
     load_turn_snapshot,
@@ -996,6 +1010,11 @@ class CuriosityInvestigation:
         # Self-inquiry runs write a decision + outcome row too (2026-10-16 attention-world-candidates
         # design, "The self-inquiry gap, and the fix"); needs spend_log_enabled.
         self_inquiry_outcomes_enabled: bool = True,
+        # Curiosity event wants step 2: label + novelty row per finished turn (curiosity_finding_register).
+        finding_register_enabled: bool = True,
+        finding_register_embed_url: str = "",
+        llm_intake_channel: str = "orion:exec:request:LLMGatewayService",
+        llm_gateway_service: str = "LLMGatewayService",
         value_order_enabled: bool = False,
         value_order_propensity: float = 0.5,
         # The curiosity replica's arm (docs/superpowers/specs/2026-11-04-curiosity-replica-design.md):
@@ -1224,6 +1243,11 @@ class CuriosityInvestigation:
         # a separate, default-off switch with a per-run random arm.
         self.spend_log_enabled = bool(spend_log_enabled)
         self.self_inquiry_outcomes_enabled = bool(self_inquiry_outcomes_enabled)
+        self.finding_register_enabled = bool(finding_register_enabled)
+        self.finding_register_embed_url = str(finding_register_embed_url or "").strip()
+        self.llm_intake_channel = str(llm_intake_channel)
+        self.llm_gateway_service = str(llm_gateway_service)
+        self._register_tasks: set[asyncio.Task] = set()
         self.value_order_enabled = bool(value_order_enabled)
         self.value_order_propensity = float(value_order_propensity)
         self.replica_arm_enabled = bool(replica_arm_enabled)
@@ -1533,6 +1557,58 @@ class CuriosityInvestigation:
         if source_tag == INVESTIGATION_TAG:
             return True
         return source_tag == SELF_INQUIRY_TAG and self.self_inquiry_outcomes_enabled
+
+    def _schedule_finding_register(self, run_id: str, source_tag: str, text: Optional[str],
+                                   started_at: Optional[datetime]) -> None:
+        """Write the run's finding-register row in the background (curiosity event wants, step 2).
+        Only finished turns of the two curiosity lines; never blocks or fails the turn."""
+        if not (self.finding_register_enabled and text) or source_tag not in (SELF_INQUIRY_TAG, INVESTIGATION_TAG):
+            return
+        task = asyncio.create_task(self._record_finding_register(run_id, source_tag, text, started_at))
+        self._register_tasks.add(task)
+        task.add_done_callback(self._register_tasks.discard)
+
+    async def _record_finding_register(self, run_id: str, source_tag: str, text: str,
+                                       started_at: Optional[datetime]) -> None:
+        pool = self._pool_provider()
+        if pool is None or self._reader is None or self._bus is None or not self.finding_register_embed_url:
+            logger.info("curiosity_register_skipped run=%s reason=not_configured", run_id)
+            return
+        try:
+            line = LINE_SELF_INQUIRY if source_tag == SELF_INQUIRY_TAG else LINE_INVESTIGATE
+            graph = {kind: await asyncio.to_thread(self._reader.query, cypher)
+                     for kind, cypher in REGISTER_CORPUS_CYPHER.items()}
+            async with pool.acquire() as conn:
+                letters = [dict(r) for r in await conn.fetch(REGISTER_LETTERS_SQL)]
+                per_prior_raw = await conn.fetchval(REGISTER_PER_PRIOR_SQL, run_id)
+                questions = {str(r["question_id"]): str(r["text"] or "")
+                             for r in await conn.fetch(REGISTER_QUESTIONS_SQL)}
+            items = register_corpus_items(graph, letters)
+            detail: dict[str, Any] = {"line": line, "finding_text": text}
+            if line == LINE_SELF_INQUIRY:
+                definition = await asyncio.to_thread(read_self_definition, self._reader, run_id)
+                lived = await asyncio.to_thread(read_lived_answers_for_run, self._reader, run_id)
+                if definition is not None and definition.text:
+                    detail["self_definition"] = {"text": definition.text}
+                elif lived:
+                    detail["lived_answer"] = {"question_id": lived[0].question_id, "text": lived[0].text}
+            question, question_ref, answer = run_question_and_answer(
+                detail, per_prior=per_prior_list(per_prior_raw), questions=questions,
+                prior_claims={str(r.get("prior_id")): str(r.get("text") or "") for r in graph.get("prior", [])},
+                graph_findings=[str(r.get("text") or "") for r in graph.get("finding", []) if r.get("run_id") == run_id],
+            )
+            route = self.llm_route or "agent"
+            async with httpx.AsyncClient() as client:
+                await score_and_record(
+                    pool=pool, run_id=run_id, line=line, question=question, question_ref=question_ref, answer=answer,
+                    items=items, started_at=started_at, route=route,
+                    embed=http_embedder(client, self.finding_register_embed_url),
+                    judge=lambda: judge_finding(
+                        self._bus, intake_channel=self.llm_intake_channel, gateway_service=self.llm_gateway_service,
+                        source_ref=self._source_ref, route=route, question=question, answer=answer),
+                )
+        except Exception:  # noqa: BLE001
+            logger.warning("curiosity_register_failed run=%s", run_id, exc_info=True)
 
     async def _spend_turn_started(self, run_id: str) -> None:
         """Snapshot every prior as the turn begins. Never raises into the turn."""
@@ -2871,6 +2947,7 @@ class CuriosityInvestigation:
             else:
                 # From here Orion may have the prompt: a cancel no longer means "unseen".
                 turn_began = True
+                turn_started_at = datetime.now(timezone.utc)
                 await self._spend_turn_started(run_id)
                 text, debug = await self._generate(
                     prompt, correlation_id, parent_run_id=run_id,
@@ -2878,6 +2955,7 @@ class CuriosityInvestigation:
                     **({"curiosity_focus": focus_anchor} if focus_anchor is not None else {}),
                 )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
+                self._schedule_finding_register(run_id, INVESTIGATION_TAG, text, turn_started_at)
                 await self._stamp_corrections(run_id)
                 await self._stamp_consult_beliefs(run_id)
                 await self._stamp_focus(run_id, turn_ok=bool(text))
@@ -3949,6 +4027,7 @@ class CuriosityInvestigation:
                 text, debug = turn.text, dict(turn.debug)
             else:
                 measured = self._measured_turn(SELF_INQUIRY_TAG)
+                turn_started_at = datetime.now(timezone.utc)
                 if measured:
                     await self._spend_turn_started(run_id)
                 text, debug = await self._generate(
@@ -3960,6 +4039,7 @@ class CuriosityInvestigation:
                 )
                 if measured:
                     await self._spend_turn_ended(run_id, turn_ok=bool(text))
+                self._schedule_finding_register(run_id, SELF_INQUIRY_TAG, text, turn_started_at)
         except asyncio.CancelledError:
             await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
             raise
@@ -5767,6 +5847,7 @@ class CuriosityInvestigation:
         investigation = request.source_tag == INVESTIGATION_TAG
 
         async def _run_turn() -> CuriosityTurnResultV1:
+            turn_started_at = datetime.now(timezone.utc)
             try:
                 if measured:
                     await self._spend_turn_started(request.run_id)
@@ -5811,6 +5892,8 @@ class CuriosityInvestigation:
                         gpu_lease=request.gpu_lease,
                         deadline=received + request.timeout_sec,
                     )
+                # After the fit hop, in the background: the turn result never waits on the judge.
+                self._schedule_finding_register(request.run_id, request.source_tag, text, turn_started_at)
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,
                     correlation_id=request.correlation_id,

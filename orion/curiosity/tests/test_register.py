@@ -93,3 +93,36 @@ def test_an_investigation_asks_the_most_moved_tested_prior_and_answers_with_its_
 def test_with_no_graph_finding_the_finish_row_text_is_the_last_resort():
     q, ref, a = run_question_and_answer({"line": "investigate", "finding_text": " The  answer. "})
     assert (q, ref, a) == ("(question not recorded)", None, "The answer.")
+
+
+# --- judge model gate and the novelty corpus (live writer, 2026-11-15) ---------------------------------
+
+from orion.curiosity.register import corpus_before, corpus_items, judge_model_passed  # noqa: E402
+
+
+@pytest.mark.parametrize("model,ok", [
+    ("qwen3.8-flash-next-iq3_s", True),
+    ("/models/gguf/Qwen3.8-Flash-Next-IQ3_S.gguf", True),
+    ("/models/gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf", False),
+    ("Qwen3-8B-Q5_K_M", False),
+    ("", False),
+    (None, False),
+])
+def test_only_a_model_that_passed_the_eval_may_label(model, ok):
+    assert judge_model_passed(model) is ok
+
+
+def test_corpus_items_key_answers_by_run_priors_by_id_and_drop_empty_text():
+    items = corpus_items(
+        {"finding": [{"run_id": "r1", "text": "a"}, {"run_id": "r1", "text": "b"}, {"run_id": "r2", "text": "  "}],
+         "prior": [{"prior_id": "p1", "run_id": "r1", "text": "claim"}, {"prior_id": None, "run_id": "r3", "text": "x"}]},
+        [{"run_id": "d1", "created_at": None, "note_md": "letter"}, {"run_id": None, "note_md": "orphan"}])
+    assert [(i["ref"], i["run_id"]) for i in items] == [
+        ("finding:r1", "r1"), ("finding:r1", "r1"), ("prior:p1", "r1"), ("letter:d1", None)]
+    assert len({(i["ref"], i["sha"]) for i in items}) == 4
+
+
+def test_corpus_before_drops_what_the_run_itself_wrote():
+    items = corpus_items({"finding": [{"run_id": "now", "text": "mine"}, {"run_id": "old", "text": "older"}],
+                          "prior": [{"prior_id": "p", "run_id": "now", "text": "formed now"}]}, [])
+    assert [i["ref"] for i in corpus_before(items, run_id="now")] == ["finding:old"]

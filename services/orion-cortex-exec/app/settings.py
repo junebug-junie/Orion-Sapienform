@@ -83,6 +83,9 @@ class Settings(BaseSettings):
         True, alias="MEMORY_COGNITION_BRAIN_BELIEF_DEFAULT"
     )
     orion_unified_grounding_enabled: bool = Field(True, alias="ORION_UNIFIED_GROUNDING_ENABLED")
+    # Core memory pages (Phase 1a): put Orion's page:juniper on the grounding capsule so the harness
+    # prefix renders it as RELATIONSHIP. false => today's identity-yaml RELATIONSHIP bullets.
+    orion_core_pages_enabled: bool = Field(True, alias="ORION_CORE_PAGES_ENABLED")
     channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")
     channel_council_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")
     channel_cognition_trace_pub: str = Field("orion:cognition:trace", alias="CHANNEL_COGNITION_TRACE_PUB")

@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     # model (bus RPC and HTTP passthroughs), with its correlation id, on orion:llm:call:usage ->
     # sql-writer llm_call_usage. Counts and clocks only, no text. Independent of the grammar flag.
     llm_gateway_call_usage_enabled: bool = Field(True, alias="LLM_GATEWAY_CALL_USAGE_ENABLED")
+
+    # Lane door (leased-evals Phase 2, app/lane_door.py): the secret every dispatch carries to the door in
+    # front of a model server, and the background check that the doors hold the same key.
+    llm_gateway_lane_door_key: str = Field("", alias="LLM_GATEWAY_LANE_DOOR_KEY")
+    llm_gateway_lane_door_check_enabled: bool = Field(True, alias="LLM_GATEWAY_LANE_DOOR_CHECK_ENABLED")
+    llm_gateway_lane_door_check_sec: float = Field(600.0, alias="LLM_GATEWAY_LANE_DOOR_CHECK_SEC")
     llm_gateway_anthropic_passthrough_enabled: bool = Field(
         True, alias="LLM_GATEWAY_ANTHROPIC_PASSTHROUGH_ENABLED"
     )

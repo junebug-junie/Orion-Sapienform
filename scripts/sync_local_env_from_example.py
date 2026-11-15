@@ -130,6 +130,10 @@ SYNC_PREFIXES = (
     # had no keys left before that. Its pool-placement keys are below.)
     "DURABLE_RUNS_",
     "CORTEX_DURABLE_",
+    # Core memory pages Phase 1a (2026-11-15): page:juniper. ORION_CORE_PAGES_ENABLED lives in
+    # orion-durable-runs (the fold) and orion-cortex-exec (the RELATIONSHIP render).
+    "ORION_CORE_PAGES_",
+    "CORE_PAGE_FOLD_",
     # Consults (2026-11-11): Hub's loop (scripts/consult_loop.py) and the room companion's consult
     # mode. Neither prefix matched before, so the default run added none of their keys.
     "HUB_CONSULT_",

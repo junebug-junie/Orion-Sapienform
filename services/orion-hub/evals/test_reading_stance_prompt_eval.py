@@ -18,7 +18,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from jinja2 import Environment
+from orion.cognition.prompt_render import prompt_environment
 
 from orion.schemas.world_pulse_read import WorldPulseReadHandoffV1, WorldPulseReadSeedV1
 from orion.world_pulse_read.reader_contract import stance_view_of_reading_prompt
@@ -73,7 +73,7 @@ PROMPTS = {
 
 
 def _render(task: str) -> str:
-    return Environment().from_string(TEMPLATE).render(
+    return prompt_environment().from_string(TEMPLATE).render(
         user_message=task, stance_inputs={"user_message": task}, association={},
         repair_bundle=None, coalition_projection=None, self_prediction_enabled=True,
     )

@@ -27,7 +27,11 @@ from pydantic import BaseModel, ConfigDict, Field
 # "layer3_reflect" has had no writer since 2026-10-30 (self-study reflection retired) and
 # "self_atlas_cluster" none since 2026-11 (Self Atlas retired); both stay so their
 # historical rows still validate.
-SelfConceptHistoryProducer = Literal["layer3_reflect", "self_atlas_cluster", "curiosity_self_inquiry"]
+# "core_page_fold": a core memory page (concept_id "page:<slug>", e.g. "page:juniper") folded by
+# orion-durable-runs from cited person_fact / episode_memory records (orion/memory/pages/juniper.py).
+# ADDITIVE on an extra="forbid" Literal: deploy orion-sql-writer (validates the row) before
+# orion-durable-runs publishes the first page.
+SelfConceptHistoryProducer = Literal["layer3_reflect", "self_atlas_cluster", "curiosity_self_inquiry", "core_page_fold"]
 
 
 def _utc_now() -> datetime:

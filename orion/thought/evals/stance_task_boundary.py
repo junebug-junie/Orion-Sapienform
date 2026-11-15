@@ -14,7 +14,7 @@ import time
 import uuid
 
 import httpx
-from jinja2 import Environment
+from orion.cognition.prompt_render import prompt_environment
 
 from orion.schemas.thought import ThoughtEventV1
 from orion.thought.coalition import canonicalize_turn_refs
@@ -46,7 +46,7 @@ async def evaluate(args: argparse.Namespace) -> dict:
     task = args.task_file.read_text(encoding='utf-8')
     correlation = str(uuid.uuid4())
     anchor = f'hub:turn:{correlation}'
-    prompt = Environment().from_string(args.template.read_text(encoding='utf-8')).render(
+    prompt = prompt_environment().from_string(args.template.read_text(encoding='utf-8')).render(
         user_message=task, stance_inputs={'user_message': task},
         association={'correlation_id': correlation, 'attended_node_ids': [anchor]},
         coalition_projection={'attended_node_ids': [anchor], 'open_loop_ids': [], 'broadcast_stale': False},

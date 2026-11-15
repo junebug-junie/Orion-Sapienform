@@ -68,6 +68,13 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "during a self-inquiry curiosity run); hydrated by the felt-state reader.",
         ),
         _entry("juniper_relationship_summary", "static_identity_config", "Relationship summary lines."),
+        _entry(
+            "orion_core_page_juniper",
+            "memory_recall",
+            "Latest page:juniper row from self_concept_history: Orion's own page 'who Juniper is to "
+            "me', folded nightly from cited person_fact / episode_memory records "
+            "(orion/memory/pages/juniper.py); hydrated by the felt-state reader.",
+        ),
         _entry("response_policy_summary", "static_identity_config", "Response policy summary lines."),
         _entry("identity_kernel_source", "static_identity_config", "Which identity kernel file was loaded."),
         _entry("personality_file", "static_identity_config", "Declared personality file for this turn."),

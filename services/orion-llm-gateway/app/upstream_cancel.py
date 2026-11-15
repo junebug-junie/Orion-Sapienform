@@ -31,7 +31,9 @@ _local = threading.local()
 
 
 class UpstreamCancel:
-    def __init__(self) -> None:
+    def __init__(self, lease_id: Optional[str] = None) -> None:
+        # The pool lease this call runs under: llm_backend sends it to the lane door (X-Orion-Lease-Id).
+        self.lease_id = lease_id
         self._lock = threading.Lock()
         self._sockets: List[socket.socket] = []
         self.cancelled = threading.Event()
@@ -86,6 +88,11 @@ class _RecordingBackend(httpcore.SyncBackend):
 
 def current() -> Optional[UpstreamCancel]:
     return getattr(_local, "handle", None)
+
+
+def current_lease_id() -> Optional[str]:
+    handle = current()
+    return getattr(handle, "lease_id", None) if handle is not None else None
 
 
 def cancelled_by_gateway() -> Optional[UpstreamCancel]:

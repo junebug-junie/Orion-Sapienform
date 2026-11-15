@@ -14,6 +14,7 @@ import pytest
 
 from app.prime_loop import STATE_KEY, JuniperTurns, PrimeRuntime
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+from orion.curiosity.focus import PENDING_FOCUS_PATH
 from orion.introspect.transport import QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL, RESULT_KIND
 from orion.prime import acts as pa
 from orion.prime.state import PrimeStateV1
@@ -97,14 +98,23 @@ SETTINGS = SimpleNamespace(
 
 
 def runtime(*, answer, bus=None, outcome="funded", runs=(), pending=None, holdback=0.0, turns=None, on_call=None,
-            now=T0, extra_pages=None, reason="net_positive", net=None):
+            now=T0, extra_pages=None, reason="net_positive", net=None, dashboard=None, pending_page=None):
+    """``dashboard``: an exception the dashboard read raises (else it answers). ``pending_page``: Hub's cheap
+    pending-focus answer, or an exception it raises (default: readable, ``pending`` waiting)."""
     clock = {"now": now}
     pages = {"http://dr:8121/physiology/state": BODY, "http://dr:8121/temporal-self/frame": TEMPORAL,
              **(extra_pages or {})}
 
     def get_json(url):
         if url.startswith("http://hub:8080/curiosity/api/runs"):
+            if dashboard is not None:
+                raise dashboard
             return curiosity(runs, pending)
+        if url == f"http://hub:8080{PENDING_FOCUS_PATH}":
+            page = {"available": True, "focus": pending, "enabled": True} if pending_page is None else pending_page
+            if isinstance(page, BaseException):
+                raise page
+            return page
         if url not in pages:
             raise urllib.error.HTTPError(url, 404, "not found", {}, None)
         return pages[url]
@@ -521,6 +531,67 @@ def test_a_question_with_no_refs_sends_no_refs_key_so_an_older_hub_accepts_it():
     asyncio.run(rt.tick())
     [(_, env)] = rt.bus.rpcs
     assert "refs" not in env.payload["args"]
+
+
+# --- the pending-focus read (#3366): the move check never waits on the dashboard --------------------
+
+def _infer_note(rt):
+    [close] = [a for k, a in rt.bus.acts() if k == "act_closed" and a["verb"] == "infer"]
+    return close["outcome"]["note"]
+
+
+def test_a_slow_dashboard_no_longer_refuses_the_move_when_the_cheap_read_answers():
+    # 11-14 live: the dashboard timed out every thought, so the move was refused. The cheap read decides now.
+    rt = runtime(answer=MOVE, dashboard=TimeoutError("timed out"))
+    asyncio.run(rt.tick())
+    [(channel, _env)] = rt.bus.rpcs
+    assert channel == QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL and len(rt.state.open_nominations) == 1
+    assert "move curiosity_focus" in _infer_note(rt)
+    # The frame still shows the dashboard gap, honestly.
+    assert "(unavailable: TimeoutError: timed out)" in rt.llm.calls[0]["user_prompt"]
+
+
+def test_a_focus_waiting_per_the_cheap_read_refuses_and_shows_even_with_the_dashboard_down():
+    rt = runtime(answer=MOVE, dashboard=TimeoutError("timed out"),
+                 pending={"origin": "juniper", "question": "what heats the closet at night?"})
+    asyncio.run(rt.tick())
+    assert rt.bus.rpcs == [] and rt.state.open_nominations == []
+    assert "curiosity already has a focus waiting for its next run" in _infer_note(rt)
+    assert "a focus is already waiting for the next run (juniper): 'what heats the closet at night?'" in (
+        rt.llm.calls[0]["user_prompt"])
+
+
+@pytest.mark.parametrize("page, said", [
+    (TimeoutError("timed out"), "timed out reading whether curiosity already has a focus waiting (no answer from Hub in 4 s)"),
+    (urllib.error.URLError(TimeoutError("timed out")), "timed out reading whether curiosity"),
+    (urllib.error.HTTPError("u", 404, "not found", {}, None),
+     "could not read whether curiosity already has a focus waiting (HTTPError"),
+    ({"available": False, "focus": None, "enabled": True},
+     "could not read whether curiosity already has a focus waiting (Hub could not read the focus table)"),
+    ({"available": True, "focus": "a string"}, "(not a pending-focus payload)"),
+    ({"focus": None}, "(not a pending-focus payload)"),
+    (["not", "a", "dict"], "(not a pending-focus payload)"),
+])
+def test_an_unreadable_pending_focus_still_refuses_never_fails_open(page, said):
+    rt = runtime(answer=MOVE, pending_page=page)  # the dashboard answers "nothing waiting": not trusted for this
+    asyncio.run(rt.tick())
+    assert rt.bus.rpcs == [] and rt.state.open_nominations == []
+    assert not [a for k, a in rt.bus.acts() if a["verb"] == "ask"]
+    note = _infer_note(rt)
+    assert "move refused" in note and said in note
+    assert "(whether a focus is waiting for the next run is unknown:" in rt.llm.calls[0]["user_prompt"]
+
+
+def test_the_dashboard_read_has_its_own_longer_timeout():
+    # conftest re-binds ``app`` per test: take the module's own default reader from the class.
+    default_get = PrimeRuntime.__init__.__kwdefaults__["get_json"]
+    rt = PrimeRuntime(settings=SETTINGS, bus=Bus(), llm=LLM(MOVE))
+    assert rt.get_json is default_get and rt.get_json_long.func is default_get
+    assert rt.get_json_long.keywords == {"timeout": 30.0}
+    tuned = PrimeRuntime(settings=SimpleNamespace(**{**vars(SETTINGS), "PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC": 12.5}),
+                         bus=Bus(), llm=LLM(MOVE))
+    assert tuned.get_json_long.keywords == {"timeout": 12.5}
+    assert default_get.__defaults__ == (4.0,)  # the move check keeps the short timeout
 
 
 # --- reliability (2026-11-03): seat wait, no-model tries, the starved route ----------------------

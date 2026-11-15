@@ -563,6 +563,20 @@ acked only after both publishes, deduped by sql-writer). Before this only
 `completed` was, so a waiter such as cortex-exec's self-study reflect never saw an
 admitted failure end the run.
 
+### Session round-up runs (`session_roundup.orion_turn`, 2026-11-15)
+
+Orion's hourly read of the messages coding sessions sent (Hub: `scripts/session_roundup_loop.py`, design
+`docs/superpowers/specs/2026-11-15-session-threads-design.md`). One run per hour at most, run id
+`session-roundup-<utc hour>`, submitted by Hub only when a thread is held. It is the single-step harness graph
+(`app/harness_smoke_graph.py` `build_session_roundup_graph`): one turn in the round's own session
+(`orion_<run id>`), lookup not required (the spec text is in the prompt). Hub reads the reply from
+`GET /runs/{run_id}` (`harness_steps.turn.text`). A failed attempt is retried by the shared policy. A cut-short
+turn is NOT retried: the run completes with the cut-short text and its code, and Hub holds the threads for the
+next hour. The run carries an admission deadline (its hour + 3 h). Run act: `ask:durable.session_roundup`
+(`app/run_acts.py`), its own family, tier 2 (design default), shadow bids (not in `BINDING_FAMILIES`).
+Contract: `orion/schemas/session_roundup_run.py`. Deploy order: orion-sql-writer, orion-actions,
+orion-cortex-orch, then orion-durable-runs, then orion-hub last.
+
 ### Intention carry runs (`intention.carry`, 2026-11-13, choice-as-EFE Step -1)
 
 The carry run of a concern Prime took on (`orion/schemas/intention.py`; Prime: `services/orion-mind/README.md`). Hub

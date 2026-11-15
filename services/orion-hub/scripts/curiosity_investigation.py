@@ -121,6 +121,7 @@ from .curiosity_finding_register import (
     LETTERS_SQL as REGISTER_LETTERS_SQL,
     PER_PRIOR_SQL as REGISTER_PER_PRIOR_SQL,
     QUESTIONS_SQL as REGISTER_QUESTIONS_SQL,
+    already_recorded,
     http_embedder,
     judge_finding,
     per_prior_list,
@@ -1248,6 +1249,7 @@ class CuriosityInvestigation:
         self.llm_intake_channel = str(llm_intake_channel)
         self.llm_gateway_service = str(llm_gateway_service)
         self._register_tasks: set[asyncio.Task] = set()
+        self._register_inflight: set[str] = set()
         self.value_order_enabled = bool(value_order_enabled)
         self.value_order_propensity = float(value_order_propensity)
         self.replica_arm_enabled = bool(replica_arm_enabled)
@@ -1564,9 +1566,13 @@ class CuriosityInvestigation:
         Only finished turns of the two curiosity lines; never blocks or fails the turn."""
         if not (self.finding_register_enabled and text) or source_tag not in (SELF_INQUIRY_TAG, INVESTIGATION_TAG):
             return
+        if run_id in self._register_inflight:
+            return  # an earlier attempt of this run is still being judged; the first row wins anyway
+        self._register_inflight.add(run_id)
         task = asyncio.create_task(self._record_finding_register(run_id, source_tag, text, started_at))
         self._register_tasks.add(task)
         task.add_done_callback(self._register_tasks.discard)
+        task.add_done_callback(lambda _t: self._register_inflight.discard(run_id))
 
     async def _record_finding_register(self, run_id: str, source_tag: str, text: str,
                                        started_at: Optional[datetime]) -> None:
@@ -1575,6 +1581,8 @@ class CuriosityInvestigation:
             logger.info("curiosity_register_skipped run=%s reason=not_configured", run_id)
             return
         try:
+            if await already_recorded(pool, run_id):
+                return
             line = LINE_SELF_INQUIRY if source_tag == SELF_INQUIRY_TAG else LINE_INVESTIGATE
             graph = {kind: await asyncio.to_thread(self._reader.query, cypher)
                      for kind, cypher in REGISTER_CORPUS_CYPHER.items()}

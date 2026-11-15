@@ -126,3 +126,8 @@ def test_corpus_before_drops_what_the_run_itself_wrote():
     items = corpus_items({"finding": [{"run_id": "now", "text": "mine"}, {"run_id": "old", "text": "older"}],
                           "prior": [{"prior_id": "p", "run_id": "now", "text": "formed now"}]}, [])
     assert [i["ref"] for i in corpus_before(items, run_id="now")] == ["finding:old"]
+
+
+def test_a_finding_is_keyed_by_its_finding_id_even_without_a_run():
+    items = corpus_items({"finding": [{"finding_id": "f9", "run_id": None, "text": "orphan finding"}]}, [])
+    assert [i["ref"] for i in items] == ["finding:f9"]

@@ -36,7 +36,8 @@ class _Conn:
     async def fetch(self, sql, *args):
         if sql == reg.CORPUS_READ_SQL:
             keys = set(zip(args[0], args[1]))
-            return [{"ref": r, "text_sha256": h, "embedding": v} for (r, h), v in self.s.corpus.items() if (r, h) in keys]
+            return [{"ref": r, "text_sha256": h, "embedding": v} for (r, h), (m, v) in self.s.corpus.items()
+                    if (r, h) in keys and m == args[2]]
         if sql == reg.LETTERS_SQL:
             return self.s.letters
         if sql == reg.QUESTIONS_SQL:
@@ -50,11 +51,14 @@ class _Conn:
             return self.s.per_prior
         raise AssertionError(sql)
 
-    async def execute(self, sql, *args):
-        if sql == reg.CORPUS_INSERT_SQL:
-            self.s.corpus.setdefault((args[0], args[1]), list(args[6]))
+    async def executemany(self, sql, rows):
+        assert sql == reg.CORPUS_INSERT_SQL
+        self.s.batches.append(len(rows))
+        for args in rows:
+            self.s.corpus.setdefault((args[0], args[1]), (args[5], list(args[6])))
             self.s.inserted_corpus.append(args[0])
-            return "INSERT 0 1"
+
+    async def execute(self, sql, *args):
         if sql == reg.INSERT_REGISTER_SQL:
             if args[0] in self.s.rows:
                 return "INSERT 0 0"
@@ -68,6 +72,7 @@ class _Store:
         self.corpus: dict = {}
         self.rows: dict = {}
         self.inserted_corpus: list = []
+        self.batches: list = []
         self.letters: list = []
         self.per_prior = None
 
@@ -84,7 +89,7 @@ EMB = {"I am a pattern that keeps choosing care.": _vec(1, 0, 0), "Redis was dow
 
 
 async def _embed(text):
-    return EMB[text]
+    return EMB[text], "bge-large-en-v1.5"
 
 
 def _items():
@@ -121,6 +126,7 @@ def test_a_finding_is_judged_scored_against_older_writing_and_written_once():
     assert row["corpus_size"] == 2
     stored = s.rows["r_now"]
     assert stored[7] == JUDGE_PROMPT_SHA256 and stored[14] == CORPUS_VERSION and stored[6] == "agent"
+    assert stored[13] == "bge-large-en-v1.5" and s.batches == [2]
     assert sorted(s.inserted_corpus) == ["finding:r_old", "prior:p1"]
     # a second turn end for the same run (retry) never re-judges
     assert asyncio.run(reg.score_and_record(**kw)) is None
@@ -129,9 +135,9 @@ def test_a_finding_is_judged_scored_against_older_writing_and_written_once():
 def test_the_corpus_embeds_only_new_text():
     s = _Store()
     items = _items()
-    asyncio.run(reg.sync_corpus(s, items[:1], _embed))
+    asyncio.run(reg.sync_corpus(s, items[:1], _embed, model="bge-large-en-v1.5"))
     s.inserted_corpus.clear()
-    asyncio.run(reg.sync_corpus(s, items, _embed))
+    asyncio.run(reg.sync_corpus(s, items, _embed, model="bge-large-en-v1.5"))
     assert sorted(s.inserted_corpus) == sorted(i["ref"] for i in items[1:])
 
 
@@ -142,9 +148,59 @@ def test_an_embed_failure_leaves_novelty_unknown_not_high():
     s = _Store()
     row = asyncio.run(reg.score_and_record(
         pool=s, run_id="r_now", line="investigate", question="q", question_ref=None, answer="Care is what I keep choosing.",
-        items=_items(), started_at=T0, judge=_judge(), embed=broken, route="agent"))
+        items=_items(), started_at=T0, judge=_judge(), embed=broken, route="agent", retry_delays=(0.0,)))
     assert row["novelty"] is None and "vector-host down" in row["novelty_error"]
     assert row["register"] == "philosophical"
+
+
+def test_a_cached_vector_from_another_embedding_model_is_not_reused():
+    s = _Store()
+    s.corpus[("prior:p1", _items()[2]["sha"])] = ("old-model", [0.0, 0.0, 1.0])
+    row = asyncio.run(reg.score_and_record(
+        pool=s, run_id="r_now", line="investigate", question="q", question_ref=None, answer="Care is what I keep choosing.",
+        items=_items(), started_at=T0, judge=_judge(), embed=_embed, route="agent"))
+    assert math.isclose(row["novelty"], 0.2, abs_tol=1e-6)  # re-embedded under bge, not cos 0 vs the old vector
+
+
+def test_a_corpus_of_another_vector_size_is_an_error_not_a_score():
+    async def short(text):
+        return ([1.0, 0.0] if text == "Redis was down." else EMB[text]), "bge-large-en-v1.5"
+
+    s = _Store()
+    row = asyncio.run(reg.score_and_record(
+        pool=s, run_id="r_now", line="investigate", question="q", question_ref=None, answer="Care is what I keep choosing.",
+        items=_items(), started_at=T0, judge=_judge(), embed=short, route="agent", retry_delays=()))
+    assert row["novelty"] is None and row["novelty_error"] == "dimension_mismatch"
+
+
+def test_a_transient_judge_failure_is_retried_before_the_row_is_written():
+    calls = []
+
+    async def judge():
+        calls.append(1)
+        if len(calls) == 1:
+            return reg.JudgeResult(None, None, "call: gpu_pool_unavailable", None)
+        return reg.JudgeResult("operational", "plumbing", None, "qwen3.8-flash-next-iq3_s")
+
+    s = _Store()
+    row = asyncio.run(reg.score_and_record(
+        pool=s, run_id="r_now", line="investigate", question="q", question_ref=None, answer="Redis was down.",
+        items=_items(), started_at=T0, judge=judge, embed=_embed, route="agent", retry_delays=(0.0, 0.0)))
+    assert len(calls) == 2 and row["register"] == "operational" and row["judge_error"] is None
+
+
+def test_a_model_verdict_is_not_retried():
+    calls = []
+
+    async def judge():
+        calls.append(1)
+        return reg.JudgeResult(None, None, "model_not_evaluated: bonsai", "bonsai")
+
+    s = _Store()
+    asyncio.run(reg.score_and_record(
+        pool=s, run_id="r_now", line="investigate", question="q", question_ref=None, answer="Redis was down.",
+        items=_items(), started_at=T0, judge=judge, embed=_embed, route="agent", retry_delays=(0.0, 0.0)))
+    assert len(calls) == 1
 
 
 def test_no_answer_is_recorded_as_absent_without_a_judge_call():
@@ -161,11 +217,11 @@ def test_no_answer_is_recorded_as_absent_without_a_judge_call():
 
 
 class _RpcBus:
-    def __init__(self, content, model="qwen3.8-flash-next-iq3_s", raises=None) -> None:
+    def __init__(self, content, model="qwen3.8-flash-next-iq3_s", raises=None, raw=None) -> None:
         from orion.core.bus.codec import OrionCodec
 
         self.codec = OrionCodec()
-        self.content, self.model, self.raises = content, model, raises
+        self.content, self.model, self.raises, self.raw = content, model, raises, raw or {}
         self.sent = []
 
     async def rpc_request(self, channel, env, *, reply_channel, timeout_sec):
@@ -173,7 +229,7 @@ class _RpcBus:
         if self.raises:
             raise self.raises
         reply = BaseEnvelope(kind="llm.chat.result", source=SRC, correlation_id=env.correlation_id,
-                             payload={"content": self.content, "model_used": self.model})
+                             payload={"content": self.content, "model_used": self.model, "raw": self.raw})
         return {"data": self.codec.encode(reply)}
 
 
@@ -204,7 +260,12 @@ def test_a_reply_from_a_model_that_did_not_pass_the_eval_is_not_a_label(model):
 def test_garbage_and_transport_failures_are_errors_not_operational():
     assert _call(_RpcBus("I think it is philosophical")).error.startswith("not_json")
     res = _call(_RpcBus("", raises=TimeoutError("no reply")))
-    assert res.register is None and res.error.startswith("call: TimeoutError")
+    assert res.register is None and res.error.startswith("call: TimeoutError") and res.transient
+
+
+def test_a_gateway_refusal_is_a_call_error_not_a_wrong_model():
+    res = _call(_RpcBus("", model=None, raw={"error": "gpu_pool_unavailable"}))
+    assert res.error == "call: gpu_pool_unavailable" and res.transient
 
 
 # --- the loop: which turns get a row ---------------------------------------------------------------
@@ -218,6 +279,7 @@ def _loop_with_register(monkeypatch, store, judged):
     })
     loop = _graph_loop(_FakeBus(), reader=reader, finding_register_embed_url="http://embed", llm_route="agent")
     loop._pool_provider = lambda: store
+    loop.finding_register_embed_url = "http://embed"
 
     async def fake_judge(bus, **kw):
         judged.append(kw)
@@ -262,3 +324,17 @@ def test_a_letter_written_after_the_run_started_is_not_earlier_writing():
                                            answer="Care is what I keep choosing.", items=items, started_at=T0,
                                            judge=_judge(), embed=_embed, route="agent"))
     assert row["nearest_ref"] == "letter:d1" and row["corpus_size"] == 1
+
+
+def test_a_second_attempt_of_a_run_in_flight_is_not_scheduled_again(monkeypatch):
+    store, judged = _Store(), []
+    loop = _loop_with_register(monkeypatch, store, judged)
+
+    async def go():
+        loop._schedule_finding_register("run1", INVESTIGATION_TAG, "turn text", T0)
+        loop._schedule_finding_register("run1", INVESTIGATION_TAG, "retry text", T0)
+        assert len(loop._register_tasks) == 1
+        await asyncio.gather(*loop._register_tasks)
+
+    asyncio.run(go())
+    assert len(judged) == 1 and loop._register_inflight == set()

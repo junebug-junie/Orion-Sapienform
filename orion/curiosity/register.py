@@ -71,7 +71,7 @@ PASSED_JUDGE_MODELS = ("qwen3.8-flash-next",)
 
 # Read-only Cypher for the novelty corpus (static, no parameters).
 CORPUS_CYPHER = {
-    "finding": "MATCH (n:Finding) RETURN n.run_id AS run_id, n.text AS text",
+    "finding": "MATCH (n:Finding) RETURN n.finding_id AS finding_id, n.run_id AS run_id, n.text AS text",
     "lived_answer": "MATCH (n:LivedAnswer) RETURN n.run_id AS run_id, n.text AS text",
     "self_definition": "MATCH (n:SelfDefinition) RETURN n.run_id AS run_id, n.text AS text",
     "prior": "MATCH (p:Prior) RETURN p.prior_id AS prior_id, p.run_id AS run_id, p.claim AS text",
@@ -165,8 +165,9 @@ def corpus_items(
 
     ``graph_rows`` maps a ``CORPUS_CYPHER`` kind to its rows; ``letters`` are Day letter rows
     ``{run_id, created_at, note_md}``. Text is cleaned and cut to ``EMBED_CHARS`` (what is embedded);
-    empty text is dropped. Answer nodes are keyed by their run (one run may write several: the sha
-    keeps them apart); a prior by its id; a letter by its run id."""
+    empty text is dropped. A Finding is keyed by its ``finding_id`` (a few have no run id); the other
+    answer nodes by their run (the sha keeps a run's several apart); a prior by its id; a letter by its
+    run id."""
     out: list[dict[str, Any]] = []
     for kind, rows in graph_rows.items():
         for r in rows:
@@ -174,7 +175,7 @@ def corpus_items(
             run = str(r.get("run_id") or "") or None
             if not text:
                 continue
-            key = r.get("prior_id") if kind == "prior" else run
+            key = r.get("prior_id") if kind == "prior" else ((r.get("finding_id") or run) if kind == "finding" else run)
             if not key:
                 continue
             out.append({"ref": f"{kind}:{key}", "kind": kind, "run_id": run, "text": text,

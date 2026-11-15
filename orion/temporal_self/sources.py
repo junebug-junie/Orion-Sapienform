@@ -21,6 +21,7 @@ Source drift found live on 2026-10-10 (recorded in the PR report):
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from typing import Any, Callable, Iterable, Mapping
 
@@ -268,7 +269,10 @@ def action_outcome(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 |
         at=row.get("observed_at") or row.get("created_at"), tz_name=tz_name,
         verdict=f"claim_upheld={word}",
         payload={"dispatch_kind": row.get("dispatch_kind"), "target_id": row.get("target_id"),
-                 "prediction_error": row.get("prediction_error")},
+                 "prediction_error": row.get("prediction_error"),
+                 # Orion's now (integration patch 1): the row's own surprisal, for temporal_self_event
+                 # .surprise_nats and the prediction organ's salience. Absent on rows read before it.
+                 **({"surprise_nats": _finite(row.get("surprise_nats"))} if "surprise_nats" in row else {})},
     )
 
 
@@ -859,6 +863,102 @@ def _iso(value: Any) -> str | None:
     return dt.isoformat() if dt else None
 
 
+# --- Orion's now, patch 1 (docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md A1)
+# Three organs that were not Temporal Self sources become experiences. None of them folds into an arc;
+# they are read back through GET /temporal-self/now.
+
+
+def _finite(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) else None
+
+
+def reading_turn(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One finished reading: a CLOSED ``hub.world_pulse_read`` act (grammar_acts). Time: opened_at ..
+    closed_at (available at closed_at). Subject: none (a reading is not a process arc). Label: the
+    act's own outcome note and the seed's title or the url. ``surprise_nats``: the act close's own.
+
+    The spec named ``reading_durable_turn`` as the source; live (2026-11-15) that table is the stage
+    request queue (two stages and retries per reading, 702 rows / 106 consumed in 7 days) and holds no
+    finished state. The act close is the one row per finished reading."""
+    if row.get("closed_at") is None:
+        return None
+    title = clip(row.get("seed_title") or "", 120)
+    what = title or clip(row.get("object_ref") or "", 160)
+    note = clip(row.get("outcome_note") or "", 80)
+    seed = row.get("correlation_id") or None
+    return _event(
+        kind="reading_turn", table="grammar_acts", ref=row.get("act_id"), at=row.get("opened_at"),
+        ended=row.get("closed_at"), tz_name=tz_name, correlation_id=seed,
+        related_refs=[f"act:{row.get('act_id')}"] + ([str(row["object_ref"])[:300]] if row.get("object_ref") else []),
+        label=clip(f"{note}: {what}" if note and what else (note or what)),
+        verdict=note or None,
+        payload={"url": row.get("object_ref"), "outcome_value": _finite(row.get("outcome_value")),
+                 "surprise_nats": _finite(row.get("surprise_nats"))},
+    )
+
+
+# Jeffreys (Krichevsky-Trofimov, add-1/2) smoothing for a Monte Carlo exceedance probability (n_paths paths): a forecast of 0 out of 40
+# paths is not certainty, so an observed exceedance it "ruled out" reads a large but finite surprisal.
+def _smoothed(p: float, n: int) -> float:
+    n = max(int(n or 0), 0)
+    return (p * n + 0.5) / (n + 1) if n else min(max(p, 1e-6), 1 - 1e-6)
+
+
+def exceedance_surprisal(probability: Any, n_paths: Any, hit: Any) -> float | None:
+    """-ln P(what happened) under the forecast: -ln p if the threshold was crossed, -ln(1-p) if not."""
+    p = _finite(probability)
+    if p is None or hit is None:
+        return None
+    ps = _smoothed(min(max(p, 0.0), 1.0), int(n_paths or 0))
+    return -math.log(ps if bool(hit) else 1.0 - ps)
+
+
+def prediction_surprise(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One SCORED exceedance forecast (orion-prediction ``prediction_exceedance``). Time: scored_at, when
+    Orion learned the outcome. ``surprise_nats``: -ln P(observed) under the forecast (Jeffreys-smoothed
+    over its n_paths). ``related_refs``: joint-surprise rows scored for a target inside the same window
+    (``row['joint_ids']``, a time match, not a causal link)."""
+    if row.get("scored_at") is None or row.get("hit_raw") is None:
+        return None
+    hit = bool(row.get("hit_raw"))
+    surprise = exceedance_surprisal(row.get("probability"), row.get("n_paths"), hit)
+    series, name = row.get("series_id"), row.get("name")
+    p = _finite(row.get("probability"))
+    label = (f"{series} {name} > {row.get('threshold')}: forecast {0 if p is None else p:.0%}, "
+             f"{'crossed' if hit else 'not crossed'} (max {row.get('max_raw')})")
+    return _event(
+        kind="prediction_surprise", table="prediction_exceedance", ref=row.get("exceedance_id"),
+        at=row.get("scored_at"), tz_name=tz_name, subject_ref=None,
+        related_refs=[f"prediction_joint_surprise:{j}" for j in (row.get("joint_ids") or [])][:8],
+        label=clip(label), verdict="crossed" if hit else "not_crossed",
+        payload={"series_id": series, "name": name, "probability": p, "n_paths": row.get("n_paths"),
+                 "max_raw": _finite(row.get("max_raw")), "threshold": _finite(row.get("threshold")),
+                 "window_start": _iso(row.get("window_start")), "window_end": _iso(row.get("window_end")),
+                 "surprise_nats": surprise},
+    )
+
+
+def prime_thought(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One Prime thought: a CLOSED ``prime``/``infer`` act (grammar_acts). Time: opened_at .. closed_at.
+    Label: the act's own outcome note (what woke Prime, what changed, the move). ``surprise_nats``: the
+    act close's own. related_refs: the act and its thought ref (object_ref ``prime_thought:<id>``)."""
+    if row.get("closed_at") is None:
+        return None
+    return _event(
+        kind="prime_thought", table="grammar_acts", ref=row.get("act_id"), at=row.get("opened_at"),
+        ended=row.get("closed_at"), tz_name=tz_name, correlation_id=row.get("correlation_id") or None,
+        related_refs=[f"act:{row.get('act_id')}"] + ([str(row["object_ref"])] if row.get("object_ref") else []),
+        label=clip(row.get("outcome_note") or ""),
+        payload={"outcome_value": _finite(row.get("outcome_value")), "surprise_nats": _finite(row.get("surprise_nats"))},
+    )
+
+
 ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "chat_turn": chat_turn,
     "curiosity_run": curiosity_run,
@@ -885,7 +985,16 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "body_binding": body_binding,
     "faculty_status_changed": faculty_status_changed,
     "office_session": office_session,
+    "reading_turn": reading_turn,
+    "prediction_surprise": prediction_surprise,
+    "prime_thought": prime_thought,
 }
+
+
+# Orion's now: kinds that are experiences only (no arc folds them), and the tables their events name.
+# A row of these tables is never arc evidence (orion-sql-writer act_downstream_use ARC_SOURCE_TABLES).
+EXPERIENCE_ONLY_KINDS = frozenset({"reading_turn", "prediction_surprise", "prime_thought"})
+EXPERIENCE_ONLY_TABLES = frozenset({"grammar_acts", "prediction_exceedance"})
 
 
 def adapt(kind: str, rows: Iterable[Row], tz_name: str = DEFAULT_TZ) -> list[TemporalSelfEventV1]:

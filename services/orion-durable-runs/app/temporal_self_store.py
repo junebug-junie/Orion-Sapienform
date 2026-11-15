@@ -17,7 +17,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from orion.schemas.temporal_self import (
     TemporalSelfArcV1,
@@ -27,6 +27,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfStateV1,
 )
 from orion.temporal_self.arcs import AVAILABLE_AT_KINDS
+from orion.temporal_self.now import stored_payload_surprise
 
 logger = logging.getLogger("orion-durable-runs.temporal_self_store")
 
@@ -55,6 +56,8 @@ class WindowWrite:
     # The commit refuses if the stored watermark moved: a second writer, or a stale cache.
     expected_prev: Optional[datetime] = None
     state_gz: Optional[bytes] = None   # pack_state(state), precomputed off the event loop
+    # event_id -> salience (Orion's now, integration patch 1); absent ids are stored NULL.
+    salience: dict[str, Optional[float]] = field(default_factory=dict)
 
 
 @dataclass
@@ -71,9 +74,10 @@ class StaleWriterError(RuntimeError):
 
 INSERT_EVENT_SQL = """
 INSERT INTO temporal_self_event (event_id, day_id, occurred_at, source_kind, source_table, source_ref,
-  correlation_id, subject_ref, related_refs, label, verdict, payload_json, late_unfolded)
+  correlation_id, subject_ref, related_refs, label, verdict, payload_json, late_unfolded, salience, surprise_nats)
 VALUES (%(event_id)s, %(day_id)s, %(occurred_at)s, %(source_kind)s, %(source_table)s, %(source_ref)s,
-  %(correlation_id)s, %(subject_ref)s, %(related_refs)s, %(label)s, %(verdict)s, %(payload)s::jsonb, %(late)s)
+  %(correlation_id)s, %(subject_ref)s, %(related_refs)s, %(label)s, %(verdict)s, %(payload)s::jsonb, %(late)s,
+  %(salience)s, %(surprise_nats)s)
 ON CONFLICT (event_id) DO UPDATE SET late_unfolded = false
   WHERE temporal_self_event.late_unfolded AND NOT EXCLUDED.late_unfolded
 """
@@ -114,15 +118,31 @@ ON CONFLICT (state_id) DO UPDATE SET watermark = EXCLUDED.watermark, origin = EX
 """
 
 
-def event_row(e: TemporalSelfEventV1, *, late: bool = False) -> dict:
+def stored_payload(e: TemporalSelfEventV1) -> dict:
+    """``payload_json`` as stored: the event's payload plus ``ended_at`` and ``privacy_class``."""
+    return dict(e.payload, ended_at=e.ended_at.isoformat() if e.ended_at else None, privacy_class=e.privacy_class)
+
+
+def stored_shape(e: TemporalSelfEventV1) -> dict:
+    """The row shape the magnitude rules (orion/temporal_self/now.py) read, for a new event."""
+    payload = stored_payload(e)
+    return {"occurred_at": e.occurred_at, "verdict": e.verdict, "payload": payload,
+            "surprise_nats": stored_payload_surprise(payload)}
+
+
+def event_row(e: TemporalSelfEventV1, *, late: bool = False, salience: Optional[float] = None) -> dict:
+    payload = stored_payload(e)
     return {
         "event_id": e.event_id, "day_id": e.day_id, "occurred_at": e.occurred_at,
         "source_kind": e.source_kind, "source_table": e.source_table, "source_ref": e.source_ref,
         "correlation_id": e.correlation_id, "subject_ref": e.subject_ref, "related_refs": list(e.related_refs),
         "label": e.label, "verdict": e.verdict,
-        "payload": json.dumps(dict(e.payload, ended_at=e.ended_at.isoformat() if e.ended_at else None,
-                                   privacy_class=e.privacy_class), default=str),
+        "payload": json.dumps(payload, default=str),
         "late": late,
+        # Orion's now (integration patch 1): NULL unless the kind declares a magnitude and has 20 past
+        # events (salience), or the source carried a real prediction's surprisal (surprise_nats).
+        "salience": salience,
+        "surprise_nats": stored_payload_surprise(payload),
     }
 
 
@@ -216,7 +236,8 @@ class ChronicleStore:
                     stored = held["watermark"] if held else None
                     if stored != w.expected_prev:
                         raise StaleWriterError(f"stored watermark {stored} != expected {w.expected_prev}")
-                    rows = [event_row(e) for e in w.events] + [event_row(e, late=True) for e in w.late_events]
+                    rows = ([event_row(e, salience=w.salience.get(e.event_id)) for e in w.events]
+                            + [event_row(e, late=True, salience=w.salience.get(e.event_id)) for e in w.late_events])
                     if rows:
                         await cur.executemany(INSERT_EVENT_SQL, rows)
                     if w.arcs:
@@ -242,6 +263,9 @@ class ChronicleStore:
                 ("event", "DELETE FROM temporal_self_event WHERE occurred_at < %(cut)s", event_days),
                 ("arc", "DELETE FROM temporal_self_arc WHERE status = 'closed' AND coalesce(ended_at, began_at) < %(cut)s", arc_days),
                 ("day", "DELETE FROM temporal_self_day WHERE closed_at < %(cut)s", day_days),
+                # Orion's now: reads and uses live as long as the experiences they name.
+                ("experience_shown", "DELETE FROM experience_shown WHERE shown_at < %(cut)s", event_days),
+                ("experience_use", "DELETE FROM experience_use WHERE cited_at < %(cut)s", event_days),
             ):
                 cur = await conn.execute(sql, {"cut": now - timedelta(days=days)})
                 out[name] = cur.rowcount
@@ -293,3 +317,131 @@ class ChronicleStore:
                 "SELECT source_kind, count(*) AS n FROM temporal_self_event WHERE late_unfolded "
                 "AND ingested_at >= %(since)s GROUP BY source_kind ORDER BY source_kind", {"since": since})).fetchall()
         return {r["source_kind"]: int(r["n"]) for r in rows}
+
+    # --- Orion's now (integration patch 1) -------------------------------------------------------
+
+    async def magnitude_history(self, kind: str, since: datetime) -> list[dict]:
+        """Stored-shape rows of one kind since ``since`` (the salience history, read once per kind)."""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                rows = await (await conn.execute(
+                    "SELECT event_id, occurred_at, verdict, payload_json, surprise_nats FROM temporal_self_event "
+                    "WHERE source_kind = %(k)s AND occurred_at >= %(since)s", {"k": kind, "since": since})).fetchall()
+        return [{"event_id": r["event_id"], "occurred_at": r["occurred_at"], "verdict": r["verdict"],
+                 "payload": r["payload_json"] or {}, "surprise_nats": r["surprise_nats"]} for r in rows]
+
+
+NOW_CANDIDATES_SQL = """
+SELECT event_id, source_kind, occurred_at, label, verdict, related_refs, payload_json, salience, surprise_nats,
+  kind_total
+FROM (
+  SELECT e.event_id, e.source_kind, e.occurred_at, e.label, e.verdict, e.related_refs, e.payload_json,
+    e.salience, e.surprise_nats,
+    row_number() OVER (PARTITION BY e.source_kind
+                       ORDER BY e.salience DESC NULLS LAST, e.occurred_at DESC, e.event_id) AS rk,
+    count(*) OVER (PARTITION BY e.source_kind) AS kind_total
+  FROM temporal_self_event e
+  WHERE e.ingested_at > %(since)s AND e.ingested_at <= %(as_of)s AND e.source_kind <> ALL(%(own)s)
+) x WHERE rk <= %(per_kind)s
+"""
+LAST_SHOWN_SQL = "SELECT max(shown_at) AS at FROM experience_shown WHERE reader_organ = %(o)s AND advances_cursor"
+INSERT_SHOWN_SQL = """
+INSERT INTO experience_shown (shown_id, reader_organ, reader_run_ref, event_ids, since, shown_at, advances_cursor)
+VALUES (%(shown_id)s, %(reader_organ)s, %(reader_run_ref)s, %(event_ids)s, %(since)s, %(shown_at)s, %(advances_cursor)s)
+"""
+SHOWN_BY_ID_SQL = "SELECT shown_id, reader_organ, event_ids, shown_at FROM experience_shown WHERE shown_id = %(s)s"
+# The same row, locked: concurrent cite calls on one shown row are serialized, so the 3-cite cap holds.
+SHOWN_FOR_UPDATE_SQL = SHOWN_BY_ID_SQL + " FOR UPDATE"
+USED_FOR_SHOWN_SQL = "SELECT event_id FROM experience_use WHERE shown_id = %(s)s"
+INSERT_USE_SQL = """
+INSERT INTO experience_use (use_id, event_id, citing_organ, citing_ref, shown_id, cited_at)
+VALUES (%(use_id)s, %(event_id)s, %(citing_organ)s, %(citing_ref)s, %(shown_id)s, %(cited_at)s)
+ON CONFLICT (use_id) DO NOTHING
+"""
+# The metric's two reads: experiences recorded in the window (by when they happened), and valid uses
+# of those experiences made within 24 h of when they could first be read (ended_at, else occurred_at);
+# plus cites each organ made in the window.
+RATE_KINDS_SQL = """
+SELECT source_kind, count(*) AS n FROM temporal_self_event
+WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s GROUP BY source_kind
+"""
+RATE_USES_SQL = """
+SELECT DISTINCT u.event_id, e.source_kind, u.citing_organ
+FROM experience_use u JOIN temporal_self_event e ON e.event_id = u.event_id
+WHERE e.occurred_at >= %(lo)s AND e.occurred_at < %(hi)s
+  AND u.cited_at < COALESCE((e.payload_json->>'ended_at')::timestamptz, e.occurred_at) + interval '24 hours'
+"""
+RATE_CITES_MADE_SQL = """
+SELECT citing_organ, count(*) AS n FROM experience_use
+WHERE cited_at >= %(lo)s AND cited_at < %(hi)s GROUP BY citing_organ
+"""
+
+
+class ExperienceStore:
+    """``experience_shown`` / ``experience_use`` and the now's reads (manual_migration_experience_now_v1.sql)."""
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+
+    async def last_shown(self, organ: str) -> Optional[datetime]:
+        async with self._pool.connection() as conn:
+            row = await (await conn.execute(LAST_SHOWN_SQL, {"o": organ})).fetchone()
+        return row["at"] if row else None
+
+    async def candidates(self, *, since: datetime, as_of: datetime, own_kinds: Iterable[str],
+                         per_kind: int) -> tuple[list[dict], int]:
+        """At most ``per_kind`` rows per source kind (by salience, then newest), ingested in
+        ``(since, as_of]``, of kinds other than ``own_kinds``; and how many rows matched in all."""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                rows = await (await conn.execute(NOW_CANDIDATES_SQL, {
+                    "since": since, "as_of": as_of, "own": sorted(own_kinds), "per_kind": per_kind})).fetchall()
+        totals: dict[str, int] = {}
+        out = []
+        for r in rows:
+            totals[r["source_kind"]] = int(r["kind_total"])
+            out.append({"event_id": r["event_id"], "source_kind": r["source_kind"], "occurred_at": r["occurred_at"],
+                        "label": r["label"], "verdict": r["verdict"], "related_refs": list(r["related_refs"] or []),
+                        "payload": r["payload_json"] or {}, "salience": r["salience"],
+                        "surprise_nats": r["surprise_nats"]})
+        return out, sum(totals.values())
+
+    async def insert_shown(self, *, shown_id: str, reader_organ: str, reader_run_ref: Optional[str],
+                           event_ids: list[str], since: datetime, shown_at: datetime,
+                           advances_cursor: bool = True) -> None:
+        async with self._pool.connection() as conn:
+            await conn.execute(INSERT_SHOWN_SQL, {
+                "shown_id": shown_id, "reader_organ": reader_organ, "reader_run_ref": reader_run_ref,
+                "event_ids": event_ids, "since": since, "shown_at": shown_at, "advances_cursor": advances_cursor})
+
+    async def record_cites(self, shown_id: str, decide: Callable[[dict, list[str]], Any]) -> Any:
+        """One transaction: lock the shown row, read the uses already stored for it, let ``decide(shown,
+        already_used)`` (orion.temporal_self.now.record_use) choose, insert its uses. None: no such row."""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    await cur.execute(SHOWN_FOR_UPDATE_SQL, {"s": shown_id})
+                    shown = await cur.fetchone()
+                    if shown is None:
+                        return None
+                    await cur.execute(USED_FOR_SHOWN_SQL, {"s": shown_id})
+                    already = [r["event_id"] for r in await cur.fetchall()]
+                    result = decide(dict(shown), already)
+                    rows = [u.model_dump() for u in result.uses]
+                    if rows:
+                        await cur.executemany(INSERT_USE_SQL, rows)
+        return result
+
+    async def rate_inputs(self, lo: datetime, hi: datetime) -> tuple[dict[str, int], list[tuple[str, str, str]], dict[str, int]]:
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                kinds = await (await conn.execute(RATE_KINDS_SQL, {"lo": lo, "hi": hi})).fetchall()
+                uses = await (await conn.execute(RATE_USES_SQL, {"lo": lo, "hi": hi})).fetchall()
+                made = await (await conn.execute(RATE_CITES_MADE_SQL, {"lo": lo, "hi": hi})).fetchall()
+        return ({r["source_kind"]: int(r["n"]) for r in kinds},
+                [(r["event_id"], r["source_kind"], r["citing_organ"]) for r in uses],
+                {r["citing_organ"]: int(r["n"]) for r in made})

@@ -24,6 +24,11 @@ def test_arc_source_tables_match_the_temporal_self_sources() -> None:
     tables = set(re.findall(r'table="([a-z_]+)"', (ts / "sources.py").read_text()))
     tables |= set(re.findall(r'f"([a-z_]+):\{', (ts / "arcs.py").read_text()))   # e.g. the broadcast log
     assert "substrate_attention_broadcast_log" in tables
+    # Orion's now: experience-only kinds (reading_turn, prediction_surprise, prime_thought) fold into no
+    # arc, so their tables can never be arc evidence.
+    from orion.temporal_self.sources import EXPERIENCE_ONLY_TABLES
+
+    tables -= EXPERIENCE_ONLY_TABLES
     assert set(ARC_SOURCE_TABLES) == tables
 
 

@@ -104,6 +104,11 @@ DECLARED_WRITERS: dict[str, tuple[Optional[str], str]] = {
     # the durable-runs writer is now uncovered by this check (single-writer limit).
     # SelfMonitorStateV1 / FacultyRecordV1 were declared here (writer orion-durable-runs) until the
     # self_monitor node (rung 6 patch 2, PR #3066) became a writer code can see: same rule as above.
+    "orion.schemas.temporal_self:ExperienceCitesV1": (
+        None,
+        "the POST /temporal-self/now/use body on orion-durable-runs (Orion's now, integration patch 1); its "
+        "callers (Prime, reveries, curiosity) are integration patch 3 and send plain JSON over HTTP",
+    ),
     "orion.schemas.prediction:ActionBetCountsV1": (
         "orion-prediction",
         "app/action_bets.py backoff() builds the per-level counts at quote/place time and stores them on "

@@ -44,6 +44,8 @@ MIGRATIONS = (
     REPO / "services/orion-sql-db/manual_migration_vision_handoff_v1.sql",
     # Office sessions (office camera design PR #3127 step B).
     REPO / "services/orion-sql-db/manual_migration_vision_office_session_v1.sql",
+    # Orion's now (integration patch 1): salience / surprise_nats columns, experience_shown / _use.
+    REPO / "services/orion-sql-db/manual_migration_experience_now_v1.sql",
 )
 
 

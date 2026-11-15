@@ -282,8 +282,13 @@ def test_retention_covers_chronicle_rows_and_arousal_transitions():
                                (now - timedelta(days=100), now - timedelta(days=100), now - timedelta(days=100)))
             await conn.execute("INSERT INTO temporal_self_day (day_id, closed_at, day_json) VALUES ('2025-01-01', %s, '{}')",
                                (now - timedelta(days=400),))
+            # Orion's now: reads and uses go with the events they name (event retention).
+            await conn.execute("INSERT INTO experience_shown (shown_id, reader_organ, event_ids, since, shown_at) VALUES "
+                               "('old', 'prime', '{}', %s, %s), ('new', 'prime', '{}', %s, %s)", (old, old, now, now))
+            await conn.execute("INSERT INTO experience_use (use_id, event_id, citing_organ, citing_ref, shown_id, cited_at) "
+                               "VALUES ('u-old', 'e', 'prime', 'r', 'old', %s)", (old,))
         out = await ChronicleStore(pool).retention(now, event_days=30, arc_days=90, day_days=365)
-        assert out == {"event": 1, "arc": 1, "day": 1}
+        assert out == {"event": 1, "arc": 1, "day": 1, "experience_shown": 1, "experience_use": 1}
         async with pool.connection() as conn:
             left = await (await conn.execute("SELECT source_kind, label FROM temporal_self_event")).fetchall()
             arcs = await (await conn.execute("SELECT arc_id FROM temporal_self_arc")).fetchall()

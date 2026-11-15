@@ -32,6 +32,9 @@ COPY config/physiology/families.yaml /app/config/physiology/families.yaml
 COPY config/physiology/consent.yaml /app/config/physiology/consent.yaml
 # Pinned per-host rest watts: GET /physiology/report hosts/unit_costs measure above this (PR #2992).
 COPY config/physiology/rest_body.yaml /app/config/physiology/rest_body.yaml
+# Orion's now (integration patch 1): the organ registry (which organ each experience belongs to, and
+# each kind's salience magnitude) read by orion/temporal_self/now.py for /temporal-self/now and salience.
+COPY config/integration/organs.yaml /app/config/integration/organs.yaml
 COPY services/orion-durable-runs /app
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8121"]

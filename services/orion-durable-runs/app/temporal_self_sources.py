@@ -130,11 +130,11 @@ FROM dream_hypothesis WHERE created_at >= %(lo)s AND created_at < %(hi)s
     # cooling world act's ``self_regulate`` rows. The dispatch ladder's own kinds (summarize, maintain,
     # inspect) stopped with dispatch; reading a kind that cannot arrive any more is a dead source.
     SourceQuery("action_outcome", """
-SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error
+SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error, surprise_nats
 FROM substrate_action_outcomes WHERE observed_at >= %(lo)s AND observed_at < %(hi)s
   AND (dispatch_kind LIKE 'act:%%' OR dispatch_kind = 'self_regulate')
 UNION ALL
-SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error
+SELECT id, observed_at, created_at, claim_upheld, dispatch_kind, target_id, prediction_error, surprise_nats
 FROM substrate_action_outcomes WHERE observed_at IS NULL AND created_at >= %(lo)s AND created_at < %(hi)s
   AND (dispatch_kind LIKE 'act:%%' OR dispatch_kind = 'self_regulate')
 """),
@@ -272,6 +272,38 @@ SELECT session_id, stream_id, status, started_at, ended_at, closed_at, who_text,
 FROM vision_office_session
 WHERE status = 'closed' AND closed_at >= %(lo)s AND closed_at < %(hi)s AND stream_id = ANY(%(room_streams)s)
 """, optional_table="vision_office_session"),
+    # Orion's now, patch 1 (integration design A1). Each is optional: a missing table skips the kind.
+    # A finished reading: a closed hub.world_pulse_read act, available at closed_at. Readings run up to
+    # ~5 h (live max 5.2 h, p99 1 h, to 11-15), so opened_at (the indexed column) is widened by a day.
+    # The seed title joins by the seed id ('reading:<uuid>') or a digest seed's request id.
+    SourceQuery("reading_turn", """
+SELECT a.act_id, a.object_ref, a.correlation_id, a.opened_at, a.closed_at, a.outcome_value, a.outcome_note,
+  a.surprise_nats, s.title AS seed_title
+FROM grammar_acts a LEFT JOIN LATERAL (
+  SELECT title FROM world_pulse_read_seed s
+  WHERE s.seed_id = 'reading:' || a.correlation_id OR s.request_id::text = a.correlation_id
+  ORDER BY s.created_at DESC LIMIT 1) s ON true
+WHERE a.verb = 'look' AND a.actor = 'hub.world_pulse_read' AND a.opened_at >= %(lo)s
+  AND a.closed_at >= %(lo)s::timestamptz + interval '1 day' AND a.closed_at < %(hi)s
+""", slack=timedelta(days=1), optional_table="grammar_acts", also_requires=("world_pulse_read_seed",)),
+    # A scored exceedance forecast, available at scored_at (scored up to ~11 min after its window ends).
+    # Joint-surprise rows scored for a target inside the same window ride along as related refs.
+    SourceQuery("prediction_surprise", """
+SELECT e.exceedance_id, e.series_id, e.name, e.threshold, e.window_start, e.window_end, e.probability,
+  e.n_paths, e.scored_at, e.hit_raw, e.max_raw,
+  ARRAY(SELECT j.joint_id FROM prediction_joint_surprise j WHERE j.status = 'scored'
+        AND j.target_ts >= e.window_start AND j.target_ts <= e.window_end ORDER BY j.joint_id) AS joint_ids
+FROM prediction_exceedance e
+WHERE e.scored_at IS NOT NULL AND e.scored_at >= %(lo)s AND e.scored_at < %(hi)s
+""", optional_table="prediction_exceedance", also_requires=("prediction_joint_surprise",)),
+    # A Prime thought: a closed prime/infer act, available at closed_at. Most close in seconds; one
+    # closed 2.3 days late (live, to 11-15), so opened_at is widened by three days.
+    SourceQuery("prime_thought", """
+SELECT act_id, object_ref, correlation_id, opened_at, closed_at, outcome_value, outcome_note, surprise_nats
+FROM grammar_acts
+WHERE verb = 'infer' AND actor = 'prime' AND opened_at >= %(lo)s
+  AND closed_at >= %(lo)s::timestamptz + interval '3 days' AND closed_at < %(hi)s
+""", slack=timedelta(days=3), optional_table="grammar_acts"),
 )
 
 TABLE_EXISTS_SQL = "SELECT to_regclass(%(t)s) IS NOT NULL AS present"

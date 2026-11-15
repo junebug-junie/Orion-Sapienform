@@ -39,6 +39,7 @@ TABLES = {
                                  "reference"),
     "prediction_reachable_forecast": ("forecast_id", "origin", "p", "p_state", "p_baseline", "served", "features",
                                       "happened"),
+    "prediction_act_chain_forecast": ("forecast_id", "origin", "probs", "served", "observed", "surprise", "excess"),
     "prediction_bill_forecast": ("bet_id", "origin", "period_start", "projected_kwh", "kwh_lo80", "usd_hi80",
                                  "settled_at", "kwh_in_80", "usd_in_80"),
 }
@@ -68,6 +69,11 @@ JUNIPER_MESSAGE_SQL = "role = 'user' AND coalesce(session_id, '') NOT LIKE 'orio
 REACHABLE_COLS = ("forecast_id", "origin", "window_end", "issued_at", "model", "p", "p_state", "p_baseline", "served",
                   "hours_since", "state_bucket", "local_hour", "n_messages", "features", "settled_at", "happened",
                   "n_in_window")
+
+ACT_CHAIN_COLS = ("forecast_id", "origin", "window_end", "issued_at", "model", "served", "prev_state", "block",
+                  "n_train", "k", "probs", "settled_at", "observed", "n_acts", "surprise", "excess")
+_ACT_CHAIN_ISSUE = ACT_CHAIN_COLS[:11]
+_ACT_CHAIN_JSONB = {"k", "probs"}
 
 BILL_BET_COLS = ("bet_id", "usage_point_id", "bet_date", "origin", "as_of", "model", "period_start", "period_end",
                  "covered_through", "days_into_cycle", "remaining_days", "observed_kwh", "projected_kwh",
@@ -690,6 +696,32 @@ class PostgresStore:
                          "WHERE opened_at >= %s AND opened_at < %s AND verb IS NOT NULL ORDER BY opened_at",
                          (start, end))
         return [(r["o"], r["c"], r["v"]) for r in rows]
+
+    def act_chain_exists(self, origin: datetime) -> bool:
+        return bool(self._all("SELECT 1 FROM prediction_act_chain_forecast WHERE origin = %s", (origin,)))
+
+    def insert_act_chain(self, row: dict) -> str | None:
+        cols = _ACT_CHAIN_ISSUE
+        rows = self._all(f"INSERT INTO prediction_act_chain_forecast ({', '.join(cols)}) VALUES "
+                         f"({', '.join('%s::jsonb' if c in _ACT_CHAIN_JSONB else '%s' for c in cols)}) "
+                         "ON CONFLICT (forecast_id) DO NOTHING RETURNING forecast_id",
+                         [_j(row[c]) if c in _ACT_CHAIN_JSONB else row[c] for c in cols])
+        return rows[0]["forecast_id"] if rows else None
+
+    def pending_act_chain(self, window_ended_before: datetime) -> list[dict]:
+        return self._all("SELECT forecast_id, origin, window_end, served, probs FROM prediction_act_chain_forecast "
+                         "WHERE settled_at IS NULL AND window_end <= %s ORDER BY origin", (window_ended_before,))
+
+    def settle_act_chain(self, forecast_id: str, observed: str, n_acts: int, surprise: float, excess: float,
+                         now: datetime) -> int:
+        return len(self._all("UPDATE prediction_act_chain_forecast SET observed = %s, n_acts = %s, surprise = %s, "
+                             "excess = %s, settled_at = %s WHERE forecast_id = %s AND settled_at IS NULL "
+                             "RETURNING forecast_id", (observed, n_acts, surprise, excess, now, forecast_id)))
+
+    def act_chain_rows(self, since: datetime, settled_only: bool) -> list[dict]:
+        where = "origin >= %s" + (" AND settled_at IS NOT NULL" if settled_only else "")
+        return self._all(f"SELECT {', '.join(ACT_CHAIN_COLS)} FROM prediction_act_chain_forecast WHERE {where} "
+                         "ORDER BY origin", (since,))
 
     # --- Juniper reachable (manual_migration_prediction_reachable_forecast_v1.sql) -----------------
     def juniper_messages(self, start: datetime, end: datetime) -> list[datetime]:

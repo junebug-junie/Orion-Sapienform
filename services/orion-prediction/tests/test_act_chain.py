@@ -144,3 +144,256 @@ def test_training_conditions_use_what_was_known_not_the_final_outcome():
     look, make = (r["probs"]["act_markov"][C.STATES.index(v)] for v in ("look", "make"))
     assert r["prev_state"] == "idle"
     assert look > 0.5 > make
+
+
+class _Store:
+    def __init__(self, acts):
+        self.acts, self.rows = acts, {}
+
+    def grammar_acts(self, start, end):
+        return [a for a in self.acts if start <= a[0] < end]
+
+    def act_chain_exists(self, origin):
+        return any(r["origin"] == origin for r in self.rows.values())
+
+    def insert_act_chain(self, row):
+        if row["forecast_id"] in self.rows:
+            return None
+        self.rows[row["forecast_id"]] = {**row, "settled_at": None, "observed": None, "n_acts": None,
+                                         "surprise": None, "excess": None}
+        return row["forecast_id"]
+
+    def pending_act_chain(self, before):
+        return [r for r in self.rows.values() if r["settled_at"] is None and r["window_end"] <= before]
+
+    def settle_act_chain(self, fid, observed, n, surprise, excess, now):
+        r = self.rows[fid]
+        if r["settled_at"] is not None:
+            return 0
+        r.update(observed=observed, n_acts=n, surprise=surprise, excess=excess, settled_at=now)
+        return 1
+
+    def act_chain_rows(self, since, settled_only):
+        return sorted((r for r in self.rows.values() if r["origin"] >= since and (r["settled_at"] or not settled_only)),
+                      key=lambda r: r["origin"])
+
+
+def test_tick_issues_once_early_in_the_bucket_and_settles_after_grace():
+    o = T0 + 2 * 96 * G
+    acts = _stream(["look", "make"] * 96)
+    store = _Store(acts + [_act(o + timedelta(minutes=2), "make"), _act(o + timedelta(minutes=4), "make"),
+                           _act(o + timedelta(minutes=6), "play", lag=timedelta(hours=2))])   # lands too late
+    ch = C.ActChain(store)
+    assert ch.tick(o + timedelta(minutes=4))["issued"] is None                 # past the issue slack
+    assert ch.tick(o + timedelta(seconds=10))["issued"] is None                # inside the commit margin
+    assert ch.tick(o + timedelta(minutes=1))["issued"] == "act_chain:" + o.strftime("%Y-%m-%dT%H:%M")
+    assert ch.tick(o + timedelta(minutes=2))["issued"] is None                 # already issued
+    row = store.rows["act_chain:" + o.strftime("%Y-%m-%dT%H:%M")]
+    assert row["prev_state"] == "make" and row["served"] == C.MODEL
+    assert abs(sum(row["probs"][C.MODEL].values()) - 1) < 1e-9
+    assert row["probs"] == C.forecast(store.acts, o)["probs"]                  # rows opened after o change nothing
+    due = o + G + C.SETTLE_GRACE + C.COMMIT_MARGIN
+    assert ch.tick(due - timedelta(seconds=1))["settled"] == 0
+    assert ch.tick(due)["settled"] == 1
+    assert (row["observed"], row["n_acts"]) == ("make", 2)                     # the late 'play' never counts
+    p = row["probs"][C.MODEL]["make"]
+    assert row["surprise"] == -np.log(p)
+    ent = -sum(q * np.log(q) for q in row["probs"][C.MODEL].values())
+    assert abs(row["excess"] - (-np.log(p) - ent)) < 1e-9
+
+
+def test_settle_after_downtime_uses_the_same_cutoff():
+    o = T0 + 96 * G
+    store = _Store(_stream(["look"] * 96) + [_act(o + timedelta(minutes=1), "say", lag=timedelta(minutes=40)),
+                                             _act(o + timedelta(minutes=2), "ask", lag=timedelta(minutes=23))])
+    ch = C.ActChain(store)
+    ch.tick(o + timedelta(minutes=1))
+    ch.tick(o + timedelta(hours=6))                                            # settles hours late
+    r = next(iter(store.rows.values()))
+    # 'ask' lands 10 min after the bucket ends (inside the grace): counts. 'say' lands past it: never.
+    assert (r["observed"], r["n_acts"]) == ("ask", 1)
+
+
+def test_live_grades_stored_rows_like_the_replay():
+    acts = _stream(["look", "make"] * (4 * 48))
+    store = _Store(acts)
+    ch = C.ActChain(store)
+    t = T0 + 96 * G + timedelta(minutes=1)
+    while t < T0 + 4 * 96 * G:
+        ch.tick(t)
+        t += G
+    now = T0 + 4 * 96 * G + C.SETTLE_GRACE + C.COMMIT_MARGIN
+    ch.tick(now)
+    live = ch.live(now)
+    g = live["grade"]
+    assert g["n_buckets"] == len([r for r in store.rows.values() if r["settled_at"]]) > 250
+    assert g["log_loss"]["act_markov"] < g["log_loss"]["act_marginal"]
+    assert live["issuance"]["issue_lag_sec_max"] == 60.0
+    assert live["current"] is None and live["newest_origin"] < C.bucket_floor(now)   # stale: not "current"
+    # missed: the bucket at day 4 (never ticked) and the current one (now is past its issue slack)
+    assert live["issuance"]["issued"] == live["issuance"]["buckets_since_first"] - 2
+    rep = {r["origin"]: r for r in C.replay(acts, T0, now, warmup=timedelta(days=1))}
+    stored = store.rows["act_chain:" + (T0 + 3 * 96 * G).strftime("%Y-%m-%dT%H:%M")]
+    assert stored["observed"] == rep[stored["origin"]]["observed"]
+
+
+def test_thin_night_cells_keep_the_night_mix(monkeypatch):
+    """Nights ask or sense, days look; 'look' is a rare night predecessor, so the (asleep, look) cell is
+    thin. Parallel backoff fills it from the night mix; prev-only backoff fills it from the day mix."""
+    rng = np.random.default_rng(3)
+    n = 10 * 96
+    starts = T0 + G * np.arange(n)
+    _, blk = C.clock(np.array([C._ns(t) for t in starts]))
+    seq = [rng.choice(["ask", "sense", "look"], p=[0.6, 0.37, 0.03]) if b == 0
+           else ("ask" if rng.random() < 0.03 else "look") for b in blk]
+    i_last_night = max(i for i in range(n) if blk[i] == 0)
+    seq[i_last_night - 1] = "look"                   # the probed bucket: asleep, previous act = look
+    s = C.Stream.build(_stream(seq), T0, T0 + (n + 1) * G)
+    a = s.asof[:i_last_night - 1]
+    thin = int(((a == C.STATES.index("look")) & (s.block[1:i_last_night] == 0)).sum())
+    assert thin <= 12                                # a handful of (asleep, look) transitions
+    ask = C.STATES.index("ask")
+    p_parallel = C.predict(s, i_last_night)["probs"][C.MODEL][ask]
+    monkeypatch.setattr(C, "LAMBDA_GRID", (1.0,))    # prev-only backoff (the previous behaviour)
+    p_prev_only = C.predict(s, i_last_night)["probs"][C.MODEL][ask]
+    assert p_parallel > 0.35 > p_prev_only
+
+
+class _Store:
+    def __init__(self, acts):
+        self.acts, self.rows = acts, {}
+
+    def grammar_acts(self, start, end):
+        return [a for a in self.acts if start <= a[0] < end]
+
+    def act_chain_exists(self, origin):
+        return any(r["origin"] == origin for r in self.rows.values())
+
+    def insert_act_chain(self, row):
+        if row["forecast_id"] in self.rows:
+            return None
+        self.rows[row["forecast_id"]] = {**row, "settled_at": None, "observed": None, "n_acts": None,
+                                         "surprise": None, "excess": None}
+        return row["forecast_id"]
+
+    def pending_act_chain(self, before):
+        return [r for r in self.rows.values() if r["settled_at"] is None and r["window_end"] <= before]
+
+    def settle_act_chain(self, fid, observed, n, surprise, excess, now):
+        r = self.rows[fid]
+        if r["settled_at"] is not None:
+            return 0
+        r.update(observed=observed, n_acts=n, surprise=surprise, excess=excess, settled_at=now)
+        return 1
+
+    def act_chain_rows(self, since, settled_only):
+        return sorted((r for r in self.rows.values() if r["origin"] >= since and (r["settled_at"] or not settled_only)),
+                      key=lambda r: r["origin"])
+
+
+def test_tick_issues_once_early_in_the_bucket_and_settles_after_grace():
+    o = T0 + 2 * 96 * G
+    acts = _stream(["look", "make"] * 96)
+    store = _Store(acts + [_act(o + timedelta(minutes=2), "make"), _act(o + timedelta(minutes=4), "make"),
+                           _act(o + timedelta(minutes=6), "play", lag=timedelta(hours=2))])   # lands too late
+    ch = C.ActChain(store)
+    assert ch.tick(o + timedelta(minutes=4))["issued"] is None                 # past the issue slack
+    assert ch.tick(o + timedelta(seconds=10))["issued"] is None                # inside the commit margin
+    assert ch.tick(o + timedelta(minutes=1))["issued"] == "act_chain:" + o.strftime("%Y-%m-%dT%H:%M")
+    assert ch.tick(o + timedelta(minutes=2))["issued"] is None                 # already issued
+    row = store.rows["act_chain:" + o.strftime("%Y-%m-%dT%H:%M")]
+    assert row["prev_state"] == "make" and row["served"] == C.MODEL
+    assert abs(sum(row["probs"][C.MODEL].values()) - 1) < 1e-9
+    assert row["probs"] == C.forecast(store.acts, o)["probs"]                  # rows opened after o change nothing
+    due = o + G + C.SETTLE_GRACE + C.COMMIT_MARGIN
+    assert ch.tick(due - timedelta(seconds=1))["settled"] == 0
+    assert ch.tick(due)["settled"] == 1
+    assert (row["observed"], row["n_acts"]) == ("make", 2)                     # the late 'play' never counts
+    p = row["probs"][C.MODEL]["make"]
+    assert row["surprise"] == -np.log(p)
+    ent = -sum(q * np.log(q) for q in row["probs"][C.MODEL].values())
+    assert abs(row["excess"] - (-np.log(p) - ent)) < 1e-9
+
+
+def test_settle_after_downtime_uses_the_same_cutoff():
+    o = T0 + 96 * G
+    store = _Store(_stream(["look"] * 96) + [_act(o + timedelta(minutes=1), "say", lag=timedelta(minutes=40)),
+                                             _act(o + timedelta(minutes=2), "ask", lag=timedelta(minutes=23))])
+    ch = C.ActChain(store)
+    ch.tick(o + timedelta(minutes=1))
+    ch.tick(o + timedelta(hours=6))                                            # settles hours late
+    r = next(iter(store.rows.values()))
+    # 'ask' lands 10 min after the bucket ends (inside the grace): counts. 'say' lands past it: never.
+    assert (r["observed"], r["n_acts"]) == ("ask", 1)
+
+
+def test_live_grades_stored_rows_like_the_replay():
+    acts = _stream(["look", "make"] * (4 * 48))
+    store = _Store(acts)
+    ch = C.ActChain(store)
+    t = T0 + 96 * G + timedelta(minutes=1)
+    while t < T0 + 4 * 96 * G:
+        ch.tick(t)
+        t += G
+    now = T0 + 4 * 96 * G + C.SETTLE_GRACE + C.COMMIT_MARGIN
+    ch.tick(now)
+    live = ch.live(now)
+    g = live["grade"]
+    assert g["n_buckets"] == len([r for r in store.rows.values() if r["settled_at"]]) > 250
+    assert g["log_loss"]["act_markov"] < g["log_loss"]["act_marginal"]
+    assert live["issuance"]["issue_lag_sec_max"] == 60.0
+    assert live["current"] is None and live["newest_origin"] < C.bucket_floor(now)   # stale: not "current"
+    # missed: the bucket at day 4 (never ticked) and the current one (now is past its issue slack)
+    assert live["issuance"]["issued"] == live["issuance"]["buckets_since_first"] - 2
+    rep = {r["origin"]: r for r in C.replay(acts, T0, now, warmup=timedelta(days=1))}
+    stored = store.rows["act_chain:" + (T0 + 3 * 96 * G).strftime("%Y-%m-%dT%H:%M")]
+    assert stored["observed"] == rep[stored["origin"]]["observed"]
+
+
+def test_thin_night_cells_keep_the_night_mix():
+    """Nights ask half the time, days almost never; the previous act says nothing. The served cell for
+    (asleep, look) must back off toward the night mix (parallel backoff), not the all-day mix."""
+    rng = np.random.default_rng(3)
+    n = 10 * 96
+    starts = T0 + G * np.arange(n)
+    _, blk = C.clock(np.array([C._ns(t) for t in starts]))
+    seq = [("ask" if rng.random() < 0.5 else "look") if b == 0 else ("ask" if rng.random() < 0.03 else "look")
+           for b in blk]
+    s = C.Stream.build(_stream(seq), T0, T0 + (n + 1) * G)
+    night = next(i for i in range(n - 96, n) if blk[i] == 0 and C.STATES[s.asof[i - 1]] == "look")
+    r = C.predict(s, night)
+    p_ask = r["probs"][C.MODEL][C.STATES.index("ask")]
+    assert r["block"] == "asleep" and r["k"]["lambda_prev"] < 1.0
+    assert p_ask > 0.35 > r["probs"]["act_markov"][C.STATES.index("ask")]
+
+
+def test_live_issue_equals_replay_once_history_covers_the_lookback():
+    rng = np.random.default_rng(4)
+    n = 31 * 96
+    acts = _stream(list(rng.choice(["look", "make", "infer", None], p=[0.4, 0.3, 0.1, 0.2], size=n)))
+    store = _Store(acts)
+    ch = C.ActChain(store)
+    origins = [T0 + (29 * 96 + j) * G for j in (0, 37, 90)]
+    for o in origins:
+        ch.tick(o + timedelta(minutes=1))
+    rep = {r["origin"]: r for r in C.replay(acts, T0, T0 + n * G, warmup=timedelta(days=29))}
+    for o in origins:
+        live = store.rows["act_chain:" + o.strftime("%Y-%m-%dT%H:%M")]["probs"]
+        for m in C.MODELS:
+            assert np.allclose([live[m][s] for s in C.STATES], rep[o]["probs"][m], rtol=1e-12, atol=0)
+
+
+def test_a_row_from_another_vocabulary_neither_blocks_settles_nor_breaks_the_grade():
+    o = T0 + 96 * G
+    store = _Store(_stream(["look"] * 98))
+    ch = C.ActChain(store)
+    ch.tick(o + timedelta(minutes=1))
+    ch.tick(o + G + timedelta(minutes=1))
+    first, second = sorted(store.rows.values(), key=lambda r: r["origin"])
+    for m in first["probs"]:
+        first["probs"][m].pop("look")                                          # issued before 'look' existed
+    out = ch.tick(o + 3 * G + C.SETTLE_GRACE)
+    assert out["settle_failed"] == 1 and out["settled"] == 1 and second["settled_at"] is not None
+    first.update(observed="look", settled_at=o)                                # even if it got settled somehow
+    live = ch.live(o + 3 * G + C.SETTLE_GRACE)
+    assert live["ungradable_rows"] == 1 and live["grade"]["n_buckets"] == 1

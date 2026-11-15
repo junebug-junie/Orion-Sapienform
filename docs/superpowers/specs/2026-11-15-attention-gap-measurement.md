@@ -1,6 +1,7 @@
 # Attention gap: what Orion does vs what the broadcast says Orion attends to
 
-Status: measurement (read-only), 2026-11-15. Feeds the next step of the 11-04 decision
+Status: measurement (read-only), 2026-11-15. **Proposal WITHDRAWN after an adversarial pass the same day**
+(see "Adversarial pass" at the end; it overrides the sections above it where they disagree).
 "attention = the want-ledger competition" (`docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md`).
 
 ## Arsonist summary
@@ -127,3 +128,41 @@ select coalesce(t.projection_json->'attended_node_ids'->>0,'(none)'), count(*)
 from c join substrate_attention_broadcast_log t on t.generated_at between c.began_at and c.e
 group by 1 order by 2 desc;
 ```
+
+## Adversarial pass (2026-11-15, independent reviewer; key claims re-checked by hand)
+
+Verdict: the numbers mostly hold; the framing and the proposal do not.
+
+- **Winner share holds, meaning weakened.** 31.5% since the current 13-source set began (11-13 04:20Z);
+  the 7-day 33.9% mixes two candidate sets. "watch" labels the top eligible loop, it is not a decision
+  (`max_asks=0`). The goal top-down path (`_apply_voluntary_attention`) is live and flipped 52 winners
+  in 7 days; this report missed it. It cannot create a winner on a `none` tick.
+- **"None is Orion's own work" is WRONG.** `world:reading` counts links Orion's own reading accepted
+  and carries their concepts to curiosity (`orion/attention/world_first.py:1126-1132`); with
+  `node:substrate.execution` it is ~30% of winners.
+- **"Busy 88%" holds at ~82%** once Prime's held-concern horizons are excluded (GPU-lease cross-check:
+  82.9%). But busy is not attending: 2+ actors run at once 56% of the time, many on a clock. Parallel
+  background work is not workspace content.
+- **Curiosity "24.8% vs 33.9%" is ~no effect**: de-duplicated and hour-adjusted it is 25.9% vs 28.2%.
+  The broadcast is close to independent of background runs, as it should be. The live example's
+  first look (11:48Z) predates its run's act (11:53Z).
+- **"~30 readers want focus" is WRONG for most named readers.** The outreach trigger does not read the
+  broadcast at all (`tension_borda_winner_target_id`). Act binding asks whether a reply answered the
+  salience winner; acts-as-focus would make it bind to itself. Reverie and turn coloring want
+  bottom-up salience on purpose. Temporal Self already has its own process lanes. **Prime, the reader
+  11-04 named, already moved** (`PRIME_CONCERNS_FROM_EVENT_WANTS=true`, funded event wants).
+- **The proposal duplicates and is tautological.** Funded wants already exist
+  (`GET /physiology/event-wants`, attention patch 2); "what's running" exists (`orion/hub/runtime_activity.py`).
+  `want_ledger` funding is a shadow record (retro leisure: 1,962 funded, 2 acts). A focus built from
+  open acts mirrors action and needs a selection policy for 2+ concurrent jobs. Its acceptance check
+  passes by construction.
+
+**Corrected conclusion.** The broadcast is the alarm and is working as designed. The 11-04 migration
+was done where it mattered (Prime). There is no large attention gap to close here.
+
+**What is real and small:**
+- Temporal Self process arcs are born closed (`orion/temporal_self/sources.py` `curiosity_run`: emitted
+  only once `completed_at` exists), and reading has no lane, so the chronology cannot say "running now".
+  Harm measured: the stance cue's rest sentence ("No attention or conversation arc is open right now")
+  reached 4 turn stages in 7 days; the cue rendered on 218 of 221 turns in 72 h, so it is rare.
+- `node:substrate.vision` has read `insufficient_history` for ~43 days: retire it (metric-retirement rule).

@@ -194,7 +194,10 @@ def test_door_a_malformed_ref_skips_and_still_releases(monkeypatch):
 @pytest.mark.parametrize("why", ["daily_cap", "quiet_hours", "strained"])
 def test_door_a_refusal_releases_the_seat_at_once(monkeypatch, why):
     """Hub refuses to compose (cap, quiet hours, strained): it tells durable-runs to release the
-    run's seat in the same call, on the exact path durable-runs serves (#3255)."""
+    run's seat in the same call, on the exact path durable-runs serves (#3255).
+
+    A contract pin, not the regression test: Hub always made this call. The bug was durable-runs
+    answering it 400 (services/orion-durable-runs/tests/test_release_outreach_route.py)."""
     loop, skips = _door_a_loop(monkeypatch)
 
     class _Refusing:

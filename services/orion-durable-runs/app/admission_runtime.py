@@ -1045,6 +1045,8 @@ class AdmissionRuntime:
                         "since": row["generated_at"], "beat": 0.0})
             self._outreach_loaded_at = time.monotonic()
         for run_id, entry in list(self.outreach.items()):
+            if self.outreach.get(run_id) is not entry:
+                continue  # Hub released it while an earlier hold in this pass was awaited
             lease, state = entry["lease"], {"run_id": run_id}
             if (self.now() - entry["since"]).total_seconds() >= self.settings.outreach_hold_max_sec:
                 logger.warning("durable_outreach_hold_timeout run=%s lease=%s", run_id, lease["lease_id"])
@@ -1056,6 +1058,8 @@ class AdmissionRuntime:
             try:
                 await self._beat(lease)
             except (HoldLost, WorkflowDeadline, RuntimeError) as exc:  # a take-back or a refusal: gone either way
+                if self.outreach.get(run_id) is not entry:
+                    continue  # released by Hub during the beat: that release already ended it
                 logger.warning("durable_outreach_hold_lost run=%s lease=%s %s", run_id, lease["lease_id"], exc)
                 await self._record_lost(state, lease, type(exc).__name__, str(exc)[:200])
                 # Re-queued holds would be granted to a finished run: end it.
@@ -1079,8 +1083,11 @@ class AdmissionRuntime:
                                          for event in await self.store.history(run_id)):
             self.outreach.pop(run_id, None)
             return {"released": False, "run_id": run_id, "reason": "already_released"}
-        await self._end_hold({"run_id": run_id}, lease["lease_id"], lease, "outreach_done")
+        released = await self._end_hold({"run_id": run_id}, lease["lease_id"], lease, "outreach_done")
         self._wake.set()
+        if not released:
+            # The pool did not confirm: the release is queued and retried on every reconcile.
+            return {"released": False, "run_id": run_id, "reason": "pending_retry"}
         return {"released": True, "run_id": run_id}
 
     # --- pool events -----------------------------------------------------------------------------

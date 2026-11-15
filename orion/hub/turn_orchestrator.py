@@ -1073,17 +1073,19 @@ def turn_workflow_label(
 ) -> str | None:
     """What kind of turn this is, for harness_turn_trace.workflow (#3255).
 
-    The caller's own ``source`` tag when it set one (every curiosity, outreach, consult and
-    day-letter turn does), else "reading" for a reading turn, else "chat" when Juniper typed it.
-    None when nothing says: unknown stays unknown rather than being guessed.
+    "chat" when Juniper typed it, checked first: a chat turn's payload is the client's own frame,
+    so a ``source`` key in it is not Hub's label. Else the caller's own ``source`` tag when it set
+    one (every curiosity, outreach, consult and day-letter turn does), else "reading" for a reading
+    turn. None when nothing says (a relayed external-room turn, for one): unknown stays unknown
+    rather than being guessed.
     """
+    if utterance_origin == "juniper":
+        return "chat"
     source = str((payload or {}).get("source") or "").strip()
     if source:
         return source[:120]
     if reading_only:
         return "reading"
-    if utterance_origin == "juniper":
-        return "chat"
     return None
 
 

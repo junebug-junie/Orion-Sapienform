@@ -10,5 +10,7 @@ def test_label_is_the_callers_source_tag_else_reading_else_chat():
         == "curiosity_investigation"
     assert to.turn_workflow_label({}, reading_only=True) == "reading"
     assert to.turn_workflow_label({"source": ""}, utterance_origin="juniper") == "chat"
+    # A chat payload is the client's own frame: a ``source`` key in it never becomes the label.
+    assert to.turn_workflow_label({"source": "endogenous_outreach"}, utterance_origin="juniper") == "chat"
     assert to.turn_workflow_label(None) is None
     assert to.turn_workflow_label({"source": None}, utterance_origin="orion") is None

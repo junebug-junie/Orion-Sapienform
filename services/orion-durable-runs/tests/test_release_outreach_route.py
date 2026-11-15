@@ -67,3 +67,45 @@ def test_generic_control_route_is_unchanged(client):
     assert admission.controlled == [("run-one", "cancel")]
     assert c.post("/runs/run-one/bogus").status_code == 400
     assert admission.released == []
+
+
+def _bare_runtime(monkeypatch, *, pool_confirms: bool):
+    """release_outreach on a runtime with no database: a completed run with one kept hold."""
+    import asyncio
+
+    from app import admission_runtime as ar
+
+    lease = {"lease_id": "hold-1", "generation": 1, "role": "agent", "holder": "durable-runs:run-one"}
+    rt = object.__new__(ar.AdmissionRuntime)
+    rt.outreach = {"run-one": {"lease": lease, "since": None, "beat": 0.0}}
+    rt._wake = asyncio.Event()
+
+    class _Store:
+        async def get_run(self, run_id):
+            return {"terminal": "completed", "request": {}}
+
+        async def history(self, run_id):
+            return []
+
+    rt.store = _Store()
+    ended = []
+
+    async def end_hold(state, lease_id, lease, reason):
+        ended.append((state["run_id"], lease_id, reason))
+        return pool_confirms
+
+    monkeypatch.setattr(rt, "_end_hold", end_hold)
+    return rt, ended
+
+
+def test_release_says_released_only_when_the_pool_confirmed(monkeypatch):
+    import asyncio
+
+    rt, ended = _bare_runtime(monkeypatch, pool_confirms=True)
+    assert asyncio.run(rt.release_outreach("run-one")) == {"released": True, "run_id": "run-one"}
+    assert ended == [("run-one", "hold-1", "outreach_done")]
+
+    # The pool call failed: the release is queued for retry, and Hub is not told it is done.
+    rt, _ = _bare_runtime(monkeypatch, pool_confirms=False)
+    assert asyncio.run(rt.release_outreach("run-one")) == {
+        "released": False, "run_id": "run-one", "reason": "pending_retry"}

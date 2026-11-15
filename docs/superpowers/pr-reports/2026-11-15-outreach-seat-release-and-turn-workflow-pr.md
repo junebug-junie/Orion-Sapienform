@@ -84,9 +84,8 @@ fixes the case where Hub did write the message: that seat was held 1,800 s too.
   sql-writer can deploy in any order. An older Hub or governor leaves the column NULL: unknown, not
   guessed. An artifact without a label never overwrites a stored label.
 
-Label values: the caller's own `source` tag when it set one (`endogenous_outreach`,
-`curiosity_investigation`, `curiosity_outreach`, `curiosity_self_inquiry`, ...), else `reading` for a reading turn, else `chat`
-when Juniper typed it, else NULL.
+Label values: `chat` when Juniper typed it, else the caller's own `source` tag when it set one (`endogenous_outreach`,
+`curiosity_investigation`, `curiosity_outreach`, `curiosity_self_inquiry`, ...), else `reading` for a reading turn, else NULL.
 
 ## Env/config changes
 
@@ -143,7 +142,31 @@ Not run. No deploy was allowed for this task. Live checks are UNVERIFIED until d
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Review ran in a subagent on the branch diff against `origin/main`. Verdict: nothing material.
+It confirmed by reading: no other shadowed route; Hub cannot get 409 in the normal flow
+(`finish_projection` writes `run.completed` and `terminal='completed'` in one transaction, and Hub
+calls only on that event); all eight artifact publish paths carry the label; no reader breaks.
+
+- Finding: a chat client could set the stored label. A chat turn's payload is the client's own
+  frame, and a `source` key in it won over "chat".
+  - Fix: a turn Juniper typed is "chat" first; `source` is read only for other callers.
+  - Evidence: `test_turn_workflow_label.py` (a `source` on a Juniper turn still gives "chat").
+- Finding: now that releases really happen, the hold heartbeat could beat a hold Hub released a
+  moment before, then log a false "lost" and release it twice.
+  - Fix: `_beat_outreach` skips an entry that is no longer the live one, before and after the beat.
+  - Evidence: `services/orion-durable-runs/app/admission_runtime.py`; inferred race, not reproduced.
+- Finding: `release_outreach` answered `released: true` even when the pool call failed.
+  - Fix: it answers `released: false, reason: pending_retry` (the release is retried as before).
+  - Evidence: `test_release_says_released_only_when_the_pool_confirmed`.
+- Finding: the Hub refusal test passes on old code, so it is not proof of the fix.
+  - Fix: its docstring now says it is a contract pin and names the route test as the regression test.
+- Finding (no code change): sql-writer deployed before the migration would fail the whole
+  `run_artifact` write for a labelled turn.
+  - Fix: none. The deploy gate refuses sql-writer until the migration is applied. Do not deploy it
+    with `ORION_ALLOW_UNAPPLIED_MIGRATION=1`.
+- Finding (no code change): a relayed external-room turn has no label (NULL), while the live
+  activity view calls it "chat".
+  - Fix: documented in `turn_workflow_label`. NULL means unknown.
 
 ## Restart required
 
@@ -181,4 +204,4 @@ The seat fix needs only durable-runs. The label needs the other three.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3479

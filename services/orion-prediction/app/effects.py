@@ -274,9 +274,11 @@ class Effects:
 
     def heat_per_watt(self, series_id: str, days: float = 7.0, experiment_id: str | None = None,
                       store: bool = False) -> dict:
-        """Fit cabinet-minus-room against machine watts; optionally convert an experiment's measured
-        watts into a predicted cabinet change, and store the fit (one row per machine)."""
-        self._spec(series_id, "target")
+        """Fit target-minus-room against machine watts; optionally convert an experiment's measured
+        watts into a predicted target change, and store the fit (one row per machine). Any registered
+        series declared in heat_balance.HEAT_BALANCE may be the target, whatever its forecast role: the
+        closet top is a covariate (never forecast) read only here."""
+        self._spec(series_id)
         fit = fit_heat_per_watt(self, series_id, days)
         out = fit.as_dict()
         if experiment_id:

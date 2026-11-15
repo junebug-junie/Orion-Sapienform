@@ -72,6 +72,7 @@ route too (GATE_VERSION 4). Earliest it can serve: ~2026-11-07.
 | `athena.cabinet_cooling_watts` | portable AC power (Shelly plug) | `home_cooling_sample` |
 | `athena.central_ac_proxy` | outdoor F above 75, 3 h earlier: the central AC's switch | `prediction_weather_hourly` |
 | `office.temp_c` | the room air the cabinet draws in (overlap covariate) | `office_env_sample` |
+| `closet.top_temp_c` | the closet top (pan-1 SCD40, above the cabinet: circe/hecate exhaust); heat per watt ONLY, never forecast, not a cabinet covariate | `closet_env_sample` |
 
 A covariate's own registry exclusions are masked too (the room sensor's settling hour), and a 5-min
 bucket that straddles an exclusion's edge is masked whole.
@@ -167,7 +168,7 @@ for bursty streams (cam0 `person_presence` logs one person as many rows). The st
 Live (2026-10-20, 14 days): no `doorbell_ring` rows exist yet, so the doorbell pair refuses;
 walkway presence -> walkway caption (0-60 s) 32x, p = 0.006.
 
-### How much cabinet heat is a watt? (`GET|POST /effects/heat-per-watt`)
+### How much cabinet (or closet-top) heat is a watt? (`GET|POST /effects/heat-per-watt`)
 
 Two fits, same method (`app/heat_balance.py`; hourly means, lags 0-2 h summed = a load held ~2 h,
 AR(1) feasible GLS + Newey-West intervals):
@@ -207,7 +208,24 @@ interval covers ~90 % in simulation (`evals/run_heat_per_watt_eval.py`).
 
 `GET /effects/{action}?series_id=` returns the best available level. An experimental answer on the
 cabinet also carries `heat_balance_prediction`: what the newest stored heat-per-watt fit predicts from
-the watts that experiment moved (`predicted_c: null` + a reason when no fit is stored). `GET /experiments/guard`
+the watts that experiment moved (`predicted_c: null` + a reason when no fit is stored).
+
+**Second target: the closet top** (`series_id=closet.top_temp_c`; air-path design
+`docs/superpowers/specs/2026-11-12-orion-air-path-design.md`, #3234). The closet-top board (pan-1,
+`sensor_id` scd40-closet, `closet_env_sample`; stale or offline samples never read) sits above the
+cabinet, where circe's and hecate's exhaust goes. The cabinet sensor cannot see circe (local slope ~0);
+the closet top can. Same fits, same refusals, room = `office.temp_c`, watts circe / hecate / athena,
+control the portable AC. The series is a `covariate` (never forecast, never a cabinet covariate: it does
+not lead the cabinet); `heat_per_watt` accepts any registered series declared in `HEAT_BALANCE`. Stored
+rows go under `series_id = closet.top_temp_c` (`details.what` = "closet top minus room" / "closet top,
+room free"), so nothing that reads the cabinet fit -- the experiment conversion above,
+`heat_sensitivity.yaml`, the heat quote (#3194) -- ever sees them. Do not use a closet-top slope as a
+cabinet slope (it is ~18x larger for circe). Use slopes, not the gap's level: the SCD40 and the office
+SHT40 may differ by a fixed offset. Live 2026-11-15 (21 d window, 238 h): circe **+0.27 C per 100 W
+(95 % +0.21..+0.33)**; hecate refused as flat (on only since 2026-11-14 20:00 UTC) until it runs >= 10 %
+of the window's hours -- then the same GET returns its slope with no code change.
+`evals/run_air_path_eval.py --days 30` (read-only) re-checks lead/lag, the one-hour cabinet forecast
+with and without closet heat (paired test), these slopes, and the daily residual (stuck-air watch). `GET /experiments/guard`
 says whether it is safe to start an ON block (P(≥ 32 °C within 30 min) < 5 %).
 
 **One dispatcher exists: `POST /experiments/run`** (`app/experiment_runner.py`, 2026-10-29). It
@@ -551,6 +569,7 @@ POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_adaptive_interval_replay_ev
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --windows 16 # real cabinet history
 PYTHONPATH=../..:. python evals/run_cabinet_replay_eval.py --train-from 2026-10-23T19:25:21Z [--without-overlap]
 PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py [--live --experiment-id <uuid>]  # planted slope, null
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_air_path_eval.py --days 30  # closet top: lead/lag, forecast gain, slopes, residual (read-only, ~45 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_event_pair_live_eval.py  # live vision pairs, read-only
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_act_chain_replay_eval.py [--since 2026-10-23]  # family B act chain, read-only, ~3 s
 python evals/export_cabinet_fixture.py --until <iso>                     # refresh the fixture

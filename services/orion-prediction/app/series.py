@@ -25,6 +25,10 @@ AGGS = ("mean", "max", "min", "last")
 # office_env_sample reading columns a series may read. The key becomes a column name in SQL
 # (app/store.py), so it is an allowlist, never a pattern.
 OFFICE_ENV_KEYS = ("office_temp_c", "office_humidity_pct")
+# closet_env_sample (the pan-1 SCD40 at the closet top, above the cabinet: circe/hecate exhaust). Same
+# rule: an allowlist of column names. Temperature only -- the closet CO2 follows the house, not Orion
+# (docs/superpowers/specs/2026-11-12-orion-air-path-design.md, "Number 2").
+CLOSET_ENV_KEYS = ("closet_temp_c",)
 
 
 class SeriesConfigError(ValueError):
@@ -86,6 +90,7 @@ class Threshold:
 class Source:
     kind: str  # biometrics | cooling | cluster (orion_biometrics_cluster per-node) | weather (prediction_weather_hourly)
     #            | office_env (office_env_sample: the pan-1 SHT40 room sensor)
+    #            | closet_env (closet_env_sample: the pan-1 SCD40 at the closet top)
     node: str | None = None
     key: str | None = None
     role: str | None = None
@@ -177,6 +182,11 @@ def _source(raw: dict, sid: str) -> Source:
         if not node or not _NODE.match(str(node)) or key not in OFFICE_ENV_KEYS:
             raise SeriesConfigError(f"{sid}: office_env source needs a node and key in {OFFICE_ENV_KEYS}")
         return Source(kind="office_env", node=str(node), key=str(key))
+    if kind == "closet_env":
+        node, key = raw.get("node"), raw.get("key")
+        if not node or not _NODE.match(str(node)) or key not in CLOSET_ENV_KEYS:
+            raise SeriesConfigError(f"{sid}: closet_env source needs a node and key in {CLOSET_ENV_KEYS}")
+        return Source(kind="closet_env", node=str(node), key=str(key))
     raise SeriesConfigError(f"{sid}: unknown source kind {kind!r}")
 
 

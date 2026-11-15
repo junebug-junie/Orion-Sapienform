@@ -41,6 +41,7 @@ class Fake:
         self.mode, self.model, self.slots, self.busy = mode, model, slots, busy
         self.pool_leases = list(pool_leases or [])
         self.bodies: list[dict] = []
+        self.prompt_tokens_total = 0.0
         self.seen: list[list[int]] = []
         self.previous: str | None = None
         self.lock = threading.Lock()
@@ -66,6 +67,12 @@ class Fake:
                     self._json([{"id": i, "is_processing": fake.busy} for i in range(fake.slots)])
                 elif self.path == "/v1/pool":
                     self._json({"leases": fake.pool_leases})
+                elif self.path == "/metrics" and fake.mode in ("metrics", "metrics_foreign"):
+                    data = f"llamacpp:prompt_tokens_total {fake.prompt_tokens_total}\n".encode()
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
                 else:
                     self.send_error(404)
 
@@ -108,6 +115,10 @@ class Fake:
                     reply = "I cannot find any codeword."
                 fake.previous = own
                 prompt_n = 100 if fake.mode == "short" else int(len(toks) * 1.3)
+                with fake.lock:
+                    fake.prompt_tokens_total += prompt_n
+                    if fake.mode == "metrics_foreign" and n == 4:
+                        fake.prompt_tokens_total += 5000   # an Orion call slipped into the idle slot
                 cache_n = lcp
                 if fake.mode == "cache":
                     cache_n = 4000
@@ -136,12 +147,56 @@ def fake():
         s.close()
 
 
-def _run(fake_server, tmp_path, **kw):
+class FakeHold:
+    """Stands in for one leased_llm operator hold: model calls and reads both reach the fake worker
+    (in production the model calls go through the gateway; test_leased_llm.py pins that)."""
+
+    def __init__(self, url: str, n: int, recall_after: int | None = None, sent: list | None = None,
+                 recall_on_get: bool = False):
+        import httpx
+
+        self.worker_url, self.lease_id = url, f"own-{n}"
+        self._http = httpx.Client(base_url=url)
+        self.recall_after, self.sent, self.n = recall_after, sent if sent is not None else [], n
+        self.recall_on_get = recall_on_get
+
+    def http_client(self):
+        hold = self
+
+        class C:
+            def get(self, path, timeout=30):
+                if hold.recall_on_get:
+                    raise type("LaneRecalled", (RuntimeError,), {})("the GPU pool took the seat back")
+                return hold._http.get(path, timeout=timeout)
+
+            def post(self, path, json=None, timeout=60):
+                if path == "/v1/chat/completions":
+                    hold.sent.append(hold.n)
+                    if hold.recall_after is not None and len(hold.sent) > hold.recall_after:
+                        LaneRecalled = type("LaneRecalled", (RuntimeError,), {})
+                        raise LaneRecalled("the GPU pool took the seat back (recalled)")
+                return hold._http.post(path, json=json, timeout=timeout)
+        return C()
+
+
+def _holds(url, **kw):
+    import contextlib
+
+    sent: list = []
+
+    @contextlib.contextmanager
+    def holds(lane, n):
+        yield [FakeHold(url, i, sent=sent, **kw) for i in range(n)]
+    holds.sent = sent
+    return holds
+
+
+def _run(fake_server, tmp_path, holds=None, **kw):
     mod = _load()
-    args = ["--url", fake_server.url, "--pool-url", fake_server.url, "--out", str(tmp_path / "out"),
+    args = ["--pool-url", fake_server.url, "--out", str(tmp_path / "out"),
             "--rounds", "1", "--pace-sec", "0",
             "--idle-wait-sec", "0", "--seed", "7", *kw.pop("extra", [])]
-    code = mod.main(args)
+    code = mod.main(args, holds=holds or _holds(fake_server.url))
     summary = json.loads((tmp_path / "out" / "summary.json").read_text())
     return code, summary
 
@@ -216,12 +271,118 @@ def test_a_run_that_could_not_see_a_leak_is_inconclusive_not_pass(fake, tmp_path
 def test_an_unreadable_pool_is_refused(fake, tmp_path):
     server = fake()
     mod = _load()
-    code = mod.main(["--url", server.url, "--pool-url", "http://127.0.0.1:9", "--out", str(tmp_path / "o"),
-                     "--idle-wait-sec", "0"])
+    code = mod.main(["--pool-url", "http://127.0.0.1:9", "--out", str(tmp_path / "o"),
+                     "--idle-wait-sec", "0"], holds=_holds(server.url))
     assert code == 2 and server.bodies == []
 
 
 def test_an_unreachable_worker_is_refused(tmp_path):
     mod = _load()
-    code = mod.main(["--url", "http://127.0.0.1:9", "--out", str(tmp_path / "o"), "--idle-wait-sec", "0"])
+    code = mod.main(["--out", str(tmp_path / "o"), "--idle-wait-sec", "0"], holds=_holds("http://127.0.0.1:9"))
     assert code == 2
+
+
+def test_the_probes_own_holds_and_their_calls_are_not_real_work(fake, tmp_path):
+    server = fake(pool_leases=[
+        {"lease_id": "own-0", "role": "agent-gpu2", "status": "granted", "hold_lease_id": None},
+        {"lease_id": "own-1", "role": "agent-gpu2", "status": "granted", "hold_lease_id": None},
+        {"lease_id": "child-9", "role": "agent-gpu2", "status": "granted", "hold_lease_id": "own-1"},
+    ])
+    code, summary = _run(server, tmp_path)
+    assert (code, summary["verdict"]) == (0, "PASS"), summary
+    assert summary["holds"] == ["own-0", "own-1"]
+
+
+def test_simultaneous_pairs_ride_both_holds(fake, tmp_path):
+    server = fake()
+    holds = _holds(server.url)
+    _run(server, tmp_path, holds=holds)
+    assert set(holds.sent) == {0, 1}   # one conversation of each pair per hold (per slot)
+
+
+def test_a_recall_mid_run_is_inconclusive_and_stops(fake, tmp_path):
+    server = fake()
+    code, summary = _run(server, tmp_path, holds=_holds(server.url, recall_after=3))
+    assert (code, summary["verdict"]) == (3, "INCONCLUSIVE")
+    assert "took a hold back" in summary["why"]
+    assert summary["requests"] < 15
+
+
+def test_there_is_no_direct_url_mode():
+    mod = _load()
+    with pytest.raises(SystemExit):
+        mod.main(["--url", "http://100.112.254.99:8016"])
+
+
+
+def test_metrics_catch_work_that_slipped_into_an_idle_slot_mid_phase(fake, tmp_path):
+    """Review finding: the before/after checks cannot see a short higher-priority call that interleaved into
+    a probe hold's idle slot and finished inside the phase. The worker's own prompt-token counter can."""
+    code, summary = _run(fake(mode="metrics_foreign"), tmp_path)
+    assert (code, summary["verdict"]) == (3, "INCONCLUSIVE") and "did not send" in summary["why"]
+
+
+def test_metrics_agreeing_with_the_probe_pass_and_say_so(fake, tmp_path):
+    code, summary = _run(fake(mode="metrics"), tmp_path)
+    assert (code, summary["verdict"]) == (0, "PASS") and summary["overlap_check"] == "metrics"
+
+
+def test_without_metrics_the_summary_says_only_before_after_ran(fake, tmp_path):
+    _code, summary = _run(fake(), tmp_path)
+    assert summary["overlap_check"] == "before_after_only"
+
+
+def test_a_recall_seen_by_the_quiet_check_stops_at_once(fake, tmp_path):
+    """Review finding: a recall during the quiet check read as '/slots unreadable' for idle_wait_sec."""
+    import time
+
+    server = fake()
+    mod = _load()
+    started = time.monotonic()
+    code = mod.main(["--pool-url", server.url, "--out", str(tmp_path / "out"), "--idle-wait-sec", "30"],
+                    holds=_holds(server.url, recall_on_get=True))
+    assert time.monotonic() - started < 10
+    assert code == 2 and server.bodies == []     # refused at the precheck: /props read raised the recall
+
+
+def test_the_real_lane_client_sends_model_calls_to_the_gateway_and_reads_to_the_worker(fake, tmp_path):
+    """The probe on leased_llm's real LaneClient: chat completions go to the gateway URL under the hold,
+    /props /slots /apply-template /tokenize go to the URL the pool granted."""
+    import httpx
+
+    from orion.evals.leased_llm import OperatorLane
+    from orion.gpu_pool.client import Lease
+    from orion.schemas.gpu_pool import GpuLeaseGrantV1
+
+    server = fake()
+    hits: list[tuple[str, str]] = []
+    real = httpx.Client(base_url=server.url)
+
+    def route(request: httpx.Request) -> httpx.Response:
+        hits.append((request.url.host, request.url.path))
+        r = real.request(request.method, request.url.path, content=request.content,
+                         headers={"Content-Type": "application/json"})
+        return httpx.Response(r.status_code, content=r.content, headers={"Content-Type": "application/json"})
+
+    lanes = []
+    for i in range(2):
+        grant = GpuLeaseGrantV1(lease_id=f"own-{i}", generation=1, role="agent-gpu2", cards=["gpu2"],
+                                url="http://worker.invalid:8016", served_by="w")
+        lanes.append(OperatorLane(lane="agent-gpu2", route="operator_agent_gpu2", holder="operator:probe-slot-bleed",
+                                  gateway="http://gateway.invalid:8210", lease=Lease(f"own-{i}", grant),
+                                  transport=httpx.MockTransport(route)))
+    import contextlib
+
+    @contextlib.contextmanager
+    def holds(lane, n):
+        yield lanes[:n]
+
+    mod = _load()
+    code = mod.main(["--pool-url", server.url, "--out", str(tmp_path / "out"), "--rounds", "1", "--pace-sec", "0",
+                     "--idle-wait-sec", "0", "--seed", "7"], holds=holds)
+    assert code == 0
+    chat = {h for h, p in hits if p == "/v1/chat/completions"}
+    reads = {h for h, p in hits if p in ("/props", "/slots", "/apply-template", "/tokenize")}
+    assert chat == {"gateway.invalid"} and reads == {"worker.invalid"}
+    assert all(b["model"] == "operator_agent_gpu2" for b in server.bodies)
+    real.close()

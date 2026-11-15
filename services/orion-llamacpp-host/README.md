@@ -453,10 +453,13 @@ llama.cpp fork (b10750, sm_70) at `/app/prism/`. Every other worker stays on `or
   `ternary-bonsai2-27b-pq2-v100-32gb-circe-np4` (orion-llamacpp-bonsai-host) still uses the embedded template.
 - **Prompt-cache knobs** (`cache_ram_mib`, `cache_idle_slots` -> `--cache-ram`, `--no-cache-idle-slots`):
   supported, unset. They fail closed if a profile sets one and the binary lacks the flag. After deploy,
-  `scripts/probe_slot_bleed.py --url http://100.112.254.99:8016` runs the llama.cpp #27148 bleed canary
-  against the live seat (synthetic prompts; refuses unless the seat is Bonsai and multi-slot, every slot is
-  idle, and the pool shows no active lease on agent-gpu2; checks cache reuse against the true token-level
-  common prefix via `/apply-template` + `/tokenize`; evidence is owner-only).
+  `ORION_BUS_URL=redis://100.92.216.81:6379/0 python3 scripts/probe_slot_bleed.py` runs the llama.cpp
+  #27148 bleed canary against the live seat. It takes two GPU pool operator holds on agent-gpu2 (one per
+  slot, background priority) and sends every model call through orion-llm-gateway under them (synthetic
+  prompts; refuses unless the seat is Bonsai and multi-slot, every slot is idle, and the pool shows no
+  active lease on agent-gpu2 but its own; checks cache reuse against the true token-level common prefix
+  via `/apply-template` + `/tokenize` on the granted URL; a recall stops it INCONCLUSIVE; evidence is
+  owner-only).
   If it reports LEAK, set `cache_idle_slots: false` on every multi-slot profile (Juniper, 2026-10-01).
 
 ---
@@ -742,14 +745,24 @@ bash services/orion-llamacpp-host/scripts/verify_qwen3_thinking_off_live.sh
 - `IMAGE` defaults to `orion-llamacpp-host:0.1.0` if unset.
 - `MODEL_QWEN3_PATH` must point at the Qwen3 GGUF you are validating.
 - `CUDA_VISIBLE_DEVICES` selects the GPU visible inside the check (adjust per host).
+- The container runs under a GPU pool operator hold on the lane that owns that card (`HOLD_LANE`,
+  default from the card: 0 chat, 1 agent, 2 agent-gpu2, 3 fast). It waits behind Orion's own work, and
+  a recall stops the container (exit 3). Needs `ORION_BUS_URL`.
 
-**Atlas quick lane (live, no Docker):** hit the **running** `llama-server` on the Hub/quick worker (Tailscale or host IP, port from `ATLAS_FAST_HOST_PORT`, usually `8013`). Per-request `chat_template_kwargs` is sent in the JSON body so thinking can be forced off **without** restarting the worker (requires `server-cuda-b8740`+ class binary and Qwen3-capable profile).
+**Fast lane (live, no Docker):** one call to the **running** fast seat, through orion-llm-gateway under a
+GPU pool operator hold (`python -m orion.evals.leased_llm chat`). Per-request `chat_template_kwargs` is
+sent in the JSON body so thinking can be forced off **without** restarting the worker. There is no direct
+worker URL: the lane door refuses unkeyed model calls (leased-evals design,
+`docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md`).
 
 ```bash
-export ATLAS_LLAMACPP_QUICK_URL=http://<atlas-host>:8013
-export ATLAS_QUICK_CHAT_MODEL=<exact-model-id-the-server-uses>
-bash services/orion-llamacpp-host/scripts/verify_atlas_quick_llamacpp_thinking_off.sh
+export ORION_BUS_URL=redis://100.92.216.81:6379/0
+bash services/orion-llamacpp-host/scripts/verify_atlas_quick_llamacpp_thinking_off.sh   # LANE=fast
 ```
+
+`scripts/probe_structured_output.py --lane fast` and `evals/run_qwen35_fast_eval.py` take an operator hold
+the same way. The Qwen3.5 eval's parallel-isolation step sends ten calls as ten separate gateway leases
+(`leased_llm.gateway_call`) and exits 3 (inconclusive) when the pool never let them overlap.
 
 **Via `orion-llm-gateway` (bus):** callers may pass `options.chat_template_kwargs` (e.g. `{"enable_thinking": false}`) on `ChatRequestPayload`; the gateway forwards that field to `llamacpp` / `llama-cola` OpenAI-compatible backends on each request.
 

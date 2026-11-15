@@ -9,7 +9,7 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
 from . import pool_placement
-from .passthrough_proxy import proxy_on_pool
+from .passthrough_proxy import holder_for, proxy_on_pool
 from .settings import settings
 from .resource_lease import ResourceLeaseRejected, gpu_lease_from_headers, lease_error
 
@@ -374,7 +374,7 @@ async def handle_messages_post(request: Request) -> Response:
         route_key=route_key,
         forward_body=forward_body,
         path="/v1/messages",
-        holder=pool_placement.HOLDER_ANTHROPIC,
+        holder=holder_for(request, route_key, pool_placement.HOLDER_ANTHROPIC),
         hold=hold,
         correlation_id=correlation_id,
         min_ctx_tokens=pool_placement.estimate_min_ctx_tokens(

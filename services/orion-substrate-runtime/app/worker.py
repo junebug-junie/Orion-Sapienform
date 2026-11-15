@@ -4643,8 +4643,11 @@ class BiometricsSubstrateWorker:
                         retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
                     )
                 else:
+                    # Say why the set is empty. With no gate these rows read as
+                    # decisions that left no trace; no decision ran (#3394).
                     self._store.save_endogenous_curiosity_candidates(
                         [],
+                        gate={"gate_result": "idle_no_seeds"},
                         retention_hours=float(s.endogenous_curiosity_candidate_retention_hours),
                     )
             except Exception:

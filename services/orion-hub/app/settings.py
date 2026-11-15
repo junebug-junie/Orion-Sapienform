@@ -1060,6 +1060,12 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_SELF_INQUIRY_OUTCOMES_ENABLED"
     )
+    # Curiosity event wants step 2: after each finished curiosity turn, the curiosity lane judges the
+    # finding (philosophical / operational / no_finding) and Hub scores how new it is to Orion, one row
+    # in curiosity_finding_register. Embeds through HUB_CURIOSITY_SEARCH_EMBED_URL.
+    HUB_CURIOSITY_FINDING_REGISTER_ENABLED: bool = Field(
+        default=True, alias="HUB_CURIOSITY_FINDING_REGISTER_ENABLED"
+    )
     # ON since 2026-11-04: the replay reported the measurement usable (see .env_example).
     HUB_CURIOSITY_VALUE_ORDER_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_VALUE_ORDER_ENABLED"

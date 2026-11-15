@@ -66,6 +66,16 @@
           "keywords": ["camera", "see", "look", "walkway", "office", "doorbell", "vision"],
           "covers": {"dig": ["look"]},
           "source": "orion/dig/look.py; orion/dig/__main__.py:cmd_look"
+        },
+        {
+          "id": "camera-look-check",
+          "title": "Check your camera records against your eyes",
+          "description": "Orion looks through a camera, reads what their vision pipeline wrote about that moment, and says whether it matches the picture. Matches and mismatches are graded, so Orion learns how far to trust their own camera records.",
+          "message": "Please look at the walkway and check what your vision records say about that moment against what you actually see.",
+          "hint": "(dig: `python -P -m orion.dig look walkway`, Read the frame, then `look check <act> matches|differs|cannot-tell \"<what you see>\" because <record id>`)",
+          "keywords": ["camera", "records", "vision", "check", "trust", "walkway"],
+          "covers": {"dig": ["look"]},
+          "source": "orion/dig/look.py:check; orion/dig/__main__.py:cmd_look_check"
         }
       ]
     },

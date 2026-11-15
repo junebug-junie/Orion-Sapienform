@@ -2585,12 +2585,21 @@ profiles:
       enable_auto_tool_choice: true
       override_generation_config: {max_new_tokens: 32768}
       default_chat_template_kwargs: {enable_thinking: true}
+      # DFlash2 draft: 2.2-4x decode, same target answers. Rollback = delete this block.
+      speculative_config:
+        method: dflash
+        model: /models/Qwen3.8-27B-DFlash2
+        num_speculative_tokens: 7
+        draft_tensor_parallel_size: 2
+        attention_backend: FLASH_ATTN_V100
+        kv_cache_dtype: auto
       env:
         VLLM_WORKER_MULTIPROC_METHOD: spawn
     notes: >-
-      Candidate, UNVERIFIED until the long-context eval passes. Fixed resident agent-deep
-      at hecate:8021 through the Gateway; one request plus pool queue. 262144 combined
-      tokens, 229376 prompt tokens with a 32768 output reserve (reasoning included).
-      Pinned 1Cat 1.5.3; no CPU offload or speculative draft in the correctness baseline.
-      Readiness is live discovery, not this declaration. Execution cost is unmeasured.
-      See docs/runbooks/hecate-deep-thinking.md and scripts/deep-thinker.lock.json.
+      VERIFIED 2026-11-15 with DFlash2: 36/36 context checks to 245760 prompt tokens,
+      245760+16384 endurance with correct recovery, 12/12 task-quality runs; decode
+      104-190 tokens/s (dense baseline 38-48). Fixed resident agent-deep at hecate:8021
+      through the Gateway; one request plus pool queue. 262144 combined tokens, 229376
+      prompt tokens with a 32768 output reserve (reasoning included). Pinned 1Cat 1.5.3;
+      no CPU offload. See docs/bench/2026-11-14-hecate-deep/RESULTS.md,
+      docs/runbooks/hecate-deep-thinking.md and scripts/deep-thinker.lock.json.

@@ -1,6 +1,0 @@
-# Apply AFTER docker-compose.deep.yml; generated profile is local commissioning state.
-services:
-  vllm-host:
-    logging: {driver: journald, options: {tag: "{{.Name}}"}}
-    volumes:
-      - /mnt/scripts/Orion-Sapienform/.orion/hecate-dflash-profiles.yaml:/app/config/llm_profiles.yaml:ro

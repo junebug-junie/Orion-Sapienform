@@ -2,10 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 788,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 0,
+    "change_count": 2,
+    "high_severity_count": 1,
     "changes": [
-      "medium added metric://bus_channel/orion-hub/orion:personality:choice"
+      "high   removed metric://bus_channel/orion-hub/orion:self_concept:history:write",
+      "medium added metric://bus_channel/orion-durable-runs/orion:self_concept:history:write"
     ]
   },
   "definitions": {
@@ -1406,6 +1407,18 @@
       "notes": "kind=request stability=experimental",
       "registry_source": "orion/bus/channels.yaml"
     },
+    "metric://bus_channel/orion-durable-runs/orion:self_concept:history:write": {
+      "schema_id": "SelfConceptHistoryV1",
+      "all_producers": [
+        "orion-durable-runs",
+        "orion-hub"
+      ],
+      "declared_consumers": [
+        "orion-sql-writer"
+      ],
+      "notes": "kind=event stability=experimental",
+      "registry_source": "orion/bus/channels.yaml"
+    },
     "metric://bus_channel/orion-durable-runs/orion:situation:state": {
       "schema_id": "SituationStateV1",
       "all_producers": [
@@ -2481,17 +2494,6 @@
       ],
       "declared_consumers": [
         "orion-room-companion"
-      ],
-      "notes": "kind=event stability=experimental",
-      "registry_source": "orion/bus/channels.yaml"
-    },
-    "metric://bus_channel/orion-hub/orion:self_concept:history:write": {
-      "schema_id": "SelfConceptHistoryV1",
-      "all_producers": [
-        "orion-hub"
-      ],
-      "declared_consumers": [
-        "orion-sql-writer"
       ],
       "notes": "kind=event stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

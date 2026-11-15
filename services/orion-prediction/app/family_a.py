@@ -254,31 +254,37 @@ def flat_limit(ceiling: float, hyg: Hygiene) -> float:
     return ceiling + hyg.flat_margin * (1.0 - ceiling)
 
 
+def _flat_share(x: np.ndarray, floor: float | None) -> float:
+    """Share of ALL present values taken by the most common value ABOVE the training floor (rounded to 6
+    significant digits). Resting at the floor is rest, never "frozen", so floor values never count:
+    a dark day of a light sensor reads 0, not 1."""
+    if not len(x):
+        return 0.0
+    r = np.array([_r6(a) for a in x])
+    if floor is not None:
+        r = r[r > _r6(floor) + 1e-9]
+    if not len(r):
+        return 0.0
+    return float(np.unique(r, return_counts=True)[1].max() / len(x))
+
+
 def _flat_ceiling(values: pd.Series, hyg: Hygiene, floor: float) -> float | None:
-    """The flattest NORMAL whole day of the window (largest one-value share; same whole-day rule as
-    ``_rest_shape``), walking days in time order and skipping any day already flatter than the ceiling so
-    far allows at a non-floor value. A frozen spell inside the window therefore never raises the ceiling
-    (else one frozen day would lift it to 1.0 and the check would go silent after the next select). None
-    without a whole day."""
+    """The flattest NORMAL whole day of the window: the largest ``_flat_share`` of any whole day (same
+    whole-day rule as ``_rest_shape``) among days at or under ``max_mode_share`` -- the line above which
+    ``select`` already calls a series one value. Order-independent, so a frozen day anywhere in the window
+    (first, middle, last) never lifts the ceiling, and a real steady day counts wherever it falls.
+    None without such a day."""
     s = values[np.isfinite(values.to_numpy(dtype=float))]
     need = 0.5 * 1440.0 / _grain_min(values.index)
-    ceiling: float | None = None
-    for _d, g in s.groupby(s.index.floor("1D")):
-        if len(g) < need:
-            continue
-        share, value = _mode(g.to_numpy(dtype=float))
-        if ceiling is not None and share > flat_limit(ceiling, hyg) and not _at_or_below_floor(value, floor):
-            continue
-        ceiling = share if ceiling is None else max(ceiling, share)
-    return None if ceiling is None else round(ceiling, 4)
+    shares = [_flat_share(g.to_numpy(dtype=float), floor) for _d, g in s.groupby(s.index.floor("1D"))
+              if len(g) >= need]
+    normal = [v for v in shares if v <= hyg.max_mode_share]
+    return round(max(normal), 4) if normal else None
 
 
 def _frozen(x: np.ndarray, hyg: Hygiene, ceiling: float | None, floor: float | None) -> bool:
-    """A window (present values ``x``) flatter than its training ceiling allows, at a non-floor value."""
-    if ceiling is None or not len(x):
-        return False
-    share, value = _mode(x)
-    return share > flat_limit(ceiling, hyg) and not _at_or_below_floor(value, floor)
+    """A window (present values ``x``) whose non-floor one-value share passes its training ceiling's limit."""
+    return ceiling is not None and _flat_share(x, floor) > flat_limit(ceiling, hyg)
 
 
 def _rest_shape(values: pd.Series, lo: float, hi: float) -> tuple[list, float, float]:
@@ -340,9 +346,9 @@ def _short_window_reasons(values: pd.Series, hyg: Hygiene, band: Sequence[float]
     sensor that stops sending is caught by ``stale``.
 
     One frozen at a constant inside its band while still reporting is caught here (#3370): the window is
-    ``flat_beyond_training`` when its one-value share passes ``flat_ceiling`` (manifest
-    ``stats.max_day_mode_share``, the flattest normal whole training day) by ``hyg.flat_margin`` of the
-    way to 1, and that value is not the training floor. The bucket is refused until the next ``select``
+    ``flat_beyond_training`` when its one-value share above the training floor (``_flat_share``) passes
+    ``flat_ceiling`` (manifest ``stats.max_day_mode_share``, the flattest normal whole training day) by
+    ``hyg.flat_margin`` of the way to 1. The bucket is refused until the next ``select``
     (<= 6 h), which drops the input with the same reason (``screen_series``) and serves the rest without
     it. Without the check ``select`` dropped it only once it was one value over 85 % of the 14-day window
     (~12 days), and until then the perfect persistence forecast read as calm.

@@ -252,10 +252,50 @@ def test_the_ceiling_ignores_frozen_days_and_select_drops_a_sensor_frozen_now():
     # recovered: frozen two days ago, moving again for the last whole day -> kept, ceiling still normal
     back = fa.screen_series(_series(np.r_[normal, np.full(2 * 288, 26.0), _daily(days=1, seed=10)]), h, "g.t")
     assert back.status == fa.TARGET and back.stats["max_day_mode_share"] == v.stats["max_day_mode_share"]
-    # resting at the training floor (event-like light sensor at 0) is never "frozen"
-    light = np.where(np.random.default_rng(11).random(14 * 288) < 0.6, 0.0, np.abs(_daily(days=14, seed=11) - 25) * 8)
-    light[-288:] = 0.0
-    assert "flat_beyond_training" not in fa.screen_series(_series(light), h, "l.raw").reasons
+
+
+def _light(days: int, seed: int = 11) -> np.ndarray:
+    """An event-like light sensor: 60 % of 5-min means at its floor (dark), the rest varying."""
+    rng = np.random.default_rng(seed)
+    return np.where(rng.random(days * 288) < 0.6, 0.0, 5 + np.abs(_daily(days=days, seed=seed) - 25) * 8)
+
+
+def test_floor_rest_is_never_frozen_and_a_dark_day_does_not_switch_the_check_off():
+    h = _hyg()
+    dark_today = _light(14)
+    dark_today[-288:] = 0.0                        # a whole dark day: rest, not frozen
+    v = fa.screen_series(_series(dark_today), h, "l.raw")
+    assert "flat_beyond_training" not in v.reasons
+    # Review finding 1: a fully dark day once set the ceiling to 1.0 and the check went silent. A dark
+    # day reads 0 now, so a later freeze at a lit value is still caught (select and issue).
+    lit = _light(13)
+    lit[5 * 288:6 * 288] = 0.0                     # one whole dark day inside the window
+    stuck = np.r_[lit, np.full(288, 120.0)]        # then stuck at 120 (inside its band) for 24 h
+    sel = fa.screen_series(_series(stuck), h, "l.raw")
+    assert sel.stats["max_day_mode_share"] < 0.2 and "flat_beyond_training" in sel.reasons
+    with pytest.raises(fa.HygieneRefused) as exc:
+        fa.gate_named_inputs({"l.raw": fa.COVARIATE}, _frame({"l.raw": np.full(288, 120.0)}), h,
+                             bands={"l.raw": [0.0, 200.0]}, floors={"l.raw": 0.0},
+                             flat_ceilings={"l.raw": sel.stats["max_day_mode_share"]})
+    assert exc.value.refusals == {"l.raw": ("flat_beyond_training",)}
+    # partly dark, partly stuck: only the non-floor share counts (0.4 stuck < limit), not 1.0
+    half = np.r_[np.zeros(170), np.full(118, 120.0)]
+    fa.gate_named_inputs({"l.raw": fa.COVARIATE}, _frame({"l.raw": half}), h, bands={"l.raw": [0.0, 200.0]},
+                         floors={"l.raw": 0.0}, flat_ceilings={"l.raw": 0.1})
+
+
+def test_the_ceiling_does_not_depend_on_day_order_and_ignores_a_frozen_first_day():
+    h = _hyg()
+    rng = np.random.default_rng(12)
+    calm = [np.round(60 + 3 * np.sin(np.arange(288) / 40) + rng.standard_normal(288)) for _ in range(10)]
+    steady = np.where(rng.random(288) < 0.65, 61.0, np.round(61 + rng.standard_normal(288)))   # real, ~0.7
+    first = fa.screen_series(_series(np.concatenate([steady, *calm])), h, "g.t").stats["max_day_mode_share"]
+    middle = fa.screen_series(_series(np.concatenate([*calm[:5], steady, *calm[5:]])), h, "g.t").stats[
+        "max_day_mode_share"]
+    assert first == middle > 0.6                   # review finding 2: the middle steady day once read as frozen
+    frozen_first = fa.screen_series(_series(np.concatenate([np.full(288, 61.0), *calm])), h, "g.t")
+    calm_only = fa.screen_series(_series(np.concatenate(calm)), h, "g.t")
+    assert frozen_first.stats["max_day_mode_share"] == calm_only.stats["max_day_mode_share"] < 0.5
 
 
 def test_flat_target_still_refuses_when_stale_absent_or_out_of_band():

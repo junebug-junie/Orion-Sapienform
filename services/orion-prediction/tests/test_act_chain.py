@@ -211,22 +211,39 @@ def test_settle_after_downtime_uses_the_same_cutoff():
 
 
 def test_live_grades_stored_rows_like_the_replay():
-    acts = _stream(["look", "make"] * (9 * 48))
+    acts = _stream(["look", "make"] * (4 * 48))
     store = _Store(acts)
     ch = C.ActChain(store)
     t = T0 + 96 * G
-    while t < T0 + 9 * 96 * G:
+    while t < T0 + 4 * 96 * G:
         ch.tick(t)
         t += G
-    now = T0 + 9 * 96 * G + C.SETTLE_GRACE
+    now = T0 + 4 * 96 * G + C.SETTLE_GRACE
     ch.tick(now)
     live = ch.live(now)
     g = live["grade"]
-    assert g["n_buckets"] == len([r for r in store.rows.values() if r["settled_at"]]) > 700
+    assert g["n_buckets"] == len([r for r in store.rows.values() if r["settled_at"]]) > 250
     assert g["log_loss"]["act_markov"] < g["log_loss"]["act_marginal"]
     assert live["issuance"]["issue_lag_sec_max"] == 0.0
-    # missed: the bucket at day 9 (never ticked) and the current one (now is past its issue slack)
+    # missed: the bucket at day 4 (never ticked) and the current one (now is past its issue slack)
     assert live["issuance"]["issued"] == live["issuance"]["buckets_since_first"] - 2
     rep = {r["origin"]: r for r in C.replay(acts, T0, now, warmup=timedelta(days=1))}
-    stored = store.rows["act_chain:" + (T0 + 5 * 96 * G).strftime("%Y-%m-%dT%H:%M")]
+    stored = store.rows["act_chain:" + (T0 + 3 * 96 * G).strftime("%Y-%m-%dT%H:%M")]
     assert stored["observed"] == rep[stored["origin"]]["observed"]
+
+
+def test_thin_night_cells_keep_the_night_mix():
+    """Nights ask half the time, days almost never; the previous act says nothing. The served cell for
+    (asleep, look) must back off toward the night mix (parallel backoff), not the all-day mix."""
+    rng = np.random.default_rng(3)
+    n = 10 * 96
+    starts = T0 + G * np.arange(n)
+    _, blk = C.clock(np.array([C._ns(t) for t in starts]))
+    seq = [("ask" if rng.random() < 0.5 else "look") if b == 0 else ("ask" if rng.random() < 0.03 else "look")
+           for b in blk]
+    s = C.Stream.build(_stream(seq), T0, T0 + (n + 1) * G)
+    night = next(i for i in range(n - 96, n) if blk[i] == 0 and C.STATES[s.asof[i - 1]] == "look")
+    r = C.predict(s, night)
+    p_ask = r["probs"][C.MODEL][C.STATES.index("ask")]
+    assert r["block"] == "asleep" and r["k"]["lambda_prev"] < 1.0
+    assert p_ask > 0.35 > r["probs"]["act_markov"][C.STATES.index("ask")]

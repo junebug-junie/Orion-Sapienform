@@ -22,6 +22,9 @@ would send to the model and checks it is something a mind could act on honestly:
                can read; quicken to dream is refused; the frame stays under the cap.
 * attention_background -- (2026-11-03) a tick where only the active arc moved records no change (attention
                no longer wakes Prime), yet the frame still names the live active arc under ATTENTION.
+* focus_read_split -- (#3366) with the dashboard read timed out, the move check still decides from Hub's
+               cheap pending-focus read (the live payload shape: a move goes when nothing waits, is refused when a
+               focus waits, and is refused with "timed out" when that read times out); the frame names both gaps.
 * starved_try  -- after a try that never reached the model, the next frame says so in Prime's own outcome
                lines, and that line is not a change (it cannot wake Prime by itself).
 
@@ -169,6 +172,31 @@ def run() -> list[tuple[str, bool, str]]:
     results.append(("attention_background", ticked.pending_changes == [] and "ATTENTION" in bg_frame
                     and (not active_id or active_id in bg_frame),
                     f"changes after an attention-only tick: {ticked.pending_changes}; active arc {active_id} in frame"))
+
+    # focus_read_split (#3366): the dashboard timed out every thought on 11-14; the cheap read decides now.
+    live_page = data["curiosity"]["schedule"]["pending_focus"]  # GET /curiosity/api/focus/pending has this shape
+    waiting = {"origin": "juniper", "question": "what heats the closet at night?"}
+    down = dict(curiosity_error="TimeoutError: timed out")
+    split_ok, split_why = True, []
+    for page_focus, unread, expect_sent in ((live_page["focus"], None, True), (waiting, None, False),
+                                            (None, "Hub did not answer in 4 s", False)):
+        inp = _inputs(data, **down)
+        if unread:
+            inp.pending_focus_error = unread
+            fp, why = None, "timed out reading whether curiosity already has a focus waiting (no answer from Hub in 4 s)"
+        else:
+            inp.pending_focus_read, inp.pending_focus = True, page_focus
+            fp, why = page_focus is not None, None
+        f = build_frame(state, inp)
+        a = apply_answer(state, move, now=inp.now, arc_ids=inp.arc_ids, focus_pending=fp, focus_unread=why)
+        shown = ("(unavailable: TimeoutError: timed out)" in f
+                 and (not page_focus or "what heats the closet at night?" in f)
+                 and (not unread or f"is unknown: {unread}" in f))
+        ok = (a.move is not None) == expect_sent and shown and (not unread or "timed out" in (a.move_refusal or ""))
+        split_ok &= ok
+        split_why.append(f"{'waiting' if page_focus else 'unread' if unread else 'none'}->"
+                         f"{'sent' if a.move else 'refused'}{'' if ok else ' (WRONG)'}")
+    results.append(("focus_read_split", split_ok, "; ".join(split_why)))
 
     # starved_try: the line a no-seat try leaves (orion/mindloop/runtime.py _note_no_model) reaches the next frame.
     line = "a try to think at 12:00 UTC never reached the model (no_seat: deadline); I tried again"

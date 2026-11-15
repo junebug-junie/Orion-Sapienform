@@ -4325,6 +4325,11 @@ Design:
 - **Hub tab.** The Curiosity tab shows the pending focus under Today's budget
   with a Clear button (`DELETE /curiosity/api/focus/{focus_id}`, pending only),
   and a run chip that took a focus says so.
+- **Cheap read (#3366).** `GET /curiosity/api/focus/pending` returns only the
+  pending focus (`{"available", "focus", "enabled"}`, the same payload the
+  schedule carries as `pending_focus`): one indexed row read, no dashboard.
+  Prime's move check reads it with a 4 s timeout; `/curiosity/api/runs` took
+  4-44 s live. `available: false` means unreadable, never "none pending".
 - **Trace (one chat correlation id).** `curiosity_focus_queued focus_id=...
   chat_corr=...` -> `curiosity_focus_offered run=... focus_id=...` ->
   `curiosity_focus_outcome run=... turn_ok=... disposition=...`.

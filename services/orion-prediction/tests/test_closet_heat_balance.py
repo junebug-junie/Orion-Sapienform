@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import app.heat_balance as hb
 from app.heat_balance import HEAT_BALANCE, HeatBalanceRefused, fit_from_frame, load_frame, store_fit
 from app.series import load_registry
 from tests.conftest import REGISTRY_PATH
@@ -115,8 +114,10 @@ class _Engine:
         self.registry = load_registry(REGISTRY_PATH)
         self.settle = timedelta(seconds=60)
         self._end = end
+        self.state = {}
 
     def effective(self, spec, now):
+        self.state.setdefault(spec.series_id, object())   # like Engine.effective: the series joins /health
         return spec
 
     def clock(self):
@@ -140,6 +141,8 @@ def test_closet_is_read_through_the_registry_as_the_target_and_a_covariate_role_
     c = out["slopes"]["circe.chassis_watts"]
     assert c["ci_lo"] < CIRCE_SLOPE < c["ci_hi"]
     assert "hecate.chassis_watts" in out["refused"]
+    # The covariate target never joins the engine's forecast state (/health lists only forecast series).
+    assert CLOSET not in fx.engine.state
     # A registered series with no declared heat balance is still refused; an unknown id too.
     with pytest.raises(HeatBalanceRefused, match="no heat balance declared"):
         fx.heat_per_watt("office.temp_c", days=7.0)
@@ -161,20 +164,38 @@ def test_load_frame_target_column_is_the_declared_series():
 
 
 # --- the cabinet is unchanged by the new entry ------------------------------------------------------
-def test_cabinet_entry_and_fit_are_unchanged_by_the_closet_entry(monkeypatch):
+# Golden: the cabinet fit of tests.test_heat_balance.planted() computed on origin/main af420fb7b, BEFORE
+# the closet entry and the internal "cabinet" -> "target" column rename existed.
+GOLDEN_CABINET = {
+    "n_hours": 166, "r2": 0.9287759355883878, "gap_mean_c": 0.9222481568279179,
+    "local": {"athena.chassis_watts": (0.004368397059411333, 0.004074704630562137, 0.004662089488260529),
+              "circe.chassis_watts": (1.6860692779620994e-05, -0.0001270665902425315, 0.0001607879758017735)},
+    "total": {"athena.chassis_watts": (0.013086857620520047, 0.012720195429752218, 0.013453519811287876),
+              "circe.chassis_watts": (0.003041465263974545, 0.0028865302481934684, 0.0031964002797556217)},
+    "summary": ("Over 166 h, C per 100 W held 2 h, cabinet minus room: athena.chassis_watts +0.44 (95% +0.41..+0.47); "
+                "circe.chassis_watts +0.00 (95% -0.01..+0.02). With the room free to warm too (outdoor air "
+                "controlled; a 0-2 h response, not a steady state), same 166 h: athena.chassis_watts +1.31 (95% "
+                "+1.27..+1.35); circe.chassis_watts +0.30 (95% +0.29..+0.32). AR(1) GLS + Newey-West 4 lags; the "
+                "95% interval covers ~90% in simulation. Observational: a common cause would look the same."),
+    "refused": {"hecate.chassis_watts": "flat: only 1% of hours more than 20 W from its median 0 W (need 10%)"},
+}
+
+
+def test_cabinet_entry_and_fit_are_unchanged_by_the_closet_entry():
     assert HEAT_BALANCE[CABINET] == {
         "room": "office.temp_c",
         "watts": ("athena.chassis_watts", "circe.chassis_watts", "hecate.chassis_watts"),
         "controls": ("athena.cabinet_cooling_watts",)}
     from tests.test_heat_balance import planted
 
-    f = planted()
-    with_closet = fit_from_frame(f, HEAT_BALANCE[CABINET], CABINET, T, T).as_dict()
-    monkeypatch.setattr(hb, "HEAT_BALANCE", {CABINET: HEAT_BALANCE[CABINET]})
-    without = fit_from_frame(f, hb.HEAT_BALANCE[CABINET], CABINET, T, T).as_dict()
-    with_closet.pop("fit_id"), without.pop("fit_id")
-    assert with_closet == without
-    assert "cabinet minus room" in with_closet["summary"]
+    d = fit_from_frame(planted(), HEAT_BALANCE[CABINET], CABINET, T, T).as_dict()
+    g = GOLDEN_CABINET
+    assert (d["n_hours"], d["r2"], d["gap_mean_c"]) == pytest.approx((g["n_hours"], g["r2"], g["gap_mean_c"]), rel=1e-9)
+    for key, slopes in (("local", d["slopes"]), ("total", d["total"]["slopes"])):
+        assert set(slopes) == set(g[key])
+        for w, (per_w, lo, hi) in g[key].items():
+            assert (slopes[w]["per_w"], slopes[w]["ci_lo"], slopes[w]["ci_hi"]) == pytest.approx((per_w, lo, hi), rel=1e-6)
+    assert d["summary"] == g["summary"] and d["refused"] == g["refused"]
 
 
 class _Rows:

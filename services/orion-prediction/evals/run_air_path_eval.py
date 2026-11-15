@@ -7,7 +7,8 @@ N days and prints one line each:
              (positive = the closet top moves FIRST). The design found lag 0 (no lead).
   FORECAST   one-hour cabinet change, linear model fitted on the first 70% and tested on the last 30%:
              MAE with and without closet heat (closet top - office), paired one-sided test
-             (app.backtest.paired_win_p, Newey-West lag 12 = the 1 h horizon's overlap at 5-min origins).
+             (app.backtest.paired_win_p, Newey-West lag 12 rows ~ the 1 h horizon's overlap at 5-min
+             origins; approximate where incomplete rows were dropped).
   SLOPES     circe and hecate heat per 100 W at the closet top, through the real
              GET /effects/heat-per-watt path (app.effects.Effects.heat_per_watt; window capped at the
              fit's MAX_DAYS). hecate reads "refused: <reason>" until it runs enough hours.
@@ -23,8 +24,8 @@ Nothing is written: every store method that could write raises.
     cd services/orion-prediction && PYTHONPATH=../..:. POSTGRES_URI=postgresql://...@localhost:55432/conjourney \\
         python evals/run_air_path_eval.py --days 30
 
-Exit 0 when every line could be computed (the gate verdict is a finding, not a failure); 1 when the
-data needed for a line is missing (e.g. the closet board went dark).
+Exit 0 when every line could be computed (the gate verdict is a finding, not a failure); non-zero when
+there are no closet-top readings, or too few complete rows for the forecast or residual line.
 """
 from __future__ import annotations
 
@@ -74,7 +75,9 @@ def five_min(eng, start: datetime, end: datetime) -> pd.DataFrame:
     idx = pd.date_range(pd.Timestamp(start), pd.Timestamp(end), freq="5min", inclusive="left")
     cols = {}
     for sid in (CLOSET, CABINET, ROOM):
-        spec = eng.effective(eng.registry.get(sid), eng.clock())
+        spec = eng.registry.get(sid)
+        if spec.role == "target":            # change events fold into forecast targets only
+            spec = eng.effective(spec, eng.clock())
         cols[sid] = mask_windows(to_grain(eng.store.points(spec, start, end), 5, spec.agg, 0, start=start, end=end),
                                  spec.exclude).reindex(idx)
     for sid in WATTS:
@@ -107,7 +110,8 @@ def forecast(f: pd.DataFrame) -> tuple[str, float | None]:
     if len(x) < 200:
         raise SystemExit(f"FORECAST: only {len(x)} complete 5-min rows")
     cut = int(0.7 * len(x))
-    train, test = x.iloc[:cut], x.iloc[cut:]
+    # Skip h rows after the cut: the last training targets reach 1 h into what follows.
+    train, test = x.iloc[:cut], x.iloc[cut + h:]
     base_cols = ["cab", "room", "room_trend", "athena", "circe", "ac"]
 
     def err(cols):
@@ -159,18 +163,23 @@ def residual(eng, start: datetime, end: datetime, f5: pd.DataFrame) -> tuple[str
     names = [w for w in (*cfg["watts"], *cfg["controls"]) if identifiable(frame[w][seen]) is None]
     X, _ = _lagged(frame, names)
     data = pd.concat([frame["gap"].rename("y"), X], axis=1).dropna()
+    if len(data) < 24:
+        raise SystemExit(f"RESIDUAL: only {len(data)} complete hours")
     A = np.column_stack([np.ones(len(data)), data.drop(columns="y").to_numpy()])
     beta = np.linalg.lstsq(A, data["y"].to_numpy(), rcond=None)[0]
     res = pd.Series(data["y"].to_numpy() - A @ beta, index=data.index)
     daily = res.groupby(res.index.floor("1D")).agg(["mean", "count"])
     days = ", ".join(f"{d:%m-%d} {m:+.2f}{'*' if m > STUCK_C else ''}" for d, (m, c) in daily.iterrows() if c >= 12)
     # Cabinet 32 C crossings: the first 5-min mean >= 32 C on a day; was the residual high in the 6 h before?
-    cab = f5[CABINET][f5[CLOSET].notna()].dropna()   # only days the closet top was read
-    hot = cab[cab >= HOT_C]
+    cab = f5[CABINET].where(f5[CLOSET].notna())   # only buckets the closet top was read
+    # A crossing: at or above the line with the previous 5-min bucket below it (a day that starts hot is
+    # not a new crossing at midnight).
+    hot = cab[(cab >= HOT_C) & (cab.shift(1) < HOT_C)]
     first = hot.groupby(hot.index.floor("1D")).apply(lambda s: s.index[0]) if not hot.empty else pd.Series(dtype=object)
     led = 0
     for t in first:
-        before = res[(res.index >= t - pd.Timedelta(hours=6)) & (res.index < t)]
+        # Hours are labelled by their start: only hours that END by the crossing are "before" it.
+        before = res[(res.index >= t - pd.Timedelta(hours=6)) & (res.index + pd.Timedelta(hours=1) <= t)]
         led += bool(len(before) and before.mean() > STUCK_C)
     return (f"RESIDUAL daily mean of the closet-top gap fit (C; * = above +{STUCK_C} C, the stuck-air watch; "
             f"fit on {', '.join(n.split('.')[0] if 'chassis' in n else n for n in names)}, {len(data)} h): {days}. "

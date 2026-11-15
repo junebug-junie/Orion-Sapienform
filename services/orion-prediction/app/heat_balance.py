@@ -281,7 +281,11 @@ def load_frame(effects, series_id: str, start: datetime, end: datetime) -> tuple
     covariate_series (derived rules, own exclusions, zero before a machine's first reading)."""
     engine, store = effects.engine, effects.store
     cfg = HEAT_BALANCE[series_id]
-    spec = engine.effective(engine.registry.get(series_id), engine.clock())
+    spec = engine.registry.get(series_id)
+    # Change events fold into a forecast target's spec; engine.effective also registers the series in the
+    # engine's forecast state (/health), so a covariate target (the closet top) skips it.
+    if spec.role == "target":
+        spec = engine.effective(spec, engine.clock())
     room = engine.registry.get(cfg["room"])
     idx5 = pd.date_range(pd.Timestamp(start), pd.Timestamp(end), freq=f"{spec.grain_min}min", inclusive="left")
     tgt = hourly(mask_windows(to_grain(store.points(spec, start, end), spec.grain_min, spec.agg, 0,

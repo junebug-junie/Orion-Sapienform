@@ -208,7 +208,8 @@ interval covers ~90 % in simulation (`evals/run_heat_per_watt_eval.py`).
 
 `GET /effects/{action}?series_id=` returns the best available level. An experimental answer on the
 cabinet also carries `heat_balance_prediction`: what the newest stored heat-per-watt fit predicts from
-the watts that experiment moved (`predicted_c: null` + a reason when no fit is stored).
+the watts that experiment moved (`predicted_c: null` + a reason when no fit is stored). `GET /experiments/guard`
+says whether it is safe to start an ON block (P(≥ 32 °C within 30 min) < 5 %).
 
 **Second target: the closet top** (`series_id=closet.top_temp_c`; air-path design
 `docs/superpowers/specs/2026-11-12-orion-air-path-design.md`, #3234). The closet-top board (pan-1,
@@ -225,8 +226,7 @@ SHT40 may differ by a fixed offset. Live 2026-11-15 (21 d window, 238 h): circe 
 (95 % +0.21..+0.33)**; hecate refused as flat (on only since 2026-11-14 20:00 UTC) until it runs >= 10 %
 of the window's hours -- then the same GET returns its slope with no code change.
 `evals/run_air_path_eval.py --days 30` (read-only) re-checks lead/lag, the one-hour cabinet forecast
-with and without closet heat (paired test), these slopes, and the daily residual (stuck-air watch). `GET /experiments/guard`
-says whether it is safe to start an ON block (P(≥ 32 °C within 30 min) < 5 %).
+with and without closet heat (paired test), these slopes, and the daily residual (stuck-air watch).
 
 **One dispatcher exists: `POST /experiments/run`** (`app/experiment_runner.py`, 2026-10-29). It
 performs `vision.focus:<stream_id>` only: during ON blocks it holds Redis key

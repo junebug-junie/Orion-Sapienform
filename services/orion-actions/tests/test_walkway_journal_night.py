@@ -53,14 +53,19 @@ class _Night:
         self.records: list[dict] = []
         self.closed: list[tuple[str, bool]] = []
         self.read_attempts: dict[str, int] = {}
+        self.open_reasons: dict[str, dict[str, str]] = {}
+        self.read_down = lambda now: False
 
     def restart(self) -> None:
         """A process restart: in-memory state is gone, the files are not."""
         self.gate = DailyAttemptGate(state_path=self.path)
         self.read_attempts = {}
+        self.open_reasons = {}
 
     async def _collect(self, night):
         self.collected_for.append(night)
+        if self.read_down(self.now):
+            raise RuntimeError("database blip")
         return [_job(k, night.isoformat()) for k in self.kinds], list(self.skips)
 
     async def _dispatch(self, job):
@@ -82,7 +87,7 @@ class _Night:
             collect=self._collect, dispatch=self._dispatch,
             job_done_on=self.cursors.get, mark_job_done=self.cursors.__setitem__,
             read_attempts=self.read_attempts, gate=self.gate, clock=self.now.timestamp,
-            record=self._record, close_night=self._close,
+            record=self._record, close_night=self._close, open_reasons=self.open_reasons,
         ))
 
     def run(self, ticks: int, *, restart_at: int | None = None, **kw) -> list[str]:
@@ -233,13 +238,70 @@ def test_a_night_that_runs_out_of_time_is_closed_with_a_no_for_each_job(tmp_path
     assert night.tick() == "expired"
     assert len(night.dispatched) == before
     assert [(r["kind"], r["landed"], r["reason"]) for r in night.records] == [
-        ("walkway_day", False, "night_expired"),
+        ("walkway_day", False, "night_expired:not_attempted:journal_cooldown"),
         ("walkway_grade", False, "night_expired"),
         ("walkway_forecast", False, "night_expired"),
     ]
     assert night.closed == [("2026-11-12", False)] and night.tick() == "idle"
     night.now = T0 + timedelta(days=1)
     assert night.tick() == "open" and night.collected_for[-1] == date(2026, 11, 13)
+
+
+def test_a_database_blip_during_a_wait_does_not_drop_a_job_with_tries_left(tmp_path) -> None:
+    """Review finding: three failed reads closed the night, and called it clean, while a job
+    that had failed twice was waiting for its third try."""
+    night = _Night(tmp_path)
+    blip_from = T0 + timedelta(minutes=3)  # after failure 2, inside its 5 minute wait
+    night.read_down = lambda now: blip_from <= now < blip_from + 5 * TICK
+    words = night.run(120)
+    assert len(night.dispatched) == 4
+    assert night.closed == [("2026-11-12", False)]
+    assert night.records[0]["reason"].startswith("gave_up_after_4_attempts")
+    assert words[4:9] == ["open"] * 5
+
+
+def test_single_read_failures_spread_over_the_night_do_not_add_up(tmp_path) -> None:
+    night = _Night(tmp_path, outcome=lambda k, n: DailyAttemptResult(n >= T0 + 30 * TICK, attempted=False,
+                                                                     failure_reason="journal_cooldown"))
+    night.read_down = lambda now: int((now - T0) / TICK) in (3, 9, 15, 21)
+    words = night.run(32)
+    assert words[30] == "closed" and night.cursors["walkway_day"] == "2026-11-12"
+
+
+def test_a_read_that_stays_down_with_nothing_pending_gives_up_after_three(tmp_path) -> None:
+    night = _Night(tmp_path)
+    night.read_down = lambda now: True
+    assert night.run(4) == ["open", "open", "closed", "idle"]
+    assert [r["reason"] for r in night.records] == ["no_job:collect_failed"] * 3
+    assert night.closed == [("2026-11-12", False)]  # not logged as a successful night
+
+
+def test_a_cursor_ahead_of_the_night_is_left_alone(tmp_path) -> None:
+    """Review finding: tonight ran at 22:30, then the schedule moved to 23:30. At 22:45 the
+    current night is the 11th by the new time; it must not be reopened or the cursor moved back."""
+    night = _Night(tmp_path)
+    night.cursors["walkway_journal"] = "2026-11-12"
+    night.now = T0 + timedelta(minutes=15)
+    assert night.tick(hour_local=23, minute_local=30) == "idle"
+    assert night.records == [] and night.closed == [] and night.cursors["walkway_journal"] == "2026-11-12"
+
+
+def test_first_boot_past_the_window_closes_last_night_without_made_up_records(tmp_path) -> None:
+    night = _Night(tmp_path)
+    night.now = T0 + timedelta(hours=10)
+    assert night.tick() == "expired"
+    assert night.records == [] and night.dispatched == [] and night.closed == [("2026-11-12", False)]
+    night.now = T0 + timedelta(days=1)
+    assert night.tick() == "open"
+
+
+def test_a_bad_timezone_is_idle_not_a_crash(tmp_path) -> None:
+    night = _Night(tmp_path)
+    assert asyncio.run(wf.run_walkway_schedule(
+        now_utc=T0, tz_name="Mars/Olympus", hour_local=22, minute_local=30, night_closed_on=None,
+        collect=night._collect, dispatch=night._dispatch, job_done_on={}.get, mark_job_done=lambda k, v: None,
+        read_attempts={}, gate=night.gate, clock=lambda: 0.0, record=night._record, close_night=night._close,
+    )) == "idle"
 
 
 # --- #3385: one landed yes/no record per night per job ---------------------------------------------

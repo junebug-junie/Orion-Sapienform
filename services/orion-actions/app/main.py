@@ -1296,6 +1296,8 @@ async def lifespan(app: FastAPI):
     # walkway_forecast.run_walkway_tick). Failed composes are capped in
     # daily_attempt_gate below, which survives a restart.
     walkway_read_attempts: dict[str, int] = {}
+    # Why each job of the open walkway night has no entry yet ({night: {kind: why}}).
+    walkway_open_reasons: dict[str, dict[str, str]] = {}
     last_skill_run_monotonic: float | None = None
     last_journal_run: str | None = None
     workflow_schedule_store = WorkflowScheduleStore(
@@ -2528,6 +2530,7 @@ async def lifespan(app: FastAPI):
                 clock=time.time,
                 record=_walkway_record,
                 close_night=_walkway_close,
+                open_reasons=walkway_open_reasons,
             )
         except Exception:
             logger.exception("walkway_journal_schedule_failed")

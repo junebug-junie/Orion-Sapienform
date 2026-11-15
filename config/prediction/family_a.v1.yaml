@@ -34,6 +34,13 @@ hygiene:
   # Independence: a series whose bucket means correlate above this with an earlier-listed passing
   # series is the same reading twice and is refused (office eCO2 vs TVOC: 0.99999, one CCS811 value).
   max_duplicate_corr: 0.999
+  # Frozen sensor (#3370), on the last 24 h: a reading whose one-value share passes its flattest normal
+  # whole training day (stats.max_day_mode_share) by this fraction of the way to 1 is refused, unless the
+  # value is its training floor (PM2.5 resting at 0 is rest, not frozen). Issue refuses the bucket; the
+  # next select (<= 6 h) drops the input and serves the rest. 0.5: a stuck sensor (share 1.0) trips within
+  # ~12-20 h; a merely quieter-than-usual day does not. Live 2026-11-15: no non-floor reading's last 24 h
+  # came near its limit (closest: cabinet vibration 0.10 against a limit of 0.57).
+  flat_margin: 0.5
 inputs:
   # --- athena: cabinet sensors (Nano ESP32 in the cabinet) ---
   - {id: athena.cabinet_temp_c, unit: C, source: {table: biometrics, node: athena, key: cabinet_temp_c}}

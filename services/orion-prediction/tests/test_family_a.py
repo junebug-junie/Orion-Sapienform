@@ -210,9 +210,52 @@ def test_flat_target_at_rest_inside_its_trained_band_does_not_refuse():
     fa.gate_named_inputs({"office.pm25_ug_m3": fa.TARGET, "gpu.t": fa.TARGET}, f, _hyg(),
                          {"office.pm25_ug_m3": end, "gpu.t": end}, end,
                          bands={"office.pm25_ug_m3": [0.0, 6.6], "gpu.t": [55.0, 65.0]})
-    # a constant inside the band, not at the floor, is the same case
+    # a constant inside the band, not at the floor, passes too when the run has no flatness ceiling (a
+    # manifest from before #3370); with one it is a frozen sensor (see the frozen-sensor tests below)
     fa.gate_named_inputs({"stuck.x": fa.TARGET}, _frame({"stuck.x": np.full(288, 3.0)}), _hyg(),
                          bands={"stuck.x": [0.0, 10.0]})
+
+
+# --- frozen sensor (#3370) -------------------------------------------------------------------------
+
+def test_flat_limit_sits_the_margin_of_the_way_from_the_ceiling_to_frozen():
+    h = _hyg()
+    assert h.flat_margin == 0.5
+    assert fa.flat_limit(0.2, h) == pytest.approx(0.6)
+    assert fa.flat_limit(1.0, h) == 1.0
+
+
+def test_a_sensor_frozen_inside_its_band_refuses_but_rest_at_the_floor_and_a_quiet_day_do_not():
+    rng = np.random.default_rng(8)
+    gate = dict(bands={"g.t": [55.0, 65.0]}, floors={"g.t": 40.0}, flat_ceilings={"g.t": 0.2})
+    with pytest.raises(fa.HygieneRefused) as exc:      # GPU temperature stuck at 61.0 C for 24 h
+        fa.gate_named_inputs({"g.t": fa.TARGET}, _frame({"g.t": np.full(288, 61.0)}), _hyg(), **gate)
+    assert exc.value.refusals == {"g.t": ("flat_beyond_training",)}
+    stuck_half = np.r_[60 + rng.standard_normal(144).round(1), np.full(144, 61.0)]   # 0.5 + a few: under 0.6
+    fa.gate_named_inputs({"g.t": fa.TARGET}, _frame({"g.t": stuck_half}), _hyg(), **gate)
+    quiet = np.where(rng.random(288) < 0.45, 60.0, 60 + rng.standard_normal(288).round(1))  # flatter than 0.2
+    fa.gate_named_inputs({"g.t": fa.TARGET}, _frame({"g.t": quiet}), _hyg(), **gate)
+    # PM2.5 resting at its floor all day is rest, whatever the ceiling
+    fa.gate_named_inputs({"p.x": fa.TARGET}, _frame({"p.x": np.zeros(288)}), _hyg(),
+                         bands={"p.x": [0.0, 6.6]}, floors={"p.x": 0.0}, flat_ceilings={"p.x": 0.1})
+
+
+def test_the_ceiling_ignores_frozen_days_and_select_drops_a_sensor_frozen_now():
+    h = _hyg()
+    normal = _daily(days=12, seed=9)
+    v = fa.screen_series(_series(normal), h, "g.t")
+    assert v.status == fa.TARGET and 0 < v.stats["max_day_mode_share"] < 0.1
+    frozen = fa.screen_series(_series(np.r_[normal, np.full(2 * 288, 26.0)]), h, "g.t")
+    # two frozen whole days do not lift the ceiling to 1.0 (else the check would go silent after a select)
+    assert frozen.stats["max_day_mode_share"] == v.stats["max_day_mode_share"]
+    assert frozen.status == fa.REFUSED and frozen.reasons == ("flat_beyond_training",)
+    # recovered: frozen two days ago, moving again for the last whole day -> kept, ceiling still normal
+    back = fa.screen_series(_series(np.r_[normal, np.full(2 * 288, 26.0), _daily(days=1, seed=10)]), h, "g.t")
+    assert back.status == fa.TARGET and back.stats["max_day_mode_share"] == v.stats["max_day_mode_share"]
+    # resting at the training floor (event-like light sensor at 0) is never "frozen"
+    light = np.where(np.random.default_rng(11).random(14 * 288) < 0.6, 0.0, np.abs(_daily(days=14, seed=11) - 25) * 8)
+    light[-288:] = 0.0
+    assert "flat_beyond_training" not in fa.screen_series(_series(light), h, "l.raw").reasons
 
 
 def test_flat_target_still_refuses_when_stale_absent_or_out_of_band():
@@ -580,3 +623,12 @@ def test_difficulty_reads_only_targets_known_at_the_origin():
     # origin 20, lead 3: targets known by then are origins <= 17 -> rows 6..17
     assert d[20] == pytest.approx(np.mean(np.arange(6, 18)))
     assert np.isnan(d[7])          # rows 0..4 only: under min_n
+
+
+def test_a_reading_resting_at_a_non_round_floor_counts_as_its_floor():
+    # Found building #3370: the mode is rounded to 6 significant digits, the floor is the exact training
+    # minimum, so a reading resting at 17.1234567 compared as 17.1235 > floor and lost the floor exemption.
+    floor = 17.1234567
+    f = _frame({"r.x": np.full(288, floor)})
+    fa.gate_named_inputs({"r.x": fa.TARGET}, f, _hyg(), bands={"r.x": [18.0, 20.0]}, floors={"r.x": floor},
+                         flat_ceilings={"r.x": 0.1})

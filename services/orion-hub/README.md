@@ -417,6 +417,29 @@ readings door's pending bundles, offered through `ReadingFindingOutreach.outreac
 only while that door's spacing allows a reading message; reads with a resonance
 finding stay with that door). Orion's reply starts with `Pick: <n>`.
 
+Two more kinds since 2026-11-15 (`scripts/outreach_world_topics.py`; Juniper: the
+choices should be about the world, not Orion's machinery):
+
+- **People** (`person:<person_id>`): someone Juniper named for the cameras (a
+  `person_link` from a name she typed; never a copied label or an unnamed
+  cluster; not Juniper or Orion; office camera left out, it has its own door)
+  whose newest visit (last 36 h) is new: back after 4+ days away, first time in
+  the 60-day window, or at a time of day none of 6+ earlier visits (4+ days)
+  came within 1.5 h of. Version = the visit's first sighting id; the topic cites
+  `vision_individual_sighting:<id>`. Flag `HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED`.
+- **Chat threads** (`chat_thread:<correlation_id>`): a chat turn of Juniper's in
+  the last 7 days where Orion's reply ended on a question and her next message
+  came 2+ hours later (or not yet). Plumbing-shaped threads (code span, URL,
+  path, `#123`, `snake_case`, `qwen38`-style words) are left out. Cites
+  `chat_history_log:<id>`. Flag `HUB_ENDOGENOUS_OUTREACH_CHAT_THREAD_TOPICS_ENABLED`.
+  Promises are not used: Orion Prime already carries each one back to its thread.
+
+Order is unchanged: freshest first across every kind (a person topic's time is
+its visit's last sighting; a chat thread's is the reply that asked). The
+decision row stores each shown topic's `evidence_ref`, and the published
+choice's situation carries them as `evidence`. Readout and live candidate count:
+`services/orion-hub/evals/run_outreach_choice_readout.py [--candidates]`.
+
 - A pick sends the message about that topic (a read's article summary rides
   under it, as the readings door delivers it). `Pick: 0` or PASS records
   `orion_declined` and sends nothing. Two or more topics and no Pick line:

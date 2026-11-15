@@ -657,3 +657,108 @@ def test_tick_bid_sends_topics_text_and_a_care_only_fund_marks_the_choice(monkey
     assert "A daydream" in seen[0]
     (choice,) = _choices(o)
     assert choice.care_promoted is True
+
+
+def test_tick_shows_a_chat_thread_and_orion_picks_it(monkeypatch) -> None:
+    """2026-11-15: an open chat thread is a topic at the tick. Freshness still orders the options (the
+    daydream is newer, so it is rank 1); the pick goes through every gate as before; the decision row,
+    the published choice and the binding bid all carry the thread."""
+    import scripts.outreach_bind as ob
+    from orion.schemas.physiology_want import WantDecisionV1
+    from scripts.outreach_world_topics import chat_thread_source
+
+    now = datetime.now(timezone.utc)
+    turn = {"correlation_id": "c-44", "session_id": "s", "created_at": (now - timedelta(days=1)).replace(tzinfo=None),
+            "prompt": "I'm going to turn 44 in February.", "response": "Two of us.\n\nSo what's the plan for 44?"}
+
+    class _Conn:
+        async def fetch(self, sql, *args):
+            return [turn]
+
+    class _Pool:
+        def acquire(self):
+            class _Ctx:
+                async def __aenter__(self):
+                    return _Conn()
+
+                async def __aexit__(self, *exc):
+                    return False
+
+            return _Ctx()
+
+    seen: List[Any] = []
+
+    async def fake_abid(want, timeout_sec, object_text=None):
+        seen.append(object_text)
+        return WantDecisionV1(
+            decision_id=f"{want.want_id}@x", want_id=want.want_id, family=want.family, producer=want.producer,
+            verb=want.verb, tier=want.tier, decided_at=datetime.now(timezone.utc), outcome="funded",
+            reason="net_positive", net=0.05, charge=0.1, want=want, why="hub.outreach: funded")
+
+    async def fake_release(want_id):
+        return 1
+
+    monkeypatch.setattr(ob, "_abid", fake_abid)
+    monkeypatch.setattr(ob, "_arelease", fake_release)
+    ledger = _Ledger(monkeypatch)
+    prompts: List[str] = []
+    delivered: List[str] = []
+    o = _choice_outreach()
+    o.economy_mode = "on"
+    o.topic_sources.append(chat_thread_source(lambda: _Pool(), tz_name="America/Denver"))
+    _stub_tick(monkeypatch, replies=["Pick: 2\nStill curious what 44 looks like.\nWhy Juniper: her birthday."],
+               prompts=prompts, delivered=delivered)
+
+    result = asyncio.run(o.maybe_outreach())
+
+    assert result["outreach"] is True and result["reason"] == "sent"
+    assert "1. A daydream" in prompts[0] and "2. An open thread with Juniper" in prompts[0]
+    assert result["choice"]["chosen_subject"] == "chat_thread:c-44"
+    assert result["choice"]["shown"][1]["evidence_ref"] == "chat_history_log:c-44"
+    assert delivered == ["Still curious what 44 looks like."]
+    (choice,) = _choices(o)
+    assert choice.chosen.key == "chat_thread:c-44" and choice.chosen_market_rank == 2
+    assert choice.situation["evidence"] == "2=chat_history_log:c-44"
+    assert choice.situation["option_kinds"] == "chat_thread,daydream"
+    assert len(seen) == 1 and "An open thread with Juniper" in seen[0] and "A daydream" in seen[0]
+    # The next tick does not show the same thread again (the 7-day subject ledger).
+    assert "chat_thread:c-44" in fold_said_subjects(
+        {"reason": r.get("reason"), "choice": r.get("choice")} for r in ledger.rows)
+
+
+def test_said_ledger_reads_every_reason_the_fold_reads(monkeypatch) -> None:
+    """Before 2026-11-15 the SQL left out no_pick / invalid_pick, so a reply with no readable pick did not
+    keep its topics out for 7 days (fold_said_subjects counts them; the query never returned them)."""
+    import scripts.endogenous_outreach_decisions as decisions
+    import scripts.pg_engine as pg_engine
+    from scripts.outreach_choice import CHOSEN_SUBJECT_REASONS, DECLINED_SUBJECT_REASONS
+
+    captured: Dict[str, Any] = {}
+
+    class _Result:
+        def mappings(self):
+            return self
+
+        def all(self):
+            return [{"reason": NO_PICK_REASON, "daydream_id": None,
+                     "choice": {"shown": [{"subject": "person:p1", "version": "s1"}]}}]
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql, params):
+            captured.update(params)
+            return _Result()
+
+    class _Engine:
+        def connect(self):
+            return _Conn()
+
+    monkeypatch.setattr(pg_engine, "get_engine", lambda: _Engine())
+    said = decisions.fetch_said_outreach_subjects(lookback_days=7)
+    assert set(captured["reasons"]) >= CHOSEN_SUBJECT_REASONS | DECLINED_SUBJECT_REASONS
+    assert said == {"person:p1": {"s1"}}

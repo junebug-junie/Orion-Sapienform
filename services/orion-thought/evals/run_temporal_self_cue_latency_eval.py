@@ -36,7 +36,7 @@ import httpx
 REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 
-from jinja2 import Environment  # noqa: E402
+from orion.cognition.prompt_render import prompt_environment  # noqa: E402
 
 from orion.temporal_self.stance_cue import project_stance_cue  # noqa: E402
 
@@ -88,7 +88,7 @@ def recent_stance_tokens(containers: list[str], since: str) -> list[tuple[int, i
 
 
 def prompt_delta(cue_text: str) -> int:
-    template = Environment().from_string(PROMPT.read_text())
+    template = prompt_environment().from_string(PROMPT.read_text())
     base = {"user_message": "hi", "stance_inputs": {"user_message": "hi"}, "association": {},
             "repair_bundle": None, "coalition_projection": None}
     return len(template.render(**base, temporal_self_cue=cue_text)) - len(template.render(**base))

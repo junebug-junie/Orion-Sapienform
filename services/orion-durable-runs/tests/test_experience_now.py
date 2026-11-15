@@ -122,7 +122,8 @@ class MemDB(FakeStore):
 
     # ExperienceStore's contract
     async def last_shown(self, organ):
-        ats = [r["shown_at"] for r in self.shown_rows.values() if r["reader_organ"] == organ]
+        ats = [r["shown_at"] for r in self.shown_rows.values()
+               if r["reader_organ"] == organ and r.get("advances_cursor", True)]
         return max(ats) if ats else None
 
     async def candidates(self, *, since, as_of, own_kinds, per_kind):
@@ -144,12 +145,14 @@ class MemDB(FakeStore):
     async def insert_shown(self, **row):
         self.shown_rows[row["shown_id"]] = row
 
-    async def shown(self, shown_id):
-        return self.shown_rows.get(shown_id)
-
-    async def insert_uses(self, rows):
-        for r in rows:
-            self.use_rows.setdefault(r["use_id"], r)
+    async def record_cites(self, shown_id, decide):
+        shown = self.shown_rows.get(shown_id)
+        if shown is None:
+            return None
+        result = decide(shown, [u["event_id"] for u in self.use_rows.values() if u["shown_id"] == shown_id])
+        for u in result.uses:
+            self.use_rows.setdefault(u.use_id, u.model_dump())
+        return result
 
     async def rate_inputs(self, lo, hi):
         kinds: dict[str, int] = {}
@@ -187,12 +190,14 @@ def test_lifecycle_emit_now_cite_store_metric(routes, monkeypatch):
     w = World(T0)
     db = MemDB(w)
     monkeypatch.setattr(store_mod, "ExperienceStore", lambda _pool: db)
-    # 25 past readings with small surprisal, then one that surprised Orion; Prime thinks meanwhile.
-    for i in range(25):
-        w.add("reading_turn", reading(i, T0 + timedelta(minutes=i), surprise=0.001 + i * 1e-5))
-    w.add("reading_turn", reading(99, T0 + timedelta(minutes=30), surprise=3.0, note="no_read_evidence"))
+    # 30 readings with small, FALLING surprisal (so the newest is never the biggest) and one that surprised
+    # Orion in the middle; Prime thinks after. The rule is set here (the mechanism under test); the live
+    # registry gives reading_turn no magnitude (its ledger surprisal drifts with age).
+    for i in range(30):
+        w.add("reading_turn", reading(i, T0 + timedelta(minutes=i), surprise=0.01 - i * 1e-4))
+    w.add("reading_turn", reading(99, T0 + timedelta(minutes=22, seconds=30), surprise=3.0, note="no_read_evidence"))
     w.add("prime_thought", prime(1, T0 + timedelta(minutes=31)))
-    rules = dict(load_organs().magnitude_rule)
+    rules = {**load_organs().magnitude_rule, "reading_turn": "surprise_nats"}
     ch = Chronicler(store=db, reader=FakeReader(w), cfg=cfg(), now=lambda: w.now,
                     salience=SalienceBook(rules, db.magnitude_history))
     while w.now < T0 + timedelta(minutes=45):
@@ -202,7 +207,8 @@ def test_lifecycle_emit_now_cite_store_metric(routes, monkeypatch):
     # 1. the organ emitted: experiences stored with salience
     surprising = f"reading_turn:act_{99:024x}"
     assert db.meta[surprising]["salience"] == 1.0 and db.meta[surprising]["surprise_nats"] == 3.0
-    assert sum(1 for m in db.meta.values() if m["source_kind"] == "reading_turn") == 26
+    assert sum(1 for m in db.meta.values() if m["source_kind"] == "reading_turn") == 31
+    assert db.meta[f"reading_turn:act_{29:024x}"]["salience"] == 0.0  # newest, smallest: the rest point
 
     # 2. it appears in a different organ's now; never in its own organ's now
     class Clock:
@@ -211,6 +217,7 @@ def test_lifecycle_emit_now_cite_store_metric(routes, monkeypatch):
             return w.now.astimezone(tz) if tz else w.now
 
     monkeypatch.setattr("datetime.datetime", type("DT", (real_datetime,), {"now": Clock.now}))
+    w.now += timedelta(minutes=5)  # past the read's commit margin
     since = (T0 - timedelta(hours=1)).isoformat()
     now = client.get("/temporal-self/now", params={"organ": "prime", "since": since, "run_ref": "prime_thought:x"}).json()
     ids = [i["event_id"] for i in now["items"]]
@@ -219,6 +226,7 @@ def test_lifecycle_emit_now_cite_store_metric(routes, monkeypatch):
     own = client.get("/temporal-self/now", params={"organ": "reading", "since": since}).json()
     assert {i["organ"] for i in own["items"]} == {"prime"}
     assert db.shown_rows[now["shown_id"]]["event_ids"] == ids
+    assert db.shown_rows[now["shown_id"]]["advances_cursor"] is False  # an explicit since= is an inspection read
 
     # 0. before any cite, the metric reads 0 (the rest point), and no organ is closed
     before = client.get("/temporal-self/integration", params={"hours": 24}).json()
@@ -269,3 +277,72 @@ def test_flag_ships_on_in_settings_env_example_and_compose():
 
 def test_dockerfile_copies_the_organ_registry():
     assert "COPY config/integration/organs.yaml /app/config/integration/organs.yaml" in (SERVICE_ROOT / "Dockerfile").read_text()
+
+
+def test_cite_cap_is_per_shown_row_across_calls(routes, monkeypatch):
+    import app.temporal_self_store as store_mod
+    from datetime import datetime, timezone
+
+    main, client = routes
+    db = MemDB(World(T0))
+    monkeypatch.setattr(store_mod, "ExperienceStore", lambda _pool: db)
+    ids = [f"gpu_wait:{i}" for i in range(6)]
+    db.shown_rows["s"] = {"shown_id": "s", "reader_organ": "prime", "event_ids": ids,
+                          "shown_at": datetime.now(timezone.utc), "advances_cursor": True}
+    first = client.post("/temporal-self/now/use", json={"shown_id": "s", "citing_ref": "r", "cites": ids[:2]}).json()
+    second = client.post("/temporal-self/now/use", json={"shown_id": "s", "citing_ref": "r", "cites": ids[:1] + ids[2:5]}).json()
+    assert len(first["uses"]) == 2 and [u["event_id"] for u in second["uses"]] == [ids[2]]
+    assert second["rejected_over_cap"] == ids[3:5] and len(db.use_rows) == 3
+
+
+def test_a_read_skips_nothing_still_committing_and_inspection_reads_keep_the_cursor(routes, monkeypatch):
+    """ingested_at is the commit's START time: a row stamped before a read but committed after it must be
+    shown at the next default read (the read cuts NOW_COMMIT_MARGIN_SEC below the clock and the cursor
+    starts there)."""
+    from datetime import datetime as real_datetime
+
+    import app.temporal_self_store as store_mod
+
+    main, client = routes
+    w = World(T0)
+    db = MemDB(w)
+    monkeypatch.setattr(store_mod, "ExperienceStore", lambda _pool: db)
+
+    class Clock:
+        @staticmethod
+        def now(tz=None):
+            return w.now.astimezone(tz) if tz else w.now
+
+    monkeypatch.setattr("datetime.datetime", type("DT", (real_datetime,), {"now": Clock.now}))
+
+    def land(i, ingested):
+        e = S.gpu_wait(gpu(i, T0, 900.0))
+        db.meta[e.event_id] = dict(event_row(e), ingested_at=ingested)
+
+    w.now = T0 + timedelta(hours=1)
+    first = client.get("/temporal-self/now", params={"organ": "prime"}).json()
+    # a window whose commit started 30 s before that read and committed after it
+    land(1, w.now - timedelta(seconds=30))
+    client.get("/temporal-self/now", params={"organ": "prime", "since": (T0 - timedelta(days=1)).isoformat()})
+    w.now += timedelta(minutes=10)
+    nxt = client.get("/temporal-self/now", params={"organ": "prime"}).json()
+    assert first["items"] == [] and [i["event_id"] for i in nxt["items"]] == ["gpu_wait:g1"]
+    assert nxt["since"] == first["as_of"]  # the explicit-since read did not move the cursor
+
+
+def test_a_salience_history_failure_stores_null_and_never_stalls_the_chronicle():
+    w = World(T0)
+    db = MemDB(w)
+    calls = []
+
+    async def broken(kind, since):
+        calls.append(kind)
+        raise TimeoutError("statement timeout")
+
+    w.add("gpu_wait", gpu(1, T0 + timedelta(minutes=1), 900.0))
+    ch = Chronicler(store=db, reader=FakeReader(w), cfg=cfg(), now=lambda: w.now,
+                    salience=SalienceBook({"gpu_wait": "waited_ms"}, broken))
+    while w.now < T0 + timedelta(minutes=20):
+        w.now += STEP
+        assert asyncio.run(ch.step())["error"] is None
+    assert db.meta["gpu_wait:g1"]["salience"] is None and len(calls) >= 1

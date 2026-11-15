@@ -86,18 +86,19 @@ def with_db(fn):
 
 
 async def seed(pool, t0: datetime) -> str:
-    """25 ordinary readings, one surprising one, one Prime thought, two scored exceedances."""
+    """25 ordinary readings with FALLING surprisal (the newest is the smallest) and one surprising reading in
+    the middle of them, one Prime thought, two scored exceedances."""
     async with pool.connection() as conn:
         for i in range(26):
             surprising = i == 25
-            at = t0 + timedelta(minutes=i)
+            at = t0 + timedelta(minutes=22, seconds=30) if surprising else t0 + timedelta(minutes=i)
             await conn.execute(
                 "INSERT INTO grammar_acts (act_id, trace_id, level, actor, verb, object_ref, correlation_id, opened_at,"
                 " outcome_value, outcome_note, surprise_nats, closed_at) VALUES (%s, 't', 'act', 'hub.world_pulse_read',"
                 " 'look', %s, %s, %s, %s, %s, %s, %s)",
                 (f"act_{i:024x}", f"https://example.org/{i}", f"00000000-0000-0000-0000-{i:012x}",
                  at - timedelta(minutes=2), 0 if surprising else 1,
-                 "no_read_evidence" if surprising else "stage1_completed", 3.0 if surprising else 0.001 + i * 1e-5, at))
+                 "no_read_evidence" if surprising else "stage1_completed", 3.0 if surprising else 0.01 - i * 1e-4, at))
             await conn.execute("INSERT INTO world_pulse_read_seed (seed_id, url, title) VALUES (%s, %s, %s)",
                                (f"reading:00000000-0000-0000-0000-{i:012x}", f"https://example.org/{i}", f"Article {i}"))
         await conn.execute(
@@ -132,7 +133,9 @@ def test_lifecycle_on_postgres(monkeypatch):
         ch = Chronicler(store=store, reader=SourceReader(pool, TZ),
                         cfg=ChronicleConfig(reducer=ReducerConfig(tz_name=TZ), read_lag_sec=300.0, backfill_days=0),
                         now=lambda: clock["now"],
-                        salience=SalienceBook(dict(load_organs().magnitude_rule), store.magnitude_history))
+                        # The rule under test is set here: the live registry gives reading_turn no magnitude.
+                        salience=SalienceBook({**load_organs().magnitude_rule, "reading_turn": "surprise_nats"},
+                                              store.magnitude_history))
         # Step the chronicle forward to just before the real clock, an hour at a time.
         while clock["now"] < real_now - timedelta(minutes=1):
             clock["now"] = min(clock["now"] + timedelta(hours=1), real_now - timedelta(minutes=1))
@@ -147,10 +150,14 @@ def test_lifecycle_on_postgres(monkeypatch):
         assert rows[surprising]["salience"] == 1.0 and rows[surprising]["surprise_nats"] == 3.0
         assert rows[surprising]["label"] == "no_read_evidence: Article 25"
         assert rows[f"reading_turn:act_{0:024x}"]["salience"] is None  # no history yet: NULL, never 0
+        assert rows[f"reading_turn:act_{24:024x}"]["salience"] == 0.0  # newest and smallest: the rest point
         crossed = [r for r in rows.values() if r["source_kind"] == "prediction_surprise" and r["surprise_nats"] > 4]
         assert len(crossed) == 1 and crossed[0]["related_refs"] == ["prediction_joint_surprise:1"]
 
-        # 2. Prime's now shows the surprising reading first; never Prime's own thought; one shown row
+        # 2. Prime's now shows the surprising reading first; never Prime's own thought; one shown row.
+        # The read cuts NOW_COMMIT_MARGIN_SEC below the clock: age the stored rows past it (time passing).
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE temporal_self_event SET ingested_at = ingested_at - interval '10 minutes'")
         monkeypatch.setattr(main, "_checkpointer_cm", pool)
         since = (real_now - timedelta(hours=2)).isoformat()
         now = await main.temporal_self_now(organ="prime", since=since, run_ref="prime_thought:test")
@@ -160,9 +167,12 @@ def test_lifecycle_on_postgres(monkeypatch):
         async with pool.connection() as conn:
             shown = await (await conn.execute("SELECT reader_organ, event_ids FROM experience_shown")).fetchall()
         assert shown == [{"reader_organ": "prime", "event_ids": [i["event_id"] for i in now["items"]]}]
-        # the default since is the organ's last look: a second read right away sees nothing new
+        # an explicit since= never moves the cursor; the first default read starts 24 h back and sees them,
+        # the next default read right away sees nothing new
+        first = await main.temporal_self_now(organ="prime")
+        assert first["items"] and first["items"][0]["event_id"] == surprising
         again = await main.temporal_self_now(organ="prime")
-        assert again["items"] == []
+        assert again["items"] == [] and again["since"] == first["as_of"]
 
         before = await main.temporal_self_integration(hours=6)
         assert before["rate"] == 0.0 and before["closed_organs"] == []
@@ -174,10 +184,15 @@ def test_lifecycle_on_postgres(monkeypatch):
         async with pool.connection() as conn:
             uses = await (await conn.execute("SELECT event_id, citing_organ FROM experience_use")).fetchall()
         assert uses == [{"event_id": surprising, "citing_organ": "prime"}]
+        # the 3-cite cap holds per shown row across calls (row-locked)
+        others = [i["event_id"] for i in now["items"] if i["event_id"] != surprising][:3]
+        more = await main.temporal_self_now_use({"shown_id": now["shown_id"], "citing_ref": "prime_thought:test",
+                                                 "cites": others})
+        assert len(more["uses"]) == 2 and more["rejected_over_cap"] == others[2:]
 
         # 5. the metric moved, by the metric's own SQL
         after = await main.temporal_self_integration(hours=6)
-        assert after["used_by_other"] == 1 and after["closed_organs"] == ["reading"]
-        assert after["rate"] == pytest.approx(1 / after["experiences"])
+        assert after["used_by_other"] == 3 and "reading" in after["closed_organs"] and "prime" not in after["closed_organs"]
+        assert after["rate"] == pytest.approx(3 / after["experiences"])
 
     with_db(scenario)

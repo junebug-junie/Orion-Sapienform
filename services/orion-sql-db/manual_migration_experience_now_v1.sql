@@ -25,7 +25,11 @@ CREATE TABLE IF NOT EXISTS experience_shown (
     reader_run_ref text,
     event_ids      text[] NOT NULL DEFAULT '{}',
     since          timestamptz NOT NULL,
-    shown_at       timestamptz NOT NULL DEFAULT now()
+    -- The read's cut-off: rows ingested at or before it were candidates. Sits a commit margin before the
+    -- wall clock, so a chronicle window still committing at read time is read next time, not skipped.
+    shown_at       timestamptz NOT NULL DEFAULT now(),
+    -- false for an inspection read with an explicit since=: it never moves the organ's default cursor.
+    advances_cursor boolean NOT NULL DEFAULT true
 );
 CREATE INDEX IF NOT EXISTS idx_experience_shown_organ_time ON experience_shown (reader_organ, shown_at);
 CREATE INDEX IF NOT EXISTS idx_experience_shown_time ON experience_shown (shown_at);

@@ -1082,13 +1082,17 @@ Spec: `docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md`
   30 days before that were strictly smaller by the kind's declared magnitude
   (`orion.physiology.event_wants.source_salience`). NULL under 20 past events or for a kind with no
   magnitude. `surprise_nats` is written only where the source carried a real prediction's surprisal.
+  Scoring runs off the event loop; a failed history read stores NULL for that window and retries next.
 - `GET /temporal-self/now?organ=<id>[&since=<iso>][&run_ref=<ref>]` -> `TemporalNowV1`: at most 12
-  experiences of other organs ingested since `since` (default: this organ's last look, else 24 h), at
-  most 2 per organ, highest salience first (NULL last, newest first on ties). Every call writes one
-  `experience_shown` row.
+  experiences of other organs ingested since `since` (default: this organ's last default read, else 24 h),
+  at most 2 per organ, highest salience first (NULL last, newest first on ties). Every call writes one
+  `experience_shown` row. The read cuts 120 s below the clock (`ingested_at` is a commit's start time, so a
+  window still committing is read next time, never skipped). A read with an explicit `since=` is an
+  inspection: stored, but it never moves the organ's cursor.
 - `POST /temporal-self/now/use` (`ExperienceCitesV1`: `shown_id`, `citing_ref`, `cites`) ->
-  `ExperienceUseResultV1`. Cites are checked against the shown row; at most 3 valid ones are stored in
-  `experience_use` (idempotent per shown row and event); the rest are counted and dropped.
+  `ExperienceUseResultV1`. Cites are checked against the shown row; at most 3 valid ones per shown row,
+  across calls (the row is locked while deciding), are stored in `experience_use`; the rest are counted
+  and dropped. Re-sending a stored cite stores nothing.
 - `GET /temporal-self/integration?hours=24` -> `ExperienceUseRateV1`: the integration metric, the share
   of experiences recorded in the window that a different organ cited, validly, within 24 h, per organ;
   and the closed organs.

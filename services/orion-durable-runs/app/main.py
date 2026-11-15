@@ -1148,6 +1148,11 @@ async def _now_read(coro):
 
 NOW_DEFAULT_LOOKBACK_HOURS = 24.0  # a reader that never looked sees the last day
 NOW_MAX_LOOKBACK_DAYS = 30  # temporal_self_event retention
+# The read's cut-off sits this far before the clock: ingested_at is the chronicle commit's START time, so a
+# window still committing at read time has rows stamped before the read. Cutting below them (and starting the
+# next read there) means such rows are read next time instead of never. Commits are bounded by a 30 s
+# statement timeout; 120 s covers the FOR UPDATE wait as well.
+NOW_COMMIT_MARGIN_SEC = 120.0
 
 
 @app.get("/temporal-self/now")
@@ -1166,7 +1171,7 @@ async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Op
     registry = load_organs()
     if organ not in registry.organs:
         raise HTTPException(422, f"unknown organ {organ!r}; registered: {', '.join(registry.organs)}")
-    as_of = datetime.now(timezone.utc)
+    as_of = datetime.now(timezone.utc) - timedelta(seconds=NOW_COMMIT_MARGIN_SEC)
     if since:
         try:
             lo = datetime.fromisoformat(since.replace("Z", "+00:00"))
@@ -1181,15 +1186,17 @@ async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Op
                                                    per_kind=NOW_MAX_PER_ORGAN))
     now = build_now(rows, organ, since=lo, as_of=as_of, shown_id=uuid4().hex, registry=registry,
                     reader_run_ref=(run_ref or None) and run_ref[:300], candidates_total=total)
+    # An explicit since= is an inspection read: stored (every read is), but it never moves the organ's cursor.
     await _now_read(store.insert_shown(shown_id=now.shown_id, reader_organ=organ, reader_run_ref=now.reader_run_ref,
-                                       event_ids=[i.event_id for i in now.items], since=lo, shown_at=as_of))
+                                       event_ids=[i.event_id for i in now.items], since=lo, shown_at=as_of,
+                                       advances_cursor=not since))
     return now.model_dump(mode="json")
 
 
 @app.post("/temporal-self/now/use")
 async def temporal_self_now_use(body: dict):
     """Record a reader's cites at its run's close (``ExperienceCitesV1``). Each cite is checked against the
-    ``experience_shown`` row it names; valid ones (at most 3) become ``experience_use`` rows, the rest are
+    ``experience_shown`` row it names; valid ones (at most 3 per shown row, across calls) become ``experience_use`` rows, the rest are
     counted and dropped (``ExperienceUseResultV1``). Idempotent per (shown_id, event_id)."""
     from datetime import datetime, timezone
 
@@ -1203,24 +1210,27 @@ async def temporal_self_now_use(body: dict):
         req = ExperienceCitesV1.model_validate(body)
     except ValidationError as exc:
         raise HTTPException(422, exc.errors(include_url=False)) from exc
-    shown = await _now_read(store.shown(req.shown_id))
-    if shown is None:
+
+    def decide(shown: dict, already_used: list[str]):
+        return record_use(shown_id=req.shown_id, reader_organ=shown["reader_organ"],
+                          shown_event_ids=list(shown["event_ids"] or []), cites=req.cites,
+                          citing_ref=req.citing_ref, cited_at=datetime.now(timezone.utc), already_used=already_used)
+
+    result = await _now_read(store.record_cites(req.shown_id, decide))
+    if result is None:
         raise HTTPException(404, f"no experience_shown row {req.shown_id!r}: cites are valid only against a shown now")
-    result = record_use(shown_id=req.shown_id, reader_organ=shown["reader_organ"],
-                        shown_event_ids=list(shown["event_ids"] or []), cites=req.cites,
-                        citing_ref=req.citing_ref, cited_at=datetime.now(timezone.utc))
-    await _now_read(store.insert_uses([u.model_dump() for u in result.uses]))
     if result.rejected_not_shown or result.rejected_over_cap:
         logger.info("experience_cites_dropped shown_id=%s organ=%s not_shown=%d over_cap=%d", req.shown_id,
-                    shown["reader_organ"], len(result.rejected_not_shown), len(result.rejected_over_cap))
+                    result.citing_organ, len(result.rejected_not_shown), len(result.rejected_over_cap))
     return result.model_dump(mode="json")
 
 
 @app.get("/temporal-self/integration")
 async def temporal_self_integration(hours: float = 24.0):
     """The integration metric (experience use rate) over the last ``hours`` (max 30 days): the share of
-    experiences recorded in the window that a different organ cited, validly, within 24 h, per organ and
-    in total; and the closed organs. Read-only."""
+    experiences recorded in the window that a different organ cited, validly, within 24 h of when they could
+    first be read, per organ and in total; and the closed organs. Read-only. The newest experiences have had
+    less than 24 h to be cited, so a trailing window reads low until they settle."""
     from datetime import datetime, timedelta, timezone
 
     from orion.integration.organs import load_organs

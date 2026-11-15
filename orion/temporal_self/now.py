@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence, get_args
 
+from orion.curiosity.value import ARM_SELF_INQUIRY
 from orion.physiology.event_wants import MIN_SOURCE_HISTORY, SOURCE_HISTORY, source_salience
 from orion.schemas.temporal_self import (
     NOW_LABEL_MAX,
@@ -195,11 +196,14 @@ def salience_of(mag: Optional[float], at: datetime, history: Iterable[tuple[date
 # --------------------------------------------------------------------------- labels
 
 _TEMPLATES: dict[str, Callable[[Mapping[str, Any]], str]] = {
-    "curiosity_run": lambda p: (f"curiosity run ({p.get('arm') or 'run'}): tested {p.get('n_tested')}, "
-                                f"moved {p.get('n_moved')}, formed {p.get('n_formed')}"),
+    # Never the experiment arm (#3458): the three-arm curiosity test (#3183) and the dream/control hypothesis
+    # test are blinded, and the now is read by Prime, every chat turn's Prime block and the roundup. The arm
+    # stays in the stored payload for the analysis scripts only. self_inquiry is a line, not an offer arm.
+    "curiosity_run": lambda p: (f"{'self-inquiry run' if p.get('arm') == ARM_SELF_INQUIRY else 'curiosity run'}: "
+                                f"tested {p.get('n_tested')}, moved {p.get('n_moved')}, formed {p.get('n_formed')}"),
     "dream_cycle": lambda p: (f"dream cycle: {p.get('hypothesis_count')} hypotheses from "
                               f"{p.get('replay_count')} replayed items"),
-    "dream_hypothesis": lambda p: f"dream hypothesis ({p.get('arm') or 'arm unknown'})",
+    "dream_hypothesis": lambda p: "dream hypothesis",
     "gpu_wait": lambda p: f"{p.get('holder') or 'a background lease'} waited {_num(p.get('waited_ms')) or 0:.0f} ms for a GPU",
     "action_outcome": lambda p: f"act outcome {p.get('target_id')} ({p.get('dispatch_kind')})",
     "vision_percept": lambda p: "saw " + ", ".join(str(x) for x in (p.get("entities") or [])[:6]),
@@ -314,12 +318,18 @@ def record_use(
     citing_ref: str,
     cited_at: datetime,
     max_cites: int = NOW_MAX_CITES,
+    already_used: Iterable[str] = (),
 ) -> ExperienceUseResultV1:
     """Check cites against the shown row. A cite not in the shown list is dropped and counted
     (``rejected_not_shown``); valid cites past ``max_cites`` are dropped and counted
-    (``rejected_over_cap``). Duplicates count once. The citing organ is the one that was shown."""
+    (``rejected_over_cap``). Duplicates count once. The citing organ is the one that was shown.
+
+    The cap is per shown row, not per call: ``already_used`` (event ids already stored for this shown
+    row) count against it, and re-sending one of them stores nothing new."""
     shown = set(shown_event_ids)
-    seen: set[str] = set()
+    stored = set(already_used)
+    max_cites = max(0, max_cites - len(stored))
+    seen: set[str] = set(stored)
     uses: list[ExperienceUseRowV1] = []
     not_shown: list[str] = []
     over_cap: list[str] = []

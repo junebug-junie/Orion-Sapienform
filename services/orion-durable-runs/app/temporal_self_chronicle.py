@@ -24,6 +24,7 @@ No LLM, no bus publish, no consumer (patch 4 adds the stance cue and the metacog
 from __future__ import annotations
 
 import asyncio
+import bisect
 import logging
 import time
 from dataclasses import dataclass, field
@@ -111,7 +112,11 @@ class SalienceBook:
     (``config/integration/organs.yaml``) keeps its last 30 days of magnitudes in memory, loaded once per
     kind from ``temporal_self_event`` (``load(kind, since)`` -> stored-shape rows) and extended only after
     a window commits. A new event is scored against the same kind's events strictly before it, including
-    earlier events of the same window. Use counts never enter: salience is the source's own magnitude."""
+    earlier events of the same window. Use counts never enter: salience is the source's own magnitude.
+
+    The scoring itself runs off the event loop (``asyncio.to_thread``; gpu_wait holds ~30k events in 30
+    days) over a time-sorted history cut by ``bisect``. A failed history read leaves the kind unloaded (it
+    is retried next window) and the caller stores NULL salience: salience never stalls the chronicle."""
 
     def __init__(self, rules: dict[str, str], load: Callable[[str, datetime], Any]) -> None:
         self._rules = dict(rules)
@@ -121,29 +126,44 @@ class SalienceBook:
     async def score(self, events: list[TemporalSelfEventV1], now: datetime
                     ) -> tuple[dict[str, Optional[float]], dict[str, dict[str, tuple[datetime, float]]]]:
         """Saliences for ``events`` and the pending history additions (``commit`` them after the write)."""
+        for kind in sorted({e.source_kind for e in events if e.source_kind in self._rules} - set(self._hist)):
+            rows = await self._load(kind, now - SOURCE_HISTORY - timedelta(days=1))
+            rule = self._rules[kind]
+
+            def build(rows=rows, rule=rule) -> dict[str, tuple[datetime, float]]:
+                book: dict[str, tuple[datetime, float]] = {}
+                for r in rows:
+                    m = magnitude(rule, r)
+                    if m is not None:
+                        book[str(r["event_id"])] = (r["occurred_at"], m)
+                return book
+
+            self._hist[kind] = await asyncio.to_thread(build)
+        return await asyncio.to_thread(self._score, events)
+
+    def _score(self, events: list[TemporalSelfEventV1]
+               ) -> tuple[dict[str, Optional[float]], dict[str, dict[str, tuple[datetime, float]]]]:
         out: dict[str, Optional[float]] = {}
         pending: dict[str, dict[str, tuple[datetime, float]]] = {}
-        for kind in sorted({e.source_kind for e in events if e.source_kind in self._rules} - set(self._hist)):
-            rule = self._rules[kind]
-            book: dict[str, tuple[datetime, float]] = {}
-            for r in await self._load(kind, now - SOURCE_HISTORY - timedelta(days=1)):
-                m = magnitude(rule, r)
-                if m is not None:
-                    book[str(r["event_id"])] = (r["occurred_at"], m)
-            self._hist[kind] = book
+        series: dict[str, list[tuple[datetime, float]]] = {}
         for e in sorted(events, key=lambda x: (x.occurred_at, x.event_id)):
             rule = self._rules.get(e.source_kind)
             if rule is None:
                 continue
-            m = magnitude(rule, stored_shape(e))
             book = self._hist[e.source_kind]
-            new = pending.setdefault(e.source_kind, {})
             if e.event_id in book:  # already stored (a re-read): its stored row keeps its salience
                 continue
-            history = [v for k, v in book.items()] + [v for k, v in new.items() if k != e.event_id]
-            out[e.event_id] = salience_of(m, e.occurred_at, history)
-            if m is not None:
+            hist = series.get(e.source_kind)
+            if hist is None:
+                hist = series[e.source_kind] = sorted(book.values(), key=lambda v: v[0])
+            m = magnitude(rule, stored_shape(e))
+            lo = bisect.bisect_left(hist, e.occurred_at - SOURCE_HISTORY, key=lambda v: v[0])
+            hi = bisect.bisect_left(hist, e.occurred_at, key=lambda v: v[0])
+            out[e.event_id] = salience_of(m, e.occurred_at, hist[lo:hi])
+            new = pending.setdefault(e.source_kind, {})
+            if m is not None and e.event_id not in new:
                 new[e.event_id] = (e.occurred_at, m)
+                bisect.insort(hist, (e.occurred_at, m), key=lambda v: v[0])
         return out, pending
 
     def commit(self, pending: dict[str, dict[str, tuple[datetime, float]]], now: datetime) -> None:
@@ -300,7 +320,11 @@ class Chronicler:
         salience: dict[str, Optional[float]] = {}
         pending: dict = {}
         if self._salience is not None:
-            salience, pending = await self._salience.score(events + late, now)
+            try:
+                salience, pending = await self._salience.score(events + late, now)
+            except Exception:  # noqa: BLE001 - salience is never worth a stalled chronicle: NULL this window
+                logger.warning("temporal_self_salience_failed window_lo=%s: stored NULL", lo.isoformat(), exc_info=True)
+                salience, pending = {}, {}
         await self._store.commit_window(WindowWrite(
             state=s, watermark=hi, frame=frame, events=events, late_events=late, arcs=list(arcs.values()),
             days=days, now=now, origin=self._origin, expected_prev=self._stored_watermark, state_gz=state_gz,

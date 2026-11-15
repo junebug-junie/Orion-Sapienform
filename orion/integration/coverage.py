@@ -13,11 +13,13 @@ RATE_KINDS_SQL = """
 SELECT source_kind, count(*) AS n FROM temporal_self_event
 WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s GROUP BY source_kind
 """
-# Valid uses of those experiences made within 24 h of them (experience_use holds only valid cites).
+# Valid uses of those experiences made within 24 h of when they could first be read (ended_at, else
+# occurred_at; experience_use holds only valid cites).
 RATE_USES_SQL = """
 SELECT DISTINCT u.event_id, e.source_kind, u.citing_organ
 FROM experience_use u JOIN temporal_self_event e ON e.event_id = u.event_id
-WHERE e.occurred_at >= %(lo)s AND e.occurred_at < %(hi)s AND u.cited_at < e.occurred_at + interval '24 hours'
+WHERE e.occurred_at >= %(lo)s AND e.occurred_at < %(hi)s
+  AND u.cited_at < COALESCE((e.payload_json->>'ended_at')::timestamptz, e.occurred_at) + interval '24 hours'
 """
 # Valid cites each organ made in the window.
 RATE_CITES_MADE_SQL = """

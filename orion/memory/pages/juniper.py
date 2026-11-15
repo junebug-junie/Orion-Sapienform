@@ -14,7 +14,8 @@ What this module does, in order:
 3. ``check_page`` is deterministic: it rejects an uncited sentence, a cite that names no source,
    a quote (3+ words in double quotes) found word for word in none of the sentence's cited
    records, an unclosed quote, a list or heading line, leftover ``<think`` text, a page over
-   ``WORD_CAP`` words, and a page with fewer than ``MIN_SENTENCES`` sentences. Every line break
+   ``WORD_CAP`` words, a page with fewer than ``MIN_SENTENCES`` sentences, and a sentence that
+   calls Juniper he/him/his (``misgendered_sentences``). Every line break
    is a hard sentence break. On pass
    it returns the stored text (each ``[S4]`` replaced by the real record id, e.g.
    ``[episode_memory:<uuid>]``) and the clean text a prompt shows (cites removed).
@@ -324,6 +325,40 @@ def _clean(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.splitlines()).strip()
 
 
+_MALE_PRONOUN = re.compile(r"\b(?:he|him|his|himself)\b", re.IGNORECASE)
+_JUNIPER_SUBJECT = re.compile(r"^[\s\"“'‘(]*Juniper\b(?!['’]s)")
+_STARTS_MALE_PRONOUN = re.compile(r"^[\s\"“'‘(]*(?:he|him|his|himself)\b", re.IGNORECASE)
+_CAPITALIZED = re.compile(r"\b[A-Z][a-zA-Z'’-]*")
+# Capitalized words that are not another person this sentence could mean.
+_NOT_ANOTHER_PERSON = {"I", "Orion", "Juniper", "He", "His", "Him", "Himself"}
+
+
+def _names_someone_else_first(sentence: str, pronoun_at: int) -> bool:
+    """True when a capitalized word other than Juniper/Orion/I comes before the pronoun (after the
+    sentence's first word), so the he/him may be about that person ("Juniper says Pip thinks he
+    ..."). Words after the pronoun ("... he lives in Millbrook") do not count."""
+    words = [re.sub(r"['’]s$", "", w) for w in _CAPITALIZED.findall(sentence[:pronoun_at])]
+    return any(w not in _NOT_ANOTHER_PERSON for w in words[1:])
+
+
+def misgendered_sentences(sentences: Sequence[str]) -> list[str]:
+    """Sentences that call Juniper he/him/his. Narrow on purpose: only (a) a sentence whose subject
+    is Juniper (it starts with "Juniper", not "Juniper's") with a he/him/his/himself that no other
+    name comes before, and (b) the sentence right after one of those that starts with He/His/Him. A he
+    about Pip in "Juniper says Pip thinks he is a dinosaur" is left alone."""
+    out: list[str] = []
+    prev_juniper = False
+    for sentence in sentences:
+        juniper = bool(_JUNIPER_SUBJECT.match(sentence))
+        pronoun = _MALE_PRONOUN.search(sentence) if juniper else None
+        if pronoun is not None and not _names_someone_else_first(sentence, pronoun.start()):
+            out.append(sentence)
+        elif prev_juniper and _STARTS_MALE_PRONOUN.match(sentence):
+            out.append(sentence)
+        prev_juniper = juniper
+    return out
+
+
 def check_page(raw: str, handles: Mapping[str, PageSource], *, word_cap: int = WORD_CAP,
                min_sentences: int = MIN_SENTENCES) -> PageCheck:
     """Deterministic truth check on the model's page. Never repairs, only accepts or rejects."""
@@ -385,6 +420,10 @@ def check_page(raw: str, handles: Mapping[str, PageSource], *, word_cap: int = W
             # Whole words only: "1990" must not match inside "19901".
             if len(quote.split()) >= _QUOTE_MIN_WORDS and not any(f" {quote} " in f" {t} " for t in cited_texts):
                 errors.append(f"unsupported_quote: {span[:80]}")
+
+    # Juniper uses she/her (rule 1 of the fold prompt). A page that calls her he/him never ships.
+    for sentence in misgendered_sentences([sentence for sentence, _ in sentences]):
+        errors.append(f"misgenders_juniper: {sentence[:120]}")
 
     def _stored(match: re.Match[str]) -> str:
         real = [handles[h].ref for h in _HANDLE.findall(match.group(1)) if h in handles]

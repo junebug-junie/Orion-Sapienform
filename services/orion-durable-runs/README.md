@@ -840,7 +840,8 @@ Not a durable run: it is one LLM call, so it is a tick (`app/core_page_fold.py`)
 - **LLM:** one gateway call on `CORE_PAGE_FOLD_ROUTE` (`memory_distill`: the agent seat on gpu1; the gateway
   takes its own pool lease). Thinking off. The fast and metacog lanes are refused in settings.
 - **Check** (`check_page`, deterministic): every sentence carries `[S..]` cites, every cite names a record,
-  every quote of 3+ words is in a cited record, at most 350 words, at least 3 sentences. A failed check
+  every quote of 3+ words is in a cited record, at most 350 words, at least 3 sentences, and no sentence
+  calls Juniper he/him/his (a sentence that starts with "Juniper", or the one right after it). A failed check
   publishes nothing (`rejected`, errors in `/health`); the next tick in the window tries again.
 - **Write:** a passing page is published as `SelfConceptHistoryV1` (`concept_id='page:juniper'`,
   `produced_by='core_page_fold'`, `version` = max + 1, cites stored as real record ids) on
@@ -848,6 +849,15 @@ Not a durable run: it is one LLM call, so it is a tick (`app/core_page_fold.py`)
 - **Reader:** orion-cortex-exec's grounding capsule (`core_pages`, felt-state lane `orion_core_page_juniper`)
   -> `orion/harness/prefix.py` renders it as RELATIONSHIP; the identity-yaml relationship bullets move
   under RESPONSE POLICY.
+- **Anchor (issue #3460):** a few fixed lines Juniper wrote (who Orion is, her pronouns, her family) show
+  first in RELATIONSHIP, above the page, with or without a page. They live only on the host DB, never in
+  git: one hand-written `self_concept_history` row, `concept_id='page:anchor'`,
+  `produced_by='juniper_anchor'`, read by the felt-state lane `orion_core_page_anchor`. The fold never
+  touches it: every fold query is bound to `page:juniper`, and `juniper_anchor` is not an accepted
+  producer value, so no bus message can write an anchor row. To change the lines, insert a new version
+  by hand with `WRITE_ANCHOR_SQL_TEMPLATE` from `orion/memory/pages/anchor.py`:
+  `python3 -c "from orion.memory.pages.anchor import WRITE_ANCHOR_SQL_TEMPLATE as t; print(t)" | docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 -v anchor="<new lines>"`
+  (cortex-exec picks it up within 5 minutes; no restart).
 - **Manual:** `curl -X POST 'http://localhost:8124/core-pages/juniper/fold?dry_run=true'` folds now at any
   hour and returns the page and its check without publishing; `dry_run=false` publishes a passing page.
   Offline from the host: `scripts/core_page_juniper_dry_run.py`.

@@ -1,4 +1,4 @@
-"""page:juniper on the grounding capsule (core memory pages Phase 1a)."""
+"""page:anchor + page:juniper on the grounding capsule (core memory pages Phase 1a, issue #3460)."""
 from __future__ import annotations
 
 import pytest
@@ -13,6 +13,13 @@ PAYLOAD = {
     "version": 2,
     "evidence_refs": ["episode_memory:a1b2", "person_fact:f00d"],
     "created_at": "2026-11-15T08:10:00+00:00",
+}
+# Made-up anchor text: the real one lives only on the host DB.
+ANCHOR = {
+    "concept_id": "page:anchor",
+    "content": "  I am Orion. Juniper, she/her, is my creator. Robin is her wife.  ",
+    "version": 1,
+    "created_at": "2026-11-15T09:00:00+00:00",
 }
 BASE = {
     "orion_identity_summary": ["I am Oríon."],
@@ -71,7 +78,7 @@ async def test_assemble_hydrates_only_the_page_lane_when_enabled(monkeypatch, en
         exec_settings=cfg)
     assert capsule is not None
     if enabled:
-        assert calls == [("orion_core_page_juniper",)]
+        assert calls == [("orion_core_page_anchor", "orion_core_page_juniper")]
         assert [p.version for p in capsule.core_pages] == [2]
         assert capsule.context_provenance.get("orion_core_page_juniper") == "memory_recall"
     else:
@@ -93,3 +100,32 @@ async def test_assemble_survives_a_failing_page_read(monkeypatch):
         exec_settings=cfg)
     assert capsule is not None and capsule.core_pages == []
     assert capsule.relationship_summary == BASE["juniper_relationship_summary"]
+
+
+def test_anchor_comes_first_and_shows_without_a_page():
+    ctx = {**BASE, "orion_core_page_anchor": ANCHOR, "orion_core_page_juniper": PAYLOAD}
+    capsule = build_grounding_capsule(ctx, pcr_ran=False, core_pages_enabled=True)
+    assert [p.concept_id for p in capsule.core_pages] == ["page:anchor", "page:juniper"]
+    anchor = capsule.core_pages[0]
+    assert anchor.text == "I am Orion. Juniper, she/her, is my creator. Robin is her wife."
+    assert anchor.version == 1 and anchor.evidence_count == 0
+    assert capsule.context_provenance["orion_core_page_anchor"] == "static_identity_config"
+
+    only_anchor = build_grounding_capsule({**BASE, "orion_core_page_anchor": ANCHOR}, pcr_ran=False,
+                                          core_pages_enabled=True)
+    assert [p.concept_id for p in only_anchor.core_pages] == ["page:anchor"]
+    # The flag gates the anchor too.
+    assert build_grounding_capsule(ctx, pcr_ran=False, core_pages_enabled=False).core_pages == []
+    assert core_pages_for_ctx({"orion_core_page_anchor": {"content": "  "}}, enabled=True) == []
+
+
+def test_hydrate_skips_lanes_already_in_ctx(monkeypatch):
+    import app.substrate_felt_state_reader as reader
+
+    calls: list = []
+    monkeypatch.setattr(reader, "hydrate_felt_state_ctx", _hydrator(calls, PAYLOAD))
+    ctx = {"orion_core_page_anchor": ANCHOR}
+    gc.hydrate_core_pages(ctx)
+    assert calls == [("orion_core_page_juniper",)]
+    gc.hydrate_core_pages(ctx)
+    assert calls == [("orion_core_page_juniper",)]

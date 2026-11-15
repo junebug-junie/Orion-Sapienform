@@ -7,6 +7,7 @@ from typing import Any, Dict
 from orion.core.bus.async_service import OrionBusAsync
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.schemas.context_provenance import CONTEXT_PROVENANCE_REGISTRY
+from orion.memory.pages.anchor import CTX_KEY_ANCHOR as CORE_PAGE_ANCHOR_CTX_KEY, anchor_page_from_payload
 from orion.memory.pages.juniper import CTX_KEY_JUNIPER as CORE_PAGE_JUNIPER_CTX_KEY, core_page_from_payload
 from orion.schemas.thought import CorePageV1, GroundingCapsuleV1
 from orion.thought.json_extract import extract_first_json_object_text
@@ -103,24 +104,33 @@ def context_provenance_for_ctx(ctx: Dict[str, Any]) -> Dict[str, str]:
 
 
 def core_pages_for_ctx(ctx: Dict[str, Any], *, enabled: bool) -> list[CorePageV1]:
-    """The core pages ctx carries (Phase 1a: page:juniper only). Empty when the flag is off or
-    no page row was hydrated, so the prefix falls back to the identity-yaml bullets."""
+    """The core pages ctx carries, anchor first: Juniper's fixed page:anchor lines, then Orion's
+    page:juniper. Either may be missing. Empty when the flag is off or no row was hydrated, so the
+    prefix falls back to the identity-yaml bullets."""
     if not enabled:
         return []
-    page = core_page_from_payload(ctx.get(CORE_PAGE_JUNIPER_CTX_KEY))
-    return [page] if page is not None else []
+    pages = [
+        anchor_page_from_payload(ctx.get(CORE_PAGE_ANCHOR_CTX_KEY)),
+        core_page_from_payload(ctx.get(CORE_PAGE_JUNIPER_CTX_KEY)),
+    ]
+    return [p for p in pages if p is not None]
+
+
+_CORE_PAGE_CTX_KEYS = (CORE_PAGE_ANCHOR_CTX_KEY, CORE_PAGE_JUNIPER_CTX_KEY)
 
 
 def hydrate_core_pages(ctx: Dict[str, Any]) -> None:
-    """Pull ONLY the page:juniper felt-state lane (cached 5 min; fail-open, never raises)."""
-    if ctx.get(CORE_PAGE_JUNIPER_CTX_KEY) is not None:
+    """Pull ONLY the core-page felt-state lanes (page:anchor, page:juniper; cached 5 min;
+    fail-open, never raises). Lanes already in ctx are not read again."""
+    missing = tuple(k for k in _CORE_PAGE_CTX_KEYS if ctx.get(k) is None)
+    if not missing:
         return
     from app.substrate_felt_state_reader import hydrate_felt_state_ctx
 
-    hydrate_felt_state_ctx(ctx, lanes=(CORE_PAGE_JUNIPER_CTX_KEY,))
-    if ctx.get(CORE_PAGE_JUNIPER_CTX_KEY) is not None:
+    hydrate_felt_state_ctx(ctx, lanes=missing)
+    if any(ctx.get(k) is not None for k in missing):
         # The provenance map may already be cached from earlier in the turn; recompute so the
-        # page's key is listed (as retrieved memory) in CONTEXT PROVENANCE.
+        # pages' keys are listed in CONTEXT PROVENANCE.
         ctx.pop("_context_provenance_cache", None)
 
 

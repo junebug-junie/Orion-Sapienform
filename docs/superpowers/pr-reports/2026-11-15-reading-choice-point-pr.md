@@ -32,6 +32,7 @@ Real ordering ("market rank"): page order. That is the order of Stage 1's fetche
 - `orion/physiology/weights.py`: `DECLINABLE_LANES` += `reading`; `_endorsement` counts per decision.
 - `services/orion-hub/app/settings.py`, `scripts/main.py`, `.env_example`, `README.md`: flag and docs.
 - `orion/bus/channels.yaml`: producer note for the reading lane.
+- `config/physiology/contract.yaml`: registers `next_read_choice.py` as a reader (imports only `endorsement_option_key`), so the body-economy contract gate passes.
 - `docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md`: Reading row updated.
 - Tests: `orion/world_pulse_read/tests/test_next_read_choice.py` (new), `services/orion-hub/tests/test_world_pulse_read_stage2.py`, `orion/physiology/tests/test_weights_endorsement.py`.
 - Evals: `services/orion-hub/evals/run_reading_choice_replay.py` (new, live read-only), `services/orion-hub/evals/test_reading_choice_eval.py` (new, frozen PBS -> PolitiFact case).

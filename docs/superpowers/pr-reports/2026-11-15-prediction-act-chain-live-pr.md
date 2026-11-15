@@ -159,6 +159,6 @@ Check: curl -fsS http://localhost:8132/act-chain
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3378
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

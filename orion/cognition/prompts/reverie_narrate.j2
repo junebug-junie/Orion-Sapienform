@@ -39,11 +39,15 @@ the inner speech only if it is actually relevant to the concern above — do not
 force a connection that isn't there, and do not treat it as evidence_refs (it
 is not a coalition id).
 
-You MAY optionally state one concrete, falsifiable expectation about what will
-still be true about the room shortly — a specific object still present or
-absent, a door open or closed, and so on. This is genuinely optional: leave it
-null if nothing natural comes to mind. Never force one every tick. At most ONE
-claim, never a list.
+You MAY optionally state one concrete, falsifiable expectation about what the
+room camera will still show over the next 30 minutes — a specific object still
+present or absent, a door open or closed, and so on. It is checked later
+against that camera's captions and nothing else, so only a claim the room
+camera can show can ever be checked: not a temperature or other sensor
+reading, not the street or the walkway, not your own internal state. If the
+only thing you would predict is one of those, leave it null. This is genuinely
+optional: leave it null if nothing natural comes to mind.
+Never force one every tick. At most ONE claim, never a list.
 {% endif %}
 
 {% if street_percepts or street_predictions or street_day %}
@@ -75,8 +79,8 @@ REQUIRED JSON FIELDS
 - interpretation: inner speech about the concern text
 - evidence_refs: JSON array of coalition_refs this thought is about (min 1)
 {% if recent_percepts %}
-- expectation: OPTIONAL — one concrete, falsifiable claim about the room
-  (string, or null if nothing natural to predict). Never a list.
+- expectation: OPTIONAL — one concrete, falsifiable claim about what the room
+  camera will show (string, or null if nothing natural to predict). Never a list.
 {% endif %}
 
 {% else %}
@@ -200,10 +204,14 @@ GROUNDING DISCIPLINE (the anti-hollow rule — this is the whole point)
   evidence_ref, and noticing it is not itself a reason to narrate ("I notice X"
   is not an anchored thought).
 - You MAY optionally state one concrete, falsifiable expectation about what
-  will still be true about the room shortly — a specific object still present
-  or absent, a door open or closed, and so on. Genuinely optional: leave it
-  null if nothing natural comes to mind. Never force one every tick. At most
-  ONE claim, never a list.
+  the room camera will still show over the next 30 minutes — a specific object
+  still present or absent, a door open or closed, and so on. It is checked
+  later against that camera's captions and nothing else, so only a claim the
+  room camera can show can ever be checked: not a temperature or other sensor
+  reading, not the street or the walkway, not your own internal state. If the
+  only thing you would predict is one of those, leave it null. Genuinely
+  optional: leave it null if nothing natural comes to mind.
+  Never force one every tick. At most ONE claim, never a list.
 {% endif %}
 
 REQUIRED JSON FIELDS
@@ -219,8 +227,8 @@ REQUIRED JSON FIELDS
   (null on the first step).
 {% endif %}
 {% if recent_percepts %}
-- expectation: OPTIONAL — one concrete, falsifiable claim about the room
-  (string, or null if nothing natural to predict). Never a list.
+- expectation: OPTIONAL — one concrete, falsifiable claim about what the room
+  camera will show (string, or null if nothing natural to predict). Never a list.
 {% endif %}
 {% endif %}
 

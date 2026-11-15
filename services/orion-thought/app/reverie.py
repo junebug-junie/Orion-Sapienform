@@ -736,8 +736,64 @@ def _envelope_correlation_id(raw: str | None) -> UUID:
 # --- Phase E (Movement III): expectation scoring -----------------------------
 
 
-def build_expectation_judge_context(*, expectation: str, percept_narrative: str) -> dict[str, Any]:
-    """Context for the `reverie_expectation_judge` verb.
+# The judge reads every room caption from the expectation's check window (#3403). Live, 8 days to
+# 2026-11-15: 487 of 487 windows held a caption, median 3, most 47 (4,359 chars). The read and the
+# prompt are both bounded so a busy half hour cannot make a long prompt on a small lane.
+EXPECTATION_JUDGE_MAX_READ = 200
+EXPECTATION_JUDGE_MAX_LINES = 24
+EXPECTATION_JUDGE_MAX_CHARS = 3000
+EXPECTATION_JUDGE_CAPTION_CHARS = 240
+
+
+def _offset(sec: float) -> str:
+    sec = max(0, int(sec))
+    return f"+{sec // 60:02d}:{sec % 60:02d}"
+
+
+def render_window_captions(captions: list[dict[str, Any]], *, start: datetime) -> str:
+    """The room captions of one check window as lines for the judge, oldest first: the time after
+    the claim, then the caption. A run of the same caption is one line with its span and count.
+    Over the caps, lines are dropped evenly (first and last kept) and the text says how many."""
+    runs: list[dict[str, Any]] = []
+    for c in captions:
+        text = " ".join(str(c.get("narrative") or "").split())[:EXPECTATION_JUDGE_CAPTION_CHARS]
+        at = c.get("created_at")
+        if not text or not isinstance(at, datetime):
+            continue
+        sec = (at - start).total_seconds()
+        if runs and runs[-1]["text"] == text:
+            runs[-1]["last"] = sec
+            runs[-1]["n"] += 1
+        else:
+            runs.append({"text": text, "first": sec, "last": sec, "n": 1})
+    if not runs:
+        return ""
+
+    def line(r: dict[str, Any]) -> str:
+        if r["n"] == 1:
+            return f"{_offset(r['first'])}  {r['text']}"
+        return f"{_offset(r['first'])} to {_offset(r['last'])} ({r['n']} captions, all the same)  {r['text']}"
+
+    lines = [line(r) for r in runs]
+    keep = min(len(lines), EXPECTATION_JUDGE_MAX_LINES)
+    while keep > 1:
+        idx = sorted({round(i * (len(lines) - 1) / (keep - 1)) for i in range(keep)})
+        if sum(len(lines[i]) + 1 for i in idx) <= EXPECTATION_JUDGE_MAX_CHARS:
+            break
+        keep -= 1
+    else:
+        idx = [len(lines) - 1]
+    shown = [lines[i] for i in idx]
+    if len(shown) < len(lines):
+        shown.append(f"({len(shown)} of {len(lines)} lines shown, evenly spaced)")
+    return "\n".join(shown)
+
+
+def build_expectation_judge_context(
+    *, expectation: str, percept_narrative: str, window_minutes: int = 30
+) -> dict[str, Any]:
+    """Context for the `reverie_expectation_judge` verb. ``percept_narrative`` is the rendered
+    captions of the whole check window (``render_window_captions``), not one caption.
 
     `options.llm_lane = "background"` reuses the exact override mechanism
     `build_reverie_context`'s semantic-lift branch already uses to force the
@@ -748,13 +804,14 @@ def build_expectation_judge_context(*, expectation: str, percept_narrative: str)
     return {
         "expectation": expectation,
         "percept_narrative": percept_narrative,
+        "window_minutes": window_minutes,
         "metadata": {"mode": "reverie_expectation_judge", "llm_profile": "brain"},
         "options": {"llm_lane": "background", "allow_chat_fallback": False},
     }
 
 
 def build_expectation_judge_plan_request(
-    *, expectation: str, percept_narrative: str, correlation_id: str
+    *, expectation: str, percept_narrative: str, correlation_id: str, window_minutes: int = 30
 ) -> PlanExecutionRequest:
     plan = build_plan_for_verb("reverie_expectation_judge", mode="brain")
     return PlanExecutionRequest(
@@ -765,7 +822,7 @@ def build_expectation_judge_plan_request(
             extra={"llm_profile": "brain", "mode": "reverie_expectation_judge"},
         ),
         context=build_expectation_judge_context(
-            expectation=expectation, percept_narrative=percept_narrative
+            expectation=expectation, percept_narrative=percept_narrative, window_minutes=window_minutes
         ),
     )
 
@@ -826,7 +883,20 @@ async def _maybe_score_pending_expectation(
         logger.warning("expectation scoring: pending row missing thought_id/expectation row=%s", row)
         return
 
-    now = datetime.now(timezone.utc)
+    # The check window is the expectation's own: from the thought's creation to its
+    # checkable_by (creation + ORION_REVERIE_EXPECTATION_CHECK_WINDOW_SEC). Both ends are row
+    # times, never this tick's clock: a tick scores one row and runs a median 674 s after the
+    # window closed (live, 8 days to 11-15), so "a caption from the last 180 s before now" was
+    # missing for most rows and they were written unscored with no judge call (#3403).
+    window_sec = float(settings.reverie_expectation_check_window_sec)
+    window_end = row.get("expectation_checkable_by")
+    window_start = row.get("created_at")
+    if isinstance(window_end, datetime) and window_end.tzinfo is None:
+        window_end = window_end.replace(tzinfo=timezone.utc)
+    if isinstance(window_start, datetime) and window_start.tzinfo is None:
+        window_start = window_start.replace(tzinfo=timezone.utc)
+    if isinstance(window_end, datetime) and not isinstance(window_start, datetime):
+        window_start = window_end - timedelta(seconds=window_sec)
 
     # Deliberately sequential, not asyncio.gather'd like run_reverie_once's own
     # loop_outcomes/percepts fetch -- those two are unconditionally needed every
@@ -834,25 +904,32 @@ async def _maybe_score_pending_expectation(
     # worth paying for once we already know a pending row exists (the common
     # "nothing pending" tick above returns before ever touching vision_reader),
     # so the two calls have a real control dependency, not just a data one.
-    try:
-        from .vision_reader import read_recent_vision_events
+    percepts: list[dict[str, Any]] = []
+    if isinstance(window_start, datetime) and isinstance(window_end, datetime):
+        try:
+            from .vision_reader import read_vision_events_between
 
-        percepts = await asyncio.to_thread(
-            read_recent_vision_events,
-            max_age_sec=settings.reverie_perception_max_age_sec,
-            limit=1,
-            stream_ids=settings.reverie_perception_stream_id_list,
-        )
-    except Exception as exc:
-        logger.warning(
-            "expectation scoring: percept fetch failed thought_id=%s err=%s", thought_id, exc
-        )
-        percepts = []
+            percepts = await asyncio.to_thread(
+                read_vision_events_between,
+                start=window_start,
+                end=window_end,
+                limit=EXPECTATION_JUDGE_MAX_READ,
+                stream_ids=settings.reverie_perception_stream_id_list,
+            )
+        except Exception as exc:
+            logger.warning(
+                "expectation scoring: percept fetch failed thought_id=%s err=%s", thought_id, exc
+            )
+            percepts = []
+    window_text = render_window_captions(percepts, start=window_start) if percepts else ""
 
-    if not percepts:
-        # No fresh-enough percept to check against -- cheap, deterministic
+    # Taken after the reads: the time the verdict was reached, not the time the tick began.
+    now = datetime.now(timezone.utc)
+    if not window_text:
+        # The room camera wrote nothing in the whole window -- cheap, deterministic
         # path, no LLM call. Never leave it permanently pending: a closed
         # window with nothing to check it against is "unscored", not a retry.
+        logger.info("expectation scoring: no room caption in the check window thought_id=%s", thought_id)
         with suppress(Exception):
             await asyncio.to_thread(persist_expectation_verdict, thought_id, "unscored", now)
         return
@@ -865,8 +942,9 @@ async def _maybe_score_pending_expectation(
         )
         plan_request = build_expectation_judge_plan_request(
             expectation=expectation_text,
-            percept_narrative=str(percepts[0].get("narrative") or ""),
+            percept_narrative=window_text,
             correlation_id=judge_correlation_id,
+            window_minutes=max(1, round(window_sec / 60)),
         )
         exec_result = await judge_client.execute_plan(
             source=_source(),
@@ -884,8 +962,14 @@ async def _maybe_score_pending_expectation(
         )
         verdict = "unscored"
 
+    logger.info(
+        "expectation scoring: judged thought_id=%s verdict=%s captions=%d prompt_chars=%d",
+        thought_id, verdict, len(percepts), len(window_text),
+    )
     with suppress(Exception):
-        await asyncio.to_thread(persist_expectation_verdict, thought_id, verdict, now)
+        await asyncio.to_thread(
+            persist_expectation_verdict, thought_id, verdict, datetime.now(timezone.utc)
+        )
 
 
 async def run_reverie_once(

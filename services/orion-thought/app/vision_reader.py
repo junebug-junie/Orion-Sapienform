@@ -152,6 +152,62 @@ def read_recent_vision_events(
     return out
 
 
+def read_vision_events_between(
+    *,
+    start: datetime,
+    end: datetime,
+    limit: int,
+    stream_ids: Sequence[str],
+    legacy_cutoff: datetime | None = None,
+) -> list[dict[str, Any]]:
+    """Narrated ROOM vision events with ``start <= created_at <= end``, oldest first. Never raises.
+
+    Each entry: {narrative: str, created_at: datetime (UTC)}. Same camera rule as
+    ``read_recent_vision_events``. The bounds are the caller's own row times (an
+    expectation's creation and its check time), never this process's clock, so a
+    late scoring tick reads the same window an on-time one would (#3403).
+    ``limit`` bounds the read; the newest rows past it are not returned.
+    """
+    if limit <= 0 or end < start:
+        return []
+    ids = [str(s).strip() for s in stream_ids if str(s).strip()] or ["\x00none"]
+    try:
+        from sqlalchemy import bindparam, text
+
+        stmt = text(
+            "SELECT narrative, created_at FROM vision_events "
+            "WHERE narrative IS NOT NULL AND narrative <> '' "
+            "AND created_at >= :start AND created_at <= :end "
+            "AND (stream_id IN :stream_ids "
+            "     OR (stream_id IS NULL AND created_at < :legacy_cutoff)) "
+            "ORDER BY created_at ASC "
+            "LIMIT :limit"
+        ).bindparams(bindparam("stream_ids", expanding=True))
+        with _get_engine().connect() as conn:
+            rows = (
+                conn.execute(
+                    stmt,
+                    {"limit": limit, "start": start, "end": end, "stream_ids": ids,
+                     "legacy_cutoff": legacy_cutoff or _legacy_cutoff()},
+                )
+                .mappings()
+                .all()
+            )
+    except Exception as exc:
+        logger.warning("vision events window read failed: %s", exc)
+        return []
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        created_at = row.get("created_at")
+        narrative = str(row["narrative"]).strip()
+        if not narrative or not isinstance(created_at, datetime):
+            continue
+        ts = created_at if created_at.tzinfo else created_at.replace(tzinfo=timezone.utc)
+        out.append({"narrative": narrative, "created_at": ts})
+    return out
+
+
 # --- The street (walkway camera), 2026-10-15 ---------------------------------
 #
 # A SEPARATE read from `read_recent_vision_events` above, never merged into it:

@@ -306,6 +306,14 @@ async def cancel_lease(bus: Any, lease_id: str, *, source: str) -> None:
 HOLD_FILE = "hold.json"
 
 
+def hold_gone_error(message: str) -> bool:
+    """An episode failure that means the seat is gone, not that the episode is bad: the next
+    episode must wait for a new hold instead of failing fast against a dead one (trial 2 lost 11
+    episodes in one second to gateway 503 gpu_pool_unavailable after a recall)."""
+    m = message or ""
+    return "gpu_pool_unavailable" in m or "hold recalled or lost" in m or "gpu_pool_recalled" in m
+
+
 class TrialHold:
     """One GPU pool hold for the run; heartbeats in the background; re-taken after a recall.
 
@@ -578,6 +586,8 @@ async def run(args: argparse.Namespace) -> int:
             except Exception as exc:  # noqa: BLE001 -- one bad episode is a data point, not the end
                 errors += 1
                 row.update(ok=False, error=f"{type(exc).__name__}: {str(exc)[:500]}")
+                if hold_gone_error(row["error"]):
+                    hold.lost.set()  # the pool took the seat back: re-queue before the next episode
                 left = (await graph_episode_names(driver)).get(ep.name)
                 if left:  # cut off mid-write: drop the half-saved episode so a retry starts clean
                     with contextlib.suppress(Exception):

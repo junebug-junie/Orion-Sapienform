@@ -823,3 +823,9 @@ def test_one_entity_ignores_possessive_things():
     pat = re.compile(score.word(T["spouse"]), re.I)
     assert score.check_one_entity([{"name": "Sam"}, {"name": "Sam's surgery"}], pat, "spouse").passed
     assert not score.check_one_entity([{"name": "Sam"}, {"name": "Sam R."}], pat, "spouse").passed
+
+
+def test_hold_gone_errors_are_recognised():
+    assert trial.hold_gone_error("InternalServerError: Error code: 503 - {'error': {'type': 'gpu_pool_unavailable'}}")
+    assert trial.hold_gone_error("RefusalError: gpu pool hold recalled or lost")
+    assert not trial.hold_gone_error("TimeoutError: ")

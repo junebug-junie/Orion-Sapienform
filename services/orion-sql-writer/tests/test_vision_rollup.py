@@ -122,8 +122,12 @@ def test_day_line_and_stored_lines_show_the_parked_count():
     old_row = {k: v for k, v in hours[0][1].items() if k != "parked_not_counted"}
     old_line = "Walkway Sat Oct 17, 12 AM: nobody passed."
     shown = wr.display_line(old_line, old_row)
-    assert shown == old_line + " (1 parked sighting not counted)"
+    assert shown == old_line + " (1 parked sighting not counted)."
     assert wr.display_line(shown, old_row) == shown
+    # A camera-down line gives no count, so it gets no note (same as render_line).
+    down_row = {**old_row, "camera": {**old_row["camera"], "status": "down"}}
+    down_line = "Walkway Sat Oct 17, 12 AM: camera was down (0 of 60 minutes seen), so no count."
+    assert wr.display_line(down_line, down_row) == down_line
     assert wr.display_line(old_line, hours[10][1]) == old_line
 
 

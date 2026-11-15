@@ -263,3 +263,72 @@ def test_gate_skip_end_to_end_makes_no_llm_call() -> None:
     assert interp is None and outcome.parse_mode == "stable_scene"
     assert outcome.salvage_warnings == ["fixture_only_change"]
     mock_llm.assert_not_awaited()
+
+
+def test_the_real_llm_call_reads_the_served_model_from_the_gateway_reply(monkeypatch) -> None:
+    """No stub of _call_llm_raw: the gateway reply envelope goes through the
+    real call, and the model it names ends up on the published row."""
+    import uuid
+
+    from orion.core.bus.codec import OrionCodec
+
+    monkeypatch.setattr(council_main.settings, "COUNCIL_TRANSITION_GATE_ENABLED", False)
+    monkeypatch.setattr(council_main.settings, "COUNCIL_UNRESOLVED_ENABLED", False)
+
+    class FakeRpcBus:
+        codec = OrionCodec()
+        replies = [
+            {"content": _llm_json(0.8), "model_used": "/models/gguf/Qwen3.5-9B-UD-Q5_K_XL.gguf", "raw": {}},
+            # The next call fails (empty reply). Its window must not inherit the first model name.
+            {"content": "", "raw": {}},
+        ]
+
+        async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec):
+            out = BaseEnvelope(kind="llm.chat.result", source=ServiceRef(name="gw", version="0"),
+                               correlation_id=uuid.uuid4(), payload=self.replies.pop(0))
+            return {"data": self.codec.encode(out)}
+
+    svc = CouncilService()
+    svc._rpc_bus = FakeRpcBus()
+    published = []
+
+    async def _publish(channel, env):
+        published.append(env)
+
+    monkeypatch.setattr(svc.bus, "publish", _publish)
+    w = _window(hard_labels=["vehicle"], label_scores={"vehicle": 0.31})
+    env = _env().model_copy(update={"payload": w.model_dump(mode="json")})
+
+    async def _both():
+        await svc._process_window(env)
+        # Same task, so the same context: a leak would show here.
+        return await svc._generate_interpretation(w, _env(), allow_transition_gate=False)
+
+    interp, outcome = asyncio.run(_both())
+    payload = published[0].payload
+    events = payload["events"] if isinstance(payload, dict) else payload.events
+    event = events[0] if isinstance(events[0], dict) else events[0].model_dump()
+    assert event["evidence_refs"][-1] == "model:/models/gguf/Qwen3.5-9B-UD-Q5_K_XL.gguf"
+    assert event["confidence"] == 0.31
+    assert interp is None and outcome.model_used is None
+    assert council_main._SERVED_MODEL.get() is None
+
+
+def test_activity_guess_is_tagged_and_capped_whatever_the_score() -> None:
+    """Review finding: the caption_inferred tag must not depend on the number."""
+    from app.evidence_grounding import enforce_evidence_grounding
+    from orion.schemas.vision import VisionEventCandidateV1, VisionSceneInterpretationV1
+
+    def run(conf):
+        w = _window(hard_labels=["person"], label_scores={"person": 0.9}, stream_id="cam0")
+        w = w.model_copy(update={"summary": {**w.summary, "captions": ["a person reading"]}})
+        interp = VisionSceneInterpretationV1(window_id="w1", scene_summary="s", event_candidates=[
+            VisionEventCandidateV1(event_type="human_activity", narrative="A person is reading.",
+                                   entities=["person"], confidence=conf)])
+        out, notes = enforce_evidence_grounding(interp, w)
+        cand = out.event_candidates[0]
+        return cand.confidence, cand.tags, notes
+
+    assert run(0.62) == (0.4, ["caption_inferred"], ["capped_confidence:human_activity"])
+    assert run(0.31) == (0.31, ["caption_inferred"], ["capped_confidence:human_activity"])   # never raised
+    assert run(None) == (None, ["caption_inferred"], ["capped_confidence:human_activity"])   # never invented

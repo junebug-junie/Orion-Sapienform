@@ -152,20 +152,22 @@ def enforce_evidence_grounding(
             notes.append(f"dropped:{cand.event_type}:caption_slop")
             continue
         updated = cand
-        # No confidence (None) = no detector score behind the row; there is
-        # nothing to cap.
-        if mentions_activity and "person" in hard and cand.confidence is not None and cand.confidence > 0.4:
+        if mentions_activity and "person" in hard:
+            # The detector scored a person, not what the person is doing. The
+            # activity is a guess, so the row is never more sure than 0.4.
+            # The tag and the note do not depend on the number: a row with a
+            # low score, or with none (None stays None), is the same guess.
             summary = window.summary or {}
+            capped = None if cand.confidence is None else min(cand.confidence, 0.4)
             if summary.get("captions"):
-                updated = cand.model_copy(
-                    update={"confidence": 0.4, "tags": [*cand.tags, "caption_inferred"]}
-                )
+                tags = cand.tags if "caption_inferred" in cand.tags else [*cand.tags, "caption_inferred"]
+                updated = cand.model_copy(update={"confidence": capped, "tags": tags})
                 notes.append(f"capped_confidence:{cand.event_type}")
             elif summary.get(CAPTIONS_WITHHELD_KEY):
                 # Captions were withheld (app/caption_policy.py): the claim is
                 # the council's own guess from detector labels. Same cap, no
                 # caption tag -- no caption was in its input.
-                updated = cand.model_copy(update={"confidence": 0.4})
+                updated = cand.model_copy(update={"confidence": capped})
                 notes.append(f"capped_confidence:{cand.event_type}:captions_withheld")
         filtered_entities = _filter_person_entity_names(list(updated.entities), hard)
         if filtered_entities != list(updated.entities):

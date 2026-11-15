@@ -70,6 +70,7 @@ Before this patch:
 - `orion/vision/walkway_rollup.py`: parked note on the line; `parked_not_counted` field; read-time note for older lines.
 - Tests: `services/orion-vision-council/tests/test_fixture_gate_and_detector_confidence.py`, `services/orion-vision-window/tests/test_walkway_night_flood_evidence.py`, `services/orion-sql-writer/tests/test_vision_rhythm_pg.py`, and additions to `test_vision_rhythm.py`, `test_vision_rollup.py`, `test_vision_handoff.py`, `test_vision_handoff_pg.py`, `test_vision_event_sql_shape.py`, `test_caption_policy.py`.
 - `services/orion-vision-council/evals/replay_walkway_gate.py`: the replay.
+- `orion/dig/look.py`: an empty confidence prints as "not measured".
 - `.github/workflows/orion-vision-council-window-tests.yml` (new), `.github/workflows/orion-sql-writer-tests.yml` (one test added).
 - READMEs of the three services.
 
@@ -115,7 +116,7 @@ All from the worktree, with the repo venv (`/mnt/scripts/Orion-Sapienform/.venv/
 
 ```text
 cd services/orion-vision-council && PYTHONPATH=../..:. python -m pytest -q -p no:cacheprovider tests
-  155 passed
+  157 passed
 cd services/orion-vision-window && PYTHONPATH=../..:. python -m pytest -q -p no:cacheprovider tests
   180 passed
 cd services/orion-sql-writer && ORION_TEST_PG_URI=<throwaway postgres:16> PYTHONPATH=../..:. python -m pytest -q -p no:cacheprovider tests -k "vision or rollup or rhythm or handoff"
@@ -161,7 +162,37 @@ All live checks are UNVERIFIED until deploy. They are listed in #3471.
 
 ## Review findings fixed
 
-REVIEW_PENDING
+Review ran in a subagent on the branch against `origin/main` (the first run died on a usage limit; the second finished). It found no material bug, six minor findings and four nits.
+
+- Finding: the 0.4 cap on activity guesses and the `caption_inferred` tag only applied when the confidence was above 0.4. With measured scores (often under 0.4, or empty) the same guess lost its tag.
+  - Fix: the tag and the note no longer depend on the number. The cap is `min(score, 0.4)`; an empty confidence stays empty.
+  - Evidence: `test_activity_guess_is_tagged_and_capped_whatever_the_score`.
+- Finding: a row's entities are matched to detector labels by exact name. If the model names things the detector did not, the column goes mostly empty. No live number was given.
+  - Fix: measured, no code change. Last 48 h, council rows matched to the fullest window in the 90 s before them: room camera 559 of 562 name a detected label; doorbell 55 of 63; walkway 1,008 of 1,609. The 590 walkway rows that name only undetected labels are the oscillator rows (belief said `vehicle`, no detection). Most of them will not be written after this patch; any that are get an empty confidence, which is the true reading.
+  - Evidence: query in this section's source; live check 3 in #3471.
+- Finding: the end-to-end model-name test stubbed `_call_llm_raw` and set the model itself, so it did not cover the real line.
+  - Fix: a new test sends a gateway reply envelope through the real `_call_llm_raw`, and checks that a failed second call in the same task does not inherit the first model name.
+  - Evidence: `test_the_real_llm_call_reads_the_served_model_from_the_gateway_reply`. With the capture line deleted it fails (1 failed, 156 passed).
+- Finding: the window keeps a label's fixture verdict until it sees the label again. A fixture that leaves unseen is reported only at the next refresh. With `COUNCIL_TRANSITION_REFRESH_SEC=0` it is never reported.
+  - Fix: accepted and documented in the council README, with the rule to keep the refresh above 0 (live value 600).
+  - Evidence: README; `test_fixture_only_change_still_refreshes_on_the_ttl`.
+- Finding: the read-time parked note had no closing period and was added to camera-down and no-record lines, where the renderer gives no note.
+  - Fix: trailing period; skipped when the camera status is `down` or `missing`.
+  - Evidence: `test_day_line_and_stored_lines_show_the_parked_count`.
+- Finding: the new workflow installs only the council's requirements for both suites, and its `push` paths were narrower than its `pull_request` paths.
+  - Fix: paths aligned. The install line was run in a clean virtualenv (155 and 180 passed at that commit); CI on the PR is the standing proof.
+  - Evidence: workflow run on PR #3481.
+- Finding (nit): `dig look` printed `conf None` for a row with no confidence.
+  - Fix: prints `conf not measured`.
+  - Evidence: `orion/dig/tests/test_look.py`, 47 passed.
+- Finding (nit): `subject_kind` is required, but an empty value still wrote `entities = []` silently.
+  - Fix: logs `handoff_event_without_subject_kind`.
+  - Evidence: `test_vision_event_entities_carry_the_subject_kind`.
+- Finding (nit): any parked overlap makes the window `unscorable`, and a car that stays parked makes all its windows `unscorable`.
+  - Fix: none. That is the intended grade. The fit already stops opening windows for identities marked parked.
+  - Evidence: `_load_subjects` (`NOT stationary`).
+
+Checked and found fine by the reviewer: the model name travels through the ContextVar on both the intake and RPC paths with no stale value; nothing does arithmetic on an empty confidence; rollup readers and number guards accept the new field and note; the gate triggers on every real-change case tried; the belief change gives presence fewer flips and no new path; the Postgres rhythm test's tables exist after that CI step's migrations.
 
 ## Restart required
 
@@ -218,4 +249,4 @@ Issues closed by this PR: #3387, #3389. #3388 stays open; the parked part is fix
 
 ## PR link
 
-PR_LINK_PENDING
+https://github.com/junebug-junie/Orion-Sapienform/pull/3481

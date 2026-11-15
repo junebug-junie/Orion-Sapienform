@@ -294,6 +294,8 @@ def _vision_event(conn, *, event_id: str, event_type: str, narrative_text: str, 
     from sqlalchemy import text
 
     kind = str(subject_kind or "").strip()
+    if not kind:
+        logger.warning("handoff_event_without_subject_kind event_id=%s event_type=%s", event_id, event_type)
 
     conn.execute(text(
         "INSERT INTO vision_events (event_id, event_type, narrative, entities, tags, confidence, salience, "

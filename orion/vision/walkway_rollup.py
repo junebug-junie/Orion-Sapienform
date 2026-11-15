@@ -1149,7 +1149,10 @@ def _stored_with_parked_note(stored: str, rollup: Mapping[str, Any]) -> str:
     note = _parked_note(rollup).strip()
     if not stored or not note or "not counted)" in stored:
         return stored
-    return f"{stored} {note}"
+    # render_line gives no count for these, so it gives no note either.
+    if str((rollup.get("camera") or {}).get("status")) in ("down", "missing"):
+        return stored
+    return f"{stored} {note}."
 
 
 def _parked_note(rollup: Mapping[str, Any]) -> str:

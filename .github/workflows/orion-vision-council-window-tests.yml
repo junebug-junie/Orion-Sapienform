@@ -21,7 +21,10 @@ on:
       - 'services/orion-vision-council/**'
       - 'services/orion-vision-window/**'
       - 'orion/schemas/vision.py'
+      - 'orion/schemas/vision_interpretation_contract.py'
       - 'orion/vision/**'
+      - 'orion/gpu_pool/shed_backoff.py'
+      - 'config/vision_zones.yaml'
       - '.github/workflows/orion-vision-council-window-tests.yml'
 jobs:
   tests:

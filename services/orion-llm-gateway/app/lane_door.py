@@ -84,7 +84,10 @@ def check_now(base: str, timeout_sec: float = 3.0) -> dict[str, Any]:
         logger.info("lane_door_absent server=%s", base)
     else:
         result.update(lane=body.get("lane"), mode=body.get("mode"), door_key_hash=body.get("key_hash"))
-        if mine and body.get("key_hash") == mine:
+        if not mine and not body.get("key_hash"):
+            result["state"] = "unkeyed"   # neither side has a key yet: deploy step 1 not done; not a drift
+            logger.info("lane_door_unkeyed server=%s lane=%s mode=%s", base, body.get("lane"), body.get("mode"))
+        elif mine and body.get("key_hash") == mine:
             result["state"] = "ok"
             logger.info("lane_door_key_ok server=%s lane=%s mode=%s", base, body.get("lane"), body.get("mode"))
         else:

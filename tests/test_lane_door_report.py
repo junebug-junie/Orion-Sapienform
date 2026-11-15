@@ -26,9 +26,9 @@ def _verdict(lines, **kw):
                        today=kw.pop("today", "2026-11-22"))
 
 
-def test_seven_clean_days_are_ready_but_say_the_join_did_not_run():
+def test_seven_clean_days_without_the_lease_join_are_not_ready():
     ok, why = _verdict([_line(d) for d in _days(15, 7)])
-    assert ok and "lease join NOT run" in why
+    assert not ok and "lease join was not run" in why
 
 
 def test_one_unkeyed_call_in_the_window_is_not_ready_and_names_the_day():
@@ -53,6 +53,13 @@ def test_wrong_key_calls_block_like_unkeyed_ones():
     assert not _verdict(lines)[0]
 
 
+def _ok_streak_joined():
+    report, _ = rep.aggregate([_line(d) for d in _days(15, 7)])
+    for d in report["chat"].values():
+        d.unmatched_leases, d.gateway_calls = 0, 1
+    return report
+
+
 def test_a_day_with_no_keyed_traffic_proves_nothing():
     lines = [_line(d) for d in _days(15, 7) if d != "2026-11-20"] + [_line("2026-11-20", path="/x", key="ok", lane="fast")]
     report, _ = rep.aggregate(lines)
@@ -69,6 +76,9 @@ def test_joined_gaps_and_unmatched_leases_block():
     report["chat"]["2026-11-17"].gateway_calls = 3
     ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
     assert not ok and "gateway sent 3" in why
+    report["chat"]["2026-11-17"].gateway_calls = 0
+    ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
+    assert not ok and "recorded none" in why
     report["chat"]["2026-11-17"].gateway_calls = 1
     report["chat"]["2026-11-18"].unmatched_leases = 2
     ok, why = rep.verdict(report["chat"], streak_days=7, max_gap_pct=1.0, joined=True, today="2026-11-22")
@@ -88,3 +98,4 @@ def test_render_names_who_sent_unkeyed_calls(capsys, tmp_path):
     out = capsys.readouterr().out
     assert "NOT READY" in out and "unkeyed x1: 100.92.216.81 POST /v1/chat/completions" in out
     assert "1 unreadable lines skipped" in out
+    assert "== lane agent-gpu2: NOT READY" in out and "no log lines for this lane" in out

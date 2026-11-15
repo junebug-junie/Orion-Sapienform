@@ -115,3 +115,13 @@ def test_the_http_passthrough_sends_the_key_and_its_own_lease_and_not_the_caller
     assert r.status_code == 200
     assert seen["X-Orion-Lane-Key"] == KEY
     assert seen["X-Orion-Lease-Id"] == f"lease-{len(fake_pool.calls)}"   # the grant's id (conftest FakePool)
+
+
+def test_both_sides_without_a_key_is_unkeyed_not_a_mismatch(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "llm_gateway_lane_door_key", "")
+    monkeypatch.setattr(httpx, "get", lambda url, timeout: httpx.Client(
+        transport=_stats({"lane": "chat", "mode": "shadow", "key_hash": None})).get(url))
+    with caplog.at_level(logging.INFO, logger="orion-llm-gateway.lane-door"):
+        assert lane_door.check_now("http://circe.test:8011")["state"] == "unkeyed"
+    assert "lane_door_key_mismatch" not in caplog.text
+    lane_door._reset_for_tests()

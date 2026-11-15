@@ -32,7 +32,8 @@ Runbook (deploy, check, roll back): `docs/runbooks/2026-11-14-lane-door.md`.
   as an upstream HTTP error, where without a door it saw a connect error (telemetry only; nothing keys on it).
 
 Modes (`LANE_DOOR_MODE`, per lane `LANE_DOOR_MODE_<LANE>`): `off` (pure pass-through, nothing counted),
-`shadow` (count and log, refuse nothing).
+`shadow` (count and log, refuse nothing), `enforce` (Phase 3: a model call without a valid key gets
+401 `lane_door_unleased` and never reaches the engine; exempt reads still pass; no key = refuses to start).
 
 ## Cost on the call path
 

@@ -410,3 +410,99 @@ def test_a_silent_caller_is_dropped_after_the_head_timeout(tmp_path, monkeypatch
 
     door, data = run(go())
     assert data.startswith(b"HTTP/1.1 400") and door.stats.bad_requests == 1
+
+
+# -- Phase 3: enforce ---------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("headers,state", [({}, "missing"), ({"X-Orion-Lane-Key": "wrong"}, "bad")])
+def test_enforce_refuses_an_unkeyed_model_call_with_the_spec_body_and_never_reaches_the_engine(tmp_path, headers,
+                                                                                                state):
+    async def go():
+        engine = Engine()
+        door, server, port = await _door(tmp_path, await engine.start(), mode="enforce")
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
+            r = await c.post("/v1/chat/completions", json={"messages": []}, headers=headers)
+            stats = (await c.get("/door/stats")).json()
+        server.close()
+        return engine, r, stats
+
+    engine, r, stats = run(go())
+    assert r.status_code == 401
+    assert r.json() == {"error": {"type": "lane_door_unleased", "message":
+                                  "call orion-llm-gateway with a route; see "
+                                  "docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md"}}
+    assert engine.seen == [] and stats["refused"] == 1 and stats["calls"][state] == 1
+    (row,) = _rows(tmp_path)
+    assert row["status"] == 401 and row["refused"] is True and row["key"] == state
+
+
+def test_enforce_passes_keyed_calls_and_every_exempt_read_unkeyed(tmp_path):
+    async def go():
+        engine = Engine()
+        door, server, port = await _door(tmp_path, await engine.start(), mode="enforce")
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
+            ok = await c.post("/v1/chat/completions", json={}, headers={"X-Orion-Lane-Key": KEY,
+                                                                        "X-Orion-Lease-Id": "L"})
+            reads = [(await c.get(p)).status_code for p in sorted(EXEMPT_GET_PATHS)]
+            reads += [(await c.post(p, json={})).status_code for p in sorted(EXEMPT_POST_PATHS)]
+            stream = await c.post("/v1/stream", json={}, headers={"X-Orion-Lane-Key": KEY})
+        server.close()
+        return door, ok, reads, stream
+
+    door, ok, reads, stream = run(go())
+    assert ok.status_code == 200 and stream.status_code == 200 and set(reads) == {200}
+    assert door.stats.refused == 0   # the pool's probes and the gateway's traffic are never refused
+
+
+def test_enforce_without_a_key_refuses_to_start(monkeypatch):
+    from app import settings as s
+
+    for k, v in {"LANE_DOOR_UPSTREAM": "e:8080", "LANE_DOOR_LANE": "fast", "LANE_DOOR_MODE": "enforce"}.items():
+        monkeypatch.setenv(k, v)
+    monkeypatch.delenv("LANE_DOOR_KEY", raising=False)
+    with pytest.raises(SystemExit, match="needs LANE_DOOR_KEY"):
+        s.load()
+    monkeypatch.setenv("LANE_DOOR_KEY", KEY)
+    assert s.load().mode == "enforce"
+
+
+def test_shadow_still_refuses_nothing(tmp_path):
+    async def go():
+        engine = Engine()
+        door, server, port = await _door(tmp_path, await engine.start(), mode="shadow")
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
+            r = await c.post("/v1/chat/completions", json={})
+        server.close()
+        return door, r
+
+    door, r = run(go())
+    assert r.status_code == 200 and door.stats.refused == 0
+
+
+def test_a_refused_large_upload_still_reads_the_401(tmp_path):
+    """Review finding: refusing without reading the body could reset a caller mid-upload."""
+    async def go():
+        engine = Engine()
+        door, server, port = await _door(tmp_path, await engine.start(), mode="enforce")
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
+            r = await c.post("/v1/chat/completions", content=b"x" * 3_000_000)
+        server.close()
+        return engine, r
+
+    engine, r = run(go())
+    assert r.status_code == 401 and r.json()["error"]["type"] == "lane_door_unleased" and engine.seen == []
+
+
+def test_the_journal_line_is_rate_limited_but_the_log_keeps_every_call(tmp_path, capsys):
+    async def go():
+        engine = Engine()
+        door, server, port = await _door(tmp_path, await engine.start(), mode="enforce")
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
+            for _ in range(5):
+                await c.post("/v1/chat/completions", json={})
+        server.close()
+
+    run(go())
+    assert capsys.readouterr().out.count("lane_door_unkeyed") == 1
+    assert len(_rows(tmp_path)) == 5

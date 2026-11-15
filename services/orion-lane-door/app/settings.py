@@ -5,7 +5,7 @@ import hashlib
 import os
 from dataclasses import dataclass
 
-MODES = ("off", "shadow")   # "enforce" (refuse unkeyed calls) arrives with lane-door phase 3
+MODES = ("off", "shadow", "enforce")
 
 
 def key_hash(key: str) -> str | None:
@@ -55,6 +55,10 @@ def load() -> Settings:
     mode = os.environ.get("LANE_DOOR_MODE", "shadow").strip().lower() or "shadow"
     if mode not in MODES:
         raise SystemExit(f"LANE_DOOR_MODE={mode!r}: one of {MODES}")
+    if mode == "enforce" and not os.environ.get("LANE_DOOR_KEY", "").strip():
+        # Enforcing with no key would refuse every call, the gateway's included (Orion mute on this lane).
+        # Refusing to start is louder and leaves the seat visibly down on the pool panel instead.
+        raise SystemExit("LANE_DOOR_MODE=enforce needs LANE_DOOR_KEY: without it every call would be refused")
     return Settings(
         lane=lane, upstream_host=host, upstream_port=int(port), mode=mode,
         key=os.environ.get("LANE_DOOR_KEY", "").strip(),

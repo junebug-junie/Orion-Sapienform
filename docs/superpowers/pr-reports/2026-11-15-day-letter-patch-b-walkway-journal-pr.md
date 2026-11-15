@@ -64,7 +64,7 @@ Before this patch:
 - `orion/journaler/worker.py`: `code_built_title`, used by `build_write_payload` when the
   draft title is empty.
 - `services/orion-actions/tests/test_walkway_journal_night.py`: new, 21 tests.
-- `orion/journaler/tests/test_code_built_title.py`: new, 4 tests (7 cases).
+- `orion/journaler/tests/test_code_built_title.py`: new, 6 test cases.
 - `services/orion-actions/tests/test_walkway_forecast.py`: the tick helper uses the new
   signature.
 - `services/orion-actions/README.md`: the new behaviour and how to read the records.

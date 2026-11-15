@@ -22,7 +22,7 @@ def trial_seed(base, prompt_tokens, repeat, output_budget, context_slack=0):
     return base + prompt_tokens + repeat + (context_slack if prompt_tokens == boundary else 0)
 
 
-def build_messages(tokenizer, prompt_tokens: int, seed: int, suite="ledger"):
+def build_messages(tokenizer, prompt_tokens: int, seed: int, suite="ledger", filler_text=None):
     rng = random.Random(seed)
     keys = [f"{rng.getrandbits(48):012x}" for _ in range(3)]
     a, b, c = rng.sample(range(100, 900), 3)
@@ -63,12 +63,18 @@ def build_messages(tokenizer, prompt_tokens: int, seed: int, suite="ledger"):
                     f'previous_keeper is who kept vaults in {cities[target]} before the replacement. Use integers for badges and weight.')
     elif suite != 'ledger':
         raise ValueError(f'unknown suite: {suite}')
+    filler_ids = tokenizer.encode(filler_text, add_special_tokens=False) if filler_text else None
+    def filler(n):
+        if not filler_ids:
+            return " cedar" * n
+        ids = (filler_ids * ((n + len(filler_ids) - 1) // len(filler_ids)))[:n]
+        return '\n' + tokenizer.decode(ids, skip_special_tokens=False) + '\n'
     def make(n):
         parts = [intro]
         segment = n // (len(facts) + 1)
         for fact in facts:
-            parts += [" cedar" * segment, "\n" + fact + "\n"]
-        parts += [" cedar" * (n - len(facts) * segment), question]
+            parts += [filler(segment), "\n" + fact + "\n"]
+        parts += [filler(n - len(facts) * segment), question]
         return [{"role": "user", "content": "".join(parts)}]
     def count(messages):
         return len(tokenizer.apply_chat_template(messages, tokenize=True, add_generation_prompt=True,
@@ -182,6 +188,7 @@ def main():
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--seed", type=int, default=20261114)
     parser.add_argument("--suite", choices=('ledger', 'hard'), default='ledger')
+    parser.add_argument("--filler-file", type=Path, help="optional source-text distractors; default is repeated cedar")
     parser.add_argument("--timeout", type=float, default=1800)
     parser.add_argument("--queue-wait", type=float, default=900)
     args = parser.parse_args()
@@ -192,6 +199,10 @@ def main():
     if args.endurance_eos_ban and any(n < 0 for n in args.endurance_eos_ban):
         parser.error('EOS IDs must be nonnegative')
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, local_files_only=True, trust_remote_code=False)
+    filler_text = args.filler_file.read_text() if args.filler_file else None
+    if filler_text is not None and not filler_text.strip():
+        parser.error('filler file must not be empty')
+    filler_sha = hashlib.sha256(filler_text.encode()).hexdigest() if filler_text is not None else None
     args.out.parent.mkdir(parents=True, exist_ok=True)
     passed = True
     # Exclusive output file prevents accidentally appending unlike runs.
@@ -202,12 +213,13 @@ def main():
                 for n in prompts:
                     for repeat in range(args.repeats):
                         seed = trial_seed(args.seed, n, repeat, args.output_budget, args.context_slack)
-                        messages, expected = build_messages(tokenizer, n, seed, args.suite)
+                        messages, expected = build_messages(tokenizer, n, seed, args.suite, filler_text)
                         for mode in ("fresh_prefix", "exact_replay"):
                             row = {"prompt_tokens_requested": n, "output_budget": args.output_budget,
                                    "engine_context_slack": args.context_slack,
                                    "total_budget": n + args.output_budget, "mode": mode, "seed": seed,
                                    "repeat": repeat, "suite": args.suite, "expected": expected, "seat": lane.summary(),
+                                   "filler_sha256": filler_sha,
                                    "prompt_sha256": hashlib.sha256(json.dumps(messages).encode()).hexdigest()}
                             try:
                                 row.update(stream_chat(lane, {"messages": messages, "max_tokens": args.output_budget,

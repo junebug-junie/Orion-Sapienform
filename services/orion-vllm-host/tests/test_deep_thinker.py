@@ -166,3 +166,24 @@ def test_planning_gold_is_optimal_over_all_topological_orders():
             scores.append((max(end.values()), end['E']))
     assert (gold['makespan'], gold['E_start'] + 2) == min(scores)
     assert gold == {'makespan': 20, 'B_start': 3, 'C_start': 3, 'D_start': 11, 'E_start': 18, 'F_start': 11}
+
+
+def test_source_filler_keeps_exact_tokens_facts_and_question():
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return messages[0]['content'].split()
+
+        def encode(self, text, add_special_tokens=False):
+            return text.split()
+
+        def decode(self, ids, skip_special_tokens=False):
+            return ' '.join(ids)
+
+    source = 'def scheduler(config): return decisions'
+    cedar, expected = EVAL['build_messages'](Tokenizer(), 8192, 123, 'hard')
+    sourced, same = EVAL['build_messages'](Tokenizer(), 8192, 123, 'hard', source)
+    content = sourced[0]['content']
+    assert len(Tokenizer().apply_chat_template(sourced)) == 8192
+    assert same == expected
+    assert 'scheduler(config):' in content and 'cedar' not in content
+    assert cedar[0]['content'].split()[-20:] == content.split()[-20:]

@@ -96,7 +96,32 @@ Baseline TP workers each used about 3.38 GiB RSS, mostly on NUMA node 1, with ze
 swap. This includes shared mappings; do not sum process RSS as unique physical
 memory. The raw snapshot is `1cat-process-memory.json`.
 
-DFlash2 and the Strata challenger are still being measured. No model
+## DFlash2 context grid: verified (recovered 2026-11-15)
+
+Same target model and lane; DFlash2 draft, seven speculative tokens, draft TP2,
+FP16 draft KV. Same seeded hard suite, Gateway, operator lease and 16384-token
+output allowance. Raw results: `dflash-hard-grid.jsonl` (copied from Hecate's
+`/tmp/hecate-deep-bench/`; the original Codex session ended before committing it).
+
+| Actual prompt tokens | Fresh TTFT median (s) | Replay TTFT median (s) | Fresh decode median (tokens/s) | Baseline fresh decode (tokens/s) |
+| ---: | ---: | ---: | ---: | ---: |
+| 8192 | 3.87 | 0.67 | 190.45 | 48.23 |
+| 32768 | 15.55 | 1.05 | 130.88 | 46.67 |
+| 65536 | 34.26 | 1.65 | 131.65 | 45.15 |
+| 132000 | 83.02 | 2.87 | 133.98 | 42.31 |
+| 196608 | 144.90 | 4.17 | 120.44 | 39.81 |
+| 245760 | 200.72 | 4.94 | 104.38 | 38.13 |
+
+**36/36 passed.** The capacity test completed 245760 input + 16384 generated tokens
+in 322.11 s (baseline 643.48 s), TTFT 200.67 s, decode 134.94 tokens/s, followed by a
+correct 8192-token recovery. Prefill is unchanged; the gain is decode only. Decode
+speed depends on draft acceptance, so it varies with the text being generated.
+
+Not yet measured for DFlash2: the 12-run task-quality suite, completed-task energy,
+and the source-text distractor run (`deep_context.py --filler-file`, added in this
+patch). DFlash2 is not promoted until task quality matches the baseline.
+
+The Strata challenger is still unmeasured. No model
 ranking follows from capacity alone. Strata reserves eight internal tokens, so its
 maximum comparison uses 245752 prompt + 16384 output = 262136 user tokens. The
 paired seed helper preserves identical reasoning facts across this boundary.

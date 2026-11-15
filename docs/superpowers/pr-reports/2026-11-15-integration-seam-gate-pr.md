@@ -1,6 +1,6 @@
 # The integration gate: organ registry, CI check, live coverage report (integration patch 2)
 
-Refs #3424 (epic #3434). **Merges after patch 1** (`feat/integration-experience-now`, Refs #3423): this
+Refs #3424 (epic #3434). **Merges after patch 1, #3453** (`feat/integration-experience-now`, Refs #3423): this
 branch is stacked on it. Spec: `docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md`
 (PR #3416), Part A.6 and "Patch 2".
 

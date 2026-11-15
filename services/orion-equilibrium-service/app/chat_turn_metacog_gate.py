@@ -157,6 +157,15 @@ def _capped_grounding_capsule_for_upstream(
         value = capped.get(field)
         if isinstance(value, str) and len(value) > _GROUNDING_DIGEST_FIELD_CHAR_CAP:
             capped[field] = value[:_GROUNDING_DIGEST_FIELD_CHAR_CAP] + "...(truncated)"
+    # Core memory pages (page:juniper, ~350 words each) are already persisted, versioned records:
+    # the metacog evidence names which version the turn saw, never a second copy of the text.
+    pages = capped.get("core_pages")
+    if isinstance(pages, list):
+        capped["core_pages"] = [
+            {"concept_id": p.get("concept_id"), "version": p.get("version")}
+            for p in pages
+            if isinstance(p, dict)
+        ]
     return capped
 
 

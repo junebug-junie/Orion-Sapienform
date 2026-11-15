@@ -17,7 +17,8 @@ through the pool is the CI check `scripts/check_circe_worker_refs.py`.
 
 | port | what | role in `config/gpu_pool.yaml` |
 |---|---|---|
-| 8011 | chat worker | `chat` |
+| 8009 | kev (System One appraisal; added 2026-11-14, leased-evals answer 7; no lane door) | `kev` (pool lists it, schedules nothing) |
+| 8011 | chat worker (behind the lane door once deployed, `docs/runbooks/2026-11-14-lane-door.md`) | `chat` |
 | 8012 | metacog worker | `metacog` |
 | 8013 | fast worker | `fast` |
 | 8014 | diffusion host | `diffusion` (pool-leased) |
@@ -63,14 +64,14 @@ iptables -w -t mangle -A ORION-LLM-GATE -i docker0 -j RETURN
 iptables -w -t mangle -A ORION-LLM-GATE -i br-+ -j RETURN
 iptables -w -t mangle -A ORION-LLM-GATE -s 100.92.216.81/32 -j RETURN
 iptables -w -t mangle -A ORION-LLM-GATE -j DROP
-iptables -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports 8011:8017,8090,8099 -m addrtype --dst-type LOCAL -j ORION-LLM-GATE
+iptables -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports 8009,8011:8017,8090,8099 -m addrtype --dst-type LOCAL -j ORION-LLM-GATE
 ip6tables -w -t mangle -N ORION-LLM-GATE
 ip6tables -w -t mangle -A ORION-LLM-GATE -i lo -j RETURN
 ip6tables -w -t mangle -A ORION-LLM-GATE -i docker0 -j RETURN
 ip6tables -w -t mangle -A ORION-LLM-GATE -i br-+ -j RETURN
 ip6tables -w -t mangle -A ORION-LLM-GATE -s fd7a:115c:a1e0::733:d851/128 -j RETURN
 ip6tables -w -t mangle -A ORION-LLM-GATE -j DROP
-ip6tables -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports 8011:8017,8090,8099 -m addrtype --dst-type LOCAL -j ORION-LLM-GATE
+ip6tables -w -t mangle -I PREROUTING 1 -p tcp -m multiport --dports 8009,8011:8017,8090,8099 -m addrtype --dst-type LOCAL -j ORION-LLM-GATE
 ```
 
 ## 0. Before (read-only, no sudo)

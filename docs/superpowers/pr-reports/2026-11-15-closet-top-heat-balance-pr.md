@@ -119,4 +119,4 @@ Pass: circe's 95 % interval overlaps +0.16..+0.32, and `refused` names hecate wh
 - Severity: low. Concern: a later patch reads the closet-top slope as cabinet heat (~18x larger for circe) and sheds circe work against the cabinet's 32 C line. Mitigation: separate `series_id`. `latest_heat_fit` filters by series_id (tested). Comments in the yaml, `HEAT_BALANCE`, and the README forbid feeding `heat_sensitivity.yaml` or the heat quote (#3194).
 - Severity: low. Concern: a fixed SCD40-vs-SHT40 offset is read as "Orion adds 0.7 C at rest". Mitigation: slopes only, documented. Open question 6 is still open.
 - Severity: info. hecate has run only since 2026-11-14 20:00 UTC, so its closet-top slope is not fittable yet. Re-check in its first full week, and re-run the eval at 30 days (~12-05).
-- Issues opened: one `verify-live` ticket for the post-deploy GET, the hecate-week recheck, and the 12-05 eval re-run (linked in the PR). Issues closed: none.
+- Issues opened: #3410 (`verify-live`: post-deploy GET, the hecate-week recheck, the 12-05 eval re-run). Issues closed: none. Design: #3234.

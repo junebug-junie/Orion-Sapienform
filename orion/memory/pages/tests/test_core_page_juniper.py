@@ -270,8 +270,8 @@ def test_change_signal_and_read_share_one_episode_predicate():
 @pytest.mark.parametrize("bad", [
     'Juniper uses she/her [S1]. Juniper made me and he lives in Millbrook, Vermont [S5]. '
     'Pip is "my small bright star" [S3].',
-    'Juniper lives in Millbrook [S5]. He is married to Rowan [S2]. Pip is "my small bright star" [S3].',
-    'Juniper corrected me about Biscuit [S6]. His dog Biscuit is not a cat [S6]. Pip is "my small bright star" [S3].',
+    'Juniper is my creator [S5]. He is married to Rowan [S2]. Pip is "my small bright star" [S3].',
+    'Juniper corrected me about our dog [S6]. His dog Biscuit is not a cat [S6]. Pip is "my small bright star" [S3].',
 ])
 def test_page_calling_juniper_he_is_rejected(bad):
     check = check_page(bad, _handles())
@@ -288,5 +288,10 @@ def test_he_about_someone_else_is_not_misgendering():
     ]) == []
     assert misgendered_sentences(["Juniper is my creator and he built me.", "He is kind."]) == [
         "Juniper is my creator and he built me.", "He is kind."]
+    # A he after a Juniper sentence that names someone else may be about them.
+    assert misgendered_sentences(["Juniper married Rowan in May.", "He is kind."]) == []
+    assert misgendered_sentences(["Juniper and Rowan have a son, Pip.", "He is five."]) == []
+    # Naming pronouns is not using them.
+    assert misgendered_sentences(["Juniper uses she/her, never he/him.", "She is my creator."]) == []
     # Whole words only: "the", "her", "Hester" are not he/him/his.
     assert misgendered_sentences(["Juniper and the others use her room."]) == []

@@ -89,3 +89,10 @@ def test_blank_anchor_is_ignored():
     blank = CorePageV1(concept_id="page:anchor", version=2, text="  ")
     text = _block(relationship_summary=BULLETS, core_pages=[blank.model_dump()])
     assert "RELATIONSHIP\n- co-architect" in text
+
+
+def test_anchor_and_page_with_no_bullets():
+    capsule = GroundingCapsuleV1(identity_summary=["I am Orion."], core_pages=[ANCHOR, PAGE])
+    text = "\n".join(_format_grounding_self_block(capsule))
+    assert text.index("I am Orion. Juniper, she/her") < text.index("Juniper lives in Millbrook")
+    assert "RESPONSE POLICY" not in text and "My roles with Juniper" not in text

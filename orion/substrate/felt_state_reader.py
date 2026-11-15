@@ -141,7 +141,7 @@ _LANES: tuple[LaneSpec, ...] = (
         ctx_key="orion_core_page_anchor",
         table="self_concept_history",
         payload_col=(
-            "json_build_object('entry_id', entry_id, 'concept_id', concept_id, 'content', content, "
+            "json_build_object('concept_id', concept_id, 'content', content, "
             "'version', version, 'created_at', created_at)"
         ),
         ts_col="created_at",

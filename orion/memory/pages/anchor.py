@@ -13,6 +13,10 @@ the lines name her family. Two things keep the fold away from it:
    producer can publish an anchor row: orion-sql-writer would reject it. The row is written by
    hand (see ``WRITE_ANCHOR_SQL_TEMPLATE``) and changed only the same way.
 
+One gap stays: orion-sql-writer upserts ``self_concept_history`` by ``entry_id``, so a valid bus row
+that reused the anchor's random ``entry_id`` would replace it. The reader lane never puts that id in
+turn ctx, so nothing downstream can learn it.
+
 The felt-state reader lane ``orion_core_page_anchor`` hydrates the newest such row; cortex-exec puts
 it on the grounding capsule as a ``CorePageV1`` ahead of page:juniper.
 """

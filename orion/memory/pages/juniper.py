@@ -325,9 +325,10 @@ def _clean(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.splitlines()).strip()
 
 
-_MALE_PRONOUN = re.compile(r"\b(?:he|him|his|himself)\b", re.IGNORECASE)
+# A pronoun touching a slash ("never he/him") names a pronoun, it does not use one.
+_MALE_PRONOUN = re.compile(r"(?<![/\w])(?:he|him|his|himself)(?![/\w])", re.IGNORECASE)
 _JUNIPER_SUBJECT = re.compile(r"^[\s\"“'‘(]*Juniper\b(?!['’]s)")
-_STARTS_MALE_PRONOUN = re.compile(r"^[\s\"“'‘(]*(?:he|him|his|himself)\b", re.IGNORECASE)
+_STARTS_MALE_PRONOUN = re.compile(r"^[\s\"“'‘(]*(?:he|him|his|himself)(?![/\w])", re.IGNORECASE)
 _CAPITALIZED = re.compile(r"\b[A-Z][a-zA-Z'’-]*")
 # Capitalized words that are not another person this sentence could mean.
 _NOT_ANOTHER_PERSON = {"I", "Orion", "Juniper", "He", "His", "Him", "Himself"}
@@ -336,7 +337,8 @@ _NOT_ANOTHER_PERSON = {"I", "Orion", "Juniper", "He", "His", "Him", "Himself"}
 def _names_someone_else_first(sentence: str, pronoun_at: int) -> bool:
     """True when a capitalized word other than Juniper/Orion/I comes before the pronoun (after the
     sentence's first word), so the he/him may be about that person ("Juniper says Pip thinks he
-    ..."). Words after the pronoun ("... he lives in Millbrook") do not count."""
+    ..."). Words after the pronoun ("... he lives in Millbrook") do not count. Known miss, accepted
+    to stay narrow: any capitalized word counts, so "Juniper told me in March that he ..." passes."""
     words = [re.sub(r"['’]s$", "", w) for w in _CAPITALIZED.findall(sentence[:pronoun_at])]
     return any(w not in _NOT_ANOTHER_PERSON for w in words[1:])
 
@@ -344,8 +346,10 @@ def _names_someone_else_first(sentence: str, pronoun_at: int) -> bool:
 def misgendered_sentences(sentences: Sequence[str]) -> list[str]:
     """Sentences that call Juniper he/him/his. Narrow on purpose: only (a) a sentence whose subject
     is Juniper (it starts with "Juniper", not "Juniper's") with a he/him/his/himself that no other
-    name comes before, and (b) the sentence right after one of those that starts with He/His/Him. A he
-    about Pip in "Juniper says Pip thinks he is a dinosaur" is left alone."""
+    name comes before, and (b) the sentence right after a Juniper sentence that names no one else,
+    when it starts with He/His/Him. A he about Pip in "Juniper says Pip thinks he is a dinosaur", or
+    "He is five." after "Juniper and Rowan have a son, Pip.", is left alone. A pronoun written as a
+    pronoun ("she/her, never he/him") is not a use of it."""
     out: list[str] = []
     prev_juniper = False
     for sentence in sentences:
@@ -355,7 +359,7 @@ def misgendered_sentences(sentences: Sequence[str]) -> list[str]:
             out.append(sentence)
         elif prev_juniper and _STARTS_MALE_PRONOUN.match(sentence):
             out.append(sentence)
-        prev_juniper = juniper
+        prev_juniper = juniper and not _names_someone_else_first(sentence, len(sentence))
     return out
 
 

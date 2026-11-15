@@ -47,6 +47,7 @@ def test_lane_reads_only_the_anchor_row_and_never_ages_out():
     assert lane.where_sql == "concept_id = 'page:anchor' AND produced_by = 'juniper_anchor'"
     assert lane.max_age_sec >= 10 * 365 * 86400
     assert lane.cache_ttl_sec == 300
+    assert "entry_id" not in lane.payload_col   # the row's key never reaches turn ctx
     assert CONTEXT_PROVENANCE_REGISTRY[CTX_KEY_ANCHOR].source_kind == "static_identity_config"
 
 

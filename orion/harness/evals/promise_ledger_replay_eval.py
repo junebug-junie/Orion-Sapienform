@@ -237,7 +237,8 @@ def run(args: argparse.Namespace) -> int:
         if args.only:
             turns = [t for t in turns if t["correlation_id"].startswith(tuple(args.only.split(",")))]
         if args.skip_done:
-            done = {r["correlation_id"] for r in merge_reports(args.skip_done)["turns"]}
+            # Error rows (a 503 while the hold was being recalled, a 502) are tried again.
+            done = {r["correlation_id"] for r in merge_reports(args.skip_done)["turns"] if "error" not in r}
             turns = [t for t in turns if t["correlation_id"] not in done]
         for i, t in enumerate(turns, 1):
             corr, at = t["correlation_id"], t["created_at"]
@@ -510,7 +511,7 @@ def main() -> int:
     r.add_argument("--out", type=Path, default=OUT_DIR / "report.json")
     r.add_argument("--only", help="comma-separated correlation id prefixes (smoke runs)")
     r.add_argument("--skip-done", type=Path, nargs="+", default=[],
-                   help="partial reports of a recalled run: skip the turns they already hold")
+                   help="partial reports of a recalled run: skip the turns they already judged (errors are retried)")
     r.add_argument("--lanes", default=DEFAULT_LANES,
                    help="comma-separated, alternated per turn: agent, chat (chat waits until gpu0 is lent)")
     s = sub.add_parser("sheet")

@@ -116,6 +116,10 @@ _LANES: tuple[LaneSpec, ...] = (
     # orion-durable-runs. Read by cortex-exec's grounding capsule (core_pages) into the harness
     # RELATIONSHIP slot. A page stays current until the next fold replaces it, so the row may be
     # old; a year bounds a page nothing has refreshed. Cache refreshes every 5 min.
+    # A full hydrate (lanes=None) reads this lane whatever ORION_CORE_PAGES_ENABLED says (this reader
+    # has no per-lane flags): the flag gates USE, in cortex-exec's core_pages_for_ctx, not the read.
+    # With the flag off the ctx key may be present (and listed in CONTEXT PROVENANCE) but no prompt
+    # renders the page.
     LaneSpec(
         ctx_key="orion_core_page_juniper",
         table="self_concept_history",

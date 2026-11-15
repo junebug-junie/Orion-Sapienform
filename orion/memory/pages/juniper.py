@@ -12,8 +12,10 @@ What this module does, in order:
    after every sentence. Strata has no constrained JSON, so the answer is plain prose and the
    check below is the contract.
 3. ``check_page`` is deterministic: it rejects an uncited sentence, a cite that names no source,
-   a quote (3+ words in double quotes) found in none of the sentence's cited records, a page over
-   ``WORD_CAP`` words, and a page with fewer than ``MIN_SENTENCES`` sentences. On pass
+   a quote (3+ words in double quotes) found word for word in none of the sentence's cited
+   records, an unclosed quote, a list or heading line, leftover ``<think`` text, a page over
+   ``WORD_CAP`` words, and a page with fewer than ``MIN_SENTENCES`` sentences. Every line break
+   is a hard sentence break. On pass
    it returns the stored text (each ``[S4]`` replaced by the real record id, e.g.
    ``[episode_memory:<uuid>]``) and the clean text a prompt shows (cites removed).
 4. ``history_row`` builds the ``SelfConceptHistoryV1`` row (``concept_id='page:juniper'``,
@@ -48,23 +50,25 @@ PERSON_FACT_SQL = (
     "WHERE f.removed_at IS NULL AND p.status = 'active' AND p.merged_into IS NULL "
     "ORDER BY (p.display_name <> 'Juniper'), p.display_name, f.created_at"
 )
+# The episode rows the page may read: about_juniper, plus happened rows that name her. ONE
+# predicate, shared by the read and the change signal below, so they can never disagree.
+EPISODE_SCOPE_SQL = "(purpose = 'about_juniper' OR (purpose = 'happened' AND statement ILIKE '%%juniper%%'))"
 # Orion's distilled memories about her. Rejected and superseded rows never reach the page.
 EPISODE_MEMORY_SQL = (
     "SELECT memory_id::text AS memory_id, purpose, statement, confirmation_state, "
     "coalesce(occurred_at, created_at) AS at "
     "FROM episode_memory "
-    "WHERE status = 'active' AND confirmation_state <> 'rejected' "
-    "AND (purpose = 'about_juniper' OR (purpose = 'happened' AND statement ILIKE '%%juniper%%')) "
+    f"WHERE status = 'active' AND confirmation_state <> 'rejected' AND {EPISODE_SCOPE_SQL} "
     "ORDER BY coalesce(occurred_at, created_at), memory_id"
 )
-# When did anything the page reads last change? A new fact or memory, a removed fact, or a
-# memory rejected/superseded (its status moved). Reinforcement of an active row does not count.
+# When did anything the page reads last change? Any in-scope episode row added or updated (any
+# status, so a row rejected or superseded since counts), a fact added or removed, or a person
+# renamed / retired / merged (person.updated_at).
 NEWEST_SOURCE_SQL = (
     "SELECT greatest("
     "(SELECT max(greatest(created_at, coalesce(removed_at, created_at))) FROM person_fact), "
-    "(SELECT max(created_at) FROM episode_memory WHERE purpose IN ('about_juniper', 'happened')), "
-    "(SELECT max(updated_at) FROM episode_memory "
-    " WHERE purpose IN ('about_juniper', 'happened') AND status <> 'active')"
+    "(SELECT max(updated_at) FROM person), "
+    f"(SELECT max(greatest(created_at, updated_at)) FROM episode_memory WHERE {EPISODE_SCOPE_SQL})"
     ") AS newest"
 )
 CURRENT_PAGE_SQL = (
@@ -81,8 +85,13 @@ _STORED_CITE = re.compile(
 )
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _FENCE = re.compile(r"^```[a-zA-Z]*\s*$", re.MULTILINE)
-_SENTENCE_START = re.compile(r"\s+(?=[\"“(']?[A-Z0-9])")
 _LEADING_PUNCT = re.compile(r"^[\s.,;:!?)]+")
+# A line that is a list item or a heading: the page is plain paragraphs (rule 9).
+_LIST_OR_HEADING = re.compile(r"^\s*(?:[-*•#]|\d+[.)])")
+# Abbreviations whose period does not end a sentence.
+_ABBREVIATIONS = ("dr.", "mr.", "mrs.", "ms.", "st.", "e.g.", "i.e.")
+# Rows that correct something: always kept in the prompt, whatever the happened cap.
+_CORRECTION = re.compile(r"\bcorrect(?:ed|ion|ing|s)?\b|\b(?:is|was|are) not an?\b|\bnot an? \w+[,.]", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -128,7 +137,8 @@ def sources_from_rows(person_rows: Iterable[Mapping[str, Any]],
                       episode_rows: Iterable[Mapping[str, Any]],
                       *, max_happened: int = MAX_HAPPENED_ROWS) -> list[PageSource]:
     """Rows from PERSON_FACT_SQL and EPISODE_MEMORY_SQL -> ordered sources (people first, then
-    memories oldest first). Only the newest ``max_happened`` ``happened`` rows are kept."""
+    memories oldest first). Only the newest ``max_happened`` ``happened`` rows are kept, plus every
+    happened row that carries a correction."""
     out: list[PageSource] = []
     for row in person_rows:
         text = str(row.get("value_text") or "").strip()
@@ -143,6 +153,8 @@ def sources_from_rows(person_rows: Iterable[Mapping[str, Any]],
     episodes = [dict(r) for r in episode_rows if str(r.get("statement") or "").strip()]
     happened = [r for r in episodes if r.get("purpose") == "happened"]
     drop = {id(r) for r in happened[:-max_happened]} if max_happened >= 0 and len(happened) > max_happened else set()
+    # A correction outranks what it corrects only if the model can see it: never capped away.
+    drop -= {id(r) for r in happened if _CORRECTION.search(str(r.get("statement") or ""))}
     for row in episodes:
         if id(row) in drop:
             continue
@@ -222,15 +234,28 @@ def _strip_wrapping(raw: str) -> str:
     return text.strip()
 
 
+def _is_inch_mark(text: str, i: int, in_quote: bool) -> bool:
+    """A straight double quote right after a digit, while no quote is open, is an inch mark (6'5").
+    Inside an open quote it closes the quote ("... in 1990")."""
+    return text[i] == '"' and not in_quote and i > 0 and text[i - 1].isdigit()
+
+
+def _ends_in_abbreviation(piece: str) -> bool:
+    words = piece.split()
+    return bool(words) and words[-1].lower().lstrip("(\"“") in _ABBREVIATIONS
+
+
 def split_sentences(text: str) -> list[str]:
-    """Sentences of one cited span. Quote-aware: a period inside "..." does not end a sentence
-    (Juniper's quoted words often hold several). A double quote right after a digit is an inch
-    mark (6'5"), not a quote."""
+    """Sentences of one line of the page. A sentence ends at . ! or ? (or a closing quote right
+    after one) followed by whitespace, whatever case comes next, except after Dr./Mr./Mrs./Ms./St./
+    e.g./i.e. Quote-aware: a period inside an open quote does not end a sentence (Juniper's quoted
+    words often hold several). Newlines are handled by the caller: every line break is a hard
+    sentence break."""
     sentences: list[str] = []
     start = 0
     in_quote = False
     for i, ch in enumerate(text):
-        if ch == '"' and not (i > 0 and text[i - 1].isdigit()):
+        if ch == '"' and not _is_inch_mark(text, i, in_quote):
             in_quote = not in_quote
         elif ch == "“":
             in_quote = True
@@ -239,17 +264,31 @@ def split_sentences(text: str) -> list[str]:
         if in_quote:
             continue
         ends = ch in ".!?" or (ch in '"”' and i > 0 and text[i - 1] in ".!?")
-        if not ends:
+        if not ends or i + 1 >= len(text) or not text[i + 1].isspace():
             continue
-        if _SENTENCE_START.match(text, i + 1):
-            piece = text[start:i + 1].strip()
-            if piece:
-                sentences.append(piece)
-            start = i + 1
+        piece = text[start:i + 1].strip()
+        if ch == "." and _ends_in_abbreviation(piece):
+            continue
+        if piece:
+            sentences.append(piece)
+        start = i + 1
     tail = text[start:].strip()
     if tail:
         sentences.append(tail)
     return sentences
+
+
+def quote_is_open(text: str) -> bool:
+    """True when ``text`` ends inside an unclosed double quote (inch marks ignored)."""
+    in_quote = False
+    for i, ch in enumerate(text):
+        if ch == '"' and not _is_inch_mark(text, i, in_quote):
+            in_quote = not in_quote
+        elif ch == "“":
+            in_quote = True
+        elif ch == "”":
+            in_quote = False
+    return in_quote
 
 
 _QUOTE_MIN_WORDS = 3
@@ -257,7 +296,10 @@ _QUOTE_MIN_WORDS = 3
 
 def _norm(text: str) -> str:
     text = text.lower().replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
-    return " ".join(re.sub(r"[^a-z0-9' ]+", " ", text).split())
+    # Apostrophes stay inside words (don't, 6'5) but not at their edges: a record's 'single quotes'
+    # around her words must not stop a whole-word match.
+    words = (w.strip("'") for w in re.sub(r"[^a-z0-9' ]+", " ", text).split())
+    return " ".join(w for w in words if w)
 
 
 def quoted_spans(sentence: str) -> list[str]:
@@ -266,7 +308,7 @@ def quoted_spans(sentence: str) -> list[str]:
     spans: list[str] = []
     start: int | None = None
     for i, ch in enumerate(sentence):
-        if ch == '"' and i > 0 and sentence[i - 1].isdigit() and start is None:
+        if _is_inch_mark(sentence, i, start is not None):
             continue
         if ch in '"“' and start is None:
             start = i + 1
@@ -289,28 +331,40 @@ def check_page(raw: str, handles: Mapping[str, PageSource], *, word_cap: int = W
     errors: list[str] = []
     if not text:
         return PageCheck(ok=False, errors=["empty"])
+    if "<think" in text.lower() or "</think" in text.lower():
+        errors.append("leftover_think")
     sentences: list[tuple[str, list[str]]] = []
-    pos = 0
-    for match in _HANDLE_GROUP.finditer(text):
-        chunk = _LEADING_PUNCT.sub("", text[pos:match.start()])
-        cites = _HANDLE.findall(match.group(1))
-        pos = match.end()
-        if not chunk.strip():
-            if sentences:      # "[S4] [S9]" or "[S4]. [S9]": more cites for the same sentence
-                sentences[-1][1].extend(cites)
-            else:
-                errors.append("cite_without_sentence")
+    # Every line break is a hard sentence break: a cite never reaches back across a line, so a
+    # title line or an uncited first paragraph cannot borrow the next line's cite.
+    for line in text.splitlines():
+        if not line.strip():
             continue
-        parts = split_sentences(chunk)
-        for uncited in parts[:-1]:
-            errors.append(f"uncited: {uncited[:120]}")
-            sentences.append((uncited, []))
-        sentences.append((parts[-1], list(cites)))
-    tail = _LEADING_PUNCT.sub("", text[pos:]).strip()
-    if tail:
-        for uncited in split_sentences(tail):
-            errors.append(f"uncited: {uncited[:120]}")
-            sentences.append((uncited, []))
+        if _LIST_OR_HEADING.match(line):
+            errors.append(f"list_or_heading_line: {line.strip()[:80]}")
+        if quote_is_open(line):
+            errors.append(f"unbalanced_quote: {line.strip()[:80]}")
+        line_start = len(sentences)
+        pos = 0
+        for match in _HANDLE_GROUP.finditer(line):
+            chunk = _LEADING_PUNCT.sub("", line[pos:match.start()])
+            cites = _HANDLE.findall(match.group(1))
+            pos = match.end()
+            if not chunk.strip():
+                if len(sentences) > line_start:   # "[S4] [S9]" or "[S4]. [S9]": more cites, same sentence
+                    sentences[-1][1].extend(cites)
+                else:
+                    errors.append("cite_without_sentence")
+                continue
+            parts = split_sentences(chunk)
+            for uncited in parts[:-1]:
+                errors.append(f"uncited: {uncited[:120]}")
+                sentences.append((uncited, []))
+            sentences.append((parts[-1], list(cites)))
+        tail = _LEADING_PUNCT.sub("", line[pos:]).strip()
+        if tail:
+            for uncited in split_sentences(tail):
+                errors.append(f"uncited: {uncited[:120]}")
+                sentences.append((uncited, []))
 
     refs: list[str] = []
     for sentence, cites in sentences:
@@ -328,7 +382,8 @@ def check_page(raw: str, handles: Mapping[str, PageSource], *, word_cap: int = W
         # A quote is a claim about someone's exact words: it must be in a record this sentence cites.
         for span in quoted_spans(sentence):
             quote = _norm(span)
-            if len(quote.split()) >= _QUOTE_MIN_WORDS and not any(quote in t for t in cited_texts):
+            # Whole words only: "1990" must not match inside "19901".
+            if len(quote.split()) >= _QUOTE_MIN_WORDS and not any(f" {quote} " in f" {t} " for t in cited_texts):
                 errors.append(f"unsupported_quote: {span[:80]}")
 
     def _stored(match: re.Match[str]) -> str:

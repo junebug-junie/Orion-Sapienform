@@ -58,12 +58,12 @@ class FakePool:
 
         class Conn:
             async def execute(self, sql, params=None):
+                if "AS newest" in sql:
+                    return Cur([{"newest": pool.newest}])
                 if "FROM person_fact f" in sql:
                     return Cur(PEOPLE)
                 if "FROM episode_memory" in sql and "statement" in sql:
                     return Cur(EPISODES)
-                if "AS newest" in sql:
-                    return Cur([{"newest": pool.newest}])
                 if "max(version)" in sql:
                     assert params == {"cid": PAGE_JUNIPER, "by": PRODUCED_BY}
                     return Cur([{"v": pool.top}])
@@ -220,3 +220,85 @@ def test_published_envelope_passes_the_bus_catalog_validation():
     h2 = Harness()
     h2.folder.publish = bus_publisher(Down(), ServiceRef(name="orion-durable-runs", version="t", node="athena"))
     assert h2.tick().decision == "publish_failed"
+
+
+def test_published_but_not_yet_visible_does_not_refold_tonight():
+    """orion-sql-writer lands the row asynchronously (or rejects it on a version skew). The next
+    tick in the window must not spend another LLM call and publish a second page."""
+    h = Harness()                          # FakePool never shows a current row
+    assert h.tick().decision == "folded"
+    assert h.tick().decision == "done_today"
+    assert len(h.calls) == 1 and len(h.published) == 1
+    # A manual fold still runs (force skips the once-a-day gate).
+    assert h.tick(force=True).decision == "folded"
+
+
+def _gateway_reply(payload: dict):
+    from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
+
+    env = BaseEnvelope(kind="llm.chat.result", source=ServiceRef(name="llm-gateway", version="t", node="n"),
+                       payload=payload)
+    return env
+
+
+class _Codec:
+    def __init__(self, env):
+        self.env = env
+
+    def decode(self, data):
+        return SimpleNamespace(ok=self.env is not None, envelope=self.env, error=None if self.env else "bad")
+
+
+class _RpcBus:
+    def __init__(self, env):
+        self.codec = _Codec(env)
+        self.sent = []
+
+    async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec, require_listener):
+        self.sent.append((channel, envelope, reply_channel, timeout_sec, require_listener))
+        return {"data": b"x"}
+
+
+def _caller(env):
+    from app.core_page_fold import bus_llm_caller
+    from orion.core.bus.bus_schemas import ServiceRef
+
+    s = SimpleNamespace(core_page_fold_route="memory_distill", core_page_fold_timeout_sec=600.0,
+                        core_page_fold_max_tokens=3000, llm_intake_channel="orion:exec:request:LLMGatewayService")
+    bus = _RpcBus(env)
+    return bus, bus_llm_caller(bus, s, ServiceRef(name="orion-durable-runs", version="t", node="athena"))
+
+
+def test_bus_llm_caller_sends_the_route_without_a_hold_and_parses_the_reply():
+    bus, call = _caller(_gateway_reply({"content": "Page [S1].", "raw": {"model": "m27b"}}))
+    out = asyncio.run(call("prompt"))
+    assert out == {"text": "Page [S1].", "model": "m27b"}
+    ((channel, env, reply, timeout, require_listener),) = bus.sent
+    assert channel == "orion:exec:request:LLMGatewayService" and require_listener is True
+    assert reply.endswith(str(env.correlation_id)) and timeout == 630.0
+    opts = env.payload["options"]
+    assert env.payload["route"] == "memory_distill" and opts["llm_route"] == "memory_distill"
+    assert "gpu_lease" not in opts and opts["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.parametrize("payload, err", [
+    ({"content": "x", "raw": {"error": "pool deadline"}}, "gateway_error"),
+    ({"content": "  ", "raw": {}}, "gateway_empty_text"),
+])
+def test_bus_llm_caller_raises_on_gateway_error_or_empty_text(payload, err):
+    _, call = _caller(_gateway_reply(payload))
+    with pytest.raises(RuntimeError, match=err):
+        asyncio.run(call("prompt"))
+
+
+def test_bus_llm_caller_raises_on_undecodable_reply():
+    _, call = _caller(None)
+    with pytest.raises(RuntimeError, match="gateway_decode_failed"):
+        asyncio.run(call("prompt"))
+
+
+def test_timeout_setting_is_capped_at_900():
+    from app.settings import Settings
+
+    with pytest.raises(ValueError):
+        Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_TIMEOUT_SEC=901)

@@ -465,7 +465,8 @@ class Settings(BaseSettings):
     core_page_fold_poll_sec: float = Field(600.0, ge=60.0, alias="CORE_PAGE_FOLD_POLL_SEC")
     core_page_fold_hour_local: int = Field(1, ge=0, le=23, alias="CORE_PAGE_FOLD_HOUR_LOCAL")
     core_page_fold_end_hour_local: int = Field(3, ge=1, le=24, alias="CORE_PAGE_FOLD_END_HOUR_LOCAL")
-    core_page_fold_timeout_sec: float = Field(600.0, ge=30.0, le=1800.0, alias="CORE_PAGE_FOLD_TIMEOUT_SEC")
+    # <= 900: past that a hung call holds the gpu1 seat longer than any other one-shot memory job.
+    core_page_fold_timeout_sec: float = Field(600.0, ge=30.0, le=900.0, alias="CORE_PAGE_FOLD_TIMEOUT_SEC")
     core_page_fold_max_tokens: int = Field(3000, ge=500, le=16384, alias="CORE_PAGE_FOLD_MAX_TOKENS")
     # Folds (LLM calls) per Denver day, failed ones included; a pass ends the day.
     core_page_fold_max_attempts_per_day: int = Field(3, ge=1, le=10, alias="CORE_PAGE_FOLD_MAX_ATTEMPTS_PER_DAY")

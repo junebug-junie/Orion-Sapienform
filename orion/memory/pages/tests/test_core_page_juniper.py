@@ -171,3 +171,94 @@ def test_core_page_from_lane_payload():
 def test_page_source_is_hashable_record():
     src = PageSource(ref="person_fact:x", kind="person_fact", text="t", label="l")
     assert {src: 1}[src] == 1
+
+
+# --- review findings (PR review 2026-11-15): false accepts the first check let through ---------
+
+def _probe_handles():
+    return handle_map([
+        PageSource(ref="person_fact:a", kind="person_fact", text="she/her", label="l"),
+        PageSource(ref="episode_memory:b", kind="episode_memory",
+                   text="Juniper said 'we went to Mars in 1990' and laughed.", label="l"),
+        PageSource(ref="episode_memory:c", kind="episode_memory",
+                   text="Juniper told me she loves her dog Biscuit very much.", label="l"),
+    ])
+
+
+BASE3 = "Juniper uses she/her [S1]. She laughed about Mars [S2]. She loves her dog [S3]."
+
+
+def test_lowercase_next_sentence_is_still_a_sentence():
+    check = check_page("She lives in Millbrook. she loves her dog [S3]. " + BASE3, _probe_handles())
+    assert not check.ok
+    assert "uncited: She lives in Millbrook." in check.errors
+
+
+def test_abbreviation_does_not_split_a_sentence():
+    check = check_page("Juniper saw Dr. Rowan today [S3]. " + BASE3, _probe_handles())
+    assert check.ok, check.errors
+
+
+def test_title_line_cannot_borrow_the_next_lines_cite():
+    check = check_page("Who Juniper is to me\n" + BASE3, _probe_handles())
+    assert not check.ok
+    assert "uncited: Who Juniper is to me" in check.errors
+
+
+def test_uncited_paragraph_before_a_line_break_is_rejected():
+    check = check_page("She is wonderful\n\n" + BASE3, _probe_handles())
+    assert not check.ok and "uncited: She is wonderful" in check.errors
+
+
+@pytest.mark.parametrize("line", ["- Juniper uses she/her [S1].", "* Juniper [S1].", "• Juniper [S1].",
+                                  "# Juniper [S1]", "1. Juniper uses she/her [S1]."])
+def test_bullets_numbered_items_and_headings_are_rejected(line):
+    check = check_page(line + "\n" + BASE3, _probe_handles())
+    assert not check.ok
+    assert any(e.startswith("list_or_heading_line") for e in check.errors)
+
+
+def test_unclosed_quote_is_rejected():
+    check = check_page('She said "we went to Mars [S2]. ' + BASE3, _probe_handles())
+    assert not check.ok
+    assert any(e.startswith("unbalanced_quote") for e in check.errors)
+
+
+def test_quote_closing_after_a_year_is_a_quote_not_an_inch_mark():
+    ok = check_page('She said "we went to Mars in 1990" today [S2]. ' + BASE3, _probe_handles())
+    assert ok.ok, ok.errors
+    assert quoted_spans('She said "we went to Mars in 1990" today') == ["we went to Mars in 1990"]
+    assert split_sentences('She said "went to Mars in 1990". Then she left.') == [
+        'She said "went to Mars in 1990".', "Then she left."]
+    bad = check_page('She said "we went to Venus in 1990" today [S2]. ' + BASE3, _probe_handles())
+    assert any(e.startswith("unsupported_quote") for e in bad.errors)
+
+
+def test_quote_must_match_whole_words():
+    check = check_page('She said "her dog Bisc" once [S3]. ' + BASE3, _probe_handles())
+    assert not check.ok
+    assert any(e.startswith("unsupported_quote") for e in check.errors)
+    whole = check_page('She said "her dog Biscuit" once [S3]. ' + BASE3, _probe_handles())
+    assert whole.ok, whole.errors
+
+
+@pytest.mark.parametrize("raw", ["<think>plan with no end\n" + BASE3, BASE3 + "\n<think>later</thin"])
+def test_leftover_think_is_rejected(raw):
+    check = check_page(raw, _probe_handles())
+    assert not check.ok and "leftover_think" in check.errors
+
+
+def test_correction_rows_survive_the_happened_cap():
+    rows = [{"memory_id": "fix", "purpose": "happened", "at": T,
+             "statement": "Juniper corrected me that Biscuit is a dog.", "confirmation_state": "auto"}]
+    rows += [{"memory_id": f"h{i}", "purpose": "happened", "statement": f"Juniper did thing {i}.",
+              "confirmation_state": "auto", "at": T} for i in range(5)]
+    refs = [s.ref for s in sources_from_rows([], rows, max_happened=2)]
+    assert refs == ["episode_memory:fix", "episode_memory:h3", "episode_memory:h4"]
+
+
+def test_change_signal_and_read_share_one_episode_predicate():
+    from orion.memory.pages.juniper import EPISODE_MEMORY_SQL, EPISODE_SCOPE_SQL, NEWEST_SOURCE_SQL
+
+    assert EPISODE_SCOPE_SQL in EPISODE_MEMORY_SQL and EPISODE_SCOPE_SQL in NEWEST_SOURCE_SQL
+    assert "FROM person)" in NEWEST_SOURCE_SQL

@@ -7,7 +7,8 @@ when to fold, makes the one LLM call, and publishes the passing page.
 Every CORE_PAGE_FOLD_POLL_SEC, inside the Denver window [CORE_PAGE_FOLD_HOUR_LOCAL,
 CORE_PAGE_FOLD_END_HOUR_LOCAL):
 
-1. A version already written today (Denver date) -> ``done_today``.
+1. A version already written today (Denver date), or published by this process today even if
+   orion-sql-writer has not landed it yet -> ``done_today``.
 2. CORE_PAGE_FOLD_MAX_ATTEMPTS_PER_DAY LLM calls spent today -> ``attempts_spent``.
 3. A current version exists and no record it reads changed since it was written -> ``no_new_sources``.
 4. Otherwise: load the records, one LLM call on CORE_PAGE_FOLD_ROUTE (the gateway leases the seat),
@@ -91,6 +92,9 @@ class CorePageFolder:
         self.now = now or (lambda: datetime.now(timezone.utc))
         self.last: FoldResult | None = None
         self._attempts: dict[date, int] = {}
+        # The Denver date this process last published a page. orion-sql-writer writes the row
+        # asynchronously; a slow or rejecting writer must not make the next tick fold again.
+        self._folded_on: date | None = None
         self._lock = asyncio.Lock()
 
     async def _fetch(self) -> tuple[list[dict], list[dict], dict | None, datetime | None, int]:
@@ -131,7 +135,7 @@ class CorePageFolder:
         written_at = current.created_at if current is not None else None
         result.current_version = current.version if current is not None else None
         if not force:
-            if written_at is not None and written_at.astimezone(ZONE).date() == today:
+            if self._folded_on == today or (written_at is not None and written_at.astimezone(ZONE).date() == today):
                 result.decision = "done_today"
                 return result
             if self._attempts.get(today, 0) >= int(s.core_page_fold_max_attempts_per_day):
@@ -177,6 +181,7 @@ class CorePageFolder:
         if not await self.publish(SELF_CONCEPT_CHANNEL, SELF_CONCEPT_KIND, row, corr):
             result.decision, result.error = "publish_failed", "bus publish failed"
             return result
+        self._folded_on = today
         result.decision = "folded"
         logger.info("core_page_folded %s", json.dumps(result.as_dict(with_text=False)))
         return result

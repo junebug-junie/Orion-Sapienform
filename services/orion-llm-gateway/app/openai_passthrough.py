@@ -22,7 +22,7 @@ from .anthropic_passthrough import (
     normalize_anthropic_model_name,
 )
 from . import pool_placement
-from .passthrough_proxy import proxy_on_pool
+from .passthrough_proxy import holder_for, proxy_on_pool
 from .settings import settings
 from .resource_lease import ResourceLeaseRejected, gpu_lease_from_headers, lease_error
 
@@ -124,7 +124,7 @@ async def handle_chat_completions_post(request: Request) -> Response:
         route_key=route_key,
         forward_body=forward_body,
         path="/v1/chat/completions",
-        holder=pool_placement.HOLDER_OPENAI,
+        holder=holder_for(request, route_key, pool_placement.HOLDER_OPENAI),
         hold=hold,
         correlation_id=correlation_id,
         min_ctx_tokens=pool_placement.estimate_min_ctx_tokens(

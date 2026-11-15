@@ -27,7 +27,8 @@ def test_quick_check_uses_the_leased_helper_and_no_worker_url():
 def test_qwen3_container_check_runs_under_an_operator_hold():
     src = QWEN3.read_text()
     hold = src.index("-m orion.evals.leased_llm hold")
-    assert hold < src.index("docker run --rm --gpus all")
+    assert hold < src.index("docker run --rm --init")
+    assert "trap 'docker rm -f" in src and "CUDA_DEVICE_ORDER=PCI_BUS_ID" in src
     assert "--holder operator:verify-qwen3-thinking-off" in src
 
 
@@ -49,3 +50,19 @@ def test_quick_check_verdicts(tmp_path, body, code, want):
     env = {**os.environ, "ORION_PYTHON": str(_stub(tmp_path, body, code)), "ORION_BUS_URL": "redis://x:1/0"}
     got = subprocess.run(["bash", str(QUICK)], env=env, capture_output=True, text=True).returncode
     assert got == want
+
+
+def test_every_model_call_in_the_hosts_scripts_and_evals_goes_through_the_lease_helper():
+    """The address scan cannot see a loopback or tunnel URL (review finding). This one can: a file in the
+    llama.cpp host's scripts/ or evals/ that names a model-call path must use orion.evals.leased_llm."""
+    root = SCRIPTS.parent
+    offenders = []
+    for folder in ("scripts", "evals"):
+        for path in sorted((root / folder).rglob("*")):
+            if path.suffix not in (".py", ".sh") or not path.is_file():
+                continue
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"/v1/chat/completions|/v1/completions|/completion\b|/v1/messages", text) \
+                    and "leased_llm" not in text:
+                offenders.append(path.relative_to(root).as_posix())
+    assert offenders == [], offenders

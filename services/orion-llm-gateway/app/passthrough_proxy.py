@@ -21,6 +21,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 from typing import Any, AsyncIterator, Callable, Dict, Optional
 
 import httpx
@@ -28,6 +29,7 @@ from fastapi import Request, Response
 from fastapi.responses import JSONResponse
 
 from orion.gpu_pool.client import Lease, LeaseUnavailable
+from orion.gpu_pool.value_order import is_operator_class
 from orion.llm.call_usage import STREAM_HEAD_BYTES
 from orion.schemas.gpu_pool import GpuLeaseRefV1
 
@@ -56,6 +58,25 @@ from .settings import settings
 from .vision import count_images, replace_images_with_note, resolve_vision_capability
 
 logger = logging.getLogger("orion-llm-gateway.passthrough")
+
+
+# An eval's one-off call on an operator route (orion/evals/leased_llm.gateway_call) names its holder here,
+# so gpu_pool_events records which eval ran (``operator:<eval>``), not the passthrough's default holder.
+# Honoured only for operator classes and only in the ``operator:<name>`` shape: Orion's own routes keep
+# their holders.
+OPERATOR_HOLDER_HEADER = "x-orion-operator-holder"
+_OPERATOR_HOLDER_RE = re.compile(r"operator:[A-Za-z0-9_.:-]{1,64}")
+
+
+def holder_for(request: Request, route_key: str, default: str) -> str:
+    raw = (request.headers.get(OPERATOR_HOLDER_HEADER) or "").strip()
+    if not raw or not _OPERATOR_HOLDER_RE.fullmatch(raw):
+        return default
+    try:
+        work_class = route_spec(route_key).work_class
+    except Exception:  # noqa: BLE001 -- an unknown route is refused later, with its own error
+        return default
+    return raw if is_operator_class(work_class) else default
 
 
 class _UpstreamStatus(Exception):

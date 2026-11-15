@@ -12,6 +12,9 @@ on:
       - "orion/harness/evals/**"
       - "orion/gpu_pool/client.py"
       - "orion/llm/resource_lease.py"
+      - "orion/schemas/gpu_pool.py"
+      - "config/gpu_pool.yaml"
+      - "services/orion-llm-gateway/app/passthrough_proxy.py"
       - "services/orion-llamacpp-host/scripts/**"
       - "services/orion-llamacpp-host/evals/**"
       - "services/orion-llamacpp-host/tests/test_probe_*.py"
@@ -25,6 +28,9 @@ on:
       - "orion/harness/evals/**"
       - "orion/gpu_pool/client.py"
       - "orion/llm/resource_lease.py"
+      - "orion/schemas/gpu_pool.py"
+      - "config/gpu_pool.yaml"
+      - "services/orion-llm-gateway/app/passthrough_proxy.py"
       - "services/orion-llamacpp-host/scripts/**"
       - "services/orion-llamacpp-host/evals/**"
       - "services/orion-llamacpp-host/tests/test_probe_*.py"
@@ -41,13 +47,17 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install
-        run: |
-          sudo apt-get install -y jq
-          python -m pip install -r services/orion-hub/tests/requirements-reading.txt
+        run: python -m pip install -r services/orion-hub/tests/requirements-reading.txt   # jq ships on the runner
       - name: Helper (operator hold, gateway-only model calls, worker reads, CLI)
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest -q -p no:cacheprovider orion/evals/tests/test_leased_llm.py orion/harness/evals
+      - name: Gateway names an operator call's holder
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pip install -r services/orion-llm-gateway/requirements.txt -r requirements-dev.txt
+          python -m pytest -q -p no:cacheprovider services/orion-llm-gateway/tests/test_operator_holder_header.py
       - name: llama.cpp operator probes and evals are leased
         env:
           PYTHONPATH: ${{ github.workspace }}

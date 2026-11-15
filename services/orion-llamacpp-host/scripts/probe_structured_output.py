@@ -65,10 +65,12 @@ METHOD_ORDER = [
 HOLDER = "operator:probe-structured-output"
 
 
+REPO = Path(__file__).resolve().parents[3]
+
+
 def _is_recall(exc: BaseException) -> bool:
     """orion.evals.leased_llm.LaneRecalled, without importing it at module load (tests run bare)."""
     return type(exc).__name__ == "LaneRecalled"
-REPO = Path(__file__).resolve().parents[3]
 
 
 def _default_model() -> str:
@@ -467,6 +469,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 client_factory=lane.http_client,
             )
             summary["lease"] = lane.summary()
+            summary["model"] = f"{lane.route} (gateway route; --model is not what ran)"
     except LaneRecalled as exc:
         print(f"RECALLED: {exc}; partial artifacts in {args.artifact_dir}", file=sys.stderr)
         return EXIT_RECALLED

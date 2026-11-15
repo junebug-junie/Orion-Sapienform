@@ -107,6 +107,7 @@ class Probe:
     expected: int = 0                                        # requests dispatched by phases
     tainted: str | None = None                               # why real work overlapped the probe
     recalled: str | None = None                              # the pool took a hold back
+    overlap_check: str = "before_after_only"
     _prompts: list[tuple[str, list[int]]] = field(default_factory=list)   # (conv, tokens) sent so far
     _lock: threading.Lock = field(default_factory=threading.Lock)
     _n: int = 0
@@ -167,6 +168,9 @@ class Probe:
         try:
             slots = self._get("/slots")
         except Exception as exc:  # noqa: BLE001
+            if type(exc).__name__ == "LaneRecalled":
+                self.recalled = str(exc)
+                return f"recalled: {exc}"
             return f"/slots unreadable: {exc!r}"
         if not (isinstance(slots, list) and slots and all(
                 isinstance(s, dict) and s.get("is_processing") is False for s in slots)):
@@ -184,9 +188,36 @@ class Probe:
         deadline = time.monotonic() + self.idle_wait_sec
         while True:
             why = self.busy_reason()
-            if why is None or time.monotonic() >= deadline:
+            if why is None or self.recalled or time.monotonic() >= deadline:
                 return why
             time.sleep(min(10.0, self.idle_wait_sec))
+
+    def check_holds(self) -> None:
+        """A recall of ANY hold (not just the one the next read uses) stops the run."""
+        for client in self.clients:
+            lane = getattr(client, "lane", None)
+            if lane is None:
+                continue
+            try:
+                lane.check()
+            except Exception as exc:  # noqa: BLE001
+                if type(exc).__name__ != "LaneRecalled":
+                    raise
+                self.recalled = str(exc)
+                return
+
+    def prompt_tokens_total(self) -> float | None:
+        """llama.cpp's /metrics counter of prompt tokens it processed, or None without --metrics."""
+        try:
+            r = self._client().get("/metrics", timeout=10)
+            if r.status_code != 200:
+                return None
+            for line in r.text.splitlines():
+                if line.startswith("llamacpp:prompt_tokens_total"):
+                    return float(line.split()[-1])
+        except Exception:  # noqa: BLE001
+            return None
+        return None
 
     # --- conversations ------------------------------------------------------------------------
     def _cid(self, tag: str) -> str:
@@ -315,11 +346,26 @@ class Probe:
                   self._shared_prefix]
         for _ in range(rounds):
             for phase in phases:
-                busy = self.wait_quiet()
+                self.check_holds()
+                busy = None if self.recalled else self.wait_quiet()
+                if self.recalled:
+                    self.tainted = f"the GPU pool took a hold back before {phase.__name__.lstrip('_')}: {self.recalled}"
+                    return self.summarize()
                 if busy is not None:
                     self.tainted = f"before {phase.__name__.lstrip('_')}: {busy}"
                     return self.summarize()
+                tokens_before, first = self.prompt_tokens_total(), len(self.records)
                 phase()
+                tokens_after = self.prompt_tokens_total()
+                if tokens_before is not None and tokens_after is not None:
+                    self.overlap_check = "metrics"
+                    ours = sum(int(r["prompt_n"] or 0) for r in self.records[first:])
+                    extra = tokens_after - tokens_before - ours
+                    if extra > LCP_SLACK * max(1, len(self.records) - first):
+                        self.tainted = (f"during {phase.__name__.lstrip('_')}: the worker processed {extra:.0f} "
+                                        "prompt tokens the probe did not send")
+                        return self.summarize()
+                self.check_holds()
                 if self.recalled:
                     self.tainted = f"the GPU pool took a hold back during {phase.__name__.lstrip('_')}: {self.recalled}"
                     return self.summarize()
@@ -388,7 +434,7 @@ class Probe:
             verdict, why = "PASS", "no foreign canary, no cache reuse past the true common prefix"
         summary = {
             "verdict": verdict, "why": why, "url": self.url, "pool_url": self.pool_url,
-            "holds": sorted(self.own_leases),
+            "holds": sorted(self.own_leases), "overlap_check": self.overlap_check,
             "requests": len(recs), "expected": self.expected, "ok": len(ok),
             "leaks": [{k: r[k] for k in ("phase", "conv", "foreign_convs", "id_slot")} for r in leaks],
             "cache_over_lcp": [{k: r[k] for k in ("phase", "conv", "cache_n", "true_lcp", "prompt_n")}

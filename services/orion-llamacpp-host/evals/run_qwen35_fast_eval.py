@@ -17,7 +17,8 @@ refuses an unkeyed model call.
     ORION_BUS_URL=redis://100.92.216.81:6379/0 \\
       python3 services/orion-llamacpp-host/evals/run_qwen35_fast_eval.py
 
-Exit: 0 pass, 1 a check failed, 2 no seat, 3 recalled or no overlap seen (inconclusive).
+Exit: 0 pass, 1 a check failed, 2 no seat, 3 recalled, the pool did not run the parallel calls, or
+they never overlapped (inconclusive).
 """
 from __future__ import annotations
 
@@ -102,9 +103,21 @@ def run(chat: Callable[[dict], dict], slots: list) -> None:
     print("PASS: 10 x 32768 slots, long context, thinking on/off, strict JSON, topic labels, logprobs, tools")
 
 
-def parallel_load(call: Callable[[dict], dict], slots: Callable[[], list]) -> int:
-    """Ten calls at once, each its own lease. Every reply must carry only its own code. Returns the
-    most slots seen working at once; fewer than 2 means nothing overlapped (inconclusive)."""
+def _busy(slots: Callable[[], list]) -> int | None:
+    try:
+        return sum(slot.get("is_processing") is True for slot in slots())
+    except OSError:
+        return None   # a missed sample lowers the peak; it never raises it
+
+
+def parallel_load(call: Callable[[dict], dict], slots: Callable[[], list], baseline_sec: float = 1.0) -> int:
+    """Ten calls at once, each its own lease. Every reply must carry only its own code. Returns how many
+    MORE slots were seen working at once than before the calls went out (the fast worker is shared:
+    Orion's own calls also show in /slots). Under 2 means the eval's calls never overlapped."""
+    baseline, until = 0, time.monotonic() + baseline_sec
+    while time.monotonic() < until:
+        baseline = max(baseline, _busy(slots) or 0)
+        time.sleep(0.05)
     barrier = Barrier(11)
 
     def one(index: int) -> tuple[float, str, bool]:
@@ -124,17 +137,14 @@ def parallel_load(call: Callable[[dict], dict], slots: Callable[[], list]) -> in
         barrier.wait()
         peak = 0
         while not all(f.done() for f in futures):
-            try:
-                peak = max(peak, sum(slot.get("is_processing") is True for slot in slots()))
-            except OSError:
-                pass   # a missed sample lowers the peak; it never raises it
+            peak = max(peak, _busy(slots) or 0)
             time.sleep(0.05)
         results = [f.result() for f in futures]
     assert all(code in text and not reasoned for code, (_, text, reasoned) in zip(CODES, results)), results
     durations = sorted(row[0] for row in results)
-    print(f"parallel isolation: 10 replies, each its own code; peak_slots={peak}, "
+    print(f"parallel isolation: 10 replies, each its own code; peak_slots={peak} (baseline {baseline}), "
           f"median_s={statistics.median(durations):.1f}, p95_s={durations[9]:.1f}")
-    return peak
+    return peak - baseline
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -145,8 +155,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if str(REPO) not in sys.path:
         sys.path.insert(0, str(REPO))
-    from orion.evals.leased_llm import (EXIT_RECALLED, LaneCallError, LaneRecalled, LaneUnavailable,
-                                        gateway_call, operator_lane_sync)
+    from orion.evals.leased_llm import (_HOLD_GONE_MARKERS, EXIT_RECALLED, LaneCallError, LaneRecalled,
+                                        LaneUnavailable, gateway_call, operator_lane_sync)
 
     try:
         with operator_lane_sync(args.lane, holder=HOLDER) as lane:
@@ -165,14 +175,22 @@ def main(argv: list[str] | None = None) -> int:
     if args.skip_parallel:
         return 0
 
+    class NoSeat(RuntimeError):
+        """The pool did not place a one-off call (lane busy) or took it back: not the worker's fault."""
+
     def call(body: dict) -> dict:
-        r = gateway_call(args.lane, body)
+        r = gateway_call(args.lane, body, holder=HOLDER)
         if r.status_code != 200:
+            if "gpu_pool_unavailable" in r.text or any(m in r.text for m in _HOLD_GONE_MARKERS):
+                raise NoSeat(f"http {r.status_code} {r.text[:200]}")
             raise LaneCallError(f"http {r.status_code} {r.text[:200]}", r.status_code)
         return r.json()
 
     try:
         peak = parallel_load(call, lambda: read_slots(worker_url))
+    except NoSeat as exc:
+        print(f"INCONCLUSIVE: the pool did not run the parallel calls: {exc}", file=sys.stderr)
+        return 3
     except (AssertionError, LaneCallError) as exc:
         print(f"FAIL: parallel isolation: {exc!r}", file=sys.stderr)
         return 1

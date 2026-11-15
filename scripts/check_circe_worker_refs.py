@@ -91,8 +91,10 @@ ZONE_EXCEPTIONS: dict[str, str] = {
     "services/orion-llamacpp-host/evals/*": "evals: they call the worker, so they are scanned",
 }
 
-# Scripts that talk to a model server WITHOUT the gateway, on purpose. Each needs a reason, and the
-# file must exist (a stale entry fails). Nothing else may: an eval or probe calls a model through
+# Known scripts that talk to a model server WITHOUT the gateway, on purpose. Documentation with a stale
+# check (the file must exist), not an exemption the scan applies: these call circe's own loopback, which
+# the address scan never matches (nor would it match an SSH tunnel on 127.0.0.1). The runtime fence for
+# those is the lane door. Nothing else may: an eval or probe calls a model through
 # orion/evals/leased_llm.py (a GPU pool operator hold + the gateway).
 DIRECT_CALLERS: dict[str, str] = {
     "scripts/gpu_power_bench.py": (
@@ -464,7 +466,8 @@ def main(argv: list[str] | None = None) -> int:
         f"{len(allowed)} allowed hit(s), {len(ALLOW)} allow entries, {len(ZONES)} zones)"
     )
     for p, why in DIRECT_CALLERS.items():
-        print(f"  exempt by design (calls a model server without the gateway): {p}\n      why: {why}")
+        print(f"  known direct caller, by design (loopback on circe; not matched by this scan): {p}\n"
+              f"      why: {why}")
     return 0
 
 

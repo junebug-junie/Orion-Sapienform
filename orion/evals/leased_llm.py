@@ -68,9 +68,8 @@ EXIT_UNAVAILABLE = 2   # the pool gave no seat (CLI)
 # Model calls: only ever POSTed to the gateway, under the hold.
 INFERENCE_PATHS = frozenset({"/v1/chat/completions", "/v1/messages"})
 # Reads a model server answers WITHOUT running the model (no slot, no generation). An eval may send
-# these to the URL the pool granted. The lane door (services/orion-lane-door) lets exactly these
-# through without a lane key, in every mode; tests/test_lane_door_exempt_parity.py keeps both lists
-# the same.
+# these to the URL the pool granted. The lane door (leased-evals Phase 2, in front of each model
+# server) lets exactly these through without a lane key, in every mode; its own list must match this.
 WORKER_READ_GET_PATHS = frozenset({"/health", "/props", "/slots", "/v1/models", "/models", "/metrics"})
 WORKER_READ_POST_PATHS = frozenset({"/tokenize", "/detokenize", "/apply-template"})
 
@@ -269,29 +268,37 @@ class LaneClient:
     def post(self, url: str, json: Optional[dict[str, Any]] = None, timeout: float = DEFAULT_CALL_TIMEOUT_SEC,
              **_: Any) -> httpx.Response:
         path = self._path(url)
-        if path.split("?", 1)[0] in INFERENCE_PATHS:
-            return self.lane.post_raw(path, json or {}, timeout)
+        bare = path.split("?", 1)[0]
+        if bare in INFERENCE_PATHS:
+            return self.lane.post_raw(bare, json or {}, timeout)   # the gateway takes no query string
         return self.lane.worker_read("POST", path, json, timeout_sec=timeout)
 
     def close(self) -> None:
         pass
 
 
-def gateway_call(lane: str, body: dict[str, Any], *, gateway: Optional[str] = None,
+OPERATOR_HOLDER_HEADER = "X-Orion-Operator-Holder"   # services/orion-llm-gateway/app/passthrough_proxy.py
+
+
+def gateway_call(lane: str, body: dict[str, Any], *, holder: str, gateway: Optional[str] = None,
                  path: str = "/v1/chat/completions", timeout_sec: float = DEFAULT_CALL_TIMEOUT_SEC,
                  transport: Any = None) -> httpx.Response:
     """ONE model call through the gateway on ``lane``'s operator route, with no hold: the gateway takes
     a lease for this call alone (class ``operator_<lane>``, ``background``) and releases it when the
     reply is done. For parallel load only, where one hold would run the calls one at a time in its
     single slot. Each call waits in the pool's queue on its own (the gateway's passthrough wait), so a
-    busy lane answers 503 ``gpu_pool_unavailable`` rather than a reply. Returns the HTTP response."""
+    busy lane answers 503 ``gpu_pool_unavailable`` rather than a reply. ``holder`` (``operator:<eval>``)
+    is what gpu_pool_events records for the call. Returns the HTTP response."""
     if path not in INFERENCE_PATHS:
         raise ValueError(f"{path!r} is not a model call path")
+    if not holder.startswith("operator:"):
+        raise ValueError(f"holder must start with 'operator:' (got {holder!r})")
     route = operator_class(lane)
     client = httpx.Client(transport=transport) if transport is not None else httpx.Client()
     try:
         return client.post(f"{gateway_url(gateway)}{path}", json={**body, "model": route},
-                           headers={"Content-Type": "application/json"}, timeout=timeout_sec)
+                           headers={"Content-Type": "application/json", OPERATOR_HOLDER_HEADER: holder},
+                           timeout=timeout_sec)
     finally:
         client.close()
 
@@ -479,11 +486,26 @@ def _cli_chat(args: Any) -> int:
         return 1
 
 
+def _stop(proc: Any, grace_sec: float = 30.0) -> None:
+    import signal
+    import subprocess
+
+    if proc.poll() is not None:
+        return
+    proc.send_signal(signal.SIGTERM)
+    try:
+        proc.wait(timeout=grace_sec)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 def _cli_hold(args: Any, poll_sec: float = 1.0) -> int:
     """Hold an operator seat while a command runs. A recall stops the command (SIGTERM, then SIGKILL
-    after 30 s) and exits 3. For work that uses a card without calling a model server (a throwaway
-    test container on that card)."""
-    import signal
+    after 30 s) and exits 3; so does Ctrl+C (the command is stopped before the hold is released). For
+    work that uses a card without calling a model server (a throwaway test container on that card).
+    Exit: the command's own status (128+N if a signal N ended it), 2 no seat, 3 recalled. A command that
+    itself exits 2 or 3 reads the same; the RECALLED/REFUSED line on stderr tells them apart."""
     import subprocess
     import sys
     import time
@@ -499,19 +521,15 @@ def _cli_hold(args: Any, poll_sec: float = 1.0) -> int:
             print(f"holding {lane.route} lease {lane.lease_id} on {lane.role} while: {' '.join(cmd)}",
                   file=sys.stderr, flush=True)
             proc = subprocess.Popen(cmd)
-            while proc.poll() is None:
-                try:
+            try:
+                while proc.poll() is None:
                     lane.check()
-                except LaneRecalled:
-                    proc.send_signal(signal.SIGTERM)
-                    try:
-                        proc.wait(timeout=30)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.wait()
-                    raise
-                time.sleep(poll_sec)
-            return int(proc.returncode)
+                    time.sleep(poll_sec)
+            except BaseException:
+                _stop(proc)   # recall, Ctrl+C or any error: the command never outlives the hold
+                raise
+            rc = int(proc.returncode)
+            return 128 - rc if rc < 0 else rc
     except LaneRecalled as exc:
         print(f"RECALLED: {exc}; the command was stopped", file=sys.stderr)
         return EXIT_RECALLED
@@ -547,7 +565,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 
 __all__ = ["DEFAULT_GATEWAY_URL", "EXIT_RECALLED", "EXIT_UNAVAILABLE", "INFERENCE_PATHS", "LaneCallError",
-           "LaneClient", "LaneRecalled", "LaneUnavailable", "OPERATOR_LANES", "OPERATOR_PRIORITY", "OperatorLane",
+           "LaneClient", "LaneRecalled", "LaneUnavailable", "OPERATOR_HOLDER_HEADER", "OPERATOR_LANES", "OPERATOR_PRIORITY", "OperatorLane",
            "OperatorLanes", "WORKER_READ_GET_PATHS", "WORKER_READ_POST_PATHS", "gateway_call", "gateway_url",
            "operator_class", "operator_lane", "operator_lane_sync"]
 

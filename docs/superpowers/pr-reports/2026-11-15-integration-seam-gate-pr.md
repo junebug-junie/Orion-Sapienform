@@ -83,7 +83,7 @@ source" is in the CLAUDE.md text but not in the spec's detectable list, so it is
 ## Tests run
 
 ```text
-tests/test_check_integration_seam.py   14 passed (repo passes; planted: new family, new workflow, new
+tests/test_check_integration_seam.py + tests/test_report_integration_coverage.py   18 passed (repo passes; planted: new family, new workflow, new
   intention adapter, new channel in the diff, new source kind, organ with no emit/read reason, fake
   reads_now, stale claim, double claim; exemption with reason passes, without fails)
 the same under a venv with only the static-gates deps (pydantic, pydantic-settings, PyYAML, pytest): passed
@@ -112,7 +112,38 @@ No runtime change: no image, no restart.
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A code-review subagent reviewed `feat/integration-experience-now...feat/integration-seam-gate`. No
+blockers. Six should-fix items, all fixed:
+
+- Finding: `reads_now` passed on a docstring or a bare string ("TODO: read GET /temporal-self/now"). The
+  comment "liar" test passed for the wrong reason (the parser never sees comments).
+  - Fix: strings that are bare expressions (docstrings) never count. The module must also record cites
+    (`record_use`, or the `/temporal-self/now/use` route in code), as CLAUDE.md asks.
+  - Evidence: `test_reads_now_must_really_read_the_now_and_record_cites` covers a comment liar, a module
+    docstring liar, a function docstring liar and a read-only module.
+- Finding: with no merge base, the script skipped rule 6 and still exited 0.
+  - Fix: `--require-base` turns that into a failure. The CI step uses it.
+- Finding: there was no stale check for channels.
+  - Fix: a channel entry or `exempt_channels` key naming a channel that does not exist now fails
+    (`test_a_stale_channel_entry_fails`).
+- Finding: three exemption reasons said "integration patch 7", but patch 7 (#3429) does not cover reading,
+  metacognition or play. Four permanent exemptions contradict the spec's "every organ reads the now".
+  - Fix: the reasons now say "no read-back planned in the spec yet" or "design call". All seven point to
+    the new issue #3457 (`needs-juniper`).
+- Finding: CLAUDE.md names "a new Prime concern source", which the script cannot see.
+  - Fix: the script's docstring and this report list it under "Not seen".
+- Finding: the coverage report had no tests.
+  - Fix: `tests/test_report_integration_coverage.py` covers a cite by another organ (counted), a cite by
+    the event's own organ (not counted), `reads_no_cite`, unregistered kinds and missing tables. It runs in
+    the same CI step.
+- Nits fixed: refuse an organ that holds both a claim and its exemption; say plainly that rule 3 does not
+  require the adapter's organ to emit.
+- Nits not changed:
+  - The three `execution_dispatch.*` families are dead. Deleting them from `families.yaml` touches the
+    market's family table, so it is out of scope here. The exemption records that they are dead.
+  - Runtime is 2.2 s against the spec's "under 2 s"; most of that is the git calls.
+- Also found by CI on patch 1, and fixed there: `ARC_SOURCE_TABLES` in sql-writer's `act_downstream_use`
+  test now excludes the experience-only kinds' tables.
 
 ## Restart required
 
@@ -127,7 +158,10 @@ No restart required. Deploy patch 1 first (it carries the only runtime change in
   exemption with a reason is one line.
 - Severity: low. Concern: rule 6 needs a merge base; a shallow checkout skips it with a printed note.
   Mitigation: orion-static-gates already checks out with `fetch-depth: 0`.
-- Issues: refs #3424. Opened: none. Closed: none.
+- Severity: medium (design). Concern: 7 of 16 organs have no planned read-back (3 with no plan, 4 exempt by
+  design), against the spec's "every organ reads the now". Mitigation: each exemption names #3457
+  (`needs-juniper`).
+- Issues: refs #3424. Opened: #3457. Closed: none.
 
 ## PR link
 

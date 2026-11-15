@@ -91,18 +91,43 @@ def test_an_organ_must_emit_or_say_why_and_read_or_say_why(real):
     assert any("organ 'painting' has no reads_now module and no exempt_read" in e for e in errs)
 
 
-def test_reads_now_must_really_read_the_now(real, tmp_path):
-    good = tmp_path / "reader.py"
-    good.write_text("from orion.temporal_self.now import build_now\n")
-    route = tmp_path / "route_reader.py"
-    route.write_text("URL = 'http://durable-runs:8121/temporal-self/now?organ=prime'\n")
-    bad = tmp_path / "liar.py"
-    bad.write_text("# reads the now, honest\nimport orion.temporal_self\n")
-    for path, ok in ((good, True), (route, True), (bad, False), (tmp_path / "missing.py", False)):
+def test_reads_now_must_really_read_the_now_and_record_cites(real, tmp_path):
+    files = {
+        "reader.py": ("from orion.temporal_self.now import build_now, record_use\n", True),
+        "route_reader.py": ("NOW = 'http://durable-runs:8121/temporal-self/now?organ=prime'\n"
+                            "USE = 'http://durable-runs:8121/temporal-self/now/use'\n", True),
+        # reads but records nothing
+        "reads_only.py": ("NOW = 'http://durable-runs:8121/temporal-self/now?organ=prime'\n", False),
+        # liars: a comment, a module docstring, a function docstring (none is code)
+        "comment_liar.py": ("# reads /temporal-self/now and posts /temporal-self/now/use\nimport orion.temporal_self\n", False),
+        "docstring_liar.py": ('"""TODO: read GET /temporal-self/now and POST /temporal-self/now/use here."""\n', False),
+        "func_docstring_liar.py": ('def f():\n    """Unlike /temporal-self/now and /temporal-self/now/use ..."""\n', False),
+    }
+    for name, (text, _) in files.items():
+        (tmp_path / name).write_text(text)
+    for name, ok in [*((n, ok) for n, (_, ok) in files.items()), ("missing.py", False)]:
         inp = planted(real, repo_root=tmp_path)
-        inp.registry["organs"]["prime"]["reads_now"] = path.name
+        inp.registry["organs"]["prime"]["reads_now"] = name
+        del inp.registry["organs"]["prime"]["exempt_read"]
         errs = seam.check(inp)
-        assert (errs == []) is ok, (path.name, errs)
+        assert (errs == []) is ok, (name, errs)
+
+
+def test_an_organ_may_not_hold_a_claim_and_its_exemption(real, tmp_path):
+    (tmp_path / "reader.py").write_text("from orion.temporal_self.now import build_now, record_use\n")
+    inp = planted(real, repo_root=tmp_path)
+    inp.registry["organs"]["prime"]["reads_now"] = "reader.py"  # exempt_read still set
+    inp.registry["organs"]["reverie"]["exempt_emit"] = "why"  # it emits
+    errs = seam.check(inp)
+    assert any("'prime' both names reads_now and is exempt" in e for e in errs)
+    assert any("'reverie' both emits and is exempt" in e for e in errs)
+
+
+def test_a_stale_channel_entry_fails(real):
+    inp = planted(real)
+    inp.registry["exempt_channels"] = {"orion:no:such:channel": "why"}
+    assert seam.check(inp) == ["channel 'orion:no:such:channel' is named in config/integration/organs.yaml "
+                               "but does not exist; remove it."]
 
 
 def test_a_claim_on_a_producer_that_does_not_exist_fails(real):

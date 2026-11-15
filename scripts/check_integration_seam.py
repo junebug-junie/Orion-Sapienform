@@ -11,21 +11,30 @@ What it detects (the spec's list, nothing more):
    ``exempt_families`` with a reason;
 2. every ``DurableWorkflowV1`` value (``orion/schemas/durable_run.py``) belongs to exactly one organ, or is in
    ``exempt_workflows`` with a reason;
-3. every module in ``orion/prime/intention_sources/`` is listed under one organ's ``intention_sources``;
+3. every module in ``orion/prime/intention_sources/`` is listed under one organ's ``intention_sources`` (the
+   organ is not required to emit yet: today's only adapter belongs to ``intention``, exempt from emitting);
 4. every ``TemporalSourceKind`` value belongs to exactly one organ, and every organ with no
    ``temporal_sources`` has an ``exempt_emit`` reason;
-5. every organ either names a ``reads_now`` module that exists and imports ``orion.temporal_self.now`` or
-   names the ``/temporal-self/now`` route (AST), or has an ``exempt_read`` reason;
+5. every organ either names a ``reads_now`` module that exists, READS the now (imports
+   ``orion.temporal_self.now`` or uses the ``/temporal-self/now`` route in code) and RECORDS cites (references
+   ``record_use`` or the ``/temporal-self/now/use`` route in code), or has an ``exempt_read`` reason. Docstrings
+   and comments never count (AST, ``ast.Expr`` strings skipped). An organ may not hold both a claim and its
+   exemption (``temporal_sources`` + ``exempt_emit``, ``reads_now`` + ``exempt_read``);
 6. every channel ADDED to ``orion/bus/channels.yaml`` since the merge base with ``origin/main`` is named by
    one organ's ``channels`` or by ``exempt_channels`` with a reason (existing channels are not re-litigated).
 
-Not seen (stated plainly): a producer that writes a new table with no family, workflow, adapter or channel.
-``scripts/report_integration_coverage.py`` catches that after the fact.
+Also: a registry entry naming a producer (family, workflow, adapter, kind, channel) that does not exist fails.
+
+Not seen (stated plainly): a producer that writes a new table with no family, workflow, adapter or channel
+(``scripts/report_integration_coverage.py`` shows its kind as unregistered once it lands in
+``temporal_self_event``), and a new Prime concern source (CLAUDE.md names it, but concern sources are
+``_read_*`` methods in services/orion-mind/app/prime_loop.py, not modules a check can enumerate).
 
 Run from the repo root:
 
     python3 scripts/check_integration_seam.py
     python3 scripts/check_integration_seam.py --base origin/main   # the ref new channels are diffed against
+    python3 scripts/check_integration_seam.py --require-base       # CI: no merge base is a failure, not a skip
 """
 
 from __future__ import annotations
@@ -50,6 +59,7 @@ CHANNELS = "orion/bus/channels.yaml"
 INTENTION_SOURCES = "orion/prime/intention_sources"
 NOW_MODULE = "orion.temporal_self.now"
 NOW_ROUTE = "/temporal-self/now"
+USE_ROUTE = "/temporal-self/now/use"
 FIX = f"Fix: register it under an organ in {REGISTRY}, or add an exemption with a reason there."
 
 
@@ -128,23 +138,40 @@ def _owners(organs: Mapping[str, Any], key: str) -> dict[str, list[str]]:
     return out
 
 
-def _reads_the_now(path: Path) -> bool:
-    """True when the module imports orion.temporal_self.now (any form) or names the /temporal-self/now route."""
+def _code_strings(tree: ast.AST) -> list[str]:
+    """String constants used as values in code: docstrings and other bare-expression strings are skipped."""
+    skip = {id(n.value) for n in ast.walk(tree) if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)}
+    return [n.value for n in ast.walk(tree)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str) and id(n) not in skip]
+
+
+def _reads_the_now(path: Path) -> tuple[bool, bool]:
+    """(reads, records): reads = imports orion.temporal_self.now or uses the /temporal-self/now route in code;
+    records = references ``record_use`` or uses the /temporal-self/now/use route in code."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError):
-        return False
+        return False, False
+    reads = records = False
     for node in ast.walk(tree):
         if isinstance(node, ast.Import) and any(a.name == NOW_MODULE or a.name.startswith(NOW_MODULE + ".")
                                                 for a in node.names):
-            return True
-        if isinstance(node, ast.ImportFrom):
+            reads = True
+        elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
             if mod == NOW_MODULE or (mod == "orion.temporal_self" and any(a.name == "now" for a in node.names)):
-                return True
-        if isinstance(node, ast.Constant) and isinstance(node.value, str) and NOW_ROUTE in node.value:
-            return True
-    return False
+                reads = True
+                records = records or any(a.name == "record_use" for a in node.names)
+        elif isinstance(node, ast.Name) and node.id == "record_use":
+            records = True
+        elif isinstance(node, ast.Attribute) and node.attr == "record_use":
+            records = True
+    for text in _code_strings(tree):
+        if USE_ROUTE in text:
+            records = True
+        if NOW_ROUTE in text.replace(USE_ROUTE, ""):
+            reads = True
+    return reads, records
 
 
 def _covered(kind: str, items: Iterable[str], owners: Mapping[str, list[str]], exempt: Mapping[str, Any],
@@ -197,6 +224,10 @@ def check(inp: Inputs) -> list[str]:
     errors += _unknown("TemporalSourceKind", kind_owners, {}, inp.temporal_kinds)
     for name, spec in organs.items():
         spec = spec or {}
+        if spec.get("temporal_sources") and spec.get("exempt_emit"):
+            errors.append(f"organ {name!r} both emits and is exempt from emitting; drop exempt_emit.")
+        if spec.get("reads_now") and spec.get("exempt_read"):
+            errors.append(f"organ {name!r} both names reads_now and is exempt from reading; drop exempt_read.")
         if not spec.get("temporal_sources") and not _reason(spec.get("exempt_emit")):
             errors.append(f"organ {name!r} emits no TemporalSourceKind and has no exempt_emit reason. Emit through "
                           f"the experience contract (a TemporalSourceKind + a reader in temporal_self_sources.py), "
@@ -207,9 +238,15 @@ def check(inp: Inputs) -> list[str]:
             path = inp.repo_root / str(reads)
             if not path.is_file():
                 errors.append(f"organ {name!r}: reads_now {reads} does not exist.")
-            elif not _reads_the_now(path):
-                errors.append(f"organ {name!r}: reads_now {reads} neither imports {NOW_MODULE} nor names "
-                              f"{NOW_ROUTE}; read the now there, or set reads_now: null with an exempt_read reason.")
+            else:
+                did_read, did_record = _reads_the_now(path)
+                if not did_read:
+                    errors.append(f"organ {name!r}: reads_now {reads} neither imports {NOW_MODULE} nor uses "
+                                  f"{NOW_ROUTE} in code; read the now there, or set reads_now: null with an "
+                                  f"exempt_read reason.")
+                elif not did_record:
+                    errors.append(f"organ {name!r}: reads_now {reads} reads the now but records no cites (no "
+                                  f"record_use, no {USE_ROUTE} in code); CLAUDE.md asks for both.")
         elif not _reason(spec.get("exempt_read")):
             errors.append(f"organ {name!r} has no reads_now module and no exempt_read reason. Read GET {NOW_ROUTE} "
                           f"at the organ's next run and record cites, or write the exemption in {REGISTRY}.")
@@ -219,6 +256,8 @@ def check(inp: Inputs) -> list[str]:
         ch_owners = _owners(organs, "channels")
         errors += _covered("channel", added, ch_owners, reg.get("exempt_channels") or {},
                            f"added to {CHANNELS} since the merge base with {inp.base_ref}")
+    # Stale channel entries are checked against every current channel, base or not.
+    errors += _unknown("channel", _owners(organs, "channels"), reg.get("exempt_channels") or {}, inp.channels_now)
     return errors
 
 
@@ -244,9 +283,14 @@ def new_exemptions(inp: Inputs) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--base", default="origin/main", help="ref new channels and new exemptions are diffed against")
+    ap.add_argument("--require-base", action="store_true",
+                    help="fail (not skip rule 6) when there is no merge base with --base; CI sets it")
     args = ap.parse_args(argv)
     inp = gather(REPO_ROOT, args.base)
     errors = check(inp)
+    if args.require_base and inp.channels_base is None:
+        errors.append(f"no merge base with {args.base}: the new-channel rule (6) cannot run. Fetch it "
+                      f"(git fetch origin main; CI checks out with fetch-depth: 0).")
     for n in inp.notes:
         print(f"check_integration_seam: note: {n}")
     fresh = new_exemptions(inp)

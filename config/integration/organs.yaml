@@ -62,7 +62,7 @@ organs:
     families: [hub.world_pulse_read, actions.daily_pulse]
     workflows: [reading.turn, reading.resonance]
     reads_now: null
-    exempt_read: "not yet migrated; integration patch 7"
+    exempt_read: "no read-back planned in the spec yet (#3457)"
   camera:
     temporal_sources: [vision_percept, presence_transition, street_event, office_session]
     # vision_percept has no magnitude: entity count stepped from 1 to 4-5 per percept on 2026-11-09 (a
@@ -78,7 +78,7 @@ organs:
       gpu_wait: waited_ms
     families: [self_regulate.shed]
     reads_now: null
-    exempt_read: "a reflex organ: regulation and the body economy act on sensor state, not on other organs' experiences"
+    exempt_read: "a reflex organ: regulation and the body economy act on sensor state, not on other organs' experiences (design call, #3457)"
   prediction:
     # action_outcome: the act ledger's predicted-vs-observed outcome rows (substrate_action_outcomes),
     # one per closed act of any organ. Scoring a prediction is this organ's work, whoever acted.
@@ -87,7 +87,7 @@ organs:
       prediction_surprise: surprise_nats
       action_outcome: surprise_nats
     reads_now: null
-    exempt_read: "orion-prediction forecasts sensor series; no forecast reads experiences yet (choice-as-EFE learning progress is designed, not built)"
+    exempt_read: "orion-prediction forecasts sensor series; no forecast reads experiences yet (design call, #3457)"
   metacognition:
     temporal_sources:
       - metacog_observation
@@ -102,7 +102,7 @@ organs:
     families: [metacog.log, actions.daily_metacog, durable.self_sense_eval, spark.introspect]
     workflows: [self_sense_eval, situation.update]
     reads_now: null
-    exempt_read: "not yet migrated; integration patch 7"
+    exempt_read: "no read-back planned in the spec yet (#3457)"
   memory:
     temporal_sources: [memory_episode, consolidation_window_close]
     families: [memory.consolidation, durable.reminiscence, actions.journal, durable.journal_compose, compactor.digest,
@@ -120,7 +120,7 @@ organs:
     temporal_sources: [retro_play]
     families: [hub.retro_coplay, hub.retro_leisure, aitown.session]
     reads_now: null
-    exempt_read: "not yet migrated; integration patch 7"
+    exempt_read: "no read-back planned in the spec yet (#3457)"
   prime:
     # prime_thought has no magnitude yet: the act ledger's surprisal for a Prime thought drifts by
     # 1e-6 per thought (0.000454 -> 0.000443 over 11-14..15) whatever the thought did, so it ranks by
@@ -136,7 +136,7 @@ organs:
     workflows: [intention.carry]
     intention_sources: [turn_promise]
     reads_now: null
-    exempt_read: "a carry turn reads its own promise's thread only (intention design: nothing from any other thread)"
+    exempt_read: "a carry turn reads its own promise's thread only (intention design; design call, #3457)"
   day_letter:
     temporal_sources: []
     exempt_emit: "day_letter is integration patch 7"
@@ -147,7 +147,7 @@ organs:
     temporal_sources: []
     exempt_emit: "personality_choice is integration patch 7"
     reads_now: null
-    exempt_read: "choices are made by Prime; the personality loop folds them and reads no other organ"
+    exempt_read: "choices are made by Prime; the personality loop folds them and reads no other organ (design call, #3457)"
 
 # Producers that are no organ's experience. Each needs a reason a reviewer can check.
 exempt_families:

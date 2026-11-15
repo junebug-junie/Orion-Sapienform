@@ -224,8 +224,8 @@ jobs:
       # not; channels added since the merge base with origin/main are registered (fetch-depth 0 above).
       - name: Integration gate (every producer of Orion experience registered or exempt with a reason)
         run: |
-          python scripts/check_integration_seam.py
-          python -m pytest tests/test_check_integration_seam.py -q -p no:cacheprovider
+          python scripts/check_integration_seam.py --require-base
+          python -m pytest tests/test_check_integration_seam.py tests/test_report_integration_coverage.py -q -p no:cacheprovider
 
       # One owner per tuned env key, and no copy at all of a module-owned line (body economy
       # Patch B: the room's 32/30.5/34/33 C lines live only in orion/autonomy/thermal_gate.py).

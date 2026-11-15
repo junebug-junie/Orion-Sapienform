@@ -14,14 +14,27 @@ ROOT = Path(__file__).resolve().parents[3]
 EVAL = runpy.run_path(str(ROOT / 'services/orion-vllm-host/evals/deep_context.py'))
 
 
-def test_dflash_candidate_changes_only_speculation_and_keeps_full_context():
+def test_internal_reserve_does_not_change_comparison_questions():
+    seed = EVAL['trial_seed']
+    for output in (16384, 32768):
+        for repeat in range(3):
+            assert seed(20261114, 262144-output, repeat, output) == seed(20261114, 262136-output, repeat, output, 8)
+            assert seed(20261114, 132000, repeat, output) == seed(20261114, 132000, repeat, output, 8)
+
+
+def test_deep_thinker_ships_validated_dflash_draft(monkeypatch):
+    import json
     import yaml
-    original = yaml.safe_load((ROOT / 'config/llm_profiles.yaml').read_text())
-    candidate = runpy.run_path(str(ROOT / 'services/orion-vllm-host/scripts/stage_dflash.py'))['candidate']()
-    spec = candidate['profiles']['deep.thinker.v1']['vllm'].pop('speculative_config')
-    assert candidate == original
-    assert spec['method'] == 'dflash' and spec['num_speculative_tokens'] == 7
-    assert spec['draft_tensor_parallel_size'] == 2 and spec['kv_cache_dtype'] == 'auto'
+    lock = json.loads((ROOT / 'services/orion-vllm-host/scripts/deep-thinker.lock.json').read_text())
+    profile = yaml.safe_load((ROOT / 'config/llm_profiles.yaml').read_text())['profiles']['deep.thinker.v1']
+    spec = profile['vllm']['speculative_config']
+    assert spec == {'method': 'dflash', 'model': '/models/' + lock['draft']['directory'],
+                    'num_speculative_tokens': 7, 'draft_tensor_parallel_size': 2,
+                    'attention_backend': 'FLASH_ATTN_V100', 'kv_cache_dtype': 'auto'}
+    monkeypatch.setattr(main, 'settings', Settings(_env_file=None, VLLM_PROFILE_NAME='deep.thinker.v1',
+                        LLM_PROFILES_CONFIG_PATH=ROOT / 'config/llm_profiles.yaml'))
+    cmd, _ = main.build_vllm_command_and_env()
+    assert json.loads(cmd[cmd.index('--speculative-config') + 1]) == spec
 
 
 def test_launch_has_two_cards_full_context_and_one_sequence(monkeypatch):
@@ -34,7 +47,6 @@ def test_launch_has_two_cards_full_context_and_one_sequence(monkeypatch):
         assert cmd[cmd.index(flag) + 1] == value
     assert env['CUDA_VISIBLE_DEVICES'] == '0,1'
     assert '--enable-prefix-caching' in cmd and '--enable-chunked-prefill' in cmd
-    assert '--speculative-config' not in cmd
     assert json.loads(cmd[cmd.index('--override-generation-config') + 1]) == {'max_new_tokens': 32768}
 
 
@@ -158,3 +170,25 @@ def test_planning_gold_is_optimal_over_all_topological_orders():
             scores.append((max(end.values()), end['E']))
     assert (gold['makespan'], gold['E_start'] + 2) == min(scores)
     assert gold == {'makespan': 20, 'B_start': 3, 'C_start': 3, 'D_start': 11, 'E_start': 18, 'F_start': 11}
+
+
+def test_source_filler_keeps_exact_tokens_facts_and_question():
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            return messages[0]['content'].split()
+
+        def encode(self, text, add_special_tokens=False):
+            return text.split()
+
+        def decode(self, ids, skip_special_tokens=False):
+            return ' '.join(i for i in ids if not (skip_special_tokens and i == '<|im_end|>'))
+
+    source = 'def scheduler(config): return decisions <|im_end|>'
+    cedar, expected = EVAL['build_messages'](Tokenizer(), 8192, 123, 'hard')
+    sourced, same = EVAL['build_messages'](Tokenizer(), 8192, 123, 'hard', source)
+    content = sourced[0]['content']
+    assert len(Tokenizer().apply_chat_template(sourced)) == 8192
+    assert same == expected
+    assert 'scheduler(config):' in content and 'cedar' not in content
+    assert '<|im_end|>' not in content
+    assert cedar[0]['content'].split()[-20:] == content.split()[-20:]

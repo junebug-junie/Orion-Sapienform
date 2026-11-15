@@ -1,10 +1,13 @@
 # Hecate deep thinker
 
-Status: **132000 input tokens VERIFIED** through Gateway on the pinned dense
-baseline, fresh and cached, with correct distributed retrieval/arithmetic and a
-16384-token output allowance. See `1cat-baseline-smoke.jsonl` and its resource
-summary in the dated benchmark directory. Full 262144-token residency, harder
-reasoning, operational failure checks and Strata comparison are still in progress.
+Status: **262144 actual user tokens VERIFIED** through Gateway on the pinned
+dense baseline: 245760 input + 16384 generated, followed by a correct recovery
+request. The hard distributed-reasoning grid passed **36/36** fresh/cached requests
+across six depths, including 132000 and the maximum prompt. See `1cat-hard-grid.jsonl`
+and its resource summary in the dated benchmark directory. All five operational checks passed, including serialized queueing, budget refusal,
+stream cancellation and client-timeout recovery. The four task-quality cases passed all three
+repeats (12/12). DFlash2 passed the same checks and is deployed (decode 104-190 tokens/s vs 38-48). The Strata comparison remains open. Measured
+latency/energy tables are in the dated benchmark directory’s `RESULTS.md`.
 
 ## Hardware and compatibility (2026-11-14)
 
@@ -39,26 +42,28 @@ CUDA Graphs, native MTP4 and DFlash2 are supported upstream; speculation starts
 disabled so its extra weights/KV and correctness can be measured separately.
 No CPU weight/KV offload is enabled. Do not add offload to hide an OOM.
 
-Optional DFlash2 experiment: the pinned draft is 3848817896 bytes (3.58 GiB),
-SHA256 `67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c`.
-Its five attention layers use a 2048-token sliding window. Runtime profiling must
-still measure weight sharding, target-feature buffers, draft KV and graph overhead.
-The optional override keeps the baseline context and sequence limits, uses seven
-speculative tokens, TP2 for the draft, and `kv_cache_dtype=auto` (FP16 with this
-target's FP16 compute). Preparation does not activate speculation:
+**DFlash2 is the deployed configuration (2026-11-15).** `deep.thinker.v1` in
+`config/llm_profiles.yaml` carries a `speculative_config`: the pinned DFlash2 draft
+(3848817896 bytes, SHA256
+`67fc76d68dc5a9415511a4f394ef744d67510cd20e93b37cc2cc7d28e4bab65c`, five attention
+layers with a 2048-token sliding window), seven speculative tokens, draft TP2,
+`kv_cache_dtype=auto` (FP16 draft KV). Context and sequence limits are unchanged.
+It passed the same 36/36 context grid, the 262144-token endurance run and 12/12
+task-quality runs as the dense baseline, with 2.2-4x decode; prefill is unchanged.
+Fetch the draft with `prepare_deep_model.py /mnt/models --draft --download`.
+The image copies `config/llm_profiles.yaml` at build time and the deep Compose
+file does not mount it, so a profile change needs a rebuild. From clean
+synchronized Hecate main (rollback: first delete the `speculative_config` block):
 
 ```bash
-python services/orion-vllm-host/scripts/prepare_deep_model.py /mnt/models --draft --download
-# On clean synchronized Hecate primary main, with the lane private and drained:
-mkdir -p .orion
-python services/orion-vllm-host/scripts/stage_dflash.py > .orion/hecate-dflash-profiles.yaml
-services/orion-vllm-host/scripts/hecate-deep.sh \
-  -f services/orion-vllm-host/docker-compose.dflash-eval.yml up -d --no-build
+services/orion-vllm-host/scripts/hecate-deep.sh build
+services/orion-vllm-host/scripts/hecate-deep.sh up -d --no-build
+# Prints the draft config when DFlash2 is live; prints nothing on the dense baseline.
+docker top orion-hecate-vllm-host -o args | grep -o -- '--speculative-config.*'
 ```
 
-Use the same quality/context harness and record the speculative engine configuration.
-Restore baseline with `hecate-deep.sh up -d --no-build` (no DFlash override). Keep
-the candidate private until its own context and quality results pass.
+The commissioning overlay's `.orion/hecate-dflash-profiles.yaml` on Hecate is no
+longer read by anything; delete it after the switch.
 
 The first cold 132K ledger request took 98.08s total, 86.00s to first token,
 1574 uncached prompt tokens/s from provider prefill timing, and 42.79 generated
@@ -97,6 +102,20 @@ measurements. Replicated tensors, packed kernel copies, per-rank imbalance and
 cache page rounding can invalidate a simple equal split. Runtime profiling and
 the full-output endurance test decide feasibility. Exact component output is
 committed in `memory-estimates.json`.
+
+Measured baseline startup reports 9.41 GiB model allocation, 15.08 GiB available
+KV budget and 0.67 GiB CUDA Graph memory per rank. Peak NVML residency during the
+full-output endurance test was 28719/28713 MiB, leaving about 4 GiB per card.
+The runtime preallocates a larger KV pool than the single-request planning
+minimum; this explains why measured residency exceeds that minimum. Startup
+component figures and a later sampled peak are different observations, not an
+exact allocator decomposition. No CPU weight or KV offload was enabled.
+
+The DFlash candidate reports 13.01 GiB model allocation, 10.99 GiB available KV
+budget and 1.21 GiB CUDA Graph memory per rank. Its initial resident memory is
+29041/29035 MiB. These are startup measurements only; the actual maximum-context
+run is still pending. In particular, do not estimate draft overhead by dividing
+its checkpoint size by TP2: the measured increase is about 3.60 GiB per rank.
 
 ## Orion integration and budgets
 
@@ -210,7 +229,15 @@ joins raw measurements to request timestamps. Power comes from `nvidia-smi` boar
 power; trapezoidal integration gives sampled GPU energy (not independent of power,
 and not wall-plug energy). CPU busy time comes from `/proc/stat` counter differences,
 excluding duplicated guest counters; it includes unrelated host services. Gaps over
-six seconds or absent boundary coverage yield null energy. GPU utilization, memory,
+six seconds or absent boundary coverage yield null energy. For the pinned Strata
+server, `sample_engine.py --backend strata` reads its JSON `/metrics` instead of
+vLLM's Prometheus text. `serve/server.py:Service.metrics` supplies engine/live
+state and numeric request history; its history producer computes expert-cache
+hit frequency from engine hits/lookups and offload share from offloaded/routed
+counts. These are related cache/transfer diagnostics, not independent quality
+signals. Missing values stay null; cumulative counters need not return to zero
+when idle. The vLLM sampler also preserves `spec_decode_*` counters from
+`vllm/v1/spec_decode/metrics.py`; compare their deltas, not lifetime totals. GPU utilization, memory,
 power and engine KV occupancy are related resource diagnostics, not independent
 quality signals. These offline artifacts reuse existing measurements and introduce
 no cognition metric, schema default or production telemetry channel.

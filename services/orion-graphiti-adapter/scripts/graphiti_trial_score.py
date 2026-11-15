@@ -116,7 +116,8 @@ def check_trip_city_not_home(edges: list[dict[str, Any]], t: dict[str, str]) -> 
     """Fail when a CURRENT fact says the subject lives in the trip city (a stay is not a home)."""
     city = t["trip_city"]
     hits = [e for e in edges if _mentions(e, re.compile(word(city), re.I))]
-    homes = [e for e in hits if LIVES_RE.search(str(e.get("fact")))
+    subject = re.compile(word(t["subject"]), re.I)
+    homes = [e for e in hits if subject.search(str(e.get("source") or "")) and LIVES_RE.search(str(e.get("fact")))
              and not STAY_RE.search(str(e.get("fact"))) and not negated_before(city).search(str(e.get("fact")))]
     bad = [e for e in homes if is_current(e)]
     return Check("lives in [trip city] absent or invalidated", not bad,
@@ -170,7 +171,10 @@ def check_pet_dog(edges: list[dict[str, Any]], t: dict[str, str]) -> Check:
 
 
 def check_one_entity(nodes: list[dict[str, Any]], pattern: re.Pattern, label: str) -> Check:
-    hits = [n for n in nodes if pattern.search(str(n.get("name") or ""))]
+    """Name forms of one person/pet. A possessive name ("<spouse>'s surgery") is a different thing
+    that belongs to them, not a duplicate of them."""
+    hits = [n for n in nodes if pattern.search(str(n.get("name") or ""))
+            and not re.search(pattern.pattern + r"\s*['\u2019]s\s+\w", str(n.get("name") or ""), re.I)]
     return Check(f"{label} is one entity", len(hits) == 1,
                  f"{len(hits)} entity nodes match: {[n.get('name') for n in hits]}",
                  [f"{n.get('name')} ({n.get('uuid')}): {str(n.get('summary') or '')[:200]}" for n in hits])
@@ -255,7 +259,9 @@ def pronoun_violations(nodes: list[dict[str, Any]], edges: list[dict[str, Any]],
         own = bool(not_he_re.fullmatch(str(n.get("name") or "").strip()))
         for sent in re.split(r"(?<=[.!?;])\s+", str(n.get("summary") or "")):
             # their own summary: any "he" sentence; any other summary: a "he" sentence that names them
-            if (own or not_he_re.search(sent)) and bad(sent):
+            # in another entity's summary a sentence that opens "He ..."/"His ..." is about that entity
+            about_node = not own and re.match(r"\s*(he|his|him)\b", sent, re.I)
+            if (own or not_he_re.search(sent)) and not about_node and bad(sent):
                 out.append(f"summary of {n.get('name')}: \"{sent.strip()}\"")
     for e in edges:
         for sent in re.split(r"(?<=[.!?;])\s+", str(e.get("fact") or "")):

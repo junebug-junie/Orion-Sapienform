@@ -805,3 +805,21 @@ def test_scorer_refuses_a_dump_of_another_graph(tmp_path, monkeypatch):
     (tmp_path / "graph_dump.json").write_text(json.dumps({"nodes": [], "edges": [], "episodes": 0,
                                                           "graph": "graphiti_trial"}))
     assert score.main(["report", "--graph", "graphiti_trial2"]) == 1
+
+
+def test_pronoun_violations_skip_he_sentences_about_another_entity():
+    nodes = [{"name": "Pat", "summary": "Pat fixed the sprinklers. He came out for Robin."},
+             {"name": "Shelbyville", "summary": "Robin shared photos of his hotel room."}]
+    v = score.pronoun_violations(nodes, [], T)
+    assert len(v) == 1 and "his hotel room" in v[0]
+
+
+def test_trip_city_home_needs_the_subject():
+    bar = _edge("The corner bar is located in Shelbyville", source="corner bar", target="Shelbyville")
+    assert score.check_trip_city_not_home([bar], T).passed
+
+
+def test_one_entity_ignores_possessive_things():
+    pat = re.compile(score.word(T["spouse"]), re.I)
+    assert score.check_one_entity([{"name": "Sam"}, {"name": "Sam's surgery"}], pat, "spouse").passed
+    assert not score.check_one_entity([{"name": "Sam"}, {"name": "Sam R."}], pat, "spouse").passed

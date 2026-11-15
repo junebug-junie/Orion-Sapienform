@@ -41,9 +41,10 @@ AMANDA = "person-amanda"
 
 
 def _sighting(sid: str, at: datetime, *, pid: str = AMANDA, name: str = "Amanda", stream: str = "walkway",
-              minutes: float = 2.0) -> Dict[str, Any]:
+              minutes: float = 2.0, observations: int = 5, dwell: float = 30.0) -> Dict[str, Any]:
     return {"person_id": pid, "display_name": name, "sighting_id": sid, "stream_id": stream,
-            "started_at": at, "ended_at": at + timedelta(minutes=minutes)}
+            "started_at": at, "ended_at": at + timedelta(minutes=minutes),
+            "observation_count": observations, "dwell_sec": dwell}
 
 
 # --- people ---------------------------------------------------------------------------------------
@@ -57,8 +58,10 @@ def test_person_back_after_days_away_is_a_topic_citing_the_visit() -> None:
     assert t.kind == PERSON_KIND and t.subject == f"person:{AMANDA}"
     # One visit (sightings 20 min apart): the version and the evidence are its FIRST sighting.
     assert t.version == "s-new-1" and t.evidence_ref == "vision_individual_sighting:s-new-1"
-    assert t.option_text.startswith("Amanda at the walkway, today 10:00 am:")
-    assert "first time the cameras saw Amanda in 9 days" in t.option_text
+    assert t.option_text.startswith(
+        "Amanda (a camera match for a name Juniper gave) at the walkway, today 10:00 am:")
+    assert "the first camera match for Amanda in 9 days" in t.option_text
+    assert "A match can be wrong" in t.prompt_text
     assert len(t.option_text) <= 400
     assert t.observed_at == NOW - timedelta(hours=3) + timedelta(minutes=22)
 
@@ -76,7 +79,7 @@ def test_person_at_an_unusual_time_is_a_topic() -> None:
     rows.append(_sighting("s-late", late))
     (t,) = person_topics(rows, NOW, tz_name=TZ)
     assert t.version == "s-late"
-    assert "a time of day the cameras had not seen Amanda at in 8 earlier visits over 8 days" in t.option_text
+    assert "a time of day Amanda had not matched at in 8 earlier visits over 8 days" in t.option_text
 
 
 def test_unusual_time_needs_enough_history() -> None:
@@ -96,7 +99,7 @@ def test_first_sighting_in_the_whole_window_says_since_when() -> None:
     rows = [_sighting("s1", NOW - timedelta(hours=2)),
             _sighting("o1", NOW - timedelta(days=80), pid="person-other", name="Teddy")]
     (t,) = person_topics(rows, NOW, tz_name=TZ, history_days=60)
-    assert "the first time the cameras saw Amanda since Sep 16" in t.option_text
+    assert "the first camera match for Amanda since Sep 16" in t.option_text
 
 
 def test_first_sighting_date_never_predates_the_camera_records() -> None:
@@ -105,6 +108,39 @@ def test_first_sighting_date_never_predates_the_camera_records() -> None:
             _sighting("o1", NOW - timedelta(days=30), pid="person-other", name="Teddy")]
     amanda = [t for t in person_topics(rows, NOW, tz_name=TZ) if t.subject == f"person:{AMANDA}"]
     assert "since Oct 16" in amanda[0].option_text
+
+
+def test_first_sighting_with_no_other_records_has_no_since_date() -> None:
+    """Review 2026-11-15: with only this person in the rows the date clamped to their own visit
+    ("since Nov 15"). No other record before the visit: no date."""
+    (t,) = person_topics([_sighting("s1", NOW - timedelta(hours=2))], NOW, tz_name=TZ)
+    assert "the first camera match for Amanda on record" in t.option_text and "since" not in t.option_text
+
+
+def test_a_glimpse_is_not_a_topic() -> None:
+    rows = [_sighting("s-old", NOW - timedelta(days=9)),
+            _sighting("s-new", NOW - timedelta(hours=3), observations=1, dwell=1.5)]
+    assert person_topics(rows, NOW, tz_name=TZ) == []
+
+
+def test_two_named_people_matching_at_once_is_ambiguous() -> None:
+    """Live 2026-11-14: Addy, Exterminator and Emerald matched on the doorbell inside 81 s."""
+    at = NOW - timedelta(hours=3)
+    rows = [_sighting("a-old", NOW - timedelta(days=9), stream="doorbell"),
+            _sighting("a-new", at, stream="doorbell"),
+            _sighting("e-old", NOW - timedelta(days=9, hours=5), pid="person-em", name="Emerald", stream="doorbell"),
+            _sighting("e-new", at + timedelta(seconds=81), pid="person-em", name="Emerald", stream="doorbell")]
+    assert person_topics(rows, NOW, tz_name=TZ) == []
+    # On another camera at the same moment: not the same visitor, both stand.
+    rows[3] = _sighting("e-new", at + timedelta(seconds=81), pid="person-em", name="Emerald", stream="walkway")
+    assert {t.subject for t in person_topics(rows, NOW, tz_name=TZ)} == {f"person:{AMANDA}", "person:person-em"}
+
+
+def test_a_future_dated_sighting_does_not_hide_the_real_visit() -> None:
+    rows = [_sighting("s-old", NOW - timedelta(days=9)), _sighting("s-new", NOW - timedelta(hours=3)),
+            _sighting("s-skew", NOW + timedelta(hours=2))]
+    (t,) = person_topics(rows, NOW, tz_name=TZ)
+    assert t.version == "s-new"
 
 
 def test_no_unnamed_people() -> None:
@@ -186,7 +222,7 @@ def test_chat_thread_candidate_from_a_fixture() -> None:
 def test_last_turn_with_no_reply_yet_says_so() -> None:
     rows = [_turn("c1", NOW - timedelta(hours=5), "long day", "Rest. Want to tell me about it later?")]
     (t,) = chat_thread_topics(rows, NOW, tz_name=TZ)
-    assert "she has not written since" in t.option_text
+    assert "the chat has been quiet since" in t.option_text
 
 
 def test_threads_older_than_the_lookback_are_left_out() -> None:
@@ -204,6 +240,13 @@ def test_threads_older_than_the_lookback_are_left_out() -> None:
     ("So what's the plan for 44?", False),
     ("Is it the gameplay, which holds up thirty-odd years on, or the nostalgia?", False),
     ("Will you shine for it Tuesday at 7:30?", False),
+    # Review 2026-11-15: prose that the first rule dropped.
+    ("Are you up at 10pm again?", False),
+    ("Was it the 2nd or the 3rd?", False),
+    ("Still into 90s music?", False),
+    ("Did the B12 help?", True),  # a vitamin, but shaped like an id: dropped, accepted
+    ("Tea and/or sleep?", False),
+    ("Is it a 24/7 thing now?", False),
 ])
 def test_machinery_shape(text, machinery) -> None:
     assert looks_like_machinery(text) is machinery
@@ -212,6 +255,10 @@ def test_machinery_shape(text, machinery) -> None:
 def test_last_question_reads_the_last_paragraph_only() -> None:
     assert last_question("Is this a question?\n\nNo, it ended here.") is None
     assert last_question("First? Then this. And how are you? <3") == "And how are you?"
+    # A closing line after the question is how Orion writes (both live threads, 2026-11-15).
+    assert last_question("So what's the plan for 44? February's cold here.") == "So what's the plan for 44?"
+    assert last_question('Did he say "why?"') == "Did he say 'why?"
+    assert last_question("Any thoughts, e.g. what do you think?") == "Any thoughts, e.g. what do you think?"
     assert last_question("") is None
 
 
@@ -237,7 +284,7 @@ def test_evidence_rides_on_the_decision_row_and_the_situation() -> None:
     assert evidence_line(shown) == "2=vision_individual_sighting:s-new"
     assert evidence_line([daydream]) is None
     # The binding bid's object_text carries the person topic's text (#3336's seam).
-    assert "Amanda at the walkway" in (outreach_object_text(shown) or "")
+    assert "Amanda (a camera match for a name Juniper gave) at the walkway" in (outreach_object_text(shown) or "")
 
 
 # --- the sources (I/O seam) ---------------------------------------------------------------------

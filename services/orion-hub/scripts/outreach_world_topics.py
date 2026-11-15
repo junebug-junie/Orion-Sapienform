@@ -23,13 +23,17 @@ What is new about the person, from real rows only (``person_topics``):
 * "unusual time": at least ``MIN_PRIOR_VISITS`` earlier visits on ``MIN_PRIOR_DAYS`` days, and none of
   them started within ``UNUSUAL_HOUR_MARGIN`` hours (time of day, local) of this one.
 
-A visit that is neither is not a topic. The version is the visit's first sighting id, so a later visit
+A visit that is neither is not a topic. A camera match is a cluster match, not proof of who it was
+(clusters hold lookalikes, PR #2859), so a visit also needs ``MIN_VISIT_OBSERVATIONS`` frames or
+``MIN_VISIT_DWELL_SEC`` of dwell, and is dropped when another named person matched on the same camera
+within ``AMBIGUOUS_WINDOW``; the text says "a camera match", never "the cameras saw". The version is the visit's first sighting id, so a later visit
 that is new again comes back after the 7-day subject ledger; the same visit never does. The topic cites
 that sighting (``evidence_ref = vision_individual_sighting:<id>``).
 
 CHAT THREADS (``kind="chat_thread"``, subject ``chat_thread:<correlation_id>``). Source:
 ``chat_history_log`` rows Juniper typed in Hub (``hub_orion`` / ``hub_ws`` / ``hub_http``). A thread is
-open when Orion's reply ended on a question to her (the last paragraph holds a sentence ending in "?")
+open when Orion's reply ended on a question to her (the last paragraph holds a sentence ending in "?";
+see ``last_question``)
 and the chat then went quiet: Juniper's next message came ``QUIET_GAP`` or more later, or not yet. The
 reply must be at least ``QUIET_GAP`` old and at most ``THREAD_LOOKBACK_DAYS`` old. The text says exactly
 that ("the chat went quiet after"), never that she did not answer: she may have answered later in other
@@ -55,7 +59,7 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from scripts.outreach_choice import OutreachTopic, clip
@@ -73,11 +77,21 @@ RETURN_GAP_DAYS = 4.0
 MIN_PRIOR_VISITS = 6
 MIN_PRIOR_DAYS = 4
 UNUSUAL_HOUR_MARGIN = 1.5
+# A camera match is a cluster match, not proof of who it was (clusters are impure: PR #2859). A visit
+# counts only when the camera held it (MIN_VISIT_OBSERVATIONS frames or MIN_VISIT_DWELL_SEC), and not
+# when another named person matched on the same camera within AMBIGUOUS_WINDOW of it (live 2026-11-14:
+# Addy, Exterminator and Emerald matched on the doorbell inside 81 s, almost surely one visitor).
+MIN_VISIT_OBSERVATIONS = 3
+MIN_VISIT_DWELL_SEC = 5.0
+AMBIGUOUS_WINDOW = timedelta(minutes=2)
+# A sighting this far past ``now`` is clock skew: left out, never allowed to hide the real newest visit.
+FUTURE_SKEW = timedelta(minutes=5)
 
 STREAM_PLACES = {"walkway": "the walkway", "doorbell": "the front door"}
 
 PEOPLE_SQL = """
-SELECT p.person_id, p.display_name, s.sighting_id, s.stream_id, s.started_at, s.ended_at
+SELECT p.person_id, p.display_name, s.sighting_id, s.stream_id, s.started_at, s.ended_at,
+       s.dwell_sec, s.observation_count
 FROM person_link l
 JOIN person lp ON lp.person_id = l.person_id
 JOIN person p ON p.person_id = coalesce(lp.merged_into, lp.person_id)
@@ -144,6 +158,9 @@ class _Visit:
     stream_id: str
     start: datetime
     end: datetime
+    observations: int = 0
+    dwell_sec: float = 0.0
+    streams: frozenset = frozenset()
 
 
 def _visits(rows: Sequence[Mapping[str, Any]]) -> List[_Visit]:
@@ -154,15 +171,18 @@ def _visits(rows: Sequence[Mapping[str, Any]]) -> List[_Visit]:
         sid = str(r.get("sighting_id") or "")
         if start is None or not sid:
             continue
-        clean.append((start, max(end or start, start), sid, str(r.get("stream_id") or "")))
+        obs = int(r.get("observation_count") or 0)
+        dwell = float(r.get("dwell_sec") or 0.0)
+        clean.append((start, max(end or start, start), sid, str(r.get("stream_id") or ""), obs, dwell))
     clean.sort()
     visits: List[_Visit] = []
-    for start, end, sid, stream in clean:
+    for start, end, sid, stream, obs, dwell in clean:
         if visits and start - visits[-1].end < VISIT_GAP:
             last = visits[-1]
-            visits[-1] = _Visit(last.first_sighting_id, last.stream_id, last.start, max(last.end, end))
+            visits[-1] = _Visit(last.first_sighting_id, last.stream_id, last.start, max(last.end, end),
+                                last.observations + obs, last.dwell_sec + dwell, last.streams | {stream})
         else:
-            visits.append(_Visit(sid, stream, start, end))
+            visits.append(_Visit(sid, stream, start, end, obs, dwell, frozenset({stream})))
     return visits
 
 
@@ -183,7 +203,7 @@ def person_topics(rows: Iterable[Mapping[str, Any]], now: datetime, *, tz_name: 
     ``started_at``, ``ended_at``). The SQL keeps out unnamed clusters; a row with no ``person_id`` or
     no ``display_name`` is skipped here too."""
     tz = _zone(tz_name)
-    rows_list = list(rows)
+    rows_list = [r for r in rows if (_aware(r.get("started_at")) or now) <= now + FUTURE_SKEW]
     by_person: Dict[str, List[Mapping[str, Any]]] = {}
     names: Dict[str, str] = {}
     for r in rows_list:
@@ -192,36 +212,52 @@ def person_topics(rows: Iterable[Mapping[str, Any]], now: datetime, *, tz_name: 
             continue
         by_person.setdefault(pid, []).append(r)
         names[pid] = name
-    # "First time since <date>": the later of the window start and the oldest named sighting in the rows.
-    # The camera records only reach back so far (live: 2026-10-15); a date older than the oldest
-    # record would claim the cameras watched when they did not.
-    oldest = min((a for a in (_aware(r.get("started_at")) for r in rows_list) if a is not None), default=None)
-    window_start = max(now - timedelta(days=history_days), oldest) if oldest else now - timedelta(days=history_days)
+    # Other named people's sightings per stream, for the ambiguity check.
+    by_stream: Dict[str, List[Tuple[datetime, str]]] = {}
+    for pid, prs in by_person.items():
+        for r in prs:
+            at = _aware(r.get("started_at"))
+            if at is not None:
+                by_stream.setdefault(str(r.get("stream_id") or ""), []).append((at, pid))
+    window_floor = now - timedelta(days=history_days)
     topics: List[OutreachTopic] = []
     for pid in sorted(by_person):
         visits = _visits(by_person[pid])
         if not visits:
             continue
         visit, prior = visits[-1], visits[:-1]
-        if visit.start > now or now - visit.start > timedelta(hours=FRESH_HOURS):
+        if visit.start > now + FUTURE_SKEW or now - visit.start > timedelta(hours=FRESH_HOURS):
             continue
+        if visit.observations < MIN_VISIT_OBSERVATIONS and visit.dwell_sec < MIN_VISIT_DWELL_SEC:
+            continue  # a glimpse: too thin to say who it was
+        if any(other != pid and visit.start - AMBIGUOUS_WINDOW <= at <= visit.end + AMBIGUOUS_WINDOW
+               for stream in visit.streams for at, other in by_stream.get(stream, ())):
+            continue  # another named person matched on the same camera at the same moment
         name = names[pid]
         place = STREAM_PLACES.get(visit.stream_id, f"the {visit.stream_id} camera")
         when = _when(visit.start, now, tz)
         if not prior:
-            ws = window_start.astimezone(tz)
-            what = f"the first time the cameras saw {name} since {ws.strftime('%b')} {ws.day}"
+            # "Since <date>": the later of the window start and the oldest OTHER named sighting (the camera
+            # records only reach back so far; live 2026-10-15). No such date before this visit: no "since".
+            oldest = min((a for o, prs in by_person.items() if o != pid
+                          for a in (_aware(r.get("started_at")) for r in prs) if a is not None), default=None)
+            since = max(window_floor, oldest) if oldest else None
+            if since is not None and since < visit.start - timedelta(days=1):
+                ws = since.astimezone(tz)
+                what = f"the first camera match for {name} since {ws.strftime('%b')} {ws.day}"
+            else:
+                what = f"the first camera match for {name} on record"
         elif visit.start - prior[-1].end >= timedelta(days=RETURN_GAP_DAYS):
-            what = f"the first time the cameras saw {name} in {_days(visit.start - prior[-1].end)}"
+            what = f"the first camera match for {name} in {_days(visit.start - prior[-1].end)}"
         else:
             prior_days = {v.start.astimezone(tz).date() for v in prior}
             if (len(prior) < MIN_PRIOR_VISITS or len(prior_days) < MIN_PRIOR_DAYS
                     or any(_hour_distance(v.start, visit.start, tz) <= UNUSUAL_HOUR_MARGIN for v in prior)):
                 continue
-            what = (f"a time of day the cameras had not seen {name} at in {len(prior)} earlier visits "
+            what = (f"a time of day {name} had not matched at in {len(prior)} earlier visits "
                     f"over {len(prior_days)} days")
         evidence = f"vision_individual_sighting:{visit.first_sighting_id}"
-        option = clip(f"{name} at {place}, {when}: {what}.", 400)
+        option = clip(f"{name} (a camera match for a name Juniper gave) at {place}, {when}: {what}.", 400)
         topics.append(OutreachTopic(
             subject=f"person:{pid}",
             kind=PERSON_KIND,
@@ -229,8 +265,9 @@ def person_topics(rows: Iterable[Mapping[str, Any]], now: datetime, *, tz_name: 
             observed_at=visit.end,
             option_text=option,
             prompt_text=clip(
-                f"Someone Juniper named for your cameras: {option} What the camera recorded is a sighting "
-                f"and a time, nothing more; do not invent what {name} was doing.", 600),
+                f"Someone Juniper named for your cameras: {option} The camera recorded a match and a time, "
+                f"nothing more. A match can be wrong (the cameras group lookalikes), so say it is a camera "
+                f"match, and do not invent what {name} was doing.", 600),
             evidence_ref=evidence,
         ))
     return topics
@@ -238,7 +275,11 @@ def person_topics(rows: Iterable[Mapping[str, Any]], now: datetime, *, tz_name: 
 
 # --- chat threads -----------------------------------------------------------------------------------
 _MACHINERY = re.compile(
-    r"`|https?://|www\.|(?:^|\s)[\w.~-]*/[\w.-]+|#\d|\b\w+_\w+\b|\b(?=\w*[a-z])(?=\w*\d)[a-z0-9]{3,}\b",
+    r"`|https?://|www\.|#\d|\b\w+_\w+\b"
+    # a path: two slashes ("docs/specs/x") or a file name ("thing.md"); "and/or", "24/7" are prose
+    r"|\b[\w.~-]+/[\w.~-]+/[\w.~-]+|\b[\w-]+\.(?:py|md|ya?ml|json|sql|sh|js|ts|toml|txt|env|log)\b"
+    # letters and digits mixed in one word ("qwen38", "v2b"); ordinals, times, decades, units are prose
+    r"|\b(?!\d+(?:st|nd|rd|th|s|am|pm|k|h|m|kg|lb|mg|g)\b)(?=[a-z]*\d)(?=\d*[a-z])[a-z0-9]{3,}\b",
     re.IGNORECASE,
 )
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
@@ -251,19 +292,27 @@ def looks_like_machinery(text: str) -> bool:
 
 
 def last_question(reply: str) -> Optional[str]:
-    """The last sentence ending in "?" in the reply's last paragraph, or None. A question earlier in a
-    reply that then moved on is not where the chat stopped."""
+    """The last sentence ending in "?" in the reply's last paragraph, or None.
+
+    The question need not be the very last sentence: Orion usually adds one line after it ("So what's
+    the plan for 44? February's cold here -- I'm picturing something indoor."), and requiring the
+    question last dropped both real threads live on 2026-11-15. A question in an earlier paragraph, with
+    a new paragraph after it, is not where the chat stopped. Double quotes inside the question become
+    single quotes, so it can be quoted again."""
     text = str(reply or "").strip()
     if not text:
         return None
-    paragraph = re.split(r"\n\s*\n", text)[-1]
-    paragraph = " ".join(paragraph.split())
-    found = None
-    for sentence in _SENTENCE_SPLIT.split(paragraph):
-        s = sentence.strip().rstrip(_TRAILING).strip()
-        if s.endswith("?"):
-            found = s
-    return found
+    paragraph = " ".join(re.split(r"\n\s*\n", text)[-1].split())
+    sentences = [x.strip() for x in _SENTENCE_SPLIT.split(paragraph) if x.strip()]
+    for i in range(len(sentences) - 1, -1, -1):
+        q = sentences[i].rstrip(_TRAILING).strip()
+        if not q.endswith("?"):
+            continue
+        # "e.g. what do you think?" splits after "e.g."; join a lowercase tail back to its lead.
+        if i >= 1 and q[:1].islower():
+            q = f"{sentences[i - 1]} {q}"
+        return q.replace('"', "'").replace("\u201c", "'").replace("\u201d", "'")
+    return None
 
 
 def chat_thread_topics(rows: Iterable[Mapping[str, Any]], now: datetime, *, tz_name: str = "UTC",
@@ -295,10 +344,10 @@ def chat_thread_topics(rows: Iterable[Mapping[str, Any]], now: datetime, *, tz_n
         if not question or looks_like_machinery(question) or looks_like_machinery(said[:SAID_CHARS]):
             continue
         quiet = (f"the chat went quiet for {_days(nxt - at) if nxt - at >= timedelta(days=1) else _hours(nxt - at)} after"
-                 if nxt is not None else "she has not written since")
+                 if nxt is not None else "the chat has been quiet since")
         when = _when(at, now, tz)
         option = clip(
-            f'An open thread with Juniper, {when}: she said "{clip(said, SAID_CHARS)}" and you asked '
+            f'An open thread with Juniper, {when}: she said "{clip(said.replace(chr(34), chr(39)), SAID_CHARS)}" and you asked '
             f'"{clip(question, QUESTION_CHARS)}"; {quiet}.', 400)
         topics.append(OutreachTopic(
             subject=f"chat_thread:{cid}",

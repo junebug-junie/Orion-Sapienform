@@ -425,7 +425,11 @@ choices should be about the world, not Orion's machinery):
   cluster; not Juniper or Orion; office camera left out, it has its own door)
   whose newest visit (last 36 h) is new: back after 4+ days away, first time in
   the 60-day window, or at a time of day none of 6+ earlier visits (4+ days)
-  came within 1.5 h of. Version = the visit's first sighting id; the topic cites
+  came within 1.5 h of. A camera match is a cluster match, not proof: the visit
+  also needs 3+ frames or 5+ s of dwell, is dropped when another named person
+  matched on the same camera within 2 minutes, and the text says "a camera
+  match". Names Juniper gave to roles ("Mail carrier") are in scope as named.
+  Version = the visit's first sighting id; the topic cites
   `vision_individual_sighting:<id>`. Flag `HUB_ENDOGENOUS_OUTREACH_PEOPLE_TOPICS_ENABLED`.
 - **Chat threads** (`chat_thread:<correlation_id>`): a chat turn of Juniper's in
   the last 7 days where Orion's reply ended on a question and her next message

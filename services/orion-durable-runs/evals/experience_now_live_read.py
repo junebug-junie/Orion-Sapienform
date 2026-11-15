@@ -38,6 +38,10 @@ from orion.integration.organs import load_organs  # noqa: E402
 from orion.temporal_self.now import SOURCE_HISTORY, build_now, magnitude, salience_of, use_rate  # noqa: E402
 
 NEW_KINDS = ("reading_turn", "prediction_surprise", "prime_thought")
+# A trend that is the organ changing, not the magnitude aging: reported, not flagged. Each names its evidence.
+KNOWN_TRENDS = {
+    "dream_cycle": "#3412: every cycle since 2026-11-13 07:02Z formed 0 hypotheses (4 before): a break, not age",
+}
 TZ = "America/Denver"
 
 
@@ -46,6 +50,21 @@ def _shape(e) -> dict:
 
     return dict(stored_shape(e), event_id=e.event_id, source_kind=e.source_kind, label=e.label,
                 related_refs=list(e.related_refs))
+
+
+def _trend(series: list) -> "float | None":
+    import math
+
+    if len(series) < 40:
+        return None
+    xs = [t.timestamp() for t, _ in series]
+    ys = [math.log1p(max(m, 0.0)) for _, m in series]
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    if not sxx or not syy:
+        return None
+    return round(sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / math.sqrt(sxx * syy), 3)
 
 
 async def main(dsn: str, days: int, check: bool) -> int:
@@ -134,7 +153,15 @@ async def main(dsn: str, days: int, check: bool) -> int:
                 "high_share": round(sum(1 for v in known if v >= 0.9) / len(known), 3) if known else None,
                 "distinct": len(set(round(v, 4) for v in known)),
                 "magnitude_distinct": len({m for _, m in series})}
+        # Drift: a magnitude that trends with time (not with the event) ranks by age against its own
+        # 30 days (review 2026-11-15: the act ledger's surprisal fell 40x in a month). Pearson r of time
+        # vs log1p(magnitude) over the whole history; |r| > 0.4 flags.
+        stat["time_trend_r"] = _trend(series)
         report["salience"][kind] = stat
+        if kind in KNOWN_TRENDS:
+            stat["known_trend"] = KNOWN_TRENDS[kind]
+        elif stat["time_trend_r"] is not None and abs(stat["time_trend_r"]) > 0.4:
+            report["flags"].append(f"{kind}: magnitude trends with time (r={stat['time_trend_r']}), ranks by age")
         # Degenerate: enough history to score, yet every score is one value (or none scores at all).
         if len(series) >= 40 and (not known or stat["distinct"] <= 1):
             report["flags"].append(f"{kind}: salience degenerate ({stat})")

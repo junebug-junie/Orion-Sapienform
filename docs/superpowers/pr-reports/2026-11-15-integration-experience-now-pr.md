@@ -78,24 +78,28 @@ stance's and the letter's `[arc:]` cites, and records nothing durable about use.
    integrated when other specialist processes consume it; a checked cite is the observable trace.
 4. **Live data** (`evals/experience_now_live_read.py`, 2026-11-15 05:37Z, last 7 days):
 
-   | kind | rule | scored share NULL | at rest (0) | >= 0.9 | distinct |
-   |---|---|---|---|---|---|
-   | curiosity_run | moved + formed | 0.0 | 0.40 | 0.10 | 43 |
-   | dream_cycle | hypothesis count | 0.0 | 0.36 | 0.0 | 10 |
-   | field_dominance_run | ticks | 0.0 | 0.01 | 0.12 | 661 |
-   | gpu_wait | waited ms | 0.01 | 0.0 | 0.03 | 1181 |
-   | metacog_observation | severity | 0.0 | 0.58 | 0.0 | 147 |
-   | prediction_surprise | surprisal | 0.0 | 0.99 | 0.004 | 40 |
-   | action_outcome | surprisal | 0.0 | 0.002 | 0.05 | 1187 |
-   | reading_turn | surprisal | 0.0 | 0.30 | 0.0 | 171 |
-   | reverie_chain | thought count | 0.0 | 0.17 | 0.0 | 192 |
-   | office_session | visit seconds | 0.9 (10 visits, under 20 history) | - | - | - |
+   | kind | rule | scored share NULL | at rest (0) | >= 0.9 | distinct | trend r(time) |
+   |---|---|---|---|---|---|---|
+   | curiosity_run | moved + formed | 0.0 | 0.39 | 0.08 | 47 | 0.22 |
+   | dream_cycle | hypothesis count | 0.0 | 0.44 | 0.0 | 10 | -0.55 (the #3412 break, not age) |
+   | field_dominance_run | ticks | 0.0 | 0.01 | 0.09 | 735 | 0.03 |
+   | gpu_wait | waited ms | 0.01 | 0.0 | 0.02 | 1385 | 0.06 |
+   | metacog_observation | severity | 0.0 | 0.61 | 0.0 | 153 | 0.10 |
+   | prediction_surprise | -ln P(observed) | 0.0 | 0.99 | 0.004 | 40 | -0.23 |
+   | reverie_chain | thought count | 0.0 | 0.21 | 0.0 | 201 | -0.02 |
+   | office_session | visit seconds | 0.9 (10 visits, under 20 history) | - | - | - | - |
 
-   Two magnitudes failed and were **not** wired: `vision_percept` entity count (a producer step on 11-09
-   from 1 to 4-5 entities per percept made 88% of ordinary scenes read >= 0.9 against the 30-day history;
-   they could not read calm), and `prime_thought` surprisal (drifts 1e-6 per thought whatever the thought
-   did). Both kinds read NULL and rank after scored items. The use rate's rest point is 0 and is reachable:
-   it is 0 today.
+   Four magnitudes failed the check and were **not** wired (those kinds read NULL and rank after scored
+   items, newest first):
+   - `vision_percept` entity count: a producer change on 11-09 (1 -> 4-5 entities per percept) made 88% of
+     ordinary scenes read >= 0.9 against the 30-day history; they could not read calm.
+   - `prime_thought`, `reading_turn` and `action_outcome` act-ledger surprisal: it falls with the family
+     posterior's age, not with the act (readings: daily median 0.0253 on 10-16 -> 0.000087 on 11-15;
+     action outcomes: weekly median 0.0105 -> 0.00024, corr(time, ln) = -0.43). Every ordinary act would
+     read ~0 and only failures high: it ranks by age and failure, not content. Found by the code review;
+     the live-read eval now flags any magnitude whose |r(time, log magnitude)| > 0.4.
+
+   The use rate's rest point is 0 and is reachable: it is 0 today.
 5. **Existing mechanism.** Reuses `temporal_self_event`, `source_salience`, the citation gate's rule.
 6. **Reversibility.** Two nullable columns, two tables, one module, three routes, one flag. No training
    default.
@@ -108,11 +112,12 @@ From `ORION_LIVE_DSN=... python services/orion-durable-runs/evals/experience_now
 - New sources through the chronicle's own SQL, last 7 days: `reading_turn` 372, `prediction_surprise`
   4,010, `prime_thought` 36. Example labels: "no_read_evidence: Internalizing Investment Mandates: ...",
   "athena.cabinet_temp_c experiment_guard > 32.0: forecast 0%, crossed (max 32.37)".
-- Prime's now over the last 24 h (12 items from 2,975 candidates): 2 action outcomes (salience 1.0), 2
-  attention dominance runs (0.99), 2 curiosity runs ("tested 1, moved 1, formed 4", 0.95), 2 GPU waits
-  (1.7 h waits, 0.92), 2 reverie chains (0.76), 2 readings that failed to read (0.66). Never a Prime item.
-- **Baseline integration metric:** 2,980 experiences in 24 h, 0 used by another organ, rate 0.0%, closed
-  organs 0 of 13. (`experience_use` does not exist live yet.)
+- Prime's now over the last 24 h (re-run 18:15Z after the review fixes): 2 cabinet forecasts that
+  crossed at "forecast 0%" (salience 0.999), 2 attention dominance runs (0.99), 2 curiosity runs ("tested 1,
+  moved 1, formed 4", 0.95), 2 GPU waits of 1.7-2.2 h (0.94), 2 reverie chains (0.77), an office session
+  ("Juniper (probably) in the office: sitting on the floor ...") and a dream cycle. Never a Prime item.
+- **Baseline integration metric:** 05:37Z: 2,980 experiences in 24 h; 18:15Z: 4,788. Both: 0 used by
+  another organ, rate 0.0%, closed organs 0 of 13. (`experience_use` does not exist live yet.)
 
 UNVERIFIED until deploy: rows of the three new kinds in `temporal_self_event`, non-null salience from
 `GET /temporal-self/now?organ=prime`, and its `experience_shown` row (the spec's live acceptance). Proof
@@ -178,7 +183,38 @@ test_dockerfile_copies_the_organ_registry.
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+Two code-review subagents ran on `origin/main...feat/integration-experience-now`. The first was cut off by a
+usage limit. The second found no blocker and five should-fix items, all fixed:
+
+- Finding: experiences could be lost by "since you last looked". `ingested_at` is a commit's START time,
+  so rows of a window still committing at read time were stamped before the read and skipped by the next one.
+  - Fix: the read cuts 120 s below the clock (`NOW_COMMIT_MARGIN_SEC`) and stores that cut as `shown_at`,
+    which is the next read's `since`.
+  - Evidence: `test_a_read_skips_nothing_still_committing_and_inspection_reads_keep_the_cursor`.
+- Finding: `reading_turn` (and, checked further, `action_outcome`) ranked by the ledger posterior's age.
+  - Fix: both magnitudes removed, with the live numbers written in `organs.yaml`. The eval gained a
+    time-trend check.
+  - Evidence: see the gate table above.
+- Finding: salience scoring was O(30-day history) per event on the shared event loop: 0.4 s per gpu_wait
+  window, measured.
+  - Fix: scoring runs in `asyncio.to_thread` over a time-sorted history cut by `bisect`.
+- Finding: a failed history read would stall the chronicle; every window would be retried forever.
+  - Fix: the window stores NULL salience and the kind retries next window.
+  - Evidence: `test_a_salience_history_failure_stores_null_and_never_stalls_the_chronicle`.
+- Finding: the 3-cite cap was per request, so repeated POSTs bypassed it.
+  - Fix: one transaction locks the shown row, counts the uses already stored, and caps across calls.
+  - Evidence: `test_cite_cap_is_per_shown_row_across_calls`, `test_record_use_counts_cites_already_stored...`,
+    and the Postgres lifecycle test.
+- Nits fixed:
+  - An explicit `since=` read no longer moves the organ's cursor (`experience_shown.advances_cursor`).
+  - The Postgres ranking test passed by recency. Magnitudes now fall and the surprising reading sits mid-sequence.
+  - The smoothing comment now says Jeffreys/KT, not Laplace.
+  - The 24 h use window counts from when an experience could first be read (`ended_at`), not from when it began.
+- Nit noted, not changed: `prediction_surprise` adds ~570 rows a day, 99% at rest, and they dilute the
+  total rate's denominator. This follows the spec's "one per exceedance". Reporting a rate without them is
+  Juniper's call.
+- Also found by CI and fixed: sql-writer's `ARC_SOURCE_TABLES` test now subtracts the experience-only
+  kinds' tables (`EXPERIENCE_ONLY_TABLES`); they are never arc evidence.
 
 ## Restart required
 
@@ -197,12 +233,15 @@ scripts/safe_docker_build.sh orion-durable-runs up -d --build
 - Severity: low. Concern: first-window salience history reads up to 31 days of one kind per kind (largest:
   `prediction_surprise` ~17k small rows once accumulated). Mitigation: one read per kind per process, then
   memory; indexed by `(source_kind, occurred_at)`.
+- Severity: low. Concern: a trailing 24 h metric window gives the newest experiences less than 24 h to be
+  cited, so it reads low until they settle. Mitigation: the route's docstring says so; the roundup (patch 4)
+  reads closed days.
 - Severity: info. `prediction_surprise` adds ~570 rows a day to `temporal_self_event` (one series, two
   thresholds), 99% at the rest point.
 - Issues: refs #3423. Opened: none. Closed: none (live proof after deploy).
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3453
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -30,9 +30,10 @@ organs:
     salience_magnitude:
       curiosity_run: curiosity_moved_formed
   reading:
+    # reading_turn has no magnitude: the act ledger's surprisal for a finished read falls with the
+    # family posterior's age (daily median 0.0253 on 10-16 -> 0.000087 on 11-15), so against 30 days every
+    # successful read reads ~0 and only failed fetches read high. It would rank by "this read failed".
     temporal_sources: [reading_turn]
-    salience_magnitude:
-      reading_turn: surprise_nats
   camera:
     temporal_sources: [vision_percept, presence_transition, street_event, office_session]
     # vision_percept has no magnitude: entity count stepped from 1 to 4-5 per percept on 2026-11-09 (a
@@ -46,10 +47,13 @@ organs:
   prediction:
     # action_outcome: the act ledger's predicted-vs-observed outcome rows (substrate_action_outcomes),
     # one per closed act of any organ. Scoring a prediction is this organ's work, whoever acted.
+    # action_outcome has no magnitude: like reading_turn, the ledger's surprisal falls with each family
+    # posterior's age (weekly median 0.0105 the week of 10-12 -> 0.00024 the week of 11-09; corr(time,
+    # ln surprisal) = -0.43 over 35 days), so it would rank by age. prediction_surprise is a forecast's own
+    # -ln P(observed) and does not drift that way.
     temporal_sources: [prediction_surprise, action_outcome]
     salience_magnitude:
       prediction_surprise: surprise_nats
-      action_outcome: surprise_nats
   metacognition:
     temporal_sources:
       - metacog_observation

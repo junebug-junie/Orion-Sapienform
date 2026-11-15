@@ -252,3 +252,10 @@ def test_action_outcome_carries_its_surprisal_only_when_read():
             "prediction_error": 0.2}
     assert "surprise_nats" not in S.action_outcome(base).payload
     assert S.action_outcome({**base, "surprise_nats": 0.3}).payload["surprise_nats"] == 0.3
+
+
+def test_record_use_counts_cites_already_stored_for_the_shown_row_against_the_cap():
+    shown = [f"gpu_wait:{i}" for i in range(5)]
+    r = record_use(shown_id="s", reader_organ="prime", shown_event_ids=shown, cites=shown, citing_ref="x",
+                   cited_at=T, already_used=shown[:2])
+    assert [u.event_id for u in r.uses] == ["gpu_wait:2"] and r.rejected_over_cap == ["gpu_wait:3", "gpu_wait:4"]

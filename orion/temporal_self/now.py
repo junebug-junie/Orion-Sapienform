@@ -314,12 +314,18 @@ def record_use(
     citing_ref: str,
     cited_at: datetime,
     max_cites: int = NOW_MAX_CITES,
+    already_used: Iterable[str] = (),
 ) -> ExperienceUseResultV1:
     """Check cites against the shown row. A cite not in the shown list is dropped and counted
     (``rejected_not_shown``); valid cites past ``max_cites`` are dropped and counted
-    (``rejected_over_cap``). Duplicates count once. The citing organ is the one that was shown."""
+    (``rejected_over_cap``). Duplicates count once. The citing organ is the one that was shown.
+
+    The cap is per shown row, not per call: ``already_used`` (event ids already stored for this shown
+    row) count against it, and re-sending one of them stores nothing new."""
     shown = set(shown_event_ids)
-    seen: set[str] = set()
+    stored = set(already_used)
+    max_cites = max(0, max_cites - len(stored))
+    seen: set[str] = set(stored)
     uses: list[ExperienceUseRowV1] = []
     not_shown: list[str] = []
     over_cap: list[str] = []

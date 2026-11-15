@@ -17,7 +17,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from orion.schemas.temporal_self import (
     TemporalSelfArcV1,
@@ -345,19 +345,23 @@ FROM (
   WHERE e.ingested_at > %(since)s AND e.ingested_at <= %(as_of)s AND e.source_kind <> ALL(%(own)s)
 ) x WHERE rk <= %(per_kind)s
 """
-LAST_SHOWN_SQL = "SELECT max(shown_at) AS at FROM experience_shown WHERE reader_organ = %(o)s"
+LAST_SHOWN_SQL = "SELECT max(shown_at) AS at FROM experience_shown WHERE reader_organ = %(o)s AND advances_cursor"
 INSERT_SHOWN_SQL = """
-INSERT INTO experience_shown (shown_id, reader_organ, reader_run_ref, event_ids, since, shown_at)
-VALUES (%(shown_id)s, %(reader_organ)s, %(reader_run_ref)s, %(event_ids)s, %(since)s, %(shown_at)s)
+INSERT INTO experience_shown (shown_id, reader_organ, reader_run_ref, event_ids, since, shown_at, advances_cursor)
+VALUES (%(shown_id)s, %(reader_organ)s, %(reader_run_ref)s, %(event_ids)s, %(since)s, %(shown_at)s, %(advances_cursor)s)
 """
 SHOWN_BY_ID_SQL = "SELECT shown_id, reader_organ, event_ids, shown_at FROM experience_shown WHERE shown_id = %(s)s"
+# The same row, locked: concurrent cite calls on one shown row are serialized, so the 3-cite cap holds.
+SHOWN_FOR_UPDATE_SQL = SHOWN_BY_ID_SQL + " FOR UPDATE"
+USED_FOR_SHOWN_SQL = "SELECT event_id FROM experience_use WHERE shown_id = %(s)s"
 INSERT_USE_SQL = """
 INSERT INTO experience_use (use_id, event_id, citing_organ, citing_ref, shown_id, cited_at)
 VALUES (%(use_id)s, %(event_id)s, %(citing_organ)s, %(citing_ref)s, %(shown_id)s, %(cited_at)s)
 ON CONFLICT (use_id) DO NOTHING
 """
 # The metric's two reads: experiences recorded in the window (by when they happened), and valid uses
-# of those experiences made within 24 h of them; plus cites each organ made in the window.
+# of those experiences made within 24 h of when they could first be read (ended_at, else occurred_at);
+# plus cites each organ made in the window.
 RATE_KINDS_SQL = """
 SELECT source_kind, count(*) AS n FROM temporal_self_event
 WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s GROUP BY source_kind
@@ -365,7 +369,8 @@ WHERE occurred_at >= %(lo)s AND occurred_at < %(hi)s GROUP BY source_kind
 RATE_USES_SQL = """
 SELECT DISTINCT u.event_id, e.source_kind, u.citing_organ
 FROM experience_use u JOIN temporal_self_event e ON e.event_id = u.event_id
-WHERE e.occurred_at >= %(lo)s AND e.occurred_at < %(hi)s AND u.cited_at < e.occurred_at + interval '24 hours'
+WHERE e.occurred_at >= %(lo)s AND e.occurred_at < %(hi)s
+  AND u.cited_at < COALESCE((e.payload_json->>'ended_at')::timestamptz, e.occurred_at) + interval '24 hours'
 """
 RATE_CITES_MADE_SQL = """
 SELECT citing_organ, count(*) AS n FROM experience_use
@@ -404,24 +409,30 @@ class ExperienceStore:
         return out, sum(totals.values())
 
     async def insert_shown(self, *, shown_id: str, reader_organ: str, reader_run_ref: Optional[str],
-                           event_ids: list[str], since: datetime, shown_at: datetime) -> None:
+                           event_ids: list[str], since: datetime, shown_at: datetime,
+                           advances_cursor: bool = True) -> None:
         async with self._pool.connection() as conn:
             await conn.execute(INSERT_SHOWN_SQL, {
                 "shown_id": shown_id, "reader_organ": reader_organ, "reader_run_ref": reader_run_ref,
-                "event_ids": event_ids, "since": since, "shown_at": shown_at})
+                "event_ids": event_ids, "since": since, "shown_at": shown_at, "advances_cursor": advances_cursor})
 
-    async def shown(self, shown_id: str) -> Optional[dict]:
-        async with self._pool.connection() as conn:
-            row = await (await conn.execute(SHOWN_BY_ID_SQL, {"s": shown_id})).fetchone()
-        return dict(row) if row else None
-
-    async def insert_uses(self, rows: list[dict]) -> None:
-        if not rows:
-            return
+    async def record_cites(self, shown_id: str, decide: Callable[[dict, list[str]], Any]) -> Any:
+        """One transaction: lock the shown row, read the uses already stored for it, let ``decide(shown,
+        already_used)`` (orion.temporal_self.now.record_use) choose, insert its uses. None: no such row."""
         async with self._pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cur:
-                    await cur.executemany(INSERT_USE_SQL, rows)
+                    await cur.execute(SHOWN_FOR_UPDATE_SQL, {"s": shown_id})
+                    shown = await cur.fetchone()
+                    if shown is None:
+                        return None
+                    await cur.execute(USED_FOR_SHOWN_SQL, {"s": shown_id})
+                    already = [r["event_id"] for r in await cur.fetchall()]
+                    result = decide(dict(shown), already)
+                    rows = [u.model_dump() for u in result.uses]
+                    if rows:
+                        await cur.executemany(INSERT_USE_SQL, rows)
+        return result
 
     async def rate_inputs(self, lo: datetime, hi: datetime) -> tuple[dict[str, int], list[tuple[str, str, str]], dict[str, int]]:
         async with self._pool.connection() as conn:

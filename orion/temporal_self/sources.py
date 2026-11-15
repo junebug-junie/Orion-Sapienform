@@ -901,7 +901,7 @@ def reading_turn(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | N
     )
 
 
-# Laplace smoothing for a Monte Carlo exceedance probability (n_paths paths): a forecast of 0 out of 40
+# Jeffreys (Krichevsky-Trofimov, add-1/2) smoothing for a Monte Carlo exceedance probability (n_paths paths): a forecast of 0 out of 40
 # paths is not certainty, so an observed exceedance it "ruled out" reads a large but finite surprisal.
 def _smoothed(p: float, n: int) -> float:
     n = max(int(n or 0), 0)
@@ -919,7 +919,7 @@ def exceedance_surprisal(probability: Any, n_paths: Any, hit: Any) -> float | No
 
 def prediction_surprise(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
     """One SCORED exceedance forecast (orion-prediction ``prediction_exceedance``). Time: scored_at, when
-    Orion learned the outcome. ``surprise_nats``: -ln P(observed) under the forecast (Laplace-smoothed
+    Orion learned the outcome. ``surprise_nats``: -ln P(observed) under the forecast (Jeffreys-smoothed
     over its n_paths). ``related_refs``: joint-surprise rows scored for a target inside the same window
     (``row['joint_ids']``, a time match, not a causal link)."""
     if row.get("scored_at") is None or row.get("hit_raw") is None:

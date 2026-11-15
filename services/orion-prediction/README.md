@@ -478,8 +478,10 @@ same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
   medians are not a monotone drift (a decay-to-zero fails); not a duplicate of an earlier input (|corr|
   > 0.999). Resting on its floor > 50 % of the time = event-like = input only, never a target. Missing is
   NaN plus a mask channel, never 0.0. Standardisation from training rows only, kept in the manifest. At
-  scoring time (windows < 7 days) every named input must be present, not stuck, inside its training band
-  and fresh (30 min), or the run refuses.
+  scoring time (windows < 7 days) every named input must be present, inside its training band and fresh
+  (30 min), or the bucket refuses. The degeneracy checks (one value, few distinct, event-like) run only at
+  select time over 14 days, never per bucket: a reading resting flat at its floor for a day (office PM2.5
+  at 0 in clean air) is calm, not broken.
 - **Rungs**: persistence; per-series AR (ridge on the last 6 buckets); `ridge_var` = the AR forecast plus
   a ridge on lags 0-12 of every input + masks + time of day (so at a large penalty it is AR, and it can
   only win by what the other readings add). Backtest: the repo's `block_purged_temporal_split`

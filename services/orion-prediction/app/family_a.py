@@ -272,27 +272,29 @@ def stale_inputs(last_seen: Mapping[str, datetime | None], now: datetime, max_st
 
 def _short_window_reasons(values: pd.Series, hyg: Hygiene, band: Sequence[float] | None,
                           status: str = TARGET, floor: float | None = None) -> list[str]:
-    """Run-time checks for a scoring window shorter than FULL_SCREEN_MIN_DAYS: present, not stuck on one
-    value, and still inside the regime it was trained on (touches the TRAINING central 80 % band).
+    """Run-time checks for a scoring window shorter than FULL_SCREEN_MIN_DAYS: present, and still inside
+    the regime it was trained on (touches the TRAINING central 80 % band).
+
+    No degeneracy check here. "One value" / "too few distinct values" / event-like are model-selection
+    decisions over the training window (``screen_series`` in ``select``), never per-issue refusals: a
+    reading resting at its floor for a day (office PM2.5 at 0 ug/m3 in clean air, 2026-11-14) is its rest
+    state, not a broken input, and a 24 h window cannot tell the two apart. A frozen sensor that stops
+    sending is caught by ``stale``; one that stays frozen is dropped at the next ``select`` (14 days).
 
     An event-like covariate whose most common value is its training floor (``floor``) may sit there all
-    day -- a quiet day is its rest state, not a stuck sensor -- so ``one_value`` and the band check do
-    not apply to it; ``absent`` and stale still do."""
+    day below its band, so the band check does not apply to it; ``absent`` and stale still do."""
     v = values.to_numpy(dtype=float)
     present = np.isfinite(v)
     if not len(v) or present.mean() < hyg.min_present or present.sum() < 2:
         return ["absent"]
     x = v[present]
-    _u, counts = np.unique(np.array([float(f"{a:.6g}") for a in x]), return_counts=True)
-    out = []
-    if status == COVARIATE and floor is not None and float(np.min(x)) >= floor - 1e-9 and \
-            float(_u[int(np.argmax(counts))]) <= floor + 1e-9:
-        return out
-    if counts.max() / len(x) > hyg.max_mode_share:
-        out.append("one_value")
+    if status == COVARIATE and floor is not None and float(np.min(x)) >= floor - 1e-9:
+        _u, counts = np.unique(np.array([float(f"{a:.6g}") for a in x]), return_counts=True)
+        if float(_u[int(np.argmax(counts))]) <= floor + 1e-9:
+            return []
     if band is not None and not bool(((x >= band[0]) & (x <= band[1])).any()):
-        out.append("left_trained_band")
-    return out
+        return ["left_trained_band"]
+    return []
 
 
 def gate_named_inputs(named: Mapping[str, str], frame: pd.DataFrame, hyg: Hygiene,
@@ -305,7 +307,8 @@ def gate_named_inputs(named: Mapping[str, str], frame: pd.DataFrame, hyg: Hygien
     FULL_SCREEN_MIN_DAYS get the full screen: an input now refused, or a named target that turned
     event-like, refuses the run. Shorter (scoring) windows get ``_short_window_reasons`` against the
     training band in ``bands`` (manifest ``stats.band``; ``floors`` = ``stats.min`` for event-like
-    covariates). Any input missing from the frame, or stale,
+    covariates) and never refuse for degeneracy (that is selection's job). Any input missing from the
+    frame, or stale,
     refuses either way.
     """
     span_days = (len(frame) * _grain_min(frame.index)) / 1440.0

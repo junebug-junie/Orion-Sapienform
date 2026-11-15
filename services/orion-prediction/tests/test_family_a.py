@@ -222,6 +222,7 @@ def test_flat_target_still_refuses_when_stale_absent_or_out_of_band():
         fa.gate_named_inputs({"p.x": fa.TARGET}, f, _hyg(), {"p.x": end - timedelta(hours=2)}, end,
                              bands={"p.x": [0.0, 6.6]})
     assert exc.value.refusals == {"p.x": ("stale",)}
+    # absent wins before any flatness check (guards against reordering the checks)
     gone = _frame({"p.x": np.r_[np.zeros(40), np.full(248, np.nan)]})
     with pytest.raises(fa.HygieneRefused) as exc:
         fa.gate_named_inputs({"p.x": fa.TARGET}, gone, _hyg(), bands={"p.x": [0.0, 6.6]})
@@ -229,6 +230,16 @@ def test_flat_target_still_refuses_when_stale_absent_or_out_of_band():
     with pytest.raises(fa.HygieneRefused) as exc:     # flat below its trained band: out of regime
         fa.gate_named_inputs({"p.x": fa.TARGET}, f, _hyg(), bands={"p.x": [1.0, 6.6]})
     assert exc.value.refusals == {"p.x": ("left_trained_band",)}
+    with pytest.raises(fa.HygieneRefused) as exc:     # flat at 0 when training never went below 1
+        fa.gate_named_inputs({"p.x": fa.TARGET}, f, _hyg(), bands={"p.x": [1.0, 6.6]}, floors={"p.x": 1.0})
+    assert exc.value.refusals == {"p.x": ("left_trained_band",)}
+
+
+def test_target_resting_at_its_training_floor_below_the_band_does_not_refuse():
+    # A dirtier training fortnight can lift PM2.5's 10th percentile to 1 while its minimum stays 0: a
+    # clean-air day at 0 is still the trained rest state, not out of regime.
+    f = _frame({"p.x": np.zeros(288)}, start=T0 + timedelta(minutes=20))
+    fa.gate_named_inputs({"p.x": fa.TARGET}, f, _hyg(), bands={"p.x": [1.0, 6.6]}, floors={"p.x": 0.0})
 
 
 def test_short_scoring_window_refuses_out_of_regime_inputs():

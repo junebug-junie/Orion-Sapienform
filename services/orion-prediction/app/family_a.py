@@ -271,24 +271,27 @@ def stale_inputs(last_seen: Mapping[str, datetime | None], now: datetime, max_st
 
 
 def _short_window_reasons(values: pd.Series, hyg: Hygiene, band: Sequence[float] | None,
-                          status: str = TARGET, floor: float | None = None) -> list[str]:
+                          floor: float | None = None) -> list[str]:
     """Run-time checks for a scoring window shorter than FULL_SCREEN_MIN_DAYS: present, and still inside
     the regime it was trained on (touches the TRAINING central 80 % band).
 
     No degeneracy check here. "One value" / "too few distinct values" / event-like are model-selection
     decisions over the training window (``screen_series`` in ``select``), never per-issue refusals: a
     reading resting at its floor for a day (office PM2.5 at 0 ug/m3 in clean air, 2026-11-14) is its rest
-    state, not a broken input, and a 24 h window cannot tell the two apart. A frozen sensor that stops
-    sending is caught by ``stale``; one that stays frozen is dropped at the next ``select`` (14 days).
+    state, not a broken input, and a 24 h window cannot tell the two apart. A sensor that stops sending is
+    caught by ``stale``. One frozen at a constant inside its band while still reporting is dropped by
+    ``select`` only once it is one value over 85 % of the 14-day window (~12 days); until then it reads as
+    calm (follow-up: a per-issue check against the training's own flattest day).
 
-    An event-like covariate whose most common value is its training floor (``floor``) may sit there all
-    day below its band, so the band check does not apply to it; ``absent`` and stale still do."""
+    A reading resting at its training floor (``floor`` = manifest ``stats.min``; most common value = the
+    floor, nothing below it) is in its trained regime even when the floor sits below the band's 10th
+    percentile, so the band check does not apply to it; ``absent`` and stale still do."""
     v = values.to_numpy(dtype=float)
     present = np.isfinite(v)
     if not len(v) or present.mean() < hyg.min_present or present.sum() < 2:
         return ["absent"]
     x = v[present]
-    if status == COVARIATE and floor is not None and float(np.min(x)) >= floor - 1e-9:
+    if floor is not None and float(np.min(x)) >= floor - 1e-9:
         _u, counts = np.unique(np.array([float(f"{a:.6g}") for a in x]), return_counts=True)
         if float(_u[int(np.argmax(counts))]) <= floor + 1e-9:
             return []
@@ -306,8 +309,8 @@ def gate_named_inputs(named: Mapping[str, str], frame: pd.DataFrame, hyg: Hygien
     ``named`` maps input id -> status in the manifest (target / covariate). Windows of at least
     FULL_SCREEN_MIN_DAYS get the full screen: an input now refused, or a named target that turned
     event-like, refuses the run. Shorter (scoring) windows get ``_short_window_reasons`` against the
-    training band in ``bands`` (manifest ``stats.band``; ``floors`` = ``stats.min`` for event-like
-    covariates) and never refuse for degeneracy (that is selection's job). Any input missing from the
+    training band in ``bands`` (manifest ``stats.band``; ``floors`` = manifest ``stats.min``: a reading
+    resting at its training floor is in regime) and never refuse for degeneracy (that is selection's job). Any input missing from the
     frame, or stale,
     refuses either way.
     """
@@ -318,8 +321,7 @@ def gate_named_inputs(named: Mapping[str, str], frame: pd.DataFrame, hyg: Hygien
             refusals[iid] = ["not_loaded"]
             continue
         if span_days < FULL_SCREEN_MIN_DAYS:
-            reasons = _short_window_reasons(frame[iid], hyg, (bands or {}).get(iid), status,
-                                            (floors or {}).get(iid))
+            reasons = _short_window_reasons(frame[iid], hyg, (bands or {}).get(iid), (floors or {}).get(iid))
             if reasons:
                 refusals[iid] = reasons
             continue

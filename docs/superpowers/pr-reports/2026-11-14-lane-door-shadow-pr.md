@@ -1,7 +1,7 @@
 # Leased evals, part 2 of 3: the shadow lane door
 
 Design: `docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md`, Phase 2.
-Stacked on part 1 (#3404). Part 3 (refusal + firewall) is stacked on this one.
+Part 1 (#3404) is merged. Part 3 (refusal + firewall) is stacked on this one.
 
 ## Summary
 
@@ -180,6 +180,6 @@ Recreating an engine reloads its model; chat is unreachable for several minutes 
 
 ## PR link
 
-(filled in after `gh pr create`)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3417
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

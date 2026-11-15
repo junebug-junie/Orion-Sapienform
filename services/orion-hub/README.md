@@ -1385,6 +1385,23 @@ arm: no prior was chosen from an offer. Orion's Day, Temporal Self and reading c
 they read investigations. Before this, 97 of 100 philosophical findings (all from self-inquiry) had
 no outcome row.
 
+**Finding register** (curiosity event wants step 2, since 2026-11-15,
+`HUB_CURIOSITY_FINDING_REGISTER_ENABLED`, default true). After every finished curiosity turn (both
+lines) Hub writes one row to `curiosity_finding_register`, in the background:
+
+- *register*: the curiosity lane's own route (`HUB_CURIOSITY_INVESTIGATION_LLM_ROUTE`) judges the
+  finding with the pinned prompt v2 (`orion/curiosity/register.py`): `philosophical`, `operational`
+  or `no_finding`. Kept only when the served model passed the judge-agreement eval (Flash-Next:
+  philosophical-or-not kappa 0.856; `scripts/analysis/eval_curiosity_register_judge.py`). Anything
+  else leaves `register` NULL with `judge_error`, never "operational by default".
+- *novelty*: `1 - max cosine` against everything Orion wrote before the run (graph answer nodes,
+  prior claims, Day letters), embedded through `HUB_CURIOSITY_SEARCH_EMBED_URL` and cached in
+  `curiosity_novelty_corpus`. Any embed failure leaves `novelty` NULL with `novelty_error`.
+
+Insert-only; a label is never re-judged. Log line: `curiosity_register run=<id> register=<r>
+novelty=<v> judge=<model>`. Migration: `services/orion-sql-db/manual_migration_curiosity_finding_register_v1.sql`.
+Nothing reads the label yet; the curiosity event-want producer (step 3) will.
+
 `HUB_CURIOSITY_SPEND_LOG_ENABLED=false` stops all three writes. The migration
 must be applied first:
 `services/orion-sql-db/manual_migration_curiosity_spend_v1.sql`. Without it,

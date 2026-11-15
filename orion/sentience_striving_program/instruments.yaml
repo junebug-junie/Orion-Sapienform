@@ -579,3 +579,41 @@ instruments:
           node fold (evals/run_surprise_node_replay_eval.py --hours 72, 2026-11-11): exact 0
           for 56-58 % of writes; the node crosses curiosity's 0.55 bar on 8-10 % of writes
           (theory 5 %: consecutive outcomes in one window are mildly autocorrelated).
+
+  - id: action_effect_table
+    title: "What my own actions do: randomised effect table + efference-copy miss (family C)"
+    theory: "Efference copy / forward model (predict the sensory result of one's own act, score the miss); causal effects only from randomised switchbacks"
+    program_ref: "docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md, C. Causal effects"
+    module: services/orion-prediction/app/family_c.py
+    outcome: O2
+    storage:
+      # No table of its own: the effect table is recomputed read-only from prediction_experiment +
+      # prediction_intervention + the raw readings (GET /effects/table). No consumer, no node.
+      kind: none
+    unlock: >-
+      One row per (actuator, reading, minutes after the act) with an ON-minus-OFF estimate and
+      95 % interval, only from finished randomised switchback experiments; observational rows can
+      never be chosen. Before an act, the Family A forecast plus the table's effect is the
+      expected reading; after it, the real reading is scored in the same excess-surprise unit
+      (calm = 0 by theory). Slice 1 is eval/replay only: one experiment (vision.focus:walkway,
+      2026-10-29) has ever run, and no act has yet been scored live.
+    last_reviewed: 2026-11-15
+    claims:
+      - id: action_effect_table_rows
+        question: >-
+          How many finished randomised experiments feed the effect table, and does any row's
+          95 % interval exclude 0? (evals/run_family_c_live_eval.py)
+        kind: manual
+        recorded: "1 experiment, 45 rows, 31 with an estimate; 1 of 31 has p <= 0.05 (cabinet_vibration_g, about what chance gives); cabinet_temp_c +0.29 C (95% -0.47..+1.04)"
+        recorded_at: 2026-11-15
+      - id: efference_miss_rest_check
+        question: >-
+          With no act, does the miss score rest at 0 on live Family A forecasts (48 h), and does a
+          planted act separate "expected" from "surprise"? (evals/run_family_c_live_eval.py --hours 48)
+        kind: manual
+        recorded: "PASS rest (5 min +0.115, 95% -0.073..+0.340; 15 min +0.037, 95% -0.132..+0.262); planted act: table knows it -0.20/-0.11 excess vs blind +1.77/+1.91"
+        recorded_at: 2026-11-15
+        note: >-
+          The rest point is inherited from Family A's per-reading calibration. A single Gaussian
+          read off the 80 % range did NOT rest (+0.375 / +0.165): the scorer reads all 9 stored
+          quantiles instead. Re-run after any Family A forecaster change.

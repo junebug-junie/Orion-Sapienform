@@ -205,3 +205,131 @@ def test_a_very_long_seed_id_keeps_pick_ids_distinct():
     rows, _ = reading_choices(seed_id="s" * 400, shown=shown, picked_urls=[shown[0].url, shown[1].url],
                               allowlist=hop_allowlist([(PAGE, TEXT)]), occurred_at=NOW)
     assert len({r.choice_id for r in rows}) == 2 and all(len(r.choice_id) <= 300 for r in rows)
+
+
+# --- #3443: only links to something else to read are options ----------------------------------
+
+# The live 2026-11-15 09:35Z digest of https://arxiv.org/pdf/2611.17316 (trimmed): the paper's own
+# DOI and arXiv page, its licence, and XMP namespace URIs were the whole option list.
+PDF_PAGE = "https://arxiv.org/pdf/2611.17316"
+PDF_DIGEST = (
+    "**3) URLs found in the metadata**\n\n"
+    "- https://doi.org/10.48550/arXiv.2611.17316\n"
+    "- https://arxiv.org/abs/2611.17316v1\n"
+    "- http://creativecommons.org/licenses/by/4.0/\n\n"
+    "(The XMP block also declares standard RDF/XML namespace URIs — e.g. "
+    "`http://www.w3.org/1999/02/22-rdf-syntax-ns#`, `http://purl.org/dc/elements/1.1/`, "
+    "`http://ns.adobe.com/xap/1.0/` — but these are metadata namespace declarations, not cited sources.)\n"
+)
+
+
+def test_live_pdf_digest_offers_nothing_to_read_next():
+    from orion.world_pulse_read.next_read_choice import classified_links
+
+    got = {c.url: reason for c, reason in classified_links([(PDF_PAGE, PDF_DIGEST)], exclude_urls=[PDF_PAGE])}
+    assert got == {
+        "https://doi.org/10.48550/arXiv.2611.17316": "same_document",
+        "https://arxiv.org/abs/2611.17316v1": "same_document",
+        "http://creativecommons.org/licenses/by/4.0/": "license",
+        "http://www.w3.org/1999/02/22-rdf-syntax-ns#": "schema_namespace",
+        "http://purl.org/dc/elements/1.1/": "schema_namespace",
+        "http://ns.adobe.com/xap/1.0/": "schema_namespace",
+    }
+    assert next_read_options([(PDF_PAGE, PDF_DIGEST)], exclude_urls=[PDF_PAGE]) == []
+
+
+def test_same_document_is_any_url_carrying_the_page_identifier_or_the_page_url():
+    from orion.world_pulse_read.next_read_choice import non_content_reason, document_ids
+
+    ids = document_ids("https://arxiv.org/abs/2611.08452")
+    assert ids == {"arxiv:2611.08452"}
+    keys = {"arxiv.org/abs/2611.08452"}
+    for url in (
+        "https://scholar.google.com/scholar_lookup?arxiv_id=2611.08452",
+        "https://api.semanticscholar.org/arXiv:2611.08452",
+        "https://arxiv.org/show-email/345b4fc2/2611.08452",
+        "https://reddit.com/submit?url=https://arxiv.org/abs/2611.08452&title=x",
+    ):
+        assert non_content_reason(url, ids=ids, page_keys=keys) == "same_document", url
+    # Another paper (a near id, a different version family) stays an option.
+    assert non_content_reason("https://arxiv.org/abs/2611.08453", ids=ids, page_keys=keys) is None
+    assert non_content_reason("https://arxiv.org/abs/2611.084521", ids=ids, page_keys=keys) is None
+    # A share button embeds the read page's URL in its query.
+    pbs = "https://www.pbs.org/newshour/politics/x"
+    share = "https://www.facebook.com/sharer/sharer.php?u=https%3A%2F%2Fwww.pbs.org%2Fnewshour%2Fpolitics%2Fx"
+    assert non_content_reason(share, page_keys={"pbs.org/newshour/politics/x"}) == "same_document"
+    assert document_ids(pbs) == set()
+    # A DOI page names the same work as a publisher URL carrying that DOI.
+    doi_ids = document_ids("https://doi.org/10.1038/s41586-024-07421-0")
+    assert non_content_reason("https://www.nature.com/articles/10.1038/s41586-024-07421-0",
+                              ids=doi_ids) == "same_document"
+
+
+def test_licence_and_namespace_rules_are_structural_and_spare_real_pages():
+    from orion.world_pulse_read.next_read_choice import non_content_reason
+
+    assert non_content_reason("https://github.com/a/b/blob/main/LICENSE") == "license"
+    assert non_content_reason("https://info.arxiv.org/help/license/index.html") == "license"
+    assert non_content_reason("https://creativecommons.org/publicdomain/zero/1.0/") == "license"
+    assert non_content_reason("https://schema.org/Article") == "schema_namespace"
+    # A W3C spec is a document; only year-path vocabulary URIs are namespaces.
+    assert non_content_reason("https://www.w3.org/TR/webauthn-3/") is None
+    assert non_content_reason("https://creativecommons.org/about/") is None
+    assert non_content_reason("https://www.pbs.org/newshour/science/licensing-rules-for-drones") is None
+
+
+def test_code_only_links_drop_but_backticked_and_fenced_url_lists_stay():
+    from orion.world_pulse_read.next_read_choice import classified_links
+
+    page = "https://ex.org/readme"
+    text = (
+        "- Abstract page: `https://ex.org/papers/one`\n"
+        "```text\nhttps://ex.org/papers/two\n```\n"
+        "```bash\ncurl -L https://get.example.net/tools/install.sh | sh\n```\n"
+        "Set `xmlns:dc=\"https://ex.org/vocab/dc\"` in the header.\n"
+        "Pattern: `https://github.com/a/b/blob/<sha>/<file_path>`\n"
+        "- Cited: `proceedings.mlr.press/v306/agrawal26d.html`\n"
+    )
+    got = {c.url: reason for c, reason in classified_links([(page, text)], exclude_urls=[page])}
+    assert got["https://ex.org/papers/one"] is None
+    assert got["https://ex.org/papers/two"] is None
+    assert got["https://proceedings.mlr.press/v306/agrawal26d.html"] is None
+    assert got["https://get.example.net/tools/install.sh"] == "code_only"
+    assert got["https://ex.org/vocab/dc"] == "code_only"
+    assert got["https://github.com/a/b/blob/"] == "code_only"
+
+
+def test_option_text_is_the_sentence_or_line_words_without_urls_or_markup():
+    page = "https://ex.org/digest"
+    text = (
+        "- Abstract page: `https://ex.org/papers/one`\n"
+        "Quiet rivers are returning to the plains. The survey is at https://survey.example.net/rivers and "
+        "it covers 40 sites. Unrelated other sentence.\n"
+        "- https://arxiv.org/abs/2611.07965\n"
+    )
+    shown = next_read_options([(page, text)], exclude_urls=[page])
+    assert [o.text for o in shown] == [
+        "Abstract page (ex.org)",
+        "The survey is at and it covers 40 sites. (survey.example.net)",
+        "arXiv 2611.07965 (arxiv.org)",
+    ]
+
+
+def test_shared_labels_take_the_item_title_and_url_rows_split_per_link():
+    page = "https://www.wsoctv.com/weather/"
+    text = (
+        "- **“How to use the WSOC-TV weather app”**  \n"
+        "  Video guide.  \n"
+        "  Full URL: https://www.wsoctv.com/weather/how-use-app/FQ6N/\n\n"
+        "- **“FORECAST: Frosty start”**  \n"
+        "  Full URL: https://www.wsoctv.com/weather/forecasts/frosty-start/7HRU/\n"
+        "- Wireless Emergency Alerts → https://www.weather.gov/wrn/wea ; Brochures → "
+        "https://www.weather.gov/owlie/publication_brochures\n"
+    )
+    shown = next_read_options([(page, text)], exclude_urls=[page])
+    assert [o.text for o in shown] == [
+        "How to use the WSOC-TV weather app (wsoctv.com)",
+        "FORECAST: Frosty start (wsoctv.com)",
+        "Wireless Emergency Alerts (weather.gov)",
+        "Brochures (weather.gov)",
+    ]

@@ -40,7 +40,9 @@ MUTANTS = {
     "replay ignores same_grading": (RPL, "        event_values = (same_grading_events(ref, app.graded) if same_grading",
                                     "        event_values = (same_grading_events([v for v, _ in ref], app.graded) "
                                     "if same_grading"),
-    "replay stand-ins after the ledger starts": (RPL, "(ledger_from is None or t < ledger_from) and ", ""),
+    "replay counts stand-ins after the ledger starts": (RPL, "        if stand_ins and (counterfactual or ledger_from is None or snap < ledger_from):",
+                                                       "        if stand_ins:"),
+    "pairs from JSON (lists) dropped": (APP, "        if isinstance(e, (tuple, list)):", "        if isinstance(e, tuple):"),
 }
 
 

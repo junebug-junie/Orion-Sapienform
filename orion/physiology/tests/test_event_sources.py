@@ -195,6 +195,8 @@ def test_same_grading_events_keeps_floats_and_only_matching_pairs():
     mixed = [0.4, (0.1, False), (0.9, True), (0.2, None), (float("nan"), True), ("x", True), (0.3, True, 1), True]
     assert same_grading_events(mixed, True) == (0.4, 0.9)
     assert same_grading_events(mixed, False) == (0.4, 0.1)
+    # A pair that went through JSON comes back as a list: still a pair, not dropped.
+    assert same_grading_events([[0.5, True], [0.6, False], [0.7, None]], True) == (0.5,)
 
 
 def test_live_shape_3364_a_low_value_event_ranks_zero_against_graded_events_only():

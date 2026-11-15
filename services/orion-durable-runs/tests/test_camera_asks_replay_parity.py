@@ -56,6 +56,16 @@ def test_the_replay_reproduces_all_16_live_bids_under_the_rule_the_market_ran():
         assert r["replay_outcome"] == pytest.approx(0.1354, abs=1e-4) and r["replay_reference_n"] == 120
 
 
+def test_the_full_window_replay_reproduces_them_too():
+    """Review finding: the whole 30-day replay, with its stand-ins for the time before the ledger, must still rank
+    the live bids against exactly the market's reference (120 rows at 07:00, the earlier live rows after)."""
+    p = ewr.live_parity(FAMS, ASKS, LEDGER, same_grading=False, start=ASKS[0]["created_at"])
+    assert (p["bids"], p["matched"]) == (16, 16), [r for r in p["rows"] if not r["match"]]
+    n = [r["replay_reference_n"] for r in p["rows"]]
+    assert n[:9] == [120] * 9                      # the 07:00 batch: the shadow rows only (snapshot 300 s before)
+    assert n[-1] == 135 and n == sorted(n)         # each later bid also sees the live bids decided before its snapshot
+
+
 def test_the_old_replay_reference_did_not_reproduce_them():
     """Before #3364 the replay ranked against its own first bids only (no ledger): the vehicle bids held."""
     out = ewr.camera_asks_gate(FAMS, ASKS, start=ASKS[0]["created_at"], end=LAST_BID + timedelta(seconds=1),
@@ -73,10 +83,11 @@ def _probe(same_grading: bool, at: datetime) -> dict:
 def test_the_next_bid_under_same_grading_holds_vehicle_and_funds_confirm_and_same():
     at = LAST_BID + timedelta(minutes=10)
     old, new = _probe(False, at), _probe(True, at)
-    assert old["vehicle"]["funded"] is True and old["vehicle"]["reference_n"] == 136
-    assert new["vehicle"]["funded"] is False and new["vehicle"]["rank"] == 0.0
+    assert old["vehicle"]["funded_at_any_salience"] is True and old["vehicle"]["reference_n"] == 136
+    # Held even at salience 1.0 (the rank's ceiling), not only at the floor.
+    assert new["vehicle"]["held_at_any_salience"] is True and new["vehicle"]["rank_ceiling"] == 0.0
     assert new["vehicle"]["basis"] == "event:graded" and new["vehicle"]["reference_n"] == 16
-    assert new["confirm"]["funded"] and new["same"]["funded"]
+    assert new["confirm"]["funded_at_any_salience"] and new["same"]["funded_at_any_salience"]
 
 
 def test_lifecycle_a_held_vehicle_candidate_rebids_on_the_backoff_and_never_opens():
@@ -106,3 +117,15 @@ def test_the_snapshot_lag_matters_for_parity():
     p = ewr.live_parity(FAMS, ASKS, LEDGER, same_grading=False, snapshot_lag=timedelta(0))
     miss = [r for r in p["rows"] if not r["match"]]
     assert len(miss) == 1 and miss[0]["decided_at"].startswith("2026-11-14T23:41")
+
+
+def test_the_gate_counterfactual_holds_vehicles_and_the_as_ledger_view_does_not():
+    """The gate asks "had 4b bid every ask": every ask with no 4b bid gets a stand-in, so the shadow era's ungraded
+    rows are replaced by graded bids. The as-ledger view is what the market really had: no graded event before
+    2026-11-14, so those bids ranked cold and vehicles were funded."""
+    start = ASKS[0]["created_at"] + timedelta(days=1)
+    end = LAST_BID + timedelta(seconds=1)
+    cf = ewr.camera_asks_gate(FAMS, ASKS, start=start, end=end, ledger=LEDGER, counterfactual=True)
+    seen = ewr.camera_asks_gate(FAMS, ASKS, start=start, end=end, ledger=LEDGER)
+    assert cf["checks"]["vehicle_held_at_least_70pct"] and cf["checks"]["confirm_and_same_held_at_most_10pct"]
+    assert seen["by_rule"]["vehicle"]["held_at_all"] < cf["by_rule"]["vehicle"]["held_at_all"]

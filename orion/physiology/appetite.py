@@ -200,11 +200,11 @@ def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: dat
 
 def same_grading_events(events: Iterable[Any], graded: bool) -> tuple[float, ...]:
     """The finite intensities of past events decided with grading ``graded`` (module docstring, issue #3364).
-    A float is kept (its grading is not known to the caller); an ``(intensity, graded)`` pair is kept only when
+    A float is kept (its grading is not known to the caller); an ``(intensity, graded)`` pair (tuple or list) is kept only when
     its ``graded`` is exactly ``graded`` (``None``, unknown, is dropped)."""
     out: list[float] = []
     for e in events:
-        if isinstance(e, tuple):
+        if isinstance(e, (tuple, list)):        # a list: the same pair after a JSON round trip (review finding)
             if len(e) != 2 or not isinstance(e[1], bool) or e[1] != graded:
                 continue
             e = e[0]

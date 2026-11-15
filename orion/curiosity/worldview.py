@@ -730,19 +730,43 @@ def build_concepts(
 # commas, so there is nothing reliable to split on. Same family as the
 # floats-come-back-as-strings note at the top of this module. One row per
 # (run, claim), grouped in Python where the types are real.
-# Named so a caller reading past this row bound (orion/curiosity/supervisor.py
-# :build_run_order, which repurposes this row-per-(run,claim) read as a
-# run_id -> written_at map for the WHOLE history rather than "recent") can
-# tell it was hit, the same way LIVE_PRIORS_LIMIT/HOPS_LIMIT are named for
-# their own truncation warnings elsewhere in this module.
-RECENT_RUNS_LIMIT = 200
+# TWO reads, not one join (#3398). The old query joined every TurnOutcome to its
+# priors and took `LIMIT 200` with no ORDER BY. Once the graph held 752 joined
+# rows the 200 kept were the oldest, so "your last runs" stayed frozen near
+# 2026-09-29 and the supervisor's run order lost every run after it.
+#
+# Read 1 is one row per TurnOutcome, newest first, no join. ORDER BY in Cypher
+# only decides WHICH rows survive the bound: FalkorDB sorts integer stamps
+# ahead of ISO strings under DESC (read live 2026-11-15: 543 integer, 8 string),
+# so a cut drops the oldest and the hand-written ISO ones, never the newest.
+# The real order is still decided in Python by `_stamp_ms`, which reads both.
+# Read 2 fetches the claims of only the runs that will be shown.
+RECENT_RUNS_LIMIT = 2000
 
 RECENT_RUNS_CYPHER = (
     f"MATCH (t:{LABEL_TURN_OUTCOME}) "
-    f"OPTIONAL MATCH (p:{LABEL_PRIOR} {{run_id: t.run_id}}) "
     "RETURN t.run_id AS run_id, t.written_at AS written_at, "
-    f"t.continue_note AS continue_note, p.claim AS claim LIMIT {RECENT_RUNS_LIMIT}"
+    "t.continue_note AS continue_note "
+    f"ORDER BY t.written_at DESC LIMIT {RECENT_RUNS_LIMIT}"
 )
+
+
+def recent_run_claims_cypher(run_ids: Sequence[str]) -> Optional[str]:
+    """Claims for the named runs, one row per (run, claim). None when no id is usable.
+
+    The reader takes no parameters, so ids go into the query text. Only ids that
+    match `_RUN_ID_RE` (hex) are used; a run with any other id is shown by its
+    continue note instead of its claims.
+    """
+    safe = [r for r in run_ids if _RUN_ID_RE.match(r)]
+    if not safe:
+        return None
+    id_list = ", ".join(f"'{r}'" for r in safe)
+    return (
+        f"MATCH (p:{LABEL_PRIOR}) WHERE p.run_id IN [{id_list}] "
+        "RETURN p.run_id AS run_id, p.claim AS claim"
+    )
+
 
 # Priors Orion has closed, newest first. `last_tested_at` is a string Orion
 # writes by hand, so this ordering is only as good as what it wrote -- which is
@@ -1313,6 +1337,25 @@ def build_recent_runs(
     return built[: max(0, limit)]
 
 
+def read_recent_runs(reader: "WorldviewReader", *, limit: int) -> list[RecentRun]:
+    """The newest `limit` runs with their claims. Raises `WorldviewUnavailable`."""
+    stamp_rows = reader.query(RECENT_RUNS_CYPHER)
+    if len(stamp_rows) >= RECENT_RUNS_LIMIT:
+        logger.warning(
+            "curiosity_worldview_recent_runs_truncated limit=%s -- more run "
+            "outcomes than one read holds; the oldest are cut, and a run whose "
+            "written_at is an ISO string can be cut ahead of older integer ones",
+            RECENT_RUNS_LIMIT,
+        )
+    newest = build_recent_runs(stamp_rows, limit=limit)
+    cypher = recent_run_claims_cypher([r.run_id for r in newest])
+    if cypher is None:
+        return newest
+    shown = {r.run_id for r in newest}
+    kept = [row for row in stamp_rows if str(row.get("run_id") or "").strip() in shown]
+    return build_recent_runs(kept + list(reader.query(cypher)), limit=limit)
+
+
 def read_snapshot(
     reader: WorldviewReader,
     *,
@@ -1349,7 +1392,7 @@ def read_snapshot(
         concept_rows = reader.query(CONCEPT_COUNT_CYPHER)
         concept_list_rows = reader.query(CONCEPTS_CYPHER) if read_concepts else []
         settled_rows = reader.query(RECENT_SETTLED_CYPHER)
-        recent_rows = reader.query(RECENT_RUNS_CYPHER)
+        recent = read_recent_runs(reader, limit=recent_runs)
     except WorldviewUnavailable as exc:
         return WorldviewSnapshot(unavailable_reason=str(exc)[:200])
     if len(concept_list_rows) >= CONCEPTS_READ_LIMIT:
@@ -1396,7 +1439,6 @@ def read_snapshot(
             "schema the prompt states",
             dropped,
         )
-    recent = build_recent_runs(recent_rows, limit=recent_runs)
     counts = count_rows[0] if count_rows else {}
     live_total = _as_int(counts.get("live_total"), len(offered))
     closed_total = _as_int(counts.get("closed_total"), 0)

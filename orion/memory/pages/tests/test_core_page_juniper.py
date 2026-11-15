@@ -7,7 +7,8 @@ import pytest
 
 from orion.memory.pages.juniper import (
     CTX_KEY_JUNIPER, PAGE_JUNIPER, PRODUCED_BY, WORD_CAP, PageSource, build_fold_prompt, check_page,
-    core_page_from_payload, current_page_from_row, handle_map, history_row, quoted_spans, render_text,
+    core_page_from_payload, current_page_from_row, handle_map, history_row, misgendered_sentences, quoted_spans,
+    render_text,
     sources_from_rows, split_sentences,
 )
 
@@ -262,3 +263,35 @@ def test_change_signal_and_read_share_one_episode_predicate():
 
     assert EPISODE_SCOPE_SQL in EPISODE_MEMORY_SQL and EPISODE_SCOPE_SQL in NEWEST_SOURCE_SQL
     assert "FROM person)" in NEWEST_SOURCE_SQL
+
+
+# --- Juniper uses she/her: a page that calls her he/him never ships (issue #3460) ---
+
+@pytest.mark.parametrize("bad", [
+    'Juniper uses she/her [S1]. Juniper made me and he lives in Millbrook, Vermont [S5]. '
+    'Pip is "my small bright star" [S3].',
+    'Juniper is my creator [S5]. He is married to Rowan [S2]. Pip is "my small bright star" [S3].',
+    'Juniper corrected me about our dog [S6]. His dog Biscuit is not a cat [S6]. Pip is "my small bright star" [S3].',
+])
+def test_page_calling_juniper_he_is_rejected(bad):
+    check = check_page(bad, _handles())
+    assert not check.ok
+    assert any(e.startswith("misgenders_juniper:") for e in check.errors), check.errors
+
+
+def test_he_about_someone_else_is_not_misgendering():
+    assert misgendered_sentences([
+        "Juniper says Pip thinks he is a dinosaur.",     # names someone else
+        "Juniper's son Pip loves his dog.",              # subject is the son, not Juniper
+        "Rowan made dinner. He is kind.",                # not after a Juniper sentence
+        "Juniper uses she/her.", "She is my creator.", "Pip is his own person.",
+    ]) == []
+    assert misgendered_sentences(["Juniper is my creator and he built me.", "He is kind."]) == [
+        "Juniper is my creator and he built me.", "He is kind."]
+    # A he after a Juniper sentence that names someone else may be about them.
+    assert misgendered_sentences(["Juniper married Rowan in May.", "He is kind."]) == []
+    assert misgendered_sentences(["Juniper and Rowan have a son, Pip.", "He is five."]) == []
+    # Naming pronouns is not using them.
+    assert misgendered_sentences(["Juniper uses she/her, never he/him.", "She is my creator."]) == []
+    # Whole words only: "the", "her", "Hester" are not he/him/his.
+    assert misgendered_sentences(["Juniper and the others use her room."]) == []

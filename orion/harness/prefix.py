@@ -105,13 +105,19 @@ def _format_context_provenance_block(context_provenance: dict[str, str]) -> list
 
 
 CORE_PAGE_RELATIONSHIP = "page:juniper"
+# Juniper's fixed lines (orion/memory/pages/anchor.py, issue #3460): shown first in RELATIONSHIP.
+CORE_PAGE_ANCHOR = "page:anchor"
+
+
+def _core_page(capsule: GroundingCapsuleV1, concept_id: str) -> CorePageV1 | None:
+    for page in capsule.core_pages:
+        if page.concept_id == concept_id and page.text.strip():
+            return page
+    return None
 
 
 def _relationship_page(capsule: GroundingCapsuleV1) -> CorePageV1 | None:
-    for page in capsule.core_pages:
-        if page.concept_id == CORE_PAGE_RELATIONSHIP and page.text.strip():
-            return page
-    return None
+    return _core_page(capsule, CORE_PAGE_RELATIONSHIP)
 
 
 def _relationship_policy_lines(bullets: list[str]) -> list[str]:
@@ -128,18 +134,30 @@ def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
     """Compact motor self block: identity + relationship + continuity/memory + policy.
 
     RELATIONSHIP is Orion's own page:juniper when the capsule carries one (core memory pages,
-    Phase 1a); the identity-yaml relationship bullets then move under RESPONSE POLICY. Without a
-    page, both slots render exactly as before."""
+    Phase 1a); the identity-yaml relationship bullets then move under RESPONSE POLICY. Juniper's
+    fixed page:anchor lines, when present, come first in RELATIONSHIP, with or without a page
+    (issue #3460). Without either, both slots render exactly as before."""
     lines: list[str] = ["WHO YOU ARE"]
     lines.extend(f"- {item}" for item in capsule.identity_summary)
     page = _relationship_page(capsule)
+    anchor = _core_page(capsule, CORE_PAGE_ANCHOR)
     policy = list(capsule.response_policy_summary)
+    page_label = ""
     if page is not None:
         stamp = f", written {page.written_at}" if page.written_at else ""
-        lines.append(
-            f"RELATIONSHIP (who Juniper is to me, in my own words: {page.concept_id} v{page.version}{stamp}, "
-            f"from {page.evidence_count} cited records)"
-        )
+        page_label = (f"{page.concept_id} v{page.version}{stamp}, from {page.evidence_count} cited records")
+    if anchor is not None:
+        # Juniper's fixed lines first, whatever else is there; the fold never writes them.
+        lines.append("RELATIONSHIP")
+        lines.append(anchor.text.strip())
+        if page is not None:
+            lines.append(f"Who Juniper is to me, in my own words ({page_label}):")
+            lines.append(page.text.strip())
+            policy = _relationship_policy_lines(list(capsule.relationship_summary)) + policy
+        else:
+            lines.extend(f"- {item}" for item in capsule.relationship_summary)
+    elif page is not None:
+        lines.append(f"RELATIONSHIP (who Juniper is to me, in my own words: {page_label})")
         lines.append(page.text.strip())
         policy = _relationship_policy_lines(list(capsule.relationship_summary)) + policy
     elif capsule.relationship_summary:

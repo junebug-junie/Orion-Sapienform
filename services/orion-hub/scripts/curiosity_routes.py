@@ -43,7 +43,9 @@ use), gated on a confirmed `sent` outreach decision for that exact run.
 on the bus (the hardware watcher's path too) and writes nothing itself;
 `GET /api/urgent` lists the incidents `start_urgent` recorded.
 
-`DELETE /api/focus/{id}` is the Clear button on the pending curiosity focus
+`GET /api/focus/pending` returns only the pending focus (one indexed read) for
+callers that need "is a focus waiting?" without the dashboard: Prime's move check
+(#3366). `DELETE /api/focus/{id}` is the Clear button on the pending curiosity focus
 (orion/curiosity/focus.py): it marks that one pending row `cleared` and touches
 nothing else. Orion queues a focus with the `queue_curiosity_focus` tool; the
 schedule payload carries the pending one as `pending_focus`, and each run in
@@ -626,6 +628,15 @@ async def curiosity_run_now() -> JSONResponse:
         },
         headers=_NO_CACHE,
     )
+
+
+@router.get("/api/focus/pending")
+async def curiosity_focus_pending_api() -> JSONResponse:
+    """Only the pending focus (``curiosity_focus.PENDING_FOCUS_PATH``): one indexed row read, the same
+    payload the schedule carries as ``pending_focus``. Prime's move check reads this, not
+    ``/api/runs``, which builds the whole dashboard and took 4-44 s live (#3366). Never 500s:
+    an unreadable table is ``available: false``."""
+    return JSONResponse(content=await _read_pending_focus(), headers=_NO_CACHE)
 
 
 @router.delete("/api/focus/{focus_id}")

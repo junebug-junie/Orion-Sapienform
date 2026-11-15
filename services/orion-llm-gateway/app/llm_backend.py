@@ -17,7 +17,7 @@ from app.vision import (
 )
 from orion.core.bus.async_service import OrionBusAsync
 
-from . import lane_senders, pool_placement, upstream_cancel
+from . import lane_door, lane_senders, pool_placement, upstream_cancel
 from .ctx_overflow import CONTEXT_OVERFLOW_ERROR, is_context_overflow
 from .fast_thinking import GPU3_WORK_CLASSES, with_gpu3_route_defaults
 from .models import ChatBody, ChatMessage
@@ -404,6 +404,8 @@ def _common_http_client(body: Optional[ChatBody] = None) -> httpx.Client:
             write=10.0,
             pool=10.0,
         ),
+        # The lane door in front of the granted server (app/lane_door.py): the key and this call's lease.
+        headers=lane_door.headers(upstream_cancel.current_lease_id()),
         **({"transport": transport} if transport is not None else {}),
     )
 

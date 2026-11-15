@@ -887,8 +887,124 @@ def test_an_undated_run_sorts_last_in_the_thread_too() -> None:
 def test_the_thread_query_does_not_use_collect() -> None:
     from orion.curiosity.worldview import RECENT_RUNS_CYPHER
 
-    assert "collect(" not in RECENT_RUNS_CYPHER
-    assert "p.claim AS claim" in RECENT_RUNS_CYPHER
+    from orion.curiosity.worldview import recent_run_claims_cypher
+
+    claims = recent_run_claims_cypher(["abc123"])
+    assert "collect(" not in RECENT_RUNS_CYPHER and "collect(" not in claims
+    assert "p.claim AS claim" in claims
+
+
+# --- #3398: the run menu was frozen on the oldest 200 of 752 joined rows -----
+
+
+class _GraphLikeReader(_FakeReader):
+    """Holds outcomes and priors and answers the way the graph does: an
+    unordered MATCH returns insertion order (oldest first), ORDER BY ... DESC
+    returns integer stamps newest first and string stamps after them, and
+    LIMIT cuts whatever order the query asked for."""
+
+    def __init__(self, outcomes, priors) -> None:
+        super().__init__()
+        self.outcomes, self.priors = list(outcomes), list(priors)
+
+    def query(self, cypher: str):
+        import re
+
+        self.queries.append(cypher)
+        if "MATCH (t:TurnOutcome)" in cypher:
+            rows = list(self.outcomes)
+            if "OPTIONAL MATCH (p:Prior" in cypher:  # the old join shape
+                rows = [
+                    {**o, "claim": p["claim"]}
+                    for o in rows
+                    for p in ([p for p in self.priors if p["run_id"] == o["run_id"]] or [{"claim": None}])
+                ]
+            if "ORDER BY t.written_at DESC" in cypher:
+                ints = sorted((r for r in rows if isinstance(r["written_at"], int)),
+                              key=lambda r: r["written_at"], reverse=True)
+                rows = ints + [r for r in rows if not isinstance(r["written_at"], int)]
+            limit = re.search(r"LIMIT (\d+)", cypher)
+            return rows[: int(limit.group(1))] if limit else rows
+        if "MATCH (p:Prior) WHERE p.run_id IN" in cypher:
+            wanted = set(re.findall(r"'([0-9a-f]+)'", cypher))
+            return [p for p in self.priors if p["run_id"] in wanted]
+        return []
+
+
+def _history(n_runs: int):
+    """`n_runs` runs, oldest first, two priors each -- more joined rows than the old LIMIT 200."""
+    outcomes = [
+        {"run_id": f"{i:06x}", "written_at": 1_790_000_000_000 + i * 1000, "continue_note": f"note {i}"}
+        for i in range(n_runs)
+    ]
+    priors = [
+        {"run_id": o["run_id"], "claim": f"claim {k} of {o['run_id']}"}
+        for o in outcomes for k in (1, 2)
+    ]
+    return outcomes, priors
+
+
+def test_recent_runs_are_the_newest_when_history_is_longer_than_one_old_read() -> None:
+    from orion.curiosity.worldview import read_recent_runs
+
+    outcomes, priors = _history(400)  # 800 joined rows; the old read kept the oldest 200
+    reader = _GraphLikeReader(outcomes, priors)
+
+    recent = read_recent_runs(reader, limit=4)
+
+    assert [r.run_id for r in recent] == ["00018f", "00018e", "00018d", "00018c"]
+    assert recent[0].claims == ["claim 1 of 00018f", "claim 2 of 00018f"]
+    # Claims are read for the shown runs only, not the whole history.
+    claims_query = reader.queries[-1]
+    assert "'00018f'" in claims_query and "'000000'" not in claims_query
+
+
+def test_the_old_join_shape_would_have_shown_the_oldest_runs() -> None:
+    """Pins the defect: this is the query #3398 replaced, on the same data."""
+    from orion.curiosity.worldview import build_recent_runs
+
+    outcomes, priors = _history(400)
+    old_cypher = (
+        "MATCH (t:TurnOutcome) OPTIONAL MATCH (p:Prior {run_id: t.run_id}) "
+        "RETURN t.run_id AS run_id, t.written_at AS written_at, "
+        "t.continue_note AS continue_note, p.claim AS claim LIMIT 200"
+    )
+    rows = _GraphLikeReader(outcomes, priors).query(old_cypher)
+    assert build_recent_runs(rows, limit=4)[0].run_id == "000063"  # run 99 of 400
+
+
+def test_recent_runs_read_through_the_snapshot_and_an_iso_stamp_still_sorts() -> None:
+    outcomes, priors = _history(300)
+    # The newest run wrote an ISO string. The graph sorts it after every integer.
+    outcomes.append({"run_id": "feedbeef", "written_at": "2030-01-01T00:00:00Z", "continue_note": "iso run"})
+    reader = _GraphLikeReader(outcomes, priors)
+
+    snap = read_snapshot(reader, sample=4, stale_after=3, recent_runs=4)
+
+    assert [r.run_id for r in snap.recent_runs][:2] == ["feedbeef", "00012b"]
+    assert snap.recent_runs[0].claims == ["iso run"]  # no prior written: its note stands in
+
+
+def test_recent_runs_warn_when_the_outcome_read_is_cut(caplog) -> None:
+    from orion.curiosity.worldview import RECENT_RUNS_LIMIT, read_recent_runs
+
+    outcomes, priors = _history(RECENT_RUNS_LIMIT + 5)
+    with caplog.at_level("WARNING"):
+        recent = read_recent_runs(_GraphLikeReader(outcomes, priors), limit=1)
+    assert recent[0].run_id == f"{RECENT_RUNS_LIMIT + 4:06x}"  # still the newest
+    assert any("curiosity_worldview_recent_runs_truncated" in m for m in caplog.messages)
+
+
+def test_a_run_id_that_is_not_hex_never_reaches_the_query_text() -> None:
+    from orion.curiosity.worldview import read_recent_runs, recent_run_claims_cypher
+
+    assert recent_run_claims_cypher(["x'] RETURN 1 //"]) is None
+    reader = _GraphLikeReader(
+        [{"run_id": "x'] RETURN 1 //", "written_at": 5, "continue_note": "odd id"}], []
+    )
+    recent = read_recent_runs(reader, limit=4)
+    assert recent[0].claims == ["odd id"]
+    assert len(reader.queries) == 1  # no claims query was built
 
 
 # --- edges are part of the footprint ----------------------------------------

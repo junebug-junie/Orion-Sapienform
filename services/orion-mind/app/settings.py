@@ -148,8 +148,15 @@ class Settings(BaseSettings):
     PRIME_HOLDBACK_FRACTION: float = Field(default=0.2, ge=0.0, le=1.0, alias="PRIME_HOLDBACK_FRACTION")
     # Body (/physiology/state) and attention (/temporal-self/frame).
     PRIME_DURABLE_RUNS_URL: str = Field(default="http://orion-athena-durable-runs:8121", alias="PRIME_DURABLE_RUNS_URL")
-    # Hub (host network on athena): curiosity's runs and pending focus (/curiosity/api/runs).
+    # Hub (host network on athena): curiosity's runs (/curiosity/api/runs) and the pending focus
+    # (/curiosity/api/focus/pending, the move check's cheap read, 4 s timeout).
     PRIME_HUB_URL: str = Field(default="http://100.92.216.81:8080", alias="PRIME_HUB_URL")
+    # Timeout for Hub's curiosity dashboard read (frame CURIOSITY section, settling questions). It took 4-44 s
+    # live (#3366), so the slowest reads still fail by design (a named gap in the frame; settling waits for the
+    # next interval). The move check never waits on it. Once per thought and once per settle interval while a
+    # question is open; both can fall in one tick. The thought's read runs after the bid is funded.
+    PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC: float = Field(default=30.0, gt=0.0,
+                                                         alias="PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC")
     # Orion Prime step 3: Prime may send "slow" / "quicken" signals to a want family that declares the
     # receptor (config/physiology/families.yaml; today curiosity investigate), as bounded, temporary
     # charges in the body economy (orion/physiology/prime_charge.py). false: the move is not offered and a

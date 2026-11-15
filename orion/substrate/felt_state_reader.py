@@ -112,6 +112,27 @@ _LANES: tuple[LaneSpec, ...] = (
         where_sql="concept_id = 'self:definition' AND produced_by = 'curiosity_self_inquiry'",
         cache_ttl_sec=300,
     ),
+    # Orion's core page "who Juniper is to me" (orion/memory/pages/juniper.py), folded nightly by
+    # orion-durable-runs. Read by cortex-exec's grounding capsule (core_pages) into the harness
+    # RELATIONSHIP slot. A page stays current until the next fold replaces it, so the row may be
+    # old; a year bounds a page nothing has refreshed. Cache refreshes every 5 min.
+    # A full hydrate (lanes=None) reads this lane whatever ORION_CORE_PAGES_ENABLED says (this reader
+    # has no per-lane flags): the flag gates USE, in cortex-exec's core_pages_for_ctx, not the read.
+    # With the flag off the ctx key may be present (and listed in CONTEXT PROVENANCE) but no prompt
+    # renders the page.
+    LaneSpec(
+        ctx_key="orion_core_page_juniper",
+        table="self_concept_history",
+        payload_col=(
+            "json_build_object('entry_id', entry_id, 'concept_id', concept_id, 'content', content, "
+            "'version', version, 'evidence_refs', evidence_refs, 'created_at', created_at)"
+        ),
+        ts_col="created_at",
+        projection_id=None,
+        max_age_sec=365 * 86400,
+        where_sql="concept_id = 'page:juniper' AND produced_by = 'core_page_fold'",
+        cache_ttl_sec=300,
+    ),
     LaneSpec(
         ctx_key="latest_reverie_thought",
         table="substrate_reverie_thought",

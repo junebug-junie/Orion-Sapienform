@@ -656,6 +656,7 @@ from orion.schemas.reverie_visual import (
 )
 from orion.schemas.thought import (
     CoalitionSnapshotV1,
+    CorePageV1,
     GroundingCapsuleV1,
     HubAssociationBundleV1,
     StanceHarnessSliceV1,
@@ -1666,6 +1667,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "ThoughtEventV1": ThoughtEventV1,
     "ThoughtDecisionRecordV1": ThoughtDecisionRecordV1,
     "GroundingCapsuleV1": GroundingCapsuleV1,
+    "CorePageV1": CorePageV1,
     "SpontaneousThoughtV1": SpontaneousThoughtV1,
     "ReverieChainV1": ReverieChainV1,
     "ReverieRefractoryEntry": ReverieRefractoryEntry,

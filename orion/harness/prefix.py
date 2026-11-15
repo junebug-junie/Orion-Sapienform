@@ -19,6 +19,7 @@ from orion.schemas.pre_turn_appraisal import TurnWindowMessageV1
 from orion.schemas.reading import ReadingToolBindingV1
 from orion.schemas.thought import (
     AutonomySliceV1,
+    CorePageV1,
     GroundingCapsuleV1,
     StanceHarnessSliceV1,
     ThoughtEventV1,
@@ -103,20 +104,54 @@ def _format_context_provenance_block(context_provenance: dict[str, str]) -> list
     return lines
 
 
+CORE_PAGE_RELATIONSHIP = "page:juniper"
+
+
+def _relationship_page(capsule: GroundingCapsuleV1) -> CorePageV1 | None:
+    for page in capsule.core_pages:
+        if page.concept_id == CORE_PAGE_RELATIONSHIP and page.text.strip():
+            return page
+    return None
+
+
+def _relationship_policy_lines(bullets: list[str]) -> list[str]:
+    """The identity-yaml relationship bullets, kept under RESPONSE POLICY once Orion's own page
+    holds RELATIONSHIP. Bare role words ("co-architect", "steward") read as one line; the
+    how-to-meet-her bullets stay as they are."""
+    roles = [b.strip() for b in bullets if b.strip() and len(b.split()) <= 3 and not b.strip().endswith(".")]
+    rest = [b for b in bullets if b.strip() and b.strip() not in roles]
+    out = [f"My roles with Juniper: {', '.join(roles)}."] if roles else []
+    return out + rest
+
+
 def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
-    """Compact motor self block: identity + relationship + continuity/memory + policy."""
+    """Compact motor self block: identity + relationship + continuity/memory + policy.
+
+    RELATIONSHIP is Orion's own page:juniper when the capsule carries one (core memory pages,
+    Phase 1a); the identity-yaml relationship bullets then move under RESPONSE POLICY. Without a
+    page, both slots render exactly as before."""
     lines: list[str] = ["WHO YOU ARE"]
     lines.extend(f"- {item}" for item in capsule.identity_summary)
-    if capsule.relationship_summary:
+    page = _relationship_page(capsule)
+    policy = list(capsule.response_policy_summary)
+    if page is not None:
+        stamp = f", written {page.written_at}" if page.written_at else ""
+        lines.append(
+            f"RELATIONSHIP (who Juniper is to me, in my own words: {page.concept_id} v{page.version}{stamp}, "
+            f"from {page.evidence_count} cited records)"
+        )
+        lines.append(page.text.strip())
+        policy = _relationship_policy_lines(list(capsule.relationship_summary)) + policy
+    elif capsule.relationship_summary:
         lines.append("RELATIONSHIP")
         lines.extend(f"- {item}" for item in capsule.relationship_summary)
     digest = (capsule.memory_digest or capsule.continuity_digest or "").strip()
     if digest:
         lines.append("DURABLE MEMORY / CONTINUITY")
         lines.append(digest)
-    if capsule.response_policy_summary:
+    if policy:
         lines.append("RESPONSE POLICY")
-        lines.extend(f"- {item}" for item in capsule.response_policy_summary)
+        lines.extend(f"- {item}" for item in policy)
     lines.extend(_format_context_provenance_block(capsule.context_provenance))
     return lines
 

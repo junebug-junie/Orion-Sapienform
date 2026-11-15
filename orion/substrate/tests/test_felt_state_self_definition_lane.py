@@ -77,7 +77,8 @@ def test_where_clause_and_aliases_are_rendered_into_the_query() -> None:
     reader = _reader({"payload": payload, "ts": datetime.now(timezone.utc)})
     ctx: dict = {}
     reader.hydrate(ctx)
-    sql = next(q for q, _ in reader._engine.queries if "self_concept_history" in q)
+    # The lived-answers and page:juniper lanes read self_concept_history too: pick this lane's query.
+    sql = next(q for q, _ in reader._engine.queries if "'self:definition'" in q)
     assert "WHERE concept_id = 'self:definition' AND produced_by = 'curiosity_self_inquiry'" in sql
     assert "AS payload" in sql and "AS ts" in sql
     assert "ORDER BY created_at DESC LIMIT 1" in sql
@@ -96,14 +97,14 @@ def test_cache_ttl_is_the_short_one_not_the_row_age() -> None:
     reader = _reader({"payload": {"content": "v1"}, "ts": datetime.now(timezone.utc)})
     ctx: dict = {}
     reader.hydrate(ctx)
-    n_after_first = sum(1 for q, _ in reader._engine.queries if "self_concept_history" in q)
+    n_after_first = sum(1 for q, _ in reader._engine.queries if "'self:definition'" in q)
     # Age the cache entry past the cache TTL but well inside the row age.
     payload, _ = reader._cache[lane.ctx_key]
     reader._cache[lane.ctx_key] = (payload, time.monotonic() - (lane.cache_ttl_sec + 1))
     reader._engine._row = {"payload": {"content": "v2"}, "ts": datetime.now(timezone.utc)}
     ctx2: dict = {}
     reader.hydrate(ctx2)
-    n_after_second = sum(1 for q, _ in reader._engine.queries if "self_concept_history" in q)
+    n_after_second = sum(1 for q, _ in reader._engine.queries if "'self:definition'" in q)
     assert n_after_second == n_after_first + 1, "expired cache re-queried"
     assert ctx2["orion_self_definition"] == {"content": "v2"}
 
@@ -125,9 +126,9 @@ def test_a_miss_is_remembered_for_the_cache_ttl_and_does_not_leak_into_ctx() -> 
     reader = _reader(None)
     ctx: dict = {}
     reader.hydrate(ctx)
-    n1 = sum(1 for q, _ in reader._engine.queries if "self_concept_history" in q)
+    n1 = sum(1 for q, _ in reader._engine.queries if "'self:definition'" in q)
     reader.hydrate({})
-    n2 = sum(1 for q, _ in reader._engine.queries if "self_concept_history" in q)
+    n2 = sum(1 for q, _ in reader._engine.queries if "'self:definition'" in q)
     assert n1 == 1 and n2 == 1, "second hydrate inside the TTL did not re-query"
     assert "orion_self_definition" not in ctx
     # After the TTL the lane looks again and picks up a new row.
@@ -158,9 +159,14 @@ def test_a_failing_query_is_also_remembered_as_a_miss() -> None:
     reader._engine = _Boom(None)
     reader.hydrate({})
     reader.hydrate({})
-    # Every lane errors on connect; the opted-in lane is asked once, the others
-    # (no cache_ttl_sec) keep retrying -- so the count is 2*(lanes) - 1.
-    assert len(reader._engine.queries) == 2 * len(_LANES) - 1
+    # Every lane errors on connect; the opted-in lanes (cache_ttl_sec set) are asked
+    # once, the others keep retrying. The lived-answers read (when pinned questions
+    # exist) also remembers its failure, so it is asked once.
+    from orion.substrate.felt_state_reader import _pinned_lived_concept_ids
+
+    opted_in = sum(1 for lane in _LANES if lane.cache_ttl_sec is not None)
+    lived = 1 if _pinned_lived_concept_ids() else 0
+    assert len(reader._engine.queries) == 2 * len(_LANES) - opted_in + lived
     assert reader._cache["orion_self_definition"][0] is None
 
 

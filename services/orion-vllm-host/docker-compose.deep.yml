@@ -22,7 +22,7 @@ services:
       LLM_ANNOUNCE_PORT: "8021"
       XDG_CACHE_HOME: /cache
     ports: !override
-      - "8021:8000"
+      - "${VLLM_ENGINE_PUBLISH:-8021}:8000"   # lane door: 127.0.0.1:18021 (docs/runbooks/2026-11-14-lane-door.md)
     volumes: !override
       - type: bind
         source: /mnt/models

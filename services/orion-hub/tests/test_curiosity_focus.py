@@ -487,6 +487,41 @@ def test_schedule_carries_the_pending_focus_and_unreadable_is_not_none(monkeypat
     assert asyncio.run(cr._read_pending_focus()) == {"available": False, "focus": None, "enabled": got["enabled"]}
 
 
+def test_the_pending_focus_route_reads_only_the_focus_never_the_dashboard(monkeypatch):
+    # #3366: Prime's move check timed out on /api/runs (4-44 s). This route is its cheap read.
+    import scripts.curiosity_routes as cr
+
+    def no_dashboard(*_a, **_k):
+        raise AssertionError("the pending-focus route must not build the dashboard")
+
+    monkeypatch.setattr(cr, "_read_schedule", no_dashboard)
+    monkeypatch.setattr(cr, "_run_store", no_dashboard)
+    monkeypatch.setattr(cr, "_build_reader", no_dashboard)
+    [route] = [r for r in cr.router.routes if getattr(r, "path", None) == cf.PENDING_FOCUS_PATH]
+    assert route.methods == {"GET"}
+
+    table = FocusTable()
+    pool = FocusPool(table)
+    monkeypatch.setattr(cr, "_get_memory_pg_pool", lambda: pool)
+
+    def body():
+        resp = asyncio.run(cr.curiosity_focus_pending_api())
+        assert resp.status_code == 200 and "no-store" in resp.headers["cache-control"]
+        return json.loads(resp.body)
+
+    got = body()
+    assert got["available"] is True and got["focus"] is None
+    focus = _queue(pool)
+    got = body()
+    assert got["available"] is True and got["focus"]["focus_id"] == focus.focus_id
+    assert got == asyncio.run(cr._read_pending_focus())  # the same payload the schedule carries
+    # Unreadable is "unknown", never "none pending", and never a 500.
+    table.fail_with = RuntimeError("relation does not exist")
+    assert body() == {"available": False, "focus": None, "enabled": got["enabled"]}
+    monkeypatch.setattr(cr, "_get_memory_pg_pool", lambda: None)
+    assert body()["available"] is False
+
+
 def test_runs_that_took_a_focus_are_marked(monkeypatch):
     import scripts.curiosity_routes as cr
 

@@ -2378,11 +2378,11 @@ channels:
     kind: "event"
     schema_id: "SelfConceptHistoryV1"
     message_kind: "self_concept.history.write.v1"
-    producer_services: ["orion-hub"]
+    producer_services: ["orion-hub", "orion-durable-runs"]
     consumer_services: ["orion-sql-writer"]
     stability: "experimental"
     since: "2026-09-05"
-    description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by one live producer (two retired, their rows stay as history: Layer 3 self-study reflection from orion-cortex-exec, layer3_reflect, retired 2026-10-30; Self Atlas per-cluster descriptions from orion-hub, self_atlas_cluster, retired 2026-11): since 2026-09-08, Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Additive to identity.yaml, not a replacement."
+    description: "Append-only, versioned self-concept claims -- the identity.yaml-replacement store (self-model rebuild arc, Layer 2/Patch 3). Fed by one live producer (two retired, their rows stay as history: Layer 3 self-study reflection from orion-cortex-exec, layer3_reflect, retired 2026-10-30; Self Atlas per-cluster descriptions from orion-hub, self_atlas_cluster, retired 2026-11): since 2026-09-08, Orion's own first-person `:SelfDefinition` from a self-inquiry curiosity run, mirrored by orion-hub under concept_id `self:definition` / produced_by `curiosity_self_inquiry` (orion/curiosity/self_inquiry.py). That last one is read back into every chat turn's identity kernel via the felt-state reader's `orion_self_definition` lane. Since 2026-11-15 also core memory pages from orion-durable-runs (concept_id `page:juniper`, produced_by `core_page_fold`; orion/memory/pages/juniper.py): every sentence cites a person_fact or episode_memory record, read back into the unified turn's RELATIONSHIP block via the felt-state reader's `orion_core_page_juniper` lane. Additive to identity.yaml, not a replacement."
 
   - name: "orion:personality:naming"
     kind: "event"

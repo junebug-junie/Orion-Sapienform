@@ -10,7 +10,9 @@ would send to the model and checks it is something a mind could act on honestly:
 * settles   -- the runtime's own settlement rule finds a graded run for a control question opened
                before the newest finished run in the fixture (the eval would catch a settle rule that
                can never close on live run shapes);
-* refusals  -- the move check reads the live pending_focus shape (a focus waiting refuses the move);
+* refusals  -- apply_answer on the live pending_focus payload shape (a focus waiting refuses the move). Since
+               #3366 the runtime reads that payload from GET /curiosity/api/focus/pending, not the dashboard;
+               the shape is the same (both come from Hub's _read_pending_focus);
 * refs      -- Prime's live question of 2026-10-30, which wrote "arc 8d87adeca2ce06a5" in its text with
                no way for a curiosity run to open it, is refused; the same question with that arc in
                ``refs`` passes, and the run's focus section prints the dig command that opens it;
@@ -22,6 +24,11 @@ would send to the model and checks it is something a mind could act on honestly:
                can read; quicken to dream is refused; the frame stays under the cap.
 * attention_background -- (2026-11-03) a tick where only the active arc moved records no change (attention
                no longer wakes Prime), yet the frame still names the live active arc under ATTENTION.
+* focus_read_split -- (#3366) with the dashboard read timed out, apply_answer still decides from the cheap
+               pending-focus read's result (a move goes when nothing waits, is refused when a focus waits, and is
+               refused with the runtime's "timed out" sentence when that read times out); the frame names both
+               gaps. It does not run the runtime's read-to-result mapping: services/orion-mind/tests/test_prime_loop.py
+               covers that.
 * starved_try  -- after a try that never reached the model, the next frame says so in Prime's own outcome
                lines, and that line is not a change (it cannot wake Prime by itself).
 
@@ -169,6 +176,31 @@ def run() -> list[tuple[str, bool, str]]:
     results.append(("attention_background", ticked.pending_changes == [] and "ATTENTION" in bg_frame
                     and (not active_id or active_id in bg_frame),
                     f"changes after an attention-only tick: {ticked.pending_changes}; active arc {active_id} in frame"))
+
+    # focus_read_split (#3366): the dashboard timed out every thought on 11-14; the cheap read decides now.
+    live_page = data["curiosity"]["schedule"]["pending_focus"]  # GET /curiosity/api/focus/pending has this shape
+    waiting = {"origin": "juniper", "question": "what heats the closet at night?"}
+    down = dict(curiosity_error="TimeoutError: timed out")
+    split_ok, split_why = True, []
+    for page_focus, unread, expect_sent in ((live_page["focus"], None, True), (waiting, None, False),
+                                            (None, "Hub did not answer in 4 s", False)):
+        inp = _inputs(data, **down)
+        if unread:
+            inp.pending_focus_error = unread
+            fp, why = None, "timed out reading whether curiosity already has a focus waiting (no answer from Hub in 4 s)"
+        else:
+            inp.pending_focus_read, inp.pending_focus = True, page_focus
+            fp, why = page_focus is not None, None
+        f = build_frame(state, inp)
+        a = apply_answer(state, move, now=inp.now, arc_ids=inp.arc_ids, focus_pending=fp, focus_unread=why)
+        shown = ("(unavailable: TimeoutError: timed out)" in f
+                 and (not page_focus or "what heats the closet at night?" in f)
+                 and (not unread or f"is unknown: {unread}" in f))
+        ok = (a.move is not None) == expect_sent and shown and (not unread or "timed out" in (a.move_refusal or ""))
+        split_ok &= ok
+        split_why.append(f"{'waiting' if page_focus else 'unread' if unread else 'none'}->"
+                         f"{'sent' if a.move else 'refused'}{'' if ok else ' (WRONG)'}")
+    results.append(("focus_read_split", split_ok, "; ".join(split_why)))
 
     # starved_try: the line a no-seat try leaves (orion/mindloop/runtime.py _note_no_model) reaches the next frame.
     line = "a try to think at 12:00 UTC never reached the model (no_seat: deadline); I tried again"

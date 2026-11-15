@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+
+import pytest
 import subprocess
 import sys
 from pathlib import Path
@@ -327,3 +329,37 @@ def test_settings_json_carries_reading_flags_only_when_armed():
     armed = json.loads(rfb.hook_settings_json(threshold=3, python_bin="py", refetch_limit=1, tool_window_fraction=0.5))
     assert armed["hooks"]["PreToolUse"][0]["hooks"][0]["command"].endswith(
         "--threshold 3 --refetch-limit 1 --tool-window-fraction 0.5")
+
+
+# --- #3401: Postgres reads \\b as a backspace, so the regex matches nothing ---
+
+_PSQL = 'psql "$ORION_CURIOSITY_PG_DSN" -At -c '
+
+
+@pytest.mark.parametrize("sql", [
+    r"""select count(*) from reverie_thoughts where body ~* '\bjuniper\b'""",
+    r"""select count(*) from t where body !~ '\bfoo'""",
+    r"""select regexp_count(body, '\bjuniper\b', 1, 'i') from t""",
+    r"""select 1 from t where body SIMILAR TO '%\bfoo%'""",
+])
+def test_psql_regex_with_backslash_b_is_blocked_with_the_fix(tmp_path, sql):
+    proc = _run_hook(tmp_path, [], "Bash", {"command": _PSQL + '"' + sql + '"'})
+    assert proc.returncode == 2
+    assert rfb.BLOCK_MARKER in proc.stderr
+    assert r"Use \y for a word boundary" in proc.stderr
+
+
+@pytest.mark.parametrize("tool_name,command", [
+    ("Bash", _PSQL + r""" "select count(*) from t where body ~* '\yjuniper\y'" """),
+    ("Bash", _PSQL + r""" "select count(*) from t where body like '%juniper%'" """),
+    ("Bash", r"grep -rn '\bjuniper\b' ~/notes"),  # not psql: \b is right for grep
+    ("Bash", _PSQL + r""" "select 1" && printf 'a\bc' """),  # \b, but no regex operator
+    ("Read", _PSQL + r""" "select 1 where 'a' ~ '\bfoo'" """),  # not a Bash call
+])
+def test_psql_guard_lets_everything_else_through(tmp_path, tool_name, command):
+    assert _run_hook(tmp_path, [], tool_name, {"command": command}).returncode == 0
+
+
+def test_psql_guard_needs_no_transcript():
+    payload = {"tool_name": "Bash", "tool_input": {"command": _PSQL + r""" "select 1 where x ~ '\bfoo'" """}}
+    assert rfb.run_hook(payload, threshold=3) == rfb.psql_backspace_message()

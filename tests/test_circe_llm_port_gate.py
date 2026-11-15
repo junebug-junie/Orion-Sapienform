@@ -94,3 +94,11 @@ def test_install_is_one_command_that_places_enables_reapplies_and_shows_status()
 
 def test_uninstall_stops_the_unit_which_removes_the_rules() -> None:
     assert _dry("uninstall")[0] == "systemctl disable --now orion-llm-port-gate.service"
+
+
+def test_kev_is_behind_the_firewall_too() -> None:
+    """Leased-evals answer 7 (2026-11-12): kev :8009 gets no lane door, so the firewall is its only fence.
+    A one-off iptables line was handed out first; the port list here is what survives a reboot."""
+    out = _dry("apply")
+    for ipt in ("iptables", "ip6tables"):
+        assert 8009 in _ports(out, ipt)

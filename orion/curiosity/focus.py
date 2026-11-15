@@ -51,6 +51,13 @@ REFUSED_MIGRATION = "services/orion-sql-db/manual_migration_curiosity_focus_requ
 # and no day was skipped. 48 h covers that worst wait plus one whole missed day.
 FOCUS_TTL = timedelta(hours=48)
 
+# Hub's cheap read of the one pending focus (services/orion-hub/scripts/curiosity_routes.py), for
+# readers that only need "is a focus waiting?" -- Prime's move check. One indexed row read (the partial
+# unique index ``curiosity_focus_request_one_pending``), never the whole dashboard. Body:
+# ``{"available": bool, "focus": <focus payload> | null, "enabled": bool | null}``; ``available: false``
+# means the table could not be read, never "none pending" (#3366: the dashboard took 4-44 s).
+PENDING_FOCUS_PATH = "/curiosity/api/focus/pending"
+
 ORIGIN_SELF = "self"
 ORIGIN_JUNIPER = "juniper"
 

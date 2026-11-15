@@ -3,7 +3,7 @@
 - After Orion reads a page, the second reading pass (Stage 2) now shows a numbered list of up to 12 links that page contained. Orion already picks links to read next (`need_stage1_urls`); now the links Orion left are on record too.
 - After the pass, Hub publishes one `PersonalityChoiceV1` (lane `reading`) per pick on `orion:personality:choice`. An empty pick list is `declined_all` over every shown link. durable-runs already writes these rows. No new model call.
 - The shown list is read back out of the prompt actually bound to the durable turn, never recomputed, so restarts and later polls record what Orion really saw.
-- Reading joins `DECLINABLE_LANES`, so reading picks count for the `hub.world_pulse_read` endorsement (source (c)), not only declines. Source (c) now counts one decision per offer instead of one row per pick (review finding).
+- Reading choices feed tendencies and care, but are kept OUT of the family endorsement score (source (c), `ENDORSEMENT_EXCLUDED_LANES`). Source (c) now counts one decision per offer instead of one row per pick (review finding).
 - Kill switch: `HUB_WORLD_PULSE_READ_CHOICE_ENABLED` (default `true`).
 
 ## Outcome moved
@@ -29,7 +29,7 @@ Real ordering ("market rank"): page order. That is the order of Stage 1's fetche
 - `orion/world_pulse_read/next_read_choice.py`: new. Candidate links (page order, label from markdown anchor text or the line, else URL words), prompt section render/parse, `reading_choices`, `publish_choice`.
 - `services/orion-hub/scripts/world_pulse_read_stage2.py`: builds the list (minus pages Stage 1 fetched, assets, the site's top-level navigation, links already read; none when the chain is full), puts it in the prompt, keeps the bound prompt from `bind_turn`, publishes choices after `stage2_completed`.
 - `orion/world_pulse_read/reader_contract.py`: `defuse_fence_markers` also defuses the list markers.
-- `orion/physiology/weights.py`: `DECLINABLE_LANES` += `reading`; `_endorsement` counts per decision.
+- `orion/physiology/weights.py`: `DECLINABLE_LANES` += `reading` (its choices are real: a decline is on offer); new `ENDORSEMENT_EXCLUDED_LANES = {reading}` keeps them out of source (c); `_endorsement` counts per decision.
 - `services/orion-hub/app/settings.py`, `scripts/main.py`, `.env_example`, `README.md`: flag and docs.
 - `orion/bus/channels.yaml`: producer note for the reading lane.
 - `config/physiology/contract.yaml`: registers `next_read_choice.py` as a reader (imports only `endorsement_option_key`), so the body-economy contract gate passes.
@@ -42,7 +42,7 @@ Real ordering ("market rank"): page order. That is the order of Stage 1's fetche
 - Added: none (lane `reading` already existed in `ChoiceLane`).
 - Removed: none.
 - Renamed: none.
-- Behavior changed: Hub publishes `PersonalityChoiceV1` lane `reading`. Source (c) endorsement counts one decision per `act_id` (was one row per pick); for today's single-pick Prime/outreach rows the result is the same.
+- Behavior changed: Hub publishes `PersonalityChoiceV1` lane `reading` (feeds tendencies and care, not source (c)). Source (c) endorsement counts one decision per `act_id` (was one row per pick); for today's single-pick Prime/outreach rows the result is the same.
 - Compatibility notes: a Stage 2 turn bound before deploy has no list in its prompt, so it records no choice.
 
 ## Env/config changes
@@ -108,7 +108,7 @@ Run from the clean primary `main` checkout after merge. durable-runs needs no ch
 
 ## Risks / concerns
 
-- Severity: medium. Concern: reading endorsement will read high (Orion picks a link in about 86% of passes with links), which raises `hub.world_pulse_read`'s weight once rows land; Move 2 binds with no shadow. Mitigation: that is Orion's revealed preference, as designed; `HUB_WORLD_PULSE_READ_CHOICE_ENABLED=false` stops new rows.
+- Severity: low (was medium). Concern: reading choices would have read about 86% "picked a link" and lifted `hub.world_pulse_read`'s weight with no comparison against other work (every option is one family, chosen inside a reading run). Mitigation: reading rows are excluded from source (c) (`ENDORSEMENT_EXCLUDED_LANES`, test `test_reading_rows_are_real_choices_but_never_move_reading_endorsement`); they still feed tendencies and care, which bind from deploy. A Prime pick of a reading concern still counts for the family. `HUB_WORLD_PULSE_READ_CHOICE_ENABLED=false` stops new rows.
 - Severity: low. Concern: the list may nudge Orion toward more hops (each hop is an agent-GPU Stage 1 read, Wallet A gated). Mitigation: the chain cap and Wallet A are unchanged; replay shows 82% of passes already asked for hops.
 - Severity: low. Concern: pub/sub delivery, so a choice published while durable-runs is down is lost. Mitigation: same as Prime/outreach.
 - Live path: UNVERIFIED (no deploy in this PR). Check after deploy: `docker logs orion-athena-hub 2>&1 | grep reading_choice` and `SELECT count(*) FROM personality_choice WHERE lane='reading'`.

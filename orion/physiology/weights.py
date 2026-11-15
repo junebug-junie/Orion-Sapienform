@@ -19,7 +19,8 @@ Evidence sources, each a rate per act in 0..1 (never a count, so running more do
   ``DECLINABLE_LANES``, or any row that did decline) or that offered options from two or more families.
   A curiosity prior menu (one family, no "none") is never a point for (c): picking from it always reads
   1.0, which measures nothing. A ``care_promoted`` choice counts half (runaway guard). Families with no
-  choice point have NO source (c), never 0. Off unless the caller passes ``choices``.
+  choice point have NO source (c), never 0. Off unless the caller passes ``choices``. Reading-lane rows
+  never count (``ENDORSEMENT_EXCLUDED_LANES``): one family, chosen inside a reading run.
 
   Which family an option belongs to (``option_family``): an option key ``<family>::<id>`` names it
   (``endorsement_option_key``, for a producer whose options span families). Prime uses it since
@@ -99,9 +100,14 @@ LANE_FAMILIES: Mapping[str, str] = {
 }
 # Lanes whose choice point shows a "none" option (orion.personality.graph.DECLINE_TEXT's lanes).
 # Reading: Stage 2 may leave need_stage1_urls empty ("or none", orion/world_pulse_read/
-# next_read_choice.py), so a pick is a real choice. Without it only reading DECLINES would count
-# for hub.world_pulse_read and the rate could only read 0.
+# next_read_choice.py), so its picks and declines are real choices. They feed tendencies and care
+# (the personality reducer reads every personality_choice row); source (c) leaves them out below.
 DECLINABLE_LANES = frozenset({"prime", "outreach", "reading"})
+# Lanes whose choices never count for source (c). Every reading option is in hub.world_pulse_read
+# and the choice happens inside a reading run, so its rate only measures "kept reading once already
+# reading" (~86% live), not a preference for reading over other work: it would lift the family's
+# weight with no comparison behind it (Juniper/coordinator, 2026-11-15).
+ENDORSEMENT_EXCLUDED_LANES = frozenset({"reading"})
 OPTION_FAMILY_SEP = "::"
 CARE_PROMOTED_WEIGHT = 0.5
 ENDORSEMENT_CORR_EXCLUDE = 0.8
@@ -183,7 +189,8 @@ def _endorsement(family: str, choices: Sequence[ChoiceRecord], *, since: datetim
     chose: dict[str, bool] = {}
     ids: dict[str, float] = {}
     for c in choices:
-        if family not in c.offered_families or not c.real_choice or not since <= c.occurred_at < until:
+        if (c.lane in ENDORSEMENT_EXCLUDED_LANES or family not in c.offered_families or not c.real_choice
+                or not since <= c.occurred_at < until):
             continue
         w = CARE_PROMOTED_WEIGHT if c.care_promoted else 1.0
         key = c.act_id or f"choice:{c.choice_id}"
@@ -431,6 +438,7 @@ def max_daily_move(series: Mapping[date, Mapping[str, FamilyWeight]]) -> float:
 __all__ = [
     "ChoiceRecord",
     "DECLINABLE_LANES",
+    "ENDORSEMENT_EXCLUDED_LANES",
     "ENDORSEMENT_CORR_EXCLUDE",
     "ENDORSEMENT_CORR_MIN_DAYS",
     "EndorsementCheck",

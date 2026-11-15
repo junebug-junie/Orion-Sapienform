@@ -45,21 +45,30 @@ def test_declinable_lanes_match_the_reducers_decline_phrases():
     assert DECLINABLE_LANES - frozenset(DECLINE_TEXT) == {"reading"}
 
 
-def test_a_reading_pick_is_a_real_choice_for_the_reading_family():
-    rec = choice_record("reading:s1:a", "reading", NOW - timedelta(days=1), "hub.world_pulse_read::link:a",
-                        ["hub.world_pulse_read::link:b"])
-    assert rec.real_choice and rec.chosen_family == "hub.world_pulse_read"
-    rate, n, _ = endorsement_for("hub.world_pulse_read", [rec], since=SINCE, until=NOW)
-    assert rate == 1.0 and n == 1
+def test_reading_rows_are_real_choices_but_never_move_reading_endorsement():
+    at = NOW - timedelta(days=1)
+    pick = choice_record("reading:s1:a", "reading", at, "hub.world_pulse_read::link:a",
+                         ["hub.world_pulse_read::link:b"], act_id="reading_stage2:s1")
+    decline = choice_record("reading:s2:none", "reading", at, None, ["hub.world_pulse_read::link:c"],
+                            declined_all=True, act_id="reading_stage2:s2")
+    assert pick.real_choice and decline.real_choice  # declinable: tendencies may use them
+    assert endorsement_for("hub.world_pulse_read", [pick, decline], since=SINCE, until=NOW)[:2] == (None, 0)
+    # A Prime pick of a reading concern still counts for the family, and reading rows beside it change nothing.
+    prime = choice_record("prime:t1", "prime", at, endorsement_option_key("hub.world_pulse_read", "c1"),
+                          ["prime-c2"], act_id="prime:t1")
+    alone = endorsement_for("hub.world_pulse_read", [prime], since=SINCE, until=NOW)[:2]
+    assert alone == (1.0, 1)
+    assert endorsement_for("hub.world_pulse_read", [prime, pick, decline], since=SINCE, until=NOW)[:2] == alone
+    ev = evidence_for("hub.world_pulse_read", [], [], since=SINCE, until=NOW, choices=[pick, decline])
+    assert ev.endorsement_rate is None
 
 
 def test_a_multi_pick_decision_counts_once_per_offer():
     at = NOW - timedelta(days=1)
-    picks = [choice_record(f"reading:s1:{x}", "reading", at, f"hub.world_pulse_read::link:{x}",
-                           ["hub.world_pulse_read::link:z"], act_id="reading_stage2:s1") for x in "abc"]
-    decline = choice_record("reading:s2:none", "reading", at, None, ["hub.world_pulse_read::link:y"],
-                            declined_all=True, act_id="reading_stage2:s2")
-    rate, n, _ = endorsement_for("hub.world_pulse_read", [*picks, decline], since=SINCE, until=NOW)
+    picks = [choice_record(f"outreach:d1:{x}", "outreach", at, f"topic{x}", ["topicz"], act_id="outreach:d1")
+             for x in "abc"]
+    decline = choice_record("outreach:d2", "outreach", at, None, ["topicy"], declined_all=True, act_id="outreach:d2")
+    rate, n, _ = endorsement_for("hub.outreach", [*picks, decline], since=SINCE, until=NOW)
     assert rate == 0.5 and n == 2
 
 

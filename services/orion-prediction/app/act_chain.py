@@ -51,6 +51,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence, get_args
 from zoneinfo import ZoneInfo
 
+import logging
+
 import numpy as np
 import pandas as pd
 from scipy import stats
@@ -79,6 +81,7 @@ _G = int(GRAIN.total_seconds() * 1e9)
 _GRACE = int(SETTLE_GRACE.total_seconds() * 1e9)
 _DAY = 86_400_000_000_000
 _IDX = {s: i for i, s in enumerate(STATES)}
+logger = logging.getLogger("orion-prediction.act_chain")
 
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
@@ -339,6 +342,9 @@ def verdict(rows: Iterable[dict]) -> dict:
 
 # --- live: issue at each bucket start, settle after the grace ------------------------------------
 ISSUE_SLACK = timedelta(minutes=3)    # a forecast is issued only in the first 3 min of its bucket
+# Margins after each cutoff before reading: created_at is stamped by the writer before its commit, so a
+# row stamped just before a cutoff can commit just after it. Waiting keeps live equal to the replay.
+COMMIT_MARGIN = timedelta(seconds=30)
 VERDICT_DAYS = 14
 
 
@@ -352,9 +358,12 @@ def observe(acts: Sequence[tuple[datetime, datetime, str]], origin: datetime) ->
     return STATES[int(st[0])], n
 
 
-def _row_for_verdict(r: dict) -> dict:
-    """A stored settled row in the shape ``verdict`` grades (probs as arrays in STATES order)."""
-    probs = {m: np.array([float(d.get(s, 0.0)) for s in STATES]) for m, d in r["probs"].items()}
+def _row_for_verdict(r: dict) -> dict | None:
+    """A stored settled row in the shape ``verdict`` grades (probs as arrays in STATES order). None when
+    the row was issued under another verb vocabulary (ActVerb changed): it cannot be graded on this one."""
+    if r["observed"] not in _IDX or any(set(d) != set(STATES) for d in r["probs"].values()):
+        return None
+    probs = {m: np.array([float(d[s]) for s in STATES]) for m, d in r["probs"].items()}
     obs = _IDX[r["observed"]]
     row = {"origin": r["origin"], "block": r["block"], "probs": probs, "observed": r["observed"], "observed_i": obs}
     return {**row, "scores": score(row, obs)}
@@ -370,8 +379,20 @@ class ActChain:
     def tick(self, now: datetime | None = None) -> dict:
         now = now or datetime.now(timezone.utc)
         origin = bucket_floor(now)
+        settled, failed = 0, 0
+        # settle first, one row at a time: a bad row (or a failing issue) must not block the others
+        for r in self.store.pending_act_chain(now - SETTLE_GRACE - COMMIT_MARGIN):
+            try:
+                state, n = observe(self.store.grammar_acts(r["origin"], r["window_end"]), r["origin"])
+                dist = r["probs"][r["served"]]
+                p = float(dist[state])
+                ent = float(-sum(q * np.log(q) for q in dist.values() if q > 0))
+                settled += self.store.settle_act_chain(r["forecast_id"], state, n, -np.log(p), -np.log(p) - ent, now)
+            except Exception:  # noqa: BLE001 -- e.g. a row issued under another verb vocabulary
+                failed += 1
+                logger.exception("act_chain_settle_failed %s", r.get("forecast_id"))
         issued = None
-        if now - origin <= ISSUE_SLACK and not self.store.act_chain_exists(origin):
+        if COMMIT_MARGIN <= now - origin <= ISSUE_SLACK and not self.store.act_chain_exists(origin):
             # opened before the origin only; forecast() further drops rows landed after each cutoff
             f = forecast(self.store.grammar_acts(origin - LOOKBACK - GRAIN, origin), origin)
             row = {"forecast_id": f"act_chain:{origin.strftime('%Y-%m-%dT%H:%M')}", "origin": origin,
@@ -379,13 +400,7 @@ class ActChain:
                    "prev_state": f["prev_state"], "block": f["block"], "n_train": f["n_train"],
                    "k": {m: float(v) for m, v in f["k"].items()}, "probs": f["probs"]}
             issued = self.store.insert_act_chain(row)
-        settled = 0
-        for r in self.store.pending_act_chain(now - SETTLE_GRACE):
-            state, n = observe(self.store.grammar_acts(r["origin"], r["window_end"]), r["origin"])
-            p = float(r["probs"][r["served"]][state])
-            ent = float(-sum(q * np.log(q) for q in r["probs"][r["served"]].values() if q > 0))
-            settled += self.store.settle_act_chain(r["forecast_id"], state, n, -np.log(p), -np.log(p) - ent, now)
-        self.last_pass = {"at": now, "issued": issued, "settled": settled}
+        self.last_pass = {"at": now, "issued": issued, "settled": settled, "settle_failed": failed}
         return self.last_pass
 
     def live(self, now: datetime | None = None) -> dict:
@@ -393,10 +408,13 @@ class ActChain:
         since = now - timedelta(days=VERDICT_DAYS)
         rows = self.store.act_chain_rows(since, settled_only=False)
         settled = [r for r in rows if r["settled_at"] is not None]
-        current = max(rows, key=lambda r: r["origin"]) if rows else None
+        newest = max(rows, key=lambda r: r["origin"]) if rows else None
+        current = newest if newest is not None and newest["origin"] == bucket_floor(now) else None
         lag = [(r["issued_at"] - r["origin"]).total_seconds() for r in rows]
         expected = int((bucket_floor(now) - bucket_floor(min((r["origin"] for r in rows), default=now))) / GRAIN) + 1
-        return {"model": MODEL, "baselines": list(BASELINES), "current": current, "window_days": VERDICT_DAYS,
+        graded = [g for g in map(_row_for_verdict, settled) if g is not None]
+        return {"model": MODEL, "baselines": list(BASELINES), "current": current,
+                "newest_origin": newest["origin"] if newest else None, "window_days": VERDICT_DAYS,
                 "issuance": {"issued": len(rows), "buckets_since_first": expected,
                              "issue_lag_sec_max": max(lag) if lag else None},
-                "grade": verdict([_row_for_verdict(r) for r in settled])}
+                "ungradable_rows": len(settled) - len(graded), "grade": verdict(graded)}

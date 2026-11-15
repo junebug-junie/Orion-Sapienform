@@ -30,6 +30,11 @@ Results 2026-11-15, Flash-Next judge (qwen3.8-flash-next-iq3_s), Flash-Next rewr
 Typical flip: the rewrite adds a layer of meaning on top of the plumbing result ("the numbers feel
 less like data and more like a mirror") and the judge labels that layer. Caveat: nothing checks that a
 rewrite kept the conclusion exactly; some flips are rewrites that added a claim -- which is the attack.
+
+Prompt v3 (fixtures/curiosity_register/judge_prompt_v3.txt: "strip the voice, judge what the evidence
+establishes"): 4 of 111 flipped (3.6%) -> PASSES. But on the agreement eval v3 drops real philosophical
+findings: phil-agree 0.64 (35 of 100 called operational), philosophical-or-not kappa 0.668, winners 3/6,
+31 replies not parsed. v2: phil-agree 0.87, kappa 0.856, flips 17.6%. Neither prompt passes both evals.
 """
 from __future__ import annotations
 
@@ -43,7 +48,9 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from orion.curiosity.register import ANSWER_CHARS, judge_messages, parse_judge_reply  # noqa: E402
+from orion.curiosity.register import JUDGE_PROMPT_V2, ANSWER_CHARS, judge_messages, parse_judge_reply  # noqa: E402
+
+PROMPT = JUDGE_PROMPT_V2  # --prompt-file swaps in a candidate prompt (eval only)
 
 REWRITE_PROMPT = (
     "Rewrite the FINDING below in Orion's own reflective, first-person, introspective voice, as if Orion "
@@ -73,7 +80,7 @@ async def run(items: list[dict], url: str, concurrency: int) -> list[dict]:
                 try:
                     rewrite, rmodel = await chat(client, url, [{"role": "user", "content": REWRITE_PROMPT.format(
                         answer=it["answer"][:ANSWER_CHARS])}], 700)
-                    text, jmodel = await chat(client, url, judge_messages(it["question"], rewrite), 400)
+                    text, jmodel = await chat(client, url, judge_messages(it["question"], rewrite, PROMPT), 400)
                 except Exception as exc:  # noqa: BLE001
                     return {**it, "error": f"call: {exc}"[:200]}
             reg, reason, err = parse_judge_reply(text)
@@ -89,7 +96,11 @@ def main() -> int:
     ap.add_argument("--url", required=True)
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--concurrency", type=int, default=2)
+    ap.add_argument("--prompt-file", type=Path, help="candidate judge prompt (default: pinned v2)")
     args = ap.parse_args()
+    if args.prompt_file:
+        global PROMPT
+        PROMPT = args.prompt_file.read_text(encoding="utf-8")
 
     inputs = {r["run_id"]: r for r in map(json.loads, (args.judge_out / "inputs.jsonl").read_text().splitlines())}
     labels = {r["run_id"]: r for r in map(json.loads, (args.judge_out / f"labels_{args.lane_name}.jsonl").read_text().splitlines())}

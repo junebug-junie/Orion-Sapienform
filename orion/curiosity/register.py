@@ -94,8 +94,9 @@ def judge_input(question: str, answer: str) -> str:
     return f"QUESTION: {clean(question)[:QUESTION_CHARS]}\n\nFINDING: {clean(answer)[:ANSWER_CHARS]}"
 
 
-def judge_messages(question: str, answer: str) -> list[dict[str, str]]:
-    return [{"role": "system", "content": JUDGE_PROMPT_V2},
+def judge_messages(question: str, answer: str, prompt: str = JUDGE_PROMPT_V2) -> list[dict[str, str]]:
+    """``prompt``: the evals may try a candidate prompt; the live writer always uses the pinned one."""
+    return [{"role": "system", "content": prompt},
             {"role": "user", "content": judge_input(question, answer)}]
 
 

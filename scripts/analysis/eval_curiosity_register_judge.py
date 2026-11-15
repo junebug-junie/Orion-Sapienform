@@ -63,7 +63,9 @@ REPO = Path(__file__).resolve().parents[2]
 if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
-from orion.curiosity.register import judge_messages, parse_judge_reply, run_question_and_answer  # noqa: E402
+from orion.curiosity.register import JUDGE_PROMPT_V2, judge_messages, parse_judge_reply, run_question_and_answer  # noqa: E402
+
+PROMPT = JUDGE_PROMPT_V2  # --prompt-file swaps in a candidate prompt (eval only)
 
 LABELS = REPO / "scripts/analysis/fixtures/curiosity_register/reference_labels_2026-10-20.jsonl"
 WINNERS = ("2bf28e16", "987448e7", "8998e10d", "91241b6d", "1f7b1157", "a9ba948f")
@@ -137,7 +139,7 @@ async def judge_all(url: str, its: list[dict], concurrency: int, thinking: bool 
             async with sem:
                 try:
                     r = await client.post(f"{url}/v1/chat/completions", json={
-                        "messages": judge_messages(it["question"], it["answer"]), "temperature": 0,
+                        "messages": judge_messages(it["question"], it["answer"], PROMPT), "temperature": 0,
                         "max_tokens": 2048 if thinking else 400,
                         "chat_template_kwargs": {"enable_thinking": thinking}})
                     r.raise_for_status()
@@ -177,7 +179,11 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--concurrency", type=int, default=2)
     ap.add_argument("--thinking", action="store_true", help="thinking on (more tokens per label)")
+    ap.add_argument("--prompt-file", type=Path, help="candidate judge prompt (default: pinned v2)")
     args = ap.parse_args()
+    if args.prompt_file:
+        global PROMPT
+        PROMPT = args.prompt_file.read_text(encoding="utf-8")
     args.out.mkdir(parents=True, exist_ok=True)
     its = items()
     (args.out / "inputs.jsonl").write_text("".join(json.dumps(i) + "\n" for i in its))

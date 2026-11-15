@@ -46,6 +46,7 @@ class Day:
     unkeyed_from: Counter = field(default_factory=Counter)   # "src path" -> n
     lease_ids: set = field(default_factory=set)
     no_lease_id: int = 0                                     # keyed calls without a lease id
+    refused: int = 0                                         # Phase 3: unkeyed calls an enforcing door refused
     unmatched_leases: Optional[int] = None                   # --dsn: keyed lease ids not in gpu_pool_events
     gateway_calls: Optional[int] = None                      # --dsn: llm_call_usage rows for this lane
 
@@ -84,6 +85,9 @@ def aggregate(lines: Iterable[str]) -> tuple[dict[str, dict[str, Day]], int]:
                 d.lease_ids.add(str(lease))
             else:
                 d.no_lease_id += 1
+        elif row.get("refused"):
+            d.refused += 1   # already refused (enforce): shown, not counted against the lane's readiness
+            d.unkeyed_from[f"REFUSED {row.get('src', '?')} {row.get('method', '?')} {row.get('path', '?')}"] += 1
         else:
             if key == "bad":
                 d.bad += 1
@@ -171,13 +175,13 @@ def render(report: dict[str, dict[str, Day]], verdicts: dict[str, tuple[bool, st
         if not report[lane]:
             lines.append("   no log lines for this lane (door not deployed, or no traffic)")
             continue
-        head = f"   {'day':10} {'keyed':>7} {'unkeyed':>8} {'badkey':>7}"
+        head = f"   {'day':10} {'keyed':>7} {'unkeyed':>8} {'badkey':>7} {'refused':>8}"
         if joined:
             head += f" {'no-lease':>9} {'gateway':>8} {'gap%':>6}"
         lines.append(head)
         for day in sorted(report[lane]):
             d = report[lane][day]
-            row = f"   {day:10} {d.ok:7d} {d.missing:8d} {d.bad:7d}"
+            row = f"   {day:10} {d.ok:7d} {d.missing:8d} {d.bad:7d} {d.refused:8d}"
             if joined:
                 gap = (f"{abs(d.ok - d.gateway_calls) * 100.0 / d.gateway_calls:6.1f}"
                        if d.gateway_calls else "     -")
@@ -217,7 +221,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                 for lane, days in report.items()}
     if args.json:
         print(json.dumps({"lanes": {lane: {"ready": verdicts[lane][0], "why": verdicts[lane][1], "days": {
-            day: {"keyed": d.ok, "unkeyed": d.missing, "bad_key": d.bad, "unkeyed_from": dict(d.unkeyed_from),
+            day: {"keyed": d.ok, "unkeyed": d.missing, "bad_key": d.bad, "refused": d.refused, "unkeyed_from": dict(d.unkeyed_from),
                   "unmatched_leases": d.unmatched_leases, "gateway_calls": d.gateway_calls}
             for day, d in sorted(days.items())}} for lane, days in report.items()},
             "unreadable_lines": bad_lines, "lease_join": joined}, indent=1))

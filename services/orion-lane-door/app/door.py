@@ -10,6 +10,8 @@ The door checks the key (``ok`` / ``missing`` / ``bad``), strips both headers, f
 byte-for-byte to the engine on the docker network, and logs ONE JSON line per model call: time,
 lane, source address, method, path, key state, lease id, status, duration. Never prompt text, never
 the key. In ``shadow`` mode it refuses nothing. ``off`` = pure pass-through (headers still stripped).
+In ``enforce`` mode (Phase 3, one lane at a time, Juniper's call after the shadow evidence) a model call
+without a valid key gets 401 ``lane_door_unleased`` and never reaches the engine; exempt reads still pass.
 
 Not a model call, never refused in any mode, counted but not logged per line (the pool probes them
 every few seconds): ``GET /health /props /slots /v1/models /models /metrics`` and the no-model reads
@@ -51,6 +53,9 @@ LEASE_HEADER = b"x-orion-lease-id"
 EXEMPT_GET_PATHS = frozenset({"/health", "/props", "/slots", "/v1/models", "/models", "/metrics"})
 EXEMPT_POST_PATHS = frozenset({"/tokenize", "/detokenize", "/apply-template"})
 STATS_PATH = "/door/stats"
+SPEC = "docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md"
+REFUSAL = {"error": {"type": "lane_door_unleased",
+                     "message": f"call orion-llm-gateway with a route; see {SPEC}"}}
 MAX_HEAD_BYTES = 64 * 1024
 CHUNK = 64 * 1024
 _HOP = {b"connection", b"keep-alive", b"proxy-connection"}
@@ -310,8 +315,16 @@ class Door:
             headers.insert(0, (b"Host", self.s.upstream_host_header.encode("latin-1")))
         headers.append((b"Connection", b"close"))
 
-        status, err = await self._forward(reader, writer, Head(head.start, headers), version,
-                                          expect_continue=expect_continue)
+        if self.s.mode == "enforce" and not exempt and state != "ok":
+            # Refused before any engine connection; the request body is not read (the connection closes).
+            self.stats.refused += 1
+            with contextlib.suppress(Exception):
+                writer.write(_json_response(401, "Unauthorized", REFUSAL))
+                await writer.drain()
+            status, err = 401, None
+        else:
+            status, err = await self._forward(reader, writer, Head(head.start, headers), version,
+                                              expect_continue=expect_continue)
         if self.s.mode == "off":
             return
         if exempt:
@@ -323,6 +336,8 @@ class Door:
                "status": status, "ms": round((time.monotonic() - started) * 1000.0, 1)}
         if err:
             row["error"] = err
+        if status == 401 and self.s.mode == "enforce" and state != "ok":
+            row["refused"] = True
         self.log.write(row)
         if state != "ok":
             # Rare and the whole point of the shadow phase: also in the container log (journald).

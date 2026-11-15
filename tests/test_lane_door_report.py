@@ -99,3 +99,12 @@ def test_render_names_who_sent_unkeyed_calls(capsys, tmp_path):
     assert "NOT READY" in out and "unkeyed x1: 100.92.216.81 POST /v1/chat/completions" in out
     assert "1 unreadable lines skipped" in out
     assert "== lane agent-gpu2: NOT READY" in out and "no log lines for this lane" in out
+
+
+def test_calls_an_enforcing_door_already_refused_are_shown_but_do_not_block():
+    lines = [_line(d) for d in _days(15, 7)]
+    refused = json.loads(_line("2026-11-19", key="missing"))
+    refused.update(status=401, refused=True)
+    report, _ = rep.aggregate(lines + [json.dumps(refused)])
+    day = report["chat"]["2026-11-19"]
+    assert (day.refused, day.missing) == (1, 0)

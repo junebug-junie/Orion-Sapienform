@@ -239,6 +239,31 @@ class Settings(BaseSettings):
     # A source not started within this window expires (never started).
     HUB_CONSULT_SOURCE_MAX_AGE_HOURS: float = Field(default=72.0)
     HUB_CONSULT_NOTIFY_TIMEOUT_SEC: float = Field(default=20.0)
+    # ── Session threads (scripts/session_roundup_loop.py) ─────────────
+    # Coding sessions write to Orion (POST /api/session-threads/message); Hub holds each message
+    # and, once per interval, submits ONE durable Orion turn (session_roundup.orion_turn) over every
+    # held thread. Nothing held: nothing submitted. Needs the curiosity turn loop
+    # (HUB_CURIOSITY_INVESTIGATION_ENABLED + HUB_CURIOSITY_KICKOFF_VIA_CORTEX), like consults.
+    # Design: docs/superpowers/specs/2026-11-15-session-threads-design.md.
+    HUB_SESSION_ROUNDUP_ENABLED: bool = Field(default=True)
+    # One round-up per bucket of this many seconds (3600: on the hour, UTC).
+    HUB_SESSION_ROUNDUP_INTERVAL_SEC: float = Field(default=3600.0)
+    HUB_SESSION_ROUNDUP_TICK_SEC: float = Field(default=120.0)
+    # Orion's round-up turn budget per attempt (s). durable-runs retries a failed attempt.
+    HUB_SESSION_ROUNDUP_ORION_TIMEOUT_SEC: float = Field(default=1800.0)
+    # A round still waiting or retrying this long after its hour started is failed by durable-runs
+    # (the run's admission deadline); its threads are held for the next round-up.
+    HUB_SESSION_ROUNDUP_RUN_DEADLINE_SEC: float = Field(default=10800.0)
+    # The most characters one round-up prompt holds (the brief allows 120000). Threads that do not
+    # fit stay held for the next hour, oldest first.
+    HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS: int = Field(default=100000)
+    # Orion's questions also go on the pull request as a GitHub comment (ORION_GITHUB_TOKEN).
+    HUB_SESSION_ROUNDUP_PR_COMMENTS: bool = Field(default=True)
+    # The only repo Hub comments on. A session's pr_url never picks the target.
+    HUB_SESSION_ROUNDUP_GITHUB_REPO: str = Field(default="junebug-junie/Orion-Sapienform")
+    HUB_SESSION_ROUNDUP_DURABLE_URL: str = Field(default="http://127.0.0.1:8124")
+    # The receipt names the next round-up in UTC and in this zone.
+    HUB_SESSION_ROUNDUP_TZ: str = Field(default="America/Denver")
     # The Claude usage meter (orion-cocreation-signals). The budget gate reads it.
     CHANNEL_CLAUDE_LIMIT: str = Field(default="orion:substrate:claude_limit")
 

@@ -23,6 +23,7 @@ from scripts.crystallization_routes import router as crystallization_router
 from scripts.mind_routes import router as mind_router
 from scripts.ask_routes import router as ask_router
 from scripts.consult_routes import router as consult_router
+from scripts.session_thread_routes import router as session_thread_router
 from scripts.claude_tools_routes import router as claude_tools_router
 from scripts.motion_story_routes import router as motion_story_router
 from scripts.people_routes import router as people_router
@@ -101,6 +102,7 @@ from orion.physiology.attention_pacing import JUNIPER_DAILY_CAP
 import scripts.tension_outreach_trigger as tension_outreach_trigger
 from scripts.room_claude_relay import RoomClaudeRelay
 from scripts.consult_loop import ConsultLoop, make_priors_reader, make_self_monitor_reader
+from scripts.session_roundup_loop import GitHubCommenter, SessionRoundupLoop
 from scripts.harness_step_relay import HarnessStepRelay
 from scripts.signals_inspect_cache import SignalsInspectCache
 from scripts.cognition_trace_cache import CognitionTraceCache
@@ -381,6 +383,7 @@ self_monitor_question_minter: Optional[SelfMonitorQuestionMinter] = None
 orion_day_mailer: Optional[OrionDayMailer] = None
 room_claude_relay: Optional[RoomClaudeRelay] = None
 consult_loop: Optional[ConsultLoop] = None
+session_roundup_loop: Optional[SessionRoundupLoop] = None
 runtime_activity_feeds: Optional[RuntimeActivityFeeds] = None
 harness_step_relay: Optional[HarnessStepRelay] = None
 signals_inspect_cache: Optional[SignalsInspectCache] = None
@@ -484,7 +487,7 @@ async def startup_event():
     Initializes all shared services at application startup.
     OrionBus + Clients + UI template.
     """
-    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, cortex_client, tts_client, html_content, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, session_roundup_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, presence_state, presence_context_store, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
 
     # ------------------------------------------------------------
     # Bus-native SystemHealthV1 heartbeat (pilot-5 rollout, see
@@ -1147,6 +1150,32 @@ async def startup_event():
             except Exception:  # noqa: BLE001 -- never blocks Hub boot
                 logger.exception("consult_loop_start_failed")
 
+            # Session threads: coding sessions write to Orion; Orion asks questions once an hour
+            # (scripts/session_roundup_loop.py). The object is built even when the round-up is off,
+            # so intake still stores a message and its receipt says Orion will not read it yet.
+            try:
+                session_roundup_loop = SessionRoundupLoop(
+                    # Orion's round-up turn is a durable run served by curiosity's turn-request loop,
+                    # like a consult turn: without it no round-up turn is served.
+                    enabled=(settings.HUB_SESSION_ROUNDUP_ENABLED
+                             and settings.HUB_CURIOSITY_INVESTIGATION_ENABLED
+                             and settings.HUB_CURIOSITY_KICKOFF_VIA_CORTEX),
+                    pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
+                    durable_client=DurableRunsClient(settings.HUB_SESSION_ROUNDUP_DURABLE_URL),
+                    connections_provider=room_claude_relay.connections,
+                    commenter=GitHubCommenter(settings.HUB_SESSION_ROUNDUP_GITHUB_REPO),
+                    pr_comments=settings.HUB_SESSION_ROUNDUP_PR_COMMENTS,
+                    interval_sec=settings.HUB_SESSION_ROUNDUP_INTERVAL_SEC,
+                    tick_sec=settings.HUB_SESSION_ROUNDUP_TICK_SEC,
+                    orion_timeout_sec=settings.HUB_SESSION_ROUNDUP_ORION_TIMEOUT_SEC,
+                    run_deadline_sec=settings.HUB_SESSION_ROUNDUP_RUN_DEADLINE_SEC,
+                    prompt_max_chars=settings.HUB_SESSION_ROUNDUP_PROMPT_MAX_CHARS,
+                    tz_name=settings.HUB_SESSION_ROUNDUP_TZ,
+                )
+                await session_roundup_loop.start()
+            except Exception:  # noqa: BLE001 -- never blocks Hub boot
+                logger.exception("session_roundup_loop_start_failed")
+
             harness_step_relay = HarnessStepRelay(
                 channel=settings.CHANNEL_HARNESS_RUN_STEP,
                 draft_preview_channel=(
@@ -1766,7 +1795,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event() -> None:
-    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
+    global reading_turn_listener, reading_listener, retro_leisure_self_start, curiosity_introspect_listener, orion_day_introspect_listener, orion_day_correction_listener, curiosity_focus_listener, curiosity_focus_refusal_listener, node_history_introspect_listener, power_attribution_introspect_listener, bus, rpc_bus, biometrics_cache, notification_cache, endogenous_outreach, collapse_mirror_chat_reply_handler, curiosity_investigation, world_pulse_read_pipeline, world_pulse_read_stage2, reading_finding_outreach, office_reach_out, reading_event_wants, self_monitor_question_minter, orion_day_mailer, room_claude_relay, consult_loop, session_roundup_loop, harness_step_relay, signals_inspect_cache, cognition_trace_cache, embodiment_outcome_cache, substrate_autonomy_task, substrate_review_task, substrate_topic_foundry_scheduler_task, substrate_concept_seed_task, affect_ambient_loop_task, heartbeat_chassis, runtime_activity_feeds
     if heartbeat_chassis is not None:
         try:
             await heartbeat_chassis.stop()
@@ -1926,6 +1955,12 @@ async def shutdown_event() -> None:
         except Exception:  # noqa: BLE001
             logger.warning("consult_loop_stop_failed", exc_info=True)
         consult_loop = None
+    if session_roundup_loop is not None:
+        try:
+            await session_roundup_loop.stop()
+        except Exception:  # noqa: BLE001
+            logger.warning("session_roundup_loop_stop_failed", exc_info=True)
+        session_roundup_loop = None
     if room_claude_relay is not None:
         try:
             await room_claude_relay.stop()
@@ -1984,6 +2019,7 @@ app.include_router(crystallization_router)
 app.include_router(mind_router)
 app.include_router(ask_router)
 app.include_router(consult_router)
+app.include_router(session_thread_router)
 app.include_router(claude_tools_router)
 # Orion's Day: Prime's letter orders (GET letter status, POST letter-run). The only path that
 # submits an orion_day.letter run; gated by HUB_ORION_DAY_ENABLED inside the desk.

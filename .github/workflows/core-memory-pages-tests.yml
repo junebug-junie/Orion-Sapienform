@@ -15,6 +15,7 @@ on:
       - "orion/schemas/self_concept_history.py"
       - "orion/substrate/felt_state_reader.py"
       - "orion/substrate/tests/test_felt_state_core_page_lane.py"
+      - "orion/substrate/tests/test_felt_state_self_definition_lane.py"
       - "orion/cognition/personality/**"
       - "services/orion-cortex-exec/app/grounding_capsule.py"
       - "services/orion-cortex-exec/tests/test_core_page_grounding.py"
@@ -54,7 +55,8 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider orion/memory/pages/tests \
             orion/harness/tests/test_core_page_relationship_block.py \
-            orion/substrate/tests/test_felt_state_core_page_lane.py
+            orion/substrate/tests/test_felt_state_core_page_lane.py \
+            orion/substrate/tests/test_felt_state_self_definition_lane.py
       - name: orion-durable-runs nightly fold tick
         working-directory: services/orion-durable-runs
         run: python -m pytest -q -p no:cacheprovider tests/test_core_page_fold.py

@@ -14,9 +14,6 @@ REPO_ROOT = os.path.abspath(os.path.join(SERVICE_DIR, "..", ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-# No background /door/stats reads to fake (or real) worker URLs from unit tests (app/lane_door.py).
-os.environ.setdefault("LLM_GATEWAY_LANE_DOOR_CHECK_ENABLED", "false")
-
 # The real routes -> class map (the container reads /app/config/gpu_pool.yaml).
 os.environ.setdefault("GPU_POOL_CONFIG_PATH", os.path.join(REPO_ROOT, "config", "gpu_pool.yaml"))
 

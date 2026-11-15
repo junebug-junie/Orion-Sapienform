@@ -404,7 +404,7 @@ def _common_http_client(body: Optional[ChatBody] = None) -> httpx.Client:
             write=10.0,
             pool=10.0,
         ),
-        # The lane door in front of the granted server (app/lane_door.py): the key and this call's lease.
+        # The lane door in front of the granted server (app/lane_door.py): this call's lease id.
         headers=lane_door.headers(upstream_cancel.current_lease_id()),
         **({"transport": transport} if transport is not None else {}),
     )

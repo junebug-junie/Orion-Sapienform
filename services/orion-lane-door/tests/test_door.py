@@ -10,10 +10,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from app.door import EXEMPT_GET_PATHS, EXEMPT_POST_PATHS, Door, RequestLog, is_exempt, key_state
-from app.settings import Settings, key_hash
+from app.door import EXEMPT_GET_PATHS, EXEMPT_POST_PATHS, Door, RequestLog, drain, is_exempt, lease_state, take_port
+from app.settings import Settings
 
-KEY = "k" * 64
+LEASE = {"X-Orion-Lease-Id": "lease-abc123"}
 
 
 class Engine:
@@ -76,7 +76,7 @@ class Engine:
 
 
 async def _door(tmp_path: Path, engine_port: int, **kw) -> tuple[Door, asyncio.AbstractServer, int]:
-    settings = Settings(lane="chat", upstream_host="127.0.0.1", upstream_port=engine_port, key=KEY,
+    settings = Settings(lane="chat", upstream_host="127.0.0.1", upstream_port=engine_port,
                         log_dir=str(tmp_path / "logs"), **kw)
     door = Door(settings)
     server = await asyncio.start_server(door.handle, "127.0.0.1", 0)
@@ -91,35 +91,35 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def test_a_keyed_call_reaches_the_engine_without_the_door_headers_and_is_logged_without_text(tmp_path):
+def test_a_leased_call_reaches_the_engine_without_the_door_header_and_is_logged_without_text(tmp_path):
     async def go():
         engine = Engine()
         door, server, port = await _door(tmp_path, await engine.start())
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
             r = await c.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "SECRET-PROMPT"}]},
-                             headers={"X-Orion-Lane-Key": KEY, "X-Orion-Lease-Id": "lease-abc123",
-                                      "Host": "100.112.254.99:8011"})
+                             headers={"X-Orion-Lease-Id": "lease-abc123", "Host": "100.112.254.99:8011"})
         server.close()
         return engine, door, r
 
     engine, door, r = run(go())
     assert r.status_code == 200 and r.json()["path"] == "/v1/chat/completions"
     (seen,) = engine.seen
-    assert "x-orion-lane-key" not in seen["headers"] and "x-orion-lease-id" not in seen["headers"]
+    assert "x-orion-lease-id" not in seen["headers"]
     assert seen["headers"]["host"] == "100.112.254.99:8011"          # Strata accepts the caller's Host today
     assert seen["headers"]["connection"] == "close"
     assert b"SECRET-PROMPT" in seen["body"]                          # the body passes byte for byte
     (row,) = _rows(tmp_path)
-    assert (row["key"], row["lease_id"], row["status"], row["path"]) == ("ok", "lease-abc123", 200,
+    assert (row["lease"], row["lease_id"], row["status"], row["path"]) == ("leased", "lease-abc123", 200,
                                                                         "/v1/chat/completions")
-    assert set(row) == {"ts", "lane", "src", "method", "path", "key", "lease_id", "status", "ms"}
+    assert set(row) == {"ts", "lane", "src", "method", "path", "lease", "lease_id", "status", "ms"}
     text = json.dumps(row)
-    assert "SECRET-PROMPT" not in text and KEY not in text
-    assert door.stats.calls == {"ok": 1, "missing": 0, "bad": 0}
+    assert "SECRET-PROMPT" not in text
+    assert door.stats.calls == {"leased": 1, "unleased": 0, "invalid": 0}
 
 
-@pytest.mark.parametrize("headers,state", [({}, "missing"), ({"X-Orion-Lane-Key": "wrong"}, "bad")])
-def test_shadow_forwards_an_unkeyed_call_and_records_who_sent_it(tmp_path, capsys, headers, state):
+@pytest.mark.parametrize("headers,state,logged_id", [({}, "unleased", None),
+                                                     ({"X-Orion-Lease-Id": "bad id; drop table"}, "invalid", "invalid")])
+def test_shadow_forwards_an_unleased_call_and_records_who_sent_it(tmp_path, capsys, headers, state, logged_id):
     async def go():
         engine = Engine()
         door, server, port = await _door(tmp_path, await engine.start())
@@ -131,13 +131,13 @@ def test_shadow_forwards_an_unkeyed_call_and_records_who_sent_it(tmp_path, capsy
     engine, door, r = run(go())
     assert r.status_code == 200 and len(engine.seen) == 1               # shadow refuses nothing
     (row,) = _rows(tmp_path)
-    assert row["key"] == state and row["src"] == "127.0.0.1" and row["lease_id"] is None
-    assert door.stats.unkeyed_by_source == {"127.0.0.1": 1}
-    assert door.stats.unkeyed_by_path == {"/v1/chat/completions": 1}
-    assert "lane_door_unkeyed" in capsys.readouterr().out               # and in the container log
+    assert row["lease"] == state and row["src"] == "127.0.0.1" and row["lease_id"] == logged_id
+    assert door.stats.unleased_by_source == {"127.0.0.1": 1}
+    assert door.stats.unleased_by_path == {"/v1/chat/completions": 1}
+    assert "lane_door_unleased" in capsys.readouterr().out               # and in the container log
 
 
-def test_exempt_reads_pass_unkeyed_are_counted_and_never_logged_per_line(tmp_path):
+def test_exempt_reads_pass_unleased_are_counted_and_never_logged_per_line(tmp_path):
     async def go():
         engine = Engine()
         door, server, port = await _door(tmp_path, await engine.start())
@@ -151,35 +151,35 @@ def test_exempt_reads_pass_unkeyed_are_counted_and_never_logged_per_line(tmp_pat
     door, codes = run(go())
     assert set(codes) == {200}
     assert door.stats.exempt == len(EXEMPT_GET_PATHS) + len(EXEMPT_POST_PATHS) + 1
-    assert door.stats.calls == {"ok": 0, "missing": 0, "bad": 0}
+    assert door.stats.calls == {"leased": 0, "unleased": 0, "invalid": 0}
     assert _rows(tmp_path) == []
 
 
 def test_the_exempt_list_is_pinned():
     """Spec Phase 2: GET /health /props /slots /v1/models /metrics never refused. Plus /models (llama.cpp's
     alias) and the three no-model POST reads the gateway and the probes use. A change here is a change to
-    what the door lets through unkeyed: update the spec and this test together."""
+    what the door lets through unleased: update the spec and this test together."""
     assert EXEMPT_GET_PATHS == {"/health", "/props", "/slots", "/v1/models", "/models", "/metrics", "/orion/server-info"}
     assert EXEMPT_POST_PATHS == {"/tokenize", "/detokenize", "/apply-template"}
     assert not is_exempt("POST", "/slots") and not is_exempt("POST", "/completion")
     assert not is_exempt("GET", "/v1/chat/completions") and is_exempt("HEAD", "/health")
 
 
-def test_stats_show_the_key_hash_never_the_key(tmp_path):
+def test_stats_count_by_lease_state_and_hold_no_key(tmp_path):
     async def go():
         engine = Engine()
         door, server, port = await _door(tmp_path, await engine.start())
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
-            await c.post("/v1/chat/completions", json={}, headers={"X-Orion-Lane-Key": KEY})
+            await c.post("/v1/chat/completions", json={}, headers=LEASE)
             r = await c.get("/door/stats")
         server.close()
         return engine, r
 
     engine, r = run(go())
     stats = r.json()
-    assert stats["key_hash"] == key_hash(KEY) and len(stats["key_hash"]) == 16
-    assert KEY not in r.text
-    assert stats["calls"]["ok"] == 1 and stats["mode"] == "shadow" and stats["lane"] == "chat"
+    assert "key_hash" not in stats and "key" not in r.text
+    assert stats["calls"] == {"leased": 1, "unleased": 0, "invalid": 0}
+    assert stats["mode"] == "shadow" and stats["lane"] == "chat"
     assert [s["path"] for s in engine.seen] == ["/v1/chat/completions"]   # /door/stats is the door's own
 
 
@@ -190,7 +190,7 @@ def test_a_stream_is_relayed_as_it_arrives(tmp_path):
         stamps = []
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
             t0 = time.monotonic()
-            async with c.stream("POST", "/v1/stream", json={}, headers={"X-Orion-Lane-Key": KEY}) as r:
+            async with c.stream("POST", "/v1/stream", json={}, headers=LEASE) as r:
                 async for chunk in r.aiter_text():
                     stamps.append((time.monotonic() - t0, chunk))
         server.close()
@@ -208,8 +208,8 @@ def test_a_client_that_hangs_up_mid_stream_closes_the_engine_connection(tmp_path
         engine = Engine()
         door, server, port = await _door(tmp_path, await engine.start())
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
-        writer.write(b"POST /v1/stream-slow HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nX-Orion-Lane-Key: "
-                     + KEY.encode() + b"\r\n\r\n{}")
+        writer.write(b"POST /v1/stream-slow HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nX-Orion-Lease-Id: L1"
+                     b"\r\n\r\n{}")
         await writer.drain()
         await reader.readuntil(b"data:")
         writer.close()
@@ -227,7 +227,7 @@ def test_an_engine_that_is_down_is_a_502_and_is_logged(tmp_path):
     async def go():
         door, server, port = await _door(tmp_path, 9)   # nothing listens on port 9
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
-            r = await c.post("/v1/chat/completions", json={}, headers={"X-Orion-Lane-Key": KEY})
+            r = await c.post("/v1/chat/completions", json={}, headers=LEASE)
             h = await c.get("/health")
         server.close()
         return door, r, h
@@ -244,7 +244,7 @@ def test_an_engine_error_passes_through_unchanged(tmp_path):
         engine = Engine()
         door, server, port = await _door(tmp_path, await engine.start())
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
-            r = await c.post("/boom", json={}, headers={"X-Orion-Lane-Key": KEY})
+            r = await c.post("/boom", json={}, headers=LEASE)
         server.close()
         return r
 
@@ -253,19 +253,19 @@ def test_an_engine_error_passes_through_unchanged(tmp_path):
     assert _rows(tmp_path)[0]["status"] == 500
 
 
-def test_mode_off_is_a_plain_pass_through_that_still_strips_the_key(tmp_path):
+def test_mode_off_is_a_plain_pass_through_that_still_strips_the_lease_header(tmp_path):
     async def go():
         engine = Engine()
         door, server, port = await _door(tmp_path, await engine.start(), mode="off")
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
-            await c.post("/v1/chat/completions", json={}, headers={"X-Orion-Lane-Key": KEY})
+            await c.post("/v1/chat/completions", json={}, headers=LEASE)
             await c.post("/v1/chat/completions", json={})
         server.close()
         return engine, door
 
     engine, door = run(go())
-    assert len(engine.seen) == 2 and all("x-orion-lane-key" not in s["headers"] for s in engine.seen)
-    assert _rows(tmp_path) == [] and door.stats.calls == {"ok": 0, "missing": 0, "bad": 0}
+    assert len(engine.seen) == 2 and all("x-orion-lease-id" not in s["headers"] for s in engine.seen)
+    assert _rows(tmp_path) == [] and door.stats.calls == {"leased": 0, "unleased": 0, "invalid": 0}
 
 
 def test_a_large_body_and_a_chunked_request_arrive_intact(tmp_path):
@@ -274,12 +274,12 @@ def test_a_large_body_and_a_chunked_request_arrive_intact(tmp_path):
         door, server, port = await _door(tmp_path, await engine.start())
         big = json.dumps({"messages": [{"role": "user", "content": "x" * 2_000_000}]}).encode()
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
-            r = await c.post("/v1/chat/completions", content=big, headers={"X-Orion-Lane-Key": KEY})
+            r = await c.post("/v1/chat/completions", content=big, headers=LEASE)
 
             async def gen():
                 yield b'{"a":'
                 yield b"1}"
-            r2 = await c.post("/v1/chat/completions", content=gen(), headers={"X-Orion-Lane-Key": KEY})
+            r2 = await c.post("/v1/chat/completions", content=gen(), headers=LEASE)
         server.close()
         return engine, r, r2, big
 
@@ -304,11 +304,12 @@ def test_a_malformed_request_is_a_400_and_reaches_nothing(tmp_path):
     assert data.startswith(b"HTTP/1.1 400") and engine.seen == [] and door.stats.bad_requests == 1
 
 
-def test_key_state():
-    assert key_state(None, KEY) == "missing"
-    assert key_state(KEY.encode(), KEY) == "ok"
-    assert key_state(b"nope", KEY) == "bad"
-    assert key_state(b"", "") == "bad"         # no door key configured: nothing reads as ok
+def test_lease_state():
+    assert lease_state(None) == ("unleased", None)
+    assert lease_state(b"") == ("unleased", None)
+    assert lease_state(b"7f3c-lease_1.a:b") == ("leased", "7f3c-lease_1.a:b")
+    assert lease_state(b"has space") == ("invalid", "invalid")      # never echoed into the log
+    assert lease_state(b"x" * 81) == ("invalid", "invalid")
 
 
 def test_log_files_roll_daily_and_old_ones_are_removed(tmp_path):
@@ -360,7 +361,7 @@ def test_expect_100_continue_gets_the_final_reply_not_just_the_interim_one(tmp_p
         door, server, port = await _door(tmp_path, await engine.start())
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         writer.write(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Length: 2\r\nExpect: 100-continue\r\n"
-                     b"X-Orion-Lane-Key: " + KEY.encode() + b"\r\n\r\n")
+                     b"X-Orion-Lease-Id: L1\r\n\r\n")
         await writer.drain()
         first = await reader.readuntil(b"\r\n\r\n")
         writer.write(b"{}")
@@ -415,8 +416,9 @@ def test_a_silent_caller_is_dropped_after_the_head_timeout(tmp_path, monkeypatch
 # -- Phase 3: enforce ---------------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("headers,state", [({}, "missing"), ({"X-Orion-Lane-Key": "wrong"}, "bad")])
-def test_enforce_refuses_an_unkeyed_model_call_with_the_spec_body_and_never_reaches_the_engine(tmp_path, headers,
+@pytest.mark.parametrize("headers,state", [({}, "unleased"), ({"X-Orion-Lease-Id": "not a lease"}, "invalid"),
+                                          ({"X-Orion-Lane-Key": "an old key"}, "unleased")])
+def test_enforce_refuses_an_unleased_model_call_with_the_spec_body_and_never_reaches_the_engine(tmp_path, headers,
                                                                                                 state):
     async def go():
         engine = Engine()
@@ -434,19 +436,18 @@ def test_enforce_refuses_an_unkeyed_model_call_with_the_spec_body_and_never_reac
                                   "docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md"}}
     assert engine.seen == [] and stats["refused"] == 1 and stats["calls"][state] == 1
     (row,) = _rows(tmp_path)
-    assert row["status"] == 401 and row["refused"] is True and row["key"] == state
+    assert row["status"] == 401 and row["refused"] is True and row["lease"] == state
 
 
-def test_enforce_passes_keyed_calls_and_every_exempt_read_unkeyed(tmp_path):
+def test_enforce_passes_leased_calls_and_every_exempt_read_unleased(tmp_path):
     async def go():
         engine = Engine()
         door, server, port = await _door(tmp_path, await engine.start(), mode="enforce")
         async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as c:
-            ok = await c.post("/v1/chat/completions", json={}, headers={"X-Orion-Lane-Key": KEY,
-                                                                        "X-Orion-Lease-Id": "L"})
+            ok = await c.post("/v1/chat/completions", json={}, headers={"X-Orion-Lease-Id": "L"})
             reads = [(await c.get(p)).status_code for p in sorted(EXEMPT_GET_PATHS)]
             reads += [(await c.post(p, json={})).status_code for p in sorted(EXEMPT_POST_PATHS)]
-            stream = await c.post("/v1/stream", json={}, headers={"X-Orion-Lane-Key": KEY})
+            stream = await c.post("/v1/stream", json={}, headers=LEASE)
         server.close()
         return door, ok, reads, stream
 
@@ -455,16 +456,16 @@ def test_enforce_passes_keyed_calls_and_every_exempt_read_unkeyed(tmp_path):
     assert door.stats.refused == 0   # the pool's probes and the gateway's traffic are never refused
 
 
-def test_enforce_without_a_key_refuses_to_start(monkeypatch):
+def test_settings_have_no_key_and_enforce_starts_without_one(monkeypatch):
+    """Kill means kill: the door reads no key, and enforce needs nothing but the mode."""
     from app import settings as s
 
-    for k, v in {"LANE_DOOR_UPSTREAM": "e:8080", "LANE_DOOR_LANE": "fast", "LANE_DOOR_MODE": "enforce"}.items():
+    for k, v in {"LANE_DOOR_UPSTREAM": "127.0.0.1:18013", "LANE_DOOR_LANE": "fast", "LANE_DOOR_MODE": "enforce",
+                 "LANE_DOOR_KEY": "ignored"}.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.delenv("LANE_DOOR_KEY", raising=False)
-    with pytest.raises(SystemExit, match="needs LANE_DOOR_KEY"):
-        s.load()
-    monkeypatch.setenv("LANE_DOOR_KEY", KEY)
-    assert s.load().mode == "enforce"
+    loaded = s.load()
+    assert loaded.mode == "enforce" and loaded.listen_host == ""
+    assert not any("key" in name for name in s.Settings.__dataclass_fields__)
 
 
 def test_shadow_still_refuses_nothing(tmp_path):
@@ -504,5 +505,120 @@ def test_the_journal_line_is_rate_limited_but_the_log_keeps_every_call(tmp_path,
         server.close()
 
     run(go())
-    assert capsys.readouterr().out.count("lane_door_unkeyed") == 1
+    assert capsys.readouterr().out.count("lane_door_unleased") == 1
     assert len(_rows(tmp_path)) == 5
+
+
+# -- taking the lane port: only once the engine answers on loopback --------------------------------------
+
+
+def _free_port() -> int:
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def test_the_door_waits_for_its_engine_before_it_takes_the_lane_port(tmp_path, capsys):
+    """Until the engine answers on the loopback upstream, the door must not bind the lane port: the engine
+    may still publish that port itself (before its move, or restarting after a crash)."""
+    async def go():
+        lane_port, engine_port = _free_port(), _free_port()
+        settings = Settings(lane="chat", upstream_host="127.0.0.1", upstream_port=engine_port,
+                            listen_host="127.0.0.1", listen_port=lane_port, log_dir=str(tmp_path / "logs"),
+                            bind_poll_sec=0.05, connect_timeout_sec=0.5)
+        door = Door(settings)
+        task = asyncio.ensure_future(take_port(door, settings))
+        await asyncio.sleep(0.3)
+        bound_early = await _connects(lane_port)
+        engine = Engine()
+        engine.server = await asyncio.start_server(engine.handle, "127.0.0.1", engine_port)
+        server = await asyncio.wait_for(task, 3.0)
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{lane_port}") as c:
+            r = await c.get("/health")
+        server.close()
+        engine.server.close()
+        return bound_early, r
+
+    bound_early, r = run(go())
+    assert bound_early is False and r.status_code == 200
+    assert "lane_door_waiting lane=chat reason=engine_not_on_upstream" in capsys.readouterr().out
+
+
+def test_the_door_waits_while_another_process_holds_the_lane_port(tmp_path, capsys):
+    async def go():
+        engine = Engine()
+        engine_port = await engine.start()
+        holder = await asyncio.start_server(lambda r, w: w.close(), "127.0.0.1", 0)
+        lane_port = holder.sockets[0].getsockname()[1]
+        settings = Settings(lane="fast", upstream_host="127.0.0.1", upstream_port=engine_port,
+                            listen_host="127.0.0.1", listen_port=lane_port, log_dir=str(tmp_path / "logs"),
+                            bind_poll_sec=0.05)
+        task = asyncio.ensure_future(take_port(Door(settings), settings))
+        await asyncio.sleep(0.3)
+        assert not task.done()
+        holder.close()
+        await holder.wait_closed()
+        server = await asyncio.wait_for(task, 3.0)
+        server.close()
+        return True
+
+    assert run(go())
+    assert "lane_door_waiting lane=fast reason=port_in_use" in capsys.readouterr().out
+
+
+def test_a_stop_while_waiting_ends_the_wait(tmp_path):
+    async def go():
+        settings = Settings(lane="agent", upstream_host="127.0.0.1", upstream_port=_free_port(),
+                            listen_host="127.0.0.1", listen_port=_free_port(), log_dir=str(tmp_path / "logs"),
+                            bind_poll_sec=5.0, connect_timeout_sec=0.2)
+        stop = asyncio.Event()
+        task = asyncio.ensure_future(take_port(Door(settings), settings, stop=stop))
+        await asyncio.sleep(0.1)
+        stop.set()
+        return await asyncio.wait_for(task, 2.0)
+
+    assert run(go()) is None
+
+
+async def _connects(port: int) -> bool:
+    try:
+        _, w = await asyncio.open_connection("127.0.0.1", port)
+    except OSError:
+        return False
+    w.close()
+    return True
+
+
+def test_drain_waits_for_calls_in_flight_and_gives_up_at_the_limit(tmp_path):
+    async def go():
+        door = Door(Settings(lane="chat", upstream_host="127.0.0.1", upstream_port=9, log_dir=str(tmp_path)))
+        door.active = 1
+
+        async def finish():
+            await asyncio.sleep(0.3)
+            door.active = 0
+
+        asyncio.ensure_future(finish())
+        t0 = time.monotonic()
+        left = await drain(door, 5.0)
+        waited = time.monotonic() - t0
+        door.active = 2
+        left2 = await drain(door, 0.3)
+        return left, waited, left2
+
+    left, waited, left2 = run(go())
+    assert left == 0 and 0.2 < waited < 2.0 and left2 == 2
+
+
+def test_health_is_ok_while_waiting_and_needs_the_stats_once_listening(tmp_path, monkeypatch):
+    from app import health
+
+    state = tmp_path / "state"
+    monkeypatch.setattr(health, "STATE_FILE", str(state))
+    monkeypatch.setenv("LANE_DOOR_LISTEN_PORT", str(_free_port()))
+    state.write_text("waiting\n")
+    assert health.main() == 0
+    state.write_text("listening\n")
+    assert health.main() == 1          # nothing answers /door/stats on that port

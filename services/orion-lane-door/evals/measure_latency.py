@@ -2,8 +2,8 @@
 """How much time the lane door adds to a call: direct to an engine vs through a door in front of it.
 
 The spec's rule for the chat path is "no per-call pool check in the door" (a pool RPC would sit on
-Juniper's chat path). This measures what the door does instead costs: one more TCP connect on the docker
-bridge, a header parse, and a relay.
+Juniper's chat path). This measures what the door does instead costs: one more TCP connect on the host's
+loopback, a header parse, and a relay.
 
 It starts a real door process (``python -m app.main``, shadow mode, logging on) in front of an engine and
 times the same request both ways, a new connection per request (the gateway opens a new client per call).
@@ -160,26 +160,25 @@ def main(argv: list[str] | None = None) -> int:
         threading.Thread(target=stand_in.serve_forever, daemon=True).start()
         up_host, up_port = "127.0.0.1", str(stand_in.server_address[1])
     door_port = _free_port()
-    key = "measure-" + "k" * 56
     logs = tempfile.mkdtemp(prefix="lane-door-measure-")
     env = {**os.environ, "LANE_DOOR_LANE": "measure", "LANE_DOOR_UPSTREAM": f"{up_host}:{up_port}",
-           "LANE_DOOR_MODE": "shadow", "LANE_DOOR_KEY": key, "LANE_DOOR_LISTEN_HOST": "127.0.0.1",
+           "LANE_DOOR_MODE": "shadow", "LANE_DOOR_LISTEN_HOST": "127.0.0.1",
            "LANE_DOOR_LISTEN_PORT": str(door_port), "LANE_DOOR_LOG_DIR": logs}
     proc = subprocess.Popen([sys.executable, "-m", "app.main"], cwd=SERVICE, env=env,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         _wait(door_port)
         direct, door = f"http://{up_host}:{up_port}", f"http://127.0.0.1:{door_port}"
-        keyed = {"X-Orion-Lane-Key": key, "X-Orion-Lease-Id": "measure-lease"}
+        leased = {"X-Orion-Lease-Id": "measure-lease"}
         rows = []
         _time(direct + "/props", 20), _time(door + "/props", 20)   # warm up
         rows.append(_line("GET /props", _time(direct + "/props", args.n), _time(door + "/props", args.n)))
         if stand_in is not None:
-            rows.append(_line("POST chat (keyed, logged)", _time(direct + "/v1/chat/completions", args.n, "POST"),
-                              _time(door + "/v1/chat/completions", args.n, "POST", keyed)))
+            rows.append(_line("POST chat (leased, logged)", _time(direct + "/v1/chat/completions", args.n, "POST"),
+                              _time(door + "/v1/chat/completions", args.n, "POST", leased)))
             k = max(20, args.n // 10)
             rows.append(_line("stream first byte", _ttfb(direct + "/v1/stream", k),
-                              _ttfb(door + "/v1/stream", k, keyed)))
+                              _ttfb(door + "/v1/stream", k, leased)))
         print(json.dumps({"engine": args.engine or "local stand-in", "rows": rows}, indent=1))
         if stand_in is not None and rows[1]["added_p50_ms"] > args.budget_ms:
             print(f"FAIL: the door adds {rows[1]['added_p50_ms']} ms at p50 (budget {args.budget_ms} ms)")

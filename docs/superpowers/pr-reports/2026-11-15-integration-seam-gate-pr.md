@@ -168,7 +168,7 @@ No restart required. Deploy patch 1 first (it carries the only runtime change in
 - Severity: medium (design). Concern: 7 of 16 organs have no planned read-back (3 with no plan, 4 exempt by
   design), against the spec's "every organ reads the now". Mitigation: each exemption names #3457
   (`needs-juniper`).
-- Issues: refs #3424. Opened: #3457. Closed: none.
+- Issues: refs #3424. Opened: #3457. Closed: none. #3458 (the now's labels showed the blinded curiosity and dream experiment arms) is fixed in patch 1 (#3453, commit 699719a7d) and carried into this branch by the merge; #3458 stays open for the residual exposure: the arm is still readable by SQL in the stored payload and in `curiosity_offer_decisions`.
 
 ## PR link
 

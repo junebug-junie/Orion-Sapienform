@@ -991,3 +991,34 @@ async def test_cut_short_turn_keeps_its_marker_through_repair() -> None:
     assert "Here is the complete answer." in run.final_text
     assert run.compliance_verdict == "partial"
     assert run.grounding_status == "fcc_context_ceiling_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_run_artifact_carries_the_requests_workflow_label() -> None:
+    """#3255: the caller's label for the turn's kind rides the request onto the published
+    artifact, which is what sql-writer stores in harness_turn_trace.workflow."""
+    from app import bus_listener
+
+    thought = make_thought(disposition="defer").model_copy(
+        update={"grounding_capsule": make_grounding_capsule()}
+    )
+    req = HarnessRunRequestV1(
+        correlation_id="c-wf",
+        thought_event=thought,
+        user_message="hello",
+        permissions=ContextExecPermissionV1(),
+        answer_contract=AnswerContract(),
+        workflow="endogenous_outreach",
+    )
+    bus = AsyncMock()
+    run = await bus_listener.handle_harness_run_request(bus, req, reply_to="orion:harness:run:result:c-wf")
+    assert run.workflow == "endogenous_outreach"
+    artifacts = [call.args[1] for call in bus.publish.await_args_list
+                 if call.args[0] == bus_listener.settings.channel_harness_run_artifact]
+    assert [env.payload["workflow"] for env in artifacts] == ["endogenous_outreach"]
+
+    # No label on the request (an older Hub): the artifact says unknown, not a guess.
+    bus = AsyncMock()
+    bare = req.model_copy(update={"workflow": None})
+    run = await bus_listener.handle_harness_run_request(bus, bare, reply_to="orion:harness:run:result:c-wf")
+    assert run.workflow is None

@@ -1803,6 +1803,12 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
 - **Door-A**: `finish` with `reach_out` keeps the hold (finish detail `gpu_lease`), heartbeats it
   until Hub calls `POST /runs/{id}/release-outreach-lease` (a pool `release`) or
   `DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC` passes; a restarted process adopts it from the outbox.
+  Hub makes that call in every case, also when it refuses to compose (quiet hours, daily cap,
+  strained). Until 2026-11-15 the call never arrived: the generic `/runs/{run_id}/{action}` route
+  was declared first and answered it 400, so every kept hold ended `outreach_timeout` after 1,800 s
+  (#3255). Check: `select payload->'detail'->>'reason', count(*) from durable_resource_events where
+  event = 'resource.lease_released' and payload->'detail'->>'reason' like 'outreach_%' and
+  generated_at > now() - interval '1 day' group by 1` shows `outreach_done`, not `outreach_timeout`.
 - Lifecycle events are unchanged for Hub's run views: `run.waiting_resource`,
   `run.resource_granted` + `run.lane_assigned` (detail `lane` = the hold's role),
   `run.started`, `resource.lease_released`, `resource.lease_expired`, `run.outreach_pending`

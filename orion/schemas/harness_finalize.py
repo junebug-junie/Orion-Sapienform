@@ -308,6 +308,13 @@ class HarnessRunRequestV1(BaseModel):
     # (HARNESS_FCC_CHAT_DISABLE_AUTO_MEMORY). None from an older Hub build
     # means "not a chat reply", i.e. today's behavior.
     utterance_origin: str | None = None
+    # What kind of turn this is, in the caller's own words: the unified-turn payload's
+    # ``source`` tag ("curiosity_investigation", "endogenous_outreach", ...), else "reading" or
+    # "chat" (orion/hub/turn_orchestrator.py::turn_workflow_label). The governor copies it onto
+    # HarnessRunV1.workflow and sql-writer stores it in harness_turn_trace.workflow, so turn
+    # failures can be split by kind (#3255). None from an older Hub build means unknown. This
+    # model ignores unknown keys, so an older governor drops it silently.
+    workflow: str | None = None
     # A curiosity run that took a focus (orion/curiosity/focus.py): the governor puts the focus and
     # the focus_disposition instruction in the system prompt, where CLI compaction cannot reach it
     # (orion/harness/task_anchor.py::build_focus_anchor). None for every other turn. This model
@@ -432,6 +439,10 @@ class HarnessRunV1(BaseModel):
     # fcc_stream_stalled, fcc_nonzero_exit, ...), else None. None also on records
     # from governors that predate this field: absent means unknown, never "outside".
     stop_reason: str | None = None
+    # HarnessRunRequestV1.workflow, copied by the governor (bus_listener._reply_and_artifact).
+    # None on records from a Hub or governor that predates the field: absent means unknown.
+    # No consumer validates this model with extra="forbid", so old readers drop the key.
+    workflow: str | None = None
     compliance_verdict: Literal["completed", "partial", "failed", "refused"]
     grounding_status: str
     grammar_event_ids: list[str] = Field(default_factory=list)

@@ -43,15 +43,22 @@ def upsert_harness_turn_trace(sess: Session, payload: dict[str, Any]) -> bool:
         return False
 
     now = datetime.now(timezone.utc)
+    filled: dict[str, Any] = {column: payload}
+    # Only the run artifact carries the turn's workflow label, and only newer producers set it:
+    # the column is named in the statement when there is a value, so an artifact without one
+    # never overwrites a stored label with NULL.
+    workflow = str(payload.get("workflow") or "").strip() if column == "run_artifact" else ""
+    if workflow:
+        filled["workflow"] = workflow
     stmt = insert(HarnessTurnTraceSQL).values(
         correlation_id=str(corr_id),
         created_at=now,
         updated_at=now,
-        **{column: payload},
+        **filled,
     )
     stmt = stmt.on_conflict_do_update(
         index_elements=[HarnessTurnTraceSQL.correlation_id],
-        set_={column: payload, "updated_at": now},
+        set_={**filled, "updated_at": now},
     )
     sess.execute(stmt)
     sess.commit()

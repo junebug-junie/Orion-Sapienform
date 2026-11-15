@@ -101,6 +101,9 @@ curiosity 14, painting 12, memory 4, dream 2; reading, play, prime, intention, d
 missing tables (migration not applied yet): experience_shown, experience_use.
 ```
 
+Re-run after the review fixes and the merge of patch 1's fixes (2026-11-15, ~19:00Z): `0 / 4198 = 0.00%;
+closed organs: 0 of 16`, same missing tables.
+
 This is the gate's baseline. Reading and Prime read 0 because their kinds start with patch 1's deploy;
 patch 1's live read counted 2,980 experiences in 24 h once they are included.
 
@@ -142,6 +145,10 @@ blockers. Six should-fix items, all fixed:
   - The three `execution_dispatch.*` families are dead. Deleting them from `families.yaml` touches the
     market's family table, so it is out of scope here. The exemption records that they are dead.
   - Runtime is 2.2 s against the spec's "under 2 s"; most of that is the git calls.
+- Branch history: the first push of this branch was rebased locally. Instead of a force-push, the old
+  remote head was merged in with `-s ours` (the tree is unchanged, and the old head is now an ancestor).
+  Patch 1's later fixes come in by a normal merge: its review fixes and the #3458 blinding fix. That merge
+  carries patch 1's availability-based 24 h use window into `orion/integration/coverage.py`.
 - Also found by CI on patch 1, and fixed there: `ARC_SOURCE_TABLES` in sql-writer's `act_downstream_use`
   test now excludes the experience-only kinds' tables.
 
@@ -165,6 +172,6 @@ No restart required. Deploy patch 1 first (it carries the only runtime change in
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3454
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

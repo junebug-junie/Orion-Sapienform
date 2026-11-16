@@ -231,6 +231,14 @@ jobs:
           python -m pytest orion/integration/evals -q -p no:cacheprovider
           python -m orion.integration.evals.run_now_ablation_eval --offline
 
+      # Alarms (cabinet / strain / street) ride the node prediction_error field but mean "it fired", not a
+      # surprise size (#3307). Every file that reads node prediction_error skips them (is_alarm_node) or is
+      # registered with a class and a reason in config/substrate/prediction_error_readers.yaml.
+      - name: Prediction-error readers account for alarms
+        run: |
+          python scripts/check_pe_alarm_readers.py
+          python -m pytest tests/test_check_pe_alarm_readers.py -q -p no:cacheprovider
+
       # One owner per tuned env key, and no copy at all of a module-owned line (body economy
       # Patch B: the room's 32/30.5/34/33 C lines live only in orion/autonomy/thermal_gate.py).
       # Repo-wide on purpose: a new copy can land in any service, so a path filter would miss it.

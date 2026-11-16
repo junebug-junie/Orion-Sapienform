@@ -1,0 +1,115 @@
+"""scripts/check_pe_alarm_readers.py (#3307): every prediction_error reader says how it treats alarms."""
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+import yaml
+
+REPO = Path(__file__).resolve().parents[1]
+_spec = importlib.util.spec_from_file_location("check_pe_alarm_readers", REPO / "scripts/check_pe_alarm_readers.py")
+gate = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(gate)
+
+
+def _repo(tmp_path: Path, files: dict[str, str], registry: dict) -> Path:
+    for rel, text in files.items():
+        p = tmp_path / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+    reg = tmp_path / gate.REGISTRY
+    reg.parent.mkdir(parents=True, exist_ok=True)
+    reg.write_text(yaml.safe_dump({"version": 1, **registry}))
+    return tmp_path
+
+
+GENERIC = "def top(nodes):\n    return max(n.metadata.get('prediction_error', 0) for n in nodes)\n"
+FILTERED = ("from orion.substrate.prediction_error_freshness import is_alarm_node\n"
+            "def top(nodes):\n    return max(n.metadata['prediction_error'] for n in nodes if not is_alarm_node(n.id))\n")
+
+
+def test_the_checked_in_repo_passes():
+    assert gate.check(REPO) == []
+
+
+def test_a_new_generic_reader_that_forgets_alarms_fails(tmp_path):
+    root = _repo(tmp_path, {"orion/new_reader.py": GENERIC}, {})
+    problems = gate.check(root)
+    assert len(problems) == 1 and "orion/new_reader.py" in problems[0] and "is_alarm_node" in problems[0]
+    assert gate.main(["--root", str(root)]) == 1
+
+
+def test_a_reader_that_skips_alarms_passes_without_registering(tmp_path):
+    assert gate.check(_repo(tmp_path, {"orion/reader.py": FILTERED}, {})) == []
+
+
+def test_history_table_and_attribute_reads_count_as_touching(tmp_path):
+    root = _repo(tmp_path, {"services/x/app/a.py": "SQL = 'select * from substrate_node_prediction_error_history'\n",
+                            "services/x/app/b.py": "v = node.prediction_error\n"}, {})
+    assert {p.split(" ")[0] for p in gate.check(root)} == {"services/x/app/a.py", "services/x/app/b.py"}
+
+
+def test_registered_with_a_class_and_reason_passes_and_each_needs_both(tmp_path):
+    ok = _repo(tmp_path / "ok", {"orion/w.py": GENERIC},
+               {"files": {"orion/w.py": {"class": "not_a_reader", "reason": "writes the value"}}})
+    assert gate.check(ok) == []
+    bad = _repo(tmp_path / "bad", {"orion/w.py": GENERIC},
+                {"files": {"orion/w.py": {"class": "trust_me", "reason": ""}}})
+    problems = gate.check(bad)
+    assert any("not one of" in p for p in problems) and any("no reason" in p for p in problems)
+
+
+def test_stale_and_redundant_entries_fail(tmp_path):
+    root = _repo(tmp_path, {"orion/gone_quiet.py": "x = 1\n", "orion/reader.py": FILTERED},
+                 {"files": {"orion/missing.py": {"class": "not_a_reader", "reason": "r"},
+                            "orion/gone_quiet.py": {"class": "not_a_reader", "reason": "r"},
+                            "orion/reader.py": {"class": "filters_via", "reason": "r"}}})
+    problems = gate.check(root)
+    assert any("orion/missing.py" in p and "no longer exists" in p for p in problems)
+    assert any("orion/gone_quiet.py" in p and "no longer touches" in p for p in problems)
+    assert any("orion/reader.py" in p and "already filters" in p for p in problems)
+
+
+def test_every_spelling_of_the_key_counts_as_touching(tmp_path):
+    files = {
+        "orion/a_getattr.py": "v = getattr(node, 'prediction_error', 0)\n",
+        "orion/b_member.py": "hot = [k for k, vec in vectors.items() if 'prediction_error' in vec]\n",
+        "orion/c_sql.py": "SQL = \"select field_json -> 'node_vectors' ->> 'prediction_error'\"\n",
+        "orion/d_const.py": "PE_KEY = \"prediction_error\"\nv = md.get(PE_KEY)\n",
+        "orion/e_fstring.py": "q = f\"{node}.prediction_error\"\n",
+    }
+    root = _repo(tmp_path, files, {})
+    assert {p.split(" ")[0] for p in gate.check(root)} == set(files)
+
+
+def test_a_mention_in_a_comment_or_docstring_is_not_a_filter(tmp_path):
+    text = ('"""Uses is_alarm_node somewhere else."""\n'
+            "# ALARM_NODE_IDS are handled upstream\n" + GENERIC)
+    root = _repo(tmp_path, {"orion/claims.py": text}, {})
+    assert len(gate.check(root)) == 1
+
+
+def test_excluded_paths_must_be_narrow_existing_directories(tmp_path):
+    root = _repo(tmp_path, {"orion/x.py": GENERIC, "scripts/analysis_x.py": GENERIC},
+                 {"excluded_paths": [{"path": "orion/", "reason": "too broad"},
+                                     {"path": "scripts/analysis", "reason": "no slash"},
+                                     {"path": "scripts/nope/", "reason": "missing"}]})
+    problems = gate.check(root)
+    assert sum("must be an existing directory" in p for p in problems) == 3
+    assert any(p.startswith("orion/x.py") for p in problems)              # not excluded by the bad entries
+    assert any(p.startswith("scripts/analysis_x.py") for p in problems)
+
+
+def test_tests_evals_and_excluded_paths_are_not_scanned(tmp_path):
+    root = _repo(tmp_path, {"orion/tests/test_x.py": GENERIC, "services/s/evals/run.py": GENERIC,
+                            "scripts/analysis/replay.py": GENERIC},
+                 {"excluded_paths": [{"path": "scripts/analysis/", "reason": "offline, read by a person"}]})
+    assert gate.check(root) == []
+    no_reason = _repo(tmp_path / "nr", {"scripts/analysis/replay.py": GENERIC},
+                      {"excluded_paths": [{"path": "scripts/analysis/", "reason": ""}]})
+    assert any("no reason" in p for p in gate.check(no_reason))
+
+
+def test_an_unparseable_file_never_auto_passes_on_a_comment(tmp_path):
+    broken = "# is_alarm_node handles this\n" + GENERIC + "def broken(:\n    x = 'unterminated\n"
+    assert len(gate.check(_repo(tmp_path, {"orion/broken.py": broken}, {}))) == 1

@@ -171,8 +171,12 @@ def magnitude_scorer(prediction_errors: dict[str, float]) -> dict[str, float]:
     real history for these values exists, per Candidate A's own established
     finding, reused here rather than re-derived).
     """
+    from orion.substrate.prediction_error_freshness import is_alarm_node
+
     out: dict[str, float] = {}
     for target_id, value in prediction_errors.items():
+        if is_alarm_node(target_id):   # an alarm's value means "it fired", never a surprise size (#3307)
+            continue
         try:
             fv = float(value)
         except (TypeError, ValueError):

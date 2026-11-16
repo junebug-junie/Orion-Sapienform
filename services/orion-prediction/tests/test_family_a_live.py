@@ -162,7 +162,8 @@ def test_a_target_resting_flat_inside_its_band_is_issued_and_scored_not_refused(
     # Flatten s.x AT ITS FLOOR for the last 23 h before selection and on: its 24 h gate window is ~96 % one
     # value. (Flat at a non-floor value is a frozen sensor, refused since #3370 -- see the test below.)
     f = _frame()
-    rest = float(f.loc[:DAY7 - timedelta(hours=23), "s.x"].min())
+    rest = float(f.loc[:DAY7 - timedelta(hours=23), "s.x"].quantile(0.05))
+    f["s.x"] = f["s.x"].clip(lower=rest)          # a floor it rests on every day, like PM2.5's 0
     f.loc[DAY7 - timedelta(hours=23):, "s.x"] = rest
     live, _l = _live(f)
     now = DAY7 + timedelta(minutes=6)
@@ -356,3 +357,24 @@ def test_calm_eval_passes_a_calibrated_week_and_waits_for_seven_days():
     assert s["5"]["refusal_reasons"] == {"s.y:stale": 1}
     assert ev.verdict(s, 7.0)[0].startswith("NOT YET")
     assert ev.verdict(ev.summarize(_joint_rows(8, lambda rng: 0.01), 5), 7.0)[0] == "FAIL"
+
+
+def test_a_probe_that_died_to_a_new_low_before_select_is_not_served_as_rest():
+    """Review round 2: s.x dies to -127 six hours before select. The window minimum is -127, but the
+    served floor is the rest floor of normal days, so the dead probe is never exempt as 'rest'."""
+    f = _frame()
+    f.loc[DAY7 - timedelta(hours=6):, "s.x"] = -127.0
+    live, _l = _live(f)
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    assert live.served is not None and live.served.floors["s.x"] > -100
+    for _ in range(140):                                               # ~11.7 h
+        now += G
+        live.tick(now)
+    issued_with_x = [r for r in live.store.forecasts if r["series_id"] == fl.PREFIX + "s.x"]
+    refused = [j for j in live.store.joints if j["status"] == "refused" and "s.x" in (j["refusal"] or {})]
+    assert refused                                                     # caught within the day, never calm
+    # dead since day7 - 6 h; the half-dead day it died on is its flattest day (0.25), so the limit is
+    # 0.625 and the refusals start ~15 h in, like real readings frozen at their median (12-15 h)
+    late = [r for r in issued_with_x if r["origin_ts"] > DAY7 + timedelta(hours=9, minutes=30)]
+    assert not late                                                    # refused from then on

@@ -474,13 +474,15 @@ same `PREDICTION_TICK_SEC`). No bus event, no substrate node, no consumer yet.
   ~100 KB), so rows issued before a restart are scored with the run that issued them. Run rows are not
   pruned (~4 a day). A selection longer than ~4 min makes the next bucket's 5 min horizon late (skipped).
 - **Issue** each completed 5-min bucket: the hygiene gate on the last 24 h of every named input (present,
-  fresh, inside its training band, and not frozen). Frozen (#3370): one value ABOVE the training floor
+  fresh, inside its training band, and not frozen). Frozen (#3370): one value other than the rest floor
   covers more of the 24 h than `flat_margin` (0.5) of the way from the input's flattest normal training
   day (`stats.max_day_mode_share`: largest such share among whole days at or under `max_mode_share`) to
-  1.0. Floor values never count (PM2.5 resting at 0 is rest); a sensor frozen AT its floor is therefore
-  not caught. The bucket is refused (`flat_beyond_training`) until the next select, which drops the input
+  1.0. The rest floor (`stats.rest_floor`) is a low reached on at least two normal days (PM2.5's 0), never
+  the window minimum, so a probe dead at -127 is a new low, not rest. Values at the rest floor never count;
+  a sensor frozen AT its rest floor is therefore not caught. The bucket is refused (`flat_beyond_training`) until the next select, which drops the input
   with the same reason and serves the rest. Live smoke: real readings held at their median were refused
-  after 12-14 h (`evals/run_family_a_gate_replay_eval.py --freeze <input>`); before, ~12 days. Refused
+  after 12-14 h, and a probe held at -127 after 12 h (`evals/run_family_a_gate_replay_eval.py --freeze <input>
+  [--freeze-at -127]`); before, ~12 days (and the dead probe read as rest after the next select). Refused
   -> one `prediction_joint_surprise` row per horizon with `status = 'refused'` and the reasons
   (`refusal`), a `family_a_issue_refused` log line, nothing forecast. Passed -> per reading a
   `prediction_forecast` row (`series_id = 'family_a:<reading>'`, role `champion`, model = the rung,

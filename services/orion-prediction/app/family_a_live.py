@@ -279,7 +279,9 @@ class FamilyALive:
             run_id=run_id, selection_id=selection_id, fitted_at=now,
             named={k: verdicts[k].status for k in inputs},
             bands={k: verdicts[k].stats["band"] for k in inputs},
-            floors={k: verdicts[k].stats["min"] for k in inputs}, horizons=horizons,
+            # the rest floor (normal days only), never the window minimum: a probe frozen at a new low
+            # must not become its own "floor" and pass as rest
+            floors={k: verdicts[k].stats.get("rest_floor") for k in inputs}, horizons=horizons,
             flat_ceilings={k: verdicts[k].stats.get("max_day_mode_share") for k in inputs})
         for h, s in horizons.items():
             self._runs[(run_id, h)] = RunInfo(targets=s.fit.targets,

@@ -208,14 +208,17 @@ def screen_series(values: pd.Series, hyg: Hygiene, series_id: str = "") -> Serie
     stats["band"] = [float(lo), float(hi)]
     stats["min"] = float(x.min())
     full_days, rest_share, rho = _rest_shape(values, lo, hi)
-    ceiling = _flat_ceiling(values, hyg, stats["min"])
+    rest = _rest_floor(values, hyg)
+    ceiling = _flat_ceiling(values, hyg, rest)
+    if ceiling is None and full_days:        # whole days, none normal: hold them to select's one-value line
+        ceiling = hyg.max_mode_share
     stats.update(n_days=len(full_days), rest_day_share=round(rest_share, 4), drift_rho=round(rho, 4),
-                 max_day_mode_share=ceiling)
+                 max_day_mode_share=ceiling, rest_floor=rest)
     if not full_days or rest_share < hyg.min_rest_day_share:
         reasons.append("no_rest")
     # frozen now: the window's last 24 h, against the ceiling of its own normal days (#3370)
     last = values[values.index > values.index[-1] - pd.Timedelta(hours=24)].to_numpy(dtype=float)
-    if _frozen(last[np.isfinite(last)], hyg, ceiling, stats["min"]):
+    if _frozen(last[np.isfinite(last)], hyg, ceiling, rest):
         reasons.append("flat_beyond_training")
     if len(full_days) >= 5 and abs(rho) >= hyg.max_drift_rho:
         reasons.append("drift")
@@ -254,21 +257,37 @@ def flat_limit(ceiling: float, hyg: Hygiene) -> float:
     return ceiling + hyg.flat_margin * (1.0 - ceiling)
 
 
+def _rest_floor(values: pd.Series, hyg: Hygiene) -> float | None:
+    """The reading's rest floor: a low it reaches on at least two NORMAL whole days (one value covers at
+    most ``max_mode_share`` of the day) -- the second-lowest of those days' minimums. A probe dead at its
+    -127 error code makes its days not normal, and the day it died on is only one day, so a new low
+    reached by freezing never becomes the floor and is never exempt as rest (review 2026-11-15: with the
+    window minimum as the floor, a probe dead for 6 h read as calm after the next select). PM2.5 sits at
+    0 on most days, so its rest floor stays 0. None with fewer than two normal days."""
+    s = values[np.isfinite(values.to_numpy(dtype=float))]
+    need = 0.5 * 1440.0 / _grain_min(values.index)
+    lows = sorted(float(g.min()) for _d, g in s.groupby(s.index.floor("1D"))
+                  if len(g) >= need and _mode(g.to_numpy(dtype=float))[0] <= hyg.max_mode_share)
+    return lows[1] if len(lows) >= 2 else None
+
+
 def _flat_share(x: np.ndarray, floor: float | None) -> float:
-    """Share of ALL present values taken by the most common value ABOVE the training floor (rounded to 6
-    significant digits). Resting at the floor is rest, never "frozen", so floor values never count:
-    a dark day of a light sensor reads 0, not 1."""
+    """Share of ALL present values taken by the most common value other than the rest floor (rounded to 6
+    significant digits). Resting at the floor is rest, never "frozen", so values AT the floor never count
+    (a dark day of a light sensor reads 0, not 1); values below it are a new low and do count. Measured
+    over all present values, not only the non-floor ones: conservative (a light sensor dark half the day
+    and stuck the other half reads 0.5), and it needs no minimum count of lit buckets."""
     if not len(x):
         return 0.0
     r = np.array([_r6(a) for a in x])
     if floor is not None:
-        r = r[r > _r6(floor) + 1e-9]
+        r = r[np.abs(r - _r6(floor)) > 1e-9]
     if not len(r):
         return 0.0
     return float(np.unique(r, return_counts=True)[1].max() / len(x))
 
 
-def _flat_ceiling(values: pd.Series, hyg: Hygiene, floor: float) -> float | None:
+def _flat_ceiling(values: pd.Series, hyg: Hygiene, floor: float | None) -> float | None:
     """The flattest NORMAL whole day of the window: the largest ``_flat_share`` of any whole day (same
     whole-day rule as ``_rest_shape``) among days at or under ``max_mode_share`` -- the line above which
     ``select`` already calls a series one value. Order-independent, so a frozen day anywhere in the window

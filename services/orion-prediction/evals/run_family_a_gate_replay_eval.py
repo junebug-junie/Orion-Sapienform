@@ -52,14 +52,19 @@ def _manifest(manifest: dict) -> tuple[dict, dict, dict, dict]:
     m = manifest.get("inputs", manifest)
     d = {k: v for k, v in m.items() if isinstance(v, dict) and v.get("status") in (fa.TARGET, fa.COVARIATE)}
     return ({k: v["status"] for k, v in d.items()}, {k: v["stats"]["band"] for k, v in d.items()},
-            {k: v["stats"]["min"] for k, v in d.items()},
+            {k: v["stats"].get("rest_floor", v["stats"]["min"]) for k, v in d.items()},
             {k: v["stats"].get("max_day_mode_share") for k, v in d.items()})
 
 
 def _ceilings(frame: pd.DataFrame, named: dict, fitted_at: datetime, hyg) -> dict:
     """What a select at ``fitted_at`` would store (manifests from before #3370 lack it)."""
     w = frame.loc[(frame.index >= fitted_at - timedelta(days=SELECT_DAYS)) & (frame.index < fitted_at)]
-    return {k: fa.screen_series(w[k], hyg, k).stats.get("max_day_mode_share") for k in named if k in w.columns}
+    out = {}
+    for k in named:
+        if k in w.columns:
+            st = fa.screen_series(w[k], hyg, k).stats
+            out[k] = (st.get("max_day_mode_share"), st.get("rest_floor"))
+    return out
 
 
 def main() -> int:
@@ -69,6 +74,8 @@ def main() -> int:
     ap.add_argument("--freeze", default=None, metavar="INPUT",
                     help="live smoke for #3370: hold this input at its median (a normal-looking, non-floor "
                          "value) from the replay start on, and report when each gate first refuses it")
+    ap.add_argument("--freeze-at", type=float, default=None,
+                    help="with --freeze: hold it at this value instead (e.g. -127, a dead probe's error code)")
     args = ap.parse_args()
     uri = os.environ.get("POSTGRES_URI")
     if not uri:
@@ -92,7 +99,8 @@ def main() -> int:
     lo = lo.replace(second=0, microsecond=0) - timedelta(minutes=lo.minute % cfg.grain_min)   # on the grain grid
     frame, _ = load_frame(uri, cfg.inputs, cfg.grain_min, lo, end)
     if args.freeze:
-        held = float(frame.loc[frame.index < start, args.freeze].median())
+        held = (args.freeze_at if args.freeze_at is not None
+                else float(frame.loc[frame.index < start, args.freeze].median()))
         frame.loc[frame.index >= start, args.freeze] = held
         print(f"froze {args.freeze} at {held:g} from {start:%Y-%m-%d %H:%M}Z")
     first_flat: dict = {}
@@ -113,7 +121,9 @@ def main() -> int:
         if any(v is None for v in ceilings.values()):
             if fitted not in ceil_cache:
                 ceil_cache[fitted] = _ceilings(frame, named, fitted, cfg.hygiene)
-            ceilings = {k: (v if v is not None else ceil_cache[fitted].get(k)) for k, v in ceilings.items()}
+            rec = ceil_cache[fitted]
+            ceilings = {k: (v if v is not None else rec.get(k, (None, None))[0]) for k, v in ceilings.items()}
+            floors = {k: rec[k][1] if k in rec else v for k, v in floors.items()}   # what that select would store
         w = frame.loc[(frame.index >= e - timedelta(hours=24)) & (frame.index < e)]
         seen = {col: (w[col].dropna().index[-1].to_pydatetime() + grain) if w[col].notna().any() else None
                 for col in w.columns}
@@ -132,7 +142,7 @@ def main() -> int:
           f"({cfg.horizons_min[0]} min horizon): {dict(stored)}")
     for t, c in sorted(ceil_cache.items()):
         print(f"recomputed ceilings for the run fitted {t:%Y-%m-%d %H:%M}Z: "
-              f"{ {k: v for k, v in sorted(c.items(), key=lambda kv: -(kv[1] or 0))[:4]} } (top 4)")
+              f"{ {k: v[0] for k, v in sorted(c.items(), key=lambda kv: -(kv[1][0] or 0))[:4]} } (top 4)")
     for name in gates:
         print(f"{name}: pass={passed[name]} refused={sum(refused[name].values())} reasons={dict(refused[name])}")
     if args.freeze:

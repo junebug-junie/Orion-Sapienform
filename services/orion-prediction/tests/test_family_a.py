@@ -672,3 +672,46 @@ def test_a_reading_resting_at_a_non_round_floor_counts_as_its_floor():
     f = _frame({"r.x": np.full(288, floor)})
     fa.gate_named_inputs({"r.x": fa.TARGET}, f, _hyg(), bands={"r.x": [18.0, 20.0]}, floors={"r.x": floor},
                          flat_ceilings={"r.x": 0.1})
+
+
+def test_a_probe_dead_at_a_new_low_is_never_its_own_rest_floor():
+    """Review round 2: a DS18B20 dead at -127 became the window minimum, so after the next select it was
+    'resting at its floor' and read as calm. The rest floor comes from normal days only."""
+    h = _hyg()
+    normal = _daily(days=12, seed=13)
+    for dead_days in (1, 3):
+        v = fa.screen_series(_series(np.r_[normal, np.full(dead_days * 288, -127.0)]), h, "probe.t")
+        assert v.stats["rest_floor"] > 20 and v.status == fa.REFUSED and "flat_beyond_training" in v.reasons
+    # and at issue time, with that rest floor: refused, never exempt as rest
+    with pytest.raises(fa.HygieneRefused) as exc:
+        fa.gate_named_inputs({"probe.t": fa.TARGET}, _frame({"probe.t": np.full(288, -127.0)}), h,
+                             bands={"probe.t": [23.0, 27.0]}, floors={"probe.t": float(normal.min())},
+                             flat_ceilings={"probe.t": 0.01})
+    assert exc.value.refusals == {"probe.t": ("left_trained_band",)}
+
+
+def test_a_day_over_the_one_value_line_never_lifts_the_ceiling():
+    """Pins max_mode_share as the normal-day cut: a 90 %-frozen day is not normal."""
+    h = _hyg()
+    rng = np.random.default_rng(14)
+    calm = [np.round(60 + 3 * np.sin(np.arange(288) / 40) + rng.standard_normal(288)) for _ in range(10)]
+    stuck90 = np.where(rng.random(288) < 0.9, 61.0, np.round(61 + rng.standard_normal(288)))
+    v = fa.screen_series(_series(np.concatenate([*calm[:5], stuck90, *calm[5:]])), h, "g.t")
+    assert v.stats["max_day_mode_share"] < 0.5
+
+
+def test_flat_share_is_over_all_values_so_half_dark_half_stuck_is_one_half():
+    x = np.r_[np.zeros(144), np.full(144, 120.0)]
+    assert fa._flat_share(x, 0.0) == pytest.approx(0.5)
+    assert fa._flat_share(np.r_[np.full(144, -5.0), np.full(144, 120.0)], 0.0) == pytest.approx(0.5)  # new low counts
+    assert fa._flat_share(np.zeros(288), 0.0) == 0.0
+
+
+def test_whole_days_with_none_normal_still_get_a_ceiling():
+    """Review round 2: a step sensor (a different value each day, every day > 85 % one value) had no
+    ceiling, so no frozen check at all. It falls back to select's one-value line."""
+    h = _hyg()
+    rng = np.random.default_rng(15)
+    days = [np.where(rng.random(288) < 0.9, 10.0 + d, 10.0 + d + rng.random(288)) for d in range(12)]
+    v = fa.screen_series(_series(np.concatenate(days)), h, "step.x")
+    assert v.stats["max_day_mode_share"] == h.max_mode_share

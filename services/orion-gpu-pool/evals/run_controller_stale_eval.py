@@ -41,10 +41,15 @@ logging.disable(logging.CRITICAL)   # 272 refusal log lines would bury the verdi
 LIVE_REFUSALS = 136
 STALE = "config_unloadable:ValidationError"
 RETRYABLE = ("busy", "deadline_passed", "upstream_not_idle:agent-gpu2", "stale_generation")
+# The replay stands one background hold on `agent` for the whole 26 h as "agent is busy" (the live
+# demand was many shorter runs). The background hold cap (H6, #3391) would take that one hold back
+# at 9000 s and the gpu2 demand with it (43 of 136 refusals replayed), so the cap is off here. This
+# eval is about controller alerts; hold length is pinned in orion/gpu_pool/tests/test_scheduler_holds.py.
+REPLAY_CFG = CFG.model_copy(update={"defaults": CFG.defaults.model_copy(update={"background_max_hold_sec": None})})
 
 
 async def replay(reasons: list[str], *, then_succeed: bool) -> dict:
-    rt, clock = make()
+    rt, clock = make(cfg=REPLAY_CFG)
     sent: list[tuple[str, object]] = []
 
     async def alert(seat, state, view):

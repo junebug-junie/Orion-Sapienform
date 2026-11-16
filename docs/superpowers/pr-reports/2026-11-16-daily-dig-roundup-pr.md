@@ -198,6 +198,7 @@ orion-hub, orion-durable-runs, orion-actions and orion-harness-governor are rebu
 - Severity: medium. Concern: `OrionDayMaterialV1` is `extra="forbid"`. New Hub sends `organ_roundup` (null even with the flag off), so an old orion-durable-runs would refuse the brief. Rolling back only Hub after letters are stored would also fail to read those rows. Mitigation: rebuild orion-hub and orion-durable-runs in the same post-merge run, outside 08:30 America/Denver; roll back both together.
 - Severity: low. Concern: `notify_attempts` has 0 rows ever (written by no service), so the old digest's "delivery failures" section was always empty; the footer counts `notify_requests` by status instead (sent / pending / no_email).
 - Severity: low. Concern: Orion's own `dig organs` reads all UNREAD until the grant is applied. UNVERIFIED as Orion's role until then.
+- Issues: opened #3526 (verify-live, needs-juniper: the two manual steps and the four live checks). Refs #3426 (the patch 4 ticket; left open until #3526's live checks pass). Checked #3458 (curiosity arm unblinding): the roundup prints only `now_label` text, which on main folds the three investigate arms into "curiosity run", and never prints payloads.
 - UNVERIFIED (needs the deploy and a letter): the next letter email has "What each organ did", the letter turn cites at least one roundup ref (`note_roundup_refs.valid >= 1` in the run's finish detail), no `orion.digest.daily` row in `notify_requests` for 2 days, and a `curiosity_compaction` row the week after.
 
 ## PR link

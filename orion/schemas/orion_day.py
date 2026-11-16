@@ -285,6 +285,8 @@ class OrganRoundupV1(_Model):
     unread: dict[str, str] = Field(default_factory=dict)
     use_rate: float | None = None
     closed_organs: list[str] = Field(default_factory=list)
+    # organ -> experiences that day: the letter drops a tail section only when its organ carried something.
+    organ_experiences: dict[str, int] = Field(default_factory=dict)
 
 
 class OrionDayMaterialV1(_Model):

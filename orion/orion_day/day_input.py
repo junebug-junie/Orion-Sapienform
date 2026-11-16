@@ -85,8 +85,10 @@ SOURCES = ("frame", "chronology", "temporal_core", "juniper", "roundup", "curios
            "walkway", "world_pulse", "github", "dreams", "visual_reveries", "readings")
 
 
-# Tail sections the roundup replaces when it is in the material (spec Part A.7, "Where it goes").
-ROUNDUP_REPLACES = frozenset({"walkway", "dreams", "visual_reveries", "readings"})
+# Tail sections the roundup replaces (spec Part A.7, "Where it goes"), each by the organ that carries it. A
+# section is dropped only when that organ recorded at least 1 experience that day: a lagging or broken chronicle
+# (every organ quiet) never costs the letter its readings or dreams.
+ROUNDUP_REPLACES = {"walkway": "camera", "dreams": "dream", "visual_reveries": "painting", "readings": "reading"}
 ROUNDUP_HEADING = "## What each organ did"
 
 
@@ -154,9 +156,12 @@ def _juniper_section(material: OrionDayMaterialV1, tz: ZoneInfo) -> str:
 ROUNDUP_CORE_QUERIES = frozenset({"kinds", "top"})
 
 
-def roundup_carries_organs(material: OrionDayMaterialV1) -> bool:
+def roundup_replaced(material: OrionDayMaterialV1) -> frozenset[str]:
+    """The tail sections the roundup carries this day (see ``ROUNDUP_REPLACES``)."""
     r = material.organ_roundup
-    return r is not None and bool(r.lines) and not (ROUNDUP_CORE_QUERIES & set(r.unread))
+    if r is None or not r.lines or ROUNDUP_CORE_QUERIES & set(r.unread):
+        return frozenset()
+    return frozenset(s for s, organ in ROUNDUP_REPLACES.items() if r.organ_experiences.get(organ, 0) > 0)
 
 
 def _roundup_section(material: OrionDayMaterialV1) -> str:
@@ -164,7 +169,7 @@ def _roundup_section(material: OrionDayMaterialV1) -> str:
     if r is None or not r.lines:
         return ""
     return "\n".join([f"{ROUNDUP_HEADING} (my organ roundup for {r.day.isoformat()}: every line a count, a quote "
-                      "or a ref; cite an item by its [experience:<id>])", *r.lines])
+                      "or a ref; cite an item by its bracketed experience ref, as shown)", *r.lines])
 
 
 # --- self-sense, deduplicated ------------------------------------------------------------------
@@ -294,7 +299,7 @@ def _tail_sections(material: OrionDayMaterialV1, tz: ZoneInfo) -> list[tuple[str
     """(source name, lines) in tail order: the short fixed items first, readings last (they are the
     longest list and fill what is left). Every line already trimmed."""
     out: list[tuple[str, list[str]]] = []
-    replaced = ROUNDUP_REPLACES if roundup_carries_organs(material) else frozenset()
+    replaced = roundup_replaced(material)
     if material.walkway_day is not None and "walkway" not in replaced:
         w = material.walkway_day
         out.append(("walkway", ["## The street outside (my walkway camera; counts by code)",

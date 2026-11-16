@@ -25,6 +25,9 @@ ROUNDUP_LINES = [
 ]
 
 
+CARRIED = {"reading": 4, "dream": 2, "painting": 13, "camera": 571}
+
+
 class _Conn(fx.FakeConn):
     """The fixture day plus the roundup's queries (served empty, so every organ is quiet)."""
 
@@ -45,7 +48,8 @@ def _material(roundup: bool = True):
     if not roundup:
         return m
     return m.model_copy(update={"organ_roundup": OrganRoundupV1(
-        day=fx.LETTER_DATE, lines=ROUNDUP_LINES, refs=["experience:dream_cycle:dc-1"])})
+        day=fx.LETTER_DATE, lines=ROUNDUP_LINES, refs=["experience:dream_cycle:dc-1"],
+        organ_experiences=CARRIED)})
 
 
 def test_gather_reads_the_roundup_only_when_asked():
@@ -68,6 +72,7 @@ def test_roundup_sits_after_juniper_and_before_curiosity_whole():
         assert line in d  # never clipped
     assert view.source_chars["roundup"] > 0
     assert "experience:dream_cycle:dc-1" in view.included_refs
+    assert not [r for r in view.included_refs if "<" in r]  # the heading plants no placeholder ref
 
 
 def test_roundup_replaces_the_tails_readings_dreams_street_and_visual_reveries():
@@ -105,3 +110,29 @@ def test_a_roundup_whose_experience_reads_failed_does_not_displace_the_tail():
         day=fx.LETTER_DATE, lines=ROUNDUP_LINES, unread={"top": "RuntimeError: permission denied"})})
     d = di.render_day_input(m).digest_md
     assert di.ROUNDUP_HEADING in d and "## Readings (" in d and "## Dreams (" in d
+
+
+def test_a_tail_section_stays_when_its_organ_carried_nothing_that_day():
+    # Chronicle lagging at 08:30 or ingest broken: every organ quiet -> the letter keeps readings and dreams.
+    quiet = _material().model_copy(update={"organ_roundup": OrganRoundupV1(
+        day=fx.LETTER_DATE, lines=ROUNDUP_LINES, organ_experiences={})})
+    d = di.render_day_input(quiet).digest_md
+    assert "## Readings (" in d and "## Dreams (" in d and "## Visual reveries (" in d
+    only_dreams = _material().model_copy(update={"organ_roundup": OrganRoundupV1(
+        day=fx.LETTER_DATE, lines=ROUNDUP_LINES, organ_experiences={"dream": 2})})
+    d = di.render_day_input(only_dreams).digest_md
+    assert "## Dreams (" not in d and "## Readings (" in d
+
+
+def test_roundup_refs_resolve_for_grounding_and_reread():
+    from orion.orion_day.budget import material_ref_records
+    from orion.orion_day.evals.run_orion_day_eval import evaluate
+
+    m = _material()
+    rec = material_ref_records(m)["experience:dream_cycle:dc-1"]
+    assert rec["line"].startswith('"dream cycle: pressure"') and rec["roundup_day"] == fx.LETTER_DATE.isoformat()
+    view = di.render_day_input(m)
+    assert all(r in material_ref_records(m) for r in view.included_refs)
+    results = {name: (ok, detail) for name, ok, detail in evaluate(m)}
+    assert results["grounding"][0], results["grounding"][1]
+    assert results["blind"][0], results["blind"][1]

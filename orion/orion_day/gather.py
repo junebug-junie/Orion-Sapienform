@@ -584,7 +584,7 @@ async def gather_organ_roundup(conn: Any, letter_date: date) -> OrganRoundupV1:
 
     r = await read_async(conn, letter_date, load_organs())
     return OrganRoundupV1(day=letter_date, lines=r.lines, refs=r.refs, unread=r.unread, use_rate=r.use_rate,
-                          closed_organs=r.closed_organs)
+                          closed_organs=r.closed_organs, organ_experiences=r.organ_experiences)
 
 
 async def gather_orion_day(

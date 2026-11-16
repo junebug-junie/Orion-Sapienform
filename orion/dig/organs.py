@@ -50,6 +50,13 @@ NOTIFY_TITLES = 3
 # "woke: <a change>"; both are counted, so the roundup counts thoughts per need the day patch 5 lands.
 NEED_PREFIX = "need:"
 
+# The dream experiment's blind rule (orion/schemas/orion_day.py, orion_day_email.py): a hypothesis id is the
+# dream scorecard's join key and is never shown. A dream_hypothesis event's id IS ``dream_hypothesis:<id>``, so
+# those rows are counted and quoted but never printed with a ref.
+BLIND_KINDS = frozenset({"dream_hypothesis"})
+BLIND_REF = "(ref withheld: dream experiment blind rule)"
+_BLIND_ID_RE = re.compile(r"dream_hypothesis:(?!\(withheld\))[^\]\s\"']+")
+
 # Refs this roundup prints. The letter's ref gate (orion/orion_day/budget.py _REF_RE) knows both kinds.
 REF_RE = re.compile(r"\[(?:experience|act):[^\]\s]+\]")
 _QUOTE_RE = re.compile(r"\"[^\"]+\"|“[^”]+”")
@@ -185,6 +192,24 @@ def _label(r: Mapping[str, Any]) -> str:
                      _payload(r.get("payload")))
 
 
+def _ref(r: Mapping[str, Any]) -> str:
+    return BLIND_REF if str(r.get("source_kind")) in BLIND_KINDS else f"[experience:{r['event_id']}]"
+
+
+def _when(v: Any) -> float:
+    """occurred_at as epoch seconds, from an asyncpg datetime or a psql text timestamp (same order both ways)."""
+    if isinstance(v, datetime):
+        return (v if v.tzinfo else v.replace(tzinfo=timezone.utc)).timestamp()
+    t = str(v or "").strip().replace(" ", "T", 1)
+    if re.search(r"[+-]\d\d$", t):
+        t += ":00"
+    try:
+        d = datetime.fromisoformat(t)
+    except ValueError:
+        return 0.0
+    return (d if d.tzinfo else d.replace(tzinfo=timezone.utc)).timestamp()
+
+
 def wake_reason(note: str) -> str:
     """``need:<name>`` / ``quiet floor`` / ``a change`` / ``still open`` from a Prime thought's outcome_note."""
     note = (note or "").strip()
@@ -211,6 +236,7 @@ class Roundup:
     use_rate: Optional[float] = None
     closed_organs: list[str] = field(default_factory=list)
     experiences: int = 0
+    organ_experiences: dict[str, int] = field(default_factory=dict)  # organ -> experiences that day
 
 
 def _organ_families(registry: OrganRegistry) -> dict[str, str]:
@@ -278,7 +304,7 @@ def build(day: date, rows: Mapping[str, list[Mapping[str, Any]]], registry: Orga
         wakes[w] = wakes.get(w, 0) + 1
 
     out = Roundup(day=day.isoformat(), unread=unread, use_rate=rate.rate, closed_organs=list(rate.closed_organs),
-                  experiences=rate.experiences)
+                  experiences=rate.experiences, organ_experiences={o.organ: o.experiences for o in rate.organs})
     L = out.lines
     L.append(f"organs {day.isoformat()} (Denver; {a[:16]}Z to {b[:16]}Z): {len(registry.organs)} organs, "
              f"{rate.experiences} experiences")
@@ -302,13 +328,14 @@ def build(day: date, rows: Mapping[str, list[Mapping[str, Any]]], registry: Orga
                      f"({_counts((x[0], x[1]) for x in organ_acts)})")
         L.append(head)
         # highest salience first; unscored after scored (the now's own order, orion/temporal_self/now.py)
-        ranked = sorted(top.get(organ, []), key=lambda r: str(r.get("occurred_at") or ""), reverse=True)
+        ranked = sorted(top.get(organ, []), key=lambda r: str(r.get("event_id")))
+        ranked.sort(key=lambda r: _when(r.get("occurred_at")), reverse=True)
         ranked.sort(key=lambda r: (_float(r.get("salience")) is None, -(_float(r.get("salience")) or 0.0)))
         for r in ranked[:TOP_PER_ORGAN]:
-            ref = f"[experience:{r['event_id']}]"
+            ref = _ref(r)
             sal = _float(r.get("salience"))
             line = f"  {_q(_label(r))} {ref} " + (f"salience {sal:.2f}" if sal is not None else "salience none")
-            if r.get("source_table") == "grammar_acts" and r.get("source_ref"):
+            if r.get("source_table") == "grammar_acts" and r.get("source_ref") and r["source_kind"] not in BLIND_KINDS:
                 line += f" [act:{r['source_ref']}]"  # the source row, when it is an act `dig act` opens
             L.append(line)
         if organ == "prime" and wakes:
@@ -320,7 +347,7 @@ def build(day: date, rows: Mapping[str, list[Mapping[str, Any]]], registry: Orga
             L.append(f"  did not read the now (registry: {_q(spec.get('exempt_read') or 'no reason given')})")
         for r in mine[:CITED_SHOWN]:
             owner = registry.organ_of.get(str(r["source_kind"]), "?")
-            L.append(f"  cited from {owner}: {_q(_label(r))} [experience:{r['event_id']}]")
+            L.append(f"  cited from {owner}: {_q(_label(r))} {_ref(r)}")
         if len(mine) > CITED_SHOWN:
             L.append(f"  {len(mine) - CITED_SHOWN} more cites today")
         by = cited_of.get(organ, {})
@@ -354,6 +381,9 @@ def build(day: date, rows: Mapping[str, list[Mapping[str, Any]]], registry: Orga
         L.append(f"  {r['severity']} x{_int(r['n'])}: {_q(r['title'])}")
     for name, why in sorted(unread.items()):
         L.append(f"UNREAD {name}: {_q(why, 200)} (that part is missing, not empty)")
+    # The blind rule on the output itself: a hypothesis id quoted inside some other row's label is withheld too.
+    L[:] = [_BLIND_ID_RE.sub("dream_hypothesis:(withheld)", x) for x in L]
+    out.lines = L
     check_lines(L)
     seen: dict[str, None] = {}
     for line in L:

@@ -571,3 +571,20 @@ def test_email_without_a_roundup_has_no_empty_section():
     letter = _letter()
     assert email.ORGAN_ROUNDUP_HEADING not in email.render_text(letter, [])
     assert 'data-section="organ-roundup"' not in email.render_html(letter, [])
+
+
+def test_email_roundup_never_shows_a_dream_hypothesis_id():
+    from orion.dig import organs as og
+    from orion.schemas.orion_day import OrganRoundupV1
+    from orion.temporal_self.now import parse_organs
+
+    reg = parse_organs({"organs": {"dream": {"temporal_sources": ["dream_hypothesis"], "reads_now": None,
+                                            "exempt_read": "later"}}})
+    rows = {"kinds": [{"source_kind": "dream_hypothesis", "n": "1"}],
+            "top": [{"event_id": "dream_hypothesis:dh-secret01", "source_kind": "dream_hypothesis",
+                     "source_table": "dream_hypothesis", "source_ref": "dh-secret01", "label": "", "verdict": "",
+                     "salience": None, "occurred_at": "2026-09-29 12:00:00+00", "payload": "{}"}]}
+    r = og.build(LETTER_DATE, rows, reg)
+    m = _material().model_copy(update={"organ_roundup": OrganRoundupV1(day=LETTER_DATE, lines=r.lines, refs=r.refs)})
+    letter = _letter(material=m)
+    assert "dh-secret01" not in email.render_text(letter, []) and "dh-secret01" not in email.render_html(letter, [])

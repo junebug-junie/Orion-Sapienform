@@ -311,3 +311,35 @@ def test_cli_routes_organs_and_refuses_a_long_window(capsys, tmp_path, monkeypat
     assert "organs <date> [<end>]" in dig.HELP
     code = dig.main(["organs", "2026-11-01", "2026-11-12"])
     assert code == 1 and "at most 7 days" in capsys.readouterr().err
+
+
+def test_a_dream_hypothesis_is_counted_and_quoted_but_its_id_never_printed():
+    # The dream experiment's blind rule: a hypothesis id is the scorecard's join key.
+    rows = _rows()
+    hyp = {"event_id": "dream_hypothesis:dh-1a69e4d982ac", "source_kind": "dream_hypothesis",
+           "source_table": "dream_hypothesis", "source_ref": "dh-1a69e4d982ac", "label": "",
+           "verdict": "", "salience": "0.99", "occurred_at": "2026-11-15 11:00:00+00", "payload": "{}"}
+    rows["top"].append(hyp)
+    rows["kinds"].append({"source_kind": "dream_hypothesis", "n": "3"})
+    rows["cited"].append({"event_id": hyp["event_id"], "citing_organ": "reverie", "citing_ref": "t:2",
+                          "source_kind": "dream_hypothesis", "label": "", "verdict": "", "payload": "{}"})
+    # and an id quoted inside another row's own label is withheld too
+    rows["top"][0]["label"] = "thinking about dream_hypothesis:dh-1a69e4d982ac again"
+    r = _build(rows)
+    text = "\n".join(r.lines)
+    assert "dh-1a69e4d982ac" not in text and not any("dream_hypothesis:dh" in x for x in r.refs)
+    assert organs.BLIND_REF in text and "dream: 5 experiences (dream_hypothesis 3, dream_cycle 2)" in text
+    organs.check_lines(r.lines)
+
+
+def test_ties_order_the_same_from_csv_text_and_typed_rows():
+    rows = _rows()
+    for r in rows["top"]:
+        if r["source_kind"] == "reverie_chain":
+            r["salience"] = "0.5"
+    typed = json.loads(json.dumps(rows))
+    for r in typed["top"]:
+        r["occurred_at"] = datetime.fromisoformat(r["occurred_at"].replace(" ", "T") + ":00")
+        r["salience"] = float(r["salience"]) if r["salience"] else None
+    assert _build(rows).lines == _build(typed).lines
+    assert "e-rev-lo" in next(x for x in _build(rows).lines if "open-loop" in x)  # newer first on a tie

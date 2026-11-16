@@ -364,6 +364,12 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
     they really were), then the asks this replay opens. Bids are replayed in time order across every ask (a heap), so
     a re-bid sees the opens of asks created after its own. None: no floor (the rule before #3381).
 
+    The time order also changes the stand-ins a RE-bid sees (issue #3381 review): the old per-ask loop finished one
+    ask's re-bids before the next ask's first bid, so a re-bid never saw later asks' stand-ins; now it sees every
+    stand-in decided before its snapshot, as the market would. On the live 30-day window (2026-11-16) no ``by_rule``
+    number moved without the floor (vehicle 87.5% held, 87.5% never opened, 7.0 answered a day); re-bids per held
+    candidate-day 8.5 -> 8.49.
+
     **Steady state** (``steady_state``): every bid ranks against the reference the live market holds at ``end`` (the
     real ledger only, as ``next_bid_by_rule``), with hunger saturated (intensity 1.0: live tau is 60 s, so it nearly
     always is). This is the regime from now on, where #3381's starvation lives; the historical lanes ranked against
@@ -441,7 +447,11 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
     state: dict[int, dict] = {}
     heap: list[tuple[datetime, int]] = []
     for i, (a, s) in enumerate(zip(asks, sal)):
-        if s is None or a["created_at"] < start or a["created_at"] > end:
+        if a["created_at"] < start or a["created_at"] > end:
+            continue
+        if s is None:
+            # Too little history to rank: live opens it unbid (``no_answer:no_history``), and the floor counts it.
+            opens.append((a["created_at"], a["rule"]))
             continue
         state[i] = {"s": s, "bids": [], "n_held": 0, "funded_at": None, "floor": False,
                     "horizon": min(a["created_at"] + LOSS_HORIZON, end)}

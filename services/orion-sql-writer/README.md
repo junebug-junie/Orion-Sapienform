@@ -418,8 +418,8 @@ Env: `ORION_PHYSIOLOGY_BID_CAMERA_ASKS` (`on`; `shadow` = open first, shadow wan
 family mean (face, sighting) ranks 0 at every bid and would be held forever, never graded. A held ask (`sated` or
 `price`, never `consent`) now opens anyway when its rule has under 2% of the family's Orion-made camera asks opened
 over the rolling 7 days (`orion/grammar/camera_ask_acts.py` `under_rule_floor`, the market's own family floor applied
-one level down). Each floor open raises the rule's share, so it stops itself: about one vehicle ask a week opens this
-way. Log: `camera_ask_bid ... verdict=admit why=rule_floor market=deferred:sated ... rule_share=...`. Env:
+one level down). Each floor open raises the rule's share, so it stops itself at about 2% of the week's asks: 2-3
+vehicle asks a week at today's ~100 asks a week. Log: `camera_ask_bid ... verdict=admit why=rule_floor market=deferred:sated ... rule_share=...`. Env:
 `ORION_CAMERA_ASK_RULE_FLOOR_ENABLED` (`true`; `false` = held stays held).
 
 **Visual confirmation asks** (2026-10-15, Juniper: "have Orion ask to confirm

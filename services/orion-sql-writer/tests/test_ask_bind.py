@@ -98,7 +98,7 @@ class FakeConn:
         # 30 days of Orion-made asks' sightings: 2..41, so 86 ranks 1.0 and 9 ranks 7/40. Opened every 4 h before
         # ``now`` (the rule floor's week count, issue #3381): one in four a vehicle ask (25% of the week's opens, far
         # over the 2% floor), the rest "Is this <name>?".
-        self.history = [{"sightings": 2 + i, "created_at": now - timedelta(hours=4 * (i + 1)),
+        self.history = [{"ask_id": f"ask-hist-{i}", "sightings": 2 + i, "created_at": now - timedelta(hours=4 * (i + 1)),
                          **({"source_kind": "vision_individual", "evidence_refs": [], "individual_kind": "vehicle"}
                             if i % 4 == 0 else
                             {"source_kind": "vision_person_confirm", "evidence_refs": [], "individual_kind": "person"})}
@@ -125,7 +125,7 @@ class FakeConn:
                 return _Res(rows=[])                     # the open-card unique index
             self.inserted.append(params)
             # The card is now one of the family's asks: the next ask read (and the rule floor) sees it.
-            self.history.append({"sightings": 0, "created_at": params["c"], "source_kind": params["sk"],
+            self.history.append({"ask_id": params["id"], "sightings": 0, "created_at": params["c"], "source_kind": params["sk"],
                                  "evidence_refs": json.loads(params["ev"]),
                                  "individual_kind": self.kinds.get(str(params["sr"]).split("|", 1)[0])})
             return _Res(rows=[(params["id"],)])
@@ -502,6 +502,23 @@ def test_a_floor_open_is_stamped_logged_and_counted_at_once(monkeypatch, caplog)
                for r in caplog.records)
     v = ab.ask_bind(conn, face_ask(ask_id="ask-face-2", iid="f2"), now=NOW + timedelta(seconds=30), bid=market)
     assert not v.admit and v.why == "deferred:sated"          # 1 face of 41 opens this week: 2.4%, over the floor
+
+
+def test_a_floor_open_still_counts_when_a_later_read_does_not_see_its_uncommitted_row(monkeypatch):
+    """Openers run in separate threads and transactions: a cache refresh after a floor open may not contain the new
+    card yet. The open stays counted until a read contains its ask_id (review finding), so a second candidate of the
+    same rule is held; once the row is seen it is counted once, not twice."""
+    monkeypatch.setattr(ab, "CACHE_TTL_SEC", 0.0)                 # every bid re-reads
+    kinds, sightings = {FACE_PERSON: "person", "f2": "person", "f3": "person"}, {FACE_PERSON: 6, "f2": 6, "f3": 6}
+    conn, market = FakeConn(kinds=kinds, sightings=sightings), Market(sated)
+    assert ab.open_camera_ask(conn, face_ask(), now=NOW, bid=market) is not None
+    row = conn.history.pop()                                        # the other transaction has not committed yet
+    assert row["ask_id"] == "ask-face"
+    v = ab.ask_bind(conn, face_ask(ask_id="ask-face-2", iid="f2"), now=NOW + timedelta(seconds=30), bid=market)
+    assert not v.admit and v.why == "deferred:sated"
+    conn.history.append(row)                                        # committed: the read now sees it
+    ab.ask_bind(conn, face_ask(ask_id="ask-face-3", iid="f3"), now=NOW + timedelta(seconds=60), bid=market)
+    assert [f[3] for f in ab._floor_opens] == []                    # dropped once seen: no double count
 
 
 def test_the_floor_opens_a_price_hold_but_never_a_consent_block():

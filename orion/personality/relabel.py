@@ -117,6 +117,7 @@ class Member:
     excerpt: str  # remade with the current label maker (stored excerpt when the choice row is gone)
     takes_label: bool = True  # False: a Juniper-"no" absorb or an own-name echo (never the label)
     remade: bool = True  # False: the choice row was missing, the stored excerpt is used
+    decline_lane: str = ""  # the lane of a decline of every option ("" for any other choice)
 
 
 @dataclass(frozen=True)
@@ -168,7 +169,8 @@ def members_from_rows(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[Membe
             evidence_id=str(r["evidence_id"]),
             similarity=float(r["similarity"]) if r.get("similarity") is not None else None,
             excerpt=remade if remade is not None else str(r.get("excerpt") or ""),
-            takes_label=takes, remade=remade is not None))
+            takes_label=takes, remade=remade is not None,
+            decline_lane=str(r.get("lane") or "") if r.get("choice_id") and r.get("declined_all") else ""))
     return out
 
 
@@ -193,6 +195,11 @@ def plan_relabel(nodes: Iterable[Mapping[str, Any]], evidence: Iterable[Mapping[
         missing = sum(1 for m in members if not m.remade)
         if missing:
             anomalies.append(f"choice_rows_missing:{missing}")
+        decline_lanes = sorted({m.decline_lane for m in members if m.decline_lane})
+        if len(decline_lanes) > 1:
+            # Declines from several lanes in one node (before 2026-11-16 they could fold together): the label
+            # names only one lane. Reported, never split here.
+            anomalies.append("decline_lanes:" + "+".join(decline_lanes))
         if len(members) != int(n.get("evidence_count") or 0):
             anomalies.append(f"evidence_rows:{len(members)}_vs_count:{int(n.get('evidence_count') or 0)}")
         label, sim, base_id = replay_label(members, evidence_count=int(n.get("evidence_count") or 0),

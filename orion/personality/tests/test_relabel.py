@@ -174,3 +174,12 @@ def test_decline_nodes_relabel_to_their_lane_phrase():
     [o] = plan_relabel([node("o", "say nothing over a, 1 of 1")],
                        [ev("o", "o1", 1.0, None, ["a"], lane="outreach", declined_all=True)])
     assert o.new_label == "Says nothing to Juniper, 1 of 1"
+
+
+def test_a_node_holding_declines_from_two_lanes_is_flagged_not_split():
+    [r] = plan_relabel([node("m", "no move, 2 of 2", n=2)],
+                       [ev("m", "p1", 1.0, None, ["a"], lane="prime", declined_all=True),
+                        ev("m", "r1", 0.9, None, ["a"], lane="reading", declined_all=True, created=1)])
+    assert "decline_lanes:prime+reading" in r.anomalies
+    # The label names only the lane of the closest member (as the reducer does); the anomaly says so.
+    assert r.new_label == "Turns down every link in a reading, 2 of 2"

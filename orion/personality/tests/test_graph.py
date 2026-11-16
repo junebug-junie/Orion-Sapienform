@@ -480,7 +480,7 @@ def test_only_id_shaped_refs_are_removed():
     assert subject_text("chat memory [juniper_chat:7a286bdd-acc] stalls") == "chat memory stalls"
 
 
-# --- declines of every option (#3515) ------------------------------------------------------------
+# --- declines of every option, 2026-11-16 ---------------------------------------------------------
 
 
 def decline(direction, lane, **kw) -> Evidence:
@@ -523,3 +523,22 @@ def test_a_decline_never_joins_a_mixed_lane_tendency_but_other_choices_still_mat
     # A non-decline choice keeps the old rule: it matches by direction alone.
     res2 = fold([node(lane_counts={"reading": 5}, lane_recent={"reading": 4.0})], [ev(axis(0), "prime")], now=NOW)
     assert res2.evidence_rows[0].disposition_id == "d1"
+
+
+def test_a_decline_still_opposes_a_tendency_in_another_lane():
+    reading = node(lane_counts={"reading": 5}, lane_recent={"reading": 4.0})
+    res = fold([reading], [decline([-x for x in axis(0)], "prime")], now=NOW)
+    row = next(r for r in res.evidence_rows if r.disposition_id != "d1")
+    assert row.meta.get("opposed") == ["d1"]
+    assert next(n for n in res.nodes if n.disposition_id == "d1").opposed_count == 1
+
+
+def test_a_juniper_no_tendency_still_absorbs_declines_from_any_lane_it_holds():
+    retired = node(status="retired", retired_at=NOW - timedelta(days=1),
+                   lane_counts={"prime": 4, "reading": 3}, lane_recent={"prime": 2.0, "reading": 2.0})
+    res = fold([retired], [decline(axis(0), "prime")], now=NOW, juniper={"d1": g.JUNIPER_NO})
+    [row] = res.evidence_rows
+    assert row.disposition_id == "d1" and row.meta.get("juniper_no") is True
+    # A lane it never held founds its own tendency instead.
+    res2 = fold([retired], [decline(axis(0), "outreach")], now=NOW, juniper={"d1": g.JUNIPER_NO})
+    assert res2.evidence_rows[0].disposition_id != "d1"

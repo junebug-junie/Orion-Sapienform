@@ -1606,6 +1606,19 @@ last tick, last error, evidence last tick, choices read, curiosity rows synced, 
 inserted/invalid, held, nodes by status). Log lines: `personality_choice_received choice_id=...`,
 `personality_tick {...}`.
 
+Option `detail` (2026-11-16): a choice option may carry `detail`, fuller words for the Hub tendency
+card only (today a curiosity-run promise's own sentence, from Prime). `/personality/choices` and the
+tendency examples return it; nothing embeds it, labels it or puts it in a turn (`text` is the option).
+Deploy durable-runs before orion-mind: bus intake validates `ChoiceOptionV1` with `extra="forbid"`.
+
+One-time relabel (#3444): `POST /personality/relabel` `{"apply": false}` returns the plan for rebuilding
+every non-retired choice tendency's label from its own stored choices with the current label maker
+(`orion/personality/relabel.py`); `{"apply": true, "expected": {id: [old_label, new_label]}}` writes
+exactly those changes (only `label` and `label_similarity`), under the reducer's tick lock, in one
+transaction, each only while the row still holds `old_label`. Run it through
+`scripts/personality_relabel_choice_nodes.py` (dry run by default; snapshot, progress log, CSV and report
+under `/tmp/personality-relabel/<run>/`). Log line: `personality_relabel apply=... written=... refused=...`.
+
 Failure: a bad tick logs `personality_tick_failed error_type=...` and writes nothing; the service
 keeps running. Kill switch: `PERSONALITY_ENABLED=false` (tables stay; bus choices are dropped with
 `personality_choice_dropped`).

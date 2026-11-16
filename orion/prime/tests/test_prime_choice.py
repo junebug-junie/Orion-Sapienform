@@ -340,3 +340,38 @@ def test_choice_record_text_is_clean_but_prime_concern_text_is_untouched():
 def test_free_text_concern_keeps_its_words_minus_markup():
     from orion.prime.choice import option_text
     assert option_text(ShownConcern("c5", "**agent lane** congestion [thought:abc123def]")) == "agent lane congestion"
+
+
+# --- ChoiceOptionV1.detail: a curiosity-run promise's sentence, for the Hub card only (2026-11-16) ---------------
+SENTENCE = 'a promise I made in a curiosity run at 2026-11-15 08:00Z: "I will check the walkway logs tomorrow."'
+CUR = ShownConcern("c-p", "a promise I made in a curiosity run (1 promise, harness_turn_trace:abc#promises_made[0])",
+                   "turn:abc", promise_text=SENTENCE)
+CHAT = ShownConcern("c-q", 'a promise I made in a chat with Juniper (1 promise): Juniper: "can you look?"',
+                    "turn:def", promise_text='a promise I made to Juniper in chat at 2026-11-15 09:00Z: "I will look."')
+
+
+def test_curiosity_promise_sentence_is_detail_only_never_text_or_label():
+    from orion.personality.graph import choice_label, pair_label
+    from orion.personality.relabel import excerpt_from_choice_row
+
+    for pick in ("c-p", "c-a", "none"):
+        choice, _ = _choice({"text": "x", "pick": pick}, shown=(A, CUR, CHAT))
+        opts = ([choice.chosen] if choice.chosen else []) + list(choice.alternatives)
+        promise = next(o for o in opts if o.key.endswith("c-p"))
+        assert promise.detail == SENTENCE
+        # Only a curiosity-run promise carries it; a chat promise and a reading concern do not.
+        assert [o.detail for o in opts if not o.key.endswith("c-p")] == [None, None]
+        assert all("walkway logs" not in o.text for o in opts)
+        row = choice.model_dump(mode="json")
+        label = choice_label(excerpt_from_choice_row({**row, "choice_id": row["choice_id"]}), 1, 1)
+        assert "walkway logs" not in label
+        chosen = choice.chosen.text if choice.chosen else "no move"
+        assert "walkway logs" not in pair_label(chosen, [o.text for o in choice.alternatives])
+
+
+def test_shown_concerns_carry_the_promise_sentence_from_the_concern():
+    c = PrimeConcernV1(concern_id="c-p", text=CUR.text, event_ref="turn:abc", promise_text=SENTENCE,
+                       opened_at=NOW, last_evidence_at=NOW)
+    from orion.prime.choice import shown_concerns
+
+    assert shown_concerns([c])[0].promise_text == SENTENCE

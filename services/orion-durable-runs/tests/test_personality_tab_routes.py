@@ -125,3 +125,28 @@ def test_driver_verdict_waits_for_the_tick_lock():
         assert store.calls == [("disp-1", "no")]
 
     asyncio.run(go())
+
+
+class RelabelDrv:
+    def __init__(self):
+        self.calls = []
+
+    async def relabel(self, *, apply, expected=None):
+        self.calls.append((apply, expected))
+        return {"applied": apply, "nodes": 1, "changes": 1, "written": int(apply), "written_ids": [],
+                "refused_ids": [], "plan": [], "anomalies": {}}
+
+
+def test_relabel_route_dry_run_by_default_and_apply_needs_expected(client, monkeypatch):
+    main, c = client
+    monkeypatch.setattr(main, "personality", None)
+    assert c.post("/personality/relabel", json={}).status_code == 503
+    drv = RelabelDrv()
+    monkeypatch.setattr(main, "personality", drv)
+    monkeypatch.setattr(main, "_checkpointer_cm", object())
+    assert c.post("/personality/relabel", json={}).json()["applied"] is False
+    assert c.post("/personality/relabel", json={"apply": True}).status_code == 400
+    assert c.post("/personality/relabel", json={"apply": True, "expected": {"d": ["only one"]}}).status_code == 422
+    assert c.post("/personality/relabel", json={"apply": True, "expected": {"d": ["a", "b"]}}).status_code == 200
+    assert c.post("/personality/relabel", json={"bogus": 1}).status_code == 422
+    assert drv.calls == [(False, None), (True, {"d": ["a", "b"]})]

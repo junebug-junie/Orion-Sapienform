@@ -1442,6 +1442,31 @@ async def personality_tendency_verdict(disposition_id: str, body: JuniperVerdict
     return out
 
 
+class RelabelIn(BaseModel):
+    """#3444 one-time relabel. ``apply`` false: the plan only (read-only). ``expected``: disposition_id ->
+    [old_label, new_label] from a reviewed dry run; only those exact changes are written."""
+
+    model_config = ConfigDict(extra="forbid")
+    apply: bool = False
+    expected: Optional[dict[str, list[str]]] = None
+
+
+@app.post("/personality/relabel")
+async def personality_relabel(body: RelabelIn):
+    """Admin: rebuild every non-retired choice-built tendency's label from its own stored choices with the
+    current label maker, under the reducer's tick lock, in one transaction. Only label and
+    label_similarity move. Run through scripts/personality_relabel_choice_nodes.py (snapshot first)."""
+    _personality_store()  # 503 when the loop is disabled
+    if body.apply and not body.expected:
+        raise HTTPException(400, "apply needs expected: the reviewed dry run's [old_label, new_label] per node")
+    if body.expected is not None and any(len(v) != 2 for v in body.expected.values()):
+        raise HTTPException(422, "expected values must be [old_label, new_label]")
+    out = await _personality_read(personality.relabel(apply=body.apply, expected=body.expected))
+    logger.info("personality_relabel apply=%s nodes=%s changes=%s written=%s refused=%s", body.apply,
+                out["nodes"], out["changes"], out["written"], len(out["refused_ids"]))
+    return out
+
+
 @app.get("/personality/arms")
 async def personality_arms(days: int = PERSONALITY_ARM_WINDOW_DAYS):
     """Market decisions with a personality arm (care vs holdback), by outcome, over the last days."""

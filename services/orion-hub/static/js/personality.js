@@ -131,9 +131,12 @@
   // "About": the full words of the options behind a tendency, as stored (no model writes them): what Orion
   // chose and what Orion passed over in its example choices, each text once. A declined-all choice's chosen
   // side is the lane's "made no move" words.
+  // ``details``: an option's fuller words where the producer stored them (a curiosity-run promise's own
+  // sentence, ChoiceOptionV1.detail). Shown here only, never in a label.
   function aboutView(examples) {
     const chose = [];
     const over = [];
+    const details = [];
     const add = (list, text) => {
       const t = String(text || "").trim();
       if (t && !list.includes(t)) list.push(t);
@@ -141,10 +144,13 @@
     for (const e of Array.isArray(examples) ? examples : []) {
       if (!e || typeof e !== "object") continue;
       if (e.declined_all || !e.chosen) add(chose, DECLINE_TEXT[e.lane] || DECLINE_TEXT_DEFAULT);
-      else add(chose, e.chosen.text);
-      for (const o of Array.isArray(e.passed_over) ? e.passed_over : []) add(over, o && o.text);
+      else { add(chose, e.chosen.text); add(details, e.chosen.detail); }
+      for (const o of Array.isArray(e.passed_over) ? e.passed_over : []) {
+        add(over, o && o.text);
+        add(details, o && o.detail);
+      }
     }
-    return { chose, over };
+    return { chose, over, details };
   }
 
   function tendencyView(t) {
@@ -345,11 +351,12 @@
     if (v.count) facts.appendChild(el("span", "muted", v.count));
     if (v.strength) facts.appendChild(el("span", "muted", v.strength));
     card.appendChild(facts);
-    if (v.about.chose.length || v.about.over.length) {
+    if (v.about.chose.length || v.about.over.length || v.about.details.length) {
       // Collapsed by default: the full option words behind the label.
       const det = el("details", "more about");
       det.appendChild(el("summary", null, "About"));
-      for (const [head, list] of [["Chose", v.about.chose], ["Passed over", v.about.over]]) {
+      for (const [head, list] of [["Chose", v.about.chose], ["Passed over", v.about.over],
+        ["The promise, in its own words", v.about.details]]) {
         if (!list.length) continue;
         det.appendChild(el("div", "muted", `${head}:`));
         const ul = el("ul");

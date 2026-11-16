@@ -270,6 +270,14 @@ class PersonalityDriver:
         async with self._lock:
             return await self._store.record_juniper_verdict(disposition_id, verdict, self._now())
 
+    # --- one-time relabel (#3444) ----------------------------------------------------------------
+
+    async def relabel(self, *, apply: bool, expected: Optional[dict] = None) -> dict:
+        """Rebuild choice-node labels from their stored choices (``PersonalityStore.relabel_choice_nodes``).
+        Under the tick lock: a tick in flight would write its loaded label back over the new one."""
+        async with self._lock:
+            return await self._store.relabel_choice_nodes(apply=apply, expected=expected)
+
     # --- tick -------------------------------------------------------------------------------------
 
     async def _with_situation(self, evidence: list[Evidence], warnings: list[str]) -> list[Evidence]:

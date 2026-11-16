@@ -378,3 +378,90 @@ def test_a_probe_that_died_to_a_new_low_before_select_is_not_served_as_rest():
     # 0.625 and the refusals start ~15 h in, like real readings frozen at their median (12-15 h)
     late = [r for r in issued_with_x if r["origin_ts"] > DAY7 + timedelta(hours=9, minutes=30)]
     assert not late                                                    # refused from then on
+
+
+def _seed_pool(live, origin, miss_by_hour):
+    """One day of scored champion rows for every target and horizon before ``origin``, served by the rung
+    serving now. ``miss_by_hour(hours_before_origin) -> |actual - point|`` sets how hard each hour was."""
+    rows = []
+    for h, sh in live.served.horizons.items():
+        for t in sh.fit.targets:
+            for i in range(1, 300):
+                o = origin - i * G
+                miss = miss_by_hour((origin - o).total_seconds() / 3600.0) * (1 if i % 2 else -1)
+                rows.append({"series_id": fl.PREFIX + t, "role": "champion", "model": sh.rung, "horizon_min": h,
+                             "origin_ts": o - timedelta(minutes=h), "target_ts": o, "point": 0.0, "actual": miss,
+                             "score_status": "scored", "scored_at": o, "interval_source": fl.INTERVAL_SOURCE,
+                             "forecast_id": -i, "quantiles": {}})
+    live.store.forecasts.extend(rows)
+
+
+def test_family_ranges_come_from_each_readings_own_live_misses_scaled_by_its_last_hour():
+    """#3310: a busy last hour widens the reading's range, a calm one narrows it; validation is the fallback."""
+    widths = {}
+    for name, last_hour in (("calm", 0.1), ("busy", 2.0)):
+        live, _l = _live()
+        now = DAY7 + timedelta(minutes=6)
+        live.tick(now)                                           # select only (no selection before this tick)
+        origin = live.latest_complete(now + G)
+        _seed_pool(live, origin, lambda hrs, lh=last_hour: lh if hrs <= 1.0 else 0.5)
+        live.issue(now + G)
+        mine = [r for r in live.store.forecasts if r["origin_ts"] == origin and r["role"] == "champion"]
+        assert mine and {r["interval_source"] for r in mine} == {fl.ADAPTIVE_SOURCE}
+        assert live.state.last_issue["n_adaptive"] == len(mine)
+        r = next(r for r in mine if r["series_id"] == fl.PREFIX + "s.x" and r["horizon_min"] == 5)
+        assert r["quantiles"]["0.1"] < r["point"] < r["quantiles"]["0.9"]
+        widths[name] = r["quantiles"]["0.9"] - r["quantiles"]["0.1"]
+    # busy 2.0 vs calm 0.1 last hour; a calm hour narrows only down to the pool's difficulty floor
+    # (adaptive.FLOOR_Q), so the ratio is ~4, not 20
+    assert widths["busy"] > 2 * widths["calm"]
+
+
+def test_family_ranges_stay_validation_when_disabled_or_when_the_pool_read_fails():
+    for kw in ({"adaptive_intervals": False}, {}):
+        live, _l = _live(**kw)
+        now = DAY7 + timedelta(minutes=6)
+        live.tick(now)
+        origin = live.latest_complete(now + G)
+        _seed_pool(live, origin, lambda hrs: 1.0)
+        if not kw:
+            def boom(*a, **k):
+                raise RuntimeError("db down")
+            live.store.family_champion_pool = boom
+        live.issue(now + G)
+        mine = [r for r in live.store.forecasts if r["origin_ts"] == origin and r["role"] == "champion"]
+        assert mine and {r["interval_source"] for r in mine} == {fl.INTERVAL_SOURCE}
+        if not kw:
+            assert "db down" in live.state.errors["adaptive"]
+
+
+
+def test_a_pool_served_by_the_other_rung_does_not_size_this_rungs_range():
+    """Owner filter: rungs miss by different amounts, so another rung's rows never size the range."""
+    live, _l = _live()
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    origin = live.latest_complete(now + G)
+    _seed_pool(live, origin, lambda hrs: 1.0)
+    for r in live.store.forecasts:
+        if r.get("forecast_id", 0) < 0:
+            r["model"] = "ridge_var" if r["model"] == "ar" else "ar"
+    live.issue(now + G)
+    mine = [r for r in live.store.forecasts if r["origin_ts"] == origin and r["role"] == "champion"]
+    assert mine and {r["interval_source"] for r in mine} == {fl.INTERVAL_SOURCE}
+
+
+def test_a_zero_width_adaptive_range_keeps_the_validation_range():
+    """>= 80 % identical misses give equal 0.1 / 0.9 offsets; family C refuses a zero-width range."""
+    live, _l = _live()
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    origin = live.latest_complete(now + G)
+    _seed_pool(live, origin, lambda hrs: 1.0)
+    for r in live.store.forecasts:
+        if r.get("forecast_id", 0) < 0:
+            r["actual"] = 1.0                                  # every miss identical: +1.0
+    live.issue(now + G)
+    mine = [r for r in live.store.forecasts if r["origin_ts"] == origin and r["role"] == "champion"]
+    assert mine and all(r["interval_source"] == fl.INTERVAL_SOURCE for r in mine)
+    assert all(r["quantiles"]["0.9"] > r["quantiles"]["0.1"] for r in mine)

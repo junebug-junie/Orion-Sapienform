@@ -41,6 +41,7 @@ import numpy as np
 import pandas as pd
 
 from app import family_a as fa
+from app.adaptive import MAX_HORIZON, adaptive_offsets, pool_since
 from app.backtest import QUANTILES, q_key, residual_quantiles
 from app.frame import floor_ts
 
@@ -58,6 +59,11 @@ RETENTION = timedelta(days=35)      # reading rows (forecast + shadow); joint ro
 PRUNE_EVERY = timedelta(hours=24)
 RETRY_SELECT = timedelta(minutes=30)
 INTERVAL_SOURCE = "validation"      # per-reading ranges: the served rung's validation residuals
+# Per-reading ranges from the reading's own recent live misses, scaled by its last hour (app/adaptive.py,
+# #3310). The validation ranges are one width for calm and busy hours: replay 11-14..16, athena.load_1m
+# was covered 0.64 of the time at 80 % (chassis watts 0.64, board temp 0.68) while PM2.5 read 0.97.
+ADAPTIVE_SOURCE = "adaptive"
+K10, K90 = QUANTILES.index(0.1), QUANTILES.index(0.9)
 TOP_SHARES = 5
 BLAS_THREADS = 4
 DUE_LIMIT = 2000                    # joint rows scored per pass (~3.5 days of backlog per pass)
@@ -142,7 +148,8 @@ class State:
 class FamilyALive:
     def __init__(self, store: Any, config: fa.FamilyAConfig, loader: Loader, *, settle_sec: float = 60.0,
                  select_interval_sec: float = 21600.0, clock: Callable[[], datetime] = utcnow,
-                 seeds: tuple[int, ...] = SELECT_SEEDS, train_days: float = TRAIN_DAYS):
+                 seeds: tuple[int, ...] = SELECT_SEEDS, train_days: float = TRAIN_DAYS,
+                 adaptive_intervals: bool = True):
         self.store = store
         self.cfg = config
         self.loader = loader
@@ -152,6 +159,7 @@ class FamilyALive:
         self.clock = clock
         self.seeds = tuple(seeds)
         self.train_days = train_days
+        self.adaptive_intervals = adaptive_intervals
         self.due_limit = DUE_LIMIT
         self.served: Served | None = None
         self.next_select: datetime | None = None
@@ -312,6 +320,33 @@ class FamilyALive:
             out[h] = float(np.mean(ratios)) if len(ratios) >= fa.MIN_DIFFICULTY_N else None
         return out
 
+    def adaptive_ranges(self, origin: datetime, served: Served) -> dict[tuple[str, int], np.ndarray]:
+        """(reading, horizon) -> residual offsets at QUANTILES, from that reading's own scored champion rows
+        in the POOL before ``origin`` (the rung serving each horizon now; app/adaptive.adaptive_offsets). A
+        reading or horizon with too thin a pool or no recent difficulty is absent and keeps its validation
+        range; a failure here keeps every validation range (never costs the forecast)."""
+        if not self.adaptive_intervals:
+            return {}
+        try:
+            readings = sorted({t for s in served.horizons.values() for t in s.fit.targets})
+            rows = self.store.family_champion_pool([PREFIX + t for t in readings], pool_since(origin),
+                                                   int(MAX_HORIZON.total_seconds() // 60))
+            by: dict[str, list[dict]] = {}
+            for r in rows:
+                by.setdefault(r["series_id"], []).append(r)
+            owners = {int(h): s.rung for h, s in served.horizons.items()}
+            out: dict[tuple[str, int], np.ndarray] = {}
+            for sid, rs in by.items():
+                offs, _why = adaptive_offsets(rs, pd.Timestamp(origin), sorted(owners), self.cfg.grain_min, owners=owners)
+                for h, o in offs.items():
+                    out[(sid[len(PREFIX):], int(h))] = o
+            self.state.errors.pop("adaptive", None)
+            return out
+        except Exception as exc:  # noqa: BLE001 -- the validation range is a valid forecast
+            self.state.errors["adaptive"] = f"{type(exc).__name__}: {exc}"[:300]
+            logger.warning("family_a_adaptive_failed %s: %s", type(exc).__name__, str(exc)[:200])
+            return {}
+
     def issue(self, now: datetime) -> dict:
         served = self.served
         if served is None:
@@ -339,6 +374,8 @@ class FamilyALive:
             logger.warning("family_a_issue_refused origin=%s reasons=%s", origin.isoformat(), exc.refusals)
             return {"refused": exc.refusals}
         diffs = self.current_difficulty(origin)
+        adapt = self.adaptive_ranges(origin, served)
+        n_adaptive = 0
         forecasts, shadows, joints = [], [], []
         n_by_h: dict[int, int] = {}
         for h, sh in served.horizons.items():
@@ -354,14 +391,25 @@ class FamilyALive:
             for j, t in enumerate(sh.fit.targets):
                 zt, dz = pr["z"][i, j], pr[sh.rung][i, j]
                 offs = sh.q_offsets[:, j]
-                if not (np.isfinite(zt) and np.isfinite(dz) and np.isfinite(offs).all()):
+                live = adapt.get((t, int(h)))
+                # adaptive only with a real width: >= 80 % identical scaled misses (a near-constant reading)
+                # gives equal 0.1 / 0.9 offsets, and family C refuses a zero-width range
+                if live is not None and not (np.isfinite(live).all() and live[K90] > live[K10]):
+                    live = None
+                if not (np.isfinite(zt) and np.isfinite(dz) and (live is not None or np.isfinite(offs).all())):
                     continue
                 st = sh.fit.standardizer[t]
                 mu, sd = st["mean"], st["std"]
+                point = float(mu + sd * (zt + dz))
+                if live is not None:
+                    quantiles = {q_key(q): point + float(live[k]) for k, q in enumerate(QUANTILES)}
+                    source = ADAPTIVE_SOURCE
+                    n_adaptive += 1
+                else:
+                    quantiles = {q_key(q): float(mu + sd * (zt + dz + offs[k])) for k, q in enumerate(QUANTILES)}
+                    source = INTERVAL_SOURCE
                 forecasts.append({**row, "series_id": PREFIX + t, "model": sh.rung, "role": "champion",
-                                  "point": float(mu + sd * (zt + dz)), "interval_source": INTERVAL_SOURCE,
-                                  "quantiles": {q_key(q): float(mu + sd * (zt + dz + offs[k]))
-                                                for k, q in enumerate(QUANTILES)}})
+                                  "point": point, "interval_source": source, "quantiles": quantiles})
                 n_f += 1
                 dz2 = pr[other][i, j]
                 if np.isfinite(dz2):
@@ -380,7 +428,7 @@ class FamilyALive:
                 self.state.counts["shadow_failed"] += 1
                 self.state.errors["shadow"] = f"{type(exc).__name__}: {exc}"[:300]
         self.state.last_issue = {"at": now, "origin": origin, "ok": True, "n_forecast": n_by_h,
-                                 "difficulty": diffs}
+                                 "n_adaptive": n_adaptive, "difficulty": diffs}
         return {"origin": origin, "n_forecast": n_by_h}
 
     # --- score ------------------------------------------------------------------------------------
@@ -573,6 +621,13 @@ class MemoryStore:
         sh = {r["shadow_id"]: r for r in self.shadows}
         for s in rows:
             sh[s["shadow_id"]].update(s)
+
+    def family_champion_pool(self, series_ids: list[str], since: datetime, max_horizon_min: int) -> list[dict]:
+        ids = set(series_ids)
+        return [{**r, "owner": r["model"]} for r in self.forecasts
+                if r["series_id"] in ids and r.get("role") == "champion"
+                and r.get("score_status") == "scored" and r["target_ts"] >= since
+                and int(r["horizon_min"]) <= max_horizon_min]
 
     def family_recent_scored(self, family: str, since: datetime) -> list[dict]:
         return [r for r in self.joints if r["family"] == family and r["status"] == "scored" and r["target_ts"] > since]

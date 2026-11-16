@@ -46,6 +46,12 @@ Audio = C.CFUNCTYPE(None, C.c_int16, C.c_int16)
 AudioBatch = C.CFUNCTYPE(C.c_size_t, C.POINTER(C.c_int16), C.c_size_t)
 Poll = C.CFUNCTYPE(None)
 Input = C.CFUNCTYPE(C.c_int16, C.c_uint, C.c_uint, C.c_uint, C.c_uint)
+# printf-style; the varargs are ignored (safe on the SysV/x86-64 ABI) and nothing is logged.
+Log = C.CFUNCTYPE(None, C.c_int, C.c_char_p)
+
+
+class LogCallback(C.Structure):
+    _fields_ = [("log", Log)]
 
 
 def digest(path: Path) -> str:
@@ -55,17 +61,29 @@ def digest(path: Path) -> str:
 
 class CoreProbe:
     """Own exactly one native core in a dedicated process; caller owns pacing."""
+    overrides: dict = {}
+    _scratch = None
 
-    def __init__(self, core: Path, rom: Path):
+    def __init__(self, core: Path, rom: Path, options=None, scratch=None):
+        """options: core option overrides, applied over each declared default.
+        scratch: a private writable directory, given only to cores that need a
+        system/save directory and a log callback (N64); other cores keep refusing both."""
         core, rom = core.resolve(strict=True), rom.resolve(strict=True)
-        if rom.suffix.lower() not in {".nes", ".sfc", ".smc"}:
-            raise ValueError("only NES/SNES content is supported")
-        if not 0 < rom.stat().st_size <= 32 * 1024 * 1024:
-            raise ValueError("ROM must be nonempty and at most 32 MiB")
+        if rom.suffix.lower() not in {".nes", ".sfc", ".smc", ".n64", ".z64", ".v64"}:
+            raise ValueError("only NES/SNES/N64 content is supported")
+        if not 0 < rom.stat().st_size <= 64 * 1024 * 1024:
+            raise ValueError("ROM must be nonempty and at most 64 MiB")
         self.identity = {"core_sha256": digest(core), "rom_sha256": digest(rom)}
         self.lib = C.CDLL(str(core))
         self.initialized = self.loaded = False
         self.buttons = (0, 0)
+        self.axes = ((0, 0, 0, 0), (0, 0, 0, 0))  # left x/y, right x/y per port
+        self.overrides = {k.encode(): v.encode() for k, v in (options or {}).items()}
+        self._scratch = None
+        if scratch is not None:
+            scratch = Path(scratch); scratch.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self._scratch = C.c_char_p(str(scratch).encode())
+        self._log = LogCallback(Log(lambda level, fmt: None))
         self.pixel_format = 0  # ABI default: 0RGB1555
         self.video_frames = self.audio_samples = 0
         self.frame_hash = None
@@ -137,11 +155,19 @@ class CoreProbe:
                 self.pixel_format = value
                 return True
             return False
+        if command in (9, 31) and data and self._scratch is not None:  # GET_SYSTEM/SAVE_DIRECTORY
+            C.cast(data, C.POINTER(C.c_char_p))[0] = self._scratch
+            return True
+        if command == 27 and data and self._scratch is not None:  # GET_LOG_INTERFACE, discards
+            C.cast(data, C.POINTER(LogCallback))[0] = self._log
+            return True
         if command == 16 and data:  # SET_VARIABLES, keep first/default value
             values = C.cast(data, C.POINTER(Variable))
             for index in range(1024):
                 item = values[index]
                 if not item.key:
+                    for key, value in self.overrides.items():
+                        if key in self.options: self.options[key] = value
                     return True
                 if item.value and b"; " in item.value:
                     self.options[item.key] = item.value.split(b"; ", 1)[1].split(b"|", 1)[0]
@@ -185,14 +211,20 @@ class CoreProbe:
     def _input(self, port, device, index, button):
         if port < 2 and device == 1 and index == 0 and button < 16:
             return int(bool(self.buttons[port] & (1 << button)))
+        if port < 2 and device == 5 and index < 2 and button < 2:  # ANALOG left/right, x/y
+            return self.axes[port][index * 2 + button]
         return 0
 
-    def step(self, p1=0, p2=0):
+    def step(self, p1=0, p2=0, axes=None):
         if not self.loaded:
             raise RuntimeError("core is closed")
         if any(type(mask) is not int or not 0 <= mask <= 0xFFFF for mask in (p1, p2)):
             raise ValueError("invalid controller mask")
-        self.buttons = (p1, p2)
+        axes = axes or ((0, 0, 0, 0), (0, 0, 0, 0))
+        if len(axes) != 2 or any(len(a) != 4 or any(type(v) is not int or not -32767 <= v <= 32767 for v in a)
+                                 for a in axes):
+            raise ValueError("invalid analog axes")
+        self.buttons = (p1, p2); self.axes = tuple(tuple(a) for a in axes)
         self.lib.retro_run()
         if self.error:
             raise RuntimeError(self.error)
@@ -217,7 +249,7 @@ class CoreProbe:
         buffer = C.create_string_buffer(state)
         if not self.lib.retro_unserialize(buffer, len(state)):
             raise RuntimeError("restore failed")
-        self.buttons = (0, 0)
+        self.buttons = (0, 0); self.axes = ((0, 0, 0, 0), (0, 0, 0, 0))
         self.frame_hash = None
 
     def close(self):

@@ -12,6 +12,11 @@ class Settings:
     artifacts: Path = Path('/evidence')
     core: Path = Path('/opt/retro/core.so')
     snes_core: Path = Path('/opt/retro/snes9x.so')
+    n64_core: Path = Path('/opt/retro/mupen64plus_next.so')
+    # Private scratch on the container's tmpfs for the N64 core's system/save directory.
+    # In-game N64 saves live there until the container restarts; server Save/Load
+    # states include cartridge save memory, so they are the persistent record.
+    n64_scratch: Path = Path('/tmp/n64')
     token_file: Path = Path('/run/secrets/retro_operator')
     hub_token_file: Path = Path('/run/secrets/retro_hub')
     session_bytes: int = 268435456
@@ -21,6 +26,7 @@ class Settings:
     saves: Path = Path('/saves')
     save_max_per_game: int = 20
     save_max_bytes: int = 4194304
+    n64_save_max_bytes: int = 33554432  # an N64 state is ~16.8 MB (8 MB RDRAM + device state)
 
     @classmethod
     def from_env(cls):
@@ -36,4 +42,17 @@ class Settings:
     def core_for(self, system):
         if system == 'nes': return self.core
         if system == 'snes': return self.snes_core
+        if system == 'n64': return self.n64_core
         raise ValueError('unsupported system')
+
+    def core_host(self, system):
+        """Extra frontend support one core needs. The service has no GPU or GL context,
+        so N64 renders in software: Angrylion RDP + CXD4 LLE RSP, 8 render threads
+        (fits pids_limit; the 'all threads' default spawns one per host CPU)."""
+        if system != 'n64': return {}
+        return dict(scratch=self.n64_scratch, options={
+            'mupen64plus-rdp-plugin': 'angrylion', 'mupen64plus-rsp-plugin': 'cxd4',
+            'mupen64plus-angrylion-multithread': '8'})
+
+    def save_limit(self, system):
+        return self.n64_save_max_bytes if system == 'n64' else self.save_max_bytes

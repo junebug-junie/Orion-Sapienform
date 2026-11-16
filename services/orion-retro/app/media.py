@@ -52,18 +52,31 @@ class MediaSlot:
 
 
 class MediaProbe(CoreProbe):
-    def __init__(self, *args):
+    def __init__(self, *args, **kwargs):
         self.video = b''; self.pcm = bytearray(); self.geometry = (0, 0)
-        super().__init__(*args)
+        super().__init__(*args, **kwargs)
 
     def _video(self, data, width, height, pitch):
         super()._video(data, width, height, pitch)
         if not data or self.error: return
-        if width > 512 or height > 512:
+        # Larger pictures are decimated by a whole factor (N64 Angrylion: 640x480 is the
+        # native 320x240 doubled), so the wire keeps its 512x512 bound.
+        # Angrylion sends 640x480 and 640x240 (low-res modes are doubled only horizontally).
+        # Halve the width, then keep the console's 4:3 picture: both become 320x240.
+        # Pictures within the bound (NES/SNES, hi-res 512x448) pass unchanged.
+        sx = -(-width // 512)
+        sy = 1 if sx == 1 else max(1, min(2, round(height * sx * 4 / (width * 3))))
+        if sx > 2 or -(-height // sy) > 512:
             self.error = 'media_geometry_limit'; return
-        size = width * (4 if self.pixel_format == 1 else 2)
-        self.video = b''.join(C.string_at(data + y*pitch, size) for y in range(height))
-        self.geometry = (width, height)
+        depth = 4 if self.pixel_format == 1 else 2
+        size = width * depth
+        if sx == 1:
+            self.video = b''.join(C.string_at(data + y*pitch, size) for y in range(0, height, sy))
+        else:
+            code = 'I' if depth == 4 else 'H'
+            self.video = b''.join(memoryview(C.string_at(data + y*pitch, size)).cast(code)[::sx].tobytes()
+                                  for y in range(0, height, sy))
+        self.geometry = (-(-width // sx), -(-height // sy))
 
     def _audio(self, left, right):
         super()._audio(left, right)

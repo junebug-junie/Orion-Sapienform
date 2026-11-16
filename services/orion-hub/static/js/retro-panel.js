@@ -10,7 +10,14 @@
   let mediaFlowControl=false; // negotiate with the gateway; old pages keep legacy media
   let activeSystem='nes'; // follows the running session, never an unstarted dropdown choice
   const keys = new Set(), sources = new Set();
-  const bits = {ArrowUp:16, ArrowDown:32, ArrowLeft:64, ArrowRight:128, KeyZ:256, KeyX:1, KeyA:2, KeyS:512, KeyQ:1024, KeyW:2048, Enter:8, ShiftLeft:4, ShiftRight:4};
+  // N64 (Mupen64Plus-Next standard map): X = A, A = B, C = Z, Q/W = L/R. Arrows push the
+  // control stick and I/J/K/L the C stick instead of the D-pad. Select is not an N64 button.
+  // Bit 15 marks the C-stick keys only: no console accepts it, so mask() always removes it.
+  const bits = {ArrowUp:16, ArrowDown:32, ArrowLeft:64, ArrowRight:128, KeyZ:256, KeyX:1, KeyA:2, KeyS:512, KeyQ:1024, KeyW:2048, Enter:8, ShiftLeft:4, ShiftRight:4, KeyC:4096, KeyI:32768, KeyJ:32768, KeyK:32768, KeyL:32768},
+    SYSTEM_BUTTONS = {nes:509, snes:4095, n64:16379},
+    STICK = {ArrowLeft:[0,-1], ArrowRight:[0,1], ArrowUp:[1,-1], ArrowDown:[1,1], KeyJ:[2,-1], KeyL:[2,1], KeyI:[3,-1], KeyK:[3,1]};
+  const SYSTEM_LABEL = {snes:' (SNES)', n64:' (N64)'};
+  const titleKey = g => (g.title+(SYSTEM_LABEL[g.system]||'')).replace(/^the\s+/i,'').toLowerCase();
   // #status sits outside the fullscreen stage, so mirror each message into a toast
   // shown only in fullscreen; otherwise F7/F10 results would be invisible there.
   let toastTimer=null;
@@ -102,10 +109,22 @@
     let m=0; for(const code of keys) m |= bits[code] || 0;
     const pad = gamepad();
     if (pad && (document.activeElement===screen || document.fullscreenElement===stage))
-      m |= selectChord(chord, pad, padMask(pad), performance.now(), code=>runHotkey(code));
+      m |= selectChord(chord, pad, padMask(pad, activeSystem==='n64'), performance.now(), code=>runHotkey(code));
     else resetChord(chord);
-    if(activeSystem!=='snes')m&=509; // retain the NES authority's eight-button contract
+    if(activeSystem==='n64'){for(const code of keys)if(STICK[code])m&=~(bits[code]||0);}  // arrows are the stick
+    m&=SYSTEM_BUTTONS[activeSystem] ?? 509; // each authority refuses buttons its console lacks
     if((m&48)===48)m&=~48;if((m&192)===192)m&=~192;return m;
+  }
+  // N64 sticks: [left x, left y, right x, right y] in libretro's range (up is negative, as in
+  // the Gamepad API). Keys push full deflection; a pad stick past its own centre wins.
+  function sticks() {
+    const v=[0,0,0,0];
+    for(const code of keys){const s=STICK[code];if(s)v[s[0]]+=s[1];}
+    const pad=gamepad();
+    if(pad && (document.activeElement===screen || document.fullscreenElement===stage)){
+      const a=pad.axes||[];for(let i=0;i<4;i++)if(Math.abs(a[i]||0)>.08)v[i]=a[i];
+    }
+    return v.map(x=>Math.round(Math.max(-1,Math.min(1,x))*32767));
   }
   // Pad Select + L2 saves, Select + R2 loads the newest save (the F7 / F10 hotkeys). Select is a
   // game button (Zelda: pause and map), so the pad's Select is held back until it is released:
@@ -136,12 +155,15 @@
   }
   // Standard mapping is positional: A right, B bottom, X top, Y left (8BitDo labels).
   // SNES uses L1/R1; L2/R2 remain save/load chords. mask() removes SNES-only bits for NES.
-  function padMask(pad) {
+  function padMask(pad, n64=false) {
     const b=pad.buttons, a=pad.axes||[]; let m=0;
     if(b[1]?.pressed)m|=256;if(b[0]?.pressed)m|=1;if(b[8]?.pressed)m|=4;if(b[9]?.pressed)m|=8;
     if(b[3]?.pressed)m|=512;if(b[2]?.pressed)m|=2;if(b[4]?.pressed)m|=1024;if(b[5]?.pressed)m|=2048;
-    if(b[12]?.pressed||a[1]<-.5)m|=16;if(b[13]?.pressed||a[1]>.5)m|=32;
-    if(b[14]?.pressed||a[0]<-.5)m|=64;if(b[15]?.pressed||a[0]>.5)m|=128;
+    const stick=!n64; // on N64 the left stick is analog, not the D-pad
+    if(b[12]?.pressed||stick&&a[1]<-.5)m|=16;if(b[13]?.pressed||stick&&a[1]>.5)m|=32;
+    if(b[14]?.pressed||stick&&a[0]<-.5)m|=64;if(b[15]?.pressed||stick&&a[0]>.5)m|=128;
+    // N64 Z on L2, unless Select is held for the save/load chord.
+    if(!stick && !b[8]?.pressed && (b[6]?.pressed || b[6]?.value>.5))m|=4096;
     return m;
   }
   function padStatus() {
@@ -157,8 +179,9 @@
         (outstanding.size && performance.now()-outstanding.values().next().value>1000)){
       transportLost('stall');return;
     }
-    const currentMask=pictureReady && performance.now()-lastPictureAt<=1000?mask():0;
-    outstanding.set(seq+1,performance.now());input.send(JSON.stringify({version:1,session_id:sid,generation,...lease,seq:++seq,mask:currentMask}));
+    const live=pictureReady && performance.now()-lastPictureAt<=1000;
+    const currentMask=live?mask():0, axes=activeSystem==='n64'?{axes:live?sticks():[0,0,0,0]}:{};
+    outstanding.set(seq+1,performance.now());input.send(JSON.stringify({version:1,session_id:sid,generation,...lease,seq:++seq,mask:currentMask,...axes}));
   }
   async function grant(action='acquire') {
     const epoch=transportEpoch, mine=intent;
@@ -290,7 +313,7 @@
     lastPictureAt=performance.now();pictureReady=true;
     if(flow && socket.readyState===WebSocket.OPEN)socket.send(JSON.stringify({ack:sequence}));
   }
-  async function load(){const games=await api('games');el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title+(g.system==='snes'?' (SNES)':'');o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;activeSystem=state.session?.system||'nes';conditionalResume=state.capabilities?.conditional_resume===true;mediaFlowControl=state.capabilities?.retro_media_ack_v1===true;
+  async function load(){const games=(await api('games')).sort((x,y)=>titleKey(x).localeCompare(titleKey(y)));el('game').replaceChildren(...games.map(g=>{const o=document.createElement('option');o.value=g.game_id;o.textContent=g.title+(SYSTEM_LABEL[g.system]||'');o.dataset.ports=JSON.stringify(g.ports);o.dataset.save=String(g.save_enabled===true);return o;}));el('game').value=games.some(g=>g.game_id==='spacegulls')?'spacegulls':games[0]?.game_id;const state=await api('health/ready');sid=state.session?.session_id;activeSystem=state.session?.system||'nes';conditionalResume=state.capabilities?.conditional_resume===true;mediaFlowControl=state.capabilities?.retro_media_ack_v1===true;
     el('player').hidden=false;
     if(state.session && ['running','paused','starting'].includes(state.session.state)){el('game').value=state.session.game_id;report('Game '+state.session.state+'. Click the game to play.');}
     else if(state.session?.reason==='service_restart'){el('game').value=state.session.game_id;report('The game service restarted. Choose a save and press Load to continue.');}

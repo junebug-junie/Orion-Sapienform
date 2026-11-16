@@ -188,7 +188,9 @@ class CuriosityEventWants:
                         "value_rank=%s want_id=%s", p["run_id"], p["line"], p["novelty"], p["salience"],
                         decision.outcome, decision.reason, decision.value_rank, want_id)
         if len(self._posted) > 5000:
-            self._posted = set(ids)   # a memory guard; the ledger still answers for older findings
+            # A memory guard: keep only this window's FINAL decisions, so an unanswered finding is still
+            # bid again; the ledger answers for older ones.
+            self._posted &= set(ids)
         return summary
 
 

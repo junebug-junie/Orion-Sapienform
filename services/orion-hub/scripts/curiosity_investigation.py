@@ -1160,7 +1160,7 @@ class CuriosityInvestigation:
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         self.temporal_self_fact_enabled = bool(temporal_self_fact_enabled)
         self.personality_cue_enabled = bool(personality_cue_enabled)
-        self._now = CuriosityNow(enabled=now_enabled, durable_runs_url=durable_runs_url,
+        self._now_reader = CuriosityNow(enabled=now_enabled, durable_runs_url=durable_runs_url,
                                  pool_provider=pool_provider)
         self.orion_day_corrections_enabled = bool(orion_day_corrections_enabled)
         self.focus_enabled = bool(focus_enabled)
@@ -1585,23 +1585,25 @@ class CuriosityInvestigation:
 
     # Orion's now (scripts/curiosity_now.py). Class-level so a loop built without __init__ (tests) reads
     # no now and records no cites, instead of failing.
-    _now: Optional[CuriosityNow] = None
+    _now_reader: Optional[CuriosityNow] = None
 
     async def _read_now(self, run_id: str):
         """Orion's now for this run's kickoff, or None. Never raises, bounded by the reader's timeout."""
-        reader = self._now
+        reader = self._now_reader
         if reader is None:
             return None
         try:
-            return await reader.read_for_kickoff(run_id)
+            # Bounded as a whole: the HTTP call has its own timeout, the Postgres write does too, and this
+            # caps both together so an exhausted pool never holds the kickoff.
+            return await asyncio.wait_for(reader.read_for_kickoff(run_id), timeout=2 * reader.timeout_sec + 1.0)
         except Exception as exc:  # noqa: BLE001
-            logger.info("curiosity_now_unavailable run=%s err=%s", run_id, exc)
+            logger.info("curiosity_now_unavailable run=%s err=%s", run_id, f"{type(exc).__name__}: {exc}"[:200])
             return None
 
     def _schedule_now_cites(self, run_id: str, source_tag: str, text: Optional[str]) -> None:
         """POST the turn's [experience:<id>] cites in the background (integration patch 3). Only the two
         curiosity lines' finished turns; never blocks or fails the turn."""
-        reader = self._now
+        reader = self._now_reader
         if reader is None or not reader.enabled or not text or source_tag not in (SELF_INQUIRY_TAG, INVESTIGATION_TAG):
             return
         task = asyncio.create_task(reader.record_turn_cites(run_id, text))
@@ -3894,8 +3896,9 @@ class CuriosityInvestigation:
         previous_stamp = await self._read_cooldown_stamp(LINE_SELF_INQUIRY)
         await self._record_investigation(now, run_id, LINE_SELF_INQUIRY)
         await self._record_self_inquiry_decision(run_id)
-        # After the decision row, which carries the shown_id (integration patch 3).
-        now_read = await self._read_now(run_id)
+        # After the decision row, which carries the shown_id (integration patch 3). Started now, awaited
+        # just before the prompt, so it overlaps the reads below instead of adding its wait.
+        now_task = asyncio.create_task(self._read_now(run_id))
 
         logger.info(
             "curiosity_self_inquiry_starting run=%s definitions=%s self_priors=%s/%s "
@@ -3915,6 +3918,7 @@ class CuriosityInvestigation:
         previous_lived = None
         if picked.family == "lived":
             previous_lived = await self._read_previous_lived(picked.question_id, run_id=run_id)
+        now_read = await now_task
         prompt = build_self_inquiry_prompt(
             view=view,
             latest=latest,

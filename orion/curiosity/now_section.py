@@ -11,14 +11,15 @@ there as ``rejected_not_shown``, so an invented cite is measured, not hidden.
 from __future__ import annotations
 
 import re
-from typing import Any, Mapping, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from orion.schemas.temporal_self import NOW_MAX_CITES, TemporalNowV1
 from orion.temporal_self.now import EXPERIENCE_PREFIX
 
 # A cite as Orion writes it in the turn text. Event ids carry colons, dots and dashes
-# (``office_session:cam0-tr-0``), so everything up to the closing bracket is the id.
-CITE_RE = re.compile(r"\[\s*" + re.escape(EXPERIENCE_PREFIX) + r"\s*([^\]\s]+)\s*\]")
+# (``office_session:cam0-tr-0``), so everything up to the closing bracket is the id. Angle brackets never
+# belong to an id: the prompt's own example ``[experience:<id>]`` is not a cite.
+CITE_RE = re.compile(r"\[\s*" + re.escape(EXPERIENCE_PREFIX) + r"\s*([^\]\s<>]+)\s*\]")
 
 HEADER = "WHAT YOUR OTHER ORGANS LIVED SINCE YOUR LAST RUN"
 
@@ -61,17 +62,20 @@ def format_now_section(now: Optional[TemporalNowV1]) -> list[str]:
     return lines
 
 
-def extract_cites(text: Optional[str], cap: int = NOW_MAX_CITES) -> list[str]:
-    """The distinct ``[experience:<id>]`` ids in ``text``, first ``cap`` in order of appearance."""
+def extract_cites(text: Optional[str], cap: int = NOW_MAX_CITES, shown: Optional[Iterable[str]] = None) -> list[str]:
+    """The distinct ``[experience:<id>]`` ids in ``text``, at most ``cap``, in order of appearance. With
+    ``shown`` (the event ids the run was shown), shown ids go first, so an invented cite never pushes a real
+    one out of the cap; invented ones still fill any room left, so the endpoint counts them."""
     cap = max(0, int(cap))
-    out: list[str] = []
+    found: list[str] = []
     for m in CITE_RE.finditer(text or ""):
-        if len(out) >= cap:
-            break
         eid = m.group(1).strip()
-        if eid and eid not in out:
-            out.append(eid)
-    return out
+        if eid and eid not in found:
+            found.append(eid)
+    if shown is not None:
+        known = set(shown)
+        found = [c for c in found if c in known] + [c for c in found if c not in known]
+    return found[:cap]
 
 
 __all__ = ["CITE_RE", "HEADER", "extract_cites", "format_now_section", "parse_now"]

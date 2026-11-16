@@ -74,7 +74,7 @@ def _loop(state, decision="funded"):
 def test_plan_ranks_each_recent_finding_against_its_30_days_and_bands_it():
     by = {p["run_id"]: p for p in plan_findings(_rows(), now=NOW, lookback=timedelta(hours=12))}
     assert set(by) == {"new0", "new1"}
-    assert by["new0"]["salience"] == 1.0 and by["new0"]["in_band"]       # newer than everything before it
+    assert by["new0"]["salience"] == 1.0 and by["new0"]["in_band"]       # higher novelty than everything before it
     # new1 (a minute before new0) is ranked against the 40 older ones only: 0.12 is above 0.100 .. 0.119.
     assert by["new1"]["salience"] == 20 / 40 and not by["new1"]["in_band"]
     assert SALIENCE_BAND == 0.9
@@ -147,12 +147,23 @@ def test_family_is_registered_with_a_window_and_no_lanes():
 
 
 def test_the_replay_eval_fixture_passes_its_band_gate():
+    import os
     import subprocess
     import sys
     from pathlib import Path
 
     repo = Path(__file__).resolve().parents[3]
     out = subprocess.run([sys.executable, str(repo / "services/orion-hub/evals/run_curiosity_event_wants_replay.py")],
-                         capture_output=True, text=True, env={"PYTHONPATH": str(repo), "PYTHONDONTWRITEBYTECODE": "1"})
+                         capture_output=True, text=True, env={**os.environ, "PYTHONPATH": str(repo), "PYTHONDONTWRITEBYTECODE": "1"})
     assert out.returncode == 0, out.stdout + out.stderr
     assert "PASS" in out.stdout
+
+
+def test_the_memory_guard_keeps_retrying_unanswered_findings():
+    state = {"rows": _rows(), "ledger": set()}
+    loop, bids = _loop(state, decision=None)
+    loop._posted = {f"stale{i}" for i in range(5001)}
+    asyncio.run(loop.tick())                       # guard trips; new0 was unanswered
+    assert event_want_id("curiosity_finding", "new0") not in loop._posted
+    asyncio.run(loop.tick())
+    assert len(bids) == 2

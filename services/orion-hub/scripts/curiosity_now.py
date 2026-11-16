@@ -3,13 +3,15 @@
 Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, Part A ("Who reads the now",
 A3-A4). The organ registry (``config/integration/organs.yaml``) names this module as curiosity's ``reads_now``.
 
-1. **Kickoff** (``read_for_kickoff``). ``GET /temporal-self/now?organ=curiosity&since=<last curiosity run>&
-   run_ref=<run_id>`` on orion-durable-runs. ``since`` is when the previous curiosity run (either line) was
-   decided (``curiosity_offer_decisions.decided_at``); with no earlier run the endpoint's own default applies.
-   The endpoint stores every read as an ``experience_shown`` row and returns its ``shown_id``. The shown_id is
-   kept with the run: in this process, and on the run's decision row
-   (``curiosity_offer_decisions.constants.now_shown_id``), because the durable turn can run in another
-   process attempt, after a Hub restart, hours later.
+1. **Kickoff** (``read_for_kickoff``). ``GET /temporal-self/now?organ=curiosity&run_ref=<run_id>`` on
+   orion-durable-runs, with no ``since``: the endpoint then reads from when curiosity last looked (its own
+   cursor, the previous curiosity run's read, either line; 24 h on the first read) and moves that cursor. An
+   explicit ``since`` would make every read an inspection read that never moves it. The endpoint stores
+   every read as an ``experience_shown`` row and returns its ``shown_id``. The shown_id and the shown event
+   ids are kept with the run: in this process, and on the run's decision row
+   (``curiosity_offer_decisions.constants.now_shown_id`` / ``now_event_ids``), because the durable turn can
+   run in another process attempt, after a Hub restart, hours later. No decision row (the spend log off):
+   memory only, and a turn in another process records no cites (logged ``reason=no_shown_id``).
 2. **Turn end** (``record_turn_cites``). The ``[experience:<id>]`` cites in the turn's text, at most 3
    (``orion.curiosity.now_section.extract_cites``), go to ``POST /temporal-self/now/use`` with the run's
    shown_id. The endpoint keeps only ids that were shown (``record_use``); the rest are counted there. No
@@ -21,8 +23,9 @@ Log lines: ``curiosity_now_read``, ``curiosity_now_unavailable``, ``curiosity_no
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
-from datetime import datetime
 from typing import Any, Callable, Optional
 
 import httpx
@@ -41,12 +44,12 @@ NOW_TIMEOUT_SEC = 5.0
 CITING_PREFIX = "curiosity_run"
 MEMORY_CAP = 500
 
-LAST_RUN_SQL = "SELECT max(decided_at) AS at FROM curiosity_offer_decisions WHERE run_id <> $1"
 REMEMBER_SQL = (
     "UPDATE curiosity_offer_decisions SET constants = COALESCE(constants, '{}'::jsonb) || "
-    "jsonb_build_object('now_shown_id', $2::text) WHERE run_id = $1"
+    "jsonb_build_object('now_shown_id', $2::text, 'now_event_ids', $3::jsonb) WHERE run_id = $1"
 )
-LOAD_SQL = "SELECT constants->>'now_shown_id' AS shown_id FROM curiosity_offer_decisions WHERE run_id = $1"
+LOAD_SQL = ("SELECT constants->>'now_shown_id' AS shown_id, constants->'now_event_ids' AS event_ids "
+            "FROM curiosity_offer_decisions WHERE run_id = $1")
 
 
 def citing_ref(run_id: str) -> str:
@@ -62,39 +65,28 @@ class CuriosityNow:
         self._pool_provider = pool_provider
         self.timeout_sec = float(timeout_sec)
         self._client_factory = client_factory or (lambda: httpx.AsyncClient(timeout=self.timeout_sec))
-        # run_id -> shown_id for turns that run in this process (the decision row is the durable copy).
-        self._shown: dict[str, str] = {}
+        # run_id -> (shown_id, shown event ids) for turns in this process (the decision row is the durable copy).
+        self._shown: dict[str, tuple[str, list[str]]] = {}
 
     # --- Postgres (best effort) -------------------------------------------------------------------
 
-    async def _last_run_at(self, run_id: str) -> Optional[datetime]:
-        pool = self._pool_provider()
-        if pool is None:
-            return None
-        try:
-            async with pool.acquire() as conn:
-                at = await conn.fetchval(LAST_RUN_SQL, run_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.info("curiosity_now_since_unread run=%s err=%s", run_id, exc)
-            return None
-        return at if isinstance(at, datetime) and at.tzinfo is not None else None
-
-    async def _remember(self, run_id: str, shown_id: str) -> bool:
+    async def _remember(self, run_id: str, shown_id: str, event_ids: list[str]) -> bool:
         if len(self._shown) >= MEMORY_CAP:
             self._shown.pop(next(iter(self._shown)))
-        self._shown[run_id] = shown_id
+        self._shown[run_id] = (shown_id, event_ids)
         pool = self._pool_provider()
         if pool is None:
             return False
         try:
             async with pool.acquire() as conn:
-                status = await conn.execute(REMEMBER_SQL, run_id, shown_id)
+                status = await asyncio.wait_for(conn.execute(REMEMBER_SQL, run_id, shown_id, json.dumps(event_ids)),
+                                                timeout=self.timeout_sec)
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_now_shown_unpersisted run=%s err=%s", run_id, exc)
             return False
         return str(status).endswith(" 1")
 
-    async def _load_shown(self, run_id: str) -> Optional[str]:
+    async def _load_shown(self, run_id: str) -> Optional[tuple[str, list[str]]]:
         if run_id in self._shown:
             return self._shown[run_id]
         pool = self._pool_provider()
@@ -106,7 +98,15 @@ class CuriosityNow:
         except Exception as exc:  # noqa: BLE001
             logger.warning("curiosity_now_shown_unread run=%s err=%s", run_id, exc)
             return None
-        return str(row["shown_id"]) if row is not None and row["shown_id"] else None
+        if row is None or not row["shown_id"]:
+            return None
+        ids = row["event_ids"]
+        if isinstance(ids, str):
+            try:
+                ids = json.loads(ids)
+            except ValueError:
+                ids = []
+        return str(row["shown_id"]), [str(i) for i in ids] if isinstance(ids, list) else []
 
     # --- the two calls -------------------------------------------------------------------------------
 
@@ -115,10 +115,7 @@ class CuriosityNow:
         decision row must already exist for the shown_id to be stored with it."""
         if not (self.enabled and self.root and run_id):
             return None
-        since = await self._last_run_at(run_id)
         params = {"organ": ORGAN, "run_ref": run_id}
-        if since is not None:
-            params["since"] = since.isoformat()
         try:
             async with self._client_factory() as client:
                 resp = await client.get(f"{self.root}{NOW_ROUTE}", params=params)
@@ -130,7 +127,7 @@ class CuriosityNow:
         if now is None:
             logger.info("curiosity_now_unavailable run=%s status=%s", run_id, getattr(resp, "status_code", None))
             return None
-        persisted = await self._remember(run_id, now.shown_id)
+        persisted = await self._remember(run_id, now.shown_id, [i.event_id for i in now.items])
         logger.info("curiosity_now_read run=%s shown_id=%s items=%d candidates=%d since=%s persisted=%s",
                     run_id, now.shown_id, len(now.items), now.candidates, now.since.isoformat(), persisted)
         return now
@@ -141,14 +138,15 @@ class CuriosityNow:
         try:
             if not (self.enabled and self.root and run_id):
                 return None
-            cites = extract_cites(text)
-            if not cites:
+            if not extract_cites(text):
                 logger.info("curiosity_now_cites run=%s cites=0", run_id)
                 return None
-            shown_id = await self._load_shown(run_id)
-            if not shown_id:
-                logger.info("curiosity_now_cites run=%s cites=%d posted=false reason=no_shown_id", run_id, len(cites))
+            shown = await self._load_shown(run_id)
+            if not shown:
+                logger.info("curiosity_now_cites run=%s posted=false reason=no_shown_id", run_id)
                 return None
+            shown_id, shown_ids = shown
+            cites = extract_cites(text, shown=shown_ids)
             body = {"shown_id": shown_id, "citing_ref": citing_ref(run_id), "cites": cites}
             async with self._client_factory() as client:
                 resp = await client.post(f"{self.root}{USE_ROUTE}", json=body)
@@ -167,4 +165,4 @@ class CuriosityNow:
             return None
 
 
-__all__ = ["LAST_RUN_SQL", "LOAD_SQL", "NOW_ROUTE", "REMEMBER_SQL", "USE_ROUTE", "CuriosityNow", "citing_ref"]
+__all__ = ["LOAD_SQL", "NOW_ROUTE", "REMEMBER_SQL", "USE_ROUTE", "CuriosityNow", "citing_ref"]

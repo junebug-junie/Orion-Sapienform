@@ -63,7 +63,7 @@ OFFICE_LABELS_SQL = "SELECT session_id, label, who_text FROM vision_office_sessi
 # The run's latest finish row (this service's own table): the finding's own words.
 FINISH_LABELS_SQL = """
 SELECT DISTINCT ON (run_id) run_id, detail FROM substrate_durable_run_state
- WHERE run_id = ANY(%(ids)s) AND node = 'finish'
+ WHERE run_id = ANY(%(ids)s) AND node = 'finish' AND status = 'completed'
  ORDER BY run_id, created_at DESC
 """
 

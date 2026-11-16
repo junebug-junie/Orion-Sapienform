@@ -21,7 +21,7 @@ from orion.curiosity.self_inquiry_prompt import build_self_inquiry_prompt
 from orion.curiosity.study_material import StudyMaterial
 from orion.curiosity.worldview import RecentRun, WorldviewSnapshot
 from scripts.curiosity_investigation import CuriosityInvestigation
-from scripts.curiosity_now import LAST_RUN_SQL, LOAD_SQL, REMEMBER_SQL, CuriosityNow
+from scripts.curiosity_now import LOAD_SQL, REMEMBER_SQL, CuriosityNow
 
 NOW = datetime(2026, 11, 16, 12, 0, tzinfo=timezone.utc)
 LAST = NOW - timedelta(hours=3)
@@ -67,6 +67,16 @@ def test_cites_are_distinct_in_order_and_capped_at_three():
     assert extract_cites(text, cap=0) == [] and extract_cites(None) == []
 
 
+def test_the_prompts_own_placeholder_is_not_a_cite_and_shown_cites_go_first():
+    assert extract_cites("cite it as [experience:<id>] like this") == []
+    text = "[experience:made_up] [experience:x1] [experience:also_made_up] [experience:x2] [experience:x3]"
+    # Unknown shown list: order of appearance.
+    assert extract_cites(text) == ["made_up", "x1", "also_made_up"]
+    # Known: a real cite is never pushed out by an invented one; invented ones fill what room is left.
+    assert extract_cites(text, shown=["x1", "x2", "x3"]) == ["x1", "x2", "x3"]
+    assert extract_cites(text, shown=["x2"]) == ["x2", "made_up", "x1"]
+
+
 def test_kickoff_and_self_inquiry_prompts_show_the_now_and_omit_it_when_absent():
     now = parse_now(_now_body())
     material = StudyMaterial(generated_at=NOW)
@@ -86,20 +96,19 @@ class _Conn:
     def __init__(self, db):
         self.db = db
 
-    async def fetchval(self, sql, *args):
-        assert sql == LAST_RUN_SQL
-        return self.db.get("last")
-
-    async def execute(self, sql, run_id, shown_id):
+    async def execute(self, sql, run_id, shown_id, event_ids):
         assert sql == REMEMBER_SQL
         if run_id not in self.db["rows"]:
             return "UPDATE 0"
-        self.db["rows"][run_id] = shown_id
+        self.db["rows"][run_id] = (shown_id, event_ids)
         return "UPDATE 1"
 
     async def fetchrow(self, sql, run_id):
         assert sql == LOAD_SQL
-        return {"shown_id": self.db["rows"][run_id]} if run_id in self.db["rows"] else None
+        if run_id not in self.db["rows"]:
+            return None
+        shown_id, ids = self.db["rows"][run_id]
+        return {"shown_id": shown_id, "event_ids": ids}
 
 
 class _Pool:
@@ -124,8 +133,8 @@ def _reader(db, handler, enabled=True):
                         client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
 
 
-def test_kickoff_read_asks_since_the_last_run_and_persists_the_shown_id_on_the_decision_row():
-    db, seen = {"last": LAST, "rows": {"run1": None}}, []
+def test_kickoff_read_uses_the_server_cursor_and_persists_the_shown_row_on_the_decision_row():
+    db, seen = {"rows": {"run1": (None, None)}}, []
 
     def handler(req):
         seen.append(req)
@@ -135,32 +144,27 @@ def test_kickoff_read_asks_since_the_last_run_and_persists_the_shown_id_on_the_d
     assert now is not None and now.shown_id == "shown1" and len(now.items) == 2
     (req,) = seen
     assert req.url.path == "/temporal-self/now"
-    assert dict(req.url.params) == {"organ": "curiosity", "run_ref": "run1", "since": LAST.isoformat()}
-    assert db["rows"]["run1"] == "shown1"
-
-
-def test_with_no_earlier_run_the_endpoint_default_applies():
-    db, seen = {"last": None, "rows": {"run1": None}}, []
-    asyncio.run(_reader(db, lambda r: (seen.append(r), httpx.Response(200, json=_now_body()))[1])
-                .read_for_kickoff("run1"))
-    assert "since" not in dict(seen[0].url.params)
+    # No explicit since: the endpoint reads from curiosity's last look and moves that cursor (an explicit
+    # since would be an inspection read that never moves it).
+    assert dict(req.url.params) == {"organ": "curiosity", "run_ref": "run1"}
+    assert db["rows"]["run1"] == ("shown1", json.dumps(["visual_run:p1", "prediction_surprise:x:7"]))
 
 
 def test_a_failed_or_malformed_now_is_no_section_and_never_raises():
-    db = {"last": LAST, "rows": {"run1": None}}
+    db = {"rows": {"run1": (None, None)}}
 
     def boom(req):
         raise httpx.ConnectError("down")
 
     for handler in (boom, lambda r: httpx.Response(404, json={}), lambda r: httpx.Response(200, json={"x": 1})):
         assert asyncio.run(_reader(db, handler).read_for_kickoff("run1")) is None
-    assert db["rows"]["run1"] is None
+    assert db["rows"]["run1"] == (None, None)
     off = _reader(db, lambda r: (_ for _ in ()).throw(AssertionError("no call when off")), enabled=False)
     assert asyncio.run(off.read_for_kickoff("run1")) is None
 
 
 def test_turn_end_posts_at_most_three_cites_with_the_persisted_shown_id_from_another_process():
-    db, posted = {"rows": {"run1": "shown1"}}, []
+    db, posted = {"rows": {"run1": ("shown1", json.dumps(["a", "b", "c", "d"]))}}, []
 
     def handler(req):
         body = json.loads(req.content)
@@ -182,7 +186,7 @@ def test_no_cites_or_no_shown_row_posts_nothing_and_a_failed_post_never_raises()
         calls.append(req)
         return httpx.Response(500, text="boom")
 
-    db = {"rows": {"run1": "shown1"}}
+    db = {"rows": {"run1": ("shown1", ["a"])}}
     assert asyncio.run(_reader(db, handler).record_turn_cites("run1", "no cites here")) is None
     assert asyncio.run(_reader({"rows": {}}, handler).record_turn_cites("run9", "[experience:a]")) is None
     assert calls == []
@@ -206,7 +210,7 @@ def _loop(**over) -> CuriosityInvestigation:
 
 
 def test_bare_construction_is_off_and_main_turns_it_on():
-    assert _loop()._now.enabled is False
+    assert _loop()._now_reader.enabled is False
     tree = ast.parse((Path(__file__).resolve().parents[1] / "scripts" / "main.py").read_text())
     kws = {kw.arg for node in ast.walk(tree) if isinstance(node, ast.Call)
            and getattr(node.func, "id", None) == "CuriosityInvestigation" for kw in node.keywords}
@@ -223,7 +227,7 @@ def test_turn_end_schedules_cites_only_for_the_two_curiosity_lines_with_text():
     async def fake_record(run_id, text):
         got.append((run_id, text))
 
-    loop._now.record_turn_cites = fake_record  # type: ignore[assignment]
+    loop._now_reader.record_turn_cites = fake_record  # type: ignore[assignment]
 
     async def go():
         loop._schedule_now_cites("r1", INVESTIGATION_TAG, "[experience:a]")
@@ -243,6 +247,19 @@ def _src(fn) -> ast.AST:
 def _calls(tree, name):
     return [n for n in ast.walk(tree) if isinstance(n, ast.Call)
             and (getattr(n.func, "attr", None) == name or getattr(n.func, "id", None) == name)]
+
+
+def _first_line(tree, name):
+    return min(c.lineno for c in _calls(tree, name))
+
+
+def test_the_now_is_read_after_the_decision_row_that_carries_its_shown_id():
+    inv = _src(CuriosityInvestigation._investigate)
+    gather_with_now = min(g.lineno for g in _calls(inv, "gather")
+                          if any(getattr(getattr(a, "func", None), "attr", None) == "_read_now" for a in g.args))
+    assert _first_line(inv, "_record_offer") < gather_with_now
+    si = _src(CuriosityInvestigation._self_inquire)
+    assert _first_line(si, "_record_self_inquiry_decision") < _first_line(si, "_read_now")
 
 
 def test_both_kickoffs_hand_the_now_to_their_prompt_and_every_turn_end_records_cites():
@@ -267,5 +284,5 @@ def test_the_kickoff_now_read_never_raises():
     async def boom(run_id):
         raise RuntimeError("bad")
 
-    loop._now.read_for_kickoff = boom  # type: ignore[assignment]
+    loop._now_reader.read_for_kickoff = boom  # type: ignore[assignment]
     assert asyncio.run(loop._read_now("r1")) is None

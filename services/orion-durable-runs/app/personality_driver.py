@@ -46,12 +46,12 @@ from orion.personality.graph import (
     apply_fade,
     apply_namings,
     choice_direction,
-    decline_text,
     evidence_weight,
     fold,
     pair_label,
 )
 from orion.personality.naming import grounding
+from orion.personality.relabel import choice_sides
 from orion.personality.situation import COMPANY_CLOSE_GRACE, situation_at
 from orion.schemas.personality import PersonalityChoiceV1
 
@@ -114,9 +114,8 @@ def _rejected(exc: BaseException) -> bool:
 def option_texts(c: PersonalityChoiceV1) -> tuple[str, list[str]]:
     """(chosen-side text, declined texts in shown order). ``declined_all`` uses the lane's decline
     phrase as the chosen side: a decline of every option."""
-    chosen = decline_text(c.lane) if c.declined_all or c.chosen is None else c.chosen.text
-    declined = sorted(c.alternatives, key=lambda o: (o.market_rank is None, o.market_rank or 0))
-    return chosen, [o.text for o in declined]
+    return choice_sides(c.lane, c.declined_all, c.chosen.text if c.chosen is not None else None,
+                        [(o.text, o.market_rank) for o in c.alternatives])
 
 
 def all_texts(c: PersonalityChoiceV1) -> list[str]:
@@ -270,6 +269,14 @@ class PersonalityDriver:
         status over the retirement."""
         async with self._lock:
             return await self._store.record_juniper_verdict(disposition_id, verdict, self._now())
+
+    # --- one-time relabel (#3444) ----------------------------------------------------------------
+
+    async def relabel(self, *, apply: bool, expected: Optional[dict] = None) -> dict:
+        """Rebuild choice-node labels from their stored choices (``PersonalityStore.relabel_choice_nodes``).
+        Under the tick lock: a tick in flight would write its loaded label back over the new one."""
+        async with self._lock:
+            return await self._store.relabel_choice_nodes(apply=apply, expected=expected)
 
     # --- tick -------------------------------------------------------------------------------------
 

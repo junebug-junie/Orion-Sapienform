@@ -13,7 +13,9 @@ before the pass finished), then ``reading_choices`` against the model's stored `
 
 This is an estimate, not a record: these passes ran without the list in their prompt, so Orion
 picked from page text it may only partly have seen. Prints per-day counts of passes, choice
-decisions (picked / declined_all), rows, and why a pass produced none.
+decisions (picked / declined_all), rows, and why a pass produced none; then how many written links
+were left out as not something to read (``classified_links`` reasons, #3443) with ``--examples``
+of each, and sample option texts as the prompt would show them.
 
 Exit 0 on a completed replay; 2 when Postgres is unavailable.
 """
@@ -28,7 +30,7 @@ from collections import Counter, defaultdict
 
 from orion.world_pulse_read.fetch_provenance import hop_allowlist, hop_url_key, parent_read_state, reached_pages
 from orion.world_pulse_read.fetch_text import load_retained_texts
-from orion.world_pulse_read.next_read_choice import candidate_links, next_read_options, reading_choices
+from orion.world_pulse_read.next_read_choice import classified_links, next_read_options, reading_choices
 from orion.world_pulse_read.read_evidence import parse_source_fetches
 
 SEEDS_SQL = """
@@ -74,6 +76,7 @@ async def main() -> int:
     parser.add_argument("--days", type=int, default=7)
     parser.add_argument("--max-round-trips", type=int, default=5,
                         help="Hub HUB_WORLD_PULSE_READ_STAGE2_MAX_ROUND_TRIPS (chain cap)")
+    parser.add_argument("--examples", type=int, default=5, help="examples per drop reason / of shown options")
     parser.add_argument("--dsn", default=os.environ.get(
         "RECALL_PG_DSN", "postgresql://postgres:postgres@127.0.0.1:55432/conjourney"))
     args = parser.parse_args()
@@ -88,6 +91,9 @@ async def main() -> int:
     ranks: Counter = Counter()
     unlisted: Counter = Counter()
     shown_sizes: list[int] = []
+    dropped: Counter = Counter()
+    drop_examples: dict[str, list[str]] = defaultdict(list)
+    shown_examples: list[str] = []
     try:
         seeds = await conn.fetch(SEEDS_SQL, args.days)
         traces = {r["correlation_id"]: parse_source_fetches(_obj(r["f"]) if r["f"] else None)
@@ -105,11 +111,20 @@ async def main() -> int:
                 per_pass.append((day, "no_parent_text", 0))
                 continue
             fetched = [s["url"], *(e.url for e in evidence)]
-            cands = candidate_links(parent_pages, exclude_urls=fetched)
+            classified = classified_links(parent_pages, exclude_urls=fetched)
+            cands = [c for c, why in classified if why is None]
+            for c, why in classified:
+                if why is None:
+                    continue
+                dropped[why] += 1
+                if len(drop_examples[why]) < args.examples:
+                    drop_examples[why].append(f"{c.text} -> {c.url}")
             read = await conn.fetch(READ_BEFORE_SQL, [c.url for c in cands], s["stage2_completed_at"])
             done = {k for k in (hop_url_key(str(r["url"])) for r in read) if k}
             shown = next_read_options(parent_pages, exclude_urls=fetched, already_read_keys=done)
             shown_sizes.append(len(shown))
+            if shown and len(shown_examples) < args.examples:
+                shown_examples.append(f"{s['url']}: " + " | ".join(o.text for o in shown[:4]))
             reached, stage2_pages = reached_pages(traces.get(s["stage2_trace_id"]) or [])
             allow = hop_allowlist([*parent_pages, *stage2_pages], reached)
             picked = _obj(s["stage2_result_json"]).get("need_stage1_urls") or []
@@ -138,6 +153,13 @@ async def main() -> int:
         print(f"links_shown: mean={sum(shown_sizes) / len(shown_sizes):.1f} zero={shown_sizes.count(0)}")
     print(f"chosen market ranks: {dict(ranks)}")
     print(f"unlisted picks by where Orion met them: {dict(unlisted)}")
+    print(f"links left out as not something to read: {dict(dropped)}")
+    for why, rows_ in sorted(drop_examples.items()):
+        for row in rows_:
+            print(f"  [{why}] {row}")
+    print("options as shown (first 4 per pass):")
+    for row in shown_examples:
+        print(f"  {row}")
     return 0
 
 

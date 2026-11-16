@@ -158,6 +158,21 @@ test("aboutView: full chosen and passed-over words from the examples, each once,
   const a = p.aboutView(ex);
   assert.deepStrictEqual(a.chose, [long, "Made no move"]);   // full text, never cut
   assert.deepStrictEqual(a.over, ["Chat memory has never been promoted", long]);
-  assert.deepStrictEqual(p.aboutView(null), { chose: [], over: [] });
+  assert.deepStrictEqual(a.details, []);
+  assert.deepStrictEqual(p.aboutView(null), { chose: [], over: [], details: [] });
   assert.deepStrictEqual(p.tendencyView({ examples: ex }).about, a);
+});
+
+test("aboutView: a curiosity-run promise's sentence (option detail) shows in About only, once", () => {
+  const sentence = 'a promise I made in a curiosity run at 2026-11-15 08:00Z: "I will check the walkway logs tomorrow."';
+  const promise = { text: "Curiosity run promise — the words stay in my own thinking", market_rank: null, detail: sentence };
+  const ex = [
+    { ...CHOICE, lane: "prime", chosen: promise, passed_over: [{ text: "Chat memory has never been promoted" }] },
+    { ...CHOICE, lane: "prime", chosen: { text: "Other" }, passed_over: [promise] },
+  ];
+  const v = p.tendencyView({ label: "Curiosity run promise, 2 of 2", examples: ex });
+  assert.deepStrictEqual(v.about.details, [`Chose: ${sentence}`, `Passed over: ${sentence}`]);
+  assert.ok(!v.label.includes("I will check"));
+  assert.ok(v.examples.every((e) => !e.includes("I will check")));
+  assert.ok(v.about.chose.every((t) => !t.includes("I will check")));
 });

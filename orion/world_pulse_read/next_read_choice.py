@@ -21,6 +21,28 @@ The shown list is parsed back out of the prompt that was actually bound to the d
 (``parse_next_read_section``), never recomputed: the first committed prompt is authoritative
 (orion/world_pulse_read/durable.py), and recomputing later would see a different "already read" set.
 A prompt with no section (bound before this shipped, or the flag off) yields no choice.
+
+Only links to something else to read are options (#3443, live 2026-11-15: the paper's own DOI, a
+Creative Commons deed and XMP namespace URIs were shown, and Orion "picked" the paper's own arXiv
+page). ``non_content_reason`` drops a link by its structure, never by words in its text:
+
+* ``same_document``: the link carries the read page's own identifier (its arXiv id or DOI), or its
+  query embeds the read page's URL. That is the page again: another format, a citation lookup, a
+  share button.
+* ``license``: a licence deed or file: a ``license(s)`` / ``publicdomain`` path on a deed registry
+  (creativecommons.org, opensource.org, spdx.org, gnu.org), a versioned ``licenses/<name>/<n.n>`` deed
+  anywhere, or a last path part ``LICENSE[.*]`` /
+  ``licence`` / ``copying``, or ``license/index.*``.
+* ``schema_namespace``: a vocabulary URI, not a document: host ``schema.org`` / ``xmlns.com``, a host
+  whose first label is ``ns`` (``ns.adobe.com``), or a namespace-shaped URI (ends in "/" or "#", no
+  file name) on ``purl.org`` or under ``w3.org/<year>/``.
+* ``code_only``: the link is written only inside code: a line of a fenced block, or a backtick span,
+  that holds more than bare URLs (``xmlns:dc="http://..."``, ``curl https://...``, a URL template).
+  A digest that wraps a URL in backticks or lists URLs in a fence is formatting, not code: live
+  digests do both for most links.
+
+Option text is the link's anchor text, else the sentence the link sits in with URLs and markdown
+taken out, else words from the URL's path.
 """
 
 from __future__ import annotations
@@ -28,6 +50,7 @@ from __future__ import annotations
 import hashlib
 import html
 import re
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, Optional, Sequence
@@ -55,6 +78,27 @@ _MD_LINK = re.compile(r"\[([^\]\n]{1,300})\]\((https?://[^)\s]+)\)")
 _LINE = re.compile(r"^\s*\[(\d{1,3})\] (.+) -> (\S+)\s*$")
 _SLUG_SPLIT = re.compile(r"[-_+.]+")
 _WS = re.compile(r"\s+")
+# Structural drop rules (module docstring). Short, documented sets: registries, not topic words.
+_LICENSE_SEGMENTS = frozenset({"license", "licenses", "publicdomain"})
+_NAMESPACE_HOSTS = frozenset({"schema.org", "xmlns.com"})  # vocabulary-only hosts
+# Hosts that also serve documents: only a namespace-shaped URI (ends in "/" or "#", no file name) counts.
+_MIXED_NAMESPACE_HOSTS = frozenset({"purl.org", "w3.org"})
+# Licence deed registries: any URL under their licence paths is a deed.
+_LICENSE_HOSTS = frozenset({"creativecommons.org", "opensource.org", "spdx.org", "gnu.org"})
+_VERSION_SEGMENT = re.compile(r"^\d+(?:\.\d+)*$")
+_LICENSE_FILE = frozenset({"license", "licence", "licenses", "copying"})
+_YEAR_SEGMENT = re.compile(r"^(?:19|20)\d\d$")
+# Identifiers that name one document whatever URL carries them.
+# Not inside a longer number ("12611.17316", "1.2611.17316"); "arXiv.2611.17316" is fine.
+_ARXIV_ID = re.compile(r"(?<!\d)(?<!\d\.)(\d{4}\.\d{4,5})(?:v\d+)?(?!\d)")
+_DOI = re.compile(r"\b(10\.\d{4,9}/[^\s?#&\"'<>`]+)", re.IGNORECASE)
+_FENCE = re.compile(r"^[ \t]*(```|~~~)[^\n]*\n.*?^[ \t]*\1[ \t]*$", re.MULTILINE | re.DOTALL)
+_INLINE_CODE = re.compile(r"`([^`\n]+)`")
+_URL_DRESSING = " \t\"'<>()[]{},;:."
+_SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9\"'(\[])")
+_MARKUP = re.compile(r"\*\*|__|`|^#+\s*|^\s*(?:[-*•+]|\d{1,3}[.)])\s+")
+_EMPTY_BRACKETS = re.compile(r"\(\s*\)|\[\s*\]|<\s*>")
+_EMPTY_SEPARATORS = re.compile(r"([|;,])(?:\s*[|;,])+")  # "a | | b" once its URL is out -> "a | b"
 
 
 @dataclass(frozen=True)
@@ -97,8 +141,26 @@ def _slug_words(url: str) -> str:
     return _WS.sub(" ", words).strip()
 
 
+def _id_words(url: str) -> str:
+    """"arXiv 2611.07965" / "DOI 10.1000/x" for a link that names a paper by identifier, else ""."""
+    ids = sorted(document_ids(url))
+    arxiv = next((i for i in ids if i.startswith("arxiv:")), None)
+    if arxiv:
+        return "arXiv " + arxiv.split(":", 1)[1]
+    doi = next((i for i in ids if i.startswith("doi:")), None)
+    return "DOI " + doi.split(":", 1)[1] if doi else ""
+
+
+_EDGE = " \t-*•:;,|—–→←>"
+_QUOTES = "\"“”"
+
+
 def _clean(text: str) -> str:
-    text = _WS.sub(" ", str(text or "")).strip().strip("-*•:|").strip()
+    text = _WS.sub(" ", str(text or "")).strip(_EDGE)
+    # A wrapping pair of quotes goes ('“A title” —' -> 'A title'); a quote inside the text stays.
+    while len(text) > 1 and text[0] in _QUOTES and text[-1] in _QUOTES \
+            and not any(q in text[1:-1] for q in _QUOTES):
+        text = text[1:-1].strip(_EDGE)
     # Never let a label carry our list syntax or a fence.
     return text.replace("<<<", "").replace(" -> ", " - ")[:_LABEL_MAX].strip()
 
@@ -106,28 +168,220 @@ def _clean(text: str) -> str:
 def option_text(label: str, url: str) -> str:
     """Subject first, plain words: "<what the link says> (<host>)"; at most 400 chars."""
     host = _host(url)
-    body = _clean(label) or _slug_words(url) or url
+    body = _clean(label) or _id_words(url) or _slug_words(url) or url
     text = f"{body} ({host})" if host and host not in body else body
     return text[:CHOICE_OPTION_TEXT_MAX]
 
 
+def _plain(text: str) -> str:
+    """Markdown links to their words, URLs and markup out, empty brackets gone."""
+    text = _MD_LINK.sub(lambda m: m.group(1), text)
+    for url in urls_in_text(text):
+        text = text.replace(url, " ").replace(url.removeprefix("https://"), " ")
+    text = _MARKUP.sub("", text.strip())
+    text = _EMPTY_SEPARATORS.sub(r"\1", _EMPTY_BRACKETS.sub(" ", text))
+    return _clean(_WS.sub(" ", text))
+
+
+def _sentence_with(line: str, url: str) -> str:
+    """The words of ``line`` that belong to ``url``: the sentence holding it (a URL's own dots never
+    end a sentence: the split needs whitespace after the stop). When that sentence holds other URLs
+    too ("Alerts -> <url> ; Brochures -> <url>"), only the words between the previous URL and this
+    one, else the words after it up to the next one."""
+    if url not in line:  # a scheme-less link (``nasa.gov/x``) is returned with "https://" put in front
+        url = url.removeprefix("https://")
+    sentence = next((x for x in _SENTENCE_END.split(line) if url in x), line)
+    others = [u if u in sentence else u.removeprefix("https://")
+              for u in urls_in_text(sentence) if url not in (u, u.removeprefix("https://"))]
+    if not others:
+        return sentence
+    at = sentence.find(url)
+    if at < 0:
+        return sentence
+    before, after = sentence[:at], sentence[at + len(url):]
+    for u in others:
+        if u in before:
+            before = before[before.rfind(u) + len(u):]
+        if u in after:
+            after = after[:after.find(u)]
+    return before if len(_plain(before)) >= 4 else after
+
+
+_LIST_ITEM = re.compile(r"^(\s*)(?:[-*+•]|\d{1,3}[.)])\s+")
+
+
+def _heads(lines: Sequence[str]) -> list[int]:
+    """For each line, the index of the line that heads its block: a list item heads itself and the
+    more-indented lines under it; other lines are headed by the first line of their paragraph."""
+    heads: list[int] = []
+    para = 0
+    items: list[tuple[int, int]] = []  # (indent, line index) of list items in this paragraph
+    for i, line in enumerate(lines):
+        if not line.strip():
+            para, items = i + 1, []
+            heads.append(i)
+            continue
+        indent = len(line) - len(line.lstrip())
+        m = _LIST_ITEM.match(line)
+        if m:
+            items = [it for it in items if it[0] < indent] + [(indent, i)]
+            heads.append(i)
+            continue
+        owner = [idx for ind, idx in items if ind < indent]
+        heads.append(owner[-1] if owner else para)
+    return heads
+
+
 def link_labels(text: str) -> dict[str, str]:
-    """hop key -> the words a page wrote for a link: markdown anchor text, else its line."""
+    """hop key -> the words a page wrote for a link: markdown anchor text, else the sentence it sits
+    in (URLs and markup taken out). A label two or more links share ("Full URL:") does not tell them
+    apart: those take the head line of their list item or paragraph (the title above the link)."""
     out: dict[str, str] = {}
     text = html.unescape(text)  # as urls_in_text does, so the hop keys agree
-    for m in _MD_LINK.finditer(text):
-        k = hop_url_key(m.group(2))
-        if k and k not in out and _clean(m.group(1)):
-            out[k] = _clean(m.group(1))
-    for line in text.splitlines():
+    lines = text.splitlines()
+    heads = _heads(lines)
+    head_of: dict[str, str] = {}
+    for i, line in enumerate(lines):
+        for m in _MD_LINK.finditer(line):
+            k = hop_url_key(m.group(2))
+            label = _plain(m.group(1))
+            if k and k not in out and label:
+                out[k] = label
+                head_of.setdefault(k, _plain(lines[heads[i]]) if heads[i] != i else "")
         for url in urls_in_text(line):
             k = hop_url_key(url)
             if not k or k in out:
                 continue
-            rest = _clean(_MD_LINK.sub(lambda m: m.group(1), line).replace(url, " "))
+            rest = _plain(_sentence_with(line, url))
             if len(rest) >= 4:
                 out[k] = rest
+                head_of.setdefault(k, _plain(lines[heads[i]]) if heads[i] != i else "")
+    shared = Counter(out.values())
+    for k, label in out.items():
+        head = head_of.get(k, "")
+        if shared[label] > 1 and len(head) >= 4 and shared.get(head, 0) <= 1:
+            out[k] = head
     return out
+
+
+def _only_urls(text: str) -> bool:
+    """Is ``text`` nothing but URLs (and quotes, brackets, separators around them)?"""
+    rest = text
+    for url in urls_in_text(text):
+        # A scheme-less link (``nasa.gov/x``) is returned with "https://" put in front.
+        rest = rest.replace(url, " ").replace(url.removeprefix("https://"), " ")
+    return not rest.strip(_URL_DRESSING)
+
+
+def _code_free(text: str) -> str:
+    """``text`` with real code blanked. A fenced block keeps only its lines that are bare URLs (live
+    digests list a page's links in ```text fences); a backtick span is blanked unless it is a bare URL."""
+
+    def fence(m: re.Match) -> str:
+        return "\n".join(line for line in m.group(0).splitlines()[1:-1] if _only_urls(line))
+
+    text = _FENCE.sub(fence, html.unescape(text or ""))
+    # Per line, and only on a line whose backticks pair up: a stray backtick used as an apostrophe ("Don`t")
+    # would otherwise open a "span" that swallows a prose link.
+    return "\n".join(
+        _INLINE_CODE.sub(lambda m: m.group(0) if _only_urls(m.group(1)) else " ", line)
+        if line.count("`") % 2 == 0 else line
+        for line in text.split("\n"))
+
+
+def document_ids(url: str) -> set[str]:
+    """Identifiers that name the document behind ``url``: ``arxiv:<id>`` (an arXiv URL, or an arXiv
+    DOI) and ``doi:<doi>`` (a DOI in its path). Empty for an ordinary page."""
+    try:
+        parts = urlsplit(url)
+        path = unquote(parts.path)
+    except ValueError:
+        return set()
+    host = _host(url)
+    ids: set[str] = set()
+    for m in _DOI.finditer(path):
+        doi = m.group(1).rstrip(".,;)").lower()
+        ids.add("doi:" + doi)
+        a = _ARXIV_ID.search(doi) if doi.startswith("10.48550/") else None
+        if a:
+            ids.add("arxiv:" + a.group(1))
+    if host == "arxiv.org" or host.endswith(".arxiv.org"):
+        a = _ARXIV_ID.search(path)
+        if a:
+            ids.add("arxiv:" + a.group(1))
+    return ids
+
+
+def _carries_document(url: str, ids: set[str], page_keys: set[str]) -> bool:
+    """Does ``url`` name the read page itself: one of its identifiers anywhere in the URL, or the
+    page's own URL inside the query (a share or lookup link)."""
+    flat = unquote(url).lower()
+    for ident in ids:
+        kind, _, value = ident.partition(":")
+        if kind == "arxiv" and re.search(r"(?<!\d)(?<!\d\.)" + re.escape(value) + r"(?!\d)", flat):
+            return True
+        # The DOI must end where the page's ends ("...59200" is not "...592001"); a version suffix and a
+        # format tail ("v1.full.pdf") are the same work.
+        if kind == "doi" and re.search(re.escape(value) + r"(?:v\d+)?(?![0-9a-z\-]|\.\d)", flat):
+            return True
+    try:
+        query = unquote(urlsplit(url).query)
+    except ValueError:
+        return False
+    if not query or not page_keys:
+        return False
+    return bool(page_keys & _hop_keys_in(query))
+
+
+def _hop_keys_in(text: str) -> set[str]:
+    """Hop keys of every URL written in ``text``."""
+    return {k for k in (hop_url_key(u) for u in urls_in_text(text)) if k}
+
+
+def non_content_reason(url: str, *, ids: set[str] = frozenset(), page_keys: set[str] = frozenset()) -> Optional[str]:
+    """Why ``url`` is not something else to read (module docstring), or None when it is. Pure."""
+    try:
+        parts = urlsplit(url)
+        segs = [s.lower() for s in unquote(parts.path).split("/") if s]
+    except ValueError:
+        return "unparseable"
+    host = _host(url)
+    if _carries_document(url, set(ids), set(page_keys)):
+        return "same_document"
+    if _is_license(host, segs):
+        return "license"
+    if host in _NAMESPACE_HOSTS or host.split(".", 1)[0] == "ns" or _namespace_shaped(url, host, segs):
+        return "schema_namespace"
+    return None
+
+
+def _is_license(host: str, segs: list[str]) -> bool:
+    """A deed registry's licence path, or a licence file/page: the last segment is ``LICENSE`` (any
+    extension), or ``license/index.*``."""
+    if host in _LICENSE_HOSTS and _LICENSE_SEGMENTS & set(segs):
+        return True
+    # A versioned deed anywhere: ".../licenses/<name>/<version>/" (arxiv.org/licenses/nonexclusive-distrib/1.0/).
+    if "licenses" in segs and _VERSION_SEGMENT.match(segs[-1]):
+        return True
+    if not segs:
+        return False
+    if segs[-1].split(".", 1)[0] in _LICENSE_FILE:
+        return True
+    return len(segs) >= 2 and segs[-2] in _LICENSE_SEGMENTS and segs[-1].startswith("index.")
+
+
+def _namespace_shaped(url: str, host: str, segs: list[str]) -> bool:
+    """On a host that also serves documents (``purl.org``, ``w3.org``): a vocabulary URI, i.e. ending in
+    "/" or "#" with no file name (``purl.org/dc/elements/1.1/``, ``w3.org/1999/02/22-rdf-syntax-ns#``). On
+    w3.org only under a year path (``/TR/`` specs are documents)."""
+    if host not in _MIXED_NAMESPACE_HOSTS or not segs:
+        return False
+    if host == "w3.org" and not _YEAR_SEGMENT.match(segs[0]):
+        return False
+    raw = url.split("?", 1)[0]
+    if "." in segs[-1].rsplit("-", 1)[-1] and not re.fullmatch(r"[\d.]+", segs[-1]):
+        return False  # a file name (report.html), not a vocabulary
+    return raw.endswith(("/", "#")) or (host == "w3.org" and "." not in segs[-1])
 
 
 def _is_asset(url: str) -> bool:
@@ -150,26 +404,43 @@ def _is_site_nav(url: str, page_host: str) -> bool:
     return len(parts) <= 1 and not urlsplit(url).query
 
 
-def candidate_links(
+def classified_links(
     texts: Iterable[tuple[str, str]], *, exclude_urls: Iterable[str] = ()
-) -> list[NextReadLink]:
-    """Every link written in Stage 1's retained texts, in fetch order then page order, deduplicated
-    by hop identity. The pages Stage 1 itself fetched (``exclude_urls``), asset files and the read
-    site's own top-level navigation (``_is_site_nav``) are left out.
-    Ranks are 1.. in that order. Pure."""
-    skip = {k for k in (hop_url_key(u) for u in exclude_urls) if k}
+) -> list[tuple[NextReadLink, Optional[str]]]:
+    """Every link written in Stage 1's retained texts, in fetch order then page order, deduplicated by
+    hop identity, each with why it is not an option (None: it is one). The pages Stage 1 itself
+    fetched (``exclude_urls``), asset files and the read site's own top-level navigation
+    (``_is_site_nav``) are not listed at all. Ranks are list positions 1.. here. Pure."""
+    texts = list(texts)
+    excluded = [u for u in exclude_urls if u]
+    skip = {k for k in (hop_url_key(u) for u in excluded) if k}
+    own = [*excluded, *(p for p, _ in texts if p)]
+    ids: set[str] = set().union(*(document_ids(u) for u in own)) if own else set()
+    page_keys = {k for k in (hop_url_key(u) for u in own) if k}
     seen: set[str] = set()
-    out: list[NextReadLink] = []
+    out: list[tuple[NextReadLink, Optional[str]]] = []
     for page_url, text in texts:
         labels = link_labels(text or "")
         page_host = _host(page_url or "")
+        prose = {k for k in (hop_url_key(u) for u in urls_in_text(_code_free(text or ""), page_url)) if k}
         for url in urls_in_text(text, page_url):
             k = hop_url_key(url)
             if not k or k in skip or k in seen or _is_asset(url) or _is_site_nav(url, page_host):
                 continue
             seen.add(k)
-            out.append(NextReadLink(url=url, label=labels.get(k, ""), rank=len(out) + 1))
+            reason = non_content_reason(url, ids=ids, page_keys=page_keys)
+            if reason is None and k not in prose:
+                reason = "code_only"
+            out.append((NextReadLink(url=url, label=labels.get(k, ""), rank=len(out) + 1), reason))
     return out
+
+
+def candidate_links(
+    texts: Iterable[tuple[str, str]], *, exclude_urls: Iterable[str] = ()
+) -> list[NextReadLink]:
+    """The readable links of ``classified_links`` (reason None), re-ranked 1.. in page order. Pure."""
+    kept = [c for c, reason in classified_links(texts, exclude_urls=exclude_urls) if reason is None]
+    return [NextReadLink(url=c.url, label=c.label, rank=i) for i, c in enumerate(kept, start=1)]
 
 
 def next_read_options(

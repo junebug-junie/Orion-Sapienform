@@ -1020,3 +1020,43 @@ def test_choice_channel_is_subscribed_only_with_the_loop_on(main_mod, monkeypatc
     asyncio.run(go())
     (patterns,) = patterns_seen
     assert (PERSONALITY_CHOICE_CHANNEL in patterns) is enabled
+
+
+def test_option_detail_never_reaches_the_embedded_text_or_the_label():
+    """ChoiceOptionV1.detail (a curiosity-run promise's sentence) is for the Hub card only (S-1.8)."""
+    from orion.schemas.personality import ChoiceOptionV1
+
+    sentence = 'a promise I made in a curiosity run: "I will check the walkway logs."'
+    c = choice("prime:d", T0).model_copy(update={"chosen": ChoiceOptionV1(key="c-p", text="Curiosity run promise",
+                                                                          market_rank=2, detail=sentence)})
+    chosen, declined = option_texts(c)
+    assert all("walkway logs" not in t for t in [chosen, *declined])
+    e = choice_evidence(c, {})
+    assert "walkway logs" not in e.excerpt and "walkway logs" not in e.text
+
+
+def test_relabel_holds_the_tick_lock():
+    """A tick must not load and write nodes while the relabel is writing labels (it would put the old label back)."""
+    import asyncio
+
+    drv, store, *_ = world()
+    gate, entered = asyncio.Event(), asyncio.Event()
+
+    async def slow_relabel(*, apply, expected=None):
+        entered.set()
+        await gate.wait()
+        return {"applied": apply}
+
+    store.relabel_choice_nodes = slow_relabel
+
+    async def scenario():
+        relabel = asyncio.create_task(drv.relabel(apply=True, expected={"d": ["a", "b"]}))
+        await entered.wait()
+        tick = asyncio.create_task(drv.tick())
+        await asyncio.sleep(0.05)
+        assert not tick.done()  # blocked behind the relabel
+        gate.set()
+        assert (await relabel)["applied"] is True
+        await tick
+
+    asyncio.run(scenario())

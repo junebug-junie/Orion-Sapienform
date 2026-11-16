@@ -7,6 +7,9 @@ on:
       - 'services/orion-sql-db/manual_migration_personality_choice_v1*.sql'
       - 'scripts/personality_rev3_retire_prose_nodes.py'
       - 'tests/test_personality_rev3_retire_prose_nodes.py'
+      - 'scripts/personality_relabel_choice_nodes.py'
+      - 'tests/test_personality_relabel_choice_nodes.py'
+      - 'orion/prime/choice.py'
       - 'scripts/analysis/measure_tone_dial_baseline.py'
       - 'scripts/analysis/tests/test_measure_tone_dial_baseline.py'
       - 'scripts/analysis/measure_personality_situation_specificity.py'
@@ -28,4 +31,4 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install pytest pydantic==2.11.5 pyyaml
-      - run: python -m pytest orion/personality/tests scripts/analysis/tests/test_measure_tone_dial_baseline.py scripts/analysis/tests/test_measure_personality_situation_specificity.py scripts/analysis/tests/test_eval_personality_naming_grounding.py tests/test_personality_schemas_registered.py tests/test_personality_rev3_retire_prose_nodes.py -q
+      - run: python -m pytest orion/personality/tests scripts/analysis/tests/test_measure_tone_dial_baseline.py scripts/analysis/tests/test_measure_personality_situation_specificity.py scripts/analysis/tests/test_eval_personality_naming_grounding.py tests/test_personality_schemas_registered.py tests/test_personality_rev3_retire_prose_nodes.py tests/test_personality_relabel_choice_nodes.py -q

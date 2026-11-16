@@ -336,3 +336,62 @@ def test_store_revive_fades_across_the_retired_time_like_the_reducer_revive():
         assert after["weight"] < row["weight"] * 0.65                # ~10 days of a 14-day half-life
 
     with_db(scenario)
+
+
+# --- #3444 one-time relabel, and ChoiceOptionV1.detail on the tendency card ------------------------------------
+
+
+def test_relabel_rebuilds_old_form_labels_from_stored_choices_only_under_expected():
+    async def scenario(pool):
+        store, drv = await seed(pool, Clock(T0))
+        [people] = await q(pool, "SELECT disposition_id, label, label_similarity, weight, status, evidence_count "
+                                 "FROM personality_disposition WHERE label LIKE 'people over%%'")
+        good = people["label"]
+        old = "A read, people over pipeline (+3 more), 3 of 3"
+        await ex(pool, "UPDATE personality_disposition SET label = %(l)s WHERE disposition_id = %(d)s",
+                 {"l": old, "d": people["disposition_id"]})
+        dry = await drv.relabel(apply=False)
+        plan = {r["disposition_id"]: r for r in dry["plan"]}
+        assert dry["applied"] is False and dry["written"] == 0
+        assert plan[people["disposition_id"]]["old_label"] == old
+        assert plan[people["disposition_id"]]["new_label"] == good
+        [still] = await q(pool, "SELECT label FROM personality_disposition WHERE disposition_id = %(d)s",
+                          {"d": people["disposition_id"]})
+        assert still["label"] == old  # dry run wrote nothing
+        # An expected pair that no longer matches is refused; the matching one is written.
+        bad = await drv.relabel(apply=True, expected={people["disposition_id"]: [old, "something else"]})
+        assert bad["written"] == 0 and bad["refused_ids"] == [people["disposition_id"]]
+        out = await drv.relabel(apply=True, expected={people["disposition_id"]: [old, good]})
+        assert out["written_ids"] == [people["disposition_id"]]
+        [after] = await q(pool, "SELECT label, weight, status, evidence_count FROM personality_disposition "
+                                "WHERE disposition_id = %(d)s", {"d": people["disposition_id"]})
+        assert after["label"] == good
+        assert (after["weight"], after["status"], after["evidence_count"]) == (
+            people["weight"], people["status"], people["evidence_count"])
+        # Nothing left to change: a second dry run plans no change for this node.
+        again = await drv.relabel(apply=False)
+        assert people["disposition_id"] not in {r["disposition_id"] for r in again["plan"]}
+
+    with_db(scenario)
+
+
+def test_option_detail_reaches_the_tendency_card_but_not_the_label():
+    async def scenario(pool):
+        from orion.schemas.personality import ChoiceOptionV1
+
+        store = PersonalityStore(pool)
+        sentence = 'a promise I made in a curiosity run at 2030-01-01 11:00Z: "I will check the walkway logs."'
+        c = choice("prime:d0", T0, rank=2, declined=("pipeline",))
+        c = c.model_copy(update={"chosen": ChoiceOptionV1(key="c-p", text="Curiosity run promise", market_rank=2,
+                                                          detail=sentence)})
+        assert await store.insert_choices([c], written_by="bus") == 1
+        clock = Clock(T0 + timedelta(minutes=30))
+        await driver(pool, clock).tick()
+        body = await store.tendencies(limit=20, examples=3)
+        [t] = [t for t in body["tendencies"] if t["examples"] and t["examples"][0]["choice_id"] == "prime:d0"]
+        assert t["examples"][0]["chosen"]["detail"] == sentence
+        assert "walkway logs" not in t["label"]
+        [ev] = await q(pool, "SELECT excerpt FROM personality_evidence WHERE evidence_id = 'choice:prime:d0'")
+        assert "walkway logs" not in ev["excerpt"]
+
+    with_db(scenario)

@@ -62,3 +62,26 @@ def test_summary_counts_decisions_not_rows():
     assert table["d1"] == {"passes": 3, "picked": 1, "declined_all": 1, "no_links_shown": 1,
                            "rows": 4, "decisions": 2}
     assert table["d2"]["passes"] == 1 and "decisions" not in table["d2"]
+
+
+# #3443, live 2026-11-15 09:35Z: a read of https://arxiv.org/pdf/2611.17316 showed six options, every
+# one the paper itself, its licence, or an XMP namespace; Orion "picked" its own arXiv page.
+ARXIV_PDF = "https://arxiv.org/pdf/2611.17316"
+ARXIV_PDF_DIGEST = (
+    "**3) URLs found in the metadata**\n\n"
+    "- https://doi.org/10.48550/arXiv.2611.17316\n"
+    "- https://arxiv.org/abs/2611.17316v1\n"
+    "- http://creativecommons.org/licenses/by/4.0/\n\n"
+    "(The XMP block also declares standard RDF/XML namespace URIs — e.g. "
+    "`http://www.w3.org/1999/02/22-rdf-syntax-ns#`, `http://purl.org/dc/elements/1.1/`, "
+    "`http://ns.adobe.com/xap/1.0/` — but these are metadata namespace declarations, not cited sources.)\n"
+)
+
+
+def test_live_self_doi_licence_and_namespaces_make_no_choice():
+    shown = next_read_options([(ARXIV_PDF, ARXIV_PDF_DIGEST)], exclude_urls=[ARXIV_PDF])
+    assert shown == []
+    rows, reason = reading_choices(
+        seed_id="reading:7ea0589d", shown=shown, picked_urls=["https://arxiv.org/abs/2611.17316v1"],
+        allowlist=hop_allowlist([(ARXIV_PDF, ARXIV_PDF_DIGEST)]), occurred_at=AT)
+    assert (rows, reason) == ([], "no_links_shown")

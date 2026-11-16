@@ -784,6 +784,51 @@ class PersonalityStore:
         return {"verdict_id": row["verdict_id"], "disposition_id": disposition_id, "verdict": verdict,
                 "status": status, "retired": retire, "revived": revive, "at": _iso(now)}
 
+    async def relabel_choice_nodes(self, *, apply: bool,
+                                   expected: Optional[Mapping[str, Sequence[str]]] = None) -> dict:
+        """#3444: rebuild every non-retired choice node's label from its own stored choices with the current
+        label maker (``orion.personality.relabel``). One transaction; with ``apply`` the nodes are locked
+        (FOR UPDATE) and each change is written only while the row still holds the label it was planned
+        from. ``expected`` (disposition_id -> [old_label, new_label], a reviewed dry run) limits the write to
+        those exact changes. Call it under the reducer's lock: a tick writes the whole row back when it
+        folds a choice, and would put the old label back. The lock is per process: this is safe while
+        durable-runs runs one uvicorn worker (today). With more workers or replicas a tick in another
+        process could still upsert its loaded label over the new one (``UPSERT_NODE_SQL`` has no label guard)."""
+        from orion.personality.relabel import (
+            RELABEL_EVIDENCE_SQL,
+            RELABEL_NODES_SQL,
+            RELABEL_UPDATE_SQL,
+            approved,
+            plan_relabel,
+            relabel_view,
+        )
+
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                async with conn.cursor() as cur:
+                    if not apply:
+                        await cur.execute("SET TRANSACTION READ ONLY")
+                    await cur.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                    nodes_sql = RELABEL_NODES_SQL.rstrip() + (" FOR UPDATE" if apply else "")
+                    await cur.execute(nodes_sql)
+                    nodes = await cur.fetchall()
+                    await cur.execute(RELABEL_EVIDENCE_SQL)
+                    evidence = await cur.fetchall()
+                    plan = plan_relabel(nodes, evidence)
+                    todo, refused = approved(plan, expected)
+                    written: list[str] = []
+                    if apply:
+                        for r in todo:
+                            await cur.execute(RELABEL_UPDATE_SQL, {
+                                "disposition_id": r.disposition_id, "old_label": r.old_label,
+                                "new_label": r.new_label, "new_similarity": float(r.new_similarity)})
+                            if (cur.rowcount or 0) > 0:
+                                written.append(r.disposition_id)
+        changes = [relabel_view(r) for r in plan if r.changed]
+        return {"applied": bool(apply), "nodes": len(plan), "changes": len(changes), "written": len(written),
+                "written_ids": written, "refused_ids": refused, "plan": changes,
+                "anomalies": {r.disposition_id: list(r.anomalies) for r in plan if r.anomalies}}
+
     async def arm_counts(self, since: datetime) -> dict:
         """Market decisions since ``since`` that carry a ``personality:arm=<arm>`` trace line (rev 4
         move 2), by arm and outcome. Empty until the personality values term is live."""
@@ -805,8 +850,12 @@ def _option(o: Any) -> Optional[dict]:
     if not isinstance(o, Mapping):
         return None
     rank = o.get("market_rank")
-    return {"key": str(o.get("key") or ""), "text": str(o.get("text") or ""),
-            "market_rank": int(rank) if isinstance(rank, (int, float)) and not isinstance(rank, bool) else None}
+    out = {"key": str(o.get("key") or ""), "text": str(o.get("text") or ""),
+           "market_rank": int(rank) if isinstance(rank, (int, float)) and not isinstance(rank, bool) else None}
+    # ``ChoiceOptionV1.detail`` (a curiosity-run promise's sentence): for the Hub tendency card only.
+    if isinstance(o.get("detail"), str) and o["detail"].strip():
+        out["detail"] = o["detail"]
+    return out
 
 
 def choice_view(r: Mapping[str, Any]) -> dict:

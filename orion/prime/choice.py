@@ -53,7 +53,12 @@ from typing import Any, Collection, Mapping, Optional, Sequence
 from orion.physiology.weights import endorsement_option_key
 from orion.prime.day_letter import LETTER_EVENT_PREFIX
 from orion.prime.handback import TURN_EVENT_PREFIX, WHO_WORDS
-from orion.schemas.personality import CHOICE_OPTION_TEXT_MAX, ChoiceOptionV1, PersonalityChoiceV1
+from orion.schemas.personality import (
+    CHOICE_OPTION_DETAIL_MAX,
+    CHOICE_OPTION_TEXT_MAX,
+    ChoiceOptionV1,
+    PersonalityChoiceV1,
+)
 
 LANE = "prime"
 PICK_NONE = "none"
@@ -70,12 +75,15 @@ class ShownConcern:
     # not recorded (a concern from before 2026-11-13), the live list is read instead.
     family: Optional[str] = None
     care_promoted: Optional[bool] = None
+    # ``PrimeConcernV1.promise_text``: the promise sentence. Only ever the option's ``detail`` (``option_detail``).
+    promise_text: Optional[str] = None
 
 
 def shown_concerns(concerns: Sequence[Any]) -> list[ShownConcern]:
     """Snapshot of the concerns in the frame (``PrimeConcernV1``-like objects)."""
     return [ShownConcern(c.concern_id, c.text, getattr(c, "event_ref", None), getattr(c, "event_family", None),
-                         getattr(c, "event_care_promoted", None)) for c in concerns]
+                         getattr(c, "event_care_promoted", None), getattr(c, "promise_text", None))
+            for c in concerns]
 
 
 def market_ranks(shown: Sequence[ShownConcern], ranked_event_ids: Sequence[str]) -> dict[str, Optional[int]]:
@@ -205,6 +213,19 @@ def option_text(concern: ShownConcern) -> str:
     return _text(_plain(raw))
 
 
+def option_detail(concern: ShownConcern) -> Optional[str]:
+    """A curiosity-run promise's own sentence, for the Hub tendency card only (``ChoiceOptionV1.detail``,
+    Juniper 2026-11-16). Never the option ``text``: that becomes labels and the Prime ``tending:`` line, which
+    reach turn context (S-1.8). None for every other concern."""
+    p = _PROMISE.match(" ".join((concern.text or "").split()))
+    if not p or _WHO_BY_WORDS.get(p["words"].strip()) != "curiosity":
+        return None
+    if concern.event_ref and not concern.event_ref.startswith(TURN_EVENT_PREFIX):
+        return None
+    words = " ".join((concern.promise_text or "").split())
+    return words[:CHOICE_OPTION_DETAIL_MAX] or None
+
+
 def resolve_pick(answer: Any, shown: Sequence[ShownConcern]) -> tuple[Optional[str], Optional[str]]:
     """(pick, why-not). pick is a shown concern_id or PICK_NONE; None with the reason when the answer
     made no usable pick."""
@@ -253,7 +274,7 @@ def prime_choice(
     ranks = market_ranks(shown, ranked_event_ids)
     fams = families or {}
     options = {c.concern_id: ChoiceOptionV1(key=option_key(c, fams), text=option_text(c),
-                                            market_rank=ranks[c.concern_id]) for c in shown}
+                                            market_rank=ranks[c.concern_id], detail=option_detail(c)) for c in shown}
     common = dict(choice_id=f"{LANE}:{thought_id}", lane=LANE, occurred_at=occurred_at,
                   situation=dict(situation or {}), act_id=act_id, correlation_id=correlation_id)
     if pick == PICK_NONE:
@@ -285,5 +306,5 @@ def body_situation(body: Optional[dict[str, Any]], binding: Optional[Sequence[st
 
 
 __all__ = ["LANE", "PICK_NONE", "ShownConcern", "body_situation", "care_promoted_events", "concern_care_promoted",
-           "event_families", "listed_wants", "market_ranks", "option_key", "option_text", "prime_choice", "resolve_pick",
+           "event_families", "listed_wants", "market_ranks", "option_detail", "option_key", "option_text", "prime_choice", "resolve_pick",
            "shown_concerns"]

@@ -212,6 +212,9 @@ Reviewed by an independent subagent against `origin/main`. All material findings
 - Finding: rollout note named only Hub. Fix: governor added (above, and the restart line).
 - Nits fixed: the trace prefix is bounded (ref <= 120, changes <= 100 chars) so the move stays inside the 500-char
   note; the frame says "could not be read" only when no read is in use; the trace contract posted on #3426.
+- CI finding (not from this patch, also red on feat/day-letter-patch-f): `test_experience_now_postgres.py::test_lifecycle_on_postgres` failed 07:00-10:00 UTC, when its seed (3 h before the real clock) falls on the previous Denver day and `backfill_days=0` never reads it.
+  - Fix: `backfill_days=1`.
+  - Evidence: pinned the seed 10 min before local midnight against a throwaway postgres:16: fails with 0, passes with 1.
 - Not fixed, by design: the connection need's "asked and got no answer" half (no table can observe it; see gate).
 
 ## Restart required

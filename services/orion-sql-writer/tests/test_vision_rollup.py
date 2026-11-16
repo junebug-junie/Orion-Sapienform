@@ -89,6 +89,48 @@ def test_props_stationary_patio_and_parked_repeats_are_excluded_and_tallied():
     assert r["total"]["passings"] == 1 and list(r["individuals"]) == ["walker"]
 
 
+def test_nobody_passed_says_how_many_parked_sightings_were_left_out():
+    """#3389: Orion read "nobody passed" beside captions that named a vehicle.
+    Live 2026-11-14 01:00: 54 sightings excluded, none shown."""
+    t = utc(2026, 10, 17, 20, 0)
+    parked = [sight("still", t + timedelta(minutes=m), kind="vehicle", stationary=True) for m in (1, 2, 3)]
+    repeat = [sight("car", t + timedelta(minutes=9), kind="vehicle")]
+    r = hour(t, parked + repeat, parked_ids=frozenset({"car"}))
+    assert r["total"]["passings"] == 0 and r["parked_not_counted"] == 4
+    line = wr.render_line(r)
+    assert "nobody passed (4 parked sightings not counted)" in line
+    assert wr.unsupported_numbers(line, r) == []
+    # One is singular; a prop or the patio is not "parked"; none prints nothing.
+    one = wr.render_line(hour(t, parked[:1]))
+    assert "(1 parked sighting not counted)" in one
+    prop_only = hour(t, [sight("prop", t + timedelta(minutes=1))], prop_ids=frozenset({"prop"}))
+    assert prop_only["parked_not_counted"] == 0 and "not counted" not in wr.render_line(prop_only)
+    assert "not counted" not in wr.render_line(hour(t, []))
+    # An hour with passings shows it too.
+    busy = wr.render_line(hour(t, parked + [sight("walker", t + timedelta(minutes=6))]))
+    assert "(3 parked sightings not counted)" in busy and "nobody passed" not in busy
+
+
+def test_day_line_and_stored_lines_show_the_parked_count():
+    day_p = wr.day_period(date(2026, 10, 17), TZ)
+    hours = [(p, hour(p.start, [sight("still", p.start + timedelta(minutes=1), kind="vehicle", stationary=True)]
+                      if i < 5 else [])) for i, p in enumerate(wr.child_periods(day_p, TZ))]
+    day = wr.build_parent("walkway", day_p, hours, TZ)
+    assert day["parked_not_counted"] == 5
+    assert "(5 parked sightings not counted)" in wr.render_line(day)
+    # A line stored before this change gets the note at read time, once.
+    old_row = {k: v for k, v in hours[0][1].items() if k != "parked_not_counted"}
+    old_line = "Walkway Sat Oct 17, 12 AM: nobody passed."
+    shown = wr.display_line(old_line, old_row)
+    assert shown == old_line + " (1 parked sighting not counted)."
+    assert wr.display_line(shown, old_row) == shown
+    # A camera-down line gives no count, so it gets no note (same as render_line).
+    down_row = {**old_row, "camera": {**old_row["camera"], "status": "down"}}
+    down_line = "Walkway Sat Oct 17, 12 AM: camera was down (0 of 60 minutes seen), so no count."
+    assert wr.display_line(down_line, down_row) == down_line
+    assert wr.display_line(old_line, hours[10][1]) == old_line
+
+
 def test_parked_repeat_rule_counts_hours_not_sightings():
     base = utc(2026, 10, 17, 0, 0)
     trailing = [sight("car", base + timedelta(hours=h, minutes=m), kind="vehicle") for h in (1, 5, 9) for m in (0, 20)]

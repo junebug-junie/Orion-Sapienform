@@ -304,10 +304,16 @@ def _num(value: Any) -> float | None:
         return None
 
 
+def _conf_words(value: Any) -> str:
+    """A vision row's confidence. Empty means the detector gave no score for
+    what the row names (council rows since 2026-11-15), not zero."""
+    return "not measured" if value is None else str(value)
+
+
 def _record_line(r: dict[str, Any]) -> str:
     ents = str(r.get("entities") or "").strip()
     ents = "" if ents in ("", "[]", "null") else f" entities {ents}"
-    return (f"  {r['id']} {r['type']} conf {r.get('confidence')} ({r.get('offset_sec')} s from the frame)"
+    return (f"  {r['id']} {r['type']} conf {_conf_words(r.get('confidence'))} ({r.get('offset_sec')} s from the frame)"
             f"{ents}: {r.get('text') or '(no text)'}")
 
 
@@ -566,7 +572,7 @@ def check(act_id: str, verdict: str, seen: str, record_id: str, *, home: Path,
     with log.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry) + "\n")
     lines = [
-        f"check: {verdict} on {rec.get('type')} {rec['id']} (conf {rec.get('confidence')}) for look {act_id}",
+        f"check: {verdict} on {rec.get('type')} {rec['id']} (conf {_conf_words(rec.get('confidence'))}) for look {act_id}",
         f"you saw: {seen}",
         line,
     ]

@@ -122,6 +122,61 @@ def test_scoring_met_missed_unscorable() -> None:
     assert score_window(occurred=False, coverage=0.3) == "unscorable"
 
 
+def test_parked_in_the_window_is_unscorable_never_missed() -> None:
+    """#3388: the subject sat parked in view through the window. It did not
+    arrive and it was not absent. Live 2026-11-15: 12 of 127 misses."""
+    assert score_window(occurred=False, coverage=0.95, parked_in_window=True) == "unscorable"
+    # A true miss (watched, nothing there) stays a miss.
+    assert score_window(occurred=False, coverage=0.95, parked_in_window=False) == "missed"
+    # It moved inside the window as well: that is an arrival.
+    assert score_window(occurred=True, coverage=0.95, parked_in_window=True) == "met"
+
+
+class _Conn:
+    """Answers the two sighting queries from a list of (started, ended, stationary)."""
+
+    def __init__(self, sightings):
+        self.sightings = sightings
+        self.sql: list[str] = []
+
+    def execute(self, stmt, params=None):
+        sql = str(stmt)
+        self.sql.append(sql)
+        a, b = params["a"], params["b"]
+        overlap = [s for s in self.sightings if s[0] <= b and s[1] >= a]
+        if "AND stationary" in sql:
+            rows = [(1,)] if any(s[2] for s in overlap) else []
+        else:  # _occurred: moving sightings only
+            moving = [max(s[0], a) for s in overlap if not s[2]]
+            rows = [(min(moving) if moving else None,)]
+        return type("R", (), {"fetchone": lambda self_: rows[0] if rows else None})()
+
+
+def test_parked_overlap_query_and_the_grade_it_gives() -> None:
+    from app.vision_rhythm import _occurred, _parked_in_window
+
+    ws = datetime(2026, 11, 14, 1, 0, tzinfo=timezone.utc)
+    we = ws + timedelta(minutes=60)
+    parked_all_evening = [(ws - timedelta(hours=3), we + timedelta(hours=2), True)]
+    drove_in = [(ws + timedelta(minutes=10), ws + timedelta(minutes=11), False)]
+    key = "individual:ind-1"
+
+    def grade(sightings) -> str:
+        conn = _Conn(sightings)
+        arrived = _occurred(conn, "walkway", key, ws, we)
+        parked = arrived is None and _parked_in_window(conn, key, ws, we)
+        return score_window(occurred=arrived is not None, coverage=1.0, parked_in_window=parked)
+
+    assert grade(parked_all_evening) == "unscorable"
+    assert grade([]) == "missed"
+    assert grade(drove_in) == "met"
+    assert grade(parked_all_evening + drove_in) == "met"
+    # Parked, but only outside the window: still a miss.
+    assert grade([(we + timedelta(minutes=5), we + timedelta(hours=1), True)]) == "missed"
+    # A label subject (the census) has no sightings to be parked.
+    assert _parked_in_window(_Conn(parked_all_evening), "label:vehicle", ws, we) is False
+
+
 def test_coverage_bridges_the_live_census_cadence_but_not_outages() -> None:
     start = datetime(2026, 9, 1, 13, 0, tzinfo=timezone.utc)
     end = start + timedelta(minutes=30)

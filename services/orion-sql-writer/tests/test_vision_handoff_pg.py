@@ -216,6 +216,8 @@ def test_watched_miss_settles_unexplained_into_vision_unresolved_and_the_outbox(
     assert hyps["detector_miss"]["status"] == "false" and hyps["late"]["status"] == "open"
     assert all(r["prior"] == pytest.approx(0.2) for r in hyps.values())
     assert [e["event_type"] for e in _rows(pg, "SELECT event_type FROM vision_events")] == ["handoff_missed"]
+    # #3389: the row says what the handoff was about (it used to be always []).
+    assert [e["entities"] for e in _rows(pg, "SELECT entities FROM vision_events")] == [["person"]]
     # Past the deadline: nothing came true -> unexplained.
     _cycle(pg, h["late_until"] + timedelta(seconds=700))
     hyps = {r["kind"]: r["status"] for r in _rows(pg, "SELECT kind, status FROM vision_handoff_hypothesis")}

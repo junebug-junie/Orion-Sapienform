@@ -218,6 +218,7 @@ jobs:
             services/orion-sql-writer/tests/test_vision_story_strip.py \
             services/orion-sql-writer/tests/test_vision_rollup.py \
             services/orion-sql-writer/tests/test_vision_handoff_pg.py \
+            services/orion-sql-writer/tests/test_vision_rhythm_pg.py \
             services/orion-sql-writer/tests/test_vision_hourly_frames_pg.py \
             services/orion-sql-writer/tests/test_vision_office_sessions_pg.py \
             tests/scripts/test_vision_detection_rate_watch_pg.py | tee vision_pg.out

@@ -40,6 +40,74 @@ class InterpretationParseOutcome:
     interpretation: VisionSceneInterpretationV1 | None
     parse_mode: ParseMode = "parse_failed"
     salvage_warnings: list[str] = field(default_factory=list)
+    # The model the gateway says answered (ChatResultPayload.model_used).
+    # None when no model wrote this interpretation (host fallback, gate skip).
+    model_used: str | None = None
+
+
+# Prefix of the evidence_refs entry that names the serving model.
+MODEL_REF_PREFIX = "model:"
+# Events the council builds from detector hits alone, with no model text.
+HOST_DETECT_TAG = "host_detect"
+
+
+def detector_label_scores(window: VisionWindowPayload | None) -> dict[str, float]:
+    """Best detector score per hard label in this window, keyed casefolded.
+
+    Written by orion-vision-window (projection._build_evidence ->
+    summary.evidence.label_scores) from the detector's own box scores
+    (orion-vision-host app/gdino.py). Empty when the window has none: an
+    older orion-vision-window, or a window with no detection."""
+    if window is None or not isinstance(window.summary, dict):
+        return {}
+    evidence = window.summary.get("evidence")
+    raw = evidence.get("label_scores") if isinstance(evidence, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for label, score in raw.items():
+        if isinstance(score, bool) or not isinstance(score, (int, float)):
+            continue
+        key = str(label).strip().casefold()
+        if key:
+            out[key] = max(0.0, min(1.0, float(score)))
+    return out
+
+
+def detector_confidence(window: VisionWindowPayload | None, entities: Any) -> float | None:
+    """Confidence of a row from detector evidence, or None when there is none.
+
+    The row names labels (its entities). The detector gives each label it
+    saw in this window a score. The row is as sure as its weakest named
+    label: the lowest of those scores. A row that names no label is about
+    the whole window: the lowest score of any label seen.
+
+    None (never a made-up number) when the detector saw none of the labels
+    the row names, or saw nothing at all. A named label the detector did not
+    see is ignored when another named label was seen; it cannot lower a
+    measured score to an unmeasured one."""
+    scores = detector_label_scores(window)
+    if not scores:
+        return None
+    named = [str(e).strip().casefold() for e in (entities or []) if isinstance(e, str) and e.strip()]
+    if named:
+        seen = [scores[n] for n in named if n in scores]
+        return round(min(seen), 4) if seen else None
+    return round(min(scores.values()), 4)
+
+
+def apply_detector_confidence(
+    interpretation: VisionSceneInterpretationV1,
+    window: VisionWindowPayload,
+) -> VisionSceneInterpretationV1:
+    """Replace every event candidate's confidence with the detector-derived
+    one. Whatever number the model wrote is dropped: it was the prompt
+    example echoed back (0.8 on 96% of rows, 2026-11-15)."""
+    candidates = [
+        cand.model_copy(update={"confidence": detector_confidence(window, cand.entities)})
+        for cand in interpretation.event_candidates
+    ]
+    return interpretation.model_copy(update={"event_candidates": candidates})
 
 
 def _coerce_llm_text(content: Any) -> str:
@@ -119,7 +187,6 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
             {
                 "observation": "short factual note — use observation field, not narrative",
                 "salience": 0.5,
-                "confidence": 0.8,
                 "evidence_refs": ["artifact-id-from-window"],
                 "tags": [],
             }
@@ -132,7 +199,6 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
                 "narrative": "Concrete event sentence for scribe projection.",
                 "entities": [],
                 "tags": [],
-                "confidence": 0.8,
                 "salience": 0.7,
                 "evidence_refs": ["artifact-id-from-window"],
             }
@@ -158,6 +224,8 @@ def build_interpretation_prompt(window: VisionWindowPayload) -> str:
         "- Each event_candidates.entities item MUST be a string label, never an object.\n"
         "- Populate at least one event_candidates entry when anything salient happened.\n"
         "- Use empty arrays [] for missing list fields; do not omit required keys.\n"
+        "- Do not output a confidence value. Confidence is computed from the detector scores, "
+        "not by you.\n"
         "- Do not invent identities, names, or facts not supported by the context.\n"
         "- Preserve uncertainty when visual evidence is weak; record it in uncertainties.\n"
         "- Set evidence_refs using artifact_ids from the window whenever possible.\n"
@@ -723,7 +791,7 @@ def _dict_to_event_candidate(evt: dict[str, Any]) -> VisionEventCandidateV1:
         narrative=str(evt.get("narrative", "")),
         entities=list(evt.get("entities") or []),
         tags=list(evt.get("tags") or []),
-        confidence=float(evt.get("confidence", 0.5)),
+        confidence=float(evt["confidence"]) if evt.get("confidence") is not None else None,
         salience=float(evt.get("salience", 0.5)),
         evidence_refs=list(evt.get("evidence_refs") or []),
     )
@@ -898,15 +966,24 @@ def parse_llm_content(content: str, window: VisionWindowPayload) -> Interpretati
 def project_interpretation_to_events(
     interpretation: VisionSceneInterpretationV1,
     window: VisionWindowPayload,
+    *,
+    model_used: str | None = None,
 ) -> VisionEventPayload:
+    """``model_used``: the model that wrote the narratives. Each row a model
+    wrote gets ``model:<name>`` appended to its evidence_refs, so a wording
+    change can be traced to a model change (#3387). Rows the council built
+    from detector hits alone (tag ``host_detect``) do not get it."""
     fallback_refs = list(window.artifact_ids or [])
+    model_ref = f"{MODEL_REF_PREFIX}{model_used.strip()}" if isinstance(model_used, str) and model_used.strip() else None
     bundle_items: list[VisionEventBundleItem] = []
     # Carried onto every row so room readers can tell a walkway narrative
     # (street + patio) from a room one. None when the window has no stream.
     stream_id = (window.stream_id or "").strip() or None
 
     for candidate in interpretation.event_candidates:
-        evidence_refs = list(candidate.evidence_refs) if candidate.evidence_refs else fallback_refs
+        evidence_refs = list(candidate.evidence_refs) if candidate.evidence_refs else list(fallback_refs)
+        if model_ref and HOST_DETECT_TAG not in candidate.tags and model_ref not in evidence_refs:
+            evidence_refs.append(model_ref)
         bundle_items.append(
             VisionEventBundleItem(
                 event_id=str(uuid.uuid4()),

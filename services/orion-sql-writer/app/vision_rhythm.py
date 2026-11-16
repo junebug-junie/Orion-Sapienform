@@ -260,12 +260,18 @@ def coverage_fraction(
     return min(1.0, covered / (b - a))
 
 
-def score_window(*, occurred: bool, coverage: float, min_coverage: float = 0.8) -> str:
+def score_window(*, occurred: bool, coverage: float, min_coverage: float = 0.8,
+                 parked_in_window: bool = False) -> str:
     """met if it happened; missed only if the camera watched enough of the
-    window to have seen it; otherwise unscorable."""
+    window to have seen it; otherwise unscorable.
+
+    ``parked_in_window``: the subject was in view during the window, parked
+    (a stationary sighting). It did not arrive, and it was not absent: the
+    window cannot say whether the expected arrival happened, so it is
+    unscorable, never "did not come" (#3388: 12 of 127 misses on 2026-11-15)."""
     if occurred:
         return "met"
-    if coverage < min_coverage:
+    if parked_in_window or coverage < min_coverage:
         return "unscorable"
     return "missed"
 
@@ -441,6 +447,20 @@ def _occurred(conn, stream_id: str, subject_key: str, start: datetime, end: date
     return row[0] if row and row[0] else None
 
 
+def _parked_in_window(conn, subject_key: str, start: datetime, end: datetime) -> bool:
+    """True when the individual has a stationary (parked) sighting that
+    overlaps [start, end]. Label subjects have no sightings: always False."""
+    from sqlalchemy import text
+
+    kind, _, ref = subject_key.partition(":")
+    if kind != "individual":
+        return False
+    row = conn.execute(text(
+        "SELECT 1 FROM vision_individual_sighting WHERE individual_id=:i "
+        "AND started_at <= :b AND ended_at >= :a AND stationary LIMIT 1"), {"i": ref, "a": start, "b": end}).fetchone()
+    return row is not None
+
+
 def _census_coverage(conn, stream_id: str, start: datetime, end: datetime) -> float:
     from sqlalchemy import text
 
@@ -479,7 +499,7 @@ def run_one_rhythm_cycle(
     ts = now or datetime.now(timezone.utc)
     tz = ZoneInfo(cfg.local_tz)
     summary = {"subjects": 0, "fitted": 0, "emitted": 0, "met": 0, "missed": 0, "unscorable": 0,
-               "expect_keys": 0}
+               "parked_in_window": 0, "expect_keys": 0}
     engine = create_engine(postgres_uri, pool_pre_ping=True)
     lock_conn = None
     per_stream: Dict[str, List[Tuple[datetime, datetime, bool]]] = {}
@@ -505,9 +525,14 @@ def run_one_rhythm_cycle(
                     summary["deferred"] = summary.get("deferred", 0) + 1
                     continue
                 coverage = _census_coverage(conn, r.stream_id, r.window_start, r.window_end)
+                parked = arrived is None and _parked_in_window(conn, r.subject_key, r.window_start, r.window_end)
                 status = score_window(occurred=arrived is not None, coverage=coverage,
-                                      min_coverage=cfg.min_coverage)
+                                      min_coverage=cfg.min_coverage, parked_in_window=parked)
                 summary[status] += 1
+                if parked:
+                    summary["parked_in_window"] += 1
+                    logger.info("vision_rhythm_parked_in_window expectation_id=%s subject=%s status=%s",
+                                r.expectation_id, r.subject_key, status)
                 event_id = None
                 if status in ("met", "missed"):
                     event_id = f"rhythm-{r.expectation_id}"

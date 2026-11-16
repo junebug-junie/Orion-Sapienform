@@ -1,0 +1,81 @@
+"""#3396 Patch F: one rule for "Orion's current answer"."""
+from __future__ import annotations
+
+from orion.curiosity.self_inquiry import LivedAnswer, newest_answer_per_question, read_current_lived_answers
+from orion.world_pulse_read import resonance_records as rr
+
+
+def _a(run: str, at: int | None, *, ev: bool = True, q: str = "lived.q1") -> LivedAnswer:
+    return LivedAnswer(run_id=run, question_id=q, family="lived", text=f"answer {run}",
+                       evidence=["row:1"] if ev else [], written_at=at)
+
+
+def test_newest_wins_and_history_keeps_both():
+    refuted, corrected = _a("aaaaaaaaaaaa", 100), _a("bbbbbbbbbbbb", 200)
+    assert newest_answer_per_question([refuted, corrected])["lived.q1"] is corrected
+    assert newest_answer_per_question([corrected, refuted], require_evidence=True)["lived.q1"] is corrected
+
+
+def test_equal_timestamps_break_on_run_id_every_time():
+    x, y = _a("aaaaaaaaaaaa", 100), _a("bbbbbbbbbbbb", 100)
+    for order in ([x, y], [y, x]):
+        assert newest_answer_per_question(order)["lived.q1"] is y
+
+
+def test_missing_written_at_sorts_as_oldest():
+    undated, dated = _a("ffffffffffff", None), _a("aaaaaaaaaaaa", 1)
+    assert newest_answer_per_question([undated, dated])["lived.q1"] is dated
+
+
+def test_evidence_rule_skips_a_newer_draft_and_falls_back_when_only_drafts():
+    good, draft = _a("aaaaaaaaaaaa", 100), _a("bbbbbbbbbbbb", 200, ev=False)
+    assert newest_answer_per_question([good, draft])["lived.q1"] is draft  # prompt rule
+    assert newest_answer_per_question([good, draft], require_evidence=True)["lived.q1"] is good
+    only = _a("cccccccccccc", 50, ev=False, q="lived.q2")
+    assert newest_answer_per_question([only], require_evidence=True)["lived.q2"] is only
+
+
+class _Reader:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def query(self, cypher):
+        return self.rows
+
+
+def test_prompt_reader_keeps_newest_of_any_kind():
+    rows = [
+        {"run_id": "aaaaaaaaaaaa", "question_id": "lived.q1", "text": "old", "evidence": ["r"], "written_at": 100},
+        {"run_id": "bbbbbbbbbbbb", "question_id": "lived.q1", "text": "draft", "evidence": [], "written_at": 200},
+    ]
+    assert read_current_lived_answers(_Reader(rows), ["lived.q1"])["lived.q1"].text == "draft"
+    out = read_current_lived_answers(_Reader(rows), ["lived.q1"], exclude_run_id="bbbbbbbbbbbb")
+    assert out["lived.q1"].text == "old"
+
+
+class _Falkor:
+    """Rows shaped like redis-cli GRAPH.RO_QUERY replies (lists come back as strings)."""
+
+    def rows(self, graph, cypher, **params):
+        if "MATCH (a:LivedAnswer)" in cypher:
+            return [
+                {"nid": 3, "run_id": "cccccccccccc", "qid": "lived.q1", "text": "draft", "revises": "",
+                 "evidence": "[]", "at": "300"},
+                {"nid": 2, "run_id": "bbbbbbbbbbbb", "qid": "lived.q1", "text": "corrected", "revises": "x",
+                 "evidence": "[row:2, q:3]", "at": "200"},
+                {"nid": 1, "run_id": "aaaaaaaaaaaa", "qid": "lived.q1", "text": "refuted", "revises": "",
+                 "evidence": "[row:1]", "at": "100"},
+            ]
+        if "SelfQuestionMint" in cypher:
+            return [{"qid": "lived.q1", "text": "what am I?"}]
+        return []
+
+
+def test_resonance_pool_offers_only_the_current_answer():
+    docs, pairs, _ = rr.worldview_pool(_Falkor())
+    lived = [d for d in docs if d.ref_kind == "lived_answer"]
+    assert [d.ref_id for d in lived] == ["lived.q1@bbbbbbbbbbbb"]
+    prev = [n for n in lived[0].neighborhood if n.relation == "previous_answer"]
+    assert [n.ref_id for n in prev] == ["lived.q1@aaaaaaaaaaaa"]
+    # History stays available to callers that want it.
+    assert len(pairs["answers"]) == 3

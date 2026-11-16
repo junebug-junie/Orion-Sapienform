@@ -361,7 +361,7 @@ def format_corrections_section(corrections: Sequence[OfferedCorrection]) -> list
         lines += [
             "Re-test each named prior against its correction in this run, with the two "
             "testing commands under WRITING TO YOUR OWN GRAPH below (the update, then the "
-            'once-per-run count guarded by last_run_id <> "<RUN_ID>", and a :PriorRevision '
+            'once-per-run count guarded by last_counted_run_id, and a :PriorRevision '
             "MERGE when the confidence moves). Move confidence, or close the prior, only as far as the evidence "
             "warrants. A correction is evidence, not an override: Juniper can be wrong, and so can "
             "the you that agreed. If you test a prior and keep it, say why in your write-up. "

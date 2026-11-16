@@ -49,6 +49,10 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
     for a in answers:
         if a["text"]:
             a_by.setdefault(a["qid"], []).append(a)
+    # Newest first by the same key as newest_answer_per_question: FalkorDB puts a
+    # null written_at FIRST in DESC order, the helper treats it as oldest.
+    for alist in a_by.values():
+        alist.sort(key=lambda a: (_written_at(a.get("at")), str(a.get("run_id") or "")), reverse=True)
     docs: list[PoolDoc] = []
     for p in priors:
         nb = [ResonanceNeighborV1(relation=f"finding_{f['rel'].lower()}", ref_id=str(f["fid"]), text=f["text"][:600])
@@ -87,6 +91,13 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
                             a["text"], tuple(nb)))
     pairs = {"findings": findings, "answers": answers, "questions": questions}
     return docs, pairs, priors  # type: ignore[return-value]
+
+
+def _written_at(raw: Any) -> int:
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return 0
 
 
 def current_lived_answer_rows(a_by: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:

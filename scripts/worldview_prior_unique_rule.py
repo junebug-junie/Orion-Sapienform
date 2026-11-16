@@ -52,9 +52,10 @@ def taught_batch(run_id: str) -> list[str]:
     return [
         f'MERGE (p:Prior {{prior_id: "new-claim"}}) ON CREATE SET p.claim = "c", p.confidence = 0.55, '
         f'p.status = "open", p.times_tested = 0, p.run_id = "{run_id}"',
-        'MATCH (p:Prior {prior_id: "old-claim"}) SET p.status = "revised", p.confidence = 0.75, p.last_tested_at = "t"',
-        f'MATCH (p:Prior {{prior_id: "old-claim"}}) WHERE coalesce(p.last_run_id, "") <> "{run_id}" '
-        f'SET p.times_tested = coalesce(p.times_tested, 0) + 1, p.last_run_id = "{run_id}"',
+        f'MATCH (p:Prior {{prior_id: "old-claim"}}) SET p.status = "revised", p.confidence = 0.75, '
+        f'p.last_tested_at = "t", p.last_run_id = "{run_id}"',
+        f'MATCH (p:Prior {{prior_id: "old-claim"}}) WHERE coalesce(p.last_counted_run_id, "") <> "{run_id}" '
+        f'SET p.times_tested = coalesce(p.times_tested, 0) + 1, p.last_counted_run_id = "{run_id}"',
         f'MERGE (v:PriorRevision {{prior_id: "old-claim", run_id: "{run_id}", from_confidence: 0.92, '
         'to_confidence: 0.9, from_status: "open", to_status: "revised"}) ON CREATE SET v.written_at = timestamp()',
         f'MERGE (v:PriorRevision {{prior_id: "old-claim", run_id: "{run_id}", from_confidence: 0.9, '
@@ -108,7 +109,7 @@ def scratch(image: str | None) -> int:
         # 1. Replay the taught batch twice.
         g = "replay"
         cli.run("GRAPH.QUERY", g, 'CREATE (:Prior {prior_id: "old-claim", confidence: 0.92, status: "open", '
-                'times_tested: 2})', check=True)  # no last_run_id: the coalesce case
+                'times_tested: 2})', check=True)  # no last_counted_run_id: the coalesce case
         seen = []
         for _ in range(2):
             for cmd in taught_batch("aaaaaaaaaaaa"):

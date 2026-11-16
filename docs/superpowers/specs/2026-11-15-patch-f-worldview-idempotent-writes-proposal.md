@@ -185,3 +185,11 @@ rule. I recommend that Orion makes them in a curiosity run, from a short note in
     duplicates, 1 id-less prior, node 3208, no constraints). #3455 was relieved by the
     FalkorDB restart at 11-16 09:11Z. The live write still waits for Juniper:
     `python3 scripts/worldview_prior_unique_rule.py commands` prints it.
+
+**Built change after code review (2026-11-16):** the count guard uses its own property,
+`last_counted_run_id`, not `last_run_id`. The update command keeps setting
+`last_run_id`, because `orion/curiosity/value.py:286-288` and
+`orion/orion_day/corrections.py:258` attribute a move to a run by it. With the guard on
+`last_run_id`, a run that sent the update but skipped the count would have its move
+scored as "not this run" instead of as protocol drift. The "two traps" above still hold,
+with `last_counted_run_id` in place of `last_run_id`.

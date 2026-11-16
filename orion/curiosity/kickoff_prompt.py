@@ -1043,19 +1043,20 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "  TESTING ONE you already hold -- two commands. The first updates it "
         "in place:",
         '    MATCH (p:Prior {prior_id: "..."}) SET p.status = "revised", '
-        'p.confidence = 0.72, p.last_tested_at = "<iso>"',
+        'p.confidence = 0.72,',
+        '      p.last_tested_at = "<iso>", p.last_run_id = "<RUN_ID>"',
         "",
         "  The second counts the test, ONCE PER RUN, whether or not the "
         "confidence moved:",
-        '    MATCH (p:Prior {prior_id: "..."}) WHERE coalesce(p.last_run_id, "") '
+        '    MATCH (p:Prior {prior_id: "..."}) WHERE coalesce(p.last_counted_run_id, "") '
         '<> "<RUN_ID>"',
         '      SET p.times_tested = coalesce(p.times_tested, 0) + 1, '
-        'p.last_run_id = "<RUN_ID>"',
+        'p.last_counted_run_id = "<RUN_ID>"',
         "",
         "  times_tested counts RUNS that tested the claim, not commands: "
         "testing it again later in this run, or sending the same batch twice, "
         "leaves it where it is. Only this second command may set "
-        "last_run_id -- put it in the first and the count never moves.",
+        "last_counted_run_id -- put it in the first and the count never moves.",
         "",
         "  AND RECORD WHAT IT WAS, in the same breath -- the SET above "
         "overwrites the old confidence and nothing else remembers it:",

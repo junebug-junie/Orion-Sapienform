@@ -305,8 +305,9 @@ def diff_snapshots(
                 PriorOutcome(prior_id, KIND_TESTED, was.confidence, now.confidence, delta, nats)
             )
         else:
-            # Moved without a test being counted: the prompt asks for
-            # `times_tested + 1` on every test, so this is protocol drift.
+            # Moved without a test being counted: the prompt asks for the
+            # once-per-run counting command on every tested prior (guarded by
+            # last_counted_run_id since #3395), so this is protocol drift.
             # Reported with its nats for audit, not summed.
             n_moved_untested += 1
             outcomes.append(

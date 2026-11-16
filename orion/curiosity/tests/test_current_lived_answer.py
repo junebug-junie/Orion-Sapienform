@@ -79,3 +79,23 @@ def test_resonance_pool_offers_only_the_current_answer():
     assert [n.ref_id for n in prev] == ["lived.q1@aaaaaaaaaaaa"]
     # History stays available to callers that want it.
     assert len(pairs["answers"]) == 3
+
+
+class _FalkorNullFirst(_Falkor):
+    """FalkorDB returns a null written_at FIRST under ORDER BY ... DESC."""
+
+    def rows(self, graph, cypher, **params):
+        rows = super().rows(graph, cypher, **params)
+        if "MATCH (a:LivedAnswer)" in cypher:
+            undated = {"nid": 9, "run_id": "dddddddddddd", "qid": "lived.q1", "text": "undated", "revises": "",
+                       "evidence": "[row:9]", "at": None}
+            return [undated] + rows
+        return rows
+
+
+def test_previous_answer_uses_the_helper_order_not_falkor_null_first():
+    docs, _, _ = rr.worldview_pool(_FalkorNullFirst())
+    lived = [d for d in docs if d.ref_kind == "lived_answer"]
+    assert [d.ref_id for d in lived] == ["lived.q1@bbbbbbbbbbbb"]
+    prev = [n.ref_id for n in lived[0].neighborhood if n.relation == "previous_answer"]
+    assert prev == ["lived.q1@aaaaaaaaaaaa"]

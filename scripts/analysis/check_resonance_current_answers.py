@@ -17,13 +17,27 @@ import argparse
 import csv
 import datetime as dt
 import subprocess
+import json
 
 SQL = ("select r.request_json->'brief'->'packet'->>'built_at', c->>'ref_id', "
        "coalesce(r.result_json->>'raw','') like '%%'||(c->>'ref_id')||'%%' "
        "from reading_resonance r, jsonb_array_elements(r.request_json->'brief'->'packet'->'candidates') c "
        "where c->>'ref_kind'='lived_answer' and r.created_at >= '{since}'")
 CYPHER = ("MATCH (a:LivedAnswer) RETURN a.question_id + '|' + a.run_id + '|' + toString(coalesce(a.written_at, 0)) "
-          "+ '|' + toString(CASE WHEN a.evidence IS NULL OR size(a.evidence) = 0 THEN 0 ELSE 1 END)")
+          "+ '|' + CASE WHEN a.evidence IS NULL OR a.evidence = [] OR a.evidence = '' OR a.evidence = '[]' "
+          "THEN '[]' ELSE 'x' END")
+
+
+def has_evidence(raw: str) -> bool:
+    """Truthiness of orion/curiosity/self_inquiry.py:_evidence_list on a redis-cli value
+    (a list prints as "[a, b]" or "[]"); kept dependency-free so this runs on bare python3."""
+    raw = raw.strip()
+    if raw.startswith("["):
+        try:
+            return bool([x for x in json.loads(raw) if str(x).strip()])
+        except ValueError:
+            return raw.strip("[] ") != ""
+    return bool(raw)
 
 
 def main() -> int:
@@ -35,9 +49,15 @@ def main() -> int:
                           "orion_worldview", CYPHER], capture_output=True, text=True, check=True).stdout
     by_q: dict[str, list[tuple[int, str, int]]] = {}
     for cell in next(csv.reader([out.replace("\n", ",")]), []):
-        parts = cell.split("|")
-        if len(parts) == 4 and parts[2].isdigit():
-            by_q.setdefault(parts[0], []).append((int(parts[2]), parts[1], int(parts[3])))
+        parts = cell.split("|", 3)
+        if len(parts) != 4:
+            continue
+        try:
+            written = int(float(parts[2]))
+        except ValueError:
+            continue
+        # Same evidence parse as the code under test (a list may come back as "[a, b]" or "[]").
+        by_q.setdefault(parts[0], []).append((written, parts[1], int(has_evidence(parts[3]))))
     rows = subprocess.run(["docker", "exec", "orion-athena-sql-db", "sh", "-c",
                            'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -At -F"\t" -c "$0"',
                            SQL.format(since=args.since)], capture_output=True, text=True, check=True).stdout

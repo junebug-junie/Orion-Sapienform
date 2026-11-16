@@ -1965,10 +1965,13 @@ def test_prompt_merges_a_revision_on_the_whole_move():
 
 def test_prompt_counts_a_test_once_per_run_and_only_the_guard_sets_last_run_id():
     text = _taught()
-    assert 'WHERE coalesce(p.last_run_id, "") <> "<RUN_ID>"' in text
+    assert 'WHERE coalesce(p.last_counted_run_id, "") <> "<RUN_ID>"' in text
     assert "p.times_tested = coalesce(p.times_tested, 0) + 1" in text
     assert "p.times_tested = p.times_tested + 1" not in text
-    # The update command must not stamp last_run_id, or the guard never passes.
-    update = next(line for line in text.splitlines() if 'SET p.status = "revised"' in line)
-    assert "last_run_id" not in update
+    # The update still stamps last_run_id (value.py / corrections.py attribute a
+    # move by it); only the count guard's own property must stay out of it.
+    lines = text.splitlines()
+    at = next(i for i, line in enumerate(lines) if 'SET p.status = "revised"' in line)
+    update = " ".join(lines[at:at + 2])
+    assert 'p.last_run_id = "<RUN_ID>"' in update and "last_counted_run_id" not in update
     assert "counts RUNS" in text

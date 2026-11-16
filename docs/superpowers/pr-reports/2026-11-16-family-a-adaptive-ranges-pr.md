@@ -113,6 +113,6 @@ Check: /health family_a.last_issue.n_adaptive > 0 and errors has no "adaptive".
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3548
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

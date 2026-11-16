@@ -63,6 +63,7 @@ INTERVAL_SOURCE = "validation"      # per-reading ranges: the served rung's vali
 # #3310). The validation ranges are one width for calm and busy hours: replay 11-14..16, athena.load_1m
 # was covered 0.64 of the time at 80 % (chassis watts 0.64, board temp 0.68) while PM2.5 read 0.97.
 ADAPTIVE_SOURCE = "adaptive"
+K10, K90 = QUANTILES.index(0.1), QUANTILES.index(0.9)
 TOP_SHARES = 5
 BLAS_THREADS = 4
 DUE_LIMIT = 2000                    # joint rows scored per pass (~3.5 days of backlog per pass)
@@ -327,7 +328,9 @@ class FamilyALive:
         if not self.adaptive_intervals:
             return {}
         try:
-            rows = self.store.family_champion_pool(PREFIX, pool_since(origin), int(MAX_HORIZON.total_seconds() // 60))
+            readings = sorted({t for s in served.horizons.values() for t in s.fit.targets})
+            rows = self.store.family_champion_pool([PREFIX + t for t in readings], pool_since(origin),
+                                                   int(MAX_HORIZON.total_seconds() // 60))
             by: dict[str, list[dict]] = {}
             for r in rows:
                 by.setdefault(r["series_id"], []).append(r)
@@ -388,13 +391,17 @@ class FamilyALive:
             for j, t in enumerate(sh.fit.targets):
                 zt, dz = pr["z"][i, j], pr[sh.rung][i, j]
                 offs = sh.q_offsets[:, j]
-                if not (np.isfinite(zt) and np.isfinite(dz) and np.isfinite(offs).all()):
+                live = adapt.get((t, int(h)))
+                # adaptive only with a real width: >= 80 % identical scaled misses (a near-constant reading)
+                # gives equal 0.1 / 0.9 offsets, and family C refuses a zero-width range
+                if live is not None and not (np.isfinite(live).all() and live[K90] > live[K10]):
+                    live = None
+                if not (np.isfinite(zt) and np.isfinite(dz) and (live is not None or np.isfinite(offs).all())):
                     continue
                 st = sh.fit.standardizer[t]
                 mu, sd = st["mean"], st["std"]
                 point = float(mu + sd * (zt + dz))
-                live = adapt.get((t, int(h)))
-                if live is not None and np.isfinite(live).all():
+                if live is not None:
                     quantiles = {q_key(q): point + float(live[k]) for k, q in enumerate(QUANTILES)}
                     source = ADAPTIVE_SOURCE
                     n_adaptive += 1
@@ -615,9 +622,10 @@ class MemoryStore:
         for s in rows:
             sh[s["shadow_id"]].update(s)
 
-    def family_champion_pool(self, prefix: str, since: datetime, max_horizon_min: int) -> list[dict]:
+    def family_champion_pool(self, series_ids: list[str], since: datetime, max_horizon_min: int) -> list[dict]:
+        ids = set(series_ids)
         return [{**r, "owner": r["model"]} for r in self.forecasts
-                if r["series_id"].startswith(prefix) and r.get("role") == "champion"
+                if r["series_id"] in ids and r.get("role") == "champion"
                 and r.get("score_status") == "scored" and r["target_ts"] >= since
                 and int(r["horizon_min"]) <= max_horizon_min]
 

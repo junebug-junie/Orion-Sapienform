@@ -8,7 +8,7 @@ the served range, exactly as live would.
 
     POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_adaptive_ranges_eval.py [--days 2] [--stride 2]
 
-Prints per reading: n, served cov80, adaptive cov80, adaptive share, median width ratio; then per day for
+Prints per reading: n, served cov80, adaptive cov80, adaptive share; then per day for
 the busiest readings; then PASS when every reading with n >= 200 sits in [0.72, 0.88] adaptive (the
 #3310 check), else FAIL with the list. Exit 0 always (a report).
 """
@@ -23,19 +23,23 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import yaml
 
 sys.path[:0] = [str(Path(__file__).resolve().parents[1]), str(Path(__file__).resolve().parents[3])]
 
 from app.adaptive import MAX_HORIZON, POOL, adaptive_offsets  # noqa: E402
 from app.backtest import QUANTILES  # noqa: E402
+from app import family_a as fa  # noqa: E402
 from app.family_a_live import PREFIX  # noqa: E402
 from app.store import PostgresStore  # noqa: E402
 
 BAND = (0.72, 0.88)
+CONFIG = Path(__file__).resolve().parents[3] / "config" / "prediction" / "family_a.v1.yaml"
 K10, K90 = QUANTILES.index(0.1), QUANTILES.index(0.9)
 
 
-def evaluate(rows: list[dict], start: datetime, end: datetime, stride: int, grain_min: int = 5) -> dict:
+def evaluate(rows: list[dict], start: datetime, end: datetime, stride: int, horizons: list[int],
+             grain_min: int = 5) -> dict:
     """{reading: list of (target_ts, served_in80, adaptive_in80, adaptive_used, width_ratio)}."""
     by_t: dict[str, list[dict]] = defaultdict(list)
     for r in rows:
@@ -48,14 +52,16 @@ def evaluate(rows: list[dict], start: datetime, end: datetime, stride: int, grai
         res = []
         for o in origins:
             here = [r for r in rs if r["origin_ts"] == o]
-            lo_i, hi_i = np.searchsorted(tgt, [pd.Timestamp(o - POOL).value, pd.Timestamp(o).value], side="right")
-            pool = rs[lo_i:hi_i]                       # targets in (o - POOL, o]: known when o was issued
+            lo_i = np.searchsorted(tgt, pd.Timestamp(o - POOL).value, side="left")
+            hi_i = np.searchsorted(tgt, pd.Timestamp(o).value, side="right")
+            pool = rs[lo_i:hi_i]                       # targets in [o - POOL, o], as live (pool_since, >=)
             owners = {int(r["horizon_min"]): r["owner"] for r in here}
-            offs, _why = adaptive_offsets(pool, pd.Timestamp(o), sorted(owners), grain_min, owners=owners)
+            # every served horizon, as live: difficulty always comes from the smallest one
+            offs, _why = adaptive_offsets(pool, pd.Timestamp(o), horizons, grain_min, owners=owners)
             for r in here:
                 h, a, p = int(r["horizon_min"]), float(r["actual"]), float(r["point"])
                 served = bool(r["in_80"])
-                if h in offs:
+                if h in offs and offs[h][K90] > offs[h][K10]:   # live keeps validation for a zero width
                     lo, hi = p + offs[h][K10], p + offs[h][K90]
                     res.append((r["target_ts"], served, lo <= a <= hi, True, float(offs[h][K90] - offs[h][K10])))
                 else:
@@ -71,11 +77,12 @@ def main() -> None:
     a = ap.parse_args()
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=a.days)
+    cfg = fa.parse_config(yaml.safe_load(CONFIG.read_text(encoding="utf-8")))
+    max_h = int(MAX_HORIZON.total_seconds() // 60)
     store = PostgresStore(os.environ["POSTGRES_URI"])
-    rows = store.family_champion_pool(PREFIX, start - POOL, int(MAX_HORIZON.total_seconds() // 60))
-    widths = {(r["series_id"], r["origin_ts"], int(r["horizon_min"])): r for r in rows}
+    rows = store.family_champion_pool([PREFIX + s.id for s in cfg.inputs], start - POOL, max_h)
     store.close()
-    res = evaluate(rows, start, end, a.stride)
+    res = evaluate(rows, start, end, a.stride, [h for h in cfg.horizons_min if h <= max_h], cfg.grain_min)
     print(f"window {start:%Y-%m-%d %H:%M}Z .. {end:%Y-%m-%d %H:%M}Z, {len(rows)} pool rows, stride {a.stride}")
     print(f"{'reading':32s} {'n':>5s} {'served':>7s} {'adapt':>7s} {'used':>5s}")
     bad = []

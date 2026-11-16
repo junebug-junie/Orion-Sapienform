@@ -432,16 +432,16 @@ class PostgresStore:
                                                   else s.get(c) for c in JOINT_SCORE_COLS) + (s["joint_id"],)
                                             for s in joint_scores])
 
-    def family_champion_pool(self, prefix: str, since: datetime, max_horizon_min: int) -> list[dict]:
-        """Scored champion rows of every family reading (``series_id`` starting with ``prefix``) with targets
-        at or after ``since``, for the per-reading adaptive range (app/adaptive.py). ``owner`` = the rung that
-        served the row (family rows store it as ``model``). starts_with, never a string range: the live
-        collation is en_US.utf8 (#3334)."""
+    def family_champion_pool(self, series_ids: list[str], since: datetime, max_horizon_min: int) -> list[dict]:
+        """Scored champion rows of the named family readings with targets at or after ``since``, for the
+        per-reading adaptive range (app/adaptive.py). ``owner`` = the rung that served the row (family rows
+        store it as ``model``). Equality on series_id (never a string range: en_US collation, #3334) and
+        ``scored_at IS NOT NULL`` so prediction_forecast_scored_idx serves it."""
         return self._all(
             "SELECT series_id, origin_ts, target_ts, horizon_min, point, actual, interval_source, in_80, "
-            "model AS owner FROM prediction_forecast WHERE starts_with(series_id, %s) AND role = 'champion' "
-            "AND score_status = 'scored' AND target_ts >= %s AND horizon_min <= %s",
-            (prefix, since, max_horizon_min))
+            "model AS owner FROM prediction_forecast WHERE series_id = ANY(%s) AND role = 'champion' "
+            "AND scored_at IS NOT NULL AND score_status = 'scored' AND target_ts >= %s AND horizon_min <= %s",
+            (list(series_ids), since, max_horizon_min))
 
     def family_recent_scored(self, family: str, since: datetime) -> list[dict]:
         """Scored joint rows with targets after ``since`` (the adaptive difficulty)."""

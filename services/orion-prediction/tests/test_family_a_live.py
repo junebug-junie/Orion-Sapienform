@@ -433,3 +433,35 @@ def test_family_ranges_stay_validation_when_disabled_or_when_the_pool_read_fails
         assert mine and {r["interval_source"] for r in mine} == {fl.INTERVAL_SOURCE}
         if not kw:
             assert "db down" in live.state.errors["adaptive"]
+
+
+
+def test_a_pool_served_by_the_other_rung_does_not_size_this_rungs_range():
+    """Owner filter: rungs miss by different amounts, so another rung's rows never size the range."""
+    live, _l = _live()
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    origin = live.latest_complete(now + G)
+    _seed_pool(live, origin, lambda hrs: 1.0)
+    for r in live.store.forecasts:
+        if r.get("forecast_id", 0) < 0:
+            r["model"] = "ridge_var" if r["model"] == "ar" else "ar"
+    live.issue(now + G)
+    mine = [r for r in live.store.forecasts if r["origin_ts"] == origin and r["role"] == "champion"]
+    assert mine and {r["interval_source"] for r in mine} == {fl.INTERVAL_SOURCE}
+
+
+def test_a_zero_width_adaptive_range_keeps_the_validation_range():
+    """>= 80 % identical misses give equal 0.1 / 0.9 offsets; family C refuses a zero-width range."""
+    live, _l = _live()
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    origin = live.latest_complete(now + G)
+    _seed_pool(live, origin, lambda hrs: 1.0)
+    for r in live.store.forecasts:
+        if r.get("forecast_id", 0) < 0:
+            r["actual"] = 1.0                                  # every miss identical: +1.0
+    live.issue(now + G)
+    mine = [r for r in live.store.forecasts if r["origin_ts"] == origin and r["role"] == "champion"]
+    assert mine and all(r["interval_source"] == fl.INTERVAL_SOURCE for r in mine)
+    assert all(r["quantiles"]["0.9"] > r["quantiles"]["0.1"] for r in mine)

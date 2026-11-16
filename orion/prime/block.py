@@ -298,8 +298,11 @@ def render_prime_block(
     shown = list(tending)[:MAX_TENDING_LINES]
     for k in range(len(shown), 0, -1):
         extra = [_tending_line(t) for t in shown[:k]]
-        t_text, t_refs, _t_dropped = _render(header, lines, cap - sum(len(e) + 1 for e in extra))
-        if set(t_refs) >= set(refs) and len(t_text) + sum(len(e) + 1 for e in extra) <= cap:
+        t_text, t_refs, t_dropped = _render(header, lines, cap - sum(len(e) + 1 for e in extra))
+        # Refs alone cannot show a lost line: two own lines can share one (the body line and "Asks: none open."
+        # both cite the tick), so the re-render must also drop no more own lines than the block without tending.
+        if (t_dropped <= dropped and set(t_refs) >= set(refs)
+                and len(t_text) + sum(len(e) + 1 for e in extra) <= cap):
             return PrimeBlockV1(text="\n".join([t_text, *extra]), status="ok",
                                 refs=tuple(dict.fromkeys(t_refs + tuple(t.ref for t in shown[:k]))),
                                 ticked_at=_utc(ticked_at),

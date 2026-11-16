@@ -11,9 +11,11 @@ services:
     cap_drop: [ALL]
     security_opt: [no-new-privileges:true]
     pids_limit: 64
-    mem_limit: 512m
-    memswap_limit: 512m
-    cpus: 2
+    # N64 renders in software (Angrylion, 8 threads): ~2x real speed at 12 CPUs,
+    # 21 fps at 2. A 32 MB ROM plus a 16.8 MB state needs more than 512 MB.
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    cpus: 12
     ulimits:
       core: 0
       fsize: 268435456
@@ -33,7 +35,7 @@ services:
       - ${RETRO_TOKEN_FILE:?operator credential required}:/run/secrets/retro_operator:ro
       - ${RETRO_HUB_TOKEN_FILE:-/dev/null}:/run/secrets/retro_hub:ro
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=16m
+      - /tmp:rw,noexec,nosuid,size=64m
     healthcheck:
       test: [CMD, python, -m, app.health]
       interval: 15s

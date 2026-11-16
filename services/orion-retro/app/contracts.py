@@ -37,6 +37,8 @@ class Input(Strict):
     seq: int = Field(ge=0, le=2**53-1)
     port: int = Field(ge=0, le=1)
     mask: int = Field(ge=0, le=65535)
+    # N64 only: [left x, left y, right x, right y], libretro analog range. Omitted = centred.
+    axes: list[Annotated[int, Field(ge=-32767, le=32767)]] | None = Field(default=None, min_length=4, max_length=4)
 
 
 class ScriptControl(Strict):

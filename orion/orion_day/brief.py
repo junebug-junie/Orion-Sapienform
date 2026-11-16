@@ -66,7 +66,7 @@ def brief_from_material(
         window_end=material.window_end,
         material=material,
         # The honest input (living Prime design #3224, constraint 7): Juniper protected, reveries
-        # by theme, self-sense once each, readings and news as a trimmed tail.
+        # by theme, self-sense once each, the daily organ roundup, news and code changes as a trimmed tail.
         llm_view=render_day_input(material, budget_tokens=budget_tokens),
         llm_route=ORION_DAY_LLM_ROUTE,
         timeout_sec=timeout_sec,
@@ -87,9 +87,11 @@ async def build_orion_day_brief(
     prior_lookup: PriorLookup | None = None,
     prime_act_id: str | None = None,
     missed_letters: list[MissedLetterV1] | None = None,
+    organ_roundup: bool = False,
 ) -> OrionDayRunBriefV1:
     material = await gather_orion_day(conn, letter_date, now=now, github_repo=github_repo,
-                                      temporal_day=temporal_day, prior_lookup=prior_lookup)
+                                      temporal_day=temporal_day, prior_lookup=prior_lookup,
+                                      organ_roundup=organ_roundup)
     return brief_from_material(material, budget_tokens=budget_tokens, timeout_sec=timeout_sec,
                                prime_act_id=prime_act_id, missed_letters=missed_letters)
 

@@ -21,12 +21,13 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         replies.put_nowait(row)  # backpressure is fatal, never unbounded
     try:
         system = game.get('system', 'nes')
-        core = (MediaProbe if media is not None else CoreProbe)(settings.core_for(system), game['path'])
+        core = (MediaProbe if media is not None else CoreProbe)(settings.core_for(system), game['path'],
+                                                                **settings.core_host(system))
         evidence = Evidence(settings.artifacts, session, settings.session_bytes, settings.total_bytes)
         authority = Arbiter(game['ports'], system)
         def record(kind, **fields):
             evidence.write(dict(kind=kind, session_id=session, generation=generation, frame=frame, **fields))
-        store = SaveStore(settings.saves, settings.save_max_per_game, settings.save_max_bytes)
+        store = SaveStore(settings.saves, settings.save_max_per_game, settings.save_limit(system))
         # Zelda (fingerprint-gated, cognition gate on) gets its reader, GoalV2 motor and
         # atlas. Every other game keeps the Nova v1 path unchanged.
         zelda = None
@@ -174,13 +175,14 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
             if state == 'running':
                 scripted.tick(time.monotonic())
                 masks, applied, neutral = authority.frame(time.monotonic())
+                analog = {'axes': authority.axes()} if authority.analog else {}
                 for event in applied:
                     policy = scripted.active.get(event['port'])
                     goals = policy['goals'] if policy else None
                     if (goals and hasattr(goals, 'applied_start') and goals.accepted_current() and event['seq'] == policy['seq']
                             and policy['goal_attempt_id'] == goals.accepted['attempt_id']):
                         goals.applied_start(frame+1, observer.read())
-                core.step(*masks); frame += 1
+                core.step(*masks, **analog); frame += 1
                 # Port 0 is Zelda's only controller; Lane C derives the control share from this.
                 if zelda: zelda.after_frame(frame, time.monotonic(), scripted.active, scripted.controller(0))
                 for port, policy in scripted.active.items():

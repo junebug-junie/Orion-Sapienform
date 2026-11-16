@@ -7,7 +7,8 @@
 #     reader's own organ", and the integration metric's per-organ split;
 #   * orion-durable-runs' chronicle -- salience per kind (salience_magnitude) at insert;
 #   * scripts/check_integration_seam.py (CI, the integration gate in CLAUDE.md);
-#   * scripts/report_integration_coverage.py (the live coverage report).
+#   * scripts/report_integration_coverage.py (the live coverage report);
+#   * orion/dig/organs.py (`dig organs <date>`, the daily roundup in the day letter, integration patch 4).
 #
 # Per organ:
 #   temporal_sources    TemporalSourceKind values this organ emits (each kind belongs to exactly one organ).
@@ -145,7 +146,11 @@ organs:
     exempt_emit: "day_letter is integration patch 7"
     workflows: [orion_day.letter]
     reads_now: null
-    exempt_read: "the letter reads the day's experience_use rows through the daily roundup (integration patch 4)"
+    # Integration patch 4: the letter's input carries the daily organ roundup (orion/dig/organs.py), with the
+    # day's experience_use rows quoted per organ. Its [experience:] cites are counted in the run's finish
+    # detail (note_roundup_refs); they are not experience_use rows, because the roundup is a read-only dig and
+    # writes no experience_shown row a cite could be checked against.
+    exempt_read: "reads the daily organ roundup, not GET /temporal-self/now; cites counted in finish detail note_roundup_refs, not as experience_use (integration patch 4)"
   personality:
     temporal_sources: []
     exempt_emit: "personality_choice is integration patch 7"

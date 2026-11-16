@@ -843,7 +843,7 @@ from orion.schemas.reminiscence_run import ReminiscenceRunBriefV1
 from orion.schemas.reverie_visual_run import ReverieVisualStepRequestV1, ReverieVisualStepResultV1
 from orion.schemas.orion_day import (
     MissedLetterV1, OrionDayLetterOrderResultV1, OrionDayLetterOrderV1, OrionDayLetterStatusV1,
-    OrionDayLetterV1, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1,
+    OrionDayLetterV1, OrionDayLlmViewV1, OrionDayMaterialV1, OrionDayRunBriefV1, OrganRoundupV1,
 )
 from orion.schemas.reading import (
     ReadingRequestedV1, ReadingToolBindingV1, ReadingToolRequestV1, ReadingToolResultV1, ReadingLifecycleV1
@@ -1124,6 +1124,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # DurableRunRequestV1 (brief) and the orion_day_letter row, not bus kinds.
     "OrionDayRunBriefV1": OrionDayRunBriefV1,
     "OrionDayMaterialV1": OrionDayMaterialV1,
+    "OrganRoundupV1": OrganRoundupV1,
     "OrionDayLlmViewV1": OrionDayLlmViewV1,
     "OrionDayLetterV1": OrionDayLetterV1,
     # Living Prime Part 3: Prime's order to Hub and Hub's answers (HTTP, not bus kinds).

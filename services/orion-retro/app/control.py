@@ -1,9 +1,13 @@
-"""Frame-authoritative NES/SNES leases, exercised with a deterministic clock."""
+"""Frame-authoritative NES/SNES/N64 leases, exercised with a deterministic clock."""
 import secrets
 
 # libretro B, select, start, up/down/left/right, A; SNES adds Y, X, L, R.
 NES_MASK = sum(1 << bit for bit in (0, 2, 3, 4, 5, 6, 7, 8))
 SNES_MASK = NES_MASK | sum(1 << bit for bit in (1, 9, 10, 11))
+# Mupen64Plus-Next standard map: B->A, Y->B, L2->Z, L/R, Start, D-pad; A/X/R2 are its
+# C-button face mode. Select is unused. The control stick and C stick are analog axes.
+N64_MASK = SNES_MASK & ~(1 << 2) | (1 << 12) | (1 << 13)
+CENTRED = (0, 0, 0, 0)
 # How long a lease survives without input. Browsers throttle page timers to about
 # 1 Hz in some states (live 2026-10-20), so the heartbeat cannot be trusted at 50 ms.
 # Button changes still arrive at once; socket close or blur releases immediately.
@@ -13,10 +17,12 @@ LEASE_TTL = 2.0
 class Arbiter:
     def __init__(self, ports, system='nes'):
         self.ports = ports
-        self.button_mask = {'nes': NES_MASK, 'snes': SNES_MASK}[system]
+        self.button_mask = {'nes': NES_MASK, 'snes': SNES_MASK, 'n64': N64_MASK}[system]
+        self.analog = system == 'n64'
         self.leases = {}
         self.epochs = {p: 0 for p in ports}
         self.neutral = set()
+        self._neutral_last = set()
 
     def clear(self):
         released = list(self.leases)
@@ -53,7 +59,7 @@ class Arbiter:
         self.neutral.add(port)
         item = dict(connection=connection, epoch=self.epochs[port],
                     token=secrets.token_urlsafe(32), expires=now+LEASE_TTL,
-                    seq=-1, mask=0, latch=0, pending=None, leisure=bool(leisure))
+                    seq=-1, mask=0, latch=0, pending=None, leisure=bool(leisure), axes=CENTRED)
         self.leases[port] = item
         result = {'port': port, 'lease': item['token'], 'epoch': item['epoch']}
         if live and old.get('leisure') and not leisure: result['preempted_leisure'] = True
@@ -72,6 +78,8 @@ class Arbiter:
             raise ValueError('unsupported_buttons')
         if data['mask'] & 48 == 48 or data['mask'] & 192 == 192:
             raise ValueError('opposing_directions')
+        if data.get('axes') is not None and not self.analog:
+            raise ValueError('unsupported_axes')
         if item['pending'] is not None:
             # The previous input never reached a frame. Keep its buttons for one frame
             # so a quick tap (press and release in the same frame) is not lost.
@@ -79,7 +87,16 @@ class Arbiter:
             for axis in (48, 192):  # a newer latched direction replaces an older one
                 if item['mask'] & axis: item['latch'] &= ~axis
             item['latch'] |= item['mask']
-        item.update(seq=data['seq'], mask=data['mask'], expires=now+LEASE_TTL, pending=data['seq'])
+        item.update(seq=data['seq'], mask=data['mask'], expires=now+LEASE_TTL, pending=data['seq'],
+                    axes=tuple(data.get('axes') or CENTRED))
+
+    def axes(self):
+        """Live sticks per port, read after frame(): an expired, released or neutral
+        port is absent from leases or was skipped, so it reads centred. Sticks are not
+        latched like buttons: a stick press and release inside one frame (~16 ms) is lost.
+        Accepted: a stick is held to steer, never tapped like Start."""
+        return tuple(self.leases[p]['axes'] if p in self.leases and p not in self._neutral_last else CENTRED
+                     for p in (0, 1))
 
     def frame(self, now):
         masks = [0, 0]; applied = []; expired = []
@@ -98,5 +115,6 @@ class Arbiter:
                                 'mask': mask})
                 item['pending'] = None
         neutral = sorted(self.neutral)
+        self._neutral_last = set(self.neutral)
         self.neutral.clear()
         return masks, applied, sorted(set(expired + neutral))

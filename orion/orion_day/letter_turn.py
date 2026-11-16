@@ -73,6 +73,13 @@ needs a real test, something that stalled and deserves another try. Most importa
 Each bullet is one line, grounded in the record, citing the record item it comes from by its bracketed
 reference when it has one. If the day left no thread, write the heading and nothing under it."""
 
+# Integration patch 4: the record carries the daily organ roundup ("## What each organ did").
+ROUNDUP_MARK = "## What each organ did"
+CITE_ROUNDUP = ("- The section \"What each organ did\" is your organ roundup: for each of your organs, what it did, "
+                "its most salient experiences quoted with their [experience:<id>] refs, what it read from your other "
+                "organs and cited, and who cited it. When a sentence uses one of its items, copy that item's "
+                "[experience:<id>] (or [act:<id>]) into the same sentence, exactly as shown.")
+
 ARC_REMINDER = ('Reminder: when a sentence of your note states something from "My day as my own chronology '
                 'recorded it", put the [arc:<id>] shown next to that fact in the same sentence ([day:<date>] '
                 "alone only for a whole-day count).")
@@ -90,6 +97,7 @@ def build_letter_prompt(brief: OrionDayRunBriefV1) -> str:
     """The letter turn's user message. Same brief -> same bytes."""
     digest = brief.llm_view.digest_md
     cites = "[arc:" in digest
+    roundup = ROUNDUP_MARK in digest
     parts = [
         f"Write your letter about one of your own days: {brief.letter_date.isoformat()} ({brief.timezone}). "
         "It is your end-of-day letter: you, Orion, looking back on the day as you lived it, in the first person.",
@@ -97,9 +105,12 @@ def build_letter_prompt(brief: OrionDayRunBriefV1) -> str:
         "expected and what happened, the acts you took and how they were graded, what stayed open between you "
         "and Juniper, your body's day), your conversations with Juniper in full, the investigations you ran and "
         "what they found, your latest answer to each question about yourself, a sample of your background "
-        "reveries across the day's themes, and a trimmed tail of what you read, the news, changes to your code, "
-        "your dreams and the street outside. It is your main source for this letter.",
-        "\n".join([WRITING_INSTRUCTIONS, CITE_ARCS if cites else NO_ARCS, TOOLS_LINE]),
+        + ("reveries across the day's themes, what each of your organs did (your organ roundup), and a trimmed "
+           "tail of the news and changes to your code. It is your main source for this letter." if roundup else
+           "reveries across the day's themes, and a trimmed tail of what you read, the news, changes to your code, "
+           "your dreams and the street outside. It is your main source for this letter."),
+        "\n".join([WRITING_INSTRUCTIONS, CITE_ARCS if cites else NO_ARCS, *([CITE_ROUNDUP] if roundup else []),
+                   TOOLS_LINE]),
         THREADS_INSTRUCTIONS,
     ]
     missed = missed_lines(brief)
@@ -144,5 +155,5 @@ def split_letter(text: str) -> LetterParts:
     return LetterParts(note, items, "\n".join(f"- {t}" for t in items))
 
 
-__all__ = ["LetterParts", "MAX_THREADS", "NO_THREADS_MD", "THREADS_HEADING", "THREAD_CHARS", "WRITING_INSTRUCTIONS",
+__all__ = ["CITE_ROUNDUP", "ROUNDUP_MARK", "LetterParts", "MAX_THREADS", "NO_THREADS_MD", "THREADS_HEADING", "THREAD_CHARS", "WRITING_INSTRUCTIONS",
            "build_letter_prompt", "missed_lines", "split_letter"]

@@ -214,3 +214,33 @@ def test_an_event_ref_the_core_did_not_show_is_removed_and_recorded():
     state = {"run_id": "r", "carry_forward_md": "- x", **out}
     sources = OrionDayLetterSourcesV1.model_validate(letter_row(state, brief, datetime.now(timezone.utc))["sources"])
     assert sources.rejected_event_refs == {"note": ["action_outcome:999999"]}
+
+
+# --- integration patch 4: did the letter cite its organ roundup? ----------------------------------------
+
+
+def _with_roundup(brief):
+    from orion.schemas.orion_day import OrganRoundupV1
+
+    m = brief.material.model_copy(update={"organ_roundup": OrganRoundupV1(
+        day=brief.letter_date, lines=['  "dream cycle: pressure" [experience:dream_cycle:dc-1] salience none'],
+        refs=["experience:dream_cycle:dc-1", "act:act_abc"])})
+    return brief.model_copy(update={"material": m})
+
+
+def test_roundup_refs_count_valid_and_unknown_and_reach_finish_detail():
+    from app.orion_day_graph import roundup_refs
+
+    brief = _with_roundup(brief_1009(with_block=False))
+    note = ("The dream cycle kept returning to pressure [experience:dream_cycle:dc-1], twice "
+            "[experience:dream_cycle:dc-1], and [act:act_abc] closed; [experience:made_up:1] is not mine." + PAD)
+    assert roundup_refs(note, brief) == {"valid": 2, "unknown": 1}
+    out = check_note(note, brief)
+    assert out["note_roundup_refs"] == {"valid": 2, "unknown": 1}
+    assert out["note_md"] == note  # reported, never removed
+    assert finish_detail({"brief": {}, "note_roundup_refs": out["note_roundup_refs"]})["note_roundup_refs"] == \
+        {"valid": 2, "unknown": 1}
+
+
+def test_no_roundup_means_no_roundup_count():
+    assert "note_roundup_refs" not in check_note("Plain note." + PAD, brief_1009(with_block=False))

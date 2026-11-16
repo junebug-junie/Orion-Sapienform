@@ -70,6 +70,8 @@ path of a file with the full result; read only what you need from that file.
   reminisce write|rewrite <hop> "<note>" because "<refs>"   save one hop (code checks each ref).
   days <start> <end>     what you lived through then (from 2026-07-23): journals, Hub chats,
                          Temporal Self arcs; prints journal:/chat:/arc: ids a lived_record cites.
+  organs <date> [<end>]  what each organ did (yesterday is the usual ask): counts, quotes with
+                         [experience:<id>] refs, cites, breaks, use rate. At most 7 days.
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
   look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
@@ -1743,6 +1745,35 @@ def cmd_days(start: date, end: date, out: Out, runner=None, get_json=None) -> st
     return capped(days.render(read), tail=f"full record (bodies, every entry and chat): {path}")
 
 
+# --- organs (the daily dig roundup) ---------------------------------------------------------
+
+def cmd_organs(start: date, end: date, out: Out, runner=None) -> str:
+    """Read-only: what each registered organ did on each Denver day in [start, end]."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import organs
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+    from orion.integration.organs import load_organs
+
+    try:
+        organs.check_window(start, end)
+    except ValueError as exc:
+        raise DigError(str(exc)) from exc
+    runner = runner or ReadOnlyPsql(timeout_sec=60.0)
+    registry = load_organs()
+    t0 = time.monotonic()
+    days, lines = [], []
+    d = max(start, organs.ROUNDUP_FROM)
+    while d <= end:
+        r = organs.read_sync(d, lambda sql: psql_rows(runner, sql), registry)
+        days.append(dataclasses.asdict(r))
+        lines += r.lines
+        d += timedelta(days=1)
+    took = time.monotonic() - t0
+    path = out.write(f"organs-{start.isoformat()}-{end.isoformat()}", days)
+    return capped(lines, tail=f"read {len(days)} day(s) in {took:.1f} s\n"
+                              f"full roundup (every organ, every line): {path}; `dig arc|act <id>` opens a ref")
+
+
 # --- turn steps -----------------------------------------------------------------------------
 
 def cmd_turn_steps(session_id: str, turns: str, out: Out, runner=None) -> str:
@@ -1892,6 +1923,9 @@ def main(argv: list[str] | None = None) -> int:
                                        out=out)
         elif ns.command == "days" and len(a) == 2:
             text = cmd_days(_parse_day(a[0]), _parse_day(a[1]), out)
+        elif ns.command == "organs" and len(a) in (1, 2):
+            first = _parse_day(a[0])
+            text = cmd_organs(first, _parse_day(a[1]) if len(a) == 2 else first, out)
         elif ns.command == "turn-steps" and len(a) in (1, 2):
             text = cmd_turn_steps(a[0], a[1] if len(a) == 2 else "2", out)
         elif ns.command == "claude-grants" and not a:

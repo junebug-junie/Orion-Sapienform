@@ -30,8 +30,7 @@ organs:
     salience_magnitude:
       reverie_chain: chain_thought_count
     families: [thought.reverie]
-    reads_now: null
-    exempt_read: "not yet migrated: the reverie cue (services/orion-thought/app/temporal_self_cue.py) reads the now in integration patch 3"
+    reads_now: services/orion-thought/app/temporal_self_cue.py
   painting:
     temporal_sources: [visual_run, visual_deferral]
     families: [thought.painting, thought.dream_hop]

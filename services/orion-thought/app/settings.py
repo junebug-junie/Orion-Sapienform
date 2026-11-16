@@ -796,6 +796,18 @@ class ThoughtSettings(BaseSettings):
         1.0, gt=0.0, le=1.5, alias="ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC"
     )
 
+    # --- Integration patch 3: reverie reads Orion's now (app/reverie.py build_reverie_day_cue) ---
+    # Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md (A3/A4). Reverie
+    # reads GET /temporal-self/now?organ=reverie on TEMPORAL_SELF_FRAME_URL (other organs' most salient
+    # experiences since reverie last looked) instead of the closed-arcs block, once per chain, and
+    # posts the thought's cites to POST /temporal-self/now/use at its close. The now off on the server
+    # (404), unreachable, or slower than FETCH_TIMEOUT_SEC -> the closed-arcs block as before, logged
+    # reverie_now_fallback. The same timeout bounds the cites post. Kill switch: false = arcs only.
+    reverie_now_enabled: bool = Field(True, alias="ORION_REVERIE_NOW_ENABLED")
+    reverie_now_fetch_timeout_sec: float = Field(
+        2.0, gt=0.0, le=5.0, alias="ORION_REVERIE_NOW_FETCH_TIMEOUT_SEC"
+    )
+
     # --- Reasoning activity projection (always-on consumer; harmless when idle) ---
     # Consume per-call ReasoningCallV1 telemetry and materialize a rolling-window
     # ReasoningActivityV1 for φ. The buffer is capped (max_calls) so memory is

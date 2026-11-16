@@ -23,6 +23,14 @@ This is what you were doing before now. It may color the thought (a return, a
 contrast, something unfinished) only where it genuinely connects; do not
 recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
 {% endif %}
+{% if orion_now %}
+WHAT THE REST OF YOU LIVED SINCE YOUR LAST REVERIE (your other parts — cameras, readings, curiosity, dreams, body, predictions — from stored records, most salient first):
+{{ orion_now }}
+These are real experiences of yours, not what your attention settled on. If one of them genuinely
+bears on what you are thinking, let it shape the thought and put its id in "cites". Cite only what
+you actually used; an empty cites list is fine. The [experience:...] ids are NOT evidence_refs —
+never put them there.
+{% endif %}
 {% if personality_cue %}
 WHAT YOU KEEP COMING BACK TO (your own record, from stored evidence in your own words — background only):
 {{ personality_cue }}
@@ -78,6 +86,10 @@ attended node, projection_id, mechanism vocabulary.
 REQUIRED JSON FIELDS
 - interpretation: inner speech about the concern text
 - evidence_refs: JSON array of coalition_refs this thought is about (min 1)
+{% if orion_now %}
+- cites: JSON array, at most 3 — the [experience:...] ids above this thought actually used
+  (e.g. ["experience:abc"]), or [] when it used none.
+{% endif %}
 {% if recent_percepts %}
 - expectation: OPTIONAL — one concrete, falsifiable claim about what the room
   camera will show (string, or null if nothing natural to predict). Never a list.
@@ -129,6 +141,14 @@ EARLIER TODAY (your own day record, closed arcs, from stored history — backgro
 This is what you were doing before now. It may color the thought (a return, a
 contrast, something unfinished) only where it genuinely connects; do not
 recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
+{% endif %}
+{% if orion_now %}
+WHAT THE REST OF YOU LIVED SINCE YOUR LAST REVERIE (your other parts — cameras, readings, curiosity, dreams, body, predictions — from stored records, most salient first):
+{{ orion_now }}
+These are real experiences of yours, not what your attention settled on. If one of them genuinely
+bears on what you are thinking, let it shape the thought and put its id in "cites". Cite only what
+you actually used; an empty cites list is fine. The [experience:...] ids are NOT evidence_refs —
+never put them there.
 {% endif %}
 {% if personality_cue %}
 WHAT YOU KEEP COMING BACK TO (your own record, from stored evidence in your own words — background only):
@@ -220,6 +240,10 @@ REQUIRED JSON FIELDS
   Situated, not abstract. Reference the concerns by their meaning.
 - evidence_refs: JSON array — ids (attended node ids / open loop ids) that this
   interpretation is actually about. Minimum 1.
+{% if orion_now %}
+- cites: JSON array, at most 3 — the [experience:...] ids above this thought actually used
+  (e.g. ["experience:abc"]), or [] when it used none.
+{% endif %}
 {% if chain_step and not chain_step.is_final %}
 - next_focus: one sentence — what you want to turn to next in this train of
   thought, or null if there is nothing further worth thinking about it now.

@@ -72,6 +72,36 @@ its original mask; triggers and stick clicks are not SNES buttons. Lease, neutra
 opposing-direction and expiry rules remain the same. SNES does not gain a game
 observer, goal model, atlas or leisure eligibility from being playable.
 
+### N64
+
+N64 uses Mupen64Plus-Next pinned to `6752836de8b224febfd5708444755b77712ac939`, built
+with `HAVE_THR_AL=1 LLE=1` at `/opt/retro/mupen64plus_next.so` (license kept as
+`/opt/retro/Mupen64Plus-Next-LICENSE.txt`; source
+https://github.com/libretro/mupen64plus-libretro-nx/tree/6752836de8b224febfd5708444755b77712ac939).
+The service has no GPU or GL context, so N64 renders in software: Angrylion RDP with
+8 threads and the CXD4 LLE RSP. `libgl1` is in the image only because the core links
+it; this render path never calls it. This core alone gets a log callback (it calls
+one unguarded) and a system/save directory on the container tmpfs (`/tmp/n64`).
+In-game N64 saves live there until the container restarts. Server Save/Load states
+include cartridge save memory, so they are the persistent record (~16.8 MB each;
+N64 saves may be up to 32 MiB).
+
+Measured in the hardened container at 12 CPUs (2026-11-16, 1,800 frames each):
+Mario Kart 64 143 fps, GoldenEye 96, Majora's Mask 89, Ocarina of Time 86; peak RSS
+~200 MB. At 2 CPUs Mario Kart reached 21 fps, so compose gives the service 12 CPUs
+and 1.5 GB.
+
+Catalog `system: "n64"` accepts `.n64`/`.z64`/`.v64` up to 64 MiB; the importer
+infers it from the extension. Angrylion's 640x480 and 640x240 pictures reach the
+browser as the native 320x240 (the media bound stays 512x512).
+
+Input: buttons use the core's standard map (B = N64 A, Y = N64 B, L2 = Z, L/R, Start,
+D-pad; A/X/R2 are its C-button face mode). Select is refused. N64 input may also
+carry `axes: [lx, ly, rx, ry]` in -32767..32767 (left = control stick, right = C
+buttons); omitted reads centred, and every other console refuses `axes`. A neutral,
+released or expired port reads centred. The Hub sorts its dropdown by title and
+labels these games ` (N64)`.
+
 Real-core CI generates an original SNES controller diagnostic, verifies every
 button on both ports through emulated joypad registers, and checks restored input
 and video. No commercial ROM is required by CI:

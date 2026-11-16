@@ -14,11 +14,12 @@ from app.contracts import Start
 def import_rom(catalog, rom, game_id, title, players):
     Start(game_id=game_id, idempotency_key='import')
     suffix = rom.suffix.lower()
-    system = {'.nes': 'nes', '.sfc': 'snes', '.smc': 'snes'}.get(suffix)
-    if system is None: raise ValueError('extract a .nes, .sfc or .smc ROM first')
+    system = {'.nes': 'nes', '.sfc': 'snes', '.smc': 'snes',
+              '.n64': 'n64', '.z64': 'n64', '.v64': 'n64'}.get(suffix)
+    if system is None: raise ValueError('extract a .nes, .sfc, .smc, .n64, .z64 or .v64 ROM first')
     if not title.strip() or len(title) > 128: raise ValueError('invalid title')
     if players not in (1, 2): raise ValueError('players must be 1 or 2')
-    if not 0 < rom.stat().st_size <= 32 * 1024 * 1024: raise ValueError('invalid ROM size')
+    if not 0 < rom.stat().st_size <= 64 * 1024 * 1024: raise ValueError('invalid ROM size')
     data = rom.read_bytes()
     sha = hashlib.sha256(data).hexdigest()
     catalog = catalog.resolve()

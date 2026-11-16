@@ -46,9 +46,9 @@ from orion.personality.graph import (
     apply_fade,
     apply_namings,
     choice_direction,
+    choice_excerpt,
     evidence_weight,
     fold,
-    pair_label,
 )
 from orion.personality.naming import grounding
 from orion.personality.relabel import choice_sides
@@ -139,9 +139,11 @@ def choice_evidence(c: PersonalityChoiceV1, vectors: dict[str, Optional[list[flo
     }
     if c.situation:
         meta["choice_situation"] = dict(c.situation)
+    # A decline of every option is labelled with its lane ("Prime waits instead of acting"), not "no move".
+    excerpt = choice_excerpt(c.lane, c.declined_all or c.chosen is None, chosen, declined)
     return Evidence(
         evidence_id=f"{EVIDENCE_PREFIX}{c.choice_id}", lane=c.lane, source_ref=c.act_id or c.choice_id,
-        occurred_at=utc(c.occurred_at), excerpt=pair_label(chosen, declined), embedding=direction or [],
+        occurred_at=utc(c.occurred_at), excerpt=excerpt, embedding=direction or [],
         weight=evidence_weight(c.chosen_market_rank, declined_all=c.declined_all, care_promoted=c.care_promoted,
                                picks_in_decision=c.picks_in_decision),
         meta=meta, text="\n".join([chosen, *declined]),

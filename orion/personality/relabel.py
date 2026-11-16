@@ -6,8 +6,9 @@ quoted title stands alone) reach a tendency only when it gets another choice, an
 1-of-1. This module rebuilds a label the way the reducer would have built it under the CURRENT rules,
 from the node's own evidence:
 
-* each evidence row's excerpt is remade with the current ``pair_label`` from the stored choice
-  (``personality_choice``): chosen text and declined texts in shown order (``choice_sides``). A Prime
+* each evidence row's excerpt is remade with the current ``choice_excerpt`` from the stored choice
+  (``personality_choice``): chosen text and declined texts in shown order (``choice_sides``); a decline of
+  every option reads as its lane's decline label ("Prime waits instead of acting"). A Prime
   option text from before 2026-11-15 is first remade with Prime's current ``option_text`` (subject first);
   that rewrite is a fixed point on current texts;
 * the founding choice is the base, at ``match_threshold`` similarity (``_Tick.create``);
@@ -36,9 +37,9 @@ from orion.personality.graph import (
     ORIGIN_CHOICE,
     GraphParams,
     category_led,
+    choice_excerpt,
     choice_label,
     decline_text,
-    pair_label,
 )
 
 # Every non-retired choice node. Both SQL texts take no parameters, so psycopg and asyncpg run them as is.
@@ -81,7 +82,8 @@ def choice_sides(lane: str, declined_all: bool, chosen_text: Optional[str],
 
 
 def excerpt_from_choice_row(row: Mapping[str, Any]) -> Optional[str]:
-    """The current ``pair_label`` of a stored ``personality_choice`` row; None when the row is missing."""
+    """The current label text of a stored ``personality_choice`` row (``choice_excerpt``: the lane's decline
+    label for a decline of every option, else ``pair_label``); None when the row is missing."""
     if not row.get("choice_id"):
         return None
     chosen = _obj(row.get("chosen"))
@@ -95,8 +97,9 @@ def excerpt_from_choice_row(row: Mapping[str, Any]) -> Optional[str]:
         # rewrites them deterministically; a text already in the current form passes through unchanged.
         chosen_text = _prime_text(chosen_text) if chosen_text is not None else None
         pairs = [(_prime_text(t), r) for t, r in pairs]
-    c, declined = choice_sides(lane, bool(row.get("declined_all")), chosen_text, pairs)
-    return pair_label(c, declined)
+    declined_all = bool(row.get("declined_all")) or chosen_text is None
+    c, declined = choice_sides(lane, declined_all, chosen_text, pairs)
+    return choice_excerpt(lane, declined_all, c, declined)
 
 
 def _prime_text(text: str) -> str:
@@ -114,6 +117,7 @@ class Member:
     excerpt: str  # remade with the current label maker (stored excerpt when the choice row is gone)
     takes_label: bool = True  # False: a Juniper-"no" absorb or an own-name echo (never the label)
     remade: bool = True  # False: the choice row was missing, the stored excerpt is used
+    decline_lane: str = ""  # the lane of a decline of every option ("" for any other choice)
 
 
 @dataclass(frozen=True)
@@ -165,7 +169,8 @@ def members_from_rows(rows: Iterable[Mapping[str, Any]]) -> dict[str, list[Membe
             evidence_id=str(r["evidence_id"]),
             similarity=float(r["similarity"]) if r.get("similarity") is not None else None,
             excerpt=remade if remade is not None else str(r.get("excerpt") or ""),
-            takes_label=takes, remade=remade is not None))
+            takes_label=takes, remade=remade is not None,
+            decline_lane=str(r.get("lane") or "") if r.get("choice_id") and r.get("declined_all") else ""))
     return out
 
 
@@ -190,6 +195,11 @@ def plan_relabel(nodes: Iterable[Mapping[str, Any]], evidence: Iterable[Mapping[
         missing = sum(1 for m in members if not m.remade)
         if missing:
             anomalies.append(f"choice_rows_missing:{missing}")
+        decline_lanes = sorted({m.decline_lane for m in members if m.decline_lane})
+        if len(decline_lanes) > 1:
+            # Declines from several lanes in one node (before 2026-11-16 they could fold together): the label
+            # names only one lane. Reported, never split here.
+            anomalies.append("decline_lanes:" + "+".join(decline_lanes))
         if len(members) != int(n.get("evidence_count") or 0):
             anomalies.append(f"evidence_rows:{len(members)}_vs_count:{int(n.get('evidence_count') or 0)}")
         label, sim, base_id = replay_label(members, evidence_count=int(n.get("evidence_count") or 0),

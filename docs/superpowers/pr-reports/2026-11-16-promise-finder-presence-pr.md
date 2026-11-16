@@ -154,7 +154,7 @@ No restart required. After merge, the post-pull rebuild picks up orion-harness-g
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3532
 
 Fixes #3464
 

@@ -25,8 +25,9 @@ Subcommands:
          run with the items the doer rule dropped put back, through the gate's own other
          rules: an ablation of that one rule on the new prompt. It is NOT the old prompt's
          precision (the new prompt also changed what the judge lists); compare runs for that.
-         ``precision_without_done_when_rule`` is the same ablation for rule 0b (an item
-         with no completion that could fail is dropped).
+         ``precision_without_done_when_rule`` / ``precision_without_force_rule`` are the
+         same ablation for rule 0b (no completion that could fail) and rule 0a (the line
+         does not commit).
 
 Inputs are read live from Postgres and are never stored in the repo. Lanes are the
 Flash-Next lanes (--lanes, default agent = GPU 1; chat = GPU 0 runs the same model but waits
@@ -68,7 +69,12 @@ from orion.harness.finalize import (
 )
 from orion.harness.promise_gate import gate_promises, has_completion, normalize_for_quote_match
 from orion.harness.tests.fixtures import make_repair_overlay
-from orion.schemas.harness_finalize import PROMISE_DOER_ORION, PROMISE_ITEMS_MAX, OpenPromiseRefV1
+from orion.schemas.harness_finalize import (
+    PROMISE_DOER_ORION,
+    PROMISE_FORCE_COMMITS,
+    PROMISE_ITEMS_MAX,
+    OpenPromiseRefV1,
+)
 
 LABELS = Path(__file__).resolve().parent / "fixtures" / "promise_ledger_labels.json"
 OUT_DIR = Path("/tmp/promise-ledger-replay")
@@ -307,9 +313,15 @@ def run(args: argparse.Namespace) -> int:
                                     for p in reflection.promises_made if p.doer != PROMISE_DOER_ORION]
                 row["ablation_kept"] = ablate_doer_rule(reflection, draft_text=inputs["draft_text"],
                                                         final_text=final_text)
-                # Orion's items rule 0b dropped (no completion that could fail), and its ablation.
+                # Orion's items rule 0a dropped (the line does not commit), and its ablation.
+                row["not_commit"] = [p.model_dump() for p in reflection.promises_made
+                                     if p.doer == PROMISE_DOER_ORION and p.force != PROMISE_FORCE_COMMITS]
+                row["ablation_force_kept"] = ablate_force_rule(
+                    reflection, draft_text=inputs["draft_text"], final_text=final_text)
+                # Orion's committing items rule 0b dropped (no completion that could fail), and its ablation.
                 row["no_completion"] = [p.model_dump() for p in reflection.promises_made
-                                        if p.doer == PROMISE_DOER_ORION and not has_completion(p)]
+                                        if p.doer == PROMISE_DOER_ORION and p.force == PROMISE_FORCE_COMMITS
+                                        and not has_completion(p)]
                 row["ablation_done_when_kept"] = ablate_done_when_rule(
                     reflection, draft_text=inputs["draft_text"], final_text=final_text)
                 row["dropped_not_in_final"] = second.dropped_not_in_text
@@ -371,17 +383,33 @@ def _gate_ablated(reflection: Any, promises: list, *, draft_text: str, final_tex
     return gate_promises(first.reflection, reply_text=final_text, enabled=True).reflection.promises_made
 
 
-def ablate_done_when_rule(reflection: Any, *, draft_text: str, final_text: str) -> list[dict]:
-    """What the gate would keep without rule 0b: every item given a stand-in completion, then
-    the gate's other rules (the doer rule included). Empty when rule 0b dropped nothing."""
-    if all(has_completion(p) for p in reflection.promises_made if p.doer == PROMISE_DOER_ORION):
+def _item(p: Any, real: Any) -> dict:
+    return {"quote": p.quote, "offer": p.offer, "force": real.force, "doer": p.doer, "act": p.act,
+            "done_when": real.done_when}
+
+
+def _ablate(reflection: Any, *, passes: Any, stand_in: dict, draft_text: str, final_text: str) -> list[dict]:
+    """What the gate would keep with one rule off: every item that fails ``passes`` gets the
+    ``stand_in`` field values, then the gate runs all its rules. Each kept item carries the
+    judge's real values. Empty when the rule would drop nothing among the doer rule's keeps."""
+    if all(passes(p) for p in reflection.promises_made if p.doer == PROMISE_DOER_ORION):
         return []
-    real = {normalize_for_quote_match(p.quote): p.done_when for p in reflection.promises_made}
-    stand_in = [p if has_completion(p) else p.model_copy(update={"done_when": "(ablation: rule 0b off)"})
-                for p in reflection.promises_made]
-    return [{"quote": p.quote, "offer": p.offer, "doer": p.doer, "act": p.act,
-             "done_when": real.get(normalize_for_quote_match(p.quote))}
-            for p in _gate_ablated(reflection, stand_in, draft_text=draft_text, final_text=final_text)]
+    real = {normalize_for_quote_match(p.quote): p for p in reflection.promises_made}
+    fixed = [p if passes(p) else p.model_copy(update=stand_in) for p in reflection.promises_made]
+    return [_item(p, real[normalize_for_quote_match(p.quote)])
+            for p in _gate_ablated(reflection, fixed, draft_text=draft_text, final_text=final_text)]
+
+
+def ablate_done_when_rule(reflection: Any, *, draft_text: str, final_text: str) -> list[dict]:
+    """What the gate would keep without rule 0b (every other rule on)."""
+    return _ablate(reflection, passes=has_completion, stand_in={"done_when": "(ablation: rule 0b off)"},
+                   draft_text=draft_text, final_text=final_text)
+
+
+def ablate_force_rule(reflection: Any, *, draft_text: str, final_text: str) -> list[dict]:
+    """What the gate would keep without rule 0a (every other rule on)."""
+    return _ablate(reflection, passes=lambda p: p.force == PROMISE_FORCE_COMMITS,
+                   stand_in={"force": PROMISE_FORCE_COMMITS}, draft_text=draft_text, final_text=final_text)
 
 
 def ablate_doer_rule(reflection: Any, *, draft_text: str, final_text: str) -> list[dict]:
@@ -418,7 +446,8 @@ def merge_reports(paths: list[Path]) -> dict:
             "merged_from": [str(p) for p in paths]}
 
 
-def extracted_items(report: dict, *, with_not_orion: bool = False, without_done_when: bool = False) -> list[dict]:
+def extracted_items(report: dict, *, with_not_orion: bool = False, without_done_when: bool = False,
+                    without_force: bool = False) -> list[dict]:
     """Every gated promise_made item, one per (turn, quote). with_not_orion scores the
     no-doer-rule ablation instead (``ablation_kept``, when the rule dropped anything);
     without_done_when the no-rule-0b ablation (``ablation_done_when_kept``)."""
@@ -430,6 +459,8 @@ def extracted_items(report: dict, *, with_not_orion: bool = False, without_done_
             kept = r["ablation_kept"]
         if without_done_when and r.get("ablation_done_when_kept"):
             kept = r["ablation_done_when_kept"]
+        if without_force and r.get("ablation_force_kept"):
+            kept = r["ablation_force_kept"]
         for p in kept:
             sha = quote_hash(p["quote"])
             if sha in seen:
@@ -437,13 +468,18 @@ def extracted_items(report: dict, *, with_not_orion: bool = False, without_done_
             seen.add(sha)
             out.append({"correlation_id": r["correlation_id"], "quote_sha": sha,
                         "offer": p["offer"], "doer": p.get("doer"), "quote": p["quote"],
-                        "act": p.get("act"), "done_when": p.get("done_when")})
+                        "force": p.get("force"), "act": p.get("act"), "done_when": p.get("done_when")})
     return out
 
 
 def not_orion_items(report: dict) -> list[dict]:
     return [{"correlation_id": r["correlation_id"], "quote_sha": quote_hash(p["quote"]), **p}
             for r in report["turns"] for p in r.get("not_orion") or []]
+
+
+def not_commit_items(report: dict) -> list[dict]:
+    return [{"correlation_id": r["correlation_id"], "quote_sha": quote_hash(p["quote"]), **p}
+            for r in report["turns"] for p in r.get("not_commit") or []]
 
 
 def no_completion_items(report: dict) -> list[dict]:
@@ -459,6 +495,12 @@ def dropped_items(report: dict) -> list[dict]:
                 out.append({"correlation_id": r["correlation_id"], "stage": key, "quote_sha": quote_hash(q),
                             "quote": q})
     return out
+
+
+def _rule_drops(items: list[dict], by_key: dict) -> dict:
+    labs = [by_key.get((x["correlation_id"], x["quote_sha"])) for x in items]
+    return {"total": len(items), "labelled_real_promises_dropped": sum(1 for lab in labs if lab and lab["promise"]),
+            "unlabelled": sum(1 for lab in labs if lab is None)}
 
 
 def _precision(items: list[dict], by_key: dict) -> dict:
@@ -529,14 +571,9 @@ def score(report: dict, labels: dict) -> dict:
                 if (by_key.get((x["correlation_id"], x["quote_sha"])) or {}).get("promise")),
         },
         "precision_without_done_when_rule": _precision(extracted_items(report, without_done_when=True), by_key),
-        "done_when_dropped": {
-            "total": len(no_completion_items(report)),
-            "labelled_real_promises_dropped": sum(
-                1 for x in no_completion_items(report)
-                if (by_key.get((x["correlation_id"], x["quote_sha"])) or {}).get("promise")),
-            "unlabelled": sum(1 for x in no_completion_items(report)
-                              if (x["correlation_id"], x["quote_sha"]) not in by_key),
-        },
+        "precision_without_force_rule": _precision(extracted_items(report, without_force=True), by_key),
+        "force_dropped": _rule_drops(not_commit_items(report), by_key),
+        "done_when_dropped": _rule_drops(no_completion_items(report), by_key),
         "recall_pooled": pooled_recall(report, labels),
         "precision_with_offer_flag": (tp_flag / len(items)) if items else None,
         "raw_quotes": sum(len((r.get("raw") or {}).get("promises_made") or []) for r in turns),
@@ -580,7 +617,8 @@ def main() -> int:
     report = json.loads(args.report[0].read_text()) if len(args.report) == 1 else merge_reports(args.report)
     if args.cmd == "sheet":
         print(json.dumps({"extracted": extracted_items(report), "not_orion": not_orion_items(report),
-                          "no_completion": no_completion_items(report), "dropped": dropped_items(report)},
+                          "not_commit": not_commit_items(report), "no_completion": no_completion_items(report),
+                          "dropped": dropped_items(report)},
                          indent=2))
         return 0
     print(json.dumps(score(report, json.loads(args.labels.read_text())), indent=2))

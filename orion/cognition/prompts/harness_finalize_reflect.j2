@@ -142,6 +142,17 @@ PROMISES (independent of alignment_verdict; does not change it)
   pieces. A quote that is not in draft_text is thrown away.
 - offer: true when the commitment waits for Juniper's yes ("if you want, I'll...",
   "want me to...?", "I can... if you'd like"). false when Orion just commits.
+- force: what the quoted line does. Read it as a speech act, not by its words.
+  - "commits": it binds Orion to a future act; Juniper could later say "you said you
+    would". An offer that waits for Juniper's yes commits too.
+  - "reports": it tells what was already done or is under way in this reply ("I filed
+    it in the queue").
+  - "predicts": it says what will happen, without binding anyone to do it.
+  - "suggests": it advises what should be done, by anyone ("best to try the small
+    model first").
+  - "wishes": it voices a feeling, hope, liking, or a maybe for some day ("I'd enjoy
+    trying that sometime").
+  Plain code keeps only items with force "commits".
 - doer: who carries out the future act in the quote. Read the grammar: who is the
   subject of the future verb?
   - "orion": Orion does it, alone or together with Juniper ("we'll"). A scheduled
@@ -207,7 +218,7 @@ REQUIRED JSON FIELDS (exactly these keys, in this order; no others)
 - recommended_tool: string or null (see TOOL RECOMMENDATION above)
 - recommended_tool_reason: string or null, max 300 chars
 {% if promise_ledger %}
-- promises_made: JSON array of {"quote": string, "offer": boolean, "doer": "orion" | "juniper" | "someone_else" | "a_system", "act": string, "done_when": string or null} (see PROMISES above)
+- promises_made: JSON array of {"quote": string, "offer": boolean, "force": "commits" | "reports" | "predicts" | "suggests" | "wishes", "doer": "orion" | "juniper" | "someone_else" | "a_system", "act": string, "done_when": string or null} (see PROMISES above)
 - offers_accepted: JSON array of strings (see PROMISES above)
 - promises_kept: JSON array of ids (see PROMISES above)
 {% endif %}

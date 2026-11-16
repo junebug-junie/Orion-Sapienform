@@ -1,13 +1,17 @@
 """Intention ledger D0: plain-code gate on the 5b judge's promise fields.
 
 The judge names promises; this module decides which of them are real. Nothing here is a
-model call or a word list. Five rules (docs/superpowers/specs/2026-11-11-intention-ledger-design.md):
+model call or a word list. Six rules (docs/superpowers/specs/2026-11-11-intention-ledger-design.md):
 
 0. A ``promises_made`` item must name Orion as the one who does the act
    (``PromiseV1.doer == "orion"``). The judge classifies every item it lists; an ask for
    Juniper to act, a hand-off to someone else, and a forecast about a system are dropped
    here, before the cap, so they cannot crowd out a real promise. A missing or unknown
    doer is dropped too (fail closed).
+0a. A ``promises_made`` item must commit (``PromiseV1.force == "commits"``, offers
+   included). The judge names each item's speech act (Searle's illocutionary point); a
+   report of an act already done, a prediction, a suggestion and a wish are dropped here,
+   before the cap. A missing or unknown force is dropped too (fail closed).
 0b. A ``promises_made`` item must have a completion that could fail to happen
    (``PromiseV1.done_when``: what a later reply or run would show when the act is done). The
    judge writes null when nothing Orion later does could break the line: a presence or
@@ -40,6 +44,8 @@ from orion.schemas.harness_finalize import (
     PROMISE_DONE_WHEN_MIN_CHARS,
     PROMISE_DOER_ORION,
     PROMISE_DOERS,
+    PROMISE_FORCE_COMMITS,
+    PROMISE_FORCES,
     PROMISE_ITEMS_MAX,
     PROMISE_QUOTE_MAX_CHARS,
     FinalizeReflectionV1,
@@ -88,6 +94,8 @@ class PromiseGateResult:
     dropped_not_in_text: list[str] = field(default_factory=list)
     # Items whose doer is not Orion, as (doer, quote); doer None = the judge gave none.
     dropped_not_orion: list[tuple[str | None, str]] = field(default_factory=list)
+    # Orion's items that do not commit, as (force, quote); force None = the judge gave none.
+    dropped_not_commit: list[tuple[str | None, str]] = field(default_factory=list)
     # Orion's items with no completion that could fail (done_when null or a placeholder).
     dropped_no_completion: list[str] = field(default_factory=list)
     dropped_too_long: int = 0
@@ -98,7 +106,8 @@ class PromiseGateResult:
 
     @property
     def dropped_total(self) -> int:
-        return (len(self.dropped_not_in_text) + len(self.dropped_not_orion) + len(self.dropped_no_completion)
+        return (len(self.dropped_not_in_text) + len(self.dropped_not_orion) + len(self.dropped_not_commit)
+                + len(self.dropped_no_completion)
                 + self.dropped_too_long + self.dropped_too_short
                 + len(self.dropped_unknown_offer)
                 + len(self.dropped_unknown_kept) + self.dropped_over_cap)
@@ -131,6 +140,7 @@ def coerce_promise_fields(raw: dict[str, Any]) -> dict[str, Any]:
             doer = item.get("doer")
             made.append(PromiseV1(quote=item["quote"], offer=item.get("offer") is True,
                                   doer=doer if doer in PROMISE_DOERS else None,
+                                  force=item.get("force") if item.get("force") in PROMISE_FORCES else None,
                                   act=_opt_str(item.get("act")), done_when=_opt_str(item.get("done_when"))))
     accepted = [x for x in _list("offers_accepted") if isinstance(x, str)]
     kept = [x for x in _list("promises_kept") if isinstance(x, str)]
@@ -146,7 +156,7 @@ def gate_promises(
     enabled: bool | None = None,
     correlation_id: str = "",
 ) -> PromiseGateResult:
-    """Apply the five rules. Returns a copy of the reflection with only surviving entries."""
+    """Apply the six rules. Returns a copy of the reflection with only surviving entries."""
     if enabled is None:
         enabled = promise_ledger_enabled()
     if not enabled:
@@ -159,6 +169,9 @@ def gate_promises(
     for promise in reflection.promises_made:
         if promise.doer != PROMISE_DOER_ORION:
             result.dropped_not_orion.append((promise.doer, promise.quote))
+            continue
+        if promise.force != PROMISE_FORCE_COMMITS:
+            result.dropped_not_commit.append((promise.force, promise.quote))
             continue
         if not has_completion(promise):
             result.dropped_no_completion.append(promise.quote)
@@ -205,10 +218,11 @@ def gate_promises(
     if result.dropped_total or made or accepted or kept:
         logger.info(
             "promise_gate corr=%s made=%d offers=%d accepted=%d kept=%d dropped_not_in_text=%d dropped_not_orion=%d "
-            "dropped_no_completion=%d "
+            "dropped_not_commit=%d dropped_no_completion=%d "
             "dropped_too_long=%d dropped_too_short=%d dropped_unknown_offer=%d dropped_unknown_kept=%d dropped_over_cap=%d",
             correlation_id, len(made), sum(1 for p in made if p.offer), len(accepted), len(kept),
-            len(result.dropped_not_in_text), len(result.dropped_not_orion), len(result.dropped_no_completion),
+            len(result.dropped_not_in_text), len(result.dropped_not_orion), len(result.dropped_not_commit),
+            len(result.dropped_no_completion),
             result.dropped_too_long, result.dropped_too_short, len(result.dropped_unknown_offer),
             len(result.dropped_unknown_kept), result.dropped_over_cap,
         )

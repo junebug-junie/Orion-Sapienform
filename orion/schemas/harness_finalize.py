@@ -79,6 +79,13 @@ PROMISE_QUOTE_MAX_CHARS = 240
 PromiseDoer = Literal["orion", "juniper", "someone_else", "a_system"]
 PROMISE_DOERS: tuple[str, ...] = get_args(PromiseDoer)
 PROMISE_DOER_ORION = "orion"
+# What the quoted line does, as a speech act (Searle's illocutionary point): binds Orion to
+# a future act (commits; offers included), or states what was done (reports), what will
+# happen (predicts), what someone should do (suggests), or what Orion feels or hopes
+# (wishes). The gate keeps only PROMISE_FORCE_COMMITS.
+PromiseForce = Literal["commits", "reports", "predicts", "suggests", "wishes"]
+PROMISE_FORCES: tuple[str, ...] = get_args(PromiseForce)
+PROMISE_FORCE_COMMITS = "commits"
 # A done_when shorter than this is a placeholder ("n/a", "none"), not a completion test.
 PROMISE_DONE_WHEN_MIN_CHARS = 12
 
@@ -110,6 +117,10 @@ class PromiseV1(BaseModel):
     # Who does the act. None on rows written before the field existed (they were gated without
     # it). The gate drops every item whose doer is not "orion", so a stored promise is Orion's.
     doer: PromiseDoer | None = None
+    # The line's speech act. None on rows written before the field existed. The gate drops
+    # every item that does not commit (a recommendation, a wish, a report of an act already
+    # done), so a stored promise commits.
+    force: PromiseForce | None = None
     # What Orion will do, in the judge's words. None on rows written before the field existed.
     act: str | None = None
     # What a later reply or run would show when the act is done. None: the judge found no

@@ -112,6 +112,7 @@ from .energy_stakes_gate import (
     hold_attention_row,
 )
 from .curiosity_replica_plan import plan_offer
+from .curiosity_now import CuriosityNow
 from orion.curiosity.register import (
     CORPUS_CYPHER as REGISTER_CORPUS_CYPHER,
     corpus_items as register_corpus_items,
@@ -981,6 +982,11 @@ class CuriosityInvestigation:
         # under the same deadline. Off here so bare constructions in tests never touch
         # the network; settings ship it off since personality rev 3 R0 (HUB_PERSONALITY_CUE_ENABLED).
         personality_cue_enabled: bool = False,
+        # --- Orion's now (integration patch 3, scripts/curiosity_now.py) ---
+        # GET `durable_runs_url` /temporal-self/now?organ=curiosity at kickoff (both lines) and
+        # POST /temporal-self/now/use with the turn's [experience:<id>] cites at its end. Off here so
+        # bare constructions in tests never touch the network; settings ship it on (HUB_CURIOSITY_NOW_ENABLED).
+        now_enabled: bool = False,
         # --- Orion's Day corrections (orion/orion_day/corrections.py) ------
         # The regular investigate line, on a writable graph only: claims up to
         # MAX_CORRECTIONS_PER_RUN recorded letter corrections once, shows them
@@ -1154,6 +1160,8 @@ class CuriosityInvestigation:
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         self.temporal_self_fact_enabled = bool(temporal_self_fact_enabled)
         self.personality_cue_enabled = bool(personality_cue_enabled)
+        self._now = CuriosityNow(enabled=now_enabled, durable_runs_url=durable_runs_url,
+                                 pool_provider=pool_provider)
         self.orion_day_corrections_enabled = bool(orion_day_corrections_enabled)
         self.focus_enabled = bool(focus_enabled)
         # Other Hub loops that want terminal durable-run states without a second
@@ -1574,6 +1582,32 @@ class CuriosityInvestigation:
         self._register_tasks.add(task)
         task.add_done_callback(self._register_tasks.discard)
         task.add_done_callback(lambda _t: self._register_inflight.discard(run_id))
+
+    # Orion's now (scripts/curiosity_now.py). Class-level so a loop built without __init__ (tests) reads
+    # no now and records no cites, instead of failing.
+    _now: Optional[CuriosityNow] = None
+
+    async def _read_now(self, run_id: str):
+        """Orion's now for this run's kickoff, or None. Never raises, bounded by the reader's timeout."""
+        reader = self._now
+        if reader is None:
+            return None
+        try:
+            return await reader.read_for_kickoff(run_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.info("curiosity_now_unavailable run=%s err=%s", run_id, exc)
+            return None
+
+    def _schedule_now_cites(self, run_id: str, source_tag: str, text: Optional[str]) -> None:
+        """POST the turn's [experience:<id>] cites in the background (integration patch 3). Only the two
+        curiosity lines' finished turns; never blocks or fails the turn."""
+        reader = self._now
+        if reader is None or not reader.enabled or not text or source_tag not in (SELF_INQUIRY_TAG, INVESTIGATION_TAG):
+            return
+        task = asyncio.create_task(reader.record_turn_cites(run_id, text))
+        tasks = self.__dict__.setdefault("_now_tasks", set())
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
 
     async def _record_finding_register(self, run_id: str, source_tag: str, text: str,
                                        started_at: Optional[datetime]) -> None:
@@ -2826,8 +2860,9 @@ class CuriosityInvestigation:
         open_lived_questions = await self._read_open_lived_questions(run_id)
         # Both durable-runs reads at once: each is bounded by TEMPORAL_SELF_FACT_TIMEOUT_SEC
         # and neither ever raises, so the kickoff waits for the slower one only.
-        today_fact, personality_cue = await asyncio.gather(
-            self._read_today_fact(view, now), self._read_personality_cue(now)
+        # Orion's now joins the same wait (integration patch 3): after the offer row, which carries its shown_id.
+        today_fact, personality_cue, now_read = await asyncio.gather(
+            self._read_today_fact(view, now), self._read_personality_cue(now), self._read_now(run_id)
         )
         prompt = build_kickoff_prompt(
             material,
@@ -2852,6 +2887,7 @@ class CuriosityInvestigation:
             personality_cue=personality_cue.text or None,
             focus=focus,
             consult_outcomes=consult_outcomes,
+            now=now_read,
         )
         logger.info("curiosity_personality_cue run=%s %s", run_id, cue_status(personality_cue))
         if today_fact:
@@ -2965,6 +3001,7 @@ class CuriosityInvestigation:
                 )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
                 self._schedule_finding_register(run_id, INVESTIGATION_TAG, text, turn_started_at)
+                self._schedule_now_cites(run_id, INVESTIGATION_TAG, text)
                 await self._stamp_corrections(run_id)
                 await self._stamp_consult_beliefs(run_id)
                 await self._stamp_focus(run_id, turn_ok=bool(text))
@@ -3857,6 +3894,8 @@ class CuriosityInvestigation:
         previous_stamp = await self._read_cooldown_stamp(LINE_SELF_INQUIRY)
         await self._record_investigation(now, run_id, LINE_SELF_INQUIRY)
         await self._record_self_inquiry_decision(run_id)
+        # After the decision row, which carries the shown_id (integration patch 3).
+        now_read = await self._read_now(run_id)
 
         logger.info(
             "curiosity_self_inquiry_starting run=%s definitions=%s self_priors=%s/%s "
@@ -3895,6 +3934,7 @@ class CuriosityInvestigation:
             question=picked,
             previous_lived=previous_lived,
             senses=senses,
+            now=now_read,
         )
         # Claim is unset at kickoff (Orion has not chosen). Continuation note
         # rides on Mind; the SelfDefinition / HelpRequest teach stays on the
@@ -4049,6 +4089,7 @@ class CuriosityInvestigation:
                 if measured:
                     await self._spend_turn_ended(run_id, turn_ok=bool(text))
                 self._schedule_finding_register(run_id, SELF_INQUIRY_TAG, text, turn_started_at)
+                self._schedule_now_cites(run_id, SELF_INQUIRY_TAG, text)
         except asyncio.CancelledError:
             await self._refund_investigation(previous_stamp, LINE_SELF_INQUIRY)
             raise
@@ -5903,6 +5944,7 @@ class CuriosityInvestigation:
                     )
                 # After the fit hop, in the background: the turn result never waits on the judge.
                 self._schedule_finding_register(request.run_id, request.source_tag, text, turn_started_at)
+                self._schedule_now_cites(request.run_id, request.source_tag, text)
                 return CuriosityTurnResultV1(
                     run_id=request.run_id,
                     correlation_id=request.correlation_id,

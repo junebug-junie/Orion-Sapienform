@@ -19,6 +19,7 @@ import re
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
+from orion.curiosity.now_section import format_now_section
 from orion.curiosity.self_question_pool import Family, SelfQuestion
 from orion.curiosity.kickoff_prompt import (
     DIG_HELP_FIRST,
@@ -506,10 +507,12 @@ def build_self_inquiry_prompt(
     question: Optional[SelfQuestion] = None,
     previous_lived: Optional[PreviousLivedAnswer] = None,
     senses: Sequence[str] = (),
+    now=None,
 ) -> str:
     """Assemble the whole invitation. Same three graph states as
     `build_kickoff_prompt`, same gating: read sections on `graph_enabled`,
-    write sections on readability."""
+    write sections on readability. ``now`` (``TemporalNowV1``): Orion's now for
+    the curiosity organ (integration patch 3), after the senses; None renders nothing."""
     view = view or WorldviewSnapshot()
     writable = graph_enabled and not view.is_unavailable and bool(run_id)
     family: Family = question.family if question is not None else "anatomy"
@@ -538,6 +541,7 @@ def build_self_inquiry_prompt(
 
     lines += _records_section(ledger, repo_root=repo_root, family=family)
     lines += _senses_section(senses)
+    lines += format_now_section(now)
     lines += _access_section(
         dig_kit=False,  # the records section already shows the dig kit
         own_graph=own_graph,

@@ -1171,6 +1171,13 @@ class Settings(BaseSettings):
     HUB_READING_EVENT_WANTS_ENABLED: bool = Field(default=True, alias="HUB_READING_EVENT_WANTS_ENABLED")
     HUB_READING_EVENT_WANTS_TICK_SEC: float = Field(default=300.0, alias="HUB_READING_EVENT_WANTS_TICK_SEC")
     HUB_READING_EVENT_WANTS_LOOKBACK_SEC: float = Field(default=10800.0, alias="HUB_READING_EVENT_WANTS_LOOKBACK_SEC")
+    # Curiosity event wants step 3 (scripts/curiosity_event_wants.py): a new philosophical finding
+    # (curiosity_finding_register) whose novelty is in the top tenth of the last 30 days of philosophical
+    # findings posts an event want (family hub.curiosity_finding, event_ref curiosity_run:<run_id>). Shadow;
+    # Prime reads the funded ones. Lookback = the family's 12 h window.
+    HUB_CURIOSITY_EVENT_WANTS_ENABLED: bool = Field(default=True, alias="HUB_CURIOSITY_EVENT_WANTS_ENABLED")
+    HUB_CURIOSITY_EVENT_WANTS_TICK_SEC: float = Field(default=300.0, alias="HUB_CURIOSITY_EVENT_WANTS_TICK_SEC")
+    HUB_CURIOSITY_EVENT_WANTS_LOOKBACK_SEC: float = Field(default=43200.0, alias="HUB_CURIOSITY_EVENT_WANTS_LOOKBACK_SEC")
     # Self-monitor E2 (scripts/self_monitor_questions.py): a faculty newly held broken/unreliable in
     # orion:self_monitor:latest mints ONE self-question (curiosity_self_questions, minted_by='orion'),
     # once per status episode; last-seen statuses persist in Redis. Unknown/stale state: nothing.
@@ -1324,6 +1331,11 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED"
     )
+    # Orion's now (integration patch 3, scripts/curiosity_now.py): both curiosity lines read
+    # HUB_CURIOSITY_DURABLE_RUNS_URL /temporal-self/now?organ=curiosity at kickoff (other organs' most
+    # salient experiences, citable as [experience:<id>]) and POST the turn's cites (at most 3) to
+    # /temporal-self/now/use at its end. No section and no post on any failure.
+    HUB_CURIOSITY_NOW_ENABLED: bool = Field(default=True, alias="HUB_CURIOSITY_NOW_ENABLED")
     # Personality graph read-back (spec rev 2, orion/personality/cue.py): what Orion keeps coming
     # back to, in Orion's own words -- a record, not an instruction. Read from
     # HUB_CURIOSITY_DURABLE_RUNS_URL /personality/frame into the curiosity kickoff (concurrently

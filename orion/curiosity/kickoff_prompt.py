@@ -1221,6 +1221,12 @@ def _peer_briefs_section(peer_briefs: Sequence = (), *, run_id: str | None = Non
     return format_soft_nudge(peer_briefs or (), consumer_run_id=run_id)
 
 
+def _now_section(now=None) -> list[str]:
+    from orion.curiosity.now_section import format_now_section
+
+    return format_now_section(now)
+
+
 def _dream_section(dream_hypotheses: Sequence = ()) -> list[str]:
     from orion.dream.hypotheses import format_dream_section
 
@@ -1402,8 +1408,14 @@ def build_kickoff_prompt(
     personality_cue: Optional[str] = None,
     focus=None,
     consult_outcomes: Sequence = (),
+    now=None,
 ) -> str:
     """Assemble the whole invitation.
+
+    ``now`` (``TemporalNowV1``): Orion's now for the curiosity organ, read at kickoff (integration patch 3,
+    ``orion.curiosity.now_section``): other organs' most salient experiences, each citable as
+    ``[experience:<id>]``. None or empty renders nothing. Shown on every graph state, after the
+    personality block: it is a candidate source, not a graph write.
 
     ``consult_outcomes``: rows from ``orion_consult`` (Hub claims them for this run): consults with
     Claude that ended since the last run, and Juniper's answers to their briefs. Writable graph only.
@@ -1460,6 +1472,7 @@ def build_kickoff_prompt(
         lines += _thread_section(view)
         lines += _today_section(today_fact)
         lines += _personality_section(personality_cue)
+        lines += _now_section(now)
         lines += _priors_section(view, stale_after=stale_after)
         lines += _concepts_section(view, writable=writable)
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
@@ -1475,6 +1488,7 @@ def build_kickoff_prompt(
     else:
         lines += _today_section(today_fact)
         lines += _personality_section(personality_cue)
+        lines += _now_section(now)
 
     lines += _material_section(material)
     lines += _access_section(

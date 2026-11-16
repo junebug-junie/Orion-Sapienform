@@ -51,10 +51,9 @@ organs:
     salience_magnitude:
       curiosity_run: curiosity_moved_formed
     families: [durable.curiosity_investigate, curiosity.replica, curiosity.compaction, curiosity.supervisor,
-               durable.self_inquiry]
+               durable.self_inquiry, hub.curiosity_finding]
     workflows: [curiosity.investigate, curiosity.compaction]
-    reads_now: null
-    exempt_read: "not yet migrated: curiosity candidate selection reads the now in integration patch 3"
+    reads_now: services/orion-hub/scripts/curiosity_now.py
   reading:
     # reading_turn has no magnitude: the act ledger's surprisal for a finished read falls with the
     # family posterior's age (daily median 0.0253 on 10-16 -> 0.000087 on 11-15), so against 30 days every

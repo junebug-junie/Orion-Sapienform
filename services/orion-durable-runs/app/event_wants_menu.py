@@ -16,8 +16,8 @@ want funded on its net whose net without care is not positive would not be funde
 is care-promoted whatever its rank. Computed over every funded, unexpired want, before ``limit``.
 
 This is the same market's record, not a second menu: nothing here scores or re-decides a want. The
-label is the source row's own words (a read's title, an ask's question, an office visit's label), so Prime can say what the
-event is; a cooling-act want's label comes from its own ref (the cabinet reading's node and time).
+label is the source row's own words (a read's title, an ask's question, an office visit's label, a curiosity
+finding's answer from its run's finish row), so Prime can say what the event is; a cooling-act want's label comes from its own ref (the cabinet reading's node and time).
 """
 from __future__ import annotations
 
@@ -36,6 +36,9 @@ ASK_PREFIX = "orion_ask:"
 CABINET_PREFIX = "cabinet_reading:"
 # An office visit (office camera design step C, services/orion-hub/scripts/office_reach_out.py).
 OFFICE_PREFIX = "office_session:"
+# A new philosophical curiosity finding (curiosity event wants step 3, services/orion-hub/scripts/curiosity_event_wants.py).
+CURIOSITY_PREFIX = "curiosity_run:"
+FINDING_LABEL_CHARS = 240
 MAX_HOURS = 72.0
 MAX_LIMIT = 50
 
@@ -57,6 +60,40 @@ READ_LABELS_SQL = "SELECT seed_id, title, url FROM world_pulse_read_seed WHERE s
 ASK_LABELS_SQL = "SELECT ask_id, question, status FROM orion_ask WHERE ask_id = ANY(%(ids)s)"
 OFFICE_TABLE_SQL = "SELECT to_regclass('vision_office_session') IS NOT NULL AS present"
 OFFICE_LABELS_SQL = "SELECT session_id, label, who_text FROM vision_office_session WHERE session_id = ANY(%(ids)s)"
+# The run's latest finish row (this service's own table): the finding's own words.
+FINISH_LABELS_SQL = """
+SELECT DISTINCT ON (run_id) run_id, detail FROM substrate_durable_run_state
+ WHERE run_id = ANY(%(ids)s) AND node = 'finish'
+ ORDER BY run_id, created_at DESC
+"""
+
+
+def finding_label(detail: Any) -> str:
+    """A curiosity finding's head in its own words, from the run's finish row: the self-definition or lived
+    answer Orion wrote (the answer itself), else the turn's finding text with leading markdown headings
+    skipped (its head is often process narration). "" when the row carries no text."""
+    if isinstance(detail, str):
+        try:
+            detail = json.loads(detail)
+        except ValueError:
+            return ""
+    if not isinstance(detail, Mapping):
+        return ""
+    for key in ("self_definition", "lived_answer"):
+        sub = detail.get(key)
+        text = sub.get("text") if isinstance(sub, Mapping) else None
+        if isinstance(text, str) and text.strip():
+            break
+    else:
+        raw = str(detail.get("finding_text") or "")
+        text = " ".join(ln.strip() for ln in raw.splitlines()
+                        if ln.strip() and not ln.lstrip().startswith("#"))
+    head = " ".join(str(text or "").split())
+    if not head:
+        return ""
+    if len(head) > FINDING_LABEL_CHARS:
+        head = head[: FINDING_LABEL_CHARS - 1] + "…"
+    return f"a curiosity finding: {head}"[:300]
 
 
 def _ts(v: Any) -> Optional[datetime]:
@@ -170,6 +207,7 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
         read_ids = sorted({x[len(READ_PREFIX):] for x in refs if x.startswith(READ_PREFIX)})
         ask_ids = sorted({x[len(ASK_PREFIX):] for x in refs if x.startswith(ASK_PREFIX)})
         office_ids = sorted({x[len(OFFICE_PREFIX):] for x in refs if x.startswith(OFFICE_PREFIX)})
+        run_ids = sorted({x[len(CURIOSITY_PREFIX):] for x in refs if x.startswith(CURIOSITY_PREFIX)})
         labels: dict[str, str] = {}
         gone: set[str] = set()
         if read_ids:
@@ -200,8 +238,13 @@ async def read_menu(pool: Any, families: Optional[FamiliesConfig], *, now: datet
             for r in await (await conn.execute(OFFICE_LABELS_SQL, {"ids": office_ids})).fetchall():
                 labels[f"{OFFICE_PREFIX}{r['session_id']}"] = (
                     r["label"] or f"{r['who_text'] or 'someone'} in the office")[:300]
+        if run_ids:
+            for r in await (await conn.execute(FINISH_LABELS_SQL, {"ids": run_ids})).fetchall():
+                label = finding_label(r["detail"])
+                if label:
+                    labels[f"{CURIOSITY_PREFIX}{r['run_id']}"] = label
     return menu_from_rows(rows, labels=labels, gone=gone, families=families, now=now, limit=limit)
 
 
-__all__ = ["LATEST_EVENT_DECISIONS_SQL", "OFFICE_LABELS_SQL", "OFFICE_TABLE_SQL", "expires_at", "menu_from_rows",
+__all__ = ["FINISH_LABELS_SQL", "LATEST_EVENT_DECISIONS_SQL", "OFFICE_LABELS_SQL", "finding_label", "OFFICE_TABLE_SQL", "expires_at", "menu_from_rows",
            "menu_payload", "read_menu"]

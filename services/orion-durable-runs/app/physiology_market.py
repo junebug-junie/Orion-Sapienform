@@ -322,7 +322,9 @@ class Market:
             return
         interval = max(1.0, self._ttl * REFRESH_FRACTION)
         while not stop.is_set():
-            await self._refresh_personality(datetime.now(timezone.utc))
+            # At boot (no snapshot yet) the personality read is started but not awaited: a cold read (empty
+            # embedding cache) must not delay the first snapshot; reconcile_weights picks it up next cycle.
+            await self._refresh_personality(datetime.now(timezone.utc), wait=self._cache is not None)
             try:
                 await asyncio.shield(self._kick_refresh(datetime.now(timezone.utc)))
             except asyncio.CancelledError:
@@ -335,13 +337,13 @@ class Market:
             except asyncio.TimeoutError:
                 pass
 
-    async def _refresh_personality(self, now: datetime) -> None:
+    async def _refresh_personality(self, now: datetime, *, wait: bool = True) -> None:
         """Start the personality read when its TTL is up (``PersonalityValues.kick``) and wait for it, bounded.
         Never raises: a failed or slow read keeps the last personality snapshot."""
         if self.personality is None:
             return
         t = self.personality.kick(now)
-        if t is None:
+        if t is None or not wait:
             return
         try:
             await asyncio.wait_for(asyncio.shield(t), timeout=REFRESH_TIMEOUT_SEC)
@@ -429,6 +431,10 @@ class Market:
             base, with_c, checks = await self._replay_in_process(hist, now, choices)
         else:
             base, with_c, checks = await asyncio.to_thread(self._compute_weights, hist, now, choices)
+        if choices is None:
+            # No source (c): one set of weights. Said here, not left to object identity surviving a pickle
+            # (context() reads ``with_c is not without_c`` to decide whether the holdback arm has its own).
+            with_c = base
         if choices is not None:
             for f, w in sorted(with_c.items()):
                 chk = checks.get(f)
@@ -450,12 +456,15 @@ class Market:
             self._executor = self._executor_factory()
         ex = self._executor
         try:
-            return await asyncio.get_running_loop().run_in_executor(ex, weights_worker.run_packed, self._replay,
-                                                                    packed)
-        except concurrent.futures.BrokenExecutor:
+            return await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(ex, weights_worker.run_packed, self._replay, packed),
+                timeout=REFRESH_TIMEOUT_SEC)
+        except (concurrent.futures.BrokenExecutor, asyncio.TimeoutError):
+            # Dead or stuck: drop it (a stuck one is killed, which a thread could not be), so the next replay
+            # starts a new worker instead of queueing behind it.
             if self._executor is ex:
                 self._executor = None
-                ex.shutdown(wait=False, cancel_futures=True)
+                weights_worker.kill(ex)
             raise
 
     def _compute_weights(self, hist: "_Cached", now: datetime, choices: Optional[list]) -> tuple[dict, dict, dict]:
@@ -633,7 +642,7 @@ class Market:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         if self._executor is not None:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            weights_worker.kill(self._executor)
             self._executor = None
 
     def release(self, want_id: str) -> int:
@@ -656,6 +665,12 @@ class Market:
         now = now or datetime.now(timezone.utc)
         return {"families": len(self.families.families) if self.families else 0,
                 "families_error": self.families_error, "history_cached_at": self._cache.at.isoformat() if self._cache else None,
+                # The weights' key (issue #3382): which snapshot, UTC day and personality read they were replayed for.
+                "weights_history_at": self._weights[0][0].isoformat() if self._weights else None,
+                "weights_day": self._weights[0][1].isoformat() if self._weights else None,
+                "weights_personality_at": (self._weights[0][2].isoformat()
+                                           if self._weights and self._weights[0][2] is not None else None),
+                "weights_worker": self._executor is not None,
                 "reservations": len(self.book.snapshot(now)), "funded_seeded": self.book.funded_seeded,
                 "prime_regulation": self.prime_regulation,
                 "consent_rules": len(self.consent_rules.rules) if self.consent_rules else 0,

@@ -75,4 +75,19 @@ def process_executor() -> Executor:
     return ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"))
 
 
-__all__ = ["CHUNK", "compute_weights", "pack", "process_executor", "run_packed"]
+def kill(ex: Executor) -> None:
+    """Stop an executor without waiting: queued replays are cancelled and a running worker process is
+    terminated (a replay is pure computation; nothing is lost but the replay). Never raises."""
+    procs = list((getattr(ex, "_processes", None) or {}).values())   # read first: shutdown() clears it
+    try:
+        ex.shutdown(wait=False, cancel_futures=True)
+    except Exception:  # noqa: BLE001
+        pass
+    for p in procs:
+        try:
+            p.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+__all__ = ["CHUNK", "compute_weights", "kill", "pack", "process_executor", "run_packed"]

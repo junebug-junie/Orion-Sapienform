@@ -502,7 +502,7 @@ def _build_market():
     latest prices from Redis orion:physiology:latest; decisions published on the long-lived rpc_bus."""
     from uuid import uuid4
 
-    from app.physiology_market import Market
+    from app.physiology_market import REFRESH_FRACTION, Market
     from app.weights_worker import process_executor
     from orion.physiology.families import load_families
     from orion.schemas.physiology_want import WANT_DECISION_KIND
@@ -540,7 +540,9 @@ def _build_market():
         embed, close_embed = http_embedder(s.personality_embed_url,
                                            timeout_sec=s.physiology_personality_embed_timeout_sec)
     personality = PersonalityValues(enabled=values_on, pool_getter=lambda: _checkpointer_cm, embed=embed,
-                                    ttl_sec=max(60.0, float(s.physiology_bid_history_ttl_sec)),
+                                    # Read once per market refresher cycle (it is the only caller of kick,
+                                    # issue #3382); a TTL equal to the history TTL skipped every other cycle.
+                                    ttl_sec=max(60.0, float(s.physiology_bid_history_ttl_sec) * REFRESH_FRACTION),
                                     embed_timeout_sec=s.physiology_personality_embed_timeout_sec)
     if values_on:
         personality.set_closer(close_embed)

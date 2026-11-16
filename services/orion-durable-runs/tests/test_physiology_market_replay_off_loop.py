@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import statistics
 import sys
 import time
 from datetime import timedelta
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
@@ -91,37 +94,46 @@ class _Personality:
 
 
 def _bid_times(m, start, n):
+    """Per bid: (wall seconds, this thread's CPU seconds). Waiting for the GIL is wall time with no CPU time,
+    so wall / CPU measures contention and is immune to the host's speed changing between bids."""
     async def go():
         out = []
         for i in range(n):
-            t0 = time.perf_counter()
+            t0, c0 = time.perf_counter(), time.thread_time()
             d = await m.bid(_want(start + i), NOW + timedelta(minutes=2, milliseconds=i))
-            out.append(time.perf_counter() - t0)
+            out.append((time.perf_counter() - t0, time.thread_time() - c0))
             assert d.reason != "physiology_unavailable", (d.reason, d.why)
         return out
     return go()
 
 
-def test_a_cpu_bound_replay_in_the_worker_process_does_not_slow_the_bids(tmp_path, monkeypatch):
+HEAVY_ACTS = 6000      # bids cost ~50 ms of CPU each, so the GIL contention a thread replay causes is visible
+
+
+def _slowdown(tmp_path, monkeypatch, factory) -> tuple[float, list, list]:
+    """While a CPU-bound replay runs: the median bid's wall time over its own CPU time (1.0: the bid never
+    waited for the GIL). ``factory``: the replay's executor (the worker process, or a thread for the control).
+    Wall-time ratios against a baseline flaked on a shared host (bids moved 10 <-> 26 ms between runs)."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     busy_replay, marker = _busy_replay(tmp_path, monkeypatch)
 
     async def go():
-        m = _market(_state().model_dump_json(), _Pool(acts=_heavy_acts()), [])
-        m._executor_factory = ww.process_executor
+        m = _market(_state().model_dump_json(), _Pool(acts=_heavy_acts(HEAVY_ACTS)), [])
+        m._executor_factory = factory
         try:
-            await m.bid(_want(0), NOW)                     # boot: the first weights, replayed in the worker
+            await m.bid(_want(0), NOW)                     # boot: the first weights
             assert m._weights is not None and m._executor is not None
-            base = await _bid_times(m, 100, 5)
+            base = await _bid_times(m, 100, 7)
             m._replay = busy_replay
             m.personality = _Personality()                 # a new personality read: the key moved
             m.personality.at = NOW + timedelta(seconds=1)
             rtask = asyncio.create_task(m.reconcile_weights(NOW + timedelta(minutes=2)))
-            for _ in range(1000):                          # wait until the worker is inside the busy replay
+            for _ in range(1000):                          # wait until the replay is inside its busy loop
                 if marker.exists():
                     break
                 await asyncio.sleep(0.01)
-            assert marker.exists(), "the replay never started in the worker"
-            during = await _bid_times(m, 200, 5)
+            assert marker.exists(), "the replay never started"
+            during = await _bid_times(m, 200, 7)
             assert not rtask.done(), "the replay finished before the bids: they did not overlap"
             await rtask
             assert m._weights[0][2] == m.personality.at   # the refresher's replay landed
@@ -130,10 +142,30 @@ def test_a_cpu_bound_replay_in_the_worker_process_does_not_slow_the_bids(tmp_pat
         return base, during
 
     base, during = asyncio.run(go())
-    # In a thread the busy replay shares the GIL with the loop and roughly doubles each bid; in the worker
-    # process it does not touch the loop's GIL.
-    bound = statistics.median(base) * 1.5 + 0.03
-    assert max(during) < bound, (base, during)
+    return statistics.median(w / max(c, 1e-6) for w, c in during), base, during
+
+
+def test_a_cpu_bound_replay_in_the_worker_process_does_not_slow_the_bids(tmp_path, monkeypatch):
+    if len(os.sched_getaffinity(0)) < 3:
+        # With two cores the OS can put the busy worker on the bid loop's core: CPU sharing, not the GIL.
+        pytest.skip("needs 3+ CPUs to separate GIL contention from core sharing")
+    # Best of three: on a loaded host the OS sometimes shares a core between the worker and the loop (ratio ~2
+    # for that run). GIL contention is systematic: the thread control below read 1.8-2.1 in 40 of 40 runs.
+    seen = []
+    for i in range(3):
+        ratio, base, during = _slowdown(tmp_path / str(i), monkeypatch, ww.process_executor)
+        seen.append(round(ratio, 2))
+        if ratio < 1.3:
+            return
+    raise AssertionError(f"every attempt waited on the GIL: wall/CPU ratios {seen}")
+
+
+def test_control_the_same_replay_in_a_thread_does_slow_the_bids(tmp_path, monkeypatch):
+    """The control for the test above: proves it can fail. In a thread the busy replay shares the loop's GIL."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    ratio, base, during = _slowdown(tmp_path, monkeypatch, lambda: ThreadPoolExecutor(1))
+    assert ratio > 1.6, (ratio, base, during)
 
 
 def test_a_personality_change_never_makes_a_bid_start_a_replay():
@@ -256,3 +288,122 @@ def test_a_bid_builds_only_its_own_familys_appetite_and_decides_the_same():
     a = decide_priced(want, st, full, ReservationBook(), NOW)
     b = decide_priced(want, st, one, ReservationBook(), NOW)
     assert a == b
+
+
+def test_boot_does_not_wait_on_a_slow_personality_read():
+    """At boot the history snapshot comes first: a cold personality read (empty embedding cache) must not
+    leave bids without a snapshot. Later cycles wait for it (bounded), so the history replay uses it."""
+    async def go():
+        m = _market(_state().model_dump_json(), _Pool(acts=_heavy_acts(50)), [])
+        p = _Personality()
+        gate = asyncio.Event()
+
+        def kick(now):
+            async def read():
+                await gate.wait()
+                p.at = now
+            return asyncio.ensure_future(read())
+
+        p.kick = kick
+        m.personality = p
+        stop = asyncio.Event()
+        task = asyncio.create_task(m.run_refresher(stop))
+        for _ in range(200):
+            if m._cache is not None:
+                break
+            await asyncio.sleep(0.01)
+        assert m._cache is not None and m._weights is not None      # the snapshot did not wait
+        gate.set()
+        stop.set()
+        await asyncio.wait_for(task, 2.0)
+
+    asyncio.run(go())
+
+
+def test_a_stuck_worker_is_killed_and_the_next_replay_gets_a_new_one(monkeypatch):
+    import concurrent.futures
+
+    class _Stuck(concurrent.futures.Executor):
+        killed = False
+
+        def submit(self, fn, *a, **k):
+            return concurrent.futures.Future()             # never completes
+
+        def shutdown(self, wait=True, *, cancel_futures=False):
+            _Stuck.killed = True
+
+    async def go():
+        monkeypatch.setattr(pm, "REFRESH_TIMEOUT_SEC", 0.2)
+        m = _market(_state().model_dump_json(), _Pool(acts=_heavy_acts(20)), [])
+        await m.bid(_want(0), NOW)                         # boot weights, in a thread (no factory yet)
+        made = []
+
+        def factory():
+            made.append(1)
+            return _Stuck() if len(made) == 1 else concurrent.futures.ThreadPoolExecutor(1)
+
+        m._executor_factory = factory
+        m._weights = ((NOW - timedelta(seconds=1), NOW.date(), None), *m._weights[1:])   # the key moved
+        await m.reconcile_weights(NOW)                     # times out: kept the last weights
+        assert _Stuck.killed and m._executor is None and m.counts["weights_refresh_failed"] == 1
+        await m.reconcile_weights(NOW)                     # a new worker
+        assert len(made) == 2 and m._weights[0][0] == m._cache.at
+        await m.aclose()
+
+    asyncio.run(go())
+
+
+def test_no_choices_through_a_real_worker_means_no_holdback_weights_and_health_shows_the_key():
+    async def go():
+        m = _market(_state().model_dump_json(), _Pool(acts=_heavy_acts(50)), [])
+        m._executor_factory = ww.process_executor
+        try:
+            await m.bid(_want(0), NOW)
+            ctx = await m.context(_state(), NOW, family="durable.self_inquiry")
+            assert ctx.weights_holdback is None and m._weights[1] is m._weights[2]
+            h = m.health(NOW)
+            assert h["weights_history_at"] == m._cache.at.isoformat() and h["weights_day"] == NOW.date().isoformat()
+            assert h["weights_personality_at"] is None and h["weights_worker"] is True
+        finally:
+            await m.aclose()
+
+    asyncio.run(go())
+
+
+def test_an_unknown_or_non_bidding_family_still_has_no_appetite_and_decides_the_same():
+    from orion.physiology.choice import ReservationBook
+
+    acts = [pm.act_from_row(r) for r in _heavy_acts(30)]
+    st = _state()
+    full = build_context(FAMS, acts, [], st, NOW)
+    non_bidding = [f for f, c in FAMS.families.items() if not c.bids]
+    for fam in ["no.such_family", *non_bidding[:1]]:
+        one = build_context(FAMS, acts, [], st, NOW, only_families=(fam,))
+        assert one.appetite == {}
+        want = _want(9, family=fam)
+        a = decide_priced(want, st, full, ReservationBook(), NOW)
+        b = decide_priced(want, st, one, ReservationBook(), NOW)
+        assert a == b, fam
+
+
+def test_kill_terminates_a_busy_worker_process(tmp_path, monkeypatch):
+    busy_replay, marker = _busy_replay(tmp_path, monkeypatch)
+
+    async def go():
+        ex = ww.process_executor()
+        fut = asyncio.get_running_loop().run_in_executor(ex, busy_replay, FAMS, [], [], NOW, None)
+        for _ in range(1000):
+            if marker.exists():
+                break
+            await asyncio.sleep(0.01)
+        procs = list(ex._processes.values())
+        assert procs and all(p.is_alive() for p in procs)
+        ww.kill(ex)
+        for _ in range(100):
+            if not any(p.is_alive() for p in procs):
+                break
+            await asyncio.sleep(0.01)
+        assert not any(p.is_alive() for p in procs)        # killed, well before BUSY_SEC ran out
+        await asyncio.gather(fut, return_exceptions=True)
+
+    asyncio.run(go())

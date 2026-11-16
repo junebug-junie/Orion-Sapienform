@@ -1,6 +1,6 @@
 # Patch F proposal: worldview writes that are safe to repeat (#3395)
 
-Status: proposal, no code. Refs #3395. Parent spec:
+Status: APPROVED by Juniper 2026-11-16 (rule: yes, waits for her go on the live write; times_tested counts runs: yes). Built in branch `feat/day-letter-patch-f`. Refs #3395. Parent spec:
 `docs/superpowers/specs/2026-11-15-day-letter-findings-fix-design.md` (Patch F).
 All references read on `origin/main` at `b6eeb36f0`. Live reads taken 2026-11-15 23:55Z
 with `docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview "<cypher>"`.
@@ -152,3 +152,36 @@ rule. I recommend that Orion makes them in a curiosity run, from a short note in
   not from a test.
 - Whether any prior's `times_tested` is too high today from a past double count. The graph
   keeps no per-test record to compare against.
+
+## Orion's questions (2026-11-16) and what changed
+
+12. **The correction lane teaches the same write.** **Changed:** `orion/orion_day/corrections.py`
+    now points at the two guarded commands, and so does `orion/consult/beliefs.py:164`, which
+    taught `times_tested + 1` too.
+13. **Other `times_tested` readers.** Checked all four. `value.py:285-311` already counts per
+    run (`tested_delta > 0`), so it reads the new number the same way. `corrections.py:255-269`
+    needs `last_run_id == run_id` and a rise or a move; the guarded command sets both together,
+    so a re-test still registers. `atlas.py:520` only sorts. `replica/frame.py:167` only shows
+    "never tested". None reads a healthy claim as stale. The retirement rule
+    (`worldview.py:1250`, `stale_after`) and `ask_claude_trigger.py:166` (`MIN_TIMES_TESTED`)
+    are reached more slowly, by the amount in 14.
+14. **How often is a prior tested more than once in a run?** From `curiosity_run_outcomes`
+    (09-26..11-15): 239 per-run prior tests in 172 runs; 15 (6.3%) moved `times_tested` by
+    more than 1, 2 by more than 2, max 6. Some of those may be replays. So counting runs slows
+    retirement for about 6% of tests.
+15. **Re-derived findings.** MERGE folds a replay only. The kickoff prompt teaches no minting
+    rule. The one content-derived id is `orion/consult/beliefs.py:77` (`finding_id_for`,
+    from the consult id), which already teaches MERGE. A re-derivation in a later run gets a
+    new id; detecting that is the novelty corpus's job (`orion/curiosity/register.py`), not
+    this patch. Acceptance checks are scoped to replays.
+16. **Order of operations.** The scratch test ran first, on a throwaway container from the
+    live server's own image (graph module 41811):
+    `python3 scripts/worldview_prior_unique_rule.py scratch` -> the taught batch twice leaves
+    the same counts (`Prior:2 PriorRevision:2 Finding:1`, edge 1, `times_tested` 2 -> 3 once,
+    on a prior with no `last_run_id`); the rule goes `PENDING` -> `OPERATIONAL` over a graph
+    with an id-less prior; a duplicate `CREATE` fails with `unique constraint violation on
+    node of type Prior`; a second id-less prior is still allowed. A rule over a graph that
+    already holds a duplicate goes to `FAILED`, so `preflight` runs first (live today: 0
+    duplicates, 1 id-less prior, node 3208, no constraints). #3455 was relieved by the
+    FalkorDB restart at 11-16 09:11Z. The live write still waits for Juniper:
+    `python3 scripts/worldview_prior_unique_rule.py commands` prints it.

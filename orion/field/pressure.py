@@ -231,6 +231,10 @@ def _stale_node_channels(
     for node_id, vector in field.node_vectors.items():
         stamps = field.node_vector_updated_at.get(node_id, {})
         for channel in vector:
+            if skips_merge(node_id, channel):
+                # An alarm never competes for this channel, so its fresh write must not arm the
+                # exclusion of stale real sources either: that would empty the channel (#3307 review).
+                continue
             stamp = stamps.get(channel)
             if stamp is None:
                 # No timestamp is not evidence of staleness. Untimestamped

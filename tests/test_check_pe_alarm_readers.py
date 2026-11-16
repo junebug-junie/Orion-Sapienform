@@ -108,3 +108,8 @@ def test_tests_evals_and_excluded_paths_are_not_scanned(tmp_path):
     no_reason = _repo(tmp_path / "nr", {"scripts/analysis/replay.py": GENERIC},
                       {"excluded_paths": [{"path": "scripts/analysis/", "reason": ""}]})
     assert any("no reason" in p for p in gate.check(no_reason))
+
+
+def test_an_unparseable_file_never_auto_passes_on_a_comment(tmp_path):
+    broken = "# is_alarm_node handles this\n" + GENERIC + "def broken(:\n    x = 'unterminated\n"
+    assert len(gate.check(_repo(tmp_path, {"orion/broken.py": broken}, {}))) == 1

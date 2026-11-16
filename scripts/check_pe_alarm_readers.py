@@ -58,7 +58,7 @@ def _code_only(text: str) -> str:
             if tok.type not in (tokenize.COMMENT, tokenize.STRING) and not getattr(tokenize, "FSTRING_MIDDLE", -1) == tok.type:
                 keep.append(tok.string)
     except (tokenize.TokenError, IndentationError, SyntaxError):
-        return text
+        return ""            # fail closed: an unparseable file never auto-passes on a comment; register it
     return " ".join(keep)
 
 

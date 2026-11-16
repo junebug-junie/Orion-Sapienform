@@ -199,3 +199,6 @@ docs/superpowers/evals/*labeling-set*
 # committed; orion.person_model.person.local_first reads the local file first).
 config/person_model/*.local.yaml
 orion/person_model/evals/*.local.jsonl
+
+# Graphiti trial: real names for the scorer stay local (privacy gate)
+services/orion-graphiti-adapter/scripts/*.local.json

@@ -33,9 +33,9 @@ MUTANTS = {
                                       '.append(float(r["intensity"]))'),
     "market SQL drops the grading": (MKT, "THEN (decision->>'graded')::boolean END AS graded",
                                      "THEN (decision->>'graded')::boolean END AS graded_unused"),
-    "replay ignores the ledger": (RPL, '        ref: list[Any] = [(r["intensity"], r["graded"]) for r in led if '
+    "replay ignores the ledger": (RPL, '            ref = [(r["intensity"], r["graded"]) for r in led if '
                                       'snap - SOURCE_HISTORY <= r["at"] < snap]',
-                                  "        ref: list[Any] = []"),
+                                  "            ref = []"),
     "replay has no market snapshot lag": (RPL, "        snap = t - snapshot_lag\n", "        snap = t\n"),
     "replay ignores same_grading": (RPL, "        event_values = (same_grading_events(ref, app.graded) if same_grading",
                                     "        event_values = (same_grading_events([v for v, _ in ref], app.graded) "

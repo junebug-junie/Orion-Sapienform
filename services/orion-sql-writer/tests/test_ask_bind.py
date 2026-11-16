@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -91,11 +92,17 @@ class _Res:
 class FakeConn:
     """Answers the four reads ask_bind makes, and records the card inserts."""
 
-    def __init__(self, *, kinds=None, sightings=None, history_n=40, grades=None):
+    def __init__(self, *, kinds=None, sightings=None, history_n=40, grades=None, now=NOW):
         self.kinds = kinds or {VEHICLE: "vehicle", PERSON: "person"}
         self.sightings = sightings or {VEHICLE: 86, PERSON: 9}
-        # 30 days of Orion-made asks' sightings: 2..41, so 86 ranks 1.0 and 9 ranks 7/40.
-        self.history = [{"sightings": 2 + i} for i in range(history_n)]
+        # 30 days of Orion-made asks' sightings: 2..41, so 86 ranks 1.0 and 9 ranks 7/40. Opened every 4 h before
+        # ``now`` (the rule floor's week count, issue #3381): one in four a vehicle ask (25% of the week's opens, far
+        # over the 2% floor), the rest "Is this <name>?".
+        self.history = [{"sightings": 2 + i, "created_at": now - timedelta(hours=4 * (i + 1)),
+                         **({"source_kind": "vision_individual", "evidence_refs": [], "individual_kind": "vehicle"}
+                            if i % 4 == 0 else
+                            {"source_kind": "vision_person_confirm", "evidence_refs": [], "individual_kind": "person"})}
+                        for i in range(history_n)]
         self.grades = grades if grades is not None else (
             [("camera_ask:confirm", 1.0)] * 141 + [("camera_ask:confirm", 0.0)] * 4
             + [("camera_ask:vehicle", 1.0)] * 5 + [("camera_ask:vehicle", 0.0)] * 40)
@@ -117,6 +124,10 @@ class FakeConn:
             if any(r["sk"] == params["sk"] and r["sr"] == params["sr"] for r in self.inserted):
                 return _Res(rows=[])                     # the open-card unique index
             self.inserted.append(params)
+            # The card is now one of the family's asks: the next ask read (and the rule floor) sees it.
+            self.history.append({"sightings": 0, "created_at": params["c"], "source_kind": params["sk"],
+                                 "evidence_refs": json.loads(params["ev"]),
+                                 "individual_kind": self.kinds.get(str(params["sr"]).split("|", 1)[0])})
             return _Res(rows=[(params["id"],)])
         raise AssertionError(f"unexpected SQL: {sql[:80]}")
 
@@ -151,6 +162,7 @@ def _clean(monkeypatch):
     ab.reset_state()
     monkeypatch.setattr(settings, "orion_physiology_bid_camera_asks", "on")
     monkeypatch.setattr(settings, "sql_writer_act_camera_asks_enabled", True)
+    monkeypatch.setattr(settings, "orion_camera_ask_rule_floor_enabled", True)
     yield
     ab.reset_state()
 
@@ -227,9 +239,11 @@ def test_held_does_not_open_then_backs_off_then_a_later_rebid_funds_and_opens():
     assert ab.held_snapshot() == {}
 
 
-def test_no_deadline_a_held_ask_is_never_opened_by_the_clock():
+def test_no_deadline_a_held_ask_is_never_opened_by_the_clock(monkeypatch):
     """Issue #3285: no 24 h cutoff and no cooldown. Ten days of sated answers never open the card, and the
-    re-bids never come closer than the cap allows once it is reached."""
+    re-bids never come closer than the cap allows once it is reached. (The rule floor is off: this fake's week of
+    asks ages out over the ten days, and the floor would then open the card; tested on its own below.)"""
+    monkeypatch.setattr(settings, "orion_camera_ask_rule_floor_enabled", False)
     conn, market = FakeConn(), Market(sated)
     t = NOW
     while t < NOW + timedelta(days=10):
@@ -399,6 +413,124 @@ def test_the_shadow_loop_skips_an_unstamped_card_whose_bid_the_market_decided_af
 
 
 # --- the one bid site ----------------------------------------------------------------------------
+
+# --- the per-rule exploration floor (issue #3381) ------------------------------------------------------
+
+FACE_PERSON = "5f0c2a7e9d3b4c1a8e6f7d2b3c4a5e6f"
+
+
+def face_ask(now=NOW, ask_id="ask-face", iid=FACE_PERSON):
+    return OrionAskV1(ask_id=ask_id, question="Who is this? I have seen this face 6 times.",
+                      evidence_refs=["rule:face", "sighting:aa11"], image_ref="thumb:ff01", image_refs=["thumb:ff01"],
+                      created_at=now, expires_at=now + timedelta(days=7), source_kind="vision_individual",
+                      source_ref=iid)
+
+
+def price_held(want):
+    return _decision(want, outcome="deferred", reason="price", net=-0.2, value_rank=0.1, charge=0.31,
+                     binding_constraint="prime:slow", why="vision.ask: Prime's slow charge binds")
+
+
+def consent_held(want):
+    return _decision(want, outcome="deferred", reason="consent", net=None, value_rank=None,
+                     binding_constraint="consent", why="consent gate: refused")
+
+
+def _starvation_month(monkeypatch, *, floor_on: bool):
+    """28 days of the live shape: each morning 6 "Is this <name>?" asks the market funds, 3 new vehicle candidates and
+    1 new face candidate it holds (``sated``: hunger is saturated and their expected answers are below the family
+    mean, so they rank 0 at every bid; issue #3381). Re-read the asks at every bid (days apart, past the 300 s cache).
+    Returns (face opened, vehicle opened, vehicle candidates)."""
+    monkeypatch.setattr(settings, "orion_camera_ask_rule_floor_enabled", floor_on)
+    monkeypatch.setattr(ab, "CACHE_TTL_SEC", 0.0)
+    kinds = {PERSON: "person", FACE_PERSON: "person"}
+    sightings = {PERSON: 9, FACE_PERSON: 6}
+    start = NOW - timedelta(days=30)
+    # The 30 days before: confirm asks only (the face and vehicle rules ranked low and opened none).
+    conn = FakeConn(kinds=kinds, sightings=sightings, history_n=0)
+    conn.history = [{"sightings": 2 + i, "created_at": start - timedelta(hours=4 * (i + 1)),
+                     "source_kind": "vision_person_confirm", "evidence_refs": [], "individual_kind": "person"}
+                    for i in range(40)]
+
+    def answer(want):
+        return funded(want) if want.outcome_value and want.outcome_value > 0.9 else sated(want)
+
+    market = Market(answer)
+    face_open = vehicle_open = vehicle_n = 0
+    for d in range(28):
+        t = start + timedelta(days=d, hours=7)
+        for j in range(6):
+            iid = f"p{d:02d}{j}"
+            kinds[iid], sightings[iid] = "person", 9
+            a = confirm_ask(now=t, ask_id=f"ask-c{d}-{j}").model_copy(update={"source_ref": f"{iid}|Juniper"})
+            assert ab.open_camera_ask(conn, a, now=t, bid=market) is not None
+        for j in range(3):
+            iid = f"v{d:02d}{j}"
+            kinds[iid], sightings[iid] = "vehicle", 86
+            vehicle_n += 1
+            a = vehicle_ask(now=t, ask_id=f"ask-v{d}-{j}").model_copy(update={"source_ref": iid})
+            vehicle_open += ab.open_camera_ask(conn, a, now=t, bid=market) is not None
+        face_open += ab.open_camera_ask(conn, face_ask(now=t, ask_id=f"ask-f{d}", iid=FACE_PERSON if d == 0 else f"f{d}"),
+                                        now=t, bid=market) is not None
+        kinds[f"f{d + 1}"], sightings[f"f{d + 1}"] = "person", 6
+    return face_open, vehicle_open, vehicle_n
+
+
+def test_a_rule_below_the_family_mean_starves_without_the_floor(monkeypatch):
+    """Issue #3381 regression: on the old rule a face candidate is held at every bid, for 28 days, and never opens
+    (so it is never graded and its expected answer never moves)."""
+    face, vehicle, n = _starvation_month(monkeypatch, floor_on=False)
+    assert face == 0 and vehicle == 0
+
+
+def test_the_rule_floor_gives_a_starved_rule_its_share_and_keeps_vehicle_mostly_held(monkeypatch):
+    """With the floor a rule under 2% of the week's opens opens anyway: the face rule opens about once a week, and so
+    does the vehicle rule (Juniper answers ~13% of those). Vehicle stays mostly held."""
+    face, vehicle, n = _starvation_month(monkeypatch, floor_on=True)
+    assert 3 <= face <= 5                                    # ~ one a week over 4 weeks
+    assert 3 <= vehicle <= 5 and vehicle / n <= 0.1          # 84 vehicle candidates, >= 90% held
+
+
+def test_a_floor_open_is_stamped_logged_and_counted_at_once(monkeypatch, caplog):
+    """The market answered (held), so the card carries its want, like a funded one; a second candidate of the same
+    rule in the same 300 s cache window sees the first open and is held (the floor stops itself)."""
+    conn, market = FakeConn(kinds={FACE_PERSON: "person", "f2": "person"}, sightings={FACE_PERSON: 6, "f2": 6}), Market(sated)
+    with caplog.at_level("INFO", logger="sql-writer.ask_bind"):
+        opened = ab.open_camera_ask(conn, face_ask(), now=NOW, bid=market)
+    assert opened is not None and bid_want_ref(opened.evidence_refs) == market.wants[0].want_id
+    assert any("verdict=admit why=rule_floor market=deferred:sated" in r.getMessage() and "rule_share=0.0000" in r.getMessage()
+               for r in caplog.records)
+    v = ab.ask_bind(conn, face_ask(ask_id="ask-face-2", iid="f2"), now=NOW + timedelta(seconds=30), bid=market)
+    assert not v.admit and v.why == "deferred:sated"          # 1 face of 41 opens this week: 2.4%, over the floor
+
+
+def test_the_floor_opens_a_price_hold_but_never_a_consent_block():
+    conn = FakeConn(kinds={FACE_PERSON: "person"}, sightings={FACE_PERSON: 6})
+    assert ab.ask_bind(conn, face_ask(), now=NOW, bid=Market(price_held)).why == "rule_floor"
+    ab.reset_state()
+    v = ab.ask_bind(FakeConn(kinds={FACE_PERSON: "person"}, sightings={FACE_PERSON: 6}), face_ask(), now=NOW,
+                    bid=Market(consent_held))
+    assert not v.admit and v.why.startswith("deferred:consent")
+
+
+def test_a_rule_over_its_floor_share_stays_held_and_the_flag_turns_the_floor_off(monkeypatch):
+    conn = FakeConn()                                         # vehicle: 25% of the week's opens
+    assert ab.open_camera_ask(conn, vehicle_ask(), now=NOW, bid=Market(sated)) is None
+    monkeypatch.setattr(settings, "orion_camera_ask_rule_floor_enabled", False)
+    ab.reset_state()
+    conn = FakeConn(kinds={FACE_PERSON: "person"}, sightings={FACE_PERSON: 6})
+    assert ab.open_camera_ask(conn, face_ask(), now=NOW, bid=Market(sated)) is None
+
+
+def test_the_floor_flag_ships_on():
+    from app.settings import Settings
+
+    assert Settings.model_fields["orion_camera_ask_rule_floor_enabled"].default is True
+    env = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
+    assert "ORION_CAMERA_ASK_RULE_FLOOR_ENABLED=true" in env
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+    assert "ORION_CAMERA_ASK_RULE_FLOOR_ENABLED=${ORION_CAMERA_ASK_RULE_FLOOR_ENABLED:-true}" in compose
+
 
 def test_every_camera_opener_goes_through_the_bid_site():
     """No module but app/ask_bind.py may call ``_insert_ask``: an opener that inserted directly would skip the bid."""

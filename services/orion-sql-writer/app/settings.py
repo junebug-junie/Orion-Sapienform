@@ -514,6 +514,10 @@ class Settings(BaseSettings):
     # loop above posts no second want for a card that bid. shadow: the behaviour before 4b (open first, shadow
     # want after). The daily ask caps stay a hard ceiling either way.
     orion_physiology_bid_camera_asks: str = Field("on", alias="ORION_PHYSIOLOGY_BID_CAMERA_ASKS")
+    # Issue #3381 (app/ask_bind.py): a held camera ask opens anyway when its rule (face, sighting, vehicle, ...) has
+    # under 2% of the family's asks opened over the rolling week, so a rule ranked below the family mean keeps being
+    # graded instead of starving. false: a held ask stays held (the behaviour before #3381).
+    orion_camera_ask_rule_floor_enabled: bool = Field(True, alias="ORION_CAMERA_ASK_RULE_FLOOR_ENABLED")
     # Re-identification line: body cosine to the nearest same-kind centroid
     # (any time, anywhere) needed to count as the same individual. 0.90 since
     # 2026-10-16 (docs/superpowers/specs/2026-10-16-vision-body-match-proposal.md):

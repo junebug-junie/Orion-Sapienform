@@ -218,3 +218,33 @@ def test_the_act_and_its_open_event():
     ev = ask_opened_event("ask-1", rule="vehicle", created_at=CREATED, expires_at=EXPIRES)
     assert ev.event_kind == "act_opened" and ev.correlation_id == "ask-1" and ev.observed_at == CREATED
     assert rule_from_test_before("outreach:self") is None and rule_from_test_before(None) is None
+
+
+# --- the per-rule exploration floor (issue #3381) ------------------------------------------------------
+
+def test_rule_open_share_counts_the_rolling_week_and_none_when_the_family_opened_nothing():
+    from orion.grammar.camera_ask_acts import RULE_FLOOR_WINDOW, rule_open_share, under_rule_floor
+
+    now = datetime(2026, 11, 16, 7, tzinfo=timezone.utc)
+    opens = ([(now - timedelta(hours=h), "confirm") for h in range(1, 50)]
+             + [(now - timedelta(days=2), "face"),
+                (now - RULE_FLOOR_WINDOW - timedelta(seconds=1), "face"),        # out of the week
+                (now + timedelta(seconds=1), "face")])                           # not yet
+    assert rule_open_share("face", opens, now) == pytest.approx(1 / 50)
+    assert rule_open_share("vehicle", opens, now) == 0.0
+    assert rule_open_share("face", [], now) is None
+    # Strictly below the floor: 1 of 50 is exactly 2%, not under it; 0 and "nothing opened" are.
+    assert under_rule_floor("face", opens, now) == (False, pytest.approx(0.02))
+    assert under_rule_floor("vehicle", opens, now) == (True, 0.0)
+    assert under_rule_floor("face", [], now) == (True, None)
+    # Naive timestamps (a DB row without a zone) read as UTC.
+    assert rule_open_share("face", [(now.replace(tzinfo=None) - timedelta(hours=1), "face")], now) == 1.0
+
+
+def test_the_rule_floor_uses_the_markets_floor_window_and_only_value_holds():
+    from orion.grammar.camera_ask_acts import RULE_EXPLORATION_FLOOR, RULE_FLOOR_HOLD_REASONS, RULE_FLOOR_WINDOW
+    from orion.physiology.choice import EXPLORATION_FLOOR, FLOOR_WINDOW
+
+    assert RULE_FLOOR_WINDOW == FLOOR_WINDOW
+    assert 0 < RULE_EXPLORATION_FLOOR <= EXPLORATION_FLOOR
+    assert set(RULE_FLOOR_HOLD_REASONS) == {"deferred:sated", "deferred:price"}

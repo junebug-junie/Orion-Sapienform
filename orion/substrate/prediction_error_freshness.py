@@ -115,9 +115,8 @@ RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
 # value_kind is ``trigger`` is an alarm, and this set must equal that list
 # (tests/test_pe_alarm_refile.py). The set exists so readers need no glossary
 # I/O to ask the question.
-ALARM_NODE_IDS: frozenset[str] = frozenset(
-    {"node:substrate.cabinet", "node:substrate.strain", "node:substrate.street"}
-)
+# Defined in the stdlib-only orion/prediction/alarm_nodes.py so light modules can import it.
+from orion.prediction.alarm_nodes import ALARM_NODE_IDS, is_alarm_node  # noqa: E402  (re-export)
 
 # What each alarm is called where a person or Orion reads it. Never
 # "prediction error".
@@ -131,11 +130,6 @@ ALARM_LABELS: dict[str, str] = {
 def is_retired_prediction_error_node(node_id: Any) -> bool:
     """True when ``node_id`` names a retired prediction-error node."""
     return str(node_id or "") in RETIRED_PREDICTION_ERROR_NODE_IDS
-
-
-def is_alarm_node(node_id: Any) -> bool:
-    """True when ``node_id`` is an alarm/news node, not a prediction error."""
-    return str(node_id or "") in ALARM_NODE_IDS
 
 
 def node_signal_label(node_id: Any, short_name: str | None = None) -> str:

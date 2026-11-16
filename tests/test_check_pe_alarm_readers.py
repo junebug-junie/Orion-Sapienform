@@ -70,6 +70,36 @@ def test_stale_and_redundant_entries_fail(tmp_path):
     assert any("orion/reader.py" in p and "already filters" in p for p in problems)
 
 
+def test_every_spelling_of_the_key_counts_as_touching(tmp_path):
+    files = {
+        "orion/a_getattr.py": "v = getattr(node, 'prediction_error', 0)\n",
+        "orion/b_member.py": "hot = [k for k, vec in vectors.items() if 'prediction_error' in vec]\n",
+        "orion/c_sql.py": "SQL = \"select field_json -> 'node_vectors' ->> 'prediction_error'\"\n",
+        "orion/d_const.py": "PE_KEY = \"prediction_error\"\nv = md.get(PE_KEY)\n",
+        "orion/e_fstring.py": "q = f\"{node}.prediction_error\"\n",
+    }
+    root = _repo(tmp_path, files, {})
+    assert {p.split(" ")[0] for p in gate.check(root)} == set(files)
+
+
+def test_a_mention_in_a_comment_or_docstring_is_not_a_filter(tmp_path):
+    text = ('"""Uses is_alarm_node somewhere else."""\n'
+            "# ALARM_NODE_IDS are handled upstream\n" + GENERIC)
+    root = _repo(tmp_path, {"orion/claims.py": text}, {})
+    assert len(gate.check(root)) == 1
+
+
+def test_excluded_paths_must_be_narrow_existing_directories(tmp_path):
+    root = _repo(tmp_path, {"orion/x.py": GENERIC, "scripts/analysis_x.py": GENERIC},
+                 {"excluded_paths": [{"path": "orion/", "reason": "too broad"},
+                                     {"path": "scripts/analysis", "reason": "no slash"},
+                                     {"path": "scripts/nope/", "reason": "missing"}]})
+    problems = gate.check(root)
+    assert sum("must be an existing directory" in p for p in problems) == 3
+    assert any(p.startswith("orion/x.py") for p in problems)              # not excluded by the bad entries
+    assert any(p.startswith("scripts/analysis_x.py") for p in problems)
+
+
 def test_tests_evals_and_excluded_paths_are_not_scanned(tmp_path):
     root = _repo(tmp_path, {"orion/tests/test_x.py": GENERIC, "services/s/evals/run.py": GENERIC,
                             "scripts/analysis/replay.py": GENERIC},

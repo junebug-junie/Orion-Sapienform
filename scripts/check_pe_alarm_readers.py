@@ -8,11 +8,14 @@ there. So a new reader that ranks, averages or thresholds prediction_error value
 forgets ``is_alarm_node``, reads a firing as a surprise size. This gate makes that a CI failure
 instead of a review hope.
 
-A Python file "touches" prediction_error when it names the history table or reads the key
-(``["prediction_error"]``, ``.get("prediction_error"``, ``.prediction_error``). Each such file must be
-one of:
+A Python file "touches" prediction_error when it has the quoted string ``"prediction_error"`` anywhere
+(a dict key, ``.get``, ``getattr``, a constant, a channel name, an SQL JSON path) or ``.prediction_error``
+or names the history table. Broad on purpose: the field channel of the same name carries alarms too
+(``orion/field/pressure.py`` max-merged them across nodes until #3307), and readers there address it by
+name. Each such file must be one of:
 
-- **filters** (automatic): it calls ``is_alarm_node`` or uses ``ALARM_NODE_IDS``.
+- **filters** (automatic): it uses ``is_alarm_node`` or ``ALARM_NODE_IDS`` in CODE (comments and strings
+  do not count). This means the author decided how alarms are treated, not a proof the file drops them.
 - **registered** in ``config/substrate/prediction_error_readers.yaml`` with a class and a reason:
   ``alarm_aware`` (reads alarms on purpose, as alarms), ``filters_via`` (skips alarms through a helper
   it imports -- name it), ``single_node`` (reads only named non-alarm nodes), ``not_a_reader`` (writes,
@@ -26,8 +29,10 @@ entry hides nothing today but would silently cover a new reader at the same path
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import sys
+import tokenize
 from pathlib import Path
 
 import yaml
@@ -35,8 +40,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 REGISTRY = Path("config/substrate/prediction_error_readers.yaml")
 SCAN_ROOTS = ("orion", "services", "scripts")
-TOUCH = re.compile(r"substrate_node_prediction_error_history|\[[\"']prediction_error[\"']\]"
-                   r"|\.get\(\s*[\"']prediction_error[\"']|\.prediction_error\b")
+TOUCH = re.compile(r"substrate_node_prediction_error_history|[\"']prediction_error[\"']|\.prediction_error\b")
 FILTERS = re.compile(r"\bis_alarm_node\b|\bALARM_NODE_IDS\b")
 CLASSES = ("alarm_aware", "filters_via", "single_node", "not_a_reader")
 SKIP_PARTS = {"tests", "test", "evals", "__pycache__", "node_modules", ".venv"}
@@ -44,6 +48,18 @@ SKIP_PARTS = {"tests", "test", "evals", "__pycache__", "node_modules", ".venv"}
 
 def _is_test(rel: Path) -> bool:
     return bool(SKIP_PARTS & set(rel.parts)) or rel.name.startswith("test_") or rel.name == "conftest.py"
+
+
+def _code_only(text: str) -> str:
+    """The source with comments and string literals removed (a mention in a docstring is not a filter)."""
+    keep = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(text).readline):
+            if tok.type not in (tokenize.COMMENT, tokenize.STRING) and not getattr(tokenize, "FSTRING_MIDDLE", -1) == tok.type:
+                keep.append(tok.string)
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return text
+    return " ".join(keep)
 
 
 def touching_files(root: Path) -> dict[str, bool]:
@@ -59,7 +75,7 @@ def touching_files(root: Path) -> dict[str, bool]:
                 continue
             text = p.read_text(encoding="utf-8", errors="replace")
             if TOUCH.search(text):
-                out[rel.as_posix()] = bool(FILTERS.search(text))
+                out[rel.as_posix()] = bool(FILTERS.search(_code_only(text)))
     return out
 
 
@@ -75,9 +91,14 @@ def check(root: Path) -> list[str]:
     problems: list[str] = []
     excluded = []
     for e in doc.get("excluded_paths") or []:
+        path = str(e.get("path") or "").strip()
         if not str(e.get("reason") or "").strip():
-            problems.append(f"excluded path {e.get('path')!r} has no reason")
-        excluded.append(str(e.get("path") or ""))
+            problems.append(f"excluded path {path!r} has no reason")
+        if not path.endswith("/") or path.rstrip("/") in SCAN_ROOTS or not (root / path).is_dir():
+            problems.append(f"excluded path {path!r} must be an existing directory ending in '/', "
+                            f"narrower than a whole scan root ({', '.join(SCAN_ROOTS)})")
+            continue
+        excluded.append(path)
     files = doc.get("files") or {}
     for path, entry in files.items():
         cls = (entry or {}).get("class")
@@ -87,7 +108,7 @@ def check(root: Path) -> list[str]:
             problems.append(f"{path}: no reason")
     touching = touching_files(root)
     for path, auto in touching.items():
-        if auto or path in files or any(path.startswith(x) for x in excluded if x):
+        if auto or path in files or any(path.startswith(x) for x in excluded):
             continue
         problems.append(
             f"{path} reads node prediction_error but neither skips alarms (is_alarm_node / ALARM_NODE_IDS) "

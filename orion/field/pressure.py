@@ -26,6 +26,18 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from orion.schemas.field_state import FieldStateV1
+from orion.prediction.alarm_nodes import is_alarm_node
+
+# The field channel named "prediction_error" carries alarm firings too (the field digester copies each
+# node's pressure hint, alarms included). An alarm's value means "it fired", not a surprise size, so it
+# never competes for the merged prediction_error channel (#3307; PE suite rebuild, "Alarms move out of
+# the PE group"). Shared with commensurability.observe_source_to_channel so the mirror cannot drift.
+PREDICTION_ERROR_CHANNEL = "prediction_error"
+
+
+def skips_merge(source_id: str, channel: str) -> bool:
+    """True when this node's value on this channel must not enter the cross-node merge."""
+    return channel == PREDICTION_ERROR_CHANNEL and is_alarm_node(source_id)
 
 PRESSURE_CHANNELS = frozenset({
     "cortex_exec_step_load",
@@ -302,7 +314,7 @@ def collect_field_channel_pressures_with_holders(
     holders: dict[str, tuple[str, str]] = {}
     for source_id, vector in field.node_vectors.items():
         for channel, value in vector.items():
-            if (source_id, channel) in stale_pairs:
+            if (source_id, channel) in stale_pairs or skips_merge(source_id, channel):
                 continue
             v = clamp01(float(value))
             if channel in HIGHER_IS_BETTER_CHANNELS:

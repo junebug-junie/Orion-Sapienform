@@ -281,7 +281,7 @@ The player types to Orion from inside the game.
 - **Juniper stated.** The message is a normal turn of Juniper's, with everything such a turn has: the warm slot, the recent conversation, the working notes, the Prime block, the hand-back to Prime.
 - **Guest, or nobody stated.** The message is sent as a third-party room turn, with the room's platform set to `retro`. That path exists for a speaker who is not Juniper (`services/orion-hub/scripts/cortex_request_builder.py:405`). Three things follow:
   1. The turn's origin is not Juniper. The socket path sets Juniper as the origin for every message today (`websocket_handler.py:1665`). It gains the check the HTTP path already has (`api_routes.py:3353`).
-  2. The history row carries the source `retro_guest`. The three readers that mean "Juniper spoke" must not match it: the temporal speaker rule (`orion/temporal_self/sources.py:83`), the attention count of her turns (`orion/attention/world_first.py:1208`), and the day letter's chat gather (`orion/orion_day/gather.py:220`). The first one needs a change: it reads any row with a prompt as Juniper.
+  2. The history row carries the source `retro_guest`. The three readers that mean "Juniper spoke" must not match it: the temporal speaker rule (`orion/temporal_self/sources.py:83`), the attention count of her turns (`orion/attention/world_first.py:1208`), and the day letter's chat gather (`orion/orion_day/gather.py:224`). The first one needs a change: it reads any row with a prompt as Juniper.
   3. The turn hands back to Prime as class `play`, never as Juniper's chat.
 - A guest turn has no warm slot, so it is slower. That is the cost of not knowing.
 

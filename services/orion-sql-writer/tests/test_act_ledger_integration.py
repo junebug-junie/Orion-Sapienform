@@ -544,8 +544,12 @@ def test_close_fills_energy_money_and_heat_from_the_act_leases(session, monkeypa
         if stmt.strip():
             session.execute(text(stmt))
     t0 = (datetime.now(timezone.utc) - timedelta(minutes=10)).replace(microsecond=0)
-    if (t0 - timedelta(minutes=5)).date() != t0.date():
-        t0 += timedelta(minutes=6)  # keep the lease window inside one UTC day (floors are day-keyed)
+    # Keep the whole window (samples t0-2 min .. t0+3.5 min) inside one UTC day: floors are day-keyed.
+    # Both sides: a run at 00:05-00:10 UTC puts t0 at 23:55-00:00 and the window ran past midnight
+    # (CI failed 2026-11-16 00:09Z with wh_by_host None).
+    if (t0 - timedelta(minutes=5)).date() != t0.date() or (t0 + timedelta(minutes=5)).date() != t0.date():
+        t0 = (t0.replace(hour=0, minute=6, second=0) if t0.hour == 0
+              else t0.replace(hour=23, minute=54, second=0))
     # Chassis rest is pinned (rest_body.yaml); this test pins its own 600 W so a re-measure of the
     # committed file does not move it.
     from orion.physiology.rest_body import parse_rest_body

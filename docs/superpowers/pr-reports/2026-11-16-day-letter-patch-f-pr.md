@@ -40,6 +40,8 @@ The tick built `FrontierCuriosityEvaluator` with `_neutral_frontier_metacog_inpu
 - Removed: `cognition_report` / `perception_brief` arguments of `FrontierCuriosityEvaluator.evaluate`, `FrontierCuriosityOrchestrator.run`, `GraphConsolidationEvaluator.consolidate`.
 - Behavior changed: `times_tested` counts runs, not commands (6.3% of per-run tests moved it by more than 1). `/api/substrate/hotspots` `contradiction_hotspots` is now `{available: false, reason}`, not an empty slice. Current answer outside the prompt needs evidence (no draft fallback).
 
+- Also: retired signal kinds metacog_perception/coherence_state/goal_pressure on the graph_cognition organ and the stub GraphCognitionAdapter; metric lock regenerated (drift/lineage/dead-wiring gates pass).
+
 ## Env/config changes
 
 None. No `.env_example` changed.
@@ -106,7 +108,7 @@ docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview "CALL
 
 - Severity: low. Concern: Orion writes its own SET without the CASE. Mitigation: value.py reports it as moved-untested.
 - Severity: low. Concern: an A->B, B->A, A->B sequence in one run folds the third move into the first. Mitigation: rare; documented.
-- Severity: info. Live unique rule applied by the operator 2026-11-16 (OPERATIONAL; proof on #3395). Issues opened: #3525, #3542, #3543, #3544, #3545. Issues closed: none (#3393 stays open for the self-node seed symptom).
+- Severity: info. Live unique rule applied by the operator 2026-11-16 (OPERATIONAL; proof on #3395). Issues opened: #3525, #3542 (fixed here), #3543, #3544, #3545, #3546, #3547. Issues closed: none (#3393 stays open for the self-node seed symptom).
 
 ## PR link
 

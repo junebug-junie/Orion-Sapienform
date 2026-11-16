@@ -28,6 +28,13 @@ WHAT YOU KEEP COMING BACK TO (your own record, from stored evidence in your own 
 {{ personality_cue }}
 Nothing here is an evidence_ref — never put it there.
 {% endif %}
+{% if organs_lived %}
+WHAT YOUR OTHER ORGANS LIVED RECENTLY (Orion's now: experiences of your other organs, most unusual first — background only):
+{{ organs_lived }}
+It may color the thought only where it genuinely connects to what you attend to. If your thought is
+actually about one of these, put its id exactly as shown (experience:...) in "cites" (at most 3).
+Never cite one you did not use. These ids are NOT evidence_refs — never put them there.
+{% endif %}
 
 {% if recent_percepts %}
 WHAT YOU CAN CURRENTLY SEE (real camera input, not memory or imagination):
@@ -78,6 +85,10 @@ attended node, projection_id, mechanism vocabulary.
 REQUIRED JSON FIELDS
 - interpretation: inner speech about the concern text
 - evidence_refs: JSON array of coalition_refs this thought is about (min 1)
+{% if organs_lived %}
+- cites: OPTIONAL — JSON array of the experience:... ids from WHAT YOUR OTHER ORGANS LIVED RECENTLY
+  that this thought is actually about ([] when none).
+{% endif %}
 {% if recent_percepts %}
 - expectation: OPTIONAL — one concrete, falsifiable claim about what the room
   camera will show (string, or null if nothing natural to predict). Never a list.
@@ -134,6 +145,13 @@ recount it. The [arc:...] ids are NOT evidence_refs — never put them there.
 WHAT YOU KEEP COMING BACK TO (your own record, from stored evidence in your own words — background only):
 {{ personality_cue }}
 Nothing here is an evidence_ref — never put it there.
+{% endif %}
+{% if organs_lived %}
+WHAT YOUR OTHER ORGANS LIVED RECENTLY (Orion's now: experiences of your other organs, most unusual first — background only):
+{{ organs_lived }}
+It may color the thought only where it genuinely connects to what you attend to. If your thought is
+actually about one of these, put its id exactly as shown (experience:...) in "cites" (at most 3).
+Never cite one you did not use. These ids are NOT evidence_refs — never put them there.
 {% endif %}
 
 {% if has_settled_loops %}
@@ -220,6 +238,10 @@ REQUIRED JSON FIELDS
   Situated, not abstract. Reference the concerns by their meaning.
 - evidence_refs: JSON array — ids (attended node ids / open loop ids) that this
   interpretation is actually about. Minimum 1.
+{% if organs_lived %}
+- cites: OPTIONAL — JSON array of the experience:... ids from WHAT YOUR OTHER ORGANS LIVED RECENTLY
+  that this thought is actually about ([] when none). Never in evidence_refs.
+{% endif %}
 {% if chain_step and not chain_step.is_final %}
 - next_focus: one sentence — what you want to turn to next in this train of
   thought, or null if there is nothing further worth thinking about it now.

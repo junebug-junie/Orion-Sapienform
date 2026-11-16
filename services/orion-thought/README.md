@@ -429,6 +429,17 @@ anywhere: the cue only names what recurred, where, and how often.
 - Reverie: one fetch per step alongside reverie's other reads (`ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC`),
   rendered as `WHAT YOU KEEP COMING BACK TO` in `reverie_narrate.j2` next to `EARLIER TODAY`.
 
+### Orion's now in reverie (integration patch 3)
+
+Each reverie chain reads Orion's now once (`GET $TEMPORAL_SELF_FRAME_URL/temporal-self/now?organ=reverie`, no
+`since`, so it moves reverie's cursor; `app/temporal_self_cue.py reverie_now`), at its first step that reaches the
+prompt. Every step of the chain shows it as `WHAT YOUR OTHER ORGANS LIVED RECENTLY` in `reverie_narrate.j2`, one
+`[experience:<id>]` line per item. A thought names what it used in its optional `cites` field; an `experience:` id
+put in `evidence_refs` is moved there (it is never grounding: the hollow guard stays strict). Only a PUBLISHED
+thought's cites are posted (`/temporal-self/now/use`, citing_ref `reverie_thought:<thought_id>`). Logs:
+`reverie_now_read`, `reverie_now_unread reason=...`, `reverie_now_cites`. Keys: `ORION_REVERIE_NOW_ENABLED=true`,
+`ORION_REVERIE_NOW_TIMEOUT_SEC=3`.
+
 A frame that is missing, invalid, older than `PERSONALITY_CUE_MAX_AGE_SEC=3600`, or empty renders nothing.
 Log (one per build): `personality_cue corr=... rendered=true|false ids=... skip=disabled|fetch_failed|invalid_frame|stale|empty|render_failed`.
 Kill switch: `PERSONALITY_CUE_ENABLED=false`.

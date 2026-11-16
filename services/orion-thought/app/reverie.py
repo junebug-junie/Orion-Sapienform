@@ -503,6 +503,7 @@ def build_reverie_context(
     street_predictions: list[str] | None = None,
     street_day: str | None = None,
     continuity: ChainContinuity | None = None,
+    organs_lived: str | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
     # The street (walkway camera) rides under its OWN keys, never inside
@@ -539,6 +540,8 @@ def build_reverie_context(
             ctx["recent_arcs"] = recent_arcs
         if personality_cue:
             ctx["personality_cue"] = personality_cue
+        if organs_lived:
+            ctx["organs_lived"] = organs_lived
         return ctx
     open_loops = _open_loops_for_prompt(broadcast, loop_outcomes=loop_outcomes)
     # "attended_signal", not "coalition": the broadcast's winner is 0-1 node
@@ -586,6 +589,9 @@ def build_reverie_context(
     if personality_cue:
         # Personality graph read-back: what Orion keeps coming back to (rendered, no LLM; a record).
         ctx["personality_cue"] = personality_cue
+    if organs_lived:
+        # Orion's now (integration patch 3): other organs' experiences, each with its [experience:<id>].
+        ctx["organs_lived"] = organs_lived
     return ctx
 
 
@@ -604,6 +610,7 @@ def build_reverie_plan_request(
     street_predictions: list[str] | None = None,
     street_day: str | None = None,
     continuity: ChainContinuity | None = None,
+    organs_lived: str | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -635,8 +642,23 @@ def build_reverie_plan_request(
             street_predictions=street_predictions,
             street_day=street_day,
             continuity=continuity,
+            organs_lived=organs_lived,
         ),
     )
+
+
+def _payload_dict(raw: dict[str, Any] | str | None) -> dict[str, Any]:
+    """The model's JSON object, from a dict or a JSON string; {} for anything else."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        import json
+
+        with suppress(Exception):
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+    return {}
 
 
 def parse_reverie_payload(
@@ -658,16 +680,7 @@ def parse_reverie_payload(
     salience is computed deterministically from coalition scores here, never taken
     from the LLM (same coalition → same salience, every time).
     """
-    data: dict[str, Any] = {}
-    if isinstance(raw, dict):
-        data = raw
-    elif isinstance(raw, str):
-        import json
-
-        with suppress(Exception):
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                data = parsed
+    data = _payload_dict(raw)
 
     interpretation = str(data.get("interpretation") or "").strip()
     evidence_refs = data.get("evidence_refs") or []
@@ -681,6 +694,13 @@ def parse_reverie_payload(
             logger.info("reverie_evidence_arc_ref_stripped corr=%s n=%s",
                         correlation_id, len(evidence_refs) - len(kept))
         evidence_refs = kept
+    # Orion's now (integration patch 3): an experience id is never grounding. One the model put in evidence_refs
+    # is removed here (run_reverie_once counts it as a cite instead), so the hollow guard below stays strict.
+    no_exp = [r for r in evidence_refs if not r.strip().strip("[]").startswith("experience:")]
+    if len(no_exp) != len(evidence_refs):
+        logger.info("reverie_evidence_experience_ref_moved corr=%s n=%s", correlation_id,
+                    len(evidence_refs) - len(no_exp))
+        evidence_refs = no_exp
 
     # Phase E (Movement III): optional falsifiable claim about the room. Only
     # ever present when the prompt actually offered a recent_percepts block
@@ -1148,6 +1168,8 @@ async def run_reverie_once(
             cue = await build_self_track_record_cue(correlation_id, purpose="reverie")
             return cue.text or None
 
+        from .temporal_self_cue import record_reverie_cites, render_reverie_now, reverie_cites, reverie_now
+
         (
             loop_outcomes,
             recent_percepts,
@@ -1157,6 +1179,7 @@ async def run_reverie_once(
             personality_cue,
             street_day,
             self_track_record,
+            now_read,
         ) = await asyncio.gather(
             _fetch_loop_outcomes(),
             _fetch_percepts(),
@@ -1166,6 +1189,7 @@ async def run_reverie_once(
             build_personality_cue_text(correlation_id),
             _fetch_street_day(),
             _fetch_self_track_record(),
+            reverie_now(chain_context[0] if chain_context else None, correlation_id),
         )
         if street_percepts or street_predictions or street_day:
             logger.info(
@@ -1186,6 +1210,7 @@ async def run_reverie_once(
             street_predictions=street_predictions,
             street_day=street_day or None,
             continuity=continuity,
+            organs_lived=render_reverie_now(now_read) or None,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
         # duplicated here (not returned by that function) because only a call that actually set
@@ -1222,6 +1247,11 @@ async def run_reverie_once(
             )
             raise ReverieLlmUnavailable(failure)
         raw_payload = extract_stance_react_payload(exec_result)
+        raw_dict = _payload_dict(raw_payload)
+        raw_refs = raw_dict.get("evidence_refs")
+        now_cites, _ = reverie_cites(
+            raw_dict.get("cites"), [str(x) for x in raw_refs] if isinstance(raw_refs, list) else [],
+            now_read.shown_ids if now_read is not None else [])
 
         thought = parse_reverie_payload(
             raw_payload,
@@ -1290,6 +1320,8 @@ async def run_reverie_once(
         await bus.publish(settings.channel_reverie_thought, envelope)
         # Best-effort persistence for the hub panel — never breaks the tick.
         persist_reverie_thought(thought)
+        # Orion's now: only a published thought's cites count (bounded; never breaks the tick).
+        await record_reverie_cites(now_read, now_cites, thought.thought_id, correlation_id)
         # 2026-07-31: this flag no longer selects a salience formula (there
         # is only one -- see orion.substrate.attention.salience). Its real,
         # kept purpose is narrower now: whether the salience-trace pipeline

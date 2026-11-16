@@ -100,3 +100,17 @@ def _no_live_self_monitor(monkeypatch):
         raise redis.ConnectionError("tests never read the live bus")
 
     monkeypatch.setattr(redis.Redis, "from_url", classmethod(lambda cls, *a, **k: refuse()))
+
+
+@pytest.fixture(autouse=True)
+def _no_live_now(monkeypatch):
+    """Orion's now (integration patch 3) is on by default and reverie reads it on every chain. Refuse every live
+    call of the shared client, so no test waits on the compose hostname; the reverie renders no section, as it
+    would with durable-runs down. Tests of the seam patch ``app.temporal_self_cue._now_http``."""
+    from orion.integration import now_client
+
+    def refuse(*_a, **_k):
+        raise ConnectionRefusedError("tests never read the live now")
+
+    monkeypatch.setattr(now_client, "_http_get", refuse)
+    monkeypatch.setattr(now_client, "_http_post", refuse)

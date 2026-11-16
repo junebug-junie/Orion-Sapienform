@@ -795,6 +795,12 @@ class ThoughtSettings(BaseSettings):
     reverie_recent_arcs_fetch_timeout_sec: float = Field(
         1.0, gt=0.0, le=1.5, alias="ORION_REVERIE_RECENT_ARCS_FETCH_TIMEOUT_SEC"
     )
+    # --- Orion's now (integration patch 3): reverie reads what other organs lived ---
+    # One GET {TEMPORAL_SELF_FRAME_URL}/temporal-self/now?organ=reverie per reverie chain (app/temporal_self_cue.py),
+    # shown to reverie_narrate as WHAT YOUR OTHER ORGANS LIVED RECENTLY; a published thought's "cites" are posted to
+    # /temporal-self/now/use. A failed read is a reverie without the section. false: no read, no section, no cites.
+    reverie_now_enabled: bool = Field(True, alias="ORION_REVERIE_NOW_ENABLED")
+    reverie_now_timeout_sec: float = Field(3.0, gt=0.0, le=10.0, alias="ORION_REVERIE_NOW_TIMEOUT_SEC")
 
     # --- Reasoning activity projection (always-on consumer; harmless when idle) ---
     # Consume per-call ReasoningCallV1 telemetry and materialize a rolling-window

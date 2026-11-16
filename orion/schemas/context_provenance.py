@@ -195,6 +195,14 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "(app/reverie.py build_recent_arcs_text; orion/temporal_self/recent_arcs.py).",
         ),
         _entry(
+            "organs_lived",
+            "derived_summary",
+            "Orion's now (integration patch 3): the few most unusual experiences of Orion's OTHER organs since "
+            "reverie last looked, one line each from a fixed template (no LLM, orion/temporal_self/now.py "
+            "now_lines) over orion-durable-runs GET /temporal-self/now, each citing [experience:<id>]. Set by "
+            "orion-thought for reverie_narrate only (app/temporal_self_cue.py reverie_now).",
+        ),
+        _entry(
             "personality_cue",
             "derived_summary",
             "What Orion keeps coming back to: a fixed template (no LLM, orion/personality/cue.py) "

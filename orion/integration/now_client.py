@@ -16,6 +16,8 @@ Rules every reader gets from here, so no reader can forget one:
   rows is the record of "read and cited nothing".
 
 Stdlib only (urllib), so every service image can use it; async callers use ``aread_now`` / ``arecord_use``.
+``get``/``post`` default to this module's ``_http_get``/``_http_post``, looked up at call time (a test fixture can
+refuse every live call by patching them).
 """
 
 from __future__ import annotations
@@ -77,7 +79,7 @@ def _why(exc: BaseException) -> str:
 
 
 def read_now(base_url: str, organ: str, *, run_ref: Optional[str] = None, since: Optional[datetime] = None,
-             timeout_sec: float = DEFAULT_TIMEOUT_SEC, get: Getter = _http_get) -> NowRead:
+             timeout_sec: float = DEFAULT_TIMEOUT_SEC, get: Optional[Getter] = None) -> NowRead:
     """GET the now for ``organ``. ``run_ref``: the reading run's own id, stored on the shown row.
     ``since``: inspection reads only (it never moves the organ's cursor). Never raises."""
     if not (base_url or "").strip():
@@ -89,7 +91,7 @@ def read_now(base_url: str, organ: str, *, run_ref: Optional[str] = None, since:
         params["since"] = since.isoformat()
     url = f"{base_url.rstrip('/')}{NOW_PATH}?{urllib.parse.urlencode(params)}"
     try:
-        body = get(url, timeout_sec)
+        body = (get or _http_get)(url, timeout_sec)
     except Exception as exc:  # noqa: BLE001 -- a reader never fails its organ
         return NowRead(None, _why(exc))
     try:
@@ -100,7 +102,7 @@ def read_now(base_url: str, organ: str, *, run_ref: Optional[str] = None, since:
 
 def record_use(base_url: str, shown_id: str, cites: Iterable[str], citing_ref: str, *,
                timeout_sec: float = DEFAULT_TIMEOUT_SEC,
-               post: Poster = _http_post) -> tuple[Optional[ExperienceUseResultV1], Optional[str]]:
+               post: Optional[Poster] = None) -> tuple[Optional[ExperienceUseResultV1], Optional[str]]:
     """POST a run's cites against the shown row it read. ``(None, None)`` when there was nothing to cite
     (no call is made). Durable-runs checks each cite against the shown row (at most 3 per row). Never raises."""
     ids = [str(c) for c in dict.fromkeys(cites) if c]
@@ -110,7 +112,7 @@ def record_use(base_url: str, shown_id: str, cites: Iterable[str], citing_ref: s
         return None, "missing durable-runs URL, shown_id or citing_ref"
     body = {"shown_id": shown_id, "citing_ref": citing_ref[:300], "cites": ids[:32]}
     try:
-        data = post(f"{base_url.rstrip('/')}{USE_PATH}", body, timeout_sec)
+        data = (post or _http_post)(f"{base_url.rstrip('/')}{USE_PATH}", body, timeout_sec)
     except Exception as exc:  # noqa: BLE001
         return None, _why(exc)
     try:
@@ -120,7 +122,7 @@ def record_use(base_url: str, shown_id: str, cites: Iterable[str], citing_ref: s
 
 
 async def aread_now(base_url: str, organ: str, *, run_ref: Optional[str] = None, since: Optional[datetime] = None,
-                    timeout_sec: float = DEFAULT_TIMEOUT_SEC, get: Getter = _http_get) -> NowRead:
+                    timeout_sec: float = DEFAULT_TIMEOUT_SEC, get: Optional[Getter] = None) -> NowRead:
     """``read_now`` off the event loop, bounded as a whole (DNS included). Never raises."""
     try:
         return await asyncio.wait_for(asyncio.to_thread(read_now, base_url, organ, run_ref=run_ref, since=since,
@@ -133,7 +135,7 @@ async def aread_now(base_url: str, organ: str, *, run_ref: Optional[str] = None,
 
 async def arecord_use(base_url: str, shown_id: str, cites: Iterable[str], citing_ref: str, *,
                       timeout_sec: float = DEFAULT_TIMEOUT_SEC,
-                      post: Poster = _http_post) -> tuple[Optional[ExperienceUseResultV1], Optional[str]]:
+                      post: Optional[Poster] = None) -> tuple[Optional[ExperienceUseResultV1], Optional[str]]:
     """``record_use`` off the event loop, bounded as a whole. Never raises."""
     cites = list(cites)
     try:

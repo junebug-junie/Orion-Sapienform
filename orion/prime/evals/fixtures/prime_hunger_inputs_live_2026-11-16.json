@@ -1,0 +1,2723 @@
+{
+ "window": {
+  "start": "2026-11-06T09:00:00+00:00",
+  "end": "2026-11-16T09:00:00+00:00"
+ },
+ "thoughts": [
+  {
+   "at": "2026-11-06T14:06:53.699557+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-06T20:07:02.23764+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-07T02:07:13.740982+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-07T08:09:32.903423+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-07T14:09:33.91132+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-07T20:09:44.957234+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-08T02:09:51.199882+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-08T08:09:57.345211+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | move curiosity_focus \"What governance or safety mechanisms exist in Orion's substrate configuration to detect and mitigate when the always-on \" refs act:act_41b7eb080ae91966dd78676c"
+  },
+  {
+   "at": "2026-11-08T08:35:33.273879+00:00",
+   "note": "woke: my question \"What governance or safety mechanisms exist in Orion's substrate configuration to detect and mitigate when the always-on \" (act act_c0e460d9de11d... | concerns +0 -1 kept 0 | no move | dropped bafe0843dec34b81 (Settled: A question was asked and processed by a curiosity run (724632a"
+  },
+  {
+   "at": "2026-11-08T14:35:37.522199+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-08T20:35:37.943038+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-09T02:35:49.473449+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +1 -0 kept 0 | move curiosity_focus \"What factors determine when 'lane:agent' becomes the binding constraint in Orion's body economy, and how does its strain\" refs act:act_4e638cf59b49acc09d00d51b"
+  },
+  {
+   "at": "2026-11-09T08:36:31.822091+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-09T09:26:07.145995+00:00",
+   "note": "woke: my question \"What factors determine when 'lane:agent' becomes the binding constraint in Orion's body economy, and how does its strain\" (act act_8e84c23bb742a... | concerns +0 -1 kept 0 | no move | dropped ab7a330602854a01 (Settled by curiosity run df5b3b1359e2. The energy forecast ($132) excee"
+  },
+  {
+   "at": "2026-11-09T15:26:08.980436+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-09T21:26:09.728022+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +1 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-10T03:26:18.615185+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-10T09:26:25.275144+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-10T15:26:37.369717+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-10T21:27:26.726106+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -1 kept 0 | no move | dropped 76c691d058b94b82 (No open events to attach new concerns to; energy is explicitly marked 'out of my hands' with zero strain, making structu)"
+  },
+  {
+   "at": "2026-11-11T03:27:34.661445+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-11T09:27:44.53754+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-11T15:27:53.540056+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-11T21:28:01.086669+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-12T03:28:02.550511+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-12T07:08:58.266509+00:00",
+   "note": "woke: a chat with Juniper turn (a129b72f-e698-425a-a435-3388cd7cd759) opened a thread: Juniper: \"howdy, just saying hi on my way to play Zelda, a Link from the Pas... | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-12T13:09:09.601092+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-12T19:09:21.375431+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-12T21:04:37.232136+00:00",
+   "note": "woke: my letter for 2026-11-11 (act act_c9bc6cc29806e73139962cce): the run ended failed: HarnessStepFailed: harness_step_failed:letter:no_final_frame | concerns +1 -0 kept 1 | move curiosity_focus \"What are the specific conditions or errors that cause the letter generation process to fail with 'harn"
+  },
+  {
+   "at": "2026-11-13T03:04:42.261692+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -1 kept 1 | no move | dropped be13a145d02f4188 (The letter for 2026-11-11 was successfully generated and closed in the last turn (turn 4cc51d01), resolving the 'no_fina)"
+  },
+  {
+   "at": "2026-11-13T05:51:48.661771+00:00",
+   "note": "no (conversation) body_economy"
+  },
+  {
+   "at": "2026-11-13T07:36:14.115012+00:00",
+   "note": "woke: my letter for 2026-11-12 named 5 thread(s); I now hold 2 of them as concerns; my letter for 2026-11-12 (act act_a326754dd5dc80af471421bf): the run wrote the ... | concerns +0 -1 kept 2 | no move | dropped 90d09c3e8d6c00a3 (The concern was about the letter generation failure and statistical ano"
+  },
+  {
+   "at": "2026-11-13T07:46:20.216376+00:00",
+   "note": "woke: my question \"What are the specific conditions or errors that cause the letter generation process to fail with 'harness_step_failed:le\" (act act_9bce232593f9b... | concerns +0 -0 kept 2 | no move"
+  },
+  {
+   "at": "2026-11-13T13:46:22.124123+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -1 kept 1 | no move | dropped f1e01e2a2cf54886 (The 2026-11-12 letter was successfully written and closed; the operational failure concern is resolved.)"
+  },
+  {
+   "at": "2026-11-13T19:46:47.646562+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 1 | move take_on d8db9d7b1bba4cf7: \"The promise to reply to Juniper's 'hi' message is still open and held. Taking it on ensures the thread is closed with a \""
+  },
+  {
+   "at": "2026-11-13T22:50:49.701404+00:00",
+   "note": "woke: a carry turn for something I took on turn (0cf659ad-3967-516d-b031-6aace510c878) answered my concern: concern settled: 'a thread I opened in a chat with Juni... | concerns +0 -1 kept 0 | no move | dropped d8db9d7b1bba4cf7 (The carried turn answered the promise and settled the concern.)"
+  },
+  {
+   "at": "2026-11-13T22:57:22.6479+00:00",
+   "note": "woke: what I took on (concern d8db9d7b1bba4cf7, act act_0418ced14d2fa1b989fe4086): carried: the reply is in the chat thread 9c91d646-cbd0-4977-8cdd-d2c82045c7f9 (6... | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-14T04:57:24.640172+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 0 | no move"
+  },
+  {
+   "at": "2026-11-14T09:17:03.705951+00:00",
+   "note": "woke: a curiosity run turn (d98cc64f-0867-5856-a582-f3b232905e65) made a promise, now concern 6c8990127e68eb5a | concerns +0 -0 kept 1 | no move"
+  },
+  {
+   "at": "2026-11-14T10:06:49.117024+00:00",
+   "note": "woke: my letter for 2026-11-13 named 5 thread(s); I now hold 2 of them as concerns; my letter for 2026-11-13 (act act_2c4536687e0fcf1acaaa4d9d): the run wrote the ... | concerns +0 -0 kept 3 | no move"
+  },
+  {
+   "at": "2026-11-14T16:06:56.143625+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 3 | move refused: could not read whether curiosity already has a focus waiting"
+  },
+  {
+   "at": "2026-11-14T22:07:42.007482+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 3 | move refused: could not read whether curiosity already has a focus waiting"
+  },
+  {
+   "at": "2026-11-15T04:07:45.150285+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -1 kept 2 | move refused: ref {\"kind\": \"act\", \"id\": \"orion_day_letter:2026-11-13#thread0\"} is not usable (kinds: arc, act): Value error, act id must look like act_ + 24 hex characters, got 'orion_day_letter:2026-11-13#thread0' | dropped 6c8"
+  },
+  {
+   "at": "2026-11-15T05:42:50.799282+00:00",
+   "note": "woke: a chat with Juniper turn (9f846e8e-c33c-4ecf-97c3-35e3142ce21f) made a promise, now concern 438e69ed6bb3d798 | concerns +0 -0 kept 3 | no move"
+  },
+  {
+   "at": "2026-11-15T07:33:43.265805+00:00",
+   "note": "woke: my letter for 2026-11-14 (act act_f4c84f69cdcc7e3f968018aa): the run wrote the day's letter; 5 thread(s), 0 now held as concerns, 5 without room | concerns +0 -0 kept 3 | no move"
+  },
+  {
+   "at": "2026-11-15T13:36:52.005029+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 3 | no move"
+  },
+  {
+   "at": "2026-11-15T19:37:02.904431+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 3 | no move"
+  },
+  {
+   "at": "2026-11-16T01:37:03.634615+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 3 | no move"
+  },
+  {
+   "at": "2026-11-16T07:37:15.800258+00:00",
+   "note": "woke: quiet: nothing has woken me for 6 hours | concerns +0 -0 kept 3 | no move"
+  },
+  {
+   "at": "2026-11-16T07:48:41.647198+00:00",
+   "note": "woke: my letter for 2026-11-15 (act act_4c2d0ebfd25709d9ee06fdc9): the run wrote the day's letter; 5 thread(s), 0 now held as concerns, 5 without room | concerns +0 -0 kept 3 | no move"
+  }
+ ],
+ "surprises": [
+  {
+   "event_id": "reading_turn:act_659eea3840a23504906ed17d",
+   "source_kind": "reading_turn",
+   "at": "2026-11-15T22:14:15.137219+00:00",
+   "nats": 0.000783365664465685,
+   "p90": null,
+   "n": 0
+  },
+  {
+   "event_id": "reading_turn:act_7002e43048172c7c19476902",
+   "source_kind": "reading_turn",
+   "at": "2026-11-15T22:15:18.80314+00:00",
+   "nats": 0.0007817310885693818,
+   "p90": 0.000783365664465685,
+   "n": 1
+  },
+  {
+   "event_id": "reading_turn:act_5929b2d07450881878d3576b",
+   "source_kind": "reading_turn",
+   "at": "2026-11-15T23:23:57.646595+00:00",
+   "nats": 8.740989573285951e-05,
+   "p90": 0.0007832022068760547,
+   "n": 2
+  },
+  {
+   "event_id": "prediction_surprise:14930",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:31:22.372021+00:00",
+   "nats": 0.01227009259181436,
+   "p90": null,
+   "n": 0
+  },
+  {
+   "event_id": "prediction_surprise:14929",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:31:22.372021+00:00",
+   "nats": 0.01227009259181436,
+   "p90": null,
+   "n": 0
+  },
+  {
+   "event_id": "prediction_surprise:14932",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:36:30.456928+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 2
+  },
+  {
+   "event_id": "prediction_surprise:14931",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:36:30.456928+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 2
+  },
+  {
+   "event_id": "prediction_surprise:14933",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:41:28.551677+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 4
+  },
+  {
+   "event_id": "prediction_surprise:14934",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:41:28.551677+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 4
+  },
+  {
+   "event_id": "prediction_surprise:14936",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:46:32.284648+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 6
+  },
+  {
+   "event_id": "prediction_surprise:14935",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:46:32.284648+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 6
+  },
+  {
+   "event_id": "prediction_surprise:14938",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:51:33.319826+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 8
+  },
+  {
+   "event_id": "prediction_surprise:14937",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:51:33.319826+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 8
+  },
+  {
+   "event_id": "reading_turn:act_1cd597c9c9495cd9383aadb0",
+   "source_kind": "reading_turn",
+   "at": "2026-11-15T23:55:31.368849+00:00",
+   "nats": 8.759233802524413e-05,
+   "p90": 0.0007830387492864244,
+   "n": 3
+  },
+  {
+   "event_id": "prediction_surprise:14939",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:56:34.883801+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 10
+  },
+  {
+   "event_id": "prediction_surprise:14940",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-15T23:56:34.883801+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 10
+  },
+  {
+   "event_id": "prediction_surprise:14942",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:01:00.633361+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 12
+  },
+  {
+   "event_id": "prediction_surprise:14941",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:01:00.633361+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 12
+  },
+  {
+   "event_id": "action_outcome:150640",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T00:03:48.019637+00:00",
+   "nats": 0.2215735902799727,
+   "p90": null,
+   "n": 0
+  },
+  {
+   "event_id": "action_outcome:150641",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T00:05:31.242308+00:00",
+   "nats": 8.759233802524413e-05,
+   "p90": 0.2215735902799727,
+   "n": 1
+  },
+  {
+   "event_id": "prediction_surprise:14943",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:06:33.628799+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 14
+  },
+  {
+   "event_id": "prediction_surprise:14944",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:06:33.628799+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 14
+  },
+  {
+   "event_id": "prediction_surprise:14945",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:11:07.651399+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 16
+  },
+  {
+   "event_id": "prediction_surprise:14946",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:11:07.651399+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 16
+  },
+  {
+   "event_id": "prediction_surprise:14947",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:16:20.085929+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 18
+  },
+  {
+   "event_id": "prediction_surprise:14948",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:16:20.085929+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 18
+  },
+  {
+   "event_id": "action_outcome:150642",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T00:19:11.65784+00:00",
+   "nats": 0.0017376570682918757,
+   "p90": 0.19942499048577797,
+   "n": 2
+  },
+  {
+   "event_id": "action_outcome:150643",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T00:20:17.361632+00:00",
+   "nats": 8.740989573285951e-05,
+   "p90": 0.17760640363763655,
+   "n": 3
+  },
+  {
+   "event_id": "prediction_surprise:14950",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:21:19.536631+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 20
+  },
+  {
+   "event_id": "prediction_surprise:14949",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:21:19.536631+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 20
+  },
+  {
+   "event_id": "prediction_surprise:14951",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:26:24.441506+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 22
+  },
+  {
+   "event_id": "prediction_surprise:14952",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:26:24.441506+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 22
+  },
+  {
+   "event_id": "action_outcome:150644",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T00:26:50.394539+00:00",
+   "nats": 7.368001487706444e-06,
+   "p90": 0.1556228103164685,
+   "n": 4
+  },
+  {
+   "event_id": "prediction_surprise:14954",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:31:23.861042+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 24
+  },
+  {
+   "event_id": "prediction_surprise:14953",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:31:23.861042+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 24
+  },
+  {
+   "event_id": "action_outcome:150645",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T00:33:20.711947+00:00",
+   "nats": 0.001683463458808876,
+   "p90": 0.1336392169953004,
+   "n": 5
+  },
+  {
+   "event_id": "prediction_surprise:14955",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:36:25.180211+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 26
+  },
+  {
+   "event_id": "prediction_surprise:14956",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:36:25.180211+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 26
+  },
+  {
+   "event_id": "prediction_surprise:14958",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:41:31.461268+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 28
+  },
+  {
+   "event_id": "prediction_surprise:14957",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:41:31.461268+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 28
+  },
+  {
+   "event_id": "action_outcome:150646",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T00:43:21.775083+00:00",
+   "nats": 7.294317513673043e-06,
+   "p90": 0.11165562367413229,
+   "n": 6
+  },
+  {
+   "event_id": "prediction_surprise:14959",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:46:29.241449+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 30
+  },
+  {
+   "event_id": "prediction_surprise:14960",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:46:29.241449+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 30
+  },
+  {
+   "event_id": "prediction_surprise:14961",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:51:32.720017+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 32
+  },
+  {
+   "event_id": "prediction_surprise:14962",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:51:32.720017+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 32
+  },
+  {
+   "event_id": "prediction_surprise:14964",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:56:32.270212+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 34
+  },
+  {
+   "event_id": "prediction_surprise:14963",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T00:56:32.270212+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 34
+  },
+  {
+   "event_id": "action_outcome:150647",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T00:57:20.546673+00:00",
+   "nats": 7.2217028334042865e-06,
+   "p90": 0.08967203035296428,
+   "n": 7
+  },
+  {
+   "event_id": "prediction_surprise:14965",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:01:36.539313+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 36
+  },
+  {
+   "event_id": "prediction_surprise:14966",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:01:36.539313+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 36
+  },
+  {
+   "event_id": "prediction_surprise:14968",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:06:01.590207+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 38
+  },
+  {
+   "event_id": "prediction_surprise:14967",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:06:01.590207+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 38
+  },
+  {
+   "event_id": "action_outcome:150648",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T01:11:10.056164+00:00",
+   "nats": 0.06384366516519324,
+   "p90": 0.06768843703179608,
+   "n": 8
+  },
+  {
+   "event_id": "prediction_surprise:14970",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:16:21.574315+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 40
+  },
+  {
+   "event_id": "prediction_surprise:14972",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:16:21.574315+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 40
+  },
+  {
+   "event_id": "prediction_surprise:14971",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:16:21.574315+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 40
+  },
+  {
+   "event_id": "prediction_surprise:14969",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:16:21.574315+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 40
+  },
+  {
+   "event_id": "action_outcome:150649",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T01:17:30.682623+00:00",
+   "nats": 7.150137273148616e-06,
+   "p90": 0.09538965018814916,
+   "n": 9
+  },
+  {
+   "event_id": "prediction_surprise:14974",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:24:21.911344+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 44
+  },
+  {
+   "event_id": "prediction_surprise:14973",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:24:21.911344+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 44
+  },
+  {
+   "event_id": "action_outcome:150650",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T01:25:19.960666+00:00",
+   "nats": 1.2184267067394394e-05,
+   "p90": 0.07961665767667113,
+   "n": 10
+  },
+  {
+   "event_id": "prediction_surprise:14976",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:26:04.385202+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 46
+  },
+  {
+   "event_id": "prediction_surprise:14975",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:26:04.385202+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 46
+  },
+  {
+   "event_id": "action_outcome:150651",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T01:30:23.836412+00:00",
+   "nats": 7.079601125004054e-06,
+   "p90": 0.06384366516519324,
+   "n": 11
+  },
+  {
+   "event_id": "prediction_surprise:14978",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:31:03.330674+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 48
+  },
+  {
+   "event_id": "prediction_surprise:14977",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:31:03.330674+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 48
+  },
+  {
+   "event_id": "action_outcome:150652",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T01:34:59.548883+00:00",
+   "nats": 3.854579762374577e-06,
+   "p90": 0.057633064355503125,
+   "n": 12
+  },
+  {
+   "event_id": "prediction_surprise:14979",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:36:02.653072+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 50
+  },
+  {
+   "event_id": "prediction_surprise:14980",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:36:02.653072+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 50
+  },
+  {
+   "event_id": "action_outcome:150653",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T01:37:22.319837+00:00",
+   "nats": 0.00042455819326370214,
+   "p90": 0.051422463545813014,
+   "n": 13
+  },
+  {
+   "event_id": "action_outcome:150654",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T01:42:18.1699+00:00",
+   "nats": 7.010075135371885e-06,
+   "p90": 0.0452118627361229,
+   "n": 14
+  },
+  {
+   "event_id": "prediction_surprise:14982",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:46:09.739815+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 52
+  },
+  {
+   "event_id": "prediction_surprise:14981",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:46:09.739815+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 52
+  },
+  {
+   "event_id": "prediction_surprise:14983",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:51:14.062055+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 54
+  },
+  {
+   "event_id": "prediction_surprise:14984",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:51:14.062055+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 54
+  },
+  {
+   "event_id": "prediction_surprise:14986",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:56:13.095218+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 56
+  },
+  {
+   "event_id": "prediction_surprise:14985",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T01:56:13.095218+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 56
+  },
+  {
+   "event_id": "action_outcome:150655",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T01:57:21.485831+00:00",
+   "nats": 6.941540490745801e-06,
+   "p90": 0.039001261926432676,
+   "n": 15
+  },
+  {
+   "event_id": "prediction_surprise:14987",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:01:17.275236+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 58
+  },
+  {
+   "event_id": "prediction_surprise:14988",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:01:17.275236+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 58
+  },
+  {
+   "event_id": "prediction_surprise:14990",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:06:15.753045+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 60
+  },
+  {
+   "event_id": "prediction_surprise:14989",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:06:15.753045+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 60
+  },
+  {
+   "event_id": "prediction_surprise:14991",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:11:14.111616+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 62
+  },
+  {
+   "event_id": "prediction_surprise:14992",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:11:14.111616+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 62
+  },
+  {
+   "event_id": "action_outcome:150656",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T02:12:12.505985+00:00",
+   "nats": 6.873978807830916e-06,
+   "p90": 0.03279066111674256,
+   "n": 16
+  },
+  {
+   "event_id": "prediction_surprise:14993",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:16:22.402255+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 64
+  },
+  {
+   "event_id": "prediction_surprise:14994",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:16:22.402255+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 64
+  },
+  {
+   "event_id": "prediction_surprise:14996",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:21:20.491669+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 66
+  },
+  {
+   "event_id": "prediction_surprise:14995",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:21:20.491669+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 66
+  },
+  {
+   "event_id": "prediction_surprise:14997",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:26:20.667671+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 68
+  },
+  {
+   "event_id": "prediction_surprise:14998",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:26:20.667671+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 68
+  },
+  {
+   "event_id": "action_outcome:150657",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T02:27:11.081171+00:00",
+   "nats": 6.807372120665178e-06,
+   "p90": 0.026580060307052445,
+   "n": 17
+  },
+  {
+   "event_id": "prediction_surprise:14999",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:31:19.227341+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 70
+  },
+  {
+   "event_id": "prediction_surprise:15000",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:31:19.227341+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 70
+  },
+  {
+   "event_id": "prediction_surprise:15001",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:36:22.39645+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 72
+  },
+  {
+   "event_id": "prediction_surprise:15002",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:36:22.39645+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 72
+  },
+  {
+   "event_id": "action_outcome:150658",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T02:41:20.164057+00:00",
+   "nats": 6.741702869850208e-06,
+   "p90": 0.02036945949736233,
+   "n": 18
+  },
+  {
+   "event_id": "prediction_surprise:15003",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:41:20.346085+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 74
+  },
+  {
+   "event_id": "prediction_surprise:15004",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:41:20.346085+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 74
+  },
+  {
+   "event_id": "prediction_surprise:15005",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:46:18.196784+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 76
+  },
+  {
+   "event_id": "prediction_surprise:15006",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:46:18.196784+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 76
+  },
+  {
+   "event_id": "prediction_surprise:15008",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:51:27.199576+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 78
+  },
+  {
+   "event_id": "prediction_surprise:15007",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:51:27.199576+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 78
+  },
+  {
+   "event_id": "prediction_surprise:15009",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:56:27.058754+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 80
+  },
+  {
+   "event_id": "prediction_surprise:15010",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T02:56:27.058754+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 80
+  },
+  {
+   "event_id": "prediction_surprise:15011",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:01:28.91895+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 82
+  },
+  {
+   "event_id": "prediction_surprise:15012",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:01:28.91895+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 82
+  },
+  {
+   "event_id": "prediction_surprise:15013",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:06:26.203109+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 84
+  },
+  {
+   "event_id": "prediction_surprise:15014",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:06:26.203109+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 84
+  },
+  {
+   "event_id": "action_outcome:150659",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T03:09:04.101205+00:00",
+   "nats": 3.824486848769126e-06,
+   "p90": 0.014158858687672105,
+   "n": 19
+  },
+  {
+   "event_id": "prediction_surprise:15016",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:11:25.432775+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 86
+  },
+  {
+   "event_id": "prediction_surprise:15015",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:11:25.432775+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 86
+  },
+  {
+   "event_id": "prediction_surprise:15017",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:16:26.985657+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 88
+  },
+  {
+   "event_id": "prediction_surprise:15018",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:16:26.985657+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 88
+  },
+  {
+   "event_id": "prediction_surprise:15019",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:21:25.775904+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 90
+  },
+  {
+   "event_id": "prediction_surprise:15020",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:21:25.775904+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 90
+  },
+  {
+   "event_id": "prediction_surprise:15021",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:26:30.876941+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 92
+  },
+  {
+   "event_id": "prediction_surprise:15022",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:26:30.876941+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 92
+  },
+  {
+   "event_id": "prediction_surprise:15023",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:31:30.583409+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 94
+  },
+  {
+   "event_id": "prediction_surprise:15024",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:31:30.583409+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 94
+  },
+  {
+   "event_id": "prediction_surprise:15026",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:36:34.248526+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 96
+  },
+  {
+   "event_id": "prediction_surprise:15025",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:36:34.248526+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 96
+  },
+  {
+   "event_id": "prediction_surprise:15028",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:41:32.041445+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 98
+  },
+  {
+   "event_id": "prediction_surprise:15027",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:41:32.041445+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 98
+  },
+  {
+   "event_id": "prediction_surprise:15030",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:46:30.22021+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 100
+  },
+  {
+   "event_id": "prediction_surprise:15029",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:46:30.22021+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 100
+  },
+  {
+   "event_id": "prediction_surprise:15032",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:51:07.801338+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 102
+  },
+  {
+   "event_id": "prediction_surprise:15031",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:51:07.801338+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 102
+  },
+  {
+   "event_id": "prediction_surprise:15034",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:56:06.551673+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 104
+  },
+  {
+   "event_id": "prediction_surprise:15033",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T03:56:06.551673+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 104
+  },
+  {
+   "event_id": "prediction_surprise:15036",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:01:10.185885+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 106
+  },
+  {
+   "event_id": "prediction_surprise:15035",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:01:10.185885+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 106
+  },
+  {
+   "event_id": "prediction_surprise:15037",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:06:08.538208+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 108
+  },
+  {
+   "event_id": "prediction_surprise:15038",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:06:08.538208+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 108
+  },
+  {
+   "event_id": "prediction_surprise:15039",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:11:14.774476+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 110
+  },
+  {
+   "event_id": "prediction_surprise:15040",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:11:14.774476+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 110
+  },
+  {
+   "event_id": "prediction_surprise:15041",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:16:14.323885+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 112
+  },
+  {
+   "event_id": "prediction_surprise:15042",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:16:14.323885+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 112
+  },
+  {
+   "event_id": "prediction_surprise:15044",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:21:15.137747+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 114
+  },
+  {
+   "event_id": "prediction_surprise:15043",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:21:15.137747+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 114
+  },
+  {
+   "event_id": "prediction_surprise:15046",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:26:19.622681+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 116
+  },
+  {
+   "event_id": "prediction_surprise:15045",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:26:19.622681+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 116
+  },
+  {
+   "event_id": "prediction_surprise:15047",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:31:22.943925+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 118
+  },
+  {
+   "event_id": "prediction_surprise:15048",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:31:22.943925+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 118
+  },
+  {
+   "event_id": "prediction_surprise:15049",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:36:28.626828+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 120
+  },
+  {
+   "event_id": "prediction_surprise:15050",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:36:28.626828+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 120
+  },
+  {
+   "event_id": "prediction_surprise:15052",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:41:30.073866+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 122
+  },
+  {
+   "event_id": "prediction_surprise:15051",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:41:30.073866+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 122
+  },
+  {
+   "event_id": "action_outcome:150660",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T04:42:35.891718+00:00",
+   "nats": 3.794744965146535e-06,
+   "p90": 0.0079482578779821,
+   "n": 20
+  },
+  {
+   "event_id": "prediction_surprise:15053",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:46:32.115816+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 124
+  },
+  {
+   "event_id": "prediction_surprise:15054",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:46:32.115816+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 124
+  },
+  {
+   "event_id": "prediction_surprise:15056",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:51:00.568444+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 126
+  },
+  {
+   "event_id": "prediction_surprise:15055",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:51:00.568444+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 126
+  },
+  {
+   "event_id": "prediction_surprise:15058",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:56:33.258107+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 128
+  },
+  {
+   "event_id": "prediction_surprise:15057",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T04:56:33.258107+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 128
+  },
+  {
+   "event_id": "prediction_surprise:15060",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:01:03.726571+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 130
+  },
+  {
+   "event_id": "prediction_surprise:15059",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:01:03.726571+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 130
+  },
+  {
+   "event_id": "prediction_surprise:15062",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:06:40.951033+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 132
+  },
+  {
+   "event_id": "prediction_surprise:15061",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:06:40.951033+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 132
+  },
+  {
+   "event_id": "prediction_surprise:15064",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:11:31.374116+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 134
+  },
+  {
+   "event_id": "prediction_surprise:15063",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:11:31.374116+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 134
+  },
+  {
+   "event_id": "prediction_surprise:15065",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:16:30.629399+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 136
+  },
+  {
+   "event_id": "prediction_surprise:15066",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:16:30.629399+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 136
+  },
+  {
+   "event_id": "action_outcome:150661",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T05:18:48.06105+00:00",
+   "nats": 6.676953891893156e-06,
+   "p90": 0.0017376570682918757,
+   "n": 21
+  },
+  {
+   "event_id": "prediction_surprise:15067",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:21:08.040319+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 138
+  },
+  {
+   "event_id": "prediction_surprise:15068",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:21:08.040319+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 138
+  },
+  {
+   "event_id": "prediction_surprise:15069",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:26:08.98281+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 140
+  },
+  {
+   "event_id": "prediction_surprise:15070",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:26:08.98281+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 140
+  },
+  {
+   "event_id": "action_outcome:150662",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T05:30:52.662507+00:00",
+   "nats": 0.00019027644797875443,
+   "p90": 0.0017322377073435758,
+   "n": 22
+  },
+  {
+   "event_id": "prediction_surprise:15071",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:31:12.988673+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 142
+  },
+  {
+   "event_id": "prediction_surprise:15072",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:31:12.988673+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 142
+  },
+  {
+   "event_id": "action_outcome:150663",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T05:31:15.184115+00:00",
+   "nats": 0.0001897906527041915,
+   "p90": 0.0017268183463952757,
+   "n": 23
+  },
+  {
+   "event_id": "action_outcome:150664",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T05:31:42.248883+00:00",
+   "nats": 0.0001893065099990432,
+   "p90": 0.0017213989854469758,
+   "n": 24
+  },
+  {
+   "event_id": "action_outcome:150665",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T05:32:06.383854+00:00",
+   "nats": 0.00018882401284181505,
+   "p90": 0.001715979624498676,
+   "n": 25
+  },
+  {
+   "event_id": "action_outcome:150666",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T05:35:22.216417+00:00",
+   "nats": 6.613108407993451e-06,
+   "p90": 0.0017105602635503758,
+   "n": 26
+  },
+  {
+   "event_id": "prediction_surprise:15074",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:36:12.827263+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 144
+  },
+  {
+   "event_id": "prediction_surprise:15073",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:36:12.827263+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 144
+  },
+  {
+   "event_id": "prediction_surprise:15075",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:41:12.95195+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 146
+  },
+  {
+   "event_id": "prediction_surprise:15076",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:41:12.95195+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 146
+  },
+  {
+   "event_id": "prediction_surprise:15078",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:46:13.25459+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 148
+  },
+  {
+   "event_id": "prediction_surprise:15077",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:46:13.25459+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 148
+  },
+  {
+   "event_id": "prediction_surprise:15079",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:51:13.361011+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 150
+  },
+  {
+   "event_id": "prediction_surprise:15080",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:51:13.361011+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 150
+  },
+  {
+   "event_id": "prediction_surprise:15082",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:56:16.133872+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 152
+  },
+  {
+   "event_id": "prediction_surprise:15081",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T05:56:16.133872+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 152
+  },
+  {
+   "event_id": "action_outcome:150667",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T05:57:49.746756+00:00",
+   "nats": 6.550150014494882e-06,
+   "p90": 0.001705140902602076,
+   "n": 27
+  },
+  {
+   "event_id": "prediction_surprise:15084",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:01:14.898599+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 154
+  },
+  {
+   "event_id": "prediction_surprise:15083",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:01:14.898599+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 154
+  },
+  {
+   "event_id": "prediction_surprise:15086",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:06:15.097516+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 156
+  },
+  {
+   "event_id": "prediction_surprise:15085",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:06:15.097516+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 156
+  },
+  {
+   "event_id": "prediction_surprise:15088",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:11:14.073408+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 158
+  },
+  {
+   "event_id": "prediction_surprise:15087",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:11:14.073408+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 158
+  },
+  {
+   "event_id": "prediction_surprise:15089",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:16:15.687399+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 160
+  },
+  {
+   "event_id": "prediction_surprise:15090",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:16:15.687399+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 160
+  },
+  {
+   "event_id": "action_outcome:150668",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T06:17:11.274691+00:00",
+   "nats": 6.488062673004613e-06,
+   "p90": 0.0016997215416537758,
+   "n": 28
+  },
+  {
+   "event_id": "action_outcome:150669",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T06:20:11.705125+00:00",
+   "nats": 3.765348672968294e-06,
+   "p90": 0.001694302180705476,
+   "n": 29
+  },
+  {
+   "event_id": "prediction_surprise:15092",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:21:14.070469+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 162
+  },
+  {
+   "event_id": "prediction_surprise:15091",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:21:14.070469+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 162
+  },
+  {
+   "event_id": "prediction_surprise:15094",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:26:12.21387+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 164
+  },
+  {
+   "event_id": "prediction_surprise:15093",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:26:12.21387+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 164
+  },
+  {
+   "event_id": "action_outcome:150670",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T06:26:39.49312+00:00",
+   "nats": 0.0020803883647882992,
+   "p90": 0.001688882819757176,
+   "n": 30
+  },
+  {
+   "event_id": "action_outcome:150671",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T06:29:17.432068+00:00",
+   "nats": 6.426830700179131e-06,
+   "p90": 0.0017376570682918757,
+   "n": 31
+  },
+  {
+   "event_id": "prediction_surprise:15095",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:31:19.775748+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 166
+  },
+  {
+   "event_id": "prediction_surprise:15096",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:31:19.775748+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 166
+  },
+  {
+   "event_id": "action_outcome:150672",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T06:32:28.139849+00:00",
+   "nats": 0.01816387278801057,
+   "p90": 0.0017322377073435758,
+   "n": 32
+  },
+  {
+   "event_id": "prediction_surprise:15098",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:36:17.904727+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 168
+  },
+  {
+   "event_id": "prediction_surprise:15097",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:36:17.904727+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 168
+  },
+  {
+   "event_id": "prediction_surprise:15099",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:41:18.517589+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 170
+  },
+  {
+   "event_id": "prediction_surprise:15100",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:41:18.517589+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 170
+  },
+  {
+   "event_id": "prediction_surprise:15101",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:46:16.862149+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 172
+  },
+  {
+   "event_id": "prediction_surprise:15102",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:46:16.862149+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 172
+  },
+  {
+   "event_id": "action_outcome:150673",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T06:48:20.059185+00:00",
+   "nats": 6.36643875917553e-06,
+   "p90": 0.002011842105489015,
+   "n": 33
+  },
+  {
+   "event_id": "prediction_surprise:15103",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:51:18.318076+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 174
+  },
+  {
+   "event_id": "prediction_surprise:15104",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:51:18.318076+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 174
+  },
+  {
+   "event_id": "prediction_surprise:15105",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:56:16.636084+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 176
+  },
+  {
+   "event_id": "prediction_surprise:15106",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T06:56:16.636084+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 176
+  },
+  {
+   "event_id": "action_outcome:150674",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:01:04.80572+00:00",
+   "nats": 0.00018834315424698378,
+   "p90": 0.001977568975839372,
+   "n": 34
+  },
+  {
+   "event_id": "action_outcome:150675",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:01:04.825346+00:00",
+   "nats": 0.0007557165507718899,
+   "p90": 0.0019432958461897303,
+   "n": 35
+  },
+  {
+   "event_id": "prediction_surprise:15107",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:01:15.819008+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 178
+  },
+  {
+   "event_id": "prediction_surprise:15108",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:01:15.819008+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 178
+  },
+  {
+   "event_id": "action_outcome:150676",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:01:30.930909+00:00",
+   "nats": 0.0001883439007692722,
+   "p90": 0.0019090227165400875,
+   "n": 36
+  },
+  {
+   "event_id": "action_outcome:150677",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:01:31.78143+00:00",
+   "nats": 0.00018786548316174212,
+   "p90": 0.0018747495868904447,
+   "n": 37
+  },
+  {
+   "event_id": "action_outcome:150678",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:05:25.444408+00:00",
+   "nats": 6.306871850214613e-06,
+   "p90": 0.0018404764572408042,
+   "n": 38
+  },
+  {
+   "event_id": "action_outcome:150679",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:05:59.110961+00:00",
+   "nats": 0.00018738868476286807,
+   "p90": 0.0018062033275911614,
+   "n": 39
+  },
+  {
+   "event_id": "prediction_surprise:15109",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:06:18.517898+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 180
+  },
+  {
+   "event_id": "prediction_surprise:15110",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:06:18.517898+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 180
+  },
+  {
+   "event_id": "prediction_surprise:15113",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:16:33.703258+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 182
+  },
+  {
+   "event_id": "prediction_surprise:15114",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:16:33.703258+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 182
+  },
+  {
+   "event_id": "prediction_surprise:15112",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:16:33.703258+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 182
+  },
+  {
+   "event_id": "prediction_surprise:15111",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:16:33.703258+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 182
+  },
+  {
+   "event_id": "action_outcome:150680",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:21:15.488742+00:00",
+   "nats": 0.0001869134987280141,
+   "p90": 0.0017719301979415185,
+   "n": 40
+  },
+  {
+   "event_id": "prediction_surprise:15116",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:24:40.193036+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 186
+  },
+  {
+   "event_id": "prediction_surprise:15115",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:24:40.193036+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 186
+  },
+  {
+   "event_id": "prediction_surprise:15117",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:26:16.912845+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 188
+  },
+  {
+   "event_id": "prediction_surprise:15118",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:26:16.912845+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 188
+  },
+  {
+   "event_id": "action_outcome:150681",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:26:41.975431+00:00",
+   "nats": 0.0001864399182467391,
+   "p90": 0.0017376570682918757,
+   "n": 41
+  },
+  {
+   "event_id": "action_outcome:150682",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:28:21.165347+00:00",
+   "nats": 0.00018596793654379606,
+   "p90": 0.0017322377073435756,
+   "n": 42
+  },
+  {
+   "event_id": "action_outcome:150683",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:30:44.114769+00:00",
+   "nats": 0.0023008460996079005,
+   "p90": 0.001726818346395276,
+   "n": 43
+  },
+  {
+   "event_id": "prediction_surprise:15119",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:31:27.458952+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 190
+  },
+  {
+   "event_id": "prediction_surprise:15120",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:31:27.458952+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 190
+  },
+  {
+   "event_id": "prediction_surprise:15121",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:36:29.476026+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 192
+  },
+  {
+   "event_id": "prediction_surprise:15122",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:36:29.476026+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 192
+  },
+  {
+   "event_id": "action_outcome:150684",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:37:28.936447+00:00",
+   "nats": 0.0004210026497878383,
+   "p90": 0.001977568975839373,
+   "n": 44
+  },
+  {
+   "event_id": "action_outcome:150685",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:40:22.848312+00:00",
+   "nats": 4.530670333857678e-05,
+   "p90": 0.0019432958461897303,
+   "n": 45
+  },
+  {
+   "event_id": "prediction_surprise:15123",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:46:01.758857+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 194
+  },
+  {
+   "event_id": "prediction_surprise:15124",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:46:01.758857+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 194
+  },
+  {
+   "event_id": "action_outcome:150686",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:48:41.314118+00:00",
+   "nats": 0.020952890934037294,
+   "p90": 0.0019090227165400875,
+   "n": 46
+  },
+  {
+   "event_id": "action_outcome:150687",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:48:57.019118+00:00",
+   "nats": 0.0004174867283157635,
+   "p90": 0.0021685714587161395,
+   "n": 47
+  },
+  {
+   "event_id": "prediction_surprise:15126",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:51:09.096668+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 196
+  },
+  {
+   "event_id": "prediction_surprise:15125",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:51:09.096668+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 196
+  },
+  {
+   "event_id": "action_outcome:150688",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:51:23.619873+00:00",
+   "nats": 6.248115301588086e-06,
+   "p90": 0.0021465256852341804,
+   "n": 48
+  },
+  {
+   "event_id": "prediction_surprise:15128",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:56:10.880274+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 198
+  },
+  {
+   "event_id": "prediction_surprise:15127",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T07:56:10.880274+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 198
+  },
+  {
+   "event_id": "action_outcome:150689",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T07:58:46.175842+00:00",
+   "nats": 6.1901547619980235e-06,
+   "p90": 0.00212447991175222,
+   "n": 49
+  },
+  {
+   "event_id": "action_outcome:150690",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T08:00:40.004201+00:00",
+   "nats": 1.20196226610636e-05,
+   "p90": 0.0021024341382702596,
+   "n": 50
+  },
+  {
+   "event_id": "prediction_surprise:15130",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:01:15.400606+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 200
+  },
+  {
+   "event_id": "prediction_surprise:15129",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:01:15.400606+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 200
+  },
+  {
+   "event_id": "prediction_surprise:15131",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:06:18.46809+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 202
+  },
+  {
+   "event_id": "prediction_surprise:15132",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:06:18.46809+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 202
+  },
+  {
+   "event_id": "prediction_surprise:15133",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:11:22.267719+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 204
+  },
+  {
+   "event_id": "prediction_surprise:15134",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:11:22.267719+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 204
+  },
+  {
+   "event_id": "action_outcome:150691",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T08:13:40.343497+00:00",
+   "nats": 6.132976191453032e-06,
+   "p90": 0.0020803883647882992,
+   "n": 51
+  },
+  {
+   "event_id": "prediction_surprise:15136",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:16:31.829122+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 206
+  },
+  {
+   "event_id": "prediction_surprise:15135",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:16:31.829122+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 206
+  },
+  {
+   "event_id": "prediction_surprise:15137",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:21:01.0572+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 208
+  },
+  {
+   "event_id": "prediction_surprise:15138",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:21:01.0572+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 208
+  },
+  {
+   "event_id": "prediction_surprise:15140",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:26:08.534284+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 210
+  },
+  {
+   "event_id": "prediction_surprise:15139",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:26:08.534284+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 210
+  },
+  {
+   "event_id": "action_outcome:150692",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T08:26:56.991104+00:00",
+   "nats": 4.4526254508681085e-05,
+   "p90": 0.002046115235138656,
+   "n": 52
+  },
+  {
+   "event_id": "action_outcome:150693",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T08:28:22.561619+00:00",
+   "nats": 0.008732385033243029,
+   "p90": 0.002011842105489016,
+   "n": 53
+  },
+  {
+   "event_id": "action_outcome:150694",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T08:30:58.005461+00:00",
+   "nats": 6.076565853607718e-06,
+   "p90": 0.0022347087791620207,
+   "n": 54
+  },
+  {
+   "event_id": "prediction_surprise:15141",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:31:12.318286+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 212
+  },
+  {
+   "event_id": "prediction_surprise:15142",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:31:12.318286+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 212
+  },
+  {
+   "event_id": "prediction_surprise:15143",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:36:22.602431+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 214
+  },
+  {
+   "event_id": "prediction_surprise:15144",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:36:22.602431+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 214
+  },
+  {
+   "event_id": "prediction_surprise:15145",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:41:25.261949+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 216
+  },
+  {
+   "event_id": "prediction_surprise:15146",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:41:25.261949+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 216
+  },
+  {
+   "event_id": "prediction_surprise:15148",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:46:29.089408+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 218
+  },
+  {
+   "event_id": "prediction_surprise:15147",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:46:29.089408+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 218
+  },
+  {
+   "event_id": "action_outcome:150695",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T08:47:05.804308+00:00",
+   "nats": 0.00018549754687680053,
+   "p90": 0.0022126630056800603,
+   "n": 55
+  },
+  {
+   "event_id": "prediction_surprise:15149",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:51:04.64869+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 220
+  },
+  {
+   "event_id": "prediction_surprise:15150",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:51:04.64869+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 220
+  },
+  {
+   "event_id": "action_outcome:150696",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T08:53:52.279507+00:00",
+   "nats": 3.7362926388340156e-06,
+   "p90": 0.0021906172321981,
+   "n": 56
+  },
+  {
+   "event_id": "prediction_surprise:15151",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:56:07.661486+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 222
+  },
+  {
+   "event_id": "prediction_surprise:15152",
+   "source_kind": "prediction_surprise",
+   "at": "2026-11-16T08:56:07.661486+00:00",
+   "nats": 0.01227009259181436,
+   "p90": 0.01227009259181436,
+   "n": 222
+  },
+  {
+   "event_id": "action_outcome:150697",
+   "source_kind": "action_outcome",
+   "at": "2026-11-16T08:56:23.840594+00:00",
+   "nats": 0.00018502874253911727,
+   "p90": 0.0021685714587161395,
+   "n": 57
+  }
+ ],
+ "juniper": [
+  "2026-10-08T02:40:22.489653+00:00",
+  "2026-10-08T02:42:41.965713+00:00",
+  "2026-10-08T02:43:22.05229+00:00",
+  "2026-10-09T01:59:56.451744+00:00",
+  "2026-10-09T21:00:53.76772+00:00",
+  "2026-10-10T00:08:23.668628+00:00",
+  "2026-10-10T23:00:59.338184+00:00",
+  "2026-10-10T23:09:33.279969+00:00",
+  "2026-10-10T23:34:58.157505+00:00",
+  "2026-10-11T00:20:49.023877+00:00",
+  "2026-10-11T22:03:26.368145+00:00",
+  "2026-10-11T22:50:15.613284+00:00",
+  "2026-10-11T23:05:17.715189+00:00",
+  "2026-10-11T23:15:43.800209+00:00",
+  "2026-10-14T03:07:37.153204+00:00",
+  "2026-10-14T03:12:10.931623+00:00",
+  "2026-10-14T23:55:39.489328+00:00",
+  "2026-10-15T00:01:53.322893+00:00",
+  "2026-10-15T00:15:25.658587+00:00",
+  "2026-10-15T00:20:48.837985+00:00",
+  "2026-10-15T03:43:53.101468+00:00",
+  "2026-10-15T06:01:10.567033+00:00",
+  "2026-10-15T06:08:27.213079+00:00",
+  "2026-10-15T06:34:53.067065+00:00",
+  "2026-10-15T06:46:36.525818+00:00",
+  "2026-10-15T06:52:43.990097+00:00",
+  "2026-10-15T06:59:59.031451+00:00",
+  "2026-10-15T22:26:17.966991+00:00",
+  "2026-10-15T23:38:36.292322+00:00",
+  "2026-10-15T23:43:04.027815+00:00",
+  "2026-10-16T00:22:11.323264+00:00",
+  "2026-10-16T07:47:38.582704+00:00",
+  "2026-10-16T16:56:40.219781+00:00",
+  "2026-10-16T18:02:49.130107+00:00",
+  "2026-10-16T23:49:49.819617+00:00",
+  "2026-10-16T23:54:10.766204+00:00",
+  "2026-10-17T01:44:56.606448+00:00",
+  "2026-10-17T18:39:30.682774+00:00",
+  "2026-10-17T18:43:53.393375+00:00",
+  "2026-10-18T00:20:26.272389+00:00",
+  "2026-10-18T00:41:56.660399+00:00",
+  "2026-10-18T00:45:26.276953+00:00",
+  "2026-10-18T00:53:56.751445+00:00",
+  "2026-10-18T00:55:38.278485+00:00",
+  "2026-10-18T07:13:03.755419+00:00",
+  "2026-10-18T07:27:38.102672+00:00",
+  "2026-10-18T07:40:35.977352+00:00",
+  "2026-10-20T04:52:47.433978+00:00",
+  "2026-10-20T05:00:39.782068+00:00",
+  "2026-10-20T05:57:08.686971+00:00",
+  "2026-10-20T06:05:52.427029+00:00",
+  "2026-10-21T05:31:10.463363+00:00",
+  "2026-10-21T05:58:25.092683+00:00",
+  "2026-10-21T06:01:47.735288+00:00",
+  "2026-10-21T06:05:16.669359+00:00",
+  "2026-10-21T06:10:08.789479+00:00",
+  "2026-10-21T06:14:35.799905+00:00",
+  "2026-10-21T06:19:50.48273+00:00",
+  "2026-10-21T06:24:57.398448+00:00",
+  "2026-10-21T06:34:22.675458+00:00",
+  "2026-10-21T06:36:36.548936+00:00",
+  "2026-10-21T06:50:39.200391+00:00",
+  "2026-10-21T06:57:55.151437+00:00",
+  "2026-10-21T07:00:32.228053+00:00",
+  "2026-10-21T07:02:30.379108+00:00",
+  "2026-10-23T19:58:46.392051+00:00",
+  "2026-10-23T20:20:33.867774+00:00",
+  "2026-10-23T23:25:02.973663+00:00",
+  "2026-10-23T23:28:56.383989+00:00",
+  "2026-10-24T00:34:27.453248+00:00",
+  "2026-10-24T18:56:44.464263+00:00",
+  "2026-10-24T19:01:52.092688+00:00",
+  "2026-10-25T23:05:03.351265+00:00",
+  "2026-10-25T23:07:53.632301+00:00",
+  "2026-10-25T23:12:45.775402+00:00",
+  "2026-10-25T23:22:03.115157+00:00",
+  "2026-10-26T00:49:51.08939+00:00",
+  "2026-10-26T01:50:42.437896+00:00",
+  "2026-10-26T01:57:40.611312+00:00",
+  "2026-10-26T02:05:39.887131+00:00",
+  "2026-10-26T02:17:10.001077+00:00",
+  "2026-10-26T02:21:39.607956+00:00",
+  "2026-10-27T00:46:19.024518+00:00",
+  "2026-10-27T00:55:06.724738+00:00",
+  "2026-10-27T01:01:33.986186+00:00",
+  "2026-10-27T01:05:08.524081+00:00",
+  "2026-10-27T01:08:02.706006+00:00",
+  "2026-10-27T05:42:30.012337+00:00",
+  "2026-10-27T05:51:13.974693+00:00",
+  "2026-10-28T03:26:32.882894+00:00",
+  "2026-10-28T03:55:53.752925+00:00",
+  "2026-10-28T04:52:06.28401+00:00",
+  "2026-10-28T04:55:56.982892+00:00",
+  "2026-10-28T05:00:04.693684+00:00",
+  "2026-10-28T05:03:44.741745+00:00",
+  "2026-10-28T05:08:13.696378+00:00",
+  "2026-10-28T05:11:21.785813+00:00",
+  "2026-10-28T05:16:12.758813+00:00",
+  "2026-10-28T05:23:10.175825+00:00",
+  "2026-10-28T06:41:09.089097+00:00",
+  "2026-10-29T06:12:49.983584+00:00",
+  "2026-10-29T06:21:17.205877+00:00",
+  "2026-10-29T06:39:04.975097+00:00",
+  "2026-10-29T06:54:14.183679+00:00",
+  "2026-10-29T06:56:22.607449+00:00",
+  "2026-10-29T23:29:33.641047+00:00",
+  "2026-10-29T23:37:35.49865+00:00",
+  "2026-10-30T00:20:47.382133+00:00",
+  "2026-10-30T03:28:15.076649+00:00",
+  "2026-10-30T06:12:10.306471+00:00",
+  "2026-10-30T07:01:10.84153+00:00",
+  "2026-10-30T07:49:19.625641+00:00",
+  "2026-10-30T07:55:07.924479+00:00",
+  "2026-10-30T08:01:01.375205+00:00",
+  "2026-10-30T17:14:43.495441+00:00",
+  "2026-10-30T21:07:15.485725+00:00",
+  "2026-10-30T21:15:48.731953+00:00",
+  "2026-10-30T21:21:18.535515+00:00",
+  "2026-10-30T21:34:48.254761+00:00",
+  "2026-10-30T22:21:33.048465+00:00",
+  "2026-10-30T22:30:42.496023+00:00",
+  "2026-10-30T22:41:13.092603+00:00",
+  "2026-10-30T22:50:32.759694+00:00",
+  "2026-10-30T23:50:14.379666+00:00",
+  "2026-10-30T23:52:27.658865+00:00",
+  "2026-10-30T23:54:52.172761+00:00",
+  "2026-10-30T23:59:18.406499+00:00",
+  "2026-10-31T00:01:31.667878+00:00",
+  "2026-10-31T00:04:27.872132+00:00",
+  "2026-10-31T21:32:26.521227+00:00",
+  "2026-10-31T21:33:20.797724+00:00",
+  "2026-10-31T21:35:29.453056+00:00",
+  "2026-10-31T21:36:14.562388+00:00",
+  "2026-10-31T21:41:32.008107+00:00",
+  "2026-10-31T21:47:31.997958+00:00",
+  "2026-10-31T21:49:15.674902+00:00",
+  "2026-11-02T17:58:32.039085+00:00",
+  "2026-11-02T18:17:56.316246+00:00",
+  "2026-11-02T18:32:26.931363+00:00",
+  "2026-11-03T03:04:52.202494+00:00",
+  "2026-11-03T03:24:53.693056+00:00",
+  "2026-11-03T19:00:24.012865+00:00",
+  "2026-11-03T19:47:19.813453+00:00",
+  "2026-11-03T21:01:23.536703+00:00",
+  "2026-11-04T00:41:54.604196+00:00",
+  "2026-11-04T01:40:14.905367+00:00",
+  "2026-11-04T01:45:20.942442+00:00",
+  "2026-11-04T05:37:41.191338+00:00",
+  "2026-11-04T05:50:24.422455+00:00",
+  "2026-11-04T06:50:31.945421+00:00",
+  "2026-11-04T07:47:28.998303+00:00",
+  "2026-11-04T19:48:12.485346+00:00",
+  "2026-11-05T06:27:43.424031+00:00",
+  "2026-11-05T08:16:28.885776+00:00",
+  "2026-11-05T09:15:49.521565+00:00",
+  "2026-11-05T09:29:41.760919+00:00",
+  "2026-11-05T09:44:40.003368+00:00",
+  "2026-11-05T22:06:35.866513+00:00",
+  "2026-11-05T23:33:09.783214+00:00",
+  "2026-11-06T00:12:18.491874+00:00",
+  "2026-11-06T00:19:29.055592+00:00",
+  "2026-11-06T00:26:38.106229+00:00",
+  "2026-11-06T00:35:39.556785+00:00",
+  "2026-11-06T00:58:34.753486+00:00",
+  "2026-11-06T01:00:40.815052+00:00",
+  "2026-11-06T01:17:23.195818+00:00",
+  "2026-11-06T01:33:45.4183+00:00",
+  "2026-11-06T02:27:54.710167+00:00",
+  "2026-11-06T03:27:34.303403+00:00",
+  "2026-11-06T03:32:49.266712+00:00",
+  "2026-11-06T04:24:02.367838+00:00",
+  "2026-11-06T05:12:57.899657+00:00",
+  "2026-11-06T06:13:54.32182+00:00",
+  "2026-11-06T06:36:17.043435+00:00",
+  "2026-11-06T07:19:11.250654+00:00",
+  "2026-11-06T07:32:38.819051+00:00",
+  "2026-11-06T07:47:25.71748+00:00",
+  "2026-11-07T01:21:54.715989+00:00",
+  "2026-11-07T02:15:40.325233+00:00",
+  "2026-11-07T02:40:25.213348+00:00",
+  "2026-11-07T02:52:41.833927+00:00",
+  "2026-11-07T03:03:39.460639+00:00",
+  "2026-11-07T03:33:36.667163+00:00",
+  "2026-11-08T03:48:10.103523+00:00",
+  "2026-11-08T03:57:12.339484+00:00",
+  "2026-11-08T04:02:12.39926+00:00",
+  "2026-11-08T04:21:27.613477+00:00",
+  "2026-11-08T20:45:52.998849+00:00",
+  "2026-11-11T03:23:51.635827+00:00",
+  "2026-11-11T03:27:17.492273+00:00",
+  "2026-11-11T03:34:50.213024+00:00",
+  "2026-11-11T04:10:55.427211+00:00",
+  "2026-11-11T05:36:25.206581+00:00",
+  "2026-11-11T07:11:42.288331+00:00",
+  "2026-11-11T07:20:24.550261+00:00",
+  "2026-11-11T07:25:20.291058+00:00",
+  "2026-11-11T20:30:51.419941+00:00",
+  "2026-11-12T03:10:14.141313+00:00",
+  "2026-11-12T03:13:27.843062+00:00",
+  "2026-11-12T07:08:40.457172+00:00",
+  "2026-11-13T04:33:14.231558+00:00",
+  "2026-11-13T04:40:36.890011+00:00",
+  "2026-11-13T04:47:54.042106+00:00",
+  "2026-11-13T07:14:42.952833+00:00",
+  "2026-11-13T07:37:30.443434+00:00",
+  "2026-11-13T07:58:19.102863+00:00",
+  "2026-11-13T08:05:45.004831+00:00",
+  "2026-11-13T08:07:51.797161+00:00",
+  "2026-11-14T00:15:18.502769+00:00",
+  "2026-11-14T00:22:12.842814+00:00",
+  "2026-11-14T00:27:38.236833+00:00",
+  "2026-11-14T20:56:58.860596+00:00",
+  "2026-11-14T23:12:26.574583+00:00",
+  "2026-11-14T23:56:29.49856+00:00",
+  "2026-11-15T00:05:35.226234+00:00",
+  "2026-11-15T00:08:37.010629+00:00",
+  "2026-11-15T00:55:25.295852+00:00",
+  "2026-11-15T01:10:50.453244+00:00",
+  "2026-11-15T05:42:39.163797+00:00",
+  "2026-11-15T18:57:14.194658+00:00",
+  "2026-11-15T19:11:43.466951+00:00",
+  "2026-11-15T19:45:17.647809+00:00",
+  "2026-11-15T20:02:56.536788+00:00"
+ ]
+}

@@ -122,8 +122,8 @@ jobs:
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_frame_eval.py
       - name: Prime block eval on live state (grounded refs, 600-char cap, stale renders absent)
         run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_block_eval.py
-      - name: Wake replay on the live trigger timeline (attention is not a trigger; rate, daily wake, quiet floor)
-        run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_wake_replay.py
+      - name: Hunger replay on live data (needs replace the quiet floor; budget, damping, planted never-falling need)
+        run: PYTHONPATH=${{ github.workspace }} python orion/prime/evals/run_prime_hunger_replay.py
       - name: Take-on replay on the live promise concern d8db9d7b1bba4cf7 (frame, decision, adapter, request, ages out)
         run: PYTHONPATH=${{ github.workspace }} python -m orion.prime.evals.run_intention_take_on_replay
       - name: orion-mind (resident loop + every existing Mind test)

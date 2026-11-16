@@ -103,11 +103,16 @@ def test_regulation_verdict_needs_enough_signals_and_a_significant_rate_differen
     assert rpt.binomial_two_sided(5, 10, 0.5) == 1.0
 
 
-def test_wake_replay_eval_passes_on_its_live_fixture():
-    """Attention moves no longer wake Prime: the replayed live timeline (10-30..11-03) still wakes it
-    every day, at well under the live rate, and the quiet floor bounds the longest silence."""
-    from orion.prime.evals import run_prime_wake_replay
+def test_hunger_replay_eval_passes_on_its_live_fixture():
+    """Hunger needs replace the quiet floor (integration Part B): on the live 11-06..11-16 timeline a held concern still gets a thought within its life, the budget holds, and the planted never-falling
+    and ever-new needs stay bounded."""
+    from orion.prime.evals import run_prime_hunger_replay
 
-    results = run_prime_wake_replay.run()
-    assert {name for name, _, _ in results} == {"rate_drops", "still_wakes", "floor_bounds"}
+    results = run_prime_hunger_replay.run()
+    assert {name for name, _, _ in results} == {"report", "budget_holds", "concerns_get_thought",
+                                                "never_falling_bounded", "ever_new_bounded", "rest_point",
+                                                "per_day_live_timer", "per_day_idle", "per_day_busy"}
     assert all(ok for _, ok, _ in results), results
+    # Orion's question on #3528: every day of the window and the worst day are reported, not only the mean.
+    per_day = {name: detail for name, _, detail in results if name.startswith("per_day_")}
+    assert all("worst day" in d and "11-06" in d and "11-16" in d for d in per_day.values()), per_day

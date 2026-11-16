@@ -130,10 +130,10 @@ def test_lifecycle_on_postgres(monkeypatch):
         surprising = await seed(pool, t0)
         clock = {"now": t0}
         store = ChronicleStore(pool)
-        # backfill_days=1: the chronicle starts at local midnight of the day before its first step. With 0 it
-        # started at the first step's own local midnight (first step = t0 + 1 h), so a run in the ~3 h after
-        # local midnight skipped every reading seeded before it (CI 2026-11-16 09:35Z: no reading_turn rows).
         ch = Chronicler(store=store, reader=SourceReader(pool, TZ),
+                        # backfill_days=1: the seed starts 3 h before the real clock, which is the previous LOCAL day
+                        # (America/Denver) whenever the test runs 07:00-10:00 UTC. With 0 the chronicle starts at
+                        # today's local midnight and never reads those rows (CI flake, 2026-11-16 10:00 UTC).
                         cfg=ChronicleConfig(reducer=ReducerConfig(tz_name=TZ), read_lag_sec=300.0, backfill_days=1),
                         now=lambda: clock["now"],
                         # The rule under test is set here: the live registry gives reading_turn no magnitude.

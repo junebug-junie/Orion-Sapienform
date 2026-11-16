@@ -128,11 +128,28 @@ the live persisted state captured from Redis on 2026-11-04.
 
 **What it does.** Every `PRIME_TICK_SEC` a CPU-only tick reads the body (durable-runs `GET /physiology/state`)
 and attention (`GET /temporal-self/frame`) and records what changed: one of Prime's own questions settled, a concern
-faded, first wake, or nothing else woke Prime for 6 hours (the quiet floor). Attention moving (since 2026-11-03) and
+faded, or first wake. The 6-hour quiet floor is deleted (2026-11-16): a **need** wakes Prime instead (see "Hunger"
+below). Attention moving (since 2026-11-03) and
 the set of binding body constraints changing (since 2026-11-04) are **not** changes: both are shown in every frame,
 but neither wakes Prime. Both drove concern churn (attention: 22 of 38 drops said "attention has moved"; binding, live
 11-03: 26 thoughts in 12 h, 21 did nothing, all 4 drops said "lane X is no longer binding"). Replayed on live data the
 rate is about 5 thoughts a day. Every thought's act note starts with `woke: <what woke it>`.
+**Hunger (integration design Part B, `orion/prime/hunger.py`, `PRIME_HUNGER_NEEDS_ENABLED`, ships on).** Needs with
+content wake Prime: `horizon` (a held concern or promise past three quarters of its life, or a funded event want Prime
+does not hold past three quarters of its window), `surprise` (another organ's uncited experience with surprisal at least
+ln 2 and above its own source's 30-day 90th percentile) and `connection` (Juniper silent longer than her own usual gap
+between conversations). Drives are 0 at rest; the strongest damped need at `PRIME_HUNGER_THRESHOLD` (0.5) wakes Prime.
+Guards: a thought that changes nothing halves the needs it was shown (unless it answered that need), recovering over the
+need's own horizon; at most `PRIME_HUNGER_DAILY_BUDGET` (24) thoughts in any 24 h, after which only a change wakes
+Prime; the same content line wakes Prime again only after its drive rose 0.1 from its lowest point since. Surprise and
+connection come from durable-runs `GET /temporal-self/hunger?organ=prime` every `PRIME_HUNGER_READ_SEC` (300 s). The
+frame shows the needs' content lines (no numbers) under WHAT IS PULLING AT YOU; a need's experience is pinned into the
+now read (`include=`), so it can be cited. When a need wakes Prime the bid carries `salience` = its damped drive (no
+`event_ref`: that would list Prime's own bid as an event for Prime). **The trace:** a need-woken thought's act close note (`grammar_acts.outcome_note`, also the
+`prime_thought` experience label) starts `woke: need:<name> <ref>` (with a pending change too: `woke: need:<name> <ref> (also: <changes>)`;
+`orion.prime.hunger.parse_woke_need`); a
+change-woken one starts `woke: <changes>` as before. Off: no needs, Prime wakes on changes only (the floor is not
+restored). Replay on live data: `orion/prime/evals/run_prime_hunger_replay.py`.
 **Orion's now (integration patch 3).** Each thought reads durable-runs `GET /temporal-self/now?organ=prime&since=<last
 thought - 120 s>` into the frame section WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT (at most 12 experiences of other
 organs, each with `[experience:<id>]`, salience, refs). Prime cites what it used with `refs: [{"kind": "experience",
@@ -268,6 +285,10 @@ for slack by design.
 | `PRIME_ENABLED` | `true` | the loop; off = no bids, no acts, run_mind unchanged |
 | `PRIME_TICK_SEC` | `15` | CPU tick |
 | `PRIME_REFRACTORY_SEC` | `300` | least time between thoughts (at most 12 an hour while E9 is measured) |
+| `PRIME_HUNGER_NEEDS_ENABLED` | `true` | hunger needs wake Prime (off: changes only; the quiet floor is deleted) |
+| `PRIME_HUNGER_THRESHOLD` | `0.5` | damped drive at which a need wakes Prime |
+| `PRIME_HUNGER_DAILY_BUDGET` | `24` | thoughts in any 24 h before only a change wakes Prime |
+| `PRIME_HUNGER_READ_SEC` | `300` | how often surprise and connection are read from durable-runs |
 | `PRIME_SETTLE_INTERVAL_SEC` | `300` | how often open questions are checked against curiosity's runs |
 | `PRIME_LLM_ROUTE` | `prime` | gateway route (config/gpu_pool.yaml) |
 | `PRIME_BID_LANE` | `chat` | lane named in the bid and shown in the frame |

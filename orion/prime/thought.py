@@ -247,6 +247,14 @@ Never write an experience id in a question's "question" or "why": a curiosity ru
 happened in words."""
 
 
+NEEDS_PROMPT = """
+
+WHAT IS PULLING AT YOU lists your needs, strongest first: a concern or promise near its end, something surprising
+another organ lived that nobody has used, Juniper's silence past her usual gap. One of them may be why you are
+thinking now. A need is a reason to look, not an order: answering it, deciding it needs nothing, or moving on are
+all fine. A need you leave untouched pulls less for a while. An [experience:<id>] there can be cited like any other."""
+
+
 ORGAN_REPLIES_PROMPT = """
 
 Organs can answer you. Curiosity's own planner may challenge a question or signal of yours (it still happens,
@@ -256,11 +264,13 @@ organ, not a command: you may ask differently, wait, or drop the concern."""
 
 
 def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False,
-                  organ_replies: bool = False, take_on: bool = False, experiences: bool = False) -> str:
+                  organ_replies: bool = False, take_on: bool = False, experiences: bool = False,
+                  needs: bool = False) -> str:
     """The base prompt, plus the regulate move only when regulation is on and some family receives it, plus
     the organ-replies paragraph when that section is in the frame, plus the take-on move when it is on
     (PRIME_INTENTION_TAKE_ON_ENABLED). ``events``: concerns come from funded event wants (event_id), not arcs.
-    ``experiences``: the now was read (``shows_now``), so the frame lists experiences Prime may cite."""
+    ``experiences``: the now was read (``shows_now``), so the frame lists experiences Prime may cite.
+    ``needs``: hunger is on and the frame has the WHAT IS PULLING AT YOU section (orion/prime/hunger.py)."""
     base = SYSTEM_PROMPT
     if events:
         base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
@@ -273,6 +283,8 @@ def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: b
         base += ORGAN_REPLIES_PROMPT
     if experiences:
         base += EXPERIENCE_PROMPT
+    if needs:
+        base += NEEDS_PROMPT
     return base
 
 
@@ -329,6 +341,9 @@ class FrameInputs:
     # Orion's now (integration patch 3): GET /temporal-self/now?organ=prime, a TemporalNowV1 as JSON. None: not
     # read (the now is off -- 404 -- or unreachable); the section is not shown and nothing can be cited.
     orion_now: Optional[dict[str, Any]] = None
+    # Hunger (integration Part B, orion/prime/hunger.py ``frame_lines``): the needs' content lines, strongest first.
+    # None: PRIME_HUNGER_NEEDS_ENABLED is off and the section is not shown.
+    needs: Optional[list[str]] = None
 
 
 def now_items(inputs: "FrameInputs") -> list[dict[str, Any]]:
@@ -593,7 +608,9 @@ def _tending_lines(inputs: FrameInputs) -> list[str]:
 def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
     """The user prompt: a few thousand characters, every section marked with its freshness."""
     sections = [
-        "WHAT CHANGED SINCE YOUR LAST THOUGHT:\n" + "\n".join(f"- {c}" for c in state.pending_changes),
+        "WHAT CHANGED SINCE YOUR LAST THOUGHT:\n" + ("\n".join(f"- {c}" for c in state.pending_changes) or "(nothing)"),
+        *(["WHAT IS PULLING AT YOU (your needs, strongest first):\n" + "\n".join(inputs.needs)]
+          if inputs.needs is not None else []),
         "YOUR CONCERNS:\n" + ("\n".join(_concern_line(c, inputs.now, take_on=inputs.take_on,
                                                        no_take_on=frozenset(inputs.no_take_on))
                                          for c in state.concerns) or "(none)"),

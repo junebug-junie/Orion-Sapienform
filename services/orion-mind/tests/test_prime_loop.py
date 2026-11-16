@@ -547,8 +547,8 @@ def test_a_slow_dashboard_no_longer_refuses_the_move_when_the_cheap_read_answers
     [(channel, _env)] = rt.bus.rpcs
     assert channel == QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL and len(rt.state.open_nominations) == 1
     assert "move curiosity_focus" in _infer_note(rt)
-    # The frame still shows the dashboard gap, honestly.
-    assert "(unavailable: TimeoutError: timed out)" in rt.llm.calls[0]["user_prompt"]
+    # Integration patch 3: the frame path reads no dashboard at all, so a down dashboard leaves no gap there.
+    assert "(unavailable: TimeoutError: timed out)" not in rt.llm.calls[0]["user_prompt"]
 
 
 def test_a_focus_waiting_per_the_cheap_read_refuses_and_shows_even_with_the_dashboard_down():

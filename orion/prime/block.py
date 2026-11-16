@@ -14,13 +14,16 @@ What it shows, each line with its own ref:
 * open asks (questions to curiosity) and regulate signals, with their settle state;
 * Prime's last body read: the binding constraints it last saw (``[prime_tick:<time>]``);
 * at most 2 personality tendencies, ``tending: <label> [disposition:<id>]`` (orion/prime/tending.py,
-  PRIME_PERSONALITY_LINE_ENABLED): what Orion's past choices show Orion tends to pick over what.
+  PRIME_PERSONALITY_LINE_ENABLED): what Orion's past choices show Orion tends to pick over what;
+* at most 2 lines from Orion's now, ``Other organs (<organ>, <age>): <label> [experience:<id>]``: the most unusual
+  experiences of other organs in the now Prime read at its last thought (Redis ``orion:prime:now_seen``, integration
+  patch 3). Never the chat organ's own turns.
 
 Rules (all deterministic):
 
 * **Capped** at ``BLOCK_CAP`` characters. Free text (concern words, reading, questions) is cut to fit;
-  refs are never cut. If even the refs do not fit, lower lines are dropped, in this order: tending,
-  body, "asks:
+  refs are never cut. If even the refs do not fit, lower lines are dropped, in this order: the now's
+  "other organs" lines, tending, body, "asks:
   none open", concerns after the first, open asks, the last thought. The first concern is dropped last.
 * **Stale means absent.** Prime's last tick time (``orion:prime:concerns`` ``as_of``: Prime writes it on
   every tick, after its state) older than ``stale_after`` renders only "Prime has not ticked since <time>".
@@ -44,7 +47,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Literal, Optional
 
-from orion.prime.state import PRIME_CONCERNS_KEY, PrimeConcernsViewV1, PrimeStateV1
+from orion.prime.state import PRIME_CONCERNS_KEY, PRIME_NOW_SEEN_KEY, PrimeConcernsViewV1, PrimeNowSeenV1, PrimeStateV1
 from orion.prime.tending import TendingV1
 
 PRIME_STATE_KEY = "orion:prime:state"  # same key as services/orion-mind/app/prime_loop.py STATE_KEY
@@ -57,7 +60,8 @@ HEADER = "PRIME (my slow loop between turns)"
 
 BlockStatus = Literal["ok", "stale", "absent"]
 # Ref kinds the block writes. The citation gate only judges these kinds.
-PRIME_REF_KINDS = ("prime_concern", "thought", "curiosity_focus", "prime_regulate", "prime_tick", "disposition")
+PRIME_REF_KINDS = ("prime_concern", "thought", "curiosity_focus", "prime_regulate", "prime_tick", "disposition",
+                   "experience")
 # The id ends on a letter, digit, '#' or 'Z' (prime_tick:04:22Z), so sentence punctuation after an
 # unbracketed ref ("thought:#5.") is not read as part of it.
 _PRIME_REF_RE = re.compile(r"\[?\b(" + "|".join(PRIME_REF_KINDS) + r"):([A-Za-z0-9#_.:\-]*[A-Za-z0-9#_])\]?")
@@ -75,10 +79,12 @@ class PrimeBlockV1:
     dropped_lines: int = 0
     # Personality tending lines that made it into ``text`` (after the cap).
     tending: int = 0
+    # Lines from Orion's now ("other organs") that made it into ``text`` (after the cap).
+    now_lines: int = 0
 
     def log_fields(self) -> str:
         return (f"status={self.status} chars={len(self.text)} refs={len(self.refs)} "
-                f"dropped={self.dropped_lines} tending={self.tending} "
+                f"dropped={self.dropped_lines} tending={self.tending} now={self.now_lines} "
                 f"ticked_at={self.ticked_at.isoformat() if self.ticked_at else '-'}")
 
 
@@ -179,6 +185,7 @@ def _thought_ref(state: PrimeStateV1) -> tuple[Optional[str], str]:
 # A tending label is cut to this many characters in the block (the frame's labels are <= 160).
 TENDING_LABEL_SHOWN = 90
 MAX_TENDING_LINES = 2
+MAX_NOW_LINES = 2
 
 
 def _lines(state: PrimeStateV1, now: datetime, ticked_at: datetime) -> list[_Line]:
@@ -241,6 +248,16 @@ def _tending_line(t: TendingV1) -> str:
     return _Line("- tending: ", _cut(t.label, TENDING_LABEL_SHOWN), [t.ref], rank=7).render()
 
 
+NOW_LABEL_SHOWN_IN_BLOCK = 90
+
+
+def _now_line(item: Any, now: datetime) -> tuple[str, str]:
+    """(rendered line, its ref) for one item of ``PrimeNowSeenV1``."""
+    ref = f"experience:{item.event_id}"
+    lead = f"- Other organs ({item.organ}, {_ago(now, item.occurred_at)}): "
+    return _Line(lead, _cut(item.label, NOW_LABEL_SHOWN_IN_BLOCK), [ref], rank=8).render(), ref
+
+
 def _fit(header: str, lines: list[_Line], cap: int) -> tuple[list[str], list[_Line], int]:
     """Cut free text so the block fits ``cap``; drop the highest-rank lines when refs alone do not fit."""
     lines = list(lines)
@@ -276,12 +293,14 @@ def render_prime_block(
     cap: int = BLOCK_CAP,
     absent_reason: Optional[str] = None,
     tending: Iterable[TendingV1] = (),
+    now_seen: Optional[PrimeNowSeenV1] = None,
 ) -> PrimeBlockV1:
     """Render Prime's present for a turn. Pure.
 
     ``state``: Prime's state (``orion:prime:state``, ``PrimeStateV1``). ``ticked_at``: when Prime last
     ticked (``orion:prime:concerns`` ``as_of``). ``absent_reason``: why the state could not be read; it
-    wins over everything else. The block never exceeds ``cap`` characters."""
+    wins over everything else. ``now_seen``: the top of the now Prime last read (``orion:prime:now_seen``).
+    The block never exceeds ``cap`` characters."""
     if absent_reason:
         return absent_block(absent_reason)
     if state is None:
@@ -293,19 +312,26 @@ def render_prime_block(
     header = f"{HEADER}, ticked {_ago(now, ticked_at)}:"
     lines = _lines(state, now, ticked_at)
     text, refs, dropped = _render(header, lines, cap)
-    # Tending lines are dropped first: k lines are shown only when the rest of the block, fitted into the
-    # room they leave, still keeps every line it keeps without them (its free text may be cut shorter).
-    shown = list(tending)[:MAX_TENDING_LINES]
-    for k in range(len(shown), 0, -1):
-        extra = [_tending_line(t) for t in shown[:k]]
-        t_text, t_refs, _t_dropped = _render(header, lines, cap - sum(len(e) + 1 for e in extra))
-        if set(t_refs) >= set(refs) and len(t_text) + sum(len(e) + 1 for e in extra) <= cap:
+    # Extra lines (tending, then the now's "other organs" lines) are dropped first, the now's lines before
+    # tending: the first k of them are shown only when the rest of the block, fitted into the room they leave,
+    # still keeps every line it keeps without them (its free text may be cut shorter).
+    shown_t = list(tending)[:MAX_TENDING_LINES]
+    shown_n = [_now_line(i, now) for i in (now_seen.items if now_seen is not None else [])][:MAX_NOW_LINES]
+    extras = [(_tending_line(t), t.ref) for t in shown_t] + shown_n
+    for k in range(len(extras), 0, -1):
+        extra = [e for e, _ in extras[:k]]
+        t_text, t_refs, t_dropped = _render(header, lines, cap - sum(len(e) + 1 for e in extra))
+        # Both checks: two own lines can share a ref (body and "asks: none open" both cite the tick), so a
+        # dropped own line does not always lose a ref.
+        if (t_dropped <= dropped and set(t_refs) >= set(refs)
+                and len(t_text) + sum(len(e) + 1 for e in extra) <= cap):
+            k_t = min(k, len(shown_t))
             return PrimeBlockV1(text="\n".join([t_text, *extra]), status="ok",
-                                refs=tuple(dict.fromkeys(t_refs + tuple(t.ref for t in shown[:k]))),
+                                refs=tuple(dict.fromkeys(t_refs + tuple(r for _, r in extras[:k]))),
                                 ticked_at=_utc(ticked_at),
-                                dropped_lines=dropped + len(shown) - k, tending=k)
+                                dropped_lines=dropped + len(extras) - k, tending=k_t, now_lines=k - k_t)
     return PrimeBlockV1(text=text, status="ok", refs=refs, ticked_at=_utc(ticked_at),
-                        dropped_lines=dropped + len(shown), tending=0)
+                        dropped_lines=dropped + len(extras), tending=0)
 
 
 def _render(header: str, lines: list[_Line], cap: int) -> tuple[str, tuple[str, ...], int]:
@@ -319,6 +345,16 @@ def _render(header: str, lines: list[_Line], cap: int) -> tuple[str, tuple[str, 
     # Refs from the lines themselves (never parsed back out of free text), and only those still in the text.
     refs = tuple(dict.fromkeys(r for ln in kept for r in ln.refs if f"[{r}]" in text))
     return text, refs, dropped
+
+
+def parse_now_seen(raw: Any) -> Optional[PrimeNowSeenV1]:
+    """``orion:prime:now_seen``, or None (absent or unreadable: the block shows no "other organs" lines)."""
+    if not raw:
+        return None
+    try:
+        return PrimeNowSeenV1.model_validate_json(raw)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def parse_prime_redis(raw_state: Any, raw_view: Any) -> tuple[Optional[PrimeStateV1], Optional[datetime],
@@ -358,8 +394,9 @@ async def fetch_prime_block(
     else:
         tending_src = None
     try:
-        raw_state, raw_view = await asyncio.wait_for(
-            asyncio.gather(redis.get(PRIME_STATE_KEY), redis.get(PRIME_CONCERNS_KEY)), timeout=timeout_sec)
+        raw_state, raw_view, raw_now = await asyncio.wait_for(
+            asyncio.gather(redis.get(PRIME_STATE_KEY), redis.get(PRIME_CONCERNS_KEY), redis.get(PRIME_NOW_SEEN_KEY)),
+            timeout=timeout_sec)
     except asyncio.TimeoutError:
         return absent_block(f"Prime's state did not load within {timeout_sec:g} s")
     except Exception as exc:  # noqa: BLE001
@@ -371,7 +408,8 @@ async def fetch_prime_block(
             tending = ()
     state, ticked_at, reason = parse_prime_redis(raw_state, raw_view)
     return render_prime_block(state, ticked_at=ticked_at, now=now or datetime.now(timezone.utc),
-                              stale_after=stale_after, cap=cap, absent_reason=reason, tending=tending)
+                              stale_after=stale_after, cap=cap, absent_reason=reason, tending=tending,
+                              now_seen=parse_now_seen(raw_now))
 
 
 @dataclass(frozen=True)
@@ -418,6 +456,7 @@ __all__ = [
     "absent_block",
     "check_prime_citations",
     "fetch_prime_block",
+    "parse_now_seen",
     "parse_prime_redis",
     "render_prime_block",
     "stale_block",

@@ -325,6 +325,54 @@ def concerns_view(state: PrimeStateV1, *, now: datetime) -> PrimeConcernsViewV1:
     )
 
 
+# What Prime last saw in Orion's now (integration patch 3): the top items, for the two "other organs" lines of the
+# Prime block in every chat turn (orion/prime/block.py). Its own key, not a PrimeStateV1 field: PrimeStateV1 is
+# extra="forbid", so a new field would break every reader built before it until rebuilt.
+PRIME_NOW_SEEN_KEY = "orion:prime:now_seen"
+NOW_SEEN_MAX = 2
+NOW_SEEN_LABEL_CAP = 160
+# A chat turn is never shown chat turns as "what other organs lived": that is the chat itself.
+NOW_SEEN_SKIP_ORGANS = ("chat",)
+
+
+class PrimeNowSeenItemV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_id: str = Field(min_length=1)
+    organ: str
+    label: str = Field(default="", max_length=NOW_SEEN_LABEL_CAP)
+    occurred_at: AwareDatetime
+    salience: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+
+
+class PrimeNowSeenV1(BaseModel):
+    """The top of the now Prime read at its last thought (``seen_at``; ``shown_id`` is that read's
+    ``experience_shown`` row). Highest salience first, never the chat organ, at most 2."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["prime.now_seen.v1"] = "prime.now_seen.v1"
+    seen_at: AwareDatetime
+    shown_id: str
+    items: list[PrimeNowSeenItemV1] = Field(default_factory=list, max_length=NOW_SEEN_MAX)
+
+
+def now_seen(now: Any, *, seen_at: datetime) -> PrimeNowSeenV1:
+    """``PrimeNowSeenV1`` from a ``TemporalNowV1`` (its items are already in the now's order)."""
+    items = []
+    for i in now.items:
+        if i.organ in NOW_SEEN_SKIP_ORGANS:
+            continue
+        label = " ".join(i.label.split())
+        if len(label) > NOW_SEEN_LABEL_CAP:
+            label = label[: NOW_SEEN_LABEL_CAP - 1] + "…"
+        items.append(PrimeNowSeenItemV1(event_id=i.event_id, organ=i.organ, label=label, occurred_at=i.occurred_at,
+                                        salience=i.salience))
+        if len(items) >= NOW_SEEN_MAX:
+            break
+    return PrimeNowSeenV1(seen_at=seen_at, shown_id=now.shown_id, items=items)
+
+
 def _push(items: list[str], text: str, cap: int) -> list[str]:
     out = [*items, text]
     return out[-cap:]
@@ -437,6 +485,10 @@ __all__ = [
     "ConcernEnd",
     "MAX_CONCERN_RECORD",
     "PRIME_CONCERNS_KEY",
+    "PRIME_NOW_SEEN_KEY",
+    "PrimeNowSeenItemV1",
+    "PrimeNowSeenV1",
+    "now_seen",
     "PrimeConcernRecordV1",
     "PrimeConcernV1",
     "PrimeConcernViewV1",

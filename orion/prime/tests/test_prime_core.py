@@ -77,7 +77,7 @@ def test_the_refractory_interval_holds_even_with_changes():
 def test_the_frame_marks_every_failed_read_as_a_gap_never_calm():
     frame = build_frame(PrimeStateV1(pending_changes=["first wake"]),
                         FrameInputs(now=T0, body_error="URLError: refused", temporal_error="timeout",
-                                    curiosity_error="HTTPError 500"))
+                                    now_on=True, now_error="HTTPError 500"))
     assert "(unavailable: URLError: refused)" in frame and "(unavailable: timeout)" in frame
     assert "(unavailable: HTTPError 500)" in frame and "- first wake" in frame
 
@@ -420,3 +420,25 @@ def test_energy_money_splits_idle_from_activity_and_never_invents_per_organ_cost
     assert _energy_lines(FrameInputs(now=T0, energy={"money": {}}))[0] == "(no machine figures in the report)"
     frame = build_frame(PrimeStateV1(pending_changes=["x"]), FrameInputs(now=T0, energy=live))
     assert "ENERGY MONEY:" in frame and "attention:juniper" not in frame.split("ENERGY MONEY:")[1].split("\n\n")[0]
+
+
+# --- Orion's now in the frame (integration patch 3) ------------------------------------------------
+
+
+def test_answer_cites_are_kept_in_order_deduplicated_and_capped_and_never_fail_the_thought():
+    a, err = parse_answer({"reading": "r", "cites": ["experience:a", "experience:a", "experience:b", 7,
+                                                     "experience:c", "experience:d"]})
+    assert err is None and a.cites == ["experience:a", "experience:b", "experience:c"]
+    for bad in ({"x": 1}, 7, None):
+        a, err = parse_answer({"reading": "r", "cites": bad})
+        assert err is None and a.cites == []
+    a, _ = parse_answer({"reading": "r", "cites": "experience:a"})
+    assert a.cites == ["experience:a"]
+
+
+def test_the_frame_shows_no_dashboard_runs_only_the_pending_focus():
+    f = build_frame(PrimeStateV1(), FrameInputs(now=T0, pending_focus_read=True, pending_focus=None, now_on=True,
+                                                now_error="timeout"))
+    cur = f.split("CURIOSITY:\n", 1)[1].split("\n\n", 1)[0]
+    assert cur.startswith("no focus is waiting for the next run") and "WHAT YOUR ORGANS LIVED" in cur
+    assert "WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT" in f and "(unavailable: timeout)" in f

@@ -23,6 +23,12 @@ lists those of the last 48 h with the organ's reason (``_organ_reply_lines``), f
 (Redis ``orion:curiosity:replica:replies``). Held-back answers are never in the view, so never shown. The section
 and its prompt paragraph appear when answering is on (``FrameInputs.organ_replies_on``) or the view holds a reply.
 
+Orion's now (integration patch 3, docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md A4): the
+frame shows WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT, the few most unusual experiences of Orion's other organs
+(GET /temporal-self/now, read by the runtime once per thought), each with its ``[experience:<id>]``. The answer's
+``cites`` names the ones that shaped the thought; the runtime posts them against the shown row (durable-runs keeps
+only shown ids, at most 3). Curiosity runs reach Prime this way: the frame no longer reads Hub's curiosity dashboard.
+
 References (orion/refs.py): a move cites ids only through ``refs`` (``[{kind, id}]``, kinds arc and
 act). Refused here when a ref is malformed, or when the question or why contains an id-looking word
 (``orion.refs.ID_TOKEN_RE``) that is not one of the refs; refused by the runtime when a ref does not
@@ -53,6 +59,8 @@ from orion.prime.state import (
 from orion.refs import RefV1, id_tokens_not_in, parse_refs
 from orion.schemas.curiosity_replica import REPLICA_ACTOR, CuriosityReplicaRepliesViewV1
 from orion.schemas.introspect import FOCUS_TEXT_CAP
+from orion.schemas.temporal_self import NOW_MAX_CITES, TemporalNowV1
+from orion.temporal_self.now import now_lines
 
 READING_CAP = 600
 # A move may cite the concern added in the same answer, whose id the runtime assigns afterwards.
@@ -131,6 +139,21 @@ class PrimeAnswerV1(BaseModel):
     # Personality choice point (spec 2026-10-16 rev 4, orion/prime/choice.py): the concern_id from YOUR
     # CONCERNS this thought acts on, or "none". Left out of an answer: the move's concern_id stands in.
     pick: Optional[str] = None
+    # Orion's now (integration patch 3): the ``experience:<id>`` refs of items under WHAT YOUR ORGANS LIVED that
+    # shaped this thought, at most 3. Checked against the shown row by durable-runs; never by this model.
+    cites: list[str] = Field(default_factory=list)
+
+    @field_validator("cites", mode="before")
+    @classmethod
+    def _cites_never_fail_the_thought(cls, value: Any) -> list[str]:
+        """A malformed ``cites`` must not throw away the reading, edits and move: anything that is not a list of
+        strings keeps only its strings, in order, de-duplicated, at most 3."""
+        if isinstance(value, str):
+            value = [value]
+        if not isinstance(value, list):
+            return []
+        out = [" ".join(v.split())[:400] for v in value if isinstance(v, str) and v.strip()]
+        return list(dict.fromkeys(out))[:NOW_MAX_CITES]
 
     @field_validator("pick", mode="before")
     @classmethod
@@ -171,12 +194,15 @@ Rules:
 - Use only what the frame shows. A field marked unavailable is a gap, not calm. Do not invent facts.
 - Copy numbers, units and time periods exactly as the frame states them (month to date stays month to date).
 - Refer to concerns by their concern_id; a move about the concern you add in this same answer uses "new".
+- "cites": the [experience:...] refs (copy each exactly, at most 3) of items under WHAT YOUR ORGANS LIVED that
+  actually shaped this reading, a concern edit or the move. Cite none you did not use; [] is a normal answer.
+  Never write an experience id in "question" or "why".
 - arc_id must be an arc_id listed under ATTENTION (the hex id after "arc_id"), or null.
 - A question is read later by a curiosity run that cannot see this frame. Never write an id in "question" or
   "why". To point it at an arc or an act, put it in "refs" ({"kind": "arc", "id": "<arc_id>"} or
   {"kind": "act", "id": "<act_...>"}); the run is told how to open each one. Any other id refuses the move.
 - Reply with ONE JSON object and nothing else:
-{"reading": "...", "pick": "<concern_id> | none", "concerns": {"keep": ["<concern_id>"], "add": [{"text": "...", "arc_id": null}], "drop": [{"concern_id": "...", "why": "..."}]},
+{"reading": "...", "pick": "<concern_id> | none", "cites": ["experience:<id>"], "concerns": {"keep": ["<concern_id>"], "add": [{"text": "...", "arc_id": null}], "drop": [{"concern_id": "...", "why": "..."}]},
  "move": null | {"kind": "curiosity_focus", "question": "...", "why": "...", "concern_id": "<concern_id> | new | null",
                  "refs": [{"kind": "arc" | "act", "id": "..."}]}}""".replace("<HORIZON_DAYS>", f"{CONCERN_HORIZON_SEC / 86400:g}")
 
@@ -257,12 +283,14 @@ class FrameInputs:
     body_error: Optional[str] = None
     temporal: Optional[dict[str, Any]] = None
     temporal_error: Optional[str] = None
-    curiosity: Optional[dict[str, Any]] = None
-    curiosity_error: Optional[str] = None
-    # Hub's cheap pending-focus read (GET /curiosity/api/focus/pending, #3366), separate from the slow
-    # dashboard read above. ``pending_focus_read``: it answered ``available: true``; ``pending_focus``: the
-    # waiting focus or None. ``pending_focus_error``: it failed. Neither set (replay, eval): the dashboard's
-    # copy is shown, as before.
+    # Orion's now (integration patch 3): what other organs lived since Prime last looked. ``now_on`` False: the
+    # read is off (PRIME_NOW_ENABLED) and the section is not shown. ``now`` None with ``now_error``: a gap.
+    now_on: bool = False
+    now_view: Optional[TemporalNowV1] = None
+    now_error: Optional[str] = None
+    # Hub's cheap pending-focus read (GET /curiosity/api/focus/pending, #3366). The frame reads no curiosity
+    # dashboard (integration patch 3: curiosity runs arrive through the now). ``pending_focus_read``: it answered
+    # ``available: true``; ``pending_focus``: the waiting focus or None. ``pending_focus_error``: it failed.
     pending_focus_read: bool = False
     pending_focus: Optional[dict[str, Any]] = None
     pending_focus_error: Optional[str] = None
@@ -419,37 +447,44 @@ def _event_lines(inputs: FrameInputs) -> list[str]:
 
 
 def _pending_focus_lines(inputs: FrameInputs) -> list[str]:
-    """The waiting focus from the cheap read; the gap when it failed. Shown even when the dashboard read
-    failed, so the frame and the move check agree (#3366)."""
+    """The waiting focus from the cheap read; the gap when it failed, so the frame and the move check agree
+    (#3366). Nothing when the read did not happen (replay, eval)."""
     if inputs.pending_focus_error:
         return [f"(whether a focus is waiting for the next run is unknown: {inputs.pending_focus_error})"]
-    if inputs.pending_focus_read:
-        pending = inputs.pending_focus
-    else:
-        pending = (((inputs.curiosity or {}).get("schedule") or {}).get("pending_focus") or {}).get("focus")
+    pending = inputs.pending_focus if inputs.pending_focus_read else None
     if not isinstance(pending, dict):
-        return []
+        return ["no focus is waiting for the next run"] if inputs.pending_focus_read else []
     return [f"a focus is already waiting for the next run ({pending.get('origin')}): {pending.get('question')!r}"]
 
 
+CURIOSITY_VIA_NOW = ("curiosity's finished runs reach you under WHAT YOUR ORGANS LIVED (when one is among the most "
+                     "unusual since your last thought), not here")
+
+CURIOSITY_NOW_OFF = "(curiosity's finished runs are not shown: Orion's now is switched off for you)"
+
+
 def _curiosity_lines(inputs: FrameInputs) -> list[str]:
-    if inputs.curiosity is None:
-        return [*_pending_focus_lines(inputs), f"(unavailable: {inputs.curiosity_error or 'not read'})"]
-    c = inputs.curiosity
-    lines: list[str] = []
-    line = ((c.get("schedule") or {}).get("lines") or {}).get("investigate") or {}
-    if line:
-        lines.append(f"investigate runs today {line.get('runs_today')} of {line.get('daily_cap')}, "
-                     f"next eligible {line.get('next_eligible_at')}")
-    lines.extend(_pending_focus_lines(inputs))
-    for run in (c.get("runs") or [])[:4]:
-        # What the run found, never its kickoff prompt (the "about" text is the brief Orion was handed).
-        finding = " ".join(str(run.get("finding_text") or "").split())
-        focus = (run.get("focus") or {}).get("question")
-        took = f" [took a focus: {focus[:120]!r}]" if focus else ""
-        lines.append(f"- run {run.get('run_id')} {run.get('status')}/{run.get('outcome_kind')} "
-                     f"{_age(inputs.now, run.get('started_at_iso'))}{took}: {finding[:240] or '(no finding text)'}")
-    return lines or ["(no recent investigate runs)"]
+    """Only whether a focus is waiting (the move check's own read). Integration patch 3 retired the dashboard
+    read: curiosity's runs are experiences in Orion's now, like every other organ's."""
+    if not inputs.now_on:
+        return [*_pending_focus_lines(inputs), CURIOSITY_NOW_OFF]
+    return [*_pending_focus_lines(inputs), CURIOSITY_VIA_NOW]
+
+
+NOW_LABEL_SHOWN = 160
+
+
+def _now_lines(inputs: FrameInputs) -> list[str]:
+    if inputs.now_view is None:
+        return [f"(unavailable: {inputs.now_error or 'not read'})"]
+    lines = now_lines(inputs.now_view, label_cap=NOW_LABEL_SHOWN)
+    if not lines:
+        return ["(nothing new from other organs since your last thought)"]
+    v = inputs.now_view
+    hidden = v.dropped_by_organ_cap + v.dropped_by_total_cap
+    if hidden:
+        lines.append(f"({hidden} more of {v.candidates} not shown: at most 2 per organ, 12 in all)")
+    return lines
 
 
 def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
@@ -553,6 +588,9 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
         "ENERGY MONEY:\n" + "\n".join(_energy_lines(inputs)),
         "CURIOSITY:\n" + "\n".join(_curiosity_lines(inputs)),
     ]
+    if inputs.now_on:
+        sections.append("WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT (Orion's now: other organs' experiences, "
+                        "most unusual first; cite the ones you use in \"cites\"):\n" + "\n".join(_now_lines(inputs)))
     if inputs.receptors is not None or inputs.receptors_error:
         sections.append("ORGANS YOU CAN SIGNAL (family: directions it handles):\n"
                         + "\n".join(_regulation_lines(state, inputs)))

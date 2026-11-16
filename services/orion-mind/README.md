@@ -268,7 +268,9 @@ for slack by design.
 | `PRIME_HOLDBACK_FRACTION` | `0.2` | narrator arm share |
 | `PRIME_DURABLE_RUNS_URL` | `http://orion-athena-durable-runs:8121` | body + attention |
 | `PRIME_HUB_URL` | `http://100.92.216.81:8080` | curiosity runs + pending focus |
-| `PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC` | `30` | timeout for the curiosity dashboard read (frame, settling); the move check reads `/curiosity/api/focus/pending` with 4 s (#3366) |
+| `PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC` | `30` | timeout for the curiosity dashboard read (settling questions only; the frame no longer reads it, integration patch 3); the move check reads `/curiosity/api/focus/pending` with 4 s (#3366) |
+| `PRIME_NOW_ENABLED` | `true` | each thought reads Orion's now (`GET /temporal-self/now?organ=prime`), shows it as WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT, and posts the answer's `cites`; the top 2 items go to Redis `orion:prime:now_seen` for the Prime block (integration patch 3) |
+| `PRIME_NOW_TIMEOUT_SEC` | `3` | timeout for the now read and the cite post; a failed read is a gap line, never a failed thought |
 | `PRIME_REGULATE_ENABLED` | `true` | offer the regulate move; off = not offered, answers using it refused (open signals still graded) |
 | `PRIME_FAMILIES_PATH` | `/repo/config/physiology/families.yaml` | where Prime reads the receptors (read-only repo mount) |
 

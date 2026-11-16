@@ -46,7 +46,11 @@ def test_recorded_tick_sequences_replay_identically():
     Re-recorded 2026-11-13 (promise concerns: quote in the frame, 72 h TTL, how a promise gets kept): with the
     CONCERN_BASIS fade words, the system prompt's fade sentence and new promise line, and the track record's fade
     words mapped back to the old text, every part of every scenario equals the previous golden (checked by script;
-    22 parts changed, 0 after mapping). No scenario holds a promise concern."""
+    22 parts changed, 0 after mapping). No scenario holds a promise concern.
+    Re-recorded 2026-11-16 (integration patch 3, Orion's now): with the system prompt's "cites" rule and JSON key
+    removed and each CURIOSITY section mapped to one placeholder (the frame no longer reads Hub's dashboard; it shows
+    only the pending focus), every part of every scenario equals the previous golden (checked by script; 14
+    llm_calls parts changed, 0 after mapping). PRIME_NOW_ENABLED is absent here, so no scenario reads the now."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

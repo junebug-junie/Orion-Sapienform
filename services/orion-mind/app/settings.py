@@ -157,6 +157,10 @@ class Settings(BaseSettings):
     # question is open; both can fall in one tick. The thought's read runs after the bid is funded.
     PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC: float = Field(default=30.0, gt=0.0,
                                                          alias="PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC")
+    # Orion's now (integration patch 3): each thought reads GET /temporal-self/now?organ=prime from
+    # PRIME_DURABLE_RUNS_URL and posts its cites. Off: no read, no section, no cites, no block lines.
+    PRIME_NOW_ENABLED: bool = Field(default=True, alias="PRIME_NOW_ENABLED")
+    PRIME_NOW_TIMEOUT_SEC: float = Field(default=3.0, gt=0.0, alias="PRIME_NOW_TIMEOUT_SEC")
     # Orion Prime step 3: Prime may send "slow" / "quicken" signals to a want family that declares the
     # receptor (config/physiology/families.yaml; today curiosity investigate), as bounded, temporary
     # charges in the body economy (orion/physiology/prime_charge.py). false: the move is not offered and a

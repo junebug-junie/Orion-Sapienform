@@ -133,7 +133,7 @@ from orion.schemas.curiosity_replica import (
     CuriosityReplicaRepliesViewV1,
 )
 from orion.physiology.prime_charge import PrimeChargeRefusalV1
-from orion.prime.state import PrimeConcernsViewV1
+from orion.prime.state import PrimeConcernsViewV1, PrimeNowSeenV1
 from orion.schemas.personality import (
     PERSONALITY_CHOICE_KIND,
     ChoiceOptionV1,
@@ -1657,6 +1657,7 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "CuriosityOfferPlanResultV1": CuriosityOfferPlanResultV1,
     "CuriosityOfferPlanAnswerV1": CuriosityOfferPlanAnswerV1,
     "PrimeConcernsViewV1": PrimeConcernsViewV1,
+    "PrimeNowSeenV1": PrimeNowSeenV1,
     # Curiosity replica patch 4 (answers to Prime). Also in SCHEMA_REGISTRY below.
     "CuriosityFocusRefusalRequestV1": CuriosityFocusRefusalRequestV1,
     "CuriosityFocusRefusalResultV1": CuriosityFocusRefusalResultV1,
@@ -2267,6 +2268,11 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "PrimeConcernsViewV1": SchemaRegistration(
         model=PrimeConcernsViewV1,
         kind="prime.concerns.view.v1",
+    ),
+    # Integration patch 3: the top of the now Prime last read (Redis orion:prime:now_seen, read by the Prime block).
+    "PrimeNowSeenV1": SchemaRegistration(
+        model=PrimeNowSeenV1,
+        kind="prime.now_seen.v1",
     ),
     # Curiosity replica patch 4: the focus refusal RPC (orion-mind -> Hub), the replica's replies view (Redis
     # orion:curiosity:replica:replies, read by Prime) and the refusal written next to a regulate signal (Redis

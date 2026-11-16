@@ -62,7 +62,7 @@ def _inputs(data: dict, **errors) -> FrameInputs:
         now=now,
         body=None if "body_error" in errors else data["body"], body_error=errors.get("body_error"),
         temporal=temporal, temporal_error=errors.get("temporal_error"),
-        curiosity=None if "curiosity_error" in errors else data["curiosity"], curiosity_error=errors.get("curiosity_error"),
+        now_on="now_error" in errors, now_error=errors.get("now_error"),
         arc_ids=arc_ids,
     )
 
@@ -84,7 +84,7 @@ def run() -> list[tuple[str, bool, str]]:
                     "no None/nan in the frame"))
 
     gaps = build_frame(state, _inputs(data, body_error="URLError: refused", temporal_error="timeout",
-                                       curiosity_error="HTTPError 502"))
+                                       now_error="HTTPError 502"))
     ok = all(f"(unavailable: {e})" in gaps for e in ("URLError: refused", "timeout", "HTTPError 502"))
     results.append(("honest_gaps", ok, "every failed read is a named gap"))
 
@@ -177,10 +177,11 @@ def run() -> list[tuple[str, bool, str]]:
                     and (not active_id or active_id in bg_frame),
                     f"changes after an attention-only tick: {ticked.pending_changes}; active arc {active_id} in frame"))
 
-    # focus_read_split (#3366): the dashboard timed out every thought on 11-14; the cheap read decides now.
+    # focus_read_split (#3366): the dashboard timed out every thought on 11-14; the cheap read decides now. Since
+    # integration patch 3 the frame reads no dashboard; a down now (its gap shown) must not block the move either.
     live_page = data["curiosity"]["schedule"]["pending_focus"]  # GET /curiosity/api/focus/pending has this shape
     waiting = {"origin": "juniper", "question": "what heats the closet at night?"}
-    down = dict(curiosity_error="TimeoutError: timed out")
+    down = dict(now_error="TimeoutError: timed out")
     split_ok, split_why = True, []
     for page_focus, unread, expect_sent in ((live_page["focus"], None, True), (waiting, None, False),
                                             (None, "Hub did not answer in 4 s", False)):
@@ -201,6 +202,29 @@ def run() -> list[tuple[str, bool, str]]:
         split_why.append(f"{'waiting' if page_focus else 'unread' if unread else 'none'}->"
                          f"{'sent' if a.move else 'refused'}{'' if ok else ' (WRONG)'}")
     results.append(("focus_read_split", split_ok, "; ".join(split_why)))
+
+    # now_section (integration patch 3): the frame shows other organs' experiences with copyable refs, never Prime's
+    # own, and its CURIOSITY section carries no dashboard runs (curiosity runs arrive through the now).
+    from orion.schemas.temporal_self import TemporalNowV1
+
+    now_view = TemporalNowV1.model_validate({
+        "shown_id": "eval", "reader_organ": "prime", "since": (inputs.now - timedelta(hours=6)).isoformat(),
+        "as_of": inputs.now.isoformat(), "candidates": 40, "dropped_by_organ_cap": 28,
+        "items": [
+            {"event_id": "street_event:walkway:1", "organ": "camera", "source_kind": "street_event",
+             "label": "street event: a mail truck stopped at the walkway", "salience": 0.91,
+             "occurred_at": (inputs.now - timedelta(minutes=40)).isoformat()},
+            {"event_id": "curiosity_run:r1", "organ": "curiosity", "source_kind": "curiosity_run",
+             "label": "curiosity run: tested 3, moved 1, formed 0", "salience": None,
+             "occurred_at": (inputs.now - timedelta(hours=2)).isoformat()}]})
+    n_inp = _inputs(data)
+    n_inp.now_on, n_inp.now_view = True, now_view
+    n_frame = build_frame(state, n_inp)
+    cur = n_frame.split("CURIOSITY:\n", 1)[1].split("\n\n", 1)[0]
+    results.append(("now_section", "[experience:street_event:walkway:1] camera:" in n_frame
+                    and "[experience:curiosity_run:r1] curiosity:" in n_frame and "(28 more of 40 not shown" in n_frame
+                    and "- run " not in cur and len(n_frame) <= FRAME_CHAR_CAP,
+                    f"{n_frame.count('[experience:')} experience refs shown; curiosity section: {cur[:80]!r}"))
 
     # starved_try: the line a no-seat try leaves (orion/mindloop/runtime.py _note_no_model) reaches the next frame.
     line = "a try to think at 12:00 UTC never reached the model (no_seat: deadline); I tried again"

@@ -142,6 +142,12 @@ class FinalizeReflectionV1(...):
   would do in the normal course of events. The gate drops a null, missing or
   placeholder-length (`< 12` chars) `done_when`, before the cap. D1 can read `done_when` to
   know what to check when it settles a promise.
+- **Force (added 2026-11-16, same rerun):** each item also carries `force`, the line's speech
+  act (Searle's illocutionary point): `commits` (binds Orion to a future act; offers
+  included), `reports` (an act already done this reply), `predicts`, `suggests`, `wishes`.
+  The gate keeps only `commits` (rule 0a), before the cap, and drops a missing force. On
+  the dev window the completion rule alone left recommendations, wishes and reports of done
+  acts, which the doer rule cannot see because Orion is their subject.
 - The field rides the judge call that already runs. It adds no new model call. It does not
   run on the quick deterministic gate. The 9 quick-gate turns are a known blind spot, and
   the log records them.

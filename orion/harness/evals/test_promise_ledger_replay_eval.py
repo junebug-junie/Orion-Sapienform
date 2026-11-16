@@ -212,6 +212,21 @@ def test_ablation_runs_the_gate_without_the_force_rule() -> None:
     assert ablate_force_rule(only_real, draft_text=draft, final_text=draft) == []
 
 
+def test_ablation_reports_the_first_copy_of_a_duplicated_quote() -> None:
+    """The gate keeps the first copy of a quote; the ablation must report that copy's force."""
+    from orion.harness.evals.promise_ledger_replay_eval import ablate_force_rule
+    from orion.harness.tests.test_promise_gate import _reflection
+    from orion.schemas.harness_finalize import PromiseV1
+
+    draft = "Best to try the small model first."
+    dw = "a later reply reports the small-model result"
+    reflection = _reflection(promises_made=[
+        PromiseV1(force="suggests", quote=draft, doer="orion", done_when=dw),
+        PromiseV1(force="commits", quote=draft, doer="orion", done_when=dw)])
+    kept = ablate_force_rule(reflection, draft_text=draft, final_text=draft)
+    assert [(k["quote"], k["force"]) for k in kept] == [(draft, "suggests")]
+
+
 def test_hand_found_recall_matches_a_different_span_by_key() -> None:
     from orion.harness.evals.promise_ledger_replay_eval import quote_hash, score
 

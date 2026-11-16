@@ -394,7 +394,10 @@ def _ablate(reflection: Any, *, passes: Any, stand_in: dict, draft_text: str, fi
     judge's real values. Empty when the rule would drop nothing among the doer rule's keeps."""
     if all(passes(p) for p in reflection.promises_made if p.doer == PROMISE_DOER_ORION):
         return []
-    real = {normalize_for_quote_match(p.quote): p for p in reflection.promises_made}
+    # First item per quote, as the gate keeps the first copy of a duplicated quote.
+    real: dict[str, Any] = {}
+    for p in reflection.promises_made:
+        real.setdefault(normalize_for_quote_match(p.quote), p)
     fixed = [p if passes(p) else p.model_copy(update=stand_in) for p in reflection.promises_made]
     return [_item(p, real[normalize_for_quote_match(p.quote)])
             for p in _gate_ablated(reflection, fixed, draft_text=draft_text, final_text=final_text)]
@@ -414,18 +417,23 @@ def ablate_force_rule(reflection: Any, *, draft_text: str, final_text: str) -> l
 
 def ablate_doer_rule(reflection: Any, *, draft_text: str, final_text: str) -> list[dict]:
     """What the gate would keep if the doer rule did not exist: every listed item treated as
-    Orion's, then the gate's other rules (quote in the draft and the final text, length,
-    duplicates, the per-turn cap). Runs the gate itself, so the ablation follows the gate
-    if the gate changes. Each kept item carries the doer the judge gave it."""
+    Orion's, then the gate's other rules (rules 0a and 0b, quote in the draft and the final
+    text, length, duplicates, the per-turn cap). Runs the gate itself, so the ablation
+    follows the gate if the gate changes; since 2026-11-16 that includes rules 0a/0b, so
+    it is not comparable to the 11-15 doer PR's number. Each kept item carries the doer
+    the judge gave it."""
     if not any(p.doer != PROMISE_DOER_ORION for p in reflection.promises_made):
         return []  # the rule dropped nothing: the ablation equals promises_made
-    doers = {normalize_for_quote_match(p.quote): p.doer for p in reflection.promises_made}
+    doers: dict[str, Any] = {}
+    for p in reflection.promises_made:
+        doers.setdefault(normalize_for_quote_match(p.quote), p.doer)
     as_orion = reflection.model_copy(update={
         "promises_made": [p.model_copy(update={"doer": PROMISE_DOER_ORION}) for p in reflection.promises_made],
         "offers_accepted": [], "promises_kept": []})
     first = gate_promises(as_orion, reply_text=draft_text, enabled=True)
     second = gate_promises(first.reflection, reply_text=final_text, enabled=True)
-    return [{"quote": p.quote, "offer": p.offer, "doer": doers.get(normalize_for_quote_match(p.quote))}
+    return [{"quote": p.quote, "offer": p.offer, "doer": doers.get(normalize_for_quote_match(p.quote)),
+             "force": p.force, "act": p.act, "done_when": p.done_when}
             for p in second.reflection.promises_made]
 
 
@@ -477,14 +485,25 @@ def not_orion_items(report: dict) -> list[dict]:
             for r in report["turns"] for p in r.get("not_orion") or []]
 
 
+def _row_items(report: dict, key: str) -> list[dict]:
+    """A rule's dropped items, one per (turn, quote). They come from the raw judge list, so
+    unlike extracted_items they may hold a quote that is not in the reply."""
+    out, seen = [], set()
+    for r in report["turns"]:
+        for p in r.get(key) or []:
+            item = {"correlation_id": r["correlation_id"], "quote_sha": quote_hash(p["quote"]), **p}
+            if (item["correlation_id"], item["quote_sha"]) not in seen:
+                seen.add((item["correlation_id"], item["quote_sha"]))
+                out.append(item)
+    return out
+
+
 def not_commit_items(report: dict) -> list[dict]:
-    return [{"correlation_id": r["correlation_id"], "quote_sha": quote_hash(p["quote"]), **p}
-            for r in report["turns"] for p in r.get("not_commit") or []]
+    return _row_items(report, "not_commit")
 
 
 def no_completion_items(report: dict) -> list[dict]:
-    return [{"correlation_id": r["correlation_id"], "quote_sha": quote_hash(p["quote"]), **p}
-            for r in report["turns"] for p in r.get("no_completion") or []]
+    return _row_items(report, "no_completion")
 
 
 def dropped_items(report: dict) -> list[dict]:

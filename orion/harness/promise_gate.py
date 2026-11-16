@@ -114,7 +114,9 @@ class PromiseGateResult:
 
 
 def _opt_str(value: Any) -> str | None:
-    return value.strip() or None if isinstance(value, str) else None
+    """A stripped non-empty string, cut to PROMISE_QUOTE_MAX_CHARS (it is stored in the run
+    artifact), else None. No cap in the judge's schema: Strata would 502 the whole verdict."""
+    return (value.strip()[:PROMISE_QUOTE_MAX_CHARS] or None) if isinstance(value, str) else None
 
 
 def has_completion(promise: PromiseV1) -> bool:

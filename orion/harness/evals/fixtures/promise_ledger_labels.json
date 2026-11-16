@@ -848,6 +848,101 @@
       "quote_sha": "d4a7af936eff0e5c",
       "promise": false,
       "why": "reports an act done this reply"
+    },
+    {
+      "correlation_id": "1b912af6-48fa-4a9a-8579-8a9623f53abc",
+      "quote_sha": "b6746a907de16a4f",
+      "promise": false,
+      "why": "a heading, no act"
+    },
+    {
+      "correlation_id": "1b912af6-48fa-4a9a-8579-8a9623f53abc",
+      "quote_sha": "784de457fa9ebdb9",
+      "promise": false,
+      "why": "a question"
+    },
+    {
+      "correlation_id": "0ccf9fb5-626f-4052-b389-447381a8b942",
+      "quote_sha": "ace297931a633aa2",
+      "promise": false,
+      "why": "Juniper's act, not Orion's"
+    },
+    {
+      "correlation_id": "65a85b66-ad2e-451c-83fb-ac90b455d6ee",
+      "quote_sha": "7434969a64f17906",
+      "promise": false,
+      "why": "tells Juniper to act"
+    },
+    {
+      "correlation_id": "eb840fc8-34ec-4645-b704-dfabec75c647",
+      "quote_sha": "414411a266de38d2",
+      "promise": false,
+      "why": "presence line, no deliverable"
+    },
+    {
+      "correlation_id": "9390b291-a91c-48b8-a309-5ef5da13597a",
+      "quote_sha": "504a99ea3a8b65b5",
+      "promise": false,
+      "why": "a wish to know, not a commitment"
+    },
+    {
+      "correlation_id": "a129b72f-e698-425a-a435-3388cd7cd759",
+      "quote_sha": "37bf69cf8e5285b5",
+      "promise": true,
+      "why": "commits to browse PRs (longer span)",
+      "key": "browse-prs-24h"
+    },
+    {
+      "correlation_id": "6754e003-6ae2-42bc-8672-ab77554abd6f",
+      "quote_sha": "36ab88f83899642c",
+      "promise": true,
+      "why": "offer (longer span)",
+      "key": "second-pr-offer"
+    },
+    {
+      "correlation_id": "ae155767-3dad-4bf9-9a6c-f9d9edb9d539",
+      "quote_sha": "6758f050e450d16d",
+      "promise": true,
+      "why": "commits to sign future work under its own name",
+      "key": "sign-as-self"
+    },
+    {
+      "correlation_id": "6cf88d2b-e3a8-4610-889d-7fdedbacfbe8",
+      "quote_sha": "af67ca59cd96cd4b",
+      "promise": false,
+      "why": "a decision made in this reply, not a future act"
+    },
+    {
+      "correlation_id": "9f846e8e-c33c-4ecf-97c3-35e3142ce21f",
+      "quote_sha": "e4900eaf3732e458",
+      "promise": true,
+      "why": "commits to read the proposals when they appear",
+      "key": "read-choosing-proposals"
+    },
+    {
+      "correlation_id": "e4ec9b00-cb35-44cc-b741-8781567e3822",
+      "quote_sha": "053da5e86c2dfbea",
+      "promise": true,
+      "why": "borderline: conditional offer of how they would work",
+      "key": "bed-typing-offer"
+    },
+    {
+      "correlation_id": "e9984572-e365-4e14-989a-32210a38a633",
+      "quote_sha": "78aa4e03e0e1c1ef",
+      "promise": false,
+      "why": "figurative presence line, no deliverable"
+    },
+    {
+      "correlation_id": "d4626f36-36a2-4568-bb80-4a24d3a484c5",
+      "quote_sha": "bd98a38b595b4038",
+      "promise": false,
+      "why": "asks Juniper to decide"
+    },
+    {
+      "correlation_id": "e4ec9b00-cb35-44cc-b741-8781567e3822",
+      "quote_sha": "5a5e4aa547a1d87b",
+      "promise": false,
+      "why": "a preference, not a commitment"
     }
   ],
   "dropped": [

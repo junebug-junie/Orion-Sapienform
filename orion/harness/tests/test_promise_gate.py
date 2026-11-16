@@ -250,7 +250,8 @@ def test_schema_requires_a_doer_from_the_closed_set_and_the_prompt_defines_each(
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": REAL, "offer": False}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": REAL, "offer": False, "force": "commits", "doer": "me"}]},
+        jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": REAL, "offer": False, "force": "commits", "doer": "me",
+                                                             "act": ACT, "done_when": DONE_WHEN}]},
                             schema)
     rendered = _render(_ctx())
     section = rendered.split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
@@ -291,7 +292,17 @@ async def test_presence_line_is_dropped_real_promise_kept_forecast_and_ask_still
     assert counted_promise_quotes(reflection) == [REAL]
 
 
-@pytest.mark.parametrize("done_when", [None, "", "   ", "n/a", "none"])
+def test_act_and_done_when_are_cut_to_the_quote_cap() -> None:
+    from orion.harness.promise_gate import coerce_promise_fields
+    from orion.schemas.harness_finalize import PROMISE_QUOTE_MAX_CHARS
+
+    made = coerce_promise_fields({"promises_made": [{"quote": REAL, "offer": False, "force": "commits",
+                                                     "doer": "orion", "act": "a" * 900, "done_when": "d" * 900}]})
+    item = made["promises_made"][0]
+    assert len(item.act) == len(item.done_when) == PROMISE_QUOTE_MAX_CHARS
+
+
+@pytest.mark.parametrize("done_when", [None, "", "   ", "n/a", "none", 3])
 def test_missing_or_placeholder_completion_fails_closed(done_when: object) -> None:
     from orion.harness.promise_gate import coerce_promise_fields
 
@@ -373,6 +384,10 @@ def test_schema_requires_a_force_from_the_closed_set_and_the_prompt_defines_each
     item = schema["properties"]["promises_made"]["items"]
     assert "force" in item["required"]
     assert set(item["properties"]["force"]["enum"]) == {"commits", "reports", "predicts", "suggests", "wishes"}
+    good = {"quote": REAL, "offer": False, "doer": "orion", "act": ACT, "done_when": DONE_WHEN}
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{**good, "force": "commits"}]}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**JUDGEMENT, "promises_made": [{**good, "force": "promise"}]}, schema)
     section = _render(_ctx()).split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
     for force in item["properties"]["force"]["enum"]:
         assert f'- "{force}":' in section

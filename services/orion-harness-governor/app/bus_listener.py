@@ -587,6 +587,9 @@ async def handle_harness_run_request(
             gpu_lease=request.gpu_lease,
             fcc_model_label=request.fcc_model_label,
             situation_notes=_finalize_notes(request),
+            # Intention ledger D1: Hub's view of open promises / pending offers, for the judge only.
+            pending_offers=list(getattr(request, "pending_offers", None) or []),
+            open_promises=list(getattr(request, "open_promises", None) or []),
             cut_short=bool(getattr(motor, "cut_short_reason", None)),
             # The perception re-check (finalize._recheck_unsupported_claim_repair)
             # stays inside the reply budget instead of running it out.

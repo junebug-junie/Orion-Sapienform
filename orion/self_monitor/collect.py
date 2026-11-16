@@ -18,6 +18,7 @@ from orion.schemas.self_monitor import SelfMonitorStateV1, SettledBetV1
 from orion.self_monitor import adapters
 from orion.self_monitor.catalog import UNGRADEABLE
 from orion.self_monitor.record import BILL_WINDOW_DAYS, reduce_bets
+from orion.grammar.promise_acts import SHADOW_ACT_SIGNALS_SQL
 
 Adapter = Callable[[dict], Optional[SettledBetV1]]
 
@@ -30,7 +31,9 @@ _BILL_SQL = ("SELECT bet_id, usage_point_id, origin, as_of, settled_at, coverage
 SOURCES: tuple[tuple[str, str, Adapter], ...] = (
     ("grammar_acts",
      "SELECT act_id, actor, verb, object_ref, signal_id, predicted, opened_at, closed_at, outcome_value, outcome_source, "
-     "outcome_note FROM grammar_acts WHERE closed_at >= :since",
+     # Acts on a shadow signal (promise_kept until #3531) are on the ledger but are no bet yet.
+     "outcome_note FROM grammar_acts WHERE closed_at >= :since "
+     f"AND COALESCE(signal_id, '') <> ALL (ARRAY[{SHADOW_ACT_SIGNALS_SQL}])",
      adapters.grammar_act),
     ("prediction_turn_self_bet",
      "SELECT bet_id, faculty, claim_kind, placed_at, settled_at, status, void_reason, stated_p, coverage "

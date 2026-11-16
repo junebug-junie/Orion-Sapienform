@@ -1702,6 +1702,14 @@ async def execute_unified_turn(
         progress_lines=progress_lines,
     )
     inference_timeout_sec, reply_budget_sec = _held_turn_budgets(payload)
+    # Intention ledger D1 (shadow): the 5b judge sees Orion's open promises and the previous reply's
+    # offers, so it can mark one kept or accepted. Juniper's own turns only; judge only, never the motor.
+    promise_view = None
+    if (utterance_origin == "juniper" and bool(getattr(cfg, "HUB_PROMISE_LEDGER_ENABLED", True))
+            and bool(getattr(cfg, "HUB_ACT_LEDGER_ENABLED", True))):
+        from orion.hub.promise_ledger import promise_view_for_turn
+
+        promise_view = await promise_view_for_turn(session_id, correlation_id)
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
         resume_key=payload.get("resume_key"),
@@ -1739,6 +1747,8 @@ async def execute_unified_turn(
         situation_prompt_fragment=situation_prompt_fragment,
         prime_block=prime_block.text if prime_block is not None else None,
         draft_preview=bool(draft_preview),
+        open_promises=list(promise_view.open_promises) if promise_view is not None else [],
+        pending_offers=promise_view.offer_quotes if promise_view is not None else [],
     )
     harness_bus = harness_rpc_bus or bus
     if harness_step_relay is not None and harness_step_queue is not None:
@@ -2107,6 +2117,14 @@ async def _publish_unified_turn_chat_history(
         source_label=source_label,
         client_meta=client_meta,
     )
+    await _publish_promise_acts(
+        bus,
+        correlation_id=correlation_id,
+        session_id=session,
+        source_label=source_label,
+        client_meta=client_meta,
+        reflection=run.reflection,
+    )
 
 
 async def _publish_reply_say_act(
@@ -2165,6 +2183,46 @@ async def _publish_reply_say_act(
     except Exception as exc:  # noqa: BLE001 -- the reply is already delivered; the act is a trace
         logger.warning("reply_say_act_publish_failed corr=%s error=%s", correlation_id, exc)
         return False
+
+
+async def _publish_promise_acts(
+    bus: Any,
+    *,
+    correlation_id: str,
+    session_id: str | None,
+    source_label: str,
+    client_meta: Mapping[str, Any] | None,
+    reflection: Any,
+) -> dict[str, int] | None:
+    """Intention ledger D2 (shadow until #3531): the promise acts of the reply Juniper just got.
+
+    Same turns as the reply act (Juniper's own hub turns, not unsolicited). Opens one ``hub.promise``
+    act per firm promise in this reply and one per earlier offer this message accepted; closes each
+    promise the judge marked kept with a delivering quote (orion/hub/promise_ledger.py). Best-effort,
+    never raises. Gated by HUB_PROMISE_LEDGER_ENABLED and HUB_ACT_LEDGER_ENABLED.
+    """
+    from scripts.settings import settings as hub_settings
+
+    if not (bool(getattr(hub_settings, "HUB_PROMISE_LEDGER_ENABLED", True))
+            and bool(getattr(hub_settings, "HUB_ACT_LEDGER_ENABLED", True))):
+        return None
+    if bus is None or source_label != "hub_orion" or reflection is None:
+        return None
+    if str((client_meta or {}).get("unsolicited") or "").lower() == "true" or (client_meta or {}).get("unsolicited") is True:
+        return None
+    try:
+        from orion.hub.promise_ledger import promise_view_for_turn, publish_promise_acts
+
+        prior_offers: list[tuple[str, str]] = []
+        if getattr(reflection, "offers_accepted", None):
+            # The offers the judge was shown: Orion's previous reply in this session (re-read here, the
+            # same query; this turn's own row is excluded by correlation id).
+            prior_offers = (await promise_view_for_turn(session_id, correlation_id, open_too=False)).offers
+        return await publish_promise_acts(bus, correlation_id=str(correlation_id), session_id=session_id,
+                                          reflection=reflection, prior_offers=prior_offers)
+    except Exception as exc:  # noqa: BLE001 -- the reply is already delivered; the acts are a trace
+        logger.warning("promise_acts_failed corr=%s error=%s", correlation_id, exc)
+        return None
 
 
 # Draft-first display (spec L8). The relay queue item the governor's draft

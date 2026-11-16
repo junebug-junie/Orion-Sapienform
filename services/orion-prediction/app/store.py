@@ -11,6 +11,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
 
+from orion.grammar.promise_acts import SHADOW_ACT_SIGNALS_SQL
+
 from app.series import CLOSET_ENV_KEYS, OFFICE_ENV_KEYS, SeriesSpec
 
 # Event tables the event_pair estimator may read (read-only), keyed by selector ``source``.
@@ -722,8 +724,11 @@ class PostgresStore:
     def grammar_acts(self, start: datetime, end: datetime) -> list[tuple[datetime, datetime, str]]:
         """(opened_at, created_at, verb) of Orion's acts opened in ``[start, end)``. ``created_at`` is
         when the row landed; act_chain uses it so a replay sees only what was known at each origin."""
+        # Acts on a shadow signal (promise_kept until #3531, orion/grammar/promise_acts.py) are on the
+        # ledger but not yet part of what Orion learns its own act rhythm from.
         rows = self._all("SELECT opened_at AS o, created_at AS c, verb AS v FROM grammar_acts "
-                         "WHERE opened_at >= %s AND opened_at < %s AND verb IS NOT NULL ORDER BY opened_at",
+                         "WHERE opened_at >= %s AND opened_at < %s AND verb IS NOT NULL "
+                         f"AND COALESCE(signal_id, '') <> ALL (ARRAY[{SHADOW_ACT_SIGNALS_SQL}]) ORDER BY opened_at",
                          (start, end))
         return [(r["o"], r["c"], r["v"]) for r in rows]
 

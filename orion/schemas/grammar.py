@@ -68,7 +68,16 @@ ActLevel = Literal["metabolic", "organ", "faculty", "deliberate"]
 #                        orion-sql-writer from the orion_ask row
 #                        (orion/grammar/camera_ask_acts.py ask_grade, attention
 #                        patch 4a); producers never self-report it.
-ActSignal = Literal["juniper_replied", "artifact_produced", "juniper_answered"]
+#   promise_kept      -- a promise Orion made Juniper was kept by the horizon
+#                        (72 h): a later judged reply quotes the delivering text
+#                        (intention ledger D2,
+#                        docs/superpowers/specs/2026-11-11-intention-ledger-design.md).
+#                        Opened and producer-closed by orion-hub
+#                        (orion/grammar/promise_acts.py); a horizon with no keep is
+#                        a 0, or void (not graded) when Juniper wrote no chat turn
+#                        inside it. SHADOW until #3531: no grader, track record or
+#                        learner reads these acts (promise_acts.SHADOW_ACT_SIGNALS).
+ActSignal = Literal["juniper_replied", "artifact_produced", "juniper_answered", "promise_kept"]
 
 # Who supplied an act's outcome.
 ActOutcomeSource = Literal["producer", "resolver", "expired"]

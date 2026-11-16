@@ -54,6 +54,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional
 
+from orion.grammar.promise_acts import is_shadow_signal, is_void_note
 from orion.schemas.self_monitor import SettledBetV1
 
 Row = Mapping[str, Any]
@@ -120,6 +121,10 @@ def grammar_act(row: Row) -> Optional[SettledBetV1]:
     closed = _aware(row.get("closed_at"))
     opened = _aware(row.get("opened_at"))
     if closed is None or opened is None:
+        return None
+    # A void close (orion/grammar/promise_acts.py: censored, the outcome was never observable) and an
+    # act on a shadow signal are not bets. collect.py also filters shadow signals in SQL.
+    if is_void_note(row.get("outcome_note")) or is_shadow_signal(row.get("signal_id")):
         return None
     outcome = act_outcome(row)
     source = (row.get("outcome_source") or "").strip()

@@ -319,3 +319,114 @@ acceptance check 1 against 30 days of stored turns, and report precision, recall
 baseline keep rate. Do not open acts and do not show the cue yet. If precision is below 0.8,
 the design stops and comes back. If it passes, D1 to D3 follow in one PR (consumer-first order:
 sql-writer, then thought, then hub).
+
+## Amendments (2026-11-16): D1 + D2 in shadow, and Orion's critique
+
+Juniper approved building D1 and D2 in **shadow** ("okay hit it", 2026-11-16). Promises become acts on
+the act ledger and close as kept, expired or void, but nothing learns from them and nothing steers
+Orion yet: no OPEN PROMISES cue in stance, no settled bet, no posterior update. Issue #3531 decides
+when that changes. Orion read the PR #3532 thread and raised eleven points. Each answer below is what
+this patch builds, or a default that waits on Juniper (marked **needs-juniper**).
+
+### What shadow means, in code
+
+- Every promise is one act: actor `hub.promise` (its own actor, not `hub.chat_reply`), verb `say`,
+  object `juniper`, signal `promise_kept`, horizon 72 h. `test_before` is
+  `harness_turn_trace:<corr>#promises_made[<i>]` (`orion/grammar/promise_acts.py`). Its own actor keeps
+  the reply's per-actor readers clean: workspace binding, the body-economy family `hub.chat_reply` and
+  downstream-use linking would otherwise count a promise as a second reply.
+- `SHADOW_ACT_SIGNALS = {"promise_kept"}` in the same module. sql-writer persists and closes these
+  acts but writes no `substrate_action_outcomes` row and no posterior update (`close_act`, the same
+  path a withdrawn camera ask uses). The self-monitor builds no bet from them (SQL filter in
+  `collect.py`, and the adapter). The act-chain forecaster in orion-prediction leaves them out of
+  Orion's act rhythm. Going live is one reviewed code change: empty that set.
+- A promise act never gets a cost. Its GPU time and energy belong to the reply that made it, already
+  on the reply's act with the same correlation id; its wall time is days of waiting.
+- Hub reads the open promises before each of Juniper's turns (`orion/hub/promise_ledger.py`, the read
+  in `orion/grammar/promise_view.py`) and passes them on `HarnessRunRequestV1` to the 5b judge only.
+  The motor prompt never sees them (test: `test_motor_prompt_never_shows_open_promises`).
+- D3 (the stance cue) is built and wired behind `THOUGHT_OPEN_PROMISES_CUE_ENABLED`, which ships
+  **false**: the one deliberate exception to "flags ship on". #3531 turns it on.
+
+### Answers to Orion's critique
+
+1. **Precision numbers (from #3532).** The rules were frozen on the dev window before any held-out
+   run. Dev (10-13..11-12, 185 turns): 26/31 = 0.84, 95% Wilson 0.67-0.93. Held-out (111 turns):
+   10/12 = 0.83, 0.55-0.95. All 296 turns: 36/43 = 0.84, 0.70-0.92. Pooled recall 35/44 = 0.80,
+   0.65-0.89. The held-out interval alone cannot tell 0.8 from 0.6. That is why the acts are shadow.
+2. **Held-out blinding.** No. The labeller saw `force` and `done_when` on the after items while
+   labelling (#3532 report, "Labelling"), and 5 borderline calls were all labelled true. Worst case,
+   if all 5 were false: held-out 8/12 = 0.67. For #3531 the report writes a blinded sheet
+   (`scripts/report_promise_ledger.py --sample 60`): each item shows only the quote and the reply
+   around it. It never shows doer, force, act, done_when or the offer flag. Keys are hashes. The
+   labeller fills true/false and `--score` prints precision with a Wilson interval.
+3. **Recall floor for the shadow-to-live gate.** Proposed default: live goes ahead only when pooled
+   recall is at least 0.7 on at least 40 hand-found promises, alongside precision at least 0.8 on at
+   least 60 labelled items. Recall needs its own hand-found set: the blinded sheet samples only what
+   the finder stored, so it cannot see misses. #3531 builds that set by reading 150 judged Juniper
+   turns blind and marking every promise, then matching by key as the replay eval already does.
+   **needs-juniper** (the floor and the n).
+4. **Offers.** Restored, and enforced in the ledger, not the prompt. `force: commits` still labels an
+   offer's speech act (an offer does bind Orion once accepted), but an item with `offer: true` opens
+   no act (`plan_promise_events`, `offers_not_opened`). The next judged turn of the same session sees
+   that reply's firm offers as `pending_offers`; only an entry in `offers_accepted` that matches one of
+   them opens an act, on the earlier turn's ref, from the moment of acceptance. An accepted quote
+   that matches none is counted (`accepted_unmatched`) and opens nothing. Offers in an Orion-started
+   message are out of v1 (Juniper's answer 3).
+5. **Kept marks need a quote.** Done. The judge returns `promises_kept` as `{"id", "quote"}`. The gate
+   keeps an id only when it was shown and its quote is literally in the reply (the same normalized
+   substring test as a made promise), and checks it again against the final text after response
+   repair. The quotes are stored in `FinalizeReflectionV1.promises_kept_evidence`; `promises_kept`
+   stays a list of ids for its existing reader (Prime's hand-back). A bare id fails closed.
+6. **One record.** The ledger act is the record of the promise's life (open, kept, expired, void). The
+   quote has one home, the promising turn's `harness_turn_trace` row. The act holds only the pointer,
+   and Prime's hand-back already links promises by the identical string, so the act id is derivable
+   from Prime's ref (`promise_act_id(ref)`). Prime's concern still holds `promise_text`, a frame-only
+   cache that `promise_words_private` guards (no promise sentence in a choice label). This patch does
+   not change Prime, because changing what Prime holds or when its concern closes would steer Orion
+   during shadow. At go-live (#3531) the proposed change is: Prime's turn concern closes when its act
+   closes, and Prime reads the quote through the ref instead of caching it. `promise_words_private`
+   then checks the same thing against the ref read. **needs-juniper** (whether Prime's concern
+   should follow the act at go-live).
+7. **Censoring.** A promise can be marked kept only by the judge reading a reply to Juniper. When
+   Juniper starts no chat turn inside the 72 h horizon, there was no reply to keep it in, so the
+   outcome is unseen: the resolver closes it `void` (note `void: ...`), never graded, never a bet.
+   This is broader than Orion's proposal (only promises whose done_when needs her input) and needs no
+   new judge field: it censors exactly the cases where the measuring instrument never ran. When she
+   did write and no reply delivered it, the close is `expired`, a real 0. **needs-juniper** (this
+   default; the alternative is Orion's narrower rule, which needs a judge field).
+8. **Cap of 3.** The judge's view is lifted to 8 open promises (`PROMISE_JUDGE_VIEW_MAX`), oldest
+   first; the cap on promises listed per reply stays 3. At the replay rate (about 1 firm promise per
+   12 judged turns, 72 h horizon) more than 8 open at once should not happen. The report still names
+   any expired promise that was never in the view at any Juniper turn in its window as
+   `un-closeable`, kept out of the keep rate.
+9. **Guard baseline.** Re-based on the replay of the deployed finder, judged turns only: 23 firm
+   promises over 289 judged turns = 0.080 per judged turn (dev 15/179, held-out 0/86 and 8/24). The
+   guard counts firm non-offer items per judged Juniper turn (judge model pass; quick-gate turns are
+   not judged and are reported apart). Red above 2x, as before.
+10. **Keep evidence.** Every keep records its kind in the close note (`kept_in:<corr> evidence=reply`),
+    and the report splits keeps by kind. In v1 the only producer is the judge reading a reply to
+    Juniper. A Prime carry run (`intention.carry`) that delivered something for the promise does NOT
+    close it: delivery is not keeping (the carry may say "I could not"), and the carry reply is not
+    judged against the promise. The report names each expired promise whose turn got a carry reply
+    inside its window (`expired_with_carry_reply`), so #3531 can see whether that gap is real before
+    a second evidence kind is built.
+11. **Old rows and priors.** Stored items without `force`/`done_when` (written before #3532 deploys:
+    12 such items on Juniper's turns in the last 14 days, live 2026-11-16) are skipped explicitly
+    and counted (`skipped_no_force` in Hub's `promise_ledger` log line, `skipped_pre_force` in the
+    report); nothing guesses their force. No promise act opens until #3532 is live in the governor.
+    The 12-16 read's "before" arm is the replay (old turns graded by the same judge), not live data.
+    The prior for `promise_kept` with no history is the act ledger's cold binary prior (mean 0.5,
+    `cold_start` true), and every promise shares one posterior key and one faculty bucket
+    (`act.hub.promise.say`), not one per promise.
+
+### Acceptance checks added by this patch
+
+- Postgres lifecycle (`services/orion-sql-writer/tests/test_promise_acts_integration.py`): a keep
+  closes `producer` 1 with `evidence=reply`; a horizon with Juniper writing closes `expired` 0; a
+  horizon with no Juniper turn closes `void`; none of the three writes an outcome row, a posterior or a
+  cost; a keep after the resolver closed is ignored.
+- Live (UNVERIFIED until deploy after #3532): a `grammar_acts` row with `actor='hub.promise'`; Hub's
+  `promise_ledger corr=... opened=1` log line; a later `promise_view corr=... open_shown=1`; a close
+  with `evidence=reply` or a `void`/`expired` close at 72 h; `scripts/report_promise_ledger.py`
+  shows them.

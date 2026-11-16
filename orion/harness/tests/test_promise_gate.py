@@ -31,6 +31,7 @@ from orion.schemas.harness_finalize import (
     REFLECTION_SOURCE_JUDGE_FAILED,
     FinalizeReflectionV1,
     OpenPromiseRefV1,
+    PromiseKeptV1,
     PromiseV1,
 )
 
@@ -161,24 +162,84 @@ def test_string_false_offer_is_not_an_offer() -> None:
     assert made[0].offer is False
 
 
+DELIVERY = "The read is still queued."  # a span of REPLY, standing in for "the words that deliver it"
+
+
+def _kept(*ids: str, quote: str = DELIVERY) -> dict:
+    return {"promises_kept": list(ids), "promises_kept_evidence": [PromiseKeptV1(id=i, quote=quote) for i in ids]}
+
+
 def test_kept_entry_that_is_not_an_open_promise_is_dropped() -> None:
-    reflection = _reflection(promises_kept=["act_open", "act_invented"])
+    reflection = _reflection(**_kept("act_open", "act_invented"))
     result = gate_promises(reflection, reply_text=REPLY, enabled=True,
                            open_promises=[OpenPromiseRefV1(id="act_open", quote=FIRM)])
     assert result.reflection.promises_kept == ["act_open"]
+    assert [e.id for e in result.reflection.promises_kept_evidence] == ["act_open"]
     assert result.dropped_unknown_kept == ["act_invented"]
 
 
 def test_regate_against_final_text_drops_a_promise_repair_removed() -> None:
-    """The chain gates again on the text Juniper saw; accepted offers and kept ids survive."""
+    """The chain gates again on the text Juniper saw; accepted offers survive, and a kept id survives
+    only while its delivering quote is still in the final text."""
     reflection = _reflection(promises_made=[PromiseV1(force="commits", quote=FIRM, doer="orion", done_when=DONE_WHEN)], offers_accepted=[OFFER],
-                             promises_kept=["act_open"])
+                             **_kept("act_open"))
     repaired = "The read is still queued."
     result = gate_promises(reflection, reply_text=repaired, enabled=True,
                            pending_offers=reflection.offers_accepted, open_promises=reflection.promises_kept)
     assert result.reflection.promises_made == []
     assert result.reflection.offers_accepted == [OFFER]
     assert result.reflection.promises_kept == ["act_open"]
+    gone = gate_promises(reflection, reply_text="Nothing new yet.", enabled=True,
+                         pending_offers=reflection.offers_accepted, open_promises=reflection.promises_kept)
+    assert gone.reflection.promises_kept == [] and gone.dropped_kept_not_in_text == ["act_open"]
+
+
+# --- amendment 5: a "kept" mark must quote the words that deliver it ----------------------
+
+def test_kept_mark_without_a_quote_or_with_an_invented_quote_is_dropped() -> None:
+    open_refs = [OpenPromiseRefV1(id="act_a", quote=FIRM), OpenPromiseRefV1(id="act_b", quote=OFFER),
+                 OpenPromiseRefV1(id="act_c", quote=FIRM)]
+    reflection = _reflection(
+        promises_kept=["act_a", "act_b", "act_c"],
+        promises_kept_evidence=[PromiseKeptV1(id="act_a", quote=DELIVERY),
+                                PromiseKeptV1(id="act_b", quote="Here is the full deep read you asked for.")])
+    result = gate_promises(reflection, reply_text=REPLY, enabled=True, open_promises=open_refs)
+    assert result.reflection.promises_kept == ["act_a"]
+    assert result.dropped_kept_not_in_text == ["act_b", "act_c"]  # invented quote; no quote at all
+
+
+def test_judge_kept_objects_parse_and_a_bare_id_fails_closed() -> None:
+    from orion.harness.promise_gate import coerce_promise_fields
+
+    got = coerce_promise_fields({"promises_kept": [{"id": "act_a", "quote": DELIVERY}, "act_bare", {"quote": "x"}, 7]})
+    assert got["promises_kept"] == ["act_a", "act_bare"]
+    assert [(e.id, e.quote) for e in got["promises_kept_evidence"]] == [("act_a", DELIVERY)]
+    reflection = _reflection(**got)
+    result = gate_promises(reflection, reply_text=REPLY, enabled=True,
+                           open_promises=[OpenPromiseRefV1(id="act_a", quote=FIRM),
+                                          OpenPromiseRefV1(id="act_bare", quote=FIRM)])
+    assert result.reflection.promises_kept == ["act_a"] and result.dropped_kept_not_in_text == ["act_bare"]
+
+
+def test_schema_asks_for_an_id_and_a_quote_per_kept_promise() -> None:
+    kept = finalize_reflect_json_schema(True)["properties"]["promises_kept"]
+    assert kept["items"]["required"] == ["id", "quote"]
+    jsonschema.validate([{"id": "act_a", "quote": DELIVERY}], kept)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(["act_a"], kept)
+    text = _render(_ctx(open_promises=[OpenPromiseRefV1(id="act_a", quote=FIRM)]))
+    assert '"quote": the exact words of' in text and "[act_a]" in text
+
+
+def test_judge_view_holds_more_open_promises_than_the_made_cap() -> None:
+    """Amendment 8: the judge sees up to PROMISE_JUDGE_VIEW_MAX open promises, so a 4th open
+    promise is not structurally un-closeable."""
+    from orion.schemas.harness_finalize import PROMISE_ITEMS_MAX, PROMISE_JUDGE_VIEW_MAX
+
+    assert PROMISE_JUDGE_VIEW_MAX > PROMISE_ITEMS_MAX
+    refs = [OpenPromiseRefV1(id=f"act_{i}", quote=FIRM) for i in range(PROMISE_JUDGE_VIEW_MAX)]
+    text = _render(_ctx(open_promises=refs))
+    assert all(f"[act_{i}]" in text for i in range(PROMISE_JUDGE_VIEW_MAX))
 
 
 # --- doer: only Orion's own future act is a promise (2026-11-14 exclusions) ----------------

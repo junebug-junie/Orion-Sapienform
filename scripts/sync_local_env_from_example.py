@@ -176,6 +176,8 @@ SYNC_PREFIXES = (
     # sql-writer act materialiser + horizon resolver. No generic HUB_/SQL_WRITER_ prefix
     # is synced, so without these the flags never reach a live .env.
     "HUB_ACT_LEDGER_",
+    # Intention ledger promise acts (orion/hub/promise_ledger.py, shadow until #3531).
+    "HUB_PROMISE_LEDGER_",
     "SQL_WRITER_ACT_",
     # Hourly energy attribution (orion-sql-writer); the leased-evals sponsored flag (2026-11-12)
     # lives here and would otherwise never reach a live .env.

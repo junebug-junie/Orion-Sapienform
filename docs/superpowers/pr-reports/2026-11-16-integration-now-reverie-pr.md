@@ -38,6 +38,7 @@ Before this patch, reverie could not use a camera event, a reading, or a dream u
 - `services/orion-thought/app/settings.py`, `services/orion-thought/.env_example`: 2 new keys.
 - `services/orion-thought/tests/test_reverie_orion_now.py`: 30 tests (new file).
 - `.github/workflows/temporal-self-readers-tests.yml`: runs the new tests and the recent-arcs tests.
+- `tests/test_check_integration_seam.py`: the reads_now test moved the repo root to a temp dir, so any real organ that already reads the now (reverie, first) looked missing. The test now points other real readers at its valid planted reader. Prime's and curiosity's slices need this too.
 
 ## Schema / bus / API changes
 
@@ -66,8 +67,8 @@ services/orion-thought: pytest tests/test_reverie_orion_now.py tests/test_reveri
 orion/schemas/tests/test_context_provenance.py                        6 passed
 orion/temporal_self/tests                                             passed
 scripts/check_env_template_parity.py                                  OK
-scripts/check_integration_seam.py      no reverie findings; main's own 2 failures (session_roundup)
-                                       are pre-existing, fixed by open PR #3493 (issue #3491)
+scripts/check_integration_seam.py      OK (16 organs), after merging main (#3493 fixed session_roundup)
+tests/test_check_integration_seam.py   16 passed
 ```
 
 The new tests cover these cases:

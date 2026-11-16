@@ -107,6 +107,11 @@ def test_reads_now_must_really_read_the_now_and_record_cites(real, tmp_path):
         (tmp_path / name).write_text(text)
     for name, ok in [*((n, ok) for n, (_, ok) in files.items()), ("missing.py", False)]:
         inp = planted(real, repo_root=tmp_path)
+        # Organs that already read the now in the real repo point at files that do not exist under
+        # tmp_path: point them at the valid planted reader so only the organ under test is judged.
+        for organ, spec in inp.registry["organs"].items():
+            if organ != "prime" and (spec or {}).get("reads_now"):
+                spec["reads_now"] = "reader.py"
         inp.registry["organs"]["prime"]["reads_now"] = name
         inp.registry["organs"]["prime"].pop("exempt_read", None)  # prime reads the now since patch 3
         errs = seam.check(inp)

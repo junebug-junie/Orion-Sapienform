@@ -28,6 +28,8 @@ MIN_INTERPRETATION_CHARS = 40
 MAX_CONCERN_HUMAN_TEXT = 500
 # Cap on audit evidence refs (§ cap-all-collections).
 MAX_EVIDENCE_REFS = 50
+# Cites of Orion's now per thought (orion.schemas.temporal_self.NOW_MAX_CITES).
+MAX_EXPERIENCE_CITES = 3
 
 
 def _utc_now() -> datetime:
@@ -78,6 +80,12 @@ class SpontaneousThoughtV1(BaseModel):
     # `motif_refs` (Layer 11 consolidation frame ids) was removed with that rung, 2026-11-04;
     # older stored thoughts carrying it still parse (extra keys are ignored).
     episode_summary_refs: list[str] = Field(default_factory=list, max_length=MAX_EVIDENCE_REFS)
+
+    # Orion's now (integration patch 3, docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-
+    # design.md A4): experience event ids from the now this reverie was shown that the thought used,
+    # at most 3, only ids that were shown. Never grounding: the hollow guard reads evidence_refs only.
+    # Posted to orion-durable-runs POST /temporal-self/now/use, which checks them again.
+    experience_cites: list[str] = Field(default_factory=list, max_length=MAX_EXPERIENCE_CITES)
 
     # Phase E expectation scoring — additive, optional; set only when the thought
     # narrates from a real percept (ORION_REVERIE_PERCEPTION_ENABLED) and states one

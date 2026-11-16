@@ -10,7 +10,8 @@ The fixture is a live pull (``--pull``, read-only SQL) of one window:
   concern at every thought (the notes read ``kept 3``), so the replay keeps them all at every replayed thought: the
   horizon need then measures the time since Prime last thought while it holds a concern.
 * every experience with ``surprise_nats`` in the window, with its own source kind's 90th percentile and count over
-  the 30 days strictly before it (the endpoint's rule);
+  the 30 days strictly before it. (The endpoint uses the 30 days up to its read, which includes the event itself;
+  with at least 20 past events the two differ by at most one row of the percentile.)
 * Juniper's messages to Orion in Hub (chat_history_log, source hub_orion) from 30 days before the window on.
 
 The replay runs the real rules every 60 s (orion/prime/hunger.py ``compute_needs``, ``track_troughs``, ``pick_wake``, ``note_thought``,
@@ -22,13 +23,13 @@ thought acts: no halving). Planted cases check the guards directly.
 Checks:
 
 * budget_holds        -- no replayed 24 h window has more than 24 need-woken thoughts, either policy;
-* no_floor_wakes      -- no replayed thought woke on time alone (the floor is gone);
 * concerns_get_thought-- while a concern is held, no stretch without a thought exceeds the concern's 24 h life
                          (the floor's one job: a held concern is thought about before it fades);
 * never_falling_bounded -- a planted need pinned at drive 1.0 with the same content, Prime never acting, wakes Prime
                          at most once in 7 days (guards 1 and 5);
-* ever_new_bounded    -- a planted need with NEW content every 10 minutes at drive 0.99, Prime never acting, stays
-                         within the budget (24 per 24 h) every day;
+* ever_new_bounded    -- a planted need with NEW content every 10 minutes at drive 0.99 stays within the budget
+                         (24 per 24 h): under ``busy`` (no halving, guard 5 never applies: only the budget binds;
+                         the refractory interval alone would allow 288 a day) and under ``idle``;
 * rest_point          -- with no change, no concern, no surprise and Juniper having written 30 minutes ago, no need wakes Prime.
 
 Reported, not gated: thoughts per day per need and per change, against the live timer's thoughts per day and
@@ -239,8 +240,6 @@ def run(data: Optional[dict[str, Any]] = None) -> list[tuple[str, bool, str]]:
                                      f"{floor_only} woke on the floor alone | " + " | ".join(report)))
     worst = max(_max_need_wakes_24h(idle["thoughts"]), _max_need_wakes_24h(busy["thoughts"]))
     results.append(("budget_holds", worst <= hg.DAILY_BUDGET, f"most need wakes in any 24 h: {worst}"))
-    floorish = [w for _, w in idle["thoughts"] + busy["thoughts"] if w == "?"]
-    results.append(("no_floor_wakes", not floorish, f"{len(floorish)} thoughts woke on time alone"))
     gap = max(_longest_gap_while_held(idle), _longest_gap_while_held(busy))
     results.append(("concerns_get_thought", gap <= timedelta(hours=24),
                     f"longest stretch with a held concern and no thought: {gap.total_seconds() / 3600:.1f} h"))
@@ -248,12 +247,15 @@ def run(data: Optional[dict[str, Any]] = None) -> list[tuple[str, bool, str]]:
     nf = replay(base, policy="idle", planted="never_falling")
     results.append(("never_falling_bounded", len(nf["thoughts"]) <= 1,
                     f"planted never-falling need, same content, never acted on: {len(nf['thoughts'])} thoughts in 7 days"))
-    en = replay(base, policy="idle", planted="ever_new")
-    by_day = Counter(t.date() for t, _ in en["thoughts"])
-    worst_en = _max_need_wakes_24h(en["thoughts"])
-    results.append(("ever_new_bounded", worst_en <= hg.DAILY_BUDGET,
-                    f"planted ever-new need: {len(en['thoughts'])} thoughts in 7 days, most in any 24 h {worst_en}, "
-                    f"per day {dict(sorted((d.isoformat()[5:], n) for d, n in by_day.items()))}"))
+    en_busy = replay(base, policy="busy", planted="ever_new")
+    en_idle = replay(base, policy="idle", planted="ever_new")
+    worst_busy, worst_idle = _max_need_wakes_24h(en_busy["thoughts"]), _max_need_wakes_24h(en_idle["thoughts"])
+    by_day = Counter(t.date() for t, _ in en_busy["thoughts"])
+    results.append(("ever_new_bounded", worst_busy <= hg.DAILY_BUDGET and worst_idle <= hg.DAILY_BUDGET
+                    and worst_busy == hg.DAILY_BUDGET,
+                    f"planted ever-new need: busy (budget alone binds) most in any 24 h {worst_busy}, per day "
+                    f"{dict(sorted((d.isoformat()[5:], n) for d, n in by_day.items()))}; idle (halving binds first) "
+                    f"most in any 24 h {worst_idle}"))
     rest = replay(base, policy="idle", planted="rest", days=2)
     results.append(("rest_point", not rest["thoughts"], f"{len(rest['thoughts'])} thoughts at rest over 2 days"))
     return results

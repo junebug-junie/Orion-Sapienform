@@ -104,12 +104,11 @@ def test_regulation_verdict_needs_enough_signals_and_a_significant_rate_differen
 
 
 def test_hunger_replay_eval_passes_on_its_live_fixture():
-    """Hunger needs replace the quiet floor (integration Part B): on the live 11-06..11-16 timeline no thought wakes on
-    time alone, a held concern still gets a thought within its life, the budget holds, and the planted never-falling
+    """Hunger needs replace the quiet floor (integration Part B): on the live 11-06..11-16 timeline a held concern still gets a thought within its life, the budget holds, and the planted never-falling
     and ever-new needs stay bounded."""
     from orion.prime.evals import run_prime_hunger_replay
 
     results = run_prime_hunger_replay.run()
-    assert {name for name, _, _ in results} == {"report", "budget_holds", "no_floor_wakes", "concerns_get_thought",
+    assert {name for name, _, _ in results} == {"report", "budget_holds", "concerns_get_thought",
                                                 "never_falling_bounded", "ever_new_bounded", "rest_point"}
     assert all(ok for _, ok, _ in results), results

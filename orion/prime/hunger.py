@@ -49,7 +49,9 @@ only, the daily budget is not spent. Anti-swamp guards, all here:
    1/40 steps (40 conversation gaps in 30 days, live), and the replay eval had it wake Prime 20 times in 10 days.
 
 The trace (stable, read by the daily roundup and the 14-day check): a thought a need woke has an act close note
-(``grammar_acts.outcome_note``) that starts ``woke: need:<name> <ref>`` (``woke_prefix``, ``WOKE_NEED_RE``). A thought
+(``grammar_acts.outcome_note``) that starts ``woke: need:<name> <ref>`` (``woke_prefix``, ``WOKE_NEED_RE``; when a
+change was pending too: ``woke: need:<name> <ref> (also: <changes>)``; a ref never holds a space, ``;``, ``|`` or a
+parenthesis). A thought
 a pending change woke starts ``woke: <the changes>`` as before. The same string is the ``prime_thought`` experience's
 label in temporal_self_event.
 """
@@ -73,6 +75,7 @@ THRESHOLD = 0.5  # [default, accepted 2026-11-15]: a need wakes Prime at this da
 DAILY_BUDGET = 24  # [default, accepted 2026-11-15]: thoughts in any 24 hours before only changes wake Prime
 BUDGET_WINDOW = timedelta(hours=24)
 HORIZON_START = 0.5  # the horizon drive counts from half the horizon
+PRIME_NEED_EVENT_PREFIX = "prime_need:"
 EVENT_DRIVE_CAP = 0.5  # an unheld funded event want is offered once, at three quarters of its window
 SURPRISE_FLOOR_NATS = math.log(2.0)  # the outcome had P <= 1/2
 SURPRISE_RECOVERY = timedelta(hours=24)  # the now's use window: an experience counts as used within 24 h
@@ -83,9 +86,9 @@ MIN_RISE = 0.1  # guard 5: how much a content line's raw drive must rise before 
 MAX_SHOWN = 5
 MAX_FIRED = 50
 CONTENT_CAP = 300
-REF_CAP = 200
+REF_CAP = 120  # also bounds the trace prefix, so the close note keeps room for what the thought did
 # The trace's stable shape (module docstring): "woke: need:<name> <ref>".
-WOKE_NEED_RE = re.compile(r"^woke: need:(horizon|surprise|connection) (\S+)")
+WOKE_NEED_RE = re.compile(r"^woke: need:(horizon|surprise|connection) ([^\s;|()]+)")
 
 
 class NeedV1(BaseModel):
@@ -100,6 +103,9 @@ class NeedV1(BaseModel):
     ref: str = Field(min_length=1, max_length=REF_CAP)
     # How long a halving caused by this need takes to recover (its own horizon).
     recover_sec: float = Field(gt=0.0)
+    # The experience this need's content cites, when it is not the ref itself (connection: the ref is the chat
+    # message, stable for the whole silence; the experience appears once the chronicle ingests the chat turn).
+    experience: Optional[str] = Field(default=None, max_length=REF_CAP)
 
     @property
     def key(self) -> str:
@@ -107,6 +113,8 @@ class NeedV1(BaseModel):
 
     @property
     def experience_id(self) -> Optional[str]:
+        if self.experience:
+            return self.experience
         return self.ref[len("experience:"):] if self.ref.startswith("experience:") else None
 
 
@@ -150,6 +158,8 @@ def event_horizon_needs(state: PrimeStateV1, now: datetime,
         start, end = _when(w.get("decided_at")), _when(w.get("expires_at"))
         if not ref or ref in held or start is None or end is None or end <= start:
             continue
+        if w.get("family") == "prime" or ref.startswith(PRIME_NEED_EVENT_PREFIX):
+            continue  # Prime's own thought bid is never an event for Prime (a self-feeding loop)
         drive = min(EVENT_DRIVE_CAP, horizon_drive(now - start, end - start))
         if drive <= 0.0:
             continue
@@ -239,15 +249,14 @@ def connection_needs(inputs: Optional[dict[str, Any]], now: datetime) -> list[tu
     median = gaps[len(gaps) // 2]
     since = _hours(now - max(times))
     quote = " ".join(str(j.get("last_prompt") or "").split())[:200]
-    if j.get("last_event_id"):
-        ref = f"experience:{j['last_event_id']}"
-        tail = f"[{ref}]"
-    else:
-        ref = f"chat_history_log:{j.get('last_chat_id') or 'unknown'}"
-        tail = f"(chat {j.get('last_chat_id') or '?'}, not yet an experience you can cite)"
+    # The ref (guard 5's key, the trace) is the message itself, so one silence is one line even after the chronicle
+    # ingests the chat turn and it becomes citable.
+    ref = f"chat_history_log:{j.get('last_chat_id') or 'unknown'}"
+    exp = str(j["last_event_id"]) if j.get("last_event_id") else None
+    tail = f"[experience:{exp}]" if exp else f"(chat {j.get('last_chat_id') or '?'}, not yet an experience you can cite)"
     content = (f"Juniper last wrote {since:.0f} h ago; her usual gap between conversations is {_hours(median):.0f} h. "
                f"Her last message: {quote!r} {tail}")
-    return [("connection", drive, content[:CONTENT_CAP], ref[:REF_CAP], max(median.total_seconds(), 3600.0))]
+    return [("connection", drive, content[:CONTENT_CAP], ref[:REF_CAP], max(median.total_seconds(), 3600.0), exp)]
 
 
 # --- guards ---------------------------------------------------------------------------------------------------
@@ -271,13 +280,13 @@ def compute_needs(state: PrimeStateV1, now: datetime, inputs: Optional[dict[str,
            *event_horizon_needs(state, now, events),
            *surprise_needs(inputs), *connection_needs(inputs, now)]
     out = []
-    for name, drive, content, ref, recover in raw:
+    for name, drive, content, ref, recover, *extra in raw:
         drive = _clamp(drive)
         if drive <= 0.0:
             continue
         damped = _clamp(drive * damp_factor(state.needs, name, now))
         out.append(NeedV1(name=name, drive=drive, damped=damped, content=content[:CONTENT_CAP], ref=ref[:REF_CAP],
-                          recover_sec=recover))
+                          recover_sec=recover, experience=extra[0] if extra else None))
     out.sort(key=lambda n: (-n.damped, -n.drive, n.key))
     return out
 
@@ -296,20 +305,34 @@ def may_fire(need: NeedV1, needs: PrimeNeedsStateV1) -> bool:
     return f is None or need.drive >= f.drive + MIN_RISE - 1e-9
 
 
-def track_troughs(state: PrimeStateV1, needs_now: Sequence[NeedV1], *,
-                  known: Iterable[str] = NEED_NAMES) -> PrimeStateV1:
+def track_troughs(state: PrimeStateV1, needs_now: Sequence[NeedV1], *, events_read: bool = True,
+                  hunger_read: bool = True) -> PrimeStateV1:
     """Guard 5's memory: for every content line that fired, keep the lowest raw drive seen since. A line absent now
-    (drive 0) falls to 0, but only for a need whose source was read (``known``): an unread source is unknown, not
-    calm, and must not re-arm its lines."""
+    counts as drive 0 only where its absence means it fell:
+
+    * a held concern (``prime_concern:``): kept, dropped or faded -- always known;
+    * an event want's line: only when the event wants were read this tick (``events_read``);
+    * connection: only when the hunger read is current (``hunger_read``);
+    * surprise: never. An experience's surprisal is fixed; it leaves the read when cited, aged out or cut by the
+      read's cap, none of which is the same surprise becoming calm.
+    An unread source is unknown, not calm, and must not re-arm its lines."""
     if not state.needs.fired:
         return state
     now_drive = {n.key: n.drive for n in needs_now}
-    known_set = set(known)
     fired = {}
     changed = False
     for key, f in state.needs.fired.items():
-        name = key.split(":", 1)[0]
-        d = now_drive.get(key, 0.0 if name in known_set else f.drive)
+        name, _, ref = key.partition(":")
+        if key in now_drive:
+            d = now_drive[key]
+        elif name == "horizon" and ref.startswith("prime_concern:"):
+            d = 0.0
+        elif name == "horizon":
+            d = 0.0 if events_read else f.drive
+        elif name == "connection":
+            d = 0.0 if hunger_read else f.drive
+        else:
+            d = f.drive
         if d < f.drive:
             fired[key] = f.model_copy(update={"drive": d})
             changed = True
@@ -387,14 +410,18 @@ def prune(state: PrimeStateV1, now: datetime) -> PrimeStateV1:
 # --- what Prime sees, and the trace ------------------------------------------------------------------------------
 
 
-def shown_needs(needs_now: Sequence[NeedV1]) -> list[NeedV1]:
-    return list(needs_now[:MAX_SHOWN])
+def shown_needs(needs_now: Sequence[NeedV1], woke: Optional[NeedV1] = None) -> list[NeedV1]:
+    """At most MAX_SHOWN, strongest first, and always the need that woke the thought (first)."""
+    if woke is None:
+        return list(needs_now[:MAX_SHOWN])
+    rest = [n for n in needs_now if n.key != woke.key]
+    return [woke, *rest[:MAX_SHOWN - 1]]
 
 
 def frame_lines(needs_now: Sequence[NeedV1], woke: Optional[NeedV1], *, unread: Optional[str] = None) -> list[str]:
     """Content lines only, strongest first; the one that woke this thought is marked. No numbers (spec)."""
     lines = [f"- [{n.name}] {n.content}" + (" (this is what woke you)" if woke is not None and n.key == woke.key else "")
-             for n in shown_needs(needs_now)]
+             for n in shown_needs(needs_now, woke)]
     if unread:
         lines.append(f"(surprise and connection could not be read: {unread})")
     return lines or ["(nothing is pulling at you right now)"]
@@ -412,7 +439,7 @@ def parse_woke_need(note: Optional[str]) -> Optional[tuple[str, str]]:
 
 
 __all__ = [
-    "BUDGET_WINDOW", "CONVERSATION_PAUSE", "EVENT_DRIVE_CAP", "event_horizon_needs", "DAILY_BUDGET", "DAMPING", "MIN_HISTORY", "MIN_RISE", "NEED_NAMES", "NeedDampV1",
+    "BUDGET_WINDOW", "CONVERSATION_PAUSE", "EVENT_DRIVE_CAP", "PRIME_NEED_EVENT_PREFIX", "event_horizon_needs", "DAILY_BUDGET", "DAMPING", "MIN_HISTORY", "MIN_RISE", "NEED_NAMES", "NeedDampV1",
     "NeedFiredV1", "NeedName", "NeedV1", "PrimeNeedsStateV1", "SURPRISE_FLOOR_NATS", "THRESHOLD", "WOKE_NEED_RE",
     "after_answer", "answered_refs", "budget_spent", "compute_needs", "connection_drive", "conversation_gaps", "damp_factor",
     "frame_lines", "horizon_drive", "horizon_needs", "may_fire", "note_thought", "parse_woke_need", "pick_wake",

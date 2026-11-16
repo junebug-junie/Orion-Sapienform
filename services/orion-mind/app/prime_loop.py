@@ -129,7 +129,7 @@ Hunger (integration design Part B, patch 5; PRIME_HUNGER_NEEDS_ENABLED; orion/pr
 Prime's needs (horizon from its own concerns and the funded event wants; surprise and connection from durable-runs
 GET /temporal-self/hunger, read every PRIME_HUNGER_READ_SEC) and wakes Prime when the strongest damped need crosses
 PRIME_HUNGER_THRESHOLD, within PRIME_HUNGER_DAILY_BUDGET thoughts a day. The 6-hour quiet floor is deleted. The bid
-carries the strongest need as ``salience``/``event_ref``; the frame shows the needs' content lines; a need's experience
+carries the waking need's drive as ``salience`` (never an ``event_ref``); the frame shows the needs' content lines; a need's experience
 is pinned into the now read (``include=``); a need-woken thought's close note starts ``woke: need:<name> <ref>``.
 
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
@@ -607,8 +607,9 @@ class PrimeRuntime(MindLoopRuntime):
         self._needs = hg.compute_needs(self.state, now, self._hunger_inputs, taken_on=taken,
                                        horizon_of=it.horizon_for if self._intentions_on() else None,
                                        events=inputs.events if inputs.event_mode else None)
-        self.state = hg.track_troughs(self.state, self._needs, known=(
-            hg.NEED_NAMES if self._hunger_inputs is not None else ("horizon",)))
+        self.state = hg.track_troughs(self.state, self._needs,
+                                      events_read=not inputs.event_mode or inputs.events is not None,
+                                      hunger_read=self._hunger_inputs is not None and self._hunger_error is None)
         wake = hg.pick_wake(self._needs, self.state, now,
                             threshold=float(getattr(self.s, "PRIME_HUNGER_THRESHOLD", hg.THRESHOLD)),
                             budget=int(getattr(self.s, "PRIME_HUNGER_DAILY_BUDGET", hg.DAILY_BUDGET)))
@@ -619,12 +620,14 @@ class PrimeRuntime(MindLoopRuntime):
         self._wake_need = wake
 
     def _want_extras(self) -> dict[str, Any]:
-        """The bid carries hunger (spec Part B, "How hunger reaches the market"): salience = the strongest damped
-        need, event_ref = that need. The market's intensity is then max(clock hunger, need). No need: a clock want."""
-        if not self._hunger_on() or not self._needs:
+        """The bid carries hunger (spec Part B, "How hunger reaches the market"): ``salience`` = the waking need's
+        damped drive, so the market's intensity is max(clock hunger, need). Only when a need crossed its threshold:
+        a weak need waits for the clock. NO ``event_ref``: GET /physiology/event-wants lists every want that has one,
+        so Prime's own bid would come back to Prime as an event to think about (review finding, a self-feeding
+        loop). The need is named in the prime_need_wake and prime_thought log lines."""
+        if not self._hunger_on() or self._wake_need is None:
             return {}
-        top = self._needs[0]
-        return {"salience": round(top.damped, 6), "event_ref": f"prime_need:{top.name}:{top.ref}"[:500]}
+        return {"salience": round(self._wake_need.damped, 6)}
 
     async def _open_thought(self, act: ActV1, started_at: datetime) -> None:
         await super()._open_thought(act, started_at)
@@ -649,8 +652,10 @@ class PrimeRuntime(MindLoopRuntime):
                 not self.state.pending_changes or self._wake_need.damped >= float(
                     getattr(self.s, "PRIME_HUNGER_THRESHOLD", hg.THRESHOLD))):
             self._thought_need = self._wake_need
-            changes = woke_note(list(self.state.pending_changes)) if self.state.pending_changes else ""
-            return hg.woke_prefix(self._wake_need) + (f"; {changes[len('woke: '):]}" if changes else "")
+            changes = woke_note(list(self.state.pending_changes))[len("woke: "):] if self.state.pending_changes else ""
+            if len(changes) > 100:
+                changes = changes[:97] + "..."
+            return hg.woke_prefix(self._wake_need) + (f" (also: {changes})" if changes else "")
         return woke_note(list(self.state.pending_changes))
 
     def _new_thought_id(self) -> str:
@@ -1118,8 +1123,9 @@ class PrimeRuntime(MindLoopRuntime):
         """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
         if self._hunger_on():
             # Before the now read: a need's experience is pinned into the now, so citing it is valid.
-            self._shown_needs = hg.shown_needs(self._needs)
-            inputs.needs = hg.frame_lines(self._needs, self._thought_need, unread=self._hunger_error)
+            self._shown_needs = hg.shown_needs(self._needs, self._thought_need)
+            inputs.needs = hg.frame_lines(self._needs, self._thought_need,
+                                          unread=self._hunger_error if self._hunger_inputs is None else None)
         # The move check depends on the cheap pending-focus read (#3366). Curiosity's runs arrive through the now
         # (integration patch 3): the frame no longer reads Hub's curiosity dashboard. Both reads run at once.
         (focus_pending, focus_unread), orion_now = await asyncio.gather(
@@ -1257,7 +1263,9 @@ class PrimeRuntime(MindLoopRuntime):
         since = self._now_since()
         if since is not None:
             params["since"] = since
-        include = ",".join(i for i in (n.experience_id for n in self._shown_needs) if i)[:600]
+        from orion.temporal_self.now import NOW_MAX_PINNED
+
+        include = ",".join([i for i in (n.experience_id for n in self._shown_needs) if i][:NOW_MAX_PINNED])
         if include:
             params["include"] = include
         clock = self.clock()

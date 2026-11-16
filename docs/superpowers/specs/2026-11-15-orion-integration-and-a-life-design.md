@@ -451,7 +451,7 @@ Gate notes: the moves come from `grammar_acts.outcome_note`, written by `apply_a
 - **Privacy:** none between Juniper and Orion (her standing rule). The connection need quotes her message only inside Prime's own frame.
 - **Trace:** each thought's `outcome_note` starts `woke: need:<name> <ref>`. The roundup counts thoughts per need.
 - **Danger:** a need that never falls (a deadline that cannot be met) wakes Prime again and again. The dampening rule and the daily budget stop it. An eval plants exactly this case.
-- **Rollback:** flag `PRIME_HUNGER_NEEDS_ENABLED` [ships on]. Off restores the floor.
+- **Rollback:** flag `PRIME_HUNGER_NEEDS_ENABLED` [ships on]. Off = Prime wakes on changes only; a held concern can then fade with no thought. The floor is not restored by the flag (amended 2026-11-16 with patch 5: the acceptance check says `QUIET_FLOOR` is deleted, and kill means kill). Restoring the floor is a git revert.
 
 ---
 

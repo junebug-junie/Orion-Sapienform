@@ -45,10 +45,10 @@ def test_a_horizon_need_wakes_prime_with_no_change_and_writes_the_trace():
     rt.state = held(19)
     asyncio.run(rt.tick())
     [want] = rt.bids
-    # The bid carries hunger: salience = the strongest damped need, event_ref names it.
-    assert want.salience == hg.horizon_drive(timedelta(hours=19), timedelta(hours=24)) or abs(
-        want.salience - (19 / 24 - 0.5) / 0.5) < 1e-3
-    assert want.event_ref == f"prime_need:horizon:prime_concern:{CID}"
+    # The bid carries hunger: salience = the waking need's damped drive. Never an event_ref (it would list Prime's
+    # own bid as an event for Prime).
+    assert abs(want.salience - (19 / 24 - 0.5) / 0.5) < 1e-3
+    assert want.event_ref is None
     [call] = rt.llm.calls
     assert "WHAT IS PULLING AT YOU" in call["user_prompt"] and "(this is what woke you)" in call["user_prompt"]
     assert "WHAT IS PULLING AT YOU" in call["system_prompt"]
@@ -132,3 +132,18 @@ def test_the_read_is_cached_between_ticks():
     rt.clock_box["now"] = T0 + timedelta(seconds=301)
     asyncio.run(rt.tick())
     assert rt.urls.count(HUNGER_URL) == 2
+
+
+def test_a_change_wake_without_a_need_bids_as_a_clock_want_and_the_mixed_trace_parses():
+    rt = hungry(runtime(answer=IDLE))
+    rt.state = held(10).model_copy(update={"pending_changes": ["an act of mine settled"]})
+    asyncio.run(rt.tick())
+    [want] = rt.bids
+    assert want.salience is None and want.event_ref is None
+    assert closed_note(rt).startswith("woke: an act of mine settled")
+    mixed = hungry(runtime(answer=IDLE))
+    mixed.state = held(19).model_copy(update={"pending_changes": ["an act of mine settled"]})
+    asyncio.run(mixed.tick())
+    note = closed_note(mixed)
+    assert note.startswith(f"woke: need:horizon prime_concern:{CID} (also: an act of mine settled) |")
+    assert hg.parse_woke_need(note) == ("horizon", f"prime_concern:{CID}")

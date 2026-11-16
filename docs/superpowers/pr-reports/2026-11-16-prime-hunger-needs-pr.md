@@ -47,7 +47,7 @@ think about.
   halvings, fired lines, thought starts), omitted from the saved state while empty; `wants_to_think(..., need_wake)`.
 - `orion/prime/thought.py`: frame section WHAT IS PULLING AT YOU and its system-prompt paragraph.
 - `services/orion-mind/app/prime_loop.py`: reads hunger inputs every `PRIME_HUNGER_READ_SEC`, computes needs every
-  tick, need wake, bid `salience`/`event_ref`, the trace, guard 1 at the thought's close, guards 4/5 at the open.
+  tick, need wake, bid `salience` (no `event_ref`), the trace, guard 1 at the thought's close, guards 4/5 at the open.
 - `services/orion-durable-runs`: `GET /temporal-self/hunger` (read-only) and `include=` on `GET /temporal-self/now`
   (`ExperienceStore.by_id`, `hunger_inputs`; `build_now(pinned=...)` in `orion/temporal_self/now.py`).
 - `orion/schemas/temporal_self.py` + registry: `TemporalHungerInputsV1`, `HungerSurpriseV1`, `HungerJuniperV1`.
@@ -56,14 +56,15 @@ think about.
 
 - Where: `grammar_acts.outcome_note` of Prime's thought acts (`actor = 'prime'`, `verb = 'infer'`). The same string
   is the `prime_thought` experience's label in `temporal_self_event`.
-- Shape: `woke: need:<name> <ref>` then, if a change was also pending, `; <changes>`, then ` | <what the thought did>`.
-  `<name>` is one of `horizon`, `surprise`, `connection`. `<ref>` has no spaces: `prime_concern:<16 hex>`,
-  `experience:<event_id>`, `chat_history_log:<id>` (connection before the chat turn is ingested) or an event want's
-  `event_ref`.
+- Shape: `woke: need:<name> <ref>`, then ` (also: <changes>)` if a change was also pending, then
+  ` | <what the thought did>`. `<name>` is one of `horizon`, `surprise`, `connection`. `<ref>` (at most 120 chars)
+  never holds a space, `;`, `|` or a parenthesis: `prime_concern:<16 hex>`, an event want's `event_ref`,
+  `experience:<event_id>` (surprise) or `chat_history_log:<id>` (connection: the message, stable for one silence).
 - Parser: `orion.prime.hunger.parse_woke_need(note) -> (name, ref) | None` (regex `WOKE_NEED_RE`). None = the thought
   woke on a change (`woke: <changes>`, unchanged format).
 - SQL: `substring(outcome_note from '^woke: need:(horizon|surprise|connection) ')`.
-- Also in the log line `prime_thought ... need=<name>:<ref>` and the bid's `event_ref prime_need:<name>:<ref>`.
+- Also in the log lines `prime_need_wake need=<name> ref=<ref>` and `prime_thought ... need=<name>:<ref>`.
+- Patch 4's roundup is its consumer; the contract is posted on #3426.
 
 ## Metric quality gate (each drive)
 
@@ -134,10 +135,12 @@ Not built (no producer exists; no placeholder shipped): `coherence` (#3523), `le
 - Added: `TemporalHungerInputsV1`, `HungerSurpriseV1`, `HungerJuniperV1` (registered; HTTP only, no channel);
   `GET /temporal-self/hunger?organ=<id>`; `include=` on `GET /temporal-self/now`; `PrimeStateV1.needs`.
 - Removed: `orion.prime.state.QUIET_FLOOR`; the "quiet" pending change.
-- Behavior changed: Prime's bid carries `salience` and `event_ref prime_need:<name>:<ref>` when a need is present
-  (the market ranks it as an event want, intensity = max(clock, need)).
-- Compatibility: `PrimeStateV1` is `extra="forbid"` and Hub reads `orion:prime:state` (`parse_prime_redis`):
-  rebuild Hub before orion-mind. `needs` is omitted while empty, so the state is byte-identical until Prime first
+- Behavior changed: when a need wakes Prime, its bid carries `salience` = the need's damped drive (the market ranks
+  it as an event want, intensity = max(clock, need)). No `event_ref`, so Prime's bid never appears in
+  `GET /physiology/event-wants`. A change-woken bid without a need is a plain clock want, as before.
+- Compatibility: `PrimeStateV1` is `extra="forbid"`; Hub (`orion/hub/turn_orchestrator.py`), the harness
+  governor's Claude tools (`orion/claude_tools/readers.py`) and orion-mind's consent responder read
+  `orion:prime:state` through `parse_prime_redis`: rebuild Hub and orion-harness-governor before orion-mind. `needs` is omitted while empty, so the state is byte-identical until Prime first
   thinks with hunger on. Rollback of orion-mind: drop the `needs` key from `orion:prime:state` first.
   durable-runs before orion-mind (else the hunger read 404s: surprise and connection are then unknown and shown as
   a gap; horizon still works). No migration (reads existing tables).
@@ -152,8 +155,8 @@ Not built (no producer exists; no placeholder shipped): `coherence` (#3523), `le
 ## Tests run
 
 ```text
-pytest orion/prime -q                                  -> 272 passed
-orion-mind: pytest tests -q                            -> 419 passed
+pytest orion/prime orion/temporal_self -q              -> 596 passed
+orion-mind: pytest tests -q                            -> 420 passed
 orion-durable-runs: pytest tests -q                    -> 1003 passed, 149 skipped
 pytest orion/mindloop orion/temporal_self test_replica_contracts -> 353 passed
 static gates (settings defaults, schema registry, schema skew, personal terms, env sync) -> 89 passed; 7 passed
@@ -163,9 +166,10 @@ scripts/check_integration_seam.py                      -> OK (16 organs)
 ## Evals run
 
 ```text
-run_prime_hunger_replay.py  7/7 PASS (report above; budget_holds max 4 need wakes/24 h; no_floor_wakes 0;
+run_prime_hunger_replay.py  6/6 PASS (report above; budget_holds max 4 need wakes/24 h on live data;
                             concerns_get_thought 18.0 h; never_falling_bounded 1 thought in 7 days;
-                            ever_new_bounded max 4/24 h; rest_point 0)
+                            ever_new_bounded: with no halving the budget alone binds at exactly 24/24 h every
+                            day (refractory alone would allow 288); with halving 4/24 h; rest_point 0)
 run_prime_frame_eval.py, run_prime_block_eval.py, run_intention_take_on_replay -> rc 0
 ```
 
@@ -181,15 +185,42 @@ Not deployed (task: do not merge or deploy). Live path UNVERIFIED.
 
 ## Review findings fixed
 
-(filled after review)
+Reviewed by an independent subagent against `origin/main`. All material findings fixed:
+
+- Finding (blocker): Prime's bid carried `event_ref prime_need:...`; `GET /physiology/event-wants` lists every want
+  with an `event_ref`, so Prime's own funded bid came back as an unheld event, became a horizon need at 0.5 after
+  22 minutes, with a new nested ref each time (guard 5 never held): a self-fed loop capped only by the budget.
+  - Fix: the bid sends `salience` only, and only when a need woke Prime (also fixes the nit that any weak need moved
+    every bid into event ranking). Backstop: `event_horizon_needs` skips family `prime` and the `prime_need:` prefix.
+  - Evidence: `test_prime_own_thought_bid_is_never_an_event_need`, loop test asserts `want.event_ref is None`.
+- Finding: the mixed wake note `woke: need:<name> <ref>; <changes>` made the parsed ref `...;`.
+  - Fix: mixed form is `(also: <changes>)`; the ref group excludes space, `;`, `|`, parentheses.
+  - Evidence: mixed-case tests in `test_prime_hunger.py` and `test_prime_hunger_loop.py`.
+- Finding: guard 5 re-armed when a line merely left view (a surprise cut by the read's cap of 10; every event line
+  when the event-wants read failed; the connection ref changing once the chat turn was ingested).
+  - Fix: `track_troughs(events_read=, hunger_read=)`; surprises never re-arm by absence (fixed surprisal); the
+    connection ref is the chat message, with the citable experience carried separately (`NeedV1.experience`).
+  - Evidence: `test_guard5_rearms_from_the_trough_but_an_unread_source_never_rearms`, connection test.
+- Finding: the waking need could be missing from the frame's top 5 and from the now pins; `include` was cut by
+  characters.
+  - Fix: `shown_needs(needs, woke)` puts it first; `include` joins whole ids up to `NOW_MAX_PINNED`.
+  - Evidence: `test_the_need_that_woke_is_always_shown_first`.
+- Finding: spec said "off restores the floor", contradicting "QUIET_FLOOR is deleted".
+  - Fix: spec rollback line amended in this PR (off = changes only; a held concern can fade unthought).
+- Finding: `ever_new_bounded` never exercised the budget (halving bound first); `no_floor_wakes` could not fail.
+  - Fix: ever-new also runs with no halving and must hit exactly 24/24 h; the tautological check is dropped.
+- Finding: rollout note named only Hub. Fix: governor added (above, and the restart line).
+- Nits fixed: the trace prefix is bounded (ref <= 120, changes <= 100 chars) so the move stays inside the 500-char
+  note; the frame says "could not be read" only when no read is in use; the trace contract posted on #3426.
+- Not fixed, by design: the connection need's "asked and got no answer" half (no table can observe it; see gate).
 
 ## Restart required
 
 ```bash
-scripts/safe_docker_build.sh orion-hub up -d --build && scripts/safe_docker_build.sh orion-durable-runs up -d --build && scripts/safe_docker_build.sh orion-mind up -d --build
+scripts/safe_docker_build.sh orion-hub up -d --build && scripts/safe_docker_build.sh orion-harness-governor up -d --build && scripts/safe_docker_build.sh orion-durable-runs up -d --build && scripts/safe_docker_build.sh orion-mind up -d --build
 ```
 
-Order matters: Hub (reads Prime state), then durable-runs (serves the hunger read), then orion-mind. From the clean
+Order matters: Hub and the governor (read Prime state), then durable-runs (serves the hunger read), then orion-mind. From the clean
 primary `main` checkout after merge.
 
 ## Risks / concerns
@@ -200,6 +231,8 @@ primary `main` checkout after merge.
 - Severity: medium. Concern: surprise has not fired once in 7 days live (prediction_surprise is constant at its
   floor). It is correct at rest but unproven in motion. Mitigation: listed UNVERIFIED; the replay planted cases
   test the mechanism.
+- Severity: low. Concern: the flag off now means changes only, so a held concern can fade with no thought (spec
+  amended). Mitigation: ships on; restoring the floor is a revert.
 - Severity: low. Concern: connection may wake Prime 1-2 times a day while Juniper is away; bounded by guard 5's
   0.1 rise, damping and the budget.
 - Issues: opened #3523 (coherence need), #3524 (learning need); commented #3428 (project need). #3427 stays open

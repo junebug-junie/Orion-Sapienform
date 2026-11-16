@@ -144,9 +144,10 @@ need's own horizon; at most `PRIME_HUNGER_DAILY_BUDGET` (24) thoughts in any 24 
 Prime; the same content line wakes Prime again only after its drive rose 0.1 from its lowest point since. Surprise and
 connection come from durable-runs `GET /temporal-self/hunger?organ=prime` every `PRIME_HUNGER_READ_SEC` (300 s). The
 frame shows the needs' content lines (no numbers) under WHAT IS PULLING AT YOU; a need's experience is pinned into the
-now read (`include=`), so it can be cited. The bid carries `salience` = the strongest need and `event_ref
-prime_need:<name>:<ref>`. **The trace:** a need-woken thought's act close note (`grammar_acts.outcome_note`, also the
-`prime_thought` experience label) starts `woke: need:<name> <ref>` (`orion.prime.hunger.parse_woke_need`); a
+now read (`include=`), so it can be cited. When a need wakes Prime the bid carries `salience` = its damped drive (no
+`event_ref`: that would list Prime's own bid as an event for Prime). **The trace:** a need-woken thought's act close note (`grammar_acts.outcome_note`, also the
+`prime_thought` experience label) starts `woke: need:<name> <ref>` (with a pending change too: `woke: need:<name> <ref> (also: <changes>)`;
+`orion.prime.hunger.parse_woke_need`); a
 change-woken one starts `woke: <changes>` as before. Off: no needs, Prime wakes on changes only (the floor is not
 restored). Replay on live data: `orion/prime/evals/run_prime_hunger_replay.py`.
 **Orion's now (integration patch 3).** Each thought reads durable-runs `GET /temporal-self/now?organ=prime&since=<last

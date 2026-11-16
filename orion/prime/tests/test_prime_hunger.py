@@ -117,10 +117,12 @@ def test_connection_is_her_gap_against_her_own_usual_gap():
     # Pauses under 2 h are inside one conversation: they are not her gaps.
     assert hg.conversation_gaps([T, T + timedelta(minutes=30), T + timedelta(hours=3)]) == [timedelta(hours=2, minutes=30)]
     [n] = hg.compute_needs(PrimeStateV1(), T, {"juniper": juniper(gaps, last_ago=timedelta(hours=30))})
-    assert n.name == "connection" and n.ref == "experience:chat_turn:c1" and "'are you there?'" in n.content
+    # The ref is the message (stable for the whole silence); the citable experience rides alongside.
+    assert n.name == "connection" and n.ref == "chat_history_log:c1" and n.experience_id == "chat_turn:c1"
+    assert "'are you there?'" in n.content and "[experience:chat_turn:c1]" in n.content
     j = {**juniper(gaps, last_ago=timedelta(hours=30)), "last_event_id": None}
-    [n] = hg.compute_needs(PrimeStateV1(), T, {"juniper": j})
-    assert n.ref == "chat_history_log:c1" and n.experience_id is None and "not yet an experience" in n.content
+    [m] = hg.compute_needs(PrimeStateV1(), T, {"juniper": j})
+    assert m.ref == n.ref and m.key == n.key and m.experience_id is None and "not yet an experience" in m.content
 
 
 def test_total_hunger_is_the_strongest_need_not_a_sum():
@@ -203,10 +205,19 @@ def test_guard5_rearms_from_the_trough_but_an_unread_source_never_rearms():
     rearmed = hg.track_troughs(fired, [])
     assert rearmed.needs.fired[n.key].drive == 0.0 and hg.pick_wake([n], rearmed, T) is not None
     # A connection line whose source was not read is unknown, not calm: its record stays.
-    c = hg.NeedV1(name="connection", drive=0.8, damped=0.8, content="x", ref="experience:chat_turn:c1", recover_sec=3600)
+    c = hg.NeedV1(name="connection", drive=0.8, damped=0.8, content="x", ref="chat_history_log:c1", recover_sec=3600)
     cf = hg.note_thought(PrimeStateV1(), T, c)
-    assert hg.track_troughs(cf, [], known=("horizon",)).needs.fired[c.key].drive == 0.8
+    assert hg.track_troughs(cf, [], hunger_read=False).needs.fired[c.key].drive == 0.8
     assert hg.track_troughs(cf, []).needs.fired[c.key].drive == 0.0
+    # A surprise's surprisal is fixed: leaving the read (cited, aged out, cut by the cap) never re-arms it.
+    sp = hg.NeedV1(name="surprise", drive=0.9, damped=0.9, content="y", ref="experience:p:1", recover_sec=86400)
+    sf = hg.note_thought(PrimeStateV1(), T, sp)
+    assert hg.track_troughs(sf, []).needs.fired[sp.key].drive == 0.9
+    # An event want's line falls only when the event wants were read.
+    ev = hg.NeedV1(name="horizon", drive=0.5, damped=0.5, content="z", ref="curiosity_run:r1", recover_sec=3600)
+    ef = hg.note_thought(PrimeStateV1(), T, ev)
+    assert hg.track_troughs(ef, [], events_read=False).needs.fired[ev.key].drive == 0.5
+    assert hg.track_troughs(ef, []).needs.fired[ev.key].drive == 0.0
 
 
 def test_a_planted_never_falling_need_is_dampened_and_bounded():
@@ -236,6 +247,10 @@ def test_the_trace_is_stable_and_parseable():
     assert note.startswith("woke: need:surprise experience:prediction_surprise:a")
     assert hg.parse_woke_need(note) == ("surprise", "experience:prediction_surprise:a")
     assert hg.parse_woke_need("woke: first wake: I have not thought yet | no move") is None
+    # A need and a change together: the ref stays clean.
+    mixed = hg.woke_prefix(n) + " (also: an act of mine settled) | no move"
+    assert hg.parse_woke_need(mixed) == ("surprise", "experience:prediction_surprise:a")
+    assert hg.parse_woke_need("woke: need:horizon prime_concern:abc; x | y") == ("horizon", "prime_concern:abc")
     assert hg.parse_woke_need(None) is None
 
 
@@ -292,3 +307,20 @@ def test_guard1_a_need_the_thought_answered_is_not_halved():
     only_h = hg.after_answer(PrimeStateV1(), [h, s], T, acted=False, touched=hg.answered_refs(kept=["a" * 16]))
     assert set(only_h.needs.damp) == {"surprise"}
     assert hg.answered_refs(dropped=[f"{'b' * 16} (no longer matters)"]) == {f"prime_concern:{'b' * 16}"}
+
+
+def test_prime_own_thought_bid_is_never_an_event_need():
+    """Review finding: Prime's own bid listed as a funded event want would wake Prime about itself, forever."""
+    own = {"want_id": "prime-think-1", "family": "prime", "event_ref": "prime_need:horizon:prime_concern:x",
+           "decided_at": (T - timedelta(hours=1)).isoformat(), "expires_at": (T + timedelta(minutes=1)).isoformat()}
+    assert hg.compute_needs(PrimeStateV1(), T, None, events={"wants": [own]}) == []
+    assert hg.compute_needs(PrimeStateV1(), T, None, events={"wants": [{**own, "family": "other"}]}) == []
+
+
+def test_the_need_that_woke_is_always_shown_first():
+    needs = [hg.NeedV1(name="horizon", drive=0.9, damped=0.9, content=f"c{i}", ref=f"prime_concern:{i:016x}",
+                       recover_sec=86400) for i in range(6)]
+    woke = hg.NeedV1(name="surprise", drive=0.6, damped=0.6, content="s", ref="experience:p:9", recover_sec=86400)
+    shown = hg.shown_needs([*needs, woke], woke)
+    assert shown[0] == woke and len(shown) == hg.MAX_SHOWN
+    assert hg.frame_lines([*needs, woke], woke)[0].endswith("(this is what woke you)")

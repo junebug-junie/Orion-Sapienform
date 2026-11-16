@@ -25,6 +25,9 @@ GRANT SELECT ON public.experience_shown TO orion_readonly;
 GRANT SELECT ON public.experience_use TO orion_readonly;
 GRANT SELECT ON public.grammar_acts TO orion_readonly;
 GRANT SELECT ON public.notify_requests TO orion_readonly;
+-- act_downstream_use: the integration metric's "before" baseline (Orion's question 7 on #3528: it could not
+-- check its own integration priors).
+GRANT SELECT ON public.act_downstream_use TO orion_readonly;
 
 COMMIT;
 
@@ -37,4 +40,5 @@ COMMIT;
 --          has_table_privilege('orion_readonly', 'experience_shown', 'SELECT'),
 --          has_table_privilege('orion_readonly', 'experience_use', 'SELECT'),
 --          has_table_privilege('orion_readonly', 'grammar_acts', 'SELECT'),
---          has_table_privilege('orion_readonly', 'notify_requests', 'SELECT');
+--          has_table_privilege('orion_readonly', 'notify_requests', 'SELECT'),
+--          has_table_privilege('orion_readonly', 'act_downstream_use', 'SELECT');

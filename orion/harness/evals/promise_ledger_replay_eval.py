@@ -25,6 +25,8 @@ Subcommands:
          run with the items the doer rule dropped put back, through the gate's own other
          rules: an ablation of that one rule on the new prompt. It is NOT the old prompt's
          precision (the new prompt also changed what the judge lists); compare runs for that.
+         ``precision_without_done_when_rule`` is the same ablation for rule 0b (an item
+         with no completion that could fail is dropped).
 
 Inputs are read live from Postgres and are never stored in the repo. Lanes are the
 Flash-Next lanes (--lanes, default agent = GPU 1; chat = GPU 0 runs the same model but waits
@@ -64,7 +66,7 @@ from orion.harness.finalize import (
     finalize_reflect_json_schema,
     parse_finalize_reflection_payload,
 )
-from orion.harness.promise_gate import gate_promises, normalize_for_quote_match
+from orion.harness.promise_gate import gate_promises, has_completion, normalize_for_quote_match
 from orion.harness.tests.fixtures import make_repair_overlay
 from orion.schemas.harness_finalize import PROMISE_DOER_ORION, PROMISE_ITEMS_MAX, OpenPromiseRefV1
 
@@ -305,6 +307,11 @@ def run(args: argparse.Namespace) -> int:
                                     for p in reflection.promises_made if p.doer != PROMISE_DOER_ORION]
                 row["ablation_kept"] = ablate_doer_rule(reflection, draft_text=inputs["draft_text"],
                                                         final_text=final_text)
+                # Orion's items rule 0b dropped (no completion that could fail), and its ablation.
+                row["no_completion"] = [p.model_dump() for p in reflection.promises_made
+                                        if p.doer == PROMISE_DOER_ORION and not has_completion(p)]
+                row["ablation_done_when_kept"] = ablate_done_when_rule(
+                    reflection, draft_text=inputs["draft_text"], final_text=final_text)
                 row["dropped_not_in_final"] = second.dropped_not_in_text
                 row["dropped_other"] = (first.dropped_too_long + first.dropped_over_cap
                                         + len(first.dropped_unknown_offer) + len(first.dropped_unknown_kept))
@@ -357,6 +364,26 @@ def run(args: argparse.Namespace) -> int:
 
 # --- labelling and scoring ----------------------------------------------------------------
 
+def _gate_ablated(reflection: Any, promises: list, *, draft_text: str, final_text: str) -> list:
+    """The gate's own rules over ``promises`` (draft, then final text), offers and keeps left out."""
+    as_given = reflection.model_copy(update={"promises_made": promises, "offers_accepted": [], "promises_kept": []})
+    first = gate_promises(as_given, reply_text=draft_text, enabled=True)
+    return gate_promises(first.reflection, reply_text=final_text, enabled=True).reflection.promises_made
+
+
+def ablate_done_when_rule(reflection: Any, *, draft_text: str, final_text: str) -> list[dict]:
+    """What the gate would keep without rule 0b: every item given a stand-in completion, then
+    the gate's other rules (the doer rule included). Empty when rule 0b dropped nothing."""
+    if all(has_completion(p) for p in reflection.promises_made if p.doer == PROMISE_DOER_ORION):
+        return []
+    real = {normalize_for_quote_match(p.quote): p.done_when for p in reflection.promises_made}
+    stand_in = [p if has_completion(p) else p.model_copy(update={"done_when": "(ablation: rule 0b off)"})
+                for p in reflection.promises_made]
+    return [{"quote": p.quote, "offer": p.offer, "doer": p.doer, "act": p.act,
+             "done_when": real.get(normalize_for_quote_match(p.quote))}
+            for p in _gate_ablated(reflection, stand_in, draft_text=draft_text, final_text=final_text)]
+
+
 def ablate_doer_rule(reflection: Any, *, draft_text: str, final_text: str) -> list[dict]:
     """What the gate would keep if the doer rule did not exist: every listed item treated as
     Orion's, then the gate's other rules (quote in the draft and the final text, length,
@@ -391,28 +418,37 @@ def merge_reports(paths: list[Path]) -> dict:
             "merged_from": [str(p) for p in paths]}
 
 
-def extracted_items(report: dict, *, with_not_orion: bool = False) -> list[dict]:
+def extracted_items(report: dict, *, with_not_orion: bool = False, without_done_when: bool = False) -> list[dict]:
     """Every gated promise_made item, one per (turn, quote). with_not_orion scores the
-    no-doer-rule ablation instead (``ablation_kept``, when the rule dropped anything)."""
+    no-doer-rule ablation instead (``ablation_kept``, when the rule dropped anything);
+    without_done_when the no-rule-0b ablation (``ablation_done_when_kept``)."""
     out = []
     for r in report["turns"]:
         seen: set[str] = set()
         kept = r.get("promises_made") or []
         if with_not_orion and r.get("ablation_kept"):
             kept = r["ablation_kept"]
+        if without_done_when and r.get("ablation_done_when_kept"):
+            kept = r["ablation_done_when_kept"]
         for p in kept:
             sha = quote_hash(p["quote"])
             if sha in seen:
                 continue
             seen.add(sha)
             out.append({"correlation_id": r["correlation_id"], "quote_sha": sha,
-                        "offer": p["offer"], "doer": p.get("doer"), "quote": p["quote"]})
+                        "offer": p["offer"], "doer": p.get("doer"), "quote": p["quote"],
+                        "act": p.get("act"), "done_when": p.get("done_when")})
     return out
 
 
 def not_orion_items(report: dict) -> list[dict]:
     return [{"correlation_id": r["correlation_id"], "quote_sha": quote_hash(p["quote"]), **p}
             for r in report["turns"] for p in r.get("not_orion") or []]
+
+
+def no_completion_items(report: dict) -> list[dict]:
+    return [{"correlation_id": r["correlation_id"], "quote_sha": quote_hash(p["quote"]), **p}
+            for r in report["turns"] for p in r.get("no_completion") or []]
 
 
 def dropped_items(report: dict) -> list[dict]:
@@ -465,8 +501,9 @@ def score(report: dict, labels: dict) -> dict:
     hand = labels.get("hand_found", [])
     found = []
     for h in hand:
+        # By key: a run that quotes a different span of the same promise still found it.
         hits = [it for it, lab in labelled if it["correlation_id"] == h["correlation_id"]
-                and lab and lab.get("hand_found") == h["key"]]
+                and lab and lab.get("promise") and h["key"] in (lab.get("hand_found"), lab.get("key"))]
         found.append({"key": h["key"], "offer": h["offer"], "extracted": bool(hits),
                       "offer_flag_right": bool(hits) and hits[0]["offer"] == h["offer"]})
 
@@ -490,6 +527,15 @@ def score(report: dict, labels: dict) -> dict:
             "real_promises_dropped": sum(
                 1 for x in not_orion_items(report)
                 if (by_key.get((x["correlation_id"], x["quote_sha"])) or {}).get("promise")),
+        },
+        "precision_without_done_when_rule": _precision(extracted_items(report, without_done_when=True), by_key),
+        "done_when_dropped": {
+            "total": len(no_completion_items(report)),
+            "labelled_real_promises_dropped": sum(
+                1 for x in no_completion_items(report)
+                if (by_key.get((x["correlation_id"], x["quote_sha"])) or {}).get("promise")),
+            "unlabelled": sum(1 for x in no_completion_items(report)
+                              if (x["correlation_id"], x["quote_sha"]) not in by_key),
         },
         "recall_pooled": pooled_recall(report, labels),
         "precision_with_offer_flag": (tp_flag / len(items)) if items else None,
@@ -534,7 +580,8 @@ def main() -> int:
     report = json.loads(args.report[0].read_text()) if len(args.report) == 1 else merge_reports(args.report)
     if args.cmd == "sheet":
         print(json.dumps({"extracted": extracted_items(report), "not_orion": not_orion_items(report),
-                          "dropped": dropped_items(report)}, indent=2))
+                          "no_completion": no_completion_items(report), "dropped": dropped_items(report)},
+                         indent=2))
         return 0
     print(json.dumps(score(report, json.loads(args.labels.read_text())), indent=2))
     return 0

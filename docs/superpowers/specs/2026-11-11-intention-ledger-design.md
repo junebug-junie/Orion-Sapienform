@@ -133,6 +133,15 @@ class FinalizeReflectionV1(...):
   future act. The gate keeps only `orion`, before the cap, and drops a missing doer. This
   removes forecasts about a system and asks for Juniper to act, the two biggest false
   classes in the D0 replay, without a word list.
+- **Completion (added 2026-11-16, after the doer rerun measured precision 0.60):** each item
+  also carries `act` (what Orion will do, in plain words) and `done_when` (what a later
+  reply or run would show once the act is done, written so it could also show it was not
+  done). The judge writes `done_when` null when nothing could break the line: a presence or
+  readiness line ("I'll be here when you wake") names a state Orion is in anyway, not an
+  act. This is Searle's preparatory condition for a promise: the act is not one the speaker
+  would do in the normal course of events. The gate drops a null, missing or
+  placeholder-length (`< 12` chars) `done_when`, before the cap. D1 can read `done_when` to
+  know what to check when it settles a promise.
 - The field rides the judge call that already runs. It adds no new model call. It does not
   run on the quick deterministic gate. The 9 quick-gate turns are a known blind spot, and
   the log records them.

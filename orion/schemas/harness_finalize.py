@@ -79,6 +79,8 @@ PROMISE_QUOTE_MAX_CHARS = 240
 PromiseDoer = Literal["orion", "juniper", "someone_else", "a_system"]
 PROMISE_DOERS: tuple[str, ...] = get_args(PromiseDoer)
 PROMISE_DOER_ORION = "orion"
+# A done_when shorter than this is a placeholder ("n/a", "none"), not a completion test.
+PROMISE_DONE_WHEN_MIN_CHARS = 12
 
 
 class PromiseV1(BaseModel):
@@ -93,6 +95,12 @@ class PromiseV1(BaseModel):
     doer names who carries out the act. Only "orion" survives the gate: a forecast about a
     queue or deploy (a_system), an ask for Juniper to act (juniper) and a hand-off to someone
     else are not Orion's commitments (D0 replay, 2026-11-12: 5 of 8 false items).
+
+    act / done_when name the act and how a later reply or run would show it done. A promise
+    has a completion that could also fail to happen; a line nothing could break ("I'll be
+    here when you get back": Orion is here anyway) commits to nothing, so the judge writes
+    done_when null and the gate drops it (2026-11-15 rerun: 3 of 6 false items left after
+    the doer rule were presence lines).
     """
 
     # Length caps are enforced by the judge's JSON schema and by the gate, not here: a
@@ -102,6 +110,12 @@ class PromiseV1(BaseModel):
     # Who does the act. None on rows written before the field existed (they were gated without
     # it). The gate drops every item whose doer is not "orion", so a stored promise is Orion's.
     doer: PromiseDoer | None = None
+    # What Orion will do, in the judge's words. None on rows written before the field existed.
+    act: str | None = None
+    # What a later reply or run would show when the act is done. None: the judge found no
+    # completion that could fail; the gate drops those, so a stored promise has one (rows
+    # written before the field existed have None and were gated without it).
+    done_when: str | None = None
 
 
 class OpenPromiseRefV1(BaseModel):

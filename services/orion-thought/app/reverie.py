@@ -458,6 +458,97 @@ async def build_recent_arcs_text(
     return block.text, list(block.arc_ids)
 
 
+@dataclass(frozen=True)
+class ReverieDayCue:
+    """What reverie is shown about the rest of Orion: Orion's now (integration patch 3) or, when the
+    now is off or unreachable, the old closed-arcs block (spec rollback rule)."""
+
+    source: str  # "now" | "arcs" (fallback, or the now flag off)
+    now_block: str = ""
+    shown_id: str | None = None
+    shown_event_ids: tuple[str, ...] = ()
+    recent_arcs: str = ""
+    arc_ids: tuple[str, ...] = ()
+    fallback_reason: str | None = None
+
+
+# One now per train of thought: every step of a chain sees the same shown now, and its cites are
+# posted against that one shown_id (the server caps cites at 3 per shown row, across calls).
+_CHAIN_DAY_CUES: dict[str, ReverieDayCue] = {}
+_CHAIN_DAY_CUES_MAX = 8
+
+
+def _remember_chain_cue(chain_id: str, cue: ReverieDayCue) -> None:
+    _CHAIN_DAY_CUES[chain_id] = cue
+    while len(_CHAIN_DAY_CUES) > _CHAIN_DAY_CUES_MAX:
+        _CHAIN_DAY_CUES.pop(next(iter(_CHAIN_DAY_CUES)))
+
+
+async def build_reverie_day_cue(
+    correlation_id: str, *, chain_id: str | None = None, now: datetime | None = None
+) -> ReverieDayCue:
+    """Read Orion's now for reverie (GET /temporal-self/now?organ=reverie). When the now is off on the
+    server (404), unreachable, slow or malformed, fall back to the recent-arcs block and log why.
+    Inside a chain the first step's cue is reused by later steps. Never raises."""
+    if chain_id and chain_id in _CHAIN_DAY_CUES:
+        return _CHAIN_DAY_CUES[chain_id]
+    fallback_reason: str | None = None
+    if settings.reverie_now_enabled:
+        try:
+            from .temporal_self_cue import REVERIE_ORGAN, fetch_now_bounded, render_now_block
+
+            run_ref = f"reverie_chain:{chain_id}" if chain_id else f"reverie_tick:{correlation_id}"
+            read = await fetch_now_bounded(settings.reverie_now_fetch_timeout_sec, organ=REVERIE_ORGAN,
+                                           run_ref=run_ref, correlation_id=correlation_id)
+            if read.ok:
+                assert read.now is not None
+                cue = ReverieDayCue(
+                    source="now",
+                    now_block=render_now_block(read.now, as_of=now),
+                    shown_id=read.now.shown_id,
+                    shown_event_ids=tuple(i.event_id for i in read.now.items),
+                )
+                logger.info("reverie_now corr=%s chain=%s shown_id=%s items=%d candidates=%d organs=%s",
+                            correlation_id, chain_id or "-", cue.shown_id, len(cue.shown_event_ids),
+                            read.now.candidates, ",".join(sorted({i.organ for i in read.now.items})) or "-")
+                if chain_id:
+                    _remember_chain_cue(chain_id, cue)
+                return cue
+            fallback_reason = read.reason
+        except Exception as exc:  # noqa: BLE001 -- a reverie tick must never fail on this read
+            fallback_reason = f"error:{type(exc).__name__}"
+        logger.info("reverie_now_fallback corr=%s chain=%s reason=%s", correlation_id, chain_id or "-",
+                    fallback_reason)
+    text, arc_ids = await build_recent_arcs_text(correlation_id, now=now)
+    cue = ReverieDayCue(source="arcs", recent_arcs=text, arc_ids=tuple(arc_ids), fallback_reason=fallback_reason)
+    if chain_id:
+        _remember_chain_cue(chain_id, cue)
+    return cue
+
+
+async def record_reverie_now_use(cue: ReverieDayCue, thought: SpontaneousThoughtV1, correlation_id: str) -> None:
+    """At the thought's close: post its cites against the now it was shown. Nothing to post (no now,
+    or no cites) posts nothing; "shown and cited nothing" is already the experience_shown row with no
+    use rows. Never raises, bounded by ORION_REVERIE_NOW_FETCH_TIMEOUT_SEC."""
+    if not cue.shown_id or not thought.experience_cites:
+        return
+    try:
+        from .temporal_self_cue import post_now_use
+
+        result = await post_now_use(cue.shown_id, list(thought.experience_cites),
+                                    f"reverie_thought:{thought.thought_id}",
+                                    settings.reverie_now_fetch_timeout_sec, correlation_id=correlation_id)
+    except Exception as exc:  # noqa: BLE001 -- recording a use must never fail a reverie
+        logger.warning("reverie_now_use_failed corr=%s err=%s", correlation_id, type(exc).__name__)
+        return
+    if result is None:
+        return
+    logger.info("reverie_now_use corr=%s shown_id=%s thought=%s cited=%d stored=%d not_shown=%d over_cap=%d",
+                correlation_id, cue.shown_id, thought.thought_id, len(thought.experience_cites),
+                len(result.get("uses") or []), len(result.get("rejected_not_shown") or []),
+                len(result.get("rejected_over_cap") or []))
+
+
 async def build_personality_cue_text(correlation_id: str, *, now: datetime | None = None) -> str:
     """What Orion keeps coming back to, for the reverie prompt; "" when nothing may be shown
     (personality graph read-back, ``app/personality_cue.py``).
@@ -503,6 +594,7 @@ def build_reverie_context(
     street_predictions: list[str] | None = None,
     street_day: str | None = None,
     continuity: ChainContinuity | None = None,
+    orion_now: str | None = None,
 ) -> dict[str, Any]:
     percepts = recent_percepts or []
     # The street (walkway camera) rides under its OWN keys, never inside
@@ -537,6 +629,8 @@ def build_reverie_context(
         ctx.update(street)
         if recent_arcs:
             ctx["recent_arcs"] = recent_arcs
+        if orion_now:
+            ctx["orion_now"] = orion_now
         if personality_cue:
             ctx["personality_cue"] = personality_cue
         return ctx
@@ -583,6 +677,10 @@ def build_reverie_context(
         ctx["self_track_record"] = self_track_record
     if recent_arcs:
         ctx["recent_arcs"] = recent_arcs
+    if orion_now:
+        # Orion's now (integration patch 3): other organs' experiences since reverie last looked,
+        # each with its [experience:<id>] cite token (rendered, no LLM).
+        ctx["orion_now"] = orion_now
     if personality_cue:
         # Personality graph read-back: what Orion keeps coming back to (rendered, no LLM; a record).
         ctx["personality_cue"] = personality_cue
@@ -604,6 +702,7 @@ def build_reverie_plan_request(
     street_predictions: list[str] | None = None,
     street_day: str | None = None,
     continuity: ChainContinuity | None = None,
+    orion_now: str | None = None,
 ) -> PlanExecutionRequest:
     use_lift = settings.reverie_semantic_lift_enabled and bool(concern_cards)
     mode = "metacog" if use_lift else "brain"
@@ -635,6 +734,7 @@ def build_reverie_plan_request(
             street_predictions=street_predictions,
             street_day=street_day,
             continuity=continuity,
+            orion_now=orion_now,
         ),
     )
 
@@ -646,6 +746,7 @@ def parse_reverie_payload(
     correlation_id: str,
     broadcast: AttentionBroadcastProjectionV1,
     strip_arc_ids: list[str] | None = None,
+    now_event_ids: list[str] | tuple[str, ...] | None = None,
 ) -> SpontaneousThoughtV1:
     """Build a SpontaneousThoughtV1 from LLM output, stamping the hollow guard.
 
@@ -681,6 +782,19 @@ def parse_reverie_payload(
             logger.info("reverie_evidence_arc_ref_stripped corr=%s n=%s",
                         correlation_id, len(evidence_refs) - len(kept))
         evidence_refs = kept
+    # Orion's now: the model cites in "cites"; an experience id that strayed into evidence_refs is
+    # moved over (never grounding, so it can never drop or anchor a thought). Only shown ids, at most 3.
+    experience_cites: list[str] = []
+    stray_experience = [r for r in evidence_refs if r.strip().strip("[]").startswith("experience:")]
+    if stray_experience:
+        evidence_refs = [r for r in evidence_refs if r not in stray_experience]
+        logger.info("reverie_evidence_experience_ref_moved corr=%s n=%s", correlation_id, len(stray_experience))
+    if now_event_ids:
+        from .temporal_self_cue import shown_cites
+
+        raw_cites = data.get("cites")
+        raw_cites = [str(x) for x in raw_cites] if isinstance(raw_cites, list) else []
+        experience_cites = shown_cites([*raw_cites, *stray_experience], now_event_ids)
 
     # Phase E (Movement III): optional falsifiable claim about the room. Only
     # ever present when the prompt actually offered a recent_percepts block
@@ -713,6 +827,7 @@ def parse_reverie_payload(
         expectation=expectation,
         next_focus=next_focus,
         drift=drift,
+        experience_cites=experience_cites,
     )
     return thought.marked_hollow()
 
@@ -1151,7 +1266,7 @@ async def run_reverie_once(
         (
             loop_outcomes,
             recent_percepts,
-            (recent_arcs, recent_arc_ids),
+            day_cue,
             self_readings,
             (street_percepts, street_predictions),
             personality_cue,
@@ -1160,7 +1275,7 @@ async def run_reverie_once(
         ) = await asyncio.gather(
             _fetch_loop_outcomes(),
             _fetch_percepts(),
-            build_recent_arcs_text(correlation_id),
+            build_reverie_day_cue(correlation_id, chain_id=chain_context[0] if chain_context else None),
             _fetch_self_readings(),
             _fetch_street(),
             build_personality_cue_text(correlation_id),
@@ -1179,13 +1294,14 @@ async def run_reverie_once(
             loop_outcomes=loop_outcomes,
             recent_percepts=recent_percepts,
             self_readings=self_readings,
-            recent_arcs=recent_arcs,
+            recent_arcs=day_cue.recent_arcs or None,
             personality_cue=personality_cue,
             self_track_record=self_track_record,
             street_percepts=street_percepts,
             street_predictions=street_predictions,
             street_day=street_day or None,
             continuity=continuity,
+            orion_now=day_cue.now_block or None,
         )
         # Same formula build_reverie_plan_request uses internally to decide `use_lift` --
         # duplicated here (not returned by that function) because only a call that actually set
@@ -1228,7 +1344,8 @@ async def run_reverie_once(
             coalition=coalition,
             correlation_id=correlation_id,
             broadcast=broadcast,
-            strip_arc_ids=recent_arc_ids,
+            strip_arc_ids=list(day_cue.arc_ids),
+            now_event_ids=day_cue.shown_event_ids,
         )
         if thought.expectation and not recent_percepts and (street_percepts or street_predictions):
             # The expectation is a claim about the ROOM, judged later against a
@@ -1290,6 +1407,8 @@ async def run_reverie_once(
         await bus.publish(settings.channel_reverie_thought, envelope)
         # Best-effort persistence for the hub panel — never breaks the tick.
         persist_reverie_thought(thought)
+        # The thought's close: its cites of Orion's now are checked and stored (never fails the tick).
+        await record_reverie_now_use(day_cue, thought, correlation_id)
         # 2026-07-31: this flag no longer selects a salience formula (there
         # is only one -- see orion.substrate.attention.salience). Its real,
         # kept purpose is narrower now: whether the salience-trace pipeline

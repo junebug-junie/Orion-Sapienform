@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_serializer, model_validator
 
 PERSONALITY_CHOICE_SCHEMA_VERSION = "personality.choice.v1"
 PERSONALITY_CHOICE_KIND = "personality.choice.v1"
@@ -47,7 +47,8 @@ class ChoiceOptionV1(BaseModel):
     today a curiosity-run promise's own sentence (orion/prime/choice.py). Nothing embeds it, labels it or
     puts it in a turn: ``text`` stays the option for the reducer, labels and the Prime ``tending:`` line
     (choice-as-EFE acceptance S-1.8 keeps promise sentences out of turn context). Additive on a forbid
-    model: deploy the consumer (orion-durable-runs) before a producer that fills it (orion-mind)."""
+    model: an option without it dumps without the key (old consumers keep validating every producer);
+    an option WITH it (Prime's curiosity-run promises) needs orion-durable-runs deployed before orion-mind."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -55,6 +56,15 @@ class ChoiceOptionV1(BaseModel):
     text: str = Field(min_length=1, max_length=CHOICE_OPTION_TEXT_MAX)
     market_rank: Optional[int] = Field(default=None, ge=1)
     detail: Optional[str] = Field(default=None, min_length=1, max_length=CHOICE_OPTION_DETAIL_MAX)
+
+    @model_serializer(mode="wrap")
+    def _omit_empty_detail(self, handler):
+        # An option without ``detail`` dumps exactly as before the field existed, so every producer's
+        # payload (reading, outreach, prime) still validates on a durable-runs built before it.
+        out = handler(self)
+        if isinstance(out, dict) and out.get("detail") is None:
+            out.pop("detail", None)
+        return out
 
 
 class PersonalityChoiceV1(BaseModel):

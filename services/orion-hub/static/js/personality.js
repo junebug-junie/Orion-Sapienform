@@ -132,7 +132,7 @@
   // chose and what Orion passed over in its example choices, each text once. A declined-all choice's chosen
   // side is the lane's "made no move" words.
   // ``details``: an option's fuller words where the producer stored them (a curiosity-run promise's own
-  // sentence, ChoiceOptionV1.detail). Shown here only, never in a label.
+  // sentence, ChoiceOptionV1.detail), each tagged with the side it was on. Shown here only, never in a label.
   function aboutView(examples) {
     const chose = [];
     const over = [];
@@ -144,10 +144,13 @@
     for (const e of Array.isArray(examples) ? examples : []) {
       if (!e || typeof e !== "object") continue;
       if (e.declined_all || !e.chosen) add(chose, DECLINE_TEXT[e.lane] || DECLINE_TEXT_DEFAULT);
-      else { add(chose, e.chosen.text); add(details, e.chosen.detail); }
+      else {
+        add(chose, e.chosen.text);
+        if (e.chosen.detail) add(details, `Chose: ${e.chosen.detail}`);
+      }
       for (const o of Array.isArray(e.passed_over) ? e.passed_over : []) {
         add(over, o && o.text);
-        add(details, o && o.detail);
+        if (o && o.detail) add(details, `Passed over: ${o.detail}`);
       }
     }
     return { chose, over, details };

@@ -146,6 +146,7 @@ def test_relabel_route_dry_run_by_default_and_apply_needs_expected(client, monke
     monkeypatch.setattr(main, "_checkpointer_cm", object())
     assert c.post("/personality/relabel", json={}).json()["applied"] is False
     assert c.post("/personality/relabel", json={"apply": True}).status_code == 400
+    assert c.post("/personality/relabel", json={"apply": True, "expected": {}}).status_code == 400
     assert c.post("/personality/relabel", json={"apply": True, "expected": {"d": ["only one"]}}).status_code == 422
     assert c.post("/personality/relabel", json={"apply": True, "expected": {"d": ["a", "b"]}}).status_code == 200
     assert c.post("/personality/relabel", json={"bogus": 1}).status_code == 422

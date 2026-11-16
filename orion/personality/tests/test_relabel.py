@@ -88,3 +88,76 @@ def test_approved_writes_only_reviewed_exact_pairs():
     ok, refused = approved(plan, {"d1": ["old one, 1 of 1", "new one, 1 of 1"], "d2": ["old two, 1 of 1", "other"],
                                   "gone": ["a", "b"]})
     assert [r.disposition_id for r in ok] == ["d1"] and refused == ["d2", "gone"]
+
+
+# --- differential: under the current rules, a graph built by the real reducer is a fixed point -----------------
+
+
+def test_relabel_of_a_graph_folded_by_the_real_reducer_changes_nothing():
+    """Fold real choices with ``graph.fold`` over several ticks: closer and weaker matches, a category-only
+    choice before and after a subject, an own-name echo, an opposing choice. The relabel planner, reading
+    the evidence rows those ticks wrote, must give back every node's label and label bar exactly."""
+    from dataclasses import replace
+
+    from orion.personality.graph import Evidence, fold
+
+    def axis(i, wobble=0.0, j=None):
+        v = [0.0] * 8
+        v[i] = 1.0
+        if wobble:
+            v[(i + 1) % 8 if j is None else j] = wobble
+        return v
+
+    # (tick, chosen text, declined texts, direction)
+    script = [
+        (0, "a promise I made in a curiosity run (1 promise, harness_turn_trace:a#promises_made[0])", ["budget"],
+         axis(0)),
+        (0, "walkway logs are stale", ["budget", "pipeline"], axis(0, 0.3)),
+        (1, "walkway logs closer", ["budget"], axis(0, 0.05)),
+        (1, "weaker walkway thought", ["pipeline"], axis(0, 0.9)),
+        (2, "a thread from my letter for 2026-11-13: x", ["budget"], axis(0, 0.01)),
+        (2, "OWNNAME echo choice", ["budget"], axis(0, 0.02)),
+        (3, "the other way", ["walkway"], [-x for x in axis(0, 0.04)]),
+        (3, "unrelated tendency", ["a", "b", "c"], axis(3)),
+    ]
+    nodes, ev_rows, choice_rows = [], [], {}
+    for tick in range(4):
+        now = T0 + timedelta(hours=tick)
+        batch = []
+        for i, (t, chosen, declined, direction) in enumerate(script):
+            if t != tick:
+                continue
+            eid = f"choice:prime:t{tick}-{i}"
+            alts = [{"key": f"k{j}", "text": d, "market_rank": j + 1} for j, d in enumerate(declined)]
+            choice_rows[eid] = {"choice_id": eid[len("choice:"):], "lane": "prime", "declined_all": False,
+                                "chosen": {"key": "kc", "text": chosen, "market_rank": None}, "alternatives": alts}
+            from orion.personality.relabel import excerpt_from_choice_row
+            batch.append(Evidence(evidence_id=eid, lane="prime", source_ref=eid,
+                                  occurred_at=now - timedelta(minutes=30) + timedelta(seconds=i),
+                                  excerpt=excerpt_from_choice_row(choice_rows[eid]), embedding=direction))
+        res = fold(nodes, batch, now=now)
+        by_id = {n.disposition_id: n for n in nodes}
+        for n in res.nodes:
+            by_id[n.disposition_id] = n
+        nodes = list(by_id.values())
+        if tick == 1:  # Orion names the walkway tendency: a later choice citing the name is an echo
+            nodes = [replace(n, name="OWNNAME") if n.evidence_count >= 3 else n for n in nodes]
+        for r in res.evidence_rows:
+            if r.disposition_id is None:
+                continue
+            ev_rows.append({"disposition_id": r.disposition_id, "evidence_id": r.evidence_id,
+                            "occurred_at": r.occurred_at, "created_at": now, "similarity": r.similarity,
+                            "meta": r.meta, "excerpt": r.excerpt, **choice_rows[r.evidence_id]})
+    ev_rows.sort(key=lambda r: (r["disposition_id"], r["created_at"], r["occurred_at"], r["evidence_id"]))
+    live = [n for n in nodes if n.status != "retired"]
+    assert any(n.opposed_count for n in live) and any(r["meta"].get("cites_own_name") for r in ev_rows)
+    node_rows = [{"disposition_id": n.disposition_id, "status": n.status, "label": n.label,
+                  "label_similarity": n.label_similarity, "evidence_count": n.evidence_count,
+                  "opposed_count": n.opposed_count} for n in live]
+    plan = plan_relabel(node_rows, ev_rows)
+    assert len(plan) >= 2
+    # The swap paths ran: the walkway node's base is not its founding choice (category-only), it moved on.
+    assert any(r.base_evidence_id and not r.base_evidence_id.endswith("t0-0") and r.evidence >= 3 for r in plan)
+    for r, n in zip(plan, live):
+        assert not r.changed, (r.old_label, r.new_label)
+        assert abs(r.new_similarity - n.label_similarity) < 1e-9, r.disposition_id

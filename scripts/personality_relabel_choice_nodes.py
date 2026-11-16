@@ -9,17 +9,19 @@ label maker (``orion/personality/relabel.py``). Only ``label`` and ``label_simil
     # 1. Dry run (default): read-only against Postgres; writes the snapshot and report, changes nothing.
     PYTHONPATH=. .venv/bin/python scripts/personality_relabel_choice_nodes.py [--dsn postgresql://...]
 
-    # 2. Apply (production write: needs Juniper's approval). Re-plans read-only, snapshots, then asks
-    #    orion-durable-runs to write under its reducer tick lock, in one transaction.
+    # 2. Apply (production write: needs Juniper's approval) the REVIEWED dry run. Re-plans read-only and
+    #    snapshots again, then asks orion-durable-runs to write exactly the reviewed changes under its
+    #    reducer tick lock, in one transaction.
     PYTHONPATH=. .venv/bin/python scripts/personality_relabel_choice_nodes.py --apply \
-        [--durable-runs-url http://127.0.0.1:8124]
+        --from /tmp/personality-relabel/<dry-run> [--durable-runs-url http://127.0.0.1:8124]
 
 Why an endpoint for the write: the reducer's tick lock is an in-process ``asyncio.Lock`` inside
 orion-durable-runs, and a tick writes a node's whole row back when it folds a choice. A direct SQL write
 from here could land between a tick's load and its write and be overwritten with the old label. So
 ``--apply`` calls ``POST /personality/relabel`` with ``expected`` = this run's [old_label, new_label] per
-node: the service writes only those exact changes (anything that drifted since the snapshot is refused
-and reported).
+node, read from the reviewed dry run's before_after.csv (``--from``): the service writes only those exact
+changes. A label that moved since the review, or that the current rules would now make differently, is
+refused and reported.
 
 Files under /tmp/personality-relabel/<run>/: snapshot.jsonl (every planned node's current label and
 label_similarity: the rollback source), progress.log, before_after.csv, report.md, and apply_response.json
@@ -112,7 +114,10 @@ def write_files(run_dir: Path, plan: list[Relabel], progress: Progress) -> list[
 
 def report(run_dir: Path, plan: list[Relabel], changes: list[Relabel], *, applied: Optional[dict]) -> str:
     before_stale = sum(1 for r in plan if stale_lead(r.old_label))
-    after_stale = [r for r in plan if stale_lead(r.new_label if r.changed else r.old_label)]
+    # After an apply, "after" is what was actually written; a refused node keeps its old label.
+    written = set(applied.get("written_ids") or []) if applied is not None else None
+    after_stale = [r for r in plan if stale_lead(
+        r.new_label if r.changed and (written is None or r.disposition_id in written) else r.old_label)]
     category_after = [r for r in plan if category_led(r.new_label.rsplit(", ", 1)[0])]
     anomalies = [r for r in plan if r.anomalies]
     lines = [
@@ -143,10 +148,15 @@ def report(run_dir: Path, plan: list[Relabel], changes: list[Relabel], *, applie
     return text
 
 
-def post_apply(url: str, changes: list[Relabel]) -> dict:
+def reviewed_pairs(run_dir: Path) -> dict[str, list[str]]:
+    """disposition_id -> [old_label, new_label] from a dry run's before_after.csv."""
+    with (run_dir / "before_after.csv").open(newline="") as fh:
+        return {r["disposition_id"]: [r["old_label"], r["new_label"]] for r in csv.DictReader(fh)}
+
+
+def post_apply(url: str, expected: dict[str, list[str]]) -> dict:
     import httpx
 
-    expected = {r.disposition_id: [r.old_label, r.new_label] for r in changes}
     resp = httpx.post(url.rstrip("/") + "/personality/relabel", json={"apply": True, "expected": expected},
                       timeout=120.0)
     resp.raise_for_status()
@@ -157,9 +167,17 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dsn", default=DEFAULT_DSN)
     ap.add_argument("--apply", action="store_true", help="write through orion-durable-runs (production write)")
+    ap.add_argument("--from", dest="reviewed", type=Path,
+                    help="the reviewed dry run directory; --apply writes only its before_after.csv pairs")
     ap.add_argument("--durable-runs-url", default=DEFAULT_URL)
     ap.add_argument("--out", type=Path, default=OUT_ROOT)
     args = ap.parse_args()
+    reviewed: Optional[dict[str, list[str]]] = None
+    if args.apply:
+        if args.reviewed is None or not (args.reviewed / "before_after.csv").exists():
+            print("--apply needs --from <reviewed dry run dir> (with before_after.csv)", file=sys.stderr)
+            return 5
+        reviewed = reviewed_pairs(args.reviewed)
 
     run = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ("-apply" if args.apply else "-dry")
     run_dir = args.out / run
@@ -177,11 +195,11 @@ def main() -> int:
     changes = write_files(run_dir, plan, progress)
     applied = None
     if args.apply:
-        if not changes:
-            print("nothing to change")
+        if not reviewed:
+            print("the reviewed dry run has nothing to change")
         else:
             try:
-                applied = post_apply(args.durable_runs_url, changes)
+                applied = post_apply(args.durable_runs_url, reviewed)
             except Exception as exc:  # noqa: BLE001
                 progress.errors += 1
                 progress.line("apply_failed", 0)

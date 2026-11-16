@@ -171,7 +171,7 @@ test("aboutView: a curiosity-run promise's sentence (option detail) shows in Abo
     { ...CHOICE, lane: "prime", chosen: { text: "Other" }, passed_over: [promise] },
   ];
   const v = p.tendencyView({ label: "Curiosity run promise, 2 of 2", examples: ex });
-  assert.deepStrictEqual(v.about.details, [sentence]);
+  assert.deepStrictEqual(v.about.details, [`Chose: ${sentence}`, `Passed over: ${sentence}`]);
   assert.ok(!v.label.includes("I will check"));
   assert.ok(v.examples.every((e) => !e.includes("I will check")));
   assert.ok(v.about.chose.every((t) => !t.includes("I will check")));

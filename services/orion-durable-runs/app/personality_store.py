@@ -791,7 +791,9 @@ class PersonalityStore:
         (FOR UPDATE) and each change is written only while the row still holds the label it was planned
         from. ``expected`` (disposition_id -> [old_label, new_label], a reviewed dry run) limits the write to
         those exact changes. Call it under the reducer's lock: a tick writes the whole row back when it
-        folds a choice, and would put the old label back."""
+        folds a choice, and would put the old label back. The lock is per process: this is safe while
+        durable-runs runs one uvicorn worker (today). With more workers or replicas a tick in another
+        process could still upsert its loaded label over the new one (``UPSERT_NODE_SQL`` has no label guard)."""
         from orion.personality.relabel import (
             RELABEL_EVIDENCE_SQL,
             RELABEL_NODES_SQL,

@@ -29,9 +29,13 @@ page). ``non_content_reason`` drops a link by its structure, never by words in i
 * ``same_document``: the link carries the read page's own identifier (its arXiv id or DOI), or its
   query embeds the read page's URL. That is the page again: another format, a citation lookup, a
   share button.
-* ``license``: a path segment ``license`` / ``licenses`` / ``publicdomain`` (a licence deed or file).
-* ``schema_namespace``: a vocabulary URI, not a document: host ``schema.org`` / ``purl.org`` /
-  ``xmlns.com``, a host whose first label is ``ns`` (``ns.adobe.com``), or ``w3.org/<year>/...``.
+* ``license``: a licence deed or file: a ``license(s)`` / ``publicdomain`` path on a deed registry
+  (creativecommons.org, opensource.org, spdx.org, gnu.org), a versioned ``licenses/<name>/<n.n>`` deed
+  anywhere, or a last path part ``LICENSE[.*]`` /
+  ``licence`` / ``copying``, or ``license/index.*``.
+* ``schema_namespace``: a vocabulary URI, not a document: host ``schema.org`` / ``xmlns.com``, a host
+  whose first label is ``ns`` (``ns.adobe.com``), or a namespace-shaped URI (ends in "/" or "#", no
+  file name) on ``purl.org`` or under ``w3.org/<year>/``.
 * ``code_only``: the link is written only inside code: a line of a fenced block, or a backtick span,
   that holds more than bare URLs (``xmlns:dc="http://..."``, ``curl https://...``, a URL template).
   A digest that wraps a URL in backticks or lists URLs in a fence is formatting, not code: live
@@ -76,7 +80,13 @@ _SLUG_SPLIT = re.compile(r"[-_+.]+")
 _WS = re.compile(r"\s+")
 # Structural drop rules (module docstring). Short, documented sets: registries, not topic words.
 _LICENSE_SEGMENTS = frozenset({"license", "licenses", "publicdomain"})
-_NAMESPACE_HOSTS = frozenset({"schema.org", "purl.org", "xmlns.com"})
+_NAMESPACE_HOSTS = frozenset({"schema.org", "xmlns.com"})  # vocabulary-only hosts
+# Hosts that also serve documents: only a namespace-shaped URI (ends in "/" or "#", no file name) counts.
+_MIXED_NAMESPACE_HOSTS = frozenset({"purl.org", "w3.org"})
+# Licence deed registries: any URL under their licence paths is a deed.
+_LICENSE_HOSTS = frozenset({"creativecommons.org", "opensource.org", "spdx.org", "gnu.org"})
+_VERSION_SEGMENT = re.compile(r"^\d+(?:\.\d+)*$")
+_LICENSE_FILE = frozenset({"license", "licence", "licenses", "copying"})
 _YEAR_SEGMENT = re.compile(r"^(?:19|20)\d\d$")
 # Identifiers that name one document whatever URL carries them.
 # Not inside a longer number ("12611.17316", "1.2611.17316"); "arXiv.2611.17316" is fine.
@@ -271,7 +281,12 @@ def _code_free(text: str) -> str:
         return "\n".join(line for line in m.group(0).splitlines()[1:-1] if _only_urls(line))
 
     text = _FENCE.sub(fence, html.unescape(text or ""))
-    return _INLINE_CODE.sub(lambda m: m.group(0) if _only_urls(m.group(1)) else " ", text)
+    # Per line, and only on a line whose backticks pair up: a stray backtick used as an apostrophe ("Don`t")
+    # would otherwise open a "span" that swallows a prose link.
+    return "\n".join(
+        _INLINE_CODE.sub(lambda m: m.group(0) if _only_urls(m.group(1)) else " ", line)
+        if line.count("`") % 2 == 0 else line
+        for line in text.split("\n"))
 
 
 def document_ids(url: str) -> set[str]:
@@ -305,7 +320,9 @@ def _carries_document(url: str, ids: set[str], page_keys: set[str]) -> bool:
         kind, _, value = ident.partition(":")
         if kind == "arxiv" and re.search(r"(?<!\d)(?<!\d\.)" + re.escape(value) + r"(?!\d)", flat):
             return True
-        if kind == "doi" and value in flat:
+        # The DOI must end where the page's ends ("...59200" is not "...592001"); a version suffix and a
+        # format tail ("v1.full.pdf") are the same work.
+        if kind == "doi" and re.search(re.escape(value) + r"(?:v\d+)?(?![0-9a-z\-]|\.\d)", flat):
             return True
     try:
         query = unquote(urlsplit(url).query)
@@ -331,12 +348,40 @@ def non_content_reason(url: str, *, ids: set[str] = frozenset(), page_keys: set[
     host = _host(url)
     if _carries_document(url, set(ids), set(page_keys)):
         return "same_document"
-    if _LICENSE_SEGMENTS & set(segs):
+    if _is_license(host, segs):
         return "license"
-    if host in _NAMESPACE_HOSTS or host.split(".", 1)[0] == "ns" \
-            or (host == "w3.org" and segs and _YEAR_SEGMENT.match(segs[0])):
+    if host in _NAMESPACE_HOSTS or host.split(".", 1)[0] == "ns" or _namespace_shaped(url, host, segs):
         return "schema_namespace"
     return None
+
+
+def _is_license(host: str, segs: list[str]) -> bool:
+    """A deed registry's licence path, or a licence file/page: the last segment is ``LICENSE`` (any
+    extension), or ``license/index.*``."""
+    if host in _LICENSE_HOSTS and _LICENSE_SEGMENTS & set(segs):
+        return True
+    # A versioned deed anywhere: ".../licenses/<name>/<version>/" (arxiv.org/licenses/nonexclusive-distrib/1.0/).
+    if "licenses" in segs and _VERSION_SEGMENT.match(segs[-1]):
+        return True
+    if not segs:
+        return False
+    if segs[-1].split(".", 1)[0] in _LICENSE_FILE:
+        return True
+    return len(segs) >= 2 and segs[-2] in _LICENSE_SEGMENTS and segs[-1].startswith("index.")
+
+
+def _namespace_shaped(url: str, host: str, segs: list[str]) -> bool:
+    """On a host that also serves documents (``purl.org``, ``w3.org``): a vocabulary URI, i.e. ending in
+    "/" or "#" with no file name (``purl.org/dc/elements/1.1/``, ``w3.org/1999/02/22-rdf-syntax-ns#``). On
+    w3.org only under a year path (``/TR/`` specs are documents)."""
+    if host not in _MIXED_NAMESPACE_HOSTS or not segs:
+        return False
+    if host == "w3.org" and not _YEAR_SEGMENT.match(segs[0]):
+        return False
+    raw = url.split("?", 1)[0]
+    if "." in segs[-1].rsplit("-", 1)[-1] and not re.fullmatch(r"[\d.]+", segs[-1]):
+        return False  # a file name (report.html), not a vocabulary
+    return raw.endswith(("/", "#")) or (host == "w3.org" and "." not in segs[-1])
 
 
 def _is_asset(url: str) -> bool:

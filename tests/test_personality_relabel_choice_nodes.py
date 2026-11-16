@@ -64,15 +64,27 @@ def test_apply_posts_the_reviewed_pairs_and_saves_the_response(tmp_path, monkeyp
     async def fake_plan(dsn):
         return PLAN
 
-    def fake_post(url, changes):
-        sent["pairs"] = {r.disposition_id: [r.old_label, r.new_label] for r in changes}
-        return {"applied": True, "written": 2, "written_ids": ["d1", "d3"], "refused_ids": []}
+    def fake_post(url, expected):
+        sent["pairs"] = expected
+        return {"applied": True, "written": 1, "written_ids": ["d1"], "refused_ids": ["d3"]}
 
     monkeypatch.setattr(m, "read_plan", fake_plan)
     monkeypatch.setattr(m, "post_apply", fake_post)
-    monkeypatch.setattr(sys, "argv", ["x", "--apply", "--out", str(tmp_path)])
+    # --apply without a reviewed dry run is refused before anything is read.
+    monkeypatch.setattr(sys, "argv", ["x", "--apply", "--out", str(tmp_path / "a")])
+    assert m.main() == 5
+    # The reviewed dry run's pairs are what is sent, not a fresh plan's (here the review only kept d1).
+    reviewed = tmp_path / "reviewed"
+    reviewed.mkdir()
+    with (reviewed / "before_after.csv").open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["disposition_id", "old_label", "new_label"])
+        w.writerow(["d1", PLAN[0].old_label, PLAN[0].new_label])
+    monkeypatch.setattr(sys, "argv", ["x", "--apply", "--from", str(reviewed), "--out", str(tmp_path / "a")])
     assert m.main() == 0
-    assert sent["pairs"] == {"d1": [PLAN[0].old_label, PLAN[0].new_label], "d3": [PLAN[2].old_label, PLAN[2].new_label]}
-    [run] = list(tmp_path.iterdir())
-    assert json.loads((run / "apply_response.json").read_text())["written"] == 2
+    assert sent["pairs"] == {"d1": [PLAN[0].old_label, PLAN[0].new_label]}
+    [run] = list((tmp_path / "a").iterdir())
+    # d3 was refused: the report's "after" counts it as still stale.
+    assert "after 1" in (run / "report.md").read_text()
+    assert json.loads((run / "apply_response.json").read_text())["written"] == 1
     assert (run / "snapshot.jsonl").exists()  # snapshot before the write

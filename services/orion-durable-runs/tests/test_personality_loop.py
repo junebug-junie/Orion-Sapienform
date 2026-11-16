@@ -1033,3 +1033,30 @@ def test_option_detail_never_reaches_the_embedded_text_or_the_label():
     assert all("walkway logs" not in t for t in [chosen, *declined])
     e = choice_evidence(c, {})
     assert "walkway logs" not in e.excerpt and "walkway logs" not in e.text
+
+
+def test_relabel_holds_the_tick_lock():
+    """A tick must not load and write nodes while the relabel is writing labels (it would put the old label back)."""
+    import asyncio
+
+    drv, store, *_ = world()
+    gate, entered = asyncio.Event(), asyncio.Event()
+
+    async def slow_relabel(*, apply, expected=None):
+        entered.set()
+        await gate.wait()
+        return {"applied": apply}
+
+    store.relabel_choice_nodes = slow_relabel
+
+    async def scenario():
+        relabel = asyncio.create_task(drv.relabel(apply=True, expected={"d": ["a", "b"]}))
+        await entered.wait()
+        tick = asyncio.create_task(drv.tick())
+        await asyncio.sleep(0.05)
+        assert not tick.done()  # blocked behind the relabel
+        gate.set()
+        assert (await relabel)["applied"] is True
+        await tick
+
+    asyncio.run(scenario())

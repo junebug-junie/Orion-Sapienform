@@ -49,7 +49,7 @@ WHERE origin = '{ORIGIN_CHOICE}' AND status <> 'retired'
 ORDER BY disposition_id
 """
 # Their folded choices, in fold order: one tick commits its rows together (same created_at) after
-# sorting them by (occurred_at, evidence_id).
+# sorting them by (occurred_at, evidence_id) in Python string order, hence COLLATE "C".
 RELABEL_EVIDENCE_SQL = f"""
 SELECT e.disposition_id, e.evidence_id, e.occurred_at, e.created_at, e.similarity, e.meta, e.excerpt,
        c.choice_id, c.lane, c.declined_all, c.chosen, c.alternatives
@@ -57,7 +57,7 @@ FROM personality_evidence e
 JOIN personality_disposition d ON d.disposition_id = e.disposition_id
 LEFT JOIN personality_choice c ON c.choice_id = substr(e.evidence_id, {len(EVIDENCE_PREFIX) + 1})
 WHERE d.origin = '{ORIGIN_CHOICE}' AND d.status <> 'retired' AND starts_with(e.evidence_id, '{EVIDENCE_PREFIX}')
-ORDER BY e.disposition_id, e.created_at, e.occurred_at, e.evidence_id
+ORDER BY e.disposition_id, e.created_at, e.occurred_at, e.evidence_id COLLATE "C"
 """
 
 

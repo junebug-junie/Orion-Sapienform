@@ -333,3 +333,24 @@ def test_shared_labels_take_the_item_title_and_url_rows_split_per_link():
         "Wireless Emergency Alerts (weather.gov)",
         "Brochures (weather.gov)",
     ]
+
+
+def test_review_fixes_sibling_doi_stray_backtick_and_document_pages_on_mixed_hosts():
+    from orion.world_pulse_read.next_read_choice import classified_links, document_ids, non_content_reason
+
+    ids = document_ids("https://doi.org/10.1101/2024.05.01.59200")
+    # A sibling paper whose DOI starts with the page's is another paper; a version / format tail is the same.
+    assert non_content_reason("https://doi.org/10.1101/2024.05.01.592001", ids=ids) is None
+    assert non_content_reason("https://www.biorxiv.org/content/10.1101/2024.05.01.59200v1.full.pdf",
+                              ids=ids) == "same_document"
+    # A backtick used as an apostrophe does not turn a prose link into code.
+    page = "https://ex.org/digest"
+    text = "Don`t miss https://news.example.com/story/big-thing and the `config` flag.\n"
+    got = {c.url: r for c, r in classified_links([(page, text)], exclude_urls=[page])}
+    assert got["https://news.example.com/story/big-thing"] is None
+    # Document pages on hosts that also serve vocabularies stay options.
+    for url in ("https://www.w3.org/2020/06/machine-learning-workshop/report.html", "https://purl.org/net/some-paper",
+                "https://example.gov/business/licensing-office"):
+        assert non_content_reason(url) is None, url
+    assert non_content_reason("http://purl.org/dc/elements/1.1/") == "schema_namespace"
+    assert non_content_reason("http://arxiv.org/licenses/nonexclusive-distrib/1.0/") == "license"

@@ -166,8 +166,11 @@ class CoreProbe:
             for index in range(1024):
                 item = values[index]
                 if not item.key:
-                    for key, value in self.overrides.items():
-                        if key in self.options: self.options[key] = value
+                    missing = set(self.overrides) - set(self.options)
+                    if missing:  # a renamed option would silently fall back (N64: to GL, absent here)
+                        self.error = "core does not declare option " + b", ".join(sorted(missing)).decode()
+                        return False
+                    self.options.update(self.overrides)
                     return True
                 if item.value and b"; " in item.value:
                     self.options[item.key] = item.value.split(b"; ", 1)[1].split(b"|", 1)[0]

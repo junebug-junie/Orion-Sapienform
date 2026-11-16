@@ -37,8 +37,9 @@ def test_n64_catalog_uses_its_own_core(tmp_path, file):
     sessions = Sessions(cfg)
     assert ('Mario Kart 64', 'n64') in [(g['title'], g['system']) for g in sessions.games()]
     assert sessions.identity('kart64')['core_sha256'] == digest(cfg.n64_core)
-    # An N64 state (~16.8 MB) must fit the shared store's listing bound.
-    assert sessions.saves.max_bytes == cfg.n64_save_max_bytes
+    # An N64 state (~16.8 MB) fits N64's store; NES keeps its own smaller bound.
+    assert sessions.store('kart64').max_bytes == cfg.n64_save_max_bytes
+    assert sessions.store('test').max_bytes == cfg.save_max_bytes
 
 
 def test_missing_n64_core_refuses_startup(tmp_path):
@@ -127,12 +128,20 @@ def test_scratch_and_log_are_given_only_when_configured(tmp_path):
     assert probe._environment(27, C.addressof(log)) and log.log
 
 
-def test_option_overrides_replace_declared_defaults_only():
-    probe = bare(overrides={b'core-rdp': b'angrylion', b'not-declared': b'x'})
+def test_option_overrides_replace_declared_defaults():
+    probe = bare(overrides={b'core-rdp': b'angrylion'})
     variables = (Variable * 3)(Variable(b'core-rdp', b'RDP; gliden64|angrylion'),
                                Variable(b'core-other', b'Other; a|b'), Variable(None, None))
     assert probe._environment(16, C.addressof(variables))
     assert probe.options == {b'core-rdp': b'angrylion', b'core-other': b'a'}
+
+
+def test_an_override_the_core_never_declared_fails_loudly():
+    # A core bump renaming the renderer key would otherwise fall back to GL and die unexplained.
+    probe = bare(overrides={b'core-renamed': b'angrylion'})
+    variables = (Variable * 2)(Variable(b'core-rdp', b'RDP; gliden64|angrylion'), Variable(None, None))
+    assert not probe._environment(16, C.addressof(variables))
+    assert probe.error == 'core does not declare option core-renamed'
 
 
 def test_media_halves_angrylion_640x480_to_the_native_320x240():

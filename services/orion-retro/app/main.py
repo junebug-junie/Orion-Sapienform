@@ -172,7 +172,7 @@ def create_app(settings=None):
             except ValidationError: raise HTTPException(422, 'invalid_load')
             # Refuse a missing or mismatched save before it reaches the worker; the
             # worker re-checks identity and digest against the core it actually loaded.
-            m.saves.meta(m.session['game_id'], body.save_id, m.identity(m.session['game_id']))
+            m.store(m.session['game_id']).meta(m.session['game_id'], body.save_id, m.identity(m.session['game_id']))
             return await m.command('load', data={'save_id': body.save_id})
         if operation == 'stop':
             await m.stop(); return m.session

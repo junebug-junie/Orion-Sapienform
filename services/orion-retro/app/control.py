@@ -92,7 +92,9 @@ class Arbiter:
 
     def axes(self):
         """Live sticks per port, read after frame(): an expired, released or neutral
-        port is absent from leases or was skipped, so it reads centred."""
+        port is absent from leases or was skipped, so it reads centred. Sticks are not
+        latched like buttons: a stick press and release inside one frame (~16 ms) is lost.
+        Accepted: a stick is held to steer, never tapped like Start."""
         return tuple(self.leases[p]['axes'] if p in self.leases and p not in self._neutral_last else CENTRED
                      for p in (0, 1))
 

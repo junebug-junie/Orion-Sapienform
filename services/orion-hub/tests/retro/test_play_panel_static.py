@@ -146,7 +146,7 @@ def test_n64_dropdown_label_sort_buttons_and_sticks():
     assert "SYSTEM_LABEL[g.system]" in js and ".sort((x,y)=>titleKey(x).localeCompare(titleKey(y)))" in js
     if not shutil.which('node'): pytest.skip('node not installed')
     functions = '\n'.join(re.search(pattern, js, re.S).group(0) for pattern in (
-        r'const bits = .*?;', r'const SYSTEM_LABEL = .*?;', r'const titleKey = .*?;\n',
+        r'const bits = .*?;', r'const SYSTEM_LABEL = .*?;', r'const gameKey = .*?;\n', r'const titleKey = .*?;\n',
         r'function mask\(\) \{.*?\n  \}', r'function sticks\(\) \{.*?\n  \}',
         r'function padMask\(pad, n64=false\) \{.*?\n  \}'))
     probe = functions + '''
@@ -157,11 +157,13 @@ const keys=new Set(['ArrowUp','ArrowLeft','KeyX','KeyC','KeyL','ShiftLeft']);
 const keyboard={mask:mask(), sticks:sticks()}; keys.clear();
 pad={axes:[.5,0,0,-1],buttons:Array.from({length:16},(_,i)=>({pressed:[1,6].includes(i)}))};
 const padded={mask:mask(), sticks:sticks()};
+const n64Keys=['KeyC','KeyJ','ArrowUp','ShiftLeft'].map(gameKey);
 activeSystem='snes'; keys.add('KeyC'); keys.add('KeyI'); pad=null; const snesStray=mask();
+const snesKeys=['KeyC','KeyJ','ArrowUp','KeyA'].map(gameKey);
 const titles=[{title:'Super Mario Kart',system:'snes'},{title:'The Legend of Zelda: Ocarina of Time',system:'n64'},
   {title:'GoldenEye 007',system:'n64'},{title:'Mario Kart 64',system:'n64'}]
   .sort((x,y)=>titleKey(x).localeCompare(titleKey(y))).map(g=>g.title+(SYSTEM_LABEL[g.system]||''));
-console.log(JSON.stringify({keyboard,padded,snesStray,titles}));'''
+console.log(JSON.stringify({keyboard,padded,snesStray,titles,n64Keys,snesKeys}));'''
     run = subprocess.run(['node', '-e', probe], capture_output=True, text=True, check=True)
     got = json.loads(run.stdout)
     # Arrows and I/J/K/L move sticks, never the D-pad; X = A (bit 0), C = Z (bit 12); no Select.
@@ -169,5 +171,7 @@ console.log(JSON.stringify({keyboard,padded,snesStray,titles}));'''
     # Pad: right face = libretro A (bit 8), L2 = Z; the left stick is analog, not D-pad bits.
     assert got['padded'] == dict(mask=256 | 4096, sticks=[16384, 0, 0, -32767])
     assert got['snesStray'] == 0  # Z and C-stick keys never reach a console without them
+    # N64-only keys are not game keys elsewhere: they neither take the game back nor get swallowed.
+    assert got['n64Keys'] == [True, True, True, False] and got['snesKeys'] == [False, False, True, True]
     assert got['titles'] == ['GoldenEye 007 (N64)', 'The Legend of Zelda: Ocarina of Time (N64)',
                              'Mario Kart 64 (N64)', 'Super Mario Kart (SNES)']

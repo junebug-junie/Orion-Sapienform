@@ -17,6 +17,8 @@
     SYSTEM_BUTTONS = {nes:509, snes:4095, n64:16379},
     STICK = {ArrowLeft:[0,-1], ArrowRight:[0,1], ArrowUp:[1,-1], ArrowDown:[1,1], KeyJ:[2,-1], KeyL:[2,1], KeyI:[3,-1], KeyK:[3,1]};
   const SYSTEM_LABEL = {snes:' (SNES)', n64:' (N64)'};
+  // A key is a game key only when this console has its button (or, on N64, its stick).
+  const gameKey = code => !!((bits[code]||0)&(SYSTEM_BUTTONS[activeSystem] ?? 509) || activeSystem==='n64'&&STICK[code]);
   const titleKey = g => (g.title+(SYSTEM_LABEL[g.system]||'')).replace(/^the\s+/i,'').toLowerCase();
   // #status sits outside the fullscreen stage, so mirror each message into a toast
   // shown only in fullscreen; otherwise F7/F10 results would be invisible there.
@@ -106,12 +108,11 @@
     if(input && (lease || scriptedMode) && performance.now()-lastPictureAt>3000)transportLost('media_stalled');
   },100);
   function mask() {
-    let m=0; for(const code of keys) m |= bits[code] || 0;
+    let m=0; for(const code of keys) if(!(activeSystem==='n64' && STICK[code])) m |= bits[code] || 0;  // N64 arrows are the stick
     const pad = gamepad();
     if (pad && (document.activeElement===screen || document.fullscreenElement===stage))
       m |= selectChord(chord, pad, padMask(pad, activeSystem==='n64'), performance.now(), code=>runHotkey(code));
     else resetChord(chord);
-    if(activeSystem==='n64'){for(const code of keys)if(STICK[code])m&=~(bits[code]||0);}  // arrows are the stick
     m&=SYSTEM_BUTTONS[activeSystem] ?? 509; // each authority refuses buttons its console lacks
     if((m&48)===48)m&=~48;if((m&192)===192)m&=~192;return m;
   }
@@ -601,11 +602,11 @@
       if(!e.repeat)runHotkey(e.code);
       return;
     }
-    if(orionPlay && scriptedMode && bits[e.code] && !field(e.target) && !e.target?.closest?.('button,summary,a,select')){
+    if(orionPlay && scriptedMode && gameKey(e.code) && !field(e.target) && !e.target?.closest?.('button,summary,a,select')){
       e.preventDefault();takeBack();return;}
     if(document.activeElement!==screen && (document.fullscreenElement!==stage || field(e.target)))return;
-    if(bits[e.code] || SCROLL_KEYS.has(e.code))e.preventDefault();
-    if(bits[e.code] && !keys.has(e.code)){keys.add(e.code);send();}
+    if(gameKey(e.code) || SCROLL_KEYS.has(e.code))e.preventDefault();
+    if(gameKey(e.code) && !keys.has(e.code)){keys.add(e.code);send();}
   },{capture:true});
   action('fullscreen',async()=>{
     if(document.fullscreenElement){await document.exitFullscreen();return;}

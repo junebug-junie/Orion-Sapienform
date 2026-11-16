@@ -30,8 +30,9 @@ organs:
     salience_magnitude:
       reverie_chain: chain_thought_count
     families: [thought.reverie]
-    reads_now: null
-    exempt_read: "not yet migrated: the reverie cue (services/orion-thought/app/temporal_self_cue.py) reads the now in integration patch 3"
+    # One now per reverie chain (read at the first step that reaches the model); cites = the shown items a
+    # published thought names in its "cites" (integration patch 3).
+    reads_now: services/orion-thought/app/temporal_self_cue.py
   painting:
     temporal_sources: [visual_run, visual_deferral]
     families: [thought.painting, thought.dream_hop]
@@ -53,8 +54,9 @@ organs:
     families: [durable.curiosity_investigate, curiosity.replica, curiosity.compaction, curiosity.supervisor,
                durable.self_inquiry]
     workflows: [curiosity.investigate, curiosity.compaction]
-    reads_now: null
-    exempt_read: "not yet migrated: curiosity candidate selection reads the now in integration patch 3"
+    # The investigate kickoff offers the now as candidates; cites = the shown items the run's finding names.
+    # Blind to the offer arm (#3183): read and rendered the same way under every arm (integration patch 3).
+    reads_now: services/orion-hub/scripts/curiosity_now.py
   reading:
     # reading_turn has no magnitude: the act ledger's surprisal for a finished read falls with the
     # family posterior's age (daily median 0.0253 on 10-16 -> 0.000087 on 11-15), so against 30 days every
@@ -119,7 +121,7 @@ organs:
     families: [hub.chat_reply, hub.outreach, durable.consult_orion_turn, durable.session_roundup]
     workflows: [consult.orion_turn, session_roundup.orion_turn]
     reads_now: null
-    exempt_read: "the chat turn reads the Prime block, which carries the now's top 2 lines in integration patch 3"
+    exempt_read: "a chat turn sees the now's top 2 lines through the Prime block (Prime's own read, integration patch 3); a chat turn records no cites of its own yet (integration patch 7)"
   play:
     temporal_sources: [retro_play]
     families: [hub.retro_coplay, hub.retro_leisure, aitown.session]
@@ -131,8 +133,9 @@ organs:
     # nothing. Unscored items rank after scored ones, newest first. Part B (hunger) gives Prime content.
     temporal_sources: [prime_thought]
     families: [prime]
-    reads_now: null
-    exempt_read: "not yet migrated: Prime's frame reads the now in integration patch 3"
+    # Every thought reads the now (WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT) and posts the answer's
+    # "cites"; the top 2 items also ride into every chat turn's Prime block (integration patch 3).
+    reads_now: services/orion-mind/app/prime_loop.py
   intention:
     temporal_sources: []
     exempt_emit: "intention_close is integration patch 7 (one intention ever, 2026-11-13)"

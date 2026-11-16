@@ -16,8 +16,9 @@ What it detects (the spec's list, nothing more):
 4. every ``TemporalSourceKind`` value belongs to exactly one organ, and every organ with no
    ``temporal_sources`` has an ``exempt_emit`` reason;
 5. every organ either names a ``reads_now`` module that exists, READS the now (imports
-   ``orion.temporal_self.now`` or uses the ``/temporal-self/now`` route in code) and RECORDS cites (references
-   ``record_use`` or the ``/temporal-self/now/use`` route in code), or has an ``exempt_read`` reason. Docstrings
+   ``orion.temporal_self.now`` or the shared client ``orion.integration.now_client``, or uses the
+   ``/temporal-self/now`` route in code) and RECORDS cites (references ``record_use`` / ``arecord_use`` or the
+   ``/temporal-self/now/use`` route in code), or has an ``exempt_read`` reason. Docstrings
    and comments never count (AST, ``ast.Expr`` strings skipped). An organ may not hold both a claim and its
    exemption (``temporal_sources`` + ``exempt_emit``, ``reads_now`` + ``exempt_read``);
 6. every channel ADDED to ``orion/bus/channels.yaml`` since the merge base with ``origin/main`` is named by
@@ -58,6 +59,8 @@ FAMILIES = "config/physiology/families.yaml"
 CHANNELS = "orion/bus/channels.yaml"
 INTENTION_SOURCES = "orion/prime/intention_sources"
 NOW_MODULE = "orion.temporal_self.now"
+NOW_CLIENT = "orion.integration.now_client"  # the shared HTTP client (integration patch 3)
+RECORD_NAMES = {"record_use", "arecord_use"}
 NOW_ROUTE = "/temporal-self/now"
 USE_ROUTE = "/temporal-self/now/use"
 FIX = f"Fix: register it under an organ in {REGISTRY}, or add an exemption with a reason there."
@@ -146,25 +149,28 @@ def _code_strings(tree: ast.AST) -> list[str]:
 
 
 def _reads_the_now(path: Path) -> tuple[bool, bool]:
-    """(reads, records): reads = imports orion.temporal_self.now or uses the /temporal-self/now route in code;
-    records = references ``record_use`` or uses the /temporal-self/now/use route in code."""
+    """(reads, records): reads = imports orion.temporal_self.now or orion.integration.now_client, or uses the
+    /temporal-self/now route in code; records = references ``record_use`` / ``arecord_use`` or uses the
+    /temporal-self/now/use route in code."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError):
         return False, False
     reads = records = False
     for node in ast.walk(tree):
-        if isinstance(node, ast.Import) and any(a.name == NOW_MODULE or a.name.startswith(NOW_MODULE + ".")
+        if isinstance(node, ast.Import) and any(a.name in (NOW_MODULE, NOW_CLIENT) or a.name.startswith(NOW_MODULE + ".")
                                                 for a in node.names):
             reads = True
         elif isinstance(node, ast.ImportFrom):
             mod = node.module or ""
-            if mod == NOW_MODULE or (mod == "orion.temporal_self" and any(a.name == "now" for a in node.names)):
+            if (mod in (NOW_MODULE, NOW_CLIENT)
+                    or (mod == "orion.temporal_self" and any(a.name == "now" for a in node.names))
+                    or (mod == "orion.integration" and any(a.name == "now_client" for a in node.names))):
                 reads = True
-                records = records or any(a.name == "record_use" for a in node.names)
-        elif isinstance(node, ast.Name) and node.id == "record_use":
+                records = records or any(a.name in RECORD_NAMES for a in node.names)
+        elif isinstance(node, ast.Name) and node.id in RECORD_NAMES:
             records = True
-        elif isinstance(node, ast.Attribute) and node.attr == "record_use":
+        elif isinstance(node, ast.Attribute) and node.attr in RECORD_NAMES:
             records = True
     for text in _code_strings(tree):
         if USE_ROUTE in text:

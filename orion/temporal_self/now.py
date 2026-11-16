@@ -14,6 +14,9 @@ Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, 
   and returns the rows to store. At most 3 count per run.
 * ``use_rate`` is the integration metric: the share of experiences a different organ cited, validly,
   within 24 h; and the organs whose experiences another organ used ("closed organs").
+* Read-back helpers (integration patch 3): ``now_lines`` renders what a reader was shown, one
+  ``[experience:<id>]`` line per item, for a prompt; ``cites_in_text`` finds which shown items a reader's
+  own output names. The HTTP calls are ``orion.integration.now_client``.
 
 No I/O (the package rule, tests/test_sources.py): ``orion.integration.organs.load_organs`` reads the
 registry file and orion-durable-runs reads rows and stores what this returns.
@@ -53,7 +56,10 @@ __all__ = [
     "SOURCE_HISTORY",
     "OrganRegistry",
     "build_now",
+    "cites_in_text",
+    "experience_ref",
     "magnitude",
+    "now_lines",
     "now_label",
     "parse_organs",
     "record_use",
@@ -393,3 +399,68 @@ def use_rate(
         closed_organs=[o for o in registry.organs if used[o]], registered_organs=len(registry.organs),
         organs=organs, unregistered_kinds=unregistered,
     )
+
+
+# --------------------------------------------------------------------------- read-back (patch 3)
+# What a reader shows its model, and how it finds which shown items its own output named. Every line carries
+# the item's ``[experience:<id>]`` so a cite is copied, never retyped. A cite is valid only against the shown
+# row (record_use); these helpers only keep a reader from sending ids it was never shown.
+
+_ID_CHAR = r"A-Za-z0-9_+\-"
+
+
+def experience_ref(event_id: str) -> str:
+    return f"{EXPERIENCE_PREFIX}{event_id}"
+
+
+def _ago_words(as_of: datetime, at: datetime) -> str:
+    sec = max(0.0, (as_of - at).total_seconds())
+    if sec < 3600:
+        return f"{int(sec // 60)} min ago"
+    if sec < 48 * 3600:
+        return f"{int(sec // 3600)} h ago"
+    return f"{int(sec // 86400)} days ago"
+
+
+def now_lines(
+    now: TemporalNowV1,
+    *,
+    as_of: Optional[datetime] = None,
+    exclude_organs: Iterable[str] = (),
+    limit: Optional[int] = None,
+    label_cap: int = NOW_LABEL_MAX,
+) -> list[str]:
+    """One line per shown item, in the now's own order (highest salience first):
+    ``- [experience:<id>] <organ>: <label> (<age>; how unusual 0.63)``. ``how unusual`` is the item's
+    salience against its own kind's last 30 days, and is left out when unknown (never shown as 0)."""
+    skip = set(exclude_organs)
+    when = as_of or now.as_of
+    out: list[str] = []
+    for item in now.items:
+        if item.organ in skip:
+            continue
+        if limit is not None and len(out) >= limit:
+            break
+        label = " ".join(item.label.split())
+        if len(label) > label_cap:
+            label = label[: max(1, label_cap) - 1] + "…"
+        extra = f"; how unusual {item.salience:.2f}" if item.salience is not None else ""
+        out.append(f"- [{experience_ref(item.event_id)}] {item.organ}: {label} "
+                   f"({_ago_words(when, item.occurred_at)}{extra})")
+    return out
+
+
+def cites_in_text(text: Optional[str], shown_event_ids: Iterable[str]) -> list[str]:
+    """Shown event ids that ``text`` names as ``experience:<id>`` (bracketed or not), in order of first
+    appearance. Exact match against the shown ids, so an id that is a prefix of another is not a hit, and
+    sentence punctuation after a ref is not read as part of it. Ids never shown are never returned."""
+    import re
+
+    body = text or ""
+    hits: list[tuple[int, str]] = []
+    for eid in dict.fromkeys(str(e) for e in shown_event_ids if e):
+        pat = re.compile(re.escape(experience_ref(eid)) + rf"(?![{_ID_CHAR}]|[.:][{_ID_CHAR}])")
+        m = pat.search(body)
+        if m:
+            hits.append((m.start(), eid))
+    return [eid for _pos, eid in sorted(hits)]

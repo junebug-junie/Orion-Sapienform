@@ -310,3 +310,44 @@ def test_self_inquiry_is_a_line_not_an_arm_and_keeps_its_name():
     e = S.curiosity_run({"run_id": "s", "turn_started_at": T, "completed_at": T + timedelta(minutes=5),
                          "arm": "self_inquiry", "n_tested": 0, "n_moved": 0, "n_formed": 3, "offered": []})
     assert _now_from([e]).items[0].label == "self-inquiry run: tested 0, moved 0, formed 3"
+
+
+# --------------------------------------------------------------------------- read-back helpers (patch 3)
+
+
+def _now(items):
+    from orion.schemas.temporal_self import TemporalNowItemV1
+
+    return TemporalNowV1(shown_id="s1", reader_organ="prime", since=T - timedelta(hours=1), as_of=T,
+                         items=[TemporalNowItemV1(**i) for i in items])
+
+
+def test_now_lines_carry_the_ref_the_organ_and_salience_only_when_known():
+    from orion.temporal_self.now import now_lines
+
+    now = _now([
+        {"event_id": "vision_percept:a", "organ": "camera", "source_kind": "vision_percept", "label": "saw a dog",
+         "occurred_at": T - timedelta(minutes=12), "salience": 0.634},
+        {"event_id": "chat_turn:b", "organ": "chat", "source_kind": "chat_turn", "label": "chat turn by juniper",
+         "occurred_at": T - timedelta(hours=3), "salience": None},
+    ])
+    lines = now_lines(now)
+    assert lines == ["- [experience:vision_percept:a] camera: saw a dog (12 min ago; how unusual 0.63)",
+                     "- [experience:chat_turn:b] chat: chat turn by juniper (3 h ago)"]
+    assert now_lines(now, exclude_organs=["chat"]) == lines[:1]
+    assert now_lines(now, limit=1) == lines[:1]
+    assert now_lines(now, label_cap=4)[0].startswith("- [experience:vision_percept:a] camera: saw… (")
+
+
+def test_cites_in_text_returns_only_shown_ids_exactly_in_order_of_appearance():
+    from orion.temporal_self.now import cites_in_text
+
+    long_id = "body_binding:attention:juniper:2026-11-15T15:33:23+00:00:keepalive:2026-11-16T00:00:39+00:00"
+    shown = ["prediction_surprise:1494", "prediction_surprise:14945", long_id]
+    text = (f"First [experience:prediction_surprise:14945]. Then experience:{long_id}. "
+            "And experience:prediction_surprise:1494, plus experience:never_shown:1.")
+    assert cites_in_text(text, shown) == ["prediction_surprise:14945", long_id, "prediction_surprise:1494"]
+    # a longer id is not a hit for its prefix; a bare id without the experience: prefix is not a cite
+    assert cites_in_text("experience:prediction_surprise:14945", shown) == ["prediction_surprise:14945"]
+    assert cites_in_text("prediction_surprise:1494 was odd", shown) == []
+    assert cites_in_text(None, shown) == []

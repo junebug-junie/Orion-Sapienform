@@ -94,6 +94,12 @@ def test_an_organ_must_emit_or_say_why_and_read_or_say_why(real):
 def test_reads_now_must_really_read_the_now_and_record_cites(real, tmp_path):
     files = {
         "reader.py": ("from orion.temporal_self.now import build_now, record_use\n", True),
+        # the shared client (integration patch 3): import + a recorded cite
+        "client_reader.py": ("from orion.integration import now_client\n"
+                             "async def f():\n    await now_client.arecord_use('u', 's', ['e'], 'r')\n", True),
+        "client_reader_from.py": ("from orion.integration.now_client import aread_now, arecord_use\n", True),
+        # the client imported but no cite ever recorded
+        "client_reads_only.py": ("from orion.integration.now_client import read_now\n", False),
         "route_reader.py": ("NOW = 'http://durable-runs:8121/temporal-self/now?organ=prime'\n"
                             "USE = 'http://durable-runs:8121/temporal-self/now/use'\n", True),
         # reads but records nothing
@@ -107,8 +113,8 @@ def test_reads_now_must_really_read_the_now_and_record_cites(real, tmp_path):
         (tmp_path / name).write_text(text)
     for name, ok in [*((n, ok) for n, (_, ok) in files.items()), ("missing.py", False)]:
         inp = planted(real, repo_root=tmp_path)
-        inp.registry["organs"]["prime"]["reads_now"] = name
-        del inp.registry["organs"]["prime"]["exempt_read"]
+        inp.registry["organs"]["painting"]["reads_now"] = name
+        del inp.registry["organs"]["painting"]["exempt_read"]
         errs = seam.check(inp)
         assert (errs == []) is ok, (name, errs)
 
@@ -116,10 +122,10 @@ def test_reads_now_must_really_read_the_now_and_record_cites(real, tmp_path):
 def test_an_organ_may_not_hold_a_claim_and_its_exemption(real, tmp_path):
     (tmp_path / "reader.py").write_text("from orion.temporal_self.now import build_now, record_use\n")
     inp = planted(real, repo_root=tmp_path)
-    inp.registry["organs"]["prime"]["reads_now"] = "reader.py"  # exempt_read still set
+    inp.registry["organs"]["painting"]["reads_now"] = "reader.py"  # exempt_read still set
     inp.registry["organs"]["reverie"]["exempt_emit"] = "why"  # it emits
     errs = seam.check(inp)
-    assert any("'prime' both names reads_now and is exempt" in e for e in errs)
+    assert any("'painting' both names reads_now and is exempt" in e for e in errs)
     assert any("'reverie' both emits and is exempt" in e for e in errs)
 
 

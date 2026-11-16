@@ -3103,6 +3103,24 @@ reposted. Log: `reading_event_want seed=... links=... salience=... outcome=...`.
 `scripts/reading_event_wants.py`. Switches: `HUB_READING_EVENT_WANTS_ENABLED` (default true),
 `HUB_READING_EVENT_WANTS_TICK_SEC` (300), `HUB_READING_EVENT_WANTS_LOOKBACK_SEC` (10800 = the family window).
 
+**Curiosity event wants** (2026-11-16, step 3). Each new philosophical curiosity finding
+(`curiosity_finding_register`, register `philosophical`, novelty not null) is ranked by its novelty against the
+philosophical findings of the previous 30 days (`source_salience`). Only the top tenth (salience >= 0.9) posts a
+SHADOW event want: family `hub.curiosity_finding`, verb `infer`, `event_ref` `curiosity_run:<run_id>`, no GPU slot
+cost. Under 20 earlier findings or below the band: logged as skipped, never retried. Deterministic want id; a
+finding already in `want_ledger` is not reposted. Log: `curiosity_event_want run=... novelty=... salience=...`.
+Code: `scripts/curiosity_event_wants.py`. Switches: `HUB_CURIOSITY_EVENT_WANTS_ENABLED` (default true),
+`HUB_CURIOSITY_EVENT_WANTS_TICK_SEC` (300), `HUB_CURIOSITY_EVENT_WANTS_LOOKBACK_SEC` (43200 = the family window).
+Replay: `evals/run_curiosity_event_wants_replay.py [--live]`.
+
+**Curiosity reads Orion's now** (2026-11-16, integration patch 3). Both curiosity lines read
+`GET /temporal-self/now?organ=curiosity&since=<last curiosity run>` on `HUB_CURIOSITY_DURABLE_RUNS_URL` at
+kickoff and show the items with `[experience:<id>]` tags. The `shown_id` is kept with the run
+(`curiosity_offer_decisions.constants.now_shown_id`), so a durable turn in another process still finds it. At the
+turn's end the first 3 distinct `[experience:<id>]` cites in its text go to `POST /temporal-self/now/use`. Any
+failure: no section, no post, never a failed turn. Logs: `curiosity_now_read`, `curiosity_now_cites`. Code:
+`scripts/curiosity_now.py`, `orion/curiosity/now_section.py`. Switch: `HUB_CURIOSITY_NOW_ENABLED` (default true).
+
 Known gaps, on purpose:
 
 - When outreach's agent lane times out and the chat lane retries, the act opens on the retry's

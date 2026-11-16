@@ -27,6 +27,14 @@ def planted(real, **changes):
     inp = replace(real, registry=copy.deepcopy(real.registry), notes=[])
     for k, v in changes.items():
         setattr(inp, k, v)
+    if "repo_root" in changes:
+        # Organs that already read the now keep their real reader under the planted root, so a test
+        # that plants one organ's reader sees only that organ's verdict.
+        for spec in (real.registry.get("organs") or {}).values():
+            rel = (spec or {}).get("reads_now")
+            if rel and (real.repo_root / rel).is_file() and not (inp.repo_root / rel).exists():
+                (inp.repo_root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (inp.repo_root / rel).write_text((real.repo_root / rel).read_text(encoding="utf-8"), encoding="utf-8")
     return inp
 
 

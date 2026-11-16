@@ -15,6 +15,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(REPO), str(Path(__file__).resolve().parents[1])]
 
 from app.event_wants_menu import (  # noqa: E402
+    FINISH_LABELS_SQL, finding_label,
     ASK_LABELS_SQL, LATEST_EVENT_DECISIONS_SQL, OFFICE_LABELS_SQL, OFFICE_TABLE_SQL, READ_LABELS_SQL, menu_from_rows,
     read_menu,
 )
@@ -137,6 +138,33 @@ def test_an_office_visit_want_is_labelled_from_its_session_row():
     menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=8))
     assert [w.label for w in menu.wants] == [""]
     assert not any(sql == OFFICE_LABELS_SQL for sql, _ in pool.seen)
+
+
+def test_a_curiosity_finding_want_is_labelled_from_its_finish_row():
+    ref, ref2 = "curiosity_run:run1", "curiosity_run:run2"
+    rows = [_row("f", ref, family="hub.curiosity_finding", net=0.6),
+            _row("g", ref2, family="hub.curiosity_finding", net=0.4)]
+    pool = _Pool({LATEST_EVENT_DECISIONS_SQL: rows, FINISH_LABELS_SQL: [
+        {"run_id": "run1", "detail": {"line": "self_inquiry", "finding_text": "Done for the sitting.",
+                                       "lived_answer": {"question_id": "q", "text": "Yes, but what comes back\nis my own loops."}}},
+        # json columns can arrive as text; a finish row with only narration falls back to it, headings skipped.
+        {"run_id": "run2", "detail": json.dumps({"finding_text": "## What I followed\n\nThe flicker is real."})},
+    ]})
+    menu = asyncio.run(read_menu(pool, FAMS, now=NOW, hours=24, limit=8))
+    assert [w.label for w in menu.wants] == ["a curiosity finding: Yes, but what comes back is my own loops.",
+                                             "a curiosity finding: The flicker is real."]
+    sql, params = next((q, p) for q, p in pool.seen if q == FINISH_LABELS_SQL)
+    assert params == {"ids": ["run1", "run2"]} and "node = 'finish'" in sql
+    # The family's 12 h window bounds it.
+    assert menu.wants[0].expires_at == rows[0]["decided_at"] + timedelta(hours=12)
+
+
+def test_finding_label_prefers_the_answer_and_caps_its_length():
+    assert finding_label({"self_definition": {"text": "I am one process."}, "finding_text": "narration"}) == \
+        "a curiosity finding: I am one process."
+    assert finding_label({}) == "" and finding_label(None) == "" and finding_label("not json") == ""
+    long = finding_label({"lived_answer": {"text": "x" * 1000}})
+    assert len(long) <= 300 and long.endswith("…")
 
 
 def _state():

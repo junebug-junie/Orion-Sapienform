@@ -42,11 +42,10 @@ FIXTURE = Path(__file__).parent / "fixtures" / "self_signal_pe_history_2026-10-0
 
 @pytest.fixture(scope="module")
 def rows():
-    from orion.substrate.prediction_error_freshness import RETIRED_PREDICTION_ERROR_NODE_IDS
-
-    # The fixture predates the 2026-11 retirements; the live path
-    # (orion.attention.pe_history_cache) never reads these nodes' rows.
-    return [r for r in rows_from_csv(FIXTURE) if r[0] not in RETIRED_PREDICTION_ERROR_NODE_IDS]
+    # The fixture predates the 2026-11 retirements and still holds those
+    # nodes' rows; replay drops them like the live cache
+    # (orion.attention.pe_history_cache) does.
+    return rows_from_csv(FIXTURE)
 
 
 @pytest.fixture(scope="module")
@@ -83,15 +82,15 @@ def test_without_the_dwell_every_signal_opens_constantly(rows, result):
     assert len(no_dwell["episodes"]) > 8 * len(result["episodes"])
 
 
-def test_placeholder_never_opens(rows, result):
-    # node:substrate.harness_closure (a fixed 0.65 placeholder) joined the
-    # retired set 2026-11-16, so its fixture rows are dropped like the live
-    # cache drops them. Replayed directly it still reads unknown and never opens.
-    assert "node:substrate.harness_closure" not in result["per_signal"]
-    hc_rows = [r for r in rows_from_csv(FIXTURE) if r[0] == "node:substrate.harness_closure"]
-    assert hc_rows
-    hc = replay(rows + hc_rows)["per_signal"]["node:substrate.harness_closure"]
-    assert hc["episodes"] == 0 and set(hc["observations"]) == {"unknown"}
+def test_retired_nodes_are_not_replayed_at_all(rows, result):
+    # node:substrate.harness_closure (a fixed 0.65 placeholder, this test's
+    # old subject) joined the retired set 2026-11-16. The fixture still holds
+    # every retired node's rows; none of them is observed.
+    from orion.substrate.prediction_error_freshness import RETIRED_PREDICTION_ERROR_NODE_IDS
+
+    in_fixture = {r[0] for r in rows} & RETIRED_PREDICTION_ERROR_NODE_IDS
+    assert "node:substrate.harness_closure" in in_fixture
+    assert not in_fixture & set(result["per_signal"])
 
 
 def test_closes_are_returns_not_silence(result):

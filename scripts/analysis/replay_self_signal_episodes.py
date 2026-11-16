@@ -58,6 +58,7 @@ from orion.metacog.self_signal_episode import (  # noqa: E402
     step_signal,
 )
 from orion.schemas.attention_frame import PredictionErrorMagnitudeV1  # noqa: E402
+from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node  # noqa: E402
 from orion.substrate.prediction_error_magnitude import (  # noqa: E402
     DEFAULT_BAND_CUTS,
     DEFAULT_MIN_READINGS,
@@ -158,6 +159,10 @@ def build_windows(rows: Iterable[Row]) -> dict[str, NodeWindow]:
     wins: dict[str, NodeWindow] = {}
     for node_id, t, v in rows:
         if not node_id.startswith(PREFIX) or source_kind_for_node(node_id) != "internal":
+            continue
+        if is_retired_prediction_error_node(node_id):
+            # Same as the live cache (orion.attention.pe_history_cache): a
+            # retired node's lingering rows are not readings.
             continue
         w = wins.setdefault(node_id, NodeWindow())
         w.times.append(t)

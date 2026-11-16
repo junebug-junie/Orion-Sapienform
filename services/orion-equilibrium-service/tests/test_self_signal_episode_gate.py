@@ -323,6 +323,17 @@ def test_pending_episode_on_a_retired_node_is_dropped_without_a_row(monkeypatch)
     assert BUS not in gate.state.episodes
 
 
+def test_confirmed_but_unpublished_episode_on_a_retired_node_drops_without_a_row(monkeypatch):
+    gate = SelfSignalEpisodeGate(GateConfig())
+    _warm(gate)
+    rows = _drive(gate, T0, 11, HOT, publish=False)
+    assert [r.phase for r in rows] == ["open"]  # owed, never reached the bus
+    assert gate.state.episodes[BUS].confirmed and not gate.state.episodes[BUS].open_published
+    _retire(monkeypatch, BUS)
+    assert _poll(gate, T0 + timedelta(seconds=330), {}) == []
+    assert gate.state.episodes == {}
+
+
 def test_persisted_state_naming_a_retired_node_closes_after_restart(monkeypatch):
     """Redis state (equilibrium:self_signal_episodes:v1) written before a retirement."""
     gate = SelfSignalEpisodeGate(GateConfig())

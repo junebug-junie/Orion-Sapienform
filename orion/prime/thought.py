@@ -27,6 +27,15 @@ References (orion/refs.py): a move cites ids only through ``refs`` (``[{kind, id
 act). Refused here when a ref is malformed, or when the question or why contains an id-looking word
 (``orion.refs.ID_TOKEN_RE``) that is not one of the refs; refused by the runtime when a ref does not
 open with its resolver. A curiosity run opens each ref with ``python -P -m orion.dig <kind> <id>``.
+
+Orion's now (integration design Part A, patch 3; docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md):
+the frame's WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT section lists what other organs recorded (orion-durable-runs
+GET /temporal-self/now, at most 12 items). Prime cites the ones it used with a third ref kind, ``experience``, in the
+answer's top-level ``refs`` (``[{"kind": "experience", "id": "<event_id>"}]``). ``parse_refs`` here splits those
+from the openable kinds of orion/refs.py; ``apply_answer`` keeps only cites of items this frame showed, at most 3
+(``Applied.experience_cites``); the runtime stores them with POST /temporal-self/now/use. An experience ref inside a
+move's refs counts as a cite too, and is never forwarded to curiosity (a run has no way to open one). Curiosity's
+recent runs reach Prime through the now; the frame's CURIOSITY section only says whether a question waits.
 """
 
 from __future__ import annotations
@@ -50,9 +59,11 @@ from orion.prime.state import (
     new_id,
     track_record,
 )
-from orion.refs import RefV1, id_tokens_not_in, parse_refs
+from orion.refs import RefV1, id_tokens_not_in
+from orion.refs import parse_refs as parse_openable_refs
 from orion.schemas.curiosity_replica import REPLICA_ACTOR, CuriosityReplicaRepliesViewV1
 from orion.schemas.introspect import FOCUS_TEXT_CAP
+from orion.schemas.temporal_self import NOW_MAX_CITES, NOW_MAX_ITEMS
 
 READING_CAP = 600
 # A move may cite the concern added in the same answer, whose id the runtime assigns afterwards.
@@ -131,6 +142,9 @@ class PrimeAnswerV1(BaseModel):
     # Personality choice point (spec 2026-10-16 rev 4, orion/prime/choice.py): the concern_id from YOUR
     # CONCERNS this thought acts on, or "none". Left out of an answer: the move's concern_id stands in.
     pick: Optional[str] = None
+    # What this thought used from WHAT YOUR ORGANS LIVED (integration patch 3): raw [{kind: "experience", id}].
+    # Checked in apply_answer, so a bad ref is a warning, never a failed thought.
+    refs: Any = None
 
     @field_validator("pick", mode="before")
     @classmethod
@@ -222,6 +236,15 @@ ends 3 days after you made it, even if you kept it. One move per thought:
 "move": {"kind": "take_on", "concern_id": "<concern_id>", "why": "...", "not_before": null | "<ISO time UTC>"}"""
 
 
+EXPERIENCE_PROMPT = """
+
+WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT lists what Orion's other organs recorded since then (readings,
+curiosity runs, camera sightings, prediction surprises, reveries ...), highest salience first, each with its
+[experience:<id>]. When one of them shaped this thought, cite it: add "refs" to your JSON object,
+"refs": [{"kind": "experience", "id": "<the id after experience:>"}], at most 3, only ones you actually used.
+Citing nothing is a normal answer. Copy ids exactly; an id the section did not list is not recorded."""
+
+
 ORGAN_REPLIES_PROMPT = """
 
 Organs can answer you. Curiosity's own planner may challenge a question or signal of yours (it still happens,
@@ -231,10 +254,11 @@ organ, not a command: you may ask differently, wait, or drop the concern."""
 
 
 def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False,
-                  organ_replies: bool = False, take_on: bool = False) -> str:
+                  organ_replies: bool = False, take_on: bool = False, experiences: bool = False) -> str:
     """The base prompt, plus the regulate move only when regulation is on and some family receives it, plus
     the organ-replies paragraph when that section is in the frame, plus the take-on move when it is on
-    (PRIME_INTENTION_TAKE_ON_ENABLED). ``events``: concerns come from funded event wants (event_id), not arcs."""
+    (PRIME_INTENTION_TAKE_ON_ENABLED). ``events``: concerns come from funded event wants (event_id), not arcs.
+    ``experiences``: the now was read (``shows_now``), so the frame lists experiences Prime may cite."""
     base = SYSTEM_PROMPT
     if events:
         base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
@@ -245,6 +269,8 @@ def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: b
         base += TAKE_ON_PROMPT
     if organ_replies:
         base += ORGAN_REPLIES_PROMPT
+    if experiences:
+        base += EXPERIENCE_PROMPT
     return base
 
 
@@ -257,12 +283,10 @@ class FrameInputs:
     body_error: Optional[str] = None
     temporal: Optional[dict[str, Any]] = None
     temporal_error: Optional[str] = None
-    curiosity: Optional[dict[str, Any]] = None
-    curiosity_error: Optional[str] = None
-    # Hub's cheap pending-focus read (GET /curiosity/api/focus/pending, #3366), separate from the slow
-    # dashboard read above. ``pending_focus_read``: it answered ``available: true``; ``pending_focus``: the
-    # waiting focus or None. ``pending_focus_error``: it failed. Neither set (replay, eval): the dashboard's
-    # copy is shown, as before.
+    # Hub's cheap pending-focus read (GET /curiosity/api/focus/pending, #3366). ``pending_focus_read``: it
+    # answered ``available: true``; ``pending_focus``: the waiting focus or None. ``pending_focus_error``: it
+    # failed. Neither set: "not read". (The dashboard read, /curiosity/api/runs, left the frame in integration
+    # patch 3: curiosity's runs arrive through the now. Settling still reads it, prime_loop._maybe_settle.)
     pending_focus_read: bool = False
     pending_focus: Optional[dict[str, Any]] = None
     pending_focus_error: Optional[str] = None
@@ -300,6 +324,27 @@ class FrameInputs:
     # None with no error: PRIME_PERSONALITY_LINE_ENABLED is off and the section is not shown.
     tending: Optional[list[str]] = None
     tending_error: Optional[str] = None
+    # Orion's now (integration patch 3): GET /temporal-self/now?organ=prime, a TemporalNowV1 as JSON. None: not
+    # read (the now is off -- 404 -- or unreachable); the section is not shown and nothing can be cited.
+    orion_now: Optional[dict[str, Any]] = None
+
+
+def now_items(inputs: "FrameInputs") -> list[dict[str, Any]]:
+    """The now's items as shown in the frame (at most NOW_MAX_ITEMS, each with an event_id)."""
+    items = inputs.orion_now.get("items") if isinstance(inputs.orion_now, dict) else None
+    if not isinstance(items, list):
+        return []
+    return [i for i in items if isinstance(i, dict) and str(i.get("event_id") or "").strip()][:NOW_MAX_ITEMS]
+
+
+def shows_now(inputs: "FrameInputs") -> bool:
+    """The now was read: the section is in the frame (possibly saying nothing new)."""
+    return isinstance(inputs.orion_now, dict) and bool(inputs.orion_now.get("shown_id"))
+
+
+def shown_experience_ids(inputs: "FrameInputs") -> Optional[list[str]]:
+    """The event ids this frame showed; None when the now was not read (no cite can be valid)."""
+    return [str(i["event_id"]).strip() for i in now_items(inputs)] if shows_now(inputs) else None
 
 
 def shows_organ_replies(inputs: "FrameInputs") -> bool:
@@ -418,38 +463,52 @@ def _event_lines(inputs: FrameInputs) -> list[str]:
     return lines
 
 
-def _pending_focus_lines(inputs: FrameInputs) -> list[str]:
-    """The waiting focus from the cheap read; the gap when it failed. Shown even when the dashboard read
-    failed, so the frame and the move check agree (#3366)."""
+def _curiosity_lines(inputs: FrameInputs) -> list[str]:
+    """Whether a question waits for curiosity's next run, from the cheap read only (#3366); the gap when it
+    failed, so the frame and the move check agree. Curiosity's runs arrive through the now (patch 3)."""
     if inputs.pending_focus_error:
         return [f"(whether a focus is waiting for the next run is unknown: {inputs.pending_focus_error})"]
-    if inputs.pending_focus_read:
-        pending = inputs.pending_focus
-    else:
-        pending = (((inputs.curiosity or {}).get("schedule") or {}).get("pending_focus") or {}).get("focus")
+    if not inputs.pending_focus_read:
+        return ["(unavailable: whether a focus is waiting was not read)"]
+    pending = inputs.pending_focus
     if not isinstance(pending, dict):
-        return []
+        return ["no focus is waiting for the next run"]
     return [f"a focus is already waiting for the next run ({pending.get('origin')}): {pending.get('question')!r}"]
 
 
-def _curiosity_lines(inputs: FrameInputs) -> list[str]:
-    if inputs.curiosity is None:
-        return [*_pending_focus_lines(inputs), f"(unavailable: {inputs.curiosity_error or 'not read'})"]
-    c = inputs.curiosity
+def _num_or_none(value: Any) -> Optional[float]:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out == out else None
+
+
+NOW_LINE_REFS = 3  # related refs shown per item (the item carries up to 8)
+
+
+def _now_lines(inputs: FrameInputs) -> list[str]:
+    """One line per experience: its id to cite, organ, age, label, salience and surprise when known, refs."""
     lines: list[str] = []
-    line = ((c.get("schedule") or {}).get("lines") or {}).get("investigate") or {}
-    if line:
-        lines.append(f"investigate runs today {line.get('runs_today')} of {line.get('daily_cap')}, "
-                     f"next eligible {line.get('next_eligible_at')}")
-    lines.extend(_pending_focus_lines(inputs))
-    for run in (c.get("runs") or [])[:4]:
-        # What the run found, never its kickoff prompt (the "about" text is the brief Orion was handed).
-        finding = " ".join(str(run.get("finding_text") or "").split())
-        focus = (run.get("focus") or {}).get("question")
-        took = f" [took a focus: {focus[:120]!r}]" if focus else ""
-        lines.append(f"- run {run.get('run_id')} {run.get('status')}/{run.get('outcome_kind')} "
-                     f"{_age(inputs.now, run.get('started_at_iso'))}{took}: {finding[:240] or '(no finding text)'}")
-    return lines or ["(no recent investigate runs)"]
+    for item in now_items(inputs):
+        sal, nats = _num_or_none(item.get("salience")), _num_or_none(item.get("surprise_nats"))
+        scores = [f"salience {sal:.2f}" if sal is not None else "salience unknown"]
+        if nats is not None:
+            scores.append(f"surprise {nats:.2f} nats")
+        label = " ".join(str(item.get("label") or "").split()) or f"({item.get('source_kind') or 'no label'})"
+        refs = [str(r) for r in (item.get("related_refs") or []) if r][:NOW_LINE_REFS]
+        lines.append(f"- [experience:{str(item['event_id']).strip()}] {item.get('organ') or '?'} "
+                     f"{_age(inputs.now, item.get('occurred_at'))}: {label} ({'; '.join(scores)})"
+                     + (f" refs {', '.join(refs)}" if refs else ""))
+    if not lines:
+        return ["(nothing new from the other organs since your last thought)"]
+    dropped = int(_num((inputs.orion_now or {}).get("dropped_by_organ_cap"))) + int(
+        _num((inputs.orion_now or {}).get("dropped_by_total_cap")))
+    if dropped > 0:
+        lines.append(f"({dropped} more were recorded and not shown: at most 2 per organ, {NOW_MAX_ITEMS} in all)")
+    return lines
 
 
 def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
@@ -551,8 +610,11 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
          if inputs.event_mode else "ATTENTION (Temporal Self, today):\n" + "\n".join(_attention_lines(inputs))),
         "BODY:\n" + "\n".join(_body_lines(inputs)),
         "ENERGY MONEY:\n" + "\n".join(_energy_lines(inputs)),
-        "CURIOSITY:\n" + "\n".join(_curiosity_lines(inputs)),
+        "CURIOSITY (whether a question waits for its next run):\n" + "\n".join(_curiosity_lines(inputs)),
     ]
+    if shows_now(inputs):
+        sections.append("WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT (other organs, highest salience first; cite "
+                        "the ones you use):\n" + "\n".join(_now_lines(inputs)))
     if inputs.receptors is not None or inputs.receptors_error:
         sections.append("ORGANS YOU CAN SIGNAL (family: directions it handles):\n"
                         + "\n".join(_regulation_lines(state, inputs)))
@@ -585,6 +647,57 @@ class Applied:
     move_refusal: Optional[str]
     # The move's references, checked for shape; the runtime still resolves each before sending.
     refs: list[RefV1] = field(default_factory=list)
+    # Event ids of experiences this thought cited that the frame showed (at most NOW_MAX_CITES, in cite order).
+    experience_cites: list[str] = field(default_factory=list)
+
+
+EXPERIENCE_KIND = "experience"
+
+
+def parse_refs(raw: Any) -> tuple[list[RefV1], list[str], list[str]]:
+    """(openable refs, experience cites, plain-words problems). ``experience`` refs (``{"kind": "experience",
+    "id": <event_id>}``) are split off first: they name a row of Orion's now and are recorded with
+    POST /temporal-self/now/use, never opened by a curiosity run. Everything else goes to orion/refs.py's
+    parse_refs (kinds arc and act, the move's refs)."""
+    if raw in (None, []):
+        return [], [], []
+    if not isinstance(raw, list):
+        return [], [], ["refs must be a list of {kind, id}"]
+    rest: list[Any] = []
+    cites: list[str] = []
+    problems: list[str] = []
+    for item in raw:
+        if isinstance(item, Mapping) and item.get("kind") == EXPERIENCE_KIND:
+            eid = item.get("id")
+            eid = eid.strip() if isinstance(eid, str) else ""
+            if eid.startswith(f"{EXPERIENCE_KIND}:"):
+                eid = eid[len(EXPERIENCE_KIND) + 1:].strip()
+            if not eid or len(eid) > 400 or set(item) - {"kind", "id"}:
+                problems.append(f"experience ref {json.dumps(item, default=str)[:120]} is not usable "
+                                "(write {\"kind\": \"experience\", \"id\": \"<id>\"})")
+            elif eid not in cites:
+                cites.append(eid)
+        else:
+            rest.append(item)
+    refs, more = parse_openable_refs(rest)
+    return refs, cites, problems + more
+
+
+def shown_cites(cites: Sequence[str], shown: Optional[Sequence[str]]) -> tuple[list[str], list[str]]:
+    """(cites to record, warnings): only ids the frame showed, in cite order, at most NOW_MAX_CITES."""
+    if not cites:
+        return [], []
+    if shown is None:
+        return [], [f"{len(cites)} experience cite(s) ignored: the now was not read this thought"]
+    allowed = set(shown)
+    kept = [c for c in cites if c in allowed]
+    unknown = [c for c in cites if c not in allowed]
+    warnings = []
+    if unknown:
+        warnings.append(f"experience cite(s) not shown in this frame, not recorded: {', '.join(u[:80] for u in unknown[:3])}")
+    if len(kept) > NOW_MAX_CITES:
+        warnings.append(f"cited {len(kept)} experiences; only the first {NOW_MAX_CITES} are recorded")
+    return kept[:NOW_MAX_CITES], warnings
 
 
 def regulate_refusal(move: RegulateMoveV1, state: PrimeStateV1,
@@ -616,6 +729,7 @@ def apply_answer(
     event_wants: Optional[Mapping[str, Mapping[str, Any]]] = None,
     take_on_check: Optional[Callable[[TakeOnMoveV1, PrimeStateV1], Optional[str]]] = None,
     focus_unread: Optional[str] = None,
+    shown_experience: Optional[Sequence[str]] = None,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
     ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
@@ -627,7 +741,11 @@ def apply_answer(
     argument = taking on is off (a take_on move is refused, and shown).
 
     ``focus_pending``: None = unknown, and an ask move is refused (never fail open). ``focus_unread``: the
-    refusal sentence for that case when the runtime knows why (a timed-out read says "timed out", #3366)."""
+    refusal sentence for that case when the runtime knows why (a timed-out read says "timed out", #3366).
+
+    ``shown_experience``: the event ids this frame showed under WHAT YOUR ORGANS LIVED (None: the now was not
+    read). Experience cites (the answer's top-level refs, and any inside a move's refs) are kept only when shown,
+    at most NOW_MAX_CITES; the rest are warnings. A bad cite never refuses the move or fails the thought."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -675,6 +793,12 @@ def apply_answer(
         concerns.append(concern)
         added.append(concern.concern_id)
 
+    top_refs, cited, ref_problems = parse_refs(answer.refs)
+    if ref_problems:
+        warnings.append("refs: " + "; ".join(ref_problems)[:300])
+    if top_refs:
+        warnings.append(f"top-level refs only record experiences; {len(top_refs)} arc/act ref(s) ignored "
+                        "(a move's refs carry those)")
     move, refusal, refs = answer.move, None, []
     if isinstance(move, TakeOnMoveV1):
         edited = state.model_copy(update={"concerns": concerns})
@@ -687,7 +811,8 @@ def apply_answer(
         if refusal is None:
             move = move.model_copy(update={"hours": clamp_hours(move.hours), "why": move.why[:600]})
     elif move is not None:
-        refs, problems = parse_refs(move.refs)
+        refs, move_cites, problems = parse_refs(move.refs)
+        cited.extend(c for c in move_cites if c not in cited)
         stray = id_tokens_not_in(f"{move.question}\n{move.why}", refs)
         if problems:
             refusal = "; ".join(problems)
@@ -716,8 +841,10 @@ def apply_answer(
         "last_thought_at": now,
         "thoughts_total": state.thoughts_total + 1,
     })
+    experience_cites, cite_warnings = shown_cites(cited, shown_experience)
+    warnings.extend(cite_warnings)
     return Applied(new_state, added, dropped, sorted(kept_ids), warnings, None if refusal else move, refusal,
-                   [] if refusal else refs)
+                   [] if refusal else refs, experience_cites)
 
 
 WOKE_NOTE_CAP = 160
@@ -749,6 +876,8 @@ def summary_note(applied: Applied) -> str:
         parts.append(f"move refused: {applied.move_refusal}")
     else:
         parts.append("no move")
+    if applied.experience_cites:
+        parts.append(f"cited {len(applied.experience_cites)} experience(s)")
     if applied.dropped:
         parts.append("dropped " + "; ".join(applied.dropped))
     if applied.warnings:

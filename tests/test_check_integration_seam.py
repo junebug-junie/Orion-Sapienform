@@ -116,7 +116,8 @@ def test_reads_now_must_really_read_the_now_and_record_cites(real, tmp_path):
 def test_an_organ_may_not_hold_a_claim_and_its_exemption(real, tmp_path):
     (tmp_path / "reader.py").write_text("from orion.temporal_self.now import build_now, record_use\n")
     inp = planted(real, repo_root=tmp_path)
-    inp.registry["organs"]["prime"]["reads_now"] = "reader.py"  # exempt_read still set
+    inp.registry["organs"]["prime"]["reads_now"] = "reader.py"
+    inp.registry["organs"]["prime"]["exempt_read"] = "planted"  # and an exemption beside it
     inp.registry["organs"]["reverie"]["exempt_emit"] = "why"  # it emits
     errs = seam.check(inp)
     assert any("'prime' both names reads_now and is exempt" in e for e in errs)

@@ -115,6 +115,16 @@ gates) and closes the act: 1 = the reply was stored. Dropping the concern lets i
 delivered). A concern taken on does not fade while its run is open; one never taken on ages out at its horizon. Own
 Redis key (orion:prime:intentions). Flag off: no move, no frame section, nothing watched.
 
+Orion's now (integration design Part A, patch 3; docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md):
+each thought reads GET /temporal-self/now?organ=prime&since=<last thought time> on durable-runs (the experiences of
+other organs since Prime last thought, at most 12) into the frame section WHAT YOUR ORGANS LIVED SINCE YOUR LAST
+THOUGHT, and keeps the returned ``shown_id``. At the thought's close, the experiences it cited (``refs`` of kind
+``experience``, only ones the frame showed, at most 3) go to POST /temporal-self/now/use with that ``shown_id``;
+durable-runs checks them again and stores the valid ones (``experience_use``). The now off (404,
+TEMPORAL_SELF_NOW_ENABLED=false on durable-runs) or unreachable: no section, nothing cited, the thought goes on.
+A failed use POST is logged and never fails the thought. Curiosity's recent runs reach the frame through the now;
+the dashboard read (/curiosity/api/runs) is only for settling Prime's questions.
+
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
 ``run_mind`` never waits on this loop: every blocking call runs in a worker thread.
 """
@@ -126,6 +136,7 @@ import functools
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import deque
 from datetime import datetime, timedelta
@@ -215,6 +226,8 @@ from orion.prime.thought import (
     build_frame,
     event_ids,
     parse_answer,
+    shown_experience_ids,
+    shows_now,
     shows_organ_replies,
     summary_note,
     woke_note,
@@ -256,14 +269,23 @@ FAMILY = "prime"
 PRODUCER = "orion-mind.prime"
 HTTP_TIMEOUT_SEC = 4.0
 # Hub's curiosity dashboard (/curiosity/api/runs) builds runs, stores and reach-outs and took 4-44 s live
-# (#3366); the frame and settling read it with this longer timeout (PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC).
-# The move check never waits on it: it reads PENDING_FOCUS_PATH with HTTP_TIMEOUT_SEC.
+# (#3366); settling reads it with this longer timeout (PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC). The frame does not
+# read it (integration patch 3: curiosity's runs arrive through the now), and the move check reads
+# PENDING_FOCUS_PATH with HTTP_TIMEOUT_SEC.
 CURIOSITY_DASHBOARD_TIMEOUT_SEC = 30.0
 # Hub gathers the day before it answers an order (read-only SQL, seconds); a timed-out order is re-sent and Hub
 # answers ``exists`` for a run it already submitted.
 ORDER_HTTP_TIMEOUT_SEC = 45.0
 FOCUS_RPC_TIMEOUT_SEC = 10.0
 CURIOSITY_RUNS_DAYS = 4  # covers a nomination's whole horizon (48 h focus TTL + 24 h run)
+# Orion's now (integration patch 3). durable-runs cuts each read this far before its clock (NOW_COMMIT_MARGIN_SEC in
+# services/orion-durable-runs/app/main.py), so the read for the last thought covered events up to about (that
+# thought's start - 120 s). Reading from there again leaves no gap; the overlap is a few seconds.
+NOW_PATH = "/temporal-self/now"
+NOW_USE_PATH = "/temporal-self/now/use"
+NOW_ORGAN = "prime"
+NOW_SINCE_MARGIN_SEC = 120.0
+NOW_USE_TIMEOUT_SEC = 10.0
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
 REGULATE_SETTLE_LAG_SEC = 120.0
 # Hand-back signals queued between ticks (a tick drains them). Hops of sessions that are not handed back never
@@ -348,6 +370,8 @@ class PrimeRuntime(MindLoopRuntime):
         self._turn_inbox: deque[TurnSignalV1] = deque(maxlen=TURN_INBOX_MAX)
         self._turn_hops_dropped = 0
         self._listener: Optional[asyncio.Task] = None
+        # The thought being built (set by _new_thought_id, read by _ask for the now's run_ref).
+        self._thought_id: Optional[str] = None
 
     # --- turn hand-back (living Prime design, Part 2) ----------------------------------------
     def _handback_on(self) -> bool:
@@ -529,7 +553,9 @@ class PrimeRuntime(MindLoopRuntime):
         return woke_note(list(self.state.pending_changes))
 
     def _new_thought_id(self) -> str:
-        return new_id()
+        # The runtime makes the id just before _ask; the now read names the thought it is for (run_ref).
+        self._thought_id = new_id()
+        return self._thought_id
 
     def _parse_answer(self, parsed: Optional[dict[str, Any]]) -> tuple[Any, Optional[str]]:
         return parse_answer(parsed)
@@ -988,11 +1014,11 @@ class PrimeRuntime(MindLoopRuntime):
 
     async def _ask(self, inputs: FrameInputs, now: datetime) -> ModelReply:
         """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
-        # The move check depends on the cheap pending-focus read, never on the dashboard (#3366). Both reads run
-        # at once, so the funded window waits for the slower one only (the dashboard, up to its own timeout).
-        (focus_pending, focus_unread), (curiosity, curiosity_err) = await asyncio.gather(
-            self._read_pending_focus(inputs), self._read_curiosity())
-        inputs.curiosity, inputs.curiosity_error, inputs.now = curiosity, curiosity_err, now
+        # The move check depends on the cheap pending-focus read (#3366). Curiosity's runs arrive through the now
+        # (integration patch 3): the frame no longer reads Hub's curiosity dashboard. Both reads run at once.
+        (focus_pending, focus_unread), orion_now = await asyncio.gather(
+            self._read_pending_focus(inputs), self._read_now())
+        inputs.orion_now, inputs.now = orion_now, now
         # Once per thought, never per tick: the report takes ~1.5 s to build.
         inputs.energy, inputs.energy_error = await self._read(
             f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}/physiology/report")
@@ -1017,8 +1043,10 @@ class PrimeRuntime(MindLoopRuntime):
         shown = shown_concerns(self.state.concerns)
         reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
                                                     organ_replies=shows_organ_replies(inputs),
-                                                    take_on=inputs.take_on), frame)
-        reply.context.update(curiosity=curiosity, focus_pending=focus_pending, focus_unread=focus_unread,
+                                                    take_on=inputs.take_on, experiences=shows_now(inputs)), frame)
+        reply.context.update(focus_pending=focus_pending, focus_unread=focus_unread,
+                             now_shown_id=(orion_now or {}).get("shown_id"),
+                             now_event_ids=shown_experience_ids(inputs),
                              receptors=receptors, shown_concerns=shown,
                              ranked_event_ids=event_ids(inputs) if inputs.event_mode else [],
                              event_families=event_families(inputs.events) if inputs.event_mode else {},
@@ -1112,8 +1140,57 @@ class PrimeRuntime(MindLoopRuntime):
         return (sorted(n for n, p in prices.items() if isinstance(p, dict) and p.get("bind_state") == "binding")
                 if isinstance(prices, dict) else None)
 
+    async def _read_now(self) -> Optional[dict[str, Any]]:
+        """Orion's now for Prime (GET /temporal-self/now?organ=prime&since=...): the other organs' experiences since
+        the last thought. None when it is off (404), unreachable or malformed: the frame has no section and the
+        thought goes on (logged). Every successful read is stored by durable-runs as an experience_shown row."""
+        base = self.s.PRIME_DURABLE_RUNS_URL.rstrip("/")
+        params: dict[str, str] = {"organ": NOW_ORGAN}
+        last = self.state.last_thought_at
+        if last is not None:
+            params["since"] = (last - timedelta(seconds=NOW_SINCE_MARGIN_SEC)).isoformat()
+        if self._thought_id:
+            params["run_ref"] = f"{PRIME_IDENTITY.thought_ref}{self._thought_id}"
+        url = f"{base}{NOW_PATH}?{urllib.parse.urlencode(params)}"
+        try:
+            data = await asyncio.to_thread(self.get_json, url)
+        except Exception as exc:  # noqa: BLE001 -- the now never fails a thought
+            if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+                logger.info("prime_now_unread reason=off url=%s", url)  # TEMPORAL_SELF_NOW_ENABLED=false
+            else:
+                logger.warning("prime_now_unread reason=%s: %s url=%s", type(exc).__name__, str(exc)[:120], url)
+            return None
+        if not isinstance(data, dict) or not data.get("shown_id") or not isinstance(data.get("items"), list):
+            logger.warning("prime_now_unread reason=not_a_now_payload url=%s", url)
+            return None
+        logger.info("prime_now_read shown_id=%s items=%d candidates=%s", data["shown_id"], len(data["items"]),
+                    data.get("candidates"))
+        return data
+
+    async def _record_now_use(self, *, shown_id: Optional[str], cites: list[str], thought_id: str) -> str:
+        """POST the thought's experience cites (already only shown ones, at most 3) with the now's shown_id.
+        Returns the outcome for the log. A failure is logged, never raised: the thought already happened."""
+        if not shown_id or not cites:
+            return "none"
+        url = f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}{NOW_USE_PATH}"
+        body = {"shown_id": shown_id, "citing_ref": f"{PRIME_IDENTITY.thought_ref}{thought_id}", "cites": list(cites)}
+        try:
+            res = await asyncio.wait_for(asyncio.to_thread(self.post_json, url, body), timeout=NOW_USE_TIMEOUT_SEC)
+        except Exception as exc:  # noqa: BLE001 -- never fails the thought
+            logger.warning("prime_now_use_failed thought=%s shown_id=%s cites=%d err=%s: %s", thought_id, shown_id,
+                           len(cites), type(exc).__name__, str(exc)[:160])
+            return "failed"
+        uses = (res or {}).get("uses") if isinstance(res, dict) else None
+        stored = len(uses) if isinstance(uses, list) else 0
+        rejected = (len((res or {}).get("rejected_not_shown") or []) + len((res or {}).get("rejected_over_cap") or [])
+                    if isinstance(res, dict) else 0)
+        logger.info("prime_now_use thought=%s shown_id=%s cited=%s stored=%d rejected=%d", thought_id, shown_id,
+                    ",".join(cites), stored, rejected)
+        return f"stored {stored}/{len(cites)}"
+
     async def _read_curiosity(self) -> tuple[Optional[dict[str, Any]], Optional[str]]:
-        """Hub's curiosity dashboard (runs, schedule) for the frame and settling, with the long timeout."""
+        """Hub's curiosity dashboard (runs) for settling Prime's questions, with the long timeout. Not read for the
+        frame (integration patch 3: curiosity's runs arrive through the now)."""
         base = self.s.PRIME_HUB_URL.rstrip("/")
         url = f"{base}/curiosity/api/runs?days={CURIOSITY_RUNS_DAYS}&line=investigate"
         try:
@@ -1260,7 +1337,8 @@ class PrimeRuntime(MindLoopRuntime):
                                focus_unread=reply.context.get("focus_unread"),
                                receptors=receptors, event_ids=event_ids(inputs) if inputs.event_mode else None,
                                event_wants=listed_wants(inputs.events) if inputs.event_mode else None,
-                               take_on_check=self._take_on_check(now) if self._intentions_on() else None)
+                               take_on_check=self._take_on_check(now) if self._intentions_on() else None,
+                               shown_experience=reply.context.get("now_event_ids"))
         if inputs.event_mode:
             new = set(applied.added)
             for c in applied.state.concerns:
@@ -1292,8 +1370,11 @@ class PrimeRuntime(MindLoopRuntime):
         # After the move: the pick is Orion's choice whether the move was sent, held back or refused.
         choice = await self._publish_choice(act=act, thought_id=thought_id, inputs=inputs, now=now, reply=reply,
                                             answer=answer)
-        logger.info("prime_thought thought=%s route=%s choice=%s %s reading=%r", thought_id, reply.route, choice,
-                    note, answer.reading[:200])
+        # At the thought's close: what it used from the now (never fails the thought).
+        use = await self._record_now_use(shown_id=reply.context.get("now_shown_id"), cites=applied.experience_cites,
+                                         thought_id=thought_id)
+        logger.info("prime_thought thought=%s route=%s choice=%s now_use=%s %s reading=%r", thought_id, reply.route,
+                    choice, use, note, answer.reading[:200])
         return True, note
 
     async def _unresolved(self, refs: list[RefV1]) -> list[str]:

@@ -133,6 +133,14 @@ the set of binding body constraints changing (since 2026-11-04) are **not** chan
 but neither wakes Prime. Both drove concern churn (attention: 22 of 38 drops said "attention has moved"; binding, live
 11-03: 26 thoughts in 12 h, 21 did nothing, all 4 drops said "lane X is no longer binding"). Replayed on live data the
 rate is about 5 thoughts a day. Every thought's act note starts with `woke: <what woke it>`.
+**Orion's now (integration patch 3).** Each thought reads durable-runs `GET /temporal-self/now?organ=prime&since=<last
+thought - 120 s>` into the frame section WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT (at most 12 experiences of other
+organs, each with `[experience:<id>]`, salience, refs). Prime cites what it used with `refs: [{"kind": "experience",
+"id": ...}]`; at the thought's close the shown cites (at most 3) go to `POST /temporal-self/now/use` with the read's
+`shown_id`. The now off (404, `TEMPORAL_SELF_NOW_ENABLED=false` on durable-runs) or unreachable: no section, and the
+thought goes on. A failed use POST is logged (`prime_now_use_failed`), never a failed thought. Logs: `prime_now_read`,
+`prime_now_unread`, `prime_now_use`. The frame no longer reads Hub's curiosity dashboard; curiosity's runs arrive
+through the now (settling still reads it).
 If something changed, the refractory interval has passed and no Juniper turn is running, Prime bids in the body
 economy (family `prime`, Tier 1, lane `chat`) and **obeys the answer**: funded thinks, and so does a `capacity_reserved` deferral with a positive net (the lane is full
 but the thought is worth its price; it queues at the GPU pool). Any other deferral, or no answer, waits.
@@ -268,7 +276,7 @@ for slack by design.
 | `PRIME_HOLDBACK_FRACTION` | `0.2` | narrator arm share |
 | `PRIME_DURABLE_RUNS_URL` | `http://orion-athena-durable-runs:8121` | body + attention |
 | `PRIME_HUB_URL` | `http://100.92.216.81:8080` | curiosity runs + pending focus |
-| `PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC` | `30` | timeout for the curiosity dashboard read (frame, settling); the move check reads `/curiosity/api/focus/pending` with 4 s (#3366) |
+| `PRIME_CURIOSITY_DASHBOARD_TIMEOUT_SEC` | `30` | timeout for the curiosity dashboard read (settling only); the move check reads `/curiosity/api/focus/pending` with 4 s (#3366) |
 | `PRIME_REGULATE_ENABLED` | `true` | offer the regulate move; off = not offered, answers using it refused (open signals still graded) |
 | `PRIME_FAMILIES_PATH` | `/repo/config/physiology/families.yaml` | where Prime reads the receptors (read-only repo mount) |
 

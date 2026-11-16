@@ -31,6 +31,12 @@ would send to the model and checks it is something a mind could act on honestly:
                covers that.
 * starved_try  -- after a try that never reached the model, the next frame says so in Prime's own outcome
                lines, and that line is not a change (it cannot wake Prime by itself).
+* now          -- (integration patch 3) a full now (12 items, TemporalNowV1-valid, labels at the 200-char cap) adds
+               the WHAT YOUR ORGANS LIVED section with every item's [experience:<id>], the frame stays under the
+               cap, the dashboard's runs are not in the frame, and apply_answer keeps only shown cites, at most 3.
+
+Since integration patch 3 the frame does not read the curiosity dashboard; the fixture's dashboard copy still feeds
+``settles`` (settling reads it) and its pending_focus page stands in for the cheap read (same shape).
 
 Run: ``PYTHONPATH=. python orion/prime/evals/run_prime_frame_eval.py`` (exit 1 on any failed check).
 """
@@ -62,7 +68,10 @@ def _inputs(data: dict, **errors) -> FrameInputs:
         now=now,
         body=None if "body_error" in errors else data["body"], body_error=errors.get("body_error"),
         temporal=temporal, temporal_error=errors.get("temporal_error"),
-        curiosity=None if "curiosity_error" in errors else data["curiosity"], curiosity_error=errors.get("curiosity_error"),
+        pending_focus_read="pending_focus_error" not in errors,
+        pending_focus=None if "pending_focus_error" in errors else (
+            data["curiosity"]["schedule"].get("pending_focus") or {}).get("focus"),
+        pending_focus_error=errors.get("pending_focus_error"),
         arc_ids=arc_ids,
     )
 
@@ -84,8 +93,9 @@ def run() -> list[tuple[str, bool, str]]:
                     "no None/nan in the frame"))
 
     gaps = build_frame(state, _inputs(data, body_error="URLError: refused", temporal_error="timeout",
-                                       curiosity_error="HTTPError 502"))
-    ok = all(f"(unavailable: {e})" in gaps for e in ("URLError: refused", "timeout", "HTTPError 502"))
+                                       pending_focus_error="HTTPError 502"))
+    ok = (all(f"(unavailable: {e})" in gaps for e in ("URLError: refused", "timeout"))
+          and "(whether a focus is waiting for the next run is unknown: HTTPError 502)" in gaps)
     results.append(("honest_gaps", ok, "every failed read is a named gap"))
 
     runs = data["curiosity"]["runs"]
@@ -180,7 +190,7 @@ def run() -> list[tuple[str, bool, str]]:
     # focus_read_split (#3366): the dashboard timed out every thought on 11-14; the cheap read decides now.
     live_page = data["curiosity"]["schedule"]["pending_focus"]  # GET /curiosity/api/focus/pending has this shape
     waiting = {"origin": "juniper", "question": "what heats the closet at night?"}
-    down = dict(curiosity_error="TimeoutError: timed out")
+    down: dict = {}  # the dashboard is not read for the frame any more (integration patch 3)
     split_ok, split_why = True, []
     for page_focus, unread, expect_sent in ((live_page["focus"], None, True), (waiting, None, False),
                                             (None, "Hub did not answer in 4 s", False)):
@@ -193,8 +203,7 @@ def run() -> list[tuple[str, bool, str]]:
             fp, why = page_focus is not None, None
         f = build_frame(state, inp)
         a = apply_answer(state, move, now=inp.now, arc_ids=inp.arc_ids, focus_pending=fp, focus_unread=why)
-        shown = ("(unavailable: TimeoutError: timed out)" in f
-                 and (not page_focus or "what heats the closet at night?" in f)
+        shown = ((not page_focus or "what heats the closet at night?" in f)
                  and (not unread or f"is unknown: {unread}" in f))
         ok = (a.move is not None) == expect_sent and shown and (not unread or "timed out" in (a.move_refusal or ""))
         split_ok &= ok
@@ -210,7 +219,37 @@ def run() -> list[tuple[str, bool, str]]:
     s_frame = build_frame(starved, _inputs(data))
     results.append(("starved_try", line in s_frame and starved.pending_changes == ["quiet: nothing has woken me for 6 hours"]
                     and len(s_frame) <= FRAME_CHAR_CAP, "the no-seat line is shown, and is not a change"))
+    results.append(_now_check(state, data))
     return results
+
+
+def _now_check(state: PrimeStateV1, data: dict) -> tuple[str, bool, str]:
+    """A full now in the frame (integration patch 3), built through the real contract (TemporalNowV1)."""
+    from orion.schemas.temporal_self import NOW_LABEL_MAX, NOW_MAX_ITEMS, TemporalNowV1
+
+    inputs = _inputs(data)
+    kinds = ["reading_turn", "curiosity_run", "vision_percept", "prediction_surprise", "reverie_chain", "street_event"]
+    organs = ["reading", "curiosity", "camera", "prediction", "reverie", "street"]
+    items = [{"event_id": f"{kinds[i % 6]}:cortex-{i:02d}-8580502e-e6ac-5b06-90c9-0f244b9d51ab", "organ": organs[i % 6],
+              "source_kind": kinds[i % 6], "label": ("x" * NOW_LABEL_MAX), "related_refs": [f"act:act_{i:032x}"] * 8,
+              "occurred_at": (inputs.now - timedelta(minutes=5 * i)).isoformat(), "salience": round(1 - i / 20, 2),
+              "surprise_nats": 3.25 if i % 6 == 3 else None} for i in range(NOW_MAX_ITEMS)]
+    now = TemporalNowV1.model_validate({"shown_id": "eval-shown", "reader_organ": "prime", "since": inputs.now.isoformat(),
+                                        "as_of": inputs.now.isoformat(), "items": items, "candidates": 40,
+                                        "dropped_by_organ_cap": 20, "dropped_by_total_cap": 8}).model_dump(mode="json")
+    inputs.orion_now = now
+    frame = build_frame(state, inputs)
+    ids = [i["event_id"] for i in now["items"]]
+    runs = [r.get("run_id") for r in data["curiosity"]["runs"] if r.get("run_id")]
+    shown_all = all(f"[experience:{e}]" in frame for e in ids)
+    answer = PrimeAnswerV1.model_validate({"reading": "r", "refs": [{"kind": "experience", "id": e}
+                                                                    for e in ["not:shown", *ids[:5]]]})
+    applied = apply_answer(state, answer, now=inputs.now, arc_ids=inputs.arc_ids, focus_pending=False,
+                           shown_experience=ids)
+    ok = (shown_all and len(frame) <= FRAME_CHAR_CAP and "(28 more were recorded and not shown" in frame
+          and not any(f"run {r}" in frame for r in runs) and applied.experience_cites == ids[:3])
+    return ("now", ok, f"{len(frame)} chars (cap {FRAME_CHAR_CAP}); 12 ids shown={shown_all}; "
+                       f"cites kept {len(applied.experience_cites)} of 6 (1 not shown, cap 3)")
 
 
 def main() -> int:

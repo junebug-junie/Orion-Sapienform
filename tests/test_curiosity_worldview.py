@@ -1598,11 +1598,10 @@ def test_prompt_forms_a_prior_with_merge_not_create():
     """A CREATE here forks the node on every repeat; MERGE binds the existing one."""
     text = "\n".join(_write_section(own_graph="orion_worldview", run_id="RID", max_hops=3))
     assert 'MERGE (p:Prior {prior_id: "<something unique>"})' in text
-    # `CREATE (:Prior {` exactly -- `CREATE (:PriorRevision {` is correct and
-    # must stay: a revision is an append-only record of a claim MOVING, so a
-    # second one is a second real event, not a fork of an identity.
     assert "CREATE (:Prior {" not in text
-    assert "CREATE (:PriorRevision {" in text
+    # A revision MERGEs on the whole move (#3395): a replay folds, a second
+    # real move in the same run does not.
+    assert "MERGE (v:PriorRevision {" in text
 
 
 def test_prompt_sets_prior_properties_only_ON_CREATE():
@@ -1639,8 +1638,7 @@ def test_prompt_never_creates_a_prior_node_under_any_variable():
 
     text = "\n".join(_write_section(own_graph="orion_worldview", run_id="RID", max_hops=3))
     assert re.search(r"CREATE\s*\(\s*\w*\s*:Prior\s*\{", text) is None
-    # A revision is an append-only record of a claim MOVING; it stays a CREATE.
-    assert "CREATE (:PriorRevision {" in text
+    assert re.search(r"CREATE\s*\(\s*\w*\s*:(PriorRevision|Finding)\s*\{", text) is None
 
 
 def test_prompt_warns_that_a_bound_merge_writes_nothing():
@@ -1938,3 +1936,51 @@ def test_head_ids_skip_stale_unknown_and_duplicate_ids_and_never_exceed_the_orde
     assert ids[:6] == ["p09", "p08", "p07", "p06", "p05", "p04"]  # capped at sample - coverage
     assert "p19" not in ids[:6]
     assert len(set(ids)) == len(ids) == 8
+
+
+# --- #3395 Patch F: worldview writes that are safe to repeat ------------------
+
+
+def _taught() -> str:
+    return "\n".join(_write_section(own_graph="orion_worldview", run_id="RID", max_hops=3))
+
+
+def test_prompt_merges_a_finding_on_finding_id_alone():
+    text = _taught()
+    assert 'MERGE (f:Finding {finding_id: "<something unique>"})' in text
+    at = text.index("MERGE (f:Finding")
+    assert "ON CREATE SET f.text" in text[at:at + 300]
+    assert "new finding is lost" in text
+
+
+def test_prompt_merges_a_revision_on_the_whole_move():
+    text = _taught()
+    at = text.index("MERGE (v:PriorRevision {")
+    key = text[at:text.index("})", at)]
+    for prop in ("prior_id", "run_id", "from_confidence", "to_confidence", "from_status", "to_status"):
+        assert prop in key, prop
+    assert "written_at" not in key
+    assert "ON CREATE SET v.written_at = timestamp()" in text
+
+
+def test_prompt_counts_a_test_once_per_run_in_one_command():
+    """Update, count and last_run_id in ONE command (#3395 follow-up, Orion Q1):
+    attention_schema, consult, atlas and value read last_run_id as "this run
+    tested it", so the count must move in the same write or they split."""
+    text = _taught()
+    assert "last_counted_run_id" not in text
+    assert "p.times_tested = p.times_tested + 1" not in text
+    lines = text.splitlines()
+    at = next(i for i, line in enumerate(lines) if 'MATCH (p:Prior {prior_id: "..."}) SET' in line)
+    cmd = " ".join(lines[at:at + 3])
+    assert 'CASE WHEN coalesce(p.last_run_id, "") <> "<RUN_ID>" THEN 1 ELSE 0 END' in cmd
+    assert 'p.last_run_id = "<RUN_ID>"' in cmd and "p.confidence" in cmd
+    assert "counts RUNS" in text
+
+
+def test_prompt_forbids_empty_or_placeholder_ids_and_explains_partial_batches():
+    text = _taught()
+    assert "AN ID IS NEVER EMPTY AND NEVER A PLACEHOLDER" in text
+    assert "<RUN_ID>-why-x-fails" in text
+    assert "read the output, not the exit code" in text
+    assert "unique constraint violation on node of type Prior" in text

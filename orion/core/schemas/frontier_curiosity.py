@@ -11,11 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer
 from orion.core.schemas.cognitive_substrate import SubstrateAnchorScopeV1
 from orion.core.schemas.frontier_expansion import FrontierExpansionRequestV1, FrontierTargetZoneV1, FrontierTaskTypeV1
 
+# concept_instability, contradiction_hotspot and unresolved_pressure_region were
+# retired 2026-11-16 with their producer branches (#3393, Patch F).
 FrontierInvocationSignalTypeV1 = Literal[
-    "concept_instability",
-    "contradiction_hotspot",
     "evidence_gap_cluster",
-    "unresolved_pressure_region",
     "explicit_operator_request",
     "curiosity_candidate",
     "world_coverage_gap",
@@ -106,7 +105,12 @@ class FrontierInvocationPlanV1(BaseModel):
     selected_node_refs: List[str] = Field(default_factory=list, max_length=32)
     selected_edge_refs: List[str] = Field(default_factory=list, max_length=64)
     selected_evidence_refs: List[str] = Field(default_factory=list, max_length=128)
-    selected_graph_cognition_refs: List[str] = Field(default_factory=list, max_length=16)
+    selected_graph_cognition_refs: List[str] = Field(
+        default_factory=list,
+        description="RETIRED 2026-11-16 (#3393, PR #3522): always empty. It named the GraphCognitionReportV1 / "
+        "MetacogPerceptionBriefV1 inputs; the package that built them is deleted. Empty means retired, not quiet. "
+        "Kept only so stored rows still validate.",
+        max_length=16)
     task_type: FrontierTaskTypeV1
     target_zone: FrontierTargetZoneV1
     expected_safety_posture: str

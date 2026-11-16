@@ -1,12 +1,49 @@
 {
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
-  "metric_count": 788,
+  "metric_count": 749,
   "_last_change": {
-    "change_count": 2,
-    "high_severity_count": 1,
+    "change_count": 39,
+    "high_severity_count": 39,
     "changes": [
-      "high   removed metric://bus_channel/orion-hub/orion:self_concept:history:write",
-      "medium added metric://bus_channel/orion-durable-runs/orion:self_concept:history:write"
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#assistant_accountability_demand",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#coherence",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#coherence_gap",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#confidence",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#explicit_repair_command",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#goal_pressure",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#level",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#operational_block",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#repetition_failure",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#specificity_demand",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#tension",
+      "high   removed metric://organ_signal/graph_cognition/coherence_state#trust_rupture",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#assistant_accountability_demand",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#coherence",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#coherence_gap",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#confidence",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#explicit_repair_command",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#goal_pressure",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#level",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#operational_block",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#repetition_failure",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#specificity_demand",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#tension",
+      "high   removed metric://organ_signal/graph_cognition/goal_pressure#trust_rupture",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#assistant_accountability_demand",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#coherence",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#coherence_gap",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#confidence",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#explicit_repair_command",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#goal_pressure",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#level",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#operational_block",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#repetition_failure",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#specificity_demand",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#tension",
+      "high   removed metric://organ_signal/graph_cognition/metacog_perception#trust_rupture",
+      "high   removed metric://organ_signal/graph_cognition/repair_pressure#coherence",
+      "high   removed metric://organ_signal/graph_cognition/repair_pressure#goal_pressure",
+      "high   removed metric://organ_signal/graph_cognition/repair_pressure#tension"
     ]
   },
   "definitions": {
@@ -6632,266 +6669,7 @@
       "notes": "organ=equilibrium class=hybrid",
       "registry_source": "orion/signals/registry.py"
     },
-    "metric://organ_signal/graph_cognition/coherence_state#assistant_accountability_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#coherence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#coherence_gap": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#confidence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#explicit_repair_command": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#goal_pressure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#level": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#operational_block": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#repetition_failure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#specificity_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#tension": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/coherence_state#trust_rupture": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#assistant_accountability_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#coherence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#coherence_gap": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#confidence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#explicit_repair_command": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#goal_pressure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#level": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#operational_block": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#repetition_failure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#specificity_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#tension": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/goal_pressure#trust_rupture": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#assistant_accountability_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#coherence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#coherence_gap": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#confidence": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#explicit_repair_command": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#goal_pressure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#level": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#operational_block": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#repetition_failure": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#specificity_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#tension": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/metacog_perception#trust_rupture": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
     "metric://organ_signal/graph_cognition/repair_pressure#assistant_accountability_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/repair_pressure#coherence": {
       "upstream_organs": [
         "social_memory"
       ],
@@ -6913,13 +6691,6 @@
       "registry_source": "orion/signals/registry.py"
     },
     "metric://organ_signal/graph_cognition/repair_pressure#explicit_repair_command": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/repair_pressure#goal_pressure": {
       "upstream_organs": [
         "social_memory"
       ],
@@ -6948,13 +6719,6 @@
       "registry_source": "orion/signals/registry.py"
     },
     "metric://organ_signal/graph_cognition/repair_pressure#specificity_demand": {
-      "upstream_organs": [
-        "social_memory"
-      ],
-      "notes": "organ=graph_cognition class=endogenous",
-      "registry_source": "orion/signals/registry.py"
-    },
-    "metric://organ_signal/graph_cognition/repair_pressure#tension": {
       "upstream_organs": [
         "social_memory"
       ],

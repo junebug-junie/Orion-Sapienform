@@ -1,6 +1,6 @@
 # Patch F proposal: the curiosity tick's "calm" stub (#3393)
 
-Status: proposal, no code. Refs #3393. Parent spec:
+Status: APPROVED by Juniper 2026-11-16 and built in branch `feat/day-letter-patch-f` (see "Orion's questions" at the end). Refs #3393. Parent spec:
 `docs/superpowers/specs/2026-11-15-day-letter-findings-fix-design.md` (Patch F).
 All references read on `origin/main` at `b6eeb36f0`. Live reads taken 2026-11-15 23:50Z.
 
@@ -139,3 +139,55 @@ prove nothing. Use these:
 - The node count of the tick's in-memory graph copy under #3455.
 - How often drift would have read "active" in the past. I measured one moment. The formula
   says it is active whenever 4 or more of Orion's own nodes were refreshed in 24 hours.
+
+## Orion's questions (2026-11-16) and what changed
+
+Orion asked six questions about this proposal (turn `a13c8dc3c334`). Answers, with the
+change each one made:
+
+1. **Which graph gave the drift number?** My replay of the full FalkorDB graph. The tick
+   never computed drift: it passed the hardcoded stub, so it built no view and had no node
+   count. Its store is the runtime's in-memory cache (`falkor_store.py:1336-1362`), which
+   held only this process's own writes while #3455 failed. FalkorDB was restarted 11-16
+   09:11Z and reloads now decode 15,569/15,569 nodes. The cache size at 23:50Z is UNVERIFIED.
+2. **Is drift monotone in node count?** Yes. With every viewed node fresh, churn
+   (`features.py:118`) equals the node count, so the score is `0.35 + 0.25*min(1, n/20)`. It
+   rises with size and saturates at 0.60 at 20 fresh nodes, below the `max_nodes` cap. More
+   reason to delete, not wire.
+3. **Un-fed or impossible?** Both, for this store. `FalkorSubstrateStore` refuses any kind
+   outside `DURABLE_NODE_KINDS` at write time, before its cache (`falkor_store.py:1011`), so
+   the cache cannot be richer than the durable graph. The other producers have no live
+   caller: `emit_contradiction` (`orion/autonomy/substrate_emit.py:56`) is called only from
+   tests and makes a molecule, not a graph node; `map_concept_delta_to_substrate`
+   (`adapters/concept_induction.py:187`) is exported but never called. **Changed:** the
+   delete-site comment names the whitelist (`falkor_codec.py:183`) as what a future producer
+   must widen.
+4. **Consolidation.** Confirmed: the only live `consolidate()` caller
+   (`review_runtime.py:93`) passes no report. **Changed:** the patch also deletes
+   `consolidation.py:383` (goal-pressure `maintain_priority`) and the whole
+   `orion/graph_cognition` package, plus the now-unused `SubstrateQueryPlanner.graph_view_basis`.
+5. **Positive evidence of no other caller.** `git grep` over all files: the evaluator is
+   built only at `worker.py:4739`; `FrontierCuriosityOrchestrator` and `cognition_report=`
+   appear only in tests. After the patch the arguments do not exist, so a hidden caller fails
+   with `TypeError`, not silently. The tick test now binds the worker's real call kwargs
+   against the real `evaluate` signature.
+6. **Is a contradiction producer on the roadmap?** No open issue plans one
+   (`gh issue list --search contradiction`). The comment at the delete site, the retired
+   signal types (removed from `FrontierInvocationSignalTypeV1`), and a test that they stay
+   out of the contract constrain the next one: it must ship its own consumer and test.
+
+**Follow-ups (2026-11-16):** Hub's `/api/substrate/hotspots` no longer serializes an empty
+`contradiction_hotspots` slice; it says the store cannot hold them. Deferred tickets:
+#3544 (contradiction node kind: producer or retire the region query), #3545 (tick failure
+has no dead-man signal), #3542 (signals organ `graph_cognition` declares 3 kinds nothing
+produces; not this package, needs Juniper).
+
+**Signals organ (Orion's PR question 1):** the `graph_cognition` organ id in
+`orion/signals/registry.py` is historical; its one live signal, `repair_pressure`, comes from
+`orion/substrate/appraisal`. This PR retires the three kinds nothing produced
+(`metacog_perception`, `coherence_state`, `goal_pressure`), their dimensions, and the stub
+`GraphCognitionAdapter` (constant 0.5, no channel matched it), and comments the name. #3542
+is closed by this. Baseline for the real #3393 symptom, re-runnable:
+`python3 scripts/analysis/curiosity_target_return_days.py --days 30` (2026-11-16: 2,764
+targets, 70 on 2+ days, 97.5% one day only, 949 world-reading targets, 48 of them on 2+
+UTC days, every candidate subject_ref entity:orion).

@@ -179,16 +179,17 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
         organ_id="graph_cognition",
         organ_class=OrganClass.endogenous,
         service="orion-cortex-exec",
+        # The organ id is historical. Its one live signal, repair_pressure, comes from
+        # orion/substrate/appraisal (repair_pressure_v2 -> repair_pressure_appraisal_log, ~200
+        # rows/day live 2026-11-16), not from the orion/graph_cognition package. That package
+        # (views, features, interpreters, metacog brief) never emitted an organ signal and was
+        # deleted in PR #3522, together with the three kinds that named its report
+        # (metacog_perception, coherence_state, goal_pressure) and their dimensions
+        # (coherence, tension, goal_pressure).
         signal_kinds=[
-            "metacog_perception",
-            "coherence_state",
-            "goal_pressure",
             "repair_pressure",
         ],
         canonical_dimensions=[
-            "coherence",
-            "tension",
-            "goal_pressure",
             "confidence",
             "level",
             "specificity_demand",
@@ -207,6 +208,8 @@ ORGAN_REGISTRY: Dict[str, OrionOrganRegistryEntry] = {
             "registry parent edge to avoid a recall↔graph_cognition cycle in static DAG validation.",
             "repair_pressure is a substrate-derived appraisal emitted by orion.substrate.appraisal; "
             "see docs/plans/substrate/2026-05-23-repair-pressure-v1.md.",
+            "Name is historical: the orion/graph_cognition package was deleted in PR #3522 and never "
+            "produced this organ's signals. Do not look for it.",
         ],
     ),
     "autonomy": OrionOrganRegistryEntry(

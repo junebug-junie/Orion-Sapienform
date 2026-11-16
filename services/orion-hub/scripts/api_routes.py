@@ -4194,22 +4194,31 @@ def _graphdb_overview_payload(*, limit: int = 10) -> Dict[str, Any]:
 
 def _graphdb_hotspots_payload(*, limit: int = 20) -> Dict[str, Any]:
     hotspot = SUBSTRATE_SEMANTIC_STORE.query_hotspot_region(limit_nodes=limit, limit_edges=max(40, limit * 2))
-    contradiction = SUBSTRATE_SEMANTIC_STORE.query_contradiction_region(limit_nodes=limit, limit_edges=max(40, limit * 2))
     concept = SUBSTRATE_SEMANTIC_STORE.query_concept_region(limit_nodes=limit, limit_edges=max(40, limit * 2))
+    # The durable Falkor store refuses node_kind=contradiction, so there an empty
+    # slice would read as "no contradictions" when it means "cannot hold any" (#3393).
+    # Other backends (in-memory) can hold them and are still queried.
+    falkor = "Falkor" in store_type_name(SUBSTRATE_SEMANTIC_STORE)
+    contradiction = None if falkor else SUBSTRATE_SEMANTIC_STORE.query_contradiction_region(
+        limit_nodes=limit, limit_edges=max(40, limit * 2))
+    parts = [r for r in (hotspot, concept, contradiction) if r is not None]
 
-    degraded = bool(hotspot.degraded or contradiction.degraded or concept.degraded)
-    error = hotspot.error or contradiction.error or concept.error
+    degraded = any(r.degraded for r in parts)
+    error = next((r.error for r in parts if r.error), None)
 
     return {
         "source": {
             **_source_meta(kind=hotspot.source_kind, degraded=degraded, limit=limit, error=error),
             "query_kind": "hotspots",
             "semantic_backend": store_type_name(SUBSTRATE_SEMANTIC_STORE),
-            "truncated": bool(hotspot.truncated or contradiction.truncated or concept.truncated),
+            "truncated": any(r.truncated for r in parts),
         },
         "data": {
             "active_regions": _serialize_slice(hotspot),
-            "contradiction_hotspots": _serialize_slice(contradiction),
+            "contradiction_hotspots": _serialize_slice(contradiction) if contradiction is not None else {
+                "available": False,
+                "reason": "the durable Falkor store refuses node_kind=contradiction (falkor_codec.DURABLE_NODE_KINDS)",
+            },
             "pressure_hotspots": _serialize_slice(hotspot),
             "drift_hotspots": _serialize_slice(concept),
         },

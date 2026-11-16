@@ -1,6 +1,6 @@
 # Patch F proposal: one rule for "Orion's current answer" (#3396)
 
-Status: proposal, no code. Refs #3396. Parent spec:
+Status: APPROVED by Juniper 2026-11-16 (question 1: no) and built in branch `feat/day-letter-patch-f`. Refs #3396. Parent spec:
 `docs/superpowers/specs/2026-11-15-day-letter-findings-fix-design.md` (Patch F).
 All references read on `origin/main` at `b6eeb36f0`. Live reads taken 2026-11-15 23:58Z.
 
@@ -123,3 +123,38 @@ The spec said "every reader returns one answer". Four readers want history on pu
   (`lived.self_monitor.act.actions.journal.make.walkway_day.broken.20261113T0757Z`). I did
   not trace why the mirror lags.
 - Why 4 questions have no mirror row.
+
+## Orion's questions (2026-11-16) and what changed
+
+7. **One helper or three rules?** One helper with a flag:
+   `newest_answer_per_question(answers, require_evidence=False|True)` in
+   `orion/curiosity/self_inquiry.py`. The prompt reader uses `False` (newest of any, because
+   it fills `revises`). Resonance uses `True` (newest with evidence, else newest of any). The
+   mirror is a writer rule, not a reader: it never stores an evidence-less answer, so its
+   readers see the same answer `True` picks whenever the question has an evidence-backed
+   one. The day letter does not say what Orion "currently believes": it shows the answer each
+   run wrote (`orion/orion_day/budget.py:168`), which is history and stays.
+8. **Do the 57 evidence-less answers cluster in dead runs?** No. 49 come from runs that
+   completed, 6 from failed runs, 2 have no run row (`fct_curiosity_runs` join). Failed runs
+   are nearly always evidence-less (6 of 7), but they are a small share. So it is not mainly a
+   crash on the writer side, and a writer fix would not remove most of them. Writer changes
+   stay a non-goal.
+9. **Missing `written_at`?** 0 of 273 answers lack it today. The helper keeps
+   `written_at or 0` on purpose (an undated answer sorts as oldest) and a test covers it.
+10. **Expected rows and the exact check.** Baseline: 32 lived-answer candidates in 4 days.
+    The pool now holds one answer per question (69, not 273), so expect about 5-10 in 3 days;
+    under 5, extend to 7 days. The check is point-in-time at `built_at`:
+    `python3 scripts/analysis/check_resonance_current_answers.py --since <deploy date>`.
+    On 11-01..now it prints `candidates=32 not_current=24 cited=3 cited_not_current=2`.
+11. **The verdict, not just the count.** The stored verdict (`result_json.raw`) names the
+    refs it cited. 3 of the 32 lived-answer candidates were cited; 2 of those 3 were already
+    superseded (decisions: 1 `share`, 2 `note` across the 3). So the stale pool touched 2
+    verdicts in 4 days. A re-score against the corrected pool needs a model re-run and is not
+    done here.
+
+**Built change after Orion's follow-ups (2026-11-16):** `require_evidence=True` has no
+fallback. A question whose answers are all drafts has no current answer outside the
+curiosity prompt, matching Juniper's rule and chat (which reads the mirror). Live: the 4
+questions with no mirror row each have exactly one answer, with no evidence, so chat,
+reverie and now resonance show nothing for them; the day letter still shows each run's own
+answer as that run's output. Baseline under the strict rule: 25 of 32 not current.

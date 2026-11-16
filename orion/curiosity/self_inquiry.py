@@ -62,7 +62,7 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from orion.curiosity.worldview import (
     LABEL_PRIOR,
@@ -557,6 +557,31 @@ def current_lived_answers_cypher(question_ids: list[str]) -> str:
     )
 
 
+def newest_answer_per_question(
+    answers: Iterable[LivedAnswer], *, require_evidence: bool = False,
+) -> dict[str, LivedAnswer]:
+    """question_id -> Orion's current answer. The ONE rule for "current" (#3396).
+
+    Newest by `(written_at, run_id)`; an answer with no `written_at` sorts as
+    oldest on purpose (`written_at or 0`). `require_evidence=False` is the
+    curiosity prompt's rule: the newest answer of any kind, because that is the
+    node a new answer revises. `require_evidence=True` is the rule everywhere
+    else (reading resonance; the mirror and its readers already skip
+    evidence-less drafts): the newest answer WITH evidence. A question whose
+    answers are all drafts has no current answer there -- the same as chat,
+    which reads the mirror and sees nothing for it (Juniper, 2026-11-16: an
+    answer with no evidence does not count as current outside the curiosity
+    prompt). History readers (novelty corpus, run story, footprint) must not
+    call this."""
+    ordered = sorted(answers, key=lambda a: (a.written_at or 0, a.run_id), reverse=True)
+    out: dict[str, LivedAnswer] = {}
+    for answer in ordered:
+        if require_evidence and not answer.evidence:
+            continue
+        out.setdefault(answer.question_id, answer)
+    return out
+
+
 def read_current_lived_answers(
     reader: WorldviewReader,
     question_ids: list[str],
@@ -576,15 +601,11 @@ def read_current_lived_answers(
     except WorldviewUnavailable:
         return None
     built = [a for a in (build_lived_answer(r) for r in rows) if a is not None]
-    # Sorted here as well as in Cypher: a node with no written_at sorts
-    # unpredictably in FalkorDB, and "newest" must not depend on read order.
-    built.sort(key=lambda a: (a.written_at or 0, a.run_id), reverse=True)
-    out: dict[str, LivedAnswer] = {}
-    for answer in built:
-        if exclude_run_id and answer.run_id == exclude_run_id:
-            continue
-        out.setdefault(answer.question_id, answer)
-    return out
+    # Sorted in the helper as well as in Cypher: a node with no written_at
+    # sorts unpredictably in FalkorDB, and "newest" must not depend on read order.
+    return newest_answer_per_question(
+        a for a in built if not (exclude_run_id and a.run_id == exclude_run_id)
+    )
 
 
 def lived_answers_for_run_cypher(run_id: str) -> str:

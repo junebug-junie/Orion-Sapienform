@@ -985,3 +985,29 @@ def test_cognitive_review_action_returns_safety_block(monkeypatch) -> None:
     assert payload["data"]["review_recorded"] is True
     assert payload["data"]["safety"]["production_default_unchanged"] is True
     assert payload["data"]["safety"]["apply_performed"] is False
+
+
+def test_hotspots_payload_marks_contradictions_unavailable_not_empty(monkeypatch) -> None:
+    """#3393 follow-up: the durable store cannot hold contradiction nodes, so the
+    payload must say so instead of serializing an empty slice that reads as 'none'."""
+    from types import SimpleNamespace
+
+    empty = SimpleNamespace(degraded=False, error=None, truncated=False, source_kind="falkor",
+                            slice=SimpleNamespace(nodes=[], edges=[]))
+    store = SimpleNamespace(
+        query_hotspot_region=lambda **kw: empty,
+        query_concept_region=lambda **kw: empty,
+        query_contradiction_region=lambda **kw: (_ for _ in ()).throw(AssertionError("must not be queried")),
+    )
+    monkeypatch.setattr(api_routes, "SUBSTRATE_SEMANTIC_STORE", store)
+    monkeypatch.setattr(api_routes, "_serialize_slice", lambda s: {"nodes": [], "edges": []})
+    monkeypatch.setattr(api_routes, "store_type_name", lambda s: "FalkorSubstrateStore")
+    payload = api_routes._graphdb_hotspots_payload(limit=5)
+    assert payload["data"]["contradiction_hotspots"]["available"] is False
+    assert "refuses" in payload["data"]["contradiction_hotspots"]["reason"]
+
+    # A backend that can hold contradiction nodes is still queried and serialized.
+    store.query_contradiction_region = lambda **kw: empty
+    monkeypatch.setattr(api_routes, "store_type_name", lambda s: "InMemorySubstrateGraphStore")
+    payload = api_routes._graphdb_hotspots_payload(limit=5)
+    assert payload["data"]["contradiction_hotspots"] == {"nodes": [], "edges": []}

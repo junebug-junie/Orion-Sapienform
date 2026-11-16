@@ -359,10 +359,10 @@ def format_corrections_section(corrections: Sequence[OfferedCorrection]) -> list
         lines.append("")
     if testable:
         lines += [
-            "Re-test each named prior against its correction in this run, with the testing "
-            "MATCH ... SET under WRITING TO YOUR OWN GRAPH below (p.times_tested = "
-            'p.times_tested + 1, p.last_run_id = "<RUN_ID>", and a :PriorRevision when the '
-            "confidence moves). Move confidence, or close the prior, only as far as the evidence "
+            "Re-test each named prior against its correction in this run, with the one "
+            "testing command under WRITING TO YOUR OWN GRAPH below (it updates the claim, "
+            'counts the test once per run and sets p.last_run_id = "<RUN_ID>"; add a '
+            ":PriorRevision MERGE when the confidence moves). Move confidence, or close the prior, only as far as the evidence "
             "warrants. A correction is evidence, not an override: Juniper can be wrong, and so can "
             "the you that agreed. If you test a prior and keep it, say why in your write-up. "
             "Afterwards Hub reads back which of these priors this run stamped; one you leave "

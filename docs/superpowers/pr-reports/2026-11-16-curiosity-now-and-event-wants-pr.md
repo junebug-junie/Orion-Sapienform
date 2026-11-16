@@ -131,7 +131,7 @@ scripts/safe_docker_build.sh orion-durable-runs up -d --build
 - Severity: low. Concern: no event want will post for about 3 days (live replay: 6 of 6 no_history). Expected, not a bug.
 - Severity: low. Concern: when the decision row is missing (spend log off), the shown_id lives only in this process; a durable turn in another process then records no cites (logged `reason=no_shown_id`).
 - UNVERIFIED (live): an `experience_use` row with `citing_organ = curiosity` (spec acceptance: within 48 h of deploy), and a `curiosity_event_want` log line with `outcome=`.
-- Issues: references #3435 (not fixed). Opened: ISSUES_PLACEHOLDER.
+- Issues: references #3435 (not fixed). Opened: #3502 (verify-live).
 
 ## PR link
 

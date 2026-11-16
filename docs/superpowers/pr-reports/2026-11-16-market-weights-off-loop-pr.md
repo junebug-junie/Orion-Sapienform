@@ -127,6 +127,6 @@ Run this from the clean primary `main` checkout after merge (the post-pull rebui
 
 ## PR link
 
-(see PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3529
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

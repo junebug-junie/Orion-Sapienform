@@ -10,7 +10,8 @@ The old proposal wanted to cap circe GPU3 at 120 W with a new root helper. Three
 with it, and a live check found a fourth:
 
 1. GPU3 is not a spare card. It is the `fast` lane (fast + metacog work, :8013) and it hosts Kev
-   (System One appraisal). Nine tier-1 upkeep families run only there. A cap slows all of them, and
+   (System One appraisal). Seven tier-1 upkeep families run only there, and `actions.journal` uses
+   it too (it also spans the agent lanes). A cap slows all of them, and
    the old proposal measured only heat, not that cost.
 2. Juniper decided on 11-08 that Family C actuators are the attention economy (prices, bids) and run
    caps set by a runtime override with a TTL, not env and not hardware.
@@ -129,18 +130,33 @@ receptor). A run-cap override acts on the controller's own gate, which is real.
 
 The override follows the 11-08 rules exactly:
 
+- **The knob.** The town has no session-count cap to lower. `start_block_reason` has only the daily
+  cap, the gap, the minimum session and the enabled switch (env `EMBODIMENT_TOWN_*`). So the knob is
+  an honest boolean, `hold_starts`: env value `false` (today), override value `true`. It is the
+  start gate only.
 - **Runtime, not env.** Redis key `orion:physiology:run_cap:aitown.session`, value
-  `RunCapOverrideV1` JSON `{family, knob: "max_open_sessions", value: 0, experiment_id, block_index,
+  `RunCapOverrideV1` JSON `{family, knob: "hold_starts", value: true, experiment_id, block_index,
   set_at, expires_at}`, Redis `EX` TTL 90 s, refreshed by the runner every tick (30 s). The
   controller reads override-else-env. A dead runner falls back to env within 90 s.
+- **`set_at` never moves.** It is the block's start. The runner never rewrites it on refresh. The
+  controller obeys the key only while `now - set_at <= max_hold_s`. So a runner that is alive but
+  stuck in its refresh loop still cannot hold the town longer than one block.
 - **Bounds per knob, in config.** New `config/physiology/run_cap_overrides.yaml`:
-  `aitown.session: {knob: max_open_sessions, env_value: 1, floor: 0, max_hold_s: 2400}`. An override
-  outside `[floor, env_value]`, a key with no TTL, or an `expires_at` more than `max_hold_s` past
-  `set_at` is ignored and counted (`run_cap_override_refused`), never obeyed.
-- **The override can only hold.** It never raises a cap above today's env value.
+  `aitown.session: {knob: hold_starts, env_value: false, allowed: [true], max_hold_s: 2700}`
+  (40 min block + 5 min slack). A key with no TTL, a value not in `allowed`, or `now - set_at >
+  max_hold_s` is ignored and counted (`run_cap_override_refused`), never obeyed.
+- **The override can only hold.** It never loosens any of the town's env caps.
 - **Never stops a running session.** It gates the start only (new refusal reason
-  `run_cap_override` in `orion/embodiment/town_sessions.py` `start_block_reason`, with
-  `retry_after_sec` = the key's remaining life). Stopping Orion mid-play is not part of this design.
+  `run_cap_override` in `orion/embodiment/town_sessions.py` `start_block_reason`). Its
+  `retry_after_sec` is the key's Redis TTL (90 s or less), not `expires_at`. The self-start loop
+  holds a refusal in memory without re-checking (`town_self_start.py` step 3), so a longer retry
+  would break the "town resumes within one tick" rollback. Stopping Orion mid-play is not part of
+  this design.
+- **Side effects the build must handle.** The self-start places its shadow bid before the gate, so
+  each OFF block writes a few shadow `aitown.session` wants that end blocked by `run_cap_override`.
+  The build tags them, so appetite readers do not read them as hunger. The build also confirms that
+  this refusal does not count against the town in the self-monitor track record (step 4 gate). If
+  it did, the town would be held as broken and ON blocks would be contaminated.
 
 ### The experiment is itself a tier-2 act
 
@@ -148,8 +164,12 @@ The override follows the 11-08 rules exactly:
   sign-off**), `lanes: []` (the runner holds no GPU slot; an OFF block only removes load),
   `deferrable_window_s: 2400`, no receptors.
 - Before each decision the runner bids (`orion.physiology.client.bid`, want id = the block id) and
-  **obeys**: producer `orion-prediction.experiment.binding`. Funded: take the next arm and run the block. Deferred
-  or no answer: no block; the town starts normally and nothing is logged as an arm.
+  **obeys**: producer `orion-prediction.experiment.binding`, added to `BINDING_PRODUCERS` in
+  `orion/physiology/binding.py`. Without that, the market treats the bid as shadow and Prime's charge
+  never applies. Funded: take the next arm and run the block. Deferred: no block; the town starts
+  normally and nothing is logged as an arm. **No answer: also no block.** This differs on purpose
+  from the repo's binding convention (binding producers admit on no answer, `NO_ANSWER_REASONS` in
+  `binding.py`): an experiment that cannot reach the market is the one act that should not run.
 - Honest limit: a lane-less tier-2 bid is priced only by its own family weight and any Prime charge.
   The bid makes the experiment visible in the market, the body report and Prime's view, and lets
   Prime slow it later. It is not what keeps the body safe. The stop rules below do that.
@@ -158,14 +178,25 @@ The override follows the 11-08 rules exactly:
 
 ### Blocks
 
-- **Decision point.** The runner polls the town's state (the Redis session ledger, read with the
-  pure `orion.embodiment.town_sessions.start_block_reason`) every 30 s. A decision point is a moment
-  the town is eligible to start (no open session, gap and daily cap pass, enabled) and no block is
-  open. The arms are not drawn on the spot: at run start the runner draws a balanced, seeded arm
-  sequence the way `app/causal.py` `design_switchback` already does (seed logged), re-shuffled until
-  it has no 3 OFF in a row (the play floor below), and each decision point takes the next arm. The
-  arm is logged before the key is set. The analysis permutes under the same restriction.
-- **ON block**: no key. The town's own timer (300 s tick) starts the session, normally within 5 min.
+- **Eligibility comes from the town, not from copied env.** Embodiment's `/health` gains
+  `town_start_eligible_at`. It is the controller's own answer: the end of the gap, or the next local
+  midnight after the daily cap, or `null` while a session is open, the town is disabled, or the
+  self-monitor gate holds it. The runner never re-derives the town's caps from env.
+- **No race at the decision point.** The town ticks every 300 s on its own clock and the runner
+  polls every 30 s, so the runner could see "eligible" after the town already started. To close
+  that gap, the runner sets a *pending* hold (the same key, with the coming block's index) from 60 s
+  before `town_start_eligible_at`. At eligibility it takes the next arm. ON deletes the key, and the
+  town starts on its next tick (within 5 min). OFF keeps the key as the block's hold (`set_at` = the
+  block start). No eligible moment is missed, and no session can slip into an OFF block. A pending
+  hold that does not become a block (a refused decision) is deleted at once and delays the town's
+  start by at most 60 s.
+- **Arms.** One experiment per night: a run is one night, not 16 nights. At the night's start the
+  runner draws that night's seeded arm sequence. The sequence is balanced and is re-shuffled until it
+  has no 3 OFF in a row (the play floor). The seed is logged. Each decision takes the next arm, which
+  is logged before the key changes. A post-pull rebuild of orion-prediction then costs one night,
+  not the whole run, because `recover()` cancels only that night. The 16 nights are analysed pooled,
+  as 16 strata, with a permutation test under the same restriction.
+- **ON block**: no key. The town's own timer starts the session.
 - **OFF block**: the key is held for 40 min, then removed.
 - **Outcome window**: block start + [2, 35) min. 35 min covers a 30-min session plus the timer's
   start lag. Blocks start on a 5-min grain boundary, like today's runner.
@@ -174,14 +205,21 @@ The override follows the 11-08 rules exactly:
 - **Window of the night**: decision points only between 00:00 and 08:00 America/Denver (the town's
   sessions start at local midnight today: 07:00, 08:35, 10:10, 11:45 UTC). Outside it the town runs
   normally and nothing is randomised. Expected time per decision: 0.5 x 95 + 0.5 x 40 = 67.5 min, so
-  ~7 decisions per night, ~3.5 per arm.
+  ~7 decisions per night, ~3.5 per arm. This is an upper bound with no slack. The daily cap allows
+  at most 4 ON sessions (7200 / 1800 s), and 3.5 + 3.5 blocks fill ~472 of 480 minutes.
+- **Time of night is a confounder.** OFF blocks push later decisions later, so the two arms do not
+  land at the same hours. The analysis uses `analyze_switchback`'s existing time-of-day `profile`
+  and stratifies by night. Patch 0 simulates the real decision process (cap, window, tick lag,
+  refusal rate) and reports the expected n per arm and the hour balance before any live run.
 
 ### Outcomes
 
 Family A (already registered in `config/prediction/family_a.v1.yaml`; the effect table reads these
 today): `circe.gpu3_watts` (primary), `circe.gpu3_temp_c`, `circe.chassis_watts`, the cabinet reading.
 
-Lane cost (new effect-table targets, computed from existing tables; metric gate below):
+Lane cost (new effect-table targets, computed from existing tables; metric gate below). The effect
+table can hold them only after `services/orion-prediction/app/series.py` gains two source kinds,
+`pool_leases` and `kev_appraisal`:
 
 - `lane.fast.tier1_hold_s`: mean hold of `cortex-exec`/`metacog`/`system` leases on role `fast`
   started in the window (primary lane cost).
@@ -193,7 +231,7 @@ Lane cost (new effect-table targets, computed from existing tables; metric gate 
 
 Minimum detectable effect at 80 % power, two-sided 5 %: MDE = 2.8 x SD x sqrt(2 / n_per_arm).
 
-- 16 nights x ~3.5 per arm ≈ **56 blocks per arm**.
+- 16 nights x ~3.5 per arm ≈ **56 blocks per arm** (an upper bound; see the window note above).
 - GPU3 watts, block SD ≈ 15 W: MDE ≈ 2.8 x 15 x 0.189 ≈ **7.9 W**. The +13 W reading is detectable.
   The +3 W reading is not: if that is the truth, the result is an honest null with an interval about
   ±8 W wide, which is still a usable effect-table row (it says "a town session costs GPU3 less than
@@ -216,6 +254,9 @@ Per block, from the act ledger and the pool, not from the runner's own state:
   check: the override did not hold, and the run is marked `contaminated`, not analysed as clean.
 - Report intention-to-treat (all blocks) and the share of ON blocks where no session started (the
   self-monitor gate, `town_unreachable`, a manual session).
+- **Manual sessions.** A session Juniper opens by hand is not gated by the override, and it loads
+  `fast` too. Any block with a manual session in its window is flagged, excluded from the primary
+  analysis, and reported separately.
 
 ### Stop rules
 
@@ -229,12 +270,18 @@ Orion's play, and the rule that the experiment yields to tier-1 work.
     heat reflex sheds `background`, which is the town's NPC priority, so the arm would be
     contaminated anyway);
   - the market defers the experiment's own bid.
-- **Abort the run** (key deleted, abort row with arm NULL, status `cancelled`, the existing runner
-  path) on: a failed guard read, a lost lock, or 2 contaminated OFF blocks.
+- **Abort the night** (key deleted, abort row with arm NULL, status `cancelled`, the existing
+  runner path) on: a failed guard read, a lost lock, or the first contaminated OFF block (the same
+  line the manipulation check uses).
 - **Play floor**: never more than 2 OFF blocks in a row. This is built into the arm sequence
   (above), so no block is ever overridden after the draw. A refused decision does not consume an
   arm.
-- **Dead runner**: key TTL 90 s; `recover()` at boot cancels any half-done run (existing code).
+- **Dead runner**: key TTL 90 s. `recover()` at boot cancels the half-done night. Today it deletes
+  the key through `stream_of()`, which knows only `vision.focus` (the error is swallowed), so for
+  this key only the TTL would clear it. The build makes the key name depend on the action.
+- **Blind spots of the stop rules.** The pool does not schedule Kev, so the queued-lease rule cannot
+  see a Kev backlog. Kev latency is only an outcome. The build confirms that orion-prediction can
+  read `gpu_pool_leases`.
 
 ## Experiment 2 (later): GPU3 power cap through the existing root job
 
@@ -249,36 +296,59 @@ decision (question 3).
   the mean of max(w - 150, 0) = **10.8 W** on average (an upper bound; the work then takes longer).
 - **Where the override lives**: the existing job, not a new helper.
   - `config/gpu_power_limits.json` gains `"overridable": {"3": {"floor_watts": 150, "max_ttl_s":
-    3600}}`. A card not listed there can never be overridden.
+    180, "max_hold_s": 1500}}`. A card not listed there can never be overridden.
   - The root job reads `/run/orion-gpu-power-limits/override.json` (`{card, watts, experiment_id,
-    expires_at}`) on every check. It applies the override only when the card is overridable,
-    `floor_watts <= watts <= the card's base target`, and `now < expires_at <= now + max_ttl_s`.
-    Otherwise it applies the base config. Expiry restores itself: the next check after `expires_at`
-    applies the base config.
-  - The timer goes from 5 min to 1 min (`OnUnitActiveSec=1min`), so a lapsed override lasts at most
-    ~1 min past its TTL. One `nvidia-smi` query per minute.
-  - Crash safety: a dead runner or dead writer leaves a file whose `expires_at` passes; `/run` is
-    tmpfs, so a reboot clears it; stopping the service still restores defaults (`ExecStop`).
+    set_at, expires_at}`) on every check. The runner refreshes `expires_at` every tick (TTL 180 s).
+    `set_at` is the block start and never moves. The job applies the override only when all of these
+    hold: the card is overridable; `floor_watts <= watts <= the card's base target`;
+    `now < expires_at <= now + max_ttl_s`; `now - set_at <= max_hold_s` (20 min block + 5 min).
+    Otherwise it applies the base config. If the runner dies or a clear request is lost, the cap
+    lasts at most ~3 min past its last refresh, not an hour. (The lane controller handles one request
+    at a time, so a clear can wait behind a launch plan.)
+  - **Root reads a file the container can write.** Open it with `O_NOFOLLOW`, refuse anything over
+    4 KB, check the owner uid and mode, and parse a strict schema. Any failure means "no override".
+  - **State and errors.** The job records the override it applied in
+    `/run/orion-gpu-power-limits/applied.json`. On any error, including a `ConfigError` (which today
+    leaves a card untouched), a card with an applied override goes back to its default limit. An
+    applied override never outlives an error.
+  - **The directory** is created by a `tmpfiles.d` entry with a fixed owner and mode, before the lane
+    controller starts. Not by `RuntimeDirectory=`: that is deleted when the service stops and would
+    leave the container's bind mount on a dead inode. If the directory is missing, Docker creates it
+    as root.
+  - The timer goes from 5 min to 1 min (`OnUnitActiveSec=1min`). One `nvidia-smi` query per minute.
+  - **Install step.** The job runs as a copy in `/usr/local/sbin`, and its units are copies in
+    `/etc/systemd/system`. Neither the code nor the 1-min timer arrives by `git pull`. The operator
+    re-runs `sudo .../gpu_power_limits.py install` once. An old installed script ignores the
+    `overridable` block, which is safe: it never applies an override.
+  - Crash safety: `/run` is tmpfs, so a reboot clears the file. Stopping the service still restores
+    defaults (`ExecStop`).
   - **Writer**: `orion-gpu-lane-controller` (already on circe, already the pool's actuator). New
     `GpuActuateV1` action `power_cap_override` with a TTL; the controller writes the file atomically
     through a new rw bind mount of `/run/orion-gpu-power-limits`. The runner on athena never touches
     circe directly. This is a second writer to the cap, next to the PR; that exception is question 3.
-- **Scheduled as a tier-2 bid** (`prediction.experiment`, same as Experiment 1), refused while any
-  tier-0/1 lease is queued on `fast` (same rule), and the ON block is ended early (override deleted)
-  if tier-1 work queues more than 5 s during it.
+- **Scheduled as a tier-2 bid** (`prediction.experiment`, same as Experiment 1). It is refused **at
+  decision time** while any tier-0/1 lease is queued on `fast` (same rule). An ON block is not ended
+  early when tier-1 work queues. That queueing is the cost being measured: cutting it off would push
+  the estimate toward zero and make blocks differ in length by arm. The only early end is heat
+  (cabinet at or above `thermal_gate.hot`). The analysis window stays fixed (intention-to-treat),
+  and the early-end rate per arm is reported as its own outcome.
 - **Lane latency is a measured cost**: the same lane-cost targets as Experiment 1, plus the server's
   own tokens per second on `fast` if the llama.cpp worker reports it (UNVERIFIED that it does).
 - **Blocks**: 20 min, outcome window [3, 20) min. Effect of a cap is immediate on watts; heat lags.
 
 ### Exact file changes for Experiment 2
 
-- `scripts/ops/gpu_power_limits.py`: `load_overridable()`, `read_override()`, `effective_target()`;
-  `apply()` uses `effective_target()`; `status` prints override and its expiry.
+- `scripts/ops/gpu_power_limits.py`: `load_overridable()`, `read_override()` (O_NOFOLLOW, size,
+  owner, schema), `effective_target()`, the `applied.json` state, restore on error. `apply()` uses
+  `effective_target()`. `status` prints the override and its expiry.
+- `scripts/ops/orion-gpu-power-limits.tmpfiles.conf` (new); `install()` copies it to
+  `/etc/tmpfiles.d/`.
 - `config/gpu_power_limits.json`: `overridable` block for card 3 (and add `"3": {"watts": "default"}`
   so the card is managed at all).
 - `scripts/ops/orion-gpu-power-limits.timer`: `OnUnitActiveSec=1min`.
 - `tests/scripts/test_gpu_power_limits.py`: expired override ignored, out-of-range ignored, card not
-  overridable ignored, `expires_at` too far out ignored, restore on expiry.
+  overridable ignored, `expires_at` too far out ignored, `set_at` too old ignored, symlink and
+  oversize files refused, restore on expiry, restore on `ConfigError` with an applied override.
 - `services/orion-gpu-lane-controller/app/actuator_bus.py`: `power_cap_override` action, atomic
   file write; `docker-compose.yml`: rw bind mount `/run/orion-gpu-power-limits`.
 - `orion/schemas/` (`GpuActuateV1` action literal) and `orion/schemas/registry.py` if the action
@@ -359,8 +429,9 @@ Run for `lane.fast.tier1_hold_s`, `lane.fast.grant_wait_s`, `lane.kev.latency_ms
    estimate is the town's total effect on hold, which is the quantity wanted.
 5. **Existing mechanism.** `gpu_wait` (body organ) already turns long waits into experience; these
    outcomes reuse the same table and add no producer.
-6. **Reversibility.** They are effect-table targets computed at analysis time. Removing one is a
-   config line; no schema field, no stored series.
+6. **Reversibility.** They are effect-table targets computed at analysis time from existing
+   tables. Removing one means removing its series spec and its rows. No schema field, no stored
+   series. (That this is one line is UNVERIFIED until the series kinds exist.)
 
 ## Missing questions
 
@@ -382,10 +453,20 @@ None blocking the design. The four decisions that need Juniper are at the end.
 
 ## Files likely to touch (Experiment 1)
 
-- `services/orion-prediction/app/experiment_runner.py`: run-cap actuator, decision-point loop,
-  stop rules, restricted arm sequence, bid before each decision.
-- `services/orion-prediction/app/family_c.py`, `app/causal.py`: lane-cost targets, manipulation
-  check from the act ledger.
+- `services/orion-prediction/app/experiment_runner.py`: run-cap actuator, decision-point loop with
+  the pending hold, one experiment per night, stop rules, restricted arm sequence, bid before each
+  decision. Key name and `recover()` cleanup by action (today `stream_of()` knows only
+  `vision.focus`).
+- `services/orion-prediction/app/causal.py`: blocks that start at an event (today
+  `design_switchback` makes fixed clock blocks), a restricted-permutation test (today
+  `analyze_switchback` permutes freely), pooling across nights.
+- `services/orion-prediction/app/effects.py`: several outcome series per experiment (today
+  `analyze_experiment` matches fixed block times and one `series_id`).
+- `services/orion-prediction/app/series.py`: source kinds `pool_leases` and `kev_appraisal`.
+- `services/orion-prediction/app/family_c.py`: lane-cost targets, manipulation check from the act
+  ledger.
+- `orion/physiology/binding.py`: `BINDING_PRODUCERS` gains `orion-prediction.experiment.binding`.
+- `services/orion-embodiment/app/main.py`: `/health` field `town_start_eligible_at`.
 - `services/orion-prediction/tests/`, `services/orion-prediction/evals/`: replay eval (Patch 0).
 - `orion/embodiment/town_sessions.py`, `services/orion-embodiment/app/town_sessions.py`: read the
   override, `run_cap_override` refusal.
@@ -417,8 +498,10 @@ Patch 0 (replay, before anything is built to run live):
 
 Patch 1 (build):
 
-- Unit: the controller refuses with `run_cap_override` under a valid key; ignores a key with no TTL,
-  a value outside bounds, an `expires_at` past `max_hold_s`, and a family not in the YAML.
+- Unit: the controller refuses with `run_cap_override` under a valid key, with `retry_after_sec` no
+  more than the key's TTL. It ignores a key with no TTL, a value not in `allowed`, a `set_at` older
+  than `max_hold_s`, and a family not in the YAML.
+- Unit: the pending hold is set 60 s before `town_start_eligible_at`, and an ON arm deletes it.
 - Unit: the runner refuses a decision with tier-0/1 queued > 5 s, when hot, when its bid is
   deferred; never produces 3 OFF in a row; logs the arm before setting the key.
 - Unit: the manipulation check marks a run `contaminated` when an OFF block has a session start.

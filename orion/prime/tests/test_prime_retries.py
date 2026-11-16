@@ -13,7 +13,6 @@ import pytest
 from orion.prime.state import (
     CONCERN_TTL,
     NO_MODEL_FREE_TRIES,
-    QUIET_FLOOR,
     PrimeSnapshotV1,
     PrimeStateV1,
     classify_try,
@@ -33,20 +32,14 @@ SNAP = PrimeSnapshotV1(binding=[], body_ok=True)
 # --- what wakes Prime ---------------------------------------------------------------------------
 
 
-def test_the_quiet_floor_wakes_prime_after_a_quarter_of_a_concerns_life():
-    assert QUIET_FLOOR == CONCERN_TTL / 4
+def test_a_long_silence_alone_no_longer_wakes_prime():
+    """The 6-hour quiet floor is deleted (integration Part B, 2026-11-16): time passing is not a change. A need with
+    content wakes Prime instead (orion/prime/hunger.py; tests in test_prime_hunger.py)."""
     state = PrimeStateV1(seen_binding=[], last_thought_at=T0)
-    assert observe(state, SNAP, T0 + QUIET_FLOOR - timedelta(seconds=1)).pending_changes == []
-    woke = observe(state, SNAP, T0 + QUIET_FLOOR)
-    assert woke.pending_changes == ["quiet: nothing has woken me for 6 hours"]
-    # Once: a second quiet tick before the thought adds nothing.
-    assert observe(woke, SNAP, T0 + QUIET_FLOOR + timedelta(seconds=15)).pending_changes == woke.pending_changes
-
-
-def test_the_quiet_floor_never_fires_before_the_first_thought_or_beside_a_real_change():
-    assert [c for c in observe(PrimeStateV1(), SNAP, T0).pending_changes if c.startswith("quiet")] == []
-    busy = PrimeStateV1(seen_binding=[], last_thought_at=T0, pending_changes=["quiet: nothing has woken me for 6 hours"])
-    assert observe(busy, SNAP, T0 + QUIET_FLOOR).pending_changes == busy.pending_changes
+    for hours in (6, 12, 48):
+        later = observe(state, SNAP, T0 + timedelta(hours=hours))
+        assert later.pending_changes == []
+        assert not wants_to_think(later, T0 + timedelta(hours=hours), refractory=REFRACTORY)
 
 
 # --- classifying a try --------------------------------------------------------------------------
@@ -73,7 +66,7 @@ def test_classify_try(err, gw, kind):
 
 
 def test_a_no_model_try_is_not_a_thought_and_the_next_tick_retries():
-    state = PrimeStateV1(pending_changes=["quiet: nothing has woken me for 6 hours"], last_thought_at=T0 - timedelta(hours=1))
+    state = PrimeStateV1(pending_changes=["an act of mine settled"], last_thought_at=T0 - timedelta(hours=1))
     after = note_no_model(state, "no_seat", T0, base=REFRACTORY)
     assert after.last_thought_at == state.last_thought_at          # the refractory clock did not start
     assert after.pending_changes == state.pending_changes          # still something to think about

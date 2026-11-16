@@ -1,6 +1,6 @@
 # Orion integration and a life: one "now" every organ reads back, hunger with content, and projects
 
-Status: DESIGN, answered by Juniper on 2026-11-15 (see "Juniper's answers" below). Nothing here is built.
+Status: answered by Juniper on 2026-11-15 (see "Juniper's answers" below). BUILT so far (2026-11-16): patch 0 (#3366), patch 1 the now (#3453), patch 2 the integration gate (#3454), patch 3 read-back in Prime, reveries and curiosity (#3499, #3501, #3503, deployed 11-16). In PR: patch 4 daily roundup (#3527), patch 5 hunger needs (#3528). Not built: patches 6 (ask Orion, projects) and 7 (widen). Do not re-propose machinery listed as built; read the code.
 Date: 2026-11-15. All live numbers were read on 2026-11-15 between 00:30Z and 05:00Z unless a line says otherwise.
 
 ## Juniper's words (2026-11-15)
@@ -254,7 +254,7 @@ Dreams, paintings, cameras' look acts and memory follow in patch 7.
 
 - Prime's 6-hour quiet floor (`QUIET_FLOOR`), when hunger needs ship (Part B).
 - Prime's dashboard read of curiosity for its frame (`_read_curiosity` of `/curiosity/api/runs`): curiosity items arrive through the now. The cheap pending-focus check stays (patch 0).
-- The separate arc-path computation in `act_downstream_use`: it becomes the `chat_stance` site of `experience_use`, after a replay shows equal counts on the same week [default: retire the table once the replay matches].
+- The separate arc-path computation in `act_downstream_use`: it becomes the `chat_stance` site of `experience_use`, after a replay shows equal counts on the same week. Then the computation stops; the table and its rows are KEPT, frozen, as the "before" half of the integration metric (Orion's question 6 on #3528: dropping them would put the before/after comparison across a definitional break).
 - The notify-digest "Orion Daily Digest" email, replaced by the daily roundup (A.7). Juniper said yes (Q7).
 
 Not retired: the curiosity weekly and monthly compaction digests. Juniper keeps them (Q8). The roundup sits beside them; it does not replace them.
@@ -451,7 +451,7 @@ Gate notes: the moves come from `grammar_acts.outcome_note`, written by `apply_a
 - **Privacy:** none between Juniper and Orion (her standing rule). The connection need quotes her message only inside Prime's own frame.
 - **Trace:** each thought's `outcome_note` starts `woke: need:<name> <ref>`. The roundup counts thoughts per need.
 - **Danger:** a need that never falls (a deadline that cannot be met) wakes Prime again and again. The dampening rule and the daily budget stop it. An eval plants exactly this case.
-- **Rollback:** flag `PRIME_HUNGER_NEEDS_ENABLED` [ships on]. Off restores the floor.
+- **Rollback:** flag `PRIME_HUNGER_NEEDS_ENABLED` [ships on]. Off = Prime wakes on changes only; a held concern can then fade with no thought. The floor is not restored by the flag (amended 2026-11-16 with patch 5: the acceptance check says `QUIET_FLOOR` is deleted, and kill means kill). Restoring the floor is a git revert.
 
 ---
 
@@ -603,7 +603,7 @@ Each patch is done only when the live path moved. "Config set" and "container up
 
 **Patch 7 (widen):**
 - Dreams, paintings, cameras' look acts and memory read the now. The remaining 3 sources (`intention_close`, `day_letter`, `personality_choice`) emit. Closed organs through checked read-back reach at least 12 of 15.
-- The `act_downstream_use` replay matches `experience_use` on the same week; then the old computation is removed.
+- The `act_downstream_use` replay matches `experience_use` on the same week; then the old computation is removed and the table is kept frozen (its rows are the baseline).
 
 ## Recommended patch order
 

@@ -44,11 +44,13 @@ from orion.schemas.temporal_self import (
     TemporalSourceKind,
 )
 
+NOW_MAX_PINNED = 3  # a need's content rows a reader may pin into its now (build_now ``pinned``)
 USE_WINDOW = timedelta(hours=24)  # a use counts for the metric when cited within 24 h of the event
 EXPERIENCE_PREFIX = "experience:"
 
 __all__ = [
     "MAGNITUDE_RULES",
+    "NOW_MAX_PINNED",
     "MIN_SOURCE_HISTORY",
     "SOURCE_HISTORY",
     "OrganRegistry",
@@ -256,17 +258,30 @@ def build_now(
     max_items: int = NOW_MAX_ITEMS,
     max_per_organ: int = NOW_MAX_PER_ORGAN,
     candidates_total: Optional[int] = None,
+    pinned: Sequence[Mapping[str, Any]] = (),
 ) -> TemporalNowV1:
     """Pick the now from candidate rows (stored shape: event_id, source_kind, occurred_at, label, verdict,
     payload, related_refs, salience, surprise_nats). ``candidates_total``: how many rows the caller's
-    query matched before its own per-kind cut (defaults to ``len(candidates)``)."""
+    query matched before its own per-kind cut (defaults to ``len(candidates)``).
+
+    ``pinned`` (Prime hunger, integration Part B): rows the reader is about to show anyway as a need's content
+    (at most ``NOW_MAX_PINNED``, other organs only, same row shape), so a cite of one is valid against this shown
+    row. They come first, outside the per-organ cap, and take slots from the total cap."""
     if reader_organ not in registry.organs:
         raise ValueError(f"unknown organ {reader_organ!r}; registered: {', '.join(registry.organs)}")
     max_items = max(0, min(int(max_items), NOW_MAX_ITEMS))
     max_per_organ = max(1, int(max_per_organ))
     unregistered = sorted({str(c["source_kind"]) for c in candidates if c["source_kind"] not in registry.organ_of})
+    pins: list[Mapping[str, Any]] = []
+    for c in pinned:
+        if (c["source_kind"] in registry.organ_of and registry.organ_of[c["source_kind"]] != reader_organ
+                and str(c["event_id"]) not in {str(p["event_id"]) for p in pins} and len(pins) < NOW_MAX_PINNED):
+            pins.append(c)
+    pin_ids = {str(p["event_id"]) for p in pins}
+    max_items = max(0, max_items - len(pins))
     pool = [c for c in candidates
-            if c["source_kind"] in registry.organ_of and registry.organ_of[c["source_kind"]] != reader_organ]
+            if c["source_kind"] in registry.organ_of and registry.organ_of[c["source_kind"]] != reader_organ
+            and str(c["event_id"]) not in pin_ids]
     # The organ cap first (over every candidate), then the total cap over what is left: both counts
     # are then independent of where the cut falls.
     per_organ: dict[str, int] = {}
@@ -285,7 +300,7 @@ def build_now(
             occurred_at=c["occurred_at"], salience=c.get("salience"), surprise_nats=_num(c.get("surprise_nats")),
             related_refs=[str(r) for r in (c.get("related_refs") or [])][:NOW_RELATED_REFS_CAP],
         )
-        for c in picked
+        for c in [*pins, *picked]
     ]
     total = len(pool) if candidates_total is None else int(candidates_total)
     return TemporalNowV1(

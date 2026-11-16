@@ -603,3 +603,61 @@ def test_close_fills_energy_money_and_heat_from_the_act_leases(session, monkeypa
     assert "share 0.75" in cost["basis"]["wh"] and cost["basis"]["wh"].startswith("whole machine above rest (chassis)")
     assert cost["basis"]["cpu"].startswith("CPU above its fitted idle")
     assert cost["gpu_slot_s_by_lane"] == {"diffusion": pytest.approx(60.0)}
+
+
+# --- #3392 option A: an outreach reply is graded against Juniper's base rate for that time of day ---
+
+def _outreach(key):
+    return build_act(actor="hub.outreach", verb="say", key=key, signal_id="juniper_replied",
+                     horizon_sec=36000.0, basis="median gap")
+
+
+def _outcome_row(sess, act_id):
+    return sess.execute(text("SELECT baseline, baseline_bin, observed_after, observed_delta, predicted_delta "
+                             "FROM substrate_action_outcomes WHERE dispatch_id = :a"), {"a": act_id}).mappings().one()
+
+
+def test_outreach_reply_where_she_always_replies_grades_as_usual(session):
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(hours=11)
+    # A Juniper turn 2 h after this clock time on each of the last 30 days.
+    for k in range(1, 31):
+        _chat(session, at=t0 - timedelta(days=k) + timedelta(hours=2), corr=f"hist-{k}")
+    act = _outreach("msg-usual")
+    _open_say(session, act, "c-usual", t0)
+    opened = _row(session, act.act_id)
+    assert opened["predicted"] == pytest.approx(28.5 / 29) and opened["predicted_n"] == 28
+    assert opened["cold_start"] is False
+    _chat(session, at=t0 + timedelta(hours=2), corr="c-usual-answer")
+    assert resolve_due_acts(session, now=now).closed_replied == 1
+    row = _row(session, act.act_id)
+    assert row["outcome_value"] == 1.0  # her vote (weights.py) still reads the plain reply
+    assert row["error"] == pytest.approx(1.0 - 28.5 / 29)  # ~0: as usual for this hour
+    assert "usual for this time of day 0.98 (28 of 28 days)" in row["outcome_note"]
+    out = _outcome_row(session, act.act_id)
+    assert out["baseline"] == pytest.approx(28.5 / 29) and out["baseline_bin"] == 9
+    assert out["observed_after"] == 1.0 and out["observed_delta"] == pytest.approx(1.0 - 28.5 / 29)
+
+
+def test_outreach_with_no_history_keeps_the_posterior_stamp(session):
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(hours=11)
+    act = _outreach("msg-cold")
+    _open_say(session, act, "c-cold", t0)
+    opened = _row(session, act.act_id)
+    assert opened["predicted"] == pytest.approx(0.5) and opened["cold_start"] is True
+    assert resolve_due_acts(session, now=now).closed_not_replied == 1
+    row = _row(session, act.act_id)
+    assert row["outcome_value"] == 0.0 and "usual for this time" not in row["outcome_note"]
+    out = _outcome_row(session, act.act_id)
+    assert out["baseline"] == 0.0 and out["baseline_bin"] == 0 and out["observed_delta"] == 0.0
+
+
+def test_chat_reply_acts_are_not_base_rated(session):
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(hours=1)
+    for k in range(1, 31):
+        _chat(session, at=t0 - timedelta(days=k) + timedelta(minutes=5), corr=f"hist-{k}")
+    act = _say_act("c-chat")
+    _open_say(session, act, "c-chat", t0)
+    assert _row(session, act.act_id)["predicted"] == pytest.approx(0.5)

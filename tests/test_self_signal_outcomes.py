@@ -454,3 +454,38 @@ def test_a_trigger_still_on_from_the_previous_hour_is_high() -> None:
     rows += [(h + timedelta(seconds=30 * k), 0.7 if k < 4 else 0.0) for k in range(120)]
     got = sso.classify_signal_hours(CAB, rows, [h])
     assert got[h].condition == "high" and got[h].n_hot == 0  # on, but no new onset this hour
+
+
+# --- retire step 7: a retired node's persisted hours and associations are history, not readings --
+
+RETIRED_SIG = "node:substrate.bus_synaptic"
+
+
+def _two_signal_hours(conds, events, *, other: str) -> list[SelfSignalHourV1]:
+    """Each hour carries EXE and ``other`` with the same condition (one old row per hour)."""
+    rows = _hours(conds, events, signal=EXE)
+    return [
+        r.model_copy(update={"signals": [*r.signals, SignalHourV1(signal_id=other, condition=r.signals[0].condition)]})
+        for r in rows
+    ]
+
+
+def test_associate_all_skips_a_retired_signal_and_its_comparisons() -> None:
+    """self_signal_hour is never pruned, so a retired node's old hour rows stay in the window. Live
+    2026-11-16: four retired signals were still written every hour and widened every live
+    interval (25 comparisons instead of 13)."""
+    conds, events = _pattern(n_high=30, n_normal=60, hit_after_high=0.6, hit_after_normal=0.1)
+    out = sso.associate_all(_two_signal_hours(conds, events, other=RETIRED_SIG), computed_at=NOW)
+    assert {a.signal_id for a in out} == {EXE}
+    assert {a.n_comparisons for a in out} == {1}
+    # Control: a live second signal is still associated and still counts.
+    live = sso.associate_all(_two_signal_hours(conds, events, other=BIO), computed_at=NOW)
+    assert {a.signal_id for a in live} == {EXE, BIO}
+    assert {a.n_comparisons for a in live} == {4}
+
+
+def test_held_rows_of_a_retired_signal_never_render() -> None:
+    rows = [r.model_copy(update={"signal_id": RETIRED_SIG}) for r in _run([M] * 6)]
+    assert sso.held_latest_by_pair(rows) == []
+    assert dict(sso.index_by_signal(rows)) == {}
+    assert BIO in sso.index_by_signal(_run([M] * 6))  # control: the same rows on a live signal render

@@ -605,6 +605,13 @@ def associate(
     return assoc.model_copy(update={"clause": clause_for(assoc)})
 
 
+def _retired(signal_id: str) -> bool:
+    # Lazy: orion.substrate's package init is heavy (same as the rollup's body_signal_ids).
+    from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
+
+    return is_retired_prediction_error_node(signal_id)
+
+
 def associate_all(
     hours: Sequence[SelfSignalHourV1],
     *,
@@ -612,7 +619,13 @@ def associate_all(
     min_hours: int = DEFAULT_MIN_HOURS,
     min_history_hours: float = MIN_HISTORY_HOURS,
 ) -> list[SelfSignalOutcomeAssociationV1]:
-    signals = sorted({s.signal_id for r in hours for s in r.signals})[:MAX_SIGNALS_PER_HOUR]
+    # A retired prediction-error node's old hour rows outlive it (self_signal_hour is never
+    # pruned). They are not readings: no association is computed for it, and it does not count
+    # toward the Bonferroni family below (live 2026-11-16: four retired signals were still written
+    # hourly and widened every live signal's interval, 25 comparisons instead of 13).
+    signals = sorted(
+        {s.signal_id for r in hours for s in r.signals if not _retired(s.signal_id)}
+    )[:MAX_SIGNALS_PER_HOUR]
     pairs = [(sid, o) for sid in signals for o in OUTCOMES]
     # Every pair that could ever render is one simultaneous claim (circular pairs never render).
     m = sum(1 for p in pairs if p not in CIRCULAR_PAIRS)
@@ -697,6 +710,8 @@ def held_latest_by_pair(
     row before Orion is told it. ``holds <= 1`` is the old rule (newest row with a clause)."""
     need = max(1, int(holds))
     out: list[SelfSignalOutcomeAssociationV1] = []
+    # Persisted rows of a retired node may still sit in the table; never render them.
+    rows = [r for r in rows if not _retired(r.signal_id)]
     for k, by_hour in sorted(hourly_runs(rows).items()):
         newest = by_hour[max(by_hour)]
         if fresh_since is not None and _aware(newest.computed_at) < _aware(fresh_since):

@@ -83,8 +83,14 @@ def test_without_the_dwell_every_signal_opens_constantly(rows, result):
     assert len(no_dwell["episodes"]) > 8 * len(result["episodes"])
 
 
-def test_placeholder_never_opens(result):
-    hc = result["per_signal"]["node:substrate.harness_closure"]
+def test_placeholder_never_opens(rows, result):
+    # node:substrate.harness_closure (a fixed 0.65 placeholder) joined the
+    # retired set 2026-11-16, so its fixture rows are dropped like the live
+    # cache drops them. Replayed directly it still reads unknown and never opens.
+    assert "node:substrate.harness_closure" not in result["per_signal"]
+    hc_rows = [r for r in rows_from_csv(FIXTURE) if r[0] == "node:substrate.harness_closure"]
+    assert hc_rows
+    hc = replay(rows + hc_rows)["per_signal"]["node:substrate.harness_closure"]
     assert hc["episodes"] == 0 and set(hc["observations"]) == {"unknown"}
 
 

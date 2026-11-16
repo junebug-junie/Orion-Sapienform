@@ -318,6 +318,12 @@ RETIRED_PSEUDO_NODES: dict[str, str] = {
     "node:substrate.codebase": (
         "retired 2026-11-13 PE rebuild: git/PR/graph churn z, not a forecast; no successor"
     ),
+    # 2026-11-11 (PE step 3): producer removed; joined the shared retired set
+    # 2026-11-16 (step 7). Same agreement with RETIRED_PREDICTION_ERROR_NODE_IDS.
+    "node:substrate.harness_closure": (
+        "retired 2026-11-11 PE step 3: fixed 0.65 placeholder, not a measurement; "
+        "successor = turn-level self-bet"
+    ),
 }
 
 # Every node id reconcile drops wholesale (perturbation refusal covers only

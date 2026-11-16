@@ -317,6 +317,36 @@ def test_went_silent_close_is_not_rendered_as_a_recovery():
     assert "NOT a recovery" in m.evidence[0] and "returned" not in m.evidence[0]
 
 
+def test_close_retired_writes_a_row_only_for_a_confirmed_non_silent_episode():
+    from orion.metacog.self_signal_episode import close_retired, mark_silent
+
+    obs = _obs(T0 + 400, "unknown")
+    assert close_retired(None, obs) is None
+    pending, _ = _run(_hot_run(T0, 3))
+    assert pending is not None and not pending.confirmed
+    assert close_retired(pending, obs) is None
+    confirmed, ev = _run(_hot_run(T0, 11))
+    assert confirmed.confirmed and [e.phase for e in ev] == ["open"]
+    assert close_retired(mark_silent(confirmed, "over_open_budget"), obs) is None
+    event = close_retired(confirmed, obs)
+    assert event is not None and event.phase == "close"
+    assert event.close_reason == "retired" and event.closed_at == obs.at
+    assert episode_upstream(event)["close_reason"] == "retired"
+
+
+def test_retired_close_is_not_rendered_as_a_recovery():
+    from orion.metacog.evidence_map import map_trigger
+    from orion.metacog.self_signal_episode import close_retired
+
+    confirmed, _ = _run(_hot_run(T0, 11))
+    event = close_retired(confirmed, _obs(T0 + 400, "unknown"))
+    m = map_trigger("self_signal_episode", episode_reason(event), episode_upstream(event))
+    assert m.severity == "nominal"
+    assert "retired" in m.evidence[0] and "NOT a recovery" in m.evidence[0]
+    assert "usual range" not in " ".join(m.evidence)
+    assert "settled" not in m.summary_fallback and "not a recovery" in m.summary_fallback
+
+
 def test_calm_and_unknown_interleaving_keeps_episode_open():
     """Documented behaviour: a flapping read (unknown at least every 10 min)
     neither completes a calm gap nor a silent close."""

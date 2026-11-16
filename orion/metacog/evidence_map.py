@@ -900,6 +900,21 @@ def map_self_signal_episode(reason: str, up: dict[str, Any]) -> EvidenceMapping:
                 touches=touches,
                 headline=f"{label} went silent while {peak_band} (not a recovery)",
             )
+        if close_reason == "retired":
+            # The instrument was removed (RETIRED_PREDICTION_ERROR_NODE_IDS):
+            # no further readings will come. Not a recovery.
+            evidence.insert(
+                0, f"{label} closed{after}: its signal was retired; no further readings, NOT a recovery"
+            )
+            return _build(
+                kind="self_signal_episode",
+                severity="nominal",
+                magnitude=_nominal_band((dur or 0.0) / 3600.0),
+                basis=f"close:retired:duration_sec={dur}",
+                evidence=evidence,
+                touches=touches,
+                headline=f"{label} closed while {peak_band}: signal retired (not a recovery)",
+            )
         if close_reason == "faded":
             what = "no new event since; its last reading stopped being news"
         else:

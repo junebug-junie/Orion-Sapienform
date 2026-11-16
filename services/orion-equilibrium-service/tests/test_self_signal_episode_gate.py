@@ -280,3 +280,69 @@ def test_tracked_signal_that_became_a_world_source_is_observed_absent() -> None:
     # Not tracked -> a world source is not a body signal at all.
     obs = observe_signals(_mags(now, **{walkway: HOT, BUS: CALM}), now=now)
     assert walkway not in {o.signal_id for o in obs}
+
+
+# --- retire step 7: a retired node's episode closes explicitly ---------------------------------
+
+
+def _retire(monkeypatch, node_id):
+    import orion.substrate.prediction_error_freshness as pef
+
+    monkeypatch.setattr(
+        pef, "RETIRED_PREDICTION_ERROR_NODE_IDS", pef.RETIRED_PREDICTION_ERROR_NODE_IDS | {node_id}
+    )
+
+
+def test_open_episode_on_a_retired_node_closes_retired_on_the_next_poll(monkeypatch):
+    gate = SelfSignalEpisodeGate(GateConfig())
+    _warm(gate)
+    rows = _drive(gate, T0, 11, HOT)
+    assert [(r.phase, r.signal_id) for r in rows] == [("open", BUS)]
+    _retire(monkeypatch, BUS)
+    now = T0 + timedelta(seconds=330)
+    # The history cache drops retired rows, so the node is gone from the magnitudes;
+    # it is still observed because the gate tracks its episode.
+    rows = _poll(gate, now, {})
+    assert [(r.phase, r.signal_id) for r in rows] == [("close", BUS)]
+    assert rows[0].trigger.upstream["close_reason"] == "retired"
+    assert rows[0].trigger.reason.endswith(":closed=retired")
+    assert BUS not in gate.state.episodes
+    _publish_all(gate, rows, now)
+    # Never re-opens, even if a stale value reaches the gate.
+    assert _drive(gate, now + timedelta(seconds=30), 20, HOT) == []
+    assert BUS not in gate.state.episodes
+
+
+def test_pending_episode_on_a_retired_node_is_dropped_without_a_row(monkeypatch):
+    gate = SelfSignalEpisodeGate(GateConfig())
+    _warm(gate)
+    assert _drive(gate, T0, 3, HOT) == []  # pending, not confirmed
+    assert BUS in gate.state.episodes
+    _retire(monkeypatch, BUS)
+    assert _poll(gate, T0 + timedelta(seconds=90), {}) == []
+    assert BUS not in gate.state.episodes
+
+
+def test_confirmed_but_unpublished_episode_on_a_retired_node_drops_without_a_row(monkeypatch):
+    gate = SelfSignalEpisodeGate(GateConfig())
+    _warm(gate)
+    rows = _drive(gate, T0, 11, HOT, publish=False)
+    assert [r.phase for r in rows] == ["open"]  # owed, never reached the bus
+    assert gate.state.episodes[BUS].confirmed and not gate.state.episodes[BUS].open_published
+    _retire(monkeypatch, BUS)
+    assert _poll(gate, T0 + timedelta(seconds=330), {}) == []
+    assert gate.state.episodes == {}
+
+
+def test_persisted_state_naming_a_retired_node_closes_after_restart(monkeypatch):
+    """Redis state (equilibrium:self_signal_episodes:v1) written before a retirement."""
+    gate = SelfSignalEpisodeGate(GateConfig())
+    _warm(gate)
+    _drive(gate, T0, 11, HOT)
+    raw = gate.dump()
+    _retire(monkeypatch, BUS)
+    restarted = SelfSignalEpisodeGate(GateConfig())
+    restarted.load(raw)
+    rows = _poll(restarted, T0 + timedelta(seconds=330), {})
+    assert [(r.phase, r.trigger.upstream["close_reason"]) for r in rows] == [("close", "retired")]
+    assert restarted.state.episodes == {}

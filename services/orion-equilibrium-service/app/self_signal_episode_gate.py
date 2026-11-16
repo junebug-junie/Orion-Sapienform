@@ -34,6 +34,7 @@ from orion.attention.world_first import (
 )
 from orion.metacog.self_signal_episode import (
     TRIGGER_KIND,
+    close_retired,
     EpisodeEvent,
     SelfSignalEpisodesStateV1,
     SignalObservation,
@@ -241,18 +242,31 @@ class SelfSignalEpisodeGate:
         # Opens queued THIS poll count against the budget too (published ones
         # are recorded for real in mark_published).
         budget = self.state
+        # Lazy, like observe_signals: orion.substrate's package init is heavy.
+        from orion.substrate.prediction_error_freshness import is_retired_prediction_error_node
+
         for obs in observations:
             before = episodes.get(obs.signal_id)
-            ep, event = step_signal(
-                before,
-                obs,
-                poll_sec=cfg.poll_sec,
-                open_dwell_sec=cfg.open_dwell_sec,
-                open_window_sec=cfg.open_window_sec,
-                calm_gap_sec=cfg.calm_gap_sec,
-                silent_close_sec=cfg.silent_close_sec,
-                cold_start=cold,
-            )
+            if is_retired_prediction_error_node(obs.signal_id):
+                # A retired node never opens; a tracked episode closes now with
+                # an explicit reason instead of hanging until went_silent.
+                ep, event = None, close_retired(before, obs)
+                if before is not None and event is None:
+                    logger.info(
+                        "self_signal_episode_dropped_retired episode_id=%s (pending or silent; no row)",
+                        before.episode_id,
+                    )
+            else:
+                ep, event = step_signal(
+                    before,
+                    obs,
+                    poll_sec=cfg.poll_sec,
+                    open_dwell_sec=cfg.open_dwell_sec,
+                    open_window_sec=cfg.open_window_sec,
+                    calm_gap_sec=cfg.calm_gap_sec,
+                    silent_close_sec=cfg.silent_close_sec,
+                    cold_start=cold,
+                )
             if event is not None and event.phase == "close":
                 if event.episode.open_published:
                     out = Outgoing(

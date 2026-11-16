@@ -23,6 +23,9 @@ into an episode over time:
               episode, never advances the calm clock, and resets it. An episode
               that stays unknown for ``silent_close_sec`` closes as
               ``went_silent`` -- explicitly NOT a recovery.
+- **retired** the signal's node was retired (``close_retired``): its episode
+              closes on the next poll with ``close_reason="retired"``, never
+              opens again, and is not a recovery either.
 
 Hysteresis (both directions, read from 7 days of live history -- PR report):
 
@@ -212,7 +215,7 @@ class EpisodeEvent:
     phase: Literal["open", "close"]
     episode: SignalEpisodeV1
     observation: SignalObservation
-    close_reason: str | None = None  # calm | faded | went_silent
+    close_reason: str | None = None  # calm | faded | went_silent | retired
     closed_at: float | None = None
 
     @property
@@ -380,6 +383,22 @@ def step_signal(
             return None, None
         return None, EpisodeEvent("close", ep, obs, obs.kind, obs.at)
     return ep, None
+
+
+def close_retired(
+    episode: SignalEpisodeV1 | None, obs: SignalObservation
+) -> EpisodeEvent | None:
+    """The signal's node was retired (``prediction_error_freshness.
+    RETIRED_PREDICTION_ERROR_NODE_IDS``): end its episode now, on this poll.
+
+    Not ``went_silent`` (that waits ``silent_close_sec`` and reads as "the
+    signal stopped talking"), and not a recovery: the instrument was removed.
+    A confirmed, non-silent episode gets a ``retired`` close row; a pending or
+    silent one is dropped without a row, the same as any other close. The
+    caller drops the episode from state either way."""
+    if episode is None or not episode.confirmed or episode.silent:
+        return None
+    return EpisodeEvent("close", episode, obs, "retired", obs.at)
 
 
 def mark_open_published(episode: SignalEpisodeV1) -> SignalEpisodeV1:

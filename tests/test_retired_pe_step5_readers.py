@@ -37,6 +37,7 @@ def test_deny_list_is_exactly_the_retired_nodes() -> None:
     assert RETIRED_PREDICTION_ERROR_NODE_IDS == {
         "node:substrate.bus_synaptic", "node:substrate.route", "node:substrate.chat",
         "node:substrate.codebase",  # 2026-11-13: churn z, not a forecast
+        "node:substrate.harness_closure",  # 2026-11-16: fixed 0.65 placeholder
     }
     assert not is_retired_prediction_error_node(LIVE)
     assert not is_retired_prediction_error_node("node:prediction.chat_turn")

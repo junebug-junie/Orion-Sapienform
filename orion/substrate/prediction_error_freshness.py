@@ -74,8 +74,16 @@ PREDICTION_ERROR_MISSING_REASON_KEY = "prediction_error_missing_reason"
 # stays in substrate_codebase_delta_log for the Hub co-creation tab and Orion's
 # self-study reader; only the prediction-error node, its field receipt and its
 # history rows are gone.
+#
+# node:substrate.harness_closure joined 2026-11-16 (retire step 7, history
+# fence): a fixed 0.65 written on every unresolved harness closure, never a
+# measured size. Its producer was removed 2026-11-11 (retire step 3) and its
+# readers were fenced by the glossary value-kind rule (no entry = not a
+# measurement); listing it here makes every generic reader drop its lingering
+# history rows and close any tracked episode, the same as the others.
 RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
     {
+        "node:substrate.harness_closure",
         "node:substrate.bus_synaptic",
         "node:substrate.route",
         "node:substrate.chat",

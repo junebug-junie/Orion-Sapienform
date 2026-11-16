@@ -432,6 +432,17 @@ class PostgresStore:
                                                   else s.get(c) for c in JOINT_SCORE_COLS) + (s["joint_id"],)
                                             for s in joint_scores])
 
+    def family_champion_pool(self, prefix: str, since: datetime, max_horizon_min: int) -> list[dict]:
+        """Scored champion rows of every family reading (``series_id`` starting with ``prefix``) with targets
+        at or after ``since``, for the per-reading adaptive range (app/adaptive.py). ``owner`` = the rung that
+        served the row (family rows store it as ``model``). starts_with, never a string range: the live
+        collation is en_US.utf8 (#3334)."""
+        return self._all(
+            "SELECT series_id, origin_ts, target_ts, horizon_min, point, actual, interval_source, in_80, "
+            "model AS owner FROM prediction_forecast WHERE starts_with(series_id, %s) AND role = 'champion' "
+            "AND score_status = 'scored' AND target_ts >= %s AND horizon_min <= %s",
+            (prefix, since, max_horizon_min))
+
     def family_recent_scored(self, family: str, since: datetime) -> list[dict]:
         """Scored joint rows with targets after ``since`` (the adaptive difficulty)."""
         return self._all("SELECT horizon_min, target_ts, d2, n_observed FROM prediction_joint_surprise "

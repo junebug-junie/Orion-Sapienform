@@ -12,8 +12,6 @@ from orion.core.schemas.frontier_curiosity import (
 from orion.core.schemas.frontier_expansion import FrontierExpansionRequestV1
 from orion.core.schemas.frontier_landing import FrontierLandingRequestV1
 from orion.core.schemas.cognitive_substrate import BaseSubstrateNodeV1
-from orion.graph_cognition.brief import MetacogPerceptionBriefV1
-from orion.graph_cognition.interpreters import GraphCognitionReportV1
 from orion.substrate.frontier_expansion import FrontierExpansionResultV1, FrontierExpansionService
 from orion.substrate.frontier_landing import FrontierLandingEvaluator, FrontierLandingExecutionResultV1
 from orion.substrate.query_planning import (
@@ -43,8 +41,6 @@ class FrontierCuriosityEvaluator:
         *,
         anchor_scope: str,
         subject_ref: str | None,
-        cognition_report: GraphCognitionReportV1,
-        perception_brief: MetacogPerceptionBriefV1,
         operator_requested: bool = False,
         query_cache_enabled: bool = True,
         endogenous_signals: list[FrontierInvocationSignalV1] | None = None,
@@ -72,8 +68,6 @@ class FrontierCuriosityEvaluator:
             subject_ref=subject_ref,
             all_nodes=all_nodes,
             query_coordinator=coordinator,
-            cognition_report=cognition_report,
-            perception_brief=perception_brief,
             operator_requested=operator_requested,
         )
         # Rung 5: intrinsic curiosity_candidate seeds (endogenous_curiosity.py)
@@ -98,7 +92,7 @@ class FrontierCuriosityEvaluator:
             ],
         )
 
-    def _derive_signals(self, *, anchor_scope: str, subject_ref: str | None, all_nodes: list[BaseSubstrateNodeV1], query_coordinator: SubstrateSemanticReadCoordinator, cognition_report: GraphCognitionReportV1, perception_brief: MetacogPerceptionBriefV1, operator_requested: bool) -> list[FrontierInvocationSignalV1]:
+    def _derive_signals(self, *, anchor_scope: str, subject_ref: str | None, all_nodes: list[BaseSubstrateNodeV1], query_coordinator: SubstrateSemanticReadCoordinator, operator_requested: bool) -> list[FrontierInvocationSignalV1]:
         signals: list[FrontierInvocationSignalV1] = []
 
         # `ontology_sparse_region` (-> `ontology_expand`) was retired 2026-10-10.
@@ -125,41 +119,22 @@ class FrontierCuriosityEvaluator:
         #     and jsonb_array_length(coalesce(s->'focal_edge_refs','[]')) > 0
         #   order by c.generated_at desc limit 10;
 
-        if cognition_report.contradiction_candidates.candidates:
-            contradiction_ids = [c.node_id for c in cognition_report.contradiction_candidates.candidates]
-            node_refs, edge_refs = self._select_region(zone="concept_graph", preferred_node_ids=contradiction_ids, query_coordinator=query_coordinator)
-            signals.append(
-                FrontierInvocationSignalV1(
-                    signal_type="contradiction_hotspot",
-                    anchor_scope=anchor_scope,
-                    subject_ref=subject_ref,
-                    target_zone="concept_graph",
-                    task_type_candidate="contradiction_discovery",
-                    focal_node_refs=node_refs,
-                    focal_edge_refs=edge_refs,
-                    signal_strength=min(1.0, 0.5 + (0.1 * len(contradiction_ids))),
-                    evidence_summary="active contradiction candidate cluster",
-                    confidence=0.8,
-                )
-            )
-
-        if cognition_report.concept_drift.active:
-            concept_ids = [node.node_id for node in all_nodes if node.node_kind in {"concept", "hypothesis"}]
-            node_refs, edge_refs = self._select_region(zone="concept_graph", preferred_node_ids=concept_ids, query_coordinator=query_coordinator)
-            signals.append(
-                FrontierInvocationSignalV1(
-                    signal_type="concept_instability",
-                    anchor_scope=anchor_scope,
-                    subject_ref=subject_ref,
-                    target_zone="concept_graph",
-                    task_type_candidate="relation_discovery",
-                    focal_node_refs=node_refs,
-                    focal_edge_refs=edge_refs,
-                    signal_strength=max(0.0, cognition_report.concept_drift.drift_score),
-                    evidence_summary="concept drift active from deterministic cognition",
-                    confidence=cognition_report.concept_drift.confidence,
-                )
-            )
+        # Four report-driven branches were retired 2026-11-16 (#3393, Patch F):
+        # contradiction_hotspot, concept_instability (drift),
+        # unresolved_pressure_region (goal pressure) and the identity-conflict
+        # self_relationship candidate. Their only live caller (the endogenous
+        # curiosity tick) fed them a hardcoded "all calm" report, so none fired
+        # in 30 days of stored candidates; the real interpreter
+        # (orion/graph_cognition, deleted with them) read drift as a function of
+        # node count, not change. Kill means kill: no flag, no fallback.
+        # See docs/superpowers/specs/2026-11-15-patch-f-curiosity-tick-stub-proposal.md.
+        #
+        # If you add a contradiction / goal / tension producer: the durable
+        # substrate store refuses every node kind outside
+        # DURABLE_NODE_KINDS (orion/substrate/falkor_codec.py) at write time,
+        # before its cache, so such nodes never reach this evaluator. Widen that
+        # whitelist (with a decoder) in the same patch as the producer, then
+        # build the consumer here with its own metric-gate record and test.
 
         gap_markers = [n.node_id for n in all_nodes if bool(n.metadata.get("frontier_hypothesis_marker"))]
         if len(gap_markers) >= 2:
@@ -179,24 +154,6 @@ class FrontierCuriosityEvaluator:
                 )
             )
 
-        if cognition_report.goal_pressure.pressure_score >= 0.7:
-            high_pressure = [n.node_id for n in all_nodes if float(n.metadata.get("dynamic_pressure") or 0.0) >= 0.7]
-            node_refs, edge_refs = self._select_region(zone="autonomy_graph", preferred_node_ids=high_pressure, query_coordinator=query_coordinator)
-            signals.append(
-                FrontierInvocationSignalV1(
-                    signal_type="unresolved_pressure_region",
-                    anchor_scope=anchor_scope,
-                    subject_ref=subject_ref,
-                    target_zone="autonomy_graph",
-                    task_type_candidate="autonomy_hypothesis",
-                    focal_node_refs=node_refs,
-                    focal_edge_refs=edge_refs,
-                    signal_strength=cognition_report.goal_pressure.pressure_score,
-                    evidence_summary="goal pressure state above conservative threshold",
-                    confidence=cognition_report.goal_pressure.confidence,
-                )
-            )
-
         if operator_requested:
             top_nodes = [node.node_id for node in all_nodes[: self._max_focal_nodes]]
             node_refs, edge_refs = self._select_region(zone="concept_graph", preferred_node_ids=top_nodes, query_coordinator=query_coordinator)
@@ -213,23 +170,6 @@ class FrontierCuriosityEvaluator:
                     evidence_summary="explicit operator-approved curiosity invocation",
                     confidence=0.95,
                     notes=["operator_override"],
-                )
-            )
-
-        if perception_brief.overall_priority == "stabilize" and cognition_report.identity_conflict.active:
-            node_refs, edge_refs = self._select_region(zone="self_relationship_graph", preferred_node_ids=[n.node_id for n in all_nodes if n.subject_ref == subject_ref], query_coordinator=query_coordinator)
-            signals.append(
-                FrontierInvocationSignalV1(
-                    signal_type="curiosity_candidate",
-                    anchor_scope=anchor_scope,
-                    subject_ref=subject_ref,
-                    target_zone="self_relationship_graph",
-                    task_type_candidate="self_or_relationship_hypothesis",
-                    focal_node_refs=node_refs,
-                    focal_edge_refs=edge_refs,
-                    signal_strength=0.52,
-                    evidence_summary="identity conflict present but strict-zone constraints apply",
-                    confidence=0.55,
                 )
             )
 
@@ -313,7 +253,7 @@ class FrontierCuriosityEvaluator:
             request_payload_summary=f"{decision.chosen_task_type} over bounded region ({len(decision.chosen_focal_node_refs)} nodes)",
             selected_node_refs=decision.chosen_focal_node_refs,
             selected_edge_refs=decision.chosen_focal_edge_refs,
-            selected_graph_cognition_refs=["GraphCognitionReportV1", "MetacogPerceptionBriefV1"],
+            selected_graph_cognition_refs=[],
             task_type=decision.chosen_task_type,
             target_zone=decision.target_zone,
             expected_safety_posture=expected_posture,
@@ -392,15 +332,11 @@ class FrontierCuriosityOrchestrator:
         *,
         anchor_scope: str,
         subject_ref: str | None,
-        cognition_report: GraphCognitionReportV1,
-        perception_brief: MetacogPerceptionBriefV1,
         operator_requested: bool = False,
     ) -> FrontierCuriosityExecutionV1:
         invocation = self._curiosity_evaluator.evaluate(
             anchor_scope=anchor_scope,
             subject_ref=subject_ref,
-            cognition_report=cognition_report,
-            perception_brief=perception_brief,
             operator_requested=operator_requested,
         )
         if invocation.decision.outcome != "invoke" or invocation.plan is None:

@@ -100,6 +100,15 @@ def test_endogenous_curiosity_routes_seeds_through_evaluator(monkeypatch):
     kwargs = evaluator_cls.return_value.evaluate.call_args.kwargs
     assert kwargs["operator_requested"] is False
     assert kwargs["endogenous_signals"] == [seed]
+    # The mock accepts any kwargs, so bind them against the REAL signature: a
+    # caller still passing a retired argument (the "all calm" cognition_report /
+    # perception_brief stub, #3393) would fail every tick, quietly.
+    import inspect
+
+    from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator as RealEvaluator
+
+    inspect.signature(RealEvaluator.evaluate).bind(None, **kwargs)
+    assert "cognition_report" not in kwargs and "perception_brief" not in kwargs
 
 
 def test_endogenous_curiosity_fails_open_on_evaluator_error(monkeypatch):

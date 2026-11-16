@@ -11,11 +11,10 @@ from pydantic import BaseModel, ConfigDict, Field, model_serializer
 from orion.core.schemas.cognitive_substrate import SubstrateAnchorScopeV1
 from orion.core.schemas.frontier_expansion import FrontierExpansionRequestV1, FrontierTargetZoneV1, FrontierTaskTypeV1
 
+# concept_instability, contradiction_hotspot and unresolved_pressure_region were
+# retired 2026-11-16 with their producer branches (#3393, Patch F).
 FrontierInvocationSignalTypeV1 = Literal[
-    "concept_instability",
-    "contradiction_hotspot",
     "evidence_gap_cluster",
-    "unresolved_pressure_region",
     "explicit_operator_request",
     "curiosity_candidate",
     "world_coverage_gap",

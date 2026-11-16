@@ -61,23 +61,6 @@ class SubstrateQueryExecutionV1:
 
 class SubstrateQueryPlanner:
     @staticmethod
-    def graph_view_basis(*, subject_ref: str | None, max_nodes: int, max_edges: int) -> SubstrateQueryPlanV1:
-        bounded_nodes = max(1, int(max_nodes))
-        bounded_edges = max(1, int(max_edges))
-        return SubstrateQueryPlanV1(
-            plan_kind="graph_view_basis",
-            steps=(
-                SubstrateQueryPlanStepV1("hotspot_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
-                SubstrateQueryPlanStepV1("concept_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
-                SubstrateQueryPlanStepV1("contradiction_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
-                SubstrateQueryPlanStepV1(
-                    "provenance_neighborhood",
-                    {"evidence_ref": str(subject_ref or ""), "limit_nodes": bounded_nodes, "limit_edges": bounded_edges},
-                ),
-            ),
-        )
-
-    @staticmethod
     def consolidation_region(*, target_zone: str, focal_node_refs: list[str], max_nodes: int, max_edges: int) -> SubstrateQueryPlanV1:
         bounded_nodes = max(1, int(max_nodes))
         bounded_edges = max(1, int(max_edges))

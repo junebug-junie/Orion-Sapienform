@@ -10,7 +10,6 @@ from orion.core.schemas.substrate_consolidation import (
     GraphReviewCycleRecordV1,
     GraphStateDeltaDigestV1,
 )
-from orion.graph_cognition.interpreters import GraphCognitionReportV1
 from orion.substrate.frontier_landing import FrontierLandingExecutionResultV1
 from orion.substrate.query_planning import SubstrateQueryExecutionMetaV1, SubstrateQueryPlanner, SubstrateSemanticReadCoordinator
 from orion.substrate.store import SubstrateGraphStore, SubstrateQueryResultV1
@@ -39,7 +38,6 @@ class GraphConsolidationEvaluator:
         *,
         request: GraphConsolidationRequestV1,
         prior_cycle: GraphReviewCycleRecordV1 | None = None,
-        cognition_report: GraphCognitionReportV1 | None = None,
         landing_result: FrontierLandingExecutionResultV1 | None = None,
         max_region_nodes: int | None = None,
         max_region_edges: int | None = None,
@@ -117,7 +115,6 @@ class GraphConsolidationEvaluator:
             mean_pressure=mean_pressure,
             isolated_frontier_count=isolated_frontier_count,
             digest=digest,
-            cognition_report=cognition_report,
             landing_result=landing_result,
         )
 
@@ -264,7 +261,6 @@ class GraphConsolidationEvaluator:
         mean_pressure: float,
         isolated_frontier_count: int,
         digest: GraphStateDeltaDigestV1,
-        cognition_report: GraphCognitionReportV1 | None,
         landing_result: FrontierLandingExecutionResultV1 | None,
     ) -> list[GraphConsolidationDecisionV1]:
         decisions: list[GraphConsolidationDecisionV1] = []
@@ -380,19 +376,10 @@ class GraphConsolidationEvaluator:
                 )
             )
 
-        if cognition_report and cognition_report.goal_pressure.pressure_score > 0.75 and request.target_zone == "autonomy_graph":
-            decisions.append(
-                GraphConsolidationDecisionV1(
-                    target_refs=node_ids[:8],
-                    outcome="maintain_priority",
-                    reason="goal pressure remains elevated in autonomy zone",
-                    confidence=cognition_report.goal_pressure.confidence,
-                    zone=request.target_zone,
-                    priority=88,
-                    notes=["autonomy_pressure_followup"],
-                    evidence_summary="goal pressure state from cognition report",
-                )
-            )
+        # The goal-pressure "maintain_priority" branch was retired 2026-11-16
+        # (#3393, Patch F): it read a GraphCognitionReportV1 that no live caller
+        # passed (review_runtime.py is the only one), and orion/graph_cognition
+        # was deleted with it.
 
         if landing_result and landing_result.landing_result.materialization_summary.get("materialized_items", 0) == 0:
             decisions.append(

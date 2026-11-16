@@ -16,7 +16,6 @@ filters:
   prefer_tags_boost: 0.2
 relevance:
   backend_weights:
-    active_packet: 1.0
     cards: 0.75
     rdf: 0.55
     rdf_chat: 0.35

@@ -12,7 +12,6 @@ render_lane: belief
 enable_graphiti: true
 relevance:
   backend_weights:
-    active_packet: 1.0
     cards: 0.6
     rdf: 0.5
     graphiti: 0.45

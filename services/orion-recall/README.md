@@ -62,7 +62,7 @@ When cortex-exec logs `RPC timeout waiting on orion:exec:result:RecallService:..
 
 Provenance: `.env_example` → `docker-compose.yml` → `services/orion-recall/app/settings.py`
 
-**Gotcha: `docker exec ... env` does not prove what this service actually reads.** This service's `Dockerfile` does `COPY services/orion-recall /app` at build time, baking `.env` directly into the image; `settings.py`'s pydantic-settings `Config` also declares `env_file=".env"`, so it reads that baked-in file directly, not just docker-compose's `environment:` list. `docker exec orion-<node>-recall env` only shows the OS-level environment docker-compose actually injected -- if a key exists in `.env`/`.env_example` but is missing from `docker-compose.yml`'s `environment:` block, `docker exec ... env` will show nothing for it even though the app is reading a real value from the baked-in file. This bit real verification once (`RECALL_GRAPHITI_IN_CHAT`, 2026-07-13) -- the correct way to check what this service actually sees is to ask its own `Settings` object directly:
+**Gotcha: `docker exec ... env` does not prove what this service actually reads.** This service's `Dockerfile` does `COPY services/orion-recall /app` at build time, baking `.env` directly into the image; `settings.py`'s pydantic-settings `Config` also declares `env_file=".env"`, so it reads that baked-in file directly, not just docker-compose's `environment:` list. `docker exec orion-<node>-recall env` only shows the OS-level environment docker-compose actually injected -- if a key exists in `.env`/`.env_example` but is missing from `docker-compose.yml`'s `environment:` block, `docker exec ... env` will show nothing for it even though the app is reading a real value from the baked-in file. This bit real verification once (`RECALL_GRAPHITI_IN_CHAT`, 2026-07-13; key retired #3461) -- the correct way to check what this service actually sees is to ask its own `Settings` object directly:
 
 ```bash
 docker exec orion-<node>-recall python -c "from app.settings import settings; print(settings.<KEY>)"
@@ -100,7 +100,7 @@ Chatturn-only read path standing in for RDF's chat-turn fetch. **Live as of 2026
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
-| `RECALL_FALKOR_IN_CHAT` | `true` (code-level pydantic default stays `False` -- a safe fallback for any environment that hasn't set this key at all) | When `true`, `app/storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments` **swaps in** for the RDF chatturn fetch in `_query_backends` -- not additive like `RECALL_GRAPHITI_IN_CHAT` (that merges an extra rail; this replaces one, since the point of this migration is retiring RDF). Independent of `RECALL_ENABLE_RDF`. Only covers chatturn fragments (prompt/response text). |
+| `RECALL_FALKOR_IN_CHAT` | `true` (code-level pydantic default stays `False` -- a safe fallback for any environment that hasn't set this key at all) | When `true`, `app/storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments` **swaps in** for the RDF chatturn fetch in `_query_backends` -- not additive like the retired (#3461) `RECALL_GRAPHITI_IN_CHAT` (that merged an extra rail; this replaces one, since the point of this migration is retiring RDF). Independent of `RECALL_ENABLE_RDF`. Only covers chatturn fragments (prompt/response text). |
 | `RECALL_FALKOR_NEIGHBORHOOD_IN_CHAT` | `true` (code-level pydantic default stays `False` -- a safe fallback for any environment that hasn't set this key at all) | The last live Fuseki read path in this service -- `storage/rdf_adapter.py`'s generic `fetch_rdf_fragments` (confirmed live 2026-07-22 via direct Fuseki container log read, not dead code). When `true`, `app/storage/falkor_neighborhood_adapter.py::fetch_falkor_neighborhood_fragments` **swaps in**: keyword-matches real `:Entity` nodes and walks `MENTIONS_ENTITY` to `:ChatTurn`s, rather than a blind SPARQL `?s ?p ?o` scan. Three disclosed, not-fully-closed scope differences from the RDF version -- see the module's own docstring: (1) entity-name matches only, not any triple; (2) `chat.history`-sourced turns only, not social-room/enrichment content; (3) `CONTAINS` is not word-bounded, so short keywords can still false-positive inside an unrelated entity name (live example: "nico" matched only "unicode"). A stopword filter closes the larger live-confirmed instance of (3) (generic words like "and" matching dozens of unrelated entities) but not all of it. Flipped live 2026-07-23 after a direct live test against a running container confirmed real, non-empty, sensible matches. |
 | `FALKORDB_URI` | `redis://orion-athena-falkordb:6379` | Same shared instance as the substrate collector above -- not a new dependency. |
 | `FALKORDB_RECALL_GRAPH` | `orion_recall` | Read directly from the environment by `app/recall_falkor_store.py` (same "no pydantic field, must be listed in docker-compose's `environment:`" constraint as `FALKORDB_SUBSTRATE_GRAPH` above -- this service has no `env_file:` directive). |
@@ -188,8 +188,8 @@ Design: `docs/superpowers/specs/2026-09-29-recall-retrieval-query-architecture-d
 - **Feeds vs retrievers.** Query-independent context feeds (bus anomalies, recent Falkor chat, SQL chat pairs/messages, SQL timeline recent + related) run **once** per recall. Query-dependent retrievers (Falkor neighborhood, RDF, cards on the first sub-query, graph compression, anchor rail) run per sub-query. All of it runs concurrently, at most `RECALL_FETCH_CONCURRENCY` units at a time (default 4, anchor rail included), which also caps the fetch stage's Postgres connections per recall. Sync adapters (RDF, anchor RDF, v2 shadow) run in threads; a thread still running when the deadline fires keeps its connection until it finishes.
 - **Deadline.** One budget for the fetch: 80% of the caller's `deadline_ms`, else `RECALL_DEADLINE_MS_DEFAULT`. On expiry, pending backends are cancelled, completed ones are kept, and the decision says `deadline_hit=true`. The entity boost and v2 shadow compare only use what is left of the budget. The shadow compare only runs when the bundle is empty or vector-topped (main's effective triggers).
 - **`mode=context_only`.** Feeds only: no retrievers, no expansion, no boost (for verbs with no user text, e.g. reverie).
-- **Telemetry.** `recall.decision.v1` and `recall_telemetry` carry `query_chars`, `retrieval_query_source`, `sub_query_count`, `candidates_fetched`, `candidates_kept`, `deadline_hit`, `timings_ms` (`intake`, `feeds`, `retrievers`, `fetch`, `windowing`, `suppression`, `pcr_collectors` with `pcr_active_packet`/`pcr_concept_region`, `boost`, `fusion`, `eligible_count`, `shadow_compare`, `total`; feeds/retrievers are the slowest unit in each group since units overlap, and the top-level stages add up to roughly `total`). `latency_ms` is now end-to-end.
-- **PCR collectors under the deadline.** For purposeful (belief) recall, `active_packet` and `concept_region` run concurrently inside what is left of the recall deadline; one still running at the deadline is dropped, `deadline_hit` is set, and the rest of the recall is kept. There is no substrate warm-up any more: since 2026-10-06 `concept_region` reads FalkorDB directly with bounded queries and never loads the substrate graph (see §15).
+- **Telemetry.** `recall.decision.v1` and `recall_telemetry` carry `query_chars`, `retrieval_query_source`, `sub_query_count`, `candidates_fetched`, `candidates_kept`, `deadline_hit`, `timings_ms` (`intake`, `feeds`, `retrievers`, `fetch`, `windowing`, `suppression`, `pcr_collectors` with `pcr_concept_region`, `boost`, `fusion`, `eligible_count`, `shadow_compare`, `total`; feeds/retrievers are the slowest unit in each group since units overlap, and the top-level stages add up to roughly `total`). `latency_ms` is now end-to-end.
+- **PCR collectors under the deadline.** For purposeful (belief) recall, `concept_region` runs inside what is left of the recall deadline (the `active_packet` collector was retired, see §16); still running at the deadline, it is dropped, `deadline_hit` is set, and the rest of the recall is kept. There is no substrate warm-up any more: since 2026-10-06 `concept_region` reads FalkorDB directly with bounded queries and never loads the substrate graph (see §15).
 
 | Variable | Default | Notes |
 | :--- | :--- | :--- |
@@ -216,7 +216,6 @@ Eval: `python services/orion-recall/evals/run_recall_bounded_retrieval_eval.py` 
 | `RECALL_ENABLE_CARDS` | `true` | When `true` and `RECALL_PG_DSN` is set, recall scores `memory_cards` rows as `source=cards`. |
 | `RECALL_CARDS_TIMEOUT_SEC` | `2.5` | Per-query cards rail budget (embedding + Postgres). |
 | `RECALL_CARDS_MAX_NEIGHBORS` | `6` | 1-hop graph neighbor fan-out cap. |
-| `RECALL_CARDS_EMBEDDING_URL` | derived | Defaults to `RECALL_VECTOR_EMBEDDING_URL` or `http://orion-athena-vector-host:8320/embedding`. |
 | `RECALL_CARDS_EMBED_TIMEOUT_SEC` | `5.0` | HTTP timeout per embed call to vector-host. |
 | `RECALL_CARDS_MIN_SIMILARITY` | `0.32` | Minimum cosine similarity vs query embedding. |
 | `RECALL_CARDS_EMBED_CONCURRENCY` | `4` | Parallel embed requests when warming card caches. |
@@ -451,10 +450,6 @@ If you see `rdf_chat` counts high but your desired quote didn’t appear in the 
 Vector is *always* 0 -- vector retrieval was removed from orion-recall in
 May 2026 (`RECALL_ENABLE_VECTOR` defaults `false`, `app/source_policy.py`
 always returns `allowed=False`). This is expected, not a bug to chase.
-
-### D) Verify what real chat turns actually recalled (crystallizations)
-
-`app/collectors/active_packet.py::fetch_active_packet_fragments()` (real `chat_general` PCR calls, not the Hub API route) logs every non-empty retrieval to `memory_crystallization_retrieval_events` — same table Hub's `/api/memory/active-packet` route writes to. Query by `session_id` to see exactly which `crystallization_ids` a given turn actually pulled in, and the fusion `trace` (rails, hit counts) that produced them. Empty-result retrievals are not logged (no empty-shell rows).
 
 ---
 
@@ -856,12 +851,12 @@ Note this only affects *scoring* (a continuous, soft decay) — it does not give
 
 ### Compose env-var defaults hardened (fixed 2026-07-14)
 
-`docker-compose.yml`'s `environment:` list (added by the compose-parity PR, #1021) crash-looped this service in production: `RECALL_SKIP_MAX_NOVELTY`, `RECALL_SKIP_SHIFT_NOVELTY_FLOOR`, `RECALL_CONTINUITY_SQL_MINUTES`, `RECALL_CONTINUITY_RENDER_BUDGET`, `RECALL_BELIEF_RENDER_BUDGET`, and `RECALL_CRYSTALLIZATION_VECTOR_COLLECTION` were missing from live `.env` and had no `${VAR:-default}` fallback, so compose substituted empty strings and pydantic Settings validation failed on every boot (`float_parsing`/`int_parsing` errors). Fixed live by syncing the missing keys into `.env` (`python scripts/sync_local_env_from_example.py --all-keys orion-recall`) and, in this changeset, adding compose-level `:-default` fallbacks matching `.env_example` so a missing `.env` key can't crash the service again — see `services/orion-recall/tests/test_docker_compose_numeric_defaults.py`. `RECALL_GRAPHITI_IN_CHAT`/`RECALL_GRAPHITI_ADAPTER_URL` remain deliberately unguarded (see the comment above them in `docker-compose.yml`) — they're `NEVER_SYNC_KEYS`-protected and a duplicated default here would drift from `.env_example` over time.
+`docker-compose.yml`'s `environment:` list (added by the compose-parity PR, #1021) crash-looped this service in production: `RECALL_SKIP_MAX_NOVELTY`, `RECALL_SKIP_SHIFT_NOVELTY_FLOOR`, `RECALL_CONTINUITY_SQL_MINUTES`, `RECALL_CONTINUITY_RENDER_BUDGET`, `RECALL_BELIEF_RENDER_BUDGET`, and `RECALL_CRYSTALLIZATION_VECTOR_COLLECTION` were missing from live `.env` and had no `${VAR:-default}` fallback, so compose substituted empty strings and pydantic Settings validation failed on every boot (`float_parsing`/`int_parsing` errors). Fixed live by syncing the missing keys into `.env` (`python scripts/sync_local_env_from_example.py --all-keys orion-recall`) and, in this changeset, adding compose-level `:-default` fallbacks matching `.env_example` so a missing `.env` key can't crash the service again — see `services/orion-recall/tests/test_docker_compose_numeric_defaults.py`. `RECALL_GRAPHITI_IN_CHAT`/`RECALL_GRAPHITI_ADAPTER_URL` were left unguarded at the time (`NEVER_SYNC_KEYS`-protected); both were retired with the `active_packet` collector in #3461.
 
 ## 15) Concept-region collector (substrate concept graph in belief-lane recall)
 
-`app/collectors/concept_region.py::fetch_concept_region_fragment()` is a PCR collector
-alongside `active_packet`, wired into `process_recall`'s purposeful phase in `app/worker.py`.
+`app/collectors/concept_region.py::fetch_concept_region_fragment()` is the PCR collector
+wired into `process_recall`'s purposeful phase in `app/worker.py`.
 It matches the current turn's text against concept labels already materialized in the
 shared substrate graph (golden Orion/Juniper/Claude/relationship concepts seeded by `orion-hub`,
 plus organically-grown topic-foundry concepts) and, on a match, returns a bounded
@@ -964,3 +959,21 @@ that hash pattern again, that's this same failure mode recurring, not a new bug 
 `git log` for the responsible commit before assuming the running container is also affected
 (a running container built from an earlier good image is not automatically broken by a bad
 commit landing on `main` afterward, but the next rebuild would be).
+
+## 16) What the Juniper chat prompt's DURABLE MEMORY may carry (issue #3461)
+
+The two PCR phases (`recall_phase=continuity` and `purposeful`) are called only by
+`orion-cortex-exec`'s `pcr_chat_memory.py` and build the chat prompt's DURABLE MEMORY.
+Four sources were cut from that path on 2026-11-15, because live prompts showed only noise:
+
+| Cut | Where | How |
+|---|---|---|
+| AI Town NPC chatter | `sql_chat.fetch_chat_history_pairs` unions `aitown_chat_history_log` | `apply_chat_memory_exclusions()` sets `sql_chat_include_aitown=False`; the query scans `chat_history_log` only. |
+| Bus hop-latency z-scores | `bus_synaptic_anomaly` feed | `apply_chat_memory_exclusions()` sets `enable_bus_synaptic_anomaly=False`; the fetch never runs. |
+| `active_packet` "durable beliefs" | `app/collectors/active_packet.py` | Collector deleted, removed from every intent plan and belief profile, with its settings (`RECALL_ACTIVE_PACKET_ENABLED`, `RECALL_GRAPHITI_*`, `RECALL_CRYSTALLIZATION_VECTOR_COLLECTION`, `RECALL_CARDS_EMBEDDING_URL`). Crystallizations stay in Postgres; Hub's `/api/memory/active-packet` route is unchanged. |
+| Topic-foundry concepts | `concept_region` collector | Nodes with id prefix `sub-concept-topicfoundry-` and edges touching them are dropped before render and before reinforcement. |
+
+Other recall profiles (`reflect.v1`, `social.room.v1`, journals) still get the AI Town union
+and the bus anomaly feed. The exclusions apply only when `RECALL_PCR_ENABLED` is true, which
+is the only mode in which cortex-exec sends the continuity/purposeful phases. An empty continuity or belief digest now renders as an empty
+string, not a bare header.

@@ -33,7 +33,6 @@ from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, Rec
 
 def _base_worker_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker.settings, "RECALL_PCR_ENABLED", True)
-    monkeypatch.setattr(worker.settings, "RECALL_ACTIVE_PACKET_ENABLED", False)
     monkeypatch.setattr(worker.settings, "RECALL_BELIEF_RENDER_BUDGET", 128)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_CHAT", False)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_TIMELINE", False)

@@ -17,6 +17,5 @@ filters:
   prefer_tags_boost: 0.2
 relevance:
   backend_weights:
-    active_packet: 1.0
     cards: 0.65
   enable_recency: false

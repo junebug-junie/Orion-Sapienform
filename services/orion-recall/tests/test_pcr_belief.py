@@ -14,7 +14,6 @@ if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 
 from app import worker
-from app.collectors.active_packet import fetch_active_packet_fragments
 from app.fusion import pcr_fuse_belief_candidates
 from app.pcr_collectors import collectors_for_intent
 from app.profiles import get_profile
@@ -33,53 +32,29 @@ def test_belief_profiles_load():
         assert profile["profile"] == name
         assert profile["render_lane"] == "belief"
         assert profile["sql_chat_top_k"] == 0
-        assert float(profile["relevance"]["backend_weights"]["active_packet"]) == 1.0
+        # Retired from chat (#3461): no weight left behind for a source that never runs.
+        assert "active_packet" not in profile["relevance"]["backend_weights"]
 
 
 def test_collectors_for_intent_semantic():
     plan = collectors_for_intent("semantic")
-    assert plan["active_packet"] is True
     assert plan["cards"] is True
     assert plan["rdf"] is True
 
 
-@pytest.mark.asyncio
-async def test_active_packet_maps_crystallization_to_fragment():
-    fake_packet = type(
-        "Pkt",
-        (),
-        {
-            "items": [
-                {
-                    "crystallization_id": "crys_abc",
-                    "summary": "Move solo",
-                    "salience": 0.9,
-                    "kind": "semantic",
-                    "bucket": "semantic",
-                }
-            ]
-        },
-    )()
-    with patch("app.collectors.active_packet.list_crystallizations", new=AsyncMock(return_value=[])), patch(
-        "app.collectors.active_packet.retrieve_active_packet", new=AsyncMock(return_value=fake_packet)
-    ):
-        frags = await fetch_active_packet_fragments(
-            query=type(
-                "Q",
-                (),
-                {"session_id": "s1", "node_id": "n1", "retrieval_intent": "semantic", "fragment": "move logistics"},
-            )(),
-            pool=object(),
-            settings=type("S", (), {"RECALL_ACTIVE_PACKET_ENABLED": True})(),
-        )
-    assert frags[0]["source"] == "active_packet"
-    assert "Move solo" in frags[0]["snippet"]
+def test_no_intent_plans_active_packet_or_graphiti():
+    """#3461: the active_packet digest (and the graphiti walk that rode on it)
+    is retired from chat recall for every intent, not just weighted down."""
+    for intent in ("relational", "semantic", "procedural", "open_loop", "contradiction"):
+        plan = collectors_for_intent(intent)
+        assert "active_packet" not in plan
+        assert "graphiti" not in plan
 
 
-def test_pcr_fuse_belief_candidates_ranks_active_packet_and_drops_social():
+def test_pcr_fuse_belief_candidates_ranks_concept_region_and_drops_social():
     candidates = [
         {"id": "card-1", "source": "cards", "snippet": "Card belief", "score": 0.95},
-        {"id": "ap-1", "source": "active_packet", "snippet": "Move solo logistics", "score": 0.9},
+        {"id": "cr-1", "source": "concept_region", "snippet": "Move solo logistics", "score": 0.9},
         {"id": "social-1", "source": "cards", "snippet": "User: hey\nAssistant: hi there", "score": 0.99},
     ]
     profile = {
@@ -97,12 +72,12 @@ def test_pcr_fuse_belief_candidates_ranks_active_packet_and_drops_social():
     )
     assert "purposeful recall" in bundle.rendered
     assert "hey" not in bundle.rendered.lower()
-    assert bundle.items[0].source == "active_packet"
+    assert bundle.items[0].source == "concept_region"
 
 
 def test_worker_uses_purposeful_fusion_when_phase_purposeful(monkeypatch):
     monkeypatch.setattr(worker.settings, "RECALL_PCR_ENABLED", True)
-    monkeypatch.setattr(worker.settings, "RECALL_ACTIVE_PACKET_ENABLED", True)
+    monkeypatch.setattr(worker.settings, "RECALL_CONCEPT_REGION_ENABLED", False)
     monkeypatch.setattr(worker.settings, "RECALL_BELIEF_RENDER_BUDGET", 128)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_CHAT", False)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_TIMELINE", False)
@@ -117,7 +92,6 @@ def test_worker_uses_purposeful_fusion_when_phase_purposeful(monkeypatch):
 
     fuse_called = []
     belief_fuse_called = []
-    active_packet_called = []
 
     def _mock_fuse(**kwargs):
         fuse_called.append(kwargs)
@@ -127,15 +101,10 @@ def test_worker_uses_purposeful_fusion_when_phase_purposeful(monkeypatch):
         belief_fuse_called.append(kwargs)
         return MemoryBundleV1(rendered="belief ok", stats=MemoryBundleStatsV1()), []
 
-    async def _mock_active_packet(query, *, pool, settings):
-        active_packet_called.append(query)
-        return [{"id": "ap-1", "source": "active_packet", "snippet": "Move solo", "score": 0.9}]
-
     monkeypatch.setattr(worker, "_fetch_anchor_candidates", _anchor)
     monkeypatch.setattr(worker, "_query_backends", AsyncMock(return_value=([], {})))
     monkeypatch.setattr(worker, "fuse_candidates", _mock_fuse)
     monkeypatch.setattr(worker, "pcr_fuse_belief_candidates", _mock_belief_fuse)
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _mock_active_packet)
 
     q = RecallQueryV1(
         fragment="what did we decide about the move",
@@ -150,13 +119,13 @@ def test_worker_uses_purposeful_fusion_when_phase_purposeful(monkeypatch):
 
     bundle, decision = asyncio.run(worker.process_recall(q, corr_id="corr-pcr-belief", diagnostic=True))
 
-    assert active_packet_called
     assert belief_fuse_called
     assert not fuse_called
     assert bundle.rendered == "belief ok"
     assert decision.recall_debug["pcr"]["phase"] == "purposeful"
     assert decision.recall_debug["pcr"]["retrieval_intent"] == "semantic"
-    assert "active_packet" in decision.recall_debug["pcr"]["backend_plan"]
+    assert "active_packet" not in decision.recall_debug["pcr"]["backend_plan"]
+    assert "active_packet_refs" not in decision.recall_debug["pcr"]
 
 
 def test_pcr_phase_preserves_profile_against_intent_routing(monkeypatch):

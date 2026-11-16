@@ -109,8 +109,16 @@ _FIRST_TURN_SQL = text(
 
 def juniper_reply_base_rate(conn: Any, *, opened_at: datetime, horizon_sec: float,
                             days: int = BASE_RATE_DAYS) -> Optional[ReplyBaseRate]:
-    """Read-only. Juniper's logged turns (the resolver also counts an ingress hop with no logged row,
-    an errored turn; the base rate does not, so it can read a little low)."""
+    """Read-only. Juniper's logged turns, on ``created_at``. Two known differences from the resolver,
+    which reads when her turn STARTED (the hub ingress hop) and also counts an errored turn: a row is
+    written 1 to 41 min after the turn starts, so a window can miss a turn at its far edge, and an
+    errored turn is not seen. Both make the rate read a little low (live replay 2026-11-16: mean
+    base rate 0.530 against mean outcome 0.531, so the bias is small). ~5 ms per act live
+    (chat_history_log 1,162 rows; no created_at index needed at this size).
+
+    ``surprise_nats`` on the act is still scored against the pooled posterior; only ``predicted``,
+    ``error`` and the outcome row's baseline are hour-relative. ``predicted_n`` on an outreach act is
+    the number of history days, and ``cold_start`` is False."""
     opened = _aware(opened_at)
     first = conn.execute(_FIRST_TURN_SQL).scalar()
     if first is None:

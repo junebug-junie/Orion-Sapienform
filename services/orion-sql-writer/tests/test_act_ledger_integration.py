@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -661,3 +662,49 @@ def test_chat_reply_acts_are_not_base_rated(session):
     act = _say_act("c-chat")
     _open_say(session, act, "c-chat", t0)
     assert _row(session, act.act_id)["predicted"] == pytest.approx(0.5)
+
+
+def test_outreach_opened_without_a_base_rate_keeps_one_expectation_at_close(session):
+    # Opened with no history (pooled stamp); history appears before the close. The close must not
+    # mix a base-rate baseline with an error against the pooled mean.
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(hours=11)
+    act = _outreach("msg-mixed")
+    _open_say(session, act, "c-mixed", t0)
+    for k in range(1, 31):
+        _chat(session, at=t0 - timedelta(days=k) + timedelta(hours=2), corr=f"hist-{k}")
+    resolve_due_acts(session, now=now)
+    row = _row(session, act.act_id)
+    out = _outcome_row(session, act.act_id)
+    assert row["predicted"] == pytest.approx(0.5)
+    assert out["baseline"] == 0.0 and out["observed_delta"] == row["outcome_value"]
+    assert "usual for this time" not in (row["outcome_note"] or "")
+
+
+def test_a_failing_base_rate_read_does_not_block_the_open(session, monkeypatch):
+    import orion.grammar.act_ledger as al
+
+    def boom(*a, **k):
+        raise RuntimeError("read failed")
+
+    monkeypatch.setattr(al, "juniper_reply_base_rate", boom)
+    act = _outreach("msg-boom")
+    _open_say(session, act, "c-boom", datetime.now(timezone.utc) - timedelta(hours=1))
+    assert _row(session, act.act_id)["predicted"] == pytest.approx(0.5)
+
+
+def test_base_rate_reads_naive_created_at_on_a_non_utc_server_clock(session):
+    # created_at is naive on the server clock; with TimeZone=America/Denver it holds Denver wall time.
+    session.execute(text("SET TimeZone = 'America/Denver'"))
+    now = datetime.now(timezone.utc)
+    t0 = now - timedelta(hours=11)
+    for k in range(1, 31):
+        at = (t0 - timedelta(days=k) + timedelta(hours=2)).astimezone(ZoneInfo("America/Denver"))
+        session.execute(text(
+            "INSERT INTO chat_history_log (id, correlation_id, source, prompt, response, created_at) "
+            "VALUES (:id, :c, 'hub_orion', 'hi', 'r', :at)"),
+            {"id": uuid.uuid4().hex, "c": f"tz-{k}", "at": at.replace(tzinfo=None)})
+    act = _outreach("msg-tz")
+    _open_say(session, act, "c-tz", t0)
+    assert _row(session, act.act_id)["predicted_n"] == 28
+    assert _row(session, act.act_id)["predicted"] == pytest.approx(28.5 / 29)

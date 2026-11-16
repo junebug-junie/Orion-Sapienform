@@ -7,7 +7,8 @@ counts as the outcome, and who settled it. A row that is not settled yet returns
 Vocabulary found live (2026-11-03, 7 days), kept here so a reader can check the mapping:
 
 * ``grammar_acts`` (``orion/grammar/act_ledger.py``): ``predicted`` is the act cell's posterior mean
-  stamped at open (an outreach ``juniper_replied`` act: Juniper's base rate for that time of day, #3392) (or, for a close that arrives before its open, the prior read just before the
+  stamped at open (an outreach ``juniper_replied`` act: Juniper's base rate for that time of day, #3392, so its
+  stated level varies by hour inside one belief_key) (or, for a close that arrives before its open, the prior read just before the
   close's own update -- still pre-outcome). The cell is keyed (verb, actor, signal), so every trigger
   name of one actor shares it: ``belief_key`` carries that key. ``outcome_source`` is ``producer`` (the doer reported), ``resolver`` (Juniper's
   turn did or didn't start) or ``expired`` (no close within horizon + 120 s). A close that never

@@ -573,6 +573,10 @@ def close_act(
     # Outreach (#3392): the outcome row's baseline is Juniper's base rate for the act's time of day,
     # recomputed from days strictly before the open (the same number the open stamped as predicted).
     base = _reply_base_rate(conn, act, opened_at_row) if (exp is not None and not not_graded) else None
+    if base is not None and (predicted_at_open is None or abs(predicted_at_open - base.rate) > 1e-9):
+        # The open did not stamp this base rate (opened before the deploy or with the switch off, or its
+        # read failed): keep the row's baseline and its prediction_error on the same expectation.
+        base = None
     if base is not None and outcome.source == "resolver":
         note = f"{note}; {base.note()}" if note else base.note()
     if exp is not None and not not_graded:

@@ -144,6 +144,6 @@ No manual restart. After merge, the post-pull rebuild rebuilds orion-prediction;
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3492
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

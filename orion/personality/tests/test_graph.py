@@ -478,3 +478,67 @@ def test_only_id_shaped_refs_are_removed():
     from orion.personality.graph import subject_text
     assert subject_text("See [note: the cache] for details") == "See [note: the cache] for details"
     assert subject_text("chat memory [juniper_chat:7a286bdd-acc] stalls") == "chat memory stalls"
+
+
+# --- declines of every option, 2026-11-16 ---------------------------------------------------------
+
+
+def decline(direction, lane, **kw) -> Evidence:
+    e = ev(direction, lane, label=g.decline_label(lane), **kw)
+    return Evidence(**{**e.__dict__, "meta": {"declined_all": True}})
+
+
+def test_decline_label_names_the_lane_and_keeps_counts():
+    assert g.choice_excerpt("prime", True, "no move", ["a", "b", "c"]) == "Prime waits instead of acting"
+    assert g.choice_excerpt("outreach", True, "say nothing", ["a"]) == "Says nothing to Juniper"
+    assert g.choice_excerpt("reading", True, "none of these", ["a"]) == "Turns down every link in a reading"
+    assert g.choice_excerpt("curiosity", True, "none of these", []) == "Passes on every question offered"
+    assert g.choice_excerpt("chat", True, "none of these", ["a"]) == "Brings up no open thread"
+    assert g.choice_excerpt("prime", False, "people", ["pipeline"]) == "people over pipeline"
+    assert set(g.DECLINE_LABEL) == set(g.VALID_LANES)
+    assert choice_label(g.decline_label("prime"), 7, 7) == "Prime waits instead of acting, 7 of 7"
+    assert label_base("Turns down every link in a reading, 3 of 3") == "Turns down every link in a reading"
+
+
+def test_a_prime_decline_and_a_reading_decline_found_two_tendencies():
+    # Same direction (the decline phrases embed alike): without the lane rule they would share one node.
+    res = fold([], [decline(axis(0), "prime"), decline(axis(0, 0.1), "reading")], now=NOW)
+    assert len(res.nodes) == 2
+    by_lane = {next(iter(n.lane_counts)): n for n in res.nodes}
+    assert by_lane["prime"].label == "Prime waits instead of acting, 1 of 1"
+    assert by_lane["reading"].label == "Turns down every link in a reading, 1 of 1"
+    # A second Prime decline joins the Prime tendency, not the reading one.
+    res2 = fold(res.nodes, [decline(axis(0, 0.05), "prime", at=NOW + timedelta(minutes=1))],
+                now=NOW + timedelta(minutes=1))
+    [row] = res2.evidence_rows
+    assert row.disposition_id == by_lane["prime"].disposition_id
+    [n] = [x for x in res2.nodes if x.disposition_id == row.disposition_id]
+    assert n.lane_counts == {"prime": 2} and n.label == "Prime waits instead of acting, 2 of 2"
+
+
+def test_a_decline_never_joins_a_mixed_lane_tendency_but_other_choices_still_match_across_lanes():
+    mixed = node(lane_counts={"prime": 3, "reading": 2}, lane_recent={"prime": 2.0, "reading": 2.0})
+    res = fold([mixed], [decline(axis(0), "prime")], now=NOW)
+    assert res.evidence_rows[0].disposition_id != "d1"  # founds its own Prime tendency
+    # A non-decline choice keeps the old rule: it matches by direction alone.
+    res2 = fold([node(lane_counts={"reading": 5}, lane_recent={"reading": 4.0})], [ev(axis(0), "prime")], now=NOW)
+    assert res2.evidence_rows[0].disposition_id == "d1"
+
+
+def test_a_decline_still_opposes_a_tendency_in_another_lane():
+    reading = node(lane_counts={"reading": 5}, lane_recent={"reading": 4.0})
+    res = fold([reading], [decline([-x for x in axis(0)], "prime")], now=NOW)
+    row = next(r for r in res.evidence_rows if r.disposition_id != "d1")
+    assert row.meta.get("opposed") == ["d1"]
+    assert next(n for n in res.nodes if n.disposition_id == "d1").opposed_count == 1
+
+
+def test_a_juniper_no_tendency_still_absorbs_declines_from_any_lane_it_holds():
+    retired = node(status="retired", retired_at=NOW - timedelta(days=1),
+                   lane_counts={"prime": 4, "reading": 3}, lane_recent={"prime": 2.0, "reading": 2.0})
+    res = fold([retired], [decline(axis(0), "prime")], now=NOW, juniper={"d1": g.JUNIPER_NO})
+    [row] = res.evidence_rows
+    assert row.disposition_id == "d1" and row.meta.get("juniper_no") is True
+    # A lane it never held founds its own tendency instead.
+    res2 = fold([retired], [decline(axis(0), "outreach")], now=NOW, juniper={"d1": g.JUNIPER_NO})
+    assert res2.evidence_rows[0].disposition_id != "d1"

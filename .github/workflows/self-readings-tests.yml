@@ -19,6 +19,9 @@ on:
       - "services/orion-thought/evals/*self_readings*"
       - "tests/test_attention_self_readings.py"
       - "tests/fixtures/self_readings_history.py"
+      - "orion/field/channel_glossary.py"
+      - "orion/field/pressure.py"
+      - "tests/test_field_channel_glossary.py"
       - ".github/workflows/self-readings-tests.yml"
   push:
     branches: [main]
@@ -26,6 +29,8 @@ on:
       - "orion/attention/**"
       - "orion/schemas/self_reading.py"
       - "config/field/field_channel_glossary.v1.yaml"
+      - "orion/field/channel_glossary.py"
+      - "tests/test_field_channel_glossary.py"
       - "services/orion-thought/app/**"
   workflow_dispatch:
 permissions:
@@ -49,6 +54,8 @@ jobs:
           python -m pip install -r services/orion-thought/requirements.txt
       - name: Build and render (pure)
         run: python -m pytest -q -p no:cacheprovider tests/test_attention_self_readings.py tests/test_attention_pe_history_cache.py
+      - name: Field channel glossary (entry count and retired entries)
+        run: python -m pytest -q -p no:cacheprovider tests/test_field_channel_glossary.py
       - name: orion-thought cue and prompt wiring
         run: cd services/orion-thought && python -m pytest -q -p no:cacheprovider tests/test_stance_self_readings.py tests/test_reverie_thin_import_boundary.py
       - name: Truth-to-rows eval

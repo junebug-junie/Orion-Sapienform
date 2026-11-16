@@ -47,6 +47,8 @@ Retired ids: bus_synaptic, route, chat, codebase, harness_closure.
 
 ## Files changed
 
+- `tests/test_field_channel_glossary.py`, `.github/workflows/self-readings-tests.yml`: glossary count 60 -> 59 (codebase retirement) and a CI step so it cannot rot again (Fixes #3506).
+
 - `orion/attention/self_signal_outcomes.py`: `associate_all` skips retired and non-body signals; `held_latest_by_pair` refuses retired rows.
 - `orion/metacog/self_signal_episode.py`: `close_retired()` and the `retired` close reason.
 - `services/orion-equilibrium-service/app/self_signal_episode_gate.py`: routes a retired node's observation to `close_retired`, never `step_signal`.
@@ -69,7 +71,8 @@ Retired ids: bus_synaptic, route, chat, codebase, harness_closure.
 
 ```text
 tests/test_self_signal_outcomes.py tests/test_retired_pe_step5_readers.py tests/test_attention_self_readings.py orion/metacog/tests/test_self_signal_episode.py tests/test_pe_alarm_refile.py -> 130+ passed
-tests/test_metric_* tests/test_trace_unified_turn.py tests/test_attention_world_first.py tests/test_attention_candidate_society_of_mind.py orion/substrate/tests/test_endogenous_curiosity.py orion/attention -> passed (except tests/test_field_channel_glossary.py count test, fails identically on origin/main -> #3506)
+tests/test_metric_* tests/test_trace_unified_turn.py tests/test_attention_world_first.py tests/test_attention_candidate_society_of_mind.py orion/substrate/tests/test_endogenous_curiosity.py orion/attention -> passed
+tests/test_field_channel_glossary.py -> 18 passed (was failing on main: 59 != 60; fixed here, Fixes #3506)
 services/orion-equilibrium-service tests+evals -> 288 passed
 services/orion-field-digester tests (excl. test_heartbeat_chassis.py, env FileNotFoundError on main too) -> 297 passed, 6 skipped
 services/orion-substrate-runtime test_retired_pe_step5/turn_referent/post_turn_closure -> 15 passed (cursor/quarantine tests fail identically on main)
@@ -149,7 +152,7 @@ No Redis state fix is needed: `equilibrium:self_signal_episodes:v1` tracks 0 epi
 - Severity: low. Concern: live signals' association intervals get narrower (family 25 to 10), so a clause can now render with less evidence than before. Mitigation: 10 is the correct family size. The live replay shows no new clause today, and the 6-hour hold rule still applies.
 - Severity: low. Concern: harness_closure history rows (110, newest 11-11) now disappear from the cache. Mitigation: they were already judged "unknown" placeholders and never opened or seeded anything.
 - Issues opened: #3505 (dead `substrate_prediction_raw_reading` table), #3506 (glossary count test failing on main), #3507 (verify-live + needs-juniper: leak stopped after deploy, then run the purge).
-- Issues closed: none.
+- Issues closed: Fixes #3506. The glossary has 59 entries because the `node:substrate.codebase` prediction_error entry left with the node (2005c2b39, #3314); `node:substrate.chat` was swapped 1:1 for `node:prediction.chat_turn` the same day. The test now expects 59 and asserts that codebase is absent. It also now runs in `.github/workflows/self-readings-tests.yml`, which already triggers on the glossary YAML, plus paths for the test and `orion/field/channel_glossary.py`. Before this, no workflow ran it.
 
 ## PR link
 

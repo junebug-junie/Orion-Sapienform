@@ -13,7 +13,10 @@ The shared part of the options (they are all curiosity priors, or all outreach t
 what is left points from what Orion turned down toward what Orion took. A ``declined_all`` choice
 uses the lane's decline phrase ("no move", "say nothing", "none") as the chosen side, so it reads as
 a decline of every option. Nodes ("tendencies") are clusters of directions: a choice joins the node
-whose centroid is nearest when the cosine is at least ``match_threshold``, else it founds a node.
+whose centroid is nearest when the cosine is at least ``match_threshold``, else it founds a node. A
+``declined_all`` choice matches only nodes whose choices all came from its own lane (the decline phrases
+embed alike across lanes), and its label is the lane's ``DECLINE_LABEL`` ("Prime waits instead of acting").
+Only matching is lane-bound: opposition, other choices, and Orion's own MERGE verdict still ignore lanes.
 
 **Weight (revealed preference, Samuelson 1938).** A choice reveals a preference only to the extent
 it departs from the order it was offered in::
@@ -72,6 +75,17 @@ VALID_LANES = frozenset(get_args(PersonalityLane))
 # The chosen side of a ``declined_all`` choice: the "none" option as each lane shows it.
 DECLINE_TEXT = {"prime": "no move", "outreach": "say nothing"}
 DECLINE_TEXT_DEFAULT = "none of these"
+# The label of a ``declined_all`` choice: what the decline was, said with its lane, because "no move" or
+# "none of these" alone has no place (live 2026-11-16: "no move, 7 of 7", "none of these, 3 of 3"). The
+# decline phrase above stays the chosen side of the direction; only the label changes.
+DECLINE_LABEL = {
+    "prime": "Prime waits instead of acting",
+    "outreach": "Says nothing to Juniper",
+    "reading": "Turns down every link in a reading",
+    "curiosity": "Passes on every question offered",
+    "chat": "Brings up no open thread",
+}
+DECLINE_LABEL_DEFAULT = "Declines every option"
 # Words kept from an option's text in a label. Six reads as a phrase; seven read as a sentence cut
 # off mid-thought, two of them side by side (live 2026-11-13: "turn start context is stale snapshot
 # over camera layer mediation not closeness (+13 more), 21 of 21").
@@ -307,6 +321,25 @@ def choice_direction(chosen: Sequence[float], declined: Sequence[Sequence[float]
 
 def decline_text(lane: str) -> str:
     return DECLINE_TEXT.get(lane, DECLINE_TEXT_DEFAULT)
+
+
+def decline_label(lane: str) -> str:
+    return DECLINE_LABEL.get(lane, DECLINE_LABEL_DEFAULT)
+
+
+def choice_excerpt(lane: str, declined_all: bool, chosen_text: str, declined_texts: Sequence[str]) -> str:
+    """A choice's label text: the lane's ``decline_label`` for a decline of every option, else ``pair_label``."""
+    return decline_label(lane) if declined_all else pair_label(chosen_text, declined_texts)
+
+
+def _is_decline(ev: "Evidence") -> bool:
+    return bool(isinstance(ev.meta, Mapping) and ev.meta.get("declined_all"))
+
+
+def _single_lane(node: "Node", lane: str) -> bool:
+    """Every choice folded into the node came from ``lane``."""
+    lanes = {k for k, v in (node.lane_counts or {}).items() if v}
+    return lanes <= {lane}
 
 
 def _before_dash(text: str) -> str:
@@ -684,12 +717,21 @@ def _ingest(tick: _Tick, evidence: Sequence[Evidence], *, now: datetime, params:
     valid.sort(key=lambda t: (t[0].occurred_at, t[0].evidence_id))
     for ev, emb, lane, w in valid:
         sims = tick.sims(emb)
+        # A decline's chosen side is its lane's "none" phrase ("no move", "none of these"), and those phrases
+        # embed close together, so declines from different lanes would fold into one tendency. A decline
+        # joins only a live tendency whose choices all came from its own lane. A tendency Juniper said No to
+        # still absorbs a decline from any lane it holds (her No covers every lane in it). Opposition below
+        # keeps every node: a decline still counts against a tendency in another lane.
+        match = sims
+        if _is_decline(ev):
+            match = [(n, x) for n, x in sims if _single_lane(n, lane)
+                     or (id(n) in tick.vetoed and (n.lane_counts or {}).get(lane))]
         # A live tendency that matches takes the choice; only a choice no live node matches goes to the
         # nearest tendency Juniper said No to (``absorb``) instead of founding a new one.
-        live_sims = [(n, x) for n, x in sims if id(n) not in tick.vetoed]
+        live_sims = [(n, x) for n, x in match if id(n) not in tick.vetoed]
         best, best_sim = max(live_sims, key=lambda t: t[1], default=(None, -2.0))
         if best is None or best_sim < params.match_threshold:
-            vetoed_best = max(((n, x) for n, x in sims if id(n) in tick.vetoed), key=lambda t: t[1],
+            vetoed_best = max(((n, x) for n, x in match if id(n) in tick.vetoed), key=lambda t: t[1],
                               default=(None, -2.0))
             if vetoed_best[0] is not None and vetoed_best[1] >= params.match_threshold:
                 best, best_sim = vetoed_best

@@ -63,7 +63,11 @@ def test_load_glossary_has_48_channels_matching_field_digester_channels_py():
     glossary = load_glossary()
     entries = glossary["entries"]
     # + node:prediction.room / node:prediction.body (forecast surprise, 2026-11-11): 58 -> 60.
-    assert len(entries) == 60
+    # - node:substrate.codebase prediction_error entry removed with the node (PE suite
+    #   rebuild, 2026-11-13, #3314): 60 -> 59. (node:substrate.chat was swapped 1:1 for
+    #   node:prediction.chat_turn the same day, no count change.)
+    assert len(entries) == 59
+    assert not any(e.node == "node:substrate.codebase" for e in entries)
     assert not any(e.node == "node:substrate.harness_closure" for e in entries)
     names = {e.channel for e in entries}
     for retired in (

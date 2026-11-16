@@ -100,7 +100,8 @@ def test_declined_all_reads_as_a_decline_of_every_option():
     c = choice("outreach:o1", T0, lane="outreach", declined=("topic a", "topic b"), declined_all=True)
     assert option_texts(c) == ("say nothing", ["topic a", "topic b"])
     e = choice_evidence(c, {t: vec_for(t) for t in ("say nothing", "topic a", "topic b")})
-    assert e.excerpt == "say nothing over topic a and topic b" and e.weight == 1.0 and e.meta["declined_all"] is True
+    # Labelled with its lane; "say nothing" stays the chosen side of the direction.
+    assert e.excerpt == "Says nothing to Juniper" and e.weight == 1.0 and e.meta["declined_all"] is True
     assert option_texts(choice("prime:x", T0, declined_all=True))[0] == "no move"
 
 

@@ -108,7 +108,7 @@ def test_reads_now_must_really_read_the_now_and_record_cites(real, tmp_path):
     for name, ok in [*((n, ok) for n, (_, ok) in files.items()), ("missing.py", False)]:
         inp = planted(real, repo_root=tmp_path)
         inp.registry["organs"]["prime"]["reads_now"] = name
-        del inp.registry["organs"]["prime"]["exempt_read"]
+        inp.registry["organs"]["prime"].pop("exempt_read", None)  # prime reads the now since patch 3
         errs = seam.check(inp)
         assert (errs == []) is ok, (name, errs)
 

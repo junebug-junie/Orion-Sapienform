@@ -15,9 +15,9 @@ Two clocks:
   instead, GET /physiology/event-wants, Prime's only concern source then), record what changed
   (orion.prime.state.observe), settle any
   open question, save the state to Redis. Most ticks stop here.
-* **thought** (only when something changed, the refractory interval has passed, no Juniper turn is
-  running, and the body economy FUNDS the bid): one model call on route PRIME_LLM_ROUTE (circe chat
-  lane 0 at pool priority system), then at most one move.
+* **thought** (only when something changed or a hunger need crossed its threshold, the refractory interval has
+  passed, no Juniper turn is running, and the body economy FUNDS the bid): one model call on route PRIME_LLM_ROUTE
+  (circe chat lane 0 at pool priority system), then at most one move.
 
 Seat wait and generation are two numbers (2026-11-03). The call may wait PRIME_SEAT_WAIT_SEC for a pool
 seat and then generate for PRIME_LLM_TIMEOUT_SEC (the gateway's ``gateway_pool_wait_sec`` option); the
@@ -125,6 +125,13 @@ TEMPORAL_SELF_NOW_ENABLED=false on durable-runs) or unreachable: no section, not
 A failed use POST is logged and never fails the thought. Curiosity's recent runs reach the frame through the now;
 the dashboard read (/curiosity/api/runs) is only for settling Prime's questions.
 
+Hunger (integration design Part B, patch 5; PRIME_HUNGER_NEEDS_ENABLED; orion/prime/hunger.py): the tick computes
+Prime's needs (horizon from its own concerns and the funded event wants; surprise and connection from durable-runs
+GET /temporal-self/hunger, read every PRIME_HUNGER_READ_SEC) and wakes Prime when the strongest damped need crosses
+PRIME_HUNGER_THRESHOLD, within PRIME_HUNGER_DAILY_BUDGET thoughts a day. The 6-hour quiet floor is deleted. The bid
+carries the strongest need as ``salience``/``event_ref``; the frame shows the needs' content lines; a need's experience
+is pinned into the now read (``include=``); a need-woken thought's close note starts ``woke: need:<name> <ref>``.
+
 Everything here is best-effort: a failed read, publish or save is logged and the loop goes on.
 ``run_mind`` never waits on this loop: every blocking call runs in a worker thread.
 """
@@ -183,6 +190,7 @@ from orion.prime.acts import (
     treated_focus_gone,
 )
 from orion.prime import day_letter as dl
+from orion.prime import hunger as hg
 from orion.prime import intention as it
 from orion.prime.choice import (
     body_situation,
@@ -239,6 +247,7 @@ from orion.schemas.curiosity_replica import REPLIES_KEY, CuriosityReplicaReplies
 from orion.schemas.grammar import ActV1
 from orion.schemas.personality import PERSONALITY_CHOICE_CHANNEL, PERSONALITY_CHOICE_KIND
 from orion.schemas.physiology_want import FundedEventWantsV1
+from orion.schemas.temporal_self import TemporalHungerInputsV1
 from orion.schemas.introspect import (
     IntrospectRequestV1,
     IntrospectResultV1,
@@ -286,6 +295,7 @@ NOW_USE_PATH = "/temporal-self/now/use"
 NOW_ORGAN = "prime"
 NOW_SINCE_MARGIN_SEC = 120.0
 NOW_USE_TIMEOUT_SEC = 10.0
+HUNGER_PATH = "/temporal-self/hunger"
 NOW_REUSE_MAX_SEC = 1800.0  # an unseen now older than this is read again rather than reused
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
 REGULATE_SETTLE_LAG_SEC = 120.0
@@ -382,6 +392,17 @@ class PrimeRuntime(MindLoopRuntime):
         # reuses it instead of storing another experience_shown row the model never saw.
         self._now_seen_as_of: Optional[datetime] = None
         self._now_unseen: Optional[tuple[Optional[str], datetime, dict[str, Any]]] = None
+        self._now_unseen_include: str = ""
+        # Hunger (integration Part B, orion/prime/hunger.py). The durable-runs read (surprise, connection) is cached
+        # for PRIME_HUNGER_READ_SEC; the needs are recomputed every tick. ``_thought_need``: the need that woke the
+        # thought being built (set by _woke_note, cleared after the thought); ``_shown_needs``: what its frame showed.
+        self._hunger_inputs: Optional[dict[str, Any]] = None
+        self._hunger_error: Optional[str] = None
+        self._hunger_read_at: Optional[datetime] = None
+        self._needs: list[hg.NeedV1] = []
+        self._wake_need: Optional[hg.NeedV1] = None
+        self._thought_need: Optional[hg.NeedV1] = None
+        self._shown_needs: list[hg.NeedV1] = []
 
     # --- turn hand-back (living Prime design, Part 2) ----------------------------------------
     def _handback_on(self) -> bool:
@@ -545,10 +566,71 @@ class PrimeRuntime(MindLoopRuntime):
         await self._maybe_settle(now)
         await self._settle_regulations(now)
         await self._flush_concern_acts()
+        if self._hunger_on():
+            await self._hunger_upkeep(now, inputs)
         return inputs, now
 
     def _wants_to_think(self, now: datetime) -> bool:
-        return wants_to_think(self.state, now, refractory=timedelta(seconds=float(self.s.PRIME_REFRACTORY_SEC)))
+        return wants_to_think(self.state, now, refractory=timedelta(seconds=float(self.s.PRIME_REFRACTORY_SEC)),
+                              need_wake=self._hunger_on() and self._wake_need is not None)
+
+    # --- hunger (integration design Part B; orion/prime/hunger.py) ----------------------------------------
+    def _hunger_on(self) -> bool:
+        return bool(getattr(self.s, "PRIME_HUNGER_NEEDS_ENABLED", False))
+
+    async def _read_hunger_inputs(self) -> None:
+        """durable-runs GET /temporal-self/hunger?organ=prime (TemporalHungerInputsV1). A failed read keeps the last
+        good one for one more read interval, then drops it: surprise and connection are then unknown (no need from
+        them, and the frame says so), never "calm"."""
+        url = f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}{HUNGER_PATH}?organ={NOW_ORGAN}"
+        try:
+            raw = await asyncio.to_thread(self.get_json, url)
+            data = TemporalHungerInputsV1.model_validate(raw).model_dump(mode="python")
+        except Exception as exc:  # noqa: BLE001 -- hunger never fails the tick
+            why = (f"{type(exc).__name__}: {str(exc)[:120]}" if not (isinstance(exc, urllib.error.HTTPError)
+                                                                   and exc.code == 404) else "the read is off (404)")
+            if self._hunger_error is not None:  # second failure in a row: the old read is too old to trust
+                self._hunger_inputs = None
+            self._hunger_error = why
+            logger.warning("prime_hunger_unread reason=%s url=%s", why, url)
+            return
+        self._hunger_inputs, self._hunger_error = data, None
+
+    async def _hunger_upkeep(self, now: datetime, inputs: FrameInputs) -> None:
+        """Refresh the read when due, recompute the needs, decide which (if any) wakes Prime."""
+        every = float(getattr(self.s, "PRIME_HUNGER_READ_SEC", 300.0))
+        if self._hunger_read_at is None or (now - self._hunger_read_at).total_seconds() >= every:
+            self._hunger_read_at = now
+            await self._read_hunger_inputs()
+        self.state = hg.prune(self.state, now)
+        taken = it.open_ids(self.intentions) if self._intentions_on() else set()
+        self._needs = hg.compute_needs(self.state, now, self._hunger_inputs, taken_on=taken,
+                                       horizon_of=it.horizon_for if self._intentions_on() else None,
+                                       events=inputs.events if inputs.event_mode else None)
+        self.state = hg.track_troughs(self.state, self._needs, known=(
+            hg.NEED_NAMES if self._hunger_inputs is not None else ("horizon",)))
+        wake = hg.pick_wake(self._needs, self.state, now,
+                            threshold=float(getattr(self.s, "PRIME_HUNGER_THRESHOLD", hg.THRESHOLD)),
+                            budget=int(getattr(self.s, "PRIME_HUNGER_DAILY_BUDGET", hg.DAILY_BUDGET)))
+        if (wake.key if wake else None) != (self._wake_need.key if self._wake_need else None):
+            logger.info("prime_need_wake need=%s ref=%s drive=%.3f damped=%.3f needs=%d budget_used=%d",
+                        wake.name if wake else "-", wake.ref if wake else "-", wake.drive if wake else 0.0,
+                        wake.damped if wake else 0.0, len(self._needs), hg.thoughts_in_window(self.state.needs, now))
+        self._wake_need = wake
+
+    def _want_extras(self) -> dict[str, Any]:
+        """The bid carries hunger (spec Part B, "How hunger reaches the market"): salience = the strongest damped
+        need, event_ref = that need. The market's intensity is then max(clock hunger, need). No need: a clock want."""
+        if not self._hunger_on() or not self._needs:
+            return {}
+        top = self._needs[0]
+        return {"salience": round(top.damped, 6), "event_ref": f"prime_need:{top.name}:{top.ref}"[:500]}
+
+    async def _open_thought(self, act: ActV1, started_at: datetime) -> None:
+        await super()._open_thought(act, started_at)
+        if self._hunger_on():
+            # Guards 4 and 5: the thought counts for the budget; its content line is recorded as having fired.
+            self.state = hg.note_thought(self.state, started_at, self._thought_need)
 
     def _pending_count(self) -> int:
         return len(self.state.pending_changes)
@@ -560,6 +642,15 @@ class PrimeRuntime(MindLoopRuntime):
         return thought_act(thought_id, llm_timeout_sec=horizon_sec)
 
     def _woke_note(self) -> str:
+        """Why this thought woke (the act's close note). A need wake starts ``woke: need:<name> <ref>`` (the stable
+        trace the roundup counts, orion/prime/hunger.py); a change wake is ``woke: <changes>`` as before."""
+        self._thought_need = None
+        if self._hunger_on() and self._wake_need is not None and (
+                not self.state.pending_changes or self._wake_need.damped >= float(
+                    getattr(self.s, "PRIME_HUNGER_THRESHOLD", hg.THRESHOLD))):
+            self._thought_need = self._wake_need
+            changes = woke_note(list(self.state.pending_changes)) if self.state.pending_changes else ""
+            return hg.woke_prefix(self._wake_need) + (f"; {changes[len('woke: '):]}" if changes else "")
         return woke_note(list(self.state.pending_changes))
 
     def _new_thought_id(self) -> str:
@@ -571,6 +662,7 @@ class PrimeRuntime(MindLoopRuntime):
         return parse_answer(parsed)
 
     async def _after_think(self) -> None:
+        self._thought_need, self._shown_needs = None, []
         await self._flush_concern_acts()
 
     # --- the day letter: Prime's end-of-day turn (living Prime design, Part 3) -----------------
@@ -1024,6 +1116,10 @@ class PrimeRuntime(MindLoopRuntime):
 
     async def _ask(self, inputs: FrameInputs, now: datetime) -> ModelReply:
         """Build the frame and call the model (one immediate retry on an upstream 5xx: _ask_model)."""
+        if self._hunger_on():
+            # Before the now read: a need's experience is pinned into the now, so citing it is valid.
+            self._shown_needs = hg.shown_needs(self._needs)
+            inputs.needs = hg.frame_lines(self._needs, self._thought_need, unread=self._hunger_error)
         # The move check depends on the cheap pending-focus read (#3366). Curiosity's runs arrive through the now
         # (integration patch 3): the frame no longer reads Hub's curiosity dashboard. Both reads run at once.
         (focus_pending, focus_unread), orion_now = await asyncio.gather(
@@ -1053,7 +1149,8 @@ class PrimeRuntime(MindLoopRuntime):
         shown = shown_concerns(self.state.concerns)
         reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
                                                     organ_replies=shows_organ_replies(inputs),
-                                                    take_on=inputs.take_on, experiences=shows_now(inputs)), frame)
+                                                    take_on=inputs.take_on, experiences=shows_now(inputs),
+                                                    needs=inputs.needs is not None), frame)
         self._now_after_call(orion_now, reached=reply.kind == "model")
         reply.context.update(focus_pending=focus_pending, focus_unread=focus_unread,
                              now_shown_id=(orion_now or {}).get("shown_id"),
@@ -1160,10 +1257,14 @@ class PrimeRuntime(MindLoopRuntime):
         since = self._now_since()
         if since is not None:
             params["since"] = since
+        include = ",".join(i for i in (n.experience_id for n in self._shown_needs) if i)[:600]
+        if include:
+            params["include"] = include
         clock = self.clock()
         if self._now_unseen is not None:
             u_since, read_at, page = self._now_unseen
-            if u_since == since and (clock - read_at).total_seconds() <= NOW_REUSE_MAX_SEC:
+            if (u_since == since and include == self._now_unseen_include
+                    and (clock - read_at).total_seconds() <= NOW_REUSE_MAX_SEC):
                 logger.info("prime_now_reused shown_id=%s items=%d", page.get("shown_id"), len(page.get("items") or []))
                 return page
             self._now_unseen = None
@@ -1183,7 +1284,7 @@ class PrimeRuntime(MindLoopRuntime):
             return None
         logger.info("prime_now_read shown_id=%s items=%d candidates=%s", data["shown_id"], len(data["items"]),
                     data.get("candidates"))
-        self._now_unseen = (since, clock, data)
+        self._now_unseen, self._now_unseen_include = (since, clock, data), include
         return data
 
     def _now_since(self) -> Optional[str]:
@@ -1412,11 +1513,23 @@ class PrimeRuntime(MindLoopRuntime):
         use = await self._record_now_use(shown_id=reply.context.get("now_shown_id"), cites=applied.experience_cites,
                                          thought_id=thought_id)
         note = summary_note(applied, now_use=None if use == "none" else use)
+        if self._hunger_on():
+            # Guard 1: shown needs and nothing changed (no move sent, no concern added or dropped) -> halve them.
+            acted = applied.move is not None or bool(applied.added) or bool(applied.dropped)
+            added = set(applied.added)
+            touched = hg.answered_refs(kept=applied.kept, dropped=applied.dropped, cited=applied.experience_cites,
+                                       added_event_refs=[c.event_ref for c in self.state.concerns
+                                                         if c.concern_id in added and c.event_ref])
+            self.state = hg.after_answer(self.state, self._shown_needs, now, acted=acted, touched=touched)
+            if not acted and self._shown_needs:
+                logger.info("prime_needs_damped thought=%s needs=%s", thought_id,
+                            ",".join(sorted({n.name for n in self._shown_needs})))
         # After the move: the pick is Orion's choice whether the move was sent, held back or refused.
         choice = await self._publish_choice(act=act, thought_id=thought_id, inputs=inputs, now=now, reply=reply,
                                             answer=answer)
-        logger.info("prime_thought thought=%s route=%s choice=%s now_use=%s %s reading=%r", thought_id, reply.route,
-                    choice, use, note, answer.reading[:200])
+        need = self._thought_need
+        logger.info("prime_thought thought=%s route=%s need=%s choice=%s now_use=%s %s reading=%r", thought_id,
+                    reply.route, f"{need.name}:{need.ref}" if need else "-", choice, use, note, answer.reading[:200])
         return True, note
 
     async def _unresolved(self, refs: list[RefV1]) -> list[str]:

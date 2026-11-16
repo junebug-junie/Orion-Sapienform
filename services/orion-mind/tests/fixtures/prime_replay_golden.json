@@ -204,17 +204,17 @@
     "temperature": 0.4,
     "thinking": false,
     "timeout_sec": 60.0,
-    "user_prompt": "Now: 2026-10-30T18:40:00+00:00\n\nWHAT CHANGED SINCE YOUR LAST THOUGHT:\n- quiet: nothing has woken me for 7 hours\n- my question 'What heats the cabinet after 14:00?' (act act_91468dbe016e7a35f42061c5): treated focus left Hub's slot with no run taking it (replaced, cleared, expired, or never written)\n\nYOUR CONCERNS:\n- concern_id 0000000600004000: afternoon heat (arc arc1, held since 6 h ago, last kept 6 h ago)\n\nHOW YOUR CONCERNS HAVE ENDED:\n(no concern has ended yet)\n\nYOUR LAST READING:\nthe cabinet is warming\n\nWHAT HAPPENED TO YOUR EARLIER MOVES:\n- my question 'What heats the cabinet after 14:00?' (act act_91468dbe016e7a35f42061c5): treated focus left Hub's slot with no run taking it (replaced, cleared, expired, or never written)\n\nQUESTIONS YOU ASKED THAT ARE STILL OPEN:\n(none)\n\nATTENTION (Temporal Self, today):\nday phase: afternoon\nnow: heat (arc_id arc1, kind attention, dwell 0 s)\n- arc_id arc1: attention 'heat', open, returned 0x, last seen age unknown\n\nBODY:\n(read 30 s after the body last measured itself)\nstrain: lane:agent at 0.3\nheat (price 0.05): cabinet 24 C\nenergy: (unavailable: not in the body state)\nlane:chat: (unavailable: not in the body state)\nattention:juniper: (unavailable: not in the body state)\n\nENERGY MONEY:\n(unavailable: HTTPError: HTTP Error 404: not found)\n\nCURIOSITY (whether a question waits for its next run):\nno focus is waiting for the next run"
+    "user_prompt": "Now: 2026-10-30T18:40:00+00:00\n\nWHAT CHANGED SINCE YOUR LAST THOUGHT:\n- my question 'What heats the cabinet after 14:00?' (act act_91468dbe016e7a35f42061c5): treated focus left Hub's slot with no run taking it (replaced, cleared, expired, or never written)\n\nYOUR CONCERNS:\n- concern_id 0000000600004000: afternoon heat (arc arc1, held since 6 h ago, last kept 6 h ago)\n\nHOW YOUR CONCERNS HAVE ENDED:\n(no concern has ended yet)\n\nYOUR LAST READING:\nthe cabinet is warming\n\nWHAT HAPPENED TO YOUR EARLIER MOVES:\n- my question 'What heats the cabinet after 14:00?' (act act_91468dbe016e7a35f42061c5): treated focus left Hub's slot with no run taking it (replaced, cleared, expired, or never written)\n\nQUESTIONS YOU ASKED THAT ARE STILL OPEN:\n(none)\n\nATTENTION (Temporal Self, today):\nday phase: afternoon\nnow: heat (arc_id arc1, kind attention, dwell 0 s)\n- arc_id arc1: attention 'heat', open, returned 0x, last seen age unknown\n\nBODY:\n(read 30 s after the body last measured itself)\nstrain: lane:agent at 0.3\nheat (price 0.05): cabinet 24 C\nenergy: (unavailable: not in the body state)\nlane:chat: (unavailable: not in the body state)\nattention:juniper: (unavailable: not in the body state)\n\nENERGY MONEY:\n(unavailable: HTTPError: HTTP Error 404: not found)\n\nCURIOSITY (whether a question waits for its next run):\nno focus is waiting for the next run"
    }
   ],
   "logs": [
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A0000000200004000",
    "orion-mind.prime INFO prime_nomination focus=540c6c7c-7d50-58d9-bf5b-2860cd30611b arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=0000000200004000 route=prime choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
+   "orion-mind.prime INFO prime_thought thought=0000000200004000 route=prime need=- choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
    "orion-mind.prime INFO prime_nomination_settled focus=540c6c7c-7d50-58d9-bf5b-2860cd30611b arm=treated produced=False note=treated focus left Hub's slot with no run taking it (replaced, cleared, expired, or never written)",
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&since=2026-10-30T11%3A58%3A00%2B00%3A00&run_ref=prime_thought%3A0000001700004000",
    "orion-mind.prime INFO prime_nomination focus=a2dc5818-5ce0-5d03-bd09-c1c61bd00468 arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=0000001700004000 route=prime choice=no_pick now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
+   "orion-mind.prime INFO prime_thought thought=0000001700004000 route=prime need=- choice=no_pick now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
   ],
   "published": [
    [
@@ -807,7 +807,7 @@
        "level": "deliberate",
        "object_ref": "prime_thought:0000001700004000",
        "outcome": {
-        "note": "woke: quiet: nothing has woken me for 7 hours; my question 'What heats the cabinet after 14:00?' (act act_91468dbe016e7a35f42061c5): treated focus left Hub's slot ... | concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?'",
+        "note": "woke: my question 'What heats the cabinet after 14:00?' (act act_91468dbe016e7a35f42061c5): treated focus left Hub's slot with no run taking it (replaced, cleared,... | concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?'",
         "observed_at": "<wallclock>",
         "source": "producer",
         "value": 1.0
@@ -1108,7 +1108,7 @@
   "logs": [
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A000000bf00004000",
    "orion-mind.prime INFO prime_nomination focus=1643c186-2b00-5f7d-8e52-48a8aee0c42c arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=000000bf00004000 route=prime choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
+   "orion-mind.prime INFO prime_thought thought=000000bf00004000 route=prime need=- choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
   ],
   "published": [
    [
@@ -1577,7 +1577,7 @@
   "logs": [
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A000000d100004000",
    "orion-mind.prime INFO prime_nomination focus=6f992154-64d4-56ab-a67d-9b7d2e80afb3 arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=000000d100004000 route=prime choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
+   "orion-mind.prime INFO prime_thought thought=000000d100004000 route=prime need=- choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
    "orion-mind.prime INFO prime_act_refused verb=predict concern=000000d500004000 gate=self_monitor:track_record_failing:act.prime.predict:unreliable"
   ],
   "published": [
@@ -1941,7 +1941,7 @@
   "logs": [
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A0000002900004000",
    "orion-mind.prime INFO prime_nomination focus=6a70bb18-21c4-5a53-a725-0d147db71db6 arm=control queued=None err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=0000002900004000 route=prime choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
+   "orion-mind.prime INFO prime_thought thought=0000002900004000 route=prime need=- choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
   ],
   "published": [
    [
@@ -2933,7 +2933,7 @@
    "orion-mind.prime INFO prime_try_no_model kind=no_seat route=prime_starved reason=deadline err=empty_llm_response streak=4 retry_not_before=2026-10-30T12:02:45+00:00 pending=1",
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A0000005300004000",
    "orion-mind.prime INFO prime_nomination focus=1aa4295a-5e5b-5fa9-9d9f-fdc4a65f3d56 arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=0000005300004000 route=prime_starved choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
+   "orion-mind.prime INFO prime_thought thought=0000005300004000 route=prime_starved need=- choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
   ],
   "published": [
    [
@@ -3404,7 +3404,7 @@
   "logs": [
    "orion-mind.prime INFO prime_now_read shown_id=shown-1 items=5 candidates=5",
    "orion-mind.prime INFO prime_now_use thought=0000011700004000 shown_id=shown-1 cited=curiosity_run:run1 stored=1 rejected=0",
-   "orion-mind.prime INFO prime_thought thought=0000011700004000 route=prime choice=no_concerns now_use=stored 1/1 concerns +0 -0 kept 0 | no move | proposed 1 experience cite(s), now_use stored 1/1 | warnings: experience cite(s) not shown in this frame, not recorded: gpu_wait:not-shown reading='the reading was about heat'"
+   "orion-mind.prime INFO prime_thought thought=0000011700004000 route=prime need=- choice=no_concerns now_use=stored 1/1 concerns +0 -0 kept 0 | no move | proposed 1 experience cite(s), now_use stored 1/1 | warnings: experience cite(s) not shown in this frame, not recorded: gpu_wait:not-shown reading='the reading was about heat'"
   ],
   "now_use_posts": [
    [
@@ -3709,9 +3709,9 @@
   "logs": [
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A000000e000004000",
    "orion-mind.prime INFO prime_nomination focus=9a808277-7ae5-5c7d-8eb7-166a182c269d arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=000000e000004000 route=prime choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
+   "orion-mind.prime INFO prime_thought thought=000000e000004000 route=prime need=- choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&since=2026-10-30T11%3A58%3A00%2B00%3A00&run_ref=prime_thought%3A000000f200004000",
-   "orion-mind.prime INFO prime_thought thought=000000f200004000 route=prime choice=no_pick now_use=none concerns +0 -0 kept 0 | no move reading='the organ answered'"
+   "orion-mind.prime INFO prime_thought thought=000000f200004000 route=prime need=- choice=no_pick now_use=none concerns +0 -0 kept 0 | no move reading='the organ answered'"
   ],
   "published": [
    [
@@ -4375,10 +4375,10 @@
   "logs": [
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A000000fa00004000",
    "orion-mind.prime INFO prime_nomination focus=84bb3329-f74c-5ec6-8ce4-22c43c111755 arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=000000fa00004000 route=prime choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
+   "orion-mind.prime INFO prime_thought thought=000000fa00004000 route=prime need=- choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
    "orion-mind.prime INFO prime_nomination_settled focus=84bb3329-f74c-5ec6-8ce4-22c43c111755 arm=treated produced=False note=refused by curiosity.replica: three runs died on this kind of question",
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&since=2026-10-30T11%3A58%3A00%2B00%3A00&run_ref=prime_thought%3A0000010f00004000",
-   "orion-mind.prime INFO prime_thought thought=0000010f00004000 route=prime choice=no_pick now_use=none concerns +0 -0 kept 0 | no move reading='the organ answered'"
+   "orion-mind.prime INFO prime_thought thought=0000010f00004000 route=prime need=- choice=no_pick now_use=none concerns +0 -0 kept 0 | no move reading='the organ answered'"
   ],
   "published": [
    [
@@ -5373,10 +5373,10 @@
   "logs": [
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A0000008b00004000",
    "orion-mind.prime INFO prime_regulate signal=0000008f00004000 act=act_16a642f51940947fe280cc7c family=durable.curiosity_investigate direction=slow arm=treated hours=2 written=True err=None why='five runs since 06:00'",
-   "orion-mind.prime INFO prime_thought thought=0000008b00004000 route=prime choice=no_concerns now_use=none concerns +0 -0 kept 0 | move regulate slow durable.curiosity_investigate for 2 h: 'five runs since 06:00' reading='curiosity has run five times since 06:00'",
+   "orion-mind.prime INFO prime_thought thought=0000008b00004000 route=prime need=- choice=no_concerns now_use=none concerns +0 -0 kept 0 | move regulate slow durable.curiosity_investigate for 2 h: 'five runs since 06:00' reading='curiosity has run five times since 06:00'",
    "orion-mind.prime INFO prime_regulation_settled signal=0000008f00004000 act=act_16a642f51940947fe280cc7c produced=False note=treated slow durable.curiosity_investigate: no bid from it came while the signal was in force",
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&since=2026-10-30T11%3A58%3A00%2B00%3A00&run_ref=prime_thought%3A0000009a00004000",
-   "orion-mind.prime INFO prime_thought thought=0000009a00004000 route=prime choice=no_concerns now_use=none concerns +0 -0 kept 0 | no move reading='watching'"
+   "orion-mind.prime INFO prime_thought thought=0000009a00004000 route=prime need=- choice=no_concerns now_use=none concerns +0 -0 kept 0 | no move reading='watching'"
   ],
   "published": [
    [
@@ -6001,10 +6001,10 @@
   "logs": [
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A000000a200004000",
    "orion-mind.prime INFO prime_nomination focus=f127cb90-dbc5-52d0-b1e2-86fe64f742c7 arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=000000a200004000 route=prime choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
+   "orion-mind.prime INFO prime_thought thought=000000a200004000 route=prime need=- choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'",
    "orion-mind.prime INFO prime_nomination_settled focus=f127cb90-dbc5-52d0-b1e2-86fe64f742c7 arm=treated produced=True note=treated run r1 finished disposition=explored",
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&since=2026-10-30T11%3A58%3A00%2B00%3A00&run_ref=prime_thought%3A000000b700004000",
-   "orion-mind.prime INFO prime_thought thought=000000b700004000 route=prime choice=no_pick now_use=none concerns +0 -0 kept 0 | no move reading='ok'"
+   "orion-mind.prime INFO prime_thought thought=000000b700004000 route=prime need=- choice=no_pick now_use=none concerns +0 -0 kept 0 | no move reading='ok'"
   ],
   "published": [
    [
@@ -7269,7 +7269,7 @@
    "orion-mind.prime INFO prime_now_unread reason=off url=http://dr:8121/temporal-self/now?organ=prime&run_ref=prime_thought%3A0000006500004000",
    "orion-mind.prime INFO prime_upstream_5xx_retry route=prime err=empty_llm_response",
    "orion-mind.prime INFO prime_nomination focus=a2fa9fff-fcb4-55d9-b3d9-c78113ea93c9 arm=treated queued=True err=None question='What heats the cabinet after 14:00?'",
-   "orion-mind.prime INFO prime_thought thought=0000006500004000 route=prime choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
+   "orion-mind.prime INFO prime_thought thought=0000006500004000 route=prime need=- choice=no_concerns now_use=none concerns +1 -0 kept 0 | move curiosity_focus 'What heats the cabinet after 14:00?' reading='the cabinet is warming'"
   ],
   "published": [
    [

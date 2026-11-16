@@ -346,6 +346,43 @@ FROM (
   WHERE e.ingested_at > %(since)s AND e.ingested_at <= %(as_of)s AND e.source_kind <> ALL(%(own)s)
 ) x WHERE rk <= %(per_kind)s
 """
+# Pinned now rows (Prime hunger, integration Part B): by id, other organs' kinds only.
+NOW_BY_ID_SQL = """
+SELECT e.event_id, e.source_kind, e.occurred_at, e.label, e.verdict, e.related_refs, e.payload_json,
+  e.salience, e.surprise_nats
+FROM temporal_self_event e
+WHERE e.event_id = ANY(%(ids)s) AND e.source_kind <> ALL(%(own)s)
+"""
+# Prime hunger's surprise need: other organs' experiences in (lo, as_of] whose surprisal is strictly above their
+# own kind's 90th percentile over (hist_lo, as_of], and that no organ has cited.
+HUNGER_SURPRISES_SQL = """
+WITH hist AS (
+  SELECT source_kind, percentile_cont(0.9) WITHIN GROUP (ORDER BY surprise_nats) AS p90, count(*) AS n
+  FROM temporal_self_event
+  WHERE surprise_nats IS NOT NULL AND occurred_at > %(hist_lo)s AND occurred_at <= %(as_of)s
+  GROUP BY source_kind
+)
+SELECT e.event_id, e.source_kind, e.occurred_at, e.label, e.verdict, e.payload_json, e.surprise_nats,
+  h.p90, h.n
+FROM temporal_self_event e JOIN hist h USING (source_kind)
+WHERE e.occurred_at > %(lo)s AND e.occurred_at <= %(as_of)s AND e.surprise_nats > h.p90
+  AND e.source_kind <> ALL(%(own)s)
+  AND NOT EXISTS (SELECT 1 FROM experience_use u WHERE u.event_id = e.event_id)
+ORDER BY e.surprise_nats DESC, e.occurred_at DESC
+LIMIT %(cap)s
+"""
+# Prime hunger's connection need: Juniper's own messages to Orion in Hub (chat_history_log.created_at is UTC
+# without a zone, as the chronicle's chat_turn source reads it).
+HUNGER_JUNIPER_SQL = """
+SELECT id, created_at AT TIME ZONE 'UTC' AS at, prompt
+FROM chat_history_log
+WHERE source = 'hub_orion' AND btrim(coalesce(prompt, '')) <> ''
+  AND created_at >= (%(lo)s::timestamptz AT TIME ZONE 'UTC')
+ORDER BY created_at
+"""
+HUNGER_CHAT_EVENT_SQL = """
+SELECT event_id FROM temporal_self_event WHERE source_kind = 'chat_turn' AND source_ref = %(ref)s LIMIT 1
+"""
 LAST_SHOWN_SQL = "SELECT max(shown_at) AS at FROM experience_shown WHERE reader_organ = %(o)s AND advances_cursor"
 INSERT_SHOWN_SQL = """
 INSERT INTO experience_shown (shown_id, reader_organ, reader_run_ref, event_ids, since, shown_at, advances_cursor)
@@ -391,6 +428,34 @@ class ExperienceStore:
                         "payload": r["payload_json"] or {}, "salience": r["salience"],
                         "surprise_nats": r["surprise_nats"]})
         return out, sum(totals.values())
+
+    async def by_id(self, event_ids: Iterable[str], *, own_kinds: Iterable[str]) -> list[dict]:
+        """Rows by event id (other organs' kinds only), in the candidates' shape: a reader's pinned items."""
+        ids = sorted({str(i) for i in event_ids if str(i).strip()})
+        if not ids:
+            return []
+        async with self._pool.connection() as conn:
+            rows = await (await conn.execute(NOW_BY_ID_SQL, {"ids": ids, "own": sorted(own_kinds)})).fetchall()
+        return [{"event_id": r["event_id"], "source_kind": r["source_kind"], "occurred_at": r["occurred_at"],
+                 "label": r["label"], "verdict": r["verdict"], "related_refs": list(r["related_refs"] or []),
+                 "payload": r["payload_json"] or {}, "salience": r["salience"], "surprise_nats": r["surprise_nats"]}
+                for r in rows]
+
+    async def hunger_inputs(self, *, lo: datetime, hist_lo: datetime, as_of: datetime, own_kinds: Iterable[str],
+                            cap: int, juniper_lo: datetime) -> tuple[list[dict], list[dict], Optional[str]]:
+        """(surprise rows, Juniper's messages oldest first, the last message's chat_turn event id). Read only."""
+        async with self._pool.connection() as conn:
+            async with conn.transaction():
+                await conn.execute("SET TRANSACTION READ ONLY")
+                await conn.execute(f"SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}'")
+                surprises = await (await conn.execute(HUNGER_SURPRISES_SQL, {
+                    "lo": lo, "hist_lo": hist_lo, "as_of": as_of, "own": sorted(own_kinds), "cap": cap})).fetchall()
+                msgs = await (await conn.execute(HUNGER_JUNIPER_SQL, {"lo": juniper_lo})).fetchall()
+                event_id = None
+                if msgs:
+                    row = await (await conn.execute(HUNGER_CHAT_EVENT_SQL, {"ref": str(msgs[-1]["id"])})).fetchone()
+                    event_id = row["event_id"] if row else None
+        return [dict(r) for r in surprises], [dict(r) for r in msgs], event_id
 
     async def insert_shown(self, *, shown_id: str, reader_organ: str, reader_run_ref: Optional[str],
                            event_ids: list[str], since: datetime, shown_at: datetime,

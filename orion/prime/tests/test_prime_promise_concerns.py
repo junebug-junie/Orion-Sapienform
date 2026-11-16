@@ -13,7 +13,7 @@ from typing import get_args
 from orion.prime import handback as hb
 from orion.prime.block import render_prime_block
 from orion.prime.intention_sources import turn_promise
-from orion.prime.state import (CONCERN_TTL, PROMISE_CONCERN_TTL, PROMISE_EVENT_PREFIX, QUIET_FLOOR, PrimeConcernV1,
+from orion.prime.state import (CONCERN_TTL, PROMISE_CONCERN_TTL, PROMISE_EVENT_PREFIX, PrimeConcernV1,
                                PrimeSnapshotV1, PrimeStateV1, concern_ttl, concerns_view, observe)
 from orion.prime.thought import SYSTEM_PROMPT, FrameInputs, build_frame, system_prompt
 from orion.schemas.cockpit_sighting import CockpitHopV1
@@ -149,8 +149,8 @@ def test_an_unkept_promise_older_than_a_day_lives_on_but_does_not_block_the_next
     assert f2[0].thread_refused == "already holding 1 concern opened by a turn"
 
 
-def test_the_ttls_and_the_quiet_floor():
-    assert CONCERN_TTL == timedelta(hours=24) and QUIET_FLOOR == timedelta(hours=6)
+def test_the_ttls():
+    assert CONCERN_TTL == timedelta(hours=24)
     # The promise TTL is the intention ledger's promise horizon, and the kind is the adapter's prefix.
     assert PROMISE_CONCERN_TTL == timedelta(seconds=turn_promise.HORIZON_SEC)
     assert PROMISE_EVENT_PREFIX == turn_promise.PREFIX == hb.TURN_EVENT_PREFIX

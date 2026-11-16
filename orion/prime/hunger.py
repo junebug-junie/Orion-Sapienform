@@ -1,0 +1,420 @@
+"""Prime's hunger: needs that carry content (integration design Part B, patch 5). Pure: no I/O, no model.
+
+Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, "Part B: Prime hunger, built as
+designed". Juniper approved the bracketed defaults (threshold 0.5, budget 24 thoughts a day).
+
+Hunger is a short list of **needs**. Each need has a **drive** (0..1, computed here by code) and a **content line**
+(the specific thing to think about, with its ref). Prime's frame shows the content lines, never the numbers. A need
+with drive 0 is not shown. Total hunger is the strongest need (max), not a sum: a sum would let six weak needs look
+like one strong one.
+
+The needs built here (each has a live producer; see the PR report's metric gate for the live checks):
+
+* ``horizon`` -- a held concern (24 h) or a promise (72 h, or its intention adapter's own deadline) nears its end.
+  drive = (elapsed / horizon - 0.5) / 0.5, clamped to 0..1: 0 until half the horizon has passed, 0.5 at three
+  quarters, 1 at the end. Source: Prime's own state. This is the job the 6-hour quiet floor did, with content.
+  Also a funded event want Prime does not hold yet (event mode, PRIME_CONCERNS_FROM_EVENT_WANTS: Prime's only concern
+  source) nearing its ``expires_at``, counted from its ``decided_at``. Its drive stops at ``EVENT_DRIVE_CAP`` (0.5):
+  the event is offered to one thought before it expires, never re-offered as it rises. Without this, an event with a
+  short window (a reading's look 3 h, an office visit 2 h, a curiosity finding 12 h) could expire between thoughts
+  once the floor is gone: the replay's longest stretch with no thought is 20-27 h.
+* ``surprise`` -- an experience of another organ whose ``surprise_nats`` is strictly above its own source kind's
+  30-day 90th percentile, that no organ has cited yet, and whose surprisal is at least ln 2 (the outcome had
+  probability 1/2 or less: more unlikely than not). drive = 1 - exp(-nats) = 1 - P(observed): exactly 0.5 at ln 2.
+  Source: orion-durable-runs GET /temporal-self/hunger (temporal_self_event, experience_use).
+* ``connection`` -- Juniper has not written to Orion for longer than her own usual gap between conversations.
+  Gaps shorter than ``CONVERSATION_PAUSE`` are pauses inside one conversation and are not gaps between them.
+  drive = the share of her past gaps between conversations (30 days, at least ``MIN_HISTORY``) strictly shorter
+  than the current one: 0.5 at her median gap. Source: the same endpoint (chat_history_log, source hub_orion).
+
+Not built here, each because its source does not exist yet (no placeholder need ships; the PR report links the
+tickets): ``coherence`` (the contradiction finder), ``learning`` (orion-prediction GET /learning-progress) and
+``project`` (Part C projects).
+
+When Prime thinks (``pick_wake`` + orion/prime/state.py ``wants_to_think``): a pending change, OR a need whose
+damped drive is at least the threshold; AND the refractory interval passed; AND no back-off; AND, for a need wake
+only, the daily budget is not spent. Anti-swamp guards, all here:
+
+1. A thought that shows needs and changes nothing (no move sent, no concern added or dropped) halves each shown
+   need's drive (per need name), except a need whose own ref the thought answered (``touched``: the concern it
+   kept or dropped, the event it took up as a concern, the experience it cited). Keeping a concern is the answer
+   to its horizon need, so it is never "nothing". The halving recovers linearly over the fired content's own horizon. Kept in
+   ``PrimeNeedsStateV1`` inside Prime's persisted state, so it survives a restart.
+2. Concern TTLs stay (24 h, 72 h for a promise): orion/prime/state.py.
+3. The refractory interval stays: orion/prime/state.py ``wants_to_think``.
+4. Daily budget: at most ``DAILY_BUDGET`` thoughts in any 24 hours. Past that only a pending change wakes Prime.
+5. The same content line (need name + ref) cannot wake Prime twice unless its raw drive rose since it last did, by at
+   least ``MIN_RISE``, measured from the lowest the drive went since then (``track_troughs``: a concern kept falls
+   to 0 and may rise again; a need pinned at 1.0 never re-arms). Without the margin a stepped drive refires on every step: the connection drive moves in
+   1/40 steps (40 conversation gaps in 30 days, live), and the replay eval had it wake Prime 20 times in 10 days.
+
+The trace (stable, read by the daily roundup and the 14-day check): a thought a need woke has an act close note
+(``grammar_acts.outcome_note``) that starts ``woke: need:<name> <ref>`` (``woke_prefix``, ``WOKE_NEED_RE``). A thought
+a pending change woke starts ``woke: <the changes>`` as before. The same string is the ``prime_thought`` experience's
+label in temporal_self_event.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from datetime import datetime, timedelta
+from typing import Any, Iterable, Literal, Optional, Sequence
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from orion.prime.state import (NeedDampV1, NeedFiredV1, PrimeNeedsStateV1, PrimeStateV1, concern_ttl,
+                               is_promise_concern)
+
+NeedName = Literal["horizon", "surprise", "connection"]
+NEED_NAMES: tuple[str, ...] = ("horizon", "surprise", "connection")
+
+THRESHOLD = 0.5  # [default, accepted 2026-11-15]: a need wakes Prime at this damped drive
+DAILY_BUDGET = 24  # [default, accepted 2026-11-15]: thoughts in any 24 hours before only changes wake Prime
+BUDGET_WINDOW = timedelta(hours=24)
+HORIZON_START = 0.5  # the horizon drive counts from half the horizon
+EVENT_DRIVE_CAP = 0.5  # an unheld funded event want is offered once, at three quarters of its window
+SURPRISE_FLOOR_NATS = math.log(2.0)  # the outcome had P <= 1/2
+SURPRISE_RECOVERY = timedelta(hours=24)  # the now's use window: an experience counts as used within 24 h
+CONVERSATION_PAUSE = timedelta(hours=2)
+MIN_HISTORY = 20  # the salience rule's own minimum (orion.physiology.event_wants.MIN_SOURCE_HISTORY)
+DAMPING = 0.5
+MIN_RISE = 0.1  # guard 5: how much a content line's raw drive must rise before it may wake Prime again
+MAX_SHOWN = 5
+MAX_FIRED = 50
+CONTENT_CAP = 300
+REF_CAP = 200
+# The trace's stable shape (module docstring): "woke: need:<name> <ref>".
+WOKE_NEED_RE = re.compile(r"^woke: need:(horizon|surprise|connection) (\S+)")
+
+
+class NeedV1(BaseModel):
+    """One need now. ``drive``: the raw drive. ``damped``: after guard 1 (what is compared to the threshold)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: NeedName
+    drive: float = Field(ge=0.0, le=1.0)
+    damped: float = Field(ge=0.0, le=1.0)
+    content: str = Field(min_length=1, max_length=CONTENT_CAP)
+    ref: str = Field(min_length=1, max_length=REF_CAP)
+    # How long a halving caused by this need takes to recover (its own horizon).
+    recover_sec: float = Field(gt=0.0)
+
+    @property
+    def key(self) -> str:
+        return f"{self.name}:{self.ref}"
+
+    @property
+    def experience_id(self) -> Optional[str]:
+        return self.ref[len("experience:"):] if self.ref.startswith("experience:") else None
+
+
+def _clamp(x: float) -> float:
+    return 0.0 if not math.isfinite(x) else min(1.0, max(0.0, x))
+
+
+def _hours(td: timedelta) -> float:
+    return td.total_seconds() / 3600.0
+
+
+# --- the drives ---------------------------------------------------------------------------------------------
+
+
+def horizon_drive(elapsed: timedelta, horizon: timedelta) -> float:
+    """0 until half the horizon, then linear to 1 at the horizon."""
+    if horizon.total_seconds() <= 0:
+        return 0.0
+    frac = elapsed / horizon
+    return _clamp((frac - HORIZON_START) / (1.0 - HORIZON_START))
+
+
+def _when(v: Any) -> Optional[datetime]:
+    if isinstance(v, datetime):
+        return v
+    try:
+        t = datetime.fromisoformat(str(v).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    return t if t.tzinfo is not None else None
+
+
+def event_horizon_needs(state: PrimeStateV1, now: datetime,
+                        events: Optional[dict[str, Any]]) -> list[tuple[NeedName, float, str, str, float]]:
+    """Funded event wants (GET /physiology/event-wants, FundedEventWantsV1) Prime does not hold as a concern, nearing
+    their expiry. Drive capped at EVENT_DRIVE_CAP (module docstring)."""
+    held = {c.event_ref for c in state.concerns if c.event_ref}
+    out = []
+    for w in (events or {}).get("wants") or []:
+        ref = str(w.get("event_ref") or "")
+        start, end = _when(w.get("decided_at")), _when(w.get("expires_at"))
+        if not ref or ref in held or start is None or end is None or end <= start:
+            continue
+        drive = min(EVENT_DRIVE_CAP, horizon_drive(now - start, end - start))
+        if drive <= 0.0:
+            continue
+        label = " ".join(str(w.get("label") or w.get("family") or "").split())[:160]
+        content = (f"{label} ({w.get('family') or '?'}) stops being worth effort in "
+                   f"{max(0.0, _hours(end - now)):.0f} h unless you take it up [event_id {ref}]")
+        out.append(("horizon", drive, content, ref[:REF_CAP], (end - start).total_seconds()))
+    return out
+
+
+def horizon_needs(state: PrimeStateV1, now: datetime, *, taken_on: Iterable[str] = (),
+                  horizon_of: Optional[Any] = None) -> list[tuple[NeedName, float, str, str, float]]:
+    """(name, drive, content, ref, recover_sec) per open concern. A concern taken on (its run is open) or already
+    settled has nothing left to decide. ``horizon_of(concern)``: the intention adapter's deadline, or None."""
+    skip = set(taken_on)
+    out = []
+    for c in state.concerns:
+        if c.concern_id in skip or c.graded == "settled":
+            continue
+        ttl = concern_ttl(c)
+        fade_at = c.last_evidence_at + ttl
+        drive = horizon_drive(now - c.last_evidence_at, ttl)
+        end, verb = fade_at, "fades unless I keep it"
+        deadline = horizon_of(c) if horizon_of is not None else None
+        if deadline is not None and deadline > c.opened_at:
+            d2 = horizon_drive(now - c.opened_at, deadline - c.opened_at)
+            if d2 > drive:
+                drive, end, verb = d2, deadline, "ends"
+        if drive <= 0.0:
+            continue
+        left = max(0.0, _hours(end - now))
+        what = "promise" if is_promise_concern(c) else "concern"
+        content = f"{what} {c.text[:160]!r} {verb} in {left:.0f} h [prime_concern:{c.concern_id}]"
+        out.append(("horizon", drive, content, f"prime_concern:{c.concern_id}", ttl.total_seconds()))
+    return out
+
+
+def surprise_drive(nats: float, p90: float, n: int) -> float:
+    """1 - P(observed), only for a surprisal above its own source's 90th percentile (with enough history) and at
+    least ln 2; else 0."""
+    if n < MIN_HISTORY or not math.isfinite(nats) or nats <= p90 or nats < SURPRISE_FLOOR_NATS:
+        return 0.0
+    return _clamp(1.0 - math.exp(-nats))
+
+
+def surprise_needs(inputs: Optional[dict[str, Any]]) -> list[tuple[NeedName, float, str, str, float]]:
+    out = []
+    for s in (inputs or {}).get("surprises") or []:
+        drive = surprise_drive(float(s.get("surprise_nats") or 0.0), float(s.get("source_p90") or 0.0),
+                               int(s.get("source_n") or 0))
+        if drive <= 0.0:
+            continue
+        label = " ".join(str(s.get("label") or s.get("source_kind") or "").split())[:160]
+        content = (f"{s.get('organ') or '?'}: {label} -- {float(s['surprise_nats']):.2f} nats, more than its source's "
+                   f"usual 90th percentile of {float(s['source_p90']):.2f}; nobody has used it yet "
+                   f"[experience:{s['event_id']}]")
+        out.append(("surprise", drive, content, f"experience:{s['event_id']}", SURPRISE_RECOVERY.total_seconds()))
+    return out
+
+
+def conversation_gaps(times: Sequence[datetime]) -> list[timedelta]:
+    """Gaps between Juniper's conversations: consecutive message gaps of at least ``CONVERSATION_PAUSE``."""
+    ts = sorted(times)
+    return [b - a for a, b in zip(ts, ts[1:]) if b - a >= CONVERSATION_PAUSE]
+
+
+def connection_drive(times: Sequence[datetime], now: datetime) -> Optional[float]:
+    """Share of her past gaps between conversations strictly shorter than the current gap. None: too little
+    history to say what her usual gap is (unknown, never "calm"). 0 while the current gap is a pause."""
+    gaps = conversation_gaps(times)
+    if len(gaps) < MIN_HISTORY or not times:
+        return None
+    current = now - max(times)
+    if current < CONVERSATION_PAUSE:
+        return 0.0
+    return sum(1 for g in gaps if g < current) / len(gaps)
+
+
+def connection_needs(inputs: Optional[dict[str, Any]], now: datetime) -> list[tuple[NeedName, float, str, str, float]]:
+    j = (inputs or {}).get("juniper") or {}
+    times = [t if isinstance(t, datetime) else datetime.fromisoformat(str(t).replace("Z", "+00:00"))
+             for t in j.get("message_times") or []]
+    drive = connection_drive(times, now)
+    if not drive:
+        return []
+    gaps = sorted(conversation_gaps(times))
+    median = gaps[len(gaps) // 2]
+    since = _hours(now - max(times))
+    quote = " ".join(str(j.get("last_prompt") or "").split())[:200]
+    if j.get("last_event_id"):
+        ref = f"experience:{j['last_event_id']}"
+        tail = f"[{ref}]"
+    else:
+        ref = f"chat_history_log:{j.get('last_chat_id') or 'unknown'}"
+        tail = f"(chat {j.get('last_chat_id') or '?'}, not yet an experience you can cite)"
+    content = (f"Juniper last wrote {since:.0f} h ago; her usual gap between conversations is {_hours(median):.0f} h. "
+               f"Her last message: {quote!r} {tail}")
+    return [("connection", drive, content[:CONTENT_CAP], ref[:REF_CAP], max(median.total_seconds(), 3600.0))]
+
+
+# --- guards ---------------------------------------------------------------------------------------------------
+
+
+def damp_factor(needs: PrimeNeedsStateV1, name: str, now: datetime) -> float:
+    """Guard 1: the multiplier on ``name``'s drive now (1 = undamped), recovering linearly over its horizon."""
+    d = needs.damp.get(name)
+    if d is None:
+        return 1.0
+    left = 1.0 - (now - d.at).total_seconds() / d.recover_sec
+    return 1.0 if left <= 0 else _clamp(1.0 - (1.0 - d.factor) * left)
+
+
+def compute_needs(state: PrimeStateV1, now: datetime, inputs: Optional[dict[str, Any]], *,
+                  taken_on: Iterable[str] = (), horizon_of: Optional[Any] = None,
+                  events: Optional[dict[str, Any]] = None) -> list[NeedV1]:
+    """Every need with drive above 0, strongest (damped) first. ``inputs``: the durable-runs hunger read
+    (TemporalHungerInputsV1 as a dict; None = unread). ``events``: the funded event wants Prime read this tick."""
+    raw = [*horizon_needs(state, now, taken_on=taken_on, horizon_of=horizon_of),
+           *event_horizon_needs(state, now, events),
+           *surprise_needs(inputs), *connection_needs(inputs, now)]
+    out = []
+    for name, drive, content, ref, recover in raw:
+        drive = _clamp(drive)
+        if drive <= 0.0:
+            continue
+        damped = _clamp(drive * damp_factor(state.needs, name, now))
+        out.append(NeedV1(name=name, drive=drive, damped=damped, content=content[:CONTENT_CAP], ref=ref[:REF_CAP],
+                          recover_sec=recover))
+    out.sort(key=lambda n: (-n.damped, -n.drive, n.key))
+    return out
+
+
+def thoughts_in_window(needs: PrimeNeedsStateV1, now: datetime) -> int:
+    return sum(1 for t in needs.thoughts_at if now - t < BUDGET_WINDOW)
+
+
+def budget_spent(needs: PrimeNeedsStateV1, now: datetime, budget: int = DAILY_BUDGET) -> bool:
+    return thoughts_in_window(needs, now) >= budget
+
+
+def may_fire(need: NeedV1, needs: PrimeNeedsStateV1) -> bool:
+    """Guard 5: this content line has not woken Prime yet, or its raw drive rose by at least ``MIN_RISE`` since."""
+    f = needs.fired.get(need.key)
+    return f is None or need.drive >= f.drive + MIN_RISE - 1e-9
+
+
+def track_troughs(state: PrimeStateV1, needs_now: Sequence[NeedV1], *,
+                  known: Iterable[str] = NEED_NAMES) -> PrimeStateV1:
+    """Guard 5's memory: for every content line that fired, keep the lowest raw drive seen since. A line absent now
+    (drive 0) falls to 0, but only for a need whose source was read (``known``): an unread source is unknown, not
+    calm, and must not re-arm its lines."""
+    if not state.needs.fired:
+        return state
+    now_drive = {n.key: n.drive for n in needs_now}
+    known_set = set(known)
+    fired = {}
+    changed = False
+    for key, f in state.needs.fired.items():
+        name = key.split(":", 1)[0]
+        d = now_drive.get(key, 0.0 if name in known_set else f.drive)
+        if d < f.drive:
+            fired[key] = f.model_copy(update={"drive": d})
+            changed = True
+        else:
+            fired[key] = f
+    if not changed:
+        return state
+    return state.model_copy(update={"needs": state.needs.model_copy(update={"fired": fired})})
+
+
+def pick_wake(needs_now: Sequence[NeedV1], state: PrimeStateV1, now: datetime, *, threshold: float = THRESHOLD,
+              budget: int = DAILY_BUDGET) -> Optional[NeedV1]:
+    """The need that wakes Prime now, or None: the strongest damped need at or over the threshold that guard 5
+    allows; never while the daily budget is spent (guard 4)."""
+    if budget_spent(state.needs, now, budget):
+        return None
+    for n in needs_now:
+        if n.damped >= threshold and may_fire(n, state.needs):
+            return n
+    return None
+
+
+def note_thought(state: PrimeStateV1, now: datetime, fired: Optional[NeedV1]) -> PrimeStateV1:
+    """A thought started (the model was reached): count it for the budget; record the content line that woke it."""
+    n = state.needs
+    thoughts = [t for t in n.thoughts_at if now - t < BUDGET_WINDOW] + [now]
+    fired_map = dict(n.fired)
+    if fired is not None:
+        fired_map[fired.key] = NeedFiredV1(drive=fired.drive, at=now)
+        if len(fired_map) > MAX_FIRED:
+            fired_map = dict(sorted(fired_map.items(), key=lambda kv: kv[1].at)[-MAX_FIRED:])
+    return state.model_copy(update={"needs": n.model_copy(update={"thoughts_at": thoughts, "fired": fired_map})})
+
+
+def after_answer(state: PrimeStateV1, shown: Sequence[NeedV1], now: datetime, *, acted: bool,
+                 touched: Iterable[str] = ()) -> PrimeStateV1:
+    """Guard 1: a thought that was shown needs and changed nothing halves each shown need (by name), except needs
+    whose ref is in ``touched`` (the thought answered that one). A name with any answered need is not halved."""
+    if acted or not shown:
+        return state
+    hit = set(touched)
+    answered = {n.name for n in shown if n.ref in hit}
+    damp = dict(state.needs.damp)
+    seen: set[str] = set(answered)
+    for n in shown:
+        if n.name in seen:
+            continue
+        seen.add(n.name)
+        damp[n.name] = NeedDampV1(factor=_clamp(damp_factor(state.needs, n.name, now) * DAMPING), at=now,
+                                  recover_sec=n.recover_sec)
+    return state.model_copy(update={"needs": state.needs.model_copy(update={"damp": damp})})
+
+
+def answered_refs(*, kept: Iterable[str] = (), dropped: Iterable[str] = (), added_event_refs: Iterable[str] = (),
+                  cited: Iterable[str] = ()) -> set[str]:
+    """The need refs a thought answered: ``prime_concern:<id>`` for each concern kept or dropped (``dropped`` items
+    may carry a reason after the id), each event it took up as a concern, ``experience:<id>`` for each cite."""
+    out = {f"prime_concern:{c}" for c in kept}
+    out |= {f"prime_concern:{str(d).split(' ', 1)[0]}" for d in dropped}
+    out |= {str(e) for e in added_event_refs if e}
+    out |= {f"experience:{c}" for c in cited}
+    return out
+
+
+def prune(state: PrimeStateV1, now: datetime) -> PrimeStateV1:
+    """Drop recovered halvings and budget entries outside the window (keeps the saved state small)."""
+    n = state.needs
+    damp = {k: d for k, d in n.damp.items() if (now - d.at).total_seconds() < d.recover_sec}
+    thoughts = [t for t in n.thoughts_at if now - t < BUDGET_WINDOW]
+    if damp == n.damp and thoughts == n.thoughts_at:
+        return state
+    return state.model_copy(update={"needs": n.model_copy(update={"damp": damp, "thoughts_at": thoughts})})
+
+
+# --- what Prime sees, and the trace ------------------------------------------------------------------------------
+
+
+def shown_needs(needs_now: Sequence[NeedV1]) -> list[NeedV1]:
+    return list(needs_now[:MAX_SHOWN])
+
+
+def frame_lines(needs_now: Sequence[NeedV1], woke: Optional[NeedV1], *, unread: Optional[str] = None) -> list[str]:
+    """Content lines only, strongest first; the one that woke this thought is marked. No numbers (spec)."""
+    lines = [f"- [{n.name}] {n.content}" + (" (this is what woke you)" if woke is not None and n.key == woke.key else "")
+             for n in shown_needs(needs_now)]
+    if unread:
+        lines.append(f"(surprise and connection could not be read: {unread})")
+    return lines or ["(nothing is pulling at you right now)"]
+
+
+def woke_prefix(need: NeedV1) -> str:
+    """The trace (module docstring): ``woke: need:<name> <ref>``."""
+    return f"woke: need:{need.name} {need.ref}"
+
+
+def parse_woke_need(note: Optional[str]) -> Optional[tuple[str, str]]:
+    """(need name, ref) from a thought act's close note, or None when a pending change woke it."""
+    m = WOKE_NEED_RE.match(note or "")
+    return (m.group(1), m.group(2)) if m else None
+
+
+__all__ = [
+    "BUDGET_WINDOW", "CONVERSATION_PAUSE", "EVENT_DRIVE_CAP", "event_horizon_needs", "DAILY_BUDGET", "DAMPING", "MIN_HISTORY", "MIN_RISE", "NEED_NAMES", "NeedDampV1",
+    "NeedFiredV1", "NeedName", "NeedV1", "PrimeNeedsStateV1", "SURPRISE_FLOOR_NATS", "THRESHOLD", "WOKE_NEED_RE",
+    "after_answer", "answered_refs", "budget_spent", "compute_needs", "connection_drive", "conversation_gaps", "damp_factor",
+    "frame_lines", "horizon_drive", "horizon_needs", "may_fire", "note_thought", "parse_woke_need", "pick_wake",
+    "prune", "shown_needs", "surprise_drive", "thoughts_in_window", "track_troughs", "woke_prefix",
+]

@@ -310,3 +310,35 @@ def test_self_inquiry_is_a_line_not_an_arm_and_keeps_its_name():
     e = S.curiosity_run({"run_id": "s", "turn_started_at": T, "completed_at": T + timedelta(minutes=5),
                          "arm": "self_inquiry", "n_tested": 0, "n_moved": 0, "n_formed": 3, "offered": []})
     assert _now_from([e]).items[0].label == "self-inquiry run: tested 0, moved 0, formed 3"
+
+
+# --------------------------------------------------------------------------- pinned (Prime hunger, Part B)
+
+
+def test_pinned_rows_come_first_outside_the_organ_cap_and_inside_the_total():
+    """A need's content row (Prime hunger) is pinned into the now so a cite of it is valid against the shown row."""
+    from orion.temporal_self.now import NOW_MAX_PINNED
+
+    rows = []
+    for organ_kind in ("reverie_chain", "curiosity_run", "reading_turn", "prediction_surprise", "dream_cycle",
+                       "vision_percept", "gpu_wait", "metacog_observation", "memory_episode", "chat_turn"):
+        for j in range(3):
+            rows.append(row(f"{organ_kind}:{j}", organ_kind, sal=round(0.1 * j + 0.01 * len(rows), 3)))
+    old_chat = row("chat_turn:old", "chat_turn", at=T - timedelta(days=2))  # not a candidate: older than since
+    own = row("prime_thought:mine", "prime_thought", sal=1.0)
+    pins = [old_chat, row("chat_turn:2", "chat_turn"), own, row("reading_turn:x", "reading_turn"),
+            row("reading_turn:y", "reading_turn")]
+    now = build_now(rows, "prime", since=T - timedelta(hours=1), as_of=T, shown_id="s", registry=REG, pinned=pins)
+    ids = [i.event_id for i in now.items]
+    # The reader's own organ is never pinned; at most NOW_MAX_PINNED; pins first, in order; no duplicates.
+    assert ids[:NOW_MAX_PINNED] == ["chat_turn:old", "chat_turn:2", "reading_turn:x"]
+    assert "prime_thought:mine" not in ids and len(ids) == 12 and len(set(ids)) == 12
+    # Pins stand outside the per-organ cap: chat shows its 2 pins plus up to 2 ranked rows.
+    assert sum(1 for i in now.items if i.organ == "chat") <= 2 + 2
+
+
+def test_no_pins_is_exactly_the_old_now():
+    rows = [row("reading_turn:b", "reading_turn", sal=0.1), row("chat_turn:c", "chat_turn")]
+    a = build_now(rows, "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG)
+    b = build_now(rows, "prime", since=T - timedelta(hours=6), as_of=T, shown_id="s", registry=REG, pinned=[])
+    assert a == b

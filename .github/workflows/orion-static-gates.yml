@@ -226,6 +226,9 @@ jobs:
         run: |
           python scripts/check_integration_seam.py --require-base
           python -m pytest tests/test_check_integration_seam.py tests/test_report_integration_coverage.py -q -p no:cacheprovider
+          # Integration patch 3 follow-on: the weekly now ablation eval's harness (offline lane: fixtures + stub).
+          python -m pytest orion/integration/evals -q -p no:cacheprovider
+          python -m orion.integration.evals.run_now_ablation_eval --offline
 
       # One owner per tuned env key, and no copy at all of a module-owned line (body economy
       # Patch B: the room's 32/30.5/34/33 C lines live only in orion/autonomy/thermal_gate.py).

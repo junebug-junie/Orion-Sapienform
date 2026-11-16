@@ -99,6 +99,17 @@ class Settings(BaseSettings):
     ORION_LLM_VLLM_URL: Optional[str] = Field(None, alias="ORION_LLM_VLLM_URL")
     ORION_LLM_LLAMA_COLA_URL: Optional[str] = Field(None, alias="ORION_LLM_LLAMA_COLA_URL")
 
+    # Local cross-encoder behind POST /rerank (app/reranker.py, issue #3533). Read by
+    # orion-recall's lived-memory collector. Empty = no reranker; /rerank answers 503.
+    VECTOR_HOST_RERANK_MODEL: str = Field(
+        default="BAAI/bge-reranker-base",
+        alias="VECTOR_HOST_RERANK_MODEL",
+    )
+    VECTOR_HOST_RERANK_DEVICE: str = Field(
+        default="cpu",
+        alias="VECTOR_HOST_RERANK_DEVICE",
+    )
+
     VECTOR_HOST_EMBED_CONNECT_TIMEOUT_SEC: float = Field(
         default=10.0,
         alias="VECTOR_HOST_EMBED_CONNECT_TIMEOUT_SEC",

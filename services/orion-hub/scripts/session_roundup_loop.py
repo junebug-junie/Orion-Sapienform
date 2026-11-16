@@ -316,11 +316,25 @@ class GitHubCommenter:
 
     def __init__(self, repo: str, *, token_provider: Callable[[], str] = lambda: (
             os.environ.get("ORION_GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""),
-            timeout_sec: float = 15.0, api_base: str = "https://api.github.com") -> None:
+            timeout_sec: float = 15.0, api_base: str = "https://api.github.com",
+            guard_loader: Optional[Callable[[], Any]] = None) -> None:
         self.repo = repo.strip().strip("/")
         self._token_provider = token_provider
         self.timeout_sec = timeout_sec
         self.api_base = api_base.rstrip("/")
+        # Mesh-edge check (orion/memory/mesh_edge.py, issue #3409): None = load from Postgres.
+        self._guard_loader = guard_loader
+
+    async def mesh_edge_refusal(self, body: str) -> Optional[str]:
+        """Why this body must not be posted publicly, or None when it may (fail closed)."""
+        from orion.memory.mesh_edge import MeshEdgeUnavailable, load_guard
+
+        try:
+            guard = await asyncio.to_thread(self._guard_loader or load_guard)
+        except MeshEdgeUnavailable:
+            return "mesh_edge_unavailable"
+        hits = guard.find(body)
+        return f"mesh_edge_leak:{len(hits)}" if hits else None
 
     async def post(self, pr_number: int, body: str, *, branch: Optional[str] = None) -> Optional[str]:
         """The comment's URL, or None when it was not posted (no token, no repo, API error, or the
@@ -328,6 +342,10 @@ class GitHubCommenter:
         number, so Hub checks it before Orion's account writes anywhere)."""
         import httpx
 
+        refusal = await self.mesh_edge_refusal(body)
+        if refusal:
+            logger.warning("session_thread_pr_comment_skipped pr=%s why=%s", pr_number, refusal)
+            return None
         token = (self._token_provider() or "").strip()
         if not token or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", self.repo):
             logger.warning("session_thread_pr_comment_skipped pr=%s why=%s", pr_number,

@@ -19,6 +19,7 @@ from orion.core.schemas.substrate_mutation import MutationPressureEvidenceV1
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
 from orion.core.contracts.recall import (
     MemoryBundleV1,
+    MemoryItemV1,
     RecallDecisionV1,
     RecallQueryV1,
 )
@@ -104,6 +105,67 @@ _recall_pg_pool: Any = None
 def set_recall_pg_pool(pool: Any) -> None:
     global _recall_pg_pool
     _recall_pg_pool = pool
+
+
+# Lived-memory reader (app/lived_memory.py, issue #3533). Set by main.py's lifespan when
+# RECALL_LIVED_MEMORY_ENABLED and the Postgres pool are up; None = no lived memories.
+_lived_memory: Any = None
+
+
+def set_lived_memory(reader: Any) -> None:
+    global _lived_memory
+    _lived_memory = reader
+
+
+async def _add_lived_memories(
+    q: RecallQueryV1,
+    bundle: MemoryBundleV1,
+    *,
+    query_text: str,
+    remaining_s: float | None,
+    corr_id: str,
+) -> Tuple[Dict[str, Any], int, bool]:
+    """Append the lived memories that fit this turn to the continuity bundle.
+
+    Returns (debug, injected_count, deadline_hit). The debug carries ids, fits and timings only,
+    never memory text. Every injected id also lands in bundle.items, so recall_telemetry's
+    selected_ids is the read log (step 3 of issue #3533's arc reads it).
+    """
+    reader = _lived_memory
+    if reader is None:
+        return {"skipped": "disabled"}, 0, False
+    budget = float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC)
+    if remaining_s is not None:
+        budget = min(budget, max(0.0, remaining_s))
+    if budget <= 0:
+        return {"skipped": "deadline"}, 0, True
+    try:
+        lived = await asyncio.wait_for(reader.recall(query_text), timeout=budget)
+    except asyncio.TimeoutError:
+        logger.warning("lived_memory_timeout corr_id=%s budget_s=%.2f", corr_id, budget)
+        return {"skipped": "timeout"}, 0, True
+    except Exception as exc:  # noqa: BLE001 -- never fail the chat recall over it
+        logger.warning("lived_memory_failed corr_id=%s error=%s", corr_id, type(exc).__name__)
+        return {"skipped": f"error:{type(exc).__name__}"}, 0, False
+    debug = dict(lived.debug)
+    debug["injected"] = [
+        {"id": c.rec.doc_id, "fit": round(c.fit, 4), "score": round(c.score, 4)} for c in lived.chosen
+    ]
+    if lived.lines:
+        from .lived_memory import items_for
+
+        rendered = lived.rendered
+        bundle.rendered = (bundle.rendered + "\n\n" + rendered).strip() if bundle.rendered else rendered
+        bundle.items = list(bundle.items) + [MemoryItemV1(**kw) for kw in items_for(lived.chosen)]
+    logger.info(
+        "lived_memory_injected corr_id=%s count=%s ids=%s fits=%s total_ms=%s",
+        corr_id,
+        len(lived.lines),
+        [c.rec.doc_id for c in lived.chosen],
+        [round(c.fit, 3) for c in lived.chosen],
+        (lived.debug.get("timings_ms") or {}).get("total"),
+    )
+    return debug, len(lived.lines), False
 
 
 RECALL_REQUEST_KIND = "recall.query.v1"
@@ -2619,6 +2681,7 @@ async def process_recall(
             suppressed,
         )
 
+    lived_debug: Dict[str, Any] = {}
     pcr_started = time.perf_counter()
     if settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
         pcr_cands, pcr_counts, pcr_elapsed, pcr_deadline_hit = await _run_pcr_collectors(
@@ -2650,6 +2713,21 @@ async def process_recall(
             latency_ms=latency_ms,
             session_id=effective_session_id,
         )
+        if bool(settings.RECALL_LIVED_MEMORY_ENABLED) and not context_only:
+            # Once per chat turn: the continuity phase runs on every turn the skip gate
+            # lets through, and phase 3 merges this digest into its own.
+            lived_started = time.perf_counter()
+            lived_debug, lived_count, lived_deadline = await _add_lived_memories(
+                q,
+                bundle,
+                query_text=str(q.fragment or query_fragment or ""),
+                remaining_s=_remaining_s(),
+                corr_id=corr_id,
+            )
+            timings_ms["lived_memory"] = int((time.perf_counter() - lived_started) * 1000)
+            backend_counts_total["lived_memory"] = lived_count
+            if lived_deadline:
+                deadline_hit = True
     elif settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
         belief_budget = q.belief_digest_max_tokens or settings.RECALL_BELIEF_RENDER_BUDGET
         profile["render_budget_tokens"] = belief_budget
@@ -2815,11 +2893,13 @@ async def process_recall(
                 "selected_summary": _bounded_selected_summary(list(bundle.items)),
                 **({"eligible_belief_count": eligible_belief_count} if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"} else {}),
                 **({"pcr": pcr_debug} if pcr_debug else {}),
+                **({"lived_memory": lived_debug} if lived_debug else {}),
             }
             if diagnostic
             else (
                 {
                     "latency_breakdown_ms": timing_breakdown_ms,
+                    **({"lived_memory": lived_debug} if lived_debug else {}),
                     **({"eligible_belief_count": eligible_belief_count} if settings.RECALL_PCR_ENABLED and recall_phase in {"continuity", "purposeful"} else {}),
                     **({"pcr": pcr_debug} if pcr_debug else {}),
                 }

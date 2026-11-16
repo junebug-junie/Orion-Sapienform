@@ -1,0 +1,76 @@
+# Memory recall step 1 (issue #3533) and the mesh-edge leak check (issue #3409).
+# Lived-memory recall: exact-word + meaning candidates, live gating, local rerank, the bar, ranking,
+# render, the worker seam, and the committed fixture replay eval. Mesh edge: the shared guard, the
+# FCC gh PreToolUse hook, Hub's PR commenter, and outbound email. No DB, bus or model (fakes only).
+
+name: lived-memory-recall-tests
+
+on:
+  pull_request:
+    paths:
+      - "orion/memory/lived_memory.py"
+      - "orion/memory/mesh_edge.py"
+      - "orion/memory/tests/test_mesh_edge.py"
+      - "orion/memory/vector_collection_policy.py"
+      - "orion/fcc/mesh_edge_hook.py"
+      - "orion/fcc/tests/test_mesh_edge_hook.py"
+      - "orion/harness/fcc_motor.py"
+      - "orion/notify/transport.py"
+      - "orion/introspect/semantic_index.py"
+      - "services/orion-recall/app/lived_memory.py"
+      - "services/orion-recall/app/worker.py"
+      - "services/orion-recall/app/main.py"
+      - "services/orion-recall/app/settings.py"
+      - "services/orion-recall/tests/test_lived_memory.py"
+      - "services/orion-recall/evals/**"
+      - "services/orion-vector-host/app/**"
+      - "services/orion-vector-host/tests/**"
+      - "services/orion-hub/scripts/session_roundup_loop.py"
+      - "services/orion-notify/tests/test_email_mesh_edge.py"
+      - ".github/workflows/lived-memory-recall-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/memory/lived_memory.py"
+      - "orion/memory/mesh_edge.py"
+      - "orion/fcc/mesh_edge_hook.py"
+      - "orion/harness/fcc_motor.py"
+      - "orion/notify/transport.py"
+      - "services/orion-recall/app/**"
+      - "services/orion-recall/evals/**"
+      - "services/orion-vector-host/app/**"
+      - "services/orion-hub/scripts/session_roundup_loop.py"
+      - ".github/workflows/lived-memory-recall-tests.yml"
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/orion-recall/requirements.txt
+          python -m pip install -r requirements-dev.txt
+          python -m pip install "pydantic-settings>=2.2" "fastapi>=0.110" "loguru>=0.7"
+      - name: Mesh-edge guard, FCC gh hook, outbound email
+        run: |
+          python -m pytest -q -p no:cacheprovider orion/memory/tests/test_mesh_edge.py \
+            orion/fcc/tests/test_mesh_edge_hook.py services/orion-notify/tests/test_email_mesh_edge.py \
+            tests/test_vector_collection_policy.py
+      - name: Lived-memory recall + fixture replay eval
+        working-directory: services/orion-recall
+        run: |
+          PYTHONPATH=.:${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
+            tests/test_lived_memory.py evals/test_lived_memory_replay_eval.py
+      - name: Hub PR commenter refuses guarded text
+        working-directory: services/orion-hub
+        run: |
+          PYTHONPATH=.:${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
+            tests/test_session_roundup_loop.py -k commenter

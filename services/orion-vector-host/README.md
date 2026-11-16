@@ -39,6 +39,15 @@ deleted by this change.
 | `orion:vector:semantic:upsert` | `VectorUpsertV1` | Semantic vector upserts for the vector writer. |
 | `orion:embedding:result:*` | `EmbeddingResultV1` | Embedding RPC replies. |
 
+### HTTP: `POST /rerank` (issue #3533)
+
+Local cross-encoder (`app/reranker.py`, model `VECTOR_HOST_RERANK_MODEL`, device
+`VECTOR_HOST_RERANK_DEVICE`). Request `{"query": str, "documents": [str, ...]}` (at most 64);
+reply `{"model": str, "scores": [float, ...]}`, raw logits in request order, higher = better
+fit. 503 when no model is loaded. Read by orion-recall's lived-memory collector
+(`services/orion-recall/app/lived_memory.py`). Runs on its own single-thread executor so bus
+embeds do not queue a chat turn's rerank.
+
 ## Environment Variables
 Provenance: `.env_example` → `docker-compose.yml` → `settings.py`
 

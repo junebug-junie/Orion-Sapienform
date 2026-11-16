@@ -253,6 +253,46 @@ class Settings(BaseSettings):
     RECALL_BELIEF_RENDER_BUDGET: int = Field(
         default=128, validation_alias=AliasChoices("RECALL_BELIEF_RENDER_BUDGET")
     )
+    # Lived-memory recall (app/lived_memory.py, issue #3533): episode_memory, stance
+    # crystallizations and person facts, found by meaning + exact words, reranked by a local
+    # cross-encoder, at most RECALL_LIVED_MEMORY_MAX_LINES lines into the chat prompt's
+    # DURABLE MEMORY on the PCR continuity phase. Nothing below RECALL_LIVED_MEMORY_MIN_FIT
+    # (reranker fit, tuned by evals/run_lived_memory_replay_eval.py) is injected.
+    RECALL_LIVED_MEMORY_ENABLED: bool = Field(
+        default=True, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_ENABLED")
+    )
+    RECALL_LIVED_MEMORY_CHROMA_URL: str = Field(
+        default="http://orion-athena-vector-db:8000", validation_alias=AliasChoices("RECALL_LIVED_MEMORY_CHROMA_URL")
+    )
+    RECALL_LIVED_MEMORY_EMBED_URL: str = Field(
+        default="http://orion-athena-vector-host:8320/embedding",
+        validation_alias=AliasChoices("RECALL_LIVED_MEMORY_EMBED_URL"),
+    )
+    RECALL_LIVED_MEMORY_RERANK_URL: str = Field(
+        default="http://orion-athena-vector-host:8320/rerank",
+        validation_alias=AliasChoices("RECALL_LIVED_MEMORY_RERANK_URL"),
+    )
+    RECALL_LIVED_MEMORY_COLLECTION: str = Field(
+        default="orion_lived_memory", validation_alias=AliasChoices("RECALL_LIVED_MEMORY_COLLECTION")
+    )
+    RECALL_LIVED_MEMORY_MIN_FIT: float = Field(
+        default=0.1, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_MIN_FIT")
+    )
+    RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS: int = Field(
+        default=5, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS")
+    )
+    RECALL_LIVED_MEMORY_MAX_LINES: int = Field(
+        default=4, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_MAX_LINES")
+    )
+    RECALL_LIVED_MEMORY_TIMEOUT_SEC: float = Field(
+        default=4.0, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_TIMEOUT_SEC")
+    )
+    RECALL_LIVED_MEMORY_INDEX_INTERVAL_SEC: float = Field(
+        default=300.0, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_INDEX_INTERVAL_SEC")
+    )
+    RECALL_LIVED_MEMORY_INDEX_BATCH: int = Field(
+        default=25, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_INDEX_BATCH")
+    )
     # Phase 4 of the recall RDF->Falkor cutover (docs/superpowers/specs/
     # 2026-07-17-recall-rdf-writer-falkor-cutover-phase2-spec.md). When true,
     # storage/falkor_chat_adapter.py::fetch_falkor_chatturn_fragments SWAPS IN

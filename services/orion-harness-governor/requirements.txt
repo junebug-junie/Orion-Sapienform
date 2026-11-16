@@ -11,3 +11,5 @@ httpx==0.27.2
 # Per-turn reading MCP server (also used by the existing AI Town MCP).
 mcp>=1.0.0,<2
 tzdata==2025.3  # America/Denver for harness RECENT CONVERSATION times (orion/harness/prefix.py)
+# Mesh-edge check (orion/memory/mesh_edge.py): read-only core pages + lived memories.
+psycopg2-binary==2.9.9

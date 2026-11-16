@@ -201,8 +201,8 @@ scripts/safe_docker_build.sh orion-sql-writer up -d --build
   opens are counted at once; a missed funded open of another rule only makes the floor stricter.
 - Severity: low. Concern: the replay's steady state pins hunger at 1.0 and the reference at today's ledger. Mitigation:
   it is the live regime (tau 60 s); the historical lanes are still reported beside it.
-- Issues: fixes #3381. Opened: VERIFY_LIVE_PLACEHOLDER.
+- Issues: fixes #3381. Opened: #3509 (verify-live).
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3510

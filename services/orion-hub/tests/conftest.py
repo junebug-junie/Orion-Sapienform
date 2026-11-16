@@ -210,3 +210,16 @@ def pre_turn_appraisal_off(monkeypatch, request):
         seen.add(id(candidate))
         if hasattr(candidate, "ENABLE_PRE_TURN_APPRAISAL"):
             monkeypatch.setattr(candidate, "ENABLE_PRE_TURN_APPRAISAL", False)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_now(monkeypatch):
+    """Orion's now (integration patch 3): no Hub test reads or posts to a live durable-runs. A test of the seam
+    patches ``orion.integration.now_client._http_get`` / ``_http_post`` itself (after this fixture)."""
+    from orion.integration import now_client
+
+    def refuse(*_a, **_k):
+        raise ConnectionRefusedError("tests never read the live now")
+
+    monkeypatch.setattr(now_client, "_http_get", refuse)
+    monkeypatch.setattr(now_client, "_http_post", refuse)

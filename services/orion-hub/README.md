@@ -1764,6 +1764,18 @@ an ON CONFLICT no-op; a new cycle or a pressure change is a new row. Only
 `estimated_run_cost_usd` is a run cost autonomy may read; this gate never reads
 `house_share_cost_usd`. (`scripts/energy_stakes_gate.py`, `scripts/curiosity_investigation.py`.)
 
+**Orion's now as candidates (integration patch 3, `scripts/curiosity_now.py`).** Each investigate kickoff reads
+`GET $HUB_CURIOSITY_DURABLE_RUNS_URL/temporal-self/now?organ=curiosity` (no `since`: it moves curiosity's cursor;
+`run_ref=curiosity_run:<run_id>`) and shows the items under WHAT YOUR OTHER ORGANS LIVED SINCE CURIOSITY LAST
+LOOKED, one `[experience:<id>]` line each: candidates, not orders. The shown row is kept in Redis
+`orion:curiosity:now_shown:<run_id>` (7 days), because a durable run can wait hours for a GPU hold. When the turn
+ends with text (durable `_run_turn` and the in-process fallback alike), the shown items the finding names as
+`experience:<id>` are posted to `/temporal-self/now/use` (`citing_ref=curiosity_run:<run_id>`; durable-runs keeps
+only shown ids, at most 3, idempotent). Blind to the three-arm experiment (#3183): the read takes only the run id,
+never the arm, its propensities, the replica plan or the view. Logs: `curiosity_now_offered`,
+`curiosity_now_unread reason=...`, `curiosity_now_cites`. Keys: `HUB_CURIOSITY_NOW_ENABLED=true`,
+`HUB_CURIOSITY_NOW_TIMEOUT_SEC=3`.
+
 ### 3. Speech-to-Text (ASR)
 
 *   **Note**: Hub no longer performs local ASR.

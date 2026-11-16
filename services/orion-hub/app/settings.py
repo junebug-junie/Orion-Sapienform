@@ -1324,6 +1324,12 @@ class Settings(BaseSettings):
     HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED: bool = Field(
         default=True, alias="HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED"
     )
+    # Orion's now (integration patch 3, scripts/curiosity_now.py): the investigate kickoff reads
+    # HUB_CURIOSITY_DURABLE_RUNS_URL /temporal-self/now?organ=curiosity and offers the items as
+    # candidates; the finding's experience:<id> refs are posted to /temporal-self/now/use at turn end.
+    # Blind to the offer arm (#3183). A failed read is a kickoff without the section.
+    HUB_CURIOSITY_NOW_ENABLED: bool = Field(default=True, alias="HUB_CURIOSITY_NOW_ENABLED")
+    HUB_CURIOSITY_NOW_TIMEOUT_SEC: float = Field(default=3.0, gt=0.0, le=10.0, alias="HUB_CURIOSITY_NOW_TIMEOUT_SEC")
     # Personality graph read-back (spec rev 2, orion/personality/cue.py): what Orion keeps coming
     # back to, in Orion's own words -- a record, not an instruction. Read from
     # HUB_CURIOSITY_DURABLE_RUNS_URL /personality/frame into the curiosity kickoff (concurrently

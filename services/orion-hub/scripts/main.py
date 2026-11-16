@@ -782,6 +782,9 @@ async def startup_event():
                 durable_runs_url=settings.HUB_CURIOSITY_DURABLE_RUNS_URL,
                 temporal_self_fact_enabled=settings.HUB_CURIOSITY_TEMPORAL_SELF_FACT_ENABLED,
                 personality_cue_enabled=settings.HUB_PERSONALITY_CUE_ENABLED,
+                # Orion's now at the investigate kickoff (integration patch 3, scripts/curiosity_now.py).
+                now_enabled=settings.HUB_CURIOSITY_NOW_ENABLED,
+                now_timeout_sec=settings.HUB_CURIOSITY_NOW_TIMEOUT_SEC,
                 # The self-inquiry line: own budget, same loop. See the
                 # settings' own comment and orion/curiosity/self_inquiry.py.
                 self_inquiry_enabled=settings.HUB_CURIOSITY_SELF_INQUIRY_ENABLED,

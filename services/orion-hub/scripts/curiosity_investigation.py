@@ -99,6 +99,7 @@ from orion.regulation.arousal_view import (
 from .arousal_reader import ArousalReader
 from .rest_drive_reader import RestDriveReader
 from .personality_cue_reader import cue_status, read_personality_cue
+from . import curiosity_now
 from .outreach_door_policy import (
     ALREADY_TOLD_REASON,
     NOT_FOR_JUNIPER_REASON,
@@ -981,6 +982,12 @@ class CuriosityInvestigation:
         # under the same deadline. Off here so bare constructions in tests never touch
         # the network; settings ship it off since personality rev 3 R0 (HUB_PERSONALITY_CUE_ENABLED).
         personality_cue_enabled: bool = False,
+        # --- Orion's now (integration patch 3, scripts/curiosity_now.py) ---
+        # The investigate kickoff reads GET `durable_runs_url`/temporal-self/now?organ=curiosity and offers the
+        # items as candidates; the run's finding cites what it used. Off here so bare constructions in tests never
+        # touch the network; settings ship it on (HUB_CURIOSITY_NOW_ENABLED).
+        now_enabled: bool = False,
+        now_timeout_sec: float = curiosity_now.DEFAULT_TIMEOUT_SEC,
         # --- Orion's Day corrections (orion/orion_day/corrections.py) ------
         # The regular investigate line, on a writable graph only: claims up to
         # MAX_CORRECTIONS_PER_RUN recorded letter corrections once, shows them
@@ -1154,6 +1161,8 @@ class CuriosityInvestigation:
         self.dream_hypotheses_per_run = max(0, int(dream_hypotheses_per_run))
         self.temporal_self_fact_enabled = bool(temporal_self_fact_enabled)
         self.personality_cue_enabled = bool(personality_cue_enabled)
+        self.now_enabled = bool(now_enabled)
+        self.now_timeout_sec = float(now_timeout_sec)
         self.orion_day_corrections_enabled = bool(orion_day_corrections_enabled)
         self.focus_enabled = bool(focus_enabled)
         # Other Hub loops that want terminal durable-run states without a second
@@ -1732,6 +1741,19 @@ class CuriosityInvestigation:
                         frame.get("day_id") if isinstance(frame, dict) else None,
                         frame.get("as_of") if isinstance(frame, dict) else None)
         return fact
+
+    async def _read_now_lines(self, run_id: str) -> list[str]:
+        """Orion's now for this investigate run's kickoff (scripts/curiosity_now.py). Takes only the run id: blind
+        to the offer arm, its propensities and the worldview view (#3183), so every arm reads and sees the same."""
+        return await curiosity_now.read_for_run(
+            self.durable_runs_url, run_id, enabled=self.now_enabled, redis=getattr(self._bus, "redis", None),
+            timeout_sec=self.now_timeout_sec)
+
+    async def _record_now_cites(self, run_id: str, text: Optional[str]) -> None:
+        """The shown items this run's finding named, posted against its kickoff's shown row. Never raises."""
+        await curiosity_now.record_run_cites(
+            self.durable_runs_url, run_id, text, enabled=self.now_enabled, redis=getattr(self._bus, "redis", None),
+            timeout_sec=self.now_timeout_sec)
 
     async def _read_personality_cue(self, now: datetime) -> PersonalityCueV1:
         """The kickoff's personality read-back cue. ``text == ""`` (with a skip reason) on
@@ -2826,8 +2848,8 @@ class CuriosityInvestigation:
         open_lived_questions = await self._read_open_lived_questions(run_id)
         # Both durable-runs reads at once: each is bounded by TEMPORAL_SELF_FACT_TIMEOUT_SEC
         # and neither ever raises, so the kickoff waits for the slower one only.
-        today_fact, personality_cue = await asyncio.gather(
-            self._read_today_fact(view, now), self._read_personality_cue(now)
+        today_fact, personality_cue, now_lines = await asyncio.gather(
+            self._read_today_fact(view, now), self._read_personality_cue(now), self._read_now_lines(run_id)
         )
         prompt = build_kickoff_prompt(
             material,
@@ -2852,6 +2874,7 @@ class CuriosityInvestigation:
             personality_cue=personality_cue.text or None,
             focus=focus,
             consult_outcomes=consult_outcomes,
+            now_lines=now_lines,
         )
         logger.info("curiosity_personality_cue run=%s %s", run_id, cue_status(personality_cue))
         if today_fact:
@@ -2965,6 +2988,7 @@ class CuriosityInvestigation:
                 )
                 await self._spend_turn_ended(run_id, turn_ok=bool(text))
                 self._schedule_finding_register(run_id, INVESTIGATION_TAG, text, turn_started_at)
+                await self._record_now_cites(run_id, text)
                 await self._stamp_corrections(run_id)
                 await self._stamp_consult_beliefs(run_id)
                 await self._stamp_focus(run_id, turn_ok=bool(text))
@@ -5887,6 +5911,7 @@ class CuriosityInvestigation:
                 if measured:
                     await self._spend_turn_ended(request.run_id, turn_ok=bool(text))
                 if investigation:
+                    await self._record_now_cites(request.run_id, text)
                     await self._stamp_corrections(request.run_id)
                     # A retry of this run may still record it: the run's end state settles the rest.
                     await self._stamp_consult_beliefs(request.run_id, release_missing=False)

@@ -1382,6 +1382,23 @@ And it is entirely fine to conclude that none of this is worth writing up right
 now; say so and stop. A quiet answer is a real answer."""
 
 
+def _now_section(now_lines: Sequence[str]) -> list[str]:
+    """Orion's now as candidates (integration patch 3): the few most unusual experiences of Orion's OTHER organs
+    since curiosity last looked, one line each with its ``[experience:<id>]`` (rendered by
+    ``orion.temporal_self.now.now_lines``, no LLM). Candidates, not orders. Nothing is rendered when there are none.
+    The same section under every offer arm: it takes nothing from the worldview view or the arm."""
+    lines = [str(x) for x in now_lines if str(x).strip()]
+    if not lines:
+        return []
+    return [
+        "WHAT YOUR OTHER ORGANS LIVED SINCE CURIOSITY LAST LOOKED (Orion's now; candidates, not orders):",
+        *lines,
+        "You may take one of these up as this run's question, or let them all pass. If your finding uses one,",
+        "write its ref exactly as shown (experience:...) in the finding. Never cite one you did not use.",
+        "",
+    ]
+
+
 def build_kickoff_prompt(
     material: StudyMaterial,
     *,
@@ -1402,8 +1419,12 @@ def build_kickoff_prompt(
     personality_cue: Optional[str] = None,
     focus=None,
     consult_outcomes: Sequence = (),
+    now_lines: Sequence[str] = (),
 ) -> str:
     """Assemble the whole invitation.
+
+    ``now_lines``: Orion's now for this run (``scripts/curiosity_now.py read_for_run``), one ``[experience:<id>]``
+    line per item, shown as candidates right after the personality block (graph or not). () renders nothing.
 
     ``consult_outcomes``: rows from ``orion_consult`` (Hub claims them for this run): consults with
     Claude that ended since the last run, and Juniper's answers to their briefs. Writable graph only.
@@ -1460,6 +1481,7 @@ def build_kickoff_prompt(
         lines += _thread_section(view)
         lines += _today_section(today_fact)
         lines += _personality_section(personality_cue)
+        lines += _now_section(now_lines)
         lines += _priors_section(view, stale_after=stale_after)
         lines += _concepts_section(view, writable=writable)
         lines += _peer_briefs_section(peer_briefs, run_id=run_id if writable else None)
@@ -1475,6 +1497,7 @@ def build_kickoff_prompt(
     else:
         lines += _today_section(today_fact)
         lines += _personality_section(personality_cue)
+        lines += _now_section(now_lines)
 
     lines += _material_section(material)
     lines += _access_section(

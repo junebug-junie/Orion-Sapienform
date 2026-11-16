@@ -130,8 +130,7 @@ organs:
     # nothing. Unscored items rank after scored ones, newest first. Part B (hunger) gives Prime content.
     temporal_sources: [prime_thought]
     families: [prime]
-    reads_now: null
-    exempt_read: "not yet migrated: Prime's frame reads the now in integration patch 3"
+    reads_now: services/orion-mind/app/prime_loop.py
   intention:
     temporal_sources: []
     exempt_emit: "intention_close is integration patch 7 (one intention ever, 2026-11-13)"

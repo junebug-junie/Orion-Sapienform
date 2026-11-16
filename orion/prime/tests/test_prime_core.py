@@ -77,9 +77,12 @@ def test_the_refractory_interval_holds_even_with_changes():
 def test_the_frame_marks_every_failed_read_as_a_gap_never_calm():
     frame = build_frame(PrimeStateV1(pending_changes=["first wake"]),
                         FrameInputs(now=T0, body_error="URLError: refused", temporal_error="timeout",
-                                    curiosity_error="HTTPError 500"))
+                                    pending_focus_error="HTTPError 500"))
     assert "(unavailable: URLError: refused)" in frame and "(unavailable: timeout)" in frame
-    assert "(unavailable: HTTPError 500)" in frame and "- first wake" in frame
+    assert "(whether a focus is waiting for the next run is unknown: HTTPError 500)" in frame and "- first wake" in frame
+    # Not read at all is a named gap too, never "no focus waiting".
+    unread = build_frame(PrimeStateV1(), FrameInputs(now=T0))
+    assert "(unavailable: whether a focus is waiting was not read)" in unread
 
 
 def test_a_held_back_question_is_shown_as_held_back():

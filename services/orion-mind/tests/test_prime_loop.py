@@ -98,14 +98,23 @@ SETTINGS = SimpleNamespace(
 
 
 def runtime(*, answer, bus=None, outcome="funded", runs=(), pending=None, holdback=0.0, turns=None, on_call=None,
-            now=T0, extra_pages=None, reason="net_positive", net=None, dashboard=None, pending_page=None):
+            now=T0, extra_pages=None, reason="net_positive", net=None, dashboard=None, pending_page=None,
+            now_page=None, post_json=None):
     """``dashboard``: an exception the dashboard read raises (else it answers). ``pending_page``: Hub's cheap
-    pending-focus answer, or an exception it raises (default: readable, ``pending`` waiting)."""
+    pending-focus answer, or an exception it raises (default: readable, ``pending`` waiting). ``now_page``: what
+    GET /temporal-self/now answers, or an exception it raises (default: 404, the now is off). ``rt.urls``: every
+    GET, in order."""
     clock = {"now": now}
     pages = {"http://dr:8121/physiology/state": BODY, "http://dr:8121/temporal-self/frame": TEMPORAL,
              **(extra_pages or {})}
+    urls = []
 
     def get_json(url):
+        urls.append(url)
+        if url.startswith("http://dr:8121/temporal-self/now?") and now_page is not None:
+            if isinstance(now_page, BaseException):
+                raise now_page
+            return now_page
         if url.startswith("http://hub:8080/curiosity/api/runs"):
             if dashboard is not None:
                 raise dashboard
@@ -133,8 +142,9 @@ def runtime(*, answer, bus=None, outcome="funded", runs=(), pending=None, holdba
 
     rt = PrimeRuntime(settings=SimpleNamespace(**{**vars(SETTINGS), "PRIME_HOLDBACK_FRACTION": holdback}),
                       bus=bus or Bus(), llm=LLM(answer, on_call), get_json=get_json, bid=bid, release=release,
-                      clock=lambda: clock["now"], turns=turns or JuniperTurns())
-    rt.bids, rt.released, rt.clock_box = bids, released, clock
+                      clock=lambda: clock["now"], turns=turns or JuniperTurns(),
+                      **({"post_json": post_json} if post_json is not None else {}))
+    rt.bids, rt.released, rt.clock_box, rt.urls = bids, released, clock, urls
     return rt
 
 
@@ -547,8 +557,9 @@ def test_a_slow_dashboard_no_longer_refuses_the_move_when_the_cheap_read_answers
     [(channel, _env)] = rt.bus.rpcs
     assert channel == QUEUE_CURIOSITY_FOCUS_REQUEST_CHANNEL and len(rt.state.open_nominations) == 1
     assert "move curiosity_focus" in _infer_note(rt)
-    # The frame still shows the dashboard gap, honestly.
-    assert "(unavailable: TimeoutError: timed out)" in rt.llm.calls[0]["user_prompt"]
+    # The frame does not read the dashboard at all any more (integration patch 3): no gap line for it.
+    assert "(unavailable: TimeoutError: timed out)" not in rt.llm.calls[0]["user_prompt"]
+    assert "no focus is waiting for the next run" in rt.llm.calls[0]["user_prompt"]
 
 
 def test_a_focus_waiting_per_the_cheap_read_refuses_and_shows_even_with_the_dashboard_down():

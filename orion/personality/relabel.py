@@ -6,8 +6,9 @@ quoted title stands alone) reach a tendency only when it gets another choice, an
 1-of-1. This module rebuilds a label the way the reducer would have built it under the CURRENT rules,
 from the node's own evidence:
 
-* each evidence row's excerpt is remade with the current ``pair_label`` from the stored choice
-  (``personality_choice``): chosen text and declined texts in shown order (``choice_sides``). A Prime
+* each evidence row's excerpt is remade with the current ``choice_excerpt`` from the stored choice
+  (``personality_choice``): chosen text and declined texts in shown order (``choice_sides``); a decline of
+  every option reads as its lane's decline label ("Prime waits instead of acting"). A Prime
   option text from before 2026-11-15 is first remade with Prime's current ``option_text`` (subject first);
   that rewrite is a fixed point on current texts;
 * the founding choice is the base, at ``match_threshold`` similarity (``_Tick.create``);
@@ -36,9 +37,9 @@ from orion.personality.graph import (
     ORIGIN_CHOICE,
     GraphParams,
     category_led,
+    choice_excerpt,
     choice_label,
     decline_text,
-    pair_label,
 )
 
 # Every non-retired choice node. Both SQL texts take no parameters, so psycopg and asyncpg run them as is.
@@ -81,7 +82,8 @@ def choice_sides(lane: str, declined_all: bool, chosen_text: Optional[str],
 
 
 def excerpt_from_choice_row(row: Mapping[str, Any]) -> Optional[str]:
-    """The current ``pair_label`` of a stored ``personality_choice`` row; None when the row is missing."""
+    """The current label text of a stored ``personality_choice`` row (``choice_excerpt``: the lane's decline
+    label for a decline of every option, else ``pair_label``); None when the row is missing."""
     if not row.get("choice_id"):
         return None
     chosen = _obj(row.get("chosen"))
@@ -95,8 +97,9 @@ def excerpt_from_choice_row(row: Mapping[str, Any]) -> Optional[str]:
         # rewrites them deterministically; a text already in the current form passes through unchanged.
         chosen_text = _prime_text(chosen_text) if chosen_text is not None else None
         pairs = [(_prime_text(t), r) for t, r in pairs]
-    c, declined = choice_sides(lane, bool(row.get("declined_all")), chosen_text, pairs)
-    return pair_label(c, declined)
+    declined_all = bool(row.get("declined_all")) or chosen_text is None
+    c, declined = choice_sides(lane, declined_all, chosen_text, pairs)
+    return choice_excerpt(lane, declined_all, c, declined)
 
 
 def _prime_text(text: str) -> str:

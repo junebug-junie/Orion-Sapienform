@@ -161,3 +161,16 @@ def test_relabel_of_a_graph_folded_by_the_real_reducer_changes_nothing():
     for r, n in zip(plan, live):
         assert not r.changed, (r.old_label, r.new_label)
         assert abs(r.new_similarity - n.label_similarity) < 1e-9, r.disposition_id
+
+
+def test_decline_nodes_relabel_to_their_lane_phrase():
+    alts = ["a", "b", "c"]
+    [p, r] = plan_relabel([node("p", "no move, 7 of 7", n=7), node("r", "none of these, 3 of 3", n=3)],
+                          [ev("p", "p1", 1.0, None, alts, lane="prime", declined_all=True),
+                           ev("r", "r1", 1.0, None, alts, lane="reading", declined_all=True)])
+    assert p.new_label == "Prime waits instead of acting, 7 of 7"
+    assert r.new_label == "Turns down every link in a reading, 3 of 3"
+    # One named alternative used to read "say nothing over <topic>"; the lane phrase stands alone now.
+    [o] = plan_relabel([node("o", "say nothing over a, 1 of 1")],
+                       [ev("o", "o1", 1.0, None, ["a"], lane="outreach", declined_all=True)])
+    assert o.new_label == "Says nothing to Juniper, 1 of 1"

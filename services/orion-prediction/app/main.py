@@ -38,6 +38,7 @@ from app.event_pair import MIN_A_EVENTS, EventPairRefused
 from app.heat_balance import HeatBalanceRefused
 from app.experiment_runner import ExperimentRunner, RouterProbe, RunnerRefused, recover as recover_experiments
 from app.family_a_live import FamilyALive
+from app.family_c import EffectTable
 from app.series import load_registry
 from app.settings import get_settings
 from app.store import PostgresStore
@@ -59,6 +60,7 @@ _last_act_chain: dict[str, Any] = {"at": None, "ok": None, "error": None}
 bill_forecast: BillForecast | None = None
 _last_bill: dict[str, Any] = {"at": None, "ok": None, "error": None}
 family_a: FamilyALive | None = None
+effect_table: EffectTable | None = None   # family C (app/family_c.py), read-only
 _blas_limit: list[Any] = []   # keeps the process-wide BLAS thread limit object alive
 _last_family_a: dict[str, Any] = {"at": None, "ok": None, "error": None}
 _last_settle: dict[str, Any] = {"at": None, "ok": None, "error": None}
@@ -194,7 +196,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, effects, action_bets, turn_self_bets, reachable, act_chain, bill_forecast, family_a, runner, _runner_redis, _store, _bus
+    global engine, effects, action_bets, turn_self_bets, reachable, act_chain, bill_forecast, family_a, effect_table, runner, _runner_redis, _store, _bus
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -249,6 +251,11 @@ async def lifespan(app: FastAPI):
                 _store, fa_cfg,
                 lambda start, end: load_frame(_settings.postgres_uri, fa_cfg.inputs, fa_cfg.grain_min, start, end),
                 settle_sec=_settings.settle_sec, select_interval_sec=_settings.select_interval_sec)
+            # Family C's effect table measures every reading family A reads (read-only, on demand).
+            effect_table = EffectTable(
+                _store,
+                lambda start, end: load_frame(_settings.postgres_uri, fa_cfg.inputs, fa_cfg.grain_min, start, end),
+                units={i.id: i.unit for i in fa_cfg.inputs}, grain_min=fa_cfg.grain_min)
         except Exception as exc:  # noqa: BLE001
             _last_family_a.update(at=datetime.now(timezone.utc), ok=False,
                                   error=f"not started: {type(exc).__name__}: {exc}"[:300])
@@ -642,6 +649,17 @@ async def _heat(series_id: str, days: float, experiment_id: uuid.UUID | None, st
 
 
 # Declared before GET /effects/{action}, which would otherwise capture this path.
+@app.get("/effects/table")
+async def get_effect_table() -> dict[str, Any]:
+    """Family C: what Orion's own actions do. One row per (actuator, reading, window after the act),
+    measured only by finished randomised switchback experiments, recomputed from their logged blocks
+    and the raw readings. Read-only; nothing is stored. 503 when family A's config is not loaded."""
+    _ready()
+    if effect_table is None:
+        raise HTTPException(503, "family C needs family A's input config (PREDICTION_FAMILY_A_ENABLED)")
+    return await _causal(effect_table.build)
+
+
 @app.get("/effects/heat-per-watt")
 async def get_heat_per_watt(series_id: str = "athena.cabinet_temp_c", days: float = Query(7.0, ge=2, le=21),
                             experiment_id: uuid.UUID | None = None) -> dict[str, Any]:

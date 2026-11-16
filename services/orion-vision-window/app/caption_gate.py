@@ -77,6 +77,15 @@ class CaptionGate:
     def enabled_for(self, stream_id: str) -> bool:
         return bool(self.labels) and str(stream_id or "").strip().lower() in self.streams
 
+    def fixture_only_labels(self, stream_id: str) -> List[str]:
+        """Gate labels whose every box, the last time the label was seen on
+        this stream, was a stationary fixture (a parked car, a prop). Empty
+        for a stream with no fixture tracking. The council's transition gate
+        reads it: a label that only appears or disappears as a fixture is the
+        detector losing and re-finding something that did not move (#3387)."""
+        key = str(stream_id or "").strip().lower()
+        return sorted(label for label, tracker in self._fixtures.items() if tracker.fixture_only(key))
+
     def _observe(self, stream_id: str, items: Sequence[Item]) -> None:
         """Feed this window's detections to the per-label prop trackers."""
         per_label: Dict[str, List[Tuple[float, List[List[float]]]]] = {l: [] for l in self.labels}

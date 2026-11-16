@@ -9,6 +9,7 @@ from orion.schemas.vision import (
 )
 
 from .caption_policy import CAPTIONS_WITHHELD_KEY
+from .interpretation import HOST_DETECT_TAG, detector_confidence
 
 ACTIVITY_PATTERN = re.compile(
     r"\b(watching|reading|using|talking|listening|playing|browsing)\b", re.I
@@ -151,18 +152,22 @@ def enforce_evidence_grounding(
             notes.append(f"dropped:{cand.event_type}:caption_slop")
             continue
         updated = cand
-        if mentions_activity and "person" in hard and cand.confidence > 0.4:
+        if mentions_activity and "person" in hard:
+            # The detector scored a person, not what the person is doing. The
+            # activity is a guess, so the row is never more sure than 0.4.
+            # The tag and the note do not depend on the number: a row with a
+            # low score, or with none (None stays None), is the same guess.
             summary = window.summary or {}
+            capped = None if cand.confidence is None else min(cand.confidence, 0.4)
             if summary.get("captions"):
-                updated = cand.model_copy(
-                    update={"confidence": 0.4, "tags": [*cand.tags, "caption_inferred"]}
-                )
+                tags = cand.tags if "caption_inferred" in cand.tags else [*cand.tags, "caption_inferred"]
+                updated = cand.model_copy(update={"confidence": capped, "tags": tags})
                 notes.append(f"capped_confidence:{cand.event_type}")
             elif summary.get(CAPTIONS_WITHHELD_KEY):
                 # Captions were withheld (app/caption_policy.py): the claim is
                 # the council's own guess from detector labels. Same cap, no
                 # caption tag -- no caption was in its input.
-                updated = cand.model_copy(update={"confidence": 0.4})
+                updated = cand.model_copy(update={"confidence": capped})
                 notes.append(f"capped_confidence:{cand.event_type}:captions_withheld")
         filtered_entities = _filter_person_entity_names(list(updated.entities), hard)
         if filtered_entities != list(updated.entities):
@@ -198,8 +203,9 @@ def ensure_grounded_person_presence(
         event_type="person_presence",
         narrative="A person was detected on camera.",
         entities=["person"],
-        tags=["host_detect"],
-        confidence=0.85,
+        tags=[HOST_DETECT_TAG],
+        # The detector's score for the person box, not a constant (#3387).
+        confidence=detector_confidence(window, ["person"]),
         salience=0.7,
         evidence_refs=refs,
     )
@@ -223,8 +229,8 @@ def build_person_presence_fallback(window: VisionWindowPayload) -> VisionSceneIn
                 event_type="person_presence",
                 narrative="A person was detected on camera.",
                 entities=["person"],
-                tags=["host_detect"],
-                confidence=0.85,
+                tags=[HOST_DETECT_TAG],
+                confidence=detector_confidence(window, ["person"]),
                 salience=0.7,
                 evidence_refs=refs,
             )

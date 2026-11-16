@@ -25,17 +25,18 @@ PIP_TURN_ID = "turn-pip-birthday-0816"
 PIP_PROMPT = "We celebrated my son, Pip's, 7th birthday today. He loved the rocket cake."
 
 
-def _unrelated_active_packet():
+def _unrelated_belief_filler():
+    # Top-ranked belief source (concept_region) that has nothing to do with
+    # the query. Was active_packet until that collector was retired (#3461).
     filler = " ".join(["the substrate maintenance window keeps drifting and needs a follow up review"] * 4)
     return [
-        {"id": f"ap-{i}", "source": "active_packet", "snippet": f"Open loop {i}: {filler}", "score": 0.568}
+        {"id": f"cr-{i}", "source": "concept_region", "snippet": f"Concept {i}: {filler}", "score": 0.568}
         for i in range(3)
     ]
 
 
 def _patch_common(monkeypatch, profile_name: str):
     monkeypatch.setattr(worker.settings, "RECALL_PCR_ENABLED", True)
-    monkeypatch.setattr(worker.settings, "RECALL_ACTIVE_PACKET_ENABLED", True)
     monkeypatch.setattr(worker.settings, "RECALL_CONCEPT_REGION_ENABLED", False)
     monkeypatch.setattr(worker.settings, "RECALL_BELIEF_RENDER_BUDGET", 128)
     monkeypatch.setattr(worker.settings, "RECALL_ENABLE_SQL_CHAT", False)
@@ -50,12 +51,8 @@ def _patch_common(monkeypatch, profile_name: str):
     async def _anchor(**kwargs):
         return [], {}
 
-    async def _active_packet(query, *, pool, settings):
-        return _unrelated_active_packet()
-
     monkeypatch.setattr(worker, "_fetch_anchor_candidates", _anchor)
-    monkeypatch.setattr(worker, "_query_backends", AsyncMock(return_value=([], {})))
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _active_packet)
+    monkeypatch.setattr(worker, "_query_backends", AsyncMock(return_value=(_unrelated_belief_filler(), {})))
 
     # Falkor/Postgres seams of the entity injection: one older turn naming
     # Pip as the user's son. Degree 3 -> K/degree discount clamps to 1.0.
@@ -92,8 +89,8 @@ def test_purposeful_open_loop_injects_entity_turn_into_belief_digest(monkeypatch
     assert decision.backend_counts.get("falkor_chat_entity_injected", 0) >= 1
     assert "my son, Pip" in bundle.rendered
     assert bundle.items[0].id == PIP_TURN_ID
-    # active_packet still renders after it, not replaced wholesale.
-    assert "[active_packet" in bundle.rendered
+    # The other belief source still renders after it, not replaced wholesale.
+    assert "[concept_region" in bundle.rendered
 
 
 def test_purposeful_procedural_gets_no_entity_injection(monkeypatch):
@@ -115,7 +112,7 @@ def test_purposeful_procedural_gets_no_entity_injection(monkeypatch):
     assert "Pip" not in bundle.rendered
 
 
-def test_belief_fusion_reserves_slot_for_entity_turn_ahead_of_active_packet():
+def test_belief_fusion_reserves_slot_for_entity_turn_ahead_of_top_ranked_source():
     profile = dict(get_profile("chat.belief.open_loop.v1"))
     long_response = " ".join(["Orion talked at length about cake and candles and the party."] * 30)
     pip = {
@@ -127,7 +124,7 @@ def test_belief_fusion_reserves_slot_for_entity_turn_ahead_of_active_packet():
         "tags": ["falkor", "chat", "chatturn", ENTITY_INJECTED_TAG],
     }
     bundle, _ = pcr_fuse_belief_candidates(
-        candidates=_unrelated_active_packet() + [pip],
+        candidates=_unrelated_belief_filler() + [pip],
         profile=profile,
         retrieval_intent="open_loop",
         query_text=FRAGMENT,
@@ -140,12 +137,12 @@ def test_belief_fusion_reserves_slot_for_entity_turn_ahead_of_active_packet():
 
 def test_belief_fusion_without_injected_turns_is_unchanged():
     profile = dict(get_profile("chat.belief.open_loop.v1"))
-    cands = _unrelated_active_packet()
+    cands = _unrelated_belief_filler()
     plain_turn = {"id": "t-plain", "source": "falkor_chat", "text": "Pip said hi", "score": 0.5, "tags": []}
     bundle, _ = pcr_fuse_belief_candidates(
         candidates=cands + [plain_turn], profile=profile, retrieval_intent="open_loop", query_text=FRAGMENT
     )
-    assert bundle.items[0].source == "active_packet"
+    assert bundle.items[0].source == "concept_region"
 
 
 def test_injected_turn_is_cut_around_the_name_not_from_its_start():
@@ -162,7 +159,7 @@ def test_injected_turn_is_cut_around_the_name_not_from_its_start():
     assert _window_around_terms(text, [], 16).startswith('ExactUserText: "photos')
 
 
-def test_four_entity_turns_fit_ahead_of_active_packet():
+def test_four_entity_turns_fit_ahead_of_top_ranked_source():
     profile = dict(get_profile("chat.belief.open_loop.v1"))
     turns = [
         {"id": f"t{i}", "source": "falkor_chat", "uri": f"t{i}",
@@ -172,7 +169,7 @@ def test_four_entity_turns_fit_ahead_of_active_packet():
         for i in range(4)
     ]
     bundle, _ = pcr_fuse_belief_candidates(
-        candidates=_unrelated_active_packet() + turns,
+        candidates=_unrelated_belief_filler() + turns,
         profile=profile,
         retrieval_intent="open_loop",
         query_text=FRAGMENT,

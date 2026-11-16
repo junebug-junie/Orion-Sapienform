@@ -286,14 +286,22 @@ def _outbox(ctx: "Ctx", hid: str, ev: Optional[dict]) -> None:
 
 
 def _vision_event(conn, *, event_id: str, event_type: str, narrative_text: str, stream_id: Optional[str],
-                  salience_v: float, refs: Sequence[str], tags: Sequence[str], confidence: float = 1.0) -> None:
+                  salience_v: float, refs: Sequence[str], tags: Sequence[str], subject_kind: Optional[str],
+                  confidence: float = 1.0) -> None:
+    """``subject_kind`` (person, vehicle, dog, ...) is the row's one entity:
+    what the handoff was about. Required, so a call site cannot leave the row
+    with no entity again (#3389: every handoff row had ``entities = []``)."""
     from sqlalchemy import text
+
+    kind = str(subject_kind or "").strip()
+    if not kind:
+        logger.warning("handoff_event_without_subject_kind event_id=%s event_type=%s", event_id, event_type)
 
     conn.execute(text(
         "INSERT INTO vision_events (event_id, event_type, narrative, entities, tags, confidence, salience, "
         "evidence_refs, stream_id, created_at) VALUES (:id, :et, :n, CAST(:e AS jsonb), CAST(:tg AS jsonb), :c, "
         ":sal, CAST(:ev AS jsonb), :sid, now()) ON CONFLICT (event_id) DO NOTHING"),
-        {"id": event_id, "et": event_type, "n": narrative_text, "e": json.dumps([]), "tg": json.dumps(list(tags)),
+        {"id": event_id, "et": event_type, "n": narrative_text, "e": json.dumps([kind] if kind else []), "tg": json.dumps(list(tags)),
          "c": confidence, "sal": salience_v, "ev": json.dumps(list(refs)), "sid": stream_id})
 
 
@@ -613,6 +621,7 @@ def _grade_one(ctx: Ctx, r) -> None:
                       narrative_text=narrative(status, kind=r["subject_kind"], source_stream=r["source_stream"],
                                                target_stream=r["target_stream"], transit_sec=upd["transit_sec"]),
                       stream_id=r["target_stream"], salience_v=upd["salience"], tags=[portal.id, "handoff"],
+                      subject_kind=r["subject_kind"],
                       refs=[f"handoff:{r['handoff_id']}", f"story:{r['source_story_id']}"]
                       + ([f"story:{upd['target_story_id']}"] if upd.get("target_story_id") else [])
                       + ([f"event:{upd['target_event_id']}"] if upd.get("target_event_id") else []))
@@ -645,6 +654,7 @@ def _grade_one(ctx: Ctx, r) -> None:
                                                    source_stream=r["source_stream"],
                                                    target_stream=r["target_stream"]),
                           stream_id=r["target_stream"], salience_v=upd["salience"], tags=[portal.id, "handoff"],
+                          subject_kind=r["subject_kind"],
                           refs=[f"handoff:{r['handoff_id']}", f"story:{r['source_story_id']}",
                                 f"coverage:{cov:.2f}"])
             _open_hypotheses(ctx, r, portal)
@@ -864,6 +874,7 @@ def _overlap_one(ctx: Ctx, item) -> None:
                       narrative_text=narrative("paired", kind=d.kind, source_stream=a_stream,
                                                target_stream=b_stream),
                       stream_id=b_stream, salience_v=row.get("salience") or 0.0, tags=[portal.id, "handoff"],
+                      subject_kind=d.kind,
                       refs=[f"handoff:{hid}", f"story:{d.story_id}", f"story:{c.story.story_id}"])
 
 

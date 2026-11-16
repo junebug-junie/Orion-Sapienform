@@ -126,3 +126,16 @@ def test_missing_stream_id_column_is_tolerated_on_write() -> None:
         assert worker._VISION_EVENTS_STREAM_ID_READY is False
     finally:
         worker.set_vision_events_stream_id_ready(True)
+
+
+def test_a_council_row_with_no_detector_evidence_carries_null_confidence() -> None:
+    """#3387: confidence is None when no measurement stands behind the row. The
+    producer schema, the column and the dict the writer persists all accept it."""
+    evt = _make_event(confidence=None)
+    assert evt.model_dump()["confidence"] is None
+    assert VisionEventBundleItem.model_validate(evt.model_dump(mode="json")).confidence is None
+    assert VisionEventSQL.__table__.c.confidence.nullable is True
+    # A producer that never set it (older payload shape without the key) also validates.
+    data = _make_event().model_dump()
+    data.pop("confidence")
+    assert VisionEventBundleItem.model_validate(data).confidence is None

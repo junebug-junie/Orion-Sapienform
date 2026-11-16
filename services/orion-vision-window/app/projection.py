@@ -205,6 +205,10 @@ def _caption_soft_tokens(text: str) -> List[str]:
 
 def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[str, Any]:
     hard_counts: Dict[str, int] = {}
+    # Best detector score per hard label in this window (the detector's own
+    # match score, orion-vision-host app/gdino.py). The council reads it as
+    # the confidence of a row that names the label (#3387).
+    label_scores: Dict[str, float] = {}
     soft_labels: List[str] = []
     edge_person_hits = 0
     host_person_hits = 0
@@ -223,11 +227,13 @@ def _build_evidence(items: List[Tuple[VisionArtifactPayload, float]]) -> Dict[st
                 continue
             label = obj.label.lower()
             hard_counts[label] = hard_counts.get(label, 0) + 1
+            label_scores[label] = max(label_scores.get(label, 0.0), float(obj.score))
             if label == "person":
                 host_person_hits += 1
     hard_labels = sorted(hard_counts.keys())
     return {
         "hard_labels": hard_labels,
+        "label_scores": {label: round(label_scores[label], 4) for label in hard_labels},
         "soft_labels": sorted(set(soft_labels)),
         "edge_person_hits": edge_person_hits,
         "host_person_hits": host_person_hits,

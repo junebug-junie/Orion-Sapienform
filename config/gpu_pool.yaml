@@ -34,6 +34,13 @@ defaults:
   # reader still on older code. Add `background_drain_grace_sec: <sec>` here once every reader is deployed.
   # Rollback today is a code change (set that default to 600); once every reader of this file is deployed
   # with the field, setting the key here equal to hold_clawback_grace_sec also rolls it back.
+  # H6 (2026-11-15, #3391): a background-priority hold is taken back after 9000 s (2.5 h) granted without a
+  # break, on any role and for any work class (recall reason background_max_hold, then hold_clawback_grace_sec).
+  # A trial hold kept the agent lane 25,126 s on 11-13. Orion's own holds 11-05..11-15: max 8,545 s of 1,650.
+  # Like background_drain_grace_sec above, the default lives in orion/gpu_pool/config.py
+  # (Defaults.background_max_hold_sec) and NOT here yet, for the same reason: a new key here breaks any reader
+  # of this file still on older code. Add `background_max_hold_sec: <sec>` here once every reader is deployed.
+  # Rollback today is a code change (set that default to None).
   swap_min_residency_sec: 600   # after a seat unloads, its evicted residents stay this long (swap_requested reason=min_residency)
   actuate_ack_sec: 10           # the actuator must answer "accepted" within this, else swap_failed reason=actuator_unreachable
   # Urgent (docs/superpowers/specs/2026-09-28-urgent-curiosity-and-hardware-watch-design.md)

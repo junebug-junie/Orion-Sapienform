@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from orion.schemas.vision import VisionWindowPayload
@@ -13,6 +13,11 @@ from orion.schemas.vision import VisionWindowPayload
 class EvidenceSnapshot:
     hard_labels: frozenset[str]
     person_present: bool
+    # Labels whose every box, the last time the label was seen, was a
+    # stationary fixture (a parked car, a prop). From orion-vision-window
+    # (summary.evidence.fixture_only_labels). Not part of what "changed":
+    # compare=False keeps two snapshots with the same labels equal.
+    fixture_only_labels: frozenset[str] = field(default=frozenset(), compare=False)
 
 
 @dataclass(frozen=True)
@@ -50,11 +55,20 @@ def _labels_for_gate(window: VisionWindowPayload) -> frozenset[str]:
     return _hard_labels_from_evidence(evidence)
 
 
+def _fixture_only_labels(window: VisionWindowPayload) -> frozenset[str]:
+    evidence = (window.summary or {}).get("evidence") or {}
+    raw = evidence.get("fixture_only_labels") if isinstance(evidence, dict) else None
+    if not isinstance(raw, list):
+        return frozenset()
+    return frozenset(str(label).strip().lower() for label in raw if str(label).strip())
+
+
 def snapshot_from_window(window: VisionWindowPayload) -> EvidenceSnapshot:
     hard_labels = _labels_for_gate(window)
     return EvidenceSnapshot(
         hard_labels=hard_labels,
         person_present="person" in hard_labels,
+        fixture_only_labels=_fixture_only_labels(window),
     )
 
 
@@ -87,7 +101,15 @@ class EvidenceTransitionTracker:
         prev_person = bool(row.get("person_present"))
         last_interpret_at = float(row.get("last_interpret_at") or 0.0)
 
-        if snapshot.hard_labels != prev_labels:
+        changed = snapshot.hard_labels ^ prev_labels
+        # A change made only of stationary fixtures is the detector losing and
+        # re-finding something that did not move (a far parked car at night),
+        # not a change in the scene. It does not trigger; the refresh TTL below
+        # still does. The remembered label set is left as it was, so a real
+        # label arriving later is still compared against the last
+        # interpretation (#3387).
+        fixture_only_change = bool(changed) and changed <= snapshot.fixture_only_labels
+        if changed and not fixture_only_change:
             if snapshot.person_present and not prev_person:
                 return EvidenceTransitionDecision(interpret=True, reason="person_entered")
             if prev_person and not snapshot.person_present:
@@ -97,6 +119,8 @@ class EvidenceTransitionTracker:
         if max_refresh_sec > 0 and (now - last_interpret_at) >= max_refresh_sec:
             return EvidenceTransitionDecision(interpret=True, reason="refresh_ttl")
 
+        if fixture_only_change:
+            return EvidenceTransitionDecision(interpret=False, reason="fixture_only_change")
         return EvidenceTransitionDecision(interpret=False, reason="stable_scene")
 
     def begin_interpretation(self, *, stream_key: str) -> None:

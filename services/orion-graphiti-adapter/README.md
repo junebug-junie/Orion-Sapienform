@@ -79,3 +79,20 @@ Set in `services/orion-graphiti-adapter/.env`:
 - `FALKORDB_URI=redis://orion-${NODE_NAME}-falkordb:6379`
 - `FALKORDB_GRAPH=graphiti_temporal`
 - `FALKORDB_ENABLED=true`
+
+## Full-engine trial (Patch 0, 2026-11-13)
+
+`scripts/graphiti_trial.py` is a one-off go/no-go trial, not part of the running adapter. It runs
+graphiti-core's real `add_episode` (entity resolution, facts as timed edges, contradicted facts
+invalidated) over `episode_memory` plus the high-salience stance messages, on the local agent lane,
+into the FalkorDB graph `graphiti_trial` only. Nothing reads that graph. The live adapter still
+writes template nodes through a no-op LLM client.
+
+- LLM seat: one GPU pool hold (work class `agent`, priority `background`), calls sent to
+  llm-gateway's OpenAI passthrough (`model=agent`) with `X-Orion-Gpu-Lease`.
+- Run it from the adapter image, never inside the live container (command in the script docstring).
+- Progress: `/tmp/graphiti-trial/progress.log`; per-episode cost: `results.jsonl`. Resumable.
+- Score: `scripts/graphiti_trial_score.py sample` (50 entities to judge by hand), then `report`.
+  Real names come from the gitignored `scripts/graphiti_trial_terms.local.json`
+  (copy the `.example.json`); `report.redacted.md` is the copy safe to commit.
+- Result: `docs/superpowers/pr-reports/2026-11-13-graphiti-trial-report.md`.

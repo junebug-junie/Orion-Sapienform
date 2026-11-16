@@ -1,6 +1,7 @@
 """Turn-scoped concept-region collector (Phase 6, concept-atlas pipeline).
 
-Mirrors the salience/intent-gated shape of `active_packet.py`, not the
+Follows a salience/intent-gated, per-call shape (like the retired
+`active_packet.py` collector, #3461), not the
 always-on producer shape of `chat_stance.py`. This module never runs
 unconditionally and never registers a standing stance: it is a pure,
 per-call function that, only when the current turn's text cheaply and
@@ -65,11 +66,24 @@ _DEFAULT_SEARCH_LIMIT_EDGES = 500
 # for this phase, not a tuned threshold.
 _MIN_LABEL_CHARS = 3
 
+# Topic-foundry concepts never reach the chat prompt (issue #3461). They are
+# HDBSCAN word labels over AI Town chatter ("github", "team", "speaker"), and
+# their edges to the seed concepts rendered as bare ids --
+# "sub-concept-topicfoundry-<run>-<n> associated_with sub-concept-seed-orion" --
+# on 1,056 of 1,560 concept_region lines in chat prompts 2026-11-08..15. The
+# producer (orion/substrate/adapters/topic_foundry.py) builds every concept id
+# with this prefix; the spec retires that adapter separately.
+_TOPIC_FOUNDRY_CONCEPT_PREFIX = "sub-concept-topicfoundry-"
+
+
+def _is_topic_foundry_id(node_id: Any) -> bool:
+    return str(node_id or "").startswith(_TOPIC_FOUNDRY_CONCEPT_PREFIX)
+
 
 def _turn_text(query: Any) -> str:
     """Extract the current turn's text from `query`.
 
-    Mirrors `active_packet.py`'s `_intent`/fragment-extraction convention:
+    Uses the recall-query convention:
     `query` is typed loosely (`Any`) and the turn text lives on a
     `.fragment` attribute. A bare string is also accepted directly so
     callers that already have raw turn text don't need to wrap it.
@@ -176,17 +190,24 @@ def fetch_concept_region_fragment(
     nodes = list(getattr(region, "nodes", None) or [])
     edges = list(getattr(region, "edges", None) or [])
 
-    matched_nodes = [node for node in nodes if _label_matches(_node_label(node), turn_text_lower)]
+    matched_nodes = [
+        node
+        for node in nodes
+        if not _is_topic_foundry_id(getattr(node, "node_id", None))
+        and _label_matches(_node_label(node), turn_text_lower)
+    ]
     if not matched_nodes:
         return []
 
     matched_node_ids = {getattr(node, "node_id", None) for node in matched_nodes}
-    matched_edges = [
-        edge
-        for edge in edges
-        if getattr(getattr(edge, "source", None), "node_id", None) in matched_node_ids
-        or getattr(getattr(edge, "target", None), "node_id", None) in matched_node_ids
-    ]
+    matched_edges = []
+    for edge in edges:
+        source_id = getattr(getattr(edge, "source", None), "node_id", None)
+        target_id = getattr(getattr(edge, "target", None), "node_id", None)
+        if _is_topic_foundry_id(source_id) or _is_topic_foundry_id(target_id):
+            continue
+        if source_id in matched_node_ids or target_id in matched_node_ids:
+            matched_edges.append(edge)
 
     fragments: list[dict[str, Any]] = [_node_to_fragment(node) for node in matched_nodes]
     fragments.extend(_edge_to_fragment(edge) for edge in matched_edges)

@@ -39,6 +39,12 @@ Stage 4.3 (docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-ac
      so the running node finishes instead of dying at hold_clawback_grace_sec (live 10-28..11-04: 81
      gpu2 turns killed for ~1 min images). If the seat later drains for anything else, the hold gets
      hold_clawback_grace_sec counted from its recall, then is aborted
+  H6 a background-priority hold granted for defaults.background_max_hold_sec without a break is
+     recalled (``background_max_hold``) with the normal hold grace, on any role and for any work
+     class: a trial hold kept the agent lane 7 h on 2026-11-13 (#3391). Operator holds are exempt.
+     A retryable hold is re-queued in its old place, as in H4, so it may be granted again at once
+     when nothing of higher priority waits; a hold nobody retries is released. If another recall
+     reason fires in the same tick (a drain), that reason and its grace win: the hold still leaves
   S1 a seat load is blocked -- reported as SwapBlocked, never silent -- by min residency after an
      unload, cooldown after a failed load, or a failing guard (thermal)
   S2 a card in "fault" grants nothing on any of its roles; a card mid-swap grants nothing on the
@@ -113,6 +119,8 @@ PREEMPTIBLE = ("background", "system", "starved")
 BACKGROUND_DRAIN = "draining_background"
 # H5 abort reason: that long grace cut back because the seat now drains for something else.
 BACKGROUND_DRAIN_CUT = "background_drain_cut"
+# H6: recall reason of a background hold that reached defaults.background_max_hold_sec (#3391).
+BACKGROUND_MAX_HOLD = "background_max_hold"
 
 
 @dataclass(frozen=True)
@@ -972,6 +980,11 @@ def schedule(
         if lease.kind == "hold" and not lease.operator and spec.swap is None and spec.max_hold_sec \
                 and lease.granted_at and (now - lease.granted_at).total_seconds() >= spec.max_hold_sec:
             recall(lease, "max_hold")
+        # H6: no background hold keeps a seat past defaults.background_max_hold_sec (#3391).
+        if lease.kind == "hold" and not lease.operator and lease.priority == "background" \
+                and d.background_max_hold_sec and lease.granted_at \
+                and (now - lease.granted_at).total_seconds() >= d.background_max_hold_sec:
+            recall(lease, BACKGROUND_MAX_HOLD)
 
     # U1: each urgent lease still owed a pause pauses one preemptible hold it could replace:
     # background before system, most recently granted first.

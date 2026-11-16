@@ -116,8 +116,8 @@ organs:
     exempt_read: "not yet migrated; integration patch 7"
   chat:
     temporal_sources: [chat_turn]
-    families: [hub.chat_reply, hub.outreach, durable.consult_orion_turn]
-    workflows: [consult.orion_turn]
+    families: [hub.chat_reply, hub.outreach, durable.consult_orion_turn, durable.session_roundup]
+    workflows: [consult.orion_turn, session_roundup.orion_turn]
     reads_now: null
     exempt_read: "the chat turn reads the Prime block, which carries the now's top 2 lines in integration patch 3"
   play:

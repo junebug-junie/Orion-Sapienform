@@ -10,6 +10,9 @@ fetch, outside the deadline, and untimed.
 The boot warm-up and hydrate-backoff tests that used to live here were
 removed on 2026-10-06 with the code they tested: recall no longer hydrates
 the substrate graph at all (see test_recall_no_full_graph_hydration.py).
+
+active_packet was retired from chat recall on 2026-11-15 (#3461); concept_region
+is the one PCR collector left, and these tests now pin its deadline handling.
 """
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ from app.profiles import get_profile
 from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1, RecallQueryV1
 
 # Top-level, non-overlapping stages of process_recall. feeds/retrievers are
-# sub-parts of fetch; pcr_active_packet/pcr_concept_region of pcr_collectors.
+# sub-parts of fetch; pcr_concept_region of pcr_collectors.
 _TOP_LEVEL_STAGES = (
     "intake",
     "fetch",
@@ -58,7 +61,6 @@ def _fetch_candidate() -> Dict[str, Any]:
 def purposeful(monkeypatch: pytest.MonkeyPatch):
     s = worker.settings
     monkeypatch.setattr(s, "RECALL_PCR_ENABLED", True)
-    monkeypatch.setattr(s, "RECALL_ACTIVE_PACKET_ENABLED", True)
     monkeypatch.setattr(s, "RECALL_CONCEPT_REGION_ENABLED", True)
     monkeypatch.setattr(s, "RECALL_BELIEF_RENDER_BUDGET", 128)
     monkeypatch.setattr(s, "RECALL_ENABLE_SQL_CHAT", False)
@@ -69,8 +71,8 @@ def purposeful(monkeypatch: pytest.MonkeyPatch):
 
     belief_profile = get_profile("chat.belief.semantic.v1")
     monkeypatch.setattr(worker, "get_profile", lambda _name: dict(belief_profile))
-    # Force both collectors into the plan regardless of the intent table.
-    monkeypatch.setattr(worker, "collectors_for_intent", lambda _i: {"active_packet": True, "concept_region": True})
+    # Force the collector into the plan regardless of the intent table.
+    monkeypatch.setattr(worker, "collectors_for_intent", lambda _i: {"concept_region": True})
 
     async def _anchor(**kwargs):
         return [], {}
@@ -135,10 +137,6 @@ async def _run_with_ticker(coro):
     return result, time.perf_counter() - started, ticks
 
 
-def _ap_frag() -> Dict[str, Any]:
-    return {"id": "ap-1", "source": "active_packet", "snippet": "belief: continuity matters", "score": 0.8}
-
-
 def _cr_frag() -> Dict[str, Any]:
     return {"id": "cr-1", "source": "concept_region", "snippet": "Orion: continuity", "score": 0.7}
 
@@ -147,10 +145,6 @@ def _cr_frag() -> Dict[str, Any]:
 
 
 def test_slow_concept_region_is_cut_at_the_deadline_and_other_candidates_kept(purposeful, monkeypatch) -> None:
-    async def _ap(q, *, pool, settings):
-        return [_ap_frag()]
-
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _ap)
     blocking = _blocking(1.5, [_cr_frag()])
     monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", blocking)
 
@@ -166,28 +160,8 @@ def test_slow_concept_region_is_cut_at_the_deadline_and_other_candidates_kept(pu
     assert bundle.rendered == "belief ok"
     ids = [c.get("id") for c in purposeful[0]["candidates"]]
     assert "fetch-1" in ids
-    assert "ap-1" in ids
     assert "cr-1" not in ids
-    assert decision.backend_counts.get("active_packet") == 1
     assert "concept_region" not in decision.backend_counts
-
-
-def test_slow_active_packet_is_cut_at_the_deadline_and_concept_region_kept(purposeful, monkeypatch) -> None:
-    async def _slow_ap(q, *, pool, settings):
-        await asyncio.sleep(10)
-        return [_ap_frag()]
-
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _slow_ap)
-    monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", lambda q, *, store, **_kw: [_cr_frag()])
-
-    started = time.perf_counter()
-    _bundle, decision = asyncio.run(worker.process_recall(_q(deadline_ms=500), corr_id="c-ap-slow"))
-    elapsed = time.perf_counter() - started
-
-    assert elapsed < 1.0
-    assert decision.deadline_hit is True
-    ids = [c.get("id") for c in purposeful[0]["candidates"]]
-    assert "fetch-1" in ids and "cr-1" in ids and "ap-1" not in ids
 
 
 def test_collectors_skipped_when_deadline_already_passed(purposeful, monkeypatch) -> None:
@@ -198,67 +172,51 @@ def test_collectors_skipped_when_deadline_already_passed(purposeful, monkeypatch
         return [], {}
 
     monkeypatch.setattr(worker, "_query_backends", _slow_backends)
-    ap_calls: list = []
-
-    async def _ap(q, *, pool, settings):
-        ap_calls.append(1)
-        return [_ap_frag()]
-
     cr_calls: list = []
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _ap)
     monkeypatch.setattr(
         worker, "fetch_concept_region_fragment_and_reinforce", lambda q, *, store, **_kw: cr_calls.append(1) or []
     )
 
     _bundle, decision = asyncio.run(worker.process_recall(_q(deadline_ms=250), corr_id="c-pcr-skip"))
     assert decision.deadline_hit is True
-    assert ap_calls == [] and cr_calls == []
-    assert decision.timings_ms["pcr_active_packet"] == 0
+    assert cr_calls == []
     assert decision.timings_ms["pcr_concept_region"] == 0
 
 
 def test_no_deadline_hit_when_collectors_finish(purposeful, monkeypatch) -> None:
-    async def _ap(q, *, pool, settings):
-        return [_ap_frag()]
-
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _ap)
     monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", lambda q, *, store, **_kw: [_cr_frag()])
 
     _bundle, decision = asyncio.run(worker.process_recall(_q(deadline_ms=5000), corr_id="c-pcr-ok"))
     assert decision.deadline_hit is False
     ids = [c.get("id") for c in purposeful[0]["candidates"]]
-    assert ids.index("ap-1") < ids.index("cr-1")  # same order as before the fix
-    assert decision.backend_counts.get("active_packet") == 1
+    assert ids.index("fetch-1") < ids.index("cr-1")
+    assert "active_packet" not in decision.backend_counts
     assert decision.backend_counts.get("concept_region") == 1
 
 
 def test_a_failing_collector_does_not_fail_the_recall(purposeful, monkeypatch) -> None:
-    async def _boom(q, *, pool, settings):
-        raise RuntimeError("pg down")
+    def _boom(q, *, store, **_kw):
+        raise RuntimeError("falkor down")
 
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _boom)
-    monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", lambda q, *, store, **_kw: [_cr_frag()])
+    monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", _boom)
 
     bundle, decision = asyncio.run(worker.process_recall(_q(deadline_ms=5000), corr_id="c-pcr-fail"))
     assert bundle.rendered == "belief ok"
     assert decision.deadline_hit is False
     ids = [c.get("id") for c in purposeful[0]["candidates"]]
-    assert "cr-1" in ids and "ap-1" not in ids
+    assert "fetch-1" in ids and "cr-1" not in ids
 
 
 # ── timings_ms ──────────────────────────────────────────────────────────────
 
 
 def test_timings_ms_has_the_new_keys(purposeful, monkeypatch) -> None:
-    async def _ap(q, *, pool, settings):
-        return [_ap_frag()]
-
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _ap)
     monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", lambda q, *, store, **_kw: [_cr_frag()])
 
     _bundle, decision = asyncio.run(worker.process_recall(_q(), corr_id="c-pcr-keys"))
-    for key in (*_TOP_LEVEL_STAGES, "pcr_active_packet", "pcr_concept_region", "total"):
+    for key in (*_TOP_LEVEL_STAGES, "pcr_concept_region", "total"):
         assert key in decision.timings_ms, key
+    assert "pcr_active_packet" not in decision.timings_ms
 
 
 def test_timed_stages_add_up_to_total(purposeful, monkeypatch) -> None:
@@ -266,11 +224,6 @@ def test_timed_stages_add_up_to_total(purposeful, monkeypatch) -> None:
     With slow-but-in-budget PCR collectors and eligible-count, the stages
     must now account for nearly all of total."""
 
-    async def _ap(q, *, pool, settings):
-        await asyncio.sleep(0.15)
-        return [_ap_frag()]
-
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _ap)
     monkeypatch.setattr(worker, "fetch_concept_region_fragment_and_reinforce", _blocking(0.3, [_cr_frag()]))
 
     async def _count(_pool, **_k):
@@ -285,7 +238,6 @@ def test_timed_stages_add_up_to_total(purposeful, monkeypatch) -> None:
     assert t["total"] >= 450
     assert t["pcr_collectors"] >= 280
     assert t["pcr_concept_region"] >= 280
-    assert t["pcr_active_packet"] >= 140
     assert t["eligible_count"] >= 180
     # Relative bound: per-stage values are floored to whole ms and wall time
     # jitters on a loaded CI runner, so the remainder is not exactly 0. Before
@@ -319,10 +271,6 @@ def test_deadline_cut_concept_region_does_not_reinforce(purposeful, monkeypatch)
     """Finding 3: the abandoned thread used to write the activation bump for
     fragments the recall had already dropped."""
 
-    async def _ap(q, *, pool, settings):
-        return []
-
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _ap)
     reinforced, fetch_done = _concept_region_split(monkeypatch, fetch_block_s=0.8)
 
     (_bundle, decision), elapsed, _ticks = asyncio.run(
@@ -336,10 +284,6 @@ def test_deadline_cut_concept_region_does_not_reinforce(purposeful, monkeypatch)
 
 
 def test_in_time_concept_region_still_reinforces(purposeful, monkeypatch) -> None:
-    async def _ap(q, *, pool, settings):
-        return []
-
-    monkeypatch.setattr(worker, "fetch_active_packet_fragments", _ap)
     reinforced, _fetch_done = _concept_region_split(monkeypatch, fetch_block_s=0.0)
     _bundle, decision = asyncio.run(worker.process_recall(_q(deadline_ms=5000), corr_id="c-cr-reinforce"))
     assert decision.deadline_hit is False

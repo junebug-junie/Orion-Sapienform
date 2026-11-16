@@ -1,9 +1,11 @@
 import asyncio
+import contextvars
 import time
 import uuid
 from typing import Optional
 
 from contextlib import asynccontextmanager
+from dataclasses import replace
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -49,6 +51,7 @@ from .foveal_probe import (
 )
 from .interpretation import (
     InterpretationParseOutcome,
+    apply_detector_confidence,
     build_interpretation_llm_options,
     build_interpretation_prompt,
     parse_llm_content,
@@ -67,6 +70,24 @@ from orion.gpu_pool.shed_backoff import ShedBackoff, gateway_error_reason as _ga
 from .unresolved import UnresolvedRateLimiter, build_unresolved
 
 _MAX_DEBUG_INTERPRETATIONS = 20
+# The model the gateway says served the last LLM call made in this task
+# (ChatResultPayload.model_used). A ContextVar, not an attribute: each window
+# is processed in its own task, so one stream's reply can never be read as
+# another's. settings.COUNCIL_MODEL is only what was asked for; the route
+# decides what answers (it read llama-3-8b while Qwen3.5 9B served, 2026-11-15).
+_SERVED_MODEL: contextvars.ContextVar[str | None] = contextvars.ContextVar("council_served_model", default=None)
+
+
+def _model_used_from_reply(payload) -> str | None:
+    if hasattr(payload, "model_dump"):
+        payload = payload.model_dump(mode="json")
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("model_used")
+    if not (isinstance(value, str) and value.strip()):
+        raw = payload.get("raw")
+        value = raw.get("model") if isinstance(raw, dict) else None
+    return value.strip() if isinstance(value, str) and value.strip() else None
 from .settings import Settings
 
 settings = Settings()
@@ -181,7 +202,9 @@ class CouncilService:
             self._record_interpretation(interpretation, parse_outcome)
 
         event_payload = (
-            self._project_interpretation_to_events(interpretation, window)
+            self._project_interpretation_to_events(
+                interpretation, window, model_used=parse_outcome.model_used
+            )
             if interpretation is not None
             else None
         )
@@ -254,7 +277,9 @@ class CouncilService:
             self._record_interpretation(interpretation, parse_outcome)
 
         event_payload = (
-            self._project_interpretation_to_events(interpretation, council_window)
+            self._project_interpretation_to_events(
+                interpretation, council_window, model_used=parse_outcome.model_used
+            )
             if interpretation is not None
             else None
         )
@@ -324,6 +349,8 @@ class CouncilService:
         window: VisionWindowPayload,
     ) -> tuple[VisionSceneInterpretationV1 | None, InterpretationParseOutcome]:
         if interpretation is not None:
+            # First, so the grounding caps below act on the measured number.
+            interpretation = apply_detector_confidence(interpretation, window)
             interpretation, grounding_notes = enforce_evidence_grounding(interpretation, window)
             for note in grounding_notes:
                 logger.info(f"[COUNCIL] grounding {note}")
@@ -334,6 +361,7 @@ class CouncilService:
                 interpretation = build_person_presence_fallback(window)
                 warnings = list(parse_outcome.salvage_warnings)
                 warnings.append("host_fallback_after_grounding")
+                # model_used is left None: no model wrote the fallback row.
                 parse_outcome = InterpretationParseOutcome(
                     interpretation=interpretation,
                     parse_mode=parse_outcome.parse_mode,
@@ -395,11 +423,13 @@ class CouncilService:
 
         try:
             prompt = build_interpretation_prompt(window)
+            _SERVED_MODEL.set(None)
             content = await self._call_llm_raw(prompt, source_env)
             if not content:
                 return None, InterpretationParseOutcome(interpretation=None, parse_mode="parse_failed")
 
             outcome = parse_llm_content(content, window)
+            outcome = replace(outcome, model_used=_SERVED_MODEL.get())
             if gate_ctx is not None:
                 stream_key, snapshot, _ = gate_ctx
                 async with self._evidence_transition_lock:
@@ -422,8 +452,10 @@ class CouncilService:
         self,
         interpretation: VisionSceneInterpretationV1,
         window: VisionWindowPayload,
+        *,
+        model_used: str | None = None,
     ) -> VisionEventPayload | None:
-        payload = project_interpretation_to_events(interpretation, window)
+        payload = project_interpretation_to_events(interpretation, window, model_used=model_used)
         if not payload.events:
             return None
         return payload
@@ -491,6 +523,7 @@ class CouncilService:
                 )
                 return None
             content = _extract_chat_result_text(res_env.payload)
+            _SERVED_MODEL.set(_model_used_from_reply(res_env.payload))
 
             if not content:
                 logger.warning(f"[COUNCIL] Empty LLM response: {res_env.payload}")

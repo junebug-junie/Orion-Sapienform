@@ -2,6 +2,8 @@
 
 Date: 2026-11-13
 Status: APPROVED 2026-11-13 (Juniper). No code in this PR.
+Amended: 2026-11-16, "Recall rev 2" approved by Juniper. Parts it replaces are marked
+**SUPERSEDED by Recall rev 2** where they stand. The original text is kept.
 Branch: `docs/memory-core-pages`
 
 ## Arsonist summary
@@ -134,6 +136,9 @@ It is already a versioned, insert-only page store: `concept_id`, `version`, `con
 
 A durable run in `orion-durable-runs`, so retries and a GPU lease come for free:
 
+> **SUPERSEDED by Recall rev 2 (step 1 only).** The fold reads `episode_memory` directly.
+> Corrections replace the old memory at write time, so there are no Graphiti facts to load.
+
 1. Load the current page version and the current Graphiti facts about the page's entity
    (only facts not marked no-longer-true), plus any memories added since that version.
 2. The LLM rewrites the page. Every sentence must cite at least one fact edge, `memory_id`,
@@ -220,6 +225,10 @@ verbatim. Covered by a test.
 
 ### How a concept is born
 
+> **SUPERSEDED by Recall rev 2 (the mention-ledger bullet).** A page is born from read
+> demand, not from mentions. See "Phase 2 change" in Recall rev 2. Splits and curiosity
+> concept reuse stay as written.
+
 - **Links to missing pages.** Page text may link `[[the name Orion]]`. A mention ledger
   counts distinct sources pointing at each missing slug. Sources are pages, memories, and
   curiosity `Concept` nodes. At 3 distinct sources, the page-fold run writes
@@ -287,7 +296,9 @@ arcs, and notes. **It has no command for anything Orion read or concluded.**
      knowledge Orion holds instead of a pile of nodes.
    - Reading resonance results are the strongest reading source. Each one becomes a citable
      record that pages may cite.
-3. **Dig access to knowledge: yes.** Add one read-only dig command over everything Orion has
+3. **Dig access to knowledge: yes.** *(SUPERSEDED in part by Recall rev 2: `orion.dig know`
+   is a thin client of orion-recall over all stores, lived and learned. It does not read
+   Postgres directly.)* Add one read-only dig command over everything Orion has
    read or concluded:
    - `python -P -m orion.dig know <words>` searches pages, coined concepts, priors, news
      concepts with their claims, and reading resonance. It returns short hits, each with its
@@ -304,6 +315,10 @@ arcs, and notes. **It has no command for anything Orion read or concluded.**
    chatter. Check `orion/signals/adapters/topic_foundry.py` readers first.
 
 ### Graphiti: turn on the full engine, as the fact layer under the pages
+
+> **SUPERSEDED by Recall rev 2.** The Graphiti fact layer failed. Corrections now supersede
+> the old memory when the memory is written (Mem0-style update). This section is kept as the
+> record of why Graphiti was tried.
 
 **Revised 2026-11-13 after Juniper's challenge.** An earlier draft said retire. That was
 wrong on three counts.
@@ -396,7 +411,7 @@ Graphiti's defaults, and add a type only when a page needs it.
 | Topic foundry → substrate concept adapter | 1,234 word-label concepts, no chat reader. | Readers of `orion/signals/adapters/topic_foundry.py`. |
 | World-pulse learning deltas | Headlines, not learning. | Readers of `world_pulse_learning_delta`. |
 | Verbatim `memory_cards` (`operator_distiller`) and the `active_packet` "durable beliefs" digest | 75% verbatim; the digest shows unrelated old messages. | `page:lately` must be live and verified first. |
-| Vector memory recall backend | 0 hits in 16,168 recalls. | — |
+| Vector memory recall backend | 0 hits in 16,168 recalls. | — **SUPERSEDED by Recall rev 2:** the old backend stays off. Rev 2 builds a new dense index in the existing Chroma instead. |
 
 **Not retired:** Graphiti (full engine turned on), news/reading concepts (they get a reader and a fair trial), Orion's coined
 concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concept_history`
@@ -410,13 +425,98 @@ concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concep
 3. Build order: Patch 0 (Graphiti trial) and 2a (coined-concept reuse) in parallel, then 1a
    (`page:juniper`).
 
+## Recall rev 2 (Juniper, 2026-11-16)
+
+Approved by Juniper on 2026-11-16. This section changes how Orion finds memories during a
+chat. Phase 1 core pages stay. The parts of this spec that rev 2 replaces are marked
+**SUPERSEDED by Recall rev 2** where they stand.
+
+### Why
+
+- **Real chat rarely asks "remember when".** Juniper leans on the shared past without
+  naming it. A recall that waits for an explicit memory question almost never runs.
+- **Orion denied a memory that was stored.** On a 2026-11-14 turn, Orion first said it had
+  no memory of a past event. `episode_memory` held that memory. Orion found it only after
+  Juniper prodded.
+- **Nothing on the chat recall path reads `episode_memory`.** The best store has no chat
+  reader.
+- **The vector backend is switched off.** It served 0 of 16,168 recalls.
+- **The read-only database role cannot see the memory tables.** `orion_readonly` has no
+  grants on them, so a read-only tool gets nothing.
+
+### Design
+
+Each part follows published work. Each part names it.
+
+1. **Tiered memory** (MemGPT / Letta).
+   - Core pages are always in the prompt (phase 1, unchanged).
+   - Everything else is searchable, not pasted in.
+   - Prompt rule: **look before you deny.** Orion does not say "I have no memory of that"
+     until a search has run and found nothing.
+2. **Hybrid retrieval.**
+   - Meaning search: dense `bge-large` embeddings in the existing Chroma.
+   - Exact-word search, so names and rare words are not lost.
+   - A local cross-encoder reranker orders the merged hits.
+   - Score = fit x recency x importance (Generative Agents, Park et al. 2023).
+   - At most about 4 lines go into the prompt. Nothing below a quality bar goes in. Zero
+     lines is a valid result.
+3. **Pre-turn query rewrite** on the fast lane. A small model turns the chat turn into one
+   or more search queries before recall runs. This is how implicit references find memories.
+4. **Link-following** over `episode_memory_referent`, in the style of personalized PageRank
+   (HippoRAG 2). A hit pulls in memories that share a referent with it.
+5. **Corrections supersede at write time** (Mem0-style update). When a new memory corrects
+   an old one, the old one is marked superseded when the new one is written. This replaces
+   the Graphiti fact layer, which failed its trial.
+6. **Local models only.** Embedder, reranker, and query rewrite all run on Orion's own
+   hardware.
+
+### Phase 2 change
+
+- **Page births come from read demand.** A referent becomes a page when it is served or
+  opened in 3 or more turns within 14 days. `episode_memory_referent` is the ledger.
+- **Drop `memory_page_mention`.** It is no longer needed.
+- **`orion.dig know` is a thin client of orion-recall.** It searches all stores, lived and
+  learned, through the same recall path. It does not read Postgres directly.
+
+### Scoreboard
+
+A local test bank in the style of LongMemEval. It has five kinds of question:
+
+- facts;
+- events across several sessions;
+- time ("when did ...", "before or after ...");
+- knowledge updates (the answer changed, and only the new answer counts);
+- abstention (the answer is not stored, and Orion must say so).
+
+Two bars:
+
+- **Retrieval bar: 80%.** The target memory id is in the prompt.
+- **Answer bar:** 70% or more correct, 0 invented facts, and 0 false "I have no memory".
+
+### Build order
+
+| Step | Issue | What |
+|---|---|---|
+| 1 | #3533 (with #3409) | Meaning search and reranker over `episode_memory`, stance crystallizations, and `person_fact`. Ships with the mesh-edge leak check. |
+| 2 | #3534 | Pre-turn query rewrite and link-following over `episode_memory_referent`. |
+| 3 | #3535 | `orion.dig know` as a recall client, and the look-before-you-deny prompt rule. |
+| — | #3536 | The scoreboard. Measures each step. |
+| — | #3537 | Backfill: distill July to September 2026 chat into `episode_memory`. |
+| then | #3463 | `page:lately`. |
+| then | #3462 | `page:origin`. |
+
+**Note on #3356.** That issue says the cause is `memory_tier` (chat memory never promoted
+past ephemeral). That diagnosis is wrong. The memories are stored. The missing piece is a
+reader on the chat recall path, which steps 1 to 3 add.
+
+
 ## Proposed schema / API changes
 
 - `episode_memory`: add column `matters text` (`core` | `notable` | `passing`, nullable).
   Additive migration, fits the post-pull allowlist.
 - `self_concept_history`: no schema change. New `concept_id` prefix `page:`.
-- New table `memory_page_mention` (`slug`, `source_kind`, `source_id`, `seen_at`). Phase 2
-  only.
+- ~~New table `memory_page_mention` (`slug`, `source_kind`, `source_id`, `seen_at`). Phase 2
+  only.~~ **SUPERSEDED by Recall rev 2:** dropped. `episode_memory_referent` is the ledger.
 - New table `memory_page_read` (`concept_id`, `version`, `turn_id`, `read_at`). Phase 2 only.
   Also logs `orion.dig know` lookups (`source_kind`, `ref_id`), so every source's trial is counted.
 - New table `memory_page_veto` (`concept_id`, `version`, `sentence_ref`, `vetoed_at`). Phase 1b.
@@ -448,6 +548,7 @@ concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concep
 - No change to how `self:definition` is written.
 - No personality changes (rev 4 owns that).
 - No retrieval rebuild. The long tail stays with recall until phase 2 pages replace it.
+  **SUPERSEDED by Recall rev 2:** recall is rebuilt for the memory stores.
 - No concept taxonomy. Concepts exist only as pages with cites and read counts.
 
 ## Acceptance checks
@@ -470,7 +571,8 @@ concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concep
 **Phase 2**
 
 5. Within two weeks of going live:
-   - at least one concept page is born from the 3-source mention rule;
+   - at least one concept page is born from the 3-source mention rule
+     (**SUPERSEDED by Recall rev 2:** born from the read-demand rule);
    - at least one concept page is opened by 3 or more separate turns.
 6. The share of curiosity Concepts with 2 or more links rises from 9/33 once reuse is fixed.
 7. `orion.dig know` is called by real turns. Each source (pages, coined concepts, news

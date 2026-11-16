@@ -154,24 +154,89 @@ def test_ablation_runs_the_gate_without_the_doer_rule() -> None:
     from orion.harness.tests.test_promise_gate import _reflection
     from orion.schemas.harness_finalize import PromiseV1
 
+    DW = "a later reply shows it done"
+
     draft = ("The queue should clear by noon. Text me when you land. I'll send the summary tonight. "
              "I'll also check the logs after lunch. I'll file the ticket tomorrow.")
     final = draft.replace(" Text me when you land.", "")  # repair removed the ask
     reflection = _reflection(promises_made=[
-        PromiseV1(quote="The queue should clear by noon.", doer="a_system"),
-        PromiseV1(quote="Text me when you land.", offer=True, doer="juniper"),
-        PromiseV1(quote="I'll send the summary tonight.", doer="orion"),
-        PromiseV1(quote="I'll also check the logs after lunch.", doer="orion"),
-        PromiseV1(quote="I'll file the ticket tomorrow.", doer="orion"),
-        PromiseV1(quote="not in the reply at all, invented", doer="a_system")])
+        PromiseV1(force="commits", quote="The queue should clear by noon.", doer="a_system", done_when=DW),
+        PromiseV1(force="commits", quote="Text me when you land.", offer=True, doer="juniper", done_when=DW),
+        PromiseV1(force="commits", quote="I'll send the summary tonight.", doer="orion", done_when=DW),
+        PromiseV1(force="commits", quote="I'll also check the logs after lunch.", doer="orion", done_when=DW),
+        PromiseV1(force="commits", quote="I'll file the ticket tomorrow.", doer="orion", done_when=DW),
+        PromiseV1(force="commits", quote="not in the reply at all, invented", doer="a_system", done_when=DW)])
     kept = ablate_doer_rule(reflection, draft_text=draft, final_text=final)
     # As the live gate: the cap of 3 applies on the draft pass (the ask takes a slot), then
     # the final-text pass drops the ask that repair removed. Invented quotes never survive.
     assert [(k["quote"], k["doer"]) for k in kept] == [
         ("The queue should clear by noon.", "a_system"),
         ("I'll send the summary tonight.", "orion")]
-    only_orion = _reflection(promises_made=[PromiseV1(quote="I'll send the summary tonight.", doer="orion")])
+    only_orion = _reflection(promises_made=[PromiseV1(force="commits", quote="I'll send the summary tonight.", doer="orion", done_when=DW)])
     assert ablate_doer_rule(only_orion, draft_text=draft, final_text=final) == []
+
+
+def test_ablation_runs_the_gate_without_the_done_when_rule() -> None:
+    from orion.harness.evals.promise_ledger_replay_eval import ablate_done_when_rule
+    from orion.harness.tests.test_promise_gate import _reflection
+    from orion.schemas.harness_finalize import PromiseV1
+
+    draft = "I'm around all evening. The queue should clear by noon. I'll send the summary tonight."
+    reflection = _reflection(promises_made=[
+        PromiseV1(force="commits", quote="I'm around all evening.", doer="orion", act="be around"),
+        PromiseV1(force="commits", quote="The queue should clear by noon.", doer="a_system"),
+        PromiseV1(force="commits", quote="I'll send the summary tonight.", doer="orion", done_when="tonight's reply holds the summary")])
+    kept = ablate_done_when_rule(reflection, draft_text=draft, final_text=draft)
+    # Rule 0b off: the presence line comes back with its real (null) done_when; the doer
+    # rule still drops the forecast.
+    assert [(k["quote"], k["done_when"]) for k in kept] == [
+        ("I'm around all evening.", None), ("I'll send the summary tonight.", "tonight's reply holds the summary")]
+    only_real = _reflection(promises_made=[reflection.promises_made[2]])
+    assert ablate_done_when_rule(only_real, draft_text=draft, final_text=draft) == []
+
+
+def test_ablation_runs_the_gate_without_the_force_rule() -> None:
+    from orion.harness.evals.promise_ledger_replay_eval import ablate_force_rule
+    from orion.harness.tests.test_promise_gate import _reflection
+    from orion.schemas.harness_finalize import PromiseV1
+
+    draft = "Best to try the small model first. I'll send the summary tonight."
+    dw = "tonight's reply holds the summary"
+    reflection = _reflection(promises_made=[
+        PromiseV1(force="suggests", quote="Best to try the small model first.", doer="orion", done_when=dw),
+        PromiseV1(force="commits", quote="I'll send the summary tonight.", doer="orion", done_when=dw)])
+    kept = ablate_force_rule(reflection, draft_text=draft, final_text=draft)
+    assert [(k["quote"], k["force"]) for k in kept] == [
+        ("Best to try the small model first.", "suggests"), ("I'll send the summary tonight.", "commits")]
+    only_real = _reflection(promises_made=[reflection.promises_made[1]])
+    assert ablate_force_rule(only_real, draft_text=draft, final_text=draft) == []
+
+
+def test_ablation_reports_the_first_copy_of_a_duplicated_quote() -> None:
+    """The gate keeps the first copy of a quote; the ablation must report that copy's force."""
+    from orion.harness.evals.promise_ledger_replay_eval import ablate_force_rule
+    from orion.harness.tests.test_promise_gate import _reflection
+    from orion.schemas.harness_finalize import PromiseV1
+
+    draft = "Best to try the small model first."
+    dw = "a later reply reports the small-model result"
+    reflection = _reflection(promises_made=[
+        PromiseV1(force="suggests", quote=draft, doer="orion", done_when=dw),
+        PromiseV1(force="commits", quote=draft, doer="orion", done_when=dw)])
+    kept = ablate_force_rule(reflection, draft_text=draft, final_text=draft)
+    assert [(k["quote"], k["force"]) for k in kept] == [(draft, "suggests")]
+
+
+def test_hand_found_recall_matches_a_different_span_by_key() -> None:
+    from orion.harness.evals.promise_ledger_replay_eval import quote_hash, score
+
+    quote = "I'll bring the read back next time."
+    report = {"turns": [{"correlation_id": "c1", "at": "2026-11-01T00:00:00",
+                         "promises_made": [{"quote": quote, "offer": False, "doer": "orion"}]}]}
+    labels = {"dropped": [], "hand_found": [{"key": "bring-back", "correlation_id": "c1", "offer": False}],
+              "labels": [{"correlation_id": "c1", "quote_sha": quote_hash(quote), "promise": True,
+                          "key": "bring-back"}]}
+    assert score(report, labels)["recall_hand_found"]["found"] == 1
 
 
 def test_merge_reports_joins_partial_runs_by_turn(tmp_path) -> None:

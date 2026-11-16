@@ -65,7 +65,11 @@ def prime_case(case_id: str, cited: str, uses: list[str], note: Optional[str] = 
 
 def _reverie_block() -> str:
     """The line shape of orion-thought's ``app/temporal_self_cue.py render_now_block``. The service package is loaded
-    under its own alias, so another service's ``app`` already imported in the same process never stands in for it."""
+    under its own alias, so another service's ``app`` already imported in the same process never stands in for it.
+
+    Side effect: importing it runs ``app/settings.py``, which loads ``services/orion-thought/.env`` into
+    ``os.environ`` (``override=False``) when that file exists. In CI it does not; on a host it can, for the rest of
+    the process."""
     import importlib
     import importlib.util
 
@@ -84,10 +88,10 @@ def _reverie_block() -> str:
 
 
 def reverie_case() -> dict[str, Any]:
-    from jinja2 import Environment
+    from orion.cognition.prompt_render import prompt_environment  # the environment production renders with
 
     template = (REPO / "orion" / "cognition" / "prompts" / "reverie_narrate.j2").read_text(encoding="utf-8")
-    prompt = Environment().from_string(template).render(
+    prompt = prompt_environment().from_string(template).render(
         attended_signal={"selected_description": "the deploy plan is still unfinished", "attended_node_ids": ["n-1"],
                          "selected_open_loop_id": "ol-1"},
         open_loops=[{"id": "ol-1", "description": "deploy plan unfinished"}],
@@ -104,7 +108,7 @@ def curiosity_case() -> dict[str, Any]:
     return {"case_id": "curiosity-painting", "organ": "curiosity",
             "system": "You are Orion's curiosity. Pick one question for this run, look into it, and report.",
             "prompt": section, "cited_event_ids": ["visual_run:aa745afd"],
-            "stub_uses": ["visual_run:aa745afd", "street_event:walkway:2611"]}
+            "stub_uses": ["visual_run:aa745afd"]}  # a run takes up one candidate
 
 
 def build_cases() -> list[dict[str, Any]]:

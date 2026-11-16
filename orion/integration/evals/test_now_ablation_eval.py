@@ -44,20 +44,67 @@ def test_an_original_output_is_used_instead_of_replaying_the_full_prompt():
     assert len(calls) == 1 and "[experience:a:1]" not in calls[0]
 
 
-def test_the_offline_lane_passes_on_the_checked_in_fixtures():
+def test_the_offline_lane_passes_on_the_checked_in_fixtures_and_its_verdict_comes_from_distance():
     assert ev.main(["--offline"]) == 0
+    assert ev.main(["--offline", "--threshold", "2.0"]) == 1  # no content change can reach 2.0: the check must fail
 
 
-def test_a_prime_style_cite_in_refs_counts_as_naming_the_item():
-    """Prime cites as {"kind": "experience", "id": "<id>"}: the bare id is what is matched, not "experience:<id>"."""
+def _one(model, **kw):
+    rep = ev.run([{"case_id": "c", "organ": "prime", "prompt": PROMPT, "cited_event_ids": ["a:1"]}], model,
+                 mode="t", **kw)
+    return rep
+
+
+def test_only_the_cite_token_differing_is_hollow_in_every_shape_an_organ_cites_in():
+    """The ablated prompt cannot show the id, so dropping only the cite is no evidence the item shaped anything."""
+    for with_cite in ('{"reading": "the cabinet is warm", "refs": [{"kind": "experience", "id": "a:1"}]}',
+                      '{"interpretation": "the cabinet is warm", "cites": ["experience:a:1"]}',
+                      "The cabinet is warm [experience:a:1]."):
+        def model(case, system, prompt, w=with_cite):
+            if "[experience:a:1]" in prompt:
+                return w
+            return w.replace('{"kind": "experience", "id": "a:1"}', "").replace('"experience:a:1"', "").replace(
+                " [experience:a:1]", "")
+
+        rep = _one(model)
+        [r] = rep.results
+        assert r.names_ref_full and not r.names_ref_ablated and not r.changed, with_cite
+
+
+def test_a_content_change_without_naming_the_id_is_changed():
     def model(case, system, prompt):
-        return '{"reading": "r", "refs": [{"kind": "experience", "id": "a:1"}]}' if "[experience:a:1]" in prompt \
-            else '{"reading": "r", "refs": []}'
+        return "a mail truck idled on the walkway" if "[experience:a:1]" in prompt else "nothing stood out today"
 
-    rep = ev.run([{"case_id": "p", "organ": "prime", "prompt": PROMPT, "cited_event_ids": ["a:1"]}], model,
-                 mode="t", threshold=0.99)
-    [r] = rep.results
-    assert r.names_ref_full and not r.names_ref_ablated and r.changed
+    [r] = _one(model).results
+    assert r.changed and not r.names_ref_full
+
+
+def test_an_empty_output_is_refused_never_scored_hollow():
+    rep = _one(lambda case, system, prompt: "   ")
+    assert rep.results == [] and "empty output" in rep.refused[0]
+
+
+def test_live_noise_raises_the_bar():
+    calls = {"n": 0}
+
+    def drifting(case, system, prompt):
+        calls["n"] += 1
+        if "[experience:a:1]" not in prompt:
+            return "alpha beta gamma delta"
+        # two replays of the same full prompt differ a lot: the noise floor
+        return "alpha beta gamma delta" if calls["n"] % 2 else "epsilon zeta eta theta alpha"
+
+    [r] = _one(drifting, measure_noise=True).results
+    assert r.noise is not None and r.threshold >= r.noise + ev.NOISE_MARGIN - 1e-9
+    assert r.changed is (r.distance >= r.threshold)
+    assert _one(drifting, measure_noise=True).summary()["noise"]
+
+
+def test_an_id_is_matched_as_a_whole_token():
+    assert ev.names("see a:10 and b", "a:10") and not ev.names("see a:10", "a:1")
+    assert ev.names('"cites": ["experience:a:1"]', "a:1") and not ev.names("experience:a:10", "a:1")
+    assert not ev.names("xa:1", "a:1")
+    assert ev.strip_cite("x [experience:a:10] y", "a:1") == "x [experience:a:10] y"
 
 
 def test_the_fixtures_are_what_the_merged_renderers_build_today():

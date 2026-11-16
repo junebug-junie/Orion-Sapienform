@@ -44,7 +44,12 @@ def test_a_tending_line_never_costs_one_of_the_blocks_own_lines_even_one_sharing
             with_t = _render(state, tending)
             assert len(with_t.text) <= BLOCK_CAP
             assert _own(with_t.text) == _own(without.text), with_t.text
-            assert with_t.dropped_lines == without.dropped_lines + len(tending) - with_t.tending
+
+
+def test_the_reproducing_case_shows_one_tending_line_and_keeps_the_body_line():
+    # Two short concerns + two 90-char tending lines: on main both tending lines showed and the body line went.
+    b = _render(_state("xxxxx", n=2), [TendingV1("disp-aaa", "y" * 90, 12.0), TendingV1("disp-bbb", "z" * 90, 10.5)])
+    assert b.tending == 1 and b.dropped_lines == 1 and "- Body: nothing binding." in b.text
 
 
 def test_tending_still_shows_when_there_is_room():

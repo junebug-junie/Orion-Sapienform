@@ -48,7 +48,9 @@ def _section(prompt: str) -> str:
 
 
 def _tick_under(arm: str, monkeypatch) -> tuple[list[str], str]:
-    """One real investigate tick with the offer draw pinned to ``arm``. Returns (now request URLs, now section)."""
+    """One real investigate tick with the offer draw pinned to ``arm``. Returns (now request URLs, now section).
+    Fails (not passes hollow) if the pin did not take: the arm the offer row recorded must be ``arm``, and the
+    replica planner must run on the replica arm only."""
     urls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -65,16 +67,33 @@ def _tick_under(arm: str, monkeypatch) -> tuple[list[str], str]:
         def __init__(self, view):
             self.view = view
 
+    planned: list[bool] = []
+
     async def no_plan(*, view, **_kw):
+        planned.append(True)
         return _Plan(view)  # the replica arm's planner, without the bus round trip
 
+    # The loop reads both names from its own module globals; setitem on a missing name would add a dead key and
+    # leave every tick on whatever arm the real draw picks.
+    for name in ("draw_offer_arm", "plan_offer"):
+        assert name in g, f"{name} is no longer a global of curiosity_investigation: re-point this test"
     monkeypatch.setitem(g, "draw_offer_arm", pinned)
     monkeypatch.setitem(g, "plan_offer", no_plan)
     loop = _loop(_FakeBus())
+    recorded: list[str] = []
+    real_record = loop._record_offer
+
+    async def spy_record(*args, **kwargs):
+        recorded.append(kwargs.get("arm"))
+        return await real_record(*args, **kwargs)
+
+    loop._record_offer = spy_record
     loop._now_reader = CuriosityNow(
         enabled=True, durable_runs_url="http://dr.test", pool_provider=lambda: None,
         client_factory=lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)))
     assert asyncio.run(loop.tick()) is None
+    assert recorded == [arm], f"the offer row recorded {recorded}, not the pinned arm {arm}"
+    assert bool(planned) is (arm == ARM_REPLICA_ORDER)
     return [u for u in urls if urlparse(u).path == "/temporal-self/now"], _section(loop.seen_prompt)
 
 

@@ -63,7 +63,8 @@ jobs:
       - name: Install minimal deps
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pydantic pydantic-settings PyYAML pytest
+          # jinja2, httpx, python-dotenv: the now ablation fixtures' drift test renders with the merged renderers.
+          python -m pip install pydantic pydantic-settings PyYAML pytest jinja2 httpx python-dotenv
 
       # Public repo: no tracked file may name people close to Juniper, her home
       # place, or her contact details (hashed denylist, config/privacy/).

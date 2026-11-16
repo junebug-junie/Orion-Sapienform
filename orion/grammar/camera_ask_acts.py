@@ -221,6 +221,49 @@ def rule_outcome_values(closes: Iterable[tuple[str, float]], *, k: float = PRIOR
     return {r: (answered[r] + k * m) / (closed[r] + k) for r in RULES}
 
 
+# --- the per-rule exploration floor (issue #3381; #3350 option c) ------------------------------------------
+# The market's exploration floor (orion/physiology/choice.py, attention patch 3b) funds a Tier 2 FAMILY anyway when it
+# has under EXPLORATION_FLOOR of its tier's acts started over the rolling FLOOR_WINDOW. The market cannot apply it per
+# camera-ask RULE: a want names only its family, and the market's act history does not read ``test_before`` (the rule).
+# So the opener applies the same rule one level down: a held ask whose rule has under RULE_EXPLORATION_FLOOR of the
+# family's asks opened over the rolling week opens anyway. Each floor open is an ask opened, so the rule's share rises
+# and the floor stops itself. Without it a rule whose expected answer is below the family mean (face, sighting) ranks
+# 0 at every bid when hunger is saturated, is held, never opens, is never graded, and its expected answer never moves.
+# 2%, not the family floor's 5%: in the live 30-day replay (services/orion-durable-runs/evals/event_wants_replay.py
+# --camera-asks --live, steady-state lanes, 2026-11-16) 5% leaves only 69% of vehicle asks unopened (Juniper answers
+# ~13% of them; the 4b gate needs 70%), while 2% keeps 83% unopened and still opens every face and sighting ask the
+# old rule starved (docs/superpowers/pr-reports/2026-11-16-camera-ask-rule-exploration-pr.md).
+RULE_EXPLORATION_FLOOR = 0.02
+RULE_FLOOR_WINDOW = timedelta(days=7)          # == orion.physiology.choice.FLOOR_WINDOW (tested)
+# Only a hold on value opens through the floor: ``sated`` (rank 0 with no charge, every camera-ask hold today) or
+# ``price`` (a charge, Prime's slow charge included), as the market's family floor. Never a consent block.
+RULE_FLOOR_HOLD_REASONS = ("deferred:sated", "deferred:price")
+
+
+def rule_open_share(rule: str, opens: Iterable[tuple[datetime, str]], now: datetime) -> Optional[float]:
+    """``rule``'s share of the family's asks opened in the rolling ``RULE_FLOOR_WINDOW`` before ``now``. ``opens``:
+    (created_at, rule) of every Orion-made camera ask. None when the family opened none (every rule is under the
+    floor, as the market's family floor reads an empty tier). Pure."""
+    now = _utc(now)
+    since = now - RULE_FLOOR_WINDOW
+    n = mine = 0
+    for at, r in opens:
+        at = _utc(at)
+        if at is None or not (since <= at <= now):
+            continue
+        n += 1
+        mine += 1 if r == rule else 0
+    return mine / n if n else None
+
+
+def under_rule_floor(rule: str, opens: Iterable[tuple[datetime, str]], now: datetime, *,
+                     floor: float = RULE_EXPLORATION_FLOOR) -> tuple[bool, Optional[float]]:
+    """(under the floor, the rule's share). Under: the family opened nothing this week, or the rule's share is
+    strictly below ``floor``. Pure."""
+    share = rule_open_share(rule, opens, now)
+    return (share is None or share < floor), share
+
+
 def rule_from_test_before(test_before: Optional[str]) -> Optional[str]:
     """The rule stamped on an act at open (``test_before = camera_ask:<rule>``)."""
     if test_before and test_before.startswith("camera_ask:"):
@@ -308,4 +351,5 @@ __all__ = [
     "candidate_key", "rebid_after_sec", "AskGrade", "BASIS", "CAMERA_ASK_KINDS", "JUNIPER_STORY_CARD_REF", "ORION_MADE_CAMERA_ASK_SQL", "RULES",
     "SIGNAL", "VERB", "ask_act", "ask_act_ids", "ask_grade", "ask_opened_event", "ask_rule", "is_juniper_card",
     "is_orion_camera_ask", "PRIOR_WEIGHT", "rule_from_test_before", "rule_outcome_values",
+    "RULE_EXPLORATION_FLOOR", "RULE_FLOOR_HOLD_REASONS", "RULE_FLOOR_WINDOW", "rule_open_share", "under_rule_floor",
 ]

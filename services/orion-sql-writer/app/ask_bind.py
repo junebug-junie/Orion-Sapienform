@@ -23,6 +23,16 @@ issues #3285 and #3286:
   opener no longer proposes it: it then just drops, it was never shown). ``bind_verdict`` admits at ``end``, so it
   gets a rolling end one day past now that never arrives.
 * **Ranking** is the market's: family hunger x expected answer (issue #3286). No vision.ask exception.
+* **The per-rule exploration floor** (issue #3381; #3350 option c). The market's own exploration floor (patch 3b)
+  guarantees a FAMILY a share of its tier's acts started; it cannot see the rule an ask comes from (a want names only
+  its family). Hunger is saturated, so a rule whose expected answer is below the family mean ranks 0 at every bid,
+  is held, never opens, is never graded, and never moves. So here, where the rule and its history already live: a
+  hold on value (``sated`` or ``price``, never consent) opens anyway when the rule has under
+  ``RULE_EXPLORATION_FLOOR`` (2%) of the family's asks opened over the rolling week
+  (``camera_ask_acts.under_rule_floor``, counted from the same 30-day ask read, plus this process's own floor opens
+  until a read contains it). Each floor open raises the rule's share, so it stops itself at about 2% of the week's
+  asks (2-3 vehicle asks a week at today's ~100 asks a week): vehicle (answered ~13%) stays mostly held. The card is stamped like a funded one (the market did answer). Flag
+  ``ORION_CAMERA_ASK_RULE_FLOOR_ENABLED`` (default true).
 * **The daily caps stay** a hard ceiling: the openers check them before they ask; a held candidate takes no slot.
 * **Juniper's own cards never bid.** Her walkway-story names are inserted by Hub, already answered, and never
   pass through here; ``ask_bind`` refuses one anyway (``is_juniper_card``).
@@ -51,6 +61,9 @@ from orion.grammar.camera_ask_acts import (
     rebid_after_sec,
     rule_from_test_before,
     rule_outcome_values,
+    RULE_EXPLORATION_FLOOR,
+    RULE_FLOOR_HOLD_REASONS,
+    under_rule_floor,
 )
 from orion.physiology.binding import NO_ANSWER_REASONS, BindVerdict, bind_verdict
 from orion.physiology.event_wants import SOURCE_HISTORY, event_want, event_want_id, source_salience
@@ -91,8 +104,15 @@ class _Held:
 
 _lock = threading.Lock()
 _held: dict[str, _Held] = {}
-_cache: dict[str, Any] = {"at": None, "history": None, "outcomes": None}
+_cache: dict[str, Any] = {"at": None, "history": None, "outcomes": None, "opens": None, "open_ids": None}
 _bids: list[datetime] = []          # times of this process's fresh bids inside BID_BUDGET_WINDOW
+# This process's own rule-floor opens: (monotonic time, created_at, rule, ask_id). Counted until a read contains that
+# ask_id (the opener committed its insert) or FLOOR_OPEN_FORGET_SEC passed (the insert lost to an open card, or rolled
+# back). Matched by ask_id, not by time: the openers run in separate threads and transactions, so a read made after a
+# floor open may not see its uncommitted row yet (review finding). Without them one daily batch could floor-open every
+# held vehicle candidate before the 300 s cache saw the first one.
+_floor_opens: list[tuple[float, datetime, str, str]] = []
+FLOOR_OPEN_FORGET_SEC = 2 * CACHE_TTL_SEC
 
 
 def reset_state() -> None:
@@ -100,7 +120,8 @@ def reset_state() -> None:
     with _lock:
         _held.clear()
         _bids.clear()
-        _cache.update(at=None, history=None, outcomes=None)
+        _floor_opens.clear()
+        _cache.update(at=None, history=None, outcomes=None, opens=None, open_ids=None)
 
 
 def held_snapshot() -> dict[str, _Held]:
@@ -119,6 +140,12 @@ def _graded() -> bool:
     from app.settings import settings
 
     return bool(getattr(settings, "sql_writer_act_camera_asks_enabled", True))
+
+
+def _rule_floor_enabled() -> bool:
+    from app.settings import settings
+
+    return bool(getattr(settings, "orion_camera_ask_rule_floor_enabled", True))
 
 
 def _first_individual(source_ref: str) -> str:
@@ -140,6 +167,11 @@ def _history_and_outcomes(conn, now: datetime, graded: bool) -> tuple[list[int],
             return _cache["history"], (_cache["outcomes"] if graded else None)
     rows = conn.execute(text(ASKS_SQL), {"since": now - SOURCE_HISTORY, "until": now}).mappings().all()
     history = [int(r["sightings"] or 0) for r in rows]
+    # Every Orion-made ask in the same read, with its rule: the per-rule exploration floor's week count (acts started:
+    # each of these asks is one vision.ask act opened at its created_at, app/ask_acts.py).
+    opens = [(r["created_at"], ask_rule(str(r.get("source_kind") or ""), r.get("evidence_refs"), r.get("individual_kind")))
+             for r in rows if r.get("created_at") is not None]
+    open_ids = {str(r["ask_id"]) for r in rows if r.get("ask_id") is not None}
     # No act ledger in this database (a test database with only the vision tables): no grades, every rule at its
     # prior. Checked first, because a failed read would abort the opener's transaction.
     has_acts = conn.execute(text("SELECT to_regclass('grammar_acts') IS NOT NULL")).scalar()
@@ -147,8 +179,16 @@ def _history_and_outcomes(conn, now: datetime, graded: bool) -> tuple[list[int],
                                              "now": now}).fetchall() if has_acts else []
     outcomes = rule_outcome_values((rule_from_test_before(g[0]) or "", float(g[1])) for g in grades)
     with _lock:
-        _cache.update(at=mono, history=history, outcomes=outcomes)
+        _cache.update(at=mono, history=history, outcomes=outcomes, opens=opens, open_ids=open_ids)
+        _floor_opens[:] = [f for f in _floor_opens if f[3] not in open_ids and mono - f[0] < FLOOR_OPEN_FORGET_SEC]
     return history, (outcomes if graded else None)
+
+
+def _week_opens_locked() -> list[tuple[datetime, str]]:
+    """The asks opened as the floor counts them: the cached read plus this process's floor opens not in it. Caller
+    holds ``_lock``."""
+    seen = _cache.get("open_ids") or set()
+    return list(_cache["opens"] or []) + [(at, r) for _m, at, r, i in _floor_opens if i not in seen]
 
 
 def in_backoff(rule: str, source_kind: str, source_ref: str, now: datetime) -> bool:
@@ -226,6 +266,25 @@ def ask_bind(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any
     answered = decision is not None and str(getattr(decision, "reason", "") or "") not in NO_ANSWER_REASONS
     detail = {**verdict.detail, "want_id": want_id, "rule": rule, "salience": round(salience, 4),
               "expected_answer": want.outcome_value, "market_answered": answered}
+    floor_share: Optional[float] = None
+    if not verdict.admit and verdict.why in RULE_FLOOR_HOLD_REASONS and _rule_floor_enabled():
+        # Check and count under one lock: two opener threads cannot both read "under" for the same rule (review finding).
+        with _lock:
+            under, floor_share = under_rule_floor(rule, _week_opens_locked(), now)
+            if under:
+                _held.pop(want_id, None)
+                _floor_opens.append((time.monotonic(), ask.created_at or now, rule, str(ask.ask_id)))
+        if under:
+            # Held on value, but the rule has under its floor share of the week's opens: open it anyway, so the rule
+            # keeps being graded (issue #3381). Counted at once, so the next candidate of this rule sees it.
+            logger.info("camera_ask_bid ask=%s rule=%s want_id=%s verdict=admit why=rule_floor market=%s salience=%.3f "
+                        "expected_answer=%s rule_share=%s floor=%.2f held_before=%d", ask.ask_id, rule, want_id,
+                        verdict.why, salience, want.outcome_value,
+                        "none" if floor_share is None else f"{floor_share:.4f}", RULE_EXPLORATION_FLOOR,
+                        held.n_held if held is not None else 0)
+            return BindVerdict(True, "rule_floor", detail={**detail, "market_why": verdict.why,
+                                                           "rule_share": floor_share,
+                                                           "rule_floor": RULE_EXPLORATION_FLOOR})
     if verdict.admit:
         with _lock:
             _held.pop(want_id, None)
@@ -241,8 +300,9 @@ def ask_bind(conn, ask: Any, *, now: datetime, bid: Optional[Callable[[Any], Any
     # history_n on the held path too: held asks open no card and so stop feeding the salience history; if it ever
     # falls under 20, asks open unbid (no_history). Live: ~450 Orion asks in 30 days, far from it (review nit).
     logger.info("camera_ask_bid ask=%s rule=%s want_id=%s verdict=held why=%s salience=%.3f expected_answer=%s "
-                "n_held=%d retry_at=%s history_n=%d", ask.ask_id, rule, want_id, verdict.why, salience,
-                want.outcome_value, n, retry_at.isoformat(), len(history))
+                "n_held=%d retry_at=%s history_n=%d rule_share=%s", ask.ask_id, rule, want_id, verdict.why, salience,
+                want.outcome_value, n, retry_at.isoformat(), len(history),
+                "n/a" if floor_share is None else f"{floor_share:.4f}")
     return BindVerdict(False, verdict.why, retry_at=retry_at, detail={**detail, "n_held": n})
 
 

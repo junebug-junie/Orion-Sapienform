@@ -315,6 +315,9 @@ families:
     # no longer from the want's own opened_at: intensity = max(hunger, salience) gains a hunger floor.
     # An ask is a card Juniper answers when she likes, not a message, so no fixed juniper_msgs cost
     # (Juniper, PR #3213 question 1: no attention cost in v1).
+    # 2026-11-16, issue #3381: a held ask opens anyway when its RULE has under 2% of the family's asks opened over
+    # the rolling 7 days (the exploration floor one level down, applied by the opener, which knows the rule:
+    # services/orion-sql-writer/app/ask_bind.py, ORION_CAMERA_ASK_RULE_FLOOR_ENABLED). The market's decision is unchanged.
     # 86400: asks are opened in a daily batch; the want's own window ends when the ask expires.
     tier: 2
     deferrable_window_s: 86400

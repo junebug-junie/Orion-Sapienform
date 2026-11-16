@@ -329,7 +329,9 @@ def _as_of(acts: Sequence[tuple[ActRecord, str]], t: datetime) -> list[tuple[Act
 def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]], *, start: datetime,
                      end: datetime, ledger: Sequence[Mapping[str, Any]] = (), same_grading: bool = True,
                      snapshot_lag: timedelta = MARKET_SNAPSHOT_LAG, keep_bids: bool = False,
-                     probe_rules: Sequence[str] = (), counterfactual: bool = False) -> dict:
+                     probe_rules: Sequence[str] = (), counterfactual: bool = False,
+                     rule_floor: Optional[float] = None, steady_state: bool = False,
+                     pin_outcomes: bool = False) -> dict:
     """Replay 4b's rule with 4a's value over ``asks`` (Orion-made only; each has ask_id, rule, created_at,
     expires_at, status, answered_at, answer_detail, sightings). Pure.
 
@@ -354,8 +356,30 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
     **The market's snapshot** (``snapshot_lag``): the market reads acts and the event history through a cache up to
     ``MARKET_SNAPSHOT_LAG`` (300 s) old, and the opener's rule outcomes come from a 300 s cache too. A bid at ``t``
     sees closes, grades and ledger rows up to ``t - snapshot_lag`` (the upper bound of the staleness; it reproduces all
-    16 live bids); the appetite is still built at ``t``, as the market does."""
-    from orion.grammar.camera_ask_acts import OUTCOME_WINDOW, rebid_after_sec, rule_outcome_values
+    16 live bids); the appetite is still built at ``t``, as the market does.
+
+    **The per-rule exploration floor** (``rule_floor``, issue #3381; services/orion-sql-writer app/ask_bind.py): a held
+    bid whose rule has under ``rule_floor`` of the family's asks opened in the rolling week before it
+    (``camera_ask_acts.under_rule_floor``) opens anyway. Opens counted: the real asks before ``start`` (all opened, as
+    they really were), then the asks this replay opens. Bids are replayed in time order across every ask (a heap), so
+    a re-bid sees the opens of asks created after its own. None: no floor (the rule before #3381).
+
+    The time order also changes the stand-ins a RE-bid sees (issue #3381 review): the old per-ask loop finished one
+    ask's re-bids before the next ask's first bid, so a re-bid never saw later asks' stand-ins; now it sees every
+    stand-in decided before its snapshot, as the market would. On the live 30-day window (2026-11-16) no ``by_rule``
+    number moved without the floor (vehicle 87.5% held, 87.5% never opened, 7.0 answered a day); re-bids per held
+    candidate-day 8.5 -> 8.49.
+
+    **Steady state** (``steady_state``): every bid ranks against the reference the live market holds at ``end`` (the
+    real ledger only, as ``next_bid_by_rule``), with hunger saturated (intensity 1.0: live tau is 60 s, so it nearly
+    always is). This is the regime from now on, where #3381's starvation lives; the historical lanes ranked against
+    old, partly unsaturated rows, which hid it. ``pin_outcomes``: every bid also carries its rule's expected answer as
+    it stands at ``end`` (today's values: face and sighting below the family mean), so a rule below the mean stays
+    there for the whole window, as it does live when no grade can move it. Real answers still decide what a held ask
+    would have got once opened."""
+    import heapq
+
+    from orion.grammar.camera_ask_acts import OUTCOME_WINDOW, rebid_after_sec, rule_outcome_values, under_rule_floor
     from orion.physiology.appetite import same_grading_events
     from orion.physiology.binding import REBID_DEFAULT_SEC
 
@@ -385,54 +409,84 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
             app_cache[key] = build_family_appetite(cfg, [k for k, _ in known], t)
         return app_cache[key], known
 
+    end_snap = end - snapshot_lag
+    end_outcomes = rule_outcome_values(
+        (r, k.outcome_value) for k, r in _as_of(acts, end_snap)
+        if k.graded and k.closed_at is not None and end_snap - OUTCOME_WINDOW <= (k.opened_at or k.closed_at) <= end_snap)
+    end_ref: list[Any] = [(r["intensity"], r["graded"]) for r in led if end_snap - SOURCE_HISTORY <= r["at"] < end_snap]
+
     def bid_once(t: datetime, first_bid: datetime, rule: str, s: float, *, stand_ins: bool = True) -> tuple[dict, Any]:
         """One bid of a ``rule`` ask with salience ``s`` at ``t``, as the market decides it. ``stand_ins`` False:
         the reference is the real ledger only (what the live market holds today)."""
         snap = t - snapshot_lag
         app, known = appetite_at(snap, t)
         closes = [k.closed_at for k, _ in known if k.closed_at is not None]
-        ref: list[Any] = [(r["intensity"], r["graded"]) for r in led if snap - SOURCE_HISTORY <= r["at"] < snap]
-        if stand_ins and (counterfactual or ledger_from is None or snap < ledger_from):
-            ref += [(v, g) for bt, v, g in synthetic if snap - SOURCE_HISTORY <= bt < snap]
+        if steady_state:
+            ref: list[Any] = list(end_ref)
+        else:
+            ref = [(r["intensity"], r["graded"]) for r in led if snap - SOURCE_HISTORY <= r["at"] < snap]
+            if stand_ins and (counterfactual or ledger_from is None or snap < ledger_from):
+                ref += [(v, g) for bt, v, g in synthetic if snap - SOURCE_HISTORY <= bt < snap]
         event_values = (same_grading_events(ref, app.graded) if same_grading
                         else same_grading_events([v for v, _ in ref], app.graded))
         app = dataclasses.replace(app, last_close_at=max(closes) if closes else None, event_values=event_values)
         h = hunger(app, t, opened_at=first_bid)
         inten, ibasis = want_intensity(h.intensity, s)
+        if steady_state:
+            inten, ibasis = 1.0, "hunger"
         # As GRADES_SQL and the market read them: graded acts OPENED in the 30 days before the bid (issue #3350).
         graded = [(r, k.outcome_value) for k, r in known if k.graded and k.closed_at is not None
                   and snap - OUTCOME_WINDOW <= (k.opened_at or k.closed_at) <= snap]
-        outcome = rule_outcome_values(graded)[rule]
+        outcome = end_outcomes[rule] if pin_outcomes else rule_outcome_values(graded)[rule]
         rank, basis, _ = rank_value(app, inten, outcome, event=True)
         return {"at": t, "rank": rank, "basis": basis, "outcome": outcome, "intensity": inten,
                 "intensity_basis": ibasis, "salience": s, "n_reference": len(event_values)}, app
 
-    for a, s in zip(asks, sal):
-        if s is None or a["created_at"] < start or a["created_at"] > end:
+    # Replayed in time order across every ask, so the floor's week count sees every open before a bid.
+    opens: list[tuple[datetime, str]] = [(a["created_at"], a["rule"]) for a in asks if a["created_at"] < start]
+    state: dict[int, dict] = {}
+    heap: list[tuple[datetime, int]] = []
+    for i, (a, s) in enumerate(zip(asks, sal)):
+        if a["created_at"] < start or a["created_at"] > end:
             continue
+        if s is None:
+            # Too little history to rank: live opens it unbid (``no_answer:no_history``), and the floor counts it.
+            opens.append((a["created_at"], a["rule"]))
+            continue
+        state[i] = {"s": s, "bids": [], "n_held": 0, "funded_at": None, "floor": False,
+                    "horizon": min(a["created_at"] + LOSS_HORIZON, end)}
+        heapq.heappush(heap, (a["created_at"], i))
+    while heap:
+        t, i = heapq.heappop(heap)
+        a, st = asks[i], state[i]
         first_bid = a["created_at"]
-        horizon = min(first_bid + LOSS_HORIZON, end)
-        bids = []
-        t = first_bid
-        n_held = 0
-        while t <= horizon:
-            b, app = bid_once(t, first_bid, a["rule"], s)
-            bids.append(b)
-            rank, inten = b["rank"], b["intensity"]
-            # A first bid with no row in the ledger stands in for one. Outside ``counterfactual`` a stand-in is counted
-            # only while the market had no ledger at all (``bid_once``); once the ledger exists it is the truth.
-            ref_id = f"orion_ask:{a['ask_id']}"
-            if t == first_bid and ref_id not in (bound_refs if counterfactual else led_refs):
-                synthetic.append((t, inten, app.graded))
-            if rank > 0:
-                break
-            n_held += 1
-            # The live wait is max(backoff, the market's own wait clamped by bind_verdict). Every replayed hold is
-            # ``sated`` (no charge, asserted above), which names no wait, so bind_verdict's is REBID_DEFAULT_SEC.
-            t += timedelta(seconds=rebid_after_sec(n_held, REBID_DEFAULT_SEC))
-        funded_at = next((b["at"] for b in bids if b["rank"] > 0), None)
+        b, app = bid_once(t, first_bid, a["rule"], st["s"])
+        st["bids"].append(b)
+        # A first bid with no row in the ledger stands in for one. Outside ``counterfactual`` a stand-in is counted
+        # only while the market had no ledger at all (``bid_once``); once the ledger exists it is the truth.
+        ref_id = f"orion_ask:{a['ask_id']}"
+        if t == first_bid and ref_id not in (bound_refs if counterfactual else led_refs):
+            synthetic.append((t, b["intensity"], app.graded))
+        floor_open = False
+        if b["rank"] <= 0 and rule_floor is not None:
+            floor_open, b["rule_share"] = under_rule_floor(a["rule"], opens, t, floor=rule_floor)
+        b["floor_open"] = floor_open
+        if b["rank"] > 0 or floor_open:
+            st["funded_at"], st["floor"] = t, floor_open
+            opens.append((t, a["rule"]))
+            continue
+        st["n_held"] += 1
+        # The live wait is max(backoff, the market's own wait clamped by bind_verdict). Every replayed hold is
+        # ``sated`` (no charge, asserted above), which names no wait, so bind_verdict's is REBID_DEFAULT_SEC.
+        nt = t + timedelta(seconds=rebid_after_sec(st["n_held"], REBID_DEFAULT_SEC))
+        if nt <= st["horizon"]:
+            heapq.heappush(heap, (nt, i))
+    for i, st in sorted(state.items()):
+        a, bids, first_bid, horizon, funded_at = asks[i], state[i]["bids"], asks[i]["created_at"], st["horizon"], st["funded_at"]
         rows.append({"ask_id": a["ask_id"], "rule": a["rule"], "answered": a["status"] == "answered",
-                     "held_at_all": bids[0]["rank"] <= 0, "never_opened": funded_at is None,
+                     # Held: not opened at the first bid (the market held it, and no rule floor opened it).
+                     "held_at_all": bids[0]["rank"] <= 0 and not bids[0]["floor_open"], "never_opened": funded_at is None,
+                     "floor_open": st["floor"],
                      "censored": funded_at is None and horizon < first_bid + LOSS_HORIZON,
                      "bids": len(bids), "followed_h": (horizon - first_bid).total_seconds() / 3600,
                      "first_rank": bids[0]["rank"], "first_basis": bids[0]["basis"], "outcome": bids[0]["outcome"],
@@ -451,6 +505,7 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
         late = sorted(x["delay_h"] for x in mine if x["held_at_all"] and x["delay_h"] is not None)
         by_rule[r] = {"asks": len(mine), "held_at_all": share(mine, lambda x: x["held_at_all"]),
                       "opened_later": sum(1 for x in mine if x["held_at_all"] and not x["never_opened"]),
+                      "floor_opens": sum(1 for x in mine if x["floor_open"]),
                       "never_opened_in_horizon": share(mine, lambda x: x["never_opened"]),
                       "of_which_censored_by_replay_end": sum(1 for x in mine if x["censored"]),
                       "later_open_delay_h_median": _q(late, 0.5), "later_open_delay_h_max": late[-1] if late else None,
@@ -464,7 +519,9 @@ def camera_asks_gate(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]]
     held = [x for x in rows if x["held_at_all"]]
     held_days = sum(x["followed_h"] if x["never_opened"] else (x["delay_h"] or 0) for x in held) / 24
     out = {
-        "rule": "no_deadline (issue #3285): held re-bids 600 s doubling to 3 h until funded",
+        "rule": "no_deadline (issue #3285): held re-bids 600 s doubling to 3 h until funded"
+                + (f"; per-rule exploration floor {rule_floor:.0%} of the week's opens (issue #3381)" if rule_floor is not None else ""),
+        "rule_floor": rule_floor, "steady_state": steady_state,
         "loss_horizon_days": LOSS_HORIZON.days,
         "asks": len(rows), "by_rule": by_rule,
         "answered_per_day": round(len(answered) / days, 3),
@@ -567,6 +624,34 @@ def live_parity(families: FamiliesConfig, asks: Sequence[Mapping[str, Any]], led
             "held": sum(1 for x in rows if x["replay_funded"] is False), "rows": rows}
 
 
+# PR #3406 (issue #3364: same-grading event rank) merged 2026-11-15 02:59:19Z; no camera-ask bid ran between the merge
+# and its deploy (bids ran 11-14 20:09Z, then 11-15 07:00Z), so every bid from here on was decided under it.
+RULE_3364_LIVE_FROM = datetime(2026, 11, 15, 2, 59, 19, tzinfo=timezone.utc)
+
+
+def parity_by_era(before: Mapping[str, Any], after: Mapping[str, Any], switch_at: datetime) -> dict:
+    """One parity over every live bid, each compared under the rule live when it was decided: ``before``'s row for a
+    bid decided before ``switch_at``, ``after``'s from it on. Both come from ``live_parity`` over the same ledger, so
+    their rows are the same bids in the same order. Pure."""
+    rows = []
+    for b, a in zip(before.get("rows", []), after.get("rows", [])):
+        assert b["event_ref"] == a["event_ref"] and b["decided_at"] == a["decided_at"]
+        rows.append({**(b if _ts(b["decided_at"]) < switch_at else a), "rule_era": "before_3364"
+                     if _ts(b["decided_at"]) < switch_at else "same_grading"})
+    return {"bids": len(rows), "matched": sum(1 for x in rows if x["match"]), "switch_at": switch_at.isoformat(),
+            "rows": rows}
+
+
+def steady_summary(r: Mapping[str, Any]) -> dict:
+    """What the steady-state lanes report: per rule held and opened, answers per day, the gate."""
+    return {"rule": r["rule"], "by_rule": {k: {f: v[f] for f in ("asks", "held_at_all", "never_opened_in_horizon",
+                                                                 "floor_opens", "opened_later", "answered")}
+                                           for k, v in r["by_rule"].items()},
+            "answered_per_day": r["answered_per_day"], "answered_per_day_under_4b": r["answered_per_day_under_4b"],
+            "answered_loss_share": r["answered_loss_share"], "lost_answers_by_rule": r["lost_answers_by_rule"],
+            "checks": r["checks"]}
+
+
 ASKS_FOR_REPLAY_SQL = """select coalesce(json_agg(r order by r.created_at), '[]'::json) from (
         select a.ask_id, a.source_kind, a.evidence_refs, a.status, a.answer_detail, a.created_at, a.expires_at,
                a.answered_at, (select i.kind from vision_individual i
@@ -610,27 +695,58 @@ def _camera_live(days: int, out_json: Optional[str], parity_fixture: Optional[st
     start = end - timedelta(days=days)
     asks, ledger = _read_camera_inputs(start - SOURCE_HISTORY - timedelta(days=1))
     families, _ = load_families(ROOT / "config" / "physiology" / "families.yaml")
-    from orion.grammar.camera_ask_acts import RULES
+    from orion.grammar.camera_ask_acts import RULE_EXPLORATION_FLOOR, RULES
 
-    # The gate: 4b's rule as if it had bid every ask of the window (stand-ins for asks with no 4b bid).
-    r = camera_asks_gate(families, asks, start=start, end=end, ledger=ledger, probe_rules=RULES, counterfactual=True)
+    # The gate: 4b's rule as if it had bid every ask of the window (stand-ins for asks with no 4b bid), with the
+    # per-rule exploration floor the opener runs (issue #3381).
+    r = camera_asks_gate(families, asks, start=start, end=end, ledger=ledger, probe_rules=RULES, counterfactual=True,
+                         rule_floor=RULE_EXPLORATION_FLOOR)
+    # Issue #3381's regime: today's reference and saturated hunger for every bid, without and with the floor (and
+    # the market's family-floor share, 5%, for comparison: it opens too many vehicle asks).
+    steady = {name: camera_asks_gate(families, asks, start=start, end=end, ledger=ledger, steady_state=True,
+                                     rule_floor=f)
+              for name, f in (("no_floor", None), ("floor_2pct", RULE_EXPLORATION_FLOOR), ("floor_5pct", 0.05))}
+    # The same, with every rule's expected answer pinned at today's value (the starvation of #3381 itself).
+    pinned = {name: camera_asks_gate(families, asks, start=start, end=end, ledger=ledger, steady_state=True,
+                                     pin_outcomes=True, rule_floor=f)
+              for name, f in (("no_floor", None), ("floor_2pct", RULE_EXPLORATION_FLOOR), ("floor_5pct", 0.05))}
     # What the market really had (the ledger as it was), under the rule after and before #3364.
     as_ledger = camera_asks_gate(families, asks, start=start, end=end, ledger=ledger)
     before = camera_asks_gate(families, asks, start=start, end=end, ledger=ledger, same_grading=False, probe_rules=RULES)
     # Parity over the whole window: the full replay, stand-ins and all, must reproduce every live bid.
     parity_old = live_parity(families, asks, ledger, same_grading=False, start=start)
     parity_new = live_parity(families, asks, ledger, same_grading=True, start=start)
+    # Each live bid under the rule the market ran when it was made: before #3364's merge, every past event; after it,
+    # same grading. (Checked against the old rule alone, the 2026-11-15 07:00Z bids, decided under #3364, failed.)
+    parity_then = parity_by_era(parity_old, parity_new, RULE_3364_LIVE_FROM)
     out = {"lane": "camera_asks_live", "window_days": days, "as_of": end.isoformat(), **r,
            "as_ledger_same_grading": {"by_rule": as_ledger["by_rule"], "checks": as_ledger["checks"],
                                       "answered_loss_share": as_ledger["answered_loss_share"]},
            "rule_before_3364": {"by_rule": before["by_rule"], "checks": before["checks"],
                                 "answered_loss_share": before["answered_loss_share"],
                                 "next_bid_by_rule": before["next_bid_by_rule"]},
-           "live_parity_rule_live_then": parity_old, "live_bids_under_same_grading": parity_new}
+           "live_parity_rule_live_then": parity_then, "live_parity_before_3364_rule": parity_old,
+           "live_bids_under_same_grading": parity_new,
+           "steady_state": {name: steady_summary(x) for name, x in steady.items()},
+           "steady_state_today_values": {name: steady_summary(x) for name, x in pinned.items()}}
     nb = r["next_bid_by_rule"]
+    st_floor, st_none = steady["floor_2pct"], steady["no_floor"]
     out["checks"] = {**r["checks"],
                      # The replay must reproduce every live 4b decision under the rule the market ran then.
-                     "replay_reproduces_live_bids": parity_old["bids"] > 0 and parity_old["matched"] == parity_old["bids"],
+                     "replay_reproduces_live_bids": parity_then["bids"] > 0 and parity_then["matched"] == parity_then["bids"],
+                     # Issue #3381, in the steady state: the floor keeps the 4b gate (vehicle held, answers kept)...
+                     "steady_state_floor_passes_gate": all(st_floor["checks"].values()),
+                     # ...and every rule with an ask in the window opens at least one (no rule starves).
+                     "steady_state_floor_opens_every_rule": all(
+                         round((1 - (v["never_opened_in_horizon"] or 0)) * v["asks"]) > 0
+                         for v in st_floor["by_rule"].values()),
+                     "steady_state_floor_loses_no_more_answers": (st_floor["answered_loss_share"] or 0)
+                     <= (st_none["answered_loss_share"] or 0),
+                     # With today's expected answers held fixed: the floor still passes the gate, and opens every rule.
+                     "today_values_floor_passes_gate": all(pinned["floor_2pct"]["checks"].values()),
+                     "today_values_floor_opens_every_rule": all(
+                         round((1 - (v["never_opened_in_horizon"] or 0)) * v["asks"]) > 0
+                         for v in pinned["floor_2pct"]["by_rule"].values()),
                      # What the live market decides for the next ask, from today's ledger (issue #3364).
                      "next_vehicle_bid_held": nb["vehicle"]["held_at_any_salience"],
                      "next_confirm_and_same_bids_funded": (nb["confirm"]["funded_at_any_salience"]

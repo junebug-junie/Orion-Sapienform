@@ -100,14 +100,15 @@ def _past_ask(c, ask_id, iid, at, *, refs=None, detail=None, status="answered"):
                "r": iid, "d": None if detail is None else json.dumps(detail)})
 
 
-def _seed(c):
+def _seed(c, *, vehicle_history=True):
     _individual(c, VEHICLE, "vehicle", 30, 6)
     _individual(c, OTHER_VEHICLE, "vehicle", 20, 5)
     _individual(c, PERSON, "person", 12, 5)
-    # 30 days of past Orion-made asks about other individuals (the salience history; 25 >= 20).
+    # 30 days of past Orion-made asks about other individuals (the salience history; 25 >= 20). With
+    # ``vehicle_history`` one in five is a vehicle ask: 20% of the week's opens, over the rule floor's 2% (issue #3381).
     for i in range(25):
         hid = f"hist{i:02d}"
-        _individual(c, hid, "person", 2 + i % 7, 1)
+        _individual(c, hid, "vehicle" if vehicle_history and i % 5 == 0 else "person", 2 + i % 7, 1)
         _past_ask(c, f"ask-h{i}", hid, NOW - timedelta(days=3, minutes=i))
     # Juniper's own walkway-story card: in no history, never bids.
     _past_ask(c, "ask-juniper", "story1", NOW - timedelta(days=2),
@@ -146,6 +147,7 @@ def _state(monkeypatch):
     ab.reset_state()
     monkeypatch.setattr(settings, "orion_physiology_bid_camera_asks", "on")
     monkeypatch.setattr(settings, "sql_writer_act_camera_asks_enabled", True)
+    monkeypatch.setattr(settings, "orion_camera_ask_rule_floor_enabled", True)
     yield
     ab.reset_state()
 
@@ -199,6 +201,21 @@ def test_held_vehicle_gets_no_card_funded_person_opens_then_a_later_rebid_opens_
     assert market.wants[3].want_id == market.wants[0].want_id and market.wants[3].opened_at == NOW
     assert len(market.wants) == 4
     assert _open(conn, t + timedelta(seconds=601), market, monkeypatch) == []
+
+
+def test_a_rule_with_no_open_this_week_opens_through_the_floor_once_then_holds(conn, monkeypatch):
+    """Issue #3381 against real Postgres and the real opener: no vehicle ask opened this week, so the first held
+    vehicle candidate opens through the rule floor (stamped: the market answered); that open is counted at once, so
+    the second vehicle (1 of 26 opens, 3.8%, over 2%) is held; the funded person still opens."""
+    _seed(conn, vehicle_history=False)
+    market = Market(line=0.5)
+    opened = _open(conn, NOW, market, monkeypatch)
+    assert sorted(o["source_ref"] for o in opened) == sorted([VEHICLE, PERSON])
+    cards = {r["source_ref"]: r for r in _cards(conn)}          # same created_at: no order between them
+    assert set(cards) == {VEHICLE, PERSON}
+    assert bid_want_ref(cards[VEHICLE]["evidence_refs"]) == market.wants[0].want_id
+    held = ab.held_snapshot()
+    assert len(held) == 1 and next(iter(held.values())).n_held == 1          # OTHER_VEHICLE
 
 
 def test_shadow_mode_opens_first_with_no_bid(conn, monkeypatch):

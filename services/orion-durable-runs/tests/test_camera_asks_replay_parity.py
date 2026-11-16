@@ -129,3 +129,47 @@ def test_the_gate_counterfactual_holds_vehicles_and_the_as_ledger_view_does_not(
     seen = ewr.camera_asks_gate(FAMS, ASKS, start=start, end=end, ledger=LEDGER)
     assert cf["checks"]["vehicle_held_at_least_70pct"] and cf["checks"]["confirm_and_same_held_at_most_10pct"]
     assert seen["by_rule"]["vehicle"]["held_at_all"] < cf["by_rule"]["vehicle"]["held_at_all"]
+
+
+# --- issue #3381: the per-rule exploration floor -------------------------------------------------------------
+
+def _steady(rule_floor):
+    """The steady state of the live market (today's reference, hunger saturated), with every rule's expected answer
+    pinned at the fixture's end: sighting (0.80) sits below the family mean, as it does live."""
+    end = LAST_BID + timedelta(seconds=1)
+    return ewr.camera_asks_gate(FAMS, ASKS, start=end - timedelta(days=30), end=end, ledger=LEDGER, steady_state=True,
+                                pin_outcomes=True, rule_floor=rule_floor)
+
+
+def test_a_rule_below_the_family_mean_starves_on_the_old_rule_and_gets_its_share_with_the_floor():
+    from orion.grammar.camera_ask_acts import RULE_EXPLORATION_FLOOR
+
+    old, new = _steady(None), _steady(RULE_EXPLORATION_FLOOR)
+    # Old rule: half the sighting asks are never opened (an answered one is lost); no floor opens anywhere.
+    assert old["by_rule"]["sighting"]["never_opened_in_horizon"] == 0.5 and old["lost_answers_by_rule"].get("sighting")
+    assert all(v["floor_opens"] == 0 for v in old["by_rule"].values())
+    # Floor: every sighting ask opens; no answer lost to starvation, only vehicle ones.
+    assert new["by_rule"]["sighting"]["never_opened_in_horizon"] == 0.0 and new["by_rule"]["sighting"]["floor_opens"] > 0
+    assert set(new["lost_answers_by_rule"]) == {"vehicle"}
+    assert new["answered_loss_share"] < old["answered_loss_share"]
+
+
+def test_the_floor_keeps_vehicle_mostly_held_and_the_4b_gate_passing():
+    from orion.grammar.camera_ask_acts import RULE_EXPLORATION_FLOOR
+
+    new = _steady(RULE_EXPLORATION_FLOOR)
+    assert all(new["checks"].values()), new["checks"]
+    v = new["by_rule"]["vehicle"]
+    assert v["never_opened_in_horizon"] >= ewr.GATE_VEHICLE_HELD_MIN and 0 < v["floor_opens"] <= 0.15 * v["asks"]
+    # Confirm and same rank above the mean: never held, never floor-opened.
+    assert all(new["by_rule"][r]["held_at_all"] == 0 and new["by_rule"][r]["floor_opens"] == 0 for r in ("confirm", "same"))
+
+
+def test_parity_by_era_compares_each_bid_under_the_rule_live_when_it_was_made():
+    before = {"rows": [{"event_ref": "a", "decided_at": "2026-11-14T07:00:00+00:00", "match": True},
+                       {"event_ref": "b", "decided_at": "2026-11-15T07:00:00+00:00", "match": False}]}
+    after = {"rows": [{"event_ref": "a", "decided_at": "2026-11-14T07:00:00+00:00", "match": False},
+                      {"event_ref": "b", "decided_at": "2026-11-15T07:00:00+00:00", "match": True}]}
+    p = ewr.parity_by_era(before, after, ewr.RULE_3364_LIVE_FROM)
+    assert (p["bids"], p["matched"]) == (2, 2)
+    assert [r["rule_era"] for r in p["rows"]] == ["before_3364", "same_grading"]

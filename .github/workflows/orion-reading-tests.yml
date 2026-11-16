@@ -60,6 +60,7 @@ jobs:
             services/orion-hub/tests/test_reading_postgres.py \
             services/orion-hub/tests/test_world_pulse_read_*.py \
             services/orion-hub/tests/test_curiosity_investigation.py \
+            services/orion-hub/tests/test_curiosity_now.py \
             services/orion-hub/tests/test_energy_stakes_gate.py \
             services/orion-hub/tests/test_energy_routes.py \
             services/orion-hub/tests/test_energy_strip_panel.py \

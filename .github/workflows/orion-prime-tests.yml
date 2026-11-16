@@ -11,6 +11,8 @@ on:
     paths:
       - "orion/prime/**"
       - "orion/mindloop/**"
+      - "orion/integration/**"
+      - "orion/temporal_self/now.py"
       - "orion/curiosity/replica/**"
       - "orion/curiosity/tests/test_replica_*.py"
       - "orion/curiosity/worldview.py"
@@ -50,6 +52,8 @@ on:
     paths:
       - "orion/prime/**"
       - "orion/mindloop/**"
+      - "orion/integration/**"
+      - "orion/temporal_self/now.py"
       - "orion/curiosity/replica/**"
       - "orion/curiosity/tests/test_replica_*.py"
       - "orion/curiosity/worldview.py"

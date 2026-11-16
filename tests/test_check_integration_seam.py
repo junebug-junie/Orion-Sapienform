@@ -30,6 +30,16 @@ def planted(real, **changes):
     return inp
 
 
+def test_the_three_patch3_readers_really_read_and_record(real):
+    """Integration patch 3 (#3425): Prime, reverie and curiosity name a reads_now module that reads the now and
+    records cites, with no exemption left."""
+    organs = real.registry["organs"]
+    for organ in ("prime", "reverie", "curiosity"):
+        spec = organs[organ]
+        assert spec.get("reads_now") and not spec.get("exempt_read"), organ
+        assert seam._reads_the_now(REPO / spec["reads_now"]) == (True, True), organ
+
+
 def test_the_repo_passes(real):
     assert seam.check(real) == []
     assert real.channels_base is not None, "no merge base with origin/main: rule 6 did not run (fetch origin main)"
@@ -113,6 +123,9 @@ def test_reads_now_must_really_read_the_now_and_record_cites(real, tmp_path):
         (tmp_path / name).write_text(text)
     for name, ok in [*((n, ok) for n, (_, ok) in files.items()), ("missing.py", False)]:
         inp = planted(real, repo_root=tmp_path)
+        for spec in inp.registry["organs"].values():  # the real readers' files are not under tmp_path
+            if spec.get("reads_now"):
+                spec["reads_now"], spec["exempt_read"] = None, "planted test"
         inp.registry["organs"]["painting"]["reads_now"] = name
         del inp.registry["organs"]["painting"]["exempt_read"]
         errs = seam.check(inp)

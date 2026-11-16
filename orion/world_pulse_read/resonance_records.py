@@ -65,14 +65,18 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
         docs.append(PoolDoc("self_prior", p["id"], "falkor:orion_worldview:Prior",
                             f"{p['claim']} (status {p['status']}, confidence {p['conf']}, tested {p['tt']}x)",
                             tuple(nb)))
+    current = current_lived_answer_rows(a_by)
     for q in questions:
+        # Neighbours are the current answer and the one before it, never a draft that is not current.
         nb = []
-        for a in a_by.get(q["qid"], [])[:2]:
-            nb.append(ResonanceNeighborV1(relation="lived_answer" + ("_revision" if a.get("revises") else ""),
-                                          ref_id=f"{q['qid']}@{a['run_id']}", text=a["text"][:600]))
+        cur = current.get(q["qid"])
+        if cur is not None:
+            alist = a_by[q["qid"]]
+            for a in alist[alist.index(cur):alist.index(cur) + 2]:
+                nb.append(ResonanceNeighborV1(relation="lived_answer" + ("_revision" if a.get("revises") else ""),
+                                              ref_id=f"{q['qid']}@{a['run_id']}", text=a["text"][:600]))
         docs.append(PoolDoc("lived_question", q["qid"], "falkor:orion_worldview:SelfQuestionMint", q["text"], tuple(nb)))
     qtext = {q["qid"]: q["text"] for q in questions}
-    current = current_lived_answer_rows(a_by)
     for qid, alist in a_by.items():
         # Only the CURRENT answer is a match target (#3396): an article is
         # compared with what Orion thinks now, not with every view Orion held.
@@ -102,8 +106,8 @@ def _written_at(raw: Any) -> int:
 
 def current_lived_answer_rows(a_by: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
     """question_id -> the row of Orion's current answer, by the shared rule
-    (`newest_answer_per_question(require_evidence=True)`): newest with evidence,
-    else newest of any kind."""
+    (`newest_answer_per_question(require_evidence=True)`): newest with evidence.
+    A question with only evidence-less drafts has none, so it offers no answer."""
     out: dict[str, dict[str, Any]] = {}
     for qid, alist in a_by.items():
         by_run = {}

@@ -21,7 +21,6 @@ from .dream import DreamAdapter
 from .state_journaler import StateJournalerAdapter
 from .topic_foundry import TopicFoundryAdapter
 from .concept_induction import ConceptInductionAdapter
-from .graph_cognition import GraphCognitionAdapter
 from .journaler import JournalerAdapter
 from .power_guard import PowerGuardAdapter
 
@@ -46,7 +45,6 @@ ADAPTERS: List[OrionSignalAdapter] = [
     StateJournalerAdapter(),
     TopicFoundryAdapter(),
     ConceptInductionAdapter(),
-    GraphCognitionAdapter(),
     JournalerAdapter(),
     PowerGuardAdapter(),
     SqlWriterAdapter(),
@@ -77,7 +75,6 @@ __all__ = [
     "StateJournalerAdapter",
     "TopicFoundryAdapter",
     "ConceptInductionAdapter",
-    "GraphCognitionAdapter",
     "JournalerAdapter",
     "PowerGuardAdapter",
     "ADAPTERS",

@@ -3,8 +3,8 @@
 
 Read-only. For every `reading_resonance` packet candidate with ref_kind=lived_answer
 created after --since, compare its answer with the current answer for that question
-AT THE PACKET'S built_at (point in time, not now): the newest answer with evidence,
-else the newest of any kind -- the rule in
+AT THE PACKET'S built_at (point in time, not now): the newest answer with evidence
+(none when all are drafts) -- the rule in
 orion/curiosity/self_inquiry.py:newest_answer_per_question(require_evidence=True).
 Also counts which candidates the stored verdict cited (result_json.raw citations).
 
@@ -68,7 +68,7 @@ def main() -> int:
         at = int(dt.datetime.fromisoformat(built.replace("Z", "+00:00")).timestamp() * 1000)
         held = sorted((a for a in by_q.get(qid, []) if a[0] <= at), key=lambda a: (a[0], a[1]), reverse=True)
         with_ev = [a for a in held if a[2]]
-        current = (with_ev or held or [(0, "", 0)])[0][1]
+        current = (with_ev or [(0, "", 0)])[0][1]  # all drafts: nothing is current
         total += 1
         stale += run != current
         if was_cited == "t":

@@ -3,7 +3,7 @@
 Patch F of the day-letter fix plan, approved by Juniper ("go with patch f"). Refs #3393 #3395 #3396.
 
 - The curiosity tick no longer passes a hardcoded "all calm" report. The four report-driven evaluator branches, the goal-pressure branch in consolidation, the `orion/graph_cognition` package and the unused `graph_view_basis` planner are deleted. Three signal types leave the contract.
-- Orion's taught worldview writes are safe to repeat: findings `MERGE` on `finding_id`, a belief move `MERGE`s on the whole move, and `times_tested` moves once per run (guarded by a new `last_counted_run_id`). The correction lane and consult texts point at the same writes.
+- Orion's taught worldview writes are safe to repeat: findings `MERGE` on `finding_id`, a belief move `MERGE`s on the whole move, and `times_tested` moves once per run, in the same single command that sets `last_run_id`. The correction lane and consult texts point at the same writes.
 - One rule for "Orion's current answer": `newest_answer_per_question(require_evidence=)`. Reading resonance now offers only the current answer per question.
 - `scripts/worldview_prior_unique_rule.py` tests the index + unique rule on a scratch FalkorDB and prints the operator command. The live rule is NOT applied.
 - The three proposals now carry answers to Orion's 16 questions (reply turn `e24df41cfeba`, thread `01ae43c8a48b`).
@@ -38,7 +38,7 @@ The tick built `FrontierCuriosityEvaluator` with `_neutral_frontier_metacog_inpu
 
 - Removed: `concept_instability`, `contradiction_hotspot`, `unresolved_pressure_region` from `FrontierInvocationSignalTypeV1`. None stored in 30 days (all 16,109 candidates are `curiosity_candidate`); readers of old rows already skip invalid ones.
 - Removed: `cognition_report` / `perception_brief` arguments of `FrontierCuriosityEvaluator.evaluate`, `FrontierCuriosityOrchestrator.run`, `GraphConsolidationEvaluator.consolidate`.
-- Behavior changed: `times_tested` counts runs, not commands (6.3% of per-run tests moved it by more than 1). New graph property `Prior.last_counted_run_id`.
+- Behavior changed: `times_tested` counts runs, not commands (6.3% of per-run tests moved it by more than 1). `/api/substrate/hotspots` `contradiction_hotspots` is now `{available: false, reason}`, not an empty slice. Current answer outside the prompt needs evidence (no draft fallback).
 
 ## Env/config changes
 
@@ -77,8 +77,10 @@ no substrate_endogenous_curiosity_tick_failed in substrate-runtime logs for 24 h
 
 - Finding: two ctx-adapter tests still built signals with retired types.
   - Fix: switched to live types. Evidence: `test_curiosity_ctx_adapter.py` passes.
-- Finding: moving `last_run_id` into the guarded count command broke run attribution in value.py/corrections.py when a run skipped the count.
-  - Fix: guard on new `last_counted_run_id`; the update keeps `last_run_id`. Evidence: prompt test + scratch replay PASS.
+- Finding: moving `last_run_id` into a separate count command broke run attribution; a second-pass fix with `last_counted_run_id` let "tested" and `times_tested` split (Orion Q1).
+  - Fix: one command sets the count (CASE on the old `last_run_id`), the update and `last_run_id`. Evidence: prompt tests + scratch replay PASS.
+- Orion follow-ups (turn 26e2cb9b125e): empty-id MERGE fuses nodes, partial batches, contradiction_hotspots blank, draft fallback.
+  - Fix: prompt teaches id rule and error handling; scratch test covers both; hotspots payload marks unavailable; strict evidence rule. Tickets #3542-#3545 for deferred items.
 - Finding: `previous_answer` neighbour followed FalkorDB's null-first DESC order.
   - Fix: lists re-sorted with the helper's key; test with a null-dated row.
 - Finding: check script's evidence test disagreed with `_evidence_list` on `"[]"`, dropped float `written_at`.
@@ -102,9 +104,9 @@ docker exec orion-athena-falkordb redis-cli GRAPH.RO_QUERY orion_worldview "CALL
 
 ## Risks / concerns
 
-- Severity: low. Concern: Orion skips the second (count) command. Mitigation: value.py still reports it as moved-untested; corrections still attribute the move.
+- Severity: low. Concern: Orion writes its own SET without the CASE. Mitigation: value.py reports it as moved-untested.
 - Severity: low. Concern: an A->B, B->A, A->B sequence in one run folds the third move into the first. Mitigation: rare; documented.
-- Severity: info. Live unique rule not applied; waits for Juniper. Issues opened: none. Issues closed: none (#3393 stays open for the self-node seed symptom).
+- Severity: info. Live unique rule applied by the operator 2026-11-16 (OPERATIONAL; proof on #3395). Issues opened: #3525, #3542, #3543, #3544, #3545. Issues closed: none (#3393 stays open for the self-node seed symptom).
 
 ## PR link
 

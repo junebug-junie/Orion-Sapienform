@@ -19,7 +19,8 @@ def test_replay_batch_uses_only_repeat_safe_writes():
     batch = wpur.taught_batch("aaaaaaaaaaaa")
     assert not [c for c in batch if c.startswith("CREATE")]
     count = [c for c in batch if "times_tested = coalesce" in c]
-    assert len(count) == 1 and 'coalesce(p.last_counted_run_id, "") <> "aaaaaaaaaaaa"' in count[0]
+    assert len(count) == 1 and 'coalesce(p.last_run_id, "") <> "aaaaaaaaaaaa"' in count[0]
+    assert 'p.last_run_id = "aaaaaaaaaaaa"' in count[0] and "last_counted_run_id" not in "".join(batch)
     assert sum("MERGE (v:PriorRevision" in c for c in batch) == 2
 
 

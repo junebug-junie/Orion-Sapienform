@@ -27,12 +27,13 @@ def test_missing_written_at_sorts_as_oldest():
     assert newest_answer_per_question([undated, dated])["lived.q1"] is dated
 
 
-def test_evidence_rule_skips_a_newer_draft_and_falls_back_when_only_drafts():
+def test_evidence_rule_skips_a_newer_draft_and_has_nothing_when_only_drafts():
     good, draft = _a("aaaaaaaaaaaa", 100), _a("bbbbbbbbbbbb", 200, ev=False)
     assert newest_answer_per_question([good, draft])["lived.q1"] is draft  # prompt rule
     assert newest_answer_per_question([good, draft], require_evidence=True)["lived.q1"] is good
     only = _a("cccccccccccc", 50, ev=False, q="lived.q2")
-    assert newest_answer_per_question([only], require_evidence=True)["lived.q2"] is only
+    assert "lived.q2" not in newest_answer_per_question([only], require_evidence=True)
+    assert newest_answer_per_question([only])["lived.q2"] is only
 
 
 class _Reader:
@@ -99,3 +100,9 @@ def test_previous_answer_uses_the_helper_order_not_falkor_null_first():
     assert [d.ref_id for d in lived] == ["lived.q1@bbbbbbbbbbbb"]
     prev = [n.ref_id for n in lived[0].neighborhood if n.relation == "previous_answer"]
     assert prev == ["lived.q1@aaaaaaaaaaaa"]
+
+
+def test_lived_question_neighbours_skip_a_newer_draft():
+    docs, _, _ = rr.worldview_pool(_Falkor())
+    q = next(d for d in docs if d.ref_kind == "lived_question")
+    assert [n.ref_id for n in q.neighborhood] == ["lived.q1@bbbbbbbbbbbb", "lived.q1@aaaaaaaaaaaa"]

@@ -151,3 +151,10 @@ The spec said "every reader returns one answer". Four readers want history on pu
     superseded (decisions: 1 `share`, 2 `note` across the 3). So the stale pool touched 2
     verdicts in 4 days. A re-score against the corrected pool needs a model re-run and is not
     done here.
+
+**Built change after Orion's follow-ups (2026-11-16):** `require_evidence=True` has no
+fallback. A question whose answers are all drafts has no current answer outside the
+curiosity prompt, matching Juniper's rule and chat (which reads the mirror). Live: the 4
+questions with no mirror row each have exactly one answer, with no evidence, so chat,
+reverie and now resonance show nothing for them; the day letter still shows each run's own
+answer as that run's output. Baseline under the strict rule: 25 of 32 not current.

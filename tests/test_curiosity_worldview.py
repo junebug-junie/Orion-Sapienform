@@ -1963,15 +1963,24 @@ def test_prompt_merges_a_revision_on_the_whole_move():
     assert "ON CREATE SET v.written_at = timestamp()" in text
 
 
-def test_prompt_counts_a_test_once_per_run_and_only_the_guard_sets_last_run_id():
+def test_prompt_counts_a_test_once_per_run_in_one_command():
+    """Update, count and last_run_id in ONE command (#3395 follow-up, Orion Q1):
+    attention_schema, consult, atlas and value read last_run_id as "this run
+    tested it", so the count must move in the same write or they split."""
     text = _taught()
-    assert 'WHERE coalesce(p.last_counted_run_id, "") <> "<RUN_ID>"' in text
-    assert "p.times_tested = coalesce(p.times_tested, 0) + 1" in text
+    assert "last_counted_run_id" not in text
     assert "p.times_tested = p.times_tested + 1" not in text
-    # The update still stamps last_run_id (value.py / corrections.py attribute a
-    # move by it); only the count guard's own property must stay out of it.
     lines = text.splitlines()
-    at = next(i for i, line in enumerate(lines) if 'SET p.status = "revised"' in line)
-    update = " ".join(lines[at:at + 2])
-    assert 'p.last_run_id = "<RUN_ID>"' in update and "last_counted_run_id" not in update
+    at = next(i for i, line in enumerate(lines) if 'MATCH (p:Prior {prior_id: "..."}) SET' in line)
+    cmd = " ".join(lines[at:at + 3])
+    assert 'CASE WHEN coalesce(p.last_run_id, "") <> "<RUN_ID>" THEN 1 ELSE 0 END' in cmd
+    assert 'p.last_run_id = "<RUN_ID>"' in cmd and "p.confidence" in cmd
     assert "counts RUNS" in text
+
+
+def test_prompt_forbids_empty_or_placeholder_ids_and_explains_partial_batches():
+    text = _taught()
+    assert "AN ID IS NEVER EMPTY AND NEVER A PLACEHOLDER" in text
+    assert "<RUN_ID>-why-x-fails" in text
+    assert "read the output, not the exit code" in text
+    assert "unique constraint violation on node of type Prior" in text

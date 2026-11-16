@@ -175,3 +175,19 @@ change each one made:
    (`gh issue list --search contradiction`). The comment at the delete site, the retired
    signal types (removed from `FrontierInvocationSignalTypeV1`), and a test that they stay
    out of the contract constrain the next one: it must ship its own consumer and test.
+
+**Follow-ups (2026-11-16):** Hub's `/api/substrate/hotspots` no longer serializes an empty
+`contradiction_hotspots` slice; it says the store cannot hold them. Deferred tickets:
+#3544 (contradiction node kind: producer or retire the region query), #3545 (tick failure
+has no dead-man signal), #3542 (signals organ `graph_cognition` declares 3 kinds nothing
+produces; not this package, needs Juniper).
+
+**Signals organ (Orion's PR question 1):** the `graph_cognition` organ id in
+`orion/signals/registry.py` is historical; its one live signal, `repair_pressure`, comes from
+`orion/substrate/appraisal`. This PR retires the three kinds nothing produced
+(`metacog_perception`, `coherence_state`, `goal_pressure`), their dimensions, and the stub
+`GraphCognitionAdapter` (constant 0.5, no channel matched it), and comments the name. #3542
+is closed by this. Baseline for the real #3393 symptom, re-runnable:
+`python3 scripts/analysis/curiosity_target_return_days.py --days 30` (2026-11-16: 2,764
+targets, 70 on 2+ days, 97.5% one day only, 949 world-reading targets, 48 of them on 2+
+UTC days, every candidate subject_ref entity:orion).

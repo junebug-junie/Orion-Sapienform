@@ -161,7 +161,7 @@ def consult_outcomes_section(rows: Sequence[Mapping[str, Any]]) -> list[str]:
             lines += [
                 f"     Answered by you and Claude: {_quote(row.get('answer'), 600)}",
                 "     This is evidence about the claim. Test the prior it bears on with the testing "
-                "commands under WRITING TO YOUR OWN GRAPH (the once-per-run times_tested count, a "
+                "command under WRITING TO YOUR OWN GRAPH (it counts the test once per run, a "
                 ":PriorRevision if the confidence moves), and join the finding with SUPPORTS or CONTRADICTS.",
             ]
         else:

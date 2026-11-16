@@ -46,16 +46,15 @@ def rollback_commands(graph: str = "orion_worldview", container: str = LIVE_CONT
 
 
 # One taught batch (orion/curiosity/kickoff_prompt.py), RUN_ID substituted: a new
-# prior, a test of an old prior (update + once-per-run count), two different
+# prior, a test of an old prior (one SET that updates and counts once per run), two different
 # revisions of one prior in the same run, a finding and its edge.
 def taught_batch(run_id: str) -> list[str]:
     return [
         f'MERGE (p:Prior {{prior_id: "new-claim"}}) ON CREATE SET p.claim = "c", p.confidence = 0.55, '
         f'p.status = "open", p.times_tested = 0, p.run_id = "{run_id}"',
-        f'MATCH (p:Prior {{prior_id: "old-claim"}}) SET p.status = "revised", p.confidence = 0.75, '
-        f'p.last_tested_at = "t", p.last_run_id = "{run_id}"',
-        f'MATCH (p:Prior {{prior_id: "old-claim"}}) WHERE coalesce(p.last_counted_run_id, "") <> "{run_id}" '
-        f'SET p.times_tested = coalesce(p.times_tested, 0) + 1, p.last_counted_run_id = "{run_id}"',
+        f'MATCH (p:Prior {{prior_id: "old-claim"}}) SET p.times_tested = coalesce(p.times_tested, 0) + '
+        f'CASE WHEN coalesce(p.last_run_id, "") <> "{run_id}" THEN 1 ELSE 0 END, '
+        f'p.status = "revised", p.confidence = 0.75, p.last_tested_at = "t", p.last_run_id = "{run_id}"',
         f'MERGE (v:PriorRevision {{prior_id: "old-claim", run_id: "{run_id}", from_confidence: 0.92, '
         'to_confidence: 0.9, from_status: "open", to_status: "revised"}) ON CREATE SET v.written_at = timestamp()',
         f'MERGE (v:PriorRevision {{prior_id: "old-claim", run_id: "{run_id}", from_confidence: 0.9, '
@@ -109,15 +108,25 @@ def scratch(image: str | None) -> int:
         # 1. Replay the taught batch twice.
         g = "replay"
         cli.run("GRAPH.QUERY", g, 'CREATE (:Prior {prior_id: "old-claim", confidence: 0.92, status: "open", '
-                'times_tested: 2})', check=True)  # no last_counted_run_id: the coalesce case
-        seen = []
+                'times_tested: 2})', check=True)  # no last_run_id: the coalesce case
+        seen, finding_created = [], []
         for _ in range(2):
             for cmd in taught_batch("aaaaaaaaaaaa"):
-                cli.run("GRAPH.QUERY", g, cmd, check=True)
+                out = cli.run("GRAPH.QUERY", g, cmd, check=True)[1]
+                if cmd.startswith("MERGE (f:Finding"):
+                    finding_created.append("Nodes created: 1" in out)
             seen.append(counts(cli, g))
             print("after batch:", seen[-1])
         # Same graph after the replay; the id-less-last_run_id prior moved 2 -> 3 once.
         ok &= seen[0] == seen[1] and "times_tested=['3']" in seen[1] and "PriorRevision:2" in seen[1]
+        # Created vs matched, not just "no duplicate": batch 1 creates the finding, batch 2 matches it.
+        print("finding MERGE created per batch:", finding_created)
+        ok &= finding_created == [True, False]
+        # The dangerous fold: a NEW finding sent under an existing id creates nothing and keeps the old text.
+        out = cli.run("GRAPH.QUERY", g, 'MERGE (f:Finding {finding_id: "f-1"}) ON CREATE SET f.text = "new claim"')[1]
+        kept = cli.scalar_rows(g, 'MATCH (f:Finding {finding_id: "f-1"}) RETURN f.text')[1:]
+        print(f"new finding under an existing id: created={'Nodes created' in out}, text now={kept}")
+        ok &= "Nodes created" not in out and kept == ["t"]
         # 2. Unique rule over a graph holding an id-less Prior.
         g = "rule"
         cli.run("GRAPH.QUERY", g, 'CREATE (:Prior {prior_id: "a"}), (:Prior {name: "no-id"}), (:Prior {prior_id: "b"})',
@@ -142,6 +151,19 @@ def scratch(image: str | None) -> int:
         merge = cli.run("GRAPH.QUERY", g, 'MERGE (p:Prior {prior_id: "a"}) ON CREATE SET p.claim = "x"')[1]
         ok &= "Nodes created" not in merge
         print("MERGE on existing id: no node created" if "Nodes created" not in merge else f"MERGE: {merge}")
+        # 3. Hazards the prompt now teaches around (Orion's Q9, Q10).
+        for _ in range(2):
+            cli.run("GRAPH.QUERY", g, 'MERGE (f:Finding {finding_id: ""}) ON CREATE SET f.text = "t"')
+        fused = cli.scalar_rows(g, 'MATCH (f:Finding {finding_id: ""}) RETURN toString(count(f))')[1:]
+        print("empty finding_id MERGE x2 -> nodes:", fused, "(one node: empty ids fuse)")
+        ok &= fused == ["1"]
+        null = cli.run("GRAPH.QUERY", g, 'MERGE (f:Finding {finding_id: null}) ON CREATE SET f.text = "t"')[1]
+        print("null finding_id MERGE:", null.splitlines()[0])
+        ok &= "null" in null.lower()
+        rc, part = cli.run("GRAPH.QUERY", g, 'CREATE (:Marker {m: 1}) CREATE (:Prior {prior_id: "a"})')
+        markers = cli.scalar_rows(g, "MATCH (m:Marker) RETURN toString(count(m))")[1:]
+        print(f"one query, write then violation: redis-cli rc={rc}, earlier write kept={markers}")
+        ok &= markers == ["0"]
         print("final priors:", cli.scalar_rows(g, "MATCH (p:Prior) RETURN coalesce(p.prior_id, '(none:' + p.name + ')') "
                                                   "ORDER BY 1")[1:])
     finally:
@@ -156,11 +178,14 @@ def preflight(container: str, graph: str) -> int:
                                   "WHERE c > 1 RETURN id")[1:]
     idless = cli.scalar_rows(graph, f"MATCH (p:{LABEL}) WHERE p.{PROP} IS NULL RETURN toString(id(p))")[1:]
     cons = cli.scalar_rows(graph, "CALL db.constraints() YIELD label, properties, status "
-                                  "RETURN label + ' ' + toString(properties) + ' ' + status")[1:]
+                                  "RETURN label + ' ' + properties[0] + ' ' + status")[1:]
     print(f"duplicate {PROP}s: {len(dups)} {dups[:10]}")
     print(f"{LABEL} nodes with no {PROP} (not held to the rule): {len(idless)} node ids {idless[:10]}")
     print(f"constraints: {cons or 'none'}")
-    return 1 if dups else 0
+    stuck = [c for c in cons if not c.endswith("OPERATIONAL")]
+    if stuck:
+        print(f"NOT OPERATIONAL (UNDER CONSTRUCTION or FAILED): {stuck}")
+    return 1 if dups or stuck else 0
 
 
 def main(argv: list[str] | None = None) -> int:

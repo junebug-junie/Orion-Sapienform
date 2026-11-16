@@ -567,18 +567,18 @@ def newest_answer_per_question(
     curiosity prompt's rule: the newest answer of any kind, because that is the
     node a new answer revises. `require_evidence=True` is the rule everywhere
     else (reading resonance; the mirror and its readers already skip
-    evidence-less drafts): the newest answer WITH evidence, else the newest of
-    any kind, so a question with only drafts still has one. History readers
-    (novelty corpus, run story, footprint) must not call this."""
+    evidence-less drafts): the newest answer WITH evidence. A question whose
+    answers are all drafts has no current answer there -- the same as chat,
+    which reads the mirror and sees nothing for it (Juniper, 2026-11-16: an
+    answer with no evidence does not count as current outside the curiosity
+    prompt). History readers (novelty corpus, run story, footprint) must not
+    call this."""
     ordered = sorted(answers, key=lambda a: (a.written_at or 0, a.run_id), reverse=True)
     out: dict[str, LivedAnswer] = {}
     for answer in ordered:
+        if require_evidence and not answer.evidence:
+            continue
         out.setdefault(answer.question_id, answer)
-    if require_evidence:
-        for answer in ordered:
-            current = out[answer.question_id]
-            if answer.evidence and not current.evidence:
-                out[answer.question_id] = answer
     return out
 
 

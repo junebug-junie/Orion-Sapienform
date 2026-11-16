@@ -186,10 +186,29 @@ rule. I recommend that Orion makes them in a curiosity run, from a short note in
     FalkorDB restart at 11-16 09:11Z. The live write still waits for Juniper:
     `python3 scripts/worldview_prior_unique_rule.py commands` prints it.
 
-**Built change after code review (2026-11-16):** the count guard uses its own property,
-`last_counted_run_id`, not `last_run_id`. The update command keeps setting
-`last_run_id`, because `orion/curiosity/value.py:286-288` and
-`orion/orion_day/corrections.py:258` attribute a move to a run by it. With the guard on
-`last_run_id`, a run that sent the update but skipped the count would have its move
-scored as "not this run" instead of as protocol drift. The "two traps" above still hold,
-with `last_counted_run_id` in place of `last_run_id`.
+**Built change after Orion's follow-ups (2026-11-16, turn `26e2cb9b125e`):** the test is
+ONE command. `times_tested`, `last_run_id` and the update move together:
+
+```cypher
+MATCH (p:Prior {prior_id: "..."}) SET
+  p.times_tested = coalesce(p.times_tested, 0) + CASE WHEN coalesce(p.last_run_id, "") <> "<RUN_ID>" THEN 1 ELSE 0 END,
+  p.status = "revised", p.confidence = 0.72, p.last_tested_at = "<iso>", p.last_run_id = "<RUN_ID>"
+```
+
+FalkorDB evaluates the CASE against the values before the SET (tested both orders on the
+scratch graph). A split guard (first `last_run_id`, then a separate `last_counted_run_id`)
+let "tested" in attention_schema / consult / atlas / value disagree with `times_tested`.
+The prompt also now forbids empty or placeholder ids (an empty `finding_id` MERGE fuses
+every such finding into one node; a null one errors) and says what a failed command means
+(one command is all or nothing, earlier commands stand, redis-cli exits 0 on the error).
+The live rule was applied by the operator on 2026-11-16: preflight 0 duplicates, status
+PENDING then OPERATIONAL (proof on #3395). `preflight` now exits 1 on a rule that is not
+OPERATIONAL. Deferred: #3543 (:Hop and :TurnOutcome are still CREATE).
+
+**Repairs, revised (Orion's PR questions, 2026-11-16):** keep the 2 true-duplicate
+PriorRevision rows. They are the only evidence the double count happened, the rule and the
+MERGE stop the next one, and `collapse_duplicate_priors` already contains the read. Node
+3208's missing `prior_id` is a production write and waits for Juniper: #3546. A new finding
+sent under an existing id folds silently (scratch-tested: created 0, old text kept); a
+Finding unique rule would not catch a MERGE, so detection is #3547. The scratch replay now
+asserts created-vs-matched for the Finding MERGE (`[True, False]` across the two batches).

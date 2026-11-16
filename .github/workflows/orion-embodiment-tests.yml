@@ -12,6 +12,9 @@ on:
       - 'orion/self_monitor/view.py'
       - 'orion/self_monitor/adapters.py'
       - 'orion/grammar/acts.py'
+      - 'orion/physiology/run_cap_override.py'
+      - 'orion/schemas/physiology_run_cap.py'
+      - 'config/physiology/run_cap_overrides.yaml'
       - '.github/workflows/orion-embodiment-tests.yml'
   workflow_dispatch:
 permissions:

@@ -410,6 +410,7 @@ class EffectTable:
     grain_min: int
     n_perm: int = N_PERM
     _cache: dict[str, list[EffectRow]] = field(default_factory=dict)
+    _run_cache: dict[tuple, tuple] = field(default_factory=dict)
 
     def rows_for(self, experiment_id: str) -> list[EffectRow]:
         from app.causal import CausalError
@@ -435,10 +436,41 @@ class EffectTable:
         self._cache[experiment_id] = rows
         return rows
 
+    def runs(self, exps: Sequence[Mapping[str, Any]]) -> dict[tuple[str, str], list[Mapping[str, Any]]]:
+        """Event-start experiments (one per night) grouped into their runs: (action, run_id) -> nights."""
+        out: dict[tuple[str, str], list] = {}
+        for e in exps:
+            if is_event_experiment(e):
+                out.setdefault((str(e["action"]), str(e["design"].get("run_id"))), []).append(e)
+        return out
+
+    def rows_for_run(self, nights: Sequence[Mapping[str, Any]]) -> tuple[list[EffectRow], dict]:
+        """Every target (Family A readings + lane costs) for one run of nights, pooled as strata."""
+        key = tuple(sorted(str(e["experiment_id"]) for e in nights))
+        hit = self._run_cache.get(key)
+        if hit is not None:
+            return hit
+        per_night = []
+        for e in nights:
+            logged = self.store.interventions(experiment_id=str(e["experiment_id"]), limit=1000)
+            per_night.append((e, event_blocks(e, logged)))
+        out = event_run_rows(per_night, self.loader, self.store, self.units, self.grain_min, self.n_perm)
+        self._run_cache[key] = out
+        return out
+
     def build(self) -> dict:
         exps = self.store.experiments(status="analyzed")
         per, errors = [], {}
+        runs = self.runs(exps)
+        for (_action, run_id), nights in runs.items():
+            try:
+                rows, _manip = self.rows_for_run(nights)
+                per.extend(rows)
+            except Exception as exc:  # noqa: BLE001 -- one bad run is reported, not fatal
+                errors[f"run:{run_id}"] = f"{type(exc).__name__}: {exc}"[:300]
         for e in exps:
+            if is_event_experiment(e):
+                continue
             eid = str(e["experiment_id"])
             try:
                 per.extend(self.rows_for(eid))
@@ -451,3 +483,227 @@ class EffectTable:
                 "rows": [r.as_dict() for r in pooled],
                 "note": ("Rows come only from randomised switchback experiments. One experiment measured many "
                          "readings: expect about 1 in 20 rows to show p <= 0.05 by chance alone.")}
+
+
+# --------------------------------------------------------------------------------------------
+# Experiment 1 (design 2026-11-16): event-start blocks, one experiment per night, lane-cost targets
+# --------------------------------------------------------------------------------------------
+#
+# A night's experiment row (``prediction_experiment``) has ``design.kind = event_switchback``: the night's
+# seeded arm sequence (``arms``), the hold length, the outcome window and the run it belongs to. Blocks are
+# not on a clock: each starts when the town's start gate opens. Logged rows (``prediction_intervention``):
+#   * one row per decision, written BEFORE the key changes: arm on/off, [start, start + hold), notes
+#     {block_index, ...};
+#   * one ``block_check`` row (arm NULL) per block once its outcome window is over: notes {block_check,
+#     manual_session, ...} -- a manual (Juniper) session in the window excludes the block from the primary
+#     analysis;
+#   * refusal and abort rows (arm NULL), never analysed.
+# The run's nights are analysed together as strata (``causal.analyze_stratified_switchback``) with the
+# restricted permutation redrawn from each night's own design.
+
+EVENT_KIND = "event_switchback"
+TIER1_LEASE = ("cortex-exec", "metacog", "system")       # holder, work class, priority: tier-1-class calls on fast
+TOWN_NPC_LEASE = ("http:openai", "background")          # holder, priority: the town's NPC dialogue
+LANE_TARGETS: dict[str, str] = {
+    "lane.fast.tier1_hold_s": "s",       # primary lane cost: mean hold of tier-1-class leases started in the window
+    "lane.fast.grant_wait_s": "s",       # mean grant wait of every non-town lease on fast
+    "lane.fast.grant_wait_p95_s": "s",   # its p95
+    "lane.kev.latency_ms_p50": "ms",     # Kev's median appraisal latency (secondary, noisy)
+}
+
+
+def is_event_experiment(exp: Mapping[str, Any]) -> bool:
+    return (exp.get("design") or {}).get("kind") == EVENT_KIND
+
+
+def _notes(row: Mapping[str, Any]) -> dict:
+    import json
+
+    raw = row.get("notes")
+    if isinstance(raw, dict):
+        return raw
+    try:
+        v = json.loads(raw or "{}")
+        return v if isinstance(v, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def event_blocks(exp: Mapping[str, Any], logged: Sequence[Mapping[str, Any]]) -> list[dict]:
+    """The night's blocks as run, checked against its design: each arm row's ``block_index`` must be the next
+    index of the seeded sequence and carry that index's arm. Raises CausalError otherwise."""
+    from app.causal import CausalError
+
+    design = exp["design"]
+    arms = list(design["arms"])
+    win0, win1 = (int(x) for x in design["window_min"])
+    checks = {int(n["block_check"]): n for n in (_notes(r) for r in logged if not r.get("arm"))
+              if isinstance(n.get("block_check"), int)}
+    out, bad = [], []
+    rows = sorted((r for r in logged if r.get("arm")), key=lambda r: pd.Timestamp(r["started_at"]))
+    for expect, r in enumerate(rows):
+        n = _notes(r)
+        idx = n.get("block_index")
+        if r["action"] != exp["action"]:
+            bad.append(f"{r.get('intervention_id')}: action {r['action']} != {exp['action']}")
+        elif idx != expect or idx >= len(arms):
+            bad.append(f"{r.get('intervention_id')}: block_index {idx}, expected {expect}")
+        elif r["arm"] != arms[idx]:
+            bad.append(f"{r.get('intervention_id')}: logged arm {r['arm']} but the design says {arms[idx]}")
+        else:
+            s0 = pd.Timestamp(r["started_at"])
+            chk = checks.get(idx) or {}
+            out.append({"stratum": str(exp["experiment_id"]), "seq": idx, "arm": r["arm"],
+                        "start": s0.isoformat(), "window_start": (s0 + pd.Timedelta(minutes=win0)).isoformat(),
+                        "window_end": (s0 + pd.Timedelta(minutes=win1)).isoformat(),
+                        "checked": bool(chk), "manual_session": bool(chk.get("manual_session"))})
+    if bad:
+        raise CausalError("logged blocks do not follow the night's randomised sequence: " + "; ".join(bad[:5]))
+    return out
+
+
+def lane_outcomes(leases: Sequence[Mapping[str, Any]], kev: Sequence[tuple[datetime, float]],
+                  w0: pd.Timestamp, w1: pd.Timestamp) -> dict[str, float | None]:
+    """The lane-cost targets for one window [w0, w1). None: nothing to measure in it (never 0)."""
+    def within(t):
+        return t is not None and w0 <= pd.Timestamp(t) < w1
+
+    holds = [(pd.Timestamp(r["updated_at"]) - pd.Timestamp(r["granted_at"])).total_seconds() for r in leases
+             if (r["holder"], r["work_class"], r["priority"]) == TIER1_LEASE and r.get("status") == "released"
+             and within(r.get("granted_at")) and r.get("updated_at") is not None]
+    waits = [(pd.Timestamp(r["granted_at"]) - pd.Timestamp(r["queued_since"])).total_seconds() for r in leases
+             if (r["holder"], r["priority"]) != TOWN_NPC_LEASE and r.get("granted_at") is not None
+             and r.get("queued_since") is not None and within(r.get("queued_since"))]
+    lat = [v for t, v in kev if within(t) and v is not None and math.isfinite(v)]
+    return {"lane.fast.tier1_hold_s": float(np.mean(holds)) if holds else None,
+            "lane.fast.grant_wait_s": float(np.mean(waits)) if waits else None,
+            "lane.fast.grant_wait_p95_s": float(np.quantile(waits, 0.95)) if waits else None,
+            "lane.kev.latency_ms_p50": float(np.median(lat)) if lat else None}
+
+
+def manipulation_block(acts: Sequence[Mapping[str, Any]], leases: Sequence[Mapping[str, Any]],
+                       start: pd.Timestamp, w0: pd.Timestamp, w1: pd.Timestamp, hold_end: pd.Timestamp) -> dict:
+    """From the act ledger and the pool, not from the runner's state: town session-seconds in the window,
+    sessions STARTED inside the hold [start, hold_end) (an OFF block with one is contaminated), NPC leases."""
+    secs = 0.0
+    started = 0
+    for a in acts:
+        o = pd.Timestamp(a["opened_at"])
+        c = pd.Timestamp(a["closed_at"]) if a.get("closed_at") is not None else w1
+        secs += max(0.0, (min(c, w1) - max(o, w0)).total_seconds())
+        started += start <= o < hold_end
+    npc = sum(1 for r in leases if (r["holder"], r["priority"]) == TOWN_NPC_LEASE
+              and r.get("granted_at") is not None and w0 <= pd.Timestamp(r["granted_at"]) < w1)
+    return {"session_s": secs, "sessions_started_in_hold": started, "npc_leases": npc}
+
+
+def _welch(on: Sequence[float], off: Sequence[float]) -> dict:
+    from scipy import stats
+
+    if len(on) < 2 or len(off) < 2:
+        return {"diff": (float(np.mean(on)) - float(np.mean(off))) if on and off else None, "ci_lo": None, "ci_hi": None}
+    a, b = np.asarray(on, float), np.asarray(off, float)
+    va, vb = a.var(ddof=1) / len(a), b.var(ddof=1) / len(b)
+    se = math.sqrt(va + vb)
+    diff = float(a.mean() - b.mean())
+    if se == 0:
+        return {"diff": diff, "ci_lo": diff, "ci_hi": diff}
+    dof = (va + vb) ** 2 / ((va ** 2) / (len(a) - 1) + (vb ** 2) / (len(b) - 1))
+    t = float(stats.t.ppf(0.975, dof))
+    return {"diff": diff, "ci_lo": diff - t * se, "ci_hi": diff + t * se}
+
+
+def manipulation_summary(blocks: Sequence[Mapping[str, Any]]) -> dict:
+    """The manipulation check over a run: ON minus OFF session-seconds (95 % interval must exclude 0), every
+    OFF block free of a session started inside its hold, and the ITT share of ON blocks where none ran."""
+    on = [b["manip"]["session_s"] for b in blocks if b["arm"] == "on"]
+    off = [b["manip"]["session_s"] for b in blocks if b["arm"] == "off"]
+    leaks = [f"{b['stratum']}#{b['seq']}" for b in blocks if b["arm"] == "off" and b["manip"]["sessions_started_in_hold"]]
+    w = _welch(on, off)
+    passed = (not leaks and w["ci_lo"] is not None and w["ci_lo"] > 0)
+    return {"verdict": "contaminated" if leaks else ("passed" if passed else "not_shown"),
+            "session_s_on_minus_off": w, "off_blocks_with_a_session_started": leaks,
+            "on_blocks_with_no_session": sum(1 for x in on if x <= 0), "n_on": len(on), "n_off": len(off),
+            "manual_blocks_excluded": sum(1 for b in blocks if b.get("manual_session"))}
+
+
+def _redraw(per_night: Sequence[tuple[Mapping[str, Any], list]]):
+    from app.causal import draw_arm_sequence
+
+    shape = {str(e["experiment_id"]): (len(e["design"]["arms"]), int(e["design"]["max_off_run"])) for e, _ in per_night}
+
+    def redraw(stratum, rng):
+        n, m = shape[stratum]
+        return draw_arm_sequence(n, m, rng)
+
+    return redraw
+
+
+def event_run_rows(per_night: Sequence[tuple[Mapping[str, Any], list]], loader: Loader, store: Any,
+                   units: Mapping[str, str], grain_min: int, n_perm: int = N_PERM) -> tuple[list[EffectRow], dict]:
+    """One row per target for a run of nights: Family A readings (time-of-day adjusted grain means in each
+    block's window) and the lane costs (from the leases and Kev rows in the window). Blocks with a manual
+    session in the window are left out of the primary estimate (reported in the manipulation summary)."""
+    from app.causal import analyze_stratified_switchback
+
+    blocks = [b for _e, bs in per_night for b in bs]
+    if not blocks:
+        raise ValueError("no blocks")
+    design = per_night[0][0]["design"]
+    win0, win1 = (int(x) for x in design["window_min"])
+    hold = int(design["hold_min"])
+    ids = tuple(sorted(str(e["experiment_id"]) for e, _ in per_night))
+    action = str(per_night[0][0]["action"])
+    first = min(pd.Timestamp(b["start"]) for b in blocks)
+    last = max(pd.Timestamp(b["start"]) for b in blocks) + pd.Timedelta(minutes=max(hold, win1))
+    grain = f"{grain_min}min"
+    f0, f1 = (first - pd.Timedelta(days=PROFILE_DAYS)).floor(grain), last.ceil(grain)
+    frame, _ = loader(f0.to_pydatetime(), f1.to_pydatetime())
+
+    # Lane and act rows, one read per night.
+    for e, bs in per_night:
+        if not bs:
+            continue
+        n0 = min(pd.Timestamp(b["start"]) for b in bs)
+        n1 = max(pd.Timestamp(b["start"]) for b in bs) + pd.Timedelta(minutes=max(hold, win1))
+        leases = store.lane_leases(n0.to_pydatetime(), n1.to_pydatetime())
+        kev = store.kev_latencies(n0.to_pydatetime(), n1.to_pydatetime())
+        acts = store.town_acts(n0.to_pydatetime(), n1.to_pydatetime())
+        for b in bs:
+            s0 = pd.Timestamp(b["start"])
+            w0, w1 = pd.Timestamp(b["window_start"]), pd.Timestamp(b["window_end"])
+            b["lane"] = lane_outcomes(leases, kev, w0, w1)
+            b["manip"] = manipulation_block(acts, leases, s0, w0, w1, s0 + pd.Timedelta(minutes=hold))
+
+    manip = manipulation_summary(blocks)
+    primary = [b for b in blocks if not b.get("manual_session")]
+    redraw = _redraw(per_night)
+
+    def row(target: str, unit: str | None, values: dict, profile_adjusted: bool) -> EffectRow:
+        est = analyze_stratified_switchback([{**b, "value": values.get((b["stratum"], b["seq"]))} for b in primary],
+                                            redraw, n_perm=n_perm, seed=0)
+        d = est.details
+        return EffectRow(actuator=action, target=target, unit=unit, window_start_min=win0, window_end_min=win1,
+                         method=METHOD_RANDOMISED, estimate=est.effect, ci_lo=est.ci_lo, ci_hi=est.ci_hi,
+                         se=d.get("se"), n_on=int(d.get("n_on") or 0), n_off=int(d.get("n_off") or 0),
+                         p_value=est.p_value, experiment_ids=ids, reason=d.get("reason"),
+                         profile_adjusted=profile_adjusted)
+
+    rows: list[EffectRow] = []
+    for target in frame.columns:
+        col = frame[target].astype(float)
+        hist = col[(col.index >= f0) & (col.index < first)]
+        span = col[(col.index >= first) & (col.index < last)]
+        profile = _profile_for(hist, span, grain_min)
+        adj = span
+        if profile is not None:
+            tod = (span.index.hour * 60 + span.index.minute) // grain_min * grain_min
+            adj = span - profile.reindex(tod).to_numpy()
+        values = {}
+        for b in primary:
+            w = adj[(adj.index >= pd.Timestamp(b["window_start"])) & (adj.index < pd.Timestamp(b["window_end"]))].dropna()
+            values[(b["stratum"], b["seq"])] = float(w.mean()) if len(w) else None
+        rows.append(row(str(target), units.get(target), values, profile is not None))
+    for target, unit in LANE_TARGETS.items():
+        rows.append(row(target, unit, {(b["stratum"], b["seq"]): b["lane"][target] for b in primary}, False))
+    return rows, {"manipulation": manip, "blocks": [{k: v for k, v in b.items()} for b in blocks]}

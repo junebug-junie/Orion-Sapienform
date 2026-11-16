@@ -57,6 +57,10 @@ LUA_RELEASE = ("if redis.call('get', KEYS[1]) == ARGV[1] then "
                "return redis.call('del', KEYS[1]) else return 0 end")
 OVERRIDE_PREFIX = "orion:vision:experiment:"   # read by orion-vision-frame-router app/expectation.py
 ACTION_RE = re.compile(r"^vision\.focus:([a-z0-9_-]{1,40})$")
+RUN_CAP_RE = re.compile(r"^run_cap:([a-z0-9_.-]{1,120})$")   # app/town_hold.py (Family C Experiment 1)
+# The town-hold run's schedule (app/town_hold.py). Defined here so this module never imports town_hold: a
+# vision.focus run is refused while a town-hold run is scheduled (two experiments would confound each other).
+TOWN_HOLD_SCHEDULE_KEY = "orion:prediction:experiment:town_hold:schedule"
 READING_MAX_AGE = timedelta(minutes=10)
 ALIGN_MIN = 5   # blocks start on a 5-min grain boundary so buckets never straddle two arms
 
@@ -80,6 +84,16 @@ class _Abort(Exception):
 
 def override_key(stream_id: str) -> str:
     return f"{OVERRIDE_PREFIX}{stream_id}"
+
+
+def override_key_for(action: str) -> str:
+    """The Redis key an action's ON (vision.focus) or OFF (run_cap) arm holds. CausalError for any other."""
+    m = RUN_CAP_RE.match(action or "")
+    if m:
+        from orion.schemas.physiology_run_cap import run_cap_key
+
+        return run_cap_key(m.group(1))
+    return override_key(stream_of(action))
 
 
 def stream_of(action: str) -> str:
@@ -187,6 +201,8 @@ class ExperimentRunner:
                                      "check the stream id (an unknown stream would make every ON block a no-op)")
         if await self.redis.get(ACTIVE_KEY):
             raise RunnerRefused(409, f"{ACTIVE_KEY} names an unfinished run; restart the service to recover it")
+        if await self.redis.get(TOWN_HOLD_SCHEDULE_KEY):
+            raise RunnerRefused(409, "a town-hold experiment run is scheduled (POST /experiments/town-hold/abort ends it)")
         token = f"starting-{id(self)}-{self.clock().timestamp()}"
         if not await self.redis.set(LOCK_KEY, token, nx=True, ex=self.lock_ttl):
             holder = await self.redis.get(LOCK_KEY)
@@ -457,10 +473,13 @@ async def recover(effects: Any, redis: Any, to_thread=asyncio.to_thread) -> list
         if exp is None or exp["status"] != "designed":
             continue
         mine = await to_thread(effects.store.interventions, None, eid, 1000)
-        if sum(1 for r in mine if r.get("arm")) >= exp["design"]["n_blocks"]:
+        event_night = (exp.get("design") or {}).get("kind") == "event_switchback"
+        if not event_night and sum(1 for r in mine if r.get("arm")) >= exp["design"]["n_blocks"]:
             continue   # every block ran; only the analysis is missing (POST /experiments/{id}/analyze)
+        # A town-hold night still 'designed' was interrupted (the runner sets its final status at the night's
+        # end): cancelled, one night lost. Its schedule resumes from the next night (TownHoldRunner.resume).
         try:
-            await ExperimentRunner._safe(redis.delete(override_key(stream_of(exp["action"]))))
+            await ExperimentRunner._safe(redis.delete(override_key_for(exp["action"])))
         except CausalError:
             pass
         now = effects.engine.clock()

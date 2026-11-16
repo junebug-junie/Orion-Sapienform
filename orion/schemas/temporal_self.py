@@ -113,6 +113,10 @@ TemporalSourceKind = Literal[
     "prediction_surprise",
     # one Prime thought: a closed prime/infer act on the act ledger, its outcome note as label
     "prime_thought",
+    # one finished randomised experiment run (orion-prediction prediction_effect_estimate, estimator
+    # family_c_pooled_run): "I held my town sessions to see what they cost: GPU3 +x W, tier-1 +y s"
+    # (Family C Experiment 1, docs/superpowers/specs/2026-11-16-family-c-first-experiment-economy-native.md)
+    "experiment_result",
 ]
 
 ArcKind = Literal[

@@ -255,6 +255,41 @@ class PostgresStore:
         args.append(limit + 1)
         return [r["ts"] for r in self._read_only(sql, args, EVENT_READ_TIMEOUT_MS)]
 
+    # --- Family C Experiment 1: the fast lane, Kev and the town (read-only; other services write these) ------
+    # Lane: role 'fast', or a QUEUED lease not yet placed whose work class is served first by fast
+    # (config/gpu_pool.yaml classes: fast, metacog). Test: tests/test_town_hold.py pins the class list.
+    FAST_LANE_SQL = "(role = 'fast' OR (role IS NULL AND work_class IN ('fast', 'metacog')))"
+
+    def queued_fast_leases(self, older_than_sec: float, priorities: Sequence[str]) -> int:
+        """Leases on the fast lane still queued for more than ``older_than_sec`` at one of ``priorities``."""
+        rows = self._read_only(
+            f"SELECT count(*) AS n FROM gpu_pool_leases WHERE status = 'queued' AND {self.FAST_LANE_SQL} "
+            "AND priority = ANY(%s) AND queued_since < now() - make_interval(secs => %s)",
+            [list(priorities), float(older_than_sec)], EVENT_READ_TIMEOUT_MS)
+        return int(rows[0]["n"]) if rows else 0
+
+    def lane_leases(self, since: datetime, until: datetime) -> list[dict]:
+        """Fast-lane leases queued or granted in [since, until): holder, class, priority, status and times."""
+        return self._read_only(
+            "SELECT holder, work_class, priority, status, queued_since, granted_at, updated_at FROM gpu_pool_leases "
+            f"WHERE {self.FAST_LANE_SQL} AND coalesce(queued_since, granted_at, created_at) >= %s "
+            "AND coalesce(queued_since, granted_at, created_at) < %s", [since, until], EVENT_READ_TIMEOUT_MS)
+
+    def kev_latencies(self, since: datetime, until: datetime) -> list[tuple[datetime, float]]:
+        """Kev's (System One appraisal) per-appraisal latency, ms, generated in [since, until)."""
+        rows = self._read_only(
+            "SELECT generated_at AS ts, (frame_json->>'latency_ms')::float AS v FROM substrate_system_one_appraisal "
+            "WHERE generated_at >= %s AND generated_at < %s AND frame_json ? 'latency_ms' ORDER BY 1",
+            [since, until], EVENT_READ_TIMEOUT_MS)
+        return [(r["ts"], r["v"]) for r in rows if r["v"] is not None]
+
+    def town_acts(self, since: datetime, until: datetime) -> list[dict]:
+        """``aitown.session`` play acts that overlap [since, until) (Orion's own town sessions)."""
+        return self._read_only(
+            "SELECT act_id, opened_at, closed_at FROM grammar_acts WHERE actor = 'aitown.session' "
+            "AND opened_at < %s AND (closed_at IS NULL OR closed_at > %s) ORDER BY opened_at",
+            [until, since], EVENT_READ_TIMEOUT_MS)
+
     # --- model runs -----------------------------------------------------------------------
     def insert_runs(self, rows: list[dict]) -> None:
         cols = ("run_id", "selection_id", "series_id", "kind", "model", "fitted_at", "train_start", "train_end",

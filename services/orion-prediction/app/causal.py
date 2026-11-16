@@ -286,3 +286,115 @@ def analyze_switchback(series: pd.Series, blocks: Sequence[dict], burn_in_min: i
     details.update({"se": se, "dof": dof, "n_on": len(on), "n_off": len(off)})
     return EffectEstimate("experimental_effect", diff, diff - t * se, diff + t * se,
                           (hits + 1) / (n_perm + 1), len(on) + len(off), details)
+
+
+# --------------------------------------------------------------------------------------------
+# 3b. event-start switchbacks, one experiment per night, analysed pooled (Family C Experiment 1)
+# --------------------------------------------------------------------------------------------
+
+def max_off_run(arms: Sequence[str]) -> int:
+    run = longest = 0
+    for a in arms:
+        run = run + 1 if a == "off" else 0
+        longest = max(longest, run)
+    return longest
+
+
+def draw_arm_sequence(n: int, max_off: int, rng: np.random.Generator, max_tries: int = 10_000) -> list[str]:
+    """A balanced on/off sequence of length ``n`` (n/2 each, n even) with no run of more than ``max_off`` OFF
+    in a row (the play floor: never more than 2 holds in a row). Rejection sampling on shuffles, so every
+    allowed sequence is equally likely; the analysis's restricted permutation redraws with this function."""
+    if n < 2 or n % 2:
+        raise CausalError("n must be even and >= 2")
+    if max_off < 1:
+        raise CausalError("max_off must be >= 1")
+    arms = np.array(["on"] * (n // 2) + ["off"] * (n // 2))
+    for _ in range(max_tries):
+        rng.shuffle(arms)
+        if max_off_run(arms) <= max_off:
+            return [str(a) for a in arms]
+    raise CausalError(f"no balanced sequence of {n} with at most {max_off} OFF in a row")
+
+
+def _cell(values: list, arms: list, arm: str) -> list[float]:
+    return [v for v, a in zip(values, arms) if a == arm and v is not None]
+
+
+def _stratified_diff(values: dict, arms: dict) -> tuple[float | None, float, int, int]:
+    """Weighted mean of per-stratum (ON mean - OFF mean), weight n_on*n_off/(n_on+n_off). A stratum with one
+    arm only carries no contrast (weight 0). Returns (estimate, sum of weights, n_on, n_off)."""
+    num = den = 0.0
+    n_on = n_off = 0
+    for s, vals in values.items():
+        on, off = _cell(vals, arms[s], "on"), _cell(vals, arms[s], "off")
+        n_on += len(on)
+        n_off += len(off)
+        if on and off:
+            w = len(on) * len(off) / (len(on) + len(off))
+            num += w * (float(np.mean(on)) - float(np.mean(off)))
+            den += w
+    return (num / den if den > 0 else None), den, n_on, n_off
+
+
+def analyze_stratified_switchback(blocks: Sequence[dict], redraw, n_perm: int = 2000,
+                                  seed: int = 0) -> EffectEstimate:
+    """ON-minus-OFF over event-start blocks from several nights, each night its own randomised experiment.
+
+    ``blocks``: {stratum, seq, arm, value}. ``seq`` is the block's position in its night's arm sequence (a
+    refused decision takes no arm). ``value`` None: not measured (kept in place for the permutation).
+    ``redraw(stratum, rng) -> list[str]``: a fresh arm sequence from that night's own design (balanced, at
+    most 2 OFF in a row); arms are reassigned by ``seq``.
+
+    Estimate: stratum-weighted mean of per-night differences (night = fixed effect, so time-of-year and
+    night-level drift cancel). SE: pooled within-cell residual variance (night x arm) over the sum of weights,
+    t interval on N - cells dof. p: the restricted permutation (the design's own randomisation redrawn), exact
+    under the sharp null whatever the restriction does to the arm pattern."""
+    from scipy import stats
+
+    by: dict = {}
+    for b in blocks:
+        by.setdefault(b["stratum"], []).append(b)
+    values, arms, seqs = {}, {}, {}
+    for s, bs in by.items():
+        bs = sorted(bs, key=lambda b: int(b["seq"]))
+        values[s] = [None if b.get("value") is None or not math.isfinite(float(b["value"])) else float(b["value"])
+                     for b in bs]
+        arms[s] = [str(b["arm"]) for b in bs]
+        seqs[s] = [int(b["seq"]) for b in bs]
+    est, wsum, n_on, n_off = _stratified_diff(values, arms)
+    details: dict = {"estimator": "stratified_switchback", "n_on": n_on, "n_off": n_off, "strata": len(by),
+                     "strata_with_contrast": sum(1 for s in by if _cell(values[s], arms[s], "on")
+                                                 and _cell(values[s], arms[s], "off"))}
+    if n_on < MIN_BLOCKS_PER_ARM or n_off < MIN_BLOCKS_PER_ARM or est is None:
+        details["reason"] = (f"need >= {MIN_BLOCKS_PER_ARM} measured blocks per arm and a night with both arms; "
+                             f"have on={n_on} off={n_off}")
+        return EffectEstimate("experimental_effect", None, None, None, None, n_on + n_off, details)
+    ss, cells = 0.0, 0
+    for s in values:
+        for arm in ("on", "off"):
+            v = _cell(values[s], arms[s], arm)
+            if v:
+                cells += 1
+                m = float(np.mean(v))
+                ss += sum((x - m) ** 2 for x in v)
+    dof = n_on + n_off - cells
+    if dof < 1:
+        details["reason"] = "no residual degrees of freedom (one block per night x arm cell)"
+        return EffectEstimate("experimental_effect", est, None, None, None, n_on + n_off, details)
+    se = math.sqrt((ss / dof) / wsum)
+    t = float(stats.t.ppf(0.975, dof))
+    rng = np.random.default_rng(seed)
+    hits = done = 0
+    for _ in range(n_perm):
+        perm = {}
+        for s in values:
+            seq_arms = redraw(s, rng)
+            perm[s] = [seq_arms[i] for i in seqs[s]]
+        e, _w, _a, _b = _stratified_diff(values, perm)
+        if e is None:
+            continue
+        done += 1
+        hits += abs(e) >= abs(est) - 1e-12
+    details.update({"se": se, "dof": dof, "n_perm": done})
+    p = (hits + 1) / (done + 1) if done else None
+    return EffectEstimate("experimental_effect", est, est - t * se, est + t * se, p, n_on + n_off, details)

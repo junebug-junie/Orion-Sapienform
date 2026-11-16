@@ -117,6 +117,7 @@ from orion.schemas.self_monitor import (
 )
 from orion.schemas.physiology import PHYSIOLOGY_STATE_KIND, PhysiologyStateV1
 from orion.schemas.physiology_want import WANT_DECISION_KIND, WANT_KIND, WantDecisionV1, WantV1
+from orion.schemas.physiology_run_cap import RUN_CAP_OVERRIDE_KIND, RunCapOverrideV1
 from orion.schemas.llm_call_usage import LLM_CALL_USAGE_KIND, LlmCallUsageV1
 from orion.schemas.physiology_report import PHYSIOLOGY_REPORT_KIND, PhysiologyReportV1
 from orion.schemas.curiosity_replica import (
@@ -1639,6 +1640,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     # (durable-runs -> sql-writer want_ledger). Both also in SCHEMA_REGISTRY.
     "WantV1": WantV1,
     "WantDecisionV1": WantDecisionV1,
+    # Family C Experiment 1 (2026-11-16): a run-cap override on one family's start gate. Redis only
+    # (orion:physiology:run_cap:<family>, always with a TTL); no channel. Also in SCHEMA_REGISTRY.
+    "RunCapOverrideV1": RunCapOverrideV1,
     # Body-economy report (2026-10-29): GET /physiology/report on durable-runs (HTTP only, no
     # channel). Readers: Hub #body-economy page, skills.physiology.state.v1. Also in SCHEMA_REGISTRY.
     "PhysiologyReportV1": PhysiologyReportV1,
@@ -2231,6 +2235,10 @@ SCHEMA_REGISTRY: Dict[str, SchemaRegistration] = {
     "WantDecisionV1": SchemaRegistration(
         model=WantDecisionV1,
         kind=WANT_DECISION_KIND,
+    ),
+    "RunCapOverrideV1": SchemaRegistration(
+        model=RunCapOverrideV1,
+        kind=RUN_CAP_OVERRIDE_KIND,
     ),
     "PhysiologyReportV1": SchemaRegistration(
         model=PhysiologyReportV1,

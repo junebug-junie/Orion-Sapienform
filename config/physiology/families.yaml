@@ -346,6 +346,17 @@ families:
     deferrable_window_s: 7200
     lanes: [fast]
     placement: fixed
+  prediction.experiment:
+    # 2026-11-16 (Juniper, #3482 comment): Family C's own experiments are a tier-2 act. One want per decision
+    # of a randomised switchback (Experiment 1: hold an AI Town session start for 40 min or not). The bid
+    # BINDS (producer orion-prediction.experiment.binding, orion/physiology/binding.py): only a funded bid
+    # runs a block; a deferral or no answer skips the decision and the town starts as usual. No lanes: the
+    # runner holds no GPU slot (an OFF block only removes load). No act-ledger actor, so hunger counts from
+    # the want's own opened_at (the previous decision). No receptors yet; Prime's slow charge needs one.
+    # deferrable_window_s 2400: one 40-min block.
+    tier: 2
+    deferrable_window_s: 2400
+    lanes: []
 
   # --- Verb families (Patch C3 follow-up, 2026-10-27). Mirrors each cortex verb's own
   # `physiology:` block (orion/cognition/verbs/*.yaml, Patch C2), so a cortex-orch dispatch bid

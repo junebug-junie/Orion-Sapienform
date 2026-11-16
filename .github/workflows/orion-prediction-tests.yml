@@ -22,6 +22,12 @@ on:
       - "orion/mood_arc/fit_encoder.py"
       - "services/orion-sql-db/manual_migration_prediction_v1.sql"
       - "services/orion-sql-db/manual_migration_prediction_bill_forecast_v1.sql"
+      - "orion/schemas/physiology_run_cap.py"
+      - "orion/schemas/physiology_want.py"
+      - "orion/physiology/client.py"
+      - "orion/physiology/binding.py"
+      - "orion/embodiment/town_sessions.py"
+      - "config/gpu_pool.yaml"
       - ".github/workflows/orion-prediction-tests.yml"
   push:
     branches: [main]
@@ -45,6 +51,12 @@ on:
       - "orion/mood_arc/fit_encoder.py"
       - "services/orion-sql-db/manual_migration_prediction_v1.sql"
       - "services/orion-sql-db/manual_migration_prediction_bill_forecast_v1.sql"
+      - "orion/schemas/physiology_run_cap.py"
+      - "orion/schemas/physiology_want.py"
+      - "orion/physiology/client.py"
+      - "orion/physiology/binding.py"
+      - "orion/embodiment/town_sessions.py"
+      - "config/gpu_pool.yaml"
       - ".github/workflows/orion-prediction-tests.yml"
 
 jobs:
@@ -67,6 +79,8 @@ jobs:
         run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py
       - name: "Family C eval (planted switchback -> effect table -> efference copy: CI covers, calm rests at 0, wrong table spikes)"
         run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_family_c_synthetic_eval.py
+      - name: "Town-hold eval (Family C Experiment 1: simulated nights through the real runner and town gate; planted effects recovered, nulls stay null, no hold leaks)"
+        run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_town_hold_synthetic_eval.py
       - name: "Heat-per-watt eval (planted slope recovered, null stays null, unseen machine reads ~0, total fit covers local + room)"
         run: cd services/orion-prediction && PYTHONPATH=../..:. python evals/run_heat_per_watt_eval.py
       - name: "Replay eval (committed real cabinet history, 40 windows as production: full zoo incl. covariates, per-horizon gate, blend never loses to baseline)"

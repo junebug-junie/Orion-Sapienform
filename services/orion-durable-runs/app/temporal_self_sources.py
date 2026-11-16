@@ -296,6 +296,14 @@ SELECT e.exceedance_id, e.series_id, e.name, e.threshold, e.window_start, e.wind
 FROM prediction_exceedance e
 WHERE e.scored_at IS NOT NULL AND e.scored_at >= %(lo)s AND e.scored_at < %(hi)s
 """, optional_table="prediction_exceedance", also_requires=("prediction_joint_surprise",)),
+    # A finished randomised experiment run (Family C, 2026-11-16): orion-prediction's ONE pooled result row per
+    # run, available at created_at. Blocks and nights are not experiences; the run's result is.
+    SourceQuery("experiment_result", """
+SELECT estimate_id, action, series_id, effect, ci_lo, ci_hi, p_value, details, created_at
+FROM prediction_effect_estimate
+WHERE claim_kind = 'experimental_effect' AND details->>'estimator' = 'family_c_pooled_run'
+  AND created_at >= %(lo)s AND created_at < %(hi)s
+""", optional_table="prediction_effect_estimate"),
     # A Prime thought: a closed prime/infer act, available at closed_at. Most close in seconds; one
     # closed 2.3 days late (live, to 11-15), so opened_at is widened by three days.
     SourceQuery("prime_thought", """

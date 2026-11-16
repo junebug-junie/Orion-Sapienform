@@ -16,6 +16,10 @@ One tick (every ``EMBODIMENT_TOWN_SELF_START_TICK_SEC``, default 300 s; the firs
 3. The controller's last refusal still holds, for its own ``retry_after_sec`` (the next local midnight
    after ``daily_cap``, the rest of the gap after ``cooldown``): do nothing (``held``), no bid. This is
    dispatch's refusal hold, carried over: dispatch sent no RPC while it held, so no bid was placed.
+3b. A Family C run-cap override holds new starts (``orion:physiology:run_cap:aitown.session``, read by
+   the controller): refused ``run_cap_override``, NO bid (an experiment's hold is not hunger; a shadow want
+   blocked by it would read as one). The controller checks the same key again under its start lock, so
+   this pre-check is only there to keep the market clean, never the guard.
 4. The self-monitor act gate (E1, the same ``ActGate`` dispatch held for this act until 2026-11-05): a
    faculty held broken or unreliable is refused (``self_monitor:track_record_failing``), no bid, except
    one re-test probe per 6 h, spent only when a session really starts.
@@ -162,6 +166,14 @@ class TownSelfStart:
             if not decision.admit:
                 return self._record(ticked_at, "refused", refusal=f"self_monitor:{decision.reason}")
 
+        # Family C run-cap override (step 3b): no bid while an experiment holds starts.
+        hold = await c.read_run_cap()
+        if hold.active:
+            c.note_run_cap_hold(hold, None, where="precheck")
+            if hold.retry_after_sec:
+                self._hold = (self.clock() + float(hold.retry_after_sec), "run_cap_override")
+            return self._record(ticked_at, "refused", refusal="run_cap_override", retry_after_sec=hold.retry_after_sec)
+
         act_id = new_act_id()
         # Body economy: SHADOW bid, never obeyed. Placed before the gate: the want exists whether or
         # not the caps let it run now. want_id = the session id = the play act's correlation id.
@@ -235,10 +247,39 @@ class TownSelfStart:
             "last_started": self.last_started,
         }
 
+    def start_eligible_at(self) -> Optional[float]:
+        """When the town's own timer could next start a session (epoch), or None (no clock says when).
+
+        The controller's gate (``TownSessionController.start_eligible_at``), then this loop's own state: off
+        or not running -> None; the self-monitor gate refused the last tick -> None (its hold has no clock);
+        a refusal hold -> not before it ends. A ``run_cap_override`` hold is the experiment's own and is
+        left out, or the experiment would wait on itself. In memory only."""
+        if not self.enabled or self.task is None or self.task.done():
+            return None
+        at = self.controller.start_eligible_at()
+        if at is None:
+            return None
+        last = self.last or {}
+        if str(last.get("refusal") or "").startswith("self_monitor:"):
+            return None
+        if self._hold is not None and self._hold[1] != "run_cap_override":
+            at = max(at, self._hold[0])
+        return at
+
     def snapshot(self) -> dict[str, Any]:
-        """For /health: a silent hold is visible here, not only in the logs."""
+        """For /health: a silent hold is visible here, not only in the logs. ``start_eligible_at``,
+        ``start_in_flight`` and ``run_cap_override`` are read by orion-prediction's town-hold experiment."""
+        c = self.controller
+        try:
+            eligible = self.start_eligible_at()
+        except Exception:  # noqa: BLE001 -- /health never fails on this
+            eligible = None
         return {**self._published, "running": self.task is not None and not self.task.done(),
-                "session_open": self.controller.orion is not None}
+                "session_open": c.orion is not None,
+                "manual_session_open": getattr(c, "manual", None) is not None,
+                "start_eligible_at": _iso(eligible),
+                "start_in_flight": bool(getattr(c, "start_in_flight", False)),
+                "run_cap_override": c.run_cap_snapshot() if hasattr(c, "run_cap_snapshot") else None}
 
 
 # --- live wiring --------------------------------------------------------------------------------

@@ -30,11 +30,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable, Optional
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from orion.embodiment import town_sessions as ts
+from orion.physiology import run_cap_override as rco
 from orion.schemas.aitown_session import (
     AITOWN_SESSION_FAMILY,
     AITownSessionRowV1,
@@ -69,7 +72,8 @@ class StartOutcome:
     """One start attempt's answer (the dispatch era's AITownSessionStartResultV1, now in-process).
     ``refusal`` is set only for ``state=refused``: ``disabled`` | ``daily_cap`` | ``cooldown`` |
     ``session_open`` | ``manual_session_open`` | ``ledger_unknown`` | ``town_unreachable`` |
-    ``resume_failed`` | ``already_ran``. ``retry_after_sec``: how long the same refusal will hold, from
+    ``resume_failed`` | ``already_ran`` | ``run_cap_override`` (a Family C experiment holds new starts; its
+    ``retry_after_sec`` is the key's Redis TTL). ``retry_after_sec``: how long the same refusal will hold, from
     the controller's own clock (the next local midnight for ``daily_cap``); None = no clock of its own."""
 
     act_id: str
@@ -157,7 +161,8 @@ class TownSessionController:
     def __init__(self, cfg: TownConfig, *, redis_getter: Callable[[], Any], world_id_getter: Callable[[], Optional[str]],
                  town: Optional[ConvexTown] = None, bus_getter: Callable[[], Any] = lambda: None,
                  act_publisher: Callable[[Any, Any], Awaitable[None]] = publish_act,
-                 clock: Callable[[], float] = time.time) -> None:
+                 clock: Callable[[], float] = time.time,
+                 run_cap_bounds: Optional[dict] = None) -> None:
         self.cfg = cfg
         self._redis = redis_getter
         self._world_id = world_id_getter
@@ -172,6 +177,13 @@ class TownSessionController:
         self._rows: list[AITownSessionRowV1] = []
         self._pending_stop = False
         self._last_write: dict[str, float] = {}
+        # Family C run-cap override (config/physiology/run_cap_overrides.yaml): which families may be held.
+        self.run_cap_bounds = rco.load_bounds() if run_cap_bounds is None else dict(run_cap_bounds)
+        self.run_cap_counts: Counter = Counter()   # obeyed:<gate|precheck> / refused:<reason> / unreadable
+        self.run_cap_last: Optional[dict] = None
+        # True from the moment a start attempt is inside the gate until it has an answer: a start that read
+        # the override before it was set is visible here (orion-prediction's race check reads it via /health).
+        self.start_in_flight = False
 
     # --- state ------------------------------------------------------------------------------
 
@@ -195,6 +207,47 @@ class TownSessionController:
                  "test_before": aitown_session_object_ref(r.dispatch_id or ""),
                  "opened_at": datetime.fromtimestamp(r.started_at, tz=timezone.utc)}
                 for r in rows if r.kind == "orion" and r.started_at > cutoff]
+
+    def start_eligible_at(self, now: Optional[float] = None) -> Optional[float]:
+        """When the start gate would next pass (epoch), from the in-memory ledger and the live sessions; None
+        before the ledger is loaded, while a session is open, or with the switch off. In-memory only (/health)."""
+        if not self._booted or self._pending_stop:
+            return None
+        if self.orion is not None or self.manual is not None:
+            return None
+        at = self.clock() if now is None else now
+        return ts.start_eligible_at(list(self._rows), at, enabled=self.cfg.enabled,
+                                    daily_cap_sec=self.cfg.daily_cap_sec, min_session_sec=self.cfg.min_session_sec,
+                                    min_gap_sec=self.cfg.min_gap_sec, tz=self.cfg.tz)
+
+    async def read_run_cap(self) -> rco.OverrideVerdict:
+        """The run-cap override on ``aitown.session``, judged at a clock taken after the read. A Redis error
+        reads as no override (play is not held on a guess) and is counted ``unreadable``."""
+        try:
+            verdict = await rco.read(self._redis(), AITOWN_SESSION_FAMILY, self.run_cap_bounds,
+                                     clock=lambda: datetime.fromtimestamp(self.clock(), tz=timezone.utc))
+        except Exception:  # noqa: BLE001
+            logger.warning("aitown_session_run_cap_unreadable", exc_info=True)
+            self.run_cap_counts["unreadable"] += 1
+            return rco.OverrideVerdict(False, "unreadable")
+        if verdict.refused:
+            self.run_cap_counts[f"refused:{verdict.reason}"] += 1
+            logger.warning("run_cap_override_refused family=%s reason=%s", AITOWN_SESSION_FAMILY, verdict.reason)
+        return verdict
+
+    def note_run_cap_hold(self, hold: rco.OverrideVerdict, act_id: Optional[str], *, where: str) -> None:
+        ov = hold.override
+        self.run_cap_counts[f"obeyed:{where}"] += 1
+        self.run_cap_last = {"at": self.clock(), "where": where, "act_id": act_id,
+                             "experiment_id": ov.experiment_id if ov else None,
+                             "block_index": ov.block_index if ov else None, "phase": ov.phase if ov else None}
+        logger.info("aitown_session_refused act_id=%s refusal=run_cap_override where=%s experiment_id=%s block=%s "
+                    "phase=%s", act_id, where, ov.experiment_id if ov else None, ov.block_index if ov else None,
+                    ov.phase if ov else None)
+
+    def run_cap_snapshot(self) -> dict:
+        return {"configured": AITOWN_SESSION_FAMILY in self.run_cap_bounds, "counts": dict(self.run_cap_counts),
+                "last": self.run_cap_last}
 
     def note_utterance(self) -> None:
         """Orion spoke a line in town (the play act's artifact)."""
@@ -400,7 +453,11 @@ class TownSessionController:
     async def start_session(self, act_id: str) -> StartOutcome:
         """One start attempt under every cap. The caller placed the shadow bid already."""
         async with self._lock:
-            return await self._start(act_id, session_id_for(act_id))
+            self.start_in_flight = True
+            try:
+                return await self._start(act_id, session_id_for(act_id))
+            finally:
+                self.start_in_flight = False
 
     async def _start(self, act_id: str, session_id: str) -> StartOutcome:
         rows: Optional[list[AITownSessionRowV1]]
@@ -432,6 +489,14 @@ class TownSessionController:
             # Never a second row under the same id (it would overwrite the first one's counted seconds
             # and reopen its act). Act ids are minted fresh per attempt, so this is only a guard.
             reason = "already_ran"
+        if reason is None:
+            # The Family C run-cap override, read under the start lock and before the town is resumed: a key
+            # set before this read holds this start; a start that read before the key was set shows as
+            # start_in_flight (then as an open session) to the experiment's post-set check.
+            hold = await self.read_run_cap()
+            if hold.active:
+                self.note_run_cap_hold(hold, act_id, where="gate")
+                return self._refused(act_id, "run_cap_override", hold.retry_after_sec, gates)
         if reason is not None:
             retry = ts.retry_after_sec(reason, live, now, min_gap_sec=self.cfg.min_gap_sec, tz=self.cfg.tz)
             if reason == "session_open" and self.orion is not None:

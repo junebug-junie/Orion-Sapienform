@@ -198,6 +198,19 @@ def _per_day(thoughts: list[tuple[datetime, str]], start: datetime, end: datetim
     return len(thoughts) / max((end - start).total_seconds() / 86400.0, 1e-9)
 
 
+def _thoughts_by_day(thoughts: list[tuple[datetime, Any]], start: datetime, end: datetime) -> dict[str, int]:
+    """Thoughts on every UTC day of the window, days with none included (a quiet day is data too)."""
+    days: dict[str, int] = {}
+    d = start.date()
+    while d <= end.date():
+        days[d.isoformat()] = 0
+        d += timedelta(days=1)
+    for t, _ in thoughts:
+        if t.date().isoformat() in days:
+            days[t.date().isoformat()] += 1
+    return days
+
+
 def _max_need_wakes_24h(thoughts: list[tuple[datetime, str]]) -> int:
     times = [t for t, why in thoughts if why.startswith("need:")]
     best = 0
@@ -238,6 +251,12 @@ def run(data: Optional[dict[str, Any]] = None) -> list[tuple[str, bool, str]]:
                       f"({', '.join(f'{k} {v}' for k, v in sorted(why.items()))})")
     results.append(("report", True, f"live timer: {len(live)} thoughts = {_per_day(live, start, end):.1f}/day, "
                                      f"{floor_only} woke on the floor alone | " + " | ".join(report)))
+    # Orion's question on #3528: the wake-count distribution, every day and the worst day, not only the mean.
+    for name, r in (("live timer", {"thoughts": live}), ("idle", idle), ("busy", busy)):
+        days = _thoughts_by_day(r["thoughts"], start, end)
+        results.append((f"per_day_{name.replace(' ', '_')}", True,
+                        f"{name}: worst day {max(days.values()) if days else 0}, per day "
+                        + ", ".join(f"{d[5:]} {n}" for d, n in days.items())))
     worst = max(_max_need_wakes_24h(idle["thoughts"]), _max_need_wakes_24h(busy["thoughts"]))
     results.append(("budget_holds", worst <= hg.DAILY_BUDGET, f"most need wakes in any 24 h: {worst}"))
     gap = max(_longest_gap_while_held(idle), _longest_gap_while_held(busy))

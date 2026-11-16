@@ -612,6 +612,12 @@ def _retired(signal_id: str) -> bool:
     return is_retired_prediction_error_node(signal_id)
 
 
+def _still_a_body_signal(signal_id: str) -> bool:
+    from orion.attention.world_first import source_kind_for_node
+
+    return not _retired(signal_id) and source_kind_for_node(signal_id) == "internal"
+
+
 def associate_all(
     hours: Sequence[SelfSignalHourV1],
     *,
@@ -619,12 +625,13 @@ def associate_all(
     min_hours: int = DEFAULT_MIN_HOURS,
     min_history_hours: float = MIN_HISTORY_HOURS,
 ) -> list[SelfSignalOutcomeAssociationV1]:
-    # A retired prediction-error node's old hour rows outlive it (self_signal_hour is never
-    # pruned). They are not readings: no association is computed for it, and it does not count
-    # toward the Bonferroni family below (live 2026-11-16: four retired signals were still written
-    # hourly and widened every live signal's interval, 25 comparisons instead of 13).
+    # Old hour rows outlive their signal (self_signal_hour is never pruned). A retired
+    # prediction-error node, or a node that is no longer a body signal (the walkway camera became
+    # a world source on 2026-10-21), gets no association and does not count toward the
+    # Bonferroni family below (live 2026-11-16: four retired signals and the walkway were still
+    # written hourly and widened every live signal's interval, 25 comparisons instead of 10).
     signals = sorted(
-        {s.signal_id for r in hours for s in r.signals if not _retired(s.signal_id)}
+        {s.signal_id for r in hours for s in r.signals if _still_a_body_signal(s.signal_id)}
     )[:MAX_SIGNALS_PER_HOUR]
     pairs = [(sid, o) for sid in signals for o in OUTCOMES]
     # Every pair that could ever render is one simultaneous claim (circular pairs never render).

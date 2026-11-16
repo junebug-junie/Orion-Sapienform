@@ -484,6 +484,17 @@ def test_associate_all_skips_a_retired_signal_and_its_comparisons() -> None:
     assert {a.n_comparisons for a in live} == {4}
 
 
+def test_associate_all_skips_a_signal_that_became_a_world_source() -> None:
+    """node:substrate.perception_walkway left the body signals 2026-10-21 but its old hour rows
+    kept producing associations every hour."""
+    conds, events = _pattern(n_high=30, n_normal=60, hit_after_high=0.6, hit_after_normal=0.1)
+    out = sso.associate_all(
+        _two_signal_hours(conds, events, other="node:substrate.perception_walkway"), computed_at=NOW
+    )
+    assert {a.signal_id for a in out} == {EXE}
+    assert {a.n_comparisons for a in out} == {1}
+
+
 def test_held_rows_of_a_retired_signal_never_render() -> None:
     rows = [r.model_copy(update={"signal_id": RETIRED_SIG}) for r in _run([M] * 6)]
     assert sso.held_latest_by_pair(rows) == []

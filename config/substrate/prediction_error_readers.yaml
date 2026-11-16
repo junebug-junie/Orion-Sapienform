@@ -1,0 +1,127 @@
+# Who reads node prediction_error values, and how they treat alarms (#3307).
+# Checked in CI by scripts/check_pe_alarm_readers.py.
+#
+# node:substrate.cabinet / .strain / .street are ALARMS, not prediction errors: their value means "it
+# fired", not "how big a surprise" (orion/substrate/prediction_error_freshness.py, ALARM_NODE_IDS). They
+# still ride the node's prediction_error field and substrate_node_prediction_error_history, because the
+# attention contests and strain news read them there.
+#
+# Every non-test Python file that touches prediction_error (names the history table, or reads the
+# "prediction_error" key or attribute) either skips alarms itself (calls is_alarm_node / uses
+# ALARM_NODE_IDS: no entry needed) or is listed here with a class and a reason:
+#   alarm_aware   reads alarms on purpose, as alarms (fired / trigger semantics), or shows them as pressure
+#   filters_via   skips alarms through a helper it imports (name the helper)
+#   single_node   reads only named non-alarm nodes (name them)
+#   not_a_reader  writes, stores, defines, transports or decodes the value; never reads it as a size
+# Classified 2026-11-16 by reading each file (PR report lists the evidence).
+version: 1
+excluded_paths:
+  - path: scripts/analysis/
+    reason: offline replays and measurements a person runs and reads; never feed Orion's runtime
+files:
+  # --- alarm_aware -------------------------------------------------------------------------------
+  orion/attention/world_first.py:
+    class: alarm_aware
+    reason: the attention contest; bad_direction_percentile treats glossary value_kind trigger as "it fired"
+  orion/substrate/pressure.py:
+    class: alarm_aware
+    reason: dynamics pressure seed reads one node's value; admitting firing alarms to the workspace is its job
+  orion/metacog/self_signal_episode.py:
+    class: alarm_aware
+    reason: observation_from_verdict reads world_first.judge_candidate verdicts, so alarms use the trigger rule
+  services/orion-equilibrium-service/app/self_signal_episode_gate.py:
+    class: alarm_aware
+    reason: the metacog episode gate; judge_candidate per node (trigger rule), labels via node_signal_label
+  orion/regulation/strain_news.py:
+    class: alarm_aware
+    reason: writes the strain trigger; its restart rebuild reads strain rows as event times (counts)
+  orion/introspect/node_history.py:
+    class: alarm_aware
+    reason: one requested node at a time, no ranking; _signal_noun uses ALARM_LABELS to say "an alarm"
+  services/orion-substrate-runtime/app/worker.py:
+    class: alarm_aware
+    reason: writes the alarm nodes and samples history for the contest; labels via ALARM_LABELS; self-model
+      PE domains are the explicit _PREDICTION_ERROR_DOMAIN_NODE_IDS (execution, biometrics)
+  services/orion-thought/app/self_readings_cue.py:
+    class: alarm_aware
+    reason: fills NodePeHistoryCache and hands it to project_self_readings, which counts trigger fires per hour
+  orion/attention/pe_history_cache.py:
+    class: alarm_aware
+    reason: per-node percentile cache; every consumer is alarm-aware (contests, self_readings, episode gate,
+      rollup); a new consumer must check is_alarm_node itself
+  services/orion-substrate-runtime/app/brain_frame_producer.py:
+    class: alarm_aware
+    reason: _node_pressure falls back to the raw value as a display pressure; nodes rank by activation, and a
+      firing alarm shown as pressure matches the dynamics pressure seed
+  # --- not_a_reader ------------------------------------------------------------------------------
+  orion/attention/sustained.py:
+    class: not_a_reader
+    reason: pure dwell rule over one history it is handed; reads no prediction_error itself
+  orion/autonomy/contrast.py:
+    class: not_a_reader
+    reason: mentions only the action ledger's observed-minus-predicted, never a substrate node value
+  orion/metrics/semantics.py:
+    class: not_a_reader
+    reason: defines value kinds (trigger = it fired) and the URN inventory; interprets no values
+  orion/schemas/attention_frame.py:
+    class: not_a_reader
+    reason: schema (PredictionErrorMagnitudeV1)
+  orion/schemas/context_provenance.py:
+    class: not_a_reader
+    reason: provenance description text
+  orion/schemas/introspect.py:
+    class: not_a_reader
+    reason: constants and schema
+  orion/schemas/prediction_error_definitions.py:
+    class: not_a_reader
+    reason: definition version per reducer key
+  orion/schemas/self_reading.py:
+    class: not_a_reader
+    reason: schema
+  orion/schemas/self_signal_outcome.py:
+    class: not_a_reader
+    reason: schema
+  orion/substrate/falkor_codec.py:
+    class: not_a_reader
+    reason: encodes and decodes node metadata keys; preserves the value only
+  orion/substrate/vision_organ_loop/extract.py:
+    class: not_a_reader
+    reason: producer side; computes its own staleness pressure, reads no node prediction_error
+  orion/temporal_self/sources.py:
+    class: not_a_reader
+    reason: copies the action-ledger row's prediction_error (observed minus predicted), not a substrate node
+  services/orion-attention-runtime/app/store.py:
+    class: not_a_reader
+    reason: data access for the contest cache; the EWMA baseline advances only for the native targets
+      (biometrics, execution)
+  services/orion-equilibrium-service/app/pe_history_reader.py:
+    class: not_a_reader
+    reason: read-only SELECT of history rows into NodePeHistoryCache
+  services/orion-equilibrium-service/app/settings.py:
+    class: not_a_reader
+    reason: config
+  services/orion-field-digester/app/ingest/state_deltas.py:
+    class: not_a_reader
+    reason: transports pressure hints into the field channel "prediction_error" (alarms included); field
+      readers judge that channel by the glossary value_kind, where alarms are trigger
+  services/orion-heartbeat/app/substrate/bus_synaptic.py:
+    class: not_a_reader
+    reason: its own gap z-score mirror; reads no node prediction_error
+  services/orion-hub/scripts/main.py:
+    class: not_a_reader
+    reason: wires the node-history introspect listener only
+  services/orion-hub/scripts/node_history_introspect_listener.py:
+    class: not_a_reader
+    reason: bus transport for orion.introspect.node_history, which labels alarms
+  services/orion-sql-writer/app/models/self_signal_outcome.py:
+    class: not_a_reader
+    reason: ORM model
+  services/orion-substrate-runtime/app/settings.py:
+    class: not_a_reader
+    reason: config for the alarm writers and history
+  services/orion-substrate-runtime/app/store.py:
+    class: not_a_reader
+    reason: history persistence (save, fetch, count, prune); event-time fetch is per named node
+  services/orion-thought/app/settings.py:
+    class: not_a_reader
+    reason: config

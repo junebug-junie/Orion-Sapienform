@@ -107,6 +107,10 @@ RETIRED_PREDICTION_ERROR_NODE_IDS: frozenset[str] = frozenset(
 #   curiosity's prediction-error seeds, the self-model's prediction-error
 #   domains, the Hub prediction-error domain panel.
 #
+# A NEW reader must decide which kind it is: scripts/check_pe_alarm_readers.py (CI, #3307) fails on any
+# file that touches node prediction_error and neither skips alarms (is_alarm_node) nor is registered with
+# a class and a reason in config/substrate/prediction_error_readers.yaml.
+#
 # The glossary is the semantic owner: every ``prediction_error`` entry whose
 # value_kind is ``trigger`` is an alarm, and this set must equal that list
 # (tests/test_pe_alarm_refile.py). The set exists so readers need no glossary

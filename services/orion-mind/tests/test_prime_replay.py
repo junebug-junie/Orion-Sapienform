@@ -51,7 +51,9 @@ def test_recorded_tick_sequences_replay_identically():
     (the dashboard's runs left the frame; only whether a focus waits is shown), the new ``prime_now_unread
     reason=off`` log lines removed (the fake has no /temporal-self/now: a 404, so no section) and ``now_use=none``
     removed from prime_thought log lines, every part of every scenario equals the previous golden (checked by
-    script; 29 parts changed, 0 after mapping). No id moved: the now's shown_id is drawn by durable-runs."""
+    script; 29 parts changed, 0 after mapping). No id moved: the now's shown_id is drawn by durable-runs. Then one
+    scenario was added, recorded last (``now_section_and_one_cite``: a now page, one shown cite and one not shown,
+    and the use POST); every older scenario is byte-identical to the recording before it."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

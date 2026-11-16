@@ -242,7 +242,9 @@ WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT lists what Orion's other organs r
 curiosity runs, camera sightings, prediction surprises, reveries ...), highest salience first, each with its
 [experience:<id>]. When one of them shaped this thought, cite it: add "refs" to your JSON object,
 "refs": [{"kind": "experience", "id": "<the id after experience:>"}], at most 3, only ones you actually used.
-Citing nothing is a normal answer. Copy ids exactly; an id the section did not list is not recorded."""
+Citing nothing is a normal answer. Copy ids exactly; an id the section did not list is not recorded.
+Never write an experience id in a question's "question" or "why": a curiosity run cannot open one; say what
+happened in words."""
 
 
 ORGAN_REPLIES_PROMPT = """
@@ -663,6 +665,13 @@ def parse_refs(raw: Any) -> tuple[list[RefV1], list[str], list[str]]:
         return [], [], []
     if not isinstance(raw, list):
         return [], [], ["refs must be a list of {kind, id}"]
+    rest, cites, exp_problems = _split_experience(raw)
+    refs, more = parse_openable_refs(rest)
+    return refs, cites, exp_problems + more
+
+
+def _split_experience(raw: list[Any]) -> tuple[list[Any], list[str], list[str]]:
+    """(non-experience items, experience cites, experience-ref problems)."""
     rest: list[Any] = []
     cites: list[str] = []
     problems: list[str] = []
@@ -679,8 +688,7 @@ def parse_refs(raw: Any) -> tuple[list[RefV1], list[str], list[str]]:
                 cites.append(eid)
         else:
             rest.append(item)
-    refs, more = parse_openable_refs(rest)
-    return refs, cites, problems + more
+    return rest, cites, problems
 
 
 def shown_cites(cites: Sequence[str], shown: Optional[Sequence[str]]) -> tuple[list[str], list[str]]:
@@ -811,11 +819,23 @@ def apply_answer(
         if refusal is None:
             move = move.model_copy(update={"hours": clamp_hours(move.hours), "why": move.why[:600]})
     elif move is not None:
-        refs, move_cites, problems = parse_refs(move.refs)
+        # A bad experience ref in a move is a warning (never refuses the move); a bad arc/act ref refuses it.
+        if isinstance(move.refs, list):
+            rest, move_cites, exp_problems = _split_experience(move.refs)
+            refs, problems = parse_openable_refs(rest)
+        else:
+            move_cites, exp_problems = [], []
+            refs, problems = parse_openable_refs(move.refs)
+        if exp_problems:
+            warnings.append("move refs: " + "; ".join(exp_problems)[:300])
         cited.extend(c for c in move_cites if c not in cited)
         stray = id_tokens_not_in(f"{move.question}\n{move.why}", refs)
+        cited_tokens = {t.lower() for c in move_cites for t in id_tokens_not_in(c, [])}
         if problems:
             refusal = "; ".join(problems)
+        elif stray and any(t in cited_tokens for t in stray):
+            refusal = ("the question quotes the id of an experience it cites; a curiosity run cannot open an "
+                       "experience id. Describe what happened in words (the cite is still recorded)")
         elif stray:
             refusal = (f"the question cites {', '.join(stray[:3])} outside refs; a curiosity run cannot open "
                        "an id written in the text. Put arcs and acts in refs, and no other ids")
@@ -857,7 +877,7 @@ def woke_note(changes: list[str]) -> str:
     return "woke: " + (text if len(text) <= WOKE_NOTE_CAP else text[:WOKE_NOTE_CAP - 3] + "...")
 
 
-def summary_note(applied: Applied) -> str:
+def summary_note(applied: Applied, *, now_use: Optional[str] = None) -> str:
     """The thought act's close note: what the thought changed (concerns are never edited silently)."""
     # Most important first: the act note is cut at 500 chars (orion/grammar/acts.py) after a ~170-char
     # "woke:" prefix, so the move goes before the unbounded drop reasons and warnings.
@@ -877,7 +897,8 @@ def summary_note(applied: Applied) -> str:
     else:
         parts.append("no move")
     if applied.experience_cites:
-        parts.append(f"cited {len(applied.experience_cites)} experience(s)")
+        parts.append(f"proposed {len(applied.experience_cites)} experience cite(s)"
+                     + (f", now_use {now_use}" if now_use else ""))
     if applied.dropped:
         parts.append("dropped " + "; ".join(applied.dropped))
     if applied.warnings:

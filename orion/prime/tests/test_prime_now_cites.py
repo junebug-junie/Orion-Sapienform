@@ -30,9 +30,9 @@ def test_parse_refs_splits_experience_from_openable_kinds():
     refs, cites, problems = parse_refs([{"kind": "experience", "id": "reading_turn:r1"},
                                         {"kind": "experience", "id": "experience:curiosity_run:c1"},
                                         {"kind": "experience", "id": "reading_turn:r1"},
-                                        {"kind": "act", "id": "act_0123456789abcdef"}])
+                                        {"kind": "act", "id": "act_000000000000000000000000"}])
     assert cites == ["reading_turn:r1", "curiosity_run:c1"]  # prefix stripped, duplicate once
-    assert [(r.kind, r.id) for r in refs] == [("act", "act_0123456789abcdef")] and problems == []
+    assert [(r.kind, r.id) for r in refs] == [("act", "act_000000000000000000000000")] and problems == []
 
 
 def test_parse_refs_names_a_bad_experience_ref_and_other_bad_kinds():
@@ -49,7 +49,7 @@ def test_only_shown_cites_are_kept_in_order_at_most_three():
     assert applied.experience_cites == SHOWN[:3]
     assert any("not shown in this frame" in w and "gpu_wait:not-shown" in w for w in applied.warnings)
     assert any("only the first 3 are recorded" in w for w in applied.warnings)
-    assert "cited 3 experience(s)" in summary_note(applied)
+    assert "proposed 3 experience cite(s)" in summary_note(applied)
 
 
 def test_no_now_read_means_no_cite_is_kept():
@@ -83,3 +83,25 @@ def test_section_and_prompt_appear_only_when_the_now_was_read():
     assert shown_experience_ids(without) is None
     assert '"kind": "experience"' in system_prompt(None, experiences=True)
     assert '"kind": "experience"' not in system_prompt(None)
+
+
+def test_a_bad_experience_ref_inside_a_move_is_a_warning_not_a_refusal():
+    raw = {"reading": "r", "move": {"kind": "curiosity_focus", "question": "what heats the closet?", "why": "heat",
+                                    "refs": [{"kind": "experience"}]}}
+    applied = _apply(raw)
+    assert applied.move is not None and applied.move_refusal is None
+    assert any(w.startswith("move refs: experience ref") for w in applied.warnings)
+    # A bad arc/act ref still refuses the move, as before.
+    bad_arc = _apply({"reading": "r", "move": {**raw["move"], "refs": [{"kind": "arc", "id": "nope"}]}})
+    assert bad_arc.move is None and "arc" in (bad_arc.move_refusal or "")
+
+
+def test_a_question_quoting_a_cited_experience_id_is_refused_with_words_that_say_why():
+    eid = "curiosity_run:8580502e-e6ac-5b06-90c9-0f244b9d51ab"
+    raw = {"reading": "r", "move": {"kind": "curiosity_focus", "why": "heat",
+                                    "question": "what did run 8580502e-e6ac-5b06-90c9-0f244b9d51ab find?",
+                                    "refs": [{"kind": "experience", "id": eid}]}}
+    applied = _apply(raw, shown=[eid])
+    assert applied.move is None
+    assert "quotes the id of an experience it cites" in (applied.move_refusal or "")
+    assert applied.experience_cites == [eid]  # the cite still counts

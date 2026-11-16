@@ -262,6 +262,20 @@ def scenarios() -> dict:
             out[name] = _dump(rt, cap)
         finally:
             root.removeHandler(cap)
+    # Integration patch 3 (recorded LAST, so every older scenario's ids are unchanged): Prime reads Orion's now,
+    # the frame shows WHAT YOUR ORGANS LIVED, the thought cites one shown experience and posts it.
+    import test_prime_now as tpn
+
+    cap = _Capture()
+    root.addHandler(cap)
+    try:
+        posts = tpn.Posts()
+        rt = _instrument(tpl.runtime(answer=tpn.answer(tpn.EIDS[1], "gpu_wait:not-shown"), now_page=tpn.now_page(),
+                                     post_json=posts))
+        _ticks(rt, [0])
+        out["now_section_and_one_cite"] = {**_dump(rt, cap), "now_use_posts": posts.calls}
+    finally:
+        root.removeHandler(cap)
     return out
 
 

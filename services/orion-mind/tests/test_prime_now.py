@@ -18,7 +18,7 @@ import pytest
 
 from app.prime_loop import PrimeRuntime
 from orion.prime.state import PrimeStateV1
-from test_prime_loop import MOVE, T0, runtime
+from test_prime_loop import MOVE, NO_SEAT, T0, SeqLLM, runtime
 
 SECTION = "WHAT YOUR ORGANS LIVED SINCE YOUR LAST THOUGHT"
 EIDS = [f"curiosity_run:run{i}" if i % 2 else f"reading_turn:read{i}" for i in range(5)]
@@ -103,10 +103,12 @@ def test_cites_are_posted_with_the_shown_id_only_shown_ones_and_at_most_three(ca
     thought_id = rt.state.last_thought_id
     assert body["citing_ref"] == f"prime_thought:{thought_id}"
     note = _infer_close(rt)["note"]
-    assert "cited 3 experience(s)" in note and "not shown in this frame" in note
+    assert "proposed 3 experience cite(s)" in note and "not shown in this frame" in note
     assert any(r.getMessage().startswith(f"prime_now_use thought={thought_id} shown_id=sh-42") and "stored=3" in
                r.getMessage() for r in caplog.records)
     assert any("now_use=stored 3/3" in r.getMessage() for r in caplog.records if "prime_thought " in r.getMessage())
+    # The server's verdict is on the act note, next to the proposal.
+    assert "proposed 3 experience cite(s), now_use stored 3/3" in note
 
 
 def test_an_experience_ref_in_a_move_is_a_cite_and_never_reaches_curiosity():
@@ -169,3 +171,48 @@ def test_the_frame_no_longer_reads_the_curiosity_dashboard():
     assert any(u.endswith("/curiosity/api/focus/pending") for u in rt.urls)
     src = inspect.getsource(PrimeRuntime._ask)
     assert "_read_curiosity" not in src and "_read_now" in src and "_read_pending_focus" in src
+
+
+def _now_gets(rt):
+    return [u for u in rt.urls if "/temporal-self/now?" in u]
+
+
+def test_a_try_that_never_reached_the_model_reuses_its_now_instead_of_reading_again():
+    posts = Posts()
+    rt = runtime(answer=MOVE, now_page=now_page(shown_id="first"), post_json=posts)
+    rt.llm = SeqLLM([NO_SEAT, (answer(EIDS[0]), None, {})])
+    asyncio.run(rt.tick())
+    assert len(_now_gets(rt)) == 1 and rt.bus.acts() == []
+    rt.clock_box["now"] = T0 + timedelta(seconds=15)
+    asyncio.run(rt.tick())
+    assert len(_now_gets(rt)) == 1  # reused: no second experience_shown row the model never saw
+    assert SECTION in rt.llm.calls[1]["user_prompt"]
+    [(_url, body)] = posts.calls
+    assert body["shown_id"] == "first"
+
+
+def test_the_next_read_starts_where_the_seen_now_ended_and_a_failed_read_skips_nothing():
+    page = now_page()
+    page["as_of"] = (T0 - timedelta(seconds=118)).isoformat()
+    rt = runtime(answer=answer(), now_page=page)
+    asyncio.run(rt.tick())
+    rt.clock_box["now"] = T0 + timedelta(hours=1)
+    rt.state = rt.state.model_copy(update={"pending_changes": ["again"]})
+    asyncio.run(rt.tick())
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(_now_gets(rt)[-1]).query)
+    assert q["since"] == [page["as_of"]]
+    # A thought whose now read failed: the next read still starts at the last SEEN cut-off.
+    rt2 = runtime(answer=answer(), now_page=urllib.error.URLError("refused"))
+    rt2._now_seen_as_of = T0 - timedelta(hours=3)
+    rt2.state = PrimeStateV1(pending_changes=["x"], last_thought_at=T0 - timedelta(hours=1))
+    asyncio.run(rt2.tick())
+    rt2.clock_box["now"] = T0 + timedelta(hours=1)
+    rt2.state = rt2.state.model_copy(update={"pending_changes": ["again"]})
+    asyncio.run(rt2.tick())
+    for url in _now_gets(rt2):
+        assert urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["since"] == [(T0 - timedelta(hours=3)).isoformat()]
+
+
+def test_the_real_use_client_has_its_own_short_timeout():
+    rt = PrimeRuntime(settings=runtime(answer=None).s, bus=None, llm=None)
+    assert rt._post_use.func.__name__ == "_post_json" and rt._post_use.keywords == {"timeout": 10.0}

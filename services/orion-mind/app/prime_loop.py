@@ -286,6 +286,7 @@ NOW_USE_PATH = "/temporal-self/now/use"
 NOW_ORGAN = "prime"
 NOW_SINCE_MARGIN_SEC = 120.0
 NOW_USE_TIMEOUT_SEC = 10.0
+NOW_REUSE_MAX_SEC = 1800.0  # an unseen now older than this is read again rather than reused
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
 REGULATE_SETTLE_LAG_SEC = 120.0
 # Hand-back signals queued between ticks (a tick drains them). Hops of sessions that are not handed back never
@@ -314,10 +315,10 @@ def _timed_out(exc: BaseException) -> bool:
         isinstance(exc, urllib.error.URLError) and isinstance(getattr(exc, "reason", None), TimeoutError))
 
 
-def _post_json(url: str, body: dict[str, Any]) -> Any:
+def _post_json(url: str, body: dict[str, Any], timeout: float = ORDER_HTTP_TIMEOUT_SEC) -> Any:
     req = urllib.request.Request(url, data=json.dumps(body).encode("utf-8"), method="POST",
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=ORDER_HTTP_TIMEOUT_SEC) as resp:  # noqa: S310 -- internal service URL
+    with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 -- internal service URL
         return json.loads(resp.read())
 
 
@@ -356,6 +357,9 @@ class PrimeRuntime(MindLoopRuntime):
                 if get_json is _get_json else get_json)
         self.get_json_long = get_json_long
         self.post_json = post_json
+        # The now's use POST: its own short timeout on the real client (an injected post_json, in tests, serves it).
+        self._post_use = (functools.partial(_post_json, timeout=NOW_USE_TIMEOUT_SEC) if post_json is _post_json
+                          else post_json)
         # The day letter (Part 3): its own record, saved under dl.DAY_LETTER_KEY.
         self.day_letter = dl.PrimeDayLetterStateV1()
         self._day_letter_checked_at: Optional[datetime] = None
@@ -372,6 +376,12 @@ class PrimeRuntime(MindLoopRuntime):
         self._listener: Optional[asyncio.Task] = None
         # The thought being built (set by _new_thought_id, read by _ask for the now's run_ref).
         self._thought_id: Optional[str] = None
+        # Orion's now (integration patch 3), in memory only. ``_now_seen_as_of``: the cut-off of the last now a
+        # model call actually saw; the next read starts there (a failed read leaves it, so nothing is skipped).
+        # ``_now_unseen``: (since, read at, page) of a now read for a try that never reached the model; the retry
+        # reuses it instead of storing another experience_shown row the model never saw.
+        self._now_seen_as_of: Optional[datetime] = None
+        self._now_unseen: Optional[tuple[Optional[str], datetime, dict[str, Any]]] = None
 
     # --- turn hand-back (living Prime design, Part 2) ----------------------------------------
     def _handback_on(self) -> bool:
@@ -1044,6 +1054,7 @@ class PrimeRuntime(MindLoopRuntime):
         reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
                                                     organ_replies=shows_organ_replies(inputs),
                                                     take_on=inputs.take_on, experiences=shows_now(inputs)), frame)
+        self._now_after_call(orion_now, reached=reply.kind == "model")
         reply.context.update(focus_pending=focus_pending, focus_unread=focus_unread,
                              now_shown_id=(orion_now or {}).get("shown_id"),
                              now_event_ids=shown_experience_ids(inputs),
@@ -1146,9 +1157,16 @@ class PrimeRuntime(MindLoopRuntime):
         thought goes on (logged). Every successful read is stored by durable-runs as an experience_shown row."""
         base = self.s.PRIME_DURABLE_RUNS_URL.rstrip("/")
         params: dict[str, str] = {"organ": NOW_ORGAN}
-        last = self.state.last_thought_at
-        if last is not None:
-            params["since"] = (last - timedelta(seconds=NOW_SINCE_MARGIN_SEC)).isoformat()
+        since = self._now_since()
+        if since is not None:
+            params["since"] = since
+        clock = self.clock()
+        if self._now_unseen is not None:
+            u_since, read_at, page = self._now_unseen
+            if u_since == since and (clock - read_at).total_seconds() <= NOW_REUSE_MAX_SEC:
+                logger.info("prime_now_reused shown_id=%s items=%d", page.get("shown_id"), len(page.get("items") or []))
+                return page
+            self._now_unseen = None
         if self._thought_id:
             params["run_ref"] = f"{PRIME_IDENTITY.thought_ref}{self._thought_id}"
         url = f"{base}{NOW_PATH}?{urllib.parse.urlencode(params)}"
@@ -1165,7 +1183,31 @@ class PrimeRuntime(MindLoopRuntime):
             return None
         logger.info("prime_now_read shown_id=%s items=%d candidates=%s", data["shown_id"], len(data["items"]),
                     data.get("candidates"))
+        self._now_unseen = (since, clock, data)
         return data
+
+    def _now_since(self) -> Optional[str]:
+        """Where the next read starts: the cut-off of the last now a model saw; after a restart (memory only), the
+        last thought's start less durable-runs' 120 s commit margin; before any thought, None (the server's
+        default). Prime always sends since= after that, so the server's per-organ cursor (moved only by reads
+        without since=) stays where Prime's first read left it; Prime does not use it."""
+        if self._now_seen_as_of is not None:
+            return self._now_seen_as_of.isoformat()
+        last = self.state.last_thought_at
+        return (last - timedelta(seconds=NOW_SINCE_MARGIN_SEC)).isoformat() if last is not None else None
+
+    def _now_after_call(self, orion_now: Optional[dict[str, Any]], *, reached: bool) -> None:
+        """The model saw this now (reached): the next read starts at its cut-off. Not reached: keep it for the
+        retry. Read failed: change nothing, so the next read covers the gap."""
+        if not reached or orion_now is None:
+            return
+        try:
+            as_of = datetime.fromisoformat(str(orion_now.get("as_of")).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            as_of = None
+        if as_of is not None and as_of.tzinfo is not None:
+            self._now_seen_as_of = as_of
+        self._now_unseen = None
 
     async def _record_now_use(self, *, shown_id: Optional[str], cites: list[str], thought_id: str) -> str:
         """POST the thought's experience cites (already only shown ones, at most 3) with the now's shown_id.
@@ -1175,7 +1217,7 @@ class PrimeRuntime(MindLoopRuntime):
         url = f"{self.s.PRIME_DURABLE_RUNS_URL.rstrip('/')}{NOW_USE_PATH}"
         body = {"shown_id": shown_id, "citing_ref": f"{PRIME_IDENTITY.thought_ref}{thought_id}", "cites": list(cites)}
         try:
-            res = await asyncio.wait_for(asyncio.to_thread(self.post_json, url, body), timeout=NOW_USE_TIMEOUT_SEC)
+            res = await asyncio.to_thread(self._post_use, url, body)
         except Exception as exc:  # noqa: BLE001 -- never fails the thought
             logger.warning("prime_now_use_failed thought=%s shown_id=%s cites=%d err=%s: %s", thought_id, shown_id,
                            len(cites), type(exc).__name__, str(exc)[:160])
@@ -1366,13 +1408,13 @@ class PrimeRuntime(MindLoopRuntime):
         elif applied.move is not None:
             await self._nominate(applied.move, thought_id=thought_id, thought_act_id=act.act_id, now=now,
                                  refs=applied.refs)
-        note = summary_note(applied)
+        # What the thought used from the now (never fails the thought); the server's verdict goes on the act note.
+        use = await self._record_now_use(shown_id=reply.context.get("now_shown_id"), cites=applied.experience_cites,
+                                         thought_id=thought_id)
+        note = summary_note(applied, now_use=None if use == "none" else use)
         # After the move: the pick is Orion's choice whether the move was sent, held back or refused.
         choice = await self._publish_choice(act=act, thought_id=thought_id, inputs=inputs, now=now, reply=reply,
                                             answer=answer)
-        # At the thought's close: what it used from the now (never fails the thought).
-        use = await self._record_now_use(shown_id=reply.context.get("now_shown_id"), cites=applied.experience_cites,
-                                         thought_id=thought_id)
         logger.info("prime_thought thought=%s route=%s choice=%s now_use=%s %s reading=%r", thought_id, reply.route,
                     choice, use, note, answer.reading[:200])
         return True, note

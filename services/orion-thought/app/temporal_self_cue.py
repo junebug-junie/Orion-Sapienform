@@ -180,6 +180,8 @@ def shown_cites(raw_cites: Iterable[Any], shown_event_ids: Iterable[str], *, cap
 
     shown = set(shown_event_ids)
     out: list[str] = []
+    if cap <= 0:
+        return out
     for raw in raw_cites:
         eid = normalize_cite(raw)
         if eid and eid in shown and eid not in out:

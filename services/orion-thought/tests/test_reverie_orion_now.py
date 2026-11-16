@@ -217,7 +217,7 @@ async def test_one_now_per_chain(server):
 
     first = await reverie.build_reverie_day_cue("c-1", chain_id="chain-1")
     second = await reverie.build_reverie_day_cue("c-2", chain_id="chain-1")
-    assert first is second and len(server.now_requests) == 1
+    assert first.shown_id == second.shown_id == SHOWN_ID and len(server.now_requests) == 1
     assert server.now_requests[0].url.params["run_ref"] == "reverie_chain:chain-1"
     await reverie.build_reverie_day_cue("c-3", chain_id="chain-2")
     assert len(server.now_requests) == 2
@@ -388,3 +388,74 @@ async def test_chain_steps_share_one_shown_id(server, monkeypatch):
     assert len(server.now_requests) == 1
     assert [b["shown_id"] for b in server.use_bodies] == [SHOWN_ID, SHOWN_ID]
     assert [b["cites"] for b in server.use_bodies] == [["ev-cam-1"], ["ev-read-2"]]
+
+
+@pytest.mark.asyncio
+async def test_chain_cite_budget_is_shared_across_steps(server, monkeypatch):
+    """The server caps cites at 3 per shown row across calls: once step 1 used the whole budget, a
+    later step keeps no cites on its thought and posts nothing (review finding, 2026-11-16)."""
+    import app.reverie as reverie
+
+    monkeypatch.setattr(reverie, "persist_reverie_thought", lambda t: True)
+    monkeypatch.setattr(reverie, "_SHOWN_CITED", {})
+    _, first = await _tick(cites=["ev-cam-1", "ev-read-2", "ev-dream-3"], chain_context=("chain-b", 0))
+    assert first.experience_cites == ["ev-cam-1", "ev-read-2", "ev-dream-3"]
+    _, second = await _tick(cites=["ev-body-4", "ev-cam-1"], chain_context=("chain-b", 1))
+    assert second.experience_cites == []
+    assert len(server.use_bodies) == 1
+
+
+@pytest.mark.asyncio
+async def test_chain_budget_counts_only_cites_the_server_stored(server, monkeypatch):
+    import app.reverie as reverie
+
+    monkeypatch.setattr(reverie, "persist_reverie_thought", lambda t: True)
+    monkeypatch.setattr(reverie, "_SHOWN_CITED", {})
+    await _tick(cites=["ev-cam-1"], chain_context=("chain-c", 0))
+    _, second = await _tick(cites=["ev-cam-1", "ev-read-2", "ev-dream-3", "ev-body-4"],
+                            chain_context=("chain-c", 1))
+    assert second.experience_cites == ["ev-read-2", "ev-dream-3"]  # 2 left; ev-cam-1 already stored
+
+
+def test_zero_budget_keeps_nothing():
+    from app.temporal_self_cue import shown_cites
+
+    assert shown_cites(["ev-cam-1"], EVENT_IDS, cap=0) == []
+
+
+@pytest.mark.asyncio
+async def test_chain_steps_rerender_ages(server, monkeypatch):
+    from app import reverie
+
+    t0 = datetime.now(timezone.utc)
+    server.now_response = httpx.Response(200, json=_fake_now(as_of=t0))
+    first = await reverie.build_reverie_day_cue("c-1", chain_id="chain-age", now=t0)
+    later = await reverie.build_reverie_day_cue("c-2", chain_id="chain-age", now=t0 + timedelta(minutes=30))
+    assert "(camera, 10 min ago)" in first.now_block
+    assert "(camera, 40 min ago)" in later.now_block
+    assert later.shown_id == first.shown_id and len(server.now_requests) == 1
+
+
+@pytest.mark.asyncio
+async def test_fallback_costs_the_slower_fetch_not_the_sum(server, monkeypatch):
+    """The arcs block is fetched alongside the now, so a timed-out now plus the arcs fetch take about
+    max(timeouts), not their sum."""
+    import app.reverie as reverie
+    import app.temporal_self_cue as cue_mod
+    from app.settings import settings
+
+    async def slow_now(*a, **k):
+        await asyncio.sleep(5)
+
+    async def slow_arcs(correlation_id, *, now=None):
+        await asyncio.sleep(0.3)
+        return "Recently closed today:\n- x [arc:a]", ["a"]
+
+    monkeypatch.setattr(cue_mod, "_get_now", slow_now)
+    monkeypatch.setattr(reverie, "build_recent_arcs_text", slow_arcs)
+    monkeypatch.setattr(settings, "reverie_now_fetch_timeout_sec", 0.3)
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    cue = await reverie.build_reverie_day_cue("c-1")
+    assert cue.source == "arcs" and cue.arc_ids == ("a",)
+    assert loop.time() - t0 < 0.55

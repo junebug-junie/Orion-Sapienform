@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 from uuid import UUID, uuid4
@@ -470,11 +470,14 @@ class ReverieDayCue:
     recent_arcs: str = ""
     arc_ids: tuple[str, ...] = ()
     fallback_reason: str | None = None
+    now: Any = None  # the TemporalNowV1 read, kept so each chain step renders fresh ages
 
 
 # One now per train of thought: every step of a chain sees the same shown now, and its cites are
-# posted against that one shown_id (the server caps cites at 3 per shown row, across calls).
+# posted against that one shown_id. The server caps cites at 3 per shown row ACROSS calls, so the ids
+# already accepted for a shown_id are remembered here and later steps only get the remaining budget.
 _CHAIN_DAY_CUES: dict[str, ReverieDayCue] = {}
+_SHOWN_CITED: dict[str, list[str]] = {}
 _CHAIN_DAY_CUES_MAX = 8
 
 
@@ -484,42 +487,72 @@ def _remember_chain_cue(chain_id: str, cue: ReverieDayCue) -> None:
         _CHAIN_DAY_CUES.pop(next(iter(_CHAIN_DAY_CUES)))
 
 
+def cited_so_far(shown_id: str | None) -> list[str]:
+    """Experience ids already accepted for this shown now (earlier steps of the same chain)."""
+    return list(_SHOWN_CITED.get(shown_id or "", []))
+
+
+def _remember_cited(shown_id: str, event_ids: list[str]) -> None:
+    got = _SHOWN_CITED.setdefault(shown_id, [])
+    got.extend(e for e in event_ids if e not in got)
+    while len(_SHOWN_CITED) > _CHAIN_DAY_CUES_MAX:
+        _SHOWN_CITED.pop(next(iter(_SHOWN_CITED)))
+
+
 async def build_reverie_day_cue(
     correlation_id: str, *, chain_id: str | None = None, now: datetime | None = None
 ) -> ReverieDayCue:
     """Read Orion's now for reverie (GET /temporal-self/now?organ=reverie). When the now is off on the
-    server (404), unreachable, slow or malformed, fall back to the recent-arcs block and log why.
-    Inside a chain the first step's cue is reused by later steps. Never raises."""
-    if chain_id and chain_id in _CHAIN_DAY_CUES:
-        return _CHAIN_DAY_CUES[chain_id]
-    fallback_reason: str | None = None
-    if settings.reverie_now_enabled:
-        try:
-            from .temporal_self_cue import REVERIE_ORGAN, fetch_now_bounded, render_now_block
+    server (404), unreachable, slow or malformed, fall back to the recent-arcs block and log why. The
+    arcs block is fetched at the same time and dropped when the now arrives, so a fallback costs
+    max(now timeout, arcs timeout), not their sum. Inside a chain the first step's read is reused by
+    later steps (ages re-rendered each step). Never raises."""
+    from .temporal_self_cue import render_now_block
 
-            run_ref = f"reverie_chain:{chain_id}" if chain_id else f"reverie_tick:{correlation_id}"
-            read = await fetch_now_bounded(settings.reverie_now_fetch_timeout_sec, organ=REVERIE_ORGAN,
-                                           run_ref=run_ref, correlation_id=correlation_id)
-            if read.ok:
-                assert read.now is not None
-                cue = ReverieDayCue(
-                    source="now",
-                    now_block=render_now_block(read.now, as_of=now),
-                    shown_id=read.now.shown_id,
-                    shown_event_ids=tuple(i.event_id for i in read.now.items),
-                )
-                logger.info("reverie_now corr=%s chain=%s shown_id=%s items=%d candidates=%d organs=%s",
-                            correlation_id, chain_id or "-", cue.shown_id, len(cue.shown_event_ids),
-                            read.now.candidates, ",".join(sorted({i.organ for i in read.now.items})) or "-")
-                if chain_id:
-                    _remember_chain_cue(chain_id, cue)
-                return cue
-            fallback_reason = read.reason
-        except Exception as exc:  # noqa: BLE001 -- a reverie tick must never fail on this read
-            fallback_reason = f"error:{type(exc).__name__}"
-        logger.info("reverie_now_fallback corr=%s chain=%s reason=%s", correlation_id, chain_id or "-",
-                    fallback_reason)
-    text, arc_ids = await build_recent_arcs_text(correlation_id, now=now)
+    cached = _CHAIN_DAY_CUES.get(chain_id) if chain_id else None
+    if cached is not None:
+        if cached.now is not None:
+            return replace(cached, now_block=render_now_block(cached.now, as_of=now))
+        return cached
+    if not settings.reverie_now_enabled:
+        text, arc_ids = await build_recent_arcs_text(correlation_id, now=now)
+        cue = ReverieDayCue(source="arcs", recent_arcs=text, arc_ids=tuple(arc_ids))
+        if chain_id:
+            _remember_chain_cue(chain_id, cue)
+        return cue
+
+    arcs_task = asyncio.create_task(build_recent_arcs_text(correlation_id, now=now))
+    fallback_reason: str | None = None
+    try:
+        from .temporal_self_cue import REVERIE_ORGAN, fetch_now_bounded
+
+        run_ref = f"reverie_chain:{chain_id}" if chain_id else f"reverie_tick:{correlation_id}"
+        read = await fetch_now_bounded(settings.reverie_now_fetch_timeout_sec, organ=REVERIE_ORGAN,
+                                       run_ref=run_ref, correlation_id=correlation_id)
+        if read.ok and read.now is not None:
+            arcs_task.cancel()
+            cue = ReverieDayCue(
+                source="now",
+                now_block=render_now_block(read.now, as_of=now),
+                shown_id=read.now.shown_id,
+                shown_event_ids=tuple(i.event_id for i in read.now.items),
+                now=read.now,
+            )
+            logger.info("reverie_now corr=%s chain=%s shown_id=%s items=%d candidates=%d organs=%s",
+                        correlation_id, chain_id or "-", cue.shown_id, len(cue.shown_event_ids),
+                        read.now.candidates, ",".join(sorted({i.organ for i in read.now.items})) or "-")
+            if chain_id:
+                _remember_chain_cue(chain_id, cue)
+            return cue
+        fallback_reason = read.reason
+    except Exception as exc:  # noqa: BLE001 -- a reverie tick must never fail on this read
+        fallback_reason = f"error:{type(exc).__name__}"
+    logger.info("reverie_now_fallback corr=%s chain=%s reason=%s", correlation_id, chain_id or "-",
+                fallback_reason)
+    try:
+        text, arc_ids = await arcs_task  # build_recent_arcs_text never raises
+    except Exception:  # noqa: BLE001 -- defense in depth
+        text, arc_ids = "", []
     cue = ReverieDayCue(source="arcs", recent_arcs=text, arc_ids=tuple(arc_ids), fallback_reason=fallback_reason)
     if chain_id:
         _remember_chain_cue(chain_id, cue)
@@ -543,9 +576,11 @@ async def record_reverie_now_use(cue: ReverieDayCue, thought: SpontaneousThought
         return
     if result is None:
         return
+    stored = [str(u.get("event_id")) for u in (result.get("uses") or []) if isinstance(u, dict)]
+    _remember_cited(cue.shown_id, stored)
     logger.info("reverie_now_use corr=%s shown_id=%s thought=%s cited=%d stored=%d not_shown=%d over_cap=%d",
                 correlation_id, cue.shown_id, thought.thought_id, len(thought.experience_cites),
-                len(result.get("uses") or []), len(result.get("rejected_not_shown") or []),
+                len(stored), len(result.get("rejected_not_shown") or []),
                 len(result.get("rejected_over_cap") or []))
 
 
@@ -747,6 +782,7 @@ def parse_reverie_payload(
     broadcast: AttentionBroadcastProjectionV1,
     strip_arc_ids: list[str] | None = None,
     now_event_ids: list[str] | tuple[str, ...] | None = None,
+    already_cited: list[str] | None = None,
 ) -> SpontaneousThoughtV1:
     """Build a SpontaneousThoughtV1 from LLM output, stamping the hollow guard.
 
@@ -788,13 +824,21 @@ def parse_reverie_payload(
     stray_experience = [r for r in evidence_refs if r.strip().strip("[]").startswith("experience:")]
     if stray_experience:
         evidence_refs = [r for r in evidence_refs if r not in stray_experience]
-        logger.info("reverie_evidence_experience_ref_moved corr=%s n=%s", correlation_id, len(stray_experience))
+        logger.info("reverie_evidence_experience_ref_moved corr=%s n=%s shown_now=%s",
+                    correlation_id, len(stray_experience), bool(now_event_ids))
     if now_event_ids:
+        from orion.schemas.reverie import MAX_EXPERIENCE_CITES
+
         from .temporal_self_cue import shown_cites
 
+        # The cap is per shown now: earlier chain steps' accepted cites use up the budget, and an id
+        # already cited is not stored again, so neither is kept on this thought.
+        done = set(already_cited or [])
+        budget = max(0, MAX_EXPERIENCE_CITES - len(done))
         raw_cites = data.get("cites")
         raw_cites = [str(x) for x in raw_cites] if isinstance(raw_cites, list) else []
-        experience_cites = shown_cites([*raw_cites, *stray_experience], now_event_ids)
+        experience_cites = shown_cites([*raw_cites, *stray_experience],
+                                       [e for e in now_event_ids if e not in done], cap=budget)
 
     # Phase E (Movement III): optional falsifiable claim about the room. Only
     # ever present when the prompt actually offered a recent_percepts block
@@ -1346,6 +1390,7 @@ async def run_reverie_once(
             broadcast=broadcast,
             strip_arc_ids=list(day_cue.arc_ids),
             now_event_ids=day_cue.shown_event_ids,
+            already_cited=cited_so_far(day_cue.shown_id),
         )
         if thought.expectation and not recent_percepts and (street_percepts or street_predictions):
             # The expectation is a claim about the ROOM, judged later against a

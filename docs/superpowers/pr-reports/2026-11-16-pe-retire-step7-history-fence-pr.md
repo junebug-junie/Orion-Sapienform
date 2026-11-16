@@ -148,9 +148,9 @@ No Redis state fix is needed: `equilibrium:self_signal_episodes:v1` tracks 0 epi
 
 - Severity: low. Concern: live signals' association intervals get narrower (family 25 to 10), so a clause can now render with less evidence than before. Mitigation: 10 is the correct family size. The live replay shows no new clause today, and the 6-hour hold rule still applies.
 - Severity: low. Concern: harness_closure history rows (110, newest 11-11) now disappear from the cache. Mitigation: they were already judged "unknown" placeholders and never opened or seeded anything.
-- Issues opened: #3505 (dead `substrate_prediction_raw_reading` table), #3506 (glossary count test failing on main), VERIFY_ISSUE (verify-live: association leak stopped after deploy).
+- Issues opened: #3505 (dead `substrate_prediction_raw_reading` table), #3506 (glossary count test failing on main), #3507 (verify-live + needs-juniper: leak stopped after deploy, then run the purge).
 - Issues closed: none.
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3508

@@ -184,6 +184,10 @@ readers:
     role: display
     reason: SHADOW event wants (one per finished read, salience = links made) posted to the market; nothing in Hub obeys the decision.
     note: attention as the want competition, patch 2; Prime reads the funded ones (orion-mind PRIME_CONCERNS_FROM_EVENT_WANTS)
+  - module: services/orion-hub/scripts/curiosity_event_wants.py
+    role: display
+    reason: SHADOW event wants (one per philosophical curiosity finding in the top tenth by novelty) posted to the market; nothing in Hub obeys the decision.
+    note: curiosity event wants step 3 (2026-11-16); Prime reads the funded ones (orion-mind PRIME_CONCERNS_FROM_EVENT_WANTS)
   - module: services/orion-hub/scripts/office_reach_out.py
     role: display
     reason: SHADOW event wants (one per office visit with a story, salience = activity novelty) posted to the market; nothing in Hub obeys the decision. The visit's chat message does not read it (Juniper 2026-11-05).

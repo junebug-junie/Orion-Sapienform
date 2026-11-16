@@ -235,6 +235,20 @@ families:
     # Spec: docs/superpowers/specs/2026-11-07-attention-patch3-market-decides-design.md section 2.
     lanes: [agent, agent-gpu2]
     placement: one_of
+  hub.curiosity_finding:
+    # 2026-11-16, curiosity event wants step 3: a new philosophical curiosity finding (curiosity_finding_register,
+    # register philosophical, novelty in the top tenth of the last 30 days of philosophical findings) posts an
+    # EVENT want (event_ref curiosity_run:<run_id>, verb infer). Producer: services/orion-hub/scripts/
+    # curiosity_event_wants.py. Shadow: no caller obeys it; Prime reads the funded ones as concerns.
+    # Tier 2: discretionary, like the curiosity run it comes from. No act-ledger actor (the want opens no act).
+    # 43200 (12 h): the only consumer is Prime's thought, and Prime's longest gap between thoughts was 6.0-6.05 h on
+    # every day 11-12..11-15 (QUIET_FLOOR); 12 h gives the finding at least one thought even when Prime is quiet.
+    # An idea does not perish like a read's follow-up look (3 h) or an office visit (2 h), but a day would let
+    # yesterday's findings crowd the menu. No lanes: the finding's model time is already spent (the want states
+    # no_slot_cost) and the thought is Prime's, which bids for its own lane.
+    tier: 2
+    deferrable_window_s: 43200
+    lanes: []
   thought.painting:
     tier: 2
     deferrable_window_s: 21600

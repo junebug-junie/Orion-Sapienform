@@ -502,7 +502,8 @@ def _build_market():
     latest prices from Redis orion:physiology:latest; decisions published on the long-lived rpc_bus."""
     from uuid import uuid4
 
-    from app.physiology_market import Market
+    from app.physiology_market import REFRESH_FRACTION, Market
+    from app.weights_worker import process_executor
     from orion.physiology.families import load_families
     from orion.schemas.physiology_want import WANT_DECISION_KIND
 
@@ -539,7 +540,9 @@ def _build_market():
         embed, close_embed = http_embedder(s.personality_embed_url,
                                            timeout_sec=s.physiology_personality_embed_timeout_sec)
     personality = PersonalityValues(enabled=values_on, pool_getter=lambda: _checkpointer_cm, embed=embed,
-                                    ttl_sec=max(60.0, float(s.physiology_bid_history_ttl_sec)),
+                                    # Read once per market refresher cycle (it is the only caller of kick,
+                                    # issue #3382); a TTL equal to the history TTL skipped every other cycle.
+                                    ttl_sec=max(60.0, float(s.physiology_bid_history_ttl_sec) * REFRESH_FRACTION),
                                     embed_timeout_sec=s.physiology_personality_embed_timeout_sec)
     if values_on:
         personality.set_closer(close_embed)
@@ -550,7 +553,9 @@ def _build_market():
                   history_ttl_sec=s.physiology_bid_history_ttl_sec, lane_window_sec=s.physiology_lane_window_sec,
                   stale_after_sec=s.physiology_bid_stale_after_sec,
                   prime_regulation=bool(getattr(s, "physiology_prime_regulation", False)),
-                  consent_rules=consent_rules, consent_error=consent_err, personality=personality)
+                  consent_rules=consent_rules, consent_error=consent_err, personality=personality,
+                  # Issue #3382: the 30-day weights replay runs in one worker process, off the bid loop's GIL.
+                  weights_executor=process_executor)
 
 
 def _build_chronicle():
@@ -768,7 +773,7 @@ async def lifespan(app: FastAPI):
             _market_refresh_task.cancel()
             await asyncio.gather(_market_refresh_task, return_exceptions=True)
         if market is not None:
-            await market.aclose()   # before the pool closes under an in-flight refresh
+            await market.aclose()   # before the pool closes under an in-flight refresh; stops the replay worker
         if situation is not None:
             await situation.close()
         if temporal_self is not None:

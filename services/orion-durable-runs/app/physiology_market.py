@@ -7,7 +7,10 @@
    ``act_downstream_use`` for the same window -- cached for ``ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC``
    (default 300 s; weights move at most 0.1 per day, appetite by minutes). The cache is kept warm in the
    background (``Market.run_refresher``) and served stale-while-revalidate, so a bid never waits on these
-   reads or the weights replay while any snapshot is servable (issue #3382);
+   reads or the weights replay while any snapshot is servable (issue #3382). The weights replay runs in a
+   worker process (``app.weights_worker``), so its CPU work cannot hold the bid loop's GIL, and only the
+   refresher starts one (a history refresh, a personality refresh, a new UTC day); a bid uses the last
+   weights. The per-bid appetite is built for the want's own family only (the only one a decision reads);
 3. the pure decision (``orion.physiology.choice.decide_priced``, after the consent gate) against the in-memory reservation book;
 4. the decision published on ``orion:physiology:want:decision`` (sql-writer -> ``want_ledger``).
 
@@ -58,13 +61,14 @@ with no servable snapshot, a failed read is ``physiology_unavailable`` for that 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import copy
 import json
 import logging
 import dataclasses
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from orion.physiology.appetite import ActRecord
 from orion.physiology.choice import (
@@ -84,9 +88,11 @@ from orion.physiology import prime_charge as pc
 from orion.physiology.binding import BINDING_PRODUCERS
 from orion.physiology.families import FamiliesConfig
 from orion.physiology.personality_values import trace_arm, trace_care
-from orion.physiology.weights import UseRecord, endorsement_exclusions, weights_now
+from orion.physiology.weights import UseRecord
 from orion.schemas.physiology import PhysiologyStateV1, parse_physiology_state
 from orion.schemas.physiology_want import WantDecisionV1, WantV1
+
+from app import weights_worker
 
 logger = logging.getLogger("orion-durable-runs.physiology_market")
 
@@ -197,7 +203,8 @@ class Market:
                  redis_getter, publish, history_ttl_sec: float = 300.0, lane_window_sec: float = 3600.0,
                  stale_after_sec: float = 360.0, prime_regulation: bool = False,
                  consent_rules: Optional[ConsentRules] = None, consent_error: Optional[str] = None,
-                 personality: Optional[Any] = None) -> None:
+                 personality: Optional[Any] = None,
+                 weights_executor: Optional[Callable[[], concurrent.futures.Executor]] = None) -> None:
         self.families = families
         self.families_error = families_error
         # The consent gate (attention patch 3d): config/physiology/consent.yaml. None (missing or malformed):
@@ -216,12 +223,16 @@ class Market:
         self._weights: Optional[tuple[Any, dict, dict, dict]] = None
         # Personality values (rev 4 Move 2): app.personality_values.PersonalityValues, or None (off).
         self.personality = personality
-        # Stale-while-revalidate (issue #3382): the one history refresh / weights replay in flight, and
-        # when the last refresh was started (bid-path retries after a failure are spaced by RETRY_SEC).
+        # Stale-while-revalidate (issue #3382): the one history refresh in flight, and when the last refresh
+        # was started (bid-path retries after a failure are spaced by RETRY_SEC).
         self._refresh_task: Optional[asyncio.Task] = None
-        self._weights_task: Optional[asyncio.Task] = None
         self._last_attempt: Optional[datetime] = None
-        self._weights_last_attempt: Optional[datetime] = None
+        # The weights replay's worker process (issue #3382): a factory (app.weights_worker.process_executor),
+        # built on first use and rebuilt after the worker dies. None: the replay runs in a thread (tests).
+        self._executor_factory = weights_executor
+        self._executor: Optional[concurrent.futures.Executor] = None
+        # The replay the worker runs: a module-level function (pickled by name).
+        self._replay = weights_worker.compute_weights
         self.book = ReservationBook()
         # Orion Prime step 3: apply Prime's regulate charges (ORION_PHYSIOLOGY_PRIME_REGULATION). Off: the
         # signal is never read; bids are exactly as before.
@@ -239,10 +250,15 @@ class Market:
         if t is not None and not t.done():
             return t
         self._last_attempt = now
-        t = asyncio.create_task(asyncio.wait_for(self._refresh(now), timeout=min(REFRESH_TIMEOUT_SEC, self._ttl)))
+        t = asyncio.create_task(self._refresh_bounded(now))
         t.add_done_callback(self._refresh_done)
         self._refresh_task = t
         return t
+
+    async def _refresh_bounded(self, now: datetime) -> _Cached:
+        # The refresh coroutine is created inside the task, so a task cancelled before it starts (shutdown)
+        # leaves no never-awaited coroutine behind.
+        return await asyncio.wait_for(self._refresh(now), timeout=min(REFRESH_TIMEOUT_SEC, self._ttl))
 
     def _refresh_done(self, t: asyncio.Task) -> None:
         if t.cancelled():
@@ -298,21 +314,66 @@ class Market:
     async def run_refresher(self, stop: asyncio.Event) -> None:
         """Keep the snapshot warm (issue #3382): refresh at boot, then every ``REFRESH_FRACTION`` of the
         TTL, so a bid after a quiet gap finds a fresh snapshot instead of paying a cold read. A failed
-        refresh keeps the last snapshot and is retried next interval."""
+        refresh keeps the last snapshot and is retried next interval. Each cycle: the personality read
+        first (its TTL decides whether it reads), then the history (whose replay then uses that personality),
+        then ``reconcile_weights`` (a new UTC day or personality read the history refresh did not cover).
+        The only place a weights replay starts once weights exist: never a bid."""
         if self.families is None:
             return
         interval = max(1.0, self._ttl * REFRESH_FRACTION)
         while not stop.is_set():
+            # At boot (no snapshot yet) the personality read is started but not awaited: a cold read (empty
+            # embedding cache) must not delay the first snapshot; reconcile_weights picks it up next cycle.
+            await self._refresh_personality(datetime.now(timezone.utc), wait=self._cache is not None)
             try:
                 await asyncio.shield(self._kick_refresh(datetime.now(timezone.utc)))
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 -- logged by _refresh_done; keep the loop alive
                 pass
+            await self.reconcile_weights(datetime.now(timezone.utc))
             try:
                 await asyncio.wait_for(stop.wait(), timeout=interval)
             except asyncio.TimeoutError:
                 pass
+
+    async def _refresh_personality(self, now: datetime, *, wait: bool = True) -> None:
+        """Start the personality read when its TTL is up (``PersonalityValues.kick``) and wait for it, bounded.
+        Never raises: a failed or slow read keeps the last personality snapshot."""
+        if self.personality is None:
+            return
+        t = self.personality.kick(now)
+        if t is None or not wait:
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(t), timeout=REFRESH_TIMEOUT_SEC)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- the read logs its own failure; a slow one finishes in the background
+            logger.warning("personality_values_refresh_wait_failed", exc_info=True)
+
+    async def reconcile_weights(self, now: datetime) -> None:
+        """Replay the weights when the current snapshot's key moved (a new UTC day, a new personality read) and
+        no history refresh is in flight (that one brings its own). Called by the refresher only. Never raises:
+        a failure keeps the last weights."""
+        hist = self._cache
+        if hist is None or (self._refresh_task is not None and not self._refresh_task.done()):
+            return
+        if self._weights is not None:
+            if self._weights[0] == self._weights_key(hist, now):
+                return
+            if now.astimezone(timezone.utc).date() < self._weights[0][1]:
+                return          # a late caller's earlier day must not replace today's weights
+        try:
+            w = await self._compute_weights_entry(hist, now)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self.counts["weights_refresh_failed"] += 1
+            logger.warning("physiology_bid_weights_refresh_failed err=%r (kept the last weights)", exc)
+            return
+        if self._cache is hist:             # a refresh that landed meanwhile brought its own weights
+            self._weights = w
 
     async def _state(self) -> Optional[PhysiologyStateV1]:
         from orion.schemas.physiology import PHYSIOLOGY_STATE_REDIS_KEY
@@ -326,7 +387,10 @@ class Market:
             logger.warning("physiology_bid_state_read_failed", exc_info=True)
             return None
 
-    async def context(self, state: Optional[PhysiologyStateV1], now: datetime) -> Optional[MarketContext]:
+    async def context(self, state: Optional[PhysiologyStateV1], now: datetime,
+                      family: Optional[str] = None) -> Optional[MarketContext]:
+        """``family``: build the appetite for that family only (a bid reads only its own; ~40 ms instead of
+        ~0.2 s on the live history, 2026-11-16). None: every bidding family."""
         if self.families is None:
             return None
         try:
@@ -337,7 +401,8 @@ class Market:
         await self._ensure_weights(hist, now)
         with_c, without_c = self._weights[1], self._weights[2]
         ctx = build_context(self.families, hist.acts, hist.uses, state, now, lane_window_sec=self._lane_window,
-                            weights=with_c, event_history=hist.events)
+                            weights=with_c, event_history=hist.events,
+                            only_families=None if family is None else (family,))
         # dataclasses.replace keeps every field (C1 rebuilt the context by hand and dropped
         # tier1_recent_use, so Tier 2's line forgot Tier 1's measured use).
         return dataclasses.replace(ctx, stale_after_sec=self._stale,
@@ -348,53 +413,28 @@ class Market:
                 self.personality.snapshot_at() if self.personality is not None else None)
 
     async def _ensure_weights(self, hist: "_Cached", now: datetime) -> None:
-        """Today's weights, with and without source (c), once per history snapshot, day and personality read.
-        A bid never waits on the replay when weights exist (issue #3382): a changed key (a new UTC day, a new
-        personality read) keeps the last weights and recomputes them in the background. Only the very
-        first weights (none at all) are computed inline."""
-        key = self._weights_key(hist, now)
-        if self._weights is not None and self._weights[0] == key:
-            return
+        """Weights exist: use them, whatever their key (issue #3382). A bid never starts a replay: a new UTC
+        day or a new personality read is replayed by the refresher (``reconcile_weights``), and a history
+        refresh brings its own. Only when there are no weights at all (boot) is the replay awaited here."""
         if self._weights is not None:
-            self._kick_weights(hist, now)
             return
         w = await self._compute_weights_entry(hist, now)
         if self._weights is None or self._cache is hist:    # never overwrite a newer snapshot's weights
             self._weights = w
 
-    def _kick_weights(self, hist: "_Cached", now: datetime) -> None:
-        t = self._weights_task
-        if t is not None and not t.done():
-            return
-        if self._refresh_task is not None and not self._refresh_task.done():
-            return              # the refresh in flight computes fresh weights with its snapshot
-        if self._weights is not None and now.astimezone(timezone.utc).date() < self._weights[0][1]:
-            return              # a late caller's earlier day must not replace today's weights
-        last = self._weights_last_attempt
-        if last is not None and (now - last).total_seconds() < min(RETRY_SEC, self._ttl):
-            return              # after a failed replay, retry at most once per RETRY_SEC
-        self._weights_last_attempt = now
-
-        async def run() -> None:
-            w = await self._compute_weights_entry(hist, now)
-            if self._cache is hist:         # a refresh that landed meanwhile brought its own weights
-                self._weights = w
-
-        t = asyncio.create_task(run())
-        t.add_done_callback(self._weights_done)
-        self._weights_task = t
-
-    def _weights_done(self, t: asyncio.Task) -> None:
-        if not t.cancelled() and t.exception() is not None:
-            self.counts["weights_refresh_failed"] += 1
-            logger.warning("physiology_bid_weights_refresh_failed err=%r (kept the last weights)", t.exception())
-
     async def _compute_weights_entry(self, hist: "_Cached", now: datetime) -> tuple[Any, dict, dict, dict]:
-        """(key, with source (c), without it, endorsement checks). The replay (~0.6 s each on a live
-        30-day history, 2026-11-13) runs in a worker thread, off the loop."""
+        """(key, with source (c), without it, endorsement checks). The replay (~1.8-3.3 s on the live 30-day
+        history) runs in the worker process when there is one (``app.weights_worker``), else in a thread."""
         choices = self.personality.choices() if self.personality is not None else None
         key = self._weights_key(hist, now)
-        base, with_c, checks = await asyncio.to_thread(self._compute_weights, hist, now, choices)
+        if self._executor_factory is not None:
+            base, with_c, checks = await self._replay_in_process(hist, now, choices)
+        else:
+            base, with_c, checks = await asyncio.to_thread(self._compute_weights, hist, now, choices)
+        if choices is None:
+            # No source (c): one set of weights. Said here, not left to object identity surviving a pickle
+            # (context() reads ``with_c is not without_c`` to decide whether the holdback arm has its own).
+            with_c = base
         if choices is not None:
             for f, w in sorted(with_c.items()):
                 chk = checks.get(f)
@@ -407,15 +447,28 @@ class Market:
                             chk.paired_days if chk else 0, bool(chk and chk.excluded), w.weight, base[f].weight)
         return (key, with_c, base, checks)
 
+    async def _replay_in_process(self, hist: "_Cached", now: datetime,
+                                 choices: Optional[list]) -> tuple[dict, dict, dict]:
+        """Pack the inputs in a thread (chunked pickles: the GIL goes back to the loop between chunks), then
+        replay in the worker process. A dead worker is dropped, so the next replay starts a new one."""
+        packed = await asyncio.to_thread(weights_worker.pack, self.families, hist.acts, hist.uses, now, choices)
+        if self._executor is None:
+            self._executor = self._executor_factory()
+        ex = self._executor
+        try:
+            return await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(ex, weights_worker.run_packed, self._replay, packed),
+                timeout=REFRESH_TIMEOUT_SEC)
+        except (concurrent.futures.BrokenExecutor, asyncio.TimeoutError):
+            # Dead or stuck: drop it (a stuck one is killed, which a thread could not be), so the next replay
+            # starts a new worker instead of queueing behind it.
+            if self._executor is ex:
+                self._executor = None
+                weights_worker.kill(ex)
+            raise
+
     def _compute_weights(self, hist: "_Cached", now: datetime, choices: Optional[list]) -> tuple[dict, dict, dict]:
-        base = weights_now(self.families, hist.acts, hist.uses, now)
-        if choices is None:
-            return base, base, {}
-        checks = endorsement_exclusions(self.families, hist.acts, choices, now)
-        excluded = frozenset(f for f, c in checks.items() if c.excluded)
-        with_c = weights_now(self.families, hist.acts, hist.uses, now, choices=choices,
-                             endorsement_excluded=excluded)
-        return base, with_c, checks
+        return weights_worker.compute_weights(self.families, hist.acts, hist.uses, now, choices)
 
     async def _personality_term(self, want: WantV1, object_text: Optional[str], ctx: MarketContext,
                                 checks: dict, embed_wait_sec: Optional[float] = None) -> Optional[Any]:
@@ -441,13 +494,11 @@ class Market:
         topic), for the care term. None: care 0 (``no_object_text``). ``embed_wait_sec``: the most this bid
         waits for that text's embedding (HTTP callers have a short budget); past it, care 0."""
         now = now or datetime.now(timezone.utc)
-        if self.personality is not None:
-            self.personality.kick(now)
         # The consent gate first (patch 3d): a refused or unconsented act is deferred before any read, so no
         # missing market ("no answer", which binding producers admit) can let it through.
         verdict, deferral = consent_gate(want, self.consent_rules, now, families=self.families)
         state = await self._state() if deferral is None else None
-        ctx = await self.context(state, now) if deferral is None else None
+        ctx = await self.context(state, now, family=want.family) if deferral is None else None
         checks = self._weights[3] if self._weights is not None else {}
         if deferral is not None:
             decision = deferral
@@ -585,11 +636,14 @@ class Market:
                     sig.signal_id, sig.act_id)
 
     async def aclose(self) -> None:
-        """Cancel the refresh and weights tasks in flight (shutdown, before the pool closes)."""
-        tasks = [t for t in (self._refresh_task, self._weights_task) if t is not None and not t.done()]
+        """Cancel the refresh in flight (shutdown, before the pool closes) and stop the replay worker."""
+        tasks = [t for t in (self._refresh_task,) if t is not None and not t.done()]
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        if self._executor is not None:
+            weights_worker.kill(self._executor)
+            self._executor = None
 
     def release(self, want_id: str) -> int:
         return self.book.release(want_id)
@@ -611,6 +665,12 @@ class Market:
         now = now or datetime.now(timezone.utc)
         return {"families": len(self.families.families) if self.families else 0,
                 "families_error": self.families_error, "history_cached_at": self._cache.at.isoformat() if self._cache else None,
+                # The weights' key (issue #3382): which snapshot, UTC day and personality read they were replayed for.
+                "weights_history_at": self._weights[0][0].isoformat() if self._weights else None,
+                "weights_day": self._weights[0][1].isoformat() if self._weights else None,
+                "weights_personality_at": (self._weights[0][2].isoformat()
+                                           if self._weights and self._weights[0][2] is not None else None),
+                "weights_worker": self._executor is not None,
                 "reservations": len(self.book.snapshot(now)), "funded_seeded": self.book.funded_seeded,
                 "prime_regulation": self.prime_regulation,
                 "consent_rules": len(self.consent_rules.rules) if self.consent_rules else 0,

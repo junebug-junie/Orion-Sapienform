@@ -1266,7 +1266,12 @@ placement = the cheapest acceptable lane with room; a seat with 0 live slots is 
   0.5 s timeout) returns `None` on any failure and the caller keeps its own gate.
 
 Reads: Redis `orion:physiology:latest`, and `grammar_acts` + `act_downstream_use` (30 days, cached
-`ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC`). Debug: `GET /physiology/reservations`; `/health` ->
+`ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC`, refreshed in the background so a bid never waits on these reads).
+The 30-day family-weights replay (~2-3 s of pure-Python CPU work) runs in one worker process
+(`app/weights_worker.py`), not in the process that answers bids. Once weights exist, only the background
+refresher starts a replay: after a history refresh, after a personality refresh, or on a new UTC day. A bid
+uses the last weights it has (issue #3382: a replay in a thread held the GIL and pushed bids past the 0.5 s
+client budget). Each bid builds the appetite for its own family only. Debug: `GET /physiology/reservations`; `/health` ->
 `physiology_market`. Off: `ORION_PHYSIOLOGY_BID_ENABLED=false` (the route answers 503). Read-only
 sample against live prices: `scripts/analysis/sample_body_economy_bids.py`.
 

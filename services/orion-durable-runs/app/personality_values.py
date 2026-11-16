@@ -5,7 +5,8 @@ Pure math: ``orion.physiology.personality_values`` (care, holdback, runaway guar
 ``orion.physiology.weights`` (source (c)). This module does the reads and the embedding, for
 ``app.physiology_market.Market``:
 
-* ``refresh`` (a background task, at most once per ``ttl_sec``; never on a bid's path): reads the active
+* ``refresh`` (a background task started by ``Market.run_refresher``, at most once per ``ttl_sec``; never
+  from a bid, issue #3382): reads the active
   tendencies (``personality_disposition``, ``origin = 'choice'``, ``status = 'active'``) and the last 30 days
   of ``personality_choice`` rows. The rows become source (c)'s ``ChoiceRecord``s. The last 7 days' SHOWN
   options are embedded (cached by text) and each is matched to the tendency it most cares about: the

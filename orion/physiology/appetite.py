@@ -50,6 +50,7 @@ Pure: the caller passes the act history and ``now``.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Iterable, Mapping, Optional, Sequence
@@ -157,10 +158,10 @@ def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: dat
     values: list[float] = []
     for a in sorted(in_win, key=lambda x: x.opened_at or x.closed_at):
         t0 = a.opened_at or a.closed_at
-        prev = [c for c in closes if c < t0]
-        if not prev:
+        k = bisect_left(closes, t0)      # closes[k-1]: the last close before t0 (closes is sorted)
+        if k == 0:
             continue      # the family's first act: its hunger is unknown, not 0 or 1
-        i = intensity((t0 - prev[-1]).total_seconds(), tau)
+        i = intensity((t0 - closes[k - 1]).total_seconds(), tau)
         if graded:
             if not a.graded:
                 continue  # a graded family ranks graded acts only

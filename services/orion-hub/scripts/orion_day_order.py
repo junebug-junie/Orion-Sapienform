@@ -125,6 +125,7 @@ class OrionDayOrderDesk:
         pool_provider: Callable[[], Any],
         durable: Any,
         temporal_day_enabled: bool = True,
+        organ_roundup_enabled: bool = True,
         prior_reader_provider: Callable[[], Any] | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
@@ -133,6 +134,8 @@ class OrionDayOrderDesk:
         self.durable = durable
         # Temporal Self patch 4 (TEMPORAL_SELF_DAY_BLOCK_ENABLED): read the closed day's own chronology.
         self.temporal_day_enabled = bool(temporal_day_enabled)
+        # Integration patch 4 (ORION_DAY_ORGAN_ROUNDUP_ENABLED): read the daily organ roundup.
+        self.organ_roundup_enabled = bool(organ_roundup_enabled)
         # Orion's graph, read-only: credits a belief a read moved ("What I read").
         self._prior_lookup = prior_lookup_from_reader(prior_reader_provider) if prior_reader_provider else None
         self._clock = clock or (lambda: datetime.now(timezone.utc))
@@ -205,6 +208,7 @@ class OrionDayOrderDesk:
                     conn, day, now=self._clock(), timeout_sec=order.timeout_sec,
                     temporal_day=self.temporal_day_enabled, prior_lookup=self._prior_lookup,
                     prime_act_id=order.prime_act_id, missed_letters=missed,
+                    organ_roundup=self.organ_roundup_enabled,
                 )
         except OrionDayEmptyError:
             return self._result(order, "empty_day", run_id=None, detail="the day holds nothing to write about")

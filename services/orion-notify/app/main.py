@@ -639,10 +639,9 @@ async def _init_bus() -> OrionBusAsync | None:
 # receiving.
 #
 # Safe to change, with one correction to an earlier claim in this file: it is
-# NOT true that "nothing filters on the stored column" -- services/
-# orion-notify-digest/app/digest.py:124,135 filter `status == "throttled"` and
-# `== "deduped"`. Neither value was ever written and neither is written here, so
-# those counters are unaffected, but the justification was wrong as stated. What
+# NOT true that "nothing filters on the stored column" -- the retired
+# orion-notify-digest filtered `status == "throttled"` / `"deduped"`, and the daily
+# organ roundup (orion/dig/organs.py) counts requests by status. What
 # IS true is the part that matters for paging: the attention view derives its own
 # status from `attention_acked_at` (api_notify.py::_attention_to_schema), so
 # `/attention?status=pending` -- which health_monitor._has_open_alert depends on

@@ -73,6 +73,10 @@ COPY orion /app/orion
 # tick dies and the loop retries the same miss. Same COPY the field digester
 # already uses; do not rely on the /repo mount.
 COPY config/field /app/config/field
+# The organ registry: the day letter's gather reads the daily organ roundup (orion/dig/organs.py), which
+# enumerates organs from it (orion/integration/organs.py: parents[2]/config/integration, /app here).
+# Same COPY orion-durable-runs uses.
+COPY config/integration/organs.yaml /app/config/integration/organs.yaml
 
 # Vendor autonomy-gate pure helpers for Hub Drives Analytics (avoids relying solely
 # on the repo volume mount for ORION_REPO_ROOT=/repo).

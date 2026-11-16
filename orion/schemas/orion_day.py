@@ -273,6 +273,20 @@ class OrionDayCorrectionV1(_Model):
     priors_moved: list[str] | None = None
 
 
+class OrganRoundupV1(_Model):
+    """The daily dig roundup for the letter's day (integration Part A.7; ``orion/dig/organs.py``, the same
+    text ``dig organs <date>`` prints): what each registered organ did, as lines that are each a count, a
+    quote or a ref. ``refs`` are the ``experience:<id>`` / ``act:<id>`` refs in the lines (the letter turn
+    may cite them). ``unread`` names each query that failed (that part is missing, not empty)."""
+
+    day: date
+    lines: list[str] = Field(default_factory=list)
+    refs: list[str] = Field(default_factory=list)
+    unread: dict[str, str] = Field(default_factory=dict)
+    use_rate: float | None = None
+    closed_organs: list[str] = Field(default_factory=list)
+
+
 class OrionDayMaterialV1(_Model):
     """Everything gathered for one Denver calendar day, full length."""
 
@@ -316,6 +330,11 @@ class OrionDayMaterialV1(_Model):
     # outcomes, threads with Juniper, the body's day -- rendered from the closed day by a fixed
     # template (orion/orion_day/temporal_core.py), cited by [arc:<id>] / [event:<id>]. Same rule.
     temporal_core: TemporalSelfDayBlockV1 | None = None
+    # Added 2026-11-16 (integration patch 4): the daily dig roundup. None = not read (Hub's
+    # ORION_DAY_ORGAN_ROUNDUP_ENABLED off). ROLLOUT as ``juniper_chat``: Hub writes it into the brief
+    # durable-runs reads, and durable-runs writes it back in the letter row Hub reads; both are forbid
+    # readers. Deploy orion-hub and orion-durable-runs together, outside the letter's 08:30 fire window.
+    organ_roundup: OrganRoundupV1 | None = None
     sources: dict[str, OrionDaySourceStatusV1] = Field(default_factory=dict)
 
     @model_validator(mode="after")

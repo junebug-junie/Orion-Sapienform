@@ -536,3 +536,38 @@ def test_provenance_shows_the_writing_turn_and_the_missed_days():
     plain = _letter(material=material)
     assert 'data-section="provenance"' not in email.render_html(plain, [])
     assert "unified turn" not in email.render_text(plain, [])
+
+
+# --- integration patch 4: "What each organ did" ----------------------------------------------------------
+
+ROUNDUP = ["organs 2026-09-29 (Denver): 16 organs, 7 experiences",
+           "dream: 2 experiences (dream_cycle 2)",
+           '  "dream cycle: <pressure>" [experience:dream_cycle:dc-1] salience none']
+
+
+def _roundup_letter():
+    from orion.schemas.orion_day import OrganRoundupV1
+
+    m = _material().model_copy(update={"organ_roundup": OrganRoundupV1(day=LETTER_DATE, lines=ROUNDUP,
+                                                                       refs=["experience:dream_cycle:dc-1"])})
+    return _letter(material=m)
+
+
+def test_email_has_what_each_organ_did_below_the_letter_in_both_parts():
+    letter = _roundup_letter()
+    text = email.render_text(letter, [])
+    assert f"## {email.ORGAN_ROUNDUP_HEADING}" in text
+    assert text.index("## Threads I am carrying") < text.index(email.ORGAN_ROUNDUP_HEADING) < text.index("# What the day held")
+    for line in ROUNDUP:
+        assert line in text  # every line as written
+    html = email.render_html(letter, [])
+    assert 'data-section="organ-roundup"' in html and email.ORGAN_ROUNDUP_HEADING in html
+    assert html.index('data-section="carry-forward"') < html.index('data-section="organ-roundup"')
+    assert "&lt;pressure&gt;" in html and "<pressure>" not in html  # escaped, never raw HTML
+    assert "[experience:dream_cycle:dc-1]" in html
+
+
+def test_email_without_a_roundup_has_no_empty_section():
+    letter = _letter()
+    assert email.ORGAN_ROUNDUP_HEADING not in email.render_text(letter, [])
+    assert 'data-section="organ-roundup"' not in email.render_html(letter, [])

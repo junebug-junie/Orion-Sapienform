@@ -62,7 +62,7 @@ class Settings(BaseSettings):
 
     actions_subscribe_channel: str = Field("orion:collapse:triage", alias="ACTIONS_SUBSCRIBE_CHANNEL")
     actions_subscribe_channels: str = Field(
-        "orion:collapse:triage,orion:collapse:stored,orion:actions:trigger:daily_pulse.v1,orion:actions:trigger:daily_metacog.v1,orion:actions:trigger:journal.v1,orion:notify:persistence:request,orion:world_pulse:run:result",
+        "orion:collapse:triage,orion:collapse:stored,orion:actions:trigger:daily_pulse.v1,orion:actions:trigger:daily_metacog.v1,orion:actions:trigger:journal.v1,orion:world_pulse:run:result",
         alias="ACTIONS_SUBSCRIBE_CHANNELS",
     )
     actions_audit_channel: str = Field("orion:actions:audit", alias="ACTIONS_AUDIT_CHANNEL")
@@ -88,14 +88,10 @@ class Settings(BaseSettings):
 
     actions_recall_profile: str = Field("collapse_mirror.v1", alias="ACTIONS_RECALL_PROFILE")
     # Journal-specific recall: same env keys in .env_example and docker-compose `environment` → _run_journal in main.py
-    # (trigger_kind daily_summary+scheduler / notify_summary / world_pulse_digest).
+    # (trigger_kind daily_summary+scheduler / world_pulse_digest).
     actions_journal_scheduler_recall_profile: str = Field(
         "journal.daily.grounded.v1",
         alias="ACTIONS_JOURNAL_SCHEDULER_RECALL_PROFILE",
-    )
-    actions_journal_notify_recall_profile: str = Field(
-        "journal.notify.grounded.v1",
-        alias="ACTIONS_JOURNAL_NOTIFY_RECALL_PROFILE",
     )
     # chat is Juniper's reserved Hub lane; see scripts/check_chat_route_poachers.py
     actions_llm_route: str = Field("metacog", alias="ACTIONS_LLM_ROUTE")
@@ -254,7 +250,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "actions_journal_scheduler_recall_profile",
-        "actions_journal_notify_recall_profile",
         "actions_journal_world_pulse_recall_profile",
         mode="before",
     )

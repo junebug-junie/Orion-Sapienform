@@ -11,7 +11,6 @@ from uuid import UUID, uuid4, uuid5
 
 from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorStoredV1
 from orion.schemas.cortex.contracts import CortexClientContext, CortexClientRequest, RecallDirective
-from orion.schemas.notify import NotificationRecord
 from orion.schemas.world_pulse import CuriosityFollowupV1, WorldPulseRunResultV1
 
 from .schemas import JournalEntryDraftV1, JournalEntryWriteV1, JournalMode, JournalTriggerV1
@@ -150,18 +149,6 @@ def build_scheduler_trigger(*, summary: str, prompt_seed: str | None = None, sou
         trigger_kind="daily_summary",
         source_kind="scheduler",
         source_ref=source_ref,
-        summary=summary,
-        prompt_seed=prompt_seed,
-    )
-
-
-def build_notify_summary_trigger(record: NotificationRecord) -> JournalTriggerV1:
-    prompt_seed = record.body_md or record.body_text
-    summary = (record.body_text or record.title or "").strip() or f"Notify summary: {record.event_kind}"
-    return JournalTriggerV1(
-        trigger_kind="notify_summary",
-        source_kind="notify",
-        source_ref=str(record.notification_id),
         summary=summary,
         prompt_seed=prompt_seed,
     )

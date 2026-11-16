@@ -24,6 +24,10 @@ on:
       - "orion/cognition/verbs/skills.physiology.state.v1.yaml"
       - "services/orion-cortex-exec/app/verb_adapters.py"
       - "services/orion-cortex-exec/tests/test_skill_verbs.py"
+      - "config/integration/**"            # `dig organs` enumerates the organ registry
+      - "orion/integration/**"
+      - "orion/temporal_self/now.py"
+      - "scripts/report_integration_coverage.py"   # test_organs.py pins the roundup's footer to it
       - ".github/workflows/dig-kit-tests.yml"
   push:
     branches: [main]
@@ -49,6 +53,10 @@ on:
       - "orion/cognition/verbs/skills.physiology.state.v1.yaml"
       - "services/orion-cortex-exec/app/verb_adapters.py"
       - "services/orion-cortex-exec/tests/test_skill_verbs.py"
+      - "config/integration/**"            # `dig organs` enumerates the organ registry
+      - "orion/integration/**"
+      - "orion/temporal_self/now.py"
+      - "scripts/report_integration_coverage.py"   # test_organs.py pins the roundup's footer to it
       - ".github/workflows/dig-kit-tests.yml"
 
 jobs:

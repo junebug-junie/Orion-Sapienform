@@ -33,7 +33,6 @@ from orion.journaler import (
     build_collapse_stored_trigger,
     build_compose_request,
     build_manual_trigger,
-    build_notify_summary_trigger,
     build_scheduler_trigger,
     build_write_payload,
     cooldown_key_for_trigger,
@@ -45,7 +44,7 @@ from orion.schemas.collapse_mirror import CollapseMirrorEntryV2, CollapseMirrorS
 from orion.schemas.compactor_digest_run import COMPACTOR_DIGEST_WORKFLOW
 from orion.schemas.durable_run import DURABLE_RUN_STATE_CHANNEL, DURABLE_RUN_STATE_KIND, DurableRunStateV1
 from orion.schemas.cortex.schemas import PlanExecutionArgs, PlanExecutionRequest
-from orion.schemas.notify import NotificationRecord, NotificationRequest
+from orion.schemas.notify import NotificationRequest
 from orion.self_monitor.gate import ActGate, last_attempt_sql, read_view_sync
 from orion.self_monitor.view import TRACK_RECORD_FAILING_REASON
 from . import act_emit
@@ -1425,14 +1424,12 @@ async def lifespan(app: FastAPI):
         sched_daily = tk == "daily_summary" and sk == "scheduler"
         if sched_daily:
             recall_profile = settings.actions_journal_scheduler_recall_profile
-        elif tk == "notify_summary":
-            recall_profile = settings.actions_journal_notify_recall_profile
         elif tk == "world_pulse_digest":
             recall_profile = settings.actions_journal_world_pulse_recall_profile
         else:
             recall_profile = settings.actions_recall_profile
 
-        if sched_daily or tk in {"notify_summary", "world_pulse_digest"}:
+        if sched_daily or tk == "world_pulse_digest":
             logger.info(
                 "journal_compose profile=%s trigger_kind=%s recall_enabled=true",
                 recall_profile,
@@ -2012,20 +2009,9 @@ async def lifespan(app: FastAPI):
             dedupe_key=cooldown_key_for_trigger(trigger),
         )
 
-    async def _handle_journal_notify(env: BaseEnvelope) -> None:
-        try:
-            record = NotificationRecord.model_validate(env.payload)
-        except Exception:
-            return
-        if record.event_kind != "orion.digest.daily":
-            return
-        trigger = build_notify_summary_trigger(record)
-        await _dispatch_journal(
-            env,
-            trigger=trigger,
-            audit_action="journal.notify_summary",
-            dedupe_key=cooldown_key_for_trigger(trigger),
-        )
+    # The notify_summary journal (one journal entry per "Orion Daily Digest" email) is retired with that
+    # email (2026-11-16, integration patch 4): orion-notify-digest is deleted, so no orion.digest.daily
+    # record is ever published again. The daily organ roundup in the day letter carries those counts.
 
     async def _handle_world_pulse_run_result_journal(env: BaseEnvelope) -> bool:
         # Submitted as an admitted journal.compose durable run (GPU pool hold, restart-durable,
@@ -2277,9 +2263,6 @@ async def lifespan(app: FastAPI):
             return
         if kind == "orion.actions.trigger.journal.v1":
             await _handle_journal_manual(env)
-            return
-        if kind == "notify.notification.request.v1":
-            await _handle_journal_notify(env)
             return
         if kind == "world.pulse.run.result.v1":
             if await _handle_world_pulse_run_result_journal(env):

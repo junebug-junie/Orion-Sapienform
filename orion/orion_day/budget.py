@@ -59,7 +59,7 @@ MIN_CLIP_CHARS = 400
 
 _REF_RE = re.compile(r"\[((?:curiosity|curiosity_failed|self_sense|reading|reading_journal|dream|dream_offered|"
                      r"chat_compactor|github_compactor|world_pulse_digest|walkway_day|visual_reverie|reverie|reverie_theme|correction|"
-                     r"arc|day|event|juniper_chat)"
+                     r"arc|day|event|juniper_chat|experience|act)"
                      r":[^\]\s]+)\]")
 
 

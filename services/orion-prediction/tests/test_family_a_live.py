@@ -159,9 +159,12 @@ def test_gate_refuses_a_stale_input_and_stores_why_never_a_degraded_forecast():
 
 def test_a_target_resting_flat_inside_its_band_is_issued_and_scored_not_refused():
     # Regression, live 2026-11-14: office PM2.5 resting at 0 for 24 h refused every bucket ("one_value").
-    # Flatten s.x for the last 23 h before selection and on: its 24 h gate window is ~96 % one value.
+    # Flatten s.x AT ITS FLOOR for the last 23 h before selection and on: its 24 h gate window is ~96 % one
+    # value. (Flat at a non-floor value is a frozen sensor, refused since #3370 -- see the test below.)
     f = _frame()
-    f.loc[DAY7 - timedelta(hours=23):, "s.x"] = 20.0
+    rest = float(f.loc[:DAY7 - timedelta(hours=23), "s.x"].quantile(0.05))
+    f["s.x"] = f["s.x"].clip(lower=rest)          # a floor it rests on every day, like PM2.5's 0
+    f.loc[DAY7 - timedelta(hours=23):, "s.x"] = rest
     live, _l = _live(f)
     now = DAY7 + timedelta(minutes=6)
     live.tick(now)
@@ -178,7 +181,30 @@ def test_a_target_resting_flat_inside_its_band_is_issued_and_scored_not_refused(
     for j in scored:
         assert j["n_observed"] == 2 and np.isfinite(j["d2"]) and np.isfinite(j["excess"]) and 0 < j["p"] <= 1
     flat = [r for r in live.store.forecasts if r["series_id"] == fl.PREFIX + "s.x" and r.get("score_status") == "scored"]
-    assert flat and all(r["actual"] == 20.0 and np.isfinite(r["abs_error"]) for r in flat)
+    assert flat and all(r["actual"] == rest and np.isfinite(r["abs_error"]) for r in flat)
+
+
+def test_a_sensor_frozen_after_select_refuses_buckets_until_the_next_select_drops_it():
+    """#3370: frozen at a normal-looking value it never read as calm. Issue refuses (flat_beyond_training)
+    until the next select (6 h), which drops the input and serves the rest without it."""
+    f = _frame()
+    live, _l = _live(f)
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    assert live.served.named["s.x"] == fa.TARGET and live.served.flat_ceilings["s.x"] < 0.2
+    f.loc[DAY7 - timedelta(hours=24):, "s.x"] = 21.37                 # stuck, inside its band, not its floor
+    first_select = live.served.run_id
+    for _ in range(80):                                                # ~6 h 40 min: one more select
+        now += G
+        live.tick(now)
+    refused = [j for j in live.store.joints if j["status"] == "refused"]
+    assert refused and all(j["refusal"] == {"s.x": ["flat_beyond_training"]} or
+                           j["refusal"] == {"s.x": ("flat_beyond_training",)} for j in refused)
+    assert not [r for r in live.store.forecasts if r["origin_ts"] in {j["origin_ts"] for j in refused}]
+    assert live.served.run_id != first_select and "s.x" not in live.served.named
+    assert live.state.last_select["refused_inputs"]["s.x"] == ["flat_beyond_training"]
+    after = [j for j in live.store.joints if j["run_id"] == live.served.run_id]
+    assert after and all(j["status"] != "refused" for j in after)   # the rest is served without it
 
 
 def test_a_horizon_whose_target_already_completed_is_skipped():
@@ -331,3 +357,24 @@ def test_calm_eval_passes_a_calibrated_week_and_waits_for_seven_days():
     assert s["5"]["refusal_reasons"] == {"s.y:stale": 1}
     assert ev.verdict(s, 7.0)[0].startswith("NOT YET")
     assert ev.verdict(ev.summarize(_joint_rows(8, lambda rng: 0.01), 5), 7.0)[0] == "FAIL"
+
+
+def test_a_probe_that_died_to_a_new_low_before_select_is_not_served_as_rest():
+    """Review round 2: s.x dies to -127 six hours before select. The window minimum is -127, but the
+    served floor is the rest floor of normal days, so the dead probe is never exempt as 'rest'."""
+    f = _frame()
+    f.loc[DAY7 - timedelta(hours=6):, "s.x"] = -127.0
+    live, _l = _live(f)
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    assert live.served is not None and live.served.floors["s.x"] > -100
+    for _ in range(140):                                               # ~11.7 h
+        now += G
+        live.tick(now)
+    issued_with_x = [r for r in live.store.forecasts if r["series_id"] == fl.PREFIX + "s.x"]
+    refused = [j for j in live.store.joints if j["status"] == "refused" and "s.x" in (j["refusal"] or {})]
+    assert refused                                                     # caught within the day, never calm
+    # dead since day7 - 6 h; the half-dead day it died on is its flattest day (0.25), so the limit is
+    # 0.625 and the refusals start ~15 h in, like real readings frozen at their median (12-15 h)
+    late = [r for r in issued_with_x if r["origin_ts"] > DAY7 + timedelta(hours=9, minutes=30)]
+    assert not late                                                    # refused from then on

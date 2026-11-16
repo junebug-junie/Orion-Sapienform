@@ -74,6 +74,7 @@ class Hygiene:
     max_drift_rho: float
     max_stale_min: int
     max_duplicate_corr: float
+    flat_margin: float
 
 
 @dataclass(frozen=True)
@@ -134,7 +135,8 @@ def parse_config(doc: Mapping) -> FamilyAConfig:
         hyg = Hygiene(min_present=float(h["min_present"]), max_mode_share=float(h["max_mode_share"]),
                       min_distinct=int(h["min_distinct"]), event_mode_share=float(h["event_mode_share"]),
                       min_rest_day_share=float(h["min_rest_day_share"]), max_drift_rho=float(h["max_drift_rho"]),
-                      max_stale_min=int(h["max_stale_min"]), max_duplicate_corr=float(h["max_duplicate_corr"]))
+                      max_stale_min=int(h["max_stale_min"]), max_duplicate_corr=float(h["max_duplicate_corr"]),
+                      flat_margin=float(h["flat_margin"]))
     except KeyError as exc:
         raise FamilyAConfigError(f"hygiene.{exc.args[0]} is required (thresholds are fixed in config)") from exc
     inputs, seen = [], set()
@@ -206,9 +208,18 @@ def screen_series(values: pd.Series, hyg: Hygiene, series_id: str = "") -> Serie
     stats["band"] = [float(lo), float(hi)]
     stats["min"] = float(x.min())
     full_days, rest_share, rho = _rest_shape(values, lo, hi)
-    stats.update(n_days=len(full_days), rest_day_share=round(rest_share, 4), drift_rho=round(rho, 4))
+    rest = _rest_floor(values, hyg)
+    ceiling = _flat_ceiling(values, hyg, rest)
+    if ceiling is None and full_days:        # whole days, none normal: hold them to select's one-value line
+        ceiling = hyg.max_mode_share
+    stats.update(n_days=len(full_days), rest_day_share=round(rest_share, 4), drift_rho=round(rho, 4),
+                 max_day_mode_share=ceiling, rest_floor=rest)
     if not full_days or rest_share < hyg.min_rest_day_share:
         reasons.append("no_rest")
+    # frozen now: the window's last 24 h, against the ceiling of its own normal days (#3370)
+    last = values[values.index > values.index[-1] - pd.Timedelta(hours=24)].to_numpy(dtype=float)
+    if _frozen(last[np.isfinite(last)], hyg, ceiling, rest):
+        reasons.append("flat_beyond_training")
     if len(full_days) >= 5 and abs(rho) >= hyg.max_drift_rho:
         reasons.append("drift")
     if reasons:
@@ -220,6 +231,79 @@ def screen_series(values: pd.Series, hyg: Hygiene, series_id: str = "") -> Serie
 
 def _grain_min(index: pd.DatetimeIndex) -> float:
     return (index[1] - index[0]).total_seconds() / 60.0 if len(index) > 1 else 5.0
+
+
+def _r6(a: float) -> float:
+    """Round to 6 significant digits: the value identity used for every one-value / floor comparison."""
+    return float(f"{a:.6g}")
+
+
+def _at_or_below_floor(value: float, floor: float | None) -> bool:
+    """``value`` (already rounded) is the training floor: compared rounded, since a mode is rounded and an
+    exact float floor (17.1234567) would otherwise never equal it (17.1235)."""
+    return floor is not None and value <= _r6(floor) + 1e-9
+
+
+def _mode(x: np.ndarray) -> tuple[float, float]:
+    """(share of the most common value, that value) after rounding to 6 significant digits."""
+    u, c = np.unique(np.array([_r6(a) for a in x]), return_counts=True)
+    i = int(np.argmax(c))
+    return float(c[i] / len(x)), float(u[i])
+
+
+def flat_limit(ceiling: float, hyg: Hygiene) -> float:
+    """One-value share above which a window is flatter than training allows (``hyg.flat_margin`` of the way
+    from the flattest normal training day to 1.0, fully frozen)."""
+    return ceiling + hyg.flat_margin * (1.0 - ceiling)
+
+
+def _rest_floor(values: pd.Series, hyg: Hygiene) -> float | None:
+    """The reading's rest floor: a low it reaches on at least two NORMAL whole days (one value covers at
+    most ``max_mode_share`` of the day) -- the second-lowest of those days' minimums. A probe dead at its
+    -127 error code makes its days not normal, and the day it died on is only one day, so a new low
+    reached by freezing never becomes the floor and is never exempt as rest (review 2026-11-15: with the
+    window minimum as the floor, a probe dead for 6 h read as calm after the next select). PM2.5 sits at
+    0 on most days, so its rest floor stays 0. None with fewer than two normal days."""
+    s = values[np.isfinite(values.to_numpy(dtype=float))]
+    need = 0.5 * 1440.0 / _grain_min(values.index)
+    lows = sorted(float(g.min()) for _d, g in s.groupby(s.index.floor("1D"))
+                  if len(g) >= need and _mode(g.to_numpy(dtype=float))[0] <= hyg.max_mode_share)
+    return lows[1] if len(lows) >= 2 else None
+
+
+def _flat_share(x: np.ndarray, floor: float | None) -> float:
+    """Share of ALL present values taken by the most common value other than the rest floor (rounded to 6
+    significant digits). Resting at the floor is rest, never "frozen", so values AT the floor never count
+    (a dark day of a light sensor reads 0, not 1); values below it are a new low and do count. Measured
+    over all present values, not only the non-floor ones: conservative (a light sensor dark half the day
+    and stuck the other half reads 0.5), and it needs no minimum count of lit buckets."""
+    if not len(x):
+        return 0.0
+    r = np.array([_r6(a) for a in x])
+    if floor is not None:
+        r = r[np.abs(r - _r6(floor)) > 1e-9]
+    if not len(r):
+        return 0.0
+    return float(np.unique(r, return_counts=True)[1].max() / len(x))
+
+
+def _flat_ceiling(values: pd.Series, hyg: Hygiene, floor: float | None) -> float | None:
+    """The flattest NORMAL whole day of the window: the largest ``_flat_share`` of any whole day (same
+    whole-day rule as ``_rest_shape``) among days at or under ``max_mode_share`` -- the line above which
+    ``select`` already calls a series one value. Order-independent, so a frozen day anywhere in the window
+    (first, middle, last) never lifts the ceiling, and a real steady day counts wherever it falls.
+    None without such a day."""
+    s = values[np.isfinite(values.to_numpy(dtype=float))]
+    need = 0.5 * 1440.0 / _grain_min(values.index)
+    shares = [_flat_share(g.to_numpy(dtype=float), floor) for _d, g in s.groupby(s.index.floor("1D"))
+              if len(g) >= need]
+    normal = [v for v in shares if v <= hyg.max_mode_share]
+    return round(max(normal), 4) if normal else None
+
+
+def _frozen(x: np.ndarray, hyg: Hygiene, ceiling: float | None, floor: float | None) -> bool:
+    """A window (present values ``x``) whose non-floor one-value share passes its training ceiling's limit."""
+    return ceiling is not None and _flat_share(x, floor) > flat_limit(ceiling, hyg)
 
 
 def _rest_shape(values: pd.Series, lo: float, hi: float) -> tuple[list, float, float]:
@@ -271,17 +355,22 @@ def stale_inputs(last_seen: Mapping[str, datetime | None], now: datetime, max_st
 
 
 def _short_window_reasons(values: pd.Series, hyg: Hygiene, band: Sequence[float] | None,
-                          floor: float | None = None) -> list[str]:
+                          floor: float | None = None, flat_ceiling: float | None = None) -> list[str]:
     """Run-time checks for a scoring window shorter than FULL_SCREEN_MIN_DAYS: present, and still inside
     the regime it was trained on (touches the TRAINING central 80 % band).
 
-    No degeneracy check here. "One value" / "too few distinct values" / event-like are model-selection
-    decisions over the training window (``screen_series`` in ``select``), never per-issue refusals: a
-    reading resting at its floor for a day (office PM2.5 at 0 ug/m3 in clean air, 2026-11-14) is its rest
-    state, not a broken input, and a 24 h window cannot tell the two apart. A sensor that stops sending is
-    caught by ``stale``. One frozen at a constant inside its band while still reporting is dropped by
-    ``select`` only once it is one value over 85 % of the 14-day window (~12 days); until then it reads as
-    calm (follow-up: a per-issue check against the training's own flattest day).
+    "One value" / "too few distinct values" / event-like are model-selection decisions over the training
+    window (``screen_series`` in ``select``), never per-issue refusals: a reading resting at its floor for
+    a day (office PM2.5 at 0 ug/m3 in clean air, 2026-11-14) is its rest state, not a broken input. A
+    sensor that stops sending is caught by ``stale``.
+
+    One frozen at a constant inside its band while still reporting is caught here (#3370): the window is
+    ``flat_beyond_training`` when its one-value share above the training floor (``_flat_share``) passes
+    ``flat_ceiling`` (manifest ``stats.max_day_mode_share``, the flattest normal whole training day) by
+    ``hyg.flat_margin`` of the way to 1. The bucket is refused until the next ``select``
+    (<= 6 h), which drops the input with the same reason (``screen_series``) and serves the rest without
+    it. Without the check ``select`` dropped it only once it was one value over 85 % of the 14-day window
+    (~12 days), and until then the perfect persistence forecast read as calm.
 
     A reading resting at its training floor (``floor`` = manifest ``stats.min``; most common value = the
     floor, nothing below it) is in its trained regime even when the floor sits below the band's 10th
@@ -292,27 +381,29 @@ def _short_window_reasons(values: pd.Series, hyg: Hygiene, band: Sequence[float]
         return ["absent"]
     x = v[present]
     if floor is not None and float(np.min(x)) >= floor - 1e-9:
-        _u, counts = np.unique(np.array([float(f"{a:.6g}") for a in x]), return_counts=True)
-        if float(_u[int(np.argmax(counts))]) <= floor + 1e-9:
+        if _at_or_below_floor(_mode(x)[1], floor):
             return []
     if band is not None and not bool(((x >= band[0]) & (x <= band[1])).any()):
         return ["left_trained_band"]
+    if _frozen(x, hyg, flat_ceiling, floor):
+        return ["flat_beyond_training"]
     return []
 
 
 def gate_named_inputs(named: Mapping[str, str], frame: pd.DataFrame, hyg: Hygiene,
                       last_seen: Mapping[str, datetime | None] | None = None, now: datetime | None = None,
                       bands: Mapping[str, Sequence[float]] | None = None,
-                      floors: Mapping[str, float] | None = None) -> None:
+                      floors: Mapping[str, float] | None = None,
+                      flat_ceilings: Mapping[str, float | None] | None = None) -> None:
     """Refuse (raise ``HygieneRefused``) unless every named input still passes, in the same role.
 
     ``named`` maps input id -> status in the manifest (target / covariate). Windows of at least
     FULL_SCREEN_MIN_DAYS get the full screen: an input now refused, or a named target that turned
     event-like, refuses the run. Shorter (scoring) windows get ``_short_window_reasons`` against the
     training band in ``bands`` (manifest ``stats.band``; ``floors`` = manifest ``stats.min``: a reading
-    resting at its training floor is in regime) and never refuse for degeneracy (that is selection's job). Any input missing from the
-    frame, or stale,
-    refuses either way.
+    resting at its training floor is in regime) and against ``flat_ceilings`` (manifest
+    ``stats.max_day_mode_share``: frozen at a non-floor constant). Any input missing from the frame, or
+    stale, refuses either way.
     """
     span_days = (len(frame) * _grain_min(frame.index)) / 1440.0
     refusals: dict[str, list[str]] = {}
@@ -321,7 +412,8 @@ def gate_named_inputs(named: Mapping[str, str], frame: pd.DataFrame, hyg: Hygien
             refusals[iid] = ["not_loaded"]
             continue
         if span_days < FULL_SCREEN_MIN_DAYS:
-            reasons = _short_window_reasons(frame[iid], hyg, (bands or {}).get(iid), (floors or {}).get(iid))
+            reasons = _short_window_reasons(frame[iid], hyg, (bands or {}).get(iid), (floors or {}).get(iid),
+                                            (flat_ceilings or {}).get(iid))
             if reasons:
                 refusals[iid] = reasons
             continue

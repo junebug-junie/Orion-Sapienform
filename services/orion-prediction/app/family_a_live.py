@@ -13,8 +13,8 @@ select -> issue -> score loop, as one multivariate series, on the service's own 
   ``metrics`` hold everything scoring needs later (targets, standardisation, covariance, calibration
   tails), so rows issued before a restart are scored with the run that issued them.
 - **issue** (each completed 5-min bucket): the hygiene gate runs on the last 24 h of every named input
-  (present, inside its training band, fresh; a flat reading at rest is not refused -- degeneracy is a
-  select-time decision). A refusal stores one ``refused`` joint row per
+  (present, inside its training band, fresh, and not flatter than its flattest training day unless resting
+  at its floor -- a frozen sensor; a flat reading at rest is not refused). A refusal stores one ``refused`` joint row per
   horizon with the reasons and logs them; nothing is forecast (refuse, never degrade). Otherwise each
   forecastable reading gets a ``prediction_forecast`` row (``series_id = 'family_a:<id>'``, role
   champion, 80/95 % ranges from its validation residuals), the other rung a shadow row, and each horizon
@@ -114,6 +114,7 @@ class Served:
     bands: dict[str, list]
     floors: dict[str, float]
     horizons: dict[int, ServedHorizon]
+    flat_ceilings: dict[str, float | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -278,7 +279,10 @@ class FamilyALive:
             run_id=run_id, selection_id=selection_id, fitted_at=now,
             named={k: verdicts[k].status for k in inputs},
             bands={k: verdicts[k].stats["band"] for k in inputs},
-            floors={k: verdicts[k].stats["min"] for k in inputs}, horizons=horizons)
+            # the rest floor (normal days only), never the window minimum: a probe frozen at a new low
+            # must not become its own "floor" and pass as rest
+            floors={k: verdicts[k].stats.get("rest_floor") for k in inputs}, horizons=horizons,
+            flat_ceilings={k: verdicts[k].stats.get("max_day_mode_share") for k in inputs})
         for h, s in horizons.items():
             self._runs[(run_id, h)] = RunInfo(targets=s.fit.targets,
                                               std={t: s.fit.standardizer[t]["std"] for t in s.fit.targets},
@@ -323,7 +327,7 @@ class FamilyALive:
         base = {"family": FAMILY, "run_id": served.run_id, "issued_at": now, "origin_ts": origin}
         try:
             fa.gate_named_inputs(served.named, frame, self.cfg.hygiene, last_seen, now,
-                                 bands=served.bands, floors=served.floors)
+                                 bands=served.bands, floors=served.floors, flat_ceilings=served.flat_ceilings)
         except fa.HygieneRefused as exc:
             joints = [{**base, "horizon_min": h, "target_ts": origin + timedelta(minutes=h), "status": "refused",
                        "refusal": exc.refusals, "n_forecast": 0, "difficulty": None}

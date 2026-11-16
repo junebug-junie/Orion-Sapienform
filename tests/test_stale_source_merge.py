@@ -189,3 +189,17 @@ def test_higher_is_better_channels_use_the_same_staleness_rule() -> None:
     )
     assert values["availability"] == pytest.approx(0.90)
     assert provenance["availability"] == "node:b"
+
+
+def test_a_fresh_alarm_neither_wins_nor_empties_the_prediction_error_channel() -> None:
+    """#3307 review: alarms never compete for prediction_error, so a fresh alarm write must not count as
+    the fresh source that excludes stale real ones. Hand-computed: only biometrics competes -> 0.4."""
+    state = _state(
+        {"node:substrate.biometrics": {"prediction_error": 0.4},
+         "node:substrate.cabinet": {"prediction_error": 1.0}},
+        {"node:substrate.biometrics": {"prediction_error": STALE},
+         "node:substrate.cabinet": {"prediction_error": FRESH}},
+    )
+    values, provenance = collect_field_channel_pressures(state, staleness_threshold_sec=THRESHOLD)
+    assert values["prediction_error"] == pytest.approx(0.4)
+    assert provenance["prediction_error"] == "node:substrate.biometrics"

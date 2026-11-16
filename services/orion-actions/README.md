@@ -530,8 +530,14 @@ entry's `trigger_kind` (`daily_summary`, `world_pulse_digest`,
 which retold telemetry with no grounding and emailed it as "Journal Pass". The handler,
 `build_metacog_trigger`, and `ACTIONS_JOURNAL_METACOG_RECALL_PROFILE` are gone. The
 trigger itself still feeds cortex-orch and sql-writer. Old `metacog` rows stay in
-`journal_entries`. `daily_summary` and `notify_summary` still write but no longer email:
-they had only stayed out of the inbox because metacog won the shared daily slot.
+`journal_entries`. `daily_summary` still writes but no longer emails:
+it had only stayed out of the inbox because metacog won the shared daily slot.
+
+**Removed 2026-11-16: `notify_summary`.** It journaled each "Orion Daily Digest" email
+(`orion.digest.daily`); that email and its service, orion-notify-digest, are retired (integration
+patch 4: the daily organ roundup in the day letter carries the counts). The handler, its
+`orion:notify:persistence:request` subscription and `ACTIONS_JOURNAL_NOTIFY_RECALL_PROFILE` are gone; old
+`notify` rows stay in `journal_entries`.
 
 ### What this replaced
 

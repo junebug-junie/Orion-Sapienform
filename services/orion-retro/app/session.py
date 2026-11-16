@@ -41,7 +41,7 @@ class Sessions:
             if set(item) - {'system'} != {'game_id','title','file','rom_sha256','ports','provenance'}:
                 raise ValueError('invalid catalog fields')
             system = item.get('system', 'nes')  # existing operator catalogs remain NES
-            extensions = {'nes': {'.nes'}, 'snes': {'.sfc', '.smc'}}
+            extensions = {'nes': {'.nes'}, 'snes': {'.sfc', '.smc'}, 'n64': {'.n64', '.z64', '.v64'}}
             if system not in extensions: raise ValueError('unsupported system')
             from .contracts import Start
             Start(game_id=item['game_id'], idempotency_key='catalog')
@@ -50,7 +50,7 @@ class Sessions:
                 raise ValueError('ROM must be inside mounted catalog')
             if path.suffix.lower() not in extensions[system]:
                 raise ValueError('ROM extension does not match system')
-            if not 0 < path.stat().st_size <= 32*1024*1024:
+            if not 0 < path.stat().st_size <= 64*1024*1024:
                 raise ValueError('invalid ROM size')
             if hashlib.sha256(path.read_bytes()).hexdigest() != item['rom_sha256']:
                 raise ValueError('ROM digest mismatch')
@@ -65,7 +65,12 @@ class Sessions:
             core = settings.core_for(system)
             if not core.is_file(): raise ValueError(f'{system} core missing')
             self.core_hashes[system] = digest(core)
-        self.saves = SaveStore(settings.saves, settings.save_max_per_game, settings.save_max_bytes)
+        # One store per console: an N64 limit (32 MiB) must never admit an oversize NES/SNES save.
+        self.stores = {s: SaveStore(settings.saves, settings.save_max_per_game, settings.save_limit(s))
+                       for s in {v['system'] for v in self.catalog.values()}}
+
+    def store(self, game_id):
+        return self.stores[self.catalog[game_id]['system']]
 
     def save_enabled(self):
         return available(self.settings.saves)
@@ -80,7 +85,7 @@ class Sessions:
         identity = self.identity(game_id)
         return [dict(m, compatible=m['rom_sha256'] == identity['rom_sha256']
                      and m['core_sha256'] == identity['core_sha256'])
-                for m in self.saves.list(game_id)]
+                for m in self.store(game_id).list(game_id)]
 
     def games(self):
         return [dict(game_id=v['game_id'], title=v['title'], system=v['system'], ports=v['ports'],
@@ -102,7 +107,7 @@ class Sessions:
         if self.process is not None or self.stopping: raise ValueError('session_active')
         if save_id is not None:
             if not self.save_enabled(): raise ValueError('saves_unavailable')
-            self.saves.meta(game_id, save_id, self.identity(game_id))  # refuse before spawning
+            self.store(game_id).meta(game_id, save_id, self.identity(game_id))  # refuse before spawning
         if len(self.requests) >= 256: raise ValueError('idempotency_capacity_restart_required')
         ctx = mp.get_context('spawn')
         self.commands = ctx.Queue(32); self.urgent = ctx.Queue(8); self.replies = ctx.Queue(128); self.stop_event = ctx.Event()

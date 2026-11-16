@@ -37,6 +37,9 @@ Sources:
 * temporal_core -- from the same closed ``temporal_self_day`` row: expectations, acts and their graded
   outcomes, threads with Juniper, the body's day (``orion/orion_day/temporal_core.py``), with the
   frame's event rows read from ``temporal_self_event`` (as recorded at close).
+* organ_roundup -- the daily dig roundup (``orion/dig/organs.py``, integration Part A.7): what each organ in
+  ``config/integration/organs.yaml`` did on the day, every line a count, a quote or a ref. Read only when the
+  caller asks (Hub: ``ORION_DAY_ORGAN_ROUNDUP_ENABLED``). Its own failed queries are ``unread`` inside it.
 * walkway_day -- the walkway camera's deterministic day rollup line (``vision_rollup``,
   grain ``day``, written by orion-sql-writer; orion/vision/walkway_rollup.py). Counts only.
 """
@@ -65,6 +68,7 @@ from orion.schemas.orion_day import (
     OrionDayCorrectionV1,
     OrionDayMaterialV1,
     OrionDaySourceStatusV1,
+    OrganRoundupV1,
     ReadingItemV1,
     ReverieChainV1,
     ReverieThoughtV1,
@@ -573,6 +577,16 @@ async def gather_juniper_chat(conn: Any, start: datetime, end: datetime) -> list
     ) for r in await conn.fetch(JUNIPER_CHAT_SQL, start, end, JUNIPER_CHAT_SOURCES)]
 
 
+async def gather_organ_roundup(conn: Any, letter_date: date) -> OrganRoundupV1:
+    """The daily dig roundup for ``letter_date`` (same SQL and lines as ``dig organs <date>``)."""
+    from orion.dig.organs import read_async
+    from orion.integration.organs import load_organs
+
+    r = await read_async(conn, letter_date, load_organs())
+    return OrganRoundupV1(day=letter_date, lines=r.lines, refs=r.refs, unread=r.unread, use_rate=r.use_rate,
+                          closed_organs=r.closed_organs, organ_experiences=r.organ_experiences)
+
+
 async def gather_orion_day(
     conn: Any,
     letter_date: date,
@@ -582,6 +596,7 @@ async def gather_orion_day(
     tz_name: str = ORION_DAY_TIMEZONE,
     temporal_day: bool = True,
     prior_lookup: PriorLookup | None = None,
+    organ_roundup: bool = False,
 ) -> OrionDayMaterialV1:
     """Read everything Orion did on ``letter_date`` (local ``tz_name`` day). Read-only.
 
@@ -622,6 +637,9 @@ async def gather_orion_day(
             day_block = await _read(sources, "temporal_day",
                                     lambda: gather_temporal_day(conn, letter_date, tz_name, day=closed), None)
             core = await _read(sources, "temporal_core", lambda: gather_temporal_core(conn, closed, tz_name, day_block), None)
+    roundup = None
+    if organ_roundup:  # off: not read at all, and the letter keeps its trimmed tail
+        roundup = await _read(sources, "organ_roundup", lambda: gather_organ_roundup(conn, letter_date), None)
     return OrionDayMaterialV1(
         letter_date=letter_date,
         timezone=tz_name,
@@ -646,5 +664,6 @@ async def gather_orion_day(
         walkway_day=walkway,
         juniper_chat=juniper_chat,
         temporal_core=core,
+        organ_roundup=roundup,
         sources=sources,
     )

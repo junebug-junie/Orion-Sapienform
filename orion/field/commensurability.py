@@ -69,6 +69,7 @@ from orion.field.pressure import (
     _stale_node_channels,
     clamp01,
     field_pressures_with_provenance,
+    skips_merge,
 )
 from orion.schemas.field_state import FieldStateV1
 
@@ -310,7 +311,7 @@ def observe_source_to_channel(
     per_channel: dict[str, dict[str, float]] = defaultdict(dict)
     for source_id, vector in field.node_vectors.items():
         for channel, value in vector.items():
-            if (source_id, channel) in stale_pairs:
+            if (source_id, channel) in stale_pairs or skips_merge(source_id, channel):
                 continue
             v = clamp01(float(value))
             if channel in HIGHER_IS_BETTER_CHANNELS or channel in PRESSURE_CHANNELS or v > 0:

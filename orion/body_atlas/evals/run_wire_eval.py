@@ -58,11 +58,11 @@ TRUE_CALLS = [
     ("orion-graphiti-adapter", "http://orion-athena-vector-host:8320/embedding"),
     # services/orion-thought/app/physiology_shadow.py:62 orion.physiology.client.abid -> DEFAULT_URL
     ("orion-thought", "http://orion-athena-durable-runs:8121/physiology/bid"),
-    # services/orion-notify-digest/app/main.py: NOTIFY_URL default
-    ("orion-notify-digest", "http://notify:7140"),
     # services/orion-thought/app/mind_enrichment.py:395 getattr(settings, "mind_base_url", "")
     ("orion-thought", "http://mind:6611"),
 ]
+# orion-notify-digest -> notify was a true fact here until that service was deleted (2026-11-16,
+# integration patch 4: the daily organ roundup replaced its Daily Digest email).
 FALSE_CALLS = [
     # orion-policy-runtime / orion-execution-dispatch-runtime / orion-proposal-runtime -> thought were
     # false facts here until those services were deleted (2026-11-07, ladder retirement PR 6); a fact

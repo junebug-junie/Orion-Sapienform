@@ -311,3 +311,22 @@ def test_higher_is_better_channels_stay_in_sync() -> None:
     )
 
     assert HIGHER_IS_BETTER_CHANNELS == selectors_copy
+
+
+def test_an_alarm_never_wins_the_merged_prediction_error_channel():
+    """#3307: the field digester copies every node's prediction_error hint into the field, alarms included.
+    A firing cabinet alarm (1.0) used to win the merged channel and become its provenance; an alarm's value
+    means "it fired", not a surprise size. Hand-computed: max over the two real nodes = 0.3 (biometrics)."""
+    from orion.field.commensurability import observe_source_to_channel
+
+    state = _state({
+        "node:substrate.cabinet": {"prediction_error": 1.0, "thermal_pressure": 0.6},
+        "node:substrate.strain": {"prediction_error": 1.0},
+        "node:substrate.biometrics": {"prediction_error": 0.3},
+        "node:substrate.execution": {"prediction_error": 0.1},
+    })
+    merged, provenance = collect_field_channel_pressures(state, staleness_threshold_sec=None)
+    assert merged["prediction_error"] == 0.3 and provenance["prediction_error"] == "node:substrate.biometrics"
+    assert merged["thermal_pressure"] == 0.6          # alarms' other channels merge as before
+    obs = observe_source_to_channel(state, staleness_threshold_sec=None)
+    assert set(obs["prediction_error"][1]) == {"node:substrate.biometrics", "node:substrate.execution"}

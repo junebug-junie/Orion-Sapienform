@@ -35,6 +35,7 @@ Design: orion/schemas/orion_day.py (contract; living Prime #3224 Part 3), orion/
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable, TypedDict
@@ -106,6 +107,9 @@ class OrionDayState(TypedDict, total=False):
     # [event:] refs removed because the temporal core did not show them.
     note_rejected_events: list[str]
     carry_forward_rejected_events: list[str]
+    # Integration patch 4: [experience:]/[act:] refs the letter cited that the organ roundup showed
+    # ("valid") or did not ("unknown"). Reported, not enforced.
+    note_roundup_refs: dict[str, int]
     letter_written: bool
     persisted: bool
     persist_outcome: str | None
@@ -149,6 +153,16 @@ def gate_arc_citations(text: str, brief: OrionDayRunBriefV1) -> tuple[str, DayCi
     return cleaned, check
 
 
+_ROUNDUP_REF_RE = re.compile(r"\[((?:experience|act):[^\]\s]+)\]")
+
+
+def roundup_refs(text: str, brief: OrionDayRunBriefV1) -> dict[str, int]:
+    """How many distinct [experience:]/[act:] refs ``text`` cites that the day's organ roundup showed."""
+    shown = set(brief.material.organ_roundup.refs) if brief.material.organ_roundup is not None else set()
+    cited = set(_ROUNDUP_REF_RE.findall(text or ""))
+    return {"valid": len(cited & shown), "unknown": len(cited - shown)}
+
+
 def check_note(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
     """The letter part: the floor (a failed attempt below it), then the event and arc gates."""
     if len(text) < MIN_NOTE_CHARS:
@@ -160,6 +174,8 @@ def check_note(text: str, brief: OrionDayRunBriefV1) -> dict[str, Any]:
     cleaned, check = gate_arc_citations(text, brief)
     if check is not None:
         out.update(note_md=cleaned, note_arc_citations=check.model_dump(mode="json"))
+    if brief.material.organ_roundup is not None:  # integration patch 4: did the letter cite its roundup?
+        out["note_roundup_refs"] = roundup_refs(out["note_md"], brief)
     return out
 
 
@@ -282,6 +298,7 @@ def finish_detail(state: dict) -> dict[str, Any]:
         "threads": list(state.get("threads") or [])[:MAX_THREADS],
         "threads_total": len(state.get("threads") or []),
         "carry_forward_refs": dict(state.get("carry_forward_refs") or {}),
+        "note_roundup_refs": dict(state.get("note_roundup_refs") or {}),
         "arc_citations": {name: {"label": c.get("label"), "cited": len(c.get("cited_valid") or []),
                                  "rejected": len(c.get("rejected_unknown") or []),
                                  "uncited": c.get("uncited_day_sentences", 0)}

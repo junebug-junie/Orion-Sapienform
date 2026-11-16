@@ -36,6 +36,13 @@ on:
       - "orion/schemas/introspect.py"
       - "services/orion-hub/evals/*orion_day*"
       - "services/orion-hub/requirements.txt"
+      # Integration patch 4: the daily organ roundup in the letter; the Daily Digest stays retired.
+      - "orion/dig/organs.py"
+      - "config/integration/**"
+      - "orion/journaler/**"
+      - "services/orion-actions/app/**"
+      - "services/orion-actions/.env_example"
+      - "scripts/smoke_all_notifications.sh"
       - ".github/workflows/orion-day-letter-hub-tests.yml"
   push:
     branches: [main]
@@ -81,6 +88,13 @@ jobs:
         env:
           PYTHONPATH: ${{ github.workspace }}
         run: python -m pytest -q -p no:cacheprovider orion/orion_day/tests/test_retired_letter_verbs.py
+      - name: Organ roundup in the letter; Daily Digest retired, curiosity digests kept (integration patch 4)
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m pip install "PyYAML>=6.0"
+          python -m pytest -q -p no:cacheprovider orion/orion_day/tests/test_organ_roundup_letter.py \
+            orion/orion_day/tests/test_daily_digest_retired.py
       - name: Email full-text eval (fixture day)
         run: python services/orion-hub/evals/run_orion_day_email_eval.py
       - name: Reread eval (orion_day tool, fixture letter, 10 planted references)

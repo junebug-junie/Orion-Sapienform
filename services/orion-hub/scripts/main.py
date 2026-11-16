@@ -2050,6 +2050,7 @@ orion_day_order_desk = OrionDayOrderDesk(
     pool_provider=lambda: getattr(app.state, "memory_pg_pool", None),
     durable=DurableRunsClient(settings.HUB_ORION_DAY_DURABLE_URL),
     temporal_day_enabled=settings.TEMPORAL_SELF_DAY_BLOCK_ENABLED,
+    organ_roundup_enabled=settings.ORION_DAY_ORGAN_ROUNDUP_ENABLED,
     prior_reader_provider=build_curiosity_reader,
 )
 app.include_router(build_orion_day_order_router(lambda: orion_day_order_desk))

@@ -20,6 +20,9 @@ on:
       - "services/orion-thought/app/reverie.py"
       - "services/orion-thought/tests/test_personality_cue.py"
       - "services/orion-thought/tests/test_reverie_orion_now.py"
+      - "orion/integration/**"
+      - "orion/prime/**"
+      - "orion/curiosity/now_section.py"
       - "services/orion-thought/tests/test_reverie_recent_arcs.py"
       - "orion/schemas/reverie.py"
       - "orion/personality/**"
@@ -35,6 +38,9 @@ on:
   push:
     branches: [main]
     paths:
+      - "orion/integration/**"
+      - "orion/prime/**"
+      - "orion/curiosity/now_section.py"
       - "orion/temporal_self/**"
       - "orion/schemas/temporal_self.py"
       - "orion/thought/**"
@@ -63,7 +69,7 @@ jobs:
           python -m pip install -r services/orion-hub/tests/requirements-reading.txt
           python -m pip install -r services/orion-thought/requirements.txt
       - name: Renderers and gate (pure)
-        run: python -m pytest -q -p no:cacheprovider orion/temporal_self/tests orion/thought/tests
+        run: python -m pytest -q -p no:cacheprovider orion/temporal_self/tests orion/thought/tests orion/integration/evals
       - name: orion-thought cue fetch, stance wiring, and reverie's read of Orion's now
         run: |
           cd services/orion-thought && python -m pytest -q -p no:cacheprovider tests/test_stance_temporal_self_cue.py tests/test_personality_cue.py \

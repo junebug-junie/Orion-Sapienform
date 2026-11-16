@@ -563,6 +563,20 @@ acked only after both publishes, deduped by sql-writer). Before this only
 `completed` was, so a waiter such as cortex-exec's self-study reflect never saw an
 admitted failure end the run.
 
+### Session round-up runs (`session_roundup.orion_turn`, 2026-11-15)
+
+Orion's hourly read of the messages coding sessions sent (Hub: `scripts/session_roundup_loop.py`, design
+`docs/superpowers/specs/2026-11-15-session-threads-design.md`). One run per hour at most, run id
+`session-roundup-<utc hour>`, submitted by Hub only when a thread is held. It is the single-step harness graph
+(`app/harness_smoke_graph.py` `build_session_roundup_graph`): one turn in the round's own session
+(`orion_<run id>`), lookup not required (the spec text is in the prompt). Hub reads the reply from
+`GET /runs/{run_id}` (`harness_steps.turn.text`). A failed attempt is retried by the shared policy. A cut-short
+turn is NOT retried: the run completes with the cut-short text and its code, and Hub holds the threads for the
+next hour. The run carries an admission deadline (its hour + 3 h). Run act: `ask:durable.session_roundup`
+(`app/run_acts.py`), its own family, tier 2 (design default), shadow bids (not in `BINDING_FAMILIES`).
+Contract: `orion/schemas/session_roundup_run.py`. Deploy order: orion-sql-writer, orion-actions,
+orion-cortex-orch, then orion-durable-runs, then orion-hub last.
+
 ### Intention carry runs (`intention.carry`, 2026-11-13, choice-as-EFE Step -1)
 
 The carry run of a concern Prime took on (`orion/schemas/intention.py`; Prime: `services/orion-mind/README.md`). Hub
@@ -840,7 +854,8 @@ Not a durable run: it is one LLM call, so it is a tick (`app/core_page_fold.py`)
 - **LLM:** one gateway call on `CORE_PAGE_FOLD_ROUTE` (`memory_distill`: the agent seat on gpu1; the gateway
   takes its own pool lease). Thinking off. The fast and metacog lanes are refused in settings.
 - **Check** (`check_page`, deterministic): every sentence carries `[S..]` cites, every cite names a record,
-  every quote of 3+ words is in a cited record, at most 350 words, at least 3 sentences. A failed check
+  every quote of 3+ words is in a cited record, at most 350 words, at least 3 sentences, and no sentence
+  calls Juniper he/him/his (a sentence that starts with "Juniper", or the one right after it). A failed check
   publishes nothing (`rejected`, errors in `/health`); the next tick in the window tries again.
 - **Write:** a passing page is published as `SelfConceptHistoryV1` (`concept_id='page:juniper'`,
   `produced_by='core_page_fold'`, `version` = max + 1, cites stored as real record ids) on
@@ -848,6 +863,15 @@ Not a durable run: it is one LLM call, so it is a tick (`app/core_page_fold.py`)
 - **Reader:** orion-cortex-exec's grounding capsule (`core_pages`, felt-state lane `orion_core_page_juniper`)
   -> `orion/harness/prefix.py` renders it as RELATIONSHIP; the identity-yaml relationship bullets move
   under RESPONSE POLICY.
+- **Anchor (issue #3460):** a few fixed lines Juniper wrote (who Orion is, her pronouns, her family) show
+  first in RELATIONSHIP, above the page, with or without a page. They live only on the host DB, never in
+  git: one hand-written `self_concept_history` row, `concept_id='page:anchor'`,
+  `produced_by='juniper_anchor'`, read by the felt-state lane `orion_core_page_anchor`. The fold never
+  touches it: every fold query is bound to `page:juniper`, and `juniper_anchor` is not an accepted
+  producer value, so no bus message can write an anchor row. To change the lines, insert a new version
+  by hand with `WRITE_ANCHOR_SQL_TEMPLATE` from `orion/memory/pages/anchor.py`:
+  `python3 -c "from orion.memory.pages.anchor import WRITE_ANCHOR_SQL_TEMPLATE as t; print(t)" | docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 -v anchor="<new lines>"`
+  (cortex-exec picks it up within 5 minutes; no restart).
 - **Manual:** `curl -X POST 'http://localhost:8124/core-pages/juniper/fold?dry_run=true'` folds now at any
   hour and returns the page and its check without publishing; `dry_run=false` publishes a passing page.
   Offline from the host: `scripts/core_page_juniper_dry_run.py`.
@@ -1021,9 +1045,10 @@ windows of at most an hour. Per window:
 1. `app/temporal_self_sources.py` reads every bound source (the reference for every query is
    `orion/temporal_self/evals/export_fixture_day.sql`): broadcast ticks by `generated_at`, and every
    event whose *available* time (a process at its end) is in `[lo, hi)`;
-2. a late-row probe re-reads the previous 30 min (memory episodes: 3 days; visual deferrals: 3 h,
-   because `abandoned` replaces `active` ~90 min after `started_at`) for rows that were not there
-   yet; they are folded as late (the reducer counts them in
+2. a late-row probe re-reads the previous 30 min (visual deferrals: 3 h, because `abandoned`
+   replaces `active` ~90 min after `started_at`; memory episodes need none: they are read by
+   `created_at` and fold in the window they land in, bound by `occurred_at`) for rows that were not
+   there yet; they are folded as late (the reducer counts them in
    `frame.skipped_at_or_before_watermark`, never folds them) and stored with
    `temporal_self_event.late_unfolded = true`, so each is counted once;
 3. ONE `fold` (ticks and events together), `advance_clock(hi)`, `build_frame`, `drain_closed_days`,
@@ -1065,6 +1090,44 @@ Tables: `services/orion-sql-db/manual_migration_temporal_self_v1.sql` (hand-appl
 deploy). Kill switch: `TEMPORAL_SELF_CHRONICLE_ENABLED=false`. Health: `/health` ->
 `temporal_self_chronicle`. Eval: `evals/temporal_self_live_replay.py` runs this code path over the
 10-09 fixture on a disposable Postgres (`--source-dsn` reads real tables read-only instead).
+
+## Orion's now: experiences, salience, cites (2026-11-15, integration design Part A patch 1)
+
+Spec: `docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md` (A1-A5). Every
+`temporal_self_event` row is an **experience**; its organ comes from the organ registry
+`config/integration/organs.yaml` (loaded by `orion/integration/organs.py`, rules in
+`orion/temporal_self/now.py`).
+
+- **Three new sources** (no arc folds them): `reading_turn` (a closed `hub.world_pulse_read` act;
+  the spec's `reading_durable_turn` is the stage request queue and holds no finished state),
+  `prediction_surprise` (a scored `prediction_exceedance`, surprisal `-ln P(observed)` Laplace-smoothed
+  over its paths, joint-surprise rows of the same window as related refs), `prime_thought` (a closed
+  `prime`/`infer` act, its outcome note as label). `action_outcome` now carries its row's `surprise_nats`.
+- **Salience at insert** (`SalienceBook` in the chronicle): the share of the same kind's events in the
+  30 days before that were strictly smaller by the kind's declared magnitude
+  (`orion.physiology.event_wants.source_salience`). NULL under 20 past events or for a kind with no
+  magnitude. `surprise_nats` is written only where the source carried a real prediction's surprisal.
+  Scoring runs off the event loop; a failed history read stores NULL for that window and retries next.
+- `GET /temporal-self/now?organ=<id>[&since=<iso>][&run_ref=<ref>]` -> `TemporalNowV1`: at most 12
+  experiences of other organs ingested since `since` (default: this organ's last default read, else 24 h),
+  at most 2 per organ, highest salience first (NULL last, newest first on ties). Every call writes one
+  `experience_shown` row. The read cuts 120 s below the clock (`ingested_at` is a commit's start time, so a
+  window still committing is read next time, never skipped). A read with an explicit `since=` is an
+  inspection: stored, but it never moves the organ's cursor.
+- `POST /temporal-self/now/use` (`ExperienceCitesV1`: `shown_id`, `citing_ref`, `cites`) ->
+  `ExperienceUseResultV1`. Cites are checked against the shown row; at most 3 valid ones per shown row,
+  across calls (the row is locked while deciding), are stored in `experience_use`; the rest are counted
+  and dropped. Re-sending a stored cite stores nothing.
+- `GET /temporal-self/integration?hours=24` -> `ExperienceUseRateV1`: the integration metric, the share
+  of experiences recorded in the window that a different organ cited, validly, within 24 h, per organ;
+  and the closed organs.
+
+Readers (Prime, reveries, curiosity) are patch 3; until then nothing cites and the metric reads 0.
+Tables: `services/orion-sql-db/manual_migration_experience_now_v1.sql` (BEFORE deploy: the chronicle's
+INSERT names the new columns). Retention: `experience_shown`/`experience_use` follow the event horizon.
+Kill switch: `TEMPORAL_SELF_NOW_ENABLED=false` (both now routes 404; salience and the sources stay).
+Eval: `evals/experience_now_live_read.py` (read-only live read: new-source rows, salience distributions
+per kind, Prime's now, the metric's baseline).
 
 ## Body: the `physiology` node (2026-10-23, body economy Patch A3, no reader yet; prices Patch B2)
 
@@ -1657,6 +1720,10 @@ that submits the workflow.
 first (it validates `DurableRunStateV1` rows; an old one drops them), then this service. Hub and
 orion-actions skip rows they cannot parse and filter by workflow, so their order does not matter.
 
+Orion's now (integration patch 1): apply `manual_migration_experience_now_v1.sql` first (the post-pull
+applier does this: additive, REQUIRED-BY orion-durable-runs), then deploy this service. No other service
+reads the new kinds or models yet, so no consumer has to go first.
+
 ## Checks
 
 ```bash
@@ -1736,6 +1803,12 @@ Spec: `docs/superpowers/specs/2026-09-25-gpu-pool-stage4-durable-runs-and-actuat
 - **Door-A**: `finish` with `reach_out` keeps the hold (finish detail `gpu_lease`), heartbeats it
   until Hub calls `POST /runs/{id}/release-outreach-lease` (a pool `release`) or
   `DURABLE_RUNS_OUTREACH_HOLD_MAX_SEC` passes; a restarted process adopts it from the outbox.
+  Hub makes that call in every case, also when it refuses to compose (quiet hours, daily cap,
+  strained). Until 2026-11-15 the call never arrived: the generic `/runs/{run_id}/{action}` route
+  was declared first and answered it 400, so every kept hold ended `outreach_timeout` after 1,800 s
+  (#3255). Check: `select payload->'detail'->>'reason', count(*) from durable_resource_events where
+  event = 'resource.lease_released' and payload->'detail'->>'reason' like 'outreach_%' and
+  generated_at > now() - interval '1 day' group by 1` shows `outreach_done`, not `outreach_timeout`.
 - Lifecycle events are unchanged for Hub's run views: `run.waiting_resource`,
   `run.resource_granted` + `run.lane_assigned` (detail `lane` = the hold's role),
   `run.started`, `resource.lease_released`, `resource.lease_expired`, `run.outreach_pending`

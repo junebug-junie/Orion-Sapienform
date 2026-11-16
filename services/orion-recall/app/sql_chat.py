@@ -273,8 +273,13 @@ async def fetch_chat_history_pairs(
     *,
     exclude_text: Optional[str] = None,
     exclude_ids: Optional[List[str]] = None,
+    include_aitown: bool = True,
 ) -> List[ChatItem]:
-    """AI Town chat-history table split: unions ``RECALL_SQL_AITOWN_CHAT_TABLE``
+    """``include_aitown=False`` scans the primary (Hub) chat table only: the
+    Juniper chat prompt's continuity recall must not carry AI Town NPC
+    exchanges (issue #3461). Other profiles keep the union below.
+
+    AI Town chat-history table split: unions ``RECALL_SQL_AITOWN_CHAT_TABLE``
     in alongside the primary table. Unlike fetch_chat_turn_timestamps/
     fetch_chat_turns_by_id above, this is a recency scan, not an id-batch
     lookup -- there is no known id set to query the two tables separately
@@ -301,26 +306,23 @@ async def fetch_chat_history_pairs(
     # ORDER BY/LIMIT below can reference the aliases (prompt/response/
     # created_at) directly with no wrapping subquery needed.
     id_col = settings.RECALL_SQL_CHAT_ID_COL
-    query = f"""
+    branches = [settings.RECALL_SQL_CHAT_TABLE]
+    if include_aitown:
+        branches.append(settings.RECALL_SQL_AITOWN_CHAT_TABLE)
+    selects = [
+        f"""
         SELECT {id_col} AS row_id,
                correlation_id,
                {settings.RECALL_SQL_CHAT_TEXT_COL} AS prompt,
                {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response,
                {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at,
                client_meta,
-               '{settings.RECALL_SQL_CHAT_TABLE}' AS source_ref
-        FROM {settings.RECALL_SQL_CHAT_TABLE}
-        WHERE {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= NOW() - INTERVAL '{since_minutes} minutes'
-        UNION ALL
-        SELECT {id_col} AS row_id,
-               correlation_id,
-               {settings.RECALL_SQL_CHAT_TEXT_COL} AS prompt,
-               {settings.RECALL_SQL_CHAT_RESPONSE_COL} AS response,
-               {settings.RECALL_SQL_CHAT_CREATED_AT_COL} AS created_at,
-               client_meta,
-               '{settings.RECALL_SQL_AITOWN_CHAT_TABLE}' AS source_ref
-        FROM {settings.RECALL_SQL_AITOWN_CHAT_TABLE}
-        WHERE {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= NOW() - INTERVAL '{since_minutes} minutes'
+               '{table}' AS source_ref
+        FROM {table}
+        WHERE {settings.RECALL_SQL_CHAT_CREATED_AT_COL} >= NOW() - INTERVAL '{since_minutes} minutes'"""
+        for table in branches
+    ]
+    query = "\n        UNION ALL".join(selects) + f"""
         ORDER BY created_at DESC
         LIMIT {limit}
     """

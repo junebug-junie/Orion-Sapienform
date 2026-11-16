@@ -103,6 +103,16 @@ TemporalSourceKind = Literal[
     "faculty_status_changed",
     # one final office visit (sql-writer vision_office_session): labels the office company arc
     "office_session",
+    # Orion's now, patch 1 (docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md
+    # A1): experiences only. No arc folds them (arcs._fold_event falls through); they are read back
+    # through GET /temporal-self/now. The spec's other three (intention_close, day_letter,
+    # personality_choice) are patch 7 and are not named here until a reader exists.
+    # one finished reading: a closed hub.world_pulse_read act on the act ledger (grammar_acts)
+    "reading_turn",
+    # one scored exceedance forecast (orion-prediction prediction_exceedance), with its surprisal
+    "prediction_surprise",
+    # one Prime thought: a closed prime/infer act on the act ledger, its outcome note as label
+    "prime_thought",
 ]
 
 ArcKind = Literal[
@@ -425,6 +435,9 @@ class TemporalSelfStateV1(_Forbid):
     tick_winner_count_today: int = 0
     tick_source_gaps_today: int = 0
     tick_winner_refs_today: list[str] = Field(default_factory=list)  # distinct, capped
+    # The newest broadcast tick intervals in seconds, oldest first, capped (arcs.TICK_INTERVALS_CAP).
+    # The gap bar is 3 times their median (arcs.tick_gap_sec, #3400). Kept across midnight.
+    tick_recent_intervals_sec: list[float] = Field(default_factory=list)
     # Cross-day continuation: subject -> (arc_id, last_seen) for arcs closed at midnight.
     carry: dict[str, dict[str, str]] = Field(default_factory=dict)
     entered_day_with: list[str] = Field(default_factory=list)
@@ -508,3 +521,100 @@ class DayCitationCheckV1(_Forbid):
     uncited_examples: list[str] = Field(default_factory=list)  # first few, clipped
     label: DayCitationLabel = "no_day_claims"
     action: Literal["kept", "stripped"] = "kept"
+
+
+# --- Orion's now (integration design Part A, patch 1) -----------------------------------------
+# Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, A2-A4. The now is
+# the few most salient experiences (``temporal_self_event`` rows) of OTHER organs since a reader last
+# looked. Every read is stored (``experience_shown``); a reader's cites are checked against that row
+# and only valid ones are stored (``experience_use``). Built by ``orion/temporal_self/now.py`` (pure)
+# and served by orion-durable-runs ``GET /temporal-self/now``. No bus channel: HTTP and Postgres only.
+
+NOW_LABEL_MAX = 200
+NOW_MAX_ITEMS = 12
+NOW_MAX_PER_ORGAN = 2
+NOW_MAX_CITES = 3
+NOW_RELATED_REFS_CAP = 8
+
+
+class TemporalNowItemV1(_Forbid):
+    """One experience in the now. ``label`` is code-written from the row (never model prose)."""
+
+    event_id: str
+    organ: str
+    source_kind: TemporalSourceKind
+    label: str = Field(default="", max_length=NOW_LABEL_MAX)
+    occurred_at: AwareDatetime
+    # Share of the same source kind's events in the 30 days before this one that were strictly
+    # smaller (orion.physiology.event_wants.source_salience). None: under 20 past events, or the
+    # kind declares no magnitude (config/integration/organs.yaml). Never 0 for "unknown".
+    salience: float | None = Field(default=None, ge=0.0, le=1.0)
+    surprise_nats: float | None = None  # only where a real prediction exists
+    related_refs: list[str] = Field(default_factory=list, max_length=NOW_RELATED_REFS_CAP)
+
+
+class TemporalNowV1(_Forbid):
+    """What one reader was shown. ``shown_id`` is the ``experience_shown`` row a cite must match."""
+
+    schema_version: Literal["temporal_self.now.v1"] = "temporal_self.now.v1"
+    shown_id: str
+    reader_organ: str
+    reader_run_ref: str | None = None
+    since: AwareDatetime
+    as_of: AwareDatetime
+    items: list[TemporalNowItemV1] = Field(default_factory=list, max_length=NOW_MAX_ITEMS)
+    candidates: int = 0  # other organs' experiences recorded since ``since``
+    dropped_by_organ_cap: int = 0
+    dropped_by_total_cap: int = 0
+    unregistered_kinds: list[str] = Field(default_factory=list)  # kinds no organ claims (never shown)
+
+
+class ExperienceCitesV1(_Forbid):
+    """A reader's cites at its run's close (``POST /temporal-self/now/use``). At most 3 count."""
+
+    shown_id: str = Field(min_length=1)
+    citing_ref: str = Field(min_length=1, max_length=300)  # the citing run's own output ref
+    cites: list[str] = Field(default_factory=list, max_length=32)  # event ids, bare or "experience:<id>"
+
+
+class ExperienceUseRowV1(_Forbid):
+    use_id: str
+    event_id: str
+    citing_organ: str
+    citing_ref: str
+    shown_id: str
+    cited_at: AwareDatetime
+
+
+class ExperienceUseResultV1(_Forbid):
+    """``record_use``'s verdict. Invalid cites are counted and dropped, never stored."""
+
+    schema_version: Literal["temporal_self.experience_use.v1"] = "temporal_self.experience_use.v1"
+    shown_id: str
+    citing_organ: str
+    uses: list[ExperienceUseRowV1] = Field(default_factory=list, max_length=NOW_MAX_CITES)
+    rejected_not_shown: list[str] = Field(default_factory=list)
+    rejected_over_cap: list[str] = Field(default_factory=list)
+
+
+class OrganUseV1(_Forbid):
+    organ: str
+    experiences: int = 0
+    used_by_other: int = 0  # distinct experiences at least one different organ cited, validly
+    cites_made: int = 0  # valid cites this organ made of other organs' experiences in the window
+    rate: float | None = None  # None when the organ recorded no experience
+
+
+class ExperienceUseRateV1(_Forbid):
+    """The integration metric: the share of experiences a different organ used within 24 h."""
+
+    schema_version: Literal["temporal_self.experience_use_rate.v1"] = "temporal_self.experience_use_rate.v1"
+    window_start: AwareDatetime
+    window_end: AwareDatetime
+    experiences: int = 0
+    used_by_other: int = 0
+    rate: float | None = None
+    closed_organs: list[str] = Field(default_factory=list)
+    registered_organs: int = 0
+    organs: list[OrganUseV1] = Field(default_factory=list)
+    unregistered_kinds: dict[str, int] = Field(default_factory=dict)

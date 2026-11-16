@@ -556,6 +556,37 @@ contain 0), 7 %. Replay of the live loop itself over 11-12 07:11..11-13 07:11
 served excess +0.07 [-0.07, +0.27] (5 min), +0.07 [-0.08, +0.29] (15 min); median per-reading 80 %
 coverage 0.80 (athena load / CPU watts 0.41 / 0.43: #3310). The 7-day live calm check is #3309.
 
+## Family C: what do my own actions do? (`GET /effects/table`)
+
+Spec: `docs/superpowers/specs/2026-11-08-prediction-error-suite-rebuild-design.md`, "C. Causal effects".
+Code: `app/family_c.py`. Slice 1 is read-only and eval-only: no bus event, no node, no consumer.
+
+**The effect table.** One row per (actuator, reading, window). The window is minutes after the act
+starts: from the experiment's burn-in to the end of its block (the part of each block the switchback
+analysis reads). Each row has the ON-minus-OFF estimate, its 95 % interval, SE, blocks per arm, and
+the experiment ids. Rows come only from finished (`analyzed`) randomised switchback experiments, over
+every raw reading family A reads. Nothing is stored: `GET /effects/table` recomputes the rows from the
+logged blocks and the raw readings (cached per experiment). Several experiments of the same actuator
+pool by inverse variance. `family_c.choose()` is the only reader for acting or forecasting, and it
+refuses any row whose method is not `randomised`.
+
+**The efference copy.** Before an act: take a family A forecast whose bucket closed at or before the
+act started (it has not seen the act) and whose target falls in the row's window, while the act is
+still on. Move its quantiles by the effect, and widen them for the effect's SE (read off the row's own
+t interval). After the act: score the real reading in family A's unit (excess = -ln p - 1, calm 0 by
+theory). The same reading is also scored against the forecast alone. `gain` is the log predictive
+density with the effect minus without it. That is a proper score: a table that only adds uncertainty
+loses. It is positive when knowing the effect helped.
+`family_c.gate()` reports the mean gain over acts, its SE and prob_better. There is no alpha line.
+
+Live state, 2026-11-15 (`evals/run_family_c_live_eval.py`): one experiment ever ran
+(`vision.focus:walkway`, 2026-10-29, 12 x 20-min blocks). 45 rows, 31 with an estimate. 1 of 31 rows
+has p <= 0.05, which is about what chance gives with 31 rows. Cabinet temperature: +0.29 C, 95 %
+-0.47..+1.04. The other 14 readings had no data during that experiment. No act has been scored live. Rest
+check with no act (48 h of scored family A forecasts): mean excess +0.099 (5 min) and -0.030
+(15 min); both 95 % intervals contain 0. A single Gaussian read off the 80 % range did not rest
+(+0.614 / +0.257), so the scorer reads all 9 stored quantiles.
+
 ## Contracts
 
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).
@@ -582,6 +613,8 @@ curl -fsS http://localhost:8132/series/athena.cabinet_temp_c/models
 cd services/orion-prediction
 PYTHONPATH=../..:. python -m pytest tests -q
 PYTHONPATH=../..:. python evals/run_causal_calibration_eval.py          # planted effects, many seeds
+PYTHONPATH=../..:. python evals/run_family_c_synthetic_eval.py          # family C: switchback -> table -> efference copy (planted)
+POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_c_live_eval.py --hours 48  # family C table + rest check + planted-act replay (read-only, ~15 s)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_calm_live_eval.py --hours 24   # surprise calm check (live, read-only)
 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_surprise_node_replay_eval.py --hours 72  # gate + node fold replayed (live, read-only)
 OPENBLAS_NUM_THREADS=4 POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_family_a_baselines_eval.py --days 14 --seeds 0 1 2 [--out <dir>]  # family A gate + rungs + static vs adaptive joint surprise (read-only, ~75 s)

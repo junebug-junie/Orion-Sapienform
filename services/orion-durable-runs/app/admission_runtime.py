@@ -41,12 +41,13 @@ from app.reading_resonance_store import persist_resonance
 from app.journal_compose_graph import build_journal_compose_graph, finish_detail as journal_compose_finish_detail
 from app.harness_smoke_graph import (
     build_consult_turn_graph, build_harness_smoke_graph, build_intention_carry_graph, consult_turn_finish_detail,
-    intention_carry_finish_detail,
+    intention_carry_finish_detail, build_session_roundup_graph, session_roundup_finish_detail,
     finish_detail as harness_smoke_finish_detail,
 )
 from app.harness_step import harness_step_correlation_id
 from orion.schemas.consult_turn_run import CONSULT_ORION_TURN_STEP_KEY, CONSULT_ORION_TURN_WORKFLOW
 from orion.schemas.intention import INTENTION_CARRY_STEP_KEY, INTENTION_CARRY_WORKFLOW
+from orion.schemas.session_roundup_run import SESSION_ROUNDUP_STEP_KEY, SESSION_ROUNDUP_WORKFLOW
 from orion.schemas.harness_step_run import HARNESS_ECHO_SMOKE_STEP_KEY, HARNESS_ECHO_SMOKE_WORKFLOW
 from app.pr_field_note_graph import build_pr_field_note_graph, finish_detail as pr_field_note_finish_detail
 from app.pr_field_note_ledger import FieldNoteLedger
@@ -135,6 +136,8 @@ WORK_NODES = {READING_RESONANCE_WORKFLOW: {"judge"}, DEFAULT_WORKFLOW: {"run_sta
               CONSULT_ORION_TURN_WORKFLOW: {"harness_step"},
               # The carry turn of a concern Prime took on: the same single-step graph.
               INTENTION_CARRY_WORKFLOW: {"harness_step"},
+              # Orion's hourly read of the messages coding sessions sent: the same single-step graph.
+              SESSION_ROUNDUP_WORKFLOW: {"harness_step"},
               # One harness turn (plus verify_receipt) under the hold; precheck and finish need none.
               PR_FIELD_NOTE_WORKFLOW: {"field_note"},
               # One harness turn per step (five hops, then the cross-read), each under the run's one hold;
@@ -144,7 +147,8 @@ WORK_NODES = {READING_RESONANCE_WORKFLOW: {"judge"}, DEFAULT_WORKFLOW: {"run_sta
 HARNESS_STEP_WORKFLOWS = {HARNESS_ECHO_SMOKE_WORKFLOW: HARNESS_ECHO_SMOKE_STEP_KEY,
                           PR_FIELD_NOTE_WORKFLOW: PR_FIELD_NOTE_STEP_KEY,
                           CONSULT_ORION_TURN_WORKFLOW: CONSULT_ORION_TURN_STEP_KEY,
-                          INTENTION_CARRY_WORKFLOW: INTENTION_CARRY_STEP_KEY}
+                          INTENTION_CARRY_WORKFLOW: INTENTION_CARRY_STEP_KEY,
+                          SESSION_ROUNDUP_WORKFLOW: SESSION_ROUNDUP_STEP_KEY}
 # Workflows of several harness steps on that seam: workflow -> (state -> the step key not yet done).
 HARNESS_MULTI_STEP_WORKFLOWS = {REMINISCENCE_WORKFLOW: pending_step}
 # Interrupt nodes the driver resumes only once the run's checkpointed ``retry_at`` has passed, and
@@ -287,6 +291,9 @@ class AdmissionRuntime:
             # Intentions Prime took on: one carry turn per run, on the same seam (orion/schemas/intention.py).
             INTENTION_CARRY_WORKFLOW: build_intention_carry_graph(
                 lambda request: runner._run_turn(request), admission_deps, runner._checkpointer),
+            # Session threads: Orion's hourly round-up turn (orion/schemas/session_roundup_run.py).
+            SESSION_ROUNDUP_WORKFLOW: build_session_roundup_graph(
+                lambda request: runner._run_turn(request), admission_deps, runner._checkpointer),
             # PR field notes Patch 2: the same seam, plus a code receipt check against Orion's ledger.
             PR_FIELD_NOTE_WORKFLOW: build_pr_field_note_graph(
                 lambda request: runner._run_turn(request), admission_deps, runner._checkpointer,
@@ -394,6 +401,8 @@ class AdmissionRuntime:
             return consult_turn_finish_detail(state)
         if workflow == INTENTION_CARRY_WORKFLOW:
             return intention_carry_finish_detail(state)
+        if workflow == SESSION_ROUNDUP_WORKFLOW:
+            return session_roundup_finish_detail(state)
         if workflow == PR_FIELD_NOTE_WORKFLOW:
             return pr_field_note_finish_detail(state)
         if workflow == REMINISCENCE_WORKFLOW:
@@ -757,7 +766,8 @@ class AdmissionRuntime:
             detail["turn_correlation_id"] = turn_correlation_id(state)
         elif state.get("workflow") in (REVERIE_VISUAL_WORKFLOW, DREAM_CARRY_WORKFLOW, SELF_SENSE_WORKFLOW,
                                        HARNESS_ECHO_SMOKE_WORKFLOW, PR_FIELD_NOTE_WORKFLOW, REMINISCENCE_WORKFLOW,
-                                       CONSULT_ORION_TURN_WORKFLOW, INTENTION_CARRY_WORKFLOW, ORION_DAY_WORKFLOW) \
+                                       CONSULT_ORION_TURN_WORKFLOW, INTENTION_CARRY_WORKFLOW, SESSION_ROUNDUP_WORKFLOW,
+                                       ORION_DAY_WORKFLOW) \
                 and state.get("step_correlation_id"):
             # The step's own turn identity, on the event log BEFORE the turn runs: a turn that hangs
             # or a worker that dies mid-step is still traceable by it (self-sense: the question's).
@@ -1035,6 +1045,8 @@ class AdmissionRuntime:
                         "since": row["generated_at"], "beat": 0.0})
             self._outreach_loaded_at = time.monotonic()
         for run_id, entry in list(self.outreach.items()):
+            if self.outreach.get(run_id) is not entry:
+                continue  # Hub released it while an earlier hold in this pass was awaited
             lease, state = entry["lease"], {"run_id": run_id}
             if (self.now() - entry["since"]).total_seconds() >= self.settings.outreach_hold_max_sec:
                 logger.warning("durable_outreach_hold_timeout run=%s lease=%s", run_id, lease["lease_id"])
@@ -1046,6 +1058,8 @@ class AdmissionRuntime:
             try:
                 await self._beat(lease)
             except (HoldLost, WorkflowDeadline, RuntimeError) as exc:  # a take-back or a refusal: gone either way
+                if self.outreach.get(run_id) is not entry:
+                    continue  # released by Hub during the beat: that release already ended it
                 logger.warning("durable_outreach_hold_lost run=%s lease=%s %s", run_id, lease["lease_id"], exc)
                 await self._record_lost(state, lease, type(exc).__name__, str(exc)[:200])
                 # Re-queued holds would be granted to a finished run: end it.
@@ -1069,8 +1083,11 @@ class AdmissionRuntime:
                                          for event in await self.store.history(run_id)):
             self.outreach.pop(run_id, None)
             return {"released": False, "run_id": run_id, "reason": "already_released"}
-        await self._end_hold({"run_id": run_id}, lease["lease_id"], lease, "outreach_done")
+        released = await self._end_hold({"run_id": run_id}, lease["lease_id"], lease, "outreach_done")
         self._wake.set()
+        if not released:
+            # The pool did not confirm: the release is queued and retried on every reconcile.
+            return {"released": False, "run_id": run_id, "reason": "pending_retry"}
         return {"released": True, "run_id": run_id}
 
     # --- pool events -----------------------------------------------------------------------------

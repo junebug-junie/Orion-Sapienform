@@ -46,6 +46,9 @@ from orion.schemas.consult_turn_run import (
 from orion.schemas.intention import (
     INTENTION_CARRY_STEP_KEY, INTENTION_CARRY_TAG, INTENTION_SESSION_ID, IntentionCarryBriefV1,
 )
+from orion.schemas.session_roundup_run import (
+    SESSION_ROUNDUP_STEP_KEY, SESSION_ROUNDUP_TAG, SessionRoundupBriefV1,
+)
 from orion.schemas.harness_step_run import (
     HARNESS_ECHO_SMOKE_SESSION_ID, HARNESS_ECHO_SMOKE_STEP_KEY, HARNESS_ECHO_SMOKE_TAG, HarnessEchoSmokeBriefV1,
 )
@@ -130,6 +133,14 @@ def intention_carry_finish_detail(state: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def session_roundup_finish_detail(state: dict[str, Any]) -> dict[str, Any]:
+    """session_roundup.orion_turn's finish detail. Hub reads the full text from ``GET /runs/{run_id}``."""
+    out = _finish_detail(state, line="session_roundup", step_key=SESSION_ROUNDUP_STEP_KEY)
+    brief = state.get("brief") or {}
+    out.update({k: brief.get(k) for k in ("roundup_id", "thread_ids")})
+    return out
+
+
 def _smoke_step(brief: HarnessEchoSmokeBriefV1) -> dict[str, Any]:
     return {"prompt": brief.prompt, "source_tag": HARNESS_ECHO_SMOKE_TAG, "session_id": HARNESS_ECHO_SMOKE_SESSION_ID}
 
@@ -147,6 +158,21 @@ def _intention_step(brief: IntentionCarryBriefV1) -> dict[str, Any]:
     # prime_concern:<id> (Hub builds it), so the hand-back settles the concern when the turn completes.
     return {"prompt": brief.prompt, "source_tag": f"{INTENTION_CARRY_TAG}:{brief.concern_id}",
             "session_id": INTENTION_SESSION_ID, "retrieval_query": brief.retrieval_query, "require_lookup": False}
+
+
+def _session_roundup_step(brief: SessionRoundupBriefV1) -> dict[str, Any]:
+    # require_lookup=False: Orion may answer from the specs in the prompt alone (an unmerged spec is not in
+    # Orion's checkout, so the prompt carries its text). One session per round, named by Hub.
+    return {"prompt": brief.prompt, "source_tag": f"{SESSION_ROUNDUP_TAG}:{brief.roundup_id}",
+            "session_id": brief.session_id, "retrieval_query": brief.retrieval_query, "require_lookup": False}
+
+
+def build_session_roundup_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any):
+    """session_roundup.orion_turn: the same one-step graph; the step is Orion's hourly read of the messages
+    coding sessions sent. No cut-short retry: a turn cut short ends the run with the honest cut-short text,
+    and Hub holds the threads for the next hour instead of spending two more hour-long attempts."""
+    return build_single_step_harness_graph(run_turn, admission, checkpointer, step_key=SESSION_ROUNDUP_STEP_KEY,
+                                           brief_model=SessionRoundupBriefV1, step_args=_session_roundup_step)
 
 
 def build_harness_smoke_graph(run_turn: RunTurn, admission: AdmissionDeps, checkpointer: Any):

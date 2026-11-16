@@ -7,10 +7,7 @@ and its follow-up.
 
 This asserts each of those keys keeps a `:-default` fallback matching
 `.env_example`'s real value, so a future missing-.env-key never turns into a
-hard crash again -- unlike e.g. RECALL_GRAPHITI_IN_CHAT/RECALL_GRAPHITI_ADAPTER_URL,
-which are deliberately left without a compose-level default (see the comment
-directly above them in docker-compose.yml) because they're NEVER_SYNC_KEYS-protected
-secrets/flags, not safe numeric tunables.
+hard crash again.
 """
 from __future__ import annotations
 
@@ -31,7 +28,6 @@ _HARDENED_KEYS = (
     "RECALL_CONTINUITY_SQL_MINUTES",
     "RECALL_CONTINUITY_RENDER_BUDGET",
     "RECALL_BELIEF_RENDER_BUDGET",
-    "RECALL_CRYSTALLIZATION_VECTOR_COLLECTION",
     "RECALL_MAX_QUERY_CHARS",
     "RECALL_MAX_SUB_QUERIES",
     "RECALL_DEADLINE_MS_DEFAULT",
@@ -73,19 +69,4 @@ def test_hardened_keys_have_compose_default_matching_env_example() -> None:
         assert match.group(1) == default_value, (
             f"{key}'s compose fallback ({match.group(1)!r}) has drifted from "
             f".env_example ({default_value!r}) -- keep them in sync."
-        )
-
-
-def test_intentionally_unguarded_graphiti_keys_stay_unguarded() -> None:
-    """RECALL_GRAPHITI_IN_CHAT / RECALL_GRAPHITI_ADAPTER_URL are deliberately left
-    without a compose-level default (see the comment above them in
-    docker-compose.yml) -- they're NEVER_SYNC_KEYS-protected and a duplicated
-    ':-' default here would silently drift from .env_example over time. This
-    test documents that choice so nobody "fixes" it the same way as the keys
-    above without reading why."""
-    compose_text = _compose_text()
-    for key in ("RECALL_GRAPHITI_IN_CHAT", "RECALL_GRAPHITI_ADAPTER_URL"):
-        assert f"- {key}=${{{key}}}" in compose_text, (
-            f"{key} should stay a plain ${{{key}}} substitution with no default -- "
-            "see the docstring here and the comment above it in docker-compose.yml."
         )

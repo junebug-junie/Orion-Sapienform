@@ -39,7 +39,7 @@ from app.temporal_self_sources import SourceReader  # noqa: E402
 from app.temporal_self_store import ChronicleStore, StaleWriterError, WindowWrite  # noqa: E402
 from orion.schemas.regulation import ArousalReadingV1  # noqa: E402
 from orion.temporal_self import build_frame, initial_state  # noqa: E402
-from temporal_self_world import TZ, FakeReader, FakeStore, World  # noqa: E402
+from temporal_self_world import TZ, FakeReader, FakeStore, Row, World  # noqa: E402
 from test_temporal_self_chronicle import STEP, T0, cfg, chat, scenario  # noqa: E402
 
 
@@ -209,6 +209,26 @@ def test_live_postgres_run_matches_in_memory_and_survives_a_restart():
     with_db(scenario_fn)
 
 
+def test_memory_written_hours_later_is_read_by_write_time_and_folded():
+    """#3400 against the real SQL: the episode_memory read keys on created_at, so a memory distilled
+    3 h after its moment folds in the window it lands in and joins the arc that held that moment."""
+    async def scenario_fn(pool):
+        w = scenario()   # A holds 15:00 to ~15:06
+        occurred, created = T0 + timedelta(minutes=2), T0 + timedelta(hours=3)
+        w.rows.append(Row("memory_episode", {
+            "memory_id": "00000000-0000-0000-0000-000000000001", "episode_id": "ep-1", "purpose": "happened",
+            "occurred_at": occurred, "created_at": created}, created + timedelta(seconds=1)))
+        await run_pg(pool, w, T0 + timedelta(hours=3, minutes=30))
+        store = ChronicleStore(pool)
+        assert await store.late_counts(T0 - timedelta(days=1)) == {}
+        assert (await store.frame())["skipped_at_or_before_watermark"] == 0
+        bound = [a for a in await store.arcs("2026-10-10")
+                 if "memory_episode:00000000-0000-0000-0000-000000000001" in a["context_event_ids"]]
+        assert [a["kind"] for a in bound if a["kind"] == "attention"] == ["attention"]
+
+    with_db(scenario_fn)
+
+
 def test_late_row_is_stored_unfolded_and_counted_once():
     async def scenario_fn(pool):
         w = scenario()
@@ -262,8 +282,13 @@ def test_retention_covers_chronicle_rows_and_arousal_transitions():
                                (now - timedelta(days=100), now - timedelta(days=100), now - timedelta(days=100)))
             await conn.execute("INSERT INTO temporal_self_day (day_id, closed_at, day_json) VALUES ('2025-01-01', %s, '{}')",
                                (now - timedelta(days=400),))
+            # Orion's now: reads and uses go with the events they name (event retention).
+            await conn.execute("INSERT INTO experience_shown (shown_id, reader_organ, event_ids, since, shown_at) VALUES "
+                               "('old', 'prime', '{}', %s, %s), ('new', 'prime', '{}', %s, %s)", (old, old, now, now))
+            await conn.execute("INSERT INTO experience_use (use_id, event_id, citing_organ, citing_ref, shown_id, cited_at) "
+                               "VALUES ('u-old', 'e', 'prime', 'r', 'old', %s)", (old,))
         out = await ChronicleStore(pool).retention(now, event_days=30, arc_days=90, day_days=365)
-        assert out == {"event": 1, "arc": 1, "day": 1}
+        assert out == {"event": 1, "arc": 1, "day": 1, "experience_shown": 1, "experience_use": 1}
         async with pool.connection() as conn:
             left = await (await conn.execute("SELECT source_kind, label FROM temporal_self_event")).fetchall()
             arcs = await (await conn.execute("SELECT arc_id FROM temporal_self_arc")).fetchall()

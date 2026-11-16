@@ -1,0 +1,33 @@
+name: graphiti trial tests
+
+on:
+  pull_request:
+    paths:
+      - "services/orion-graphiti-adapter/scripts/**"
+      - "services/orion-graphiti-adapter/tests/test_graphiti_trial.py"
+      - "orion/gpu_pool/client.py"
+      - "orion/llm/resource_lease.py"
+      - "orion/schemas/gpu_pool.py"
+      - "orion/schemas/vector/**"
+      - ".github/workflows/graphiti-trial-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "services/orion-graphiti-adapter/scripts/**"
+      - "services/orion-graphiti-adapter/tests/test_graphiti_trial.py"
+
+jobs:
+  graphiti-trial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install adapter requirements
+        run: python -m pip install -r services/orion-graphiti-adapter/requirements.txt pytest pytest-asyncio
+      - name: Graphiti trial helper + scorer tests (offline)
+        env:
+          PYTHONPATH: ${{ github.workspace }}:${{ github.workspace }}/services/orion-graphiti-adapter
+        run: python -m pytest -q services/orion-graphiti-adapter/tests/test_graphiti_trial.py

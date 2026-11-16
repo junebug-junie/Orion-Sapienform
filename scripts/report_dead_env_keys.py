@@ -150,7 +150,7 @@ def _load_sync_rules(root: pathlib.Path):
             return any(p in secret_segments for p in parts) or any(pair in secret_pairs for pair in zip(parts, parts[1:]))
 
         never = frozenset({"PUBLISH_CORTEX_EXEC_GRAMMAR", "ORION_BUS_URL", "REOLINK_URL", "WALKWAY_RTSP_URL",
-                           "RECALL_GRAPHITI_IN_CHAT", "RECALL_GRAPHITI_ADAPTER_URL", "ILO_HOST", "ILO_USERNAME",
+                           "ILO_HOST", "ILO_USERNAME",
                            "ILO_PASSWORD", "HUB_CURIOSITY_GRAPH_ORION_PASSWORD", "CURSOR_API_KEY",
                            "ORION_CURIOSITY_GRAPH_PASSWORD", "ENERGY_USAGE_POINT_ID"})
         return never, is_secret_key

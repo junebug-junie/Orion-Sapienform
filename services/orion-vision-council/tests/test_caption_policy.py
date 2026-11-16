@@ -48,6 +48,8 @@ def _window(stream_id: str | None, *, camera_id: str | None = None) -> VisionWin
             "item_count": 1,
             "evidence": {
                 "hard_labels": ["person"],
+                # Detector score for the person box: above the 0.4 activity cap.
+                "label_scores": {"person": 0.9},
                 "soft_labels": ["mower"],
                 "caption_count": 1,
                 "host_person_hits": 1,

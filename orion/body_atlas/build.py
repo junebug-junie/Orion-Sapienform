@@ -321,6 +321,7 @@ def build_atlas(
         placed = Counter(host_of[n] for n in members if n in host_of)
         organs.append(OrganV1(
             organ_id=organ_id,
+            member_hash=organ_id,
             members=[f"part:{n}" for n in members],
             hub=f"part:{members[0]}",
             kinds=dict(sorted(kinds.items(), key=lambda kv: (-kv[1], kv[0]))),

@@ -1068,6 +1068,27 @@ def _log_prime_citations(prime_block: Any, final_text: Any, *, correlation_id: s
         logger.warning("prime_block_citations_failed corr=%s", correlation_id, exc_info=True)
 
 
+def turn_workflow_label(
+    payload: dict[str, Any] | None, *, reading_only: bool = False, utterance_origin: str | None = None
+) -> str | None:
+    """What kind of turn this is, for harness_turn_trace.workflow (#3255).
+
+    "chat" when Juniper typed it, checked first: a chat turn's payload is the client's own frame,
+    so a ``source`` key in it is not Hub's label. Else the caller's own ``source`` tag when it set
+    one (every curiosity, outreach, consult and day-letter turn does), else "reading" for a reading
+    turn. None when nothing says (a relayed external-room turn, for one): unknown stays unknown
+    rather than being guessed.
+    """
+    if utterance_origin == "juniper":
+        return "chat"
+    source = str((payload or {}).get("source") or "").strip()
+    if source:
+        return source[:120]
+    if reading_only:
+        return "reading"
+    return None
+
+
 async def execute_unified_turn(
     *,
     bus: Any,
@@ -1714,6 +1735,7 @@ async def execute_unified_turn(
         fcc_model_label=resolved_fcc_model_label,
         mode=mode_tag,
         utterance_origin=utterance_origin,
+        workflow=turn_workflow_label(payload, reading_only=reading_only, utterance_origin=utterance_origin),
         situation_prompt_fragment=situation_prompt_fragment,
         prime_block=prime_block.text if prime_block is not None else None,
         draft_preview=bool(draft_preview),

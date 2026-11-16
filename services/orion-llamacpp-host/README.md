@@ -302,22 +302,20 @@ Important characteristics of this compose file:
 
 This is the repo's best current Atlas pattern, but it is still **operator-edited compose**, not a full deployment system.
 
-## hecate: `agent-deep` (second GPU node)
+## Hecate: dedicated `agent-deep` lane
 
-hecate's one V100-SXM2-32GB serves the GPU pool role `agent-deep` (`config/gpu_pool.yaml`: card
-`hecate-gpu0` with `host: hecate`, port 8021). It is a fixed resident, like chat on circe: no lane
-controller runs on hecate. The card is lendable: the `agent-deep` route always reaches it, and
-agent/metacog/fast work spills onto it only while it is lent (Hub GPU pool panel).
+Hecate now has two V100-SXM2-32GB GPUs. Its dedicated deep-thinking deployment
+uses `services/orion-vllm-host/scripts/hecate-deep.sh`, with the existing Gateway
+and GPU pool at port 8021. Both cards remain un-lent. See the
+[current deployment, measurements and rollback runbook](../../docs/runbooks/hecate-deep-thinking.md).
 
-```bash
-# on hecate, from a worktree; HECATE_AGENT_DEEP_* live in this service's .env
-docker compose --env-file .env --env-file services/orion-llamacpp-host/.env \
-  -f services/orion-llamacpp-host/docker-compose.hecate.yml up -d --build
-curl -fsS http://100.87.202.68:8021/health
-```
-
-`HECATE_AGENT_DEEP_HOST_PORT` must equal the pool role's port: discovery reports `mismatch` otherwise.
-The first boot downloads the 27B GGUF into `LLM_CACHE_DIR`.
+This service supplies the isolated Strata challenger in
+`docker-compose.hecate-strata-eval.yml`, using the cached Flash-Next IQ3_S model,
+both GPUs and the existing announce-only wrapper. Its start script refuses to
+run beside the vLLM worker. Reserve and drain the lane before switching engines;
+all live deployments run from clean synchronized primary main through the safe
+Docker wrapper. The older single-card `docker-compose.hecate.yml` remains a
+historical configuration and must not replace the current deep lane implicitly.
 
 ## Chat lane on Strata (circe gpu0, 2026-10-30)
 
@@ -752,7 +750,7 @@ bash services/orion-llamacpp-host/scripts/verify_qwen3_thinking_off_live.sh
 **Fast lane (live, no Docker):** one call to the **running** fast seat, through orion-llm-gateway under a
 GPU pool operator hold (`python -m orion.evals.leased_llm chat`). Per-request `chat_template_kwargs` is
 sent in the JSON body so thinking can be forced off **without** restarting the worker. There is no direct
-worker URL: the lane door refuses unkeyed model calls (leased-evals design,
+worker URL: the lane door refuses model calls with no lease id (leased-evals design,
 `docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md`).
 
 ```bash

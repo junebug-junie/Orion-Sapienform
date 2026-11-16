@@ -494,7 +494,7 @@ def test_is_lane_door_reads_door_stats(monkeypatch):
             return False
 
     monkeypatch.setattr(bench.urllib.request, "urlopen",
-                        lambda url, timeout: R(_json.dumps({"lane": "agent-gpu2", "key_hash": None}).encode()))
+                        lambda url, timeout: R(_json.dumps({"lane": "agent-gpu2", "calls": {"leased": 0}}).encode()))
     assert bench.is_lane_door("http://127.0.0.1:8016") is True
     monkeypatch.setattr(bench.urllib.request, "urlopen",
                         lambda url, timeout: (_ for _ in ()).throw(OSError("404")))

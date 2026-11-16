@@ -736,15 +736,17 @@ def render_continuity_bundle(
         diagnostic=False,
     )
     header = "[Recent thread — continuity only]\n"
-    rendered = header + (bundle.rendered or "")
+    # No turns: no header (an empty shell in the chat prompt, #3461).
+    body = (bundle.rendered or "").strip()
+    rendered = header + body if bundle.items and body else ""
     if bundle.stats:
         bundle.stats.profile = str(profile.get("profile") or "chat.continuity.v1")
     bundle.rendered = rendered.strip()
     return bundle, ranking
 
 
+# active_packet (rank 0) retired from chat recall, issue #3461.
 _BELIEF_SOURCE_ORDER = {
-    "active_packet": 0,
     "concept_region": 1,
     "cards": 2,
     "rdf": 3,
@@ -783,7 +785,7 @@ def _belief_source_rank(source: str) -> int:
 # it injects because the turn mentions one of the query's own entities.
 ENTITY_INJECTED_TAG = "entity_relatedness_injected"
 # Belief-digest slots reserved for entity-injected turns. Without a reserve,
-# rank-0 active_packet lines (backend weight 1.0 vs falkor_chat's 0.4) fill
+# top-ranked lines (then active_packet, weight 1.0 vs falkor_chat's 0.4) fill
 # the small belief budget and the one turn that actually names who the user
 # is talking about never renders (live: corr 21c8a610, 2026-10-14).
 # 4, not 2: a person is usually mentioned in passing, and which of their turns
@@ -920,7 +922,9 @@ def _pcr_fuse_belief_with_entity_reserve(
         latency_ms=latency_ms,
         profile=str(profile.get("profile") or f"chat.belief.{retrieval_intent}.v1"),
     )
-    bundle = MemoryBundleV1(rendered=(header + rendered_body).strip(), items=items, stats=stats)
+    rendered_body = (rendered_body or "").strip()
+    rendered = (header + rendered_body).strip() if rendered_body else ""
+    bundle = MemoryBundleV1(rendered=rendered, items=items, stats=stats)
     return bundle, inj_ranking + rest_ranking
 
 
@@ -933,10 +937,11 @@ def pcr_fuse_belief_candidates(
     latency_ms: int = 0,
     entity_boost_map: Optional[Dict[str, float]] = None,
 ) -> Tuple[MemoryBundleV1, List[Dict[str, Any]]]:
-    """PCR Phase 3: belief-lane fusion with active_packet priority.
+    """PCR Phase 3: belief-lane fusion, ranked by _BELIEF_SOURCE_ORDER.
 
     Entity-injected chat turns (tagged ENTITY_INJECTED_TAG) get reserved
-    slots ranked ahead of active_packet; without any, behavior is unchanged."""
+    slots ranked ahead of every other source; without any, behavior is
+    unchanged. No items: empty string, never a bare header (#3461)."""
     filtered = [
         c
         for c in candidates
@@ -1002,9 +1007,11 @@ def pcr_fuse_belief_candidates(
             diagnostic=False,
             budget_indicator=False,
         )
-        bundle.rendered = header + rendered_body
+        bundle.rendered = header + rendered_body if (rendered_body or "").strip() else ""
     else:
-        bundle.rendered = header.strip()
+        # No content: no header. A bare "[Durable beliefs ...]" line in the
+        # chat prompt is an empty shell, not memory.
+        bundle.rendered = ""
 
     if bundle.stats:
         bundle.stats.profile = str(profile.get("profile") or f"chat.belief.{retrieval_intent}.v1")

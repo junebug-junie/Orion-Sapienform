@@ -338,8 +338,9 @@ logger = logging.getLogger("orion-hub.curiosity_investigation")
 
 # Durable turns served on this seam that are NOT curiosity runs: a consult reply to Claude
 # (consult.orion_turn, source "consult_orion_turn:<turn>") and Prime's day letter
-# (orion_day.letter, living Prime Part 3). Their reads are not framed as a curiosity run's.
-NON_CURIOSITY_TURN_SOURCES: tuple[str, ...] = ("consult_orion_turn", ORION_DAY_LETTER_SOURCE_TAG)
+# (orion_day.letter, living Prime Part 3), and the hourly session round-up (session_roundup.orion_turn,
+# source "session_roundup:<round>"). Their reads are not framed as a curiosity run's.
+NON_CURIOSITY_TURN_SOURCES: tuple[str, ...] = ("consult_orion_turn", ORION_DAY_LETTER_SOURCE_TAG, "session_roundup")
 
 
 def is_non_curiosity_turn_source(source: Any) -> bool:

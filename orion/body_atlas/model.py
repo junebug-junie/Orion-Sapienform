@@ -90,7 +90,13 @@ class FlowV1(BaseModel):
 class OrganV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    # ``organ:`` + 10 hex. Built as the member hash; on the live body the id ledger replaces it with
+    # the id of the earlier organ this one overlaps most, so it stays put when a part moves
+    # (organ_ids.py, #3402).
     organ_id: str
+    # The hash of the sorted members: what organ_id was before ids were carried. None on an atlas
+    # written before 2026-11-15.
+    member_hash: str | None = None
     members: list[str]  # part ids, strongest first
     hub: str
     kinds: dict[str, int] = Field(default_factory=dict)  # member count by part kind

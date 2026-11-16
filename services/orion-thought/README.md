@@ -189,16 +189,30 @@ With the flag on, two things happen:
   (`app/store.py::load_pending_expectations(limit=1)`) resolving the single
   most-overdue expectation whose window has already closed and that has no
   verdict yet:
-  - No fresh-enough percept available (same `ORION_REVERIE_PERCEPTION_MAX_AGE_SEC`
-    staleness gate as perception context, not a second constant) → writes
-    `expectation_verdict="unscored"` directly, no LLM call.
-  - A fresh percept is available → one call to the
-    `reverie_expectation_judge` verb (`orion/cognition/prompts/
+  - The room camera wrote no caption in the expectation's own check window
+    (thought `created_at` to `expectation_checkable_by`) → writes
+    `expectation_verdict="unscored"` directly, no LLM call. Live, 8 days to
+    2026-11-15: 487 of 487 windows held at least one caption.
+  - Otherwise → one call to the `reverie_expectation_judge` verb with every
+    room caption from that window, oldest first, each with its time after the
+    claim (`app/reverie.py::render_window_captions`; a run of the same caption
+    is one line; at most 24 lines / 3,000 chars, dropped evenly past that).
+    Until 2026-11-15 the judge saw one caption from the last 180 s before the
+    scoring tick, which runs a median 11 minutes after the window closes, so
+    most rows found none and were written `unscored` with no judge call
+    (2 real verdicts of 332 in 6 days, #3403).
+    The verb (`orion/cognition/prompts/
     reverie_expectation_judge.j2`), strict `{"verdict": "confirmed" |
     "disconfirmed" | "unscored"}` JSON, fail-closed to `unscored` on any
     ambiguity, LLM error, or parse failure. A pending expectation is never
     left permanently unresolved by a transient failure — it is stamped
     `unscored` instead of silently retried forever.
+
+The judge sees the room camera only. Expectations about a sensor reading, the
+street, or Orion's own state cannot be checked, so the narrate prompt now says
+so and asks for null instead; the judge answers `unscored` for one that still
+arrives. They are not routed to the sensor tables: that needs a parser from
+free text to a sensor and a threshold, a larger change than #3403 asked for.
 
 Scoring is fully independent of the current tick's own narration: it can
 never block, delay, or fail narration, and narration succeeding or failing

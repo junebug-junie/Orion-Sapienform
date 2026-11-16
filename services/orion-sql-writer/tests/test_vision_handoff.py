@@ -504,3 +504,42 @@ def test_street_event_carries_the_log_score_only_on_met_and_late() -> None:
 def test_departure_and_arrival_story_filters() -> None:
     assert "companion" in vh.NOT_A_DEPARTURE and "companion" in vh.NOT_AN_ARRIVAL
     assert "glimpse" not in vh.NOT_AN_ARRIVAL and "glimpse" not in vh.NOT_A_DEPARTURE
+
+
+# --- #3389: handoff rows name their subject ------------------------------------------------------
+
+
+class _RecordingConn:
+    def __init__(self):
+        self.params = None
+
+    def execute(self, stmt, params=None):
+        self.params = params
+
+
+@pytest.mark.parametrize("kind,expected", [("person", ["person"]), ("vehicle", ["vehicle"]), (" dog ", ["dog"]),
+                                           (None, []), ("", [])])
+def test_vision_event_entities_carry_the_subject_kind(kind, expected) -> None:
+    import json as _json
+
+    from app import vision_handoff_loop as hl
+
+    conn = _RecordingConn()
+    hl._vision_event(conn, event_id="handoff_missed-h1", event_type="handoff_missed", narrative_text="n",
+                     stream_id="doorbell", salience_v=0.4, refs=["handoff:h1"], tags=["p", "handoff"],
+                     subject_kind=kind)
+    assert _json.loads(conn.params["e"]) == expected
+
+
+def test_every_handoff_event_call_site_passes_the_subject_kind() -> None:
+    """``subject_kind`` has no default, so a new call site cannot write an
+    empty entity list by forgetting it."""
+    import inspect
+
+    from app import vision_handoff_loop as hl
+
+    sig = inspect.signature(hl._vision_event)
+    assert sig.parameters["subject_kind"].default is inspect.Parameter.empty
+    src = inspect.getsource(hl)
+    calls = src.count("_vision_event(ctx.conn")
+    assert calls == 3 and src.count("subject_kind=") == calls

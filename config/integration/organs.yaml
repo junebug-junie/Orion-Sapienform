@@ -1,0 +1,163 @@
+# Orion's organ registry: which organ every producer of Orion experience belongs to, whether the organ
+# emits through the experience contract and reads the now back, and what "bigger" means for salience.
+#
+# Spec: docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, Part A (A2, A5, A.6).
+# Consumers (the reason this file exists):
+#   * orion/temporal_self/now.py   -- GET /temporal-self/now: "at most 2 per organ", "never the
+#     reader's own organ", and the integration metric's per-organ split;
+#   * orion-durable-runs' chronicle -- salience per kind (salience_magnitude) at insert;
+#   * scripts/check_integration_seam.py (CI, the integration gate in CLAUDE.md);
+#   * scripts/report_integration_coverage.py (the live coverage report).
+#
+# Per organ:
+#   temporal_sources    TemporalSourceKind values this organ emits (each kind belongs to exactly one organ).
+#   exempt_emit         Required when temporal_sources is empty: why this organ does not emit yet.
+#   salience_magnitude  kind -> rule in orion/temporal_self/now.py MAGNITUDE_RULES. No rule: salience NULL.
+#   reads_now           The module that calls build_now / GET /temporal-self/now and records cites.
+#   exempt_read         Required when reads_now is null: why this organ does not read the now yet.
+#   families            config/physiology/families.yaml families (one organ each, or exempt_families).
+#   workflows           DurableWorkflowV1 values (one organ each, or exempt_workflows).
+#   intention_sources   modules in orion/prime/intention_sources/ (one organ each).
+#   channels            orion/bus/channels.yaml channels that carry this organ's output. Only channels
+#                       ADDED since the merge base with origin/main are checked (exempt_channels otherwise).
+#
+# Salience is computed from the source's own magnitude only, never from use counts.
+# A reviewer reads every new exemption (CLAUDE.md "Integration gate").
+
+organs:
+  reverie:
+    temporal_sources: [reverie_chain, expectation_verdict]
+    salience_magnitude:
+      reverie_chain: chain_thought_count
+    families: [thought.reverie]
+    reads_now: null
+    exempt_read: "not yet migrated: the reverie cue (services/orion-thought/app/temporal_self_cue.py) reads the now in integration patch 3"
+  painting:
+    temporal_sources: [visual_run, visual_deferral]
+    families: [thought.painting, thought.dream_hop]
+    workflows: [reverie.visual]
+    reads_now: null
+    exempt_read: "not yet migrated; integration patch 7"
+  dream:
+    temporal_sources: [dream_cycle, dream_hypothesis]
+    salience_magnitude:
+      dream_cycle: dream_hypothesis_count
+    families: [dream.cycle, dream.compaction]
+    workflows: [dream.carry]
+    reads_now: null
+    exempt_read: "not yet migrated; integration patch 7"
+  curiosity:
+    temporal_sources: [curiosity_run]
+    salience_magnitude:
+      curiosity_run: curiosity_moved_formed
+    families: [durable.curiosity_investigate, curiosity.replica, curiosity.compaction, curiosity.supervisor,
+               durable.self_inquiry]
+    workflows: [curiosity.investigate, curiosity.compaction]
+    reads_now: null
+    exempt_read: "not yet migrated: curiosity candidate selection reads the now in integration patch 3"
+  reading:
+    # reading_turn has no magnitude: the act ledger's surprisal for a finished read falls with the
+    # family posterior's age (daily median 0.0253 on 10-16 -> 0.000087 on 11-15), so against 30 days every
+    # successful read reads ~0 and only failed fetches read high. It would rank by "this read failed".
+    temporal_sources: [reading_turn]
+    families: [hub.world_pulse_read, actions.daily_pulse]
+    workflows: [reading.turn, reading.resonance]
+    reads_now: null
+    exempt_read: "no read-back planned in the spec yet (#3457)"
+  camera:
+    temporal_sources: [vision_percept, presence_transition, street_event, office_session]
+    # vision_percept has no magnitude: entity count stepped from 1 to 4-5 per percept on 2026-11-09 (a
+    # producer change), so against its 30-day history every ordinary scene read >= 0.9 (88% live, 11-15).
+    salience_magnitude:
+      office_session: visit_seconds
+    families: [vision.council, perception, perception.office, orion.look, orion.look_check, vision.ask]
+    reads_now: null
+    exempt_read: "not yet migrated: the cameras' look acts read the now in integration patch 7"
+  body:
+    temporal_sources: [body_binding, gpu_wait, arousal_transition]
+    salience_magnitude:
+      gpu_wait: waited_ms
+    families: [self_regulate.shed]
+    reads_now: null
+    exempt_read: "a reflex organ: regulation and the body economy act on sensor state, not on other organs' experiences (design call, #3457)"
+  prediction:
+    # action_outcome: the act ledger's predicted-vs-observed outcome rows (substrate_action_outcomes),
+    # one per closed act of any organ. Scoring a prediction is this organ's work, whoever acted.
+    # action_outcome has no magnitude: like reading_turn, the ledger's surprisal falls with each family
+    # posterior's age (weekly median 0.0105 the week of 10-12 -> 0.00024 the week of 11-09; corr(time,
+    # ln surprisal) = -0.43 over 35 days), so it would rank by age. prediction_surprise is a forecast's own
+    # -ln P(observed) and does not drift that way.
+    temporal_sources: [prediction_surprise, action_outcome]
+    salience_magnitude:
+      prediction_surprise: surprise_nats
+    reads_now: null
+    exempt_read: "orion-prediction forecasts sensor series; no forecast reads experiences yet (design call, #3457)"
+  metacognition:
+    temporal_sources:
+      - metacog_observation
+      - faculty_status_changed
+      - attention_row
+      - attention_loop_raised
+      - attention_loop_verdict
+      - field_dominance_run
+    salience_magnitude:
+      metacog_observation: metacog_severity
+      field_dominance_run: dominance_ticks
+    families: [metacog.log, actions.daily_metacog, durable.self_sense_eval, spark.introspect]
+    workflows: [self_sense_eval, situation.update]
+    reads_now: null
+    exempt_read: "no read-back planned in the spec yet (#3457)"
+  memory:
+    temporal_sources: [memory_episode, consolidation_window_close]
+    families: [memory.consolidation, durable.reminiscence, actions.journal, durable.journal_compose, compactor.digest,
+               topic_foundry.run, concept_induction, durable.pr_field_note]
+    workflows: [memory.episode_distill, journal.compose, reminiscence.episode, compactor.digest, pr.field_note]
+    reads_now: null
+    exempt_read: "not yet migrated; integration patch 7"
+  chat:
+    temporal_sources: [chat_turn]
+    families: [hub.chat_reply, hub.outreach, durable.consult_orion_turn, durable.session_roundup]
+    workflows: [consult.orion_turn, session_roundup.orion_turn]
+    reads_now: null
+    exempt_read: "the chat turn reads the Prime block, which carries the now's top 2 lines in integration patch 3"
+  play:
+    temporal_sources: [retro_play]
+    families: [hub.retro_coplay, hub.retro_leisure, aitown.session]
+    reads_now: null
+    exempt_read: "no read-back planned in the spec yet (#3457)"
+  prime:
+    # prime_thought has no magnitude yet: the act ledger's surprisal for a Prime thought drifts by
+    # 1e-6 per thought (0.000454 -> 0.000443 over 11-14..15) whatever the thought did, so it ranks by
+    # nothing. Unscored items rank after scored ones, newest first. Part B (hunger) gives Prime content.
+    temporal_sources: [prime_thought]
+    families: [prime]
+    reads_now: null
+    exempt_read: "not yet migrated: Prime's frame reads the now in integration patch 3"
+  intention:
+    temporal_sources: []
+    exempt_emit: "intention_close is integration patch 7 (one intention ever, 2026-11-13)"
+    families: [durable.intention]
+    workflows: [intention.carry]
+    intention_sources: [turn_promise]
+    reads_now: null
+    exempt_read: "a carry turn reads its own promise's thread only (intention design; design call, #3457)"
+  day_letter:
+    temporal_sources: []
+    exempt_emit: "day_letter is integration patch 7"
+    workflows: [orion_day.letter]
+    reads_now: null
+    exempt_read: "the letter reads the day's experience_use rows through the daily roundup (integration patch 4)"
+  personality:
+    temporal_sources: []
+    exempt_emit: "personality_choice is integration patch 7"
+    reads_now: null
+    exempt_read: "choices are made by Prime; the personality loop folds them and reads no other organ (design call, #3457)"
+
+# Producers that are no organ's experience. Each needs a reason a reviewer can check.
+exempt_families:
+  execution_dispatch.maintain: "dispatch ladder retired 2026-11-07 (ladder retirement PR 6); no grammar_acts row for this actor ever (live, 2026-11-15)"
+  execution_dispatch.inspect: "dispatch ladder retired 2026-11-07 (ladder retirement PR 6); no grammar_acts row for this actor ever (live, 2026-11-15)"
+  execution_dispatch.substrate: "dispatch ladder retired 2026-11-07 (ladder retirement PR 6); no grammar_acts row for this actor ever (live, 2026-11-15)"
+exempt_workflows:
+  harness.echo_smoke: "a hand-triggered seam smoke for the durable-run -> harness step path; not an organ's output"
+exempt_channels: {}

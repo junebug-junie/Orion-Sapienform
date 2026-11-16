@@ -44,6 +44,8 @@ MIGRATIONS = (
     REPO / "services/orion-sql-db/manual_migration_vision_handoff_v1.sql",
     # Office sessions (office camera design PR #3127 step B).
     REPO / "services/orion-sql-db/manual_migration_vision_office_session_v1.sql",
+    # Orion's now (integration patch 1): salience / surprise_nats columns, experience_shown / _use.
+    REPO / "services/orion-sql-db/manual_migration_experience_now_v1.sql",
 )
 
 
@@ -165,7 +167,9 @@ def table_rows(rows: dict[str, list[dict]]) -> dict[str, list[dict]]:
     # Office sessions: the adapter reads whole vision_office_session rows.
     out["vision_office_session"].extend(dict(r) for r in rows.get("office_session", []))
     for r in rows.get("memory_episode", []):
-        out["episode_memory"].append(dict(r, created_at=r.get("occurred_at")))
+        # The reader keys on created_at (the write time, #3400). An export from before that
+        # carries none: the memory then folds at occurred_at, as a replay always did.
+        out["episode_memory"].append(dict(r, created_at=r.get("created_at") or r.get("occurred_at")))
     out["orion_biometrics_cluster"].extend(dict(r) for r in rows.get("body_cluster", []))
     for r in rows.get("body_cabinet", []):
         out["orion_biometrics_summary"].append({"node": "athena", "timestamp": r["timestamp"],

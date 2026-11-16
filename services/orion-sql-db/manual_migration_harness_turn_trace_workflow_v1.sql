@@ -1,0 +1,11 @@
+-- ORION-MIGRATION-REQUIRED-BY: orion-sql-writer
+-- Workflow label on the turn trace (#3255; docs/superpowers/specs/2026-11-15-day-letter-findings-fix-design.md,
+-- Patch E): what kind of turn a harness_turn_trace row was ("curiosity_investigation",
+-- "endogenous_outreach", "reading", "chat", ...), so failures such as fcc_timeout can be split by kind.
+-- Writer: orion-sql-writer (HarnessTurnTraceSQL.workflow, from HarnessRunV1.workflow on the
+-- harness run artifact). NULL on older rows: unknown, never guessed.
+--
+-- Apply BEFORE deploying orion-sql-writer (its ORM model names the column):
+--   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_harness_turn_trace_workflow_v1.sql
+-- Additive, nullable, idempotent. Rollback: ALTER TABLE harness_turn_trace DROP COLUMN workflow;
+ALTER TABLE harness_turn_trace ADD COLUMN IF NOT EXISTS workflow text;

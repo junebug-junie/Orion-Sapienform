@@ -196,6 +196,10 @@ readers:
     role: display
     reason: read-only menu of the market's funded event wants from want_ledger (GET /physiology/event-wants); gates nothing.
     note: attention as the want competition, patch 2; Prime's concern source
+  - module: orion/temporal_self/now.py
+    role: display
+    reason: "imports only event_wants' source_salience percentile rule (and its 30-day / 20-event constants) to score Temporal Self experiences; reads no regulation, thermal or price state and gates nothing."
+    note: Orion's now, integration design 2026-11-15 Part A patch 1
   - module: services/orion-hub/scripts/temporal_self_routes.py
     role: display
     reason: Hub temporal-self routes proxy the regulation state and arousal_level for display.

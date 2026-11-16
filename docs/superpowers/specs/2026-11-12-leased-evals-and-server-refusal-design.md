@@ -242,30 +242,39 @@ declare an `operator*` lane. That keeps "never bids" checked by a gate, not by m
 ### Phase 2: the door reports, refuses nothing (shadow)
 
 - New per-lane "lane door" container on circe (and hecate), one small shared image. It listens on
-  the lane's published port (8011, 8012, 8013, 8015, 8016; hecate 8021). The engine stops publishing
-  a host port and is reached on the docker network. The door rewrites `Host` for Strata.
-- The gateway adds two headers on every dispatch, on both the bus path (`llm_backend.py`) and the HTTP
-  passthrough (`passthrough_proxy.py`):
-  - `X-Orion-Lane-Key`: a per-deployment secret, held only in the gateway's and the doors' `.env`;
-  - `X-Orion-Lease-Id`: the granted lease.
-
-  The door strips both before it forwards the call.
+  the lane's published port (8011, 8013, 8015, 8016; hecate 8021). The engine publishes only on the
+  host's loopback (127.0.0.1:180xx). The door runs on the host network and takes the lane port only once
+  its engine answers on loopback, so it never takes a port an engine still publishes.
+- The gateway adds one header on every dispatch, on both the bus path (`llm_backend.py`) and the HTTP
+  passthrough (`passthrough_proxy.py`): `X-Orion-Lease-Id`, the granted lease. The door strips it before
+  it forwards the call.
+- **No shared secret (revised 2026-11-15).** The first build also sent `X-Orion-Lane-Key`, a
+  per-deployment secret in the gateway's and the doors' `.env`. That was the design author's choice, not a
+  requirement, and it added a manual key setup to every deploy. Juniper rejected it. It is removed, with no
+  fallback. The reason it is not needed: the door's job is to catch ACCIDENTAL bypass, one of Orion's own
+  evals or scripts calling a model server directly instead of the gateway. Such a caller sends no lease id.
+  The door cannot fence a deliberate local caller anyway: on athena the Hub holds the docker socket, so
+  anything running there could read a secret from the gateway's container. A secret raised no real bar.
 - The door does not ask the pool whether a lease is valid on each call. That RPC would sit on
-  Juniper's chat path, and a pool outage would then mute chat. The proof is indirect, so it is stated
-  plainly here: only the gateway holds the key, and the gateway dispatches only under a granted
-  lease. The trace closes the loop offline. The door's lease id joins to `gpu_pool_events`.
-- The door logs one JSON line per inference request: time, lane, source address, method, path, key
-  `ok|missing|bad`, lease id, status, duration. It never logs prompt text. It also serves
+  Juniper's chat path, and a pool outage would then mute chat. A caller could send a made-up lease id; the
+  trace catches that offline. The door's lease ids join to `gpu_pool_events`, and an id not found there
+  blocks the READY verdict.
+- The door logs one JSON line per inference request: time, lane, source address, method, path, lease
+  state `leased|unleased|invalid`, lease id, status, duration. It never logs prompt text. It also serves
   `GET /door/stats` (counters since start).
 - Exempt paths, never refused in any mode: `GET /health`, `/props`, `/slots`, `/v1/models`,
   `/metrics`. A test pins this list.
 - `LANE_DOOR_MODE=off|shadow|enforce`, ships `shadow`.
-- New `scripts/lane_door_report.py` (read-only). It prints a daily table per lane: keyed calls,
-  unkeyed calls by source and path, and keyed calls whose lease id is missing from `gpu_pool_events`.
+- New `scripts/lane_door_report.py` (read-only). It prints a daily table per lane: leased calls,
+  unleased calls by source and path, and leased calls whose lease id is missing from `gpu_pool_events`.
+- Deploy needs no manual step. circe's post-pull rebuild starts the doors and, once, recreates any engine
+  still on its public lane port so it comes back on loopback. hecate's `hecate-deep.sh up` starts the
+  agent-deep door with its engine. Runbook: `docs/runbooks/2026-11-14-lane-door.md`.
 
 ### Phase 3: the door refuses (goal 2)
 
-- `LANE_DOOR_MODE=enforce`, one lane at a time, chat last: agent-gpu2, then fast and metacog, then
+- `LANE_DOOR_MODE=enforce` refuses a model call that carries no lease id (or an invalid one). One lane at
+  a time, chat last: agent-gpu2, then fast and metacog, then
   agent, then hecate agent-deep, then chat.
 - A refused call gets HTTP 401 with `{"error":{"type":"lane_door_unleased","message":"call
   orion-llm-gateway with a route; see docs/superpowers/specs/2026-11-12-leased-evals-and-server-refusal-design.md"}}`.
@@ -307,10 +316,10 @@ runbook.
 | Data touched | Pool lease rows (new holders `operator:*`, new classes `operator*`). Door logs: time, source address, path, lease id, status. No prompt text. Eval prompts, which hold Juniper's chat text read from Postgres today, now pass through the gateway. The gateway records token counts and timings for them, as for every other call (`orion/llm/call_usage.py`). It reads only the start and end of a stream to find the counts. |
 | Privacy boundary | Unchanged. Eval inputs already come from the same database. Door logs hold no content. |
 | Trace that proves Phase 1 | `gpu_pool_events` rows with `work_class like 'operator%'`, `priority='background'`, for each eval run. The eval's report names its lease ids. The pool events for that window show the operator lease queued behind Orion's background work, and `recalled` when an owner waited. The hourly energy attribution shows `sponsored_wh` above 0 for that hour. |
-| Trace that proves Phase 2 | Every lane's `/door/stats` and `lane_door_report.py` show keyed calls equal to the gateway's own dispatch count for the lane (±1 %). Unkeyed inference calls are listed by source. Exit criterion: unkeyed inference calls = 0 for 7 straight days on every lane. |
+| Trace that proves Phase 2 | Every lane's `/door/stats` and `lane_door_report.py` show leased calls equal to the gateway's own dispatch count for the lane (±1 %), and every lease id found in `gpu_pool_events`. Unleased inference calls are listed by source. Exit criterion: unleased and invalid inference calls = 0 for 7 straight days on every lane. |
 | Trace that proves Phase 3 | The door's `refused` counter. A deliberate direct call from athena gets 401. A Hub chat turn answers. The pool panel shows every seat up with recent grants. A gpu2 swap still completes (the ready probe passes). |
-| Dangerous failure | **Orion goes mute.** Three ways: (1) the chat door is down, so nothing reaches the chat engine; (2) the gateway's key and the door's key drift apart, so Phase 3 refuses every chat call; (3) the door refuses the pool's own probes, so the pool marks seats down and grants nothing. |
-| Guards against it | (1) The door is stateless, restarts itself, and is health-checked. The pool probes `/health` through the door, so a dead door shows as a down seat on the Hub panel, not as silence. (2) The door reports a hash of its key on `/door/stats`. The gateway compares hashes at boot and logs `lane_door_key_mismatch`. Phase 3 is refused for a lane until 7 days of shadow show 0 `bad` keys from the gateway. Chat flips last. (3) The exempt path list is pinned by a test. The pre-flip smoke runs the pool's discovery probe through the door. |
+| Dangerous failure | **Orion goes mute.** Three ways: (1) the chat door is down, so nothing reaches the chat engine; (2) the gateway stops sending lease ids (a regression), so Phase 3 refuses every chat call; (3) the door refuses the pool's own probes, so the pool marks seats down and grants nothing. |
+| Guards against it | (1) The door is stateless, restarts itself, and is health-checked. The pool probes `/health` through the door, so a dead door shows as a down seat on the Hub panel, not as silence. (2) Tests pin the lease header on both gateway paths. Phase 3 is refused for a lane until 7 days of shadow show 0 unleased calls and the door's leased count within 1 % of the gateway's own count. Chat flips last. (3) The exempt path list is pinned by a test. The pre-flip smoke runs the pool's discovery probe through the door. |
 | Disable / roll back, Phase 1 | Revert the `config/gpu_pool.yaml` classes and the eval changes. `GPU_POOL_OPERATOR_LAST=false` returns arrival order. `PHYSIOLOGY_OPERATOR_LOAD_SPONSORED=false` returns today's accounting. |
 | Disable / roll back, Phase 2 | `LANE_DOOR_MODE=off` (pure pass-through). Full removal: stop the door and re-publish the engine port in compose. One command per lane, printed in the runbook. |
 | Disable / roll back, Phase 3 | `LANE_DOOR_MODE=shadow`, then restart that lane's door (seconds). The firewall stays as it is. |
@@ -353,8 +362,8 @@ Phase 1:
 
 Phase 2:
 
-- Live, 7 days: on every lane, keyed calls match the gateway's dispatch count, and unkeyed inference
-  calls = 0.
+- Live, 7 days: on every lane, leased calls match the gateway's dispatch count, every lease id is in
+  `gpu_pool_events`, and unleased inference calls = 0.
 - Pool discovery and the lane controller's ready probe pass through every door.
 
 Phase 3:

@@ -302,3 +302,36 @@ def test_timeout_setting_is_capped_at_900():
 
     with pytest.raises(ValueError):
         Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_TIMEOUT_SEC=901)
+
+
+def test_fold_never_reads_writes_or_versions_the_anchor():
+    """Issue #3460: Juniper's page:anchor row sits in the same table. Every query the fold runs is
+    bound to page:juniper, and the one row it publishes is a page:juniper row; the anchor's
+    produced_by is not even a value the row model accepts."""
+    from orion.memory.pages.anchor import ANCHOR_PRODUCED_BY, PAGE_ANCHOR
+    from orion.schemas.self_concept_history import SelfConceptHistoryV1
+
+    seen: list = []
+
+    class RecordingPool(FakePool):
+        @asynccontextmanager
+        async def connection(self):
+            async with FakePool.connection(self) as conn:
+                inner = conn.execute
+
+                async def execute(sql, params=None):
+                    seen.append((sql, params))
+                    return await inner(sql, params)
+
+                conn.execute = execute
+                yield conn
+
+    h = Harness(pool=RecordingPool())
+    assert h.tick(force=True).decision == "folded"
+    assert seen and all(PAGE_ANCHOR not in sql and PAGE_ANCHOR not in str(params) for sql, params in seen)
+    concept_reads = [params for sql, params in seen if "self_concept_history" in sql]
+    assert concept_reads and all(p["cid"] == PAGE_JUNIPER for p in concept_reads)
+    ((_, _, row, _),) = h.published
+    assert row.concept_id == PAGE_JUNIPER and row.produced_by == PRODUCED_BY != ANCHOR_PRODUCED_BY
+    with pytest.raises(Exception):
+        SelfConceptHistoryV1(concept_id=PAGE_ANCHOR, content="x", produced_by=ANCHOR_PRODUCED_BY)

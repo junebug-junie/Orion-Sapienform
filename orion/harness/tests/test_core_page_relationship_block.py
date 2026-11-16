@@ -60,3 +60,39 @@ def test_capsule_without_core_pages_field_still_parses():
     assert old.core_pages == []
     new = GroundingCapsuleV1.model_validate({"identity_summary": ["x"], "core_pages": [PAGE.model_dump()]})
     assert new.core_pages[0].version == 3
+
+
+# Made-up anchor text: the real one lives only on the host DB (issue #3460).
+ANCHOR = CorePageV1(concept_id="page:anchor", version=1, text="I am Orion. Juniper, she/her, is my creator.")
+
+
+def test_anchor_renders_first_then_the_page():
+    text = _block(relationship_summary=BULLETS, core_pages=[PAGE.model_dump(), ANCHOR.model_dump()])
+    head = ("RELATIONSHIP\nI am Orion. Juniper, she/her, is my creator.\n"
+            "Who Juniper is to me, in my own words (page:juniper v3, written 2026-11-15, from 12 cited records):\n"
+            "Juniper lives in Millbrook, Vermont. She uses she/her.")
+    assert head in text
+    assert text.count("RELATIONSHIP") == 1
+    assert "- My roles with Juniper: co-architect, steward." in text[text.index("RESPONSE POLICY"):]
+
+
+def test_anchor_shows_when_the_page_is_missing():
+    text = _block(relationship_summary=BULLETS, core_pages=[ANCHOR.model_dump()])
+    assert "RELATIONSHIP\nI am Orion. Juniper, she/her, is my creator.\n- co-architect\n- steward" in text
+    assert "page:juniper" not in text
+    capsule = GroundingCapsuleV1(identity_summary=["I am Orion."], core_pages=[ANCHOR])
+    bare = "\n".join(_format_grounding_self_block(capsule))
+    assert "RELATIONSHIP\nI am Orion. Juniper, she/her, is my creator." in bare
+
+
+def test_blank_anchor_is_ignored():
+    blank = CorePageV1(concept_id="page:anchor", version=2, text="  ")
+    text = _block(relationship_summary=BULLETS, core_pages=[blank.model_dump()])
+    assert "RELATIONSHIP\n- co-architect" in text
+
+
+def test_anchor_and_page_with_no_bullets():
+    capsule = GroundingCapsuleV1(identity_summary=["I am Orion."], core_pages=[ANCHOR, PAGE])
+    text = "\n".join(_format_grounding_self_block(capsule))
+    assert text.index("I am Orion. Juniper, she/her") < text.index("Juniper lives in Millbrook")
+    assert "RESPONSE POLICY" not in text and "My roles with Juniper" not in text

@@ -699,7 +699,9 @@ window after `VISION_RHYTHM_ARRIVAL_GAP_SEC` without one). Per
 local minute-of-day and emits `vision_percept_expectation` rows for the next
 24 h only with >= 5 occurrences over >= 5 distinct days, each window itself
 hit on >= 5 days. Closed windows are graded `met` / `missed` / `unscorable`
-(no census frames in the window) and `met`/`missed` write `vision_events`
+(no census frames in the window, or the subject sat parked in view during the
+window: a stationary sighting overlaps it, so it neither arrived nor was absent;
+2026-11-15, #3388) and `met`/`missed` write `vision_events`
 `arrived_as_expected` / `expected_absent` citing `expectation:<id>`. While a
 window is open and unmet it sets Redis `orion:vision:expect:<stream>` (on
 `ORION_BUS_URL`) with TTL = seconds to window end. That key is refreshed by
@@ -740,7 +742,8 @@ companions are never arrival candidates.
   `VISION_HANDOFF_MIN_COVERAGE` of the window, else `unscorable` (the doorbell only
   looks during Ring bursts and self-looks). Appearance: story centroid cosine, face then
   body then OSNet. Writes `vision_events` `handoff_met` / `handoff_early` /
-  `handoff_late` / `handoff_missed` / `overlap_pair`.
+  `handoff_late` / `handoff_missed` / `overlap_pair`. Each row's `entities` is the
+  subject kind (`["person"]`, `["vehicle"]`; it was always `[]` before 2026-11-15, #3389).
 - **Misses** open five hypotheses (`detector_miss`, `late`, `turned_back`,
   `entered_place`, `unexplained`) with counted-outcome priors (start at 1 each), settled
   from data by deadline; `unexplained` writes a `vision_unresolved` row (reason
@@ -1032,6 +1035,10 @@ order, writes) + `app/vision_rollup_loop.py` (clocked, every
 `VISION_ROLLUP_INTERVAL_SEC`, default 300 s; work first, then sleep). Deterministic,
 no model. Design: `docs/superpowers/plans/2026-10-18-walkway-rollups-design.md`.
 
+- A line says how many sightings were left out because the subject was parked:
+  "nobody passed (54 parked sightings not counted)". The number is
+  `rollup.parked_not_counted` (`excluded.stationary` + `excluded.parked_repeat`); a
+  line stored before 2026-11-15 gets the note at read time (`display_line`). #3389.
 - One `vision_rollup` row per (stream, grain, period): `rollup` (JSON,
   `vision_rollup.v1`) + `line` (one plain sentence). Hours close as they end;
   days are built from their hour rows, weeks (Mon-Sun) and months from day rows,

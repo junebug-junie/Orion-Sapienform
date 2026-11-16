@@ -764,7 +764,14 @@ from orion.schemas.temporal_self import (
     ArcSummaryV1,
     DayCitationCheckV1,
     ExpectationRefV1,
+    ExperienceCitesV1,
+    ExperienceUseRateV1,
+    ExperienceUseResultV1,
+    ExperienceUseRowV1,
     OpenThreadV1,
+    OrganUseV1,
+    TemporalNowItemV1,
+    TemporalNowV1,
     TemporalSelfArcV1,
     TemporalSelfDayBlockV1,
     TemporalSelfDayV1,
@@ -823,6 +830,7 @@ from orion.schemas.reading_turn import ReadingTurnRequestV1, ReadingTurnResultV1
 from orion.schemas.journal_compose_run import JournalComposeRunBriefV1
 from orion.schemas.harness_step_run import HarnessEchoSmokeBriefV1
 from orion.schemas.consult_turn_run import ConsultOrionTurnBriefV1
+from orion.schemas.session_roundup_run import SessionRoundupBriefV1
 from orion.schemas.intention import (
     IntentionCarryBriefV1, IntentionDeliverResultV1, IntentionDeliverV1, IntentionOrderResultV1, IntentionOrderV1,
     IntentionSourceV1,
@@ -1074,6 +1082,9 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "JournalComposeRunBriefV1": JournalComposeRunBriefV1,
     "HarnessEchoSmokeBriefV1": HarnessEchoSmokeBriefV1,
     "ConsultOrionTurnBriefV1": ConsultOrionTurnBriefV1,
+    # Session threads (orion/schemas/session_roundup_run.py): the hourly round-up run's brief (nested in
+    # DurableRunRequestV1; Hub's round-up loop is the only producer).
+    "SessionRoundupBriefV1": SessionRoundupBriefV1,
     # Intentions Prime takes on (orion/schemas/intention.py): the carry run's brief (nested in DurableRunRequestV1),
     # Prime's order and delivery calls to Hub and Hub's answers (HTTP, not bus kinds), and an adapter's output.
     "IntentionCarryBriefV1": IntentionCarryBriefV1,
@@ -1511,6 +1522,15 @@ _REGISTRY: Dict[str, Type[BaseModel]] = {
     "SelfReadingsBlockV1": SelfReadingsBlockV1,
     "TemporalSelfDayBlockV1": TemporalSelfDayBlockV1,
     "DayCitationCheckV1": DayCitationCheckV1,
+    # Orion's now (integration design 2026-11-15, Part A patch 1): HTTP payloads of orion-durable-runs
+    # GET /temporal-self/now, POST /temporal-self/now/use and GET /temporal-self/integration. No bus channel.
+    "TemporalNowV1": TemporalNowV1,
+    "TemporalNowItemV1": TemporalNowItemV1,
+    "ExperienceCitesV1": ExperienceCitesV1,
+    "ExperienceUseRowV1": ExperienceUseRowV1,
+    "ExperienceUseResultV1": ExperienceUseResultV1,
+    "ExperienceUseRateV1": ExperienceUseRateV1,
+    "OrganUseV1": OrganUseV1,
     "SubstrateBrainFrameV1": SubstrateBrainFrameV1,
     "CausalGeometryEdgeV1": CausalGeometryEdgeV1,
     "CausalGeometryDivergenceEntryV1": CausalGeometryDivergenceEntryV1,

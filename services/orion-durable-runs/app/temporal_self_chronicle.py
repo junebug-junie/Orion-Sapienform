@@ -24,6 +24,7 @@ No LLM, no bus publish, no consumer (patch 4 adds the stance cue and the metacog
 from __future__ import annotations
 
 import asyncio
+import bisect
 import logging
 import time
 from dataclasses import dataclass, field
@@ -35,8 +36,10 @@ from orion.temporal_self import ReducerConfig, advance_clock, build_frame, drain
 from orion.temporal_self.body import NO_BODY_KINDS, body_window, summarize_body
 from orion.temporal_self.day import day_id_for, day_window
 
+from orion.temporal_self.now import SOURCE_HISTORY, magnitude, salience_of
+
 from app.temporal_self_sources import available_at
-from app.temporal_self_store import StaleWriterError, WindowWrite, pack_state
+from app.temporal_self_store import StaleWriterError, WindowWrite, pack_state, stored_shape
 
 logger = logging.getLogger("orion-durable-runs.temporal_self_chronicle")
 
@@ -44,8 +47,7 @@ MAX_WINDOW_SEC = 3600.0       # one window reads at most an hour of rows
 MAX_WINDOWS_PER_STEP = 48     # first-boot backfill (~1.5 days) finishes in one step
 LATE_PROBE_SEC = 1800.0       # rows written up to 30 min after their window was read are counted
 LATE_PROBE_OVERRIDES = {
-    # episode_memory rows land a median 13 h (max 48 h) after occurred_at (live 10-10).
-    "memory_episode": 3 * 86400.0,
+    # episode_memory needs none: it is read by its write time and folds when it lands (#3400).
     # A visual attempt reads `active` until it finishes; `abandoned` lands a median 5,398 s
     # (max 5,408 s, 31 of 31 live) after started_at, its time column. Review finding: with a
     # 30-min probe these vanished uncounted.
@@ -104,13 +106,83 @@ def _log_street(prev: TemporalSelfStateV1, arcs: list[TemporalSelfArcV1], events
                     ",".join(e.source_ref for e in capped[:10]))
 
 
+class SalienceBook:
+    """Salience at insert (Orion's now, integration patch 1): each kind with a declared magnitude
+    (``config/integration/organs.yaml``) keeps its last 30 days of magnitudes in memory, loaded once per
+    kind from ``temporal_self_event`` (``load(kind, since)`` -> stored-shape rows) and extended only after
+    a window commits. A new event is scored against the same kind's events strictly before it, including
+    earlier events of the same window. Use counts never enter: salience is the source's own magnitude.
+
+    The scoring itself runs off the event loop (``asyncio.to_thread``; gpu_wait holds ~30k events in 30
+    days) over a time-sorted history cut by ``bisect``. A failed history read leaves the kind unloaded (it
+    is retried next window) and the caller stores NULL salience: salience never stalls the chronicle."""
+
+    def __init__(self, rules: dict[str, str], load: Callable[[str, datetime], Any]) -> None:
+        self._rules = dict(rules)
+        self._load = load
+        self._hist: dict[str, dict[str, tuple[datetime, float]]] = {}
+
+    async def score(self, events: list[TemporalSelfEventV1], now: datetime
+                    ) -> tuple[dict[str, Optional[float]], dict[str, dict[str, tuple[datetime, float]]]]:
+        """Saliences for ``events`` and the pending history additions (``commit`` them after the write)."""
+        for kind in sorted({e.source_kind for e in events if e.source_kind in self._rules} - set(self._hist)):
+            rows = await self._load(kind, now - SOURCE_HISTORY - timedelta(days=1))
+            rule = self._rules[kind]
+
+            def build(rows=rows, rule=rule) -> dict[str, tuple[datetime, float]]:
+                book: dict[str, tuple[datetime, float]] = {}
+                for r in rows:
+                    m = magnitude(rule, r)
+                    if m is not None:
+                        book[str(r["event_id"])] = (r["occurred_at"], m)
+                return book
+
+            self._hist[kind] = await asyncio.to_thread(build)
+        return await asyncio.to_thread(self._score, events)
+
+    def _score(self, events: list[TemporalSelfEventV1]
+               ) -> tuple[dict[str, Optional[float]], dict[str, dict[str, tuple[datetime, float]]]]:
+        out: dict[str, Optional[float]] = {}
+        pending: dict[str, dict[str, tuple[datetime, float]]] = {}
+        series: dict[str, list[tuple[datetime, float]]] = {}
+        for e in sorted(events, key=lambda x: (x.occurred_at, x.event_id)):
+            rule = self._rules.get(e.source_kind)
+            if rule is None:
+                continue
+            book = self._hist[e.source_kind]
+            if e.event_id in book:  # already stored (a re-read): its stored row keeps its salience
+                continue
+            hist = series.get(e.source_kind)
+            if hist is None:
+                hist = series[e.source_kind] = sorted(book.values(), key=lambda v: v[0])
+            m = magnitude(rule, stored_shape(e))
+            lo = bisect.bisect_left(hist, e.occurred_at - SOURCE_HISTORY, key=lambda v: v[0])
+            hi = bisect.bisect_left(hist, e.occurred_at, key=lambda v: v[0])
+            out[e.event_id] = salience_of(m, e.occurred_at, hist[lo:hi])
+            new = pending.setdefault(e.source_kind, {})
+            if m is not None and e.event_id not in new:
+                new[e.event_id] = (e.occurred_at, m)
+                bisect.insort(hist, (e.occurred_at, m), key=lambda v: v[0])
+        return out, pending
+
+    def commit(self, pending: dict[str, dict[str, tuple[datetime, float]]], now: datetime) -> None:
+        cut = now - SOURCE_HISTORY - timedelta(days=1)
+        for kind, rows in pending.items():
+            book = self._hist.setdefault(kind, {})
+            book.update(rows)
+            for k in [k for k, (t, _) in book.items() if t < cut]:
+                del book[k]
+
+
 def _needs_body(a: TemporalSelfArcV1) -> bool:
     return a.status == "closed" and a.body is None and a.kind not in NO_BODY_KINDS
 
 
 class Chronicler:
-    def __init__(self, *, store: Any, reader: Any, cfg: ChronicleConfig, now: Callable[[], datetime]) -> None:
+    def __init__(self, *, store: Any, reader: Any, cfg: ChronicleConfig, now: Callable[[], datetime],
+                 salience: Optional[SalienceBook] = None) -> None:
         self._store = store
+        self._salience = salience
         self._reader = reader
         self._cfg = cfg
         self._now = now
@@ -244,9 +316,20 @@ class Chronicler:
             arcs.update((a.arc_id, a) for a in d.arcs)
         await self._attach_bodies([a for a in arcs.values() if _needs_body(a)], events + late)
         state_gz = await asyncio.to_thread(pack_state, s)
+        salience: dict[str, Optional[float]] = {}
+        pending: dict = {}
+        if self._salience is not None:
+            try:
+                salience, pending = await self._salience.score(events + late, now)
+            except Exception:  # noqa: BLE001 - salience is never worth a stalled chronicle: NULL this window
+                logger.warning("temporal_self_salience_failed window_lo=%s: stored NULL", lo.isoformat(), exc_info=True)
+                salience, pending = {}, {}
         await self._store.commit_window(WindowWrite(
             state=s, watermark=hi, frame=frame, events=events, late_events=late, arcs=list(arcs.values()),
-            days=days, now=now, origin=self._origin, expected_prev=self._stored_watermark, state_gz=state_gz))
+            days=days, now=now, origin=self._origin, expected_prev=self._stored_watermark, state_gz=state_gz,
+            salience=salience))
+        if self._salience is not None:
+            self._salience.commit(pending, now)
         self._state, self._watermark, self._stored_watermark = s, hi, hi
         self.frame = frame
         self.windows += 1

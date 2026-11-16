@@ -63,6 +63,7 @@ from orion.vision.walkway_rollup import (
     unsupported_numbers,
 )
 
+from .daily_retry_gate import AttemptPolicy, DailyAttemptGate, DailyAttemptResult
 from .vision_pg import fetch_rows
 
 logger = logging.getLogger("orion-actions.walkway_forecast")
@@ -534,6 +535,21 @@ def build_walkway_trigger(kind: str, seed: dict[str, Any], *, stream_id: str) ->
     )
 
 
+def rollup_grains(night: date) -> list[str]:
+    """Day always; week on Sunday night (ISO weeks end Sunday); month on its last night."""
+    grains = ["day"]
+    if night.weekday() == 6:
+        grains.append("week")
+    if (night + timedelta(days=1)).month != night.month:
+        grains.append("month")
+    return grains
+
+
+def expected_walkway_kinds(night: date) -> list[str]:
+    """Every entry kind a night may write. One landed yes/no record is kept for each."""
+    return [ROLLUP_KIND_BY_GRAIN[g] for g in rollup_grains(night)] + ["walkway_grade", "walkway_forecast"]
+
+
 def _dedupe_key(kind: str, stream_id: str, for_date: str, node: str) -> str:
     return f"actions:journal:{kind}:{stream_id}:{for_date}:{node}"
 
@@ -546,26 +562,26 @@ async def collect_walkway_jobs(
     now_utc: datetime,
     min_support_days: int,
     node: str,
+    night: date | None = None,
 ) -> tuple[list[WalkwayJournalJob], list[str]]:
-    """Read, build, and return (jobs to dispatch, skip reasons). Never raises."""
+    """Read, build, and return (jobs to dispatch, skip reasons). Never raises.
+
+    ``night`` is the local date the entries are about. It defaults to the local
+    date of ``now_utc``; the scheduler passes it so a night still open after
+    local midnight keeps reading its own day, not the new one.
+    """
     skips: list[str] = []
     jobs: list[WalkwayJournalJob] = []
     try:
         tz = ZoneInfo(tz_name)
     except Exception:  # noqa: BLE001
         return [], ["bad_timezone"]
-    today = now_utc.astimezone(tz).date()
+    today = night or now_utc.astimezone(tz).date()
     tomorrow = today + timedelta(days=1)
     day_start = datetime.combine(today, time.min, tzinfo=tz)
     day_end = day_start + timedelta(days=1)
 
-    # Day always; week on Sunday night (ISO weeks end Sunday); month on its last night.
-    grains = ["day"]
-    if today.weekday() == 6:
-        grains.append("week")
-    if tomorrow.month != today.month:
-        grains.append("month")
-    for grain in grains:
+    for grain in rollup_grains(today):
         if grain == "day":
             start_local = today
         elif grain == "week":
@@ -670,43 +686,273 @@ READ_FAILURE_SKIPS = frozenset({"expectations_unreadable", "forecast_unreadable"
                                 "rollup_unreadable"})
 
 
+# A failed compose is retried at most this many times a night, with these waits
+# after failure 1, 2, 3 (#3384). Before this a failed dispatch was retried on
+# every 45 s scheduler tick, each try a new graded act: 59 failed acts in 81
+# minutes on 2026-11-13. The cap is 4 so a night opens at most 4 acts per job;
+# the 30 minute wait only applies if the cap is ever raised.
+WALKWAY_ATTEMPT_POLICY = AttemptPolicy(max_attempts=4, backoff_seconds=(60.0, 300.0, 900.0, 1800.0))
+
+# A night that is not finished stays open this long after its scheduled time,
+# across local midnight (#3385). The cap above ends a failing job in under an
+# hour; this bound is for what the cap does not count (a refused or skipped
+# dispatch, the service being down).
+WALKWAY_NIGHT_MAX_OPEN = timedelta(hours=6)
+
+NIGHT_RECORD_ACTION = "journal.walkway_night"
+NIGHT_RECORDS_FILENAME = "walkway_night_records.jsonl"
+
+
+WALKWAY_KINDS = (*ROLLUP_KIND_BY_GRAIN.values(), "walkway_grade", "walkway_forecast")
+
+
+def walkway_gate_key(kind: str) -> str:
+    return f"walkway:{kind}"
+
+
+def walkway_night(
+    *, now_utc: datetime, tz_name: str, hour_local: int, minute_local: int
+) -> tuple[date, timedelta]:
+    """The night the scheduler is on, and how long ago it was scheduled.
+
+    A night is named by the local date of its scheduled time and belongs to the
+    most recent scheduled time at or before now. So 00:10 on the 13th is still
+    the night of the 12th: the old rule (today's date, and only once today's
+    time has passed) dropped a night the moment local midnight came.
+    """
+    tz = ZoneInfo(tz_name)
+    local_now = now_utc.astimezone(tz)
+    scheduled = local_now.replace(hour=hour_local, minute=minute_local, second=0, microsecond=0)
+    if local_now < scheduled:
+        scheduled = datetime.combine(
+            local_now.date() - timedelta(days=1), time(hour_local, minute_local), tzinfo=tz
+        )
+    return scheduled.date(), now_utc - scheduled.astimezone(timezone.utc)
+
+
+@dataclass
+class WalkwayTick:
+    closed: bool  # nothing left to try tonight
+    skips: list[str]
+    # Jobs read this tick that have no entry: kind -> why.
+    not_landed: dict[str, str]
+
+
 async def run_walkway_tick(
     *,
     collect: Callable[[], Awaitable[tuple[list[WalkwayJournalJob], list[str]]]],
-    dispatch: Callable[[WalkwayJournalJob], Awaitable[bool]],
+    dispatch: Callable[[WalkwayJournalJob], Awaitable[DailyAttemptResult]],
     job_done_on: Callable[[str], str | None],
     mark_job_done: Callable[[str, str], None],
     local_date: str,
     read_attempts: dict[str, int],
-) -> tuple[bool, list[str]]:
-    """One scheduler tick. Returns (night complete, skip reasons).
+    gate: DailyAttemptGate,
+    clock: Callable[[], float],
+    policy: AttemptPolicy = WALKWAY_ATTEMPT_POLICY,
+) -> WalkwayTick:
+    """One scheduler tick for one night (``local_date``).
 
     Each job's completion is recorded DURABLY under its own trigger kind
     (`mark_job_done`), so a restart after a partial night (grade written,
     forecast failed) retries only the forecast -- never a second grade.
-    A failed dispatch holds the night open for the next tick. Read failures
-    hold it open up to MAX_READ_ATTEMPTS, then give up.
+
+    A failed dispatch holds the night open, but only ``policy.max_attempts``
+    times per job, spaced by ``policy.backoff_seconds``. The count lives in
+    ``gate`` (a file), so a restart does not reset it. A dispatch that did no
+    work (refused, cooling down) spends no attempt and is looked at again next
+    tick. Read failures hold the night open up to MAX_READ_ATTEMPTS in a row;
+    after that the night still stays open while a job that already failed has
+    tries left, so a database blip during a wait cannot drop it.
     """
     try:
         jobs, skips = await collect()
     except Exception:  # noqa: BLE001
         logger.exception("walkway_journal_collect_failed")
         jobs, skips = [], ["collect_failed"]
-    all_ok = True
+    not_landed: dict[str, str] = {}
+    still_open = False
     for job in jobs:
         kind = job.trigger.trigger_kind
         if job_done_on(kind) == local_date:
             continue
-        if await dispatch(job):
+        key = walkway_gate_key(kind)
+        allowed, why = gate.may_attempt(key, local_date, clock(), policy)
+        if not allowed:
+            if why == "gave_up":
+                not_landed[kind] = _gave_up_reason(gate, key, local_date)
+            else:
+                not_landed[kind] = "waiting_to_retry"
+                still_open = True
+            continue
+        result = await dispatch(job)
+        if result.completed:
+            gate.record_success(key)
             mark_job_done(kind, local_date)
+            continue
+        if not result.attempted:
+            not_landed[kind] = f"not_attempted:{result.failure_reason or 'skipped'}"
+            still_open = True
+            continue
+        # The clock is read after the dispatch: a compose can hang for minutes,
+        # and the wait is counted from when it failed, not from when it began.
+        if gate.record_failure(key, local_date, clock(), result.failure_reason, policy) is not None:
+            not_landed[kind] = _gave_up_reason(gate, key, local_date)
+            logger.warning("walkway_journal_job_gave_up date=%s kind=%s reason=%s", local_date, kind, not_landed[kind])
         else:
-            all_ok = False
+            not_landed[kind] = f"failed:{(result.failure_reason or 'unknown')[:200]}"
+            still_open = True
     if READ_FAILURE_SKIPS.intersection(skips):
         read_attempts[local_date] = read_attempts.get(local_date, 0) + 1
         if read_attempts[local_date] < MAX_READ_ATTEMPTS:
-            return False, skips
-        logger.warning(
-            "walkway_journal_giving_up date=%s attempts=%d skips=%s",
-            local_date, read_attempts[local_date], ",".join(skips),
+            return WalkwayTick(False, skips, not_landed)
+        # A failed read can hide a job that failed earlier and is waiting for
+        # its next try. It keeps the night open; the read is tried again.
+        for kind in WALKWAY_KINDS:
+            key = walkway_gate_key(kind)
+            if (
+                kind not in not_landed
+                and job_done_on(kind) != local_date
+                and 0 < gate.attempts(key, local_date) < policy.max_attempts
+                and not gate.is_gave_up(key, local_date)
+            ):
+                not_landed[kind] = "waiting_to_retry:read_failed"
+                still_open = True
+        if not still_open:
+            logger.warning(
+                "walkway_journal_giving_up date=%s attempts=%d skips=%s",
+                local_date, read_attempts[local_date], ",".join(skips),
+            )
+    else:
+        read_attempts.pop(local_date, None)
+    return WalkwayTick(not still_open, skips, not_landed)
+
+
+def _gave_up_reason(gate: DailyAttemptGate, key: str, local_date: str) -> str:
+    reason = (gate.last_failure_reason(key, local_date) or "unknown")[:200]
+    return f"gave_up_after_{gate.attempts(key, local_date)}_attempts:{reason}"
+
+
+def night_records(
+    *,
+    night: date,
+    job_done_on: Callable[[str], str | None],
+    tick: WalkwayTick | None,
+    gate: DailyAttemptGate,
+    last_open: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """One "entry landed: yes or no" record per kind the night may write (#3385).
+
+    ``tick`` is the tick that closed the night, or None when the night ran out
+    of time (WALKWAY_NIGHT_MAX_OPEN) with work still open; ``last_open`` is then
+    what the last tick that ran said about each open job. A "no" always says
+    why: gave up after N tries, nothing to write (the read's skip reasons), or
+    out of time and what it was waiting on.
+    """
+    local_date = night.isoformat()
+    records: list[dict[str, Any]] = []
+    for kind in expected_walkway_kinds(night):
+        landed = job_done_on(kind) == local_date
+        attempts = gate.attempts(walkway_gate_key(kind), local_date)
+        if landed:
+            reason = "landed"
+        elif tick is None:
+            last = (last_open or {}).get(kind) or gate.last_failure_reason(walkway_gate_key(kind), local_date)
+            reason = "night_expired" + (f":{last[:200]}" if last else "")
+        elif kind in tick.not_landed:
+            reason = tick.not_landed[kind]
+        else:
+            reason = "no_job:" + (",".join(tick.skips) or "none")
+        records.append(
+            {"night": local_date, "kind": kind, "landed": landed, "reason": reason, "failed_attempts": attempts}
         )
-    return all_ok, skips
+    return records
+
+
+async def run_walkway_schedule(
+    *,
+    now_utc: datetime,
+    tz_name: str,
+    hour_local: int,
+    minute_local: int,
+    night_closed_on: str | None,
+    collect: Callable[[date], Awaitable[tuple[list[WalkwayJournalJob], list[str]]]],
+    dispatch: Callable[[WalkwayJournalJob], Awaitable[DailyAttemptResult]],
+    job_done_on: Callable[[str], str | None],
+    mark_job_done: Callable[[str, str], None],
+    read_attempts: dict[str, int],
+    gate: DailyAttemptGate,
+    clock: Callable[[], float],
+    record: Callable[[dict[str, Any]], Awaitable[None]],
+    close_night: Callable[[str, bool], None],
+    open_reasons: dict[str, dict[str, str]] | None = None,
+) -> str:
+    """One scheduler pass. Returns "idle", "open", "closed" or "expired".
+
+    Works on the night from ``walkway_night`` until it is closed. A night closes
+    when every job has an entry or has given up ("closed"), or when it has been
+    open longer than WALKWAY_NIGHT_MAX_OPEN ("expired"). On close it hands one
+    record per kind to ``record``, then calls ``close_night(date, clean)``, which
+    stores the cursor that stops this night from running again. ``clean`` is
+    False when a job gave up, a read failed, or the night ran out of time.
+
+    ``open_reasons`` is the caller's in-memory note of why each job of the open
+    night has no entry yet ({night: {kind: why}}), so a night that runs out of
+    time can still say what it was waiting on.
+    """
+    try:
+        night, open_for = walkway_night(
+            now_utc=now_utc, tz_name=tz_name, hour_local=hour_local, minute_local=minute_local
+        )
+    except Exception as exc:  # noqa: BLE001 -- a bad timezone name: one line, not a traceback per tick
+        logger.warning("walkway_journal_bad_schedule tz=%s error=%s", tz_name, exc)
+        return "idle"
+    local_date = night.isoformat()
+    # ">=": a cursor ahead of this night (the schedule time was moved later, or
+    # the clock stepped back) must not reopen an older night or move backwards.
+    if night_closed_on is not None and night_closed_on >= local_date:
+        return "idle"
+    if open_reasons is None:
+        open_reasons = {}
+    tick: WalkwayTick | None = None
+    if open_for <= WALKWAY_NIGHT_MAX_OPEN:
+        tick = await run_walkway_tick(
+            collect=lambda: collect(night),
+            dispatch=dispatch,
+            job_done_on=job_done_on,
+            mark_job_done=mark_job_done,
+            local_date=local_date,
+            read_attempts=read_attempts,
+            gate=gate,
+            clock=clock,
+        )
+        logger.info(
+            "walkway_journal_tick date=%s complete=%s skips=%s not_landed=%s",
+            local_date, tick.closed, ",".join(tick.skips) or "none",
+            json.dumps(tick.not_landed, sort_keys=True),
+        )
+        open_reasons.clear()
+        if not tick.closed:
+            open_reasons[local_date] = dict(tick.not_landed)
+            return "open"
+    elif night_closed_on is None and local_date not in open_reasons:
+        # No cursor at all and nothing ran in this process (first boot, or a
+        # lost cursor file): this night was never started here. Close it with
+        # no records; a "no" for a night nobody tried would be a made-up fact.
+        close_night(local_date, False)
+        return "expired"
+    records = night_records(
+        night=night, job_done_on=job_done_on, tick=tick, gate=gate, last_open=open_reasons.pop(local_date, None)
+    )
+    for rec in records:
+        try:
+            await record(rec)
+        except Exception:  # noqa: BLE001 -- a lost record must not hold the night open
+            logger.exception("walkway_night_record_failed night=%s kind=%s", local_date, rec.get("kind"))
+    clean = (
+        tick is not None
+        and not tick.not_landed
+        and not READ_FAILURE_SKIPS.intersection(tick.skips)
+        and not any(r["failed_attempts"] and not r["landed"] for r in records)
+    )
+    close_night(local_date, clean)
+    return "closed" if tick is not None else "expired"

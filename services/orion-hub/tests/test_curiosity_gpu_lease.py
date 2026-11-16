@@ -189,3 +189,48 @@ def test_door_a_malformed_ref_skips_and_still_releases(monkeypatch):
     env = BaseEnvelope(kind="durable.run.state.v1", source=ServiceRef(name="t"), payload=state)
     asyncio.run(loop._handle_run_state({"data": bus.codec.encode(env)}))
     assert skips == ["gpu_lease_malformed"] and released == ["run-one"]
+
+
+@pytest.mark.parametrize("why", ["daily_cap", "quiet_hours", "strained"])
+def test_door_a_refusal_releases_the_seat_at_once(monkeypatch, why):
+    """Hub refuses to compose (cap, quiet hours, strained): it tells durable-runs to release the
+    run's seat in the same call, on the exact path durable-runs serves (#3255).
+
+    A contract pin, not the regression test: Hub always made this call. The bug was durable-runs
+    answering it 400 (services/orion-durable-runs/tests/test_release_outreach_route.py)."""
+    loop, skips = _door_a_loop(monkeypatch)
+
+    class _Refusing:
+        def blocked_reason(self, **_kw):
+            return why
+
+    loop._outreach_provider = lambda: _Refusing()
+    loop.durable_runs_url = "http://durable-runs:8124/"
+    generate = AsyncMock()
+    monkeypatch.setattr(loop, "_generate", generate)
+    posted = []
+
+    class _Client:
+        def __init__(self, **_kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_exc):
+            return False
+
+        async def post(self, url):
+            posted.append(url)
+
+            class _Response:
+                status_code, text = 200, ""
+            return _Response()
+
+    import httpx
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    outcome = ci.TurnOutcome(run_id="run-one", continue_line=False, continue_note="", reach_out=True, reach_out_why="x")
+    result = asyncio.run(loop._maybe_reach_out(outcome=outcome, finding_text="f", run_id="run-one", gpu_lease=ref()))
+    assert result == why and skips == [(why, "run-one")]
+    generate.assert_not_awaited()
+    assert posted == ["http://durable-runs:8124/runs/run-one/release-outreach-lease"]

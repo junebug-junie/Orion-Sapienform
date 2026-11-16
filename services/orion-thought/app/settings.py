@@ -195,9 +195,10 @@ class ThoughtSettings(BaseSettings):
     # on: (a) a newly-set expectation gets an `expectation_checkable_by`
     # window opened on it, and (b) every tick spends at most one bounded
     # judge-LLM call resolving the single most-overdue still-pending
-    # expectation against a fresh percept (confirmed/disconfirmed) -- or, if
-    # no fresh-enough percept exists, writes "unscored" with no LLM call at
-    # all. Never fabricates a confirmed/disconfirmed verdict on stale or
+    # expectation against every room caption from its own check window,
+    # creation to checkable_by (confirmed/disconfirmed; #3403) -- or, if
+    # the room camera wrote nothing in that window, writes "unscored" with
+    # no LLM call at all. Never fabricates a confirmed/disconfirmed verdict on stale or
     # ambiguous evidence -- same honesty discipline as PerceptionContextV1's
     # staleness gate (P4). Flag off means this is a complete no-op: no pending
     # scan, no judge call, no checkable window ever opened.

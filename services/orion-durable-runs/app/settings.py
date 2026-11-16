@@ -218,6 +218,12 @@ class Settings(BaseSettings):
     # visit labels the office company arc with who probably was there and what they did. Off: the
     # source is not read and the arc keeps its old label (a confirmed identity only).
     temporal_self_office_sessions_enabled: bool = Field(True, alias="TEMPORAL_SELF_OFFICE_SESSIONS_ENABLED")
+    # Orion's now (docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md, Part A patch 1):
+    # GET /temporal-self/now (the few most salient experiences of other organs since a reader last
+    # looked; every read is stored in experience_shown) and POST /temporal-self/now/use (a reader's
+    # cites, checked against what it was shown; valid ones stored in experience_use). Off: both return
+    # 404 and readers keep their current inputs; the tables, salience and the new sources stay.
+    temporal_self_now_enabled: bool = Field(True, alias="TEMPORAL_SELF_NOW_ENABLED")
     # K: consecutive broadcast ticks that open or resume an attention arc (~110 s live). PR #2597 sweep.
     temporal_self_arc_min_ticks: int = Field(3, ge=1, alias="TEMPORAL_SELF_ARC_MIN_TICKS")
     # R: a suspended arc may return within this window, else it closes (PR #2597 sweep: 30, not 180).

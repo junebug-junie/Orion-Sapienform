@@ -75,6 +75,13 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "me', folded nightly from cited person_fact / episode_memory records "
             "(orion/memory/pages/juniper.py); hydrated by the felt-state reader.",
         ),
+        _entry(
+            "orion_core_page_anchor",
+            "static_identity_config",
+            "Latest page:anchor row from self_concept_history: fixed lines Juniper wrote by hand "
+            "(produced_by juniper_anchor), shown first in RELATIONSHIP; the nightly fold never "
+            "writes it (orion/memory/pages/anchor.py); hydrated by the felt-state reader.",
+        ),
         _entry("response_policy_summary", "static_identity_config", "Response policy summary lines."),
         _entry("identity_kernel_source", "static_identity_config", "Which identity kernel file was loaded."),
         _entry("personality_file", "static_identity_config", "Declared personality file for this turn."),

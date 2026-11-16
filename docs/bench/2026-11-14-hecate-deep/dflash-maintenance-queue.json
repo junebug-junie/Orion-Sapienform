@@ -1,0 +1,15 @@
+{
+  "lane": "agent-deep",
+  "work_class": "operator_agent_deep",
+  "holder": "operator:hecate-maintenance-20261114c",
+  "lease_id": "54032feb85e54dd1916712bbd4246810",
+  "role": "agent-deep",
+  "priority": "background",
+  "calls": 0,
+  "recalled": null,
+  "queued_at_epoch_s": 1794696434.3375561,
+  "granted_at_epoch_s": 1794697894.206627,
+  "released": true,
+  "wait_seconds": 1459.8690707683563,
+  "note": "Queued behind baseline quality, then respected Orion self-shed until expiry."
+}

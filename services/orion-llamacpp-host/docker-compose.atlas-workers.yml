@@ -64,10 +64,10 @@ x-strata-announce: &strata-announce
     - app-net
 
 # Lane door (leased-evals Phase 2, services/orion-lane-door, runbook docs/runbooks/2026-11-14-lane-door.md):
-# with the door deployed, each engine publishes only on circe's loopback (*_ENGINE_PUBLISH, e.g.
-# 127.0.0.1:18011) and the door takes the lane port (8011...) the pool announces. Unset = today's layout:
-# the engine publishes the lane port itself. The *_HOST_PORT the announcers send to the pool is the same in
-# both layouts.
+# each doored engine (chat, agent, fast, agent-burst, and the chat/agent llama.cpp rollbacks) publishes only on
+# circe's loopback, 127.0.0.1:180xx, by default; the door takes the lane port (8011...) the pool announces.
+# *_ENGINE_PUBLISH overrides it (e.g. =8011 puts an engine back on its lane port; stop its door first). The
+# *_HOST_PORT the announcers send to the pool is the lane port in both layouts.
 services:
   # Chat lane (gpu0): 262,144 tokens, thinking off by default (strata/chat-defaults.json).
   atlas-chat:
@@ -81,7 +81,7 @@ services:
     volumes:
       - "${ATLAS_CHAT_STRATA_DATA_DIR:-/mnt/telemetry/strata}:/data"
     ports:
-      - "${ATLAS_CHAT_ENGINE_PUBLISH:-${ATLAS_CHAT_HOST_PORT:-8011}}:8080"
+      - "${ATLAS_CHAT_ENGINE_PUBLISH:-127.0.0.1:18011}:8080"
     deploy:
       resources:
         reservations:
@@ -144,7 +144,7 @@ services:
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:
-      - "${ATLAS_CHAT_ENGINE_PUBLISH:-${ATLAS_CHAT_HOST_PORT:-8011}}:8080"
+      - "${ATLAS_CHAT_ENGINE_PUBLISH:-127.0.0.1:18011}:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -190,7 +190,7 @@ services:
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:
-      - "${ATLAS_FAST_ENGINE_PUBLISH:-${ATLAS_FAST_HOST_PORT:-8013}}:8080"
+      - "${ATLAS_FAST_ENGINE_PUBLISH:-127.0.0.1:18013}:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -222,7 +222,7 @@ services:
       - "${ATLAS_AGENT_STRATA_DATA_DIR:-/mnt/telemetry/strata-agent}:/data"
       - "${ATLAS_CHAT_STRATA_DATA_DIR:-/mnt/telemetry/strata}/Strata-data:/data/Strata-data"
     ports:
-      - "${ATLAS_AGENT_ENGINE_PUBLISH:-${ATLAS_AGENT_HOST_PORT:-8015}}:8080"
+      - "${ATLAS_AGENT_ENGINE_PUBLISH:-127.0.0.1:18015}:8080"
     deploy:
       resources:
         reservations:
@@ -281,7 +281,7 @@ services:
     ports:
       # Default 8015, not 8014 -- see .env_example's ATLAS_AGENT_HOST_PORT
       # comment (collides with orion-circe-diffusion-host's port mapping).
-      - "${ATLAS_AGENT_ENGINE_PUBLISH:-${ATLAS_AGENT_HOST_PORT:-8015}}:8080"
+      - "${ATLAS_AGENT_ENGINE_PUBLISH:-127.0.0.1:18015}:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s
@@ -335,7 +335,7 @@ services:
     volumes:
       - "${LLM_CACHE_DIR}:/models"
     ports:
-      - "${ATLAS_AGENT_BURST_ENGINE_PUBLISH:-${ATLAS_AGENT_BURST_HOST_PORT:-8016}}:8080"
+      - "${ATLAS_AGENT_BURST_ENGINE_PUBLISH:-127.0.0.1:18016}:8080"
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
       interval: 30s

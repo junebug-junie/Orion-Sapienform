@@ -133,6 +133,23 @@ _LANES: tuple[LaneSpec, ...] = (
         where_sql="concept_id = 'page:juniper' AND produced_by = 'core_page_fold'",
         cache_ttl_sec=300,
     ),
+    # Juniper's fixed anchor lines (orion/memory/pages/anchor.py, issue #3460): one hand-written
+    # row, concept_id 'page:anchor', produced_by 'juniper_anchor' (a value no bus producer may
+    # publish). Shown first in RELATIONSHIP, above page:juniper. It never goes stale: the bound
+    # is ten years so an old anchor still shows. Same 5 min cache and same flag as page:juniper.
+    LaneSpec(
+        ctx_key="orion_core_page_anchor",
+        table="self_concept_history",
+        payload_col=(
+            "json_build_object('concept_id', concept_id, 'content', content, "
+            "'version', version, 'created_at', created_at)"
+        ),
+        ts_col="created_at",
+        projection_id=None,
+        max_age_sec=10 * 365 * 86400,
+        where_sql="concept_id = 'page:anchor' AND produced_by = 'juniper_anchor'",
+        cache_ttl_sec=300,
+    ),
     LaneSpec(
         ctx_key="latest_reverie_thought",
         table="substrate_reverie_thought",

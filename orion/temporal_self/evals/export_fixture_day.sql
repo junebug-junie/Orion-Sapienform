@@ -113,8 +113,8 @@ SELECT json_build_object('k','vision_percept','event_id',event_id,'stream_id',st
 FROM vision_events WHERE created_at >= :start AND created_at < :end AND jsonb_array_length(entities::jsonb) > 0;
 
 SELECT json_build_object('k','memory_episode','memory_id',memory_id,'episode_id',episode_id,'purpose',purpose,
-  'occurred_at',occurred_at)
-FROM episode_memory WHERE occurred_at >= :start AND occurred_at < :end;
+  'occurred_at',occurred_at,'created_at',created_at)
+FROM episode_memory WHERE created_at >= :start AND created_at < :end AND occurred_at IS NOT NULL;
 
 -- Seam S1 (needs manual_migration_vision_presence_transition_v1.sql). Label only when confirmed.
 SELECT json_build_object('k','presence_transition','transition_id',transition_id,'presence_id',presence_id,

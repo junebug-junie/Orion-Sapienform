@@ -4,7 +4,6 @@ set -euo pipefail
 BUS_DIR="services/orion-bus"
 NOTIFY_DIR="services/orion-notify"
 HUB_DIR="services/orion-hub"
-DIGEST_DIR="services/orion-notify-digest"
 
 TEST_TIMEOUT_SECONDS=${TEST_TIMEOUT_SECONDS:-120}
 KEEP_UP=0
@@ -70,9 +69,8 @@ add_test "in_app" "scripts/smoke_in_app_notify.sh"
 add_test "attention" "scripts/smoke_attention.sh"
 add_test "chat_message" "scripts/smoke_chat_message.sh"
 add_test "notify_prefs" "scripts/smoke_notify_prefs.sh"
-add_test "digest" "scripts/smoke_digest.sh"
-add_test "topic_digest" "scripts/smoke_topic_digest.sh"
-add_test "topic_drift_alert" "scripts/smoke_topic_drift_alert.sh"
+# orion-notify-digest (and its digest / topic smokes) retired 2026-11-16 (integration patch 4): the
+# daily organ roundup in the day letter replaced the "Orion Daily Digest" email.
 
 if [[ ${LIST_ONLY} -eq 1 ]]; then
   for entry in "${TESTS[@]}"; do
@@ -106,15 +104,12 @@ start_stack() {
 
   docker compose --env-file "${HUB_DIR}/.env" -f "${HUB_DIR}/docker-compose.yml" up -d --build
 
-  docker compose -f "${DIGEST_DIR}/docker-compose.yml" up -d --build
 
   wait_for_health "http://localhost:7140/health" "notify"
   wait_for_health "http://localhost:8080/health" "hub"
-  wait_for_health "http://localhost:7150/health" "digest"
 }
 
 stop_stack() {
-  docker compose -f "${DIGEST_DIR}/docker-compose.yml" down || true
   docker compose --env-file "${HUB_DIR}/.env" -f "${HUB_DIR}/docker-compose.yml" down || true
   docker compose -f "${NOTIFY_DIR}/docker-compose.yml" down || true
   PROJECT="${PROJECT}" TELEMETRY_ROOT="${TELEMETRY_ROOT}" \

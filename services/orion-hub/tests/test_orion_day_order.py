@@ -214,3 +214,23 @@ def test_no_path_in_hub_submits_a_letter_run_without_an_order():
             if isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", None)) == "build_orion_day_request":
                 callers.append(path.name)
     assert callers == ["orion_day_order.py"]
+
+
+def test_the_order_reads_the_organ_roundup_unless_its_flag_is_off():
+    # Integration patch 4 (ORION_DAY_ORGAN_ROUNDUP_ENABLED, ships on): the brief's material carries the roundup.
+    on, off = Durable(), Durable()
+    run(desk(durable=on))
+    conn = Conn({DAY - timedelta(days=1): stored_letter(DAY - timedelta(days=1))})
+    d = odo.OrionDayOrderDesk(enabled=True, pool_provider=lambda: Pool(conn), durable=off, clock=lambda: NOW,
+                              organ_roundup_enabled=False)
+    run(d)
+    roundup = on.submitted[0]["brief"]["material"]["organ_roundup"]
+    assert roundup is not None and roundup["day"] == str(DAY) and roundup["lines"]
+    assert off.submitted[0]["brief"]["material"]["organ_roundup"] is None
+
+
+def test_hub_wires_the_roundup_flag_into_the_desk():
+    src = (Path(__file__).resolve().parents[1] / "scripts" / "main.py").read_text()
+    assert "organ_roundup_enabled=settings.ORION_DAY_ORGAN_ROUNDUP_ENABLED" in src
+    env = (Path(__file__).resolve().parents[1] / ".env_example").read_text()
+    assert "\nORION_DAY_ORGAN_ROUNDUP_ENABLED=true\n" in env

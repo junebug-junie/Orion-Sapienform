@@ -1287,6 +1287,9 @@ class Settings(BaseSettings):
     # (temporal_self_day, rendered with [arc:<id>] refs; orion/temporal_self/day_block.py), and
     # orion-durable-runs gates the note's arc citations. Kill switch: false = the letter as before.
     TEMPORAL_SELF_DAY_BLOCK_ENABLED: bool = Field(default=True, alias="TEMPORAL_SELF_DAY_BLOCK_ENABLED")
+    # Integration patch 4: the letter reads the daily organ roundup (orion/dig/organs.py) and the email shows
+    # it as "What each organ did". Kill switch: false = not read; the letter input keeps its old tail.
+    ORION_DAY_ORGAN_ROUNDUP_ENABLED: bool = Field(default=True, alias="ORION_DAY_ORGAN_ROUNDUP_ENABLED")
     # Soft Mind work-shape lines into the curiosity / self-inquiry role teach
     # (advisory only; Orion still authors :InvestigationRole / HelpRequest).
     # Default on; set false to leave motor kickoff prompts unchanged.

@@ -219,6 +219,16 @@
           "source": "orion/dig/__main__.py:cmd_days; orion/dig/days.py"
         },
         {
+          "id": "organs",
+          "title": "What each organ did",
+          "description": "Orion reads their daily organ roundup for a day: for each organ, what it did (counts), its most salient experiences quoted with refs, what it read and cited from other organs, who cited it, and where it went quiet against its usual day. Then the day's experience use rate. Every line is a count, a quote or a ref.",
+          "message": "Please read your organ roundup for this day and tell me what stands out: ",
+          "hint": "(dig: `python -P -m orion.dig organs <date> [<end>]`, dates YYYY-MM-DD, at most 7 days)",
+          "keywords": ["organs", "roundup", "integration", "cited", "experience", "daily"],
+          "covers": {"dig": ["organs"]},
+          "source": "orion/dig/__main__.py:cmd_organs; orion/dig/organs.py"
+        },
+        {
           "id": "field-note",
           "title": "Write a note on a PR",
           "description": "Orion reads one merged PR as code sees it (which parts of their body it touched) and writes a short field note about it, with every claim labelled by its source.",

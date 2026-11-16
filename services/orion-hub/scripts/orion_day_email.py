@@ -13,6 +13,8 @@ Rules this module holds:
 * Provenance, one small line each when present: the unified turn that wrote the letter
   (``sources.turn_correlation_id``) and the days with no letter the turn was told about
   (``sources.missed_letters``).
+* "What each organ did" (integration patch 4): the daily organ roundup the letter turn read
+  (``material.organ_roundup``), every line as written, right below Orion's letter and threads.
 * Email-safe HTML: tables and inline styles only, no external CSS/JS/fonts, no ``<details>``
   (Gmail strips it). Images are inline CID parts (``cid:reverie1@orion``).
 * Blind dream rule: dream hypotheses show claim + why only. No hypothesis id (the dream
@@ -47,6 +49,7 @@ logger = logging.getLogger("orion-hub.orion_day_email")
 TEMPLATE_DIR = Path(__file__).resolve().parents[1] / "templates"
 TEMPLATE_NAME = "orion_day_letter.html.j2"
 EVENT_KIND = "orion_day.letter"
+ORGAN_ROUNDUP_HEADING = "What each organ did"  # integration patch 4: below Orion's letter
 _NOTIFICATION_NS = uuid5(NAMESPACE_URL, "orion.orion_day.letter.email.v1")
 
 DEFAULT_MAX_IMAGES = 6
@@ -343,6 +346,7 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
                        if s.status == "error" or s.truncated]
     return {
         "subject": letter_subject(letter.letter_date),
+        "organ_roundup_heading": ORGAN_ROUNDUP_HEADING,
         "letter_date": letter.letter_date,
         "letter_date_long": letter.letter_date.strftime("%A, %B %-d, %Y"),
         "timezone": m.timezone,
@@ -354,6 +358,7 @@ def build_context(letter: OrionDayLetterV1, images: list[InlineImage]) -> dict[s
         "carry_forward_html": numbered_html(split_carry(letter.carry_forward_md)),
         "turn_correlation_id": letter.sources.turn_correlation_id,
         "missed_letters": [{"date": str(x.letter_date), "reason": x.reason} for x in letter.sources.missed_letters],
+        "organ_roundup": list(m.organ_roundup.lines) if m.organ_roundup is not None else [],
         "curiosity": curiosity,
         "curiosity_failed": [{"workflow": f.workflow, "when": _local(f.failed_at, tz),
                               "error": f.error or "no error recorded"} for f in m.curiosity_failed],
@@ -437,6 +442,9 @@ def render_text(letter: OrionDayLetterV1, images: list[InlineImage]) -> str:
     ]
     out += provenance_lines(letter)
     out += ["---"]
+    if m.organ_roundup is not None and m.organ_roundup.lines:
+        out += [f"## {ORGAN_ROUNDUP_HEADING}", "(The daily organ roundup Orion read for this letter: every line a "
+                "count, a quote or a ref.)", "", *m.organ_roundup.lines, "", "---"]
     reads = what_i_read(m)
     if reads:
         out += ["## What I read", ""]

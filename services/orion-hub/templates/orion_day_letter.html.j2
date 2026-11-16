@@ -60,6 +60,17 @@
 </td></tr>
 {% endif %}
 
+{% if organ_roundup %}
+{#- Integration patch 4: the daily organ roundup the letter read, every line as written (counts, quotes,
+    refs). Monospace so the indented item lines stay under their organ. -#}
+{{ heading(organ_roundup_heading) }}
+<tr><td style="padding:0 28px 8px 28px;" data-section="organ-roundup">
+<p style="margin:8px 0 8px 0;font-size:12px;color:{{ muted }};">The daily organ roundup Orion read for this letter: every line a count, a quote or a ref.</p>
+<pre style="margin:0 0 12px 0;font-family:Menlo,Consolas,monospace;font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-word;">{% for line in organ_roundup %}{{ line }}
+{% endfor %}</pre>
+</td></tr>
+{% endif %}
+
 {% if what_i_read %}
 {#- Compact, record-built: Orion's own take (first sentences of the stored read) and what the
     read changed (orion/world_pulse_read/findings.py). Full texts are under "Readings" below. -#}

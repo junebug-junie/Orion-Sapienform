@@ -92,11 +92,13 @@ JOURNAL_DISPATCH_REGISTRY: dict[str, JournalDispatchPolicy] = {
         recall_profile_setting="actions_journal_world_pulse_recall_profile",
         daily_cap_scope="world_pulse_digest",
     ),
+    # 2026-11-16: notify_summary's writer is gone with the "Orion Daily Digest" email it journaled
+    # (integration patch 4). Its row stays, email off, only because old journal rows carry the kind.
     "notify_summary": JournalDispatchPolicy(
         "notify_summary",
         email_enabled=False,
         in_app_enabled=False,
-        recall_profile_setting="actions_journal_notify_recall_profile",
+        recall_profile_setting="",
     ),
     "autonomy_episode": JournalDispatchPolicy(
         "autonomy_episode",

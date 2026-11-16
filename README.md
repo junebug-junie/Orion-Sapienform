@@ -598,13 +598,12 @@ service event / schedule / topic drift / workflow
   → orion-notify
   → in-app / email / attention request / chat message
   → notification records
-  → orion-notify-digest
+  → the day letter's organ roundup footer (counts by severity and status)
 ```
 
 | Service | Role |
 |---|---|
 | `orion-notify` | In-app messages, email, attention requests, chat messages, read receipts, quiet hours, recipient preferences, dedupe, throttling, escalation. |
-| `orion-notify-digest` | Daily summaries, notification digests, topic summaries, and topic drift alerts. |
 
 This keeps urgency inspectable. Orion should not smuggle attention needs through random chat behavior.
 
@@ -786,7 +785,7 @@ Social:
   orion-social-room-bridge, orion-social-memory, orion-room-companion
 
 Notifications / attention:
-  orion-notify, orion-notify-digest
+  orion-notify
 
 Power / security / lab safety:
   orion-power-guard, orion-gpu-cluster-power

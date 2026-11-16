@@ -22,6 +22,10 @@ What changed from ``budget.build_llm_view`` (the pile the letter was written fro
   past that their long bodies share one clip cap (water filling), marked in place and counted.
 * **Readings, news, code changes, dreams, the street and visual reveries are a trimmed tail**: one
   short line or paragraph each, cut off as a whole at ``TAIL_MAX_CHARS`` with the rest counted.
+* **The daily organ roundup** (integration patch 4, ``orion/dig/organs.py``) sits right after Juniper's
+  conversations: what each organ did, every line a count, a quote or a ref (``[experience:<id>]``,
+  ``[act:<id>]``). When it is in the material it replaces the tail's readings, dreams, street and visual
+  reveries (``ROUNDUP_REPLACES``): the roundup carries those organs with refs. It is never clipped.
 * **The temporal core** (``temporal_core.py``) sits next to the closed-day chronology block.
 * **The share each source got** is recorded: ``source_chars`` / ``source_shares`` on the view
   (characters per source over the digest length; the headings and joins are ``frame``).
@@ -77,8 +81,15 @@ GITHUB_TAIL_CHARS = 1_500
 VISUAL_TAIL_ITEMS = 6
 
 # Source names in source_chars / source_shares, in digest order. "frame" = header, headings, joins.
-SOURCES = ("frame", "chronology", "temporal_core", "juniper", "curiosity", "self_sense", "reveries",
+SOURCES = ("frame", "chronology", "temporal_core", "juniper", "roundup", "curiosity", "self_sense", "reveries",
            "walkway", "world_pulse", "github", "dreams", "visual_reveries", "readings")
+
+
+# Tail sections the roundup replaces (spec Part A.7, "Where it goes"), each by the organ that carries it. A
+# section is dropped only when that organ recorded at least 1 experience that day: a lagging or broken chronicle
+# (every organ quiet) never costs the letter its readings or dreams.
+ROUNDUP_REPLACES = {"walkway": "camera", "dreams": "dream", "visual_reveries": "painting", "readings": "reading"}
+ROUNDUP_HEADING = "## What each organ did"
 
 
 class DayInput(NamedTuple):
@@ -135,6 +146,30 @@ def _juniper_section(material: OrionDayMaterialV1, tz: ZoneInfo) -> str:
         out.append(f"### [chat_compactor:{c.entry_id}] {c.title or 'Chat digest'}")
         out.append(_Body(c.body).render(None))
     return "\n\n".join(out)
+
+
+# --- the daily organ roundup ------------------------------------------------------------------
+
+
+# The roundup queries that carry the organs' own experiences. When either failed, the roundup cannot carry
+# readings, dreams, the street or paintings, so the tail keeps them (no hole where the record was).
+ROUNDUP_CORE_QUERIES = frozenset({"kinds", "top"})
+
+
+def roundup_replaced(material: OrionDayMaterialV1) -> frozenset[str]:
+    """The tail sections the roundup carries this day (see ``ROUNDUP_REPLACES``)."""
+    r = material.organ_roundup
+    if r is None or not r.lines or ROUNDUP_CORE_QUERIES & set(r.unread):
+        return frozenset()
+    return frozenset(s for s, organ in ROUNDUP_REPLACES.items() if r.organ_experiences.get(organ, 0) > 0)
+
+
+def _roundup_section(material: OrionDayMaterialV1) -> str:
+    r = material.organ_roundup
+    if r is None or not r.lines:
+        return ""
+    return "\n".join([f"{ROUNDUP_HEADING} (my organ roundup for {r.day.isoformat()}: every line a count, a quote "
+                      "or a ref; cite an item by its bracketed experience ref, as shown)", *r.lines])
 
 
 # --- self-sense, deduplicated ------------------------------------------------------------------
@@ -264,7 +299,8 @@ def _tail_sections(material: OrionDayMaterialV1, tz: ZoneInfo) -> list[tuple[str
     """(source name, lines) in tail order: the short fixed items first, readings last (they are the
     longest list and fill what is left). Every line already trimmed."""
     out: list[tuple[str, list[str]]] = []
-    if material.walkway_day is not None:
+    replaced = roundup_replaced(material)
+    if material.walkway_day is not None and "walkway" not in replaced:
         w = material.walkway_day
         out.append(("walkway", ["## The street outside (my walkway camera; counts by code)",
                                 f"[walkway_day:{w.day.isoformat()}] {w.line}"]))
@@ -282,10 +318,10 @@ def _tail_sections(material: OrionDayMaterialV1, tz: ZoneInfo) -> list[tuple[str
     dreams = [f"- [dream:{d.id}] {_clip(d.tldr or d.narrative or 'Dream', TAIL_ITEM_CHARS)}" for d in material.dream_narratives]
     dreams += [f"- [dream_offered:{i}] {_clip(h.claim, TAIL_ITEM_CHARS)}"
                for i, h in enumerate(material.dream_hypotheses, start=1)]
-    if dreams:
+    if dreams and "dreams" not in replaced:
         out.append(("dreams", [f"## Dreams ({len(material.dream_narratives)} narratives, "
                                f"{len(material.dream_hypotheses)} hypotheses offered to me; trimmed)", *dreams]))
-    if material.visual_reveries:
+    if material.visual_reveries and "visual_reveries" not in replaced:
         out.append(("visual_reveries", [f"## Visual reveries ({len(material.visual_reveries)} images; "
                                         f"first {min(VISUAL_TAIL_ITEMS, len(material.visual_reveries))} shown)", *[
             f"- [visual_reverie:{v.sha256[:16]}] {_local(v.created_at, tz)}: {_clip(v.description or '(no caption)', TAIL_ITEM_CHARS)}"
@@ -298,7 +334,7 @@ def _tail_sections(material: OrionDayMaterialV1, tz: ZoneInfo) -> list[tuple[str
                         f"(changed: {changed})")
     readings += [f"- [reading_journal:{j.entry_id}] {j.title or 'Reading journal'}: {_clip(j.body, TAIL_ITEM_CHARS)}"
                  for j in material.reading_journals]
-    if readings:
+    if readings and "readings" not in replaced:
         out.append(("readings", [f"## Readings ({len(material.readings)} readings, "
                                  f"{len(material.reading_journals)} reading journals; trimmed)", *readings]))
     return out
@@ -364,6 +400,9 @@ def render_day_input(
     juniper = _juniper_section(material, tz)
     if juniper:
         parts.append(("juniper", juniper))
+    roundup = _roundup_section(material)
+    if roundup:
+        parts.append(("roundup", roundup))
 
     # Curiosity and the deduplicated self-sense answers share one clip cap, set only under pressure.
     sections = [s for s in (curiosity_section(material), _self_sense_section(material, tz)) if s is not None]
@@ -440,5 +479,5 @@ async def build_day_input(
                     material=material)
 
 
-__all__ = ["DAY_INPUT_BUDGET_TOKENS", "DayInput", "build_day_input", "latest_self_sense",
+__all__ = ["DAY_INPUT_BUDGET_TOKENS", "ROUNDUP_HEADING", "ROUNDUP_REPLACES", "DayInput", "build_day_input", "latest_self_sense",
            "render_day_input", "sample_reveries_by_theme"]

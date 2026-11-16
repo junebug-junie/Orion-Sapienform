@@ -353,18 +353,22 @@ def tier1_reserved_share(acts: Sequence[ActRecord], families: FamiliesConfig, la
 def build_context(families: FamiliesConfig, acts: Sequence[ActRecord], uses: Sequence[Any],
                   state: Optional[PhysiologyStateV1], now: datetime, *, lane_window_sec: float = 3600.0,
                   weights: Optional[Mapping[str, FamilyWeight]] = None,
-                  event_history: Optional[Mapping[str, Sequence[Any]]] = None) -> MarketContext:
+                  event_history: Optional[Mapping[str, Sequence[Any]]] = None,
+                  only_families: Optional[Iterable[str]] = None) -> MarketContext:
     """Everything a bid reads besides the want, the prices and the book: per-family appetite,
     today's weights and Tier 1's reserved share per lane. (The floor's weekly funded shares live on
     the ReservationBook: they come from want_ledger, not act history.) ``event_history``: family ->
     the intensities of its past event wants (want_ledger), an event want's rank reference: floats, or
-    ``(intensity, graded)`` pairs, of which only the family's current grading counts (issue #3364)."""
+    ``(intensity, graded)`` pairs, of which only the family's current grading counts (issue #3364).
+    ``only_families``: build the appetite for these families only (a bid's decision reads only its own
+    family's appetite; building all of them was most of a bid's time, issue #3382). None: every family."""
     from orion.physiology.appetite import build_family_appetite
     from orion.physiology.weights import weights_now
 
     ev = event_history or {}
+    keep = None if only_families is None else frozenset(only_families)
     app = {f: build_family_appetite(c, acts, now, event_intensities=ev.get(f, ()))
-           for f, c in families.families.items() if c.bids}
+           for f, c in families.families.items() if c.bids and (keep is None or f in keep)}
     w = dict(weights) if weights is not None else weights_now(families, acts, uses, now)
     t1: dict[str, float] = {}
     t1_use: dict[str, float] = {}

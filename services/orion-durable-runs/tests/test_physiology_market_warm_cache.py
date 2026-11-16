@@ -180,7 +180,7 @@ def _gated_weights(m):
     return gate, calls
 
 
-def test_a_new_day_keeps_the_last_weights_and_replays_in_the_background():
+def test_a_new_day_keeps_the_last_weights_and_only_the_refresher_replays():
     async def go():
         pool = _SlowPool()
         m = _late_market(pool)
@@ -188,21 +188,23 @@ def test_a_new_day_keeps_the_last_weights_and_replays_in_the_background():
         old_w, snap = m._weights, m._cache
         assert old_w[0][0] == snap.at == LATE
         gate, calls = _gated_weights(m)
+        gate.set()
         next_day = LATE + timedelta(minutes=2)             # same snapshot (fresh), new UTC day
         t0 = time.monotonic()
         d = await m.bid(_want(1), next_day)
         assert time.monotonic() - t0 < FAST and d.reason != "physiology_unavailable", (d.reason, d.why)
-        assert m._weights is old_w and m._cache is snap    # served the last weights meanwhile
         await m.bid(_want(2), next_day + timedelta(seconds=1))
-        gate.set()
-        await m._weights_task
-        assert len(calls) == 1                             # one replay, not one per bid
+        assert calls == [] and m._weights is old_w and m._cache is snap   # bids started no replay
+        await m.reconcile_weights(next_day)                # the refresher's step
+        assert len(calls) == 1
         assert m._weights[0] == (snap.at, next_day.date(), None) and m._cache is snap
+        await m.reconcile_weights(next_day + timedelta(seconds=5))
+        assert len(calls) == 1                             # same key: no second replay
 
     asyncio.run(go())
 
 
-def test_a_late_weights_replay_never_overwrites_a_newer_snapshot_and_none_starts_during_a_refresh():
+def test_a_late_reconcile_never_overwrites_a_newer_snapshot_and_none_runs_during_a_refresh():
     async def go():
         pool = _SlowPool()
         m = _late_market(pool)
@@ -210,14 +212,15 @@ def test_a_late_weights_replay_never_overwrites_a_newer_snapshot_and_none_starts
         snap, w0 = m._cache, m._weights
         gate, calls = _gated_weights(m)
         next_day = LATE + timedelta(minutes=2)
-        # The replay for snap starts on a new day; a refresh swaps in first, the stale replay finishes after.
-        await m.bid(_want(2), next_day)
-        wtask = m._weights_task
+        # The reconcile for snap starts on a new day; a refresh swaps in first, the stale replay finishes after.
+        rtask = asyncio.create_task(m.reconcile_weights(next_day))
+        while not calls:
+            await asyncio.sleep(0.01)
         fresh = pm._Cached(at=next_day + timedelta(minutes=1), acts=snap.acts, uses=snap.uses, events=snap.events)
         newer = ((fresh.at, fresh.at.date(), None), *w0[1:])
         m._cache, m._weights = fresh, newer
         gate.set()
-        await wtask
+        await rtask
         assert m._weights is newer                         # the late replay was for an older snapshot
 
         # While a refresh is in flight, a key change does not start a separate replay.
@@ -227,9 +230,8 @@ def test_a_late_weights_replay_never_overwrites_a_newer_snapshot_and_none_starts
         await m.bid(_want(3), later)                       # stale: kicks the refresh
         assert m._refresh_task is not None and not m._refresh_task.done()
         m._weights = (("other",), *m._weights[1:])         # e.g. a new personality read
-        m._weights_task, m._weights_last_attempt = None, None
-        await m.bid(_want(4), later + timedelta(seconds=1))
-        assert m._weights_task is None
+        await m.reconcile_weights(later + timedelta(seconds=1))
+        assert len(calls) == n
         await m._refresh_task
         assert len(calls) == n + 1                         # only the refresh's own replay
 

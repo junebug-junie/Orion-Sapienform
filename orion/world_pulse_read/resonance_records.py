@@ -1,11 +1,14 @@
 """Authoritative graph excerpts shared by live resonance and its replay eval."""
 from __future__ import annotations
 import json
+import logging
 from typing import Any
-from orion.curiosity.self_inquiry import build_lived_answer, newest_answer_per_question
+from orion.curiosity.self_inquiry import build_lived_answer, mint_text, newest_answer_per_question
 from orion.curiosity.worldview import CLOSED_STATUSES
 from orion.schemas.reading_resonance import ResonanceNeighborV1
 from orion.world_pulse_read.resonance import PoolDoc
+
+logger = logging.getLogger("orion.world_pulse_read.resonance_records")
 
 
 class Falkor:
@@ -32,12 +35,22 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
                         "MATCH (v:PriorRevision) RETURN v.prior_id AS pid, v.from_status AS fs, v.to_status AS ts, "
                         "v.from_confidence AS fc, v.to_confidence AS tc, v.from_claim AS from_claim, "
                         "v.note AS note, v.written_at AS at ORDER BY v.written_at DESC")
-    # A mint with blank text (one live on 2026-11-14) is no question: it would fail
-    # ResonanceNeighborV1(min_length=1) and halt every resonance read (#3585).
-    questions = [q for q in fk.rows("orion_worldview",
-                                    "MATCH (s:SelfQuestionMint) WHERE s.text IS NOT NULL "
-                                    "RETURN s.question_id AS qid, s.text AS text")
-                 if str(q["text"] or "").strip()]
+    # The words are under `text`, or under `question` where hand-written Cypher keyed
+    # them there (#3592). A mint with neither (one live `text: ''`, 2026-11-14) is no
+    # question: it would fail ResonanceNeighborV1(min_length=1) and halt every
+    # resonance read (#3585). It is dropped, and the drop is logged, never silent.
+    questions, blank_qids = [], []
+    for q in fk.rows("orion_worldview",
+                     "MATCH (s:SelfQuestionMint) RETURN s.question_id AS qid, s.text AS text, "
+                     "s.question AS question"):
+        text = mint_text(q)
+        if text:
+            questions.append({"qid": q["qid"], "text": text})
+        else:
+            blank_qids.append(q["qid"])
+    if blank_qids:
+        logger.warning("resonance_self_question_mint_dropped count=%d qids=%s reason=blank_text",
+                       len(blank_qids), blank_qids)
     answers = fk.rows("orion_worldview",
                       "MATCH (a:LivedAnswer) RETURN id(a) AS nid, a.run_id AS run_id, a.question_id AS qid, "
                       "a.text AS text, a.revises AS revises, a.evidence AS evidence, a.written_at AS at "

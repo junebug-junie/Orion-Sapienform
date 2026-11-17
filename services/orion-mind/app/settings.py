@@ -174,6 +174,12 @@ class Settings(BaseSettings):
     # Event wants decided in this many hours are considered; at most this many are shown (highest net first).
     PRIME_EVENT_WANTS_HOURS: float = Field(default=24.0, gt=0.0, le=72.0, alias="PRIME_EVENT_WANTS_HOURS")
     PRIME_EVENT_WANTS_LIMIT: int = Field(default=8, ge=1, le=50, alias="PRIME_EVENT_WANTS_LIMIT")
+    # The concern evidence clock (design docs/superpowers/specs/2026-11-17-prime-concerns-decided-by-attention-design.md
+    # patch 1, #3574): a bare "keep" no longer renews a concern's last_evidence_at, and no longer answers its horizon
+    # need. A question Prime sent about it or a take-on does (orion/prime/state.py touch_concern). Since 10-30 the
+    # model kept every concern on every thought: 0 of 54 concern acts faded and new letter threads found no room.
+    # false: a keep renews, as before (instant rollback; no state migration either way).
+    PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED: bool = Field(default=True, alias="PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED")
     # Living Prime Part 2, every turn ends back in Prime (orion/prime/handback.py, app/prime_loop.py): Prime listens
     # to the cockpit hops Hub already publishes (orion:cockpit:hop) and folds each finished chat, curiosity, consult
     # and letter turn into its state on the tick. A turn that made a promise opens a concern (at most 1 held, 4 a

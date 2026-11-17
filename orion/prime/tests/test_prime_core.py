@@ -239,12 +239,13 @@ def test_a_move_can_cite_the_concern_added_in_the_same_answer():
 
 
 def test_only_a_thought_keeping_a_concern_renews_it():
-    """Live 10-30: an energy concern tied to a conversation arc was renewed by that conversation."""
+    """Live 10-30: an energy concern tied to a conversation arc was renewed by that conversation. Evidence clock off
+    (the default for apply_answer): a keep renews. With it on, see test_prime_evidence_clock.py."""
     concern = PrimeConcernV1(concern_id="c1", text="energy", arc_id="arc1", opened_at=T0, last_evidence_at=T0)
     state = PrimeStateV1(concerns=[concern], seen_active_arc_id="arc1", seen_binding=[], last_thought_at=T0)
     later = T0 + CONCERN_TTL + timedelta(hours=1)
     faded = observe(state, _snap(), later)
-    assert faded.concerns == [] and "not kept" in faded.pending_changes[-1]
+    assert faded.concerns == [] and "nothing renewed it" in faded.pending_changes[-1]
     keep = PrimeAnswerV1.model_validate({"concerns": {"keep": ["c1", "ghost"]}})
     applied = apply_answer(state, keep, now=T0 + timedelta(hours=20), arc_ids=[], focus_pending=False)
     assert applied.state.concerns[0].last_evidence_at == T0 + timedelta(hours=20) and applied.kept == ["c1"]

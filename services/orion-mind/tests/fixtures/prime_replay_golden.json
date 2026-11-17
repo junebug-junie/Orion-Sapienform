@@ -474,7 +474,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -879,7 +879,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -1368,7 +1368,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -2201,7 +2201,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -3193,7 +3193,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -3971,7 +3971,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -4638,7 +4638,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -6264,7 +6264,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,
@@ -7529,7 +7529,7 @@
        "cost": null,
        "error": null,
        "expect": {
-        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (not kept for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
+        "basis": "artifact_produced = settled: a treated Prime question citing this concern (goal_ref prime_concern:<id>) settled produced (its investigate run wrote something), or a unified turn whose prompt cited prime_concern:<id> completed with a reply (turn hand-back, orion/prime/handback.py), within the horizon; 0 when dropped unresolved, faded (nothing renewed it for 24h; 72h for a promise concern) or lapsed. horizon = 2 x the question horizon (one question open at a time: another concern's question may be open first), 2 x 259200s",
         "cold_start": null,
         "direction": "increase",
         "horizon_sec": 518400.0,

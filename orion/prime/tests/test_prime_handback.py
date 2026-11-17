@@ -209,7 +209,7 @@ def test_a_turn_concern_is_a_promise_and_fades_after_72h_not_24h():
     assert observe(state, snap, T0 + timedelta(hours=48)).concerns == state.concerns
     later = observe(state, snap, T0 + PROMISE_CONCERN_TTL + timedelta(minutes=10))
     assert later.concerns == [] and later.concern_record[-1].end == "faded"
-    assert later.concern_record[-1].note == "faded: not kept for 3 days"
+    assert later.concern_record[-1].note == "faded: nothing renewed it for 3 days"
 
 
 # --- dedupe / replay safety -------------------------------------------------------------------------------

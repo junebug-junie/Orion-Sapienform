@@ -42,8 +42,11 @@ only, the daily budget is not spent. Anti-swamp guards, all here:
 
 1. A thought that shows needs and changes nothing (no move sent, no concern added or dropped) halves each shown
    need's drive, except a need whose own ref the thought answered (``touched``: the concern it kept or dropped, the
-   event it took up as a concern, the experience it cited). Keeping a concern is the answer to its horizon need, so
-   it is never "nothing". The halving is kept per **damp key** (``NeedV1.damp_key``): the need name, except an
+   event it took up as a concern, the experience it cited). With the evidence clock off, keeping a concern is the
+   answer to its horizon need, so it is never "nothing". With it on (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED, design
+   2026-11-17 patch 1, #3574) a bare keep answers nothing: the runtime leaves kept ids out of ``answered_refs``, and
+   a thought that only keeps halves the horizon need like any other untouched need. A sent move, a take-on or a
+   drop still answers it. Live 11-16..11-17, 17 of 18 thoughts ended "kept 3, no move". The halving is kept per **damp key** (``NeedV1.damp_key``): the need name, except an
    unheld funded event want's horizon need, which is kept under ``horizon:event:<its family>``
    (``event_damp_key``). A key with any answered shown need is not halved. Why not per name: keeping a held concern
    answers ``horizon``, and an event want is also ``horizon``, so before #3552 a thought that kept its 3 concerns
@@ -207,9 +210,11 @@ def event_horizon_needs(state: PrimeStateV1, now: datetime,
 
 
 def horizon_needs(state: PrimeStateV1, now: datetime, *, taken_on: Iterable[str] = (),
-                  horizon_of: Optional[Any] = None) -> list[tuple[NeedName, float, str, str, float]]:
+                  horizon_of: Optional[Any] = None,
+                  evidence_clock: bool = False) -> list[tuple[NeedName, float, str, str, float]]:
     """(name, drive, content, ref, recover_sec) per open concern. A concern taken on (its run is open) or already
-    settled has nothing left to decide. ``horizon_of(concern)``: the intention adapter's deadline, or None."""
+    settled has nothing left to decide. ``horizon_of(concern)``: the intention adapter's deadline, or None.
+    ``evidence_clock``: the content says a keep will not save it (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED)."""
     skip = set(taken_on)
     out = []
     for c in state.concerns:
@@ -218,7 +223,8 @@ def horizon_needs(state: PrimeStateV1, now: datetime, *, taken_on: Iterable[str]
         ttl = concern_ttl(c)
         fade_at = c.last_evidence_at + ttl
         drive = horizon_drive(now - c.last_evidence_at, ttl)
-        end, verb = fade_at, "fades unless I keep it"
+        end, verb = fade_at, ("fades unless I act on it (keeping it does not renew it)" if evidence_clock
+                              else "fades unless I keep it")
         deadline = horizon_of(c) if horizon_of is not None else None
         if deadline is not None and deadline > c.opened_at:
             d2 = horizon_drive(now - c.opened_at, deadline - c.opened_at)
@@ -310,10 +316,10 @@ def damp_factor(needs: PrimeNeedsStateV1, key: str, now: datetime) -> float:
 
 def compute_needs(state: PrimeStateV1, now: datetime, inputs: Optional[dict[str, Any]], *,
                   taken_on: Iterable[str] = (), horizon_of: Optional[Any] = None,
-                  events: Optional[dict[str, Any]] = None) -> list[NeedV1]:
+                  events: Optional[dict[str, Any]] = None, evidence_clock: bool = False) -> list[NeedV1]:
     """Every need with drive above 0, strongest (damped) first. ``inputs``: the durable-runs hunger read
     (TemporalHungerInputsV1 as a dict; None = unread). ``events``: the funded event wants Prime read this tick."""
-    raw = [*horizon_needs(state, now, taken_on=taken_on, horizon_of=horizon_of),
+    raw = [*horizon_needs(state, now, taken_on=taken_on, horizon_of=horizon_of, evidence_clock=evidence_clock),
            *event_horizon_needs(state, now, events),
            *surprise_needs(inputs), *connection_needs(inputs, now)]
     out = []

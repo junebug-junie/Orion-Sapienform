@@ -13,9 +13,12 @@ What counts as a change (each one is a fact Prime can be shown, never a score):
   under ``concerns.keep``; nothing outside a thought renews it -- 2026-10-30, Juniper: an arc the model
   tied a concern to is not evidence for it; the first live concern, about energy, was tied to a
   conversation arc and was being renewed by that conversation);
-* first wake: Prime has never thought;
-* quiet: nothing else woke Prime for ``QUIET_FLOOR`` (a quarter of ``CONCERN_TTL``), so a held concern
-  gets several chances to be kept or dropped before it fades for lack of any thought at all.
+* first wake: Prime has never thought.
+
+Besides a change, a **need** can wake Prime (integration design Part B, patch 5; orion/prime/hunger.py): a
+concern nearing its horizon, an unexplained surprise, Juniper's silence past her usual gap. The 6-hour quiet floor
+that used to add a "quiet" change is DELETED (2026-11-16): 36 of 48 thoughts 11-05..11-15 woke only from it and most
+did nothing. The horizon need does its job (a held concern gets a thought before it fades) with content.
 
 Which body constraints bind is NOT a change either (2026-11-04). Live 11-03 09:43..21:29, after
 attention was removed, Prime thought 26 times, almost every one at the 5-minute floor: 21 did nothing,
@@ -83,15 +86,12 @@ CONCERN_TEXT_CAP = 300
 # A concern Prime has not kept for a day fades. One day, because Temporal Self's arcs are per day
 # (``/temporal-self/frame`` day_id): an arc not seen for a whole day is no longer part of today.
 CONCERN_TTL = timedelta(hours=24)
-# The quiet floor. Live 10-30..11-03, with attention moves removed, the longest stretch with no other
-# trigger was 12.3 h (p90 1.6 h): without a floor a concern could fade with no thought in between.
-QUIET_FLOOR = CONCERN_TTL / 4
 # A promise concern: one the turn hand-back opened because Orion promised something in a turn (orion/prime/handback.py,
 # event_ref ``turn:<correlation_id>``). It fades after 72 h, the horizon the intention ledger gives a promise
 # (docs/superpowers/specs/2026-11-11-intention-ledger-design.md; orion/prime/intention_sources/turn_promise.py
 # HORIZON_SEC, a test pins the two together). Juniper approved 2026-11-13. Live 11-12 a promise to "take a lazy
 # browse through the last 24 hours" faded after one day with no move. The kind is read from event_ref, so a
-# concern saved before this change gets the right TTL with no new field. QUIET_FLOOR stays CONCERN_TTL / 4.
+# concern saved before this change gets the right TTL with no new field.
 PROMISE_EVENT_PREFIX = "turn:"
 PROMISE_CONCERN_TTL = timedelta(hours=72)
 PROMISE_TEXT_CAP = 600
@@ -224,6 +224,38 @@ class PrimeRegulationOpenV1(BaseModel):
     write_error: Optional[str] = None
 
 
+# --- Prime hunger's guards (orion/prime/hunger.py), persisted in PrimeStateV1.needs ---------------------------
+
+
+class NeedDampV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    factor: float = Field(ge=0.0, le=1.0)  # the multiplier right after the last halving
+    at: AwareDatetime
+    recover_sec: float = Field(gt=0.0)
+
+
+class NeedFiredV1(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    # The raw drive when this content line last woke Prime, lowered to the lowest seen since (hunger.track_troughs).
+    drive: float = Field(ge=0.0, le=1.0)
+    at: AwareDatetime
+
+
+class PrimeNeedsStateV1(BaseModel):
+    """Guards 1, 4 and 5, persisted inside ``PrimeStateV1.needs``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    damp: dict[str, NeedDampV1] = Field(default_factory=dict)  # need name -> its last halving
+    fired: dict[str, NeedFiredV1] = Field(default_factory=dict)  # need key -> when it last woke Prime
+    thoughts_at: list[AwareDatetime] = Field(default_factory=list)  # thought starts in the budget window
+
+    def is_empty(self) -> bool:
+        return not (self.damp or self.fired or self.thoughts_at)
+
+
 class PrimeStateV1(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -253,6 +285,11 @@ class PrimeStateV1(BaseModel):
     no_model_tries_total: int = 0
     last_try_kind: Optional[TryKind] = None
     retry_not_before: Optional[AwareDatetime] = None
+    # Hunger's guards (integration design Part B, orion/prime/hunger.py): halvings, the content lines that woke
+    # Prime, thought starts in the budget window. Left out of the saved state while empty, so a state with no
+    # need history saves byte-for-byte as before. A state that HAS it cannot be read by an orion-mind or Hub built
+    # before it (extra="forbid"): rebuild Hub before orion-mind; drop the key before rolling mind back.
+    needs: PrimeNeedsStateV1 = Field(default_factory=PrimeNeedsStateV1)
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema: Any, handler: GetJsonSchemaHandler) -> Any:
@@ -266,6 +303,8 @@ class PrimeStateV1(BaseModel):
         out = handler(self)
         if out.get("last_thought_id", 0) is None:
             del out["last_thought_id"]
+        if self.needs.is_empty():
+            out.pop("needs", None)
         return out
 
 
@@ -381,11 +420,6 @@ def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeS
     if state.last_thought_at is None and not state.pending_changes:
         state = note_change(state, "first wake: I have not thought yet")
 
-    if (state.last_thought_at is not None and not state.pending_changes
-            and now - state.last_thought_at >= QUIET_FLOOR):
-        hours = (now - state.last_thought_at).total_seconds() / 3600.0
-        state = note_change(state, f"quiet: nothing has woken me for {hours:.0f} hours")
-
     if snap.body_ok and snap.binding is not None and snap.binding != state.seen_binding:
         # Kept only as a record of the last binding set Prime saw (persisted state field). The frame's BODY
         # section reads the live body, not this; it is never a wake (module docstring, 2026-11-04).
@@ -403,10 +437,12 @@ def observe(state: PrimeStateV1, snap: PrimeSnapshotV1, now: datetime) -> PrimeS
     return state.model_copy(update={"concerns": kept})
 
 
-def wants_to_think(state: PrimeStateV1, now: datetime, *, refractory: timedelta) -> bool:
-    """True when there is something to think about, the refractory interval has passed and no
-    no-model backoff is running. Price, heat and lane contention are not decided here: the bid does."""
-    if not state.pending_changes:
+def wants_to_think(state: PrimeStateV1, now: datetime, *, refractory: timedelta, need_wake: bool = False) -> bool:
+    """True when there is something to think about (a pending change, or ``need_wake``: a need crossed its
+    threshold, orion/prime/hunger.py ``pick_wake``, which already holds the daily budget), the refractory interval
+    has passed and no no-model backoff is running. Price, heat and lane contention are not decided here: the bid
+    does."""
+    if not state.pending_changes and not need_wake:
         return False
     if state.retry_not_before is not None and now < state.retry_not_before:
         return False
@@ -426,7 +462,9 @@ __all__ = [
     "concern_ttl",
     "is_promise_concern",
     "NO_MODEL_FREE_TRIES",
-    "QUIET_FLOOR",
+    "NeedDampV1",
+    "NeedFiredV1",
+    "PrimeNeedsStateV1",
     "TryKind",
     "classify_try",
     "no_model_backoff",

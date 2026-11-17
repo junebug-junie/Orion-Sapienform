@@ -170,7 +170,7 @@ def test_accepts_mixed_types():
     signal_model = _make_signal(signal_id="sig-1", signal_strength=0.9)
     signal_dict = {
         "signal_id": "sig-2",
-        "signal_type": "concept_instability",
+        "signal_type": "curiosity_candidate",
         "anchor_scope": "orion",
         "subject_ref": "entity:orion",
         "target_zone": "concept_graph",
@@ -282,8 +282,8 @@ def test_signal_types_preserved():
     """signal_types from top 3 signals preserved in metadata."""
     signals = [
         _make_signal(signal_id="sig-1", signal_strength=0.9, signal_type="evidence_gap_cluster"),
-        _make_signal(signal_id="sig-2", signal_strength=0.8, signal_type="concept_instability"),
-        _make_signal(signal_id="sig-3", signal_strength=0.7, signal_type="contradiction_hotspot"),
+        _make_signal(signal_id="sig-2", signal_strength=0.8, signal_type="curiosity_candidate"),
+        _make_signal(signal_id="sig-3", signal_strength=0.7, signal_type="world_coverage_gap"),
     ]
 
     record = map_curiosity_ctx_to_substrate({"curiosity_signals": signals})
@@ -293,8 +293,8 @@ def test_signal_types_preserved():
     signal_types = node.metadata["signal_types"]
     assert signal_types == [
         "evidence_gap_cluster",
-        "concept_instability",
-        "contradiction_hotspot",
+        "curiosity_candidate",
+        "world_coverage_gap",
     ]
 
 

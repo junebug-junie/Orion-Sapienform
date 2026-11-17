@@ -9,7 +9,9 @@ pass, and left it deferred. This resolved exactly three candidates; two remain
 row-count helpers only it used).
 
 **Added 2026-09-04**: `organ_signal/graph_cognition/repair_pressure#level` and
-`#confidence` -- found while auditing metacog's `relational` trigger
+`#confidence` (the organ id is historical; the producer is
+`orion/substrate/appraisal`, not the `orion/graph_cognition` package
+deleted in PR #3522) -- found while auditing metacog's `relational` trigger
 (services/orion-equilibrium-service/app/repair_pressure_metacog_gate.py),
 which reads this same signal but had never had its liveness checked; the
 registry entry (`orion/signals/registry.py`'s `graph_cognition` organ, kind

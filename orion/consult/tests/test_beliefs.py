@@ -75,7 +75,7 @@ def test_answered_section_asks_for_a_test_and_a_supporting_edge():
         "consult_id": "c1", "ending": "answered", "answer": "It is by design: x.py:3", "question": "why?",
         "belief_priors": [],
     }]))
-    assert "consult:c1:answer" in text and "times_tested + 1" in text and "[e:SUPPORTS]" in text
+    assert "consult:c1:answer" in text and "counts the test once per run" in text and "[e:SUPPORTS]" in text
     assert "No belief is named by its source" in text
 
 

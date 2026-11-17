@@ -502,7 +502,8 @@ def _build_market():
     latest prices from Redis orion:physiology:latest; decisions published on the long-lived rpc_bus."""
     from uuid import uuid4
 
-    from app.physiology_market import Market
+    from app.physiology_market import REFRESH_FRACTION, Market
+    from app.weights_worker import process_executor
     from orion.physiology.families import load_families
     from orion.schemas.physiology_want import WANT_DECISION_KIND
 
@@ -539,7 +540,9 @@ def _build_market():
         embed, close_embed = http_embedder(s.personality_embed_url,
                                            timeout_sec=s.physiology_personality_embed_timeout_sec)
     personality = PersonalityValues(enabled=values_on, pool_getter=lambda: _checkpointer_cm, embed=embed,
-                                    ttl_sec=max(60.0, float(s.physiology_bid_history_ttl_sec)),
+                                    # Read once per market refresher cycle (it is the only caller of kick,
+                                    # issue #3382); a TTL equal to the history TTL skipped every other cycle.
+                                    ttl_sec=max(60.0, float(s.physiology_bid_history_ttl_sec) * REFRESH_FRACTION),
                                     embed_timeout_sec=s.physiology_personality_embed_timeout_sec)
     if values_on:
         personality.set_closer(close_embed)
@@ -550,7 +553,9 @@ def _build_market():
                   history_ttl_sec=s.physiology_bid_history_ttl_sec, lane_window_sec=s.physiology_lane_window_sec,
                   stale_after_sec=s.physiology_bid_stale_after_sec,
                   prime_regulation=bool(getattr(s, "physiology_prime_regulation", False)),
-                  consent_rules=consent_rules, consent_error=consent_err, personality=personality)
+                  consent_rules=consent_rules, consent_error=consent_err, personality=personality,
+                  # Issue #3382: the 30-day weights replay runs in one worker process, off the bid loop's GIL.
+                  weights_executor=process_executor)
 
 
 def _build_chronicle():
@@ -768,7 +773,7 @@ async def lifespan(app: FastAPI):
             _market_refresh_task.cancel()
             await asyncio.gather(_market_refresh_task, return_exceptions=True)
         if market is not None:
-            await market.aclose()   # before the pool closes under an in-flight refresh
+            await market.aclose()   # before the pool closes under an in-flight refresh; stops the replay worker
         if situation is not None:
             await situation.close()
         if temporal_self is not None:
@@ -1165,10 +1170,13 @@ NOW_COMMIT_MARGIN_SEC = 120.0
 
 
 @app.get("/temporal-self/now")
-async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Optional[str] = None):
+async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Optional[str] = None,
+                            include: Optional[str] = None):
     """Orion's now for one reading organ: at most 12 experiences of OTHER organs recorded since ``since``
     (default: when this organ last looked, else 24 h), at most 2 per organ, highest salience first.
-    Every call stores one ``experience_shown`` row; its ``shown_id`` is what cites are checked against."""
+    Every call stores one ``experience_shown`` row; its ``shown_id`` is what cites are checked against.
+    ``include``: comma-separated event ids the reader shows anyway as a need's content (Prime hunger, at most 3,
+    other organs only); they are pinned first, so citing one is valid."""
     from datetime import datetime, timedelta, timezone
     from uuid import uuid4
 
@@ -1193,13 +1201,63 @@ async def temporal_self_now(organ: str, since: Optional[str] = None, run_ref: Op
     lo = max(lo.astimezone(timezone.utc), as_of - timedelta(days=NOW_MAX_LOOKBACK_DAYS))
     rows, total = await _now_read(store.candidates(since=lo, as_of=as_of, own_kinds=registry.kinds_of(organ),
                                                    per_kind=NOW_MAX_PER_ORGAN))
+    from orion.temporal_self.now import NOW_MAX_PINNED
+
+    pin_ids = [i.strip() for i in (include or "").split(",") if i.strip()][:NOW_MAX_PINNED]
+    pinned = await _now_read(store.by_id(pin_ids, own_kinds=registry.kinds_of(organ))) if pin_ids else []
+    pinned.sort(key=lambda r: pin_ids.index(str(r["event_id"])) if str(r["event_id"]) in pin_ids else len(pin_ids))
     now = build_now(rows, organ, since=lo, as_of=as_of, shown_id=uuid4().hex, registry=registry,
-                    reader_run_ref=(run_ref or None) and run_ref[:300], candidates_total=total)
+                    reader_run_ref=(run_ref or None) and run_ref[:300], candidates_total=total, pinned=pinned)
     # An explicit since= is an inspection read: stored (every read is), but it never moves the organ's cursor.
     await _now_read(store.insert_shown(shown_id=now.shown_id, reader_organ=organ, reader_run_ref=now.reader_run_ref,
                                        event_ids=[i.event_id for i in now.items], since=lo, shown_at=as_of,
                                        advances_cursor=not since))
     return now.model_dump(mode="json")
+
+
+HUNGER_SURPRISE_LOOKBACK_HOURS = 24.0  # a surprise not used within a day is history (the now's use window)
+HUNGER_JUNIPER_LOOKBACK_DAYS = 30  # her usual gap between conversations: 30 days, like salience
+
+
+@app.get("/temporal-self/hunger")
+async def temporal_self_hunger(organ: str):
+    """Inputs of Prime's needs that live in Postgres (integration design Part B; drives in orion/prime/hunger.py):
+    other organs' uncited experiences of the last 24 h whose surprisal is above their own kind's 30-day 90th
+    percentile, and Juniper's messages to Orion of the last 30 days (``TemporalHungerInputsV1``). Read-only: no
+    ``experience_shown`` row, so polling it never counts as a shown now."""
+    from datetime import datetime, timedelta, timezone
+
+    from orion.integration.organs import load_organs
+    from orion.schemas.temporal_self import (HUNGER_JUNIPER_TIMES_CAP, HUNGER_PROMPT_CAP, HUNGER_SURPRISES_CAP,
+                                             TemporalHungerInputsV1)
+    from orion.temporal_self.now import now_label
+
+    store = _now_store()
+    registry = load_organs()
+    if organ not in registry.organs:
+        raise HTTPException(422, f"unknown organ {organ!r}; registered: {', '.join(registry.organs)}")
+    as_of = datetime.now(timezone.utc)
+    surprises, msgs, last_event = await _now_read(store.hunger_inputs(
+        lo=as_of - timedelta(hours=HUNGER_SURPRISE_LOOKBACK_HOURS), hist_lo=as_of - timedelta(days=30), as_of=as_of,
+        own_kinds=registry.kinds_of(organ), cap=HUNGER_SURPRISES_CAP,
+        juniper_lo=as_of - timedelta(days=HUNGER_JUNIPER_LOOKBACK_DAYS)))
+    msgs = msgs[-HUNGER_JUNIPER_TIMES_CAP:]
+    last = msgs[-1] if msgs else None
+    body = TemporalHungerInputsV1(
+        organ=organ, as_of=as_of,
+        surprises=[{
+            "event_id": r["event_id"], "organ": registry.organ_of.get(r["source_kind"], "?"),
+            "source_kind": r["source_kind"],
+            "label": now_label(r["source_kind"], r.get("label"), r.get("verdict"), r.get("payload_json") or {}),
+            "occurred_at": r["occurred_at"], "surprise_nats": float(r["surprise_nats"]),
+            "source_p90": float(r["p90"]), "source_n": int(r["n"])}
+            for r in surprises if r["source_kind"] in registry.organ_of],
+        juniper={"message_times": [m["at"] for m in msgs],
+                 "last_chat_id": str(last["id"]) if last else None,
+                 "last_prompt": " ".join(str((last or {}).get("prompt") or "").split())[:HUNGER_PROMPT_CAP],
+                 "last_event_id": last_event},
+    )
+    return body.model_dump(mode="json")
 
 
 @app.post("/temporal-self/now/use")

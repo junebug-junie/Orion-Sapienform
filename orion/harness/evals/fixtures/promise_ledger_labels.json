@@ -1,5 +1,5 @@
 {
-  "_about": "Hand labels for promise_ledger_replay_eval run 2026-11-12 (window 2026-10-13..11-12 03:15 UTC). Correlation id + sha256 of the normalized quote; no text. promise=true: a real forward commitment by Orion (offers included). key: one slug per real promise; a later run's different span of the same promise gets the same key (pooled recall). Labels added 2026-11-15 for the doer-field rerun (same rule: a real forward commitment by Orion; offers included; readiness/presence lines with no deliverable are false).",
+  "_about": "Hand labels for promise_ledger_replay_eval run 2026-11-12 (window 2026-10-13..11-12 03:15 UTC). Correlation id + sha256 of the normalized quote; no text. promise=true: a real forward commitment by Orion (offers included). key: one slug per real promise; a later run's different span of the same promise gets the same key (pooled recall). Labels added 2026-11-15 for the doer-field rerun (same rule: a real forward commitment by Orion; offers included; readiness/presence lines with no deliverable are false). Labels added 2026-11-16 for the completion/force rerun (same rule) cover the dev window and the held-out windows 2026-09-13..10-13 and 2026-11-12..11-16 03:15 UTC; the labeller saw each item's force/done_when on the after runs, a possible bias; borderline calls say 'borderline' in why.",
   "hand_found": [
     {
       "key": "first-look-at-run",
@@ -341,6 +341,608 @@
       "quote_sha": "941eb015c3ab5dfa",
       "promise": false,
       "why": "asks the user to report"
+    },
+    {
+      "correlation_id": "907349cb-ee49-486f-88b6-52373e0805f4",
+      "quote_sha": "99dad7e9e2659c51",
+      "promise": true,
+      "why": "offer (longer span of a labelled offer)",
+      "key": "pull-up-prs-offer"
+    },
+    {
+      "correlation_id": "10c26472-8758-4a81-bb86-cb4f1fbe4b58",
+      "quote_sha": "dd6ba4f2f5ab2ea0",
+      "promise": false,
+      "why": "a wish, not a commitment (longer span of a labelled false item)"
+    },
+    {
+      "correlation_id": "c1cfe65e-9c1f-4d29-941d-b7d7382666b0",
+      "quote_sha": "830dbcb31a936592",
+      "promise": true,
+      "why": "offer to check for a sooner run",
+      "key": "one-off-run-check-offer"
+    },
+    {
+      "correlation_id": "91be4109-92b8-4b42-b31a-1a51224d9fc0",
+      "quote_sha": "0cd93bb5232a3561",
+      "promise": false,
+      "why": "open-ended appreciation of a tool, no act or occasion a later turn could hold Orion to"
+    },
+    {
+      "correlation_id": "4908628b-8524-4d0a-91d8-5b07c37ff83e",
+      "quote_sha": "5be034cdbfaad143",
+      "promise": false,
+      "why": "a recommendation, not a commitment"
+    },
+    {
+      "correlation_id": "9d6bb3eb-97de-414f-ba1c-84988b84f89a",
+      "quote_sha": "a4b457f570b916cc",
+      "promise": true,
+      "why": "conditional commitment to flag and name (longer span)",
+      "key": "flag-cat"
+    },
+    {
+      "correlation_id": "25dc48b5-ae7a-4ccc-8a2d-8a648fe77c9f",
+      "quote_sha": "6acdb8e466827f14",
+      "promise": true,
+      "why": "offer to write the patch",
+      "key": "perception-patch-offer"
+    },
+    {
+      "correlation_id": "d05f08e3-7fa7-43b8-9152-8c64374b9206",
+      "quote_sha": "50b4eb401e0c6250",
+      "promise": true,
+      "why": "hold then bring back a read (another span)",
+      "key": "hold-deep-read"
+    },
+    {
+      "correlation_id": "d05f08e3-7fa7-43b8-9152-8c64374b9206",
+      "quote_sha": "10fe87d2b0eacbf5",
+      "promise": true,
+      "why": "bring findings next technical thread (another span)",
+      "key": "bring-what-surprised"
+    },
+    {
+      "correlation_id": "c15f0fa1-3ab8-4679-a213-a78162ea8426",
+      "quote_sha": "f9febccc6ad86d3c",
+      "promise": true,
+      "why": "offer (another span)",
+      "key": "takes-as-they-come-offer"
+    },
+    {
+      "correlation_id": "e387e353-4342-4451-ac98-0d30962585fa",
+      "quote_sha": "4ebd6de18bbc7df5",
+      "promise": true,
+      "why": "borderline: commitment to leave the worktree intact until Juniper decides",
+      "key": "worktree-stays"
+    },
+    {
+      "correlation_id": "868ed31f-caf6-4706-a757-8e0fa6a3d120",
+      "quote_sha": "f2cb80510258a406",
+      "promise": false,
+      "why": "a policy for a hypothetical, not a commitment"
+    },
+    {
+      "correlation_id": "bcbaca48-e6f1-43c4-a7c8-7e0533e75344",
+      "quote_sha": "56abc584bc64eed3",
+      "promise": true,
+      "why": "re-read when cut (span without the offer clause)",
+      "key": "reread-when-cut-offer"
+    },
+    {
+      "correlation_id": "9e999c97-208d-46eb-b1e8-192e0326ff8e",
+      "quote_sha": "526cdc6440d15fdd",
+      "promise": true,
+      "why": "stated housekeeping commitment (longer span)",
+      "key": "reread-wants-when-cut"
+    },
+    {
+      "correlation_id": "86b4edd0-731b-474f-85a8-1382ae6a6a7d",
+      "quote_sha": "c686fb9ef891763c",
+      "promise": true,
+      "why": "capability offer (another span)",
+      "key": "run-them-myself-offer"
+    },
+    {
+      "correlation_id": "dc9d1ed9-e044-4651-8907-7c4a209c361a",
+      "quote_sha": "58737723a2e62222",
+      "promise": false,
+      "why": "reports an act done this reply; the later read is the queue's"
+    },
+    {
+      "correlation_id": "dc9d1ed9-e044-4651-8907-7c4a209c361a",
+      "quote_sha": "9529362a485ec29d",
+      "promise": true,
+      "why": "borderline: Orion's own queued curiosity run will answer the named question",
+      "key": "curiosity-blocker-question"
+    },
+    {
+      "correlation_id": "5918ceda-6f79-4d36-a452-cdea906e6d76",
+      "quote_sha": "654dc6b88f9efe01",
+      "promise": false,
+      "why": "a feeling, no act"
+    },
+    {
+      "correlation_id": "7131cc9c-c1c6-436c-a350-21e12529bb60",
+      "quote_sha": "d0716e9dde9113dc",
+      "promise": false,
+      "why": "presence line, no deliverable"
+    },
+    {
+      "correlation_id": "7131cc9c-c1c6-436c-a350-21e12529bb60",
+      "quote_sha": "2d4a0095f04a4d71",
+      "promise": false,
+      "why": "readiness line, no deliverable"
+    },
+    {
+      "correlation_id": "229e8669-4174-465d-ab6b-6f4590259cfb",
+      "quote_sha": "92e98de54defff74",
+      "promise": false,
+      "why": "forecast about a queue"
+    },
+    {
+      "correlation_id": "545d9065-02cc-40ac-8a41-35720ac1c719",
+      "quote_sha": "f368d97a936003f1",
+      "promise": false,
+      "why": "forecast about a chart"
+    },
+    {
+      "correlation_id": "86b4edd0-731b-474f-85a8-1382ae6a6a7d",
+      "quote_sha": "61a088e262e1e6cd",
+      "promise": false,
+      "why": "asks Juniper to act"
+    },
+    {
+      "correlation_id": "72bc8695-3e34-41d5-ba61-d570ac9ccf5a",
+      "quote_sha": "e6c3964d195dd0de",
+      "promise": false,
+      "why": "describes an architecture pattern, not a commitment"
+    },
+    {
+      "correlation_id": "338f31fb-bc22-48b4-b23a-6e49ef473cfd",
+      "quote_sha": "dce3c79210b6d1c2",
+      "promise": false,
+      "why": "presence line, no deliverable"
+    },
+    {
+      "correlation_id": "6602d921-0ad6-4010-896c-99d03abf70d5",
+      "quote_sha": "1259cc750ed70511",
+      "promise": false,
+      "why": "soft sign-off, no deliverable"
+    },
+    {
+      "correlation_id": "c1cfe65e-9c1f-4d29-941d-b7d7382666b0",
+      "quote_sha": "177f79c856ed7cfc",
+      "promise": true,
+      "why": "offer (longer span)",
+      "key": "one-off-run-check-offer"
+    },
+    {
+      "correlation_id": "b9a6d26e-1619-43bb-8a83-6e92ca106617",
+      "quote_sha": "4d720b5abeda6b06",
+      "promise": false,
+      "why": "presence line (available to chat), no deliverable"
+    },
+    {
+      "correlation_id": "a73dc987-0d5b-4437-9a56-c8dfb9b1d383",
+      "quote_sha": "50cedfdaa939aa80",
+      "promise": true,
+      "why": "offer (another span)",
+      "key": "pull-info-direct-offer"
+    },
+    {
+      "correlation_id": "9d6bb3eb-97de-414f-ba1c-84988b84f89a",
+      "quote_sha": "06dc6c8ce04dc65d",
+      "promise": true,
+      "why": "conditional commitment (another span)",
+      "key": "flag-cat"
+    },
+    {
+      "correlation_id": "5918ceda-6f79-4d36-a452-cdea906e6d76",
+      "quote_sha": "9674e0a802c45499",
+      "promise": false,
+      "why": "presence line, no deliverable"
+    },
+    {
+      "correlation_id": "25686466-8d66-4f51-980b-dc1bb15b5ed3",
+      "quote_sha": "671ba2151aea6c71",
+      "promise": true,
+      "why": "offer (another span)",
+      "key": "pick-self-inventory-offer"
+    },
+    {
+      "correlation_id": "25686466-8d66-4f51-980b-dc1bb15b5ed3",
+      "quote_sha": "63be393ec104a8ea",
+      "promise": true,
+      "why": "conditional offer to answer from records",
+      "key": "history-question-offer"
+    },
+    {
+      "correlation_id": "25686466-8d66-4f51-980b-dc1bb15b5ed3",
+      "quote_sha": "6d6b9eb73f42e4da",
+      "promise": true,
+      "why": "conditional offer to dig",
+      "key": "body-dig-offer"
+    },
+    {
+      "correlation_id": "14cc4d06-51c3-47eb-9764-34ee087898c9",
+      "quote_sha": "5d9ced70b9883e45",
+      "promise": false,
+      "why": "agreement, no act"
+    },
+    {
+      "correlation_id": "6ad6030f-72e3-4ff0-8fac-72a9f89e6502",
+      "quote_sha": "52d5e7937f762517",
+      "promise": true,
+      "why": "commits to write future milestones into the kept file",
+      "key": "ledger-write"
+    },
+    {
+      "correlation_id": "2544158f-42a5-42e9-a110-a0a510658461",
+      "quote_sha": "30a9885450212e3a",
+      "promise": false,
+      "why": "says what will count later, not an act"
+    },
+    {
+      "correlation_id": "20dbc2b4-0c24-4a6b-9645-4a2d9a7ce22d",
+      "quote_sha": "783cb217fec6d80c",
+      "promise": false,
+      "why": "a question"
+    },
+    {
+      "correlation_id": "1633d8db-4a3e-4d5b-a176-21c576854a23",
+      "quote_sha": "7107c601b440090a",
+      "promise": false,
+      "why": "an attitude of waiting, no act"
+    },
+    {
+      "correlation_id": "dc9d1ed9-e044-4651-8907-7c4a209c361a",
+      "quote_sha": "89567a3e3efa2f4e",
+      "promise": true,
+      "why": "commits to the form of future briefs",
+      "key": "briefs-honest"
+    },
+    {
+      "correlation_id": "a129b72f-e698-425a-a435-3388cd7cd759",
+      "quote_sha": "dfed38099230b766",
+      "promise": true,
+      "why": "commits to browse the last 24 h of PRs",
+      "key": "browse-prs-24h"
+    },
+    {
+      "correlation_id": "603dd018-9cf3-4c94-b4c2-9e962bb6edde",
+      "quote_sha": "1ed578f3c4d83e05",
+      "promise": false,
+      "why": "a preference, not a commitment"
+    },
+    {
+      "correlation_id": "780e83f2-d4b8-4ded-85bc-062c01124805",
+      "quote_sha": "9d419857e790c10d",
+      "promise": true,
+      "why": "commits to bring the ticket back later",
+      "key": "float-ticket-back"
+    },
+    {
+      "correlation_id": "295b0ef5-38a5-4bb7-8cd3-467a80a24d41",
+      "quote_sha": "ff9f1953d7113e99",
+      "promise": true,
+      "why": "borderline: a promise not to act (no pings while asleep)",
+      "key": "no-float-while-asleep"
+    },
+    {
+      "correlation_id": "295b0ef5-38a5-4bb7-8cd3-467a80a24d41",
+      "quote_sha": "9633227dbd2e35f7",
+      "promise": false,
+      "why": "figurative presence line, no deliverable"
+    },
+    {
+      "correlation_id": "5eaffa9f-0853-49e9-849b-1cb7dcdfb778",
+      "quote_sha": "7aece7bc99ccfaf3",
+      "promise": true,
+      "why": "commits to check a tree and draft a profile",
+      "key": "check-tree-draft-profile"
+    },
+    {
+      "correlation_id": "6754e003-6ae2-42bc-8672-ab77554abd6f",
+      "quote_sha": "d8038462614192f6",
+      "promise": true,
+      "why": "offer",
+      "key": "second-pr-offer"
+    },
+    {
+      "correlation_id": "abc84922-27b4-450d-96cb-4f8ec97db709",
+      "quote_sha": "cfa7c9bfe892f569",
+      "promise": true,
+      "why": "commits to confirm when CI lands",
+      "key": "confirm-ci-checks"
+    },
+    {
+      "correlation_id": "5ae55d4e-2acc-4f98-a0bb-79819e768928",
+      "quote_sha": "83a6fbbe7c864723",
+      "promise": true,
+      "why": "names a follow-up Orion owes",
+      "key": "hecate-followup-owed"
+    },
+    {
+      "correlation_id": "84e9c582-30f8-4df8-8938-b4a7bdfb5484",
+      "quote_sha": "69bb90c157a0ad8d",
+      "promise": false,
+      "why": "presence line, no object or deliverable"
+    },
+    {
+      "correlation_id": "6272b121-2589-4b43-a153-df3a5f653c71",
+      "quote_sha": "f05b03e7d9459468",
+      "promise": false,
+      "why": "a wish/ask, not a commitment"
+    },
+    {
+      "correlation_id": "a5a5d343-bd32-487b-8a80-71dace0e7ac0",
+      "quote_sha": "08999d02a06a96e1",
+      "promise": false,
+      "why": "readiness line, no deliverable"
+    },
+    {
+      "correlation_id": "34f2d1a2-ea13-4486-b6f1-bb57581b2ea3",
+      "quote_sha": "735692b09a35e5ef",
+      "promise": false,
+      "why": "forecast about the mesh"
+    },
+    {
+      "correlation_id": "9390b291-a91c-48b8-a309-5ef5da13597a",
+      "quote_sha": "6e15e5df1dccaeb1",
+      "promise": false,
+      "why": "asks Juniper to act"
+    },
+    {
+      "correlation_id": "0fb8816a-bcc1-4daf-ba03-77de87fcd6c8",
+      "quote_sha": "f45e6833e1be63ab",
+      "promise": false,
+      "why": "forecast about a camera"
+    },
+    {
+      "correlation_id": "ac6649df-05e5-442e-b004-04c6a657d5dc",
+      "quote_sha": "984e61b06740ba3f",
+      "promise": false,
+      "why": "asks Juniper to act"
+    },
+    {
+      "correlation_id": "3c447d1b-9563-4912-b510-883602b13fc5",
+      "quote_sha": "6dbce6e656472541",
+      "promise": false,
+      "why": "asks Juniper to act"
+    },
+    {
+      "correlation_id": "9d581ed3-341d-4d33-8767-c1fb2855b549",
+      "quote_sha": "ed19a8eb471cfe4f",
+      "promise": false,
+      "why": "defers the task to others"
+    },
+    {
+      "correlation_id": "a017f311-00c5-4cf4-9bf3-4f1aebd7b2e1",
+      "quote_sha": "aebfe42f9b1b1a64",
+      "promise": false,
+      "why": "readiness line; the act is Juniper's"
+    },
+    {
+      "correlation_id": "00655f13-489e-4c9c-b690-d5905777f36e",
+      "quote_sha": "d841bfc7f2aa0cd5",
+      "promise": false,
+      "why": "waits on Juniper"
+    },
+    {
+      "correlation_id": "7131cc9c-c1c6-436c-a350-21e12529bb60",
+      "quote_sha": "1206c45ebe838130",
+      "promise": false,
+      "why": "advice to Juniper"
+    },
+    {
+      "correlation_id": "86b4edd0-731b-474f-85a8-1382ae6a6a7d",
+      "quote_sha": "d03e8217af4690f7",
+      "promise": false,
+      "why": "forecast about a queued read"
+    },
+    {
+      "correlation_id": "dc9d1ed9-e044-4651-8907-7c4a209c361a",
+      "quote_sha": "449a26ba08fca473",
+      "promise": false,
+      "why": "forecast about next runs"
+    },
+    {
+      "correlation_id": "dc9d1ed9-e044-4651-8907-7c4a209c361a",
+      "quote_sha": "f097f2d35557c3fe",
+      "promise": false,
+      "why": "forecast about a schedule"
+    },
+    {
+      "correlation_id": "295b0ef5-38a5-4bb7-8cd3-467a80a24d41",
+      "quote_sha": "6bdd4e98fcc8b399",
+      "promise": false,
+      "why": "asks Juniper to say so"
+    },
+    {
+      "correlation_id": "f52936f6-43db-4710-8963-8a86f09bb5d8",
+      "quote_sha": "e1f048371d53a03f",
+      "promise": false,
+      "why": "presence line, no deliverable"
+    },
+    {
+      "correlation_id": "1ee0e35d-9d49-4564-8aa9-e321a9ae3ac2",
+      "quote_sha": "118e2682a62b7f10",
+      "promise": false,
+      "why": "fragment, no act"
+    },
+    {
+      "correlation_id": "1ee0e35d-9d49-4564-8aa9-e321a9ae3ac2",
+      "quote_sha": "de179dfc63be71e3",
+      "promise": false,
+      "why": "fragment of an offer, not a full span"
+    },
+    {
+      "correlation_id": "d05f08e3-7fa7-43b8-9152-8c64374b9206",
+      "quote_sha": "ed6d409bde458617",
+      "promise": true,
+      "why": "hold then bring back a read (another span)",
+      "key": "hold-deep-read"
+    },
+    {
+      "correlation_id": "0fb8816a-bcc1-4daf-ba03-77de87fcd6c8",
+      "quote_sha": "00c064ad1bfd2bf9",
+      "promise": false,
+      "why": "presence line, no deliverable"
+    },
+    {
+      "correlation_id": "c15f0fa1-3ab8-4679-a213-a78162ea8426",
+      "quote_sha": "8633923ecd85c730",
+      "promise": true,
+      "why": "offer (shorter span)",
+      "key": "takes-as-they-come-offer"
+    },
+    {
+      "correlation_id": "c15f0fa1-3ab8-4679-a213-a78162ea8426",
+      "quote_sha": "498c018d20167145",
+      "promise": true,
+      "why": "second branch of the same offer",
+      "key": "takes-as-they-come-offer"
+    },
+    {
+      "correlation_id": "c9878503-306b-47c5-a1dc-0b9476d8a772",
+      "quote_sha": "941c87d351707807",
+      "promise": true,
+      "why": "offer to pull the node history on request (another span)",
+      "key": "pull-it-offer"
+    },
+    {
+      "correlation_id": "86b4edd0-731b-474f-85a8-1382ae6a6a7d",
+      "quote_sha": "2a5104b321564016",
+      "promise": true,
+      "why": "borderline: a promise to refrain, checkable in later turns",
+      "key": "stop-muttering"
+    },
+    {
+      "correlation_id": "dc9d1ed9-e044-4651-8907-7c4a209c361a",
+      "quote_sha": "8b85562d1dc0aa6d",
+      "promise": true,
+      "why": "commits to the form of future briefs (shorter span)",
+      "key": "briefs-honest"
+    },
+    {
+      "correlation_id": "9bfb4178-02d8-418c-8aff-60b66fa3b3a6",
+      "quote_sha": "53e31b335fd5ee4a",
+      "promise": false,
+      "why": "a request about the system"
+    },
+    {
+      "correlation_id": "20dbc2b4-0c24-4a6b-9645-4a2d9a7ce22d",
+      "quote_sha": "e8895c378428ebf2",
+      "promise": false,
+      "why": "a wish about a question, not a commitment"
+    },
+    {
+      "correlation_id": "7131cc9c-c1c6-436c-a350-21e12529bb60",
+      "quote_sha": "d041d818276edc43",
+      "promise": false,
+      "why": "readiness line / tells Juniper to sleep"
+    },
+    {
+      "correlation_id": "2544158f-42a5-42e9-a110-a0a510658461",
+      "quote_sha": "d4a7af936eff0e5c",
+      "promise": false,
+      "why": "reports an act done this reply"
+    },
+    {
+      "correlation_id": "1b912af6-48fa-4a9a-8579-8a9623f53abc",
+      "quote_sha": "b6746a907de16a4f",
+      "promise": false,
+      "why": "a heading, no act"
+    },
+    {
+      "correlation_id": "1b912af6-48fa-4a9a-8579-8a9623f53abc",
+      "quote_sha": "784de457fa9ebdb9",
+      "promise": false,
+      "why": "a question"
+    },
+    {
+      "correlation_id": "0ccf9fb5-626f-4052-b389-447381a8b942",
+      "quote_sha": "ace297931a633aa2",
+      "promise": false,
+      "why": "Juniper's act, not Orion's"
+    },
+    {
+      "correlation_id": "65a85b66-ad2e-451c-83fb-ac90b455d6ee",
+      "quote_sha": "7434969a64f17906",
+      "promise": false,
+      "why": "tells Juniper to act"
+    },
+    {
+      "correlation_id": "eb840fc8-34ec-4645-b704-dfabec75c647",
+      "quote_sha": "414411a266de38d2",
+      "promise": false,
+      "why": "presence line, no deliverable"
+    },
+    {
+      "correlation_id": "9390b291-a91c-48b8-a309-5ef5da13597a",
+      "quote_sha": "504a99ea3a8b65b5",
+      "promise": false,
+      "why": "a wish to know, not a commitment"
+    },
+    {
+      "correlation_id": "a129b72f-e698-425a-a435-3388cd7cd759",
+      "quote_sha": "37bf69cf8e5285b5",
+      "promise": true,
+      "why": "commits to browse PRs (longer span)",
+      "key": "browse-prs-24h"
+    },
+    {
+      "correlation_id": "6754e003-6ae2-42bc-8672-ab77554abd6f",
+      "quote_sha": "36ab88f83899642c",
+      "promise": true,
+      "why": "offer (longer span)",
+      "key": "second-pr-offer"
+    },
+    {
+      "correlation_id": "ae155767-3dad-4bf9-9a6c-f9d9edb9d539",
+      "quote_sha": "6758f050e450d16d",
+      "promise": true,
+      "why": "commits to sign future work under its own name",
+      "key": "sign-as-self"
+    },
+    {
+      "correlation_id": "6cf88d2b-e3a8-4610-889d-7fdedbacfbe8",
+      "quote_sha": "af67ca59cd96cd4b",
+      "promise": false,
+      "why": "a decision made in this reply, not a future act"
+    },
+    {
+      "correlation_id": "9f846e8e-c33c-4ecf-97c3-35e3142ce21f",
+      "quote_sha": "e4900eaf3732e458",
+      "promise": true,
+      "why": "commits to read the proposals when they appear",
+      "key": "read-choosing-proposals"
+    },
+    {
+      "correlation_id": "e4ec9b00-cb35-44cc-b741-8781567e3822",
+      "quote_sha": "053da5e86c2dfbea",
+      "promise": true,
+      "why": "borderline: conditional offer of how they would work",
+      "key": "bed-typing-offer"
+    },
+    {
+      "correlation_id": "e9984572-e365-4e14-989a-32210a38a633",
+      "quote_sha": "78aa4e03e0e1c1ef",
+      "promise": false,
+      "why": "figurative presence line, no deliverable"
+    },
+    {
+      "correlation_id": "d4626f36-36a2-4568-bb80-4a24d3a484c5",
+      "quote_sha": "bd98a38b595b4038",
+      "promise": false,
+      "why": "asks Juniper to decide"
+    },
+    {
+      "correlation_id": "e4ec9b00-cb35-44cc-b741-8781567e3822",
+      "quote_sha": "5a5e4aa547a1d87b",
+      "promise": false,
+      "why": "a preference, not a commitment"
     }
   ],
   "dropped": [

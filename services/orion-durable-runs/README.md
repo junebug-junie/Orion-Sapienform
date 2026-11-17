@@ -1113,7 +1113,14 @@ Spec: `docs/superpowers/specs/2026-11-15-orion-integration-and-a-life-design.md`
   at most 2 per organ, highest salience first (NULL last, newest first on ties). Every call writes one
   `experience_shown` row. The read cuts 120 s below the clock (`ingested_at` is a commit's start time, so a
   window still committing is read next time, never skipped). A read with an explicit `since=` is an
-  inspection: stored, but it never moves the organ's cursor.
+  inspection: stored, but it never moves the organ's cursor. `&include=<id>,<id>` (at most 3): rows the reader
+  shows anyway as a need's content (Prime hunger); pinned first, outside the per-organ cap, so a cite is valid.
+- `GET /temporal-self/hunger?organ=<id>` -> `TemporalHungerInputsV1` (integration design Part B, Prime hunger;
+  drives computed in `orion/prime/hunger.py`): other organs' experiences of the last 24 h whose `surprise_nats` is
+  strictly above their own kind's 30-day 90th percentile and that no organ has cited (at most 10, biggest first,
+  with the percentile and count), and Juniper's own messages to Orion in Hub (`chat_history_log` source
+  `hub_orion`, 30 days) with the last one quoted and its `chat_turn` experience id. Read-only: writes no
+  `experience_shown` row. 404 when `TEMPORAL_SELF_NOW_ENABLED=false`. Live 2026-11-16: 82 ms.
 - `POST /temporal-self/now/use` (`ExperienceCitesV1`: `shown_id`, `citing_ref`, `cites`) ->
   `ExperienceUseResultV1`. Cites are checked against the shown row; at most 3 valid ones per shown row,
   across calls (the row is locked while deciding), are stored in `experience_use`; the rest are counted
@@ -1259,7 +1266,12 @@ placement = the cheapest acceptable lane with room; a seat with 0 live slots is 
   0.5 s timeout) returns `None` on any failure and the caller keeps its own gate.
 
 Reads: Redis `orion:physiology:latest`, and `grammar_acts` + `act_downstream_use` (30 days, cached
-`ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC`). Debug: `GET /physiology/reservations`; `/health` ->
+`ORION_PHYSIOLOGY_BID_HISTORY_TTL_SEC`, refreshed in the background so a bid never waits on these reads).
+The 30-day family-weights replay (~2-3 s of pure-Python CPU work) runs in one worker process
+(`app/weights_worker.py`), not in the process that answers bids. Once weights exist, only the background
+refresher starts a replay: after a history refresh, after a personality refresh, or on a new UTC day. A bid
+uses the last weights it has (issue #3382: a replay in a thread held the GIL and pushed bids past the 0.5 s
+client budget). Each bid builds the appetite for its own family only. Debug: `GET /physiology/reservations`; `/health` ->
 `physiology_market`. Off: `ORION_PHYSIOLOGY_BID_ENABLED=false` (the route answers 503). Read-only
 sample against live prices: `scripts/analysis/sample_body_economy_bids.py`.
 

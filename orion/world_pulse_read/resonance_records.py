@@ -2,6 +2,7 @@
 from __future__ import annotations
 import json
 from typing import Any
+from orion.curiosity.self_inquiry import build_lived_answer, newest_answer_per_question
 from orion.curiosity.worldview import CLOSED_STATUSES
 from orion.schemas.reading_resonance import ResonanceNeighborV1
 from orion.world_pulse_read.resonance import PoolDoc
@@ -35,7 +36,8 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
                         "MATCH (s:SelfQuestionMint) WHERE s.text IS NOT NULL RETURN s.question_id AS qid, s.text AS text")
     answers = fk.rows("orion_worldview",
                       "MATCH (a:LivedAnswer) RETURN id(a) AS nid, a.run_id AS run_id, a.question_id AS qid, "
-                      "a.text AS text, a.revises AS revises, a.written_at AS at ORDER BY a.written_at DESC")
+                      "a.text AS text, a.revises AS revises, a.evidence AS evidence, a.written_at AS at "
+                      "ORDER BY a.written_at DESC")
     f_by: dict[str, list[dict[str, Any]]] = {}
     for f in findings:
         if f["text"]:
@@ -47,6 +49,10 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
     for a in answers:
         if a["text"]:
             a_by.setdefault(a["qid"], []).append(a)
+    # Newest first by the same key as newest_answer_per_question: FalkorDB puts a
+    # null written_at FIRST in DESC order, the helper treats it as oldest.
+    for alist in a_by.values():
+        alist.sort(key=lambda a: (_written_at(a.get("at")), str(a.get("run_id") or "")), reverse=True)
     docs: list[PoolDoc] = []
     for p in priors:
         nb = [ResonanceNeighborV1(relation=f"finding_{f['rel'].lower()}", ref_id=str(f["fid"]), text=f["text"][:600])
@@ -59,26 +65,63 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
         docs.append(PoolDoc("self_prior", p["id"], "falkor:orion_worldview:Prior",
                             f"{p['claim']} (status {p['status']}, confidence {p['conf']}, tested {p['tt']}x)",
                             tuple(nb)))
+    current = current_lived_answer_rows(a_by)
     for q in questions:
+        # Neighbours are the current answer and the one before it, never a draft that is not current.
         nb = []
-        for a in a_by.get(q["qid"], [])[:2]:
-            nb.append(ResonanceNeighborV1(relation="lived_answer" + ("_revision" if a.get("revises") else ""),
-                                          ref_id=f"{q['qid']}@{a['run_id']}", text=a["text"][:600]))
+        cur = current.get(q["qid"])
+        if cur is not None:
+            alist = a_by[q["qid"]]
+            for a in alist[alist.index(cur):alist.index(cur) + 2]:
+                nb.append(ResonanceNeighborV1(relation="lived_answer" + ("_revision" if a.get("revises") else ""),
+                                              ref_id=f"{q['qid']}@{a['run_id']}", text=a["text"][:600]))
         docs.append(PoolDoc("lived_question", q["qid"], "falkor:orion_worldview:SelfQuestionMint", q["text"], tuple(nb)))
     qtext = {q["qid"]: q["text"] for q in questions}
     for qid, alist in a_by.items():
-        # Each answer once; its question and the answer it revised are its neighbourhood.
-        for i, a in enumerate(alist):
-            nb = []
-            if qid in qtext:
-                nb.append(ResonanceNeighborV1(relation="answers_question", ref_id=qid, text=qtext[qid][:600]))
-            if i + 1 < len(alist):
-                nb.append(ResonanceNeighborV1(relation="previous_answer", ref_id=f"{qid}@{alist[i + 1]['run_id']}",
-                                              text=alist[i + 1]["text"][:600]))
-            docs.append(PoolDoc("lived_answer", f"{qid}@{a['run_id']}", "falkor:orion_worldview:LivedAnswer",
-                                a["text"], tuple(nb)))
+        # Only the CURRENT answer is a match target (#3396): an article is
+        # compared with what Orion thinks now, not with every view Orion held.
+        # Its question and the answer before it are its neighbourhood.
+        a = current.get(qid)
+        if a is None:
+            continue
+        i = alist.index(a)
+        nb = []
+        if qid in qtext:
+            nb.append(ResonanceNeighborV1(relation="answers_question", ref_id=qid, text=qtext[qid][:600]))
+        if i + 1 < len(alist):
+            nb.append(ResonanceNeighborV1(relation="previous_answer", ref_id=f"{qid}@{alist[i + 1]['run_id']}",
+                                          text=alist[i + 1]["text"][:600]))
+        docs.append(PoolDoc("lived_answer", f"{qid}@{a['run_id']}", "falkor:orion_worldview:LivedAnswer",
+                            a["text"], tuple(nb)))
     pairs = {"findings": findings, "answers": answers, "questions": questions}
     return docs, pairs, priors  # type: ignore[return-value]
+
+
+def _written_at(raw: Any) -> int:
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+def current_lived_answer_rows(a_by: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    """question_id -> the row of Orion's current answer, by the shared rule
+    (`newest_answer_per_question(require_evidence=True)`): newest with evidence.
+    A question with only evidence-less drafts has none, so it offers no answer."""
+    out: dict[str, dict[str, Any]] = {}
+    for qid, alist in a_by.items():
+        by_run = {}
+        built = []
+        for row in alist:
+            answer = build_lived_answer({"run_id": row.get("run_id"), "question_id": qid, "text": row.get("text"),
+                                         "evidence": row.get("evidence"), "written_at": row.get("at")})
+            if answer is not None:
+                by_run.setdefault(answer.run_id, row)
+                built.append(answer)
+        pick = newest_answer_per_question(built, require_evidence=True).get(qid)
+        if pick is not None:
+            out[qid] = by_run[pick.run_id]
+    return out
 
 
 def atlas_hydrate(fk: Falkor, node_id: str) -> tuple[PoolDoc, set[str]] | None:

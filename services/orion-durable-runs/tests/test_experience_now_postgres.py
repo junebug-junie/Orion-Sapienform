@@ -131,7 +131,10 @@ def test_lifecycle_on_postgres(monkeypatch):
         clock = {"now": t0}
         store = ChronicleStore(pool)
         ch = Chronicler(store=store, reader=SourceReader(pool, TZ),
-                        cfg=ChronicleConfig(reducer=ReducerConfig(tz_name=TZ), read_lag_sec=300.0, backfill_days=0),
+                        # backfill_days=1: the seed starts 3 h before the real clock, which is the previous LOCAL day
+                        # (America/Denver) whenever the test runs 07:00-10:00 UTC. With 0 the chronicle starts at
+                        # today's local midnight and never reads those rows (CI flake, 2026-11-16 10:00 UTC).
+                        cfg=ChronicleConfig(reducer=ReducerConfig(tz_name=TZ), read_lag_sec=300.0, backfill_days=1),
                         now=lambda: clock["now"],
                         # The rule under test is set here: the live registry gives reading_turn no magnitude.
                         salience=SalienceBook({**load_organs().magnitude_rule, "reading_turn": "surprise_nats"},

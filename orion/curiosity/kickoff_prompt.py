@@ -1040,27 +1040,38 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "you are looking at, MATCH it on its own first and look -- the ids you "
         "hold are all on the menu.",
         "",
-        "  TESTING ONE you already hold -- update it in place, and move "
-        "times_tested whether or not the confidence moved:",
-        '    MATCH (p:Prior {prior_id: "..."}) SET p.status = "revised", '
-        "p.confidence = 0.72,",
-        "      p.times_tested = p.times_tested + 1, p.last_tested_at = "
-        '"<iso>", p.last_run_id = "<RUN_ID>"',
+        "  TESTING ONE you already hold -- ONE command. It updates the claim "
+        "and counts the test, ONCE PER RUN, whether or not the confidence moved:",
+        '    MATCH (p:Prior {prior_id: "..."}) SET',
+        "      p.times_tested = coalesce(p.times_tested, 0) + CASE WHEN "
+        'coalesce(p.last_run_id, "") <> "<RUN_ID>" THEN 1 ELSE 0 END,',
+        '      p.status = "revised", p.confidence = 0.72, p.last_tested_at = "<iso>", '
+        'p.last_run_id = "<RUN_ID>"',
+        "",
+        "  times_tested counts RUNS that tested the claim, not commands: "
+        "testing it again later in this run, or sending the same command twice, "
+        "leaves it where it is (the CASE reads last_run_id as it was before this "
+        "SET). Keep all of it in one command: an update without the count, or a "
+        "count without last_run_id, makes your record say you tested a claim "
+        "that your count says you did not.",
         "",
         "  AND RECORD WHAT IT WAS, in the same breath -- the SET above "
         "overwrites the old confidence and nothing else remembers it:",
-        '    CREATE (:PriorRevision {prior_id: "...", run_id: "<RUN_ID>",',
+        '    MERGE (v:PriorRevision {prior_id: "...", run_id: "<RUN_ID>",',
         "      from_confidence: 0.85, to_confidence: 0.72,",
-        '      from_status: "open", to_status: "revised", '
-        "written_at: timestamp()})",
+        '      from_status: "open", to_status: "revised"})',
+        "    ON CREATE SET v.written_at = timestamp()",
         "",
         "  This is the only record of a claim MOVING rather than of where it "
         "landed. Without it your own history reads as though every belief you "
-        "hold arrived at its current confidence and stayed there.",
+        "hold arrived at its current confidence and stayed there. The MERGE "
+        "key is the whole move, so a claim that moves twice in one run keeps "
+        "both steps, and the same move sent twice is written once. Keep "
+        "written_at in ON CREATE SET, never inside the braces.",
         "",
-        "  Inconclusive is a real answer: bump times_tested, leave confidence "
-        "where it was, and say why in a :Finding. Three of those and the claim "
-        "is probably not answerable with what you can reach.",
+        "  Inconclusive is a real answer: run the counting command, leave "
+        "confidence where it was, and say why in a :Finding. Three runs like "
+        "that and the claim is probably not answerable with what you can reach.",
         "",
         "  ONLY TWO STATUSES CLOSE A PRIOR: 'refuted' and "
         "'retired_unresolvable'. 'supported' and 'revised' record what a test "
@@ -1093,9 +1104,31 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "Coining a near-copy of one you already hold splits its links across "
         "two nodes, and neither one grows.",
         "",
-        "  A FINDING that supports or contradicts something:",
-        '    CREATE (:Finding {finding_id: "...", text: "...", evidence: '
-        '"<ids, queries, rows you actually looked at>", run_id: "<RUN_ID>"})',
+        "  A FINDING that supports or contradicts something. MERGE on "
+        "finding_id alone, the same rule as a prior:",
+        '    MERGE (f:Finding {finding_id: "<something unique>"})',
+        '    ON CREATE SET f.text = "...", f.evidence = '
+        '"<ids, queries, rows you actually looked at>", f.run_id = "<RUN_ID>"',
+        "",
+        "  If that id already exists this writes NOTHING and no error: your "
+        "new finding is lost and the edge below joins the OLD one. A new "
+        "finding needs a new id.",
+        "",
+        "  AN ID IS NEVER EMPTY AND NEVER A PLACEHOLDER. `finding_id: \"\"` (or "
+        "the literal `...` or `<something unique>` from this page) is a real "
+        "value: the first MERGE makes a node with it and every later one binds "
+        "that same node, so unrelated findings fuse into one and lose their "
+        "text. A missing id (null) is refused with an error. Use your run id "
+        "plus a short slug: `<RUN_ID>-why-x-fails`. The same rule holds for "
+        "prior_id and concept_id.",
+        "",
+        "  IF A COMMAND PRINTS AN ERROR, it wrote nothing -- one command is all "
+        "or nothing -- and the commands before it still stand. redis-cli exits "
+        "0 even then, so read the output, not the exit code. A `unique "
+        "constraint violation on node of type Prior` means that prior_id "
+        "already exists: MATCH it instead. Fix and resend only the failed "
+        "command. Every write above is safe to send again; a :Hop or "
+        ":TurnOutcome is not, so do not resend one that printed no error.",
         "",
         "  THEN CONNECT IT, in the same breath. A finding that points at "
         "nothing is a note; a finding joined to the claim it bears on is "

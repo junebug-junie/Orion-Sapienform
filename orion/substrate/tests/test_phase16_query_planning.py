@@ -12,18 +12,6 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateTemporalWindowV1,
 )
 from orion.core.schemas.substrate_consolidation import GraphConsolidationRequestV1
-from orion.graph_cognition.brief import build_metacog_perception_brief
-from orion.graph_cognition.interpreters import (
-    CoherenceAssessmentV1,
-    ConceptDriftSignalV1,
-    ContradictionCandidateSetV1,
-    GoalPressureStateV1,
-    GraphCognitionReportV1,
-    IdentityConflictSignalV1,
-    SocialContinuityAssessmentV1,
-)
-from orion.graph_cognition.views import build_graph_views_from_store
-from orion.graph_cognition.evidence import EvidenceSpanV1, SignalEvidenceBundleV1
 from orion.substrate.consolidation import GraphConsolidationEvaluator
 from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator
 from orion.substrate.query_planning import SubstrateQueryPlanner, SubstrateSemanticReadCoordinator
@@ -106,23 +94,11 @@ def _seed_store(store: InMemorySubstrateGraphStore) -> None:
     store.upsert_edge(identity_key=f"{concept.node_id}|contradicts|{contradiction.node_id}", edge=edge)
 
 
-def _report() -> GraphCognitionReportV1:
-    evidence = SignalEvidenceBundleV1(spans=(EvidenceSpanV1(node_ids=("node-concept",), edge_ids=(), reason="test", weight=1.0),), truncated=False, degraded=False, notes=())
-    return GraphCognitionReportV1(
-        coherence=CoherenceAssessmentV1(score=0.7, confidence=0.8, evidence=evidence, notes=()),
-        identity_conflict=IdentityConflictSignalV1(conflict_score=0.2, active=False, confidence=0.7, evidence=evidence),
-        goal_pressure=GoalPressureStateV1(pressure_score=0.82, stalled_goal_count=1, competing_goal_density=0.2, confidence=0.8, evidence=evidence),
-        social_continuity=SocialContinuityAssessmentV1(continuity_score=0.6, confidence=0.7, degraded=False, evidence=evidence),
-        concept_drift=ConceptDriftSignalV1(drift_score=0.6, active=True, confidence=0.7, evidence=evidence),
-        contradiction_candidates=ContradictionCandidateSetV1(candidates=(), confidence=0.7, evidence=evidence),
-    )
-
-
 def test_query_planner_is_bounded_and_deterministic() -> None:
-    first = SubstrateQueryPlanner.graph_view_basis(subject_ref="orion", max_nodes=32, max_edges=64)
-    second = SubstrateQueryPlanner.graph_view_basis(subject_ref="orion", max_nodes=32, max_edges=64)
+    first = SubstrateQueryPlanner.curiosity_seed(max_nodes=32, max_edges=64)
+    second = SubstrateQueryPlanner.curiosity_seed(max_nodes=32, max_edges=64)
     assert first.signature == second.signature
-    assert len(first.steps) == 4
+    assert len(first.steps) == 3
     assert all(step.params.get("limit_nodes", 1) <= 32 for step in first.steps if "limit_nodes" in step.params)
 
 
@@ -142,20 +118,9 @@ def test_query_coordinator_reuses_identical_reads_with_explicit_meta() -> None:
     assert store.calls["contradiction_region"] == 1
 
 
-def test_graph_cognition_and_consumers_surface_planning_metadata() -> None:
+def test_consumers_surface_planning_metadata() -> None:
     store = CountingSemanticStore()
     _seed_store(store)
-
-    _, basis, _ = build_graph_views_from_store(
-        store=store,
-        now=datetime.now(timezone.utc),
-        scope="orion",
-        subject_ref="orion",
-        max_nodes=16,
-        max_edges=16,
-    )
-    assert basis.plan_kind == "graph_view_basis"
-    assert basis.duration_ms >= 0.0
 
     consolidation = GraphConsolidationEvaluator(store=store).consolidate(
         request=GraphConsolidationRequestV1(
@@ -171,7 +136,5 @@ def test_graph_cognition_and_consumers_surface_planning_metadata() -> None:
     curiosity = FrontierCuriosityEvaluator(store=store, max_focal_nodes=4, max_focal_edges=4).evaluate(
         anchor_scope="orion",
         subject_ref="orion",
-        cognition_report=_report(),
-        perception_brief=build_metacog_perception_brief(_report()),
     )
     assert any(note.startswith("semantic_plan:") for note in curiosity.notes)

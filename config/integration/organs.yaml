@@ -127,7 +127,9 @@ organs:
   prime:
     # prime_thought has no magnitude yet: the act ledger's surprisal for a Prime thought drifts by
     # 1e-6 per thought (0.000454 -> 0.000443 over 11-14..15) whatever the thought did, so it ranks by
-    # nothing. Unscored items rank after scored ones, newest first. Part B (hunger) gives Prime content.
+    # nothing. Unscored items rank after scored ones, newest first. Part B (hunger, orion/prime/hunger.py):
+    # Prime reads GET /temporal-self/hunger (no new kind, family or channel) and pins a need's experience into
+    # its now (include=); a need-woken thought's label starts "woke: need:<name> <ref>".
     temporal_sources: [prime_thought]
     families: [prime]
     reads_now: services/orion-mind/app/prime_loop.py

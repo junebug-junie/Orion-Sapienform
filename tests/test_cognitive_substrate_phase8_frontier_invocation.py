@@ -14,18 +14,6 @@ from orion.core.schemas.cognitive_substrate import (
     SubstrateTemporalWindowV1,
 )
 from orion.core.schemas.frontier_expansion import FrontierDeltaItemV1, FrontierExpansionResponseV1
-from orion.graph_cognition.brief import MetacogPerceptionBriefV1
-from orion.graph_cognition.evidence import EvidenceSpanV1, SignalEvidenceBundleV1
-from orion.graph_cognition.interpreters import (
-    CoherenceAssessmentV1,
-    ConceptDriftSignalV1,
-    ContradictionCandidateSetV1,
-    ContradictionCandidateV1,
-    GoalPressureStateV1,
-    GraphCognitionReportV1,
-    IdentityConflictSignalV1,
-    SocialContinuityAssessmentV1,
-)
 from orion.substrate import FrontierExpansionService, FrontierLandingEvaluator, InMemorySubstrateGraphStore, SubstrateGraphMaterializer
 from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator, FrontierCuriosityOrchestrator
 
@@ -40,37 +28,6 @@ def _prov() -> SubstrateProvenanceV1:
         source_kind="test",
         source_channel="orion:test",
         producer="pytest",
-    )
-
-
-def _evidence() -> SignalEvidenceBundleV1:
-    return SignalEvidenceBundleV1(spans=(EvidenceSpanV1(node_ids=("n1",), edge_ids=(), reason="test", weight=1.0),), truncated=False, degraded=False, notes=())
-
-
-def _report(*, contradiction_count: int = 1, drift_active: bool = True, pressure: float = 0.8, identity_conflict: bool = False) -> GraphCognitionReportV1:
-    contradiction_candidates = tuple(
-        ContradictionCandidateV1(node_id=f"contra-{idx}", severity=0.8, pressure=0.7) for idx in range(contradiction_count)
-    )
-    return GraphCognitionReportV1(
-        coherence=CoherenceAssessmentV1(score=0.4, confidence=0.8, evidence=_evidence(), notes=()),
-        identity_conflict=IdentityConflictSignalV1(conflict_score=0.6 if identity_conflict else 0.2, active=identity_conflict, confidence=0.7, evidence=_evidence()),
-        goal_pressure=GoalPressureStateV1(pressure_score=pressure, stalled_goal_count=1, competing_goal_density=0.3, confidence=0.75, evidence=_evidence()),
-        social_continuity=SocialContinuityAssessmentV1(continuity_score=0.4, confidence=0.7, degraded=False, evidence=_evidence()),
-        concept_drift=ConceptDriftSignalV1(drift_score=0.7 if drift_active else 0.2, active=drift_active, confidence=0.8, evidence=_evidence()),
-        contradiction_candidates=ContradictionCandidateSetV1(candidates=contradiction_candidates, confidence=0.8, evidence=_evidence()),
-    )
-
-
-def _brief(*, priority: str = "stabilize") -> MetacogPerceptionBriefV1:
-    return MetacogPerceptionBriefV1(
-        top_tensions=("identity_conflict",),
-        top_stabilizers=("coherence",),
-        overall_priority=priority,
-        recommended_verbs=("deconflict", "prioritize", "repair"),
-        confidence=0.8,
-        degraded=False,
-        supporting_evidence=_evidence(),
-        notes_for_router=(),
     )
 
 
@@ -111,10 +68,9 @@ def _build_store() -> InMemorySubstrateGraphStore:
 )
 def test_signal_derivation_and_task_selection_are_deterministic() -> None:
     evaluator = FrontierCuriosityEvaluator(store=_build_store())
-    result = evaluator.evaluate(anchor_scope="orion", subject_ref="entity:orion", cognition_report=_report(), perception_brief=_brief())
+    result = evaluator.evaluate(anchor_scope="orion", subject_ref="entity:orion")
 
     signal_types = {signal.signal_type for signal in result.signals}
-    assert "contradiction_hotspot" in signal_types
     assert "ontology_sparse_region" not in signal_types
     assert any(signal.task_type_candidate == "evidence_gap_scan" for signal in result.signals)
     assert result.decision.outcome in {"invoke", "defer", "noop", "operator_only", "blocked"}
@@ -125,8 +81,6 @@ def test_self_relationship_cases_are_operator_only() -> None:
     result = evaluator.evaluate(
         anchor_scope="orion",
         subject_ref="entity:orion",
-        cognition_report=_report(identity_conflict=True, pressure=0.3),
-        perception_brief=_brief(priority="stabilize"),
         operator_requested=False,
     )
     if result.decision.target_zone == "self_relationship_graph":
@@ -135,7 +89,7 @@ def test_self_relationship_cases_are_operator_only() -> None:
 
 def test_region_selection_is_bounded_and_inspectable() -> None:
     evaluator = FrontierCuriosityEvaluator(store=_build_store(), max_focal_nodes=2, max_focal_edges=2)
-    result = evaluator.evaluate(anchor_scope="orion", subject_ref="entity:orion", cognition_report=_report(), perception_brief=_brief())
+    result = evaluator.evaluate(anchor_scope="orion", subject_ref="entity:orion")
     if result.plan is not None:
         assert len(result.plan.selected_node_refs) <= 2
         assert len(result.plan.selected_edge_refs) <= 2
@@ -151,8 +105,6 @@ def test_integration_flows_into_phase6_and_phase7_paths() -> None:
     result = orchestrator.run(
         anchor_scope="orion",
         subject_ref="entity:orion",
-        cognition_report=_report(),
-        perception_brief=_brief(),
         operator_requested=True,
     )
 
@@ -168,8 +120,6 @@ def test_low_value_region_can_noop_without_broad_runtime_expansion() -> None:
     result = evaluator.evaluate(
         anchor_scope="orion",
         subject_ref="entity:orion",
-        cognition_report=_report(contradiction_count=0, drift_active=False, pressure=0.2),
-        perception_brief=_brief(priority="advance"),
         operator_requested=False,
     )
     assert result.decision.outcome in {"noop", "defer", "invoke", "operator_only", "blocked"}
@@ -212,8 +162,6 @@ def test_concepts_without_ontology_branches_emit_no_ontology_sparse_region() -> 
     result = evaluator.evaluate(
         anchor_scope="orion",
         subject_ref="entity:orion",
-        cognition_report=_report(contradiction_count=0, drift_active=False, pressure=0.2),
-        perception_brief=_brief(priority="advance"),
         operator_requested=False,
     )
     assert [s.signal_type for s in result.signals] == []
@@ -230,3 +178,36 @@ def test_retired_kinds_are_not_in_the_contracts() -> None:
 
     assert "ontology_sparse_region" not in get_args(FrontierInvocationSignalTypeV1)
     assert "ontology_expand" not in get_args(FrontierTaskTypeV1)
+
+
+def test_report_driven_branches_are_retired() -> None:
+    """#3393 Patch F: the contradiction, drift, goal-pressure and identity-conflict
+    branches read a hardcoded "all calm" report and never fired. A store that DOES
+    hold contradiction and high-pressure goal nodes must still produce none of them,
+    and evaluate() no longer accepts the report arguments at all."""
+    import inspect
+
+    params = inspect.signature(FrontierCuriosityEvaluator.evaluate).parameters
+    assert "cognition_report" not in params and "perception_brief" not in params
+    run_params = inspect.signature(FrontierCuriosityOrchestrator.run).parameters
+    assert "cognition_report" not in run_params and "perception_brief" not in run_params
+
+    result = FrontierCuriosityEvaluator(store=_build_store()).evaluate(anchor_scope="orion", subject_ref="entity:orion")
+    signal_types = {signal.signal_type for signal in result.signals}
+    assert not signal_types & {"contradiction_hotspot", "concept_instability", "unresolved_pressure_region"}
+    assert not any(s.task_type_candidate == "self_or_relationship_hypothesis" for s in result.signals)
+
+
+def test_retired_report_signal_types_are_not_in_the_contract() -> None:
+    from typing import get_args
+
+    from orion.core.schemas.frontier_curiosity import FrontierInvocationSignalTypeV1
+
+    retired = {"contradiction_hotspot", "concept_instability", "unresolved_pressure_region"}
+    assert not retired & set(get_args(FrontierInvocationSignalTypeV1))
+
+
+def test_graph_cognition_package_is_gone() -> None:
+    import importlib.util
+
+    assert importlib.util.find_spec("orion.graph_cognition") is None

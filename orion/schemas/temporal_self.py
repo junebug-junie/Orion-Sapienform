@@ -618,3 +618,46 @@ class ExperienceUseRateV1(_Forbid):
     registered_organs: int = 0
     organs: list[OrganUseV1] = Field(default_factory=list)
     unregistered_kinds: dict[str, int] = Field(default_factory=dict)
+
+
+# --- Prime hunger inputs (integration design Part B, patch 5) ----------------------------------
+# orion-durable-runs GET /temporal-self/hunger?organ=<id>: the two inputs of Prime's needs that live in
+# Postgres (orion/prime/hunger.py computes the drives; this is only the read). Read-only: no
+# experience_shown row is written, so polling it is never a "shown" now. HTTP only, no bus channel.
+
+HUNGER_SURPRISES_CAP = 10
+HUNGER_JUNIPER_TIMES_CAP = 2000
+HUNGER_PROMPT_CAP = 240
+
+
+class HungerSurpriseV1(_Forbid):
+    """One experience of another organ whose ``surprise_nats`` is strictly above its own source kind's
+    30-day 90th percentile, and that no organ has cited (``experience_use``)."""
+
+    event_id: str
+    organ: str
+    source_kind: TemporalSourceKind
+    label: str = Field(default="", max_length=NOW_LABEL_MAX)
+    occurred_at: AwareDatetime
+    surprise_nats: float = Field(ge=0.0)
+    source_p90: float = Field(ge=0.0)  # the kind's 90th percentile over the 30 days before as_of
+    source_n: int = Field(ge=0)  # how many of the kind's events carried surprise_nats in those 30 days
+
+
+class HungerJuniperV1(_Forbid):
+    """Juniper's own messages to Orion in Hub (``chat_history_log`` source ``hub_orion``, prompt not blank),
+    30 days, oldest first; and the last one, quoted, with its Temporal Self experience id when ingested."""
+
+    message_times: list[AwareDatetime] = Field(default_factory=list, max_length=HUNGER_JUNIPER_TIMES_CAP)
+    last_chat_id: str | None = None
+    last_prompt: str = Field(default="", max_length=HUNGER_PROMPT_CAP)
+    # temporal_self_event.event_id of the chat_turn row for the last message; None until the chronicle ingests it.
+    last_event_id: str | None = None
+
+
+class TemporalHungerInputsV1(_Forbid):
+    schema_version: Literal["temporal_self.hunger_inputs.v1"] = "temporal_self.hunger_inputs.v1"
+    organ: str
+    as_of: AwareDatetime
+    surprises: list[HungerSurpriseV1] = Field(default_factory=list, max_length=HUNGER_SURPRISES_CAP)
+    juniper: HungerJuniperV1 = Field(default_factory=HungerJuniperV1)

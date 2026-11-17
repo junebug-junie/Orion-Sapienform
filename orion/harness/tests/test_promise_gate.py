@@ -44,6 +44,9 @@ REPLY = (
 FIRM = "I'll hold the deep read until the pipeline digests it, then pull it back."
 OFFER = "If you want, I'll re-read it the next time I'm cut."
 USER = "How is the paper read going?"
+# A completion test, as the judge writes it (rule 0b keeps only items with one).
+ACT = "bring the deep read back"
+DONE_WHEN = "a later reply gives Juniper the digested deep read"
 
 JUDGEMENT = {
     "imperative": "Report the read status.",
@@ -83,7 +86,7 @@ def _ctx(**kw: object) -> dict:
 
 def test_quote_not_in_reply_is_dropped_and_real_quote_survives() -> None:
     paraphrase = "I will bring the deep read back once the pipeline has digested it."
-    reflection = _reflection(promises_made=[PromiseV1(quote=paraphrase, doer="orion"), PromiseV1(quote=FIRM, doer="orion")])
+    reflection = _reflection(promises_made=[PromiseV1(force="commits", quote=paraphrase, doer="orion", done_when=DONE_WHEN), PromiseV1(force="commits", quote=FIRM, doer="orion", done_when=DONE_WHEN)])
     result = gate_promises(reflection, reply_text=REPLY, enabled=True)
     assert [p.quote for p in result.reflection.promises_made] == [FIRM]
     assert result.dropped_not_in_text == [paraphrase]
@@ -101,7 +104,7 @@ def test_quote_match_tolerates_whitespace_and_curly_quotes_only() -> None:
 
 
 def test_short_quote_is_counted_as_too_short_not_as_missing() -> None:
-    result = gate_promises(_reflection(promises_made=[PromiseV1(quote="I'll do it.", doer="orion")]),
+    result = gate_promises(_reflection(promises_made=[PromiseV1(force="commits", quote="I'll do it.", doer="orion", done_when=DONE_WHEN)]),
                            reply_text="Sure. I'll do it.", enabled=True)
     assert result.reflection.promises_made == []
     assert result.dropped_too_short == 1 and result.dropped_not_in_text == []
@@ -109,8 +112,8 @@ def test_short_quote_is_counted_as_too_short_not_as_missing() -> None:
 
 def test_over_long_duplicate_and_over_cap_quotes_are_dropped() -> None:
     long_reply = "x" * 300
-    reflection = _reflection(promises_made=[PromiseV1(quote=long_reply, doer="orion"), PromiseV1(quote=FIRM, doer="orion"),
-                                            PromiseV1(quote=" " + FIRM, doer="orion")])
+    reflection = _reflection(promises_made=[PromiseV1(force="commits", quote=long_reply, doer="orion", done_when=DONE_WHEN), PromiseV1(force="commits", quote=FIRM, doer="orion", done_when=DONE_WHEN),
+                                            PromiseV1(force="commits", quote=" " + FIRM, doer="orion", done_when=DONE_WHEN)])
     result = gate_promises(reflection, reply_text=long_reply + " " + REPLY, enabled=True)
     assert [p.quote for p in result.reflection.promises_made] == [FIRM]
     assert result.dropped_too_long == 1
@@ -120,8 +123,8 @@ def test_over_long_duplicate_and_over_cap_quotes_are_dropped() -> None:
 async def test_judge_paraphrase_never_reaches_the_reflection() -> None:
     async def _judge(_req: object) -> dict[str, object]:
         return {"final_text": json.dumps({**JUDGEMENT, "promises_made": [
-            {"quote": "I promise to finish the paper tomorrow.", "offer": False, "doer": "orion"},
-            {"quote": FIRM, "offer": False, "doer": "orion"}]})}
+            {"quote": "I promise to finish the paper tomorrow.", "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN},
+            {"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]})}
 
     reflection, quick, _ = await run_finalize_reflection(
         correlation_id="c-gate", draft_text=REPLY, thought=make_thought(repair_pressure_level=0.9),
@@ -134,7 +137,7 @@ async def test_judge_paraphrase_never_reaches_the_reflection() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("bad", [
-    {"promises_made": ["not an object", {"offer": True, "doer": "orion"}], "promises_kept": [7]},
+    {"promises_made": ["not an object", {"offer": True, "doer": "orion", "act": ACT, "done_when": DONE_WHEN}], "promises_kept": [7]},
     {"promises_made": 7, "offers_accepted": True, "promises_kept": "act_1"},
 ])
 async def test_malformed_promise_list_does_not_sink_the_verdict(bad: dict) -> None:
@@ -154,7 +157,7 @@ async def test_malformed_promise_list_does_not_sink_the_verdict(bad: dict) -> No
 def test_string_false_offer_is_not_an_offer() -> None:
     from orion.harness.promise_gate import coerce_promise_fields
 
-    made = coerce_promise_fields({"promises_made": [{"quote": FIRM, "offer": "false", "doer": "orion"}]})["promises_made"]
+    made = coerce_promise_fields({"promises_made": [{"quote": FIRM, "offer": "false", "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]})["promises_made"]
     assert made[0].offer is False
 
 
@@ -168,7 +171,7 @@ def test_kept_entry_that_is_not_an_open_promise_is_dropped() -> None:
 
 def test_regate_against_final_text_drops_a_promise_repair_removed() -> None:
     """The chain gates again on the text Juniper saw; accepted offers and kept ids survive."""
-    reflection = _reflection(promises_made=[PromiseV1(quote=FIRM, doer="orion")], offers_accepted=[OFFER],
+    reflection = _reflection(promises_made=[PromiseV1(force="commits", quote=FIRM, doer="orion", done_when=DONE_WHEN)], offers_accepted=[OFFER],
                              promises_kept=["act_open"])
     repaired = "The read is still queued."
     result = gate_promises(reflection, reply_text=repaired, enabled=True,
@@ -195,9 +198,9 @@ REAL = "I'll compare the two runs tomorrow and tell you which one drifted."
 async def test_forecast_and_ask_are_dropped_and_the_real_promise_is_kept() -> None:
     async def _judge(_req: object) -> dict[str, object]:
         return {"final_text": json.dumps({**JUDGEMENT, "promises_made": [
-            {"quote": FORECAST, "offer": False, "doer": "a_system"},
-            {"quote": ASK, "offer": True, "doer": "juniper"},
-            {"quote": REAL, "offer": False, "doer": "orion"}]})}
+            {"quote": FORECAST, "offer": False, "force": "commits", "doer": "a_system", "act": ACT, "done_when": DONE_WHEN},
+            {"quote": ASK, "offer": True, "force": "commits", "doer": "juniper", "act": ACT, "done_when": DONE_WHEN},
+            {"quote": REAL, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]})}
 
     reflection, _, _ = await run_finalize_reflection(
         correlation_id="c-doer", draft_text=DOER_REPLY, thought=make_thought(repair_pressure_level=0.9),
@@ -209,8 +212,8 @@ async def test_forecast_and_ask_are_dropped_and_the_real_promise_is_kept() -> No
 
 def test_gate_reports_what_it_dropped_for_the_doer() -> None:
     reflection = _reflection(promises_made=[
-        PromiseV1(quote=FORECAST, doer="a_system"), PromiseV1(quote=ASK, offer=True, doer="juniper"),
-        PromiseV1(quote=REAL, doer="someone_else"), PromiseV1(quote=REAL, doer="orion")])
+        PromiseV1(force="commits", quote=FORECAST, doer="a_system", done_when=DONE_WHEN), PromiseV1(force="commits", quote=ASK, offer=True, doer="juniper", done_when=DONE_WHEN),
+        PromiseV1(force="commits", quote=REAL, doer="someone_else", done_when=DONE_WHEN), PromiseV1(force="commits", quote=REAL, doer="orion", done_when=DONE_WHEN)])
     result = gate_promises(reflection, reply_text=DOER_REPLY, enabled=True)
     assert [p.quote for p in result.reflection.promises_made] == [REAL]
     assert result.dropped_not_orion == [("a_system", FORECAST), ("juniper", ASK), ("someone_else", REAL)]
@@ -232,8 +235,8 @@ def test_missing_or_unknown_doer_fails_closed(doer: object) -> None:
 
 def test_non_orion_items_do_not_use_up_the_cap() -> None:
     """Dropped before the cap: three forecasts listed first must not crowd out the promise."""
-    reflection = _reflection(promises_made=[PromiseV1(quote=FORECAST, doer="a_system")] * 3
-                             + [PromiseV1(quote=REAL, doer="orion")])
+    reflection = _reflection(promises_made=[PromiseV1(force="commits", quote=FORECAST, doer="a_system", done_when=DONE_WHEN)] * 3
+                             + [PromiseV1(force="commits", quote=REAL, doer="orion", done_when=DONE_WHEN)])
     result = gate_promises(reflection, reply_text=DOER_REPLY, enabled=True)
     assert [p.quote for p in result.reflection.promises_made] == [REAL]
     assert result.dropped_over_cap == 0
@@ -247,7 +250,8 @@ def test_schema_requires_a_doer_from_the_closed_set_and_the_prompt_defines_each(
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": REAL, "offer": False}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": REAL, "offer": False, "doer": "me"}]},
+        jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": REAL, "offer": False, "force": "commits", "doer": "me",
+                                                             "act": ACT, "done_when": DONE_WHEN}]},
                             schema)
     rendered = _render(_ctx())
     section = rendered.split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
@@ -256,10 +260,144 @@ def test_schema_requires_a_doer_from_the_closed_set_and_the_prompt_defines_each(
     assert 'Plain code keeps only items with doer "orion".' in section
 
 
+# --- rule 0b: a promise has a completion that could fail ---------------------------------
+
+PRESENCE_REPLY = (
+    "Good luck with the move. I'm around all evening if anything comes up. "
+    "I'll compare the two runs tomorrow and tell you which one drifted. "
+    "Send me the log when it finishes, so it should finish overnight."
+)
+PRESENCE = "I'm around all evening if anything comes up."
+
+
+@pytest.mark.asyncio
+async def test_presence_line_is_dropped_real_promise_kept_forecast_and_ask_still_dropped() -> None:
+    """Orion is the subject of the presence line, so the doer rule keeps it; the judge finds
+    no completion that could fail (done_when null) and rule 0b drops it."""
+    async def _judge(_req: object) -> dict[str, object]:
+        return {"final_text": json.dumps({**JUDGEMENT, "promises_made": [
+            {"quote": PRESENCE, "offer": False, "force": "commits", "doer": "orion", "act": "stay available", "done_when": None},
+            {"quote": REAL, "offer": False, "force": "commits", "doer": "orion", "act": "compare the two runs",
+             "done_when": "a reply names which of the two runs drifted"},
+            {"quote": ASK, "offer": False, "force": "commits", "doer": "juniper", "act": "send the log", "done_when": "the log arrives"},
+            {"quote": FORECAST, "offer": False, "force": "commits", "doer": "a_system", "act": "finish", "done_when": None}]})}
+
+    reflection, _, _ = await run_finalize_reflection(
+        correlation_id="c-presence", draft_text=PRESENCE_REPLY, thought=make_thought(repair_pressure_level=0.9),
+        substrate_appraisal=make_appraisal(surprise_level=0.5), repair_overlay=make_repair_overlay(),
+        user_message=USER, cortex_client=_judge)
+    assert [p.quote for p in reflection.promises_made] == [REAL]
+    kept = reflection.promises_made[0]
+    assert (kept.act, kept.done_when) == ("compare the two runs", "a reply names which of the two runs drifted")
+    assert counted_promise_quotes(reflection) == [REAL]
+
+
+def test_act_and_done_when_are_cut_to_the_quote_cap() -> None:
+    from orion.harness.promise_gate import coerce_promise_fields
+    from orion.schemas.harness_finalize import PROMISE_QUOTE_MAX_CHARS
+
+    made = coerce_promise_fields({"promises_made": [{"quote": REAL, "offer": False, "force": "commits",
+                                                     "doer": "orion", "act": "a" * 900, "done_when": "d" * 900}]})
+    item = made["promises_made"][0]
+    assert len(item.act) == len(item.done_when) == PROMISE_QUOTE_MAX_CHARS
+
+
+@pytest.mark.parametrize("done_when", [None, "", "   ", "n/a", "none", 3])
+def test_missing_or_placeholder_completion_fails_closed(done_when: object) -> None:
+    from orion.harness.promise_gate import coerce_promise_fields
+
+    item: dict[str, object] = {"quote": REAL, "offer": False, "force": "commits", "doer": "orion", "act": "compare"}
+    if done_when is not None:
+        item["done_when"] = done_when
+    made = coerce_promise_fields({"promises_made": [item]})["promises_made"]
+    result = gate_promises(_reflection(promises_made=made), reply_text=DOER_REPLY, enabled=True)
+    assert result.reflection.promises_made == [] and result.dropped_no_completion == [REAL]
+    assert result.dropped_total == 1
+
+
+def test_presence_lines_do_not_use_up_the_cap() -> None:
+    reflection = _reflection(promises_made=[PromiseV1(force="commits", quote=PRESENCE, doer="orion")] * 3
+                             + [PromiseV1(force="commits", quote=REAL, doer="orion", done_when=DONE_WHEN)])
+    result = gate_promises(reflection, reply_text=PRESENCE_REPLY, enabled=True)
+    assert [p.quote for p in result.reflection.promises_made] == [REAL]
+    assert result.dropped_over_cap == 0 and len(result.dropped_no_completion) == 3
+
+
+def test_schema_requires_act_and_done_when_and_the_prompt_defines_them() -> None:
+    schema = finalize_reflect_json_schema(True)
+    item = schema["properties"]["promises_made"]["items"]
+    assert {"act", "done_when"} <= set(item["required"])
+    base = {"quote": REAL, "offer": False, "force": "commits", "doer": "orion", "act": "compare"}
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{**base, "done_when": None}]}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{**base, "done_when": DONE_WHEN}]}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**JUDGEMENT, "promises_made": [base]}, schema)
+    section = _render(_ctx()).split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
+    assert "- act:" in section and "- done_when:" in section
+    assert "Plain code\n  keeps only items with a done_when." in section
+
+
+# --- rule 0a: the line must commit -----------------------------------------------------------
+
+SPEECH_REPLY = (
+    "I filed the trace in the queue. Best to try the small model first. I'd enjoy trying "
+    "the camera sometime. I'll compare the two runs tomorrow and tell you which one drifted."
+)
+
+
+@pytest.mark.asyncio
+async def test_report_suggestion_and_wish_are_dropped_and_the_commitment_kept() -> None:
+    """All four lines have Orion as the doer; only the one that binds Orion survives."""
+    def _item(quote: str, force: str) -> dict[str, object]:
+        return {"quote": quote, "offer": False, "force": force, "doer": "orion", "act": "x",
+                "done_when": "a later reply shows it done"}
+
+    async def _judge(_req: object) -> dict[str, object]:
+        return {"final_text": json.dumps({**JUDGEMENT, "promises_made": [
+            _item("I filed the trace in the queue.", "reports"),
+            _item("Best to try the small model first.", "suggests"),
+            _item("I'd enjoy trying the camera sometime.", "wishes"),
+            _item(REAL, "commits")]})}
+
+    reflection, _, _ = await run_finalize_reflection(
+        correlation_id="c-force", draft_text=SPEECH_REPLY, thought=make_thought(repair_pressure_level=0.9),
+        substrate_appraisal=make_appraisal(surprise_level=0.5), repair_overlay=make_repair_overlay(),
+        user_message=USER, cortex_client=_judge)
+    assert [(p.quote, p.force) for p in reflection.promises_made] == [(REAL, "commits")]
+
+
+@pytest.mark.parametrize("force", [None, "promise", "Commits", 1])
+def test_missing_or_unknown_force_fails_closed(force: object) -> None:
+    from orion.harness.promise_gate import coerce_promise_fields
+
+    item: dict[str, object] = {"quote": REAL, "offer": False, "doer": "orion", "done_when": DONE_WHEN}
+    if force is not None:
+        item["force"] = force
+    made = coerce_promise_fields({"promises_made": [item]})["promises_made"]
+    assert made[0].force is None
+    result = gate_promises(_reflection(promises_made=made), reply_text=DOER_REPLY, enabled=True)
+    assert result.reflection.promises_made == [] and result.dropped_not_commit == [(None, REAL)]
+
+
+def test_schema_requires_a_force_from_the_closed_set_and_the_prompt_defines_each() -> None:
+    schema = finalize_reflect_json_schema(True)
+    item = schema["properties"]["promises_made"]["items"]
+    assert "force" in item["required"]
+    assert set(item["properties"]["force"]["enum"]) == {"commits", "reports", "predicts", "suggests", "wishes"}
+    good = {"quote": REAL, "offer": False, "doer": "orion", "act": ACT, "done_when": DONE_WHEN}
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{**good, "force": "commits"}]}, schema)
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate({**JUDGEMENT, "promises_made": [{**good, "force": "promise"}]}, schema)
+    section = _render(_ctx()).split("PROMISES (", 1)[1].split("REQUIRED JSON FIELDS", 1)[0]
+    for force in item["properties"]["force"]["enum"]:
+        assert f'- "{force}":' in section
+    assert 'Plain code keeps only items with force "commits".' in section
+
+
 # --- the offer rule -----------------------------------------------------------------------
 
 def test_offer_is_recorded_but_counts_only_after_acceptance() -> None:
-    reflection = _reflection(promises_made=[PromiseV1(quote=FIRM, doer="orion"), PromiseV1(quote=OFFER, offer=True, doer="orion")])
+    reflection = _reflection(promises_made=[PromiseV1(force="commits", quote=FIRM, doer="orion", done_when=DONE_WHEN), PromiseV1(force="commits", quote=OFFER, offer=True, doer="orion", done_when=DONE_WHEN)])
     gated = gate_promises(reflection, reply_text=REPLY, enabled=True).reflection
     assert [p.offer for p in gated.promises_made] == [False, True]
     assert counted_promise_quotes(gated) == [FIRM]
@@ -287,11 +425,11 @@ def test_acceptance_is_asked_from_the_next_user_message_not_a_word_list() -> Non
 def test_flag_on_schema_asks_for_promise_fields_and_validates_them() -> None:
     schema = finalize_reflect_json_schema(True)
     assert list(schema["properties"])[-3:] == list(PROMISE_FIELDS)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "doer": "orion"}]}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]}, schema)
     # No caps in the schema: Strata 502s an answer that breaks it, which would sink the
     # verdict. Four promises or a long quote must pass the schema; the gate caps them.
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "doer": "orion"}] * 4}, schema)
-    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False, "doer": "orion"}]}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}] * 4}, schema)
+    jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": "y" * 241, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]}, schema)
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate({**JUDGEMENT, "promises_made": [{"quote": FIRM}]}, schema)
     rendered = _render(_ctx())
@@ -323,7 +461,7 @@ async def test_chain_regates_promises_against_the_final_text() -> None:
         correlation_id="c-regate", thought=thought, draft_text=REPLY, grammar_receipts=[],
         coalition_snapshot=build_coalition_snapshot(thought), repair_overlay=make_repair_overlay())
     judged = {**JUDGEMENT, "alignment_verdict": "misaligned",
-              "promises_made": [{"quote": FIRM, "offer": False, "doer": "orion"}]}
+              "promises_made": [{"quote": FIRM, "offer": False, "force": "commits", "doer": "orion", "act": ACT, "done_when": DONE_WHEN}]}
 
     async def substrate_client(_mol: object):
         return make_appraisal(surprise_level=0.5)
@@ -354,7 +492,7 @@ def test_flag_off_judge_is_not_asked_and_gate_clears(monkeypatch: pytest.MonkeyP
     rendered = _render(ctx)
     # The draft itself holds both quotes; the promise section and its lists are absent.
     assert "PROMISES (" not in rendered and f'- "{OFFER}"' not in rendered and "[a1]" not in rendered
-    gated = gate_promises(_reflection(promises_made=[PromiseV1(quote=FIRM, doer="orion")]), reply_text=REPLY).reflection
+    gated = gate_promises(_reflection(promises_made=[PromiseV1(force="commits", quote=FIRM, doer="orion", done_when=DONE_WHEN)]), reply_text=REPLY).reflection
     assert gated.promises_made == []
 
 

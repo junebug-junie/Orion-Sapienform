@@ -250,7 +250,8 @@ async def lifespan(app: FastAPI):
             family_a = FamilyALive(
                 _store, fa_cfg,
                 lambda start, end: load_frame(_settings.postgres_uri, fa_cfg.inputs, fa_cfg.grain_min, start, end),
-                settle_sec=_settings.settle_sec, select_interval_sec=_settings.select_interval_sec)
+                settle_sec=_settings.settle_sec, select_interval_sec=_settings.select_interval_sec,
+                adaptive_intervals=_settings.adaptive_intervals_enabled)
             # Family C's effect table measures every reading family A reads (read-only, on demand).
             effect_table = EffectTable(
                 _store,

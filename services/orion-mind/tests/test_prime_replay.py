@@ -53,7 +53,12 @@ def test_recorded_tick_sequences_replay_identically():
     removed from prime_thought log lines, every part of every scenario equals the previous golden (checked by
     script; 29 parts changed, 0 after mapping). No id moved: the now's shown_id is drawn by durable-runs. Then one
     scenario was added, recorded last (``now_section_and_one_cite``: a now page, one shown cite and one not shown,
-    and the use POST); every older scenario is byte-identical to the recording before it."""
+    and the use POST); every older scenario is byte-identical to the recording before it.
+    Re-recorded 2026-11-16 (integration patch 5, Prime hunger; the quiet floor deleted): with every "quiet: nothing
+    has woken me for N hours" change removed from the old golden's frames and close notes, the ``woke:`` prefix
+    re-cut at its 160-character cap, and ``need=-`` removed from prime_thought log lines, every part of every
+    scenario equals the previous golden (checked by script; 13 parts changed, 0 after mapping). No scenario turns
+    hunger on (the flag is absent from the fake settings), and none woke on the floor alone."""
     proc = subprocess.run([sys.executable, "-W", "ignore", str(HERE / "prime_replay_scenarios.py")],
                           capture_output=True, text=True, timeout=120, check=False)
     assert proc.returncode == 0, proc.stderr[-2000:]

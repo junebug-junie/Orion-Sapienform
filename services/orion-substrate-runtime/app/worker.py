@@ -4397,63 +4397,6 @@ class BiometricsSubstrateWorker:
             logger.exception("substrate_endogenous_curiosity_repair_load_failed")
             return None
 
-    @staticmethod
-    def _neutral_frontier_metacog_inputs() -> tuple[Any, Any]:
-        """Low-tension metacog inputs so endogenous seeds drive the decision path."""
-        from orion.graph_cognition.brief import MetacogPerceptionBriefV1
-        from orion.graph_cognition.evidence import SignalEvidenceBundleV1
-        from orion.graph_cognition.interpreters import (
-            CoherenceAssessmentV1,
-            ConceptDriftSignalV1,
-            ContradictionCandidateSetV1,
-            GoalPressureStateV1,
-            GraphCognitionReportV1,
-            IdentityConflictSignalV1,
-            SocialContinuityAssessmentV1,
-        )
-
-        evidence = SignalEvidenceBundleV1(
-            spans=(),
-            truncated=False,
-            degraded=True,
-            notes=("endogenous_curiosity_tick",),
-        )
-        report = GraphCognitionReportV1(
-            coherence=CoherenceAssessmentV1(
-                score=0.85, confidence=0.5, evidence=evidence, notes=()
-            ),
-            identity_conflict=IdentityConflictSignalV1(
-                conflict_score=0.1, active=False, confidence=0.5, evidence=evidence
-            ),
-            goal_pressure=GoalPressureStateV1(
-                pressure_score=0.1,
-                stalled_goal_count=0,
-                competing_goal_density=0.0,
-                confidence=0.5,
-                evidence=evidence,
-            ),
-            social_continuity=SocialContinuityAssessmentV1(
-                continuity_score=0.8, confidence=0.5, degraded=False, evidence=evidence
-            ),
-            concept_drift=ConceptDriftSignalV1(
-                drift_score=0.1, active=False, confidence=0.5, evidence=evidence
-            ),
-            contradiction_candidates=ContradictionCandidateSetV1(
-                candidates=(), confidence=0.5, evidence=evidence
-            ),
-        )
-        brief = MetacogPerceptionBriefV1(
-            top_tensions=(),
-            top_stabilizers=("coherence",),
-            overall_priority="advance",
-            recommended_verbs=("observe",),
-            confidence=0.5,
-            degraded=True,
-            supporting_evidence=evidence,
-            notes_for_router=("endogenous_curiosity_tick",),
-        )
-        return report, brief
-
     def _link_accepted_curiosity_seeds(self) -> tuple[list[Any], dict[str, Any] | None]:
         """Seeds for newly accepted reading links (orion/substrate/link_accepted_seeds.py).
 
@@ -4735,13 +4678,12 @@ class BiometricsSubstrateWorker:
         try:
             from orion.substrate.frontier_curiosity import FrontierCuriosityEvaluator
 
-            cognition_report, perception_brief = self._neutral_frontier_metacog_inputs()
+            # The hardcoded "all calm" metacog report this used to pass was
+            # retired 2026-11-16 with the evaluator branches it fed (#3393).
             evaluator = FrontierCuriosityEvaluator(store=store)
             result = evaluator.evaluate(
                 anchor_scope="orion",
                 subject_ref="entity:orion",
-                cognition_report=cognition_report,
-                perception_brief=perception_brief,
                 operator_requested=False,
                 endogenous_signals=seeds,
             )

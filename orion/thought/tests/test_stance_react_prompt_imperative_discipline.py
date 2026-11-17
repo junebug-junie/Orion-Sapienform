@@ -91,3 +91,20 @@ def test_stance_prompt_reads_message_against_recent_conversation() -> None:
 def test_stance_prompt_without_history_has_no_recent_conversation_guidance() -> None:
     rendered = _render_stance({"user_message": "It was eventful"})
     assert "recent_conversation" not in rendered
+
+
+def test_stance_prompt_renders_strictly_without_open_promises() -> None:
+    """Intention ledger D3 ships off: the cue key is absent from the context on every turn, so the
+    template must render under StrictUndefined without it (and show the block only when given)."""
+    rendered = _render_stance({"user_message": "It was eventful"})
+    assert "OPEN PROMISES" not in rendered
+    from jinja2 import Environment, StrictUndefined
+
+    text = (REPO_ROOT / "orion/cognition/prompts/stance_react.j2").read_text(encoding="utf-8")
+    with_cue = Environment(undefined=StrictUndefined).from_string(text).render(
+        user_message="hi", stance_inputs={"user_message": "hi"}, association={}, repair_bundle=None,
+        coalition_projection=None, orion_identity_summary=None, juniper_relationship_summary=None,
+        mind_coloring=None, temporal_self_cue=None, self_readings=None, personality_cue=None,
+        self_track_record=None, chat_attention_frame=None, autonomy_slice=None, self_prediction_enabled=False,
+        open_promises="OPEN PROMISES (mine, not yet kept):\n- [act:act_a] 2 days ago: \"x\"")
+    assert "OPEN PROMISES (mine, not yet kept)" in with_cue

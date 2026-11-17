@@ -139,3 +139,29 @@ def test_render_degraded_hits_are_not_called_above_the_bar():
 def test_render_unverified_matches_are_said():
     text = "\n".join(know.render("pet", {"status": "unverified", "backend": "hybrid", "hits": [], "unverified": 3}))
     assert "3 more match(es) found but could not be checked" in text and "No stored memory" not in text
+
+
+def test_brief_says_a_search_that_could_not_run_is_not_no_memory():
+    """#3663: a skipped, degraded, timed-out or failed search is not grounds for "I have no memory"."""
+    from orion.dig.brief import MAX_BRIEF_CHARS
+
+    sentence = ("If it could not search properly (skipped, degraded, timed out, error), say you could not look, "
+                "never that you have no memory.")
+    assert sentence in DIG_BRIEF_LINE and DIG_BRIEF_LINE.endswith(sentence)
+    assert len(DIG_BRIEF_LINE) <= MAX_BRIEF_CHARS
+
+
+@pytest.mark.parametrize("status", ["skipped_short", "timeout", "error", "busy", "off", "degraded"])
+def test_render_every_non_search_says_not_no_memory(status):
+    data = {"status": status, "hits": []}
+    if status == "degraded":
+        data.update(backend="degraded", degraded=["rerank_timeout"])
+    text = "\n".join(know.render("the", data))
+    assert "No stored memory" not in text
+    assert "NOT the same as having no memory" in text or "does not mean no memory" in text
+
+
+def test_render_skipped_short_carries_the_not_no_memory_sentence():
+    text = "\n".join(know.render("the a", {"status": "skipped_short", "hits": []}))
+    assert "nothing was searched" in text and "This is NOT the same as having no memory of it" in text
+    assert "use names, places, things" in text

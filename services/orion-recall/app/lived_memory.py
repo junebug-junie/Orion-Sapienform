@@ -24,6 +24,8 @@ Pipeline, once per chat turn (PCR continuity phase):
    PageRank over ``episode_memory_referent``). They only ever reach the prompt through the rerank.
 4. **Rerank.** A local cross-encoder (orion-vector-host ``/rerank``) scores each (turn, memory)
    pair; the turn side is the message followed by the rewritten searches. ``fit = sigmoid(logit)``.
+   Candidates go in chunks of ``RERANK_CHUNK``, best-retrieved first; a deadline that stops the
+   rerank keeps the chunks already scored (``rerank_partial`` in the trace, issue #3662).
 5. **Quality bar.** Records with ``fit < min_fit`` are dropped. The bar is tuned by replay
    (``evals/run_lived_memory_replay_eval.py``).
 6. **Rank** (Generative Agents, Park et al. 2023): ``score = logit + W_RECENCY * recency +
@@ -33,8 +35,8 @@ Pipeline, once per chat turn (PCR continuity phase):
    (a correction written since the snapshot removes what it corrects), then rendered one line
    each with kind, record id and date.
 
-**Degraded mode** (issue #3573). When the reranker is down, errors or runs past the deadline,
-the exact-word hits are ranked by BM25 alone (``lexical_fallback``) and the block says it ran
+**Degraded mode** (issue #3573). When the reranker is down, errors or runs past the deadline
+before scoring a single chunk, the exact-word hits are ranked by BM25 alone (``lexical_fallback``) and the block says it ran
 degraded. When the embedder is down, exact-word candidates are still reranked, and the block
 says it ran degraded. Recall never silently skips: a degraded search that finds nothing still
 puts a one-line note in the prompt. ``LivedRecall.backend`` is ``hybrid`` or ``degraded``.
@@ -132,6 +134,9 @@ QUERY_MAX_CHARS = 1000
 # the opening of a message and of a memory carry what it is about.
 RERANK_QUERY_CHARS = 600
 RERANK_DOC_CHARS = 400
+# Candidates per /rerank call (issue #3662). On the shared P4, a 27-candidate call for a long
+# message took 2-4.4 s and, past the deadline, all of it was lost. Chunks keep what finished.
+RERANK_CHUNK = 8
 SNAPSHOT_TTL_SEC = 60.0
 # The referent graph changes only when the distiller writes; it is refreshed in the background.
 GRAPH_TTL_SEC = 600.0
@@ -634,39 +639,53 @@ class LivedMemoryRecall:
             t = time.perf_counter()
             docs = [r.text[:RERANK_DOC_CHARS] for r in recs]
             rq = rerank_query(query, queries)
-            logits: List[float] | None = None
+            logits: List[float | None] = [None] * len(docs)
+            chunks_done = 0
             budget = deadline - time.perf_counter() - FINISH_RESERVE_SEC
+
+            async def score(idx: List[int]) -> None:
+                nonlocal chunks_done
+                part = [docs[i] for i in idx]
+                if self._reranker is not None:
+                    got = list(await self._reranker(rq, part))
+                else:
+                    got = await self._rerank_http(client, rq, part,
+                                                  timeout=max(0.001, deadline - time.perf_counter()))
+                if len(got) != len(part):
+                    raise SearchUnavailableError("reranker returned a malformed reply")
+                for i, x in zip(idx, got):
+                    logits[i] = float(x)
+                chunks_done += 1
+
+            # Issue #3662: the pool goes in chunks of RERANK_CHUNK, best-retrieved first, one call
+            # at a time (the vector host refuses a third request in flight). When the deadline or an
+            # error stops it, the chunks already scored are kept: the top candidates still get a
+            # fit score, and only a call that scored nothing falls back to exact words.
+            async def all_chunks() -> None:
+                for start in range(0, len(docs), RERANK_CHUNK):
+                    await score(list(range(start, min(start + RERANK_CHUNK, len(docs)))))
+
+            stopped: str | None = None
             try:
                 if budget <= 0:
                     raise asyncio.TimeoutError
-                rqs = [rq]
-
-                async def score(text: str) -> List[float]:
-                    if self._reranker is not None:
-                        got = list(await self._reranker(text, docs))
-                    else:
-                        got = await self._rerank_http(client, text, docs, timeout=budget)
-                    if len(got) != len(docs):
-                        raise SearchUnavailableError("reranker returned a malformed reply")
-                    return [float(x) for x in got]
-
-                # One call at a time: the vector host refuses a third request in flight.
-                async def all_scores() -> List[List[float]]:
-                    return [await score(text) for text in rqs]
-
-                per_query = await asyncio.wait_for(all_scores(), timeout=budget)
-                logits = [max(col) for col in zip(*per_query)]
+                await asyncio.wait_for(all_chunks(), timeout=budget)
             except asyncio.TimeoutError:
-                degraded.append("rerank_timeout")
-                logits = None
+                stopped = "timeout"
             except Exception as exc:  # noqa: BLE001 -- a down reranker degrades, never skips (#3573)
-                degraded.append("rerank_unavailable")
+                stopped = "error"
                 out.debug["rerank_error"] = f"{type(exc).__name__}: {exc}"[:200]
-                logits = None
             timings["rerank"] = int((time.perf_counter() - t) * 1000)
+            scored_idx = [i for i, x in enumerate(logits) if x is not None]
+            if stopped and not scored_idx:
+                degraded.append("rerank_timeout" if stopped == "timeout" else "rerank_unavailable")
+            elif stopped:
+                out.debug["rerank_partial"] = {"scored": len(scored_idx), "of": len(docs), "reason": stopped}
 
-            if logits is not None:
-                out.reranked = list(zip(recs, [float(x) for x in logits]))
+            if scored_idx:
+                # Unscored candidates (a partial rerank) are left out, like link neighbours below:
+                # nothing reaches the prompt without a fit score unless the whole rerank failed.
+                out.reranked = [(recs[i], float(logits[i])) for i in scored_idx]
                 chosen = rank(out.reranked, min_fit=self.cfg.min_fit, max_lines=self.cfg.max_lines,
                               now=self._clock())
                 out.debug["reranked"] = [
@@ -857,6 +876,8 @@ def trace_of(debug: Dict[str, Any] | None) -> Dict[str, Any]:
         out["weak_ids"] = [str(x) for x in d["weak_ids"]][:TRACE_MAX_IDS]
     if d.get("recheck_dropped"):  # the serving gate removed these after the snapshot
         out["recheck_dropped"] = [str(x) for x in d["recheck_dropped"]][:TRACE_MAX_IDS]
+    if d.get("rerank_partial"):  # #3662: the deadline stopped the rerank after some chunks
+        out["rerank_partial"] = dict(d["rerank_partial"])
     for key in ("degraded", "skipped", "outer", "error", "know_recheck_error"):
         if d.get(key):
             out[key] = d[key] if key == "degraded" else str(d[key])[:200]

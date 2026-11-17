@@ -167,7 +167,11 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
         "SELECT id, prompt, created_at, session_id FROM chat_history_log WHERE source = $1 "
         "AND length(trim(prompt)) > 0 AND prompt NOT LIKE $2 ORDER BY created_at DESC LIMIT $3",
         bank.get("noise_source", "hub_orion"), bank.get("noise_exclude_prefix", "Orion — ") + "%",
-        int(bank.get("noise_limit", 150)))
+        int(args.noise_limit or bank.get("noise_limit", 150)))
+    if args.budget_sec:
+        # Budget mode (issue #3662) measures the chat-turn deadline, not hit rate: only the last
+        # real messages are replayed, under the live end-to-end budget.
+        referring_rows = []
 
     report: Dict[str, Any] = {"min_query_tokens": args.min_query_tokens, "referring": len(referring_rows),
                               "noise_messages": len(noise_rows), "variants": {}}
@@ -181,7 +185,8 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             search=SearchConfig(chroma_url=args.chroma_url, embed_url=args.embed_url, collection=args.collection,
                                 min_similarity=0.0),
             rerank_url=args.dead_rerank_url if dead else args.rerank_url, min_fit=0.0 if not dead else args.degraded_min_fit,
-            max_lines=64 if not dead else MAX_LINES, timeout_sec=30.0,
+            max_lines=64 if not dead and not args.budget_sec else MAX_LINES,
+            timeout_sec=float(args.budget_sec or 30.0),
             min_query_tokens=args.min_query_tokens, rewrite_timeout_sec=args.rewrite_timeout,
             link_top_k=args.link_top_k if use_links else 0)
         lm = LivedMemoryRecall(pool, cfg, rewriter=rewriter if use_rewrite else None)
@@ -190,8 +195,14 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
         noise: List[Dict[str, Any]] = []
         outcomes: Dict[str, int] = {}
         backends: Dict[str, int] = {}
+        degraded_reasons: Dict[str, int] = {}
+        partial = 0
 
         def note(out: Any) -> None:
+            nonlocal partial
+            for reason in out.debug.get("degraded") or []:
+                degraded_reasons[reason] = degraded_reasons.get(reason, 0) + 1
+            partial += int(bool(out.debug.get("rerank_partial")))
             timings.append(out.debug.get("timings_ms") or {})
             o = (out.debug.get("rewrite") or {}).get("outcome") or "none"
             outcomes[o] = outcomes.get(o, 0) + 1
@@ -233,6 +244,11 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             "errors": [r["label"] for r in results if r["errors"]],
             "rewrite_outcomes": outcomes,
             "backends": backends,
+            # Share of searched messages that fell back to exact words (issue #3662 bar: < 2%).
+            "degraded_rate": (round(backends.get("degraded", 0) / searched, 3)
+                              if (searched := backends.get("degraded", 0) + backends.get("hybrid", 0)) else None),
+            "degraded_reasons": degraded_reasons,
+            "rerank_partial": partial,
             "latency_ms": {k: {"p50": pct(k, 0.5), "p90": pct(k, 0.9), "max": pct(k, 0.999)}
                            for k in ("snapshot", "rewrite", "dense", "links", "rerank", "recheck", "total")},
             "bars": [{k: v for k, v in b.items() if k != "items" or args.items} for b in bars],
@@ -265,6 +281,10 @@ def main() -> int:
     ap.add_argument("--rewrite-route", default="quick_turn")
     ap.add_argument("--rewrite-timeout", type=float, default=1.8)
     ap.add_argument("--link-top-k", type=int, default=6)
+    ap.add_argument("--budget-sec", type=float, default=0.0,
+                    help="replay under this end-to-end budget (live: RECALL_LIVED_MEMORY_TIMEOUT_SEC) and "
+                         "skip the referring bank; reports degraded_rate (issue #3662)")
+    ap.add_argument("--noise-limit", type=int, default=0, help="last N real messages (default: the bank's)")
     ap.add_argument("--items", action="store_true", help="include per-item hits (labels are private)")
     args = ap.parse_args()
     print(json.dumps(asyncio.run(_replay(args)), indent=2, default=str))

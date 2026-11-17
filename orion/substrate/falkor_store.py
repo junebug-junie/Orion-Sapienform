@@ -72,6 +72,17 @@ logger = logging.getLogger("orion.substrate.falkor_store")
 # reader (skipped and counted, never a decode failure).
 _UNKNOWN_SHAPE = object()
 
+
+def _decode_native_node(row: dict[str, Any]) -> Any:
+    """decode_node returns None for some bad rows instead of raising; raise so
+    a page of them counts as undecodable for the plan-cache retry (#3455)."""
+    if not node_row_is_known(row):
+        return _UNKNOWN_SHAPE
+    node = decode_node(row)
+    if node is None:
+        raise ValueError(f"undecodable durable node row: {row.get('node_id')!r}")
+    return node
+
 NODE_ADAPTER = TypeAdapter(SubstrateNodeV1)
 
 # FalkorGraphClient, RecordingFalkorClient, RedisGraphQueryClient moved to
@@ -468,6 +479,9 @@ class FalkorSubstrateStore:
         # _record_node_count_gap).
         self.hydrate_plan_cache_retries_total = 0
         self.hydrate_plan_cache_recovered_total = 0
+        # Scans (keyed by WHERE text) whose exact text read a poisoned plan and
+        # now start on the bypass variant (see _scan_pages).
+        self._plan_cache_bypass: set[str] = set()
         self.last_durable_node_count: int | None = None
         self.last_node_count_gap: int | None = None
         self._hydrate_stats_logged_at: float | None = None
@@ -505,14 +519,18 @@ class FalkorSubstrateStore:
         """A short page may be the server cap. Only an empty page ends a scan.
 
         Yields ``(row, decoded)``. ``decode`` runs per row; when EVERY row of a
-        page fails it, the page is re-read once with the plan-cache-bypass
-        variant of the query text (#3455) and the variant is used for the rest
-        of this scan. A page with only some bad rows, or a variant that fails
-        too, raises the first decode error exactly as before."""
+        page fails it, the page is re-read once with the OTHER of two fixed
+        query texts (exact / plan-cache-bypass variant, #3455). The text that
+        worked is remembered per scan on the store, so a poisoned plan costs
+        one wasted page and one warning per episode, not one per reload. A
+        page with only some bad rows, or both texts failing, raises the first
+        decode error. The whole page decodes before the cursor check, so a
+        page with both faults raises the decode error."""
         query = (f"{match} WHERE {where} AND id({alias}) > $after_id "
                  f"RETURN {returns}, id({alias}) AS object_id "
                  "ORDER BY object_id LIMIT $page_size")
-        bypassed = False
+        bypassed = where in self._plan_cache_bypass
+        retried = False
         cursor = -1
 
         def fetch(text: str) -> list[dict[str, Any]]:
@@ -535,7 +553,7 @@ class FalkorSubstrateStore:
             if not rows:
                 return
             decoded, errors = decode_page(rows)
-            if errors and len(errors) == len(rows) and not bypassed:
+            if errors and len(errors) == len(rows) and not retried:
                 sample = rows[0]
                 id_field = fields[0]
                 shifted = sorted(k for k, v in sample.items()
@@ -543,19 +561,23 @@ class FalkorSubstrateStore:
                                  and v == sample.get(id_field))
                 logger.warning(
                     "falkor_hydrate_plan_cache_suspect graph=%s scan=%r rows=%d field=%s "
-                    "sample_%s=%r error=%s",
+                    "sample_%s=%r bad_text=%s error=%s",
                     self._cfg.graph_name, where, len(rows), ",".join(shifted) or "unknown",
-                    id_field, sample.get(id_field), errors[0],
+                    id_field, sample.get(id_field), "variant" if bypassed else "exact", errors[0],
                 )
                 self.hydrate_plan_cache_retries_total += 1
-                bypassed = True
-                rows = fetch(query + self._PLAN_CACHE_BYPASS_SUFFIX)
+                retried, bypassed = True, not bypassed
+                rows = fetch(query + self._PLAN_CACHE_BYPASS_SUFFIX if bypassed else query)
                 progress["pages"] += 1
                 if not rows:
                     return
                 decoded, errors = decode_page(rows)
                 if not errors:
                     self.hydrate_plan_cache_recovered_total += 1
+                    if bypassed:
+                        self._plan_cache_bypass.add(where)
+                    else:
+                        self._plan_cache_bypass.discard(where)
             if errors:
                 raise errors[0]
             for row, obj in zip(rows, decoded):
@@ -638,7 +660,7 @@ class FalkorSubstrateStore:
                 match="MATCH (n:SubstrateNode)", where="n.payload_json IS NULL",
                 alias="n", returns=_return_clause("n", NATIVE_NODE_RETURN_FIELDS),
                 fields=NATIVE_NODE_RETURN_FIELDS, progress=progress,
-                decode=lambda row: decode_node(row) if node_row_is_known(row) else _UNKNOWN_SHAPE,
+                decode=_decode_native_node,
             ):
                 if node is _UNKNOWN_SHAPE:
                     # A kind newer than this code: skip it (and, below, its edges).
@@ -715,7 +737,9 @@ class FalkorSubstrateStore:
                 last_successful_refresh_at=self._last_successful_refresh_at,
                 reason=str(exc), edge_identity_aliases=progress["edge_identity_aliases"],
             )
-            self._record_node_count_gap()
+            # Failed scan: the kept cache is the last good one, so its own
+            # skipped count is the right one to subtract.
+            self._record_node_count_gap(self.hydrate_skipped_unknown_nodes)
             self._maybe_log_hydrate_stats()
             return
 
@@ -746,7 +770,7 @@ class FalkorSubstrateStore:
             edge_identity_aliases=progress["edge_identity_aliases"],
             duplicate_node_identities=len(duplicate_identities),
         )
-        self._record_node_count_gap()
+        self._record_node_count_gap(skipped["nodes"])
         self._maybe_log_hydrate_stats()
         if not getattr(self._client, "read_only", False):
             self._migrate_legacy_payload_nodes(legacy_nodes)
@@ -754,7 +778,7 @@ class FalkorSubstrateStore:
 
     _HYDRATE_STATS_LOG_INTERVAL_SEC = 300.0
 
-    def _record_node_count_gap(self) -> None:
+    def _record_node_count_gap(self, skipped_unknown_nodes: int = 0) -> None:
         """Compare the in-memory node count with the durable graph's (#3455).
 
         A failed refresh keeps the last good cache, and a process that never
@@ -762,7 +786,9 @@ class FalkorSubstrateStore:
         graph while nothing complains (#3455: 40 cached nodes vs 15,355
         durable). One cheap count per refresh; the gap rides on the scan
         receipt and the stats line, and a large gap logs a warning every
-        refresh until it closes. Best effort: a count error leaves it None."""
+        refresh until it closes. Nodes of kinds newer than this reader are
+        skipped on purpose and are subtracted, so an old reader next to a newer
+        writer does not alarm forever. A count error leaves the gap None."""
         with self._cache_lock:
             cache_nodes = len(self._cache._nodes)
         durable = None
@@ -772,7 +798,7 @@ class FalkorSubstrateStore:
             durable = int(value) if value is not None else None
         except Exception as exc:  # noqa: BLE001
             logger.debug("falkor_substrate_node_count_failed error=%s", exc)
-        gap = durable - cache_nodes if durable is not None else None
+        gap = durable - cache_nodes - skipped_unknown_nodes if durable is not None else None
         self.last_durable_node_count, self.last_node_count_gap = durable, gap
         if self.last_scan_receipt is not None:
             self.last_scan_receipt = replace(
@@ -785,7 +811,7 @@ class FalkorSubstrateStore:
                 "falkor_substrate_hydrate_node_gap graph=%s durable_nodes=%d cache_nodes=%d gap=%d "
                 "last_hydrate_ok=%s skipped_unknown_nodes=%d",
                 self._cfg.graph_name, durable, cache_nodes, gap, self.last_hydrate_ok,
-                self.hydrate_skipped_unknown_nodes,
+                skipped_unknown_nodes,
             )
 
     def _maybe_log_hydrate_stats(self) -> None:

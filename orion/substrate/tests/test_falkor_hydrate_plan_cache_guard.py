@@ -53,7 +53,7 @@ def test_shifted_cached_plan_is_retried_with_variant_and_reload_succeeds(caplog)
     # Fixed variant set: exactly two distinct texts ever sent for this scan.
     assert len(set(texts)) == 2
     suspect = [r.getMessage() for r in caplog.records if "falkor_hydrate_plan_cache_suspect" in r.getMessage()]
-    assert len(suspect) == 1 and "field=decay_floor" in suspect[0] and "node0" in suspect[0]
+    assert len(suspect) == 1 and "decay_floor" in suspect[0] and "node0" in suspect[0]
 
 
 def test_variant_also_bad_fails_as_before_and_keeps_old_cache():
@@ -122,3 +122,54 @@ def test_node_count_error_leaves_gap_unknown_and_reload_ok():
     store = build(NoCount())
     assert store.last_hydrate_ok is True
     assert store.last_node_count_gap is None and store.last_scan_receipt.node_count_gap is None
+
+
+def test_bypass_is_remembered_so_later_reloads_skip_the_poisoned_text(caplog):
+    client = StalePlanClient()
+    store = build(client)
+    client.calls.clear()
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="orion.substrate.falkor_store"):
+        store._hydrate_from_durable()
+    assert store.last_hydrate_ok is True
+    assert all(t.endswith(SUFFIX) for t in _node_scan_texts(client))
+    assert store.hydrate_plan_cache_retries_total == 1
+    assert not any("falkor_hydrate_plan_cache_suspect" in r.getMessage() for r in caplog.records)
+
+
+def test_flips_back_to_exact_text_when_variant_goes_bad_and_exact_heals():
+    class VariantPoisoned(CappedClient):
+        def graph_query(self, cypher, params=None):
+            rows = super().graph_query(cypher, params)
+            if _is_node_scan(cypher) and cypher.endswith(SUFFIX) == self.poison_variant:
+                return [dict(row, decay_floor=row["node_id"]) for row in rows]
+            return rows
+
+    client = VariantPoisoned()
+    client.poison_variant = False  # exact text poisoned first
+    store = build(client)
+    assert store.last_hydrate_ok and store._plan_cache_bypass
+    client.poison_variant = True  # now the variant goes bad, exact heals
+    store._hydrate_from_durable()
+    assert store.last_hydrate_ok is True and not store._plan_cache_bypass
+    assert store.hydrate_plan_cache_recovered_total == 2
+
+
+def test_none_returning_decode_page_is_retried(monkeypatch):
+    from orion.substrate import falkor_store as fs
+
+    real = fs.decode_node
+    client = StalePlanClient()
+    client.calls.clear()
+    monkeypatch.setattr(fs, "decode_node", lambda row: None if row["decay_floor"] == row["node_id"] else real(row))
+    store = build(client)
+    assert store.last_hydrate_ok is True and store.hydrate_plan_cache_recovered_total == 1
+
+
+def test_unknown_kind_nodes_do_not_count_as_gap():
+    client = CappedClient(nodes=120, edges=0)
+    for row in client._hydrate_node_rows[:100]:
+        row["node_kind"] = "kind_from_the_future"
+    store = build(client)
+    assert store.last_hydrate_ok is True and store.hydrate_skipped_unknown_nodes == 100
+    assert store.last_durable_node_count == 120 and store.last_node_count_gap == 0

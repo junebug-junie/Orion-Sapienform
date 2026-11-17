@@ -50,8 +50,9 @@ Failure mode from #3455: a stale plan made 15,568 of 15,568 node rows undecodabl
 ## Tests run
 
 ```text
-pytest orion/substrate/tests/test_falkor_hydrate_plan_cache_guard.py  -> 7 passed
-pytest orion/substrate/tests/test_complete_hydration.py test_falkor_store.py test_falkor_store_hydrate_signal.py test_falkor_identity_dedupe.py -> 109 passed
+pytest orion/substrate/tests/test_falkor_hydrate_plan_cache_guard.py  -> 11 passed
+pytest orion/substrate/tests/ -> 1162 passed, 49 skipped, 1 failed
+  (test_felt_state_lived_answers.py::test_hydrate_lived_answers_latest_per_pinned_concept_id fails identically on main; unrelated)
 ```
 
 New tests: shifted cached plan + good variant -> reload succeeds, one suspect log naming `decay_floor`, exactly two distinct query texts; both bad -> reload fails, old cache kept; partly-bad page -> no retry; clean scan never sends the variant; gap 0 on a full reload; gap 200 + alarm when a failed reload leaves a partial cache; count error -> gap None, reload still ok.
@@ -70,7 +71,17 @@ Read-only live replay (see gate item 4). No image build; runtime picks this up o
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+- Finding: nodes of kinds newer than this reader are skipped on purpose but counted by the durable count, so an old reader would alarm forever.
+  - Fix: gap subtracts skipped unknown nodes (last good scan's count on a failed reload).
+  - Evidence: `test_unknown_kind_nodes_do_not_count_as_gap` (100 unknown of 120 -> gap 0).
+- Finding: the bypass was per scan, so a poisoned plan cost a wasted page and a WARNING on every reload (reloads follow every write).
+  - Fix: the working text is remembered per scan on the store; a later failure of the remembered text flips back to the other one. Still exactly two texts per scan.
+  - Evidence: `test_bypass_is_remembered_...` (second reload sends only the variant, no new warning); `test_flips_back_to_exact_text_...`.
+- Finding: `decode_node` returns None for some bad rows instead of raising, which would skip the retry.
+  - Fix: `_decode_native_node` raises on None.
+  - Evidence: `test_none_returning_decode_page_is_retried`.
+- Finding (no fix): the count query adds one round trip inside `snapshot()`'s lock. Accepted: label count is cheap and reloads run every 30-140 s; revisit with rate-limiting if latency shows.
+- Finding (no fix): a page with both a bad cursor and bad rows now raises the decode error rather than the cursor error. Documented in `_scan_pages`.
 
 ## Restart required
 
@@ -81,7 +92,7 @@ No manual restart. The post-pull rebuild of services importing orion/substrate (
 ## Risks / concerns
 
 - Severity: low. Concern: the variant's own plan could go bad too. Mitigation: then the reload fails as today and the gap alarm fires; a FalkorDB restart is still the operator fix.
-- Severity: low. Concern: each reload during a bad-plan episode reads one wasted page and logs one suspect line. Mitigation: deliberate, keeps the fault visible; plan cache gets at most four extra entries (one per scan).
+- Severity: low. Concern: each reload during a bad-plan episode reads one wasted page and logs one suspect line. Mitigation: the working text is remembered, so one wasted page and one warning per episode; plan cache gets at most four extra entries (one per scan).
 - Issues: refs #3455 (kept open; close with a live `ok_total` rising / gap 0 comment, or a live suspect-then-recovered line). No new issues opened.
 
 ## Upstream FalkorDB bug report (draft, not filed)

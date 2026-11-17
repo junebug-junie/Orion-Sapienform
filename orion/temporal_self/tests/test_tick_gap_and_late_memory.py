@@ -219,17 +219,18 @@ def test_a_memory_committed_behind_the_watermark_is_counted_never_folded_and_nev
     assert out.watermark == s.watermark
 
 
-def test_a_memory_with_no_arc_over_its_moment_goes_to_the_day_and_one_about_yesterday_does_not():
+def test_a_memory_with_no_arc_over_its_moment_goes_to_the_day_it_was_written_even_about_yesterday():
+    # Until #3584 the one about yesterday was dropped from every day.
     s = advance_clock(initial_state(), T0, CFG)
     today = S.memory_episode(memory_row("today", T0 - timedelta(hours=2), T0 + timedelta(minutes=1)))
     yesterday = S.memory_episode(memory_row("yest", T0 - timedelta(hours=20), T0 + timedelta(minutes=2)))
     s = fold(s, events=[today, yesterday], cfg=CFG)
     assert s.skipped_today == 0
     frame = build_frame(s, T0 + timedelta(minutes=5), CFG)
-    assert frame.unbound_context_event_ids == ["memory_episode:today"]
-    # After the buffer horizon (6 h) both leave the buffer; only today's is in the day's list.
+    assert frame.unbound_context_event_ids == ["memory_episode:today", "memory_episode:yest"]
+    # After the buffer horizon (6 h) both leave the buffer, into today's list.
     s = advance_clock(s, T0 + timedelta(hours=7), CFG)
-    assert s.day_context_event_ids == ["memory_episode:today"]
+    assert s.day_context_event_ids == ["memory_episode:today", "memory_episode:yest"]
     assert not [i for i in s.context_buffer if i.source_kind == "memory_episode"]
 
 
@@ -243,3 +244,38 @@ def test_the_buffer_stays_in_time_order_so_old_items_still_leave_it():
     s = advance_clock(s, T0 + timedelta(hours=5), CFG)  # 13:00 is 7 h back, 15:10 is 4 h 50 min back
     assert [i.event_id for i in s.context_buffer] == ["metacog_observation:m1"]
     assert s.day_context_event_ids == ["memory_episode:old"]
+
+
+# ---------------------------------------------------------------- #3584: a memory about a closed day
+
+# The 6 live rows of 2026-11-16 (read-only from temporal_self_event): about 18:57-20:26Z on 11-15
+# (Denver day 11-15, closed at 2026-11-16 07:00Z), all written 2026-11-16 15:10:43Z.
+LIVE_3584 = [
+    ("4634b009", "2026-11-15T18:57:00+00:00"), ("459c7082", "2026-11-15T19:11:00+00:00"),
+    ("f19c35b7", "2026-11-15T19:45:00+00:00"), ("478b74f9", "2026-11-15T20:02:00+00:00"),
+    ("609ab4a9", "2026-11-15T20:02:00+00:00"), ("f5ea4fcd", "2026-11-15T20:26:00+00:00"),
+]
+WRITTEN_3584 = datetime.fromisoformat("2026-11-16T15:10:43.395995+00:00")
+
+
+def test_every_memory_about_a_closed_day_lands_once_in_the_day_it_was_written():
+    """#3584: before the fix all 6 fell out of the buffer into no day (``f5ea4fcd`` was only the
+    source cursor). Rule: a memory about a closed day joins the day it was written."""
+    from orion.temporal_self.arcs import drain_closed_days
+
+    events = [S.memory_episode(memory_row(ref, datetime.fromisoformat(occ), WRITTEN_3584)) for ref, occ in LIVE_3584]
+    s = advance_clock(initial_state(), datetime.fromisoformat("2026-11-15T15:00:00+00:00"), CFG)
+    s = advance_clock(s, datetime.fromisoformat("2026-11-16T15:00:00+00:00"), CFG)  # 11-15 closed
+    assert s.day_id == "2026-11-16"
+    s = fold(s, events=events, cfg=CFG)
+    ids = sorted(e.event_id for e in events)
+    assert s.skipped_today == 0
+    # Visible in the live frame at once, and in the day list after leaving the buffer.
+    assert build_frame(s, WRITTEN_3584 + timedelta(minutes=1), CFG).unbound_context_event_ids == ids
+    s = advance_clock(s, datetime.fromisoformat("2026-11-17T07:00:00+00:00"), CFG)  # 11-16 closes
+    s, closed = drain_closed_days(s)
+    days = {d.day_id: d for d in closed}
+    assert days["2026-11-16"].frame.unbound_context_event_ids == ids
+    assert all(i not in d.frame.unbound_context_event_ids for k, d in days.items() if k != "2026-11-16" for i in ids)
+    # The event still says which moment it is about.
+    assert [e.occurred_at.isoformat() for e in events] == [occ for _, occ in LIVE_3584]

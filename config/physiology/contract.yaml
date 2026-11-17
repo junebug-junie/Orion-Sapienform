@@ -83,6 +83,12 @@ readers:
     note: 2026-11-05, ladder retirement PR 2 (moved from orion-proposal-runtime's worker); pending Patch D (painting is fourth in the binding order)
   # The reading pull's gate (orion/world_pulse_read/pull.py, fed by Hub's world_pulse_read_pipeline.py)
   # retired with the dispatch rung, 2026-11-07 (ladder retirement PR 6).
+  - module: services/orion-prediction/app/town_hold.py
+    role: bidder
+    reason: "Family C Experiment 1 (#3482): the experiment's own binding bid (prediction.experiment) decides whether a block runs; its stop rules also refuse a decision while strain is latched (data quality: the heat reflex sheds the town's background leases, so an arm would be contaminated). Gates only the experiment, never the town."
+  - module: services/orion-embodiment/app/town_sessions.py
+    role: bidder
+    reason: "obeys the run-cap override (orion/physiology/run_cap_override.py) at the town's start gate: a time-limited, TTL-bounded hold of new AI Town starts set by the Family C experiment runner; reads no regulation, thermal or price state itself."
   - module: services/orion-hub/scripts/retro_leisure.py
     role: bidder
     reason: retro leisure refuses on cabinet_hot and arousal_strained.

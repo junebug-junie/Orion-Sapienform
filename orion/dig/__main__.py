@@ -1803,18 +1803,23 @@ def cmd_take_ons(days: str, out: Out, runner=None, find=None) -> str:
     from orion.dig import take_ons
     from orion.evals.model_replay.sandbox import ReadOnlyPsql
 
-    if not days.isdigit() or not 1 <= int(days) <= take_ons.MAX_DAYS:
+    if not (days.isascii() and days.isdigit()) or not 1 <= int(days) <= take_ons.MAX_DAYS:
         raise DigError(f"take-ons: <days> must be a number 1-{take_ons.MAX_DAYS}, got {days!r}")
     try:
         rows = psql_rows(runner or ReadOnlyPsql(timeout_sec=60.0), take_ons.build_sql(int(days)))
     except RuntimeError as exc:
         raise DigError(f"take-ons: {exc}") from exc
+    last_generation = lambda key: None  # noqa: E731
     if find is None:
-        from orion.harness.session_resume import claude_home, find_transcript
+        from orion.harness import session_resume as sr
 
-        home = claude_home()
-        find = lambda sid: find_transcript(home, sid)  # noqa: E731
-    found = take_ons.read_take_ons(rows, find)
+        home = sr.claude_home()
+        find = lambda sid: sr.find_transcript(home, sid)  # noqa: E731
+
+        def last_generation(key: str):
+            raw = sr._read(sr._registry_path(home, key)).get("generation")
+            return raw if isinstance(raw, int) else None
+    found = take_ons.read_take_ons(rows, find, last_generation)
     path = out.write("take-ons", [{**t.__dict__, "dispatches": t.dispatches} for t in found])
     return capped(take_ons.render(found, int(days)), tail=f"full list: {path}")
 

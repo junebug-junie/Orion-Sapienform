@@ -57,7 +57,9 @@ def test_count_tools_counts_agent_and_task_by_type_and_dedupes_ids() -> None:
         _assistant(_use("a", "Bash", command="ls")),
         _assistant(_use("b", "Agent", subagent_type="Explore", prompt="find x")),
         _assistant(_use("c", "Task", prompt="old name, no type")),
-        _assistant(_use("b", "Agent", subagent_type="Explore", prompt="find x")),  # repeated after a resume
+        _assistant(_use("b", "Agent", subagent_type="Explore", prompt="find x")),  # the same block logged twice
+        json.dumps({"type": "assistant", "isSidechain": True,  # a sub-agent's own call (older CLIs): not counted
+                    "message": {"content": [_use("s", "Agent", subagent_type="Explore")]}}),
         json.dumps({"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "a"}]}}),
         "not json with \"tool_use\"",
     ]
@@ -116,3 +118,24 @@ def test_cmd_take_ons_prints_counts_and_writes_full_file(tmp_path: Path, monkeyp
 
 def test_dig_help_lists_take_ons() -> None:
     assert "take-ons [<days>]" in dig.HELP
+
+
+def test_probing_follows_the_registry_generation_and_says_when_capped(tmp_path: Path) -> None:
+    key = take_ons.resume_key(RUN, CID)
+    _write(tmp_path, session_id_for(key, 9), [_assistant(_use("a", "Bash", command="ls"))])
+    find = lambda sid: find_transcript(tmp_path, sid)  # noqa: E731
+    # no registry: four misses in a row stop the probe before gen 9
+    assert take_ons.transcripts_for(RUN, CID, find) == ([], False)
+    # the registry says gen 9 is the last: it is read
+    paths, capped = take_ons.transcripts_for(RUN, CID, find, last_generation=9)
+    assert len(paths) == 1 and not capped
+    # every generation present up to the cap: the cap is said
+    paths, capped = take_ons.transcripts_for(RUN, CID, lambda sid: tmp_path)
+    assert capped and len(paths) == take_ons.MAX_GENERATIONS
+
+
+def test_sql_prints_utc_minutes_and_non_ascii_days_are_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert "AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI'" in take_ons.build_sql(7)
+    monkeypatch.setenv("ORION_DIG_HOME", str(tmp_path))
+    with pytest.raises(dig.DigError):
+        dig.cmd_take_ons("\u00b2", dig.Out("t"), runner=_runner([], []))

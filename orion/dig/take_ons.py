@@ -22,9 +22,11 @@ from orion.schemas.intention import INTENTION_CARRY_TAG, INTENTION_CARRY_WORKFLO
 
 MAX_DAYS = 90
 MAX_RUNS = 50
-# Generations probed per take-on: a lease/ceiling bump moves the session to ``<key>#<n>``. Gaps are possible, so
-# every generation up to this cap is looked for.
-MAX_GENERATIONS = 8
+# Generations per take-on: a lease/ceiling/resume-limit bump moves the session to ``<key>#<n>``, with no upper
+# bound. The resume registry names the last one; without it, probing stops after MISS_RUN misses in a row (a bump
+# for a missing transcript leaves a gap) or at MAX_GENERATIONS, and a cap hit is said, never hidden.
+MAX_GENERATIONS = 64
+MISS_RUN = 4
 # Claude Code's sub-agent tool: "Agent" today (2.1.x transcripts), "Task" in older ones.
 SUBAGENT_TOOLS = frozenset({"Agent", "Task"})
 # An Agent call without subagent_type runs Claude Code's default agent.
@@ -32,7 +34,8 @@ DEFAULT_SUBAGENT = "general-purpose"
 RUN_ID_RE = re.compile(r"intention-([0-9a-f]{16})")
 
 SQL = f"""
-SELECT run_id, created_at, coalesce(terminal, 'running') AS terminal
+SELECT run_id, to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI') AS created_at,
+       coalesce(terminal, 'running') AS terminal
   FROM durable_run_workflow
  WHERE workflow = '{INTENTION_CARRY_WORKFLOW}'
    AND created_at >= now() - interval '{{days}} days'
@@ -54,6 +57,7 @@ class TakeOn:
     transcripts: list[str] = field(default_factory=list)
     tool_calls: int = 0
     subagents: dict[str, int] = field(default_factory=dict)
+    capped: bool = False
 
     @property
     def read(self) -> bool:
@@ -70,11 +74,26 @@ def resume_key(run_id: str, concern_id: str) -> str:
     return f"{run_id}:{INTENTION_CARRY_TAG}:{concern_id}"
 
 
-def transcripts_for(run_id: str, concern_id: str, find: Callable[[str], Optional[Path]]) -> list[Path]:
+def transcripts_for(run_id: str, concern_id: str, find: Callable[[str], Optional[Path]],
+                    last_generation: Optional[int] = None) -> tuple[list[Path], bool]:
+    """(transcripts in generation order, capped). ``last_generation`` from the resume registry when known."""
     from orion.harness.session_resume import session_id_for
 
     key = resume_key(run_id, concern_id)
-    return [p for g in range(MAX_GENERATIONS) if (p := find(session_id_for(key, g))) is not None]
+    if last_generation is not None and 0 <= last_generation < MAX_GENERATIONS:
+        return [p for g in range(last_generation + 1) if (p := find(session_id_for(key, g))) is not None], False
+    found: list[Path] = []
+    misses = 0
+    for g in range(MAX_GENERATIONS):
+        p = find(session_id_for(key, g))
+        if p is None:
+            misses += 1
+            if misses >= MISS_RUN:
+                return found, False
+            continue
+        misses = 0
+        found.append(p)
+    return found, True
 
 
 def count_tools(lines: Iterable[str], seen: set[str]) -> tuple[int, dict[str, int]]:
@@ -89,7 +108,8 @@ def count_tools(lines: Iterable[str], seen: set[str]) -> tuple[int, dict[str, in
             event = json.loads(line)
         except ValueError:
             continue
-        if not isinstance(event, dict) or event.get("type") != "assistant":
+        # Older CLIs log a sub-agent's own events into the parent file as a sidechain: not the turn's calls.
+        if not isinstance(event, dict) or event.get("type") != "assistant" or event.get("isSidechain"):
             continue
         message = event.get("message")
         content = message.get("content") if isinstance(message, dict) else None
@@ -111,7 +131,8 @@ def count_tools(lines: Iterable[str], seen: set[str]) -> tuple[int, dict[str, in
     return tools, subagents
 
 
-def read_take_ons(rows: Iterable[dict[str, str]], find: Callable[[str], Optional[Path]]) -> list[TakeOn]:
+def read_take_ons(rows: Iterable[dict[str, str]], find: Callable[[str], Optional[Path]],
+                  last_generation: Callable[[str], Optional[int]] = lambda key: None) -> list[TakeOn]:
     out: list[TakeOn] = []
     for row in rows:
         run_id = str(row.get("run_id") or "")
@@ -122,7 +143,9 @@ def read_take_ons(rows: Iterable[dict[str, str]], find: Callable[[str], Optional
             continue
         t.concern_id = m.group(1)
         seen: set[str] = set()
-        for path in transcripts_for(run_id, t.concern_id, find):
+        paths, t.capped = transcripts_for(run_id, t.concern_id, find,
+                                          last_generation(resume_key(run_id, t.concern_id)))
+        for path in paths:
             try:
                 with path.open(encoding="utf-8", errors="replace") as fh:
                     tools, subs = count_tools(fh, seen)
@@ -143,11 +166,11 @@ def render(take_ons: list[TakeOn], days: int) -> list[str]:
     lines = [f"{len(take_ons)} take-on(s) in the last {days} day(s); transcripts read for {len(read)}; "
              f"{len(used)} started a sub-agent ({sum(t.dispatches for t in read)} sub-agent call(s))"]
     for t in take_ons:
-        head = f"{t.created_at[:16]}Z {t.run_id} {t.terminal}:"
+        head = f"{t.created_at}Z {t.run_id} {t.terminal}:"
         if not t.read:
             lines.append(f"{head} UNREAD (no carry transcript found here; run this in a turn's Bash)")
             continue
         kinds = ", ".join(f"{k} {n}" for k, n in sorted(t.subagents.items())) or "none"
         lines.append(f"{head} {len(t.transcripts)} attempt(s), {t.tool_calls} tool call(s), "
-                     f"sub-agents: {kinds}")
+                     f"sub-agents: {kinds}" + (f" (+ generations past {MAX_GENERATIONS} not read)" if t.capped else ""))
     return lines

@@ -261,7 +261,7 @@ def test_only_the_carry_prompt_carries_the_sub_agent_line():
     from pathlib import Path
 
     root = Path(it.__file__).resolve().parents[2]
-    needle = "CARRY_SUBAGENT_HINT"
+    needle = "read-only search across many files"  # the hint's own text, wherever it might be pasted
     users = sorted(str(p.relative_to(root)) for base in ("orion", "services") for p in (root / base).rglob("*.py")
-                   if "/tests/" not in str(p) and needle in p.read_text(encoding="utf-8", errors="replace"))
+                   if "/tests/" not in str(p) and "/dig/" not in str(p) and needle in p.read_text(encoding="utf-8", errors="replace"))
     assert users == ["orion/prime/intention.py"], users

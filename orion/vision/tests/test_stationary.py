@@ -32,3 +32,14 @@ def test_older_observation_leaves_run_alone():
 
 def test_zero_min_sec_never_stationary():
     assert not is_stationary(StillRun(tuple(SK), 0.0, 1e6), 0)
+
+
+def test_stream_min_secs_reads_per_stream_hold_times():
+    from orion.vision.stationary import stream_min_secs
+
+    assert stream_min_secs("walkway,doorbell,cam0:10800", 1800) == {
+        "walkway": 1800.0, "doorbell": 1800.0, "cam0": 10800.0}
+    assert stream_min_secs(["walkway", " cam0 : 600 ", ""], 1800) == {"walkway": 1800.0, "cam0": 600.0}
+    assert stream_min_secs("", 1800) == {}
+    assert stream_min_secs(None, 1800) == {}
+    assert stream_min_secs({"cam0": 5}, 1800) == {"cam0": 5.0}

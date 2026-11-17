@@ -74,3 +74,14 @@ def test_room_cameras_are_never_filtered() -> None:
 def test_disabled_with_zero_min_sec() -> None:
     tr = FixtureTracker(streams=["walkway"], min_sec=0, iou=0.5, max_gap_sec=300)
     assert _feed_skeleton(tr) is None
+
+
+def test_office_hold_is_its_own_and_longer_than_the_walkways():
+    """2026-11-16: boxes on the office floor read as `person` in one box for
+    4-5 h. cam0 holds 3 h: 35 min at the desk stays a person, 4 h is a prop,
+    while the walkway keeps its 30 min hold."""
+    tr = FixtureTracker(streams="walkway,cam0:10800", min_sec=1800, iou=0.5, max_gap_sec=300)
+    assert _feed_skeleton(tr, minutes=35, stream="walkway") is True
+    assert _feed_skeleton(tr, minutes=35, stream="cam0") is False
+    tr2 = FixtureTracker(streams="walkway,cam0:10800", min_sec=1800, iou=0.5, max_gap_sec=300)
+    assert _feed_skeleton(tr2, minutes=4 * 60, stream="cam0") is True

@@ -227,12 +227,31 @@ def test_office_person_at_a_desk_is_never_a_prop() -> None:
     assert any(res.crop_stationary.values())
 
 
-def test_stationary_streams_default_leaves_the_office_camera_out() -> None:
+def test_office_camera_gets_its_own_longer_hold() -> None:
+    """2026-11-16: boxes on the office floor read as `person` in one box for
+    4-5 h. With `cam0:<sec>` the office has its own hold: the 35 min skeleton
+    run is not a prop at a 3 h hold, the same box held 4 h is."""
+    import dataclasses
+
+    crops = [dataclasses.replace(c, stream_id="cam0") for c in _skeleton_crops()]
+    res = _batch(crops, [], stationary_streams={"walkway", "cam0:10800"},
+                 new_id=iter(f"id{k}" for k in range(1000)).__next__)
+    assert not any(res.crop_stationary.values())
+    box = crops[0].box_xyxy
+    long_run = [dataclasses.replace(crops[0], crop_id=f"o{k}", observation_id=f"obs-o{k}",
+                                    observed_at=T0 + timedelta(seconds=60 * k), box_xyxy=box)
+                for k in range(4 * 60)]
+    res = _batch(long_run, [], stationary_streams={"walkway", "cam0:10800"},
+                 new_id=iter(f"id{k}" for k in range(1000)).__next__)
+    assert not res.crop_stationary["o170"] and res.crop_stationary["o239"]
+
+
+def test_stationary_streams_default_holds_the_office_three_hours() -> None:
     from app.settings import Settings
     from app.vision_individuals_loop import individuals_config
 
     cfg = individuals_config(Settings())
-    assert cfg.stationary_streams == ("walkway", "doorbell")
+    assert cfg.stationary_streams == ("walkway", "doorbell", "cam0:10800")
 
 
 def test_stationary_rule_can_be_disabled() -> None:

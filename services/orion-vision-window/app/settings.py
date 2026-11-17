@@ -108,8 +108,10 @@ class Settings(BaseSettings):
     # its first box (gaps <= VISION_STATIONARY_MAX_GAP_SEC) for
     # VISION_STATIONARY_MIN_SEC is a prop, and a window whose people are all
     # props does not make the stream "present". Same keys as orion-sql-writer.
-    # Room cameras stay out: a person at a desk sits still for hours.
-    WINDOW_STATIONARY_STREAMS: str = "walkway"
+    # An entry may carry its own hold time, ``stream:seconds``: the office
+    # (cam0) holds three hours, since a person at the desk sits still (at most
+    # 22 min in one box in 11-05..11-14 crops) but boxes on the floor did 4-5 h.
+    WINDOW_STATIONARY_STREAMS: str = "walkway,cam0:10800"
     VISION_STATIONARY_MIN_SEC: float = 1800.0
     VISION_STATIONARY_IOU: float = 0.5
     VISION_STATIONARY_MAX_GAP_SEC: float = 300.0

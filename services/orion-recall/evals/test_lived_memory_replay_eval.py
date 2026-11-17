@@ -85,7 +85,7 @@ def test_fixture_replay_hits_every_target_and_keeps_small_talk_empty(monkeypatch
 
 
 def test_fixture_replay_implicit_references_need_the_rewrite(monkeypatch):
-    """Step 2 (issue #3534): short implicit messages hit only with the rewrite; small talk, whose
+    """Step 2 (issue #3534): implicit messages hit only with the rewrite; small talk, whose
     rewrite answers NONE, still injects nothing."""
     async def embed(*_a, **_k):
         return [0.0], "fake"

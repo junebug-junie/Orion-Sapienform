@@ -97,7 +97,7 @@
   "implicit": [
     {
       "label": "kite_again",
-      "message": "ugh, it got stuck again!",
+      "message": "ugh, it got stuck again up high, so annoying, sigh!",
       "rewrites": [
         "blue kite stuck in oak tree at the lake"
       ],
@@ -107,7 +107,7 @@
     },
     {
       "label": "exam_done",
-      "message": "I passed!!",
+      "message": "I passed!! nerves were wild this morning, whew",
       "rewrites": [
         "pottery exam"
       ],
@@ -117,7 +117,7 @@
     },
     {
       "label": "vet_done",
-      "message": "he's all healed up now",
+      "message": "he's all healed up now, running around happy and wagging",
       "rewrites": [
         "Biscuit dog surgery stitches"
       ],

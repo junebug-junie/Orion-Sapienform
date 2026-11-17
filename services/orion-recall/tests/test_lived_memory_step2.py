@@ -143,7 +143,7 @@ def test_fetch_context_reads_this_session_only_and_skips_the_active_turn():
 
 # --- rewrite: in the recall --------------------------------------------------------------
 
-def test_a_short_implicit_message_finds_its_memory_through_the_rewrite(no_dense):
+def test_an_implicit_message_finds_its_memory_through_the_rewrite(no_dense):
     t0 = datetime(2026, 11, 16, 11, 30)
     pool = Pool({"episode_memory": [GAME, OFFICE]},
                 chat=[{"session_id": "s1", "created_at": t0, "prompt": "off to the castle game's last dungeon",
@@ -152,21 +152,30 @@ def test_a_short_implicit_message_finds_its_memory_through_the_rewrite(no_dense)
     reader = LivedMemoryRecall(pool, _cfg(), reranker=overlap_reranker,
                                rewriter=fixed_rewriter(["castle adventure game final dungeon"], seen),
                                clock=lambda: NOW)
-    out = asyncio.run(reader.recall("okay, I beat it!", session_id="s1"))
+    msg = "okay, finally beat it after tries tonight, whew!"
+    out = asyncio.run(reader.recall(msg, session_id="s1"))
     assert [s.rec.record_id for s in out.chosen] == ["g1"]
     assert out.debug["rewrite"]["outcome"] == "ok" and out.backend == "hybrid"
     assert seen[0][1][0].user == "off to the castle game's last dungeon"
-    # Without the rewrite the same message is below the content-word floor and searches nothing.
+    # Without the rewrite the message's own words fit nothing.
     plain = LivedMemoryRecall(pool, _cfg(), reranker=overlap_reranker, clock=lambda: NOW)
-    assert asyncio.run(plain.recall("okay, I beat it!")).debug["skipped"] == "few_content_words"
+    assert asyncio.run(plain.recall(msg)).lines == []
+
+
+def test_short_messages_are_neither_rewritten_nor_searched(no_dense):
+    calls: List[Any] = []
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME]}), _cfg(), reranker=overlap_reranker,
+                               rewriter=fixed_rewriter(["castle adventure game final dungeon"], calls), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("okay, I beat it!"))
+    assert out.lines == [] and out.rendered == "" and out.debug["skipped"] == "few_content_words"
+    assert calls == []
 
 
 def test_small_talk_stays_empty_when_the_rewrite_says_none(no_dense):
     reader = LivedMemoryRecall(Pool({"episode_memory": [GAME]}), _cfg(), reranker=overlap_reranker,
                                rewriter=fixed_rewriter([]), clock=lambda: NOW)
-    out = asyncio.run(reader.recall("hey Orion, how are you?"))
-    assert out.lines == [] and out.rendered == "" and out.debug["skipped"] == "few_content_words"
-    assert out.debug["rewrite"]["outcome"] == "none"
+    out = asyncio.run(reader.recall("sounds lovely, enjoy your evening and sleep well tonight"))
+    assert out.lines == [] and out.rendered == "" and out.debug["rewrite"]["outcome"] == "none"
 
 
 def test_a_slow_rewrite_falls_back_to_the_raw_message(no_dense):
@@ -398,7 +407,7 @@ def test_names_in_the_rewrite_seed_the_links(no_dense):
                 names=[("castle quest", "project:castle-game")])
     reader = LivedMemoryRecall(pool, _cfg(), reranker=overlap_reranker,
                                rewriter=fixed_rewriter(["castle quest ending"]), clock=lambda: NOW)
-    out = asyncio.run(reader.recall("okay, I beat it!"))
+    out = asyncio.run(reader.recall("okay, finally beat it after tries tonight, whew!"))
     assert out.debug["links"]["seed_names"] == 1
 
 

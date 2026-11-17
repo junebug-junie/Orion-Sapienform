@@ -1037,8 +1037,9 @@ Code: `app/lived_rewrite.py`, `app/lived_links.py`, wired in `app/lived_memory.p
   `NONE` for small talk. Each search runs through the same meaning + exact-word retrievers; all
   lists merge by reciprocal-rank fusion. The reranker scores each memory against the message
   followed by the searches. Past `RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC`, or on any error, the
-  raw message is searched alone. A message under the content-word floor searches only when the
-  rewrite named something. Messages over 1,500 characters skip the rewrite.
+  raw message is searched alone. A message under the content-word floor is neither searched nor
+  rewritten (a rewrite bypass was tried: small talk injecting rose to 35%, no hit gained).
+  Messages over 1,500 characters skip the rewrite.
 - **Link-following.** Memories that share a referent (`episode_memory_referent`) with the top 5
   candidates, or whose referent's name (name-class `referent_alias` only, 4+ characters, not a
   function word) appears in the message or a search, join the rerank: two-hop personalized

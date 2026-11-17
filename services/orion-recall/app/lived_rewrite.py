@@ -8,8 +8,8 @@ the same conversation and writes up to ``MAX_QUERIES`` short searches that name 
 - **Lane.** The LLM gateway's ``quick_turn`` route: the fast class (gpu3) at interactive
   priority, the same seat as the pre-turn repair probe. Never the metacog lane, never an
   outside API. Thinking off; a few dozen output tokens.
-- **Gate.** The model answers ``NONE`` for small talk. A short message only searches when the
-  rewrite named something (see ``LivedMemoryRecall.recall``).
+- **Gate.** The model answers ``NONE`` for small talk; then only the message is searched.
+  Messages under the content-word floor are not rewritten at all (see ``LivedMemoryRecall.recall``).
 - **Failure.** Any error, refusal or timeout means "no rewrite": recall goes on with the raw
   message, exactly as in step 1.
 

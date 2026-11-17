@@ -10,7 +10,8 @@ Pipeline, once per chat turn (PCR continuity phase):
    and the last turns of the conversation and writes up to 3 short searches that name what the
    message points at ("okay, I beat it!" -> the game). Bounded by ``rewrite_timeout_sec``; on
    timeout or error the raw message is used alone. A message below ``min_query_tokens`` content
-   words searches only when the rewrite named something (small talk comes back NONE).
+   words is not searched and not rewritten (step 1's floor; replay showed a rewrite bypass let
+   small talk in).
 1. **Candidates, two ways, per search** (the message plus each rewrite). Meaning: embed it
    (orion-vector-host ``/embedding``, bge-large) and take the nearest docs in the
    ``orion_lived_memory`` Chroma collection. Exact words: BM25 over the same live records, so
@@ -341,8 +342,9 @@ class LivedMemoryConfig:
     # A message with fewer content words than this ("hi Orion, how are you?") has nothing to
     # search with: greetings matched greeting-shaped stance messages by form, not content.
     # A rare-word bypass ("Biscuit is home!") was tried and let small talk back in (13% -> 30-48%
-    # of small-talk messages injecting, replay 2026-11-17), so it is not here. Step 2: a short
-    # message still searches when the query rewrite named something it points at.
+    # of small-talk messages injecting, replay 2026-11-17), so it is not here. A rewrite bypass
+    # (search a short message when the rewrite names something) was tried in step 2 and raised
+    # small-talk injection to 35% with no referring hit gained, so it is not here either.
     min_query_tokens: int = 0
     # Step 2 (issue #3534). rewrite_timeout_sec bounds the pre-turn rewrite; past it the raw
     # message is used. link_top_k is how many referent neighbours join the rerank (0 = off).
@@ -462,6 +464,15 @@ class LivedMemoryRecall:
         rewrite_info: Dict[str, Any] = {"outcome": "off"}
         out.debug["rewrite"] = rewrite_info
         try:
+            qtoks = set(tokenize(query))
+            if len(qtoks) < self.cfg.min_query_tokens:
+                # Too few words to search with. Replay (2026-11-17) tried letting the rewrite
+                # rescue these: no referring message in the bank was this short, and small-talk
+                # injection rose from 13% to 35%. So the step 1 floor stands, and the rewrite is
+                # not even asked.
+                out.debug["skipped"] = "few_content_words"
+                out.debug["content_tokens"] = len(qtoks)
+                return out
             # The rewrite starts first: it does not need the snapshot, and it is the slow part.
             rewrite_task: asyncio.Future | None = None
             rewrite_started = time.perf_counter()
@@ -497,15 +508,6 @@ class LivedMemoryRecall:
             t = time.perf_counter()
             await self.snapshot()
             timings["snapshot"] = int((time.perf_counter() - t) * 1000)
-            qtoks = set(tokenize(query))
-
-            if len(qtoks) < self.cfg.min_query_tokens:
-                # Too few words to search with on its own. Search only if the rewrite named
-                # something; small talk comes back NONE and stops here.
-                if not (await rewrites()):
-                    out.debug["skipped"] = "few_content_words"
-                    out.debug["content_tokens"] = len(qtoks)
-                    return out
 
             def allowed(rec: LivedRecord) -> bool:
                 return as_of is None or rec.created_at is None or rec.created_at < as_of

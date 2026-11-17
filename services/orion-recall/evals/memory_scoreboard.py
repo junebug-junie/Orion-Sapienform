@@ -302,13 +302,17 @@ def build_judge_prompt(item: Item, message: str, reply: str, record_texts: Seque
         f"Orion's reply:\n{reply}\n\n"
         "Pick exactly one label:\n"
         "- correct: the reply gives the recorded truth (for a never-happened item: says it does not know, "
-        "has no record, or that it did not happen). Minor wording differences are fine.\n"
+        "has no record, or that it did not happen). Minor wording differences are fine, and so is a date one "
+        "day off (records are stored in UTC; Juniper lives in US Mountain time).\n"
         "- dont_know: the reply says it is not sure or asks to be reminded, but does not say it never happened.\n"
         "- no_memory: the reply says it has no memory or record of this, or that it did not happen.\n"
-        "- invented: the reply states specific details that are false or not in the record (this includes "
-        "describing a never-happened event as real, or giving a corrected old answer as true).\n"
+        "- invented: the reply CONTRADICTS the recorded truth, gets the asked-for answer wrong, describes a "
+        "never-happened event as real, or gives a corrected old answer as true.\n"
         "- unrelated: the reply does not address it.\n"
-        "If a reply mixes the truth with false specific details, the label is invented.\n"
+        "The record lines above are only the few records this question targets, not all of Orion's memory. "
+        "Extra details the record lines do not mention are NOT invented; Orion may know them from other "
+        "memories. Only a detail that contradicts the recorded truth, or a wrong answer to what was asked, "
+        "makes a reply invented.\n"
         'Answer with JSON only: {"label": "<one label>", "why": "<one short sentence>"}'
     )
 

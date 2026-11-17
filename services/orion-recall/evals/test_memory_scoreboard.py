@@ -169,6 +169,11 @@ def test_abstention_judge_prompt_never_leaks_expected_as_truth_and_update_prompt
     assert "OLD, wrong answer was: red" in p and "The fence is blue." in p
     p = ms.build_judge_prompt(by_qid["event_implicit"], "she's back!", "Yay!")
     assert "not a direct question" in p
+    # Extra true context is not invention (live 2026-11-17: 25 correct replies were labelled
+    # invented because they cited details beyond the target records).
+    p = ms.build_judge_prompt(by_qid["fact_city"], "Which city?", "Lakeport, since spring.")
+    assert "Extra details the record lines do not mention are NOT invented" in p
+    assert "CONTRADICTS" in p and "one day off" in p
 
 
 def test_table_has_every_category_and_no_memory_text():

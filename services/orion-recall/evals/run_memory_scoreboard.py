@@ -437,6 +437,10 @@ async def _main(args: argparse.Namespace) -> int:
         if args.resume:
             prev = json.loads(Path(args.resume).expanduser().read_text(encoding="utf-8"))
             args.prior_turns = prev.get("turns") or []
+            if args.rejudge:
+                # Keep the replies, drop the judgments: the judge rubric changed, the turns did not.
+                args.prior_turns = [{k: v for k, v in t.items() if k not in ("judge_label", "judge_raw", "outcome")}
+                                    for t in args.prior_turns]
             if "retrieval" not in phases:
                 retrieval = prev.get("retrieval")   # keep the resumed run's retrieval score
         turns: List[Dict[str, Any]] = []
@@ -490,6 +494,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--resume", default=None,
                     help="earlier run JSON: keep its replies and judgments, redo failed turns and unjudged items")
+    ap.add_argument("--rejudge", action="store_true", help="with --resume: judge every kept reply again")
     ap.add_argument("--hub-wait", type=float, default=900.0, help="seconds to wait for Hub /health before a turn")
     args = ap.parse_args(argv)
     if not args.bus_url:

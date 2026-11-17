@@ -92,4 +92,4 @@ cd /mnt/scripts/Orion-Sapienform && git pull --ff-only
 
 ## PR link
 
-PR_LINK
+https://github.com/junebug-junie/Orion-Sapienform/pull/3643

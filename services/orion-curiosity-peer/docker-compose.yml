@@ -29,7 +29,7 @@ services:
 
       - CURIOSITY_PEER_EPISODES_ENABLED=${CURIOSITY_PEER_EPISODES_ENABLED:-false}
       # Claude usage meter root (fail-closed without a fresh `clear` reading).
-      - CURIOSITY_PEER_CLAUDE_PROJECTS_PATH=${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:-${HOME}/.claude/projects}
+      - CURIOSITY_PEER_CLAUDE_PROJECTS_PATH=${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:?set CURIOSITY_PEER_CLAUDE_PROJECTS_PATH}
 
       - ORION_CURIOSITY_GRAPH_HOST=${ORION_CURIOSITY_GRAPH_HOST:-}
       - ORION_CURIOSITY_GRAPH_PORT=${ORION_CURIOSITY_GRAPH_PORT:-}
@@ -50,7 +50,7 @@ services:
       # tree (cross-project subagent transcripts) still resolve -- same rule
       # as orion-cocreation-signals. Without this mount every hire is refused
       # `claude_budget_unobserved` (live 2026-11-14..16).
-      - ${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:-${HOME}/.claude/projects}:${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:-${HOME}/.claude/projects}:ro
+      - ${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:?set CURIOSITY_PEER_CLAUDE_PROJECTS_PATH in services/orion-curiosity-peer/.env}:${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:?set CURIOSITY_PEER_CLAUDE_PROJECTS_PATH}:ro
     # DELIBERATELY ABSENT: no docker.sock, no SSH/gh mounts, no host network.
     # Credential isolation is the point of this container existing.
 

@@ -118,7 +118,7 @@ def context_pack_from_help(help_req: HelpRequestV1) -> str:
 
 
 def _map_claude_result(help_req: HelpRequestV1, result: Union[str, PeerBriefV1]) -> PeerBriefV1:
-    """Map Claude room output; strip evidence claims (room has --tools \"\")."""
+    """Map Claude room output; strip evidence claims (room tools read Orion state only, never the repo or graph)."""
     if isinstance(result, PeerBriefV1):
         brief = result
         if brief.peer != "claude_room":

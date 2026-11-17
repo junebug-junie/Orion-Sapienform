@@ -64,3 +64,20 @@ def test_hub_enqueue_flag_is_separate_contract() -> None:
     """
     assert "HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED" not in Settings.model_fields
     assert "CURIOSITY_PEER_ENABLED" in Settings.model_fields
+
+
+def test_compose_mounts_the_claude_meter_read_only_at_the_same_path() -> None:
+    """The 2026-11-14..16 outage was a missing mount: the meter read an empty
+    /root/.claude/projects and refused every hire. Guard the mount itself."""
+    from pathlib import Path
+
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+    expr = "${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:?"
+    mounts = [
+        ln.strip() for ln in compose.splitlines()
+        if ln.strip().startswith("- ") and ln.strip().endswith(":ro") and expr in ln
+    ]
+    assert len(mounts) == 1, mounts
+    src, dst = mounts[0][2:-3].split("}:", 1)
+    assert src.startswith(expr) and dst.startswith(expr)
+    assert f"CURIOSITY_PEER_CLAUDE_PROJECTS_PATH={expr}" in compose

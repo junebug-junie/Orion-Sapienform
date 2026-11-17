@@ -189,6 +189,8 @@ Rules:
 - A question is read later by a curiosity run that cannot see this frame. Never write an id in "question" or
   "why". To point it at an arc or an act, put it in "refs" ({"kind": "arc", "id": "<arc_id>"} or
   {"kind": "act", "id": "<act_...>"}); the run is told how to open each one. Any other id refuses the move.
+- A concern's own event (a letter thread, a turn, an event_id) has no ref a run can open: point a move at it with
+  the move's concern_id, and describe the thread in words.
 - Reply with ONE JSON object and nothing else:
 {"reading": "...", "pick": "<concern_id> | none", "concerns": {"keep": ["<concern_id>"], "add": [{"text": "...", "arc_id": null}], "drop": [{"concern_id": "...", "why": "..."}]},
  "move": null | {"kind": "curiosity_focus", "question": "...", "why": "...", "concern_id": "<concern_id> | new | null",
@@ -722,6 +724,23 @@ def _split_experience(raw: list[Any]) -> tuple[list[Any], list[str], list[str]]:
     return rest, cites, problems
 
 
+def _split_concern_refs(raw: list[Any], concerns: Sequence[PrimeConcernV1]) -> tuple[list[Any], list[str]]:
+    """(other items, concern_ids): a ref whose id is a held concern's event_ref (a letter thread
+    ``orion_day_letter:<date>#thread<i>``, a ``turn:`` ref, a funded event) names that concern, not something a
+    curiosity run can open. Split off whatever kind it was written as (11-16 Prime wrote one as an act, #3609)."""
+    by_event = {c.event_ref: c.concern_id for c in concerns if c.event_ref}
+    rest: list[Any] = []
+    named: list[str] = []
+    for item in raw:
+        rid = item.get("id") if isinstance(item, Mapping) else None
+        cid = by_event.get(rid.strip()) if isinstance(rid, str) else None
+        if cid is None:
+            rest.append(item)
+        else:
+            named.append(cid)
+    return rest, named
+
+
 def shown_cites(cites: Sequence[str], shown: Optional[Sequence[str]]) -> tuple[list[str], list[str]]:
     """(cites to record, warnings): only ids the frame showed, in cite order, at most NOW_MAX_CITES."""
     if not cites:
@@ -858,8 +877,10 @@ def apply_answer(
             move = move.model_copy(update={"hours": clamp_hours(move.hours), "why": move.why[:600]})
     elif move is not None:
         # A bad experience ref in a move is a warning (never refuses the move); a bad arc/act ref refuses it.
+        concern_refs: list[str] = []
         if isinstance(move.refs, list):
             rest, move_cites, exp_problems = _split_experience(move.refs)
+            rest, concern_refs = _split_concern_refs(rest, concerns)
             refs, problems = parse_openable_refs(rest)
         else:
             move_cites, exp_problems = [], []
@@ -869,6 +890,17 @@ def apply_answer(
         cited.extend(c for c in move_cites if c not in cited)
         stray = id_tokens_not_in(f"{move.question}\n{move.why}", refs)
         cited_tokens = {t.lower() for c in move_cites for t in id_tokens_not_in(c, [])}
+        if not problems and concern_refs:
+            # A held concern's event (a letter thread, a turn, a funded event) has no openable ref: the move's
+            # concern_id is how a move points at it (#3609). Unambiguous -> the move takes that concern_id.
+            agrees = move.concern_id in (None, concern_refs[0]) or (
+                move.concern_id == NEW_CONCERN and concern_refs[0] in added)
+            if len(set(concern_refs)) > 1 or not agrees:
+                problems = [f"refs name the event of concern {', '.join(sorted(set(concern_refs)))}, but the move's "
+                            f"concern_id is {move.concern_id!r}; a concern's event has no openable ref, point the "
+                            "move at it with its concern_id and leave it out of refs"]
+            else:
+                move = move.model_copy(update={"concern_id": concern_refs[0]})
         if problems:
             refusal = "; ".join(problems)
         elif stray and any(t in cited_tokens for t in stray):
@@ -892,6 +924,9 @@ def apply_answer(
         if refusal is None and move.concern_id and move.concern_id not in {c.concern_id for c in concerns}:
             warnings.append(f"move cites unknown concern {move.concern_id!r}; kept without it")
             move = move.model_copy(update={"concern_id": None})
+        if refusal is None and concern_refs:
+            warnings.append(f"move refs named the event of concern {concern_refs[0]}; used it as the move's "
+                            "concern_id (a concern's event has no openable ref)")
     new_state = state.model_copy(update={
         "concerns": concerns,
         "last_reading": answer.reading[:READING_CAP],

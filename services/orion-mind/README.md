@@ -490,6 +490,13 @@ thread and makes one outreach attempt through the normal gates (quiet hours, the
 blocked attempt still leaves the reply in the thread. The act closes 1 when the reply is stored, else 0. A concern
 taken on does not fade while its run is open.
 
+Time budget (#3354): the order carries `timeout_sec` = `PRIME_INTENTION_TURN_TIMEOUT_SEC` (default 3600, max 3600).
+Durable-runs uses it as the carry attempt's timer, and Hub gives the FCC motor that limit minus the 30 s reply grace
+and its finalize reserve (`HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC`, 330 s live), so about 3,240 s. At the old
+1800 the first live carry (a "lazy browse" dig on the agent lane) was cut at 1,440 s of motor time; with its findings
+carried, attempt 2 needed 317 s more, ~1,757 s in all. A cut attempt is still retried on the durable run with what it
+found (`retry_cut_short`).
+
 - Record: Redis `orion:prime:intentions` (`PrimeIntentionsStateV1`; no quote text is ever stored in Prime's state).
 - Logs: `prime_intention_taken`, `prime_intention_ordered`, `prime_intention_order_unanswered`,
   `prime_intention_closed`, `prime_intention_open_failed`, `prime_intention_step_failed`.

@@ -59,7 +59,10 @@ def test_recorded_tick_sequences_replay_identically():
     re-cut at its 160-character cap, and ``need=-`` removed from prime_thought log lines, every part of every
     scenario equals the previous golden (checked by script; 13 parts changed, 0 after mapping). No scenario turns
     hunger on (the flag is absent from the fake settings), and none woke on the floor alone.
-    Re-recorded 2026-11-17 (concern evidence clock, #3574): with the track record's and CONCERN_BASIS's fade words
+    Re-recorded 2026-11-17 (#3609, a concern's event is reached by concern_id): with the system prompt's new
+    two-line rule about a concern's own event removed, every part of every scenario equals the previous golden
+    (checked by script; 15 parts changed, 0 after mapping).
+    Then re-recorded 2026-11-17 (concern evidence clock, #3574): with the track record's and CONCERN_BASIS's fade words
     ("nothing renewed it for ...") mapped back to "not kept for ...", every part of every scenario equals the
     previous golden (checked by script; 8 parts changed, 0 after mapping). No scenario turns the clock on (the flag
     is absent from the fake settings), so a keep still renews in every scenario."""

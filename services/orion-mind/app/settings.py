@@ -204,6 +204,10 @@ class Settings(BaseSettings):
     # (PRIME_HUB_URL); the reply goes back into the originating chat thread. false = no move, no frame section, no
     # order, nothing watched (runs already ordered finish or expire). Shipped ON.
     PRIME_INTENTION_TAKE_ON_ENABLED: bool = Field(default=True, alias="PRIME_INTENTION_TAKE_ON_ENABLED")
+    # The carry turn's budget per attempt (the order's timeout_sec; the run's attempt timer and the FCC motor's limit
+    # derive from it). 3600 (#3354): a dig-style promise on the agent lane needed ~1,757 s of FCC work live.
+    PRIME_INTENTION_TURN_TIMEOUT_SEC: float = Field(default=3600.0, ge=60.0, le=3600.0,
+                                                    alias="PRIME_INTENTION_TURN_TIMEOUT_SEC")
     # Prime hunger (integration design Part B, orion/prime/hunger.py): needs with content (a concern near its horizon,
     # an uncited surprise, Juniper's silence past her usual gap) wake Prime when the strongest damped need reaches
     # PRIME_HUNGER_THRESHOLD, at most PRIME_HUNGER_DAILY_BUDGET thoughts in any 24 h (past that only a change wakes).

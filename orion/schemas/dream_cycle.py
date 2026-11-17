@@ -137,6 +137,24 @@ class DreamHypothesisV1(BaseModel):
     expires_at: datetime
 
 
+PairOutcome = Literal["linked", "no_link", "echo", "unparseable", "failed"]
+PAIR_ANSWER_CHARS = 300
+
+
+class PairAnswerV1(BaseModel):
+    """What the model said for one recombination pair, kept so a sleep's counts can be read back
+    against the answers that produced them (#3412: 8 sleeps of 0 links, no answer stored)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    arm: HypothesisArm
+    ref_a: str
+    ref_b: str
+    outcome: PairOutcome
+    # First PAIR_ANSWER_CHARS of the raw answer; "" when the call failed.
+    answer: str = Field(default="", max_length=PAIR_ANSWER_CHARS)
+
+
 class DreamCycleV1(BaseModel):
     """One sleep. Persisted whole as dream_cycle.cycle_json (no bus channel:
     Hub reads hypotheses from Postgres, and a channel with no consumer is an
@@ -153,11 +171,16 @@ class DreamCycleV1(BaseModel):
     replay: list[ReplayItemV1] = Field(default_factory=list, max_length=MAX_REPLAY_ITEMS)
     hypotheses: list[DreamHypothesisV1] = Field(default_factory=list, max_length=MAX_HYPOTHESES)
     # Pairs the LLM declined to link (answered "no link"). Counted, not hidden:
-    # a dream that links everything is manufacturing significance.
+    # a dream that links everything is manufacturing significance. Before 2026-11-17 this also
+    # counted echoes (below); rows from before then cannot tell the two apart.
     no_link_count: int = 0
+    # The model answered "link" but its claim only pasted one fragment back (recombine._echoes).
+    echo_count: int = 0
     # LLM answered but not in the requested shape. Kept apart from no_link so
     # "the model honestly declined" is not overstated by format failures.
     unparseable_count: int = 0
     llm_failures: int = 0
     compaction_delta_id: Optional[str] = None
     note: str = ""
+    # One entry per pair asked, in order (dream arm first, then control).
+    pair_answers: list[PairAnswerV1] = Field(default_factory=list, max_length=MAX_HYPOTHESES)

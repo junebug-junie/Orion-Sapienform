@@ -73,7 +73,9 @@ path of a file with the full result; read only what you need from that file.
   organs <date> [<end>]  what each organ did (yesterday is the usual ask): counts, quotes with
                          [experience:<id>] refs, cites, breaks, use rate. At most 7 days.
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
+  take-ons [<days>]      sub-agents each take-on started.
   claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
+  know <words>           your lived memories matching <words>; run it before saying you don't remember.
   look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
@@ -1796,6 +1798,33 @@ def cmd_turn_steps(session_id: str, turns: str, out: Out, runner=None) -> str:
     return capped(turn_steps.render(steps, session_id), tail=f"full steps: {path}")
 
 
+def cmd_take_ons(days: str, out: Out, runner=None, find=None) -> str:
+    """Each take-on (intention.carry run) and the sub-agents its carry turn started (orion/dig/take_ons.py)."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import take_ons
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    if not (days.isascii() and days.isdigit()) or not 1 <= int(days) <= take_ons.MAX_DAYS:
+        raise DigError(f"take-ons: <days> must be a number 1-{take_ons.MAX_DAYS}, got {days!r}")
+    try:
+        rows = psql_rows(runner or ReadOnlyPsql(timeout_sec=60.0), take_ons.build_sql(int(days)))
+    except RuntimeError as exc:
+        raise DigError(f"take-ons: {exc}") from exc
+    last_generation = lambda key: None  # noqa: E731
+    if find is None:
+        from orion.harness import session_resume as sr
+
+        home = sr.claude_home()
+        find = lambda sid: sr.find_transcript(home, sid)  # noqa: E731
+
+        def last_generation(key: str):
+            raw = sr._read(sr._registry_path(home, key)).get("generation")
+            return raw if isinstance(raw, int) else None
+    found = take_ons.read_take_ons(rows, find, last_generation)
+    path = out.write("take-ons", [{**t.__dict__, "dispatches": t.dispatches} for t in found])
+    return capped(take_ons.render(found, int(days)), tail=f"full list: {path}")
+
+
 # --- Claude's tools: Orion's standing grants (spec 2026-11-12-claude-hub-tools-orion-consent) -----
 
 def cmd_claude_grants(out: Out) -> str:
@@ -1827,6 +1856,22 @@ def cmd_claude_grants_set(category: str, setting: str, reason: str, out: Out) ->
     g.append_grant(path, line)
     return (f'claude-grants: {line.category} {before} -> {line.setting} ("{line.reason}"); Hub shows it at '
             f"/api/claude-tools/grants\ngrants ledger: {path}")
+
+
+# --- know (lived memories, issue #3535) -----------------------------------------------------
+
+def cmd_know(words: list[str], out: Out, post=None, environ=None) -> str:
+    """Read-only lookup through orion-recall (never Postgres): what recall would inject, plus weak matches."""
+    from orion.dig import know
+
+    text = " ".join(words)
+    try:
+        data = know.lookup(text, post=post, environ=environ)
+    except know.KnowError as exc:
+        raise DigError(str(exc).removeprefix("know: ")) from exc
+    shown = " ".join(text.split())[:know.MAX_WORDS_CHARS]
+    path = out.write("know", {"words": shown, **data})
+    return capped(know.render(shown, data), tail=f"full record (every hit, untrimmed): {path}")
 
 
 # --- notes ----------------------------------------------------------------------------------
@@ -1928,10 +1973,14 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_organs(first, _parse_day(a[1]) if len(a) == 2 else first, out)
         elif ns.command == "turn-steps" and len(a) in (1, 2):
             text = cmd_turn_steps(a[0], a[1] if len(a) == 2 else "2", out)
+        elif ns.command == "take-ons" and len(a) <= 1:
+            text = cmd_take_ons(a[0] if a else "7", out)
         elif ns.command == "claude-grants" and not a:
             text = cmd_claude_grants(out)
         elif ns.command == "claude-grants" and len(a) >= 5 and a[0] == "set" and a[3] == "because":
             text = cmd_claude_grants_set(a[1], a[2], " ".join(a[4:]), out)
+        elif ns.command == "know" and a:
+            text = cmd_know(a, out)
         elif ns.command == "look" and a[:1] == ["check"] and len(a) >= 6 and "because" in a[4:]:
             cut = len(a) - 1 - a[::-1].index("because")  # the last one: what you saw may say "because"
             if cut != len(a) - 2:

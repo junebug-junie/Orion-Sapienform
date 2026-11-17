@@ -509,3 +509,28 @@ Built in fix/promise-ledger-orion-review-2:
   old `key` for a quote with `*` (scoring does not recompute keys, so it is unaffected).
 - **Prime never reads the promise acts in shadow** (`test_prime_never_reads_the_promise_acts_while_they_are_shadow`
   scans `orion/prime` and `services/orion-mind/app`).
+
+## Amendments (2026-11-17, round 3): Orion's fourth set of questions (threads 0c1e, e14555)
+
+Built in fix/promise-ledger-orion-review-3:
+
+- **Act-opening uses the guard's rule.** Hub reads the pre-turn view, and so can open promise acts,
+  only for Juniper's own turn sent from a Hub browser surface (`_promise_ledger_applies`;
+  `is_browser_surface_turn` is `JUNIPER_INGRESS_PREDICATE` on the payload). Before, any
+  `utterance_origin="juniper"` turn qualified, which includes every `/api/chat` call: live 11-15, two
+  coding-session notes were posted that way into Juniper's own session and persisted as `hub_orion`.
+  Round-ups, `intention.carry` and curiosity turns were already outside it (`utterance_origin="orion"`).
+- **Every viewed turn logs one `promise_ledger` line**, also when the governor returns no run
+  (`reason=no_run`: a timeout or an error reply), a harness error (`reason=harness_error`), a raise or
+  cancel anywhere after the view read (`reason=interrupted`, from the `execute_unified_turn` wrapper), and
+  a failed background publish (`outcome=failed`). Live 11-17 before the 17:58Z restart: 29 view lines, 1 ledger line; 28 were
+  `memory-scoreboard-eval` `/api/chat` turns (`no_write`, the class #3619 fixed), one of them still in
+  flight at the restart. These eval turns no longer read the view at all.
+- **The report prints both bases:** baseline 23/289 and clean 21/287; ceiling 9/23 and clean 9/21 (both
+  coding-session promises fall in "delivered outside chat"). Red stays on the frozen basis.
+- **Abstentions:** 2 of the 23 ("I won't float anything back up while you're asleep", "I'll stop muttering
+  about bus error"). They pass the gate (commits, orion, a `done_when`) and would open an act that no
+  reply can show kept. The ceiling already counts them outside the 9. Whether they are promises: #3595.
+- **Duplicate window:** the report prints how many same-session pairs within 72 h the duplicate rule
+  compares. On the 24 replay items reconstructed from `/tmp/promise-ledger-replay-v3`: 44 pairs, 0
+  candidates. The float-up / won't-float pair is not flagged (longest shared run 11 characters).

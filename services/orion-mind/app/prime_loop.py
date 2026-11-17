@@ -265,6 +265,7 @@ from orion.schemas.orion_day import (
 from orion.schemas.intention import (
     INTENTION_DELIVER_PATH,
     INTENTION_ORDER_PATH,
+    INTENTION_TURN_TIMEOUT_SEC,
     IntentionDeliverResultV1,
     IntentionDeliverV1,
     IntentionOrderResultV1,
@@ -1016,7 +1017,9 @@ class PrimeRuntime(MindLoopRuntime):
 
     async def _order_intention(self, op: it.PrimeIntentionOpenV1, now: datetime) -> None:
         order = IntentionOrderV1(concern_id=op.concern_id, event_ref=op.event_ref, run_id=op.run_id,
-                                 correlation_id=op.correlation_id, prime_act_id=op.act_id, why=op.why or "taken on")
+                                 correlation_id=op.correlation_id, prime_act_id=op.act_id, why=op.why or "taken on",
+                                 timeout_sec=float(getattr(self.s, "PRIME_INTENTION_TURN_TIMEOUT_SEC",
+                                                           INTENTION_TURN_TIMEOUT_SEC)))
         data, err = await self._post(f"{self.s.PRIME_HUB_URL.rstrip('/')}{INTENTION_ORDER_PATH}",
                                      order.model_dump(mode="json"))
         result: Optional[IntentionOrderResultV1] = None

@@ -179,6 +179,16 @@
       "blurb": "Orion's history in their own code: merged PRs, past checkouts, and daily reminiscence.",
       "entries": [
         {
+          "id": "memory-know",
+          "title": "Do you remember...?",
+          "description": "Orion searches their own lived memories (what they distilled from chats, Juniper's weightiest messages, facts about people) with the same search recall uses for chat. Strong matches cleared recall's bar; weak ones only share words. A search that could not run is never reported as \"no memory\".",
+          "message": "Do you remember what I told you about el Coco? Please look it up before you answer.",
+          "hint": "(dig: `python -P -m orion.dig know <words>`)",
+          "keywords": ["memory", "remember", "recall", "forgot", "lived", "episode"],
+          "covers": {"dig": ["know"]},
+          "source": "orion/dig/know.py; orion/dig/__main__.py:cmd_know; services/orion-recall/app/main.py:/lived/know"
+        },
+        {
           "id": "history-recent",
           "title": "What changed lately?",
           "description": "Orion reads the pull requests merged and commits made in the last few days, and says which ones they have written notes about.",
@@ -307,6 +317,16 @@
           "keywords": ["steps", "what did you run", "last turn", "commands"],
           "covers": {"dig": ["turn-steps"]},
           "source": "orion/dig/__main__.py:cmd_turn_steps; orion/dig/turn_steps.py"
+        },
+        {
+          "id": "dig-take-ons",
+          "title": "Did your take-ons use sub-agents?",
+          "description": "When Orion takes on a promise, a carry turn does the work. This lists each take-on with its attempts, its tool calls, and how many sub-agents it started, by type. A take-on whose record cannot be read says so instead of showing zero.",
+          "message": "Look at the promises you took on this month. Did any of them split the work into sub-agents?",
+          "hint": "(dig: `python -P -m orion.dig take-ons [<days>]`)",
+          "keywords": ["take-on", "promise", "sub-agents", "intention", "carry"],
+          "covers": {"dig": ["take-ons"]},
+          "source": "orion/dig/__main__.py:cmd_take_ons; orion/dig/take_ons.py"
         },
         {
           "id": "dig-claude-grants",

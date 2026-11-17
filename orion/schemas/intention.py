@@ -40,8 +40,11 @@ INTENTION_CARRY_STEP_KEY = "carry"
 INTENTION_CARRY_NODES: tuple[str, ...] = ("harness_step", "finish")
 INTENTION_ORDER_PATH = "/api/intention/run"
 INTENTION_DELIVER_PATH = "/api/intention/deliver"
-# The carry turn's budget per attempt (the attempt timer and Hub's turn limit derive from it).
-INTENTION_TURN_TIMEOUT_SEC = 1800.0
+# The carry turn's budget per attempt (the attempt timer and Hub's turn limit derive from it; the FCC motor gets it
+# minus the 30 s reply grace and Hub's 330 s finalize reserve). 1800 -> 3600 (#3354): the first live carry (a "look
+# into X" dig on the agent lane, Bonsai 2 27B) needed ~1,757 s of FCC work in total (attempt 1 cut at its 1,440 s
+# motor budget, attempt 2 finished in 317 s from the carried findings); consult turns on the same seam run at 3600.
+INTENTION_TURN_TIMEOUT_SEC = 3600.0
 CONCERN_ID_PATTERN = r"^[0-9a-f]{16}$"
 
 # One value per adapter. ``letter_thread`` is declared now so the second adapter is one file plus one map entry

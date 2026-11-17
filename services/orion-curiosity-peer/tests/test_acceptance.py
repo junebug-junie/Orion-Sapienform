@@ -1,11 +1,12 @@
 """Patch 1 acceptance gates for contractor peer (fixture / mock driven).
 
-Maps design acceptances 1–8 without a live Cursor hire:
+Maps design acceptances 1–8 without a live hire. Claude is the only peer
+since #3397 (Cursor retired 2026-11-17):
 
   1 — no HelpRequest → no peer job
-  2 — budget refuse → refused_budget + soft-nudge text
-  3 — Cursor CLI argv read-only; no --force/--yolo; --mode ask required
-  4 — Claude fallback exactly once on token unavailable
+  2 — Claude budget refuse → refused_budget + soft-nudge text
+  3 — no Cursor path left in the service (no CLI, no Cursor modules)
+  4 — Claude asked exactly once, directly
   5 — persist MERGE callable + bus payload (sql shape covered elsewhere; live UNVERIFIED)
   6 — kickoff soft-nudge for ok; empty not success
   7 — strip SelfDefinition from peer output
@@ -15,13 +16,12 @@ Maps design acceptances 1–8 without a live Cursor hire:
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 
-from app.cursor_errors import TokenUnavailable
-from app.policy import assert_read_only_cli_argv, build_cursor_agent_argv
 from app.worker import _default_persist, handle_help_request
 from orion.core.bus.bus_schemas import ServiceRef
 from orion.curiosity.kickoff_prompt import build_kickoff_prompt
@@ -32,7 +32,6 @@ from orion.curiosity.peer_briefs import (
 )
 from orion.curiosity.self_inquiry_prompt import build_self_inquiry_prompt
 from orion.curiosity.study_material import StudyMaterial
-from orion.dev_economics.cursor_limit_events import CursorLimitObservation
 from orion.schemas.curiosity_peer import (
     PEER_BRIEF_CHANNEL,
     HelpRequestV1,
@@ -57,8 +56,11 @@ def _help(**overrides: Any) -> HelpRequestV1:
     return HelpRequestV1(**base)
 
 
-def _clear_budget() -> CursorLimitObservation:
-    return CursorLimitObservation(observed=True, state="clear", staleness_sec=1.0)
+@dataclass
+class _ClaudeLimit:
+    observed: bool = True
+    state: str = "clear"
+    staleness_sec: float | None = 1.0
 
 
 def _empty_material() -> StudyMaterial:
@@ -108,13 +110,9 @@ def test_acceptance_1_no_help_request_no_job() -> None:
 
 
 def test_acceptance_2_budget_refuse_and_soft_nudge() -> None:
-    """Budget refuse → refused_budget brief + 'could not hire' soft-nudge."""
-    calls = {"cursor": 0, "claude": 0}
+    """Claude budget refuse → refused_budget brief + 'could not hire' soft-nudge."""
+    calls = {"claude": 0}
     persisted: list[PeerBriefV1] = []
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        calls["cursor"] += 1
-        raise AssertionError("cursor must not run on budget refuse")
 
     def claude(*_a: Any, **_k: Any) -> str:
         calls["claude"] += 1
@@ -122,15 +120,15 @@ def test_acceptance_2_budget_refuse_and_soft_nudge() -> None:
 
     brief = handle_help_request(
         _help(),
-        cursor=cursor,
         claude=claude,
-        observe_limit=lambda: CursorLimitObservation(
+        observe_claude_limit=lambda: _ClaudeLimit(
             observed=False, state="unknown", staleness_sec=None
         ),
         persist=persisted.append,
     )
-    assert calls == {"cursor": 0, "claude": 0}
+    assert calls == {"claude": 0}
     assert brief.status == "refused_budget"
+    assert brief.peer == "claude_room"
     assert brief.refusal_reason
     assert persisted == [brief]
 
@@ -143,70 +141,43 @@ def test_acceptance_2_budget_refuse_and_soft_nudge() -> None:
 # --- 3 -----------------------------------------------------------------------
 
 
-def test_acceptance_3_cli_argv_read_only_no_force() -> None:
-    """Invoker policy: ask/print argv only; force/yolo/plan refused."""
-    ok = build_cursor_agent_argv(
-        agent_bin="cursor-agent",
-        prompt="investigate",
-        workspace="/repo",
-        model="composer-2.5",
-    )
-    assert_read_only_cli_argv(ok)
-    assert ok[ok.index("--mode") + 1] == "ask"
-    for bad in ("--force", "--yolo", "--approve-mcps"):
-        with pytest.raises(ValueError):
-            assert_read_only_cli_argv([*ok[:-1], bad, ok[-1]])
+def test_acceptance_3_no_cursor_path_left() -> None:
+    """Kill means kill: no Cursor modules or CLI call in the service."""
+    from pathlib import Path
 
-    plan = [
-        "cursor-agent",
-        "-p",
-        "--mode",
-        "plan",
-        "--workspace",
-        "/repo",
-        "--trust",
-        "x",
-    ]
-    with pytest.raises(ValueError) as exc:
-        assert_read_only_cli_argv(plan)
-    assert "ask" in str(exc.value).lower()
+    import app.worker as worker_mod
+
+    app_dir = Path(worker_mod.__file__).parent
+    for gone in ("cursor_invoker.py", "cursor_errors.py", "policy.py"):
+        assert not (app_dir / gone).exists(), gone
+    for src in app_dir.glob("*.py"):
+        text = src.read_text()
+        assert "cursor_limit_events" not in text, src.name
+        assert "cursor_policy" not in text, src.name
+        assert "import subprocess" not in text, src.name
 
 
 # --- 4 -----------------------------------------------------------------------
 
 
-def test_acceptance_4_fallback_once() -> None:
-    """Token unavailable → exactly one Claude attempt; success skips second."""
-    from dataclasses import dataclass
-
-    calls = {"cursor": 0, "claude": 0}
-
-    @dataclass
-    class _ClearClaude:
-        observed: bool = True
-        state: str = "clear"
-        staleness_sec: float | None = 1.0
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        calls["cursor"] += 1
-        raise TokenUnavailable("cursor tokens dry")
+def test_acceptance_4_claude_once() -> None:
+    """A hire asks Claude exactly once, directly; reply becomes an ok brief."""
+    calls = {"claude": 0}
 
     def claude(*_a: Any, **_k: Any) -> str:
         calls["claude"] += 1
-        return '{"summary": "fallback notes", "evidence_pointers": ["policy.py"]}'
+        return '{"summary": "claude notes", "evidence_pointers": ["policy.py"]}'
 
     brief = handle_help_request(
         _help(),
-        cursor=cursor,
         claude=claude,
-        observe_limit=_clear_budget,
-        observe_claude_limit=lambda: _ClearClaude(),
+        observe_claude_limit=_ClaudeLimit,
         persist=lambda _b: None,
     )
-    assert calls == {"cursor": 1, "claude": 1}
+    assert calls == {"claude": 1}
     assert brief.status == "ok"
     assert brief.peer == "claude_room"
-    assert "fallback notes" in brief.summary
+    assert "claude notes" in brief.summary
     assert "conversation-only" in brief.summary.lower()
     assert brief.evidence_pointers == []
 
@@ -244,7 +215,7 @@ def test_acceptance_5_persist_merge_and_bus() -> None:
         help_id="help-1",
         run_id=RUN_ID,
         prior_id="prior-1",
-        peer="cursor_auto",
+        peer="claude_room",
         status="ok",
         summary="fixture persist",
         evidence_pointers=["worker.py"],
@@ -284,7 +255,7 @@ def test_acceptance_6_kickoff_soft_nudge() -> None:
         brief_id="brief-ok",
         help_id="help-ok",
         run_id=RUN_ID,
-        peer="cursor_auto",
+        peer="claude_room",
         status="ok",
         summary="Check worldview RO_QUERY gate.",
     )
@@ -292,7 +263,7 @@ def test_acceptance_6_kickoff_soft_nudge() -> None:
         brief_id="brief-empty",
         help_id="help-empty",
         run_id=RUN_ID,
-        peer="cursor_auto",
+        peer="claude_room",
         status="empty",
         summary="",
     )

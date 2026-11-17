@@ -45,11 +45,11 @@ def test_queue_line_never_embeds_raw_counts() -> None:
 
 def test_queue_line_prefers_hire_not_compete_with_gpu() -> None:
     text = "\n".join(format_queue_contention_progress(score=8.0, driver=SOURCE_DURABLE)).lower()
-    assert "hire_cursor" in text or "hire cursor" in text
+    assert "hire_peer" in text or "hire peer" in text
     assert "compete" not in text
     assert "prefer hire when mind says deep" not in text
     # Elevated queue must push hire, never excuse staying local.
-    assert "reason to hire" in text or "reason to hire_cursor" in text
+    assert "reason to hire" in text or "reason to hire_peer" in text
     assert "not a reason to stay" in text or "not a reason to" in text
     assert "no hire" not in text
     assert "uneconom" not in text
@@ -90,8 +90,8 @@ def test_stuck_seed_queue_does_not_push_a_hire() -> None:
     from orion.field.queue_contention import OLDEST_WAIT_SUFFIX, SOURCE_SEED
 
     (line,) = format_queue_contention_progress(10.0, SOURCE_SEED + OLDEST_WAIT_SUFFIX)
-    assert "Write hire_cursor" not in line
-    assert "not by itself a reason to hire_cursor" in line
+    assert "Write hire_peer" not in line
+    assert "not by itself a reason to hire_peer" in line
 
 
 def test_capacity_oldest_wait_drivers_keep_the_hire_nudge() -> None:
@@ -99,4 +99,4 @@ def test_capacity_oldest_wait_drivers_keep_the_hire_nudge() -> None:
 
     for driver in (SOURCE_DURABLE + OLDEST_WAIT_SUFFIX, SOURCE_GPU_POOL + OLDEST_WAIT_SUFFIX, SOURCE_SEED):
         (line,) = format_queue_contention_progress(6.0, driver)
-        assert "Write hire_cursor and HelpRequest now" in line
+        assert "Write hire_peer and HelpRequest now" in line

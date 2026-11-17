@@ -145,7 +145,7 @@ jobs:
           python -m pip install -r services/orion-sql-writer/requirements.txt
           python -m pip install -r services/orion-substrate-runtime/requirements.txt
           python -m pip install -r requirements-dev.txt
-          python -m pip install pytest-asyncio
+          python -m pip install pytest-asyncio jinja2 jsonschema  # promise_acts_mutations runs the promise gate tests
       - name: Run grammar Postgres integration tests
         run: |
           PYTHONPATH=.:services/orion-sql-writer:services/orion-sql-writer/tests python -m pytest -q -m integration \
@@ -174,6 +174,11 @@ jobs:
         env:
           ORION_SQL_WRITER_TEST_DATABASE_URI: postgresql://postgres:postgres@localhost:5432/conjourney
         run: python services/orion-sql-writer/evals/camera_ask_acts_mutations.py
+      # Intention ledger D2 (shadow): every mutant of the shadow / void / kept-quote / offer guards must fail the tests.
+      - name: Promise acts mutation check (must kill every mutant)
+        env:
+          ORION_SQL_WRITER_TEST_DATABASE_URI: postgresql://postgres:postgres@localhost:5432/conjourney
+        run: python services/orion-sql-writer/evals/promise_acts_mutations.py
       # Attention patch 4b: every mutant of the bid-before-open guards (held does not open, the backoff, one want per
       # ask, Juniper's card and shadow never bid, every opener bids) must fail the tests.
       - name: Camera-ask bid mutation check (must kill every mutant)

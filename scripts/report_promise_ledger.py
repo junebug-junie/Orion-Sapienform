@@ -9,7 +9,9 @@ Over the last ``--days`` (default 28) it reports:
 * promise acts (``grammar_acts`` actor ``hub.promise``, signal ``promise_kept``): open, kept (by the
   kind of evidence that closed it), expired, void (no Juniper chat turn in the horizon: censored);
 * un-closeable: expired acts the judge was never shown at any Juniper turn in their window (more
-  open promises than the judge's view, ``PROMISE_JUDGE_VIEW_MAX``). They are not broken promises;
+  open promises than the judge's view, ``PROMISE_JUDGE_VIEW_MAX``). They are not broken promises.
+  Approximate: turn times here are ``chat_history_log.created_at`` (when the reply was stored), not
+  the ingress time the resolver uses, so a turn at the very edge of a window can fall either side;
 * expired acts whose promising turn got an intention carry reply in the window (Prime took the
   promise on and delivered something; the ledger does not count a carry as a keep in v1);
 * keep rate kept / (kept + expired), void and un-closeable left out, with a Beta(1, 1) posterior;
@@ -77,13 +79,14 @@ JUNIPER_STARTS_SQL = f"""
 SELECT created_at FROM chat_history_log WHERE {JUNIPER_TURN_PREDICATE} AND created_at >= %(since)s ORDER BY created_at
 """
 JUDGED_SQL = f"""
-SELECT t.correlation_id, t.created_at,
+SELECT DISTINCT ON (t.correlation_id) t.correlation_id, t.created_at,
        t.run_artifact -> 'reflection' ->> 'reflection_source' AS reflection_source,
        t.run_artifact -> 'reflection' -> 'promises_made' AS made,
        t.run_artifact ->> 'final_text' AS final_text
   FROM harness_turn_trace t
   JOIN chat_history_log c ON c.correlation_id = t.correlation_id
  WHERE t.created_at >= %(since)s AND {JUNIPER_TURN_PREDICATE.replace('prompt', 'c.prompt').replace('client_meta', 'c.client_meta')}
+ ORDER BY t.correlation_id
 """
 CARRY_SQL = """
 SELECT client_meta ->> 'concern_id' AS concern_id, created_at

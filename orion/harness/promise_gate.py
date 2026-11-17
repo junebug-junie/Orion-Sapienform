@@ -26,7 +26,8 @@ model call or a word list. Six rules (docs/superpowers/specs/2026-11-11-intentio
 3. A ``promises_kept`` entry must be one of the open-promise ids the harness showed the
    judge, AND carry a quote of the words in this reply that deliver it, literally in the reply
    (same test as rule 1; intention ledger amendment 5, 2026-11-16). An unknown id, a missing
-   quote, or a quote that is not in the reply is dropped.
+   quote, a quote that is not in the reply, or a quote that only repeats the promise's own words
+   (promising again is not keeping) is dropped.
 
 Offers (``PromiseV1.offer``) are recorded but are not counted as promises until a later
 judge call accepts them (``counted_promise_quotes``).
@@ -107,6 +108,8 @@ class PromiseGateResult:
     dropped_unknown_kept: list[str] = field(default_factory=list)
     # Kept ids the judge gave no delivering quote for, or whose quote is not in the reply.
     dropped_kept_not_in_text: list[str] = field(default_factory=list)
+    # Kept ids whose "delivering" quote is the promise's own words again (re-promising is not keeping).
+    dropped_kept_repeats_promise: list[str] = field(default_factory=list)
     dropped_over_cap: int = 0
 
     @property
@@ -116,6 +119,7 @@ class PromiseGateResult:
                 + self.dropped_too_long + self.dropped_too_short
                 + len(self.dropped_unknown_offer)
                 + len(self.dropped_unknown_kept) + len(self.dropped_kept_not_in_text)
+                + len(self.dropped_kept_repeats_promise)
                 + self.dropped_over_cap)
 
 
@@ -224,7 +228,11 @@ def gate_promises(
         elif original not in accepted:
             accepted.append(original)
 
+    open_promises = list(open_promises)
     open_ids = {p if isinstance(p, str) else p.id for p in open_promises}
+    # The promise's own words, when the harness showed them: a "delivery" that only repeats the
+    # promise is promising it again, not keeping it.
+    promise_quotes = {p.id: normalize_for_quote_match(p.quote) for p in open_promises if not isinstance(p, str)}
     quotes_by_id: dict[str, str] = {}
     for ev in reflection.promises_kept_evidence:
         quotes_by_id.setdefault(ev.id, ev.quote)
@@ -237,8 +245,13 @@ def gate_promises(
         if entry in kept:
             continue
         quote = quotes_by_id.get(entry, "")
-        if len(quote) > PROMISE_QUOTE_MAX_CHARS or not quote_in_text(quote, reply_text):
+        norm_quote = normalize_for_quote_match(quote)
+        if len(norm_quote) > PROMISE_QUOTE_MAX_CHARS or not quote_in_text(quote, reply_text):
             result.dropped_kept_not_in_text.append(entry)
+            continue
+        own = promise_quotes.get(entry)
+        if own and (norm_quote in own or own in norm_quote):
+            result.dropped_kept_repeats_promise.append(entry)
             continue
         kept.append(entry)
         evidence.append(PromiseKeptV1(id=entry, quote=quote))
@@ -252,12 +265,13 @@ def gate_promises(
             "promise_gate corr=%s made=%d offers=%d accepted=%d kept=%d dropped_not_in_text=%d dropped_not_orion=%d "
             "dropped_not_commit=%d dropped_no_completion=%d "
             "dropped_too_long=%d dropped_too_short=%d dropped_unknown_offer=%d dropped_unknown_kept=%d "
-            "dropped_kept_not_in_text=%d dropped_over_cap=%d",
+            "dropped_kept_not_in_text=%d dropped_kept_repeats_promise=%d dropped_over_cap=%d",
             correlation_id, len(made), sum(1 for p in made if p.offer), len(accepted), len(kept),
             len(result.dropped_not_in_text), len(result.dropped_not_orion), len(result.dropped_not_commit),
             len(result.dropped_no_completion),
             result.dropped_too_long, result.dropped_too_short, len(result.dropped_unknown_offer),
-            len(result.dropped_unknown_kept), len(result.dropped_kept_not_in_text), result.dropped_over_cap,
+            len(result.dropped_unknown_kept), len(result.dropped_kept_not_in_text),
+            len(result.dropped_kept_repeats_promise), result.dropped_over_cap,
         )
     return result
 

@@ -83,11 +83,7 @@ async def test_delivered_juniper_turn_opens_and_closes_promise_acts(monkeypatch)
 
     offer_ref = promise_ref("c1", 1)
 
-    async def _view(session_id, corr, *, open_too=True, timeout_sec=2.0):
-        assert open_too is False and corr == "c2"
-        return PromiseView(offers=[(offer_ref, "If you want, I'll re-read it later.")])
-
-    monkeypatch.setattr("orion.hub.promise_ledger.promise_view_for_turn", _view)
+    view = PromiseView(offers=[(offer_ref, "If you want, I'll re-read it later.")])
     kept = promise_act_id(promise_ref("c0", 0))
     reflection = _reflection(
         promises_made=[PromiseV1(**_item(QUOTE)), PromiseV1(**_item("If you want, I'll look again.", offer=True))],
@@ -95,7 +91,8 @@ async def test_delivered_juniper_turn_opens_and_closes_promise_acts(monkeypatch)
         promises_kept=[kept], promises_kept_evidence=[PromiseKeptV1(id=kept, quote="Here is the read.")])
     bus = _Bus()
     counts = await turn_orchestrator._publish_promise_acts(
-        bus, correlation_id="c2", session_id="s1", source_label="hub_orion", client_meta=None, reflection=reflection)
+        bus, correlation_id="c2", session_id="s1", source_label="hub_orion", client_meta=None, reflection=reflection,
+        promise_view=view)
     kinds = [(e.event_kind, e.act.act_id) for e in bus.events()]
     assert kinds == [("act_opened", promise_act_id(promise_ref("c2", 0))),
                      ("act_opened", promise_act_id(offer_ref)),
@@ -112,6 +109,7 @@ async def test_delivered_juniper_turn_opens_and_closes_promise_acts(monkeypatch)
 ])
 async def test_other_turns_and_flag_off_publish_no_promise_acts(monkeypatch, source_label, client_meta, flag):
     from scripts.settings import settings
+    from orion.grammar.promise_view import PromiseView
     from orion.hub import turn_orchestrator
 
     monkeypatch.setattr(settings, "HUB_PROMISE_LEDGER_ENABLED", flag, raising=False)
@@ -119,27 +117,70 @@ async def test_other_turns_and_flag_off_publish_no_promise_acts(monkeypatch, sou
     reflection = _reflection(promises_made=[PromiseV1(**_item(QUOTE))])
     assert await turn_orchestrator._publish_promise_acts(
         bus, correlation_id="c2", session_id="s1", source_label=source_label, client_meta=client_meta,
-        reflection=reflection) is None
+        reflection=reflection, promise_view=PromiseView()) is None
     assert bus.events() == []
 
 
-def test_motor_prompt_never_shows_open_promises():
-    """Acceptance check 5: the request carries the open promises for the judge; the motor prompt is
-    built without them, and neither the motor's prompt builder nor its runner reads the fields."""
-    from orion.harness.runner import build_harness_prompt
-    from orion.harness.tests.fixtures import make_repair_overlay, make_thought
+@pytest.mark.asyncio
+async def test_motor_prompt_never_shows_open_promises():
+    """Acceptance check 5: the request carries open promises and pending offers for the judge; the FCC
+    motor, driven through HarnessRunner with that request, never receives them in any kwarg."""
+    from unittest.mock import AsyncMock
 
-    secret = "I'll bring the zebra-striped audit back on Thursday."
+    from orion.harness.runner import HarnessRunner
+    from orion.harness.tests.fixtures import make_thought
+
+    secret, offer = "I'll bring the zebra-striped audit back on Thursday.", "If you want, I'll tour the okapi logs."
     req = HarnessRunRequestV1.model_validate({
-        "correlation_id": "c", "thought_event": make_thought().model_dump(mode="json"), "user_message": "hi",
-        "permissions": {}, "answer_contract": {},
-        "open_promises": [{"id": "act_a", "quote": secret}], "pending_offers": [secret]})
-    assert req.open_promises[0].quote == secret
-    prompt = build_harness_prompt(thought=req.thought_event, user_message=req.user_message,
-                                  repair_overlay=make_repair_overlay(), answer_contract=req.answer_contract,
-                                  situation_prompt_fragment=req.situation_prompt_fragment,
-                                  prime_block=req.prime_block, recent_turns=list(req.recent_turns))
-    assert "zebra-striped" not in prompt
+        "correlation_id": "c-motor", "thought_event": make_thought().model_dump(mode="json"), "user_message": "hi",
+        "permissions": {}, "answer_contract": {}, "situation_prompt_fragment": "Situation: quiet evening.",
+        "open_promises": [{"id": "act_a", "quote": secret}], "pending_offers": [offer]})
+    assert req.open_promises[0].quote == secret and req.pending_offers == [offer]
+    captured: dict = {}
+
+    async def _fcc(**kwargs):
+        captured.update(kwargs)
+        yield {"type": "final", "llm_response": "answer", "metadata": {"exit_code": 0}}
+
+    await HarnessRunner(AsyncMock(), fcc_runner=_fcc, served_model_probe=AsyncMock(return_value=None),
+                        pool_state_probe=AsyncMock(return_value=None)).run(req)
+    assert "Situation: quiet evening." in captured["prompt"]  # the request's other fields did reach the motor
+    blob = repr(captured)
+    assert "zebra-striped" not in blob and "okapi" not in blob and "act_a" not in blob
     for rel in ("orion/harness/prefix.py", "orion/harness/runner.py"):
         src = (REPO / rel).read_text(encoding="utf-8")
         assert "open_promises" not in src and "pending_offers" not in src, rel
+
+
+@pytest.mark.asyncio
+async def test_view_read_fails_open(monkeypatch):
+    """A failed or slow read shows the judge nothing and never raises into the turn."""
+    import time
+
+    from orion.hub import promise_ledger
+
+    monkeypatch.setattr(promise_ledger, "fetch_promise_view", lambda *a, **k: None)
+    assert (await promise_ledger.promise_view_for_turn("s", "c")).open_promises == []
+
+    def _boom(*a, **k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(promise_ledger, "fetch_promise_view", _boom)
+    assert (await promise_ledger.promise_view_for_turn("s", "c")).offers == []
+    monkeypatch.setattr(promise_ledger, "fetch_promise_view", lambda *a, **k: time.sleep(0.5))
+    started = time.monotonic()
+    view = await promise_ledger.promise_view_for_turn("s", "c", timeout_sec=0.05)
+    assert view.open_promises == [] and time.monotonic() - started < 0.4
+
+
+@pytest.mark.asyncio
+async def test_no_view_means_no_acts_even_on_a_hub_orion_turn():
+    """Same rule as the judge's view: only a turn that got a pre-turn view (Juniper's own) opens acts."""
+    from orion.hub import turn_orchestrator
+
+    bus = _Bus()
+    reflection = _reflection(promises_made=[PromiseV1(**_item(QUOTE))])
+    assert await turn_orchestrator._publish_promise_acts(
+        bus, correlation_id="c2", session_id="s1", source_label="hub_orion", client_meta=None,
+        reflection=reflection, promise_view=None) is None
+    assert bus.events() == []

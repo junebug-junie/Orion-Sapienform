@@ -6,7 +6,7 @@ Each mutant breaks one guard, and the tests must FAIL on every one:
 * shadow: a promise act graded into substrate_action_outcomes / the posterior; a void close graded;
   promise acts given a cost; the self-monitor building a bet from a shadow act;
 * void vs expired: the resolver's "did Juniper write in the horizon" check removed or inverted;
-* honesty: a kept mark accepted without its delivering quote in the reply; an offer opening an act
+* honesty: a kept mark accepted without its delivering quote in the reply, or one that only repeats the promise; an offer opening an act
   before Juniper accepts it; an item without force/done_when opening an act.
 
 Files are rewritten IN PLACE and restored in a ``finally``; a SIGKILL mid-run would leave a mutant in the
@@ -43,8 +43,9 @@ MUTANTS = {
     "void and expired swapped": (LEDGER, "                if wrote is None:\n", "                if wrote is not None:\n"),
     "self-monitor bets on shadow acts": (ADAPTERS, "if is_void_note(row.get(\"outcome_note\")) or is_shadow_signal(row.get(\"signal_id\")):",
                                          "if False:"),
-    "kept without delivering quote": (GATE, "if len(quote) > PROMISE_QUOTE_MAX_CHARS or not quote_in_text(quote, reply_text):",
+    "kept without delivering quote": (GATE, "if len(norm_quote) > PROMISE_QUOTE_MAX_CHARS or not quote_in_text(quote, reply_text):",
                                       "if False:"),
+    "re-promise counts as kept": (GATE, "if own and (norm_quote in own or own in norm_quote):", "if False:"),
     "offer opens before acceptance": (ACTS, "        if promise.offer:\n            plan.offers_not_opened += 1\n            continue\n", ""),
     "old row without force opens": (ACTS, "        if not is_firm_ledger_promise(promise):\n            plan.skipped_no_force += 1\n            continue\n", ""),
 }

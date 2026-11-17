@@ -113,3 +113,41 @@ def test_a_keep_after_the_resolver_expired_it_is_ignored(session):
         promises_kept=[act.act_id], promises_kept_evidence=[PromiseKeptV1(id=act.act_id, quote="here it is now")]))
     apply_grammar_trace_batch(session, plan.events)
     assert promise_close_kind(_row(session, act.act_id)["outcome_source"], _row(session, act.act_id)["outcome_note"]) == "expired"
+
+
+def test_the_hub_view_sql_reads_open_promises_and_the_previous_replys_offers(session):
+    """The read Hub runs before each of Juniper's turns (orion/grammar/promise_view.py), on Postgres:
+    open acts oldest first with quotes from the turn record, closed and past-horizon acts left out, and
+    the previous row's firm offers only when that row answered a Juniper turn."""
+    import json
+
+    from orion.grammar.promise_view import (OPEN_PROMISES_SQL, PREVIOUS_TURN_SQL, TRACE_PROMISES_SQL,
+                                            offers_from_made, view_from_rows)
+
+    session.execute(text("CREATE TABLE harness_turn_trace (correlation_id TEXT PRIMARY KEY, "
+                         "created_at TIMESTAMP DEFAULT now(), run_artifact JSONB)"))
+    now = datetime.now(timezone.utc)
+    done = "a later reply gives Juniper the digested deep read"
+    made = [{"quote": "I'll pull the deep read back once it lands.", "offer": False, "doer": "orion",
+             "force": "commits", "act": "x", "done_when": done},
+            {"quote": "If you want, I'll re-read it later.", "offer": True, "doer": "orion",
+             "force": "commits", "act": "y", "done_when": done}]
+    session.execute(text("INSERT INTO harness_turn_trace (correlation_id, run_artifact) VALUES (:c, CAST(:a AS jsonb))"),
+                    {"c": "c-old", "a": json.dumps({"reflection": {"promises_made": made}})})
+    older = _open(session, promise_ref("c-old", 0), now - timedelta(hours=10))
+    _open(session, promise_ref("c-gone", 0), now - timedelta(hours=100))  # past its horizon: not shown
+    _chat(session, at=now - timedelta(hours=10), corr="c-old")
+    session.commit()
+
+    params = {"actor": PROMISE_ACTOR, "signal": "promise_kept", "n": 8}
+    open_rows = [dict(r) for r in session.execute(text(OPEN_PROMISES_SQL), params).mappings()]
+    assert [r["act_id"] for r in open_rows] == [older.act_id]
+    traces = [dict(r) for r in session.execute(text(TRACE_PROMISES_SQL), {"corrs": ["c-old"]}).mappings()]
+    shown, unreadable = view_from_rows(open_rows, traces)
+    assert [(p.id, p.quote) for p in shown] == [(older.act_id, made[0]["quote"])] and unreadable == 0
+
+    session.execute(text("ALTER TABLE chat_history_log ADD COLUMN session_id VARCHAR"))
+    session.execute(text("UPDATE chat_history_log SET session_id = 's1'"))
+    prev = session.execute(text(PREVIOUS_TURN_SQL), {"sid": "s1", "corr": "c-new"}).mappings().first()
+    assert prev["correlation_id"] == "c-old" and prev["is_juniper"] is True
+    assert offers_from_made("c-old", traces[0]["made"]) == [(promise_ref("c-old", 1), made[1]["quote"])]

@@ -120,13 +120,20 @@ def offers_from_made(correlation_id: str, made_raw: Any) -> list[tuple[str, str]
     return out[:PROMISE_ITEMS_MAX]
 
 
+STATEMENT_TIMEOUT_MS = 1500
+
+
 @lru_cache(maxsize=4)
 def _engine_for(uri: str) -> Any:
     """One small pool per process and URI (built on first use, then reused: a pool per call left
     connections open until garbage collection, services/orion-hub/tests/test_route_engine_reuse.py)."""
     from sqlalchemy import create_engine
 
-    return create_engine(uri, pool_pre_ping=True, pool_size=2, max_overflow=2)
+    # Bounded at the database too: the caller's timeout stops waiting but cannot stop a worker thread, so
+    # a slow or hung DB must fail fast here or every turn would strand one thread and one connection.
+    return create_engine(uri, pool_pre_ping=True, pool_size=2, max_overflow=2, pool_timeout=1,
+                         connect_args={"connect_timeout": 2,
+                                       "options": f"-c statement_timeout={STATEMENT_TIMEOUT_MS}"})
 
 
 def _engine() -> Any:

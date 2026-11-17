@@ -208,6 +208,15 @@ def test_kept_mark_without_a_quote_or_with_an_invented_quote_is_dropped() -> Non
     assert result.dropped_kept_not_in_text == ["act_b", "act_c"]  # invented quote; no quote at all
 
 
+def test_kept_mark_that_only_repeats_the_promise_is_dropped() -> None:
+    """Re-promising is not keeping: a delivering quote inside the promise's own words is refused."""
+    reflection = _reflection(promises_kept=["act_a"],
+                             promises_kept_evidence=[PromiseKeptV1(id="act_a", quote="I'll hold the deep read")])
+    result = gate_promises(reflection, reply_text=REPLY, enabled=True,
+                           open_promises=[OpenPromiseRefV1(id="act_a", quote=FIRM)])
+    assert result.reflection.promises_kept == [] and result.dropped_kept_repeats_promise == ["act_a"]
+
+
 def test_judge_kept_objects_parse_and_a_bare_id_fails_closed() -> None:
     from orion.harness.promise_gate import coerce_promise_fields
 

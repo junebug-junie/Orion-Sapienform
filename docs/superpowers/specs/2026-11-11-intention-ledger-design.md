@@ -344,7 +344,11 @@ this patch builds, or a default that waits on Juniper (marked **needs-juniper**)
   on the reply's act with the same correlation id; its wall time is days of waiting.
 - Hub reads the open promises before each of Juniper's turns (`orion/hub/promise_ledger.py`, the read
   in `orion/grammar/promise_view.py`) and passes them on `HarnessRunRequestV1` to the 5b judge only.
-  The motor prompt never sees them (test: `test_motor_prompt_never_shows_open_promises`).
+  The motor prompt never sees them (test: `test_motor_prompt_never_shows_open_promises` drives the
+  motor runner with them on the request). The same single read supplies the offers the ledger maps an
+  acceptance to, and only a turn that got that read (Juniper's own) opens acts. The acts publish in a
+  background task, so the reply never waits on them. The read is bounded at the database
+  (statement_timeout 1.5 s, connect 2 s, pool wait 1 s) and fail-open; live it takes about 3 ms.
 - D3 (the stance cue) is built and wired behind `THOUGHT_OPEN_PROMISES_CUE_ENABLED`, which ships
   **false**: the one deliberate exception to "flags ship on". #3531 turns it on.
 
@@ -376,7 +380,8 @@ this patch builds, or a default that waits on Juniper (marked **needs-juniper**)
 5. **Kept marks need a quote.** Done. The judge returns `promises_kept` as `{"id", "quote"}`. The gate
    keeps an id only when it was shown and its quote is literally in the reply (the same normalized
    substring test as a made promise), and checks it again against the final text after response
-   repair. The quotes are stored in `FinalizeReflectionV1.promises_kept_evidence`; `promises_kept`
+   repair. A quote that only repeats the promise's own words is refused: promising again is not
+   keeping. The quotes are stored in `FinalizeReflectionV1.promises_kept_evidence`; `promises_kept`
    stays a list of ids for its existing reader (Prime's hand-back). A bare id fails closed.
 6. **One record.** The ledger act is the record of the promise's life (open, kept, expired, void). The
    quote has one home, the promising turn's `harness_turn_trace` row. The act holds only the pointer,

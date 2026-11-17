@@ -217,8 +217,11 @@ def receipt_line(resp: dict[str, Any]) -> str:
             "Orion's questions will come back to this session.")
 
 
-def pending_text(rows: list[dict[str, Any]]) -> str:
-    """Orion's undelivered turns as context for a session. Orion's words are quoted, not orders."""
+def pending_text(rows: list[dict[str, Any]], *, woke: bool = False) -> str:
+    """Orion's undelivered turns as context for a session. Orion's words are quoted, not orders.
+
+    ``woke``: the session was woken for these (wait_for_orion_answer.py), so it acts now. Otherwise they
+    ride along with Juniper's prompt, and her request comes first."""
     if not rows:
         return ""
     out = ["Orion read the message(s) this session sent and answered (hourly round-up of session threads). "
@@ -243,7 +246,8 @@ def pending_text(rows: list[dict[str, Any]]) -> str:
                        f"{pr_arg} --body-file <file>  (Orion reads it at the next hourly round-up"
                        + ("; --pr also posts it on the pull request)" if pr_arg else ")"))
     if any(has_questions(r) for r in rows):
-        out.append(CIRCLE_BACK_STEPS)
+        out.append(("Do this now, without waiting to be asked. " if woke else
+                    "Do this after Juniper's current request, unless she says otherwise. ") + CIRCLE_BACK_STEPS)
     return "\n".join(out)
 
 
@@ -251,8 +255,26 @@ def has_questions(row: dict[str, Any]) -> bool:
     return not (row.get("meta") or {}).get("no_questions")
 
 
+def claim(rows: list[dict[str, Any]], *, timeout: float = 2.0) -> list[dict[str, Any]]:
+    """The rows this caller marked delivered. Hub marks a turn only once (delivered_at IS NULL), so two
+    hooks that read the same rows never both show them. A failed call claims nothing: shown later."""
+    return [r for r in rows if delivered([str(r["turn_id"])], timeout=timeout) == 1]
+
+
+def thread_view(thread_id: str, *, timeout: float = 5.0) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    resp = request("GET", f"/api/session-threads/{urllib.parse.quote(thread_id, safe='')}", timeout=timeout)
+    return dict(resp.get("thread") or {}), list(resp.get("turns") or [])
+
+
+def recent_threads(*, timeout: float = 5.0) -> list[dict[str, Any]]:
+    return list(request("GET", "/api/session-threads?hours=0.1", timeout=timeout).get("threads") or [])
+
+
+RECEIPT_THREAD_RE = re.compile(r"\bthread ([A-Za-z0-9_-]{6,})")
+
+
 # What a session does with Orion's questions. Juniper's standing rules (CLAUDE.md "Ticket board").
-CIRCLE_BACK_STEPS = """What to do with Orion's questions (circle back now, without waiting to be asked):
+CIRCLE_BACK_STEPS = """What to do with Orion's questions:
 1. Investigate each question against the code, live data and open tickets. Do not answer from memory.
 2. Fix small, clear findings on this PR's branch, in its worktree. Commit and push.
 3. File a ticket for each real finding you will not fix in this PR. Search first (gh issue list --search "<words>").

@@ -63,11 +63,13 @@ def cmd_reply(args: argparse.Namespace) -> int:
             proc = subprocess.run(["gh", "pr", "comment", str(args.pr), "--body-file", "-"], input=body,
                                   capture_output=True, text=True, timeout=30, check=False)
         except Exception as exc:  # noqa: BLE001 -- no gh / timeout
-            print(f"Sent to Orion, but the PR comment failed: {type(exc).__name__}: {exc}", file=sys.stderr)
-            return 1
-        if proc.returncode != 0:
-            print(f"Sent to Orion, but the PR comment failed: {(proc.stderr or proc.stdout).strip()[:300]}",
-                  file=sys.stderr)
+            proc, why = None, f"{type(exc).__name__}: {exc}"
+        else:
+            why = (proc.stderr or proc.stdout).strip()[:300]
+        if proc is None or proc.returncode != 0:
+            # Orion already has it: retry only the comment, never the whole reply.
+            print(f"Sent to Orion, but the PR comment failed: {why}\nRetry only the comment: "
+                  f"gh pr comment {args.pr} --body-file {args.body_file or '<file with the reply>'}", file=sys.stderr)
             return 1
         print(f"Posted on PR #{args.pr}: {proc.stdout.strip()}")
     return 0
@@ -80,9 +82,9 @@ def cmd_pending(args: argparse.Namespace) -> int:
     if not rows:
         print("Nothing from Orion is waiting for this session.")
         return 0
-    print(lib.pending_text(rows))
     if not args.keep:
-        lib.delivered([str(r["turn_id"]) for r in rows], timeout=6.0)
+        rows = lib.claim(rows, timeout=6.0)   # only what no hook has shown yet
+    print(lib.pending_text(rows) or "Nothing from Orion is waiting for this session.")
     return 0
 
 
@@ -99,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     body = rep.add_mutually_exclusive_group(required=True)
     body.add_argument("--body")
     body.add_argument("--body-file", help="read the reply from this file")
-    rep.add_argument("--pr", help="also post the reply as a comment on this pull request")
+    rep.add_argument("--pr", type=int, help="also post the reply as a comment on this pull request")
     rep.set_defaults(fn=cmd_reply)
     pend = sub.add_parser("pending", help="Orion's questions waiting for this session")
     pend.add_argument("--branch", help="branch to look up (default: this session's)")

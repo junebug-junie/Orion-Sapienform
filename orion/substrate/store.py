@@ -30,6 +30,12 @@ class CompleteScanReceipt:
     # Identities held by more than one durable node (hydrated, not fatal --
     # see FalkorSubstrateStore._hydrate_from_durable). Nonzero = repair due.
     duplicate_node_identities: int = 0
+    # #3455 partial-graph signal: durable SubstrateNode count read right after
+    # this refresh, and durable minus in-memory nodes. None = count unread.
+    # A failed refresh keeps the old cache, so its gap is the real shortfall.
+    durable_node_count: int | None = None
+    node_count_gap: int | None = None
+    plan_cache_retries: int = 0
 
 
 @dataclass(frozen=True)

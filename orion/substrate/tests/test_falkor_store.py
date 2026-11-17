@@ -1221,7 +1221,8 @@ def test_falkor_snapshot_same_generation_reuses_cache_no_new_query():
 
     first = store.snapshot()
     calls_after_first = len(client.calls)
-    assert calls_after_first == 5  # node page + empty terminal page, edge + 2 legacy scans
+    # node page + empty terminal page, edge + 2 legacy scans, durable node count (#3455)
+    assert calls_after_first == 6
     assert "concept-a" in first.nodes
 
     second = store.snapshot()

@@ -96,7 +96,9 @@ def test_a_long_sitting_ends_as_one_human_play_row_that_credits_orion_with_nothi
         clock["t"] = 1600.0 + 301                                 # five minutes with no change
         for _ in range(200):
             await asyncio.sleep(0.01)
-            if svc.tracker.current is None and not svc._jobs: break
+            # The tick closes the sitting first, then deletes the Redis key, then writes the rows: wait for all.
+            if (svc.tracker.current is None and SITTING_KEY not in redis.data
+                    and pool.named("retro_play_sessions") and not svc._jobs): break
         await settle(svc)
         assert SITTING_KEY not in redis.data                      # nobody is playing: the key is gone
         (_, sql, args), = pool.named("retro_play_sessions")
@@ -374,34 +376,6 @@ def test_the_page_routes(tmp_path, monkeypatch):
         assert r.status_code == 200 and r.json()["sitting"]["player_stated"] == "guest"
         got = c.get("/api/retro/sitting")
         assert got.headers["cache-control"] == "no-store" and got.json()["sitting"]["retro_session_id"] == SID
-
-
-def test_the_chat_prompt_gets_one_play_line_only_while_someone_plays():
-    from orion.hub import turn_orchestrator as orch
-
-    open_ = {"sitting_id": "s", "started_at": 0.0, "last_input_at": 60.0 * 12, "ended_at": None,
-             "game_title": "A Link to the Past", "player_stated": "juniper"}
-    on = SimpleNamespace(HUB_RETRO_SITTING_ENABLED=True)
-
-    async def check():
-        r = Redis(); bus = SimpleNamespace(redis=r)
-        assert await orch._situation_with_game_sitting("Situation: midday.", bus, settings=on) == "Situation: midday."
-        r.data[SITTING_KEY] = json.dumps(open_)
-        text = await orch._situation_with_game_sitting("Situation: midday.", bus, settings=on, correlation_id="c1")
-        assert text.startswith("Situation: midday.\nPlay: Juniper is playing A Link to the Past on your Retro service, for 12 min so far.")
-        assert (await orch._situation_with_game_sitting(None, bus, settings=on)).startswith("Play: Juniper is playing")
-        off = SimpleNamespace(HUB_RETRO_SITTING_ENABLED=False)
-        assert await orch._situation_with_game_sitting("Situation: midday.", bus, settings=off) == "Situation: midday."
-        # a closed sitting, an unconnected bus and a broken Redis all leave the prompt as it was
-        r.data[SITTING_KEY] = json.dumps(dict(open_, ended_at=800.0))
-        assert await orch._situation_with_game_sitting("S", bus, settings=on) == "S"
-
-        class NotConnected:
-            @property
-            def redis(self): raise RuntimeError("bus not connected")
-        assert await orch._situation_with_game_sitting("S", NotConnected(), settings=on) == "S"
-        assert await orch._situation_with_game_sitting("S", None, settings=on) == "S"
-    asyncio.run(check())
 
 
 def test_the_game_page_works_when_the_record_cannot_be_loaded(tmp_path, monkeypatch):

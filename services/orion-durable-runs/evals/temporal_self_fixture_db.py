@@ -165,7 +165,10 @@ def table_rows(rows: dict[str, list[dict]]) -> dict[str, list[dict]]:
             "subject_ref": f"orion:body:{payload.get('constraint')}",
             "label": payload.get("constraint"), "payload_json": payload})
     # Orion plays Zelda (section F): the export emits whole retro_play_sessions rows.
-    out["retro_play_sessions"].extend(dict(r) for r in rows.get("retro_play", []))
+    # The reader keys on write time (greatest of ended_at and created_at). Orion's own rows are written
+    # at their end, so a row without created_at gets ended_at, not the load time.
+    out["retro_play_sessions"].extend(dict(r, created_at=r.get("created_at") or r.get("ended_at"))
+                                      for r in rows.get("retro_play", []))
     # Office sessions: the adapter reads whole vision_office_session rows.
     out["vision_office_session"].extend(dict(r) for r in rows.get("office_session", []))
     for r in rows.get("memory_episode", []):

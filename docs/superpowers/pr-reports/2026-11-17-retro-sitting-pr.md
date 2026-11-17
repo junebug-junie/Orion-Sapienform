@@ -48,6 +48,7 @@ After (once deployed): each sitting of 2 minutes or more is one row and one play
 - `orion/schemas/retro_play.py`: kind `human_play`, basis `human_input`, `player_stated`.
 - `orion/temporal_self/sources.py`, `arcs.py`, `stance_cue.py`, `frame.py`, `recent_arcs.py`, `day_block.py`, `now.py`: the label, write-time order, the readers, the salience rule.
 - `services/orion-durable-runs/app/temporal_self_sources.py`: the play query.
+- `services/orion-durable-runs/evals/temporal_self_fixture_db.py`: a `retro_play` fixture row without `created_at` is written at its `ended_at`.
 - `config/integration/organs.yaml`: organ `play` gets `salience_magnitude: {retro_play: sitting_minutes}`.
 - `services/orion-sql-db/manual_migration_retro_watch_v1.sql`: table `retro_sitting`, column `retro_play_sessions.player_stated`.
 - `scripts/backfill_retro_sittings.py`: the baseline from the journals.
@@ -174,6 +175,18 @@ A read-only review ran in a subagent (the code-review skill at effort high, then
   - Evidence: `test_the_game_page_works_when_the_record_cannot_be_loaded`.
 
 Found by me while fixing: the backfill script's header said "2 N64 journals, 1,446 human rows, all mask 0". That was wrong. Those rows are one SNES session where the page was open and nobody pressed anything. The journals hold one N64 session and it has no input row. The header now says so.
+
+CI found three more (first CI run):
+
+- Finding: the long-sitting test looked at Redis before the loop deleted the key. The tick closes the sitting first, then deletes the key. A slow runner saw the gap.
+  - Fix: the test waits for all three outcomes: sitting closed, key gone, play row written. No production change.
+  - Evidence: `test_a_long_sitting_ends_as_one_human_play_row_...` passes 5 of 5 locally.
+- Finding: the play-line test imports `orion.hub.turn_orchestrator`, which needs `requests`. The native-boundary job runs `tests/retro` with a small dependency set.
+  - Fix: the test moved to `services/orion-hub/tests/test_game_sitting_prompt_line.py`. The full Hub job runs it.
+  - Evidence: `258 passed` for `tests/retro` plus the moved file.
+- Finding: the `retro_play` source reads by write time, but the fixture loader let `created_at` default to the load time. The Postgres test row fell outside its window. It was skipped locally (no database).
+  - Fix: the fixture loader gives a `retro_play` row without `created_at` its `ended_at`, the way Orion's own rows are written. The query stays as it is.
+  - Evidence: `test_temporal_self_chronicle_postgres.py` 17 passed against a scratch Postgres 16.
 
 ## Restart required
 

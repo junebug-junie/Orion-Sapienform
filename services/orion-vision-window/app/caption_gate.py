@@ -31,7 +31,6 @@ from collections import Counter
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from orion.schemas.vision import VisionArtifactPayload, VisionCaption
-from orion.vision.stationary import stream_min_secs
 
 from .fixtures import FixtureTracker
 
@@ -58,14 +57,9 @@ class CaptionGate:
     ) -> None:
         self.streams = set(_csv(streams))
         # Fixture (prop) tracking only where props exist: WINDOW_STATIONARY_STREAMS.
-        # None keeps the old behavior (every gated stream). An entry may carry its
-        # own hold time (``cam0:10800``): the office needs a longer one than the
-        # walkway, since Juniper sits still at her desk (2026-11-04, 2026-11-17).
-        if stationary_streams is None:
-            fixture_streams: Dict[str, float] = {s: float(stationary_min_sec) for s in self.streams}
-        else:
-            fixture_streams = {k.lower(): v for k, v in stream_min_secs(stationary_streams, stationary_min_sec).items()
-                               if k.lower() in self.streams}
+        # None keeps the old behavior (every gated stream). The office camera is
+        # gated but not tracked: Juniper at her desk is not a prop (2026-11-04).
+        fixture_streams = self.streams if stationary_streams is None else set(_csv(stationary_streams)) & self.streams
         self.labels = list(dict.fromkeys(_csv(labels)))
         self.min_score = float(min_score)
         self.max_age_sec = float(max_age_sec)

@@ -19,7 +19,7 @@ Pure functions over epoch seconds; callers keep the run state.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Mapping, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 DEFAULT_IOU_THRESHOLD = 0.5
 DEFAULT_MIN_SEC = 1800.0
@@ -75,26 +75,3 @@ def advance(
 
 def is_stationary(run: Optional[StillRun], min_sec: float = DEFAULT_MIN_SEC) -> bool:
     return run is not None and min_sec > 0 and run.held_sec() >= min_sec
-
-
-def stream_min_secs(spec, default_min_sec: float) -> Dict[str, float]:
-    """Stream -> min_sec for the stationary rule, from a stream list.
-
-    ``spec`` is a comma-separated string, an iterable of entries, or a mapping
-    already in this shape. An entry is ``stream`` (uses ``default_min_sec``) or
-    ``stream:seconds`` (its own hold time). A room camera needs a longer hold
-    than an outdoor one: live 2026-11-15..16 a pile of boxes on the office
-    floor read as ``person`` for 4-5 h, while real people at the office desk
-    held one box for at most 22 min in the crops of 11-05..11-14.
-    """
-    if isinstance(spec, Mapping):
-        return {str(k).strip(): float(v) for k, v in spec.items() if str(k).strip()}
-    items = str(spec).split(",") if isinstance(spec, str) else list(spec or ())
-    out: Dict[str, float] = {}
-    for item in items:
-        name, sep, secs = str(item).strip().partition(":")
-        name = name.strip()
-        if not name:
-            continue
-        out[name] = float(secs) if sep and secs.strip() else float(default_min_sec)
-    return out

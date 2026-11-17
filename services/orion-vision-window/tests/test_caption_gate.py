@@ -130,10 +130,10 @@ def test_caption_of_a_stationary_prop_only_is_dropped():
 
 
 def test_office_person_sitting_still_for_hours_is_not_a_prop():
-    """2026-11-04 review H1: Juniper at her desk in the same box for 2 h is
-    still a person, so her caption stands. cam0 is prop-tracked since
-    2026-11-17, but with a 3 h hold (WINDOW_STATIONARY_STREAMS cam0:10800)."""
-    gate = _gate(streams="walkway,cam0", stationary_streams="walkway,cam0:10800")
+    """2026-11-04 review H1: cam0 is caption-gated but not prop-tracked
+    (WINDOW_STATIONARY_STREAMS=walkway). Juniper at her desk in the same box
+    for 2 h is still a person, so her caption stands."""
+    gate = _gate(streams="walkway,cam0", stationary_streams="walkway")
     t0 = time.time() - 7300
     for k in range(int(2 * 60 * 3)):
         gate.apply("cam0", [(_detect([("person", 0.8, SKELETON)], stream="cam0"), t0 + 20.0 * k)])
@@ -144,30 +144,12 @@ def test_office_person_sitting_still_for_hours_is_not_a_prop():
     assert items[1][0].outputs.caption.text == "A woman is typing on a laptop at a desk."
 
 
-def test_office_boxes_still_for_four_hours_are_a_prop():
-    """2026-11-16: a pile of boxes on the office floor read as `person` in one
-    box for 4-5 h, and its captions ("packing items into a box") reached Orion
-    as Juniper's activity. Past the office's 3 h hold it is a prop."""
-    gate = _gate(streams="walkway,cam0", stationary_streams="walkway,cam0:10800")
-    t0 = time.time() - 4 * 3600 - 100
-    for k in range(int(4 * 60 * 3)):
-        gate.apply("cam0", [(_detect([("person", 0.41, SKELETON)], stream="cam0"), t0 + 20.0 * k)])
-    now = t0 + 20.0 * 720
-    art = _caption("Organizing or packing items into a box.", source=[_src("person", SKELETON, 0.41)],
-                   stream="cam0", frame_ts=now - 1)
-    items, stats, _ = gate.apply("cam0", [(_detect([("person", 0.41, SKELETON)], stream="cam0"), now - 1), (art, now)])
-    assert items[1][0].outputs.caption is None or items[1][0].outputs.caption.text != "Organizing or packing items into a box."
-
-
-def test_real_settings_track_props_on_the_walkway_and_office_with_a_long_office_hold():
+def test_real_settings_track_props_on_the_walkway_only():
     from app.settings import Settings
-    from orion.vision.stationary import stream_min_secs
 
     s = Settings()
     assert "cam0" in s.WINDOW_CAPTION_GATE_STREAMS.split(",")
-    holds = stream_min_secs(s.WINDOW_STATIONARY_STREAMS, s.VISION_STATIONARY_MIN_SEC)
-    assert holds["walkway"] == s.VISION_STATIONARY_MIN_SEC
-    assert holds["cam0"] >= 3 * 3600
+    assert "cam0" not in s.WINDOW_STATIONARY_STREAMS.split(",")
 
 
 def test_stale_caption_is_dropped():

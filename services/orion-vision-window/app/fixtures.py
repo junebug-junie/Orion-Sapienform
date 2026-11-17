@@ -13,17 +13,14 @@ person for presence. A window with any moving person box does. A window with
 no person box keeps the stream's last verdict (the belief tracker's own
 hysteresis decides presence then).
 
-Room cameras need a longer hold: Juniper sitting at a desk is not a prop, but a
-pile of boxes on the office floor read as ``person`` for 4-5 h on 2026-11-15..16
-and opened "visits" with nobody there. A stream entry may carry its own hold
-time (``cam0:10800``, ``orion.vision.stationary.stream_min_secs``).
+Room cameras are not opted in: Juniper sitting at a desk for hours is not a prop.
 """
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Union
+from typing import Dict, Iterable, List, Optional, Sequence
 
-from orion.vision.stationary import StillRun, advance, box_iou, is_stationary, stream_min_secs
+from orion.vision.stationary import StillRun, advance, box_iou, is_stationary
 
 # A fixture run nobody has seen for this long is forgotten. Runs live in
 # memory only: after a window restart (or a day without the prop) the prop
@@ -37,15 +34,14 @@ class FixtureTracker:
     def __init__(
         self,
         *,
-        streams: Union[str, Iterable[str], Mapping[str, float]],
+        streams: Iterable[str],
         min_sec: float,
         iou: float,
         max_gap_sec: float,
         label: str = "person",
     ) -> None:
-        # stream -> hold time; an entry without its own time uses ``min_sec``.
-        self.min_secs = stream_min_secs(streams, min_sec)
-        self.streams = set(self.min_secs)
+        self.streams = {str(s).strip() for s in streams if str(s).strip()}
+        self.min_sec = float(min_sec)
         self.iou = float(iou)
         self.max_gap_sec = float(max_gap_sec)
         self.label = label
@@ -53,7 +49,7 @@ class FixtureTracker:
         self._fixture_only: Dict[str, bool] = {}
 
     def enabled_for(self, stream_id: str) -> bool:
-        return self.min_secs.get(stream_id, 0.0) > 0
+        return self.min_sec > 0 and stream_id in self.streams
 
     def observe_window(self, stream_id: str, frames: Sequence[tuple]) -> Optional[bool]:
         """``frames`` are ``(t, [box, ...])`` of this label, oldest first.
@@ -65,8 +61,7 @@ class FixtureTracker:
         saw = False
         all_fixed = True
         for t, boxes in sorted(frames, key=lambda f: f[0]):
-            runs[:] = [r for r in runs
-                       if (t - r.last) <= (FORGET_FIXTURE_SEC if self._fixed(stream_id, r) else self.max_gap_sec)]
+            runs[:] = [r for r in runs if (t - r.last) <= (FORGET_FIXTURE_SEC if self._fixed(r) else self.max_gap_sec)]
             free = list(range(len(runs)))
             for box in boxes:
                 if len(box) != 4:
@@ -84,16 +79,16 @@ class FixtureTracker:
                 free.remove(best)
                 old = runs[best]
                 runs[best] = advance(old, box, t, iou_threshold=self.iou,
-                                     max_gap_sec=None if self._fixed(stream_id, old) else self.max_gap_sec)
-                if not self._fixed(stream_id, runs[best]):
+                                     max_gap_sec=None if self._fixed(old) else self.max_gap_sec)
+                if not self._fixed(runs[best]):
                     all_fixed = False
         if not saw:
             return None
         self._fixture_only[stream_id] = all_fixed
         return all_fixed
 
-    def _fixed(self, stream_id: str, run: StillRun) -> bool:
-        return is_stationary(run, self.min_secs.get(stream_id, 0.0))
+    def _fixed(self, run: StillRun) -> bool:
+        return is_stationary(run, self.min_sec)
 
     def is_fixture_box(self, stream_id: str, box) -> bool:
         """True when ``box`` overlaps a run that has already been held long
@@ -101,7 +96,7 @@ class FixtureTracker:
         if not self.enabled_for(stream_id) or len(box or []) != 4:
             return False
         return any(
-            self._fixed(stream_id, r) and box_iou(box, r.box) >= self.iou
+            self._fixed(r) and box_iou(box, r.box) >= self.iou
             for r in self._runs.get(stream_id, [])
         )
 

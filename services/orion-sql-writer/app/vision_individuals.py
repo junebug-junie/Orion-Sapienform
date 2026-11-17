@@ -62,7 +62,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from orion.vision.stationary import StillRun, advance, box_iou, is_stationary, stream_min_secs
+from orion.vision.stationary import StillRun, advance, box_iou, is_stationary
 from orion.vision.zones import Zone
 
 logger = logging.getLogger("sql-writer.vision_individuals")
@@ -477,8 +477,6 @@ def apply_batch(
     With the continuation lane off this is exactly the single body rule it
     replaces.
     """
-    # stream -> stationary hold time (None: every stream, stationary_min_sec).
-    hold_by_stream = None if stationary_streams is None else stream_min_secs(stationary_streams, stationary_min_sec)
     forbidden = set(no_embed_zones)
     inds = {k: replace(v, centroid=list(v.centroid),
                        face_centroid=list(v.face_centroid) if v.face_centroid else None,
@@ -606,15 +604,12 @@ def apply_batch(
         if continuation_threshold is not None:
             _observe(ind.individual_id, crop.observed_at, crop.box_xyxy)
         assigned += 1
-        # Prop detection only on streams that have props (None: every stream),
-        # each with its own hold time. The office camera holds longer: a person
-        # at a desk sits still (2026-11-04), but a pile of boxes read as a
-        # person there for 4-5 h (2026-11-16). A prop gets no asks, attention
-        # or "who is around".
-        if hold_by_stream is None or crop.stream_id in hold_by_stream:
-            hold = stationary_min_sec if hold_by_stream is None else hold_by_stream[crop.stream_id]
+        # Prop detection only on streams that have props (None: every stream).
+        # The office camera stays out: a person at a desk sits still for hours
+        # (2026-11-04), and a prop gets no asks, attention or "who is around".
+        if stationary_streams is None or crop.stream_id in stationary_streams:
             advance_stationary(ind, crop.box_xyxy, crop.observed_at, iou=stationary_iou,
-                               min_sec=hold, max_gap_sec=stationary_max_gap_sec)
+                               min_sec=stationary_min_sec, max_gap_sec=stationary_max_gap_sec)
         crop_stationary[crop.crop_id] = ind.stationary
 
         zone_key = crop.zone or _NO_ZONE

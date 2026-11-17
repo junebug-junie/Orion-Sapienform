@@ -73,6 +73,7 @@ path of a file with the full result; read only what you need from that file.
   organs <date> [<end>]  what each organ did (yesterday is the usual ask): counts, quotes with
                          [experience:<id>] refs, cites, breaks, use rate. At most 7 days.
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
+  take-ons [<days>]      sub-agents each take-on started.
   claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
   look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
   arc|act <id>           open a cited arc/act.
@@ -1796,6 +1797,28 @@ def cmd_turn_steps(session_id: str, turns: str, out: Out, runner=None) -> str:
     return capped(turn_steps.render(steps, session_id), tail=f"full steps: {path}")
 
 
+def cmd_take_ons(days: str, out: Out, runner=None, find=None) -> str:
+    """Each take-on (intention.carry run) and the sub-agents its carry turn started (orion/dig/take_ons.py)."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import take_ons
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    if not days.isdigit() or not 1 <= int(days) <= take_ons.MAX_DAYS:
+        raise DigError(f"take-ons: <days> must be a number 1-{take_ons.MAX_DAYS}, got {days!r}")
+    try:
+        rows = psql_rows(runner or ReadOnlyPsql(timeout_sec=60.0), take_ons.build_sql(int(days)))
+    except RuntimeError as exc:
+        raise DigError(f"take-ons: {exc}") from exc
+    if find is None:
+        from orion.harness.session_resume import claude_home, find_transcript
+
+        home = claude_home()
+        find = lambda sid: find_transcript(home, sid)  # noqa: E731
+    found = take_ons.read_take_ons(rows, find)
+    path = out.write("take-ons", [{**t.__dict__, "dispatches": t.dispatches} for t in found])
+    return capped(take_ons.render(found, int(days)), tail=f"full list: {path}")
+
+
 # --- Claude's tools: Orion's standing grants (spec 2026-11-12-claude-hub-tools-orion-consent) -----
 
 def cmd_claude_grants(out: Out) -> str:
@@ -1928,6 +1951,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_organs(first, _parse_day(a[1]) if len(a) == 2 else first, out)
         elif ns.command == "turn-steps" and len(a) in (1, 2):
             text = cmd_turn_steps(a[0], a[1] if len(a) == 2 else "2", out)
+        elif ns.command == "take-ons" and len(a) <= 1:
+            text = cmd_take_ons(a[0] if a else "7", out)
         elif ns.command == "claude-grants" and not a:
             text = cmd_claude_grants(out)
         elif ns.command == "claude-grants" and len(a) >= 5 and a[0] == "set" and a[3] == "because":

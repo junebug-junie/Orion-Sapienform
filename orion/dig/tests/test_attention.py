@@ -115,7 +115,7 @@ def test_won_when_eligible_matches_the_issue_baseline(tmp_path, monkeypatch):
 def test_rest_and_perception_eligibility_match_the_issue_baseline(tmp_path, monkeypatch):
     text = _baseline_text(tmp_path, monkeypatch)
     assert "rest (no eligible target): 70% (28,643 of 40,836) of frames" in text
-    assert "eligible 10.7% (4,368 of 40,836) vs 10.0% design" in text
+    assert "eligible 10.7% (4,368 of 40,836) vs design 10.0%" in text
 
 
 def test_event_sources_are_measured_against_their_own_events():
@@ -314,8 +314,10 @@ def test_a_target_judged_only_before_the_window_is_not_called_attended():
 
 def test_drift_carries_the_prior_rate_with_its_numerator_and_denominator():
     r = _read()
-    line = A.target_line(r, "node:substrate.perception")
-    assert re.search(r"drift won [+-]\d+% \(was \d+% \([\d,]+ of [\d,]+\)\), eligible [+-]\d+% \(was ", line), line
+    assert re.search(r"drift won [+-]\d+%, eligible [+-]\d+%$", A.target_line(r, "node:substrate.perception"))
+    prior = A.prior_line(r, "node:substrate.perception")
+    assert re.fullmatch(r"  node:substrate.perception: won \d+% \([\d,]+ of [\d,]+\), eligible [\d.]+% \([\d,]+ of [\d,]+\)", prior), prior
+    assert "prior rates each drift is against (sampled frames):" in A.render(r)
 
 
 def test_eligible_share_is_of_the_frames_the_target_was_judged():

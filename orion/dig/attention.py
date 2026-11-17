@@ -475,23 +475,30 @@ def target_line(r: AttentionRead, t: str) -> str:
     e_now, e_then = eligibility(c, t, kind), eligibility(b, t, kind)
     if present:
         pc = c.present_contested.get(t, 0)
-        won = f"won {rate_text(c.won.get(t, 0), present)}, won-contested {rate_text(c.won_contested.get(t, 0), pc)}"
+        won = f"won {rate_text(c.won.get(t, 0), present)}, contested won {rate_text(c.won_contested.get(t, 0), pc)}"
     else:
         won = "never eligible"
     if kind == "event":
         src = EVENT_SOURCES[t]
-        elig = f"eligible {rate_text(e_now.num, e_now.den)} of expected: {e_now.reference}"
+        elig = f"eligible {rate_text(e_now.num, e_now.den)} of expected, {e_now.reference}"
         if src.note:
             elig += f" [{src.note}]"
     else:
-        elig = f"eligible {rate_text(e_now.num, e_now.den)} vs {pct(DESIGN_ELIGIBLE_RATE)} design"
+        elig = f"eligible {rate_text(e_now.num, e_now.den)} vs design {pct(DESIGN_ELIGIBLE_RATE)}"
     if not present and not judged_frames(c, t) and kind != "event":
         return f"  {t} [{kind}]: not judged in this window (a candidate only before it)"
     won_then = _rate(b.won.get(t, 0), b.present.get(t, 0))
     won_now = _rate(c.won.get(t, 0), present)
-    return (f"  {t} [{kind}]: {won}; {elig}; drift won {drift(won_now, won_then)} "
-            f"(was {rate_text(b.won.get(t, 0), b.present.get(t, 0))}), "
-            f"eligible {drift(e_now.rate, e_then.rate)} (was {rate_text(e_then.num, e_then.den)})")
+    return f"  {t} [{kind}]: {won}; {elig}; drift won {drift(won_now, won_then)}, eligible {drift(e_now.rate, e_then.rate)}"
+
+
+def prior_line(r: AttentionRead, t: str) -> str:
+    """The prior rates each drift was taken against, with their numerators and denominators (the
+    prior side is sampled harder, so a drift on a small prior count reads as one)."""
+    kind = r.kinds.get(t) or target_kind(t)
+    b = r.base
+    e = eligibility(b, t, kind)
+    return f"  {t}: won {rate_text(b.won.get(t, 0), b.present.get(t, 0))}, eligible {rate_text(e.num, e.den)}"
 
 
 def cause_line(r: AttentionRead, t: str) -> str:
@@ -525,7 +532,7 @@ def render(r: AttentionRead) -> list[str]:
     lines.append(f"contested (more than one eligible): {rate_text(c.contested, c.frames)} of frames; "
                  f"drift {drift(_rate(c.contested, c.frames), _rate(b.contested, b.frames))} "
                  f"(was {rate_text(b.contested, b.frames)})")
-    lines.append("won = ranked first in the frames it was eligible (won-contested: of those with more than one eligible); "
+    lines.append("won = ranked first in the frames it was eligible (contested: of those with more than one eligible); "
                  "eligible against its own activity:")
     order = targets(r)
     never = [t for t in order if not c.present.get(t) and not b.present.get(t)]
@@ -536,6 +543,9 @@ def render(r: AttentionRead) -> list[str]:
     lines.append(LEGEND)
     lines.append("not attended, top causes (share of the frames it was judged and not attended):")
     lines += [cause_line(r, t) for t in order]
+    if b.frames:
+        lines.append("prior rates each drift is against (sampled frames):")
+        lines += [prior_line(r, t) for t in order if t not in never]
     return lines
 
 

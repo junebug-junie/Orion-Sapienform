@@ -131,6 +131,9 @@ _DB_DEPENDENT_MODULES = {
     "test_camera_ask_acts_integration",
     # 2026-11-13 (attention patch 4b, camera asks bid before they open): same shape.
     "test_ask_bind_integration",
+    # 2026-11-16 (intention ledger D2, promise acts in shadow): 3 ERRORS (KeyError on the URI) with no
+    # database; runs in sql-writer-integration.
+    "test_promise_acts_integration",
 }
 
 _TESTS_DIR = Path(__file__).resolve().parent

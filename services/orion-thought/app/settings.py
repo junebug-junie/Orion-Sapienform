@@ -745,6 +745,12 @@ class ThoughtSettings(BaseSettings):
     # nothing. Shown to stance_react and reverie's coalition branch. false = both prompts as before.
     self_track_record_cue_enabled: bool = Field(True, alias="SELF_TRACK_RECORD_CUE_ENABLED")
 
+    # --- Intention ledger D3: open promises for stance_react (app/open_promises_cue.py) ---
+    # Up to 3 of Orion's open promises (hub.promise acts, oldest first) on Juniper's own turns. Ships
+    # OFF on purpose: the promise acts are shadow until #3531 measures the finder's live precision,
+    # and a false promise shown to stance would steer Orion. true = render the block.
+    open_promises_cue_enabled: bool = Field(False, alias="THOUGHT_OPEN_PROMISES_CUE_ENABLED")
+
     # --- Self-readings: body signals against their own 7 days (self-calibration spec section C) ---
     # app/self_readings_cue.py -> orion/attention/self_readings.py. A fixed template (no LLM) over
     # substrate_node_prediction_error_history, calibrated by the attention seam's own rule; only

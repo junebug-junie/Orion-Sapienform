@@ -569,7 +569,17 @@ _PROMISE_SCHEMA: dict[str, dict[str, Any]] = {
         },
     },
     "offers_accepted": {"type": "array", "items": {"type": "string"}},
-    "promises_kept": {"type": "array", "items": {"type": "string"}},
+    # Each kept promise names its id and quotes the words of the reply that deliver it
+    # (intention ledger amendment 5): the gate checks the quote like a made promise's.
+    "promises_kept": {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "quote": {"type": "string"}},
+            "required": ["id", "quote"],
+            "additionalProperties": False,
+        },
+    },
 }
 
 
@@ -636,8 +646,8 @@ def build_finalize_reflect_context(
         # actually said. 11-03: notes said "Rowan usually comes around 11:39", the
         # draft said "Rowan right on her usual 11:39", and 5b had nothing to check it with.
         "situation_notes": _clip_situation_notes(situation_notes),
-        # Intention ledger D0: the promise section renders only with the flag on.
-        # pending_offers / open_promises are empty on live turns until D1 carries them.
+        # Intention ledger: the promise section renders only with the flag on. Hub reads
+        # pending_offers / open_promises for Juniper's turns (orion/hub/promise_ledger.py).
         "promise_ledger": promise_ledger,
         "pending_offers": list(pending_offers or []) if promise_ledger else [],
         "open_promises": (
@@ -903,6 +913,8 @@ async def maybe_run_finalize_tool_retry(
     fcc_model_label: str | None = None,
     situation_notes: str | None = None,
     deadline_monotonic: float | None = None,
+    pending_offers: list[str] | None = None,
+    open_promises: list[OpenPromiseRefV1] | None = None,
 ) -> tuple[FinalizeReflectionV1, list[GrammarReceiptV1], bool, str | None, str | None]:
     """One bounded tool-recall retry (loop-back beat, "finalize 5b-prime").
 
@@ -1071,6 +1083,8 @@ async def maybe_run_finalize_tool_retry(
             gpu_lease=gpu_lease,
             fcc_model_label=fcc_model_label,
             situation_notes=situation_notes,
+            pending_offers=pending_offers,
+            open_promises=open_promises,
         )
     except Exception as exc:
         logger.warning(
@@ -1844,6 +1858,8 @@ async def run_harness_finalize_chain(
     situation_notes: str | None = None,
     cut_short: bool = False,
     deadline_monotonic: float | None = None,
+    pending_offers: list[str] | None = None,
+    open_promises: list[OpenPromiseRefV1] | None = None,
 ) -> HarnessFinalizeChainResult:
     """Orion capability: unified-turn reflection and conditional response repair.
 
@@ -1894,6 +1910,9 @@ async def run_harness_finalize_chain(
         gpu_lease=gpu_lease,
         fcc_model_label=fcc_model_label,
         situation_notes=situation_notes,
+        # Intention ledger D1: what the judge may mark kept / accepted (judge only, never the motor).
+        pending_offers=pending_offers,
+        open_promises=open_promises,
     )
 
     # Loop-back tool-recall retry (5b-prime). MAX_FINALIZE_LOOP_RETRIES bounds
@@ -1925,6 +1944,8 @@ async def run_harness_finalize_chain(
                 grammar_publish_fn=grammar_publish_fn,
                 situation_notes=situation_notes,
                 deadline_monotonic=deadline_monotonic,
+                pending_offers=pending_offers,
+                open_promises=open_promises,
             )
         )
         if not attempt_retried:
@@ -2070,6 +2091,8 @@ async def run_harness_finalize_chain(
     # Intention ledger D0: a promise counts only if Juniper saw it. Response repair can
     # rewrite the draft, so the quotes are checked again against the final text.
     # Offers and kept ids were already checked against what the judge was shown.
+    # Kept ids were already checked against what the judge was shown; their delivering quotes
+    # are checked again here, against the final text, like a made promise's.
     reflection = gate_promises(
         reflection,
         reply_text=final_text,

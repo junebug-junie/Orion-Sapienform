@@ -24,7 +24,10 @@ model call or a word list. Six rules (docs/superpowers/specs/2026-11-11-intentio
 2. An ``offers_accepted`` entry must be one of the offer quotes the harness showed the
    judge (Orion's previous-reply offers). Anything else is dropped.
 3. A ``promises_kept`` entry must be one of the open-promise ids the harness showed the
-   judge. Anything else is dropped.
+   judge, AND carry a quote of the words in this reply that deliver it, literally in the reply
+   (same test as rule 1; intention ledger amendment 5, 2026-11-16). An unknown id, a missing
+   quote, a quote that is not in the reply, or a quote that only repeats the promise's own words
+   (promising again is not keeping) is dropped.
 
 Offers (``PromiseV1.offer``) are recorded but are not counted as promises until a later
 judge call accepts them (``counted_promise_quotes``).
@@ -50,6 +53,7 @@ from orion.schemas.harness_finalize import (
     PROMISE_QUOTE_MAX_CHARS,
     FinalizeReflectionV1,
     OpenPromiseRefV1,
+    PromiseKeptV1,
     PromiseV1,
 )
 
@@ -102,6 +106,10 @@ class PromiseGateResult:
     dropped_too_short: int = 0
     dropped_unknown_offer: list[str] = field(default_factory=list)
     dropped_unknown_kept: list[str] = field(default_factory=list)
+    # Kept ids the judge gave no delivering quote for, or whose quote is not in the reply.
+    dropped_kept_not_in_text: list[str] = field(default_factory=list)
+    # Kept ids whose "delivering" quote is the promise's own words again (re-promising is not keeping).
+    dropped_kept_repeats_promise: list[str] = field(default_factory=list)
     dropped_over_cap: int = 0
 
     @property
@@ -110,7 +118,9 @@ class PromiseGateResult:
                 + len(self.dropped_no_completion)
                 + self.dropped_too_long + self.dropped_too_short
                 + len(self.dropped_unknown_offer)
-                + len(self.dropped_unknown_kept) + self.dropped_over_cap)
+                + len(self.dropped_unknown_kept) + len(self.dropped_kept_not_in_text)
+                + len(self.dropped_kept_repeats_promise)
+                + self.dropped_over_cap)
 
 
 def _opt_str(value: Any) -> str | None:
@@ -145,8 +155,19 @@ def coerce_promise_fields(raw: dict[str, Any]) -> dict[str, Any]:
                                   force=item.get("force") if item.get("force") in PROMISE_FORCES else None,
                                   act=_opt_str(item.get("act")), done_when=_opt_str(item.get("done_when"))))
     accepted = [x for x in _list("offers_accepted") if isinstance(x, str)]
-    kept = [x for x in _list("promises_kept") if isinstance(x, str)]
-    return {"promises_made": made, "offers_accepted": accepted, "promises_kept": kept}
+    # promises_kept items are {"id", "quote"} (amendment 5). A bare id string (an older prompt)
+    # keeps its id but has no quote, so the gate drops it: fail closed.
+    kept: list[str] = []
+    evidence: list[PromiseKeptV1] = []
+    for item in _list("promises_kept"):
+        if isinstance(item, str) and item.strip():
+            kept.append(item.strip())
+        elif isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip():
+            kept.append(item["id"].strip())
+            if isinstance(item.get("quote"), str) and item["quote"].strip():
+                evidence.append(PromiseKeptV1(id=item["id"].strip(), quote=item["quote"].strip()))
+    return {"promises_made": made, "offers_accepted": accepted, "promises_kept": kept,
+            "promises_kept_evidence": evidence}
 
 
 def gate_promises(
@@ -158,11 +179,12 @@ def gate_promises(
     enabled: bool | None = None,
     correlation_id: str = "",
 ) -> PromiseGateResult:
-    """Apply the six rules. Returns a copy of the reflection with only surviving entries."""
+    """Apply the rules. Returns a copy of the reflection with only surviving entries."""
     if enabled is None:
         enabled = promise_ledger_enabled()
     if not enabled:
-        cleared = reflection.model_copy(update={"promises_made": [], "offers_accepted": [], "promises_kept": []})
+        cleared = reflection.model_copy(update={"promises_made": [], "offers_accepted": [], "promises_kept": [],
+                                                "promises_kept_evidence": []})
         return PromiseGateResult(reflection=cleared)
 
     result = PromiseGateResult(reflection=reflection)
@@ -206,27 +228,50 @@ def gate_promises(
         elif original not in accepted:
             accepted.append(original)
 
+    open_promises = list(open_promises)
     open_ids = {p if isinstance(p, str) else p.id for p in open_promises}
+    # The promise's own words, when the harness showed them: a "delivery" that only repeats the
+    # promise is promising it again, not keeping it.
+    promise_quotes = {p.id: normalize_for_quote_match(p.quote) for p in open_promises if not isinstance(p, str)}
+    quotes_by_id: dict[str, str] = {}
+    for ev in reflection.promises_kept_evidence:
+        quotes_by_id.setdefault(ev.id, ev.quote)
     kept: list[str] = []
+    evidence: list[PromiseKeptV1] = []
     for entry in reflection.promises_kept:
         if entry not in open_ids:
             result.dropped_unknown_kept.append(entry)
-        elif entry not in kept:
-            kept.append(entry)
+            continue
+        if entry in kept:
+            continue
+        quote = quotes_by_id.get(entry, "")
+        norm_quote = normalize_for_quote_match(quote)
+        if len(norm_quote) > PROMISE_QUOTE_MAX_CHARS or not quote_in_text(quote, reply_text):
+            result.dropped_kept_not_in_text.append(entry)
+            continue
+        own = promise_quotes.get(entry)
+        if own and (norm_quote in own or own in norm_quote):
+            result.dropped_kept_repeats_promise.append(entry)
+            continue
+        kept.append(entry)
+        evidence.append(PromiseKeptV1(id=entry, quote=quote))
 
     result.reflection = reflection.model_copy(
-        update={"promises_made": made, "offers_accepted": accepted, "promises_kept": kept}
+        update={"promises_made": made, "offers_accepted": accepted, "promises_kept": kept,
+                "promises_kept_evidence": evidence}
     )
     if result.dropped_total or made or accepted or kept:
         logger.info(
             "promise_gate corr=%s made=%d offers=%d accepted=%d kept=%d dropped_not_in_text=%d dropped_not_orion=%d "
             "dropped_not_commit=%d dropped_no_completion=%d "
-            "dropped_too_long=%d dropped_too_short=%d dropped_unknown_offer=%d dropped_unknown_kept=%d dropped_over_cap=%d",
+            "dropped_too_long=%d dropped_too_short=%d dropped_unknown_offer=%d dropped_unknown_kept=%d "
+            "dropped_kept_not_in_text=%d dropped_kept_repeats_promise=%d dropped_over_cap=%d",
             correlation_id, len(made), sum(1 for p in made if p.offer), len(accepted), len(kept),
             len(result.dropped_not_in_text), len(result.dropped_not_orion), len(result.dropped_not_commit),
             len(result.dropped_no_completion),
             result.dropped_too_long, result.dropped_too_short, len(result.dropped_unknown_offer),
-            len(result.dropped_unknown_kept), result.dropped_over_cap,
+            len(result.dropped_unknown_kept), len(result.dropped_kept_not_in_text),
+            len(result.dropped_kept_repeats_promise), result.dropped_over_cap,
         )
     return result
 

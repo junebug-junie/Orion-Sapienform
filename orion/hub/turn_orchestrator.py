@@ -1702,6 +1702,14 @@ async def execute_unified_turn(
         progress_lines=progress_lines,
     )
     inference_timeout_sec, reply_budget_sec = _held_turn_budgets(payload)
+    # Intention ledger D1 (shadow): the 5b judge sees Orion's open promises and the previous reply's
+    # offers, so it can mark one kept or accepted. Juniper's own turns only; judge only, never the motor.
+    promise_view = None
+    if (utterance_origin == "juniper" and bool(getattr(cfg, "HUB_PROMISE_LEDGER_ENABLED", True))
+            and bool(getattr(cfg, "HUB_ACT_LEDGER_ENABLED", True))):
+        from orion.hub.promise_ledger import promise_view_for_turn
+
+        promise_view = await promise_view_for_turn(session_id, correlation_id)
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
         resume_key=payload.get("resume_key"),
@@ -1739,6 +1747,8 @@ async def execute_unified_turn(
         situation_prompt_fragment=situation_prompt_fragment,
         prime_block=prime_block.text if prime_block is not None else None,
         draft_preview=bool(draft_preview),
+        open_promises=list(promise_view.open_promises) if promise_view is not None else [],
+        pending_offers=promise_view.offer_quotes if promise_view is not None else [],
     )
     harness_bus = harness_rpc_bus or bus
     if harness_step_relay is not None and harness_step_queue is not None:
@@ -1891,6 +1901,7 @@ async def execute_unified_turn(
             fcc_model_label=resolved_model_label,
             client_meta=client_meta,
             conversation_phase=situation_bundle.get("conversation_phase"),
+            promise_view=promise_view,
         )
         degraded_frame = {
             "type": "turn_degraded",
@@ -1926,6 +1937,7 @@ async def execute_unified_turn(
         fcc_model_label=resolved_model_label,
         client_meta=client_meta,
         conversation_phase=situation_bundle.get("conversation_phase"),
+        promise_view=promise_view,
     )
     await _finish_cockpit(run, success=True)
     return _success_frames(
@@ -1950,8 +1962,13 @@ async def _publish_unified_turn_chat_history(
     fcc_model_label: str | None = None,
     client_meta: dict[str, Any] | None = None,
     conversation_phase: dict[str, Any] | None = None,
+    promise_view: Any = None,
 ) -> None:
     """Orion capability: unified-turn persistence after successful handoff.
+
+    ``promise_view`` (intention ledger, shadow): the open promises and pending offers read before this
+    turn (``orion/hub/promise_ledger.py``), set only on Juniper's own turns. The promise acts are
+    published in a background task from that same view, so the final frame never waits on them.
 
     ``conversation_phase`` (2026-10-02, memory episode boundary Fix 1): this
     turn's wall-clock stamp from the situation build, persisted as
@@ -2107,6 +2124,18 @@ async def _publish_unified_turn_chat_history(
         source_label=source_label,
         client_meta=client_meta,
     )
+    if promise_view is not None:
+        task = asyncio.create_task(_publish_promise_acts(
+            bus,
+            correlation_id=correlation_id,
+            session_id=session,
+            source_label=source_label,
+            client_meta=client_meta,
+            reflection=run.reflection,
+            promise_view=promise_view,
+        ), name=f"promise-acts-{correlation_id}")
+        _PROMISE_ACT_TASKS.add(task)
+        task.add_done_callback(_PROMISE_ACT_TASKS.discard)
 
 
 async def _publish_reply_say_act(
@@ -2165,6 +2194,51 @@ async def _publish_reply_say_act(
     except Exception as exc:  # noqa: BLE001 -- the reply is already delivered; the act is a trace
         logger.warning("reply_say_act_publish_failed corr=%s error=%s", correlation_id, exc)
         return False
+
+
+# Background promise-act publishes (held so a task is not garbage-collected mid-flight).
+_PROMISE_ACT_TASKS: set[asyncio.Task] = set()
+
+
+async def _publish_promise_acts(
+    bus: Any,
+    *,
+    correlation_id: str,
+    session_id: str | None,
+    source_label: str,
+    client_meta: Mapping[str, Any] | None,
+    reflection: Any,
+    promise_view: Any = None,
+) -> dict[str, int] | None:
+    """Intention ledger D2 (shadow until #3531): the promise acts of the reply Juniper just got.
+
+    Only Juniper's own turns: the caller passes the pre-turn ``promise_view`` only when
+    ``utterance_origin == "juniper"`` (the same rule as the judge's view), and the reply act's guards
+    (hub_orion, not unsolicited) apply too. Opens one ``hub.promise``
+    act per firm promise in this reply and one per earlier offer this message accepted; closes each
+    promise the judge marked kept with a delivering quote (orion/hub/promise_ledger.py). Best-effort,
+    never raises. Runs as a background task, so the reply never waits on it. Gated by
+    HUB_PROMISE_LEDGER_ENABLED and HUB_ACT_LEDGER_ENABLED.
+    """
+    from scripts.settings import settings as hub_settings
+
+    if not (bool(getattr(hub_settings, "HUB_PROMISE_LEDGER_ENABLED", True))
+            and bool(getattr(hub_settings, "HUB_ACT_LEDGER_ENABLED", True))):
+        return None
+    if bus is None or source_label != "hub_orion" or reflection is None or promise_view is None:
+        return None
+    if str((client_meta or {}).get("unsolicited") or "").lower() == "true" or (client_meta or {}).get("unsolicited") is True:
+        return None
+    try:
+        from orion.hub.promise_ledger import publish_promise_acts
+
+        # The offers the judge was shown come from the same pre-turn read: one read, so an accepted
+        # quote always maps to the ref the judge saw.
+        return await publish_promise_acts(bus, correlation_id=str(correlation_id), session_id=session_id,
+                                          reflection=reflection, prior_offers=list(promise_view.offers))
+    except Exception as exc:  # noqa: BLE001 -- a background trace; never fails the turn
+        logger.warning("promise_acts_failed corr=%s error=%s", correlation_id, exc)
+        return None
 
 
 # Draft-first display (spec L8). The relay queue item the governor's draft

@@ -129,8 +129,29 @@ class PromiseV1(BaseModel):
     done_when: str | None = None
 
 
+# How many open promises the judge is shown (oldest first). Wider than PROMISE_ITEMS_MAX on
+# purpose (intention ledger amendment 8): a promise the judge is never shown can never be marked
+# kept, so a cap of 3 made a 4th open promise structurally un-closeable. Live rate ~1 promise per
+# 12 judged turns with a 72 h horizon keeps this far above the usual open count.
+PROMISE_JUDGE_VIEW_MAX = 8
+
+
 class OpenPromiseRefV1(BaseModel):
-    """An earlier promise shown to the judge so it can say this reply kept it."""
+    """An earlier promise shown to the judge so it can say this reply kept it.
+
+    id is the promise's act id on the act ledger (orion/grammar/promise_acts.py); quote is read
+    from the promising turn's own record (harness_turn_trace), never stored on the act."""
+
+    id: str
+    quote: str
+
+
+class PromiseKeptV1(BaseModel):
+    """One open promise this reply keeps, with the words of the reply that deliver it.
+
+    quote must be literally in the reply (the same normalized substring test as a made
+    promise; intention ledger amendment 5), so the judge can mark a promise kept but cannot
+    invent the delivery."""
 
     id: str
     quote: str
@@ -199,6 +220,10 @@ class FinalizeReflectionV1(BaseModel):
     promises_made: list[PromiseV1] = Field(default_factory=list)
     offers_accepted: list[str] = Field(default_factory=list)
     promises_kept: list[str] = Field(default_factory=list)
+    # The delivering quote for each id in promises_kept, same order (amendment 5). A kept id
+    # with no quote that passes the substring test is dropped by the gate, so every id in
+    # promises_kept has exactly one entry here. Empty on rows written before the field.
+    promises_kept_evidence: list[PromiseKeptV1] = Field(default_factory=list)
 
 
 class HarnessVerdictMoleculeV1(BaseModel):
@@ -404,6 +429,15 @@ class HarnessRunRequestV1(BaseModel):
             "isolation regardless of how long the conversation had run."
         ),
     )
+    # Intention ledger D1 (docs/superpowers/specs/2026-11-11-intention-ledger-design.md). Read by
+    # orion-hub before the turn (orion/hub/promise_ledger.py) for Juniper's own turns only, and
+    # passed to the 5b judge ONLY (orion/harness/finalize.py). The motor prompt never reads them
+    # (orion/harness/prefix.py, runner.py; test_motor_prompt_never_shows_open_promises). An older
+    # governor ignores the keys (this model ignores unknown keys).
+    open_promises: list[OpenPromiseRefV1] = Field(default_factory=list, max_length=PROMISE_JUDGE_VIEW_MAX)
+    # Offers Orion made in the previous reply of this session (quotes), so the judge can say
+    # whether this message accepts one. An offer opens no promise until it is accepted.
+    pending_offers: list[str] = Field(default_factory=list, max_length=PROMISE_ITEMS_MAX)
 
 
 class HarnessRunCancelV1(BaseModel):

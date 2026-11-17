@@ -1438,6 +1438,11 @@ class Settings(BaseSettings):
     # messages (say/ask) and web reads (look) publish act_opened/act_closed grammar events
     # (orion/grammar/acts.py) that orion-sql-writer persists and grades into L10.
     HUB_ACT_LEDGER_ENABLED: bool = Field(default=True, alias="HUB_ACT_LEDGER_ENABLED")
+    # Intention ledger D1/D2 (orion/hub/promise_ledger.py), SHADOW until #3531: Juniper's turns show the
+    # 5b judge the open promises and the previous reply's offers, and each promise opens/closes a
+    # hub.promise act. Nothing learns from those acts yet (orion/grammar/promise_acts.py). Needs
+    # HUB_ACT_LEDGER_ENABLED too.
+    HUB_PROMISE_LEDGER_ENABLED: bool = Field(default=True, alias="HUB_PROMISE_LEDGER_ENABLED")
 
     # Body economy Patch C3b: outreach, retro co-play and retro leisure place a SHADOW bid
     # (orion.physiology.client -> durable-runs POST /physiology/bid) and log the decision beside

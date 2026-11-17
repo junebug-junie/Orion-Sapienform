@@ -63,6 +63,13 @@ from orion.grammar.act_cost_ids import (
     reading_hold_ids,
 )
 from orion.grammar.act_energy_fill import act_energy_cost
+from orion.grammar.promise_acts import (
+    EXPIRED_NOTE as PROMISE_EXPIRED_NOTE,
+    PROMISE_SIGNAL,
+    VOID_NOTE as PROMISE_VOID_NOTE,
+    is_shadow_signal,
+    is_void_note,
+)
 from orion.grammar.reply_base_rate import ReplyBaseRate, juniper_reply_base_rate
 from orion.grammar.reply_base_rate import applies as reply_base_rate_applies
 
@@ -569,7 +576,11 @@ def close_act(
     outcome_row_id = None
     exp = act.expect
     # A camera ask Orion withdrew (attention patch 4a) is not a grade: no outcome row, no posterior update.
-    not_graded = (exp is not None and exp.signal_id == "juniper_answered" and outcome.source == "expired")
+    # Neither is a void close (censored: no reply existed to keep a promise in), nor any act on a
+    # shadow signal (orion/grammar/promise_acts.py SHADOW_ACT_SIGNALS: on the ledger, learned from by
+    # nothing until #3531).
+    not_graded = (exp is not None and ((exp.signal_id == "juniper_answered" and outcome.source == "expired")
+                                       or is_shadow_signal(exp.signal_id) or is_void_note(outcome.note)))
     # Outreach (#3392): the outcome row's baseline is Juniper's base rate for the act's time of day,
     # recomputed from days strictly before the open (the same number the open stamped as predicted).
     base = _reply_base_rate(conn, act, opened_at_row) if (exp is not None and not not_graded) else None
@@ -666,8 +677,11 @@ def close_act(
                 {"p": predicted, "n": prior.n, "c": prior.n == 0, "a": act.act_id},
             )
 
-    cost = fill_close_cost(conn, act, opened_at=opened_at_row, closed_at=observed_at,
-                           correlation_id=correlation_id, source=outcome.source, stored=stored_cost)
+    # A promise costs nothing of its own: its GPU and energy are the promising reply's, already on the
+    # reply's act (same correlation id), and its wall time is days of waiting, not work.
+    cost = None if (exp is not None and exp.signal_id == PROMISE_SIGNAL) else fill_close_cost(
+        conn, act, opened_at=opened_at_row, closed_at=observed_at,
+        correlation_id=correlation_id, source=outcome.source, stored=stored_cost)
     conn.execute(
         text(
             """
@@ -809,6 +823,9 @@ class ResolveSummary:
     # juniper_answered (camera asks, attention patch 4a): graded by Juniper's answer or silence / withdrawn.
     closed_asks_graded: int = 0
     closed_asks_withdrawn: int = 0
+    # promise_kept (intention ledger D2): no keep by the horizon. void = Juniper wrote no chat turn in it.
+    closed_promises_expired: int = 0
+    closed_promises_void: int = 0
 
 
 # A camera ask's act is graded from its orion_ask row (orion/grammar/camera_ask_acts.py ask_grade):
@@ -939,6 +956,7 @@ def resolve_due_acts(
         _DUE_SQL, {"expired_before": now - timedelta(seconds=EXPIRY_GRACE_SEC), "limit": limit}
     ).mappings().all()
     replied = not_replied = expired = recovered = asks_graded = asks_withdrawn = 0
+    promises_expired = promises_void = 0
     for row in rows:
         act = _act_from_row(row)
         opened_at = _aware(row["opened_at"])
@@ -976,11 +994,30 @@ def resolve_due_acts(
                               persisted.event_id):
                     recovered += 1
                 continue
+            if row["signal_id"] == PROMISE_SIGNAL:
+                # A promise can only be marked kept by the judge reading a reply to Juniper. With no
+                # Juniper chat turn inside the horizon there was no such reply: the outcome is unseen
+                # (void, not graded), not a broken promise (intention ledger amendment 7).
+                wrote = conn.execute(
+                    _JUNIPER_REPLY_SQL,
+                    {"opened_at": opened_at, "horizon_at": horizon_at, "correlation_id": row["correlation_id"]},
+                ).scalar()
+                if wrote is None:
+                    outcome = ActOutcomeV1(value=0.0, observed_at=horizon_at, source="expired",
+                                           note=PROMISE_VOID_NOTE)
+                    promises_void += 1
+                else:
+                    outcome = ActOutcomeV1(value=0.0, observed_at=horizon_at, source="expired",
+                                           note=PROMISE_EXPIRED_NOTE)
+                    promises_expired += 1
+                _one_close(conn, commit, None, act, outcome, f"resolver:{act.act_id}")
+                continue
             outcome = ActOutcomeV1(value=0.0, observed_at=horizon_at, source="expired",
                                    note=f"no producer close within horizon + {EXPIRY_GRACE_SEC:.0f}s grace")
             expired += 1
         _one_close(conn, commit, None, act, outcome, f"resolver:{act.act_id}")
-    return ResolveSummary(len(rows), replied, not_replied, expired, recovered, asks_graded, asks_withdrawn)
+    return ResolveSummary(len(rows), replied, not_replied, expired, recovered, asks_graded, asks_withdrawn,
+                          promises_expired, promises_void)
 
 
 # --- late cost fill (attention patch 3a, "reading's real cost") ------------------------------------

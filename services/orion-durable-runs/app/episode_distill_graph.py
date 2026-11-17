@@ -12,10 +12,10 @@ Spec: docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md, secti
   (``options.gpu_lease``): no cortex-orch hop, because orch's recall step would mix retrieved
   memories into the evidence. An unparseable answer is a failed attempt (bounded, backed off);
   waiting for the hold never is.
-* ``distill`` also runs the supersede check (orion.memory.episode.supersede, issue #3587) under the
-  same hold, when a ``link`` step is given: candidates among older live memories, then one strict
-  yes/no call per pair on the same route. Its answer is checkpointed in ``supersede``; any failure
-  there links nothing and never fails the attempt.
+* ``supersede_check`` (when a ``link`` step is given; issue #3587) runs after ``distill`` on the same hold,
+  with its own time budget: candidates among older live memories, then strict yes/no calls on the
+  same route. Its plan is checkpointed in ``supersede``. Any failure there (timeout, lost hold,
+  model or index fault) links nothing and never fails the run or spends an attempt.
 * ``persist`` lets the hold go first (no GPU needed), then validates deterministically
   (orion.memory.episode.validate) and writes the shadow tables in one idempotent transaction.
   A crash after the write resumes at ``persist`` and re-writes nothing (deterministic ids).
@@ -24,6 +24,7 @@ Nothing here changes live behavior: the tables are read by no consumer except th
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, TypedDict
@@ -52,15 +53,17 @@ PersistFn = Callable[..., Awaitable[dict[str, int]]]
 """(**kwargs of orion.memory.episode.store.persist_episode minus pool) -> counts."""
 
 LinkFn = Callable[..., Awaitable[dict[str, Any]]]
-"""(ValidationResult, ask) -> orion.memory.episode.supersede.plan_for_new_rows' dict; ``ask`` is
+"""(ValidationResult, ask, *, episode_id) -> orion.memory.episode.supersede.plan_for_new_rows' dict; ``ask`` is
 an async prompt -> answer text on the run's own hold."""
 
 logger = logging.getLogger(__name__)
 
 EPISODE_DISTILL_MIN_ATTEMPTS = 4
-# The supersede check: one short JSON answer per pair (no thinking).
+# The supersede check: one short JSON answer per pair (no thinking), on its own node budget.
 SUPERSEDE_CHECK_MAX_TOKENS = 200
 SUPERSEDE_CHECK_TIMEOUT_SEC = 120.0
+SUPERSEDE_NODE_BUDGET_SEC = 300.0
+SUPERSEDE_CHECK_PURPOSE = "memory_supersede_check"
 
 
 class EpisodeDistillState(TypedDict, total=False):
@@ -172,32 +175,28 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
             # "distill_json_invalid:Expecting ',' delimiter" (12 of 12 calls on one episode, 2026-10-31).
             raise ValueError(f"distill_truncated_at_max_tokens:{brief.max_tokens}")
         parse_distillation(text)  # raises -> a bounded attempt; the text is re-parsed in persist
-        out = {"answer_text": text, "rendered_prompt_version": rendered_version,
-               "usage": dict(answer.get("usage") or {}), "model": answer.get("model"),
-               "llm_latency_ms": answer.get("latency_ms"), "distill_started_at": started,
-               "attempt": int(state.get("attempt") or 0) + 1}
-        out["supersede"] = await supersede_plan({**state, **out}, brief, ref)
-        return out
+        return {"answer_text": text, "rendered_prompt_version": rendered_version,
+                "usage": dict(answer.get("usage") or {}), "model": answer.get("model"),
+                "llm_latency_ms": answer.get("latency_ms"), "distill_started_at": started,
+                "attempt": int(state.get("attempt") or 0) + 1}
 
-    async def supersede_plan(state: dict[str, Any], brief: EpisodeDistillBriefV1, ref: GpuLeaseRefV1) -> dict | None:
-        """Never raises: a failed check links nothing (a wrong supersede hides a true memory)."""
-        if link is None:
-            return None
+    async def check_operation(state: dict[str, Any]) -> dict[str, Any]:
+        lease = state["lease"]
+        ref = GpuLeaseRefV1.model_validate({k: lease[k] for k in ("lease_id", "generation", "role", "holder")})
+        brief = EpisodeDistillBriefV1.model_validate(state["brief"])
         check_brief = brief.model_copy(update={
             "max_tokens": SUPERSEDE_CHECK_MAX_TOKENS,
             "timeout_sec": min(float(brief.timeout_sec), SUPERSEDE_CHECK_TIMEOUT_SEC)})
 
         async def ask(prompt: str) -> str:
             answer = await call_llm(prompt, brief=check_brief, run_id=state["run_id"],
-                                    correlation_id=state["correlation_id"], gpu_lease=ref)
+                                    correlation_id=state["correlation_id"], gpu_lease=ref,
+                                    purpose=SUPERSEDE_CHECK_PURPOSE, temperature=0.0)
             return str(answer.get("text") or "")
 
-        try:
-            return await link(validated(state), ask)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("episode_supersede_check_failed episode_id=%s error=%s", brief.episode_id,
-                           f"{type(exc).__name__}: {exc}"[:300])
-            return {"links": [], "error": f"{type(exc).__name__}: {exc}"[:300]}
+        # Its own bound too (execute's node_timeout_sec is the pool-side one).
+        async with asyncio.timeout(SUPERSEDE_NODE_BUDGET_SEC):
+            return {"supersede": await link(validated(state), ask, episode_id=brief.episode_id)}
 
     async def distill_node(state: EpisodeDistillState) -> dict:
         try:
@@ -232,6 +231,22 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
             return {**released, "status": "retrying", "attempt": attempt, "last_error": error,
                     "retry_node": None, "retry_at": (admission.now() + timedelta(seconds=delay)).isoformat()}
 
+    async def supersede_node(state: EpisodeDistillState) -> dict:
+        """The supersede check (issue #3587), its own node so the distill answer is already
+        checkpointed: a slow, failed, recalled or timed-out check links nothing and never costs an
+        attempt or a re-distill. An operator control still stops the run as usual."""
+        if link is None or state.get("supersede") is not None:
+            return {}
+        try:
+            return await admission.execute({**dict(state), "node_timeout_sec": SUPERSEDE_NODE_BUDGET_SEC},
+                                           check_operation)
+        except RunControlPending:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- timeout, lost/recalled hold, model or index fault
+            logger.warning("episode_supersede_check_skipped episode_id=%s error=%s",
+                           (state.get("brief") or {}).get("episode_id"), type(exc).__name__)
+            return {"supersede": {"links": [], "error": type(exc).__name__}}
+
     async def retry_wait(state: EpisodeDistillState) -> dict:
         from langgraph.types import interrupt
 
@@ -265,7 +280,8 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
 
     g = StateGraph(EpisodeDistillState)
     for name, node in {"load_episode": load_episode, "resource_request": resource_request,
-                       "resource_wait": resource_wait, "distill": distill_node, "retry_wait": retry_wait,
+                       "resource_wait": resource_wait, "distill": distill_node, "supersede_check": supersede_node,
+                       "retry_wait": retry_wait,
                        "persist": persist_node, "finish": finish, "failed": failed}.items():
         g.add_node(name, node)
     g.add_edge(START, "load_episode")
@@ -276,7 +292,8 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
     g.add_conditional_edges("distill", lambda s: (
         "resource_request" if s.get("status") == "waiting_resource"
         else "retry_wait" if s.get("status") == "retrying"
-        else "failed" if s.get("status") == "failed" else "persist"))
+        else "failed" if s.get("status") == "failed" else "supersede_check"))
+    g.add_edge("supersede_check", "persist")
     g.add_edge("retry_wait", "resource_request")
     g.add_edge("persist", "finish")
     g.add_edge("finish", END)

@@ -66,6 +66,12 @@ NO_DENSE_MIN_SHARED = 2   # without vectors: two shared rare words, or one plus 
 # view that disagrees is growth, not a correction: the earlier view stays as history. (Dry run
 # 2026-11-17: the only sure-yes pair on a view was a changed opinion, not a fact.)
 PROTECTED_CONFIRMATION_STATES = frozenset({"confirmed"})
+# A row Juniper is still being asked about is hers to settle, not the model's: never retired while
+# pending/unconfirmed (her answer would be dropped as already_resolved). And only a correction that
+# is settled (auto: low stakes, or confirmed) may retire anything: a pending high-stakes correction
+# she later rejects would leave the old row hidden with nothing in its place.
+OPEN_CONFIRMATION_STATES = frozenset({"pending_confirmation", "unconfirmed"})
+CORRECTION_STATES = frozenset({"auto", "confirmed"})
 SKIPPED_PURPOSES = frozenset({"follow_up"})                     # neither side
 NOT_SUPERSEDABLE_PURPOSES = SKIPPED_PURPOSES | {"orion_view"}   # never the old side
 
@@ -176,15 +182,18 @@ class Candidate:
 
 def can_be_superseded(row: MemoryRow) -> bool:
     return (row.confirmation_state not in PROTECTED_CONFIRMATION_STATES
+            and row.confirmation_state not in OPEN_CONFIRMATION_STATES
+            and row.confirmation_state != "rejected"
             and row.purpose not in NOT_SUPERSEDABLE_PURPOSES)
 
 
 def can_correct(row: MemoryRow) -> bool:
-    return row.purpose not in SKIPPED_PURPOSES and bool(row.statement)
+    return (row.purpose not in SKIPPED_PURPOSES and bool(row.statement)
+            and row.confirmation_state in CORRECTION_STATES)
 
 
 def candidates_for(new: MemoryRow, corpus: Corpus, *, dense: Optional[Mapping[str, float]] = None,
-                   k: int = K_PER_ROW) -> list[Candidate]:
+                   k: int = K_PER_ROW, excluded: frozenset[tuple[str, str]] = frozenset()) -> list[Candidate]:
     """Older live rows ``new`` might correct, best first, at most ``k``. ``dense`` maps memory_id to
     cosine with ``new`` (None when the index is unavailable: then shared words/referents alone)."""
     if not can_correct(new):
@@ -194,6 +203,10 @@ def candidates_for(new: MemoryRow, corpus: Corpus, *, dense: Optional[Mapping[st
     for old in corpus.rows:
         if old.memory_id == new.memory_id or not can_be_superseded(old):
             continue
+        if new.episode_id and old.episode_id == new.episode_id:
+            continue  # siblings from one episode (e.g. a re-distill) never retire each other
+        if (old.memory_id, new.memory_id) in excluded:
+            continue  # a pair someone undid is never proposed again
         if new.created_at and old.created_at and old.created_at >= new.created_at:
             continue  # a correction is newer than what it corrects
         rare_toks = tuple(sorted(t for t in new_toks & corpus.toks(old)
@@ -399,6 +412,11 @@ async def check_pairs(new: MemoryRow, cands: Sequence[Candidate], ask: AskFn, *,
         verdict = await run_check(c.old, new, ask, budget)
         shared = c.shared_rare_referents + c.shared_rare_tokens
         records.append(CheckRecord(c.old.memory_id, new.memory_id, verdict, c.dense, shared))
+        if (verdict.error or "").startswith("call_failed") or verdict.both_true_reason.startswith("call_failed"):
+            # The model call failed (a lost hold, an operator pause, a dead gateway): stop asking.
+            if budget is not None:
+                budget[0] = 0
+            break
         if verdict.accepted:
             links.append(Link(old_id=c.old.memory_id, new_id=new.memory_id, reason=verdict.reason,
                               dense=None if c.dense is None else round(float(c.dense), 4), shared=shared))
@@ -442,16 +460,24 @@ async def apply_link(conn: Any, link: Link, *, actor: str, now: Optional[datetim
     from psycopg.types.json import Jsonb
 
     now = now or datetime.now(timezone.utc)
-    old = await _fetchone(conn, "SELECT memory_id::text AS memory_id, status, confirmation_state, purpose "
-                                "FROM episode_memory WHERE memory_id = %s FOR UPDATE", (link.old_id,))
-    new = await _fetchone(conn, "SELECT memory_id::text AS memory_id, status, episode_id, "
-                                "supersedes_memory_id::text AS supersedes_memory_id "
-                                "FROM episode_memory WHERE memory_id = %s FOR UPDATE", (link.new_id,))
-    if not old or not new or old["status"] != "active" or new["status"] != "active":
+    # Both rows locked in one statement, in id order (the pass and the distiller may run together).
+    cur = await conn.execute("SELECT memory_id::text AS memory_id, status, confirmation_state, purpose, episode_id, "
+                             "supersedes_memory_id::text AS supersedes_memory_id FROM episode_memory "
+                             "WHERE memory_id = ANY(%s::uuid[]) ORDER BY memory_id FOR UPDATE",
+                             ([link.old_id, link.new_id],))
+    locked = {}
+    for r in await cur.fetchall():
+        r = r if isinstance(r, dict) else dict(zip([d.name for d in cur.description], r))
+        locked[r["memory_id"]] = r
+    old, new = locked.get(link.old_id), locked.get(link.new_id)
+    if not old or not new or link.old_id == link.new_id or old["status"] != "active" or new["status"] != "active":
         return None
-    if old["confirmation_state"] in PROTECTED_CONFIRMATION_STATES or old["purpose"] in NOT_SUPERSEDABLE_PURPOSES:
+    if not can_be_superseded(MemoryRow(memory_id=link.old_id, statement="", purpose=old["purpose"],
+                                       created_at=None, confirmation_state=old["confirmation_state"])):
         return None
-    if old["confirmation_state"] == "rejected":
+    if new["confirmation_state"] not in CORRECTION_STATES:
+        return None
+    if old["episode_id"] and old["episode_id"] == new["episode_id"]:
         return None
     undone = await _fetchone(conn, "SELECT 1 AS x FROM episode_memory_event WHERE op = %s AND memory_id = %s "
                                    "AND evidence->>'superseded_by' = %s LIMIT 1",
@@ -486,18 +512,23 @@ async def undo_link(conn: Any, *, old_id: str, new_id: str, actor: str, note: st
     from psycopg.types.json import Jsonb
 
     now = now or datetime.now(timezone.utc)
-    ev = await _fetchone(conn, "SELECT evidence FROM episode_memory_event WHERE op = %s AND memory_id = %s "
-                               "AND evidence->>'superseded_by' = %s ORDER BY created_at DESC LIMIT 1",
-                         (OP_SUPERSEDED, old_id, new_id))
     old = await _fetchone(conn, "SELECT status FROM episode_memory WHERE memory_id = %s FOR UPDATE", (old_id,))
-    if not ev or not old or old["status"] != "superseded":
+    # Only the change this pair made can be undone: the row's latest status event must be this
+    # pair's ``superseded`` (not a later revision by Juniper, another correction, or an undo).
+    last = await _fetchone(conn, "SELECT op, evidence FROM episode_memory_event WHERE memory_id = %s "
+                                 "AND op IN ('superseded', 'supersede_undone', 'revised', 'rejected') "
+                                 "ORDER BY created_at DESC, event_id DESC LIMIT 1", (old_id,))
+    if not old or old["status"] != "superseded" or not last or last["op"] != OP_SUPERSEDED:
         return None
-    evidence = ev["evidence"] if isinstance(ev["evidence"], dict) else json.loads(ev["evidence"] or "{}")
+    evidence = last["evidence"] if isinstance(last["evidence"], dict) else json.loads(last["evidence"] or "{}")
+    if evidence.get("superseded_by") != new_id:
+        return None
     prior = str(evidence.get("prior_confirmation_state") or "auto")
     await conn.execute("UPDATE episode_memory SET status = 'active', confirmation_state = %s, updated_at = %s "
                        "WHERE memory_id = %s AND status = 'superseded'", (prior, now, old_id))
-    await conn.execute("UPDATE episode_memory SET supersedes_memory_id = NULL, updated_at = %s "
-                       "WHERE memory_id = %s AND supersedes_memory_id = %s", (now, new_id, old_id))
+    if evidence.get("pointer_set"):  # only clear a pointer this link set
+        await conn.execute("UPDATE episode_memory SET supersedes_memory_id = NULL, updated_at = %s "
+                           "WHERE memory_id = %s AND supersedes_memory_id = %s", (now, new_id, old_id))
     restored = {"superseded_by": new_id, "restored_confirmation_state": prior, "note": note[:400]}
     await conn.execute(
         "INSERT INTO episode_memory_event (event_id, memory_id, op, actor, episode_id, evidence, reason, created_at) "
@@ -522,7 +553,8 @@ DenseFn = Callable[[str], Awaitable[Optional[dict[str, float]]]]
 
 
 async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: AskFn, *,
-                            dense: Optional[DenseFn] = None, max_checks: int = 12) -> dict[str, Any]:
+                            dense: Optional[DenseFn] = None, max_checks: int = 12,
+                            excluded: frozenset[tuple[str, str]] = frozenset()) -> dict[str, Any]:
     """The distiller's step: candidates and checks for this episode's new rows. Returns a
     checkpointable dict: links (to apply in the persist transaction), counts, and any error."""
     budget = [max(0, int(max_checks))]
@@ -538,7 +570,8 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
                 scores = None
             if scores is None:
                 dense_unavailable = True
-        found, records = await check_pairs(new, candidates_for(new, corpus, dense=scores), ask, budget=budget)
+        found, records = await check_pairs(new, candidates_for(new, corpus, dense=scores, excluded=excluded), ask,
+                                           budget=budget)
         asked += len(records)
         refused += sum(1 for r in records if r.verdict.error)
         links.extend(found)
@@ -573,14 +606,29 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
     return run
 
 
-def rows_from_validation(result: Any, *, now: datetime) -> list[MemoryRow]:
+def rows_from_validation(result: Any, *, now: datetime, episode_id: Optional[str] = None) -> list[MemoryRow]:
     """ValidationResult memories -> MemoryRow (created now, so every live row is older)."""
     return [
         MemoryRow(memory_id=m.memory_id, statement=" ".join(m.statement.split()), purpose=m.purpose,
-                  created_at=now, confirmation_state=m.confirmation_state,
+                  created_at=now, confirmation_state=m.confirmation_state, episode_id=episode_id,
                   referents=frozenset(k for k, _ in m.referents), occurred_at=m.occurred_at)
         for m in result.memories
     ]
+
+
+UNDONE_PAIRS_SQL = ("SELECT memory_id::text AS old_id, evidence->>'superseded_by' AS new_id "
+                    "FROM episode_memory_event WHERE op = 'supersede_undone'")
+
+
+async def undone_pairs(conn: Any) -> frozenset[tuple[str, str]]:
+    """Pairs someone put back: never proposed or applied again."""
+    if hasattr(conn, "fetch"):
+        rows = [dict(r) for r in await conn.fetch(UNDONE_PAIRS_SQL)]
+    else:
+        cur = await conn.execute(UNDONE_PAIRS_SQL)
+        rows = [r if isinstance(r, dict) else dict(zip([d.name for d in cur.description], r))
+                for r in await cur.fetchall()]
+    return frozenset((str(r["old_id"]), str(r["new_id"])) for r in rows)
 
 
 async def load_corpus(conn: Any) -> Corpus:

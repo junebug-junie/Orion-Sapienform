@@ -165,3 +165,29 @@ def test_live_rows_sql_reuses_the_serving_gate():
     from orion.memory.lived_memory import EPISODE_SQL
 
     assert EPISODE_SQL in s.LIVE_ROWS_SQL
+
+
+def test_open_asks_rejected_rows_and_unsettled_corrections_are_out():
+    pending = row("p", "Juniper told me Biscuit is a cat.", state="pending_confirmation", refs=("pet:biscuit",))
+    unconf = row("u", "Juniper told me Biscuit is a cat again.", state="unconfirmed", refs=("pet:biscuit",))
+    assert s.candidates_for(NEW, corpus(pending, unconf, NEW), dense={"p": 0.9, "u": 0.9}) == []
+    unsettled = row("n", "Juniper told me Biscuit is a dog.", days=3, state="pending_confirmation",
+                    refs=("pet:biscuit",))
+    assert s.candidates_for(unsettled, corpus(OLD, unsettled), dense={"old": 0.9}) == []
+
+
+def test_same_episode_siblings_and_undone_pairs_are_never_candidates():
+    sib_old = s.MemoryRow("so", OLD.statement, "about_juniper", T0, episode_id="ep-1", referents=OLD.referents)
+    sib_new = s.MemoryRow("sn", NEW.statement, "about_juniper", T0 + timedelta(days=1), episode_id="ep-1",
+                          referents=NEW.referents)
+    assert s.candidates_for(sib_new, corpus(sib_old, sib_new), dense={"so": 0.9}) == []
+    assert s.candidates_for(NEW, corpus(OLD, NEW), dense={"old": 0.9}, excluded=frozenset({("old", "new")})) == []
+
+
+def test_a_failed_call_stops_the_whole_plan():
+    olds = [row(f"o{i}", f"Biscuit fact {i}.", refs=("pet:biscuit",)) for i in range(3)]
+    other = row("n2", "Juniper said Biscuit is a dog now.", days=4, refs=("pet:biscuit",))
+    ask, seen = answers(RuntimeError("gpu_hold_lost"))
+    plan = asyncio.run(s.plan_for_new_rows([NEW, other], corpus(*olds), ask, max_checks=10,
+                                           dense=_dense({f"o{i}": 0.7 for i in range(3)})))
+    assert len(seen) == 1 and plan["links"] == [] and plan["budget_left"] == 0

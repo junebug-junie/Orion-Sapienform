@@ -98,9 +98,10 @@ class CheckingDistiller(Distiller):
         super().__init__(world, answers)
         self.check_briefs = []
 
-    async def call_llm(self, prompt, *, brief, run_id, correlation_id, gpu_lease):
+    async def call_llm(self, prompt, *, brief, run_id, correlation_id, gpu_lease, **kw):
         if prompt.startswith("CHECK:"):
             assert gpu_lease.model_dump() == self.world.ref()    # the check rides the same hold
+            assert kw == {"purpose": "memory_supersede_check", "temperature": 0.0}
             self.check_briefs.append(brief)
             return {"text": "yes", "finish_reason": "stop"}
         return await super().call_llm(prompt, brief=brief, run_id=run_id, correlation_id=correlation_id,
@@ -108,7 +109,8 @@ class CheckingDistiller(Distiller):
 
 
 def test_supersede_check_runs_on_the_hold_and_its_links_reach_persist():
-    async def link(result, ask):
+    async def link(result, ask, *, episode_id):
+        assert episode_id == "ep-1"
         assert [m.statement for m in result.memories] == ["Juniper flew to Austin and returns Wednesday."]
         assert await ask("CHECK: does B correct A?") == "yes"
         return {"links": [{"old_id": "old-1", "new_id": result.memories[0].memory_id, "reason": "r"}],
@@ -129,7 +131,7 @@ def test_supersede_check_runs_on_the_hold_and_its_links_reach_persist():
 
 
 def test_a_failing_supersede_check_links_nothing_and_never_fails_the_run():
-    async def link(result, ask):
+    async def link(result, ask, **_kw):
         raise RuntimeError("index down")
 
     async def run():
@@ -140,7 +142,27 @@ def test_a_failing_supersede_check_links_nothing_and_never_fails_the_run():
         result = await graph(world, saver, d, link=link).ainvoke(Command(resume={}), CFG)
         assert result["status"] == "completed" and len(d.calls) == 1
         assert "supersede_links" not in d.persisted[0]
-        assert result["supersede"]["links"] == [] and "index down" in result["supersede"]["error"]
+        assert result["supersede"] == {"links": [], "error": "RuntimeError"}
+
+    asyncio.run(run())
+
+
+def test_a_slow_supersede_check_times_out_without_costing_an_attempt(monkeypatch):
+    import app.episode_distill_graph as g
+
+    monkeypatch.setattr(g, "SUPERSEDE_NODE_BUDGET_SEC", 0.05)
+
+    async def link(result, ask, **_kw):
+        await asyncio.sleep(5)
+
+    async def run():
+        world, saver = World(), InMemorySaver()
+        d = Distiller(world, [GOOD])
+        await asyncio.wait_for(graph(world, saver, d, link=link).ainvoke(initial(), CFG), 1)
+        world.grant()
+        result = await asyncio.wait_for(graph(world, saver, d, link=link).ainvoke(Command(resume={}), CFG), 3)
+        assert result["status"] == "completed" and result["attempt"] == 1 and len(d.calls) == 1
+        assert result["supersede"]["links"] == [] and "supersede_links" not in d.persisted[0]
 
     asyncio.run(run())
 

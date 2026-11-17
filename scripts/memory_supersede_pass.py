@@ -53,7 +53,7 @@ sys.path.insert(0, str(REPO))
 
 from orion.memory.episode.supersede import (  # noqa: E402
     ACTOR_PASS, CHECK_VERSION, Candidate, CheckRecord, Corpus, Link, MemoryRow, candidates_for, cosine,
-    dedupe_links, load_corpus, run_check,
+    dedupe_links, load_corpus, run_check, undone_pairs,
 )
 
 DEFAULT_DIR = Path("/tmp/memory-supersede-pass")
@@ -162,10 +162,11 @@ def dense_for(new: MemoryRow, corpus: Corpus, vecs: Optional[dict[str, list[floa
     return out
 
 
-def plan_candidates(corpus: Corpus, vecs: Optional[dict[str, list[float]]]) -> list[tuple[MemoryRow, Candidate]]:
+def plan_candidates(corpus: Corpus, vecs: Optional[dict[str, list[float]]],
+                    excluded: frozenset[tuple[str, str]] = frozenset()) -> list[tuple[MemoryRow, Candidate]]:
     pairs = []
     for new in corpus.rows:
-        for c in candidates_for(new, corpus, dense=dense_for(new, corpus, vecs)):
+        for c in candidates_for(new, corpus, dense=dense_for(new, corpus, vecs), excluded=excluded):
             pairs.append((new, c))
     return pairs
 
@@ -186,8 +187,9 @@ async def cmd_dry_run(args: argparse.Namespace) -> int:
         write_private(out / "snapshot_active_rows.jsonl",
                       "".join(json.dumps(dict(r), default=str) + "\n" for r in snap))
         corpus = await load_corpus(conn)
+        excluded = await undone_pairs(conn)
     vecs = None if args.no_dense else await dense_matrix(args.chroma, args.embed_url, args.collection)
-    pairs = plan_candidates(corpus, vecs)
+    pairs = plan_candidates(corpus, vecs, excluded)
     if args.max_checks:
         pairs = pairs[: args.max_checks]
     by_id = {r.memory_id: r for r in corpus.rows}
@@ -410,9 +412,16 @@ async def cmd_apply(args: argparse.Namespace) -> int:
     applied = skipped = 0
     applied_ids: list[dict[str, Any]] = []
     async with await psycopg.AsyncConnection.connect(args.dsn, row_factory=dict_row, autocommit=True) as conn:
+        undone = await undone_pairs(conn)
         for p in pairs:
             key = (p["old_id"], p["new_id"])
             if (only and key not in only) or key in exclude:
+                continue
+            if key in undone:  # someone put this pair back: never re-applied, never reported applied
+                with log.open("a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now(timezone.utc).isoformat()} undone_never_reapplied "
+                            f"old={key[0]} new={key[1]}\n")
+                skipped += 1
                 continue
             cur = await conn.execute("SELECT created_at FROM episode_memory_event WHERE event_id = %s",
                                      (superseded_event_id(*key),))

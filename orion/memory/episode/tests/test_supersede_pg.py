@@ -161,6 +161,58 @@ def test_write_time_supersede_sets_all_three_marks_and_readers_drop_the_old_row(
     asyncio.run(_with_db(body))
 
 
+def test_undo_never_reverses_a_later_retirement_and_keeps_a_pointer_it_did_not_set():
+    async def body(pool, dsn):
+        a = await _old_row(pool, "Juniper told me Biscuit is a cat.")
+        result = _correction()
+        b = result.memories[0].memory_id
+        await _persist(pool, result, [s.Link(a, b, "r").as_dict()])
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                assert await s.undo_link(conn, old_id=a, new_id=b, actor="operator") is not None
+            # A is retired again by another correction C (not this pair).
+            c = await _old_row(pool, "Juniper told me Biscuit is a dog.")
+            await conn.execute("UPDATE episode_memory SET created_at = %s, episode_id = 'ep-c' WHERE memory_id = %s",
+                               (T0 + timedelta(days=9), c))
+            async with conn.transaction():
+                assert await s.apply_link(conn, s.Link(a, c, "r2"), actor=s.ACTOR_PASS,
+                                          now=T0 + timedelta(days=10)) is not None
+            async with conn.transaction():
+                assert await s.undo_link(conn, old_id=a, new_id=b, actor="operator") is None  # not B's to undo
+        row = await _one(pool, "SELECT status FROM episode_memory WHERE memory_id = %s", (a,))
+        assert row["status"] == "superseded"
+
+        # A pointer this link did not set stays when the link is undone.
+        x = await _old_row(pool, "Juniper said the cabinet was cold.")
+        y = await _old_row(pool, "Juniper said the cabinet was warm.")
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE episode_memory SET episode_id = 'ep-y', created_at = %s, "
+                               "supersedes_memory_id = %s WHERE memory_id = %s", (T0 + timedelta(days=2), c, y))
+            async with conn.transaction():
+                ev = await s.apply_link(conn, s.Link(x, y, "r"), actor=s.ACTOR_PASS, now=T0 + timedelta(days=11))
+            assert ev["pointer_set"] is False
+            async with conn.transaction():
+                assert await s.undo_link(conn, old_id=x, new_id=y, actor="operator") is not None
+        ptr = await _one(pool, "SELECT supersedes_memory_id::text AS p FROM episode_memory WHERE memory_id = %s", (y,))
+        assert ptr["p"] == c
+
+    asyncio.run(_with_db(body))
+
+
+def test_open_asks_and_pending_corrections_are_never_applied():
+    async def body(pool, dsn):
+        asked = await _old_row(pool, "Juniper told me she moved.", state="pending_confirmation")
+        plain = await _old_row(pool, "Juniper told me Biscuit is a cat.")
+        pending_fix = await _old_row(pool, "Juniper told me Biscuit is a dog.", state="pending_confirmation")
+        async with pool.connection() as conn:
+            await conn.execute("UPDATE episode_memory SET episode_id = 'ep-fix' WHERE memory_id = %s", (pending_fix,))
+            async with conn.transaction():
+                assert await s.apply_link(conn, s.Link(asked, plain, "r"), actor=s.ACTOR_PASS) is None
+                assert await s.apply_link(conn, s.Link(plain, pending_fix, "r"), actor=s.ACTOR_PASS) is None
+
+    asyncio.run(_with_db(body))
+
+
 def test_confirmed_rows_and_views_are_never_superseded_and_foreign_links_are_ignored():
     async def body(pool, dsn):
         confirmed = await _old_row(pool, "Juniper told me she lives in Millbrook.", state="confirmed")

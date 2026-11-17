@@ -121,6 +121,6 @@ Run it from the clean primary main checkout after merge. The post-pull rebuild d
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3598
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

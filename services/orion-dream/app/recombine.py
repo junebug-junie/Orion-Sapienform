@@ -3,8 +3,12 @@
 Code picks the pairs (§4); the LLM only writes the claim text, and is allowed
 to say there is no link. Two arms, same prompt:
 
-  dream    greedy over the replay set: highest weight_a * weight_b * distance,
-           each item used once. Distance = 1 - tag Jaccard, +0.1 across sources.
+  dream    coincidence (#3664, 2026-11-17): fragments from DIFFERENT organs whose
+           times fall within the pairing window of each other, highest
+           weight_a * weight_b first, nearer in time breaking ties, each item used
+           once. Fragments with no known time are never paired by this arm. No
+           fallback to distant pairs: an honest judge declines those (#3412), so a
+           sleep with no coincidences asks fewer questions instead.
   control  uniform random pairs from the WHOLE candidate pool, seeded by the
            cycle id (reproducible). This is the baseline the scorecard needs.
 """
@@ -21,8 +25,6 @@ from uuid import uuid4
 
 from orion.schemas.dream_cycle import PAIR_ANSWER_CHARS, DreamHypothesisV1, PairAnswerV1, ReplayItemV1
 
-CROSS_SOURCE_BONUS = 0.1
-
 Complete = Callable[[str], Awaitable[str]]
 
 
@@ -33,31 +35,31 @@ class Pair:
     arm: str
 
 
-def jaccard(a: Sequence[str], b: Sequence[str]) -> float:
-    sa, sb = set(a), set(b)
-    if not sa and not sb:
-        return 0.0
-    return len(sa & sb) / len(sa | sb)
+def time_gap_minutes(a: ReplayItemV1, b: ReplayItemV1) -> Optional[float]:
+    """Minutes between two fragments' times (0 when their spans overlap). None when either has no time."""
+    if a.occurred_at is None or b.occurred_at is None:
+        return None
+    a0, a1 = sorted((a.occurred_at, a.occurred_until or a.occurred_at))
+    b0, b1 = sorted((b.occurred_at, b.occurred_until or b.occurred_at))
+    gap = max(a0, b0) - min(a1, b1)
+    return max(0.0, gap.total_seconds() / 60.0)
 
 
-def pair_score(a: ReplayItemV1, b: ReplayItemV1) -> float:
-    distance = 1.0 - jaccard(a.tags, b.tags)
-    bonus = CROSS_SOURCE_BONUS if a.source_kind != b.source_kind else 0.0
-    return a.weight * b.weight * distance + bonus
-
-
-def dream_pairs(replay: Sequence[ReplayItemV1], n: int) -> list[Pair]:
+def dream_pairs(replay: Sequence[ReplayItemV1], n: int, *, window_minutes: float) -> list[Pair]:
     scored = []
     for i in range(len(replay)):
         for j in range(i + 1, len(replay)):
             a, b = replay[i], replay[j]
-            s = pair_score(a, b)
-            if s > 0.0:
-                scored.append((s, a.ref_id, b.ref_id, a, b))
-    scored.sort(key=lambda t: (-t[0], t[1], t[2]))
+            if a.source_kind == b.source_kind:
+                continue
+            gap = time_gap_minutes(a, b)
+            if gap is None or gap > window_minutes:
+                continue
+            scored.append((a.weight * b.weight, gap, a.ref_id, b.ref_id, a, b))
+    scored.sort(key=lambda t: (-t[0], t[1], t[2], t[3]))
     used: set[str] = set()
     out: list[Pair] = []
-    for _, _, _, a, b in scored:
+    for _, _, _, _, a, b in scored:
         if len(out) >= n:
             break
         if a.ref_id in used or b.ref_id in used:

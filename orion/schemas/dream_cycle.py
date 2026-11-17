@@ -115,6 +115,11 @@ class ReplayItemV1(BaseModel):
     weight: float = Field(ge=0.0, le=1.0)
     reason: str
     tags: list[str] = Field(default_factory=list, max_length=32)
+    # When it happened: a point, or [occurred_at, occurred_until] for a span (an arc). The dream arm
+    # pairs fragments whose times fall near each other (#3664). None: no known time; never paired by
+    # the dream arm, still drawable by the random control arm.
+    occurred_at: Optional[AwareDatetime] = None
+    occurred_until: Optional[AwareDatetime] = None
 
 
 class DreamHypothesisV1(BaseModel):

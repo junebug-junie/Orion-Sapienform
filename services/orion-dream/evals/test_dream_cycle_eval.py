@@ -54,7 +54,7 @@ class _World:
             out = {"metacog": [], "compaction_request": [], "resonance": [], "crystallization": []}
             for kind, ts, row in self.rows:
                 if ts > since and (until is None or ts < until):
-                    out[kind].append(row)
+                    out[kind].append({**row, "occurred_at": ts})  # every source query returns its time
             return out
 
         def persist(cycle):

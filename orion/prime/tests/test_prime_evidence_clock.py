@@ -129,3 +129,14 @@ def test_the_replay_eval_passes_on_the_live_window():
     from orion.prime.evals import run_concern_evidence_clock_replay as ev
 
     assert ev.main() == 0
+
+
+def test_an_untouched_promise_frees_the_turn_slot_after_24h_while_still_held():
+    from orion.prime import handback as hb
+
+    promise = _concern("p1", ref="turn:abc")
+    state = PrimeStateV1(concerns=[promise])
+    assert hb.holds_turn_slot(promise, T0 + timedelta(hours=23))
+    later = T0 + timedelta(hours=25)
+    assert not hb.holds_turn_slot(promise, later)
+    assert observe(state, PrimeSnapshotV1(), later).concerns == [promise]  # still held (72 h)

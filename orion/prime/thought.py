@@ -199,7 +199,7 @@ Rules:
 # renews a concern. Swapped into SYSTEM_PROMPT by system_prompt(evidence_clock=True).
 _KEEP_RENEWS = "A concern you do not keep fades after a day (a promise: after 3 days);"
 _EVIDENCE_RENEWS = ("Keeping a concern does not renew it: a concern fades a day (a promise: 3 days)\n"
-                    "   after something last touched it -- a question you sent about it, taking it on, or a turn about it;")
+                    "   after you last acted on it -- a question you sent about it (its concern_id), or taking it on;")
 
 
 REGULATE_PROMPT = """

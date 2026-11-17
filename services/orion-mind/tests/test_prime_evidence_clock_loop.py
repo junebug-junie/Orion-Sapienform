@@ -118,3 +118,29 @@ def test_a_keep_only_thought_no_longer_answers_the_horizon_need(clock, damped):
     asyncio.run(rt.tick())
     assert len(rt.llm.calls) == 1
     assert ("horizon" in rt.state.needs.damp) is damped
+
+
+def test_an_unknown_hub_answer_counts_as_sent():
+    class Silent(Bus):
+        async def rpc_request(self, channel, envelope, *, reply_channel, timeout_sec):
+            raise TimeoutError
+
+    rt = _run(_ask(), bus=Silent())
+    assert rt.state.open_nominations[0].queued is None
+    assert _clock_of(rt) == T0
+
+
+def test_a_move_refused_after_apply_answer_does_not_renew_it():
+    """A ref no curiosity run can open refuses the move in _conclude, after apply_answer: no renewal."""
+    answer = _ask()
+    answer["move"]["refs"] = [{"kind": "act", "id": "act_" + "a" * 24}]
+    rt = _run(answer)
+    assert rt.state.open_nominations == [] and "not sent" in rt.state.recent_outcomes[-1]
+    assert _clock_of(rt) == OPENED
+
+
+def test_the_prompt_names_only_real_evidence():
+    rt = _run(KEEP_ONLY)
+    prompt = rt.llm.calls[0]["system_prompt"]
+    assert "a question you sent about it (its concern_id), or taking it on;" in prompt
+    assert "a turn about it" not in prompt

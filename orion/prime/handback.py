@@ -329,7 +329,11 @@ def turn_concern_id(correlation_id: str) -> str:
 
 def holds_turn_slot(c: PrimeConcernV1, now: datetime) -> bool:
     """Whether an open turn concern holds the turn-concern slot (``TURN_CONCERNS_MAX_OPEN``). Only while it is
-    within ``CONCERN_TTL`` (24 h) of last being kept, exactly as long as it lived before promise concerns got 72 h
+    within ``CONCERN_TTL`` (24 h) of its last evidence (``last_evidence_at``). With the evidence clock on
+    (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED, #3574) a keep no longer renews it, so an untouched promise frees the slot
+    24 h after it opened (or after Prime last asked about it or took it on) while it is still held for up to 72 h;
+    before, every keep held the slot as long as Prime held the promise. This is the rule's stated intent: 24 h is
+    exactly as long as it lived before promise concerns got 72 h
     (2026-11-13): the longer life gives Prime more time to keep a promise, not one promise 3 days of blocking
     every later one (on the live 3-day replay a slot held 72 h refused a thread that 24 h opened)."""
     return (c.graded is None and (c.event_ref or "").startswith(TURN_EVENT_PREFIX)

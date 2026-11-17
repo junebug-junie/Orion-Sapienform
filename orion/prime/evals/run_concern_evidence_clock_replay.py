@@ -19,6 +19,10 @@ The replay applies the real pure functions (orion/prime/state.py ``observe`` eve
 ``apply_answer``, orion/prime/day_letter.py ``thread_concerns``, orion/prime/handback.py ``thread_refusal``,
 orion/prime/acts.py ``settle_concern``) twice: clock off (a keep renews, as live) and clock on.
 
+Limit: the model's live answers are held fixed. A model that reacts to the new prompt (keeping no longer renews) by
+sending questions is not simulated, so ``no_evidence`` is true by construction here; it records that the live window
+had no evidence source at all. ``promise_lives`` passes because the settle came ~51.5 h after the promise opened.
+
 Checks (exit 1 on any failure):
 
 * fidelity      -- clock off reproduces the live record: threads held per letter 2/0/0/1, the same 3 concern ids held

@@ -1254,7 +1254,8 @@ class PrimeRuntime(MindLoopRuntime):
 
     def _evidence_clock_on(self) -> bool:
         """PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED (#3574): a bare keep no longer renews a concern; a sent question or a
-        take-on does (orion/prime/state.py ``touch_concern``)."""
+        take-on does (orion/prime/state.py ``touch_concern``). Settings default True (shipped on); the getattr default
+        False only matters for fake test settings that lack the key, so the golden replay runs with the clock off."""
         return bool(getattr(self.s, "PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED", False))
 
     @staticmethod
@@ -1580,7 +1581,8 @@ class PrimeRuntime(MindLoopRuntime):
         self.state = self.state.model_copy(update={"open_nominations": [*self.state.open_nominations, nom]})
         # The evidence clock (#3574): a question Prime sent about a concern is evidence for it. Both arms count (a
         # held-back question is the same act by Prime; counting only treated would make control-arm concerns fade
-        # sooner and bias the hold-back comparison). Not when Hub refused it before writing (queued False).
+        # sooner and bias the hold-back comparison). Not when Hub refused it before writing (queued False). An unknown
+        # Hub answer (queued None: timeout or error) counts as sent: the question may have been written.
         if self._evidence_clock_on() and move.concern_id and nom.queued is not False:
             self.state = touch_concern(self.state, move.concern_id, now)
 

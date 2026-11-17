@@ -416,7 +416,8 @@ def after_answer(state: PrimeStateV1, shown: Sequence[NeedV1], now: datetime, *,
                  touched: Iterable[str] = ()) -> PrimeStateV1:
     """Guard 1: a thought that was shown needs and changed nothing halves each shown need (by damp key,
     ``NeedV1.damp_key``), except needs whose ref is in ``touched`` (the thought answered that one). A damp key with
-    any answered need is not halved. Kept concerns answer ``horizon``; they never shield an event want's key (#3552)."""
+    any answered need is not halved. Kept concerns answer ``horizon`` (evidence clock off; with it on the runtime
+    passes no kept ids); they never shield an event want's key (#3552)."""
     if acted or not shown:
         return state
     hit = set(touched)

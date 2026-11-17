@@ -12,8 +12,9 @@ What counts as a change (each one is a fact Prime can be shown, never a score):
   ``PROMISE_CONCERN_TTL`` (72 h) for a promise concern. What renews it (``last_evidence_at``), with the evidence
   clock on (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED, 2026-11-17, design
   docs/superpowers/specs/2026-11-17-prime-concerns-decided-by-attention-design.md patch 1, #3574): only real
-  evidence -- a question Prime sent about it (the move's concern_id), Prime taking it on, or a handed-back turn
-  whose prompt cites ``prime_concern:<id>`` (``touch_concern``). A bare "keep" no longer renews it: from 10-30 to
+  evidence -- a question Prime sent about it (the move's concern_id) or Prime taking it on (``touch_concern``).
+  A turn whose prompt cites ``prime_concern:<id>`` settles it (orion/prime/handback.py) but does not renew it:
+  a day letter's prompt quotes Orion's own earlier text, refs included (#3644). A bare "keep" no longer renews it: from 10-30 to
   11-17 the model kept every held concern on every thought, so 0 of 54 concern acts ever faded and new letter
   threads found no room. With the clock off, a keep renews it as before. An arc the model tied a concern to is
   never evidence (2026-10-30, Juniper: the first live concern, about energy, was tied to a conversation arc and
@@ -165,8 +166,8 @@ def concern_ttl(concern: PrimeConcernV1) -> timedelta:
 
 def touch_concern(state: "PrimeStateV1", concern_id: Optional[str], now: datetime) -> "PrimeStateV1":
     """Real evidence touched a held concern: its clock (``last_evidence_at``) restarts at ``now``. Callers: a
-    question Prime sent about it (services/orion-mind/app/prime_loop.py ``_nominate``), Prime taking it on
-    (orion/prime/intention.py ``keep_taken_on``), a handed-back turn whose prompt cites it (orion/prime/handback.py).
+    question Prime sent about it (services/orion-mind/app/prime_loop.py ``_nominate``; Prime taking it on renews it
+    through orion/prime/intention.py ``keep_taken_on`` on every tick while the run is open).
     Keyed on ``concern_id`` only, never on the concern's text: a letter thread's id is a hash of its stable
     ``orion_day_letter:<day>#thread<i>`` event_ref (orion/prime/day_letter.py ``thread_concern_id``), while its
     text is cut. An unknown id, or a clock already at or after ``now``, changes nothing."""

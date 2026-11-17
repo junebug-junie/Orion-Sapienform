@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import logging
+import time
 
 import requests
 from uuid import uuid4
@@ -15,7 +16,14 @@ from orion.core.bus.bus_schemas import ServiceRef
 from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_consumer_readiness
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 
-from .http_models import RecallCompareRequestBody, RecallCompareResponseBody, RecallRequestBody, RecallResponseBody
+from .http_models import (
+    LivedKnowRequestBody,
+    LivedKnowResponseBody,
+    RecallCompareRequestBody,
+    RecallCompareResponseBody,
+    RecallRequestBody,
+    RecallResponseBody,
+)
 from .recall_eval import run_recall_eval_case, run_recall_eval_suite
 from .recall_v2 import run_recall_v2_shadow
 from .service import chassis_cfg
@@ -25,9 +33,10 @@ from .storage.falkor_entity_relatedness import (
     fetch_entity_mention_timeline,
     fetch_related_entities,
 )
+from . import worker as _worker
 from .worker import handle_recall, process_recall, persist_decision_async, set_lived_memory, set_recall_pg_pool
 
-from orion.core.contracts.recall import RecallQueryV1
+from orion.core.contracts.recall import RecallDecisionV1, RecallQueryV1
 
 logger = logging.getLogger("orion-recall.main")
 
@@ -268,6 +277,71 @@ async def recall_endpoint(body: RecallRequestBody):
             "selected_ids": decision.selected_ids,
         }
     return {"bundle": bundle.model_dump(mode="json"), "debug": debug}
+
+
+# A deliberate lookup has no chat reply waiting on it, so it may take longer than a turn's budget.
+KNOW_TIMEOUT_SEC = 8.0
+KNOW_GRACE_SEC = 2.0
+KNOW_VERB = "dig.know"
+
+
+@app.post("/lived/know", response_model=LivedKnowResponseBody)
+async def lived_know_endpoint(body: LivedKnowRequestBody):
+    """``python -P -m orion.dig know <words>`` (issue #3535): the lived-memory retriever a chat turn
+    uses, on Orion's own words. Logged to recall_telemetry under the turn's id (verb ``dig.know``),
+    so a memory Orion looks up counts toward read demand like one recall injected."""
+    reader = _worker._lived_memory
+    if reader is None:
+        return JSONResponse({"error": "lived memory recall is off in orion-recall"}, status_code=503)
+    started = time.perf_counter()
+    try:
+        result = await asyncio.wait_for(
+            reader.know(body.words, max_hits=body.max_hits, timeout_sec=KNOW_TIMEOUT_SEC),
+            timeout=KNOW_TIMEOUT_SEC + KNOW_GRACE_SEC,
+        )
+    except Exception as exc:  # noqa: BLE001 -- said as "could not search", never as "no memory"
+        status = "timeout" if isinstance(exc, asyncio.TimeoutError) else "error"
+        logger.warning("lived_know_failed status=%s error=%s", status, type(exc).__name__)
+        from .lived_memory import KnowResult, LivedRecall
+
+        result = KnowResult(strong=[], weak=[], status=status,
+                            recall=LivedRecall(debug={"outer": status if status == "timeout"
+                                                      else f"error:{type(exc).__name__}"}))
+    hits = [
+        {"strength": strength, "kind": s.rec.kind, "purpose": s.rec.purpose, "id": s.rec.doc_id,
+         "date": s.rec.date, "text": s.rec.text, "fit": round(float(s.fit), 4)}
+        for strength, group in (("strong", result.strong), ("weak", result.weak))
+        for s in group
+    ]
+    corr = str(body.turn_id or "").strip() or str(uuid4())
+    debug = dict(result.recall.debug)
+    debug["status"] = result.status
+    debug["injected"] = [{"id": h["id"]} for h in hits]
+    decision = RecallDecisionV1(
+        corr_id=corr,
+        verb=KNOW_VERB,
+        profile="lived_memory.know",
+        query=body.words[:1000],
+        selected_ids=[h["id"] for h in hits],
+        backend_counts={"lived_memory": len(result.strong), "lived_memory_weak": len(result.weak)},
+        latency_ms=int((time.perf_counter() - started) * 1000),
+        recall_debug={"lived_memory": debug},
+        timings_ms={f"lived_memory_{k}": int(v) for k, v in (debug.get("timings_ms") or {}).items()
+                    if isinstance(v, (int, float))},
+    )
+    await persist_decision_async(decision)
+    logger.info(
+        "lived_know corr_id=%s status=%s strong=%s weak=%s backend=%s latency_ms=%s",
+        corr, result.status, len(result.strong), len(result.weak), result.recall.backend or "none",
+        decision.latency_ms,
+    )
+    return {
+        "status": result.status,
+        "backend": result.recall.backend or "",
+        "degraded": list(result.recall.degraded_reasons),
+        "hits": hits,
+        "corr_id": corr,
+    }
 
 
 @app.post("/debug/recall/compare", response_model=RecallCompareResponseBody)

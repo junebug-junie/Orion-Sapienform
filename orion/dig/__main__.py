@@ -74,6 +74,7 @@ path of a file with the full result; read only what you need from that file.
                          [experience:<id>] refs, cites, breaks, use rate. At most 7 days.
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
+  know <words>           your lived memories matching <words>; run it before saying you don't remember.
   look [<camera>|check]  see a camera now (office/walkway/doorbell), Read the path; check a record.
   arc|act <id>           open a cited arc/act.
   notes [append <text>]  this dig's shared notes (hops / turns read each other).
@@ -1829,6 +1830,22 @@ def cmd_claude_grants_set(category: str, setting: str, reason: str, out: Out) ->
             f"/api/claude-tools/grants\ngrants ledger: {path}")
 
 
+# --- know (lived memories, issue #3535) -----------------------------------------------------
+
+def cmd_know(words: list[str], out: Out, post=None, environ=None) -> str:
+    """Read-only lookup through orion-recall (never Postgres): what recall would inject, plus weak matches."""
+    from orion.dig import know
+
+    text = " ".join(words)
+    try:
+        data = know.lookup(text, post=post, environ=environ)
+    except know.KnowError as exc:
+        raise DigError(str(exc).removeprefix("know: ")) from exc
+    shown = " ".join(text.split())[:know.MAX_WORDS_CHARS]
+    path = out.write("know", {"words": shown, **data})
+    return capped(know.render(shown, data), tail=f"full record (every hit, untrimmed): {path}")
+
+
 # --- notes ----------------------------------------------------------------------------------
 
 def cmd_notes(text: str | None, out: Out) -> str:
@@ -1932,6 +1949,8 @@ def main(argv: list[str] | None = None) -> int:
             text = cmd_claude_grants(out)
         elif ns.command == "claude-grants" and len(a) >= 5 and a[0] == "set" and a[3] == "because":
             text = cmd_claude_grants_set(a[1], a[2], " ".join(a[4:]), out)
+        elif ns.command == "know" and a:
+            text = cmd_know(a, out)
         elif ns.command == "look" and a[:1] == ["check"] and len(a) >= 6 and "because" in a[4:]:
             cut = len(a) - 1 - a[::-1].index("because")  # the last one: what you saw may say "because"
             if cut != len(a) - 2:

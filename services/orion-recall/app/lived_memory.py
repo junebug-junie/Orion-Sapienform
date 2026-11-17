@@ -100,6 +100,8 @@ LEXICAL_TOP_K = 10
 MAX_RERANK = 24
 # Step 2 ceiling: step 1's pool (at most MAX_RERANK) plus rewrite hits and link neighbours.
 MAX_RERANK_STEP2 = 32
+# ``orion.dig know``: at most this many hits (strong first, then weak) per lookup.
+KNOW_MAX_HITS = 8
 # Step 2 (issue #3534): each rewritten search adds its own, smaller candidate lists; all lists
 # are merged by reciprocal-rank fusion before the rerank.
 REWRITE_DENSE_TOP_K = 8
@@ -250,6 +252,10 @@ class LivedRecall:
     degraded_reasons: List[str] = field(default_factory=list)
     lexical_hits: int = 0
     quiet_empty: bool = False  # degraded, nothing found, and nothing to note (small talk)
+    # Every record that reached the rerank, in rerank order, and the best exact-word score of each
+    # search hit (``orion.dig know`` shows the below-bar ones that share words as weak matches).
+    candidates: List[LivedRecord] = field(default_factory=list)
+    lexical_scores: Dict[str, float] = field(default_factory=dict)
 
     @property
     def degraded(self) -> bool:
@@ -438,7 +444,8 @@ class LivedMemoryRecall:
 
     async def recall(self, query: str, *, client: httpx.AsyncClient | None = None,
                      as_of: datetime | None = None, session_id: str | None = None,
-                     exclude_ids: Sequence[str] = (), timeout_sec: float | None = None) -> LivedRecall:
+                     exclude_ids: Sequence[str] = (), timeout_sec: float | None = None,
+                     min_query_tokens: int | None = None, rewrite: bool = True) -> LivedRecall:
         """One retrieval. ``session_id`` lets the rewrite read the last turns of this
         conversation. ``as_of`` (replay evals only) hides records Orion stored after that time,
         so a replayed message cannot be answered by the memory distilled from it.
@@ -446,7 +453,10 @@ class LivedMemoryRecall:
         Bounded by ``timeout_sec`` (default ``cfg.timeout_sec``) end to end: the rewrite gets
         ``rewrite_timeout_sec``, the meaning search what is left minus ``RERANK_RESERVE_SEC``, and
         the rerank the rest. A reranker or embedder that is down or too slow drops to exact-word
-        ranking (backend ``degraded``), never to nothing (issue #3573)."""
+        ranking (backend ``degraded``), never to nothing (issue #3573).
+
+        ``min_query_tokens`` and ``rewrite`` are for a deliberate lookup (``know``): its words are
+        already a search, so it skips the chat-turn floor and the pre-turn rewrite."""
         started = time.perf_counter()
         deadline = started + float(timeout_sec if timeout_sec is not None else self.cfg.timeout_sec)
         timings: Dict[str, int] = {}
@@ -465,7 +475,8 @@ class LivedMemoryRecall:
         out.debug["rewrite"] = rewrite_info
         try:
             qtoks = set(tokenize(query))
-            if len(qtoks) < self.cfg.min_query_tokens:
+            floor = self.cfg.min_query_tokens if min_query_tokens is None else int(min_query_tokens)
+            if len(qtoks) < floor:
                 # Too few words to search with. Replay (2026-11-17) tried letting the rewrite
                 # rescue these: no referring message in the bank was this short, and small-talk
                 # injection rose from 13% to 35%. So the step 1 floor stands, and the rewrite is
@@ -476,7 +487,9 @@ class LivedMemoryRecall:
             # The rewrite starts first: it does not need the snapshot, and it is the slow part.
             rewrite_task: asyncio.Future | None = None
             rewrite_started = time.perf_counter()
-            if self._rewriter is not None and not long_message:
+            if not rewrite:
+                pass  # rewrite_info stays "off"
+            elif self._rewriter is not None and not long_message:
                 rewrite_task = asyncio.ensure_future(
                     self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of))
                 pending.append(rewrite_task)
@@ -590,6 +603,7 @@ class LivedMemoryRecall:
                                        "live_pool": len(fused), "links": len(links),
                                        "dense_not_live": out.debug.pop("dense_not_live", 0)}
             out.lexical_hits = len(lexical_best)
+            out.lexical_scores = dict(lexical_best)
 
             def finish_backend() -> None:
                 out.backend = BACKEND_DEGRADED if degraded else BACKEND_HYBRID
@@ -606,6 +620,10 @@ class LivedMemoryRecall:
                 return out
             cand_ids = base + extra[: max(0, MAX_RERANK_STEP2 - len(base) - len(links))] + [d for d, _ in links]
             recs = [self._by_doc[d] for d in cand_ids]
+            out.candidates = list(recs)
+            # Every id that reached the rerank, not only the injected ones (#3628): "the target was a
+            # candidate but fell below the bar" is then visible in recall_telemetry.lived_trace.
+            out.debug["candidate_ids"] = [r.doc_id for r in recs]
             names = name_tokens(query, self._names)
             all_tokens = set(qtoks)
             for q in queries:
@@ -730,6 +748,116 @@ class LivedMemoryRecall:
         timings["total"] = int((time.perf_counter() - started) * 1000)
         return out
 
+    async def know(self, words: str, *, max_hits: int = KNOW_MAX_HITS,
+                   timeout_sec: float | None = None) -> "KnowResult":
+        """A deliberate lookup (``python -P -m orion.dig know <words>``, issue #3535): the same
+        retrieval a chat turn gets, minus the chat-turn floor and the rewrite (the words already
+        are the search). Strong hits cleared recall's bar (the first ``max_lines`` of them are what
+        a chat turn would inject). Weak hits are below the bar but share at least one word with the search, so a partial match is shown, never hidden
+        behind "nothing found". Every hit passes the serving gate (re-checked against Postgres)."""
+        max_hits = max(1, int(max_hits))
+        out = await self.recall(words, min_query_tokens=1, rewrite=False, timeout_sec=timeout_sec)
+        strong = list(out.chosen)[:max_hits]
+        taken = {s.rec.doc_id for s in strong}
+        lex = out.lexical_scores
+        more_strong: List[Scored] = []  # above the bar, past the chat turn's line cap
+        pool: List[Scored] = []
+        if out.reranked:
+            above = rank(out.reranked, min_fit=self.cfg.min_fit, max_lines=max_hits, now=self._clock())
+            more_strong = [s for s in above if s.rec.doc_id not in taken]
+            taken |= {s.rec.doc_id for s in above}
+            for rec, logit in sorted(out.reranked, key=lambda x: (-x[1], x[0].doc_id)):
+                if rec.doc_id in taken or not lex.get(rec.doc_id) or not math.isfinite(float(logit)):
+                    continue
+                pool.append(Scored(rec=rec, fit=sigmoid(float(logit)), score=float(logit),
+                                   lexical=lex.get(rec.doc_id)))
+        else:  # no rerank ran (degraded): exact-word hits the fallback did not choose
+            for rec in sorted(out.candidates, key=lambda r: (-lex.get(r.doc_id, 0.0), r.doc_id)):
+                if rec.doc_id in taken or not lex.get(rec.doc_id):
+                    continue
+                pool.append(Scored(rec=rec, fit=0.0, score=lex[rec.doc_id], lexical=lex[rec.doc_id],
+                                   degraded=True))
+        more_strong = more_strong[: max_hits - len(strong)]
+        weak = pool[: max(0, max_hits - len(strong) - len(more_strong))]
+        extra = more_strong + weak
+        if extra:
+            timings = out.debug.setdefault("timings_ms", {})
+            try:
+                live = {s.rec.doc_id for s in await self._recheck(extra, out, timings)}
+            except Exception as exc:  # noqa: BLE001 -- an unverified row is never shown
+                out.debug["know_recheck_error"] = type(exc).__name__
+                live = set()
+            more_strong = [s for s in more_strong if s.rec.doc_id in live]
+            weak = [s for s in weak if s.rec.doc_id in live]
+        strong = strong + more_strong
+        return KnowResult(strong=strong, weak=weak, recall=out,
+                          status=status_of(out.debug, len(strong), backend=out.backend))
+
+
+# Why a lived-recall call injected what it did (#3628), persisted as recall_telemetry.lived_status.
+# NULL in that column means lived recall did not run on that call (not a chat-turn continuity call).
+STATUS_OK = "ok"                    # full search ran and at least one memory cleared the bar
+STATUS_BELOW_BAR = "below_bar"      # full search ran; nothing cleared the bar (or nothing matched)
+STATUS_SKIPPED_SHORT = "skipped_short"  # too few content words to search with
+STATUS_DEGRADED = "degraded"        # exact words only (embedder/reranker down or slow); count says if it served
+STATUS_TIMEOUT = "timeout"          # ran out of time and the exact-word fallback found nothing
+STATUS_ERROR = "error"              # failed, and nothing was served
+STATUS_OFF = "off"                  # the reader is switched off or not started
+STATUSES = (STATUS_OK, STATUS_BELOW_BAR, STATUS_SKIPPED_SHORT, STATUS_DEGRADED, STATUS_TIMEOUT,
+            STATUS_ERROR, STATUS_OFF)
+
+
+def status_of(debug: Dict[str, Any] | None, served: int, *, backend: str | None = None) -> str:
+    """One status per lived-recall call, from its debug dict and how many memories it served.
+
+    ``debug`` is a ``LivedRecall.debug`` (or the worker's copy of it, which adds ``outer`` when
+    the worker's own wait timed out or raised). Pure: the same input always gives the same status."""
+    d = debug or {}
+    outer = str(d.get("outer") or "")
+    skipped = str(d.get("skipped") or "")
+    if skipped == "disabled":
+        return STATUS_OFF
+    if outer == "timeout" or skipped == "timeout":
+        return STATUS_DEGRADED if served else STATUS_TIMEOUT
+    if outer.startswith("error") or skipped.startswith("error"):
+        return STATUS_DEGRADED if served else STATUS_ERROR
+    if skipped in ("few_content_words", "empty_query"):
+        return STATUS_SKIPPED_SHORT
+    if d.get("error") and not served:
+        return STATUS_ERROR
+    if (backend or d.get("backend")) == BACKEND_DEGRADED:
+        return STATUS_DEGRADED
+    return STATUS_OK if served else STATUS_BELOW_BAR
+
+
+TRACE_MAX_IDS = 32
+
+
+def trace_of(debug: Dict[str, Any] | None) -> Dict[str, Any]:
+    """The persisted recall trace (#3628): rewritten queries, every id that reached the rerank, the
+    injected ids, and the backend. Ids and Orion's own search text only, never memory text."""
+    d = debug or {}
+    rewrite = d.get("rewrite") or {}
+    out: Dict[str, Any] = {
+        "backend": d.get("backend") or None,
+        "queries": [str(q)[:200] for q in (rewrite.get("queries") or [])][:5],
+        "rewrite": rewrite.get("outcome"),
+        "candidate_ids": [str(x) for x in (d.get("candidate_ids") or [])][:TRACE_MAX_IDS],
+        "injected_ids": [str(x.get("id")) for x in (d.get("injected") or []) if isinstance(x, dict)][:TRACE_MAX_IDS],
+    }
+    for key in ("degraded", "skipped", "outer", "error"):
+        if d.get(key):
+            out[key] = d[key] if key == "degraded" else str(d[key])[:200]
+    return out
+
+
+@dataclass
+class KnowResult:
+    strong: List[Scored]
+    weak: List[Scored]
+    recall: LivedRecall
+    status: str
+
 
 @dataclass(frozen=True)
 class LivedIndexPass:
@@ -798,8 +926,9 @@ def items_for(chosen: Sequence[Scored]) -> List[Dict[str, Any]]:
 
 __all__ = [
     "BACKEND_DEGRADED", "BACKEND_HYBRID", "BM25", "DEGRADED_EMPTY_NOTE", "DEGRADED_EMPTY_NOTE_RERANKED",
+    "KNOW_MAX_HITS", "KnowResult", "STATUSES",
     "DEGRADED_HEADER", "HEADER", "KINDS", "LivedMemoryConfig", "LivedMemoryRecall", "LivedRecall", "SOURCE",
     "index_loop", "items_for", "lexical_fallback", "name_tokens", "rank", "recency", "render_line",
     "rerank_query", "rrf", "run_index_pass",
-    "sigmoid", "split_doc_id", "tokenize",
+    "sigmoid", "split_doc_id", "status_of", "tokenize", "trace_of",
 ]

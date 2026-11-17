@@ -186,15 +186,20 @@ async def _add_lived_memories(
         if lived is None:
             return {"skipped": "timeout"}, 0, True
         timed_out = True
+        outer = "timeout"
     except Exception as exc:  # noqa: BLE001 -- never fail the chat recall over it
         logger.warning("lived_memory_failed corr_id=%s error=%s", corr_id, type(exc).__name__)
         lived = await _lived_fallback(query_text, reason=f"error:{type(exc).__name__}", corr_id=corr_id)
         if lived is None:
             return {"skipped": f"error:{type(exc).__name__}"}, 0, False
         timed_out = False
+        outer = f"error:{type(exc).__name__}"
     else:
         timed_out = False
+        outer = ""
     debug = dict(lived.debug)
+    if outer:
+        debug["outer"] = outer  # the full recall failed; what follows is its fallback
     debug["injected"] = [
         {"id": c.rec.doc_id, "fit": round(c.fit, 4), "score": round(c.score, 4), "link": c.link}
         for c in lived.chosen
@@ -1967,6 +1972,10 @@ _TELEMETRY_BOUNDED_RETRIEVAL_COLUMNS = (
     "candidates_kept integer",
     "deadline_hit boolean",
     "timings_ms jsonb",
+    # Lived-memory recall status + trace (#3628). Also in
+    # services/orion-sql-db/manual_migration_recall_telemetry_lived_status_v1.sql.
+    "lived_status text",
+    "lived_trace jsonb",
 )
 
 
@@ -2031,6 +2040,19 @@ def _ensure_telemetry_schema(cur: Any) -> None:
     # that follows is bounded the same way.
 
 
+def _lived_columns(decision: RecallDecisionV1, json_wrap: Any) -> Dict[str, Any]:
+    """recall_telemetry.lived_status / lived_trace (#3628) from the decision's lived-memory debug.
+    Both NULL when lived recall did not run on this call (not a chat-turn continuity call)."""
+    lived = (decision.recall_debug or {}).get("lived_memory")
+    if not isinstance(lived, dict) or not lived:
+        return {"lived_status": None, "lived_trace": None}
+    from .lived_memory import status_of, trace_of
+
+    served = int((decision.backend_counts or {}).get("lived_memory") or 0)
+    status = str(lived.get("status") or status_of(lived, served))
+    return {"lived_status": status, "lived_trace": json_wrap(trace_of(lived))}
+
+
 def _persist_decision(decision: RecallDecisionV1) -> None:
     """
     Durable log to Postgres if available. Best-effort, blocking (psycopg2):
@@ -2070,6 +2092,7 @@ def _persist_decision(decision: RecallDecisionV1) -> None:
                 "candidates_kept": decision.candidates_kept,
                 "deadline_hit": decision.deadline_hit,
                 "timings_ms": Json(dict(decision.timings_ms or {})),
+                **_lived_columns(decision, Json),
             }
             base_cols = [
                 "id", "corr_id", "session_id", "node_id", "verb", "profile", "query",
@@ -2817,6 +2840,10 @@ async def process_recall(
                     timings_ms[f"lived_memory_{key}"] = int(lived_timings[key])
             if lived_timed_out:
                 lived_debug["timed_out"] = True
+            # Why it injected what it did (#3628); persisted as recall_telemetry.lived_status.
+            from .lived_memory import status_of
+
+            lived_debug["status"] = status_of(lived_debug, lived_count)
     elif settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
         belief_budget = q.belief_digest_max_tokens or settings.RECALL_BELIEF_RENDER_BUDGET
         profile["render_budget_tokens"] = belief_budget

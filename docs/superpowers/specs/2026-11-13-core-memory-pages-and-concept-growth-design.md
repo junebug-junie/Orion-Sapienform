@@ -43,6 +43,8 @@ pages get retired, one per PR, each with its readers cut.
    rooms, curiosity, reading, Prime, and Claude consult briefs. They are not pasted into
    public output (GitHub PRs and issues, email to anyone but Juniper). That boundary is the
    mesh edge, not a privacy gate between Juniper and Orion.
+   *(Changed by Recall rev 2: Claude consult briefs go to an outside model. Recommended:
+   treat them as outside the mesh unless Juniper opts in.)*
 
 ## Current architecture (live evidence, 2026-11-13)
 
@@ -161,13 +163,17 @@ ways:
 - **In chat.** "That's wrong, el Coco is a dog." The correction becomes an `episode_memory`
   row (the distiller already records corrections, e.g. "Juniper corrected me that she lives in
   <town>"). The next fold must honor it, because a correction outranks the memory it corrects.
-- **On a Hub page view.** A veto marks one sentence's cites as rejected. The next fold drops
+- **On a Hub page view.** *(Changed by Recall rev 2: a veto attaches to the claim and is
+  stored as a negative fact. See "Vetoes attach to the claim".)* A veto marks one sentence's cites as rejected. The next fold drops
   the sentence.
 
 The confirmation loop (`orion/memory/episode/confirmation.py`) keeps its current job of
 confirming single sensitive memories. It is not reused as a page gate.
 
 ### How much it matters (new grade, distinct from stakes)
+
+> **Changed by Recall rev 2.** "Came up more than once" becomes a later re-grade from read
+> demand, and the metric gate has numbers. See "`matters`: a later re-grade" in Recall rev 2.
 
 At distill time, each `episode_memory` gets a `matters` grade: `core`, `notable`, or
 `passing`.
@@ -190,6 +196,10 @@ The rubric asks four questions:
 - It fails if the grade is flat.
 
 ### Mesh boundary
+
+> **Changed by Recall rev 2.** Recommended: treat Claude consult briefs as outside the mesh
+> edge unless Juniper opts in. Also, the verbatim check has a known paraphrase gap. See "Outside
+> models and the mesh edge" in Recall rev 2.
 
 Pages render on every Orion surface inside the mesh (Decision 4). They are never pasted into
 public output. Pages hold health facts about <person A> and <person B>, and the mesh edge is where that
@@ -316,7 +326,8 @@ arcs, and notes. **It has no command for anything Orion read or concluded.**
 
 ### Graphiti: turn on the full engine, as the fact layer under the pages
 
-> **SUPERSEDED by Recall rev 2.** The Graphiti fact layer failed. Corrections now supersede
+> **SUPERSEDED by Recall rev 2.** The Graphiti fact layer failed two trials (numbers in
+> "Why not Graphiti" in Recall rev 2). Corrections now supersede
 > the old memory when the memory is written (Mem0-style update). This section is kept as the
 > record of why Graphiti was tried.
 
@@ -465,10 +476,116 @@ Each part follows published work. Each part names it.
 4. **Link-following** over `episode_memory_referent`, in the style of personalized PageRank
    (HippoRAG 2). A hit pulls in memories that share a referent with it.
 5. **Corrections supersede at write time** (Mem0-style update). When a new memory corrects
-   an old one, the old one is marked superseded when the new one is written. This replaces
-   the Graphiti fact layer, which failed its trial.
+   an old one, the old one is marked superseded when the new one is written. This is the
+   design, not a stand-in until Graphiti works. See "Corrections" and "Why not Graphiti"
+   below.
 6. **Local models only.** Embedder, reranker, and query rewrite all run on Orion's own
    hardware.
+
+### Why not Graphiti: the trial numbers
+
+Graphiti ran twice on the local agent-lane model (PR #3341, reports
+`docs/superpowers/pr-reports/2026-11-13-graphiti-trial-report.md` and
+`docs/superpowers/pr-reports/2026-11-15-graphiti-trial2-report.md`). Both were NO-GO.
+
+| Check | Target | Trial 1 (distilled notes, thinking on) | Trial 2 (raw chat, small ontology, thinking off) |
+|---|---|---|---|
+| Wrong invalidations (true facts retired), judged by hand | under 2 | 7 of 15 | 5 of 29 |
+| Duplicate entities, 50 judged by hand | under 10% | 14% | 12% |
+| Misgendered summary or fact sentences | 0 | 10-11 | 42 |
+| Wall time per episode | recorded | 254 s mean | 111 s mean |
+| JSON retries / schema refusals | recorded | 0 | 0 |
+
+- **Failed:** invalidation, duplicates, and pronouns. They failed under both setups, so the
+  cause is the engine on our local model, not how we fed it.
+- **Worked:** structured output. The local model met Graphiti's JSON prompts with no retries.
+  The spec's open question on that is now answered.
+- **Decision:** supersede-at-write is the design. Graphiti is not on the build path. A later
+  retry needs a new trial that passes the same checks.
+
+### Corrections: supersede at write time
+
+- **Pointer, not delete.** A correction is a new `episode_memory` row. Its
+  `supersedes_memory_id` (the column exists; `orion/memory/episode/confirmation.py` writes it
+  today for Juniper's revisions) points at the row it corrects. The old row is marked
+  superseded. Both rows stay readable. Undo means clearing the mark.
+- **One-time pass over existing rows.** `episode_memory` already holds active contradictions:
+  a trip recorded as a home, and a pet-species correction sitting beside the error. A
+  one-time supersede pass runs over the existing active rows as part of step 1 (#3533),
+  before retrieval serves them. It finds correction rows that name an earlier claim, links
+  them with `supersedes_memory_id`, and writes a report of every pair for Juniper to scan.
+  It follows the backfill protocol (snapshot first).
+- **Deterministic test: a correction outranks what it corrects.** Given a superseded row
+  and its correction:
+  - retrieval never serves the superseded row, at any score, for any query;
+  - the core-page fold input does not contain it.
+  The test is part of step 1 and runs in CI. The scoreboard's knowledge-update questions
+  check the same rule end to end.
+
+### Vetoes attach to the claim
+
+*(Changes "Corrections, not approval" above.)* A Hub veto rejects the **claim**, not only the
+cites behind one sentence. The vetoed claim is stored as a negative fact. The fold and
+retrieval both check new text and hits against the negative facts. So a vetoed claim cannot
+come back through a different old record that says the same thing.
+
+### `matters`: a later re-grade, with gate numbers
+
+*(Changes "How much it matters" above.)*
+
+- **At distill time** the grade uses only what is known then: origins, identity or a
+  relationship; a life event; strong feeling. A local-lane model grades it (the
+  `memory_distill` route, the same seat as the distiller).
+- **"Came up more than once"** cannot be known at distill time. It becomes a later re-grade
+  from read demand: a memory served or opened in 3 or more turns within 14 days moves up one
+  grade. `episode_memory_referent` and the recall trace below are the ledger.
+- **Gate numbers (44 + 44):** pass if at least 70% of the stance rows grade `core` or
+  `notable`, and at least 70% of the random rows grade `passing`. Anything else fails, and
+  the grade drives nothing.
+
+### Recall trace and heat shedding
+
+- **Trace.** Every recall call logs, per turn: the turn id, the rewritten queries, the ids
+  of every memory injected into the prompt, and the backend that served them.
+- **False denials are counted from that log.** The scoreboard joins the trace to the answer.
+  A "no memory" answer on a turn where the target id was stored is a false denial. This is
+  how "look before you deny" is checked, not by reading prompts.
+- **Heat shedding never skips recall.** When the body sheds load, recall falls back to
+  exact-word search only. The prompt states that recall ran degraded, so Orion does not read
+  an empty result as "no memory".
+
+### Flattening guard
+
+The fold rewrites each page from scratch every night. To keep Juniper's words from being
+smoothed away:
+
+- **Pin quotes.** A verbatim-quoted span stays unchanged across versions unless a correction
+  or veto cites it.
+- **Flag large rewrites.** A fold that changes more than a set share of uncorrected text is
+  written, but flagged. The Hub page view shows the flag with the version diff. This is a
+  flag, not a gate (Decision 1).
+
+Follow-up: #3553.
+
+### Outside models and the mesh edge
+
+- **Claude consult briefs are an exception to Decision 4.** A consult brief goes to an
+  outside model. Recommendation: core pages and injected memory lines do **not** go into
+  consult briefs unless Juniper opts in. This follows the static boundary PR #3528 pinned for
+  the now (no consult, Claude-room, or FCC-Claude prompt builder reads it). The open policy
+  question for text Orion writes itself is #3541.
+- **Known limit: paraphrase.** The mesh-edge check (#3409) refuses verbatim core-page
+  sentences only. A paraphrase passes. Follow-up: #3554.
+
+### Phase 1 status
+
+- **Phase 1a is DONE and live.** `page:juniper` (PR #3418, merged 2026-11-15) and the fixed
+  anchor lines above it (PR #3478, merged 2026-11-15).
+- **Provenance.** The `core_page_fold` run in `orion-durable-runs`
+  (`services/orion-durable-runs/app/core_page_fold.py`) calls the LLM on the
+  `memory_distill` route. It writes a new version only when the cite validator passes. A
+  rejected fold is logged and writes nothing.
+- The phase 1a plan under "Recommended next patch" is kept as history.
 
 ### Phase 2 change
 
@@ -497,13 +614,16 @@ Two bars:
 
 | Step | Issue | What |
 |---|---|---|
-| 1 | #3533 (with #3409) | Meaning search and reranker over `episode_memory`, stance crystallizations, and `person_fact`. Ships with the mesh-edge leak check. |
+| done | PR #3418, PR #3478 | Phase 1a: `page:juniper` and its anchor lines. Live. |
+| 1 | #3533 (with #3409) | Meaning search and reranker over `episode_memory`, stance crystallizations, and `person_fact`. Includes the one-time supersede pass, the supersede test, and the recall trace. Ships with the mesh-edge leak check. |
 | 2 | #3534 | Pre-turn query rewrite and link-following over `episode_memory_referent`. |
 | 3 | #3535 | `orion.dig know` as a recall client, and the look-before-you-deny prompt rule. |
 | — | #3536 | The scoreboard. Measures each step. |
 | — | #3537 | Backfill: distill July to September 2026 chat into `episode_memory`. |
 | then | #3463 | `page:lately`. |
 | then | #3462 | `page:origin`. |
+| any time | #3553 | Flattening guard on the fold. |
+| any time | #3554 | Paraphrase check at the mesh edge. |
 
 **Note on #3356.** That issue says the cause is `memory_tier` (chat memory never promoted
 past ephemeral). That diagnosis is wrong. The memories are stored. The missing piece is a
@@ -520,6 +640,8 @@ reader on the chat recall path, which steps 1 to 3 add.
 - New table `memory_page_read` (`concept_id`, `version`, `turn_id`, `read_at`). Phase 2 only.
   Also logs `orion.dig know` lookups (`source_kind`, `ref_id`), so every source's trial is counted.
 - New table `memory_page_veto` (`concept_id`, `version`, `sentence_ref`, `vetoed_at`). Phase 1b.
+  **Changed by Recall rev 2:** it also stores the vetoed claim text, so the fold and
+  retrieval can check against it as a negative fact.
 - `GroundingCapsuleV1`: add `core_pages: list[{concept_id, version, text}]`. Additive.
   Consumers first.
 - `orion.dig page <slug>`, `orion.dig pages`, and `orion.dig know <words|concept>`. Phase 2.
@@ -591,7 +713,8 @@ reader on the chat recall path, which steps 1 to 3 add.
   duplicates, cost).
 - Nothing reads the trial graph until it passes.
 
-**Phase 1a**, the smallest slice that moves the live path:
+**Phase 1a**, the smallest slice that moves the live path. **DONE and live (PR #3418,
+PR #3478). See "Phase 1 status" in Recall rev 2.**
 
 1. Build `page:juniper` only. It folds from `episode_memory` directly at first, and switches
    to Graphiti's current facts once Patch 0 passes.

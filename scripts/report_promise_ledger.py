@@ -55,7 +55,7 @@ from orion.grammar.promise_acts import (  # noqa: E402
     promise_close_kind,
 )
 from orion.harness.promise_gate import normalize_for_quote_match  # noqa: E402
-from orion.regulation.juniper_turns import JUNIPER_TURN_PREDICATE  # noqa: E402
+from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE  # noqa: E402
 from orion.schemas.harness_finalize import (  # noqa: E402
     PROMISE_DONE_WHEN_MIN_CHARS,
     PROMISE_FORCE_COMMITS,
@@ -76,6 +76,19 @@ REPLAY_BASELINE = (23, 289)
 # so the guard leaves those turns out of its denominator (they would pull the live rate toward 0).
 FINDER_LIVE_AT = datetime(2026, 11, 16, 18, 5, tzinfo=timezone.utc)
 GUARD_RATIO_RED = 2.0
+# The guard cannot go red before this many judged turns (Orion's PR #3561 second-round question 3).
+# At the frozen rate 0.08, 50 turns expect 4 firm promises; red then needs 9 or more, which pure
+# noise gives about 2% of the time (Poisson). At 20 turns red would need 4, about 8% on noise alone.
+GUARD_MIN_JUDGED_TURNS = 50
+# The keep rate's ceiling until #3595 lands: the share of firm promises a later chat reply could show
+# kept. Hand count of the 23 firm replay promises (one reader, not blind; #3595): 9 chat-showable,
+# 8 delivered by a run or outside chat, 6 abstentions or standing states. A keep rate near this
+# number is the most the reply-only close can show, not a sign of broken promises.
+KEEP_RATE_CEILING = (9, 23)
+# Two firm promises in different turns of one session, open at the same time, that may be one
+# promise said twice in other words: same act or done_when text, or this many shared characters.
+DUPLICATE_SPAN_CHARS = 24
+JUNIPER_SAID_CHARS = 280
 CARRY_SOURCE = "intention_carry"
 CONTEXT_CHARS = 280
 
@@ -92,7 +105,12 @@ JUDGED_SQL = f"""
 SELECT DISTINCT ON (t.correlation_id) t.correlation_id, t.created_at,
        t.run_artifact -> 'reflection' ->> 'reflection_source' AS reflection_source,
        t.run_artifact -> 'reflection' -> 'promises_made' AS made,
-       t.run_artifact ->> 'final_text' AS final_text
+       t.run_artifact -> 'reflection' -> 'offers_accepted' AS accepted,
+       t.run_artifact ->> 'final_text' AS final_text,
+       c.session_id, c.prompt AS juniper_said,
+       EXISTS (SELECT 1 FROM cockpit_turn_sighting k
+                WHERE k.correlation_id = t.correlation_id AND k.{JUNIPER_INGRESS_PREDICATE.replace(" AND ", " AND k.")})
+         AS from_browser
   FROM harness_turn_trace t
   JOIN chat_history_log c ON c.correlation_id = t.correlation_id
  WHERE t.created_at >= %(since)s AND {JUNIPER_TURN_PREDICATE.replace('prompt', 'c.prompt').replace('client_meta', 'c.client_meta')}
@@ -211,16 +229,22 @@ def _firm(item: Mapping[str, Any]) -> bool:
 
 
 def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] = REPLAY_BASELINE,
-                  finder_live_at: datetime = FINDER_LIVE_AT) -> dict[str, Any]:
+                  finder_live_at: datetime = FINDER_LIVE_AT,
+                  min_judged: int = GUARD_MIN_JUDGED_TURNS) -> dict[str, Any]:
     """Firm (non-offer) promises per JUDGED Juniper turn vs the replay baseline, counting only turns
-    from ``finder_live_at`` on (``turns_before_finder`` counts the rest). Items written before #3532
-    (no force/done_when) are counted in ``skipped_pre_force`` and left out of both sides."""
+    from ``finder_live_at`` on (``turns_before_finder`` counts the rest) and only turns Juniper sent
+    from a Hub browser surface (``turns_not_from_browser`` counts the rest: a coding session's message
+    posted over the Hub API, #3602). Items written before #3532 (no force/done_when) are counted in
+    ``skipped_pre_force`` and left out of both sides. Red needs at least ``GUARD_MIN_JUDGED_TURNS``
+    judged turns (``armed``)."""
     def _before(t: Mapping[str, Any]) -> bool:
         at = _aware(t.get("created_at"))
         return at is not None and at < finder_live_at
 
     early = [t for t in turns if _before(t)]
-    judged = [t for t in turns if t.get("reflection_source") == "substrate_informed_pass" and not _before(t)]
+    not_browser = [t for t in turns if not _before(t) and t.get("from_browser", True) is False]
+    judged = [t for t in turns if t.get("reflection_source") == "substrate_informed_pass" and not _before(t)
+              and t.get("from_browser", True) is not False]
     firm = skipped = offers = 0
     for t in judged:
         for item in _made(t.get("made")):
@@ -237,14 +261,105 @@ def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] 
     lo, hi = poisson_rate_interval(firm, len(judged)) if judged else (None, None)
     for t in early:
         skipped += sum(1 for item in _made(t.get("made")) if "force" not in item and "done_when" not in item)
-    return {"judged_turns": len(judged), "turns_not_judged": len(turns) - len(early) - len(judged),
-            "turns_before_finder": len(early), "firm_promises": firm,
+    armed = len(judged) >= min_judged
+    return {"judged_turns": len(judged),
+            "turns_not_judged": len(turns) - len(early) - len(not_browser) - len(judged),
+            "turns_before_finder": len(early), "turns_not_from_browser": len(not_browser),
+            "firm_promises": firm,
             "offers": offers, "skipped_pre_force": skipped,
             "rate": None if rate is None else round(rate, 4),
             "rate_poisson90": None if lo is None else [round(lo, 4), round(hi, 4)],
             "baseline": f"{baseline[0]}/{baseline[1]} replay",
             "baseline_rate": round(base, 4), "ratio": None if ratio is None else round(ratio, 2),
-            "red": bool(ratio is not None and ratio > GUARD_RATIO_RED)}
+            "min_judged_turns": min_judged, "armed": armed,
+            "red": bool(armed and ratio is not None and ratio > GUARD_RATIO_RED)}
+
+
+def _judged_firm(turns: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for t in turns:
+        if t.get("reflection_source") != "substrate_informed_pass":
+            continue
+        for i, item in enumerate(_made(t.get("made"))):
+            if _firm(item) and item.get("offer") is not True and str(item.get("quote") or "").strip():
+                out.append({"ref": f"{str(t['correlation_id'])[:8]}#{i}", "corr": str(t["correlation_id"]),
+                            "session": t.get("session_id"), "at": _aware(t.get("created_at")), **item})
+    return out
+
+
+def _flat(text: Any) -> str:
+    return normalize_for_quote_match(str(text or "")).casefold()
+
+
+def duplicate_candidates(turns: Sequence[Mapping[str, Any]], *, window: timedelta = timedelta(hours=72),
+                         span_chars: int = DUPLICATE_SPAN_CHARS) -> list[dict[str, Any]]:
+    """Pairs of firm promises from different turns of one session, made within ``window`` of each other
+    (both could be open at once), that may be one promise said twice in other words: the same ``act``,
+    the same ``done_when``, or a shared run of at least ``span_chars`` characters in the quotes. Only
+    word-for-word repeats are skipped at open time (``REPEAT_MIN_CHARS``); this lists the rest for a
+    hand look, it closes nothing."""
+    from difflib import SequenceMatcher
+
+    items = sorted(_judged_firm(turns), key=lambda x: (x["at"] or datetime.min.replace(tzinfo=timezone.utc)))
+    pairs: list[dict[str, Any]] = []
+    for i, a in enumerate(items):
+        for b in items[i + 1:]:
+            if a["corr"] == b["corr"] or not a.get("session") or a.get("session") != b.get("session"):
+                continue
+            if a["at"] and b["at"] and b["at"] - a["at"] > window:
+                continue
+            why = []
+            if _flat(a.get("act")) and _flat(a.get("act")) == _flat(b.get("act")):
+                why.append("same_act")
+            if _flat(a.get("done_when")) and _flat(a.get("done_when")) == _flat(b.get("done_when")):
+                why.append("same_done_when")
+            qa, qb = _flat(a.get("quote")), _flat(b.get("quote"))
+            m = SequenceMatcher(None, qa, qb, autojunk=False).find_longest_match(0, len(qa), 0, len(qb))
+            if m.size >= span_chars:
+                why.append(f"shared_span_{m.size}")
+            if why:
+                pairs.append({"a": a["ref"], "b": b["ref"], "why": why})
+    return pairs
+
+
+def offers_summary(turns: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Accepted offers in the stored judged turns, and how many of them match no firm offer in the
+    previous Juniper turn of the same session (``accepted_unmatched``, the Hub's per-turn count of the
+    same name). Matching keys on the normalized STORED offer quote: the gate (rule 2) already swapped
+    the judge's own text for the stored quote it matched, so a non-zero count here means the view and
+    the stored offers disagreed (or the previous turn fell before the window: ``accepted_no_prior``)."""
+    by_session: dict[Any, list[Mapping[str, Any]]] = {}
+    for t in turns:
+        by_session.setdefault(t.get("session_id"), []).append(t)
+    accepted = unmatched = no_prior = 0
+    unmatched_refs: list[str] = []
+    for rows in by_session.values():
+        rows = sorted(rows, key=lambda r: _aware(r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
+        for prev, cur in zip([None, *rows[:-1]], rows):
+            quotes = [q for q in _accepted(cur.get("accepted")) if q.strip()]
+            if not quotes:
+                continue
+            accepted += len(quotes)
+            if prev is None:
+                no_prior += len(quotes)
+                continue
+            offered = {normalize_for_quote_match(str(x.get("quote") or "")) for x in _made(prev.get("made"))
+                       if x.get("offer") is True and _firm(x)}
+            for q in quotes:
+                if normalize_for_quote_match(q) not in offered:
+                    unmatched += 1
+                    unmatched_refs.append(str(cur["correlation_id"])[:8])
+    return {"accepted": accepted, "accepted_unmatched": unmatched, "accepted_no_prior": no_prior,
+            "accepted_unmatched_turns": unmatched_refs}
+
+
+def _accepted(raw: Any) -> list[str]:
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    return [x for x in raw if isinstance(x, str)] if isinstance(raw, list) else []
 
 
 def item_key(correlation_id: str, index: int, quote: str) -> str:
@@ -262,9 +377,15 @@ def _context(final_text: str, quote: str) -> str:
     return ("..." if lo else "") + text[lo:hi] + ("..." if hi < len(text) else "")
 
 
+def _clip(text: Any, cap: int = JUNIPER_SAID_CHARS) -> str:
+    flat = " ".join(str(text or "").split())
+    return flat if len(flat) <= cap else flat[:cap] + "..."
+
+
 def blinded_sample(turns: Sequence[Mapping[str, Any]], n: int, *, seed: int = 3531) -> list[dict[str, Any]]:
-    """Stored firm items from judged Juniper turns, n at random. Each shows only the quote and the reply
-    around it: no doer, force, act, done_when or offer flag (the judge's own reading)."""
+    """Stored firm items from judged Juniper turns, n at random. Each shows the quote, the reply around it
+    and Juniper's message that reply answered (``juniper_said``, so an offer she asked for reads as one):
+    no doer, force, act, done_when or offer flag (the judge's own reading)."""
     pool: list[dict[str, Any]] = []
     for t in turns:
         if t.get("reflection_source") != "substrate_informed_pass":
@@ -273,7 +394,8 @@ def blinded_sample(turns: Sequence[Mapping[str, Any]], n: int, *, seed: int = 35
             if not _firm(item) or not str(item.get("quote") or "").strip():
                 continue
             pool.append({"key": item_key(str(t["correlation_id"]), i, item["quote"]),
-                         "quote": item["quote"], "reply_context": _context(t.get("final_text") or "", item["quote"]),
+                         "quote": item["quote"], "juniper_said": _clip(t.get("juniper_said")),
+                         "reply_context": _context(t.get("final_text") or "", item["quote"]),
                          "label": None, "why": ""})
     rng = random.Random(seed)
     rng.shuffle(pool)
@@ -311,8 +433,14 @@ def gather(dsn: str, since: datetime) -> dict[str, Any]:
 
 def report(data: Mapping[str, Any]) -> dict[str, Any]:
     unclosable = unclosable_ids(data["acts"], data["starts"])
-    return {"ledger": close_summary(data["acts"], unclosable=unclosable, carry_concerns=data["carry"]),
-            "guard": guard_summary(data["turns"])}
+    since_finder = [t for t in data["turns"] if (_aware(t.get("created_at")) or FINDER_LIVE_AT) >= FINDER_LIVE_AT]
+    ledger = close_summary(data["acts"], unclosable=unclosable, carry_concerns=data["carry"])
+    ledger["keep_rate_ceiling"] = {"name": "chat-showable share", "kept_could_show": KEEP_RATE_CEILING[0],
+                                   "of": KEEP_RATE_CEILING[1],
+                                   "share": round(KEEP_RATE_CEILING[0] / KEEP_RATE_CEILING[1], 2),
+                                   "source": "replay hand count, one reader, not blind (#3595)"}
+    return {"ledger": ledger, "guard": guard_summary(data["turns"]), "offers": offers_summary(since_finder),
+            "duplicate_candidates": duplicate_candidates(since_finder)}
 
 
 def _ids(ids: Sequence[str], cap: int = 10) -> str:
@@ -355,13 +483,24 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           + _ids(led["expired_with_carry_reply_acts"]))
     kr = led["keep_rate"]
     print(f"keep rate (Beta(1,1)) over kept {led['kept']} + expired {led['expired']} (void {led['void']} and "
-          f"un-closeable {led['unclosable']} left out): mean {kr['mean']}, 90% {kr['lo90']}-{kr['hi90']}, n={kr['n']}")
+          f"un-closeable {led['unclosable']} left out): mean {kr['mean']}, 90% {kr['lo90']}-{kr['hi90']}, n={kr['n']}; "
+          f"ceiling ({led['keep_rate_ceiling']['name']}) {led['keep_rate_ceiling']['share']} "
+          f"({KEEP_RATE_CEILING[0]}/{KEEP_RATE_CEILING[1]}, {led['keep_rate_ceiling']['source']})")
     ci = g["rate_poisson90"]
     print(f"guard: {g['firm_promises']} firm promises over {g['judged_turns']} judged Juniper turns = {g['rate']}"
           f"{f' (90% {ci[0]}-{ci[1]})' if ci else ''} "
-          f"vs frozen baseline {g['baseline_rate']} ({g['baseline']}): ratio {g['ratio']}{' RED' if g['red'] else ''}; "
+          f"vs frozen baseline {g['baseline_rate']} ({g['baseline']}): ratio {g['ratio']}{' RED' if g['red'] else ''}"
+          f"{'' if g['armed'] else f' (not armed: red needs {GUARD_MIN_JUDGED_TURNS} judged turns)'}; "
           f"skipped pre-#3532 items {g['skipped_pre_force']}; turns not judged {g['turns_not_judged']}; "
-          f"turns before the finder went live ({FINDER_LIVE_AT:%Y-%m-%d %H:%MZ}) left out {g['turns_before_finder']}")
+          f"turns before the finder went live ({FINDER_LIVE_AT:%Y-%m-%d %H:%MZ}) left out {g['turns_before_finder']}; "
+          f"turns not from a Hub browser surface left out {g['turns_not_from_browser']}")
+    of = out["offers"]
+    print(f"offers accepted: {of['accepted']}; accepted_unmatched {of['accepted_unmatched']}"
+          f"{_ids(of['accepted_unmatched_turns'])}; previous turn outside the window {of['accepted_no_prior']}")
+    dups = out["duplicate_candidates"]
+    print(f"duplicate candidates (same session, within 72 h; same act or done_when, or a shared span of "
+          f">= {DUPLICATE_SPAN_CHARS} chars): {len(dups)}"
+          + _ids([f"{d['a']}~{d['b']} {'+'.join(d['why'])}" for d in dups]))
     if args.sample:
         print(f"blinded sample: {out['sample']['written']} items -> {out['sample']['path']} (fill label true/false, then --score)")
     return 0

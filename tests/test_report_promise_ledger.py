@@ -117,7 +117,7 @@ def test_guard_counts_judged_turns_only_and_skips_pre_force_items():
     turns = [_turn("a", [FIRM]), _turn("b", [{**FIRM, "offer": True}]),
              _turn("c", [{"quote": "old row", "offer": False, "doer": "orion"}]),
              _turn("d", [FIRM], source="deterministic_quick_gate"), _turn("e", [])]
-    g = rpt.guard_summary(turns, baseline=(1, 10))
+    g = rpt.guard_summary(turns, baseline=(1, 10), min_judged=1)
     assert g["judged_turns"] == 4 and g["turns_not_judged"] == 1
     assert (g["firm_promises"], g["offers"], g["skipped_pre_force"]) == (1, 1, 1)
     assert g["rate"] == 0.25 and g["ratio"] == 2.5 and g["red"] is True
@@ -127,7 +127,7 @@ def test_blinded_sample_hides_the_judges_reading_and_scores_back():
     text = "Lots of context before. I'll compare the two runs tomorrow. And after."
     sheet = rpt.blinded_sample([_turn("a", [FIRM], text=text)], 5)
     (item,) = sheet
-    assert set(item) == {"key", "quote", "reply_context", "label", "why"}
+    assert set(item) == {"key", "quote", "juniper_said", "reply_context", "label", "why"}
     assert "compare the two runs" in item["reply_context"]
     blob = json.dumps(sheet)
     for leaked in ("force", "doer", "done_when", "commits", "offer"):
@@ -142,3 +142,68 @@ def test_blinded_sample_hides_the_judges_reading_and_scores_back():
 def test_wilson_matches_the_pr_3532_numbers():
     lo, hi = rpt.wilson(36, 43)
     assert (round(lo, 2), round(hi, 2)) == (0.70, 0.92)
+
+
+# --- Orion's second review round (PR #3561 / #3598 / #3532 threads, 2026-11-17) ---------------------
+
+
+def test_guard_cannot_go_red_before_it_is_armed():
+    # 0c1e question 3: a high ratio on a handful of turns is noise, not a red guard.
+    turns = [_turn(str(i), [FIRM] if i < 3 else []) for i in range(10)]
+    g = rpt.guard_summary(turns)
+    assert g["ratio"] > rpt.GUARD_RATIO_RED and g["armed"] is False and g["red"] is False
+    assert rpt.GUARD_MIN_JUDGED_TURNS == 50
+    many = [_turn(str(i), [FIRM] if i < 15 else []) for i in range(rpt.GUARD_MIN_JUDGED_TURNS)]
+    g = rpt.guard_summary(many)
+    assert g["armed"] is True and g["red"] is True
+
+
+def test_guard_leaves_out_turns_not_sent_from_a_hub_browser_surface():
+    # 0c1e question 2 / #3602: a coding session's message posted over the Hub API is not Juniper's turn.
+    session = {**_turn("agent", [FIRM, {**FIRM, "quote": "I'll read the three proposals closely."}]), "from_browser": False}
+    g = rpt.guard_summary([_turn("j", []), session], min_judged=1)
+    assert (g["judged_turns"], g["turns_not_from_browser"], g["firm_promises"], g["turns_not_judged"]) == (1, 1, 0, 0)
+
+
+def _sturn(corr, made, *, session="s1", at=T0, accepted=None):
+    return {**_turn(corr, made), "session_id": session, "created_at": at, "accepted": accepted or []}
+
+
+def test_duplicate_candidates_pair_reworded_repeats_in_one_session_only():
+    a = {**FIRM, "quote": "I'll compare the two runs tomorrow morning and tell you which drifted."}
+    b = {**FIRM, "quote": "Tomorrow I'll compare the two runs and tell you which drifted.", "act": "other"}
+    turns = [_sturn("c1", [a], at=T0), _sturn("c2", [b], at=T0 + timedelta(hours=5)),
+             _sturn("c3", [b], session="s2", at=T0 + timedelta(hours=6)),
+             _sturn("c4", [{**FIRM, "quote": "Different promise entirely, about the camera.",
+                            "act": "x", "done_when": "y happened later on"}], at=T0 + timedelta(hours=7)),
+             _sturn("c5", [a], at=T0 + timedelta(hours=80))]
+    pairs = rpt.duplicate_candidates(turns)
+    assert [(p["a"], p["b"]) for p in pairs] == [("c1#0", "c2#0")]  # c5 is 75 h after c2: never open together
+    assert "same_done_when" in pairs[0]["why"] and any(w.startswith("shared_span_") for w in pairs[0]["why"])
+
+
+def test_offers_summary_counts_accepted_and_unmatched_against_the_previous_turn():
+    offer = {**FIRM, "quote": "If you want, I'll queue the read tonight.", "offer": True}
+    turns = [_sturn("c1", [offer], at=T0),
+             _sturn("c2", [], at=T0 + timedelta(hours=1), accepted=["If you want, I\u2019ll queue the read tonight."]),
+             _sturn("c3", [], at=T0 + timedelta(hours=2), accepted=["Something never offered here."]),
+             _sturn("c4", [], session="s9", at=T0, accepted=["No earlier turn in the window."])]
+    out = rpt.offers_summary(turns)
+    assert (out["accepted"], out["accepted_unmatched"], out["accepted_no_prior"]) == (3, 1, 1)
+    assert out["accepted_unmatched_turns"] == ["c3"]
+
+
+def test_blinded_sample_shows_the_message_juniper_sent():
+    sheet = rpt.blinded_sample([{**_turn("a", [FIRM], text="I'll compare the two runs tomorrow."),
+                                 "juniper_said": "can you   check the runs?"}], 1)
+    assert sheet[0]["juniper_said"] == "can you check the runs?"
+
+
+def test_text_report_names_the_keep_rate_ceiling_and_the_new_lines(monkeypatch, capsys):
+    monkeypatch.setattr(rpt, "gather", lambda dsn, since: {"acts": [], "starts": [], "turns": [], "carry": {}})
+    assert rpt.main(["--dsn", "x"]) == 0
+    out = capsys.readouterr().out
+    assert "ceiling (chat-showable share) 0.39 (9/23" in out
+    assert "not armed: red needs 50 judged turns" in out
+    assert "offers accepted: 0; accepted_unmatched 0" in out
+    assert "duplicate candidates" in out

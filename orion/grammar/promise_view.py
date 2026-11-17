@@ -13,6 +13,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, Iterable, Optional
 
 from orion.grammar.promise_acts import (
@@ -119,20 +120,24 @@ def offers_from_made(correlation_id: str, made_raw: Any) -> list[tuple[str, str]
     return out[:PROMISE_ITEMS_MAX]
 
 
-def _engine() -> Any:
-    uri = os.getenv("POSTGRES_URI", "").strip()
-    if not uri:
-        return None
+@lru_cache(maxsize=4)
+def _engine_for(uri: str) -> Any:
+    """One small pool per process and URI (built on first use, then reused: a pool per call left
+    connections open until garbage collection, services/orion-hub/tests/test_route_engine_reuse.py)."""
     from sqlalchemy import create_engine
 
-    return create_engine(uri, pool_pre_ping=True)
+    return create_engine(uri, pool_pre_ping=True, pool_size=2, max_overflow=2)
+
+
+def _engine() -> Any:
+    uri = os.getenv("POSTGRES_URI", "").strip()
+    return _engine_for(uri) if uri else None
 
 
 def fetch_promise_view(session_id: Optional[str], correlation_id: str, *, open_too: bool = True) -> Optional[PromiseView]:
     """Sync. None when nothing could be read (no POSTGRES_URI, or a read error)."""
     from sqlalchemy import text
 
-    engine = None
     try:
         engine = _engine()
         if engine is None:
@@ -157,10 +162,6 @@ def fetch_promise_view(session_id: Optional[str], correlation_id: str, *, open_t
     except Exception as exc:  # noqa: BLE001 -- fail-open: the judge sees no promises this turn
         logger.warning("promise_view_read_failed corr=%s err=%s: %s", correlation_id, type(exc).__name__, exc)
         return None
-    finally:
-        if engine is not None:
-            engine.dispose()
-
 
 
 __all__ = [

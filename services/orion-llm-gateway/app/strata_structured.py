@@ -265,8 +265,17 @@ def check(text: Any, finish_reason: Any) -> Verdict:
     return Verdict(None, error)
 
 
+#: A reply this short is not an attempt to correct, it is a stop (live 11-17: '{' then end-of-turn,
+#: 2 output tokens). Echoed back as an assistant turn, the model copies it: 6 of 8 retry pairs
+#: failed again in under a second. Such a reply is retried as a fresh call instead.
+_FRESH_RETRY_MAX_CHARS = 8
+
+
 def corrective_messages(messages: List[Dict[str, Any]], bad_reply: str, error: str) -> List[Dict[str, Any]]:
-    """The one retry: the model sees what it wrote and why it was refused."""
+    """The one retry. A real attempt is shown back with the parser's error; a reply that stopped after
+    a character or two (``{``) is not shown back, the original messages are sent again."""
+    if len((bad_reply or "").strip()) <= _FRESH_RETRY_MAX_CHARS:
+        return list(messages)
     return [*messages, {"role": "assistant", "content": bad_reply or ""}, {"role": "user", "content": (
         f"Your reply was not one valid JSON object ({error}). Reply again with only the corrected JSON "
         "object: double quotes around every key and string, every double quote inside a string escaped "

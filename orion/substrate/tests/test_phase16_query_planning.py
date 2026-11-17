@@ -34,9 +34,6 @@ class CountingSemanticStore(InMemorySubstrateGraphStore):
         self._count("concept_region")
         return super().query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64):
-        self._count("contradiction_region")
-        return super().query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64):
         self._count("focal_slice")
@@ -98,7 +95,7 @@ def test_query_planner_is_bounded_and_deterministic() -> None:
     first = SubstrateQueryPlanner.curiosity_seed(max_nodes=32, max_edges=64)
     second = SubstrateQueryPlanner.curiosity_seed(max_nodes=32, max_edges=64)
     assert first.signature == second.signature
-    assert len(first.steps) == 3
+    assert len(first.steps) == 2  # contradiction_region retired, #3544
     assert all(step.params.get("limit_nodes", 1) <= 32 for step in first.steps if "limit_nodes" in step.params)
 
 
@@ -115,7 +112,7 @@ def test_query_coordinator_reuses_identical_reads_with_explicit_meta() -> None:
     assert second.meta.reused_cache is True
     assert store.calls["hotspot_region"] == 1
     assert store.calls["concept_region"] == 1
-    assert store.calls["contradiction_region"] == 1
+    assert "contradiction_region" not in store.calls  # retired, #3544
 
 
 def test_consumers_surface_planning_metadata() -> None:

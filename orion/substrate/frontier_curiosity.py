@@ -47,8 +47,8 @@ class FrontierCuriosityEvaluator:
     ) -> FrontierInvocationRunResultV1:
         coordinator = SubstrateSemanticReadCoordinator(store=self._store, cache_enabled=query_cache_enabled)
         seed_execution = coordinator.execute(SubstrateQueryPlanner.curiosity_seed(max_nodes=64, max_edges=128))
-        hotspot, concept, contradiction = seed_execution.results
-        state = self._store.snapshot() if (hotspot.degraded and concept.degraded and contradiction.degraded) else None
+        hotspot, concept = seed_execution.results
+        state = self._store.snapshot() if (hotspot.degraded and concept.degraded) else None
         all_nodes: list[BaseSubstrateNodeV1] = []
         if state is not None:
             all_nodes = list(state.nodes.values())
@@ -56,12 +56,12 @@ class FrontierCuriosityEvaluator:
             semantic_degraded = True
         else:
             node_map: dict[str, BaseSubstrateNodeV1] = {}
-            for result in (hotspot, concept, contradiction):
+            for result in (hotspot, concept):
                 for node in result.slice.nodes:
                     node_map[node.node_id] = node
             all_nodes = list(node_map.values())
-            semantic_source = "graphdb" if all(r.source_kind == "graphdb" for r in (hotspot, concept, contradiction)) else "mixed"
-            semantic_degraded = bool(hotspot.degraded or concept.degraded or contradiction.degraded)
+            semantic_source = "graphdb" if all(r.source_kind == "graphdb" for r in (hotspot, concept)) else "mixed"
+            semantic_degraded = bool(hotspot.degraded or concept.degraded)
 
         signals = self._derive_signals(
             anchor_scope=anchor_scope,

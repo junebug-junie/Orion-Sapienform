@@ -242,6 +242,6 @@ The vector-host must go first: recall's reranker calls fail (and inject nothing)
 
 ## PR link
 
-(see PR)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3571
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

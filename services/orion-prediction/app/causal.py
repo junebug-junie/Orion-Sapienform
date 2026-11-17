@@ -336,8 +336,41 @@ def _stratified_diff(values: dict, arms: dict) -> tuple[float | None, float, int
     return (num / den if den > 0 else None), den, n_on, n_off
 
 
+def redraws(strata: Sequence[str], redraw, n_perm: int, seed: int = 0) -> dict:
+    """``n_perm`` redrawn arm sequences per stratum, drawn once and shared by every outcome of one run (the
+    same randomisation distribution for each target, and one draw instead of one per target)."""
+    rng = np.random.default_rng(seed)
+    rows = [{s: redraw(s, rng) for s in strata} for _ in range(n_perm)]
+    # stratum -> bool matrix (n_perm x sequence length): True = ON. Vectorised permutation test below.
+    return {"n": n_perm, "on": {s: np.array([[a == "on" for a in r[s]] for r in rows], dtype=bool) for s in strata}}
+
+
+def _perm_estimates(values: dict, seqs: dict, on: dict, n: int) -> np.ndarray:
+    """The stratified estimate under each redrawn assignment, vectorised over draws (NaN: no contrast)."""
+    num = np.zeros(n)
+    den = np.zeros(n)
+    for s, vals in values.items():
+        v = np.array([np.nan if x is None else x for x in vals], dtype=float)
+        ok = np.isfinite(v)
+        if not ok.any():
+            continue
+        m = on[s][:, np.asarray(seqs[s])][:, ok]      # n x measured blocks, True = ON
+        x = v[ok]
+        n_on = m.sum(1)
+        n_off = (~m).sum(1)
+        s_on = m.astype(float) @ x
+        s_off = (~m).astype(float) @ x
+        both = (n_on > 0) & (n_off > 0)
+        w = np.where(both, n_on * n_off / np.maximum(n_on + n_off, 1), 0.0)
+        d = np.where(both, s_on / np.maximum(n_on, 1) - s_off / np.maximum(n_off, 1), 0.0)
+        num += w * d
+        den += w
+    with np.errstate(invalid="ignore", divide="ignore"):
+        return np.where(den > 0, num / den, np.nan)
+
+
 def analyze_stratified_switchback(blocks: Sequence[dict], redraw, n_perm: int = 2000,
-                                  seed: int = 0) -> EffectEstimate:
+                                  seed: int = 0, perms: dict | None = None) -> EffectEstimate:
     """ON-minus-OFF over event-start blocks from several nights, each night its own randomised experiment.
 
     ``blocks``: {stratum, seq, arm, value}. ``seq`` is the block's position in its night's arm sequence (a
@@ -383,18 +416,11 @@ def analyze_stratified_switchback(blocks: Sequence[dict], redraw, n_perm: int = 
         return EffectEstimate("experimental_effect", est, None, None, None, n_on + n_off, details)
     se = math.sqrt((ss / dof) / wsum)
     t = float(stats.t.ppf(0.975, dof))
-    rng = np.random.default_rng(seed)
-    hits = done = 0
-    for _ in range(n_perm):
-        perm = {}
-        for s in values:
-            seq_arms = redraw(s, rng)
-            perm[s] = [seq_arms[i] for i in seqs[s]]
-        e, _w, _a, _b = _stratified_diff(values, perm)
-        if e is None:
-            continue
-        done += 1
-        hits += abs(e) >= abs(est) - 1e-12
+    draws = perms if perms is not None else redraws(list(values), redraw, n_perm, seed)
+    e = _perm_estimates(values, seqs, draws["on"], int(draws["n"]))
+    e = e[np.isfinite(e)]
+    done = int(len(e))
+    hits = int(np.sum(np.abs(e) >= abs(est) - 1e-12))
     details.update({"se": se, "dof": dof, "n_perm": done})
     p = (hits + 1) / (done + 1) if done else None
     return EffectEstimate("experimental_effect", est, est - t * se, est + t * se, p, n_on + n_off, details)

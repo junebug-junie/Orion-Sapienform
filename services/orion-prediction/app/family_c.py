@@ -644,7 +644,7 @@ def event_run_rows(per_night: Sequence[tuple[Mapping[str, Any], list]], loader: 
     """One row per target for a run of nights: Family A readings (time-of-day adjusted grain means in each
     block's window) and the lane costs (from the leases and Kev rows in the window). Blocks with a manual
     session in the window are left out of the primary estimate (reported in the manipulation summary)."""
-    from app.causal import analyze_stratified_switchback
+    from app.causal import analyze_stratified_switchback, redraws
 
     blocks = [b for _e, bs in per_night for b in bs]
     if not blocks:
@@ -678,10 +678,12 @@ def event_run_rows(per_night: Sequence[tuple[Mapping[str, Any], list]], loader: 
     manip = manipulation_summary(blocks)
     primary = [b for b in blocks if not b.get("manual_session")]
     redraw = _redraw(per_night)
+    # One set of redrawn arm sequences for every target of this run (drawn once: ~50 targets x 2000 draws).
+    perms = redraws(sorted(str(e["experiment_id"]) for e, _ in per_night), redraw, n_perm, seed=0)
 
     def row(target: str, unit: str | None, values: dict, profile_adjusted: bool) -> EffectRow:
         est = analyze_stratified_switchback([{**b, "value": values.get((b["stratum"], b["seq"]))} for b in primary],
-                                            redraw, n_perm=n_perm, seed=0)
+                                            redraw, n_perm=n_perm, seed=0, perms=perms)
         d = est.details
         return EffectRow(actuator=action, target=target, unit=unit, window_start_min=win0, window_end_min=win1,
                          method=METHOD_RANDOMISED, estimate=est.effect, ci_lo=est.ci_lo, ci_hi=est.ci_hi,

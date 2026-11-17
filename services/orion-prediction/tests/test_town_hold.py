@@ -536,6 +536,22 @@ def test_the_restricted_permutation_is_calibrated_under_the_null():
     assert 0.0 <= np.mean(np.array(ps) <= 0.05) <= 0.12
 
 
+def test_the_vectorised_permutation_matches_the_plain_estimator():
+    from app.causal import _perm_estimates, _stratified_diff, redraws
+
+    blocks = _blocks(5, 1.0, np.random.default_rng(3))
+    blocks[2]["value"] = None
+    strata = sorted({b["stratum"] for b in blocks})
+    draws = redraws(strata, _redraw(), 50, seed=1)
+    values = {s: [b["value"] for b in blocks if b["stratum"] == s] for s in strata}
+    seqs = {s: [b["seq"] for b in blocks if b["stratum"] == s] for s in strata}
+    fast = _perm_estimates(values, seqs, draws["on"], 50)
+    for k in range(50):
+        arms = {s: ["on" if draws["on"][s][k, i] else "off" for i in seqs[s]] for s in strata}
+        slow, _w, _a, _b = _stratified_diff(values, arms)
+        assert fast[k] == pytest.approx(slow)
+
+
 def test_too_few_blocks_is_no_estimate_not_zero():
     est = analyze_stratified_switchback([{"stratum": "a", "seq": 0, "arm": "on", "value": 1.0}], _redraw())
     assert est.effect is None and "need" in est.details["reason"]

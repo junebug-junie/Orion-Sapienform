@@ -156,7 +156,7 @@ def _reading_page(*decided_and_ids):
     return {"schema_version": "physiology.funded_event_wants.v1", "as_of": T0.isoformat(), "considered": 1,
             "funded_open": len(decided_and_ids), "wants": [
                 {"want_id": f"w{i}", "family": "hub.world_pulse_read", "event_ref": f"world_pulse_read_seed:reading:{i}",
-                 "salience": 0.2, "value_rank": 0.4, "net": 0.4, "decided_at": d.isoformat(),
+                 "salience": 0.95, "value_rank": 0.4, "net": 0.4, "decided_at": d.isoformat(),
                  "expires_at": (d + timedelta(hours=3)).isoformat(), "label": f"a read finished: {i}"}
                 for d, i in decided_and_ids]}
 
@@ -187,9 +187,14 @@ def test_kept_concerns_do_not_shield_an_ignored_reading_want_issue_3552(caplog):
     # The next reading, a new ref at the 0.5 cap, past the refractory interval: no second thought.
     later = T0 + timedelta(minutes=10)
     rt.clock_box["now"] = later
-    page[EVENTS_URL] = _reading_page((T0 - timedelta(hours=2, minutes=15), 1),
-                                     (later - timedelta(hours=2, minutes=15), 2))
+    second = _reading_page((T0 - timedelta(hours=2, minutes=15), 1), (later - timedelta(hours=2, minutes=15), 2))
+    # runtime() copies extra_pages, so serve the new menu through get_json itself (review finding).
+    orig = rt.get_json
+    rt.get_json = lambda u, *a, **k: second if u == EVENTS_URL else orig(u, *a, **k)
     asyncio.run(rt.tick())
+    # Prime saw the new reading at the cap, halved below the threshold, and did not think again.
+    [r2] = [n for n in rt._needs if n.ref == "world_pulse_read_seed:reading:2"]
+    assert r2.drive == hg.EVENT_DRIVE_CAP and r2.damped < hg.THRESHOLD
     assert len(rt.llm.calls) == 1
     saved = PrimeStateV1.model_validate_json(rt.bus.redis.kv[STATE_KEY])
     assert set(saved.needs.damp) == {"horizon:event:hub.world_pulse_read"}  # survives a restart

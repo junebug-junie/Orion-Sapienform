@@ -35,8 +35,9 @@ Checks:
                          (their adapter deadlines count from when they opened, so their horizon needs are shown), and
                          a new reading want (3 h window, family hub.world_pulse_read) is funded every 45 minutes; Prime
                          never takes one up. An ignored reading may wake Prime at most once per its own 3 h recovery
-                         window (9 in any 24 h, counting both ends). Before the fix keeping the concerns shielded the
-                         readings and the budget alone bound them (24 in any 24 h).
+                         window (8 in any 24 h: the window count is strict and a halving recovers exactly 3 h after
+                         its wake). Before the fix keeping the concerns shielded the readings and the budget alone
+                         bound them (24 in any 24 h).
 
 Reported, not gated: thoughts per day per need and per change, against the live timer's thoughts per day and
 floor-only thoughts.
@@ -156,6 +157,7 @@ def replay(data: dict[str, Any], *, policy: str, planted: Optional[str] = None,
     flood_deadline = lambda c: c.opened_at + timedelta(days=10)  # noqa: E731
     flood_wants = [{"want_id": f"r{k}", "family": "hub.world_pulse_read",
                     "event_ref": f"world_pulse_read_seed:reading:{k}", "label": f"a read finished: {k}",
+                    "salience": 0.95,  # top tenth: still a wake candidate under a salience gate (#3559)
                     "decided_at": (start + k * FLOOD_EVERY).isoformat(),
                     "expires_at": (start + k * FLOOD_EVERY + FLOOD_WINDOW).isoformat()}
                    for k in range(int((end - start) / FLOOD_EVERY) + 1)] if planted == "reading_flood" else []
@@ -303,7 +305,7 @@ def run(data: Optional[dict[str, Any]] = None) -> list[tuple[str, bool, str]]:
     results.append(("rest_point", not rest["thoughts"], f"{len(rest['thoughts'])} thoughts at rest over 2 days"))
     flood = replay(base, policy="idle", planted="reading_flood", days=2)
     worst_flood = _max_need_wakes_24h(flood["thoughts"])
-    cap = int(timedelta(hours=24) / FLOOD_WINDOW) + 1
+    cap = int(timedelta(hours=24) / FLOOD_WINDOW)
     results.append(("reading_flood_bounded", worst_flood <= cap,
                     f"#3552: ignored reading wants with 3 kept concerns: {len(flood['thoughts'])} thoughts in 2 days, "
                     f"most need wakes in any 24 h {worst_flood} (at most {cap}: one per 3 h recovery window)"))

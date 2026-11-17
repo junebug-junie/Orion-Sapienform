@@ -45,8 +45,10 @@ only, the daily budget is not spent. Anti-swamp guards, all here:
    and ignored the reading want that woke it halved nothing; live, every new reading (a new ref, so guard 5 cannot
    hold it) woke Prime again, about 1 an hour. Why not per ref: every reading is a new ref, so per-ref halving would
    not hold the next one either. Per family: an ignored reading damps the next readings, not an office visit, and
-   not a held concern's own horizon. Because an event need's drive stops at ``EVENT_DRIVE_CAP`` = the threshold, any
-   halving holds that family until it fully recovers: at most one event wake per family per recovery window. The
+   not a held concern's own horizon. At the default threshold (= ``EVENT_DRIVE_CAP``; ``PRIME_HUNGER_THRESHOLD`` can
+   lower it) an event need never exceeds the threshold, so any halving holds that family until it fully recovers: at
+   most one event wake per family per recovery window. Any thought that shows a family and changes nothing halves it
+   again and restarts its window (the same rule as every other need). The
    halving recovers linearly over the fired content's own horizon. Kept in ``PrimeNeedsStateV1`` inside Prime's
    persisted state, so it survives a restart (older saved state, keyed by name only, still loads and means the same).
 2. Concern TTLs stay (24 h, 72 h for a promise): orion/prime/state.py.

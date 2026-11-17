@@ -310,8 +310,9 @@ def test_guard1_a_need_the_thought_answered_is_not_halved():
 
 
 def _reading(i: int, decided: datetime, window=timedelta(hours=3)) -> dict:
+    # salience 0.95: a top-tenth reading, so the case still holds if a salience gate on event wakes lands (#3559).
     return {"want_id": f"w{i}", "family": "hub.world_pulse_read", "event_ref": f"world_pulse_read_seed:reading:{i}",
-            "decided_at": decided.isoformat(), "expires_at": (decided + window).isoformat(),
+            "salience": 0.95, "decided_at": decided.isoformat(), "expires_at": (decided + window).isoformat(),
             "label": f"a read finished: {i}"}
 
 

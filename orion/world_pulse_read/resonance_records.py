@@ -32,15 +32,19 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
                         "MATCH (v:PriorRevision) RETURN v.prior_id AS pid, v.from_status AS fs, v.to_status AS ts, "
                         "v.from_confidence AS fc, v.to_confidence AS tc, v.from_claim AS from_claim, "
                         "v.note AS note, v.written_at AS at ORDER BY v.written_at DESC")
-    questions = fk.rows("orion_worldview",
-                        "MATCH (s:SelfQuestionMint) WHERE s.text IS NOT NULL RETURN s.question_id AS qid, s.text AS text")
+    # A mint with blank text (one live on 2026-11-14) is no question: it would fail
+    # ResonanceNeighborV1(min_length=1) and halt every resonance read (#3585).
+    questions = [q for q in fk.rows("orion_worldview",
+                                    "MATCH (s:SelfQuestionMint) WHERE s.text IS NOT NULL "
+                                    "RETURN s.question_id AS qid, s.text AS text")
+                 if str(q["text"] or "").strip()]
     answers = fk.rows("orion_worldview",
                       "MATCH (a:LivedAnswer) RETURN id(a) AS nid, a.run_id AS run_id, a.question_id AS qid, "
                       "a.text AS text, a.revises AS revises, a.evidence AS evidence, a.written_at AS at "
                       "ORDER BY a.written_at DESC")
     f_by: dict[str, list[dict[str, Any]]] = {}
     for f in findings:
-        if f["text"]:
+        if f["text"] and f["fid"]:
             f_by.setdefault(f["pid"], []).append(f)
     r_by: dict[str, list[dict[str, Any]]] = {}
     for v in revisions:

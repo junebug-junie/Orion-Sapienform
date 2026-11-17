@@ -106,3 +106,21 @@ def test_lived_question_neighbours_skip_a_newer_draft():
     docs, _, _ = rr.worldview_pool(_Falkor())
     q = next(d for d in docs if d.ref_kind == "lived_question")
     assert [n.ref_id for n in q.neighborhood] == ["lived.q1@bbbbbbbbbbbb", "lived.q1@aaaaaaaaaaaa"]
+
+
+class _FalkorBlankQuestion(_Falkor):
+    """Live shape on 2026-11-14 (#3585): a SelfQuestionMint with text '' whose LivedAnswer is current."""
+
+    def rows(self, graph, cypher, **params):
+        if "SelfQuestionMint" in cypher:
+            return [{"qid": "lived.q1", "text": ""}, {"qid": "lived.q2", "text": "   "}]
+        return super().rows(graph, cypher, **params)
+
+
+def test_blank_question_text_does_not_halt_the_pool():
+    docs, pairs, _ = rr.worldview_pool(_FalkorBlankQuestion())
+    assert not [d for d in docs if d.ref_kind == "lived_question"]
+    lived = [d for d in docs if d.ref_kind == "lived_answer"]
+    assert [d.ref_id for d in lived] == ["lived.q1@bbbbbbbbbbbb"]
+    assert not [n for n in lived[0].neighborhood if n.relation == "answers_question"]
+    assert pairs["questions"] == []

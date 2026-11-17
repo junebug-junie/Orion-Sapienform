@@ -279,3 +279,19 @@ def test_every_memory_about_a_closed_day_lands_once_in_the_day_it_was_written():
     assert all(i not in d.frame.unbound_context_event_ids for k, d in days.items() if k != "2026-11-16" for i in ids)
     # The event still says which moment it is about.
     assert [e.occurred_at.isoformat() for e in events] == [occ for _, occ in LIVE_3584]
+
+
+def test_late_memories_about_a_closed_day_do_not_depend_on_chunking_across_midnight():
+    events = [S.memory_episode(memory_row(ref, datetime.fromisoformat(occ), WRITTEN_3584)) for ref, occ in LIVE_3584]
+    late = S.memory_episode(memory_row("night", datetime.fromisoformat("2026-11-16T06:00:00+00:00"),
+                                       datetime.fromisoformat("2026-11-16T07:30:00+00:00")))  # 23:00 local, written 00:30
+    start = advance_clock(initial_state(), datetime.fromisoformat("2026-11-15T15:00:00+00:00"), CFG)
+    end = datetime.fromisoformat("2026-11-17T08:00:00+00:00")
+    whole = advance_clock(fold(start, events=[late, *events], cfg=CFG), end, CFG)
+    parts = advance_clock(start, datetime.fromisoformat("2026-11-16T07:00:00+00:00"), CFG)  # boundary on midnight
+    parts = fold(parts, events=[late], cfg=CFG)
+    parts = advance_clock(parts, datetime.fromisoformat("2026-11-16T12:00:00+00:00"), CFG)
+    parts = advance_clock(fold(parts, events=events, cfg=CFG), end, CFG)
+    assert parts.model_dump_json() == whole.model_dump_json()
+    days = {d.day_id: d.frame.unbound_context_event_ids for d in whole.pending_closed_days}
+    assert "memory_episode:night" in days["2026-11-16"] and "memory_episode:night" not in days.get("2026-11-15", [])

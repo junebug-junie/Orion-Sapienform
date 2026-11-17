@@ -203,4 +203,8 @@ curl -fsS -X POST http://localhost:8132/experiments/town-hold/run -H 'content-ty
 - **Severity: medium. Concern: a persisted schedule resumes after a restart.** That is the design's "a rebuild costs one night". **Mitigation:** only an explicitly started run resumes. `POST /experiments/town-hold/abort` deletes it, and `PREDICTION_TOWN_HOLD_ENABLED=false` stops the resume.
 - **Severity: low. Concern: the bid's hunger comes from `opened_at` = the previous decision, capped at one block.** A want opened at the bid time reads `sated` in the real market (a test pins both cases). **Mitigation:** none needed. The tests pin the behaviour.
 - **Severity: low. Concern: Kev latency is too noisy to claim anything.** **Mitigation:** it is reported, not claimed, as the design says.
-- **Issues:** opened #3549 (Experiment 2, later). The verify-live issue for the first night is listed below.
+- **Issues:** opened #3549 (Experiment 2, later; follow-up) and #3557 (verify-live: the first night; needs-juniper to schedule the run). None closed.
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/3556

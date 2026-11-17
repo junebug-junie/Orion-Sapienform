@@ -78,7 +78,8 @@ def test_persist_is_complete_and_replay_safe():
                   usage={"prompt_tokens": 900, "completion_tokens": 120}, llm_latency_ms=4200, hold_wait_ms=1000,
                   coverage=0.667)
         counts = await persist_episode(pool, **kw)
-        assert counts == {"memories": 2, "rejections": 1, "questions": 1, "downgrades": 1}
+        assert counts == {"memories": 2, "rejections": 1, "questions": 1, "downgrades": 1,
+                          "superseded": 0}
         first = await _counts(pool)
         assert first["episode_memory"] == 2 and first["memory_tension_shadow"] == 1 and first["episode_distill_run"] == 1
         await persist_episode(pool, **kw)                       # crash-and-resume replay

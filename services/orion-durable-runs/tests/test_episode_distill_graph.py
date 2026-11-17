@@ -83,12 +83,66 @@ class Distiller:
                 "downgrades": r.downgrades}
 
 
-def graph(world, saver, d, max_attempts=3):
+def graph(world, saver, d, max_attempts=3, link=None):
     return build_episode_distill_graph(
         d.load, d.call_llm, d.persist,
         AdmissionDeps(world.register, world.lease, world.execute, world.release, world.event,
                       now=lambda: world.now, max_attempts=max_attempts),
-        saver)
+        saver, link=link)
+
+
+class CheckingDistiller(Distiller):
+    """The distill answer first, then supersede-check answers on the same hold (issue #3587)."""
+
+    def __init__(self, world, answers):
+        super().__init__(world, answers)
+        self.check_briefs = []
+
+    async def call_llm(self, prompt, *, brief, run_id, correlation_id, gpu_lease):
+        if prompt.startswith("CHECK:"):
+            assert gpu_lease.model_dump() == self.world.ref()    # the check rides the same hold
+            self.check_briefs.append(brief)
+            return {"text": "yes", "finish_reason": "stop"}
+        return await super().call_llm(prompt, brief=brief, run_id=run_id, correlation_id=correlation_id,
+                                      gpu_lease=gpu_lease)
+
+
+def test_supersede_check_runs_on_the_hold_and_its_links_reach_persist():
+    async def link(result, ask):
+        assert [m.statement for m in result.memories] == ["Juniper flew to Austin and returns Wednesday."]
+        assert await ask("CHECK: does B correct A?") == "yes"
+        return {"links": [{"old_id": "old-1", "new_id": result.memories[0].memory_id, "reason": "r"}],
+                "asked": 1}
+
+    async def run():
+        world, saver = World(), InMemorySaver()
+        d = CheckingDistiller(world, [GOOD])
+        await asyncio.wait_for(graph(world, saver, d, link=link).ainvoke(initial(), CFG), 1)
+        world.grant()
+        result = await graph(world, saver, d, link=link).ainvoke(Command(resume={}), CFG)
+        assert result["status"] == "completed"
+        assert [b.max_tokens for b in d.check_briefs] == [200] and d.check_briefs[0].timeout_sec <= 120
+        assert d.persisted[0]["supersede_links"][0]["old_id"] == "old-1"
+        assert result["supersede"]["asked"] == 1
+
+    asyncio.run(run())
+
+
+def test_a_failing_supersede_check_links_nothing_and_never_fails_the_run():
+    async def link(result, ask):
+        raise RuntimeError("index down")
+
+    async def run():
+        world, saver = World(), InMemorySaver()
+        d = Distiller(world, [GOOD])
+        await asyncio.wait_for(graph(world, saver, d, link=link).ainvoke(initial(), CFG), 1)
+        world.grant()
+        result = await graph(world, saver, d, link=link).ainvoke(Command(resume={}), CFG)
+        assert result["status"] == "completed" and len(d.calls) == 1
+        assert "supersede_links" not in d.persisted[0]
+        assert result["supersede"]["links"] == [] and "index down" in result["supersede"]["error"]
+
+    asyncio.run(run())
 
 
 def test_loads_first_waits_for_the_hold_then_distills_and_persists_validated_memories():

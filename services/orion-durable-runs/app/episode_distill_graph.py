@@ -12,6 +12,10 @@ Spec: docs/superpowers/specs/2026-09-30-memory-episode-redesign-design.md, secti
   (``options.gpu_lease``): no cortex-orch hop, because orch's recall step would mix retrieved
   memories into the evidence. An unparseable answer is a failed attempt (bounded, backed off);
   waiting for the hold never is.
+* ``distill`` also runs the supersede check (orion.memory.episode.supersede, issue #3587) under the
+  same hold, when a ``link`` step is given: candidates among older live memories, then one strict
+  yes/no call per pair on the same route. Its answer is checkpointed in ``supersede``; any failure
+  there links nothing and never fails the attempt.
 * ``persist`` lets the hold go first (no GPU needed), then validates deterministically
   (orion.memory.episode.validate) and writes the shadow tables in one idempotent transaction.
   A crash after the write resumes at ``persist`` and re-writes nothing (deterministic ids).
@@ -20,6 +24,7 @@ Nothing here changes live behavior: the tables are read by no consumer except th
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, TypedDict
 
@@ -46,7 +51,16 @@ Raises on transport / non-ok / empty text: each is a bounded attempt."""
 PersistFn = Callable[..., Awaitable[dict[str, int]]]
 """(**kwargs of orion.memory.episode.store.persist_episode minus pool) -> counts."""
 
+LinkFn = Callable[..., Awaitable[dict[str, Any]]]
+"""(ValidationResult, ask) -> orion.memory.episode.supersede.plan_for_new_rows' dict; ``ask`` is
+an async prompt -> answer text on the run's own hold."""
+
+logger = logging.getLogger(__name__)
+
 EPISODE_DISTILL_MIN_ATTEMPTS = 4
+# The supersede check: one short JSON answer per pair (no thinking).
+SUPERSEDE_CHECK_MAX_TOKENS = 200
+SUPERSEDE_CHECK_TIMEOUT_SEC = 120.0
 
 
 class EpisodeDistillState(TypedDict, total=False):
@@ -80,6 +94,8 @@ class EpisodeDistillState(TypedDict, total=False):
     model: str | None
     llm_latency_ms: int | None
     persisted: dict[str, int] | None
+    # The supersede check's plan (links + counts). Absent on checkpoints from before #3587: no links.
+    supersede: dict[str, Any] | None
 
 
 def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
@@ -93,6 +109,7 @@ def finish_detail(state: dict[str, Any]) -> dict[str, Any]:
         "rejections": persisted.get("rejections"),
         "questions": persisted.get("questions"),
         "downgrades": persisted.get("downgrades"),
+        **({"superseded": persisted["superseded"]} if "superseded" in persisted else {}),
         "attempts": int(state.get("attempt") or 0),
     }
 
@@ -114,8 +131,16 @@ def rendered_prompt_version(state: dict[str, Any]) -> str:
     return str(state.get("rendered_prompt_version") or UNMARKED_TEMPLATE_VERSION)
 
 
+def validated(state: dict[str, Any]):
+    """The deterministic validation of the stored answer (the same call persist makes)."""
+    brief = EpisodeDistillBriefV1.model_validate(state["brief"])
+    return validate_distillation(parse_distillation(state["answer_text"] or ""), turns_from_state(state["turns"]),
+                                 episode_id=brief.episode_id, prompt_version=rendered_prompt_version(state),
+                                 known_referents=state.get("candidate_referents") or [])
+
+
 def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: PersistFn, admission: AdmissionDeps,
-                                checkpointer: Any):
+                                checkpointer: Any, link: LinkFn | None = None):
     from langgraph.graph import END, START, StateGraph
 
     resource_request, resource_wait, after_wait = resource_nodes(admission)
@@ -147,10 +172,32 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
             # "distill_json_invalid:Expecting ',' delimiter" (12 of 12 calls on one episode, 2026-10-31).
             raise ValueError(f"distill_truncated_at_max_tokens:{brief.max_tokens}")
         parse_distillation(text)  # raises -> a bounded attempt; the text is re-parsed in persist
-        return {"answer_text": text, "rendered_prompt_version": rendered_version,
-                "usage": dict(answer.get("usage") or {}), "model": answer.get("model"),
-                "llm_latency_ms": answer.get("latency_ms"), "distill_started_at": started,
-                "attempt": int(state.get("attempt") or 0) + 1}
+        out = {"answer_text": text, "rendered_prompt_version": rendered_version,
+               "usage": dict(answer.get("usage") or {}), "model": answer.get("model"),
+               "llm_latency_ms": answer.get("latency_ms"), "distill_started_at": started,
+               "attempt": int(state.get("attempt") or 0) + 1}
+        out["supersede"] = await supersede_plan({**state, **out}, brief, ref)
+        return out
+
+    async def supersede_plan(state: dict[str, Any], brief: EpisodeDistillBriefV1, ref: GpuLeaseRefV1) -> dict | None:
+        """Never raises: a failed check links nothing (a wrong supersede hides a true memory)."""
+        if link is None:
+            return None
+        check_brief = brief.model_copy(update={
+            "max_tokens": SUPERSEDE_CHECK_MAX_TOKENS,
+            "timeout_sec": min(float(brief.timeout_sec), SUPERSEDE_CHECK_TIMEOUT_SEC)})
+
+        async def ask(prompt: str) -> str:
+            answer = await call_llm(prompt, brief=check_brief, run_id=state["run_id"],
+                                    correlation_id=state["correlation_id"], gpu_lease=ref)
+            return str(answer.get("text") or "")
+
+        try:
+            return await link(validated(state), ask)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("episode_supersede_check_failed episode_id=%s error=%s", brief.episode_id,
+                           f"{type(exc).__name__}: {exc}"[:300])
+            return {"links": [], "error": f"{type(exc).__name__}: {exc}"[:300]}
 
     async def distill_node(state: EpisodeDistillState) -> dict:
         try:
@@ -197,14 +244,14 @@ def build_episode_distill_graph(load: LoadFn, call_llm: CallLlmFn, persist: Pers
         brief = EpisodeDistillBriefV1.model_validate(state["brief"])
         turns = turns_from_state(state["turns"])
         prompt_version = rendered_prompt_version(dict(state))
-        result = validate_distillation(parse_distillation(state["answer_text"] or ""), turns,
-                                       episode_id=brief.episode_id, prompt_version=prompt_version,
-                                       known_referents=state.get("candidate_referents") or [])
+        result = validated(dict(state))
+        links = list((state.get("supersede") or {}).get("links") or [])
         counts = await persist(
             episode_id=brief.episode_id, run_id=state["run_id"], result=result, model_route=brief.llm_route,
             model=state.get("model"), prompt_version=prompt_version, usage=state.get("usage") or {},
             llm_latency_ms=state.get("llm_latency_ms"), hold_wait_ms=_hold_wait_ms(dict(state)),
             coverage=coverage(result, turns)["coverage"],
+            **({"supersede_links": links} if links else {}),
         )
         return {**released, "persisted": dict(counts), "status": "running"}
 

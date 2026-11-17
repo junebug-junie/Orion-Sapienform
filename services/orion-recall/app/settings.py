@@ -276,7 +276,7 @@ class Settings(BaseSettings):
         default="orion_lived_memory", validation_alias=AliasChoices("RECALL_LIVED_MEMORY_COLLECTION")
     )
     RECALL_LIVED_MEMORY_MIN_FIT: float = Field(
-        default=0.1, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_MIN_FIT")
+        default=0.004, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_MIN_FIT")
     )
     RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS: int = Field(
         default=5, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS")

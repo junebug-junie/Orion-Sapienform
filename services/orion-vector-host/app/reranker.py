@@ -7,8 +7,12 @@ orders candidates far better than the cosine of two separate embeddings.
 Model: ``VECTOR_HOST_RERANK_MODEL``. Runs on this host only (no external inference API); the
 weights come from the Hugging Face Hub on first load and are kept in the persistent HF cache
 volume mounted by docker-compose.yml, so a container recreate does not download them again.
-Measured on athena 2026-11-16, CPU, 8 OpenMP threads: 24 pairs in ~270 ms (bge-reranker-v2-m3:
-~950 ms). Empty model name = the endpoint answers 503 and recall serves no lived memories.
+Default ``BAAI/bge-reranker-v2-m3`` on the athena Tesla P4 (``VECTOR_HOST_RERANK_DEVICE=cuda``,
+the GPU pinned by ``VECTOR_HOST_RERANK_GPU_DEVICE_ID`` in docker-compose.yml). Replay
+2026-11-17 (11 real referring messages): v2-m3 retrieved 9/11 targets, bge-reranker-base 7/11,
+mxbai-rerank-base 7/11, ms-marco-MiniLM-L-12 6/11. On CPU v2-m3 took 2.3-3.6 s p50 per turn,
+too slow for a chat turn; a missing GPU falls back to CPU rather than failing. Empty model name =
+the endpoint answers 503 and recall serves no lived memories.
 
 One forward pass at a time on its own single-thread executor, for the same reason the embedder
 has one (``app/embedder.py``): parallel torch passes each start an OpenMP team and slow every
@@ -34,6 +38,9 @@ class Reranker:
 
         self.model_name = model_name
         self._torch = torch
+        if str(device).startswith("cuda") and not torch.cuda.is_available():
+            device = "cpu"  # no GPU passed through: still serve, slower
+        self.device = str(device)
         self._device = torch.device(device)
         self._tokenizer = AutoTokenizer.from_pretrained(model_name)
         self._model = AutoModelForSequenceClassification.from_pretrained(model_name)

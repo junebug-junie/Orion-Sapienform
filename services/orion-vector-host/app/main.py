@@ -638,7 +638,7 @@ async def lifespan(app: FastAPI):
             reranker = await asyncio.to_thread(
                 Reranker, settings.VECTOR_HOST_RERANK_MODEL.strip(), settings.VECTOR_HOST_RERANK_DEVICE
             )
-            logger.info("Reranker loaded model=%s device=%s", reranker.model_name, settings.VECTOR_HOST_RERANK_DEVICE)
+            logger.info("Reranker loaded model=%s device=%s", reranker.model_name, reranker.device)
         except Exception as exc:  # the embedder must still serve; /rerank answers 503
             reranker = None
             logger.error("Reranker failed to load model=%s error=%s", settings.VECTOR_HOST_RERANK_MODEL, exc)

@@ -151,16 +151,12 @@ def test_recall_finds_by_exact_words_reranks_and_renders(no_dense):
     assert lm.items_for(out.chosen)[0]["id"] == "episode_memory:m1"
 
 
-def test_short_message_searches_only_when_it_names_something_rare(no_dense):
-    pool = FakePool({"episode_memory": [_row("m1", "Juniper told me Biscuit had surgery and got stitches."),
-                                        _row("m2", "Juniper said thanks for the help."),
-                                        _row("m3", "Juniper said thanks again."),
-                                        _row("m4", "Juniper said thanks for the review."),
-                                        _row("m5", "Juniper said thanks for the fix.")]})
+def test_short_messages_inject_nothing_at_the_content_word_floor(no_dense):
+    pool = FakePool({"episode_memory": [_row("m1", "Juniper told me Biscuit had surgery and got stitches.")]})
     reader = LivedMemoryRecall(pool, _cfg(min_fit=0.0), reranker=_overlap_reranker, clock=lambda: NOW)
     reader.cfg = LivedMemoryConfig(**{**reader.cfg.__dict__, "min_query_tokens": 5})
     assert asyncio.run(reader.recall("thanks, appreciate it")).debug["skipped"] == "few_content_words"
-    assert asyncio.run(reader.recall("Biscuit is home!")).lines
+    assert asyncio.run(reader.recall("Biscuit finally got his surgery stitches removed today")).lines
 
 
 def test_small_talk_injects_nothing(no_dense):

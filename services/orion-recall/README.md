@@ -1001,8 +1001,15 @@ Pipeline: content-word floor (`RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS`) -> meaning
 (vector-host `/embedding`, Chroma `RECALL_LIVED_MEMORY_COLLECTION`) + exact-word candidates (BM25,
 names weighted) -> local cross-encoder (vector-host `/rerank`) -> bar
 (`RECALL_LIVED_MEMORY_MIN_FIT`, sigmoid of the reranker logit; uncalibrated, tuned by replay) ->
-rank by `fit + 0.10*recency(30 d half-life) + 0.05*importance + 0.05*is_correction` -> at most
-`RECALL_LIVED_MEMORY_MAX_LINES`. Zero lines is a valid answer.
+rank by `logit + 1.0*recency(30 d half-life) + 0.5*importance + 0.5*is_correction` (logit units)
+-> at most `RECALL_LIVED_MEMORY_MAX_LINES`. Zero lines is a valid answer. It starts at intake and
+runs while the other backends fetch.
+
+Replay 2026-11-17 (11 real referring messages, Juniper's last 150 messages; reranker
+bge-reranker-v2-m3 on the P4, bar 0.004, floor 5 content words): 9/11 targets injected (the
+2026-11-14 el Coco miss included), 3 of 23 small-talk messages inject anything, 1.9 lines per
+message on average, lived-memory time p50 1.4 s / p90 2.5 s (overlapped with the fetch). Before:
+0 of 11 (no chat reader of these stores existed).
 
 Read log: every injected doc id is a `lived_memory` item in the bundle, so it lands in
 `recall_telemetry.selected_ids`; the log line `lived_memory_injected corr_id=... ids=... fits=...`

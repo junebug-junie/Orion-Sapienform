@@ -102,11 +102,11 @@ class Settings(BaseSettings):
     # Local cross-encoder behind POST /rerank (app/reranker.py, issue #3533). Read by
     # orion-recall's lived-memory collector. Empty = no reranker; /rerank answers 503.
     VECTOR_HOST_RERANK_MODEL: str = Field(
-        default="BAAI/bge-reranker-base",
+        default="BAAI/bge-reranker-v2-m3",
         alias="VECTOR_HOST_RERANK_MODEL",
     )
     VECTOR_HOST_RERANK_DEVICE: str = Field(
-        default="cpu",
+        default="cuda",
         alias="VECTOR_HOST_RERANK_DEVICE",
     )
 

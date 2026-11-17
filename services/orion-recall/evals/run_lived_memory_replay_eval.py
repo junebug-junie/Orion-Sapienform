@@ -154,8 +154,8 @@ def main() -> int:
     ap.add_argument("--embed-url", default="http://127.0.0.1:8320/embedding")
     ap.add_argument("--rerank-url", default="http://127.0.0.1:8320/rerank")
     ap.add_argument("--collection", default=COLLECTION)
-    ap.add_argument("--min-fit", default="0.005,0.011,0.02,0.05")
-    ap.add_argument("--min-query-tokens", type=int, default=4)
+    ap.add_argument("--min-fit", default="0.002,0.004,0.006,0.01,0.02")
+    ap.add_argument("--min-query-tokens", type=int, default=5)
     args = ap.parse_args()
     print(json.dumps(asyncio.run(_replay(args)), indent=2, default=str))
     return 0

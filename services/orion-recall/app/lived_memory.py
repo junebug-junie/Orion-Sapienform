@@ -17,9 +17,9 @@ Pipeline, once per chat turn (PCR continuity phase):
    pair. ``fit = sigmoid(logit)``.
 4. **Quality bar.** Records with ``fit < min_fit`` are dropped. The bar is tuned by replay
    (``evals/run_lived_memory_replay_eval.py``).
-5. **Rank** (Generative Agents, Park et al. 2023): ``score = fit + W_RECENCY * recency +
-   W_IMPORTANCE * importance + W_CORRECTION * is_correction``. Fit dominates; recency and
-   importance only order memories that already fit.
+5. **Rank** (Generative Agents, Park et al. 2023): ``score = logit + W_RECENCY * recency +
+   W_IMPORTANCE * importance + W_CORRECTION * is_correction`` (logit units). Fit dominates;
+   recency and importance only order memories that already fit.
 6. **Re-check and render.** The chosen ids are re-read from Postgres with the serving gate
    (a correction written since the snapshot removes what it corrects), then rendered one line
    each with kind, record id and date.
@@ -71,9 +71,12 @@ LEXICAL_TOP_K = 10
 MAX_RERANK = 24
 NAME_WEIGHT = 2.5
 RECENCY_HALF_LIFE_DAYS = 30.0
-W_RECENCY = 0.10
-W_IMPORTANCE = 0.05
-W_CORRECTION = 0.05
+# Ranking weights, in reranker-logit units. Cross-encoder logits for a real fit sit around -6..+2
+# and their sigmoid is tiny (0.002..0.9), so blending in probability space let recency outrank
+# fit (replay 2026-11-17). In logit units fit stays dominant: a month of age costs 0.5.
+W_RECENCY = 1.0
+W_IMPORTANCE = 0.5
+W_CORRECTION = 0.5
 LINE_MAX_CHARS = 320
 QUERY_MAX_CHARS = 1000
 # What the cross-encoder reads. Cost grows with pair length (24 long pairs: ~1.3 s on CPU);
@@ -81,9 +84,6 @@ QUERY_MAX_CHARS = 1000
 RERANK_QUERY_CHARS = 600
 RERANK_DOC_CHARS = 400
 SNAPSHOT_TTL_SEC = 60.0
-# A short message still searches when it names something specific: a word found in at most this
-# many lived records ("Biscuit", "pottery") is a reference, not a pleasantry.
-RARE_WORD_MAX_DF = 3
 
 # Standard English function words (BM25 stopping), not a topic list.
 _STOPWORDS = frozenset(
@@ -219,7 +219,7 @@ def rank(candidates: Sequence[tuple[LivedRecord, float]], *, min_fit: float, max
         fit = sigmoid(float(logit))
         if fit < min_fit:
             continue
-        score = (fit + W_RECENCY * recency(rec.occurred_at, now) + W_IMPORTANCE * rec.importance
+        score = (float(logit) + W_RECENCY * recency(rec.occurred_at, now) + W_IMPORTANCE * rec.importance
                  + (W_CORRECTION if rec.is_correction else 0.0))
         kept.append(Scored(rec=rec, fit=fit, score=score))
     kept.sort(key=lambda s: (-s.score, s.rec.doc_id))
@@ -238,7 +238,8 @@ class LivedMemoryConfig:
     timeout_sec: float
     # A message with fewer content words than this ("hi Orion, how are you?") has nothing to
     # search with: greetings matched greeting-shaped stance messages by form, not content.
-    # Unless it names something rare in the store (RARE_WORD_MAX_DF).
+    # A rare-word bypass ("Biscuit is home!") was tried and let small talk back in (13% -> 30-48%
+    # of small-talk messages injecting, replay 2026-11-17), so it is not here.
     min_query_tokens: int = 0
 
 
@@ -277,10 +278,6 @@ class LivedMemoryRecall:
             raise SearchUnavailableError("reranker returned a malformed reply")
         return [float(s) for s in scores]
 
-    def has_rare_word(self, tokens: Iterable[str]) -> bool:
-        df = self._bm25.df if self._bm25 is not None else {}
-        return any(0 < df.get(t, 0) <= RARE_WORD_MAX_DF for t in tokens)
-
     def lexical(self, query: str, k: int = LEXICAL_TOP_K, *,
                 allowed: Callable[[LivedRecord], bool] | None = None) -> List[tuple[str, float]]:
         if self._bm25 is None:
@@ -315,7 +312,7 @@ class LivedMemoryRecall:
             await self.snapshot()
             timings["snapshot"] = int((time.perf_counter() - t) * 1000)
             qtoks = set(tokenize(query))
-            if len(qtoks) < self.cfg.min_query_tokens and not self.has_rare_word(qtoks):
+            if len(qtoks) < self.cfg.min_query_tokens:
                 out.debug["skipped"] = "few_content_words"
                 out.debug["content_tokens"] = len(qtoks)
                 return out

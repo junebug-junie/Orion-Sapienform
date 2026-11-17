@@ -244,5 +244,5 @@ paragraph and the memory ids, placed before the roundup. The letter can cite `[d
 
 ## Recommended next patch
 
-Patch 1 (`dig digs`); Patch 0 is done. The dream has to make something again, and we need to see its answers, before anything is
-built on top of it. It is small, contained in orion-dream, and closes #3412.
+Patch 1 (`dig digs`). Patch 0 is done. Patch 1 is read-only and model-free, so it is safe to build before
+Juniper answers the six questions above.

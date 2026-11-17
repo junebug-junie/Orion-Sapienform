@@ -40,8 +40,10 @@ from orion.substrate.prediction_error_magnitude import DEFAULT_BAND_CUTS
 DEFAULT_WINDOW = "24h"
 MAX_WINDOW = timedelta(days=30)
 BASELINE = timedelta(days=7)
-# Frames per pass: about one day (~41k frames, ~6 s live on 2026-11-17). Past it, sample.
+# Frames per pass: about one day for the window (~41k frames, ~6 s live on 2026-11-17), about half a day for
+# the baseline (a drift ratio needs far fewer frames than the window's own rates). Past it, sample.
 FRAMES_SPAN_PER_PASS = timedelta(days=1)
+BASE_FRAMES_SPAN_PER_PASS = timedelta(hours=12)
 STATEMENT_TIMEOUT = "25s"
 WORLD_FIRST_PREFIX = "world-first:"
 # Eligible = band high or unusual for itself = at or above the usual/high cut of its own week.
@@ -154,11 +156,11 @@ class Window:
 
     @property
     def k_base(self) -> int:
-        return _sample_k(self.base_seconds)
+        return _sample_k(self.base_seconds, BASE_FRAMES_SPAN_PER_PASS)
 
 
-def _sample_k(seconds: float) -> int:
-    return max(1, math.ceil(seconds / FRAMES_SPAN_PER_PASS.total_seconds() - 1e-9))
+def _sample_k(seconds: float, per_pass: timedelta = FRAMES_SPAN_PER_PASS) -> int:
+    return max(1, math.ceil(seconds / per_pass.total_seconds() - 1e-9))
 
 
 def parse_end(text: str | None, now: datetime | None = None) -> datetime:
@@ -384,6 +386,34 @@ def eligibility(side: Side, target: str, kind: str) -> Eligibility:
         ref = f"{events:,} {src.kind} x {src.window_sec:.0f} s"
         return Eligibility(present / expected if expected else None, present, round(expected), ref)
     return Eligibility(_rate(present, side.frames), present, side.frames, f"design {pct(DESIGN_ELIGIBLE_RATE)}")
+
+
+# --- the rule: every number is part of a rate, a duration, a time or a ref -----------------------
+
+# Allowed number shapes on a line: a rate with its numerator and denominator ("91% (3,971 of 4,368)"),
+# a rate alone or a relative change ("10.0%", "+24%"), a duration ("900 s", "24h", "2.0d"), a time
+# ("2026-11-17T08:23Z"), an event-expectation ref ("2 chat_turn x 900 s": the denominator's parts,
+# printed inside the rate's own clause), "1 in 4" (the sample rate), and ids/paths (refs).
+_ALLOWED_NUMBERS = [
+    r"n/a \(\d[\d,]* of \d[\d,]*\)",  # before refs: "n/a" holds a slash
+    r"\S*[:/]\S*",  # refs and paths first: node:substrate.perception, world:chat, /tmp/...-24h-1.json
+    r"[+-]?\d[\d,]*(?:\.\d+)?% \(\d[\d,]* of \d[\d,]*\)",
+    r"\d[\d,]* [a-z_]+ x \d+ s",
+    r"\b1 in \d+\b",
+    r"cut at \d+ chars|showing \d+ of \d+ lines",  # dig's own length-cut notes (capped())
+    r"\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z?",
+    r"[+-]?\d+(?:\.\d+)?%",
+    r"\d+(?:\.\d+)? ?(?:s|h|d|min)\b",
+]
+
+
+def bare_counts(line: str) -> list[str]:
+    """Numbers on a line that are not part of a rate, a duration, a time or a ref."""
+    rest = line
+    for pat in _ALLOWED_NUMBERS:
+        rest = re.sub(pat, " ", rest)
+    return re.findall(r"\d[\d,]*", rest)
+
 
 
 # --- render -------------------------------------------------------------------------------------

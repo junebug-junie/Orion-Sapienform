@@ -8,7 +8,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-import re
 import typing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -63,29 +62,7 @@ def _read():
 
 # --- the rule: no raw cross-source count without its rate ------------------------------------------
 
-# Allowed number shapes on a line: a rate with its numerator and denominator ("91% (3,971 of 4,368)"),
-# a rate alone or a relative change ("10.0%", "+24%"), a duration ("900 s", "24h", "2.0d"), a time
-# ("2026-11-17T08:23Z"), an event-expectation ref ("2 chat_turn x 900 s": the denominator's parts,
-# printed inside the rate's own clause), "1 in 4" (the sample rate), and ids/paths (refs).
-_ALLOWED = [
-    r"n/a \(\d[\d,]* of \d[\d,]*\)",  # before refs: "n/a" holds a slash
-    r"\S*[:/]\S*",  # refs and paths first: node:substrate.perception, world:chat, /tmp/...-24h-1.json
-    r"[+-]?\d[\d,]*(?:\.\d+)?% \(\d[\d,]* of \d[\d,]*\)",
-    r"\d[\d,]* [a-z_]+ x \d+ s",
-    r"\b1 in \d+\b",
-    r"cut at \d+ chars|showing \d+ of \d+ lines",  # dig's own length-cut notes (capped())
-    r"\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d)?Z?",
-    r"[+-]?\d+(?:\.\d+)?%",
-    r"\d+(?:\.\d+)? ?(?:s|h|d|min)\b",
-]
-
-
-def bare_counts(line: str) -> list[str]:
-    """Numbers on a line that are not part of a rate, a duration, a time or a ref."""
-    rest = line
-    for pat in _ALLOWED:
-        rest = re.sub(pat, " ", rest)
-    return re.findall(r"\d[\d,]*", rest)
+bare_counts = A.bare_counts
 
 
 def test_the_checker_catches_raw_cross_source_counts():
@@ -208,7 +185,7 @@ def test_parse_window():
 def test_coverage_clamps_both_sides_to_the_kept_frames():
     w = A.parse_window("24h", None, now=NOW)
     c = w.covered(NOW - timedelta(hours=60))  # 72 h retention: 36 h of baseline, not 7 days
-    assert c.start == w.start and c.base_seconds == 36 * 3600 and c.k_base == 2 and c.k_cur == 1
+    assert c.start == w.start and c.base_seconds == 36 * 3600 and c.k_base == 3 and c.k_cur == 1
     c = A.parse_window("7d", None, now=NOW).covered(NOW - timedelta(hours=72))
     assert c.seconds == 72 * 3600 and c.base_seconds == 0 and c.k_cur == 3
 

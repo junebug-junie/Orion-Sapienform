@@ -229,6 +229,16 @@
           "source": "orion/dig/__main__.py:cmd_days; orion/dig/days.py"
         },
         {
+          "id": "attention-rates",
+          "title": "What you paid attention to",
+          "description": "Orion reads how their attention treated each source, as rates against that source's own activity: how often it won when eligible, how often it was eligible for its own events, why it was not attended, how often nothing won, and the drift. Never raw winner counts: the world fires rarely by nature.",
+          "message": "Please look at what you paid attention to today. Was it fair to the world, given how often each source was active?",
+          "hint": "(dig: `python -P -m orion.dig attention [24h|7d]`)",
+          "keywords": ["attention", "salience", "fair", "world-first", "eligible", "rest", "drift"],
+          "covers": {"dig": ["attention"]},
+          "source": "orion/dig/__main__.py:cmd_attention; orion/dig/attention.py"
+        },
+        {
           "id": "organs",
           "title": "What each organ did",
           "description": "Orion reads their daily organ roundup for a day: for each organ, what it did (counts), its most salient experiences quoted with refs, what it read and cited from other organs, who cited it, and where it went quiet against its usual day. Then the day's experience use rate. Every line is a count, a quote or a ref.",

@@ -39,6 +39,9 @@ CORE_PAGES_SQL = (
     "WHERE concept_id IN ('page:juniper', 'page:anchor')"
 )
 # Privacy, not serving: retired, superseded, rejected and removed rows stay guarded too.
+# Bare table names on purpose (issue #3567): the governor reads as orion_readonly, whose search_path
+# is (orion_scope, public), so memory_crystallizations resolves to the AI-Town-filtered view
+# (scripts/sql/scope_orion_readonly_off_aitown.sql). AI Town stances are therefore not guarded there.
 GUARD_MEMORY_SQL = (
     "SELECT 'episode_memory:' || memory_id::text AS source, statement AS text FROM episode_memory "
     "UNION ALL SELECT 'stance:' || crystallization_id::text, summary FROM memory_crystallizations "

@@ -143,8 +143,11 @@ class FinalizeReflectionV1(...):
   placeholder-length (`< 12` chars) `done_when`, before the cap. D1 can read `done_when` to
   know what to check when it settles a promise.
 - **Force (added 2026-11-16, same rerun):** each item also carries `force`, the line's speech
-  act (Searle's illocutionary point): `commits` (binds Orion to a future act; offers
-  included), `reports` (an act already done this reply), `predicts`, `suggests`, `wishes`.
+  act (Searle's illocutionary point): `commits` (binds Orion to a future act; an offer's
+  speech act is also labelled `commits`, so the gate keeps it as a stored item with
+  `offer: true`, but it is not a promise and opens no ledger act until Juniper accepts it:
+  Juniper's answer 1 and amendment 4 are authoritative), `reports` (an act already done this
+  reply), `predicts`, `suggests`, `wishes`.
   The gate keeps only `commits` (rule 0a), before the cap, and drops a missing force. On
   the dev window the completion rule alone left recommendations, wishes and reports of done
   acts, which the doer rule cannot see because Orion is their subject.
@@ -367,9 +370,18 @@ this patch builds, or a default that waits on Juniper (marked **needs-juniper**)
 3. **Recall floor for the shadow-to-live gate.** Proposed default: live goes ahead only when pooled
    recall is at least 0.7 on at least 40 hand-found promises, alongside precision at least 0.8 on at
    least 60 labelled items. Recall needs its own hand-found set: the blinded sheet samples only what
-   the finder stored, so it cannot see misses. #3531 builds that set by reading 150 judged Juniper
-   turns blind and marking every promise, then matching by key as the replay eval already does.
+   the finder stored, so it cannot see misses. #3531 builds that set by reading judged Juniper turns
+   blind and marking every promise, then matching by key as the replay eval already does.
    **needs-juniper** (the floor and the n).
+   *Arithmetic corrected 2026-11-17 (Orion's second review):* the first draft said 150 turns. At the
+   replay's rate of real promises (44 over 296 turns, offers included, 0.15 per turn) 150 turns hold
+   about 22, so 40 needs about 270 turns read blind. Live there are about 5.8 judged Juniper turns a
+   day (28 days to 2026-11-17), so live turns alone reach 270 in about 47 days; the blind read may
+   include older turns (re-read blind, the finder replayed on them). The same arithmetic applies to
+   precision: at about 0.11 stored items per judged turn (firm 0.08 plus offers), 60 live items take
+   about 3 months, not 2 weeks. The 296-turn "pooled recall" (35/44) is not blind recall: its
+   denominator holds only promises some finder run found, so a promise every run missed is invisible.
+   #3531 carries the corrected plan.
 4. **Offers.** Restored, and enforced in the ledger, not the prompt. `force: commits` still labels an
    offer's speech act (an offer does bind Orion once accepted), but an item with `offer: true` opens
    no act (`plan_promise_events`, `offers_not_opened`). The next judged turn of the same session sees
@@ -408,7 +420,13 @@ this patch builds, or a default that waits on Juniper (marked **needs-juniper**)
 9. **Guard baseline.** Re-based on the replay of the deployed finder, judged turns only: 23 firm
    promises over 289 judged turns = 0.080 per judged turn (dev 15/179, held-out 0/86 and 8/24). The
    guard counts firm non-offer items per judged Juniper turn (judge model pass; quick-gate turns are
-   not judged and are reported apart). Red above 2x, as before.
+   not judged and are reported apart). Red above 2x, as before. *Frozen 2026-11-17 (Orion's second
+   review):* this baseline was set from replay data before any live promise act existed, and it stays
+   23/289 for the whole shadow period (pinned by `tests/test_report_promise_ledger.py`); it is never
+   re-based on shadow data. Because the slices are uneven (0/86 to 8/24), the report prints a 90%
+   Poisson score interval on the live rate beside the ratio (a turn can hold more than one promise, so
+   the rate is a count rate, not a proportion). Whether red should need the interval, not the point
+   ratio, to clear 2x is a rule change for Juniper (#3531).
 10. **Keep evidence.** Every keep records its kind in the close note (`kept_in:<corr> evidence=reply`),
     and the report splits keeps by kind. In v1 the only producer is the judge reading a reply to
     Juniper. A Prime carry run (`intention.carry`) that delivered something for the promise does NOT
@@ -435,3 +453,30 @@ this patch builds, or a default that waits on Juniper (marked **needs-juniper**)
   `promise_ledger corr=... opened=1` log line; a later `promise_view corr=... open_shown=1`; a close
   with `evidence=reply` or a `void`/`expired` close at 72 h; `scripts/report_promise_ledger.py`
   shows them.
+
+## Amendments (2026-11-17): Orion's second review (PR #3561 and #3532 threads)
+
+Built in this patch (fix/promise-ledger-orion-review):
+
+- **One Hub line per Juniper turn.** `promise_ledger corr=... outcome=<found_nothing|nothing_opened|acted|skipped>`
+  with every count (`items`, `opened`, `offers_not_opened`, `skipped_no_force`, `repeats_open`, ...);
+  a skipped turn names its reason (`no_reflection`, `not_hub_orion`, `unsolicited`; `flag_off`,
+  `no_bus` and `no_view` are defensive, since Hub only calls the ledger on a Juniper turn with the
+  flags on and a view). The `promise_view` line also logs on every read, empty, failed
+  (`outcome=unread`) or not. A Juniper turn with neither line means the ledger never ran for it.
+- **A promise said again word for word, while it is open, opens no second act** (`repeats_open`;
+  normalized quote equal to an open promise the judge was shown, and at least 40 characters, so a short
+  generic line on a new topic still opens; the log names the matched act ids). A reworded repeat is
+  not caught.
+- **Report:** the keep-rate line names its kept and expired counts, and void and un-closeable beside
+  them; the act ids of expired promises with a carry reply are listed; the guard prints a 90% Poisson
+  interval and the baseline is frozen (amendment 9). The guard counts only judged turns from
+  2026-11-16 18:05Z, when the governor went live with the #3532 rules (`FINDER_LIVE_AT`): before that
+  no turn could store a firm item, and the 28-day window held 172 such turns that pulled the rate to 0.
+- **Offer wording** in D1 corrected: Juniper's answer 1 and amendment 4 are authoritative; an
+  unaccepted offer never opens an act (`test_unaccepted_offer_never_opens_and_accepted_offer_opens_on_the_earlier_turn`).
+
+Not built (tickets): the not-due state for conditional promises and promises a chat reply cannot show
+kept; the go-live gate criteria (recall/precision n, lower bound, side posterior, Prime close path);
+the promise index drifting if a turn's run artifact is ever re-published. See #3531 and the issues
+named in the PR report.

@@ -105,6 +105,21 @@ class SaveStore:
         if hashlib.sha256(state).hexdigest() != meta['state_sha256']: raise ValueError('save_corrupt')
         return meta, state
 
+    # Cartridge save memory (battery) for one game: one file, newest wins, never pruned.
+    def read_battery(self, game_id):
+        path = self._dir(game_id) / 'battery.srm'
+        try: return path.read_bytes() if path.is_file() else None
+        except OSError: raise ValueError('battery_io_failed')
+
+    def write_battery(self, game_id, data):
+        if not available(self.root): raise ValueError('saves_unavailable')
+        directory = self._dir(game_id)
+        try:
+            directory.mkdir(mode=0o700, exist_ok=True)
+            tmp = directory / '.battery.srm.tmp'
+            tmp.write_bytes(data); tmp.replace(directory / 'battery.srm')
+        except OSError: raise ValueError('battery_io_failed')
+
     def prune(self, game_id):
         directory = self._dir(game_id)
         keep = self.list(game_id)

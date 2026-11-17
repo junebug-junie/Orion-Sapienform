@@ -64,10 +64,13 @@ class CoreProbe:
     overrides: dict = {}
     _scratch = None
 
-    def __init__(self, core: Path, rom: Path, options=None, scratch=None):
+    def __init__(self, core: Path, rom: Path, options=None, scratch=None, warm_restore=False):
         """options: core option overrides, applied over each declared default.
         scratch: a private writable directory, given only to cores that need a
-        system/save directory and a log callback (N64); other cores keep refusing both."""
+        system/save directory and a log callback (N64); other cores keep refusing both.
+        warm_restore: the core refuses retro_unserialize until one frame has run (N64)."""
+        self.warm_restore = warm_restore
+        self.frames_run = 0
         core, rom = core.resolve(strict=True), rom.resolve(strict=True)
         if rom.suffix.lower() not in {".nes", ".sfc", ".smc", ".n64", ".z64", ".v64"}:
             raise ValueError("only NES/SNES/N64 content is supported")
@@ -228,14 +231,19 @@ class CoreProbe:
                                  for a in axes):
             raise ValueError("invalid analog axes")
         self.buttons = (p1, p2); self.axes = tuple(tuple(a) for a in axes)
-        self.lib.retro_run()
+        self.lib.retro_run(); self.frames_run += 1
         if self.error:
             raise RuntimeError(self.error)
         return self.frame_hash
 
+    def _warm(self):
+        if self.warm_restore and not self.frames_run:
+            self.step()  # Mupen64Plus-Next starts its emulation thread on the first frame
+
     def snapshot(self):
         if not self.loaded:
             raise RuntimeError("core is closed")
+        self._warm()  # live 2026-11-17: N64 serialize also fails before the first frame
         size = self.lib.retro_serialize_size()
         if not 0 < size <= 64 * 1024 * 1024:
             raise ValueError("unsupported save-state size")
@@ -249,11 +257,37 @@ class CoreProbe:
             raise RuntimeError("core is closed")
         if len(state) != self.lib.retro_serialize_size():
             raise ValueError("incompatible save-state size")
+        self._warm()
         buffer = C.create_string_buffer(state)
         if not self.lib.retro_unserialize(buffer, len(state)):
             raise RuntimeError("restore failed")
         self.buttons = (0, 0); self.axes = ((0, 0, 0, 0), (0, 0, 0, 0))
         self.frame_hash = None
+
+    def _save_ram(self):
+        data, size = getattr(self.lib, "retro_get_memory_data", None), getattr(self.lib, "retro_get_memory_size", None)
+        if data is None or size is None:
+            return None
+        data.restype, data.argtypes = C.c_void_p, [C.c_uint]
+        size.restype, size.argtypes = C.c_size_t, [C.c_uint]
+        size, address = size(0), data(0)  # RETRO_MEMORY_SAVE_RAM (cartridge battery)
+        if not (address and 0 < size <= 4 * 1024 * 1024):
+            return None
+        return (C.c_uint8 * size).from_address(address)
+
+    def save_ram(self):
+        """A copy of the cartridge save memory, or None when the core exposes none."""
+        if not self.loaded:
+            raise RuntimeError("core is closed")
+        memory = self._save_ram()
+        return None if memory is None else bytes(memory)
+
+    def load_save_ram(self, data):
+        """Write cartridge save memory before the game reads it (after load, before play)."""
+        memory = self._save_ram() if self.loaded else None
+        if memory is None or len(data) != len(memory):
+            raise ValueError("incompatible save memory")
+        C.memmove(C.addressof(memory), bytes(data), len(data))
 
     def close(self):
         if self.loaded:

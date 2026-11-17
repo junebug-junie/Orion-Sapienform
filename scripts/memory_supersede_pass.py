@@ -393,7 +393,7 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
         print(f"manifest NOT written to {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
-def degraded_pair_ok(pair: dict[str, Any]) -> bool:
+def found_with_dense(pair: dict[str, Any]) -> bool:
     """True when the pair was found with a meaning-index cosine. Files from before #3659 carry no
     ``dense_on``: their ``dense`` value decides (None = found by words alone)."""
     if "dense_on" in pair:
@@ -419,14 +419,16 @@ async def cmd_apply(args: argparse.Namespace) -> int:
     if not args.yes:
         raise SystemExit("apply writes to the live database: re-run with --yes after Juniper reviewed the pairs")
     pairs = [json.loads(line) for line in Path(args.pairs).read_text(encoding="utf-8").splitlines() if line.strip()]
-    no_dense = [p for p in pairs if not degraded_pair_ok(p)]
+    only, exclude = _pair_set(args.only), _pair_set(args.exclude)
+    pairs = [p for p in pairs if not ((only and (p["old_id"], p["new_id"]) not in only)
+                                      or (p["old_id"], p["new_id"]) in exclude)]
+    no_dense = [p for p in pairs if not found_with_dense(p)]
     if no_dense and not args.allow_no_dense:
         # Issue #3659: a pair found without the meaning index (word overlap only) is never applied
-        # unless someone says so on purpose for this run.
+        # unless someone says so on purpose for this run (or --exclude drops it).
         raise SystemExit(f"{len(no_dense)} pair(s) in {args.pairs} were found without the meaning index "
-                         "(dense off); refusing. Re-run dry-run with the index up, or pass --allow-no-dense "
-                         "after reviewing those pairs by hand.")
-    only, exclude = _pair_set(args.only), _pair_set(args.exclude)
+                         "(dense off); refusing. Re-run dry-run with the index up, --exclude them, or pass "
+                         "--allow-no-dense after reviewing those pairs by hand.")
     out = private_dir(Path(args.pairs).parent)
     log = out / "applied.log"
     from orion.memory.episode.supersede import superseded_event_id

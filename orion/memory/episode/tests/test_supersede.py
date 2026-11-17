@@ -183,6 +183,15 @@ def test_a_malformed_answer_anywhere_holds_every_link():
     assert plan["refused_because"] == [s.REFUSED_CHECK_ERRORS] and s.links_to_apply(plan) == []
 
 
+def test_a_malformed_second_answer_holds_every_link():
+    other_old = row("o2", "Biscuit sleeps on the green sofa.", refs=("pet:biscuit",))
+    ask, _ = answers(YES, BOTH_FALSE, YES, "not json")
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD, other_old), ask,
+                                           dense=_dense({"old": 0.75, "o2": 0.7}), apply_gate=OPEN))
+    assert plan["check_errors"] == 1 and s.links_to_apply(plan) == []
+    assert [l["old_id"] for l in plan["held_links"]] == ["old"]
+
+
 def test_a_closed_eval_gate_proposes_but_holds():
     ask, seen = answers(YES, BOTH_FALSE)
     plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=_dense({"old": 0.75}),

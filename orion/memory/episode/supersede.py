@@ -351,6 +351,8 @@ def parse_both_true(text: str) -> tuple[Optional[bool], str]:
     return _yes(data.get("both_true")), " ".join(str(data.get("reason") or "").split())[:400]
 
 
+BAD_SECOND_ANSWER = "bad_answer"
+
 AskFn = Callable[[str], Awaitable[str]]
 """prompt -> the model's raw answer text (raises on a failed call)."""
 
@@ -402,6 +404,8 @@ async def run_check(old: MemoryRow, new: MemoryRow, ask: "AskFn",
         both, why = parse_both_true(await ask(build_both_true_prompt(old, new)))
     except Exception as exc:  # noqa: BLE001
         return replace(verdict, both_true=None, both_true_reason=f"call_failed:{type(exc).__name__}")
+    if both is None:  # an unparseable second answer is a failed check, not a quiet "no link"
+        return replace(verdict, both_true=None, both_true_reason=BAD_SECOND_ANSWER)
     return replace(verdict, both_true=both, both_true_reason=why)
 
 
@@ -568,6 +572,11 @@ REFUSED_CHECK_ERRORS = "check_errors"            # a model call failed or an ans
 REFUSED_EVAL_GATE = "eval_gate"                  # no passing precision eval for this check version
 
 
+def check_failed(v: CheckVerdict) -> bool:
+    """A model call failed or an answer (either question) did not parse."""
+    return bool(v.error) or v.both_true_reason.startswith("call_failed") or v.both_true_reason == BAD_SECOND_ANSWER
+
+
 async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: AskFn, *,
                             dense: Optional[DenseFn] = None, max_checks: int = 12,
                             excluded: frozenset[tuple[str, str]] = frozenset(),
@@ -602,8 +611,7 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
             found, records = await check_pairs(new, candidates_for(new, corpus, dense=scores, excluded=excluded),
                                                ask, budget=budget)
             asked += len(records)
-            refused += sum(1 for r in records if r.verdict.error
-                           or r.verdict.both_true_reason.startswith("call_failed"))
+            refused += sum(1 for r in records if check_failed(r.verdict))
             links.extend(found)
     if refused:
         reasons.append(REFUSED_CHECK_ERRORS)
@@ -631,7 +639,7 @@ def links_to_apply(plan: Optional[Mapping[str, Any]]) -> list[dict[str, Any]]:
 # the eval's migration; until it exists (or while its latest run for this check version did not
 # pass), write time proposes only.
 EVAL_GATE_SQL = ("SELECT passed, check_version, finished_at FROM memory_supersede_eval_run "
-                 "WHERE check_version = %s ORDER BY finished_at DESC LIMIT 1")
+                 "WHERE check_version = %s AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 1")
 
 
 async def eval_gate(conn: Any, *, check_version: str = CHECK_VERSION) -> tuple[bool, str]:

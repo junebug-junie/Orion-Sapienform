@@ -62,5 +62,10 @@ def test_apply_refuses_pairs_found_without_the_meaning_index(tmp_path):
                               dsn="postgresql://nobody@127.0.0.1:1/none", no_manifest=True, watch=[])
     with pytest.raises(SystemExit, match="without the meaning index"):
         asyncio.run(P.cmd_apply(args))
-    assert P.degraded_pair_ok({"dense": 0.7}) and not P.degraded_pair_ok({"dense": None})
-    assert not P.degraded_pair_ok({"dense": 0.7, "dense_on": False})
+    # --exclude drops the word-only pair: then the refusal does not fire (it reaches the DB connect).
+    args.exclude = "o1:n1"
+    with pytest.raises(Exception) as got:
+        asyncio.run(P.cmd_apply(args))
+    assert "meaning index" not in str(got.value)
+    assert P.found_with_dense({"dense": 0.7}) and not P.found_with_dense({"dense": None})
+    assert not P.found_with_dense({"dense": 0.7, "dense_on": False})

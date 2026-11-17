@@ -264,3 +264,50 @@ def test_runner_profiles_match_cortex_exec():
             found[target.id] = ast.literal_eval(node.value)
     assert found["CONTINUITY_PROFILE"] == runner.CONTINUITY_PROFILE
     assert found["PROFILE_FOR_INTENT"] == runner.PROFILE_FOR_INTENT
+
+
+def test_runner_resume_keeps_good_turns_and_redoes_failed_ones(monkeypatch):
+    """A Hub restart mid-run left failed turns; --resume redoes only those and judges the rest."""
+    import contextlib
+
+    import orion.evals.leased_llm as leased
+
+    _, items, _ = _fixture()
+    items = [it for it in items if it.qid in ("fact_city", "abstain_volcano", "event_kiln")]
+    texts = {it.qid: it.question for it in items}
+    asked = []
+
+    def fake_ask(base, text, timeout):
+        asked.append(text)
+        return {"text": "I have no record of a volcano tour.", "correlation_id": "c-new"}
+
+    class _Lane:
+        def chat(self, body, timeout_sec):
+            return {"choices": [{"message": {"content": '{"label": "dont_know"}'}}]}
+
+    @contextlib.contextmanager
+    def fake_lane(*a, **k):
+        yield _Lane()
+
+    class _Pool:
+        async def fetchrow(self, sql, *args):
+            return None
+
+        async def fetch(self, sql, *args):
+            return []
+
+    monkeypatch.setattr(runner, "ask_hub", fake_ask)
+    monkeypatch.setattr(runner, "wait_for_hub", lambda *a, **k: None)
+    monkeypatch.setattr(leased, "operator_lane_sync", fake_lane)
+    prior = [
+        {"qid": "fact_city", "reply": "Lakeport.", "correlation_id": "c1", "error": None, "judge_label": "correct"},
+        {"qid": "event_kiln", "reply": "Not sure.", "correlation_id": "c2", "error": None},           # unjudged
+        {"qid": "abstain_volcano", "reply": "", "correlation_id": None, "error": "ConnectionError: refused"},
+    ]
+    args = Namespace(hub_url="http://hub", hub_wait=1.0, turn_timeout=1.0, judge_lane="agent",
+                     bus_url="redis://fake", prior_turns=prior)
+    report, turns = asyncio.run(runner.run_answers(items, texts, {}, _Pool(), args))
+    assert asked == ["How was the volcano tour?"]                 # only the failed turn went to Hub
+    out = {t["qid"]: t["outcome"] for t in turns}
+    assert out == {"fact_city": "correct", "event_kiln": "dont_know", "abstain_volcano": "correct"}
+    assert report["measured"] == 3 and report["not_measured"] == []

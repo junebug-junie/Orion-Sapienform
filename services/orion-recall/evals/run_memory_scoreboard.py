@@ -221,6 +221,22 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
 
 # ---------------------------------------------------------------- answer
 
+def wait_for_hub(base_url: str, max_wait_sec: float, poll_sec: float = 10.0) -> None:
+    """Return once Hub's /health answers 200; raise after ``max_wait_sec``."""
+    import requests
+
+    deadline = time.monotonic() + max(0.0, max_wait_sec)
+    while True:
+        try:
+            if requests.get(base_url.rstrip("/") + "/health", timeout=5).status_code == 200:
+                return
+        except requests.RequestException:
+            pass
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"Hub not healthy after {max_wait_sec:.0f}s")
+        time.sleep(poll_sec)
+
+
 def ask_hub(base_url: str, text: str, timeout_sec: float) -> Dict[str, Any]:
     import requests
 
@@ -241,11 +257,21 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
                       args: argparse.Namespace) -> tuple[Dict[str, Any], List[Dict[str, Any]]]:
     page = await pool.fetchrow(PAGE_SQL)
     pids = page_refs(page["content"] if page else None)   # the core page rides in every chat prompt
+    prior = {t["qid"]: t for t in (getattr(args, "prior_turns", None) or [])}
     turns: List[Dict[str, Any]] = []
     for n, it in enumerate(items, 1):
+        old = prior.get(it.qid)
+        if old and not old.get("error") and (old.get("reply") or "").strip():
+            # --resume: a turn that already has a reply is kept (and its judgment, if any).
+            turns.append(dict(old))
+            print(f"  [{n}/{len(items)}] {it.qid}: kept from the resumed run", flush=True)
+            continue
         t0 = time.monotonic()
         turn: Dict[str, Any] = {"qid": it.qid, "reply": "", "correlation_id": None, "error": None}
         try:
+            # A Hub restart mid-run (seen live 2026-11-17: 49 turns lost to connection refused)
+            # waits for /health instead of failing every remaining item.
+            await asyncio.to_thread(wait_for_hub, args.hub_url, args.hub_wait)
             body = await asyncio.to_thread(ask_hub, args.hub_url, texts[it.qid], args.turn_timeout)
             turn["reply"] = str(body.get("text") or "").strip()
             turn["correlation_id"] = body.get("correlation_id")
@@ -289,6 +315,9 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
                 it = by_qid[turn["qid"]]
                 if turn["error"]:
                     outcomes[it.qid] = "error"
+                    continue
+                if turn.get("judge_label"):
+                    outcomes[it.qid] = outcome_for(it, turn["judge_label"])
                     continue
                 prompt = build_judge_prompt(it, texts[it.qid], turn["reply"],
                                             [records[t] for t in it.targets if records.get(t)])
@@ -360,6 +389,12 @@ async def _main(args: argparse.Namespace) -> int:
             print(f"WARNING: {len(missing)} bank record id(s) no longer exist: {missing[:5]}", flush=True)
         phases = set(args.phases.split(","))
         retrieval = answers = None
+        args.prior_turns = []
+        if args.resume:
+            prev = json.loads(Path(args.resume).expanduser().read_text(encoding="utf-8"))
+            args.prior_turns = prev.get("turns") or []
+            if "retrieval" not in phases:
+                retrieval = prev.get("retrieval")   # keep the resumed run's retrieval score
         turns: List[Dict[str, Any]] = []
         if "retrieval" in phases:
             print(f"retrieval: {len(items)} items (phase-3 intent {args.phase3_intent})", flush=True)
@@ -380,8 +415,10 @@ async def _main(args: argparse.Namespace) -> int:
     _write_private(out_dir / f"{run_date}.json", json.dumps(full, indent=1, default=str))
     _write_private(out_dir / f"{run_date}.md", table + "\n")
     hist = out_dir / "history.jsonl"
-    prior = hist.read_text(encoding="utf-8") if hist.exists() else ""
-    _write_private(hist, prior + json.dumps(summary_line(run_date, retrieval, answers)) + "\n")
+    # One line per date: a resumed or repeated run replaces that date's line.
+    kept = [ln for ln in (hist.read_text(encoding="utf-8").splitlines() if hist.exists() else [])
+            if ln.strip() and json.loads(ln).get("date") != run_date]
+    _write_private(hist, "".join(ln + "\n" for ln in kept) + json.dumps(summary_line(run_date, retrieval, answers)) + "\n")
     print("\n" + table)
     print(f"\nwritten: {out_dir / (run_date + '.json')} and .md (mode 600)")
     return 0
@@ -403,6 +440,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--date", default=None, help="run date label (default: today, UTC)")
     ap.add_argument("--only", default=None, help="comma-separated qids")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--resume", default=None,
+                    help="earlier run JSON: keep its replies and judgments, redo failed turns and unjudged items")
+    ap.add_argument("--hub-wait", type=float, default=900.0, help="seconds to wait for Hub /health before a turn")
     args = ap.parse_args(argv)
     if not args.bus_url:
         print("ORION_BUS_URL is not set (redis://<bus-host>:6379/0): recall and the judge's GPU seat go over the real bus.")

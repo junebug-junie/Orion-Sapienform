@@ -179,6 +179,16 @@
       "blurb": "Orion's history in their own code: merged PRs, past checkouts, and daily reminiscence.",
       "entries": [
         {
+          "id": "memory-know",
+          "title": "Do you remember...?",
+          "description": "Orion searches their own lived memories (what they distilled from chats, Juniper's weightiest messages, facts about people) with the same search recall uses for chat. Strong matches cleared recall's bar; weak ones only share words. A search that could not run is never reported as \"no memory\".",
+          "message": "Do you remember what I told you about el Coco? Please look it up before you answer.",
+          "hint": "(dig: `python -P -m orion.dig know <words>`)",
+          "keywords": ["memory", "remember", "recall", "forgot", "lived", "episode"],
+          "covers": {"dig": ["know"]},
+          "source": "orion/dig/know.py; orion/dig/__main__.py:cmd_know; services/orion-recall/app/main.py:/lived/know"
+        },
+        {
           "id": "history-recent",
           "title": "What changed lately?",
           "description": "Orion reads the pull requests merged and commits made in the last few days, and says which ones they have written notes about.",

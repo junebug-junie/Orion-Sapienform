@@ -40,6 +40,7 @@ Fixes #3628
 - `orion/dig/know.py`, `orion/dig/__main__.py`: the `know` command and its help line.
 - `orion/dig/brief.py`: the look-before-you-deny sentence (brief cap 520 -> 640 chars).
 - `services/orion-recall/README.md`: endpoint, statuses, a 14-day count query.
+- `services/orion-hub/static/catalog/orion-abilities.json`: a "Do you remember...?" entry for `know` (CI: every dig command needs one).
 - `services/orion-recall/evals/run_dig_know_bank_eval.py`: live eval over the host-local bank.
 - Tests: `services/orion-recall/tests/test_lived_know_and_status.py`, `evals/test_dig_know_bank_eval.py`, `orion/dig/tests/test_know_cmd.py`, updates to `tests/test_recall_telemetry_persist.py` and `orion/dig/tests/test_dig.py` (help cap 4000 -> 4250).
 - `.github/workflows/lived-memory-recall-tests.yml`: runs the new tests.

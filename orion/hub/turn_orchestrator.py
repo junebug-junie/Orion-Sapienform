@@ -724,6 +724,36 @@ def fetch_latest_outreach_provenance(
     return _impl(session_id, max_age_hours=max_age_hours)
 
 
+async def _situation_with_game_sitting(
+    situation_prompt_fragment: str | None,
+    bus: Any,
+    *,
+    settings: Any,
+    correlation_id: str | None = None,
+) -> str | None:
+    """Append one line when someone is playing on the Retro service right now (game company design,
+    patch 1; services/orion-hub/scripts/retro_sitting.py). The line says only what the controller's
+    input shows: the game, how long, and who only when the game page was told. Not part of the cached
+    situation brief: a sitting changes by the minute. Fail-open: never raise into the turn.
+
+    Runtime evidence: the "Play:" line in the motor prompt's Situation block, and this log line.
+    """
+    if not bool(getattr(settings, "HUB_RETRO_SITTING_ENABLED", True)):
+        return situation_prompt_fragment
+    try:
+        from scripts.retro_sitting import open_sitting_line
+
+        line = await open_sitting_line(bus)
+        if not line:
+            return situation_prompt_fragment
+        logger.info("game_sitting_line corr=%s chars=%d", correlation_id, len(line))
+        block = f"Play: {line}"
+        return f"{situation_prompt_fragment}\n{block}" if situation_prompt_fragment else block
+    except Exception:
+        logger.warning("game_sitting_inject_failed corr=%s", correlation_id, exc_info=True)
+        return situation_prompt_fragment
+
+
 async def _situation_with_outreach_provenance(
     situation_prompt_fragment: str | None,
     session_id: str | None,
@@ -1582,6 +1612,9 @@ async def execute_unified_turn(
         situation_prompt_fragment,
         session_id,
         correlation_id=correlation_id,
+    )
+    situation_prompt_fragment = await _situation_with_game_sitting(
+        situation_prompt_fragment, bus, settings=cfg, correlation_id=correlation_id
     )
     prime_block = await prime_task
     # Map builder statuses onto CockpitHopStatusV1 (no "empty" in the schema).

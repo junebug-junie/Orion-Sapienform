@@ -129,3 +129,132 @@ def test_recent_arcs_and_day_letter_carry_the_session() -> None:
     (day,) = [d for d in days if d.day_id == "2026-10-09"]
     rendered = render_closed_day_block(day)
     assert rendered is not None and "1 play" in rendered.text
+
+
+# --- a person's own sitting (game company design, patch 1): kind human_play --------------------------
+
+def sitting_row(sitting_id: str, start, minutes: float, **kw) -> dict:
+    """As services/orion-hub/scripts/retro_sitting.py play_row writes it."""
+    base = {"session_id": f"sitting:{sitting_id}", "retro_session_id": "retro-1", "lineage_id": None,
+            "game_id": "a-link-to-the-past", "game_title": "A Link to the Past", "kind": "human_play",
+            "control_basis": "human_input", "human_may_be_in_control": True, "played_together": False,
+            "human_share": None, "decisions": None, "predictions_met": 0, "predictions_unknown": None,
+            "rooms_new": None, "deaths": None, "memory_card_id": None, "player_stated": None,
+            "started_at": start, "ended_at": start + timedelta(minutes=minutes), "duration_sec": minutes * 60.0,
+            "summary": "Someone played A Link to the Past."}
+    base.update(kw)
+    return base
+
+
+def test_a_persons_sitting_is_a_play_arc_that_never_credits_orion() -> None:
+    e = S.retro_play(sitting_row("s1", at(0), 142))
+    assert e.subject_ref == "retro_sitting:s1" and e.source_ref == "sitting:s1"
+    assert e.label == "Someone played A Link to the Past for 2 h 22 min"
+    assert e.payload["duration_sec"] == 142 * 60.0 and e.payload["kind"] == "human_play"
+    told = S.retro_play(sitting_row("s2", at(0), 40, player_stated="juniper"))
+    assert told.label == "Juniper played A Link to the Past for 40 min"
+    # The label does not say "Orion did not play": a short handoff to Orion can sit inside a sitting
+    # (1 of 32 long sittings in the journals), and the label must never state a thing that can be false.
+    assert "Orion" not in e.label and "Orion" not in told.label
+    # Only the page's own word makes it Juniper: anything else stays "Someone".
+    assert S.retro_play_label(sitting_row("s3", at(0), 5, player_stated="guest")).startswith("Someone played")
+    assert S.retro_play_label(sitting_row("s4", at(0), 5, player_stated="a name from a camera")).startswith("Someone played")
+    # duration falls back to the row's own times; an Orion session keeps its old subject and label
+    assert S.retro_play_seconds(sitting_row("s5", at(0), 7, duration_sec=None)) == 420.0
+    assert S.retro_play(row("sess-1", at(0), 22, SOLO)).subject_ref == "retro_session:sess-1"
+    assert S.retro_play(row("sess-1", at(0), 22, SOLO)).payload["duration_sec"] == 22 * 60.0
+
+
+def test_no_reader_words_a_persons_sitting_as_orion_playing() -> None:
+    now = at(200)
+    rows = [row("sess-1", at(0), 22, SOLO), sitting_row("s1", at(30), 142, player_stated="juniper")]
+    frame = _frame(rows, now)
+    label = "Juniper played A Link to the Past for 2 h 22 min"
+    cue = project_stance_cue(frame, now)
+    assert f"On your Retro service: {label} (09:30 to 11:52) [arc:" in cue.text
+    # Review finding: the later sitting must not push Orion's own play of the day out of the cue.
+    assert "Played The Legend of Zelda solo, 14 of 31 predictions met (09:00 to 09:22) [arc:" in cue.text
+    assert "Played Juniper" not in cue.text and "Played Someone" not in cue.text
+    assert len(cue.arc_ids) == 2 and len(cue.text) <= STANCE_CUE_MAX_CHARS
+    block = project_recent_arcs(frame, now)
+    assert f"(2 h 22 min) {label} [arc:" in block.text and f"played {label}" not in block.text
+    assert "played The Legend of Zelda solo" in block.text    # Orion's own session is still Orion's
+    state = _state(rows, at(60 * 24))
+    _, days = drain_closed_days(state)
+    (day,) = [d for d in days if d.day_id == "2026-10-09"]
+    text = render_closed_day_block(day).text
+    assert "2 play" in text
+    assert f"Play on the Retro service: 09:00 The Legend of Zelda solo, 14 of 31 predictions met [arc:" in text
+    assert f"; 09:30 {label} [arc:" in text
+
+
+def test_sitting_minutes_is_the_salience_magnitude_of_play() -> None:
+    from orion.temporal_self.now import MAGNITUDE_RULES
+
+    rule = MAGNITUDE_RULES["sitting_minutes"]
+    assert rule({"payload": {"duration_sec": 8520.0}}) == 142.0
+    assert rule({"payload": {"duration_sec": 0.0}}) == 0.0          # rest is a true zero
+    for nothing in ({}, {"payload": None}, {"payload": {}}, {"payload": {"duration_sec": None}},
+                    {"payload": {"duration_sec": "long"}}):
+        assert rule(nothing) is None                                 # not recorded is not zero
+
+
+def test_a_busy_day_keeps_orions_own_play_and_a_persons_sitting_both_in_the_frame() -> None:
+    """Review finding: the frame pinned only the single latest play arc, so a person's sitting took
+    the pin from Orion's own session (and the reverse)."""
+    from orion.schemas.temporal_self import ARCS_IN_FRAME_CAP
+    from orion.temporal_self.tests.fixtures import ev
+
+    later = [ev("curiosity_run", f"r{i}", at(200 + i), ended=at(200 + i) + timedelta(seconds=30),
+                subject=f"curiosity:{i}", label="probe") for i in range(ARCS_IN_FRAME_CAP + 5)]
+    now = at(200 + ARCS_IN_FRAME_CAP + 10)
+    plays = S.adapt("retro_play", [row("sess-1", at(0), 22, SOLO), sitting_row("s1", at(30), 142)])
+    f = build_frame(advance_clock(fold(initial_state(), events=plays + later), now), now)
+    assert len(f.arcs_today) == ARCS_IN_FRAME_CAP
+    assert sorted(a.subject_ref for a in f.arcs_today if a.kind == "play") == ["retro_session:sess-1", "retro_sitting:s1"]
+
+
+def test_a_play_row_written_after_its_end_is_ordered_by_when_it_was_written() -> None:
+    """Review finding: a sitting ends at its last button press and its row is written 5 minutes later.
+    Read by ended_at alone, a row that landed after the chronicle's read lag was stored late and never
+    folded. The adapter now carries the write time and the reducer orders by it."""
+    from orion.temporal_self.arcs import AVAILABLE_AT_KINDS, event_available_at
+
+    assert "retro_play" in AVAILABLE_AT_KINDS
+    ended = at(142)
+    late = S.retro_play(sitting_row("s1", at(0), 142, created_at=ended + timedelta(seconds=312)))
+    assert late.ended_at == ended and event_available_at(late) == ended + timedelta(seconds=312)
+    assert late.occurred_at == at(0)                                   # the arc still spans the play itself
+    plain = S.retro_play(row("sess-1", at(0), 22, SOLO))               # no write time on the row: its end
+    assert event_available_at(plain) == at(22)
+    # a watermark that passed the sitting's end before the row existed no longer hides it
+    state = fold(initial_state(), events=[S.retro_play(row("sess-9", ended + timedelta(seconds=60), 1, SOLO))])
+    state = fold(state, events=[late])                                  # read one step later, as the chronicle would
+    assert state.skipped_today == 0
+    now = ended + timedelta(seconds=600)
+    frame = build_frame(advance_clock(state, now), now)
+    assert {"retro_sitting:s1", "retro_session:sess-9"} <= {a.subject_ref for a in frame.arcs_today if a.kind == "play"}
+    # the same row with no write time is behind the watermark: counted, never folded (the bug, kept as a contrast)
+    blind = S.retro_play(sitting_row("s2", at(0), 142))
+    assert fold(fold(initial_state(), events=[S.retro_play(row("sess-9", ended + timedelta(seconds=60), 1, SOLO))]),
+                events=[blind]).skipped_today == 1
+
+
+def test_the_day_block_play_line_has_a_cap() -> None:
+    """Review finding: the play line listed every play arc of the day, with no item cap. On the real
+    closed day 2026-11-15 its four sittings made a 403-character line that pushed the conversation
+    threads line out of the block. Now: the longest two, in time order, after the conversation lines."""
+    from orion.temporal_self.day_block import PLAY_LINE_ITEMS
+
+    minutes = [10, 40, 142, 15]
+    rows = [sitting_row(f"s{i}", at(i * 150), m) for i, m in enumerate(minutes)]
+    _, days = drain_closed_days(_state(rows, at(60 * 24)))
+    (day,) = [d for d in days if d.day_id == "2026-10-09"]
+    block = render_closed_day_block(day)
+    (line,) = [l for l in block.text.split("\n") if l.startswith("Play on the Retro service")]
+    assert PLAY_LINE_ITEMS == 2 and line.startswith("Play on the Retro service (4 today, the 2 longest): ")
+    assert line.count("Someone played") == 2 and line.index("for 40 min") < line.index("for 2 h 22 min")
+    assert "for 10 min" not in line and "for 15 min" not in line and len(line) < 220
+    # among lines of its own priority it is the one the cap drops first, so it cannot evict a conversation line
+    tight = render_closed_day_block(day, max_chars=len(block.text) - 1).text
+    assert "Play on the Retro service" not in tight and "left out to fit" in tight

@@ -248,7 +248,9 @@ def _add_context(arc: TemporalSelfArcV1, event_id: str) -> None:
 # (final VISION_OFFICE_SESSIONS_SETTLE_SEC, 660 s, after the visit ended) and episode memories
 # (distilled 0.5 to 97 h after the moment they are about, 11-05 to 11-13; #3400). A memory is
 # ordered by when it was written and still binds by ``occurred_at``, the moment it is about.
-AVAILABLE_AT_KINDS = frozenset({"street_event", "office_session", "memory_episode"})
+# A play row of a person's sitting ends at the last button press and is written when the 5-minute
+# gap is noticed (orion-hub scripts/retro_sitting.py), or later by its recovery.
+AVAILABLE_AT_KINDS = frozenset({"street_event", "office_session", "memory_episode", "retro_play"})
 
 
 def event_available_at(e: TemporalSelfEventV1) -> datetime:

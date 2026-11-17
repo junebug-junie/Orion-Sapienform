@@ -8,7 +8,7 @@ HUB = Path(__file__).resolve().parents[2]
 def test_template_has_play_panel_and_current_asset():
     html = (HUB / 'templates/retro.html').read_text()
     for marker in ('id="play"', 'id="atlas"', 'id="leisure"', 'id="zgoal"', 'id="zprediction"',
-                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=17'):
+                   'id="verdicts"', 'id="takeover"', '/static/js/retro-panel.js?v=18'):
         assert marker in html, marker
 
 
@@ -175,3 +175,21 @@ console.log(JSON.stringify({keyboard,padded,snesStray,titles,n64Keys,snesKeys}))
     assert got['n64Keys'] == [True, True, True, False] and got['snesKeys'] == [False, False, True, True]
     assert got['titles'] == ['GoldenEye 007 (N64)', 'The Legend of Zelda: Ocarina of Time (N64)',
                              'Mario Kart 64 (N64)', 'Super Mario Kart (SNES)']
+
+
+def test_who_plays_question_is_inside_the_fullscreen_stage_and_wired():
+    # Game company patch 1: the page asks who plays, once per sitting; the server never guesses.
+    html = (HUB / 'templates/retro.html').read_text()
+    stage = html[html.index('id="stage"'):html.index('</canvas>')]
+    for marker in ('id="whoPlays" hidden', 'id="whoJuniper"', 'id="whoGuest"', 'id="whoLater"'):
+        assert marker in stage, marker                      # fullscreen shows only what is inside #stage
+    js = (HUB / 'static/js/retro-panel.js').read_text()
+    for marker in ("api('sitting')", "api('sitting/player',{player,sitting_id:asked})", "['whoJuniper','juniper']",
+                   "['whoGuest','guest']",
+                   # asked of the page that holds the controller, once per sitting, never after an answer
+                   "!(s && lease && !s.player_stated && s.sitting_id!==sittingAsked)",
+                   # "Not now" is an answer the page keeps, also across a reload
+                   "action('whoLater',async()=>settle(el('whoPlays').dataset.sitting));",
+                   "sessionStorage.setItem('retroSittingAsked',id)", "sessionStorage.getItem('retroSittingAsked')",
+                   "screen.focus();"):
+        assert marker in js, marker

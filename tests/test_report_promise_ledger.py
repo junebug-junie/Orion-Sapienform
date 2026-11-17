@@ -245,3 +245,34 @@ def test_judged_sql_qualifies_both_predicates_by_alias():
     with pytest.raises(ValueError):
         rpt.qualify("stage = 'x'", "k", ("seq",))
     assert rpt.qualify("raw = 'raw seq'", "k", ("raw",)) == "k.raw = 'raw seq'"
+
+
+def test_baseline_and_ceiling_print_on_the_clean_basis_too(monkeypatch, capsys):
+    # Orion's PR #3561 third-round question 2: the 2 coding-session turns out, beside the frozen numbers.
+    assert rpt.REPLAY_BASELINE_CLEAN == (21, 287) and rpt.KEEP_RATE_CEILING_CLEAN == (9, 21)
+    g = rpt.guard_summary([_turn("j", [FIRM])], min_judged=1)
+    assert (g["baseline_rate"], g["baseline_clean_rate"]) == (0.0796, 0.0732)
+    assert g["ratio_clean"] == round(1 / (21 / 287), 2) and g["red"] is True  # red still on the frozen basis
+    monkeypatch.setattr(rpt, "gather", lambda dsn, since: {"acts": [], "starts": [], "turns": [], "carry": {}})
+    assert rpt.main(["--dsn", "x"]) == 0
+    out = capsys.readouterr().out
+    assert "clean 0.43 9/21" in out and "[clean baseline 0.0732 (21/287 replay" in out
+
+
+def test_duplicate_window_pairs_counts_every_pair_the_rule_compares():
+    # Orion's PR #3598 third-round question 5: the number of same-session pairs within 72 h, before the
+    # similarity test. The live example (780e83f2 / 295b0ef5, 2 minutes apart) is one such pair, and the
+    # shipped rule does not flag it: its longest shared run is 11 characters and act/done_when differ.
+    float_up = {**FIRM, "quote": "I'll float it back up when you've had some sleep — or whenever you poke me first.",
+                "act": "float the ticket back up",
+                "done_when": "Orion brings up the GitHub ticket in a subsequent turn after Juniper has rested"}
+    abstain = {**FIRM, "quote": "I won't float anything back up while you're asleep",
+               "act": "not resurface open loops while user sleeps",
+               "done_when": "no new messages regarding open loops are sent during the user's sleep period"}
+    turns = [_sturn("c1", [float_up], at=T0), _sturn("c2", [abstain], at=T0 + timedelta(minutes=2)),
+             _sturn("c3", [FIRM], session="s2", at=T0), _sturn("c4", [FIRM], at=T0 + timedelta(hours=80))]
+    assert rpt.duplicate_window_pairs(turns) == 1
+    assert rpt.duplicate_candidates(turns) == []
+    out = rpt.report({"acts": [], "starts": [], "turns": [{**t, "created_at": rpt.FINDER_LIVE_AT + (t["created_at"] - T0)}
+                                                          for t in turns], "carry": {}})
+    assert out["duplicate_window_pairs"] == 1

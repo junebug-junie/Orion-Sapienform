@@ -85,11 +85,15 @@ one unguarded) and a system directory on the container tmpfs (`/tmp/n64`).
 
 Cartridge saves (in-game save slots, EEPROM, SRAM, flash, Controller Pak) are kept
 per game in `<saves>/<game_id>/battery.srm`. N64 save states do **not** include
-them (verified 2026-11-17: a restored state leaves SRAM blank). So the worker loads
-`battery.srm` before the first frame, writes it back when it changes (every 5 s)
-and at stop, and records `battery` evidence. A disk fault never stops the game.
+them (verified 2026-11-17), and restoring a state leaves cartridge memory as it was.
+So the worker loads `battery.srm` before the first frame, writes it back when it
+changes (every 5 s) and at a clean stop, and records `battery` evidence. A disk
+fault never stops the game; if an existing file cannot be loaded, writes stay off
+for that session so it is never overwritten. Up to 5 s of in-game saving can be lost
+if the session is killed rather than stopped.
 Server Save/Load states are ~16.8 MB (N64 saves may be up to 32 MiB). The core
-refuses a state until one frame has run, so the probe runs one frame first.
+refuses to save or restore a state until one frame has run, so the probe runs one
+frame first (after the battery is in place).
 
 Bring saves from another Mupen64Plus emulator (`.eep/.mpk/.sra/.fla`, and `.st*`
 states, raw or gzip) with `evals/import_n64_save.py`, run inside the image; see its

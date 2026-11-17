@@ -55,8 +55,9 @@ class Settings:
 
     def battery(self, system):
         """Persist cartridge save memory per game (<saves>/<game>/battery.srm). N64 save
-        states omit it (verified 2026-11-17: restore leaves SRAM blank), so without this
-        an in-game save is lost when the session ends."""
+        states omit it (verified 2026-11-17: a state restored into a fresh core leaves its
+        SRAM unformatted-blank, and a restore leaves existing SRAM untouched), so without
+        this an in-game save is lost when the session ends."""
         return system == 'n64'
 
     def save_limit(self, system):

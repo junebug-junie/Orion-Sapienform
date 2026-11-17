@@ -84,3 +84,29 @@ def test_import_overlays_each_region_at_the_core_offsets():
     assert image[0x800:0x20800] == b'\4' * 0x20000
     assert image[0x20800:0x28800] == b'\2' * 0x8000 and image[0x28800:] == b'\3' * 0x20000
     with pytest.raises(ValueError, match='at most'): mod.battery_image(base, {'eep': b'\0' * 0x801})
+
+
+@pytest.mark.parametrize('stored,action', [(None, 'load_failed'), (b'x' * 8, 'size_mismatch')])
+def test_an_unloadable_battery_is_never_overwritten(tmp_path, stored, action):
+    # Review 2026-11-17: a blank image must not replace a file that exists but was not loaded.
+    store, records = SaveStore(tmp_path), []
+    if stored: store.write_battery('oot', stored)
+    else:
+        store.read_battery = lambda game_id: (_ for _ in ()).throw(ValueError('battery_io_failed'))
+    core = FakeCore(); battery = Battery(core, store, 'oot', lambda *a, **k: records.append(k))
+    core.ram[0] = 9
+    battery.flush(force=True)
+    assert records[0]['action'] == action
+    if stored: assert SaveStore(tmp_path).read_battery('oot') == stored
+
+
+def test_warm_snapshot_runs_one_frame_first():
+    # Live 2026-11-17: N64 retro_serialize fails before the first frame too.
+    probe = CoreProbe.__new__(CoreProbe)
+    probe.loaded, probe.warm_restore, probe.frames_run = True, True, 0
+    calls = []
+    probe.step = lambda *a, **k: (calls.append('step'), setattr(probe, 'frames_run', 1))
+    probe.lib = type('L', (), {'retro_serialize_size': lambda self: 4,
+                               'retro_serialize': lambda self, b, n: calls.append('serialize') or True})()
+    probe.snapshot()
+    assert calls == ['step', 'serialize']

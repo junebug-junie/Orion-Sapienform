@@ -24,13 +24,16 @@ class Battery:
         self.core, self.store, self.game_id, self.record = core, store, game_id, record
         self.last = core.save_ram(); self.at = time.monotonic()
         if self.last is None: return
+        # A file that exists but was not loaded must never be overwritten: writes stay off.
         try: stored = store.read_battery(game_id)
-        except ValueError as exc: record('battery', action='load_failed', error=str(exc)); return
+        except ValueError as exc:
+            self.last = None; record('battery', action='load_failed', error=str(exc)); return
         if stored is not None:
             if len(stored) == len(self.last):
                 core.load_save_ram(stored); self.last = stored
                 record('battery', action='loaded', bytes=len(stored))
-            else: record('battery', action='size_mismatch', bytes=len(stored))
+            else:
+                self.last = None; record('battery', action='size_mismatch', bytes=len(stored))
 
     def flush(self, now=None, force=False):
         if self.last is None: return
@@ -267,12 +270,10 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         authority.clear(); core.buttons = (0, 0)
         reject_pending('stopped')
         record('transition', state='stopped', reason='operator_or_service_stop')
+        if battery: battery.flush(force=True)  # clean stop only: a failed core's memory is not trusted
     except BaseException as exc:
         try: send(dict(kind='fatal', error=type(exc).__name__+': '+str(exc)[:200]))
         except queue.Full: pass
     finally:
-        if battery and core and core.loaded:
-            try: battery.flush(force=True)
-            except Exception: pass  # stopping anyway; never mask the original failure
         if core: core.close()
         if evidence: evidence.close()

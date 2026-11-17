@@ -236,9 +236,14 @@ class CoreProbe:
             raise RuntimeError(self.error)
         return self.frame_hash
 
+    def _warm(self):
+        if self.warm_restore and not self.frames_run:
+            self.step()  # Mupen64Plus-Next starts its emulation thread on the first frame
+
     def snapshot(self):
         if not self.loaded:
             raise RuntimeError("core is closed")
+        self._warm()  # live 2026-11-17: N64 serialize also fails before the first frame
         size = self.lib.retro_serialize_size()
         if not 0 < size <= 64 * 1024 * 1024:
             raise ValueError("unsupported save-state size")
@@ -252,8 +257,7 @@ class CoreProbe:
             raise RuntimeError("core is closed")
         if len(state) != self.lib.retro_serialize_size():
             raise ValueError("incompatible save-state size")
-        if self.warm_restore and not self.frames_run:
-            self.step()  # Mupen64Plus-Next starts its emulation thread on the first frame
+        self._warm()
         buffer = C.create_string_buffer(state)
         if not self.lib.retro_unserialize(buffer, len(state)):
             raise RuntimeError("restore failed")

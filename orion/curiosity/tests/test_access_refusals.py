@@ -36,4 +36,4 @@ def test_progress_line_only_at_threshold() -> None:
     lines = format_access_refusal_progress(2)
     assert lines
     assert "hand off" in "\n".join(lines).lower()
-    assert "cursor" in "\n".join(lines).lower()
+    assert "claude" in "\n".join(lines).lower()

@@ -75,7 +75,7 @@ When the utterance origin is Orion (self-authored investigation / curiosity subj
 - expected_depth: shallow | deep  (REQUIRED — never omit; prefer deep when the subject is unresolved archaeology, multi-hop, cross-service, or otherwise needs repo/runtime digging; shallow only for a single bounded lookup)
 - cross_cutting: yes | no | unknown
 - foresight_note: short note, max 240 chars
-Do not leave expected_depth blank or "unknown". Deep means Orion should prefer hire_cursor for the dig.
+Do not leave expected_depth blank or "unknown". Deep means Orion should prefer hire_peer for the dig.
 """
 
 _VALID_EXPECTED_DEPTH: frozenset[str] = frozenset({"shallow", "deep", "unknown"})
@@ -153,10 +153,10 @@ def _minimal_stance_from_pack(pack: MindEvidencePackV1) -> dict[str, Any]:
 
 
 def ensure_orion_expected_depth(payload: dict[str, Any]) -> dict[str, Any]:
-    """Orion-origin sittings: missing/unknown depth becomes deep (use Cursor path).
+    """Orion-origin sittings: missing/unknown depth becomes deep (hire-peer path).
 
     Live 2026-09-21: Mind often returned foresight/intent with no expected_depth,
-    so Hub never spliced the strong hire_cursor nudge. Prefer deep over silent omit.
+    so Hub never spliced the strong hire_peer nudge. Prefer deep over silent omit.
     """
     out = dict(payload)
     depth = str(out.get("expected_depth") or "").strip().lower()

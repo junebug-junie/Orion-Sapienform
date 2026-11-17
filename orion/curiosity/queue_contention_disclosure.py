@@ -16,17 +16,17 @@ from orion.field.queue_contention import (
 )
 
 _HIRE_NUDGE = (
-    "Elevated queue is a reason to hire_cursor (offload), not a reason to "
+    "Elevated queue is a reason to hire_peer (offload), not a reason to "
     "stay on local_crawl — the local agent GPU seat is the expensive one. "
-    "Write hire_cursor and HelpRequest now — do not take a short local look first."
+    "Write hire_peer and HelpRequest now — do not take a short local look first."
 )
 
 # A reading-seed queue that has stopped moving is most likely a stalled reader
-# pipeline, not shared agent capacity under contention: hiring Cursor does not
+# pipeline, not shared agent capacity under contention: hiring a peer does not
 # unstick it, so it must not push a hire. Report it as information only.
 _STUCK_SEED_NOTE = (
     "This is a stalled queue, not busy capacity — it is not by itself a "
-    "reason to hire_cursor."
+    "reason to hire_peer."
 )
 
 _DRIVER_BLURBS: dict[str, str] = {

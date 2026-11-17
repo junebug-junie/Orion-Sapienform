@@ -41,28 +41,18 @@ class Settings(BaseSettings):
         ),
     )
 
-    # ── Cursor Agent CLI (desktop login) — lives HERE, never in Hub ───
-    # Same isolation rationale as room-companion's Claude credential:
-    # Hub is root-equivalent with docker.sock. Auth is host `agent login`
-    # (~/.config/cursor/auth.json), not CURSOR_API_KEY / cursor-sdk.
-    # Compose mounts the host install + config; default points at the
-    # versioned binary under the share mount (wrapper needs sibling node).
-    CURIOSITY_PEER_AGENT_BIN: str = Field(
-        default="/opt/cursor-agent/versions/2026.05.20-2b5dd59/cursor-agent"
-    )
-
-    CURIOSITY_PEER_REPO_ROOT: str = Field(default="/repo")
-    CURIOSITY_PEER_MODEL: str = Field(default="composer-2.5")
     # Require an acknowledged immutable expectation before a real hire.
     CURIOSITY_PEER_EPISODES_ENABLED: bool = Field(default=False)
 
-    # ── Contested Cursor budget meter (fail-closed) ───────────────────
-    # observe_cursor_limit() refuses hire until a real reading exists.
-    # File wins over STATE. Empty both → unobserved (no hire).
-    # STATE values: clear | limited | unknown
-    # FILE: JSON {"state":"clear","observed_at":"<iso>"} or plain "clear".
-    CURIOSITY_PEER_CURSOR_BUDGET_STATE: str = Field(default="")
-    CURIOSITY_PEER_CURSOR_BUDGET_FILE: str = Field(default="")
+    # ── Claude usage meter (fail-closed) ──────────────────────────────
+    # Claude (via orion-room-companion) is the only peer. Before each hire the
+    # worker reads Claude Code transcripts under this path
+    # (orion.dev_economics.rate_limit_events.observe) and refuses unless the
+    # meter reads a fresh `clear`. Compose mounts the host tree read-only at
+    # this SAME path so absolute symlinks inside it still resolve.
+    CURIOSITY_PEER_CLAUDE_PROJECTS_PATH: str = Field(
+        default_factory=lambda: os.path.expanduser("~/.claude/projects")
+    )
 
     # ── Worldview graph (PeerBrief dual-write target) ─────────────────
     ORION_CURIOSITY_GRAPH_HOST: str = Field(default="")

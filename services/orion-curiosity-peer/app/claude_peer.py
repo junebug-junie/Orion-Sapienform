@@ -1,4 +1,8 @@
-"""Claude room fallback — exactly one RoomClaudeRequest → utterance → PeerBrief.
+"""Claude helper — exactly one RoomClaudeRequest → utterance → PeerBrief.
+
+Claude (via orion-room-companion) is the only peer this service hires. The
+Cursor Agent CLI path was retired 2026-11-17 (#3397): Juniper no longer uses
+Cursor, and gating Claude behind a Cursor failure meant no hire ran at all.
 
 Live path publishes `RoomClaudeRequestV1` (trigger=auto) and waits for a matching
 utterance. Tests inject `publish_request` / `wait_utterance` (or the worker's
@@ -10,24 +14,51 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from app.cursor_invoker import build_sealed_prompt, parse_peer_brief_body
+from app.brief_prompt import build_sealed_prompt, parse_peer_brief_body
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerBriefV1
 from orion.schemas.room_claude import RoomClaudeRequestV1, RoomClaudeUtteranceV1
 
-logger = logging.getLogger("orion-curiosity-peer.claude_fallback")
+logger = logging.getLogger("orion-curiosity-peer.claude_peer")
 
 # Keep in sync with services/orion-room-companion/app/room_prompt.py
 CONTRACTOR_PEER_MARKER = "[orion-contractor-peer]"
 
 DEFAULT_ROOM_ID = "curiosity-contractor-peer"
 DEFAULT_INVITED_BY = "orion"
-DEFAULT_TIMEOUT_SEC = 120.0
+# Room companion gives a turn with Orion's tools up to
+# ROOM_COMPANION_TOOLS_TURN_TIMEOUT_SEC=360 s (consent asks + reads). Waiting
+# only 120 s would time out a turn the companion was still allowed to finish.
+DEFAULT_TIMEOUT_SEC = 420.0
 
 PublishRequest = Callable[[RoomClaudeRequestV1], Any]
+
+# Plain sentences for `orion.autonomy.ask_claude_trigger.RefusalReason` budget
+# values the Claude gate can return. Orion reads these (role-teach progress
+# line + soft nudge show the part before the "[codes]" block).
+_CLAUDE_REFUSAL_TEXT = {
+    "budget_unobserved": (
+        "this service cannot see Claude's usage meter, so it refuses rather "
+        "than spend blind"
+    ),
+    "budget_limited": "Claude's usage meter reads limited",
+    "budget_unknown": "Claude's usage meter state is unknown",
+    "budget_observation_missing": "no Claude usage reading was available",
+    "budget_observation_incoherent": "Claude's usage reading contradicted itself",
+}
+
+
+def describe_claude_refusal(refusal: str) -> str:
+    text = _CLAUDE_REFUSAL_TEXT.get(refusal, f"budget gate returned {refusal}")
+    return f"Claude helper refused: {text}."
+
+
+def claude_reason(text: str, code: str) -> str:
+    """Refusal chain Orion reads: plain sentence first, then the code block."""
+    return f"{text.strip()} [{code}]"
 WaitUtterance = Callable[..., str]
 
 
-def build_claude_fallback_prompt(
+def build_claude_peer_prompt(
     help_req: HelpRequestV1,
     *,
     context_pack: str = "",
@@ -50,7 +81,7 @@ def _utterance_text(payload: Any) -> str:
     return str(payload or "")
 
 
-def run_claude_fallback(
+def run_claude_peer(
     help_req: HelpRequestV1,
     *,
     context_pack: str = "",
@@ -67,11 +98,11 @@ def run_claude_fallback(
     """
     if publish_request is None or wait_utterance is None:
         raise NotImplementedError(
-            "run_claude_fallback requires publish_request and wait_utterance "
+            "run_claude_peer requires publish_request and wait_utterance "
             "(inject mocks in tests; wire bus seams in the worker)"
         )
 
-    prompt = build_claude_fallback_prompt(help_req, context_pack=context_pack)
+    prompt = build_claude_peer_prompt(help_req, context_pack=context_pack)
     request = RoomClaudeRequestV1(
         trigger="auto",
         invited_by=invited_by,
@@ -82,7 +113,7 @@ def run_claude_fallback(
         correlation_id=help_req.help_id,
     )
     logger.info(
-        "curiosity_peer_claude_fallback_request request_id=%s help_id=%s",
+        "curiosity_peer_claude_request request_id=%s help_id=%s",
         request.request_id,
         help_req.help_id,
     )

@@ -18,16 +18,12 @@ def test_curiosity_peer_defaults_disabled(monkeypatch: pytest.MonkeyPatch) -> No
     for key in (
         "CURIOSITY_PEER_ENABLED",
         "CURIOUSITY_PEER_ENABLED",
-        "CURSOR_API_KEY",
-        "CURIOSITY_PEER_AGENT_BIN",
     ):
         monkeypatch.delenv(key, raising=False)
 
     settings = Settings(_env_file=None)
     assert settings.CURIOSITY_PEER_ENABLED is False
-    assert "CURSOR_API_KEY" not in Settings.model_fields
-    assert "CURIOSITY_PEER_AGENT_BIN" in Settings.model_fields
-    assert settings.CURIOSITY_PEER_AGENT_BIN.endswith("cursor-agent")
+    assert settings.CURIOSITY_PEER_CLAUDE_PROJECTS_PATH.endswith("/.claude/projects")
 
 
 def test_curiosity_peer_enabled_only_when_explicitly_true(
@@ -46,15 +42,17 @@ def test_curiousity_typo_alias_enables(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.CURIOSITY_PEER_ENABLED is True
 
 
-def test_agent_bin_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(
-        "CURIOSITY_PEER_AGENT_BIN",
-        "/opt/cursor-agent/versions/test/cursor-agent",
-    )
+def test_claude_meter_path_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CURIOSITY_PEER_CLAUDE_PROJECTS_PATH", "/home/x/.claude/projects")
     settings = Settings(_env_file=None)
-    assert settings.CURIOSITY_PEER_AGENT_BIN == (
-        "/opt/cursor-agent/versions/test/cursor-agent"
-    )
+    assert settings.CURIOSITY_PEER_CLAUDE_PROJECTS_PATH == "/home/x/.claude/projects"
+
+
+def test_no_cursor_settings_remain() -> None:
+    """Cursor retired (#3397): kill means kill, no dormant Cursor knobs."""
+    for name in Settings.model_fields:
+        assert "CURSOR" not in name
+        assert name not in ("CURIOSITY_PEER_AGENT_BIN", "CURIOSITY_PEER_MODEL", "CURIOSITY_PEER_REPO_ROOT")
 
 
 def test_hub_enqueue_flag_is_separate_contract() -> None:
@@ -66,3 +64,20 @@ def test_hub_enqueue_flag_is_separate_contract() -> None:
     """
     assert "HUB_CURIOSITY_CONTRACTOR_PEER_ENABLED" not in Settings.model_fields
     assert "CURIOSITY_PEER_ENABLED" in Settings.model_fields
+
+
+def test_compose_mounts_the_claude_meter_read_only_at_the_same_path() -> None:
+    """The 2026-11-14..16 outage was a missing mount: the meter read an empty
+    /root/.claude/projects and refused every hire. Guard the mount itself."""
+    from pathlib import Path
+
+    compose = (Path(__file__).resolve().parents[1] / "docker-compose.yml").read_text()
+    expr = "${CURIOSITY_PEER_CLAUDE_PROJECTS_PATH:?"
+    mounts = [
+        ln.strip() for ln in compose.splitlines()
+        if ln.strip().startswith("- ") and ln.strip().endswith(":ro") and expr in ln
+    ]
+    assert len(mounts) == 1, mounts
+    src, dst = mounts[0][2:-3].split("}:", 1)
+    assert src.startswith(expr) and dst.startswith(expr)
+    assert f"CURIOSITY_PEER_CLAUDE_PROJECTS_PATH={expr}" in compose

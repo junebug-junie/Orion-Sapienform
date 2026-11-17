@@ -122,10 +122,10 @@ scripts/safe_docker_build.sh orion-hub up -d --build
 - Severity: low
   - Concern: `dig take-ons` only reads transcripts where they are (the governor). From any other container it prints UNREAD.
   - Mitigation: UNREAD is explicit; Orion's Bash runs in the governor.
-- Issues: opened #3639 (gap), VERIFY_PLACEHOLDER (verify-live). Closed: #3639 by this PR.
+- Issues: opened #3639 (gap), #3646 (verify-live). Closed: #3639 by this PR.
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3647
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

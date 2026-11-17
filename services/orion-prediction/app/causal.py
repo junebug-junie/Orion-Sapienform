@@ -380,8 +380,10 @@ def analyze_stratified_switchback(blocks: Sequence[dict], redraw, n_perm: int = 
 
     Estimate: stratum-weighted mean of per-night differences (night = fixed effect, so time-of-year and
     night-level drift cancel). SE: pooled within-cell residual variance (night x arm) over the sum of weights,
-    t interval on N - cells dof. p: the restricted permutation (the design's own randomisation redrawn), exact
-    under the sharp null whatever the restriction does to the arm pattern."""
+    t interval on N - cells dof. p: the restricted permutation (the design's own arm draw redrawn, at most 2 OFF
+    in a row), CONDITIONAL on each night's number of blocks and their positions. Approximate, not exact: how many
+    decisions a night holds depends on its arms (ON ~95 min, OFF ~40 min). The synthetic eval
+    (evals/run_town_hold_synthetic_eval.py) checks null calibration with that dependence simulated."""
     from scipy import stats
 
     by: dict = {}

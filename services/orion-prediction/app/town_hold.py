@@ -321,6 +321,17 @@ class TownHoldRunner:
             logger.warning("town_hold_schedule_unreadable; deleting it")
             await self._safe(self.redis.delete(SCHEDULE_KEY))
             return False
+        stored = sched.get("config")
+        if stored and stored != self.cfg.as_dict():
+            # A run keeps the design it started with; a config change between restarts must not silently
+            # change a run in progress.
+            try:
+                self.cfg = TownHoldConfig(**{**stored, "window_min": tuple(stored["window_min"])})
+                logger.warning("town_hold_resumed_with_its_own_config run_id=%s", sched["run_id"])
+            except Exception:  # noqa: BLE001
+                logger.warning("town_hold_schedule_config_unreadable; deleting the schedule")
+                await self._safe(self.redis.delete(SCHEDULE_KEY))
+                return False
         logger.warning("town_hold_resumed run_id=%s", sched["run_id"])
         self._launch(sched)
         return True
@@ -400,11 +411,13 @@ class TownHoldRunner:
         st = NightState(eid, plan["night"], w0, w1, list(plan["arms"]), plan["seed"])
         self.night = st
         logger.warning("town_hold_night_start id=%s night=%s seed=%d arms=%s", eid, st.night, st.seed, st.arms)
-        if not await self.redis.set(LOCK_KEY, eid, nx=True, ex=self.lock_ttl):
-            await self._abort(st, "another experiment holds the runner lock")
-            return
-        await self.redis.set(ACTIVE_KEY, eid)
         try:
+            if not await self.redis.set(LOCK_KEY, eid, nx=True, ex=self.lock_ttl):
+                await self._abort(st, "another experiment holds the runner lock")
+                self.nights_done.append({"experiment_id": eid, "night": st.night, "status": st.status,
+                                         "blocks": 0, "abort_reason": st.abort_reason})
+                return   # never touch the other run's lock, ACTIVE key or hold
+            await self.redis.set(ACTIVE_KEY, eid)
             while True:
                 state = await self.step(st)
                 if state == "done":
@@ -412,7 +425,8 @@ class TownHoldRunner:
                 await self._sleep(self.cfg.tick_sec)
             await self._finish(st)
         except asyncio.CancelledError:
-            await self._abort(st, self._cancel_reason or "runner cancelled")
+            if st.status != "analyzed":   # a cancel landing after the night was finished keeps it analysed
+                await self._abort(st, self._cancel_reason or "runner cancelled")
             await self._release(st)
             raise
         except _Abort as exc:
@@ -427,7 +441,8 @@ class TownHoldRunner:
     async def _release(self, st: NightState) -> None:
         await self._safe(self.redis.delete(run_cap_key()))
         await self._safe(self.redis.eval(LUA_RELEASE, 1, LOCK_KEY, st.experiment_id))
-        await self._safe(self.redis.delete(ACTIVE_KEY))
+        if await self._safe(self.redis.get(ACTIVE_KEY)) == st.experiment_id:   # only our own
+            await self._safe(self.redis.delete(ACTIVE_KEY))
 
     async def _abort(self, st: NightState, reason: str) -> None:
         st.status, st.abort_reason = "cancelled", reason
@@ -503,7 +518,10 @@ class TownHoldRunner:
             await self._drop_pending(st, "embodiment_unreadable")
             return "blind"
         if st.quiet_until is not None:
-            moved = view.eligible_at is not None and st.quiet_marker is not None and view.eligible_at > st.quiet_marker
+            # /health reports an open gate as "eligible now" (the read time), so only a gate that moved INTO THE
+            # FUTURE counts as the town having moved on (a session ran, or a cap started).
+            moved = (view.eligible_at is not None
+                     and view.eligible_at > now + timedelta(seconds=self.cfg.tick_sec))
             if view.session_open or moved or now >= st.quiet_until:
                 st.quiet_until = st.quiet_marker = None
             else:
@@ -516,8 +534,10 @@ class TownHoldRunner:
         if elig is None or view.session_open or view.manual_session_open:
             await self._drop_pending(st, "not_eligible")
             return "idle"
-        if elig >= st.w1:
-            await self._drop_pending(st, "eligible_after_window")
+        if max(elig, now) + timedelta(minutes=self.cfg.hold_min) > st.w1:
+            # No block (either arm, so they stay balanced) that would run past the night's end: outside the
+            # window the town runs normally and nothing is randomised.
+            await self._drop_pending(st, "block_would_end_after_window")
             return "idle"
         if now < elig - timedelta(seconds=self.cfg.pending_lead_sec):
             await self._drop_pending(st, "not_yet")
@@ -543,6 +563,9 @@ class TownHoldRunner:
 
     async def _decide(self, st: NightState, now: datetime) -> str:
         reasons = await self.stop_reasons(now)
+        failed = [r for r in reasons if "_read_failed" in r]
+        if failed:   # design "Stop rules": a failed guard read aborts the night (a missing reading only refuses)
+            raise _Abort(f"guard read failed: {failed}")
         if reasons:
             return await self._refuse(st, now, reasons)
         want_id = f"{st.experiment_id}:{st.k}"
@@ -694,6 +717,12 @@ def run_result(effect_table: Any, store: Any, run_id: str) -> dict:
               if (e.get("design") or {}).get("kind") == EVENT_KIND and e["design"].get("run_id") == run_id]
     if not nights:
         raise CausalError(f"run {run_id} has no analysed nights")
+    # One result per run, ever: each stored row becomes one experience for Orion, so a retry returns the row
+    # already stored instead of a duplicate.
+    for r in store.effects(ACTION, PRIMARY_TARGET):
+        d = r.get("details") or {}
+        if d.get("estimator") == ESTIMATOR_RUN and d.get("run_id") == run_id:
+            return {**r, "already_stored": True}
     rows, extra = effect_table.rows_for_run(nights)
     by = {r.target: r for r in rows}
     main = by.get(PRIMARY_TARGET)
@@ -701,8 +730,8 @@ def run_result(effect_table: Any, store: Any, run_id: str) -> dict:
     targets = {t: by[t].as_dict() for t in (PRIMARY_TARGET, "circe.gpu3_temp_c", "circe.chassis_watts",
                                             "athena.cabinet_temp_c", *LANE_TARGETS) if t in by}
     z = None
-    if main is not None and main.estimate is not None and main.eff_se:
-        z = main.estimate / main.eff_se
+    if main is not None and main.estimate is not None and main.se:
+        z = main.estimate / main.se   # the raw SE, not the t-widened interval's
     last = max(nights, key=lambda e: str(e["design"].get("night")))
 
     def txt(r, unit, fmt):

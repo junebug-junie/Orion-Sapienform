@@ -151,6 +151,9 @@ class Store:
     def lane_leases(self, a, b):
         return self.leases
 
+    def effects(self, action, series_id):
+        return [r for r in reversed(self.effect_rows) if r["action"] == action and r["series_id"] == series_id]
+
     def kev_latencies(self, a, b):
         return self.kev
 
@@ -189,7 +192,9 @@ class Probe:
             return None
         if self.after_first is not None and self.reads % 2 == 0:
             self.after_first(self)
-        return TownView(eligible_at=None if self.session_open or self.manual else self.eligible_at,
+        # As the real /health: an open gate reads "eligible now" (the read time), not the moment it opened.
+        elig = None if self.session_open or self.manual or self.eligible_at is None else max(self.eligible_at, self.clock())
+        return TownView(eligible_at=elig,
                         session_open=self.session_open, manual_session_open=self.manual,
                         start_in_flight=self.in_flight, override_configured=self.configured, running=True)
 
@@ -360,7 +365,6 @@ def test_a_session_already_open_when_the_key_lands_voids_the_decision():
     (lambda w: setattr(w.store, "queued", 2), "tier0_1_queued_on_fast"),
     (lambda w: setattr(w.store, "cabinet", 31.5), "cabinet_hot"),
     (lambda w: setattr(w.store, "cabinet", None), "cabinet_missing"),
-    (lambda w: setattr(w.store, "fail_leases", True), "lease_read_failed"),
 ])
 def test_a_stop_rule_refuses_the_decision_without_using_an_arm(setup, reason):
     w = world(T_NIGHT + timedelta(minutes=10))
@@ -438,6 +442,97 @@ def test_an_act_opened_inside_an_off_block_aborts_the_night_at_its_end():
     w.clock.t += timedelta(seconds=30)
     with pytest.raises(Exception, match="contaminated"):
         step(w, st)
+
+
+def test_a_failed_guard_read_aborts_the_night():
+    w = world(T_NIGHT + timedelta(minutes=10))
+    st = open_night(w)
+    w.store.fail_leases = True
+    arrive(w, st)
+    with pytest.raises(Exception, match="guard read failed"):
+        step(w, st)
+
+
+def test_after_an_on_arm_the_runner_waits_for_the_town_instead_of_drawing_again():
+    """Regression (review): /health reports an open gate as eligible NOW, so 'the gate moved' must mean moved
+    into the future, or the quiet period ended one tick later and blocks ran back to back."""
+    w = world(T_NIGHT + timedelta(minutes=10), arms=["on", "off", "on", "off", "on", "off", "on", "off"])
+    st = open_night(w)
+    arrive(w, st)
+    assert step(w, st) == "decided:on"
+    for _ in range(9):   # 4.5 min: the town has not ticked yet; its gate still reads "now"
+        w.clock.t += timedelta(seconds=30)
+        assert step(w, st) == "quiet"
+    assert st.k == 1 and w.redis.override() is None
+
+
+def test_after_a_refusal_the_runner_does_not_re_decide_every_tick():
+    w = world(T_NIGHT + timedelta(minutes=10))
+    st = open_night(w)
+    w.store.queued = 1
+    arrive(w, st)
+    assert step(w, st) == "refused"
+    for _ in range(5):
+        w.clock.t += timedelta(seconds=30)
+        assert step(w, st) == "quiet"
+    assert sum(1 for e in w.log if e[0] == "iv") == 1
+
+
+def test_no_block_that_would_run_past_eight():
+    w = world(T_NIGHT + timedelta(hours=7, minutes=30))   # 07:30 local: a 40-min block would end 08:10
+    st = open_night(w)
+    w.probe.eligible_at = w.clock()
+    assert step(w, st) == "idle" and w.redis.override() is None and st.k == 0
+
+
+def test_cancel_mid_off_block_deletes_the_hold_cancels_the_night_and_frees_the_lock():
+    w = world(T_NIGHT + timedelta(minutes=10), arms=["off", "on", "on", "off", "on", "off", "on", "off"])
+    w.probe.eligible_at = w.clock()
+
+    async def go():
+        ticks = {"n": 0}
+
+        async def sleep(sec):
+            w.clock.t += timedelta(seconds=sec)
+            await w.redis.set("orion:regulation:latest", regulation(w.clock))
+            ticks["n"] += 1
+            if ticks["n"] == 5:
+                assert w.redis.override() is not None and w.redis.override().phase == "block"
+                raise asyncio.CancelledError
+
+        w.runner._sleep = sleep
+        with pytest.raises(asyncio.CancelledError):
+            await w.runner._run_night(w.sched, date(2026, 11, 17))
+
+    asyncio.run(go())
+    (exp,) = w.store.exps.values()
+    assert exp["status"] == "cancelled" and w.redis.override() is None
+    assert asyncio.run(w.redis.get(LOCK_KEY)) is None and asyncio.run(w.redis.get(ACTIVE_KEY)) is None
+
+
+def test_resume_continues_a_scheduled_run_and_drops_a_malformed_one():
+    w = world(T_NIGHT - timedelta(hours=3))
+    sched = {"run_id": "r9", "first_night": "2026-11-17", "nights": 2, "seed": 4, "config": w.runner.cfg.as_dict()}
+
+    async def go(raw):
+        await w.redis.set(TOWN_HOLD_SCHEDULE_KEY, raw)
+        ok = await w.runner.resume()
+        running = w.runner.running()
+        await w.runner.shutdown("test", clear_schedule=True)
+        return ok, running
+
+    assert asyncio.run(go(json.dumps(sched))) == (True, True)
+    assert asyncio.run(go("{not json")) == (False, False)
+    assert asyncio.run(w.redis.get(TOWN_HOLD_SCHEDULE_KEY)) is None
+
+
+def test_the_run_result_is_stored_once():
+    from app.town_hold import run_result
+
+    store, table = _run_world()
+    first = run_result(table, store, "run-x")
+    again = run_result(table, store, "run-x")
+    assert len(store.effect_rows) == 1 and again["already_stored"] and again["details"] == first["details"]
 
 
 def test_no_decisions_after_eight_and_the_night_drains_its_checks():

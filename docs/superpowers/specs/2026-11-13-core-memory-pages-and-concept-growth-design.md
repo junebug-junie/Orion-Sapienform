@@ -549,7 +549,14 @@ The status write is the part that matters for readers. Only the lived-memory ser
 | Confirmation loop (`confirmation.py`) | `status='active'`, pending | Yes (status form) |
 | Reverie seed (`services/orion-thought/app/store.py`) | `status='active'` plus evidence checks | Yes (status form) |
 | Referent projector (`services/orion-memory-consolidation/app/referent_projector.py`) | closes the evidence node when status is not active | Yes (status form) |
-| Temporal self (`temporal_self_sources.py`, `memory_episode`) | none; reads by `created_at` | No, by design: it records that a memory was formed, and carries no statement text |
+| Temporal self (`temporal_self_sources.py`, `memory_episode`) | none; reads by `created_at` | No, by design: it records that a memory was formed (rejected rows too), and carries only the purpose label, no statement text |
+| `page:lately` (#3463, not built) | must reuse the lived-memory serving SQL | Required; pg test from day one (noted on #3463) |
+
+**Index build vs query time.** Both. The exact-word (BM25) index is rebuilt from the serving
+SQL every 60 s, so superseded rows are never in it. The Chroma index is a copy: the index
+pass (every 300 s) deletes docs whose record is no longer servable, and every dense hit is
+re-gated against Postgres at query time, then re-checked once more before render. A row
+superseded mid-turn can sit in Chroma for up to 300 s, but it cannot be served.
 
 The CI test today covers retrieval (pointer and status) and the fold (status). A pg test that
 the supersede write sets all three marks belongs with #3587.
@@ -559,6 +566,16 @@ mesh-edge check (PR #3571), but no pass. Live: 5 rows are `superseded`, all from
 confirmation loop. The named contradictions are all still `active`, and no correction row
 points at its target. The distiller does not supersede at write time either. Follow-up:
 #3587.
+
+**The pass must be idempotent (rule for #3587).**
+
+- A pair is keyed by (correction id, target id). A target that is already superseded is
+  skipped. A second run writes no rows and no events, and its pair report is identical.
+- Pair detection is deterministic: the same rows in the same order give the same pairs.
+- An undo (clearing the mark) writes an event. The pass honors it and does not supersede
+  that pair again.
+- Every run snapshots first (CLAUDE.md section 14) and writes a manifest Orion can read
+  (#3611 covers read access).
 
 **Ordering with the #3537 backfill.** The backfill writes July to September rows after the
 October and November corrections already exist. So write-time supersede (which looks at older
@@ -620,9 +637,12 @@ come back through a different old record that says the same thing.
   first day.
 - **Opened:** `memory_page_read` (proposed table, below), for `orion.dig page` and
   `orion.dig know`.
-- **Known gap: no turn id.** One chat turn can log two recall rows (`chat_quick` and
-  `stance_react`) with different `corr_id`s. Counting rows would count one turn twice. "3 or
-  more turns" needs a turn id on the row first: #3589.
+- **Counting turns (corrected 2026-11-17).** Recall does not mint ids. It logs the caller's
+  bus `correlation_id`. For Hub chat turns (verb `stance_react`) that is the turn's
+  correlation id, and one turn can log up to 2 rows. So the count is `count(distinct corr_id)`,
+  not a row count. The `chat_quick` rows are AI Town speech from orion-embodiment, not Hub
+  turns. In one day they had 129 lived serves against 80 Hub turns. **Only Juniper chat
+  turns count as read demand.** #3589.
 - **Degraded serves do not count as demand.** A serve from the exact-word fallback (#3573)
   is marked degraded in `recall_telemetry` and is excluded from the page-birth and re-grade
   counts. Only full-path serves and explicit opens count.
@@ -672,6 +692,10 @@ Follow-up: #3553.
   - versions are insert-only;
   - the mesh-edge check guards its sentences.
   It has no size cap in code. Live it is 120 characters.
+  **Known limits (#3612):** the producer check covers the bus path only (the sql-writer
+  schema rejects `juniper_anchor`; tested). Nothing at the database stops a direct INSERT by
+  a role with write access, and the reader trusts any row with that value. There is no size
+  cap.
 
 ### Phase 2 change
 
@@ -738,6 +762,9 @@ Orion asked 9 questions on PR #3538. Short answers; detail is in the sections ab
    has no memory command. The path is `orion.dig know` over recall's HTTP API (#3535). The
    GRANT in #3567 is for the mesh-edge check; if applied, it would also let FCC Bash read
    `episode_memory` directly. Waits on Juniper (#3567).
+   **Update:** the GRANT file merged in PR #3593 but is not applied (checked live). It omits
+   `episode_memory_referent` and `recall_telemetry`. #3611 proposes both, with `recall_telemetry`
+   minus its `query` column (it holds turn text). Waits on Juniper.
 5. Lease: see "GPU lease" in Phase 1 status. The Hub version diff does not exist (#3588).
    v1 to v2 similarity is 0.902 and all 4 quotes survive, so #3553 would not have fired.
 6. `page:anchor` exemption: see Phase 1 status.

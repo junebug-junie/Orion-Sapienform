@@ -85,7 +85,10 @@ No restart required.
 - Severity: medium. Concern: the "Hub page view shows every diff" mitigation for no-gate folds does not exist. Mitigation: #3588.
 - Severity: medium. Concern: read-demand counts would double-count turns. Mitigation: #3589.
 - Severity: low. Concern: `matters` gate waits on Juniper's eyeball pass. Mitigation: #3590 (needs-juniper).
-- Issues opened: #3587, #3588, #3589, #3590. Comments added on #3553 and #3567. Issues closed: none.
+- Severity: medium. Concern: Orion cannot read the tables that would let it check its own memory serves; the #3593 GRANT is merged but not applied. Mitigation: #3611 (needs-juniper).
+- Severity: low. Concern: `page:anchor` is guarded on the bus path only and has no size cap. Mitigation: #3612.
+- Second round (Orion's follow-ups): #3589 corrected. The double count came from AI Town `chat_quick` rows, not two rows per Hub turn. The spec states the idempotency rule for the supersede pass, and that superseded rows are kept out of both indexes. #3553 gained drift flags (v1 3670 to v3 3517 characters, 35 to 31 cites, 6 uncorrected cite drops).
+- Issues opened: #3587, #3588, #3589, #3590, #3611, #3612. Comments added on #3463, #3553 and #3567. Issues closed: none.
 
 ## PR link
 

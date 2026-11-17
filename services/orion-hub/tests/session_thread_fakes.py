@@ -61,8 +61,10 @@ class FakeStore:
         thread = self.threads.get(thread_id) if thread_id else next(
             (t for t in self.threads.values() if t["source_ref"] == source_ref), None)
         out = {"held_threads": sum(1 for t in self.threads.values() if t["status"] in ("held", "reading")),
-               "thread": dict(thread) if thread else None, "unread": 0, "last_digest": None}
+               "thread": dict(thread) if thread else None, "unread": 0, "last_digest": None, "answer_phase": False}
         if thread:
+            out["answer_phase"] = core.in_answer_phase(
+                [u for u in self.turns if u["thread_id"] == thread["thread_id"] and u["speaker"] == "orion"])
             mine = [u for u in self.turns if u["thread_id"] == thread["thread_id"] and u["speaker"] == "session"]
             out.update(unread=sum(1 for u in mine if u["roundup_id"] is None),
                        last_digest=mine[-1]["meta"].get("digest") if mine else None)

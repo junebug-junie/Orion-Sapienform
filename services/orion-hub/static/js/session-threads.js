@@ -58,6 +58,7 @@
       case "reading": return "Orion is reading it now.";
       case "asked": return "Orion asked questions.";
       case "no_questions": return "Orion read it. No questions.";
+      case "closed": return "Orion read the answers. One round of questions per thread: done.";
       case "failed": return "Failed" + (t.status_reason ? " (" + t.status_reason + ")" : "") + ". Orion did not read it.";
       default: return String(t.status || "unknown") + ".";
     }
@@ -69,6 +70,7 @@
     let text = s.label;
     if (turn.speaker === "hub" && meta.roundup_failed) text = "Hub (round-up failed)";
     if (turn.speaker === "orion" && meta.unparsed) text = "Orion (whole reply: Hub could not find this thread's section)";
+    if (turn.speaker === "orion" && meta.closing_note) text = "Orion (closing note: not posted, not sent as questions)";
     return { text: text, colour: s.colour };
   }
 

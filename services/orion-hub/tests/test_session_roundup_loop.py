@@ -210,26 +210,47 @@ def test_lifecycle_message_roundup_questions_reply_second_roundup(mode, monkeypa
         assert await srl.pending_for(w.pool, session_id="sess-A", branch="feat/a") == []
         assert await srl.mark_delivered(w.pool, [orion["turn_id"]]) == 0
 
-        # The session replies on the thread: held again, and not read before the next hour.
+        # The session replies on the thread: held again, and not read before the next hour. Orion used
+        # the thread's one round of questions, so Hub's receipt says the reply is read as answers.
         got = await w.loop.intake(session_id="sess-A", title="reply", body="Hourly is Juniper's rule.", thread_id=tid)
         assert got["thread"]["status"] == "held" and got["thread"]["title"] == "feat: thing 3456"
+        assert got["answer_phase"] is True and "one round of questions on this thread" in got["receipt"]["body"]
         assert (await w.loop.tick())["skipped"] in ("nothing_due", "roundup_already_ran_this_hour")
         assert len(w.durable.submits) == 1
 
-        # The second round shows Orion their own earlier questions, the reply, and the spec again.
+        # The second round shows Orion their own earlier questions and the reply (the answers), marked
+        # ANSWER PHASE, without the spec again. Orion asks anyway: that text is a closing note.
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "Thanks.\n1. But who pays for the retry?"))]
+        tick = await w.loop.tick()
+        rid2 = tick["started"]
+        assert rid2 != rid1 and tick["closed"] == 1 and tick["asked"] == 0 and tick["pr_comments"] == 0
+        assert tick["dropped_question_lines"] == 1
+        prompt = w.durable.submits[-1]["prompt"]
+        assert "[you (Orion), an earlier round-up] 1. Why hourly?" in prompt
+        assert "[session] Hourly is Juniper's rule." in prompt and SPEC.strip() not in prompt
+        assert core.ANSWER_PHASE_NOTE in prompt
+        assert prompt.index(f"## thread:{tid}") < prompt.index(core.ANSWER_PHASE_NOTE) < prompt.index("earlier in this thread")
+        assert prompt.index("earlier in this thread") < prompt.index("new since your last round-up") < prompt.index("Hourly is Juniper's rule.")
+        thread, turns = await state(w, tid)
+        assert thread["status"] == core.STATUS_CLOSED
+        closing = turns[-1]
+        assert closing["body"] == "Thanks.\n1. But who pays for the retry?" and closing["meta"]["closing_note"] is True
+        assert closing["meta"]["dropped_question_lines"] == 1 and not closing["meta"].get("no_questions")
+        assert closing["pr_comment_url"] is None and len(w.commenter.posts) == 1   # a closing note is never posted
+        [waiting] = await srl.pending_for(w.pool, session_id="sess-A", branch="")
+        assert waiting["turn_id"] == closing["turn_id"] and waiting["meta"]["closing_note"] is True
+        assert w.durable.new_runs == [rid1, rid2]
+
+        # Another reply: still read (Orion should see it), still answer phase, still no questions out.
+        await w.loop.intake(session_id="sess-A", title="reply", body="The retry is on durable runs.", thread_id=tid)
         w.clock.to_next_hour()
         w.durable.replies = [answer((tid, "NO QUESTIONS"))]
         tick = await w.loop.tick()
-        rid2 = tick["started"]
-        assert rid2 != rid1 and tick["no_questions"] == 1 and tick["pr_comments"] == 0
-        prompt = w.durable.submits[-1]["prompt"]
-        assert "[you (Orion), an earlier round-up] 1. Why hourly?" in prompt
-        assert "[session] Hourly is Juniper's rule." in prompt and SPEC.strip() in prompt
-        assert prompt.index("earlier in this thread") < prompt.index("new since your last round-up") < prompt.index("Hourly is Juniper's rule.")
+        assert tick["closed"] == 1 and tick["no_questions"] == 0 and core.ANSWER_PHASE_NOTE in w.durable.submits[-1]["prompt"]
         thread, turns = await state(w, tid)
-        assert thread["status"] == "no_questions" and turns[-1]["body"] == "NO QUESTIONS" and turns[-1]["meta"]["no_questions"] is True
-        assert len(w.commenter.posts) == 1   # NO QUESTIONS is never posted on the PR
-        assert w.durable.new_runs == [rid1, rid2]
+        assert thread["status"] == core.STATUS_CLOSED and turns[-1]["meta"]["closing_note"] is True
+        assert len(w.commenter.posts) == 1
 
     run(mode, monkeypatch, scenario)
 
@@ -485,7 +506,10 @@ def test_a_message_that_arrives_while_orion_is_reading_waits_for_the_next_round(
         prompt = w.durable.submits[-1]["prompt"]
         new_part = prompt[prompt.index("new since your last round-up"):]
         assert "One more thing: the cap is 3." in new_part and "Please read the spec." not in new_part
-        assert (await state(w, tid))[0]["status"] == "no_questions"
+        # Orion's round-1 turn sits AFTER this message (it arrived while Orion was reading), and still
+        # counts: the thread is in its answer phase.
+        assert core.ANSWER_PHASE_NOTE in prompt
+        assert (await state(w, tid))[0]["status"] == core.STATUS_CLOSED
 
     run(mode, monkeypatch, scenario)
 
@@ -692,3 +716,68 @@ def test_the_commenter_checks_the_pull_request_before_it_posts_and_never_raises(
     asyncio.run(go())
     assert calls == [("GET", "/repos/o/r/pulls/5", "Bearer tok"), ("POST", "/repos/o/r/issues/5/comments", "Bearer tok"),
                      ("GET", "/repos/o/r/pulls/6", "Bearer tok"), ("GET", "/repos/o/r/pulls/5", "Bearer tok")]
+
+
+# --- one round of questions per thread ---------------------------------------------------------
+
+
+def test_one_question_round_per_thread_is_a_fixed_constant():
+    assert core.MAX_QUESTION_ROUNDS_PER_THREAD == 1
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_a_new_thread_still_gets_its_round_beside_an_answer_phase_thread(mode, monkeypatch, caplog):
+    async def scenario(w):
+        old = (await send_pr(w, pr=1))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((old, "1. Why?"))]
+        await w.loop.tick()
+        await w.loop.intake(session_id="sess-A", title="reply", body="Because.", thread_id=old)
+        new = (await send_pr(w, pr=2, session="sess-B", branch="feat/b"))["thread"]["thread_id"]
+        assert new != old
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((old, "1. And then what?"), (new, "1. What does it cost?"))]
+        with caplog.at_level("INFO", logger="orion-hub.session_threads"):
+            tick = await w.loop.tick()
+        assert tick["asked"] == 1 and tick["closed"] == 1 and tick["pr_comments"] == 1
+        assert "session_thread_questions_dropped thread=" + old in caplog.text and "lines=1" in caplog.text
+        prompt = w.durable.submits[-1]["prompt"]
+        old_part = prompt[prompt.index(f"## thread:{old}"):prompt.index(f"## thread:{new}")]
+        new_part = prompt[prompt.index(f"## thread:{new}"):]
+        assert core.ANSWER_PHASE_NOTE in old_part and core.ANSWER_PHASE_NOTE not in new_part
+        assert SPEC.strip() in new_part and SPEC.strip() not in old_part
+        assert (await state(w, old))[0]["status"] == core.STATUS_CLOSED
+        assert (await state(w, new))[0]["status"] == core.STATUS_ASKED
+        assert [pr for pr, _ in w.commenter.posts] == [1, 2]   # round 1 of the old thread, round 1 of the new
+        [b] = await srl.pending_for(w.pool, session_id="sess-B", branch="")
+        assert b["body"] == "1. What does it cost?" and not b["meta"].get("closing_note")
+
+    run(mode, monkeypatch, scenario)
+
+
+@pytest.mark.parametrize("mode", BOTH)
+def test_no_questions_does_not_use_the_round_and_an_unparsed_reply_does(mode, monkeypatch):
+    async def scenario(w):
+        tid = (await send_pr(w))["thread"]["thread_id"]
+        w.clock.to_next_hour()
+        w.durable.replies = [answer((tid, "NO QUESTIONS"))]
+        await w.loop.tick()
+        # NO QUESTIONS used no round: a new message on the thread may still be asked about.
+        got = await w.loop.intake(session_id="sess-A", title="reply", body="I changed the cap.", thread_id=tid)
+        assert got["answer_phase"] is False
+        w.clock.to_next_hour()
+        w.durable.replies = ["no headings at all, 1. why the cap?"]
+        tick = await w.loop.tick()
+        assert core.ANSWER_PHASE_NOTE not in w.durable.submits[-1]["prompt"] and tick["unparsed"] == 1
+        # The unparsed whole reply went to the session as questions: the round is used.
+        await w.loop.intake(session_id="sess-A", title="reply", body="Answers.", thread_id=tid)
+        w.clock.to_next_hour()
+        w.durable.replies = ["again no headings. 1. one more?"]
+        tick = await w.loop.tick()
+        assert tick["closed"] == 1 and tick["unparsed"] == 0 and tick["pr_comments"] == 0
+        assert tick["dropped_question_lines"] == 0   # the whole reply is not this thread's own lines
+        thread, turns = await state(w, tid)
+        assert thread["status"] == core.STATUS_CLOSED
+        assert turns[-1]["meta"]["closing_note"] is True and turns[-1]["meta"]["unparsed"] is True
+
+    run(mode, monkeypatch, scenario)

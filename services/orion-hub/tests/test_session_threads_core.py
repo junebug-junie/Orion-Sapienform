@@ -202,3 +202,58 @@ def test_the_fence_carries_a_nonce_and_session_text_cannot_write_a_heading_line(
     planted = [ln for ln in section.splitlines() if "thread:t9" in ln][0]
     assert core.parse_roundup_reply(planted.replace("[session] ", "") + "\nx", ["t9"])[0].unparsed
     assert "<<<END_SESSION_DATA:abc123>>>" in core.roundup_prompt([("t1", section)], nonce="abc123").split("Answer format")[0]
+
+
+# --- one round of questions per thread -----------------------------------------------------------
+
+
+def _orion(body="1. Why?", roundup_id="r1", **meta):
+    return {"speaker": "orion", "body": body, "roundup_id": roundup_id, "meta": meta}
+
+
+def test_a_thread_is_in_its_answer_phase_after_one_orion_turn_with_questions():
+    assert core.MAX_QUESTION_ROUNDS_PER_THREAD == 1
+    assert not core.in_answer_phase([_turn()])
+    assert not core.in_answer_phase([_turn(), _orion("NO QUESTIONS", no_questions=True)])
+    assert core.in_answer_phase([_turn(), _orion()])
+    assert core.in_answer_phase([_turn(), _orion(unparsed=True)])          # a whole reply went out as questions
+    assert not core.in_answer_phase([_turn(), _orion("ok", closing_note=True)])
+    # The round being read now does not count against itself.
+    assert not core.in_answer_phase([_turn(), _orion(roundup_id="r2")], exclude_roundup="r2")
+    assert core.in_answer_phase([_turn(), _orion(roundup_id="r1"), _orion(roundup_id="r2")], exclude_roundup="r2")
+    # The live threads with several rounds (883a69953bba had 4) are all past it.
+    assert core.question_rounds_used([_orion(roundup_id=f"r{i}") for i in range(4)]) == 4
+
+
+def test_an_answer_phase_section_says_so_outside_the_fence_and_drops_the_spec():
+    spec = "# the spec body"
+    first = core.thread_section(_thread(), [_turn(spec_text=spec)])
+    assert core.ANSWER_PHASE_NOTE not in first and spec in first
+    later = core.thread_section(_thread(answer_phase=True), [_turn("my answers")],
+                                [_turn(spec_text=spec), _orion("1. Why hourly?")], nonce="n1")
+    assert spec not in later and "my answers" in later and "1. Why hourly?" in later
+    assert later.index(core.ANSWER_PHASE_NOTE) < later.index(core.fence_lines("n1")[0])   # Hub's words, not data
+    assert "the session's answers to your questions" in later
+    prompt = core.roundup_prompt([("t1", later)])
+    assert "ONE round of questions per thread" in prompt and core.NO_QUESTIONS in core.ANSWER_PHASE_NOTE
+
+
+def test_whatever_orion_writes_on_an_answer_phase_thread_is_a_closing_note():
+    reply = ("### thread:a\n1. A new question?\n2. Another one\n\n### thread:b\n1. First round question?\n\n"
+             "### thread:c\nNO QUESTIONS\nThe answers settle it; the cap stays open.")
+    a, b, c = core.parse_roundup_reply(reply, ["a", "b", "c"], ["a", "c"])
+    assert a.closing and not a.no_questions and a.text == "1. A new question?\n2. Another one" and a.dropped_question_lines == 2
+    assert not b.closing and b.text == "1. First round question?"                      # a new thread still asks
+    assert c.closing and c.dropped_question_lines == 0 and "cap stays open" in c.text
+    [bare] = core.parse_roundup_reply("### thread:a\nNO QUESTIONS", ["a"], ["a"])
+    assert bare.closing and bare.text == core.NO_QUESTIONS and not bare.no_questions
+    [whole] = core.parse_roundup_reply("no headings, 1. why?", ["a"], ["a"])
+    assert whole.closing and whole.unparsed and whole.dropped_question_lines == 0
+
+
+def test_the_receipt_on_an_answer_phase_thread_says_the_round_is_used():
+    first = core.receipt_text(thread_id="t1", next_at=NOW, roundup_enabled=True)
+    later = core.receipt_text(thread_id="t1", next_at=NOW, roundup_enabled=True, answer_phase=True)
+    assert "Orion's questions will appear" in first and "one round of questions" not in first
+    assert "one round of questions on this thread" in later and "Orion's questions will appear" not in later
+    assert "Orion has NOT read it yet" in later

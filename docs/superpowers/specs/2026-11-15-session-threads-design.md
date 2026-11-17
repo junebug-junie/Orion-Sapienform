@@ -33,15 +33,20 @@ Answered in this build; Juniper may change any of them in review.
   is Juniper's rule, so the body economy does not hold the run. A tier is Juniper's decision.
 - **What happens to a message that arrives while Orion is reading?** It waits for the next round. The
   thread goes back to `held` after Orion's answer.
-- **What does a second round see?** The thread's earlier turns (clipped to 3,000 characters each), the
-  new message in full, and the newest spec text again. Each round is a fresh Orion session.
+- **What does a second round see?** The thread's earlier turns (clipped to 3,000 characters each) and
+  the new message in full. Each round is a fresh Orion session. If Orion already asked on the thread,
+  the second round is the ANSWER PHASE (below): no spec text again, and no new questions.
+- **How many rounds of questions does Orion get?** ONE per thread (added 2026-11-17, Juniper: "just
+  add one round of questions Orion can ask"). The promise-ledger threads reached 4-6 rounds of
+  question, reply, question.
 - **Cursor sessions?** Not wired (`.cursor/hooks.json` is unchanged). The CLI works from any session.
 
 ## Proposed schema / API changes
 
 - **Tables** (`manual_migration_orion_session_thread_v1.sql`, additive, required by orion-hub):
   `orion_session_thread` (one per PR or note; `source_ref` unique; status
-  `held | reading | asked | no_questions | failed`) and `orion_session_turn` (speaker
+  `held | reading | asked | no_questions | closed | failed`; `closed` added 2026-11-17, a free-text
+  column, no migration) and `orion_session_turn` (speaker
   `session | hub | orion`; `roundup_id`; `delivered_at`; `pr_comment_url`; `meta`).
 - **Durable workflow** `session_roundup.orion_turn` (`orion/schemas/session_roundup_run.py`,
   `SessionRoundupBriefV1`, registered). Run id `session-roundup-<utc hour>`. Act family
@@ -71,6 +76,22 @@ Rules that carry weight:
 - Code posts the PR comment. Only on the configured repo, and only on an open pull request whose head
   branch is the thread's branch. `@name` and `#123` are broken. `NO QUESTIONS` and unparsed replies are
   never posted.
+- **One round of questions per thread** (`MAX_QUESTION_ROUNDS_PER_THREAD = 1` in
+  `orion/session_threads/core.py`, a constant, no env key). A thread whose Orion turns include one with
+  questions (not `NO QUESTIONS`, not a closing note; an `unparsed` whole reply counts, since it went out
+  as questions) is in its ANSWER PHASE:
+  - A session reply is still stored, held and read at the next round-up: Orion sees the answers.
+  - The prompt puts a Hub line above that thread's data fence: the round is used, read the answers,
+    write `NO QUESTIONS`, optionally one short line. The spec text is not shown again.
+  - Whatever Orion writes for that thread is a CLOSING NOTE: stored as the Orion turn with
+    `meta.closing_note` and `meta.dropped_question_lines`, thread status `closed`. Never a PR comment.
+    The session sees it as information ("nothing here needs an answer"), with no reply command and no
+    circle-back steps. Hub logs `session_thread_questions_dropped` with the count of question-like lines.
+  - The intake receipt and the CLI's receipt line say the round is used. The waiting hook does not wait
+    on such a thread.
+  - A new thread (a new PR, a new note) gets its own round. A later push of the same PR's spec joins the
+    same thread (`source_ref pr:<n>`), so it is in the answer phase too.
+  - `NO QUESTIONS` uses no round: a later message on that thread may still be asked about.
 - Intake has no login (Hub is host-local). It is bounded: 50 waiting threads, 20 unread messages a
   thread, the same message stored once.
 
@@ -104,6 +125,9 @@ Rules that carry weight:
 5. For a real PR with a spec: one comment by `orion-sapienform` on the PR, and its URL in
    `orion_session_turn.pr_comment_url`.
 6. The sending session gets Orion's questions as context on its next prompt, once.
+7. One round per thread: after deploy, `python3 scripts/smoke_session_threads.py --rule-since <deploy
+   time>` passes (no Orion turn since then asked on a thread that already had its round). Before the
+   deploy it fails on 18 turns across 8 threads (2026-11-17 22:00 UTC, read-only).
 
 ## Recommended next patch
 

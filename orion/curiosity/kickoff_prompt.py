@@ -1132,10 +1132,9 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "0 even then, so read the output, not the exit code. A `unique "
         "constraint violation on node of type Prior` means that prior_id "
         "already exists: MATCH it instead. Fix and resend only the failed "
-        "command. Every write on this page is safe to send again: a :Hop is "
-        "found by its run_id and n, a :TurnOutcome by its run_id, so a resend "
-        "never makes a second one. (A resent :InvestigationRole or :ReviewRole "
-        "adds a newer row; only the newest counts, so that is harmless too.)",
+        "command. Every write above is safe to send again, and so are a :Hop "
+        "and a :TurnOutcome: a :Hop is found by its run_id and n, a "
+        ":TurnOutcome by its run_id, so a resend never makes a second one.",
         "",
         "  THEN CONNECT IT, in the same breath. A finding that points at "
         "nothing is a note; a finding joined to the claim it bears on is "

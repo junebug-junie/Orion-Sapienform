@@ -62,7 +62,7 @@ def test_no_taught_create_and_resend_sentence_is_true():
     text = _prompt()
     assert "CREATE (:Hop" not in text and "CREATE (:TurnOutcome" not in text
     assert "a :Hop or :TurnOutcome is not" not in text
-    assert "Every write on this page is safe to send again" in text
+    assert "so a resend never makes a second one" in text
 
 
 def test_edges_to_a_prior_match_it_first_never_inline():

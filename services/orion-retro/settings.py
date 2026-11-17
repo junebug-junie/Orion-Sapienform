@@ -13,9 +13,8 @@ class Settings:
     core: Path = Path('/opt/retro/core.so')
     snes_core: Path = Path('/opt/retro/snes9x.so')
     n64_core: Path = Path('/opt/retro/mupen64plus_next.so')
-    # Private scratch on the container's tmpfs for the N64 core's system/save directory.
-    # In-game N64 saves live there until the container restarts; server Save/Load
-    # states include cartridge save memory, so they are the persistent record.
+    # Private scratch on the container's tmpfs for the N64 core's system directory
+    # (it copies an ini there). Cartridge saves never go here: see battery().
     n64_scratch: Path = Path('/tmp/n64')
     token_file: Path = Path('/run/secrets/retro_operator')
     hub_token_file: Path = Path('/run/secrets/retro_hub')
@@ -50,9 +49,15 @@ class Settings:
         so N64 renders in software: Angrylion RDP + CXD4 LLE RSP, 8 render threads
         (fits pids_limit; the 'all threads' default spawns one per host CPU)."""
         if system != 'n64': return {}
-        return dict(scratch=self.n64_scratch, options={
+        return dict(scratch=self.n64_scratch, warm_restore=True, options={
             'mupen64plus-rdp-plugin': 'angrylion', 'mupen64plus-rsp-plugin': 'cxd4',
             'mupen64plus-angrylion-multithread': '8'})
+
+    def battery(self, system):
+        """Persist cartridge save memory per game (<saves>/<game>/battery.srm). N64 save
+        states omit it (verified 2026-11-17: restore leaves SRAM blank), so without this
+        an in-game save is lost when the session ends."""
+        return system == 'n64'
 
     def save_limit(self, system):
         return self.n64_save_max_bytes if system == 'n64' else self.save_max_bytes

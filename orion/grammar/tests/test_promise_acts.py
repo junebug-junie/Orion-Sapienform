@@ -99,3 +99,27 @@ def test_close_kinds_and_shadow_set() -> None:
 
 def test_every_promise_is_one_faculty_bucket() -> None:
     assert act_faculty(PROMISE_ACTOR, "say", "juniper") == "act.hub.promise.say"
+
+
+def test_outcome_word_tells_a_quiet_turn_from_a_skipped_one() -> None:
+    # Orion's PR #3561 question 1: the Hub line names which of these happened.
+    assert plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection()).outcome() == "found_nothing"
+    offer_only = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(
+        promises_made=[_p("If you want, I'll re-read it later.", offer=True)]))
+    assert offer_only.outcome() == "nothing_opened" and offer_only.counts()["items"] == 1
+    old = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(
+        promises_made=[_p("I'll hold the deep read for you.", force=None)]))
+    assert old.outcome() == "nothing_opened" and old.counts()["skipped_no_force"] == 1
+    firm = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(
+        promises_made=[_p("I'll hold the deep read for you.")]))
+    assert firm.outcome() == "acted"
+
+
+def test_a_promise_said_again_word_for_word_opens_no_second_act() -> None:
+    # Orion's PR #3561 question 8: the same sentence promised again while it is open is one promise.
+    words = "I'll hold the deep read, then pull it back."
+    plan = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(promises_made=[
+        _p("I\u2019ll  hold the deep read, then pull it back."), _p("I'll also compare the two runs.")]),
+        open_quotes=[words])
+    assert plan.repeats_open == 1 and len(plan.opened) == 1
+    assert plan.opened == [promise_act_id(promise_ref("c2", 1))]

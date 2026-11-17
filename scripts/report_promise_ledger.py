@@ -13,10 +13,11 @@ Over the last ``--days`` (default 28) it reports:
   Approximate: turn times here are ``chat_history_log.created_at`` (when the reply was stored), not
   the ingress time the resolver uses, so a turn at the very edge of a window can fall either side;
 * expired acts whose promising turn got an intention carry reply in the window (Prime took the
-  promise on and delivered something; the ledger does not count a carry as a keep in v1);
+  promise on and delivered something; the ledger does not count a carry as a keep in v1), with their act ids;
 * keep rate kept / (kept + expired), void and un-closeable left out, with a Beta(1, 1) posterior;
 * the self-reinforcement guard: firm promises per JUDGED Juniper turn (judge model pass, not the
-  quick gate), against the replay baseline (``REPLAY_BASELINE``); red above 2x. Stored items with no
+  quick gate), with a Wilson 90% interval, against the frozen replay baseline (``REPLAY_BASELINE``);
+  red above 2x. Stored items with no
   ``force``/``done_when`` (written before #3532) are skipped and counted, never guessed;
 * ``--sample N``: a blinded sample of stored promise items for hand labels. Each item shows ONLY the
   quote and the reply around it, never the judge's doer/force/act/done_when, so the labeller cannot
@@ -64,6 +65,11 @@ from orion.schemas.harness_finalize import (  # noqa: E402
 # Replay of the deployed finder (#3532 rules, same model and lane as live), judged turns only:
 # dev 10-13..11-12 (179 judged, 15 firm promises), held-out 09-13..10-13 (86 judged, 0) and
 # 11-12..11-16 (24 judged, 8). Firm = gated item with offer false. 23 / 289 = 0.080 per judged turn.
+# FROZEN for the whole shadow period (Orion's PR #3561 question 3): set 2026-11-16, before any live
+# promise act existed, and pinned by tests/test_report_promise_ledger.py. It is never re-based on
+# shadow data: a baseline moved after seeing the rate it judges is no guard. Changing it is a
+# Juniper decision recorded in #3531, not an edit here. The slices are uneven (0/86 to 8/24), so the
+# report prints the live rate's Wilson 90% interval beside the ratio; red still means ratio > 2x.
 REPLAY_BASELINE = (23, 289)
 GUARD_RATIO_RED = 2.0
 CARRY_SOURCE = "intention_carry"
@@ -156,7 +162,7 @@ def close_summary(acts: Sequence[Mapping[str, Any]], *, unclosable: set[str],
 
     kinds: Counter[str] = Counter()
     evidence: Counter[str] = Counter()
-    expired_with_carry = 0
+    expired_with_carry: list[str] = []
     for act in acts:
         kind = promise_close_kind(act.get("outcome_source"), act.get("outcome_note"), act.get("closed_at") is not None)
         if kind == "expired" and str(act["act_id"]) in unclosable:
@@ -169,11 +175,12 @@ def close_summary(acts: Sequence[Mapping[str, Any]], *, unclosable: set[str],
             opened, horizon = _aware(act.get("opened_at")), _aware(act.get("horizon_at"))
             if parsed and opened and horizon and any(
                     opened < t <= horizon for t in carry_concerns.get(turn_concern_id(parsed[0]), [])):
-                expired_with_carry += 1
+                expired_with_carry.append(str(act["act_id"]))
     kept, expired = kinds.get("kept", 0), kinds.get("expired", 0)
     return {"acts": len(acts), "open": kinds.get("open", 0), "kept": kept, "expired": expired,
             "void": kinds.get("void", 0), "unclosable": kinds.get("unclosable", 0),
-            "kept_by_evidence": dict(evidence), "expired_with_carry_reply": expired_with_carry,
+            "kept_by_evidence": dict(evidence), "expired_with_carry_reply": len(expired_with_carry),
+            "expired_with_carry_reply_acts": expired_with_carry,
             "keep_rate": beta_summary(kept, expired)}
 
 
@@ -207,9 +214,12 @@ def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] 
     rate = firm / len(judged) if judged else None
     base = baseline[0] / baseline[1]
     ratio = (rate / base) if rate is not None and base > 0 else None
+    lo, hi = wilson(firm, len(judged), z=1.645) if judged else (None, None)
     return {"judged_turns": len(judged), "turns_not_judged": len(turns) - len(judged), "firm_promises": firm,
             "offers": offers, "skipped_pre_force": skipped,
-            "rate": None if rate is None else round(rate, 4), "baseline": f"{baseline[0]}/{baseline[1]} replay",
+            "rate": None if rate is None else round(rate, 4),
+            "rate_wilson90": None if lo is None else [round(lo, 4), round(hi, 4)],
+            "baseline": f"{baseline[0]}/{baseline[1]} replay",
             "baseline_rate": round(base, 4), "ratio": None if ratio is None else round(ratio, 2),
             "red": bool(ratio is not None and ratio > GUARD_RATIO_RED)}
 
@@ -311,11 +321,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"promise acts since {since:%Y-%m-%d %H:%M} UTC: {led['acts']} "
           f"(open {led['open']}, kept {led['kept']}, expired {led['expired']}, void {led['void']}, "
           f"un-closeable {led['unclosable']})")
-    print(f"kept by evidence: {led['kept_by_evidence'] or '-'}; expired with a carry reply: {led['expired_with_carry_reply']}")
+    print(f"kept by evidence: {led['kept_by_evidence'] or '-'}; expired with a carry reply: {led['expired_with_carry_reply']}"
+          + (f" ({', '.join(led['expired_with_carry_reply_acts'])})" if led["expired_with_carry_reply_acts"] else ""))
     kr = led["keep_rate"]
-    print(f"keep rate (Beta(1,1)): mean {kr['mean']}, 90% {kr['lo90']}-{kr['hi90']}, n={kr['n']} (void and un-closeable left out)")
-    print(f"guard: {g['firm_promises']} firm promises over {g['judged_turns']} judged Juniper turns = {g['rate']} "
-          f"vs baseline {g['baseline_rate']} ({g['baseline']}): ratio {g['ratio']}{' RED' if g['red'] else ''}; "
+    print(f"keep rate (Beta(1,1)) over kept {led['kept']} + expired {led['expired']} (void {led['void']} and "
+          f"un-closeable {led['unclosable']} left out): mean {kr['mean']}, 90% {kr['lo90']}-{kr['hi90']}, n={kr['n']}")
+    ci = g["rate_wilson90"]
+    print(f"guard: {g['firm_promises']} firm promises over {g['judged_turns']} judged Juniper turns = {g['rate']}"
+          f"{f' (90% {ci[0]}-{ci[1]})' if ci else ''} "
+          f"vs frozen baseline {g['baseline_rate']} ({g['baseline']}): ratio {g['ratio']}{' RED' if g['red'] else ''}; "
           f"skipped pre-#3532 items {g['skipped_pre_force']}; turns not judged {g['turns_not_judged']}")
     if args.sample:
         print(f"blinded sample: {out['sample']['written']} items -> {out['sample']['path']} (fill label true/false, then --score)")

@@ -2224,10 +2224,23 @@ async def _publish_promise_acts(
 
     if not (bool(getattr(hub_settings, "HUB_PROMISE_LEDGER_ENABLED", True))
             and bool(getattr(hub_settings, "HUB_ACT_LEDGER_ENABLED", True))):
-        return None
-    if bus is None or source_label != "hub_orion" or reflection is None or promise_view is None:
-        return None
-    if str((client_meta or {}).get("unsolicited") or "").lower() == "true" or (client_meta or {}).get("unsolicited") is True:
+        skip = "flag_off"
+    elif bus is None:
+        skip = "no_bus"
+    elif promise_view is None:
+        skip = "no_view"
+    elif source_label != "hub_orion":
+        skip = "not_hub_orion"
+    elif str((client_meta or {}).get("unsolicited") or "").lower() == "true" or (client_meta or {}).get("unsolicited") is True:
+        skip = "unsolicited"
+    elif reflection is None:
+        skip = "no_reflection"
+    else:
+        skip = None
+    if skip is not None:
+        # One line per skipped turn too (Orion's PR #3561 question 1): a turn the ledger skipped
+        # says why, so "skipped" and "never ran" are told apart.
+        logger.info("promise_ledger corr=%s outcome=skipped reason=%s", correlation_id, skip)
         return None
     try:
         from orion.hub.promise_ledger import publish_promise_acts
@@ -2235,7 +2248,8 @@ async def _publish_promise_acts(
         # The offers the judge was shown come from the same pre-turn read: one read, so an accepted
         # quote always maps to the ref the judge saw.
         return await publish_promise_acts(bus, correlation_id=str(correlation_id), session_id=session_id,
-                                          reflection=reflection, prior_offers=list(promise_view.offers))
+                                          reflection=reflection, prior_offers=list(promise_view.offers),
+                                          open_quotes=[p.quote for p in promise_view.open_promises])
     except Exception as exc:  # noqa: BLE001 -- a background trace; never fails the turn
         logger.warning("promise_acts_failed corr=%s error=%s", correlation_id, exc)
         return None

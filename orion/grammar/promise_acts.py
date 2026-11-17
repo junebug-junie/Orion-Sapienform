@@ -128,12 +128,27 @@ class PromiseLedgerPlan:
         self.skipped_no_force = 0            # items without force/done_when (pre-#3532 judge)
         self.accepted_unmatched = 0          # an accepted quote not among the prior offers
         self.kept_without_evidence = 0       # a kept id with no delivering quote (gate should prevent)
+        self.items = 0                       # promises_made items the gated reflection carried
+        self.repeats_open = 0                # a firm promise word-for-word the same as one already open
 
     def counts(self) -> dict[str, int]:
-        return {"opened": len(self.opened), "opened_offers": len(self.opened_offers), "kept": len(self.kept),
-                "offers_not_opened": self.offers_not_opened, "skipped_no_force": self.skipped_no_force,
+        return {"items": self.items, "opened": len(self.opened), "opened_offers": len(self.opened_offers),
+                "kept": len(self.kept), "offers_not_opened": self.offers_not_opened,
+                "skipped_no_force": self.skipped_no_force, "repeats_open": self.repeats_open,
                 "accepted_unmatched": self.accepted_unmatched,
                 "kept_without_evidence": self.kept_without_evidence}
+
+    def outcome(self) -> str:
+        """One word for the Hub's per-turn line, so a quiet turn and a ledger that never ran look
+        different (Orion's PR #3561 question 1): ``found_nothing`` (the gated reflection carried no
+        promise, offer, acceptance or keep), ``nothing_opened`` (it carried items, and every one was
+        skipped: an offer waiting, a pre-#3532 item, a repeat, an unmatched acceptance), or ``acted``."""
+        if self.events:
+            return "acted"
+        c = self.counts()
+        if c["items"] or c["accepted_unmatched"] or c["kept_without_evidence"]:
+            return "nothing_opened"
+        return "found_nothing"
 
 
 def plan_promise_events(
@@ -142,22 +157,31 @@ def plan_promise_events(
     session_id: Optional[str],
     reflection: Optional[FinalizeReflectionV1],
     prior_offers: Sequence[tuple[str, str]] = (),
+    open_quotes: Sequence[str] = (),
     at: Optional[datetime] = None,
 ) -> PromiseLedgerPlan:
     """The act events for one delivered Juniper turn. ``reflection`` is the gated reflection on the
     run artifact (checked against the text Juniper saw). ``prior_offers``: (ref, quote) of the
-    offers in Orion's previous reply in this session, the ones the judge was shown."""
+    offers in Orion's previous reply in this session, the ones the judge was shown. ``open_quotes``:
+    the quotes of the open promises the judge was shown; a firm promise with the same words (after
+    quote normalization) is the open promise said again, not a second promise, so it opens no act
+    (``repeats_open``). A reworded repeat is not caught here."""
     plan = PromiseLedgerPlan()
     if reflection is None:
         return plan
     corr = str(correlation_id)
     reply_act = stable_act_id(REPLY_ACTOR, "say", corr)
+    already_open = {_norm(q) for q in open_quotes if q}
+    plan.items = len(reflection.promises_made)
     for i, promise in enumerate(reflection.promises_made):
         if not is_firm_ledger_promise(promise):
             plan.skipped_no_force += 1
             continue
         if promise.offer:
             plan.offers_not_opened += 1
+            continue
+        if _norm(promise.quote) in already_open:
+            plan.repeats_open += 1
             continue
         act = build_promise_act(promise_ref(corr, i), parent_act_id=reply_act)
         plan.events.append(act_opened_event(act, source_service="orion-hub", source_component="promise_ledger.open",

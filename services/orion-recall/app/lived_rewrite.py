@@ -14,7 +14,9 @@ the same conversation and writes up to ``MAX_QUERIES`` short searches that name 
   message, exactly as in step 1.
 
 Context comes from ``chat_history_log`` (same ``session_id``, the last ``CONTEXT_TURNS`` rows
-inside ``CONTEXT_WINDOW``). The text goes only to the local model and is never logged.
+inside ``CONTEXT_WINDOW``). The prompt goes only to the local model through the gateway; orion-recall
+does not log it. The rewritten searches themselves are kept in the recall debug (the recall trace).
+Whether the gateway or the bus mirror keeps the prompt is decided there, not here.
 """
 from __future__ import annotations
 

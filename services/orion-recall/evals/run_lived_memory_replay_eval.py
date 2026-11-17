@@ -219,6 +219,8 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
                 noise.append({"reranked": out.reranked, "now": at, "small_talk": is_small_talk(row["prompt"]),
                               "chosen_ids": [c.rec.doc_id for c in out.chosen] if dead else None})
 
+        print(f"variant {name} done: {len(results)} referring, {len(noise)} noise", file=sys.stderr, flush=True)
+
         def pct(key: str, q: float) -> int | None:
             vals = sorted(t[key] for t in timings if key in t)
             return vals[min(len(vals) - 1, int(q * len(vals)))] if vals else None

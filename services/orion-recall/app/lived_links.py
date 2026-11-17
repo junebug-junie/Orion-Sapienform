@@ -9,8 +9,8 @@ project, a place). The style is personalized PageRank over the memory-referent g
 2. **Spread.** Seed mass flows referent -> memory -> referent -> memory, with restart
    ``ALPHA`` back to the seeds. Each referent splits its mass over its memories, so a referent
    shared by many memories passes little to each one.
-3. **Hubs.** A referent on more than ``HUB_MAX_DEGREE`` memories (Juniper and Orion, on most of
-   them) says nothing about this turn and is left out of the graph.
+3. **Hubs.** A referent on more than ``HUB_MAX_DEGREE`` memories (the two main participants, on
+   most of them) says nothing about this turn and is left out of the graph.
 
 Neighbours are only *candidates*: the reranker scores every one, and the quality bar applies.
 Nothing reaches the prompt from here without a rerank.

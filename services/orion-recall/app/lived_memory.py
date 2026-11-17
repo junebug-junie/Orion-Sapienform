@@ -87,8 +87,12 @@ HEADER = "[Lived memories that fit this turn -- kind, record id, date]"
 DEGRADED_HEADER = ("[Lived memories found by exact words only -- memory search ran degraded this turn, "
                    "so these may fit loosely and a missing memory is not proof there is none -- "
                    "kind, record id, date]")
-DEGRADED_EMPTY_NOTE = ("[Lived memory search ran degraded this turn and found no exact-word match. "
-                       "That is not proof there is no memory: look again before saying you do not remember.]")
+DEGRADED_EMPTY_NOTE = ("[Lived memory search ran degraded this turn (exact words only) and found no "
+                       "match. That is not proof there is no memory: look again before saying you do "
+                       "not remember.]")
+DEGRADED_EMPTY_NOTE_RERANKED = ("[Lived memory search ran degraded this turn (meaning search unavailable) "
+                                "and nothing it found fit. That is not proof there is no memory: look "
+                                "again before saying you do not remember.]")
 
 DENSE_TOP_K = 16
 LEXICAL_TOP_K = 10
@@ -123,6 +127,8 @@ QUERY_MAX_CHARS = 1000
 RERANK_QUERY_CHARS = 600
 RERANK_DOC_CHARS = 400
 SNAPSHOT_TTL_SEC = 60.0
+# The referent graph changes only when the distiller writes; it is refreshed in the background.
+GRAPH_TTL_SEC = 600.0
 
 # Standard English function words (BM25 stopping), not a topic list.
 _STOPWORDS = frozenset(
@@ -238,6 +244,9 @@ class LivedRecall:
     reranked: List[tuple[LivedRecord, float]] = field(default_factory=list)
     # "hybrid" (meaning + exact words, reranked) or "degraded" (issue #3573); "" = no search ran.
     backend: str = ""
+    degraded_reasons: List[str] = field(default_factory=list)
+    lexical_hits: int = 0
+    quiet_empty: bool = False  # degraded, nothing found, and nothing to note (small talk)
 
     @property
     def degraded(self) -> bool:
@@ -245,9 +254,12 @@ class LivedRecall:
 
     @property
     def rendered(self) -> str:
-        if not self.lines:
-            return DEGRADED_EMPTY_NOTE if self.degraded else ""
-        return (DEGRADED_HEADER if self.degraded else HEADER) + "\n" + "\n".join(self.lines)
+        if self.lines:
+            return (DEGRADED_HEADER if self.degraded else HEADER) + "\n" + "\n".join(self.lines)
+        if not self.degraded or self.quiet_empty:
+            return ""
+        reranked = not any(r.startswith("rerank") or r == "timeout" for r in self.degraded_reasons)
+        return DEGRADED_EMPTY_NOTE_RERANKED if reranked else DEGRADED_EMPTY_NOTE
 
 
 def render_line(rec: LivedRecord) -> str:
@@ -352,6 +364,8 @@ class LivedMemoryRecall:
         self._bm25: BM25 | None = None
         self._names: List[str] = []
         self._graph: ReferentGraph | None = None
+        self._graph_loaded_at = 0.0
+        self._graph_task: asyncio.Future | None = None
         self._loaded_at = 0.0
         self._lock = asyncio.Lock()
 
@@ -363,14 +377,22 @@ class LivedMemoryRecall:
                 self._by_doc = {r.doc_id: r for r in recs}
                 self._bm25 = BM25([r.text for r in recs])
                 self._names = sorted({r.text.split(",", 1)[0] for r in recs if r.kind == KIND_PERSON_FACT})
-                if self.cfg.link_top_k > 0:
-                    try:
-                        self._graph = await load_graph(self.pool)
-                    except Exception as exc:  # noqa: BLE001 -- links are an extra, never a blocker
-                        logger.warning("lived_memory_links_unavailable error=%s", type(exc).__name__)
-                        self._graph = None
                 self._loaded_at = time.monotonic()
+        if self.cfg.link_top_k > 0:
+            if force or self._graph_loaded_at == 0.0:
+                await self._load_graph()  # once, inline; later refreshes run off the turn path
+            elif (time.monotonic() - self._graph_loaded_at > GRAPH_TTL_SEC
+                  and (self._graph_task is None or self._graph_task.done())):
+                self._graph_task = asyncio.ensure_future(self._load_graph())
         return self._snapshot
+
+    async def _load_graph(self) -> None:
+        try:
+            self._graph = await load_graph(self.pool)
+        except Exception as exc:  # noqa: BLE001 -- links are an extra, never a blocker
+            logger.warning("lived_memory_links_unavailable error=%s", type(exc).__name__)
+            self._graph = None
+        self._graph_loaded_at = time.monotonic()
 
     async def _rerank_http(self, client: httpx.AsyncClient, query: str, docs: List[str],
                            timeout: float | None = None) -> List[float]:
@@ -412,16 +434,17 @@ class LivedMemoryRecall:
 
     async def recall(self, query: str, *, client: httpx.AsyncClient | None = None,
                      as_of: datetime | None = None, session_id: str | None = None,
-                     exclude_ids: Sequence[str] = ()) -> LivedRecall:
+                     exclude_ids: Sequence[str] = (), timeout_sec: float | None = None) -> LivedRecall:
         """One retrieval. ``session_id`` lets the rewrite read the last turns of this
         conversation. ``as_of`` (replay evals only) hides records Orion stored after that time,
         so a replayed message cannot be answered by the memory distilled from it.
 
-        Bounded by ``cfg.timeout_sec`` end to end: the rewrite gets ``rewrite_timeout_sec`` and
-        the rerank whatever is left. A reranker or embedder that is down or too slow drops to
-        exact-word ranking (backend ``degraded``), never to nothing (issue #3573)."""
+        Bounded by ``timeout_sec`` (default ``cfg.timeout_sec``) end to end: the rewrite gets
+        ``rewrite_timeout_sec``, the meaning search what is left minus ``RERANK_RESERVE_SEC``, and
+        the rerank the rest. A reranker or embedder that is down or too slow drops to exact-word
+        ranking (backend ``degraded``), never to nothing (issue #3573)."""
         started = time.perf_counter()
-        deadline = started + float(self.cfg.timeout_sec)
+        deadline = started + float(timeout_sec if timeout_sec is not None else self.cfg.timeout_sec)
         timings: Dict[str, int] = {}
         out = LivedRecall(debug={"timings_ms": timings})
         query = " ".join(str(query or "").split())
@@ -432,44 +455,49 @@ class LivedMemoryRecall:
             return out
         own_client = client is None
         client = client or httpx.AsyncClient(timeout=self.cfg.timeout_sec)
-        rewrite_task: asyncio.Task | None = None
+        pending: List[asyncio.Future] = []
         degraded: List[str] = []
+        rewrite_info: Dict[str, Any] = {"outcome": "off"}
+        out.debug["rewrite"] = rewrite_info
         try:
-            t = time.perf_counter()
-            await self.snapshot()
-            timings["snapshot"] = int((time.perf_counter() - t) * 1000)
-            qtoks = set(tokenize(query))
-            short = len(qtoks) < self.cfg.min_query_tokens
-
-            rewrite_info: Dict[str, Any] = {"outcome": "off"}
-            out.debug["rewrite"] = rewrite_info
+            # The rewrite starts first: it does not need the snapshot, and it is the slow part.
+            rewrite_task: asyncio.Future | None = None
             rewrite_started = time.perf_counter()
             if self._rewriter is not None and not long_message:
                 rewrite_task = asyncio.ensure_future(
                     self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of))
+                pending.append(rewrite_task)
             elif self._rewriter is not None:
                 rewrite_info["outcome"] = "skipped_long_message"
+            rewrite_result: List[List[str]] = []
 
             async def rewrites() -> List[str]:
-                if rewrite_task is None:
-                    return []
-                budget = min(float(self.cfg.rewrite_timeout_sec),
-                             deadline - time.perf_counter() - RERANK_RESERVE_SEC)
-                try:
-                    qs = await asyncio.wait_for(asyncio.shield(rewrite_task), timeout=max(0.001, budget))
-                    rewrite_info["outcome"] = "ok" if qs else "none"
-                except asyncio.TimeoutError:
-                    rewrite_task.cancel()
-                    qs = []
-                    rewrite_info["outcome"] = "timeout"
-                except Exception as exc:  # noqa: BLE001 -- no rewrite means the raw message, never a failure
-                    qs = []
-                    rewrite_info["outcome"] = f"error:{type(exc).__name__}"
-                timings["rewrite"] = int((time.perf_counter() - rewrite_started) * 1000)
+                if rewrite_result:
+                    return rewrite_result[0]
+                qs: List[str] = []
+                if rewrite_task is not None:
+                    budget = min(float(self.cfg.rewrite_timeout_sec),
+                                 deadline - time.perf_counter() - RERANK_RESERVE_SEC)
+                    try:
+                        qs = list(await asyncio.wait_for(asyncio.shield(rewrite_task), timeout=max(0.001, budget)))
+                        rewrite_info["outcome"] = "ok" if qs else "none"
+                    except asyncio.TimeoutError:
+                        rewrite_task.cancel()
+                        rewrite_info["outcome"] = "timeout"
+                    except Exception as exc:  # noqa: BLE001 -- no rewrite means the raw message, never a failure
+                        rewrite_info["outcome"] = f"error:{type(exc).__name__}"
+                    timings["rewrite"] = int((time.perf_counter() - rewrite_started) * 1000)
+                # The searches are Orion's own query text: the recall trace the spec asks for.
                 rewrite_info["queries"] = list(qs)
-                return list(qs)
+                rewrite_result.append(qs)
+                return qs
 
-            if short:
+            t = time.perf_counter()
+            await self.snapshot()
+            timings["snapshot"] = int((time.perf_counter() - t) * 1000)
+            qtoks = set(tokenize(query))
+
+            if len(qtoks) < self.cfg.min_query_tokens:
                 # Too few words to search with on its own. Search only if the rewrite named
                 # something; small talk comes back NONE and stops here.
                 if not (await rewrites()):
@@ -481,18 +509,30 @@ class LivedMemoryRecall:
                 return as_of is None or rec.created_at is None or rec.created_at < as_of
 
             replay = as_of is not None
-            raw_dense_task = asyncio.ensure_future(self._dense(client, query, DENSE_TOP_K, replay=replay))
+            raw_dense = asyncio.ensure_future(self._dense(client, query, DENSE_TOP_K, replay=replay))
+            pending.append(raw_dense)
             queries = await rewrites()
             t = time.perf_counter()  # dense time past the rewrite wait (the raw search overlaps it)
-            sub_dense = [asyncio.ensure_future(self._dense(client, q, REWRITE_DENSE_TOP_K, replay=replay))
-                         for q in queries]
+            dense_tasks = [raw_dense] + [
+                asyncio.ensure_future(self._dense(client, q, REWRITE_DENSE_TOP_K, replay=replay)) for q in queries]
+            pending.extend(dense_tasks[1:])
+            dense_budget = deadline - time.perf_counter() - RERANK_RESERVE_SEC
+            done, not_done = await asyncio.wait(dense_tasks, timeout=max(0.001, dense_budget))
+            for task in not_done:
+                task.cancel()
             dense_lists: List[List[tuple[str, float]]] = []
             dense_failed = 0
-            for i, res in enumerate(await asyncio.gather(raw_dense_task, *sub_dense, return_exceptions=True)):
-                if isinstance(res, BaseException):
+            for i, task in enumerate(dense_tasks):
+                res: Any = []
+                if task in not_done:
                     dense_failed += 1
-                    out.debug.setdefault("dense_error", f"{type(res).__name__}: {res}"[:200])
-                    res = []
+                    out.debug.setdefault("dense_error", "timeout")
+                elif task.exception() is not None:
+                    exc = task.exception()
+                    dense_failed += 1
+                    out.debug.setdefault("dense_error", f"{type(exc).__name__}: {exc}"[:200])
+                else:
+                    res = task.result()
                 k = DENSE_TOP_K if i == 0 else REWRITE_DENSE_TOP_K
                 kept = []
                 for did, sim in res:
@@ -503,8 +543,8 @@ class LivedMemoryRecall:
                 if i == 0:
                     out.debug["dense_not_live"] = sum(1 for d, _ in res if d not in self._by_doc)
             timings["dense"] = int((time.perf_counter() - t) * 1000)
-            if dense_failed == len(dense_lists):
-                degraded.append("embedder_unavailable")
+            if dense_failed == len(dense_tasks):
+                degraded.append("embedder_timeout" if not_done else "embedder_unavailable")
 
             lexical_lists = [self.lexical(query, allowed=allowed)]
             lexical_lists += [self.lexical(q, REWRITE_LEXICAL_TOP_K, allowed=allowed) for q in queries]
@@ -520,15 +560,18 @@ class LivedMemoryRecall:
             fused = rrf(dense_lists + lexical_lists)
             ordered = sorted(fused, key=lambda d: (-fused[d], d))
 
-            # Link-following: neighbours of the top candidates and of names in the message.
+            # Link-following: neighbours of the top candidates and of names in the message or
+            # in the rewritten searches.
             links: List[tuple[str, float]] = []
-            if self._graph is not None and self.cfg.link_top_k > 0 and len(self._graph):
+            link_k = max(0, min(int(self.cfg.link_top_k), MAX_RERANK // 2))
+            if self._graph is not None and link_k > 0 and len(self._graph):
                 t = time.perf_counter()
-                seed_refs = self._graph.mentions(query)
+                seed_refs = set(self._graph.mentions(query))
+                for q in queries:
+                    seed_refs |= self._graph.mentions(q)
                 links = self._graph.spread(
                     ordered[:SEED_DOCS], seed_refs, exclude=set(ordered[:MAX_RERANK]),
-                    allowed=lambda d: d in self._by_doc and allowed(self._by_doc[d]),
-                    top_k=self.cfg.link_top_k)
+                    allowed=lambda d: d in self._by_doc and allowed(self._by_doc[d]), top_k=link_k)
                 timings["links"] = int((time.perf_counter() - t) * 1000)
                 out.debug["links"] = {"seed_names": len(seed_refs), "added": len(links)}
             link_ids = {d for d, _ in links}
@@ -536,11 +579,20 @@ class LivedMemoryRecall:
                                        "lexical": sum(len(x) for x in lexical_lists),
                                        "live_pool": len(fused), "links": len(links),
                                        "dense_not_live": out.debug.pop("dense_not_live", 0)}
-            if not ordered and not links:
+            out.lexical_hits = len(lexical_best)
+
+            def finish_backend() -> None:
                 out.backend = BACKEND_DEGRADED if degraded else BACKEND_HYBRID
                 out.debug["backend"] = out.backend
                 if degraded:
                     out.debug["degraded"] = list(degraded)
+                    out.degraded_reasons = list(degraded)
+                    # Small talk the rewrite called NONE, with no word in common with any memory,
+                    # gets no note: there is nothing it could be denying.
+                    out.quiet_empty = rewrite_info.get("outcome") == "none" and not lexical_best
+
+            if not ordered and not links:
+                finish_backend()
                 return out
             cand_ids = ordered[: MAX_RERANK - len(links)] + [d for d, _ in links]
             recs = [self._by_doc[d] for d in cand_ids]
@@ -587,23 +639,11 @@ class LivedMemoryRecall:
                 # Never inject a link neighbour without a rerank: exact-word hits only.
                 chosen = lexical_fallback([r for r in recs if r.doc_id not in link_ids], lexical_best,
                                           all_tokens, names, max_lines=self.cfg.max_lines)
-            out.backend = BACKEND_DEGRADED if degraded else BACKEND_HYBRID
-            out.debug["backend"] = out.backend
-            if degraded:
-                out.debug["degraded"] = list(degraded)
+            finish_backend()
             if not chosen:
                 return out
 
-            t = time.perf_counter()
-            ids_by_kind: Dict[str, List[str]] = {}
-            for s in chosen:
-                ids_by_kind.setdefault(s.rec.kind, []).append(s.rec.record_id)
-            still_live = {r.doc_id for r in await fetch_live_records(self.pool, kinds=list(ids_by_kind), ids_by_kind=ids_by_kind)}
-            timings["recheck"] = int((time.perf_counter() - t) * 1000)
-            dropped = [s.rec.doc_id for s in chosen if s.rec.doc_id not in still_live]
-            if dropped:
-                out.debug["recheck_dropped"] = dropped
-            chosen = [s for s in chosen if s.rec.doc_id in still_live]
+            chosen = await self._recheck(chosen, out, timings)
             for s in chosen:
                 s.dense, s.lexical = dense_best.get(s.rec.doc_id), lexical_best.get(s.rec.doc_id)
                 s.link = s.rec.doc_id in link_ids
@@ -614,11 +654,61 @@ class LivedMemoryRecall:
             out.debug["error"] = f"{type(exc).__name__}: {exc}"[:300]
             return out
         finally:
-            if rewrite_task is not None and not rewrite_task.done():
-                rewrite_task.cancel()
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            if pending:
+                # Collect every child (cancelled or failed) so none logs "exception never retrieved".
+                await asyncio.gather(*pending, return_exceptions=True)
             timings["total"] = int((time.perf_counter() - started) * 1000)
             if own_client:
                 await client.aclose()
+
+    async def _recheck(self, chosen: List[Scored], out: LivedRecall, timings: Dict[str, int]) -> List[Scored]:
+        """Re-read the chosen ids with the serving gate: a correction written since the snapshot
+        removes what it corrects."""
+        t = time.perf_counter()
+        ids_by_kind: Dict[str, List[str]] = {}
+        for s in chosen:
+            ids_by_kind.setdefault(s.rec.kind, []).append(s.rec.record_id)
+        still_live = {r.doc_id for r in await fetch_live_records(self.pool, kinds=list(ids_by_kind),
+                                                                  ids_by_kind=ids_by_kind)}
+        timings["recheck"] = int((time.perf_counter() - t) * 1000)
+        dropped = [s.rec.doc_id for s in chosen if s.rec.doc_id not in still_live]
+        if dropped:
+            out.debug["recheck_dropped"] = dropped
+        return [s for s in chosen if s.rec.doc_id in still_live]
+
+    async def degraded_now(self, query: str, *, reason: str, timeout_sec: float = 0.3) -> LivedRecall:
+        """Exact-word recall from the in-memory snapshot, for when the full recall ran out of time
+        (issue #3573). No embedder, no reranker, no rewrite; only the re-check touches Postgres,
+        bounded by ``timeout_sec``. If the re-check cannot finish, nothing is served but the
+        degraded note still is."""
+        started = time.perf_counter()
+        timings: Dict[str, int] = {}
+        out = LivedRecall(debug={"timings_ms": timings, "backend": BACKEND_DEGRADED, "degraded": [reason]},
+                          backend=BACKEND_DEGRADED, degraded_reasons=[reason])
+        query = " ".join(str(query or "").split())[:QUERY_MAX_CHARS]
+        qtoks = set(tokenize(query))
+        if not query or len(qtoks) < self.cfg.min_query_tokens or self._bm25 is None:
+            out.backend = ""  # nothing a search could have run on: no note
+            out.debug = {"timings_ms": timings, "skipped": "few_content_words_or_no_snapshot"}
+            return out
+        lexical_best = dict(self.lexical(query))
+        out.lexical_hits = len(lexical_best)
+        recs = [self._by_doc[d] for d in lexical_best if d in self._by_doc]
+        chosen = lexical_fallback(recs, lexical_best, qtoks, name_tokens(query, self._names),
+                                  max_lines=self.cfg.max_lines)
+        if chosen:
+            try:
+                chosen = await asyncio.wait_for(self._recheck(chosen, out, timings), timeout=timeout_sec)
+            except Exception as exc:  # noqa: BLE001 -- unverified rows are never served
+                out.debug["recheck_error"] = type(exc).__name__
+                chosen = []
+        out.chosen = chosen
+        out.lines = [render_line(s.rec) for s in chosen]
+        timings["total"] = int((time.perf_counter() - started) * 1000)
+        return out
 
 
 @dataclass(frozen=True)
@@ -687,7 +777,8 @@ def items_for(chosen: Sequence[Scored]) -> List[Dict[str, Any]]:
 
 
 __all__ = [
-    "BACKEND_DEGRADED", "BACKEND_HYBRID", "BM25", "DEGRADED_EMPTY_NOTE", "DEGRADED_HEADER", "HEADER", "KINDS", "LivedMemoryConfig", "LivedMemoryRecall", "LivedRecall", "SOURCE",
+    "BACKEND_DEGRADED", "BACKEND_HYBRID", "BM25", "DEGRADED_EMPTY_NOTE", "DEGRADED_EMPTY_NOTE_RERANKED",
+    "DEGRADED_HEADER", "HEADER", "KINDS", "LivedMemoryConfig", "LivedMemoryRecall", "LivedRecall", "SOURCE",
     "index_loop", "items_for", "lexical_fallback", "name_tokens", "rank", "recency", "render_line",
     "rerank_query", "rrf", "run_index_pass",
     "sigmoid", "split_doc_id", "tokenize",

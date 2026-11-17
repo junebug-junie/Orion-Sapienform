@@ -333,17 +333,72 @@ def test_degraded_with_no_match_still_tells_the_prompt(no_dense):
     assert out.lines == [] and out.backend == "degraded" and out.rendered == lm.DEGRADED_EMPTY_NOTE
 
 
-def test_a_link_neighbour_is_never_served_without_a_rerank(no_dense):
+def test_a_link_neighbour_is_never_served_without_a_rerank(no_dense, monkeypatch):
+    """The neighbour shares words with the turn, so exact words alone would serve it; it entered
+    the candidates only as a link (pushed out of the searched pool), so it must not be served."""
     async def down(query, docs):
         raise ConnectionError("down")
 
+    monkeypatch.setattr(lm, "MAX_RERANK", 2)
     seed = _row("s1", "Juniper reached the final dungeon of the castle adventure game.")
-    sibling = _row("s2", "A different note on the same project.")
-    pool = Pool({"episode_memory": [seed, sibling]},
+    other = _row("s3", "The castle adventure game has a final dungeon boss.")
+    sibling = _row("s2", "Castle adventure game notes from the final week.")
+    pool = Pool({"episode_memory": [seed, other, sibling]},
                 edges=[("s1", "project:castle-game"), ("s2", "project:castle-game")])
     reader = LivedMemoryRecall(pool, _cfg(), reranker=down, clock=lambda: NOW)
     out = asyncio.run(reader.recall("final dungeon reached in the castle adventure game today"))
-    assert out.backend == "degraded" and [s.rec.record_id for s in out.chosen] == ["s1"]
+    assert out.debug["candidates"]["links"] == 1  # s2 came in as a link, not as a search hit
+    assert out.backend == "degraded" and "s2" not in [s.rec.record_id for s in out.chosen]
+    assert out.chosen
+
+
+def test_a_hanging_embedder_degrades_inside_the_deadline(monkeypatch):
+    async def embed(*_a, **_k):
+        await asyncio.sleep(10)
+        return [0.0], "m"
+
+    monkeypatch.setattr(lm, "embed", embed)
+    monkeypatch.setattr(lm, "RERANK_RESERVE_SEC", 0.3)
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME]}), _cfg(timeout_sec=0.8), reranker=overlap_reranker,
+                               clock=lambda: NOW)
+    out = asyncio.run(reader.recall("Juniper reached the final dungeon of the castle adventure game today"))
+    assert out.backend == "degraded" and out.debug["degraded"] == ["embedder_timeout"]
+    assert [s.rec.record_id for s in out.chosen] == ["g1"] and not out.chosen[0].degraded  # still reranked
+    assert out.debug["timings_ms"]["total"] < 1000
+
+
+def test_degraded_small_talk_gets_no_note(no_dense):
+    async def down(query, docs):
+        raise ConnectionError("down")
+
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME]}), _cfg(), reranker=down,
+                               rewriter=fixed_rewriter([]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("sounds lovely, enjoy your evening and sleep well tonight"))
+    assert out.lines == [] and out.rendered == ""
+
+
+def test_embedder_down_and_nothing_fits_says_meaning_search_was_down(monkeypatch):
+    from orion.introspect.semantic_index import SearchUnavailableError
+
+    async def embed(*_a, **_k):
+        raise SearchUnavailableError("down")
+
+    monkeypatch.setattr(lm, "embed", embed)
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GAME]}), _cfg(min_fit=0.999), reranker=overlap_reranker,
+                               clock=lambda: NOW)
+    out = asyncio.run(reader.recall("thinking about an adventure with weather and baking bread today"))
+    assert out.lines == [] and out.rendered == lm.DEGRADED_EMPTY_NOTE_RERANKED
+
+
+def test_names_in_the_rewrite_seed_the_links(no_dense):
+    sibling = _row("s2", "She said the save states rescued her whole run.")
+    pool = Pool({"episode_memory": [GAME, sibling]},
+                edges=[("g1", "project:castle-game"), ("s2", "project:castle-game")],
+                names=[("castle quest", "project:castle-game")])
+    reader = LivedMemoryRecall(pool, _cfg(), reranker=overlap_reranker,
+                               rewriter=fixed_rewriter(["castle quest ending"]), clock=lambda: NOW)
+    out = asyncio.run(reader.recall("okay, I beat it!"))
+    assert out.debug["links"]["seed_names"] == 1
 
 
 # --- worker seam --------------------------------------------------------------------------
@@ -373,3 +428,30 @@ def test_worker_renders_the_degraded_note_and_passes_the_session(monkeypatch, no
     assert (count, timed_out, debug["backend"]) == (0, False, "degraded")
     assert lm.DEGRADED_EMPTY_NOTE in bundle.rendered and bundle.items == []
     assert seen and seen[0][0].startswith("thinking about an adventure")
+
+
+def test_worker_falls_back_to_exact_words_when_the_backstop_fires(no_dense):
+    from app import worker
+    from orion.core.contracts.recall import MemoryBundleStatsV1, MemoryBundleV1
+
+    class Hung(LivedMemoryRecall):
+        async def recall(self, *_a, **_kw):
+            await asyncio.sleep(10)
+
+    reader = Hung(Pool({"episode_memory": [GAME, OFFICE]}), _cfg(), reranker=overlap_reranker, clock=lambda: NOW)
+    asyncio.run(reader.snapshot(force=True))
+    worker.set_lived_memory(reader)
+    msg = "Juniper reached the final dungeon of the castle adventure game today"
+    try:
+        bundle = MemoryBundleV1(rendered="", items=[], stats=MemoryBundleStatsV1())
+
+        async def go():
+            task = worker._start_lived_recall(msg)
+            return await worker._add_lived_memories(bundle, lived_task=task, remaining_s=0.05, corr_id="c",
+                                                    query_text=msg)
+
+        debug, count, timed_out = asyncio.run(go())
+    finally:
+        worker.set_lived_memory(None)
+    assert (count, timed_out, debug["backend"]) == (1, True, "degraded")
+    assert bundle.rendered.startswith(lm.DEGRADED_HEADER) and [i.id for i in bundle.items] == ["episode_memory:g1"]

@@ -131,6 +131,10 @@ Code review ran in a subagent (a first run died on a usage limit and was rerun).
   - Fix: DISTINCT ON correlation id; clock difference stated in the report docstring.
 - Finding: the new ActSignal value must reach sql-writer before hub publishes it.
   - Fix: deploy order stated below. An event published early is dropped (shadow only; logged).
+- Finding (CI, Juniper): `stance_react.j2` raised UndefinedError on `open_promises` under StrictUndefined, because the cue key is absent on every turn while it ships off.
+  - Fix: guarded with `is defined`; the strict renders in orion/thought/tests now pass.
+  - Evidence: `test_stance_prompt_renders_strictly_without_open_promises` (absent: no block; given: block shown); readers + reading CI jobs run locally, all OK.
+- Merge: origin/main merged (#3532 merged earlier); conflict in `act_ledger.py` with the outreach reply base rate (#3392) resolved by keeping both. Focused suites rerun green.
 - Not changed: AI-town rows counting as "Juniper wrote" in the void rule. Checked live: 0 non-hub_orion Juniper-predicate rows in 14 days. Same predicate as the reply-act resolver.
 - Not changed: no test of the `execute_unified_turn` wiring or the tool-retry re-reflection carrying the promise view (see Risks).
 

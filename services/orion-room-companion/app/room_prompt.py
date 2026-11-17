@@ -134,8 +134,10 @@ def append_system_prompt_for(*, trigger: str, prompt: str, consult: bool = False
     if tools:
         parts.append(TOOLS_CLAUSE)
     if CONTRACTOR_PEER_MARKER in (prompt or ""):
+        # A contractor hire is Orion asking for help, not a social invite: the
+        # auto-invite "[pass]" option turned hires into empty briefs (#3397).
         parts.append(CONTRACTOR_PEER_CLAUSE)
-    if trigger == "auto":
+    elif trigger == "auto":
         parts.append(AUTO_INVITE_CLAUSE)
     return "".join(parts)
 

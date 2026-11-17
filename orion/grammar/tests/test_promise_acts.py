@@ -99,3 +99,70 @@ def test_close_kinds_and_shadow_set() -> None:
 
 def test_every_promise_is_one_faculty_bucket() -> None:
     assert act_faculty(PROMISE_ACTOR, "say", "juniper") == "act.hub.promise.say"
+
+
+def test_outcome_word_tells_a_quiet_turn_from_a_skipped_one() -> None:
+    # Orion's PR #3561 question 1: the Hub line names which of these happened.
+    assert plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection()).outcome() == "found_nothing"
+    offer_only = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(
+        promises_made=[_p("If you want, I'll re-read it later.", offer=True)]))
+    assert offer_only.outcome() == "nothing_opened" and offer_only.counts()["items"] == 1
+    old = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(
+        promises_made=[_p("I'll hold the deep read for you.", force=None)]))
+    assert old.outcome() == "nothing_opened" and old.counts()["skipped_no_force"] == 1
+    firm = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(
+        promises_made=[_p("I'll hold the deep read for you.")]))
+    assert firm.outcome() == "acted"
+
+
+def test_a_promise_said_again_word_for_word_opens_no_second_act() -> None:
+    # Orion's PR #3561 question 8: the same sentence promised again while it is open is one promise.
+    words = "I'll hold the deep read until the pipeline digests it, then pull it back."
+    plan = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(promises_made=[
+        _p("I\u2019ll  hold the deep read until the pipeline digests it, then pull it back."),
+        _p("I'll also compare the two runs.")]),
+        open_promises=[("act_open", words)])
+    assert plan.repeats_open == ["act_open"] and plan.counts()["repeats_open"] == 1
+    assert plan.opened == [promise_act_id(promise_ref("c2", 1))]
+
+
+def test_a_short_generic_line_said_again_is_a_new_promise() -> None:
+    # Review finding: "I'll check back tomorrow." on a new topic is a second promise, not a repeat.
+    plan = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(promises_made=[
+        _p("I'll check back tomorrow.")]), open_promises=[("act_open", "I'll check back tomorrow.")])
+    assert plan.repeats_open == [] and len(plan.opened) == 1
+
+
+def test_an_accepted_offer_starts_its_72h_clock_at_acceptance_not_at_the_offer() -> None:
+    # Orion's PR #3561 question 8: the ref points at the earlier turn; the open event (whose time
+    # the act ledger turns into opened_at, and opened_at + 72 h into horizon_at) is the accepting turn's.
+    from datetime import datetime, timezone
+
+    at = datetime(2026, 11, 17, 9, 0, tzinfo=timezone.utc)
+    prior = [(promise_ref("c1", 1), "If you want, I'll re-read it the next time I'm cut.")]
+    plan = plan_promise_events(correlation_id="c2", session_id="s", prior_offers=prior, at=at,
+                               reflection=_reflection(offers_accepted=["If you want, I'll re-read it the next time I'm cut."]))
+    (event,) = plan.events
+    assert event.correlation_id == "c2" and event.observed_at == at
+    assert event.act.test_before == promise_ref("c1", 1)
+
+
+def test_prime_never_reads_the_promise_acts_while_they_are_shadow():
+    """Orion's PR #3598 question 6: in shadow, the open-promise ACT list reaches the 5b judge only.
+    Prime (orion/prime, orion-mind) holds its own promise concerns from the turn hand-back and must
+    not read hub.promise acts or the promise view until #3531 decides the record of truth."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    banned = ("hub.promise", "PROMISE_ACTOR", "promise_view", "fetch_promise_view", "promise_acts",
+              "open_promises_cue", "promise_kept")
+    roots = [repo / "orion" / "prime", repo / "services" / "orion-mind" / "app"]
+    assert all(r.is_dir() for r in roots)
+    hits = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+            src = path.read_text(encoding="utf-8")
+            hits += [f"{path.relative_to(repo)}: {b}" for b in banned if b in src]
+    assert hits == [], hits

@@ -362,6 +362,7 @@ class DurableRunner:
 
     async def _call_frozen_evidence_llm(
         self, prompt: str, *, brief: Any, run_id: str, correlation_id: str, gpu_lease: GpuLeaseRefV1, purpose: str,
+        temperature: float = 0.2,
     ) -> dict[str, Any]:
         """Tool-free gateway call under the supplied hold; no recall changes frozen evidence."""
         import time
@@ -377,7 +378,7 @@ class DurableRunner:
             options={
                 "llm_route": brief.llm_route,
                 "max_tokens": int(brief.max_tokens),
-                "temperature": 0.2,
+                "temperature": float(temperature),
                 "purpose": purpose,
                 "structured_output_method": "json_object_only",
                 "chat_template_kwargs": {"enable_thinking": False},
@@ -416,7 +417,9 @@ class DurableRunner:
                 "latency_ms": int((time.monotonic() - started) * 1000)}
 
     async def _call_memory_distill_llm(self, prompt: str, **kwargs) -> dict[str, Any]:
-        return await self._call_frozen_evidence_llm(prompt, purpose="memory_episode_distill", **kwargs)
+        # The supersede check (#3587) passes its own purpose and temperature 0.0.
+        kwargs.setdefault("purpose", "memory_episode_distill")
+        return await self._call_frozen_evidence_llm(prompt, **kwargs)
 
     async def _call_reading_resonance_llm(self, prompt: str, **kwargs) -> dict[str, Any]:
         await self._reading_resonance_lifecycle(kwargs["brief"], "resonance_started", kwargs["correlation_id"])

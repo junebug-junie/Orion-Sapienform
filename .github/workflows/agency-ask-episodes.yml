@@ -12,6 +12,9 @@ on:
       - 'services/orion-hub/scripts/curiosity_investigation.py'
       - 'services/orion-hub/tests/test_curiosity_help_request_enqueue.py'
       - 'tests/test_curiosity_peer*.py'
+      - 'tests/test_curiosity_cursor_policy.py'
+      - 'services/orion-room-companion/app/room_prompt.py'
+      - 'services/orion-room-companion/tests/test_contractor_peer_prompt.py'
       - 'orion/hub/turn_orchestrator.py'
       - 'tests/test_role_teach_disclosure.py'
       - 'services/orion-hub/tests/test_turn_orchestrator_role_teach_disclosure.py'
@@ -37,6 +40,7 @@ jobs:
           python -m pytest tests/test_curiosity_peer_schema.py tests/test_curiosity_peer_registry.py
           tests/test_curiosity_peer_briefs.py tests/test_curiosity_peer_brief_persist.py
           tests/test_curiosity_peer_kickoff.py tests/test_curiosity_peer_patch0_acceptance.py
+          tests/test_curiosity_cursor_policy.py
           orion/curiosity/tests/test_self_inquiry_prompt_drawn_question.py
           orion/curiosity/tests/test_self_inquiry_prompt_dig_body.py
           tests/scripts/test_schema_skew_discovery.py

@@ -82,3 +82,47 @@ def test_fixture_replay_hits_every_target_and_keeps_small_talk_empty(monkeypatch
     assert bar["hit_rate"] == 1.0, bar["items"]
     assert bar["small_talk_messages"] == len(data["small_talk"])
     assert bar["small_talk_share_injecting"] == 0.0
+
+
+def test_fixture_replay_implicit_references_need_the_rewrite(monkeypatch):
+    """Step 2 (issue #3534): implicit messages hit only with the rewrite; small talk, whose
+    rewrite answers NONE, still injects nothing."""
+    async def embed(*_a, **_k):
+        return [0.0], "fake"
+
+    async def nearest(*_a, **_k):
+        return []
+
+    monkeypatch.setattr(lm, "embed", embed)
+    monkeypatch.setattr(lm, "nearest", nearest)
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    answers = {item["message"]: item["rewrites"] for item in data["implicit"]}
+
+    async def rewriter(message, _context):
+        return list(answers.get(message, []))  # small talk -> NONE
+
+    def build(with_rewrite: bool) -> LivedMemoryRecall:
+        cfg = LivedMemoryConfig(search=SearchConfig("http://c", "http://e", "orion_lived_memory", 0.0),
+                                rerank_url="http://r", min_fit=0.0, max_lines=64, timeout_sec=2.0,
+                                min_query_tokens=settings.RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS,
+                                rewrite_timeout_sec=0.5, link_top_k=0)
+        return LivedMemoryRecall(_Pool(data["records"]), cfg, reranker=_reranker,
+                                 rewriter=rewriter if with_rewrite else None, clock=lambda: NOW)
+
+    async def run(reader):
+        results = []
+        for item in data["implicit"]:
+            out = await reader.recall(item["message"])
+            results.append({"label": item["label"], "kind": "implicit", "targets": item["targets"],
+                            "reranked": out.reranked, "now": NOW})
+        noise = []
+        for msg in data["small_talk"]:
+            out = await reader.recall(msg)
+            noise.append({"reranked": out.reranked, "now": NOW, "small_talk": is_small_talk(msg)})
+        return results, noise
+
+    before = score_bar(*asyncio.run(run(build(False))), min_fit=0.5, now=NOW)
+    after = score_bar(*asyncio.run(run(build(True))), min_fit=0.5, now=NOW)
+    assert before["by_kind"] == {"implicit": "0/3"}
+    assert after["by_kind"] == {"implicit": "3/3"}, after["items"]
+    assert after["small_talk_share_injecting"] == 0.0

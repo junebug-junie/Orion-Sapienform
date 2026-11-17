@@ -45,7 +45,7 @@ def test_format_all_unknown_and_empty_foresight_returns_empty() -> None:
     )
 
 
-def test_format_deep_includes_strong_hire_cursor_nudge() -> None:
+def test_format_deep_includes_strong_hire_peer_nudge() -> None:
     lines = format_role_teach_disclosure(
         {
             "expected_depth": "deep",
@@ -54,7 +54,7 @@ def test_format_deep_includes_strong_hire_cursor_nudge() -> None:
         }
     )
     text = "\n".join(lines).lower()
-    assert "hire_cursor" in text or "hire cursor" in text
+    assert "hire_peer" in text or "hire peer" in text
     assert "helprequest" in text.replace(" ", "") or "help request" in text
     assert "expensive" not in text
     # Ban short-look theater; allow explicit "do not take a short local look".
@@ -75,7 +75,7 @@ def test_ensure_orion_hire_depth_failopen_to_deep() -> None:
     lines = format_role_teach_disclosure(ensure_orion_hire_depth({"foresight_note": "setup"}))
     text = "\n".join(lines).lower()
     assert "deep" in text
-    assert "hire_cursor" in text or "hire cursor" in text
+    assert "hire_peer" in text or "hire peer" in text
     assert "helprequest" in text.replace(" ", "") or "help request" in text
     assert "keep a short local look" not in text
     assert "after a short local look" not in text

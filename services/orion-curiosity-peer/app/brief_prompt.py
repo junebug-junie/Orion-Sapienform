@@ -1,19 +1,17 @@
-"""Cursor Agent CLI invoker — sealed prompt, ask-mode argv, PeerBrief parse.
+"""Sealed contractor prompt + lenient PeerBrief parse for the Claude helper.
 
-Same idea as FCC / ``claude -p``: subprocess argv, print mode, host/desktop
-auth. Never import ``cursor_sdk``. Tests inject ``subprocess.run``.
+Pure functions: no bus, no subprocess. The worker sends the prompt to the
+room companion (Claude) and maps the reply text back with
+``parse_peer_brief_body``.
 """
 
 from __future__ import annotations
 
 import json
 import re
-import subprocess
 import uuid
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
-from app.cursor_errors import TokenUnavailable, classify_cursor_failure
-from app.policy import assert_read_only_cli_argv, build_cursor_agent_argv
 from orion.curiosity.peer_briefs import strip_self_definition_draft
 from orion.schemas.curiosity_peer import (
     CuriosityPeerNameV1,
@@ -22,9 +20,6 @@ from orion.schemas.curiosity_peer import (
 )
 
 _JSON_OBJECT_RE = re.compile(r"\{[\s\S]*\}")
-
-# Injectable for tests (never call a live agent from pytest).
-SubprocessRun = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def build_sealed_prompt(
@@ -36,7 +31,7 @@ def build_sealed_prompt(
     mode = help_req.mode
     lines = [
         "You are a read-only contractor peer hired by Orion.",
-        "Investigate with read/grep/glob/ls only. Do not edit, shell, delete, or mutate.",
+        "Use only read-only tools you are given. Do not edit, shell, delete, or mutate.",
         "Do not write :Prior, :Finding, :PeerBrief, or belief graph nodes.",
         f"Mode: {mode}.",
         "",
@@ -130,9 +125,9 @@ def parse_peer_brief_body(
     body: str,
     *,
     help: HelpRequestV1,
-    peer: CuriosityPeerNameV1 = "cursor_auto",
+    peer: CuriosityPeerNameV1 = "claude_room",
 ) -> PeerBriefV1:
-    """Leniently map Cursor/Claude text into PeerBriefV1.
+    """Leniently map the helper's reply text into PeerBriefV1.
 
     Empty body → status=empty. Self-inquiry strips SelfDefinition drafts from
     summary and list fields; if that empties useful content → status=empty.
@@ -187,53 +182,3 @@ def parse_peer_brief_body(
         open_questions=opens,
         suggested_next_looks=looks,
     )
-
-
-def _combined_cli_output(proc: subprocess.CompletedProcess[str]) -> str:
-    parts = [proc.stdout or "", proc.stderr or ""]
-    return "\n".join(p for p in parts if p).strip()
-
-
-def run_cursor_job(
-    help: HelpRequestV1,
-    sealed_prompt: str,
-    *,
-    agent_bin: str,
-    cwd: str,
-    model: str,
-    timeout_sec: float = 600.0,
-    run: Optional[SubprocessRun] = None,
-) -> PeerBriefV1:
-    """Spawn Cursor Agent CLI in ask/print mode; map stdout to PeerBriefV1."""
-    argv = build_cursor_agent_argv(
-        agent_bin=agent_bin,
-        prompt=sealed_prompt,
-        workspace=cwd,
-        model=model,
-    )
-    assert_read_only_cli_argv(argv)
-
-    runner = run or subprocess.run
-    try:
-        proc = runner(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout_sec,
-            check=False,
-        )
-    except FileNotFoundError as exc:
-        raise TokenUnavailable(f"cursor agent binary not found: {agent_bin}") from exc
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"cursor agent timed out after {exc.timeout}s") from exc
-
-    combined = _combined_cli_output(proc)
-    if proc.returncode != 0:
-        err = RuntimeError(
-            f"cursor agent exited {proc.returncode}: {combined[:2000]}"
-        )
-        if classify_cursor_failure(err) == "token_unavailable":
-            raise TokenUnavailable(str(err)) from err
-        raise err
-
-    return parse_peer_brief_body(combined, help=help)

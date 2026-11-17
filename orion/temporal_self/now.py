@@ -161,6 +161,10 @@ MAGNITUDE_RULES: dict[str, Callable[[Mapping[str, Any]], Optional[float]]] = {
                                                      (r.get("payload") or {}).get("n_formed")),
     # camera: how long one office visit lasted (vision_office_session started_at .. ended_at)
     "visit_seconds": _visit_seconds,
+    # play: how long one Retro session lasted, in minutes (retro_play_sessions.duration_sec: a person's
+    # sitting, a co-play handoff or a solo leisure session). A count of time, so rest is a true zero.
+    "sitting_minutes": lambda r: (lambda sec: sec / 60.0 if sec is not None else None)(
+        _num((r.get("payload") or {}).get("duration_sec"))),
     # body: how long a background GPU lease waited (gpu_pool_events.waited_ms)
     "waited_ms": lambda r: _num((r.get("payload") or {}).get("waited_ms")),
     # metacognition: degraded 1, critical 2 (orion_metacog.severity; only those two are emitted)

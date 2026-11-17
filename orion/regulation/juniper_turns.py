@@ -50,6 +50,19 @@ JUNIPER_INGRESS_PREDICATE = (
 )
 
 
+def is_browser_surface_turn(payload: Mapping[str, Any] | None) -> bool:
+    """``JUNIPER_INGRESS_PREDICATE`` for a Hub turn payload, before the ingress hop is written.
+
+    True when the payload carries a non-empty ``surface_context`` dict: the same field, under the same
+    test, that ``turn_orchestrator._ingress_hop`` copies into the ingress raw. A coding session's message
+    posted to ``/api/chat`` (live 2026-11-15: two of them, persisted as ``hub_orion`` in Juniper's own
+    session) and a ``no_write`` eval turn carry none."""
+    if not payload:
+        return False
+    surface = payload.get("surface_context")
+    return isinstance(surface, Mapping) and bool(surface)
+
+
 def is_juniper_turn(payload: Mapping[str, Any] | None) -> bool:
     """The same rule for a ``chat.history.turn`` bus payload (``ChatHistoryTurnV1`` dict)."""
     if not payload:
@@ -62,4 +75,5 @@ def is_juniper_turn(payload: Mapping[str, Any] | None) -> bool:
     return not (unsolicited is True or str(unsolicited).lower() == "true")
 
 
-__all__ = ["JUNIPER_IDLE_MINUTES_SQL", "JUNIPER_INGRESS_PREDICATE", "JUNIPER_TURN_PREDICATE", "is_juniper_turn"]
+__all__ = ["JUNIPER_IDLE_MINUTES_SQL", "JUNIPER_INGRESS_PREDICATE", "JUNIPER_TURN_PREDICATE", "is_browser_surface_turn",
+           "is_juniper_turn"]

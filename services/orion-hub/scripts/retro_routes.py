@@ -1,4 +1,7 @@
-"""Hub network-boundary Retro access and same-origin UDS proxy; no chat/bus path."""
+"""Hub network-boundary Retro access and same-origin UDS proxy; no chat/bus path.
+
+The relay and the proxy also tell the sitting record what the player did (scripts/retro_sitting.py:
+input messages, save/load/pause/stop). That record is an observer: it never changes what is relayed."""
 import asyncio
 from pathlib import Path
 import time
@@ -12,9 +15,24 @@ from fastapi.responses import FileResponse, JSONResponse
 COPLAY_POLL_SEC = 2.0
 
 
-def create_router(config, presence=None, experience=None):
+class NoSitting:
+    """Stands in when scripts.retro_sitting cannot be loaded: every call is a no-op, so the relay, the
+    proxy and the page work as before patch 1."""
+    enabled = False
+    def note_input(self, *a): pass
+    def note_action(self, *a): pass
+    def note_disconnect(self, *a): pass
+    def status(self): return {'enabled': False, 'sitting': None}
+    async def state_player(self, *a): return False
+    async def recover(self): return 0
+    async def close(self): pass
+
+
+def create_router(config, presence=None, experience=None, sitting=None):
     """``presence``: a scripts.retro_presence.PresenceStore (tests/evals); default is the
     process's Redis store from ORION_BUS_URL, or none (human play never depends on it).
+    ``sitting``: a scripts.retro_sitting.SittingService (tests); default one per router, on the
+    process's Redis store and memory pool (HUB_RETRO_SITTING_ENABLED).
     ``experience``: a scripts.retro_experience.ZeldaExperience (action bets); default from config
     (HUB_ACTION_BETS_ENABLED / HUB_PREDICTION_URL)."""
     router = APIRouter()
@@ -38,6 +56,41 @@ def create_router(config, presence=None, experience=None):
         if s is None: return
         task = asyncio.create_task(getattr(s, coro_fn)(*args))
         background.add(task); task.add_done_callback(background.discard)
+
+    app_ref = {}  # the FastAPI app, known from the first request or socket (its state holds the memory pool)
+
+    async def resolve_game(retro_sid):
+        # (game_id, title) of a Retro session, for the sitting record. Either may be None.
+        async with client() as c:
+            async with c.get('http://retro/sessions/'+retro_sid, headers=credentials()) as r:
+                game_id = (await r.json()).get('game_id') if r.status == 200 else None
+            title = None
+            if game_id:
+                async with c.get('http://retro/games', headers=credentials()) as r:
+                    games = await r.json() if r.status == 200 else None   # a list of games
+                for g in games if isinstance(games, list) else []:
+                    if isinstance(g, dict) and g.get('game_id') == game_id: title = g.get('title')
+        return game_id, title
+
+    if sitting is None:
+        try:
+            from scripts.retro_sitting import SittingService
+            sitting = SittingService(
+                config, resolve_game=resolve_game,
+                redis_provider=lambda: getattr(store(), 'redis', None),
+                pool_provider=lambda: getattr(getattr(app_ref.get('app'), 'state', None), 'memory_pg_pool', None))
+        except Exception:  # the record is an observer: a fault in it must not take the game page down
+            import logging
+            logging.getLogger('orion-hub.retro.sitting').error('retro_sitting_unavailable', exc_info=True)
+            sitting = NoSitting()
+    router.retro_sitting = sitting   # the gateway's lifespan reads it (recovery at start, close at shutdown)
+
+    def bind(app):
+        # Shutdown (the gateway's lifespan) closes the open sitting through app.state.retro_sitting.
+        if app_ref.get('app') is None:
+            app_ref['app'] = app
+            try: app.state.retro_sitting = sitting
+            except Exception: pass
 
     def enabled():
         if not config.HUB_RETRO_ENABLED: raise HTTPException(503, 'retro_disabled')
@@ -93,6 +146,34 @@ def create_router(config, presence=None, experience=None):
         coplay_turns[key] = coplay_turn_id(coplay_key(sid, started_at))
         task = asyncio.create_task(watch_coplay(app, sid, policy['port'], policy['epoch'], started_at))
         background.add(task); task.add_done_callback(background.discard)
+
+    @router.get('/api/retro/sitting')
+    async def sitting_status(request: Request):
+        # The open sitting (who plays what, since when), for the game page. Declared before the
+        # catch-all proxy below. The gateway relays the input, so its tracker is the truth; Hub's own
+        # process answers from the Redis copy.
+        enabled(); bind(request.app)
+        status = sitting.status()
+        if status['sitting'] is None and status['enabled']:
+            from scripts.retro_sitting import read_sitting
+            redis = getattr(store(), 'redis', None)
+            copy = await read_sitting(redis) if redis is not None else None
+            if copy is not None and copy.get('ended_at') is None: status = dict(status, sitting=copy)
+        return JSONResponse(status, headers={'Cache-Control': 'no-store'})
+
+    @router.post('/api/retro/sitting/player')
+    async def sitting_player(request: Request):
+        # What the page was told about who plays: 'juniper' or 'guest'. Never a guess.
+        await authorize(request); bind(request.app)
+        import json
+        try: data = json.loads(await body(request))
+        except ValueError: raise HTTPException(422, 'invalid_player')
+        # sitting_id (optional): the sitting the page asked about. An answer to an older question is refused.
+        ok = isinstance(data, dict) and 'player' in data and set(data) <= {'player', 'sitting_id'}
+        player, asked = (data.get('player'), data.get('sitting_id')) if ok else (None, None)
+        if player not in ('juniper', 'guest') or not (asked is None or isinstance(asked, str)): raise HTTPException(422, 'invalid_player')
+        if not await sitting.state_player(player, asked): raise HTTPException(409, 'no_open_sitting')
+        return JSONResponse(sitting.status(), headers={'Cache-Control': 'no-store'})
 
     @router.get('/api/retro/leisure')
     async def leisure():
@@ -276,7 +357,7 @@ def create_router(config, presence=None, experience=None):
     async def proxy(path: str, request: Request):
         nonlocal planning, last_plan
         import re
-        await authorize(request)
+        await authorize(request); bind(request.app)
         # Every proxied POST is a human action (the leisure runner talks to Retro directly).
         if request.method == 'POST': soon('mark_human')
         if request.method == 'POST' and re.fullmatch(r'sessions/[0-9a-f-]{36}/plan', path):
@@ -337,6 +418,8 @@ def create_router(config, presence=None, experience=None):
                         result['capabilities'] = dict(result.get('capabilities') or {}, retro_media_ack_v1=True)
                     if request.method=='POST' and r.status==200 and path.endswith('/scripted'):
                         handoff(request.app, path.split('/')[1], raw, result)
+                    if request.method=='POST' and r.status==200 and path.count('/')==2 and path.rsplit('/',1)[1] in ('save','load','pause','stop'):
+                        sitting.note_action(path.split('/')[1], path.rsplit('/',1)[1])
                     return JSONResponse(result,status_code=r.status,headers={'Cache-Control':'no-store'})
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError): raise HTTPException(503, 'retro_unavailable')
 
@@ -347,7 +430,7 @@ def create_router(config, presence=None, experience=None):
         if (not config.HUB_RETRO_ENABLED or not origin(ws.headers)
                 or channel not in ('input','media') or not re.fullmatch(r'[0-9a-f-]{36}',sid) or len(sockets)>=8):
             await ws.close(code=1008);return
-        sockets.add(ws)
+        sockets.add(ws); bind(ws.app)
         socket_id=str(uuid.uuid4())
         try:
             async with client() as c:
@@ -364,7 +447,8 @@ def create_router(config, presence=None, experience=None):
                             await asyncio.sleep(5)
                     beating=asyncio.create_task(beat())
                     try: await relay_messages(ws, upstream, channel, sid,
-                                              media_ack=channel=='media' and ws.query_params.get('flow')=='ack-v1')
+                                              media_ack=channel=='media' and ws.query_params.get('flow')=='ack-v1',
+                                              on_input=(lambda m: sitting.note_input(sid, m)) if channel=='input' else None)
                     finally:
                         beating.cancel();await asyncio.gather(beating,return_exceptions=True)
         except (aiohttp.ClientError, OSError, asyncio.TimeoutError, RuntimeError) as exc:
@@ -372,6 +456,7 @@ def create_router(config, presence=None, experience=None):
                 'retro_relay_connect_failed sid=%s channel=%s error=%s', sid, channel, type(exc).__name__)
         finally:
             sockets.discard(ws)
+            if channel=='input': sitting.note_disconnect(sid)
             soon('drop_browser',socket_id)
             try: await ws.close()
             except RuntimeError: pass

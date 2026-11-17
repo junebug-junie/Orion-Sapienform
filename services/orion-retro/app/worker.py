@@ -14,8 +14,40 @@ from .zelda.observe import supported as zelda_supported, PROFILE as ZELDA_PROFIL
 from .zelda.runtime import ZeldaRuntime
 
 
+class Battery:
+    """Cartridge save memory for one game, kept in the save store across sessions.
+    Loaded before the first frame; written when it changes (every 5 s) and at stop.
+    A disk fault is recorded, never fatal: the game keeps running."""
+    PERIOD = 5.0
+
+    def __init__(self, core, store, game_id, record):
+        self.core, self.store, self.game_id, self.record = core, store, game_id, record
+        self.last = core.save_ram(); self.at = time.monotonic()
+        if self.last is None: return
+        # A file that exists but was not loaded must never be overwritten: writes stay off.
+        try: stored = store.read_battery(game_id)
+        except ValueError as exc:
+            self.last = None; record('battery', action='load_failed', error=str(exc)); return
+        if stored is not None:
+            if len(stored) == len(self.last):
+                core.load_save_ram(stored); self.last = stored
+                record('battery', action='loaded', bytes=len(stored))
+            else:
+                self.last = None; record('battery', action='size_mismatch', bytes=len(stored))
+
+    def flush(self, now=None, force=False):
+        if self.last is None: return
+        now = time.monotonic() if now is None else now
+        if not force and now - self.at < self.PERIOD: return
+        self.at = now
+        data = self.core.save_ram()
+        if data == self.last: return
+        try: self.store.write_battery(self.game_id, data); self.last = data
+        except ValueError as exc: self.record('battery', action='write_failed', error=str(exc))
+
+
 def run(commands, urgent, replies, stop, settings, game, session, generation, media=None):
-    core = evidence = None
+    core = evidence = battery = None
     state = 'starting'; frame = 0
     def send(row):
         replies.put_nowait(row)  # backpressure is fatal, never unbounded
@@ -28,6 +60,8 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         def record(kind, **fields):
             evidence.write(dict(kind=kind, session_id=session, generation=generation, frame=frame, **fields))
         store = SaveStore(settings.saves, settings.save_max_per_game, settings.save_limit(system))
+        if settings.battery(system):
+            battery = Battery(core, store, game['game_id'], record)
         # Zelda (fingerprint-gated, cognition gate on) gets its reader, GoalV2 motor and
         # atlas. Every other game keeps the Nova v1 path unchanged.
         zelda = None
@@ -225,6 +259,7 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
             else:
                 time.sleep(.01)
             now = time.monotonic()
+            if battery: battery.flush(now)
             if now-last_status >= .1:
                 send(dict(kind='status', state=state, frame=frame, video_frames=core.video_frames,
                           audio_samples=core.audio_samples, frame_hash=core.frame_hash,
@@ -235,6 +270,7 @@ def run(commands, urgent, replies, stop, settings, game, session, generation, me
         authority.clear(); core.buttons = (0, 0)
         reject_pending('stopped')
         record('transition', state='stopped', reason='operator_or_service_stop')
+        if battery: battery.flush(force=True)  # clean stop only: a failed core's memory is not trusted
     except BaseException as exc:
         try: send(dict(kind='fatal', error=type(exc).__name__+': '+str(exc)[:200]))
         except queue.Full: pass

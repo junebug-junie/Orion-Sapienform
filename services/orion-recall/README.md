@@ -32,6 +32,35 @@ It then **fuses** candidates into a prompt-ready `MemoryBundleV1` with per-sourc
 
 - `POST /recall` — runs recall for a query and returns `MemoryBundleV1`
 - `GET /health` / `GET /ready` — liveness/readiness
+- `POST /lived/know` — `{"words", "turn_id"?, "max_hits"?}`. A deliberate lived-memory lookup:
+  the same retriever a chat turn uses, on Orion's own words (no 5-word floor, no rewrite). Hits are
+  `strong` (cleared the bar) or `weak` (below it, but share a word with the search), each re-checked
+  by the serving gate. Returns `status` (below, plus `busy` when another lookup is running and
+  `unverified` when matches were found but the re-check failed) and `degraded` reasons. Called by
+  `python -P -m orion.dig know <words>` (`orion/dig/know.py`, issue #3535). One lookup runs at a
+  time. Each lookup writes one `recall_telemetry` row off the reply path: verb `dig.know`,
+  `corr_id` = the turn id, `selected_ids` = the **strong** hits only (those count toward read
+  demand), weak ids in `lived_trace.weak_ids`. A call with no turn id gets `corr_id` `adhoc:<uuid>`
+  and profile `lived_memory.know.adhoc`, so operator runs can be left out of read demand. Reached at `RECALL_SERVICE_URL` from Hub (host
+  network) and at `http://orion-athena-recall:8260` from the harness governor (`app-net`);
+  `ORION_DIG_RECALL_URL` overrides both.
+
+**Lived-recall status per call** (`recall_telemetry.lived_status`, issue #3628;
+migration `services/orion-sql-db/manual_migration_recall_telemetry_lived_status_v1.sql`):
+`ok` (served by the full search) · `below_bar` (searched, nothing cleared the bar) ·
+`skipped_short` (too few content words) · `degraded` (exact words only; `backend_counts.lived_memory`
+says whether it served) · `timeout` / `error` (nothing served) · `off`. NULL = lived recall did not
+run on that call. `lived_trace` (jsonb) holds the rewritten queries, every candidate id that reached
+the rerank, the injected ids and the backend: ids and Orion's own search text only.
+
+Count the calls that could produce a false "no memory" on Hub turns:
+
+```sql
+SELECT lived_status, count(DISTINCT corr_id) AS turns
+FROM recall_telemetry
+WHERE verb = 'stance_react' AND created_at > now() - interval '14 days' AND lived_status IS NOT NULL
+GROUP BY 1 ORDER BY 2 DESC;
+```
 - `POST /debug/recall/compare` — Recall V1 vs shadow Recall V2 comparison (read-only)
 - `GET /debug/recall/eval-suite` — run built-in Recall V1/V2 evaluation corpus
 - `POST /debug/recall/eval-case` — run a single ad-hoc evaluation case
@@ -978,7 +1007,7 @@ and the bus anomaly feed. The exclusions apply only when `RECALL_PCR_ENABLED` is
 is the only mode in which cortex-exec sends the continuity/purposeful phases. An empty continuity or belief digest now renders as an empty
 string, not a bare header.
 
-## 17) Lived-memory recall (issue #3533, "Recall rev 2" step 1)
+## 17) Lived-memory recall (issues #3533, #3534, #3573, "Recall rev 2" steps 1-2)
 
 Code: `app/lived_memory.py` (reader + index loop), `orion/memory/lived_memory.py` (which rows may be
 served, and how a row becomes one document). Spec: the "Recall rev 2" section of
@@ -1026,6 +1055,40 @@ bank (`~/.orion/evals/lived_memory_recall_bank.json`, mode 600, ids only) and pr
 small-talk injection and latency per bar; `evals/test_lived_memory_replay_eval.py` runs the same
 scoring on made-up fixtures in CI.
 
-Kill switch: `RECALL_LIVED_MEMORY_ENABLED=false` (restart orion-recall). Failure is silent for the
-turn: a down embedder leaves exact-word candidates, a down reranker or a timeout
-(`RECALL_LIVED_MEMORY_TIMEOUT_SEC`) injects nothing.
+### 17a) Step 2: query rewrite and link-following (issue #3534)
+
+Code: `app/lived_rewrite.py`, `app/lived_links.py`, wired in `app/lived_memory.py`.
+
+- **Query rewrite.** Before searching, a small local model (LLM gateway route
+  `RECALL_LIVED_MEMORY_REWRITE_ROUTE`, default `quick_turn`: the fast class at interactive
+  priority; never metacog, never an outside API) reads the message plus the last 3 turns of the
+  same `session_id` from `chat_history_log` (6 h window) and writes up to 3 short searches, or
+  `NONE` for small talk. Each search runs through the same meaning + exact-word retrievers; all
+  lists merge by reciprocal-rank fusion. The reranker scores each memory against the message
+  followed by the searches. Past `RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC`, or on any error, the
+  raw message is searched alone. A message under the content-word floor is neither searched nor
+  rewritten (a rewrite bypass was tried: small talk injecting rose to 35%, no hit gained).
+  Messages over 1,500 characters skip the rewrite.
+- **Link-following.** Memories that share a referent (`episode_memory_referent`) with the top 5
+  candidates, or whose referent's name (name-class `referent_alias` only, 4+ characters, not a
+  function word) appears in the message or a search, join the rerank: two-hop personalized
+  PageRank, hubs on more than 30 memories left out, at most `RECALL_LIVED_MEMORY_LINK_TOP_K`.
+  A neighbour reaches the prompt only through the rerank and the bar. The graph reloads in the
+  background every 10 minutes.
+
+### 17b) Degraded mode (issue #3573)
+
+Recall never silently skips. When the reranker is down, errors or runs past the deadline, the
+exact-word hits are ranked by BM25 alone (at most 3 lines, each sharing 2+ content words or a
+name with the turn) under a header that says the search ran degraded. When the embedder is down
+or hangs, the exact-word candidates are still reranked, and the block still says degraded. A
+degraded search that finds nothing puts a one-line note in the prompt ("not proof there is no
+memory"), except for small talk the rewrite answered NONE. If the whole lived recall misses the
+worker's deadline, the worker runs the same exact-word fallback from the in-memory snapshot.
+Telemetry: `recall_telemetry.backend_counts.lived_memory_degraded = 1`, and
+`recall_telemetry.timings_ms.lived_memory_{rewrite,rerank,total}`; `recall_debug.lived_memory`
+carries `backend`, `degraded` reasons and the rewritten searches.
+
+Kill switches: `RECALL_LIVED_MEMORY_ENABLED=false` (all lived recall),
+`RECALL_LIVED_MEMORY_REWRITE_ENABLED=false` (rewrite only), `RECALL_LIVED_MEMORY_LINK_TOP_K=0`
+(links only). Restart orion-recall after changing any of them.

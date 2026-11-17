@@ -427,17 +427,27 @@ _COLUMNS = ("session_id", "retro_session_id", "lineage_id", "game_id", "game_tit
             "played_together", "rooms_new", "caves_new", "items_gained", "deaths", "death_rooms", "decisions",
             "predictions_met", "predictions_refuted", "predictions_unknown", "human_interventions", "summary")
 _JSON_COLUMNS = {"control", "items_gained", "death_rooms"}
-INSERT_SQL = (
-    f"INSERT INTO {TABLE} ({', '.join(_COLUMNS)}) VALUES ("
-    + ", ".join(f"${i + 1}::jsonb" if c in _JSON_COLUMNS else f"${i + 1}" for i, c in enumerate(_COLUMNS))
-    + ") ON CONFLICT (session_id) DO NOTHING RETURNING session_id"
-)
 
 
-def _row_values(s: RetroPlaySessionSummaryV1) -> list[Any]:
+def insert_sql(extra: tuple[str, ...] = ()) -> str:
+    """The idempotent insert of one play row. ``extra``: columns another writer of this table also
+    fills (scripts/retro_sitting.py: ``player_stated``), after the exporter's own."""
+    columns = _COLUMNS + tuple(extra)
+    return (
+        f"INSERT INTO {TABLE} ({', '.join(columns)}) VALUES ("
+        + ", ".join(f"${i + 1}::jsonb" if c in _JSON_COLUMNS else f"${i + 1}" for i, c in enumerate(columns))
+        + ") ON CONFLICT (session_id) DO NOTHING RETURNING session_id"
+    )
+
+
+INSERT_SQL = insert_sql()
+
+
+def row_values(s: RetroPlaySessionSummaryV1, extra: tuple[str, ...] = ()) -> list[Any]:
+    """The values of ``insert_sql(extra)`` for one summary, in column order."""
     data = s.model_dump(mode="python")
     data["control"] = [c.model_dump() for c in s.control]
-    return [json.dumps(data[c]) if c in _JSON_COLUMNS else data[c] for c in _COLUMNS]
+    return [json.dumps(data[c]) if c in _JSON_COLUMNS else data[c] for c in _COLUMNS + tuple(extra)]
 
 
 @dataclass(frozen=True)
@@ -566,7 +576,7 @@ async def export_session(
     try:
         async with pool.acquire() as conn:
             await _ensure_table(conn)
-            claimed = await conn.fetchval(INSERT_SQL, *_row_values(s))
+            claimed = await conn.fetchval(INSERT_SQL, *row_values(s))
     except Exception as exc:  # noqa: BLE001
         await close(produced=False, note="session_row_failed")
         logger.warning("retro_memory_export_failed session_id=%s reason=session_row error=%s", session_id, exc)
@@ -652,4 +662,5 @@ def make_session_end_sink(*, pool_provider, bus_provider):
 
 __all__ = ["CARD_SOURCE", "fetch_learned_lines", "learned_lines_from", "export_leisure_outcome", "export_session_end", "make_session_end_sink", "make_session_start_sink", "coplay_key",
            "session_end_inputs", "DDL", "ExportResult", "INSERT_SQL", "TABLE", "build_session_summary", "export_session",
+           "insert_sql", "row_values",
            "game_title", "item_words", "memory_card_for"]

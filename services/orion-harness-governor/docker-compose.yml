@@ -83,8 +83,10 @@ services:
       - GH_TOKEN=${ORION_GITHUB_TOKEN:-}
       # Mesh-edge check (orion/fcc/mesh_edge_hook.py, issue #3409): read-only Postgres for the
       # core pages + lived memories a GitHub write must not quote. Empty = every gh write is
-      # refused (fail closed).
-      - ORION_MESH_EDGE_PG_DSN=${ORION_MESH_EDGE_PG_DSN:-postgresql://postgres:postgres@orion-athena-sql-db:5432/conjourney}
+      # refused (fail closed). Role orion_readonly, never postgres (issue #3567); the password
+      # lives only in the local .env, so an unset key cannot authenticate and fails closed
+      # (pg_hba trusts only localhost; never add trust for the Docker network to "fix" this).
+      - ORION_MESH_EDGE_PG_DSN=${ORION_MESH_EDGE_PG_DSN:-postgresql://orion_readonly@orion-athena-sql-db:5432/conjourney}
       - SERVICE_VERSION=${SERVICE_VERSION:-0.1.0}
       - NODE_NAME=${NODE_NAME}
       - HARNESS_GOVERNOR_PORT=${HARNESS_GOVERNOR_PORT:-7156}

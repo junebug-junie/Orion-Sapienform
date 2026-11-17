@@ -98,6 +98,23 @@ ID_FILTER: dict[str, str] = {
 
 MAX_DOC_CHARS = 1200
 
+# Link-following (issue #3534): which memories share a referent, and which names point at one.
+# Only memories that are servable right now become candidates (the reader intersects with its
+# live snapshot), so these two reads need no serving gate of their own.
+REFERENT_EDGES_SQL = """
+SELECT r.memory_id::text AS memory_id, r.referent_key AS referent_key
+FROM episode_memory_referent r
+"""
+
+# Name-class aliases only, mapped to the referent key the edges use. Descriptor aliases
+# ("that", "home", "the mesh") are generic words and are never read.
+REFERENT_NAMES_SQL = """
+SELECT a.alias_norm AS alias, k.alias_norm AS referent_key
+FROM referent_alias a
+JOIN referent_alias k ON k.node_id = a.node_id AND k.alias_class = 'key'
+WHERE a.alias_class = 'name'
+"""
+
 
 @dataclass(frozen=True)
 class LivedRecord:

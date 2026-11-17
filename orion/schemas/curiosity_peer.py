@@ -21,6 +21,8 @@ PEER_BRIEF_CONSUMED_CHANNEL = "orion:curiosity:peer:brief:consumed"
 PEER_BRIEF_CONSUMED_KIND = "curiosity.peer.brief.consumed.v1"
 
 CuriosityPeerModeV1 = Literal["world_curiosity", "self_inquiry"]
+# `cursor_auto` is no longer produced (Cursor retired 2026-11-17, #3397); it
+# stays accepted so old briefs keep validating.
 CuriosityPeerNameV1 = Literal["cursor_auto", "claude_room"]
 CuriosityPeerBriefStatusV1 = Literal["ok", "failed", "refused_budget", "empty"]
 

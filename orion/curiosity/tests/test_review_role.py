@@ -125,7 +125,7 @@ def test_review_role_section_warns_against_the_investigation_vocabulary():
     lines = _review_role_section(run_id="abc123")
     text = "\n".join(lines)
     assert "DIFFERENT field from the role you wrote above" in text
-    assert "never local_crawl or hire_cursor" in text
+    assert "never local_crawl or hire_peer" in text
     # the ambiguous placeholder shape ("choice: \"a|b\"") the InvestigationRole
     # template also uses must be gone from this one -- that shared shape is
     # what caused the cross-echo in the first place.

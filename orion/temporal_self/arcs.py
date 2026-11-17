@@ -248,7 +248,9 @@ def _add_context(arc: TemporalSelfArcV1, event_id: str) -> None:
 # (final VISION_OFFICE_SESSIONS_SETTLE_SEC, 660 s, after the visit ended) and episode memories
 # (distilled 0.5 to 97 h after the moment they are about, 11-05 to 11-13; #3400). A memory is
 # ordered by when it was written and still binds by ``occurred_at``, the moment it is about.
-AVAILABLE_AT_KINDS = frozenset({"street_event", "office_session", "memory_episode"})
+# A play row of a person's sitting ends at the last button press and is written when the 5-minute
+# gap is noticed (orion-hub scripts/retro_sitting.py), or later by its recovery.
+AVAILABLE_AT_KINDS = frozenset({"street_event", "office_session", "memory_episode", "retro_play"})
 
 
 def event_available_at(e: TemporalSelfEventV1) -> datetime:
@@ -504,16 +506,16 @@ def _flush_buffer(state: TemporalSelfStateV1, before: datetime | None, cfg: "Red
     # horizon, nothing is due.
     if before is not None and (not state.context_buffer or state.context_buffer[0].at >= before):
         return
-    # An episode memory that lands today about an earlier day is not part of today: it stays an
-    # event row, in no arc and not in today's list (that day is closed and is not rewritten).
-    day_start = day_window(state.day_id, cfg.tz_name)[0] if state.day_id else None
+    # Everything in the buffer was folded into the current day (``_roll_day`` empties it), so an
+    # unbound item joins the current day. An episode memory written today about an earlier,
+    # closed day joins today, the day it was remembered (#3584); its row keeps ``occurred_at``,
+    # the moment it is about. That closed day is not rewritten. Nothing is dropped here.
     keep: list[TemporalSelfContextItemV1] = []
     for item in state.context_buffer:
         if before is not None and item.at >= before:
             keep.append(item)
             continue
-        if (item.source_kind in _DAY_CONTEXT_KINDS and not item.bound_arc_ids
-                and (day_start is None or item.at >= day_start)):
+        if item.source_kind in _DAY_CONTEXT_KINDS and not item.bound_arc_ids:
             _add_day_context(state, item.event_id)
     state.context_buffer = keep
 

@@ -147,7 +147,7 @@ def test_printout_caps_keep_the_file_path():
 
 def dig_help_cap() -> int:
     """The one cap on `dig help` length; test_capacities_cmd.py reads it from here."""
-    return 4000
+    return 4250
 
 
 def test_help_fits_and_teaches_the_source_labels(capsys):

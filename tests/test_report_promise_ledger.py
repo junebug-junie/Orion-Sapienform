@@ -50,7 +50,59 @@ def test_an_expired_promise_never_in_the_judges_view_is_unclosable():
 def test_expired_promise_with_a_carry_reply_is_named():
     acts = [_act(1, opened=T0, closed=T0 + H, source="expired", note="no keep within horizon", corr="c-carry")]
     carry = {turn_concern_id("c-carry"): [T0 + timedelta(hours=20)]}
-    assert rpt.close_summary(acts, unclosable=set(), carry_concerns=carry)["expired_with_carry_reply"] == 1
+    out = rpt.close_summary(acts, unclosable=set(), carry_concerns=carry)
+    assert out["expired_with_carry_reply"] == 1 and out["expired_with_carry_reply_acts"] == ["act_1"]
+
+
+def test_guard_baseline_is_frozen_for_shadow():
+    # Orion's PR #3561 question 3: the baseline is set before shadow data and never re-based on it.
+    # Changing this pin is a Juniper decision recorded in #3531, not a quiet edit.
+    assert rpt.REPLAY_BASELINE == (23, 289) and rpt.GUARD_RATIO_RED == 2.0
+
+
+def test_guard_prints_an_interval_beside_the_ratio():
+    g = rpt.guard_summary([_turn(str(i), [FIRM] if i < 2 else []) for i in range(20)])
+    lo, hi = g["rate_poisson90"]
+    assert g["rate"] == 0.1 and lo < 0.1 < hi
+    assert rpt.guard_summary([])["rate_poisson90"] is None
+
+
+def test_guard_leaves_out_turns_before_the_finder_went_live():
+    early = {**_turn("old", [{"quote": "old row", "offer": False, "doer": "orion"}]),
+             "created_at": rpt.FINDER_LIVE_AT - timedelta(hours=1)}
+    late = {**_turn("new", [FIRM]), "created_at": rpt.FINDER_LIVE_AT + timedelta(hours=1)}
+    g = rpt.guard_summary([early, late])
+    assert (g["judged_turns"], g["turns_before_finder"], g["firm_promises"]) == (1, 1, 1)
+    assert g["skipped_pre_force"] == 1 and g["turns_not_judged"] == 0
+
+
+def test_guard_interval_handles_more_promises_than_turns():
+    # A turn can hold several promises: the rate is a count rate and can exceed 1 (Wilson crashed here).
+    g = rpt.guard_summary([_turn("a", [FIRM, {**FIRM, "quote": "I'll also check the other run tonight."}])])
+    lo, hi = g["rate_poisson90"]
+    assert g["rate"] == 2.0 and lo < 2.0 < hi
+
+
+def test_text_report_shows_raw_counts_beside_the_keep_rate(monkeypatch, capsys):
+    acts = [
+        _act(1, opened=T0, closed=T0 + timedelta(hours=5), source="producer", note="kept_in:cx evidence=reply"),
+        _act(2, opened=T0, closed=T0 + H, source="expired", note="no keep within horizon"),
+        _act(3, opened=T0, closed=T0 + H, source="expired", note=VOID_NOTE),
+    ]
+    acts += [_act(10 + i, opened=T0, closed=T0 + H, source="expired", note="no keep within horizon",
+                  corr=f"c-carry{i}") for i in range(3)]
+    carry = {turn_concern_id(f"c-carry{i}"): [T0 + timedelta(hours=20)] for i in range(3)}
+    monkeypatch.setattr(rpt, "gather", lambda dsn, since: {"acts": acts, "starts": [T0 + timedelta(hours=1)],
+                                                           "turns": [], "carry": carry})
+    assert rpt.main(["--dsn", "x"]) == 0
+    out = capsys.readouterr().out
+    assert "keep rate (Beta(1,1)) over kept 1 + expired 4 (void 1 and un-closeable 0 left out)" in out
+    assert "expired with a carry reply: 3 (act_10, act_11, act_12)" in out
+
+
+def test_carry_act_ids_are_capped_in_the_text_report():
+    assert rpt._ids([f"act_{i}" for i in range(12)]) == " (" + ", ".join(f"act_{i}" for i in range(10)) + " +2 more)"
+    assert rpt._ids([]) == ""
 
 
 def _turn(corr, made, source="substrate_informed_pass", text="Some reply."):
@@ -65,7 +117,7 @@ def test_guard_counts_judged_turns_only_and_skips_pre_force_items():
     turns = [_turn("a", [FIRM]), _turn("b", [{**FIRM, "offer": True}]),
              _turn("c", [{"quote": "old row", "offer": False, "doer": "orion"}]),
              _turn("d", [FIRM], source="deterministic_quick_gate"), _turn("e", [])]
-    g = rpt.guard_summary(turns, baseline=(1, 10))
+    g = rpt.guard_summary(turns, baseline=(1, 10), min_judged=1)
     assert g["judged_turns"] == 4 and g["turns_not_judged"] == 1
     assert (g["firm_promises"], g["offers"], g["skipped_pre_force"]) == (1, 1, 1)
     assert g["rate"] == 0.25 and g["ratio"] == 2.5 and g["red"] is True
@@ -75,7 +127,7 @@ def test_blinded_sample_hides_the_judges_reading_and_scores_back():
     text = "Lots of context before. I'll compare the two runs tomorrow. And after."
     sheet = rpt.blinded_sample([_turn("a", [FIRM], text=text)], 5)
     (item,) = sheet
-    assert set(item) == {"key", "quote", "reply_context", "label", "why"}
+    assert set(item) == {"key", "quote", "juniper_said", "reply_context", "label", "why"}
     assert "compare the two runs" in item["reply_context"]
     blob = json.dumps(sheet)
     for leaked in ("force", "doer", "done_when", "commits", "offer"):
@@ -90,3 +142,137 @@ def test_blinded_sample_hides_the_judges_reading_and_scores_back():
 def test_wilson_matches_the_pr_3532_numbers():
     lo, hi = rpt.wilson(36, 43)
     assert (round(lo, 2), round(hi, 2)) == (0.70, 0.92)
+
+
+# --- Orion's second review round (PR #3561 / #3598 / #3532 threads, 2026-11-17) ---------------------
+
+
+def test_guard_cannot_go_red_before_it_is_armed():
+    # 0c1e question 3: a high ratio on a handful of turns is noise, not a red guard.
+    turns = [_turn(str(i), [FIRM] if i < 3 else []) for i in range(10)]
+    g = rpt.guard_summary(turns)
+    assert g["ratio"] > rpt.GUARD_RATIO_RED and g["armed"] is False and g["red"] is False
+    assert rpt.GUARD_MIN_JUDGED_TURNS == 60
+
+
+def test_guard_red_boundary_at_the_arming_point():
+    # At 60 turns and the frozen 23/289, red (ratio > 2) needs 10 firm promises: 9 is not red.
+    n = rpt.GUARD_MIN_JUDGED_TURNS
+    for firm, red in ((9, False), (10, True)):
+        g = rpt.guard_summary([_turn(str(i), [FIRM] if i < firm else []) for i in range(n)])
+        assert g["armed"] is True and g["red"] is red, (firm, g["ratio"])
+
+
+def test_guard_leaves_out_turns_not_sent_from_a_hub_browser_surface():
+    # 0c1e question 2 / #3602: a coding session's message posted over the Hub API is not Juniper's turn.
+    session = {**_turn("agent", [FIRM, {**FIRM, "quote": "I'll read the three proposals closely."}]), "from_browser": False}
+    g = rpt.guard_summary([_turn("j", []), session], min_judged=1)
+    assert (g["judged_turns"], g["turns_not_from_browser"], g["firm_promises"], g["turns_not_judged"]) == (1, 1, 0, 0)
+
+
+def _sturn(corr, made, *, session="s1", at=T0, accepted=None, prev=None, prev_is_juniper=True):
+    return {**_turn(corr, made), "session_id": session, "created_at": at, "accepted": accepted or [],
+            "prev_correlation_id": prev, "prev_is_juniper": prev_is_juniper if prev else None}
+
+
+def test_duplicate_candidates_pair_reworded_repeats_in_one_session_only():
+    a = {**FIRM, "quote": "I'll compare the two runs tomorrow morning and tell you which drifted."}
+    b = {**FIRM, "quote": "Tomorrow I'll compare the two runs and tell you which drifted.", "act": "other"}
+    turns = [_sturn("c1", [a], at=T0), _sturn("c2", [b], at=T0 + timedelta(hours=5)),
+             _sturn("c3", [b], session="s2", at=T0 + timedelta(hours=6)),
+             _sturn("c4", [{**FIRM, "quote": "Different promise entirely, about the camera.",
+                            "act": "x", "done_when": "y happened later on"}], at=T0 + timedelta(hours=7)),
+             _sturn("c5", [a], at=T0 + timedelta(hours=80))]
+    pairs = rpt.duplicate_candidates(turns)
+    assert [(p["a"], p["b"]) for p in pairs] == [("c1#0", "c2#0")]  # c5 is 75 h after c2: never open together
+    assert "same_done_when" in pairs[0]["why"] and any(w.startswith("shared_span_") for w in pairs[0]["why"])
+
+
+def test_offers_summary_counts_accepted_and_unmatched_against_the_previous_turn():
+    offer = {**FIRM, "quote": "If you want, I'll queue the read tonight.", "offer": True}
+    turns = [_sturn("c1", [offer], at=T0),
+             _sturn("c2", [], at=T0 + timedelta(hours=1), prev="c1",
+                    accepted=["If you want, I\u2019ll queue the read tonight."]),
+             _sturn("c3", [], at=T0 + timedelta(hours=2), prev="c2", accepted=["Something never offered here."]),
+             _sturn("c4", [], session="s9", at=T0, prev="before-window", accepted=["No earlier turn in the window."]),
+             # Hub's rule: the previous row was Orion's outreach, so the judge was shown no offers.
+             _sturn("c5", [], at=T0 + timedelta(hours=3), prev="outreach-row", prev_is_juniper=False,
+                    accepted=["If you want, I'll queue the read tonight."])]
+    out = rpt.offers_summary(turns)
+    assert (out["accepted"], out["accepted_unmatched"], out["accepted_no_prior"],
+            out["accepted_prev_not_juniper"]) == (4, 1, 1, 1)
+    assert out["accepted_unmatched_turns"] == ["c3"]
+
+
+def test_blinded_sample_shows_the_message_juniper_sent():
+    sheet = rpt.blinded_sample([{**_turn("a", [FIRM], text="I'll compare the two runs tomorrow."),
+                                 "juniper_said": "can you   check the runs?"}], 1)
+    assert sheet[0]["juniper_said"] == "can you check the runs?"
+
+
+def test_text_report_names_the_keep_rate_ceiling_and_the_new_lines(monkeypatch, capsys):
+    monkeypatch.setattr(rpt, "gather", lambda dsn, since: {"acts": [], "starts": [], "turns": [], "carry": {}})
+    assert rpt.main(["--dsn", "x"]) == 0
+    out = capsys.readouterr().out
+    assert "ceiling (chat-showable share) 0.39 (9/23" in out
+    assert "not armed: red needs 60 judged turns" in out
+    assert "offers accepted: 0; accepted_unmatched 0" in out
+    assert "duplicate candidates" in out
+
+
+def test_duplicate_candidates_skip_items_with_no_time():
+    a = {**FIRM, "quote": "I'll compare the two runs tomorrow morning and tell you which drifted."}
+    turns = [{**_sturn("c1", [a]), "created_at": None}, _sturn("c2", [a], at=T0)]
+    assert rpt.duplicate_candidates(turns) == []
+
+
+def test_report_leaves_session_turns_out_of_offers_and_duplicates(monkeypatch):
+    a = {**FIRM, "quote": "I'll compare the two runs tomorrow morning and tell you which drifted."}
+    at = rpt.FINDER_LIVE_AT + timedelta(hours=1)
+    turns = [_sturn("c1", [a], at=at), {**_sturn("c2", [a], at=at + timedelta(hours=1)), "from_browser": False}]
+    out = rpt.report({"acts": [], "starts": [], "turns": turns, "carry": {}})
+    assert out["duplicate_candidates"] == []
+    turns[1]["from_browser"] = True
+    assert len(rpt.report({"acts": [], "starts": [], "turns": turns, "carry": {}})["duplicate_candidates"]) == 1
+
+
+def test_judged_sql_qualifies_both_predicates_by_alias():
+    sql = rpt.JUDGED_SQL
+    assert "k.stage = 'ingress' AND k.seq = 0 AND k.raw->'surface_context' IS NOT NULL" in sql
+    assert "btrim(c.prompt)" in sql and "c.client_meta->>'unsolicited'" in sql
+    assert "btrim(p.prompt)" in sql and "p.client_meta->>'unsolicited'" in sql
+    import pytest
+    with pytest.raises(ValueError):
+        rpt.qualify("stage = 'x'", "k", ("seq",))
+    assert rpt.qualify("raw = 'raw seq'", "k", ("raw",)) == "k.raw = 'raw seq'"
+
+
+def test_baseline_and_ceiling_print_on_the_clean_basis_too(monkeypatch, capsys):
+    # Orion's PR #3561 third-round question 2: the 2 coding-session turns out, beside the frozen numbers.
+    assert rpt.REPLAY_BASELINE_CLEAN == (21, 287) and rpt.KEEP_RATE_CEILING_CLEAN == (9, 21)
+    g = rpt.guard_summary([_turn("j", [FIRM])], min_judged=1)
+    assert (g["baseline_rate"], g["baseline_clean_rate"]) == (0.0796, 0.0732)
+    assert g["ratio_clean"] == round(1 / (21 / 287), 2) and g["red"] is True  # red still on the frozen basis
+    monkeypatch.setattr(rpt, "gather", lambda dsn, since: {"acts": [], "starts": [], "turns": [], "carry": {}})
+    assert rpt.main(["--dsn", "x"]) == 0
+    out = capsys.readouterr().out
+    assert "clean 0.43 9/21" in out and "[clean baseline 0.0732 (21/287 replay" in out
+
+
+def test_duplicate_window_pairs_counts_every_pair_the_rule_compares():
+    # Orion's PR #3598 third-round question 5: the number of same-session pairs within 72 h, before the
+    # similarity test. The live example (780e83f2 / 295b0ef5, 2 minutes apart) is one such pair, and the
+    # shipped rule does not flag it: its longest shared run is 11 characters and act/done_when differ.
+    float_up = {**FIRM, "quote": "I'll float it back up when you've had some sleep — or whenever you poke me first.",
+                "act": "float the ticket back up",
+                "done_when": "Orion brings up the GitHub ticket in a subsequent turn after Juniper has rested"}
+    abstain = {**FIRM, "quote": "I won't float anything back up while you're asleep",
+               "act": "not resurface open loops while user sleeps",
+               "done_when": "no new messages regarding open loops are sent during the user's sleep period"}
+    turns = [_sturn("c1", [float_up], at=T0), _sturn("c2", [abstain], at=T0 + timedelta(minutes=2)),
+             _sturn("c3", [FIRM], session="s2", at=T0), _sturn("c4", [FIRM], at=T0 + timedelta(hours=80))]
+    assert rpt.duplicate_window_pairs(turns) == 1
+    assert rpt.duplicate_candidates(turns) == []
+    out = rpt.report({"acts": [], "starts": [], "turns": [{**t, "created_at": rpt.FINDER_LIVE_AT + (t["created_at"] - T0)}
+                                                          for t in turns], "carry": {}})
+    assert out["duplicate_window_pairs"] == 1

@@ -311,6 +311,22 @@ PRIME_EVENT_WANTS_LIMIT`, highest net first). A new concern must name one of tho
 `prime_concern_added concern=... event_ref=...`. An unread menu is a frame gap, never calm. false = the
 arc path, unchanged. Replay: `services/orion-durable-runs/evals/event_wants_replay.py`. Spec: docs/superpowers/specs/2026-11-04-attention-as-want-competition-design.md.
 
+### Prime's concern evidence clock (2026-11-17, #3574)
+
+`PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED` (default true): a concern lives while evidence touches it, not while the
+model says "keep". What renews a concern's clock (`last_evidence_at`): a question Prime sent about it (the move's
+`concern_id`, either hold-back arm; not when Hub refused it, and never a refused move; an unknown Hub answer counts
+as sent) and taking it on (renewed on
+every tick while the take-on's run is open). A concern nothing touched for 24 h (a promise: 72 h) fades: its act
+closes `faded: nothing renewed it for a day`. A bare keep also no longer answers the concern's horizon need, so a
+thought that only keeps halves that need. A turn whose prompt cites `prime_concern:<id>` still settles it (hand-back,
+below); it does not renew it (#3644: a letter's prompt quotes Orion's own refs). An untouched promise therefore frees
+the hand-back's one turn-concern slot 24 h after it opened, while it stays held up to 72 h. The frame line reads
+"last touched", and the system prompt says keeping does not renew.
+false = a keep renews, as before. No state migration: the field keeps its name and type. Replay (11-14..11-17 on
+the live state): `python orion/prime/evals/run_concern_evidence_clock_replay.py`. Spec:
+docs/superpowers/specs/2026-11-17-prime-concerns-decided-by-attention-design.md (patch 1).
+
 ### Every turn ends back in Prime: the turn hand-back (2026-11-12, living Prime Part 2)
 
 `PRIME_TURN_HANDBACK_ENABLED` (default true). Prime listens to `orion:cockpit:hop`, the hops Hub already
@@ -473,6 +489,13 @@ terminal Prime POSTs `IntentionDeliverV1` (`/api/intention/deliver`): Hub writes
 thread and makes one outreach attempt through the normal gates (quiet hours, the shared daily cap, the economy). A
 blocked attempt still leaves the reply in the thread. The act closes 1 when the reply is stored, else 0. A concern
 taken on does not fade while its run is open.
+
+Time budget (#3354): the order carries `timeout_sec` = `PRIME_INTENTION_TURN_TIMEOUT_SEC` (default 3600, max 3600).
+Durable-runs uses it as the carry attempt's timer, and Hub gives the FCC motor that limit minus the 30 s reply grace
+and its finalize reserve (`HUB_CURIOSITY_HELD_TURN_FINALIZE_RESERVE_SEC`, 330 s live), so about 3,240 s. At the old
+1800 the first live carry (a "lazy browse" dig on the agent lane) was cut at 1,440 s of motor time; with its findings
+carried, attempt 2 needed 317 s more, ~1,757 s in all. A cut attempt is still retried on the durable run with what it
+found (`retry_cut_short`).
 
 - Record: Redis `orion:prime:intentions` (`PrimeIntentionsStateV1`; no quote text is ever stored in Prime's state).
 - Logs: `prime_intention_taken`, `prime_intention_ordered`, `prime_intention_order_unanswered`,

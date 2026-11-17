@@ -1,4 +1,4 @@
-"""Claude fallback exactly once + dual-failure / budget refuse briefs."""
+"""Claude is the only peer: budget gate, exactly one Claude ask, honest briefs."""
 
 from __future__ import annotations
 
@@ -10,8 +10,7 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
-from app.claude_fallback import CONTRACTOR_PEER_MARKER, run_claude_fallback
-from app.cursor_errors import TokenUnavailable, classify_cursor_failure
+from app.claude_peer import CONTRACTOR_PEER_MARKER, run_claude_peer
 from app.settings import Settings
 from app.worker import (
     _default_persist,
@@ -19,11 +18,10 @@ from app.worker import (
     _run_coro_threadsafe,
     apply_peer_brief_consumed,
     handle_help_request,
-    make_bus_claude_fallback,
+    make_bus_claude_peer,
 )
 from orion.core.bus.bus_schemas import BaseEnvelope
 from orion.core.bus.codec import OrionCodec
-from orion.dev_economics.cursor_limit_events import CursorLimitObservation
 from orion.schemas.curiosity_peer import (
     PEER_BRIEF_KIND,
     HelpRequestV1,
@@ -47,10 +45,6 @@ def _help(**overrides: Any) -> HelpRequestV1:
     return HelpRequestV1(**base)
 
 
-def _clear_budget() -> CursorLimitObservation:
-    return CursorLimitObservation(observed=True, state="clear", staleness_sec=1.0)
-
-
 @dataclass
 class _ClearClaudeLimit:
     observed: bool = True
@@ -60,191 +54,6 @@ class _ClearClaudeLimit:
 
 def _clear_claude() -> _ClearClaudeLimit:
     return _ClearClaudeLimit()
-
-
-def test_classify_token_unavailable() -> None:
-    assert classify_cursor_failure(TokenUnavailable("dry")) == "token_unavailable"
-    assert classify_cursor_failure(RuntimeError("boom")) == "other"
-    assert (
-        classify_cursor_failure(RuntimeError("401 Unauthorized: invalid api key"))
-        == "token_unavailable"
-    )
-    # Bare "token" must not false-positive (narrowed markers).
-    assert classify_cursor_failure(RuntimeError("tokenizing the input")) == "other"
-    # Desktop CLI login markers.
-    assert (
-        classify_cursor_failure(RuntimeError("not logged in — please run agent login"))
-        == "token_unavailable"
-    )
-    assert (
-        classify_cursor_failure(RuntimeError("Please run `agent login` to continue"))
-        == "token_unavailable"
-    )
-
-
-def test_cursor_token_failure_tries_claude_once() -> None:
-    calls = {"cursor": 0, "claude": 0}
-    persisted: list[PeerBriefV1] = []
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        calls["cursor"] += 1
-        raise TokenUnavailable("cursor tokens dry")
-
-    def claude(*_a: Any, **_k: Any) -> str:
-        calls["claude"] += 1
-        return '{"summary": "ok summary", "evidence_pointers": ["policy.py"]}'
-
-    brief = handle_help_request(
-        _help(),
-        cursor=cursor,
-        claude=claude,
-        observe_limit=lambda: _clear_budget(),
-        observe_claude_limit=_clear_claude,
-        persist=persisted.append,
-    )
-    assert calls == {"cursor": 1, "claude": 1}
-    assert brief.status == "ok"
-    assert brief.peer == "claude_room"
-    assert "ok summary" in brief.summary
-    assert "conversation-only" in brief.summary.lower()
-    assert brief.evidence_pointers == []
-    assert persisted == [brief]
-
-
-def test_claude_budget_refuse_skips_claude_spend() -> None:
-    calls = {"cursor": 0, "claude": 0}
-    persisted: list[PeerBriefV1] = []
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        calls["cursor"] += 1
-        raise TokenUnavailable("dry")
-
-    def claude(*_a: Any, **_k: Any) -> str:
-        calls["claude"] += 1
-        raise AssertionError("claude must not spend")
-
-    brief = handle_help_request(
-        _help(),
-        cursor=cursor,
-        claude=claude,
-        observe_limit=lambda: _clear_budget(),
-        observe_claude_limit=lambda: _ClearClaudeLimit(
-            observed=False, state="unknown", staleness_sec=None
-        ),
-        persist=persisted.append,
-    )
-    assert calls == {"cursor": 1, "claude": 0}
-    assert brief.status == "refused_budget"
-    assert brief.peer == "claude_room"
-    assert brief.refusal_reason and "claude_budget_unobserved" in brief.refusal_reason
-    assert persisted == [brief]
-
-
-def test_both_fail_yields_failed_brief() -> None:
-    calls = {"cursor": 0, "claude": 0}
-    persisted: list[PeerBriefV1] = []
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        calls["cursor"] += 1
-        raise TokenUnavailable("no tokens")
-
-    def claude(*_a: Any, **_k: Any) -> str:
-        calls["claude"] += 1
-        raise RuntimeError("claude room timed out")
-
-    brief = handle_help_request(
-        _help(),
-        cursor=cursor,
-        claude=claude,
-        observe_limit=lambda: _clear_budget(),
-        observe_claude_limit=_clear_claude,
-        persist=persisted.append,
-    )
-    assert calls == {"cursor": 1, "claude": 1}
-    assert brief.status == "failed"
-    assert brief.refusal_reason
-    assert "claude" in brief.refusal_reason.lower() or "timed out" in brief.refusal_reason.lower()
-    assert persisted == [brief]
-
-
-def test_other_cursor_failure_skips_claude() -> None:
-    calls = {"cursor": 0, "claude": 0}
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        calls["cursor"] += 1
-        raise RuntimeError("agent crashed")
-
-    def claude(*_a: Any, **_k: Any) -> str:
-        calls["claude"] += 1
-        return "should not run"
-
-    brief = handle_help_request(
-        _help(),
-        cursor=cursor,
-        claude=claude,
-        observe_limit=lambda: _clear_budget(),
-        persist=lambda _b: None,
-    )
-    assert calls == {"cursor": 1, "claude": 0}
-    assert brief.status == "failed"
-    assert brief.peer == "cursor_auto"
-
-
-def test_budget_refuse_skips_peers() -> None:
-    calls = {"cursor": 0, "claude": 0}
-    persisted: list[PeerBriefV1] = []
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        calls["cursor"] += 1
-        raise AssertionError("cursor must not run")
-
-    def claude(*_a: Any, **_k: Any) -> str:
-        calls["claude"] += 1
-        raise AssertionError("claude must not run")
-
-    brief = handle_help_request(
-        _help(),
-        cursor=cursor,
-        claude=claude,
-        observe_limit=lambda: CursorLimitObservation(
-            observed=False, state="unknown", staleness_sec=None
-        ),
-        persist=persisted.append,
-    )
-    assert calls == {"cursor": 0, "claude": 0}
-    assert brief.status == "refused_budget"
-    assert brief.refusal_reason == "budget_unobserved"
-    assert persisted == [brief]
-
-
-def test_cursor_success_skips_claude() -> None:
-    calls = {"claude": 0}
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        return PeerBriefV1(
-            brief_id="brief-c",
-            help_id="help-1",
-            run_id="run-1",
-            prior_id="prior-1",
-            peer="cursor_auto",
-            status="ok",
-            summary="from cursor",
-        )
-
-    def claude(*_a: Any, **_k: Any) -> str:
-        calls["claude"] += 1
-        return "nope"
-
-    brief = handle_help_request(
-        _help(),
-        cursor=cursor,
-        claude=claude,
-        observe_limit=lambda: _clear_budget(),
-        persist=lambda _b: None,
-    )
-    assert calls["claude"] == 0
-    assert brief.peer == "cursor_auto"
-    assert brief.status == "ok"
 
 
 def test_map_claude_result_strips_evidence_pointers() -> None:
@@ -262,7 +71,7 @@ def test_map_claude_result_strips_evidence_pointers() -> None:
     assert "conversation-only" in mapped.summary.lower()
 
 
-def test_run_claude_fallback_publishes_and_waits_once() -> None:
+def test_run_claude_peer_publishes_and_waits_once() -> None:
     published: list[Any] = []
     waits = {"n": 0}
     order: list[str] = []
@@ -285,7 +94,7 @@ def test_run_claude_fallback_publishes_and_waits_once() -> None:
         assert request_id == published[0].request_id
         return '{"summary": "room notes", "evidence_pointers": []}'
 
-    brief = run_claude_fallback(
+    brief = run_claude_peer(
         _help(),
         publish_request=publish,
         wait_utterance=wait,
@@ -303,7 +112,7 @@ def test_run_claude_fallback_publishes_and_waits_once() -> None:
     assert "room notes" in brief.summary
 
 
-def test_run_claude_fallback_failure_raises() -> None:
+def test_run_claude_peer_failure_raises() -> None:
     def publish(_req: Any) -> None:
         return None
 
@@ -318,14 +127,14 @@ def test_run_claude_fallback_failure_raises() -> None:
         raise TimeoutError("no utterance")
 
     with pytest.raises(TimeoutError):
-        run_claude_fallback(
+        run_claude_peer(
             _help(),
             publish_request=publish,
             wait_utterance=wait,
         )
 
 
-def test_bus_claude_fallback_unwraps_titanium_payload_envelope() -> None:
+def test_bus_claude_peer_unwraps_titanium_payload_envelope() -> None:
     """Room companion publishes Titanium envelopes with utterance under `payload`."""
     order: list[str] = []
     settings = Settings()
@@ -370,7 +179,7 @@ def test_bus_claude_fallback_unwraps_titanium_payload_envelope() -> None:
             yield {"type": "message", "data": json.dumps(envelope)}
 
     bus = FakeBus()
-    claude = make_bus_claude_fallback(settings=settings, bus=bus, timeout_sec=2.0)
+    claude = make_bus_claude_peer(settings=settings, bus=bus, timeout_sec=2.0)
     brief = claude(_help(), context_pack="")
     assert order[0] == "subscribe"
     assert "publish" in order
@@ -460,7 +269,7 @@ def test_default_persist_skips_graph_when_unconfigured(caplog: pytest.LogCapture
         brief_id="brief-bus-only",
         help_id="help-1",
         run_id="run-1",
-        peer="cursor_auto",
+        peer="claude_room",
         status="ok",
         summary="bus only",
     )
@@ -495,68 +304,174 @@ def test_apply_peer_brief_consumed_marks_graph() -> None:
     assert params["brief_ids"] == ["brief-a", "brief-b"]
 
 
-# --- 2026-09-25 (D2): with no injected Claude observer, the Claude fallback
-# gate must read the real Claude meter (`rate_limit_events.observe`), never
-# the Cursor meter. A local `observe = observe_limit or ...` used to shadow the
-# module-level import, so production gated Claude spend on Cursor state.
-# Every test above injects `observe_claude_limit`, which is why none caught it.
+# --- Claude-only hire path (#3397) ------------------------------------------
 
 
-def test_default_claude_gate_reads_the_claude_meter_not_the_cursor_meter(monkeypatch) -> None:
-    import app.worker as worker_mod
-
-    seen: list[str] = []
-
-    def claude_meter() -> _ClearClaudeLimit:
-        seen.append("claude_meter")
-        return _ClearClaudeLimit()
-
-    def cursor_meter() -> CursorLimitObservation:
-        seen.append("cursor_meter")
-        return _clear_budget()
-
-    monkeypatch.setattr(worker_mod, "observe", claude_meter)
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        raise TokenUnavailable("cursor tokens dry")
+def test_hire_goes_to_claude_once_and_returns_ok() -> None:
+    calls = {"claude": 0}
+    persisted: list[PeerBriefV1] = []
 
     def claude(*_a: Any, **_k: Any) -> str:
-        return '{"summary": "ok summary", "evidence_pointers": []}'
+        calls["claude"] += 1
+        return '{"summary": "claude notes", "evidence_pointers": ["x.py"]}'
 
     brief = handle_help_request(
         _help(),
-        cursor=cursor,
         claude=claude,
-        observe_limit=cursor_meter,
+        observe_claude_limit=_clear_claude,
+        persist=persisted.append,
+    )
+    assert calls == {"claude": 1}
+    assert brief.peer == "claude_room"
+    assert brief.status == "ok"
+    assert "claude notes" in brief.summary
+    assert brief.evidence_pointers == []
+    assert persisted == [brief]
+
+
+def test_hire_with_no_cursor_anywhere_is_not_refused_for_cursor_reasons(monkeypatch) -> None:
+    """Regression for #3397: 2026-11-14..16 every hire was refused with
+    "Cursor unavailable: it is not logged in", because Claude only ran after a
+    Cursor token failure. With no Cursor binary, auth, or budget env present,
+    a hire must reach Claude directly."""
+    for key in (
+        "CURIOSITY_PEER_AGENT_BIN",
+        "CURIOSITY_PEER_MODEL",
+        "CURIOSITY_PEER_CURSOR_BUDGET_STATE",
+        "CURIOSITY_PEER_CURSOR_BUDGET_FILE",
+        "CURSOR_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    import app.worker as worker_mod
+
+    assert not hasattr(worker_mod, "_default_cursor")
+    calls = {"claude": 0}
+
+    def claude(*_a: Any, **_k: Any) -> str:
+        calls["claude"] += 1
+        return '{"summary": "answer", "evidence_pointers": []}'
+
+    brief = handle_help_request(
+        _help(),
+        settings=Settings(),
+        claude=claude,
+        observe_claude_limit=_clear_claude,
         persist=lambda _b: None,
     )
-    assert seen == ["cursor_meter", "claude_meter"]
+    assert calls == {"claude": 1}
     assert brief.status == "ok"
     assert brief.peer == "claude_room"
+    assert "cursor" not in (brief.refusal_reason or "").lower()
 
 
-def test_default_claude_gate_refuses_when_the_claude_meter_is_unobserved(monkeypatch) -> None:
-    # The Cursor meter reads clear. Before the fix that alone let Claude spend.
-    import app.worker as worker_mod
-
-    monkeypatch.setattr(
-        worker_mod,
-        "observe",
-        lambda: _ClearClaudeLimit(observed=False, state="unknown", staleness_sec=None),
-    )
-
-    def cursor(*_a: Any, **_k: Any) -> PeerBriefV1:
-        raise TokenUnavailable("cursor tokens dry")
-
+def test_claude_budget_refuse_skips_claude_spend() -> None:
     def claude(*_a: Any, **_k: Any) -> str:
-        raise AssertionError("claude must not spend on an unobserved Claude meter")
+        raise AssertionError("claude must not spend on a limited meter")
 
     brief = handle_help_request(
         _help(),
-        cursor=cursor,
         claude=claude,
-        observe_limit=lambda: _clear_budget(),
+        observe_claude_limit=lambda: _ClearClaudeLimit(state="limited"),
         persist=lambda _b: None,
     )
     assert brief.status == "refused_budget"
-    assert brief.refusal_reason and "claude_budget_unobserved" in brief.refusal_reason
+    assert brief.peer == "claude_room"
+    assert brief.refusal_reason == (
+        "Claude helper refused: Claude's usage meter reads limited. "
+        "[claude_budget_limited]"
+    )
+
+
+def test_claude_failure_yields_failed_brief_with_reason() -> None:
+    def claude(*_a: Any, **_k: Any) -> str:
+        raise TimeoutError("claude utterance timeout after 420.0s")
+
+    brief = handle_help_request(
+        _help(),
+        claude=claude,
+        observe_claude_limit=_clear_claude,
+        persist=lambda _b: None,
+    )
+    assert brief.status == "failed"
+    assert brief.peer == "claude_room"
+    assert brief.refusal_reason.startswith("Claude helper was tried and failed: ")
+    assert "timeout" in brief.refusal_reason
+    assert brief.refusal_reason.endswith("[claude_failed]")
+
+
+def test_no_bus_and_no_claude_callable_is_unwired_failure() -> None:
+    brief = handle_help_request(
+        _help(),
+        observe_claude_limit=_clear_claude,
+        persist=lambda _b: None,
+    )
+    assert brief.status == "failed"
+    assert brief.refusal_reason.endswith("[claude_unwired]")
+
+
+def test_default_claude_gate_reads_the_configured_transcript_root(monkeypatch, tmp_path) -> None:
+    """No injected observer: the gate calls the real Claude meter at
+    CURIOSITY_PEER_CLAUDE_PROJECTS_PATH (the compose mount), not ~/.claude."""
+    import app.worker as worker_mod
+
+    seen: list[Any] = []
+
+    def meter(*, root: Any) -> _ClearClaudeLimit:
+        seen.append(str(root))
+        return _ClearClaudeLimit()
+
+    monkeypatch.setattr(worker_mod, "observe", meter)
+    brief = handle_help_request(
+        _help(),
+        settings=Settings(CURIOSITY_PEER_CLAUDE_PROJECTS_PATH=str(tmp_path)),
+        claude=lambda *_a, **_k: '{"summary": "ok"}',
+        persist=lambda _b: None,
+    )
+    assert seen == [str(tmp_path)]
+    assert brief.status == "ok"
+
+
+def test_unmounted_transcript_root_refuses_unobserved(tmp_path) -> None:
+    """Real meter over an empty root reads unobserved → fail closed."""
+
+    def claude(*_a: Any, **_k: Any) -> str:
+        raise AssertionError("claude must not spend on an unobserved meter")
+
+    brief = handle_help_request(
+        _help(),
+        settings=Settings(CURIOSITY_PEER_CLAUDE_PROJECTS_PATH=str(tmp_path / "missing")),
+        claude=claude,
+        persist=lambda _b: None,
+    )
+    assert brief.status == "refused_budget"
+    assert brief.refusal_reason.endswith("[claude_budget_unobserved]")
+
+
+
+def test_real_meter_over_a_fresh_transcript_lets_claude_run(tmp_path) -> None:
+    """End-to-end default gate: a mounted transcript tree with a fresh message
+    reads `clear`, so the hire reaches Claude (the 2026-11-14..16 failure was
+    the opposite: no mount → unobserved → refused)."""
+    from datetime import datetime, timezone
+
+    project = tmp_path / "-mnt-scripts-proj"
+    project.mkdir()
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    (project / "session.jsonl").write_text(
+        json.dumps({"type": "assistant", "timestamp": now, "message": {"content": "hi"}})
+        + "\n"
+    )
+    calls = {"claude": 0}
+
+    def claude(*_a: Any, **_k: Any) -> str:
+        calls["claude"] += 1
+        return '{"summary": "real gate passed"}'
+
+    brief = handle_help_request(
+        _help(),
+        settings=Settings(CURIOSITY_PEER_CLAUDE_PROJECTS_PATH=str(tmp_path)),
+        claude=claude,
+        persist=lambda _b: None,
+    )
+    assert calls == {"claude": 1}
+    assert brief.status == "ok"

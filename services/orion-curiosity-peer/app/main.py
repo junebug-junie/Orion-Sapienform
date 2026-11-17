@@ -77,9 +77,10 @@ async def main_async() -> None:
         if settings.ORION_BUS_ENABLED:
             await bus.connect()
             logger.info(
-                "curiosity_peer_listening channel=%s model=%s",
+                "curiosity_peer_listening channel=%s peer=claude_room "
+                "claude_meter_root=%s",
                 settings.CHANNEL_HELP_REQUEST,
-                settings.CURIOSITY_PEER_MODEL,
+                settings.CURIOSITY_PEER_CLAUDE_PROJECTS_PATH,
             )
             await run_consumer(settings, bus, stop)
         else:

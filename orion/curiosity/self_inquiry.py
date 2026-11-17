@@ -411,11 +411,11 @@ def read_latest_self_definition(reader: WorldviewReader) -> Optional[SelfDefinit
 
 def build_lived_answer(row: dict[str, Any]) -> Optional[LivedAnswer]:
     """None for a row with no run_id, question_id, or text."""
-    if self_question_mint_drop_reason(row):
-        return None
     run_id = str(row.get("run_id") or "").strip()
     question_id = str(row.get("question_id") or "").strip()
-    text = mint_text(row)
+    text = str(row.get("text") or "").strip()
+    if not run_id or not question_id or not text:
+        return None
     return LivedAnswer(
         run_id=run_id,
         question_id=question_id,

@@ -35,11 +35,15 @@ def taught_hop(text: str) -> str:
     return lines[0]
 
 
-def taught_outcome(focus: bool) -> str:
+def taught_outcome_block(focus: bool) -> str:
+    """The command exactly as taught: multi-line, `//` comments included."""
     text = "\n".join(_outcome_section(run_id=RUN_ID, focus=focus))
     start = text.index("MERGE (t:TurnOutcome")
-    block = text[start: text.index("\n\n", start)]
-    return " ".join(ln.split("//")[0].strip() for ln in block.splitlines())
+    return text[start: text.index("\n\n", start)]
+
+
+def taught_outcome(focus: bool) -> str:
+    return " ".join(ln.split("//")[0].strip() for ln in taught_outcome_block(focus).splitlines())
 
 
 def test_hop_merges_on_identity_only():
@@ -47,6 +51,9 @@ def test_hop_merges_on_identity_only():
     pattern = re.match(r"MERGE \(h:Hop \{([^}]*)\}\)", hop).group(1)
     assert pattern == f'run_id: "{RUN_ID}", n: 1'
     assert "ON CREATE SET h.note =" in hop and "h.written_at = timestamp()" in hop
+    # A reused n silently keeps the earlier note, so the note comes back to be checked.
+    assert hop.endswith("RETURN h.note")
+    assert "that n is already taken by an earlier stop" in _prompt()
 
 
 @pytest.mark.parametrize("focus", [False, True])
@@ -102,7 +109,7 @@ def test_real_falkordb_taught_writes_sent_twice_leave_one_of_each():
 
     try:
         hop = taught_hop(_prompt())
-        outcome = taught_outcome(focus=True)
+        outcome = taught_outcome_block(focus=True).replace("<explored | set_aside: why not>", "explored")
         # The focus anchor's own MERGE lands first, as in a compacted focus run.
         client.execute_command("GRAPH.QUERY", g, _focus_anchor_statement())
         for _ in range(2):
@@ -113,13 +120,19 @@ def test_real_falkordb_taught_writes_sent_twice_leave_one_of_each():
         assert count("MATCH (h:Hop) WHERE h.written_at IS NOT NULL AND h.note <> '' RETURN count(h)") == 1
         # The outcome's decision landed on the anchor's node instead of being lost.
         assert count(f'MATCH (t:TurnOutcome {{run_id: "{RUN_ID}"}}) WHERE t.continue_line = true RETURN count(t)') == 1
-        # Matching the prior first never mints a blank one.
+        # A different stop reusing n=1 does not overwrite: the returned note shows the old one.
+        reused = hop.replace("what I just learned", "a different stop")
+        reply = client.execute_command("GRAPH.QUERY", g, reused)
+        assert "a different stop" not in str(reply[1]) and "what I just learned" in str(reply[1])
+        assert count(f'MATCH (h:Hop {{run_id: "{RUN_ID}"}}) RETURN count(h)') == 1
+        # Matching both ends first never mints a blank prior.
         client.execute_command("GRAPH.QUERY", g, 'MERGE (p:Prior {prior_id: "x"}) ON CREATE SET p.claim = "c"')
-        edge = (f'MATCH (h:Hop {{run_id: "{RUN_ID}", n: 1}}), (p:Prior {{prior_id: "x"}}) '
-                f'MERGE (h)-[e:ABOUT]->(p) ON CREATE SET e.run_id = "{RUN_ID}"')
+        client.execute_command("GRAPH.QUERY", g, 'MERGE (f:Finding {finding_id: "f"}) ON CREATE SET f.text = "t"')
+        edge = (f'MATCH (f:Finding {{finding_id: "f"}}), (p:Prior {{prior_id: "x"}}) '
+                f'MERGE (f)-[e:SUPPORTS]->(p) ON CREATE SET e.run_id = "{RUN_ID}"')
         for _ in range(2):
             client.execute_command("GRAPH.QUERY", g, edge)
         assert count("MATCH (p:Prior) RETURN count(p)") == 1
-        assert count("MATCH (:Hop)-[e:ABOUT]->(:Prior) RETURN count(e)") == 1
+        assert count("MATCH (:Finding)-[e:SUPPORTS]->(:Prior) RETURN count(e)") == 1
     finally:
         client.execute_command("GRAPH.DELETE", g)

@@ -732,11 +732,14 @@ def _hops_section(max_hops: int, *, writable: bool = True) -> list[str]:
         "",
         '    MERGE (h:Hop {run_id: "<RUN_ID>", n: 1}) ON CREATE SET h.note = '
         '"what I just learned and what I want to look at next", '
-        "h.written_at = timestamp()",
+        "h.written_at = timestamp() RETURN h.note",
         "",
         "Only `run_id` and `n` go inside the braces -- they are what makes the "
         "stop this stop, so sending the same command twice finds the first node "
-        "instead of making a second. The note and the clock go in ON CREATE SET.",
+        "instead of making a second. The note and the clock go in ON CREATE SET. "
+        "Read the note that comes back: if it is not the one you just wrote, "
+        "that n is already taken by an earlier stop -- send it again with the "
+        "next n.",
         "",
         "`n` counts up from 1 within this sitting -- UNLESS you were told "
         "above that this is a resumed sitting, in which case start at the n "
@@ -1154,10 +1157,8 @@ def _write_section(*, own_graph: str, run_id: str, max_hops: int) -> list[str]:
         "  BOTH ENDS OF AN EDGE ARE MATCHED FIRST, by their id. Never draw a "
         "node inline inside an arrow, as in `MERGE (h)-[:ABOUT]->(:Prior)`: "
         "that does not find your prior, it makes a new blank :Prior with no "
-        "prior_id and no claim. To tie a stop or a finding to a prior:",
-        "",
-        '    MATCH (h:Hop {run_id: "<RUN_ID>", n: 1}), (p:Prior {prior_id: "..."})',
-        '    MERGE (h)-[e:ABOUT]->(p) ON CREATE SET e.run_id = "<RUN_ID>"',
+        "prior_id and no claim. MATCH each end by its id first, then MERGE "
+        "the arrow between the two names, as in every example here.",
         "",
         "  The run_id goes in ON CREATE SET and NOT inside the arrow. Inside "
         "it, MERGE would only match an edge from this same run, so asserting "
@@ -1244,7 +1245,7 @@ def _outcome_section(*, run_id: str, focus: bool = False) -> list[str]:
     if focus:
         lines += [
             "This run was shown a focus you queued, so write this node even if you want neither "
-            "of the two decisions above (then continue_line: false): focus_disposition is how "
+            "of the two decisions above (then t.continue_line = false): focus_disposition is how "
             "Hub learns what you did with it. No node, or no focus_disposition, is recorded as "
             "unknown, not as explored. Nothing is inferred from your prose.",
             "",

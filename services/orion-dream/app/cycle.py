@@ -567,9 +567,11 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
             replay=replay,
             hypotheses=rem.hypotheses,
             no_link_count=rem.no_link,
+            echo_count=rem.echo,
             unparseable_count=rem.unparseable,
             llm_failures=rem.failures,
             compaction_delta_id=compaction_delta_id,
+            pair_answers=rem.answers,
             note=f"pairs dream={len(d_pairs)} control={len(c_pairs)}"
             + (f" | arc candidates={len(arcs)}" if deps.load_arc_rows is not None else "")
             + (f" | walkway candidates={len(walkway)}" if deps.load_walkway_rows is not None else "")
@@ -581,11 +583,11 @@ async def run_cycle_once(deps: CycleDeps, *, trigger: str = "pressure", force: b
             logger.warning("dream_cycle %s ran but was not persisted", cycle_id)
         logger.info(
             "dream_cycle %s id=%s pressure=%.2f replay=%d hypotheses=%d (dream=%d control=%d) "
-            "no_link=%d unparseable=%d llm_failures=%d",
+            "no_link=%d echo=%d unparseable=%d llm_failures=%d",
             cycle.status, cycle_id, pressure.pressure, len(replay), len(rem.hypotheses),
             sum(1 for h in rem.hypotheses if h.arm == "dream"),
             sum(1 for h in rem.hypotheses if h.arm == "control"),
-            rem.no_link, rem.unparseable, rem.failures,
+            rem.no_link, rem.echo, rem.unparseable, rem.failures,
         )
     except BaseException as exc:  # noqa: BLE001 -- closed at 0, then re-raised unchanged
         await act.close(False, f"raised:{type(exc).__name__}:{str(exc)[:200]}")

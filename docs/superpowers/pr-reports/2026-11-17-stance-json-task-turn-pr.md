@@ -119,6 +119,6 @@ The post-pull rebuild covers both.
 
 ## PR link
 
-(added after creation)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3620
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

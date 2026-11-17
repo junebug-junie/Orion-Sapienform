@@ -123,3 +123,17 @@ def test_a_promise_said_again_word_for_word_opens_no_second_act() -> None:
         open_quotes=[words])
     assert plan.repeats_open == 1 and len(plan.opened) == 1
     assert plan.opened == [promise_act_id(promise_ref("c2", 1))]
+
+
+def test_an_accepted_offer_starts_its_72h_clock_at_acceptance_not_at_the_offer() -> None:
+    # Orion's PR #3561 question 8: the ref points at the earlier turn; the open event (whose time
+    # the act ledger turns into opened_at, and opened_at + 72 h into horizon_at) is the accepting turn's.
+    from datetime import datetime, timezone
+
+    at = datetime(2026, 11, 17, 9, 0, tzinfo=timezone.utc)
+    prior = [(promise_ref("c1", 1), "If you want, I'll re-read it the next time I'm cut.")]
+    plan = plan_promise_events(correlation_id="c2", session_id="s", prior_offers=prior, at=at,
+                               reflection=_reflection(offers_accepted=["If you want, I'll re-read it the next time I'm cut."]))
+    (event,) = plan.events
+    assert event.correlation_id == "c2" and event.observed_at == at
+    assert event.act.test_before == promise_ref("c1", 1)

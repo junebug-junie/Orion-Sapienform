@@ -18,6 +18,7 @@ DIG_BRIEF_LINE = (
 #: it had no memory of something episode_memory held; `know` searches the same lived memories recall injects.
 #: 2026-11-17: raised 640 -> 740 (#3663): a search that was skipped, degraded, timed out or errored is not a
 #: basis for "I have no memory"; Orion says it could not look instead.
+#: The line is 739 chars: the next addition needs a raise here and in the same breath a dated reason.
 MAX_BRIEF_CHARS = 740
 
 

@@ -53,6 +53,7 @@ import math
 import re
 import time
 from collections import Counter
+from itertools import zip_longest
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
@@ -586,6 +587,14 @@ class LivedMemoryRecall:
             fused = rrf(dense_lists + lexical_lists)
             base = list(dict.fromkeys([d for d, _ in dense_lists[0]] + [d for d, _ in lexical_lists[0]]))
             base = sorted(base, key=lambda d: (-dense_best.get(d, 0.0), -lexical_best.get(d, 0.0)))[:MAX_RERANK]
+            # Rerank order (#3662): the message's own meaning and exact-word lists take turns, so the
+            # first chunk holds the top hits of both. An exact-word-only hit (a name, a rare word)
+            # has no meaning score and would otherwise sit in the last chunk, past a short deadline.
+            # Link seeds still come from ``ordered`` (meaning first), so only the chunk order changes.
+            kept_base = set(base)
+            turns = [d for pair in zip_longest([d for d, _ in dense_lists[0]], [d for d, _ in lexical_lists[0]])
+                     for d in pair if d is not None and d in kept_base]
+            rerank_base = list(dict.fromkeys(turns + base))
             extra = sorted((d for d in fused if d not in set(base)), key=lambda d: (-fused[d], d))
             ordered = base + extra
 
@@ -624,7 +633,7 @@ class LivedMemoryRecall:
             if not ordered and not links:
                 finish_backend()
                 return out
-            cand_ids = base + extra[: max(0, MAX_RERANK_STEP2 - len(base) - len(links))] + [d for d, _ in links]
+            cand_ids = rerank_base + extra[: max(0, MAX_RERANK_STEP2 - len(base) - len(links))] + [d for d, _ in links]
             recs = [self._by_doc[d] for d in cand_ids]
             out.candidates = list(recs)
             # Every id that reached the rerank, not only the injected ones (#3628): "the target was a
@@ -640,22 +649,19 @@ class LivedMemoryRecall:
             docs = [r.text[:RERANK_DOC_CHARS] for r in recs]
             rq = rerank_query(query, queries)
             logits: List[float | None] = [None] * len(docs)
-            chunks_done = 0
             budget = deadline - time.perf_counter() - FINISH_RESERVE_SEC
 
             async def score(idx: List[int]) -> None:
-                nonlocal chunks_done
                 part = [docs[i] for i in idx]
                 if self._reranker is not None:
                     got = list(await self._reranker(rq, part))
                 else:
                     got = await self._rerank_http(client, rq, part,
-                                                  timeout=max(0.001, deadline - time.perf_counter()))
+                                                  timeout=max(0.001, deadline - time.perf_counter() - FINISH_RESERVE_SEC))
                 if len(got) != len(part):
                     raise SearchUnavailableError("reranker returned a malformed reply")
                 for i, x in zip(idx, got):
                     logits[i] = float(x)
-                chunks_done += 1
 
             # Issue #3662: the pool goes in chunks of RERANK_CHUNK, best-retrieved first, one call
             # at a time (the vector host refuses a third request in flight). When the deadline or an
@@ -693,6 +699,14 @@ class LivedMemoryRecall:
                      "lexical": round(lexical_best.get(r.doc_id, 0.0), 3), "link": r.doc_id in link_ids}
                     for r, l in sorted(out.reranked, key=lambda x: -x[1])[:8]
                 ]
+                if not chosen and stopped:
+                    # The scored chunks hold nothing that fits and the rest was never scored, so
+                    # this was not a full search: serve the unscored exact-word hits, degraded, and
+                    # say so. Never a silent "below the bar" (#3663: a part-search is no denial).
+                    degraded.append("rerank_partial")
+                    chosen = lexical_fallback([recs[i] for i, x in enumerate(logits)
+                                               if x is None and recs[i].doc_id not in link_ids],
+                                              lexical_best, all_tokens, names, max_lines=self.cfg.max_lines)
             else:
                 # Never inject a link neighbour without a rerank: exact-word hits only.
                 chosen = lexical_fallback([r for r in recs if r.doc_id not in link_ids], lexical_best,
@@ -791,6 +805,13 @@ class LivedMemoryRecall:
                     continue
                 pool.append(Scored(rec=rec, fit=sigmoid(float(logit)), score=float(logit),
                                    lexical=lex.get(rec.doc_id)))
+            if out.debug.get("rerank_partial"):  # #3662: candidates the deadline left unscored
+                scored = {rec.doc_id for rec, _l in out.reranked}
+                for rec in sorted(out.candidates, key=lambda r: (-lex.get(r.doc_id, 0.0), r.doc_id)):
+                    if rec.doc_id in taken or rec.doc_id in scored or not lex.get(rec.doc_id):
+                        continue
+                    pool.append(Scored(rec=rec, fit=0.0, score=lex[rec.doc_id], lexical=lex[rec.doc_id],
+                                       degraded=True))
         else:  # no rerank ran (degraded): exact-word hits the fallback did not choose
             for rec in sorted(out.candidates, key=lambda r: (-lex.get(r.doc_id, 0.0), r.doc_id)):
                 if rec.doc_id in taken or not lex.get(rec.doc_id):

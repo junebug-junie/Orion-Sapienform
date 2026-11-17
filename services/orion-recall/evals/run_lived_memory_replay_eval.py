@@ -158,7 +158,9 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             source=ServiceRef(name="orion-recall", version="replay-eval", node="eval")))
 
     referring_rows = []
-    for item in bank["referring"]:
+    # Budget mode (issue #3662) measures the chat-turn deadline, not hit rate: only the last real
+    # messages are replayed, under the live end-to-end budget.
+    for item in ([] if args.budget_sec else bank["referring"]):
         row = await pool.fetchrow("SELECT prompt, created_at, session_id FROM chat_history_log WHERE id = $1",
                                   item["chat_id"])
         if row is not None:
@@ -168,10 +170,6 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
         "AND length(trim(prompt)) > 0 AND prompt NOT LIKE $2 ORDER BY created_at DESC LIMIT $3",
         bank.get("noise_source", "hub_orion"), bank.get("noise_exclude_prefix", "Orion — ") + "%",
         int(args.noise_limit or bank.get("noise_limit", 150)))
-    if args.budget_sec:
-        # Budget mode (issue #3662) measures the chat-turn deadline, not hit rate: only the last
-        # real messages are replayed, under the live end-to-end budget.
-        referring_rows = []
 
     report: Dict[str, Any] = {"min_query_tokens": args.min_query_tokens, "referring": len(referring_rows),
                               "noise_messages": len(noise_rows), "variants": {}}
@@ -189,7 +187,10 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             timeout_sec=float(args.budget_sec or 30.0),
             min_query_tokens=args.min_query_tokens, rewrite_timeout_sec=args.rewrite_timeout,
             link_top_k=args.link_top_k if use_links else 0)
-        lm = LivedMemoryRecall(pool, cfg, rewriter=rewriter if use_rewrite else None)
+        # Budget mode times the live rewrite in every variant: a cached answer would cost 0 ms.
+        variant_rewriter = (_CachedRewriter(rewriter.inner) if args.budget_sec and rewriter is not None
+                            else rewriter)
+        lm = LivedMemoryRecall(pool, cfg, rewriter=variant_rewriter if use_rewrite else None)
         timings: List[Dict[str, int]] = []
         results: List[Dict[str, Any]] = []
         noise: List[Dict[str, Any]] = []
@@ -197,12 +198,16 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
         backends: Dict[str, int] = {}
         degraded_reasons: Dict[str, int] = {}
         partial = 0
+        rerank_errors: Dict[str, int] = {}
 
         def note(out: Any) -> None:
             nonlocal partial
             for reason in out.debug.get("degraded") or []:
                 degraded_reasons[reason] = degraded_reasons.get(reason, 0) + 1
             partial += int(bool(out.debug.get("rerank_partial")))
+            if out.debug.get("rerank_error"):  # exception type only, never text
+                err = str(out.debug["rerank_error"]).split(":", 1)[0]
+                rerank_errors[err] = rerank_errors.get(err, 0) + 1
             timings.append(out.debug.get("timings_ms") or {})
             o = (out.debug.get("rewrite") or {}).get("outcome") or "none"
             outcomes[o] = outcomes.get(o, 0) + 1
@@ -236,6 +241,7 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             vals = sorted(t[key] for t in timings if key in t)
             return vals[min(len(vals) - 1, int(q * len(vals)))] if vals else None
 
+        searched = backends.get("degraded", 0) + backends.get("hybrid", 0)
         bars = [score_bar(results, noise, float(x), now) for x in str(args.min_fit).split(",") if x.strip()]
         report["variants"][name] = {
             "targets_in_candidate_pool": {k: f"{sum(1 for r in results if r['kind'] == k and r['target_in_pool'])}/"
@@ -245,10 +251,10 @@ async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
             "rewrite_outcomes": outcomes,
             "backends": backends,
             # Share of searched messages that fell back to exact words (issue #3662 bar: < 2%).
-            "degraded_rate": (round(backends.get("degraded", 0) / searched, 3)
-                              if (searched := backends.get("degraded", 0) + backends.get("hybrid", 0)) else None),
+            "degraded_rate": round(backends.get("degraded", 0) / searched, 3) if searched else None,
             "degraded_reasons": degraded_reasons,
             "rerank_partial": partial,
+            "rerank_errors": rerank_errors,
             "latency_ms": {k: {"p50": pct(k, 0.5), "p90": pct(k, 0.9), "max": pct(k, 0.999)}
                            for k in ("snapshot", "rewrite", "dense", "links", "rerank", "recheck", "total")},
             "bars": [{k: v for k, v in b.items() if k != "items" or args.items} for b in bars],
@@ -283,7 +289,9 @@ def main() -> int:
     ap.add_argument("--link-top-k", type=int, default=6)
     ap.add_argument("--budget-sec", type=float, default=0.0,
                     help="replay under this end-to-end budget (live: RECALL_LIVED_MEMORY_TIMEOUT_SEC) and "
-                         "skip the referring bank; reports degraded_rate (issue #3662)")
+                         "skip the referring bank; reports degraded_rate (issue #3662). Calls run one at a "
+                         "time on whatever else the GPU is doing, so on an idle P4 this is a lower bound: "
+                         "the live rate needs recall_telemetry, or a run beside GPU load")
     ap.add_argument("--noise-limit", type=int, default=0, help="last N real messages (default: the bank's)")
     ap.add_argument("--items", action="store_true", help="include per-item hits (labels are private)")
     args = ap.parse_args()

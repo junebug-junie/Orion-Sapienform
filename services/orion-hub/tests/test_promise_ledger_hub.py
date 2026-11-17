@@ -135,6 +135,7 @@ async def test_every_juniper_turn_logs_one_promise_ledger_line(caplog, kwargs, e
     from orion.grammar.promise_view import PromiseView
     from orion.hub import turn_orchestrator
 
+    kwargs = dict(kwargs)  # the parametrize dict is shared: never mutate it
     reflection = kwargs.pop("reflection", _reflection())
     if reflection == "offer":
         reflection = _reflection(promises_made=[PromiseV1(**_item("If you want, I'll look again.", offer=True))])
@@ -158,6 +159,19 @@ async def test_a_promise_repeated_while_open_opens_no_second_act():
         bus, correlation_id="c2", session_id="s1", source_label="hub_orion", client_meta=None,
         reflection=_reflection(promises_made=[PromiseV1(**_item(QUOTE))]), promise_view=view)
     assert counts["repeats_open"] == 1 and counts["opened"] == 0 and bus.events() == []
+
+
+@pytest.mark.asyncio
+async def test_an_unread_view_still_logs_a_promise_view_line(monkeypatch, caplog):
+    import logging
+
+    from orion.hub import promise_ledger
+
+    monkeypatch.setattr(promise_ledger, "fetch_promise_view", lambda *a, **k: None)
+    with caplog.at_level(logging.INFO):
+        view = await promise_ledger.promise_view_for_turn("s1", "c9")
+    assert view.open_promises == [] and view.offers == []
+    assert any(r.getMessage() == "promise_view corr=c9 outcome=unread" for r in caplog.records)
 
 
 @pytest.mark.asyncio

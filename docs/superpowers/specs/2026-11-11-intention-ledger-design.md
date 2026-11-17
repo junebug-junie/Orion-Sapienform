@@ -423,8 +423,9 @@ this patch builds, or a default that waits on Juniper (marked **needs-juniper**)
    not judged and are reported apart). Red above 2x, as before. *Frozen 2026-11-17 (Orion's second
    review):* this baseline was set from replay data before any live promise act existed, and it stays
    23/289 for the whole shadow period (pinned by `tests/test_report_promise_ledger.py`); it is never
-   re-based on shadow data. Because the slices are uneven (0/86 to 8/24), the report prints the live
-   rate's Wilson 90% interval beside the ratio. Whether red should need the interval, not the point
+   re-based on shadow data. Because the slices are uneven (0/86 to 8/24), the report prints a 90%
+   Poisson score interval on the live rate beside the ratio (a turn can hold more than one promise, so
+   the rate is a count rate, not a proportion). Whether red should need the interval, not the point
    ratio, to clear 2x is a rule change for Juniper (#3531).
 10. **Keep evidence.** Every keep records its kind in the close note (`kept_in:<corr> evidence=reply`),
     and the report splits keeps by kind. In v1 the only producer is the judge reading a reply to
@@ -459,14 +460,19 @@ Built in this patch (fix/promise-ledger-orion-review):
 
 - **One Hub line per Juniper turn.** `promise_ledger corr=... outcome=<found_nothing|nothing_opened|acted|skipped>`
   with every count (`items`, `opened`, `offers_not_opened`, `skipped_no_force`, `repeats_open`, ...);
-  a skipped turn names its reason (`no_reflection`, `not_hub_orion`, `unsolicited`, `flag_off`). The
-  `promise_view` line also logs on every read, empty or not. A Juniper turn with neither line means the
-  ledger never ran for it.
+  a skipped turn names its reason (`no_reflection`, `not_hub_orion`, `unsolicited`; `flag_off`,
+  `no_bus` and `no_view` are defensive, since Hub only calls the ledger on a Juniper turn with the
+  flags on and a view). The `promise_view` line also logs on every read, empty, failed
+  (`outcome=unread`) or not. A Juniper turn with neither line means the ledger never ran for it.
 - **A promise said again word for word, while it is open, opens no second act** (`repeats_open`;
-  normalized quote equal to an open promise the judge was shown). A reworded repeat is not caught.
+  normalized quote equal to an open promise the judge was shown, and at least 40 characters, so a short
+  generic line on a new topic still opens; the log names the matched act ids). A reworded repeat is
+  not caught.
 - **Report:** the keep-rate line names its kept and expired counts, and void and un-closeable beside
-  them; the act ids of expired promises with a carry reply are listed; the guard prints a Wilson 90%
-  interval and the baseline is frozen (amendment 9).
+  them; the act ids of expired promises with a carry reply are listed; the guard prints a 90% Poisson
+  interval and the baseline is frozen (amendment 9). The guard counts only judged turns from
+  2026-11-16 18:05Z, when the governor went live with the #3532 rules (`FINDER_LIVE_AT`): before that
+  no turn could store a firm item, and the 28-day window held 172 such turns that pulled the rate to 0.
 - **Offer wording** in D1 corrected: Juniper's answer 1 and amendment 4 are authoritative; an
   unaccepted offer never opens an act (`test_unaccepted_offer_never_opens_and_accepted_offer_opens_on_the_earlier_turn`).
 

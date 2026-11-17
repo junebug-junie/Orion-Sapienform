@@ -117,12 +117,20 @@ def test_outcome_word_tells_a_quiet_turn_from_a_skipped_one() -> None:
 
 def test_a_promise_said_again_word_for_word_opens_no_second_act() -> None:
     # Orion's PR #3561 question 8: the same sentence promised again while it is open is one promise.
-    words = "I'll hold the deep read, then pull it back."
+    words = "I'll hold the deep read until the pipeline digests it, then pull it back."
     plan = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(promises_made=[
-        _p("I\u2019ll  hold the deep read, then pull it back."), _p("I'll also compare the two runs.")]),
-        open_quotes=[words])
-    assert plan.repeats_open == 1 and len(plan.opened) == 1
+        _p("I\u2019ll  hold the deep read until the pipeline digests it, then pull it back."),
+        _p("I'll also compare the two runs.")]),
+        open_promises=[("act_open", words)])
+    assert plan.repeats_open == ["act_open"] and plan.counts()["repeats_open"] == 1
     assert plan.opened == [promise_act_id(promise_ref("c2", 1))]
+
+
+def test_a_short_generic_line_said_again_is_a_new_promise() -> None:
+    # Review finding: "I'll check back tomorrow." on a new topic is a second promise, not a repeat.
+    plan = plan_promise_events(correlation_id="c2", session_id="s", reflection=_reflection(promises_made=[
+        _p("I'll check back tomorrow.")]), open_promises=[("act_open", "I'll check back tomorrow.")])
+    assert plan.repeats_open == [] and len(plan.opened) == 1
 
 
 def test_an_accepted_offer_starts_its_72h_clock_at_acceptance_not_at_the_offer() -> None:

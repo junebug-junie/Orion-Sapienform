@@ -62,9 +62,25 @@ def test_guard_baseline_is_frozen_for_shadow():
 
 def test_guard_prints_an_interval_beside_the_ratio():
     g = rpt.guard_summary([_turn(str(i), [FIRM] if i < 2 else []) for i in range(20)])
-    lo, hi = g["rate_wilson90"]
+    lo, hi = g["rate_poisson90"]
     assert g["rate"] == 0.1 and lo < 0.1 < hi
-    assert rpt.guard_summary([])["rate_wilson90"] is None
+    assert rpt.guard_summary([])["rate_poisson90"] is None
+
+
+def test_guard_leaves_out_turns_before_the_finder_went_live():
+    early = {**_turn("old", [{"quote": "old row", "offer": False, "doer": "orion"}]),
+             "created_at": rpt.FINDER_LIVE_AT - timedelta(hours=1)}
+    late = {**_turn("new", [FIRM]), "created_at": rpt.FINDER_LIVE_AT + timedelta(hours=1)}
+    g = rpt.guard_summary([early, late])
+    assert (g["judged_turns"], g["turns_before_finder"], g["firm_promises"]) == (1, 1, 1)
+    assert g["skipped_pre_force"] == 1 and g["turns_not_judged"] == 0
+
+
+def test_guard_interval_handles_more_promises_than_turns():
+    # A turn can hold several promises: the rate is a count rate and can exceed 1 (Wilson crashed here).
+    g = rpt.guard_summary([_turn("a", [FIRM, {**FIRM, "quote": "I'll also check the other run tonight."}])])
+    lo, hi = g["rate_poisson90"]
+    assert g["rate"] == 2.0 and lo < 2.0 < hi
 
 
 def test_text_report_shows_raw_counts_beside_the_keep_rate(monkeypatch, capsys):
@@ -73,10 +89,20 @@ def test_text_report_shows_raw_counts_beside_the_keep_rate(monkeypatch, capsys):
         _act(2, opened=T0, closed=T0 + H, source="expired", note="no keep within horizon"),
         _act(3, opened=T0, closed=T0 + H, source="expired", note=VOID_NOTE),
     ]
-    monkeypatch.setattr(rpt, "gather", lambda dsn, since: {"acts": acts, "starts": [T0 + timedelta(hours=1)], "turns": [], "carry": {}})
+    acts += [_act(10 + i, opened=T0, closed=T0 + H, source="expired", note="no keep within horizon",
+                  corr=f"c-carry{i}") for i in range(3)]
+    carry = {turn_concern_id(f"c-carry{i}"): [T0 + timedelta(hours=20)] for i in range(3)}
+    monkeypatch.setattr(rpt, "gather", lambda dsn, since: {"acts": acts, "starts": [T0 + timedelta(hours=1)],
+                                                           "turns": [], "carry": carry})
     assert rpt.main(["--dsn", "x"]) == 0
     out = capsys.readouterr().out
-    assert "keep rate (Beta(1,1)) over kept 1 + expired 1 (void 1 and un-closeable 0 left out)" in out
+    assert "keep rate (Beta(1,1)) over kept 1 + expired 4 (void 1 and un-closeable 0 left out)" in out
+    assert "expired with a carry reply: 3 (act_10, act_11, act_12)" in out
+
+
+def test_carry_act_ids_are_capped_in_the_text_report():
+    assert rpt._ids([f"act_{i}" for i in range(12)]) == " (" + ", ".join(f"act_{i}" for i in range(10)) + " +2 more)"
+    assert rpt._ids([]) == ""
 
 
 def _turn(corr, made, source="substrate_informed_pass", text="Some reply."):

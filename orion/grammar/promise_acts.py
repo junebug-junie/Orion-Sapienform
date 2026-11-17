@@ -69,6 +69,9 @@ VOID_NOTE_PREFIX = "void:"
 VOID_NOTE = "void: no juniper chat turn started before horizon (censored, not graded)"
 EXPIRED_NOTE = "no keep within horizon (juniper wrote, no reply delivered it)"
 EVIDENCE_REPLY = "reply"
+# A promise repeated word for word opens no second act only when it is at least this long: a short
+# generic line ("I'll check back tomorrow.") said again on a new topic is a new promise.
+REPEAT_MIN_CHARS = 40
 
 _REF = re.compile(r"^harness_turn_trace:(?P<corr>[^#\s]{1,200})#promises_made\[(?P<i>\d{1,3})\]$")
 
@@ -129,12 +132,12 @@ class PromiseLedgerPlan:
         self.accepted_unmatched = 0          # an accepted quote not among the prior offers
         self.kept_without_evidence = 0       # a kept id with no delivering quote (gate should prevent)
         self.items = 0                       # promises_made items the gated reflection carried
-        self.repeats_open = 0                # a firm promise word-for-word the same as one already open
+        self.repeats_open: list[str] = []    # open act ids a firm promise here repeated word for word
 
     def counts(self) -> dict[str, int]:
         return {"items": self.items, "opened": len(self.opened), "opened_offers": len(self.opened_offers),
                 "kept": len(self.kept), "offers_not_opened": self.offers_not_opened,
-                "skipped_no_force": self.skipped_no_force, "repeats_open": self.repeats_open,
+                "skipped_no_force": self.skipped_no_force, "repeats_open": len(self.repeats_open),
                 "accepted_unmatched": self.accepted_unmatched,
                 "kept_without_evidence": self.kept_without_evidence}
 
@@ -142,7 +145,9 @@ class PromiseLedgerPlan:
         """One word for the Hub's per-turn line, so a quiet turn and a ledger that never ran look
         different (Orion's PR #3561 question 1): ``found_nothing`` (the gated reflection carried no
         promise, offer, acceptance or keep), ``nothing_opened`` (it carried items, and every one was
-        skipped: an offer waiting, a pre-#3532 item, a repeat, an unmatched acceptance), or ``acted``."""
+        skipped: an offer waiting, a pre-#3532 item, a repeat, an unmatched acceptance), or ``acted``
+        (at least one event: an open, an accepted offer opened, or a keep closed; a keep-only turn is
+        ``acted`` too)."""
         if self.events:
             return "acted"
         c = self.counts()
@@ -157,21 +162,23 @@ def plan_promise_events(
     session_id: Optional[str],
     reflection: Optional[FinalizeReflectionV1],
     prior_offers: Sequence[tuple[str, str]] = (),
-    open_quotes: Sequence[str] = (),
+    open_promises: Sequence[tuple[str, str]] = (),
     at: Optional[datetime] = None,
 ) -> PromiseLedgerPlan:
     """The act events for one delivered Juniper turn. ``reflection`` is the gated reflection on the
     run artifact (checked against the text Juniper saw). ``prior_offers``: (ref, quote) of the
-    offers in Orion's previous reply in this session, the ones the judge was shown. ``open_quotes``:
-    the quotes of the open promises the judge was shown; a firm promise with the same words (after
-    quote normalization) is the open promise said again, not a second promise, so it opens no act
-    (``repeats_open``). A reworded repeat is not caught here."""
+    offers in Orion's previous reply in this session, the ones the judge was shown. ``open_promises``:
+    (act id, quote) of the open promises the judge was shown; a firm promise with the same words
+    (after quote normalization, and at least ``REPEAT_MIN_CHARS`` long, so a short generic line like
+    "I'll check back tomorrow." on a new topic still counts as a new promise) is the open promise
+    said again, not a second promise, so it opens no act (``repeats_open`` holds the matched act
+    ids). A reworded repeat is not caught here."""
     plan = PromiseLedgerPlan()
     if reflection is None:
         return plan
     corr = str(correlation_id)
     reply_act = stable_act_id(REPLY_ACTOR, "say", corr)
-    already_open = {_norm(q) for q in open_quotes if q}
+    already_open = {_norm(q): act_id for act_id, q in open_promises if q and len(_norm(q)) >= REPEAT_MIN_CHARS}
     plan.items = len(reflection.promises_made)
     for i, promise in enumerate(reflection.promises_made):
         if not is_firm_ledger_promise(promise):
@@ -180,8 +187,9 @@ def plan_promise_events(
         if promise.offer:
             plan.offers_not_opened += 1
             continue
-        if _norm(promise.quote) in already_open:
-            plan.repeats_open += 1
+        repeated = already_open.get(_norm(promise.quote))
+        if repeated is not None:
+            plan.repeats_open.append(repeated)
             continue
         act = build_promise_act(promise_ref(corr, i), parent_act_id=reply_act)
         plan.events.append(act_opened_event(act, source_service="orion-hub", source_component="promise_ledger.open",
@@ -245,7 +253,7 @@ def kept_evidence_kind(note: Optional[str]) -> Optional[str]:
 
 __all__ = [
     "EVIDENCE_REPLY", "EXPIRED_NOTE", "KEPT_NOTE_PREFIX", "PROMISE_ACTOR", "PROMISE_BASIS", "PROMISE_HORIZON_SEC",
-    "PROMISE_OBJECT_REF", "PROMISE_SIGNAL", "PROMISE_VERB", "PromiseLedgerPlan", "SHADOW_ACT_SIGNALS",
+    "PROMISE_OBJECT_REF", "PROMISE_SIGNAL", "PROMISE_VERB", "PromiseLedgerPlan", "REPEAT_MIN_CHARS", "SHADOW_ACT_SIGNALS",
     "SHADOW_ACT_SIGNALS_SQL", "VOID_NOTE", "VOID_NOTE_PREFIX", "build_promise_act", "is_firm_ledger_promise",
     "is_shadow_signal", "is_void_note", "kept_evidence_kind", "parse_promise_ref", "plan_promise_events",
     "promise_act_id", "promise_close_kind", "promise_ref",

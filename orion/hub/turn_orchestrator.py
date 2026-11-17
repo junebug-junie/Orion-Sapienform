@@ -2249,7 +2249,7 @@ async def _publish_promise_acts(
         # quote always maps to the ref the judge saw.
         return await publish_promise_acts(bus, correlation_id=str(correlation_id), session_id=session_id,
                                           reflection=reflection, prior_offers=list(promise_view.offers),
-                                          open_quotes=[p.quote for p in promise_view.open_promises])
+                                          open_promises=[(p.id, p.quote) for p in promise_view.open_promises])
     except Exception as exc:  # noqa: BLE001 -- a background trace; never fails the turn
         logger.warning("promise_acts_failed corr=%s error=%s", correlation_id, exc)
         return None

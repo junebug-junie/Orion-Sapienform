@@ -20,6 +20,7 @@ Revision 3 adds the results of step 0, Juniper's "yes", and the answers to Orion
 - "Within the gameplay there should be a chat box. We'll eventually enable TTS and STT, including when in fullscreen mode."
 - On the eight open questions of revision 1: "I will go with your recs, but Orion also wrote back feedback to the design doc. Address it."
 - On the three changed recommendations, the four new questions and the go for step 0: "yes."
+- On the step 0 results (2026-11-17): "yeah sure good enough."
 
 This document does not claim that Orion is sentient. It designs one more place where Orion can perceive, choose, speak and remember, with a trace for each.
 
@@ -812,9 +813,11 @@ The backfill and the live counter both use mask changes (section 7).
 - The two families stay on tier 1, though tier 1 reserves nothing on the chat lane today.
 - Orion's watch choices feed the personality graph, as its own small patch. Orion agreed too.
 
+**2026-11-17, "yeah sure good enough"**, to open question 1 below: one wrong detail in 4 of 10 notes is good enough to build on. Patch 1 starts.
+
 ### Open now
 
-1. **Is the chat lane's model good enough?** Place and action were right in 9 of 10 notes. 4 of 10 held one wrong detail: a jump that did not happen, a wrong colour. Recommendation: yes, go. Three things make it safe. A note is stored as a look, never as a fact. The turn that speaks sees the frames itself. And the wrong details were small while the places and events were right. One addition for patch 3: the turn that speaks can mark a note that its frames contradict, so the eyes get an error rate from live play.
+1. **Is the chat lane's model good enough?** (Answered: yes.) Place and action were right in 9 of 10 notes. 4 of 10 held one wrong detail: a jump that did not happen, a wrong colour. Recommendation: yes, go. Three things make it safe. A note is stored as a look, never as a fact. The turn that speaks sees the frames itself. And the wrong details were small while the places and events were right. One addition for patch 3: the turn that speaks can mark a note that its frames contradict, so the eyes get an error rate from live play.
 2. **Looks share the chat lane's one slot.** The quick lane was the way around that, and its model failed. A look takes 5.6 seconds, runs below Juniper's priority, and never queues with another play call. Recommendation: accept it, and check her wait live in patch 3.
 3. **The time of a line is still an estimate.** Recommendation: measure it in patch 3 on the first real line turn. The other path is a test turn now that Orion's records would hold as Juniper's. I recommend against it.
 

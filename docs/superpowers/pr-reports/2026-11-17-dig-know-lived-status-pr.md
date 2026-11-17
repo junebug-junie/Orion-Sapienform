@@ -6,7 +6,7 @@ Orion can now look up their own memories on demand, and is told to do so before 
   - **Strong** hits cleared recall's bar.
   - **Weak** hits are below the bar but share a word with the search. They are shown and labelled, so a partial match is never hidden behind "nothing found".
   - A degraded search (exact words only) says so. A search that could not run says "this is NOT the same as having no memory".
-- New orion-recall endpoint `POST /lived/know`. Each lookup writes one `recall_telemetry` row (verb `dig.know`, `corr_id` = the turn id), so a memory Orion looks up counts toward read demand.
+- New orion-recall endpoint `POST /lived/know`. Each lookup writes one `recall_telemetry` row (verb `dig.know`, `corr_id` = the turn id, `selected_ids` = the strong hits), so a memory Orion looks up counts toward read demand. One lookup runs at a time; a second gets `busy`, never an empty answer.
 - One prompt rule, added to the dig-kit line that is already in every chat turn's motor prompt: "Before telling Juniper you don't remember or have no record of something, run `orion.dig know <words>`."
 - `recall_telemetry` gets two new columns. `lived_status` records why memory search injected what it did: `ok`, `below_bar`, `skipped_short`, `degraded`, `timeout`, `error` or `off` (NULL = lived recall did not run on that call). `lived_trace` records the rewritten searches, every candidate id that reached the reranker, the injected ids and the backend.
 
@@ -46,7 +46,7 @@ Fixes #3628
 
 ## Schema / bus / API changes
 
-- Added: `POST /lived/know` on orion-recall (`{"words", "turn_id"?, "max_hits"?}` -> `{"status", "backend", "degraded", "hits": [{strength, kind, purpose, id, date, text, fit}], "corr_id"}`). Columns `recall_telemetry.lived_status text`, `recall_telemetry.lived_trace jsonb`.
+- Added: `POST /lived/know` on orion-recall (`{"words", "turn_id"?, "max_hits"?}` -> `{"status", "backend", "degraded", "hits": [{strength, kind, purpose, id, date, text, fit}], "unverified", "corr_id"}`; status adds `busy` and `unverified` to the list below). Columns `recall_telemetry.lived_status text`, `recall_telemetry.lived_trace jsonb`.
 - Removed: none.
 - Renamed: none.
 - Behavior changed: chat-turn lived recall is unchanged, except its debug now carries `candidate_ids`, `status` and (after a backstop timeout/error) `outer`.
@@ -67,8 +67,9 @@ Fixes #3628
 cd services/orion-recall && PYTHONPATH=.:<repo> python -m pytest -q -p no:cacheprovider \
   tests/test_lived_memory.py tests/test_lived_memory_step2.py evals/test_lived_memory_replay_eval.py \
   tests/test_lived_know_and_status.py tests/test_recall_telemetry_persist.py evals/test_dig_know_bank_eval.py
-  -> 96 passed
-python -m pytest -q -p no:cacheprovider orion/dig/tests orion/harness/tests   -> 1159 passed
+  -> 98 passed (after review fixes)
+python -m pytest -q -p no:cacheprovider orion/dig/tests   -> 254 passed (after review fixes)
+python -m pytest -q -p no:cacheprovider orion/harness/tests   -> passed (dig brief in the prefix)
 services/orion-recall/tests (whole folder): 2 failures, both also fail on clean main
   (test_recall_policy_harness vector gating, test_recall_vector_amputation import); not touched here.
 scripts/check_metric_lineage.py --gate / --prompt-semantics: PASS
@@ -126,7 +127,22 @@ running orion-recall image with the worktree mounted read-only.
 
 ## Review findings fixed
 
-(filled in below)
+Review by a separate agent (by hand; read-only). All material findings fixed in `80e3698c2`.
+
+- Finding: if the extra serving-gate re-check failed, `know` returned `below_bar`, and the CLI printed "No stored memory", a failed check shown as no memory.
+  - Fix: new status `unverified` and an `unverified` count; the CLI says the matches could not be checked and is NOT no memory. The re-check is time-bounded; `know_recheck_error` goes in the trace.
+  - Evidence: `test_know_a_failed_recheck_is_unverified_never_below_bar`, `test_render_unverified_matches_are_said`.
+- Finding: a degraded search with no hits printed both "a miss here does not mean no memory" and "No stored memory".
+  - Fix: no "No stored memory" line when degraded; degraded hits are labelled "no bar was applied".
+  - Evidence: `test_render_degraded_empty_never_says_no_stored_memory`, `test_render_degraded_hits_are_not_called_above_the_bar`.
+- Finding: `dig.know` rows put weak hits in `selected_ids` and in `injected_ids`.
+  - Fix: `selected_ids` and `injected_ids` = strong only; weak ids in `lived_trace.weak_ids`. README says only strong hits count toward read demand.
+  - Evidence: `test_know_endpoint_returns_hits_and_logs_the_turn`.
+- Finding: the reply waited on the Postgres insert, so a slow insert could turn a finished lookup into "could not run".
+  - Fix: the row is written in a background task (reference kept).
+  - Evidence: endpoint test still sees the persisted decision.
+- Nits fixed: re-check dropped ids persisted (`recheck_dropped`) and asserted in the gate test; ad-hoc calls with no turn id tagged `adhoc:<uuid>` / `lived_memory.know.adhoc`; one lookup at a time (`busy`); reader off returns status `off` (200) instead of a bare 503.
+- Nit not changed: dig help is 4038 chars, so the help cap moved 4000 -> 4250. Help loads only on demand, not every turn.
 
 ## Restart required
 
@@ -142,7 +158,7 @@ The dig command and prompt rule reach Orion's turns when the FCC sandbox syncs a
 ## Risks / concerns
 
 - Severity: low. Concern: weak hits are anything below the bar that shares one word with the search; with common words this can list loosely related memories. Mitigation: they are labelled "check before relying on one", capped at 8 total, and strong hits always come first.
-- Severity: low. Concern: `dig.know` rows join the read log. Read-demand counts (#3589) must decide whether a lookup counts as "opened". Mitigation: distinct verb `dig.know`; the eval tags its rows `turn_id = eval:dig-know`.
+- Severity: low. Concern: `dig.know` rows join the read log. Read-demand counts (#3589) must decide whether a lookup counts as "opened". Mitigation: distinct verb `dig.know`, strong hits only in `selected_ids`, ad-hoc and eval runs tagged (`adhoc:` / `eval:dig-know`).
 - Severity: medium. Concern: the prompt rule is one sentence; whether Orion follows it is UNVERIFIED until a post-deploy replay. Mitigation: the scoreboard (#3536, PR #3603) counts false "no memory" answers; `lived_status` now lets that count be split by cause.
 - Issues opened: none yet. Issues closed: #3535, #3628 (by this PR).
 

@@ -28,6 +28,7 @@ Orion asked a fourth round of questions on two session threads (PRs #3561, #3598
 - `orion/hub/turn_orchestrator.py`: adds `_promise_ledger_applies`, the gate for the view and therefore for act-opening. Adds `_log_promise_ledger_skip` for the `no_run` and `harness_error` paths; the `no_write` / empty-reply / no-bus path now uses it too. `execute_unified_turn` is now a thin wrapper around `_execute_unified_turn_body`. It keeps per-turn state in a ContextVar and logs `reason=interrupted` for a viewed turn that raises or is cancelled before its line. A failed background publish logs `outcome=failed`.
 - `orion/regulation/juniper_turns.py`: adds `is_browser_surface_turn`.
 - `services/orion-hub/tests/test_promise_ledger_turn_gate.py`: new tests that run `execute_unified_turn` end to end. They cover which turns read the view, and the 3 new skip lines.
+- `services/orion-hub/tests/test_mind_tier_by_caller.py`: the call-site table names `_execute_unified_turn_body`, where the stance request is now built.
 - `scripts/report_promise_ledger.py`: adds `REPLAY_BASELINE_CLEAN`, `KEEP_RATE_CEILING_CLEAN` and `duplicate_window_pairs`, plus the text lines that print them.
 - `tests/test_report_promise_ledger.py`: tests for the clean basis and the window-pair count, including the live float-up / won't-float pair.
 - `docs/superpowers/specs/2026-11-11-intention-ledger-design.md`: the round-3 amendments.

@@ -238,6 +238,25 @@ def pending_text(rows: list[dict[str, Any]]) -> str:
             out.append("<<<ORION_TEXT")
             out.append(str(row.get("body") or "").replace("<<<", "< < <").replace(">>>", "> > >"))
             out.append("ORION_TEXT>>>")
-            out.append(f"To answer Orion: python3 scripts/orion_session_thread.py reply --thread {row.get('thread_id')} "
-                       "--body \"...\"  (read at the next hourly round-up)")
+            pr_arg = f" --pr {row['pr_number']}" if row.get("pr_number") else ""
+            out.append(f"To answer Orion: python3 scripts/orion_session_thread.py reply --thread {row.get('thread_id')}"
+                       f"{pr_arg} --body-file <file>  (Orion reads it at the next hourly round-up"
+                       + ("; --pr also posts it on the pull request)" if pr_arg else ")"))
+    if any(has_questions(r) for r in rows):
+        out.append(CIRCLE_BACK_STEPS)
     return "\n".join(out)
+
+
+def has_questions(row: dict[str, Any]) -> bool:
+    return not (row.get("meta") or {}).get("no_questions")
+
+
+# What a session does with Orion's questions. Juniper's standing rules (CLAUDE.md "Ticket board").
+CIRCLE_BACK_STEPS = """What to do with Orion's questions (circle back now, without waiting to be asked):
+1. Investigate each question against the code, live data and open tickets. Do not answer from memory.
+2. Fix small, clear findings on this PR's branch, in its worktree. Commit and push.
+3. File a ticket for each real finding you will not fix in this PR. Search first (gh issue list --search "<words>").
+   Then gh issue create with one kind label (bug, follow-up, verify-live, design) and one area:* label.
+   Add needs-juniper when it waits on Juniper. Then gh project item-add 1 --owner junebug-junie --url <issue-url>.
+4. Answer every question in one numbered reply. Name the commits and issue numbers. Say plainly what is
+   UNVERIFIED and what waits on Juniper. Write it to a file and send it with the reply command above."""

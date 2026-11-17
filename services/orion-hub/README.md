@@ -454,10 +454,11 @@ The session side lives in the repo's `scripts/`:
 |---|---|
 | Send a PR's spec when `gh pr create` runs | `scripts/hooks/post_tool_pr_spec_to_orion.py` (PostToolUse hook on Bash) |
 | Show Orion's questions to the session | `scripts/hooks/session_pending_orion_questions.py` (UserPromptSubmit + SessionStart) |
-| Send, reply, read by hand | `python3 scripts/orion_session_thread.py send --pr N [--note TEXT]`, `reply --thread ID --body TEXT`, `pending` |
+| Wake the session when Orion answers, so it circles back unasked | `scripts/hooks/wait_for_orion_answer.py` (PostToolUse on Bash, `asyncRewake`): arms after a spec PR is opened or `send` gets a receipt, polls Hub every 60 s for up to 4 h, then wakes the session with Orion's questions and the steps: investigate, fix small things, file tickets, answer on the PR and to Orion. "No questions" ends the wait without waking |
+| Send, reply, read by hand | `python3 scripts/orion_session_thread.py send --pr N [--note TEXT]`, `reply --thread ID [--pr N] --body TEXT\|--body-file F` (`--pr` also posts the reply on the PR), `pending` |
 | Smoke after deploy | `python3 scripts/smoke_session_threads.py`, then `--check THREAD_ID` an hour later |
 
-Both hooks are silent when Hub is down. Off for one shell: `ORION_SESSION_THREADS_HOOKS=0`. Hub URL:
+The hooks are silent when Hub is down. Off for one shell: `ORION_SESSION_THREADS_HOOKS=0`. Hub URL:
 `ORION_HUB_URL` (default `http://localhost:8080`). Hook log: `~/.orion/session_threads_hooks.log`.
 
 | Env key | Default | What changes when it moves |

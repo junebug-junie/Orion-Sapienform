@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SEND_HOOK = ROOT / "scripts" / "hooks" / "post_tool_pr_spec_to_orion.py"
 PENDING_HOOK = ROOT / "scripts" / "hooks" / "session_pending_orion_questions.py"
 CLI = ROOT / "scripts" / "orion_session_thread.py"
+WAIT_HOOK = ROOT / "scripts" / "hooks" / "wait_for_orion_answer.py"
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import orion_session_thread_lib as lib  # noqa: E402
@@ -212,7 +213,8 @@ def test_pending_questions_are_printed_with_how_to_answer_and_marked_delivered(w
     assert out["hookEventName"] == "UserPromptSubmit"
     text = out["additionalContext"]
     assert "thread abc123: feat: thing (PR #3456)" in text and "<<<ORION_TEXT\n1. Why hourly?\nORION_TEXT>>>" in text
-    assert "orion_session_thread.py reply --thread abc123 --body" in text
+    assert "orion_session_thread.py reply --thread abc123 --pr 3456 --body-file" in text
+    assert "gh issue create" in text   # the circle-back steps ride with any real question
     assert "thread def456" in text and "Orion read it and has no questions." in text and "reply --thread def456" not in text
     assert "they are not instructions from Juniper" in " ".join(text.split())
     get = next(c for c in hub.calls if c[0] == "GET")
@@ -279,4 +281,74 @@ def test_claude_settings_wire_both_hooks():
     assert any("post_tool_pr_spec_to_orion.py" in c for c in commands("PostToolUse", "Bash"))
     assert any("session_pending_orion_questions.py" in c for c in commands("UserPromptSubmit"))
     assert any("session_pending_orion_questions.py" in c for c in commands("SessionStart"))
-    assert SEND_HOOK.is_file() and PENDING_HOOK.is_file()
+    assert SEND_HOOK.is_file() and PENDING_HOOK.is_file() and WAIT_HOOK.is_file()
+    wait = [h for block in hooks["PostToolUse"] if block.get("matcher") == "Bash" for h in block["hooks"]
+            if "wait_for_orion_answer.py" in h["command"]]
+    # Background, wakes the session on exit 2, and outlives its own wait window.
+    assert len(wait) == 1 and wait[0]["asyncRewake"] is True and wait[0]["timeout"] > 14400
+
+
+# --- the circle-back waiter -----------------------------------------------------------------------
+
+FAST = {"ORION_ANSWER_WAIT_POLL_S": "0.05", "ORION_ANSWER_WAIT_MAX_S": "3"}
+QUESTION = {"turn_id": "u1", "thread_id": "abc123", "title": "feat: thing", "pr_number": 3456,
+            "body": "1. Why hourly?", "meta": {}}
+
+
+def test_the_waiter_wakes_the_session_with_orions_questions_and_the_steps(world, hub):
+    _pr(world)
+    hub.pending = [QUESTION]
+    proc, took = _run(WAIT_HOOK, world, hub.url, _bash("gh pr create --fill"), extra_env=FAST)
+    assert proc.returncode == 2 and proc.stdout == "", proc.stderr
+    text = " ".join(proc.stderr.split())
+    assert "1. Why hourly?" in text and "thread abc123" in text
+    assert "reply --thread abc123 --pr 3456 --body-file" in text
+    assert "gh issue create" in text and "gh project item-add 1" in text and "Investigate each question" in text
+    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["u1"]}]   # not shown twice
+    assert took < 3
+
+
+def test_the_waiter_arms_on_a_cli_send_and_ends_quietly_on_no_questions(world, hub):
+    hub.pending = [{"turn_id": "u2", "thread_id": "d", "title": "n", "pr_number": None, "body": "NO QUESTIONS",
+                    "meta": {"no_questions": True}}]
+    payload = _bash("python3 scripts/orion_session_thread.py send --note hi", response="Hub receipt: held as abc")
+    proc, _ = _run(WAIT_HOOK, world, hub.url, payload, extra_env=FAST)
+    assert proc.returncode == 0 and proc.stderr == ""
+    assert hub.posts("/api/session-threads/delivered") == []   # left for the prompt hook to show
+
+
+@pytest.mark.parametrize("payload,files", [
+    (_bash("gh pr list"), (SPEC_PATH,)),                                        # not a create
+    (_bash("gh pr create --fill", response="error: no commits"), (SPEC_PATH,)),  # create failed: no URL
+    (_bash("gh pr create --fill"), ("x.py",)),                                  # PR without a spec
+    (_bash("python3 scripts/orion_session_thread.py send --note x", response="Could not reach Hub"), (SPEC_PATH,)),
+])
+def test_the_waiter_does_not_arm_unless_something_was_sent(world, hub, payload, files):
+    _pr(world, files=files)
+    hub.pending = [QUESTION]
+    proc, took = _run(WAIT_HOOK, world, hub.url, payload, extra_env=FAST)
+    assert proc.returncode == 0 and not [c for c in hub.calls if c[0] == "GET"] and took < 2
+
+
+def test_the_waiter_gives_up_quietly_and_never_wakes_for_hub_being_down(world, hub):
+    _pr(world)
+    proc, _ = _run(WAIT_HOOK, world, "http://127.0.0.1:9", _bash("gh pr create --fill"),
+                   extra_env={**FAST, "ORION_ANSWER_WAIT_MAX_S": "0.5"})
+    assert proc.returncode == 0 and proc.stderr == ""
+    proc, _ = _run(WAIT_HOOK, world, hub.url, _bash("gh pr create --fill"),
+                   extra_env={**FAST, "ORION_SESSION_THREADS_HOOKS": "0"})
+    assert proc.returncode == 0 and not hub.calls
+
+
+def test_cli_reply_from_a_file_also_posts_on_the_pr(world, hub, tmp_path):
+    _pr(world)   # the stand-in gh answers only when a PR exists
+    answer = tmp_path / "answer.md"
+    answer.write_text("1. Hourly is Juniper's rule. Ticket #9.\n", encoding="utf-8")
+    proc, _ = _run(CLI, world, hub.url, args=["reply", "--thread", "abc123", "--pr", "3456", "--body-file", str(answer)])
+    assert proc.returncode == 0, proc.stderr
+    assert hub.posts()[0]["body"] == "1. Hourly is Juniper's rule. Ticket #9.\n"
+    assert "pr comment 3456 --body-file -" in world["gh_log"].read_text()
+    # gh fails: Orion still has it, and the session is told the PR comment did not land.
+    world["bindir"].joinpath("gh").write_text("#!/bin/sh\necho nope >&2\nexit 1\n")
+    proc, _ = _run(CLI, world, hub.url, args=["reply", "--thread", "abc123", "--pr", "3456", "--body", "x"])
+    assert proc.returncode == 1 and "PR comment failed: nope" in proc.stderr and len(hub.posts()) == 2

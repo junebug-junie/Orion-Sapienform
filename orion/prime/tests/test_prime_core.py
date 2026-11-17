@@ -423,3 +423,47 @@ def test_energy_money_splits_idle_from_activity_and_never_invents_per_organ_cost
     assert _energy_lines(FrameInputs(now=T0, energy={"money": {}}))[0] == "(no machine figures in the report)"
     frame = build_frame(PrimeStateV1(pending_changes=["x"]), FrameInputs(now=T0, energy=live))
     assert "ENERGY MONEY:" in frame and "attention:juniper" not in frame.split("ENERGY MONEY:")[1].split("\n\n")[0]
+
+
+# --- a held concern's event in a move's refs (#3609) ----------------------------------------------
+
+LETTER_THREAD = "orion_day_letter:2026-11-13#thread0"
+
+
+def _letter_move(concern_id=None):
+    return PrimeAnswerV1.model_validate({"move": {
+        "kind": "curiosity_focus", "question": "Why did the walkway render break?", "why": "letter thread 0",
+        **({"concern_id": concern_id} if concern_id else {}),
+        "refs": [{"kind": "act", "id": LETTER_THREAD}]}})
+
+
+def test_a_letter_thread_written_as_an_act_ref_moves_on_its_concern():
+    """11-16: Prime put a letter thread's event_ref in refs as kind act and was refused ("act id must look like
+    act_ + 24 hex"). The thread is a held concern: the move goes with that concern_id and no openable ref."""
+    state = PrimeStateV1(concerns=[_held("lt0", event_ref=LETTER_THREAD), _held("other")])
+    applied = apply_answer(state, _letter_move(), now=T0, arc_ids=[], focus_pending=False)
+    assert applied.move_refusal is None and applied.move is not None
+    assert applied.move.concern_id == "lt0" and applied.refs == []
+    assert any("lt0" in w and "concern_id" in w for w in applied.warnings)
+    applied = apply_answer(state, _letter_move("lt0"), now=T0, arc_ids=[], focus_pending=False)
+    assert applied.move is not None and applied.move.concern_id == "lt0"
+
+
+def test_a_concern_ref_that_contradicts_the_moves_concern_id_names_the_one_to_use():
+    state = PrimeStateV1(concerns=[_held("lt0", event_ref=LETTER_THREAD), _held("other")])
+    applied = apply_answer(state, _letter_move("other"), now=T0, arc_ids=[], focus_pending=False)
+    assert applied.move is None and "lt0" in applied.move_refusal and "concern_id" in applied.move_refusal
+    assert "act_ + 24 hex" not in applied.move_refusal
+
+
+def test_a_letter_thread_no_concern_holds_is_still_refused():
+    applied = apply_answer(PrimeStateV1(concerns=[_held("other")]), _letter_move(), now=T0, arc_ids=[],
+                           focus_pending=False)
+    assert applied.move is None and "act_ + 24 hex" in applied.move_refusal
+
+
+def test_the_system_prompt_says_a_concerns_event_is_reached_by_concern_id():
+    from orion.prime.thought import system_prompt
+    for events in (False, True):
+        text = system_prompt(None, events=events)
+        assert "letter thread" in text and "concern_id" in text.split("letter thread", 1)[1][:200]

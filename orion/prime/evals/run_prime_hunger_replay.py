@@ -295,7 +295,9 @@ def run(data: Optional[dict[str, Any]] = None) -> list[tuple[str, bool, str]]:
                     f"most in any 24 h {worst_idle}"))
     stream = replay(base, policy="idle", planted="event_stream", days=2)
     top = sum(1 for k in range(int(timedelta(days=2) / EVENT_STREAM_EVERY) + 1) if k % 20 == 0)
-    results.append(("ordinary_events_do_not_wake", len(stream["thoughts"]) <= top,
+    # Exactly one wake per top-tenth event, each a horizon need: a gate that blocks everything fails too.
+    results.append(("ordinary_events_do_not_wake", len(stream["thoughts"]) == top
+                    and all(why == "need:horizon" for _, why in stream["thoughts"]),
                     f"planted live-rate funded reading wants (one per 38 min, 1 in 20 top-tenth), 2 days: "
                     f"{len(stream['thoughts'])} thoughts; top-tenth events {top}"))
     rest = replay(base, policy="idle", planted="rest", days=2)

@@ -18,8 +18,10 @@ The needs built here (each has a live producer; see the PR report's metric gate 
   the event is offered to one thought before it expires, never re-offered as it rises. Without this, an event with a
   short window (a reading's look 3 h, an office visit 2 h, a curiosity finding 12 h) could expire between thoughts
   once the floor is gone: the replay's longest stretch with no thought is 20-27 h. Only an event in the top tenth of
-  its own source (``salience`` >= ``EVENT_WAKE_SALIENCE``) may wake Prime this way; every funded event is still in
-  Prime's frame at its next thought. Live 11-16 18:06Z..11-17 03:00Z, with no gate, 11 of 12 thoughts were woken by
+  its own source (``salience`` >= ``EVENT_WAKE_SALIENCE``) may wake Prime this way. An ordinary funded event is
+  shown at Prime's next thought only if it is still open then and in the top ``PRIME_EVENT_WANTS_LIMIT`` by net:
+  a 3 h read or a 15 min cooling act below the band is often never seen by Prime (the cooling act itself runs on
+  its own clock either way). Deliberate: salience (how unusual for its source), not net, decides the wake. Live 11-16 18:06Z..11-17 03:00Z, with no gate, 11 of 12 thoughts were woken by
   funded reading wants (3-day mean salience 0.09: reads that made no link) and all 11 ended "no move".
 * ``surprise`` -- an experience of another organ whose ``surprise_nats`` is strictly above its own source kind's
   30-day 90th percentile, that no organ has cited yet, and whose surprisal is at least ln 2 (the outcome had

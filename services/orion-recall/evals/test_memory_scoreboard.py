@@ -149,7 +149,8 @@ def test_answer_bars_pass_and_errors_are_not_measured():
     ('{"label": "correct", "why": "x"}', "correct"),
     ('<think>maybe invented?</think>\n{"label": "dont know"}', "dont_know"),
     ("```json\n{\"label\": \"no_memory\"}\n```", "no_memory"),
-    ("The label is invented.", "invented"),
+    ("label: invented", "invented"),
+    ("the reply is not correct", None),
     ("correct or invented, hard to say", None),
     ("", None),
 ])
@@ -233,6 +234,7 @@ def test_runner_retrieval_replays_both_phases_and_reads_the_trace(monkeypatch):
 
     import orion.core.bus.async_service as bus_mod
 
+    monkeypatch.delenv("RECALL_LIVED_MEMORY_TIMEOUT_SEC", raising=False)   # the 4.0 s default
     monkeypatch.setattr(runner, "_recall_rpc", fake_rpc)
     monkeypatch.setattr(bus_mod, "OrionBusAsync", _Bus)
     monkeypatch.setattr(runner.asyncio, "sleep", no_sleep)
@@ -243,6 +245,8 @@ def test_runner_retrieval_replays_both_phases_and_reads_the_trace(monkeypatch):
     assert [d["qid"] for d in report["degraded"]] == ["time_market"]
     assert report["page"] == {"version": 3, "cites": 2}
     # Every non-skipped item ran phase 1 then phase 3 with cortex-exec's profiles.
+    skipped = set(report["skipped_by_gate"])
+    assert {c[0] for c in calls} == {it.qid for it in items} - skipped and len(calls) > 0
     for qid in {c[0] for c in calls}:
         assert [c[1:] for c in calls if c[0] == qid] == [
             ("chat.continuity.v1", "continuity"), ("chat.belief.open_loop.v1", "purposeful")]
@@ -264,6 +268,39 @@ def test_runner_profiles_match_cortex_exec():
             found[target.id] = ast.literal_eval(node.value)
     assert found["CONTINUITY_PROFILE"] == runner.CONTINUITY_PROFILE
     assert found["PROFILE_FOR_INTENT"] == runner.PROFILE_FOR_INTENT
+
+
+def test_runner_skip_gate_thresholds_match_cortex_exec_defaults():
+    """The replay's phase-0 gate uses cortex-exec's CHAT_PCR_SKIP_* defaults (settings.py)."""
+    src = (REPO / "services" / "orion-cortex-exec" / "app" / "settings.py").read_text(encoding="utf-8")
+    defaults = {}
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and isinstance(node.value, ast.Call):
+            if node.target.id in ("chat_pcr_skip_max_novelty", "chat_pcr_skip_shift_novelty_floor",
+                                  "chat_pcr_skip_on_low_info"):
+                defaults[node.target.id] = ast.literal_eval(node.value.args[0])
+    assert defaults == {"chat_pcr_skip_on_low_info": True,
+                        "chat_pcr_skip_max_novelty": runner.SKIP_MAX_NOVELTY,
+                        "chat_pcr_skip_shift_novelty_floor": runner.SKIP_SHIFT_NOVELTY_FLOOR}
+
+
+def test_bars_are_not_measured_below_the_coverage_floor():
+    _, items, replay = _fixture()
+    obs = _observations(items, replay)
+    for q in ("fact_city", "event_kiln"):   # with time_market, 3 of 6 stored items degraded
+        obs[q].degraded = ["recall:deadline_hit"]
+    r = ms.score_retrieval(items, obs)
+    assert r["passes"] is None and "NOT MEASURED" in ms.render_table(r, None, run_date="d", bank_items=8)
+    outcomes = {it.qid: "error" for it in items}
+    outcomes["fact_city"] = "correct"
+    a = ms.score_answers(items, outcomes)
+    assert a["correct_rate"] == 1.0 and a["passes"] == {"correct_rate": None, "invented": None, "false_no_memory": None}
+
+
+def test_time_item_judge_prompt_carries_as_of():
+    _, items, _ = _fixture()
+    it = next(i for i in items if i.qid == "time_market")
+    assert "written on 2026-03-10" in ms.build_judge_prompt(it, "q", "r")
 
 
 def test_runner_resume_keeps_good_turns_and_redoes_failed_ones(monkeypatch):

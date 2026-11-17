@@ -48,6 +48,7 @@ for p in (str(HERE.parent), str(REPO)):
         sys.path.insert(0, p)
 
 from memory_scoreboard import (  # noqa: E402
+    JUDGE_SYSTEM,
     Item,
     RetrievalObservation,
     build_judge_prompt,
@@ -73,6 +74,9 @@ RECALL_CHANNEL = "orion:exec:request:RecallService"
 # phases). The two profile names mirror services/orion-cortex-exec/app/pcr_chat_memory.py; the
 # fixture test fails if they drift.
 VERB = "stance_react"
+# cortex-exec CHAT_PCR_SKIP_MAX_NOVELTY / CHAT_PCR_SKIP_SHIFT_NOVELTY_FLOOR defaults (drift-tested).
+SKIP_MAX_NOVELTY = 0.25
+SKIP_SHIFT_NOVELTY_FLOOR = 0.35
 CONTINUITY_PROFILE = "chat.continuity.v1"
 PROFILE_FOR_INTENT: dict[str, str] = {
     "relational": "chat.belief.relational.v1",
@@ -140,6 +144,9 @@ async def _recall_rpc(bus: Any, *, text: str, profile: str, phase: str, intent: 
     body = decoded.envelope.payload if isinstance(decoded.envelope.payload, dict) else {}
     if body.get("error"):
         raise RuntimeError(str(body["error"]))
+    from orion.core.contracts.recall import RecallReplyV1
+
+    RecallReplyV1.model_validate(body)   # same check RecallClient does on a real turn
     return body, corr
 
 
@@ -161,7 +168,7 @@ async def run_retrieval(items: List[Item], texts: Dict[str, str], pool: Any, arg
             obs = RetrievalObservation(qid=it.qid, page_ids=set(pids))
             observations[it.qid] = obs
             gate = recall_skip_gate(user_message=text, appraisal=None, has_repair_grammar_signal=False,
-                                    max_novelty=0.25, shift_novelty_floor=0.35)
+                                    max_novelty=SKIP_MAX_NOVELTY, shift_novelty_floor=SKIP_SHIFT_NOVELTY_FLOOR)
             if gate.skip:
                 obs.skipped = True
                 print(f"  [{n}/{len(items)}] {it.qid}: skip gate", flush=True)
@@ -289,7 +296,9 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
                     break
                 await asyncio.sleep(5)
         if corr:
-            rows = await pool.fetch("SELECT selected_ids FROM recall_telemetry WHERE corr_id = $1", corr)
+            rows = await pool.fetch(
+                "SELECT selected_ids FROM recall_telemetry WHERE corr_id = $1 AND profile = ANY($2::text[])",
+                corr, [CONTINUITY_PROFILE, *PROFILE_FOR_INTENT.values()])
             ids: set[str] = set()
             for r in rows:
                 sel = r["selected_ids"]
@@ -298,14 +307,21 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
             turn["recall_rows"] = len(rows)
             in_page = any(t in pids for t in it.targets)
             turn["target_in_prompt"] = (in_page or any(t in ids for t in it.targets)) if (rows or in_page) and it.targets else None
+            if it.chat_id:
+                # An implicit item resends a real past message; flag a turn whose recall served
+                # that very message's chat row (its old reply rides with it).
+                turn["own_message_served"] = it.chat_id in ids
         if not turn["reply"] and not turn["error"]:
             turn["error"] = "empty reply"
         turn["seconds"] = round(time.monotonic() - t0, 1)
         turns.append(turn)
+        if getattr(args, "checkpoint", None):
+            # Every Hub reply is on disk before the next turn, so --resume always has a file.
+            _write_private(args.checkpoint, json.dumps({"turns": turns}, indent=1, default=str))
         print(f"  [{n}/{len(items)}] {it.qid}: {turn['seconds']}s reply_chars={len(turn['reply'])} "
               f"target_in_prompt={turn.get('target_in_prompt')} error={bool(turn['error'])}", flush=True)
 
-    from orion.evals.leased_llm import LaneRecalled, operator_lane_sync
+    from orion.evals.leased_llm import LaneCallError, LaneRecalled, LaneUnavailable, operator_lane_sync
 
     outcomes: Dict[str, str] = {}
     by_qid = {it.qid: it for it in items}
@@ -323,12 +339,16 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
                                             [records[t] for t in it.targets if records.get(t)])
                 label = None
                 for _attempt in range(2):
-                    data = lane.chat({
-                        "messages": [{"role": "system", "content": "You grade replies. JSON only."},
+                    try:
+                        data = lane.chat({
+                        "messages": [{"role": "system", "content": JUDGE_SYSTEM},
                                      {"role": "user", "content": prompt}],
                         "max_tokens": 200, "temperature": 0.0,
                         "chat_template_kwargs": {"enable_thinking": False},
-                    }, timeout_sec=180)
+                        }, timeout_sec=180)
+                    except LaneCallError as exc:
+                        turn["judge_error"] = str(exc)[:200]
+                        continue
                     raw = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
                     label = parse_judge_label(raw)
                     if label:
@@ -337,7 +357,9 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
                 turn["judge_label"] = label
                 outcomes[it.qid] = outcome_for(it, label)
     except LaneRecalled as exc:
-        print(f"judge lane recalled: {exc} -- remaining items unjudged", flush=True)
+        print(f"judge lane recalled: {exc} -- remaining items unjudged (rerun with --resume)", flush=True)
+    except LaneUnavailable as exc:
+        print(f"judge lane unavailable: {exc} -- items unjudged (rerun with --resume)", flush=True)
     for turn in turns:
         outcomes.setdefault(turn["qid"], "unjudged")
         turn["outcome"] = outcomes[turn["qid"]]
@@ -355,7 +377,10 @@ async def run_answers(items: List[Item], texts: Dict[str, str], records: Dict[st
 async def _main(args: argparse.Namespace) -> int:
     import asyncpg  # type: ignore
 
-    bank = json.loads(Path(args.bank).expanduser().read_text(encoding="utf-8"))
+    bank_path = Path(args.bank).expanduser()
+    if bank_path.stat().st_mode & 0o077:
+        print(f"WARNING: {bank_path} is readable by others; it holds private history (chmod 600)", flush=True)
+    bank = json.loads(bank_path.read_text(encoding="utf-8"))
     items = load_items(bank)
     if args.only:
         keep = set(args.only.split(","))
@@ -363,6 +388,20 @@ async def _main(args: argparse.Namespace) -> int:
     if args.limit:
         items = items[: args.limit]
     started = datetime.now(timezone.utc)
+    run_date = args.date or started.date().isoformat()
+    # The dated file is the weekly record: only a whole-bank run of both phases (or a resume of
+    # one) writes it and the history line. Anything else gets its own timestamped name.
+    full_run = not args.only and not args.limit and (set(args.phases.split(",")) >= {"retrieval", "answer"}
+                                                       or bool(args.resume))
+    run_name = run_date if full_run else f"{run_date}T{started.strftime('%H%M%S')}.partial"
+    out_dir = Path(args.out_dir).expanduser()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(out_dir, 0o700)
+    target = out_dir / f"{run_name}.json"
+    if target.exists() and not args.force and (not args.resume or Path(args.resume).expanduser().resolve() != target.resolve()):
+        print(f"{target} exists; pass --resume {target} to continue it or --force to replace it")
+        return 2
+    args.checkpoint = out_dir / f"{run_name}.checkpoint.json"
     pool = await asyncpg.create_pool(_dsn(args.dsn), min_size=1, max_size=2)
     try:
         texts: Dict[str, str] = {}
@@ -387,6 +426,11 @@ async def _main(args: argparse.Namespace) -> int:
                 records[rid] = str(row[0] or "")
         if missing:
             print(f"WARNING: {len(missing)} bank record id(s) no longer exist: {missing[:5]}", flush=True)
+        # An item whose every target is gone can never hit: a bank problem, not a memory one.
+        gone = [it.qid for it in items if it.targets and all(t in missing for t in it.targets)]
+        if gone:
+            print(f"WARNING: {len(gone)} item(s) left out, all targets deleted: {gone}", flush=True)
+            items = [it for it in items if it.qid not in gone]
         phases = set(args.phases.split(","))
         retrieval = answers = None
         args.prior_turns = []
@@ -405,22 +449,24 @@ async def _main(args: argparse.Namespace) -> int:
             answers, turns = await run_answers(items, texts, records, pool, args)
     finally:
         await pool.close()
-    run_date = args.date or started.date().isoformat()
-    out_dir = Path(args.out_dir).expanduser()
-    out_dir.mkdir(parents=True, exist_ok=True)
-    os.chmod(out_dir, 0o700)
     table = render_table(retrieval, answers, run_date=run_date, bank_items=len(items))
     full = {"date": run_date, "started_at": started.isoformat(), "bank": str(args.bank), "items": len(items),
             "missing_records": missing, "retrieval": retrieval, "answer": answers, "turns": turns}
-    _write_private(out_dir / f"{run_date}.json", json.dumps(full, indent=1, default=str))
-    _write_private(out_dir / f"{run_date}.md", table + "\n")
-    hist = out_dir / "history.jsonl"
-    # One line per date: a resumed or repeated run replaces that date's line.
-    kept = [ln for ln in (hist.read_text(encoding="utf-8").splitlines() if hist.exists() else [])
-            if ln.strip() and json.loads(ln).get("date") != run_date]
-    _write_private(hist, "".join(ln + "\n" for ln in kept) + json.dumps(summary_line(run_date, retrieval, answers)) + "\n")
+    full["left_out_all_targets_deleted"] = gone
+    full["own_message_served"] = [t["qid"] for t in turns if t.get("own_message_served")]
+    _write_private(target, json.dumps(full, indent=1, default=str))
+    _write_private(out_dir / f"{run_name}.md", table + "\n")
+    if args.checkpoint.exists():
+        args.checkpoint.unlink()
+    if full_run:
+        hist = out_dir / "history.jsonl"
+        # One line per date: a resumed or repeated full run replaces that date's line.
+        kept = [ln for ln in (hist.read_text(encoding="utf-8").splitlines() if hist.exists() else [])
+                if ln.strip() and json.loads(ln).get("date") != run_date]
+        _write_private(hist, "".join(ln + "\n" for ln in kept)
+                       + json.dumps(summary_line(run_date, retrieval, answers)) + "\n")
     print("\n" + table)
-    print(f"\nwritten: {out_dir / (run_date + '.json')} and .md (mode 600)")
+    print(f"\nwritten: {target} and .md (mode 600){'' if full_run else ' -- partial run, no history line'}")
     return 0
 
 
@@ -432,8 +478,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--hub-url", default=os.getenv("HUB_BASE_URL", DEFAULT_HUB))
     ap.add_argument("--phases", default="retrieval,answer")
     ap.add_argument("--phase3-intent", default=DEFAULT_PHASE3_INTENT, choices=["auto", "none", *PROFILE_FOR_INTENT])
-    ap.add_argument("--deadline-ms", type=int, default=30000, help="recall deadline per phase")
-    ap.add_argument("--rpc-timeout", type=float, default=60.0)
+    # A real chat turn waits min(STEP_TIMEOUT_MS, RECALL_RPC_TIMEOUT_SEC) = 90 s (cortex-exec defaults).
+    ap.add_argument("--deadline-ms", type=int, default=90000, help="recall deadline per phase")
+    ap.add_argument("--rpc-timeout", type=float, default=120.0)
+    ap.add_argument("--force", action="store_true", help="replace an existing run file of the same name")
     ap.add_argument("--turn-timeout", type=float, default=900.0, help="seconds per Hub chat turn")
     ap.add_argument("--judge-lane", default="agent", help="orion.evals.leased_llm lane (local only)")
     ap.add_argument("--out-dir", default=DEFAULT_OUT)

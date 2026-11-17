@@ -28,6 +28,9 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 SCHEMA = "memory_scoreboard_bank.v1"
 CATEGORIES = ("fact", "event", "time", "update", "abstention")
 RETRIEVAL_BAR = 0.80
+# A bar is only judged when enough of the bank was measured (degraded / error / unjudged items
+# leave the denominator, so a mostly-failed run must not read as a pass).
+COVERAGE_FLOOR = 0.80
 ANSWER_CORRECT_BAR = 0.70
 
 # The kinds a lived-memory doc id / core-page cite can carry (orion/memory/lived_memory.py KINDS).
@@ -249,7 +252,9 @@ def score_retrieval(items: Sequence[Item], observations: Mapping[str, RetrievalO
         "stored": len(stored), "scored": len(clean), "hits": hits, "hit_rate": rate,
         # Same, counting only the two recall phases' DURABLE MEMORY (not the core page's cites).
         "bundle_hits": bundle_hits, "bundle_hit_rate": _rate(bundle_hits, len(clean)),
-        "passes": rate is not None and rate >= RETRIEVAL_BAR,
+        "coverage": _rate(len(clean), len(stored)),
+        "passes": (None if not stored or len(clean) / len(stored) < COVERAGE_FLOOR
+                   else rate is not None and rate >= RETRIEVAL_BAR),
         "degraded": [{"qid": v["qid"], "reasons": v["degraded"], "hit": v["hit"]} for v in stored if v["degraded"]],
         "superseded_served": [{"qid": v["qid"], "ids": v["superseded_served"]} for v in verdicts if v["superseded_served"]],
         "backfill": [{"qid": v["qid"], "injected": v["injected"]} for v in verdicts if v["kind"] == "backfill"],
@@ -280,6 +285,9 @@ def build_judge_prompt(item: Item, message: str, reply: str, record_texts: Seque
     if item.wrong_answer and item.kind != "abstention":
         extra = (f"\nThis was corrected. The OLD, wrong answer was: {item.wrong_answer}. A reply that gives "
                  "the old answer as true is 'invented'.")
+    if item.as_of:
+        extra += (f"\nThis question was written on {item.as_of}. Relative dates in it refer to that day; "
+                  "a reply that gives the right dated event counts as correct.")
     if item.implicit:
         extra += ("\nJuniper's message is not a direct question. It leans on shared past. 'correct' means the "
                   "reply shows Orion knows the recorded truth, or uses it. A friendly reply that neither "
@@ -316,8 +324,12 @@ def parse_judge_label(raw: str) -> Optional[str]:
         label = str(obj.get("label") or "").strip().lower().replace(" ", "_").replace("'", "")
         if label in JUDGE_LABELS:
             return label
-    found = [lab for lab in JUDGE_LABELS if re.search(rf"\b{lab}\b", text.lower())]
-    return found[0] if len(found) == 1 else None
+    m = re.search(r"\blabel\s*[:=]\s*\"?([a-z_' ]+?)\"?(?:[\s,.}]|$)", text.lower())
+    if m:
+        label = m.group(1).strip().replace(" ", "_").replace("'", "")
+        if label in JUDGE_LABELS:
+            return label
+    return None
 
 
 def outcome_for(item: Item, label: Optional[str]) -> str:
@@ -363,11 +375,13 @@ def score_answers(items: Sequence[Item], outcomes: Mapping[str, str]) -> Dict[st
         "bars": {"correct_rate": ANSWER_CORRECT_BAR, "invented": 0, "false_no_memory": 0},
         "scored": len(scored), "measured": len(measured), "correct": correct, "correct_rate": rate,
         "invented": invented, "false_no_memory": false_no,
-        "passes": {
+        "coverage": _rate(len(measured), len(scored)),
+        "passes": ({k: None for k in ("correct_rate", "invented", "false_no_memory")}
+                   if not scored or len(measured) / len(scored) < COVERAGE_FLOOR else {
             "correct_rate": rate is not None and rate >= ANSWER_CORRECT_BAR,
-            "invented": not invented and bool(measured),
-            "false_no_memory": not false_no and bool(measured),
-        },
+            "invented": not invented,
+            "false_no_memory": not false_no,
+        }),
         "not_measured": [{"qid": it.qid, "outcome": outcomes[it.qid]} for it in scored
                          if outcomes[it.qid] in ("error", "unjudged")],
         "backfill": [{"qid": it.qid, "outcome": outcomes[it.qid]} for it in items
@@ -377,6 +391,10 @@ def score_answers(items: Sequence[Item], outcomes: Mapping[str, str]) -> Dict[st
 
 
 # ---------------------------------------------------------------- report
+
+def _verdict(passed: Optional[bool]) -> str:
+    return "NOT MEASURED (coverage below floor)" if passed is None else ("PASS" if passed else "FAIL")
+
 
 def _pct(x: Optional[float]) -> str:
     return "-" if x is None else f"{round(100 * x)}%"
@@ -401,13 +419,13 @@ def render_table(retrieval: Optional[Mapping[str, Any]], answers: Optional[Mappi
                      f"{len(retrieval['degraded'])} | {len(retrieval['backfill'])} | {len(retrieval['superseded_served'])} |")
         lines += ["", "Hit = a target id is in DURABLE MEMORY (both chat recall phases) or cited by the core page. "
                   "Recall-only = DURABLE MEMORY alone.", "",
-                  f"Retrieval bar: {'PASS' if retrieval['passes'] else 'FAIL'}.", ""]
+                  f"Retrieval bar: {_verdict(retrieval['passes'])} (coverage {_pct(retrieval['coverage'])}).", ""]
         if retrieval["degraded"]:
             lines.append("Degraded recalls (not scored): " + ", ".join(
                 f"{d['qid']} ({'/'.join(d['reasons'])})" for d in retrieval["degraded"]))
             lines.append("")
         if retrieval["skipped_by_gate"]:
-            lines += ["Skipped by the phase-0 gate (counted as misses): " + ", ".join(retrieval["skipped_by_gate"]), ""]
+            lines += ["Skipped by the phase-0 gate (no recall ran; only core-page cites can hit): " + ", ".join(retrieval["skipped_by_gate"]), ""]
     if answers is not None:
         lines += [
             f"## Answer (bars: correct >= {_pct(ANSWER_CORRECT_BAR)}, 0 invented, 0 false 'no memory' on stored)", "",
@@ -420,9 +438,9 @@ def render_table(retrieval: Optional[Mapping[str, Any]], answers: Optional[Mappi
         lines.append(f"| **all** | {answers['scored']} | {answers['correct']} | | {len(answers['invented'])} | "
                      f"{len(answers['false_no_memory'])} | | {len(answers['not_measured'])} | **{_pct(answers['correct_rate'])}** |")
         p = answers["passes"]
-        lines += ["", "Answer bars: correct " + ("PASS" if p["correct_rate"] else "FAIL")
-                  + ", invented " + ("PASS" if p["invented"] else "FAIL")
-                  + ", false no-memory " + ("PASS" if p["false_no_memory"] else "FAIL") + ".", ""]
+        lines += ["", "Answer bars: correct " + _verdict(p["correct_rate"]) + ", invented " + _verdict(p["invented"])
+                  + ", false no-memory " + _verdict(p["false_no_memory"])
+                  + f" (coverage {_pct(answers['coverage'])}).", ""]
         if answers["invented"]:
             lines += ["Invented: " + ", ".join(answers["invented"]), ""]
         if answers["false_no_memory"]:

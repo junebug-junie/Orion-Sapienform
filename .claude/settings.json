@@ -62,6 +62,12 @@
             "type": "command",
             "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/post_tool_pr_spec_to_orion.py\"",
             "timeout": 30
+          },
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/wait_for_orion_answer.py\"",
+            "asyncRewake": true,
+            "timeout": 14700
           }
         ]
       }

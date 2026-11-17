@@ -3,8 +3,8 @@
 sent the spec.
 
 Asks Hub for Orion's undelivered turns for this session id OR this session's branch (the agent
-board's identity: a hook's own cwd is not reliable), prints them as additionalContext with the
-thread id and how to answer, then marks them delivered.
+board's identity: a hook's own cwd is not reliable), marks them delivered (only the rows this hook
+claims, so the waiting hook never shows the same ones), then prints them as additionalContext.
 
 Silent and fast when nothing is pending or Hub is down (2 s timeout, exit 0, no output).
 Kill switch: ORION_SESSION_THREADS_HOOKS=0.
@@ -38,6 +38,10 @@ def main() -> None:
         rows = lib.pending(session_id=session_id, branch=branch, timeout=2.0)
     except Exception:  # noqa: BLE001 -- Hub down or an older Hub: silent
         return
+    try:
+        rows = lib.claim(rows, timeout=2.0)   # claim first: a waiting hook may be showing the same rows
+    except Exception:  # noqa: BLE001
+        return
     text = lib.pending_text(rows)
     if not text:
         return
@@ -45,10 +49,6 @@ def main() -> None:
     sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": event, "additionalContext": text}},
                                 ensure_ascii=False))
     sys.stdout.flush()
-    try:
-        lib.delivered([str(r["turn_id"]) for r in rows], timeout=2.0)
-    except Exception as exc:  # noqa: BLE001 -- shown again next time rather than lost
-        lib.log(f"pending_hook delivered_failed err={type(exc).__name__}")
 
 
 if __name__ == "__main__":

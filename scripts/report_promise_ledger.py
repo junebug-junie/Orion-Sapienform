@@ -37,6 +37,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -77,9 +78,10 @@ REPLAY_BASELINE = (23, 289)
 FINDER_LIVE_AT = datetime(2026, 11, 16, 18, 5, tzinfo=timezone.utc)
 GUARD_RATIO_RED = 2.0
 # The guard cannot go red before this many judged turns (Orion's PR #3561 second-round question 3).
-# At the frozen rate 0.08, 50 turns expect 4 firm promises; red then needs 9 or more, which pure
-# noise gives about 2% of the time (Poisson). At 20 turns red would need 4, about 8% on noise alone.
-GUARD_MIN_JUDGED_TURNS = 50
+# At the frozen rate 0.0796, 60 turns expect 4.8 firm promises; red (ratio > 2) then needs 10 or more,
+# which pure noise gives about 2.4% of the time (Poisson). At 50 turns red needs 8 (about 5%), at 20
+# turns 4 (about 8%).
+GUARD_MIN_JUDGED_TURNS = 60
 # The keep rate's ceiling until #3595 lands: the share of firm promises a later chat reply could show
 # kept. Hand count of the 23 firm replay promises (one reader, not blind; #3595): 9 chat-showable,
 # 8 delivered by a run or outside chat, 6 abstentions or standing states. A keep rate near this
@@ -101,6 +103,23 @@ SELECT act_id, test_before, correlation_id, opened_at, horizon_at, closed_at, ou
 JUNIPER_STARTS_SQL = f"""
 SELECT created_at FROM chat_history_log WHERE {JUNIPER_TURN_PREDICATE} AND created_at >= %(since)s ORDER BY created_at
 """
+def qualify(predicate: str, alias: str, columns: Sequence[str]) -> str:
+    """``predicate`` with each bare column name prefixed by ``alias.`` (whole words only, never inside a
+    quoted string). Fails loudly if a column is missing, so a changed predicate cannot be mis-qualified."""
+    parts = re.split(r"('(?:[^']|'')*')", predicate)
+    for col in columns:
+        pat = re.compile(rf"(?<![\w.]){re.escape(col)}\b")
+        if not any(pat.search(x) for i, x in enumerate(parts) if i % 2 == 0):
+            raise ValueError(f"column {col!r} not in predicate {predicate!r}")
+        parts = [x if i % 2 else pat.sub(f"{alias}.{col}", x) for i, x in enumerate(parts)]
+    return "".join(parts)
+
+
+_JUNIPER_C = qualify(JUNIPER_TURN_PREDICATE, "c", ("prompt", "client_meta"))
+_JUNIPER_P = qualify(JUNIPER_TURN_PREDICATE, "p", ("prompt", "client_meta"))
+_INGRESS_K = qualify(JUNIPER_INGRESS_PREDICATE, "k", ("stage", "seq", "raw"))
+# prev_correlation_id / prev_is_juniper: the session's previous chat_history_log row of ANY kind, the
+# Hub's own rule for which reply's offers the judge is shown (orion/grammar/promise_view.py PREVIOUS_TURN_SQL).
 JUDGED_SQL = f"""
 SELECT DISTINCT ON (t.correlation_id) t.correlation_id, t.created_at,
        t.run_artifact -> 'reflection' ->> 'reflection_source' AS reflection_source,
@@ -109,11 +128,17 @@ SELECT DISTINCT ON (t.correlation_id) t.correlation_id, t.created_at,
        t.run_artifact ->> 'final_text' AS final_text,
        c.session_id, c.prompt AS juniper_said,
        EXISTS (SELECT 1 FROM cockpit_turn_sighting k
-                WHERE k.correlation_id = t.correlation_id AND k.{JUNIPER_INGRESS_PREDICATE.replace(" AND ", " AND k.")})
-         AS from_browser
+                WHERE k.correlation_id = t.correlation_id AND {_INGRESS_K}) AS from_browser,
+       pv.prev_correlation_id, pv.prev_is_juniper
   FROM harness_turn_trace t
   JOIN chat_history_log c ON c.correlation_id = t.correlation_id
- WHERE t.created_at >= %(since)s AND {JUNIPER_TURN_PREDICATE.replace('prompt', 'c.prompt').replace('client_meta', 'c.client_meta')}
+  LEFT JOIN LATERAL (
+       SELECT p.correlation_id AS prev_correlation_id, ({_JUNIPER_P}) AS prev_is_juniper
+         FROM chat_history_log p
+        WHERE p.session_id = c.session_id AND p.correlation_id IS DISTINCT FROM c.correlation_id
+          AND p.created_at < c.created_at
+        ORDER BY p.created_at DESC LIMIT 1) pv ON true
+ WHERE t.created_at >= %(since)s AND {_JUNIPER_C}
  ORDER BY t.correlation_id
 """
 CARRY_SQL = """
@@ -306,8 +331,10 @@ def duplicate_candidates(turns: Sequence[Mapping[str, Any]], *, window: timedelt
         for b in items[i + 1:]:
             if a["corr"] == b["corr"] or not a.get("session") or a.get("session") != b.get("session"):
                 continue
-            if a["at"] and b["at"] and b["at"] - a["at"] > window:
-                continue
+            if a["at"] is None or b["at"] is None:
+                continue  # no time: cannot tell whether both were open at once
+            if b["at"] - a["at"] > window:
+                break  # sorted by time: every later b is further away
             why = []
             if _flat(a.get("act")) and _flat(a.get("act")) == _flat(b.get("act")):
                 why.append("same_act")
@@ -323,34 +350,36 @@ def duplicate_candidates(turns: Sequence[Mapping[str, Any]], *, window: timedelt
 
 
 def offers_summary(turns: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """Accepted offers in the stored judged turns, and how many of them match no firm offer in the
-    previous Juniper turn of the same session (``accepted_unmatched``, the Hub's per-turn count of the
-    same name). Matching keys on the normalized STORED offer quote: the gate (rule 2) already swapped
-    the judge's own text for the stored quote it matched, so a non-zero count here means the view and
-    the stored offers disagreed (or the previous turn fell before the window: ``accepted_no_prior``)."""
-    by_session: dict[Any, list[Mapping[str, Any]]] = {}
-    for t in turns:
-        by_session.setdefault(t.get("session_id"), []).append(t)
-    accepted = unmatched = no_prior = 0
+    """Accepted offers in the stored judged turns, checked against the reply the Hub showed the judge:
+    the session's previous chat row of any kind (``prev_correlation_id``, Hub's PREVIOUS_TURN_SQL rule).
+    Matching keys on the normalized STORED offer quote: the gate (rule 2) already swapped the judge's own
+    text for the stored quote it matched. So ``accepted_unmatched`` (the Hub's per-turn count of the same
+    name) means the view and the stored offers disagreed. Counted apart: ``accepted_prev_not_juniper``
+    (the previous row was not a Juniper turn, so the Hub showed no offers: also a disagreement) and
+    ``accepted_no_prior`` (the previous row is outside the window or missing)."""
+    by_corr = {str(t["correlation_id"]): t for t in turns}
+    accepted = unmatched = no_prior = not_juniper = 0
     unmatched_refs: list[str] = []
-    for rows in by_session.values():
-        rows = sorted(rows, key=lambda r: _aware(r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
-        for prev, cur in zip([None, *rows[:-1]], rows):
-            quotes = [q for q in _accepted(cur.get("accepted")) if q.strip()]
-            if not quotes:
-                continue
-            accepted += len(quotes)
-            if prev is None:
-                no_prior += len(quotes)
-                continue
-            offered = {normalize_for_quote_match(str(x.get("quote") or "")) for x in _made(prev.get("made"))
-                       if x.get("offer") is True and _firm(x)}
-            for q in quotes:
-                if normalize_for_quote_match(q) not in offered:
-                    unmatched += 1
-                    unmatched_refs.append(str(cur["correlation_id"])[:8])
-    return {"accepted": accepted, "accepted_unmatched": unmatched, "accepted_no_prior": no_prior,
-            "accepted_unmatched_turns": unmatched_refs}
+    for cur in turns:
+        quotes = [q for q in _accepted(cur.get("accepted")) if q.strip()]
+        if not quotes:
+            continue
+        accepted += len(quotes)
+        if cur.get("prev_correlation_id") and cur.get("prev_is_juniper") is False:
+            not_juniper += len(quotes)
+            continue
+        prev = by_corr.get(str(cur.get("prev_correlation_id") or ""))
+        if prev is None:
+            no_prior += len(quotes)
+            continue
+        offered = {normalize_for_quote_match(str(x.get("quote") or "")) for x in _made(prev.get("made"))
+                   if x.get("offer") is True and _firm(x)}
+        for q in quotes:
+            if normalize_for_quote_match(q) not in offered:
+                unmatched += 1
+                unmatched_refs.append(str(cur["correlation_id"])[:8])
+    return {"accepted": accepted, "accepted_unmatched": unmatched, "accepted_prev_not_juniper": not_juniper,
+            "accepted_no_prior": no_prior, "accepted_unmatched_turns": unmatched_refs}
 
 
 def _accepted(raw: Any) -> list[str]:
@@ -433,14 +462,17 @@ def gather(dsn: str, since: datetime) -> dict[str, Any]:
 
 def report(data: Mapping[str, Any]) -> dict[str, Any]:
     unclosable = unclosable_ids(data["acts"], data["starts"])
+    # Same turns the guard counts: from the finder going live, sent from a Hub browser surface (#3602).
+    # offers_summary still looks up the previous row among all rows, so a session turn can be a "previous".
     since_finder = [t for t in data["turns"] if (_aware(t.get("created_at")) or FINDER_LIVE_AT) >= FINDER_LIVE_AT]
+    juniper_only = [t for t in since_finder if t.get("from_browser", True) is not False]
     ledger = close_summary(data["acts"], unclosable=unclosable, carry_concerns=data["carry"])
     ledger["keep_rate_ceiling"] = {"name": "chat-showable share", "kept_could_show": KEEP_RATE_CEILING[0],
                                    "of": KEEP_RATE_CEILING[1],
                                    "share": round(KEEP_RATE_CEILING[0] / KEEP_RATE_CEILING[1], 2),
                                    "source": "replay hand count, one reader, not blind (#3595)"}
-    return {"ledger": ledger, "guard": guard_summary(data["turns"]), "offers": offers_summary(since_finder),
-            "duplicate_candidates": duplicate_candidates(since_finder)}
+    return {"ledger": ledger, "guard": guard_summary(data["turns"]), "offers": offers_summary(juniper_only),
+            "duplicate_candidates": duplicate_candidates(juniper_only)}
 
 
 def _ids(ids: Sequence[str], cap: int = 10) -> str:
@@ -496,7 +528,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           f"turns not from a Hub browser surface left out {g['turns_not_from_browser']}")
     of = out["offers"]
     print(f"offers accepted: {of['accepted']}; accepted_unmatched {of['accepted_unmatched']}"
-          f"{_ids(of['accepted_unmatched_turns'])}; previous turn outside the window {of['accepted_no_prior']}")
+          f"{_ids(of['accepted_unmatched_turns'])}; previous row not a Juniper turn {of['accepted_prev_not_juniper']}; "
+          f"previous row outside the window {of['accepted_no_prior']}")
     dups = out["duplicate_candidates"]
     print(f"duplicate candidates (same session, within 72 h; same act or done_when, or a shared span of "
           f">= {DUPLICATE_SPAN_CHARS} chars): {len(dups)}"

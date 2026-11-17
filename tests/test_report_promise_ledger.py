@@ -152,10 +152,15 @@ def test_guard_cannot_go_red_before_it_is_armed():
     turns = [_turn(str(i), [FIRM] if i < 3 else []) for i in range(10)]
     g = rpt.guard_summary(turns)
     assert g["ratio"] > rpt.GUARD_RATIO_RED and g["armed"] is False and g["red"] is False
-    assert rpt.GUARD_MIN_JUDGED_TURNS == 50
-    many = [_turn(str(i), [FIRM] if i < 15 else []) for i in range(rpt.GUARD_MIN_JUDGED_TURNS)]
-    g = rpt.guard_summary(many)
-    assert g["armed"] is True and g["red"] is True
+    assert rpt.GUARD_MIN_JUDGED_TURNS == 60
+
+
+def test_guard_red_boundary_at_the_arming_point():
+    # At 60 turns and the frozen 23/289, red (ratio > 2) needs 10 firm promises: 9 is not red.
+    n = rpt.GUARD_MIN_JUDGED_TURNS
+    for firm, red in ((9, False), (10, True)):
+        g = rpt.guard_summary([_turn(str(i), [FIRM] if i < firm else []) for i in range(n)])
+        assert g["armed"] is True and g["red"] is red, (firm, g["ratio"])
 
 
 def test_guard_leaves_out_turns_not_sent_from_a_hub_browser_surface():
@@ -165,8 +170,9 @@ def test_guard_leaves_out_turns_not_sent_from_a_hub_browser_surface():
     assert (g["judged_turns"], g["turns_not_from_browser"], g["firm_promises"], g["turns_not_judged"]) == (1, 1, 0, 0)
 
 
-def _sturn(corr, made, *, session="s1", at=T0, accepted=None):
-    return {**_turn(corr, made), "session_id": session, "created_at": at, "accepted": accepted or []}
+def _sturn(corr, made, *, session="s1", at=T0, accepted=None, prev=None, prev_is_juniper=True):
+    return {**_turn(corr, made), "session_id": session, "created_at": at, "accepted": accepted or [],
+            "prev_correlation_id": prev, "prev_is_juniper": prev_is_juniper if prev else None}
 
 
 def test_duplicate_candidates_pair_reworded_repeats_in_one_session_only():
@@ -185,11 +191,16 @@ def test_duplicate_candidates_pair_reworded_repeats_in_one_session_only():
 def test_offers_summary_counts_accepted_and_unmatched_against_the_previous_turn():
     offer = {**FIRM, "quote": "If you want, I'll queue the read tonight.", "offer": True}
     turns = [_sturn("c1", [offer], at=T0),
-             _sturn("c2", [], at=T0 + timedelta(hours=1), accepted=["If you want, I\u2019ll queue the read tonight."]),
-             _sturn("c3", [], at=T0 + timedelta(hours=2), accepted=["Something never offered here."]),
-             _sturn("c4", [], session="s9", at=T0, accepted=["No earlier turn in the window."])]
+             _sturn("c2", [], at=T0 + timedelta(hours=1), prev="c1",
+                    accepted=["If you want, I\u2019ll queue the read tonight."]),
+             _sturn("c3", [], at=T0 + timedelta(hours=2), prev="c2", accepted=["Something never offered here."]),
+             _sturn("c4", [], session="s9", at=T0, prev="before-window", accepted=["No earlier turn in the window."]),
+             # Hub's rule: the previous row was Orion's outreach, so the judge was shown no offers.
+             _sturn("c5", [], at=T0 + timedelta(hours=3), prev="outreach-row", prev_is_juniper=False,
+                    accepted=["If you want, I'll queue the read tonight."])]
     out = rpt.offers_summary(turns)
-    assert (out["accepted"], out["accepted_unmatched"], out["accepted_no_prior"]) == (3, 1, 1)
+    assert (out["accepted"], out["accepted_unmatched"], out["accepted_no_prior"],
+            out["accepted_prev_not_juniper"]) == (4, 1, 1, 1)
     assert out["accepted_unmatched_turns"] == ["c3"]
 
 
@@ -204,6 +215,33 @@ def test_text_report_names_the_keep_rate_ceiling_and_the_new_lines(monkeypatch, 
     assert rpt.main(["--dsn", "x"]) == 0
     out = capsys.readouterr().out
     assert "ceiling (chat-showable share) 0.39 (9/23" in out
-    assert "not armed: red needs 50 judged turns" in out
+    assert "not armed: red needs 60 judged turns" in out
     assert "offers accepted: 0; accepted_unmatched 0" in out
     assert "duplicate candidates" in out
+
+
+def test_duplicate_candidates_skip_items_with_no_time():
+    a = {**FIRM, "quote": "I'll compare the two runs tomorrow morning and tell you which drifted."}
+    turns = [{**_sturn("c1", [a]), "created_at": None}, _sturn("c2", [a], at=T0)]
+    assert rpt.duplicate_candidates(turns) == []
+
+
+def test_report_leaves_session_turns_out_of_offers_and_duplicates(monkeypatch):
+    a = {**FIRM, "quote": "I'll compare the two runs tomorrow morning and tell you which drifted."}
+    at = rpt.FINDER_LIVE_AT + timedelta(hours=1)
+    turns = [_sturn("c1", [a], at=at), {**_sturn("c2", [a], at=at + timedelta(hours=1)), "from_browser": False}]
+    out = rpt.report({"acts": [], "starts": [], "turns": turns, "carry": {}})
+    assert out["duplicate_candidates"] == []
+    turns[1]["from_browser"] = True
+    assert len(rpt.report({"acts": [], "starts": [], "turns": turns, "carry": {}})["duplicate_candidates"]) == 1
+
+
+def test_judged_sql_qualifies_both_predicates_by_alias():
+    sql = rpt.JUDGED_SQL
+    assert "k.stage = 'ingress' AND k.seq = 0 AND k.raw->'surface_context' IS NOT NULL" in sql
+    assert "btrim(c.prompt)" in sql and "c.client_meta->>'unsolicited'" in sql
+    assert "btrim(p.prompt)" in sql and "p.client_meta->>'unsolicited'" in sql
+    import pytest
+    with pytest.raises(ValueError):
+        rpt.qualify("stage = 'x'", "k", ("seq",))
+    assert rpt.qualify("raw = 'raw seq'", "k", ("raw",)) == "k.raw = 'raw seq'"

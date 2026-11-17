@@ -589,6 +589,8 @@ def test_open_promise_text_is_in_the_judge_prompt_but_never_the_motor_prompt() -
     ("I＇ll compare the two runs tomorrow.", "Sure. I’ll compare the two runs tomorrow."),
     # A zero-width space and a non-breaking space inside the copy.
     ("I'll compare​ the two runs tomorrow.", "Sure. I'll compare the two runs tomorrow."),
+    # A zero-width space standing in for a real one.
+    ("I'll compare\u200bthe two runs tomorrow.", "Sure. I'll compare the two runs tomorrow."),
 ])
 def test_quote_match_folds_emphasis_apostrophes_and_invisible_spacing(judge_copy, reply):
     """Orion's PR #3532 second-round question 5: a promise must not be refused for a copy artifact."""

@@ -68,8 +68,9 @@ PROMISE_QUOTE_MIN_CHARS = 12
 _QUOTE_MARKS = str.maketrans({
     "‘": "'", "’": "'", "‛": "'", "′": "'", "\u02bc": "'", "\uff07": "'",
     "“": '"', "”": '"', "‟": '"', "″": '"', "\uff02": '"',
-    # Zero-width characters a model or a renderer can slip into a copy: removed.
-    "\u200b": None, "\u200c": None, "\u200d": None, "\u2060": None, "\ufeff": None,
+    # Zero-width characters a model or a renderer can slip into a copy: a space (a zero-width space
+    # can stand in for a real one; runs of spaces collapse below).
+    "\u200b": " ", "\u200c": " ", "\u200d": " ", "\u2060": " ", "\ufeff": " ",
 })
 _WS = re.compile(r"\s+")
 _DASH = re.compile(r"\s*(?:\u2014|\u2013|--)\s*")

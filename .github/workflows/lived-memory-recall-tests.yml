@@ -15,6 +15,7 @@ on:
       - "orion/fcc/mesh_edge_hook.py"
       - "orion/fcc/tests/test_mesh_edge_hook.py"
       - "orion/harness/fcc_motor.py"
+      - "orion/harness/tests/test_fcc_motor_repeat_failure_breaker.py"
       - "orion/notify/transport.py"
       - "orion/introspect/semantic_index.py"
       - "services/orion-recall/app/lived_memory.py"
@@ -35,6 +36,7 @@ on:
       - "orion/memory/mesh_edge.py"
       - "orion/fcc/mesh_edge_hook.py"
       - "orion/harness/fcc_motor.py"
+      - "orion/harness/tests/test_fcc_motor_repeat_failure_breaker.py"
       - "orion/notify/transport.py"
       - "services/orion-recall/app/**"
       - "services/orion-recall/evals/**"
@@ -68,7 +70,8 @@ jobs:
         run: |
           python -m pytest -q -p no:cacheprovider orion/harness/tests/test_task_anchor.py \
             orion/harness/tests/test_session_resume.py orion/harness/tests/test_focus_anchor.py \
-            orion/harness/tests/test_fcc_reading_undeclared_tool.py
+            orion/harness/tests/test_fcc_reading_undeclared_tool.py \
+            orion/harness/tests/test_fcc_motor_repeat_failure_breaker.py
       - name: Lived-memory recall + fixture replay eval
         working-directory: services/orion-recall
         run: |

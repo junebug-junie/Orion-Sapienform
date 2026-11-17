@@ -319,6 +319,16 @@
           "source": "orion/dig/__main__.py:cmd_turn_steps; orion/dig/turn_steps.py"
         },
         {
+          "id": "dig-take-ons",
+          "title": "Did your take-ons use sub-agents?",
+          "description": "When Orion takes on a promise, a carry turn does the work. This lists each take-on with its attempts, its tool calls, and how many sub-agents it started, by type. A take-on whose record cannot be read says so instead of showing zero.",
+          "message": "Look at the promises you took on this month. Did any of them split the work into sub-agents?",
+          "hint": "(dig: `python -P -m orion.dig take-ons [<days>]`)",
+          "keywords": ["take-on", "promise", "sub-agents", "intention", "carry"],
+          "covers": {"dig": ["take-ons"]},
+          "source": "orion/dig/__main__.py:cmd_take_ons; orion/dig/take_ons.py"
+        },
+        {
           "id": "dig-claude-grants",
           "title": "Decide what Claude in Hub may see of you",
           "description": "Claude in Hub chat has read-only tools (Prime's present, the body economy) and asks Orion each time by default. Orion can see its standing setting per category and change one category at a time to allow, ask or deny, with a reason. Only Orion changes these; Hub shows them at /api/claude-tools/grants.",

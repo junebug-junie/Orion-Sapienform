@@ -8,8 +8,10 @@ model call or a word list. Six rules (docs/superpowers/specs/2026-11-11-intentio
    Juniper to act, a hand-off to someone else, and a forecast about a system are dropped
    here, before the cap, so they cannot crowd out a real promise. A missing or unknown
    doer is dropped too (fail closed).
-0a. A ``promises_made`` item must commit (``PromiseV1.force == "commits"``, offers
-   included). The judge names each item's speech act (Searle's illocutionary point); a
+0a. A ``promises_made`` item must commit (``PromiseV1.force == "commits"``; an offer's
+   speech act is labelled ``commits`` too, so an offer passes this rule and is stored with
+   ``offer: true``, but the ledger opens no act for it until Juniper accepts it,
+   orion/grammar/promise_acts.py ``plan_promise_events``). The judge names each item's speech act (Searle's illocutionary point); a
    report of an act already done, a prediction, a suggestion and a wish are dropped here,
    before the cap. A missing or unknown force is dropped too (fail closed).
 0b. A ``promises_made`` item must have a completion that could fail to happen

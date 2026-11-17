@@ -6,12 +6,27 @@
 -- (ORION_MESH_EDGE_PG_DSN in orion-harness-governor) used the postgres superuser, and FCC Bash
 -- inherits that env. It now uses orion_readonly, which needs these grants:
 --
---   self_concept_history     page:juniper / page:anchor, every version (CORE_PAGES_SQL)
+--   self_concept_history     page:juniper / page:anchor, every version (CORE_PAGES_SQL; already
+--                            granted live, restated so this file is the whole set)
 --   episode_memory           lived memories (GUARD_MEMORY_SQL)
---   memory_crystallizations  stance crystallizations (GUARD_MEMORY_SQL)
 --   person_fact, person      person facts and display names (GUARD_MEMORY_SQL)
---   episode_memory_referent  who/what each lived memory is about (granted with the set, so a guard
---                            that joins referents later does not silently fail closed)
+--
+-- Deliberately NOT granted:
+--   memory_crystallizations  orion_readonly's search_path is (orion_scope, public), so the guard's bare
+--                            table name already reads the AI-Town-filtered view
+--                            orion_scope.memory_crystallizations (SELECT already granted). Granting
+--                            public.memory_crystallizations would undo
+--                            scripts/sql/scope_orion_readonly_off_aitown.sql for the curiosity sandbox
+--                            and the guard would still read the view. Consequence: AI Town stance
+--                            crystallizations are not guarded at the mesh edge under this role
+--                            (live 2026-11-17: 107 of 719 stance rows visible).
+--   episode_memory_referent  no guard query reads it. Grant it when one does.
+--
+-- Privacy boundary, stated plainly: orion_readonly is also the curiosity sandbox's role
+-- (ORION_CURIOSITY_PG_DSN). These grants let every curiosity and FCC turn read lived memories and
+-- person facts directly. That is close to unavoidable (the hook needs the data, and FCC Bash can read
+-- any DSN the hook uses) and matches "no privacy boundary between Juniper and Orion"; it is still a
+-- scope change, named here on purpose.
 --
 -- Without them the guard cannot load and the hook refuses EVERY GitHub write from an Orion turn
 -- (fail closed, not open). So apply this BEFORE the governor runs with the orion_readonly DSN.
@@ -25,21 +40,22 @@
 --   docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 \
 --     < scripts/sql/2026-11-17_grant_orion_readonly_mesh_edge.sql
 -- or the one-line form:
---   docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "GRANT SELECT ON episode_memory, memory_crystallizations, person_fact, person, self_concept_history, episode_memory_referent TO orion_readonly;"
+--   docker exec orion-athena-sql-db psql -U postgres -d conjourney -c "GRANT SELECT ON episode_memory, person_fact, person, self_concept_history TO orion_readonly;"
 
 BEGIN;
 
-GRANT SELECT ON public.episode_memory, public.memory_crystallizations, public.person_fact, public.person,
-    public.self_concept_history, public.episode_memory_referent TO orion_readonly;
+GRANT SELECT ON public.episode_memory, public.person_fact, public.person, public.self_concept_history
+    TO orion_readonly;
 
 COMMIT;
 
 -- Undo (every Orion GitHub write is then refused until the DSN changes again):
---   REVOKE SELECT ON public.episode_memory, public.memory_crystallizations, public.person_fact,
---     public.person, public.self_concept_history, public.episode_memory_referent FROM orion_readonly;
+--   REVOKE SELECT ON public.episode_memory, public.person_fact, public.person FROM orion_readonly;
+--   (self_concept_history was granted before this file; leave it.)
 --
--- Verify (expect t for every SELECT and f for every INSERT):
+-- Verify (expect t for every SELECT and f for every INSERT; memory_crystallizations resolves to the
+-- orion_scope view for this role and must stay f on public.memory_crystallizations):
 --   SELECT t, has_table_privilege('orion_readonly', t, 'SELECT') AS can_select,
 --          has_table_privilege('orion_readonly', t, 'INSERT') AS can_insert
---   FROM unnest(ARRAY['episode_memory', 'memory_crystallizations', 'person_fact', 'person',
---                     'self_concept_history', 'episode_memory_referent']) AS t;
+--   FROM unnest(ARRAY['episode_memory', 'person_fact', 'person', 'self_concept_history',
+--                     'orion_scope.memory_crystallizations', 'public.memory_crystallizations']) AS t;

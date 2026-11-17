@@ -173,7 +173,10 @@ def _fake_psycopg2(monkeypatch, *, denied_table: str):
         def execute(self, sql):
             if denied_table in sql:
                 raise _PermissionDenied(f"permission denied for table {denied_table}")
-            self.rows = [{"concept_id": "page:juniper", "content": SENTENCE}]
+            if "self_concept_history" in sql:
+                self.rows = [{"concept_id": "page:juniper", "content": SENTENCE}]
+            else:
+                self.rows = [{"source": "episode_memory:1", "text": "A lived memory sentence with enough words."}]
 
         def fetchall(self):
             return self.rows
@@ -197,7 +200,24 @@ def _fake_psycopg2(monkeypatch, *, denied_table: str):
     monkeypatch.setitem(sys.modules, "psycopg2.extras", extras)
 
 
-@pytest.mark.parametrize("denied_table", ["self_concept_history", "episode_memory", "person_fact"])
+def test_fake_driver_control_loads_a_working_guard(monkeypatch):
+    """Control for the test below: with nothing denied, the same fake loads a real guard that
+    blocks a quoted sentence and passes a clean write -- so a refusal there comes from the
+    permission error, not from a broken fake."""
+    from orion.memory import mesh_edge
+
+    _fake_psycopg2(monkeypatch, denied_table="__nothing__")
+    monkeypatch.setattr(mesh_edge, "_cache", {})
+    dsn = "postgresql://orion_readonly:x@db:5432/conjourney"
+    assert mesh_edge.load_guard(dsn).phrases
+    loader = lambda: mesh_edge.load_guard(dsn)  # noqa: E731
+    msg = hook.decide(_bash(f"gh issue create --title t --body \"{SENTENCE}\""), guard_loader=loader)
+    assert msg and "quotes 1 sentence" in msg
+    assert hook.decide(_bash("gh pr comment 3 --body 'CI is green now.'"), guard_loader=loader) is None
+
+
+@pytest.mark.parametrize("denied_table", ["self_concept_history", "episode_memory", "memory_crystallizations",
+                                          "person_fact", "person"])
 def test_readonly_role_missing_a_grant_refuses_the_write(monkeypatch, denied_table):
     """Issue #3567: the DSN is now orion_readonly. If any guarded table is not granted to it, the
     guard cannot load and a clean GitHub write is refused (fail closed), never let through."""
@@ -206,8 +226,9 @@ def test_readonly_role_missing_a_grant_refuses_the_write(monkeypatch, denied_tab
     _fake_psycopg2(monkeypatch, denied_table=denied_table)
     monkeypatch.setattr(mesh_edge, "_cache", {})
     dsn = "postgresql://orion_readonly:x@db:5432/conjourney"
-    with pytest.raises(MeshEdgeUnavailable):
+    with pytest.raises(MeshEdgeUnavailable) as err:
         mesh_edge.load_guard(dsn)
+    assert isinstance(err.value.__cause__, _PermissionDenied)
     msg = hook.decide(_bash("gh pr comment 3 --body 'CI is green now.'"),
                       guard_loader=lambda: mesh_edge.load_guard(dsn))
     assert msg and "could not be checked" in msg and hook.BLOCK_MARKER in msg
@@ -215,8 +236,11 @@ def test_readonly_role_missing_a_grant_refuses_the_write(monkeypatch, denied_tab
 
 def test_governor_mesh_edge_dsn_is_never_the_superuser():
     """Issue #3567: FCC Bash inherits the governor env, so the shipped DSN and the compose default
-    must use orion_readonly, and the template must not carry a real password."""
+    must use orion_readonly, the template must not carry a real password, and no fallback DSN key
+    (mesh_edge.DSN_ENV_KEYS) may reach the governor env where a superuser value could slip in."""
     import re
+
+    from orion.memory.mesh_edge import DSN_ENV_KEYS
 
     root = Path(__file__).resolve().parents[3]
     svc = root / "services" / "orion-harness-governor"
@@ -225,4 +249,9 @@ def test_governor_mesh_edge_dsn_is_never_the_superuser():
     (line,) = [ln for ln in example.splitlines() if ln.startswith("ORION_MESH_EDGE_PG_DSN=")]
     assert line == "ORION_MESH_EDGE_PG_DSN=postgresql://orion_readonly:CHANGE_ME@orion-athena-sql-db:5432/conjourney"
     (default,) = re.findall(r"ORION_MESH_EDGE_PG_DSN=\$\{ORION_MESH_EDGE_PG_DSN:-([^}]*)\}", compose)
-    assert default.startswith("postgresql://orion_readonly@") and "postgres:postgres" not in compose
+    assert default.startswith("postgresql://orion_readonly@")
+    for text in (example, compose):
+        assert "postgresql://postgres:" not in text
+    assert DSN_ENV_KEYS[0] == "ORION_MESH_EDGE_PG_DSN"
+    for key in DSN_ENV_KEYS[1:]:
+        assert not re.search(rf"(?m)^\s*-?\s*{key}=", example + "\n" + compose), key

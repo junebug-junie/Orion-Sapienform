@@ -171,6 +171,9 @@ MAGNITUDE_RULES: dict[str, Callable[[Mapping[str, Any]], Optional[float]]] = {
     # or an exceedance forecast's -ln P(observed). The column, else the payload copy.
     "surprise_nats": lambda r: _num(r.get("surprise_nats")) if _num(r.get("surprise_nats")) is not None
     else _num((r.get("payload") or {}).get("surprise_nats")),
+    # prediction: a finished randomised experiment's |estimate| / SE of its primary outcome
+    # (sources.experiment_result). A clear effect is more notable than a null; z does not drift with age.
+    "effect_z": lambda r: (lambda z: abs(z) if z is not None else None)(_num((r.get("payload") or {}).get("effect_z"))),
 }
 
 

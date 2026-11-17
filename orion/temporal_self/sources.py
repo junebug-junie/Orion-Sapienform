@@ -959,6 +959,37 @@ def prime_thought(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | 
     )
 
 
+def experiment_result(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
+    """One finished randomised experiment run: orion-prediction's pooled result row
+    (``prediction_effect_estimate``, ``details.estimator = family_c_pooled_run``). Time: created_at, when the run
+    was analysed. Label: the run's own summary ("I held my AI Town sessions at random ... GPU3 +x W, tier-1 calls
+    +y s slower"). ``effect_z``: |estimate| / SE of the primary outcome, the salience magnitude (a clear effect is
+    more notable than a null; z does not drift with age). related_refs: the run's night experiments."""
+    details = row.get("details") or {}
+    if isinstance(details, str):
+        try:
+            details = json.loads(details)
+        except ValueError:
+            return None
+    if details.get("estimator") != "family_c_pooled_run":
+        return None
+    z = _finite(details.get("effect_z"))
+    targets = details.get("targets") or {}
+    lane = targets.get("lane.fast.tier1_hold_s") or {}
+    return _event(
+        kind="experiment_result", table="prediction_effect_estimate", ref=row.get("estimate_id"),
+        at=row.get("created_at"), tz_name=tz_name, subject_ref=None,
+        related_refs=[f"prediction_experiment:{e}" for e in (details.get("experiment_ids") or [])][:8],
+        label=clip(details.get("summary") or f"{row.get('action')}: {row.get('series_id')} {row.get('effect')}"),
+        verdict=(details.get("manipulation") or {}).get("verdict"),
+        payload={"action": row.get("action"), "series_id": row.get("series_id"),
+                 "effect": _finite(row.get("effect")), "ci_lo": _finite(row.get("ci_lo")),
+                 "ci_hi": _finite(row.get("ci_hi")), "p_value": _finite(row.get("p_value")),
+                 "effect_z": None if z is None else abs(z), "nights": len(details.get("nights") or []),
+                 "tier1_hold_s": _finite(lane.get("estimate")), "run_id": details.get("run_id")},
+    )
+
+
 ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "chat_turn": chat_turn,
     "curiosity_run": curiosity_run,
@@ -988,13 +1019,14 @@ ADAPTERS: dict[str, Callable[[Row, str], TemporalSelfEventV1 | None]] = {
     "reading_turn": reading_turn,
     "prediction_surprise": prediction_surprise,
     "prime_thought": prime_thought,
+    "experiment_result": experiment_result,
 }
 
 
 # Orion's now: kinds that are experiences only (no arc folds them), and the tables their events name.
 # A row of these tables is never arc evidence (orion-sql-writer act_downstream_use ARC_SOURCE_TABLES).
-EXPERIENCE_ONLY_KINDS = frozenset({"reading_turn", "prediction_surprise", "prime_thought"})
-EXPERIENCE_ONLY_TABLES = frozenset({"grammar_acts", "prediction_exceedance"})
+EXPERIENCE_ONLY_KINDS = frozenset({"reading_turn", "prediction_surprise", "prime_thought", "experiment_result"})
+EXPERIENCE_ONLY_TABLES = frozenset({"grammar_acts", "prediction_exceedance", "prediction_effect_estimate"})
 
 
 def adapt(kind: str, rows: Iterable[Row], tz_name: str = DEFAULT_TZ) -> list[TemporalSelfEventV1]:

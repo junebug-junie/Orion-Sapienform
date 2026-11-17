@@ -86,11 +86,16 @@ organs:
     # posterior's age (weekly median 0.0105 the week of 10-12 -> 0.00024 the week of 11-09; corr(time,
     # ln surprisal) = -0.43 over 35 days), so it would rank by age. prediction_surprise is a forecast's own
     # -ln P(observed) and does not drift that way.
-    temporal_sources: [prediction_surprise, action_outcome]
+    # experiment_result (Family C, 2026-11-16): one item per finished randomised experiment RUN (not per block or
+    # night): "I held my town sessions to see what they cost". Magnitude effect_z = |estimate| / SE of the primary
+    # outcome: a clear effect is more notable than a null, and z does not drift with age.
+    temporal_sources: [prediction_surprise, action_outcome, experiment_result]
     salience_magnitude:
       prediction_surprise: surprise_nats
+      experiment_result: effect_z
+    families: [prediction.experiment]
     reads_now: null
-    exempt_read: "orion-prediction forecasts sensor series; no forecast reads experiences yet (design call, #3457)"
+    exempt_read: "orion-prediction forecasts sensor series; no forecast reads experiences yet (design call, #3457). The experiment runner (prediction.experiment) must not read experience: a randomised arm that depends on Orion's state is no longer randomised; its stop rules read sensors and the pool only"
   metacognition:
     temporal_sources:
       - metacog_observation

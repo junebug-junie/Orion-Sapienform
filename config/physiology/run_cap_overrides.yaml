@@ -1,0 +1,26 @@
+# Run-cap overrides: which want family's start gate may be held at runtime, and how far.
+#
+# Design: docs/superpowers/specs/2026-11-16-family-c-first-experiment-economy-native.md ("Actuator: a run-cap
+# TTL override"). Juniper's yes on Experiment 1: #3482 comment, 2026-11-16.
+# Read by orion/physiology/run_cap_override.py. Readers: orion-embodiment's town session controller (the start
+# gate). Writer: orion-prediction's town-hold experiment runner (Redis key orion:physiology:run_cap:<family>).
+#
+# Per family:
+#   knob        the one setting the override changes (the controller checks the name).
+#   env_value   what the controller does with no override (documentation of today's behaviour; never read).
+#   allowed     the only override values the controller obeys. The override can only HOLD: it never loosens
+#               any env cap.
+#   max_hold_s  the controller ignores a key whose set_at is older than this, even if the writer keeps
+#               refreshing it. 2700 = one 40-min block + 5 min slack.
+#
+# Not listed here = never overridable: the controller ignores any key for it. Removing a family is the
+# rollback for its reader.
+
+version: 1
+
+families:
+  aitown.session:
+    knob: hold_starts
+    env_value: false
+    allowed: [true]
+    max_hold_s: 2700

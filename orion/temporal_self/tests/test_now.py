@@ -61,14 +61,15 @@ def test_registry_refuses_a_kind_claimed_twice_an_unknown_kind_and_an_unknown_ru
 
 
 def test_new_kinds_never_fold_into_an_arc():
-    assert S.EXPERIENCE_ONLY_KINDS == {"reading_turn", "prediction_surprise", "prime_thought"}
+    assert S.EXPERIENCE_ONLY_KINDS == {"reading_turn", "prediction_surprise", "prime_thought", "experiment_result"}
     for k in S.EXPERIENCE_ONLY_KINDS:
         assert k not in PROCESS_KINDS and k not in CONTEXT_KINDS and k not in CONSTRAINT_KINDS
 
 
 def test_experience_only_tables_are_exactly_the_new_kinds_tables():
     base = {"act_id": "act_" + "c" * 24, "opened_at": T, "closed_at": T + timedelta(seconds=5), "object_ref": "x",
-            "exceedance_id": 1, "scored_at": T, "hit_raw": False, "probability": 0.1, "n_paths": 40}
+            "exceedance_id": 1, "scored_at": T, "hit_raw": False, "probability": 0.1, "n_paths": 40,
+            "estimate_id": "e1", "created_at": T, "details": {"estimator": "family_c_pooled_run", "effect_z": 2.0}}
     tables = {S.ADAPTERS[k](base).source_table for k in S.EXPERIENCE_ONLY_KINDS}
     assert tables == S.EXPERIENCE_ONLY_TABLES
 
@@ -237,6 +238,23 @@ def test_prediction_surprise_is_minus_log_probability_of_what_happened():
     assert hit.payload["surprise_nats"] == pytest.approx(-math.log(p)) and hit.verdict == "crossed"
     assert calm.related_refs == ["prediction_joint_surprise:3", "prediction_joint_surprise:4"]
     assert hit.payload["surprise_nats"] > 4.0 > calm.payload["surprise_nats"]
+
+
+def test_experiment_result_is_one_run_with_its_effect_z_as_magnitude():
+    row = {"estimate_id": "e-9", "created_at": T, "action": "run_cap:aitown.session", "series_id": "circe.gpu3_watts",
+           "effect": 9.1, "ci_lo": 2.0, "ci_hi": 16.2, "p_value": 0.01,
+           "details": {"estimator": "family_c_pooled_run", "effect_z": -2.5, "experiment_ids": ["n1", "n2"],
+                       "nights": ["2026-11-17", "2026-11-18"], "summary": "I held my AI Town sessions ...",
+                       "manipulation": {"verdict": "passed"},
+                       "targets": {"lane.fast.tier1_hold_s": {"estimate": 6.0}}}}
+    e = S.experiment_result(row)
+    assert e.source_kind == "experiment_result" and e.event_id == "experiment_result:e-9"
+    assert e.label.startswith("I held my AI Town sessions") and e.verdict == "passed"
+    assert e.payload["effect_z"] == 2.5 and e.payload["tier1_hold_s"] == 6.0 and e.payload["nights"] == 2
+    assert e.related_refs == ["prediction_experiment:n1", "prediction_experiment:n2"]
+    assert MAGNITUDE_RULES["effect_z"]({"payload": e.payload}) == 2.5
+    # Other effect rows (an observational estimate, a heat fit) are not experiences.
+    assert S.experiment_result({**row, "details": {"estimator": "heat_per_watt"}}) is None
 
 
 def test_prime_thought_labels_with_its_own_outcome_note():

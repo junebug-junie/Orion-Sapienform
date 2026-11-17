@@ -105,6 +105,14 @@ class Settings(BaseSettings):
     experiment_tick_sec: float = Field(30.0, ge=5, le=60, alias="PREDICTION_EXPERIMENT_TICK_SEC")
     # Re-run the experiment guard (a forecast build) this often during a run, and before every ON block.
     experiment_guard_every_sec: float = Field(300.0, ge=60, le=1800, alias="PREDICTION_EXPERIMENT_GUARD_EVERY_SEC")
+    # --- Family C Experiment 1: the town-hold runner (app/town_hold.py, POST /experiments/town-hold/run) ---
+    # Holds orion:physiology:run_cap:aitown.session during OFF blocks (TTL = PREDICTION_EXPERIMENT_OVERRIDE_TTL_SEC,
+    # refreshed every PREDICTION_EXPERIMENT_TICK_SEC). Never starts on its own: an operator starts a run, and a
+    # scheduled run resumes after a restart from its next night. false = the endpoints answer 503 and a
+    # scheduled run does not resume.
+    town_hold_enabled: bool = Field(True, alias="PREDICTION_TOWN_HOLD_ENABLED")
+    # orion-embodiment /health (the town's own start gate: start_eligible_at, start_in_flight, run_cap_override).
+    embodiment_url: str = Field("http://orion-athena-embodiment:8130", alias="PREDICTION_EMBODIMENT_URL")
 
     @model_validator(mode="after")
     def _ttl_covers_two_ticks(self) -> "Settings":

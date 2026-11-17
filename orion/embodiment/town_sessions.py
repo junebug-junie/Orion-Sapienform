@@ -98,6 +98,29 @@ def start_block_reason(rows: Optional[Sequence[AITownSessionRowV1]], now: float,
     return None
 
 
+def start_eligible_at(rows: Optional[Sequence[AITownSessionRowV1]], now: float, *, enabled: bool,
+                      daily_cap_sec: float, min_session_sec: float, min_gap_sec: float,
+                      tz: str = DEFAULT_TZ) -> Optional[float]:
+    """When the start gate would next pass, from the controller's own caps (epoch seconds), or None.
+
+    None: the ledger is unknown, the switch is off, or a session (Orion's or a manual one) is open: no
+    clock says when that ends. ``now`` when the gate passes now. The end of the gap after ``cooldown``;
+    the next local midnight after ``daily_cap`` (or the gap's end, if that is later). Used by orion-prediction's
+    town-hold experiment (through embodiment ``/health``), so it never re-derives the town's caps from env.
+    A run-cap override is NOT part of this answer: it is the experiment's own hold."""
+    reason = start_block_reason(rows, now, enabled=enabled, daily_cap_sec=daily_cap_sec,
+                                min_session_sec=min_session_sec, min_gap_sec=min_gap_sec, tz=tz)
+    if reason is None:
+        return now
+    ends = [row_end(r, now) for r in rows or () if r.kind == "orion"]
+    gap_end = max(ends) + min_gap_sec if ends else now
+    if reason == "daily_cap":
+        return max(next_local_midnight(now, tz), gap_end)
+    if reason == "cooldown":
+        return gap_end
+    return None
+
+
 def retry_after_sec(reason: str, rows: Sequence[AITownSessionRowV1], now: float, *, min_gap_sec: float,
                     tz: str = DEFAULT_TZ) -> Optional[float]:
     """How long a refusal holds, from the gate's own clock. None: no clock (the caller's default)."""
@@ -220,6 +243,7 @@ __all__ = [
     "save_row",
     "seconds_today",
     "start_block_reason",
+    "start_eligible_at",
     "stop_reason",
     "summarize",
 ]

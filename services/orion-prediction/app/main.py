@@ -13,7 +13,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -40,6 +40,7 @@ from app.experiment_runner import ExperimentRunner, RouterProbe, RunnerRefused, 
 from app.family_a_live import FamilyALive
 from app.family_c import EffectTable
 from app.series import load_registry
+from app.town_hold import EmbodimentProbe, TownHoldConfig, TownHoldRefused, TownHoldRunner, run_result
 from app.settings import get_settings
 from app.store import PostgresStore
 from orion.energy.tariff import load_tariff
@@ -65,6 +66,7 @@ _blas_limit: list[Any] = []   # keeps the process-wide BLAS thread limit object 
 _last_family_a: dict[str, Any] = {"at": None, "ok": None, "error": None}
 _last_settle: dict[str, Any] = {"at": None, "ok": None, "error": None}
 runner: ExperimentRunner | None = None
+town_hold: TownHoldRunner | None = None   # Family C Experiment 1 (app/town_hold.py)
 _runner_redis: Any = None
 _store: PostgresStore | None = None
 _bus: OrionBusAsync | None = None
@@ -196,7 +198,7 @@ async def _tick_forever() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global engine, effects, action_bets, turn_self_bets, reachable, act_chain, bill_forecast, family_a, effect_table, runner, _runner_redis, _store, _bus
+    global engine, effects, action_bets, turn_self_bets, reachable, act_chain, bill_forecast, family_a, effect_table, runner, town_hold, _runner_redis, _store, _bus
     heartbeat = HeartbeatOnly(ChassisConfig(
         service_name=_settings.service_name, service_version=_settings.service_version,
         node_name=_settings.node_name, bus_url=_settings.orion_bus_url, bus_enabled=_settings.orion_bus_enabled,
@@ -279,6 +281,19 @@ async def lifespan(app: FastAPI):
                 logger.warning("experiment_runner_recovered cancelled=%s", cancelled)
         except Exception as exc:  # noqa: BLE001 -- the key's TTL still clears focus; boot goes on
             logger.warning("experiment_runner_recover_failed %s: %s", type(exc).__name__, exc)
+        if _settings.town_hold_enabled:
+            tbl = effect_table
+            town_hold = TownHoldRunner(
+                effects, _runner_redis, EmbodimentProbe(_settings.embodiment_url),
+                cfg=TownHoldConfig(key_ttl_sec=_settings.experiment_override_ttl_sec,
+                                   tick_sec=_settings.experiment_tick_sec),
+                on_run_complete=(lambda run_id: run_result(tbl, _store, run_id)) if tbl is not None else None,
+                vision_runner=runner)
+            try:   # an EXPLICITLY started run continues from its next night (the interrupted night is cancelled)
+                if await town_hold.resume():
+                    logger.warning("town_hold_schedule_resumed")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("town_hold_resume_failed %s: %s", type(exc).__name__, exc)
     _stop.clear()
     if _settings.enabled:
         _tasks.append(asyncio.create_task(_tick_forever()))
@@ -296,6 +311,8 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         _stop.set()
+        if town_hold is not None:   # the night is cancelled; the schedule stays and resumes at boot
+            await town_hold.shutdown("service shutting down", clear_schedule=False)
         if runner is not None:
             await runner.shutdown("service shutting down")
         if _runner_redis is not None:
@@ -387,7 +404,10 @@ async def health() -> dict[str, Any]:
                               "last_pass": _jsonable(bill_forecast.last_pass if bill_forecast else {})},
             "family_a": {"enabled": _settings.family_a_enabled, **_jsonable(_last_family_a),
                          **(family_a.health() if family_a else {})},
-            "experiment_runner": runner.status() if runner else {"enabled": False}}
+            "experiment_runner": runner.status() if runner else {"enabled": False},
+            "town_hold": ({"running": town_hold.running(), "schedule": town_hold.schedule,
+                           "night": town_hold.night.public() if town_hold.night else None}
+                          if town_hold else {"enabled": False})}
 
 
 async def _action_bets_health() -> dict[str, Any]:
@@ -629,6 +649,67 @@ async def post_runner_abort() -> dict[str, Any]:
     if not await r.shutdown("aborted by operator"):
         raise HTTPException(409, "no experiment is running")
     return _jsonable(r.status())
+
+
+# --- Family C Experiment 1: hold AI Town session starts at random (app/town_hold.py) --------------------
+
+class TownHoldRunBody(BaseModel):
+    """Start a run: one randomised experiment per night (00:00-08:00 America/Denver), ``nights`` nights from
+    ``first_night`` (default: the next night that has not started). Juniper's yes: #3482, ~16 nights."""
+    nights: int = Field(16, ge=1, le=30)
+    first_night: date | None = None
+    seed: int | None = Field(None, ge=0, lt=2 ** 31)
+
+
+def _town_hold() -> TownHoldRunner:
+    _ready()
+    if town_hold is None:
+        raise HTTPException(503, "town-hold runner disabled (PREDICTION_TOWN_HOLD_ENABLED=false or "
+                                 "PREDICTION_EXPERIMENT_RUNNER_ENABLED=false)")
+    return town_hold
+
+
+@app.post("/experiments/town-hold/run")
+async def post_town_hold_run(body: TownHoldRunBody) -> dict[str, Any]:
+    """The ONLY way a town-hold run starts. Refuses (409) while another run is scheduled or active, (422/503)
+    when embodiment cannot be read or does not obey the override. Holds nothing until the first night opens."""
+    t = _town_hold()
+    try:
+        return _jsonable(await t.start(body.nights, body.first_night, body.seed))
+    except TownHoldRefused as exc:
+        raise HTTPException(exc.status, exc.detail) from exc
+    except CausalError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.get("/experiments/town-hold")
+async def get_town_hold() -> dict[str, Any]:
+    return _jsonable(_town_hold().status())
+
+
+@app.get("/experiments/town-hold/preview")
+async def get_town_hold_preview(night: date | None = None, seed: int | None = Query(None, ge=0, lt=2 ** 31)) -> dict[str, Any]:
+    """Dry run, read-only: a night's arm list for ``seed`` (default: the scheduled run's, else 0), the town's own
+    start gate, and every stop rule read now. Writes nothing, places no bid."""
+    return _jsonable(await _town_hold().preview(night, seed))
+
+
+@app.post("/experiments/town-hold/abort")
+async def post_town_hold_abort() -> dict[str, Any]:
+    """End the night now (hold key deleted, night cancelled) and delete the schedule: the run does not resume."""
+    t = _town_hold()
+    stopped = await t.shutdown("aborted by operator", clear_schedule=True)
+    return _jsonable({"stopped_a_task": stopped, **t.status()})
+
+
+@app.post("/experiments/town-hold/{run_id}/result")
+async def post_town_hold_result(run_id: uuid.UUID) -> dict[str, Any]:
+    """Pool a run's analysed nights and store its one result row (Orion's ``experiment_result`` experience).
+    The runner does this itself after the last night; this re-does it (e.g. after an aborted run)."""
+    _ready()
+    if effect_table is None:
+        raise HTTPException(503, "family C needs family A's input config (PREDICTION_FAMILY_A_ENABLED)")
+    return await _causal(run_result, effect_table, _store, str(run_id))
 
 
 class HeatPerWattBody(BaseModel):

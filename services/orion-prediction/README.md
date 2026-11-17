@@ -587,6 +587,37 @@ check with no act (48 h of scored family A forecasts): mean excess +0.099 (5 min
 (15 min); both 95 % intervals contain 0. A single Gaussian read off the 80 % range did not rest
 (+0.614 / +0.257), so the scorer reads all 9 stored quantiles.
 
+### Experiment 1: hold a town session, at random (`app/town_hold.py`, 2026-11-16)
+
+Design: `docs/superpowers/specs/2026-11-16-family-c-first-experiment-economy-native.md`; Juniper's yes on #3482.
+When an AI Town session is about to be allowed to start, the runner takes the next arm from the night's
+seeded list. ON: nothing happens, the town plays as today. OFF: no new session for 40 minutes (Redis
+`orion:physiology:run_cap:aitown.session`, TTL 90 s refreshed every 30 s, `set_at` fixed at the block start;
+orion-embodiment obeys it at its start gate). Running sessions are never stopped; the 2 h daily cap is
+unchanged. The list is balanced and never has 3 OFF in a row.
+
+- **Start (operator only):** `POST /experiments/town-hold/run {"nights": 16}`. Holds nothing until the next
+  night (00:00-08:00 America/Denver). Refused while another run is scheduled or active, or while embodiment
+  cannot be read or does not obey the override. The schedule lives in Redis
+  (`orion:prediction:experiment:town_hold:schedule`): a rebuild cancels the night in progress (`recover()`)
+  and the run continues from the next night. `POST /experiments/town-hold/abort` ends the night and the run.
+- **Per decision:** 60 s before the town's own `start_eligible_at` a pending hold goes on, then the town is read
+  again (a start already in flight voids the decision). At eligibility: the stop rules (tier-0/1 work queued
+  on `fast` > 5 s; cabinet at/above `thermal_gate.hot` or missing; strain latched, stale or unknown) and the
+  experiment's own binding bid (family `prediction.experiment`, tier 2, producer
+  `orion-prediction.experiment.binding`): anything but `funded` refuses the decision (no arm used; logged).
+  The arm is logged before the key changes. A session inside an OFF block aborts the night as contaminated.
+- **Read:** `GET /experiments/town-hold` (the live night), `GET /experiments/town-hold/preview` (dry run, no
+  writes), `GET /effects/table` (rows `actuator = run_cap:aitown.session`, window 2..35 min, `method =
+  randomised`, pooled over nights with night as stratum and a restricted permutation test). Lane-cost targets
+  computed per block from `gpu_pool_leases` and Kev's appraisals: `lane.fast.tier1_hold_s` (primary),
+  `lane.fast.grant_wait_s`, `lane.fast.grant_wait_p95_s`, `lane.kev.latency_ms_p50`.
+- **After the last night** the runner stores ONE result row (`prediction_effect_estimate`, estimator
+  `family_c_pooled_run`); orion-durable-runs turns it into Orion's experience `experiment_result`.
+  `POST /experiments/town-hold/{run_id}/result` re-does it.
+- Evals: `evals/run_town_hold_synthetic_eval.py` (CI), `evals/run_town_hold_replay_eval.py` (Patch 0, live
+  read-only: per-block spread and MDE), `evals/run_town_hold_dry_run_eval.py` (live read-only: tonight's plan).
+
 ## Contracts
 
 - Bus: `orion:prediction:forecast` (`PredictionForecastV1`, `orion/schemas/prediction.py`).

@@ -573,7 +573,15 @@ points at its target. The distiller does not supersede at write time either. Fol
   skipped. A second run writes no rows and no events, and its pair report is identical.
 - Pair detection is deterministic: the same rows in the same order give the same pairs.
 - An undo (clearing the mark) writes an event. The pass honors it and does not supersede
-  that pair again.
+  that pair again. A Juniper undo is final. An operator undo (for example after a matcher bug)
+  may be reopened only by an explicit reopen event; the pass never reopens anything by itself
+  (#3629).
+- **Pair detection (as built in PR #3617).** Candidates are rows the serving SQL may serve,
+  ranked by the retriever's own vectors. A candidate must also share a rare referent (25 rows
+  or fewer) or a rare word with the new row. Then two local-model questions decide it.
+  Referent coverage is high: since 10-05, 97 to 100% of rows per week have a referent, and 68
+  to 93% have one besides Juniper or Orion. The #3537 backfill must write referents the same
+  way (noted on #3537).
 - Every run snapshots first (CLAUDE.md section 14) and writes a manifest Orion can read
   (#3611 covers read access).
 
@@ -643,6 +651,16 @@ come back through a different old record that says the same thing.
   not a row count. The `chat_quick` rows are AI Town speech from orion-embodiment, not Hub
   turns. In one day they had 129 lived serves against 80 Hub turns. **Only Juniper chat
   turns count as read demand.** #3589.
+- **How a Juniper turn is recognized (2026-11-17).** By joining to the turn record
+  (`cockpit_turn_sighting.correlation_id`), not by a verb list. On 11-17, 131 `stance_react`
+  ids with no turn record came from one 15-minute burst with repeated queries and a single
+  chat-log row. That burst was not Juniper turns; its caller is UNVERIFIED (logs lost on a
+  restart). The join drops it, and AI Town rows too.
+- **Decision for Juniper (#3589, needs-juniper).** Pages exist for the Juniper relationship and
+  for Orion's own use. Explicit opens (`dig page`, `dig know`) count as demand. AI Town demand
+  is logged and reported apart. It does not birth a page or keep one alive.
+- **Fields still missing for false denials.** The table does not record whether lived recall
+  ran, was skipped, timed out, or found nothing above the bar (#3628).
 - **Degraded serves do not count as demand.** A serve from the exact-word fallback (#3573)
   is marked degraded in `recall_telemetry` and is excluded from the page-birth and re-grade
   counts. Only full-path serves and explicit opens count.

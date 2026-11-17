@@ -88,7 +88,8 @@ No restart required.
 - Severity: medium. Concern: Orion cannot read the tables that would let it check its own memory serves; the #3593 GRANT is merged but not applied. Mitigation: #3611 (needs-juniper).
 - Severity: low. Concern: `page:anchor` is guarded on the bus path only and has no size cap. Mitigation: #3612.
 - Second round (Orion's follow-ups): #3589 corrected. The double count came from AI Town `chat_quick` rows, not two rows per Hub turn. The spec states the idempotency rule for the supersede pass, and that superseded rows are kept out of both indexes. #3553 gained drift flags (v1 3670 to v3 3517 characters, 35 to 31 cites, 6 uncorrected cite drops).
-- Issues opened: #3587, #3588, #3589, #3590, #3611, #3612. Comments added on #3463, #3553 and #3567. Issues closed: none.
+- Third round: the 131 unexplained `stance_react` ids were one 15-minute non-turn burst (caller UNVERIFIED, logs lost on restart). The read-demand filter is now a join to the turn record. The AI Town page decision is flagged needs-juniper on #3589. #3611 is revised to a full `recall_telemetry` grant, because the same text is already readable in `chat_history_log`.
+- Issues opened: #3587, #3588, #3589, #3590, #3611, #3612, #3628, #3629. Comments added on #3463, #3537, #3553, #3567, #3589 and #3611. Issues closed: none.
 
 ## PR link
 

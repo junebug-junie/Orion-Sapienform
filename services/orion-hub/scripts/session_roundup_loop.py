@@ -520,7 +520,8 @@ class SessionRoundupLoop:
             meta={"spec": specs, "digest": digest} if specs else {"digest": digest},
             receipt=lambda tid: core.receipt_text(thread_id=tid, next_at=next_at, roundup_enabled=self.enabled,
                                                   cut_notes=notes, tz_name=self.tz_name,
-                                                  answer_phase=bool(before["answer_phase"])))
+                                                  answer_phase=bool(before["answer_phase"]),
+                                                  reading_now=bool(existing and existing["status"] == core.STATUS_READING)))
         if result is None:
             return None
         thread = result["thread"]
@@ -600,8 +601,16 @@ class SessionRoundupLoop:
             mine = [t for t in turns if t["thread_id"] == thread["thread_id"] and t["speaker"] != core.SPEAKER_HUB]
             new = [t for t in mine if t["speaker"] == core.SPEAKER_SESSION and t.get("roundup_id") == roundup_id]
             first = min((t["seq"] for t in new), default=None)
-            earlier = [t for t in mine if first is not None and t["seq"] < first]
             phase = core.in_answer_phase(mine, exclude_roundup=roundup_id)
+            if phase and first is not None:
+                # Orion's question turn may sit AFTER a new message (one sent while Orion was reading):
+                # every turn that is not new is shown, so Orion always sees its own questions.
+                new_ids = {t["turn_id"] for t in new}
+                earlier = [t for t in mine if t["turn_id"] not in new_ids
+                           and not (t["speaker"] == core.SPEAKER_ORION and t.get("roundup_id") == roundup_id
+                                    and roundup_id is not None)]
+            else:
+                earlier = [t for t in mine if first is not None and t["seq"] < first]
             out.append(({**thread, "answer_phase": phase}, new, earlier))
         return out
 

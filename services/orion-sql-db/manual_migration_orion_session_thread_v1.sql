@@ -9,7 +9,8 @@
 --   session_id / session_name / worktree / branch: the coding session that sent the newest message,
 --     so Orion's questions go back to the session the spec came from.
 --   status: held (waiting for the hourly round-up) -> reading (in a submitted round-up) ->
---     asked | no_questions | failed. A new message sets it back to held.
+--     asked | no_questions | failed. A new message sets it back to held. Added 2026-11-17 (no DDL, free
+--     text): closed = the thread's one round of questions was used; Orion read the answers.
 --   last_roundup_id: the durable run id of the last round-up that took this thread
 --     (session-roundup-<utc hour>). One round-up per hour: a round-up id already on a thread is
 --     never submitted again.
@@ -20,7 +21,8 @@
 --     for an orion turn, the round-up that produced it.
 --   delivered_at: when an orion turn was handed back to a coding session (NULL = not yet).
 --   pr_comment_url: the GitHub comment Hub posted for this orion turn.
---   meta: spec files [{path, text, cut}] on a session turn; unparsed / no_questions on an orion turn.
+--   meta: spec files [{path, text, cut}] on a session turn; unparsed / no_questions on an orion turn;
+--     closing_note / dropped_question_lines on an orion turn of an answer-phase thread (2026-11-17).
 --
 -- Additive only. Apply: docker exec -i orion-athena-sql-db psql -U postgres -d conjourney < services/orion-sql-db/manual_migration_orion_session_thread_v1.sql
 -- Rollback (additive): DROP TABLE orion_session_turn; DROP TABLE orion_session_thread;

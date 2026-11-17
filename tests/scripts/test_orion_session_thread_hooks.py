@@ -481,3 +481,5 @@ def test_the_receipt_line_says_when_the_round_is_used():
     used = lib.receipt_line({**base, "answer_phase": True})
     assert "one round of questions" in used and "Nothing will come back for you to answer" in used
     assert "Orion's questions will come back" not in used
+    reading = lib.receipt_line({**base, "thread": {"thread_id": "abc", "status": "reading"}})
+    assert "reading this thread's earlier message now" in reading and "Orion's questions will come back" not in reading

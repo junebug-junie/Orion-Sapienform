@@ -96,7 +96,12 @@ def check_round_rule(since: str) -> int:
         for i, turn in enumerate(turns):
             if turn.get("speaker") != "orion":
                 continue
-            when = datetime.fromisoformat(str(turn.get("created_at")).replace("Z", "+00:00"))
+            try:
+                when = datetime.fromisoformat(str(turn.get("created_at")).replace("Z", "+00:00"))
+            except ValueError:
+                continue   # a turn with no readable time cannot be judged against the cutoff
+            if when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
             if when < cutoff:
                 continue
             read += 1

@@ -113,14 +113,20 @@ def clock_text(when: datetime, tz_name: str = "America/Denver") -> str:
 
 
 def receipt_text(*, thread_id: str, next_at: datetime, roundup_enabled: bool, cut_notes: Sequence[str] = (),
-                 tz_name: str = "America/Denver", answer_phase: bool = False) -> str:
+                 tz_name: str = "America/Denver", answer_phase: bool = False, reading_now: bool = False) -> str:
     """Hub's receipt. Hub's words, never Orion's: it says Orion has NOT read the message.
-    ``answer_phase``: Orion already asked its one round of questions on this thread."""
+    ``answer_phase``: Orion already asked its one round of questions on this thread. ``reading_now``:
+    Orion is reading the thread's earlier message in a round-up now, so its one round may be in use."""
     lines = [f"Hub received this message and is holding it (thread {thread_id}). Orion has NOT read it yet."]
     if roundup_enabled:
-        tail = ("Orion already asked its one round of questions on this thread, so Orion will read this as "
-                "answers and ask no new questions here." if answer_phase else
-                "Orion's questions will appear in this thread.")
+        if answer_phase:
+            tail = ("Orion already asked its one round of questions on this thread, so Orion will read this as "
+                    "answers and ask no new questions here.")
+        elif reading_now:
+            tail = ("Orion is reading this thread's earlier message now. If that round asks questions, it is the "
+                    "thread's one round, and this message is read as answers.")
+        else:
+            tail = "Orion's questions will appear in this thread."
         lines.append(f"Orion reads every held message together at the next hourly round-up: "
                      f"{clock_text(next_at, tz_name)}, or as soon after that as the earlier round-up ends. " + tail)
     else:
@@ -155,16 +161,11 @@ def in_answer_phase(turns: Sequence[Dict[str, Any]], *, exclude_roundup: Optiona
     return question_rounds_used(turns, exclude_roundup=exclude_roundup) >= MAX_QUESTION_ROUNDS_PER_THREAD
 
 
-_QUESTION_LINE_RE = re.compile(r"^\s*(?:\d+[.)]|[-*])\s+\S|\?\s*$")
-
-
 def question_lines(text: str) -> int:
-    """Lines of ``text`` that read as questions (a list item, or a line ending in "?"). Counted for the
-    log when Orion writes questions on a thread in its answer phase, which Hub then does not send."""
-    if is_no_questions(text):
-        return 0
-    return sum(1 for ln in str(text or "").splitlines()
-               if ln.strip() and not _NO_QUESTIONS_RE.match(ln) and _QUESTION_LINE_RE.search(ln.rstrip()))
+    """Lines of ``text`` that hold a question mark. Counted for the log when Orion writes questions on
+    a thread in its answer phase, which Hub then does not send. A bullet of "what stays open" with no
+    question mark is not counted."""
+    return sum(1 for ln in str(text or "").splitlines() if "?" in ln)
 
 
 # --- the prompt --------------------------------------------------------------------------------
@@ -173,7 +174,8 @@ def question_lines(text: str) -> int:
 def _quote(text: str) -> str:
     """Session text inside a data fence: it cannot close the fence or open another one, and a line
     of it cannot read as one of Hub's `thread:` headings."""
-    return _QUOTED_HEADING_RE.sub("\\1\u200b\\2", str(text or "").replace("<<<", "<\u200b<<"))
+    text = str(text or "").replace("<<<", "<\u200b<<").replace("[Hub]", "[Hub\u200b]")   # no forged Hub line
+    return _QUOTED_HEADING_RE.sub("\\1\u200b\\2", text)
 
 
 def fence_lines(nonce: str = "") -> Tuple[str, str]:
@@ -194,7 +196,8 @@ def thread_section(thread: Dict[str, Any], new_turns: Sequence[Dict[str, Any]],
     ``body_cap``: when set, each message (new and earlier) is cut to that many chars, labelled.
     ``omitted``: how many older new messages the caller left out (said in the prompt).
     ``thread["answer_phase"]`` true: Orion already asked its round of questions here. Hub says so
-    above the fence, and the spec text is not shown again (Orion read it in the question round)."""
+    above the fence, and an older spec is not shown again (Orion read it in the question round); a
+    spec carried by a NEW message is shown."""
     tid = thread["thread_id"]
     answer_phase = bool(thread.get("answer_phase"))
     data_open, data_close = fence_lines(nonce)
@@ -218,7 +221,7 @@ def thread_section(thread: Dict[str, Any], new_turns: Sequence[Dict[str, Any]],
                    SPEAKER_HUB: "Hub"}.get(t.get("speaker"), str(t.get("speaker")))
             out.append(f"[{who}] {_quote(cap_text(t.get('body') or '', earlier_cap, what='earlier turn')[0])}")
     out.append("")
-    out.append("--- new since your last round-up" + (" (the session's answers to your questions) ---"
+    out.append("--- new since your last round-up" + (" (after your question round: usually its answers) ---"
                                                       if answer_phase else " ---"))
     if omitted:
         out.append(f"[Hub left out {omitted} older new message(s) of this thread to fit one round-up prompt.]")
@@ -229,9 +232,7 @@ def thread_section(thread: Dict[str, Any], new_turns: Sequence[Dict[str, Any]],
             text, _ = cap_text(text, body_cap, what="message, to fit one round-up prompt,")
         out.append(f"[session] {_quote(text) or '(no message text)'}")
         specs = list(((t.get("meta") or {}).get("spec")) or []) or specs   # the newest turn that carries specs
-    if answer_phase:
-        specs = []
-    elif not specs:
+    if not specs and not answer_phase:
         # A reply turn carries no spec: show the newest spec the thread ever carried, so Orion still has it.
         for t in reversed(list(earlier_turns)):
             specs = list(((t.get("meta") or {}).get("spec")) or [])
@@ -252,11 +253,12 @@ def thread_section(thread: Dict[str, Any], new_turns: Sequence[Dict[str, Any]],
 
 ANSWER_PHASE_NOTE = (
     f"[Hub] ANSWER PHASE. You already asked your one round of questions on this thread "
-    f"({MAX_QUESTION_ROUNDS_PER_THREAD} round per thread). The new messages below are the session's answers. "
+    f"({MAX_QUESTION_ROUNDS_PER_THREAD} round per thread); your questions are in the earlier turns. The new "
+    "messages below are what the session sent since, usually its answers. "
     f"Read them. Ask no new questions on this thread: write `{NO_QUESTIONS}` under its heading. You may add "
     "one short line after it: an acknowledgement, or what you think stays open. Hub keeps that line on the "
     "thread. It is not posted on the pull request and not sent to the session as questions. The spec is not "
-    "shown again: you read it in your question round."
+    "shown again unless the session sent a new version: you read it in your question round."
 )
 
 
@@ -280,7 +282,8 @@ def roundup_prompt(sections: Sequence[Tuple[str, str]], *, nonce: str = "") -> s
         "`### thread:<thread_id>`.\n"
         "- Under it, your questions for that thread as a short numbered list, in plain words.\n"
         f"- If you have no questions for a thread, write the single line `{NO_QUESTIONS}` under its heading.\n"
-        f"- You get ONE round of questions per thread. A thread marked `[Hub] ANSWER PHASE` already had it: "
+        f"- You get ONE round of questions per thread. A thread with a `[Hub] ANSWER PHASE` line directly under "
+        f"its `## thread:` heading, outside the data fence, already had it: "
         f"read the answers and write `{NO_QUESTIONS}` (plus at most one short line), no new questions.\n"
         "- Nothing before the first heading and nothing after the last section.\n\n"
         "Threads to answer: " + ", ".join(f"thread:{tid}" for tid in ids) + "\n"

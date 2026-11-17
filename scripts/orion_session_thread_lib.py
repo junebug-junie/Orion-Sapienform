@@ -2,7 +2,9 @@
 
 Used by the CLI (scripts/orion_session_thread.py) and by two Claude Code hooks
 (scripts/hooks/post_tool_pr_spec_to_orion.py, scripts/hooks/session_pending_orion_questions.py).
-Standard library only: a hook must start fast and must not need the repo's venv.
+Standard library only: a hook must start fast and must not need the repo's venv. The one exception is
+orion/session_threads/core.py (itself stdlib-only), imported lazily from REPO_ROOT by ``answer_phase``
+so the one-round rule has one source.
 
 Hub side: services/orion-hub/scripts/session_thread_routes.py. Design:
 docs/superpowers/specs/2026-11-15-session-threads-design.md.
@@ -216,6 +218,9 @@ def receipt_line(resp: dict[str, Any]) -> str:
     if resp.get("answer_phase"):
         after = ("Orion already asked its one round of questions on this thread, so Orion reads this as answers "
                  "and asks nothing more here. Nothing will come back for you to answer.")
+    elif thread.get("status") == "reading":
+        after = ("Orion is reading this thread's earlier message now; if that round asks questions, it is the "
+                 "thread's one round and this message is read as answers.")
     else:
         after = "Orion's questions will come back to this session."
     return f"Hub receipt: your message to Orion is held as session thread {thread.get('thread_id')}. {tail} {after}"

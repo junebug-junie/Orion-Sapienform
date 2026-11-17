@@ -495,6 +495,8 @@ def test_a_message_that_arrives_while_orion_is_reading_waits_for_the_next_round(
         rid = (await w.loop.tick())["started"]
         got = await w.loop.intake(session_id="sess-A", title="reply", body="One more thing: the cap is 3.", thread_id=tid)
         assert got["thread"]["status"] == "reading"
+        # Orion has not answered yet: the receipt says this may be read as answers, not "questions will come".
+        assert got["answer_phase"] is False and "reading this thread's earlier message now" in got["receipt"]["body"]
         w.durable.finish(rid, answer((tid, "1. first question?")))
         await w.loop.tick()
         thread, turns = await state(w, tid)
@@ -509,6 +511,7 @@ def test_a_message_that_arrives_while_orion_is_reading_waits_for_the_next_round(
         # Orion's round-1 turn sits AFTER this message (it arrived while Orion was reading), and still
         # counts: the thread is in its answer phase.
         assert core.ANSWER_PHASE_NOTE in prompt
+        assert "[you (Orion), an earlier round-up] 1. first question?" in prompt   # Orion sees its own questions
         assert (await state(w, tid))[0]["status"] == core.STATUS_CLOSED
 
     run(mode, monkeypatch, scenario)

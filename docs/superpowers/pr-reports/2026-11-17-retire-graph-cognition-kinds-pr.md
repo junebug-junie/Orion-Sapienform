@@ -83,6 +83,6 @@ Substrate consumers in other services pick up the change on their next normal re
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3566
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

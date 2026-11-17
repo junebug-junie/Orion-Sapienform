@@ -280,7 +280,9 @@ class AdmissionRuntime:
             MEMORY_EPISODE_DISTILL_WORKFLOW: build_episode_distill_graph(
                 lambda brief: self._load_episode(brief),
                 lambda prompt, **kw: runner._call_memory_distill_llm(prompt, **kw),
-                lambda **kw: self._persist_episode(**kw), admission_deps, runner._checkpointer),
+                lambda **kw: self._persist_episode(**kw), admission_deps, runner._checkpointer,
+                link=(lambda result, ask, **kw: self._plan_supersede(result, ask, **kw))
+                if getattr(settings, "memory_supersede_enabled", False) else None),
             # Durable-run -> harness step seam smoke. Late-bound: the same Hub turn RPC curiosity and
             # self_sense_eval use (orion:curiosity:turn:request), resolved on the runner per call.
             HARNESS_ECHO_SMOKE_WORKFLOW: build_harness_smoke_graph(
@@ -424,6 +426,31 @@ class AdmissionRuntime:
         from orion.memory.episode.store import persist_episode
 
         return await persist_episode(self.pool, **kwargs, referent_policy=self._referent_policy())
+
+    async def _plan_supersede(self, result, ask, *, episode_id=None) -> dict:
+        """Issue #3587: which older live memories this episode's memories correct (checked, not applied).
+        Candidates from the lived-memory index when configured, else shared words/referents."""
+        from datetime import datetime, timezone
+
+        from orion.introspect.semantic_index import SearchConfig
+        from orion.memory.episode.supersede import (
+            index_dense, load_corpus, plan_for_new_rows, rows_from_validation, undone_pairs,
+        )
+
+        if not result.memories:
+            return {"links": [], "asked": 0}
+        s = self.settings
+        async with self.pool.connection() as conn:
+            corpus = await load_corpus(conn)
+            excluded = await undone_pairs(conn)
+        cfg = SearchConfig(chroma_url=s.memory_supersede_chroma_url, embed_url=s.memory_supersede_embed_url,
+                           collection=s.memory_supersede_collection, min_similarity=0.0)
+        rows = rows_from_validation(result, now=datetime.now(timezone.utc), episode_id=episode_id)
+        plan = await plan_for_new_rows(rows, corpus, ask, dense=index_dense(cfg) if cfg.enabled else None,
+                                       max_checks=int(s.memory_supersede_max_checks), excluded=excluded)
+        logger.info("episode_supersede_planned links=%s asked=%s check_errors=%s dense=%s",
+                    len(plan["links"]), plan["asked"], plan["check_errors"], plan["dense"])
+        return plan
 
     def _referent_policy(self):
         """None when MEMORY_REFERENTS_ENABLED=false (the referent step is skipped)."""

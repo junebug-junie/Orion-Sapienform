@@ -141,6 +141,16 @@ class Settings(BaseSettings):
     memory_referents_enabled: bool = Field(True, alias="MEMORY_REFERENTS_ENABLED")
     memory_alias_grounding_auto_accept: bool = Field(True, alias="MEMORY_ALIAS_GROUNDING_AUTO_ACCEPT")
     memory_cooccurrence_auto_accept: bool = Field(True, alias="MEMORY_COOCCURRENCE_AUTO_ACCEPT")
+    # Corrections supersede at write time (issue #3587, orion/memory/episode/supersede.py): after the
+    # distill answer, one strict yes/no check per candidate pair on the same hold; a sure "yes" retires
+    # the older row in the persist transaction. Candidates by meaning from the lived-memory index
+    # (empty URL = shared words/referents only). MAX_CHECKS caps model calls per episode.
+    memory_supersede_enabled: bool = Field(True, alias="MEMORY_SUPERSEDE_ENABLED")
+    memory_supersede_chroma_url: str = Field("http://orion-athena-vector-db:8000", alias="MEMORY_SUPERSEDE_CHROMA_URL")
+    memory_supersede_embed_url: str = Field("http://orion-athena-vector-host:8320/embedding",
+                                            alias="MEMORY_SUPERSEDE_EMBED_URL")
+    memory_supersede_collection: str = Field("orion_lived_memory", alias="MEMORY_SUPERSEDE_COLLECTION")
+    memory_supersede_max_checks: int = Field(12, ge=0, le=60, alias="MEMORY_SUPERSEDE_MAX_CHECKS")
     # Situation graph step 2 (spec 2026-10-07-situation-graph-design.md, SHADOW): one self-driven
     # LangGraph thread per day that keeps Orion's running situation and projects it to Redis
     # orion:situation:latest + bus orion:situation:state. Nothing reads it until step 3.

@@ -317,6 +317,8 @@ SYNC_PREFIXES = (
     "MEMORY_SUGGEST_",
     "MEMORY_FAILED_",
     "MEMORY_WINDOW_",
+    # Corrections supersede at write time (orion-durable-runs, issue #3587).
+    "MEMORY_SUPERSEDE_",
     "SPARK_INTROSPECTION_",
     "TURN_CHANGE_",
     "CHANNEL_SIGNALS_",

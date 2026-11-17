@@ -79,6 +79,11 @@ The two misses are both implicit references. Step 2 (#3534: query rewrite and li
     - 503 when no model is loaded, or when 2 requests are already in flight.
   - Chroma collection `orion_lived_memory` (derived, rebuildable).
 - **Bus**: orion-recall publishes `VectorUpsertV1` on the existing `orion:vector:semantic:upsert`. Catalog producer list updated. No new schema.
+  - This is intended. It follows the pattern every derived search index in this repo already uses: Hub reading search, dream search and the introspect responders all run their own index loop through `orion/introspect/semantic_index.py`.
+  - The service that owns the reader decides which rows belong in the index and when they are stale. Here that is recall's serving SQL: active, not superseded, not removed.
+  - orion-vector-host still does the embedding and orion-vector-writer still owns the write to Chroma. Recall only publishes the upsert.
+  - Moving the selection into the vector host would put the memory tables' serving rules in a service that does not read them.
+  - The metric-definition lock was refreshed for this `routing_changed` (the producer list of `metric://bus_channel/orion-dream/orion:vector:semantic:upsert`).
 - **Behavior changed**
   - The continuity digest can carry a `[Lived memories ...]` block.
   - `recall_telemetry.selected_ids` now includes `episode_memory:<id>` / `stance:<id>` / `person_fact:<id>` items. That is the read log step 3 needs.

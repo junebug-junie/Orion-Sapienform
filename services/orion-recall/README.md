@@ -32,6 +32,32 @@ It then **fuses** candidates into a prompt-ready `MemoryBundleV1` with per-sourc
 
 - `POST /recall` — runs recall for a query and returns `MemoryBundleV1`
 - `GET /health` / `GET /ready` — liveness/readiness
+- `POST /lived/know` — `{"words", "turn_id"?, "max_hits"?}`. A deliberate lived-memory lookup:
+  the same retriever a chat turn uses, on Orion's own words (no 5-word floor, no rewrite). Hits are
+  `strong` (cleared the bar) or `weak` (below it, but share a word with the search), each re-checked
+  by the serving gate. Returns `status` (below) and `degraded` reasons. Called by
+  `python -P -m orion.dig know <words>` (`orion/dig/know.py`, issue #3535). Each lookup writes one
+  `recall_telemetry` row, verb `dig.know`, `corr_id` = the turn id, `selected_ids` = the ids shown,
+  so a looked-up memory counts toward read demand. Reached at `RECALL_SERVICE_URL` from Hub (host
+  network) and at `http://orion-athena-recall:8260` from the harness governor (`app-net`);
+  `ORION_DIG_RECALL_URL` overrides both.
+
+**Lived-recall status per call** (`recall_telemetry.lived_status`, issue #3628;
+migration `services/orion-sql-db/manual_migration_recall_telemetry_lived_status_v1.sql`):
+`ok` (served by the full search) · `below_bar` (searched, nothing cleared the bar) ·
+`skipped_short` (too few content words) · `degraded` (exact words only; `backend_counts.lived_memory`
+says whether it served) · `timeout` / `error` (nothing served) · `off`. NULL = lived recall did not
+run on that call. `lived_trace` (jsonb) holds the rewritten queries, every candidate id that reached
+the rerank, the injected ids and the backend: ids and Orion's own search text only.
+
+Count the calls that could produce a false "no memory" on Hub turns:
+
+```sql
+SELECT lived_status, count(DISTINCT corr_id) AS turns
+FROM recall_telemetry
+WHERE verb = 'stance_react' AND created_at > now() - interval '14 days' AND lived_status IS NOT NULL
+GROUP BY 1 ORDER BY 2 DESC;
+```
 - `POST /debug/recall/compare` — Recall V1 vs shadow Recall V2 comparison (read-only)
 - `GET /debug/recall/eval-suite` — run built-in Recall V1/V2 evaluation corpus
 - `POST /debug/recall/eval-case` — run a single ad-hoc evaluation case

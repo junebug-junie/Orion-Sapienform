@@ -97,6 +97,8 @@ DEGRADED_EMPTY_NOTE_RERANKED = ("[Lived memory search ran degraded this turn (me
 DENSE_TOP_K = 16
 LEXICAL_TOP_K = 10
 MAX_RERANK = 24
+# Step 2 ceiling: step 1's pool (at most MAX_RERANK) plus rewrite hits and link neighbours.
+MAX_RERANK_STEP2 = 32
 # Step 2 (issue #3534): each rewritten search adds its own, smaller candidate lists; all lists
 # are merged by reciprocal-rank fusion before the rerank.
 REWRITE_DENSE_TOP_K = 8
@@ -344,8 +346,8 @@ class LivedMemoryConfig:
     min_query_tokens: int = 0
     # Step 2 (issue #3534). rewrite_timeout_sec bounds the pre-turn rewrite; past it the raw
     # message is used. link_top_k is how many referent neighbours join the rerank (0 = off).
-    rewrite_timeout_sec: float = 1.8
-    link_top_k: int = 6
+    rewrite_timeout_sec: float = 2.5
+    link_top_k: int = 2
 
 
 class LivedMemoryRecall:
@@ -557,8 +559,14 @@ class LivedMemoryRecall:
                 for did, s in lst:
                     dense_best[did] = max(dense_best.get(did, 0.0), s)
 
+            # Step 1's pool comes first and whole (the message's own meaning hits, then its exact-
+            # word hits): the rewrite and the links only add candidates, never push one out. The
+            # rewrite's hits follow in reciprocal-rank-fusion order (Cormack et al. 2009).
             fused = rrf(dense_lists + lexical_lists)
-            ordered = sorted(fused, key=lambda d: (-fused[d], d))
+            base = list(dict.fromkeys([d for d, _ in dense_lists[0]] + [d for d, _ in lexical_lists[0]]))
+            base = sorted(base, key=lambda d: (-dense_best.get(d, 0.0), -lexical_best.get(d, 0.0)))[:MAX_RERANK]
+            extra = sorted((d for d in fused if d not in set(base)), key=lambda d: (-fused[d], d))
+            ordered = base + extra
 
             # Link-following: neighbours of the top candidates and of names in the message or
             # in the rewritten searches.
@@ -570,7 +578,7 @@ class LivedMemoryRecall:
                 for q in queries:
                     seed_refs |= self._graph.mentions(q)
                 links = self._graph.spread(
-                    ordered[:SEED_DOCS], seed_refs, exclude=set(ordered[:MAX_RERANK]),
+                    ordered[:SEED_DOCS], seed_refs, exclude=set(ordered[:MAX_RERANK_STEP2]),
                     allowed=lambda d: d in self._by_doc and allowed(self._by_doc[d]), top_k=link_k)
                 timings["links"] = int((time.perf_counter() - t) * 1000)
                 out.debug["links"] = {"seed_names": len(seed_refs), "added": len(links)}
@@ -594,7 +602,7 @@ class LivedMemoryRecall:
             if not ordered and not links:
                 finish_backend()
                 return out
-            cand_ids = ordered[: MAX_RERANK - len(links)] + [d for d, _ in links]
+            cand_ids = base + extra[: max(0, MAX_RERANK_STEP2 - len(base) - len(links))] + [d for d, _ in links]
             recs = [self._by_doc[d] for d in cand_ids]
             names = name_tokens(query, self._names)
             all_tokens = set(qtoks)
@@ -610,13 +618,23 @@ class LivedMemoryRecall:
             try:
                 if budget <= 0:
                     raise asyncio.TimeoutError
-                if self._reranker is not None:
-                    logits = list(await asyncio.wait_for(self._reranker(rq, docs), timeout=budget))
-                else:
-                    logits = await asyncio.wait_for(self._rerank_http(client, rq, docs, timeout=budget),
-                                                    timeout=budget)
-                if len(logits) != len(docs):
-                    raise SearchUnavailableError("reranker returned a malformed reply")
+                rqs = [rq]
+
+                async def score(text: str) -> List[float]:
+                    if self._reranker is not None:
+                        got = list(await self._reranker(text, docs))
+                    else:
+                        got = await self._rerank_http(client, text, docs, timeout=budget)
+                    if len(got) != len(docs):
+                        raise SearchUnavailableError("reranker returned a malformed reply")
+                    return [float(x) for x in got]
+
+                # One call at a time: the vector host refuses a third request in flight.
+                async def all_scores() -> List[List[float]]:
+                    return [await score(text) for text in rqs]
+
+                per_query = await asyncio.wait_for(all_scores(), timeout=budget)
+                logits = [max(col) for col in zip(*per_query)]
             except asyncio.TimeoutError:
                 degraded.append("rerank_timeout")
                 logits = None

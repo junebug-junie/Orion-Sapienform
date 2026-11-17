@@ -340,6 +340,7 @@ def test_a_link_neighbour_is_never_served_without_a_rerank(no_dense, monkeypatch
         raise ConnectionError("down")
 
     monkeypatch.setattr(lm, "MAX_RERANK", 2)
+    monkeypatch.setattr(lm, "MAX_RERANK_STEP2", 2)
     seed = _row("s1", "Juniper reached the final dungeon of the castle adventure game.")
     other = _row("s3", "The castle adventure game has a final dungeon boss.")
     sibling = _row("s2", "Castle adventure game notes from the final week.")

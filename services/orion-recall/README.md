@@ -978,7 +978,7 @@ and the bus anomaly feed. The exclusions apply only when `RECALL_PCR_ENABLED` is
 is the only mode in which cortex-exec sends the continuity/purposeful phases. An empty continuity or belief digest now renders as an empty
 string, not a bare header.
 
-## 17) Lived-memory recall (issue #3533, "Recall rev 2" step 1)
+## 17) Lived-memory recall (issues #3533, #3534, #3573, "Recall rev 2" steps 1-2)
 
 Code: `app/lived_memory.py` (reader + index loop), `orion/memory/lived_memory.py` (which rows may be
 served, and how a row becomes one document). Spec: the "Recall rev 2" section of
@@ -1026,6 +1026,39 @@ bank (`~/.orion/evals/lived_memory_recall_bank.json`, mode 600, ids only) and pr
 small-talk injection and latency per bar; `evals/test_lived_memory_replay_eval.py` runs the same
 scoring on made-up fixtures in CI.
 
-Kill switch: `RECALL_LIVED_MEMORY_ENABLED=false` (restart orion-recall). Failure is silent for the
-turn: a down embedder leaves exact-word candidates, a down reranker or a timeout
-(`RECALL_LIVED_MEMORY_TIMEOUT_SEC`) injects nothing.
+### 17a) Step 2: query rewrite and link-following (issue #3534)
+
+Code: `app/lived_rewrite.py`, `app/lived_links.py`, wired in `app/lived_memory.py`.
+
+- **Query rewrite.** Before searching, a small local model (LLM gateway route
+  `RECALL_LIVED_MEMORY_REWRITE_ROUTE`, default `quick_turn`: the fast class at interactive
+  priority; never metacog, never an outside API) reads the message plus the last 3 turns of the
+  same `session_id` from `chat_history_log` (6 h window) and writes up to 3 short searches, or
+  `NONE` for small talk. Each search runs through the same meaning + exact-word retrievers; all
+  lists merge by reciprocal-rank fusion. The reranker scores each memory against the message
+  followed by the searches. Past `RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC`, or on any error, the
+  raw message is searched alone. A message under the content-word floor searches only when the
+  rewrite named something. Messages over 1,500 characters skip the rewrite.
+- **Link-following.** Memories that share a referent (`episode_memory_referent`) with the top 5
+  candidates, or whose referent's name (name-class `referent_alias` only, 4+ characters, not a
+  function word) appears in the message or a search, join the rerank: two-hop personalized
+  PageRank, hubs on more than 30 memories left out, at most `RECALL_LIVED_MEMORY_LINK_TOP_K`.
+  A neighbour reaches the prompt only through the rerank and the bar. The graph reloads in the
+  background every 10 minutes.
+
+### 17b) Degraded mode (issue #3573)
+
+Recall never silently skips. When the reranker is down, errors or runs past the deadline, the
+exact-word hits are ranked by BM25 alone (at most 3 lines, each sharing 2+ content words or a
+name with the turn) under a header that says the search ran degraded. When the embedder is down
+or hangs, the exact-word candidates are still reranked, and the block still says degraded. A
+degraded search that finds nothing puts a one-line note in the prompt ("not proof there is no
+memory"), except for small talk the rewrite answered NONE. If the whole lived recall misses the
+worker's deadline, the worker runs the same exact-word fallback from the in-memory snapshot.
+Telemetry: `recall_telemetry.backend_counts.lived_memory_degraded = 1`, and
+`recall_telemetry.timings_ms.lived_memory_{rewrite,rerank,total}`; `recall_debug.lived_memory`
+carries `backend`, `degraded` reasons and the rewritten searches.
+
+Kill switches: `RECALL_LIVED_MEMORY_ENABLED=false` (all lived recall),
+`RECALL_LIVED_MEMORY_REWRITE_ENABLED=false` (rewrite only), `RECALL_LIVED_MEMORY_LINK_TOP_K=0`
+(links only). Restart orion-recall after changing any of them.

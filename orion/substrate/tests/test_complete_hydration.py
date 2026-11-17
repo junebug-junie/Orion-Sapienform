@@ -14,7 +14,8 @@ def test_short_pages_are_not_terminal(page_size, cap):
     assert len(state.nodes) == 7 and len(state.edges) == 11
     assert state.scan_receipt.complete and not state.scan_receipt.stale
     assert state.scan_receipt.consistency == "non_atomic_keyset"
-    assert all("ORDER BY object_id LIMIT $page_size" in q for q, _ in client.calls)
+    assert all("ORDER BY object_id LIMIT $page_size" in q for q, _ in client.calls
+               if "AS node_count" not in q)
     assert {p["after_id"] for q, p in client.calls if "RETURN e.edge_id" in q} >= {-1,10}
 
 

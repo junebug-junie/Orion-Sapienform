@@ -50,6 +50,10 @@ class RecordingFalkorClient:
             rows = self._hydrate_node_rows
         elif "RETURN e.edge_id AS edge_id" in cypher:
             rows = self._hydrate_edge_rows
+        elif "RETURN count(n) AS node_count" in cypher:
+            # The post-refresh durable node count (FalkorSubstrateStore.
+            # _record_node_count_gap, #3455): every SubstrateNode row held.
+            return [{"node_count": len(self._hydrate_node_rows) + len(self._hydrate_legacy_node_rows)}]
         elif "RETURN n.node_id AS applied_node_id" in cypher:
             # A targeted dynamics write (FalkorSubstrateStore.
             # update_node_dynamics): the recording double holds no graph to

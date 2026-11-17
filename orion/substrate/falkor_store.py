@@ -68,6 +68,21 @@ from orion.substrate.graphdb_store import _resolve_snapshot_force_refresh_ceilin
 
 logger = logging.getLogger("orion.substrate.falkor_store")
 
+# Scan decode sentinel: a row of a node kind / edge shape newer than this
+# reader (skipped and counted, never a decode failure).
+_UNKNOWN_SHAPE = object()
+
+
+def _decode_native_node(row: dict[str, Any]) -> Any:
+    """decode_node returns None for some bad rows instead of raising; raise so
+    a page of them counts as undecodable for the plan-cache retry (#3455)."""
+    if not node_row_is_known(row):
+        return _UNKNOWN_SHAPE
+    node = decode_node(row)
+    if node is None:
+        raise ValueError(f"undecodable durable node row: {row.get('node_id')!r}")
+    return node
+
 NODE_ADAPTER = TypeAdapter(SubstrateNodeV1)
 
 # FalkorGraphClient, RecordingFalkorClient, RedisGraphQueryClient moved to
@@ -237,6 +252,9 @@ NATIVE_EDGE_RETURN_FIELDS: tuple[str, ...] = (
     "assertion_id",
     "assertion_revision",
 )
+
+
+DURABLE_NODE_COUNT_CYPHER = "MATCH (n:SubstrateNode) RETURN count(n) AS node_count"
 
 
 def _return_clause(alias: str, fields: tuple[str, ...]) -> str:
@@ -457,6 +475,15 @@ class FalkorSubstrateStore:
         self.hydrate_ok_total = 0
         self.hydrate_failed_total = 0
         self.hydrate_replayed_writes_total = 0
+        # #3455 plan-cache guard and partial-graph signal (see _scan_pages and
+        # _record_node_count_gap).
+        self.hydrate_plan_cache_retries_total = 0
+        self.hydrate_plan_cache_recovered_total = 0
+        # Scans (keyed by WHERE text) whose exact text read a poisoned plan and
+        # now start on the bypass variant (see _scan_pages).
+        self._plan_cache_bypass: set[str] = set()
+        self.last_durable_node_count: int | None = None
+        self.last_node_count_gap: int | None = None
         self._hydrate_stats_logged_at: float | None = None
         self.last_scan_receipt: CompleteScanReceipt | None = None
         self._last_successful_refresh_at: str | None = None
@@ -473,27 +500,92 @@ class FalkorSubstrateStore:
     last_hydrate_ok: bool | None = None
     last_hydrate_node_count: int = 0
 
+    # #3455: FalkorDB's cached plan for the exact native-node scan text once
+    # returned each row's node_id in the decay_floor column, so every row of
+    # every page failed to decode and every reload failed for ~28 h. The same
+    # query with one extra space missed the cache and read correctly. The plan
+    # cache is keyed on the exact query text and is a small LRU, so the bypass
+    # is ONE fixed variant per scan query (trailing space), never a nonce.
+    _PLAN_CACHE_BYPASS_SUFFIX = " "
+    # In-memory vs durable node-count gap that reads as "readers are on a
+    # partial graph". Floor absorbs nodes written between the scan and the
+    # count; the fraction scales with the graph (#3455 incident: 40 of 15,355).
+    _NODE_GAP_ALARM_FLOOR = 50
+    _NODE_GAP_ALARM_FRACTION = 0.05
+
     def _scan_pages(self, *, match: str, where: str, alias: str,
-                    returns: str, fields: tuple[str, ...], progress: dict[str, int]):
-        """A short page may be the server cap. Only an empty page ends a scan."""
+                    returns: str, fields: tuple[str, ...], progress: dict[str, int],
+                    decode=None):
+        """A short page may be the server cap. Only an empty page ends a scan.
+
+        Yields ``(row, decoded)``. ``decode`` runs per row; when EVERY row of a
+        page fails it, the page is re-read once with the OTHER of two fixed
+        query texts (exact / plan-cache-bypass variant, #3455). The text that
+        worked is remembered per scan on the store, so a poisoned plan costs
+        one wasted page and one warning per episode, not one per reload. A
+        page with only some bad rows, or both texts failing, raises the first
+        decode error. The whole page decodes before the cursor check, so a
+        page with both faults raises the decode error."""
+        query = (f"{match} WHERE {where} AND id({alias}) > $after_id "
+                 f"RETURN {returns}, id({alias}) AS object_id "
+                 "ORDER BY object_id LIMIT $page_size")
+        bypassed = where in self._plan_cache_bypass
+        retried = False
         cursor = -1
-        while True:
+
+        def fetch(text: str) -> list[dict[str, Any]]:
             raw = self._client.graph_query(
-                f"{match} WHERE {where} AND id({alias}) > $after_id "
-                f"RETURN {returns}, id({alias}) AS object_id "
-                "ORDER BY object_id LIMIT $page_size",
-                {"after_id": cursor, "page_size": self._cfg.hydration_page_size},
-            )
-            rows = _normalize_rows(raw, fields=(*fields, "object_id"), strict=True)
+                text, {"after_id": cursor, "page_size": self._cfg.hydration_page_size})
+            return _normalize_rows(raw, fields=(*fields, "object_id"), strict=True)
+
+        def decode_page(rows):
+            out, errors = [], []
+            for row in rows:
+                try:
+                    out.append(decode(row) if decode is not None else None)
+                except Exception as exc:  # noqa: BLE001 - re-raised below
+                    errors.append(exc)
+            return out, errors
+
+        while True:
+            rows = fetch(query + self._PLAN_CACHE_BYPASS_SUFFIX if bypassed else query)
             progress["pages"] += 1
             if not rows:
                 return
-            for row in rows:
+            decoded, errors = decode_page(rows)
+            if errors and len(errors) == len(rows) and not retried:
+                sample = rows[0]
+                id_field = fields[0]
+                shifted = sorted(k for k, v in sample.items()
+                                 if k not in (id_field, "object_id") and v is not None
+                                 and v == sample.get(id_field))
+                logger.warning(
+                    "falkor_hydrate_plan_cache_suspect graph=%s scan=%r rows=%d field=%s "
+                    "sample_%s=%r bad_text=%s error=%s",
+                    self._cfg.graph_name, where, len(rows), ",".join(shifted) or "unknown",
+                    id_field, sample.get(id_field), "variant" if bypassed else "exact", errors[0],
+                )
+                self.hydrate_plan_cache_retries_total += 1
+                retried, bypassed = True, not bypassed
+                rows = fetch(query + self._PLAN_CACHE_BYPASS_SUFFIX if bypassed else query)
+                progress["pages"] += 1
+                if not rows:
+                    return
+                decoded, errors = decode_page(rows)
+                if not errors:
+                    self.hydrate_plan_cache_recovered_total += 1
+                    if bypassed:
+                        self._plan_cache_bypass.add(where)
+                    else:
+                        self._plan_cache_bypass.discard(where)
+            if errors:
+                raise errors[0]
+            for row, obj in zip(rows, decoded):
                 object_id = row.get("object_id")
                 if type(object_id) is not int or object_id <= cursor:
                     raise ValueError("nonadvancing or invalid object cursor")
                 cursor = object_id
-                yield row
+                yield row, obj
 
     def _hydrate_from_durable(self) -> None:
         """Stage and validate all pages before replacing the last good cache.
@@ -564,44 +656,51 @@ class FalkorSubstrateStore:
         skipped_nodes: set[str] = set()
         skipped = {"nodes": 0, "edges": 0}
         try:
-            for row in self._scan_pages(
+            for row, node in self._scan_pages(
                 match="MATCH (n:SubstrateNode)", where="n.payload_json IS NULL",
                 alias="n", returns=_return_clause("n", NATIVE_NODE_RETURN_FIELDS),
                 fields=NATIVE_NODE_RETURN_FIELDS, progress=progress,
+                decode=_decode_native_node,
             ):
-                if not node_row_is_known(row):
+                if node is _UNKNOWN_SHAPE:
                     # A kind newer than this code: skip it (and, below, its edges).
                     skipped_nodes.add(str(row.get("node_id")))
                     skipped["nodes"] += 1
                     continue
-                add_node(row, decode_node(row))
-            for row in self._scan_pages(
+                add_node(row, node)
+            for row, node in self._scan_pages(
                 match="MATCH (n:SubstrateNode)", where="n.payload_json IS NOT NULL",
                 alias="n", returns="n.payload_json AS payload_json, n.identity_key AS identity_key",
                 fields=("payload_json", "identity_key"), progress=progress,
+                decode=lambda row: NODE_ADAPTER.validate_json(row["payload_json"]),
             ):
-                node = NODE_ADAPTER.validate_json(row["payload_json"])
                 if node.node_kind not in DURABLE_NODE_KINDS:
                     raise ValueError("unsupported legacy node kind")
                 add_node(row, node)
                 legacy_nodes.append(row)
-            for row in self._scan_pages(
+            def decode_native_edge(row):
+                if (not edge_row_is_known(row) or str(row.get("source_id")) in skipped_nodes
+                        or str(row.get("target_id")) in skipped_nodes):
+                    return _UNKNOWN_SHAPE
+                return decode_edge(row)
+
+            for row, edge in self._scan_pages(
                 match="MATCH (source:SubstrateNode)-[e]->(target:SubstrateNode)",
                 where="e.substrate_edge = true AND e.payload_json IS NULL", alias="e",
                 returns=_edge_hydrate_return_clause(NATIVE_EDGE_RETURN_FIELDS),
-                fields=NATIVE_EDGE_RETURN_FIELDS, progress=progress,
+                fields=NATIVE_EDGE_RETURN_FIELDS, progress=progress, decode=decode_native_edge,
             ):
-                if (not edge_row_is_known(row) or str(row.get("source_id")) in skipped_nodes
-                        or str(row.get("target_id")) in skipped_nodes):
+                if edge is _UNKNOWN_SHAPE:
                     skipped["edges"] += 1
                     continue
-                add_edge(row, decode_edge(row))
-            for row in self._scan_pages(
+                add_edge(row, edge)
+            for row, edge in self._scan_pages(
                 match="MATCH ()-[e]->()", where="e.payload_json IS NOT NULL", alias="e",
                 returns="e.payload_json AS payload_json, e.identity_key AS identity_key",
                 fields=("payload_json", "identity_key"), progress=progress,
+                decode=lambda row: SubstrateEdgeV1.model_validate_json(row["payload_json"]),
             ):
-                add_edge(row, SubstrateEdgeV1.model_validate_json(row["payload_json"]))
+                add_edge(row, edge)
                 legacy_edges.append(row)
             # Replay and swap are one atomic step under _cache_lock: every
             # local write since the scan began is in the journal, and no new
@@ -630,7 +729,6 @@ class FalkorSubstrateStore:
                 self._scan_journal = None
             logger.warning("falkor_substrate_hydrate_failed error=%s", exc)
             self.hydrate_failed_total += 1
-            self._maybe_log_hydrate_stats()
             self.last_hydrate_ok = False
             self.last_scan_receipt = CompleteScanReceipt(
                 started_at=started, finished_at=datetime.now(timezone.utc).isoformat(),
@@ -639,6 +737,10 @@ class FalkorSubstrateStore:
                 last_successful_refresh_at=self._last_successful_refresh_at,
                 reason=str(exc), edge_identity_aliases=progress["edge_identity_aliases"],
             )
+            # Failed scan: the kept cache is the last good one, so its own
+            # skipped count is the right one to subtract.
+            self._record_node_count_gap(self.hydrate_skipped_unknown_nodes)
+            self._maybe_log_hydrate_stats()
             return
 
         self.last_hydrate_ok = True
@@ -657,7 +759,6 @@ class FalkorSubstrateStore:
         if skipped["nodes"] or skipped["edges"]:
             logger.warning("falkor_substrate_hydrate_skipped_unknown_shapes nodes=%d edges=%d",
                            skipped["nodes"], skipped["edges"])
-        self._maybe_log_hydrate_stats()
         self.last_hydrate_node_count = len(node_ids)
         finished = datetime.now(timezone.utc).isoformat()
         self._last_snapshot_at = time.monotonic()
@@ -669,11 +770,49 @@ class FalkorSubstrateStore:
             edge_identity_aliases=progress["edge_identity_aliases"],
             duplicate_node_identities=len(duplicate_identities),
         )
+        self._record_node_count_gap(skipped["nodes"])
+        self._maybe_log_hydrate_stats()
         if not getattr(self._client, "read_only", False):
             self._migrate_legacy_payload_nodes(legacy_nodes)
             self._migrate_legacy_payload_edges(legacy_edges)
 
     _HYDRATE_STATS_LOG_INTERVAL_SEC = 300.0
+
+    def _record_node_count_gap(self, skipped_unknown_nodes: int = 0) -> None:
+        """Compare the in-memory node count with the durable graph's (#3455).
+
+        A failed refresh keeps the last good cache, and a process that never
+        refreshed holds only its own writes, so readers can run on a partial
+        graph while nothing complains (#3455: 40 cached nodes vs 15,355
+        durable). One cheap count per refresh; the gap rides on the scan
+        receipt and the stats line, and a large gap logs a warning every
+        refresh until it closes. Nodes of kinds newer than this reader are
+        skipped on purpose and are subtracted, so an old reader next to a newer
+        writer does not alarm forever. A count error leaves the gap None."""
+        with self._cache_lock:
+            cache_nodes = len(self._cache._nodes)
+        durable = None
+        try:
+            rows = _normalize_rows(self._client.graph_query(DURABLE_NODE_COUNT_CYPHER, {}))
+            value = rows[0].get("node_count") if rows else None
+            durable = int(value) if value is not None else None
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("falkor_substrate_node_count_failed error=%s", exc)
+        gap = durable - cache_nodes - skipped_unknown_nodes if durable is not None else None
+        self.last_durable_node_count, self.last_node_count_gap = durable, gap
+        if self.last_scan_receipt is not None:
+            self.last_scan_receipt = replace(
+                self.last_scan_receipt, durable_node_count=durable, node_count_gap=gap,
+                plan_cache_retries=self.hydrate_plan_cache_retries_total,
+            )
+        if gap is not None and gap > max(self._NODE_GAP_ALARM_FLOOR,
+                                         self._NODE_GAP_ALARM_FRACTION * durable):
+            logger.warning(
+                "falkor_substrate_hydrate_node_gap graph=%s durable_nodes=%d cache_nodes=%d gap=%d "
+                "last_hydrate_ok=%s skipped_unknown_nodes=%d",
+                self._cfg.graph_name, durable, cache_nodes, gap, self.last_hydrate_ok,
+                skipped_unknown_nodes,
+            )
 
     def _maybe_log_hydrate_stats(self) -> None:
         """Cumulative refresh success/failure counts, at most every 5 min, so
@@ -685,10 +824,14 @@ class FalkorSubstrateStore:
         self._hydrate_stats_logged_at = now
         logger.info(
             "falkor_substrate_hydrate_stats graph=%s ok_total=%d failed_total=%d replayed_writes_total=%d "
-            "duplicate_identities=%d identity_durable_lookups=%d identity_durable_hits=%d",
+            "duplicate_identities=%d identity_durable_lookups=%d identity_durable_hits=%d "
+            "plan_cache_retries=%d plan_cache_recovered=%d node_count_gap=%s",
             self._cfg.graph_name, self.hydrate_ok_total, self.hydrate_failed_total,
             self.hydrate_replayed_writes_total, getattr(self, "hydrate_duplicate_node_identities", 0),
             getattr(self, "identity_durable_lookups_total", 0), getattr(self, "identity_durable_hits_total", 0),
+            getattr(self, "hydrate_plan_cache_retries_total", 0),
+            getattr(self, "hydrate_plan_cache_recovered_total", 0),
+            getattr(self, "last_node_count_gap", None),
         )
 
     @staticmethod

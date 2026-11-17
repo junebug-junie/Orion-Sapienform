@@ -872,13 +872,13 @@ def apply_answer(
         if not problems and concern_refs:
             # A held concern's event (a letter thread, a turn, a funded event) has no openable ref: the move's
             # concern_id is how a move points at it (#3609). Unambiguous -> the move takes that concern_id.
-            if len(set(concern_refs)) > 1 or move.concern_id not in (None, concern_refs[0]):
+            agrees = move.concern_id in (None, concern_refs[0]) or (
+                move.concern_id == NEW_CONCERN and concern_refs[0] in added)
+            if len(set(concern_refs)) > 1 or not agrees:
                 problems = [f"refs name the event of concern {', '.join(sorted(set(concern_refs)))}, but the move's "
                             f"concern_id is {move.concern_id!r}; a concern's event has no openable ref, point the "
                             "move at it with its concern_id and leave it out of refs"]
             else:
-                warnings.append(f"move refs named the event of concern {concern_refs[0]}; used it as the move's "
-                                "concern_id (a concern's event has no openable ref)")
                 move = move.model_copy(update={"concern_id": concern_refs[0]})
         if problems:
             refusal = "; ".join(problems)
@@ -903,6 +903,9 @@ def apply_answer(
         if refusal is None and move.concern_id and move.concern_id not in {c.concern_id for c in concerns}:
             warnings.append(f"move cites unknown concern {move.concern_id!r}; kept without it")
             move = move.model_copy(update={"concern_id": None})
+        if refusal is None and concern_refs:
+            warnings.append(f"move refs named the event of concern {concern_refs[0]}; used it as the move's "
+                            "concern_id (a concern's event has no openable ref)")
     new_state = state.model_copy(update={
         "concerns": concerns,
         "last_reading": answer.reading[:READING_CAP],

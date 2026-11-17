@@ -467,3 +467,26 @@ def test_the_system_prompt_says_a_concerns_event_is_reached_by_concern_id():
     for events in (False, True):
         text = system_prompt(None, events=events)
         assert "letter thread" in text and "concern_id" in text.split("letter thread", 1)[1][:200]
+
+
+def test_new_with_the_new_concerns_own_event_in_refs_moves_on_that_concern():
+    """Review finding: in event mode a concern added this answer holds its event_id; "new" plus that event in
+    refs must not be refused for naming a concern_id the model cannot know yet."""
+    answer = PrimeAnswerV1.model_validate({
+        "concerns": {"add": [{"text": "walkway render", "event_id": "evt-abc"}]},
+        "move": {"kind": "curiosity_focus", "question": "Why?", "why": "w", "concern_id": "new",
+                 "refs": [{"kind": "act", "id": "evt-abc"}]}})
+    applied = apply_answer(PrimeStateV1(), answer, now=T0, arc_ids=[], focus_pending=False, event_ids=["evt-abc"])
+    assert applied.move_refusal is None and applied.move.concern_id == applied.added[0]
+
+
+def test_two_refs_naming_different_concerns_refuse_and_a_later_refusal_claims_nothing_was_used():
+    state = PrimeStateV1(concerns=[_held("lt0", event_ref=LETTER_THREAD), _held("lt1", event_ref="turn:t1")])
+    answer = PrimeAnswerV1.model_validate({"move": {
+        "kind": "curiosity_focus", "question": "Why?", "why": "w",
+        "refs": [{"kind": "act", "id": LETTER_THREAD}, {"kind": "arc", "id": "turn:t1"}]}})
+    applied = apply_answer(state, answer, now=T0, arc_ids=[], focus_pending=False)
+    assert applied.move is None and "lt0" in applied.move_refusal and "lt1" in applied.move_refusal
+    applied = apply_answer(state, _letter_move(), now=T0, arc_ids=[], focus_pending=True)
+    assert applied.move is None and "focus waiting" in applied.move_refusal
+    assert not any("used it as the move's concern_id" in w for w in applied.warnings)

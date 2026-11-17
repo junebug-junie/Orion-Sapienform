@@ -35,12 +35,22 @@ class Pair:
     arm: str
 
 
-def time_gap_minutes(a: ReplayItemV1, b: ReplayItemV1) -> Optional[float]:
-    """Minutes between two fragments' times (0 when their spans overlap). None when either has no time."""
+def time_gap_minutes(a: ReplayItemV1, b: ReplayItemV1, *, max_span_minutes: Optional[float] = None) -> Optional[float]:
+    """Minutes between two fragments' times (0 when their spans overlap). None when either has no time.
+
+    A span longer than `max_span_minutes` counts only by its end: a night-long body arc is not "at the
+    same time" as everything that happened during it (#3664 review)."""
     if a.occurred_at is None or b.occurred_at is None:
         return None
-    a0, a1 = sorted((a.occurred_at, a.occurred_until or a.occurred_at))
-    b0, b1 = sorted((b.occurred_at, b.occurred_until or b.occurred_at))
+
+    def span(x: ReplayItemV1):
+        lo, hi = sorted((x.occurred_at, x.occurred_until or x.occurred_at))
+        if max_span_minutes is not None and (hi - lo).total_seconds() / 60.0 > max_span_minutes:
+            return hi, hi
+        return lo, hi
+
+    a0, a1 = span(a)
+    b0, b1 = span(b)
     gap = max(a0, b0) - min(a1, b1)
     return max(0.0, gap.total_seconds() / 60.0)
 
@@ -52,7 +62,7 @@ def dream_pairs(replay: Sequence[ReplayItemV1], n: int, *, window_minutes: float
             a, b = replay[i], replay[j]
             if a.source_kind == b.source_kind:
                 continue
-            gap = time_gap_minutes(a, b)
+            gap = time_gap_minutes(a, b, max_span_minutes=window_minutes)
             if gap is None or gap > window_minutes:
                 continue
             scored.append((a.weight * b.weight, gap, a.ref_id, b.ref_id, a, b))

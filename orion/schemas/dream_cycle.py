@@ -7,7 +7,7 @@ exists so a dream can be *scored*: every hypothesis carries the two memory refs
 it linked and which experimental arm produced it.
 
 Arms:
-  dream    pairs chosen from the replay set (salient, distant).
+  dream    pairs chosen from the replay set: different organs, near in time (#3664).
   control  pairs drawn at random from the whole candidate pool, same prompt.
 
 Hub offers both arms to Orion's curiosity loop blind (arm is never shown). If

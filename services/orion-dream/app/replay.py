@@ -543,7 +543,9 @@ def walkway_candidates(
                 weight=weight,
                 reason=f"walkway prediction graded since last sleep ({len(gs) - missed} met, {missed} missed)",
                 tags=["walkway", newest.subject.lower()],
-                occurred_at=_as_utc(newest.scored_at),
+                # From the expected arrival window to its grading: the street event, not just the grade.
+                occurred_at=_as_utc(newest.window_start or newest.scored_at),
+                occurred_until=_as_utc(newest.scored_at),
             ),
             newest.scored_at,
         ))

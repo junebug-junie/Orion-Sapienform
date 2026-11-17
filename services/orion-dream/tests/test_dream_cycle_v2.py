@@ -220,6 +220,20 @@ def test_an_arc_span_overlapping_a_point_is_zero_minutes_apart():
     assert time_gap_minutes(arc, inside) == 0.0
     assert time_gap_minutes(arc, after) == 30.0
     assert time_gap_minutes(arc, _item("metacog:n", "metacog", None)) is None
+    # Longer than the window: only its end counts, so it does not swallow everything inside it.
+    assert time_gap_minutes(arc, inside, max_span_minutes=120) == 100.0
+    assert time_gap_minutes(arc, after, max_span_minutes=120) == 30.0
+
+
+def test_a_night_long_arc_does_not_take_every_pair():
+    from app.recombine import dream_pairs
+
+    night = _item("arc:night", "arc", 0, weight=1.0, until=480)     # 8 h body arc
+    items = [night, _item("metacog:m", "metacog", 60, weight=0.9),
+             _item("compaction_request:c", "compaction_request", 70, weight=0.9)]
+    pairs = dream_pairs(items, 3, window_minutes=120)
+    assert [frozenset((p.a.ref_id, p.b.ref_id)) for p in pairs] == [
+        frozenset(("metacog:m", "compaction_request:c"))]
 
 
 def test_every_builder_carries_the_rows_time():

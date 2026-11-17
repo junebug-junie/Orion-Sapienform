@@ -122,6 +122,59 @@ async def test_other_turns_and_flag_off_publish_no_promise_acts(monkeypatch, sou
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kwargs,expect", [
+    ({"reflection": None}, "outcome=skipped reason=no_reflection"),
+    ({"source_label": "aitown"}, "outcome=skipped reason=not_hub_orion"),
+    ({}, "outcome=found_nothing items=0 opened=0"),
+    ({"reflection": "offer"}, "outcome=nothing_opened items=1 opened=0 opened_offers=0 kept=0 offers_not_opened=1"),
+])
+async def test_every_juniper_turn_logs_one_promise_ledger_line(caplog, kwargs, expect):
+    # Orion's PR #3561 question 1: a line on every turn the ledger saw, so silence means it never ran.
+    import logging
+
+    from orion.grammar.promise_view import PromiseView
+    from orion.hub import turn_orchestrator
+
+    kwargs = dict(kwargs)  # the parametrize dict is shared: never mutate it
+    reflection = kwargs.pop("reflection", _reflection())
+    if reflection == "offer":
+        reflection = _reflection(promises_made=[PromiseV1(**_item("If you want, I'll look again.", offer=True))])
+    args = dict(correlation_id="c2", session_id="s1", source_label="hub_orion", client_meta=None,
+                reflection=reflection, promise_view=PromiseView())
+    args.update(kwargs)
+    with caplog.at_level(logging.INFO):
+        await turn_orchestrator._publish_promise_acts(_Bus(), **args)
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("promise_ledger corr=c2")]
+    assert len(lines) == 1 and expect in lines[0]
+
+
+@pytest.mark.asyncio
+async def test_a_promise_repeated_while_open_opens_no_second_act():
+    from orion.grammar.promise_view import PromiseView
+    from orion.hub import turn_orchestrator
+
+    view = PromiseView(open_promises=[OpenPromiseRefV1(id="act_open", quote=QUOTE)])
+    bus = _Bus()
+    counts = await turn_orchestrator._publish_promise_acts(
+        bus, correlation_id="c2", session_id="s1", source_label="hub_orion", client_meta=None,
+        reflection=_reflection(promises_made=[PromiseV1(**_item(QUOTE))]), promise_view=view)
+    assert counts["repeats_open"] == 1 and counts["opened"] == 0 and bus.events() == []
+
+
+@pytest.mark.asyncio
+async def test_an_unread_view_still_logs_a_promise_view_line(monkeypatch, caplog):
+    import logging
+
+    from orion.hub import promise_ledger
+
+    monkeypatch.setattr(promise_ledger, "fetch_promise_view", lambda *a, **k: None)
+    with caplog.at_level(logging.INFO):
+        view = await promise_ledger.promise_view_for_turn("s1", "c9")
+    assert view.open_promises == [] and view.offers == []
+    assert any(r.getMessage() == "promise_view corr=c9 outcome=unread" for r in caplog.records)
+
+
+@pytest.mark.asyncio
 async def test_motor_prompt_never_shows_open_promises():
     """Acceptance check 5: the request carries open promises and pending offers for the judge; the FCC
     motor, driven through HarnessRunner with that request, never receives them in any kwarg."""

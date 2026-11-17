@@ -13,10 +13,11 @@ Over the last ``--days`` (default 28) it reports:
   Approximate: turn times here are ``chat_history_log.created_at`` (when the reply was stored), not
   the ingress time the resolver uses, so a turn at the very edge of a window can fall either side;
 * expired acts whose promising turn got an intention carry reply in the window (Prime took the
-  promise on and delivered something; the ledger does not count a carry as a keep in v1);
+  promise on and delivered something; the ledger does not count a carry as a keep in v1), with their act ids;
 * keep rate kept / (kept + expired), void and un-closeable left out, with a Beta(1, 1) posterior;
 * the self-reinforcement guard: firm promises per JUDGED Juniper turn (judge model pass, not the
-  quick gate), against the replay baseline (``REPLAY_BASELINE``); red above 2x. Stored items with no
+  quick gate), with a 90% Poisson score interval, against the frozen replay baseline (``REPLAY_BASELINE``);
+  red above 2x. Stored items with no
   ``force``/``done_when`` (written before #3532) are skipped and counted, never guessed;
 * ``--sample N``: a blinded sample of stored promise items for hand labels. Each item shows ONLY the
   quote and the reply around it, never the judge's doer/force/act/done_when, so the labeller cannot
@@ -64,7 +65,16 @@ from orion.schemas.harness_finalize import (  # noqa: E402
 # Replay of the deployed finder (#3532 rules, same model and lane as live), judged turns only:
 # dev 10-13..11-12 (179 judged, 15 firm promises), held-out 09-13..10-13 (86 judged, 0) and
 # 11-12..11-16 (24 judged, 8). Firm = gated item with offer false. 23 / 289 = 0.080 per judged turn.
+# FROZEN for the whole shadow period (Orion's PR #3561 question 3): set 2026-11-16, before any live
+# promise act existed, and pinned by tests/test_report_promise_ledger.py. It is never re-based on
+# shadow data: a baseline moved after seeing the rate it judges is no guard. Changing it is a
+# Juniper decision recorded in #3531, not an edit here. The slices are uneven (0/86 to 8/24), so the
+# report prints a 90% interval on the live rate beside the ratio; red still means ratio > 2x.
 REPLAY_BASELINE = (23, 289)
+# When orion-harness-governor went live with the #3532 force/done_when rules (post-pull rebuild at
+# head d198f79ed, ~/.orion/post_pull_rebuild.log). A judged turn before this could store no firm item,
+# so the guard leaves those turns out of its denominator (they would pull the live rate toward 0).
+FINDER_LIVE_AT = datetime(2026, 11, 16, 18, 5, tzinfo=timezone.utc)
 GUARD_RATIO_RED = 2.0
 CARRY_SOURCE = "intention_carry"
 CONTEXT_CHARS = 280
@@ -109,6 +119,15 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     mid = (p + z * z / (2 * n)) / den
     half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / den
     return (max(0.0, mid - half), min(1.0, mid + half))
+
+
+def poisson_rate_interval(k: int, n: int, z: float = 1.645) -> tuple[float, float]:
+    """Score interval for a count rate k events over n turns (a turn can hold several promises, so this
+    is not a proportion and Wilson does not apply: it would take sqrt of a negative once k > n)."""
+    if n <= 0:
+        return (0.0, float("inf"))
+    half = z * math.sqrt(k + z * z / 4)
+    return (max(0.0, (k + z * z / 2 - half) / n), (k + z * z / 2 + half) / n)
 
 
 def beta_summary(kept: int, broken: int) -> dict[str, float]:
@@ -156,7 +175,7 @@ def close_summary(acts: Sequence[Mapping[str, Any]], *, unclosable: set[str],
 
     kinds: Counter[str] = Counter()
     evidence: Counter[str] = Counter()
-    expired_with_carry = 0
+    expired_with_carry: list[str] = []
     for act in acts:
         kind = promise_close_kind(act.get("outcome_source"), act.get("outcome_note"), act.get("closed_at") is not None)
         if kind == "expired" and str(act["act_id"]) in unclosable:
@@ -169,11 +188,12 @@ def close_summary(acts: Sequence[Mapping[str, Any]], *, unclosable: set[str],
             opened, horizon = _aware(act.get("opened_at")), _aware(act.get("horizon_at"))
             if parsed and opened and horizon and any(
                     opened < t <= horizon for t in carry_concerns.get(turn_concern_id(parsed[0]), [])):
-                expired_with_carry += 1
+                expired_with_carry.append(str(act["act_id"]))
     kept, expired = kinds.get("kept", 0), kinds.get("expired", 0)
     return {"acts": len(acts), "open": kinds.get("open", 0), "kept": kept, "expired": expired,
             "void": kinds.get("void", 0), "unclosable": kinds.get("unclosable", 0),
-            "kept_by_evidence": dict(evidence), "expired_with_carry_reply": expired_with_carry,
+            "kept_by_evidence": dict(evidence), "expired_with_carry_reply": len(expired_with_carry),
+            "expired_with_carry_reply_acts": expired_with_carry,
             "keep_rate": beta_summary(kept, expired)}
 
 
@@ -190,10 +210,17 @@ def _firm(item: Mapping[str, Any]) -> bool:
     return item.get("force") == PROMISE_FORCE_COMMITS and len(str(item.get("done_when") or "").strip()) >= PROMISE_DONE_WHEN_MIN_CHARS
 
 
-def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] = REPLAY_BASELINE) -> dict[str, Any]:
-    """Firm (non-offer) promises per JUDGED Juniper turn vs the replay baseline. Items written before
-    #3532 (no force/done_when) are counted in ``skipped_pre_force`` and left out of both sides."""
-    judged = [t for t in turns if t.get("reflection_source") == "substrate_informed_pass"]
+def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] = REPLAY_BASELINE,
+                  finder_live_at: datetime = FINDER_LIVE_AT) -> dict[str, Any]:
+    """Firm (non-offer) promises per JUDGED Juniper turn vs the replay baseline, counting only turns
+    from ``finder_live_at`` on (``turns_before_finder`` counts the rest). Items written before #3532
+    (no force/done_when) are counted in ``skipped_pre_force`` and left out of both sides."""
+    def _before(t: Mapping[str, Any]) -> bool:
+        at = _aware(t.get("created_at"))
+        return at is not None and at < finder_live_at
+
+    early = [t for t in turns if _before(t)]
+    judged = [t for t in turns if t.get("reflection_source") == "substrate_informed_pass" and not _before(t)]
     firm = skipped = offers = 0
     for t in judged:
         for item in _made(t.get("made")):
@@ -207,9 +234,15 @@ def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] 
     rate = firm / len(judged) if judged else None
     base = baseline[0] / baseline[1]
     ratio = (rate / base) if rate is not None and base > 0 else None
-    return {"judged_turns": len(judged), "turns_not_judged": len(turns) - len(judged), "firm_promises": firm,
+    lo, hi = poisson_rate_interval(firm, len(judged)) if judged else (None, None)
+    for t in early:
+        skipped += sum(1 for item in _made(t.get("made")) if "force" not in item and "done_when" not in item)
+    return {"judged_turns": len(judged), "turns_not_judged": len(turns) - len(early) - len(judged),
+            "turns_before_finder": len(early), "firm_promises": firm,
             "offers": offers, "skipped_pre_force": skipped,
-            "rate": None if rate is None else round(rate, 4), "baseline": f"{baseline[0]}/{baseline[1]} replay",
+            "rate": None if rate is None else round(rate, 4),
+            "rate_poisson90": None if lo is None else [round(lo, 4), round(hi, 4)],
+            "baseline": f"{baseline[0]}/{baseline[1]} replay",
             "baseline_rate": round(base, 4), "ratio": None if ratio is None else round(ratio, 2),
             "red": bool(ratio is not None and ratio > GUARD_RATIO_RED)}
 
@@ -282,6 +315,13 @@ def report(data: Mapping[str, Any]) -> dict[str, Any]:
             "guard": guard_summary(data["turns"])}
 
 
+def _ids(ids: Sequence[str], cap: int = 10) -> str:
+    if not ids:
+        return ""
+    more = len(ids) - cap
+    return f" ({', '.join(ids[:cap])}{f' +{more} more' if more > 0 else ''})"
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--dsn", default=os.getenv("ORION_LIVE_DSN") or os.getenv("POSTGRES_URI"))
@@ -311,12 +351,17 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"promise acts since {since:%Y-%m-%d %H:%M} UTC: {led['acts']} "
           f"(open {led['open']}, kept {led['kept']}, expired {led['expired']}, void {led['void']}, "
           f"un-closeable {led['unclosable']})")
-    print(f"kept by evidence: {led['kept_by_evidence'] or '-'}; expired with a carry reply: {led['expired_with_carry_reply']}")
+    print(f"kept by evidence: {led['kept_by_evidence'] or '-'}; expired with a carry reply: {led['expired_with_carry_reply']}"
+          + _ids(led["expired_with_carry_reply_acts"]))
     kr = led["keep_rate"]
-    print(f"keep rate (Beta(1,1)): mean {kr['mean']}, 90% {kr['lo90']}-{kr['hi90']}, n={kr['n']} (void and un-closeable left out)")
-    print(f"guard: {g['firm_promises']} firm promises over {g['judged_turns']} judged Juniper turns = {g['rate']} "
-          f"vs baseline {g['baseline_rate']} ({g['baseline']}): ratio {g['ratio']}{' RED' if g['red'] else ''}; "
-          f"skipped pre-#3532 items {g['skipped_pre_force']}; turns not judged {g['turns_not_judged']}")
+    print(f"keep rate (Beta(1,1)) over kept {led['kept']} + expired {led['expired']} (void {led['void']} and "
+          f"un-closeable {led['unclosable']} left out): mean {kr['mean']}, 90% {kr['lo90']}-{kr['hi90']}, n={kr['n']}")
+    ci = g["rate_poisson90"]
+    print(f"guard: {g['firm_promises']} firm promises over {g['judged_turns']} judged Juniper turns = {g['rate']}"
+          f"{f' (90% {ci[0]}-{ci[1]})' if ci else ''} "
+          f"vs frozen baseline {g['baseline_rate']} ({g['baseline']}): ratio {g['ratio']}{' RED' if g['red'] else ''}; "
+          f"skipped pre-#3532 items {g['skipped_pre_force']}; turns not judged {g['turns_not_judged']}; "
+          f"turns before the finder went live ({FINDER_LIVE_AT:%Y-%m-%d %H:%MZ}) left out {g['turns_before_finder']}")
     if args.sample:
         print(f"blinded sample: {out['sample']['written']} items -> {out['sample']['path']} (fill label true/false, then --score)")
     return 0

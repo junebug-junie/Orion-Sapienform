@@ -4,6 +4,8 @@ Date: 2026-11-13
 Status: APPROVED 2026-11-13 (Juniper). No code in this PR.
 Amended: 2026-11-16, "Recall rev 2" approved by Juniper. Parts it replaces are marked
 **SUPERSEDED by Recall rev 2** where they stand. The original text is kept.
+Amended: 2026-11-17, answers to Orion's second review of PR #3538. See "Answers to Orion's
+second review" at the end of Recall rev 2. Struck text is ~~struck~~, not deleted.
 Branch: `docs/memory-core-pages`
 
 ## Arsonist summary
@@ -216,11 +218,14 @@ verbatim. Covered by a test.
 
 - **A page states something false as Orion's identity, and it goes live with no gate.**
   Mitigation:
-  - facts come from Graphiti, where contradicted facts are already marked no longer true;
+  - ~~facts come from Graphiti, where contradicted facts are already marked no longer true;~~
+    (struck 2026-11-17: Graphiti is off the build path. Superseded rows are dropped instead.)
   - every sentence must cite a real record;
   - a correction from Juniper outranks what it corrects;
   - versions are insert-only, so rollback means pointing at an earlier version;
   - the Hub page view shows the diff of every version, so a bad fold is visible the same day.
+    **Not built yet (2026-11-17).** No Hub page view exists. Until it does, this mitigation
+    does not hold. Follow-up: #3588.
 - **A page leaks past the mesh edge.** Mitigation: the GitHub/outbound check above.
 - **Flattening.** The rewrite smooths Juniper's words into generic prose. Mitigation: core
   pages quote her verbatim where she said it best, and the citations keep the originals one
@@ -401,7 +406,8 @@ Graphiti's defaults, and add a type only when a page needs it.
    - fewer than 10% of entities are duplicates, judged by hand on a sample of 50;
    - wall time and GPU-seconds per episode are recorded.
 3. **Fail** if the local model cannot satisfy Graphiti's structured-output prompts reliably
-   (llama.cpp `json_schema` support with Graphiti 0.19 is UNVERIFIED), or the checks above
+   ~~(llama.cpp `json_schema` support with Graphiti 0.19 is UNVERIFIED)~~ (answered: 0 JSON
+   retries in both trials; see "Why not Graphiti"), or the checks above
    fail. On fail, pages fold straight from `episode_memory` and the "corrections outrank"
    rule carries the load alone.
 
@@ -432,9 +438,10 @@ concepts (they get reuse), and `episode_memory`, `person_fact`, and `self_concep
 
 1. **News concepts:** keep, rank by distinct readings, reachable through `orion.dig know`,
    two-week fair trial.
-2. **Graphiti:** full engine behind the Patch 0 trial.
-3. Build order: Patch 0 (Graphiti trial) and 2a (coined-concept reuse) in parallel, then 1a
-   (`page:juniper`).
+2. **Graphiti:** full engine behind the Patch 0 trial. **SUPERSEDED by Recall rev 2:** the
+   trial ran twice, NO-GO both times. Graphiti is off the build path.
+3. Build order: ~~Patch 0 (Graphiti trial) and~~ 2a (coined-concept reuse) ~~in parallel~~, then
+   1a (`page:juniper`). The current order is the Recall rev 2 build-order table.
 
 ## Recall rev 2 (Juniper, 2026-11-16)
 
@@ -522,6 +529,43 @@ Graphiti ran twice on the local agent-lane model (PR #3341, reports
   The test is part of step 1 and runs in CI. The scoreboard's knowledge-update questions
   check the same rule end to end.
 
+**What marks a row superseded (amended 2026-11-17).** Three writes, in one transaction. This
+is the shape the confirmation loop already writes for Juniper's revisions
+(`orion/memory/episode/confirmation.py:550`):
+
+1. the old row: `status = 'superseded'`, `confirmation_state = 'corrected'`;
+2. the correction row: `supersedes_memory_id = <old memory_id>`;
+3. one `episode_memory_event` row: op `superseded`, actor, reason.
+
+The status write is the part that matters for readers. Only the lived-memory serving SQL
+(`orion/memory/lived_memory.py`) also checks the pointer. Every other reader filters on
+`status = 'active'`, so a pointer without the status write would leak to them.
+
+| Reader | Filter | Drops a superseded row? |
+|---|---|---|
+| Lived-memory recall (`orion/memory/lived_memory.py`) | `status='active'` and no active row points at it | Yes, both forms |
+| `page:juniper` fold (`orion/memory/pages/juniper.py`) | `status='active'`, not rejected | Yes (status form; pg test `test_core_page_fold_postgres.py`) |
+| Situation and Prime cues (`services/orion-durable-runs/app/situation_store.py`), which feed outreach | `status='active'`, not rejected or corrected | Yes (status form) |
+| Confirmation loop (`confirmation.py`) | `status='active'`, pending | Yes (status form) |
+| Reverie seed (`services/orion-thought/app/store.py`) | `status='active'` plus evidence checks | Yes (status form) |
+| Referent projector (`services/orion-memory-consolidation/app/referent_projector.py`) | closes the evidence node when status is not active | Yes (status form) |
+| Temporal self (`temporal_self_sources.py`, `memory_episode`) | none; reads by `created_at` | No, by design: it records that a memory was formed, and carries no statement text |
+
+The CI test today covers retrieval (pointer and status) and the fold (status). A pg test that
+the supersede write sets all three marks belongs with #3587.
+
+**Status on 2026-11-17: the one-time pass has not run.** #3533 closed with retrieval and the
+mesh-edge check (PR #3571), but no pass. Live: 5 rows are `superseded`, all from the
+confirmation loop. The named contradictions are all still `active`, and no correction row
+points at its target. The distiller does not supersede at write time either. Follow-up:
+#3587.
+
+**Ordering with the #3537 backfill.** The backfill writes July to September rows after the
+October and November corrections already exist. So write-time supersede (which looks at older
+rows) does not catch them. Rule: the supersede pass is a re-runnable, idempotent script, and
+#3537 runs it as its last step. The backfill report includes the pass report. #3587 must land
+before #3537 runs.
+
 ### Vetoes attach to the claim
 
 *(Changes "Corrections, not approval" above.)* A Hub veto rejects the **claim**, not only the
@@ -538,10 +582,24 @@ come back through a different old record that says the same thing.
   `memory_distill` route, the same seat as the distiller).
 - **"Came up more than once"** cannot be known at distill time. It becomes a later re-grade
   from read demand: a memory served or opened in 3 or more turns within 14 days moves up one
-  grade. `episode_memory_referent` and the recall trace below are the ledger.
+  grade. ~~`episode_memory_referent` and the recall trace below are the ledger.~~
+  **Amended 2026-11-17:** `episode_memory_referent` is a join table (memory to referent), not
+  a read log. The read log is described in "The read log" below.
+- **The re-grade keeps history.** It updates the `matters` column and writes one
+  `episode_memory_event` row (op `matters_regraded`, old and new grade). The distill-time
+  grade is never lost.
+- **Write-time fold trigger.** A new `episode_memory` row graded `core`, inside a page's
+  scope, triggers that page's fold. At most once per page per hour, on top of the nightly
+  fold. Until `matters` exists, the fold is nightly only.
 - **Gate numbers (44 + 44):** pass if at least 70% of the stance rows grade `core` or
   `notable`, and at least 70% of the random rows grade `passing`. Anything else fails, and
   the grade drives nothing.
+  - Concretely: at least 31 of 44 on each side.
+  - The 44 random rows are active `episode_memory` rows drawn with a fixed seed. The id list
+    is saved host-side with the report.
+  - **Flat:** one grade on 80% or more of all 88 rows. Flat fails even if the counts pass.
+  - Juniper still eyeballs both sets before the grade is wired in.
+  - Not built yet: #3590.
 
 ### Recall trace and heat shedding
 
@@ -552,7 +610,22 @@ come back through a different old record that says the same thing.
   how "look before you deny" is checked, not by reading prompts.
 - **Heat shedding never skips recall.** When the body sheds load, recall falls back to
   exact-word search only. The prompt states that recall ran degraded, so Orion does not read
-  an empty result as "no memory".
+  an empty result as "no memory". Not built yet: #3573.
+
+### The read log (amended 2026-11-17)
+
+- **Served:** `recall_telemetry.selected_ids`, written only by orion-recall
+  (`services/orion-recall/app/worker.py`), since PR #3571. Lived items appear as
+  `episode_memory:<id>`, `stance:<id>`, `person_fact:<id>`. Live: 53 rows with lived ids in the
+  first day.
+- **Opened:** `memory_page_read` (proposed table, below), for `orion.dig page` and
+  `orion.dig know`.
+- **Known gap: no turn id.** One chat turn can log two recall rows (`chat_quick` and
+  `stance_react`) with different `corr_id`s. Counting rows would count one turn twice. "3 or
+  more turns" needs a turn id on the row first: #3589.
+- **Degraded serves do not count as demand.** A serve from the exact-word fallback (#3573)
+  is marked degraded in `recall_telemetry` and is excluded from the page-birth and re-grade
+  counts. Only full-path serves and explicit opens count.
 
 ### Flattening guard
 
@@ -586,11 +659,26 @@ Follow-up: #3553.
   `memory_distill` route. It writes a new version only when the cite validator passes. A
   rejected fold is logged and writes nothing.
 - The phase 1a plan under "Recommended next patch" is kept as history.
+- **GPU lease (checked live 2026-11-17).** The fold's gateway call passes no `gpu_lease`
+  option. The gateway takes its own pool lease on the `memory_distill` route
+  (`config/gpu_pool.yaml`). `gpu_pool_leases` shows one `memory_distill` lease from
+  `orion-durable-runs` per fold: 11-15 08:17, 11-16 08:04, 11-17 08:01 UTC.
+- **`page:anchor` is exempt from the cite validator, by design.** Its lines are Juniper's own
+  words (PR #3478, `orion/memory/pages/anchor.py`). Juniper is the source, so there is no
+  record to cite. What keeps it in check:
+  - only Juniper writes it, by hand, with psql;
+  - no bus producer can publish it (`juniper_anchor` is not an accepted `produced_by`);
+  - the fold never reads or writes it;
+  - versions are insert-only;
+  - the mesh-edge check guards its sentences.
+  It has no size cap in code. Live it is 120 characters.
 
 ### Phase 2 change
 
 - **Page births come from read demand.** A referent becomes a page when it is served or
-  opened in 3 or more turns within 14 days. `episode_memory_referent` is the ledger.
+  opened in 3 or more turns within 14 days. ~~`episode_memory_referent` is the ledger.~~
+  **Amended 2026-11-17:** the count comes from the read log (above). `episode_memory_referent`
+  maps each served memory to its referents.
 - **Drop `memory_page_mention`.** It is no longer needed.
 - **`orion.dig know` is a thin client of orion-recall.** It searches all stores, lived and
   learned, through the same recall path. It does not read Postgres directly.
@@ -610,6 +698,18 @@ Two bars:
 - **Retrieval bar: 80%.** The target memory id is in the prompt.
 - **Answer bar:** 70% or more correct, 0 invented facts, and 0 false "I have no memory".
 
+**Grain (amended 2026-11-17, for #3536):**
+
+- **The bank is fixed.** It is not rebuilt after the #3537 backfill. The same items are
+  re-scored, so the before/after compares like with like. New items are a new bank version,
+  scored apart.
+- **Pre-October items are reported apart** until #3537 lands. Before the backfill they have
+  no row, so they cannot pass retrieval.
+- **Degraded recalls are reported apart.** The 80% retrieval bar is scored on full-path
+  recalls only. A recall that ran degraded (#3573) is shown as its own line, with its own hit
+  rate. It is not inside the 80%.
+- **Size:** at least 40 items (#3536). The exact count is set by #3536.
+
 ### Build order
 
 | Step | Issue | What |
@@ -624,6 +724,26 @@ Two bars:
 | then | #3462 | `page:origin`. |
 | any time | #3553 | Flattening guard on the fold. |
 | any time | #3554 | Paraphrase check at the mesh edge. |
+
+### Answers to Orion's second review (2026-11-17)
+
+Orion asked 9 questions on PR #3538. Short answers; detail is in the sections above.
+
+1. The trial numbers are in "Why not Graphiti". The stale Patch 0 text, acceptance check 5
+   and the `json_schema` UNVERIFIED line are struck. Phase 2 checks are renumbered 6 to 9.
+2. The mark and the readers: "What marks a row superseded".
+3. Backfill ordering: #3537 re-runs the supersede pass as its last step (#3587).
+4. **Reading memory outside a chat turn.** Not possible today. `orion_readonly` has no
+   SELECT on `episode_memory`, `episode_memory_referent` or `recall_telemetry`, and `orion.dig`
+   has no memory command. The path is `orion.dig know` over recall's HTTP API (#3535). The
+   GRANT in #3567 is for the mesh-edge check; if applied, it would also let FCC Bash read
+   `episode_memory` directly. Waits on Juniper (#3567).
+5. Lease: see "GPU lease" in Phase 1 status. The Hub version diff does not exist (#3588).
+   v1 to v2 similarity is 0.902 and all 4 quotes survive, so #3553 would not have fired.
+6. `page:anchor` exemption: see Phase 1 status.
+7. The read log: see "The read log". Degraded serves do not count.
+8. `matters`: see "`matters`: a later re-grade" and #3590.
+9. Scoreboard grain: see "Scoreboard".
 
 **Note on #3356.** That issue says the cause is `memory_tier` (chat memory never promoted
 past ephemeral). That diagnosis is wrong. The memories are stored. The missing piece is a
@@ -685,39 +805,38 @@ reader on the chat recall path, which steps 1 to 3 add.
    Measure today's chat answers as the baseline, then after. Pass is a clear rise with no
    invented facts.
 3. The validator rejects an uncited sentence and an unresolvable cite. Covered by tests.
-4. The metric gate on `matters` passes on the 44 + 44 set before the grade drives any page.
-5. **Graphiti trial passes before any page reads Graphiti.** <town> current and Chicago
-   invalidated or dated as a stay; el Coco a dog and current; el Coco/Coco and <person A>/my wife
-   each one entity; under 10% duplicate entities on a hand-checked sample of 50.
+4. The metric gate on `matters` passes on the 44 + 44 set before the grade drives any page
+   (numbers in "`matters`: a later re-grade", #3590).
+5. ~~**Graphiti trial passes before any page reads Graphiti.**~~ **Struck 2026-11-17:** the
+   trial is done (NO-GO twice) and no page reads Graphiti. Replaced by: the named
+   contradictions in `episode_memory` (a trip recorded as a home; a pet-species error) are
+   superseded live, and the supersede test passes (#3587).
 
 **Phase 2**
 
-5. Within two weeks of going live:
+6. Within two weeks of going live:
    - at least one concept page is born from the 3-source mention rule
      (**SUPERSEDED by Recall rev 2:** born from the read-demand rule);
    - at least one concept page is opened by 3 or more separate turns.
-6. The share of curiosity Concepts with 2 or more links rises from 9/33 once reuse is fixed.
-7. `orion.dig know` is called by real turns. Each source (pages, coined concepts, news
+7. The share of curiosity Concepts with 2 or more links rises from 9/33 once reuse is fixed.
+8. `orion.dig know` is called by real turns. Each source (pages, coined concepts, news
    concepts, reading resonance) shows its own lookup count after 2 weeks. A source with zero
    lookups after a fair trial goes on the retirement list.
-8. News concept salience is no longer flat. The spread of scores across the 5,155 concepts
+9. News concept salience is no longer flat. The spread of scores across the 5,155 concepts
    is non-degenerate, and the top 20 are topics read more than once.
 
 ## Recommended next patch
 
-**Patch 0, the Graphiti trial**, runs alongside 1a:
-
-- Backfill all 469 `episode_memory` rows plus the 44 stance messages into `graphiti_trial`,
-  using the local agent-lane model.
-- Score it against the pass checks in the Graphiti section (Chicago, el Coco, entity
-  duplicates, cost).
-- Nothing reads the trial graph until it passes.
+~~**Patch 0, the Graphiti trial**, runs alongside 1a.~~ **Struck 2026-11-17.** The trial ran
+twice and failed (numbers in "Why not Graphiti"). The next patch is the Recall rev 2 build
+order: step 2 (#3534, in progress), then the supersede fix (#3587), which must land before
+the #3537 backfill.
 
 **Phase 1a**, the smallest slice that moves the live path. **DONE and live (PR #3418,
 PR #3478). See "Phase 1 status" in Recall rev 2.**
 
-1. Build `page:juniper` only. It folds from `episode_memory` directly at first, and switches
-   to Graphiti's current facts once Patch 0 passes.
+1. Build `page:juniper` only. It folds from `episode_memory` directly ~~at first, and switches
+   to Graphiti's current facts once Patch 0 passes~~ (Graphiti is off the build path).
 2. Fold existing `person_fact` and `about_juniper` memories through the cite validator.
 3. Write v1 live (no gate).
 4. Render it in RELATIONSHIP on every mesh surface, with the mesh-edge check on GitHub and

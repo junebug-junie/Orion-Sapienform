@@ -535,6 +535,22 @@ eval-self-sense:
 	set +a; \
 	$(METRIC_PYTHON) services/orion-hub/evals/run_self_sense_eval.py $(ARGS)
 
+# Memory scoreboard (issue #3536): how well Orion remembers Juniper's real history. Retrieval
+# replays orion-recall's two chat phases over the bus (no model); answer sends each bank item as a
+# no_write Hub chat turn on session memory-scoreboard-eval and grades it with a local judge (GPU
+# pool operator hold). Bank and results stay host-side under ~/.orion/evals/ (mode 600). Run it
+# weekly to track change; `ARGS=--phases retrieval` is the fast, model-free half. Env: root .env
+# (ORION_BUS_URL, POSTGRES_*) and services/orion-recall/.env (RECALL_LIVED_MEMORY_TIMEOUT_SEC),
+# read from the primary checkout when this is a linked worktree.
+.PHONY: eval-memory-scoreboard
+eval-memory-scoreboard:
+	@set -a; \
+	_root=$$(git rev-parse --git-common-dir 2>/dev/null)/..; \
+	if [ -f services/orion-recall/.env ]; then . ./services/orion-recall/.env; elif [ -f "$$_root/services/orion-recall/.env" ]; then . "$$_root/services/orion-recall/.env"; fi; \
+	if [ -f .env ]; then . ./.env; elif [ -f "$$_root/.env" ]; then . "$$_root/.env"; fi; \
+	set +a; \
+	$(METRIC_PYTHON) services/orion-recall/evals/run_memory_scoreboard.py $(ARGS)
+
 # Bonsai (gpu2) vs Q4 (gpu1) replay quality test: 30 real tasks, both models, writes stubbed,
 # verdict printed at the end. Holds gpu1+gpu2 per task through the pool's operator verbs and
 # releases them between tasks; ~12 h expected. `ARGS=--dry-run` shows the plan and touches nothing.

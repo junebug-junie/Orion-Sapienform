@@ -1,0 +1,53 @@
+{
+ "schema": "memory_scoreboard_bank.v1",
+ "note": "Made-up fixture for the committed scoreboard test (issue #3536). Not real history.",
+ "created": "2026-11-17",
+ "items": [
+  {"qid": "fact_city", "category": "fact", "question": "Which city does the gardener live in?",
+   "targets": ["episode_memory:00000000-0000-5000-8000-000000000001"], "expected": "Lakeport."},
+  {"qid": "fact_page_only", "category": "fact", "question": "What color is the gardener's bicycle?",
+   "targets": ["person_fact:fx-bike"], "expected": "Green."},
+  {"qid": "event_kiln", "category": "event", "question": "How did the pottery kiln project go?",
+   "targets": ["episode_memory:00000000-0000-5000-8000-000000000002", "episode_memory:00000000-0000-5000-8000-000000000003"],
+   "expected": "The first firing cracked a bowl; the second firing worked."},
+  {"qid": "event_implicit", "category": "event", "chat_id": "00000000-0000-4000-8000-0000000000aa", "implicit": true,
+   "targets": ["stance:00000000-0000-4000-8000-000000000004"], "expected": "The cat came home after two days."},
+  {"qid": "time_market", "category": "time", "question": "What did we do on the morning of March 3rd?",
+   "targets": ["episode_memory:00000000-0000-5000-8000-000000000005"], "expected": "Went to the farmers market.",
+   "as_of": "2026-03-10"},
+  {"qid": "update_color", "category": "update", "question": "What color did the fence end up?",
+   "targets": ["episode_memory:00000000-0000-5000-8000-000000000006"], "expected": "Blue (it was first planned as red).",
+   "wrong_answer": "red", "superseded": ["episode_memory:00000000-0000-5000-8000-000000000007"]},
+  {"qid": "abstain_volcano", "category": "abstention", "question": "How was the volcano tour?",
+   "targets": [], "expected": "Never happened."},
+  {"qid": "fact_backfill", "category": "fact", "question": "What is the gardener's favorite tree?",
+   "targets": [], "expected": "Oak.", "backfill_pending": true,
+   "source_chat_ids": ["00000000-0000-4000-8000-0000000000bb"]}
+ ],
+ "replay": {
+  "page_content": "The gardener rides a green bicycle [person_fact:fx-bike]. They live near the water [episode_memory:00000000-0000-5000-8000-000000000099].",
+  "observations": {
+   "fact_city": {"injected": ["episode_memory:00000000-0000-5000-8000-000000000001", "chat:123"]},
+   "fact_page_only": {"injected": []},
+   "event_kiln": {"injected": ["episode_memory:00000000-0000-5000-8000-000000000003"]},
+   "event_implicit": {"injected": ["episode_memory:00000000-0000-5000-8000-000000000002"]},
+   "time_market": {"injected": ["episode_memory:00000000-0000-5000-8000-000000000005"],
+                   "telemetry": [{"profile": "chat.continuity.v1", "deadline_hit": false,
+                                  "backend_counts": {"lived_memory": 0}, "timings_ms": {"lived_memory_wait": 3990}}]},
+   "update_color": {"injected": ["episode_memory:00000000-0000-5000-8000-000000000006",
+                                 "episode_memory:00000000-0000-5000-8000-000000000007"]},
+   "abstain_volcano": {"injected": ["episode_memory:00000000-0000-5000-8000-000000000001"]},
+   "fact_backfill": {"injected": []}
+  },
+  "judge": {
+   "fact_city": "{\"label\": \"correct\", \"why\": \"names Lakeport\"}",
+   "fact_page_only": "<think>hmm</think>{\"label\": \"no_memory\", \"why\": \"denies\"}",
+   "event_kiln": "label: dont_know",
+   "event_implicit": "{\"label\": \"unrelated\"}",
+   "time_market": "{\"label\": \"correct\"}",
+   "update_color": "{\"label\": \"invented\", \"why\": \"says red\"}",
+   "abstain_volcano": "{\"label\": \"no_memory\"}",
+   "fact_backfill": "{\"label\": \"no_memory\"}"
+  }
+ }
+}

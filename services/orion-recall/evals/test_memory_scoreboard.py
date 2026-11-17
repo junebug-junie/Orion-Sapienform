@@ -1,0 +1,266 @@
+"""Committed memory-scoreboard eval on made-up fixtures (issue #3536).
+
+Guards the bank rules, the retrieval and answer scoring (bars, degraded and backfill items kept
+apart, superseded rows caught), the judge-label parsing, the per-category table (no memory text),
+the runner's retrieval glue (fake bus replies, fake trace rows), and that the runner's recall
+profiles still match what cortex-exec sends on a chat turn. The live numbers come from
+``run_memory_scoreboard.py`` against the host-side bank.
+"""
+from __future__ import annotations
+
+import ast
+import asyncio
+import json
+import sys
+from argparse import Namespace
+from pathlib import Path
+
+import pytest
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[2]
+if str(HERE) not in sys.path:
+    sys.path.insert(0, str(HERE))
+
+import memory_scoreboard as ms  # noqa: E402
+import run_memory_scoreboard as runner  # noqa: E402
+
+FIXTURE = HERE / "fixtures" / "memory_scoreboard_fixture.json"
+
+
+def _fixture():
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    return data, ms.load_items(data), data["replay"]
+
+
+def _observations(items, replay):
+    pids = ms.page_refs(replay["page_content"])
+    out = {}
+    for it in items:
+        o = replay["observations"][it.qid]
+        tel = o.get("telemetry", [{"profile": "chat.continuity.v1", "deadline_hit": False,
+                                   "backend_counts": {"lived_memory": 1}, "timings_ms": {"lived_memory_wait": 50}}])
+        out[it.qid] = ms.RetrievalObservation(qid=it.qid, injected_ids=set(o["injected"]), page_ids=pids,
+                                              degraded=ms.degraded_reasons(tel, lived_timeout_ms=4000))
+    return out
+
+
+def test_fixture_bank_is_valid_and_kinds_are_right():
+    data, items, _ = _fixture()
+    assert ms.validate_bank(data) == []
+    kinds = {it.qid: it.kind for it in items}
+    assert kinds["abstain_volcano"] == "abstention"
+    assert kinds["fact_backfill"] == "backfill"
+    assert kinds["fact_city"] == "stored"
+    assert next(it for it in items if it.qid == "event_implicit").implicit
+
+
+@pytest.mark.parametrize("mutate,needle", [
+    (lambda b: b["items"][0].update(targets=[]), "names its target"),
+    (lambda b: b["items"][6].update(targets=["episode_memory:x"]), "abstention items name no target"),
+    (lambda b: b["items"][4].pop("as_of"), "as_of"),
+    (lambda b: b["items"][5].pop("wrong_answer"), "wrong (pre-correction) answer"),
+    (lambda b: b["items"][0].update(targets=["chat:abc"]), "bad record id"),
+    (lambda b: b["items"][1].update(qid="fact_city"), "duplicate qid"),
+    (lambda b: b["items"][0].update(chat_id="x"), "exactly one of question / chat_id"),
+    (lambda b: b["items"][7].update(source_chat_ids=[]), "source_chat_ids"),
+    (lambda b: b["items"][0].update(category="trivia"), "category"),
+])
+def test_bank_rules_reject_bad_items(mutate, needle):
+    data = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    mutate(data)
+    errors = ms.validate_bank(data)
+    assert any(needle in e for e in errors), errors
+    with pytest.raises(ValueError):
+        ms.load_items(data)
+
+
+def test_retrieval_score_counts_page_cites_keeps_degraded_apart_and_catches_superseded():
+    _, items, replay = _fixture()
+    report = ms.score_retrieval(items, _observations(items, replay))
+    # stored: city (bundle hit), page_only (page hit), kiln (1 of 2 targets), implicit (miss),
+    # update (hit); time_market timed out -> degraded, not scored.
+    assert report["scored"] == 5 and report["hits"] == 4 and report["hit_rate"] == 0.8
+    assert report["passes"] is True                      # 0.80 meets the 80% bar exactly
+    assert report["bundle_hits"] == 3                    # without the page's cites
+    assert [d["qid"] for d in report["degraded"]] == ["time_market"]
+    assert report["degraded"][0]["reasons"] == ["lived_memory:timeout"]
+    assert report["superseded_served"] == [
+        {"qid": "update_color", "ids": ["episode_memory:00000000-0000-5000-8000-000000000007"]}]
+    assert [b["qid"] for b in report["backfill"]] == ["fact_backfill"]
+    assert report["by_category"]["fact"]["hits"] == 2
+    assert report["by_category"]["abstention"]["stored"] == 0
+
+
+def test_one_more_miss_fails_the_retrieval_bar():
+    _, items, replay = _fixture()
+    obs = _observations(items, replay)
+    obs["fact_city"].injected_ids = set()
+    assert ms.score_retrieval(items, obs)["passes"] is False
+
+
+@pytest.mark.parametrize("rows,reasons", [
+    ([], ["trace:missing"]),
+    ([{"profile": "chat.continuity.v1", "deadline_hit": True, "backend_counts": {"lived_memory": 2},
+       "timings_ms": {}}], ["recall:deadline_hit"]),
+    ([{"profile": "chat.continuity.v1", "backend_counts": json.dumps({"sql_chat": 2}), "timings_ms": "{}"}],
+     ["lived_memory:not_run"]),
+    ([{"profile": "chat.continuity.v1", "backend_counts": {"lived_memory": 0},
+       "timings_ms": {"lived_memory_wait": 120}}], []),   # nothing fit, fast: not degraded
+    ([{"profile": "chat.belief.open_loop.v1", "backend_counts": {}, "timings_ms": {}}], []),
+])
+def test_degraded_reasons_from_trace_rows(rows, reasons):
+    assert ms.degraded_reasons(rows, lived_timeout_ms=4000) == reasons
+
+
+def test_degraded_reasons_rpc_error():
+    assert ms.degraded_reasons([], lived_timeout_ms=4000, rpc_error="TimeoutError") == ["rpc:TimeoutError"]
+
+
+def test_answer_score_maps_labels_by_kind_and_applies_bars():
+    _, items, replay = _fixture()
+    by_qid = {it.qid: it for it in items}
+    outcomes = {q: ms.outcome_for(by_qid[q], ms.parse_judge_label(raw)) for q, raw in replay["judge"].items()}
+    assert outcomes == {
+        "fact_city": "correct", "fact_page_only": "false_no_memory", "event_kiln": "dont_know",
+        "event_implicit": "missed", "time_market": "correct", "update_color": "invented",
+        "abstain_volcano": "correct", "fact_backfill": "no_memory",
+    }
+    report = ms.score_answers(items, outcomes)
+    assert report["scored"] == 7 and report["measured"] == 7 and report["correct"] == 3
+    assert report["invented"] == ["update_color"]
+    assert report["false_no_memory"] == ["fact_page_only"]
+    assert report["passes"] == {"correct_rate": False, "invented": False, "false_no_memory": False}
+    assert report["backfill"] == [{"qid": "fact_backfill", "outcome": "no_memory"}]
+    assert report["by_category"]["fact"]["backfill"]["no_memory"] == 1
+
+
+def test_answer_bars_pass_and_errors_are_not_measured():
+    _, items, _ = _fixture()
+    outcomes = {it.qid: "correct" for it in items}
+    outcomes["event_kiln"] = "error"
+    report = ms.score_answers(items, outcomes)
+    assert report["measured"] == 6 and report["correct_rate"] == 1.0
+    assert all(report["passes"].values())
+    assert report["not_measured"] == [{"qid": "event_kiln", "outcome": "error"}]
+
+
+@pytest.mark.parametrize("raw,label", [
+    ('{"label": "correct", "why": "x"}', "correct"),
+    ('<think>maybe invented?</think>\n{"label": "dont know"}', "dont_know"),
+    ("```json\n{\"label\": \"no_memory\"}\n```", "no_memory"),
+    ("The label is invented.", "invented"),
+    ("correct or invented, hard to say", None),
+    ("", None),
+])
+def test_parse_judge_label(raw, label):
+    assert ms.parse_judge_label(raw) == label
+
+
+def test_abstention_judge_prompt_never_leaks_expected_as_truth_and_update_prompt_names_old_answer():
+    _, items, _ = _fixture()
+    by_qid = {it.qid: it for it in items}
+    p = ms.build_judge_prompt(by_qid["abstain_volcano"], "How was the volcano tour?", "It was great!")
+    assert "NOTHING is recorded" in p and "It was great!" in p
+    p = ms.build_judge_prompt(by_qid["update_color"], "What color?", "Red.", ["The fence is blue."])
+    assert "OLD, wrong answer was: red" in p and "The fence is blue." in p
+    p = ms.build_judge_prompt(by_qid["event_implicit"], "she's back!", "Yay!")
+    assert "not a direct question" in p
+
+
+def test_table_has_every_category_and_no_memory_text():
+    data, items, replay = _fixture()
+    retrieval = ms.score_retrieval(items, _observations(items, replay))
+    by_qid = {it.qid: it for it in items}
+    answers = ms.score_answers(items, {q: ms.outcome_for(by_qid[q], ms.parse_judge_label(r))
+                                       for q, r in replay["judge"].items()})
+    table = ms.render_table(retrieval, answers, run_date="2026-11-17", bank_items=len(items))
+    for cat in ms.CATEGORIES:
+        assert f"| {cat} |" in table
+    assert "Retrieval bar: PASS" in table and "correct FAIL" in table
+    assert "fact_backfill" in table
+    for it in data["items"]:
+        assert it["expected"] not in table
+        if it.get("question"):
+            assert it["question"] not in table
+    line = ms.summary_line("2026-11-17", retrieval, answers)
+    assert line["retrieval"]["hit_rate"] == 0.8 and line["answer"]["invented"] == 1
+
+
+# ------------------------------------------------------------ runner glue (no bus, DB or Hub)
+
+class _FakePool:
+    def __init__(self, page_content, telemetry):
+        self.page_content, self.telemetry = page_content, telemetry
+
+    async def fetchrow(self, sql, *args):
+        assert sql == runner.PAGE_SQL
+        return {"version": 3, "content": self.page_content}
+
+    async def fetch(self, sql, *args):
+        assert "FROM recall_telemetry" in sql
+        return [row for corr in args[0] for row in self.telemetry.get(corr, [])]
+
+
+def test_runner_retrieval_replays_both_phases_and_reads_the_trace(monkeypatch):
+    _, items, replay = _fixture()
+    calls, telemetry = [], {}
+
+    async def fake_rpc(bus, *, text, profile, phase, intent, deadline_ms, timeout_sec):
+        qid = next(q for q, t in texts.items() if t == text)
+        corr = f"{qid}:{phase}"
+        calls.append((qid, profile, phase))
+        obs = replay["observations"][qid]
+        ids = obs["injected"] if phase == "continuity" else []
+        telemetry[corr] = obs.get("telemetry", [{"profile": profile, "deadline_hit": False,
+                                                 "backend_counts": {"lived_memory": len(ids)}, "timings_ms": {}}]) \
+            if phase == "continuity" else [{"profile": profile, "deadline_hit": False, "backend_counts": {},
+                                            "timings_ms": {}}]
+        return {"bundle": {"items": [{"id": i} for i in ids]}}, corr
+
+    class _Bus:
+        def __init__(self, url):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def close(self):
+            pass
+
+    async def no_sleep(_s):
+        return None
+
+    import orion.core.bus.async_service as bus_mod
+
+    monkeypatch.setattr(runner, "_recall_rpc", fake_rpc)
+    monkeypatch.setattr(bus_mod, "OrionBusAsync", _Bus)
+    monkeypatch.setattr(runner.asyncio, "sleep", no_sleep)
+    texts = {it.qid: (it.question or "the cat finally came home after two days away") for it in items}
+    args = Namespace(bus_url="redis://fake", phase3_intent="open_loop", deadline_ms=1000, rpc_timeout=1.0)
+    report = asyncio.run(runner.run_retrieval(items, texts, _FakePool(replay["page_content"], telemetry), args))
+    assert report["hits"] == 4 and report["scored"] == 5 and report["passes"] is True
+    assert [d["qid"] for d in report["degraded"]] == ["time_market"]
+    assert report["page"] == {"version": 3, "cites": 2}
+    # Every non-skipped item ran phase 1 then phase 3 with cortex-exec's profiles.
+    for qid in {c[0] for c in calls}:
+        assert [c[1:] for c in calls if c[0] == qid] == [
+            ("chat.continuity.v1", "continuity"), ("chat.belief.open_loop.v1", "purposeful")]
+
+
+def test_runner_refuses_without_bus_url(monkeypatch, capsys):
+    monkeypatch.delenv("ORION_BUS_URL", raising=False)
+    assert runner.main(["--bank", str(FIXTURE)]) == 2
+    assert "ORION_BUS_URL" in capsys.readouterr().out
+
+
+def test_runner_profiles_match_cortex_exec():
+    """The replay must send what a real chat turn sends (pcr_chat_memory.py)."""
+    src = (REPO / "services" / "orion-cortex-exec" / "app" / "pcr_chat_memory.py").read_text(encoding="utf-8")
+    found = {}
+    for node in ast.parse(src).body:
+        target = node.target if isinstance(node, ast.AnnAssign) else (node.targets[0] if isinstance(node, ast.Assign) else None)
+        if isinstance(target, ast.Name) and target.id in ("CONTINUITY_PROFILE", "PROFILE_FOR_INTENT"):
+            found[target.id] = ast.literal_eval(node.value)
+    assert found["CONTINUITY_PROFILE"] == runner.CONTINUITY_PROFILE
+    assert found["PROFILE_FOR_INTENT"] == runner.PROFILE_FOR_INTENT

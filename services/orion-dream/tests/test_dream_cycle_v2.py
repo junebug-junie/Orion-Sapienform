@@ -998,3 +998,63 @@ def test_the_pair_caps_fit_the_stored_lists():
         return next(m.le for m in Settings.model_fields[name].metadata if hasattr(m, "le"))
 
     assert le("DREAM_HYPOTHESES_PER_CYCLE") + le("DREAM_CONTROL_PER_CYCLE") <= MAX_HYPOTHESES
+
+
+def test_metacog_fragment_carries_its_time_and_evidence():
+    # #3412: the summary alone is prose the model rightly declines to link; the facts and the time
+    # are what make a claimed link checkable.
+    from app.replay import candidate_from_metacog
+
+    item = candidate_from_metacog({
+        "id": "m1", "summary": "The motor burned out before the reply could form.", "severity": "critical",
+        "trigger_kind": "chat_turn", "occurred_at": datetime(2026, 11, 17, 23, 2, 14, tzinfo=timezone.utc),
+        "evidence": "compliance failed; grounding: finalize_reply_deadline",
+    })
+    assert item.text == ("[11-17 23:02 UTC] The motor burned out before the reply could form. "
+                         "Evidence: compliance failed; grounding: finalize_reply_deadline.")
+    # An ISO string (orion_metacog.timestamp is producer-written text) reads the same.
+    same = candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical",
+                                   "occurred_at": "2026-11-17T23:02:14Z"})
+    assert same.text == "[11-17 23:02 UTC] s"
+    # A row without them keeps the old text; a bad time is dropped, not guessed.
+    assert candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical"}).text == "s"
+    assert candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical",
+                                   "occurred_at": "not a time"}).text == "s"
+    assert candidate_from_metacog({"id": "m1", "summary": "", "severity": "critical", "evidence": "e"}) is None
+    # Evidence that already ends in a full stop gets one, not two; long evidence fits the cap whole-ended.
+    assert candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical",
+                                   "evidence": "done."}).text == "s Evidence: done."
+    from app.replay import TEXT_CAP
+    fits = candidate_from_metacog({"id": "m1", "summary": "y" * 272, "severity": "critical",
+                                   "occurred_at": "2026-11-17T23:02:14Z", "evidence": "z" * 300})
+    assert len(fits.text) <= TEXT_CAP and fits.text.endswith("….")  # evidence cut, its close kept
+    full = candidate_from_metacog({"id": "m1", "summary": "y" * 700, "severity": "critical", "evidence": "z"})
+    assert len(full.text) == TEXT_CAP and "Evidence" not in full.text  # no room: summary only, capped
+
+
+def test_compaction_fragment_carries_what_the_chain_thought():
+    from app.replay import candidate_from_compaction_request
+
+    item = candidate_from_compaction_request({
+        "request_id": "r1", "theme": "open-loop-x", "reason": "reverie_chain_settled",
+        "title": "Orion is reading", "occurred_at": datetime(2026, 11, 17, 22, 45, tzinfo=timezone.utc),
+        "interpretation": "The reading loop is stalling because of a GPU backlog.",
+    })
+    assert item.text == "[11-17 22:45 UTC] Orion is reading: The reading loop is stalling because of a GPU backlog."
+    # No thought (chain missing): the old label, with the time.
+    bare = candidate_from_compaction_request({
+        "request_id": "r1", "theme": "open-loop-x", "reason": "reverie_chain_settled", "title": "Orion is reading",
+        "occurred_at": datetime(2026, 11, 17, 22, 45, tzinfo=timezone.utc), "interpretation": None,
+    })
+    assert bare.text == "[11-17 22:45 UTC] Orion is reading: reverie_chain_settled"
+    assert bare.ref_id == item.ref_id and bare.tags == item.tags  # keys unchanged: novelty and tiredness hold
+
+
+def test_source_queries_read_the_content_behind_the_label():
+    from app.cycle_store import SOURCE_QUERIES
+
+    meta = " ".join(SOURCE_QUERIES["metacog"].split())
+    assert "what_changed->'evidence'" in meta and "AS occurred_at" in meta and "evidence FROM" in meta
+    comp = " ".join(SOURCE_QUERIES["compaction_request"].split())
+    assert "substrate_reverie_chain ch" in comp and "ch.chain_id = d.origin_chain_id" in comp
+    assert "chain_json->'thought_ids'->>-1" in comp and "r.interpretation" in comp

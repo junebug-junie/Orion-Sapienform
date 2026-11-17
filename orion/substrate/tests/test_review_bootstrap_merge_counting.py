@@ -52,8 +52,6 @@ class _FixedRegionStore:
             source_kind="cache",
         )
 
-    def query_contradiction_region(self, **_: object) -> SubstrateQueryResultV1:
-        return self._result("contradiction_region")
 
     def query_hotspot_region(self, **_: object) -> SubstrateQueryResultV1:
         return self._result("hotspot_region")

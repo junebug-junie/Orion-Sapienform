@@ -1347,13 +1347,6 @@ class FalkorSubstrateStore:
             )
         return _retag_source(result, self._result_source_kind)
 
-    def query_contradiction_region(
-        self, *, limit_nodes: int = 32, limit_edges: int = 64
-    ) -> SubstrateQueryResultV1:
-        with self._cache_lock:
-            result = self._cache.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
-        return _retag_source(result, self._result_source_kind)
-
     def query_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
@@ -1381,12 +1374,6 @@ class FalkorSubstrateStore:
             return self._cache.read_hotspot_region(
                 min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
             )
-
-    def read_contradiction_region(
-        self, *, limit_nodes: int = 32, limit_edges: int = 64
-    ) -> SubstrateNeighborhoodSliceV1:
-        with self._cache_lock:
-            return self._cache.read_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
     def read_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64

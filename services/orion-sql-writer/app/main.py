@@ -1110,6 +1110,9 @@ async def lifespan(app: FastAPI):
     configure_act_ledger(bool(getattr(settings, "sql_writer_act_ledger_enabled", True)))
     configure_act_workspace_binding(bool(getattr(settings, "sql_writer_act_workspace_binding_enabled", True)))
     configure_act_energy_cost(bool(getattr(settings, "sql_writer_act_energy_cost_enabled", True)))
+    from orion.grammar.reply_base_rate import configure_reply_base_rate
+
+    configure_reply_base_rate(bool(getattr(settings, "sql_writer_act_reply_base_rate_enabled", True)))
     act_resolver_task: asyncio.Task | None = None
     if bool(getattr(settings, "sql_writer_act_ledger_enabled", True)) and float(
             getattr(settings, "sql_writer_act_resolver_interval_sec", 0.0) or 0.0) > 0:

@@ -17,7 +17,12 @@ The needs built here (each has a live producer; see the PR report's metric gate 
   source) nearing its ``expires_at``, counted from its ``decided_at``. Its drive stops at ``EVENT_DRIVE_CAP`` (0.5):
   the event is offered to one thought before it expires, never re-offered as it rises. Without this, an event with a
   short window (a reading's look 3 h, an office visit 2 h, a curiosity finding 12 h) could expire between thoughts
-  once the floor is gone: the replay's longest stretch with no thought is 20-27 h.
+  once the floor is gone: the replay's longest stretch with no thought is 20-27 h. Only an event in the top tenth of
+  its own source (``salience`` >= ``EVENT_WAKE_SALIENCE``) may wake Prime this way. An ordinary funded event is
+  shown at Prime's next thought only if it is still open then and in the top ``PRIME_EVENT_WANTS_LIMIT`` by net:
+  a 3 h read or a 15 min cooling act below the band is often never seen by Prime (the cooling act itself runs on
+  its own clock either way). Deliberate: salience (how unusual for its source), not net, decides the wake. Live 11-16 18:06Z..11-17 03:00Z, with no gate, 11 of 12 thoughts were woken by
+  funded reading wants (3-day mean salience 0.09: reads that made no link) and all 11 ended "no move".
 * ``surprise`` -- an experience of another organ whose ``surprise_nats`` is strictly above its own source kind's
   30-day 90th percentile, that no organ has cited yet, and whose surprisal is at least ln 2 (the outcome had
   probability 1/2 or less: more unlikely than not). drive = 1 - exp(-nats) = 1 - P(observed): exactly 0.5 at ln 2.
@@ -89,6 +94,7 @@ HORIZON_START = 0.5  # the horizon drive counts from half the horizon
 PRIME_NEED_EVENT_PREFIX = "prime_need:"
 EVENT_DAMP_PREFIX = "horizon:event:"  # guard 1's key for an unheld event want's horizon need, per family
 EVENT_DRIVE_CAP = 0.5  # an unheld funded event want is offered once, at three quarters of its window
+EVENT_WAKE_SALIENCE = 0.9  # only the top tenth of an event's own source may wake Prime (curiosity wants' band)
 SURPRISE_FLOOR_NATS = math.log(2.0)  # the outcome had P <= 1/2
 SURPRISE_RECOVERY = timedelta(hours=24)  # the now's use window: an experience counts as used within 24 h
 CONVERSATION_PAUSE = timedelta(hours=2)
@@ -185,6 +191,9 @@ def event_horizon_needs(state: PrimeStateV1, now: datetime,
             continue
         if w.get("family") == "prime" or ref.startswith(PRIME_NEED_EVENT_PREFIX):
             continue  # Prime's own thought bid is never an event for Prime (a self-feeding loop)
+        salience = w.get("salience")
+        if not isinstance(salience, (int, float)) or salience < EVENT_WAKE_SALIENCE:
+            continue  # an ordinary event waits in the frame for the next thought; it does not wake Prime
         drive = min(EVENT_DRIVE_CAP, horizon_drive(now - start, end - start))
         if drive <= 0.0:
             continue
@@ -471,8 +480,9 @@ def parse_woke_need(note: Optional[str]) -> Optional[tuple[str, str]]:
 
 
 __all__ = [
-    "BUDGET_WINDOW", "CONVERSATION_PAUSE", "EVENT_DAMP_PREFIX", "EVENT_DRIVE_CAP", "PRIME_NEED_EVENT_PREFIX",
-    "event_damp_key", "event_horizon_needs", "DAILY_BUDGET", "DAMPING", "MIN_HISTORY", "MIN_RISE", "NEED_NAMES", "NeedDampV1",
+    "BUDGET_WINDOW", "CONVERSATION_PAUSE", "EVENT_DAMP_PREFIX", "EVENT_DRIVE_CAP", "EVENT_WAKE_SALIENCE",
+    "PRIME_NEED_EVENT_PREFIX", "event_damp_key", "event_horizon_needs", "DAILY_BUDGET", "DAMPING", "MIN_HISTORY",
+    "MIN_RISE", "NEED_NAMES", "NeedDampV1",
     "NeedFiredV1", "NeedName", "NeedV1", "PrimeNeedsStateV1", "SURPRISE_FLOOR_NATS", "THRESHOLD", "WOKE_NEED_RE",
     "after_answer", "answered_refs", "budget_spent", "compute_needs", "connection_drive", "conversation_gaps", "damp_factor",
     "frame_lines", "horizon_drive", "horizon_needs", "may_fire", "note_thought", "parse_woke_need", "pick_wake",

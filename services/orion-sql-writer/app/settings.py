@@ -938,6 +938,8 @@ class Settings(BaseSettings):
     # wh_gpu_by_host / usd / heat_c_by_host / basis on close from the act's GPU leases, per-card watts
     # and the host's chassis watts (orion/grammar/act_energy_fill.py).
     sql_writer_act_energy_cost_enabled: bool = Field(True, alias="SQL_WRITER_ACT_ENERGY_COST_ENABLED")
+    # Outreach act predicted = Juniper's reply base rate for that time of day (orion/grammar/reply_base_rate.py).
+    sql_writer_act_reply_base_rate_enabled: bool = Field(True, alias="SQL_WRITER_ACT_REPLY_BASE_RATE_ENABLED")
 
     @property
     def route_map(self) -> dict[str, str]:

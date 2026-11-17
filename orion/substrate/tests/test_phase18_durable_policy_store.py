@@ -44,9 +44,6 @@ class CountingStore(InMemorySubstrateGraphStore):
         self._bump("concept_region")
         return super().query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64):
-        self._bump("contradiction_region")
-        return super().query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
 
 def _seed(store: InMemorySubstrateGraphStore) -> None:

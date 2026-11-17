@@ -38,12 +38,10 @@ class GraphReviewBootstrapper:
         queue_before = self._scheduler.queue.snapshot(limit=200).queue_items
         before_ids = {item.queue_item_id for item in queue_before}
 
-        contradiction = self._store.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
         hotspot = self._store.query_hotspot_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
         concept = self._store.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
         seed_specs = [
-            ("contradiction_region", contradiction, "concept_graph"),
             ("hotspot_region", hotspot, "autonomy_graph"),
             ("concept_region", concept, "world_ontology"),
         ]
@@ -89,10 +87,10 @@ class GraphReviewBootstrapper:
         due_after = len(self._scheduler.queue.list_eligible(now=t, limit=200))
 
         semantic_source = "mixed"
-        semantic_sources = {contradiction.source_kind, hotspot.source_kind, concept.source_kind}
+        semantic_sources = {hotspot.source_kind, concept.source_kind}
         if len(semantic_sources) == 1:
             semantic_source = next(iter(semantic_sources))
-        semantic_degraded = bool(contradiction.degraded or hotspot.degraded or concept.degraded)
+        semantic_degraded = bool(hotspot.degraded or concept.degraded)
 
         if not notes:
             notes.append("bootstrap_seeded")
@@ -130,16 +128,7 @@ class GraphReviewBootstrapper:
         if not node_ids:
             return None
 
-        if query_kind == "contradiction_region":
-            max_pressure = max(float(node.metadata.get("dynamic_pressure") or 0.0) for node in nodes)
-            unresolved = any(not bool(node.metadata.get("resolved", False)) for node in nodes)
-            high_pressure = max_pressure >= 0.6
-            outcome = "maintain_priority" if unresolved and high_pressure else "requeue_review"
-            reason = "bootstrap contradiction frontier"
-            priority = 90 if outcome == "maintain_priority" else 76
-            evidence = f"contradictions:{len(nodes)} pressure:{max_pressure:.3f}"
-            notes = ["bootstrap_seed", "contradiction_frontier"]
-        elif query_kind == "hotspot_region":
+        if query_kind == "hotspot_region":
             outcome = "requeue_review"
             reason = "bootstrap hotspot frontier"
             priority = 72

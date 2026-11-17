@@ -135,7 +135,11 @@ def _concerns(n: int, at: datetime) -> list[PrimeConcernV1]:
 
 def replay(data: dict[str, Any], *, policy: str, planted: Optional[str] = None,
            days: Optional[float] = None) -> dict[str, Any]:
-    """Thoughts as (time, why). ``planted``: never_falling | ever_new | rest (synthetic needs, no live data)."""
+    """Thoughts as (time, why). ``planted``: never_falling | ever_new | rest | event_stream (synthetic, no live data).
+
+    ``event_stream``: funded event wants at the live 11-14..17 rate (114 funded reading wants in 3 days, one every
+    38 min, 3 h window, salience ~0.09) with every 20th in its source's top tenth (0.95). The live fixture carries no
+    event wants, which is why this replay missed the 11-16 swamp (11 of 12 thoughts woken by reads, all "no move")."""
     start = _t(data["window"]["start"])
     end = start + timedelta(days=days) if days is not None else _t(data["window"]["end"])
     live = [(_t(r["at"]), r["note"] or "") for r in data.get("thoughts") or []]
@@ -190,6 +194,15 @@ def replay(data: dict[str, Any], *, policy: str, planted: Optional[str] = None,
             # 60 past conversations 12 h apart, and she wrote 30 minutes ago: a pause, not a gap.
             inputs["juniper"] = {"message_times": [start - timedelta(hours=12 * k) for k in range(60)]
                                  + [now - timedelta(minutes=30)], "last_event_id": "e", "last_prompt": "hi"}
+        if planted == "event_stream":
+            k_now = int((now - start) / EVENT_STREAM_EVERY)
+            events = {"wants": [
+                {"want_id": f"w{k}", "family": "hub.world_pulse_read", "event_ref": f"world_pulse_read_seed:r{k}",
+                 "decided_at": (start + k * EVENT_STREAM_EVERY).isoformat(),
+                 "expires_at": (start + k * EVENT_STREAM_EVERY + EVENT_STREAM_WINDOW).isoformat(),
+                 "label": f"a read finished {k}", "salience": 0.95 if k % 20 == 0 else 0.09}
+                for k in range(max(0, k_now - 6), k_now + 1)
+                if start + k * EVENT_STREAM_EVERY + EVENT_STREAM_WINDOW > now]}
         needs = hg.compute_needs(state, now, inputs, events=events,
                                  horizon_of=flood_deadline if planted == "reading_flood" else None)
         if planted == "never_falling":
@@ -218,6 +231,10 @@ def replay(data: dict[str, Any], *, policy: str, planted: Optional[str] = None,
         state = hg.prune(state, now)
         now += TICK
     return {"thoughts": thoughts, "start": start, "end": end, "live": live, "held_steps": held_steps}
+
+
+EVENT_STREAM_EVERY = timedelta(minutes=38)
+EVENT_STREAM_WINDOW = timedelta(hours=3)
 
 
 def _per_day(thoughts: list[tuple[datetime, str]], start: datetime, end: datetime) -> float:
@@ -301,6 +318,13 @@ def run(data: Optional[dict[str, Any]] = None) -> list[tuple[str, bool, str]]:
                     f"planted ever-new need: busy (budget alone binds) most in any 24 h {worst_busy}, per day "
                     f"{dict(sorted((d.isoformat()[5:], n) for d, n in by_day.items()))}; idle (halving binds first) "
                     f"most in any 24 h {worst_idle}"))
+    stream = replay(base, policy="idle", planted="event_stream", days=2)
+    top = sum(1 for k in range(int(timedelta(days=2) / EVENT_STREAM_EVERY) + 1) if k % 20 == 0)
+    # Exactly one wake per top-tenth event, each a horizon need: a gate that blocks everything fails too.
+    results.append(("ordinary_events_do_not_wake", len(stream["thoughts"]) == top
+                    and all(why == "need:horizon" for _, why in stream["thoughts"]),
+                    f"planted live-rate funded reading wants (one per 38 min, 1 in 20 top-tenth), 2 days: "
+                    f"{len(stream['thoughts'])} thoughts; top-tenth events {top}"))
     rest = replay(base, policy="idle", planted="rest", days=2)
     results.append(("rest_point", not rest["thoughts"], f"{len(rest['thoughts'])} thoughts at rest over 2 days"))
     flood = replay(base, policy="idle", planted="reading_flood", days=2)

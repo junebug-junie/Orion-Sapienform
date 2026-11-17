@@ -118,11 +118,6 @@ class RoutedSubstrateGraphStore:
             min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
         )
 
-    def query_contradiction_region(
-        self, *, limit_nodes: int = 32, limit_edges: int = 64
-    ) -> SubstrateQueryResultV1:
-        return self._primary.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
-
     def query_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64
     ) -> SubstrateQueryResultV1:
@@ -144,11 +139,6 @@ class RoutedSubstrateGraphStore:
         return self._primary.read_hotspot_region(
             min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges
         )
-
-    def read_contradiction_region(
-        self, *, limit_nodes: int = 32, limit_edges: int = 64
-    ) -> SubstrateNeighborhoodSliceV1:
-        return self._primary.read_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges)
 
     def read_concept_region(
         self, *, limit_nodes: int = 32, limit_edges: int = 64

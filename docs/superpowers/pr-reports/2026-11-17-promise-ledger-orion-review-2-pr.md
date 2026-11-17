@@ -8,6 +8,7 @@ Orion asked a third set of questions on three session threads (PRs #3561, #3598,
 - The blinded labelling sheet shows Juniper's message that the reply answered. It still hides the judge's reading.
 - The quote match removes markdown asterisks and zero-width characters, and folds two more apostrophe forms. Replay turn 868ed31f lost a real line to `*...*`.
 - A test pins that Prime never reads the promise acts while they are in shadow.
+- A turn that got a promise view but is not saved (`no_write`, empty reply, no bus) now logs one `promise_ledger ... outcome=skipped` line. Live evidence for this gap: at 13:05Z on 11-17, eval turn d449db8c (`memory-scoreboard-eval`, `no_write`) logged `promise_view` and then nothing.
 
 ## Outcome moved
 
@@ -27,6 +28,8 @@ Orion asked a third set of questions on three session threads (PRs #3561, #3598,
 ## Files changed
 
 - `scripts/report_promise_ledger.py`: the guard arms at 60 and counts browser turns only, plus the ceiling, `duplicate_candidates`, `offers_summary` (against the previous chat row, the Hub's rule) and `juniper_said`. Both predicates are now column-qualified by `qualify()`, which fails loudly on a mismatch.
+- `orion/hub/turn_orchestrator.py`: `_publish_unified_turn_chat_history` logs the skip line on its early returns, when the turn had a view.
+- `services/orion-hub/tests/test_promise_ledger_hub.py`: a test for that skip line.
 - `orion/harness/promise_gate.py`: the quote normalization (asterisks, zero-width characters, U+02BC/U+FF07/U+FF02).
 - `orion/harness/evals/fixtures/promise_ledger_labels.json`: 3 label hashes re-keyed for the asterisk change (same labels, same quotes).
 - `orion/grammar/tests/test_promise_acts.py`: the test that Prime never reads the promise acts.
@@ -56,7 +59,7 @@ Orion asked a third set of questions on three session threads (PRs #3561, #3598,
 ```text
 pytest orion/harness/tests/test_promise_gate.py orion/harness/evals/test_promise_ledger_replay_eval.py -> 68 passed
 pytest orion/grammar/tests/test_promise_acts.py orion/self_monitor/tests/test_self_monitor_promise_shadow.py tests/test_report_promise_ledger.py -> 35 passed
-pytest services/orion-hub/tests/test_promise_ledger_hub.py -> 15 passed
+pytest services/orion-hub/tests/test_promise_ledger_hub.py -> 18 passed
 cd services/orion-thought && pytest tests/test_open_promises_cue.py -> 5 passed
 pytest orion/harness orion/prime/tests -> 1230 passed
 pytest tests/test_no_personal_terms.py tests/test_no_private_eval_artifacts.py tests/test_grammar_event_producer_catalog.py -> 13 passed
@@ -116,6 +119,7 @@ A subagent reviewed commit b177ff9e2. It found no must-fix issues.
 
 ```bash
 scripts/safe_docker_build.sh orion-harness-governor up -d --build orion-harness-governor
+scripts/safe_docker_build.sh orion-hub up -d --build orion-hub
 ```
 
 Run it from the clean primary main checkout after merge. The post-pull rebuild does the same thing. The report needs no restart.
@@ -125,7 +129,7 @@ Run it from the clean primary main checkout after merge. The post-pull rebuild d
 - Severity: low. Concern: the browser filter depends on the Hub client's `surface_context`. A known false positive is `scripts/trace_hub_skill_runner_e2e.py`, which sends it. Mitigation: `turns_not_from_browser` is printed, so a drop shows.
 - Severity: low. Concern: the keep-rate ceiling is a constant from one reader's hand count, and it was not blind. Mitigation: the report labels it that way. #3595 replaces it with a judge field.
 - Severity: low. Concern: the frozen baseline holds 2 agent turns. Mitigation: documented. Re-freezing is Juniper's call (#3531).
-- UNVERIFIED: the per-turn `promise_ledger` line from #3598. No Juniper turn has happened since the 09:13Z rebuild.
+- UNVERIFIED: the per-turn `promise_ledger` line from #3598. No Juniper turn has happened since the 09:13Z rebuild. The only turns since then were 3 `memory-scoreboard-eval` turns over the API, and the Hub gave them a promise view as if they were Juniper's (#3602).
 - Issues opened: none.
 - Issues updated: #3531 (guard power, one blind pass, labeller rule, official number and the 0.65 bound), #3595 (void promises delivered unseen), #3602 (session-turn count and baseline contamination).
 - Issues closed: none.

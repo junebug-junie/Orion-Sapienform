@@ -2002,11 +2002,15 @@ async def _publish_unified_turn_chat_history(
     (services/orion-vector-host/app/tissue_feed.py) in-process, so no
     separate candidate event is needed anymore.
     """
-    if bus is None:
-        return
-    if payload.get("no_write") or payload.get("x_no_write"):
-        return
-    if not str(response_text or "").strip():
+    early = ("no_bus" if bus is None
+             else "no_write" if (payload.get("no_write") or payload.get("x_no_write"))
+             else "empty_reply" if not str(response_text or "").strip() else None)
+    if early is not None:
+        if promise_view is not None:
+            # The turn got a promise view (it logged ``promise_view``) but is not persisted, so no promise
+            # act can open: still one ``promise_ledger`` line (live 2026-11-17: a no_write eval turn,
+            # d449db8c, left a view line and no ledger line).
+            logger.info("promise_ledger corr=%s outcome=skipped reason=%s", correlation_id, early)
         return
 
     from scripts.chat_history import (

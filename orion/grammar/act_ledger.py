@@ -52,6 +52,7 @@ from orion.autonomy.prediction import (
     cold_act_posterior,
     score_act_outcome,
 )
+from orion.autonomy.contrast import baseline_bin
 from orion.regulation.juniper_turns import JUNIPER_INGRESS_PREDICATE, JUNIPER_TURN_PREDICATE
 from orion.schemas.grammar import ActCostV2, ActExpectV1, ActOutcomeV1, ActV1, GrammarEventV1
 from orion.grammar.act_cost_ids import (
@@ -62,6 +63,8 @@ from orion.grammar.act_cost_ids import (
     reading_hold_ids,
 )
 from orion.grammar.act_energy_fill import act_energy_cost
+from orion.grammar.reply_base_rate import ReplyBaseRate, juniper_reply_base_rate
+from orion.grammar.reply_base_rate import applies as reply_base_rate_applies
 
 logger = logging.getLogger("orion.grammar.act_ledger")
 
@@ -361,8 +364,29 @@ def open_act(conn: Any, event: GrammarEventV1) -> None:
     if act.expect is not None:
         stamp = _load_posterior(conn, act_dispatch_kind(act.verb), act.actor, act.expect.signal_id)
     params = _open_params(event, act, stamp=stamp)
+    _stamp_reply_base_rate(conn, params, act)
     _stamp_workspace(conn, params, act, event)
     conn.execute(_INSERT_OPEN_SQL, params)
+
+
+def _reply_base_rate(conn: Any, act: ActV1, opened_at: datetime | None) -> ReplyBaseRate | None:
+    """Juniper's base rate for an outreach act's time of day (#3392), or None (not an outreach
+    ``juniper_replied`` act, the switch is off, too little history, or the read failed)."""
+    exp = act.expect
+    if exp is None or opened_at is None or not reply_base_rate_applies(act.actor, exp.signal_id):
+        return None
+    return _isolated(conn, "base_rate", act.act_id, lambda: juniper_reply_base_rate(
+        conn, opened_at=_aware(opened_at), horizon_sec=float(exp.horizon_sec)), log_prefix="act_reply")
+
+
+def _stamp_reply_base_rate(conn: Any, params: dict[str, Any], act: ActV1) -> None:
+    """An outreach act's expectation is Juniper's base rate for its time of day, not the act cell's
+    pooled mean: ``error`` then reads "more or less than usual for this hour" (#3392 option A)."""
+    base = _reply_base_rate(conn, act, params.get("opened_at"))
+    if base is not None:
+        params["predicted"] = base.rate
+        params["predicted_n"] = base.days
+        params["cold_start"] = False
 
 
 # --- body economy Patch A2: fill ActCostV2 on close ----------------------------------------------
@@ -546,6 +570,15 @@ def close_act(
     exp = act.expect
     # A camera ask Orion withdrew (attention patch 4a) is not a grade: no outcome row, no posterior update.
     not_graded = (exp is not None and exp.signal_id == "juniper_answered" and outcome.source == "expired")
+    # Outreach (#3392): the outcome row's baseline is Juniper's base rate for the act's time of day,
+    # recomputed from days strictly before the open (the same number the open stamped as predicted).
+    base = _reply_base_rate(conn, act, opened_at_row) if (exp is not None and not not_graded) else None
+    if base is not None and (predicted_at_open is None or abs(predicted_at_open - base.rate) > 1e-9):
+        # The open did not stamp this base rate (opened before the deploy or with the switch off, or its
+        # read failed): keep the row's baseline and its prediction_error on the same expectation.
+        base = None
+    if base is not None and outcome.source == "resolver":
+        note = f"{note}; {base.note()}" if note else base.note()
     if exp is not None and not not_graded:
         kind = act_dispatch_kind(act.verb)
         prior = _load_posterior_for_update(conn, kind, act.actor, exp.signal_id)
@@ -573,8 +606,8 @@ def close_act(
                 ) VALUES (
                     :dispatch_id, :dispatch_frame_id, :feedback_frame_id,
                     :dispatch_kind, :target_id, :signal_id, :direction,
-                    'dispatched', 0, 1,
-                    :observed_at, 0.0, :value, :value,
+                    'dispatched', :baseline_bin, 1,
+                    :observed_at, :baseline, :value, :delta,
                     :predicted, :error, :nats,
                     :pm, :pv, :pn,
                     0, :latency_ms, :upheld
@@ -593,6 +626,9 @@ def close_act(
                 "direction": exp.direction,
                 "observed_at": observed_at,
                 "value": value,
+                "baseline": base.rate if base is not None else 0.0,
+                "baseline_bin": baseline_bin(base.rate) if base is not None else 0,
+                "delta": value - base.rate if base is not None else value,
                 "predicted": predicted,
                 "error": error,
                 "nats": nats,

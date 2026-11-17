@@ -101,11 +101,13 @@ def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = 
     resolved = resolved_all[:DAY_LIST_CAP]
 
     # Flushed unbound context plus what is still buffered and unbound, without mutating state.
+    # The buffer only holds items folded into this day, so no lower bound: a memory written today
+    # about an earlier day is part of today (#3584).
     unbound = set(state.day_context_event_ids)
     unbound.update(
         i.event_id for i in state.context_buffer
         if i.source_kind in ("metacog_observation", "memory_episode", "chat_turn") and not i.bound_arc_ids
-        and start <= i.at <= now
+        and i.at <= now
     )
     unbound_sorted = sorted(unbound)
 

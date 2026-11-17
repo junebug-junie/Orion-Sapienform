@@ -73,7 +73,7 @@ git diff --check: clean
 
 ## Evals run
 
-`services/orion-dream/evals` ran with the suite above (included in the 401). No new eval: the proof
+`services/orion-dream/evals` ran with the suite above (included in the 403). No new eval: the proof
 is the next live sleep's stored answers.
 
 ## Docker/build/smoke checks

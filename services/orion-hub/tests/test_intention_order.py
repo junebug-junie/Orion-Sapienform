@@ -198,6 +198,9 @@ def test_build_carry_request_is_a_valid_durable_request():
     assert req.admission.deadline_at == src.horizon_at == datetime(2026, 11, 15, 7, 8, 40, tzinfo=timezone.utc)
     assert DurableRunRequestV1.model_validate(req.model_dump(mode="json")).brief.route_target == SESSION
     assert src.horizon_at - NOW > timedelta(hours=40)
+    # #3354: the carry turn's budget is the order's (3600 s by default), not a generic turn limit.
+    assert req.brief.timeout_sec == 3600.0
+    assert build_carry_request(order().model_copy(update={"timeout_sec": 2400.0}), src).brief.timeout_sec == 2400.0
 
 
 def test_a_content_guard_refusal_is_never_written_into_the_thread():

@@ -93,8 +93,12 @@ No restart required. New Claude Code sessions load the hook from .claude/setting
 
 ## Risks / concerns
 
-- Severity: medium. Concern: the real wake through `asyncRewake` is UNVERIFIED live. The tests run the script, not Claude Code. Mitigation: the verify-live ticket (opened with this PR) asks for the first spec PR after merge to wake its session.
+- Severity: medium. Concern: the real wake through `asyncRewake` is UNVERIFIED live. The tests run the script, not Claude Code. Mitigation: #3565 asks for the first spec PR after merge to wake its session.
 - Severity: low. Concern: a session that has ended cannot be woken. Orion's questions stay on the PR, and the next session shows them only if it uses the same session id or branch. Mitigation: none in this patch.
-- Issues opened: the verify-live ticket for the first real wake. Issues closed: none.
+- Issues opened: #3565 (verify-live: the first real wake). Issues closed: none.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
+
+## PR link
+
+https://github.com/junebug-junie/Orion-Sapienform/pull/3564

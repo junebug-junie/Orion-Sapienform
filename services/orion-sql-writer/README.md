@@ -1327,6 +1327,16 @@ Absent, never 0: no lease -> nothing written; a card with no reading or no 30 mi
 a family's GPU part (`wh_gpu_by_host`) tracks the 1 Hz power-intent meter (`python3 evals/act_energy_vs_power_intent.py`).
 Kill switch: `SQL_WRITER_ACT_ENERGY_COST_ENABLED=false`.
 
+**Outreach reply graded against the hour (#3392 option A, 2026-11-16).** A `hub.outreach` act is
+still graded `juniper_replied` (0/1, so Juniper's vote in `orion/physiology/weights.py` is unchanged),
+but its `predicted` at open is her base rate for that time of day: on how many of the last 28 days she
+started a chat turn in the same local-clock window (Jeffreys-smoothed, days before the act only;
+`orion/grammar/reply_base_rate.py`). `error` then reads "more or less than usual for this hour" (0 = as
+usual). The outcome row carries it as `baseline`, `baseline_bin` (decile) and
+`observed_delta = outcome - baseline`; the resolver note adds "usual for this time of day 0.62 (17 of 28
+days)". Under 7 days of history: the pooled posterior, as before. The pooled posterior row (bin 0) is
+unchanged. Kill switch: `SQL_WRITER_ACT_REPLY_BASE_RATE_ENABLED=false`.
+
 **Rung 3: acts bound to the workspace winner (2026-10-21).** At open, an act whose actor answers a
 world-first workspace source is stamped with the winning loop it was opened under
 (`grammar_acts.workspace_ref` = the broadcast's selected open loop id), through the same binding

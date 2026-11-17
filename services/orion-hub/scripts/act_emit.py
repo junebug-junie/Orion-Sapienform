@@ -48,7 +48,9 @@ logger = logging.getLogger("orion-hub.act_emit")
 # turn STARTED, see orion/grammar/act_ledger.py _JUNIPER_REPLY_SQL): median 36554 s,
 # P(<= 36000 s) = 0.49 on both clocks, so the horizon stands. The same "horizon at the median" rule as chat replies, so the
 # binary outcome is not saturated. Known confound: at this horizon the outcome
-# is dominated by Juniper's daily rhythm, not the message (recorded in the PR).
+# is dominated by Juniper's daily rhythm, not the message (recorded in the PR). Since #3392 the
+# sql-writer stamps the act's predicted with her base rate for that time of day
+# (orion/grammar/reply_base_rate.py), so error = outcome - predicted reads against her rhythm.
 OUTREACH_REPLY_HORIZON_SEC = 36000.0
 OUTREACH_REPLY_BASIS = (
     "juniper_replied by 36000s: median time from an outreach message to Juniper's next chat turn "

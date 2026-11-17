@@ -280,7 +280,7 @@ def test_an_unheld_funded_event_want_is_offered_once_before_it_expires():
     could expire between thoughts; the horizon need offers it once, at three quarters of its window."""
     want = {"want_id": "w", "family": "hub.curiosity_finding", "event_ref": "curiosity_run:r1",
             "decided_at": (T - timedelta(hours=9)).isoformat(), "expires_at": (T + timedelta(hours=3)).isoformat(),
-            "label": "a philosophical finding about time"}
+            "label": "a philosophical finding about time", "salience": 0.95}
     events = {"wants": [want]}
     [n] = hg.compute_needs(PrimeStateV1(), T, None, events=events)
     assert n.name == "horizon" and n.drive == hg.EVENT_DRIVE_CAP and n.ref == "curiosity_run:r1"
@@ -295,6 +295,24 @@ def test_an_unheld_funded_event_want_is_offered_once_before_it_expires():
     assert hg.compute_needs(PrimeStateV1(), T, None, events=early) == []
     held = PrimeStateV1(concerns=[concern(event_ref="curiosity_run:r1")])
     assert [x for x in hg.compute_needs(held, T, None, events=events) if x.ref == "curiosity_run:r1"] == []
+
+
+def test_a_top_tenth_funded_event_wakes_prime_at_exactly_the_band():
+    want = {"want_id": "w", "family": "hub.world_pulse_read", "event_ref": "world_pulse_read_seed:reading:x",
+            "decided_at": (T - timedelta(hours=9)).isoformat(), "expires_at": (T + timedelta(hours=3)).isoformat(),
+            "label": "a read finished", "salience": hg.EVENT_WAKE_SALIENCE}
+    [n] = hg.compute_needs(PrimeStateV1(), T, None, events={"wants": [want]})
+    assert n.name == "horizon" and n.ref == "world_pulse_read_seed:reading:x"
+
+
+@pytest.mark.parametrize("salience", [0.0, 0.09, 0.89, None])
+def test_an_ordinary_funded_event_does_not_wake_prime(salience):
+    """Live 11-16..17: 11 of 12 thoughts were woken by funded reading wants of salience ~0 and all ended 'no move'.
+    Below its source's top tenth an event waits in the frame; it does not wake Prime."""
+    want = {"want_id": "w", "family": "hub.world_pulse_read", "event_ref": "world_pulse_read_seed:reading:x",
+            "decided_at": (T - timedelta(hours=9)).isoformat(), "expires_at": (T + timedelta(hours=3)).isoformat(),
+            "label": "a read finished", "salience": salience}
+    assert hg.compute_needs(PrimeStateV1(), T, None, events={"wants": [want]}) == []
 
 
 def test_guard1_a_need_the_thought_answered_is_not_halved():

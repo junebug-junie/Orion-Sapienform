@@ -177,6 +177,11 @@ def _entity_metadata_from_row(row: Mapping[str, Any]) -> dict[str, Any]:
 # encode/decode for a kind nothing emits would be a keyword cathedral. Add a
 # kind here when something real writes it, with a decoder in the same patch.
 #
+# `contradiction` is out on purpose (#3544, decided 2026-11-17): the substrate
+# graph does not represent contradictions for now, and the contradiction-region
+# query was retired. Adding the kind needs a producer and a consumer built
+# together, in the same patch, with a metric-gate record -- not this line alone.
+#
 # `assertion` joined 2026-10-06 (memory Stage 2 PR A, the shared assertion core):
 # producer orion/substrate/assertion_projector.py, consumers the neighborhood
 # read's walkable_edge() check and orion/substrate/eligibility.py.

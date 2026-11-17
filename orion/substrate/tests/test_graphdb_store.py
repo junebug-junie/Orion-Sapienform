@@ -247,9 +247,7 @@ def test_graphdb_queries_are_primary_and_bounded(monkeypatch):
     assert len(hotspot.slice.nodes) <= 2
     assert len(hotspot.slice.edges) <= 1
 
-    contradiction = store.query_contradiction_region(limit_nodes=2, limit_edges=2)
-    assert contradiction.source_kind == "graphdb"
-    assert any(node.node_kind == "contradiction" for node in contradiction.slice.nodes)
+    assert not hasattr(store, "query_contradiction_region")  # retired, #3544
 
     concept = store.query_concept_region(limit_nodes=2, limit_edges=2)
     assert concept.source_kind == "graphdb"

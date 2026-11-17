@@ -234,13 +234,11 @@ class SubstrateGraphStore(Protocol):
 
     def query_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateQueryResultV1: ...
     def query_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1: ...
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1: ...
     def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1: ...
     def query_provenance_neighborhood(self, *, evidence_ref: str, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1: ...
 
     def read_focal_slice(self, *, node_ids: list[str], max_edges: int = 64) -> SubstrateNeighborhoodSliceV1: ...
     def read_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1: ...
-    def read_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1: ...
     def read_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1: ...
     def read_provenance_neighborhood(self, *, evidence_ref: str, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1: ...
 
@@ -358,18 +356,6 @@ class InMemorySubstrateGraphStore:
             truncated=len(slice_value.nodes) >= nodes_limit or len(slice_value.edges) >= edges_limit,
         )
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
-        nodes_limit = max(1, int(limit_nodes))
-        edges_limit = max(1, int(limit_edges))
-        slice_value = self.read_contradiction_region(limit_nodes=nodes_limit, limit_edges=edges_limit)
-        return SubstrateQueryResultV1(
-            query_kind="contradiction_region",
-            slice=slice_value,
-            source_kind="cache",
-            limits={"limit_nodes": nodes_limit, "limit_edges": edges_limit},
-            truncated=len(slice_value.nodes) >= nodes_limit or len(slice_value.edges) >= edges_limit,
-        )
-
     def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
         nodes_limit = max(1, int(limit_nodes))
         edges_limit = max(1, int(limit_edges))
@@ -436,13 +422,6 @@ class InMemorySubstrateGraphStore:
         threshold = max(0.0, min(1.0, float(min_salience)))
         return self._read_by_node_predicate(
             node_predicate=lambda node: float(node.signals.salience) >= threshold,
-            limit_nodes=limit_nodes,
-            limit_edges=limit_edges,
-        )
-
-    def read_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
-        return self._read_by_node_predicate(
-            node_predicate=lambda node: node.node_kind == "contradiction",
             limit_nodes=limit_nodes,
             limit_edges=limit_edges,
         )

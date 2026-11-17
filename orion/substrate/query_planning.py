@@ -89,7 +89,6 @@ class SubstrateQueryPlanner:
             steps=(
                 SubstrateQueryPlanStepV1("hotspot_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
                 SubstrateQueryPlanStepV1("concept_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
-                SubstrateQueryPlanStepV1("contradiction_region", {"limit_nodes": bounded_nodes, "limit_edges": bounded_edges}),
             ),
         )
 
@@ -198,11 +197,6 @@ class SubstrateSemanticReadCoordinator:
             )
         if step.query_kind == "concept_region":
             return self._store.query_concept_region(
-                limit_nodes=int(step.params.get("limit_nodes", 32)),
-                limit_edges=int(step.params.get("limit_edges", 64)),
-            )
-        if step.query_kind == "contradiction_region":
-            return self._store.query_contradiction_region(
                 limit_nodes=int(step.params.get("limit_nodes", 32)),
                 limit_edges=int(step.params.get("limit_edges", 64)),
             )

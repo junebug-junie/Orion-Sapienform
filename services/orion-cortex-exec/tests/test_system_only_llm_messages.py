@@ -43,3 +43,51 @@ def test_existing_user_turn_is_not_duplicated():
 def test_no_task_prompt_or_user_turn_fails_locally():
     with pytest.raises(ValueError, match="no task prompt or user message"):
         _build_hop_messages(prompt="", ctx_messages=None)
+
+
+def _hop_request(ctx):
+    step = ExecutionStep(
+        # A neutral verb: stance_react's own recall steps are not what this checks.
+        step_name="llm_step", verb_name="json_artifact", services=["LLMGatewayService"],
+        order=0, prompt_template="Output the requested JSON object.",
+    )
+    with patch("app.executor.LLMGatewayClient.chat", new=AsyncMock(return_value=ChatResponsePayload(content="{}"))) as chat:
+        asyncio.run(call_step_services(
+            bus=MagicMock(), source=ServiceRef(name="test"), step=step, ctx=ctx, correlation_id=str(uuid4()),
+        ))
+    return chat.await_args.kwargs["req"]
+
+
+def test_json_hop_without_user_turn_gets_the_json_task_turn():
+    # Regression, 2026-11-17: stance_react on the Strata agent lane replied "{" and ended (Strata
+    # monitor: output_tokens=2, finish=stop). The generic task turn raised the model's chance of
+    # ending right after "{" to 0.07-0.15 on two real failing prompts; JSON_TASK_TURN kept it near 0.01-0.03.
+    req = _hop_request({"mode": "metacog", "llm_route": "metacog", "response_format": {"type": "json_object"},
+                        "chat_template_kwargs": {"enable_thinking": False}})
+    assert [m.role for m in req.messages] == ["system", "user"]
+    assert req.messages[1].content == "Respond now with the JSON object the system message asks for."
+
+
+def test_return_json_hop_gets_the_json_task_turn():
+    messages = _build_hop_messages(prompt="Return JSON.", ctx_messages=None, json_output=True)
+    assert messages[-1] == {"role": "user", "content": "Respond now with the JSON object the system message asks for."}
+
+
+def test_wants_json_output_reads_the_gateway_keys():
+    from app.executor import _wants_json_output
+    assert _wants_json_output({"response_format": {"type": "json_object"}})
+    assert _wants_json_output({"return_json": True})
+    assert not _wants_json_output({"return_json": False, "response_format": None})
+    assert not _wants_json_output({})
+
+
+def test_prose_hop_keeps_the_generic_task_turn():
+    messages = _build_hop_messages(prompt="Write a short narration.", ctx_messages=None)
+    assert messages[-1] == {"role": "user", "content": "Carry out the task in the system message."}
+
+
+def test_json_hop_with_a_user_turn_is_left_alone():
+    messages = _build_hop_messages(
+        prompt="Return JSON.", ctx_messages=[{"role": "user", "content": "hi"}], json_output=True,
+    )
+    assert [m["content"] for m in messages if m["role"] == "user"] == ["hi"]

@@ -1,0 +1,105 @@
+"""How likely is a JSON hop to end its reply right after "{"? One number per task-turn wording.
+
+Why: 2026-11-17, stance_react on the Strata agent lane replied "{" and ended (Strata request monitor:
+output_tokens=2, finish=stop). The generic task turn ("Carry out the task in the system message.") made
+that ending 5-10x more likely than JSON_TASK_TURN on real failing prompts.
+
+Input: one llm.chat.request envelope JSON (for example pulled read-only from the bus mirror's
+bus_events table). Prompts hold private memory: keep them out of git.
+
+For each wording it sends the request with "{\"" banned (logit_bias), so the first token is "{", and
+reads the probability of "<|im_end|>" as the second token (top_logprobs=20). It runs each wording
+--repeat times back to back; the first reading after a cache miss can differ, so look at the later ones.
+
+Run under an operator lease (shared GPU), a handful of calls only:
+    python services/orion-cortex-exec/evals/eval_json_task_turn_end_after_brace.py envelope.json \
+        --url http://<strata-agent-host>:8015
+"""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import math
+import sys
+import urllib.request
+from pathlib import Path
+
+import importlib.util
+
+ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "services" / "orion-cortex-exec"))
+
+from app.executor import JSON_TASK_TURN, SYSTEM_TASK_TURN  # noqa: E402
+
+
+def _gateway_strata_structured():
+    """The gateway's strata_structured module, by file: both services name their package `app`."""
+    path = ROOT / "services" / "orion-llm-gateway" / "app" / "strata_structured.py"
+    spec = importlib.util.spec_from_file_location("gateway_strata_structured", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look themselves up here
+    spec.loader.exec_module(module)
+    return module
+
+OPEN_BRACE_QUOTE_ID = "4754"  # '{"' in the qwen3.8-flash-next vocabulary
+END_TOKEN = "<|im_end|>"
+
+
+def strata_payload(envelope: dict) -> dict:
+    """The body the gateway sends Strata for this request (its structured-output takeover included)."""
+    strata_structured = _gateway_strata_structured()
+    p = envelope["payload"]
+    o = p.get("options") or {}
+    body = {
+        "model": "Active-GGUF-Model",
+        "messages": [{"role": m["role"], "content": m["content"]} for m in p["messages"]],
+        "stream": False,
+        "temperature": o.get("temperature", 0.7),
+        "max_tokens": 2,
+    }
+    if isinstance(o.get("response_format"), dict):
+        body["response_format"] = o["response_format"]
+    elif o.get("return_json"):
+        body["response_format"] = {"type": "json_object"}
+    if o.get("chat_template_kwargs"):
+        body["chat_template_kwargs"] = o["chat_template_kwargs"]
+    sent, _ = strata_structured.take_over(body)
+    return sent
+
+
+def p_end_after_brace(url: str, body: dict) -> float | None:
+    b = copy.deepcopy(body)
+    b.update({"max_tokens": 2, "logprobs": True, "top_logprobs": 20, "logit_bias": {OPEN_BRACE_QUOTE_ID: -100}})
+    req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=json.dumps(b).encode(),
+                                 headers={"content-type": "application/json"})
+    out = json.load(urllib.request.urlopen(req, timeout=300))
+    lp = ((out["choices"][0].get("logprobs") or {}).get("content")) or []
+    if len(lp) < 2:
+        return None  # the sampled reply itself ended after "{"
+    return sum(math.exp(a["logprob"]) for a in lp[1]["top_logprobs"] if a["token"] == END_TOKEN)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("envelope")
+    ap.add_argument("--url", required=True)
+    ap.add_argument("--repeat", type=int, default=3)
+    args = ap.parse_args()
+    body = strata_payload(json.loads(Path(args.envelope).read_text()))
+    users = [i for i, m in enumerate(body["messages"]) if m["role"] == "user"]
+    if not users:
+        print("the request has no user turn; nothing to compare")
+        return 2
+    for name, text in (("generic", SYSTEM_TASK_TURN), ("json", JSON_TASK_TURN)):
+        variant = copy.deepcopy(body)
+        variant["messages"][users[-1]]["content"] = text
+        readings = [p_end_after_brace(args.url, variant) for _ in range(args.repeat)]
+        print(f"{name:8} {text!r}: P(end after '{{') = {readings}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1724,10 +1724,26 @@ def _json_sanitize(obj: Any, *, _seen: set[int] | None = None, _depth: int = 0, 
     return str(obj)
 
 
+#: The user turn added when a verb has its whole task in the system prompt and no user message
+#: (Qwen3.5's template refuses a request with no user turn; #3306).
+SYSTEM_TASK_TURN = "Carry out the task in the system message."
+#: The same turn for a hop that must answer with one JSON object. Measured 2026-11-17 on two real
+#: stance_react prompts that failed live as the one-character reply "{" (Strata agent lane,
+#: qwen3.8-flash-next): with SYSTEM_TASK_TURN the model put 0.15 and 0.07-0.12 of its probability on
+#: ending the turn right after "{"; with this wording 0.012-0.029 and 0.011-0.014.
+JSON_TASK_TURN = "Respond now with the JSON object the system message asks for."
+
+
+def _wants_json_output(ctx: Dict[str, Any]) -> bool:
+    """Does this hop ask the gateway for one JSON object (the same keys gateway_options forwards)?"""
+    return isinstance(ctx.get("response_format"), dict) or bool(ctx.get("return_json"))
+
+
 def _build_hop_messages(
     *,
     prompt: str,
     ctx_messages: Any,
+    json_output: bool = False,
 ) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
 
@@ -1763,7 +1779,9 @@ def _build_hop_messages(
         # Autonomous verbs can have a full task in the system prompt but no
         # human message. Qwen3.5's chat template requires a user turn; this
         # service-authored instruction asks it to execute that existing task.
-        normalized.append({"role": "user", "content": "Carry out the task in the system message."})
+        # A JSON hop gets a turn that names the JSON answer: the generic one made
+        # stance_react end its reply after "{" (see JSON_TASK_TURN).
+        normalized.append({"role": "user", "content": JSON_TASK_TURN if json_output else SYSTEM_TASK_TURN})
 
     return normalized
 
@@ -4250,7 +4268,9 @@ async def call_step_services(
                         bool(memory_digest),
                         len(memory_digest),
                     )
-                messages_payload = _build_hop_messages(prompt=prompt, ctx_messages=ctx.get("messages"))
+                messages_payload = _build_hop_messages(
+                    prompt=prompt, ctx_messages=ctx.get("messages"), json_output=_wants_json_output(ctx),
+                )
                 memory_has_marker = bool(memory_digest) and memory_digest in prompt
                 raw_query = (ctx.get("raw_user_text") or _last_user_message(ctx) or "").strip()
                 query_terms = []

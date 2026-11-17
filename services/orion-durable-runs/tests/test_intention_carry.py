@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from app.harness_step import TURN_REPLY_GRACE_SEC
 from app.run_acts import run_act_family
 from app.run_bids import BINDING_PRODUCER, RunBidder, binding_family, hold_end, want_for_run
 from orion.physiology.families import load_families
@@ -144,6 +145,8 @@ def test_the_carry_turn_runs_in_the_intention_session_writing_allowed_and_cites_
         assert req.session_id == INTENTION_SESSION_ID and req.require_lookup is False
         assert req.source_tag == f"{INTENTION_CARRY_TAG}:{CID}" and req.retrieval_query == "a lazy browse"
         assert req.prompt.startswith(f"prime_concern:{CID}\n")
+        # #3354: Hub's turn limit is the brief's budget less the reply grace (the FCC motor's limit derives from it).
+        assert req.timeout_sec == pytest.approx(1800 - TURN_REPLY_GRACE_SEC)
         assert result["steps"][INTENTION_CARRY_STEP_KEY]["text"] == "I browsed the PRs. Two stand out."
         detail = intention_carry_finish_detail(result)
         assert detail["line"] == "intention_carry" and detail["concern_id"] == CID and detail["route"] == "chat_thread"

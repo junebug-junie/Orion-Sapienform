@@ -41,10 +41,21 @@ damped drive is at least the threshold; AND the refractory interval passed; AND 
 only, the daily budget is not spent. Anti-swamp guards, all here:
 
 1. A thought that shows needs and changes nothing (no move sent, no concern added or dropped) halves each shown
-   need's drive (per need name), except a need whose own ref the thought answered (``touched``: the concern it
-   kept or dropped, the event it took up as a concern, the experience it cited). Keeping a concern is the answer
-   to its horizon need, so it is never "nothing". The halving recovers linearly over the fired content's own horizon. Kept in
-   ``PrimeNeedsStateV1`` inside Prime's persisted state, so it survives a restart.
+   need's drive, except a need whose own ref the thought answered (``touched``: the concern it kept or dropped, the
+   event it took up as a concern, the experience it cited). Keeping a concern is the answer to its horizon need, so
+   it is never "nothing". The halving is kept per **damp key** (``NeedV1.damp_key``): the need name, except an
+   unheld funded event want's horizon need, which is kept under ``horizon:event:<its family>``
+   (``event_damp_key``). A key with any answered shown need is not halved. Why not per name: keeping a held concern
+   answers ``horizon``, and an event want is also ``horizon``, so before #3552 a thought that kept its 3 concerns
+   and ignored the reading want that woke it halved nothing; live, every new reading (a new ref, so guard 5 cannot
+   hold it) woke Prime again, about 1 an hour. Why not per ref: every reading is a new ref, so per-ref halving would
+   not hold the next one either. Per family: an ignored reading damps the next readings, not an office visit, and
+   not a held concern's own horizon. At the default threshold (= ``EVENT_DRIVE_CAP``; ``PRIME_HUNGER_THRESHOLD`` can
+   lower it) an event need never exceeds the threshold, so any halving holds that family until it fully recovers: at
+   most one event wake per family per recovery window. Any thought that shows a family and changes nothing halves it
+   again and restarts its window (the same rule as every other need). The
+   halving recovers linearly over the fired content's own horizon. Kept in ``PrimeNeedsStateV1`` inside Prime's
+   persisted state, so it survives a restart (older saved state, keyed by name only, still loads and means the same).
 2. Concern TTLs stay (24 h, 72 h for a promise): orion/prime/state.py.
 3. The refractory interval stays: orion/prime/state.py ``wants_to_think``.
 4. Daily budget: at most ``DAILY_BUDGET`` thoughts in any 24 hours. Past that only a pending change wakes Prime.
@@ -81,6 +92,7 @@ DAILY_BUDGET = 24  # [default, accepted 2026-11-15]: thoughts in any 24 hours be
 BUDGET_WINDOW = timedelta(hours=24)
 HORIZON_START = 0.5  # the horizon drive counts from half the horizon
 PRIME_NEED_EVENT_PREFIX = "prime_need:"
+EVENT_DAMP_PREFIX = "horizon:event:"  # guard 1's key for an unheld event want's horizon need, per family
 EVENT_DRIVE_CAP = 0.5  # an unheld funded event want is offered once, at three quarters of its window
 EVENT_WAKE_SALIENCE = 0.9  # only the top tenth of an event's own source may wake Prime (curiosity wants' band)
 SURPRISE_FLOOR_NATS = math.log(2.0)  # the outcome had P <= 1/2
@@ -112,10 +124,17 @@ class NeedV1(BaseModel):
     # The experience this need's content cites, when it is not the ref itself (connection: the ref is the chat
     # message, stable for the whole silence; the experience appears once the chronicle ingests the chat turn).
     experience: Optional[str] = Field(default=None, max_length=REF_CAP)
+    # Guard 1's key, when it is not the need name (an unheld event want: ``event_damp_key(family)``).
+    damp_as: Optional[str] = Field(default=None, max_length=REF_CAP)
 
     @property
     def key(self) -> str:
         return f"{self.name}:{self.ref}"
+
+    @property
+    def damp_key(self) -> str:
+        """Guard 1's key: the halving this need reads and writes (module docstring)."""
+        return self.damp_as or self.name
 
     @property
     def experience_id(self) -> Optional[str]:
@@ -153,8 +172,14 @@ def _when(v: Any) -> Optional[datetime]:
     return t if t.tzinfo is not None else None
 
 
+def event_damp_key(family: Any) -> str:
+    """Guard 1's key for an unheld event want of ``family`` (module docstring)."""
+    fam = "".join(str(family or "").split())[:REF_CAP - len(EVENT_DAMP_PREFIX)] or "unknown"
+    return f"{EVENT_DAMP_PREFIX}{fam}"
+
+
 def event_horizon_needs(state: PrimeStateV1, now: datetime,
-                        events: Optional[dict[str, Any]]) -> list[tuple[NeedName, float, str, str, float]]:
+                        events: Optional[dict[str, Any]]) -> list[tuple[Any, ...]]:
     """Funded event wants (GET /physiology/event-wants, FundedEventWantsV1) Prime does not hold as a concern, nearing
     their expiry. Drive capped at EVENT_DRIVE_CAP (module docstring)."""
     held = {c.event_ref for c in state.concerns if c.event_ref}
@@ -175,7 +200,9 @@ def event_horizon_needs(state: PrimeStateV1, now: datetime,
         label = " ".join(str(w.get("label") or w.get("family") or "").split())[:160]
         content = (f"{label} ({w.get('family') or '?'}) stops being worth effort in "
                    f"{max(0.0, _hours(end - now)):.0f} h unless you take it up [event_id {ref}]")
-        out.append(("horizon", drive, content, ref[:REF_CAP], (end - start).total_seconds()))
+        # (name, drive, content, ref, recover_sec, experience, damp_as)
+        out.append(("horizon", drive, content, ref[:REF_CAP], (end - start).total_seconds(), None,
+                    event_damp_key(w.get("family"))))
     return out
 
 
@@ -271,9 +298,10 @@ def connection_needs(inputs: Optional[dict[str, Any]], now: datetime) -> list[tu
 # --- guards ---------------------------------------------------------------------------------------------------
 
 
-def damp_factor(needs: PrimeNeedsStateV1, name: str, now: datetime) -> float:
-    """Guard 1: the multiplier on ``name``'s drive now (1 = undamped), recovering linearly over its horizon."""
-    d = needs.damp.get(name)
+def damp_factor(needs: PrimeNeedsStateV1, key: str, now: datetime) -> float:
+    """Guard 1: the multiplier now on the drive of needs with damp key ``key`` (``NeedV1.damp_key``: the need name,
+    or ``event_damp_key(family)``; 1 = undamped), recovering linearly over its horizon."""
+    d = needs.damp.get(key)
     if d is None:
         return 1.0
     left = 1.0 - (now - d.at).total_seconds() / d.recover_sec
@@ -293,9 +321,11 @@ def compute_needs(state: PrimeStateV1, now: datetime, inputs: Optional[dict[str,
         drive = _clamp(drive)
         if drive <= 0.0:
             continue
-        damped = _clamp(drive * damp_factor(state.needs, name, now))
+        experience = extra[0] if extra else None
+        damp_as = extra[1] if len(extra) > 1 else None
+        damped = _clamp(drive * damp_factor(state.needs, damp_as or name, now))
         out.append(NeedV1(name=name, drive=drive, damped=damped, content=content[:CONTENT_CAP], ref=ref[:REF_CAP],
-                          recover_sec=recover, experience=extra[0] if extra else None))
+                          recover_sec=recover, experience=experience, damp_as=damp_as))
     out.sort(key=lambda n: (-n.damped, -n.drive, n.key))
     return out
 
@@ -378,20 +408,22 @@ def note_thought(state: PrimeStateV1, now: datetime, fired: Optional[NeedV1]) ->
 
 def after_answer(state: PrimeStateV1, shown: Sequence[NeedV1], now: datetime, *, acted: bool,
                  touched: Iterable[str] = ()) -> PrimeStateV1:
-    """Guard 1: a thought that was shown needs and changed nothing halves each shown need (by name), except needs
-    whose ref is in ``touched`` (the thought answered that one). A name with any answered need is not halved."""
+    """Guard 1: a thought that was shown needs and changed nothing halves each shown need (by damp key,
+    ``NeedV1.damp_key``), except needs whose ref is in ``touched`` (the thought answered that one). A damp key with
+    any answered need is not halved. Kept concerns answer ``horizon``; they never shield an event want's key (#3552)."""
     if acted or not shown:
         return state
     hit = set(touched)
-    answered = {n.name for n in shown if n.ref in hit}
+    answered = {n.damp_key for n in shown if n.ref in hit}
     damp = dict(state.needs.damp)
     seen: set[str] = set(answered)
     for n in shown:
-        if n.name in seen:
+        k = n.damp_key
+        if k in seen:
             continue
-        seen.add(n.name)
-        damp[n.name] = NeedDampV1(factor=_clamp(damp_factor(state.needs, n.name, now) * DAMPING), at=now,
-                                  recover_sec=n.recover_sec)
+        seen.add(k)
+        damp[k] = NeedDampV1(factor=_clamp(damp_factor(state.needs, k, now) * DAMPING), at=now,
+                             recover_sec=n.recover_sec)
     return state.model_copy(update={"needs": state.needs.model_copy(update={"damp": damp})})
 
 
@@ -448,7 +480,9 @@ def parse_woke_need(note: Optional[str]) -> Optional[tuple[str, str]]:
 
 
 __all__ = [
-    "BUDGET_WINDOW", "CONVERSATION_PAUSE", "EVENT_DRIVE_CAP", "EVENT_WAKE_SALIENCE", "PRIME_NEED_EVENT_PREFIX", "event_horizon_needs", "DAILY_BUDGET", "DAMPING", "MIN_HISTORY", "MIN_RISE", "NEED_NAMES", "NeedDampV1",
+    "BUDGET_WINDOW", "CONVERSATION_PAUSE", "EVENT_DAMP_PREFIX", "EVENT_DRIVE_CAP", "EVENT_WAKE_SALIENCE",
+    "PRIME_NEED_EVENT_PREFIX", "event_damp_key", "event_horizon_needs", "DAILY_BUDGET", "DAMPING", "MIN_HISTORY",
+    "MIN_RISE", "NEED_NAMES", "NeedDampV1",
     "NeedFiredV1", "NeedName", "NeedV1", "PrimeNeedsStateV1", "SURPRISE_FLOOR_NATS", "THRESHOLD", "WOKE_NEED_RE",
     "after_answer", "answered_refs", "budget_spent", "compute_needs", "connection_drive", "conversation_gaps", "damp_factor",
     "frame_lines", "horizon_drive", "horizon_needs", "may_fire", "note_thought", "parse_woke_need", "pick_wake",

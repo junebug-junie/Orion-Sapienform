@@ -31,6 +31,13 @@ Checks:
                          (24 per 24 h): under ``busy`` (no halving, guard 5 never applies: only the budget binds;
                          the refractory interval alone would allow 288 a day) and under ``idle``;
 * rest_point          -- with no change, no concern, no surprise and Juniper having written 30 minutes ago, no need wakes Prime.
+* reading_flood_bounded -- the live case of #3552 (11-16..17): Prime holds 3 concerns, keeps all 3 on every thought
+                         (their adapter deadlines count from when they opened, so their horizon needs are shown), and
+                         a new reading want (3 h window, family hub.world_pulse_read) is funded every 45 minutes; Prime
+                         never takes one up. An ignored reading may wake Prime at most once per its own 3 h recovery
+                         window (8 in any 24 h: the window count is strict and a halving recovers exactly 3 h after
+                         its wake). Before the fix keeping the concerns shielded the readings and the budget alone
+                         bound them (24 in any 24 h).
 
 Reported, not gated: thoughts per day per need and per change, against the live timer's thoughts per day and
 floor-only thoughts.
@@ -58,6 +65,8 @@ FIXTURE = Path(__file__).resolve().parent / "fixtures" / "prime_hunger_inputs_li
 TICK = timedelta(seconds=60)
 REFRACTORY = timedelta(seconds=300)
 WINDOW_DAYS = 10
+FLOOD_EVERY = timedelta(minutes=45)  # reading_flood: one new reading want this often (live: 11 in 9 h)
+FLOOD_WINDOW = timedelta(hours=3)  # a reading's look window (orion/prime/hunger.py module docstring)
 
 _KEPT = re.compile(r"concerns \+(\d+) -(\d+) kept (\d+)")
 
@@ -145,6 +154,17 @@ def replay(data: dict[str, Any], *, policy: str, planted: Optional[str] = None,
 
     state = PrimeStateV1(last_thought_at=start)
     thoughts: list[tuple[datetime, str]] = []
+    # reading_flood: 3 concerns opened 5.2 days before the start with a 10-day adapter deadline (drive 0.04..0.44
+    # over 2 days: shown on every thought, never waking Prime itself), and a reading want funded every 45 minutes.
+    flood_concerns = [PrimeConcernV1(concern_id=f"{i:016x}", text=f"held concern {i}",
+                                     opened_at=start - timedelta(days=5.2), last_evidence_at=start) for i in range(3)]
+    flood_deadline = lambda c: c.opened_at + timedelta(days=10)  # noqa: E731
+    flood_wants = [{"want_id": f"r{k}", "family": "hub.world_pulse_read",
+                    "event_ref": f"world_pulse_read_seed:reading:{k}", "label": f"a read finished: {k}",
+                    "salience": 0.95,  # top tenth: still a wake candidate under a salience gate (#3559)
+                    "decided_at": (start + k * FLOOD_EVERY).isoformat(),
+                    "expires_at": (start + k * FLOOD_EVERY + FLOOD_WINDOW).isoformat()}
+                   for k in range(int((end - start) / FLOOD_EVERY) + 1)] if planted == "reading_flood" else []
     ci = hi_ = 0
     held = 0
     last_keep = start
@@ -157,6 +177,7 @@ def replay(data: dict[str, Any], *, policy: str, planted: Optional[str] = None,
             held = held_steps[hi_][1]
             hi_ += 1
         inputs: dict[str, Any] = {"surprises": [], "juniper": {"message_times": []}}
+        events: Optional[dict[str, Any]] = None
         if planted is None:
             state = state.model_copy(update={"concerns": _concerns(held, last_keep)})
             inputs["surprises"] = [
@@ -165,11 +186,14 @@ def replay(data: dict[str, Any], *, policy: str, planted: Optional[str] = None,
                 for s in surprises if now - timedelta(hours=24) < _t(s["at"]) <= now]
             inputs["juniper"] = {"message_times": [t for t in juniper if now - timedelta(days=30) <= t <= now],
                                  "last_event_id": "chat_turn:last", "last_prompt": "..."}
+        elif planted == "reading_flood":
+            state = state.model_copy(update={"concerns": [c.model_copy(update={"last_evidence_at": last_keep})
+                                                          for c in flood_concerns]})
+            events = {"wants": [w for w in flood_wants if _t(w["decided_at"]) <= now < _t(w["expires_at"])]}
         elif planted == "rest":
             # 60 past conversations 12 h apart, and she wrote 30 minutes ago: a pause, not a gap.
             inputs["juniper"] = {"message_times": [start - timedelta(hours=12 * k) for k in range(60)]
                                  + [now - timedelta(minutes=30)], "last_event_id": "e", "last_prompt": "hi"}
-        events = None
         if planted == "event_stream":
             k_now = int((now - start) / EVENT_STREAM_EVERY)
             events = {"wants": [
@@ -179,7 +203,8 @@ def replay(data: dict[str, Any], *, policy: str, planted: Optional[str] = None,
                  "label": f"a read finished {k}", "salience": 0.95 if k % 20 == 0 else 0.09}
                 for k in range(max(0, k_now - 6), k_now + 1)
                 if start + k * EVENT_STREAM_EVERY + EVENT_STREAM_WINDOW > now]}
-        needs = hg.compute_needs(state, now, inputs, events=events)
+        needs = hg.compute_needs(state, now, inputs, events=events,
+                                 horizon_of=flood_deadline if planted == "reading_flood" else None)
         if planted == "never_falling":
             needs = [hg.NeedV1(name="surprise", drive=1.0, damped=hg.damp_factor(state.needs, "surprise", now),
                                content="a deadline that cannot be met", ref="experience:stuck", recover_sec=86400)]
@@ -198,7 +223,7 @@ def replay(data: dict[str, Any], *, policy: str, planted: Optional[str] = None,
             state = hg.note_thought(state, now, wake if wake is not None else None)
             acted = policy == "busy"
             # Live, every thought keeps every held concern: that answers each horizon need on a held concern.
-            kept = [c.concern_id for c in state.concerns] if planted is None else []
+            kept = [c.concern_id for c in state.concerns] if planted in (None, "reading_flood") else []
             state = hg.after_answer(state, hg.shown_needs(needs), now, acted=acted,
                                     touched=hg.answered_refs(kept=kept))
             state = state.model_copy(update={"pending_changes": [], "last_thought_at": now})
@@ -302,6 +327,12 @@ def run(data: Optional[dict[str, Any]] = None) -> list[tuple[str, bool, str]]:
                     f"{len(stream['thoughts'])} thoughts; top-tenth events {top}"))
     rest = replay(base, policy="idle", planted="rest", days=2)
     results.append(("rest_point", not rest["thoughts"], f"{len(rest['thoughts'])} thoughts at rest over 2 days"))
+    flood = replay(base, policy="idle", planted="reading_flood", days=2)
+    worst_flood = _max_need_wakes_24h(flood["thoughts"])
+    cap = int(timedelta(hours=24) / FLOOD_WINDOW)
+    results.append(("reading_flood_bounded", worst_flood <= cap,
+                    f"#3552: ignored reading wants with 3 kept concerns: {len(flood['thoughts'])} thoughts in 2 days, "
+                    f"most need wakes in any 24 h {worst_flood} (at most {cap}: one per 3 h recovery window)"))
     return results
 
 

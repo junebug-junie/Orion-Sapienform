@@ -105,14 +105,15 @@ def test_regulation_verdict_needs_enough_signals_and_a_significant_rate_differen
 
 def test_hunger_replay_eval_passes_on_its_live_fixture():
     """Hunger needs replace the quiet floor (integration Part B): on the live 11-06..11-16 timeline a held concern still gets a thought within its life, the budget holds, and the planted never-falling
-    and ever-new needs stay bounded."""
+    and ever-new needs stay bounded; ignored reading wants beside kept concerns wake Prime at most once per recovery
+    window (#3552)."""
     from orion.prime.evals import run_prime_hunger_replay
 
     results = run_prime_hunger_replay.run()
     assert {name for name, _, _ in results} == {"report", "budget_holds", "concerns_get_thought",
                                                 "never_falling_bounded", "ever_new_bounded", "rest_point",
                                                 "per_day_live_timer", "per_day_idle", "per_day_busy",
-                                                "ordinary_events_do_not_wake"}
+                                                "ordinary_events_do_not_wake", "reading_flood_bounded"}
     assert all(ok for _, ok, _ in results), results
     # Orion's question on #3528: every day of the window and the worst day are reported, not only the mean.
     per_day = {name: detail for name, _, detail in results if name.startswith("per_day_")}

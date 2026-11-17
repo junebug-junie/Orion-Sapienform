@@ -327,6 +327,74 @@ def test_guard1_a_need_the_thought_answered_is_not_halved():
     assert hg.answered_refs(dropped=[f"{'b' * 16} (no longer matters)"]) == {f"prime_concern:{'b' * 16}"}
 
 
+def _reading(i: int, decided: datetime, window=timedelta(hours=3)) -> dict:
+    # salience 0.95: a top-tenth reading, so the case still holds if a salience gate on event wakes lands (#3559).
+    return {"want_id": f"w{i}", "family": "hub.world_pulse_read", "event_ref": f"world_pulse_read_seed:reading:{i}",
+            "salience": 0.95, "decided_at": decided.isoformat(), "expires_at": (decided + window).isoformat(),
+            "label": f"a read finished: {i}"}
+
+
+def test_guard1_kept_concerns_do_not_shield_an_unanswered_event_need_issue_3552():
+    """#3552, live 11-16..17: Prime held 3 concerns and kept all 3 on every thought. A new reading want (event
+    horizon need, capped at 0.5 = the threshold) woke Prime 11 times in 9 h, each "kept 3 | no move". Keeping a
+    concern answered its own horizon need, and the whole name ``horizon`` counted as answered, so the reading want
+    that woke the thought was never halved. Guard 5 cannot hold it: every reading has a new ref."""
+    cids = [ch * 16 for ch in "abc"]
+    # The live shape: each concern was kept just now, but its adapter deadline counts from when it opened, so its
+    # horizon need is shown (drive 0.2) on every thought.
+    held = [concern(c, kept=T, opened=T - timedelta(days=3)) for c in cids]
+    deadline = {c.concern_id: c.opened_at + timedelta(days=5) for c in held}
+    horizon_of = lambda c: deadline[c.concern_id]  # noqa: E731
+    state = PrimeStateV1(concerns=held, last_thought_at=T - timedelta(hours=1))
+    first = _reading(1, T - timedelta(hours=2, minutes=15))  # three quarters of its 3 h window: drive at the cap
+    needs = hg.compute_needs(state, T, None, events={"wants": [first]}, horizon_of=horizon_of)
+    wake = hg.pick_wake(needs, state, T)
+    assert wake is not None and wake.ref == first["event_ref"] and wake.drive == hg.EVENT_DRIVE_CAP
+    shown = hg.shown_needs(needs, wake)
+    assert {n.ref for n in shown} == {first["event_ref"], *(f"prime_concern:{c}" for c in cids)}
+    state = hg.after_answer(hg.note_thought(state, T, wake), shown, T, acted=False,
+                            touched=hg.answered_refs(kept=cids))
+    # The unanswered reading is halved (under its own event family), the kept concerns' horizon is not.
+    assert set(state.needs.damp) == {"horizon:event:hub.world_pulse_read"}
+    assert hg.damp_factor(state.needs, "horizon", T) == 1.0
+    # The next reading (a new ref) reaches the cap at the next tick past the refractory interval: no wake.
+    later = T + timedelta(minutes=10)
+    second = _reading(2, later - timedelta(hours=2, minutes=15))
+    needs2 = hg.compute_needs(state, later, None, events={"wants": [first, second]}, horizon_of=horizon_of)
+    nxt = [n for n in needs2 if n.ref == second["event_ref"]]
+    assert nxt and nxt[0].drive == hg.EVENT_DRIVE_CAP and nxt[0].damped < hg.THRESHOLD
+    assert hg.pick_wake(needs2, state, later) is None
+    # A kept concern's own horizon need is not damped: it reads at its full drive.
+    for n in needs2:
+        if n.ref.startswith("prime_concern:"):
+            assert n.damped == pytest.approx(n.drive) and n.drive > 0
+    # Once per recovery window: after the reading's own 3 h window, a new reading may wake Prime again.
+    back = T + timedelta(hours=3)
+    third = _reading(3, back - timedelta(hours=2, minutes=15))
+    needs3 = hg.compute_needs(state, back, None, events={"wants": [third]}, horizon_of=horizon_of)
+    assert (w := hg.pick_wake(needs3, state, back)) is not None and w.ref == third["event_ref"]
+
+
+def test_guard1_an_event_family_damp_does_not_touch_other_families_and_old_state_still_loads():
+    """The halving is kept per event family: an ignored reading says nothing about an office visit. An older saved
+    state (damp keyed by need name only) still loads and still damps concern horizon needs."""
+    reading = hg.NeedV1(name="horizon", drive=0.5, damped=0.5, content="r", ref="world_pulse_read_seed:reading:1",
+                        recover_sec=3 * 3600, damp_as=hg.event_damp_key("hub.world_pulse_read"))
+    state = hg.after_answer(PrimeStateV1(), [reading], T, acted=False)
+    assert set(state.needs.damp) == {"horizon:event:hub.world_pulse_read"}
+    visit = {"want_id": "v", "family": "vision.office_visit", "event_ref": "office_visit:1",
+             "decided_at": (T - timedelta(minutes=90)).isoformat(), "expires_at": (T + timedelta(minutes=30)).isoformat(),
+             "label": "someone in the office", "salience": 0.95}
+    [n] = hg.compute_needs(state, T, None, events={"wants": [visit]})
+    assert n.damped == n.drive == hg.EVENT_DRIVE_CAP and n.damp_key == "horizon:event:vision.office_visit"
+    old = PrimeStateV1.model_validate({"needs": {"damp": {"horizon": {"factor": 0.5, "at": T.isoformat(),
+                                                                       "recover_sec": 86400.0}}}})
+    [c] = hg.compute_needs(old.model_copy(update={"concerns": [concern(kept=T - timedelta(hours=20))]}), T, None)
+    assert c.damp_key == "horizon" and c.damped == pytest.approx(c.drive * 0.5)
+    back = PrimeStateV1.model_validate_json(state.model_dump_json())
+    assert back.needs.damp == state.needs.damp
+
+
 def test_prime_own_thought_bid_is_never_an_event_need():
     """Review finding: Prime's own bid listed as a funded event want would wake Prime about itself, forever."""
     own = {"want_id": "prime-think-1", "family": "prime", "event_ref": "prime_need:horizon:prime_concern:x",

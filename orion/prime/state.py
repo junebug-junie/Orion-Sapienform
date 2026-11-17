@@ -248,7 +248,7 @@ class PrimeNeedsStateV1(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    damp: dict[str, NeedDampV1] = Field(default_factory=dict)  # need name -> its last halving
+    damp: dict[str, NeedDampV1] = Field(default_factory=dict)  # damp key (need name, or horizon:event:<family>) -> last halving
     fired: dict[str, NeedFiredV1] = Field(default_factory=dict)  # need key -> when it last woke Prime
     thoughts_at: list[AwareDatetime] = Field(default_factory=list)  # thought starts in the budget window
 

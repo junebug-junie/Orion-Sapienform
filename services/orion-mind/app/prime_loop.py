@@ -1528,10 +1528,12 @@ class PrimeRuntime(MindLoopRuntime):
             touched = hg.answered_refs(kept=applied.kept, dropped=applied.dropped, cited=applied.experience_cites,
                                        added_event_refs=[c.event_ref for c in self.state.concerns
                                                          if c.concern_id in added and c.event_ref])
+            before = dict(self.state.needs.damp)
             self.state = hg.after_answer(self.state, self._shown_needs, now, acted=acted, touched=touched)
-            if not acted and self._shown_needs:
-                logger.info("prime_needs_damped thought=%s needs=%s", thought_id,
-                            ",".join(sorted({n.name for n in self._shown_needs})))
+            # The damp keys actually halved (an answered key is not; #3552: the log used to name every shown need).
+            halved = sorted(k for k, d in self.state.needs.damp.items() if before.get(k) != d)
+            if halved:
+                logger.info("prime_needs_damped thought=%s needs=%s", thought_id, ",".join(halved))
         # After the move: the pick is Orion's choice whether the move was sent, held back or refused.
         choice = await self._publish_choice(act=act, thought_id=thought_id, inputs=inputs, now=now, reply=reply,
                                             answer=answer)

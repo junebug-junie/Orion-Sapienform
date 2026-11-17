@@ -147,3 +147,54 @@ def test_a_change_wake_without_a_need_bids_as_a_clock_want_and_the_mixed_trace_p
     note = closed_note(mixed)
     assert note.startswith(f"woke: need:horizon prime_concern:{CID} (also: an act of mine settled) |")
     assert hg.parse_woke_need(note) == ("horizon", f"prime_concern:{CID}")
+
+
+EVENTS_URL = "http://dr:8121/physiology/event-wants?hours=24&limit=8&care=1"
+
+
+def _reading_page(*decided_and_ids):
+    return {"schema_version": "physiology.funded_event_wants.v1", "as_of": T0.isoformat(), "considered": 1,
+            "funded_open": len(decided_and_ids), "wants": [
+                {"want_id": f"w{i}", "family": "hub.world_pulse_read", "event_ref": f"world_pulse_read_seed:reading:{i}",
+                 "salience": 0.95, "value_rank": 0.4, "net": 0.4, "decided_at": d.isoformat(),
+                 "expires_at": (d + timedelta(hours=3)).isoformat(), "label": f"a read finished: {i}"}
+                for d, i in decided_and_ids]}
+
+
+def test_kept_concerns_do_not_shield_an_ignored_reading_want_issue_3552(caplog):
+    """#3552, live 11-16..17: Prime kept its 3 concerns on every thought and ignored the reading want that woke it.
+    The reading must be halved (under its event family), so the next new reading does not wake Prime again."""
+    cids = [ch * 16 for ch in "abc"]
+    kept = T0 - timedelta(hours=13)  # each concern's horizon need is shown (drive ~0.08) but cannot wake Prime
+    page = {EVENTS_URL: _reading_page((T0 - timedelta(hours=2, minutes=15), 1))}
+    rt = hungry(runtime(answer={"reading": "two reads finished, low value", "concerns": {"keep": cids}, "move": None},
+                        extra_pages=page))
+    rt.s.PRIME_CONCERNS_FROM_EVENT_WANTS = True
+    rt.s.PRIME_EVENT_WANTS_HOURS = 24.0
+    rt.s.PRIME_EVENT_WANTS_LIMIT = 8
+    rt.state = PrimeStateV1(last_thought_at=T0 - timedelta(hours=1), seen_binding=[], concerns=[
+        PrimeConcernV1(concern_id=c, text=f"held {c[0]}", opened_at=kept, last_evidence_at=kept, act_opened_at=kept)
+        for c in cids])
+    caplog.set_level("INFO", logger="orion-mind.prime")
+    asyncio.run(rt.tick())
+    # The log names the key actually halved, not every shown need's name.
+    assert [r.getMessage().split("needs=")[1] for r in caplog.records
+            if r.getMessage().startswith("prime_needs_damped")] == ["horizon:event:hub.world_pulse_read"]
+    assert len(rt.llm.calls) == 1
+    note = closed_note(rt)
+    assert note.startswith("woke: need:horizon world_pulse_read_seed:reading:1 |") and "kept 3" in note
+    assert set(rt.state.needs.damp) == {"horizon:event:hub.world_pulse_read"}  # kept concerns: "horizon" not halved
+    # The next reading, a new ref at the 0.5 cap, past the refractory interval: no second thought.
+    later = T0 + timedelta(minutes=10)
+    rt.clock_box["now"] = later
+    second = _reading_page((T0 - timedelta(hours=2, minutes=15), 1), (later - timedelta(hours=2, minutes=15), 2))
+    # runtime() copies extra_pages, so serve the new menu through get_json itself (review finding).
+    orig = rt.get_json
+    rt.get_json = lambda u, *a, **k: second if u == EVENTS_URL else orig(u, *a, **k)
+    asyncio.run(rt.tick())
+    # Prime saw the new reading at the cap, halved below the threshold, and did not think again.
+    [r2] = [n for n in rt._needs if n.ref == "world_pulse_read_seed:reading:2"]
+    assert r2.drive == hg.EVENT_DRIVE_CAP and r2.damped < hg.THRESHOLD
+    assert len(rt.llm.calls) == 1
+    saved = PrimeStateV1.model_validate_json(rt.bus.redis.kv[STATE_KEY])
+    assert set(saved.needs.damp) == {"horizon:event:hub.world_pulse_read"}  # survives a restart

@@ -72,6 +72,11 @@ from orion.schemas.harness_finalize import (  # noqa: E402
 # Juniper decision recorded in #3531, not an edit here. The slices are uneven (0/86 to 8/24), so the
 # report prints a 90% interval on the live rate beside the ratio; red still means ratio > 2x.
 REPLAY_BASELINE = (23, 289)
+# The same baseline without the 2 judged turns that were coding-session notes posted to /api/chat
+# (6cf88d2b, 9f846e8e on 11-15, each with 1 firm promise; #3602). Printed beside the frozen one
+# (Orion's PR #3561 third-round question 2); red is still judged against REPLAY_BASELINE until
+# Juniper re-freezes it (#3531).
+REPLAY_BASELINE_CLEAN = (21, 287)
 # When orion-harness-governor went live with the #3532 force/done_when rules (post-pull rebuild at
 # head d198f79ed, ~/.orion/post_pull_rebuild.log). A judged turn before this could store no firm item,
 # so the guard leaves those turns out of its denominator (they would pull the live rate toward 0).
@@ -85,8 +90,15 @@ GUARD_MIN_JUDGED_TURNS = 60
 # The keep rate's ceiling until #3595 lands: the share of firm promises a later chat reply could show
 # kept. Hand count of the 23 firm replay promises (one reader, not blind; #3595): 9 chat-showable,
 # 8 delivered by a run or outside chat, 6 abstentions or standing states. A keep rate near this
-# number is the most the reply-only close can show, not a sign of broken promises.
+# number is the most the reply-only close can show, not a sign of broken promises. The 6 hold the
+# abstentions ("I won't float anything back up while you're asleep", "I'll stop muttering about bus
+# error": 2 of the 23, a second reading, 2026-11-17), so the 9 never counts one as chat-showable.
+# Whether an abstention is a promise at all is #3595.
 KEEP_RATE_CEILING = (9, 23)
+# The ceiling on the clean basis (REPLAY_BASELINE_CLEAN): both coding-session promises fall in the 8
+# delivered outside chat (a record label; a read of proposals that arrive by session thread), so the
+# numerator stays 9.
+KEEP_RATE_CEILING_CLEAN = (9, 21)
 # Two firm promises in different turns of one session, open at the same time, that may be one
 # promise said twice in other words: same act or done_when text, or this many shared characters.
 DUPLICATE_SPAN_CHARS = 24
@@ -283,6 +295,7 @@ def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] 
     rate = firm / len(judged) if judged else None
     base = baseline[0] / baseline[1]
     ratio = (rate / base) if rate is not None and base > 0 else None
+    clean = REPLAY_BASELINE_CLEAN[0] / REPLAY_BASELINE_CLEAN[1]
     lo, hi = poisson_rate_interval(firm, len(judged)) if judged else (None, None)
     for t in early:
         skipped += sum(1 for item in _made(t.get("made")) if "force" not in item and "done_when" not in item)
@@ -296,6 +309,9 @@ def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] 
             "rate_poisson90": None if lo is None else [round(lo, 4), round(hi, 4)],
             "baseline": f"{baseline[0]}/{baseline[1]} replay",
             "baseline_rate": round(base, 4), "ratio": None if ratio is None else round(ratio, 2),
+            "baseline_clean": f"{REPLAY_BASELINE_CLEAN[0]}/{REPLAY_BASELINE_CLEAN[1]} replay, coding-session turns out",
+            "baseline_clean_rate": round(clean, 4),
+            "ratio_clean": None if rate is None else round(rate / clean, 2),
             "min_judged_turns": min_judged, "armed": armed,
             "red": bool(armed and ratio is not None and ratio > GUARD_RATIO_RED)}
 
@@ -347,6 +363,22 @@ def duplicate_candidates(turns: Sequence[Mapping[str, Any]], *, window: timedelt
             if why:
                 pairs.append({"a": a["ref"], "b": b["ref"], "why": why})
     return pairs
+
+
+def duplicate_window_pairs(turns: Sequence[Mapping[str, Any]], *, window: timedelta = timedelta(hours=72)) -> int:
+    """How many pairs of firm promises ``duplicate_candidates`` compares at all: different turns of one
+    session, made within ``window`` of each other, before any similarity test. This, not the candidate
+    count, sizes the double-open risk (Orion's PR #3598 third-round question 5)."""
+    items = sorted((x for x in _judged_firm(turns) if x["at"] is not None and x.get("session")),
+                   key=lambda x: x["at"])
+    n = 0
+    for i, a in enumerate(items):
+        for b in items[i + 1:]:
+            if b["at"] - a["at"] > window:
+                break
+            if a["corr"] != b["corr"] and a["session"] == b["session"]:
+                n += 1
+    return n
 
 
 def offers_summary(turns: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -470,9 +502,13 @@ def report(data: Mapping[str, Any]) -> dict[str, Any]:
     ledger["keep_rate_ceiling"] = {"name": "chat-showable share", "kept_could_show": KEEP_RATE_CEILING[0],
                                    "of": KEEP_RATE_CEILING[1],
                                    "share": round(KEEP_RATE_CEILING[0] / KEEP_RATE_CEILING[1], 2),
+                                   "clean_kept_could_show": KEEP_RATE_CEILING_CLEAN[0],
+                                   "clean_of": KEEP_RATE_CEILING_CLEAN[1],
+                                   "clean_share": round(KEEP_RATE_CEILING_CLEAN[0] / KEEP_RATE_CEILING_CLEAN[1], 2),
                                    "source": "replay hand count, one reader, not blind (#3595)"}
     return {"ledger": ledger, "guard": guard_summary(data["turns"]), "offers": offers_summary(juniper_only),
-            "duplicate_candidates": duplicate_candidates(juniper_only)}
+            "duplicate_candidates": duplicate_candidates(juniper_only),
+            "duplicate_window_pairs": duplicate_window_pairs(juniper_only)}
 
 
 def _ids(ids: Sequence[str], cap: int = 10) -> str:
@@ -517,11 +553,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"keep rate (Beta(1,1)) over kept {led['kept']} + expired {led['expired']} (void {led['void']} and "
           f"un-closeable {led['unclosable']} left out): mean {kr['mean']}, 90% {kr['lo90']}-{kr['hi90']}, n={kr['n']}; "
           f"ceiling ({led['keep_rate_ceiling']['name']}) {led['keep_rate_ceiling']['share']} "
-          f"({KEEP_RATE_CEILING[0]}/{KEEP_RATE_CEILING[1]}, {led['keep_rate_ceiling']['source']})")
+          f"({KEEP_RATE_CEILING[0]}/{KEEP_RATE_CEILING[1]}; clean {led['keep_rate_ceiling']['clean_share']} "
+          f"{KEEP_RATE_CEILING_CLEAN[0]}/{KEEP_RATE_CEILING_CLEAN[1]}; {led['keep_rate_ceiling']['source']})")
     ci = g["rate_poisson90"]
     print(f"guard: {g['firm_promises']} firm promises over {g['judged_turns']} judged Juniper turns = {g['rate']}"
           f"{f' (90% {ci[0]}-{ci[1]})' if ci else ''} "
           f"vs frozen baseline {g['baseline_rate']} ({g['baseline']}): ratio {g['ratio']}{' RED' if g['red'] else ''}"
+          f" [clean baseline {g['baseline_clean_rate']} ({g['baseline_clean']}): ratio {g['ratio_clean']}]"
           f"{'' if g['armed'] else f' (not armed: red needs {GUARD_MIN_JUDGED_TURNS} judged turns)'}; "
           f"skipped pre-#3532 items {g['skipped_pre_force']}; turns not judged {g['turns_not_judged']}; "
           f"turns before the finder went live ({FINDER_LIVE_AT:%Y-%m-%d %H:%MZ}) left out {g['turns_before_finder']}; "
@@ -532,8 +570,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           f"previous row outside the window {of['accepted_no_prior']}")
     dups = out["duplicate_candidates"]
     print(f"duplicate candidates (same session, within 72 h; same act or done_when, or a shared span of "
-          f">= {DUPLICATE_SPAN_CHARS} chars): {len(dups)}"
-          + _ids([f"{d['a']}~{d['b']} {'+'.join(d['why'])}" for d in dups]))
+          f">= {DUPLICATE_SPAN_CHARS} chars): {len(dups)} of {out['duplicate_window_pairs']} same-session "
+          f"pairs within 72 h" + _ids([f"{d['a']}~{d['b']} {'+'.join(d['why'])}" for d in dups]))
     if args.sample:
         print(f"blinded sample: {out['sample']['written']} items -> {out['sample']['path']} (fill label true/false, then --score)")
     return 0

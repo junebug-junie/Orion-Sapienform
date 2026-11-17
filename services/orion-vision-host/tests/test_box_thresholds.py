@@ -58,8 +58,8 @@ def test_apply_filters_each_box_by_its_own_label():
 
 def test_shipped_profile_walkway_vehicle_calibrated(vision_profiles):
     """Shipped config (2026-11-03 calibration, evals/walkway_cutoff_calibration_eval.py):
-    only walkway vehicle moves, to 0.25; walkway person and every other
-    label and camera stay at 0.35."""
+    walkway vehicle moves to 0.25; walkway person and every other label and
+    camera stay at 0.35, except office person (next test)."""
     params = vision_profiles.get_profile("retina_detect_open_vocab").params
     walkway = resolve_box_thresholds(params, "walkway")
     assert walkway.for_label("vehicle") == 0.25
@@ -69,9 +69,22 @@ def test_shipped_profile_walkway_vehicle_calibrated(vision_profiles):
     for stream in ("cam0", "doorbell", None):
         th = resolve_box_thresholds(params, stream)
         assert th.default == 0.35 and th.floor == 0.35
-        for label in ("person", "vehicle", "dog", "mail truck"):
+        for label in ("vehicle", "dog", "mail truck"):
             assert th.for_label(label) == 0.35
-    assert "cam0" not in (params.get("box_threshold_by_stream") or {})
+
+
+def test_shipped_profile_office_person_drops_the_box_pile(vision_profiles):
+    """2026-11-16: boxes on the office floor read as `person` at 0.35-0.52 and
+    Orion sent Juniper check-ins with nobody in the room. Real office people
+    score p10 0.61 (evals/office_person_cutoff_eval.py). cam0 person = 0.55;
+    the walkway and doorbell keep 0.35."""
+    params = vision_profiles.get_profile("retina_detect_open_vocab").params
+    office = resolve_box_thresholds(params, "cam0")
+    assert office.for_label("person") == 0.55
+    objs = [{"label": "person", "score": 0.52}, {"label": "person", "score": 0.68}, {"label": "chair", "score": 0.4}]
+    assert [o["score"] for o in apply_box_thresholds(objs, office)] == [0.68, 0.4]
+    for stream in ("walkway", "doorbell", None):
+        assert resolve_box_thresholds(params, stream).for_label("person") == 0.35
 
 
 @pytest.fixture
@@ -117,4 +130,5 @@ def test_runner_shipped_profile_walkway_keeps_low_vehicle_not_low_person(runner_
     seen.clear()
     out = r._run_detect_grounding_dino(p, {"image_path": frame, "stream_id": "cam0"}, "cpu")
     assert seen == [0.35]
-    assert [(o["label"], o["score"]) for o in out["objects"]] == [("person", 0.5)]
+    # Office person cut-off is 0.55 (2026-11-17): a 0.5 "person" is dropped.
+    assert [(o["label"], o["score"]) for o in out["objects"]] == []

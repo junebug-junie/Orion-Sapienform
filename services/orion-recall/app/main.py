@@ -283,63 +283,84 @@ async def recall_endpoint(body: RecallRequestBody):
 KNOW_TIMEOUT_SEC = 8.0
 KNOW_GRACE_SEC = 2.0
 KNOW_VERB = "dig.know"
+KNOW_PROFILE = "lived_memory.know"
+KNOW_PROFILE_ADHOC = "lived_memory.know.adhoc"  # no turn id: an operator or eval run, not Orion's read demand
+_know_gate = asyncio.Semaphore(1)
+_know_writes: set = set()
 
 
 @app.post("/lived/know", response_model=LivedKnowResponseBody)
 async def lived_know_endpoint(body: LivedKnowRequestBody):
     """``python -P -m orion.dig know <words>`` (issue #3535): the lived-memory retriever a chat turn
-    uses, on Orion's own words. Logged to recall_telemetry under the turn's id (verb ``dig.know``),
-    so a memory Orion looks up counts toward read demand like one recall injected."""
-    reader = _worker._lived_memory
-    if reader is None:
-        return JSONResponse({"error": "lived memory recall is off in orion-recall"}, status_code=503)
-    started = time.perf_counter()
-    try:
-        result = await asyncio.wait_for(
-            reader.know(body.words, max_hits=body.max_hits, timeout_sec=KNOW_TIMEOUT_SEC),
-            timeout=KNOW_TIMEOUT_SEC + KNOW_GRACE_SEC,
-        )
-    except Exception as exc:  # noqa: BLE001 -- said as "could not search", never as "no memory"
-        status = "timeout" if isinstance(exc, asyncio.TimeoutError) else "error"
-        logger.warning("lived_know_failed status=%s error=%s", status, type(exc).__name__)
-        from .lived_memory import KnowResult, LivedRecall
+    uses, on Orion's own words. Logged to recall_telemetry (verb ``dig.know``) under the turn's id.
+    ``selected_ids`` holds the strong hits only (read demand counts what cleared the bar); the weak
+    ids are in ``lived_trace.weak_ids``. A call with no turn id is tagged ``lived_memory.know.adhoc``.
 
-        result = KnowResult(strong=[], weak=[], status=status,
-                            recall=LivedRecall(debug={"outer": status if status == "timeout"
-                                                      else f"error:{type(exc).__name__}"}))
+    Never answers "nothing" for a search that did not run: off, busy, timeout and error are statuses."""
+    reader = _worker._lived_memory
+    corr = str(body.turn_id or "").strip()
+    profile = KNOW_PROFILE if corr else KNOW_PROFILE_ADHOC
+    corr = corr or f"adhoc:{uuid4()}"
+    if reader is None:
+        return {"status": "off", "backend": "", "degraded": [], "hits": [], "corr_id": corr}
+    if _know_gate.locked():
+        # One lookup at a time: the vector host refuses a third request in flight, and a chat
+        # turn's rerank must not be pushed into degraded mode by a loop of lookups.
+        return {"status": "busy", "backend": "", "degraded": [], "hits": [], "corr_id": corr}
+    started = time.perf_counter()
+    async with _know_gate:
+        try:
+            result = await asyncio.wait_for(
+                reader.know(body.words, max_hits=body.max_hits, timeout_sec=KNOW_TIMEOUT_SEC),
+                timeout=KNOW_TIMEOUT_SEC + KNOW_GRACE_SEC,
+            )
+        except Exception as exc:  # noqa: BLE001 -- said as "could not search", never as "no memory"
+            status = "timeout" if isinstance(exc, asyncio.TimeoutError) else "error"
+            logger.warning("lived_know_failed status=%s error=%s", status, type(exc).__name__)
+            from .lived_memory import KnowResult, LivedRecall
+
+            result = KnowResult(strong=[], weak=[], status=status,
+                                recall=LivedRecall(debug={"outer": status if status == "timeout"
+                                                          else f"error:{type(exc).__name__}"}))
     hits = [
         {"strength": strength, "kind": s.rec.kind, "purpose": s.rec.purpose, "id": s.rec.doc_id,
          "date": s.rec.date, "text": s.rec.text, "fit": round(float(s.fit), 4)}
         for strength, group in (("strong", result.strong), ("weak", result.weak))
         for s in group
     ]
-    corr = str(body.turn_id or "").strip() or str(uuid4())
     debug = dict(result.recall.debug)
     debug["status"] = result.status
-    debug["injected"] = [{"id": h["id"]} for h in hits]
+    debug["injected"] = [{"id": s.rec.doc_id} for s in result.strong]
+    debug["weak_ids"] = [s.rec.doc_id for s in result.weak]
     decision = RecallDecisionV1(
         corr_id=corr,
         verb=KNOW_VERB,
-        profile="lived_memory.know",
+        profile=profile,
         query=body.words[:1000],
-        selected_ids=[h["id"] for h in hits],
-        backend_counts={"lived_memory": len(result.strong), "lived_memory_weak": len(result.weak)},
+        selected_ids=[s.rec.doc_id for s in result.strong],
+        backend_counts={"lived_memory": len(result.strong), "lived_memory_weak": len(result.weak),
+                        **({"lived_memory_unverified": result.unverified} if result.unverified else {})},
         latency_ms=int((time.perf_counter() - started) * 1000),
         recall_debug={"lived_memory": debug},
         timings_ms={f"lived_memory_{k}": int(v) for k, v in (debug.get("timings_ms") or {}).items()
                     if isinstance(v, (int, float))},
     )
-    await persist_decision_async(decision)
+    # The row is written off the reply path: a slow insert must not turn a finished lookup into
+    # "could not run" on Orion's side.
+    task = asyncio.ensure_future(persist_decision_async(decision))
+    _know_writes.add(task)
+    task.add_done_callback(_know_writes.discard)
     logger.info(
-        "lived_know corr_id=%s status=%s strong=%s weak=%s backend=%s latency_ms=%s",
-        corr, result.status, len(result.strong), len(result.weak), result.recall.backend or "none",
-        decision.latency_ms,
+        "lived_know corr_id=%s status=%s strong=%s weak=%s unverified=%s backend=%s latency_ms=%s",
+        corr, result.status, len(result.strong), len(result.weak), result.unverified,
+        result.recall.backend or "none", decision.latency_ms,
     )
     return {
         "status": result.status,
         "backend": result.recall.backend or "",
         "degraded": list(result.recall.degraded_reasons),
         "hits": hits,
+        "unverified": result.unverified,
         "corr_id": corr,
     }
 

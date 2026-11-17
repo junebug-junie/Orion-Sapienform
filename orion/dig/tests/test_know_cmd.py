@@ -80,7 +80,7 @@ def test_render_empty_hybrid_says_try_other_words():
     assert "No stored memory" in text and "Try other words" in text
 
 
-@pytest.mark.parametrize("status", ["timeout", "error", "off"])
+@pytest.mark.parametrize("status", ["timeout", "error", "off", "busy"])
 def test_render_failure_is_not_no_memory(status):
     text = "\n".join(know.render("pet", {"status": status, "backend": "", "hits": []}))
     assert "NOT the same as having no memory" in text and "No stored memory" not in text
@@ -123,3 +123,19 @@ def test_brief_carries_look_before_you_deny():
     """Recall rev 2: Orion does not say "I have no memory of that" until a search has run."""
     assert "Before telling Juniper you don't remember or have no record" in DIG_BRIEF_LINE
     assert "`orion.dig know <words>`" in DIG_BRIEF_LINE
+
+
+def test_render_degraded_empty_never_says_no_stored_memory():
+    text = "\n".join(know.render("pet", {"status": "degraded", "backend": "degraded",
+                                         "degraded": ["rerank_unavailable"], "hits": []}))
+    assert "DEGRADED" in text and "No stored memory" not in text
+
+
+def test_render_degraded_hits_are_not_called_above_the_bar():
+    text = "\n".join(know.render("pet", {"status": "degraded", "backend": "degraded", "hits": [HIT]}))
+    assert "no bar was applied" in text and "cleared recall's bar" not in text
+
+
+def test_render_unverified_matches_are_said():
+    text = "\n".join(know.render("pet", {"status": "unverified", "backend": "hybrid", "hits": [], "unverified": 3}))
+    assert "3 more match(es) found but could not be checked" in text and "No stored memory" not in text

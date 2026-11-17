@@ -70,4 +70,5 @@ class LivedKnowResponseBody(BaseModel):
     backend: str
     degraded: List[str] = Field(default_factory=list)
     hits: List[LivedKnowHit] = Field(default_factory=list)
+    unverified: int = 0  # matches found but not shown: the serving-gate re-check failed
     corr_id: str

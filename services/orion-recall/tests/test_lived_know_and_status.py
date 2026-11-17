@@ -84,6 +84,22 @@ def test_know_never_shows_a_row_the_recheck_drops(no_dense):
     pool.live["episode_memory"] = [OFFICE]  # superseded since the snapshot
     got = asyncio.run(reader.know("garden roses"))
     assert got.weak == [] and got.strong == []
+    assert got.recall.debug["recheck_dropped"] == ["episode_memory:p2"]  # dropped by the gate, not missed
+    assert trace_of(got.recall.debug)["recheck_dropped"] == ["episode_memory:p2"]
+    assert got.status == "below_bar" and got.unverified == 0
+
+
+def test_know_a_failed_recheck_is_unverified_never_below_bar(no_dense, monkeypatch):
+    reader = LivedMemoryRecall(Pool({"episode_memory": [GARDEN, OFFICE]}), _cfg(), reranker=overlap_reranker,
+                               clock=lambda: NOW)
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("db gone")
+
+    monkeypatch.setattr(reader, "_recheck", broken)
+    got = asyncio.run(reader.know("garden roses"))
+    assert got.weak == [] and got.unverified == 1 and got.status == "unverified"
+    assert trace_of(got.recall.debug)["know_recheck_error"] == "RuntimeError"
 
 
 # --- status: one per call (#3628) ------------------------------------------------------------
@@ -237,8 +253,13 @@ def test_know_endpoint_returns_hits_and_logs_the_turn(monkeypatch, no_dense):
     assert {"kind", "purpose", "date", "text", "fit"} <= set(body["hits"][0])
     (d,) = persisted
     assert (d.corr_id, d.verb) == ("turn-123", "dig.know")
-    assert d.selected_ids == [h["id"] for h in body["hits"]]
-    assert d.recall_debug["lived_memory"]["status"] == "ok"
+    strong = [h["id"] for h in body["hits"] if h["strength"] == "strong"]
+    weak = [h["id"] for h in body["hits"] if h["strength"] == "weak"]
+    assert d.selected_ids == strong  # read demand counts what cleared the bar
+    assert d.profile == "lived_memory.know"
+    lived = d.recall_debug["lived_memory"]
+    assert lived["status"] == "ok" and trace_of(lived)["injected_ids"] == strong
+    assert trace_of(lived).get("weak_ids", []) == weak
 
 
 def test_know_endpoint_says_off_when_the_reader_is_not_running():
@@ -248,7 +269,30 @@ def test_know_endpoint_says_off_when_the_reader_is_not_running():
 
     worker.set_lived_memory(None)
     resp = TestClient(main.app).post("/lived/know", json={"words": "dog stitches"})
-    assert resp.status_code == 503
+    assert resp.status_code == 200 and resp.json()["status"] == "off" and resp.json()["hits"] == []
+    assert resp.json()["corr_id"].startswith("adhoc:")
+
+
+def test_know_endpoint_answers_busy_while_another_lookup_runs(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app import main, worker
+
+    class Reader:
+        async def know(self, *_a, **_k):
+            raise AssertionError("must not run while the gate is held")
+
+    class Held:
+        def locked(self):
+            return True
+
+    monkeypatch.setattr(main, "_know_gate", Held())
+    worker.set_lived_memory(Reader())
+    try:
+        resp = TestClient(main.app).post("/lived/know", json={"words": "dog stitches", "turn_id": "t"})
+    finally:
+        worker.set_lived_memory(None)
+    assert resp.json()["status"] == "busy" and resp.json()["hits"] == []
 
 
 def test_know_endpoint_failure_is_a_status_not_an_empty_answer(monkeypatch):

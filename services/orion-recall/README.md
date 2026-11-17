@@ -35,10 +35,13 @@ It then **fuses** candidates into a prompt-ready `MemoryBundleV1` with per-sourc
 - `POST /lived/know` — `{"words", "turn_id"?, "max_hits"?}`. A deliberate lived-memory lookup:
   the same retriever a chat turn uses, on Orion's own words (no 5-word floor, no rewrite). Hits are
   `strong` (cleared the bar) or `weak` (below it, but share a word with the search), each re-checked
-  by the serving gate. Returns `status` (below) and `degraded` reasons. Called by
-  `python -P -m orion.dig know <words>` (`orion/dig/know.py`, issue #3535). Each lookup writes one
-  `recall_telemetry` row, verb `dig.know`, `corr_id` = the turn id, `selected_ids` = the ids shown,
-  so a looked-up memory counts toward read demand. Reached at `RECALL_SERVICE_URL` from Hub (host
+  by the serving gate. Returns `status` (below, plus `busy` when another lookup is running and
+  `unverified` when matches were found but the re-check failed) and `degraded` reasons. Called by
+  `python -P -m orion.dig know <words>` (`orion/dig/know.py`, issue #3535). One lookup runs at a
+  time. Each lookup writes one `recall_telemetry` row off the reply path: verb `dig.know`,
+  `corr_id` = the turn id, `selected_ids` = the **strong** hits only (those count toward read
+  demand), weak ids in `lived_trace.weak_ids`. A call with no turn id gets `corr_id` `adhoc:<uuid>`
+  and profile `lived_memory.know.adhoc`, so operator runs can be left out of read demand. Reached at `RECALL_SERVICE_URL` from Hub (host
   network) and at `http://orion-athena-recall:8260` from the harness governor (`app-net`);
   `ORION_DIG_RECALL_URL` overrides both.
 

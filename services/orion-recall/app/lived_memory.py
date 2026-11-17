@@ -102,6 +102,7 @@ MAX_RERANK = 24
 MAX_RERANK_STEP2 = 32
 # ``orion.dig know``: at most this many hits (strong first, then weak) per lookup.
 KNOW_MAX_HITS = 8
+KNOW_RECHECK_TIMEOUT_SEC = 1.5
 # Step 2 (issue #3534): each rewritten search adds its own, smaller candidate lists; all lists
 # are merged by reciprocal-rank fusion before the rerank.
 REWRITE_DENSE_TOP_K = 8
@@ -780,18 +781,23 @@ class LivedMemoryRecall:
         more_strong = more_strong[: max_hits - len(strong)]
         weak = pool[: max(0, max_hits - len(strong) - len(more_strong))]
         extra = more_strong + weak
+        unverified = 0
         if extra:
             timings = out.debug.setdefault("timings_ms", {})
             try:
-                live = {s.rec.doc_id for s in await self._recheck(extra, out, timings)}
-            except Exception as exc:  # noqa: BLE001 -- an unverified row is never shown
-                out.debug["know_recheck_error"] = type(exc).__name__
+                checked = await asyncio.wait_for(self._recheck(extra, out, timings), timeout=KNOW_RECHECK_TIMEOUT_SEC)
+                live = {s.rec.doc_id for s in checked}
+            except Exception as exc:  # noqa: BLE001 -- an unverified row is never shown, but is counted
+                out.debug["know_recheck_error"] = type(exc).__name__ or "error"
                 live = set()
+                unverified = len(extra)
             more_strong = [s for s in more_strong if s.rec.doc_id in live]
             weak = [s for s in weak if s.rec.doc_id in live]
         strong = strong + more_strong
-        return KnowResult(strong=strong, weak=weak, recall=out,
-                          status=status_of(out.debug, len(strong), backend=out.backend))
+        status = status_of(out.debug, len(strong), backend=out.backend)
+        if unverified and not strong and not weak:
+            status = STATUS_UNVERIFIED  # matches existed but could not be checked: never "below_bar"
+        return KnowResult(strong=strong, weak=weak, recall=out, status=status, unverified=unverified)
 
 
 # Why a lived-recall call injected what it did (#3628), persisted as recall_telemetry.lived_status.
@@ -803,8 +809,10 @@ STATUS_DEGRADED = "degraded"        # exact words only (embedder/reranker down o
 STATUS_TIMEOUT = "timeout"          # ran out of time and the exact-word fallback found nothing
 STATUS_ERROR = "error"              # failed, and nothing was served
 STATUS_OFF = "off"                  # the reader is switched off or not started
+# `know` only: matches were found but the serving-gate re-check failed, so none could be shown.
+STATUS_UNVERIFIED = "unverified"
 STATUSES = (STATUS_OK, STATUS_BELOW_BAR, STATUS_SKIPPED_SHORT, STATUS_DEGRADED, STATUS_TIMEOUT,
-            STATUS_ERROR, STATUS_OFF)
+            STATUS_ERROR, STATUS_OFF, STATUS_UNVERIFIED)
 
 
 def status_of(debug: Dict[str, Any] | None, served: int, *, backend: str | None = None) -> str:
@@ -845,7 +853,11 @@ def trace_of(debug: Dict[str, Any] | None) -> Dict[str, Any]:
         "candidate_ids": [str(x) for x in (d.get("candidate_ids") or [])][:TRACE_MAX_IDS],
         "injected_ids": [str(x.get("id")) for x in (d.get("injected") or []) if isinstance(x, dict)][:TRACE_MAX_IDS],
     }
-    for key in ("degraded", "skipped", "outer", "error"):
+    if d.get("weak_ids"):
+        out["weak_ids"] = [str(x) for x in d["weak_ids"]][:TRACE_MAX_IDS]
+    if d.get("recheck_dropped"):  # the serving gate removed these after the snapshot
+        out["recheck_dropped"] = [str(x) for x in d["recheck_dropped"]][:TRACE_MAX_IDS]
+    for key in ("degraded", "skipped", "outer", "error", "know_recheck_error"):
         if d.get(key):
             out[key] = d[key] if key == "degraded" else str(d[key])[:200]
     return out
@@ -857,6 +869,7 @@ class KnowResult:
     weak: List[Scored]
     recall: LivedRecall
     status: str
+    unverified: int = 0  # hits found but not shown: the serving-gate re-check failed
 
 
 @dataclass(frozen=True)

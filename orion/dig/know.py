@@ -85,24 +85,34 @@ def render(words: str, data: dict) -> list[str]:
     strong = [h for h in hits if h.get("strength") == "strong"]
     weak = [h for h in hits if h.get("strength") != "strong"]
     degraded = [str(x) for x in data.get("degraded") or []]
+    is_degraded = data.get("backend") == "degraded" or status == "degraded"
+    unverified = int(data.get("unverified") or 0)
     lines = [f'know "{words}": {len(strong)} strong, {len(weak)} weak']
     if status in ("timeout", "error"):
         lines.append(f"Memory search could not finish ({status}). This is NOT the same as having no memory "
                      "of it: try again, or try fewer, more specific words.")
+    elif status == "busy":
+        lines.append("Memory search is busy with another lookup. Try again in a few seconds. "
+                     "This is NOT the same as having no memory of it.")
     elif status == "skipped_short":
         lines.append("Your words had nothing to search with (only very common words). Use names, places, things.")
     elif status == "off":
         lines.append("Memory search is switched off in orion-recall. This is NOT the same as having no memory of it.")
-    if data.get("backend") == "degraded" or status == "degraded":
+    if is_degraded:
         why = ", ".join(degraded) or "meaning search unavailable"
         lines.append(f"DEGRADED: searched by exact words only ({why}). A miss here does not mean no memory.")
+    if unverified:
+        lines.append(f"{unverified} more match(es) found but could not be checked against the live record, "
+                     "so they are not shown. This is NOT the same as having no memory of it: try again.")
     if strong:
-        lines.append("Strong (cleared recall's bar: the kind of memory recall brings into a chat):")
+        lines.append("Exact-word matches (no reranker ran, so no bar was applied):" if is_degraded else
+                     "Strong (cleared recall's bar: the kind of memory recall brings into a chat):")
         lines.extend(_line(h) for h in strong)
     if weak:
         lines.append("Weak (share words with your search but scored below the bar; check before relying on one):")
         lines.extend(_line(h) for h in weak)
-    if not hits and status not in ("timeout", "error", "off", "skipped_short"):
+    if (not hits and not unverified and not is_degraded
+            and status not in ("timeout", "error", "off", "skipped_short", "busy", "unverified")):
         lines.append("No stored memory shares these words or fits their meaning. Try other words "
                      "(a name, a place, the thing itself) before saying you have no record.")
     return lines

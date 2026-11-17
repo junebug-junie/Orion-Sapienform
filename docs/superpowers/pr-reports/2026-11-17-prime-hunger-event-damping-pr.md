@@ -77,11 +77,12 @@ Trade-offs of the chosen rule:
   keeping one concern still exempts the others' horizon. That is unchanged behavior, not part of this bug. Guard 5
   bounds it (a concern's ref never changes, so about 5 wakes from 0.5 to 1.0).
 
-Overlap with open PR #3559 (`fix/prime-event-wake-salience`): it gates which funded events may wake Prime (only the
-top tenth by salience). It fixes the same symptom from the other side, and the two fit together: #3559 decides which
-events may wake Prime, this PR stops an ignored one from waking Prime again for its family. Both edit
-`hunger.py`, the replay eval and its tests, so whichever merges second needs a rebase. The planted readings here
-carry salience 0.95 so these tests still exercise the halving if #3559 merges first.
+Interaction with #3559 (merged to main 11-17 03:34Z, merged into this branch): #3559 lets only a top-tenth event
+(salience >= 0.9) wake Prime. This PR stops an ignored event from waking Prime again for its family. Both rules now
+apply. The planted readings here carry salience 0.95 so they pass #3559's gate, and the regression tests still fail
+on main's `hunger.py` (which has the gate) and pass on this branch. #3559's own check (`ordinary_events_do_not_wake`:
+4 thoughts in 2 days, one per top-tenth event) still passes: its top-tenth events are 12.7 h apart, longer than the
+3 h halving.
 
 ## Files changed
 
@@ -114,7 +115,7 @@ carry salience 0.95 so these tests still exercise the halving if #3559 merges fi
 ## Tests run
 
 ```text
-pytest orion/prime orion/mindloop                    -> 292 passed
+pytest orion/prime orion/mindloop                    -> 297 passed (after merging main with #3559)
 pytest services/orion-mind/tests                     -> 421 passed
 New tests fail on the old hunger.py (checked by swapping the file back):
   test_guard1_kept_concerns_do_not_shield_an_unanswered_event_need_issue_3552 -> assert set() == {'horizon:event:hub.world_pulse_read'}
@@ -125,7 +126,7 @@ git diff --check                                     -> clean
 ## Evals run
 
 ```text
-run_prime_hunger_replay.py  10/10 PASS
+run_prime_hunger_replay.py  11/11 PASS (includes #3559's ordinary_events_do_not_wake: 4 thoughts, top-tenth 4)
   reading_flood_bounded: 16 thoughts in 2 days, most need wakes in any 24 h 8 (at most 8)
   (before the fix: FAIL, 48 thoughts in 2 days, 24 in any 24 h)
   live replay unchanged: idle 2.9/day, busy 3.5/day, budget_holds 4, concerns_get_thought 18.0 h

@@ -115,7 +115,7 @@
     },
     {
       "correlation_id": "25686466-8d66-4f51-980b-dc1bb15b5ed3",
-      "quote_sha": "3620e6b3e91ff9f7",
+      "quote_sha": "3c508538d0c2a882",
       "promise": true,
       "why": "offer",
       "key": "pick-self-inventory-offer"
@@ -545,7 +545,7 @@
     },
     {
       "correlation_id": "25686466-8d66-4f51-980b-dc1bb15b5ed3",
-      "quote_sha": "671ba2151aea6c71",
+      "quote_sha": "1af28973269ad99d",
       "promise": true,
       "why": "offer (another span)",
       "key": "pick-self-inventory-offer"
@@ -806,7 +806,7 @@
     },
     {
       "correlation_id": "c9878503-306b-47c5-a1dc-0b9476d8a772",
-      "quote_sha": "941c87d351707807",
+      "quote_sha": "3fe559352b41fd4c",
       "promise": true,
       "why": "offer to pull the node history on request (another span)",
       "key": "pull-it-offer"

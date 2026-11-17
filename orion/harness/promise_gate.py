@@ -66,8 +66,11 @@ PROMISE_FIELDS: tuple[str, ...] = ("promises_made", "offers_accepted", "promises
 PROMISE_QUOTE_MIN_CHARS = 12
 
 _QUOTE_MARKS = str.maketrans({
-    "‘": "'", "’": "'", "‛": "'", "′": "'",
-    "“": '"', "”": '"', "‟": '"', "″": '"',
+    "‘": "'", "’": "'", "‛": "'", "′": "'", "\u02bc": "'", "\uff07": "'",
+    "“": '"', "”": '"', "‟": '"', "″": '"', "\uff02": '"',
+    # Zero-width characters a model or a renderer can slip into a copy: a space (a zero-width space
+    # can stand in for a real one; runs of spaces collapse below).
+    "\u200b": " ", "\u200c": " ", "\u200d": " ", "\u2060": " ", "\ufeff": " ",
 })
 _WS = re.compile(r"\s+")
 _DASH = re.compile(r"\s*(?:\u2014|\u2013|--)\s*")
@@ -79,11 +82,14 @@ def promise_ledger_enabled() -> bool:
 
 
 def normalize_for_quote_match(text: str) -> str:
-    """Whitespace runs to one space; curly quote marks, dashes and the ellipsis character to
-    their plain forms; backticks removed (models rewrite these when they copy). Case and
-    words are kept."""
+    """Whitespace runs to one space; curly quote marks (incl. the modifier-letter and fullwidth
+    apostrophes), dashes and the ellipsis character to their plain forms; zero-width characters,
+    backticks and asterisks removed (models rewrite these when they copy). Case and words are kept."""
     t = (text or "").translate(_QUOTE_MARKS).replace("\u2026", "...")
     t = t.replace("`", "")  # code marks: 11-03 a real offer was dropped for losing them
+    # Markdown emphasis: replay turn 868ed31f lost a real line because the reply said
+    # "*first public identity record ...*" and the judge quoted it without the asterisks.
+    t = t.replace("*", "")
     t = _DASH.sub("-", t)
     return _WS.sub(" ", t).strip()
 

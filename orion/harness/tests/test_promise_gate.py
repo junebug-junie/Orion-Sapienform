@@ -578,3 +578,23 @@ def test_open_promise_text_is_in_the_judge_prompt_but_never_the_motor_prompt() -
     assert "promise" not in motor_prompt.lower()
     # Structural: the motor-prefix module reads no promise state at all.
     assert "promise" not in (REPO / "orion/harness/prefix.py").read_text(encoding="utf-8").lower()
+
+
+@pytest.mark.parametrize("judge_copy, reply", [
+    # Replay turn 868ed31f (2026-11-16): markdown emphasis in the reply, none in the judge's copy.
+    ("that's ledger entry #3 for free: first public identity record — under my name.",
+     "If so, that's ledger entry #3 for free: *first public identity record — under my name.* One question."),
+    # Apostrophe forms a model or renderer can produce: modifier letter, fullwidth, curly.
+    ("Iʼll compare the two runs tomorrow.", "Sure. I'll compare the two runs tomorrow."),
+    ("I＇ll compare the two runs tomorrow.", "Sure. I’ll compare the two runs tomorrow."),
+    # A zero-width space and a non-breaking space inside the copy.
+    ("I'll compare​ the two runs tomorrow.", "Sure. I'll compare the two runs tomorrow."),
+    # A zero-width space standing in for a real one.
+    ("I'll compare\u200bthe two runs tomorrow.", "Sure. I'll compare the two runs tomorrow."),
+])
+def test_quote_match_folds_emphasis_apostrophes_and_invisible_spacing(judge_copy, reply):
+    """Orion's PR #3532 second-round question 5: a promise must not be refused for a copy artifact."""
+    from orion.harness.promise_gate import quote_in_text
+
+    assert quote_in_text(judge_copy, reply)
+    assert not quote_in_text("I'll compare the three runs tomorrow.", reply)

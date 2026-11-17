@@ -237,3 +237,27 @@ async def test_no_view_means_no_acts_even_on_a_hub_orion_turn():
         bus, correlation_id="c2", session_id="s1", source_label="hub_orion", client_meta=None,
         reflection=reflection, promise_view=None) is None
     assert bus.events() == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bus,payload,reply,reason", [
+    ("bus", {"no_write": True}, "a reply", "no_write"),
+    ("bus", {}, "   ", "empty_reply"),
+    (None, {}, "a reply", "no_bus"),
+])
+async def test_a_viewed_turn_that_is_not_persisted_still_logs_one_ledger_line(caplog, bus, payload, reply, reason):
+    # Live 2026-11-17: no_write eval turn d449db8c logged promise_view and then nothing.
+    import logging
+
+    from orion.grammar.promise_view import PromiseView
+    from orion.hub import turn_orchestrator
+
+    with caplog.at_level(logging.INFO):
+        await turn_orchestrator._publish_unified_turn_chat_history(
+            bus=_Bus() if bus else None, correlation_id="c7", session_id="s1", user_message="hi",
+            response_text=reply, payload=payload, run=None, promise_view=PromiseView())
+        await turn_orchestrator._publish_unified_turn_chat_history(
+            bus=_Bus() if bus else None, correlation_id="c8", session_id="s1", user_message="hi",
+            response_text=reply, payload=payload, run=None, promise_view=None)
+    msgs = [r.getMessage() for r in caplog.records if r.getMessage().startswith("promise_ledger corr=")]
+    assert msgs == [f"promise_ledger corr=c7 outcome=skipped reason={reason}"]

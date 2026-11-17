@@ -480,3 +480,32 @@ Not built (tickets): the not-due state for conditional promises and promises a c
 kept; the go-live gate criteria (recall/precision n, lower bound, side posterior, Prime close path);
 the promise index drifting if a turn's run artifact is ever re-published. See #3531 and the issues
 named in the PR report.
+
+## Amendments (2026-11-17, round 2): Orion's third set of questions (threads 0c1e, e14555, 883a)
+
+Built in fix/promise-ledger-orion-review-2:
+
+- **The guard arms at 60 judged turns** (`GUARD_MIN_JUDGED_TURNS`). Before that it prints the ratio
+  and "not armed", never red. At the frozen rate, 60 turns expect 4.8 firm promises; red (ratio > 2)
+  then needs 10 or more, which noise alone gives about 2.4% of the time (at 50 turns: 8, about 5%).
+  Judged Juniper turns ran 26-56 a week from 2026-10-05 to 11-15 (`chat_history_log` joined to
+  `harness_turn_trace`, read 2026-11-17), so it arms in roughly 1.5-2.5 weeks.
+- **The guard counts only turns sent from a Hub browser surface** (`JUNIPER_INGRESS_PREDICATE` on the
+  turn's ingress hop; `turns_not_from_browser` counts the rest). A coding session's message posted over
+  the Hub API is not Juniper's turn (#3602). The frozen baseline holds 2 such turns (11-15, 6cf88d2b and
+  9f846e8e) and 2 of its 23 firm promises; without them it is 21/287 = 0.073, not 0.080. The baseline
+  stays frozen at 23/289; re-freezing it is Juniper's call (#3531).
+- **The keep-rate line names its ceiling:** the chat-showable share, 9 of the 23 firm replay promises
+  (one reader, not blind; #3595). Until #3595 lands, the reply-only close cannot show more than that.
+- **The report lists duplicate candidates** (same session, within 72 h, same `act` or `done_when`, or a
+  24-character shared span) and **accepted offers**, with `accepted_unmatched` (an accepted quote that
+  matches no firm offer in the reply the Hub showed: the session's previous chat row, Hub's own rule).
+  Both leave out turns not sent from a browser surface. On the 23 replay promises: 0 candidates.
+- **The blinded sheet shows Juniper's message** that the reply answered (`juniper_said`), still not the
+  judge's reading.
+- **Quote match** also folds the modifier-letter and fullwidth apostrophes, and removes zero-width
+  characters (as a space) and markdown asterisks (replay turn 868ed31f lost a real line to `*...*`). Three
+  fixture label hashes were re-keyed for the asterisk change; a blinded sheet already written keeps its
+  old `key` for a quote with `*` (scoring does not recompute keys, so it is unaffected).
+- **Prime never reads the promise acts in shadow** (`test_prime_never_reads_the_promise_acts_while_they_are_shadow`
+  scans `orion/prime` and `services/orion-mind/app`).

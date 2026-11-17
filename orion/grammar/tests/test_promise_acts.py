@@ -145,3 +145,24 @@ def test_an_accepted_offer_starts_its_72h_clock_at_acceptance_not_at_the_offer()
     (event,) = plan.events
     assert event.correlation_id == "c2" and event.observed_at == at
     assert event.act.test_before == promise_ref("c1", 1)
+
+
+def test_prime_never_reads_the_promise_acts_while_they_are_shadow():
+    """Orion's PR #3598 question 6: in shadow, the open-promise ACT list reaches the 5b judge only.
+    Prime (orion/prime, orion-mind) holds its own promise concerns from the turn hand-back and must
+    not read hub.promise acts or the promise view until #3531 decides the record of truth."""
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[3]
+    banned = ("hub.promise", "PROMISE_ACTOR", "promise_view", "fetch_promise_view", "promise_acts",
+              "open_promises_cue", "promise_kept")
+    roots = [repo / "orion" / "prime", repo / "services" / "orion-mind" / "app"]
+    assert all(r.is_dir() for r in roots)
+    hits = []
+    for root in roots:
+        for path in root.rglob("*.py"):
+            if "tests" in path.parts:
+                continue
+            src = path.read_text(encoding="utf-8")
+            hits += [f"{path.relative_to(repo)}: {b}" for b in banned if b in src]
+    assert hits == [], hits

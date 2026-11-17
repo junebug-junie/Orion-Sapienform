@@ -1047,23 +1047,30 @@ def repeat_failure_breaker_argv(*, correlation_id: str, reading_only: bool = Fal
     (reading-only turns pass an empty source list). See
     orion/fcc/repeat_failure_breaker.py for the rule and the incident.
     Reading-only turns also get the refetch and tool-window rules (seed
-    c31227dc, 2026-10-14).
+    c31227dc, 2026-10-14). Every turn also gets the mesh-edge hook
+    (orion/fcc/mesh_edge_hook.py, issue #3409) on Bash, even when the breaker
+    is off: it refuses a GitHub write that quotes a core-page or lived-memory
+    sentence verbatim.
     """
+    from orion.fcc.mesh_edge_hook import hook_entry as mesh_edge_hook_entry
     from orion.fcc.repeat_failure_breaker import hook_settings_json
 
     threshold = repeat_failure_threshold()
     refetch = reading_refetch_limit() if reading_only else 0
     window = reading_tool_window_fraction() if reading_only else 0.0
+    pre_tool_use: List[Dict[str, Any]] = []
     if threshold <= 0 and refetch <= 0 and window <= 0:
         logger.info("fcc_repeat_failure_breaker_disabled corr=%s", correlation_id)
-        return []
-    return [
-        "--settings",
-        hook_settings_json(
+    else:
+        breaker = json.loads(hook_settings_json(
             threshold=threshold, python_bin=sys.executable,
             refetch_limit=refetch, tool_window_fraction=window,
-        ),
-    ]
+        ))
+        pre_tool_use.extend(breaker["hooks"]["PreToolUse"])
+    # Mesh-edge check (issue #3409): every Bash GitHub write is checked for verbatim core-page /
+    # lived-memory sentences. Always on: GitHub is public and Orion's gh is authenticated.
+    pre_tool_use.append(mesh_edge_hook_entry(sys.executable))
+    return ["--settings", json.dumps({"hooks": {"PreToolUse": pre_tool_use}})]
 
 
 def _log_repeat_failure_blocks(parsed: Dict[str, Any], *, correlation_id: str) -> None:

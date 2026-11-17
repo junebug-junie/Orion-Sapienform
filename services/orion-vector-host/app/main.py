@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from orion.core.bus.bus_service_chassis import ChassisConfig, Hunter
 from orion.core.bus.bus_schemas import BaseEnvelope, ServiceRef
@@ -28,6 +30,7 @@ from orion.schemas.vector.schemas import EmbeddingGenerateV1, EmbeddingResultV1,
 
 from .conn_manager import manager as tissue_ws_manager
 from .embedder import Embedder
+from .reranker import MAX_PAIRS as MAX_RERANK_PAIRS, Reranker
 from .settings import settings
 from .tissue_feed import feed_tissue, get_phi_stats
 
@@ -38,6 +41,7 @@ logging.basicConfig(
 logger = logging.getLogger(settings.SERVICE_NAME)
 
 embedder: Optional[Embedder] = None
+reranker: Optional[Reranker] = None
 hunter: Optional[Hunter] = None
 SOCIAL_ROOM_STORED_KIND = "social.turn.stored.v1"
 SOCIAL_ROOM_STORED_CHANNEL = "orion:chat:social:stored"
@@ -626,8 +630,18 @@ async def handle_envelope(env: BaseEnvelope) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global hunter, embedder
+    global hunter, embedder, reranker
     embedder = Embedder(settings)
+    if settings.VECTOR_HOST_RERANK_MODEL.strip():
+        try:
+            # Off the event loop: a first download of the weights must not stall startup work.
+            reranker = await asyncio.to_thread(
+                Reranker, settings.VECTOR_HOST_RERANK_MODEL.strip(), settings.VECTOR_HOST_RERANK_DEVICE
+            )
+            logger.info("Reranker loaded model=%s device=%s", reranker.model_name, reranker.device)
+        except Exception as exc:  # the embedder must still serve; /rerank answers 503
+            reranker = None
+            logger.error("Reranker failed to load model=%s error=%s", settings.VECTOR_HOST_RERANK_MODEL, exc)
     cfg = _cfg()
     patterns = [
         settings.VECTOR_HOST_CHAT_HISTORY_CHANNEL,
@@ -656,6 +670,8 @@ async def lifespan(app: FastAPI):
         await hunter.stop()
     if embedder:
         await embedder.close()
+    if reranker:
+        reranker.close()
 
 
 app = FastAPI(
@@ -747,6 +763,33 @@ def health() -> Dict[str, Any]:
         "service": settings.SERVICE_NAME,
         "bus_connected": bus_connected,
     }
+
+
+class RerankRequest(BaseModel):
+    query: str
+    documents: List[str] = Field(default_factory=list)
+
+
+class RerankResult(BaseModel):
+    model: str
+    # Raw cross-encoder logits, one per document, in request order. Higher = better fit.
+    scores: List[float]
+
+
+@app.post("/rerank", response_model=RerankResult)
+async def rerank_endpoint(request: RerankRequest) -> RerankResult:
+    """Score (query, document) pairs with the local cross-encoder (app/reranker.py)."""
+    if reranker is None:
+        raise HTTPException(status_code=503, detail="Reranker unavailable")
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Missing query")
+    if len(request.documents) > MAX_RERANK_PAIRS:
+        raise HTTPException(status_code=400, detail=f"At most {MAX_RERANK_PAIRS} documents")
+    if reranker.busy:
+        # Callers time out in seconds; queueing behind abandoned work only makes every turn late.
+        raise HTTPException(status_code=503, detail="Reranker busy")
+    scores = await reranker.score(request.query, request.documents)
+    return RerankResult(model=reranker.model_name, scores=scores)
 
 
 @app.post("/embedding", response_model=EmbeddingResultV1)

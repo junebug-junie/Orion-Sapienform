@@ -4,7 +4,7 @@ import base64
 import logging
 import smtplib
 from email.message import EmailMessage
-from typing import Iterable, List, Optional
+from typing import Any, Callable, Iterable, List, Optional
 
 from orion.schemas.notify import NotificationRequest
 
@@ -21,6 +21,7 @@ class EmailTransport:
         use_tls: bool,
         default_from: str,
         default_to: Iterable[str],
+        guard_loader: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.smtp_host = smtp_host
         self.smtp_port = smtp_port
@@ -29,6 +30,28 @@ class EmailTransport:
         self.use_tls = use_tls
         self.default_from = default_from
         self.default_to = list(default_to)
+        # Mesh-edge check (orion/memory/mesh_edge.py, issue #3409): None = load from Postgres.
+        self._guard_loader = guard_loader
+
+    def _check_mesh_edge(self, request: NotificationRequest, recipients: List[str]) -> None:
+        """Email to anyone but Juniper (``default_to`` = NOTIFY_EMAIL_TO, her addresses) must not
+        quote a core-page or lived-memory sentence verbatim. Raises; fails closed when the guard
+        cannot load (orion-notify has no Postgres driver today, so non-Juniper email is refused)."""
+        from email.utils import parseaddr
+
+        def addr(value: str) -> str:
+            return parseaddr(str(value or ""))[1].strip().lower()
+
+        juniper = {addr(a) for a in self.default_to if addr(a)}
+        outside = [r for r in recipients if addr(r) not in juniper]
+        if not outside:
+            return
+        from orion.memory.mesh_edge import check_outbound
+
+        text = "\n".join(str(x or "") for x in (request.title, request.body_text, request.body_md,
+                                                  getattr(request, "body_html", None)))
+        guard = self._guard_loader() if self._guard_loader is not None else None
+        check_outbound(text, surface="email", guard=guard)
 
     def send(
         self,
@@ -47,6 +70,7 @@ class EmailTransport:
         recipients: List[str] = list(to_override or self.default_to)
         if not recipients:
             raise ValueError("No recipients configured")
+        self._check_mesh_edge(request, recipients)
 
         msg = EmailMessage()
         msg["Subject"] = request.title

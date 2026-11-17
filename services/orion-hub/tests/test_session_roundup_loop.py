@@ -625,6 +625,43 @@ def test_orion_only_comments_on_an_open_pr_of_the_threads_own_branch(status, pul
     assert srl.GitHubCommenter.target_refusal(status, pull, branch) == why
 
 
+def _clean_guard():
+    from orion.memory.mesh_edge import MeshEdgeGuard
+
+    return MeshEdgeGuard()
+
+
+def test_the_commenter_refuses_a_body_quoting_a_core_page_sentence_and_never_calls_github(monkeypatch):
+    """Issue #3409: a PR comment quoting a core-page / lived-memory sentence verbatim is not
+    posted, and neither is any comment when the guard cannot load (fail closed)."""
+    import httpx
+
+    from orion.memory.mesh_edge import MeshEdgeGuard, MeshEdgeUnavailable
+
+    calls = []
+    real_client = httpx.AsyncClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(500)
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real_client(transport=httpx.MockTransport(handler), **kw))
+    sentence = "Robin told me the blue kite got stuck in the old oak tree."
+    guard = MeshEdgeGuard.from_texts([("page:juniper", sentence)])
+
+    def unavailable():
+        raise MeshEdgeUnavailable("down")
+
+    async def go():
+        leaky = srl.GitHubCommenter("o/r", token_provider=lambda: "tok", guard_loader=lambda: guard)
+        assert await leaky.post(5, f"Status update.\n\n> {sentence.upper()}", branch="feat/a") is None
+        down = srl.GitHubCommenter("o/r", token_provider=lambda: "tok", guard_loader=unavailable)
+        assert await down.post(5, "harmless body", branch="feat/a") is None
+
+    asyncio.run(go())
+    assert calls == []
+
+
 def test_the_commenter_checks_the_pull_request_before_it_posts_and_never_raises(monkeypatch):
     import httpx
 
@@ -643,12 +680,14 @@ def test_the_commenter_checks_the_pull_request_before_it_posts_and_never_raises(
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
 
     async def go():
-        ok = srl.GitHubCommenter("o/r", token_provider=lambda: "tok")
+        ok = srl.GitHubCommenter("o/r", token_provider=lambda: "tok", guard_loader=_clean_guard)
         assert await ok.post(5, "body", branch="feat/a") == "https://github.com/o/r/pull/5#issuecomment-9"
         assert await ok.post(6, "body", branch="feat/a") is None            # not a pull request
         assert await ok.post(5, "body", branch="feat/zzz") is None          # another branch's PR
-        assert await srl.GitHubCommenter("o/r", token_provider=lambda: "").post(5, "b", branch="feat/a") is None
-        assert await srl.GitHubCommenter("../evil", token_provider=lambda: "tok").post(5, "b", branch="feat/a") is None
+        assert await srl.GitHubCommenter("o/r", token_provider=lambda: "", guard_loader=_clean_guard).post(
+            5, "b", branch="feat/a") is None
+        assert await srl.GitHubCommenter("../evil", token_provider=lambda: "tok", guard_loader=_clean_guard).post(
+            5, "b", branch="feat/a") is None
 
     asyncio.run(go())
     assert calls == [("GET", "/repos/o/r/pulls/5", "Bearer tok"), ("POST", "/repos/o/r/issues/5/comments", "Bearer tok"),

@@ -41,11 +41,24 @@ async def _run(monkeypatch: pytest.MonkeyPatch, lines: list[str], *, reading_onl
     return captured
 
 
+def _hooks(argv: list) -> list:
+    return json.loads(argv[argv.index("--settings") + 1])["hooks"]["PreToolUse"]
+
+
+def _breaker_entries(argv: list) -> list:
+    """The breaker's own entries; the mesh-edge hook (issue #3409) is always installed beside it."""
+    return [e for e in _hooks(argv) if "repeat_failure_breaker.py" in e["hooks"][0]["command"]]
+
+
 def _hook_command(argv: list) -> str:
-    settings = json.loads(argv[argv.index("--settings") + 1])
-    (entry,) = settings["hooks"]["PreToolUse"]
+    (entry,) = _breaker_entries(argv)
     assert entry["matcher"] == "*"
     return entry["hooks"][0]["command"]
+
+
+def _only_mesh_edge_hook(argv: list) -> bool:
+    hooks = _hooks(argv)
+    return len(hooks) == 1 and "mesh_edge_hook.py" in hooks[0]["hooks"][0]["command"]
 
 
 _DONE = ['{"type":"result","result":"Done.","session_id":"s1"}']
@@ -78,11 +91,11 @@ async def test_reading_rules_survive_repeat_breaker_disabled(monkeypatch) -> Non
 
 
 @pytest.mark.asyncio
-async def test_reading_rules_all_off_installs_nothing(monkeypatch) -> None:
+async def test_reading_rules_all_off_installs_only_the_mesh_edge_hook(monkeypatch) -> None:
     monkeypatch.setenv("HARNESS_FCC_REPEAT_FAILURE_THRESHOLD", "0")
     monkeypatch.setenv("HARNESS_FCC_READING_REFETCH_LIMIT", "0")
     monkeypatch.setenv("HARNESS_FCC_READING_TOOL_WINDOW_FRACTION", "0")
-    assert "--settings" not in await _run(monkeypatch, _DONE, reading_only=True)
+    assert _only_mesh_edge_hook(await _run(monkeypatch, _DONE, reading_only=True))
 
 
 def test_invalid_reading_knobs_fall_back_to_defaults(monkeypatch) -> None:
@@ -99,9 +112,9 @@ async def test_breaker_threshold_from_env(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_breaker_disabled_at_zero(monkeypatch) -> None:
+async def test_breaker_disabled_at_zero_leaves_the_mesh_edge_hook(monkeypatch) -> None:
     monkeypatch.setenv("HARNESS_FCC_REPEAT_FAILURE_THRESHOLD", "0")
-    assert "--settings" not in await _run(monkeypatch, _DONE)
+    assert _only_mesh_edge_hook(await _run(monkeypatch, _DONE))
 
 
 def test_invalid_threshold_falls_back_to_default(monkeypatch) -> None:

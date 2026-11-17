@@ -115,6 +115,20 @@ POLICIES: dict[str, CollectionPolicy] = {
             ),
         ),
         CollectionPolicy(
+            name="orion_lived_memory",
+            source="derived",
+            writer="orion-recall lived-memory index loop (services/orion-recall/app/lived_memory.py)",
+            rebuild="services/orion-recall/scripts/backfill_lived_memory_index.py (from Postgres)",
+            recall_backing=True,
+            retention=None,
+            reason=(
+                "Chat lived-memory recall index over episode_memory, stance crystallizations and "
+                "person_fact (issue #3533). Rebuildable, but recall reads it every chat turn. The "
+                "index loop removes a doc once its record is no longer servable (superseded, "
+                "rejected, expired, removed); Postgres keeps every row, so nothing is lost."
+            ),
+        ),
+        CollectionPolicy(
             name="orion_reading_results",
             source="derived",
             writer="orion-hub reading search (HUB_READING_SEARCH_COLLECTION)",

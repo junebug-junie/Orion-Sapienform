@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 import logging
 
@@ -10,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from orion.core.bus.bus_service_chassis import Rabbit
+from orion.core.bus.bus_schemas import ServiceRef
 from orion.bus.consumer_readiness import bus_consumer_readiness_v1, check_bus_consumer_readiness
 from orion.schemas.telemetry.system_health import BusConsumerReadinessV1
 
@@ -23,7 +25,7 @@ from .storage.falkor_entity_relatedness import (
     fetch_entity_mention_timeline,
     fetch_related_entities,
 )
-from .worker import handle_recall, process_recall, persist_decision_async, set_recall_pg_pool
+from .worker import handle_recall, process_recall, persist_decision_async, set_lived_memory, set_recall_pg_pool
 
 from orion.core.contracts.recall import RecallQueryV1
 
@@ -86,7 +88,10 @@ async def lifespan(app: FastAPI):
         import asyncpg  # type: ignore
     except Exception:
         asyncpg = None
-    if asyncpg is not None and settings.RECALL_PG_DSN and bool(getattr(settings, "RECALL_ENABLE_CARDS", False)):
+    lived_enabled = bool(getattr(settings, "RECALL_LIVED_MEMORY_ENABLED", False))
+    if asyncpg is not None and settings.RECALL_PG_DSN and (
+        bool(getattr(settings, "RECALL_ENABLE_CARDS", False)) or lived_enabled
+    ):
         try:
             pool = await asyncpg.create_pool(
                 dsn=settings.RECALL_PG_DSN,
@@ -102,7 +107,21 @@ async def lifespan(app: FastAPI):
     else:
         set_recall_pg_pool(None)
 
+    lived_stop = asyncio.Event()
+    lived_task = None
+    if pool is not None and lived_enabled:
+        lived_task = _start_lived_memory(pool, rabbit.bus, lived_stop)
+
     yield
+
+    lived_stop.set()
+    if lived_task is not None:
+        lived_task.cancel()
+        try:
+            await lived_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        set_lived_memory(None)
 
     if pool is not None:
         try:
@@ -111,6 +130,46 @@ async def lifespan(app: FastAPI):
             pass
         set_recall_pg_pool(None)
     await rabbit.stop()
+
+
+def _start_lived_memory(pool, bus, stop: "asyncio.Event"):
+    """Lived-memory recall (issue #3533): the per-turn reader plus its Chroma index loop."""
+    from orion.introspect.semantic_index import SearchConfig
+
+    from .lived_memory import LivedMemoryConfig, LivedMemoryRecall, index_loop
+
+    search = SearchConfig(
+        chroma_url=settings.RECALL_LIVED_MEMORY_CHROMA_URL,
+        embed_url=settings.RECALL_LIVED_MEMORY_EMBED_URL,
+        collection=settings.RECALL_LIVED_MEMORY_COLLECTION,
+        min_similarity=0.0,
+    )
+    if not search.enabled:
+        logger.warning("lived_memory_disabled reason=missing_chroma_or_embed_url")
+        return None
+    set_lived_memory(
+        LivedMemoryRecall(
+            pool,
+            LivedMemoryConfig(
+                search=search,
+                rerank_url=settings.RECALL_LIVED_MEMORY_RERANK_URL,
+                min_fit=settings.RECALL_LIVED_MEMORY_MIN_FIT,
+                max_lines=settings.RECALL_LIVED_MEMORY_MAX_LINES,
+                timeout_sec=settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC,
+                min_query_tokens=settings.RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS,
+            ),
+        )
+    )
+    source = ServiceRef(name="orion-recall", version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
+    logger.info("lived_memory_enabled collection=%s min_fit=%s", search.collection, settings.RECALL_LIVED_MEMORY_MIN_FIT)
+    return asyncio.create_task(
+        index_loop(
+            pool, search, bus=bus, source=source,
+            interval_sec=settings.RECALL_LIVED_MEMORY_INDEX_INTERVAL_SEC,
+            batch=settings.RECALL_LIVED_MEMORY_INDEX_BATCH, stop=stop,
+        ),
+        name="lived_memory_index",
+    )
 
 
 app = FastAPI(title="Orion Recall", version=settings.SERVICE_VERSION, lifespan=lifespan)

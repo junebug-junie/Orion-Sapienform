@@ -977,3 +977,55 @@ Other recall profiles (`reflect.v1`, `social.room.v1`, journals) still get the A
 and the bus anomaly feed. The exclusions apply only when `RECALL_PCR_ENABLED` is true, which
 is the only mode in which cortex-exec sends the continuity/purposeful phases. An empty continuity or belief digest now renders as an empty
 string, not a bare header.
+
+## 17) Lived-memory recall (issue #3533, "Recall rev 2" step 1)
+
+Code: `app/lived_memory.py` (reader + index loop), `orion/memory/lived_memory.py` (which rows may be
+served, and how a row becomes one document). Spec: the "Recall rev 2" section of
+`docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md`.
+
+What it does: on the PCR continuity phase (once per chat turn the skip gate lets through), it
+finds the few lived memories that fit the turn and appends them to DURABLE MEMORY:
+
+```
+[Lived memories that fit this turn -- kind, record id, date]
+- (episode_memory/happened · episode_memory:<uuid> · 2026-11-11) Juniper told me ...
+```
+
+Stores: `episode_memory` (active, not rejected, not expired, not superseded by a live
+correction), `memory_crystallizations` kind `stance` (active), `person_fact` (not removed, person
+active). Chroma is only an index: every hit is re-gated against the live snapshot, and the chosen
+ids are re-read from Postgres right before they are served.
+
+Pipeline: content-word floor (`RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS`) -> meaning candidates
+(vector-host `/embedding`, Chroma `RECALL_LIVED_MEMORY_COLLECTION`) + exact-word candidates (BM25,
+names weighted) -> local cross-encoder (vector-host `/rerank`) -> bar
+(`RECALL_LIVED_MEMORY_MIN_FIT`, sigmoid of the reranker logit; uncalibrated, tuned by replay) ->
+rank by `logit + 1.0*recency(30 d half-life) + 0.5*importance + 0.5*is_correction` (logit units)
+-> at most `RECALL_LIVED_MEMORY_MAX_LINES`. Zero lines is a valid answer. It starts at intake and
+runs while the other backends fetch.
+
+Replay 2026-11-17 (11 real referring messages, Juniper's last 150 messages; reranker
+bge-reranker-v2-m3 on the P4, bar 0.004, floor 5 content words): 9/11 targets injected (the
+2026-11-14 el Coco miss included), 3 of 23 small-talk messages inject anything, 1.9 lines per
+message on average, lived-memory time p50 1.4 s / p90 2.5 s (overlapped with the fetch). Before:
+0 of 11 (no chat reader of these stores existed).
+
+Read log: every injected doc id is a `lived_memory` item in the bundle, so it lands in
+`recall_telemetry.selected_ids`; the log line `lived_memory_injected corr_id=... ids=... fits=...`
+carries the same ids, and `recall_debug.lived_memory` carries ids, fits and timings (never text).
+
+Index: `index_loop` re-embeds new or changed records every
+`RECALL_LIVED_MEMORY_INDEX_INTERVAL_SEC` (batch `RECALL_LIVED_MEMORY_INDEX_BATCH`) through
+`orion/introspect/semantic_index.py` (vector-host embeds, upsert on `orion:vector:semantic:upsert`,
+orion-vector-writer stores). First backlog / rebuild: `scripts/backfill_lived_memory_index.py`
+(CLAUDE.md s14 protocol, read-only on Postgres).
+
+Eval: `evals/run_lived_memory_replay_eval.py` replays real Juniper messages from a host-side
+bank (`~/.orion/evals/lived_memory_recall_bank.json`, mode 600, ids only) and prints hit rate,
+small-talk injection and latency per bar; `evals/test_lived_memory_replay_eval.py` runs the same
+scoring on made-up fixtures in CI.
+
+Kill switch: `RECALL_LIVED_MEMORY_ENABLED=false` (restart orion-recall). Failure is silent for the
+turn: a down embedder leaves exact-word candidates, a down reranker or a timeout
+(`RECALL_LIVED_MEMORY_TIMEOUT_SEC`) injects nothing.

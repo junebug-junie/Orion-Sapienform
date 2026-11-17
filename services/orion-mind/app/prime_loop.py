@@ -223,6 +223,7 @@ from orion.prime.state import (
     note_outcome,
     observe,
     concerns_view,
+    touch_concern,
     trim_record,
     wants_to_think,
 )
@@ -607,7 +608,8 @@ class PrimeRuntime(MindLoopRuntime):
         taken = it.open_ids(self.intentions) if self._intentions_on() else set()
         self._needs = hg.compute_needs(self.state, now, self._hunger_inputs, taken_on=taken,
                                        horizon_of=it.horizon_for if self._intentions_on() else None,
-                                       events=inputs.events if inputs.event_mode else None)
+                                       events=inputs.events if inputs.event_mode else None,
+                                       evidence_clock=self._evidence_clock_on())
         self.state = hg.track_troughs(self.state, self._needs,
                                       events_read=not inputs.event_mode or inputs.events is not None,
                                       hunger_read=self._hunger_inputs is not None and self._hunger_error is None)
@@ -1153,13 +1155,15 @@ class PrimeRuntime(MindLoopRuntime):
             inputs.no_take_on = it.no_take_on_ids(self.intentions)
         if self._personality_line_on():
             inputs.tending, inputs.tending_error = await self._read_tending(now)
+        inputs.evidence_clock = self._evidence_clock_on()
         frame = build_frame(self.state, inputs)
         # The choice point's options: the concerns this frame shows, captured now (the answer may add or drop).
         shown = shown_concerns(self.state.concerns)
         reply = await self._ask_model(system_prompt(receptors, events=inputs.event_mode,
                                                     organ_replies=shows_organ_replies(inputs),
                                                     take_on=inputs.take_on, experiences=shows_now(inputs),
-                                                    needs=inputs.needs is not None), frame)
+                                                    needs=inputs.needs is not None,
+                                                    evidence_clock=inputs.evidence_clock), frame)
         self._now_after_call(orion_now, reached=reply.kind == "model")
         reply.context.update(focus_pending=focus_pending, focus_unread=focus_unread,
                              now_shown_id=(orion_now or {}).get("shown_id"),
@@ -1250,6 +1254,12 @@ class PrimeRuntime(MindLoopRuntime):
 
     def _event_mode(self) -> bool:
         return bool(getattr(self.s, "PRIME_CONCERNS_FROM_EVENT_WANTS", False))
+
+    def _evidence_clock_on(self) -> bool:
+        """PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED (#3574): a bare keep no longer renews a concern; a sent question or a
+        take-on does (orion/prime/state.py ``touch_concern``). Settings default True (shipped on); the getattr default
+        False only matters for fake test settings that lack the key, so the golden replay runs with the clock off."""
+        return bool(getattr(self.s, "PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED", False))
 
     @staticmethod
     def _binding(body: Optional[dict[str, Any]]) -> Optional[list[str]]:
@@ -1492,7 +1502,8 @@ class PrimeRuntime(MindLoopRuntime):
                                receptors=receptors, event_ids=event_ids(inputs) if inputs.event_mode else None,
                                event_wants=listed_wants(inputs.events) if inputs.event_mode else None,
                                take_on_check=self._take_on_check(now) if self._intentions_on() else None,
-                               shown_experience=reply.context.get("now_event_ids"))
+                               shown_experience=reply.context.get("now_event_ids"),
+                               evidence_clock=self._evidence_clock_on())
         if inputs.event_mode:
             new = set(applied.added)
             for c in applied.state.concerns:
@@ -1528,7 +1539,9 @@ class PrimeRuntime(MindLoopRuntime):
             # Guard 1: shown needs and nothing changed (no move sent, no concern added or dropped) -> halve them.
             acted = applied.move is not None or bool(applied.added) or bool(applied.dropped)
             added = set(applied.added)
-            touched = hg.answered_refs(kept=applied.kept, dropped=applied.dropped, cited=applied.experience_cites,
+            # The evidence clock: a bare keep answers no horizon need (it no longer renews the concern either).
+            touched = hg.answered_refs(kept=() if self._evidence_clock_on() else applied.kept,
+                                       dropped=applied.dropped, cited=applied.experience_cites,
                                        added_event_refs=[c.event_ref for c in self.state.concerns
                                                          if c.concern_id in added and c.event_ref])
             before = dict(self.state.needs.damp)
@@ -1569,6 +1582,12 @@ class PrimeRuntime(MindLoopRuntime):
         logger.info("prime_nomination focus=%s arm=%s queued=%s err=%s question=%r",
                     focus_id, arm, nom.queued, nom.queue_error, move.question[:160])
         self.state = self.state.model_copy(update={"open_nominations": [*self.state.open_nominations, nom]})
+        # The evidence clock (#3574): a question Prime sent about a concern is evidence for it. Both arms count (a
+        # held-back question is the same act by Prime; counting only treated would make control-arm concerns fade
+        # sooner and bias the hold-back comparison). Not when Hub refused it before writing (queued False). An unknown
+        # Hub answer (queued None: timeout or error) counts as sent: the question may have been written.
+        if self._evidence_clock_on() and move.concern_id and nom.queued is not False:
+            self.state = touch_concern(self.state, move.concern_id, now)
 
     async def _queue_focus(self, question: str, why: str, thought_id: str, *,
                            refs: Optional[list[RefV1]] = None) -> tuple[Optional[bool], Optional[str]]:

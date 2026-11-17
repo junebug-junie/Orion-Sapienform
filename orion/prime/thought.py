@@ -197,6 +197,13 @@ Rules:
                  "refs": [{"kind": "arc" | "act", "id": "..."}]}}""".replace("<HORIZON_DAYS>", f"{CONCERN_HORIZON_SEC / 86400:g}")
 
 
+# The evidence clock (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED, design 2026-11-17 patch 1, #3574): keeping no longer
+# renews a concern. Swapped into SYSTEM_PROMPT by system_prompt(evidence_clock=True).
+_KEEP_RENEWS = "A concern you do not keep fades after a day (a promise: after 3 days);"
+_EVIDENCE_RENEWS = ("Keeping a concern does not renew it: a concern fades a day (a promise: 3 days)\n"
+                    "   after you last acted on it -- a question you sent about it (its concern_id), or taking it on;")
+
+
 REGULATE_PROMPT = """
 
 Your second kind of move: a regulate signal to one organ that lists receptors under ORGANS YOU CAN SIGNAL.
@@ -267,13 +274,16 @@ organ, not a command: you may ask differently, wait, or drop the concern."""
 
 def system_prompt(receptors: Optional[Mapping[str, Sequence[str]]], *, events: bool = False,
                   organ_replies: bool = False, take_on: bool = False, experiences: bool = False,
-                  needs: bool = False) -> str:
+                  needs: bool = False, evidence_clock: bool = False) -> str:
     """The base prompt, plus the regulate move only when regulation is on and some family receives it, plus
     the organ-replies paragraph when that section is in the frame, plus the take-on move when it is on
     (PRIME_INTENTION_TAKE_ON_ENABLED). ``events``: concerns come from funded event wants (event_id), not arcs.
     ``experiences``: the now was read (``shows_now``), so the frame lists experiences Prime may cite.
-    ``needs``: hunger is on and the frame has the WHAT IS PULLING AT YOU section (orion/prime/hunger.py)."""
+    ``needs``: hunger is on and the frame has the WHAT IS PULLING AT YOU section (orion/prime/hunger.py).
+    ``evidence_clock``: a keep no longer renews a concern (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED); say what does."""
     base = SYSTEM_PROMPT
+    if evidence_clock:
+        base = base.replace(_KEEP_RENEWS, _EVIDENCE_RENEWS)
     if events:
         base = (base.replace(_ARC_RULE, EVENT_CONCERN_RULE).replace(_ARC_JSON, _EVENT_JSON)
                 .replace(_ARC_REFS, _EVENT_REFS).replace(_ARC_REFS_JSON, _EVENT_REFS_JSON))
@@ -333,6 +343,8 @@ class FrameInputs:
     # Intentions (Step -1, PRIME_INTENTION_TAKE_ON_ENABLED): the take-on move is offered and concerns with an
     # adapter are marked. ``intentions``: lines for WHAT I TOOK ON (None: the section is not shown).
     take_on: bool = False
+    # PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED: a concern line says when something last touched it, not when it was kept.
+    evidence_clock: bool = False
     intentions: Optional[list[str]] = None
     # Concerns already taken on (open or ended): never marked "you can take this on".
     no_take_on: set[str] = field(default_factory=set)
@@ -531,7 +543,7 @@ def _now_lines(inputs: FrameInputs) -> list[str]:
 
 
 def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
-                  no_take_on: frozenset[str] = frozenset()) -> str:
+                  no_take_on: frozenset[str] = frozenset(), evidence_clock: bool = False) -> str:
     graded = {"settled": "; already settled", "lapsed": "; lapsed, no longer graded"}.get(c.graded or "", "")
     if take_on and c.graded != "settled" and c.concern_id not in no_take_on and has_adapter(c):
         graded += "; you can take this on"
@@ -539,7 +551,8 @@ def _concern_line(c: PrimeConcernV1, now: datetime, *, take_on: bool = False,
     about = (f"from turn {ref[len('turn:'):]}" if ref.startswith("turn:")
              else f"event {ref}" if ref else f"arc {c.arc_id or 'none'}")
     line = (f"- concern_id {c.concern_id}: {c.text} ({about}, held since "
-            f"{_age(now, c.opened_at.isoformat())}, last kept {_age(now, c.last_evidence_at.isoformat())}{graded})")
+            f"{_age(now, c.opened_at.isoformat())}, {'last touched' if evidence_clock else 'last kept'} "
+            f"{_age(now, c.last_evidence_at.isoformat())}{graded})")
     # A promise concern's own sentence (orion/prime/handback.py promise_text): only here, never in the Prime block.
     return f"{line}\n  PROMISE: {c.promise_text}" if c.promise_text else line
 
@@ -614,7 +627,8 @@ def build_frame(state: PrimeStateV1, inputs: FrameInputs) -> str:
         *(["WHAT IS PULLING AT YOU (your needs, strongest first):\n" + "\n".join(inputs.needs)]
           if inputs.needs is not None else []),
         "YOUR CONCERNS:\n" + ("\n".join(_concern_line(c, inputs.now, take_on=inputs.take_on,
-                                                       no_take_on=frozenset(inputs.no_take_on))
+                                                       no_take_on=frozenset(inputs.no_take_on),
+                                                       evidence_clock=inputs.evidence_clock)
                                          for c in state.concerns) or "(none)"),
         "HOW YOUR CONCERNS HAVE ENDED:\n" + track_record(state),
         "YOUR LAST READING:\n" + (state.last_reading or "(none yet)"),
@@ -774,6 +788,7 @@ def apply_answer(
     take_on_check: Optional[Callable[[TakeOnMoveV1, PrimeStateV1], Optional[str]]] = None,
     focus_unread: Optional[str] = None,
     shown_experience: Optional[Sequence[str]] = None,
+    evidence_clock: bool = False,
 ) -> Applied:
     """Concern edits, then the move check. Never trusts an id the frame did not show.
     ``receptors``: family -> directions it receives; None = regulation off (a regulate move is refused).
@@ -789,7 +804,11 @@ def apply_answer(
 
     ``shown_experience``: the event ids this frame showed under WHAT YOUR ORGANS LIVED (None: the now was not
     read). Experience cites (the answer's top-level refs, and any inside a move's refs) are kept only when shown,
-    at most NOW_MAX_CITES; the rest are warnings. A bad cite never refuses the move or fails the thought."""
+    at most NOW_MAX_CITES; the rest are warnings. A bad cite never refuses the move or fails the thought.
+
+    ``evidence_clock`` (PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED, #3574): a keep is recorded (``Applied.kept``) but no
+    longer renews ``last_evidence_at``. Only real evidence does, and the runtime applies it after the move is
+    actually sent (orion/prime/state.py ``touch_concern``): a refused move renews nothing. Off: a keep renews."""
     warnings: list[str] = []
     concerns = list(state.concerns)
     by_id = {c.concern_id for c in concerns}
@@ -808,7 +827,9 @@ def apply_answer(
     kept_ids = set(answer.concerns.keep) & {c.concern_id for c in concerns}
     for cid in set(answer.concerns.keep) - {c.concern_id for c in concerns}:
         warnings.append(f"keep of unknown concern {cid!r} ignored")
-    concerns = [c.model_copy(update={"last_evidence_at": now}) if c.concern_id in kept_ids else c for c in concerns]
+    if not evidence_clock:
+        concerns = [c.model_copy(update={"last_evidence_at": now}) if c.concern_id in kept_ids else c
+                    for c in concerns]
     added: list[str] = []
     for add in answer.concerns.add:
         if len(concerns) >= MAX_CONCERNS:

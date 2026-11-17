@@ -75,6 +75,8 @@ services:
       PRIME_CONCERNS_FROM_EVENT_WANTS: ${PRIME_CONCERNS_FROM_EVENT_WANTS:-true}
       PRIME_EVENT_WANTS_HOURS: ${PRIME_EVENT_WANTS_HOURS:-24}
       PRIME_EVENT_WANTS_LIMIT: ${PRIME_EVENT_WANTS_LIMIT:-8}
+      # Prime's concern evidence clock (#3574): a bare keep no longer renews a concern; see .env_example.
+      PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED: ${PRIME_CONCERN_EVIDENCE_CLOCK_ENABLED:-true}
       # Living Prime Part 2, turn hand-back (app/prime_loop.py); see .env_example.
       PRIME_TURN_HANDBACK_ENABLED: ${PRIME_TURN_HANDBACK_ENABLED:-true}
       # Living Prime Part 3, the day letter as Prime's end-of-day turn (app/prime_loop.py); see .env_example.

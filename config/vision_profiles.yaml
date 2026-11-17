@@ -210,12 +210,20 @@ profiles:
       #   the parked cars score 0.27-0.35, which is why 11-01 read 0 of 90
       #   windows. 0.25 is also the lowest useful value while text_threshold
       #   is 0.25: every box under it came back with an empty label.
-      # cam0 is not listed on purpose (stays on score_threshold). Labels not
-      # listed (dog, bicycle, stroller, "mail truck") stay at 0.35.
+      # Labels not listed (dog, bicycle, stroller, "mail truck") stay at 0.35.
+      # - cam0 person: 0.55 (2026-11-17). A pile of boxes on the office floor
+      #   read as `person` 2,396 times on 11-15..16 (one box, scores 0.35-0.52,
+      #   mean 0.41, no face) and Orion sent Juniper check-ins about "her"
+      #   packing boxes with nobody in the room. Real office person boxes
+      #   before 11-14 (479): p10 0.61, median 0.68 (with a face: p10 0.68).
+      #   Repeatable: services/orion-vision-host/evals/office_person_cutoff_eval.py.
+      #   Other cam0 labels stay on score_threshold.
       box_threshold_by_stream:
         walkway:
           person: 0.35
           vehicle: 0.25
+        cam0:
+          person: 0.55
       nms_iou: 0.6
       # Per-camera size floor (2026-10-29): stream_id -> label -> smallest
       # long side of a box, as a fraction of the frame's short side. Boxes

@@ -1293,19 +1293,19 @@ def _role_and_help_section(
     lines = [
         f"YOUR ROLE FOR THIS SITTING ({own_graph}). Write this early. It is a "
         "provisional choice: local_crawl (you work this sitting yourself) or "
-        "hire_cursor (you intend to hire a read-only contractor). You may revise "
+        "hire_peer (you intend to hire Claude as a read-only helper). You may revise "
         "mid-run by writing again; the newest written_at is the one that counts.",
         "",
-        "Writing the role does not enqueue Cursor and does not wake a peer. "
+        "Writing the role does not enqueue a hire and does not wake Claude. "
         "A role is not a hire ticket.",
         "",
         "If a Queue pressure line appears in this prompt: elevated local queue "
-        "is more reason to hire_cursor (offload), never a reason to stay local. "
+        "is more reason to hire_peer (offload), never a reason to stay local. "
         "Do not write 'queue elevated so no hire'.",
         "",
         "    MERGE (r:InvestigationRole {",
         '      run_id: "<RUN_ID>",',
-        '      choice: "local_crawl|hire_cursor",',
+        '      choice: "local_crawl|hire_peer",',
         '      why: "<one sentence: why this role now>",',
         "      written_at: timestamp()",
         "    })",
@@ -1313,15 +1313,17 @@ def _role_and_help_section(
         "ASKING FOR CONTRACTOR HELP. Write a HelpRequest when you are actually "
         "hiring. Do not take a short local look first — tried_summary names the "
         "claim and why you are handing it off, not a local dig you already did. "
-        "The peer is a read-only investigator. They return notes; YOU still "
-        "write priors and findings. Do not write :PeerBrief yourself.",
+        "The peer is Claude, asked once by message. Claude cannot open the "
+        "repo or your graph, so put what Claude needs in question and "
+        "tried_summary. Claude returns notes; YOU still write priors and "
+        "findings. Do not write :PeerBrief yourself.",
         "",
         '  MERGE (h:HelpRequest {help_id: "<unique help id>"})',
         "  ON CREATE SET",
         '    h.run_id = "<RUN_ID>",',
         f'    h.mode = "{mode}",',
         '    h.question = "<what you need looked at>",',
-        '    h.tried_summary = "<claim / why hiring / what Cursor should dig>",',
+        '    h.tried_summary = "<claim / why hiring / what Claude should think through>",',
         '    h.success_criteria = "<what would count as useful>",',
         '    h.expected_reply = "<what you predict the peer will return, not just what you want>",',
         '    h.if_not_asked = "<what you expect if you do not hire>",',
@@ -1385,7 +1387,7 @@ def _review_role_section(*, run_id: str) -> list[str]:
         "",
         "This is a DIFFERENT field from the role you wrote above. Valid "
         "values here are ONLY self_review or hire_cursor_review -- never "
-        "local_crawl or hire_cursor (those belong on :InvestigationRole, not "
+        "local_crawl or hire_peer (those belong on :InvestigationRole, not "
         "here).",
         "",
         "Writing nothing is fine and means self_review. You may revise "
@@ -1393,7 +1395,7 @@ def _review_role_section(*, run_id: str) -> list[str]:
         "",
         "    MERGE (r:ReviewRole {",
         f'      run_id: "{run_id}",',
-        '      choice: "<self_review OR hire_cursor_review -- NOT local_crawl / hire_cursor>",',
+        '      choice: "<self_review OR hire_cursor_review -- NOT local_crawl / hire_peer>",',
         '      why: "<one sentence: why this choice now>",',
         "      written_at: timestamp()",
         "    })",

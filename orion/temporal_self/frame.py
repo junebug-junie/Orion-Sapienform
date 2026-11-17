@@ -23,6 +23,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfFrameV1,
     TemporalSelfStateV1,
 )
+from orion.retro.sitting import SITTING_SUBJECT_PREFIX
 from orion.temporal_self.arcs import DAY_LIST_CAP, ReducerConfig, tick_gap_sec
 from orion.temporal_self.day import day_phase_for, day_window
 
@@ -70,11 +71,16 @@ def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = 
         return max((a for a in arcs if a.kind == kind), key=lambda a: (a.ended_at or a.began_at, a.arc_id),
                    default=None)
 
-    # Pinned however busy the day. Orion plays Zelda (section F): today's latest Retro session, so the
-    # stance cue can still say Orion played (it reads arcs_today; a closed play arc has no
-    # active_by_kind entry to fall back on). Street: today's latest outside event, so recent arcs can
+    def _latest_play(person: bool):
+        return max((a for a in arcs if a.kind == "play" and a.subject_ref.startswith(SITTING_SUBJECT_PREFIX) == person),
+                   key=lambda a: (a.ended_at or a.began_at, a.arc_id), default=None)
+
+    # Pinned however busy the day. Orion plays Zelda (section F): today's latest Retro session of
+    # Orion's own, so the stance cue can still say Orion played (it reads arcs_today; a closed play
+    # arc has no active_by_kind entry to fall back on), and today's latest sitting of a person, pinned
+    # apart so neither pushes the other out. Street: today's latest outside event, so recent arcs can
     # still name it.
-    pins = [a for a in (_latest("play"), _latest("street")) if a is not None]
+    pins = [a for a in (_latest_play(False), _latest_play(True), _latest("street")) if a is not None]
     if any(a not in ranked for a in pins):
         rest = [a for a in ranked if a not in pins]
         ranked = rest[: ARCS_IN_FRAME_CAP - len(pins)] + pins
@@ -101,11 +107,13 @@ def build_frame(state: TemporalSelfStateV1, now: datetime, cfg: ReducerConfig = 
     resolved = resolved_all[:DAY_LIST_CAP]
 
     # Flushed unbound context plus what is still buffered and unbound, without mutating state.
+    # The buffer only holds items folded into this day, so no lower bound: a memory written today
+    # about an earlier day is part of today (#3584).
     unbound = set(state.day_context_event_ids)
     unbound.update(
         i.event_id for i in state.context_buffer
         if i.source_kind in ("metacog_observation", "memory_episode", "chat_turn") and not i.bound_arc_ids
-        and start <= i.at <= now
+        and i.at <= now
     )
     unbound_sorted = sorted(unbound)
 

@@ -20,6 +20,9 @@ on:
       - "orion/cognition/prompts/harness_finalize_reflect.j2"
       - "orion/cognition/prompts/stance_react.j2"
       - "orion/self_monitor/**"
+      # test_prime_never_reads_the_promise_acts_while_they_are_shadow scans these two trees.
+      - "orion/prime/**"
+      - "services/orion-mind/app/**"
       - "services/orion-thought/app/open_promises_cue.py"
       - "services/orion-thought/app/bus_listener.py"
       - "services/orion-thought/tests/test_open_promises_cue.py"

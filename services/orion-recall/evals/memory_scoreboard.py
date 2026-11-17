@@ -161,11 +161,12 @@ def degraded_reasons(telemetry: Sequence[Mapping[str, Any]], *, lived_timeout_ms
 
     - any call hit the recall deadline;
     - the continuity call has no ``lived_memory`` backend count (lived memory never started);
+    - lived memory ran its exact-word fallback (``backend_counts.lived_memory_degraded``, #3573);
     - lived memory served nothing and waited out its whole budget (it timed out);
     - a call has no trace row at all (cannot be checked, so not trusted).
 
-    A lived-memory error that returns fast reads like "nothing fit" here; that case is not
-    detectable from the trace. A turn the skip gate skipped is not degraded: that is the path
+    Before #3573 a lived-memory error that returned fast read like "nothing fit"; the degraded
+    flag now marks it. A turn the skip gate skipped is not degraded: that is the path
     doing what it does.
     """
     reasons: List[str] = []
@@ -183,6 +184,9 @@ def degraded_reasons(telemetry: Sequence[Mapping[str, Any]], *, lived_timeout_ms
         timings = _as_dict(r.get("timings_ms"))
         if "lived_memory" not in counts:
             reasons.append("lived_memory:not_run")
+        elif counts.get("lived_memory_degraded"):
+            # Step 2 (#3573): the reader failed or timed out and its exact-word fallback served.
+            reasons.append("lived_memory:degraded")
         elif not counts.get("lived_memory") and float(timings.get("lived_memory_wait") or 0) >= 0.95 * lived_timeout_ms:
             reasons.append("lived_memory:timeout")
     return reasons

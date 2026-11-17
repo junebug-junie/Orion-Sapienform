@@ -71,9 +71,14 @@ async def persist_episode(
     coverage: Optional[float],
     now: Optional[datetime] = None,
     referent_policy: Any = None,
+    supersede_links: Optional[list[dict[str, Any]]] = None,
 ) -> dict[str, int]:
     """``referent_policy`` (orion.memory.referents.resolve.ReferentPolicy) turns on the Stage 2
-    referent step; None skips it (MEMORY_REFERENTS_ENABLED=false)."""
+    referent step; None skips it (MEMORY_REFERENTS_ENABLED=false).
+
+    ``supersede_links`` (orion.memory.episode.supersede.Link dicts, from the distill node's check)
+    retire what this episode's memories correct, in the same transaction: the old row superseded,
+    the new row's pointer, one event. Each link is re-checked against live state first."""
     from psycopg.types.json import Jsonb
 
     now = now or datetime.now(timezone.utc)
@@ -119,6 +124,7 @@ async def persist_episode(
                              "verified": e.verified} for e in q.evidence]),
                      q.referents, now),
                 )
+            superseded = await _apply_supersede_links(conn, episode_id, result, now, supersede_links)
             referents = await _persist_referents(conn, episode_id, result, now, referent_policy)
             await conn.execute(
                 _INSERT_RUN,
@@ -131,8 +137,27 @@ async def persist_episode(
         "rejections": len(result.rejections),
         "questions": len(result.questions),
         "downgrades": result.downgrades,
+        "superseded": superseded,
         **({"referents_resolved": referents["resolved"]} if referents else {}),
     }
+
+
+async def _apply_supersede_links(conn: Any, episode_id: str, result: ValidationResult, now: datetime,
+                                 links: Optional[list[dict[str, Any]]]) -> int:
+    """Only links whose new row is one of THIS episode's validated memories are applied."""
+    if not links:
+        return 0
+    from orion.memory.episode.supersede import ACTOR_DISTILL, Link, apply_link
+
+    mine = {m.memory_id for m in result.memories}
+    applied = 0
+    for d in links:
+        link = Link.from_dict(d)
+        if link.new_id not in mine:
+            continue
+        if await apply_link(conn, link, actor=ACTOR_DISTILL, now=now, episode_id=episode_id):
+            applied += 1
+    return applied
 
 
 async def _persist_referents(conn: Any, episode_id: str, result: ValidationResult, now: datetime,

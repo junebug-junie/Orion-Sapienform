@@ -191,7 +191,7 @@ def build_grading_sealed_prompt(
     {choice: "hire_cursor_review"}` -- see `kickoff_prompt._review_role_section`.
 
     Same "read-only contractor" framing convention as `services/orion-
-    curiosity-peer/app/cursor_invoker.py:build_sealed_prompt`'s `self_inquiry`
+    curiosity-peer/app/brief_prompt.py:build_sealed_prompt`'s `self_inquiry`
     branch (that prompt already names "hop notes" as valid evidence), but
     targets `HopReadingBatchV1` JSON, not `PeerBriefV1` -- a free-form brief
     cannot carry "one reading per hop," which is exactly what grading needs.

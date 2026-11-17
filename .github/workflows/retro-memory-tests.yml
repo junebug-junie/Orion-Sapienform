@@ -4,6 +4,11 @@ on:
   pull_request:
     paths:
       - "services/orion-hub/scripts/retro_memory_export.py"
+      - "services/orion-hub/scripts/retro_sitting.py"
+      - "orion/retro/sitting.py"
+      - "services/orion-hub/tests/test_retro_sitting_pg.py"
+      - "services/orion-sql-db/manual_migration_retro_watch_v1.sql"
+      - "services/orion-durable-runs/app/temporal_self_sources.py"
       - "services/orion-hub/scripts/retro_leisure_self_start.py"
       - "services/orion-hub/scripts/retro_leisure.py"
       - "services/orion-hub/evals/retro_leisure_self_start_replay.py"
@@ -22,6 +27,10 @@ on:
     branches: [main]
     paths:
       - "services/orion-hub/scripts/retro_memory_export.py"
+      - "services/orion-hub/scripts/retro_sitting.py"
+      - "orion/retro/sitting.py"
+      - "services/orion-sql-db/manual_migration_retro_watch_v1.sql"
+      - "services/orion-durable-runs/app/temporal_self_sources.py"
       - "services/orion-hub/scripts/retro_leisure_self_start.py"
       - "services/orion-hub/scripts/retro_leisure.py"
       - "services/orion-hub/scripts/act_emit.py"
@@ -52,7 +61,7 @@ jobs:
           sudo systemctl start postgresql
           sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'retro-test';"
           sudo -u postgres createdb retro_test
-      - name: Summary builder, memory card, play act, leisure consumer, real SQL
+      - name: Summary builder, memory card, play act, leisure consumer, sitting record, real SQL
         env:
           PYTHONPATH: ${{ github.workspace }}
           ORION_TEST_PG_URI: postgresql://postgres:retro-test@127.0.0.1:5432/retro_test
@@ -61,6 +70,7 @@ jobs:
           python -m pytest -q \
             tests/test_retro_memory_export.py \
             tests/test_retro_memory_export_pg.py \
+            tests/test_retro_sitting_pg.py \
             tests/test_retro_leisure_self_start.py \
             tests/test_retro_leisure_replay_live_source.py \
             tests/test_act_ledger_producers.py

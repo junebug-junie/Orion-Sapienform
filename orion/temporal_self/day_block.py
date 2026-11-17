@@ -38,6 +38,7 @@ TOP_ATTENTION = 5
 MAX_CURIOSITY_LINES = 10
 MAX_IMMUNE_LINES = 5
 MAX_FACULTY_ITEMS = 6
+PLAY_LINE_ITEMS = 2
 IMMUNE_KIND_WORDS = {"constant": "constant", "floor_locked": "floor-locked", "replayed": "replayed",
                      "decayed_to_zero": "decayed to zero"}
 KIND_ORDER = ("attention", "conversation", "curiosity", "sleep", "imagery", "concern", "reverie", "interoception",
@@ -235,6 +236,20 @@ def render_closed_day_block(
         parts += [f"{t.subject_label.strip() or t.subject_ref}, open at close, arc {t.arc_id} not in the day record "
                   f"{day_ref}" for t in orphans]
         lines.append((3, "Conversation threads: " + "; ".join(parts) + "."))
+
+    # One line for the play of the day: each session's own deterministic label (who played, which game,
+    # how long). A person's sitting names the person as the player; nothing here credits Orion with it.
+    # The PLAY_LINE_ITEMS longest only, in time order. It sits after the conversation lines on purpose:
+    # the cap drops the last line of a priority first, so play never pushes a conversation line out
+    # (measured on the closed day 2026-11-15: all four sittings listed in full did exactly that).
+    plays = [a for a in arcs if a.kind == "play"]
+    if plays:
+        longest = sorted(plays, key=lambda a: ((a.ended_at or a.began_at) - a.began_at, a.arc_id), reverse=True)
+        shown = sorted(longest[:PLAY_LINE_ITEMS], key=lambda a: (a.began_at, a.arc_id))
+        parts = [f"{clock(a, a.began_at)} {a.subject_label.strip() or a.subject_ref} {ref(a, a.subject_label.strip())}"
+                 for a in shown]
+        count = f" ({len(plays)} today, the {len(shown)} longest)" if len(plays) > len(shown) else ""
+        lines.append((3, f"Play on the Retro service{count}: " + "; ".join(parts) + "."))
 
     day_warnings = []
     for w in frame.warnings:

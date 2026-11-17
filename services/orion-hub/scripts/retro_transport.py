@@ -1,4 +1,8 @@
-"""Bounded Retro-only WebSocket relay; no planner, bus or Hub lifecycle state."""
+"""Bounded Retro-only WebSocket relay; no planner, bus or Hub lifecycle state.
+
+One observer hook: ``on_input`` is called with each browser input message after it was forwarded
+(the sitting record, scripts/retro_sitting.py). It is sync, it must not raise and it must not
+wait; the relay holds no state for it."""
 import asyncio
 import logging
 import json
@@ -12,7 +16,7 @@ logger = logging.getLogger('uvicorn.error.retro_transport')
 SEND_TIMEOUT_SEC = .75
 
 
-async def relay_messages(ws, upstream, channel, sid, *, media_ack=False):
+async def relay_messages(ws, upstream, channel, sid, *, media_ack=False, on_input=None):
     # A slow viewer must not accumulate old pictures/PCM. Never drop input replies.
     latest = asyncio.Queue(maxsize=1)
     sent = acknowledged = 0
@@ -40,6 +44,9 @@ async def relay_messages(ws, upstream, channel, sid, *, media_ack=False):
                 acknowledged = ack['ack']; credit.set()
                 continue  # presentation acknowledgments never reach native input
             await asyncio.wait_for(upstream.send_str(msg), .25)
+            if on_input is not None:
+                try: on_input(msg)
+                except Exception: logger.warning('retro_relay_on_input_failed sid=%s', sid, exc_info=True)
 
     async def native_to_browser():
         while True:

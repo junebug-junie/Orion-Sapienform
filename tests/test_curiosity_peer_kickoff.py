@@ -35,7 +35,7 @@ def test_role_split_taught_when_peer_enabled() -> None:
     )
     assert "InvestigationRole" in on
     assert "local_crawl" in on
-    assert "hire_cursor" in on
+    assert "hire_peer" in on
     assert "genuinely stuck" not in on.lower()
     assert "not as a default" not in on.lower()
     assert "MERGE (h:HelpRequest" in on
@@ -83,7 +83,7 @@ def test_self_inquiry_forbids_peer_drafting_selfdefinition() -> None:
     assert "HelpRequest" in text
     assert "InvestigationRole" in text
     assert "local_crawl" in text
-    assert "hire_cursor" in text
+    assert "hire_peer" in text
     assert "genuinely stuck" not in text.lower()
     assert "never draft" in text.lower() or "must not draft" in text.lower()
     assert "SelfDefinition" in text  # Orion still writes their own

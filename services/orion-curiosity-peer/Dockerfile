@@ -4,9 +4,9 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Thin bus worker: no Claude CLI, no git, no docker client, no cursor-sdk.
-# Spawns host-mounted Cursor Agent CLI (compose: /opt/cursor-agent + desktop
-# auth under /root/.config/cursor). Repo mount (read-only) at compose time.
+# Thin bus worker: no Claude CLI, no Cursor CLI, no git, no docker client.
+# Hires Claude over the bus (orion-room-companion runs the Claude CLI).
+# Compose mounts Claude Code transcripts read-only for the usage meter.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates && \
     rm -rf /var/lib/apt/lists/*

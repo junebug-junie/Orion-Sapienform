@@ -598,3 +598,16 @@ def test_an_office_hold_composes_anyway_after_its_short_window(monkeypatch):
     w.first_bid_at -= timedelta(seconds=ob.OFFICE_WINDOW_S + 1)
     w.retry_at = datetime.now(timezone.utc) - timedelta(seconds=1)
     assert [r["reason"] for r in asyncio.run(loop.tick())["results"]] == ["sent"] and len(delivered) == 1
+
+
+def test_the_office_note_is_told_about_an_open_game_sitting_and_is_not_silenced():
+    # Game company design, section 5: the camera keeps speaking while someone plays; it is told.
+    from scripts.office_reach_out import build_prompt
+
+    plain = build_prompt(_session(), TZ, now=T0)
+    assert "game controller" not in plain
+    line = "Someone is playing A Link to the Past on your Retro service, for 47 min so far."
+    told = build_prompt(_session(), TZ, now=T0, game_line=line)
+    assert f"One more fact, from the game controller and not from the camera: {line}" in told
+    assert '"computer work" in the captions may be that game' in told
+    assert told.replace(told[told.index("One more fact"):told.index("Juniper asked you")], "") == plain

@@ -4,7 +4,7 @@
 Starts/stops its own container with an ephemeral loopback port and no mounted
 volumes. Provider and bus delivery are deterministic in-process fixtures;
 commitment, matching, offer, completion and decision reads use the real engine.
-No Cursor/Claude invocation or production bus connection is possible here.
+No Claude invocation or production bus connection is possible here.
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ from app.worker import handle_help_request, apply_peer_brief_consumed
 from orion.curiosity.agency_episode import commit_ask, decision_query, validate_decision
 from orion.curiosity.peer_brief_persist import persist_peer_brief
 from orion.curiosity.peer_briefs import publish_peer_briefs_consumed
-from orion.dev_economics.cursor_limit_events import CursorLimitObservation
+from types import SimpleNamespace
 from orion.graph.falkor_client import RedisGraphQueryClient
 from orion.schemas.curiosity_peer import HelpRequestV1, PeerAskExpectationV1, PeerBriefV1
 
@@ -46,12 +46,12 @@ def exercise(graph):
         rows=graph.graph_query("MATCH (c:PeerAskCommit {help_id:$help_id}) RETURN c.committed_at AS committed_at",{"help_id":h.help_id})
         assert len(rows)==1 and rows[0]["committed_at"]>0
         calls.append(h.help_id)
-        return PeerBriefV1(brief_id="eval-brief",help_id=h.help_id,run_id=h.run_id,peer="cursor_auto",status="ok",summary="retry.py owns it, not worker.py",evidence_pointers=["retry.py"])
+        return PeerBriefV1(brief_id="eval-brief",help_id=h.help_id,run_id=h.run_id,peer="claude_room",status="ok",summary="retry.py owns it, not worker.py")
     persisted=[]
     def persist(brief):
         persist_peer_brief(brief=brief,graph_execute=graph.graph_query,bus_publish=lambda channel,env:persisted.append(env))
     settings=Settings(_env_file=None,CURIOSITY_PEER_EPISODES_ENABLED=True)
-    kwargs=dict(settings=settings,cursor=provider,observe_limit=lambda:CursorLimitObservation(observed=True,state="clear",staleness_sec=1),
+    kwargs=dict(settings=settings,claude=provider,observe_claude_limit=lambda:SimpleNamespace(observed=True,state="clear",staleness_sec=1),
                 begin_episode=lambda h:commit_ask(graph,h),persist=persist)
     brief=handle_help_request(req,**kwargs)
     assert brief.status=="ok" and len(persisted)==1

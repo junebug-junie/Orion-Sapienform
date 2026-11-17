@@ -184,6 +184,8 @@ read lag is read in the window it was written in instead of being stored late an
 arc keeps the real times. A story ending just before midnight and written after it lands in the next
 day's arcs.
 
+**Late memories join the day they were written.** An episode memory (`memory_episode`) is distilled 0.5 to 97 h after the moment it is about. It is ordered by its write time and binds by `occurred_at` to an arc of the current day that covers that moment. When none does (for example, the moment is in an earlier, closed day), it joins the current day's unbound context: the day it was remembered. The closed day is not rewritten, and the event row keeps `occurred_at`. Nothing is dropped (#3584).
+
 **Names say where they came from.** A story's written name (`name_label`) is the recognizer matching its
 crops to a cluster Juniper named: the label says "Robin (a guess)", like a handoff's person guess. It
 says "Robin (named by Juniper)" only when she vouched for that story: her latest name answer on it (the

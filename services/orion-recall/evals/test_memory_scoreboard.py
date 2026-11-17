@@ -108,6 +108,8 @@ def test_one_more_miss_fails_the_retrieval_bar():
     ([{"profile": "chat.continuity.v1", "backend_counts": {"lived_memory": 0},
        "timings_ms": {"lived_memory_wait": 120}}], []),   # nothing fit, fast: not degraded
     ([{"profile": "chat.belief.open_loop.v1", "backend_counts": {}, "timings_ms": {}}], []),
+    ([{"profile": "chat.continuity.v1", "backend_counts": {"lived_memory": 2, "lived_memory_degraded": 1},
+       "timings_ms": {"lived_memory_wait": 300}}], ["lived_memory:degraded"]),
 ])
 def test_degraded_reasons_from_trace_rows(rows, reasons):
     assert ms.degraded_reasons(rows, lived_timeout_ms=4000) == reasons

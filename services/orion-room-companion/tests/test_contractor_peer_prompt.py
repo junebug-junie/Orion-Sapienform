@@ -27,7 +27,7 @@ def test_contractor_marker_adds_peer_clause() -> None:
     out = append_system_prompt_for(trigger="auto", prompt=prompt)
     assert out.startswith(SYSTEM_PROMPT)
     assert CONTRACTOR_PEER_CLAUSE in out
-    assert AUTO_INVITE_CLAUSE in out
+    assert AUTO_INVITE_CLAUSE not in out  # no "[pass]" option on a hire (#3397)
     # Marker alone without trigger=auto still gets contractor clause.
     manual = append_system_prompt_for(trigger="manual", prompt=prompt)
     assert CONTRACTOR_PEER_CLAUSE in manual

@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import Any, Callable, Iterable, Mapping
 
 from orion.regulation.arousal import strain_causes
+from orion.retro.sitting import SITTING_SUBJECT_PREFIX, who_words
 from orion.schemas.temporal_self import LABEL_MAX, TemporalSelfEventV1
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
 from orion.vision.motion_story_gate import gate_passed, tally_from_counts
@@ -532,6 +533,15 @@ def retro_play_label(row: Row) -> str:
     drove more than half of the frames, else ``with a human``) and the prediction count. The full summary stays on the row and the memory card;
     the stance cue has room for this phrase only (STANCE_CUE_MAX_CHARS)."""
     title = str(row.get("game_title") or row.get("game_id") or "a game")
+    if row.get("kind") == "human_play":
+        # A person's sitting (orion-hub scripts/retro_sitting.py): the subject of the sentence is the
+        # person, so nothing credits Orion. "Juniper" only when the game page was told so; never a guess.
+        # It does not say "Orion did not play": a short handoff to Orion can sit inside a sitting.
+        from orion.temporal_self.stance_cue import span_words
+
+        seconds = retro_play_seconds(row)
+        span = f" for {span_words(seconds)}" if seconds is not None else ""
+        return clip(f"{who_words(row.get('player_stated'))} played {title}{span}")
     if row.get("played_together"):
         who = "together"
     elif row.get("kind") == "leisure" and not row.get("human_may_be_in_control") \
@@ -551,9 +561,30 @@ def retro_play_label(row: Row) -> str:
     return clip(f"{title} {who}{done}")
 
 
+def retro_sitting_ref(session_id: Any) -> str:
+    """``retro_sitting:<sitting id>`` for a human_play row (its key is ``sitting:<sitting id>``)."""
+    text = str(session_id)
+    return SITTING_SUBJECT_PREFIX + (text.split(":", 1)[1] if text.startswith("sitting:") else text)
+
+
+def retro_play_seconds(row: Row) -> float | None:
+    """How long one session lasted: the row's ``duration_sec``, else ended_at - started_at. None when
+    neither can be read. For a human_play sitting this is first to last button change."""
+    value = row.get("duration_sec")
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+        return float(value)
+    start, end = row.get("started_at"), row.get("ended_at")
+    if isinstance(start, datetime) and isinstance(end, datetime):
+        return max(0.0, (as_utc(end) - as_utc(start)).total_seconds())
+    return None
+
+
 def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
-    """retro_play_sessions (orion-hub scripts/retro_memory_export.py): one finished Retro session.
-    Time: started_at to ended_at (available at ended_at, when the row is written). Subject:
+    """retro_play_sessions (orion-hub scripts/retro_memory_export.py, and scripts/retro_sitting.py for
+    kind ``human_play``): one finished Retro session.
+    Time: started_at to ended_at. Available when WRITTEN (``payload.available_at`` = created_at): a
+    sitting's row is written 5 minutes after its last button press, when the gap is noticed, so a
+    read by ended_at alone could pass it by. Subject:
     ``retro_session:<session_id>``. Label: ``retro_play_label`` ("The Legend of Zelda solo, 14 of 31
     predictions met"). A row with no summary is dropped: Hub writes one for every exported session,
     so a row without it was not written by the exporter."""
@@ -564,7 +595,10 @@ def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | Non
         kind="retro_play", table="retro_play_sessions", ref=session_id, at=row.get("started_at"),
         ended=row.get("ended_at"), tz_name=tz_name,
         # The Retro session (a co-play row key is per handoff): the same ref the memory card anchors.
-        subject_ref=f"retro_session:{row.get('retro_session_id') or session_id}",
+        # A person's own sitting gets its own subject, so no reader words it as Orion's play
+        # (stance_cue._play_clause, recent_arcs: "Played ..." is said only of a retro_session).
+        subject_ref=(retro_sitting_ref(session_id) if row.get("kind") == "human_play"
+                     else f"retro_session:{row.get('retro_session_id') or session_id}"),
         label=retro_play_label(row),
         payload={
             "game_id": row.get("game_id"), "kind": row.get("kind"), "lineage_id": row.get("lineage_id"),
@@ -572,6 +606,9 @@ def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | Non
             "decisions": row.get("decisions"), "predictions_met": row.get("predictions_met"),
             "rooms_new": row.get("rooms_new"), "deaths": row.get("deaths"),
             "memory_card_id": str(row["memory_card_id"]) if row.get("memory_card_id") else None,
+            # The salience magnitude of this kind (orion/temporal_self/now.py ``sitting_minutes``).
+            "duration_sec": retro_play_seconds(row), "player_stated": row.get("player_stated"),
+            **_available_payload(row.get("created_at")),
         },
     )
 

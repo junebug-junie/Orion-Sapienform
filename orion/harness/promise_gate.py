@@ -8,8 +8,10 @@ model call or a word list. Six rules (docs/superpowers/specs/2026-11-11-intentio
    Juniper to act, a hand-off to someone else, and a forecast about a system are dropped
    here, before the cap, so they cannot crowd out a real promise. A missing or unknown
    doer is dropped too (fail closed).
-0a. A ``promises_made`` item must commit (``PromiseV1.force == "commits"``, offers
-   included). The judge names each item's speech act (Searle's illocutionary point); a
+0a. A ``promises_made`` item must commit (``PromiseV1.force == "commits"``; an offer's
+   speech act is labelled ``commits`` too, so an offer passes this rule and is stored with
+   ``offer: true``, but the ledger opens no act for it until Juniper accepts it,
+   orion/grammar/promise_acts.py ``plan_promise_events``). The judge names each item's speech act (Searle's illocutionary point); a
    report of an act already done, a prediction, a suggestion and a wish are dropped here,
    before the cap. A missing or unknown force is dropped too (fail closed).
 0b. A ``promises_made`` item must have a completion that could fail to happen
@@ -64,8 +66,11 @@ PROMISE_FIELDS: tuple[str, ...] = ("promises_made", "offers_accepted", "promises
 PROMISE_QUOTE_MIN_CHARS = 12
 
 _QUOTE_MARKS = str.maketrans({
-    "‘": "'", "’": "'", "‛": "'", "′": "'",
-    "“": '"', "”": '"', "‟": '"', "″": '"',
+    "‘": "'", "’": "'", "‛": "'", "′": "'", "\u02bc": "'", "\uff07": "'",
+    "“": '"', "”": '"', "‟": '"', "″": '"', "\uff02": '"',
+    # Zero-width characters a model or a renderer can slip into a copy: a space (a zero-width space
+    # can stand in for a real one; runs of spaces collapse below).
+    "\u200b": " ", "\u200c": " ", "\u200d": " ", "\u2060": " ", "\ufeff": " ",
 })
 _WS = re.compile(r"\s+")
 _DASH = re.compile(r"\s*(?:\u2014|\u2013|--)\s*")
@@ -77,11 +82,14 @@ def promise_ledger_enabled() -> bool:
 
 
 def normalize_for_quote_match(text: str) -> str:
-    """Whitespace runs to one space; curly quote marks, dashes and the ellipsis character to
-    their plain forms; backticks removed (models rewrite these when they copy). Case and
-    words are kept."""
+    """Whitespace runs to one space; curly quote marks (incl. the modifier-letter and fullwidth
+    apostrophes), dashes and the ellipsis character to their plain forms; zero-width characters,
+    backticks and asterisks removed (models rewrite these when they copy). Case and words are kept."""
     t = (text or "").translate(_QUOTE_MARKS).replace("\u2026", "...")
     t = t.replace("`", "")  # code marks: 11-03 a real offer was dropped for losing them
+    # Markdown emphasis: replay turn 868ed31f lost a real line because the reply said
+    # "*first public identity record ...*" and the judge quoted it without the asterisks.
+    t = t.replace("*", "")
     t = _DASH.sub("-", t)
     return _WS.sub(" ", t).strip()
 

@@ -29,6 +29,7 @@ Sub-agents become a stated option in take-on turns, and there is now a number fo
 - `orion/dig/__main__.py`: `cmd_take_ons`, dispatch, help line (help stays under its 4,000-char cap: 3,993).
 - `orion/dig/tests/test_take_ons.py`: resume key/session id pinned to the live 11-13 transcript id; Agent + Task counted by type; tool_use ids deduped; generation gaps probed; missing transcript reads UNREAD; days validated and clamped.
 - `orion/dig/README.md`: `take-ons` row.
+- `services/orion-hub/static/catalog/orion-abilities.json`: `dig-take-ons` entry (CI: every dig command needs a catalog entry, `test_orion_abilities_catalog.py`).
 
 ## Schema / bus / API changes
 
@@ -65,6 +66,8 @@ Sub-agents become a stated option in take-on turns, and there is now a number fo
 PYTHONPATH=. pytest -q orion/prime/tests orion/dig/tests            -> 527 passed
 services/orion-hub: pytest -q tests/test_intention_order.py         -> 11 passed
 services/orion-durable-runs: pytest -q tests/test_intention_carry.py -> 6 passed
+services/orion-hub: pytest -q tests -k 'catalog or abilities' -> 27 passed, 3 skipped
+CI first run: 15 pass, 1 fail (Hub full tests: missing catalog entry for take-ons) -> fixed
 ```
 
 ## Evals run

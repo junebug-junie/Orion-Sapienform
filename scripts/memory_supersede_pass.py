@@ -19,7 +19,7 @@ Three commands. Every file goes to --dir (default /tmp/memory-supersede-pass/, m
     .venv/bin/python scripts/memory_supersede_pass.py undo --old <old memory_id> --new <new memory_id>
 
 Manifest (ids and statuses only, never statements): --manifest, default
-/mnt/orion-fcc/self/memory_supersede_pass_manifest.json, so Orion can verify the pass ran. It lists
+/mnt/orion-fcc/notes/memory_supersede_pass_manifest.json, so Orion can verify the pass ran. It lists
 the proposed and applied pair ids and the final status of every --watch LABEL=MEMORY_ID row.
 
 Idempotent: a pair is handled once its ``superseded`` event exists (event_id =
@@ -324,7 +324,8 @@ def write_outputs(out: Path, links: list[Link], records: list[CheckRecord], by_i
     write_private(out / "report.md", "\n".join(report) + "\n")
 
 
-DEFAULT_MANIFEST = Path("/mnt/orion-fcc/self/memory_supersede_pass_manifest.json")
+# /mnt/orion-fcc is mounted into Orion's FCC turns; notes/ is the operator-writable part of it.
+DEFAULT_MANIFEST = Path("/mnt/orion-fcc/notes/memory_supersede_pass_manifest.json")
 WATCH_SQL = ("SELECT memory_id::text AS memory_id, status, confirmation_state, "
              "supersedes_memory_id::text AS supersedes_memory_id, "
              "(SELECT c.memory_id::text FROM episode_memory c WHERE c.supersedes_memory_id = m.memory_id "
@@ -349,7 +350,7 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
                          applied: list[dict[str, Any]] | None, watch: list[tuple[str, str]]) -> None:
     """Ids and statuses only -- never statements -- so Orion can verify the pass ran.
 
-    Written where Orion's FCC turns can read it (default under /mnt/orion-fcc/self, mode 644). The
+    Written where Orion's FCC turns can read it (default under /mnt/orion-fcc/notes, mode 644). The
     database is the other proof: once orion_readonly has SELECT on episode_memory (PR #3593's grant)
     and episode_memory_event (scripts/sql/2026-11-17_grant_orion_readonly_supersede_events.sql),
     ``verify_sql`` below reads every applied pair directly."""
@@ -381,9 +382,13 @@ async def write_manifest(conn: Any, path: Path, *, mode: str, proposed: list[dic
         "verify_sql": VERIFY_SQL,
         "statements": "not here: they live only in the operator's private pass directory",
     }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, indent=2, default=str) + "\n", encoding="utf-8")
-    os.chmod(path, 0o644)
+    text = json.dumps(manifest, indent=2, default=str) + "\n"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        os.chmod(path, 0o644)
+    except OSError as exc:  # the pass's own results stand; say loudly where the manifest did not go
+        print(f"manifest NOT written to {path}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
 
 def _pair_set(spec: str) -> set[tuple[str, str]]:

@@ -6,7 +6,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
 try:
@@ -117,14 +117,39 @@ def set_lived_memory(reader: Any) -> None:
     _lived_memory = reader
 
 
-def _start_lived_recall(query_text: str) -> "asyncio.Task | None":
-    """Start lived-memory recall in the background (issue #3533) so its embed + rerank overlap the
-    rest of the recall fetch instead of adding to it. Bounded by RECALL_LIVED_MEMORY_TIMEOUT_SEC."""
+LIVED_TIMEOUT_GRACE_SEC = 0.5
+# Below this the reader cannot do anything but the exact-word fallback anyway.
+LIVED_MIN_BUDGET_SEC = 0.5
+# Render-side reserve: the continuity bundle still has to be fused after lived recall returns.
+LIVED_RENDER_RESERVE_SEC = 0.3
+
+
+def _start_lived_recall(
+    query_text: str,
+    *,
+    session_id: str | None = None,
+    exclude_ids: Sequence[str] = (),
+    budget_s: float | None = None,
+) -> "asyncio.Task | None":
+    """Start lived-memory recall in the background (issue #3533) so its rewrite + embed + rerank
+    overlap the rest of the recall fetch instead of adding to it.
+
+    The reader gets an explicit budget: RECALL_LIVED_MEMORY_TIMEOUT_SEC, or less when the
+    caller's own deadline is tighter (``budget_s``). Inside it, the reader degrades to exact words
+    before it runs out (#3573). The outer wait here is only a backstop, LIVED_TIMEOUT_GRACE_SEC
+    later; ``_add_lived_memories`` falls back to exact words if even that fires."""
     reader = _lived_memory
     if reader is None:
         return None
+    budget = float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC)
+    if budget_s is not None:
+        budget = max(LIVED_MIN_BUDGET_SEC, min(budget, budget_s))
     return asyncio.ensure_future(
-        asyncio.wait_for(reader.recall(query_text), timeout=float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC))
+        asyncio.wait_for(
+            reader.recall(query_text, session_id=session_id, exclude_ids=list(exclude_ids or []),
+                          timeout_sec=budget),
+            timeout=budget + LIVED_TIMEOUT_GRACE_SEC,
+        )
     )
 
 
@@ -134,16 +159,19 @@ async def _add_lived_memories(
     lived_task: "asyncio.Future | None",
     remaining_s: float | None,
     corr_id: str,
+    query_text: str = "",
 ) -> Tuple[Dict[str, Any], int, bool]:
     """Append the lived memories that fit this turn to the continuity bundle.
 
-    Returns (debug, injected_count, timed_out). The debug carries ids, fits and timings only,
-    never memory text. Every injected id also lands in bundle.items, so recall_telemetry's
+    Returns (debug, injected_count, timed_out). The debug carries ids, fits, timings and the
+    rewritten searches (Orion's own query text: the recall trace the Recall rev 2 spec asks for),
+    never memory text. If the reader failed or ran out of time, its exact-word fallback runs
+    (#3573) and the block says it ran degraded. Every injected id also lands in bundle.items, so recall_telemetry's
     selected_ids is the read log (step 3 of issue #3533's arc reads it).
     """
     if lived_task is None:
         return {"skipped": "disabled"}, 0, False
-    budget = float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC)
+    budget = float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC) + LIVED_TIMEOUT_GRACE_SEC
     if remaining_s is not None:
         budget = min(budget, max(0.0, remaining_s))
     try:
@@ -153,29 +181,54 @@ async def _add_lived_memories(
     except asyncio.TimeoutError:
         lived_task.cancel()
         logger.warning("lived_memory_timeout corr_id=%s budget_s=%.2f", corr_id, budget)
-        return {"skipped": "timeout"}, 0, True
+        # Never skip (#3573): exact words from the in-memory snapshot, labelled degraded.
+        lived = await _lived_fallback(query_text, reason="timeout", corr_id=corr_id)
+        if lived is None:
+            return {"skipped": "timeout"}, 0, True
+        timed_out = True
     except Exception as exc:  # noqa: BLE001 -- never fail the chat recall over it
         logger.warning("lived_memory_failed corr_id=%s error=%s", corr_id, type(exc).__name__)
-        return {"skipped": f"error:{type(exc).__name__}"}, 0, False
+        lived = await _lived_fallback(query_text, reason=f"error:{type(exc).__name__}", corr_id=corr_id)
+        if lived is None:
+            return {"skipped": f"error:{type(exc).__name__}"}, 0, False
+        timed_out = False
+    else:
+        timed_out = False
     debug = dict(lived.debug)
     debug["injected"] = [
-        {"id": c.rec.doc_id, "fit": round(c.fit, 4), "score": round(c.score, 4)} for c in lived.chosen
+        {"id": c.rec.doc_id, "fit": round(c.fit, 4), "score": round(c.score, 4), "link": c.link}
+        for c in lived.chosen
     ]
+    rendered = lived.rendered  # a degraded search that found nothing still says so (#3573)
+    if rendered:
+        bundle.rendered = (bundle.rendered + "\n\n" + rendered).strip() if bundle.rendered else rendered
     if lived.lines:
         from .lived_memory import items_for
 
-        rendered = lived.rendered
-        bundle.rendered = (bundle.rendered + "\n\n" + rendered).strip() if bundle.rendered else rendered
         bundle.items = list(bundle.items) + [MemoryItemV1(**kw) for kw in items_for(lived.chosen)]
     logger.info(
-        "lived_memory_injected corr_id=%s count=%s ids=%s fits=%s total_ms=%s",
+        "lived_memory_injected corr_id=%s count=%s backend=%s rewrite=%s ids=%s fits=%s total_ms=%s",
         corr_id,
         len(lived.lines),
+        lived.backend or "none",
+        (lived.debug.get("rewrite") or {}).get("outcome"),
         [c.rec.doc_id for c in lived.chosen],
         [round(c.fit, 3) for c in lived.chosen],
         (lived.debug.get("timings_ms") or {}).get("total"),
     )
-    return debug, len(lived.lines), False
+    return debug, len(lived.lines), timed_out
+
+
+async def _lived_fallback(query_text: str, *, reason: str, corr_id: str) -> Any:
+    """The reader's exact-word fallback after the full lived recall failed or ran out of time."""
+    reader = _lived_memory
+    if reader is None or not hasattr(reader, "degraded_now") or not str(query_text or "").strip():
+        return None
+    try:
+        return await reader.degraded_now(query_text, reason=reason)
+    except Exception as exc:  # noqa: BLE001 -- the fallback must never fail the recall either
+        logger.warning("lived_memory_fallback_failed corr_id=%s error=%s", corr_id, type(exc).__name__)
+        return None
 
 
 RECALL_REQUEST_KIND = "recall.query.v1"
@@ -2345,7 +2398,17 @@ async def process_recall(
         and bool(settings.RECALL_LIVED_MEMORY_ENABLED)
         and not context_only
     ):
-        lived_task = _start_lived_recall(str(q.fragment or query_fragment or ""))
+        lived_budget_ms = _recall_deadline_budget_ms(q)
+        lived_task = _start_lived_recall(
+            str(q.fragment or query_fragment or ""),
+            session_id=q.session_id,
+            exclude_ids=list(_parse_exclusion(q).get("active_turn_ids") or []),
+            budget_s=(
+                lived_budget_ms / 1000.0 - (time.perf_counter() - recall_started) - LIVED_RENDER_RESERVE_SEC
+                if lived_budget_ms > 0
+                else None
+            ),
+        )
     ignored_session_id = q.session_id
     effective_session_id: str | None = None
     exclusion = _parse_exclusion(q)
@@ -2740,9 +2803,18 @@ async def process_recall(
                 lived_task=lived_task,
                 remaining_s=_remaining_s(),
                 corr_id=corr_id,
+                query_text=str(q.fragment or query_fragment or ""),
             )
             timings_ms["lived_memory_wait"] = int((time.perf_counter() - lived_started) * 1000)
             backend_counts_total["lived_memory"] = lived_count
+            # Persisted columns (recall_telemetry.backend_counts / timings_ms): which backend
+            # served the lived lines (#3573) and what the rewrite cost (#3534).
+            if lived_debug.get("backend") == "degraded":
+                backend_counts_total["lived_memory_degraded"] = 1
+            lived_timings = lived_debug.get("timings_ms") or {}
+            for key in ("rewrite", "rerank", "total"):
+                if key in lived_timings:
+                    timings_ms[f"lived_memory_{key}"] = int(lived_timings[key])
             if lived_timed_out:
                 lived_debug["timed_out"] = True
     elif settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":

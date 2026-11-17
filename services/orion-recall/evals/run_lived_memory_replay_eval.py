@@ -1,12 +1,20 @@
-"""Replay eval for lived-memory recall (issue #3533).
+"""Replay eval for lived-memory recall (issues #3533, #3534, #3573).
 
-Replays real Juniper chat messages through ``app/lived_memory.py`` and reports, per quality bar
-(``--min-fit``):
+Replays real Juniper chat messages through ``app/lived_memory.py`` and reports, per variant
+(``--variants``: step1 = no rewrite, no links; rewrite; links; step2 = both; degraded = step 2
+with the reranker pointed at a dead endpoint) and per quality bar (``--min-fit``):
 
-- **hit rate**: share of referring messages whose target record id lands in the injected lines;
+- **hit rate**, split by bank ``kind`` (``explicit`` names the thing; ``implicit`` leans on the
+  shared past without naming or asking): share of referring messages whose target record id
+  lands in the injected lines;
 - **noise**: lines injected on her last N real messages, and the share of small-talk messages
   (``is_low_info_social`` or 8 words or fewer) that inject anything;
-- **latency**: per-call timings (snapshot, dense, rerank, total).
+- **latency**: per-call timings (snapshot, rewrite, dense, links, rerank, total), per variant.
+  The first rewrite variant calls the fast lane for real; later ones reuse its answers (cached
+  per message), so only that first variant's rewrite and total times are live.
+
+The rewrite reads the same conversation's earlier ``chat_history_log`` turns (as of the replayed
+message) and calls the LLM gateway over the bus (``--bus-url``, route ``--rewrite-route``).
 
 Prints counts and ids only, never chat or memory text: the bank and the messages are private.
 The bank lives host-side (``~/.orion/evals/lived_memory_recall_bank.json``, mode 600) and holds
@@ -19,7 +27,8 @@ Run from the repo root on the host (reaches Postgres, Chroma and the vector host
     python services/orion-recall/evals/run_lived_memory_replay_eval.py \\
         --bank ~/.orion/evals/lived_memory_recall_bank.json \\
         --dsn postgresql://...@127.0.0.1:55432/conjourney \\
-        --rerank-url http://127.0.0.1:8320/rerank --min-fit 0.02,0.05,0.1
+        --rerank-url http://127.0.0.1:8320/rerank --bus-url redis://<bus-host>:6379/0 \\
+        --variants step1,rewrite,links,step2,degraded --min-fit 0.004
 
 The committed fixture eval (``evals/test_lived_memory_replay_eval.py``) runs the same scoring on
 made-up records with a fake embedder and reranker.
@@ -59,16 +68,26 @@ def score_bar(results: Sequence[Dict[str, Any]], noise: Sequence[Dict[str, Any]]
               now: datetime) -> Dict[str, Any]:
     """Pure scoring of already-reranked candidates at one bar (testable without any service)."""
     hits, per_item = 0, []
+    by_kind: Dict[str, List[int]] = {}
     for r in results:
-        chosen = rank(r["reranked"], min_fit=min_fit, max_lines=MAX_LINES, now=r.get("now") or now)
-        ids = [s.rec.doc_id for s in chosen]
+        if r.get("chosen_ids") is not None:  # degraded runs choose without a fit score
+            ids = list(r["chosen_ids"])[:MAX_LINES]
+        else:
+            chosen = rank(r["reranked"], min_fit=min_fit, max_lines=MAX_LINES, now=r.get("now") or now)
+            ids = [s.rec.doc_id for s in chosen]
         hit = any(t in ids for t in r["targets"])
         hits += int(hit)
-        per_item.append({"label": r["label"], "hit": hit, "lines": len(ids),
+        k = by_kind.setdefault(r.get("kind") or "explicit", [0, 0])
+        k[0] += int(hit)
+        k[1] += 1
+        per_item.append({"label": r["label"], "kind": r.get("kind"), "hit": hit, "lines": len(ids),
                          "target_rank_before_bar": r.get("target_rank")})
     lines_all, small, small_inject = [], 0, 0
     for n in noise:
-        chosen = rank(n["reranked"], min_fit=min_fit, max_lines=MAX_LINES, now=n.get("now") or now)
+        if n.get("chosen_ids") is not None:
+            chosen = list(n["chosen_ids"])[:MAX_LINES]
+        else:
+            chosen = rank(n["reranked"], min_fit=min_fit, max_lines=MAX_LINES, now=n.get("now") or now)
         lines_all.append(len(chosen))
         if n["small_talk"]:
             small += 1
@@ -78,6 +97,7 @@ def score_bar(results: Sequence[Dict[str, Any]], noise: Sequence[Dict[str, Any]]
         "hit_rate": round(hits / len(results), 3) if results else None,
         "hits": hits,
         "referring": len(results),
+        "by_kind": {k: f"{v[0]}/{v[1]}" for k, v in sorted(by_kind.items())},
         "items": per_item,
         "noise_messages": len(noise),
         "noise_mean_lines": round(statistics.mean(lines_all), 2) if lines_all else None,
@@ -87,63 +107,143 @@ def score_bar(results: Sequence[Dict[str, Any]], noise: Sequence[Dict[str, Any]]
     }
 
 
+VARIANTS = {
+    # name: (rewrite, links, dead reranker)
+    "step1": (False, False, False),
+    "rewrite": (True, False, False),
+    "links": (False, True, False),
+    "step2": (True, True, False),
+    "degraded": (True, True, True),
+}
+
+
+class _CachedRewriter:
+    """Calls the real rewriter once per message; later variants reuse the answer."""
+
+    def __init__(self, inner: Any) -> None:
+        self.inner = inner
+        self.cache: Dict[str, List[str]] = {}
+        self.errors = 0
+
+    async def __call__(self, message: str, context: Any) -> List[str]:
+        if message in self.cache:
+            return self.cache[message]
+        try:
+            out = await self.inner(message, context)
+        except Exception:
+            self.errors += 1
+            raise
+        self.cache[message] = list(out)
+        return out
+
+
 async def _replay(args: argparse.Namespace) -> Dict[str, Any]:
     import asyncpg  # type: ignore
     import httpx
 
+    from app.lived_rewrite import BusRewriter
+
     bank = json.loads(Path(args.bank).expanduser().read_text(encoding="utf-8"))
     pool = await asyncpg.create_pool(args.dsn, min_size=1, max_size=2)
-    cfg = LivedMemoryConfig(
-        search=SearchConfig(chroma_url=args.chroma_url, embed_url=args.embed_url, collection=args.collection,
-                            min_similarity=0.0),
-        rerank_url=args.rerank_url, min_fit=0.0, max_lines=64, timeout_sec=30.0,
-        min_query_tokens=args.min_query_tokens)
-    lm = LivedMemoryRecall(pool, cfg)
-    timings: List[Dict[str, int]] = []
-    results: List[Dict[str, Any]] = []
-    noise: List[Dict[str, Any]] = []
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        await lm.snapshot(force=True)
-        for item in bank["referring"]:
-            row = await pool.fetchrow("SELECT prompt, created_at FROM chat_history_log WHERE id = $1", item["chat_id"])
-            if row is None:
-                continue
-            at = row["created_at"].replace(tzinfo=timezone.utc)
-            out = await lm.recall(row["prompt"], client=client, as_of=at)
-            timings.append(out.debug.get("timings_ms") or {})
-            ordered = sorted(out.reranked, key=lambda x: -x[1])
-            rank_of = next((i + 1 for i, (rec, _l) in enumerate(ordered) if rec.doc_id in item["targets"]), None)
-            results.append({"label": item["label"], "targets": item["targets"], "reranked": out.reranked,
-                            "now": at, "target_rank": rank_of,
-                            "target_in_pool": rank_of is not None, "errors": out.debug.get("error") or out.debug.get("dense_error")})
-        rows = await pool.fetch(
-            "SELECT id, prompt, created_at FROM chat_history_log WHERE source = $1 AND length(trim(prompt)) > 0 "
-            "AND prompt NOT LIKE $2 ORDER BY created_at DESC LIMIT $3",
-            bank.get("noise_source", "hub_orion"), bank.get("noise_exclude_prefix", "Orion — ") + "%",
-            int(bank.get("noise_limit", 150)))
-        for row in rows:
-            at = row["created_at"].replace(tzinfo=timezone.utc)
-            out = await lm.recall(row["prompt"], client=client, as_of=at)
-            timings.append(out.debug.get("timings_ms") or {})
-            noise.append({"reranked": out.reranked, "now": at, "small_talk": is_small_talk(row["prompt"])})
-    await pool.close()
+    bus = None
+    rewriter = None
+    if args.bus_url:
+        from orion.core.bus.async_service import OrionBusAsync
+        from orion.core.bus.bus_schemas import ServiceRef
+
+        bus = OrionBusAsync(url=args.bus_url)
+        await bus.connect()
+        rewriter = _CachedRewriter(BusRewriter(
+            bus, channel=args.llm_channel, route=args.rewrite_route, timeout_sec=args.rewrite_timeout,
+            source=ServiceRef(name="orion-recall", version="replay-eval", node="eval")))
+
+    referring_rows = []
+    for item in bank["referring"]:
+        row = await pool.fetchrow("SELECT prompt, created_at, session_id FROM chat_history_log WHERE id = $1",
+                                  item["chat_id"])
+        if row is not None:
+            referring_rows.append((item, row))
+    noise_rows = await pool.fetch(
+        "SELECT id, prompt, created_at, session_id FROM chat_history_log WHERE source = $1 "
+        "AND length(trim(prompt)) > 0 AND prompt NOT LIKE $2 ORDER BY created_at DESC LIMIT $3",
+        bank.get("noise_source", "hub_orion"), bank.get("noise_exclude_prefix", "Orion — ") + "%",
+        int(bank.get("noise_limit", 150)))
+
+    report: Dict[str, Any] = {"min_query_tokens": args.min_query_tokens, "referring": len(referring_rows),
+                              "noise_messages": len(noise_rows), "variants": {}}
     now = datetime.now(timezone.utc)
-    bars = [score_bar(results, noise, float(x), now) for x in str(args.min_fit).split(",") if x.strip()]
+    for name in [v.strip() for v in args.variants.split(",") if v.strip()]:
+        use_rewrite, use_links, dead = VARIANTS[name]
+        if use_rewrite and rewriter is None:
+            report["variants"][name] = {"skipped": "no --bus-url"}
+            continue
+        cfg = LivedMemoryConfig(
+            search=SearchConfig(chroma_url=args.chroma_url, embed_url=args.embed_url, collection=args.collection,
+                                min_similarity=0.0),
+            rerank_url=args.dead_rerank_url if dead else args.rerank_url, min_fit=0.0 if not dead else args.degraded_min_fit,
+            max_lines=64 if not dead else MAX_LINES, timeout_sec=30.0,
+            min_query_tokens=args.min_query_tokens, rewrite_timeout_sec=args.rewrite_timeout,
+            link_top_k=args.link_top_k if use_links else 0)
+        lm = LivedMemoryRecall(pool, cfg, rewriter=rewriter if use_rewrite else None)
+        timings: List[Dict[str, int]] = []
+        results: List[Dict[str, Any]] = []
+        noise: List[Dict[str, Any]] = []
+        outcomes: Dict[str, int] = {}
+        backends: Dict[str, int] = {}
 
-    def pct(key: str, q: float) -> int | None:
-        vals = sorted(t[key] for t in timings if key in t)
-        return vals[min(len(vals) - 1, int(q * len(vals)))] if vals else None
+        def note(out: Any) -> None:
+            timings.append(out.debug.get("timings_ms") or {})
+            o = (out.debug.get("rewrite") or {}).get("outcome") or "none"
+            outcomes[o] = outcomes.get(o, 0) + 1
+            b = out.backend or "no_search"
+            backends[b] = backends.get(b, 0) + 1
 
-    return {
-        "min_query_tokens": args.min_query_tokens,
-        "referring": len(results),
-        "targets_in_candidate_pool": sum(1 for r in results if r["target_in_pool"]),
-        "errors": [r["label"] for r in results if r["errors"]],
-        "noise_messages": len(noise),
-        "latency_ms": {k: {"p50": pct(k, 0.5), "p90": pct(k, 0.9), "max": pct(k, 0.999)}
-                       for k in ("snapshot", "dense", "rerank", "recheck", "total")},
-        "bars": bars,
-    }
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            await lm.snapshot(force=True)
+            for item, row in referring_rows:
+                at = row["created_at"].replace(tzinfo=timezone.utc)
+                out = await lm.recall(row["prompt"], client=client, as_of=at, session_id=row["session_id"])
+                note(out)
+                ordered = sorted(out.reranked, key=lambda x: -x[1])
+                rank_of = next((i + 1 for i, (rec, _l) in enumerate(ordered) if rec.doc_id in item["targets"]), None)
+                results.append({"label": item["label"], "kind": item.get("kind"), "targets": item["targets"],
+                                "reranked": out.reranked, "now": at, "target_rank": rank_of,
+                                "chosen_ids": [c.rec.doc_id for c in out.chosen] if dead else None,
+                                "target_in_pool": rank_of is not None or any(
+                                    c.rec.doc_id in item["targets"] for c in out.chosen),
+                                "errors": out.debug.get("error")})
+            for row in noise_rows:
+                at = row["created_at"].replace(tzinfo=timezone.utc)
+                out = await lm.recall(row["prompt"], client=client, as_of=at, session_id=row["session_id"])
+                note(out)
+                noise.append({"reranked": out.reranked, "now": at, "small_talk": is_small_talk(row["prompt"]),
+                              "chosen_ids": [c.rec.doc_id for c in out.chosen] if dead else None})
+
+        print(f"variant {name} done: {len(results)} referring, {len(noise)} noise", file=sys.stderr, flush=True)
+
+        def pct(key: str, q: float) -> int | None:
+            vals = sorted(t[key] for t in timings if key in t)
+            return vals[min(len(vals) - 1, int(q * len(vals)))] if vals else None
+
+        bars = [score_bar(results, noise, float(x), now) for x in str(args.min_fit).split(",") if x.strip()]
+        report["variants"][name] = {
+            "targets_in_candidate_pool": {k: f"{sum(1 for r in results if r['kind'] == k and r['target_in_pool'])}/"
+                                             f"{sum(1 for r in results if r['kind'] == k)}"
+                                          for k in sorted({r['kind'] for r in results})},
+            "errors": [r["label"] for r in results if r["errors"]],
+            "rewrite_outcomes": outcomes,
+            "backends": backends,
+            "latency_ms": {k: {"p50": pct(k, 0.5), "p90": pct(k, 0.9), "max": pct(k, 0.999)}
+                           for k in ("snapshot", "rewrite", "dense", "links", "rerank", "recheck", "total")},
+            "bars": [{k: v for k, v in b.items() if k != "items" or args.items} for b in bars],
+        }
+    if rewriter is not None:
+        report["rewrite_calls"] = len(rewriter.cache)
+        report["rewrite_errors"] = rewriter.errors
+    if bus is not None:
+        await bus.close()
+    await pool.close()
+    return report
 
 
 def main() -> int:
@@ -153,9 +253,19 @@ def main() -> int:
     ap.add_argument("--chroma-url", default="http://127.0.0.1:8500")
     ap.add_argument("--embed-url", default="http://127.0.0.1:8320/embedding")
     ap.add_argument("--rerank-url", default="http://127.0.0.1:8320/rerank")
+    ap.add_argument("--dead-rerank-url", default="http://127.0.0.1:9/rerank",
+                    help="an endpoint nothing listens on, for the degraded variant")
     ap.add_argument("--collection", default=COLLECTION)
-    ap.add_argument("--min-fit", default="0.002,0.004,0.006,0.01,0.02")
+    ap.add_argument("--min-fit", default="0.004")
+    ap.add_argument("--degraded-min-fit", type=float, default=0.004)
     ap.add_argument("--min-query-tokens", type=int, default=5)
+    ap.add_argument("--variants", default="step1,step2")
+    ap.add_argument("--bus-url", default="")
+    ap.add_argument("--llm-channel", default="orion:exec:request:LLMGatewayService")
+    ap.add_argument("--rewrite-route", default="quick_turn")
+    ap.add_argument("--rewrite-timeout", type=float, default=1.8)
+    ap.add_argument("--link-top-k", type=int, default=6)
+    ap.add_argument("--items", action="store_true", help="include per-item hits (labels are private)")
     args = ap.parse_args()
     print(json.dumps(asyncio.run(_replay(args)), indent=2, default=str))
     return 0

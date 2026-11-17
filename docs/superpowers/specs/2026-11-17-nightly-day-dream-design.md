@@ -86,18 +86,20 @@ hand back. The morning letter then starts from what Orion consolidated overnight
 
 ## The design
 
-### Patch 0: make the dream cycle's "no link" readable, then fix #3412
+### Patch 0: make the dream cycle's "no link" readable, then fix #3412 (DONE 2026-11-17)
 
-- `recombine.py`: keep the first 300 characters of the raw answer for every pair, and store them on
-  the `dream_cycle` row (new nullable JSONB column `pair_answers`, additive DDL, post-pull
-  allowlist safe). Today a decline and an echo both count as `no_link`, and nothing shows which.
-  Split the count: `no_link` (the model said `{"link": false}`) and `echo` (`_echoes` caught a claim
-  that only pasted a fragment back).
-- Run one forced cycle. Read the answers. Then make one fix, chosen from the evidence: a prompt or
-  route change if the model declines, the echo rule if it echoes. Not before.
-- Done when: 3 consecutive cycles have `hypothesis_count > 0` with the cause named in #3412, and the
-  stored answers show the model links some pairs and declines others. If every pair links again,
-  report that. A detector that always says yes is as broken as one that always says no.
+- PR #3636 (deployed): every pair's raw answer is stored in `cycle_json.pair_answers`, and echoes are
+  counted apart from declines.
+- Cause found live (#3412 comment, 2026-11-17): the model on the dream route is honest. It links two
+  pairs that really link and declines unrelated ones. The old 100% link rate was the defect. The
+  dream feeds it prose with no time and bare labels ("reverie_chain_settled"), and its pairing rule
+  picks the most unrelated fragments.
+- PR #3665: fragments carry their time, the metacog evidence and the reverie chain's own thought.
+- Open decision #3664 (needs Juniper): pair by time-coincidence across organs instead of maximum
+  distance. On one sleep: 0/3 linked with the current rule, 1/4 with coincidence pairing.
+- Revised done-when: the stored answers show honest declines and checkable claims on real content.
+  A count above 0 is not the target. This matters for the day dream: it must read the day's real
+  records with refs, never labels, or it will consolidate nothing.
 
 ### Patch 1: `dig digs <date>`, the day's digs on one page
 
@@ -228,8 +230,7 @@ paragraph and the memory ids, placed before the roundup. The letter can cite `[d
 
 ## Acceptance checks
 
-- Patch 0: `dream_cycle.pair_answers` filled on the next cycle; #3412 names its cause with quoted
-  answers; 3 cycles in a row with `hypothesis_count > 0` and at least one decline among them.
+- Patch 0: done (see above): answers stored, cause named on #3412, fragments carry content (#3665).
 - Patch 1: `dig digs 2026-11-16` lists only executed dig commands (count matches a hand query of
   `tool_use` blocks), in under 3 s, as `orion_readonly`.
 - Patch 2: 7 nights in a row each have one `dream_day` row. At least 5 of 7 have `produced = 1`.
@@ -243,5 +244,5 @@ paragraph and the memory ids, placed before the roundup. The letter can cite `[d
 
 ## Recommended next patch
 
-Patch 0. The dream has to make something again, and we need to see its answers, before anything is
+Patch 1 (`dig digs`); Patch 0 is done. The dream has to make something again, and we need to see its answers, before anything is
 built on top of it. It is small, contained in orion-dream, and closes #3412.

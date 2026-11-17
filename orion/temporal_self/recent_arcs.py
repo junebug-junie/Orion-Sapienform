@@ -28,6 +28,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
+from orion.retro.sitting import SITTING_SUBJECT_PREFIX
 from orion.schemas.temporal_self import ArcSummaryV1, TemporalSelfFrameV1
 from orion.self_monitor.names import faculty_arc_words
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
@@ -67,8 +68,8 @@ def _what(arc: ArcSummaryV1) -> str:
     if arc.kind == "attention":
         return f"attention on {label}"
     if arc.kind == "play":
-        # A person's own sitting says who played in its label ("Someone played ...; Orion did not play").
-        return label if arc.subject_ref.startswith("retro_sitting:") else f"played {label}"
+        # A person's own sitting says who played in its label ("Someone played ... for 2 h 22 min").
+        return label if arc.subject_ref.startswith(SITTING_SUBJECT_PREFIX) else f"played {label}"
     if arc.kind == "street":
         return f"saw {label}"  # the label already says "Outside (<camera>): ..."
     if arc.kind == "company" and any(f" in {p}" in label for p in ROOM_PLACE_WORDS.values()):

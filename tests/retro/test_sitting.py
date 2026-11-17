@@ -125,14 +125,55 @@ def test_short_sittings_are_not_worth_a_record():
 
 def test_parse_input_message():
     ok = json.dumps({"version": 1, "session_id": SID, "generation": "g", "lease": "l", "epoch": 1, "seq": 2, "port": 0, "mask": 128})
-    assert parse_input_message(ok) == (0, 128, (0, 0, 0, 0))
+    assert parse_input_message(ok) == (0, 128, None)
     n64 = json.dumps({"version": 1, "port": 1, "mask": 0, "axes": [-32767, 9000, 120, -7999]})
-    assert parse_input_message(n64) == (1, 0, (-1, 1, 0, 0))
-    assert parse_input_message(json.dumps({"port": 0, "mask": 0, "axes": [1, 2]})) == (0, 0, (0, 0, 0, 0))
+    assert parse_input_message(n64) == (1, 0, [-32767, 9000, 120, -7999])    # raw: the tracker makes them coarse
+    assert parse_input_message(json.dumps({"port": 0, "mask": 0, "axes": [1, 2]})) == (0, 0, [1, 2])
     for bad in ("", "{", "[]", json.dumps({"port": 0}), json.dumps({"port": 2, "mask": 1}),
                 json.dumps({"port": 0, "mask": -1}), json.dumps({"port": 0, "mask": True}),
                 json.dumps({"port": "0", "mask": 1}), json.dumps({"ack": 3})):
         assert parse_input_message(bad) is None
+
+
+def _live(tracker, now, mask=0, axes=None, port=0):
+    """One browser message through the live path: the parser, then the tracker."""
+    body = {"version": 1, "session_id": SID, "port": port, "mask": mask}
+    if axes is not None:
+        body["axes"] = axes
+    return tracker.on_input(SID, *parse_input_message(json.dumps(body))[:2], now, parse_input_message(json.dumps(body))[2])
+
+
+def test_a_stick_push_counts_through_the_live_path():
+    """Review finding: the parser and the tracker both made the axes coarse, so a full push (32767)
+    became 1, then 0. A stick alone never opened a sitting, and a sitting played on the stick closed
+    as idle after 5 minutes of play."""
+    t = SittingTracker(gap_sec=300)
+    _live(t, 0.0, axes=[120, -300, 0, 0])                       # a resting stick's noise is not a hand
+    assert t.current is None
+    _live(t, 1.0, axes=[32767, 0, 0, 0])                        # a full push right, no button
+    assert t.current is not None and t.current.mask_changes == 1
+    for i in range(1, 61):                                      # ten minutes on the stick, A held throughout
+        _live(t, 1.0 + i * 10, mask=256, axes=[32767 if i % 2 else -32767, 0, 0, 0])
+    assert t.current.mask_changes == 61 and t.tick(601.0 + 299) == []
+    assert t.current.duration_sec == 600.0
+    _live(t, 620.0, mask=256, axes=[-20000, 0, 0, 0])           # the same side, a little less: no change
+    assert t.current.mask_changes == 61
+
+
+def test_a_dropped_socket_leaves_no_button_state_behind():
+    """Review finding: a socket that dropped while a button was held left that mask in the tracker,
+    so the neutral message of a reconnect hours later read as a release and opened a sitting."""
+    t = SittingTracker(gap_sec=300)
+    _live(t, 0.0, mask=128)
+    t.forget_masks(SID)                                         # the input socket closed
+    assert [s.end_reason for s in t.tick(301.0)] == [END_IDLE]
+    _live(t, 7200.0, mask=0)                                    # the page reconnects and announces itself
+    assert t.current is None
+    _live(t, 7201.0, mask=128)                                  # a real press still opens a sitting
+    assert t.current is not None and t.current.started_at == 7201.0
+    other = SittingTracker(gap_sec=300)                         # the session of another socket is untouched
+    other.on_input("b" * 36, 0, 128, 0.0); other.forget_masks(SID)
+    assert other.on_input("b" * 36, 0, 128, 1.0) == [] and other.current.mask_changes == 1
 
 
 def _row(kind, sec, **extra):

@@ -631,18 +631,26 @@
   });
   // Who plays (game company design, patch 1). The server knows only that buttons move; it never
   // guesses a name. The page asks once per sitting and tells the server what it was told
-  // ('juniper' or 'guest'). No answer is a valid state: the record then says "someone".
+  // ('juniper' or 'guest'). No answer is a valid state ("Not now"): the record then says "someone".
   let sittingAsked=null, pollingSitting=false;
+  try{sittingAsked=sessionStorage.getItem('retroSittingAsked');}catch(_){}   // a reload does not ask again
+  const settle=id=>{
+    sittingAsked=id;el('whoPlays').hidden=true;
+    try{sessionStorage.setItem('retroSittingAsked',id);}catch(_){}
+    screen.focus();                                                          // the game keeps the keys
+  };
   async function pollSitting(){
     const s=(await api('sitting')).sitting;
     el('whoPlays').dataset.sitting=s?.sitting_id||'';
-    el('whoPlays').hidden=!(s && !s.player_stated && s.sitting_id!==sittingAsked);
+    // Only the page that holds the controller is asked: a second screen that only watches is not.
+    el('whoPlays').hidden=!(s && lease && !s.player_stated && s.sitting_id!==sittingAsked);
   }
   for(const [id,player] of [['whoJuniper','juniper'],['whoGuest','guest']])action(id,async()=>{
     const asked=el('whoPlays').dataset.sitting;
-    try{await api('sitting/player',{player});}
-    finally{sittingAsked=asked;el('whoPlays').hidden=true;screen.focus();}  // the game keeps the keys
+    try{await api('sitting/player',{player,sitting_id:asked});}   // an answer to an older sitting is refused
+    finally{settle(asked);}
   });
+  action('whoLater',async()=>settle(el('whoPlays').dataset.sitting));
   setInterval(()=>{
     if(document.hidden || pollingSitting)return;
     pollingSitting=true;pollSitting().catch(()=>{}).finally(()=>{pollingSitting=false;});

@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import Any, Callable, Iterable, Mapping
 
 from orion.regulation.arousal import strain_causes
+from orion.retro.sitting import SITTING_SUBJECT_PREFIX, who_words
 from orion.schemas.temporal_self import LABEL_MAX, TemporalSelfEventV1
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for
 from orion.vision.motion_story_gate import gate_passed, tally_from_counts
@@ -533,14 +534,14 @@ def retro_play_label(row: Row) -> str:
     the stance cue has room for this phrase only (STANCE_CUE_MAX_CHARS)."""
     title = str(row.get("game_title") or row.get("game_id") or "a game")
     if row.get("kind") == "human_play":
-        # A sitting where a person played and Orion held no controller (orion-hub scripts/retro_sitting.py).
-        # "Juniper" only when the game page was told so; never a guess. Orion is credited with nothing.
+        # A person's sitting (orion-hub scripts/retro_sitting.py): the subject of the sentence is the
+        # person, so nothing credits Orion. "Juniper" only when the game page was told so; never a guess.
+        # It does not say "Orion did not play": a short handoff to Orion can sit inside a sitting.
         from orion.temporal_self.stance_cue import span_words
 
-        who = "Juniper" if row.get("player_stated") == "juniper" else "Someone"
         seconds = retro_play_seconds(row)
         span = f" for {span_words(seconds)}" if seconds is not None else ""
-        return clip(f"{who} played {title}{span}; Orion did not play")
+        return clip(f"{who_words(row.get('player_stated'))} played {title}{span}")
     if row.get("played_together"):
         who = "together"
     elif row.get("kind") == "leisure" and not row.get("human_may_be_in_control") \
@@ -560,13 +561,10 @@ def retro_play_label(row: Row) -> str:
     return clip(f"{title} {who}{done}")
 
 
-RETRO_SITTING_PREFIX = "retro_sitting:"
-
-
 def retro_sitting_ref(session_id: Any) -> str:
     """``retro_sitting:<sitting id>`` for a human_play row (its key is ``sitting:<sitting id>``)."""
     text = str(session_id)
-    return RETRO_SITTING_PREFIX + (text.split(":", 1)[1] if text.startswith("sitting:") else text)
+    return SITTING_SUBJECT_PREFIX + (text.split(":", 1)[1] if text.startswith("sitting:") else text)
 
 
 def retro_play_seconds(row: Row) -> float | None:
@@ -584,7 +582,9 @@ def retro_play_seconds(row: Row) -> float | None:
 def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | None:
     """retro_play_sessions (orion-hub scripts/retro_memory_export.py, and scripts/retro_sitting.py for
     kind ``human_play``): one finished Retro session.
-    Time: started_at to ended_at (available at ended_at, when the row is written). Subject:
+    Time: started_at to ended_at. Available when WRITTEN (``payload.available_at`` = created_at): a
+    sitting's row is written 5 minutes after its last button press, when the gap is noticed, so a
+    read by ended_at alone could pass it by. Subject:
     ``retro_session:<session_id>``. Label: ``retro_play_label`` ("The Legend of Zelda solo, 14 of 31
     predictions met"). A row with no summary is dropped: Hub writes one for every exported session,
     so a row without it was not written by the exporter."""
@@ -608,6 +608,7 @@ def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | Non
             "memory_card_id": str(row["memory_card_id"]) if row.get("memory_card_id") else None,
             # The salience magnitude of this kind (orion/temporal_self/now.py ``sitting_minutes``).
             "duration_sec": retro_play_seconds(row), "player_stated": row.get("player_stated"),
+            **_available_payload(row.get("created_at")),
         },
     )
 

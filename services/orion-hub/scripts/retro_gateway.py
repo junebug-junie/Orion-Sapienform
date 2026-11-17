@@ -52,6 +52,11 @@ def register_session_end_sink(app, settings, *, create_pool=None):
         except Exception as exc:  # noqa: BLE001 -- the relay keeps running without the memory DB
             logger.warning('retro_gateway_memory_pool_failed error=%s', exc)
         logger.info('retro_gateway_session_end_sink_ready pool=%s', app.state.memory_pg_pool is not None)
+        # This process relays the input, so it holds the only live sitting: any other open row is from
+        # a process that died. Close those, and write the play rows an earlier close could not.
+        sitting = getattr(app.state, 'retro_sitting', None)
+        if sitting is not None and app.state.memory_pg_pool is not None:
+            await sitting.recover()
 
     import asyncio
     return asyncio.create_task(open_pool())
@@ -151,7 +156,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
-app.include_router(configured_router())
+_router = configured_router()
+app.include_router(_router)
+app.state.retro_sitting = getattr(_router, 'retro_sitting', None)
 
 
 @app.get('/api/retro-gateway/health')

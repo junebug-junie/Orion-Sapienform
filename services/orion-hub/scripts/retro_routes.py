@@ -15,6 +15,19 @@ from fastapi.responses import FileResponse, JSONResponse
 COPLAY_POLL_SEC = 2.0
 
 
+class NoSitting:
+    """Stands in when scripts.retro_sitting cannot be loaded: every call is a no-op, so the relay, the
+    proxy and the page work as before patch 1."""
+    enabled = False
+    def note_input(self, *a): pass
+    def note_action(self, *a): pass
+    def note_disconnect(self, *a): pass
+    def status(self): return {'enabled': False, 'sitting': None}
+    async def state_player(self, *a): return False
+    async def recover(self): return 0
+    async def close(self): pass
+
+
 def create_router(config, presence=None, experience=None, sitting=None):
     """``presence``: a scripts.retro_presence.PresenceStore (tests/evals); default is the
     process's Redis store from ORION_BUS_URL, or none (human play never depends on it).
@@ -60,11 +73,17 @@ def create_router(config, presence=None, experience=None, sitting=None):
         return game_id, title
 
     if sitting is None:
-        from scripts.retro_sitting import SittingService
-        sitting = SittingService(
-            config, resolve_game=resolve_game,
-            redis_provider=lambda: getattr(store(), 'redis', None),
-            pool_provider=lambda: getattr(getattr(app_ref.get('app'), 'state', None), 'memory_pg_pool', None))
+        try:
+            from scripts.retro_sitting import SittingService
+            sitting = SittingService(
+                config, resolve_game=resolve_game,
+                redis_provider=lambda: getattr(store(), 'redis', None),
+                pool_provider=lambda: getattr(getattr(app_ref.get('app'), 'state', None), 'memory_pg_pool', None))
+        except Exception:  # the record is an observer: a fault in it must not take the game page down
+            import logging
+            logging.getLogger('orion-hub.retro.sitting').error('retro_sitting_unavailable', exc_info=True)
+            sitting = NoSitting()
+    router.retro_sitting = sitting   # the gateway's lifespan reads it (recovery at start, close at shutdown)
 
     def bind(app):
         # Shutdown (the gateway's lifespan) closes the open sitting through app.state.retro_sitting.
@@ -149,9 +168,11 @@ def create_router(config, presence=None, experience=None, sitting=None):
         import json
         try: data = json.loads(await body(request))
         except ValueError: raise HTTPException(422, 'invalid_player')
-        player = data.get('player') if isinstance(data, dict) and set(data) == {'player'} else None
-        if player not in ('juniper', 'guest'): raise HTTPException(422, 'invalid_player')
-        if not await sitting.state_player(player): raise HTTPException(409, 'no_open_sitting')
+        # sitting_id (optional): the sitting the page asked about. An answer to an older question is refused.
+        ok = isinstance(data, dict) and 'player' in data and set(data) <= {'player', 'sitting_id'}
+        player, asked = (data.get('player'), data.get('sitting_id')) if ok else (None, None)
+        if player not in ('juniper', 'guest') or not (asked is None or isinstance(asked, str)): raise HTTPException(422, 'invalid_player')
+        if not await sitting.state_player(player, asked): raise HTTPException(409, 'no_open_sitting')
         return JSONResponse(sitting.status(), headers={'Cache-Control': 'no-store'})
 
     @router.get('/api/retro/leisure')
@@ -435,6 +456,7 @@ def create_router(config, presence=None, experience=None, sitting=None):
                 'retro_relay_connect_failed sid=%s channel=%s error=%s', sid, channel, type(exc).__name__)
         finally:
             sockets.discard(ws)
+            if channel=='input': sitting.note_disconnect(sid)
             soon('drop_browser',socket_id)
             try: await ws.close()
             except RuntimeError: pass

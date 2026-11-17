@@ -149,10 +149,13 @@ def sitting_row(sitting_id: str, start, minutes: float, **kw) -> dict:
 def test_a_persons_sitting_is_a_play_arc_that_never_credits_orion() -> None:
     e = S.retro_play(sitting_row("s1", at(0), 142))
     assert e.subject_ref == "retro_sitting:s1" and e.source_ref == "sitting:s1"
-    assert e.label == "Someone played A Link to the Past for 2 h 22 min; Orion did not play"
+    assert e.label == "Someone played A Link to the Past for 2 h 22 min"
     assert e.payload["duration_sec"] == 142 * 60.0 and e.payload["kind"] == "human_play"
     told = S.retro_play(sitting_row("s2", at(0), 40, player_stated="juniper"))
-    assert told.label == "Juniper played A Link to the Past for 40 min; Orion did not play"
+    assert told.label == "Juniper played A Link to the Past for 40 min"
+    # The label does not say "Orion did not play": a short handoff to Orion can sit inside a sitting
+    # (1 of 32 long sittings in the journals), and the label must never state a thing that can be false.
+    assert "Orion" not in e.label and "Orion" not in told.label
     # Only the page's own word makes it Juniper: anything else stays "Someone".
     assert S.retro_play_label(sitting_row("s3", at(0), 5, player_stated="guest")).startswith("Someone played")
     assert S.retro_play_label(sitting_row("s4", at(0), 5, player_stated="a name from a camera")).startswith("Someone played")
@@ -166,10 +169,13 @@ def test_no_reader_words_a_persons_sitting_as_orion_playing() -> None:
     now = at(200)
     rows = [row("sess-1", at(0), 22, SOLO), sitting_row("s1", at(30), 142, player_stated="juniper")]
     frame = _frame(rows, now)
-    label = "Juniper played A Link to the Past for 2 h 22 min; Orion did not play"
-    cue = project_stance_cue(frame, now)                      # the latest play arc of the day is the sitting
+    label = "Juniper played A Link to the Past for 2 h 22 min"
+    cue = project_stance_cue(frame, now)
     assert f"On your Retro service: {label} (09:30 to 11:52) [arc:" in cue.text
-    assert "Played " not in cue.text and len(cue.text) <= STANCE_CUE_MAX_CHARS
+    # Review finding: the later sitting must not push Orion's own play of the day out of the cue.
+    assert "Played The Legend of Zelda solo, 14 of 31 predictions met (09:00 to 09:22) [arc:" in cue.text
+    assert "Played Juniper" not in cue.text and "Played Someone" not in cue.text
+    assert len(cue.arc_ids) == 2 and len(cue.text) <= STANCE_CUE_MAX_CHARS
     block = project_recent_arcs(frame, now)
     assert f"(2 h 22 min) {label} [arc:" in block.text and f"played {label}" not in block.text
     assert "played The Legend of Zelda solo" in block.text    # Orion's own session is still Orion's
@@ -191,3 +197,57 @@ def test_sitting_minutes_is_the_salience_magnitude_of_play() -> None:
     for nothing in ({}, {"payload": None}, {"payload": {}}, {"payload": {"duration_sec": None}},
                     {"payload": {"duration_sec": "long"}}):
         assert rule(nothing) is None                                 # not recorded is not zero
+
+
+def test_a_busy_day_keeps_orions_own_play_and_a_persons_sitting_both_in_the_frame() -> None:
+    """Review finding: the frame pinned only the single latest play arc, so a person's sitting took
+    the pin from Orion's own session (and the reverse)."""
+    from orion.schemas.temporal_self import ARCS_IN_FRAME_CAP
+    from orion.temporal_self.tests.fixtures import ev
+
+    later = [ev("curiosity_run", f"r{i}", at(200 + i), ended=at(200 + i) + timedelta(seconds=30),
+                subject=f"curiosity:{i}", label="probe") for i in range(ARCS_IN_FRAME_CAP + 5)]
+    now = at(200 + ARCS_IN_FRAME_CAP + 10)
+    plays = S.adapt("retro_play", [row("sess-1", at(0), 22, SOLO), sitting_row("s1", at(30), 142)])
+    f = build_frame(advance_clock(fold(initial_state(), events=plays + later), now), now)
+    assert len(f.arcs_today) == ARCS_IN_FRAME_CAP
+    assert sorted(a.subject_ref for a in f.arcs_today if a.kind == "play") == ["retro_session:sess-1", "retro_sitting:s1"]
+
+
+def test_a_play_row_written_after_its_end_is_ordered_by_when_it_was_written() -> None:
+    """Review finding: a sitting ends at its last button press and its row is written 5 minutes later.
+    Read by ended_at alone, a row that landed after the chronicle's read lag was stored late and never
+    folded. The adapter now carries the write time and the reducer orders by it."""
+    from orion.temporal_self.arcs import AVAILABLE_AT_KINDS, event_available_at
+
+    assert "retro_play" in AVAILABLE_AT_KINDS
+    ended = at(142)
+    late = S.retro_play(sitting_row("s1", at(0), 142, created_at=ended + timedelta(seconds=312)))
+    assert late.ended_at == ended and event_available_at(late) == ended + timedelta(seconds=312)
+    assert late.occurred_at == at(0)                                   # the arc still spans the play itself
+    plain = S.retro_play(row("sess-1", at(0), 22, SOLO))               # no write time on the row: its end
+    assert event_available_at(plain) == at(22)
+    # a watermark that passed the sitting's end before the row existed no longer hides it
+    state = fold(initial_state(), events=[S.retro_play(row("sess-9", ended + timedelta(seconds=60), 1, SOLO))])
+    state = fold(state, events=[late])                                  # read one step later, as the chronicle would
+    assert state.skipped_today == 0
+    now = ended + timedelta(seconds=600)
+    frame = build_frame(advance_clock(state, now), now)
+    assert {"retro_sitting:s1", "retro_session:sess-9"} <= {a.subject_ref for a in frame.arcs_today if a.kind == "play"}
+    # the same row with no write time is behind the watermark: counted, never folded (the bug, kept as a contrast)
+    blind = S.retro_play(sitting_row("s2", at(0), 142))
+    assert fold(fold(initial_state(), events=[S.retro_play(row("sess-9", ended + timedelta(seconds=60), 1, SOLO))]),
+                events=[blind]).skipped_today == 1
+
+
+def test_the_day_block_play_line_has_a_cap() -> None:
+    """Review finding: the play line listed every play arc of the day, with no item cap."""
+    from orion.temporal_self.day_block import PLAY_LINE_ITEMS
+
+    rows = [sitting_row(f"s{i}", at(i * 30), 10) for i in range(PLAY_LINE_ITEMS + 2)]
+    _, days = drain_closed_days(_state(rows, at(60 * 24)))
+    (day,) = [d for d in days if d.day_id == "2026-10-09"]
+    text = render_closed_day_block(day).text
+    (line,) = [l for l in text.split("\n") if l.startswith("Play on the Retro service")]
+    assert line.startswith(f"Play on the Retro service ({PLAY_LINE_ITEMS + 2} today, the last {PLAY_LINE_ITEMS}): ")
+    assert line.count("Someone played") == PLAY_LINE_ITEMS and "09:00 Someone" not in line and "11:30 Someone" in line

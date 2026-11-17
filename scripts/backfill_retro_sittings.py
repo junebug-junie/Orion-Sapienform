@@ -12,8 +12,14 @@ Only rows the journal itself attributes to a human are counted. Journals from be
 attribution (2026-10-23) carry no ``controller`` field; their play is not claimed.
 
 One known difference from the live counter: the journal records the button mask but not the analog
-stick. The live counter also counts a stick push (N64). So stick-only play in an N64 journal is
-undercounted here. Checked 2026-11-17: 2 N64 journals, 1,446 human rows, all with mask 0.
+stick (no ``applied`` row in any journal has an ``axes`` field). The live counter also counts a stick
+push (N64). So stick-only play in an N64 journal would be undercounted here. Checked 2026-11-17: the
+journals hold one N64 session (Mario Kart 64) and it has no input row at all, so nothing is lost today.
+
+It never plans a sitting the live recorder may also hold: the plan stops at ``--until``. By default
+that is the start of the first live row in ``retro_sitting`` (read through --psql, a SELECT), or,
+when there is none or the database cannot be read, 5 minutes before now, so a game still being
+played is not written as a half sitting.
 
 Dry run (default): writes the plan and the report under --out and touches no database.
 
@@ -98,6 +104,17 @@ def sql_literal(v) -> str:
     return "'" + str(v).replace("'", "''") + "'"
 
 
+def first_live_start(psql_cmd: str) -> float | None:
+    """Epoch start of the first sitting the live recorder stored, read with one SELECT. None when
+    there is none or the database cannot be read."""
+    try:
+        proc = subprocess.run(shlex.split(psql_cmd) + ["-At"], capture_output=True, text=True, timeout=30,
+                              input="SELECT extract(epoch FROM min(started_at)) FROM retro_sitting WHERE NOT backfilled;")
+        return float(proc.stdout.strip()) if proc.returncode == 0 and proc.stdout.strip() else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
 def row_of(s: Sitting, title_of: dict[str, str]) -> dict:
     return {"sitting_id": sitting_id(s), "retro_session_id": s.retro_session_id, "game_id": s.game_id,
             "game_title": title_of.get(s.game_id or "", s.game_id), "started_at": iso(s.started_at),
@@ -117,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--psql", default=DEFAULT_PSQL, help="command that reads SQL on stdin")
     ap.add_argument("--apply", action="store_true", help="write to the database (default: dry run)")
     ap.add_argument("--now", default=None, help="ISO time to count --days back from (tests)")
+    ap.add_argument("--until", default=None, help="ISO time: a sitting with input at or after it is not planned "
+                                                  "(default: the first live sitting's start, else now minus the gap)")
     args = ap.parse_args(argv)
 
     args.out.mkdir(parents=True, exist_ok=True)
@@ -128,14 +147,23 @@ def main(argv: list[str] | None = None) -> int:
 
     now = datetime.fromisoformat(args.now) if args.now else datetime.now(timezone.utc)
     since = (now - timedelta(days=args.days)).timestamp()
+    if args.until:
+        until, until_why = datetime.fromisoformat(args.until).timestamp(), "--until"
+    else:
+        live = first_live_start(args.psql)
+        open_edge = now.timestamp() - args.gap_sec
+        until, until_why = ((live, "the first live sitting") if live is not None and live < open_edge
+                            else (open_edge, "now minus the gap (no live sitting was read)" if live is None
+                                  else "now minus the gap"))
     journals = sorted(args.evidence_dir.glob("*.jsonl"))
     title_of = titles(args.catalog)
-    say(f"backfill start mode={'APPLY' if args.apply else 'dry-run'} journals={len(journals)} since={iso(since)}")
+    say(f"backfill start mode={'APPLY' if args.apply else 'dry-run'} journals={len(journals)} since={iso(since)} "
+        f"until={iso(until)} ({until_why})")
 
     rows: list[dict] = []
     per_game: dict[str, dict] = defaultdict(lambda: {"journals": 0, "human_rows": 0, "unattributed_rows": 0,
                                                      "mask_changes": 0, "sittings": 0, "minutes": 0.0, "long": 0})
-    t0, errors = time.time(), 0
+    t0, errors, after_until = time.time(), 0, 0
     for i, path in enumerate(journals, 1):
         try:
             game, human, unattributed = journal_counts(path)
@@ -145,6 +173,9 @@ def main(argv: list[str] | None = None) -> int:
                 for s in sittings_from_journal(fh, gap_sec=args.gap_sec):
                     g["mask_changes"] += s.mask_changes
                     if s.started_at < since:
+                        continue
+                    if s.last_input_at >= until:      # the live recorder's, or still being played
+                        after_until += 1
                         continue
                     g["sittings"] += 1; g["minutes"] += s.duration_sec / 60.0
                     g["long"] += int(s.duration_sec >= args.min_sec)
@@ -186,14 +217,16 @@ def main(argv: list[str] | None = None) -> int:
         w = csv.writer(fh); w.writerow(["table", "rows_before", "rows_after", "planned"]); w.writerow(["retro_sitting", before, after, len(rows)])
 
     lines = [f"# Retro sitting backfill", "", f"- Verdict: {verdict}", f"- Mode: {'apply' if args.apply else 'dry run'}",
-             f"- Window: sittings that started after {iso(since)}", f"- Journals read: {len(journals)}; errors: {errors}",
+             f"- Window: sittings that started after {iso(since)} and had no input at or after {iso(until)} ({until_why})",
+             f"- Left out because they reach past that time: {after_until}",
+             f"- Journals read: {len(journals)}; errors: {errors}",
              f"- Sittings planned: {len(rows)}; of those {sum(1 for r in rows if _sec(r) >= args.min_sec)} lasted {int(args.min_sec)} s or more",
              f"- Minutes of play in the window: {sum(_sec(r) for r in rows) / 60.0:.0f}",
              "- Written: `retro_sitting` only. No play row, no Temporal Self event, no memory.", "",
              "## The counter, per game", "",
              "A sitting is counted by changes of the button mask. `rows per change` is how many journal rows one real",
              "press or release stands for; `unattributed` rows are from before the journal named its controller and are not claimed.",
-             "The journal holds no analog stick, so stick-only play (N64) is undercounted here; the live counter counts it.", "",
+             "The journal holds no analog stick, so stick-only play (N64) would be undercounted here; the live counter counts it.", "",
              "| game | journals | human rows | mask changes | rows per change | unattributed rows | sittings in window | minutes | long sittings |",
              "| --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     for game, g in sorted(per_game.items(), key=lambda kv: -kv[1]["human_rows"]):

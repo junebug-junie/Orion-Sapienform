@@ -210,13 +210,20 @@ WHERE source_kind = 'faculty_status_changed' AND source_table = 'self_monitor'
   AND occurred_at >= %(lo)s AND occurred_at < %(hi)s
 """),
     # Orion plays Zelda (section F): one finished Retro session per row (orion-hub writes it at
-    # session end). Available at ended_at, so the window is on ended_at and needs no slack.
+    # session end). Available when WRITTEN (the later of ended_at and created_at;
+    # arcs.event_available_at): a person's sitting (kind human_play) ends at its last button press and
+    # its row is written 5 minutes later, when the gap is noticed, or later still by its recovery. A
+    # read by ended_at alone that landed in between stored the row late and never folded it. The
+    # ended_at bound keeps the read on the index (a row is written within a week of its end).
     # player_stated (game company patch 1, kind human_play) needs manual_migration_retro_watch_v1.sql.
     SourceQuery("retro_play", """
 SELECT session_id, retro_session_id, lineage_id, game_id, game_title, kind, started_at, ended_at, summary,
   control_basis, human_may_be_in_control, played_together, human_share, decisions, predictions_met, predictions_unknown, rooms_new, deaths, memory_card_id,
-  duration_sec, player_stated
-FROM retro_play_sessions WHERE ended_at >= %(lo)s AND ended_at < %(hi)s
+  duration_sec, player_stated, created_at
+FROM retro_play_sessions
+WHERE ended_at >= %(lo)s::timestamptz - interval '8 days' AND ended_at < %(hi)s
+  AND greatest(ended_at, coalesce(created_at, ended_at)) >= %(lo)s
+  AND greatest(ended_at, coalesce(created_at, ended_at)) < %(hi)s
 """, optional_table="retro_play_sessions"),
     # Episodes from the street (PR #2763 item 1), three reads of one kind; the adapter
     # (sources.street_event) decides every rule again, these only narrow the rows.

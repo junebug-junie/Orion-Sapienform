@@ -52,6 +52,29 @@ def test_a_sitting_older_than_the_window_is_left_out(tmp_path):
     _journal(evidence / "one.jsonl", "tetris", [10, 70])
     out = tmp_path / "out"
     assert backfill.main(["--evidence-dir", str(evidence), "--out", str(out), "--days", "1",
-                          "--now", "2026-11-17T00:00:00+00:00", "--catalog", str(tmp_path / "none.json")]) == 0
+                          "--now", "2026-11-17T00:00:00+00:00", "--catalog", str(tmp_path / "none.json"),
+                          "--psql", "false"]) == 0
     assert list(csv.DictReader((out / "plan.csv").open())) == []
     assert (out / "inserts.sql").read_text().startswith("-- no sittings")
+
+
+def test_a_sitting_the_live_recorder_may_hold_is_never_planned(tmp_path, monkeypatch):
+    """Review finding: with no upper bound, a backfill run after the deploy stored every live sitting
+    a second time under a ``backfill-`` id, and a game still being played as a half sitting."""
+    evidence = tmp_path / "evidence"; evidence.mkdir()
+    _journal(evidence / "one.jsonl", "tetris", [10, 70, 130, 900, 960])        # 20:00:10-20:02:10 and 20:15:00-20:16:00
+    base = ["--evidence-dir", str(evidence), "--catalog", str(tmp_path / "none.json"), "--psql", "false"]
+
+    def planned(out, *extra):
+        assert backfill.main(base + ["--out", str(tmp_path / out), *extra]) == 0
+        return [r["started_at"][11:19] for r in csv.DictReader((tmp_path / out / "plan.csv").open())]
+
+    # the first live sitting began at 20:10: the journal's second sitting (20:15) is the recorder's
+    monkeypatch.setattr(backfill, "first_live_start", lambda cmd: 1794341400.0)  # 2026-11-10T20:10:00Z
+    assert planned("a", "--now", "2026-11-17T00:00:00+00:00") == ["20:00:10"]
+    assert "Left out because they reach past that time: 1" in (tmp_path / "a/report.md").read_text()
+    # no live row: a sitting with input in the last 5 minutes may still be open, so it is left out
+    monkeypatch.setattr(backfill, "first_live_start", lambda cmd: None)
+    assert planned("b", "--now", "2026-11-10T20:17:00+00:00") == ["20:00:10"]
+    assert planned("c", "--now", "2026-11-10T20:30:00+00:00") == ["20:00:10", "20:15:00"]
+    assert planned("d", "--now", "2026-11-17T00:00:00+00:00", "--until", "2026-11-10T20:05:00+00:00") == ["20:00:10"]

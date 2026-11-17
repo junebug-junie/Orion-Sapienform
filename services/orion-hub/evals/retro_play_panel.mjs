@@ -147,6 +147,24 @@ try{
   assert(opened && opened.player_stated===null && opened.mask_changes>=1,'a key press did not open a sitting: '+JSON.stringify(opened));
   await page.waitForFunction(()=>!document.querySelector('#whoPlays').hidden,{timeout:9000});
   assert.equal(await page.$eval('#stage',s=>s.contains(document.querySelector('#whoPlays'))),true); // visible in fullscreen
+  // "Not now" is an answer: the box goes, the server still knows that nobody said, and neither the
+  // next poll nor a reload asks again.
+  await page.click('#whoLater');
+  await page.waitForFunction(()=>document.querySelector('#whoPlays').hidden,{timeout:3000});
+  assert.equal((await sittingNow()).player_stated,null);
+  const ready=async()=>{await page.waitForSelector('#play:not([hidden])',{timeout:8000});await page.click('#screen');};
+  const press=async()=>{await page.keyboard.down('ArrowLeft');await new Promise(r=>setTimeout(r,120));await page.keyboard.up('ArrowLeft');};
+  await page.reload();await ready();await press();
+  await new Promise(r=>setTimeout(r,6500));
+  assert.equal(await page.$eval('#whoPlays',e=>e.hidden),true,'the question came back after "Not now" and a reload');
+  // A page with no memory of the question asks, but only once it holds the controller: a second
+  // screen that only watches is never asked.
+  await page.evaluate(()=>sessionStorage.removeItem('retroSittingAsked'));
+  await page.reload();await page.waitForSelector('#play:not([hidden])',{timeout:8000});
+  await new Promise(r=>setTimeout(r,6500));
+  assert.equal(await page.$eval('#whoPlays',e=>e.hidden),true,'a page that only watches was asked who plays');
+  await page.click('#screen');await press();
+  await page.waitForFunction(()=>!document.querySelector('#whoPlays').hidden,{timeout:15000});
   await page.click('#whoGuest');
   await page.waitForFunction(()=>document.querySelector('#whoPlays').hidden,{timeout:3000});
   assert.equal((await sittingNow()).player_stated,'guest');

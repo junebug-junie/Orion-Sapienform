@@ -501,7 +501,8 @@ sound of the game is read: the record comes from the controller's input only.
 **What counts as play.** A change of the button mask in a browser input message (a press or a
 release), or a stick pushed past its dead zone on N64. The page repeats a held state every 50 ms;
 repeats are not counted. A sitting opens on the first change and ends when no change came for
-`HUB_RETRO_SITTING_GAP_SEC` (300). Its end time is the last change. Stop ends it at once.
+`HUB_RETRO_SITTING_GAP_SEC` (300). Its end time is the last change. Stop ends it at once. When an
+input socket closes, its button state is forgotten, so a reconnect cannot count as a press.
 
 **Where it lives.**
 
@@ -512,10 +513,19 @@ repeats are not counted. A sitting opens on the first change and ends when no ch
 - Postgres `retro_sitting`: one row per sitting, written at open, once a minute, and at close.
 - Postgres `retro_play_sessions`: a sitting of `HUB_RETRO_SITTING_MIN_SEC` (120) or more adds one
   row of kind `human_play`. Orion's frames are 0. The Temporal Self source `retro_play` turns it
-  into a play arc whose label says who played and that Orion did not.
+  into a play arc whose label names the person as the player ("Someone played <game> for 47 min").
+  The row is written 5 minutes after the last press, so the day record reads this table by write
+  time (`created_at`), not by end time.
 
-**Who is playing.** Nothing guesses. The game page asks once per sitting ("Who's playing?").
-`POST /api/retro/sitting/player {"player": "juniper" | "guest"}` stores the answer. No answer means
+**After a crash or a database fault.** `recover` runs when the gateway's database pool opens and
+each time a sitting opens. It closes a `retro_sitting` row that a dead process left open (at its
+last input, `end_reason = 'recovered'`), and writes the play row of any closed sitting of the last
+7 days that has none. Both steps are safe to repeat. Log line: `retro_sitting_recovered`.
+
+**Who is playing.** Nothing guesses. The game page asks once per sitting ("Who's playing?"), and
+only the page that holds the controller: a second screen that only watches is not asked.
+`POST /api/retro/sitting/player {"player": "juniper" | "guest", "sitting_id": "<id>"}` stores the
+answer; an answer for a sitting that is no longer open gets 409. "Not now", or no answer, means
 "Someone" in every record. `GET /api/retro/sitting` returns the open sitting.
 
 **What Orion gets from it.**
@@ -539,11 +549,15 @@ docker exec orion-athena-sql-db psql -U postgres -d conjourney -Atc \
   "select count(*) from retro_play_sessions where kind='human_play' and orion_frames > 0"
 ```
 
-Gateway log lines: `retro_sitting_opened`, `retro_sitting_closed ... recorded=play_row|too_short|no_pool|duplicate|failed`.
+Gateway log lines: `retro_sitting_opened`, `retro_sitting_closed ... recorded=play_row|too_short|no_pool|duplicate|failed`,
+`retro_sitting_recovered`. A fault that repeats is logged once a minute, not once per input message.
+`retro_sitting_unavailable` means the record could not be loaded at start; the game page works without it.
 
 **Baseline.** `scripts/backfill_retro_sittings.py` replays the evidence journals through the same
 rules and fills `retro_sitting` with `backfilled = true` rows. It writes no play row and no
-Temporal Self event. Its default is a dry run; `--apply` is a production write.
+Temporal Self event. Its default is a dry run; `--apply` is a production write. It stops at the
+first sitting the live recorder stored (or 5 minutes before now), so it can run before or after the
+deploy without storing a sitting twice.
 
 **Off switch.** `HUB_RETRO_SITTING_ENABLED=false`, then recreate hub and hub-retro-gateway. Nothing
 is tracked or written; the page question never shows.

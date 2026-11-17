@@ -38,6 +38,7 @@ TOP_ATTENTION = 5
 MAX_CURIOSITY_LINES = 10
 MAX_IMMUNE_LINES = 5
 MAX_FACULTY_ITEMS = 6
+PLAY_LINE_ITEMS = 4
 IMMUNE_KIND_WORDS = {"constant": "constant", "floor_locked": "floor-locked", "replayed": "replayed",
                      "decayed_to_zero": "decayed to zero"}
 KIND_ORDER = ("attention", "conversation", "curiosity", "sleep", "imagery", "concern", "reverie", "interoception",
@@ -206,13 +207,16 @@ def render_closed_day_block(
     if sleeps:
         lines.append((2, "Sleep cycles: " + "; ".join(f"{clock(a, a.began_at)} {ref(a, clock(a, a.began_at))}" for a in sleeps) + "."))
 
-    # One line for all play of the day: each session's own deterministic label (who played, which game,
-    # how long). A person's sitting says "Orion did not play"; nothing here credits Orion with it.
+    # One line for the play of the day: each session's own deterministic label (who played, which game,
+    # how long). A person's sitting names the person as the player; nothing here credits Orion with it.
+    # The newest PLAY_LINE_ITEMS only: a day of many short sessions must not push other lines out.
     plays = [a for a in arcs if a.kind == "play"]
     if plays:
+        shown = plays[-PLAY_LINE_ITEMS:]
         parts = [f"{clock(a, a.began_at)} {a.subject_label.strip() or a.subject_ref} {ref(a, a.subject_label.strip())}"
-                 for a in plays]
-        lines.append((3, "Play on the Retro service: " + "; ".join(parts) + "."))
+                 for a in shown]
+        count = f" ({len(plays)} today, the last {len(shown)})" if len(plays) > len(shown) else ""
+        lines.append((3, f"Play on the Retro service{count}: " + "; ".join(parts) + "."))
 
     images = [a for a in arcs if a.kind == "imagery"]
     if images:

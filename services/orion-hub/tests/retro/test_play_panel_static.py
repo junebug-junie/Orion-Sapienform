@@ -181,9 +181,15 @@ def test_who_plays_question_is_inside_the_fullscreen_stage_and_wired():
     # Game company patch 1: the page asks who plays, once per sitting; the server never guesses.
     html = (HUB / 'templates/retro.html').read_text()
     stage = html[html.index('id="stage"'):html.index('</canvas>')]
-    for marker in ('id="whoPlays" hidden', 'id="whoJuniper"', 'id="whoGuest"'):
+    for marker in ('id="whoPlays" hidden', 'id="whoJuniper"', 'id="whoGuest"', 'id="whoLater"'):
         assert marker in stage, marker                      # fullscreen shows only what is inside #stage
     js = (HUB / 'static/js/retro-panel.js').read_text()
-    for marker in ("api('sitting')", "api('sitting/player',{player})", "['whoJuniper','juniper']", "['whoGuest','guest']",
-                   "s.sitting_id!==sittingAsked", "screen.focus();}  // the game keeps the keys"):
+    for marker in ("api('sitting')", "api('sitting/player',{player,sitting_id:asked})", "['whoJuniper','juniper']",
+                   "['whoGuest','guest']",
+                   # asked of the page that holds the controller, once per sitting, never after an answer
+                   "!(s && lease && !s.player_stated && s.sitting_id!==sittingAsked)",
+                   # "Not now" is an answer the page keeps, also across a reload
+                   "action('whoLater',async()=>settle(el('whoPlays').dataset.sitting));",
+                   "sessionStorage.setItem('retroSittingAsked',id)", "sessionStorage.getItem('retroSittingAsked')",
+                   "screen.focus();"):
         assert marker in js, marker

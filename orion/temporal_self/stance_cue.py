@@ -53,6 +53,7 @@ from orion.schemas.temporal_self import (
     TemporalSelfFrameV1,
     TemporalSelfStanceCueV1,
 )
+from orion.retro.sitting import SITTING_SUBJECT_PREFIX
 from orion.temporal_self.day import DEFAULT_TZ, as_utc, day_id_for, day_phase_for, day_window
 
 DEFAULT_MAX_AGE_SEC = 900.0
@@ -309,18 +310,25 @@ def _binding_clause(frame: TemporalSelfFrameV1, now: datetime, tz_name: str,
 
 
 def _play_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[ArcSummaryV1]] | None:
+    """Today's latest play of Orion's own ("Played ...") and today's latest sitting of a person ("On
+    your Retro service: ..."), each when there is one. They are two facts: a person's sitting never
+    pushes Orion's own play out of the cue, and is never worded as Orion's play."""
     plays = [a for a in frame.arcs_today if a.kind == "play" and a.subject_label.strip()]
-    if not plays:
-        return None
-    arc = max(plays, key=lambda a: (a.ended_at or a.began_at, a.arc_id))
     tz = ZoneInfo(tz_name)
-    began = as_utc(arc.began_at).astimezone(tz).strftime("%H:%M")
-    ended = as_utc(arc.ended_at or arc.last_seen_at or arc.began_at).astimezone(tz).strftime("%H:%M")
-    if arc.subject_ref.startswith("retro_sitting:"):
-        # A person's own sitting (orion.temporal_self.sources.retro_sitting_ref): its label already says
-        # who played and that Orion did not. Never worded as "Played ...", which would credit Orion.
-        return f"On your Retro service: {arc.subject_label.strip()} ({began} to {ended}) {_ref(arc)}.", [arc]
-    return f"Played {arc.subject_label.strip()} ({began} to {ended}) {_ref(arc)}.", [arc]
+    parts: list[str] = []
+    cited: list[ArcSummaryV1] = []
+    for person in (False, True):
+        mine = [a for a in plays if a.subject_ref.startswith(SITTING_SUBJECT_PREFIX) == person]
+        if not mine:
+            continue
+        arc = max(mine, key=lambda a: (a.ended_at or a.began_at, a.arc_id))
+        began = as_utc(arc.began_at).astimezone(tz).strftime("%H:%M")
+        ended = as_utc(arc.ended_at or arc.last_seen_at or arc.began_at).astimezone(tz).strftime("%H:%M")
+        # A sitting's label says who played (orion.temporal_self.sources.retro_play_label).
+        lead = "On your Retro service: " if person else "Played "
+        parts.append(f"{lead}{arc.subject_label.strip()} ({began} to {ended}) {_ref(arc)}.")
+        cited.append(arc)
+    return (" ".join(parts), cited) if parts else None
 
 
 def _thread_arc(thread: OpenThreadV1, concern: dict[str, ArcSummaryV1]) -> ArcSummaryV1 | None:

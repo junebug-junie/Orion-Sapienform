@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Iterator, Optional
 
 SITTING_KEY = "orion:retro:sitting"       # Redis: the open sitting as JSON, for both Hub processes
+SITTING_SUBJECT_PREFIX = "retro_sitting:" # Temporal Self subject of a person's sitting (never Orion's play)
 GAP_SEC_DEFAULT = 300.0
 MIN_SEC_DEFAULT = 120.0
 PLAYERS = ("juniper", "guest")
@@ -75,6 +76,11 @@ def worth_recording(sitting: Sitting, min_sec: float = MIN_SEC_DEFAULT) -> bool:
     return sitting.duration_sec >= float(min_sec)
 
 
+def who_words(player_stated: Optional[str]) -> str:
+    """The only names this organ ever writes: "Juniper" when the page was told so, else "Someone"."""
+    return "Juniper" if player_stated == "juniper" else "Someone"
+
+
 @dataclass
 class SittingTracker:
     """One open sitting at most (Retro runs one session at a time). Every method returns the
@@ -87,7 +93,9 @@ class SittingTracker:
 
     def on_input(self, session_id: str, port: int, mask: int, now: float,
                  axes: Optional[Iterable[int]] = None) -> list[Sitting]:
-        """One browser input message. Returns closed sittings (an idle one that this input ended)."""
+        """One browser input message. ``axes`` are the RAW stick values of the message (-32767 to
+        32767); this is the one place that makes them coarse. Returns closed sittings (an idle one
+        that this input ended)."""
         key = (str(session_id), int(port))
         state = (int(mask), coarse_axes(axes))
         prev = self._masks.get(key)
@@ -132,12 +140,18 @@ class SittingTracker:
 
     def end_session(self, session_id: str, reason: str = END_SESSION_STOPPED) -> list[Sitting]:
         """The Retro session stopped or failed. The sitting ends at its last input."""
-        for key in [k for k in self._masks if k[0] == str(session_id)]:
-            del self._masks[key]
+        self.forget_masks(session_id)
         cur = self.current
         if cur is not None and cur.retro_session_id == str(session_id):
             return [self._close(cur.last_input_at, reason)]
         return []
+
+    def forget_masks(self, session_id: str) -> None:
+        """Drop the remembered button state of one Retro session (its input socket closed, or it
+        stopped). Without this a socket that dropped while a button was held would leave that state
+        behind, and the neutral message of a later reconnect would count as a release by a hand."""
+        for key in [k for k in self._masks if k[0] == str(session_id)]:
+            del self._masks[key]
 
     def close_all(self, reason: str = END_SHUTDOWN) -> list[Sitting]:
         self._masks.clear()
@@ -164,10 +178,11 @@ def coarse_axes(axes: Optional[Iterable[int]]) -> tuple[int, ...]:
     return tuple((v > STICK_DEAD_ZONE) - (v < -STICK_DEAD_ZONE) for v in values)
 
 
-def parse_input_message(raw: str) -> Optional[tuple[int, int, tuple[int, ...]]]:
-    """(port, mask, coarse axes) from one browser input message (wire v1: version, session_id,
-    generation, lease, epoch, seq, port, mask, and axes on N64). None for anything else: the relay
-    forwards it untouched either way."""
+def parse_input_message(raw: str) -> Optional[tuple[int, int, Any]]:
+    """(port, mask, raw axes) from one browser input message (wire v1: version, session_id,
+    generation, lease, epoch, seq, port, mask, and axes on N64). The axes are passed on as sent;
+    ``SittingTracker.on_input`` makes them coarse, once. None for anything that is not an input
+    message: the relay forwards it untouched either way."""
     try:
         data = json.loads(raw)
     except (ValueError, TypeError):
@@ -177,7 +192,7 @@ def parse_input_message(raw: str) -> Optional[tuple[int, int, tuple[int, ...]]]:
     port, mask = data.get("port"), data.get("mask")
     if type(port) is not int or type(mask) is not int or port not in (0, 1) or not 0 <= mask <= 0xFFFF:
         return None
-    return port, mask, coarse_axes(data.get("axes"))
+    return port, mask, data.get("axes")
 
 
 def _epoch(utc: Any) -> Optional[float]:
@@ -238,6 +253,6 @@ def sittings_from_journal(lines: Iterable[str], *, gap_sec: float = GAP_SEC_DEFA
 
 __all__ = [
     "ACTIONS", "END_IDLE", "END_SESSION_CHANGED", "END_SESSION_STOPPED", "END_SHUTDOWN", "GAP_SEC_DEFAULT",
-    "MIN_SEC_DEFAULT", "PLAYERS", "SITTING_KEY", "STICK_DEAD_ZONE", "Sitting", "SittingTracker", "coarse_axes",
-    "parse_input_message", "sittings_from_journal", "worth_recording",
+    "MIN_SEC_DEFAULT", "PLAYERS", "SITTING_KEY", "SITTING_SUBJECT_PREFIX", "STICK_DEAD_ZONE", "Sitting",
+    "SittingTracker", "coarse_axes", "parse_input_message", "sittings_from_journal", "who_words", "worth_recording",
 ]

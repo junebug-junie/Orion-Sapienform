@@ -287,6 +287,27 @@ class Settings(BaseSettings):
     RECALL_LIVED_MEMORY_TIMEOUT_SEC: float = Field(
         default=4.0, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_TIMEOUT_SEC")
     )
+    # Step 2 (issue #3534). Pre-turn query rewrite on the LLM gateway's fast lane (route
+    # RECALL_LIVED_MEMORY_REWRITE_ROUTE, never metacog, never an outside API): up to 3 short
+    # searches from the message and the last turns of the conversation. Past
+    # RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC the raw message is searched alone.
+    RECALL_LIVED_MEMORY_REWRITE_ENABLED: bool = Field(
+        default=True, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_REWRITE_ENABLED")
+    )
+    RECALL_LIVED_MEMORY_REWRITE_ROUTE: str = Field(
+        default="quick_turn", validation_alias=AliasChoices("RECALL_LIVED_MEMORY_REWRITE_ROUTE")
+    )
+    RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC: float = Field(
+        default=1.8, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC")
+    )
+    # Link-following over episode_memory_referent: how many neighbours join the rerank (0 = off).
+    RECALL_LIVED_MEMORY_LINK_TOP_K: int = Field(
+        default=6, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_LINK_TOP_K")
+    )
+    # The LLM gateway's bus intake (the rewrite's RPC). Must match orion-llm-gateway's own.
+    CHANNEL_LLM_INTAKE: str = Field(
+        default="orion:exec:request:LLMGatewayService", validation_alias=AliasChoices("CHANNEL_LLM_INTAKE")
+    )
     RECALL_LIVED_MEMORY_INDEX_INTERVAL_SEC: float = Field(
         default=300.0, validation_alias=AliasChoices("RECALL_LIVED_MEMORY_INDEX_INTERVAL_SEC")
     )

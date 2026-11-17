@@ -1,4 +1,4 @@
-"""Lived-memory recall for the Juniper chat prompt (issue #3533, "Recall rev 2" step 1).
+"""Lived-memory recall for the Juniper chat prompt (issues #3533 and #3534, "Recall rev 2" steps 1-2).
 
 Finds the few lived memories (``orion/memory/lived_memory.py``: episode_memory, stance
 crystallizations, person facts) that fit this chat turn by meaning, and renders at most
@@ -6,23 +6,37 @@ crystallizations, person facts) that fit this chat turn by meaning, and renders 
 
 Pipeline, once per chat turn (PCR continuity phase):
 
-1. **Candidates, two ways.** Meaning: embed the turn (orion-vector-host ``/embedding``,
-   bge-large) and take the nearest docs in the ``orion_lived_memory`` Chroma collection.
-   Exact words: BM25 over the same live records, so names and rare words are not lost; a query
-   word that is a name (capitalized mid-sentence, or a known person's name) counts
-   ``NAME_WEIGHT`` times.
+0. **Query rewrite** (step 2, ``app/lived_rewrite.py``). A small local model reads the message
+   and the last turns of the conversation and writes up to 3 short searches that name what the
+   message points at ("okay, I beat it!" -> the game). Bounded by ``rewrite_timeout_sec``; on
+   timeout or error the raw message is used alone. A message below ``min_query_tokens`` content
+   words searches only when the rewrite named something (small talk comes back NONE).
+1. **Candidates, two ways, per search** (the message plus each rewrite). Meaning: embed it
+   (orion-vector-host ``/embedding``, bge-large) and take the nearest docs in the
+   ``orion_lived_memory`` Chroma collection. Exact words: BM25 over the same live records, so
+   names and rare words are not lost; a query word that is a name (capitalized mid-sentence, or
+   a known person's name) counts ``NAME_WEIGHT`` times. All lists merge by reciprocal-rank fusion.
 2. **Gate.** Every candidate must be in the current live snapshot (Postgres, not Chroma): a
    superseded, rejected, expired or removed record is never served, whatever Chroma still holds.
-3. **Rerank.** A local cross-encoder (orion-vector-host ``/rerank``) scores each (turn, memory)
-   pair. ``fit = sigmoid(logit)``.
-4. **Quality bar.** Records with ``fit < min_fit`` are dropped. The bar is tuned by replay
+3. **Link-following** (step 2, ``app/lived_links.py``). Memories that share a referent with the
+   top candidates, or with a name in the message, join as extra candidates (two-hop personalized
+   PageRank over ``episode_memory_referent``). They only ever reach the prompt through the rerank.
+4. **Rerank.** A local cross-encoder (orion-vector-host ``/rerank``) scores each (turn, memory)
+   pair; the turn side is the message followed by the rewritten searches. ``fit = sigmoid(logit)``.
+5. **Quality bar.** Records with ``fit < min_fit`` are dropped. The bar is tuned by replay
    (``evals/run_lived_memory_replay_eval.py``).
-5. **Rank** (Generative Agents, Park et al. 2023): ``score = logit + W_RECENCY * recency +
+6. **Rank** (Generative Agents, Park et al. 2023): ``score = logit + W_RECENCY * recency +
    W_IMPORTANCE * importance + W_CORRECTION * is_correction`` (logit units). Fit dominates;
    recency and importance only order memories that already fit.
-6. **Re-check and render.** The chosen ids are re-read from Postgres with the serving gate
+7. **Re-check and render.** The chosen ids are re-read from Postgres with the serving gate
    (a correction written since the snapshot removes what it corrects), then rendered one line
    each with kind, record id and date.
+
+**Degraded mode** (issue #3573). When the reranker is down, errors or runs past the deadline,
+the exact-word hits are ranked by BM25 alone (``lexical_fallback``) and the block says it ran
+degraded. When the embedder is down, exact-word candidates are still reranked, and the block
+says it ran degraded. Recall never silently skips: a degraded search that finds nothing still
+puts a one-line note in the prompt. ``LivedRecall.backend`` is ``hybrid`` or ``degraded``.
 
 Indexing: ``index_loop`` re-embeds new or changed records every ``index_interval_sec`` through
 the existing semantic-index plumbing (``orion/introspect/semantic_index.py``: vector-host embeds,
@@ -61,14 +75,39 @@ from orion.memory.lived_memory import (
     split_doc_id,
 )
 
+from .lived_links import SEED_DOCS, ReferentGraph, load_graph
+from .lived_rewrite import Rewriter, fetch_context
+
 logger = logging.getLogger("orion-recall.lived_memory")
 
 SOURCE = "lived_memory"
 HEADER = "[Lived memories that fit this turn -- kind, record id, date]"
+# Issue #3573: when the reranker or embedder is down, recall still runs on exact words and says
+# so, so Orion does not read a short or empty list as "I have no memory of that".
+DEGRADED_HEADER = ("[Lived memories found by exact words only -- memory search ran degraded this turn, "
+                   "so these may fit loosely and a missing memory is not proof there is none -- "
+                   "kind, record id, date]")
+DEGRADED_EMPTY_NOTE = ("[Lived memory search ran degraded this turn and found no exact-word match. "
+                       "That is not proof there is no memory: look again before saying you do not remember.]")
 
 DENSE_TOP_K = 16
 LEXICAL_TOP_K = 10
 MAX_RERANK = 24
+# Step 2 (issue #3534): each rewritten search adds its own, smaller candidate lists; all lists
+# are merged by reciprocal-rank fusion before the rerank.
+REWRITE_DENSE_TOP_K = 8
+REWRITE_LEXICAL_TOP_K = 6
+RRF_K = 60.0
+# Messages longer than this carry their own content words; the rewrite would add latency, not
+# signal (and world-pulse-sized texts do not belong on the fast lane).
+REWRITE_MAX_MESSAGE_CHARS = 1500
+# Time kept back from the rewrite for the rerank, and from the rerank for the final re-check.
+RERANK_RESERVE_SEC = 1.5
+FINISH_RESERVE_SEC = 0.25
+# Exact-word fallback (issue #3573): a record needs this many shared content words (or a shared
+# name) to be served without a fit score, and at most DEGRADED_MAX_LINES go in.
+DEGRADED_MIN_SHARED = 2
+DEGRADED_MAX_LINES = 3
 NAME_WEIGHT = 2.5
 RECENCY_HALF_LIFE_DAYS = 30.0
 # Ranking weights, in reranker-logit units. Cross-encoder logits for a real fit sit around -6..+2
@@ -186,6 +225,8 @@ class Scored:
     score: float
     dense: float | None = None
     lexical: float | None = None
+    link: bool = False  # reached by link-following, not by the searches themselves
+    degraded: bool = False  # chosen by exact words alone; the reranker could not score it
 
 
 @dataclass
@@ -195,12 +236,18 @@ class LivedRecall:
     debug: Dict[str, Any] = field(default_factory=dict)
     # Every reranked candidate with its raw logit, before the bar (evals sweep the bar on this).
     reranked: List[tuple[LivedRecord, float]] = field(default_factory=list)
+    # "hybrid" (meaning + exact words, reranked) or "degraded" (issue #3573); "" = no search ran.
+    backend: str = ""
+
+    @property
+    def degraded(self) -> bool:
+        return self.backend == "degraded"
 
     @property
     def rendered(self) -> str:
         if not self.lines:
-            return ""
-        return HEADER + "\n" + "\n".join(self.lines)
+            return DEGRADED_EMPTY_NOTE if self.degraded else ""
+        return (DEGRADED_HEADER if self.degraded else HEADER) + "\n" + "\n".join(self.lines)
 
 
 def render_line(rec: LivedRecord) -> str:
@@ -228,6 +275,47 @@ def rank(candidates: Sequence[tuple[LivedRecord, float]], *, min_fit: float, max
 
 Reranker = Callable[[str, List[str]], Any]  # async (query, docs) -> list[float]
 
+BACKEND_HYBRID = "hybrid"
+BACKEND_DEGRADED = "degraded"
+
+
+def rerank_query(raw: str, rewrites: Sequence[str]) -> str:
+    """What the cross-encoder scores each memory against: the message, then the rewritten
+    searches. An implicit message ("okay, I beat it!") fits nothing on its own words; the
+    searches carry what it points at."""
+    if not rewrites:
+        return raw[:RERANK_QUERY_CHARS]
+    suffix = " | " + " ; ".join(rewrites)
+    head = raw[: max(160, RERANK_QUERY_CHARS - len(suffix))]
+    return (head + suffix)[: RERANK_QUERY_CHARS + 200]
+
+
+def rrf(lists: Sequence[Sequence[tuple[str, float]]], k: float = RRF_K) -> Dict[str, float]:
+    """Reciprocal-rank fusion (Cormack et al. 2009) of ranked id lists."""
+    out: Dict[str, float] = {}
+    for lst in lists:
+        for i, (did, _s) in enumerate(lst):
+            out[did] = out.get(did, 0.0) + 1.0 / (k + i + 1)
+    return out
+
+
+def lexical_fallback(recs: Sequence[LivedRecord], lexical_scores: Dict[str, float], query_tokens: set[str],
+                     names: set[str], *, max_lines: int) -> List[Scored]:
+    """Exact-word ranking when the reranker cannot score (issue #3573). Only records the
+    exact-word search found, and only when they share at least two content words with the
+    turn or a name: one shared common word is too weak to stand in for a fit score."""
+    kept: List[Scored] = []
+    for rec in recs:
+        s = lexical_scores.get(rec.doc_id)
+        if not s:
+            continue
+        shared = query_tokens & set(tokenize(rec.text))
+        if len(shared) < DEGRADED_MIN_SHARED and not (shared & names):
+            continue
+        kept.append(Scored(rec=rec, fit=0.0, score=float(s), lexical=float(s), degraded=True))
+    kept.sort(key=lambda x: (-x.score, x.rec.doc_id))
+    return kept[: max(0, min(int(max_lines), DEGRADED_MAX_LINES))]
+
 
 @dataclass(frozen=True)
 class LivedMemoryConfig:
@@ -239,23 +327,31 @@ class LivedMemoryConfig:
     # A message with fewer content words than this ("hi Orion, how are you?") has nothing to
     # search with: greetings matched greeting-shaped stance messages by form, not content.
     # A rare-word bypass ("Biscuit is home!") was tried and let small talk back in (13% -> 30-48%
-    # of small-talk messages injecting, replay 2026-11-17), so it is not here.
+    # of small-talk messages injecting, replay 2026-11-17), so it is not here. Step 2: a short
+    # message still searches when the query rewrite named something it points at.
     min_query_tokens: int = 0
+    # Step 2 (issue #3534). rewrite_timeout_sec bounds the pre-turn rewrite; past it the raw
+    # message is used. link_top_k is how many referent neighbours join the rerank (0 = off).
+    rewrite_timeout_sec: float = 1.8
+    link_top_k: int = 6
 
 
 class LivedMemoryRecall:
     """Owns the live snapshot and runs one retrieval per call. ``pool`` is an asyncpg pool."""
 
     def __init__(self, pool: Any, cfg: LivedMemoryConfig, *, reranker: Optional[Reranker] = None,
+                 rewriter: Optional[Rewriter] = None,
                  clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         self.pool = pool
         self.cfg = cfg
         self._reranker = reranker
+        self._rewriter = rewriter
         self._clock = clock
         self._snapshot: List[LivedRecord] = []
         self._by_doc: Dict[str, LivedRecord] = {}
         self._bm25: BM25 | None = None
         self._names: List[str] = []
+        self._graph: ReferentGraph | None = None
         self._loaded_at = 0.0
         self._lock = asyncio.Lock()
 
@@ -267,11 +363,19 @@ class LivedMemoryRecall:
                 self._by_doc = {r.doc_id: r for r in recs}
                 self._bm25 = BM25([r.text for r in recs])
                 self._names = sorted({r.text.split(",", 1)[0] for r in recs if r.kind == KIND_PERSON_FACT})
+                if self.cfg.link_top_k > 0:
+                    try:
+                        self._graph = await load_graph(self.pool)
+                    except Exception as exc:  # noqa: BLE001 -- links are an extra, never a blocker
+                        logger.warning("lived_memory_links_unavailable error=%s", type(exc).__name__)
+                        self._graph = None
                 self._loaded_at = time.monotonic()
         return self._snapshot
 
-    async def _rerank_http(self, client: httpx.AsyncClient, query: str, docs: List[str]) -> List[float]:
-        resp = await client.post(self.cfg.rerank_url, json={"query": query, "documents": docs})
+    async def _rerank_http(self, client: httpx.AsyncClient, query: str, docs: List[str],
+                           timeout: float | None = None) -> List[float]:
+        kw = {"timeout": timeout} if timeout is not None else {}
+        resp = await client.post(self.cfg.rerank_url, json={"query": query, "documents": docs}, **kw)
         resp.raise_for_status()
         scores = resp.json().get("scores")
         if not isinstance(scores, list) or len(scores) != len(docs):
@@ -294,76 +398,199 @@ class LivedMemoryRecall:
         )
         return ranked[:k]
 
+    async def _dense(self, client: httpx.AsyncClient, query: str, k: int, *, replay: bool) -> List[tuple[str, float]]:
+        vector, _model = await embed(client, self.cfg.search, query, doc_prefix="lived-memory-query")
+        # Replay hides later records, so ask for more neighbours to keep k eligible.
+        return await nearest(client, self.cfg.search, vector, k if not replay else k * 4)
+
+    async def _rewrite(self, query: str, *, session_id: str | None, exclude_ids: Sequence[str],
+                       as_of: datetime | None) -> List[str]:
+        context = await fetch_context(self.pool, session_id, before=as_of or self._clock(), exclude_text=query,
+                                      exclude_ids=exclude_ids)
+        assert self._rewriter is not None
+        return list(await self._rewriter(query, context))
+
     async def recall(self, query: str, *, client: httpx.AsyncClient | None = None,
-                     as_of: datetime | None = None) -> LivedRecall:
-        """One retrieval. ``as_of`` (replay evals only) hides records Orion stored after that time,
-        so a replayed message cannot be answered by the memory distilled from it."""
+                     as_of: datetime | None = None, session_id: str | None = None,
+                     exclude_ids: Sequence[str] = ()) -> LivedRecall:
+        """One retrieval. ``session_id`` lets the rewrite read the last turns of this
+        conversation. ``as_of`` (replay evals only) hides records Orion stored after that time,
+        so a replayed message cannot be answered by the memory distilled from it.
+
+        Bounded by ``cfg.timeout_sec`` end to end: the rewrite gets ``rewrite_timeout_sec`` and
+        the rerank whatever is left. A reranker or embedder that is down or too slow drops to
+        exact-word ranking (backend ``degraded``), never to nothing (issue #3573)."""
         started = time.perf_counter()
+        deadline = started + float(self.cfg.timeout_sec)
         timings: Dict[str, int] = {}
         out = LivedRecall(debug={"timings_ms": timings})
-        query = " ".join(str(query or "").split())[:QUERY_MAX_CHARS]
+        query = " ".join(str(query or "").split())
+        long_message = len(query) > REWRITE_MAX_MESSAGE_CHARS
+        query = query[:QUERY_MAX_CHARS]
         if not query:
             out.debug["skipped"] = "empty_query"
             return out
         own_client = client is None
         client = client or httpx.AsyncClient(timeout=self.cfg.timeout_sec)
+        rewrite_task: asyncio.Task | None = None
+        degraded: List[str] = []
         try:
             t = time.perf_counter()
             await self.snapshot()
             timings["snapshot"] = int((time.perf_counter() - t) * 1000)
             qtoks = set(tokenize(query))
-            if len(qtoks) < self.cfg.min_query_tokens:
-                out.debug["skipped"] = "few_content_words"
-                out.debug["content_tokens"] = len(qtoks)
-                return out
+            short = len(qtoks) < self.cfg.min_query_tokens
+
+            rewrite_info: Dict[str, Any] = {"outcome": "off"}
+            out.debug["rewrite"] = rewrite_info
+            rewrite_started = time.perf_counter()
+            if self._rewriter is not None and not long_message:
+                rewrite_task = asyncio.ensure_future(
+                    self._rewrite(query, session_id=session_id, exclude_ids=exclude_ids, as_of=as_of))
+            elif self._rewriter is not None:
+                rewrite_info["outcome"] = "skipped_long_message"
+
+            async def rewrites() -> List[str]:
+                if rewrite_task is None:
+                    return []
+                budget = min(float(self.cfg.rewrite_timeout_sec),
+                             deadline - time.perf_counter() - RERANK_RESERVE_SEC)
+                try:
+                    qs = await asyncio.wait_for(asyncio.shield(rewrite_task), timeout=max(0.001, budget))
+                    rewrite_info["outcome"] = "ok" if qs else "none"
+                except asyncio.TimeoutError:
+                    rewrite_task.cancel()
+                    qs = []
+                    rewrite_info["outcome"] = "timeout"
+                except Exception as exc:  # noqa: BLE001 -- no rewrite means the raw message, never a failure
+                    qs = []
+                    rewrite_info["outcome"] = f"error:{type(exc).__name__}"
+                timings["rewrite"] = int((time.perf_counter() - rewrite_started) * 1000)
+                rewrite_info["queries"] = list(qs)
+                return list(qs)
+
+            if short:
+                # Too few words to search with on its own. Search only if the rewrite named
+                # something; small talk comes back NONE and stops here.
+                if not (await rewrites()):
+                    out.debug["skipped"] = "few_content_words"
+                    out.debug["content_tokens"] = len(qtoks)
+                    return out
 
             def allowed(rec: LivedRecord) -> bool:
                 return as_of is None or rec.created_at is None or rec.created_at < as_of
 
-            t = time.perf_counter()
-            dense: List[tuple[str, float]] = []
-            try:
-                vector, _model = await embed(client, self.cfg.search, query, doc_prefix="lived-memory-query")
-                # Replay hides later records, so ask for more neighbours to keep DENSE_TOP_K eligible.
-                dense = await nearest(client, self.cfg.search, vector, DENSE_TOP_K if as_of is None else DENSE_TOP_K * 4)
-            except SearchUnavailableError as exc:
-                out.debug["dense_error"] = str(exc)
+            replay = as_of is not None
+            raw_dense_task = asyncio.ensure_future(self._dense(client, query, DENSE_TOP_K, replay=replay))
+            queries = await rewrites()
+            t = time.perf_counter()  # dense time past the rewrite wait (the raw search overlaps it)
+            sub_dense = [asyncio.ensure_future(self._dense(client, q, REWRITE_DENSE_TOP_K, replay=replay))
+                         for q in queries]
+            dense_lists: List[List[tuple[str, float]]] = []
+            dense_failed = 0
+            for i, res in enumerate(await asyncio.gather(raw_dense_task, *sub_dense, return_exceptions=True)):
+                if isinstance(res, BaseException):
+                    dense_failed += 1
+                    out.debug.setdefault("dense_error", f"{type(res).__name__}: {res}"[:200])
+                    res = []
+                k = DENSE_TOP_K if i == 0 else REWRITE_DENSE_TOP_K
+                kept = []
+                for did, sim in res:
+                    rec = self._by_doc.get(did)
+                    if rec is not None and allowed(rec) and len(kept) < k:
+                        kept.append((did, sim))
+                dense_lists.append(kept)
+                if i == 0:
+                    out.debug["dense_not_live"] = sum(1 for d, _ in res if d not in self._by_doc)
             timings["dense"] = int((time.perf_counter() - t) * 1000)
-            lexical = self.lexical(query, allowed=allowed)
+            if dense_failed == len(dense_lists):
+                degraded.append("embedder_unavailable")
 
-            pool: Dict[str, Dict[str, float]] = {}
-            kept_dense = 0
-            for did, sim in dense:
-                rec = self._by_doc.get(did)
-                if rec is not None and allowed(rec) and kept_dense < DENSE_TOP_K:
-                    pool.setdefault(did, {})["dense"] = sim
-                    kept_dense += 1
-            for did, s in lexical:
-                pool.setdefault(did, {})["lexical"] = s
-            out.debug["candidates"] = {"dense": len(dense), "lexical": len(lexical), "live_pool": len(pool),
-                                       "dense_not_live": sum(1 for d, _ in dense if d not in self._by_doc)}
-            if not pool:
+            lexical_lists = [self.lexical(query, allowed=allowed)]
+            lexical_lists += [self.lexical(q, REWRITE_LEXICAL_TOP_K, allowed=allowed) for q in queries]
+            lexical_best: Dict[str, float] = {}
+            for lst in lexical_lists:
+                for did, s in lst:
+                    lexical_best[did] = max(lexical_best.get(did, 0.0), s)
+            dense_best: Dict[str, float] = {}
+            for lst in dense_lists:
+                for did, s in lst:
+                    dense_best[did] = max(dense_best.get(did, 0.0), s)
+
+            fused = rrf(dense_lists + lexical_lists)
+            ordered = sorted(fused, key=lambda d: (-fused[d], d))
+
+            # Link-following: neighbours of the top candidates and of names in the message.
+            links: List[tuple[str, float]] = []
+            if self._graph is not None and self.cfg.link_top_k > 0 and len(self._graph):
+                t = time.perf_counter()
+                seed_refs = self._graph.mentions(query)
+                links = self._graph.spread(
+                    ordered[:SEED_DOCS], seed_refs, exclude=set(ordered[:MAX_RERANK]),
+                    allowed=lambda d: d in self._by_doc and allowed(self._by_doc[d]),
+                    top_k=self.cfg.link_top_k)
+                timings["links"] = int((time.perf_counter() - t) * 1000)
+                out.debug["links"] = {"seed_names": len(seed_refs), "added": len(links)}
+            link_ids = {d for d, _ in links}
+            out.debug["candidates"] = {"dense": sum(len(x) for x in dense_lists),
+                                       "lexical": sum(len(x) for x in lexical_lists),
+                                       "live_pool": len(fused), "links": len(links),
+                                       "dense_not_live": out.debug.pop("dense_not_live", 0)}
+            if not ordered and not links:
+                out.backend = BACKEND_DEGRADED if degraded else BACKEND_HYBRID
+                out.debug["backend"] = out.backend
+                if degraded:
+                    out.debug["degraded"] = list(degraded)
                 return out
-            ordered = sorted(pool, key=lambda d: (-pool[d].get("dense", 0.0), -pool[d].get("lexical", 0.0)))[:MAX_RERANK]
-            recs = [self._by_doc[d] for d in ordered]
+            cand_ids = ordered[: MAX_RERANK - len(links)] + [d for d, _ in links]
+            recs = [self._by_doc[d] for d in cand_ids]
+            names = name_tokens(query, self._names)
+            all_tokens = set(qtoks)
+            for q in queries:
+                all_tokens |= set(tokenize(q))
+                names |= name_tokens(q, self._names)
 
             t = time.perf_counter()
             docs = [r.text[:RERANK_DOC_CHARS] for r in recs]
-            rq = query[:RERANK_QUERY_CHARS]
-            if self._reranker is not None:
-                logits = list(await self._reranker(rq, docs))
-            else:
-                logits = await self._rerank_http(client, rq, docs)
+            rq = rerank_query(query, queries)
+            logits: List[float] | None = None
+            budget = deadline - time.perf_counter() - FINISH_RESERVE_SEC
+            try:
+                if budget <= 0:
+                    raise asyncio.TimeoutError
+                if self._reranker is not None:
+                    logits = list(await asyncio.wait_for(self._reranker(rq, docs), timeout=budget))
+                else:
+                    logits = await asyncio.wait_for(self._rerank_http(client, rq, docs, timeout=budget),
+                                                    timeout=budget)
+                if len(logits) != len(docs):
+                    raise SearchUnavailableError("reranker returned a malformed reply")
+            except asyncio.TimeoutError:
+                degraded.append("rerank_timeout")
+                logits = None
+            except Exception as exc:  # noqa: BLE001 -- a down reranker degrades, never skips (#3573)
+                degraded.append("rerank_unavailable")
+                out.debug["rerank_error"] = f"{type(exc).__name__}: {exc}"[:200]
+                logits = None
             timings["rerank"] = int((time.perf_counter() - t) * 1000)
-            out.reranked = list(zip(recs, [float(x) for x in logits]))
 
-            chosen = rank(list(zip(recs, logits)), min_fit=self.cfg.min_fit, max_lines=self.cfg.max_lines,
-                          now=self._clock())
-            out.debug["reranked"] = [
-                {"id": r.doc_id, "fit": round(sigmoid(l), 4), "dense": round(pool[r.doc_id].get("dense", 0.0), 4),
-                 "lexical": round(pool[r.doc_id].get("lexical", 0.0), 3)}
-                for r, l in sorted(zip(recs, logits), key=lambda x: -x[1])[:8]
-            ]
+            if logits is not None:
+                out.reranked = list(zip(recs, [float(x) for x in logits]))
+                chosen = rank(out.reranked, min_fit=self.cfg.min_fit, max_lines=self.cfg.max_lines,
+                              now=self._clock())
+                out.debug["reranked"] = [
+                    {"id": r.doc_id, "fit": round(sigmoid(l), 4), "dense": round(dense_best.get(r.doc_id, 0.0), 4),
+                     "lexical": round(lexical_best.get(r.doc_id, 0.0), 3), "link": r.doc_id in link_ids}
+                    for r, l in sorted(out.reranked, key=lambda x: -x[1])[:8]
+                ]
+            else:
+                # Never inject a link neighbour without a rerank: exact-word hits only.
+                chosen = lexical_fallback([r for r in recs if r.doc_id not in link_ids], lexical_best,
+                                          all_tokens, names, max_lines=self.cfg.max_lines)
+            out.backend = BACKEND_DEGRADED if degraded else BACKEND_HYBRID
+            out.debug["backend"] = out.backend
+            if degraded:
+                out.debug["degraded"] = list(degraded)
             if not chosen:
                 return out
 
@@ -378,8 +605,8 @@ class LivedMemoryRecall:
                 out.debug["recheck_dropped"] = dropped
             chosen = [s for s in chosen if s.rec.doc_id in still_live]
             for s in chosen:
-                d = pool.get(s.rec.doc_id, {})
-                s.dense, s.lexical = d.get("dense"), d.get("lexical")
+                s.dense, s.lexical = dense_best.get(s.rec.doc_id), lexical_best.get(s.rec.doc_id)
+                s.link = s.rec.doc_id in link_ids
             out.chosen = chosen
             out.lines = [render_line(s.rec) for s in chosen]
             return out
@@ -387,6 +614,8 @@ class LivedMemoryRecall:
             out.debug["error"] = f"{type(exc).__name__}: {exc}"[:300]
             return out
         finally:
+            if rewrite_task is not None and not rewrite_task.done():
+                rewrite_task.cancel()
             timings["total"] = int((time.perf_counter() - started) * 1000)
             if own_client:
                 await client.aclose()
@@ -451,13 +680,15 @@ def items_for(chosen: Sequence[Scored]) -> List[Dict[str, Any]]:
             "score": round(s.fit, 4),
             "ts": s.rec.occurred_at.timestamp() if s.rec.occurred_at else None,
             "snippet": s.rec.text[:LINE_MAX_CHARS],
-            "tags": [SOURCE, s.rec.kind, s.rec.purpose],
+            "tags": [SOURCE, s.rec.kind, s.rec.purpose] + (["degraded"] if s.degraded else [])
+                    + (["link"] if s.link else []),
         })
     return out
 
 
 __all__ = [
-    "BM25", "HEADER", "KINDS", "LivedMemoryConfig", "LivedMemoryRecall", "LivedRecall", "SOURCE",
-    "index_loop", "items_for", "name_tokens", "rank", "recency", "render_line", "run_index_pass",
+    "BACKEND_DEGRADED", "BACKEND_HYBRID", "BM25", "DEGRADED_EMPTY_NOTE", "DEGRADED_HEADER", "HEADER", "KINDS", "LivedMemoryConfig", "LivedMemoryRecall", "LivedRecall", "SOURCE",
+    "index_loop", "items_for", "lexical_fallback", "name_tokens", "rank", "recency", "render_line",
+    "rerank_query", "rrf", "run_index_pass",
     "sigmoid", "split_doc_id", "tokenize",
 ]

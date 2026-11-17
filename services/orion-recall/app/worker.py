@@ -6,7 +6,7 @@ import logging
 import re
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
 try:
@@ -117,14 +117,24 @@ def set_lived_memory(reader: Any) -> None:
     _lived_memory = reader
 
 
-def _start_lived_recall(query_text: str) -> "asyncio.Task | None":
-    """Start lived-memory recall in the background (issue #3533) so its embed + rerank overlap the
-    rest of the recall fetch instead of adding to it. Bounded by RECALL_LIVED_MEMORY_TIMEOUT_SEC."""
+LIVED_TIMEOUT_GRACE_SEC = 0.5
+
+
+def _start_lived_recall(
+    query_text: str, *, session_id: str | None = None, exclude_ids: Sequence[str] = ()
+) -> "asyncio.Task | None":
+    """Start lived-memory recall in the background (issue #3533) so its rewrite + embed + rerank
+    overlap the rest of the recall fetch instead of adding to it. The reader keeps its own
+    deadline (RECALL_LIVED_MEMORY_TIMEOUT_SEC) and degrades to exact words before it (#3573); the
+    outer wait here is a backstop with LIVED_TIMEOUT_GRACE_SEC on top."""
     reader = _lived_memory
     if reader is None:
         return None
     return asyncio.ensure_future(
-        asyncio.wait_for(reader.recall(query_text), timeout=float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC))
+        asyncio.wait_for(
+            reader.recall(query_text, session_id=session_id, exclude_ids=list(exclude_ids or [])),
+            timeout=float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC) + LIVED_TIMEOUT_GRACE_SEC,
+        )
     )
 
 
@@ -143,7 +153,7 @@ async def _add_lived_memories(
     """
     if lived_task is None:
         return {"skipped": "disabled"}, 0, False
-    budget = float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC)
+    budget = float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC) + LIVED_TIMEOUT_GRACE_SEC
     if remaining_s is not None:
         budget = min(budget, max(0.0, remaining_s))
     try:
@@ -159,18 +169,22 @@ async def _add_lived_memories(
         return {"skipped": f"error:{type(exc).__name__}"}, 0, False
     debug = dict(lived.debug)
     debug["injected"] = [
-        {"id": c.rec.doc_id, "fit": round(c.fit, 4), "score": round(c.score, 4)} for c in lived.chosen
+        {"id": c.rec.doc_id, "fit": round(c.fit, 4), "score": round(c.score, 4), "link": c.link}
+        for c in lived.chosen
     ]
+    rendered = lived.rendered  # a degraded search that found nothing still says so (#3573)
+    if rendered:
+        bundle.rendered = (bundle.rendered + "\n\n" + rendered).strip() if bundle.rendered else rendered
     if lived.lines:
         from .lived_memory import items_for
 
-        rendered = lived.rendered
-        bundle.rendered = (bundle.rendered + "\n\n" + rendered).strip() if bundle.rendered else rendered
         bundle.items = list(bundle.items) + [MemoryItemV1(**kw) for kw in items_for(lived.chosen)]
     logger.info(
-        "lived_memory_injected corr_id=%s count=%s ids=%s fits=%s total_ms=%s",
+        "lived_memory_injected corr_id=%s count=%s backend=%s rewrite=%s ids=%s fits=%s total_ms=%s",
         corr_id,
         len(lived.lines),
+        lived.backend or "none",
+        (lived.debug.get("rewrite") or {}).get("outcome"),
         [c.rec.doc_id for c in lived.chosen],
         [round(c.fit, 3) for c in lived.chosen],
         (lived.debug.get("timings_ms") or {}).get("total"),
@@ -2345,7 +2359,11 @@ async def process_recall(
         and bool(settings.RECALL_LIVED_MEMORY_ENABLED)
         and not context_only
     ):
-        lived_task = _start_lived_recall(str(q.fragment or query_fragment or ""))
+        lived_task = _start_lived_recall(
+            str(q.fragment or query_fragment or ""),
+            session_id=q.session_id,
+            exclude_ids=list(_parse_exclusion(q).get("active_turn_ids") or []),
+        )
     ignored_session_id = q.session_id
     effective_session_id: str | None = None
     exclusion = _parse_exclusion(q)
@@ -2743,6 +2761,14 @@ async def process_recall(
             )
             timings_ms["lived_memory_wait"] = int((time.perf_counter() - lived_started) * 1000)
             backend_counts_total["lived_memory"] = lived_count
+            # Persisted columns (recall_telemetry.backend_counts / timings_ms): which backend
+            # served the lived lines (#3573) and what the rewrite cost (#3534).
+            if lived_debug.get("backend") == "degraded":
+                backend_counts_total["lived_memory_degraded"] = 1
+            lived_timings = lived_debug.get("timings_ms") or {}
+            for key in ("rewrite", "rerank", "total"):
+                if key in lived_timings:
+                    timings_ms[f"lived_memory_{key}"] = int(lived_timings[key])
             if lived_timed_out:
                 lived_debug["timed_out"] = True
     elif settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":

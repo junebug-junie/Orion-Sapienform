@@ -1,0 +1,189 @@
+"""Pre-turn query rewrite for lived-memory recall (issue #3534, "Recall rev 2" step 2).
+
+A short chat message often leans on the shared past without naming it ("okay, I beat it!").
+Its own words find nothing. A small local model reads the message plus the last few turns of
+the same conversation and writes up to ``MAX_QUERIES`` short searches that name the thing.
+``app/lived_memory.py`` runs them through the same retriever as the message and merges.
+
+- **Lane.** The LLM gateway's ``quick_turn`` route: the fast class (gpu3) at interactive
+  priority, the same seat as the pre-turn repair probe. Never the metacog lane, never an
+  outside API. Thinking off; a few dozen output tokens.
+- **Gate.** The model answers ``NONE`` for small talk. A short message only searches when the
+  rewrite named something (see ``LivedMemoryRecall.recall``).
+- **Failure.** Any error, refusal or timeout means "no rewrite": recall goes on with the raw
+  message, exactly as in step 1.
+
+Context comes from ``chat_history_log`` (same ``session_id``, the last ``CONTEXT_TURNS`` rows
+inside ``CONTEXT_WINDOW``). The text goes only to the local model and is never logged.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable, List, Optional, Sequence
+from uuid import uuid4
+
+MAX_QUERIES = 3
+QUERY_MAX_CHARS = 120
+MESSAGE_MAX_CHARS = 800
+CONTEXT_TURNS = 3
+CONTEXT_TURN_CHARS = 300
+CONTEXT_WINDOW = timedelta(hours=6)
+MAX_TOKENS = 80
+
+PROMPT = """You help Orion search their own memories before they reply.
+
+Recent conversation, oldest first:
+{context}
+
+New message:
+{message}
+
+Does the new message lean on something from the past that a memory search could find: an
+event, a person, a pet, a place, a project, a game, a plan, or something said before? Use the
+recent conversation to work out what words like "it", "that" or "she" point to.
+
+If yes, write 1 to {max_queries} short search queries, 3 to 8 words each, one per line. Name the
+specific thing. If the message is only a greeting, thanks or small talk with nothing to look
+up, write NONE. Write only the queries, or NONE."""
+
+Rewriter = Callable[[str, Sequence["ContextTurn"]], Awaitable[List[str]]]
+
+
+@dataclass(frozen=True)
+class ContextTurn:
+    user: str
+    orion: str
+
+
+def _clip(text: Any, n: int) -> str:
+    t = " ".join(str(text or "").split())
+    return t if len(t) <= n else t[: n - 1].rstrip() + "…"
+
+
+def build_prompt(message: str, context: Sequence[ContextTurn]) -> str:
+    lines = []
+    for turn in context:
+        if turn.user:
+            lines.append(f"User: {_clip(turn.user, CONTEXT_TURN_CHARS)}")
+        if turn.orion:
+            lines.append(f"Orion: {_clip(turn.orion, CONTEXT_TURN_CHARS)}")
+    return PROMPT.format(context="\n".join(lines) or "(none)", message=_clip(message, MESSAGE_MAX_CHARS),
+                         max_queries=MAX_QUERIES)
+
+
+_LEAD = re.compile(r"^\s*(?:[-*•]+|\d+[.)]|query\s*\d*\s*:|q\d*\s*:)\s*", re.I)
+_THINK = re.compile(r"<think>.*?</think>", re.S | re.I)
+
+
+def parse_queries(text: str) -> List[str]:
+    """The model's reply -> at most MAX_QUERIES distinct queries. ``NONE`` (anywhere on its own
+    line, or as the whole reply) -> []."""
+    body = _THINK.sub("", str(text or "")).strip()
+    out: List[str] = []
+    seen: set[str] = set()
+    for raw in body.splitlines():
+        line = _LEAD.sub("", raw).strip().strip('"\'`“”').strip()
+        if not line:
+            continue
+        if line.rstrip(".!").upper() == "NONE":
+            return []
+        if len(line.split()) < 2 or len(line) > QUERY_MAX_CHARS * 2:
+            continue  # a one-word fragment or a paragraph is not a query
+        line = line[:QUERY_MAX_CHARS]
+        key = line.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(line)
+        if len(out) >= MAX_QUERIES:
+            break
+    return out
+
+
+CONTEXT_SQL = """
+SELECT prompt, response, correlation_id
+FROM chat_history_log
+WHERE session_id = $1 AND created_at < $2 AND created_at >= $3
+  AND length(trim(coalesce(prompt, ''))) > 0
+ORDER BY created_at DESC
+LIMIT $4
+"""
+
+
+async def fetch_context(pool: Any, session_id: Optional[str], *, before: datetime | None = None,
+                        exclude_text: str = "", exclude_ids: Sequence[str] = (),
+                        limit: int = CONTEXT_TURNS) -> List[ContextTurn]:
+    """The last ``limit`` turns of this conversation, oldest first. ``chat_history_log.created_at``
+    is naive UTC. The active turn (by correlation id or identical text) is left out."""
+    if pool is None or not session_id:
+        return []
+    before = before or datetime.now(timezone.utc)
+    before_naive = before.astimezone(timezone.utc).replace(tzinfo=None)
+    rows = await pool.fetch(CONTEXT_SQL, str(session_id), before_naive, before_naive - CONTEXT_WINDOW,
+                            int(limit) + 1)
+    skip_text = " ".join(str(exclude_text or "").split())
+    skip_ids = {str(i) for i in exclude_ids if i}
+    turns: List[ContextTurn] = []
+    for r in rows:
+        r = dict(r)
+        if str(r.get("correlation_id") or "") in skip_ids:
+            continue
+        if skip_text and " ".join(str(r.get("prompt") or "").split()) == skip_text:
+            continue
+        turns.append(ContextTurn(user=str(r.get("prompt") or ""), orion=str(r.get("response") or "")))
+        if len(turns) >= limit:
+            break
+    return list(reversed(turns))
+
+
+class RewriteRefused(RuntimeError):
+    """The gateway answered with an error or nothing (shed, no seat, upstream error)."""
+
+
+class BusRewriter:
+    """One ``llm.chat.request`` RPC to the gateway per turn (same pattern as orion-dream's
+    ``app/llm.py``). Raises on any failure; the caller treats that as "no rewrite"."""
+
+    def __init__(self, bus: Any, *, channel: str, route: str, timeout_sec: float, source: Any) -> None:
+        self.bus = bus
+        self.channel = channel
+        self.route = route
+        self.timeout_sec = float(timeout_sec)
+        self.source = source
+
+    async def __call__(self, message: str, context: Sequence[ContextTurn]) -> List[str]:
+        from orion.core.bus.bus_schemas import BaseEnvelope, ChatRequestPayload, LLMMessage
+
+        corr = str(uuid4())
+        reply_channel = f"orion:exec:result:LLMGatewayService:{corr}"
+        options = {
+            "max_tokens": MAX_TOKENS,
+            "temperature": 0.0,
+            "llm_route": self.route,
+            "allow_chat_fallback": False,
+            "purpose": "lived_memory_query_rewrite",
+            "skip_spark_candidate_publish": True,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "gateway_read_timeout_sec": self.timeout_sec,
+        }
+        payload = ChatRequestPayload(messages=[LLMMessage(role="user", content=build_prompt(message, context))],
+                                     route=self.route, options=options)
+        env = BaseEnvelope(kind="llm.chat.request", source=self.source, correlation_id=corr,
+                           reply_to=reply_channel, payload=payload.model_dump(mode="json"))
+        msg = await self.bus.rpc_request(self.channel, env, reply_channel=reply_channel,
+                                         timeout_sec=self.timeout_sec)
+        decoded = self.bus.codec.decode(msg.get("data"))
+        if not decoded.ok:
+            raise RewriteRefused(str(decoded.error)[:200])
+        result = decoded.envelope.payload or {}
+        text = str(result.get("content") or result.get("text") or "")
+        raw = result.get("raw") if isinstance(result.get("raw"), dict) else {}
+        if raw.get("error") or not text.strip() or text.startswith("[Error:"):
+            raise RewriteRefused(str(raw.get("error") or "empty_content")[:200])
+        return parse_queries(text)
+
+
+__all__ = ["BusRewriter", "ContextTurn", "PROMPT", "RewriteRefused", "Rewriter", "build_prompt",
+           "fetch_context", "parse_queries"]

@@ -328,6 +328,9 @@ channels:
       # Added 2026-10-02: memory.episode_distill calls the gateway directly under its GPU
       # pool hold (route memory_distill). services/orion-durable-runs/app/runner.py
       - "orion-durable-runs"
+      # Added 2026-11-17 (issue #3534): lived-memory query rewrite, one short fast-lane call
+      # (route quick_turn) per chat turn. services/orion-recall/app/lived_rewrite.py
+      - "orion-recall"
     consumer_services: ["orion-llm-gateway"]
     single_consumer: true
     stability: "experimental"
@@ -353,7 +356,7 @@ channels:
     kind: "result"
     schema_id: "ChatResultPayload"
     producer_services: ["orion-llm-gateway"]
-    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-memory-consolidation", "orion-dream", "orion-durable-runs"]
+    consumer_services: ["orion-cortex-exec", "orion-hub", "orion-memory-consolidation", "orion-dream", "orion-durable-runs", "orion-recall"]
     stability: "experimental"
     since: "2026-01-08"
 

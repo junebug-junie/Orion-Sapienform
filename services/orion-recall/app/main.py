@@ -137,6 +137,7 @@ def _start_lived_memory(pool, bus, stop: "asyncio.Event"):
     from orion.introspect.semantic_index import SearchConfig
 
     from .lived_memory import LivedMemoryConfig, LivedMemoryRecall, index_loop
+    from .lived_rewrite import BusRewriter
 
     search = SearchConfig(
         chroma_url=settings.RECALL_LIVED_MEMORY_CHROMA_URL,
@@ -147,6 +148,16 @@ def _start_lived_memory(pool, bus, stop: "asyncio.Event"):
     if not search.enabled:
         logger.warning("lived_memory_disabled reason=missing_chroma_or_embed_url")
         return None
+    source = ServiceRef(name="orion-recall", version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
+    rewriter = None
+    if settings.RECALL_LIVED_MEMORY_REWRITE_ENABLED and bus is not None:
+        rewriter = BusRewriter(
+            bus,
+            channel=settings.CHANNEL_LLM_INTAKE,
+            route=settings.RECALL_LIVED_MEMORY_REWRITE_ROUTE,
+            timeout_sec=settings.RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC,
+            source=source,
+        )
     set_lived_memory(
         LivedMemoryRecall(
             pool,
@@ -157,11 +168,17 @@ def _start_lived_memory(pool, bus, stop: "asyncio.Event"):
                 max_lines=settings.RECALL_LIVED_MEMORY_MAX_LINES,
                 timeout_sec=settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC,
                 min_query_tokens=settings.RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS,
+                rewrite_timeout_sec=settings.RECALL_LIVED_MEMORY_REWRITE_TIMEOUT_SEC,
+                link_top_k=settings.RECALL_LIVED_MEMORY_LINK_TOP_K,
             ),
+            rewriter=rewriter,
         )
     )
-    source = ServiceRef(name="orion-recall", version=settings.SERVICE_VERSION, node=settings.NODE_NAME)
-    logger.info("lived_memory_enabled collection=%s min_fit=%s", search.collection, settings.RECALL_LIVED_MEMORY_MIN_FIT)
+    logger.info(
+        "lived_memory_enabled collection=%s min_fit=%s rewrite_route=%s link_top_k=%s",
+        search.collection, settings.RECALL_LIVED_MEMORY_MIN_FIT,
+        settings.RECALL_LIVED_MEMORY_REWRITE_ROUTE if rewriter else "off", settings.RECALL_LIVED_MEMORY_LINK_TOP_K,
+    )
     return asyncio.create_task(
         index_loop(
             pool, search, bus=bus, source=source,

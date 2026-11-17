@@ -2,10 +2,11 @@
   "_comment": "Definition lock for scripts/check_definition_drift.py. Generated, never hand-edited. Regenerate with --update; the resulting diff IS the definition-change alert. Unlike the *_baseline.json ratchets this tracks current truth in both directions -- a definition change is an event, not a defect.",
   "metric_count": 749,
   "_last_change": {
-    "change_count": 1,
-    "high_severity_count": 1,
+    "change_count": 2,
+    "high_severity_count": 2,
     "changes": [
-      "high   routing_changed metric://bus_channel/orion-dream/orion:vector:semantic:upsert (all_producers: \u2026ub', 'orion-vector-host'\u2026 -> \u2026ub', 'orion-recall', 'orion-vector-host'\u2026)"
+      "high   routing_changed metric://bus_channel/orion-agent-council/orion:exec:request:LLMGatewayService (all_producers: \u2026nd', 'orion-vision-counc\u2026 -> \u2026nd', 'orion-recall', 'orion-vision-counc\u2026)",
+      "high   routing_changed metric://bus_channel/orion-llm-gateway/orion:exec:result:LLMGatewayService:* (declared_consumers: \u2026nsolidation'] -> \u2026nsolidation', 'orion-recall'])"
     ]
   },
   "definitions": {
@@ -438,6 +439,7 @@
         "orion-juniper-affective-state",
         "orion-memory-consolidation",
         "orion-mind",
+        "orion-recall",
         "orion-vision-council"
       ],
       "declared_consumers": [
@@ -2621,7 +2623,8 @@
         "orion-dream",
         "orion-durable-runs",
         "orion-hub",
-        "orion-memory-consolidation"
+        "orion-memory-consolidation",
+        "orion-recall"
       ],
       "notes": "kind=result stability=experimental",
       "registry_source": "orion/bus/channels.yaml"

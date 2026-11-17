@@ -269,7 +269,7 @@ def test_worker_skips_lived_memory_past_the_deadline():
     from orion.core.contracts.recall import MemoryBundleV1, MemoryBundleStatsV1, RecallQueryV1
 
     class Slow:
-        async def recall(self, _q):
+        async def recall(self, _q, **_kw):
             await asyncio.sleep(5)
 
     worker.set_lived_memory(Slow())

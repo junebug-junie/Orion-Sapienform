@@ -1,4 +1,5 @@
-# Memory recall step 1 (issue #3533) and the mesh-edge leak check (issue #3409).
+# Memory recall step 1 (issue #3533) and the mesh-edge leak check (issue #3409). Step 2 (issue
+# #3534): query rewrite and link-following; the degraded exact-word fallback (issue #3573).
 # Lived-memory recall: exact-word + meaning candidates, live gating, local rerank, the bar, ranking,
 # render, the worker seam, and the committed fixture replay eval. Mesh edge: the shared guard, the
 # FCC gh PreToolUse hook, Hub's PR commenter, and outbound email. No DB, bus or model (fakes only).
@@ -19,10 +20,13 @@ on:
       - "orion/notify/transport.py"
       - "orion/introspect/semantic_index.py"
       - "services/orion-recall/app/lived_memory.py"
+      - "services/orion-recall/app/lived_rewrite.py"
+      - "services/orion-recall/app/lived_links.py"
       - "services/orion-recall/app/worker.py"
       - "services/orion-recall/app/main.py"
       - "services/orion-recall/app/settings.py"
       - "services/orion-recall/tests/test_lived_memory.py"
+      - "services/orion-recall/tests/test_lived_memory_step2.py"
       - "services/orion-recall/evals/**"
       - "services/orion-vector-host/app/**"
       - "services/orion-vector-host/tests/**"
@@ -76,7 +80,7 @@ jobs:
         working-directory: services/orion-recall
         run: |
           PYTHONPATH=.:${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
-            tests/test_lived_memory.py evals/test_lived_memory_replay_eval.py
+            tests/test_lived_memory.py tests/test_lived_memory_step2.py evals/test_lived_memory_replay_eval.py
       - name: Hub PR commenter refuses guarded text
         working-directory: services/orion-hub
         run: |

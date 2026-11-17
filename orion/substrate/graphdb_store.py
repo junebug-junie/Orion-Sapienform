@@ -394,9 +394,6 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
             fallback = self._cache.query_hotspot_region(min_salience=threshold, limit_nodes=nodes_limit, limit_edges=edges_limit)
             return self._degraded(query_kind="hotspot_region", fallback=fallback, error=str(exc))
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
-        return self._query_node_kind_region(query_kind="contradiction_region", node_kind="contradiction", limit_nodes=limit_nodes, limit_edges=limit_edges)
-
     def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
         return self._query_node_kind_region(query_kind="concept_region", node_kind="concept", limit_nodes=limit_nodes, limit_edges=limit_edges)
 
@@ -436,9 +433,6 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
     def read_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
         return self.query_hotspot_region(min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges).slice
 
-    def read_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
-        return self.query_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges).slice
-
     def read_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateNeighborhoodSliceV1:
         return self.query_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges).slice
 
@@ -463,10 +457,7 @@ WHERE {{ OPTIONAL {{ GRAPH <{self._cfg.graph_uri}> {{ {edge_iri} ?p ?o . }} }} }
                 details={"node_kind": node_kind},
             )
         except GraphDBSubstrateStoreError as exc:
-            if node_kind == "concept":
-                fallback = self._cache.query_concept_region(limit_nodes=nodes_limit, limit_edges=edges_limit)
-            else:
-                fallback = self._cache.query_contradiction_region(limit_nodes=nodes_limit, limit_edges=edges_limit)
+            fallback = self._cache.query_concept_region(limit_nodes=nodes_limit, limit_edges=edges_limit)
             return self._degraded(query_kind=query_kind, fallback=fallback, error=str(exc))
 
     def _query_nodes(

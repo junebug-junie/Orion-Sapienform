@@ -43,8 +43,6 @@ class FakeSemanticStore(InMemorySubstrateGraphStore):
     def query_hotspot_region(self, *, min_salience: float = 0.6, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
         return self._wrap("hotspot_region", self.read_hotspot_region(min_salience=min_salience, limit_nodes=limit_nodes, limit_edges=limit_edges))
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
-        return self._wrap("contradiction_region", self.read_contradiction_region(limit_nodes=limit_nodes, limit_edges=limit_edges))
 
     def query_concept_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
         return self._wrap("concept_region", self.read_concept_region(limit_nodes=limit_nodes, limit_edges=limit_edges))
@@ -75,14 +73,6 @@ class EmptySemanticStore(FakeSemanticStore):
             limits={"limit_nodes": limit_nodes, "limit_edges": limit_edges},
         )
 
-    def query_contradiction_region(self, *, limit_nodes: int = 32, limit_edges: int = 64) -> SubstrateQueryResultV1:
-        return SubstrateQueryResultV1(
-            query_kind="contradiction_region",
-            source_kind="fallback",
-            degraded=True,
-            slice=SubstrateNeighborhoodSliceV1(nodes=[], edges=[]),
-            limits={"limit_nodes": limit_nodes, "limit_edges": limit_edges},
-        )
 
 
 def _seed_store(store: InMemorySubstrateGraphStore) -> None:

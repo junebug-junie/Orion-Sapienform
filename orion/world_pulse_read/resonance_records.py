@@ -67,7 +67,8 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
                             tuple(nb)))
     current = current_lived_answer_rows(a_by)
     for q in questions:
-        # Neighbours are the current answer and the one before it, never a draft that is not current.
+        # Neighbours are the current answer (never a draft that is not current) and the
+        # answer before it, which may be a draft: it is history, kept on purpose.
         nb = []
         cur = current.get(q["qid"])
         if cur is not None:
@@ -80,7 +81,8 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
     for qid, alist in a_by.items():
         # Only the CURRENT answer is a match target (#3396): an article is
         # compared with what Orion thinks now, not with every view Orion held.
-        # Its question and the answer before it are its neighbourhood.
+        # Its question and the answer before it are its neighbourhood; that
+        # previous answer may be a draft, on purpose -- it is history.
         a = current.get(qid)
         if a is None:
             continue

@@ -3,7 +3,7 @@
 "end": "2026-11-17T08:23Z",
 "coverage": [
 {
-"first": "2026-11-14 18:27:25.496684+00"
+"first": "2026-11-14 19:27:27.862952+00"
 }
 ],
 "frames": [
@@ -12,9 +12,9 @@
 "cur": "f",
 "target": "",
 "cause": "",
-"a": "30368",
-"b": "19020",
-"c": "3376",
+"a": "14867",
+"b": "9192",
+"c": "1697",
 "d": "0"
 },
 {
@@ -32,7 +32,7 @@
 "cur": "f",
 "target": "node:prediction.body",
 "cause": "quiet for itself",
-"a": "18184",
+"a": "8980",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -42,7 +42,7 @@
 "cur": "f",
 "target": "node:prediction.body",
 "cause": "stale reading",
-"a": "547",
+"a": "280",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -52,7 +52,7 @@
 "cur": "f",
 "target": "node:prediction.body",
 "cause": "usual for itself",
-"a": "8093",
+"a": "3829",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -62,7 +62,7 @@
 "cur": "f",
 "target": "node:prediction.chat_turn",
 "cause": "insufficient history",
-"a": "30368",
+"a": "14867",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -72,7 +72,7 @@
 "cur": "f",
 "target": "node:prediction.room",
 "cause": "quiet for itself",
-"a": "17244",
+"a": "8391",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -82,7 +82,7 @@
 "cur": "f",
 "target": "node:prediction.room",
 "cause": "usual for itself",
-"a": "9655",
+"a": "4689",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -92,7 +92,7 @@
 "cur": "f",
 "target": "node:substrate.biometrics",
 "cause": "not sustained",
-"a": "4993",
+"a": "2387",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -102,7 +102,7 @@
 "cur": "f",
 "target": "node:substrate.biometrics",
 "cause": "quiet for itself",
-"a": "14483",
+"a": "7152",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -112,7 +112,7 @@
 "cur": "f",
 "target": "node:substrate.biometrics",
 "cause": "usual for itself",
-"a": "10579",
+"a": "5167",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -122,7 +122,7 @@
 "cur": "f",
 "target": "node:substrate.cabinet",
 "cause": "quiet for itself",
-"a": "29523",
+"a": "14457",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -132,7 +132,7 @@
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "past the orienting window",
-"a": "3856",
+"a": "1943",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -142,7 +142,7 @@
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "quiet for itself",
-"a": "15602",
+"a": "7603",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -152,7 +152,7 @@
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "stale reading",
-"a": "542",
+"a": "276",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -162,7 +162,7 @@
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "usual for itself",
-"a": "9002",
+"a": "4359",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -172,7 +172,7 @@
 "cur": "f",
 "target": "node:substrate.harness_closure",
 "cause": "insufficient history",
-"a": "27539",
+"a": "13420",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -182,7 +182,7 @@
 "cur": "f",
 "target": "node:substrate.perception",
 "cause": "absent",
-"a": "305",
+"a": "132",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -192,7 +192,7 @@
 "cur": "f",
 "target": "node:substrate.perception",
 "cause": "quiet for itself",
-"a": "17969",
+"a": "8834",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -202,7 +202,7 @@
 "cur": "f",
 "target": "node:substrate.perception",
 "cause": "usual for itself",
-"a": "9247",
+"a": "4521",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -212,7 +212,7 @@
 "cur": "f",
 "target": "node:substrate.perception_walkway",
 "cause": "absent",
-"a": "287",
+"a": "126",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -222,7 +222,7 @@
 "cur": "f",
 "target": "node:substrate.perception_walkway",
 "cause": "below its band floor",
-"a": "29803",
+"a": "14603",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -232,7 +232,7 @@
 "cur": "f",
 "target": "node:substrate.strain",
 "cause": "past the orienting window",
-"a": "355",
+"a": "162",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -242,7 +242,7 @@
 "cur": "f",
 "target": "node:substrate.strain",
 "cause": "quiet for itself",
-"a": "30013",
+"a": "14705",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -252,7 +252,7 @@
 "cur": "f",
 "target": "node:substrate.street",
 "cause": "absent",
-"a": "107",
+"a": "48",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -262,7 +262,7 @@
 "cur": "f",
 "target": "node:substrate.street",
 "cause": "quiet for itself",
-"a": "30261",
+"a": "14819",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -272,7 +272,7 @@
 "cur": "f",
 "target": "world:chat",
 "cause": "quiet for itself",
-"a": "28115",
+"a": "13753",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -282,7 +282,7 @@
 "cur": "f",
 "target": "world:reading",
 "cause": "other",
-"a": "182",
+"a": "92",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -292,7 +292,7 @@
 "cur": "f",
 "target": "world:reading",
 "cause": "quiet for itself",
-"a": "28938",
+"a": "14246",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -302,7 +302,7 @@
 "cur": "f",
 "target": "world:reading",
 "cause": "usual for itself",
-"a": "802",
+"a": "297",
 "b": "0",
 "c": "0",
 "d": "0"
@@ -562,90 +562,90 @@
 "cur": "f",
 "target": "node:prediction.body",
 "cause": "",
-"a": "3544",
-"b": "2171",
-"c": "2323",
-"d": "950"
+"a": "1778",
+"b": "1093",
+"c": "1169",
+"d": "484"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:prediction.room",
 "cause": "",
-"a": "3469",
-"b": "2232",
-"c": "2050",
-"d": "813"
+"a": "1787",
+"b": "1159",
+"c": "1053",
+"d": "425"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:substrate.biometrics",
 "cause": "",
-"a": "313",
-"b": "226",
-"c": "124",
-"d": "37"
+"a": "161",
+"b": "116",
+"c": "61",
+"d": "16"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:substrate.cabinet",
 "cause": "",
-"a": "845",
-"b": "845",
-"c": "438",
-"d": "438"
+"a": "410",
+"b": "410",
+"c": "213",
+"d": "213"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:substrate.execution",
 "cause": "",
-"a": "1366",
-"b": "1027",
-"c": "495",
-"d": "156"
+"a": "686",
+"b": "530",
+"c": "243",
+"d": "87"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:substrate.perception",
 "cause": "",
-"a": "2847",
-"b": "2081",
-"c": "1044",
-"d": "278"
+"a": "1380",
+"b": "981",
+"c": "514",
+"d": "115"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "node:substrate.perception_walkway",
 "cause": "",
-"a": "278",
-"b": "278",
-"c": "151",
-"d": "151"
+"a": "138",
+"b": "138",
+"c": "72",
+"d": "72"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "world:chat",
 "cause": "",
-"a": "2253",
-"b": "2064",
-"c": "711",
-"d": "522"
+"a": "1114",
+"b": "1029",
+"c": "351",
+"d": "266"
 },
 {
 "part": "won",
 "cur": "f",
 "target": "world:reading",
 "cause": "",
-"a": "446",
-"b": "424",
-"c": "53",
-"d": "31"
+"a": "232",
+"b": "219",
+"c": "32",
+"d": "19"
 },
 {
 "part": "won",
@@ -750,34 +750,40 @@
 ],
 "events": [
 {
-"cur": "f",
-"kind": "chat_turn",
-"n": "12"
-},
-{
-"cur": "f",
-"kind": "reading_turn",
-"n": "4"
-},
-{
-"cur": "f",
+"cur": "t",
 "kind": "street_event",
-"n": "17"
+"n": "7",
+"lit": "1676.029560"
 },
 {
 "cur": "t",
 "kind": "chat_turn",
-"n": "2"
+"n": "2",
+"lit": "1755.152882"
 },
 {
 "cur": "t",
 "kind": "reading_turn",
-"n": "39"
+"n": "39",
+"lit": "25459.078268"
 },
 {
-"cur": "t",
+"cur": "f",
 "kind": "street_event",
-"n": "7"
+"n": "17",
+"lit": "3429.605969"
+},
+{
+"cur": "f",
+"kind": "chat_turn",
+"n": "12",
+"lit": "9696.784362"
+},
+{
+"cur": "f",
+"kind": "reading_turn",
+"n": "4",
+"lit": "2763.665921"
 }
 ]
 }

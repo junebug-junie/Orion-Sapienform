@@ -102,8 +102,9 @@ def _like(pattern: str, text: str) -> bool:
 
 def verdict_of(reason: str) -> str:
     """'world-first: not attended -- body quiet for itself; ...' -> 'body quiet for itself'."""
-    after = reason.split(" -- ", 1)[1] if " -- " in reason else reason
-    return after.split(";", 1)[0].strip()
+    if " -- " not in reason:
+        return ""  # same as the SQL: split_part(..., ' -- ', 2) is '' without the separator
+    return reason.split(" -- ", 1)[1].split(";", 1)[0].strip()
 
 
 def classify(reason: str) -> str:
@@ -117,7 +118,8 @@ def classify(reason: str) -> str:
 
 def _cause_case(col: str) -> str:
     verdict = f"btrim(split_part(split_part({col}, ' -- ', 2), ';', 1))"
-    whens = " ".join(f"WHEN {verdict} LIKE '{p}' THEN '{label}'" for label, p in CAUSES)
+    # '_' is a one-character wildcard in LIKE; escape it with '!' (a backslash is refused by ReadOnlyPsql)
+    whens = " ".join(f"WHEN {verdict} LIKE '{p.replace('_', '!_')}' ESCAPE '!' THEN '{label}'" for label, p in CAUSES)
     return f"CASE {whens} ELSE '{OTHER_CAUSE}' END"
 
 
@@ -223,7 +225,7 @@ SELECT el.part, f.cur, el.target, el.cause, count(*) AS a,
           FROM (SELECT generated_at >= '{a}' AS cur, frame_json || '{{}}'::jsonb AS j
                   FROM substrate_attention_frames
                  WHERE generated_at >= '{b0}' AND generated_at < '{b}'
-                   AND abs(hashtext(frame_id)) % (CASE WHEN generated_at >= '{a}' THEN {w.k_cur} ELSE {w.k_base} END) = 0
+                   AND hashtext(frame_id) % (CASE WHEN generated_at >= '{a}' THEN {w.k_cur} ELSE {w.k_base} END) = 0
                 OFFSET 0) raw
         OFFSET 0) f
  CROSS JOIN LATERAL (
@@ -238,19 +240,48 @@ SELECT el.part, f.cur, el.target, el.cause, count(*) AS a,
 
 
 def events_sql(w: Window) -> str:
-    """Each event source's own activity over the same covered spans (whole, never sampled)."""
-    conds = []
+    """Each event source's own activity per side (whole, never sampled): n = events inside the side, and
+    lit = seconds of the side covered by the union of its events' news windows. Each event lights
+    [t, min(t + window, next event)), so overlapping windows count once; an event just before the side
+    that still lights part of it counts for that part."""
+    conds, wins = [], []
     for src in EVENT_SOURCES.values():
         c = f"source_kind = '{src.kind}'"
         if src.payload_key:
             c += f" AND payload_json->>'{src.payload_key}' = '{src.payload_value}'"
         conds.append(f"({c})")
+        wins.append(f"WHEN '{src.kind}' THEN {src.window_sec:.0f}")
+    reach = max(src.window_sec for src in EVENT_SOURCES.values())
+    a, b0, b = _ts(w.start), _ts(w.base_start), _ts(w.end)
+
+    def side(cur: str, lo: str, hi: str) -> str:
+        return f"""SELECT '{cur}' AS cur, kind, count(*) FILTER (WHERE t >= '{lo}' AND t < '{hi}') AS n,
+       coalesce(sum(greatest(0, extract(epoch FROM least(t + w * interval '1 second', coalesce(nt, 'infinity'), '{hi}'::timestamptz)
+                                        - greatest(t, '{lo}'::timestamptz)))), 0) AS lit
+  FROM s WHERE t < '{hi}' GROUP BY kind"""
+
     return f"""SET LOCAL statement_timeout = '{STATEMENT_TIMEOUT}';
-SELECT occurred_at >= '{_ts(w.start)}' AS cur, source_kind AS kind, count(*) AS n
-  FROM temporal_self_event
- WHERE occurred_at >= '{_ts(w.base_start)}' AND occurred_at < '{_ts(w.end)}'
-   AND ({' OR '.join(conds)})
- GROUP BY 1, 2"""
+WITH e AS (
+  SELECT source_kind AS kind, occurred_at AS t, CASE source_kind {' '.join(wins)} END AS w
+    FROM temporal_self_event
+   WHERE occurred_at >= '{b0}'::timestamptz - interval '{reach:.0f} seconds' AND occurred_at < '{b}'
+     AND ({' OR '.join(conds)})
+), s AS (SELECT kind, t, w, lead(t) OVER (PARTITION BY kind ORDER BY t) AS nt FROM e)
+{side('t', a, b)}
+UNION ALL
+{side('f', b0, a)}"""
+
+
+def lit_seconds(times: Iterable[datetime], window_sec: float, lo: datetime, hi: datetime) -> float:
+    """Python reference for events_sql's ``lit``: seconds of [lo, hi) inside the union of
+    [t, t + window) over the event times (each window cut at the next event). The live eval checks
+    the SQL against this on real rows."""
+    ts = sorted(times)
+    total = 0.0
+    for i, t in enumerate(ts):
+        stop = min(t + timedelta(seconds=window_sec), ts[i + 1] if i + 1 < len(ts) else hi, hi)
+        total += max(0.0, (stop - max(t, lo)).total_seconds())
+    return total
 
 
 # --- reading ------------------------------------------------------------------------------------
@@ -271,6 +302,7 @@ class Side:
     won_contested: dict[str, int] = field(default_factory=dict)
     causes: dict[str, dict[str, int]] = field(default_factory=dict)  # target -> cause -> frames
     events: dict[str, int] = field(default_factory=dict)  # event kind -> events
+    lit: dict[str, float] = field(default_factory=dict)  # event kind -> seconds lit by its news windows (merged)
 
     @property
     def interval(self) -> float:
@@ -316,6 +348,7 @@ def parse(w: Window, frame_rows: Iterable[dict[str, str]], event_rows: Iterable[
     for r in event_rows:
         side = cur if _truth(r["cur"]) else base
         side.events[r["kind"]] = side.events.get(r["kind"], 0) + int(r["n"])
+        side.lit[r["kind"]] = side.lit.get(r["kind"], 0.0) + float(r.get("lit") or 0.0)
     return AttentionRead(w.label, _ts(asked_start or w.start), _ts(w.start), _ts(w.end), _ts(w.base_start), cur, base)
 
 
@@ -351,7 +384,8 @@ def pct(x: float | None) -> str:
     if x is None:
         return "n/a"
     v = 100.0 * x
-    return f"{v:.1f}%" if v < 20 else f"{v:.0f}%"
+    # one decimal under 20% and between 99% and 100%: "100%" must mean none lost
+    return f"{v:.1f}%" if v < 20 or 99 < v < 100 else f"{v:.0f}%"
 
 
 def rate_text(num: int, den: int) -> str:
@@ -381,11 +415,16 @@ def eligibility(side: Side, target: str, kind: str) -> Eligibility:
     src = EVENT_SOURCES.get(target)
     if kind == "event" and src is not None:
         events = side.events.get(src.kind, 0)
-        # expected sampled frames = events x window / (seconds per sampled frame)
-        expected = events * src.window_sec * side.frames / side.seconds if side.seconds else 0.0
-        ref = f"{events:,} {src.kind} x {src.window_sec:.0f} s"
+        # expected sampled frames = seconds its events lit (windows merged) / (seconds per sampled frame)
+        expected = side.lit.get(src.kind, 0.0) * side.frames / side.seconds if side.seconds else 0.0
+        ref = f"{events:,} {src.kind} x {src.window_sec:.0f} s, overlaps merged"
         return Eligibility(present / expected if expected else None, present, round(expected), ref)
-    return Eligibility(_rate(present, side.frames), present, side.frames, f"design {pct(DESIGN_ELIGIBLE_RATE)}")
+    judged = judged_frames(side, target)  # frames it was a candidate at all, not every frame
+    return Eligibility(_rate(present, judged), present, judged, f"design {pct(DESIGN_ELIGIBLE_RATE)}")
+
+
+def judged_frames(side: Side, target: str) -> int:
+    return side.present.get(target, 0) + sum(side.causes.get(target, {}).values())
 
 
 # --- the rule: every number is part of a rate, a duration, a time or a ref -----------------------
@@ -396,7 +435,8 @@ def eligibility(side: Side, target: str, kind: str) -> Eligibility:
 # printed inside the rate's own clause), "1 in 4" (the sample rate), and ids/paths (refs).
 _ALLOWED_NUMBERS = [
     r"n/a \(\d[\d,]* of \d[\d,]*\)",  # before refs: "n/a" holds a slash
-    r"\S*[:/]\S*",  # refs and paths first: node:substrate.perception, world:chat, /tmp/...-24h-1.json
+    r"\b[a-z_]+:[A-Za-z_][\w.\-:]*",  # refs: node:substrate.perception, world:chat (no digit may lead the id)
+    r"(?<![\w/])/[A-Za-z_.][\w./\-]*",  # paths: /tmp/...-24h-1.json (a "834/40846" ratio is not a path)
     r"[+-]?\d[\d,]*(?:\.\d+)?% \(\d[\d,]* of \d[\d,]*\)",
     r"\d[\d,]* [a-z_]+ x \d+ s",
     r"\b1 in \d+\b",
@@ -445,17 +485,22 @@ def target_line(r: AttentionRead, t: str) -> str:
             elig += f" [{src.note}]"
     else:
         elig = f"eligible {rate_text(e_now.num, e_now.den)} vs {pct(DESIGN_ELIGIBLE_RATE)} design"
+    if not present and not judged_frames(c, t) and kind != "event":
+        return f"  {t} [{kind}]: not judged in this window (a candidate only before it)"
     won_then = _rate(b.won.get(t, 0), b.present.get(t, 0))
     won_now = _rate(c.won.get(t, 0), present)
-    return (f"  {t} [{kind}]: {won}; {elig}; drift won {drift(won_now, won_then)}, "
-            f"eligible {drift(e_now.rate, e_then.rate)}")
+    return (f"  {t} [{kind}]: {won}; {elig}; drift won {drift(won_now, won_then)} "
+            f"(was {rate_text(b.won.get(t, 0), b.present.get(t, 0))}), "
+            f"eligible {drift(e_now.rate, e_then.rate)} (was {rate_text(e_then.num, e_then.den)})")
 
 
 def cause_line(r: AttentionRead, t: str) -> str:
     causes = r.cur.causes.get(t, {})
     total = sum(causes.values())
     if not total:
-        return f"  {t}: attended in every frame it was judged"
+        if r.cur.present.get(t, 0):
+            return f"  {t}: attended in every frame it was judged, {rate_text(r.cur.present[t], r.cur.present[t])}"
+        return f"  {t}: not judged in this window"
     parts = sorted(causes.items(), key=lambda kv: (-kv[1], kv[0]))
     shown = ", ".join(f"{k} {rate_text(n, total)}" for k, n in parts[:2])
     return f"  {t}: {shown}" + (" ..." if len(parts) > 2 else "")
@@ -478,14 +523,16 @@ def render(r: AttentionRead) -> list[str]:
     lines.append(f"rest (no eligible target): {rate_text(c.rest, c.frames)} of frames; "
                  f"drift {drift(_rate(c.rest, c.frames), _rate(b.rest, b.frames))} (was {rate_text(b.rest, b.frames)})")
     lines.append(f"contested (more than one eligible): {rate_text(c.contested, c.frames)} of frames; "
-                 f"drift {drift(_rate(c.contested, c.frames), _rate(b.contested, b.frames))}")
+                 f"drift {drift(_rate(c.contested, c.frames), _rate(b.contested, b.frames))} "
+                 f"(was {rate_text(b.contested, b.frames)})")
     lines.append("won = ranked first in the frames it was eligible (won-contested: of those with more than one eligible); "
                  "eligible against its own activity:")
     order = targets(r)
     never = [t for t in order if not c.present.get(t) and not b.present.get(t)]
     lines += [target_line(r, t) for t in order if t not in never]
     if never:
-        lines.append(f"  never eligible here or before, {rate_text(0, c.frames)} of frames each: {', '.join(never)}")
+        lines.append("  never eligible here or before (eligible / frames it was judged): "
+                     + ", ".join(f"{t} {rate_text(0, judged_frames(c, t))}" for t in never))
     lines.append(LEGEND)
     lines.append("not attended, top causes (share of the frames it was judged and not attended):")
     lines += [cause_line(r, t) for t in order]

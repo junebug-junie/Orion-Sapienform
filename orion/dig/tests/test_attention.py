@@ -8,6 +8,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import re
 import typing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -71,6 +72,10 @@ def test_the_checker_catches_raw_cross_source_counts():
     assert bare_counts("  node:prediction.body: won 1,805 frames") == ["1,805"]
     assert bare_counts("  world:chat: won 100% (834 of 834)") == []
     assert bare_counts("  1 in 4 frames sampled, about 2.2 s a frame") == []
+    # a count glued to a ref or written as a bare ratio is still a raw count (review 2026-11-17)
+    assert bare_counts("world:chat=834 frames") == ["834"]
+    assert bare_counts("chat won 834/40846") == ["834", "40846"]
+    assert bare_counts("full rates: /tmp/x/dig/t/attention-24h-1.json") == []
 
 
 def test_every_printed_line_is_a_rate_or_a_ref(tmp_path, monkeypatch):
@@ -116,12 +121,26 @@ def test_rest_and_perception_eligibility_match_the_issue_baseline(tmp_path, monk
 def test_event_sources_are_measured_against_their_own_events():
     r = _read()
     chat = A.eligibility(r.cur, "world:chat", "event")
-    # 2 Juniper turns x 900 s (CHAT_RATE_WINDOW) / ~2.1 s a frame = 851 expected frames, 834 eligible
-    assert (chat.num, chat.den) == (834, 851) and chat.reference == "2 chat_turn x 900 s"
+    # 2 Juniper turns x 900 s (CHAT_RATE_WINDOW), windows merged: 1,755 s lit / ~2.1 s a frame = 830 expected
+    # frames, 834 eligible. The issue's "~74% of 8 turns" counted Orion's 6 outreach rows too; they do not
+    # light world:chat (world_first._CHAT_TURN_WHERE counts Juniper's turns only), so they are not its activity.
+    assert (chat.num, chat.den) == (834, 830) and chat.reference == "2 chat_turn x 900 s, overlaps merged"
     street = A.eligibility(r.cur, "node:substrate.street", "event")
-    assert (street.num, street.den) == (96, 993) and street.reference == "7 street_event x 300 s"
+    assert (street.num, street.den) == (96, 792) and street.reference == "7 street_event x 300 s, overlaps merged"
     reading = A.eligibility(r.cur, "world:reading", "event")
-    assert reading.reference == "39 reading_turn x 900 s" and reading.rate == pytest.approx(426 / 16590, rel=1e-3)
+    # 39 readings, merged windows 25,459 s; only one 15-min link window lit it (loose source, see EVENT_SOURCES)
+    assert reading.reference == "39 reading_turn x 900 s, overlaps merged" and (reading.num, reading.den) == (426, 12033)
+
+
+def test_lit_seconds_merges_overlapping_windows_and_counts_window_edges():
+    t0 = datetime(2026, 11, 17, 8, 0, tzinfo=timezone.utc)
+    lo, hi = t0, t0 + timedelta(hours=1)
+    # two events 5 min apart, 15-min windows: lit 5 + 15 = 20 min, not 30
+    two = [t0 + timedelta(minutes=10), t0 + timedelta(minutes=15)]
+    assert A.lit_seconds(two, 900, lo, hi) == 20 * 60
+    # an event 5 min before the window still lights its first 10 min; one 5 min before the end only 5 min
+    assert A.lit_seconds([t0 - timedelta(minutes=5)], 900, lo, hi) == 10 * 60
+    assert A.lit_seconds([hi - timedelta(minutes=5)], 900, lo, hi) == 5 * 60
 
 
 def test_contested_frames_and_wins_inside_them_are_reported():
@@ -155,6 +174,7 @@ def test_not_attended_causes_are_counted_per_target(tmp_path, monkeypatch):
     # a quiet verdict whose later text says insufficient_history is still quiet: only the verdict counts
     ("world-first: not attended -- body quiet for itself; x; band quiet, trend insufficient_history", "quiet for itself"),
     ("world-first: not attended -- something new", "other"),
+    ("no separator at all, quiet for itself", "other"),  # same as the SQL: no ' -- ' -> '' -> other
 ])
 def test_classify(reason, cause):
     assert A.classify(reason) == cause
@@ -163,7 +183,7 @@ def test_classify(reason, cause):
 def test_sql_case_is_built_from_the_same_cause_table():
     sql = A.frames_sql(A.parse_window("24h", "2026-11-17T08:23Z"))
     for label, pattern in A.CAUSES:
-        assert f"LIKE '{pattern}' THEN '{label}'" in sql
+        assert f"LIKE '{pattern.replace('_', '!_')}' ESCAPE '!' THEN '{label}'" in sql
 
 
 # --- window, coverage, sampling --------------------------------------------------------------------
@@ -283,3 +303,26 @@ def test_result_file_holds_both_sides(tmp_path, monkeypatch):
     chat = data["rates"]["world:chat"]
     assert chat["kind"] == "event" and chat["cur"]["won_when_eligible"] == 1.0
     assert data["base"]["frames"] > 0 and data["cur"]["frames"] == 40836
+
+
+def test_a_target_judged_only_before_the_window_is_not_called_attended():
+    r = _read()
+    line = A.cause_line(r, "node:substrate.harness_closure")
+    assert line.endswith("not judged in this window") and "attended" not in line
+    assert A.target_line(r, "node:substrate.harness_closure").endswith("not judged in this window (a candidate only before it)")
+
+
+def test_drift_carries_the_prior_rate_with_its_numerator_and_denominator():
+    r = _read()
+    line = A.target_line(r, "node:substrate.perception")
+    assert re.search(r"drift won [+-]\d+% \(was \d+% \([\d,]+ of [\d,]+\)\), eligible [+-]\d+% \(was ", line), line
+
+
+def test_eligible_share_is_of_the_frames_the_target_was_judged():
+    side = A.Side(frames=100, present={"node:x": 5}, causes={"node:x": {"quiet for itself": 45}})
+    e = A.eligibility(side, "node:x", "percentile")
+    assert (e.num, e.den) == (5, 50)
+
+
+def test_pct_never_rounds_a_loss_up_to_100():
+    assert A.pct(2690 / 2694) == "99.9%" and A.pct(1.0) == "100%"

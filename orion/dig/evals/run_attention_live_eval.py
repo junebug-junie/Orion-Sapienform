@@ -8,7 +8,9 @@ Reads the window the way `python -P -m orion.dig attention` does (ReadOnlyPsql, 
   E3  it is not empty-shell: frames were read, at least one target was eligible, and the rest share is a real
       rate (0 < rest < 1: a pinned 0 or 1 is a broken contest, not calm);
   E4  the frame total equals a plain count(*) of the same window (the sampled pass covers every frame when k = 1);
-  E5  each event source's event count equals a plain count of its temporal_self_event rows.
+  E5  each event source's event count equals a plain count of its temporal_self_event rows;
+  E6  the SQL cause CASE and Python classify() agree on up to 2,000 real not-attended reasons of the window;
+  E7  each event source's lit seconds (SQL, overlap-merged) equal lit_seconds() over the raw event times.
 
     PYTHONPATH=. python orion/dig/evals/run_attention_live_eval.py [--window 24h] [--end <ISO>] [--role orion_readonly]
 
@@ -73,7 +75,26 @@ def main(argv: list[str] | None = None) -> int:
                   f"AND occurred_at < '{r.end}'")[0]["n"])
         if n != c.events.get(src.kind, 0):
             fails.append(f"E5 {target}: {c.events.get(src.kind, 0)} events != count {n}")
-    print(f"\neval: read in {took:.1f} s; " + ("PASS (E1-E5)" if not fails else "FAIL: " + "; ".join(fails)))
+    reasons = q(f"""SELECT t->'reasons'->>0 AS reason, {A._cause_case("t->'reasons'->>0")} AS cause
+  FROM (SELECT frame_json FROM substrate_attention_frames WHERE generated_at >= '{r.start}' AND generated_at < '{r.end}'
+        ORDER BY generated_at DESC LIMIT 200) f, jsonb_array_elements(f.frame_json->'suppressed_targets') t
+ WHERE t->'reasons'->>0 LIKE '{A.WORLD_FIRST_PREFIX}%' LIMIT 2000""")
+    differ = [x for x in reasons if A.classify(x["reason"]) != x["cause"]]
+    if not reasons or differ:
+        fails.append(f"E6 {len(differ)} of {len(reasons)} reasons classified differently: {differ[:1]}")
+    from datetime import timedelta
+    start, end = A.parse_end(r.start), A.parse_end(r.end)
+    for target, src in A.EVENT_SOURCES.items():
+        cond = f"source_kind = '{src.kind}'"
+        if src.payload_key:
+            cond += f" AND payload_json->>'{src.payload_key}' = '{src.payload_value}'"
+        lo = start - timedelta(seconds=src.window_sec)
+        times = [A.parse_end(x["t"]) for x in q(f"SELECT occurred_at AS t FROM temporal_self_event WHERE {cond} "
+                                                 f"AND occurred_at >= '{A._ts(lo)}' AND occurred_at < '{r.end}'")]
+        want = A.lit_seconds(times, src.window_sec, start, end)
+        if abs(want - c.lit.get(src.kind, 0.0)) > 1.0:
+            fails.append(f"E7 {target}: lit {c.lit.get(src.kind, 0.0):.0f} s != reference {want:.0f} s")
+    print(f"\neval: read in {took:.1f} s; " + ("PASS (E1-E7)" if not fails else "FAIL: " + "; ".join(fails)))
     return 1 if fails else 0
 
 

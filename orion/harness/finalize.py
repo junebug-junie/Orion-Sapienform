@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -1146,8 +1147,9 @@ async def emit_verdict_molecule(
 # 9 returning content="" (cognition_traces corr 0ba83fec-e66d-5685-9182-d9f867fc81c2).
 # Budget sized from real data (14 days): non-empty repair outputs p50 678 / p99 5466 /
 # max 6602 chars; observed ~3.3 chars/token -> max ~2000 tokens. 3072 covers that with
-# margin; a longer rewrite is cut at finish_reason=length and refused below
-# (extract_response_repair_text), never shipped half-written.
+# margin and stays the floor; a long draft gets more (response_repair_max_tokens, #3607).
+# A rewrite cut at finish_reason=length is refused below (extract_response_repair_text),
+# never shipped half-written.
 # Depends on the backend honouring enable_thinking: the gateway forwards
 # chat_template_kwargs only for llamacpp / llama-cola (llm_backend.py). Live 7-day
 # repair traces that record a backend all say llamacpp. If this lane ever moves to
@@ -1155,6 +1157,30 @@ async def emit_verdict_molecule(
 # (no reply) rather than leaking reasoning.
 RESPONSE_REPAIR_MAX_TOKENS = 3072
 RESPONSE_REPAIR_CHAT_TEMPLATE_KWARGS: dict[str, Any] = {"enable_thinking": False}
+
+# 3072 is the floor, not the budget (#3607). The repair rewrites the WHOLE reply, so a
+# long draft needs room for all of it. Live 2026-11-16..17: day letters are 18-24k chars,
+# 5.4-6.9k tokens (Qwen tokenizer, 3.07-3.55 chars/token -- hex ids and markdown tokenize
+# densely), and all 4 letter repairs stopped at exactly 3072 completion tokens with
+# thinking off (gateway reasoning_len=0), so the letter step failed (no_final_frame) and
+# the tier-0 retry spent ~1 h of GPU. The budget is the draft's token estimate (at a
+# chars/token below the lowest one measured) times headroom, plus a margin. Drafts under
+# ~6.1k chars keep exactly 3072.
+RESPONSE_REPAIR_CHARS_PER_TOKEN = 3.0
+RESPONSE_REPAIR_HEADROOM = 1.25
+RESPONSE_REPAIR_MARGIN_TOKENS = 512
+# The cap keeps the call inside the lane's window. The repair runs on the turn's GPU hold,
+# else agent or chat (resolve_finalize_llm_lane); the smallest per-slot window of those
+# roles is 131072 (agent and agent-gpu2; chat 262144). Live letter repair prompts were
+# 38-42k tokens, so prompt + 16384 stays far inside it. 16384 covers a ~38k-char draft.
+RESPONSE_REPAIR_MAX_TOKENS_CEILING = 16384
+
+
+def response_repair_max_tokens(draft_text: str) -> int:
+    """Completion budget for a repair of ``draft_text``: room to rewrite all of it. Pure."""
+    estimated = math.ceil(len(draft_text or "") / RESPONSE_REPAIR_CHARS_PER_TOKEN)
+    sized = math.ceil(estimated * RESPONSE_REPAIR_HEADROOM) + RESPONSE_REPAIR_MARGIN_TOKENS
+    return max(RESPONSE_REPAIR_MAX_TOKENS, min(sized, RESPONSE_REPAIR_MAX_TOKENS_CEILING))
 
 
 def build_response_repair_context(
@@ -1189,7 +1215,7 @@ def build_response_repair_context(
         "allow_chat_fallback": False,
         # Read by cortex-exec: ctx.max_tokens wins in _resolve_llm_chat_max_tokens,
         # chat_template_kwargs is forwarded to the gateway -> llama.cpp payload.
-        "max_tokens": RESPONSE_REPAIR_MAX_TOKENS,
+        "max_tokens": response_repair_max_tokens(draft_text),
         "chat_template_kwargs": dict(RESPONSE_REPAIR_CHAT_TEMPLATE_KWARGS),
         "metadata": {
             "correlation_id": correlation_id,
@@ -1230,6 +1256,10 @@ def build_response_repair_plan_request(
     )
 
 
+class ResponseRepairTruncatedError(ValueError):
+    """The repair reply was cut off at max_tokens (finish_reason=length)."""
+
+
 def extract_response_repair_text(result: dict[str, Any]) -> str:
     """Extract repair-pass user-visible text.
 
@@ -1245,7 +1275,9 @@ def extract_response_repair_text(result: dict[str, Any]) -> str:
                 f"orion_response_repair returned error-shaped text: {_excerpt(text, max_len=200)}"
             )
         if cortex_payload_truncated(result):
-            raise ValueError("orion_response_repair reply truncated at max_tokens (finish_reason=length)")
+            raise ResponseRepairTruncatedError(
+                "orion_response_repair reply truncated at max_tokens (finish_reason=length)"
+            )
         return text
 
     detail = cortex_exec_failure_detail(result)
@@ -1297,6 +1329,20 @@ def is_repair_no_change(text: str, *, draft_text: str) -> bool:
     return token in (text or "").casefold() and token not in (draft_text or "").casefold()
 
 
+def repair_may_keep_draft_on_truncation(reflection: FinalizeReflectionV1) -> bool:
+    """True when a cut-off repair may ship the draft instead of failing the turn.
+
+    Only when 5b passed the draft's content (aligned, no unsupported claim) and asked
+    for repair for open strain alone: the draft is a reply the judge accepted. A
+    misaligned or uncertain draft, or one with an unsupported claim, is what the judge
+    rejected, so a cut-off repair of it still fails the turn (#3607). Pure."""
+    return (
+        reflection.alignment_verdict == "aligned"
+        and reflection.reflection_source != REFLECTION_SOURCE_JUDGE_FAILED
+        and not has_unsupported_claim(reflection)
+    )
+
+
 def _response_repair_changed(
     draft_text: str,
     final_text: str,
@@ -1343,9 +1389,24 @@ async def run_orion_response_repair(
         situation_notes=situation_notes,
     )
     exec_result = await cortex_client(plan_request)
-    final_text = extract_response_repair_text(exec_result)
     kept_draft: str | None = None
-    if is_repair_no_change(final_text, draft_text=draft_text):
+    try:
+        final_text = extract_response_repair_text(exec_result)
+    except ResponseRepairTruncatedError:
+        if not repair_may_keep_draft_on_truncation(reflection):
+            raise
+        # The rewrite did not fit even the sized budget. 5b accepted the draft's content,
+        # so Juniper gets the draft, and the trace says the repair was cut off
+        # (response_repair_reason "<reason>_kept_draft:truncated").
+        kept_draft = "truncated"
+        final_text = draft_text
+        logger.warning(
+            "orion_response_repair_truncated corr=%s draft_chars=%s max_tokens=%s -- keeping the draft",
+            correlation_id, len(draft_text or ""), plan_request.context.get("max_tokens"),
+        )
+    if kept_draft:
+        pass  # already decided: the cut-off text is never read as an answer
+    elif is_repair_no_change(final_text, draft_text=draft_text):
         kept_draft = "no_change"
         logger.info("orion_response_repair_no_change corr=%s verdict=%s unsupported_claim=%s -- keeping the draft",
                     correlation_id, reflection.alignment_verdict, has_unsupported_claim(reflection))

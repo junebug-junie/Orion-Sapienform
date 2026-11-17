@@ -1021,6 +1021,15 @@ def test_metacog_fragment_carries_its_time_and_evidence():
     assert candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical",
                                    "occurred_at": "not a time"}).text == "s"
     assert candidate_from_metacog({"id": "m1", "summary": "", "severity": "critical", "evidence": "e"}) is None
+    # Evidence that already ends in a full stop gets one, not two; long evidence fits the cap whole-ended.
+    assert candidate_from_metacog({"id": "m1", "summary": "s", "severity": "critical",
+                                   "evidence": "done."}).text == "s Evidence: done."
+    from app.replay import TEXT_CAP
+    fits = candidate_from_metacog({"id": "m1", "summary": "y" * 272, "severity": "critical",
+                                   "occurred_at": "2026-11-17T23:02:14Z", "evidence": "z" * 300})
+    assert len(fits.text) <= TEXT_CAP and fits.text.endswith("….")  # evidence cut, its close kept
+    full = candidate_from_metacog({"id": "m1", "summary": "y" * 700, "severity": "critical", "evidence": "z"})
+    assert len(full.text) == TEXT_CAP and "Evidence" not in full.text  # no room: summary only, capped
 
 
 def test_compaction_fragment_carries_what_the_chain_thought():

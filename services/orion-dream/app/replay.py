@@ -97,9 +97,11 @@ def candidate_from_metacog(row: dict[str, Any]) -> Optional[ReplayItemV1]:
     severity = str(row.get("severity") or "").strip().lower()
     weight = SEVERITY_WEIGHT.get(severity)
     summary = _clip(row.get("summary"))
-    evidence = _clip(row.get("evidence"), 300)
-    text = _clip(f"{_when(row.get('occurred_at'))}{summary}" + (f" Evidence: {evidence}." if evidence else "")) \
-        if summary else ""
+    head = f"{_when(row.get('occurred_at'))}{summary}"
+    # Evidence gets the room the summary leaves, so the overall cap never cuts its end.
+    room = min(300, TEXT_CAP - len(head) - len(" Evidence: ."))
+    evidence = _clip(row.get("evidence"), room).rstrip(". ") if room >= 20 else ""
+    text = _clip(head + (f" Evidence: {evidence}." if evidence else "")) if summary else ""
     rid = str(row.get("id") or "").strip()
     if weight is None or not text or not rid:
         return None

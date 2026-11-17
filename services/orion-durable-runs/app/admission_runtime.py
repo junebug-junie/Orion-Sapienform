@@ -429,27 +429,37 @@ class AdmissionRuntime:
 
     async def _plan_supersede(self, result, ask, *, episode_id=None) -> dict:
         """Issue #3587: which older live memories this episode's memories correct (checked, not applied).
-        Candidates from the lived-memory index when configured, else shared words/referents."""
+        Issue #3659: never acts degraded. No meaning index, an index failure, a failed model answer,
+        or no passing precision eval for this check version: the plan proposes, holds its links, and
+        logs why; the persist step applies nothing."""
         from datetime import datetime, timezone
 
         from orion.introspect.semantic_index import SearchConfig
         from orion.memory.episode.supersede import (
-            index_dense, load_corpus, plan_for_new_rows, rows_from_validation, undone_pairs,
+            eval_gate, index_dense, load_corpus, plan_for_new_rows, rows_from_validation, undone_pairs,
         )
 
         if not result.memories:
-            return {"links": [], "asked": 0}
+            return {"links": [], "asked": 0, "apply": "refused", "refused_because": ["no_memories"]}
         s = self.settings
         async with self.pool.connection() as conn:
             corpus = await load_corpus(conn)
             excluded = await undone_pairs(conn)
+        try:  # its own connection: a failed read (table not there yet) must not poison the one above
+            async with self.pool.connection() as conn:
+                gate = await eval_gate(conn)
+        except Exception as exc:  # noqa: BLE001 -- unknown is closed
+            gate = (False, f"eval_unreadable:{type(exc).__name__}")
         cfg = SearchConfig(chroma_url=s.memory_supersede_chroma_url, embed_url=s.memory_supersede_embed_url,
                            collection=s.memory_supersede_collection, min_similarity=0.0)
         rows = rows_from_validation(result, now=datetime.now(timezone.utc), episode_id=episode_id)
         plan = await plan_for_new_rows(rows, corpus, ask, dense=index_dense(cfg) if cfg.enabled else None,
-                                       max_checks=int(s.memory_supersede_max_checks), excluded=excluded)
-        logger.info("episode_supersede_planned links=%s asked=%s check_errors=%s dense=%s",
-                    len(plan["links"]), plan["asked"], plan["check_errors"], plan["dense"])
+                                       max_checks=int(s.memory_supersede_max_checks), excluded=excluded,
+                                       apply_gate=gate)
+        logger.info("episode_supersede_planned episode_id=%s links=%s held=%s asked=%s check_errors=%s dense=%s "
+                    "apply=%s refused_because=%s", episode_id, len(plan["links"]), len(plan["held_links"]),
+                    plan["asked"], plan["check_errors"], plan["dense"], plan["apply"],
+                    ",".join(plan["refused_because"]) or "-")
         return plan
 
     def _referent_policy(self):

@@ -47,3 +47,20 @@ def test_manifest_has_ids_and_statuses_only(tmp_path):
     asyncio.run(P.write_manifest(conn, path, mode="apply", proposed=proposed,
                                  applied=[{"old_id": "o1", "new_id": "n1", "applied_at": "t"}], watch=[]))
     assert json.loads(path.read_text())["applied"][0]["old_id"] == "o1"
+
+
+def test_apply_refuses_pairs_found_without_the_meaning_index(tmp_path):
+    """Issue #3659: a pairs file with a word-only pair is refused before any database connection."""
+    import argparse
+
+    import pytest
+
+    pairs = tmp_path / "pairs.jsonl"
+    pairs.write_text(json.dumps({"old_id": "o1", "new_id": "n1", "reason": "r", "dense": None, "dense_on": False})
+                     + "\n" + json.dumps({"old_id": "o2", "new_id": "n2", "reason": "r", "dense": 0.71}) + "\n")
+    args = argparse.Namespace(yes=True, pairs=str(pairs), allow_no_dense=False, only="", exclude="",
+                              dsn="postgresql://nobody@127.0.0.1:1/none", no_manifest=True, watch=[])
+    with pytest.raises(SystemExit, match="without the meaning index"):
+        asyncio.run(P.cmd_apply(args))
+    assert P.degraded_pair_ok({"dense": 0.7}) and not P.degraded_pair_ok({"dense": None})
+    assert not P.degraded_pair_ok({"dense": 0.7, "dense_on": False})

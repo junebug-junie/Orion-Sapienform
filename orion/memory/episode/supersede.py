@@ -22,6 +22,12 @@ How a pair is found, in two steps:
   that answer is "no". Anything else -- no, unsure, unparseable, a failed call -- links nothing. A wrong supersede hides a true memory; a
   missed one leaves both visible, which is the state before this module existed.
 
+Never acts degraded (issue #3659). Write time applies a link only when the meaning index answered
+for every new row, every model answer parsed, and the latest precision eval for this check version
+passed (:func:`eval_gate`). Otherwise the plan proposes and holds its links, with the reasons in
+``refused_because``. There is no word-only fallback for applying; the pass's word-only candidates
+(``--no-dense`` or a dead index) are proposals its ``apply`` refuses.
+
 Never superseded automatically: rows Juniper confirmed (her word outranks a model's judgment),
 follow-up rows (a to-do is closed, not corrected) and Orion's own views (a changed view is growth;
 the earlier one stays as history). Undo: :func:`undo_link`.
@@ -195,7 +201,8 @@ def can_correct(row: MemoryRow) -> bool:
 def candidates_for(new: MemoryRow, corpus: Corpus, *, dense: Optional[Mapping[str, float]] = None,
                    k: int = K_PER_ROW, excluded: frozenset[tuple[str, str]] = frozenset()) -> list[Candidate]:
     """Older live rows ``new`` might correct, best first, at most ``k``. ``dense`` maps memory_id to
-    cosine with ``new`` (None when the index is unavailable: then shared words/referents alone)."""
+    cosine with ``new`` (None when the index is unavailable: then shared words/referents alone --
+    proposals only; nothing found that way is ever applied, issue #3659)."""
     if not can_correct(new):
         return []
     new_toks = corpus.toks(new)
@@ -552,32 +559,93 @@ DenseFn = Callable[[str], Awaitable[Optional[dict[str, float]]]]
 """statement -> {memory_id: cosine} for episode_memory rows near it, or None (index unavailable)."""
 
 
+# Why a plan's links are held instead of applied (issue #3659). A degraded plan never acts: the
+# candidate search lost its meaning leg, or a model answer failed, or the precision eval has not
+# passed for this check version. Held links are kept in the plan for the audit trail only.
+REFUSED_DENSE_OFF = "dense_off"                  # no meaning index configured
+REFUSED_DENSE_UNAVAILABLE = "dense_unavailable"  # the index failed or could not answer for a row
+REFUSED_CHECK_ERRORS = "check_errors"            # a model call failed or an answer did not parse
+REFUSED_EVAL_GATE = "eval_gate"                  # no passing precision eval for this check version
+
+
 async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: AskFn, *,
                             dense: Optional[DenseFn] = None, max_checks: int = 12,
-                            excluded: frozenset[tuple[str, str]] = frozenset()) -> dict[str, Any]:
+                            excluded: frozenset[tuple[str, str]] = frozenset(),
+                            apply_gate: tuple[bool, str] = (False, "eval_gate_not_checked")) -> dict[str, Any]:
     """The distiller's step: candidates and checks for this episode's new rows. Returns a
-    checkpointable dict: links (to apply in the persist transaction), counts, and any error."""
+    checkpointable dict: ``links`` (to apply in the persist transaction), counts, and why apply was
+    refused, if it was.
+
+    Never acts degraded (issue #3659): without a working meaning index there is no word-only
+    fallback. When the index is off or fails, no more pairs are asked and nothing is applied.
+    When any model answer fails or does not parse, nothing is applied. When ``apply_gate`` is
+    closed (no passing precision eval for this check version), the plan still asks and proposes,
+    but its links go to ``held_links``, not ``links``. ``apply`` is "on" only when none of these
+    hold; the persist step applies nothing unless it reads ``apply == "on"``."""
     budget = [max(0, int(max_checks))]
     links: list[Link] = []
     asked = refused = 0
-    dense_unavailable = False
-    for new in new_rows:
-        scores = None
-        if dense is not None and not dense_unavailable:
+    reasons: list[str] = []
+    if dense is None:
+        reasons.append(REFUSED_DENSE_OFF)
+    else:
+        for new in new_rows:
             try:
                 scores = await dense(new.statement)
-            except Exception:  # noqa: BLE001 -- fall back to shared words/referents
-                scores = None
+            except Exception as exc:  # noqa: BLE001 -- no fallback: a degraded search never acts
+                scores, why = None, f"{REFUSED_DENSE_UNAVAILABLE}:{type(exc).__name__}"
+            else:
+                why = REFUSED_DENSE_UNAVAILABLE
             if scores is None:
-                dense_unavailable = True
-        found, records = await check_pairs(new, candidates_for(new, corpus, dense=scores, excluded=excluded), ask,
-                                           budget=budget)
-        asked += len(records)
-        refused += sum(1 for r in records if r.verdict.error)
-        links.extend(found)
-    return {"links": [l.as_dict() for l in dedupe_links(links)], "asked": asked, "check_errors": refused,
-            "dense": "unavailable" if dense_unavailable else ("on" if dense is not None else "off"),
-            "budget_left": budget[0]}
+                reasons.append(why)
+                break
+            found, records = await check_pairs(new, candidates_for(new, corpus, dense=scores, excluded=excluded),
+                                               ask, budget=budget)
+            asked += len(records)
+            refused += sum(1 for r in records if r.verdict.error
+                           or r.verdict.both_true_reason.startswith("call_failed"))
+            links.extend(found)
+    if refused:
+        reasons.append(REFUSED_CHECK_ERRORS)
+    gate_open, gate_why = apply_gate
+    if not gate_open:
+        reasons.append(f"{REFUSED_EVAL_GATE}:{gate_why}")
+    planned = [l.as_dict() for l in dedupe_links(links)]
+    dense_state = "off" if dense is None else (
+        "unavailable" if any(r.startswith(REFUSED_DENSE_UNAVAILABLE) for r in reasons) else "on")
+    return {"links": [] if reasons else planned, "held_links": planned if reasons else [],
+            "apply": "refused" if reasons else "on", "refused_because": reasons,
+            "asked": asked, "check_errors": refused, "dense": dense_state, "budget_left": budget[0],
+            "check_version": CHECK_VERSION}
+
+
+def links_to_apply(plan: Optional[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """The only links the persist step may apply: a plan that says ``apply == "on"`` (so a
+    checkpoint written before #3659, or a degraded plan, applies nothing)."""
+    if not plan or plan.get("apply") != "on" or plan.get("refused_because"):
+        return []
+    return list(plan.get("links") or [])
+
+
+# The precision eval's verdict, read before write-time apply (issue #3659). The table is created by
+# the eval's migration; until it exists (or while its latest run for this check version did not
+# pass), write time proposes only.
+EVAL_GATE_SQL = ("SELECT passed, check_version, finished_at FROM memory_supersede_eval_run "
+                 "WHERE check_version = %s ORDER BY finished_at DESC LIMIT 1")
+
+
+async def eval_gate(conn: Any, *, check_version: str = CHECK_VERSION) -> tuple[bool, str]:
+    """(open, why). Open only when the most recent eval run for ``check_version`` passed. Any read
+    failure (table missing, permissions, a dead connection) reads as closed."""
+    try:
+        row = await _fetchone(conn, EVAL_GATE_SQL, (check_version,))
+    except Exception as exc:  # noqa: BLE001 -- unknown is closed
+        return False, f"eval_unreadable:{type(exc).__name__}"
+    if row is None:
+        return False, "eval_missing"
+    if not row.get("passed"):
+        return False, "eval_failed"
+    return True, "eval_passed"
 
 
 def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:

@@ -96,8 +96,9 @@ def test_an_unfinished_reply_is_incomplete_and_not_retried() -> None:
 
 
 def test_corrective_messages_show_the_model_its_reply_and_the_error() -> None:
-    msgs = ss.corrective_messages([{"role": "user", "content": "q"}], "{'bad'", "model did not return valid JSON: x")
-    assert msgs[1] == {"role": "assistant", "content": "{'bad'"}
+    bad = '{"why": "she said "yay" today"}'
+    msgs = ss.corrective_messages([{"role": "user", "content": "q"}], bad, "model did not return valid JSON: x")
+    assert msgs[1] == {"role": "assistant", "content": bad}
     assert "x" in msgs[2]["content"] and '\\"' in msgs[2]["content"]
 
 
@@ -263,3 +264,18 @@ def test_no_retry_when_the_first_call_used_the_budget(monkeypatch) -> None:
     monkeypatch.setattr(llm_backend, "_resolve_http_read_timeout_sec", lambda body: 0.0)
     result = _run()
     assert len(seen) == 1 and result["raw"]["details"]["reason"] == "http_502"
+
+
+
+@pytest.mark.parametrize("bad", ["{", " { ", "", "{\n"])
+def test_a_stopped_reply_is_retried_fresh_not_echoed(bad) -> None:
+    # Live 11-17: the model wrote '{' then ended its turn; echoed back, it copied it (6 of 8 retries failed).
+    msgs = [{"role": "user", "content": "q"}]
+    assert ss.corrective_messages(msgs, bad, "model did not return valid JSON: x") == msgs
+
+
+def test_a_brace_only_reply_gets_a_fresh_second_call(monkeypatch) -> None:
+    seen = _strata(monkeypatch, [_reply("{"), _reply('{"stance": "warm"}')])
+    result = _run()
+    assert len(seen) == 2 and seen[1]["messages"] == seen[0]["messages"]
+    assert json.loads(result["text"]) == {"stance": "warm"}

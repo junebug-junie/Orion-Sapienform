@@ -1,5 +1,5 @@
 {
-  "_note": "Made-up records and messages for the committed lived-memory replay eval (issue #3533). The real bank is host-side: ~/.orion/evals/lived_memory_recall_bank.json (mode 600).",
+  "_note": "Made-up records and messages for the committed lived-memory replay eval (issues #3533, #3534). 'implicit' items lean on the shared past without naming it; 'rewrites' is what the fake rewriter answers for them (the live eval calls the real fast lane). The real bank is host-side: ~/.orion/evals/lived_memory_recall_bank.json (mode 600).",
   "records": {
     "episode_memory": [
       {
@@ -93,5 +93,37 @@
     "night night",
     "haha nice",
     "sup yo"
+  ],
+  "implicit": [
+    {
+      "label": "kite_again",
+      "message": "ugh, it got stuck again!",
+      "rewrites": [
+        "blue kite stuck in oak tree at the lake"
+      ],
+      "targets": [
+        "episode_memory:e-kite"
+      ]
+    },
+    {
+      "label": "exam_done",
+      "message": "I passed!!",
+      "rewrites": [
+        "pottery exam"
+      ],
+      "targets": [
+        "episode_memory:e-quiz"
+      ]
+    },
+    {
+      "label": "vet_done",
+      "message": "he's all healed up now",
+      "rewrites": [
+        "Biscuit dog surgery stitches"
+      ],
+      "targets": [
+        "episode_memory:e-biscuit"
+      ]
+    }
   ]
 }

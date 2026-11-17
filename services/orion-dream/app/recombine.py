@@ -162,8 +162,14 @@ class RecombineResult:
             ref_a=pair.a.ref_id,
             ref_b=pair.b.ref_id,
             outcome=outcome,  # type: ignore[arg-type]
-            answer=(text or "")[:PAIR_ANSWER_CHARS],
+            answer=_storable(text)[:PAIR_ANSWER_CHARS],
         ))
+
+
+def _storable(text: str) -> str:
+    """Text Postgres jsonb accepts: no NUL (jsonb refuses \\u0000) and no lone surrogates, either of
+    which would fail the whole sleep's one-transaction persist."""
+    return (text or "").replace("\x00", "").encode("utf-8", "replace").decode("utf-8")
 
 
 async def recombine(

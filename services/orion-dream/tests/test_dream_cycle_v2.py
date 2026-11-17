@@ -966,3 +966,35 @@ def test_curiosity_failure_does_not_fail_sleep_and_switch_wires_hook(monkeypatch
     monkeypatch.setattr(main.settings, "DREAM_STORY_AFTER_SLEEP_ENABLED", False)
     monkeypatch.setattr(main.settings, "DREAM_CARRY_ENABLED", False)
     assert main.build_cycle_deps().compact_curiosity is not None
+
+
+def test_an_answer_with_nul_or_lone_surrogate_is_stored_clean():
+    # jsonb refuses \u0000 ("cannot be converted to text"), which would lose the whole sleep's
+    # one-transaction persist; a lone surrogate cannot be encoded as UTF-8 at all.
+    from app.recombine import Pair, recombine
+
+    items = _replay()
+    pairs = [Pair(items[0], items[1], "dream"), Pair(items[1], items[2], "control")]
+    answers = iter(['garbled\x00answer', '{"link": false} \ud800 tail'])
+
+    async def complete(_prompt):
+        return next(answers)
+
+    res = asyncio.run(recombine(pairs, complete, cycle_id="dc-1", ttl_hours=72, now=NOW))
+    assert [a.outcome for a in res.answers] == ["unparseable", "no_link"]
+    assert res.answers[0].answer == "garbledanswer"
+    stored = json.dumps([a.model_dump(mode="json") for a in res.answers])
+    assert "\\u0000" not in stored and "\\ud800" not in stored
+    stored.encode("utf-8")  # must not raise
+
+
+def test_the_pair_caps_fit_the_stored_lists():
+    # pair_answers and hypotheses share MAX_HYPOTHESES; raising a settings cap past it would make
+    # DreamCycleV1 refuse the sleep before it is saved.
+    from app.settings import Settings
+    from orion.schemas.dream_cycle import MAX_HYPOTHESES
+
+    def le(name):
+        return next(m.le for m in Settings.model_fields[name].metadata if hasattr(m, "le"))
+
+    assert le("DREAM_HYPOTHESES_PER_CYCLE") + le("DREAM_CONTROL_PER_CYCLE") <= MAX_HYPOTHESES

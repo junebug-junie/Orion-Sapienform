@@ -316,6 +316,10 @@ def _play_clause(frame: TemporalSelfFrameV1, tz_name: str) -> tuple[str, list[Ar
     tz = ZoneInfo(tz_name)
     began = as_utc(arc.began_at).astimezone(tz).strftime("%H:%M")
     ended = as_utc(arc.ended_at or arc.last_seen_at or arc.began_at).astimezone(tz).strftime("%H:%M")
+    if arc.subject_ref.startswith("retro_sitting:"):
+        # A person's own sitting (orion.temporal_self.sources.retro_sitting_ref): its label already says
+        # who played and that Orion did not. Never worded as "Played ...", which would credit Orion.
+        return f"On your Retro service: {arc.subject_label.strip()} ({began} to {ended}) {_ref(arc)}.", [arc]
     return f"Played {arc.subject_label.strip()} ({began} to {ended}) {_ref(arc)}.", [arc]
 
 

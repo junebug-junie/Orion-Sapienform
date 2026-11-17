@@ -129,3 +129,65 @@ def test_recent_arcs_and_day_letter_carry_the_session() -> None:
     (day,) = [d for d in days if d.day_id == "2026-10-09"]
     rendered = render_closed_day_block(day)
     assert rendered is not None and "1 play" in rendered.text
+
+
+# --- a person's own sitting (game company design, patch 1): kind human_play --------------------------
+
+def sitting_row(sitting_id: str, start, minutes: float, **kw) -> dict:
+    """As services/orion-hub/scripts/retro_sitting.py play_row writes it."""
+    base = {"session_id": f"sitting:{sitting_id}", "retro_session_id": "retro-1", "lineage_id": None,
+            "game_id": "a-link-to-the-past", "game_title": "A Link to the Past", "kind": "human_play",
+            "control_basis": "human_input", "human_may_be_in_control": True, "played_together": False,
+            "human_share": None, "decisions": None, "predictions_met": 0, "predictions_unknown": None,
+            "rooms_new": None, "deaths": None, "memory_card_id": None, "player_stated": None,
+            "started_at": start, "ended_at": start + timedelta(minutes=minutes), "duration_sec": minutes * 60.0,
+            "summary": "Someone played A Link to the Past."}
+    base.update(kw)
+    return base
+
+
+def test_a_persons_sitting_is_a_play_arc_that_never_credits_orion() -> None:
+    e = S.retro_play(sitting_row("s1", at(0), 142))
+    assert e.subject_ref == "retro_sitting:s1" and e.source_ref == "sitting:s1"
+    assert e.label == "Someone played A Link to the Past for 2 h 22 min; Orion did not play"
+    assert e.payload["duration_sec"] == 142 * 60.0 and e.payload["kind"] == "human_play"
+    told = S.retro_play(sitting_row("s2", at(0), 40, player_stated="juniper"))
+    assert told.label == "Juniper played A Link to the Past for 40 min; Orion did not play"
+    # Only the page's own word makes it Juniper: anything else stays "Someone".
+    assert S.retro_play_label(sitting_row("s3", at(0), 5, player_stated="guest")).startswith("Someone played")
+    assert S.retro_play_label(sitting_row("s4", at(0), 5, player_stated="a name from a camera")).startswith("Someone played")
+    # duration falls back to the row's own times; an Orion session keeps its old subject and label
+    assert S.retro_play_seconds(sitting_row("s5", at(0), 7, duration_sec=None)) == 420.0
+    assert S.retro_play(row("sess-1", at(0), 22, SOLO)).subject_ref == "retro_session:sess-1"
+    assert S.retro_play(row("sess-1", at(0), 22, SOLO)).payload["duration_sec"] == 22 * 60.0
+
+
+def test_no_reader_words_a_persons_sitting_as_orion_playing() -> None:
+    now = at(200)
+    rows = [row("sess-1", at(0), 22, SOLO), sitting_row("s1", at(30), 142, player_stated="juniper")]
+    frame = _frame(rows, now)
+    label = "Juniper played A Link to the Past for 2 h 22 min; Orion did not play"
+    cue = project_stance_cue(frame, now)                      # the latest play arc of the day is the sitting
+    assert f"On your Retro service: {label} (09:30 to 11:52) [arc:" in cue.text
+    assert "Played " not in cue.text and len(cue.text) <= STANCE_CUE_MAX_CHARS
+    block = project_recent_arcs(frame, now)
+    assert f"(2 h 22 min) {label} [arc:" in block.text and f"played {label}" not in block.text
+    assert "played The Legend of Zelda solo" in block.text    # Orion's own session is still Orion's
+    state = _state(rows, at(60 * 24))
+    _, days = drain_closed_days(state)
+    (day,) = [d for d in days if d.day_id == "2026-10-09"]
+    text = render_closed_day_block(day).text
+    assert "2 play" in text
+    assert f"Play on the Retro service: 09:00 The Legend of Zelda solo, 14 of 31 predictions met [arc:" in text
+    assert f"; 09:30 {label} [arc:" in text
+
+
+def test_sitting_minutes_is_the_salience_magnitude_of_play() -> None:
+    from orion.temporal_self.now import MAGNITUDE_RULES
+
+    rule = MAGNITUDE_RULES["sitting_minutes"]
+    assert rule({"payload": {"duration_sec": 8520.0}}) == 142.0
+    assert rule({"payload": {"duration_sec": 0.0}}) == 0.0          # rest is a true zero
+    for nothing in ({}, {"payload": None}, {"payload": {}}, {"payload": {"duration_sec": None}},
+                    {"payload": {"duration_sec": "long"}}):
+        assert rule(nothing) is None                                 # not recorded is not zero

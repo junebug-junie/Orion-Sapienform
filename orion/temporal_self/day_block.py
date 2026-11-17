@@ -206,6 +206,14 @@ def render_closed_day_block(
     if sleeps:
         lines.append((2, "Sleep cycles: " + "; ".join(f"{clock(a, a.began_at)} {ref(a, clock(a, a.began_at))}" for a in sleeps) + "."))
 
+    # One line for all play of the day: each session's own deterministic label (who played, which game,
+    # how long). A person's sitting says "Orion did not play"; nothing here credits Orion with it.
+    plays = [a for a in arcs if a.kind == "play"]
+    if plays:
+        parts = [f"{clock(a, a.began_at)} {a.subject_label.strip() or a.subject_ref} {ref(a, a.subject_label.strip())}"
+                 for a in plays]
+        lines.append((3, "Play on the Retro service: " + "; ".join(parts) + "."))
+
     images = [a for a in arcs if a.kind == "imagery"]
     if images:
         lines.append((5, f"Image attempts: {len(images)}, first {clock(images[0], images[0].began_at)} "

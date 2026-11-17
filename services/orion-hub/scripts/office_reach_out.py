@@ -350,7 +350,9 @@ def appendix(session: Mapping[str, Any], tz: ZoneInfo, now: Optional[datetime] =
     return "\n".join(lines)
 
 
-def build_prompt(session: Mapping[str, Any], tz: ZoneInfo, *, now: datetime) -> str:
+def build_prompt(session: Mapping[str, Any], tz: ZoneInfo, *, now: datetime, game_line: Optional[str] = None) -> str:
+    """``game_line``: one sentence about an open game sitting (scripts/retro_sitting.sitting_line), or
+    None. The camera is not silenced while someone plays; it is told (game company design, section 5)."""
     still_there = session.get("status") == "open" and session.get("ended_at") is None
     start = _hhmm(session.get("started_at"), tz)
     day = day_words(session.get("started_at"), tz, now)
@@ -372,6 +374,9 @@ def build_prompt(session: Mapping[str, Any], tz: ZoneInfo, *, now: datetime) -> 
               + (f" (x{int(e.get('repeats') or 1)})" if int(e.get("repeats") or 1) > 1 else "")
               for e in shown_entries(session, PROMPT_ENTRIES_CAP)]
     lines += ["", who_line(session), ""]
+    if game_line:
+        lines += [f"One more fact, from the game controller and not from the camera: {game_line} "
+                  "So \"computer work\" in the captions may be that game.", ""]
     lines.append(
         "Juniper asked you to give the office your attention, get curious, and reach out each time she is in "
         "there to ask what she is up to, based on the scenes the camera stitched together. Write her one short "
@@ -656,7 +661,10 @@ class OfficeReachOut:
         from scripts.endogenous_outreach import build_outreach_provenance, is_pass_response
 
         sid = session["session_id"]
-        prompt = build_prompt(session, self.tz, now=self._clock())
+        from scripts.retro_sitting import open_sitting_line
+
+        prompt = build_prompt(session, self.tz, now=self._clock(),
+                              game_line=await open_sitting_line(getattr(outreach, "_bus", None)))
         # Chat lane only (Juniper, 2026-11-07): she is in the room now; the agent lane's
         # 210 s timeout made the first office message 5 minutes late.
         text, debug = await outreach.compose(prompt, correlation_id, retrieval_query=session.get("label") or None,

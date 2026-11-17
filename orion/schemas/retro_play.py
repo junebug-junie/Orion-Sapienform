@@ -24,14 +24,21 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, field_validato
 
 SUMMARY_MAX = 300  # orion/schemas/temporal_self.py LABEL_MAX: the summary is the arc label.
 
-SessionKind = Literal["co_play", "leisure"]
+# human_play (2026-11-17, game company patch 1): a sitting where a person played and Orion held no
+# controller. Written by services/orion-hub/scripts/retro_sitting.py; credits Orion with nothing.
+SessionKind = Literal["co_play", "leisure", "human_play"]
 # Where the control share comes from:
 #   frames          -- per-port frame counts from ``control`` journal lines;
 #   leisure_sponsor -- a leisure session with no frame lines: Retro's arbiter lets any human acquire
 #                      or takeover preempt the leisure grant and the runner then ends the session
 #                      (``human_preempted``), so every frame it ran was Orion's (human share 0);
 #   unknown         -- a co-play session with no frame lines: no share is claimed either way.
-ControlBasis = Literal["frames", "leisure_sponsor", "unknown"]
+#   human_input     -- a human_play sitting: who played is known from the browser's input messages
+#                      (orion/retro/sitting.py); frames are not counted, so human_frames and
+#                      orion_frames are 0 and human_share is None.
+ControlBasis = Literal["frames", "leisure_sponsor", "unknown", "human_input"]
+# What the game page was told about who plays. Never a guess, never a name from a camera.
+PlayerStated = Literal["juniper", "guest"]
 Controller = Literal["human", "orion"]
 Verdict = Literal["met", "refuted", "unknown"]
 
@@ -146,6 +153,9 @@ class RetroPlaySessionSummaryV1(BaseModel):
     predictions_unknown: int | None = Field(None, ge=0)
     human_interventions: int = Field(ge=0)
     summary: str = Field(min_length=1, max_length=SUMMARY_MAX)
+    # human_play rows only. None: nobody told the page who plays (treated as a guest everywhere).
+    # Only Hub builds this model (retro_memory_export.py, retro_sitting.py); readers take the table row.
+    player_stated: PlayerStated | None = None
 
 
 __all__ = [
@@ -155,6 +165,7 @@ __all__ = [
     "RetroAtlasDeltaV1",
     "RetroAtlasItemV1",
     "RetroJournalEntryV1",
+    "PlayerStated",
     "RetroPlaySessionSummaryV1",
     "RetroPortControlV1",
     "SUMMARY_MAX",

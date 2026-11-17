@@ -129,6 +129,13 @@ async def lifespan(app: FastAPI):
             if t is not None and not t.done():
                 t.cancel()
                 await asyncio.gather(t, return_exceptions=True)
+        # The open sitting ends at its last input and is recorded while the pool is still open.
+        sitting = getattr(app.state, 'retro_sitting', None)
+        if sitting is not None:
+            try:
+                await asyncio.wait_for(sitting.close(), 8)
+            except Exception:  # noqa: BLE001
+                logger.warning('retro_gateway_sitting_close_failed', exc_info=True)
         act_bus = getattr(app.state, 'retro_act_bus', None)
         if act_bus is not None:
             try:

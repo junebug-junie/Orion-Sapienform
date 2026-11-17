@@ -629,6 +629,24 @@
     away=false;if(takeBack())return;if(scriptedMode)return;
     if(sid){wanted=true;heals=0;if(!connecting && !acquiring && !lease)void connect().catch(err=>report(err.message));}
   });
+  // Who plays (game company design, patch 1). The server knows only that buttons move; it never
+  // guesses a name. The page asks once per sitting and tells the server what it was told
+  // ('juniper' or 'guest'). No answer is a valid state: the record then says "someone".
+  let sittingAsked=null, pollingSitting=false;
+  async function pollSitting(){
+    const s=(await api('sitting')).sitting;
+    el('whoPlays').dataset.sitting=s?.sitting_id||'';
+    el('whoPlays').hidden=!(s && !s.player_stated && s.sitting_id!==sittingAsked);
+  }
+  for(const [id,player] of [['whoJuniper','juniper'],['whoGuest','guest']])action(id,async()=>{
+    const asked=el('whoPlays').dataset.sitting;
+    try{await api('sitting/player',{player});}
+    finally{sittingAsked=asked;el('whoPlays').hidden=true;screen.focus();}  // the game keeps the keys
+  });
+  setInterval(()=>{
+    if(document.hidden || pollingSitting)return;
+    pollingSitting=true;pollSitting().catch(()=>{}).finally(()=>{pollingSitting=false;});
+  },5000);
   padStatus();
   void load().catch(err=>{el('player').hidden=false;report(err.message);});
 })();

@@ -15,7 +15,7 @@ try{
   const assets=[];page.on('response',r=>{if(r.url().includes('/static/js/'))assets.push([r.url(),r.status()]);});
   await page.goto(url+'/retro');
   // Rendered template + linked asset.
-  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=17') && s===200),JSON.stringify(assets));
+  assert(assets.some(([u,s])=>u.includes('/static/js/retro-panel.js?v=18') && s===200),JSON.stringify(assets));
   // Leisure is visible live on open, by watching only.
   await page.waitForSelector('#play:not([hidden])',{timeout:8000});
   await page.waitForFunction(()=>document.querySelector('#leisure').textContent.includes('playing alone'),{timeout:8000});
@@ -133,6 +133,26 @@ try{
   log=await fixture();
   assert.equal(starts(log).length,n0,'Orion took the controller back from someone else');
   assert.equal(await page.$eval('#orionplay',b=>b.getAttribute('aria-pressed')),'false');
+  // The sitting record (game company design, patch 1): a button press opens a sitting (the
+  // take-backs above may have opened it already); the page asks who plays, once; the answer
+  // reaches the server; the game keeps the keyboard.
+  const sittingNow=async()=>(await (await fetch(url+'/api/retro/sitting')).json()).sitting;
+  await page.click('#screen');                                      // take the controller
+  let opened=await sittingNow();
+  for(let i=0;i<40 && !opened;i++){                                 // press until the relay saw a change
+    await page.keyboard.down('ArrowRight');await new Promise(r=>setTimeout(r,120));
+    await page.keyboard.up('ArrowRight');await new Promise(r=>setTimeout(r,130));
+    opened=await sittingNow();
+  }
+  assert(opened && opened.player_stated===null && opened.mask_changes>=1,'a key press did not open a sitting: '+JSON.stringify(opened));
+  await page.waitForFunction(()=>!document.querySelector('#whoPlays').hidden,{timeout:9000});
+  assert.equal(await page.$eval('#stage',s=>s.contains(document.querySelector('#whoPlays'))),true); // visible in fullscreen
+  await page.click('#whoGuest');
+  await page.waitForFunction(()=>document.querySelector('#whoPlays').hidden,{timeout:3000});
+  assert.equal((await sittingNow()).player_stated,'guest');
+  assert.equal(await page.evaluate(()=>document.activeElement.id),'screen','the game lost the keyboard after the answer');
+  await new Promise(r=>setTimeout(r,5500));                         // one more poll: asked once, not again
+  assert.equal(await page.$eval('#whoPlays',e=>e.hidden),true);
   assert.deepEqual(errors,[]);
   fs.writeFileSync(out+'/play-panel.json',JSON.stringify({atlas,goal,retro:log.retro.map(r=>r.op+(r.channel?':'+r.channel:'')),human:log.human},null,2));
 }finally{await browser.close();}

@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     HUB_RETRO_ORIGIN: str = ""
     HUB_RETRO_SOCKET: str = "/run/orion-retro/retro.sock"
     HUB_RETRO_AUTH_DIR: str = "/run/orion-retro-auth"
+    # The sitting record (scripts/retro_sitting.py; game company design, patch 1): who plays on the
+    # Retro service, in which game, since when. Ships on. Off -> nothing is tracked or written.
+    # GAP: seconds without a button change that end a sitting. MIN: a shorter sitting leaves no play row.
+    HUB_RETRO_SITTING_ENABLED: bool = Field(default=True, alias="HUB_RETRO_SITTING_ENABLED")
+    HUB_RETRO_SITTING_GAP_SEC: float = Field(default=300.0, alias="HUB_RETRO_SITTING_GAP_SEC")
+    HUB_RETRO_SITTING_MIN_SEC: float = Field(default=120.0, alias="HUB_RETRO_SITTING_MIN_SEC")
     # Solo leisure play (scripts/retro_leisure.py). Ships on; Hub's leisure timer and the doer
     # gates decide when it actually runs.
     RETRO_LEISURE_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_ENABLED")

@@ -211,9 +211,11 @@ WHERE source_kind = 'faculty_status_changed' AND source_table = 'self_monitor'
 """),
     # Orion plays Zelda (section F): one finished Retro session per row (orion-hub writes it at
     # session end). Available at ended_at, so the window is on ended_at and needs no slack.
+    # player_stated (game company patch 1, kind human_play) needs manual_migration_retro_watch_v1.sql.
     SourceQuery("retro_play", """
 SELECT session_id, retro_session_id, lineage_id, game_id, game_title, kind, started_at, ended_at, summary,
-  control_basis, human_may_be_in_control, played_together, human_share, decisions, predictions_met, predictions_unknown, rooms_new, deaths, memory_card_id
+  control_basis, human_may_be_in_control, played_together, human_share, decisions, predictions_met, predictions_unknown, rooms_new, deaths, memory_card_id,
+  duration_sec, player_stated
 FROM retro_play_sessions WHERE ended_at >= %(lo)s AND ended_at < %(hi)s
 """, optional_table="retro_play_sessions"),
     # Episodes from the street (PR #2763 item 1), three reads of one kind; the adapter

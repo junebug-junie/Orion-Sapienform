@@ -44,7 +44,7 @@ def worldview_pool(fk: Falkor) -> tuple[list[PoolDoc], dict[str, list[dict[str, 
                       "ORDER BY a.written_at DESC")
     f_by: dict[str, list[dict[str, Any]]] = {}
     for f in findings:
-        if f["text"]:
+        if f["text"] and f["fid"]:
             f_by.setdefault(f["pid"], []).append(f)
     r_by: dict[str, list[dict[str, Any]]] = {}
     for v in revisions:

@@ -200,6 +200,6 @@ Expect `horizon:event:hub.world_pulse_read` to appear, and the log line
 
 ## PR link
 
-PR_LINK_PLACEHOLDER
+https://github.com/junebug-junie/Orion-Sapienform/pull/3563
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

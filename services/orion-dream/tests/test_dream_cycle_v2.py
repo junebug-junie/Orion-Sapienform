@@ -210,9 +210,15 @@ def test_recombine_counts_no_link_failures_and_rejects_echo():
 
     res = asyncio.run(recombine(pairs, complete, cycle_id="dc-1", ttl_hours=72, now=NOW))
     assert len(res.hypotheses) == 1
-    assert res.no_link == 2  # explicit no + echo
+    assert res.no_link == 1  # the explicit no only
+    assert res.echo == 1  # the pasted-back fragment is counted apart (#3412)
     assert res.failures == 1
     assert res.unparseable == 0
+    # Every pair asked leaves one stored answer, in order, with what it was counted as.
+    assert [a.outcome for a in res.answers] == ["linked", "no_link", "failed", "echo"]
+    assert [(a.ref_a, a.ref_b, a.arm) for a in res.answers] == [(p.a.ref_id, p.b.ref_id, p.arm) for p in pairs]
+    assert res.answers[1].answer == json.dumps({"link": False})
+    assert res.answers[2].answer == ""
     h = res.hypotheses[0]
     assert h.arm == "dream" and h.cycle_id == "dc-1"
     assert h.expires_at == NOW + timedelta(hours=72)
@@ -333,6 +339,34 @@ def test_unparseable_answers_are_not_counted_as_declines():
     cycle = asyncio.run(run_cycle_once(f.deps()))
     assert cycle.status == "completed"
     assert cycle.no_link_count == 0 and cycle.unparseable_count > 0
+    # The answers that produced those counts are saved with the sleep, cut to 300 characters.
+    assert len(cycle.pair_answers) == cycle.unparseable_count
+    assert {a.outcome for a in cycle.pair_answers} == {"unparseable"}
+    assert cycle.pair_answers[0].answer == "I think they are related, honestly"
+
+
+def test_pair_answers_are_capped_and_survive_the_stored_json():
+    from app.cycle import run_cycle_once
+    from orion.schemas.dream_cycle import PAIR_ANSWER_CHARS, DreamCycleV1
+
+    f = _Fakes(_rows(), answer=json.dumps({"link": False}) + " " + "x" * 2000)
+    cycle = asyncio.run(run_cycle_once(f.deps()))
+    assert cycle.pair_answers and all(len(a.answer) == PAIR_ANSWER_CHARS for a in cycle.pair_answers)
+    assert cycle.no_link_count == len(cycle.pair_answers) and cycle.echo_count == 0
+    # cycle_json is model_dump(mode="json"): it must read back whole.
+    back = DreamCycleV1.model_validate(json.loads(json.dumps(cycle.model_dump(mode="json"))))
+    assert back.pair_answers == cycle.pair_answers
+
+
+def test_old_cycle_json_without_pair_answers_still_loads():
+    from orion.schemas.dream_cycle import DreamCycleV1
+
+    f = _Fakes(_rows())
+    from app.cycle import run_cycle_once
+    raw = asyncio.run(run_cycle_once(f.deps())).model_dump(mode="json")
+    raw.pop("pair_answers"); raw.pop("echo_count")
+    old = DreamCycleV1.model_validate(raw)
+    assert old.pair_answers == [] and old.echo_count == 0
 
 
 def test_window_uses_last_good_cycle_start_not_attempt_end():

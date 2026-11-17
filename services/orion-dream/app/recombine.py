@@ -14,12 +14,12 @@ from __future__ import annotations
 import json
 import random
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Awaitable, Callable, Optional, Sequence
 from uuid import uuid4
 
-from orion.schemas.dream_cycle import DreamHypothesisV1, ReplayItemV1
+from orion.schemas.dream_cycle import PAIR_ANSWER_CHARS, DreamHypothesisV1, PairAnswerV1, ReplayItemV1
 
 CROSS_SOURCE_BONUS = 0.1
 
@@ -151,8 +151,19 @@ def _echoes(claim: str, pair: Pair) -> bool:
 class RecombineResult:
     hypotheses: list[DreamHypothesisV1]
     no_link: int = 0
+    echo: int = 0
     unparseable: int = 0
     failures: int = 0
+    answers: list[PairAnswerV1] = field(default_factory=list)
+
+    def note(self, pair: Pair, outcome: str, text: str = "") -> None:
+        self.answers.append(PairAnswerV1(
+            arm=pair.arm,  # type: ignore[arg-type]
+            ref_a=pair.a.ref_id,
+            ref_b=pair.b.ref_id,
+            outcome=outcome,  # type: ignore[arg-type]
+            answer=(text or "")[:PAIR_ANSWER_CHARS],
+        ))
 
 
 async def recombine(
@@ -171,14 +182,22 @@ async def recombine(
             text = await complete(build_prompt(pair))
         except Exception:
             result.failures += 1
+            result.note(pair, "failed")
             continue
         parsed = parse_link(text)
         if parsed is None:
             result.unparseable += 1
+            result.note(pair, "unparseable", text)
             continue
-        if parsed == NO_LINK or _echoes(parsed[0], pair):
+        if parsed == NO_LINK:
             result.no_link += 1
+            result.note(pair, "no_link", text)
             continue
+        if _echoes(parsed[0], pair):
+            result.echo += 1
+            result.note(pair, "echo", text)
+            continue
+        result.note(pair, "linked", text)
         claim, why = parsed
         result.hypotheses.append(
             DreamHypothesisV1(

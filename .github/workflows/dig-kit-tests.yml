@@ -28,6 +28,8 @@ on:
       - "orion/integration/**"
       - "orion/temporal_self/now.py"
       - "scripts/report_integration_coverage.py"   # test_organs.py pins the roundup's footer to it
+      - "orion/attention/**"               # `dig attention` reads world_first's windows and semantics
+      - "orion/schemas/temporal_self.py"   # test_attention.py pins its event kinds to TemporalSourceKind
       - ".github/workflows/dig-kit-tests.yml"
   push:
     branches: [main]
@@ -57,6 +59,8 @@ on:
       - "orion/integration/**"
       - "orion/temporal_self/now.py"
       - "scripts/report_integration_coverage.py"   # test_organs.py pins the roundup's footer to it
+      - "orion/attention/**"               # `dig attention` reads world_first's windows and semantics
+      - "orion/schemas/temporal_self.py"   # test_attention.py pins its event kinds to TemporalSourceKind
       - ".github/workflows/dig-kit-tests.yml"
 
 jobs:

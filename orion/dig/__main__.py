@@ -72,6 +72,7 @@ path of a file with the full result; read only what you need from that file.
                          Temporal Self arcs; prints journal:/chat:/arc: ids a lived_record cites.
   organs <date> [<end>]  what each organ did (yesterday is the usual ask): counts, quotes with
                          [experience:<id>] refs, cites, breaks, use rate. At most 7 days.
+  attention [<window>]   what you attended to, as rates vs each source's own activity (24h, 7d).
   turn-steps <chat> [<n>]  your tool calls + results in that chat's last n turns (1-5).
   take-ons [<days>]      sub-agents each take-on started.
   claude-grants [set <category> allow|ask|deny because <reason>]   what Claude in Hub may see.
@@ -1776,6 +1777,29 @@ def cmd_organs(start: date, end: date, out: Out, runner=None) -> str:
                               f"full roundup (every organ, every line): {path}; `dig arc|act <id>` opens a ref")
 
 
+# --- attention (relative rates, issue #3600) -----------------------------------------------
+
+def cmd_attention(window: str | None, end: str | None, out: Out, runner=None) -> str:
+    """Read-only: what Orion attended to, as rates relative to each source's own activity."""
+    from orion.body_atlas.sources import psql_rows
+    from orion.dig import attention
+    from orion.evals.model_replay.sandbox import ReadOnlyPsql
+
+    try:
+        w = attention.parse_window(window, end)
+    except ValueError as exc:
+        raise DigError(str(exc)) from exc
+    runner = runner or ReadOnlyPsql(timeout_sec=30.0)
+    t0 = time.monotonic()
+    try:
+        r = attention.read(w, lambda sql: psql_rows(runner, sql))
+    except RuntimeError as exc:
+        raise DigError(f"attention: your attention frames could not be read ({exc})") from exc
+    r.took_sec = time.monotonic() - t0
+    path = out.write(f"attention-{w.label}", attention.to_file(r))
+    return capped(attention.render(r), tail=f"full rates (every target, every cause, both sides): {path}")
+
+
 # --- turn steps -----------------------------------------------------------------------------
 
 def cmd_turn_steps(session_id: str, turns: str, out: Out, runner=None) -> str:
@@ -1971,6 +1995,8 @@ def main(argv: list[str] | None = None) -> int:
         elif ns.command == "organs" and len(a) in (1, 2):
             first = _parse_day(a[0])
             text = cmd_organs(first, _parse_day(a[1]) if len(a) == 2 else first, out)
+        elif ns.command == "attention" and len(a) <= 2:
+            text = cmd_attention(a[0] if a else None, a[1] if len(a) == 2 else None, out)
         elif ns.command == "turn-steps" and len(a) in (1, 2):
             text = cmd_turn_steps(a[0], a[1] if len(a) == 2 else "2", out)
         elif ns.command == "take-ons" and len(a) <= 1:

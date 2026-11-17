@@ -149,3 +149,80 @@ def test_fcc_turn_settings_always_install_the_hook(monkeypatch):
     monkeypatch.setattr(fcc_motor, "repeat_failure_threshold", lambda: 3)
     hooks = json.loads(fcc_motor.repeat_failure_breaker_argv(correlation_id="c")[1])["hooks"]["PreToolUse"]
     assert len(hooks) == 2
+
+
+class _PermissionDenied(Exception):
+    """Stands in for psycopg2.errors.InsufficientPrivilege (any driver error must hold the write)."""
+
+
+def _fake_psycopg2(monkeypatch, *, denied_table: str):
+    """A psycopg2 whose connection reads like orion_readonly before the #3567 GRANT: the SELECT
+    that touches ``denied_table`` fails with a permission error; other reads return rows."""
+    import types
+
+    class Cur:
+        def __init__(self):
+            self.rows = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, sql):
+            if denied_table in sql:
+                raise _PermissionDenied(f"permission denied for table {denied_table}")
+            self.rows = [{"concept_id": "page:juniper", "content": SENTENCE}]
+
+        def fetchall(self):
+            return self.rows
+
+    class Conn:
+        def set_session(self, **kw):
+            pass
+
+        def cursor(self, **kw):
+            return Cur()
+
+        def close(self):
+            pass
+
+    mod = types.ModuleType("psycopg2")
+    mod.connect = lambda dsn, **kw: Conn()
+    extras = types.ModuleType("psycopg2.extras")
+    extras.RealDictCursor = object
+    mod.extras = extras
+    monkeypatch.setitem(sys.modules, "psycopg2", mod)
+    monkeypatch.setitem(sys.modules, "psycopg2.extras", extras)
+
+
+@pytest.mark.parametrize("denied_table", ["self_concept_history", "episode_memory", "person_fact"])
+def test_readonly_role_missing_a_grant_refuses_the_write(monkeypatch, denied_table):
+    """Issue #3567: the DSN is now orion_readonly. If any guarded table is not granted to it, the
+    guard cannot load and a clean GitHub write is refused (fail closed), never let through."""
+    from orion.memory import mesh_edge
+
+    _fake_psycopg2(monkeypatch, denied_table=denied_table)
+    monkeypatch.setattr(mesh_edge, "_cache", {})
+    dsn = "postgresql://orion_readonly:x@db:5432/conjourney"
+    with pytest.raises(MeshEdgeUnavailable):
+        mesh_edge.load_guard(dsn)
+    msg = hook.decide(_bash("gh pr comment 3 --body 'CI is green now.'"),
+                      guard_loader=lambda: mesh_edge.load_guard(dsn))
+    assert msg and "could not be checked" in msg and hook.BLOCK_MARKER in msg
+
+
+def test_governor_mesh_edge_dsn_is_never_the_superuser():
+    """Issue #3567: FCC Bash inherits the governor env, so the shipped DSN and the compose default
+    must use orion_readonly, and the template must not carry a real password."""
+    import re
+
+    root = Path(__file__).resolve().parents[3]
+    svc = root / "services" / "orion-harness-governor"
+    example = (svc / ".env_example").read_text()
+    compose = (svc / "docker-compose.yml").read_text()
+    (line,) = [ln for ln in example.splitlines() if ln.startswith("ORION_MESH_EDGE_PG_DSN=")]
+    assert line == "ORION_MESH_EDGE_PG_DSN=postgresql://orion_readonly:CHANGE_ME@orion-athena-sql-db:5432/conjourney"
+    (default,) = re.findall(r"ORION_MESH_EDGE_PG_DSN=\$\{ORION_MESH_EDGE_PG_DSN:-([^}]*)\}", compose)
+    assert default.startswith("postgresql://orion_readonly@") and "postgres:postgres" not in compose

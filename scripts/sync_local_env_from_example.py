@@ -106,6 +106,11 @@ NEVER_SYNC_KEYS = frozenset(
         # Orion's own GitHub identity (classic PAT, scope repo). Empty in
         # .env_example; --force must never wipe the live token.
         "ORION_GITHUB_TOKEN",
+        # Mesh-edge read-only DSN (orion-harness-governor, issue #3567). The
+        # template carries a CHANGE_ME password; the live value holds the real
+        # orion_readonly password. --force must never flatten it to the
+        # placeholder (that would refuse every GitHub write Orion makes).
+        "ORION_MESH_EDGE_PG_DSN",
         "ORION_CURIOSITY_GRAPH_PASSWORD",
         # The house meter's Green Button usage point (orion-energy). Empty in
         # .env_example; the ENERGY_ prefix below would otherwise let --force

@@ -73,6 +73,9 @@ services:
       # Same tissue snapshot mount spark-introspector's docker-compose.yml
       # used -- see ORION_TISSUE_SNAPSHOT_PATH above.
       - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion/spark:/mnt/graphdb/orion/spark
+      # Persistent Hugging Face cache (embedder + reranker weights, issue #3533): a recreate
+      # loads them from disk instead of downloading ~2.5 GB again.
+      - ${ORION_DATA_ROOT:-/mnt/graphdb}/orion/hf-cache:/root/.cache/huggingface
 
 networks:
   app-net:

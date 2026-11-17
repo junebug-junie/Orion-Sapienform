@@ -64,6 +64,11 @@ jobs:
           python -m pytest -q -p no:cacheprovider orion/memory/tests/test_mesh_edge.py \
             orion/fcc/tests/test_mesh_edge_hook.py services/orion-notify/tests/test_email_mesh_edge.py \
             tests/test_vector_collection_policy.py
+      - name: FCC turn argv (mesh-edge hook always installed)
+        run: |
+          python -m pytest -q -p no:cacheprovider orion/harness/tests/test_task_anchor.py \
+            orion/harness/tests/test_session_resume.py orion/harness/tests/test_focus_anchor.py \
+            orion/harness/tests/test_fcc_reading_undeclared_tool.py
       - name: Lived-memory recall + fixture replay eval
         working-directory: services/orion-recall
         run: |

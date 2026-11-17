@@ -112,6 +112,10 @@ def test_a_correction_outranks_an_equally_fitting_memory():
     assert rank([(plain, 1.0), (fix, 1.0)], min_fit=0.1, max_lines=4, now=NOW)[0].rec.record_id == "f"
 
 
+def test_non_finite_logits_never_pass_the_bar():
+    assert rank([(_rec("n", "t"), float("nan"))], min_fit=0.0, max_lines=4, now=NOW) == []
+
+
 def test_rank_caps_lines():
     recs = [(_rec(str(i), "t"), 3.0) for i in range(9)]
     assert len(rank(recs, min_fit=0.1, max_lines=4, now=NOW)) == 4
@@ -129,7 +133,7 @@ def test_person_fact_text_names_who_it_is_about():
 
 def test_serving_sql_excludes_superseded_rejected_and_expired_memories():
     sql = store.EPISODE_SQL
-    assert "status = 'active'" in sql and "confirmation_state <> 'rejected'" in sql
+    assert "status = 'active'" in sql and "confirmation_state IS DISTINCT FROM 'rejected'" in sql
     assert "expires_at" in sql and "c.supersedes_memory_id = m.memory_id" in sql
     assert "removed_at IS NULL" in store.PERSON_FACT_SQL
     assert "kind = 'stance' AND c.status = 'active'" in store.STANCE_SQL
@@ -145,6 +149,18 @@ def test_recall_finds_by_exact_words_reranks_and_renders(no_dense):
     assert [s.rec.record_id for s in out.chosen] == ["m1"]
     assert out.rendered.startswith(lm.HEADER) and "episode_memory:m1" in out.rendered
     assert lm.items_for(out.chosen)[0]["id"] == "episode_memory:m1"
+
+
+def test_short_message_searches_only_when_it_names_something_rare(no_dense):
+    pool = FakePool({"episode_memory": [_row("m1", "Juniper told me Biscuit had surgery and got stitches."),
+                                        _row("m2", "Juniper said thanks for the help."),
+                                        _row("m3", "Juniper said thanks again."),
+                                        _row("m4", "Juniper said thanks for the review."),
+                                        _row("m5", "Juniper said thanks for the fix.")]})
+    reader = LivedMemoryRecall(pool, _cfg(min_fit=0.0), reranker=_overlap_reranker, clock=lambda: NOW)
+    reader.cfg = LivedMemoryConfig(**{**reader.cfg.__dict__, "min_query_tokens": 5})
+    assert asyncio.run(reader.recall("thanks, appreciate it")).debug["skipped"] == "few_content_words"
+    assert asyncio.run(reader.recall("Biscuit is home!")).lines
 
 
 def test_small_talk_injects_nothing(no_dense):
@@ -210,14 +226,46 @@ def test_worker_appends_lived_lines_to_the_continuity_digest(monkeypatch, no_den
         bundle = MemoryBundleV1(rendered="[Recent thread — continuity only]\nUser: hi", items=[],
                                 stats=MemoryBundleStatsV1())
         q = RecallQueryV1(fragment="Biscuit got his stitches out!", verb="chat_general")
-        debug, count, hit = asyncio.run(worker._add_lived_memories(
-            q, bundle, query_text=q.fragment, remaining_s=5.0, corr_id="c1"))
+
+        async def go():
+            task = worker._start_lived_recall(q.fragment)
+            return await worker._add_lived_memories(bundle, lived_task=task, remaining_s=5.0, corr_id="c1")
+
+        debug, count, hit = asyncio.run(go())
     finally:
         worker.set_lived_memory(None)
     assert count == 1 and not hit
     assert bundle.rendered.startswith("[Recent thread") and lm.HEADER in bundle.rendered
     assert [i.id for i in bundle.items] == ["episode_memory:m1"] and bundle.items[0].source == "lived_memory"
     assert debug["injected"][0]["id"] == "episode_memory:m1" and "text" not in str(debug["injected"])
+
+
+def test_index_pass_deletes_docs_whose_record_is_no_longer_servable(monkeypatch):
+    from orion.introspect.semantic_index import IndexPass
+
+    calls = {}
+
+    async def index_docs(docs, *_a, **_k):
+        calls["upserted"] = [d[0] for d in docs]
+        return IndexPass(indexed=0, pending=0)
+
+    async def indexed_ids(*_a, **_k):
+        return ["episode_memory:m1", "episode_memory:superseded", "person_fact:removed"]
+
+    async def delete_ids(_client, _cfg, ids):
+        calls["deleted"] = list(ids)
+        return len(ids)
+
+    monkeypatch.setattr(lm, "index_docs", index_docs)
+    monkeypatch.setattr(lm, "indexed_ids", indexed_ids)
+    monkeypatch.setattr(lm, "delete_ids", delete_ids)
+    pool = FakePool({"episode_memory": [_row("m1", "Biscuit had stitches.")]})
+    out = asyncio.run(lm.run_index_pass(pool, _cfg().search, client=None, bus=None, source=None, batch=5))
+    assert calls["deleted"] == ["episode_memory:superseded", "person_fact:removed"] and out.removed == 2
+    # An empty live read (likely an outage) deletes nothing.
+    calls.clear()
+    asyncio.run(lm.run_index_pass(FakePool({}), _cfg().search, client=None, bus=None, source=None, batch=5))
+    assert "deleted" not in calls
 
 
 def test_worker_skips_lived_memory_past_the_deadline():
@@ -231,9 +279,11 @@ def test_worker_skips_lived_memory_past_the_deadline():
     worker.set_lived_memory(Slow())
     try:
         bundle = MemoryBundleV1(rendered="", items=[], stats=MemoryBundleStatsV1())
-        q = RecallQueryV1(fragment="x", verb="chat_general")
-        debug, count, hit = asyncio.run(worker._add_lived_memories(q, bundle, query_text="x", remaining_s=0.05,
-                                                                   corr_id="c"))
+        async def go():
+            task = worker._start_lived_recall("x")
+            return await worker._add_lived_memories(bundle, lived_task=task, remaining_s=0.05, corr_id="c")
+
+        debug, count, hit = asyncio.run(go())
     finally:
         worker.set_lived_memory(None)
     assert (count, hit, debug["skipped"]) == (0, True, "timeout") and bundle.rendered == ""

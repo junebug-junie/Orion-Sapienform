@@ -117,31 +117,41 @@ def set_lived_memory(reader: Any) -> None:
     _lived_memory = reader
 
 
+def _start_lived_recall(query_text: str) -> "asyncio.Task | None":
+    """Start lived-memory recall in the background (issue #3533) so its embed + rerank overlap the
+    rest of the recall fetch instead of adding to it. Bounded by RECALL_LIVED_MEMORY_TIMEOUT_SEC."""
+    reader = _lived_memory
+    if reader is None:
+        return None
+    return asyncio.ensure_future(
+        asyncio.wait_for(reader.recall(query_text), timeout=float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC))
+    )
+
+
 async def _add_lived_memories(
-    q: RecallQueryV1,
     bundle: MemoryBundleV1,
     *,
-    query_text: str,
+    lived_task: "asyncio.Future | None",
     remaining_s: float | None,
     corr_id: str,
 ) -> Tuple[Dict[str, Any], int, bool]:
     """Append the lived memories that fit this turn to the continuity bundle.
 
-    Returns (debug, injected_count, deadline_hit). The debug carries ids, fits and timings only,
+    Returns (debug, injected_count, timed_out). The debug carries ids, fits and timings only,
     never memory text. Every injected id also lands in bundle.items, so recall_telemetry's
     selected_ids is the read log (step 3 of issue #3533's arc reads it).
     """
-    reader = _lived_memory
-    if reader is None:
+    if lived_task is None:
         return {"skipped": "disabled"}, 0, False
     budget = float(settings.RECALL_LIVED_MEMORY_TIMEOUT_SEC)
     if remaining_s is not None:
         budget = min(budget, max(0.0, remaining_s))
-    if budget <= 0:
-        return {"skipped": "deadline"}, 0, True
     try:
-        lived = await asyncio.wait_for(reader.recall(query_text), timeout=budget)
+        if budget <= 0 and not lived_task.done():
+            raise asyncio.TimeoutError
+        lived = await asyncio.wait_for(asyncio.shield(lived_task), timeout=max(budget, 0.001))
     except asyncio.TimeoutError:
+        lived_task.cancel()
         logger.warning("lived_memory_timeout corr_id=%s budget_s=%.2f", corr_id, budget)
         return {"skipped": "timeout"}, 0, True
     except Exception as exc:  # noqa: BLE001 -- never fail the chat recall over it
@@ -2328,6 +2338,14 @@ async def process_recall(
             entities=bounded_entities,
         )
     timings_ms["intake"] = int((time.perf_counter() - recall_started) * 1000)
+    lived_task = None
+    if (
+        settings.RECALL_PCR_ENABLED
+        and recall_phase == "continuity"
+        and bool(settings.RECALL_LIVED_MEMORY_ENABLED)
+        and not context_only
+    ):
+        lived_task = _start_lived_recall(str(q.fragment or query_fragment or ""))
     ignored_session_id = q.session_id
     effective_session_id: str | None = None
     exclusion = _parse_exclusion(q)
@@ -2713,21 +2731,20 @@ async def process_recall(
             latency_ms=latency_ms,
             session_id=effective_session_id,
         )
-        if bool(settings.RECALL_LIVED_MEMORY_ENABLED) and not context_only:
-            # Once per chat turn: the continuity phase runs on every turn the skip gate
-            # lets through, and phase 3 merges this digest into its own.
+        if lived_task is not None:
+            # Started at intake (overlaps the fetch); once per chat turn: the continuity phase
+            # runs on every turn the skip gate lets through, and phase 3 merges this digest.
             lived_started = time.perf_counter()
-            lived_debug, lived_count, lived_deadline = await _add_lived_memories(
-                q,
+            lived_debug, lived_count, lived_timed_out = await _add_lived_memories(
                 bundle,
-                query_text=str(q.fragment or query_fragment or ""),
+                lived_task=lived_task,
                 remaining_s=_remaining_s(),
                 corr_id=corr_id,
             )
-            timings_ms["lived_memory"] = int((time.perf_counter() - lived_started) * 1000)
+            timings_ms["lived_memory_wait"] = int((time.perf_counter() - lived_started) * 1000)
             backend_counts_total["lived_memory"] = lived_count
-            if lived_deadline:
-                deadline_hit = True
+            if lived_timed_out:
+                lived_debug["timed_out"] = True
     elif settings.RECALL_PCR_ENABLED and recall_phase == "purposeful":
         belief_budget = q.belief_digest_max_tokens or settings.RECALL_BELIEF_RENDER_BUDGET
         profile["render_budget_tokens"] = belief_budget
@@ -2914,11 +2931,16 @@ async def process_recall(
     # there, so that branch never fired; fixing the regex must not start
     # running this inline diagnostic (extra Postgres + RDF round trips before
     # the reply) on every anchor-bearing query (code review, PR #2416).
+    # Lived memories are matched by meaning, not keywords: the keyword-based pressure heuristics
+    # and the empty-bundle shadow trigger judge only what the other backends returned.
+    core_bundle = bundle.model_copy(
+        update={"items": [i for i in bundle.items if str(i.source or "") != "lived_memory"]}
+    )
     should_shadow_compare = bool(
         not context_only
         and (
-            not bundle.items
-            or any(str(item.source or "") == "vector" for item in bundle.items[:2])
+            not core_bundle.items
+            or any(str(item.source or "") == "vector" for item in core_bundle.items[:2])
         )
     )
     shadow_started = time.perf_counter()
@@ -2950,7 +2972,7 @@ async def process_recall(
     pressure_events = _build_recall_pressure_events(
         q=q,
         decision=decision,
-        bundle=bundle,
+        bundle=core_bundle,
         compare_summary=compare_summary,
         anchor_plan=anchor_plan_summary,
         selected_evidence_cards=selected_cards,
@@ -2992,6 +3014,8 @@ async def process_recall(
         backend_counts=decision.backend_counts or {},
         items=list(bundle.items),
     )
+    if lived_task is not None and not lived_task.done():
+        lived_task.cancel()  # a path that never rendered continuity must not leave it running
     return bundle, decision
 
 

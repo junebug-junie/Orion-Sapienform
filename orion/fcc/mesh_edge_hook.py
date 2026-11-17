@@ -9,9 +9,11 @@ any body file it names against the mesh-edge guard (``orion/memory/mesh_edge.py`
 quotes a core-page or lived-memory sentence verbatim is blocked (exit 2; stderr goes back to the
 model). Reads (``gh pr view``, ``gh api`` GET) pass untouched.
 
-Fail closed for writes: when the guard cannot load (no DSN, DB down) the write is blocked with a
-message saying why. Any other error in the hook itself fails open, like the repeat-failure
-breaker, so a broken hook never stops a non-GitHub tool call.
+Every ``gh`` call is treated as a write unless it is a known read (view, list, status, ...; ``gh
+api`` without a write method or field). Fail closed for writes: when the guard cannot load, when
+the hook itself errors, or when the body is built at run time where the hook cannot read it
+(``$(...)``, backticks, a variable, a pipe into ``--body-file -``), the write is blocked with a
+message saying why. A non-GitHub tool call is never blocked by a hook error.
 
 Run by file path from the claude subprocess (``python /app/orion/fcc/mesh_edge_hook.py``): it puts
 the repo root on ``sys.path`` itself before importing ``orion``.
@@ -28,49 +30,80 @@ from typing import Any, Callable, Dict, List, Optional
 BLOCK_MARKER = "[orion-mesh-edge]"
 MAX_FILE_BYTES = 1_000_000
 
-_GH_WRITE = re.compile(
-    r"(?:^|[\s;&|()`$])gh\s+(?:"
-    r"(?:issue|pr)\s+(?:create|comment|edit|review|close|reopen|merge)"
-    r"|(?:gist|release)\s+(?:create|edit)"
-    r"|api\b[^\n;&|]*?(?:-X\s*|--method[\s=]+)(?:POST|PATCH|PUT)"
-    r"|api\b[^\n;&|]*?\s(?:-f|-F|--field|--raw-field|--input)[\s=]"
-    r")",
-    re.IGNORECASE,
-)
-_CURL_GITHUB_WRITE = re.compile(
-    r"\bcurl\b[^\n]*api\.github\.com[^\n]*(?:\s-d\b|--data|-X\s*(?:POST|PATCH|PUT))"
-    r"|\bcurl\b[^\n]*(?:\s-d\b|--data|-X\s*(?:POST|PATCH|PUT))[^\n]*api\.github\.com",
-    re.IGNORECASE,
-)
-_FILE_FLAGS = {"--body-file", "-F", "--input"}
+# Any gh invocation (bare, absolute path, after a pipe/subshell). Every gh call counts as a write
+# unless it is a known read: an unknown subcommand is checked, not trusted.
+_GH_CALL = re.compile(r"(?:^|[\s;&|()`$/])gh\s+([a-z-]+)(?:\s+([a-z-]+))?", re.IGNORECASE)
+_GH_READ_VERBS = frozenset({"view", "list", "status", "diff", "checks", "browse", "search", "ls"})
+_GH_READ_GROUPS = frozenset({"auth", "help", "version", "completion", "config", "alias", "search", "browse",
+                             "status", "run", "workflow", "cache", "extension", "codespace", "gpg-key", "ssh-key"})
+_GH_API_WRITE = re.compile(
+    r"(?:-X\s*|--method[\s=]+)(?:POST|PATCH|PUT|DELETE)|\s(?:-f|-F|--field|--raw-field|--input)[\s=]", re.IGNORECASE)
+_CURL_GITHUB = re.compile(r"\bcurl\b[^\n]*(?:api\.github\.com|uploads\.github\.com)", re.IGNORECASE)
+_CURL_WRITE = re.compile(
+    r"\s(?:-d|--data(?:-raw|-binary|-urlencode)?|--json|-F|--form|-T|--upload-file)(?:[\s=@]|$)"
+    r"|-X\s*(?:POST|PATCH|PUT)|\s-d@", re.IGNORECASE)
+_FILE_FLAGS = {"--body-file", "-F", "--input", "--json", "--notes-file", "-T", "--upload-file"}
+_REDIRECT = re.compile(r"<\s*([^\s<>|;&]+)")
+# A body Orion's shell builds at run time: the hook cannot read it, so it cannot clear it.
+_HIDDEN_BODY = re.compile(r"\$\(|`|\$\{?[A-Za-z_]")
+
+
+def _unfold(command: str) -> str:
+    return (command or "").replace("\\\n", " ")
 
 
 def is_github_write(command: str) -> bool:
-    return bool(_GH_WRITE.search(command or "") or _CURL_GITHUB_WRITE.search(command or ""))
+    cmd = _unfold(command)
+    for m in _GH_CALL.finditer(cmd):
+        group, verb = (m.group(1) or "").lower(), (m.group(2) or "").lower()
+        if group == "api":
+            tail = cmd[m.end(1):].split("\n", 1)[0]
+            if _GH_API_WRITE.search(" " + tail):
+                return True
+            continue
+        if group in _GH_READ_GROUPS or verb in _GH_READ_VERBS:
+            continue
+        return True
+    return bool(_CURL_GITHUB.search(cmd) and _CURL_WRITE.search(cmd))
 
 
 def referenced_files(command: str) -> List[str]:
     """Paths a GitHub write reads its body from: ``--body-file X``, ``-F X``, ``--input X``,
-    ``field=@X`` and ``-d @X``. Best effort: an unparsable command yields what the regex finds."""
-    paths: List[str] = []
+    ``field=@X``, ``-d @X`` / ``-d@X``, ``--json @X`` and ``< X`` redirects."""
+    cmd = _unfold(command)
+    paths: List[str] = [m.group(1) for m in _REDIRECT.finditer(cmd) if not m.group(1).startswith("<")]
     try:
-        tokens = shlex.split(command, posix=True)
+        tokens = shlex.split(cmd, posix=True)
     except ValueError:
-        tokens = command.split()
+        tokens = cmd.split()
     for i, tok in enumerate(tokens):
         if tok in _FILE_FLAGS and i + 1 < len(tokens):
             nxt = tokens[i + 1]
             # gh api -F key=value is a field, not a file; key=@path still reads a file.
             if "=" in nxt and not nxt.split("=", 1)[1].startswith("@"):
                 continue
-            paths.append(nxt.split("=", 1)[1][1:] if "=@" in nxt else nxt)
-        elif tok.startswith("--body-file="):
+            paths.append(nxt.split("=", 1)[1][1:] if "=@" in nxt else nxt.lstrip("@"))
+        elif tok.startswith(("--body-file=", "--input=", "--notes-file=")):
             paths.append(tok.split("=", 1)[1])
         elif "=@" in tok:
             paths.append(tok.split("=@", 1)[1])
-        elif tok.startswith("@") and i > 0 and tokens[i - 1] in {"-d", "--data", "--data-binary"}:
+        elif tok.startswith("-d@") or tok.startswith("--data@"):
+            paths.append(tok.split("@", 1)[1])
+        elif tok.startswith("@") and i > 0 and tokens[i - 1] in {"-d", "--data", "--data-binary", "--data-raw", "--json"}:
             paths.append(tok[1:])
-    return [p for p in paths if p and p != "-"]
+    return list(dict.fromkeys(p for p in paths if p and p != "-"))
+
+
+def hidden_body(command: str) -> bool:
+    """True when the write's body comes from somewhere the hook cannot read: stdin without a
+    redirect or heredoc, ``$(...)``, backticks or a shell variable."""
+    cmd = _unfold(command)
+    if _HIDDEN_BODY.search(cmd):
+        return True
+    reads_stdin = bool(re.search(r"(?:--body-file|-F|--input|--notes-file)[\s=]+-(?:\s|$)", cmd))
+    if reads_stdin and "<<" not in cmd and not _REDIRECT.search(cmd):
+        return True  # piped in from another command
+    return False
 
 
 def _read(path: str, cwd: Optional[str]) -> str:
@@ -86,14 +119,15 @@ def _read(path: str, cwd: Optional[str]) -> str:
 
 def decide(payload: Dict[str, Any], *, guard_loader: Optional[Callable[[], Any]] = None) -> Optional[str]:
     """Block message for this PreToolUse payload, or None to allow."""
-    if payload.get("tool_name") != "Bash":
-        return None
-    tool_input = payload.get("tool_input") or {}
-    command = str(tool_input.get("command") or "") if isinstance(tool_input, dict) else ""
-    if not is_github_write(command):
+    command = _command(payload)
+    if command is None or not is_github_write(command):
         return None
     from orion.memory.mesh_edge import MeshEdgeUnavailable, load_guard
 
+    if hidden_body(command):
+        return (f"{BLOCK_MARKER} Blocked: this GitHub write builds its text at run time ($(...), "
+                "backticks, a shell variable or a pipe), so it cannot be checked for private memory "
+                "text. GitHub is public. Write the body to a file and pass --body-file <path> instead.")
     text = "\n".join([command] + [_read(f, payload.get("cwd")) for f in referenced_files(command)])
     try:
         guard = (guard_loader or load_guard)()
@@ -104,11 +138,18 @@ def decide(payload: Dict[str, Any], *, guard_loader: Optional[Callable[[], Any]]
     hits = guard.find(text)
     if not hits:
         return None
-    sources = sorted({h.source.split(":", 1)[0] if h.source.count(":") > 1 else h.source for h in hits})
+    kinds = sorted({h.source.split(":", 1)[0] for h in hits})
     return (f"{BLOCK_MARKER} Blocked: this GitHub write quotes {len(hits)} sentence(s) verbatim from "
-            f"your core pages or lived memories ({', '.join(sources)}). GitHub is public; those lines "
-            "hold private facts about Juniper and her family. Rewrite the text without quoting them "
-            "(describe the work, not the private detail), then write again.")
+            f"your core pages or stored memories ({', '.join(kinds)}). GitHub is public and those lines "
+            "stay inside your mesh. Rewrite the text in your own words without quoting them, then "
+            "write again.")
+
+
+def _command(payload: Dict[str, Any]) -> Optional[str]:
+    if payload.get("tool_name") != "Bash":
+        return None
+    tool_input = payload.get("tool_input") or {}
+    return str(tool_input.get("command") or "") if isinstance(tool_input, dict) else ""
 
 
 def hook_entry(python_bin: str) -> Dict[str, Any]:
@@ -123,11 +164,23 @@ def main() -> int:
         sys.path.insert(0, repo)
     try:
         payload = json.load(sys.stdin)
-        if not isinstance(payload, dict):
-            return 0
-        message = decide(payload)
-    except Exception:  # noqa: BLE001 -- fail open on hook bugs; decide() fails closed itself
+    except Exception:  # noqa: BLE001 -- unreadable payload: nothing to judge
         return 0
+    if not isinstance(payload, dict):
+        return 0
+    try:
+        message = decide(payload)
+    except Exception as exc:  # noqa: BLE001
+        # Fail open only for calls that are not GitHub writes; a write we could not check is held.
+        try:
+            command = _command(payload)
+            is_write = command is not None and is_github_write(command)
+        except Exception:  # noqa: BLE001
+            is_write = False
+        if not is_write:
+            return 0
+        message = (f"{BLOCK_MARKER} Blocked: the mesh-edge check failed on this GitHub write "
+                   f"({type(exc).__name__}). GitHub is public; it is held.")
     if message is None:
         return 0
     sys.stderr.write(message + "\n")

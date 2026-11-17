@@ -42,7 +42,16 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 import httpx
 
-from orion.introspect.semantic_index import SearchConfig, SearchUnavailableError, embed, index_docs, nearest
+from orion.introspect.semantic_index import (
+    IndexPass,
+    SearchConfig,
+    SearchUnavailableError,
+    delete_ids,
+    embed,
+    index_docs,
+    indexed_ids,
+    nearest,
+)
 from orion.memory.lived_memory import (
     KINDS,
     KIND_PERSON_FACT,
@@ -72,6 +81,9 @@ QUERY_MAX_CHARS = 1000
 RERANK_QUERY_CHARS = 600
 RERANK_DOC_CHARS = 400
 SNAPSHOT_TTL_SEC = 60.0
+# A short message still searches when it names something specific: a word found in at most this
+# many lived records ("Biscuit", "pottery") is a reference, not a pleasantry.
+RARE_WORD_MAX_DF = 3
 
 # Standard English function words (BM25 stopping), not a topic list.
 _STOPWORDS = frozenset(
@@ -134,6 +146,7 @@ class BM25:
         for tf in self.tfs:
             df.update(tf.keys())
         n = len(self.tfs)
+        self.df = df
         self.idf = {t: math.log(1.0 + (n - c + 0.5) / (c + 0.5)) for t, c in df.items()}
 
     def scores(self, query_tokens: Sequence[str], weights: Dict[str, float] | None = None) -> List[float]:
@@ -201,6 +214,8 @@ def rank(candidates: Sequence[tuple[LivedRecord, float]], *, min_fit: float, max
     """(record, rerank logit) -> the records that clear the bar, best first, at most max_lines."""
     kept: List[Scored] = []
     for rec, logit in candidates:
+        if not math.isfinite(float(logit)):
+            continue
         fit = sigmoid(float(logit))
         if fit < min_fit:
             continue
@@ -223,6 +238,7 @@ class LivedMemoryConfig:
     timeout_sec: float
     # A message with fewer content words than this ("hi Orion, how are you?") has nothing to
     # search with: greetings matched greeting-shaped stance messages by form, not content.
+    # Unless it names something rare in the store (RARE_WORD_MAX_DF).
     min_query_tokens: int = 0
 
 
@@ -261,6 +277,10 @@ class LivedMemoryRecall:
             raise SearchUnavailableError("reranker returned a malformed reply")
         return [float(s) for s in scores]
 
+    def has_rare_word(self, tokens: Iterable[str]) -> bool:
+        df = self._bm25.df if self._bm25 is not None else {}
+        return any(0 < df.get(t, 0) <= RARE_WORD_MAX_DF for t in tokens)
+
     def lexical(self, query: str, k: int = LEXICAL_TOP_K, *,
                 allowed: Callable[[LivedRecord], bool] | None = None) -> List[tuple[str, float]]:
         if self._bm25 is None:
@@ -288,17 +308,17 @@ class LivedMemoryRecall:
         if not query:
             out.debug["skipped"] = "empty_query"
             return out
-        content_tokens = len(set(tokenize(query)))
-        if content_tokens < self.cfg.min_query_tokens:
-            out.debug["skipped"] = "few_content_words"
-            out.debug["content_tokens"] = content_tokens
-            return out
         own_client = client is None
         client = client or httpx.AsyncClient(timeout=self.cfg.timeout_sec)
         try:
             t = time.perf_counter()
             await self.snapshot()
             timings["snapshot"] = int((time.perf_counter() - t) * 1000)
+            qtoks = set(tokenize(query))
+            if len(qtoks) < self.cfg.min_query_tokens and not self.has_rare_word(qtoks):
+                out.debug["skipped"] = "few_content_words"
+                out.debug["content_tokens"] = len(qtoks)
+                return out
 
             def allowed(rec: LivedRecord) -> bool:
                 return as_of is None or rec.created_at is None or rec.created_at < as_of
@@ -375,13 +395,29 @@ class LivedMemoryRecall:
                 await client.aclose()
 
 
+@dataclass(frozen=True)
+class LivedIndexPass:
+    indexed: int
+    pending: int
+    removed: int = 0
+
+
 async def run_index_pass(pool: Any, cfg: SearchConfig, *, client: httpx.AsyncClient, bus: Any, source: Any,
-                         batch: int) -> Any:
-    """Embed and upsert every live record Chroma lacks or holds stale text for (up to ``batch``)."""
+                         batch: int) -> LivedIndexPass:
+    """Make the index mirror what may be served: embed and upsert live records Chroma lacks or
+    holds stale text for (up to ``batch``), and delete docs whose record is no longer servable
+    (superseded, rejected, expired, removed). Postgres keeps every row; only the index entry, and
+    the private text copied into it, goes. Serving re-gates every hit anyway."""
     recs = await fetch_live_records(pool)
     docs = [index_doc(r) for r in recs]
-    return await index_docs(docs, cfg, client=client, bus=bus, source=source, doc_prefix="lived-memory",
-                            batch=batch, hash_keys=("occurred_ts",))
+    result: IndexPass = await index_docs(docs, cfg, client=client, bus=bus, source=source,
+                                         doc_prefix="lived-memory", batch=batch, hash_keys=("occurred_ts",))
+    removed = 0
+    if recs:  # an empty live read is more likely an outage than a world with no memories
+        live = {d[0] for d in docs}
+        stale = [i for i in await indexed_ids(client, cfg) if i not in live]
+        removed = await delete_ids(client, cfg, stale)
+    return LivedIndexPass(indexed=result.indexed, pending=result.pending, removed=removed)
 
 
 async def index_loop(pool: Any, cfg: SearchConfig, *, bus: Any, source: Any, interval_sec: float,
@@ -394,9 +430,9 @@ async def index_loop(pool: Any, cfg: SearchConfig, *, bus: Any, source: Any, int
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 result = await run_index_pass(pool, cfg, client=client, bus=bus, source=source, batch=batch)
-            if result.indexed or result.pending:
-                logger.info("lived_memory_index_pass indexed=%s pending=%s collection=%s",
-                            result.indexed, result.pending, cfg.collection)
+            if result.indexed or result.pending or result.removed:
+                logger.info("lived_memory_index_pass indexed=%s pending=%s removed=%s collection=%s",
+                            result.indexed, result.pending, result.removed, cfg.collection)
             if result.pending:
                 delay = 5.0
         except Exception as exc:  # noqa: BLE001 -- the loop must outlive a down embedder or DB

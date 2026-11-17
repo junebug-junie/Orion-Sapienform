@@ -37,8 +37,13 @@ class EmailTransport:
         """Email to anyone but Juniper (``default_to`` = NOTIFY_EMAIL_TO, her addresses) must not
         quote a core-page or lived-memory sentence verbatim. Raises; fails closed when the guard
         cannot load (orion-notify has no Postgres driver today, so non-Juniper email is refused)."""
-        juniper = {a.strip().lower() for a in self.default_to if a and a.strip()}
-        outside = [r for r in recipients if r.strip().lower() not in juniper]
+        from email.utils import parseaddr
+
+        def addr(value: str) -> str:
+            return parseaddr(str(value or ""))[1].strip().lower()
+
+        juniper = {addr(a) for a in self.default_to if addr(a)}
+        outside = [r for r in recipients if addr(r) not in juniper]
         if not outside:
             return
         from orion.memory.mesh_edge import check_outbound

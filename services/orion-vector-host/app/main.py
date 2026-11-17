@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from contextlib import asynccontextmanager
@@ -633,7 +634,10 @@ async def lifespan(app: FastAPI):
     embedder = Embedder(settings)
     if settings.VECTOR_HOST_RERANK_MODEL.strip():
         try:
-            reranker = Reranker(settings.VECTOR_HOST_RERANK_MODEL.strip(), settings.VECTOR_HOST_RERANK_DEVICE)
+            # Off the event loop: a first download of the weights must not stall startup work.
+            reranker = await asyncio.to_thread(
+                Reranker, settings.VECTOR_HOST_RERANK_MODEL.strip(), settings.VECTOR_HOST_RERANK_DEVICE
+            )
             logger.info("Reranker loaded model=%s device=%s", reranker.model_name, settings.VECTOR_HOST_RERANK_DEVICE)
         except Exception as exc:  # the embedder must still serve; /rerank answers 503
             reranker = None
@@ -781,6 +785,9 @@ async def rerank_endpoint(request: RerankRequest) -> RerankResult:
         raise HTTPException(status_code=400, detail="Missing query")
     if len(request.documents) > MAX_RERANK_PAIRS:
         raise HTTPException(status_code=400, detail=f"At most {MAX_RERANK_PAIRS} documents")
+    if reranker.busy:
+        # Callers time out in seconds; queueing behind abandoned work only makes every turn late.
+        raise HTTPException(status_code=503, detail="Reranker busy")
     scores = await reranker.score(request.query, request.documents)
     return RerankResult(model=reranker.model_name, scores=scores)
 

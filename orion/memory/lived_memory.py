@@ -44,7 +44,7 @@ SELECT m.memory_id::text AS record_id,
        m.created_at AS created_at
 FROM episode_memory m
 WHERE m.status = 'active'
-  AND m.confirmation_state <> 'rejected'
+  AND m.confirmation_state IS DISTINCT FROM 'rejected'
   AND (m.expires_at IS NULL OR m.expires_at > now())
   AND length(trim(m.statement)) > 0
   AND NOT EXISTS (

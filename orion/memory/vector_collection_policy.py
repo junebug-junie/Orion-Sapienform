@@ -123,8 +123,9 @@ POLICIES: dict[str, CollectionPolicy] = {
             retention=None,
             reason=(
                 "Chat lived-memory recall index over episode_memory, stance crystallizations and "
-                "person_fact (issue #3533). Rebuildable, but recall reads it every chat turn; a "
-                "superseded or retired record is filtered at read time, not deleted here."
+                "person_fact (issue #3533). Rebuildable, but recall reads it every chat turn. The "
+                "index loop removes a doc once its record is no longer servable (superseded, "
+                "rejected, expired, removed); Postgres keeps every row, so nothing is lost."
             ),
         ),
         CollectionPolicy(

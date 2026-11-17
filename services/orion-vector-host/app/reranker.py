@@ -4,7 +4,9 @@ orion-recall's lived-memory collector sends one query and up to ~24 candidate me
 scores each (query, memory) pair with a cross-encoder that reads both texts together, which
 orders candidates far better than the cosine of two separate embeddings.
 
-Model: ``VECTOR_HOST_RERANK_MODEL`` (default ``BAAI/bge-reranker-base``), local weights only.
+Model: ``VECTOR_HOST_RERANK_MODEL``. Runs on this host only (no external inference API); the
+weights come from the Hugging Face Hub on first load and are kept in the persistent HF cache
+volume mounted by docker-compose.yml, so a container recreate does not download them again.
 Measured on athena 2026-11-16, CPU, 8 OpenMP threads: 24 pairs in ~270 ms (bge-reranker-v2-m3:
 ~950 ms). Empty model name = the endpoint answers 503 and recall serves no lived memories.
 
@@ -21,6 +23,8 @@ from typing import List, Sequence
 
 MAX_PAIRS = 64
 MAX_LENGTH = 512
+# Requests allowed in flight (running + queued) before /rerank answers 503.
+MAX_IN_FLIGHT = 2
 
 
 class Reranker:
@@ -36,6 +40,11 @@ class Reranker:
         self._model.to(self._device)
         self._model.eval()
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="hf-rerank")
+        self._in_flight = 0
+
+    @property
+    def busy(self) -> bool:
+        return self._in_flight >= MAX_IN_FLIGHT
 
     def _score(self, query: str, documents: Sequence[str]) -> List[float]:
         if not documents:
@@ -50,9 +59,13 @@ class Reranker:
         return [float(x) for x in logits.tolist()]
 
     async def score(self, query: str, documents: Sequence[str]) -> List[float]:
-        return await asyncio.get_running_loop().run_in_executor(
-            self._executor, self._score, query, list(documents)[:MAX_PAIRS],
-        )
+        self._in_flight += 1
+        try:
+            return await asyncio.get_running_loop().run_in_executor(
+                self._executor, self._score, query, list(documents)[:MAX_PAIRS],
+            )
+        finally:
+            self._in_flight -= 1
 
     def close(self) -> None:
         self._executor.shutdown(wait=False)

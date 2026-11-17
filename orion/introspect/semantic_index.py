@@ -218,6 +218,38 @@ async def stored_hashes(client: httpx.AsyncClient, cfg: SearchConfig, ids: list[
     return {str(i): str((m or {}).get("content_hash") or "") for i, m in zip(got, metas)}
 
 
+async def indexed_ids(client: httpx.AsyncClient, cfg: SearchConfig, *, page: int = 1000) -> list[str]:
+    """Every doc id the collection holds (ids only, paged). A missing collection holds nothing."""
+    coll = await _collection(client, cfg)
+    if coll is None:
+        return []
+    out: list[str] = []
+    offset = 0
+    while True:
+        status, body = await _json(client, "POST", f"{_base(cfg)}/{coll.id}/get",
+                                   json={"limit": page, "offset": offset, "include": []})
+        ids = body.get("ids") if isinstance(body, dict) else None
+        if status != 200 or not isinstance(ids, list):
+            raise SearchUnavailableError(f"chroma get failed: HTTP {status}")
+        out.extend(str(i) for i in ids)
+        if len(ids) < page:
+            return out
+        offset += page
+
+
+async def delete_ids(client: httpx.AsyncClient, cfg: SearchConfig, ids: list[str]) -> int:
+    """Remove docs from the index (the source rows are untouched). Returns how many were asked."""
+    if not ids:
+        return 0
+    coll = await _collection(client, cfg)
+    if coll is None:
+        return 0
+    status, _body = await _json(client, "POST", f"{_base(cfg)}/{coll.id}/delete", json={"ids": list(ids)})
+    if status != 200:
+        raise SearchUnavailableError(f"chroma delete failed: HTTP {status}")
+    return len(ids)
+
+
 async def publish_upsert(
     bus: Any, source: Any, cfg: SearchConfig, *,
     doc_id: str, text: str, vector: list[float], model: str | None, meta: dict[str, Any],

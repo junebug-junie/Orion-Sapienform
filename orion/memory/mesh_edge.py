@@ -7,10 +7,11 @@ every such writer calls before it sends.
 
 What is guarded (loaded from Postgres, read-only):
 
-- every sentence of the current ``page:juniper`` and ``page:anchor`` rows in
-  ``self_concept_history`` (the core pages);
-- every sentence of every lived memory recall can inject into the chat prompt
-  (``orion/memory/lived_memory.py``: episode_memory, stance crystallizations, person facts).
+- every sentence of every ``page:juniper`` and ``page:anchor`` version in
+  ``self_concept_history`` (the core pages, old versions included);
+- every sentence of every lived memory recall can inject into the chat prompt, and of the ones it
+  no longer may (superseded, rejected, expired, removed): episode_memory, stance crystallizations,
+  person facts. Retired text is still private.
 
 A sentence counts only when it has at least ``MIN_WORDS`` words: "she/her" or "7" in a public PR
 is not a leak of anything. Matching is verbatim after normalization (case, quotes, punctuation
@@ -21,6 +22,7 @@ Failure mode is closed: a writer that cannot load the guarded text must refuse, 
 """
 from __future__ import annotations
 
+import html
 import os
 import re
 import threading
@@ -31,9 +33,19 @@ from typing import Any, Iterable, List, Optional, Sequence
 MIN_WORDS = 6
 CACHE_TTL_SEC = 300.0
 
+# Every version of every core page: an older version is still private once replaced.
 CORE_PAGES_SQL = (
-    "SELECT DISTINCT ON (concept_id) concept_id, content FROM self_concept_history "
-    "WHERE concept_id IN ('page:juniper', 'page:anchor') ORDER BY concept_id, created_at DESC"
+    "SELECT concept_id, content FROM self_concept_history "
+    "WHERE concept_id IN ('page:juniper', 'page:anchor')"
+)
+# Privacy, not serving: retired, superseded, rejected and removed rows stay guarded too.
+GUARD_MEMORY_SQL = (
+    "SELECT 'episode_memory:' || memory_id::text AS source, statement AS text FROM episode_memory "
+    "UNION ALL SELECT 'stance:' || crystallization_id::text, summary FROM memory_crystallizations "
+    "WHERE kind = 'stance' "
+    "UNION ALL SELECT 'person_fact:' || f.fact_id, coalesce(p.display_name, 'someone') || ', ' || "
+    "replace(f.category, '_', ' ') || ': ' || f.value_text "
+    "FROM person_fact f LEFT JOIN person p ON p.person_id = f.person_id"
 )
 
 # DSN env keys tried in order. All already exist in the services that write at the mesh edge
@@ -64,9 +76,21 @@ class MeshEdgeUnavailable(RuntimeError):
     """The guarded text could not be loaded; an edge writer must refuse rather than send."""
 
 
+_UNICODE_ESCAPE = re.compile(r"\\u([0-9a-fA-F]{4})")
+_CONTROL_ESCAPE = re.compile(r"\\[nrt]")
+
+
 def normalize(text: str) -> str:
-    """Lowercase, fold quotes/punctuation/whitespace: 'She’s  "here".' -> 'shes here'."""
-    folded = str(text or "").translate(_QUOTES).lower().replace("'", "")
+    """Lowercase, fold quotes/punctuation/whitespace: 'She’s  "here".' -> 'shes here'.
+
+    Undoes the encodings a body passes through on its way out: HTML entities (``&#39;``), JSON
+    escapes (``\\u2019``, ``\\n``) and shell quoting (``'doesn'\\''t'``), so an apostrophe
+    inside quoting still folds to the same word."""
+    raw = html.unescape(str(text or ""))
+    raw = _UNICODE_ESCAPE.sub(lambda m: chr(int(m.group(1), 16)), raw)
+    raw = _CONTROL_ESCAPE.sub(" ", raw)
+    raw = raw.replace("'\\''", "'").replace("\\", "")
+    folded = raw.translate(_QUOTES).lower().replace("'", "")
     return " ".join(_NON_WORD.sub(" ", folded).split())
 
 
@@ -130,21 +154,17 @@ def _load_sync(dsn: str) -> MeshEdgeGuard:
     import psycopg2  # type: ignore
     import psycopg2.extras  # type: ignore
 
-    from orion.memory.lived_memory import KINDS, SQL_BY_KIND, records_from_rows
-
     conn = psycopg2.connect(dsn, connect_timeout=5)
     try:
         conn.set_session(readonly=True, autocommit=True)
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(CORE_PAGES_SQL)
-            pages = list(cur.fetchall())
-            records = []
-            for kind in KINDS:
-                cur.execute(SQL_BY_KIND[kind])
-                records.extend(records_from_rows(kind, [dict(r) for r in cur.fetchall()]))
+            items = [(str(r["concept_id"]), str(r["content"] or "")) for r in cur.fetchall()]
+            cur.execute(GUARD_MEMORY_SQL)
+            items.extend((str(r["source"]), str(r["text"] or "")) for r in cur.fetchall())
     finally:
         conn.close()
-    return MeshEdgeGuard.from_texts(guard_texts_from_rows(pages, records))
+    return MeshEdgeGuard.from_texts(items)
 
 
 _cache_lock = threading.Lock()

@@ -14,6 +14,7 @@ from app import main  # noqa: E402
 
 class _FakeReranker:
     model_name = "fake-ce"
+    busy = False
 
     async def score(self, query, documents):
         return [float(len(set(query.split()) & set(d.split()))) for d in documents]

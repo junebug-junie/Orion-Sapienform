@@ -15,6 +15,7 @@ from pathlib import Path
 
 import app.lived_memory as lm
 from app.lived_memory import LivedMemoryConfig, LivedMemoryRecall, tokenize
+from app.settings import settings
 from orion.introspect.semantic_index import SearchConfig
 
 from run_lived_memory_replay_eval import is_small_talk, score_bar
@@ -50,6 +51,7 @@ def _reranker(query, docs):
 
 
 def test_fixture_replay_hits_every_target_and_keeps_small_talk_empty(monkeypatch):
+    """At the shipped content-word floor: short messages that name something rare still search."""
     async def embed(*_a, **_k):
         return [0.0], "fake"
 
@@ -60,7 +62,8 @@ def test_fixture_replay_hits_every_target_and_keeps_small_talk_empty(monkeypatch
     monkeypatch.setattr(lm, "nearest", nearest)
     data = json.loads(FIXTURE.read_text(encoding="utf-8"))
     cfg = LivedMemoryConfig(search=SearchConfig("http://c", "http://e", "orion_lived_memory", 0.0),
-                            rerank_url="http://r", min_fit=0.0, max_lines=64, timeout_sec=1.0)
+                            rerank_url="http://r", min_fit=0.0, max_lines=64, timeout_sec=1.0,
+                            min_query_tokens=settings.RECALL_LIVED_MEMORY_MIN_QUERY_TOKENS)
     reader = LivedMemoryRecall(_Pool(data["records"]), cfg, reranker=_reranker, clock=lambda: NOW)
 
     async def run():

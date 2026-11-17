@@ -76,3 +76,10 @@ def test_clean_mail_to_someone_else_is_sent_and_an_unloadable_guard_refuses():
 
     with pytest.raises(MeshEdgeUnavailable):
         _transport(down).send(_req("The build is green."), to_override=["friend@example.test"])
+
+
+def test_display_name_form_of_juniper_is_still_juniper():
+    def never():
+        raise AssertionError("no check for Juniper-only email")
+
+    _transport(never).send(_req(f"FYI: {SENTENCE}"), to_override=[f"Juniper <{JUNIPER.upper()}>"])

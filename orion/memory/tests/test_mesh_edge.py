@@ -78,3 +78,21 @@ def test_load_guard_wraps_driver_errors_as_unavailable(monkeypatch):
     monkeypatch.setattr(mesh_edge, "_load_sync", boom)
     with pytest.raises(MeshEdgeUnavailable):
         mesh_edge.load_guard("postgresql://nobody@127.0.0.1:1/x", ttl_sec=0)
+
+
+@pytest.mark.parametrize("encoded", [
+    "Robin doesn'\\''t like loud noises in the morning at all.",      # shell quoting
+    "Robin doesn\\u2019t like loud noises in the morning at all.",    # JSON escape
+    "Robin doesn&#39;t like loud noises in the morning at all.",      # HTML entity
+    "Robin doesn’t like loud\\nnoises in the morning at all.",        # curly quote + escaped newline
+])
+def test_encoded_apostrophes_still_match(encoded):
+    guard = MeshEdgeGuard.from_texts([("episode_memory:x", "Robin doesn't like loud noises in the morning at all.")])
+    assert guard.find(f"body={encoded}")
+
+
+def test_guard_sql_covers_retired_rows_and_old_page_versions():
+    assert "DISTINCT ON" not in mesh_edge.CORE_PAGES_SQL
+    for table in ("episode_memory", "memory_crystallizations", "person_fact"):
+        assert table in mesh_edge.GUARD_MEMORY_SQL
+    assert "status" not in mesh_edge.GUARD_MEMORY_SQL and "removed_at" not in mesh_edge.GUARD_MEMORY_SQL

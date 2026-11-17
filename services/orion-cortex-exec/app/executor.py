@@ -1735,8 +1735,14 @@ JSON_TASK_TURN = "Respond now with the JSON object the system message asks for."
 
 
 def _wants_json_output(ctx: Dict[str, Any]) -> bool:
-    """Does this hop ask the gateway for one JSON object (the same keys gateway_options forwards)?"""
-    return isinstance(ctx.get("response_format"), dict) or bool(ctx.get("return_json"))
+    """Does this hop ask the gateway for one JSON object? The same keys, read from the same places, that
+    call_step_services forwards into gateway_options: response_format / return_json from ctx, and
+    structured_output_schema / structured_output_method from ctx["options"] or ctx (the gateway turns
+    those into a response_format, structured_output.py apply_structured_output_to_payload)."""
+    if isinstance(ctx.get("response_format"), dict) or bool(ctx.get("return_json")):
+        return True
+    options = ctx.get("options") if isinstance(ctx.get("options"), dict) else {}
+    return any(options.get(key) or ctx.get(key) for key in ("structured_output_schema", "structured_output_method"))
 
 
 def _build_hop_messages(

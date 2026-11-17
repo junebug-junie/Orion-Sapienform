@@ -5,10 +5,14 @@ output_tokens=2, finish=stop). The generic task turn ("Carry out the task in the
 that ending 5-10x more likely than JSON_TASK_TURN on real failing prompts.
 
 Input: one llm.chat.request envelope JSON (for example pulled read-only from the bus mirror's
-bus_events table). Prompts hold private memory: keep them out of git.
+bus_events table) from a hop whose user turn is a service task turn, asking for plain JSON
+(response_format json_object, or return_json). Not modelled: the gateway's structured_output_* path,
+response_format_for_backend's schema rewrites, and top_p/stop/penalties. Prompts hold private memory:
+keep them out of git.
 
 For each wording it sends the request with "{\"" banned (logit_bias), so the first token is "{", and
-reads the probability of "<|im_end|>" as the second token (top_logprobs=20). It runs each wording
+reads the probability of "<|im_end|>" as the second token (top_logprobs=20). A reply that really
+ended after "{" prints as "ended" (the end token itself is not listed). It runs each wording
 --repeat times back to back; the first reading after a cache miss can differ, so look at the later ones.
 
 Run under an operator lease (shared GPU), a handful of calls only:
@@ -70,15 +74,17 @@ def strata_payload(envelope: dict) -> dict:
     return sent
 
 
-def p_end_after_brace(url: str, body: dict) -> float | None:
+def p_end_after_brace(url: str, body: dict) -> float | str:
     b = copy.deepcopy(body)
     b.update({"max_tokens": 2, "logprobs": True, "top_logprobs": 20, "logit_bias": {OPEN_BRACE_QUOTE_ID: -100}})
     req = urllib.request.Request(url.rstrip("/") + "/v1/chat/completions", data=json.dumps(b).encode(),
                                  headers={"content-type": "application/json"})
     out = json.load(urllib.request.urlopen(req, timeout=300))
     lp = ((out["choices"][0].get("logprobs") or {}).get("content")) or []
+    if not lp or lp[0]["token"] != "{":
+        raise RuntimeError(f"first token was {lp[0]['token'] if lp else None!r}, not '{{': no reading")
     if len(lp) < 2:
-        return None  # the sampled reply itself ended after "{"
+        return "ended"  # the sampled reply itself ended after "{": the failure this measures
     return sum(math.exp(a["logprob"]) for a in lp[1]["top_logprobs"] if a["token"] == END_TOKEN)
 
 
@@ -90,8 +96,8 @@ def main() -> int:
     args = ap.parse_args()
     body = strata_payload(json.loads(Path(args.envelope).read_text()))
     users = [i for i, m in enumerate(body["messages"]) if m["role"] == "user"]
-    if not users:
-        print("the request has no user turn; nothing to compare")
+    if not users or body["messages"][users[-1]]["content"] not in (SYSTEM_TASK_TURN, JSON_TASK_TURN):
+        print("the request's last user turn is not a service task turn; nothing to compare")
         return 2
     for name, text in (("generic", SYSTEM_TASK_TURN), ("json", JSON_TASK_TURN)):
         variant = copy.deepcopy(body)

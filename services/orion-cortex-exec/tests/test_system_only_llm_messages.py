@@ -68,16 +68,28 @@ def test_json_hop_without_user_turn_gets_the_json_task_turn():
     assert req.messages[1].content == "Respond now with the JSON object the system message asks for."
 
 
-def test_return_json_hop_gets_the_json_task_turn():
-    messages = _build_hop_messages(prompt="Return JSON.", ctx_messages=None, json_output=True)
-    assert messages[-1] == {"role": "user", "content": "Respond now with the JSON object the system message asks for."}
+# The sentences are written out, not imported: the wording is what was measured, so a change to it
+# should show up here as a failing test.
+
+
+@pytest.mark.parametrize("json_keys", [
+    {"return_json": True},
+    {"structured_output_schema": {"type": "object", "properties": {"a": {"type": "string"}}}},
+    {"options": {"structured_output_method": "json_schema"}},
+])
+def test_other_json_requests_get_the_json_task_turn(json_keys):
+    req = _hop_request({"mode": "metacog", "llm_route": "metacog", **json_keys})
+    assert req.messages[1].content == "Respond now with the JSON object the system message asks for."
 
 
 def test_wants_json_output_reads_the_gateway_keys():
     from app.executor import _wants_json_output
     assert _wants_json_output({"response_format": {"type": "json_object"}})
     assert _wants_json_output({"return_json": True})
+    assert _wants_json_output({"structured_output_schema": {"type": "object"}})
+    assert _wants_json_output({"options": {"structured_output_method": "json_schema"}})
     assert not _wants_json_output({"return_json": False, "response_format": None})
+    assert not _wants_json_output({"response_format": "json", "options": {}})
     assert not _wants_json_output({})
 
 

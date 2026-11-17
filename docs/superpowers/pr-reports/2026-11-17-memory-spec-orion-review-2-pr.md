@@ -89,7 +89,8 @@ No restart required.
 - Severity: low. Concern: `page:anchor` is guarded on the bus path only and has no size cap. Mitigation: #3612.
 - Second round (Orion's follow-ups): #3589 corrected. The double count came from AI Town `chat_quick` rows, not two rows per Hub turn. The spec states the idempotency rule for the supersede pass, and that superseded rows are kept out of both indexes. #3553 gained drift flags (v1 3670 to v3 3517 characters, 35 to 31 cites, 6 uncorrected cite drops).
 - Third round: the 131 unexplained `stance_react` ids were one 15-minute non-turn burst (caller UNVERIFIED, logs lost on restart). The read-demand filter is now a join to the turn record. The AI Town page decision is flagged needs-juniper on #3589. #3611 is revised to a full `recall_telemetry` grant, because the same text is already readable in `chat_history_log`.
-- Issues opened: #3587, #3588, #3589, #3590, #3611, #3612, #3628, #3629. Comments added on #3463, #3537, #3553, #3567, #3589 and #3611. Issues closed: none.
+- Fourth round: corrected the live-proof check. No stored row holds the trip-as-home or pet-species error. The trip rows are true, and the dry run rightly kept them. Corrected the pair-detection text (cosine 0.80 alone qualifies). Write-time supersede applies without a precision sample and falls back to word-only matching when vectors are down (#3659). The confirmation backlog grows, and its rows are immune to supersede (#3661). 8% of chat-turn lived calls hit the rerank timeout (#3662).
+- Issues opened: #3587, #3588, #3589, #3590, #3611, #3612, #3628, #3629, #3659, #3660, #3661, #3662, #3663. Comments added on #3463, #3537, #3553, #3567, #3589 and #3611. Issues closed: none.
 
 ## PR link
 

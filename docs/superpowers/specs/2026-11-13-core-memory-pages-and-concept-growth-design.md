@@ -516,8 +516,11 @@ Graphiti ran twice on the local agent-lane model (PR #3341, reports
   `supersedes_memory_id` (the column exists; `orion/memory/episode/confirmation.py` writes it
   today for Juniper's revisions) points at the row it corrects. The old row is marked
   superseded. Both rows stay readable. Undo means clearing the mark.
-- **One-time pass over existing rows.** `episode_memory` already holds active contradictions:
-  a trip recorded as a home, and a pet-species correction sitting beside the error. A
+- **One-time pass over existing rows.** ~~`episode_memory` already holds active contradictions:
+  a trip recorded as a home, and a pet-species correction sitting beside the error.~~
+  **Corrected 2026-11-17:** no stored row has those errors. The trip rows are true at their
+  dates, and no stored row calls the pet a cat. Both mistakes were made in chat, and the
+  correction rows record Juniper's fix. See "What the pass proved, 2026-11-17" below. A
   one-time supersede pass runs over the existing active rows as part of step 1 (#3533),
   before retrieval serves them. It finds correction rows that name an earlier claim, links
   them with `supersedes_memory_id`, and writes a report of every pair for Juniper to scan.
@@ -567,6 +570,26 @@ confirmation loop. The named contradictions are all still `active`, and no corre
 points at its target. The distiller does not supersede at write time either. Follow-up:
 #3587.
 
+**What the pass proved, 2026-11-17 (PR #3617 merged; dry run 13:32Z, nothing applied).**
+
+- 740 pairs checked, 0 check errors, 1 pair proposed, 0 `superseded` events written.
+- The watched trip rows were candidates. Each shares a rare word (row count 4, limit 8),
+  with cosine 0.61 and 0.66. The model answered "does not correct, sure" for both. That is
+  right: the trip happened. The pet correction row was checked against 3 older rows, and 3
+  newer rows were checked against it. No stored row says the pet is a cat, and every answer
+  was "does not correct". So the proof cannot be "these rows end up
+  superseded". It is "the true rows stay active and the pass proposes nothing for them".
+- **Scope before #3537:** `episode_memory` starts 2026-10-04, so the pass proves nothing about
+  July to September yet.
+- **Audit location:** `/mnt/orion-fcc/notes/memory_supersede_pass_manifest.json` is where
+  Orion reads each run. Today it holds only the latest run, and each row's reason is only in
+  the private `/tmp` `checks.csv`. A run history and a per-watched-row trace (cosine, rare
+  token and referent counts, verdicts, no text): #3660.
+- **Rows waiting for confirmation are immune** (`pending_confirmation` can neither be
+  superseded nor correct). The backlog is growing: about 35 new high-stakes rows a week
+  against at most about 21 asks a week; 34 pending, all from 11-11 on. #3661, waits on
+  Juniper.
+
 **The pass must be idempotent (rule for #3587).**
 
 - A pair is keyed by (correction id, target id). A target that is already superseded is
@@ -577,8 +600,15 @@ points at its target. The distiller does not supersede at write time either. Fol
   may be reopened only by an explicit reopen event; the pass never reopens anything by itself
   (#3629).
 - **Pair detection (as built in PR #3617).** Candidates are rows the serving SQL may serve,
-  ranked by the retriever's own vectors. A candidate must also share a rare referent (25 rows
-  or fewer) or a rare word with the new row. Then two local-model questions decide it.
+  ranked by the retriever's own vectors. A candidate qualifies in one of two ways: cosine
+  0.80 or more alone (`DENSE_ALONE`), or any cosine plus a shared rare referent (25 rows or
+  fewer) or a rare word (8 rows or fewer). With no vectors (`--no-dense`, or the index is
+  down), a candidate needs two shared rare words, or one rare word plus a rare referent.
+  Then two local-model questions decide it. A failed model call links nothing.
+- **No degraded apply, and precision before apply (#3659, waits on Juniper).** Today the
+  write-time path applies links automatically, and drops to words-only when the index fails.
+  Rule: when dense search or the model fails, plan but do not apply. No apply, at write time
+  or by the pass, until a blind hand-labelled precision sample shows 0 wrong supersedes.
   Referent coverage is high: since 10-05, 97 to 100% of rows per week have a referent, and 68
   to 93% have one besides Juniper or Orion. The #3537 backfill must write referents the same
   way (noted on #3537).
@@ -589,7 +619,8 @@ points at its target. The distiller does not supersede at write time either. Fol
 October and November corrections already exist. So write-time supersede (which looks at older
 rows) does not catch them. Rule: the supersede pass is a re-runnable, idempotent script, and
 #3537 runs it as its last step. The backfill report includes the pass report. #3587 must land
-before #3537 runs.
+before #3537 runs. **The referent coverage check blocks:** if backfilled rows fall below the
+live band, the backfill stops before the pass (noted on #3537).
 
 ### Vetoes attach to the claim
 
@@ -659,8 +690,23 @@ come back through a different old record that says the same thing.
 - **Decision for Juniper (#3589, needs-juniper).** Pages exist for the Juniper relationship and
   for Orion's own use. Explicit opens (`dig page`, `dig know`) count as demand. AI Town demand
   is logged and reported apart. It does not birth a page or keep one alive.
-- **Fields still missing for false denials.** The table does not record whether lived recall
-  ran, was skipped, timed out, or found nothing above the bar (#3628).
+- **Fields for false denials (#3628, done by PR #3645).** `recall_telemetry.lived_status` is
+  one of `ok`, `below_bar`, `skipped_short`, `degraded`, `timeout`, `error`, `unverified`, with
+  `lived_trace`. **The baseline starts at that deploy** (first status row 2026-11-17
+  19:24:26Z). The 60,600 earlier rows have no status, so no false-denial rate exists before
+  then.
+- **What the join is tested on today.** `memory_page_read` does not exist yet. Read demand is
+  tested on `recall_telemetry`: served lived ids on `stance_react` rows, and `dig.know` calls
+  (all 36 distinct ids among 85 calls match a turn record), joined to `cockpit_turn_sighting`.
+  `memory_page_read` adds `dig page` opens when pages beyond the core ones exist.
+- **A search that did not run is not a basis for "I have no memory".** `skipped_short`,
+  `degraded`, `timeout`, `error` and `unverified` mean Orion could not look properly. Orion
+  says so, never "I have no memory". `dig know` already says this for every case except
+  `skipped_short`, and the prompt rule does not cover it yet (#3663). The scoreboard counts
+  "no memory" after a search that did not run as a false denial when the target was stored,
+  and reports it under its cause.
+- **Rerank timeouts.** In the 6 h to 23:00Z on 11-17, 7 of 88 chat-turn lived calls (8%)
+  degraded to exact words on `rerank_timeout` at the 5.5 s budget. `dig.know` had none. #3662.
 - **Degraded serves do not count as demand.** A serve from the exact-word fallback (#3573)
   is marked degraded in `recall_telemetry` and is excluded from the page-birth and re-grade
   counts. Only full-path serves and explicit opens count.
@@ -853,9 +899,11 @@ reader on the chat recall path, which steps 1 to 3 add.
 4. The metric gate on `matters` passes on the 44 + 44 set before the grade drives any page
    (numbers in "`matters`: a later re-grade", #3590).
 5. ~~**Graphiti trial passes before any page reads Graphiti.**~~ **Struck 2026-11-17:** the
-   trial is done (NO-GO twice) and no page reads Graphiti. Replaced by: the named
-   contradictions in `episode_memory` (a trip recorded as a home; a pet-species error) are
-   superseded live, and the supersede test passes (#3587).
+   trial is done (NO-GO twice) and no page reads Graphiti. Replaced by: the supersede test
+   passes (#3587), the true trip rows stay active, and an applied run's precision sample shows
+   0 wrong supersedes (#3659). ~~the named contradictions (a trip recorded as a home; a
+   pet-species error) are superseded live~~ (corrected 2026-11-17: no stored row holds either
+   error).
 
 **Phase 2**
 

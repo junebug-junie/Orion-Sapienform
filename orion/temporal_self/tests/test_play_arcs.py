@@ -241,13 +241,20 @@ def test_a_play_row_written_after_its_end_is_ordered_by_when_it_was_written() ->
 
 
 def test_the_day_block_play_line_has_a_cap() -> None:
-    """Review finding: the play line listed every play arc of the day, with no item cap."""
+    """Review finding: the play line listed every play arc of the day, with no item cap. On the real
+    closed day 2026-11-15 its four sittings made a 403-character line that pushed the conversation
+    threads line out of the block. Now: the longest two, in time order, after the conversation lines."""
     from orion.temporal_self.day_block import PLAY_LINE_ITEMS
 
-    rows = [sitting_row(f"s{i}", at(i * 30), 10) for i in range(PLAY_LINE_ITEMS + 2)]
+    minutes = [10, 40, 142, 15]
+    rows = [sitting_row(f"s{i}", at(i * 150), m) for i, m in enumerate(minutes)]
     _, days = drain_closed_days(_state(rows, at(60 * 24)))
     (day,) = [d for d in days if d.day_id == "2026-10-09"]
-    text = render_closed_day_block(day).text
-    (line,) = [l for l in text.split("\n") if l.startswith("Play on the Retro service")]
-    assert line.startswith(f"Play on the Retro service ({PLAY_LINE_ITEMS + 2} today, the last {PLAY_LINE_ITEMS}): ")
-    assert line.count("Someone played") == PLAY_LINE_ITEMS and "09:00 Someone" not in line and "11:30 Someone" in line
+    block = render_closed_day_block(day)
+    (line,) = [l for l in block.text.split("\n") if l.startswith("Play on the Retro service")]
+    assert PLAY_LINE_ITEMS == 2 and line.startswith("Play on the Retro service (4 today, the 2 longest): ")
+    assert line.count("Someone played") == 2 and line.index("for 40 min") < line.index("for 2 h 22 min")
+    assert "for 10 min" not in line and "for 15 min" not in line and len(line) < 220
+    # among lines of its own priority it is the one the cap drops first, so it cannot evict a conversation line
+    tight = render_closed_day_block(day, max_chars=len(block.text) - 1).text
+    assert "Play on the Retro service" not in tight and "left out to fit" in tight

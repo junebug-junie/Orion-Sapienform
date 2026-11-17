@@ -273,7 +273,8 @@ def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] 
     from a Hub browser surface (``turns_not_from_browser`` counts the rest: a coding session's message
     posted over the Hub API, #3602). Items written before #3532 (no force/done_when) are counted in
     ``skipped_pre_force`` and left out of both sides. Red needs at least ``GUARD_MIN_JUDGED_TURNS``
-    judged turns (``armed``)."""
+    judged turns (``armed``). The clean basis (``ratio_clean``) is always ``REPLAY_BASELINE_CLEAN``, whatever
+    ``baseline`` is passed: it is a fixed side number, not a second guard."""
     def _before(t: Mapping[str, Any]) -> bool:
         at = _aware(t.get("created_at"))
         return at is not None and at < finder_live_at

@@ -520,9 +520,10 @@ Built in fix/promise-ledger-orion-review-3:
   `utterance_origin="juniper"` turn qualified, which includes every `/api/chat` call: live 11-15, two
   coding-session notes were posted that way into Juniper's own session and persisted as `hub_orion`.
   Round-ups, `intention.carry` and curiosity turns were already outside it (`utterance_origin="orion"`).
-- **Every viewed turn logs one `promise_ledger` line**, also on a harness timeout
-  (`reason=harness_timeout`), a harness error (`reason=harness_error`) and a raise or cancel
-  (`reason=interrupted`). Live 11-17 before the 17:58Z restart: 29 view lines, 1 ledger line; 28 were
+- **Every viewed turn logs one `promise_ledger` line**, also when the governor returns no run
+  (`reason=no_run`: a timeout or an error reply), a harness error (`reason=harness_error`), a raise or
+  cancel anywhere after the view read (`reason=interrupted`, from the `execute_unified_turn` wrapper), and
+  a failed background publish (`outcome=failed`). Live 11-17 before the 17:58Z restart: 29 view lines, 1 ledger line; 28 were
   `memory-scoreboard-eval` `/api/chat` turns (`no_write`, the class #3619 fixed), one of them still in
   flight at the restart. These eval turns no longer read the view at all.
 - **The report prints both bases:** baseline 23/289 and clean 21/287; ceiling 9/23 and clean 9/21 (both

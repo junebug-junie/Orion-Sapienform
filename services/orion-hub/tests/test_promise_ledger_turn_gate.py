@@ -11,6 +11,7 @@ harness error and an interrupted turn (before this, those ended silent after ``p
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -19,6 +20,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import pytest_asyncio
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 HUB_ROOT = Path(__file__).resolve().parents[1]
@@ -85,12 +87,22 @@ async def _turn(*, payload, origin, harness_run, view=None):
     return view_read
 
 
-@pytest.fixture(autouse=True)
-def _flags_on(monkeypatch):
+@pytest_asyncio.fixture(autouse=True)
+async def _flags_on(monkeypatch):
+    from orion.hub import turn_orchestrator
     from scripts.settings import settings
 
     monkeypatch.setattr(settings, "HUB_ACT_LEDGER_ENABLED", True, raising=False)
     monkeypatch.setattr(settings, "HUB_PROMISE_LEDGER_ENABLED", True, raising=False)
+    yield
+    # A delivered turn starts a background promise-act task: finish it here, so its line never leaks
+    # into the next test's caplog.
+    if turn_orchestrator._PROMISE_ACT_TASKS:
+        await asyncio.gather(*list(turn_orchestrator._PROMISE_ACT_TASKS), return_exceptions=True)
+
+
+def _ledger_lines(caplog):
+    return [r.getMessage() for r in caplog.records if r.getMessage().startswith("promise_ledger corr=")]
 
 
 def test_browser_surface_rule_matches_the_ingress_predicate():
@@ -116,26 +128,52 @@ async def test_only_a_juniper_browser_turn_reads_the_view(payload, origin, reads
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("harness_run,reason", [
-    (None, "harness_timeout"),
+    (None, "no_run"),            # timeout, or an error / undecodable governor reply
     (_run(final_text="", finalize_ran=False), "harness_error"),
 ])
 async def test_a_viewed_turn_that_ends_before_the_ledger_logs_one_skip_line(caplog, harness_run, reason):
     with caplog.at_level(logging.INFO):
         await _turn(payload=BROWSER, origin="juniper", harness_run=harness_run)
-    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("promise_ledger corr=")]
-    assert lines == [f"promise_ledger corr={CORR} outcome=skipped reason={reason}"]
+    assert _ledger_lines(caplog) == [f"promise_ledger corr={CORR} outcome=skipped reason={reason}"]
 
 
 @pytest.mark.asyncio
-async def test_an_interrupted_viewed_turn_logs_one_skip_line_and_still_raises(caplog):
-    with caplog.at_level(logging.INFO), pytest.raises(RuntimeError, match="governor gone"):
-        await _turn(payload=BROWSER, origin="juniper", harness_run=AsyncMock(side_effect=RuntimeError("governor gone")))
-    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("promise_ledger corr=")]
-    assert lines == [f"promise_ledger corr={CORR} outcome=skipped reason=interrupted"]
+@pytest.mark.parametrize("exc", [RuntimeError("governor gone"), asyncio.CancelledError()])
+async def test_an_interrupted_viewed_turn_logs_one_skip_line_and_still_raises(caplog, exc):
+    # CancelledError is the browser leaving (run_awaitable_cancel_on_ws_disconnect) or Hub shutting down.
+    with caplog.at_level(logging.INFO), pytest.raises(type(exc)):
+        await _turn(payload=BROWSER, origin="juniper", harness_run=AsyncMock(side_effect=exc))
+    assert _ledger_lines(caplog) == [f"promise_ledger corr={CORR} outcome=skipped reason=interrupted"]
 
 
 @pytest.mark.asyncio
-async def test_a_turn_without_a_view_logs_no_ledger_line(caplog):
+async def test_a_raise_between_the_view_and_the_governor_still_logs_one_line(caplog):
+    with caplog.at_level(logging.INFO), pytest.raises(ValueError, match="bad request"), \
+            patch("orion.hub.turn_orchestrator.HarnessRunRequestV1", side_effect=ValueError("bad request")):
+        await _turn(payload=BROWSER, origin="juniper", harness_run=_run())
+    assert _ledger_lines(caplog) == [f"promise_ledger corr={CORR} outcome=skipped reason=interrupted"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload,origin", [({}, "orion"), ({"no_write": True}, "juniper")])
+async def test_a_turn_without_a_view_logs_no_view_and_no_ledger_line(caplog, payload, origin):
+    # ({"no_write": True}, "juniper") is the live memory-scoreboard-eval /api/chat class (d449db8c).
     with caplog.at_level(logging.INFO):
-        await _turn(payload={}, origin="orion", harness_run=None)
-    assert not [r for r in caplog.records if r.getMessage().startswith("promise_ledger corr=")]
+        await _turn(payload=payload, origin=origin, harness_run=None)
+    assert _ledger_lines(caplog) == []
+
+
+@pytest.mark.asyncio
+async def test_a_failed_background_publish_logs_a_failed_ledger_line(caplog, monkeypatch):
+    from orion.grammar.promise_view import PromiseView
+    from orion.hub import promise_ledger, turn_orchestrator
+
+    async def _boom(*a, **k):
+        raise KeyError("plan")
+
+    monkeypatch.setattr(promise_ledger, "publish_promise_acts", _boom)
+    with caplog.at_level(logging.INFO):
+        await turn_orchestrator._publish_promise_acts(
+            MagicMock(), correlation_id="c9", session_id="s1", source_label="hub_orion", client_meta=None,
+            reflection=object(), promise_view=PromiseView())
+    assert _ledger_lines(caplog) == ["promise_ledger corr=c9 outcome=failed reason=KeyError"]

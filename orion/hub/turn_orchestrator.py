@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import contextvars
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -1119,7 +1120,7 @@ def turn_workflow_label(
     return None
 
 
-async def execute_unified_turn(
+async def _execute_unified_turn_body(
     *,
     bus: Any,
     correlation_id: str,
@@ -1744,6 +1745,7 @@ async def execute_unified_turn(
         from orion.hub.promise_ledger import promise_view_for_turn
 
         promise_view = await promise_view_for_turn(session_id, correlation_id)
+        _promise_turn_mark("viewed", correlation_id)
     harness_req = HarnessRunRequestV1(
         gpu_lease=payload.get("gpu_lease"),
         resume_key=payload.get("resume_key"),
@@ -1851,17 +1853,11 @@ async def execute_unified_turn(
     )
     activity_outcome: dict[str, Any] = {"run": None, "error": "interrupted"}
     try:
-        try:
-            run = await HarnessGovernorClient(harness_bus).run(
-                harness_req,
-                correlation_id=correlation_id,
-                liveness_check=liveness_check,
-            )
-        except BaseException:
-            # A raise or a cancel (the browser left, Hub shutting down) after the view read: still one
-            # promise_ledger line, so "the ledger never ran" is not silent.
-            _log_promise_ledger_skip(promise_view, correlation_id, "interrupted")
-            raise
+        run = await HarnessGovernorClient(harness_bus).run(
+            harness_req,
+            correlation_id=correlation_id,
+            liveness_check=liveness_check,
+        )
         activity_outcome = {"run": run, "error": None if run is not None else "rpc_timeout"}
         # `run is None` means an RPC timeout with no cancel published -- the
         # motor may still be mid-turn, so this stays False and we leave the
@@ -1902,7 +1898,8 @@ async def execute_unified_turn(
         await publish_cockpit_frames(bus, [timeline_complete_frame(correlation_id)])
 
     if run is None:
-        _log_promise_ledger_skip(promise_view, correlation_id, "harness_timeout")
+        # HarnessGovernorClient.run returns None on a timeout AND on an error/undecodable reply.
+        _log_promise_ledger_skip(promise_view, correlation_id, "no_run")
         await _publish_turn_timeout_grammar(bus=bus, correlation_id=correlation_id, settings=cfg)
         await _finish_cockpit(None, success=False)
         return [
@@ -2181,6 +2178,7 @@ async def _publish_unified_turn_chat_history(
         ), name=f"promise-acts-{correlation_id}")
         _PROMISE_ACT_TASKS.add(task)
         task.add_done_callback(_PROMISE_ACT_TASKS.discard)
+        _promise_turn_mark("logged")  # the task logs this turn's one promise_ledger line
 
 
 async def _publish_reply_say_act(
@@ -2261,6 +2259,37 @@ def _log_promise_ledger_skip(promise_view: Any, correlation_id: str, reason: str
     ledger step (not persisted, harness timeout or error, interrupted). No view: no line."""
     if promise_view is not None:
         logger.info("promise_ledger corr=%s outcome=skipped reason=%s", correlation_id, reason)
+        _promise_turn_mark("logged")
+
+
+# Per-turn promise-ledger bookkeeping for ``execute_unified_turn``: whether the turn read the view and
+# whether its one ``promise_ledger`` line is already written (or handed to the background task).
+_PROMISE_TURN: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar("promise_turn", default=None)
+
+
+def _promise_turn_mark(key: str, correlation_id: str | None = None) -> None:
+    state = _PROMISE_TURN.get()
+    if state is not None:
+        state[key] = True
+        if correlation_id is not None:
+            state["corr"] = correlation_id
+
+
+async def execute_unified_turn(**kwargs: Any) -> list[dict[str, Any]]:
+    """The unified turn (``_execute_unified_turn_body``, same keyword arguments) plus one promise-ledger guarantee: a
+    turn that read the promise view and ends by a raise or a cancel anywhere before its ledger line (the
+    browser left, Hub shut down, a request that fails validation) logs ``outcome=skipped
+    reason=interrupted``, so no viewed turn ends silent (Orion's PR #3598 third-round question 1)."""
+    state: dict[str, Any] = {"viewed": False, "logged": False, "corr": None}
+    token = _PROMISE_TURN.set(state)
+    try:
+        return await _execute_unified_turn_body(**kwargs)
+    except BaseException:
+        if state["viewed"] and not state["logged"]:
+            logger.info("promise_ledger corr=%s outcome=skipped reason=interrupted", state["corr"])
+        raise
+    finally:
+        _PROMISE_TURN.reset(token)
 
 
 # Background promise-act publishes (held so a task is not garbage-collected mid-flight).
@@ -2320,6 +2349,7 @@ async def _publish_promise_acts(
                                           open_promises=[(p.id, p.quote) for p in promise_view.open_promises])
     except Exception as exc:  # noqa: BLE001 -- a background trace; never fails the turn
         logger.warning("promise_acts_failed corr=%s error=%s", correlation_id, exc)
+        logger.info("promise_ledger corr=%s outcome=failed reason=%s", correlation_id, type(exc).__name__)
         return None
 
 

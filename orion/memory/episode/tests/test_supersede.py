@@ -443,3 +443,18 @@ def test_a_correction_needs_the_same_specific_referent():
     c = asyncio.run(s.classify_pair(OLD, NEW, ask))
     assert not c.acts and c.abstain == "checklist:correction" and len(seen) == 1
     assert '"same_referent"' in s.build_classify_prompt(OLD, NEW)
+
+
+def test_a_named_pr_needs_the_same_number_in_b():
+    """v3.3: Juniper's rejected pair, made up: a named PR's deploy vs a general 'nothing deployed'."""
+    a = row("a", "Juniper said the login fix is deployed and linked PR #41.")
+    b = row("b", "Juniper said nothing is deployed yet; the ticket closes when a fix lands.", days=14)
+    same = row("c", "Juniper said PR #41 is not deployed after all.", days=1)
+    assert s.numbered_items(a.statement) == {"41"} and not s.same_numbered_item(a, b) and s.same_numbered_item(a, same)
+    assert s.same_numbered_item(row("x", "Biscuit is a cat."), b)          # A names no number: no constraint
+    for new in (b, replace(b, voice="juniper_said", juniper_quoted=True)):
+        ask, _ = answers(*(vote("correction", kind="event"),) * 3)
+        v = asyncio.run(s.classify_pair(a, new, ask))
+        assert not v.acts and not v.juniper_acts and v.abstain == "numbered_item_not_in_b"
+    ask, _ = answers(*(vote("correction", kind="event"),) * 3)
+    assert asyncio.run(s.classify_pair(a, same, ask)).acts

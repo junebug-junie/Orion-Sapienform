@@ -68,7 +68,7 @@ ACTOR_DISTILL = "memory.episode_distill"
 ACTOR_PASS = "memory.supersede_pass"
 OP_SUPERSEDED = "superseded"
 OP_UNDONE = "supersede_undone"
-CHECK_VERSION = "supersede_classify.v3.2"
+CHECK_VERSION = "supersede_classify.v3.3"
 SUPERSEDE_NAMESPACE = uuid.UUID("6f1d3c52-2b8e-4f7a-9d41-3587a0c0ffee")
 
 # Candidate limits. bge-large cosines are compressed (live 2026-11-17: median pair 0.56, 90th
@@ -356,8 +356,10 @@ Third, is B about the SAME SPECIFIC THING as A, and the SAME ATTRIBUTE of it?
 - "same_referent": the exact same item, not just the same project, host, person or topic word: the
   same PR or fix, the same pet, the same measured quantity over the same scope and time window.
   A slice of a measurement (one part, one overnight window, an overhead share) and a whole total
-  are different referents. "The fix" in A and "nothing is deployed" in B are the same referent
-  only when B names that same fix or PR. If B could be about a different item, answer "no".
+  are different referents. If A names a specific item (a PR or issue number, a named fix, a named
+  pet or person) and B does not repeat that same name or number, answer "no": a general statement
+  in B ("nothing is deployed yet", "my numbers were off") is not about A's item. If B could be
+  about a different item, answer "no".
 - "same_attribute": the same property of that item (species, home town, count, deployed or not).
 
 Then pick exactly one relation:
@@ -374,6 +376,22 @@ Then pick exactly one relation:
 Reply with one JSON object and nothing else:
 {{"a_kind": "<one of the six kinds>", "b_says_a_wrong_or_changed": "yes" or "no", "same_referent": "yes" or "no", "same_attribute": "yes" or "no", "relation": "<one of the five>", "confidence": <0.0 to 1.0>, "reason": "<one short sentence>"}}
 """
+
+
+# A numbered item A names (PR #2968, issue 41): a correction or update must name the same number.
+# Deterministic, after the votes (v3.3, 2026-11-18: the model said "same referent: yes" 3/3 for a
+# general "nothing is deployed yet" against a named PR's deploy, even when the prompt said "no").
+_NUMBERED = re.compile(r"(?:#\s?|\b(?:pr|pull request|issue|ticket)\s+#?\s?)(\d{2,})", re.IGNORECASE)
+
+
+def numbered_items(text: str) -> frozenset[str]:
+    return frozenset(_NUMBERED.findall(text or ""))
+
+
+def same_numbered_item(old: "MemoryRow", new: "MemoryRow") -> bool:
+    """False when A names numbered items and B names none of them (no shared referent possible)."""
+    a = numbered_items(old.statement)
+    return not a or bool(a & numbered_items(new.statement))
 
 
 def build_classify_prompt(old: MemoryRow, new: MemoryRow) -> str:
@@ -488,7 +506,8 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
             break
     rel = _majority(got)
     complete = len(got) == max(1, int(votes))
-    all_acting = complete and all(v.acting for v in got)
+    numbered_ok = same_numbered_item(old, new)
+    all_acting = complete and all(v.acting for v in got) and numbered_ok
     unanimous = all_acting and len({v.relation for v in got}) == 1
     strict = unanimous and all(v.confidence >= min_confidence for v in got)
     juniper = all_acting and new.juniper_quoted
@@ -496,6 +515,8 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
         why = "error"
     elif not complete and all(v.acting for v in got):
         why = "budget_spent"
+    elif complete and all(v.acting for v in got) and not numbered_ok:
+        why = "numbered_item_not_in_b"
     elif not all_acting:
         last = got[-1]
         why = f"checklist:{last.relation}" if last.relation in ACTING_RELATIONS else f"vote:{last.relation}"

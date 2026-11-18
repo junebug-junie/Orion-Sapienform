@@ -195,7 +195,14 @@ Native worker queues and HTTP/WS ingress are bounded. Three consecutive late
 frames pause, a silent/hung/crashed worker fails the session, and stop escalates
 from cooperative shutdown to termination/kill of only its child. Restart marks
 active persisted state failed (`service_restart`), never resumes play by itself;
-start a new session from a save instead. No raw A/V recording, model invocation or memory export occurs.
+start a new session from a save instead. This service records no raw A/V, invokes no model and exports no memory.
+That promise is the engine's own. Orion's perception of the game begins one hop
+later, in Hub's Retro gateway (game company patch 2,
+`services/orion-hub/scripts/retro_watch.py`): while a person plays, the gateway
+keeps one of the video packets it already relays every 2 s in memory, and a look
+sends at most 4 stills (never sound, never a stream) to `orion-percept-store`,
+where each is gone within the hour; one model call writes a note, and only the
+note is kept. The engine itself still opens no second viewer for this.
 
 ## Save states
 

@@ -72,6 +72,7 @@ ROUTES_ADDED_AFTER_GOLDEN = {"deep.thinker.v1", "agent-deep",          # hecate,
                              "prime_starved",       # Prime after a try that got no seat, 2026-11-03 (pinned below)
                              "judge",               # finalize 5b judge off a gpu2 hold, 2026-11-12 (pinned below)
                              "prime_consent",       # Orion's consent to a Claude tool, 2026-11-13 (pinned below)
+                             "retro_watch",         # Orion's look at a game screen, 2026-11-18 (pinned below)
                              # operator work (evals), 2026-11-12 (pinned below)
                              "operator", "operator_chat", "operator_agent", "operator_agent_gpu2",
                              "operator_agent_deep", "operator_metacog", "operator_fast"}
@@ -237,6 +238,23 @@ def test_prime_consent_route_is_the_chat_worker_at_interactive():
     assert r["priority"] == "system"   # definitional: hidden from the picker
     assert "prime_consent" in SYSTEM_LLM_ROUTES and "prime_consent" not in BACKGROUND_LLM_ROUTES
     assert "prime_consent" not in METACOG_LLM_ROUTES
+
+
+def test_retro_watch_route_is_the_sighted_chat_worker_at_system():
+    """Orion's look at a person's game screen (2026-11-18, game company patch 2): the chat worker (the only
+    sighted lane), at system priority (below Juniper's turn, shed by the heat reflex), system-only. Hub's
+    gateway takes its hold in the route's class (orion/retro/watch.py POOL_CLASS)."""
+    from orion.llm.routes import BACKGROUND_LLM_ROUTES, METACOG_LLM_ROUTES, SYSTEM_LLM_ROUTES
+    from orion.retro.watch import POOL_CLASS, POOL_ROUTE
+    view = build_route_view(None, CFG)
+    [chat] = [e for e in view["routes"] if e["id"] == "chat"]
+    [r] = [e for e in view["routes"] if e["id"] == POOL_ROUTE]
+    same = lambda e: {k: v for k, v in e.items() if k not in ("id", "priority")}  # noqa: E731
+    assert same(r) == same(chat)
+    spec = CFG.routes[POOL_ROUTE]
+    assert (spec.work_class, spec.priority) == (POOL_CLASS, "system") == ("chat", "system")
+    assert POOL_ROUTE in SYSTEM_LLM_ROUTES and POOL_ROUTE not in BACKGROUND_LLM_ROUTES
+    assert POOL_ROUTE not in METACOG_LLM_ROUTES
 
 
 def test_judge_route_is_agent_work_that_never_lands_on_the_gpu2_seat():

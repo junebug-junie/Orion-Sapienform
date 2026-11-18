@@ -131,7 +131,10 @@ organs:
     temporal_sources: [retro_play]
     salience_magnitude:
       retro_play: sitting_minutes
-    families: [hub.retro_coplay, hub.retro_leisure, aitown.session]
+    # Patch 2 (looks): hub.retro_watch bids for each look; orion.watch_choice is Orion's own switch (dig watch).
+    # Patch 2 writes no retro_look events: only looks a line turn checked and found to hold become events, and
+    # that judging arrives in patch 3 (spec rev 4 section 8). The sitting's label carries the note count.
+    families: [hub.retro_coplay, hub.retro_leisure, aitown.session, hub.retro_watch, orion.watch_choice]
     reads_now: null
     exempt_read: "the read-back comes with the line turn (game company design PR #3517, patch 3; #3457)"
   prime:

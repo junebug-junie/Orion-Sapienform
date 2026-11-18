@@ -541,7 +541,12 @@ def retro_play_label(row: Row) -> str:
 
         seconds = retro_play_seconds(row)
         span = f" for {span_words(seconds)}" if seconds is not None else ""
-        return clip(f"{who_words(row.get('player_stated'))} played {title}{span}")
+        # Game company patch 2: the count of notes Orion stored while watching (retro_watch_look). A count from
+        # the table, never a model's words; said only when there is at least one.
+        looks = row.get("looks")
+        watched = (f". Orion watched: {int(looks)} note{'' if int(looks) == 1 else 's'}"
+                   if isinstance(looks, int) and not isinstance(looks, bool) and looks > 0 else "")
+        return clip(f"{who_words(row.get('player_stated'))} played {title}{span}{watched}")
     if row.get("played_together"):
         who = "together"
     elif row.get("kind") == "leisure" and not row.get("human_may_be_in_control") \
@@ -608,6 +613,7 @@ def retro_play(row: Row, tz_name: str = DEFAULT_TZ) -> TemporalSelfEventV1 | Non
             "memory_card_id": str(row["memory_card_id"]) if row.get("memory_card_id") else None,
             # The salience magnitude of this kind (orion/temporal_self/now.py ``sitting_minutes``).
             "duration_sec": retro_play_seconds(row), "player_stated": row.get("player_stated"),
+            "looks": row.get("looks"),
             **_available_payload(row.get("created_at")),
         },
     )

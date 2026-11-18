@@ -45,6 +45,15 @@ class Settings(BaseSettings):
     HUB_RETRO_SITTING_ENABLED: bool = Field(default=True, alias="HUB_RETRO_SITTING_ENABLED")
     HUB_RETRO_SITTING_GAP_SEC: float = Field(default=300.0, alias="HUB_RETRO_SITTING_GAP_SEC")
     HUB_RETRO_SITTING_MIN_SEC: float = Field(default=120.0, alias="HUB_RETRO_SITTING_MIN_SEC")
+    # Orion's look at the game screen (scripts/retro_watch.py; game company design, patch 2). Ships on; needs
+    # the sitting record. Off -> no frame is kept, no bid, no model call, the page says the watch is off.
+    # LOOK: at most one look in this many seconds (a ceiling; a look also needs screen change and a press).
+    # SEAT_WAIT: how long a funded look waits for its GPU seat before it is given up (the frames are taken at
+    # the grant, so a long wait still describes the screen of the grant, but the trigger saw an older one).
+    # The frames go to PERCEPT_STORE_BASE_URL / PERCEPT_STORE_TOKEN (below): this process reads them too.
+    HUB_RETRO_WATCH_ENABLED: bool = Field(default=True, alias="HUB_RETRO_WATCH_ENABLED")
+    HUB_RETRO_LOOK_SEC: float = Field(default=60.0, alias="HUB_RETRO_LOOK_SEC")
+    HUB_RETRO_WATCH_SEAT_WAIT_SEC: float = Field(default=30.0, alias="HUB_RETRO_WATCH_SEAT_WAIT_SEC")
     # Solo leisure play (scripts/retro_leisure.py). Ships on; Hub's leisure timer and the doer
     # gates decide when it actually runs.
     RETRO_LEISURE_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_ENABLED")

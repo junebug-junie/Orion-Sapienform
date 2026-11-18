@@ -17,6 +17,10 @@ the process that relays the browser's input (the Retro gateway; Hub's own proces
 It credits Orion with nothing: orion_frames is 0, no memory card is written and no act is opened
 (a person playing is not an act of Orion's). Who plays is only what the page was told.
 
+Orion's own looks at the screen (game company patch 2) are kept by scripts/retro_watch.py, not here; the
+only thing this record takes from them is a count: ``looks_for`` tells the close how many notes Orion
+stored in the sitting, and the play row's summary says "Orion watched: N notes." when N > 0.
+
 No model is called here. Every failure is logged and swallowed: a game never waits for a record.
 """
 from __future__ import annotations
@@ -61,7 +65,8 @@ ON CONFLICT (sitting_id) DO UPDATE SET
 
 # The play row of a sitting: the exporter's own column list (scripts/retro_memory_export.py) plus the
 # one column only a sitting fills. One list, so the two writers of retro_play_sessions cannot drift.
-PLAY_INSERT_SQL = insert_sql(extra=("player_stated",))
+PLAY_EXTRA = ("player_stated", "looks")
+PLAY_INSERT_SQL = insert_sql(extra=PLAY_EXTRA)
 
 # A row that never closed belongs to a process that died: this process holds the only live tracker,
 # and $1 is the sitting it has open now (or '').
@@ -73,7 +78,7 @@ RETURNING sitting_id
 # Closed, long enough, and no play row: the close could not write it (database down, shutdown cut short).
 RECOVER_MISSING_SQL = f"""
 SELECT s.sitting_id, s.retro_session_id, s.game_id, s.game_title, s.started_at, s.last_input_at, s.ended_at,
-       s.end_reason, s.mask_changes, s.saves, s.loads, s.pauses, s.player_stated
+       s.end_reason, s.mask_changes, s.saves, s.loads, s.pauses, s.player_stated, s.notes_stored
 FROM retro_sitting s
 WHERE NOT s.backfilled AND s.ended_at IS NOT NULL AND s.ended_at >= now() - make_interval(days => $2)
   AND s.ended_at - s.started_at >= make_interval(secs => $1)
@@ -90,17 +95,20 @@ def _plural(n: int, word: str) -> str:
     return f"{n} {word}{'' if n == 1 else 's'}"
 
 
-def sitting_summary(s: Sitting) -> str:
-    """One deterministic sentence for the play arc. Counts only; no model writes it."""
+def sitting_summary(s: Sitting, looks: Optional[int] = None) -> str:
+    """One deterministic sentence for the play arc. Counts only; no model writes it. ``looks``: notes
+    Orion stored while watching (scripts/retro_watch.py); said only when there is at least one."""
     title = s.game_title or s.game_id or "a game"
     text = f"{who_words(s.player_stated)} played {title} for {span_words(s.duration_sec)}."
     extras = [_plural(n, w) for n, w in ((s.saves, "save"), (s.loads, "load")) if n]
     if extras:
         text += f" {' and '.join(extras).capitalize()}."
+    if looks:
+        text += f" Orion watched: {_plural(int(looks), 'note')}."
     return text
 
 
-def play_row(s: Sitting) -> RetroPlaySessionSummaryV1:
+def play_row(s: Sitting, looks: Optional[int] = None) -> RetroPlaySessionSummaryV1:
     """The ``retro_play_sessions`` row of one closed sitting. Frames are not counted (basis
     ``human_input``): human_frames and orion_frames are 0, and no share is claimed."""
     assert s.ended_at is not None
@@ -111,12 +119,13 @@ def play_row(s: Sitting) -> RetroPlaySessionSummaryV1:
         end_reason=s.end_reason, control=[], control_basis="human_input", human_may_be_in_control=True,
         human_frames=0, orion_frames=0, human_share=None, played_together=False,
         predictions_met=0, predictions_refuted=0, human_interventions=0,
-        summary=sitting_summary(s), player_stated=s.player_stated if s.player_stated in PLAYERS else None,
+        summary=sitting_summary(s, looks), player_stated=s.player_stated if s.player_stated in PLAYERS else None,
+        looks=int(looks) if looks is not None else None,
     )
 
 
 def _play_values(row: RetroPlaySessionSummaryV1) -> list[Any]:
-    return row_values(row, extra=("player_stated",))
+    return row_values(row, extra=PLAY_EXTRA)
 
 
 def _setting(config: Any, name: str, default: float) -> float:
@@ -150,7 +159,7 @@ def sitting_line(data: Any, now: Optional[float] = None) -> Optional[str]:
     idle = max(0.0, now - last)
     tail = "" if idle < 60 else f" The last button press was {span_words(idle)} ago."
     return (f"{who} is playing {title} on your Retro service, for {span_words(max(0.0, last - started))} so far."
-            f"{tail}{known} You are not watching the screen: you know this from the controller's input only.")
+            f"{tail}{known} This line comes from the controller's input only: it holds nothing you saw on the screen.")
 
 
 async def read_sitting(redis: Any) -> Optional[dict]:
@@ -193,6 +202,8 @@ class SittingService:
         self.tracker = tracker or SittingTracker(gap_sec=_setting(config, "HUB_RETRO_SITTING_GAP_SEC", GAP_SEC_DEFAULT))
         self.redis_provider, self.pool_provider = redis_provider, pool_provider
         self.resolve_game, self.clock = resolve_game, clock
+        # Set by scripts/retro_watch.py: sitting id -> notes Orion stored in it (None: the watch did not run).
+        self.looks_for: Callable[[str], Optional[int]] = lambda _sid: None
         self._loop_task: Optional[asyncio.Task] = None
         self._jobs: set[asyncio.Task] = set()
         self._persisted_at = 0.0
@@ -355,10 +366,22 @@ class SittingService:
             self._warn("retro_sitting_persist_failed")
             return False
 
-    async def _play(self, s: Sitting) -> str:
-        """Write the play row of a closed sitting. Safe to repeat: the row's key is the sitting."""
+    def _looks(self, s: Sitting) -> Optional[int]:
         try:
-            return "play_row" if await self._db("fetchval", PLAY_INSERT_SQL, *_play_values(play_row(s))) else "duplicate"
+            n = self.looks_for(s.sitting_id)
+            return int(n) if n is not None else None
+        except Exception:  # noqa: BLE001 -- a count never stops a play row
+            self._warn("retro_sitting_looks_unread")
+            return None
+
+    async def _play(self, s: Sitting, looks: Optional[int] = None) -> str:
+        """Write the play row of a closed sitting. Safe to repeat: the row's key is the sitting.
+        ``looks``: the stored notes (the live watch's count, or the row's ``notes_stored`` in recovery)."""
+        if looks is None:
+            looks = self._looks(s)
+        try:
+            return ("play_row" if await self._db("fetchval", PLAY_INSERT_SQL, *_play_values(play_row(s, looks)))
+                    else "duplicate")
         except LookupError:
             return "no_pool"
         except Exception:  # noqa: BLE001
@@ -396,7 +419,7 @@ class SittingService:
                     game_title=r["game_title"], started_at=_epoch(r["started_at"]), last_input_at=_epoch(r["last_input_at"]),
                     ended_at=_epoch(r["ended_at"]), end_reason=r["end_reason"], mask_changes=r["mask_changes"],
                     saves=r["saves"], loads=r["loads"], pauses=r["pauses"], player_stated=r["player_stated"])
-                written += (await self._play(s)) == "play_row"
+                written += (await self._play(s, r.get("notes_stored"))) == "play_row"
             if closed or rows:
                 logger.info("retro_sitting_recovered closed_rows=%d missing_play_rows=%d written=%d",
                             len(closed), len(rows), written)

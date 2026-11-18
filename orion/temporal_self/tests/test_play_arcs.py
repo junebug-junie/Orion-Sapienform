@@ -165,6 +165,16 @@ def test_a_persons_sitting_is_a_play_arc_that_never_credits_orion() -> None:
     assert S.retro_play(row("sess-1", at(0), 22, SOLO)).payload["duration_sec"] == 22 * 60.0
 
 
+def test_a_watched_sitting_label_counts_orions_notes_from_the_table() -> None:
+    # Game company patch 2: the count of stored notes (retro_play_sessions.looks), never a model's words.
+    e = S.retro_play(sitting_row("s1", at(0), 142, looks=3))
+    assert e.label == "Someone played A Link to the Past for 2 h 22 min. Orion watched: 3 notes"
+    assert e.payload["looks"] == 3
+    assert S.retro_play_label(sitting_row("s2", at(0), 40, looks=1)).endswith("Orion watched: 1 note")
+    for none in (0, None, True, "3"):                      # nothing stored, unknown, or not a count: not said
+        assert "watched" not in S.retro_play_label(sitting_row("s3", at(0), 40, looks=none))
+
+
 def test_no_reader_words_a_persons_sitting_as_orion_playing() -> None:
     now = at(200)
     rows = [row("sess-1", at(0), 22, SOLO), sitting_row("s1", at(30), 142, player_stated="juniper")]

@@ -1,8 +1,16 @@
-"""Bounded Retro-only WebSocket relay; no planner, bus or Hub lifecycle state.
+"""Bounded Retro-only WebSocket relay; no planner, bus or Hub lifecycle state of its own.
 
-One observer hook: ``on_input`` is called with each browser input message after it was forwarded
-(the sitting record, scripts/retro_sitting.py). It is sync, it must not raise and it must not
-wait; the relay holds no state for it."""
+Two observer callbacks, and nothing else leaves the relay:
+
+* ``on_input``: each browser input message, after it was forwarded (the sitting record,
+  scripts/retro_sitting.py: who plays, from the button changes);
+* ``on_media``: each binary video packet the engine sends, as it arrives, still compressed (Orion's
+  look, scripts/retro_watch.py: one packet in 2 s is kept in memory; a look decodes up to 4 of them
+  and a model reads them as stills, game company patch 2). The browser's stream is not delayed or
+  changed by it.
+
+Both are sync, must not raise and must not wait; the relay holds no state for them. The relay itself
+records nothing and calls no model."""
 import asyncio
 import logging
 import json
@@ -16,7 +24,7 @@ logger = logging.getLogger('uvicorn.error.retro_transport')
 SEND_TIMEOUT_SEC = .75
 
 
-async def relay_messages(ws, upstream, channel, sid, *, media_ack=False, on_input=None):
+async def relay_messages(ws, upstream, channel, sid, *, media_ack=False, on_input=None, on_media=None):
     # A slow viewer must not accumulate old pictures/PCM. Never drop input replies.
     latest = asyncio.Queue(maxsize=1)
     sent = acknowledged = 0
@@ -56,6 +64,9 @@ async def relay_messages(ws, upstream, channel, sid, *, media_ack=False, on_inpu
             if channel == 'media':
                 if latest.full(): latest.get_nowait()
                 latest.put_nowait(msg)
+                if on_media is not None and msg.type == aiohttp.WSMsgType.BINARY:
+                    try: on_media(msg.data)
+                    except Exception: logger.warning('retro_relay_on_media_failed sid=%s', sid, exc_info=True)
             else:
                 await asyncio.wait_for(ws.send_text(msg.data), SEND_TIMEOUT_SEC)
 

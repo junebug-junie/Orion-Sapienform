@@ -134,6 +134,13 @@ async def lifespan(app: FastAPI):
             if t is not None and not t.done():
                 t.cancel()
                 await asyncio.gather(t, return_exceptions=True)
+        # Orion's look counters and the pending screen-change counts are written while the pool is open.
+        watch = getattr(app.state, 'retro_watch', None)
+        if watch is not None:
+            try:
+                await asyncio.wait_for(watch.close(), 8)
+            except Exception:  # noqa: BLE001
+                logger.warning('retro_gateway_watch_close_failed', exc_info=True)
         # The open sitting ends at its last input and is recorded while the pool is still open.
         sitting = getattr(app.state, 'retro_sitting', None)
         if sitting is not None:
@@ -159,6 +166,7 @@ app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan
 _router = configured_router()
 app.include_router(_router)
 app.state.retro_sitting = getattr(_router, 'retro_sitting', None)
+app.state.retro_watch = getattr(_router, 'retro_watch', None)
 
 
 @app.get('/api/retro-gateway/health')

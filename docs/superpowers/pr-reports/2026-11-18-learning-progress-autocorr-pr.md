@@ -128,6 +128,6 @@ scripts/safe_docker_build.sh orion-prediction up -d --build   # from clean prima
 
 ## PR link
 
-(filled on open)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3710
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

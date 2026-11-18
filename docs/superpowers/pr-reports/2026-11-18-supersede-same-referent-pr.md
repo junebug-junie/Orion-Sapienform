@@ -1,6 +1,6 @@
 ## Summary
 
-> #3709 merged at 06:12Z with v3.3 (the numbered-item rule checked after the votes). v3.4, which checks the rule before any vote and tightens the regex, ships in the follow-up PR #FOLLOWUP. Both versions have a recorded passing eval (v3.3 at 06:07Z, v3.4 at 09:31Z).
+> #3709 merged at 06:12Z with v3.3 (the numbered-item rule checked after the votes). v3.4, which checks the rule before any vote and tightens the regex, ships in the follow-up PR #3735. Both versions have a recorded passing eval (v3.3 at 06:07Z, v3.4 at 09:31Z).
 
 Juniper reviewed the two memory corrections that the v3.1 checker proposed in the dry run. She rejected both. In each case all 3 votes said "correction", and in each case the two memories only shared a project word:
 

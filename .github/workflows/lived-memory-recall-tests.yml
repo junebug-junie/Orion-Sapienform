@@ -34,6 +34,10 @@ on:
       - "services/orion-recall/app/http_models.py"
       - "services/orion-recall/sql/recall_telemetry.sql"
       - "services/orion-recall/evals/**"
+      - "services/orion-cortex-exec/app/pcr_chat_memory.py"
+      - "services/orion-cortex-exec/app/settings.py"
+      - "orion/memory/recall_skip_gate.py"
+      - "orion/memory/retrieval_intent.py"
       - "services/orion-vector-host/app/**"
       - "services/orion-vector-host/tests/**"
       - "services/orion-hub/scripts/session_roundup_loop.py"
@@ -53,6 +57,10 @@ on:
       - "orion/notify/transport.py"
       - "services/orion-recall/app/**"
       - "services/orion-recall/evals/**"
+      - "services/orion-cortex-exec/app/pcr_chat_memory.py"
+      - "services/orion-cortex-exec/app/settings.py"
+      - "orion/memory/recall_skip_gate.py"
+      - "orion/memory/retrieval_intent.py"
       - "services/orion-vector-host/app/**"
       - "services/orion-hub/scripts/session_roundup_loop.py"
       - "services/orion-hub/scripts/consult_loop.py"
@@ -94,6 +102,11 @@ jobs:
             tests/test_lived_memory.py tests/test_lived_memory_step2.py evals/test_lived_memory_replay_eval.py \
             tests/test_lived_know_and_status.py tests/test_recall_telemetry_persist.py \
             evals/test_dig_know_bank_eval.py
+      - name: Memory scoreboard fixture eval (issue #3536)
+        working-directory: services/orion-recall
+        run: |
+          PYTHONPATH=.:${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
+            evals/test_memory_scoreboard.py
       - name: Hub PR commenter refuses guarded text
         working-directory: services/orion-hub
         run: |

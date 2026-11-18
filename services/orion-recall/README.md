@@ -1099,3 +1099,47 @@ carries `backend`, `degraded` reasons and the rewritten searches.
 Kill switches: `RECALL_LIVED_MEMORY_ENABLED=false` (all lived recall),
 `RECALL_LIVED_MEMORY_REWRITE_ENABLED=false` (rewrite only), `RECALL_LIVED_MEMORY_LINK_TOP_K=0`
 (links only). Restart orion-recall after changing any of them.
+
+### Memory scoreboard (issue #3536)
+
+One command scores how well Orion remembers Juniper's real history, so every memory change can be
+measured: `make eval-memory-scoreboard` (weekly; `ARGS=--phases retrieval` for the model-free half).
+
+- **Bank.** `~/.orion/evals/memory_scoreboard_bank.json` (host-side only, mode 600; never in git).
+  Five categories, about even: facts, events across sessions, time (each item records its
+  `as_of`), knowledge updates (a correction exists; only the corrected answer counts; the item
+  records the wrong answer and any superseded row), and abstention (never happened). Some items
+  are real past messages that lean on shared history (`chat_id`, read at run time). Each item names
+  its target record ids (`episode_memory:` / `stance:` / `person_fact:`), none for abstention.
+  Items whose memory is only in pre-October chat are `backfill_pending` (backfill #3537) and are
+  reported apart, never scored.
+- **Retrieval (no model).** Each item replays the phase-0 skip gate, phase 1
+  (`chat.continuity.v1`, lived memory) and phase 3 (`--phase3-intent`, default `open_loop`, the
+  usual live intent) over the real bus. Hit = a target id is in either phase's DURABLE MEMORY
+  bundle or cited by the current `page:juniper` core page (the table also shows the recall-only
+  rate). Bar: 80% of stored items. Degraded recalls are read from each call's own
+  `recall_telemetry` row (`lived_status` degraded / timeout / error / off, the `lived_trace`
+  degraded reasons and `rerank_partial`, deadline hit, missing trace; older rows without
+  `lived_status` fall back to timing checks) and reported apart. `lived_status = skipped_short`
+  (too few content words for the lived search) is the chat path's own rule, so it is scored and
+  counted in its own column. Superseded rows served for a knowledge-update item are counted.
+  Implicit items (real past messages) also get their own row across categories.
+- **Answer (end to end).** Each item is a real Hub chat turn (`POST /api/chat`, mode `orion`,
+  `no_write: true`, session `memory-scoreboard-eval`), the same path as the self-sense eval, so
+  nothing lands in chat history. A local judge (`orion/evals/leased_llm.py` operator hold, local
+  lanes only) labels the reply: correct / don't know / invented / false "no memory" / missed.
+  Bars: 70% or more correct, 0 invented, 0 false "no memory" on stored items. The turn's own
+  `recall_telemetry` rows say whether the target was in its prompt and whether the search ran in
+  full. A "no memory" answer on a stored item is a false denial even when the search was skipped
+  or degraded; it is also reported under its most specific cause (`lived:rerank_timeout`,
+  `lived:embedder_unavailable`, `lived:rerank_partial:N/M`, then `lived:skipped_short` /
+  `lived:degraded` / `lived:timeout`, then `recall:skip_gate` / `recall:no_trace`), `search_full`
+  when the search ran in full, or `cause:unknown` when the turn's trace was never read.
+- **Output.** `~/.orion/evals/memory_scoreboard_runs/<date>.json` (everything, includes replies)
+  and `<date>.md` (per-category table, counts and qids only), plus one line per run in
+  `history.jsonl`. All mode 600.
+- **Fixture test.** `evals/test_memory_scoreboard.py` (made-up records) runs in CI.
+- **Weekly run.** Not wired into a scheduler. The run reads a host-only bank and writes host-only
+  results, and orion-durable-runs runs in a container without them; a new `DurableWorkflowV1`
+  value is also a new producer under the integration gate (CLAUDE.md 0A). Run the make target
+  weekly.

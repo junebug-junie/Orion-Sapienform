@@ -19,6 +19,19 @@ Over the last ``--days`` (default 28) it reports:
   quick gate), with a 90% Poisson score interval, against the frozen replay baseline (``REPLAY_BASELINE``);
   red above 2x. Stored items with no
   ``force``/``done_when`` (written before #3532) are skipped and counted, never guessed;
+* expected vs observed: the firm promises the frozen baseline rate predicts for the judged browser turns
+  (``judged x 0.080``) beside the count seen, and how likely a count that low is by chance;
+* the browser window: Juniper's browser turns since the finder went live and the last one (its correlation
+  id and age). Hub reads the promise view only on those turns (#3641), so a stretch with no browser turn
+  logs no ``promise_view``/``promise_ledger`` line by design: the report prints the gap so it is not read
+  as "the ledger was quiet";
+* the lane split: every turn whose reflection stored promise items since the finder went live, by lane
+  (Juniper's browser turns vs each other session), because only the browser lane can open a ledger act;
+* Prime by exact key: for each of those turns, Prime's concern for it (``turn_concern_id(corr)``: open,
+  closed, or refused by a loop-guard bound) and the ``intention.carry`` replies keyed on the same concern
+  id. Prime state is Redis (``orion:prime:state``/``orion:prime:turns``): read with the ``redis`` package
+  when it is installed, or from ``--prime-state``/``--prime-turns`` files (``redis-cli GET`` output);
+  else the Prime column prints ``not read``;
 * ``--sample N``: a blinded sample of stored promise items for hand labels. Each item shows ONLY the
   quote and the reply around it, never the judge's doer/force/act/done_when, so the labeller cannot
   lean on the judge's own reading (amendment 2). Writes a label template with hash keys;
@@ -153,6 +166,23 @@ SELECT DISTINCT ON (t.correlation_id) t.correlation_id, t.created_at,
  WHERE t.created_at >= %(since)s AND {_JUNIPER_C}
  ORDER BY t.correlation_id
 """
+# Every turn (any lane) whose reflection stored promise items, with its ingress session and whether a Hub
+# browser surface sent it. Starts from the few item-bearing traces; the ingress hop is a primary-key probe.
+STORED_SQL = f"""
+SELECT t.correlation_id, t.created_at, t.workflow,
+       t.run_artifact -> 'reflection' -> 'promises_made' AS made,
+       (SELECT k.raw ->> 'session_id' FROM cockpit_turn_sighting k
+         WHERE k.correlation_id = t.correlation_id AND k.stage = 'ingress' AND k.seq = 0) AS session_id,
+       (SELECT k.raw ? 'mode' FROM cockpit_turn_sighting k
+         WHERE k.correlation_id = t.correlation_id AND k.stage = 'ingress' AND k.seq = 0) AS has_mode,
+       EXISTS (SELECT 1 FROM cockpit_turn_sighting k
+                WHERE k.correlation_id = t.correlation_id AND {_INGRESS_K}) AS from_browser
+  FROM harness_turn_trace t
+ WHERE t.created_at >= %(since)s
+   AND t.run_artifact -> 'reflection' -> 'promises_made' @> '[{{}}]'
+ ORDER BY t.created_at
+"""
+ROUNDUP_SESSION_PREFIX = "orion_session-roundup-"
 CARRY_SQL = """
 SELECT client_meta ->> 'concern_id' AS concern_id, created_at
   FROM chat_history_log
@@ -183,6 +213,17 @@ def poisson_rate_interval(k: int, n: int, z: float = 1.645) -> tuple[float, floa
         return (0.0, float("inf"))
     half = z * math.sqrt(k + z * z / 4)
     return (max(0.0, (k + z * z / 2 - half) / n), (k + z * z / 2 + half) / n)
+
+
+def poisson_cdf(k: int, mean: float) -> float:
+    """P(X <= k) for X ~ Poisson(mean): how likely a count this low is when the rate is the baseline."""
+    if mean <= 0:
+        return 1.0
+    term = total = math.exp(-mean)
+    for i in range(1, k + 1):
+        term *= mean / i
+        total += term
+    return min(1.0, total)
 
 
 def beta_summary(kept: int, broken: int) -> dict[str, float]:
@@ -245,8 +286,10 @@ def close_summary(acts: Sequence[Mapping[str, Any]], *, unclosable: set[str],
                     opened < t <= horizon for t in carry_concerns.get(turn_concern_id(parsed[0]), [])):
                 expired_with_carry.append(str(act["act_id"]))
     kept, expired = kinds.get("kept", 0), kinds.get("expired", 0)
+    closed = kept + expired + kinds.get("void", 0) + kinds.get("unclosable", 0)
     return {"acts": len(acts), "open": kinds.get("open", 0), "kept": kept, "expired": expired,
             "void": kinds.get("void", 0), "unclosable": kinds.get("unclosable", 0),
+            "void_share": round(kinds.get("void", 0) / closed, 3) if closed else None,
             "kept_by_evidence": dict(evidence), "expired_with_carry_reply": len(expired_with_carry),
             "expired_with_carry_reply_acts": expired_with_carry,
             "keep_rate": beta_summary(kept, expired)}
@@ -301,7 +344,11 @@ def guard_summary(turns: Sequence[Mapping[str, Any]], baseline: tuple[int, int] 
     for t in early:
         skipped += sum(1 for item in _made(t.get("made")) if "force" not in item and "done_when" not in item)
     armed = len(judged) >= min_judged
+    expected = len(judged) * base
     return {"judged_turns": len(judged),
+            "expected_firm": round(expected, 2),
+            "p_at_most_observed": round(poisson_cdf(firm, expected), 3) if judged else None,
+            "p_at_least_observed": (round(1.0 - poisson_cdf(firm - 1, expected), 3) if firm else 1.0) if judged else None,
             "turns_not_judged": len(turns) - len(early) - len(not_browser) - len(judged),
             "turns_before_finder": len(early), "turns_not_from_browser": len(not_browser),
             "firm_promises": firm,
@@ -424,6 +471,105 @@ def _accepted(raw: Any) -> list[str]:
     return [x for x in raw if isinstance(x, str)] if isinstance(raw, list) else []
 
 
+def lane_of(row: Mapping[str, Any]) -> str:
+    """``juniper_browser`` for a turn a Hub browser surface sent (the only lane that can open a ledger act),
+    else its ingress session (round-ups folded into one), else its workflow."""
+    if row.get("from_browser"):
+        return "juniper_browser"
+    session = str(row.get("session_id") or "")
+    if session.startswith(ROUNDUP_SESSION_PREFIX):
+        return "orion_session-roundup"
+    return session or str(row.get("workflow") or "") or "unknown"
+
+
+def _promise_items(raw: Any) -> list[int]:
+    """Indices of the stored items Prime's hand-back counts as promises (``_counted_promises``: a dict with a
+    non-empty quote, not an offer)."""
+    from orion.prime.handback import _counted_promises
+
+    return _counted_promises({"promises_made": _made(raw)})[0]
+
+
+def lane_split(stored: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """Item-bearing turns by lane: turns, items, firm non-offer items."""
+    lanes: dict[str, dict[str, int]] = {}
+    for row in stored:
+        made = _made(row.get("made"))
+        if not made:
+            continue
+        lane = lanes.setdefault(lane_of(row), {"turns": 0, "items": 0, "firm": 0})
+        lane["turns"] += 1
+        lane["items"] += len(made)
+        lane["firm"] += sum(1 for x in made if _firm(x) and x.get("offer") is not True)
+    ordered = dict(sorted(lanes.items(), key=lambda kv: (-kv[1]["turns"], kv[0])))
+    return {"turns": sum(v["turns"] for v in lanes.values()), "items": sum(v["items"] for v in lanes.values()),
+            "browser_turns": lanes.get("juniper_browser", {}).get("turns", 0), "by_lane": ordered}
+
+
+def browser_window(turns: Sequence[Mapping[str, Any]], now: datetime,
+                   finder_live_at: datetime = FINDER_LIVE_AT) -> dict[str, Any]:
+    """Juniper's browser turns since the finder went live (logged turns), and the last one: the only turns
+    Hub reads the promise view on, so the gap after the last one has no promise lines by design."""
+    browser = sorted(((at, t) for t in turns
+                      if t.get("from_browser") is True and (at := _aware(t.get("created_at"))) is not None
+                      and at >= finder_live_at), key=lambda x: x[0])
+    judged = sum(1 for _, t in browser if t.get("reflection_source") == "substrate_informed_pass")
+    if not browser:
+        return {"browser_turns": 0, "judged": 0, "last_at": None, "last_corr": None, "hours_since_last": None}
+    at, last = browser[-1]
+    return {"browser_turns": len(browser), "judged": judged, "last_at": at.isoformat(timespec="seconds"),
+            "last_corr": str(last["correlation_id"])[:8],
+            "hours_since_last": round((now - at).total_seconds() / 3600.0, 1)}
+
+
+def prime_by_ref(stored: Sequence[Mapping[str, Any]], carry: Mapping[str, list[datetime]],
+                 prime_state: Optional[Mapping[str, Any]], prime_turns: Optional[Mapping[str, Any]]) -> dict[str, Any]:
+    """For each item-bearing turn with a non-offer promise: what Prime did with it, keyed on the exact concern
+    id the hand-back derives from the turn (``turn_concern_id(corr)``, the id the carry run and its chat row
+    carry), and the carry replies on that id. ``who`` is Prime's own ``classify_who`` on the ingress session
+    and ``mode`` flag: ``None`` means the hand-back never reads that session (``not_handed_back``). Prime status
+    is ``not_read`` when no Prime state was given. ``refused`` is visible only for turns still in Prime's
+    recent-turn window (``MAX_RECENT_TURNS``) and a closed concern only while in ``concern_record``
+    (``MAX_CONCERN_RECORD``), so ``no_concern_or_aged_out`` holds both "opened nothing" and "aged out"."""
+    from orion.prime.handback import classify_who, turn_concern_id
+
+    open_ids = {str(c.get("concern_id")) for c in (prime_state or {}).get("concerns") or []}
+    closed = {str(c.get("concern_id")): str(c.get("end") or "closed")
+              for c in (prime_state or {}).get("concern_record") or []}
+    recent = {str(t.get("correlation_id")): t for t in (prime_turns or {}).get("recent") or []}
+    status: Counter[str] = Counter()
+    by_lane: dict[str, Counter[str]] = {}
+    carries = 0
+    rows: list[dict[str, Any]] = []
+    for row in stored:
+        if not _promise_items(row.get("made")):
+            continue
+        corr = str(row["correlation_id"])
+        cid = turn_concern_id(corr)
+        who = classify_who(row.get("session_id"), {"mode": True} if row.get("has_mode") else {})
+        if who is None:
+            st = "not_handed_back"
+        elif prime_state is None:
+            st = "not_read"
+        elif cid in open_ids:
+            st = "concern_open"
+        elif cid in closed:
+            st = f"concern_{closed[cid]}"
+        elif corr in recent and recent[corr].get("thread_refused"):
+            st = "refused"
+        else:
+            st = "no_concern_or_aged_out"
+        n_carry = len(carry.get(cid, []))
+        carries += n_carry
+        status[st] += 1
+        by_lane.setdefault(lane_of(row), Counter())[st] += 1
+        rows.append({"corr": corr[:8], "lane": lane_of(row), "prime_who": who, "concern_id": cid, "prime": st,
+                     "carries": n_carry,
+                     "refused_why": (recent.get(corr) or {}).get("thread_refused")})
+    return {"turns": len(rows), "status": dict(status), "by_lane": {k: dict(v) for k, v in by_lane.items()},
+            "carry_replies": carries, "rows": rows}
+
+
 def item_key(correlation_id: str, index: int, quote: str) -> str:
     raw = f"{correlation_id}|{index}|{normalize_for_quote_match(quote)}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
@@ -486,14 +632,46 @@ def gather(dsn: str, since: datetime) -> dict[str, Any]:
         acts = _rows(conn, ACTS_SQL, {"actor": PROMISE_ACTOR, "signal": PROMISE_SIGNAL, "since": since})
         starts = [r["created_at"] for r in _rows(conn, JUNIPER_STARTS_SQL, {"since": since})]
         turns = _rows(conn, JUDGED_SQL, {"since": since})
+        stored = _rows(conn, STORED_SQL, {"since": max(since, FINDER_LIVE_AT)})
         carry: dict[str, list[datetime]] = {}
         for r in _rows(conn, CARRY_SQL, {"source": CARRY_SOURCE, "since": since}):
             if r.get("concern_id") and _aware(r.get("created_at")):
                 carry.setdefault(str(r["concern_id"]), []).append(_aware(r["created_at"]))
-    return {"acts": acts, "starts": starts, "turns": turns, "carry": carry}
+    return {"acts": acts, "starts": starts, "turns": turns, "carry": carry, "stored": stored}
 
 
-def report(data: Mapping[str, Any]) -> dict[str, Any]:
+PRIME_STATE_KEY = "orion:prime:state"
+PRIME_TURNS_KEY = "orion:prime:turns"
+
+
+def read_prime(redis_url: Optional[str], state_file: Optional[str] = None,
+               turns_file: Optional[str] = None) -> tuple[Optional[dict], Optional[dict], str]:
+    """(state, turns, how) from files when given, else from Redis with the ``redis`` package. Never raises:
+    a missing package or an unreachable Redis returns (None, None, why) and the report prints ``not read``."""
+    if state_file:
+        try:
+            state = json.loads(Path(state_file).read_text())
+            turns = json.loads(Path(turns_file).read_text()) if turns_file else None
+            return state, turns, f"files {state_file}{f', {turns_file}' if turns_file else ''}"
+        except (OSError, ValueError) as exc:
+            return None, None, f"not read ({type(exc).__name__}: {exc})"
+    if not redis_url:
+        return None, None, "not read (no ORION_BUS_URL and no --prime-state)"
+    try:
+        import redis  # type: ignore[import-not-found]
+    except ImportError:
+        return None, None, "not read (no redis package: pass --prime-state/--prime-turns from redis-cli GET)"
+    try:
+        client = redis.Redis.from_url(redis_url, socket_timeout=3, socket_connect_timeout=3)
+        raw_state, raw_turns = client.get(PRIME_STATE_KEY), client.get(PRIME_TURNS_KEY)
+        state = json.loads(raw_state) if raw_state else None
+        turns = json.loads(raw_turns) if raw_turns else None
+        return state, turns, ("redis" if state is not None else f"not read ({PRIME_STATE_KEY} empty)")
+    except Exception as exc:  # noqa: BLE001 - a report line, never a crash
+        return None, None, f"not read ({type(exc).__name__})"
+
+
+def report(data: Mapping[str, Any], now: Optional[datetime] = None) -> dict[str, Any]:
     unclosable = unclosable_ids(data["acts"], data["starts"])
     # Same turns the guard counts: from the finder going live, sent from a Hub browser surface (#3602).
     # offers_summary still looks up the previous row among all rows, so a session turn can be a "previous".
@@ -507,9 +685,18 @@ def report(data: Mapping[str, Any]) -> dict[str, Any]:
                                    "clean_of": KEEP_RATE_CEILING_CLEAN[1],
                                    "clean_share": round(KEEP_RATE_CEILING_CLEAN[0] / KEEP_RATE_CEILING_CLEAN[1], 2),
                                    "source": "replay hand count, one reader, not blind (#3595)"}
+    stored = data.get("stored") or []
     return {"ledger": ledger, "guard": guard_summary(data["turns"]), "offers": offers_summary(juniper_only),
             "duplicate_candidates": duplicate_candidates(juniper_only),
-            "duplicate_window_pairs": duplicate_window_pairs(juniper_only)}
+            "duplicate_window_pairs": duplicate_window_pairs(juniper_only),
+            "browser_window": browser_window(data["turns"], now or datetime.now(timezone.utc)),
+            "lanes": lane_split(stored),
+            "prime": {**prime_by_ref(stored, data["carry"], data.get("prime_state"), data.get("prime_turns")),
+                      "read": data.get("prime_read") or "not read"}}
+
+
+def _or_dash(x: Any) -> str:
+    return "-" if x is None else str(x)
 
 
 def _ids(ids: Sequence[str], cap: int = 10) -> str:
@@ -527,7 +714,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--sample", type=int, default=0, help="write a blinded labelling sheet of N stored items")
     ap.add_argument("--out", default="/tmp/promise-ledger-labels.json")
     ap.add_argument("--score", help="score a filled labelling sheet (no database needed)")
+    ap.add_argument("--prime-state", help="orion:prime:state JSON (redis-cli GET), instead of reading Redis")
+    ap.add_argument("--prime-turns", help="orion:prime:turns JSON (redis-cli GET), with --prime-state")
     args = ap.parse_args(argv)
+    if args.prime_turns and not args.prime_state:
+        ap.error("--prime-turns needs --prime-state")
     if args.score:
         print(json.dumps(score_labels(json.loads(Path(args.score).read_text())), indent=2))
         return 0
@@ -536,7 +727,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 2
     since = datetime.now(timezone.utc) - timedelta(days=args.days)
     data = gather(args.dsn, since)
+    data["prime_state"], data["prime_turns"], data["prime_read"] = read_prime(
+        os.getenv("ORION_BUS_URL"), args.prime_state, args.prime_turns)
     out = report(data)
+    start = max(since, FINDER_LIVE_AT)
     if args.sample:
         sheet = blinded_sample(data["turns"], args.sample)
         Path(args.out).write_text(json.dumps(sheet, indent=2))
@@ -548,6 +742,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"promise acts since {since:%Y-%m-%d %H:%M} UTC: {led['acts']} "
           f"(open {led['open']}, kept {led['kept']}, expired {led['expired']}, void {led['void']}, "
           f"un-closeable {led['unclosable']})")
+    vs = led.get("void_share")
+    print(f"void share of closed acts: {'-' if vs is None else vs} (void = no Juniper turn started in the "
+          "horizon: a logged Juniper chat row from any surface, or a Hub browser ingress hop; act_ledger "
+          "_JUNIPER_REPLY_SQL)")
     print(f"kept by evidence: {led['kept_by_evidence'] or '-'}; expired with a carry reply: {led['expired_with_carry_reply']}"
           + _ids(led["expired_with_carry_reply_acts"]))
     kr = led["keep_rate"]
@@ -565,6 +763,27 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
           f"skipped pre-#3532 items {g['skipped_pre_force']}; turns not judged {g['turns_not_judged']}; "
           f"turns before the finder went live ({FINDER_LIVE_AT:%Y-%m-%d %H:%MZ}) left out {g['turns_before_finder']}; "
           f"turns not from a Hub browser surface left out {g['turns_not_from_browser']}")
+    print(f"expected vs observed: {g['expected_firm']} firm promises expected over {g['judged_turns']} judged "
+          f"browser turns at the frozen rate {g['baseline_rate']}; observed {g['firm_promises']}; "
+          f"P(a count this low by chance) {_or_dash(g['p_at_most_observed'])}, "
+          f"P(a count this high by chance) {_or_dash(g['p_at_least_observed'])}")
+    bw = out["browser_window"]
+    if bw["last_at"]:
+        print(f"browser window: {bw['browser_turns']} Juniper browser turns since {start:%Y-%m-%d %H:%MZ} "
+              f"({bw['judged']} judged); last {bw['last_at']} ({bw['last_corr']}), {bw['hours_since_last']} h "
+              "before this report. Hub reads the promise view only on browser turns, so no promise_view/"
+              "promise_ledger line is expected in that gap")
+    else:
+        print(f"browser window: 0 Juniper browser turns since {start:%Y-%m-%d %H:%MZ}: no promise_view/"
+              "promise_ledger line is expected")
+    ln = out["lanes"]
+    print(f"stored promise items since {start:%Y-%m-%d %H:%MZ}: {ln['items']} on {ln['turns']} turns, "
+          f"{ln['browser_turns']} of them Juniper browser turns (the only lane that opens a ledger act); by lane: "
+          + (", ".join(f"{k} {v['turns']}t/{v['items']}i/{v['firm']}f" for k, v in ln["by_lane"].items()) or "-"))
+    pr = out["prime"]
+    print(f"Prime by exact key (turn_concern_id) on {pr['turns']} item-bearing turns with a non-offer promise "
+          f"[{pr['read']}]: {pr['status'] or '-'}; intention.carry replies on those keys {pr['carry_replies']}"
+          + _ids([f"{r['corr']} {r['lane']} who={r['prime_who']} {r['prime']}" for r in pr["rows"]]))
     of = out["offers"]
     print(f"offers accepted: {of['accepted']}; accepted_unmatched {of['accepted_unmatched']}"
           f"{_ids(of['accepted_unmatched_turns'])}; previous row not a Juniper turn {of['accepted_prev_not_juniper']}; "

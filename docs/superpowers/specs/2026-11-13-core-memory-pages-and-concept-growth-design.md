@@ -564,7 +564,7 @@ The status write is the part that matters for readers. Only the lived-memory ser
 | Reverie seed (`services/orion-thought/app/store.py`) | `status='active'` plus evidence checks | Yes (status form) |
 | Referent projector (`services/orion-memory-consolidation/app/referent_projector.py`) | closes the evidence node when status is not active | Yes (status form) |
 | Temporal self (`temporal_self_sources.py`, `memory_episode`) | none; reads by `created_at` | No, by design: it records that a memory was formed (rejected rows too), and carries only the purpose label, no statement text |
-| `page:lately` (#3463, not built) | must reuse the lived-memory serving SQL | Required; pg test from day one (noted on #3463) |
+| `page:lately` (`orion/memory/pages/lately.py`, built 11-18) | wraps the lived-memory serving SQL, plus `invalid_at IS NULL` | Yes, both forms (pg test `test_core_page_lately_postgres.py`) |
 
 **Index build vs query time.** Both. The exact-word (BM25) index is rebuilt from the serving
 SQL every 60 s, so superseded rows are never in it. The Chroma index is a copy: the index
@@ -854,6 +854,13 @@ Follow-up: #3553.
   source records the memory loss, a sentence must state a loss and cite that record. Renders in
   WHO YOU ARE right after the self-definition. Shared fold code moved to
   `orion/memory/pages/fold.py`. Not live until orion-durable-runs and orion-cortex-exec are rebuilt.
+- **`page:lately` built (#3463, 2026-11-18), ahead of the `matters` gate (#3590).** Third page in the
+  same nightly tick, after `page:origin`. Reads the last 14 days of `episode_memory` plus active
+  `follow_up` rows up to 45 days old (no follow-up can be closed yet, #3758), through the lived-memory
+  serving SQL plus `invalid_at IS NULL`, and Hub chat where Juniper spoke that the distiller has not read
+  yet. Without `matters`, rows are kept by follow-up, about-Juniper, high stakes and corrections first,
+  then recency. The page must cite something from its newest week. Renders at the top of DURABLE MEMORY,
+  above the recall digest. Not live until orion-durable-runs and orion-cortex-exec are rebuilt.
 - **GPU lease (checked live 2026-11-17).** The fold's gateway call passes no `gpu_lease`
   option. The gateway takes its own pool lease on the `memory_distill` route
   (`config/gpu_pool.yaml`). `gpu_pool_leases` shows one `memory_distill` lease from
@@ -928,7 +935,7 @@ Two bars:
 | 3 | #3535 | `orion.dig know` as a recall client, and the look-before-you-deny prompt rule. |
 | — | #3536 | The scoreboard. Measures each step. |
 | — | #3537 | Backfill: distill July to September 2026 chat into `episode_memory`. |
-| then | #3463 | `page:lately`. |
+| built 11-18 | #3463 | `page:lately` (ahead of #3590: picks by recency, follow-up, about-Juniper, stakes, corrections). |
 | built 11-19 | #3462 | `page:origin` (ahead of #3590 by Juniper's decision; its sources use no `matters` grade). |
 | any time | #3553 | Flattening guard on the fold. |
 | any time | #3554 | Paraphrase check at the mesh edge. |

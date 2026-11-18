@@ -8,8 +8,15 @@ worse). The last line per series is today's reading, to compare with the endpoin
 
     cd services/orion-prediction && POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_learning_progress_live_eval.py
 
-Baseline 2026-11-18: cabinet flat 8, insufficient 12 (model change 11-03), today -0.073 t -0.93 (cut 2.33) flat;
-office better once (11-16, +0.228 t 2.86, cut 2.18), today +0.031 t 0.34 flat.
+Baseline 2026-11-18 (before #3691): cabinet flat 8, insufficient 12 (model change 11-03), today -0.073 t -0.93
+(cut 2.33) flat; office better once (11-16, +0.228 t 2.86, cut 2.18), today +0.031 t 0.34 flat.
+
+Baseline 2026-11-18 (after #3691: roster key carries gate_version + covariates; AR(1) standard error):
+cabinet flat 3, insufficient 17 (also the 10-23 gate v2->v3 change now counts), today -0.073 se 0.109 (Welch 0.078)
+t -0.67 (cut 2.43) rho 0.32 flat; office flat 3, today +0.031 se 0.112 (Welch 0.092) t 0.28 (cut 2.22) rho 0.20
+flat. Office's 11-16
+"better" is gone because of the roster key, not rho: the gate rule changed on 11-03 (v4), the champion started
+serving on 11-06, so the prior window loses 11-02..11-03 (+0.183; Welch t 2.03 < 2.32 even at rho 0).
 """
 from __future__ import annotations
 
@@ -43,7 +50,7 @@ def main() -> int:
             continue
         first = min(d.day for d in days)
         print(f"\n{sid} (first scored day {first})")
-        print("as_of       status        lp       se      t   t_crit  dir     recent  prior  roster_change")
+        print("as_of       status        lp       se      t   t_crit  dir     recent  prior   rho  se_iid  roster_change")
         tally: Counter = Counter()
         d = first + timedelta(days=2 * lp.WINDOW_DAYS)
         while d <= today:
@@ -52,7 +59,7 @@ def main() -> int:
             tally[p.direction or p.status] += 1
             f = (lambda v, w=7: f"{v:+.3f}".rjust(w) if v is not None else "-".rjust(w))
             print(f"{d}  {p.status:12} {f(p.learning_progress)} {f(p.se)} {f(p.t)} {f(p.t_crit, 6)}  {str(p.direction or '-'):7} "
-                  f"{p.recent.days:>5}  {p.prior.days:>5}  {p.roster_changed_on or '-'}")
+                  f"{p.recent.days:>5}  {p.prior.days:>5}  {f(p.rho, 5)} {f(p.se_iid)}  {p.roster_changed_on or '-'}")
             d += timedelta(days=1)
         print(f"tally: {dict(tally)}")
         if tally.get("flat", 0) == 0 and tally.get("insufficient", 0) == 0:

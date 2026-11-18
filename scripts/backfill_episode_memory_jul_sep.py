@@ -153,6 +153,9 @@ COUNTS_SQL = {
     "rejected_invalid_events_backfill": (
         "SELECT count(*) AS n FROM episode_memory_event WHERE op = 'rejected_invalid' "
         "AND evidence->>'run_id' LIKE %(run_like)s"),
+    "not_asked_high_backfill": (
+        "SELECT count(*) AS n FROM episode_memory WHERE run_id LIKE %(run_like)s "
+        "AND stakes = 'high' AND confirmation_state = 'not_asked'"),
     "pending_confirmation_high_backfill": (
         "SELECT count(*) AS n FROM episode_memory WHERE run_id LIKE %(run_like)s "
         "AND stakes = 'high' AND confirmation_state = 'pending_confirmation'"),
@@ -449,6 +452,46 @@ def dry_run_sample(episodes: list[dict[str, Any]], min_exchanges: int = 10) -> l
     return picked
 
 
+def spread_sample(episodes: list[dict[str, Any]], n: int) -> list[dict[str, Any]]:
+    """``n`` closed episodes evenly spaced across the whole range (first and last included)."""
+    closed = [e for e in episodes if e["episode_status"] == "closed"]
+    if n >= len(closed):
+        return closed
+    if n <= 1:
+        return closed[:1]
+    idx = sorted({round(i * (len(closed) - 1) / (n - 1)) for i in range(n)})
+    return [closed[i] for i in idx]
+
+
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[Optional[float], Optional[float]]:
+    """Row-level 95% interval (treats rows as independent; they are not: see cluster_interval)."""
+    if n == 0:
+        return None, None
+    p = k / n
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / d
+    return round(max(0.0, c - h), 3), round(min(1.0, c + h), 3)
+
+
+def cluster_interval(per_episode: list[tuple[int, int]], reps: int = 4000, seed: int = 3537) -> tuple[Optional[float], Optional[float]]:
+    """95% interval of the pooled rate when whole episodes are resampled (memories from one episode
+    share a topic, so they are not independent draws). ``per_episode`` = [(hits, rows)]."""
+    import random
+
+    eps = [(k, n) for k, n in per_episode if n]
+    if not eps:
+        return None, None
+    rng = random.Random(seed)
+    rates = []
+    for _ in range(reps):
+        draw = [eps[rng.randrange(len(eps))] for _ in eps]
+        rows = sum(n for _, n in draw)
+        rates.append(sum(k for k, _ in draw) / rows)
+    rates.sort()
+    return round(rates[int(0.025 * reps)], 3), round(rates[int(0.975 * reps) - 1], 3)
+
+
 # ----------------------------------------------------------------------------------- progress
 
 class Progress:
@@ -561,11 +604,29 @@ def referent_policy():
     return ReferentPolicy(grounding_auto_accept=True, cooccurrence_auto_accept=True)
 
 
-async def persist(pool: OneShotPool, episode: dict[str, Any], turns: list[Any], answer: dict[str, Any]) -> dict[str, Any]:
+NOT_ASKED = "not_asked"
+
+
+def without_asks(result: Any, *, asks: bool = False) -> Any:
+    """Juniper (2026-11-19): backfilled memories queue no confirmation questions. A high-stakes row
+    the validator marks ``pending_confirmation`` is written ``not_asked`` instead. The asker
+    (orion/memory/episode/confirmation.py ``open_cards``) selects only ``pending_confirmation``, so it
+    never asks; recall and the pages still hedge it as unconfirmed (voice_render, pages/juniper);
+    supersede may retire it but never lets it retire anything (supersede.CORRECTION_STATES).
+    The memory id does not depend on the state, so this changes no ids."""
+    if not asks:
+        for m in result.memories:
+            if m.confirmation_state == "pending_confirmation":
+                m.confirmation_state = NOT_ASKED
+    return result
+
+
+async def persist(pool: OneShotPool, episode: dict[str, Any], turns: list[Any], answer: dict[str, Any],
+                  *, asks: bool = False) -> dict[str, Any]:
     from orion.memory.episode.store import persist_episode
     from orion.memory.episode.validate import coverage
 
-    result = validated_for(episode, turns, answer)
+    result = without_asks(validated_for(episode, turns, answer), asks=asks)
     now = _utc(episode["last_turn_at"])
     async with pool.connection() as conn:
         await conn.execute(INSERT_SHADOW_SQL, shadow_params(episode))
@@ -726,7 +787,8 @@ async def _candidates(pool: OneShotPool) -> list[str]:
 
 def cmd_dry_run(args: argparse.Namespace) -> int:
     plan = _load_plan()
-    sample = dry_run_sample(plan["episodes"], args.exchanges)
+    sample = (spread_sample(plan["episodes"], args.episodes) if args.episodes
+              else dry_run_sample(plan["episodes"], args.exchanges))
     pool = OneShotPool(args.dsn)
     loop = asyncio.new_event_loop()
     candidates = loop.run_until_complete(_candidates(pool))
@@ -740,7 +802,7 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
         answer = _answer(lane, episode, turns, candidates, prog)
         prog.done += 1
         prog.turns += len(turns)
-        result = validated_for(episode, turns, answer)
+        result = without_asks(validated_for(episode, turns, answer))
         memories.extend(result.memories)
         late = occurred_after_episode(result.memories, _utc(episode["last_turn_at"]))
         cov = referent_coverage(result.memories)
@@ -751,6 +813,7 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
                         "high_stakes_pending_confirmation": sum(
                             1 for m in result.memories
                             if m.stakes == "high" and m.confirmation_state == "pending_confirmation"),
+                        "high_stakes_not_asked": sum(1 for m in result.memories if m.confirmation_state == NOT_ASKED),
                         "occurred_after_episode": late, "model": answer.get("model")})
         anomalies = []
         if not result.memories:
@@ -766,6 +829,10 @@ def cmd_dry_run(args: argparse.Namespace) -> int:
         "pass": cov["n"] > 0 and cov["any_rate"] >= BAND_ANY_MIN and cov["other_rate"] >= BAND_OTHER_MIN,
         **cov, "band": {"any_min": BAND_ANY_MIN, "other_min": BAND_OTHER_MIN},
     }
+    per_ep = [(r["with_other_referent"], r["memories"]) for r in results]
+    verdict["other_rate_wilson95"] = wilson(cov["other"], cov["n"])
+    verdict["other_rate_episode_bootstrap95"] = cluster_interval(per_ep)
+    verdict["any_rate_wilson95"] = wilson(cov["any"], cov["n"])
     out = {"episodes": results, "referent_coverage": verdict, "errors": prog.errors,
            "high_stakes_pending_confirmation": sum(r["high_stakes_pending_confirmation"] for r in results)}
     write_private(OUT / "dry_run.json", json.dumps(out, indent=1, default=str))
@@ -805,7 +872,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         prog.done += 1
         prog.turns += len(turns)
         try:
-            out = loop.run_until_complete(persist(pool, episode, turns, answer))
+            out = loop.run_until_complete(persist(pool, episode, turns, answer, asks=args.confirmation_asks))
         except Exception as exc:  # noqa: BLE001 -- recorded; the episode is retried by a re-run
             prog.errors += 1
             _append_error(episode["episode_id"], "persist_failed", f"{type(exc).__name__}: {str(exc)[:160]}")
@@ -974,8 +1041,11 @@ def main(argv: Optional[list[str]] = None) -> int:
     pl.add_argument("--force", action="store_true")
     d = sub.add_parser("dry-run")
     d.add_argument("--exchanges", type=int, default=10)
+    d.add_argument("--episodes", type=int, default=0, help="N evenly spaced episodes instead of ~--exchanges")
     r = sub.add_parser("run")
     r.add_argument("--limit", type=int, default=0)
+    r.add_argument("--confirmation-asks", action="store_true",
+                   help="write high-stakes rows pending_confirmation (the asker queues them). Default: not_asked")
     sub.add_parser("gate")
     c = sub.add_parser("counts")
     c.add_argument("--label", choices=("before", "after"), required=True)

@@ -161,7 +161,18 @@ No image built from the worktree (would retag the production image). Live path U
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A review subagent read the committed diff. Its verdict: no high or medium issues. Pairing, fold math, retirement completeness and contract parity were all checked. Its five low findings:
+
+- **One stale input of either group refuses both nodes.** The hygiene gate is all-or-nothing, so an office sensor outage also makes the body joint absent. Absent is safe, but it couples body to world.
+  - Fix: filed #3730 (gate per group). Named in Risks.
+- **15-min outcomes rarely count in the fold.** The "shortest horizon per target" rule leaves them out whenever a 5-min outcome exists.
+  - Fix: said so in the fold's module docstring. The behavior matches `node:prediction.body`.
+- **`n_observed` on a missing row changed meaning.** A blended row scored `missing` now stores the count of its own targets with a known standard deviation, not every reading that arrived. Scored rows are unchanged.
+  - Fix: noted here. The calm check reads scored rows only.
+- **The retired `BIOMETRICS_SILENT_*` keys were back in the local substrate-runtime `.env`.** The env-sync script copies from main's `.env_example`, which still has them until merge.
+  - Fix: removed again. They are harmless, because compose and settings no longer read them. After merge they need one more manual delete if a sync re-adds them (the script does not remove keys).
+- **The new nodes depend on `SUBSTRATE_WRITE_PREDICTION_ERROR_NODES`.** It is `true` in `.env_example` and in the live `.env`, but compose defaults it to `false`. That gap is not new in this PR.
+  - Fix: called out here. The live `.env` sets it, so the nodes write.
 
 ## Restart required
 
@@ -193,13 +204,14 @@ scripts/safe_docker_build.sh orion-cortex-exec up -d --build
 - **Severity medium. Room-joint goals can authorize fetch/recall.**
   - Concern: this is Juniper's #3580 decision, but it is new authority.
   - Mitigation: world-first needs an "unusual/high" band of its own week before it competes. Measure the room-joint goal share after deploy.
+- **Severity low. One stale input refuses the whole bucket.** A refused bucket makes both nodes absent (never calm). This is the same refusal behavior the blend already had. Fix is #3730.
 - **Severity low. Execution is the only Active-Inference domain left.**
   - Concern: confidence becomes unknown when execution is stale (2.5 % of rows). #3576 retires execution next.
 - **Severity low. The sustained-body dwell rule has no live subject.**
   - Concern: `ATTENTION_SUSTAINED_BODY_ENABLED` now changes nothing. Tests keep the mechanism alive with a probe node. #3723.
 - **Severity low. Joint surprise is not a temporal-self experience kind.**
   - Concern: the channel is registered under the prediction organ, which emits other kinds. Big joint spikes as experience items is #3724.
-- **Issues:** opened #3722 (per-group calm, verify-live), #3723 (sustained rule no subject), #3724 (joint surprise as experience), #3725 (office temp / sound group revisit); closed none. Fixes #3575 only on merge after the gates.
+- **Issues:** opened #3722 (per-group calm, verify-live), #3723 (sustained rule no subject), #3724 (joint surprise as experience), #3725 (office temp / sound group revisit), #3730 (gate per group); closed none. Fixes #3575 only on merge after the gates.
 
 ## PR link
 

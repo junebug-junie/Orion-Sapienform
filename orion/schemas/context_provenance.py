@@ -76,6 +76,13 @@ CONTEXT_PROVENANCE_REGISTRY: dict[str, ContextKeyProvenance] = {
             "(orion/memory/pages/juniper.py); hydrated by the felt-state reader.",
         ),
         _entry(
+            "orion_core_page_origin",
+            "memory_recall",
+            "Latest page:origin row from self_concept_history: Orion's own page 'how I came to be', "
+            "folded nightly from cited stance / episode_memory / self:definition records "
+            "(orion/memory/pages/origin.py); hydrated by the felt-state reader.",
+        ),
+        _entry(
             "orion_core_page_anchor",
             "static_identity_config",
             "Latest page:anchor row from self_concept_history: fixed lines Juniper wrote by hand "

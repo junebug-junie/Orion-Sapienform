@@ -7,7 +7,7 @@ every such writer calls before it sends.
 
 What is guarded (loaded from Postgres, read-only):
 
-- every sentence of every ``page:juniper`` and ``page:anchor`` version in
+- every sentence of every ``page:juniper``, ``page:origin`` and ``page:anchor`` version in
   ``self_concept_history`` (the core pages, old versions included);
 - every sentence of every lived memory recall can inject into the chat prompt, and of the ones it
   no longer may (superseded, rejected, expired, removed): episode_memory, stance crystallizations,
@@ -62,7 +62,7 @@ _FUNCTION_FOLD = {"an": "a", "the": "a", "which": "that"}
 # Every version of every core page: an older version is still private once replaced.
 CORE_PAGES_SQL = (
     "SELECT concept_id, content FROM self_concept_history "
-    "WHERE concept_id IN ('page:juniper', 'page:anchor')"
+    "WHERE concept_id IN ('page:juniper', 'page:origin', 'page:anchor')"
 )
 # Privacy, not serving: retired, superseded, rejected and removed rows stay guarded too.
 # Bare table names on purpose (issue #3567): the governor reads as orion_readonly, whose search_path
@@ -86,7 +86,7 @@ DSN_ENV_KEYS = ("ORION_MESH_EDGE_PG_DSN", "POSTGRES_URI", "DATABASE_URL", "SUBST
 _QUOTES = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"', "—": " ", "–": " "})
 _NON_WORD = re.compile(r"[^a-z0-9]+")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+|\n+")
-_CITE = re.compile(r"\s*\[[^\]]*(?:person_fact|episode_memory)[^\]]*\]")
+_CITE = re.compile(r"\s*\[[^\]]*(?:person_fact|episode_memory|stance|self_concept_history):[^\]]*\]")
 
 
 class MeshEdgeLeak(RuntimeError):
@@ -152,7 +152,7 @@ def shingle_words(env: Optional[dict] = None) -> int:
 
 @dataclass(frozen=True)
 class LeakHit:
-    source: str   # "page:juniper" | "page:anchor" | lived-memory doc id
+    source: str   # "page:juniper" | "page:origin" | "page:anchor" | lived-memory doc id
     words: int    # verbatim: length of the matched sentence; shingle: outgoing words covered
     kind: str = "verbatim"  # "verbatim" | "shingle" (the text itself is never logged)
 

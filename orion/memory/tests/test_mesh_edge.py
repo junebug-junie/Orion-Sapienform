@@ -261,3 +261,17 @@ def test_page_versions_repeating_sentences_are_stored_once_and_every_load_logs_i
     line = next(r.getMessage() for r in caplog.records if "mesh_edge_guard_loaded" in r.getMessage())
     assert "rows=3 sentences=9 phrases=3" in line and "load_ms=" in line
     assert "Robin" not in line
+
+
+def test_page_origin_is_guarded_and_its_stored_cites_are_stripped():
+    """page:origin (issue #3462) quotes Juniper's stance messages: every version is guarded, and its
+    stance / self_concept_history cites (ids with colons inside) never split a guarded sentence."""
+    assert "'page:origin'" in mesh_edge.CORE_PAGES_SQL
+    page = ("The old drive under the stairs failed one hot summer afternoon "
+            "[stance:5e1f, self_concept_history:self-definition:ab12]. Nothing else.")
+    assert mesh_edge.sentences(page) == ["The old drive under the stairs failed one hot summer afternoon.",
+                                         "Nothing else."]
+    guard = MeshEdgeGuard.from_texts(guard_texts_from_rows([{"concept_id": "page:origin", "content": page}], []))
+    with pytest.raises(MeshEdgeLeak) as err:
+        guard.check("The old drive under the stairs failed one hot summer afternoon.", surface="github")
+    assert err.value.hits[0].source == "page:origin"

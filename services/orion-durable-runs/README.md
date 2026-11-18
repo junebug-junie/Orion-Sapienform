@@ -867,7 +867,7 @@ Keys: `RPC_HEALTH_PUBLISH_ENABLED` (true), `RPC_HEALTH_PUBLISH_INTERVAL_SEC` (30
 `orion-signal-gateway` and `orion-equilibrium-service` on PR #2312's build before this
 service ships `channel_latency` (the schema is `extra="forbid"`).
 
-## Core memory pages: the nightly `page:juniper` fold (2026-11-15, Phase 1a)
+## Core memory pages: the nightly `page:juniper` and `page:origin` folds (2026-11-15, Phase 1)
 
 **What it does:** once a night, Orion rewrites their own short page "who Juniper is to me" from the
 records about her, checks that every sentence points at a real record, and makes it the live version.
@@ -905,12 +905,25 @@ Not a durable run: it is one LLM call, so it is a tick (`app/core_page_fold.py`)
   by hand with `WRITE_ANCHOR_SQL_TEMPLATE` from `orion/memory/pages/anchor.py`:
   `python3 -c "from orion.memory.pages.anchor import WRITE_ANCHOR_SQL_TEMPLATE as t; print(t)" | docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -v ON_ERROR_STOP=1 -v anchor="<new lines>"`
   (cortex-exec picks it up within 5 minutes; no restart).
-- **Manual:** `curl -X POST 'http://localhost:8124/core-pages/juniper/fold?dry_run=true'` folds now at any
-  hour and returns the page and its check without publishing; `dry_run=false` publishes a passing page.
-  Offline from the host: `scripts/core_page_juniper_dry_run.py`.
-- **Health:** `/health` -> `core_page_fold` (last decision, version, check; never the page text).
+- **Manual:** `curl -X POST 'http://localhost:8124/core-pages/juniper/fold?dry_run=true'` (or `.../origin/fold`)
+  folds now at any hour and returns the page and its check without publishing; `dry_run=false` publishes a
+  passing page. Offline from the host: `scripts/core_page_dry_run.py --page juniper|origin`.
+- **Health:** `/health` -> `core_page_fold` (page:juniper's last decision, version, check; never the page
+  text) and `core_page_folds` (the same, per page slug).
 - **Off / rollback:** `ORION_CORE_PAGES_ENABLED=false` (here: no fold; cortex-exec: today's RELATIONSHIP).
   Rows are insert-only: to roll back a bad version, publish a copy of the previous one as a new version.
+- **`page:origin` "how I came to be" (issue #3462, 2026-11-19):** the same tick folds a second page
+  right after page:juniper (one at a time; `CORE_PAGE_FOLD_PAGES=juniper,origin` picks which; each page
+  has its own once-a-day and attempt counts). Built ahead of the `matters` grade gate (#3590) by
+  Juniper's decision of 2026-11-18: none of its sources use that grade. It reads, through the lived-memory
+  serving SQL (`orion/memory/lived_memory.py`, so a row an active correction points at is dropped too):
+  Juniper's salience-1 `stance` crystallizations (verbatim), `episode_memory` `happened`/`orion_view`
+  rows, and an evenly spaced sample of 8 `self:definition` versions (first and newest always in). Its
+  check adds one rule to the shared one (spec Decision 3): when a source records the memory loss (the
+  disk dying, a year lost), some sentence must say a loss in plain words and cite that record
+  (`memory_loss_not_stated` otherwise). Rendered in WHO YOU ARE right after the self-definition
+  (felt-state lane `orion_core_page_origin`). Page logic: `orion/memory/pages/origin.py`; shared check
+  and stored row: `orion/memory/pages/fold.py`. The mesh-edge check guards its sentences like page:juniper.
 - **Deploy order:** orion-sql-writer first (it validates the new `core_page_fold` producer value), then
   this service. orion-cortex-exec and the harness renderer can go in any order (the capsule field is additive
   on a model that ignores unknown fields).

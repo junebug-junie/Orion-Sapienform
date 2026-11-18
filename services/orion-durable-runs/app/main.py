@@ -49,7 +49,7 @@ _admission_task: asyncio.Task | None = None
 _reconcile_task: asyncio.Task | None = None
 field_notes: Any = None     # app.pr_field_note_poll.FieldNotePoller while PR_FIELD_NOTES_ENABLED (Patch 2)
 _field_notes_task: asyncio.Task | None = None
-core_pages: Any = None      # app.core_page_fold.CorePageFolder while ORION_CORE_PAGES_ENABLED
+core_pages: dict[str, Any] = {}   # slug -> app.core_page_fold.CorePageFolder while ORION_CORE_PAGES_ENABLED
 _core_pages_task: asyncio.Task | None = None
 reminiscence: Any = None    # app.reminiscence_poll.ReminiscenceTicker while REMINISCENCE_ENABLED (Patch 2)
 _reminiscence_task: asyncio.Task | None = None
@@ -698,14 +698,20 @@ async def lifespan(app: FastAPI):
             if rpc_bus is None:
                 logger.warning("core_page_fold_not_started reason=no_bus")
             else:
-                # Core memory pages Phase 1a: Orion's page:juniper, folded overnight (app/core_page_fold.py).
-                from app.core_page_fold import CorePageFolder, bus_llm_caller, bus_publisher, service_source
+                # Core memory pages: Orion's page:juniper and page:origin, folded overnight one after the
+                # other (app/core_page_fold.py; CORE_PAGE_FOLD_PAGES picks which).
+                from app.core_page_fold import (
+                    CorePageFolder, bus_llm_caller, bus_publisher, run_folders_forever, selected_specs, service_source,
+                )
 
                 source = service_source(_settings)
-                core_pages = CorePageFolder(
-                    settings=_settings, pool=_checkpointer_cm,
-                    call_llm=bus_llm_caller(rpc_bus, _settings, source), publish=bus_publisher(rpc_bus, source))
-                _core_pages_task = asyncio.create_task(core_pages.run_forever(_stop))
+                call_llm, publish = bus_llm_caller(rpc_bus, _settings, source), bus_publisher(rpc_bus, source)
+                core_pages = {
+                    spec.slug: CorePageFolder(settings=_settings, pool=_checkpointer_cm, call_llm=call_llm,
+                                              publish=publish, spec=spec)
+                    for spec in selected_specs(_settings.core_page_fold_pages)
+                }
+                _core_pages_task = asyncio.create_task(run_folders_forever(list(core_pages.values()), _stop))
         if admission is not None:
             _admission_task = asyncio.create_task(admission.run(_stop))
             if _settings.memory_episode_writer_enabled:
@@ -843,22 +849,28 @@ async def health() -> dict[str, Any]:
         "reminiscence_tick": reminiscence.health() if reminiscence is not None else None,
         # The day dream Patch 2: the last night tick's decision (day, run submitted or why not).
         "dream_day_tick": dream_day.health() if dream_day is not None else None,
-        # Core memory pages Phase 1a: the last page:juniper fold tick (decision, version, check; no text).
-        "core_page_fold": core_pages.health() if core_pages is not None else None,
+        # Core memory pages: the last page:juniper fold tick (decision, version, check; no text). Kept as
+        # its own key so existing readers of /health see the same shape.
+        "core_page_fold": core_pages["juniper"].health() if "juniper" in core_pages else None,
+        # Every folded page's last tick, by slug (page:juniper repeated here, page:origin, ...).
+        "core_page_folds": {slug: folder.health() for slug, folder in core_pages.items()} or None,
         # LangGraph checkpoint pruning: mode (dry_run ships), last pass's totals / deletions.
         "checkpoint_prune": (checkpoint_prune.health() if checkpoint_prune is not None
                              else {"mode": _settings.checkpoint_prune_mode}),
     }
 
 
-@app.post("/core-pages/juniper/fold")
-async def core_page_juniper_fold(dry_run: bool = True) -> dict[str, Any]:
-    """Fold page:juniper now, at any hour, skipping the once-a-day and no-change gates. ``dry_run``
-    (the default) returns the page and its cite check and publishes nothing; ``dry_run=false``
-    publishes a passing page as the next live version."""
-    if core_pages is None:
+@app.post("/core-pages/{slug}/fold")
+async def core_page_fold_now(slug: str, dry_run: bool = True) -> dict[str, Any]:
+    """Fold one page (``juniper``, ``origin``) now, at any hour, skipping the once-a-day and no-change
+    gates. ``dry_run`` (the default) returns the page and its cite check and publishes nothing;
+    ``dry_run=false`` publishes a passing page as the next live version."""
+    if not core_pages:
         raise HTTPException(503, "core pages are off (ORION_CORE_PAGES_ENABLED / bus)")
-    result = await core_pages.tick_once(dry_run=dry_run, force=True)
+    folder = core_pages.get(slug)
+    if folder is None:
+        raise HTTPException(404, f"no core page {slug!r} folds here (CORE_PAGE_FOLD_PAGES: {sorted(core_pages)})")
+    result = await folder.tick_once(dry_run=dry_run, force=True)
     return result.as_dict()
 
 

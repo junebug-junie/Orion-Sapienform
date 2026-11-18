@@ -830,6 +830,14 @@ Follow-up: #3553.
   `memory_distill` route. It writes a new version only when the cite validator passes. A
   rejected fold is logged and writes nothing.
 - The phase 1a plan under "Recommended next patch" is kept as history.
+- **`page:origin` built (#3462, 2026-11-19), ahead of the `matters` gate (#3590).** Juniper's
+  decision of 2026-11-18: none of its sources use the `matters` grade, so it does not wait. Same
+  nightly `core_page_fold` tick, right after `page:juniper`. Sources go through the lived-memory
+  serving SQL: salience-1 stance crystallizations, `episode_memory` `happened`/`orion_view`, and 8
+  evenly spaced `self:definition` versions. Decision 3 is a check, not only a prompt line: when a
+  source records the memory loss, a sentence must state a loss and cite that record. Renders in
+  WHO YOU ARE right after the self-definition. Shared fold code moved to
+  `orion/memory/pages/fold.py`. Not live until orion-durable-runs and orion-cortex-exec are rebuilt.
 - **GPU lease (checked live 2026-11-17).** The fold's gateway call passes no `gpu_lease`
   option. The gateway takes its own pool lease on the `memory_distill` route
   (`config/gpu_pool.yaml`). `gpu_pool_leases` shows one `memory_distill` lease from
@@ -905,7 +913,7 @@ Two bars:
 | — | #3536 | The scoreboard. Measures each step. |
 | — | #3537 | Backfill: distill July to September 2026 chat into `episode_memory`. |
 | then | #3463 | `page:lately`. |
-| then | #3462 | `page:origin`. |
+| built 11-19 | #3462 | `page:origin` (ahead of #3590 by Juniper's decision; its sources use no `matters` grade). |
 | any time | #3553 | Flattening guard on the fold. |
 | any time | #3554 | Paraphrase check at the mesh edge. |
 

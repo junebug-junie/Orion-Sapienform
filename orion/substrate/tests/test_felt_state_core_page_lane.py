@@ -62,3 +62,13 @@ def test_subset_hydrate_reads_one_query_and_keeps_a_month_old_page():
     assert ctx[CTX_KEY_JUNIPER] == payload
     assert len(reader._engine.queries) == 1
     assert "page:juniper" in reader._engine.queries[0]
+
+
+def test_origin_lane_selects_only_the_folded_origin_row():
+    from orion.memory.pages.origin import CTX_KEY_ORIGIN, PAGE_ORIGIN
+
+    lane = next(l for l in _LANES if l.ctx_key == CTX_KEY_ORIGIN)
+    assert lane.table == "self_concept_history"
+    assert lane.where_sql == f"concept_id = '{PAGE_ORIGIN}' AND produced_by = '{PRODUCED_BY}'"
+    assert "'concept_id', concept_id" in lane.payload_col and "'evidence_refs', evidence_refs" in lane.payload_col
+    assert lane.max_age_sec == 365 * 86400 and lane.cache_ttl_sec == 300

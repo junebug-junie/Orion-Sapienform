@@ -18,6 +18,7 @@ import shutil
 import socket
 import subprocess
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import get_args
 from urllib.parse import unquote, urlparse
@@ -28,12 +29,14 @@ psycopg2 = pytest.importorskip("psycopg2")
 
 from orion.curiosity.value import ARM_SELF_INQUIRY, OFFER_ARMS  # noqa: E402
 from orion.schemas.dream_cycle import HypothesisArm  # noqa: E402
+from orion.temporal_self import sources as S  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GUARD = REPO_ROOT / "scripts/sql/2026-11-18_blind_experiment_arms_orion_readonly.sql"
 MIG_DIR = REPO_ROOT / "services/orion-sql-db"
 DREAM_ARMS = get_args(HypothesisArm)
 RO_PASSWORD = "test-only-ro"
+AT = datetime(2026, 11, 18, 3, 0, tzinfo=timezone.utc)
 
 
 def _free_port() -> int:
@@ -51,7 +54,9 @@ def server(tmp_path):
         yield dict(host=u.hostname or "localhost", port=u.port or 5432, user=unquote(u.username or "postgres"),
                    password=unquote(u.password or ""), dbname=u.path.lstrip("/") or "postgres")
         return
-    bins = sorted(glob.glob("/usr/lib/postgresql/*/bin/initdb"))
+    # Live is Postgres 15; prefer it, else the newest (numeric, not text, order).
+    bins = sorted(glob.glob("/usr/lib/postgresql/*/bin/initdb"), key=lambda b: (Path(b).parts[-3] != "15",
+                                                                              -int(Path(b).parts[-3])))
     if not bins or not shutil.which("psql"):
         if os.environ.get("CI"):
             pytest.fail("CI must provide BLIND_ARM_GUARD_TEST_POSTGRES_URI; a skip here hides the only real-DB proof")
@@ -94,9 +99,34 @@ def _psql_file(admin: dict, path: Path | None = None, sql: str | None = None) ->
 def _added_columns_sql() -> str:
     """Every later ADD COLUMN on temporal_self_event, so a new column without a view update fails this test."""
     out = []
+    pat = r"(?im)^\s*ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:public\.)?temporal_self_event\s+ADD\b[^;]*;"
     for f in sorted(MIG_DIR.glob("manual_migration_*.sql")):
-        out += re.findall(r"(?im)^\s*ALTER TABLE\s+temporal_self_event\s+ADD COLUMN[^;]*;", f.read_text())
+        out += [m.group(0) for m in re.finditer(pat, f.read_text())]
     return "\n".join(out)
+
+
+def _stored(e) -> tuple[str, str, dict]:
+    """(event_id, source_kind, payload_json) as orion-durable-runs stores it (temporal_self_store.stored_payload)."""
+    return e.event_id, e.source_kind, dict(e.payload, ended_at=e.ended_at.isoformat() if e.ended_at else None,
+                                           privacy_class=e.privacy_class)
+
+
+def _producer_rows() -> list[tuple[str, str, dict]]:
+    """One event per arm, built by the real producers, so a renamed or added arm key reaches this test."""
+    out = []
+    for arm in (*OFFER_ARMS, ARM_SELF_INQUIRY):
+        out.append(_stored(S.curiosity_run({"run_id": f"cur-{arm}", "turn_started_at": AT, "decided_at": AT,
+                                            "arm": arm, "offered": [], "completed_at": AT, "turn_ok": True,
+                                            "n_tested": 2, "n_moved": 1, "n_formed": 0})))
+    for arm in DREAM_ARMS:
+        out.append(_stored(S.dream_hypothesis({"hypothesis_id": f"hyp-{arm}", "cycle_id": "c1", "arm": arm,
+                                               "created_at": AT, "expires_at": None, "offered_at": None,
+                                               "offered_run_id": None})))
+    return out
+
+
+def _eid(kind: str, ref: str) -> str:
+    return f"{kind}:{ref}"
 
 
 @pytest.fixture()
@@ -118,15 +148,11 @@ def db(server):
         CREATE TABLE dream_cycle (cycle_id text PRIMARY KEY, cycle_json jsonb);
         GRANT SELECT ON temporal_self_event, curiosity_offer_decisions, dream_hypothesis, dream_cycle TO orion_readonly;
     """)
-    rows = [(f"cur-{a}", "curiosity_run", {"arm": a, "turn_ok": True, "n_tested": 2, "n_moved": 1, "n_formed": 0})
-            for a in OFFER_ARMS]
-    rows.append(("cur-self", "curiosity_run", {"arm": ARM_SELF_INQUIRY, "turn_ok": True, "n_tested": 1, "n_moved": 0,
-                                               "n_formed": 0}))
-    rows += [(f"hyp-{a}", "dream_hypothesis", {"arm": a, "expires_at": None, "offered_at": None}) for a in DREAM_ARMS]
+    rows = _producer_rows()
     rows.append(("chat-1", "chat_turn", {"speaker": "juniper"}))
     for event_id, kind, payload in rows:
         _exec(admin, "INSERT INTO temporal_self_event (event_id, day_id, occurred_at, source_kind, label, payload_json)"
-                     " VALUES (%s, '2026-11-18', now(), %s, 'x', %s::jsonb)", (event_id, kind, _json(payload)))
+                     " VALUES (%s, '2026-11-18', now(), %s, 'x', %s::jsonb)", (event_id, kind, _json(payload, default=str)))
     _exec(admin, "INSERT INTO curiosity_offer_decisions VALUES ('cur-a', %s)", (OFFER_ARMS[0],))
     _exec(admin, "INSERT INTO dream_hypothesis VALUES ('hyp-a', %s, 'r1', 'r2')", (DREAM_ARMS[0],))
     readonly = {**admin, "user": "orion_readonly", "password": RO_PASSWORD}
@@ -136,10 +162,10 @@ def db(server):
         _exec(server, f"DROP DATABASE IF EXISTS {name} WITH (FORCE)")
 
 
-def _json(obj) -> str:
+def _json(obj, **kw) -> str:
     import json
 
-    return json.dumps(obj)
+    return json.dumps(obj, sort_keys=True, **kw)
 
 
 def _payloads(readonly: dict) -> dict[str, dict]:
@@ -157,29 +183,36 @@ def _refused(readonly: dict, sql: str) -> bool:
 def test_before_the_guard_the_role_reads_the_arm(db):
     """The harness can see the leak, so the next test's silence means the guard closed it."""
     _, readonly = db
-    assert _payloads(readonly)[f"cur-{OFFER_ARMS[1]}"]["arm"] == OFFER_ARMS[1]
+    assert _payloads(readonly)[_eid("curiosity_run", f"cur-{OFFER_ARMS[1]}")]["arm"] == OFFER_ARMS[1]
     assert _exec(readonly, "SELECT arm FROM curiosity_offer_decisions")
 
 
 def test_after_the_guard_no_sql_as_orion_readonly_reads_a_blinded_arm(db):
     admin, readonly = db
+    _exec(admin, "ANALYZE public.temporal_self_event")
+    assert _exec(readonly, "SELECT attname FROM pg_stats WHERE tablename = 'temporal_self_event' "
+                           "AND attname = 'payload_json'")  # before: the planner's sample values are readable too
     _psql_file(admin, GUARD)
     _psql_file(admin, GUARD)  # idempotent: a second apply is a no-op, not an error
 
     payloads = _payloads(readonly)
-    for arm in OFFER_ARMS:
-        assert "arm" not in payloads[f"cur-{arm}"]
-    for arm in DREAM_ARMS:
-        assert "arm" not in payloads[f"hyp-{arm}"]
-    # The three offer arms are indistinguishable to Orion; the rest of the payload is untouched.
-    assert len({_json(payloads[f"cur-{a}"]) for a in OFFER_ARMS}) == 1
-    assert payloads[f"cur-{OFFER_ARMS[0]}"] == {"turn_ok": True, "n_tested": 2, "n_moved": 1, "n_formed": 0}
+    cur = {a: payloads[_eid("curiosity_run", f"cur-{a}")] for a in OFFER_ARMS}
+    hyp = {a: payloads[_eid("dream_hypothesis", f"hyp-{a}")] for a in DREAM_ARMS}
+    # The arms are indistinguishable to Orion; the rest of the payload is untouched.
+    assert len({_json(p) for p in cur.values()}) == 1 and len({_json(p) for p in hyp.values()}) == 1
+    assert "n_moved" in cur[OFFER_ARMS[0]] and "offered_at" in hyp[DREAM_ARMS[0]]
     # self_inquiry is a line, not an offer arm, and the now already names it.
-    assert payloads["cur-self"]["arm"] == ARM_SELF_INQUIRY
+    assert payloads[_eid("curiosity_run", f"cur-{ARM_SELF_INQUIRY}")]["arm"] == ARM_SELF_INQUIRY
     assert payloads["chat-1"] == {"speaker": "juniper"}
 
-    blinded = "|".join(OFFER_ARMS)
-    assert _exec(readonly, "SELECT count(*) FROM temporal_self_event WHERE payload_json::text ~ %s", (blinded,)) == [(0,)]
+    # No leaf value anywhere in these payloads is an arm name, whatever key a producer puts it under.
+    leaves = _exec(readonly, "SELECT v #>> '{}' FROM temporal_self_event, jsonb_path_query(payload_json, "
+                             "'strict $.**') v WHERE source_kind IN ('curiosity_run', 'dream_hypothesis') "
+                             "AND event_id <> %s AND jsonb_typeof(v) = 'string'",
+                   (_eid("curiosity_run", f"cur-{ARM_SELF_INQUIRY}"),))
+    assert not {r[0] for r in leaves} & set(OFFER_ARMS + DREAM_ARMS)
+    # The planner's statistics follow the column privilege: none for a table the role cannot read.
+    assert _exec(readonly, "SELECT attname FROM pg_stats WHERE tablename = 'temporal_self_event'") == []
 
     for sql in ("SELECT payload_json FROM public.temporal_self_event",
                 "SELECT arm FROM curiosity_offer_decisions", "SELECT arm FROM public.curiosity_offer_decisions",
@@ -219,10 +252,10 @@ def test_the_documented_lift_steps_work(db):
 
     _psql_file(admin, sql=_lift_block("Curiosity stopped, dream still blind"))
     payloads = _payloads(readonly)
-    assert payloads[f"cur-{OFFER_ARMS[0]}"]["arm"] == OFFER_ARMS[0]
-    assert all("arm" not in payloads[f"hyp-{a}"] for a in DREAM_ARMS)
+    assert payloads[_eid("curiosity_run", f"cur-{OFFER_ARMS[0]}")]["arm"] == OFFER_ARMS[0]
+    assert all("arm" not in payloads[_eid("dream_hypothesis", f"hyp-{a}")] for a in DREAM_ARMS)
 
     _psql_file(admin, sql=_lift_block("Both stopped, full undo"))
     assert _exec(readonly, "SELECT payload_json->>'arm' FROM temporal_self_event WHERE event_id = %s",
-                 (f"hyp-{DREAM_ARMS[0]}",)) == [(DREAM_ARMS[0],)]
+                 (_eid("dream_hypothesis", f"hyp-{DREAM_ARMS[0]}"),)) == [(DREAM_ARMS[0],)]
     assert not _refused(readonly, "SELECT 1 FROM public.temporal_self_event")

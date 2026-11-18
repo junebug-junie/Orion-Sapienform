@@ -6,7 +6,8 @@ name: orion_readonly blind-arm guard
 on:
   pull_request:
     paths:
-      - 'scripts/sql/2026-11-18_blind_experiment_arms_orion_readonly.sql'
+      - 'scripts/sql/**'   # any new GRANT to orion_readonly can reopen the arm
+      - 'orion/temporal_self/sources.py'   # defines the stored payload keys
       - 'services/orion-sql-db/manual_migration_*.sql'
       - 'orion/curiosity/value.py'
       - 'orion/schemas/dream_cycle.py'

@@ -17,6 +17,8 @@
 --                                   `arm` on every curiosity_run row (216) and every dream_hypothesis row (179).
 --                                   No other source kind carries "arm"; no label, subject_ref, related_refs or
 --                                   verdict carries an arm name.
+--   pg_stats on temporal_self_event  READABLE: the planner's most-common payload_json values. pg_stats shows a
+--                                   column only to a role that can SELECT it, so the REVOKE below closes this too.
 -- A text search for the three offer-arm names over every other table orion_readonly can read found only
 -- gpu_pool's unrelated `reason=value_order` and design-doc prose; no per-run assignment.
 --
@@ -28,8 +30,15 @@
 -- is hidden by default. Then the table grant goes away, so `public.temporal_self_event` is refused.
 -- Views run with their owner's privileges, so the view needs no grant on the table.
 --
--- NOT COVERED: a turn can also reach Postgres as superuser through the harness governor's docker socket
--- (`docker exec orion-athena-sql-db psql -U postgres`, local trust). That is #3680, not this file.
+-- WHAT THIS DOES NOT COVER. It hides the STORED arm from orion_readonly. It does not make the arm unknowable:
+--   * #3685: the curiosity arm is a sha256 of the run id (orion/curiosity/value.py draw_offer_arm), and the run id,
+--     the formula and the propensities are all visible to Orion. Needs Juniper's decision.
+--   * #3680: a turn can reach Postgres as superuser through the harness governor's docker socket
+--     (`docker exec orion-athena-sql-db psql -U postgres`, local trust).
+--   * Row order: dream hypotheses were stored dream arm first, then control, with one occurred_at per cycle, so
+--     scan order told the arm for rows written before this PR (43 of 44 mixed cycles, checked 2026-11-18).
+--     orion-durable-runs now stores each window in event_id order (window_event_rows). Old rows keep their order
+--     until the table is rewritten (CLUSTER or VACUUM FULL, a locking production operation; not done here).
 --
 -- Not a migration: GRANT/REVOKE/CREATE VIEW are not on the post-pull auto-apply allowlist. Apply by hand.
 -- Idempotent; safe to re-run. Do NOT re-run the temporal_self_event GRANT line of
@@ -86,7 +95,8 @@ COMMIT;
 --   ROLLBACK;
 -- Then `python -P -m orion.dig organs <date>` still prints experiences, not a GRANT line.
 --
--- LIFT, when an experiment stops. The curiosity test stops at 250 completed runs per arm or 180 days
+-- LIFT, when an experiment stops. The column lists below must match the main view; if a column was added since,
+-- add it here too (CREATE OR REPLACE VIEW refuses to drop a column, so a stale block fails loudly, not silently). The curiosity test stops at 250 completed runs per arm or 180 days
 -- (scripts/analysis/curiosity_three_arm_readout.py prints this file's name once it reads "Stopped"; #3183).
 -- The dream hypothesis test has no stop rule yet.
 --

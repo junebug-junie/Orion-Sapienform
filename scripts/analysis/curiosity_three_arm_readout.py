@@ -525,7 +525,7 @@ def render(report: dict[str, Any]) -> str:
                      f" p (replica beats uncertainty) = {_num(prim['p'][ARM_UNCERTAINTY_ORDER], '.4f')}.")
     lines.append(f"  {prim['verdict']}")
     if prim["read"]:
-        lines.append(f"  Orion's SQL is still blind to the curiosity arm. Lift it with the curiosity block under LIFT in"
+        lines.append(f"  If Orion's SQL is still blind to the curiosity arm, lift it with the curiosity block under LIFT in"
                      f" {BLIND_GUARD_SQL} (#3458).")
     h = report["harm"]
     if h["look"] is not None:

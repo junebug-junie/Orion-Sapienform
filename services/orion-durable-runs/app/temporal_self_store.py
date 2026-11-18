@@ -147,6 +147,17 @@ def event_row(e: TemporalSelfEventV1, *, late: bool = False, salience: Optional[
     }
 
 
+def window_event_rows(w: WindowWrite) -> list[dict]:
+    """The window's event rows in event_id order, which is the order they are stored in.
+
+    Never in source order (#3458): a dream cycle's hypotheses come back dream arm first, then control, and rows of
+    one cycle share occurred_at, so source-order inserts let anyone who can read the table recover the blinded arm
+    from physical row order. event_id carries the random hypothesis id, so this order says nothing about the arm."""
+    rows = ([event_row(e, salience=w.salience.get(e.event_id)) for e in w.events]
+            + [event_row(e, late=True, salience=w.salience.get(e.event_id)) for e in w.late_events])
+    return sorted(rows, key=lambda r: r["event_id"])
+
+
 def arc_row(a: TemporalSelfArcV1, now: datetime) -> dict:
     return {
         "arc_id": a.arc_id, "day_id": a.day_id, "kind": a.kind, "subject_ref": a.subject_ref,
@@ -237,8 +248,7 @@ class ChronicleStore:
                     stored = held["watermark"] if held else None
                     if stored != w.expected_prev:
                         raise StaleWriterError(f"stored watermark {stored} != expected {w.expected_prev}")
-                    rows = ([event_row(e, salience=w.salience.get(e.event_id)) for e in w.events]
-                            + [event_row(e, late=True, salience=w.salience.get(e.event_id)) for e in w.late_events])
+                    rows = window_event_rows(w)
                     if rows:
                         await cur.executemany(INSERT_EVENT_SQL, rows)
                     if w.arcs:

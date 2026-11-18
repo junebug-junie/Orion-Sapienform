@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from typing import Any, Awaitable, Callable, Optional, TypedDict
 
 from app.admitted_graph import (
@@ -57,7 +57,8 @@ from orion.schemas.dream_day import (
 logger = logging.getLogger(__name__)
 
 DIG = "python -P -m orion.dig"
-# A receipt written before the run was requested is an older read (a hand run, an earlier night): not this run's.
+# A receipt written before this attempt started is an older read (an earlier attempt, a hand or chat run): not
+# this attempt's. The slack covers clock skew between the governor and this service.
 RECEIPT_CLOCK_SLACK_SEC = 120.0
 # How much of the material the prompt shows (the rest stays in the checkpoint and the dream_day row).
 PROMPT_PAIRS_PER_CYCLE = 6
@@ -204,12 +205,15 @@ def build_prompt(brief: DreamDayBriefV1, material: DreamDayMaterialV1) -> str:
 # --------------------------------------------------------------------------- checks inside the attempt
 
 
-def check_receipt(receipt: Optional[DreamDayReadV1], requested_at: datetime) -> DreamDayReadV1:
-    """The turn read the day: a receipt exists and was written after this run was requested."""
+def check_receipt(receipt: Optional[DreamDayReadV1], attempt_started: datetime) -> DreamDayReadV1:
+    """THIS attempt's turn read the day: a receipt exists and was written after the attempt started. A receipt
+    from an earlier attempt, or from a hand / chat run of the dig, does not count (a retry resumes the same claude
+    session, and the prompt asks it to run the dig first again)."""
     if receipt is None:
         raise HarnessStepFailed("dream_day_not_read: no read receipt (the turn did not run `dig dream-day`)")
-    if receipt.read_at < requested_at - timedelta(seconds=RECEIPT_CLOCK_SLACK_SEC):
-        raise HarnessStepFailed(f"dream_day_not_read: receipt from {receipt.read_at.isoformat()} is older than the run")
+    if receipt.read_at < attempt_started - timedelta(seconds=RECEIPT_CLOCK_SLACK_SEC):
+        raise HarnessStepFailed(f"dream_day_not_read: receipt from {receipt.read_at.isoformat()} is older than this "
+                                "attempt")
     return receipt
 
 
@@ -218,18 +222,6 @@ def check_reply(text: str) -> ParsedAnswer:
     if parsed is None:
         raise HarnessStepFailed(f"dream_day_no_answer: no answer block (reply_len={len((text or '').strip())})")
     return parsed
-
-
-def _requested_at(state: dict[str, Any], day: date) -> datetime:
-    """When the run was requested (the receipt must be newer); the end of the dreamt day if the state lacks it."""
-    raw = state.get("requested_at")
-    if isinstance(raw, datetime):
-        return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
-    try:
-        at = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
-        return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
-    except ValueError:
-        return day_window(day)[1]
 
 
 # --------------------------------------------------------------------------- persist
@@ -244,6 +236,7 @@ def row_fields(state: dict[str, Any], brief: DreamDayBriefV1, check, now: dateti
         "items_dropped": check.items_dropped,
         "refs_dropped": check.refs_dropped,
         "plan_rejected": check.plan_rejected,
+        "memories_over_cap": check.memories_over_cap,
         "kept": check.kept,
         "dropped": check.dropped,
         "new": check.new,
@@ -311,9 +304,8 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
         turn_timeout = max(1.0, window - TURN_REPLY_GRACE_SEC)
         correlation_id = harness_step_correlation_id(state, DREAM_DAY_STEP_KEY)
         turn_meta = {"turn_correlation_id": correlation_id, "step_key": DREAM_DAY_STEP_KEY}
-        requested_at = _requested_at(state, brief.day)
-
         async def operation(held: dict[str, Any]) -> dict[str, Any]:
+            attempt_started = admission.now()
             record = await run_harness_step(
                 deps.run_turn, held, step_key=DREAM_DAY_STEP_KEY, prompt=build_prompt(brief, material),
                 correlation_id=correlation_id, timeout_sec=turn_timeout, source_tag=DREAM_DAY_SOURCE_TAG,
@@ -321,7 +313,7 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
                 require_lookup=False)
             # Inside the attempt, under the hold: a turn that did not read the day, or gave no answer, is a
             # failed attempt, never a checkpointed one.
-            read = check_receipt(await deps.read_receipt(brief.day), requested_at)
+            read = check_receipt(await deps.read_receipt(brief.day), attempt_started)
             parsed = check_reply(record["text"])
             return {"record": record, "answer": parsed.answer.model_dump(mode="json"), "malformed": parsed.malformed,
                     "read": read.model_dump(mode="json")}
@@ -386,7 +378,9 @@ def build_dream_day_graph(deps: DreamDayDeps, admission: AdmissionDeps, checkpoi
             update = {
                 "persisted": True, "persist_outcome": stored["outcome"],
                 "existing_run_id": None if ours else stored.get("run_id"),
-                "produced": bool(stored["produced"]), "produced_note": stored["note"],
+                # A run that lost the day to an earlier run wrote nothing: its own act grades 0.
+                "produced": bool(stored["produced"]) if ours else False,
+                "produced_note": stored["note"] if ours else f"already_written by {stored.get('run_id')}",
                 "summary": {"memories_written": stored["memories_written"], "memory_ids": stored["memory_ids"],
                             "memories_proposed": len(answer.memories),
                             "memories_rejected": len(result.rejections) + check.memories_over_cap,

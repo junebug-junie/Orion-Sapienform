@@ -119,6 +119,8 @@ TemporalSourceKind = Literal[
     "experiment_result",
     # one night's day dream (orion-durable-runs dream_day, the day-dream spec Patch 2): the paragraph of what the
     # day was, and the ids of the memories Orion kept of it. Experience only (no arc folds it).
+    # ADDITIVE on TemporalNowItemV1 (forbid): deploy the now's readers (orion-thought, orion-hub, orion-mind,
+    # orion-prediction) before orion-durable-runs writes the first dream_day row (~01:00 Denver).
     "dream_day",
 ]
 

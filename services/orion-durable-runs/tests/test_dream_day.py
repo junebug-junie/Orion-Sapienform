@@ -276,8 +276,8 @@ def test_receipt_must_be_this_runs_read():
     assert check_receipt(read, T0 - timedelta(minutes=5)) is read
     with pytest.raises(HarnessStepFailed, match="no read receipt"):
         check_receipt(None, T0)
-    with pytest.raises(HarnessStepFailed, match="older than the run"):
-        check_receipt(read, T0 + timedelta(hours=1))
+    with pytest.raises(HarnessStepFailed, match="older than this attempt"):
+        check_receipt(read, T0 + timedelta(hours=1))   # an earlier attempt's (or a hand run's) receipt
 
 
 def test_prompt_shows_every_part_with_refs_and_says_unread():
@@ -302,7 +302,7 @@ def material(**kw) -> DreamDayMaterialV1:
 
 
 class World:
-    def __init__(self, replies=None, *, receipt=True, max_attempts=3):
+    def __init__(self, replies=None, *, receipt=True, max_attempts=3, persist_fail=0, cites_fail=0, winner=None):
         from app.admitted_graph import GRANTED, WAITING
         self.GRANTED, self.WAITING = GRANTED, WAITING
         self.now = T0
@@ -315,6 +315,8 @@ class World:
         self.stored: dict | None = None
         self.cites: list = []
         self.max_attempts = max_attempts
+        self.persist_fail, self.cites_fail, self.winner = persist_fail, cites_fail, winner
+        self.receipt_at = None   # fixed receipt time (an old read), else "now"
 
     async def turn(self, req):
         self.turns.append(req)
@@ -329,7 +331,7 @@ class World:
     async def read_receipt(self, day):
         if not self.receipt:
             return None
-        return DreamDayReadV1(day=day, read_at=self.now, roundup_lines=80, roundup_refs=30, digs_total=12,
+        return DreamDayReadV1(day=day, read_at=self.receipt_at or self.now, roundup_lines=80, roundup_refs=30, digs_total=12,
                               digs_chat=4, digs_background=8)
 
     async def resolve(self, refs):
@@ -339,6 +341,12 @@ class World:
         return []
 
     async def persist(self, fields, result, route):
+        if self.persist_fail:
+            self.persist_fail -= 1
+            raise RuntimeError("db away")
+        if self.winner:
+            return {"outcome": "already_written", "run_id": self.winner, "memories_written": 2,
+                    "memory_ids": ["m1", "m2"], "produced": True, "note": "2 memories written"}
         if self.stored is None:
             n = len(result.memories)
             produced, note = grade(n)
@@ -349,6 +357,9 @@ class World:
 
     async def record_cites(self, shown_id, cites, ref):
         self.cites.append((shown_id, cites, ref))
+        if self.cites_fail:
+            self.cites_fail -= 1
+            raise RuntimeError("use endpoint away")
         return {"uses": [{"event_id": c} for c in cites], "rejected_not_shown": [], "rejected_over_cap": []}
 
     async def register(self, state):
@@ -479,4 +490,55 @@ def test_a_night_with_no_memory_grades_no_lasting_trace():
         bad = closed_event(fam, {"run_id": RUN_ID, "produced": True, "last_error": "x"}, status="failed",
                            opened_at=T0, grant_entry_id="g1", closed_at=T0)
         assert bad.act.outcome.value == 0.0
+    asyncio.run(scenario())
+
+
+def test_a_retry_needs_its_own_fresh_read():
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    async def scenario():
+        world, saver = World(replies=["no block this time"]), InMemorySaver()
+        result = await start_and_grant(world, saver)
+        assert result["status"] == "retrying" and "dream_day_no_answer" in result["last_error"]
+        # An earlier read (attempt 1, or a hand run): attempt 2 answers but never re-runs the dig.
+        world.receipt_at = T0 - timedelta(minutes=10)
+        result = await after_backoff(world, saver)
+        assert result["status"] == "retrying" and "older than this attempt" in result["last_error"]
+        assert world.stored is None
+    asyncio.run(scenario())
+
+
+def test_persist_retries_without_a_second_turn_and_cites_give_up_without_failing():
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+    from app.dream_day_graph import CITES_MAX_ATTEMPTS
+
+    async def scenario():
+        world, saver = World(persist_fail=1, cites_fail=CITES_MAX_ATTEMPTS), InMemorySaver()
+        result = await start_and_grant(world, saver)
+        assert result["status"] == "retrying" and result["retry_node"] == "persist"
+        for _ in range(CITES_MAX_ATTEMPTS):
+            from langgraph.types import Command
+            snap = await world.graph(saver).aget_state(CFG)
+            if snap.next != ("retry_wait",):
+                break
+            world.now = datetime.fromisoformat(snap.values["retry_at"]) + timedelta(seconds=1)
+            result = await asyncio.wait_for(world.graph(saver).ainvoke(Command(resume=True), CFG), 5)
+        assert result["status"] == "completed" and result["produced"] is True
+        assert len(world.turns) == 1                         # the turn ran once
+        assert len(world.cites) == CITES_MAX_ATTEMPTS and "error" in result["cites"]
+    asyncio.run(scenario())
+
+
+def test_a_run_that_lost_the_day_grades_zero():
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    async def scenario():
+        world, saver = World(winner="dream-day-2026-11-17-other"), InMemorySaver()
+        result = await start_and_grant(world, saver)
+        assert result["status"] == "completed" and result["persist_outcome"] == "already_written"
+        assert result["produced"] is False and "already_written by" in result["produced_note"]
+        assert world.cites == []                               # only the winner records cites
     asyncio.run(scenario())

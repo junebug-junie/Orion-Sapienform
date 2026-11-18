@@ -213,6 +213,8 @@ async def persist_dream_day(pool: Any, fields: dict[str, Any], result: Validatio
 
     from orion.memory.episode.store import persist_dream_memories
 
+    fields = dict(fields)
+    over_cap = int(fields.pop("memories_over_cap", 0) or 0)
     day: date = fields["day"]
     ids = [m.memory_id for m in result.memories]
     episode_id = f"dream_day:{day.isoformat()}"
@@ -230,7 +232,7 @@ async def persist_dream_day(pool: Any, fields: dict[str, Any], result: Validatio
                     n = int(dict(await (await conn.execute(COUNT_SQL, (ids,))).fetchone())["n"])
                 produced, note = grade(n)
                 row = DreamDayV1(produced=produced, note=note, memories_written=n, memory_ids=ids,
-                                 memories_rejected=len(result.rejections), **fields)
+                                 memories_rejected=len(result.rejections) + over_cap, **fields)
                 inserted = await (await conn.execute(INSERT_SQL, (
                     row.day, row.run_id, row.status, row.produced, row.note, row.memories_written, row.memory_ids,
                     row.items_dropped, row.refs_dropped, row.memories_rejected, row.plan_rejected, row.kept,

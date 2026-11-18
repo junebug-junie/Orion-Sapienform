@@ -214,6 +214,12 @@ matters. The edge has two seams:
 Those two writers get a deterministic check: refuse text that quotes a core-page sentence
 verbatim. Covered by a test.
 
+**Update 2026-11-18 (#3554, #3541, approved by Juniper).** The check also refuses text that
+shares a run of 8 or more consecutive normalized words with any guarded sentence (the shingle
+check). Claude consult prompts are now a third seam: they count as outside the mesh edge. A
+consult prompt that trips the check has the matching words redacted before it goes to Claude.
+See "Outside models and the mesh edge" in Recall rev 2.
+
 ### Dangerous failure modes
 
 - **A page states something false as Orion's identity, and it goes live with no gate.**
@@ -782,11 +788,27 @@ Follow-up: #3553.
   comments, and email to anyone but Juniper. It also guards lived-memory sentences. Consult
   briefs are not checked. No outside-model prompt builder reads core pages or lived memories
   in code. But Orion writes brief text itself, after seeing the pages, so a paraphrase can
-  reach Claude (#3541).
-- **Recommended interim gate (waits on Juniper, #3554 needs-juniper):** an 8-word shingle
-  overlap check next to the verbatim one. It runs on the same seams plus consult briefs and
-  refuses near-verbatim edits. It is measured on hand-made paraphrases first. It does not
-  catch real rewording; the embedding check in #3554 is still needed.
+  reach Claude (#3541). *(Superseded by the next bullet: consult prompts are now checked.)*
+- **Interim gate: SHIPPED (approved by Juniper 2026-11-18; #3554, #3541).** What it does:
+  - Next to the verbatim check, it refuses text that shares a run of 8 or more consecutive
+    normalized words with one guarded sentence. Articles (a/an/the) and which/that fold to one
+    word. Nothing is stemmed.
+  - URLs, file paths and code names inside a guarded sentence split it into separate runs. A
+    PR link is public, not private prose.
+  - The run length is `ORION_MESH_EDGE_SHINGLE_WORDS` (default 8, 0 = off). It ships on.
+  - It covers the same seams as before (FCC `gh`/`curl` writes, Hub PR comments, non-Juniper
+    email), and now Claude consult prompts too. Consult briefs count as outside the edge.
+  - **Consult prompts are redacted, not refused.** The matching words become
+    `[withheld: private memory]`, and Hub chat says how many spans were withheld. Why: Orion's
+    turn has already run, and no author is in the loop to rewrite it. The rest of the prompt is
+    the plumbing question Claude needs. If a match survives redaction, the consult fails and
+    nothing is sent. If the guard cannot load, the send is held and retried on the next tick.
+  - **Measured** (`orion/memory/evals/run_mesh_edge_shingle_eval.py`):
+    - Made-up set: 13 of 14 near-verbatim edits refused. The one miss shares only 7 words.
+      0 of 7 real rewordings refused (the stated limit). 0 of 14 unrelated texts refused.
+    - 866 real public PR/issue bodies and comments: runs of 7 to 12 words refuse nothing the
+      verbatim check does not already refuse. A run of 6 adds 5 refusals; a run of 5 adds 28.
+  - It still does not catch real rewording. The embedding check stays open in #3554.
 
 ### Phase 1 status
 

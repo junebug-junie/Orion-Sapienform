@@ -2,8 +2,9 @@
 # #3534): query rewrite and link-following; the degraded exact-word fallback (issue #3573).
 # Step 3 (issue #3535): `orion.dig know` endpoint; per-call lived status + trace (issue #3628).
 # Lived-memory recall: exact-word + meaning candidates, live gating, local rerank, the bar, ranking,
-# render, the worker seam, and the committed fixture replay eval. Mesh edge: the shared guard, the
-# FCC gh PreToolUse hook, Hub's PR commenter, and outbound email. No DB, bus or model (fakes only).
+# render, the worker seam, and the committed fixture replay eval. Mesh edge: the shared guard (verbatim
+# + 8-word shingle, issue #3554), the FCC gh PreToolUse hook, Hub's PR commenter, outbound email, and
+# Claude consult prompts (issue #3541). No DB, bus or model (fakes only).
 
 name: lived-memory-recall-tests
 
@@ -36,6 +37,9 @@ on:
       - "services/orion-vector-host/app/**"
       - "services/orion-vector-host/tests/**"
       - "services/orion-hub/scripts/session_roundup_loop.py"
+      - "services/orion-hub/scripts/consult_loop.py"
+      - "services/orion-hub/tests/test_consult_loop.py"
+      - "orion/memory/evals/**"
       - "services/orion-notify/tests/test_email_mesh_edge.py"
       - ".github/workflows/lived-memory-recall-tests.yml"
   push:
@@ -51,6 +55,8 @@ on:
       - "services/orion-recall/evals/**"
       - "services/orion-vector-host/app/**"
       - "services/orion-hub/scripts/session_roundup_loop.py"
+      - "services/orion-hub/scripts/consult_loop.py"
+      - "orion/memory/evals/**"
       - ".github/workflows/lived-memory-recall-tests.yml"
 
 jobs:
@@ -93,3 +99,9 @@ jobs:
         run: |
           PYTHONPATH=.:${{ github.workspace }} python -m pytest -q -p no:cacheprovider \
             tests/test_session_roundup_loop.py -k commenter
+      - name: Consult prompts pass the mesh edge before Claude (redact, hold when the guard is down)
+        working-directory: services/orion-hub
+        run: |
+          PYTHONPATH=.:${{ github.workspace }} python -m pytest -q -p no:cacheprovider tests/test_consult_loop.py
+      - name: Shingle threshold eval (made-up paraphrase set)
+        run: python orion/memory/evals/run_mesh_edge_shingle_eval.py

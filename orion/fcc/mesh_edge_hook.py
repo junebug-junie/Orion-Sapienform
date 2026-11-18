@@ -6,7 +6,8 @@ PRs, comments. Before each Bash call this hook looks for a GitHub write (``gh is
 create/comment/edit/review``, ``gh api`` with a write method or fields, ``gh gist|release
 create``, or ``curl`` to api.github.com with a body) and, for one, checks the command text and
 any body file it names against the mesh-edge guard (``orion/memory/mesh_edge.py``). A command that
-quotes a core-page or lived-memory sentence verbatim is blocked (exit 2; stderr goes back to the
+quotes a core-page or lived-memory sentence verbatim, or repeats a run of 8+ of its words (#3554),
+is blocked (exit 2; stderr goes back to the
 model). Reads (``gh pr view``, ``gh api`` GET) pass untouched.
 
 Every ``gh`` call is treated as a write unless it is a known read (view, list, status, ...; ``gh
@@ -139,10 +140,15 @@ def decide(payload: Dict[str, Any], *, guard_loader: Optional[Callable[[], Any]]
     if not hits:
         return None
     kinds = sorted({h.source.split(":", 1)[0] for h in hits})
-    return (f"{BLOCK_MARKER} Blocked: this GitHub write quotes {len(hits)} sentence(s) verbatim from "
-            f"your core pages or stored memories ({', '.join(kinds)}). GitHub is public and those lines "
-            "stay inside your mesh. Rewrite the text in your own words without quoting them, then "
-            "write again.")
+    verbatim = sum(1 for h in hits if h.kind == "verbatim")
+    near = len(hits) - verbatim
+    what = ", ".join(part for part in (
+        f"quotes {verbatim} sentence(s) verbatim" if verbatim else "",
+        f"repeats a run of {guard.shingle_n}+ words from {near} sentence(s)" if near else "",
+    ) if part)
+    return (f"{BLOCK_MARKER} Blocked: this GitHub write {what} from your core pages or stored "
+            f"memories ({', '.join(kinds)}). GitHub is public and those lines stay inside your mesh. "
+            "Rewrite the text in your own words without quoting them, then write again.")
 
 
 def _command(payload: Dict[str, Any]) -> Optional[str]:

@@ -14,8 +14,20 @@ What is guarded (loaded from Postgres, read-only):
   person facts. Retired text is still private.
 
 A sentence counts only when it has at least ``MIN_WORDS`` words: "she/her" or "7" in a public PR
-is not a leak of anything. Matching is verbatim after normalization (case, quotes, punctuation
-and whitespace folded), so shell quoting or a Markdown wrap does not hide a quoted sentence.
+is not a leak of anything. Two matches run on the same text (issue #3554):
+
+- **Verbatim.** A whole guarded sentence, after normalization (case, quotes, punctuation and
+  whitespace folded), so shell quoting or a Markdown wrap does not hide a quoted sentence.
+- **Shingle.** Any run of ``SHINGLE_WORDS`` (default 8) consecutive normalized words shared with
+  one guarded sentence. This catches near-verbatim edits: a word swapped at one end, a clause
+  cut, a sentence spliced into a longer one. Articles (a/an/the) and which/that are folded to one
+  word each first; nothing is stemmed. It does not catch real rewording (the embedding check in
+  #3554 is still open for that). ``ORION_MESH_EDGE_SHINGLE_WORDS`` sets the run length; 0 turns it
+  off. The threshold was tuned on made-up paraphrases and on real public PR and issue bodies
+  (``orion/memory/evals/run_mesh_edge_shingle_eval.py``).
+
+``MeshEdgeGuard.redact`` blanks the matching words instead of refusing, for a writer with no
+author in the loop to rewrite (the Claude consult send, issue #3541).
 
 Failure mode is closed: a writer that cannot load the guarded text must refuse, not send
 (``load_guard`` raises ``MeshEdgeUnavailable``).
@@ -32,6 +44,17 @@ from typing import Any, Iterable, List, Optional, Sequence
 
 MIN_WORDS = 6
 CACHE_TTL_SEC = 300.0
+# Shingle run length (issue #3554), tuned by orion/memory/evals/run_mesh_edge_shingle_eval.py on
+# 2026-11-18: on 866 real public PR/issue bodies and comments, runs of 7-12 words add no refusal
+# beyond the verbatim check, 6 adds 5 and 5 adds 28. 8 keeps one word of margin over 7. Shipped ON
+# (0 = off; a value below 4 is raised to 4).
+SHINGLE_WORDS = 8
+SHINGLE_WORDS_ENV_KEY = "ORION_MESH_EDGE_SHINGLE_WORDS"
+SHINGLE_WORDS_FLOOR = 4
+REDACTION_MARKER = "[withheld: private memory]"
+# Light function-word folding: interchangeable articles and relative pronouns count as one word.
+# No stemming, no stop-word removal: every word still holds its place in the run.
+_FUNCTION_FOLD = {"an": "a", "the": "a", "which": "that"}
 
 # Every version of every core page: an older version is still private once replaced.
 CORE_PAGES_SQL = (
@@ -102,37 +125,163 @@ def sentences(text: str) -> List[str]:
     return [s.strip() for s in _SENTENCE_SPLIT.split(cleaned) if s and s.strip()]
 
 
+def fold_words(norm: str) -> List[str]:
+    """Words of an already-normalized string, with the light function-word folding applied."""
+    return [_FUNCTION_FOLD.get(w, w) for w in norm.split()]
+
+
+def shingle_words(env: Optional[dict] = None) -> int:
+    """The configured run length: ``SHINGLE_WORDS`` unless the env key overrides it. 0 = off.
+    An unreadable value keeps the default (the stricter side), never turns the check off."""
+    env = os.environ if env is None else env
+    raw = str(env.get(SHINGLE_WORDS_ENV_KEY) or "").strip()
+    if not raw:
+        return SHINGLE_WORDS
+    try:
+        n = int(raw)
+    except ValueError:
+        return SHINGLE_WORDS
+    return 0 if n <= 0 else max(n, SHINGLE_WORDS_FLOOR)
+
+
 @dataclass(frozen=True)
 class LeakHit:
     source: str   # "page:juniper" | "page:anchor" | lived-memory doc id
-    words: int    # length of the matched sentence (the sentence itself is never logged)
+    words: int    # verbatim: length of the matched sentence; shingle: outgoing words covered
+    kind: str = "verbatim"  # "verbatim" | "shingle" (the text itself is never logged)
+
+
+_TOKEN = re.compile(r"\S+")
+# A URL, file path, code identifier or module name inside a guarded sentence is a public pointer,
+# not private prose: "https://github.com/<owner>/<repo>/pull/12" alone normalizes to 8+ words.
+# Such tokens split a guarded sentence into separate runs for shingling (verbatim matching still
+# uses the whole sentence). Outgoing text is never stripped, so nothing can hide inside a URL.
+_POINTER_TOKEN = re.compile(r"://|^www\.|[/\\_`]|[A-Za-z0-9]\.[A-Za-z]{2,}")
+
+
+def prose_segments(sentence: str) -> List[List[str]]:
+    """Folded word runs of one guarded sentence, split at pointer tokens (URLs, paths, code)."""
+    if not _POINTER_TOKEN.search(sentence):
+        return [fold_words(normalize(sentence))]
+    segments: List[List[str]] = [[]]
+    for tok in _TOKEN.findall(sentence):
+        if _POINTER_TOKEN.search(tok):
+            if segments[-1]:
+                segments.append([])
+            continue
+        segments[-1].extend(fold_words(normalize(tok)))
+    return [seg for seg in segments if seg]
 
 
 @dataclass
 class MeshEdgeGuard:
-    """Normalized guarded sentences -> where each came from."""
+    """Normalized guarded sentences -> where each came from, plus their word shingles."""
 
     phrases: dict[str, str] = field(default_factory=dict)
     loaded_at: float = 0.0
+    shingle_n: int = 0
+    shingles: dict[str, str] = field(default_factory=dict)
 
     @classmethod
-    def from_texts(cls, items: Iterable[tuple[str, str]], *, min_words: int = MIN_WORDS) -> "MeshEdgeGuard":
+    def from_texts(cls, items: Iterable[tuple[str, str]], *, min_words: int = MIN_WORDS,
+                   shingle_n: Optional[int] = None) -> "MeshEdgeGuard":
+        n = shingle_words() if shingle_n is None else max(0, int(shingle_n))
         phrases: dict[str, str] = {}
+        shingles: dict[str, str] = {}
         for source, text in items:
             for sent in sentences(text):
                 norm = normalize(sent)
-                if len(norm.split()) >= min_words:
+                words = norm.split()
+                if len(words) >= min_words:
                     phrases.setdefault(norm, source)
-        return cls(phrases=phrases, loaded_at=time.monotonic())
+                if n and len(words) >= n:
+                    for segment in prose_segments(sent):
+                        for i in range(len(segment) - n + 1):
+                            shingles.setdefault(" ".join(segment[i:i + n]), source)
+        return cls(phrases=phrases, loaded_at=time.monotonic(), shingle_n=n, shingles=shingles)
+
+    def _shingle_positions(self, folded: Sequence[str]) -> List[tuple[int, str]]:
+        n = self.shingle_n
+        if not n or not self.shingles or len(folded) < n:
+            return []
+        out: List[tuple[int, str]] = []
+        for i in range(len(folded) - n + 1):
+            src = self.shingles.get(" ".join(folded[i:i + n]))
+            if src is not None:
+                out.append((i, src))
+        return out
 
     def find(self, text: str) -> List[LeakHit]:
-        hay = " " + normalize(text) + " "
-        return [LeakHit(source=src, words=len(p.split())) for p, src in self.phrases.items() if f" {p} " in hay]
+        norm = normalize(text)
+        hay = " " + norm + " "
+        hits = [LeakHit(source=src, words=len(p.split())) for p, src in self.phrases.items() if f" {p} " in hay]
+        seen = {h.source for h in hits}
+        covered: dict[str, set] = {}
+        for i, src in self._shingle_positions(fold_words(norm)):
+            if src not in seen:
+                covered.setdefault(src, set()).update(range(i, i + self.shingle_n))
+        hits.extend(LeakHit(source=src, words=len(idx), kind="shingle") for src, idx in covered.items())
+        return hits
 
     def check(self, text: str, *, surface: str) -> None:
         hits = self.find(text)
         if hits:
             raise MeshEdgeLeak(surface, hits)
+
+    def redact(self, text: str, *, marker: str = REDACTION_MARKER) -> tuple[str, List[LeakHit]]:
+        """``text`` with every word inside a verbatim or shingle match replaced by ``marker`` (one
+        marker per run of withheld words), and the hits found in the original. The caller must
+        ``find`` again on the result and refuse if anything is left: normalization across token
+        boundaries can, rarely, match where per-token mapping cannot place the span."""
+        hits = self.find(text)
+        if not hits:
+            return text, []
+        tokens = list(_TOKEN.finditer(text))
+        owner: List[int] = []   # normalized word index -> token index
+        norm_words: List[str] = []
+        for t_idx, m in enumerate(tokens):
+            for w in normalize(m.group(0)).split():
+                norm_words.append(w)
+                owner.append(t_idx)
+        withheld: set = set()
+        n = self.shingle_n
+        for i, _src in self._shingle_positions([_FUNCTION_FOLD.get(w, w) for w in norm_words]):
+            withheld.update(owner[j] for j in range(i, i + n))
+        joined = " ".join(norm_words)
+        hay = " " + joined + " "
+        # Char offset in ``joined`` -> word index, for placing verbatim sentences.
+        starts = {}
+        pos = 0
+        for idx, w in enumerate(norm_words):
+            starts[pos] = idx
+            pos += len(w) + 1
+        for phrase in self.phrases:
+            needle = f" {phrase} "
+            at = hay.find(needle)
+            while at != -1:
+                first = starts.get(at)  # hay has one leading space, so ``at`` is the offset in joined
+                if first is not None:
+                    withheld.update(owner[j] for j in range(first, first + len(phrase.split())))
+                at = hay.find(needle, at + 1)
+        if not withheld:
+            return text, hits
+        out: List[str] = []
+        cursor = 0
+        in_run = False
+        for t_idx, m in enumerate(tokens):
+            if t_idx in withheld:
+                if not in_run:
+                    out.append(text[cursor:m.start()])
+                    out.append(marker)
+                    in_run = True
+                cursor = m.end()
+            else:
+                out.append(text[cursor:m.start()])
+                out.append(m.group(0))
+                in_run = False
+                cursor = m.end()
+        out.append(text[cursor:])
+        return "".join(out), hits
 
 
 def resolve_dsn(env: Optional[dict] = None) -> str:
@@ -193,12 +342,14 @@ def load_guard(dsn: Optional[str] = None, *, ttl_sec: float = CACHE_TTL_SEC) -> 
 
 
 def check_outbound(text: str, *, surface: str, guard: Optional[MeshEdgeGuard] = None) -> None:
-    """Refuse (raise) when ``text`` quotes a core-page or lived-memory sentence verbatim, or when
-    the guard cannot be loaded. ``surface`` names the writer for the log line."""
+    """Refuse (raise) when ``text`` quotes a core-page or lived-memory sentence verbatim or shares a
+    shingle run with one, or when the guard cannot be loaded. ``surface`` names the writer."""
     (guard or load_guard()).check(text, surface=surface)
 
 
 __all__ = [
     "CORE_PAGES_SQL", "LeakHit", "MIN_WORDS", "MeshEdgeGuard", "MeshEdgeLeak", "MeshEdgeUnavailable",
-    "check_outbound", "guard_texts_from_rows", "load_guard", "normalize", "resolve_dsn", "sentences",
+    "REDACTION_MARKER", "SHINGLE_WORDS", "SHINGLE_WORDS_ENV_KEY", "check_outbound", "fold_words",
+    "guard_texts_from_rows", "load_guard", "normalize", "prose_segments", "resolve_dsn", "sentences",
+    "shingle_words",
 ]

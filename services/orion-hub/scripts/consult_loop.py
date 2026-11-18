@@ -23,6 +23,15 @@ One consult at a time, all in Hub:
 
 Every turn is shown live in Hub chat and stored in ``orion_consult_turn``. Turns are NOT written to
 ``chat_history_log``: Orion's recall keeps the brief only.
+
+**The mesh edge (issues #3541, #3554).** Claude is outside Orion's mesh. Every prompt bound for
+Claude passes ``_send_claude``, and there the mesh-edge check (``orion/memory/mesh_edge.py``) blanks
+any span that quotes, or repeats an 8+ word run of, a core-page or lived-memory sentence. It
+redacts rather than refuses: Orion's turn has already run and there is no author in the loop to
+rewrite it, while the rest of the text is the plumbing question Claude needs. Hub chat gets a line
+saying how many spans were withheld. The stored turn keeps the original (Hub is inside the mesh).
+If the guard cannot load, the send is held (fail closed) and retried on the next tick; if a span
+cannot be placed for redaction, the consult fails rather than send it.
 """
 
 from __future__ import annotations
@@ -50,6 +59,7 @@ from orion.consult.core import (
 )
 from orion.consult.core import self_monitor_sources, stuck_prior_source
 from orion.consult.beliefs import MAX_BELIEF_OFFERS, STALE_CLAIM_SEC
+from orion.memory.mesh_edge import REDACTION_MARKER as MESH_EDGE_MARKER
 from orion.schemas.claude_limit import ClaudeLimitObservationV1
 from orion.schemas.room_claude import RoomClaudeUtteranceV1
 
@@ -67,6 +77,8 @@ AWAIT_ORION = "awaiting_orion"
 AWAIT_ORION_RUN = "awaiting_orion_run"
 AWAIT_CLAUDE = "awaiting_claude"
 BUDGET = "budget:"
+# Held at the mesh edge: the guard could not load, so nothing is sent; the next tick retries.
+MESH_EDGE_HOLD = "mesh_edge_hold:"
 MAX_CLAUDE_RESENDS = 1
 
 # Columns set_status may write besides status/status_reason. Code-only names: never request data.
@@ -308,6 +320,7 @@ class ConsultLoop:
         source_max_age_hours: float = 72.0,
         source_service: str = "orion-hub",
         clock: Callable[[], datetime] = _now,
+        mesh_edge_guard_loader: Optional[Callable[[], Any]] = None,
     ) -> None:
         self.enabled = enabled
         self._pool_provider = pool_provider
@@ -326,6 +339,8 @@ class ConsultLoop:
         self.source_max_age = timedelta(hours=source_max_age_hours)
         self.source_service = source_service
         self._clock = clock
+        # Mesh-edge check on every Claude-bound prompt (#3541). None = load from Postgres.
+        self._mesh_edge_guard_loader = mesh_edge_guard_loader
         self.meter: Dict[str, ClaudeLimitObservationV1] = {}
         self._lock = asyncio.Lock()
         self._tasks: List[asyncio.Task] = []
@@ -466,7 +481,7 @@ class ConsultLoop:
             return await self._orion_turn(pool, row)
         if reason == AWAIT_ORION_RUN:
             return await self._poll_orion_run(pool, row)
-        if reason.startswith(BUDGET):
+        if reason.startswith(BUDGET) or reason.startswith(MESH_EDGE_HOLD):
             return await self._send_claude(pool, row)
         if reason == AWAIT_CLAUDE:
             updated = row.get("updated_at")
@@ -619,15 +634,51 @@ class ConsultLoop:
         if relay is None:
             await set_status(pool, cid, "open", f"{BUDGET}no_relay", pending_prompt=prompt, pending_correlation_id=None)
             return {"waiting": cid, "for": "relay"}
+        outbound, edge = await self._mesh_edge(prompt)
+        if edge == "unavailable":
+            await set_status(pool, cid, "open", f"{MESH_EDGE_HOLD}unavailable", pending_prompt=prompt,
+                             pending_correlation_id=None)
+            logger.warning("consult_mesh_edge_held id=%s why=guard_unavailable", cid)
+            return {"waiting": cid, "for": "mesh_edge"}
+        if edge == "refused":
+            await set_status(pool, cid, "failed", "mesh_edge_refused", pending_prompt=None, pending_correlation_id=None)
+            self._push_turn(cid, 0, "Hub", "This consult stopped: its text quotes private memory that could not be "
+                                           "withheld cleanly, so nothing was sent to Claude.")
+            return {"failed": cid, "why": "mesh_edge_refused"}
+        if edge:
+            self._push_turn(cid, 0, "Hub", f"{edge} span(s) quoting private memory were withheld from Claude's copy.")
         correlation_id = str(uuid.uuid4())
         # Written BEFORE the invite: a crash after it is a lost reply (resent once), never an
-        # unknown request in flight.
-        await set_status(pool, cid, "open", AWAIT_CLAUDE, pending_prompt=prompt, pending_correlation_id=correlation_id)
+        # unknown request in flight. The stored prompt is the redacted one: a resend re-checks it.
+        await set_status(pool, cid, "open", AWAIT_CLAUDE, pending_prompt=outbound,
+                         pending_correlation_id=correlation_id)
         await relay.invite(
-            prompt=prompt, invited_by="Orion", session_id=None, room_id=consult_room_id(cid),
+            prompt=outbound, invited_by="Orion", session_id=None, room_id=consult_room_id(cid),
             correlation_id=correlation_id, trigger="auto",
         )
         return {"sent": cid, "to": "claude", "resend": resend}
+
+    async def _mesh_edge(self, prompt: str) -> tuple[str, Any]:
+        """The prompt as it may leave Orion, and what happened: ``None`` (clean), the number of
+        withheld spans (redacted), ``"unavailable"`` (guard did not load: hold) or ``"refused"``
+        (a match survived redaction: never send). Logs source kinds only, never text."""
+        from orion.memory.mesh_edge import MeshEdgeUnavailable, load_guard
+
+        try:
+            guard = await asyncio.to_thread(self._mesh_edge_guard_loader or load_guard)
+        except MeshEdgeUnavailable:
+            return prompt, "unavailable"
+        redacted, hits = guard.redact(prompt)
+        if not hits:
+            return prompt, None
+        kinds = sorted({h.source.split(":", 1)[0] for h in hits})
+        if guard.find(redacted):
+            logger.warning("consult_mesh_edge_refused hits=%s kinds=%s", len(hits), kinds)
+            return prompt, "refused"
+        spans = redacted.count(MESH_EDGE_MARKER) - prompt.count(MESH_EDGE_MARKER)
+        logger.warning("consult_mesh_edge_redacted hits=%s spans=%s kinds=%s match=%s", len(hits), spans, kinds,
+                       sorted({h.kind for h in hits}))
+        return redacted, max(spans, 1)
 
     async def on_claude_utterance(self, utt: RoomClaudeUtteranceV1) -> None:
         """Called by the room relay for a consult room. Never raises into the relay."""

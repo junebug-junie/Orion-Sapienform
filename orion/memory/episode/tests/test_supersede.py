@@ -487,7 +487,15 @@ def test_juniper_words_correct_a_numbered_item_without_restating_it():
     hers = replace(hers, voice="juniper_said", juniper_quoted=True)
     ask, seen = answers(*(vote("correction", kind="event"),) * 3)
     v = asyncio.run(s.classify_pair(a, hers, ask))
-    assert not v.acts and v.juniper_acts and len(seen) == 3
+    assert not v.acts and v.juniper_acts and len(seen) == 3 and v.abstain == s.NUMBERED_JUNIPER_ONLY
+    ask, _ = answers(vote("correction", kind="event"), vote("update"), vote("correction", kind="event"))
+    v = asyncio.run(s.classify_pair(a, hers, ask))
+    assert v.juniper_acts and v.relation == "correction"      # split votes, majority correction, her path
+    two = row("a2", "Juniper said the login fix is in PR #41 and deployed.", days=0)
+    cands = s.candidates_for(hers, corpus(a, two, hers), dense={"a": 0.8, "a2": 0.79})
+    ask, _ = answers(*(vote("correction", kind="event"),) * 6)
+    links, _ = asyncio.run(s.check_pairs(hers, cands, ask))
+    assert links == []                                          # two qualify: no clear target
     ask, _ = answers(vote("correction", kind="event", referent="no"))
     v = asyncio.run(s.classify_pair(a, hers, ask))
     assert not v.juniper_acts and v.abstain == "checklist:correction"
@@ -495,6 +503,9 @@ def test_juniper_words_correct_a_numbered_item_without_restating_it():
     ask, _ = answers(*(vote("correction", kind="event"),) * 3)
     links, _ = asyncio.run(s.check_pairs(hers, cands, ask))
     assert [(l.old_id, l.path) for l in links] == [("a", "juniper")]
+    plan = asyncio.run(s.plan_for_new_rows([hers], corpus(a, hers), answers(*(vote("correction", kind="event"),) * 3)[0],
+                                           dense=_dense({"a": 0.8}), apply_gate=OPEN))
+    assert len(plan["links"]) == 1 and plan["abstained"] == {}     # a linked pair is not counted as abstained
 
 
 def test_the_plan_counts_why_pairs_abstained():
@@ -535,4 +546,13 @@ def test_index_dense_retries_once_then_refuses(monkeypatch):
 
     calls.clear()
     monkeypatch.setattr(si, "embed", always_down)
-    assert asyncio.run(s.index_dense(cfg)("statement")) is None and len(calls) == s.DENSE_ATTEMPTS
+    dense = s.index_dense(cfg)
+    assert asyncio.run(dense("statement")) is None and len(calls) == 1     # "down" is not transient
+    async def timeout_down(client, cfg, text, *, doc_prefix):
+        calls.append(1)
+        raise si.SearchUnavailableError("chroma unavailable: ReadTimeout")
+    calls.clear()
+    monkeypatch.setattr(si, "embed", timeout_down)
+    dense = s.index_dense(cfg)
+    assert asyncio.run(dense("one")) is None and len(calls) == 2           # one retry
+    assert asyncio.run(dense("two")) is None and len(calls) == 3           # the plan's retry is spent

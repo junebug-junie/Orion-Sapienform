@@ -387,6 +387,7 @@ _NUMBERED = re.compile(r"(?:(?<!#)#|\b(?:prs?|pull requests?|issues?|tickets?)[\
 
 
 NUMBERED_ITEM_NOT_IN_B = "numbered_item_not_in_b"
+NUMBERED_JUNIPER_ONLY = "numbered_item_juniper_path_only"
 
 
 def numbered_items(text: str) -> frozenset[str]:
@@ -529,6 +530,8 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
     elif not all_acting:
         last = got[-1]
         why = f"checklist:{last.relation}" if last.relation in ACTING_RELATIONS else f"vote:{last.relation}"
+    elif not numbered_ok:
+        why = NUMBERED_JUNIPER_ONLY   # the model path cannot act; only Juniper's path may
     elif not unanimous:
         why = "split_update_correction"
     elif not strict:
@@ -861,7 +864,7 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
             "asked": asked, "check_errors": refused, "dense": dense_state, "budget_left": budget[0],
             "check_version": CHECK_VERSION, "decisions": decisions,
             # Why each asked pair did not link, counted (the numbered-item rule shows as its own reason).
-            "abstained": dict(Counter(d["abstain"] for d in decisions if d.get("abstain")))}
+            "abstained": dict(Counter(d["abstain"] for d in decisions if d.get("abstain") and not d.get("linked")))}
 
 
 RECORD_RUN_SQL = """
@@ -936,7 +939,7 @@ async def eval_gate(conn: Any, *, check_version: str = CHECK_VERSION, votes: int
 
 
 DENSE_ATTEMPTS = 2
-DENSE_TIMEOUT_SEC = 45.0
+DENSE_TIMEOUT_SEC = 40.0
 DENSE_RETRY_SLEEP_SEC = 5.0
 
 
@@ -944,6 +947,8 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
     """A DenseFn over the lived-memory index (``orion_lived_memory``, the retriever's vectors):
     embed the statement, take the n nearest episode_memory docs. ``cfg`` is a
     ``orion.introspect.semantic_index.SearchConfig``. None when the index cannot answer."""
+    retried = [False]   # one retry per plan (index_dense is built per plan), not per row
+
     async def run(statement: str) -> Optional[dict[str, float]]:
         import httpx
 
@@ -953,15 +958,22 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
         hits = None
         for attempt in range(DENSE_ATTEMPTS):
             try:
-                async with httpx.AsyncClient(timeout=DENSE_TIMEOUT_SEC) as client:
-                    vector, _ = await embed(client, cfg, statement, doc_prefix="supersede-check")
-                    hits = await nearest(client, cfg, vector, n, where={"kind": KIND_EPISODE})
+                # The bound covers the whole attempt (embed + every Chroma call), not each phase.
+                async with asyncio.timeout(DENSE_TIMEOUT_SEC):
+                    async with httpx.AsyncClient(timeout=DENSE_TIMEOUT_SEC) as client:
+                        vector, _ = await embed(client, cfg, statement, doc_prefix="supersede-check")
+                        hits = await nearest(client, cfg, vector, n, where={"kind": KIND_EPISODE})
                 break
-            except SearchUnavailableError:
+            except (SearchUnavailableError, TimeoutError) as exc:
                 # 2026-11-18 11:10Z: Chroma's collection lookup stalled 25 s once (20 s timeout) and the
-                # night's check refused as dense_unavailable. One retry; still no fallback if it fails.
-                if attempt + 1 < DENSE_ATTEMPTS:
+                # night's check refused as dense_unavailable. ONE retry per plan, only for a transient
+                # fault; still no fallback if it fails.
+                transient = isinstance(exc, TimeoutError) or "unavailable:" in str(exc)
+                if attempt + 1 < DENSE_ATTEMPTS and transient and not retried[0]:
+                    retried[0] = True
                     await asyncio.sleep(DENSE_RETRY_SLEEP_SEC)
+                    continue
+                break
         if hits is None:
             return None
         out: dict[str, float] = {}

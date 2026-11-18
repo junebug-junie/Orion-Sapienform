@@ -20,6 +20,8 @@
 
 BEGIN;
 
+-- Superseded for temporal_self_event by 2026-11-18_blind_experiment_arms_orion_readonly.sql (#3458): the role reads
+-- orion_scope.temporal_self_event, a view without blinded experiment arms. Re-running this line reopens the arm.
 GRANT SELECT ON public.temporal_self_event TO orion_readonly;
 GRANT SELECT ON public.experience_shown TO orion_readonly;
 GRANT SELECT ON public.experience_use TO orion_readonly;

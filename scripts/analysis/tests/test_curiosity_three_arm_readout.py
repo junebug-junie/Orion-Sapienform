@@ -119,6 +119,16 @@ def test_before_the_stop_the_outcome_numbers_are_hidden():
     assert "nats," not in text and "As treated" not in text and "hidden until the stop" in text
 
 
+def test_the_stopped_readout_names_the_blind_guard_to_lift_and_the_running_one_does_not():
+    repo = Path(__file__).resolve().parents[3]
+    assert (repo / ro.BLIND_GUARD_SQL).is_file()
+    stopped = ro.build_report(arms_of(30, [0.0, 0.3], [0.0, 0.3], [0.0]), [], now=START + timedelta(days=181),
+                              permutations=50)
+    assert stopped["primary"]["read"] and ro.BLIND_GUARD_SQL in ro.render(stopped)
+    running = ro.build_report(arms_of(16, [0.5, 0.0], [0.0], [0.0]), [], now=START + timedelta(days=6), permutations=50)
+    assert ro.BLIND_GUARD_SQL not in ro.render(running)
+
+
 def test_runs_drawn_after_the_stop_never_change_the_verdict():
     rows = arms_of(250, [0.0, 0.0, 0.0, 0.6], [0.0] * 7 + [0.1], [0.0] * 7 + [0.1])
     first = ro.build_report(rows, [], now=START + timedelta(days=40), permutations=300)

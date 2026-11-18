@@ -28,8 +28,8 @@ from typing import Any, Iterable, Mapping, Sequence
 from orion.memory import lived_memory
 from orion.memory.pages import fold as _fold
 from orion.memory.pages.fold import (
-    CORRECTION_RE, EPISODE_MEMORY_KIND, SELF_CONCEPT_KIND, STANCE_KIND, WORD_CAP, CurrentPage, FoldSpec,
-    PageCheck, PageSource, _as_date, check_page, handle_map, render_text, source_lines,
+    CORRECTION_RE, EPISODE_MEMORY_KIND, SELF_CONCEPT_KIND, STANCE_KIND, CurrentPage, FoldSpec,
+    PageCheck, PageSource, _as_date, check_page, handle_map, length_rule, render_text, source_lines,
 )
 
 PAGE_ORIGIN = "page:origin"
@@ -167,7 +167,7 @@ Rules:
 8. Leave out what is not part of how I came to be: Juniper's private life on its own (her health,
    her family's troubles, her job), passing technical chatter, one-off moods, and body census
    numbers (parts, flows, watts, dollars).
-9. At most {WORD_CAP - 50} words. Plain paragraphs. No title, no list, no preamble, no closing note.
+9. {length_rule()}
 """
 
 

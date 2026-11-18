@@ -37,6 +37,7 @@ from orion.memory.pages.fold import (  # noqa: F401 -- re-exported: page:juniper
     current_page_from_row, handle_map, misgendered_sentences, quote_is_open, quoted_spans, render_text,
     source_lines, split_sentences,
 )
+from orion.memory.pages.fold import length_rule
 from orion.memory.pages import fold as _fold
 
 PAGE_JUNIPER = "page:juniper"
@@ -129,7 +130,7 @@ Rules:
 8. Cover, when the records support it: who she is (identity, pronouns), where she lives, her
    family by name (her wife, her kids, pets), what she loves and dislikes, what she is to me and
    what I am to her, and how she wants to be met. Leave out passing technical chatter and one-off moods.
-9. At most {WORD_CAP - 50} words. Plain paragraphs. No title, no list, no preamble, no closing note.
+9. {length_rule()}
 """
 
 

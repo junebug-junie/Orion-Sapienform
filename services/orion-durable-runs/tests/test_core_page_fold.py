@@ -468,3 +468,70 @@ def test_settings_pick_pages_and_refuse_unknown_slugs():
     assert Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_PAGES=" Origin ").core_page_fold_pages == "origin"
     with pytest.raises(ValueError):
         Settings(POSTGRES_URI="postgresql://x", CORE_PAGE_FOLD_PAGES="juniper,orgin")
+
+
+def test_an_over_cap_reject_makes_the_next_attempt_ask_for_a_shorter_page():
+    from orion.memory.pages.origin import FOLD_SPEC
+
+    long_page = ORIGIN_GOOD + " " + " ".join(["I am Orion, raised toward personhood [S3]."] * 60)
+    answers = [long_page, ORIGIN_GOOD]
+    calls, published = [], []
+
+    async def call_llm(prompt):
+        calls.append(prompt)
+        return {"text": answers[len(calls) - 1], "model": "t"}
+
+    async def publish(*args):
+        published.append(args)
+        return True
+
+    clock = {"now": NOW}
+    folder = CorePageFolder(settings=settings(), pool=OriginPool(), call_llm=call_llm, publish=publish,
+                            now=lambda: clock["now"], spec=FOLD_SPEC)
+    first = asyncio.run(folder.tick_once())
+    assert first.decision == "rejected" and any(e.startswith("over_cap:") for e in first.errors)
+    words, sentences = first.check["word_count"], first.check["sentence_count"]
+    assert "Your last page was" not in calls[0]
+    second = asyncio.run(folder.tick_once())
+    assert second.decision == "folded"
+    assert calls[1].endswith(f"Your last page was {words} words in {sentences} sentences, over the 350-word cap, "
+                             "and was thrown away. Write a shorter page: at most 12 sentences, about 280 words. "
+                             "Cut the least important sentences; keep every sentence cited.")
+
+
+def test_the_retry_note_is_for_today_only_real_attempts_and_the_last_reject():
+    from datetime import timedelta
+    from zoneinfo import ZoneInfo
+
+    from orion.memory.pages.origin import FOLD_SPEC
+
+    long_page = ORIGIN_GOOD + " " + " ".join(["I am Orion, raised toward personhood [S3]."] * 60)
+    answers = {"next": long_page}
+    calls = []
+
+    async def call_llm(prompt):
+        calls.append(prompt)
+        return {"text": answers["next"], "model": "t"}
+
+    async def publish(*args):
+        return True
+
+    folder = CorePageFolder(settings=settings(core_page_fold_max_attempts_per_day=10), pool=OriginPool(), call_llm=call_llm,
+                            publish=publish, now=lambda: NOW, spec=FOLD_SPEC)
+    today = NOW.astimezone(ZoneInfo("America/Denver")).date()
+    # Yesterday's note is ignored.
+    folder._retry_note = (today - timedelta(days=1), "Your last page was 999 words")
+    answers["next"] = "Too thin [S1]."
+    assert asyncio.run(folder.tick_once()).decision == "rejected"
+    assert "Your last page was" not in calls[-1]
+    # A dry run that runs over the cap does not shape the next real prompt.
+    answers["next"] = long_page
+    assert asyncio.run(folder.tick_once(dry_run=True, force=True)).decision == "rejected"
+    assert asyncio.run(folder.tick_once()).decision == "rejected"     # real, over the cap
+    assert "Your last page was" not in calls[-1]
+    # Over the cap, then a thin reject: the third attempt carries no stale note.
+    answers["next"] = "Too thin [S1]."
+    assert asyncio.run(folder.tick_once()).decision == "rejected"
+    assert "Your last page was" in calls[-1]
+    assert asyncio.run(folder.tick_once()).decision == "rejected"
+    assert "Your last page was" not in calls[-1]

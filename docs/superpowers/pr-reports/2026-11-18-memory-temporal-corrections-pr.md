@@ -11,7 +11,7 @@ Orion's nightly memory step retires an old memory when a newer one changes or co
 
 ## Outcome moved
 
-EVAL_PLACEHOLDER
+(eval numbers: filled in below once the v3 run finishes)
 
 ## Current architecture
 
@@ -60,11 +60,27 @@ PR #3617 added write-time supersede: the distill's check node asked a two-questi
 
 ## Tests run
 
-TESTS_PLACEHOLDER
+```text
+ORION_MEMORY_EPISODE_TEST_DATABASE_URL=<throwaway postgres:16> PYTHONPATH=. pytest -q orion/memory/episode/tests orion/memory/tests
+  2407 passed (Postgres-backed included, 0 skipped)
+PYTHONPATH=.:services/orion-durable-runs pytest -q services/orion-durable-runs/tests/test_episode_distill_{graph,referent_policy,reconcile}.py
+  25 passed
+python3 scripts/check_migration_required_by.py      OK (2 new migration files)
+python3 scripts/check_env_template_parity.py        PASS
+```
+
+New tests cover each refusal and rule:
+- the degraded path refuses: index down, index raising, no index, a malformed or failed vote, a closed or stale eval gate, a pre-v3 checkpoint;
+- votes: unanimous and confident acts; any dissent, a split, or low confidence abstains;
+- Juniper's path: needs one clear target, is dissent-proof, and a budget cut turns it off;
+- validity: an update's `invalid_at` and the past-tense read, a correction is never served, undo clears validity, an update never ends before its start, expired rows are left out;
+- audit: one row per run, idempotent, no text, and a missing table does not cost the memories;
+- the manifest keeps two history lines for two runs, and the watched trace has legs and votes but no text;
+- pass apply refuses a word-only pair, a v2 pairs file, and a closed gate.
 
 ## Evals run
 
-EVALS_PLACEHOLDER
+(v3 run in progress; see Outcome moved)
 
 ## Docker/build/smoke checks
 
@@ -75,7 +91,38 @@ scripts/check_migration_required_by.py: OK. orion.sql_migration_drift.auto_apply
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+- Finding: the pass's `--max-checks` split a row's candidate list, so Juniper's "one clear target" could pass on a cut list.
+  - Fix: the cap now falls on whole rows.
+  - Evidence: `test_a_budget_cut_disables_the_juniper_path`, plus the whole-row cap in `cmd_dry_run`.
+- Finding: `build` read `/tmp/.../checks.csv`, which a v3 dry run rewrites in a new format.
+  - Fix: `build` defaults to a frozen host-side copy of the 11-17 v2 file and skips rows in other formats.
+  - Evidence: `test_build_skips_a_v3_format_checks_file`.
+- Finding: the eval gate ignored the vote count and never expired.
+  - Fix: the gate needs `votes = VOTES` and a run under 30 days old. `--record-db` accepts only a full v3 run on `memory_distill`. The run stores the gateway's model id.
+  - Evidence: `test_eval_gate_reads_the_latest_finished_run_for_this_check_version` (PG) and `test_eval_gate_open_only_on_...`.
+- Finding: a malformed answer was cached and replayed forever.
+  - Fix: only parseable votes are cached.
+  - Evidence: `test_a_malformed_answer_is_never_cached`.
+- Finding: the as-of read ignored `expires_at`.
+  - Fix: added the filter.
+  - Evidence: the expired case in the PG update test.
+- Finding: an update could end before the old fact began.
+  - Fix: `invalid_at = max(new time, old start)`.
+  - Evidence: `test_an_update_never_ends_before_the_old_fact_began`.
+- Finding: pass `apply` ignored the eval gate.
+  - Fix: `apply` refuses unless `--allow-no-eval` is given.
+  - Evidence: `test_pass_apply_refuses_while_the_eval_gate_is_closed` (PG).
+- Finding: `fetch_valid_at` has no live reader.
+  - Fix: filed #3674 (route past-tense recall to it). The read is UNVERIFIED in chat until then.
+  - Evidence: issue.
+- Nits fixed:
+  - `links_to_apply` keeps only links from the current version that carry a relation.
+  - No index call is made once the call budget is spent.
+  - Audit run ids carry a uuid suffix.
+  - The wording now says model reasons may paraphrase a memory.
+  - `passed` needs at least one true positive.
+  - The K limit on Juniper's target is documented.
+- Earlier review on #3669 (the safety PR): four findings, all fixed there.
 
 ## Restart required
 
@@ -94,7 +141,16 @@ Write time stays proposal-only until that eval run is recorded and passed.
 
 ## Risks / concerns
 
-RISKS_PLACEHOLDER
+- Severity: medium.
+  - Concern: chat recall does not yet route past-tense questions to the as-of reader.
+  - Mitigation: #3674. Until then an updated fact's history is reachable only by SQL (`EPISODE_VALID_AT_SQL`, orion_readonly).
+- Severity: low.
+  - Concern: no Hub view of the audit rows.
+  - Mitigation: #3673. They are readable by SQL after the grant.
+- Severity: low.
+  - Concern: write time applies nothing until someone runs the eval with `--record-db`, and the eval needs the host-side labelled set.
+  - Mitigation: these are the intended semantics (proposals and audit rows still accrue). The commands are under Restart required.
+- Issues: Fixes #3659. Fixes #3660. Opened #3673 and #3674.
 
 ## PR link
 

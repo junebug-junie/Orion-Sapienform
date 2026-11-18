@@ -476,7 +476,8 @@ def _learning_progress_read(today: date, series: tuple[str, ...]) -> dict[str, A
         p = lp.progress(sid, days, roster, today)
         out.append({
             "series_id": p.series_id, "status": p.status, "reason": p.reason,
-            "learning_progress": p.learning_progress, "se": p.se, "t": p.t, "direction": p.direction,
+            "learning_progress": p.learning_progress, "se": p.se, "t": p.t, "t_crit": p.t_crit,
+            "p_value": p.p_value, "direction": p.direction,
             "recent": {"start": p.recent.start.isoformat(), "end": p.recent.end.isoformat(),
                        "days": p.recent.days, "mean_skill": p.recent.mean_skill},
             "prior": {"start": p.prior.start.isoformat(), "end": p.prior.end.isoformat(),
@@ -484,7 +485,7 @@ def _learning_progress_read(today: date, series: tuple[str, ...]) -> dict[str, A
             "roster_changed_on": p.roster_changed_on.isoformat() if p.roster_changed_on else None,
         })
     return {"as_of": today.isoformat(), "horizon_min": lp.HORIZON_MIN, "window_days": lp.WINDOW_DAYS,
-            "rest_t": lp.REST_T, "series": out}
+            "alpha": lp.ALPHA, "min_effect": lp.MIN_EFFECT, "series": out}
 
 
 @app.get("/learning-progress")

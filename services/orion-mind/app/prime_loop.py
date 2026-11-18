@@ -616,7 +616,8 @@ class PrimeRuntime(MindLoopRuntime):
             if not isinstance(raw, dict) or not isinstance(raw.get("series"), list):
                 raise ValueError("no series list")
         except Exception as exc:  # noqa: BLE001 -- hunger never fails the tick
-            why = f"{type(exc).__name__}: {str(exc)[:120]}"
+            why = ("the read is off (404)" if isinstance(exc, urllib.error.HTTPError) and exc.code == 404
+                   else f"{type(exc).__name__}: {str(exc)[:120]}")
             if self._learning_error is not None:
                 self._learning = None
             self._learning_error = why

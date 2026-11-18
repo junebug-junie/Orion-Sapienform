@@ -12,11 +12,15 @@ Rules, each from the metric gate (recorded in the PR report):
 * **Only the gated series.** The gate passed for cabinet and office temperature only (``SERIES``). Chat bets and
   the legacy prediction-error nodes failed it.
 * **Same models on both sides.** A change to the set of models fitted for a series (the roster) is our deploy, not
-  Orion learning: cabinet's skill stepped 0.09 -> 0.30 the day ``direct_arx_overlap`` joined (2026-11-03). Only days
+  Orion learning: cabinet's skill stepped 0.09 -> 0.30 the day ``direct_arx_overlap`` joined (2026-11-03). Known
+  gap: a deploy that changes a model's code under the same name, or the selection logic, is not seen here. Only days
   after the last roster change count. Too few such days on either side: ``insufficient``, never 0.
 * **Rest is a real state.** Daily skill swings by about 0.15 with how hard the day was. A difference of window means
-  is ``flat`` unless it is at least ``REST_T`` standard errors from 0 (Welch, days as samples). Flat is the calm
-  reading: a calibrated forecaster that is not improving reads flat in week 1 and in week 10.
+  is ``flat`` unless its Welch t passes the two-sided ``ALPHA`` critical value of Student's t at the
+  Welch-Satterthwaite degrees of freedom (5-7 days a side: about 6-12 df, a cut of 2.2-2.4, not the normal 2.0).
+  Flat is the calm reading: a calibrated forecaster that is not improving reads flat in week 1 and in week 10.
+  Known limits, so the nominal 5% false-move rate is optimistic: daily skills are autocorrelated by weather spells
+  (the standard error is too small), and the reading is re-checked daily on overlapping windows for two series.
 * **Too small to matter reads flat too.** While the champion serves the baseline, skill sits at about 0 with almost
   no spread, so a 0.02 drift passes the t rule (cabinet "worse" on 2026-11-02, live replay). A change must also be
   at least ``MIN_EFFECT`` in skill.
@@ -30,12 +34,14 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Literal, Optional, Sequence
 
+from scipy.stats import t as student_t
+
 SERIES: tuple[str, ...] = ("athena.cabinet_temp_c", "office.temp_c")
 HORIZON_MIN = 15  # the gate's horizon
 WINDOW_DAYS = 7
 MIN_DAYS = 5  # usable days needed in each window
 MIN_PAIRS = 200  # paired scored forecasts needed for a day to count (of 288 at a 5 min grain)
-REST_T = 2.0  # |t| below this reads flat (about 95% two-sided)
+ALPHA = 0.05  # two-sided: |t| below Student's t critical value at the Welch df reads flat
 MIN_EFFECT = 0.05  # [default] |progress| below this reads flat: 5% of the baseline's error
 
 Direction = Literal["better", "worse", "flat"]
@@ -71,6 +77,8 @@ class SeriesProgress:
     learning_progress: Optional[float]
     se: Optional[float]
     t: Optional[float]
+    t_crit: Optional[float]
+    p_value: Optional[float]  # two-sided, Student's t at the Welch df (not "P(the change is real)")
     direction: Optional[Direction]
     recent: Window
     prior: Window
@@ -119,10 +127,19 @@ def progress(series_id: str, days: Sequence[DayStat], rosters: dict[date, frozen
     if len(recent) < MIN_DAYS or len(prior) < MIN_DAYS:
         why = (f"usable days: recent {len(recent)}, prior {len(prior)}; need {MIN_DAYS} each"
                + (f" (only days after the {change.isoformat()} model change count)" if change else ""))
-        return SeriesProgress(series_id, "insufficient", why, None, None, None, None, rw, pw, change)
+        return SeriesProgress(series_id, "insufficient", why, None, None, None, None, None, None, rw, pw, change)
     lp = rw.mean_skill - pw.mean_skill  # type: ignore[operator]
-    se = math.sqrt(_var(recent) / len(recent) + _var(prior) / len(prior))
-    t = lp / se if se > 0 else (0.0 if lp == 0 else math.copysign(math.inf, lp))
-    moved = abs(lp) >= MIN_EFFECT
-    direction: Direction = "better" if moved and t >= REST_T else "worse" if moved and t <= -REST_T else "flat"
-    return SeriesProgress(series_id, "ok", None, lp, se, t if math.isfinite(t) else None, direction, rw, pw, change)
+    vr, vp = _var(recent) / len(recent), _var(prior) / len(prior)
+    se = math.sqrt(vr + vp)
+    if se > 0:
+        t = lp / se
+        df = (vr + vp) ** 2 / ((vr ** 2 / (len(recent) - 1) if vr else 0.0) + (vp ** 2 / (len(prior) - 1) if vp else 0.0))
+        t_crit = float(student_t.ppf(1 - ALPHA / 2, df))
+        p_value = float(2 * student_t.sf(abs(t), df))
+    else:  # no spread on either side: any difference is exact
+        t, t_crit = (0.0 if lp == 0 else math.copysign(math.inf, lp)), 0.0
+        p_value = 1.0 if lp == 0 else 0.0
+    moved = abs(lp) >= MIN_EFFECT and abs(t) > t_crit
+    direction: Direction = ("better" if lp > 0 else "worse") if moved else "flat"
+    return SeriesProgress(series_id, "ok", None, lp, se, t if math.isfinite(t) else None, t_crit, p_value, direction,
+                          rw, pw, change)

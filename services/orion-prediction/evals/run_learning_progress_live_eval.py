@@ -8,8 +8,8 @@ worse). The last line per series is today's reading, to compare with the endpoin
 
     cd services/orion-prediction && POSTGRES_URI=... PYTHONPATH=../..:. python evals/run_learning_progress_live_eval.py
 
-Baseline 2026-11-18: cabinet flat 8, insufficient 12 (model change 11-03), today -0.073 t -0.93 flat;
-office better once (11-16, +0.228 t 2.86), today +0.031 t 0.34 flat.
+Baseline 2026-11-18: cabinet flat 8, insufficient 12 (model change 11-03), today -0.073 t -0.93 (cut 2.33) flat;
+office better once (11-16, +0.228 t 2.86, cut 2.18), today +0.031 t 0.34 flat.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def main() -> int:
             continue
         first = min(d.day for d in days)
         print(f"\n{sid} (first scored day {first})")
-        print("as_of       status        lp       se      t     dir     recent  prior  roster_change")
+        print("as_of       status        lp       se      t   t_crit  dir     recent  prior  roster_change")
         tally: Counter = Counter()
         d = first + timedelta(days=2 * lp.WINDOW_DAYS)
         while d <= today:
@@ -51,7 +51,7 @@ def main() -> int:
             p = lp.progress(sid, [x for x in days if x.day < d], {k: v for k, v in roster_all.items() if k < d}, d)
             tally[p.direction or p.status] += 1
             f = (lambda v, w=7: f"{v:+.3f}".rjust(w) if v is not None else "-".rjust(w))
-            print(f"{d}  {p.status:12} {f(p.learning_progress)} {f(p.se)} {f(p.t)}  {str(p.direction or '-'):7} "
+            print(f"{d}  {p.status:12} {f(p.learning_progress)} {f(p.se)} {f(p.t)} {f(p.t_crit, 6)}  {str(p.direction or '-'):7} "
                   f"{p.recent.days:>5}  {p.prior.days:>5}  {p.roster_changed_on or '-'}")
             d += timedelta(days=1)
         print(f"tally: {dict(tally)}")

@@ -359,9 +359,10 @@ class PostgresStore:
             "avg(c.abs_error) AS mae_champion, avg(b.abs_error) AS mae_baseline "
             "FROM prediction_forecast c JOIN prediction_forecast b ON b.series_id = c.series_id "
             "AND b.origin_ts = c.origin_ts AND b.horizon_min = c.horizon_min AND b.role = 'baseline' "
+            "AND b.series_id = ANY(%s) AND b.horizon_min = %s AND b.origin_ts >= %s "
             "WHERE c.series_id = ANY(%s) AND c.role = 'champion' AND c.horizon_min = %s AND c.origin_ts >= %s "
             "AND c.abs_error IS NOT NULL AND b.abs_error IS NOT NULL GROUP BY 1, 2",
-            (list(series_ids), horizon_min, since))
+            (list(series_ids), horizon_min, since, list(series_ids), horizon_min, since))
 
     def daily_rosters(self, series_ids: Sequence[str], since: datetime) -> list[dict]:
         """Per series and UTC day: the set of model names fitted (kind 'model'), sorted."""

@@ -630,12 +630,15 @@ progress: the drop in error over time, not low error.
 - **Only cabinet and office temperature.** The metric gate passed for these two only.
 - **Same models on both sides.** Only days after the last change to the set of fitted models count; a model joining
   is our deploy, not learning. Fewer than 5 usable days on a side: `insufficient`, with a reason (never 0).
-- **Rest.** `direction` is `flat` unless the change is at least 2 standard errors from 0 (Welch, days as samples)
-  and at least 0.05 in skill. Flat is the calm reading.
+- **Rest.** `direction` is `flat` unless the Welch t passes Student's two-sided 5% cut at the Welch-Satterthwaite
+  df (about 2.2-2.3 live) and the change is at least 0.05 in skill. Flat is the calm reading. Known limits: daily
+  skills are autocorrelated (the standard error is too small) and the reading is re-checked daily; a deploy that
+  changes a model's code under the same name is not detected as a roster change.
 - Computed on read. No table, no node, no bus event. Not a market family (design: not before Step 3).
 
-Response: `{as_of, horizon_min, window_days, rest_t, series: [{series_id, status, reason, learning_progress, se, t,
-direction, recent: {start, end, days, mean_skill}, prior: {...}, roster_changed_on}]}`. `?series_id=` reads one;
+Response: `{as_of, horizon_min, window_days, alpha, min_effect, series: [{series_id, status, reason,
+learning_progress, se, t, t_crit, p_value, direction, recent: {start, end, days, mean_skill}, prior: {...},
+roster_changed_on}]}`. `?series_id=` reads one;
 any other series is 404.
 
 Live replay (`evals/run_learning_progress_live_eval.py`, 2026-11-18): cabinet flat 8 days, insufficient 12 (the

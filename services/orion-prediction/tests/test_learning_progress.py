@@ -38,7 +38,7 @@ def test_gradual_improvement_reads_better():
     skills = [0.10 + 0.02 * i + w for i, w in enumerate(WIGGLE * 2)]
     p = lp.progress("s", days_from(skills), rosters(14), TODAY)
     assert p.status == "ok" and p.learning_progress > 0.1
-    assert p.direction == "better" and p.t >= lp.REST_T
+    assert p.direction == "better" and p.t > p.t_crit > 2.0 and p.p_value < lp.ALPHA
 
 
 def test_decline_reads_worse():
@@ -60,7 +60,18 @@ def test_tiny_but_consistent_drift_reads_flat():
     tiny = (0.001, -0.001, 0.0, 0.002, -0.002, 0.001, 0.0)
     skills = [0.01 + w for w in tiny] + [-0.01 + w for w in tiny]
     p = lp.progress("s", days_from(skills), rosters(14), TODAY)
-    assert p.t <= -lp.REST_T and p.direction == "flat"
+    assert p.t < -p.t_crit and p.direction == "flat"
+
+
+def test_t_between_normal_and_student_cut_reads_flat():
+    # 5 days a side: 8 df, Student's cut 2.31. t = 2.25 passes the normal 2.0 but is not a real move here.
+    base = (0.0, 0.12, 0.04, 0.16, 0.08)
+    grid = days_from([0.0] * 14)
+    days = ([lp.DayStat(grid[i].day, 288, 0.2 * (1 - (0.20 + b)), 0.2) for i, b in enumerate(base)]
+            + [lp.DayStat(grid[7 + i].day, 288, 0.2 * (1 - (0.29 + b)), 0.2) for i, b in enumerate(base)])
+    p = lp.progress("s", days, rosters(14), TODAY)
+    assert p.status == "ok" and 2.0 < p.t < p.t_crit and p.direction == "flat"
+    assert abs(p.t_crit - 2.306) < 0.01
 
 
 def test_step_on_roster_change_is_not_credited():

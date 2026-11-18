@@ -139,7 +139,7 @@ content wake Prime: `horizon` (a held concern or promise past three quarters of 
 does not hold past three quarters of its window), `surprise` (another organ's uncited experience with surprisal at least
 ln 2 and above its own source's 30-day 90th percentile) and `connection` (Juniper silent longer than her own usual gap
 between conversations) and `learning` (a cabinet or office forecast's skill against its baseline moved this week,
-beyond 2 standard errors and 0.05: orion-prediction `GET /learning-progress`, drive erf(|t|/√2), choice-as-EFE Step 1). Drives are 0 at rest; the strongest damped need at `PRIME_HUNGER_THRESHOLD` (0.5) wakes Prime.
+past Student's 5% cut and 0.05: orion-prediction `GET /learning-progress`, drive 1 - p, one wake per move, choice-as-EFE Step 1). Drives are 0 at rest; the strongest damped need at `PRIME_HUNGER_THRESHOLD` (0.5) wakes Prime.
 Guards: a thought that changes nothing halves the needs it was shown (unless it answered that need), recovering over the
 need's own horizon; at most `PRIME_HUNGER_DAILY_BUDGET` (24) thoughts in any 24 h, after which only a change wakes
 Prime; the same content line wakes Prime again only after its drive rose 0.1 from its lowest point since. Surprise and

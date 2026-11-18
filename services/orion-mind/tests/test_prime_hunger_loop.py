@@ -201,9 +201,9 @@ def test_kept_concerns_do_not_shield_an_ignored_reading_want_issue_3552(caplog):
 
 
 LEARNING_URL = "http://pred:8132/learning-progress"
-LEARNING_PAGE = {"as_of": "2026-11-16", "horizon_min": 15, "window_days": 7, "rest_t": 2.0, "series": [
+LEARNING_PAGE = {"as_of": "2026-11-16", "horizon_min": 15, "window_days": 7, "alpha": 0.05, "min_effect": 0.05, "series": [
     {"series_id": "office.temp_c", "status": "ok", "reason": None, "learning_progress": 0.228, "se": 0.08,
-     "t": 2.86, "direction": "better", "roster_changed_on": None,
+     "t": 2.86, "t_crit": 2.18, "p_value": 0.014, "direction": "better", "roster_changed_on": None,
      "recent": {"start": "2026-11-09", "end": "2026-11-15", "days": 7, "mean_skill": 0.341},
      "prior": {"start": "2026-11-02", "end": "2026-11-08", "days": 7, "mean_skill": 0.113}}]}
 
@@ -215,7 +215,7 @@ def test_a_learning_move_from_orion_prediction_wakes_prime_with_the_learning_tra
     assert LEARNING_URL in rt.urls
     [call] = rt.llm.calls
     assert "[learning] Your office temperature forecasts got better" in call["user_prompt"]
-    assert hg.parse_woke_need(closed_note(rt)) == ("learning", "learning:office.temp_c")
+    assert hg.parse_woke_need(closed_note(rt)) == ("learning", "learning:office.temp_c:better")
 
 
 def test_learning_off_reads_nothing_and_unreadable_says_unknown():
@@ -225,5 +225,5 @@ def test_learning_off_reads_nothing_and_unreadable_says_unknown():
     rt = hungry(runtime(answer=IDLE, extra_pages={HUNGER_URL: surprise_page(0.01)}),
                 PRIME_PREDICTION_URL="http://pred:8132")
     asyncio.run(rt.tick())  # 404: first failure keeps nothing (there was no good read), so the need is unknown
-    assert LEARNING_URL in rt.urls and rt._learning is None and rt._learning_error
+    assert LEARNING_URL in rt.urls and rt._learning is None and rt._learning_error == "the read is off (404)"
     assert all(n.name != "learning" for n in rt._needs)

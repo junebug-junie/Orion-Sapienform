@@ -34,11 +34,14 @@ The needs built here (each has a live producer; see the PR report's metric gate 
 
 * ``learning`` -- a forecast series' skill against its baseline moved this week (Oudeyer-Kaplan learning progress;
   choice-as-EFE design Step 1). Source: orion-prediction GET /learning-progress, read by the Prime loop. Only a
-  ``better`` or ``worse`` reading is a need; ``flat`` (the rest point: under 2 standard errors or under 0.05 skill)
-  and ``insufficient`` are not. drive = P(the change is real in that direction) read two-sided, erf(|t| / sqrt 2):
-  about 0.95 at the 2-standard-error edge, so a real move wakes Prime once. The ref is the series alone
-  (``learning:<series_id>``): one move is one line until the series reads flat again (guard 5's trough). An unread
-  source is unknown, never flat. Halving recovers over the 7-day window.
+  ``better`` or ``worse`` reading is a need; ``flat`` (the rest point: under Student's two-sided 5% cut at the
+  Welch df, or under 0.05 skill) and ``insufficient`` are not. drive = 1 - the producer's two-sided p-value. A move
+  already passed p < 0.05, so in practice the drive is 0.95-1: a gate that wakes Prime once per move, not a graded
+  intensity (it is not "P(the change is real)"). The ref names the series and the direction
+  (``learning:<series_id>:<better|worse>``), so a flip to the opposite direction is a new line. One move is one line
+  until the series reads flat again (guard 5's trough). Each series is damped on its own key (``learning:<series>``):
+  refs are stable, so one shown series must not hold another's wake. An unread source is unknown, never flat.
+  Halving recovers over the 7-day window.
 
 Not built here, each because its source does not exist yet (no placeholder need ships; the PR report links the
 tickets): ``coherence`` (the contradiction finder) and ``project`` (Part C projects).
@@ -310,23 +313,23 @@ def connection_needs(inputs: Optional[dict[str, Any]], now: datetime) -> list[tu
     return [("connection", drive, content[:CONTENT_CAP], ref[:REF_CAP], max(median.total_seconds(), 3600.0), exp)]
 
 
-def learning_drive(direction: Any, t: Any) -> float:
-    """P(the skill change is real in its direction), two-sided: erf(|t| / sqrt 2). 0 unless better or worse."""
+def learning_drive(direction: Any, p_value: Any) -> float:
+    """1 - the two-sided p-value of the skill change. 0 unless better or worse; 0 when the p-value is unreadable."""
     if direction not in ("better", "worse"):
         return 0.0
     try:
-        tv = abs(float(t))
+        p = float(p_value)
     except (TypeError, ValueError):
-        return 1.0  # se was 0: the windows differ with no spread at all
-    return _clamp(math.erf(tv / math.sqrt(2.0))) if math.isfinite(tv) else 1.0
+        return 0.0
+    return _clamp(1.0 - p) if math.isfinite(p) else 0.0
 
 
-def learning_needs(learning: Optional[dict[str, Any]]) -> list[tuple[NeedName, float, str, str, float]]:
+def learning_needs(learning: Optional[dict[str, Any]]) -> list[tuple[Any, ...]]:
     """``learning``: orion-prediction GET /learning-progress as read (None = unread)."""
     out = []
     for s in (learning or {}).get("series") or []:
         sid = str(s.get("series_id") or "")
-        drive = learning_drive(s.get("direction"), s.get("t"))
+        drive = learning_drive(s.get("direction"), s.get("p_value"))
         if drive <= 0.0 or not sid:
             continue
         recent, prior = s.get("recent") or {}, s.get("prior") or {}
@@ -336,10 +339,11 @@ def learning_needs(learning: Optional[dict[str, Any]]) -> list[tuple[NeedName, f
             continue
         name = LEARNING_LABELS.get(sid, sid)
         word = "better" if s.get("direction") == "better" else "worse"
+        ref = f"learning:{sid}:{word}"
         content = (f"Your {name} forecasts got {word} this week: skill against the naive baseline went from "
                    f"{ps:.2f} ({prior.get('start')} to {prior.get('end')}) to {rs:.2f} ({recent.get('start')} to "
-                   f"{recent.get('end')}), with the same models on both sides [learning:{sid}]")
-        out.append(("learning", drive, content, f"learning:{sid}", LEARNING_RECOVERY.total_seconds()))
+                   f"{recent.get('end')}), with the same models on both sides [{ref}]")
+        out.append(("learning", drive, content, ref, LEARNING_RECOVERY.total_seconds(), None, f"learning:{sid}"))
     return out
 
 

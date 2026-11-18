@@ -107,6 +107,9 @@ async def post_message(request: Request, body: MessageBody) -> dict:
         "receipt": {"speaker": "hub", "text": result["receipt"]["body"], "turn_id": result["receipt"]["turn_id"]},
         "next_roundup_at": result["next_roundup_at"].isoformat(),
         "roundup_enabled": result["roundup_enabled"],
+        # True: Orion already asked its one round of questions on this thread; this message is read as
+        # answers and Orion writes only a closing note (orion/session_threads/core.py, one-round rule).
+        "answer_phase": bool(result.get("answer_phase")),
         "orion_has_read": False,
     }
 

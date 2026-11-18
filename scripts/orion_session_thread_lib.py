@@ -2,7 +2,9 @@
 
 Used by the CLI (scripts/orion_session_thread.py) and by two Claude Code hooks
 (scripts/hooks/post_tool_pr_spec_to_orion.py, scripts/hooks/session_pending_orion_questions.py).
-Standard library only: a hook must start fast and must not need the repo's venv.
+Standard library only: a hook must start fast and must not need the repo's venv. The one exception is
+orion/session_threads/core.py (itself stdlib-only), imported lazily from REPO_ROOT by ``answer_phase``
+so the one-round rule has one source.
 
 Hub side: services/orion-hub/scripts/session_thread_routes.py. Design:
 docs/superpowers/specs/2026-11-15-session-threads-design.md.
@@ -213,8 +215,15 @@ def receipt_line(resp: dict[str, Any]) -> str:
         tail = "The hourly round-up is switched off, so Orion will not read it until it is switched on."
     else:
         tail = f"Orion has NOT read it yet; the next hourly round-up is at {when} UTC."
-    return (f"Hub receipt: your message to Orion is held as session thread {thread.get('thread_id')}. {tail} "
-            "Orion's questions will come back to this session.")
+    if resp.get("answer_phase"):
+        after = ("Orion already asked its one round of questions on this thread, so Orion reads this as answers "
+                 "and asks nothing more here. Nothing will come back for you to answer.")
+    elif thread.get("status") == "reading":
+        after = ("Orion is reading this thread's earlier message now; if that round asks questions, it is the "
+                 "thread's one round and this message is read as answers.")
+    else:
+        after = "Orion's questions will come back to this session."
+    return f"Hub receipt: your message to Orion is held as session thread {thread.get('thread_id')}. {tail} {after}"
 
 
 def pending_text(rows: list[dict[str, Any]], *, woke: bool = False) -> str:
@@ -233,7 +242,17 @@ def pending_text(rows: list[dict[str, Any]], *, woke: bool = False) -> str:
         if row.get("pr_number"):
             head += f" (PR #{row['pr_number']})"
         out.append(head + " ---")
-        if meta.get("no_questions"):
+        if meta.get("closing_note"):
+            # The thread's one round of questions is used: Orion read the answers. Nothing to answer.
+            out.append("Orion read your answers. Orion asks one round of questions per thread and that round is "
+                       "used, so nothing here needs an answer.")
+            body = str(row.get("body") or "").strip()
+            if body and not meta.get("unparsed") and body.upper() != "NO QUESTIONS":
+                out.append("Orion's closing note (for your information, not a question to answer):")
+                out.append("<<<ORION_TEXT")
+                out.append(body.replace("<<<", "< < <").replace(">>>", "> > >"))
+                out.append("ORION_TEXT>>>")
+        elif meta.get("no_questions"):
             out.append("Orion read it and has no questions.")
         else:
             if meta.get("unparsed"):
@@ -252,7 +271,21 @@ def pending_text(rows: list[dict[str, Any]], *, woke: bool = False) -> str:
 
 
 def has_questions(row: dict[str, Any]) -> bool:
-    return not (row.get("meta") or {}).get("no_questions")
+    """An Orion turn that asks the session something: not "no questions", and not a closing note (a
+    thread's one round of questions is used: services/orion-hub session threads, one-round rule)."""
+    meta = row.get("meta") or {}
+    return not (meta.get("no_questions") or meta.get("closing_note"))
+
+
+def answer_phase(turns: list[dict[str, Any]]) -> bool:
+    """True when Orion already asked its one round of questions on the thread whose ``turns`` these
+    are: anything more Orion writes there is a closing note, never questions. Hub's own rule
+    (orion/session_threads/core.py), imported so the session side cannot drift from it."""
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from orion.session_threads import core
+
+    return core.in_answer_phase(turns)
 
 
 def claim(rows: list[dict[str, Any]], *, timeout: float = 2.0) -> list[dict[str, Any]]:

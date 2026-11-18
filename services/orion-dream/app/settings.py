@@ -78,6 +78,8 @@ class Settings(BaseSettings):
     # from the whole candidate pool through the same prompt (the baseline).
     DREAM_HYPOTHESES_PER_CYCLE: int = Field(default=3, ge=0, le=8)
     DREAM_CONTROL_PER_CYCLE: int = Field(default=1, ge=0, le=4)
+    # Dream-arm pairs: different organs, times within this many minutes of each other (#3664).
+    DREAM_PAIR_WINDOW_MINUTES: float = Field(default=120.0, gt=0.0, le=1440.0)
     DREAM_HYPOTHESIS_TTL_HOURS: float = Field(default=72.0, gt=0.0)
     CHANNEL_LLM_INTAKE: str = Field(default="orion:exec:request:LLMGatewayService")
     DREAM_LLM_ROUTE: str = Field(default="metacog_background")

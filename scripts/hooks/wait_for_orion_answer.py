@@ -17,7 +17,9 @@ thread's newest turn at arming time, so an older answer never wakes or ends it. 
 - has questions: the hook claims it (marks it delivered; Hub marks a turn once, so the prompt hook
   never shows it too), writes it with the circle-back steps to stderr and exits 2. Claude Code then
   wakes the session with that text. Already claimed by the prompt hook: exit 0.
-- says "no questions": exit 0, left for the prompt hook to show.
+- says "no questions", or is a closing note: exit 0, left for the prompt hook to show.
+A thread whose one round of questions is already used (Orion asked on it before; the arming message is
+answers) is not waited on: Orion writes only a closing note there, never questions. Exit 0 at once.
 Hub down: keeps trying. Never exits 2 for an error.
 
 Kill switch: ORION_SESSION_THREADS_HOOKS=0. Test knobs: ORION_ANSWER_WAIT_POLL_S (60),
@@ -119,6 +121,9 @@ def main() -> int:
             time.sleep(poll)
             continue
         if since_seq is None:
+            if lib.answer_phase(turns):
+                lib.log(f"answer_wait answer_phase thread={thread_id}")
+                return 0   # the one round of questions is used: nothing will come back to answer
             since_seq = max((int(t.get("seq") or 0) for t in turns), default=0)
         answers = [t for t in turns if t.get("speaker") == "orion" and int(t.get("seq") or 0) > since_seq]
         if answers:

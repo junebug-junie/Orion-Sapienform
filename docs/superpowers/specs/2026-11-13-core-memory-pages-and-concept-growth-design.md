@@ -599,13 +599,14 @@ points at its target. The distiller does not supersede at write time either. Fol
   that pair again. A Juniper undo is final. An operator undo (for example after a matcher bug)
   may be reopened only by an explicit reopen event; the pass never reopens anything by itself
   (#3629).
-- **Pair detection (as built in PR #3617).** Candidates are rows the serving SQL may serve,
+- **Pair detection (as built in PR #3617; SUPERSEDED by Corrections rev 2 below: the 0.80
+  cosine-alone leg and the word-only apply fallback are gone).** Candidates are rows the serving SQL may serve,
   ranked by the retriever's own vectors. A candidate qualifies in one of two ways: cosine
   0.80 or more alone (`DENSE_ALONE`), or any cosine plus a shared rare referent (25 rows or
   fewer) or a rare word (8 rows or fewer). With no vectors (`--no-dense`, or the index is
   down), a candidate needs two shared rare words, or one rare word plus a rare referent.
   Then two local-model questions decide it. A failed model call links nothing.
-- **No degraded apply, and precision before apply (#3659, waits on Juniper).** Today the
+- **No degraded apply, and precision before apply (#3659; built in Corrections rev 2 below).** Today the
   write-time path applies links automatically, and drops to words-only when the index fails.
   Rule: when dense search or the model fails, plan but do not apply. No apply, at write time
   or by the pass, until a blind hand-labelled precision sample shows 0 wrong supersedes.
@@ -621,6 +622,32 @@ rows) does not catch them. Rule: the supersede pass is a re-runnable, idempotent
 #3537 runs it as its last step. The backfill report includes the pass report. #3587 must land
 before #3537 runs. **The referent coverage check blocks:** if backfilled rows fall below the
 live band, the backfill stops before the pass (noted on #3537).
+
+### Corrections rev 2: classify, vote, end validity, measure (Juniper, 2026-11-17, #3659 #3660)
+
+Juniper: "don't turn it off, make it world class." What changed, all on local models:
+
+- **Never act degraded.** No meaning index, an index failure, or a failed/malformed model answer:
+  the plan proposes, holds its links, and logs `refused_because`. No word-only fallback for
+  applying. A cosine alone never makes a candidate (the 0.80 "dense alone" leg is gone).
+- **Classify, don't pair** (Mem0 ADD/UPDATE/NOOP). The local model names the relation: update,
+  correction, refine, compatible, or unrelated, with "same attribute" and a confidence, in JSON
+  mode. **Self-consistency:** 3 votes above temperature 0. Act only on a unanimous, confident
+  update or correction. Anything else abstains; abstaining is always safe.
+- **Bi-temporal validity** (Zep/Graphiti). The old row gets `invalid_at`, `invalidated_by`,
+  `invalid_reason`. An update was true until the new row's time; a correction was never true.
+  Recall's default stays "currently true" (`status = 'active'`). `EPISODE_VALID_AT_SQL` reads
+  "true then". Undo clears all three.
+- **Measured before trusted.** `scripts/memory_supersede_eval.py` scores a labelled set: synthetic
+  fixtures in the repo, and real items host-side (Juniper's own confirmation revisions as positives;
+  the watched trip/home and pet rows, the 11-17 dry-run vetoes, and near-duplicates as hard
+  negatives). Bar: zero false acts. Write time applies only while the latest recorded run for the
+  current check version passed (`memory_supersede_eval_run`).
+- **Juniper's words outrank abstention.** A new row in her voice with a verified quote from her own
+  prompt acts when every vote says update/correction (any confidence) and there is exactly one such
+  candidate (a clear target).
+- **Audit trail.** One append-only `memory_supersede_run` row per run (ids, legs, votes, verdicts;
+  no statements) and an append-only pass history next to the manifest, with a per-watched-row trace.
 
 ### Vetoes attach to the claim
 

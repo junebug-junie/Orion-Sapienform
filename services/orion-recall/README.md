@@ -1085,6 +1085,13 @@ or hangs, the exact-word candidates are still reranked, and the block still says
 degraded search that finds nothing puts a one-line note in the prompt ("not proof there is no
 memory"), except for small talk the rewrite answered NONE. If the whole lived recall misses the
 worker's deadline, the worker runs the same exact-word fallback from the in-memory snapshot.
+The reranker gets the candidates in chunks of 8 (`RERANK_CHUNK`), best-retrieved first, with the
+message's own meaning and exact-word hits taking turns (issue #3662). If the deadline or an error
+stops it after at least one chunk, the scored chunks are kept and served (`rerank_partial` in the
+trace, status `ok`). If nothing in the scored chunks clears the bar, the unscored exact-word hits
+are served degraded (reason `rerank_partial`), so a part-search never reads as "below the bar".
+Cause found 2026-11-17: 5 of 7 degraded chat turns overlapped orion-whisper-tts synthesis on the
+same Tesla P4; the other 2 lost 1.8-2.6 s to the query rewrite first.
 Telemetry: `recall_telemetry.backend_counts.lived_memory_degraded = 1`, and
 `recall_telemetry.timings_ms.lived_memory_{rewrite,rerank,total}`; `recall_debug.lived_memory`
 carries `backend`, `degraded` reasons and the rewritten searches.

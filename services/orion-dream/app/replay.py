@@ -78,10 +78,37 @@ def row_key(kind: str, row: dict[str, Any]) -> Optional[str]:
     return f"{kind}:{key}" if key else None
 
 
+def _as_utc(value: Any) -> Optional[datetime]:
+    """A row's time as an aware UTC datetime: timestamptz, naive (read as UTC) or ISO text. None
+    for anything else; a bad time is dropped, never guessed."""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _when(value: Any) -> str:
+    """'[11-17 17:58 UTC] ' for a time the row carries, else ''. A link the dream claims between two
+    fragments is only checkable when each says when it happened (#3412)."""
+    at = _as_utc(value)
+    return f"[{at:%m-%d %H:%M} UTC] " if at else ""
+
+
 def candidate_from_metacog(row: dict[str, Any]) -> Optional[ReplayItemV1]:
     severity = str(row.get("severity") or "").strip().lower()
     weight = SEVERITY_WEIGHT.get(severity)
-    text = _clip(row.get("summary"))
+    summary = _clip(row.get("summary"))
+    head = f"{_when(row.get('occurred_at'))}{summary}"
+    # Evidence gets the room the summary leaves, so the overall cap never cuts its end.
+    room = min(300, TEXT_CAP - len(head) - len(" Evidence: ."))
+    evidence = _clip(row.get("evidence"), room).rstrip(". ") if room >= 20 else ""
+    text = _clip(head + (f" Evidence: {evidence}." if evidence else "")) if summary else ""
     rid = str(row.get("id") or "").strip()
     if weight is None or not text or not rid:
         return None
@@ -93,6 +120,7 @@ def candidate_from_metacog(row: dict[str, Any]) -> Optional[ReplayItemV1]:
         weight=weight,
         reason=f"metacog flagged {severity} ({kind})",
         tags=_tags(row.get("tags")),
+        occurred_at=_as_utc(row.get("occurred_at")),
     )
 
 
@@ -110,7 +138,10 @@ def candidate_from_compaction_request(row: dict[str, Any]) -> Optional[ReplayIte
         return None
     reason_text = _clip(row.get("reason"), 400)
     name = _loop_name(row, theme)
-    text = f"{name}: {reason_text}" if reason_text else name
+    # What the chain actually thought beats how it ended ("reverie_chain_settled").
+    thought = _clip(row.get("interpretation"), 450)
+    body = f"{name}: {thought or reason_text}" if (thought or reason_text) else name
+    text = _clip(f"{_when(row.get('occurred_at'))}{body}")
     return ReplayItemV1(
         ref_id=f"compaction_request:{rid}",
         source_kind="compaction_request",
@@ -118,6 +149,7 @@ def candidate_from_compaction_request(row: dict[str, Any]) -> Optional[ReplayIte
         weight=COMPACTION_REQUEST_WEIGHT,
         reason=f"reverie asked sleep to consolidate {theme!r}",
         tags=[theme.lower()],
+        occurred_at=_as_utc(row.get("occurred_at")),
     )
 
 
@@ -135,6 +167,7 @@ def candidate_from_resonance(row: dict[str, Any]) -> Optional[ReplayItemV1]:
         weight=weight,
         reason=f"reverie re-ignited {theme!r} past its refractory bound ({violations} violations)",
         tags=[theme.lower()],
+        occurred_at=_as_utc(row.get("occurred_at")),
     )
 
 
@@ -154,6 +187,7 @@ def candidate_from_crystallization(row: dict[str, Any]) -> Optional[ReplayItemV1
         weight=salience,
         reason=f"active crystallization touched since last sleep (salience {salience:.2f})",
         tags=_tags(row.get("tags")),
+        occurred_at=_as_utc(row.get("occurred_at")),
     )
 
 
@@ -365,6 +399,8 @@ def candidate_from_arc(row: dict[str, Any]) -> Optional[ReplayItemV1]:
         weight=weight,
         reason=f"closed {kind} arc since last sleep (dwell {dwell_min:.1f} min, {ret} returns)",
         tags=[kind],
+        occurred_at=_as_utc(row.get("began_at")),
+        occurred_until=_as_utc(row.get("ended_at")),
     )
 
 
@@ -507,6 +543,9 @@ def walkway_candidates(
                 weight=weight,
                 reason=f"walkway prediction graded since last sleep ({len(gs) - missed} met, {missed} missed)",
                 tags=["walkway", newest.subject.lower()],
+                # From the expected arrival window to its grading: the street event, not just the grade.
+                occurred_at=_as_utc(newest.window_start or newest.scored_at),
+                occurred_until=_as_utc(newest.scored_at),
             ),
             newest.scored_at,
         ))

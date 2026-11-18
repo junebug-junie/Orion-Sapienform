@@ -57,11 +57,27 @@ def _title_join(theme_col: str) -> str:
     )
 
 
+def _chain_thought_join(chain_col: str) -> str:
+    """What the reverie chain behind a compaction request last thought, in its own words (primary
+    keys on both tables). The request's own `reason` is only how the chain ended
+    ("reverie_chain_settled"), which gives the recombine model nothing to link (#3412)."""
+    return (
+        "\n        LEFT JOIN LATERAL (SELECT th.interpretation FROM substrate_reverie_chain ch"
+        " JOIN substrate_reverie_thought th ON th.thought_id = ch.chain_json->'thought_ids'->>-1"
+        f" WHERE ch.chain_id = {chain_col} LIMIT 1) r ON true"
+    )
+
+
 SOURCE_QUERIES: dict[str, str] = {
     "metacog": f"""
-        SELECT id, summary, severity, trigger_kind, tags, dedupe_key FROM (
-          SELECT DISTINCT ON (dedupe_key) id, summary, severity, trigger_kind, tags, dedupe_key, ts FROM (
+        SELECT id, summary, severity, trigger_kind, tags, dedupe_key, ts AS occurred_at, evidence FROM (
+          SELECT DISTINCT ON (dedupe_key) id, summary, severity, trigger_kind, tags, dedupe_key, ts, evidence FROM (
             SELECT id, summary, severity, trigger_kind, tags,
+                   -- The facts behind the summary ("exit_code=-9", "finalize cut after 207s"): the
+                   -- summary alone is prose the recombine model rightly declines to link (#3412).
+                   (SELECT string_agg(e, '; ') FROM jsonb_array_elements_text(
+                        CASE WHEN jsonb_typeof(what_changed->'evidence') = 'array'
+                             THEN what_changed->'evidence' ELSE '[]'::jsonb END) e) AS evidence,
                    COALESCE(regexp_replace(NULLIF(trigger_reason, ''), '{METACOG_KEY_RE}', '#', 'g'),
                             'id:' || id) AS dedupe_key,
                    CASE WHEN timestamp ~ '^\\d{{4}}-\\d{{2}}-\\d{{2}}T'
@@ -73,17 +89,19 @@ SOURCE_QUERIES: dict[str, str] = {
         ) d ORDER BY ts DESC LIMIT :limit
     """,
     "compaction_request": f"""
-        SELECT d.request_id, d.theme, d.reason, d.dedupe_key, t.title FROM (
-          SELECT request_id, theme, reason, dedupe_key, created_at FROM (
-            SELECT DISTINCT ON (lower(theme)) request_id, theme, reason, lower(theme) AS dedupe_key, created_at
+        SELECT d.request_id, d.theme, d.reason, d.dedupe_key, t.title,
+               d.created_at AS occurred_at, r.interpretation FROM (
+          SELECT request_id, theme, reason, dedupe_key, created_at, origin_chain_id FROM (
+            SELECT DISTINCT ON (lower(theme)) request_id, theme, reason, lower(theme) AS dedupe_key, created_at,
+                   origin_chain_id
               FROM dream_compaction_request_queue
              WHERE created_at > :since AND created_at < :until
              ORDER BY lower(theme), created_at DESC
           ) k ORDER BY created_at DESC LIMIT :limit
-        ) d{_title_join('d.theme')} ORDER BY d.created_at DESC
+        ) d{_title_join('d.theme')}{_chain_thought_join('d.origin_chain_id')} ORDER BY d.created_at DESC
     """,
     "resonance": f"""
-        SELECT d.alert_id, d.theme_key, d.violation_count, d.dedupe_key, t.title FROM (
+        SELECT d.alert_id, d.theme_key, d.violation_count, d.dedupe_key, t.title, d.created_at AS occurred_at FROM (
           SELECT alert_id, theme_key, violation_count, dedupe_key, created_at FROM (
             SELECT DISTINCT ON (lower(theme_key)) alert_id, theme_key, violation_count,
                    lower(theme_key) AS dedupe_key, created_at
@@ -94,7 +112,7 @@ SOURCE_QUERIES: dict[str, str] = {
         ) d{_title_join('d.theme_key')} ORDER BY d.created_at DESC
     """,
     "crystallization": """
-        SELECT crystallization_id, subject, summary, salience, tags, dedupe_key FROM (
+        SELECT crystallization_id, subject, summary, salience, tags, dedupe_key, created_at AS occurred_at FROM (
           SELECT DISTINCT ON (c.crystallization_id) c.crystallization_id, c.subject, c.summary,
                  c.salience, c.tags, c.crystallization_id::text AS dedupe_key, h.created_at
             FROM memory_crystallization_history h

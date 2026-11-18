@@ -137,3 +137,50 @@ def setting_sources_argv(env_key: str) -> List[str]:
     if not raw:
         return []
     return ["--setting-sources", raw]
+
+
+# Orion's own sub-agents, passed per turn with ``--agents`` (issue #3650). ``--setting-sources
+# user,local`` (above) keeps the repo's project scope out of FCC turns, so the repo's
+# ``.claude/agents/`` is never loaded there. ``--agents`` adds just the agent, not the repo's
+# CLAUDE.md, hooks or settings. The file is Orion's sandbox variant, not the operator's.
+FCC_AGENTS_DIR = Path(__file__).resolve().parent / "agents"
+FCC_AGENT_NAMES: tuple[str, ...] = ("orion-repo-agent",)
+
+
+def _parse_agent_file(path: Path) -> tuple[str, dict[str, Any]]:
+    """``(name, {description, prompt, tools})`` from a Claude Code agent markdown file."""
+    text = path.read_text(encoding="utf-8")
+    if not text.startswith("---\n"):
+        raise ValueError(f"{path}: no frontmatter")
+    head, _, body = text[4:].partition("\n---\n")
+    meta: dict[str, str] = {}
+    for line in head.splitlines():
+        key, sep, value = line.partition(":")
+        if sep:
+            meta[key.strip()] = value.strip()
+    name, description, prompt = meta.get("name", ""), meta.get("description", ""), body.strip()
+    if not (name and description and prompt):
+        raise ValueError(f"{path}: name, description and prompt are all required")
+    spec: dict[str, Any] = {"description": description, "prompt": prompt}
+    if meta.get("tools"):
+        spec["tools"] = [t.strip() for t in meta["tools"].split(",") if t.strip()]
+    return name, spec
+
+
+def fcc_agents_json(names: Sequence[str] = FCC_AGENT_NAMES) -> str:
+    """The ``--agents`` JSON object for ``names`` (read from ``FCC_AGENTS_DIR``)."""
+    agents: dict[str, Any] = {}
+    for name in names:
+        parsed_name, spec = _parse_agent_file(FCC_AGENTS_DIR / f"{name}.md")
+        if parsed_name != name:
+            raise ValueError(f"{name}.md declares name {parsed_name!r}")
+        agents[name] = spec
+    return json.dumps(agents, ensure_ascii=False)
+
+
+def fcc_agents_argv(env_key: str) -> List[str]:
+    """``--agents <json>`` for an FCC turn, or ``[]`` when ``env_key`` is off (default on)."""
+    raw = os.environ.get(env_key, "true").strip().lower()
+    if raw in {"0", "false", "no", "off"}:
+        return []
+    return ["--agents", fcc_agents_json()]

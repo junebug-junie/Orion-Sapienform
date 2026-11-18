@@ -22,6 +22,9 @@
 # at repo root (see scripts/git_hooks/post-merge).
 # Every compose step is logged (start/end/exit code) to $ORION_REBUILD_LOG,
 # default ~/.orion/post_pull_rebuild.log.
+# A fully successful deploy run records its head in post_pull_deployed_head
+# (next to the log; ORION_REBUILD_STATE overrides). The next run plans from that
+# head when an earlier pull's rebuild never finished (#3704).
 #
 # After a successful deploy run, Orion's FCC sandbox (/mnt/orion-fcc/repo) is
 # reset to origin/main (scripts/sync_fcc_sandbox_after_deploy.sh; one
@@ -109,6 +112,37 @@ fi
 # a log write never fails the rebuild.
 REBUILD_LOG="${ORION_REBUILD_LOG:-${HOME:-/tmp}/.orion/post_pull_rebuild.log}"
 REBUILD_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+rebuild_log() {
+    (
+        mkdir -p "$(dirname "$REBUILD_LOG")" &&
+            printf '%s pid=%s head=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$REBUILD_HEAD" "$*" >>"$REBUILD_LOG"
+    ) 2>/dev/null || true
+}
+
+
+# One deploy run at a time (2026-11-18 05:10Z: a pull landed mid-run, its own run
+# planned nothing while the first run's remaining `up`s were refused). A second
+# real run waits here for the first to finish (bounded by
+# ORION_REBUILD_LOCK_WAIT_S, default 7200 s; on timeout it logs LOCK_TIMEOUT and
+# runs anyway, as before this lock). Dry-run and --list-only never wait. The
+# lock file sits next to the run log.
+REBUILD_LOCK="${ORION_REBUILD_LOCK:-$(dirname "$REBUILD_LOG")/post_pull_rebuild.lock}"
+if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] && command -v flock >/dev/null 2>&1 &&
+    mkdir -p "$(dirname "$REBUILD_LOCK")" 2>/dev/null && { exec 9>>"$REBUILD_LOCK"; } 2>/dev/null; then
+    if ! flock -n 9; then
+        echo "rebuild_services_from_git_diff.sh: another rebuild run holds $REBUILD_LOCK; waiting for it (max ${ORION_REBUILD_LOCK_WAIT_S:-7200}s)"
+        rebuild_log "LOCK_WAIT lock=$REBUILD_LOCK"
+        if flock -w "${ORION_REBUILD_LOCK_WAIT_S:-7200}" 9; then
+            rebuild_log "LOCK_ACQUIRED"
+        else
+            echo "rebuild_services_from_git_diff.sh: lock wait timed out; running anyway" >&2
+            rebuild_log "LOCK_TIMEOUT wait_s=${ORION_REBUILD_LOCK_WAIT_S:-7200}"
+        fi
+        # main may have moved while we waited.
+        REBUILD_HEAD=$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)
+    fi
+fi
+
 # Judge every `up` of this run against the commit the run started on, not
 # against an origin/main that a PR merge moves mid-run (2026-10-20: one merge
 # refused 55 remaining services). safe_docker_build.sh still refuses a main
@@ -125,15 +159,68 @@ if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] &&
     fi
 fi
 export ORION_DEPLOY_PINNED_HEAD
-rebuild_log() {
+
+# Last deployed head (#3704). The planner's default base is the previous pull
+# (ORIG_HEAD), so a pull whose rebuild never ran lost its services for good
+# (2026-11-18 02:28Z: the `git pull` was interrupted 3 s after the fast-forward,
+# before the post-merge rebuild wrote its RUN line; the next pull diffed only
+# its own commits and orion-prediction/orion-mind stayed on old containers).
+# A run that fully succeeds records the head it deployed in this file. The next
+# run plans from that head instead when it is a strict ancestor of the default
+# base -- it only ever widens the diff, never narrows it. No file, an unknown
+# commit, or a non-ancestor: exactly the default base, as before.
+DEPLOYED_STATE="${ORION_REBUILD_STATE:-$(dirname "$REBUILD_LOG")/post_pull_deployed_head}"
+PLAN_BASE=""
+if [ -z "$BASE_REF" ] && [ -z "$ONLY_SERVICES" ] && [ -f "$DEPLOYED_STATE" ]; then
+    _deployed=$(head -n 1 "$DEPLOYED_STATE" 2>/dev/null | tr -d '[:space:]') || _deployed=""
+    _default_base=""
+    for _cand in ORIG_HEAD MERGE_HEAD 'HEAD@{1}' 'HEAD~1'; do
+        if _default_base=$(git -C "$REPO_ROOT" rev-parse -q --verify "$_cand^{commit}" 2>/dev/null); then
+            break
+        fi
+        _default_base=""
+    done
+    if [ -n "$_deployed" ] && [ -n "$_default_base" ] &&
+        _deployed=$(git -C "$REPO_ROOT" rev-parse -q --verify "$_deployed^{commit}" 2>/dev/null) &&
+        [ "$_deployed" != "$_default_base" ] &&
+        git -C "$REPO_ROOT" merge-base --is-ancestor "$_deployed" "$_default_base" 2>/dev/null; then
+        PLAN_BASE="$_deployed"
+        echo "rebuild_services_from_git_diff.sh: last deployed head ${_deployed:0:9} is older than the default base ${_default_base:0:9}: an earlier pull's rebuild did not finish; planning from ${_deployed:0:9}"
+        if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
+            rebuild_log "CATCHUP from=${_deployed:0:9} default_base=${_default_base:0:9} state=$DEPLOYED_STATE"
+        fi
+    fi
+fi
+
+LOG_BASE="${BASE_REF:-default}"
+if [ -n "$PLAN_BASE" ]; then
+    LOG_BASE="deployed:${PLAN_BASE:0:9}"
+fi
+
+# record_deployed_head: after a run that deployed everything it planned from the
+# planner's own base. Never on dry-run/--list-only/--services/--base, never on
+# an unpinned run (the wrapper refused its deploys), never moves backwards.
+record_deployed_head() {
+    [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ] || return 0
+    [ -z "$BASE_REF" ] && [ -z "$ONLY_SERVICES" ] || return 0
+    [ -n "$ORION_DEPLOY_PINNED_HEAD" ] || return 0
+    local prev tmp
+    prev=$(head -n 1 "$DEPLOYED_STATE" 2>/dev/null | tr -d '[:space:]') || prev=""
+    if [ -n "$prev" ] && git -C "$REPO_ROOT" rev-parse -q --verify "$prev^{commit}" >/dev/null 2>&1 &&
+        ! git -C "$REPO_ROOT" merge-base --is-ancestor "$prev" "$ORION_DEPLOY_PINNED_HEAD" 2>/dev/null; then
+        return 0
+    fi
+    tmp="$DEPLOYED_STATE.tmp.$$"
     (
-        mkdir -p "$(dirname "$REBUILD_LOG")" &&
-            printf '%s pid=%s head=%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$" "$REBUILD_HEAD" "$*" >>"$REBUILD_LOG"
-    ) 2>/dev/null || true
+        mkdir -p "$(dirname "$DEPLOYED_STATE")" &&
+            printf '%s\n' "$ORION_DEPLOY_PINNED_HEAD" >"$tmp" && mv -f "$tmp" "$DEPLOYED_STATE"
+    ) 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
 }
 
 if [ -n "$BASE_REF" ]; then
     set -- --base "$BASE_REF"
+elif [ -n "$PLAN_BASE" ]; then
+    set -- --base "$PLAN_BASE"
 else
     set --
 fi
@@ -181,7 +268,7 @@ else
 fi
 if [ "$PY_RC" -ne 0 ]; then
     if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
-        rebuild_log "PLANNER_FAILED rc=$PY_RC base=${BASE_REF:-default}"
+        rebuild_log "PLANNER_FAILED rc=$PY_RC base=$LOG_BASE"
     fi
     exit "$PY_RC"
 fi
@@ -379,7 +466,7 @@ sync_fcc_sandbox() {
                 # Detached (own session, no terminal) so the pull returns now.
                 if command -v setsid >/dev/null 2>&1; then
                     setsid "$helper" --wait-s "${ORION_SANDBOX_SYNC_RETRY_WAIT_S:-5400}" --log-to "$REBUILD_LOG" \
-                        </dev/null >/dev/null 2>&1 &
+                        </dev/null >/dev/null 2>&1 9>&- &
                     line="$line retry=detached_pid_$!"
                 else
                     line="$line retry=unavailable_no_setsid"
@@ -398,8 +485,9 @@ if [ -z "${SERVICES//[$'\n\r\t ']}" ]; then
     echo "rebuild_services_from_git_diff.sh: no affected services to rebuild on this host"
     echo "rebuild_services_from_git_diff.sh: (see rebuild_affected_services stderr above for host filter details)"
     if [ "$DRY_RUN" != "1" ] && [ "$LIST_ONLY" != "1" ]; then
-        rebuild_log "NOTHING base=${BASE_REF:-default} (no affected services on this host)"
+        rebuild_log "NOTHING base=$LOG_BASE (no affected services on this host)"
     fi
+    record_deployed_head
     export_consult_source
     sync_fcc_sandbox ok
     exit 0
@@ -513,7 +601,7 @@ run_safe_build() {
 
 if [ "$DRY_RUN" != "1" ]; then
     RUN_ACTIVE=1
-    rebuild_log "RUN base=${BASE_REF:-default} services=$(printf '%s ' $SERVICES)recreate=$(printf '%s ' $RECREATE)"
+    rebuild_log "RUN base=$LOG_BASE services=$(printf '%s ' $SERVICES)recreate=$(printf '%s ' $RECREATE)"
 fi
 
 # rebuild_one <service>: the full rebuild of one stack; adds it to FAILED,
@@ -781,6 +869,7 @@ if [ -n "${FAILED//[$'\n\r\t ']}" ]; then
     exit 1
 fi
 
+record_deployed_head
 export_consult_source
 sync_fcc_sandbox ok
 exit 0

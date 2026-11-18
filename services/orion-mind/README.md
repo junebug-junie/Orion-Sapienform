@@ -138,7 +138,8 @@ rate is about 5 thoughts a day. Every thought's act note starts with `woke: <wha
 content wake Prime: `horizon` (a held concern or promise past three quarters of its life, or a funded event want Prime
 does not hold past three quarters of its window), `surprise` (another organ's uncited experience with surprisal at least
 ln 2 and above its own source's 30-day 90th percentile) and `connection` (Juniper silent longer than her own usual gap
-between conversations). Drives are 0 at rest; the strongest damped need at `PRIME_HUNGER_THRESHOLD` (0.5) wakes Prime.
+between conversations) and `learning` (a cabinet or office forecast's skill against its baseline moved this week,
+past Student's 5% cut and 0.05: orion-prediction `GET /learning-progress`, drive 1 - p, one wake per move, choice-as-EFE Step 1). Drives are 0 at rest; the strongest damped need at `PRIME_HUNGER_THRESHOLD` (0.5) wakes Prime.
 Guards: a thought that changes nothing halves the needs it was shown (unless it answered that need), recovering over the
 need's own horizon; at most `PRIME_HUNGER_DAILY_BUDGET` (24) thoughts in any 24 h, after which only a change wakes
 Prime; the same content line wakes Prime again only after its drive rose 0.1 from its lowest point since. Surprise and
@@ -289,6 +290,7 @@ for slack by design.
 | `PRIME_HUNGER_THRESHOLD` | `0.5` | damped drive at which a need wakes Prime |
 | `PRIME_HUNGER_DAILY_BUDGET` | `24` | thoughts in any 24 h before only a change wakes Prime |
 | `PRIME_HUNGER_READ_SEC` | `300` | how often surprise and connection are read from durable-runs |
+| `PRIME_PREDICTION_URL` | `http://orion-athena-prediction:8132` | orion-prediction, for the learning need (`GET /learning-progress`, on the hunger clock); empty = off |
 | `PRIME_SETTLE_INTERVAL_SEC` | `300` | how often open questions are checked against curiosity's runs |
 | `PRIME_LLM_ROUTE` | `prime` | gateway route (config/gpu_pool.yaml) |
 | `PRIME_BID_LANE` | `chat` | lane named in the bid and shown in the frame |

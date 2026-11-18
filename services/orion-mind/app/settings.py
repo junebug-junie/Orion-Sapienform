@@ -218,6 +218,8 @@ class Settings(BaseSettings):
     PRIME_HUNGER_THRESHOLD: float = Field(default=0.5, gt=0.0, le=1.0, alias="PRIME_HUNGER_THRESHOLD")
     PRIME_HUNGER_DAILY_BUDGET: int = Field(default=24, ge=1, alias="PRIME_HUNGER_DAILY_BUDGET")
     PRIME_HUNGER_READ_SEC: float = Field(default=300.0, ge=15.0, alias="PRIME_HUNGER_READ_SEC")
+    # orion-prediction base URL for the learning need (GET /learning-progress, choice-as-EFE Step 1). Empty = off.
+    PRIME_PREDICTION_URL: str = Field(default="http://orion-athena-prediction:8132", alias="PRIME_PREDICTION_URL")
     # Personality rev 4 (docs/superpowers/specs/2026-10-16-orion-dynamic-personality-graph-design.md): Prime's
     # thought frame shows at most 2 "tending:" lines (orion/prime/tending.py), read from durable-runs
     # PRIME_DURABLE_RUNS_URL/personality/frame: choice-built tendencies with >= 10 weighted choices. No shadow.

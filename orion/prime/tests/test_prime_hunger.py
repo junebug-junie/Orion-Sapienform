@@ -410,3 +410,76 @@ def test_the_need_that_woke_is_always_shown_first():
     shown = hg.shown_needs([*needs, woke], woke)
     assert shown[0] == woke and len(shown) == hg.MAX_SHOWN
     assert hg.frame_lines([*needs, woke], woke)[0].endswith("(this is what woke you)")
+
+
+# --- learning (choice-as-EFE Step 1; orion-prediction GET /learning-progress) ------------------------------------
+
+
+def learning_read(direction, p_value, sid="office.temp_c", recent=0.34, prior=0.11):
+    return {"series": [{"series_id": sid, "status": "ok" if direction else "insufficient", "direction": direction,
+                        "p_value": p_value, "learning_progress": recent - prior,
+                        "recent": {"start": "2026-11-09", "end": "2026-11-15", "mean_skill": recent},
+                        "prior": {"start": "2026-11-02", "end": "2026-11-08", "mean_skill": prior}}]}
+
+
+def test_learning_flat_or_insufficient_is_rest_drive_zero():
+    st = PrimeStateV1()
+    assert hg.compute_needs(st, T, None, learning=learning_read("flat", 0.07)) == []
+    assert hg.compute_needs(st, T, None, learning=learning_read(None, None)) == []
+    assert hg.compute_needs(st, T, None, learning=None) == []
+    assert hg.learning_drive("flat", 0.001) == 0.0
+    assert hg.learning_drive("better", None) == 0.0
+
+
+def test_learning_real_move_wakes_once_with_content():
+    st = PrimeStateV1()
+    needs = hg.compute_needs(st, T, None, learning=learning_read("better", 0.02))
+    assert len(needs) == 1
+    n = needs[0]
+    assert n.name == "learning" and n.ref == "learning:office.temp_c:better"
+    assert n.damp_key == "learning:office.temp_c"
+    assert n.drive == pytest.approx(0.98)
+    assert "office temperature forecasts got better" in n.content and "0.11" in n.content and "0.34" in n.content
+    assert hg.pick_wake(needs, st, T) == n
+    assert hg.parse_woke_need(hg.woke_prefix(n) + "; no move") == ("learning", "learning:office.temp_c:better")
+    # Guard 5: the same move cannot wake Prime again while it stays up.
+    st2 = hg.note_thought(st, T, n)
+    assert hg.pick_wake(hg.compute_needs(st2, T, None, learning=learning_read("better", 0.001)), st2, T) is None
+    # A flip to the opposite direction is a new line and may wake Prime.
+    flip = hg.compute_needs(st2, T, None, learning=learning_read("worse", 0.01, recent=0.1, prior=0.34))
+    assert hg.pick_wake(flip, st2, T) is not None
+
+
+def test_learning_worse_is_a_need_too():
+    n = hg.compute_needs(PrimeStateV1(), T, None, learning=learning_read("worse", 0.01, recent=0.1, prior=0.3))[0]
+    assert "got worse" in n.content and n.drive > 0.95
+
+
+def test_learning_rearms_only_after_a_read_flat_not_after_an_unread():
+    st = hg.note_thought(PrimeStateV1(), T, hg.compute_needs(PrimeStateV1(), T, None,
+                                                               learning=learning_read("better", 0.02))[0])
+    key = "learning:learning:office.temp_c:better"
+    unread = hg.track_troughs(st, [], learning_read=False)
+    assert unread.needs.fired[key].drive > 0.9
+    flat = hg.track_troughs(st, hg.compute_needs(st, T, None, learning=learning_read("flat", 0.7)), learning_read=True)
+    assert flat.needs.fired[key].drive == 0.0
+    later = T + timedelta(days=10)
+    again = hg.compute_needs(flat, later, None, learning=learning_read("better", 0.02))
+    assert hg.pick_wake(again, flat, later) is not None
+
+
+def test_learning_unread_line_says_unknown_not_calm():
+    lines = hg.frame_lines([], None, learning_unread="URLError: refused")
+    assert any("could not be read" in x and "forecasts" in x for x in lines)
+
+
+def test_learning_series_are_damped_apart():
+    # A thought shown cabinet's move that changes nothing must not hold office's wake.
+    st = PrimeStateV1()
+    cab = hg.compute_needs(st, T, None, learning=learning_read("better", 0.02, sid="athena.cabinet_temp_c"))
+    st = hg.after_answer(hg.note_thought(st, T, cab[0]), cab, T, acted=False)
+    both = {"series": learning_read("better", 0.02, sid="athena.cabinet_temp_c")["series"]
+            + learning_read("worse", 0.01)["series"]}
+    needs = {n.ref: n for n in hg.compute_needs(st, T, None, learning=both)}
+    assert needs["learning:athena.cabinet_temp_c:better"].damped < 0.5
+    assert needs["learning:office.temp_c:worse"].damped == needs["learning:office.temp_c:worse"].drive

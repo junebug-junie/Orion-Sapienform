@@ -32,9 +32,19 @@ The needs built here (each has a live producer; see the PR report's metric gate 
   drive = the share of her past gaps between conversations (30 days, at least ``MIN_HISTORY``) strictly shorter
   than the current one: 0.5 at her median gap. Source: the same endpoint (chat_history_log, source hub_orion).
 
+* ``learning`` -- a forecast series' skill against its baseline moved this week (Oudeyer-Kaplan learning progress;
+  choice-as-EFE design Step 1). Source: orion-prediction GET /learning-progress, read by the Prime loop. Only a
+  ``better`` or ``worse`` reading is a need; ``flat`` (the rest point: under Student's two-sided 5% cut at the
+  Welch df, or under 0.05 skill) and ``insufficient`` are not. drive = 1 - the producer's two-sided p-value. A move
+  already passed p < 0.05, so in practice the drive is 0.95-1: a gate that wakes Prime once per move, not a graded
+  intensity (it is not "P(the change is real)"). The ref names the series and the direction
+  (``learning:<series_id>:<better|worse>``), so a flip to the opposite direction is a new line. One move is one line
+  until the series reads flat again (guard 5's trough). Each series is damped on its own key (``learning:<series>``):
+  refs are stable, so one shown series must not hold another's wake. An unread source is unknown, never flat.
+  Halving recovers over the 7-day window.
+
 Not built here, each because its source does not exist yet (no placeholder need ships; the PR report links the
-tickets): ``coherence`` (the contradiction finder), ``learning`` (orion-prediction GET /learning-progress) and
-``project`` (Part C projects).
+tickets): ``coherence`` (the contradiction finder) and ``project`` (Part C projects).
 
 When Prime thinks (``pick_wake`` + orion/prime/state.py ``wants_to_think``): a pending change, OR a need whose
 damped drive is at least the threshold; AND the refractory interval passed; AND no back-off; AND, for a need wake
@@ -87,8 +97,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from orion.prime.state import (NeedDampV1, NeedFiredV1, PrimeNeedsStateV1, PrimeStateV1, concern_ttl,
                                is_promise_concern)
 
-NeedName = Literal["horizon", "surprise", "connection"]
-NEED_NAMES: tuple[str, ...] = ("horizon", "surprise", "connection")
+NeedName = Literal["horizon", "surprise", "connection", "learning"]
+NEED_NAMES: tuple[str, ...] = ("horizon", "surprise", "connection", "learning")
 
 THRESHOLD = 0.5  # [default, accepted 2026-11-15]: a need wakes Prime at this damped drive
 DAILY_BUDGET = 24  # [default, accepted 2026-11-15]: thoughts in any 24 hours before only changes wake Prime
@@ -101,6 +111,8 @@ EVENT_WAKE_SALIENCE = 0.9  # only the top tenth of an event's own source may wak
 SURPRISE_FLOOR_NATS = math.log(2.0)  # the outcome had P <= 1/2
 SURPRISE_RECOVERY = timedelta(hours=24)  # the now's use window: an experience counts as used within 24 h
 CONVERSATION_PAUSE = timedelta(hours=2)
+LEARNING_RECOVERY = timedelta(days=7)  # learning progress compares 7-day windows
+LEARNING_LABELS = {"athena.cabinet_temp_c": "cabinet temperature", "office.temp_c": "office temperature"}
 MIN_HISTORY = 20  # the salience rule's own minimum (orion.physiology.event_wants.MIN_SOURCE_HISTORY)
 DAMPING = 0.5
 MIN_RISE = 0.1  # guard 5: how much a content line's raw drive must rise before it may wake Prime again
@@ -109,7 +121,7 @@ MAX_FIRED = 50
 CONTENT_CAP = 300
 REF_CAP = 120  # also bounds the trace prefix, so the close note keeps room for what the thought did
 # The trace's stable shape (module docstring): "woke: need:<name> <ref>".
-WOKE_NEED_RE = re.compile(r"^woke: need:(horizon|surprise|connection) ([^\s;|()]+)")
+WOKE_NEED_RE = re.compile(r"^woke: need:(horizon|surprise|connection|learning) ([^\s;|()]+)")
 
 
 class NeedV1(BaseModel):
@@ -301,6 +313,40 @@ def connection_needs(inputs: Optional[dict[str, Any]], now: datetime) -> list[tu
     return [("connection", drive, content[:CONTENT_CAP], ref[:REF_CAP], max(median.total_seconds(), 3600.0), exp)]
 
 
+def learning_drive(direction: Any, p_value: Any) -> float:
+    """1 - the two-sided p-value of the skill change. 0 unless better or worse; 0 when the p-value is unreadable."""
+    if direction not in ("better", "worse"):
+        return 0.0
+    try:
+        p = float(p_value)
+    except (TypeError, ValueError):
+        return 0.0
+    return _clamp(1.0 - p) if math.isfinite(p) else 0.0
+
+
+def learning_needs(learning: Optional[dict[str, Any]]) -> list[tuple[Any, ...]]:
+    """``learning``: orion-prediction GET /learning-progress as read (None = unread)."""
+    out = []
+    for s in (learning or {}).get("series") or []:
+        sid = str(s.get("series_id") or "")
+        drive = learning_drive(s.get("direction"), s.get("p_value"))
+        if drive <= 0.0 or not sid:
+            continue
+        recent, prior = s.get("recent") or {}, s.get("prior") or {}
+        try:
+            rs, ps = float(recent["mean_skill"]), float(prior["mean_skill"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        name = LEARNING_LABELS.get(sid, sid)
+        word = "better" if s.get("direction") == "better" else "worse"
+        ref = f"learning:{sid}:{word}"
+        content = (f"Your {name} forecasts got {word} this week: skill against the naive baseline went from "
+                   f"{ps:.2f} ({prior.get('start')} to {prior.get('end')}) to {rs:.2f} ({recent.get('start')} to "
+                   f"{recent.get('end')}), with the same models on both sides [{ref}]")
+        out.append(("learning", drive, content, ref, LEARNING_RECOVERY.total_seconds(), None, f"learning:{sid}"))
+    return out
+
+
 # --- guards ---------------------------------------------------------------------------------------------------
 
 
@@ -316,12 +362,14 @@ def damp_factor(needs: PrimeNeedsStateV1, key: str, now: datetime) -> float:
 
 def compute_needs(state: PrimeStateV1, now: datetime, inputs: Optional[dict[str, Any]], *,
                   taken_on: Iterable[str] = (), horizon_of: Optional[Any] = None,
-                  events: Optional[dict[str, Any]] = None, evidence_clock: bool = False) -> list[NeedV1]:
+                  events: Optional[dict[str, Any]] = None, evidence_clock: bool = False,
+                  learning: Optional[dict[str, Any]] = None) -> list[NeedV1]:
     """Every need with drive above 0, strongest (damped) first. ``inputs``: the durable-runs hunger read
-    (TemporalHungerInputsV1 as a dict; None = unread). ``events``: the funded event wants Prime read this tick."""
+    (TemporalHungerInputsV1 as a dict; None = unread). ``events``: the funded event wants Prime read this tick.
+    ``learning``: the orion-prediction GET /learning-progress read (None = unread)."""
     raw = [*horizon_needs(state, now, taken_on=taken_on, horizon_of=horizon_of, evidence_clock=evidence_clock),
            *event_horizon_needs(state, now, events),
-           *surprise_needs(inputs), *connection_needs(inputs, now)]
+           *surprise_needs(inputs), *connection_needs(inputs, now), *learning_needs(learning)]
     out = []
     for name, drive, content, ref, recover, *extra in raw:
         drive = _clamp(drive)
@@ -351,13 +399,14 @@ def may_fire(need: NeedV1, needs: PrimeNeedsStateV1) -> bool:
 
 
 def track_troughs(state: PrimeStateV1, needs_now: Sequence[NeedV1], *, events_read: bool = True,
-                  hunger_read: bool = True) -> PrimeStateV1:
+                  hunger_read: bool = True, learning_read: bool = True) -> PrimeStateV1:
     """Guard 5's memory: for every content line that fired, keep the lowest raw drive seen since. A line absent now
     counts as drive 0 only where its absence means it fell:
 
     * a held concern (``prime_concern:``): kept, dropped or faded -- always known;
     * an event want's line: only when the event wants were read this tick (``events_read``);
     * connection: only when the hunger read is current (``hunger_read``);
+    * learning: only when the learning-progress read is current (``learning_read``): the series read flat again;
     * surprise: never. An experience's surprisal is fixed; it leaves the read when cited, aged out or cut by the
       read's cap, none of which is the same surprise becoming calm.
     An unread source is unknown, not calm, and must not re-arm its lines."""
@@ -376,6 +425,8 @@ def track_troughs(state: PrimeStateV1, needs_now: Sequence[NeedV1], *, events_re
             d = 0.0 if events_read else f.drive
         elif name == "connection":
             d = 0.0 if hunger_read else f.drive
+        elif name == "learning":
+            d = 0.0 if learning_read else f.drive
         else:
             d = f.drive
         if d < f.drive:
@@ -466,12 +517,15 @@ def shown_needs(needs_now: Sequence[NeedV1], woke: Optional[NeedV1] = None) -> l
     return [woke, *rest[:MAX_SHOWN - 1]]
 
 
-def frame_lines(needs_now: Sequence[NeedV1], woke: Optional[NeedV1], *, unread: Optional[str] = None) -> list[str]:
+def frame_lines(needs_now: Sequence[NeedV1], woke: Optional[NeedV1], *, unread: Optional[str] = None,
+                learning_unread: Optional[str] = None) -> list[str]:
     """Content lines only, strongest first; the one that woke this thought is marked. No numbers (spec)."""
     lines = [f"- [{n.name}] {n.content}" + (" (this is what woke you)" if woke is not None and n.key == woke.key else "")
              for n in shown_needs(needs_now, woke)]
     if unread:
         lines.append(f"(surprise and connection could not be read: {unread})")
+    if learning_unread:
+        lines.append(f"(whether your forecasts are improving could not be read: {learning_unread})")
     return lines or ["(nothing is pulling at you right now)"]
 
 
@@ -489,6 +543,7 @@ def parse_woke_need(note: Optional[str]) -> Optional[tuple[str, str]]:
 __all__ = [
     "BUDGET_WINDOW", "CONVERSATION_PAUSE", "EVENT_DAMP_PREFIX", "EVENT_DRIVE_CAP", "EVENT_WAKE_SALIENCE",
     "PRIME_NEED_EVENT_PREFIX", "event_damp_key", "event_horizon_needs", "DAILY_BUDGET", "DAMPING", "MIN_HISTORY",
+    "LEARNING_RECOVERY", "learning_drive", "learning_needs",
     "MIN_RISE", "NEED_NAMES", "NeedDampV1",
     "NeedFiredV1", "NeedName", "NeedV1", "PrimeNeedsStateV1", "SURPRISE_FLOOR_NATS", "THRESHOLD", "WOKE_NEED_RE",
     "after_answer", "answered_refs", "budget_spent", "compute_needs", "connection_drive", "conversation_gaps", "damp_factor",

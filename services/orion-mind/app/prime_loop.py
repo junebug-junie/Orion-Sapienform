@@ -127,7 +127,8 @@ the dashboard read (/curiosity/api/runs) is only for settling Prime's questions.
 
 Hunger (integration design Part B, patch 5; PRIME_HUNGER_NEEDS_ENABLED; orion/prime/hunger.py): the tick computes
 Prime's needs (horizon from its own concerns and the funded event wants; surprise and connection from durable-runs
-GET /temporal-self/hunger, read every PRIME_HUNGER_READ_SEC) and wakes Prime when the strongest damped need crosses
+GET /temporal-self/hunger, read every PRIME_HUNGER_READ_SEC; learning from orion-prediction GET /learning-progress on
+PRIME_PREDICTION_URL, on the same clock, empty = off) and wakes Prime when the strongest damped need crosses
 PRIME_HUNGER_THRESHOLD, within PRIME_HUNGER_DAILY_BUDGET thoughts a day. The 6-hour quiet floor is deleted. The bid
 carries the waking need's drive as ``salience`` (never an ``event_ref``); the frame shows the needs' content lines; a need's experience
 is pinned into the now read (``include=``); a need-woken thought's close note starts ``woke: need:<name> <ref>``.
@@ -298,6 +299,7 @@ NOW_ORGAN = "prime"
 NOW_SINCE_MARGIN_SEC = 120.0
 NOW_USE_TIMEOUT_SEC = 10.0
 HUNGER_PATH = "/temporal-self/hunger"
+LEARNING_PATH = "/learning-progress"  # orion-prediction (choice-as-EFE Step 1), read beside the hunger read
 NOW_REUSE_MAX_SEC = 1800.0  # an unseen now older than this is read again rather than reused
 # A regulate act is graded this long after its signal ends: the market's last bid under it has landed.
 REGULATE_SETTLE_LAG_SEC = 120.0
@@ -400,6 +402,10 @@ class PrimeRuntime(MindLoopRuntime):
         # thought being built (set by _woke_note, cleared after the thought); ``_shown_needs``: what its frame showed.
         self._hunger_inputs: Optional[dict[str, Any]] = None
         self._hunger_error: Optional[str] = None
+        # orion-prediction GET /learning-progress (the learning need), on the hunger read's clock. Same rule as the
+        # hunger read: one failure keeps the last good read, a second drops it (unknown, never flat).
+        self._learning: Optional[dict[str, Any]] = None
+        self._learning_error: Optional[str] = None
         self._hunger_read_at: Optional[datetime] = None
         self._needs: list[hg.NeedV1] = []
         self._wake_need: Optional[hg.NeedV1] = None
@@ -598,21 +604,47 @@ class PrimeRuntime(MindLoopRuntime):
             return
         self._hunger_inputs, self._hunger_error = data, None
 
+    async def _read_learning(self) -> None:
+        """orion-prediction GET /learning-progress. Off (no need, no unread line) when PRIME_PREDICTION_URL is empty."""
+        base = str(getattr(self.s, "PRIME_PREDICTION_URL", "") or "").strip()
+        if not base:
+            self._learning, self._learning_error = None, None
+            return
+        url = f"{base.rstrip('/')}{LEARNING_PATH}"
+        try:
+            raw = await asyncio.to_thread(self.get_json, url)
+            if not isinstance(raw, dict) or not isinstance(raw.get("series"), list):
+                raise ValueError("no series list")
+        except Exception as exc:  # noqa: BLE001 -- hunger never fails the tick
+            why = ("the read is off (404)" if isinstance(exc, urllib.error.HTTPError) and exc.code == 404
+                   else f"{type(exc).__name__}: {str(exc)[:120]}")
+            if self._learning_error is not None:
+                self._learning = None
+            self._learning_error = why
+            logger.warning("prime_learning_unread reason=%s url=%s", why, url)
+            return
+        self._learning, self._learning_error = raw, None
+
+    def _learning_on(self) -> bool:
+        return bool(str(getattr(self.s, "PRIME_PREDICTION_URL", "") or "").strip())
+
     async def _hunger_upkeep(self, now: datetime, inputs: FrameInputs) -> None:
         """Refresh the read when due, recompute the needs, decide which (if any) wakes Prime."""
         every = float(getattr(self.s, "PRIME_HUNGER_READ_SEC", 300.0))
         if self._hunger_read_at is None or (now - self._hunger_read_at).total_seconds() >= every:
             self._hunger_read_at = now
             await self._read_hunger_inputs()
+            await self._read_learning()
         self.state = hg.prune(self.state, now)
         taken = it.open_ids(self.intentions) if self._intentions_on() else set()
         self._needs = hg.compute_needs(self.state, now, self._hunger_inputs, taken_on=taken,
                                        horizon_of=it.horizon_for if self._intentions_on() else None,
                                        events=inputs.events if inputs.event_mode else None,
-                                       evidence_clock=self._evidence_clock_on())
+                                       evidence_clock=self._evidence_clock_on(), learning=self._learning)
         self.state = hg.track_troughs(self.state, self._needs,
                                       events_read=not inputs.event_mode or inputs.events is not None,
-                                      hunger_read=self._hunger_inputs is not None and self._hunger_error is None)
+                                      hunger_read=self._hunger_inputs is not None and self._hunger_error is None,
+                                      learning_read=self._learning is not None and self._learning_error is None)
         wake = hg.pick_wake(self._needs, self.state, now,
                             threshold=float(getattr(self.s, "PRIME_HUNGER_THRESHOLD", hg.THRESHOLD)),
                             budget=int(getattr(self.s, "PRIME_HUNGER_DAILY_BUDGET", hg.DAILY_BUDGET)))
@@ -1130,7 +1162,9 @@ class PrimeRuntime(MindLoopRuntime):
             # Before the now read: a need's experience is pinned into the now, so citing it is valid.
             self._shown_needs = hg.shown_needs(self._needs, self._thought_need)
             inputs.needs = hg.frame_lines(self._needs, self._thought_need,
-                                          unread=self._hunger_error if self._hunger_inputs is None else None)
+                                          unread=self._hunger_error if self._hunger_inputs is None else None,
+                                          learning_unread=(self._learning_error if self._learning_on()
+                                                           and self._learning is None else None))
         # The move check depends on the cheap pending-focus read (#3366). Curiosity's runs arrive through the now
         # (integration patch 3): the frame no longer reads Hub's curiosity dashboard. Both reads run at once.
         (focus_pending, focus_unread), orion_now = await asyncio.gather(

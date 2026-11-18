@@ -68,7 +68,7 @@ ACTOR_DISTILL = "memory.episode_distill"
 ACTOR_PASS = "memory.supersede_pass"
 OP_SUPERSEDED = "superseded"
 OP_UNDONE = "supersede_undone"
-CHECK_VERSION = "supersede_classify.v3.3"
+CHECK_VERSION = "supersede_classify.v3.4"
 SUPERSEDE_NAMESPACE = uuid.UUID("6f1d3c52-2b8e-4f7a-9d41-3587a0c0ffee")
 
 # Candidate limits. bge-large cosines are compressed (live 2026-11-17: median pair 0.56, 90th
@@ -381,11 +381,15 @@ Reply with one JSON object and nothing else:
 # A numbered item A names (PR #2968, issue 41): a correction or update must name the same number.
 # Deterministic, after the votes (v3.3, 2026-11-18: the model said "same referent: yes" 3/3 for a
 # general "nothing is deployed yet" against a named PR's deploy, even when the prompt said "no").
-_NUMBERED = re.compile(r"(?:#\s?|\b(?:pr|pull request|issue|ticket)\s+#?\s?)(\d{2,})", re.IGNORECASE)
+_NUMBERED = re.compile(r"(?:(?<!#)#|\b(?:prs?|pull requests?|issues?|tickets?)[\s#-]*)(\d{2,})\b",
+                       re.IGNORECASE)
+
+
+NUMBERED_ITEM_NOT_IN_B = "numbered_item_not_in_b"
 
 
 def numbered_items(text: str) -> frozenset[str]:
-    return frozenset(_NUMBERED.findall(text or ""))
+    return frozenset(str(int(n)) for n in _NUMBERED.findall(text or ""))
 
 
 def same_numbered_item(old: "MemoryRow", new: "MemoryRow") -> bool:
@@ -490,6 +494,10 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
     non-acting answer ends the strict path; for Juniper's words a non-acting answer ends hers
     too). A failed call or a malformed answer is an error vote: the pair abstains and the caller
     treats the plan as degraded."""
+    if not same_numbered_item(old, new):
+        # A names a numbered item B never mentions: no vote could act, so none is asked (no budget spent).
+        return Classification(votes=(), relation=None, acts=False, juniper_acts=False,
+                              abstain=NUMBERED_ITEM_NOT_IN_B)
     prompt = build_classify_prompt(old, new)
     got: list[Vote] = []
     for _ in range(max(1, int(votes))):
@@ -506,8 +514,7 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
             break
     rel = _majority(got)
     complete = len(got) == max(1, int(votes))
-    numbered_ok = same_numbered_item(old, new)
-    all_acting = complete and all(v.acting for v in got) and numbered_ok
+    all_acting = complete and all(v.acting for v in got)
     unanimous = all_acting and len({v.relation for v in got}) == 1
     strict = unanimous and all(v.confidence >= min_confidence for v in got)
     juniper = all_acting and new.juniper_quoted
@@ -515,8 +522,6 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
         why = "error"
     elif not complete and all(v.acting for v in got):
         why = "budget_spent"
-    elif complete and all(v.acting for v in got) and not numbered_ok:
-        why = "numbered_item_not_in_b"
     elif not all_acting:
         last = got[-1]
         why = f"checklist:{last.relation}" if last.relation in ACTING_RELATIONS else f"vote:{last.relation}"

@@ -258,6 +258,8 @@ async def decide_v3(it: EvalItem, ask: Any, votes: int) -> Decision:
     if c.error:
         return Decision(it.item_id, False, c.relation, "error", c.abstain, [v.audit() for v in c.votes], c.error)
     acted = c.acts or c.juniper_acts
+    if c.abstain == S.NUMBERED_ITEM_NOT_IN_B:   # the deterministic rule stopped it, not the model
+        return Decision(it.item_id, False, None, "rule", c.abstain)
     return Decision(it.item_id, acted, c.relation, None if acted else "model",
                     "juniper_path" if c.juniper_acts else c.abstain, [v.audit() for v in c.votes])
 

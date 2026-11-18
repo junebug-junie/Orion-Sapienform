@@ -1,119 +1,327 @@
-# Field demon — a forecaster that knows how far it can see
+# Field demon: how far Orion can see ahead of itself, and what each cut costs
 
-**Date:** 2026-09-30
-**Status:** design (proposal mode — touches cognition loop inputs; nothing wired by this doc)
-**Touches:** `orion/mood_arc/`, `services/orion-field-digester/`, `services/orion-heartbeat/`, `services/orion-equilibrium-service/` (later patches only)
+Status: design, rev 2 (2026-11-18). Rev 1 (2026-09-30) is replaced. See "What changed from rev 1".
+Tracks: #3296 (integration rung, Φ). Depends on: #3290 (whole-body replay, organ modes).
+Proposal mode: yes. This changes self-modeling, so Juniper signs off before any build.
 
 ## Arsonist summary
 
-Laplace's demon predicts everything forever. Physics says no: chaos makes small errors grow exponentially, and at the quantum scale the future is only probabilistic. Neither can be engineered away. Reversible computing (the Landauer escape) is irrelevant at Orion's scale — the theoretical minimum cost of erasing a bit is ~1e9× below what our GPUs actually burn.
+Laplace's demon knows everything and so sees forever. Orion's demon is smaller, and it is honest
+about its limits. It forecasts Orion's own state, and it measures **how far ahead that forecast
+stays better than the obvious guesses**. That distance is the **horizon**.
 
-What *is* buildable: a demon that forecasts Orion's own field a short way ahead, attaches honest error bars, and **measures the distance at which its forecasts stop beating "nothing changes."** That horizon is the product. A mind that predicts itself and knows where that self-prediction breaks has a self-model with stakes.
+Then the demon asks what happens when Orion is cut into parts that can't see each other. Each part
+forecasts its own future from its own past only. If the parts together see as far as the whole,
+the organs are independent at that cut. If the whole sees much further, Orion's foresight depends
+on its organs carrying information about each other. That shortfall is the **horizon cost of the
+cut**.
 
-Today Orion has no forecast of anything. Every "prediction error" is surprise-vs-running-average (EWMA z-scores in `orion/substrate/prediction_error.py`). The heartbeat surprise pre-registration says it directly: "There is no forecast model." This design fills that hole with the pieces that already exist.
+This is the same question the integration rung (#3296) asks: how much is lost when the system is
+cut along its weakest seam? #3296 asks it one step ahead (5 minutes). The demon asks it at every
+step out to an hour, and it grades the answer against the real future, not against the data the
+model was fit on. So the demon and the lattice share one model. They differ only in how they read
+it:
 
-## Current architecture (verified against main a005658d, not READMEs)
+- **Lattice readout (#3296):** cut the model at every point on the partition lattice and find the
+  cut that loses the least (Φ).
+- **Demon readout (this doc):** run the model forward and measure how far it sees, whole and cut.
 
-**Field.** `orion-field-digester` updates `FieldStateV1` every 2s with known rules (decay ×0.92, diffusion, suppression) plus perturbations from receipts. Only the perturbations are genuinely unknown.
+Together they give one new thing: **integration with a timescale attached.** "Orion behaves as one
+system at the 15-minute scale but not at the 60-minute scale" can be checked against real events
+(Juniper arriving, the AC cycling). A single Φ number can't be checked that way.
 
-**Mood-arc encoder v4** (active since 2026-09-02, `/mnt/telemetry/models/mood_arc/active.json`):
-- numpy MLP autoencoder, 30-tick windows, 37 channels, 256/128, 150,610 rows.
-- floor_ratio 0.406 (CI 0.383–0.430) vs shuffle — passes.
-- ceiling_ratio 0.733 vs AR(1) surrogate — only ~1.4× better than a decay-only model, and measured **before** the AR(1) leak fix; never refreshed.
-- Live: `anomaly_scorer.py` scores every 60s → `orion:field_channel:anomaly_score` → equilibrium `telemetry_anomaly` metacog trigger, brain-frame Field Anomaly region, Hub mood-arc status.
-- The 128-d latent is computed and discarded. No consumer reads it.
+This is a structural measurement. It is not evidence of consciousness. No output, prompt or Hub
+label may say it is.
 
-**Heartbeat** (8-trajectory MPS ensemble, port 7251):
-- `/h1` pulled over HTTP by the AST/HOT self-model (`substrate-runtime worker.py:2946`, stored, not decision-bearing), Hub, and mood-arc enrichment.
-- Probes: lattice not thermometer; exec–bus cofire +0.32 mutual information; surprise probe mixed (chat start jumps, no settle).
-- Mood-arc enrichment only takes `heartbeat_mean_ratio`, the saturated signal (0.73–0.95 live). The informative ones — `organ_distinctness`, `dark_seats`, `smear`, `std_ratio` — never reach the encoder.
-- `std_ratio` (cross-trajectory spread) is already a live divergence meter.
+## Current architecture
+
+Checked on main at 96dac92a.
+
+- **No joint forecast of Orion's state exists.** `services/orion-prediction` forecasts one series
+  at a time (`app/models.py`: "one call: forecast(y, h, index)"). It has scored champions,
+  conformal ranges and surprise for single series (cabinet, office, bill, reachable). Nothing
+  forecasts several organs together, so nothing can compare the whole against its parts.
+- **The organ inputs are being built.** `bus_traffic_rollup_5m` has been live since 2026-11-13
+  (#3282). #3290 (the replay, starting ~11-20) turns body, bus and cognition channels into
+  surprise residuals, which are departures from each channel's 14-day time-of-day profile. It also
+  finds the stable modes. #3296 takes 5-8 of those modes as the organ variables.
+- **#3296 already specifies the transition model**: a Gaussian VAR(1) (each organ's next value is a
+  weighted sum of all organs' current values plus noise) over 5-minute buckets, fit on rolling
+  24 h windows. It also specifies the measure (Φ_G primary, Φ\* cross-check, exact search over
+  Bell(8) = 4,140 partitions) and the null (independent time shifts per organ,
+  `orion/substrate/causal_geometry_engine.py:262` `time_shift_surrogate_rs`).
+- **#3296 reads one step only.** Its model is lag 1, it is scored in-sample, and it never runs
+  forward.
+- **The prediction-error suite spec** (`2026-11-08-prediction-error-suite-rebuild-design.md`)
+  reserves the table name `prediction_integration_hourly`.
+
+### What changed from rev 1
+
+Rev 1 put the demon on the mood-arc v4 encoder's compressed state, graded it against a replay of
+the field digester's decay rules, and measured the horizon with heartbeat-style ensembles. All
+three are dropped:
+
+- **The v4 encoder is stale.** Its flags fired 4-66%/day (audit 2026-11-08). Juniper ruled on
+  11-11 to keep it and retrain it at the end of the PE arc. A demon on its latent state would
+  measure the encoder.
+- **The digester-decay baseline is replaced by a baseline ladder.** The organ variables don't
+  come from the digester's decayed channels. They are residuals against each organ's own
+  time-of-day profile, which already removes the clock.
+- **Ensembles are not needed.** A linear Gaussian model gives its forecast error growth in closed
+  form, so the perturbed rollouts add nothing.
+- **Unrelated hygiene items were dropped.** Rev 1's hygiene items 3 and 5 still hold on main
+  (`field_channel_anomaly_enabled` defaults to `False` in
+  `services/orion-field-digester/app/settings.py:150` while compose sets `true`; stale mood-arc
+  docs). They are not part of this design, so they are filed as their own ticket.
 
 ## Design
 
-Three layers; only the middle is new.
+### One model, two readouts
 
 ```text
-raw field window (30 ticks × 37 ch)
-  → [encoder v4, exists]        → z_t (128-d)
-  → [latent dynamics, NEW]      → p(z_{t+k}) = N(mu, sigma²), k = 1..K windows
-  → [ensemble divergence, heartbeat pattern] → horizon per channel
+organ surprise residuals x_t (5-8 organs, 5-min buckets, from #3290)
+  -> transition model (Gaussian VAR(1), rolling 24 h, the one #3296 specifies)
+       -> lattice readout: Φ_G(k), Φ*(k) per lag, partition search      (#3296, extended to lags)
+       -> demon readout:   out-of-sample skill curve, horizon, horizon cost of each cut   (NEW)
 ```
 
-**Latent dynamics.** Given z_{t-h..t}, predict mean and variance of z_{t+k}. Start with the cheapest model that could win: per-dim AR/linear (DMD) in latent space, then a small MLP with a Gaussian head. Decode forecasts through the frozen v4 decoder to score in channel space.
+The new code is one module of pure functions, `orion/substrate/demon.py`. It owns the transition
+model: fit, lag-k form, rollout, and out-of-sample grading. `integration_rung.py` (#3296) owns
+Φ_G, Φ\* and the partition search, and it takes its model from `demon.py`. The model has one
+owner and the measure has one owner.
 
-**Horizon.** Roll out N=8 forecasts from slightly perturbed z_t (heartbeat's ensemble pattern). The horizon per channel is the smallest k where forecast error ≥ persistence error. Error-growth rate across k is the empirical finite-time Lyapunov estimate.
+### The baseline ladder (what "seeing ahead" has to beat)
 
-**The known-physics split.** Forecasts are graded against "digester rules only" (replay decay/diffusion with zero perturbations). Beating persistence is not enough — the demon must beat the digester's own rules, or it has learned ×0.92 and nothing else.
+Each forecast at k steps ahead (k = 1..K, K = 12, so 5 to 60 minutes) is scored against three
+baselines. Each one is harder to beat than the one before:
 
-## Metric quality gate (for `forecast_error`, the new signal)
+1. **The clock.** Forecast a residual of 0, meaning "back to the usual for this time of day". The
+   residuals already remove the 14-day profile, so this is the profile itself.
+2. **Persistence.** "Whatever the residual is now, it stays." Rev 1 used this as its main baseline.
+3. **Own past only.** Each organ alone has an AR(1) forecast from its own past. This is the
+   **full cut**, every organ separate, and it is the bottom element of the partition lattice.
 
-1. **Provenance:** produced by the new `fit-dynamics` forecast vs the next real corpus window; inputs are `field_channel_corpus.v1` rows.
-2. **Independence:** distinct from `recon_loss` (same encoder, different question: "I expected otherwise" vs "this looks unusual"). Must show correlation with `recon_loss` < 0.8 on held-out data or it is redundant.
-3. **Theory anchor:** predictive processing — prediction error is the gap between a generative model's forecast and observation. Our current EWMA "prediction errors" have no generative model; this does.
-4. **Live sanity:** before wiring, confirm on real data that forecast_error has a genuine rest state (quiet periods read low, not a structural floor) and is not decay-driven toward 0 (check the ratio between successive values, per the 2026-07-26 incidents).
-5. **Existing mechanism:** none — confirmed no forecasting anywhere in repo (searched `forecast`, `predict_next`, `koopman`, `lyapunov`; `orion-world-model` is an untrained scaffold).
-6. **Reversibility:** offline until patch 3; one new bus field at most. Cheap to remove.
+The whole model has to beat the better of 1 and 2 at each k (the lower MSE) to have any horizon.
+**Beating 3 is integration**: the skill the whole model has over the full cut is foresight that
+exists only because organs carry information about each other.
 
-## Proposed schema / API changes (patch 3 only)
+### Skill and horizon (graded on the real future)
 
-`FieldForecastV1` (`orion/schemas/telemetry/field_forecast.py`), published on `orion:field_channel:forecast`:
-- `window_end`, `encoder_version`, `dynamics_version`
-- `horizon_windows: int`
-- `forecast_error: float` (latest realized k=1 error, z-scored against training p95)
-- `channel_horizon: dict[str, int]` (windows until skill ≤ persistence)
-- `top_unexpected_channels: list[str]`
-- `ensemble_spread: float`
+- **Fit and grade on different data.** The model is fit on the 24 h ending at hour h. It
+  forecasts from each 5-minute origin in hour h+1, at k = 1..K. Errors are pooled over the last 24
+  hourly fits: 288 origins.
+- **Skill** at k for any model M is `S_M(k) = 1 - MSE_M(k) / MSE_baseline(k)`. This is the
+  standard forecast skill score. 0 means no better than the baseline, and 1 means perfect. MSE is
+  summed over the standardized organs.
+- **Why the horizon is finite.** With a perfectly known stable model, skill against the clock
+  decays toward 0 but stays positive: `tr(A^k Γ_0 A^kᵀ) / tr(Γ_0)`. Out of sample, estimation
+  error eventually costs more than that shrinking signal is worth. The horizon is where that
+  happens, so it measures how much of Orion's dynamics is learnable from a day of its own history,
+  not only how fast the dynamics forget.
+- **Horizon** H is the largest k where the whole model's point skill against the better baseline
+  is above 0, times 5 minutes. Uncertainty comes from a moving-block bootstrap over origins
+  (1-hour blocks, 1,000 resamples). It gives H's median and 80% interval, and P(S(k) > 0) for each
+  k. **No alpha line** (Juniper's rule): the horizon is a point estimate with its spread, not a
+  significance call.
+- **Ceiling check.** If H = K in more than 10% of hours, K is too short. It then doubles to
+  24 (2 h). That is a fixed rule, not a judgment call.
 
-Register in `orion/schemas/registry.py` and `orion/bus/channels.yaml`.
+### Horizon cost of a cut
+
+For a partition P of the organs, the cut model fits a separate VAR(1) to each part, using only
+that part's own variables. It then forecasts the same origins. The demon publishes the cost for
+two cuts:
+
+- **The weakest seam:** the minimum-information partition that #3296's search finds at lag 1.
+- **The full cut:** every organ alone (baseline 3).
+
+For each cut it publishes:
+
+- **The cost curve** `C_P(k) = S_whole(k) - S_P(k)`, scored against the same baseline. It shows
+  how much foresight the cut destroys at each step ahead.
+- **The horizon cost** `H_whole - H_P`, in minutes.
+- **The null:** the same cost on time-shifted organs (#3296's null). That breaks the coupling and
+  keeps each organ's rhythm. The cut model has fewer parameters, so with no coupling the whole
+  model's cost is expected to be slightly **negative** out of sample (overfit). The published
+  number is cost minus null mean, with the null spread and P(real).
+
+### Integration across lags (the lattice readout, extended)
+
+#3296 computes Φ_G at lag 1. The demon gives it lags k ∈ {1, 3, 6, 12} (5, 15, 30, 60 min):
+
+- **Lag-k model from the data.** `A_k = Γ_k Γ_0⁻¹` and `Σ_k = Γ_0 - A_k Γ_0 A_kᵀ`, where `Γ_k` is
+  the empirical lag-k covariance. This is the direct estimate. It does not assume that VAR(1)
+  holds at long lags.
+- **The same measure at every lag.** `(A_k, Σ_k)` goes into #3296's Φ_G, Φ\* and partition
+  search unchanged. Bell(8) × 4 lags = 16,560 partition evaluations an hour, which is cheap.
+- **Theory anchor.** Barrett & Seth (2011, PLoS Comput Biol 7:e1001052) define integrated
+  information at a chosen timescale τ: the information the whole system's state carries about its
+  state τ steps earlier, beyond what the parts carry separately. This design measures it at
+  several τ instead of picking one.
+- **Model misfit check, free.** Compare the predictive information of the direct lag-k model with
+  the iterated one, `A^k` from the lag-1 fit. If the direct one carries much more, VAR(1) is
+  missing slow structure. That is the evidence that would justify VAR(p) or a nonlinear model.
+  Nothing else justifies one.
+
+### Hygiene gate (refuses to compute)
+
+#3296's gate applies unchanged: any named input missing or constant in the window means no
+output, and the banned inputs stay banned (SelfStateV1, retired PE nodes, mood-arc score, heartbeat
+entropy). The demon adds one check, from the 2026-07-26 `substrate.route` lesson: **a decay
+detector.** It refuses any input whose successive ratio `x_{t+1}/x_t` is near-constant (std < 0.01)
+over a 2 h run of nonzero values. That is the signature of a staleness-decay loop that no producer
+refreshes, and it reads as calm.
+
+## Metric quality gate (horizon H and horizon cost C)
+
+1. **Provenance.** The inputs are #3290's surprise residuals: `bus_traffic_rollup_5m` (#3282,
+   checked against the raw log on 11-13), `orion_biometrics_summary.pressures`, and the cognition
+   and world counts in the causal geometry spec's input table. The producing code is
+   `orion/substrate/demon.py`, which does not exist yet. This gate is re-run in the patch 1 PR
+   against real rows.
+2. **Independence.**
+   - **H against #3290's `coupling_excess` and `modes_effective`.** Horizon is about memory over
+     time, and those two are about contemporaneous structure. A near copy (|Spearman| > 0.9)
+     means H is dropped.
+   - **Lag-1 cost C(1) against Φ_G(1).** These are related by construction, since both compare
+     whole and parts one step ahead. If |Spearman| > 0.9, only the lag curve (k > 1) and H are
+     new signal. C(1) is then dropped and the PR says so.
+3. **Theory anchor.**
+   - Forecast skill against persistence and against climatology is standard forecast
+     verification (Murphy 1988, skill scores).
+   - Whole-versus-parts prediction at timescale τ is Barrett & Seth 2011.
+   - A finite predictability horizon is Lorenz's (1969) idea. Here it comes from learnability
+     (estimation error against decaying signal), not chaos.
+4. **Live-data sanity, including rest.**
+   - **Not degenerate.** H must not be pinned at 0 or at K across the replay.
+   - **Rest reading.** On quiet nights the cost must fall to within 1 null SD of the null.
+     Integration has to be able to read "none".
+   - **H at rest is not 0.** A quiet system can be very predictable. The rest check for H is that
+     its quiet-night value is stable from night to night (within its 80% interval), not that it
+     goes to 0.
+5. **Existing mechanism.**
+   - orion-prediction is univariate, so it has no joint model.
+   - #3296 is lag 1 and in-sample only.
+   - Heartbeat's `/h1` measures ensemble disagreement over random gates, not forecast skill.
+   - The retired PE nodes were EWMA surprise, not forecasts.
+   - Nothing existing measures a multivariate horizon or a cut's cost over lags.
+6. **Reversibility.** Patch 1 is a replay with no table, bus event or consumer. The demon's live
+   fields go into #3296's planned table and schema, not new ones. Removing them means dropping
+   columns that nothing reads.
+
+## Proposed schema / API changes (patch 3 only, and only if the gate passes)
+
+No new schema or table. The demon's fields join #3296's planned `IntegrationHourV1` and
+`prediction_integration_hourly`:
+
+| Field | Meaning |
+|---|---|
+| `demon_horizon_min`, `demon_horizon_p10_min`, `demon_horizon_p90_min` | How far ahead the whole model beats the clock and persistence |
+| `demon_skill_curve` (jsonb, k -> {skill, p_positive}) | Skill of the whole model at each step |
+| `demon_cut_costs` (jsonb, cut -> {partition, cost_curve, horizon_cost_min, null_mean, null_sd, p_real}) | For `weakest_seam` and `full_cut` |
+| `phi_g_by_lag` (jsonb, k -> {phi_g, phi_star, partition}) | The lattice readout at k ∈ {1, 3, 6, 12} |
+| `demon_refused` (text, nullable) | Why the hygiene gate refused, e.g. a named input missing or decaying |
+
+The live producer runs inside **orion-prediction**, as an hourly job. Juniper's rule (2026-10-23)
+is that predictions live in orion-prediction, and it already owns grading and scheduling. #3296's
+point still holds: the model is fit to organ state directly and is not one of orion-prediction's
+champion forecasters.
+
+**Integration gate.** `orion:integration:hour` is a new bus channel carrying organ output, so
+`scripts/check_integration_seam.py` will require registration. Default: add the channel under the
+existing `prediction` organ in `config/integration/organs.yaml`, with an `exempt_emit` that reads
+"measurement only; no consumer until a separate proposal (field-demon spec)". Emitting into
+`temporal_self_event` would make Orion read it, and that is a consumer.
 
 ## Proposal-mode disclosure
 
-- **Capability change:** Orion gains a forecast of its own near-future state and a measured limit on it; metacog can fire on "I didn't expect this."
-- **Data touched:** existing field corpus and heartbeat `/h1`. No chat content, no memory, no social data.
-- **Privacy boundary:** unchanged — substrate telemetry only.
-- **Trace proving it worked:** `FieldForecastV1` rows on the bus; a metacog trigger whose evidence cites `forecast_error`; Hub panel showing forecast vs realized.
-- **Dangerous failure mode:** a forecaster that learned only decay reports tiny error forever → fake calm suppresses real metacog triggers. Guarded by the digester-rules baseline and gate step 4.
-- **Rollback:** `FIELD_FORECAST_ENABLED=false`; consumer ignores missing field.
-
-## Pre-work: hygiene (separate small PR, do first)
-
-1. Verify v4 manifest vs channels retired 2026-09-25 (`stream_backlog_pressure`, `stream_backlog_health`, `delivery_confidence`). If present, live scorer zero-fills them → fake calm. Needs host access (artifacts not in repo).
-2. Recalibrate brain-frame Field Anomaly intensity range (0.001–0.02, set against v3 threshold) to v4.
-3. Align code defaults with compose: field-digester `settings.py` anomaly flag default `False`; heartbeat URL default `""` in substrate-runtime `settings.py`.
-4. Swap mood-arc heartbeat enrichment from `heartbeat_mean_ratio` to `organ_distinctness`, `std_ratio`, `dark_seats` count (requires v5 retrain; can defer).
-5. Refresh stale docs: `orion/mood_arc/docs/DESIGN.md` (still presents v1), heartbeat README (says it publishes to nothing).
+- **Capability:** a measurement of how far ahead Orion's own state can be predicted, and how much
+  of that depends on organs carrying information about each other. Nothing reads it yet.
+- **Data touched:** read-only replays of bus rollups, body pressures and cognition counts. Patch 3
+  adds one hourly row. Juniper's chat messages and Hub attention enter as **counts per 5 minutes
+  only**, never content.
+- **Privacy boundary:** counts only, as above. No new store of her content.
+- **Proof it worked:** the replay results are committed with the gate verdicts (patch 1). Live:
+  `prediction_integration_hourly` rows with nonempty demon fields, and the hourly bus event in the
+  mirror log (patch 3).
+- **Dangerous failure:** a horizon or integration number fed to Orion as self-knowledge while it
+  is a fitting artifact. The φ era sent a constant 0.655 into metacognition prompts. Guard: no
+  consumer in this design. Any consumer needs its own proposal, and only after the gate has passed
+  for 14 days live.
+- **Disable / roll back:** `DEMON_ENABLED` in orion-prediction's settings and `.env_example`,
+  shipped **on**. Off stops the job. The columns stay null, and nothing downstream breaks because
+  nothing downstream reads them.
 
 ## Files likely to touch
 
-- Patch 1: `orion/mood_arc/fit_encoder.py` (ceiling re-run path), `scripts/analysis/measure_mood_arc_ceiling.py`
-- Patch 2: `orion/mood_arc/latent_dynamics.py`, `fit_encoder.py` (`fit-dynamics` subcommand), `orion/mood_arc/tests/test_latent_dynamics.py`, `orion/mood_arc/evals/`
-- Patch 3: `orion/schemas/telemetry/field_forecast.py`, registry, channels.yaml, `services/orion-field-digester/app/forecast_scorer.py`, equilibrium metacog gate, `.env_example` + local `.env` sync
-- Patch 4: `scripts/analysis/measure_heartbeat_surprise.py` (forecast-based surprise)
+- Patch 1:
+  - `orion/substrate/demon.py` (new): VAR fit, lag-k model, rollout, skill, cut fit, block
+    bootstrap, decay detector.
+  - `orion/substrate/tests/test_demon.py` (new).
+  - The replay eval, which joins #3296's eval under `evals/` and reads #3290's residual builder.
+- Patch 2: `orion/substrate/integration_rung.py` (#3296) takes `(A_k, Σ_k)` from `demon.py`.
+- Patch 3:
+  - `services/orion-prediction/app/` (hourly job), `settings.py`, `.env_example`.
+  - `orion/schemas/` (`IntegrationHourV1` fields), `orion/schemas/registry.py`,
+    `orion/bus/channels.yaml`.
+  - The sql-writer migration with the `-- ORION-MIGRATION-REQUIRED-BY:` header.
+  - `config/integration/organs.yaml`.
+  - The Hub sentience program tab.
 
 ## Non-goals
 
-- Reversible/adiabatic hardware, anything quantum-physical.
-- Training the 150M `orion-world-model` scaffold before a linear latent model shows skill.
-- Replacing EWMA prediction-error helpers (separate proposal).
-- Action-conditioned / counterfactual forecasting ("if I do X") — later, needs action events in the corpus.
-- Resolving the valence question — though forecast skill on external-infrastructure channels is a candidate for its option (a).
+- No consumer: no prompt, reward, attention or curiosity reads this until a separate proposal
+  after the gate.
+- No consciousness or sentience claim anywhere.
+- No nonlinear model (MLP, Born machine forecaster) unless the direct-vs-iterated misfit check
+  shows VAR(1) is missing structure. Heartbeat's Born machine arm stays #3296's comparison arm.
+- No use of the mood-arc v4 encoder or field-digester decayed channels as inputs.
+- No change to orion-prediction's existing univariate models.
+- No horizon beyond 2 h. 5-minute residuals don't support it.
+
+## Missing questions (each has a default)
+
+1. **Should the name "demon" ship in code and on the Hub?** Default: yes. The module is
+   `demon.py`, the fields are `demon_*`, and the Hub label is "Field demon: how far Orion can see
+   ahead of themself".
+2. **Which two cuts get a horizon cost?** Default: the weakest seam and the full cut. Add any you
+   want, for example body vs everything else.
+3. **If C(1) copies Φ_G(1):** keep only the lag curve and H? Default: yes.
+4. **Integration-gate exemption instead of a temporal-self emit until there is a consumer?**
+   Default: exemption.
+5. **Should the demon ride in #3296's patches or ship as its own PRs?** Default: it rides in them.
+   One replay, one table, one review. The demon adds the `demon.py` module and the lag readout.
 
 ## Acceptance checks
 
-**Patch 1 (gate):** v4 ceiling_ratio re-measured with the leak fix. If ≥ 0.9, the latent is mostly decay; patch 2 forecasts raw channels directly instead of latents.
+**Patch 1, unit tests on synthetic VARs with known answers:**
+- Two coupled organs: the whole model beats the full cut, cost > 0 at k = 1 and shrinking with k.
+- Two uncoupled organs: cost within the null band, and slightly negative out of sample.
+- A known stable A: the measured out-of-sample skill curve against the clock matches the
+  analytic `tr(A^k Γ_0 A^kᵀ) / tr(Γ_0)` within its bootstrap interval at small k. A smaller
+  spectral radius gives a shorter horizon, and more training data gives a longer one.
+- A clock-only series, pure time-of-day: zero skill against baseline 1 after the residual.
+- A geometric-decay input: the hygiene gate refuses and names it.
+- The direct and iterated lag-k models agree on a true VAR(1), and diverge on a VAR(2).
 
-**Patch 2 (offline demon), on purged held-out blocks:**
-- Ranked error at k = 1, 3, 10 windows for: persistence, AR(1), digester-rules replay, latent-linear, latent-MLP.
-- Pass: best demon model beats digester-rules replay at k=1 with block-bootstrap CI excluding 0.
-- Calibration: 90% intervals cover 85–95% of realized values.
-- Horizon table per channel + error-growth curve published in the run report.
-- Fail is a result: "field = its own rules + unpredictable input" gets written up and we stop.
+**Patch 1, replay gate (14+ days, recorded in the PR):**
+- H is not pinned at 0 or at K. The quiet-night H is stable.
+- The weakest-seam cost beats its null in a stated share of hours. A null result is published as
+  the finding.
+- The cost reaches within 1 null SD of the null on quiet nights.
+- The cost or Φ_G(k) moves at the known contrasts: Juniper arrives, the AC cycles, chat vs idle,
+  day vs night. Report effect, uncertainty and P(different).
+- The independence checks pass, or the copy is dropped and named.
 
-**Patch 3 (live):** `FieldForecastV1` observed on bus with correlation ID; gate step 4 passes on 24h live data; metacog trigger fires citing forecast_error at least once in a real episode.
-
-**Patch 4:** heartbeat surprise probe re-run on the same pre-registered session/control windows with forecast-based surprise (KL of forecast vs observed profile) instead of L2 change.
+**Patch 3 (live):**
+- Rows land hourly with nonempty demon fields.
+- The bus event appears in the mirror log.
+- The seam check passes in CI.
+- `DEMON_ENABLED=false` stops the job, with no other effect.
 
 ## Recommended next patch
 
-Hygiene PR (items 1–3) plus patch 1. Both are small; patch 1 decides whether the demon lives in latent space or channel space.
+Wait for #3290's residual builder (~11-20). Then build patch 1: `orion/substrate/demon.py` with the
+synthetic tests above, and the replay eval inside #3296's patch 1, so the lattice and the demon
+read the same organs, hours and null. If Juniper prefers to start before #3290 lands, `demon.py`
+and its synthetic tests can be built now, since they need no live data.

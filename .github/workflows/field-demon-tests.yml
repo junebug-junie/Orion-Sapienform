@@ -1,0 +1,33 @@
+name: field-demon-tests
+
+# Field demon core (docs/superpowers/specs/2026-09-30-field-demon-forecaster-design.md, rev 2):
+# VAR(1) transition model, out-of-sample horizon, per-cut horizon cost, lag-k model for the
+# integration rung (#3296). Synthetic systems with known answers; pure numpy, ~4 s.
+on:
+  pull_request:
+    paths:
+      - "orion/substrate/demon.py"
+      - "orion/substrate/tests/test_demon.py"
+      - ".github/workflows/field-demon-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "orion/substrate/demon.py"
+      - "orion/substrate/tests/test_demon.py"
+      - ".github/workflows/field-demon-tests.yml"
+
+jobs:
+  unit:
+    name: field-demon unit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy pytest
+      - name: Demon core
+        run: python -m pytest -q -p no:cacheprovider orion/substrate/tests/test_demon.py

@@ -120,6 +120,20 @@ def test_bootstrap_horizon_spread_and_p_positive():
     assert est.p_positive.shape == (demon.DEFAULT_HORIZON,)
 
 
+def test_baseline_picks_persistence_when_it_wins():
+    """Slow, near-random-walk organs: 'nothing changes' beats 'back to the usual' at short k.
+
+    The demon must beat the better baseline, so its skill there is measured against persistence.
+    """
+    x = simulate(np.diag([0.97, 0.97]), 288 * 10, seed=18)
+    errs = demon.rolling_errors(x)
+    assert errs.persistence[:, 0].sum() < errs.clock[:, 0].sum()
+    assert np.array_equal(errs.baseline[:, 0], errs.persistence[:, 0])
+    vs_best = demon.skill_curve(errs.whole, errs.baseline)
+    vs_clock = demon.skill_curve(errs.whole, errs.clock)
+    assert vs_best[0] < vs_clock[0] - 0.5
+
+
 def test_horizon_steps_uses_first_drop():
     assert demon.horizon_steps(np.array([0.3, 0.1, -0.01, 0.2])) == 2
     assert demon.horizon_steps(np.array([-0.1, 0.5])) == 0

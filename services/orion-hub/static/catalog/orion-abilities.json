@@ -76,6 +76,16 @@
           "keywords": ["camera", "records", "vision", "check", "trust", "walkway"],
           "covers": {"dig": ["look"]},
           "source": "orion/dig/look.py:check; orion/dig/__main__.py:cmd_look_check"
+        },
+        {
+          "id": "game-watch",
+          "title": "Watch a game someone plays, or decline",
+          "description": "While someone plays on Orion's Retro service, Orion can look at the screen now and then and keep a short note. Orion can turn that off for one sitting or for a whole game, in their own words; the lower of Orion's choice and Juniper's switch on the game page wins.",
+          "message": "Are you watching the game right now? If you would rather not, you can turn it off.",
+          "hint": "(dig: `python -P -m orion.dig watch status`, or `watch off --why \"<your words>\"`, or `watch default <game> off --why \"...\"`)",
+          "keywords": ["game", "retro", "watch", "play", "screen", "decline"],
+          "covers": {"dig": ["watch"]},
+          "source": "orion/dig/watch.py; orion/dig/__main__.py:cmd_watch"
         }
       ]
     },

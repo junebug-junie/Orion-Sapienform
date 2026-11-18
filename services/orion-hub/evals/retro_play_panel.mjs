@@ -212,7 +212,12 @@ try{
   for(let i=0;i<30;i++){log=await fixture();if(log.retro.slice(opsBefore).some(r=>r.op==='pause'))break;await new Promise(r=>setTimeout(r,100));}
   const afterOpen=log.retro.slice(opsBefore);
   assert(afterOpen.some(r=>r.op==='pause'),'opening the chat with no controller did not pause the game: '+JSON.stringify(afterOpen));
-  assert.equal(afterOpen.find(r=>r.op==='input')?.mask,0,'opening the chat sent no neutral input first');
+  // The page repeats the held state every 50 ms, so one repeat of the held button can land between the snapshot
+  // and the key press. What must hold: a neutral input is sent, and nothing held is sent after it.
+  const firstNeutral=afterOpen.findIndex(r=>r.op==='input' && r.mask===0);
+  assert(firstNeutral>=0,'opening the chat sent no neutral input: '+JSON.stringify(afterOpen));
+  assert(!afterOpen.slice(firstNeutral).some(r=>r.op==='input' && r.mask!==0),
+    'a held button was sent after the chat opened: '+JSON.stringify(afterOpen));
   assert.equal(await page.evaluate(()=>document.fullscreenElement?.id),'stage','opening the chat left fullscreen');
   // Typing never moves the character: game keys typed into the input change no button mask.
   await page.type('#chatInput','zx as qw ');
@@ -258,11 +263,11 @@ try{
   assert.deepEqual(chatLog.thumbs,[{line_id:'line-1',body:{thumb:'up'}}],JSON.stringify(chatLog.thumbs));
   await page.waitForFunction(()=>[...document.querySelectorAll('.thumbs[data-line="line-1"]')].every(b=>
     b.querySelector('button[data-thumb="up"]').getAttribute('aria-pressed')==='true' && b.querySelector('.thumbState').textContent.startsWith('Saved: thumb up')),{timeout:3000});
-  // Any other outreach goes to the panel only, never the strip.
+  // Orion's other messages are to Juniper: a guest at the game never sees them (review finding, patch 3).
   await fetch(url+'/__fixture/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(
-    {kind:'orion_outreach',llm_response:'A news note from Orion.',source:'endogenous_outreach'})});
-  await page.waitForFunction(()=>document.querySelector('#chatLog').textContent.includes('A news note from Orion.'),{timeout:3000});
-  assert.equal(await page.$eval('#chatStripText',e=>e.textContent),'That jump took three tries.','a non-line outreach reached the strip');
+    {kind:'orion_outreach',llm_response:'A private note for Juniper.',source:'endogenous_outreach'})});
+  await new Promise(r=>setTimeout(r,600));
+  assert(!(await page.$eval('#chatLog',e=>e.textContent)).includes('A private note for Juniper.'),'a guest saw outreach meant for Juniper');
   // A flip of "Who's playing?" mid-sitting changes only later messages.
   const flip=await page.evaluate(async id=>(await fetch('/api/retro/sitting/player',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({player:'juniper',sitting_id:id})})).status,sittingId);
@@ -273,6 +278,11 @@ try{
   const [firstMsg,secondMsg]=chatLog.frames.filter(f=>f.text_input);
   assert.equal(firstMsg.session_id,'retro-guest-'+sittingId,'the earlier message was rewritten');
   assert.equal(secondMsg.session_id,'juniper-main-thread','Juniper stated: the message must use her main chat thread');
+  // Juniper stated: any other outreach goes to the panel only, never the strip.
+  await fetch(url+'/__fixture/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(
+    {kind:'orion_outreach',llm_response:'A news note from Orion.',source:'endogenous_outreach'})});
+  await page.waitForFunction(()=>document.querySelector('#chatLog').textContent.includes('A news note from Orion.'),{timeout:3000});
+  assert(!(await page.$eval('#chatStripText',e=>e.textContent)).includes('A news note from Orion.'),'a non-line outreach reached the strip');
   assert.equal(await page.evaluate(()=>localStorage.getItem('orion_sid')),'juniper-main-thread');
   assert(chatLog.frames.some(f=>f.type==='session_hello' && f.session_id==='juniper-main-thread'),'no hello for Juniper\'s thread');
   // Close: the game resumes (we paused it) and gets the keyboard back, still in fullscreen.

@@ -90,11 +90,16 @@ async def test_line_rows_keep_the_hard_order_and_the_player_signals() -> None:
                 NOW - timedelta(minutes=1))
             await conn.executemany(rc.SETTLE_SQL, [("look-1", True, "checked_holds", NOW, "L2"),
                                                    ("look-2", False, "unchecked", NOW, "L2")])
-            await conn.executemany(rc.SETTLE_SQL, [("look-1", True, "contradicted", NOW, "L5")])
+            await conn.executemany(rc.SETTLE_SQL, [("look-1", True, "contradicted", NOW, "L5")])     # judged: kept
+            await conn.executemany(rc.SETTLE_SQL, [("look-2", False, "unchecked", NOW, "L5")])       # unchecked: kept
             rows = {r["look_id"]: r for r in await conn.fetch(
                 "SELECT look_id, checkable, verdict, settled_by_line FROM retro_watch_look")}
             assert rows["look-1"]["verdict"] == "checked_holds" and rows["look-1"]["settled_by_line"] == "L2"
             assert rows["look-2"]["checkable"] is False and rows["look-2"]["verdict"] == "unchecked"
+            assert rows["look-2"]["settled_by_line"] == "L2"
+            # A note a passed turn left unchecked may still be judged by a later turn that could check it.
+            await conn.executemany(rc.SETTLE_SQL, [("look-2", True, "checked_holds", NOW, "L5")])
+            assert await conn.fetchval("SELECT verdict FROM retro_watch_look WHERE look_id = 'look-2'") == "checked_holds"
 
             # The gate's reads.
             assert await conn.fetchval(rc.NEWEST_NOTE_TEXT_SQL, "s1") in ("Link walks", "x")

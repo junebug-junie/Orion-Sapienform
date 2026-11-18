@@ -213,6 +213,8 @@ def build_prompt(*, game_title: Optional[str], minutes_played: float, saves: int
 # --- reading the reply ------------------------------------------------------------------------------
 
 _CHECKS_RE = re.compile(r"(?im)^[ \t>*_`#-]*CHECKS\s*:")
+# A block written inline ("... Nice run. CHECKS: N3: holds"): only when what follows names a note or says none.
+_CHECKS_INLINE_RE = re.compile(r"(?i)[*_`]*CHECKS[*_`]*\s*:[*_`]*\s*(?=(?:[-*>]\s*)?(?:N\d|none\b))")
 _JUDGE_RE = re.compile(r"(?i)\bN(\d{1,2})\s*[:=\-]\s*\**\s*(holds?|held|contradicted|contradicts?)\b")
 
 
@@ -227,7 +229,7 @@ def parse_reply(text: Optional[str]) -> Reply:
     """Split the turn's text into the line and its judgments. Everything from the first CHECKS: line on is the
     block (never said). A judgment is ``N<k>: holds|contradicted``; anything else in the block is ignored."""
     body = str(text or "")
-    m = _CHECKS_RE.search(body)
+    m = _CHECKS_RE.search(body) or _CHECKS_INLINE_RE.search(body)
     if m is None:
         return Reply(line=body.strip())
     head, block = body[:m.start()], body[m.end():]

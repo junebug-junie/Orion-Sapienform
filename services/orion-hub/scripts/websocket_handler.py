@@ -1346,8 +1346,14 @@ async def websocket_endpoint(websocket: WebSocket):
             # history source and no Juniper origin.
             retro_origin: Optional[str] = "juniper"
             _retro_commentary = getattr(scripts.main, "retro_commentary", None)
+            if _retro_commentary is not None:
+                _retro_commentary.person_spoke()      # the yield starts now, before any other await
             _surface_ctx = data.get("surface_context") if isinstance(data.get("surface_context"), dict) else {}
             _retro_player: Optional[str] = None
+            if _surface_ctx.get("surface") != "retro":
+                # Only the game page's path sets these, server side; a client cannot borrow them.
+                if data.get("source") in ("retro_commentary", "retro_guest") or data.get("chat_history_source") == "retro_guest":
+                    data = {k: v for k, v in data.items() if k not in ("source", "chat_history_source")}
             if _surface_ctx.get("surface") == "retro":
                 try:
                     from scripts.retro_commentary import prepare_retro_turn
@@ -1548,13 +1554,14 @@ async def websocket_endpoint(websocket: WebSocket):
                 # then, so there is no transcript belonging to that window,
                 # and reusing this one would present her opening words as if
                 # they were her reaction to Orion's reply.
-                chat_turn_affect.fire(
-                    settings=settings,
-                    trigger=chat_turn_affect.TRIGGER_PRE,
-                    correlation_id=trace_id,
-                    is_voice_turn=not is_text_input,
-                    subtitle=transcript,
-                )
+                if retro_origin == "juniper":     # a guest's chat-box turn is not a read of Juniper
+                    chat_turn_affect.fire(
+                        settings=settings,
+                        trigger=chat_turn_affect.TRIGGER_PRE,
+                        correlation_id=trace_id,
+                        is_voice_turn=not is_text_input,
+                        subtitle=transcript,
+                    )
                 orion_turn_frames: list[dict] = []
                 try:
                     orion_turn_frames = await run_awaitable_cancel_on_ws_disconnect(
@@ -1605,7 +1612,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     # finding, 2026-08-26). A disconnect is the one case
                     # where the missing half of the pair is the correct
                     # outcome.
-                    if websocket.client_state == WebSocketState.CONNECTED:
+                    if websocket.client_state == WebSocketState.CONNECTED and retro_origin == "juniper":
                         chat_turn_affect.fire(
                             settings=settings,
                             trigger=chat_turn_affect.TRIGGER_POST,

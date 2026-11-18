@@ -204,7 +204,8 @@ def make_service(monkeypatch, *, looks=None, bid_outcome="funded", frames=FRAMES
 
     async def default_compose(prompt, corr, **kw):
         calls["compose"].append((prompt, corr, kw))
-        return "You found the cave behind the well.\nCHECKS:\nN2: holds", {"harness_fcc_elapsed_sec": 40.0}
+        return "You found the cave behind the well.\nCHECKS:\nN2: holds", {"harness_fcc_elapsed_sec": 40.0,
+                                                                       "staged_attachment_count": 4}
 
     monkeypatch.setattr(outreach, "compose", compose(calls, log) if compose else default_compose)
     bus = SimpleNamespace(redis=FakeRedis(sitting))
@@ -293,7 +294,7 @@ def test_no_ring_means_no_turn_and_outcome_no_frames(monkeypatch):
 def test_silence_is_valid_a_pass_writes_a_decision_row_and_no_act(monkeypatch):
     def compose(calls, log):
         async def f(prompt, corr, **kw):
-            return "PASS\nCHECKS:\nN2: contradicted", {}
+            return "PASS\nCHECKS:\nN2: contradicted", {"staged_attachment_count": 4}
         return f
     t = make_service(monkeypatch, compose=compose)
     asyncio.run(t.svc.tick())
@@ -331,7 +332,7 @@ def blocking_compose(started: asyncio.Event, release: asyncio.Event, text: str):
             except asyncio.CancelledError:
                 log.append("turn_cancelled")
                 raise
-            return text, {}
+            return text, {"staged_attachment_count": 4}
         return f
     return factory
 
@@ -568,3 +569,100 @@ def test_chat_box_messages_and_replies_reach_the_next_line_turn(monkeypatch):
     prompt = t.calls["compose"][0][0]
     assert "The player: how do I get past this?" in prompt and "You: Try the bombable wall" in prompt
     assert "main window message" not in prompt
+
+
+# --- review findings (patch 3 code review) ------------------------------------------------------------------
+
+def test_frames_the_turn_did_not_carry_void_the_line_and_its_judgments(monkeypatch):
+    def compose(calls, log):
+        async def f(prompt, corr, **kw):
+            return "You found the cave.\nCHECKS:\nN2: holds", {"staged_attachment_count": 2}
+        return f
+    t = make_service(monkeypatch, compose=compose)
+    asyncio.run(t.svc.tick())
+    (row,) = t.db.lines.values()
+    assert row["outcome"] == "failed" and row["failure"] == "frames_not_staged:2/4"
+    assert t.db.looks["look-2"]["verdict"] == "unchecked" and drain(t.queue) == []
+
+
+def test_a_timed_out_line_stops_its_motor(monkeypatch):
+    def compose(calls, log):
+        async def f(prompt, corr, **kw):
+            return "", {"error": "timeout"}
+        return f
+    t = make_service(monkeypatch, compose=compose)
+    asyncio.run(t.svc.tick())
+    (row,) = t.db.lines.values()
+    assert row["outcome"] == "failed" and row["failure"] == "timeout"
+    assert t.calls["motor_cancel"] == [row["line_id"]]
+
+
+def test_a_message_after_the_claim_does_not_cut_a_line_being_said(monkeypatch):
+    t = make_service(monkeypatch)
+    real = t.outreach.deliver_line
+
+    async def deliver_then_speak(**kw):
+        async def claim_then_message():
+            ok = await kw["claim"]()
+            t.svc.note_human_message(surface=None, player=None, text="hi")   # Juniper answers at once
+            return ok
+        return await real(**{**kw, "claim": claim_then_message})
+    monkeypatch.setattr(t.outreach, "deliver_line", deliver_then_speak)
+
+    async def go():
+        out = await t.svc.tick()
+        await asyncio.gather(*list(t.svc._jobs))
+        return out
+    asyncio.run(go())
+    (row,) = t.db.lines.values()
+    assert row["outcome"] == "delivered" and row["text"] == "You found the cave behind the well."
+    assert len(drain(t.queue)) == 1 and len(t.history) == 1 and len(t.calls["acts"]) == 1
+    assert "yield_marked" not in t.log and t.calls["motor_cancel"] == []
+
+
+def test_a_message_while_the_bid_is_weighed_means_no_line_at_all(monkeypatch):
+    t = make_service(monkeypatch)
+    real_bid = t.svc._bid
+
+    async def slow_bid(want, text):
+        t.svc.note_human_message(surface=None, player=None)
+        return await real_bid(want, text)
+    t.svc._bid = slow_bid
+    assert asyncio.run(t.svc.tick()) == C.GATE_READY
+    assert t.db.lines == {} and t.calls["compose"] == [] and len(t.calls["released"]) == 1
+    assert [k for k, *_ in t.bus.redis.sets] == [rc.LINE_LOCK_KEY, rc.LINE_LOCK_KEY]   # the lock came off
+
+
+def test_a_turn_of_juniper_running_before_the_seat_yields_the_line(monkeypatch):
+    t = make_service(monkeypatch)
+    calls = {"n": 0}
+
+    def busy(self):
+        calls["n"] += 1
+        return calls["n"] > 1           # free at the gate, busy by the time the line would take its seat
+    monkeypatch.setattr(eo.EndogenousOutreach, "_turn_in_flight", busy)
+    asyncio.run(t.svc.tick())
+    (row,) = t.db.lines.values()
+    assert row["outcome"] == "yielded" and t.calls["compose"] == [] and "hold_granted" not in t.log
+
+
+def test_stopping_hub_mid_line_does_not_hang(monkeypatch):
+    started, release = asyncio.Event(), asyncio.Event()
+    t = make_service(monkeypatch, compose=blocking_compose(started, release, "x"))
+
+    async def go():
+        t.svc._task = asyncio.ensure_future(t.svc.run_line(SITTING))
+        await started.wait()
+        await asyncio.wait_for(t.svc.stop(), 5.0)
+        return t.svc._task
+    task = asyncio.run(go())
+    assert task.done()
+    (row,) = t.db.lines.values()
+    assert row["outcome"] == "yielded" and drain(t.queue) == []
+
+
+def test_a_guest_message_on_a_main_chat_socket_cannot_borrow_the_game_sources():
+    import scripts.websocket_handler as wh
+    src = open(wh.__file__).read()
+    assert 'if data.get("source") in ("retro_commentary", "retro_guest")' in src
+    assert src.index("_retro_commentary.person_spoke()") < src.index("prepare_retro_turn(")

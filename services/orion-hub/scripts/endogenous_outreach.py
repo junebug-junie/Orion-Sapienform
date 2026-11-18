@@ -3748,6 +3748,8 @@ class EndogenousOutreach:
             "fcc_model_label": final_frame.get("fcc_model_label"),
             # The motor leg's own seconds (the governor's), for a caller that times a turn by stage.
             "harness_fcc_elapsed_sec": final_frame.get("harness_fcc_elapsed_sec"),
+            # How many attachments the turn really staged (None: it carried none).
+            "staged_attachment_count": final_frame.get("staged_attachment_count"),
         }
         return text, debug
 

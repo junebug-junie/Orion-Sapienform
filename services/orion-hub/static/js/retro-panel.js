@@ -753,7 +753,8 @@
       const text=String(d.llm_response||'').trim();if(!text)return;
       if(d.source==='retro_commentary' && d.line_id){   // a line: strip with thumbs, and the panel
         chatEntry('orion',text,{lineId:String(d.line_id)});strip(text,String(d.line_id));
-      } else chatEntry('orion',text,{note:'Orion, unprompted'});   // any other outreach: panel only
+      } else if(chat.player==='juniper') chatEntry('orion',text,{note:'Orion, unprompted'});   // other outreach: panel only
+      // Orion's other messages are to Juniper: a guest (or nobody stated) at the game never sees them here.
       return;
     }
     if(d.type==='final'){

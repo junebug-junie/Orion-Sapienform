@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import time
 import uuid
@@ -105,9 +106,10 @@ UPDATE retro_line SET
 WHERE line_id = $1
 RETURNING outcome
 """
+# Written once; a note a passed turn settled 'unchecked' may be judged by a later turn that could check it.
 SETTLE_SQL = """
 UPDATE retro_watch_look SET checkable = $2, verdict = $3, settled_at = $4, settled_by_line = $5
-WHERE look_id = $1 AND settled_at IS NULL
+WHERE look_id = $1 AND (settled_at IS NULL OR (verdict = 'unchecked' AND $3 <> 'unchecked'))
 """
 # A chat message within 2 minutes of a delivered line is a response to it (spec section 4, "Did the player like it").
 REPLIED_SQL = """
@@ -136,6 +138,7 @@ def _setting(config: Any, name: str, default: float) -> float:
     return float(default if value is None else value)
 
 
+@functools.lru_cache(maxsize=1)
 def held_route_priority() -> str:
     """The priority every call of a held turn asks the pool for: the route a held turn names
     (orion.llm.resource_lease.GPU_LEASE_ROUTE) in config/gpu_pool.yaml. The line refuses to start if this is ever
@@ -188,6 +191,8 @@ class Running:
     correlation_id: str
     task: Optional[asyncio.Task] = None
     yielded: bool = False
+    claimed: bool = False             # delivery claimed the row: the line is being said, a message no longer yields it
+    kill_started: bool = False        # yield_line is marking the row and cancelling the turn
 
 
 class CommentaryService:
@@ -348,7 +353,8 @@ class CommentaryService:
         watch = await self._watch()
         newest = _epoch(await self._db("fetchval", NEWEST_NOTE_SQL, sid, quiet="retro_commentary_notes_unread"))
         last_attempt = _epoch(await self._db("fetchval", LAST_ATTEMPT_SQL, sid, quiet="retro_commentary_lines_unread"))
-        spoke = max([t for t in (last_attempt, self._last_exchange_at, float(sitting.get("started_at") or 0)) if t])
+        spoke = max([t for t in (last_attempt, self._last_exchange_at, float(sitting.get("started_at") or 0)) if t],
+                    default=None)
         now = self.clock()
         result = C.gate(enabled=self.enabled, sitting_open=True, mode=watch.get("mode"),
                         juniper_turn_running=self._juniper_turn_running(),
@@ -374,67 +380,101 @@ class CommentaryService:
                       window=WantWindowV1(latest=now + timedelta(seconds=C.DEFERRABLE_WINDOW_S)), lanes=["chat"])
 
     async def run_line(self, sitting: dict) -> Optional[str]:
-        """One line attempt. Returns the line's outcome, or None when no row was written (bid not funded,
-        no database)."""
+        """One line attempt. Returns the line's outcome, or None when no row was written (bid not funded, a person
+        spoke while it was weighed, no database, the held route not readable as ``system``)."""
+        out: dict = {}
+        await self._run_line(sitting, out)
+        return out.get("final")
+
+    async def _run_line(self, sitting: dict, out: dict) -> None:
         sid = str(sitting["sitting_id"])
         priority = held_route_priority()
-        if priority == "interactive" or C.POOL_PRIORITY == "interactive":
-            logger.error("retro_commentary_refused reason=held_route_interactive route_priority=%s", priority)
+        if priority != C.POOL_PRIORITY:
+            # Fail closed: a line never runs unless every held stage is known to ask for system.
+            logger.error("retro_commentary_refused reason=held_route_not_system route_priority=%s", priority)
             return None
         line_id = str(uuid.uuid4())
         corr = line_id
-        # The object text is the newest note (spec section 9), so the market's care term can weigh it.
-        object_text = str(sitting.get("game_title") or sitting.get("game_id") or "a game")
-        newest_note = await self._db("fetchval", NEWEST_NOTE_TEXT_SQL, sid, quiet="retro_commentary_notes_unread")
-        if newest_note:
-            object_text = f"{object_text}: {newest_note}"
-        decision = await self._bid(self._want(line_id, sid), object_text)
-        outcome = getattr(decision, "outcome", None)
-        if outcome != "funded":
-            reason = f"{outcome}:{getattr(decision, 'reason', None) or '-'}" if decision is not None else "no_answer"
-            logger.info("retro_commentary_bid_refused sitting=%s want_id=%s reason=%s", sid, line_id, reason)
-            if decision is not None:
-                await self._release(line_id)
-            return None
-        priorities = [C.POOL_PRIORITY, priority]
-        inserted = await self._db("execute", INSERT_SQL, line_id, sid, sitting.get("game_id"), line_id, corr,
-                                  _utc(self.clock()), sitting.get("player_stated"), priorities,
-                                  quiet="retro_commentary_row_failed")
-        if inserted is None:
-            await self._release(line_id)       # no row, no line: every delivered line has its row
-            return None
-        self.running = Running(line_id=line_id, sitting_id=sid, correlation_id=corr)
+        # From here a person's message yields this line (also while its bid is weighed), and the gateway bids for
+        # no look (one play call at a time).
+        run = self.running = Running(line_id=line_id, sitting_id=sid, correlation_id=corr)
         await self._set_lock(line_id)
         started = time.monotonic()
         result: dict = {"outcome": "failed", "failure": None}
+        decision = None
+        inserted = None
         try:
-            self.running.task = asyncio.ensure_future(self._line_body(sitting, line_id, corr, result, started))
-            await self.running.task
-        except asyncio.CancelledError:
-            if not (self.running and self.running.yielded):
+            # The object text is the newest note (spec section 9), so the market's care term can weigh it.
+            object_text = str(sitting.get("game_title") or sitting.get("game_id") or "a game")
+            newest_note = await self._db("fetchval", NEWEST_NOTE_TEXT_SQL, sid, quiet="retro_commentary_notes_unread")
+            if newest_note:
+                object_text = f"{object_text}: {newest_note}"
+            decision = await self._bid(self._want(line_id, sid), object_text)
+            outcome = getattr(decision, "outcome", None)
+            if outcome != "funded":
+                reason = f"{outcome}:{getattr(decision, 'reason', None) or '-'}" if decision is not None else "no_answer"
+                logger.info("retro_commentary_bid_refused sitting=%s want_id=%s reason=%s", sid, line_id, reason)
+                return
+            if run.yielded:
+                logger.info("retro_commentary_yielded_before_start line_id=%s", line_id)
+                return
+            inserted = await self._db("execute", INSERT_SQL, line_id, sid, sitting.get("game_id"), line_id, corr,
+                                      _utc(self.clock()), sitting.get("player_stated"),
+                                      [C.POOL_PRIORITY, priority], quiet="retro_commentary_row_failed")
+            if inserted is None:
+                return                         # no row, no line: every delivered line has its row
+            if run.yielded:                    # a person spoke during the insert
+                await self._db("fetchval", YIELD_SQL, line_id, "juniper_spoke", quiet="retro_commentary_yield_failed")
+                result.update(outcome="yielded", failure="yielded_before_turn")
+                return
+            task = run.task = asyncio.ensure_future(self._line_body(sitting, line_id, corr, result, started))
+            try:
+                await asyncio.wait({task})     # never raises for the line's own cancel or error
+            except asyncio.CancelledError:     # this loop itself is being stopped
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
                 raise
-            result.update(outcome="yielded", failure=result.get("failure") or "yielded")
-        except Exception as exc:  # noqa: BLE001 -- the row is still finished
-            result["failure"] = f"error:{type(exc).__name__}"
-            self._warn("retro_commentary_line_error", line_id)
+            if task.cancelled():
+                result.update(outcome="yielded" if run.yielded else "failed",
+                              failure=result.get("failure") or ("yielded" if run.yielded else "cancelled"))
+            elif task.exception() is not None:
+                result["failure"] = f"error:{type(task.exception()).__name__}"
+                logger.warning("retro_commentary_line_error line_id=%s", line_id, exc_info=task.exception())
         finally:
-            yielded = bool(self.running and self.running.yielded)
             self.running = None
             await self._clear_lock(line_id)
-            await self._release(line_id)
-            final = await self._finish_row(line_id, result, started)
-            self._last_exchange_at = max(self._last_exchange_at or 0.0, self.clock())
-            logger.info("retro_commentary_line line_id=%s sitting=%s outcome=%s failure=%s yielded=%s total_sec=%.1f",
-                        line_id, sid, final or result.get("outcome"), result.get("failure"), yielded,
-                        time.monotonic() - started)
-        return final or result.get("outcome")
+            if decision is not None:
+                await self._release(line_id)
+            final = None
+            if inserted is not None:
+                final = await self._finish_row(line_id, result, started)
+                self._last_exchange_at = max(self._last_exchange_at or 0.0, self.clock())
+                logger.info("retro_commentary_line line_id=%s sitting=%s outcome=%s failure=%s yielded=%s "
+                            "total_sec=%.1f", line_id, sid, final or result.get("outcome"), result.get("failure"),
+                            run.yielded, time.monotonic() - started)
+            out["final"] = final or (result.get("outcome") if inserted is not None else None)
+
+    async def _yield_if_spoken(self, run: Running, result: dict) -> bool:
+        """Before each costly step: a person's message (or a turn of Juniper's already running) ends the line here,
+        with its row marked yielded. True when the line must stop."""
+        if not run.yielded and self._juniper_turn_running():
+            run.yielded = True
+            await self._db("fetchval", YIELD_SQL, run.line_id, "juniper_turn_running",
+                           quiet="retro_commentary_yield_failed")
+        if run.yielded:
+            result.update(outcome="yielded", failure=result.get("failure") or "yielded")
+        return run.yielded
 
     async def _line_body(self, sitting: dict, line_id: str, corr: str, result: dict, started: float) -> None:
         sid = str(sitting["sitting_id"])
+        run = self.running
+        assert run is not None and run.line_id == line_id
         frames = await self.frames()
         if frames.get("status") != "ok" or not frames.get("frames"):
             status = str(frames.get("status") or "no_frames")
-            result.update(outcome="no_frames" if status in ("no_frames", "no_sitting") else "failed", failure=status)
+            # No ring, the sitting gone, or a look holding the frames: no turn ran (no prompt names absent frames).
+            result.update(outcome="no_frames" if status in ("no_frames", "no_sitting", "look_in_flight") else "failed",
+                          failure=status)
             return
         refs = self.attachments(frames["frames"])
         frame_times = [float(f["kept_at"]) for f in frames["frames"] if isinstance(f.get("kept_at"), (int, float))]
@@ -472,6 +512,8 @@ class CommentaryService:
 
             await publish_cockpit_frames(bus, cockpit_frames)
 
+        if await self._yield_if_spoken(run, result):
+            return
         try:
             seat_cm = self._seat(bus, line_id)
             lease = await seat_cm.__aenter__()
@@ -499,11 +541,21 @@ class CommentaryService:
         finally:
             with contextlib.suppress(Exception):
                 await seat_cm.__aexit__(type(error) if error else None, error, error.__traceback__ if error else None)
-        if self.running is not None and self.running.yielded:
+        debug = debug or {}
+        if debug.get("error") == "timeout":
+            # The Hub stopped waiting; the motor may still run on the governor. Stop it (the hold is released).
+            with contextlib.suppress(Exception):
+                await self._cancel_motor(corr)
+        if run.yielded:
             result.update(outcome="yielded", failure="yielded")
             return
         if not str(text or "").strip():
-            result.update(outcome="failed", failure=str((debug or {}).get("error") or "empty_generation"))
+            result.update(outcome="failed", failure=str(debug.get("error") or "empty_generation"))
+            return
+        staged = debug.get("staged_attachment_count")
+        if not isinstance(staged, int) or staged < len(refs):
+            # The prompt named frames the turn did not carry: neither its words nor its judgments may stand.
+            result.update(outcome="failed", failure=f"frames_not_staged:{staged}/{len(refs)}")
             return
         reply = C.parse_reply(text)
         settlements = C.settle(groups, reply.judgments, frame_times)
@@ -525,22 +577,27 @@ class CommentaryService:
         result["now_cites"] = cites
 
         async def claim() -> bool:
-            if self.running is None or self.running.yielded:
+            if run.yielded:
                 return False
-            return bool(await self._db("fetchval", CLAIM_SQL, line_id, quiet="retro_commentary_claim_failed"))
+            ok = bool(await self._db("fetchval", CLAIM_SQL, line_id, quiet="retro_commentary_claim_failed"))
+            if ok:
+                # Being said from here: a message no longer yields it, and the row keeps its words whatever follows.
+                run.claimed = True
+                result.update(outcome="delivered", failure=None, text=reply.line)
+            return ok
 
         sent = await outreach.deliver_line(text=reply.line, correlation_id=corr, source_tag=C.SOURCE, claim=claim,
                                            session_id=outreach.juniper_session_id(),
                                            model=(debug or {}).get("fcc_model_label"),
                                            push_extra=meta, meta=meta)
         if sent.get("reason") == "sent":
-            result.update(outcome="delivered", failure=None, text=reply.line, message_id=sent.get("message_id"))
+            result.update(message_id=sent.get("message_id"))
             await self._publish_act(bus, line_id=line_id, sitting_id=sid, text=reply.line)
             if cites and getattr(now_obj, "shown_id", None):
                 await self._record_use(now_obj.shown_id, f"{CITING_PREFIX}:{line_id}", cites)
         elif sent.get("reason") == "yielded":
             result.update(outcome="yielded", failure="yielded_before_delivery")
-        else:
+        elif not run.claimed:
             result.update(outcome="failed", failure=str(sent.get("reason") or "not_sent"))
 
     async def _settle(self, settlements: list, line_id: str) -> None:
@@ -570,13 +627,15 @@ class CommentaryService:
             quiet="retro_commentary_finish_failed")
 
     # --- Juniper goes first ---------------------------------------------------------------------------
-    async def yield_line(self, why: str = "juniper_spoke") -> bool:
-        """Mark the running line yielded (its row FIRST), then cancel it: the Hub task, the motor, the hold.
-        True when a line was running."""
-        run = self.running
-        if run is None:
-            return False
-        run.yielded = True
+    async def yield_line(self, why: str = "juniper_spoke", run: Optional[Running] = None) -> bool:
+        """Mark the running line yielded (in memory at once, then its row), THEN cancel it: the Hub task, the motor,
+        the hold. A line whose delivery already claimed its row is being said and is left alone. True when this
+        call yielded a line."""
+        run = run or self.running
+        if run is None or run.claimed or run.kill_started:
+            return False                 # nothing running, already being said, or already being yielded
+        run.yielded = True               # delivery's claim refuses from this instant
+        run.kill_started = True
         await self._db("fetchval", YIELD_SQL, run.line_id, why, quiet="retro_commentary_yield_failed")
         if run.task is not None and not run.task.done():
             run.task.cancel()
@@ -584,6 +643,19 @@ class CommentaryService:
             await self._cancel_motor(run.correlation_id)
         logger.info("retro_commentary_yielded line_id=%s why=%s", run.line_id, why)
         return True
+
+    def person_spoke(self) -> None:
+        """A person sent a chat message: a running line yields (its row first), in the background. Sync, never
+        raises, and called before the message's own turn awaits anything (Juniper goes first)."""
+        if not self.enabled:
+            return
+        try:
+            run = self.running
+            if run is not None and not run.claimed and not run.kill_started:
+                run.yielded = True           # at once: no claim can succeed after this line
+                self._spawn(self.yield_line("juniper_spoke", run))
+        except Exception:  # noqa: BLE001
+            self._warn("retro_commentary_person_spoke_failed")
 
     def note_human_message(self, *, surface: Optional[str] = None, player: Optional[str] = None,
                            text: Optional[str] = None) -> None:
@@ -596,8 +668,7 @@ class CommentaryService:
             self._last_exchange_at = self.clock()
             if surface == "retro" and text and str(text).strip():
                 self.recent_chat.append(("Juniper" if player == "juniper" else "The player", str(text).strip()[:300]))
-            if self.running is not None:
-                self._spawn(self.yield_line("juniper_spoke"))
+            self.person_spoke()
             sid = self._sitting_id
             if sid:
                 who = "juniper" if (player == "juniper" or surface != "retro") else "guest"

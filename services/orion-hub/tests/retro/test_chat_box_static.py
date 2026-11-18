@@ -73,6 +73,8 @@ def test_sessions_and_routing_of_pushes():
     assert 'const player=chat.player, sittingId=chat.sitting;' in JS
     # Only a line (source retro_commentary with a line_id) reaches the strip; other outreach the panel only.
     assert "if(d.source==='retro_commentary' && d.line_id)" in JS
+    # Orion's other messages are to Juniper: shown only when Juniper is the stated player.
+    assert "} else if(chat.player==='juniper') chatEntry('orion',text,{note:'Orion, unprompted'});" in JS
     assert "if(d.type==='final')" in JS
     assert 'Math.min(30000,1000*2**chat.retry++)' in JS     # reconnect with backoff
 

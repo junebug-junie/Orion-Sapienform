@@ -844,6 +844,17 @@ def _pool_state_is_fresh(state: Any) -> bool:
     return (datetime.now(timezone.utc) - generated).total_seconds() <= _POOL_STATE_MAX_AGE_SEC
 
 
+def _with_staged_count(frames: list[dict[str, Any]], staged: Any) -> list[dict[str, Any]]:
+    """Stamp the final frame with how many attachments the turn really staged (``staged`` None: the turn carried
+    none). A caller that named its attachments in the prompt (a game line: "Attached: 4 frames") checks it, so a
+    turn never stands on frames it did not carry (game company patch 3)."""
+    if staged is not None:
+        for frame in frames:
+            if isinstance(frame, dict) and frame.get("type") == "final":
+                frame["staged_attachment_count"] = len(staged)
+    return frames
+
+
 def _harness_owns_model_line(payload: dict[str, Any]) -> bool:
     """A unified turn without a lease: the harness prompt already states the default of the
     route the motor actually asks for, so the situation brief's own route-default line (always
@@ -1955,7 +1966,7 @@ async def _execute_unified_turn_body(
             "reason": run.finalize_degraded_reason,
         }
         await _finish_cockpit(run, success=True)
-        return [
+        return _with_staged_count([
             degraded_frame,
             *_success_frames(
                 run,
@@ -1964,7 +1975,7 @@ async def _execute_unified_turn_body(
                 mode_tag=mode_tag,
                 retain_fetch_text=reading_only,
             ),
-        ]
+        ], staged_attachments if staging_attempted else None)
     if not run.finalize_ran or not run.final_text:
         _log_promise_ledger_skip(promise_view, correlation_id, "harness_error")
         await _finish_cockpit(run, success=False)
@@ -1987,13 +1998,13 @@ async def _execute_unified_turn_body(
         promise_view=promise_view,
     )
     await _finish_cockpit(run, success=True)
-    return _success_frames(
+    return _with_staged_count(_success_frames(
         run,
         correlation_id=correlation_id,
         fcc_model_label=resolved_model_label,
         mode_tag=mode_tag,
         retain_fetch_text=reading_only,
-    )
+    ), staged_attachments if staging_attempted else None)
 
 
 async def _publish_unified_turn_chat_history(

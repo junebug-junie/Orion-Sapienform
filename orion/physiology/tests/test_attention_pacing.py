@@ -64,7 +64,7 @@ def test_a_strong_want_goes_late_in_the_day_and_a_weak_one_waits():
     assert 0.33 < price          # a weak want (value 0.33) waits
 
 
-def test_the_cap_is_six_paced_to_five_and_only_the_strain_report_is_exempt():
+def test_the_cap_is_six_paced_to_five_and_only_the_strain_report_and_game_lines_are_exempt():
     assert ap.JUNIPER_DAILY_CAP == 6
     assert ap.pace_budget() == 5 and ap.pace_budget(1) == 1
-    assert ap.CAP_EXEMPT_SOURCES == ("strain_report",)
+    assert ap.CAP_EXEMPT_SOURCES == ("strain_report", "retro_commentary")   # game lines: patch 3

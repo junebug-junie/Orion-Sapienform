@@ -68,7 +68,7 @@ ACTOR_DISTILL = "memory.episode_distill"
 ACTOR_PASS = "memory.supersede_pass"
 OP_SUPERSEDED = "superseded"
 OP_UNDONE = "supersede_undone"
-CHECK_VERSION = "supersede_classify.v3.1"
+CHECK_VERSION = "supersede_classify.v3.2"
 SUPERSEDE_NAMESPACE = uuid.UUID("6f1d3c52-2b8e-4f7a-9d41-3587a0c0ffee")
 
 # Candidate limits. bge-large cosines are compressed (live 2026-11-17: median pair 0.56, 90th
@@ -351,10 +351,18 @@ Second, does B itself say that A is wrong, or that A's state has since changed? 
 when B's own words say so (for example "not X", "actually", "was a mistake", "moved", "no longer",
 "sold", "now"). A different event, a different day or window, or more detail is "no".
 
+Third, is B about the SAME SPECIFIC THING as A, and the SAME ATTRIBUTE of it?
+- "same_referent": the exact same item, not just the same project, host, person or topic word: the
+  same PR or fix, the same pet, the same measured quantity over the same scope and time window.
+  A slice of a measurement (one part, one overnight window, an overhead share) and a whole total
+  are different referents. "The fix" in A and "nothing is deployed" in B are the same referent
+  only when B names that same fix or PR. If B could be about a different item, answer "no".
+- "same_attribute": the same property of that item (species, home town, count, deployed or not).
+
 Then pick exactly one relation:
 - "correction": B says A was wrong from the start: a different value for the same attribute of
-  the same thing, for the same time or occasion.
-- "update": A was a lasting state, and B says that same attribute of the same thing has since
+  the same specific referent, for the same time or occasion.
+- "update": A was a lasting state, and B says that same attribute of the same referent has since
   changed for good.
 - "refine": B adds detail to A or narrows it; both stay true.
 - "compatible": both can be true, each at its own date. Examples: a trip or visit versus where
@@ -363,7 +371,7 @@ Then pick exactly one relation:
 - "unrelated": different things that only share a word, a name, or a topic.
 
 Reply with one JSON object and nothing else:
-{{"a_kind": "<one of the six kinds>", "b_says_a_wrong_or_changed": "yes" or "no", "same_attribute": "yes" or "no", "relation": "<one of the five>", "confidence": <0.0 to 1.0>, "reason": "<one short sentence>"}}
+{{"a_kind": "<one of the six kinds>", "b_says_a_wrong_or_changed": "yes" or "no", "same_referent": "yes" or "no", "same_attribute": "yes" or "no", "relation": "<one of the five>", "confidence": <0.0 to 1.0>, "reason": "<one short sentence>"}}
 """
 
 
@@ -380,6 +388,10 @@ class Vote:
     error: Optional[str] = None
     a_kind: Optional[str] = None
     b_says_changed: Optional[bool] = None
+    # Same specific item, not just a shared project/host/topic word (v3.2, 2026-11-18: Juniper
+    # rejected two unanimous v3.1 "corrections": an overnight overhead slice vs whole-host totals,
+    # and one fix's deploy vs a different fix two weeks later).
+    same_referent: Optional[bool] = None
 
     @property
     def acting(self) -> bool:
@@ -387,14 +399,14 @@ class Vote:
         wrong or changed, and A is a kind of thing that relation can retire."""
         if self.error is not None or self.relation not in ACTING_RELATIONS:
             return False
-        if self.same_attribute is not True or self.b_says_changed is not True:
+        if self.same_attribute is not True or self.b_says_changed is not True or self.same_referent is not True:
             return False
         kinds = UPDATABLE_KINDS if self.relation == REL_UPDATE else CORRECTABLE_KINDS
         return self.a_kind in kinds
 
     def audit(self) -> dict[str, Any]:
         return {"relation": self.relation, "same_attribute": self.same_attribute, "a_kind": self.a_kind,
-                "b_says_changed": self.b_says_changed, "confidence": round(self.confidence, 3),
+                "b_says_changed": self.b_says_changed, "same_referent": self.same_referent, "confidence": round(self.confidence, 3),
                 "reason": self.reason, "error": self.error}
 
 
@@ -420,7 +432,7 @@ def parse_vote(text: str) -> Vote:
     # A malformed checklist field is not an error: such a vote can never act (Vote.acting needs a
     # known kind and a yes), so it abstains without holding the rest of the plan.
     return Vote(rel, same, conf, reason, a_kind=kind if kind in A_KINDS else None,
-                b_says_changed=changed)
+                b_says_changed=changed, same_referent=_yes(data.get("same_referent")))
 
 
 @dataclass(frozen=True)

@@ -17,7 +17,8 @@ Real items (``build``):
 - positives: Juniper's own confirmation-loop revisions (``episode_memory_event`` op ``revised``,
   actor ``juniper``): the revised row against her new wording. Judged by the classifier alone
   (``apply_rules`` false), since the old row's live state is already retired.
-- hard negatives: the watched rows in the supersede manifest (trip rows against the home
+- hard negatives: pairs someone undid after an apply (``supersede_undone``: Juniper's own
+  rejection); the watched rows in the supersede manifest (trip rows against the home
   correction; the pet rows against the pet-species correction, which the open-ask rule protects);
   pairs the 2026-11-17 dry run vetoed (first question sure-yes, second said both true); and
   near-duplicates (cosine >= 0.85, a quarter of their words shared, first question said no).
@@ -60,6 +61,16 @@ DEFAULT_MANIFEST = Path("/mnt/orion-fcc/notes/memory_supersede_pass_manifest.jso
 DEFAULT_CHECKS = EVAL_DIR / "supersede_v2_checks_2026-11-17.csv"
 PRODUCTION_ROUTE = S.EVAL_ROUTE
 SEEN_MODELS: set[str] = set()   # model ids the gateway reported for the route during this run
+# The rows #3587/#3660 watch (ids only, already public in those issues). The live manifest is
+# rewritten by every pass run and may carry no --watch list, so the set never depends on it.
+WATCHED_DEFAULT = {
+    "trip_row_1": "4df8e60e-4c07-5685-8b1a-ef6239e6795f",
+    "trip_row_2": "ac963bc8-2f8d-5b4a-8229-e4e6a83395e3",
+    "home_correction": "c0dc86c8-26b6-5468-9928-be9376394b59",
+    "pet_row_1": "8b51d185-8c9e-5a64-96d8-e9ad83e16fa5",
+    "pet_row_2": "da376c17-529e-5dd1-a31d-b7d863ee5291",
+    "pet_species_correction": "357bf161-f706-57c6-910b-4ad88c5c7910",
+}
 NEAR_DUP_COSINE = 0.85
 NEAR_DUP_JACCARD = 0.25  # hand-checked 2026-11-18: the 6 pairs this admits are different events on one topic
 
@@ -69,6 +80,10 @@ SELECT m.memory_id::text AS memory_id, m.statement, m.purpose, m.created_at, m.o
        (m.voice = 'juniper_said' AND EXISTS (SELECT 1 FROM episode_memory_evidence e
             WHERE e.memory_id = m.memory_id AND e.source_kind = 'chat_prompt' AND e.verified)) AS juniper_quoted
 FROM episode_memory m WHERE m.memory_id = ANY(%s::uuid[])
+"""
+UNDONE_SQL = """
+SELECT DISTINCT memory_id::text AS old_id, evidence->>'superseded_by' AS new_id
+FROM episode_memory_event WHERE op = 'supersede_undone' AND evidence->>'superseded_by' IS NOT NULL
 """
 REVISIONS_SQL = """
 SELECT e.memory_id::text AS old_id, n.memory_id::text AS new_id, e.evidence->>'prior_confirmation_state' AS prior
@@ -123,9 +138,9 @@ async def cmd_build(args: argparse.Namespace) -> int:
     import psycopg
     from psycopg.rows import dict_row
 
-    watch = {}
+    watch = dict(WATCHED_DEFAULT)   # ids only; a manifest's own watch list overrides
     if Path(args.manifest).exists():
-        for w in json.loads(Path(args.manifest).read_text()).get("watched", []):
+        for w in json.loads(Path(args.manifest).read_text()).get("watched", []) or []:
             watch[w["label"]] = w["memory_id"]
     checks = list(csv.DictReader(Path(args.checks).open())) if Path(args.checks).exists() else []
     items: list[EvalItem] = []
@@ -161,6 +176,16 @@ async def cmd_build(args: argparse.Namespace) -> int:
                 items.append(_item(f"watch:{label}", source, "no_act", "compatible", True, old, new, apply_rules=True))
 
         checks = [c for c in checks if "corrects" in c and "both_true" in c]   # v2-format rows only
+        # Pairs a person put back after an apply (op supersede_undone): Juniper's own "this was wrong".
+        # 2026-11-18: both v3.1 dry-run proposals, rejected by her and undone. Hard negatives.
+        undone = await (await conn.execute(UNDONE_SQL)).fetchall()
+        got = await rows([u["old_id"] for u in undone] + [u["new_id"] for u in undone])
+        for u in undone:
+            if u["old_id"] in got and u["new_id"] in got:
+                items.append(_item(f"undone:{u['old_id'][:8]}:{u['new_id'][:8]}", "undone_by_juniper", "no_act",
+                                   "compatible", True, _row_from_db(got[u["old_id"]]), _row_from_db(got[u["new_id"]]),
+                                   apply_rules=False))
+
         vetoed = [c for c in checks if c.get("corrects") == "True" and c.get("sure") == "True"
                   and c.get("accepted") != "True" and c.get("both_true") == "True"]
         near = [c for c in checks if c.get("corrects") == "False" and c.get("dense")

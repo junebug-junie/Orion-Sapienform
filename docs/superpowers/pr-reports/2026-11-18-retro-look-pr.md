@@ -5,7 +5,7 @@ Juniper's go: 2026-11-18 ("hit it"). Patch 1 (the sitting record): PR #3627.
 
 **Merge order: this branch is built on `docs/game-company-round3` (PR #3632, spec rev 4). Merge #3632 first, then rebase this branch onto `main`.**
 
-Nothing in this PR has run live. Every runtime claim below is UNVERIFIED until the live check (#ISSUE_LIVE) closes.
+Nothing in this PR has run live. Every runtime claim below is UNVERIFIED until the live check (#3726) closes.
 
 ## Summary
 
@@ -93,13 +93,38 @@ After (once deployed): each changed, played minute can give Orion one note of wh
 ## Tests run
 
 ```text
-TESTS_PLACEHOLDER
+tests/retro (repo) + orion/dig/tests + orion/temporal_self + test_route_view     670 passed
+services/orion-hub tests/retro + test_retro_watch_service + test_retro_frames     295 passed
+services/orion-hub test_retro_watch_pg + test_retro_sitting_pg + test_retro_memory_export_pg
+  against a throwaway Postgres 16                                                  3 passed
+services/orion-durable-runs -k "temporal or chronicle or retro"                   64 passed, 20 skipped
+services/orion-durable-runs test_temporal_self_chronicle_postgres (throwaway PG)  17 passed
+services/orion-llm-gateway test_anthropic_passthrough                              25 passed
+whole services/orion-hub/tests folder                                              5047 passed, 5 failed, 4 errors
+  (the 5 + 4, checked one by one: 3 need the repo root as cwd and pass from there; test_fcc_model_labels_api
+   reads ~/.fcc/.env (permission denied on this host); test_consult_belief_store_sql needs its own database.
+   The one real failure, test_orion_abilities_catalog (dig watch had no entry), is fixed.)
+all 44 commands of .github/workflows/orion-static-gates.yml, run locally: 1 failed (contract YAML), fixed, re-run OK
+check_integration_seam --base origin/main: OK; env template parity: PASS; check_settings_defaults orion-hub: OK;
+check_migration_required_by: OK; check_gpu_pool_config: ok; check_body_economy_contract: OK
+post-pull migration classifier (dry run, live DB, read-only): manual_migration_retro_watch_v2.sql "would apply"
+git diff --check: clean
 ```
 
 ## Evals run
 
 ```text
-EVALS_PLACEHOLDER
+python services/orion-hub/evals/retro_look_replay.py    (private kit present on athena)
+  Part 1, calibration rule on the fixture's values:
+    a-link-to-the-past: 22 input / 2 no-input; 30 s window floor 0.00022; 2 s step: no floor
+    crystalis: 5 / 5; no floor on either (one "still" sequence at 0.667, unexplained in step 0)
+    the-legend-of-zelda-prg1: 5 / 5; no floor on either (matches the spec's finding)
+  Part 2, frames through the engine's packer and the shipping decoder: 44 of 44 sequences
+    reproduce the fixture's numbers within 0.002
+  Fixture headline beside it (not re-run: needs the live chat lane): 9 of 10 place and action right, 4 wrong detail
+  Without the kit (ORION_RETRO_WATCH_KIT=/nonexistent): Part 2 SKIPPED, said plainly.
+python services/orion-hub/evals/retro_play_panel.py       PASS (real browser; new: the watch line says
+  "No looks for this game yet" with no database, and Juniper's switch starts on)
 ```
 
 ## Docker/build/smoke checks
@@ -111,7 +136,21 @@ The new SQL (migration twice, every statement the watch and `dig watch status` s
 
 ## Review findings fixed
 
-REVIEW_PLACEHOLDER
+A read-only review ran in a subagent on `origin/docs/game-company-round3...HEAD`. 1 must-fix, 6 should-fix, 5 nits; all fixed except the GIN index (bounded by time instead).
+
+- Finding (must-fix): a blind or failed-fetch lane answers with an "[Error: ...]" TEXT and `raw.vision.status`, not `raw.error`, so that text would have been stored as a note.
+  - Fix: a note is stored only when `raw.vision.status == "attached"`; any "[Error:" text fails the look.
+  - Evidence: `test_a_look_the_model_could_not_see_stores_no_note` (5 reply shapes, incl. the gateway's real one).
+- Finding: only `LookFailed` was caught at the grant; a bus or HTTP error left no row and an act never closed.
+  - Fix: any error is a failed look with its row and act close. Evidence: `test_an_unexpected_error_mid_look_still_writes_the_row_and_closes_the_act`.
+- Finding: the switch failed open at start (mode "on" before the first read), and a failed copy of Orion's choice still computed a mode.
+  - Fix: no bid until one read of both sides succeeded; a failed copy keeps the last mode. Evidence: `test_no_look_until_both_sides_of_the_switch_were_read`, `test_a_database_blip_keeps_the_last_mode`.
+- Finding: shutdown waited for a look (up to ~90 s) inside an 8 s bound, losing the counters.
+  - Fix: `close()` cancels the look (its finally blocks release the hold and the want), waits at most 3 s, then flushes.
+- Finding: decode and PNG ran on the relay's event loop. Fix: one worker thread per look.
+- Finding: the "looking" flag was per sitting, so a sitting change could start a second look and a second hold. Fix: one look task for the service.
+- Finding: a choice copied before its close event landed kept no words forever. Fix: the copy fills `why` later (`ON CONFLICT ... COALESCE`), and such acts are read again.
+- Nits fixed: recovered sittings the watch never saw write `looks` NULL; Juniper's switch read is her newest row only; the expiry update looks back 2 hours only; a ring reset is logged (at most once a minute); a funded look whose bus failed counts as a failed look.
 
 ## Restart required
 
@@ -127,10 +166,10 @@ docker exec -i orion-athena-sql-db psql -U postgres -d conjourney -f - < scripts
 - Severity: medium. Concern: no game has a floor until 30 minutes of its play are measured, and a fixed-screen game may never get one. Mitigation: by design (spec rev 4); the page says so; `under_floor_with_input` counts likely misses.
 - Severity: low. Concern: the spec says `deferrable_window_s: 0`; `families.py` refuses 0 for a bidding family, so it is 60 (one look interval). The producer still never holds a want.
 - Severity: low. Concern: `dig watch status` needs the new read grant (want_ledger included) to print refusals; until it is applied it names the missing GRANT.
-- Issues opened: ISSUES_PLACEHOLDER. Issues closed: none.
+- Issues opened: #3726 (verify-live). Issues closed: none.
 
 ## PR link
 
-PR_PLACEHOLDER
+(set after `gh pr create`)
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

@@ -507,7 +507,7 @@ same `PREDICTION_TICK_SEC`). Since #3575 (2026-11-18) its body and room joint gr
   The single-series loop's numpy calls run on the same 4 threads.
 - The self-monitor does not grade `family_a:` reading rows yet (`orion/self_monitor/collect.py`).
 - **Joint groups** (#3575 / #3580): every input has a `group` in the config (`body`: machines, cabinet,
-  closet, AC, office temp; `room`: office eCO2/TVOC, PM2.5, lux, sound, humidity -- classified by cause).
+  closet, AC, office temp; `room`: office eCO2/TVOC, PM2.5, lux, humidity -- classified by cause; `none`: office sound, blend only until #3581 fixes the meter).
   Select fits each group's own covariance, static and adaptive calibration tails on the same residuals
   (`metrics[h]["groups"]`; a group with no target or a pool under 200 rows is skipped, `groups_skipped`).
   Issue writes one more joint row per group per horizon (`family = 'family_a_body' / 'family_a_room'`,

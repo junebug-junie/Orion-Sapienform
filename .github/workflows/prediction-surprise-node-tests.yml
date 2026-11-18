@@ -58,6 +58,7 @@ jobs:
             orion/substrate/tests/test_prediction_joint_surprise.py \
             orion/substrate/tests/test_endogenous_curiosity.py \
             tests/test_attention_world_first.py \
+            tests/test_room_joint_world_source.py \
             tests/test_attention_self_readings.py
       - name: Runtime wiring (listener, node write, PE history)
         env:

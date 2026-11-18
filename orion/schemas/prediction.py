@@ -159,7 +159,7 @@ class PredictionJointSurpriseV1(BaseModel):
     """One scored joint-group bucket of family A (every raw body / room reading forecast at once), as surprise.
 
     ``group`` (config/prediction/family_a.v1.yaml, #3580): ``body`` = Orion's machines, cabinet, closet, AC and
-    office temp; ``room`` = office air, light and sound (a world source). ``d2`` = squared Mahalanobis miss of
+    office temp; ``room`` = office air and light, sound after #3581 (a world source). ``d2`` = squared Mahalanobis miss of
     the group's readings under the group's residual covariance: misses on coupled readings count once.
     ``p`` = adaptive conformal p of d^2 (scaled by the hour-before difficulty) against ``n_cal`` calibration
     rows; ``excess`` = -ln p - ``calm_point`` (E[-ln p] for a uniform p on that grid), 0 on average when the

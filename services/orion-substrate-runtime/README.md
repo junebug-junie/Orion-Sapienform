@@ -445,7 +445,7 @@ hints over a fixed 0.30 scale, not a forecast).
 - Listens on `orion:prediction:joint_surprise` (`prediction.joint_surprise.v1` from orion-prediction,
   one per scored family A joint-group bucket with the adaptive p;
   `services/orion-prediction/app/family_a_live.py`). Groups (#3580): body = machines, cabinet,
-  closet, AC, office temp; room = office eCO2, PM2.5, lux, sound, humidity.
+  closet, AC, office temp; room = office eCO2, PM2.5, lux, humidity (sound after #3581).
 - Folds the last 30 min of independent outcomes per group
   (`orion/substrate/prediction_joint_surprise.py`): summed excess over its calm variance
   (Var of -ln p for a uniform conformal p, about 1.0), stored as `clip(z / 3, 0, 1)`. Coupled

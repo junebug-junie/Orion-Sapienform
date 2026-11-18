@@ -87,7 +87,7 @@ NO_CURIOSITY_CONSUMER_NODE_IDS: frozenset[str] = frozenset({STREET_NODE_ID})
 ATTENTION_MIN_BAND_BY_NODE_ID: dict[str, str] = {PERCEPTION_WALKWAY_NODE_ID: "unusual"}
 
 # Family A room joint surprise (#3575; Juniper's #3580 decision, 2026-11-17): office eCO2, PM2.5,
-# lux, sound and humidity forecast together, scored as one joint miss. Their causes are people,
+# lux and humidity (sound once #3581 fixes the meter) forecast together, scored as one joint miss. Their causes are people,
 # windows, time of day and weather, so the node is WORLD: it can author a goal that permits the
 # readonly fetch/recall acts (requires_world_goal) and the body-only gates skip it. Office temp
 # stays body (node:prediction.body_joint) until family C measures Orion's share of it.

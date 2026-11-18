@@ -601,3 +601,38 @@ def test_a_run_without_groups_scores_its_old_group_rows_missing_not_with_another
     fresh.score(now + timedelta(minutes=30))
     room = [j for j in live.store.joints if j["family"] == "family_a_room"]
     assert room and all(j["status"] == "missing" and j["calibration"] == "no_group" for j in room)
+
+
+def test_an_input_in_no_group_is_scored_in_the_blend_only():
+    """office sound (#3581): forecast, scored in the blend, never in a group's joint."""
+    cfg = _cfg()
+    cfg = fa.FamilyAConfig(grain_min=cfg.grain_min, horizons_min=cfg.horizons_min, hygiene=cfg.hygiene,
+                           inputs=(fa.InputSpec(id="s.x", unit="C", source=cfg.inputs[0].source, group="body"),
+                                   fa.InputSpec(id="s.y", unit="W", source=cfg.inputs[1].source, group=fa.NO_GROUP)))
+    live = fl.FamilyALive(fl.MemoryStore(), cfg, Recording(_frame()), settle_sec=60, select_interval_sec=6 * 3600,
+                          seeds=(0, 1), train_days=7)
+    now = DAY7 + timedelta(minutes=6)
+    live.tick(now)
+    for _ in range(3):
+        now += G
+        live.tick(now)
+    champ = next(r for r in live.store.runs if r["kind"] == "champion_blend")
+    assert {g: v["targets"] for g, v in champ["metrics"]["5"]["groups"].items()} == {"body": ["s.x"]}
+    assert champ["metrics"]["5"]["groups_skipped"] == {"room": "no_targets"}
+    assert "s.y" in champ["metrics"]["5"]["targets"]                    # still forecast, still in the blend
+    assert {j["family"] for j in live.store.joints} == {fl.FAMILY, "family_a_body"}
+
+
+def test_the_config_rejects_an_unclassified_input():
+    from tests.test_family_a import CONFIG_PATH
+    import yaml
+
+    doc = yaml.safe_load(CONFIG_PATH.read_text())
+    doc["inputs"] = [{"id": "s.x", "unit": "C", "source": {"table": "biometrics", "node": "n", "key": "x"}}]
+    with pytest.raises(fa.FamilyAConfigError, match="group"):
+        fa.parse_config(doc)
+    live_cfg = fa.parse_config(yaml.safe_load(CONFIG_PATH.read_text()))
+    assert live_cfg.group_of("office.sound_dba") == fa.NO_GROUP            # until #3581
+    assert live_cfg.group_of("office.temp_c") == "body"                    # until family C measures Orion's share
+    assert {i.id for i in live_cfg.inputs if i.group == "room"} == {
+        "office.humidity_pct", "office.eco2_ppm", "office.tvoc_ppb", "office.pm25_ug_m3", "office.lux"}

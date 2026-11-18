@@ -11,7 +11,7 @@ one miss, not one per reading), an adaptive conformal p, and ``excess = -ln p - 
 one ``prediction.joint_surprise.v1`` per scored group row:
 
 - ``body`` -> ``node:prediction.body_joint``: machines, cabinet, closet, AC, office temp. A body signal.
-- ``room`` -> ``node:prediction.room_joint``: office eCO2, PM2.5, lux, sound, humidity. A WORLD signal
+- ``room`` -> ``node:prediction.room_joint``: office eCO2, PM2.5, lux, humidity (sound joins after #3581). A WORLD signal
   (``orion/schemas/attention_candidate.py`` ``_WORLD_NODE_IDS``).
 
 Aggregation (the node's value), same shape as ``node:prediction.room`` / ``.body``

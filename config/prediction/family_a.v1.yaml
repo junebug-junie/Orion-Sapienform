@@ -9,8 +9,9 @@
 # and published as prediction.joint_surprise.v1 -> node:prediction.body_joint / node:prediction.room_joint.
 # Classified by CAUSE: body = Orion's machines, cabinet, closet (circe/hecate exhaust) and the cabinet AC,
 # plus office temp (mixed: Orion's exhaust + house heat + weather; stays body until family C measures
-# Orion's share of it). room = office eCO2/TVOC, PM2.5, lux, sound, humidity (people, windows, time of day,
-# weather), a WORLD source. Covariates feed every forecast whatever their group; groups only split scoring.
+# Orion's share of it). room = office eCO2/TVOC, PM2.5, lux, humidity, and sound once fixed (people, windows, time of day,
+# weather), a WORLD source. none = in the blend only (office sound until #3581 fixes the meter). Covariates
+# feed every forecast whatever their group; groups only split scoring.
 #
 # Raw readings in real units only. app/family_a.py refuses any source outside the five raw tables
 # below and any key that names a hint channel (*_pressure, prediction_error*, action_warrant, ...).
@@ -97,7 +98,9 @@ inputs:
   - {id: office.tvoc_ppb, group: room, unit: ppb, source: {table: office_env, node: pan-1, key: office_tvoc_ppb}}
   - {id: office.pm25_ug_m3, group: room, unit: ug/m3, source: {table: office_env, node: pan-1, key: office_pm25_ug_m3}}
   - {id: office.lux, group: room, unit: lux, source: {table: office_env, node: pan-1, key: office_lux}}
-  - {id: office.sound_dba, group: room, unit: dBA, source: {table: office_env, node: pan-1, key: office_sound_dba}}
+  # group none until #3581: the meter reads 75-81 dBA in a quiet office. Scored in the blend only; it joins
+  # room when the meter is fixed (Juniper, #3575 scope, 2026-11-17).
+  - {id: office.sound_dba, group: none, unit: dBA, source: {table: office_env, node: pan-1, key: office_sound_dba}}
   # --- server closet (pan-1: SCD40, real CO2) ---
   - {id: closet.co2_ppm, group: body, unit: ppm, source: {table: closet_env, node: pan-1, key: closet_co2_ppm}}
   - {id: closet.temp_c, group: body, unit: C, source: {table: closet_env, node: pan-1, key: closet_temp_c}}

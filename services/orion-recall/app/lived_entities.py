@@ -6,22 +6,27 @@ name a known entity?
 
 Known entities come from Orion's own stores, never from a hand-written list:
 
-- **Referents** (``episode_memory_referent``): the referent key's slug ("project:hecate" ->
-  "hecate") and every name-class alias of it (``referent_alias``), for entity types only
-  (``ENTITY_TYPES``: people, pets, places, projects, services, hosts, past events). Concepts,
-  files and PR numbers are topics, not entities, and are left out.
-- **People** (``person``): active display names, except the two participants (role ``self``
-  and ``interlocutor``). For people and pets the first name alone also counts.
+- **Referents** (``episode_memory_referent``): every name-class alias (``referent_alias``) of a
+  referent of an entity type (``ENTITY_TYPES``: people, pets, places, projects, services, hosts,
+  past events). Concepts, files and PR numbers are topics, not entities, and are left out. The
+  key's slug is not a name on its own ("project:curiosity" would make "out of curiosity" an
+  entity): only what the distiller wrote down as a name counts.
+- **People** (``person``): active display names. A display name that is a proper name (two or
+  more words, each capitalized) also counts by its first word; a role-like name ("Mail carrier")
+  does not.
 
-Junk filters (the same rules link-following uses, ``lived_links.usable_name``): an alias needs 4+
-characters and a letter, and is not a function word. A referent on more than ``HUB_MAX_DEGREE``
-memories is a hub (the two participants): naming it says nothing about which memory fits, and
-"thanks Orion" must not search.
+The two participants never count, so "thanks Orion" does not search: the ``person`` rows with
+role ``self`` and ``interlocutor``, every referent that has one of their names as a key slug or
+alias, and their first names as anyone's name. Only when no participant row can be read does a
+degree backstop apply instead (a referent on more than ``HUB_MAX_DEGREE`` memories is left out).
+
+Junk filters (the same rules link-following uses, ``lived_links.usable_name``): a name needs 4+
+characters and a letter, and is not a function word.
 """
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Any, Dict, Iterable, Set, Tuple
+from typing import Any, Dict, Iterable, List, Set, Tuple
 
 from .lived_links import HUB_MAX_DEGREE, normalize, usable_name
 
@@ -59,6 +64,16 @@ def _entity_type(referent_key: str) -> str:
     return referent_key.split(":", 1)[0] if ":" in referent_key else ""
 
 
+def _first(name: str) -> str:
+    return name.split(" ", 1)[0] if name else ""
+
+
+def is_proper_name(display: str) -> bool:
+    """Two or more words, each starting with a capital letter ("Ada Lovelace", not "Mail carrier")."""
+    words = str(display or "").split()
+    return len(words) >= 2 and all(w[:1].isupper() for w in words)
+
+
 class EntityIndex:
     """Whole-word name lookup: ``mentions(text)`` -> the entity keys named in ``text``."""
 
@@ -67,40 +82,42 @@ class EntityIndex:
                  persons: Iterable[Tuple[str, str]] = (), *,
                  hub_max_degree: int = HUB_MAX_DEGREE) -> None:
         self.names: Dict[str, Set[str]] = defaultdict(set)
-        aliases = list(aliases)
-        persons = list(persons)
-        keep: Set[str] = set()
-        hubs: Set[str] = set()
-        for key, n in referent_degrees:
-            key = str(key or "")
-            if int(n or 0) > hub_max_degree:
-                hubs.add(key)
-            elif _entity_type(key) in ENTITY_TYPES and int(n or 0) > 0:
-                keep.add(key)
-        # A participant's or hub's name never counts, even as another entity's first word
-        # ("<participant> sister" must not make the participant's own name a trigger).
-        self.blocked: Set[str] = {_slug_name(k) for k in hubs}
-        self.blocked |= {normalize(a) for a, k in aliases if str(k or "") in hubs}
-        self.blocked |= {normalize(d) for d, role in persons if str(role or "") in PARTICIPANT_ROLES}
-        self.blocked |= {b.split(" ", 1)[0] for b in list(self.blocked) if b}
-        for key in keep:
-            self._add(_slug_name(key), key, first_name=_entity_type(key) in FIRST_NAME_TYPES)
+        degrees = [(str(k or ""), int(n or 0)) for k, n in referent_degrees]
+        aliases = [(normalize(a), str(k or "")) for a, k in aliases]
+        persons = [(str(d or ""), str(r or "")) for d, r in persons]
+        names_of: Dict[str, Set[str]] = defaultdict(set)
         for alias, key in aliases:
-            key = str(key or "")
+            names_of[key].add(alias)
+
+        participants = {normalize(d) for d, role in persons if role in PARTICIPANT_ROLES}
+        participants.discard("")
+        # A participant's name, and its first word, is never anyone's name.
+        self.blocked: Set[str] = participants | {_first(p) for p in participants}
+        if participants:
+            excluded = {k for k, _n in degrees
+                        if _slug_name(k) in self.blocked or names_of.get(k, set()) & self.blocked}
+        else:
+            # No participant rows readable: fall back to "too many memories to say anything".
+            excluded = {k for k, n in degrees if n > hub_max_degree}
+            self.blocked |= {_slug_name(k) for k in excluded} | {a for k in excluded for a in names_of.get(k, ())}
+            self.blocked |= {_first(b) for b in list(self.blocked)}
+
+        keep = {k for k, n in degrees if n > 0 and _entity_type(k) in ENTITY_TYPES and k not in excluded}
+        for alias, key in aliases:
             if key in keep:
                 self._add(alias, key, first_name=_entity_type(key) in FIRST_NAME_TYPES)
         for display, role in persons:
-            if str(role or "") in PARTICIPANT_ROLES:
+            if role in PARTICIPANT_ROLES:
                 continue
             full = normalize(display)
-            self._add(full, f"person_name:{full}", first_name=True)
+            self._add(full, f"person_name:{full}", first_name=is_proper_name(display))
 
     def _add(self, alias: str, key: str, *, first_name: bool = False) -> None:
         name = normalize(alias)
         if usable_name(name) and name not in self.blocked:
             self.names[name].add(key)
         # People are called by their first name: "Ada" for a person named "Ada Lovelace".
-        first = name.split(" ", 1)[0] if first_name and name else ""
+        first = _first(name) if first_name else ""
         if first and first != name and usable_name(first) and first not in self.blocked:
             self.names[first].add(key)
 
@@ -123,10 +140,11 @@ class EntityIndex:
 
 
 async def load_entities(pool: Any) -> EntityIndex:
-    degrees = [(str(r["referent_key"]), int(r["n"])) for r in await pool.fetch(REFERENT_DEGREE_SQL)]
+    degrees: List[Tuple[str, int]] = [(str(r["referent_key"]), int(r["n"]))
+                                      for r in await pool.fetch(REFERENT_DEGREE_SQL)]
     aliases = [(str(r["alias"]), str(r["referent_key"])) for r in await pool.fetch(REFERENT_ALIASES_SQL)]
     persons = [(str(r["display_name"]), str(r["role"])) for r in await pool.fetch(PERSON_NAMES_SQL)]
     return EntityIndex(degrees, aliases, persons)
 
 
-__all__ = ["ENTITY_TYPES", "EntityIndex", "PARTICIPANT_ROLES", "load_entities"]
+__all__ = ["ENTITY_TYPES", "EntityIndex", "PARTICIPANT_ROLES", "is_proper_name", "load_entities"]

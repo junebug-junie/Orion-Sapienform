@@ -58,7 +58,9 @@ the content-word floor, always searched) · `short_entity` (short, names a known
 `short_rewrite` (short; the short-message rewrite asked for a search: searched) · `short_none`
 (short; no entity, and the rewrite said NONE, failed or timed out: not searched, status
 `skipped_short`) · `short_no_content` (no content word at all, "ok" / "thanks!": not searched, not
-rewritten, status `skipped_short`). `lived_status` keeps the outcome, so a short message that
+rewritten, status `skipped_short`) · `short_off` (short, gate switched off: the plain floor).
+`lived_trace.rewrite_entities` counts the known entities the short-message searches named.
+`lived_status` keeps the outcome, so a short message that
 searched reads e.g. `ok` + gate `short_entity`.
 
 Count the calls that could produce a false "no memory" on Hub turns:
@@ -1052,12 +1054,14 @@ message on average, lived-memory time p50 1.4 s / p90 2.5 s (overlapped with the
 **Short-message gate** (issue #3613, `RECALL_LIVED_MEMORY_SHORT_GATE_ENABLED`, default on; false =
 the plain floor). A message under the floor searches when it carries signal:
 
-1. it names a known entity (`app/lived_entities.py`): a referent of `episode_memory_referent` of
-   an entity type (person, pet, place, project, service, host, past event) by its key or a
-   name-class `referent_alias`, or an active `person` display name (people and pets by first name
-   too). Concepts, files and PR numbers are not entities. Hubs (a referent on more than 30
-   memories) and the two participants (`person.role` self / interlocutor) never count, so "thanks
-   Orion" does not search; or
+1. it names a known entity (`app/lived_entities.py`): a name-class `referent_alias` of a referent
+   of an entity type (person, pet, place, project, service, host, past event), or an active
+   `person` display name. People and pets also count by first name, but only when the display
+   name is a proper name ("Mail carrier" does not make "mail" a name). Concepts, files, PR numbers
+   and bare key slugs ("project:curiosity") are not entity names. The two participants
+   (`person.role` self / interlocutor) never count, nor any referent carrying their name, so
+   "thanks Orion" does not search. If the participant rows cannot be read, a referent on more than
+   30 memories is left out instead. A failed reload keeps the last good index; or
 2. the short-message rewrite (`SHORT_PROMPT`, same fast lane) writes searches. It asks whether a
    good reply needs something from before this conversation (Self-RAG's retrieve step) and tells
    the model that a reply the recent conversation already answers needs none. NONE, an error or a

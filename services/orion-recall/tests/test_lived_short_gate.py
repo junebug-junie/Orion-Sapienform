@@ -43,12 +43,14 @@ VESPER = _row("v1", "The vesper box ran hot all night and Juniper moved it to th
 PROMO = _row("p1", "Juniper was promoted to team lead at work in October.")
 OFFICE = _row("o1", "The office was loud all evening.")
 
-DEGREES = [("project:vesper", 3), ("person:pickle-moss", 2), ("person:juniper", 90), ("person:orion", 40),
-           ("concept:attention-work", 4), ("pr:1234", 1), ("person:juniper-sister", 1)]
+# The participant "orion" sits on only 12 memories (not a hub), so only its identity can block it.
+DEGREES = [("project:vesper", 3), ("person:pickle-moss", 2), ("person:juniper", 90), ("person:orion", 12),
+           ("concept:attention-work", 4), ("pr:1234", 1), ("person:juniper-sister", 1), ("project:curiosity", 5)]
 ALIASES = [("vesper", "project:vesper"), ("the vesper box", "project:vesper"), ("pickle moss", "person:pickle-moss"),
-           ("juniper", "person:juniper"), ("orion", "person:orion"), ("attention work", "concept:attention-work"),
-           ("that", "project:vesper"), ("1234", "pr:1234")]
-PERSONS = [("Juniper Example", "interlocutor"), ("Orion", "self"), ("Rowan Vale", "other")]
+           ("juniper", "person:juniper"), ("orion", "person:orion"), ("or on", "person:orion"),
+           ("attention work", "concept:attention-work"), ("that", "project:vesper"), ("1234", "pr:1234"),
+           ("juniper sister", "person:juniper-sister")]
+PERSONS = [("Juniper", "interlocutor"), ("Orion", "self"), ("Rowan Vale", "other"), ("Mail carrier", "other")]
 
 
 class Pool:
@@ -133,15 +135,29 @@ def test_entity_index_names_entities_from_the_stores_and_drops_junk():
     assert ix.mentions("how is Pickle Moss doing") == {"person:pickle-moss"}
     assert ix.mentions("did Pickle eat?") == {"person:pickle-moss"}           # first name of a person referent
     assert ix.mentions("any news from Rowan?") == {"person_name:rowan vale"}  # person table, first name
-    # Participants and hubs never count, not even through another entity's first word.
+    # A role-like display name counts whole, never by its first word.
+    assert ix.mentions("check the mail") == set()
+    assert ix.mentions("the mail carrier came") == {"person_name:mail carrier"}
+    # A key slug with no name alias is not a name ("project:curiosity").
+    assert ix.mentions("just out of curiosity") == set()
+    # Participants never count: not by name, not by another alias of theirs, not as another
+    # entity's first word ("juniper sister" still counts whole).
     assert ix.mentions("thanks Orion") == set()
+    assert ix.mentions("turn it or on") == set()
     assert ix.mentions("juniper here") == set()
+    assert ix.mentions("my juniper sister called") == {"person:juniper-sister"}
     # Topics, PR numbers and function-word aliases are not entities.
     assert ix.mentions("attention work") == set()
     assert ix.mentions("about 1234 of them") == set()
     assert ix.mentions("that one") == set()
     # Whole words only.
     assert ix.mentions("vespers and evening") == set()
+
+
+def test_without_participant_rows_the_degree_backstop_blocks_hubs():
+    ix = EntityIndex([("person:juniper", 90), ("project:vesper", 3)], [("juniper", "person:juniper"),
+                                                                        ("vesper", "project:vesper")], [])
+    assert ix.mentions("juniper and vesper") == {"project:vesper"}
 
 
 def test_entity_index_loads_from_the_pool():
@@ -227,6 +243,53 @@ def test_degraded_now_serves_a_short_entity_message():
     assert [s.rec.record_id for s in out.chosen] == ["v1"]
     out = asyncio.run(reader.degraded_now("thanks a lot", reason="timeout"))
     assert out.chosen == [] and out.backend == ""
+
+
+def test_the_switch_off_is_the_plain_floor(dense_calls):
+    rw = Rewriter(["Juniper promoted to team lead"], ["vesper"])
+    reader = _reader(rw, short_gate=False)
+    for msg in ("what's up with vesper?", "When did I get promoted?"):
+        out = asyncio.run(reader.recall(msg))
+        assert out.debug["gate"] == "short_off" and out.lines == [] and status_of(out.debug, 0) == "skipped_short"
+    assert rw.calls == [] and dense_calls == []
+    # The degraded fallback follows the same switch.
+    asyncio.run(reader.snapshot(force=True))
+    out = asyncio.run(reader.degraded_now("vesper again?", reason="timeout"))
+    assert out.chosen == [] and out.debug["gate"] == "short_off"
+
+
+def test_a_failed_entity_reload_keeps_the_last_good_index(dense_calls):
+    class Flaky(Pool):
+        fail = False
+
+        async def fetch(self, sql, *args):
+            if self.fail and "referent_alias" in sql:
+                raise RuntimeError("db hiccup")
+            return await super().fetch(sql, *args)
+
+    pool = Flaky({"episode_memory": [VESPER]})
+    reader = LivedMemoryRecall(pool, _cfg(), reranker=overlap_reranker, rewriter=Rewriter([]), clock=lambda: NOW)
+    asyncio.run(reader.snapshot(force=True))
+    pool.fail = True
+    asyncio.run(reader.snapshot(force=True))
+    out = asyncio.run(reader.recall("vesper closet again?"))
+    assert out.debug["gate"] == GATE_SHORT_ENTITY and [s.rec.record_id for s in out.chosen] == ["v1"]
+
+
+def test_the_degraded_fallback_records_its_gate():
+    reader = _reader(None)
+    asyncio.run(reader.snapshot(force=True))
+    assert trace_of(asyncio.run(reader.degraded_now("vesper again?", reason="timeout")).debug)["gate"] == GATE_SHORT_ENTITY
+    assert trace_of(asyncio.run(reader.degraded_now("thanks a lot", reason="timeout")).debug)["gate"] == GATE_SHORT_NONE
+    assert trace_of(asyncio.run(reader.degraded_now("ok", reason="timeout")).debug)["gate"] == GATE_SHORT_NO_CONTENT
+    long = "the vesper box ran hot all night on the closet shelf"
+    assert trace_of(asyncio.run(reader.degraded_now(long, reason="timeout")).debug)["gate"] == GATE_WORDS
+
+
+def test_the_trace_counts_entities_the_short_searches_name(dense_calls):
+    out = asyncio.run(_reader(Rewriter(["vesper box closet heat"])).recall("is it still too hot?"))
+    t = trace_of(out.debug)
+    assert t["gate"] == GATE_SHORT_REWRITE and t["rewrite_entities"] == 1
 
 
 def test_an_entity_index_failure_falls_to_the_rewrite(dense_calls):

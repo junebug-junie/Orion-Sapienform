@@ -419,7 +419,7 @@ class SittingService:
                     game_title=r["game_title"], started_at=_epoch(r["started_at"]), last_input_at=_epoch(r["last_input_at"]),
                     ended_at=_epoch(r["ended_at"]), end_reason=r["end_reason"], mask_changes=r["mask_changes"],
                     saves=r["saves"], loads=r["loads"], pauses=r["pauses"], player_stated=r["player_stated"])
-                written += (await self._play(s, r.get("notes_stored"))) == "play_row"
+                written += (await self._play(s, r.get("notes_stored") or None)) == "play_row"
             if closed or rows:
                 logger.info("retro_sitting_recovered closed_rows=%d missing_play_rows=%d written=%d",
                             len(closed), len(rows), written)

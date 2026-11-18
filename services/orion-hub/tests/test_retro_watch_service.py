@@ -22,6 +22,7 @@ from scripts.retro_watch import WatchService, choice_from_act
 SID = "b" * 36
 GAME = "a-link-to-the-past"
 TITLE = "The Legend of Zelda: A Link to the Past"
+SEEN = {"vision": {"status": "attached", "attachment_count": 4}}     # the gateway's raw.vision on a sighted call
 FLOOR = W.Calibration(0.01, "set", 900, 900, 3600.0, 0.0, 1.0)
 
 
@@ -116,7 +117,7 @@ class Rig:
         self.bids, self.releases, self.acts, self.posts, self.calls = [], [], [], [], []
         self.decision = decision
         self.reply = reply if reply is not None else {"content": "Link walks north through a forest clearing.",
-                                                      "usage": {"prompt_tokens": 1086}}
+                                                      "usage": {"prompt_tokens": 1086}, "raw": SEEN}
         cfg = SimpleNamespace(HUB_RETRO_SITTING_ENABLED=True, HUB_RETRO_SITTING_GAP_SEC=300, HUB_RETRO_SITTING_MIN_SEC=120,
                               HUB_RETRO_WATCH_ENABLED=True, HUB_RETRO_LOOK_SEC=60, HUB_RETRO_WATCH_SEAT_WAIT_SEC=30,
                               PERCEPT_STORE_BASE_URL="http://percept.test/percepts")
@@ -361,16 +362,52 @@ def test_a_seat_the_pool_refuses_for_heat_closes_the_act_at_zero_and_writes_no_r
     run(go())
 
 
-def test_a_blind_lane_fails_the_look_and_stores_no_note():
+@pytest.mark.parametrize("reply,failure", [
+    # the gateway's real refusal on a blind lane (orion-llm-gateway llm_backend.py): an "[Error: ...]" TEXT, no raw.error
+    ({"content": "[Error: route 'retro_watch' cannot accept images (worker reports modalities.vision=false)]",
+      "raw": {"vision": {"status": "refused"}}}, "vision:refused"),
+    ({"content": "[Error: attachments could not be read: 404]", "raw": {"vision": {"status": "fetch_failed"}}},
+     "vision:fetch_failed"),
+    ({"content": "Link walks north.", "raw": {}}, "vision:unconfirmed"),        # no proof the model saw the frames
+    ({"content": "[Error: something]", "raw": SEEN}, "gateway_error_text"),
+    ({"content": "", "raw": {"error": "upstream_failed"}}, "gateway:upstream_failed"),
+])
+def test_a_look_the_model_could_not_see_stores_no_note(reply, failure):
     async def go():
-        rig = Rig(reply={"content": "", "raw": {"error": "vision_unavailable"}})
+        rig = Rig(reply=reply)
         rig.press()
         for _ in range(20):
             await rig.step(press=True)
         row = rig.db.looks[0]
-        assert row[7] == "failed" and row[6] is None and row[8].startswith("gateway:vision_unavailable")
+        assert row[7] == "failed" and row[6] is None and row[8] == failure
         assert rig.acts[1][3] is False and rig.watch.state.counters["failed_looks"] == 1
         assert rig.watch.state.counters["notes_stored"] == 0
+        assert rig.watch.status()["status"]["code"] != "watching"
+    run(go())
+
+
+def test_an_unexpected_error_mid_look_still_writes_the_row_and_closes_the_act():
+    async def go():
+        rig = Rig()
+        async def boom(**kw): raise ConnectionError("bus dropped")
+        rig.watch._call_model = boom
+        rig.press()
+        for _ in range(20):
+            await rig.step(press=True)
+        assert rig.db.looks[0][7] == "failed" and rig.db.looks[0][8] == "error:ConnectionError"
+        assert [a[0] for a in rig.acts] == ["opened", "closed"] and rig.acts[1][3] is False
+        assert rig.log.count("released") == 1
+    run(go())
+
+
+def test_no_look_until_both_sides_of_the_switch_were_read():
+    async def go():
+        rig = Rig()
+        rig.watch.pool_provider = lambda: None          # the database is not up yet
+        rig.press()
+        for _ in range(20):
+            await rig.step(press=True)
+        assert not rig.bids and rig.watch.state.last_refusal[0] == "mode_unread"
     run(go())
 
 
@@ -382,7 +419,7 @@ def test_empty_unclear_and_copied_notes_are_failed_looks():
             await rig.step(press=True)
         for content, outcome in (("Link walks north through a forest clearing.", "copied"), ("unclear", "unclear"),
                                  ("", "empty"), ("Link enters a cave.", "stored")):
-            rig.reply = {"content": content}
+            rig.reply = {"content": content, "raw": SEEN}
             before = len(rig.db.looks)
             for _ in range(40):
                 await rig.step(press=True)

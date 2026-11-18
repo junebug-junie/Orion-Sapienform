@@ -47,7 +47,6 @@ import hashlib
 import json
 import logging
 import time
-import urllib.error
 import urllib.request
 import uuid
 from collections import deque
@@ -99,7 +98,8 @@ ON CONFLICT (look_id) DO NOTHING
 # that names a hash we just posted moves its expiry with it.
 EXPIRY_SQL = """
 UPDATE retro_watch_look SET frames_expire_at = $2
-WHERE frame_hashes && $1::text[] AND (frames_expire_at IS NULL OR frames_expire_at < $2)
+WHERE looked_at > now() - interval '2 hours' AND frame_hashes && $1::text[]
+  AND (frames_expire_at IS NULL OR frames_expire_at < $2)
 """
 # Orion's own choices: act rows of `dig watch` (orion/dig/watch.py) not yet copied.
 CHOICE_ACTS_SQL = f"""
@@ -107,18 +107,20 @@ SELECT a.act_id, a.object_ref, a.test_before, a.outcome_note, a.session_id, coal
 FROM grammar_acts a
 WHERE a.verb = 'regulate' AND a.actor = '{W.CHOICE_ACTOR}'
   AND a.opened_at >= now() - make_interval(days => $1)
-  AND NOT EXISTS (SELECT 1 FROM retro_watch_preference p WHERE p.pref_id = 'act:' || a.act_id)
+  AND NOT EXISTS (SELECT 1 FROM retro_watch_preference p WHERE p.pref_id = 'act:' || a.act_id AND p.why IS NOT NULL)
 ORDER BY a.opened_at
 """
 PREF_INSERT_SQL = """
 INSERT INTO retro_watch_preference (pref_id, scope, scope_id, set_by, mode, why, act_id, correlation_id, set_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-ON CONFLICT (pref_id) DO NOTHING
+ON CONFLICT (pref_id) DO UPDATE SET why = COALESCE(retro_watch_preference.why, EXCLUDED.why)
 """
 PREF_READ_SQL = """
 SELECT scope, scope_id, set_by, mode, why, set_at FROM retro_watch_preference
-WHERE (set_by = 'orion' AND ((scope = 'sitting' AND scope_id = $1) OR (scope = 'game' AND scope_id = $2)))
-   OR (set_by = 'juniper' AND scope = 'all')
+WHERE set_by = 'orion' AND ((scope = 'sitting' AND scope_id = $1) OR (scope = 'game' AND scope_id = $2))
+UNION ALL
+(SELECT scope, scope_id, set_by, mode, why, set_at FROM retro_watch_preference
+ WHERE set_by = 'juniper' AND scope = 'all' ORDER BY set_at DESC LIMIT 1)
 """
 
 
@@ -174,7 +176,7 @@ def post_percept(data: bytes, *, base_url: str, token: str, timeout_sec: float) 
     try:
         with urllib.request.urlopen(req, timeout=timeout_sec) as resp:   # noqa: S310 -- internal service URL
             body = json.loads(resp.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    except Exception as exc:  # noqa: BLE001 -- URLError, OSError, http.client.HTTPException, bad JSON
         raise LookFailed(f"percept_upload_failed:{type(exc).__name__}") from exc
     if str(body.get("sha256") or "") != local:
         raise LookFailed("percept_hash_mismatch")
@@ -217,6 +219,8 @@ class WatchService:
         self.mode = W.Mode("on", None)
         self._pref_synced_once = False
         self._loop_task: Optional[asyncio.Task] = None
+        self._look_task: Optional[asyncio.Task] = None
+        self._mode_known = False      # no look is bid for until one read of both sides succeeded (fail closed)
         self._jobs: set[asyncio.Task] = set()
         self._flushing = False
         self._flushed_at = float("-inf")
@@ -240,6 +244,9 @@ class WatchService:
             if self.ring and self.ring[-1][1] != str(session_id):
                 self.ring.clear()                    # another game session: none of these are its frames
                 self._last_kept = float("-inf")
+                if time.monotonic() - self._logged.get("ring_reset", -LOG_EVERY_SEC) >= LOG_EVERY_SEC:
+                    self._logged["ring_reset"] = time.monotonic()      # two live sessions would log per packet
+                    logger.info("retro_watch_ring_reset retro_session=%s", session_id)
             if now - self._last_kept < self.check_sec * 0.95:
                 return
             self.ring.append((now, str(session_id), bytes(data)))
@@ -359,9 +366,9 @@ class WatchService:
         W.count(st.counters, result, input_in_window=input_in_window)
         if result not in (W.GATE_NO_FLOOR, W.GATE_STATIC):
             st.last_over_floor_at = now
-        if result == W.GATE_READY and not st.looking:
+        if result == W.GATE_READY and not st.looking and (self._look_task is None or self._look_task.done()):
             st.looking, st.last_look_at = True, now
-            self._spawn(self._look(st, cur, st.max_change))
+            self._look_task = self._spawn(self._look(st, cur, st.max_change))   # one look at a time, any sitting
         return result
 
     # --- the look ---------------------------------------------------------------------------------
@@ -375,6 +382,10 @@ class WatchService:
 
     async def _look_inner(self, st: SittingWatch, cur: Any, change: float) -> None:
         mode = await self.refresh_mode(cur)
+        if not self._mode_known:
+            st.last_refusal = ("mode_unread", self.clock())
+            logger.info("retro_watch_no_bid sitting=%s reason=mode_unread", st.sitting_id)
+            return
         if mode.mode == "off":
             logger.info("retro_watch_no_bid sitting=%s mode=off set_by=%s", st.sitting_id, mode.set_by)
             return
@@ -392,7 +403,13 @@ class WatchService:
         st.counters["bids_funded"] += 1
         bus = None
         try:
-            bus = await self._bus_factory()
+            try:
+                bus = await self._bus_factory()
+            except Exception:  # noqa: BLE001 -- a funded look that could not start is a failed look
+                st.counters["failed_looks"] += 1
+                st.last_refusal = ("no_bus", self.clock())
+                self._warn("retro_watch_bus_failed")
+                return
             await self._publish_act(bus, opened=True, want_id=want_id, sitting_id=st.sitting_id)
             produced, note = await self._seated(bus, st, cur, want_id, change)
             await self._publish_act(bus, opened=False, want_id=want_id, sitting_id=st.sitting_id,
@@ -442,17 +459,22 @@ class WatchService:
         try:
             if len(picked) < W.MIN_FRAMES:
                 raise LookFailed(f"no_frames:{len(picked)}")
+            def render() -> list[tuple[bytes, int, int, Any]]:
+                # Off the relay's event loop: four inflates and four PNG encodes.
+                out = []
+                for _kept_at, _sid, packet in picked:
+                    try:
+                        frame = decode_packet(packet)
+                    except FrameError as exc:
+                        raise LookFailed("undecodable_frame") from exc
+                    out.append((png(frame.rgb), frame.width * 2, frame.height * 2, luma_grid(frame.rgb)))
+                return out
             refs, last_grid = [], None
-            for kept_at, _sid, packet in picked:
-                try:
-                    frame = decode_packet(packet)
-                except FrameError as exc:
-                    raise LookFailed("undecodable_frame") from exc
-                data = png(frame.rgb)
+            for data, width, height, grid in await asyncio.to_thread(render):
                 sha = await asyncio.to_thread(self._post_frame, data)
                 hashes.append(sha)
-                refs.append(self._ref(sha, data, frame.width * 2, frame.height * 2))
-                last_grid = luma_grid(frame.rgb)
+                refs.append(self._ref(sha, data, width, height))
+                last_grid = grid
             frames_expire_at = _utc(self.clock() + W.FRAME_TTL_SEC)
             text = W.prompt(cur.game_title or cur.game_id, (now - float(cur.started_at)) / 60.0, len(refs))
             st.counters["model_calls"] += 1
@@ -464,12 +486,23 @@ class WatchService:
             raw = reply.get("raw") if isinstance(reply.get("raw"), dict) else {}
             if raw.get("error"):
                 raise LookFailed(f"gateway:{str(raw.get('error'))[:120]}")
-            note = W.clean_note(reply.get("content") or reply.get("text"))
+            # The gateway refuses images on a blind lane (or one it could not fetch them for) with an "[Error: ...]"
+            # TEXT and raw.vision.status refused/fetch_failed, not raw.error. Only "attached" means the model saw them.
+            vision = raw.get("vision") if isinstance(raw.get("vision"), dict) else {}
+            if vision.get("status") != "attached":
+                raise LookFailed(f"vision:{vision.get('status') or 'unconfirmed'}")
+            content = str(reply.get("content") or reply.get("text") or "")
+            if content.lstrip().startswith("[Error:"):
+                raise LookFailed("gateway_error_text")
+            note = W.clean_note(content)
             outcome = W.classify(note, st.last_note)
             if last_grid is not None:
                 st.ref_grid, st.max_change = last_grid, 0.0
         except LookFailed as exc:
             failure = exc.reason
+        except Exception as exc:  # noqa: BLE001 -- the row and the act's close are still written
+            failure = f"error:{type(exc).__name__}"
+            self._warn("retro_watch_look_error")
         similar = W.similar(note, st.last_stored_note) if outcome == "stored" else None
         if outcome == "stored":
             st.counters["notes_stored"] += 1
@@ -672,12 +705,18 @@ class WatchService:
         last mode read stays (a database blip must not turn Orion's "off" back on)."""
         days = PREF_SYNC_DAYS if self._pref_synced_once else PREF_SYNC_FIRST_DAYS
         acts = await self._db("fetch", CHOICE_ACTS_SQL, days, quiet="retro_watch_choice_sync_failed")
-        if acts is not None:
-            self._pref_synced_once = True
-            for a in acts:
-                row = choice_from_act(dict(a))
-                if row is not None:
-                    await self._db("execute", PREF_INSERT_SQL, *row, quiet="retro_watch_choice_copy_failed")
+        if acts is None:
+            return self.mode                  # Orion's newest choice may be uncopied: keep the last mode read
+        self._pref_synced_once = True
+        for a in acts:
+            row = choice_from_act(dict(a))
+            if row is None:
+                continue
+            try:
+                await self._db("execute", PREF_INSERT_SQL, *row)
+            except Exception:  # noqa: BLE001 -- an uncopied choice: keep the last mode read
+                self._warn("retro_watch_choice_copy_failed")
+                return self.mode
         rows = await self._db("fetch", PREF_READ_SQL, cur.sitting_id, str(cur.game_id or ""),
                               quiet="retro_watch_pref_read_failed")
         if rows is None:
@@ -690,6 +729,7 @@ class WatchService:
         self.mode = W.effective(mine.get("mode") if mine else None, self.juniper.get("mode") if self.juniper else None,
                                 orion_why=mine.get("why") if mine else None,
                                 juniper_why=self.juniper.get("why") if self.juniper else None)
+        self._mode_known = True
         return self.mode
 
     # --- the page -----------------------------------------------------------------------------------
@@ -735,8 +775,12 @@ class WatchService:
         if self._loop_task is not None:
             self._loop_task.cancel()
             await asyncio.gather(self._loop_task, return_exceptions=True)
+        # A look in flight can hold a seat for ~90 s: cancel it (its finally blocks release the hold and the
+        # want), then flush, all inside the gateway's 8 s shutdown bound.
+        if self._look_task is not None and not self._look_task.done():
+            self._look_task.cancel()
         if self._jobs:
-            await asyncio.gather(*list(self._jobs), return_exceptions=True)
+            await asyncio.wait(list(self._jobs), timeout=3.0)
         self._flushing = False
         await self.flush()
 

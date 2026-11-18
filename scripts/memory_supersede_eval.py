@@ -48,7 +48,7 @@ sys.path.insert(0, str(REPO))
 
 from orion.memory.episode import supersede as S  # noqa: E402
 from orion.memory.episode.supersede_eval import (  # noqa: E402
-    SYNTHETIC_PATH, Decision, EvalItem, decision_dict, item_to_dict, load_items, rule_refusal, score,
+    HELDOUT_PATH, SYNTHETIC_PATH, Decision, EvalItem, decision_dict, item_to_dict, load_items, rule_refusal, score,
 )
 
 EVAL_DIR = Path(os.path.expanduser("~/.orion/evals"))
@@ -58,7 +58,7 @@ DEFAULT_MANIFEST = Path("/mnt/orion-fcc/notes/memory_supersede_pass_manifest.jso
 # The 2026-11-17 v2 dry run's per-pair verdicts, frozen host-side (a v3 dry run writes a different
 # checks.csv format): the source of the dry-run-veto and near-duplicate hard negatives.
 DEFAULT_CHECKS = EVAL_DIR / "supersede_v2_checks_2026-11-17.csv"
-PRODUCTION_ROUTE = "memory_distill"
+PRODUCTION_ROUTE = S.EVAL_ROUTE
 SEEN_MODELS: set[str] = set()   # model ids the gateway reported for the route during this run
 NEAR_DUP_COSINE = 0.85
 NEAR_DUP_JACCARD = 0.25  # hand-checked 2026-11-18: the 6 pairs this admits are different events on one topic
@@ -257,6 +257,8 @@ async def cmd_run(args: argparse.Namespace) -> int:
     items = []
     if args.set in ("all", "synthetic"):
         items += load_items(SYNTHETIC_PATH)
+    if args.set in ("all", "synthetic", "heldout"):
+        items += load_items(HELDOUT_PATH)
     if args.set in ("all", "real"):
         items += load_items(Path(args.real))
     decide = {"v2": decide_v2, "v3": decide_v3}[args.checker]
@@ -334,7 +336,7 @@ def main() -> int:
     b.add_argument("--checks", default=str(DEFAULT_CHECKS))
     r = sub.add_parser("run", help="run the classifier over the labelled sets")
     r.add_argument("--checker", choices=("v2", "v3"), default="v3")
-    r.add_argument("--set", choices=("all", "synthetic", "real"), default="all")
+    r.add_argument("--set", choices=("all", "synthetic", "heldout", "real"), default="all")
     r.add_argument("--real", default=str(REAL_PATH))
     r.add_argument("--votes", type=int, default=S.VOTES)
     r.add_argument("--gateway", default=os.environ.get("ORION_GATEWAY_URL", "http://localhost:8210"))

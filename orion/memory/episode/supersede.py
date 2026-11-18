@@ -405,16 +405,22 @@ def parse_vote(text: str) -> Vote:
     rel = str(data.get("relation") or "").strip().lower()
     same = _yes(data.get("same_attribute"))
     changed = _yes(data.get("b_says_a_wrong_or_changed"))
-    kind = str(data.get("a_kind") or "").strip().lower()
+    kind = re.sub(r"[\s-]+", "_", str(data.get("a_kind") or "").strip().lower())
     reason = " ".join(str(data.get("reason") or "").split())[:300]
+    raw_conf = data.get("confidence")
     try:
-        conf = float(data.get("confidence"))
+        conf = float(raw_conf) if not isinstance(raw_conf, bool) else float("nan")
     except (TypeError, ValueError):
+        conf = float("nan")
+    if not (0.0 <= conf <= 1.0):  # also catches NaN
         return Vote(rel or None, same, 0.0, reason, error="bad_confidence", a_kind=kind or None, b_says_changed=changed)
-    if rel not in RELATIONS or same is None or changed is None or kind not in A_KINDS or not (0.0 <= conf <= 1.0):
-        return Vote(rel or None, same, max(0.0, min(1.0, conf)), reason, error="bad_answer_value",
-                    a_kind=kind or None, b_says_changed=changed)
-    return Vote(rel, same, conf, reason, a_kind=kind, b_says_changed=changed)
+    if rel not in RELATIONS or same is None:
+        return Vote(rel or None, same, conf, reason, error="bad_answer_value", a_kind=kind or None,
+                    b_says_changed=changed)
+    # A malformed checklist field is not an error: such a vote can never act (Vote.acting needs a
+    # known kind and a yes), so it abstains without holding the rest of the plan.
+    return Vote(rel, same, conf, reason, a_kind=kind if kind in A_KINDS else None,
+                b_says_changed=changed)
 
 
 @dataclass(frozen=True)
@@ -476,9 +482,6 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
         why = "error"
     elif not complete and all(v.acting for v in got):
         why = "budget_spent"
-    elif not complete:
-        last = got[-1]
-        why = f"checklist:{last.relation}" if last.relation in ACTING_RELATIONS else f"vote:{last.relation}"
     elif not all_acting:
         last = got[-1]
         why = f"checklist:{last.relation}" if last.relation in ACTING_RELATIONS else f"vote:{last.relation}"
@@ -633,9 +636,7 @@ def invalid_at_for(relation: str, old: Mapping[str, Any], new: Mapping[str, Any]
     correction: it was never true, so it is invalid from its own time."""
     old_start = _aware(old.get("occurred_at")) or _aware(old.get("created_at")) or now
     if relation == REL_UPDATE:
-        # Never before the old fact's own start (a newer row about an earlier event would otherwise
-        # give an empty validity window and silently hide the history).
-        return max(_aware(new.get("occurred_at")) or _aware(new.get("created_at")) or now, old_start)
+        return _aware(new.get("occurred_at")) or _aware(new.get("created_at")) or now
     return old_start
 
 
@@ -677,6 +678,9 @@ async def apply_link(conn: Any, link: Link, *, actor: str, now: Optional[datetim
         return None  # Juniper (or an operator) put this pair back; never re-apply it
     relation = link.relation if link.relation in ACTING_RELATIONS else REL_CORRECTION
     invalid_at = invalid_at_for(relation, old, new, now)
+    old_start = _aware(old.get("occurred_at")) or _aware(old.get("created_at")) or now
+    if relation == REL_UPDATE and invalid_at <= old_start:
+        return None  # "since changed" cannot point backwards: an empty validity window would hide history
     state = "corrected" if relation == REL_CORRECTION else old["confirmation_state"]
     await conn.execute("UPDATE episode_memory SET status = 'superseded', confirmation_state = %s, invalid_at = %s, "
                        "invalidated_by = %s, invalid_reason = %s, updated_at = %s "
@@ -858,18 +862,19 @@ def links_to_apply(plan: Optional[Mapping[str, Any]]) -> list[dict[str, Any]]:
 # pass), write time proposes only.
 # A pass expires: the model behind the memory_distill route can change under a fixed check version.
 EVAL_MAX_AGE_DAYS = 30
+EVAL_ROUTE = "memory_distill"   # the route write time asks on
 EVAL_GATE_SQL = ("SELECT passed, check_version, finished_at FROM memory_supersede_eval_run "
-                 "WHERE check_version = %s AND votes = %s AND finished_at IS NOT NULL "
+                 "WHERE check_version = %s AND votes = %s AND route = %s AND finished_at IS NOT NULL "
                  "ORDER BY finished_at DESC LIMIT 1")
 
 
 async def eval_gate(conn: Any, *, check_version: str = CHECK_VERSION, votes: int = VOTES,
                     now: Optional[datetime] = None) -> tuple[bool, str]:
     """(open, why). Open only when the most recent finished eval run for ``check_version`` at the
-    production vote count passed, less than ``EVAL_MAX_AGE_DAYS`` ago. Any read failure (table
+    production vote count and route passed, less than ``EVAL_MAX_AGE_DAYS`` ago. Any read failure (table
     missing, permissions, a dead connection) reads as closed."""
     try:
-        row = await _fetchone(conn, EVAL_GATE_SQL, (check_version, int(votes)))
+        row = await _fetchone(conn, EVAL_GATE_SQL, (check_version, int(votes), EVAL_ROUTE))
     except Exception as exc:  # noqa: BLE001 -- unknown is closed
         return False, f"eval_unreadable:{type(exc).__name__}"
     if row is None:

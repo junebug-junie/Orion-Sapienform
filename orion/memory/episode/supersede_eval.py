@@ -28,6 +28,9 @@ from typing import Any, Iterable, Mapping, Optional, Sequence
 from orion.memory.episode.supersede import MemoryRow, can_be_superseded, can_correct
 
 SYNTHETIC_PATH = Path(__file__).resolve().parent / "fixtures" / "supersede_eval_synthetic.jsonl"
+# Written after the v3.1 checklist was designed and scored, so the checklist never saw them: the
+# out-of-sample check (2026-11-18). Part of every full run from then on.
+HELDOUT_PATH = Path(__file__).resolve().parent / "fixtures" / "supersede_eval_heldout.jsonl"
 LABELS = ("act", "no_act")
 # The minimum real-data coverage for a run to count: an eval with no real negatives proves nothing.
 MIN_REAL_POSITIVES = 1

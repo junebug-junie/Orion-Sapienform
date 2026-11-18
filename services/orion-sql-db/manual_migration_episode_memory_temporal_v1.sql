@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS memory_supersede_eval_run (
     summary JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- (Also for a copy hand-applied before the column was added.)
+ALTER TABLE memory_supersede_eval_run ADD COLUMN IF NOT EXISTS model TEXT;
 CREATE INDEX IF NOT EXISTS memory_supersede_eval_run_version_idx
     ON memory_supersede_eval_run (check_version, finished_at DESC);
 

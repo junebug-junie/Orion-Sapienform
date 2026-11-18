@@ -93,3 +93,9 @@ def test_build_skips_a_v3_format_checks_file(tmp_path):
     kept = [c for c in rows if "corrects" in c and "both_true" in c]
     assert kept == []   # the same filter cmd_build applies before reading v2 columns
     assert _csv  # (imported to mirror the script's reader)
+
+
+def test_heldout_fixtures_load():
+    items = e.load_items(e.HELDOUT_PATH)
+    assert len(items) >= 8 and all(it.source.startswith("heldout_") for it in items)
+    assert sum(it.hard_negative for it in items) >= 6

@@ -202,7 +202,8 @@ async def cmd_dry_run(args: argparse.Namespace) -> int:
     vecs = None if args.no_dense else await dense_matrix(args.chroma, args.embed_url, args.collection)
     groups = plan_candidates(corpus, vecs, excluded)
     if args.max_checks:  # cap on candidate PAIRS, at whole rows: a row's candidates are never split
-        capped, n = [], 0   # (a split list could fake Juniper's "one clear target")
+        capped, n = [], 0   # (a split list could fake Juniper's "one clear target"); the first row
+                            # is always kept, so the cap can be exceeded by up to one row
         for new_row, cands in groups:
             if n and n + len(cands) > args.max_checks:
                 break
@@ -212,8 +213,9 @@ async def cmd_dry_run(args: argparse.Namespace) -> int:
     n_pairs = sum(len(c) for _, c in groups)
     by_id = {r.memory_id: r for r in corpus.rows}
 
-    # Answer cache keyed by the exact prompt AND the vote's place (both statements, dates, check
-    # version; vote 1, 2, 3 are separate samples): a re-run only asks what it has not asked.
+    # Answer cache keyed by the exact prompt (both statements and dates; a prompt change is a new
+    # key), the temperature, and the vote's place (vote 1, 2, 3 are separate samples): a re-run
+    # only asks what it has not asked.
     # Failed calls are not cached.
     cache_path = out / "verdicts.jsonl"
     cache: dict[str, str] = {}

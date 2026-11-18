@@ -362,12 +362,13 @@ def test_eval_gate_reads_the_latest_finished_run_for_this_check_version():
 
         now = datetime.now(timezone.utc)
 
-        async def add(run_id, passed, finished, version=s.CHECK_VERSION, votes=s.VOTES):
+        async def add(run_id, passed, finished, version=s.CHECK_VERSION, votes=s.VOTES, route=s.EVAL_ROUTE):
             async with pool.connection() as conn:
                 await conn.execute(
                     "INSERT INTO memory_supersede_eval_run (run_id, check_version, started_at, finished_at, passed, "
-                    "n_items, n_real, false_acts, hard_negative_false_acts, errors, votes) "
-                    "VALUES (%s, %s, %s, %s, %s, 1, 1, 0, 0, 0, %s)", (run_id, version, now, finished, passed, votes))
+                    "n_items, n_real, false_acts, hard_negative_false_acts, errors, votes, route) "
+                    "VALUES (%s, %s, %s, %s, %s, 1, 1, 0, 0, 0, %s, %s)",
+                    (run_id, version, now, finished, passed, votes, route))
 
         assert await gate() == (False, "eval_missing")
         await add("old", True, now - timedelta(days=s.EVAL_MAX_AGE_DAYS + 2))
@@ -377,6 +378,7 @@ def test_eval_gate_reads_the_latest_finished_run_for_this_check_version():
         await add("b", False, None)                                   # still running: ignored
         await add("c", False, now - timedelta(hours=1), version="supersede_check.v2")   # other version
         await add("v", False, now - timedelta(hours=1), votes=5)     # other vote count
+        await add("r", False, now - timedelta(hours=1), route="agent")   # other route
         assert await gate() == (True, "eval_passed")
         await add("d", False, now - timedelta(hours=2))
         assert await gate() == (False, "eval_failed")
@@ -402,5 +404,23 @@ def test_pass_apply_refuses_while_the_eval_gate_is_closed(tmp_path):
                                   exclude="", dsn=dsn, no_manifest=True, watch=[])
         with pytest.raises(SystemExit, match="eval gate closed"):
             await mod.cmd_apply(args)
+
+    asyncio.run(_with_db(body))
+
+
+def test_an_update_that_points_backwards_is_refused():
+    async def body(pool, dsn):
+        old_id = await _old_row(pool, "Juniper lives in Riverton.")
+        await _set_occurred(pool, old_id, T0 + timedelta(days=10))
+        result = _correction()
+        new_id = result.memories[0].memory_id
+        await _persist(pool, result, None)
+        await _set_occurred(pool, new_id, T0)                       # newer row about an earlier time
+        async with pool.connection() as conn:
+            async with conn.transaction():
+                got = await s.apply_link(conn, s.Link(old_id, new_id, "r", relation="update"), actor=s.ACTOR_PASS)
+        assert got is None
+        old = await _one(pool, "SELECT status FROM episode_memory WHERE memory_id = %s", (old_id,))
+        assert old["status"] == "active"
 
     asyncio.run(_with_db(body))

@@ -122,7 +122,13 @@ def test_parse_vote_refuses_anything_malformed():
         assert s.parse_vote(bad).error, bad
     assert not s.parse_vote(vote("correction", same="no")).acting   # not the same attribute
     assert not s.parse_vote(vote("refine")).acting
-    assert s.parse_vote(vote("correction", kind="weird")).error == "bad_answer_value"
+    weird = s.parse_vote(vote("correction", kind="weird"))
+    assert weird.error is None and not weird.acting          # a bad checklist field abstains, not an error
+    assert s.parse_vote(vote("correction", kind="lasting state")).acting   # spacing normalized
+    assert s.parse_vote(json.dumps({"relation": "correction", "same_attribute": "yes", "confidence": True,
+                                    "a_kind": "event", "b_says_a_wrong_or_changed": "yes"})).error
+    assert s.parse_vote(json.dumps({"relation": "correction", "same_attribute": "yes", "confidence": "nan",
+                                    "a_kind": "event", "b_says_a_wrong_or_changed": "yes"})).error
 
 
 def test_the_checklist_must_agree_with_an_acting_relation():
@@ -304,7 +310,7 @@ class _GateConn:
     async def execute(self, sql, params):
         if self.exc:
             raise self.exc
-        assert "memory_supersede_eval_run" in sql and params == (s.CHECK_VERSION, s.VOTES)
+        assert "memory_supersede_eval_run" in sql and params == (s.CHECK_VERSION, s.VOTES, s.EVAL_ROUTE)
         row = self.row
 
         class Cur:
@@ -390,7 +396,36 @@ def test_links_to_apply_keeps_only_current_version_links_with_a_relation():
     assert s.links_to_apply(plan) == [good]
 
 
-def test_an_update_never_ends_before_the_old_fact_began():
+def test_an_update_invalid_at_is_the_new_time():
     old = {"occurred_at": T0 + timedelta(days=5)}
     new = {"occurred_at": T0, "created_at": T0 + timedelta(days=9)}
-    assert s.invalid_at_for("update", old, new, T0) == T0 + timedelta(days=5)
+    assert s.invalid_at_for("update", old, new, T0) == T0    # apply_link refuses this one (PG test)
+
+
+def test_juniper_words_still_need_the_checklist():
+    mine = replace(NEW, voice="juniper_said", juniper_quoted=True)
+    ask, _ = answers(*(vote("update", kind="plan"),) * 3)
+    v = asyncio.run(s.classify_pair(OLD, mine, ask))
+    assert not v.acts and not v.juniper_acts
+
+
+def test_a_third_vote_failing_the_checklist_abstains_after_three_calls():
+    ask, seen = answers(COR, COR, vote("correction", changed="no"))
+    v = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert not v.acts and v.abstain == "checklist:correction" and len(seen) == 3
+
+
+def test_missing_or_mixed_checklist_fields():
+    no_changed = json.dumps({"relation": "correction", "same_attribute": "yes", "confidence": 0.9, "a_kind": "event"})
+    no_kind = json.dumps({"relation": "update", "same_attribute": "yes", "confidence": 0.9,
+                          "b_says_a_wrong_or_changed": "yes"})
+    for text in (no_changed, no_kind):
+        v = s.parse_vote(text)
+        assert v.error is None and not v.acting
+    compat_bad = json.dumps({"relation": "compatible", "same_attribute": "no", "confidence": 0.9, "a_kind": "??",
+                             "b_says_a_wrong_or_changed": "unsure"})
+    ask, _ = answers(compat_bad)
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(OLD), ask, dense=_dense({"old": 0.75}), apply_gate=OPEN))
+    assert plan["check_errors"] == 0 and plan["refused_because"] == []    # abstained, plan not held
+    assert not s.parse_vote(vote("update", kind="measurement")).acting
+    assert not s.parse_vote(vote("update", changed="no")).acting

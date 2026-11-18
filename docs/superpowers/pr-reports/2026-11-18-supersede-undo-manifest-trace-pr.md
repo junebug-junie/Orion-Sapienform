@@ -96,6 +96,6 @@ After merge, fix today's stale manifest (read-only on the database; rewrites the
 
 ## PR link
 
-(added after the PR is opened)
+https://github.com/junebug-junie/Orion-Sapienform/pull/3751
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

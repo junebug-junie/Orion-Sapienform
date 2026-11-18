@@ -889,7 +889,9 @@ def supersede_summary(directory: Path = SUPERSEDE_DIR, backfill_ids: Optional[se
     def touches(p: dict[str, Any]) -> bool:
         return str(p.get("old_id")) in ids or str(p.get("new_id")) in ids
 
-    return {"ran": True, "pairs": len(pairs), "pairs_touching_backfill": sum(1 for p in pairs if touches(p)),
+    written = datetime.fromtimestamp(pairs_file.stat().st_mtime, timezone.utc).isoformat(timespec="seconds")
+    return {"ran": True, "pairs_file_written_at": written, "pairs": len(pairs),
+            "pairs_touching_backfill": sum(1 for p in pairs if touches(p)),
             "pair_ids": [[str(p.get("old_id")), str(p.get("new_id"))] for p in pairs]}
 
 
@@ -944,6 +946,8 @@ def cmd_report(args: argparse.Namespace) -> int:
              "", "## Errors", "", f"- error records: {len(errors)}; episodes that failed: {len(failed)}"] + [
              f"  - {e}" for e in failed] + [
              "", "## Supersede pass dry run (nothing applied)", "",
+             f"- pairs file written at {sup.get('pairs_file_written_at')} (compare with the 'after' counts time: "
+             f"{after.get('at')}; an earlier file is NOT this backfill's pass)",
              f"- ran: {sup.get('ran')}; pairs proposed: {sup.get('pairs')}; "
              f"pairs touching backfilled rows: {sup.get('pairs_touching_backfill')}"] + [
              f"  - old {o} -> new {n}" for o, n in sup.get("pair_ids", [])] + [

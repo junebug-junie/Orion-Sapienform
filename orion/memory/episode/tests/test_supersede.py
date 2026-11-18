@@ -452,10 +452,9 @@ def test_a_named_pr_needs_the_same_number_in_b():
     same = row("c", "Juniper said PR #41 is not deployed after all.", days=1)
     assert s.numbered_items(a.statement) == {"41"} and not s.same_numbered_item(a, b) and s.same_numbered_item(a, same)
     assert s.same_numbered_item(row("x", "Biscuit is a cat."), b)          # A names no number: no constraint
-    for new in (b, replace(b, voice="juniper_said", juniper_quoted=True)):
-        ask, seen = answers()
-        v = asyncio.run(s.classify_pair(a, new, ask, budget=[3]))
-        assert not v.acts and not v.juniper_acts and v.abstain == s.NUMBERED_ITEM_NOT_IN_B and seen == []
+    ask, seen = answers()
+    v = asyncio.run(s.classify_pair(a, b, ask, budget=[3]))
+    assert not v.acts and not v.juniper_acts and v.abstain == s.NUMBERED_ITEM_NOT_IN_B and seen == []
     ask, _ = answers(*(vote("correction", kind="event"),) * 3)
     assert asyncio.run(s.classify_pair(a, same, ask)).acts
 
@@ -478,3 +477,62 @@ def test_numbered_rule_edge_cases():
     a = row("a", "Juniper said the fix is PR #14.")
     assert s.same_numbered_item(a, row("b", "It was PR #41, not #14.", days=1))          # renumbering that names the old one
     assert not s.same_numbered_item(a, row("c", "It was PR #41.", days=1))               # blocked: an accepted cost
+
+
+def test_juniper_words_correct_a_numbered_item_without_restating_it():
+    """v3.5: her verified words outrank the number rule, but still need every vote acting with the
+    same referent; the strict (model-only) path never bypasses it."""
+    a = row("a", "Juniper said the login fix is deployed and linked PR #41.")
+    hers = row("b", "Juniper said: no, that login fix is not deployed, I reverted it.", days=1)
+    hers = replace(hers, voice="juniper_said", juniper_quoted=True)
+    ask, seen = answers(*(vote("correction", kind="event"),) * 3)
+    v = asyncio.run(s.classify_pair(a, hers, ask))
+    assert not v.acts and v.juniper_acts and len(seen) == 3
+    ask, _ = answers(vote("correction", kind="event", referent="no"))
+    v = asyncio.run(s.classify_pair(a, hers, ask))
+    assert not v.juniper_acts and v.abstain == "checklist:correction"
+    cands = s.candidates_for(hers, corpus(a, hers), dense={"a": 0.8})
+    ask, _ = answers(*(vote("correction", kind="event"),) * 3)
+    links, _ = asyncio.run(s.check_pairs(hers, cands, ask))
+    assert [(l.old_id, l.path) for l in links] == [("a", "juniper")]
+
+
+def test_the_plan_counts_why_pairs_abstained():
+    a = row("old", "Juniper said the login fix is deployed (PR #41).", refs=("pet:biscuit",))
+    ask, seen = answers()
+    plan = asyncio.run(s.plan_for_new_rows([NEW], corpus(a), ask, dense=_dense({"old": 0.75}), apply_gate=OPEN))
+    assert plan["abstained"] == {s.NUMBERED_ITEM_NOT_IN_B: 1} and seen == []
+    assert plan["decisions"][0]["abstain"] == s.NUMBERED_ITEM_NOT_IN_B
+
+
+def test_index_dense_retries_once_then_refuses(monkeypatch):
+    import orion.introspect.semantic_index as si
+
+    calls = []
+
+    async def flaky_embed(client, cfg, text, *, doc_prefix):
+        calls.append(1)
+        if len(calls) == 1:
+            raise si.SearchUnavailableError("chroma unavailable: ReadTimeout")
+        return [0.1], "m"
+
+    async def near(client, cfg, vector, n, *, where=None):
+        return [("episode_memory:abc", 0.9)]
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(si, "embed", flaky_embed)
+    monkeypatch.setattr(si, "nearest", near)
+    monkeypatch.setattr(s.asyncio, "sleep", no_sleep)
+    cfg = si.SearchConfig(chroma_url="http://c", embed_url="http://e", collection="x", min_similarity=0.0)
+    got = asyncio.run(s.index_dense(cfg)("statement"))
+    assert len(calls) == 2 and got is not None
+
+    async def always_down(client, cfg, text, *, doc_prefix):
+        calls.append(1)
+        raise si.SearchUnavailableError("down")
+
+    calls.clear()
+    monkeypatch.setattr(si, "embed", always_down)
+    assert asyncio.run(s.index_dense(cfg)("statement")) is None and len(calls) == s.DENSE_ATTEMPTS

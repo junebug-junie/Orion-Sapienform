@@ -53,6 +53,7 @@ second event is written (the insert is also ON CONFLICT DO NOTHING on that id). 
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import re
@@ -68,7 +69,7 @@ ACTOR_DISTILL = "memory.episode_distill"
 ACTOR_PASS = "memory.supersede_pass"
 OP_SUPERSEDED = "superseded"
 OP_UNDONE = "supersede_undone"
-CHECK_VERSION = "supersede_classify.v3.4"
+CHECK_VERSION = "supersede_classify.v3.5"
 SUPERSEDE_NAMESPACE = uuid.UUID("6f1d3c52-2b8e-4f7a-9d41-3587a0c0ffee")
 
 # Candidate limits. bge-large cosines are compressed (live 2026-11-17: median pair 0.56, 90th
@@ -494,7 +495,10 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
     non-acting answer ends the strict path; for Juniper's words a non-acting answer ends hers
     too). A failed call or a malformed answer is an error vote: the pair abstains and the caller
     treats the plan as degraded."""
-    if not same_numbered_item(old, new):
+    # Juniper's own quoted words may correct a numbered item without restating its number: her
+    # path still needs every vote acting, same_referent included; the strict path never bypasses.
+    numbered_ok = same_numbered_item(old, new)
+    if not numbered_ok and not new.juniper_quoted:
         # A names a numbered item B never mentions: no vote could act, so none is asked (no budget spent).
         return Classification(votes=(), relation=None, acts=False, juniper_acts=False,
                               abstain=NUMBERED_ITEM_NOT_IN_B)
@@ -516,7 +520,7 @@ async def classify_pair(old: MemoryRow, new: MemoryRow, ask: "AskFn", *, votes: 
     complete = len(got) == max(1, int(votes))
     all_acting = complete and all(v.acting for v in got)
     unanimous = all_acting and len({v.relation for v in got}) == 1
-    strict = unanimous and all(v.confidence >= min_confidence for v in got)
+    strict = unanimous and all(v.confidence >= min_confidence for v in got) and numbered_ok
     juniper = all_acting and new.juniper_quoted
     if any(v.error for v in got):
         why = "error"
@@ -855,7 +859,9 @@ async def plan_for_new_rows(new_rows: Sequence[MemoryRow], corpus: Corpus, ask: 
     return {"links": [] if reasons else planned, "held_links": planned if reasons else [],
             "apply": "refused" if reasons else "on", "refused_because": reasons,
             "asked": asked, "check_errors": refused, "dense": dense_state, "budget_left": budget[0],
-            "check_version": CHECK_VERSION, "decisions": decisions}
+            "check_version": CHECK_VERSION, "decisions": decisions,
+            # Why each asked pair did not link, counted (the numbered-item rule shows as its own reason).
+            "abstained": dict(Counter(d["abstain"] for d in decisions if d.get("abstain")))}
 
 
 RECORD_RUN_SQL = """
@@ -878,6 +884,8 @@ async def record_run(conn: Any, *, run_id: str, source: str, plan: Mapping[str, 
     counts["links"] = len(plan.get("links") or [])
     counts["held_links"] = len(plan.get("held_links") or [])
     counts["applied"] = len(applied)
+    if plan.get("abstained"):
+        counts["abstained"] = dict(plan["abstained"])
     if plan.get("error"):
         counts["error"] = str(plan["error"])
     await conn.execute(RECORD_RUN_SQL, (
@@ -927,6 +935,11 @@ async def eval_gate(conn: Any, *, check_version: str = CHECK_VERSION, votes: int
     return True, "eval_passed"
 
 
+DENSE_ATTEMPTS = 2
+DENSE_TIMEOUT_SEC = 45.0
+DENSE_RETRY_SLEEP_SEC = 5.0
+
+
 def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
     """A DenseFn over the lived-memory index (``orion_lived_memory``, the retriever's vectors):
     embed the statement, take the n nearest episode_memory docs. ``cfg`` is a
@@ -937,11 +950,19 @@ def index_dense(cfg: Any, *, n: int = 16) -> DenseFn:
         from orion.introspect.semantic_index import SearchUnavailableError, embed, nearest
         from orion.memory.lived_memory import KIND_EPISODE, split_doc_id
 
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                vector, _ = await embed(client, cfg, statement, doc_prefix="supersede-check")
-                hits = await nearest(client, cfg, vector, n, where={"kind": KIND_EPISODE})
-        except SearchUnavailableError:
+        hits = None
+        for attempt in range(DENSE_ATTEMPTS):
+            try:
+                async with httpx.AsyncClient(timeout=DENSE_TIMEOUT_SEC) as client:
+                    vector, _ = await embed(client, cfg, statement, doc_prefix="supersede-check")
+                    hits = await nearest(client, cfg, vector, n, where={"kind": KIND_EPISODE})
+                break
+            except SearchUnavailableError:
+                # 2026-11-18 11:10Z: Chroma's collection lookup stalled 25 s once (20 s timeout) and the
+                # night's check refused as dense_unavailable. One retry; still no fallback if it fails.
+                if attempt + 1 < DENSE_ATTEMPTS:
+                    await asyncio.sleep(DENSE_RETRY_SLEEP_SEC)
+        if hits is None:
             return None
         out: dict[str, float] = {}
         for doc, sim in hits:

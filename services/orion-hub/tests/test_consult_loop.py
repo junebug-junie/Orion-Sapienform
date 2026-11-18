@@ -661,3 +661,42 @@ async def test_the_budget_hold_resend_is_redacted(world):
     await world.loop.tick()
     sent = world.relay.invites[-1]["prompt"]
     assert "bakery" not in sent and REDACTION_MARKER in sent and "lease leaks" in sent
+
+
+@pytest.mark.asyncio
+async def test_claude_is_told_what_the_marker_is_and_how_many_there_are(world):
+    # Thread cf5d4218097a: Claude saw bare markers, with no word on what they were.
+    world.guard_box["load"] = _private_guard
+    world.outreach.replies = ["The journal lease leaks after the nightly run and nobody retries it. Also she walked "
+                              "the long way home past the bakery because the bridge was shut, which is why I "
+                              "checked late. The lease row shows the lock held for six hours."]
+    await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:n1", question="Journal?")
+    await world.loop.tick()
+    sent = world.relay.invites[-1]["prompt"]
+    first, _ = sent.split("\n\n", 1)
+    assert first.startswith(cl.MESH_EDGE_NOTE_PREFIX) and "1 passage(s)" in first and REDACTION_MARKER in first
+    assert "bakery" not in sent
+    again = cl.with_redaction_note(sent)
+    assert again == sent, "a resend never stacks a second note"
+
+
+@pytest.mark.asyncio
+async def test_a_mostly_withheld_prompt_stops_the_consult_unsent(world):
+    world.guard_box["load"] = _private_guard
+    world.outreach.replies = [f"{PRIVATE} {PRIVATE} {PRIVATE} {PRIVATE} {PRIVATE} {PRIVATE} Why?"]
+    cid = await world.loop.offer(source_kind="curiosity_run", source_ref="curiosity_run:n2", question="Q?")
+    await world.loop.tick()
+    row = world.store.rows[cid]
+    assert world.relay.invites == []
+    assert row["status"] == "failed" and row["status_reason"] == cl.MESH_EDGE_MOSTLY_WITHHELD
+    assert row["pending_prompt"] is None
+    notes = [p for p in world.pushed if p.get("kind") == cl.CONSULT_TURN_KIND and "most of its text" in json.dumps(p)]
+    assert notes, "Hub chat says why it stopped"
+
+
+def test_withheld_fraction_counts_readable_words_only():
+    assert cl.withheld_fraction("a b c d", "a b c d") == 0.0
+    assert cl.withheld_fraction("a b c d", f"a {REDACTION_MARKER}") == 0.75
+    assert cl.withheld_fraction("", "") == 0.0
+    noted = cl.with_redaction_note(f"a b {REDACTION_MARKER}")
+    assert cl.withheld_fraction(noted, noted) == 0.0, "Hub's own note is not counted as Claude-readable words"

@@ -245,3 +245,19 @@ def test_load_guard_caches_the_index_instead_of_rebuilding(monkeypatch):
     second = mesh_edge.load_guard("postgresql://cache-test/x", ttl_sec=60)
     assert first is second and len(calls) == 1
     mesh_edge._cache.clear()
+
+
+def test_page_versions_repeating_sentences_are_stored_once_and_every_load_logs_its_size(monkeypatch, caplog):
+    # Thread cf5d4218097a: the fold writes a page version nightly and old versions stay guarded.
+    # A sentence repeated across versions is one phrase, and each load logs rows / sentences /
+    # phrases / load time so growth of the guarded set is visible.
+    versions = [{"concept_id": "page:juniper", "content": PAGE + (" A new line about the garden was added today." * i)}
+                for i in range(3)]
+    guard = MeshEdgeGuard.from_texts(guard_texts_from_rows(versions, []))
+    assert guard.source_rows == 3 and guard.source_sentences == 9 and len(guard.phrases) == 3
+    monkeypatch.setattr(mesh_edge, "_load_sync", lambda _dsn: guard)
+    with caplog.at_level("INFO", logger="orion.memory.mesh_edge"):
+        mesh_edge.load_guard("postgresql://nobody@127.0.0.1:1/size-log", ttl_sec=0)
+    line = next(r.getMessage() for r in caplog.records if "mesh_edge_guard_loaded" in r.getMessage())
+    assert "rows=3 sentences=9 phrases=3" in line and "load_ms=" in line
+    assert "Robin" not in line

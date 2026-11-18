@@ -8,8 +8,8 @@ worked. But the engine gets too many facts wrong to be the fact layer under the 
 
 - It left the hotel stay in the trip city open, so "[subject] is in [trip city]" is still a current fact.
 - 14% of a 50-entity sample are duplicates. The bar was under 10%.
-- 7 of the 15 facts it marked "no longer true" were still true. One of them is "[subject] refers to
-  [spouse] as [her] wife".
+- 7 of the 15 facts it marked "no longer true" were still true. One of them is a family fact:
+  [removed: private memory].
 
 It is also slow: about 4 minutes of a held agent seat per short memory sentence.
 
@@ -53,7 +53,7 @@ UNVERIFIED, and so was the engine's quality on Orion's data.
 | [trip city] stay dated as a stay, none left open | **FAIL** | 3 trip facts were closed correctly. "until Wednesday" closed on 10-07, "another night" closed on 10-07 07:30, and "team meeting" closed late, on 10-18. Two facts are still current: "[subject] is staying at a hotel in [trip city], so [subject] is in [trip city]" and "[subject] is staying at the [trip hotel]". |
 | [pet] is a dog current, "cat" invalidated or absent | PASS | "el [pet] is a dog" is current, plus a current "el [pet] is not a cat". No episode ever said "cat", so there was nothing to invalidate. |
 | el [pet] / [pet] is one entity | PASS | 1 entity |
-| [spouse] / "my [spouse alias]" is one entity | PASS | 1 entity. "my wife" in Juniper's own messages resolved to [spouse]. |
+| [spouse] / "my [spouse alias]" is one entity | PASS | 1 entity. [removed: private memory] |
 | Duplicate entities under 10% (50 hand-judged) | **FAIL** | 7/50 = 14%. It is still 5/50 = 10% if the two borderline calls (dBA, gpu3) are dropped. |
 
 ### Invalidation quality (hand-judged, all 15 invalidated facts)
@@ -61,19 +61,16 @@ UNVERIFIED, and so was the engine's quality on Orion's data.
 8 were right:
 
 - the trip-city stays;
-- "on her way home from the hospital";
+- [removed: private memory];
 - "36 PRs in the last 24 hours";
-- the dated surgery-tomorrow messages;
+- [removed: private memory];
 - the 12:48 mailbox sighting.
 
 7 were wrong:
 
-- "[subject] refers to [spouse] as [her] wife". A later unrelated message marked it no longer true.
-- "needs to spend time with [her] wife".
+- [removed: private memory] (2 family facts). A later unrelated message marked them no longer true.
 - "spends all [her] time with Orion".
-- "Catherine is [spouse]'s sister and Alice's mom".
-- "[spouse] might have multiple surgeries through December".
-- Both "the surgery is intended to improve vascular capabilities" facts.
+- [removed: private memory] (4 facts about family members and their health).
 
 A wrongly retired true fact is the dangerous failure the spec named. Here it happens to about half of
 all invalidations.
@@ -81,7 +78,7 @@ all invalidations.
 ### Other quality findings
 
 - 11 entity summaries call [subject] "he". She is she/her. Graphiti's summary prompt assumed a gender.
-- The [spouse] summary says she is "Alice's mother". The source says Catherine is Alice's mother.
+- The [spouse] summary gets a family relationship wrong: [removed: private memory].
 - There are junk entities: "I", "Speaker", "fact", "people", "system". The episodes are written in
   Orion's first person ("Juniper told me…"), and Graphiti turned the narrator into entities.
 - There is a deterministic graphiti 0.19 + FalkorDB bug: an entity name containing `%` ("38% outreach
@@ -358,14 +355,14 @@ Runs:
 
 ### lives in [home city] is current
 
-- [CURRENT] [subject] -[LIVES_IN]-> [home city], UT: "We live in [home city], UT." valid_at=2026-08-15T02:38:40.723711+00:00 invalid_at=None expired_at=None
-- [CURRENT] [subject] -[CORRECTED]-> Circe node: "[subject] corrected me that she lives in [home city], Utah, not [trip city]." valid_at=2026-10-06T03:50:17.429363+00:00 invalid_at=None expired_at=None
-- [CURRENT] Orion -[LIVES_IN]-> [home city], UT: "[subject] and Orion live in [home city], Utah." valid_at=2026-10-05T03:51:48.036489+00:00 invalid_at=None expired_at=None
-- [CURRENT] Orion -[LIVES_IN]-> [home city], UT: "We live in [home city], UT." valid_at=2026-08-15T02:38:40.723711+00:00 invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=2026-08-15T02:38:40.723711+00:00 invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=2026-10-06T03:50:17.429363+00:00 invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=2026-10-05T03:51:48.036489+00:00 invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=2026-08-15T02:38:40.723711+00:00 invalid_at=None expired_at=None
 
 ### lives in [trip city] absent or invalidated
 
-- [CURRENT] [subject] -[CORRECTED]-> Circe node: "[subject] corrected me that she lives in [home city], Utah, not [trip city]." valid_at=2026-10-06T03:50:17.429363+00:00 invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=2026-10-06T03:50:17.429363+00:00 invalid_at=None expired_at=None
 - [invalid] [subject] -[STAYING_IN]-> [trip city]: "[subject] is staying in [trip city] for another night." valid_at=2026-10-07T00:25:00+00:00 invalid_at=2026-10-07T07:30:00+00:00 expired_at=2026-11-13T21:16:18.133347+00:00
 - [CURRENT] [subject] -[NOT_LIVES_IN]-> [trip city]: "[subject] does not live in [trip city]." valid_at=2026-10-06T03:50:17.429363+00:00 invalid_at=None expired_at=None
 - [CURRENT] [subject] -[LOCATED_IN]-> [trip city]: "[subject] is staying at a hotel in [trip city], so [subject] is in [trip city]." valid_at=2026-10-05T03:07:00+00:00 invalid_at=None expired_at=None
@@ -373,8 +370,8 @@ Runs:
 - [invalid] [subject] -[ATTENDS]-> team meeting: "[subject] is in [trip city] for a team meeting." valid_at=2026-10-05T02:55:00+00:00 invalid_at=2026-10-18T08:40:00+00:00 expired_at=2026-11-13T21:58:40.397191+00:00
 - [CURRENT] team meeting -[LOCATED_IN]-> [trip city]: "The team meeting is in [trip city]." valid_at=2026-10-05T02:55:00+00:00 invalid_at=None expired_at=None
 - [CURRENT] The [trip hotel] -[LOCATED_IN]-> [trip city]: "The [trip hotel] is in [trip city]." valid_at=2026-10-05T03:07:00+00:00 invalid_at=None expired_at=None
-- [CURRENT] The [trip hotel] -[LOCATED_ON]-> Lake Michigan: "The [trip hotel] is right on the lake in [trip city], i.e., Lake Michigan." valid_at=2026-10-05T03:07:00+00:00 invalid_at=None expired_at=None
-- [CURRENT] Speaker -[NOTED_TIME_CHANGE]-> [trip city]: "Speaker noted that the 4:30am CDT wakeup is brutal due to the [trip city] time change." valid_at=2026-10-07T03:45:00+00:00 invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=2026-10-05T03:07:00+00:00 invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=2026-10-07T03:45:00+00:00 invalid_at=None expired_at=None
 
 ### [trip city] stay dated as a stay, none left open (window 2026-10-04..2026-10-09)
 
@@ -383,49 +380,49 @@ Runs:
 - [invalid] [subject] -[ATTENDS]-> team meeting: "[subject] is in [trip city] for a team meeting." valid_at=2026-10-05T02:55:00+00:00 invalid_at=2026-10-18T08:40:00+00:00 expired_at=2026-11-13T21:58:40.397191+00:00
 - [CURRENT] [subject] -[STAYING_AT]-> The [trip hotel]: "[subject] is staying at the [trip hotel]." valid_at=2026-10-05T03:07:00+00:00 invalid_at=None expired_at=None
 - [CURRENT] team meeting -[LOCATED_IN]-> [trip city]: "The team meeting is in [trip city]." valid_at=2026-10-05T02:55:00+00:00 invalid_at=None expired_at=None
-- [CURRENT] The [trip hotel] -[HAS_BRAND]-> Marriott: "The [trip hotel] is a Marriott hotel." valid_at=2026-10-05T03:07:00+00:00 invalid_at=None expired_at=None
-- [CURRENT] Speaker -[NOTED_TIME_CHANGE]-> [trip city]: "Speaker noted that the 4:30am CDT wakeup is brutal due to the [trip city] time change." valid_at=2026-10-07T03:45:00+00:00 invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=2026-10-05T03:07:00+00:00 invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=2026-10-07T03:45:00+00:00 invalid_at=None expired_at=None
 
 ### [pet] is a dog current, cat absent or invalidated
 
-- [CURRENT] [subject] -[REPORTED_INCIDENT_INVOLVING]-> [spouse]: "[subject] told me that [spouse] tripped over el [pet] and fell down the stairs, requiring a CT scan." valid_at=None invalid_at=None expired_at=None
-- [CURRENT] [subject] -[TOLD]-> I: "[subject] told me that el [pet] had a difficult post-anesthesia recovery night." valid_at=None invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=None invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=None invalid_at=None expired_at=None
 - [CURRENT] [subject] -[HAS_DOG]-> el [pet]: "[subject]'s dog is el [pet]." valid_at=2026-11-11T03:34:00+00:00 invalid_at=None expired_at=None
-- [CURRENT] [spouse] -[TRIPPED_OVER]-> el [pet]: "[spouse] tripped over el [pet]" valid_at=None invalid_at=None expired_at=None
-- [CURRENT] el [pet] -[REPORTED_BY]-> [subject]: "el [pet] had a difficult post-anesthesia recovery night, as reported by [subject]." valid_at=None invalid_at=None expired_at=None
-- [CURRENT] el [pet] -[WAS_TAKEN_TO_BY_JUNIPER]-> hospital: "[subject] took her dog, el [pet], to the hospital." valid_at=None invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=None invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=None invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=None invalid_at=None expired_at=None
 - [CURRENT] el [pet] -[IS_A]-> dog: "el [pet] is a dog" valid_at=2026-11-11T20:30:00+00:00 invalid_at=None expired_at=None
 - [CURRENT] el [pet] -[IS_NOT_A]-> cat: "el [pet] is not a cat" valid_at=2026-11-11T20:30:00+00:00 invalid_at=None expired_at=None
-- [CURRENT] el [pet] -[UNDERWENT_SURGICAL_PROCEDURE]-> surgery: "el [pet] underwent a surgical rectal prolapse repair." valid_at=None invalid_at=None expired_at=None
-- [CURRENT] el [pet] -[HAD_CONDITION]-> rectal prolapse: "el [pet] had rectal prolapse." valid_at=None invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=None invalid_at=None expired_at=None
+- [CURRENT] [removed: private memory] valid_at=None invalid_at=None expired_at=None
 
 ### [pet] (all name forms) is one entity
 
-- el [pet] (ea25f901-99ae-4e86-9314-6296b040bf47): el [pet] is [subject]'s dog, not a cat; [subject] asked the speaker to correct this in records. [subject] took el [pet] to the hospital for a surgical rectal prolapse repair after he would not stop scooting. 
+- el [pet] (ea25f901-99ae-4e86-9314-6296b040bf47): [removed: private memory]
 
 ### [spouse]/my [spouse alias] is one entity
 
-- [spouse] (16ed03d3-652b-43be-a1d9-a05084a083ba): [spouse] is [subject]'s [spouse alias], Catherine's sister, and Alice's mother. She has significant vascular health issues (DVT/PE), limited walking, and possible multiple surgeries through December; a surgery was 
+- [spouse] (16ed03d3-652b-43be-a1d9-a05084a083ba): [removed: private memory]
 
 ## Every fact the engine marked no longer true (15)
 
 Invalidation can be wrong (spec residual risk). Judge each by hand.
 
 - [invalid] [subject] -[SPENDS_TIME_WITH]-> Orion: "[subject] says he spends all his time with Orion." valid_at=2026-08-15T03:09:45.192963+00:00 invalid_at=2026-10-18T01:55:00+00:00 expired_at=2026-11-13T21:53:05.668506+00:00
-- [invalid] [subject] -[HAS_WIFE]-> [spouse]: "[subject] refers to [spouse] as his [spouse alias]." valid_at=2026-08-15T03:09:45.192963+00:00 invalid_at=2026-10-18T01:55:00+00:00 expired_at=2026-11-13T21:53:05.668496+00:00
-- [invalid] [subject] -[NEEDS_TO_SPEND_TIME_WITH]-> [spouse]: "[subject] says he needs to spend time with his [spouse alias] [spouse]." valid_at=2026-08-15T03:09:45.192963+00:00 invalid_at=2026-10-18T01:55:00+00:00 expired_at=2026-11-13T21:53:05.668512+00:00
-- [invalid] [subject] -[COMMUNICATES_WITH]-> Orion: "[subject] (to Orion): Yasss! I'm ready to dive into sleep. [spouse], my [spouse alias], has surgery tomorrow early so gotta be fresh to support. Best!" valid_at=2026-08-20T05:54:45.793561+00:00 invalid_at=2026-10-21T12:00:00+00:00 expired_at=2026-11-13T22:28:13.754089+00:00
-- [invalid] [subject] -[SUPPORTS]-> [spouse]: "[spouse], my [spouse alias], has surgery tomorrow early so gotta be fresh to support." valid_at=2026-08-20T05:54:45.793561+00:00 invalid_at=2026-10-21T12:00:00+00:00 expired_at=2026-11-13T22:28:13.754095+00:00
-- [invalid] [spouse] -[CURRENTLY_TRAVELING_FROM]-> hospital: "[spouse] is on her way home from the hospital." valid_at=2026-08-22T21:10:29.183196+00:00 invalid_at=2026-10-28T05:52:00+00:00 expired_at=2026-11-13T23:02:15.579546+00:00
-- [invalid] [spouse] -[COMMUNICATED_WITH]-> [subject]: "[subject] reports that [spouse] said she might be having multiple surgeries between here and December for her ongoing issues." valid_at=2026-09-09T00:00:00+00:00 invalid_at=2026-11-03T21:01:00+00:00 expired_at=2026-11-14T00:11:34.958713+00:00
+- [invalid] [removed: private memory] valid_at=2026-08-15T03:09:45.192963+00:00 invalid_at=2026-10-18T01:55:00+00:00 expired_at=2026-11-13T21:53:05.668496+00:00
+- [invalid] [removed: private memory] valid_at=2026-08-15T03:09:45.192963+00:00 invalid_at=2026-10-18T01:55:00+00:00 expired_at=2026-11-13T21:53:05.668512+00:00
+- [invalid] [removed: private memory] valid_at=2026-08-20T05:54:45.793561+00:00 invalid_at=2026-10-21T12:00:00+00:00 expired_at=2026-11-13T22:28:13.754089+00:00
+- [invalid] [removed: private memory] valid_at=2026-08-20T05:54:45.793561+00:00 invalid_at=2026-10-21T12:00:00+00:00 expired_at=2026-11-13T22:28:13.754095+00:00
+- [invalid] [removed: private memory] valid_at=2026-08-22T21:10:29.183196+00:00 invalid_at=2026-10-28T05:52:00+00:00 expired_at=2026-11-13T23:02:15.579546+00:00
+- [invalid] [removed: private memory] valid_at=2026-09-09T00:00:00+00:00 invalid_at=2026-11-03T21:01:00+00:00 expired_at=2026-11-14T00:11:34.958713+00:00
 - [invalid] [subject] -[LOCATED_IN]-> [trip city]: "[subject] is in [trip city] and will be there until Wednesday." valid_at=2026-10-05T02:55:00+00:00 invalid_at=2026-10-07T00:00:00+00:00 expired_at=2026-11-13T20:36:25.713701+00:00
 - [invalid] [subject] -[ATTENDS]-> team meeting: "[subject] is in [trip city] for a team meeting." valid_at=2026-10-05T02:55:00+00:00 invalid_at=2026-10-18T08:40:00+00:00 expired_at=2026-11-13T21:58:40.397191+00:00
 - [invalid] [subject] -[STAYING_IN]-> [trip city]: "[subject] is staying in [trip city] for another night." valid_at=2026-10-07T00:25:00+00:00 invalid_at=2026-10-07T07:30:00+00:00 expired_at=2026-11-13T21:16:18.133347+00:00
-- [invalid] [subject] -[TOLD]-> Speaker: "[subject] told me that Catherine is [spouse]'s sister and Alice's mom." valid_at=2026-10-20T07:05:00+00:00 invalid_at=2026-11-03T21:01:00+00:00 expired_at=2026-11-14T00:11:34.958718+00:00
+- [invalid] [removed: private memory] valid_at=2026-10-20T07:05:00+00:00 invalid_at=2026-11-03T21:01:00+00:00 expired_at=2026-11-14T00:11:34.958718+00:00
 - [invalid] [subject] -[HAS_MERGED_PULL_REQUESTS]-> Pull Requests: "[subject] had 36 merged Pull Requests in the last 24 hours." valid_at=2026-10-20T07:05:00+00:00 invalid_at=2026-10-21T07:05:00+00:00 expired_at=2026-11-13T22:17:36.946523+00:00
-- [invalid] [subject] -[MENTIONED]-> surgery: "[subject] mentioned that the surgery is intended to improve [spouse]'s vascular capabilities." valid_at=2026-10-23T20:20:00+00:00 invalid_at=2026-10-24T03:53:00+00:00 expired_at=2026-11-13T22:39:29.863521+00:00
-- [invalid] surgery -[INTENDED_TO_IMPROVE]-> vascular capabilities: "the surgery is intended to improve [spouse]'s vascular capabilities" valid_at=2026-10-23T20:20:00+00:00 invalid_at=2026-10-24T03:53:00+00:00 expired_at=2026-11-13T22:39:29.863515+00:00
-- [invalid] [spouse] -[LOCATED_AT]-> community mailbox: "[spouse] was at the mailbox when the camera matched her at 12:48 today." valid_at=2026-11-03T12:48:00+00:00 invalid_at=2026-11-03T21:01:00+00:00 expired_at=2026-11-14T00:28:44.612127+00:00
+- [invalid] [removed: private memory] valid_at=2026-10-23T20:20:00+00:00 invalid_at=2026-10-24T03:53:00+00:00 expired_at=2026-11-13T22:39:29.863521+00:00
+- [invalid] [removed: private memory] valid_at=2026-10-23T20:20:00+00:00 invalid_at=2026-10-24T03:53:00+00:00 expired_at=2026-11-13T22:39:29.863515+00:00
+- [invalid] [removed: private memory] valid_at=2026-11-03T12:48:00+00:00 invalid_at=2026-11-03T21:01:00+00:00 expired_at=2026-11-14T00:28:44.612127+00:00
 
 ## Duplicate sample (hand-judged)
 
@@ -434,10 +431,10 @@ Invalidation can be wrong (spec residual risk). Judge each by hand.
 - [ok] white wires (vs: black wires)
 - [ok] cat -- generic, not a duplicate
 - [ok] self-inquiry organ (vs: cognitive organ)
-- [DUP] [name] -- same person as "[subject]'s son"
+- [DUP] [removed: private memory]
 - [ok] contractor
 - [ok] v2 tool
-- [ok] [spouse]
+- [ok] [removed: private memory]
 - [ok] The [trip hotel] (vs: The Legend of Zelda, A Link to the Past)
 - [ok] GitHub Issues board (vs: GitHub CLI)
 - [ok] corporate card
@@ -447,28 +444,28 @@ Invalidation can be wrong (spec residual risk). Judge each by hand.
 - [ok] nostalgia
 - [ok] Tracking and Data Relay Satellite (vs: National Aeronautics and Space Administration, real data)
 - [ok] Claude Haiku 4.5 (vs: Claude Sonnet 4.6, Claude)
-- [DUP] recovering patient -- "recovering patient" is el [pet] (summary says so)
+- [DUP] [removed: private memory]
 - [ok] stance parallelization
 - [ok] Deep Space Network (vs: latent-action-space claim, National Aeronautics and Space Administration)
 - [ok] biometrics prediction error (vs: prediction.surprise.v1, prediction layer)
 - [DUP] Cursor (vs: Cursor seat) -- same as "Cursor seat"
 - [ok] plumbing questions (vs: curiosity questions)
 - [ok] porch
-- [ok] Salt Lake City (vs: Lake Michigan)
+- [ok] [removed: private memory]
 - [ok] system (vs: system prompt, Nintendo Entertainment System, reactive system) -- generic junk entity, not a duplicate
 - [ok] drift
-- [ok] dog -- a dog [child] wants, not el [pet]
+- [ok] [removed: private memory]
 - [ok] Features
 - [ok] crate
 - [ok] prediction.surprise.v1 (vs: prediction layer, biometrics prediction error)
-- [ok] walkway forecasts (vs: walkway cam, walkway)
-- [ok] viral infection
+- [ok] [removed: private memory]
+- [ok] [removed: private memory]
 - [ok] Claude Sonnet 4.6 (vs: Claude Haiku 4.5, Claude)
 - [ok] field-note feature (vs: Field of Fear)
 - [ok] people -- aggregate junk entity, not a duplicate
-- [ok] Marriott
+- [ok] [removed: private memory]
 - [ok] expected presence
-- [ok] Arturo Sol
+- [ok] [removed: private memory]
 - [ok] pending traces
 - [DUP] Gigabyte G481-HA0 high-density GPU expansion node (vs: busiest GPU lanes, Circe node) -- same machine as "Circe node" (Circe node summary names this model)
 - [ok] language model

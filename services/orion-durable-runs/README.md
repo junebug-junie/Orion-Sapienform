@@ -500,6 +500,33 @@ runs the automatic half.
   orion-hub, orion-actions and orion-cortex-orch before orion-durable-runs.
 - **Off:** `PR_FIELD_NOTES_ENABLED=false` and restart: no poll, no runs, no code records.
 
+### The day dream: night tick + `dream.day` (2026-11-18, Patch 2a)
+
+Spec: `docs/superpowers/specs/2026-11-17-nightly-day-dream-design.md`, Patch 2 (2a: the plan is stored, not handed to
+Prime). Contract: `orion/schemas/dream_day.py`. Code: `app/dream_day_poll.py` (tick), `app/dream_day_graph.py` (the
+run), `app/dream_day_store.py` (reads + the one write), `orion/memory/dream_day.py` (parse, ref check, memories, grade).
+
+- **When.** Every 600 s inside the Denver window `[DREAM_DAY_START_HOUR_LOCAL, DREAM_DAY_END_HOUR_LOCAL)` (01:00-03:00),
+  one run `dream-day-<day>` for the Denver day that just closed; a failed run gets one retry (`-a2`) while a whole turn
+  still fits. The window end is the run's deadline: a missed night is a missed night. `GET /health` ->
+  `dream_day_tick`. Hand trigger: `POST /dream-day/run?day=YYYY-MM-DD` (a closed day of the last week, 3 h deadline,
+  same idempotency). Dry run: `GET /dream-day/plan[?day=...]`.
+- **Run.** `gather` (no hold, once): the day's `dream_cycle` rows with hypotheses and pair answers, Prime's held
+  concerns (read-only), and `GET /temporal-self/now?organ=dream` (the integration read-back). `dream`: one unified
+  turn on `DREAM_DAY_ROUTE` (`memory_distill`, the gpu1 agent seat), `require_lookup=False`; the turn runs
+  `python -P -m orion.dig dream-day <day>` first (roundup + every dig, read in the governor). A missing read receipt
+  or a reply with no JSON answer is a failed attempt. `persist`: every ref must resolve (experience, act,
+  dream_cycle, dream_hypothesis, harness_turn_trace, chat_turn) or its item is dropped and counted; at most 5
+  memories go through `orion.memory.episode.validate` and are written (`channel='dream'`, voice `orion_thought`,
+  ids from (day, index)) with the `dream_day` row in one transaction; the now's `experience:` cites go to
+  `POST /temporal-self/now/use`.
+- **Grade.** `produced` only when at least one memory row was written and read back; otherwise
+  "no lasting trace". The act is `dream.cycle make` (the existing family; key = run id), closed with that grade.
+- **Trace.** `dream_day` row per night; `temporal_self_event` kind `dream_day` (the chronicle reads the row);
+  `episode_memory` rows with `channel='dream'`; `experience_use` rows citing `dream_day:<day>`.
+  Eval: `python3 services/orion-durable-runs/evals/run_dream_day_eval.py [--day D]` (each dream memory beside its refs).
+- **Off.** `DREAM_DAY_ENABLED=false`, restart. Memories are listable/retirable by `run_id` (`channel='dream'`).
+
 ### Daily reminiscence: overnight tick + `reminiscence.episode` (2026-11-07, design Patch 2)
 
 Once a day Orion visits one week of their own past and writes five short hops about it (design
@@ -586,10 +613,16 @@ submits it on Prime's order. It runs on the same single-step harness graph as co
 attempt retried with its findings. The full reply is checkpointed; Hub reads it from `GET /runs/{run_id}`
 (`harness_steps.carry.text`). Run id `intention-<concern_id>` (one per take-on). Run act: `make:durable.intention`
 (`app/run_acts.py`). Its bid BINDS (`app/run_bids.py` `BINDING_FAMILIES`) as family `durable.intention`, TIER 1
-(Juniper 2026-11-13; `config/physiology/families.yaml`, window 86400 s, agent lanes): hold end = min(opened +
-86400 s, the promise's horizon - 1800 s), admitted at hold end, never dropped. Prime cancels the run
+(Juniper 2026-11-13; `config/physiology/families.yaml`, window 86400 s, agent lanes): hold end = min(the run's
+`requested_at` + 86400 s, the promise's horizon - the deadline margin), admitted at hold end, never dropped. Its RANK
+is the age of the promise (#3640, Juniper 2026-11-18; family `hunger_from: want_opened`): the want opens at
+`brief.promised_at` (the promise's `harness_turn_trace.created_at`), and rank = 1 - exp(-age / 86400 s), never reset
+by another carry's close and never scaled by the family's mean outcome. A fresh promise still ranks ~0. Replay:
+`evals/intention_promise_age_replay.py [--live --dsn ...]`. Prime cancels the run
 (`POST /runs/{id}/cancel`) when it lets the concern go or the horizon passes. ADDITIVE workflow value: deploy
 orion-sql-writer, orion-hub, orion-actions and orion-cortex-orch before this service, and orion-mind last.
+`brief.promised_at` (#3640) is additive on `extra="forbid"`: deploy THIS service before orion-hub (an older one answers
+422; Hub reports `unavailable` and Prime re-sends). Roll back orion-hub before this service.
 
 ### Admitted Orion's Day letter (`orion_day.letter`): Prime's end-of-day turn (2026-11-12)
 

@@ -13,17 +13,24 @@ Pure rules (caps, the hour bucket, receipt, prompt, parser, PR comment text): ``
    all. No held thread: nothing is submitted. The threads are marked ``reading`` BEFORE the submit,
    so a Hub restart finds the round and never submits a second one for the same hour.
 3. **Orion's reply** is cut into one section per thread by code and stored as an ``orion`` turn on
-   each thread. A reply with no usable section for a thread is stored whole on it, marked
-   ``unparsed`` and ``requeued``: it is sent nowhere, it does NOT use the thread's one question round,
-   and the thread is read again next hour (a parse accident is not Orion's silence). It counts as a
+   each thread. A reply with no usable section for a thread is marked ``unparsed`` and ``requeued``:
+   it is sent nowhere, it does NOT use the thread's one question round, and the thread is read again
+   next hour (a parse accident is not Orion's silence). The whole reply is stored on the thread only
+   in a round of one thread; in a larger round it holds other threads' sections, so it stays only on
+   the round's durable run. It counts as a
    failure toward the cap below. Empty text, a cut-short turn or a failed run fails the round: the
    threads go back to ``held`` for the next hour, and after 3 failures in a row a thread stays
    ``failed`` until a new session message re-holds it. A run the body never gave a turn in time
    (``core.is_body_refusal``: past its admission deadline before any turn, or still waiting for the
    pool 30 min after it) is not a failure: the threads are held again with their count unchanged,
-   until the oldest unread message is ``core.BODY_REFUSAL_MAX_AGE_SEC`` old.
+   until the NEWEST unread message is ``core.BODY_REFUSAL_MAX_AGE_SEC`` old (a new message restarts
+   that clock and zeroes the count). A prompt the GPU pool refuses as too big for the lane
+   (``core.is_sizing_refusal``) is Hub's sizing: no strike, and Hub halves its prompt budget.
 4. **The PR comment**: for a thread with a pull request and real questions Hub posts one comment on
-   the PR with Orion's GitHub token. Code does it, not the model.
+   the PR with Orion's GitHub token, only while the PR is open. Code does it, not the model. The
+   prompt tells Orion when a thread's PR is closed or merged.
+6. **Delivery**: Orion's questions are shown once to each session that asks for them (sender or
+   branch), and stay pending for new sessions until a session replies on the thread.
 5. **One round of questions per thread** (``core.MAX_QUESTION_ROUNDS_PER_THREAD``): once Orion has asked
    on a thread, a session reply is still read at the next round-up, but the prompt marks the thread
    ANSWER PHASE and what Orion writes for it is stored as a closing note (status ``closed``): never a
@@ -67,6 +74,7 @@ _FENCE_SECRET = secrets.token_hex(16)
 # A run with no end in sight this long after its own deadline: Hub stops waiting for it.
 OVERDUE_GRACE_SEC = 1800.0
 MIN_PROMPT_CHARS = 8000
+BUDGET_RESTORE_SEC = 86400.0
 UNPARSED_REASON = "orion_reply_unparsed"
 
 
@@ -284,14 +292,16 @@ async def fail_round(pool, roundup_id: str, *, reason: str, text_for: Callable[[
     out: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # A body refusal on a thread whose oldest message of this round is older than the backstop
-            # counts after all (``core.BODY_REFUSAL_MAX_AGE_SEC``): ``o.n`` is the strike per thread. Read
-            # before the round's turns are released below (the age is taken from them).
+            # A body refusal on a thread whose NEWEST message of this round is older than the backstop
+            # counts after all (``core.BODY_REFUSAL_MAX_AGE_SEC``): ``o.n`` is the strike per thread. The
+            # newest, not the oldest: a fresh session message restarts the age clock (and ``add_message``
+            # zeroes the strike count), so a thread a session still writes on is never ended by the body's
+            # heat. Read before the round's turns are released below (the age is taken from them).
             rows = await conn.fetch(
                 "UPDATE orion_session_thread h SET roundup_failures = h.roundup_failures + o.n, "
                 "status = CASE WHEN h.roundup_failures + o.n >= $2 THEN 'failed' ELSE 'held' END, status_reason = $3, "
                 "updated_at = now() FROM (SELECT x.thread_id, x.status_reason, CASE WHEN $4::int = 1 OR "
-                "(SELECT min(s.created_at) FROM orion_session_turn s WHERE s.thread_id = x.thread_id "
+                "(SELECT max(s.created_at) FROM orion_session_turn s WHERE s.thread_id = x.thread_id "
                 "AND s.roundup_id = $1 AND s.speaker = 'session') < now() - make_interval(secs => $5::float8) "
                 "THEN 1 ELSE 0 END AS n FROM orion_session_thread x "
                 "WHERE x.last_roundup_id = $1 AND x.status = 'reading' FOR UPDATE OF x) o "
@@ -319,21 +329,22 @@ async def fail_round(pool, roundup_id: str, *, reason: str, text_for: Callable[[
     return out
 
 
-async def requeue_unparsed(pool, *, thread_id: str, roundup_id: str, body: str, meta: Dict[str, Any],
+async def requeue_unparsed(pool, *, thread_id: str, roundup_id: str, body: Optional[str], meta: Dict[str, Any],
                            reason: str, text_for: Callable[[int], str]
                            ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[Dict[str, Any]], bool]:
     """A thread of the round whose reply Hub could not cut: Orion's whole reply is kept as an
     ``orion`` turn (``meta.requeued``: never handed to a session, never a question round), the
     thread's session turns of this round are unread again, and the thread counts one failure (held
-    under the cap, ``failed`` at it) with a Hub line. Once per (thread, round). Returns
-    (thread, Orion turn, Hub turn or None, Orion turn created)."""
+    under the cap, ``failed`` at it) with a Hub line. Once per (thread, round). ``body`` None: no
+    Orion turn is stored (the reply holds other threads' sections; it stays on the durable run).
+    Returns (thread, Orion turn or None, Hub turn or None, Orion turn created)."""
     meta = {**meta, "unparsed": True, "requeued": True}
     async with pool.acquire() as conn:
         async with conn.transaction():
             rec = await conn.fetchrow(
                 f"SELECT {_TURN_COLUMNS} FROM orion_session_turn WHERE thread_id = $1 AND roundup_id = $2 "
                 "AND speaker = 'orion' LIMIT 1", thread_id, roundup_id)
-            created = rec is None
+            created = rec is None and body is not None
             if created:
                 rec = await conn.fetchrow(
                     "INSERT INTO orion_session_turn (turn_id, thread_id, speaker, body, roundup_id, meta, created_at) "
@@ -357,35 +368,71 @@ async def requeue_unparsed(pool, *, thread_id: str, roundup_id: str, body: str, 
                     "INSERT INTO orion_session_turn (turn_id, thread_id, speaker, body, roundup_id, meta, created_at) "
                     f"VALUES ($1, $2, 'hub', $3, $4, $5::jsonb, clock_timestamp()) RETURNING {_TURN_COLUMNS}",
                     _new_id(), thread_id, text_for(int(thread["roundup_failures"])), roundup_id,
-                    json.dumps({"reply_unparsed": True, "reason": reason[:300]})))
-    return _thread(thread), _turn(rec), hub, created
+                    json.dumps({"reply_unparsed": True, "reason": reason[:300],
+                                **({} if body is not None else {"reply_not_stored": True})})))
+    return _thread(thread), (_turn(rec) if rec is not None else None), hub, created
 
 
 async def set_pr_comment_url(pool, turn_id: str, url: str) -> None:
     await pool.execute("UPDATE orion_session_turn SET pr_comment_url = $2 WHERE turn_id = $1", turn_id, url)
 
 
+# Orion's questions stay pending until the thread moves on: a session that pulled them and exited
+# without answering must not lose them for every later session on the branch. Each session is shown
+# them once (``meta.delivered_to`` holds the session ids that claimed them), so a session's own later
+# prompts do not repeat them. The thread moves on when a session writes on it after the questions, or
+# Orion writes a later turn there (a closing note: a reply that arrived while Orion was reading sits
+# BEFORE the question turn). "No questions" and closing notes ask nothing: shown once, to one session.
+# Only turns claimed under this rule (``delivered_to`` present) and younger than
+# ``REDELIVERY_MAX_AGE_SEC`` are handed out again: questions delivered before it shipped stay delivered.
+MAX_DELIVERIES_PER_TURN = 20
+REDELIVERY_MAX_AGE_SEC = 14 * 86400
+_REDELIVERABLE_SQL = (
+    "t.meta ? 'delivered_to' "
+    "AND NOT (t.meta @> '{\"no_questions\": true}'::jsonb) AND NOT (t.meta @> '{\"closing_note\": true}'::jsonb) "
+    "AND jsonb_array_length(t.meta->'delivered_to') < " + str(MAX_DELIVERIES_PER_TURN) + " "
+    "AND t.created_at > now() - make_interval(secs => " + str(REDELIVERY_MAX_AGE_SEC) + ") "
+    "AND NOT EXISTS (SELECT 1 FROM orion_session_turn r WHERE r.thread_id = t.thread_id AND r.seq > t.seq "
+    "AND (r.speaker = 'session' OR (r.speaker = 'orion' "
+    "AND NOT (COALESCE(r.meta, '{}'::jsonb) @> '{\"requeued\": true}'::jsonb))))"
+)
+
+
+def _claimable_sql(session_param: str) -> str:
+    """A turn a caller may be shown: never handed back, or (for a named session) a question turn no
+    session has replied to and this session has not been shown."""
+    return (f"(t.delivered_at IS NULL OR ({session_param} <> '' AND {_REDELIVERABLE_SQL} "
+            f"AND NOT (COALESCE(t.meta->'delivered_to', '[]'::jsonb) ? {session_param})))")
+
+
 async def pending_for(pool, *, session_id: str = "", branch: str = "", limit: int = 20) -> List[Dict[str, Any]]:
-    """Orion's turns not yet handed back, for the session that sent the thread (or any session that
-    wrote on it) OR for the thread's branch."""
+    """Orion's turns not yet handed back to THIS session, for the session that sent the thread (or any
+    session that wrote on it) OR for the thread's branch. A question turn stays pending for a new
+    session until a session replies on the thread (``_REDELIVERABLE_SQL``)."""
     rows = await pool.fetch(
-        "SELECT t.turn_id, t.thread_id, t.body, t.meta, t.roundup_id, t.pr_comment_url, t.created_at, "
+        "SELECT t.turn_id, t.thread_id, t.body, t.meta, t.roundup_id, t.pr_comment_url, t.created_at, t.delivered_at, "
         "h.title, h.branch, h.pr_number, h.pr_url, h.status "
         "FROM orion_session_turn t JOIN orion_session_thread h ON h.thread_id = t.thread_id "
-        "WHERE t.speaker = 'orion' AND t.delivered_at IS NULL "
+        f"WHERE t.speaker = 'orion' AND {_claimable_sql('$1')} "
         "AND NOT (COALESCE(t.meta, '{}'::jsonb) @> '{\"requeued\": true}'::jsonb) AND ("
         " ($1 <> '' AND (h.session_id = $1 OR EXISTS (SELECT 1 FROM orion_session_turn s WHERE s.thread_id = t.thread_id"
         " AND s.speaker = 'session' AND s.session_id = $1)))"
-        " OR ($2 <> '' AND h.branch = $2)) ORDER BY t.seq LIMIT $3",
+        " OR ($2 <> '' AND h.branch = $2)) ORDER BY (t.delivered_at IS NOT NULL), t.seq LIMIT $3",
         session_id or "", branch or "", limit)
     return [_turn(r) for r in rows]
 
 
-async def mark_delivered(pool, turn_ids: Sequence[str]) -> int:
+async def mark_delivered(pool, turn_ids: Sequence[str], *, session_id: str = "") -> int:
+    """Claim turns for one caller. Returns how many this caller claimed (a turn is claimed once per
+    session; without a session id, once in total). Atomic per row, so two hooks of one session never
+    both show a turn."""
     rows = await pool.fetch(
-        "UPDATE orion_session_turn SET delivered_at = now() WHERE turn_id = ANY($1::text[]) AND speaker = 'orion' "
-        "AND delivered_at IS NULL AND NOT (COALESCE(meta, '{}'::jsonb) @> '{\"requeued\": true}'::jsonb) "
-        "RETURNING turn_id", list(turn_ids))
+        "UPDATE orion_session_turn t SET delivered_at = COALESCE(t.delivered_at, now()), meta = CASE WHEN $2 = '' "
+        "THEN t.meta ELSE jsonb_set(COALESCE(t.meta, '{}'::jsonb), '{delivered_to}', "
+        "COALESCE(t.meta->'delivered_to', '[]'::jsonb) || to_jsonb($2::text)) END "
+        f"WHERE t.turn_id = ANY($1::text[]) AND t.speaker = 'orion' AND {_claimable_sql('$2')} "
+        "AND NOT (COALESCE(t.meta, '{}'::jsonb) @> '{\"requeued\": true}'::jsonb) "
+        "RETURNING t.turn_id", list(turn_ids), session_id or "")
     return len(rows)
 
 
@@ -457,6 +504,34 @@ class GitHubCommenter:
             return None
 
 
+    async def pr_state(self, pr_number: int, *, timeout_sec: float = 5.0) -> Optional[str]:
+        """``open``, ``closed`` or ``merged`` for a pull request of the configured repo, or None when
+        Hub cannot tell (no token, an API error). Read-only; never raises."""
+        import httpx
+
+        token = (self._token_provider() or "").strip()
+        if not token or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", self.repo):
+            return None
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
+                   "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "orion-hub"}
+        try:
+            async with httpx.AsyncClient(timeout=min(self.timeout_sec, timeout_sec)) as client:
+                pull = await client.get(f"{self.api_base}/repos/{self.repo}/pulls/{int(pr_number)}", headers=headers)
+            return self.state_of(pull.status_code, pull.json() if pull.status_code == 200 else {})
+        except Exception as exc:  # noqa: BLE001 -- the prompt is still built, without the line
+            logger.warning("session_thread_pr_state_failed pr=%s err=%s", pr_number, type(exc).__name__)
+            return None
+
+    @staticmethod
+    def state_of(status_code: int, pull: Dict[str, Any]) -> Optional[str]:
+        """A pull request's state from GitHub's ``GET /pulls/<n>``; None when it is not readable."""
+        if status_code != 200:
+            return None
+        state = str(pull.get("state") or "")
+        if state == "closed" and (pull.get("merged") or pull.get("merged_at")):
+            return "merged"
+        return state if state in ("open", "closed") else None
+
     @staticmethod
     def target_refusal(status_code: int, pull: Dict[str, Any], branch: Optional[str]) -> Optional[str]:
         """Why this number must not get Orion's comment, or None when it may."""
@@ -502,6 +577,11 @@ class SessionRoundupLoop:
         self.orion_timeout_sec = orion_timeout_sec
         self.run_deadline_sec = run_deadline_sec
         self.prompt_max_chars = max(MIN_PROMPT_CHARS, int(prompt_max_chars))
+        # The budget a round is built to. Cut (down to MIN_PROMPT_CHARS) each time the GPU pool refuses a
+        # round's prompt as too big for the lane (``core.is_sizing_refusal``); back to the setting
+        # BUDGET_RESTORE_SEC after the last such refusal (the refusal can be brief: a role away) or on restart.
+        self.budget_chars = self.prompt_max_chars
+        self._budget_cut_at: Optional[datetime] = None
         self.tz_name = tz_name
         self._clock = clock
         self._lock = asyncio.Lock()
@@ -555,9 +635,10 @@ class SessionRoundupLoop:
             path = core.one_line((item or {}).get("path"), 500)
             if not text:
                 continue
-            text, cut = core.cap_text(text, core.SPEC_MAX_CHARS, what="spec")
+            text, cut = core.cap_spec(text, core.SPEC_MAX_CHARS, path=path, branch=core.one_line(branch, 300))
             if cut:
-                notes.append(f"Hub cut the spec {path} to {core.SPEC_MAX_CHARS} characters.")
+                notes.append(f"Hub cut the spec {path} to at most {core.SPEC_MAX_CHARS} characters "
+                             "(its last line says where, and where the full text is).")
             specs.append({"path": path, "text": text, "cut": cut})
         if len(list(spec or [])) > core.MAX_SPECS:
             notes.append(f"Hub kept the first {core.MAX_SPECS} spec files and dropped the rest.")
@@ -626,6 +707,9 @@ class SessionRoundupLoop:
         return self.last_tick
 
     async def _tick(self, pool) -> Dict[str, Any]:
+        if self._budget_cut_at is not None and (self._clock() - self._budget_cut_at).total_seconds() >= BUDGET_RESTORE_SEC:
+            logger.info("session_roundup_budget_restored budget=%s", self.prompt_max_chars)
+            self.budget_chars, self._budget_cut_at = self.prompt_max_chars, None
         reading = await threads_with_status(pool, core.STATUS_READING)
         if reading:
             # One round at a time: the next hour's round waits for this one to end.
@@ -648,10 +732,10 @@ class SessionRoundupLoop:
         if await roundup_exists(pool, roundup_id):
             return {"skipped": "roundup_already_ran_this_hour", "roundup_id": roundup_id, "due": len(due)}
         due.sort(key=lambda c: (c[1][0]["created_at"], c[0]["thread_id"]))
-        selection = core.select_for_prompt(due, budget_chars=self.prompt_max_chars, nonce=fence_nonce(roundup_id))
+        selection = core.select_for_prompt(due, budget_chars=self.budget_chars, nonce=fence_nonce(roundup_id))
         if not selection.sections:
             logger.warning("session_roundup_nothing_fits roundup=%s due=%s budget=%s", roundup_id, len(due),
-                           self.prompt_max_chars)
+                           self.budget_chars)
             return {"skipped": "nothing_fits", "due": len(due)}
         if selection.left_held:
             logger.info("session_roundup_left_held roundup=%s threads=%s", roundup_id, ",".join(selection.left_held))
@@ -690,6 +774,19 @@ class SessionRoundupLoop:
             out.append(({**thread, "answer_phase": phase}, new, earlier))
         return out
 
+    async def _with_pr_states(self, cands):
+        """Each candidate's thread with ``pr_state`` set from GitHub when Hub can read it: the prompt tells
+        Orion when a thread's pull request is closed or merged (Hub comments only on an open one). Only
+        when PR comments are on (otherwise Orion's questions never reach a PR anyway). Best effort."""
+        state_of = getattr(self._commenter, "pr_state", None)
+        numbers = sorted({int(c[0]["pr_number"]) for c in cands if c[0].get("pr_number")})
+        if not self.pr_comments or state_of is None or not numbers:
+            return cands
+        results = await asyncio.gather(*(state_of(n) for n in numbers), return_exceptions=True)
+        states = {n: r for n, r in zip(numbers, results) if isinstance(r, str)}
+        return [({**c[0], "pr_state": states.get(int(c[0]["pr_number"]))} if c[0].get("pr_number") else c[0], c[1], c[2])
+                for c in cands]
+
     async def _round(self, pool, roundup_id: str):
         threads = [t for t in await threads_with_status(pool, core.STATUS_READING) if t["last_roundup_id"] == roundup_id]
         turns = await thread_turns(pool, [t["thread_id"] for t in threads]) if threads else []
@@ -698,8 +795,9 @@ class SessionRoundupLoop:
         return threads, cands
 
     async def _submit(self, pool, roundup_id: str) -> Dict[str, Any]:
-        """Submit the round's one durable run. The prompt is built from what ``mark_round`` stored, so a
-        resubmit after a restart is the same request. Never a retry queue here: durable-runs down is
+        """Submit the round's one durable run. The prompt is built from what ``mark_round`` stored, plus
+        the threads' PR states and this process's budget, so a resubmit after a restart may differ; a 409
+        then adopts the run durable-runs already has. Never a retry queue here: durable-runs down is
         simply tried again next tick."""
         from orion.schemas.durable_run import DurableRunRequestV1
         from orion.schemas.resource_admission import ResourceRequirementV1
@@ -713,7 +811,8 @@ class SessionRoundupLoop:
                 await release_threads(pool, roundup_id, [t["thread_id"] for t in threads])
             return {"skipped": "round_has_no_turns", "roundup_id": roundup_id}
         nonce = fence_nonce(roundup_id)
-        selection = core.select_for_prompt(cands, budget_chars=self.prompt_max_chars, nonce=nonce)
+        cands = await self._with_pr_states(cands)
+        selection = core.select_for_prompt(cands, budget_chars=self.budget_chars, nonce=nonce)
         if selection.left_held:
             await release_threads(pool, roundup_id, selection.left_held)
         if not selection.sections:
@@ -836,19 +935,23 @@ class SessionRoundupLoop:
         next_at = core.next_roundup_at(self._clock(), self.interval_sec)
         for answer in answers:
             meta: Dict[str, Any] = {"model": model} if model else {}
-            if answer.unparsed and not answer.closing:
-                # A parse accident is not Orion asking: keep the words, send them nowhere, read again.
+            if answer.unparsed and (not answer.closing or answer.shared):
+                # A parse accident is not Orion asking: keep the words, send them nowhere, read again. A
+                # reply shared by several threads holds the others' sections (and session text Orion quoted
+                # in them): it is NOT stored on this thread, only on the round's durable run.
+                kept = not answer.shared
                 thread, turn, hub, created = await requeue_unparsed(
-                    pool, thread_id=answer.thread_id, roundup_id=roundup_id, body=answer.text, meta=meta,
-                    reason=UNPARSED_REASON,
-                    text_for=lambda n: core.unparsed_text(failures=n, next_at=next_at, tz_name=self.tz_name))
+                    pool, thread_id=answer.thread_id, roundup_id=roundup_id, body=answer.text if kept else None,
+                    meta=meta, reason=UNPARSED_REASON,
+                    text_for=lambda n, kept=kept: core.unparsed_text(failures=n, next_at=next_at, tz_name=self.tz_name,
+                                                                     kept=kept, roundup_id=roundup_id))
                 counts["unparsed"] += 1
-                if created:
+                if created and turn is not None:
                     self._push_turn(thread, turn)
                 if hub is not None:
                     self._push_turn(thread, hub)
-                logger.info("session_thread_reply_unparsed thread=%s roundup=%s failures=%s status=%s",
-                            answer.thread_id, roundup_id, thread.get("roundup_failures"), thread.get("status"))
+                logger.info("session_thread_reply_unparsed thread=%s roundup=%s failures=%s status=%s stored=%s",
+                            answer.thread_id, roundup_id, thread.get("roundup_failures"), thread.get("status"), kept)
                 continue
             if answer.unparsed:
                 meta["unparsed"] = True
@@ -898,10 +1001,21 @@ class SessionRoundupLoop:
     async def _fail(self, pool, roundup_id: str, reason: str) -> Dict[str, Any]:
         next_at = core.next_roundup_at(self._clock(), self.interval_sec)
         strike = not core.is_body_refusal(reason)
+        refusal_text_for = lambda n: core.body_refusal_text(reason=reason, next_at=next_at, tz_name=self.tz_name)  # noqa: E731
+        if core.is_sizing_refusal(reason) and self.budget_chars > MIN_PROMPT_CHARS:
+            # Hub built a prompt too big for the lane: Hub's sizing, not the thread's. Shrink and retry; a
+            # refusal at the floor budget is a strike (Hub cannot shrink further).
+            self.budget_chars = core.shrunk_budget(self.budget_chars, reason, floor=MIN_PROMPT_CHARS)
+            self._budget_cut_at = self._clock()
+            logger.warning("session_roundup_budget_shrunk roundup=%s budget=%s", roundup_id, self.budget_chars)
+            strike = False
+            budget = self.budget_chars
+            refusal_text_for = lambda n: core.sizing_refusal_text(  # noqa: E731
+                reason=reason, budget_chars=budget, next_at=next_at, tz_name=self.tz_name)
         failed = await fail_round(
             pool, roundup_id, reason=reason, strike=strike,
             text_for=lambda n: core.failure_text(reason=reason, failures=n, next_at=next_at, tz_name=self.tz_name),
-            refusal_text_for=lambda n: core.body_refusal_text(reason=reason, next_at=next_at, tz_name=self.tz_name))
+            refusal_text_for=refusal_text_for)
         for thread, turn in failed:
             self._push_turn(thread, turn)
         logger.warning("session_roundup_failed roundup=%s reason=%s strike=%s lines=%s", roundup_id, reason,
@@ -935,4 +1049,5 @@ class SessionRoundupLoop:
     def status(self) -> Dict[str, Any]:
         now = self._clock()
         return {"enabled": self.enabled, "interval_sec": self.interval_sec, "pr_comments": self.pr_comments,
+                "prompt_max_chars": self.prompt_max_chars, "budget_chars": self.budget_chars,
                 "next_roundup_at": core.next_roundup_at(now, self.interval_sec).isoformat(), "last_tick": self.last_tick}

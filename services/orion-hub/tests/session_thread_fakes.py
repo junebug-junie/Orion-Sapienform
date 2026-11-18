@@ -143,17 +143,17 @@ class FakeStore:
 
     async def fail_round(self, pool, roundup_id, *, reason, text_for, strike=True, refusal_text_for=None):
         out = []
-        oldest = {}
+        newest = {}
         for u in self.turns:
             if u["roundup_id"] == roundup_id and u["speaker"] == "session":
-                oldest.setdefault(u["thread_id"], u["created_at"])
+                newest[u["thread_id"]] = max(newest.get(u["thread_id"], u["created_at"]), u["created_at"])
                 u["roundup_id"] = None
         # The SQL ages against the database's now(); the fake against the real clock as well.
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=core.BODY_REFUSAL_MAX_AGE_SEC)
         for thread in self.threads.values():
             if thread["last_roundup_id"] == roundup_id and thread["status"] == "reading":
                 prior = thread.get("status_reason")
-                struck = strike or (thread["thread_id"] in oldest and oldest[thread["thread_id"]] < cutoff)
+                struck = strike or (thread["thread_id"] in newest and newest[thread["thread_id"]] < cutoff)
                 n = thread["roundup_failures"] + (1 if struck else 0)
                 thread.update(roundup_failures=n, status="failed" if n >= core.MAX_CONSECUTIVE_FAILURES else "held",
                               status_reason=reason[:300], updated_at=self.clock.now)
@@ -168,9 +168,9 @@ class FakeStore:
     async def requeue_unparsed(self, pool, *, thread_id, roundup_id, body, meta, reason, text_for):
         existing = next((u for u in self.turns if u["thread_id"] == thread_id and u["roundup_id"] == roundup_id
                          and u["speaker"] == "orion"), None)
-        created = existing is None
-        turn = existing or self._add_turn(thread_id, "orion", body, roundup_id=roundup_id,
-                                          meta={**meta, "unparsed": True, "requeued": True})
+        created = existing is None and body is not None
+        turn = existing if existing is not None or body is None else self._add_turn(
+            thread_id, "orion", body, roundup_id=roundup_id, meta={**meta, "unparsed": True, "requeued": True})
         thread = self.threads[thread_id]
         hub = None
         if thread["status"] == "reading" and thread["last_roundup_id"] == roundup_id:
@@ -181,35 +181,58 @@ class FakeStore:
                 if u["roundup_id"] == roundup_id and u["thread_id"] == thread_id and u["speaker"] == "session":
                     u["roundup_id"] = None
             hub = self._add_turn(thread_id, "hub", text_for(n), roundup_id=roundup_id,
-                                 meta={"reply_unparsed": True, "reason": reason[:300]})
-        return dict(thread), dict(turn), hub, created
+                                 meta={"reply_unparsed": True, "reason": reason[:300],
+                                       **({} if body is not None else {"reply_not_stored": True})})
+        return dict(thread), (dict(turn) if turn is not None else None), hub, created
 
     async def set_pr_comment_url(self, pool, turn_id, url):
         next(u for u in self.turns if u["turn_id"] == turn_id)["pr_comment_url"] = url
 
+    def _claimable(self, u, session_id):
+        if u["speaker"] != "orion" or u["meta"].get("requeued") is True:
+            return False
+        if u["delivered_at"] is None:
+            return True
+        meta = u["meta"]
+        return (bool(session_id) and "delivered_to" in meta and not meta.get("no_questions")
+                and not meta.get("closing_note") and len(meta["delivered_to"]) < srl.MAX_DELIVERIES_PER_TURN
+                and session_id not in meta["delivered_to"]
+                # The SQL ages against the database's now(); the fake against the real clock as well.
+                and u["created_at"] > datetime.now(timezone.utc) - timedelta(seconds=srl.REDELIVERY_MAX_AGE_SEC)
+                and not any(r["thread_id"] == u["thread_id"] and r["seq"] > u["seq"] and (
+                    r["speaker"] == "session" or (r["speaker"] == "orion" and r["meta"].get("requeued") is not True))
+                    for r in self.turns))
+
     async def pending_for(self, pool, *, session_id="", branch="", limit=20):
         out = []
         for u in self.turns:
-            if u["speaker"] != "orion" or u["delivered_at"] is not None or u["meta"].get("requeued") is True:
+            if not self._claimable(u, session_id):
                 continue
             h = self.threads[u["thread_id"]]
             mine = bool(session_id) and (h["session_id"] == session_id or any(
                 s["thread_id"] == u["thread_id"] and s["speaker"] == "session" and s["session_id"] == session_id
                 for s in self.turns))
             if mine or (bool(branch) and h["branch"] == branch):
-                out.append({**{k: u[k] for k in ("turn_id", "thread_id", "body", "meta", "roundup_id", "pr_comment_url",
-                                                 "created_at")},
+                out.append({**{k: copy.deepcopy(u[k]) for k in ("turn_id", "thread_id", "body", "meta", "roundup_id",
+                                                                "pr_comment_url", "created_at", "delivered_at", "seq")},
                             **{k: h[k] for k in ("title", "branch", "pr_number", "pr_url", "status")}})
-        return out[:limit]
+        out = self._order(out)[:limit]
+        for row in out:
+            row.pop("seq")
+        return out
 
-    async def mark_delivered(self, pool, turn_ids):
+    async def mark_delivered(self, pool, turn_ids, *, session_id=""):
         n = 0
         for u in self.turns:
-            if (u["turn_id"] in set(turn_ids) and u["speaker"] == "orion" and u["delivered_at"] is None
-                    and u["meta"].get("requeued") is not True):
-                u["delivered_at"] = self.clock.now
+            if u["turn_id"] in set(turn_ids) and self._claimable(u, session_id):
+                u["delivered_at"] = u["delivered_at"] or self.clock.now
+                if session_id:
+                    u["meta"]["delivered_to"] = list(u["meta"].get("delivered_to") or []) + [session_id]
                 n += 1
         return n
+
+    def _order(self, rows):
+        return sorted(rows, key=lambda r: (r["delivered_at"] is not None, r["seq"]))
 
 
 class FakeDurable:
@@ -270,10 +293,16 @@ class FakeDurable:
 
 
 class FakeCommenter:
-    def __init__(self, *, fail=False):
+    def __init__(self, *, fail=False, states=None):
         self.posts: List[tuple] = []
         self.branches: List[Any] = []
         self.fail = fail
+        self.states: Dict[int, Any] = dict(states or {})   # pr number -> "open" / "closed" / "merged"
+        self.state_reads: List[int] = []
+
+    async def pr_state(self, pr_number):
+        self.state_reads.append(pr_number)
+        return self.states.get(pr_number)
 
     async def post(self, pr_number, body, *, branch=None):
         self.branches.append(branch)

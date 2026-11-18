@@ -17,7 +17,8 @@ Real items (``build``):
 - positives: Juniper's own confirmation-loop revisions (``episode_memory_event`` op ``revised``,
   actor ``juniper``): the revised row against her new wording. Judged by the classifier alone
   (``apply_rules`` false), since the old row's live state is already retired.
-- hard negatives: the watched rows in the supersede manifest (trip rows against the home
+- hard negatives: pairs someone undid after an apply (``supersede_undone``: Juniper's own
+  rejection); the watched rows in the supersede manifest (trip rows against the home
   correction; the pet rows against the pet-species correction, which the open-ask rule protects);
   pairs the 2026-11-17 dry run vetoed (first question sure-yes, second said both true); and
   near-duplicates (cosine >= 0.85, a quarter of their words shared, first question said no).
@@ -39,6 +40,7 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -59,7 +61,18 @@ DEFAULT_MANIFEST = Path("/mnt/orion-fcc/notes/memory_supersede_pass_manifest.jso
 # checks.csv format): the source of the dry-run-veto and near-duplicate hard negatives.
 DEFAULT_CHECKS = EVAL_DIR / "supersede_v2_checks_2026-11-17.csv"
 PRODUCTION_ROUTE = S.EVAL_ROUTE
+MIN_RECORD_REPEATS = 2
 SEEN_MODELS: set[str] = set()   # model ids the gateway reported for the route during this run
+# The rows #3587/#3660 watch (ids only, already public in those issues). The live manifest is
+# rewritten by every pass run and may carry no --watch list, so the set never depends on it.
+WATCHED_DEFAULT = {
+    "trip_row_1": "4df8e60e-4c07-5685-8b1a-ef6239e6795f",
+    "trip_row_2": "ac963bc8-2f8d-5b4a-8229-e4e6a83395e3",
+    "home_correction": "c0dc86c8-26b6-5468-9928-be9376394b59",
+    "pet_row_1": "8b51d185-8c9e-5a64-96d8-e9ad83e16fa5",
+    "pet_row_2": "da376c17-529e-5dd1-a31d-b7d863ee5291",
+    "pet_species_correction": "357bf161-f706-57c6-910b-4ad88c5c7910",
+}
 NEAR_DUP_COSINE = 0.85
 NEAR_DUP_JACCARD = 0.25  # hand-checked 2026-11-18: the 6 pairs this admits are different events on one topic
 
@@ -69,6 +82,12 @@ SELECT m.memory_id::text AS memory_id, m.statement, m.purpose, m.created_at, m.o
        (m.voice = 'juniper_said' AND EXISTS (SELECT 1 FROM episode_memory_evidence e
             WHERE e.memory_id = m.memory_id AND e.source_kind = 'chat_prompt' AND e.verified)) AS juniper_quoted
 FROM episode_memory m WHERE m.memory_id = ANY(%s::uuid[])
+"""
+UNDONE_SQL = """
+SELECT DISTINCT ON (memory_id, evidence->>'superseded_by') memory_id::text AS old_id,
+       evidence->>'superseded_by' AS new_id, actor
+FROM episode_memory_event WHERE op = 'supersede_undone' AND evidence->>'superseded_by' IS NOT NULL
+ORDER BY memory_id, evidence->>'superseded_by', created_at
 """
 REVISIONS_SQL = """
 SELECT e.memory_id::text AS old_id, n.memory_id::text AS new_id, e.evidence->>'prior_confirmation_state' AS prior
@@ -123,9 +142,9 @@ async def cmd_build(args: argparse.Namespace) -> int:
     import psycopg
     from psycopg.rows import dict_row
 
-    watch = {}
+    watch = dict(WATCHED_DEFAULT)   # ids only; a manifest's own watch list overrides
     if Path(args.manifest).exists():
-        for w in json.loads(Path(args.manifest).read_text()).get("watched", []):
+        for w in json.loads(Path(args.manifest).read_text()).get("watched", []) or []:
             watch[w["label"]] = w["memory_id"]
     checks = list(csv.DictReader(Path(args.checks).open())) if Path(args.checks).exists() else []
     items: list[EvalItem] = []
@@ -142,7 +161,7 @@ async def cmd_build(args: argparse.Namespace) -> int:
             if r["old_id"] in got and r["new_id"] in got:
                 old = _row_from_db(got[r["old_id"]], state=r["prior"] or "auto")
                 new = _row_from_db(got[r["new_id"]])
-                items.append(_item(f"rev:{r['old_id'][:8]}", "confirmation_revise", "act", "correction", False,
+                items.append(_item(f"rev:{r['old_id'][:8]}:{r['new_id'][:8]}", "confirmation_revise", "act", "correction", False,
                                    old, new, apply_rules=False))
 
         pairs = []
@@ -161,6 +180,17 @@ async def cmd_build(args: argparse.Namespace) -> int:
                 items.append(_item(f"watch:{label}", source, "no_act", "compatible", True, old, new, apply_rules=True))
 
         checks = [c for c in checks if "corrects" in c and "both_true" in c]   # v2-format rows only
+        # Pairs someone put back after an apply (op supersede_undone). An undo is a human saying the
+        # link was wrong (2026-11-18: both v3.1 proposals, rejected by Juniper and undone by the
+        # operator). The undoing actor stays in the source so a test-rollback can be audited out.
+        undone = await (await conn.execute(UNDONE_SQL)).fetchall()
+        got = await rows([u["old_id"] for u in undone] + [u["new_id"] for u in undone])
+        for u in undone:
+            if u["old_id"] in got and u["new_id"] in got:
+                items.append(_item(f"undone:{u['old_id'][:8]}:{u['new_id'][:8]}", f"undone_by_{u['actor']}", "no_act",
+                                   "compatible", True, _row_from_db(got[u["old_id"]]), _row_from_db(got[u["new_id"]]),
+                                   apply_rules=False))
+
         vetoed = [c for c in checks if c.get("corrects") == "True" and c.get("sure") == "True"
                   and c.get("accepted") != "True" and c.get("both_true") == "True"]
         near = [c for c in checks if c.get("corrects") == "False" and c.get("dense")
@@ -181,10 +211,13 @@ async def cmd_build(args: argparse.Namespace) -> int:
             items.append(_item(f"dup:{c['old_id'][:8]}:{c['new_id'][:8]}", "near_duplicate", "no_act", "compatible",
                                True, old, new, apply_rules=True))
     seen, out = set(), []
-    for it in items:
-        if it.item_id not in seen:
-            seen.add(it.item_id)
+    for it in items:  # one item per pair (the first source wins: Juniper's own undo before a veto)
+        key = (it.old.memory_id, it.new.memory_id)
+        if key not in seen:
+            seen.add(key)
             out.append(it)
+    if len({it.item_id for it in out}) != len(out):
+        raise SystemExit("duplicate item ids in the labelled set: scoring would overwrite decisions")
     private_write(Path(args.out), "".join(json.dumps(item_to_dict(it), default=str) + "\n" for it in out))
     counts: dict[str, int] = {}
     for it in out:
@@ -261,6 +294,11 @@ async def cmd_run(args: argparse.Namespace) -> int:
         items += load_items(HELDOUT_PATH)
     if args.set in ("all", "real"):
         items += load_items(Path(args.real))
+    # Votes are sampled above temperature 0, so one pass is noisy (2026-11-18: a held-out negative
+    # that passed at 00:44 acted at 05:25). Every item runs --repeats times, scored pooled: one
+    # false act in any repeat fails the run.
+    if args.repeats > 1:
+        items = [replace(it, item_id=f"{it.item_id}@{r}") for r in range(args.repeats) for it in items]
     decide = {"v2": decide_v2, "v3": decide_v3}[args.checker]
     started = datetime.now(timezone.utc)
     decisions: list[Decision] = []
@@ -285,7 +323,7 @@ async def cmd_run(args: argparse.Namespace) -> int:
     run = {"run_id": str(uuid.uuid4()), "checker": args.checker, "check_version": check_version,
            "started_at": started.isoformat(timespec="seconds"),
            "finished_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-           "route": args.route, "votes": args.votes, "calls": calls[0], "model": ",".join(sorted(SEEN_MODELS)),
+           "route": args.route, "votes": args.votes, "repeats": args.repeats, "calls": calls[0], "model": ",".join(sorted(SEEN_MODELS)),
            "summary": result,
            "decisions": [decision_dict(d) for d in decisions]}
     out = RUNS_DIR / f"{started.strftime('%Y%m%dT%H%M%SZ')}-{args.checker}.json"
@@ -296,13 +334,21 @@ async def cmd_run(args: argparse.Namespace) -> int:
                       "model": run["model"],
                       "file": str(out), **public}, indent=2, default=str))
     if args.record_db:
+        record_guard(args)
         # Only a run that matches production counts for the gate: the current checker, the votes
         # write time uses, and the production route.
-        if args.checker != "v3" or args.votes != S.VOTES or args.route != PRODUCTION_ROUTE or args.set != "all":
-            raise SystemExit(f"only a full v3 run with --votes {S.VOTES} on {PRODUCTION_ROUTE} is recorded")
         await record(args.dsn, run)
         print(f"recorded eval run {run['run_id']} passed={result['passed']}")
     return 0 if result["passed"] else 1
+
+
+def record_guard(args: argparse.Namespace) -> None:
+    """Only a run that matches production counts for the gate: the current checker, the votes
+    write time uses, the production route, the full set, and at least MIN_RECORD_REPEATS passes."""
+    if (args.checker != "v3" or args.votes != S.VOTES or args.route != PRODUCTION_ROUTE or args.set != "all"
+            or args.repeats < MIN_RECORD_REPEATS):
+        raise SystemExit(f"only a full v3 run with --votes {S.VOTES} and --repeats >= {MIN_RECORD_REPEATS} "
+                         f"on {PRODUCTION_ROUTE} is recorded")
 
 
 RECORD_SQL = """
@@ -318,6 +364,7 @@ async def record(dsn: str, run: dict[str, Any]) -> None:
 
     s = run["summary"]
     summary = {k: v for k, v in s.items() if k != "false_acts"}
+    summary["repeats"] = run.get("repeats")
     summary["false_act_items"] = [f["item_id"] for f in s["false_acts"]]
     async with await psycopg.AsyncConnection.connect(dsn, autocommit=True) as conn:
         await conn.execute(RECORD_SQL, (
@@ -339,6 +386,8 @@ def main() -> int:
     r.add_argument("--set", choices=("all", "synthetic", "heldout", "real"), default="all")
     r.add_argument("--real", default=str(REAL_PATH))
     r.add_argument("--votes", type=int, default=S.VOTES)
+    r.add_argument("--repeats", type=int, default=MIN_RECORD_REPEATS,
+                   help="run every item this many times (sampled votes vary); any false act fails")
     r.add_argument("--gateway", default=os.environ.get("ORION_GATEWAY_URL", "http://localhost:8210"))
     r.add_argument("--route", default=PRODUCTION_ROUTE)
     r.add_argument("--timeout", type=float, default=180.0)

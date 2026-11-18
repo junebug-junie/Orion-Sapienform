@@ -30,6 +30,15 @@ are its reference (a pair whose grading is unknown, ``None``, is dropped too). P
 kept, as before. Live 2026-11-14: 120 ungraded camera-ask events (3 of them near 0) under 16 graded ones gave a
 vehicle ask (expected answer 0.135) rank 0.025, so it was funded.
 
+**Hunger from the want's own open (#3640).** A family configured ``hunger_from: want_opened``
+(``config/physiology/families.yaml``) is not a recurring drive: each want is a debt with its own birth
+time. Its hunger counts from the want's ``opened_at`` even after the family has closed acts (no close of
+another want resets it, and no lane seed raises it), its tau is its ``deferrable_window_s`` (the close
+rhythm is not its clock), and its rank is that intensity itself, never scaled by the family's mean outcome
+(basis ``want_opened:<graded|ungraded>``): the family's close-gap history
+measures a different clock, so it is not a reference. durable.intention: the want opens at the promise's
+time, so a take-on's rank is the age of the promise (Juniper 2026-11-18), low for a fresh promise.
+
 **value_rank** is the market's one common unit: this want's ``intensity x outcome_value`` as a
 percentile (mid-rank) of the SAME family's last 30 days of acts, each act's intensity
 reconstructed from its own gap since the previous close. Families are never compared on their
@@ -132,6 +141,8 @@ class FamilyAppetite:
     n_costed: int = 0
     # Intensities of the family's past event wants (want_ledger, 30 days): an event want's reference.
     event_values: tuple[float, ...] = ()
+    # FamilyConfig.hunger_from: ``last_close`` (the drive) or ``want_opened`` (each want's own clock).
+    hunger_from: str = "last_close"
 
 
 def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: datetime, *,
@@ -147,7 +158,8 @@ def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: dat
               and (a.opened_at or a.closed_at) <= now]
     win_closes = [c for c in closes if c >= since]
     gaps = [(b - a).total_seconds() for a, b in zip(win_closes, win_closes[1:]) if (b - a).total_seconds() > 0]
-    if len(gaps) >= TAU_MIN_GAPS:
+    want_clock = cfg.hunger_from == "want_opened"
+    if len(gaps) >= TAU_MIN_GAPS and not want_clock:
         tau, basis = max(_quantile(gaps, 0.5), TAU_FLOOR_SEC), f"rhythm:{len(gaps)}"
     else:
         tau, basis = max(cfg.deferrable_window_s, TAU_FLOOR_SEC), "deferrable_window"
@@ -157,6 +169,8 @@ def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: dat
     # Reference values: each act's intensity at its own open (its gap since the previous close).
     values: list[float] = []
     for a in sorted(in_win, key=lambda x: x.opened_at or x.closed_at):
+        if want_clock:
+            break         # close gaps are not this family's clock: no rank reference (hunger_from want_opened)
         t0 = a.opened_at or a.closed_at
         k = bisect_left(closes, t0)      # closes[k-1]: the last close before t0 (closes is sorted)
         if k == 0:
@@ -196,6 +210,7 @@ def build_family_appetite(cfg: FamilyConfig, acts: Iterable[ActRecord], now: dat
         cost_q={k: _quantile(v, COST_QUANTILE) for k, v in scal.items()},
         lane_slot_s_q={k: _quantile(v, COST_QUANTILE) for k, v in lanes.items()},
         total_slot_s_q=_quantile(totals, COST_QUANTILE) if totals else None, n_costed=n_costed,
+        hunger_from=cfg.hunger_from,
         event_values=same_grading_events(event_intensities, graded))
 
 
@@ -237,9 +252,15 @@ def lane_hunger_seed(lane_details: Mapping[str, Mapping[str, Any]], lanes: Seque
 def hunger(app: FamilyAppetite, now: datetime, *, opened_at: Optional[datetime] = None,
            seed_sec: Optional[float] = None, seed_lane: Optional[str] = None) -> Hunger:
     """Time unfunded and the intensity it gives. From the last close (it resets the drive); a
-    family that never closed an act counts from the want's own ``opened_at``; the lane seed is a
-    floor. Nothing known: intensity 0 (unknown is not "starving")."""
+    family that never closed an act counts from the want's own ``opened_at``, and so does every want of a
+    ``hunger_from: want_opened`` family (a close does not reset another want's clock, and no lane seed
+    applies); otherwise the lane seed is a floor. Nothing known: intensity 0 (unknown is not "starving")."""
     t, basis = None, "unknown"
+    if app.hunger_from == "want_opened" and opened_at is not None:
+        # The want's own age only: no lane seed either (other work's wait is not this want's age, and
+        # would read a fresh promise as old).
+        t = max(0.0, (now - opened_at).total_seconds())
+        return Hunger(unfunded_sec=t, intensity=intensity(t, app.tau_sec), basis="since_opened")
     if app.last_close_at is not None:
         t, basis = max(0.0, (now - app.last_close_at).total_seconds()), "since_last_close"
     elif opened_at is not None:
@@ -290,6 +311,12 @@ def rank_value(app: FamilyAppetite, want_intensity: float, outcome_value: Option
         return sum(1 for v in ref if v < x) / len(ref), f"event:{basis}", out
     # Cold start: too few past events to rank against, so the rule every want had before (patch 1).
     cold = "event_cold:" if event else ""
+    if app.hunger_from == "want_opened":
+        # The want's own age IS the rank (#3640, Juniper 2026-11-18): no close-gap history is its reference, and
+        # the family's mean outcome does not scale it (an absolute rank x a 0.10 follow-through mean would sink
+        # every promise back to ~0, the bug this fixes). ``out`` is returned for the trace only. (An event want of
+        # such a family with EVENT_HISTORY_MIN past events took the event branch above.)
+        return min(1.0, max(0.0, want_intensity * mult)), f"{cold}want_opened:{basis}", out
     if not app.values:
         return min(1.0, max(0.0, want_intensity * mult)), f"{cold}no_history", out
     return mid_rank(x, app.values), f"{cold}{basis}", out

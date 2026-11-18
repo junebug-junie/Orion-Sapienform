@@ -6,7 +6,9 @@
 ``GET  /api/session-threads?hours=48``    threads touched in the window (Hub chat's page-load view)
 ``GET  /api/session-threads/pending``     ``?session_id=&branch=``: Orion's turns not yet handed back to
                                           that session OR that branch
-``POST /api/session-threads/delivered``   {"turn_ids": [...]}: those turns were handed back
+``POST /api/session-threads/delivered``   {"turn_ids": [...], "session_id": "..."}: those turns were handed
+                                          back to that session (a question turn stays pending for OTHER
+                                          sessions until one replies on the thread)
 ``GET  /api/session-threads/{id}``        one thread with every turn
 ``GET  /api/debug/session-threads``       the loop's last tick
 
@@ -54,6 +56,8 @@ class MessageBody(BaseModel):
 
 class DeliveredBody(BaseModel):
     turn_ids: List[str] = Field(min_length=1, max_length=200)
+    # The claiming session. Empty (an older client): the turn is claimed once in total.
+    session_id: str = Field(default="", max_length=200)
 
 
 def _pool(request: Request) -> Any:
@@ -79,6 +83,9 @@ def _public(row: dict, *, with_spec_text: bool = False) -> dict:
         # The list view and the session hooks need the paths, not 40,000 characters a file.
         out["meta"] = {**meta, "spec": [{"path": s.get("path"), "chars": len(str(s.get("text") or "")),
                                          "cut": bool(s.get("cut"))} for s in meta["spec"] or []]}
+    if isinstance(out.get("meta"), dict) and "delivered_to" in out["meta"]:
+        # Which sessions claimed a turn is Hub's bookkeeping, not another session's business.
+        out["meta"] = {k: v for k, v in out["meta"].items() if k != "delivered_to"}
     for key, value in list(out.items()):
         if hasattr(value, "isoformat"):
             out[key] = value.isoformat()
@@ -131,7 +138,7 @@ async def pending(request: Request, session_id: str = "", branch: str = "") -> d
 
 @router.post("/api/session-threads/delivered")
 async def delivered(request: Request, body: DeliveredBody) -> dict:
-    return {"delivered": await store.mark_delivered(_pool(request), body.turn_ids)}
+    return {"delivered": await store.mark_delivered(_pool(request), body.turn_ids, session_id=body.session_id.strip())}
 
 
 @router.get("/api/session-threads/{thread_id}")

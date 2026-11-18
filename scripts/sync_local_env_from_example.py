@@ -468,6 +468,8 @@ SYNC_PREFIXES = (
     "PR_FIELD_NOTES_",
     # Daily reminiscence Patch 2 (orion-durable-runs overnight tick + reminiscence.episode runs, 2026-11-07).
     "REMINISCENCE_",
+    # The day dream Patch 2 (orion-durable-runs night tick + dream.day runs, 2026-11-18).
+    "DREAM_DAY_",
     # Hourly frame samples (orion-sql-writer, 2026-10-29).
     "VISION_HOURLY_FRAMES_",
     # Person graph loop + its sighting refresh (orion-substrate-runtime, 2026-11-03).

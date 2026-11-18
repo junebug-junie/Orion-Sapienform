@@ -17,7 +17,8 @@ services:
       # PR field notes Patch 2: Orion's dig self dir (the same host dir orion-harness-governor's dig writes),
       # so the poller can write code records and verify a note turn's save receipt. Only
       # app/pr_field_note_ledger.py touches it, and only the field-notes ledger in it; the daily reminiscence
-      # reads its ledger here too (app/reminiscence_ledger.py, read-only: ids, dates and booleans).
+      # reads its ledger here too (app/reminiscence_ledger.py, read-only: ids, dates and booleans), and the day
+      # dream reads the read receipt `dig dream-day` leaves in it (app/dream_day_graph.py, read-only).
       - ${PR_FIELD_NOTES_SELF_HOST:-/mnt/orion-fcc/self}:${PR_FIELD_NOTES_LEDGER_DIR:-/mnt/orion-fcc/self}
       # The daily reminiscence counts main's commits per week in the dig's clone (read-only), so quiet weeks
       # join onto the next week with a commit (app/reminiscence_ledger.py week_for, the dig's own rule).
@@ -186,6 +187,11 @@ services:
       - REMINISCENCE_LEDGER_DIR=${REMINISCENCE_LEDGER_DIR:-/mnt/orion-fcc/self}
       - REMINISCENCE_REPO_DIR=${REMINISCENCE_REPO_DIR:-/mnt/orion-fcc/repo}
       - REMINISCENCE_TURN_TIMEOUT_SEC=${REMINISCENCE_TURN_TIMEOUT_SEC:-900}
+      - DREAM_DAY_ENABLED=${DREAM_DAY_ENABLED:-true}
+      - DREAM_DAY_START_HOUR_LOCAL=${DREAM_DAY_START_HOUR_LOCAL:-1}
+      - DREAM_DAY_END_HOUR_LOCAL=${DREAM_DAY_END_HOUR_LOCAL:-3}
+      - DREAM_DAY_ROUTE=${DREAM_DAY_ROUTE:-memory_distill}
+      - DREAM_DAY_TURN_TIMEOUT_SEC=${DREAM_DAY_TURN_TIMEOUT_SEC:-900}
       - ORION_CORE_PAGES_ENABLED=${ORION_CORE_PAGES_ENABLED:-true}
       - CORE_PAGE_FOLD_ROUTE=${CORE_PAGE_FOLD_ROUTE:-memory_distill}
       - CORE_PAGE_FOLD_POLL_SEC=${CORE_PAGE_FOLD_POLL_SEC:-600}

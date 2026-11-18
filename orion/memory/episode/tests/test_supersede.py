@@ -34,9 +34,9 @@ def answers(*texts):
     return ask, seen
 
 
-def vote(relation, conf=0.9, same="yes", reason="r", kind="lasting_state", changed="yes"):
-    return json.dumps({"a_kind": kind, "b_says_a_wrong_or_changed": changed, "same_attribute": same,
-                       "relation": relation, "confidence": conf, "reason": reason})
+def vote(relation, conf=0.9, same="yes", reason="r", kind="lasting_state", changed="yes", referent="yes"):
+    return json.dumps({"a_kind": kind, "b_says_a_wrong_or_changed": changed, "same_referent": referent,
+                       "same_attribute": same, "relation": relation, "confidence": conf, "reason": reason})
 
 
 COR = vote("correction", reason="B says the pet is a dog, A said a cat.")
@@ -429,3 +429,32 @@ def test_missing_or_mixed_checklist_fields():
     assert plan["check_errors"] == 0 and plan["refused_because"] == []    # abstained, plan not held
     assert not s.parse_vote(vote("update", kind="measurement")).acting
     assert not s.parse_vote(vote("update", changed="no")).acting
+
+
+def test_a_correction_needs_the_same_specific_referent():
+    """v3.2: a shared project word is not the same item (two pairs Juniper rejected, 2026-11-18)."""
+    assert not s.parse_vote(vote("correction", kind="measurement", referent="no")).acting
+    assert not s.parse_vote(vote("update", referent="no")).acting
+    missing = json.loads(vote("correction"))
+    del missing["same_referent"]
+    v = s.parse_vote(json.dumps(missing))
+    assert v.error is None and not v.acting                     # missing = abstain, not an error
+    ask, seen = answers(vote("correction", referent="no"))
+    c = asyncio.run(s.classify_pair(OLD, NEW, ask))
+    assert not c.acts and c.abstain == "checklist:correction" and len(seen) == 1
+    assert '"same_referent"' in s.build_classify_prompt(OLD, NEW)
+
+
+def test_a_named_pr_needs_the_same_number_in_b():
+    """v3.3: Juniper's rejected pair, made up: a named PR's deploy vs a general 'nothing deployed'."""
+    a = row("a", "Juniper said the login fix is deployed and linked PR #41.")
+    b = row("b", "Juniper said nothing is deployed yet; the ticket closes when a fix lands.", days=14)
+    same = row("c", "Juniper said PR #41 is not deployed after all.", days=1)
+    assert s.numbered_items(a.statement) == {"41"} and not s.same_numbered_item(a, b) and s.same_numbered_item(a, same)
+    assert s.same_numbered_item(row("x", "Biscuit is a cat."), b)          # A names no number: no constraint
+    for new in (b, replace(b, voice="juniper_said", juniper_quoted=True)):
+        ask, _ = answers(*(vote("correction", kind="event"),) * 3)
+        v = asyncio.run(s.classify_pair(a, new, ask))
+        assert not v.acts and not v.juniper_acts and v.abstain == "numbered_item_not_in_b"
+    ask, _ = answers(*(vote("correction", kind="event"),) * 3)
+    assert asyncio.run(s.classify_pair(a, same, ask)).acts

@@ -515,9 +515,10 @@ class Settings(BaseSettings):
     # The same key gates the page render in orion-cortex-exec. false -> no fold (rollback: false, restart).
     orion_core_pages_enabled: bool = Field(True, alias="ORION_CORE_PAGES_ENABLED")
     # Which pages fold, in order (orion/memory/pages/registry.py): juniper = "who Juniper is to me"
-    # (RELATIONSHIP), origin = "how I came to be" (WHO YOU ARE, issue #3462). Drop a slug to stop folding
-    # that page; its last version still shows until ORION_CORE_PAGES_ENABLED=false in orion-cortex-exec.
-    core_page_fold_pages: str = Field("juniper,origin", alias="CORE_PAGE_FOLD_PAGES")
+    # (RELATIONSHIP), origin = "how I came to be" (WHO YOU ARE, issue #3462), lately = "what has mattered
+    # lately" (top of DURABLE MEMORY, issue #3463). Drop a slug to stop folding that page; its last version
+    # still shows until ORION_CORE_PAGES_ENABLED=false in orion-cortex-exec.
+    core_page_fold_pages: str = Field("juniper,origin,lately", alias="CORE_PAGE_FOLD_PAGES")
     # The gateway route the fold calls. memory_distill = the agent seat on gpu1 only (config/gpu_pool.yaml),
     # leased per call by the gateway. The fast and metacog lanes are refused (they share the small card).
     core_page_fold_route: str = Field("memory_distill", alias="CORE_PAGE_FOLD_ROUTE")

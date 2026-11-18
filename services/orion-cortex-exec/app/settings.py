@@ -83,8 +83,9 @@ class Settings(BaseSettings):
         True, alias="MEMORY_COGNITION_BRAIN_BELIEF_DEFAULT"
     )
     orion_unified_grounding_enabled: bool = Field(True, alias="ORION_UNIFIED_GROUNDING_ENABLED")
-    # Core memory pages: put Orion's page:juniper (RELATIONSHIP) and page:origin (WHO YOU ARE, after the
-    # self-definition; issue #3462) on the grounding capsule. false => today's identity-yaml slots.
+    # Core memory pages: put Orion's page:juniper (RELATIONSHIP), page:origin (WHO YOU ARE, after the
+    # self-definition; issue #3462) and page:lately (top of DURABLE MEMORY; issue #3463) on the grounding
+    # capsule. false => today's identity-yaml slots.
     orion_core_pages_enabled: bool = Field(True, alias="ORION_CORE_PAGES_ENABLED")
     channel_council_intake: str = Field("orion:agent-council:intake", alias="CHANNEL_COUNCIL_INTAKE")
     channel_council_reply_prefix: str = Field("orion:council:reply", alias="CHANNEL_COUNCIL_REPLY_PREFIX")

@@ -699,8 +699,8 @@ async def lifespan(app: FastAPI):
             if rpc_bus is None:
                 logger.warning("core_page_fold_not_started reason=no_bus")
             else:
-                # Core memory pages: Orion's page:juniper and page:origin, folded overnight one after the
-                # other (app/core_page_fold.py; CORE_PAGE_FOLD_PAGES picks which).
+                # Core memory pages: Orion's page:juniper, page:origin and page:lately, folded overnight one
+                # after the other (app/core_page_fold.py; CORE_PAGE_FOLD_PAGES picks which).
                 from app.core_page_fold import (
                     CorePageFolder, bus_llm_caller, bus_publisher, run_folders_forever, selected_specs, service_source,
                 )

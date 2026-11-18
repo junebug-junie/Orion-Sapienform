@@ -11,6 +11,8 @@ from orion.memory.pages.anchor import CTX_KEY_ANCHOR as CORE_PAGE_ANCHOR_CTX_KEY
 from orion.memory.pages.juniper import CTX_KEY_JUNIPER as CORE_PAGE_JUNIPER_CTX_KEY, core_page_from_payload
 from orion.memory.pages.origin import CTX_KEY_ORIGIN as CORE_PAGE_ORIGIN_CTX_KEY
 from orion.memory.pages.origin import core_page_from_payload as origin_page_from_payload
+from orion.memory.pages.lately import CTX_KEY_LATELY as CORE_PAGE_LATELY_CTX_KEY
+from orion.memory.pages.lately import core_page_from_payload as lately_page_from_payload
 from orion.schemas.thought import CorePageV1, GroundingCapsuleV1
 from orion.thought.json_extract import extract_first_json_object_text
 
@@ -107,7 +109,7 @@ def context_provenance_for_ctx(ctx: Dict[str, Any]) -> Dict[str, str]:
 
 def core_pages_for_ctx(ctx: Dict[str, Any], *, enabled: bool) -> list[CorePageV1]:
     """The core pages ctx carries, anchor first: Juniper's fixed page:anchor lines, Orion's
-    page:juniper, then Orion's page:origin (issue #3462). Any may be missing. Empty when the flag is
+    page:juniper, then Orion's page:origin (issue #3462), then page:lately (issue #3463). Any may be missing. Empty when the flag is
     off or no row was hydrated, so the prefix falls back to the identity-yaml bullets."""
     if not enabled:
         return []
@@ -115,15 +117,17 @@ def core_pages_for_ctx(ctx: Dict[str, Any], *, enabled: bool) -> list[CorePageV1
         anchor_page_from_payload(ctx.get(CORE_PAGE_ANCHOR_CTX_KEY)),
         core_page_from_payload(ctx.get(CORE_PAGE_JUNIPER_CTX_KEY)),
         origin_page_from_payload(ctx.get(CORE_PAGE_ORIGIN_CTX_KEY)),
+        lately_page_from_payload(ctx.get(CORE_PAGE_LATELY_CTX_KEY)),
     ]
     return [p for p in pages if p is not None]
 
 
-_CORE_PAGE_CTX_KEYS = (CORE_PAGE_ANCHOR_CTX_KEY, CORE_PAGE_JUNIPER_CTX_KEY, CORE_PAGE_ORIGIN_CTX_KEY)
+_CORE_PAGE_CTX_KEYS = (CORE_PAGE_ANCHOR_CTX_KEY, CORE_PAGE_JUNIPER_CTX_KEY, CORE_PAGE_ORIGIN_CTX_KEY,
+                       CORE_PAGE_LATELY_CTX_KEY)
 
 
 def hydrate_core_pages(ctx: Dict[str, Any]) -> None:
-    """Pull ONLY the core-page felt-state lanes (page:anchor, page:juniper, page:origin; cached 5 min;
+    """Pull ONLY the core-page felt-state lanes (page:anchor, page:juniper, page:origin, page:lately; cached 5 min;
     fail-open, never raises). Lanes already in ctx are not read again."""
     missing = tuple(k for k in _CORE_PAGE_CTX_KEYS if ctx.get(k) is None)
     if not missing:

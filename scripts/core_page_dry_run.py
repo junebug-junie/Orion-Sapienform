@@ -9,6 +9,11 @@ check. ``--out`` also saves prompt, raw answer, page and check as JSON (the eval
 
     .venv/bin/python scripts/core_page_dry_run.py --page juniper --out /tmp/page_juniper_dry_run.json
     .venv/bin/python scripts/core_page_dry_run.py --page origin --sources-only
+    .venv/bin/python scripts/core_page_dry_run.py --page lately --attempts 3 --no-page \
+        --out ~/.orion/core_pages/lately_dry_run.json
+
+``--out`` is written owner-only (mode 600): it holds private page text. ``--no-page`` keeps the page
+text off stdout (only the check is printed), for runs whose output lands in a log or a transcript.
 
 DSN: $ORION_PAGES_DSN, else services/orion-durable-runs/.env POSTGRES_URI with the container host
 swapped for the host port (localhost:55432).
@@ -88,7 +93,8 @@ def main() -> int:
     ap.add_argument("--max-tokens", type=int, default=3000)
     ap.add_argument("--timeout", type=float, default=900.0)
     ap.add_argument("--attempts", type=int, default=1, help="re-ask on a failed check, like the nightly window")
-    ap.add_argument("--out", help="save prompt, raw answer, page and check as JSON")
+    ap.add_argument("--out", help="save prompt, raw answer, page and check as JSON (mode 600)")
+    ap.add_argument("--no-page", action="store_true", help="do not print the page text, only the check")
     args = ap.parse_args()
     if args.route.startswith(("fast", "quick", "metacog")):
         raise SystemExit("the page fold never runs on the fast or metacog lanes")
@@ -119,11 +125,17 @@ def main() -> int:
         for err in check.errors[:10]:
             print(f"  - {err}", file=sys.stderr)
     print("\n=== %s (would be version %d; NOT written) ===\n" % (spec.concept_id, top + 1))
-    print(check.clean_text)
+    print("(page text withheld: --no-page)" if args.no_page else check.clean_text)
     print("\n=== check ===")
     print(json.dumps({**check.as_dict(), "errors": check.errors}, indent=2))
     if args.out:
-        Path(args.out).write_text(json.dumps({
+        out = Path(args.out).expanduser()
+        out.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only from the first byte: the page quotes private records.
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps({
             "page": spec.concept_id, "would_be_version": top + 1, "sources": len(sources), "prompt": prompt, "attempts": tries,
             "page_text": check.clean_text, "stored_text": check.stored_text, "refs": check.refs,
             "check": {**check.as_dict(), "errors": check.errors}}, indent=2, default=str))

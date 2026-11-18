@@ -72,3 +72,13 @@ def test_origin_lane_selects_only_the_folded_origin_row():
     assert lane.where_sql == f"concept_id = '{PAGE_ORIGIN}' AND produced_by = '{PRODUCED_BY}'"
     assert "'concept_id', concept_id" in lane.payload_col and "'evidence_refs', evidence_refs" in lane.payload_col
     assert lane.max_age_sec == 365 * 86400 and lane.cache_ttl_sec == 300
+
+
+def test_lately_lane_selects_only_the_folded_lately_row_and_goes_stale_in_three_weeks():
+    from orion.memory.pages.lately import CTX_KEY_LATELY, PAGE_LATELY
+
+    lane = next(l for l in _LANES if l.ctx_key == CTX_KEY_LATELY)
+    assert lane.table == "self_concept_history"
+    assert lane.where_sql == f"concept_id = '{PAGE_LATELY}' AND produced_by = '{PRODUCED_BY}'"
+    assert "'concept_id', concept_id" in lane.payload_col and "'evidence_refs', evidence_refs" in lane.payload_col
+    assert lane.max_age_sec == 21 * 86400 and lane.cache_ttl_sec == 300

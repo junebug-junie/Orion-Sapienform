@@ -110,6 +110,9 @@ CORE_PAGE_ANCHOR = "page:anchor"
 # Orion's "how I came to be" (orion/memory/pages/origin.py, issue #3462): in WHO YOU ARE, right after
 # Orion's own self-definition lines.
 CORE_PAGE_ORIGIN = "page:origin"
+# Orion's "what has mattered lately" (orion/memory/pages/lately.py, issue #3463): at the top of
+# DURABLE MEMORY, before the recall digest.
+CORE_PAGE_LATELY = "page:lately"
 # The prefix of Orion's own identity lines (self-definition, lived answers). Same value as
 # orion/substrate/relational/adapters/self_definition_ctx.py SELF_DEFINITION_MARKER.
 _OWN_WORDS_MARKER = "In my own words"
@@ -159,7 +162,8 @@ def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
     Phase 1a); the identity-yaml relationship bullets then move under RESPONSE POLICY. Juniper's
     fixed page:anchor lines, when present, come first in RELATIONSHIP, with or without a page
     (issue #3460). Orion's page:origin sits in WHO YOU ARE right after the self-definition (issue
-    #3462). Without any page, the slots render exactly as before."""
+    #3462). Orion's page:lately opens DURABLE MEMORY, above the recall digest (issue #3463). Without
+    any page, the slots render exactly as before."""
     lines: list[str] = ["WHO YOU ARE"]
     lines.extend(_who_you_are_lines(capsule))
     page = _relationship_page(capsule)
@@ -187,8 +191,15 @@ def _format_grounding_self_block(capsule: GroundingCapsuleV1) -> list[str]:
         lines.append("RELATIONSHIP")
         lines.extend(f"- {item}" for item in capsule.relationship_summary)
     digest = (capsule.memory_digest or capsule.continuity_digest or "").strip()
-    if digest:
+    lately = _core_page(capsule, CORE_PAGE_LATELY)
+    if digest or lately is not None:
         lines.append("DURABLE MEMORY / CONTINUITY")
+    if lately is not None:
+        stamp = f", written {lately.written_at}" if lately.written_at else ""
+        lines.append(f"What has mattered lately, in my own words ({lately.concept_id} v{lately.version}{stamp}, "
+                     f"from {lately.evidence_count} cited records):")
+        lines.append(lately.text.strip())
+    if digest:
         lines.append(digest)
     if policy:
         lines.append("RESPONSE POLICY")

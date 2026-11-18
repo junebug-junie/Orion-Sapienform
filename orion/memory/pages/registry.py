@@ -2,10 +2,10 @@
 (``app/core_page_fold.py``, ``CORE_PAGE_FOLD_PAGES``) and ``scripts/core_page_dry_run.py``."""
 from __future__ import annotations
 
-from orion.memory.pages import juniper, origin
+from orion.memory.pages import juniper, lately, origin
 from orion.memory.pages.fold import FoldSpec
 
-FOLD_SPECS: dict[str, FoldSpec] = {spec.slug: spec for spec in (juniper.FOLD_SPEC, origin.FOLD_SPEC)}
+FOLD_SPECS: dict[str, FoldSpec] = {spec.slug: spec for spec in (juniper.FOLD_SPEC, origin.FOLD_SPEC, lately.FOLD_SPEC)}
 
 
 def selected_specs(pages) -> list[FoldSpec]:

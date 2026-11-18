@@ -2,7 +2,7 @@
 
 Spec: docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md (Phase 1).
 
-A page module (``juniper.py``, ``origin.py``) owns what is page-specific: which records it reads
+A page module (``juniper.py``, ``origin.py``, ``lately.py``) owns what is page-specific: which records it reads
 (SQL), how rows become ``PageSource``s, and its fold prompt. Everything a page must obey the same
 way lives here, once:
 
@@ -34,7 +34,9 @@ EPISODE_MEMORY_KIND = "episode_memory"
 STANCE_KIND = "stance"
 # A row of self_concept_history (e.g. one version of Orion's self:definition).
 SELF_CONCEPT_KIND = "self_concept_history"
-REF_KINDS = (PERSON_FACT_KIND, EPISODE_MEMORY_KIND, STANCE_KIND, SELF_CONCEPT_KIND)
+# A Hub chat turn the episode distiller has not read yet (page:lately).
+CHAT_KIND = "chat_history_log"
+REF_KINDS = (PERSON_FACT_KIND, EPISODE_MEMORY_KIND, STANCE_KIND, SELF_CONCEPT_KIND, CHAT_KIND)
 
 CURRENT_PAGE_SQL = (
     "SELECT entry_id, version, content, evidence_refs, created_at FROM self_concept_history "

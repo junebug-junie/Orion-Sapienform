@@ -194,7 +194,7 @@ _PREDICTION_ERROR_DOMAIN_NODE_IDS = {
 
 
 def _prediction_error_nodes_enabled() -> bool:
-    return os.getenv(_PREDICTION_ERROR_NODE_FLAG, "false").strip().lower() in _TRUTHY
+    return os.getenv(_PREDICTION_ERROR_NODE_FLAG, "true").strip().lower() in _TRUTHY
 
 
 # docs/superpowers/specs/2026-07-22-transport-bus-signal-quality-measurement-design.md

@@ -161,6 +161,8 @@ def test_self_model_tick_reads_broadcast_lane_field_frame(monkeypatch):
     object the broadcast tick just persisted -- no second construction, no
     drift between what gets saved to the broadcast lane and what the
     self-model reducer reasons about."""
+    # Isolate the attention ticks from the prediction-error history writers (on by default).
+    monkeypatch.setenv("SUBSTRATE_WRITE_PREDICTION_ERROR_NODES", "false")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
     fake_store = _fake_store()
     with patch(
@@ -196,6 +198,8 @@ def test_self_model_tick_never_calls_a_foreign_writer(monkeypatch):
     tick must be read-only against every existing live input. Asserts the
     only new store call beyond the existing broadcast-tick writes is the one
     it exclusively owns."""
+    # Isolate the attention ticks from the prediction-error history writers (on by default).
+    monkeypatch.setenv("SUBSTRATE_WRITE_PREDICTION_ERROR_NODES", "false")
     worker = _make_worker(monkeypatch, self_model_enabled=True)
     fake_store = _fake_store(_pe_node("node:substrate.execution", 0.1))
     with patch(

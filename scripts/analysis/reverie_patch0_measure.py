@@ -9,6 +9,7 @@ Measures, from live data, whether each part of the "reveries that ask" design ha
   rehearse   can an hour-of-week model of Juniper's chat turns call "likely within 2 h" better than chance?
   body       commits per day in Orion's own sandbox that touch orion/ or services/
   self_def   self-definitions written per day (contradiction seed material)
+  joint      per day, how many seed kinds had material (does rotation have a real choice?)
   far_memory similarity spread in the lived-memory index: is there a middle band below the nearest?
 
 Reads only: Postgres (docker exec psql, SELECT only), Chroma HTTP (/get), git log. Writes nothing.
@@ -99,13 +100,26 @@ def quiet(days: int, calm_min: float) -> dict:
 
 # ---------------------------------------------------------------- seeds
 
+# A `missed` for a named individual means no sighting was ATTRIBUTED to that individual in the window;
+# the individuals reducer (re-identification) decides attribution, not the raw detector. So split misses:
+# clean = the raw census saw no person at all in the window; ambiguous = a person was detected but not
+# attributed (they may have come and gone unrecognised). Orion's question 1 on PR #3736, checked 11-18.
+_NAMED_PERSON_MISSES = (
+    "select e.window_end::date, "
+    "(select count(*) from vision_scene_inventory v where v.stream_id = e.stream_id "
+    " and v.observed_at between e.window_start and e.window_end "
+    " and coalesce((v.counts->>'person')::int, 0) > 0) "
+    "from vision_percept_expectation e join vision_individual i on e.subject_key = 'individual:' || i.individual_id "
+    "where e.status = 'missed' and i.kind = 'person' and i.label is not null "
+    "and e.window_end > now() - interval '{days} days'"
+)
+
+
 def absence(days: int) -> dict:
-    rows = sql(
-        "select window_end::date, count(*), count(distinct subject_key), "
-        "count(*) filter (where support_days >= 7) from vision_percept_expectation "
-        f"where status = 'missed' and window_end > now() - interval '{days} days' group by 1 order by 1"
-    )
-    return {"per_day(missed, subjects, support>=7d)": {d: (int(a), int(b), int(c)) for d, a, b, c in rows}}
+    per_day: dict[str, list[int]] = defaultdict(lambda: [0, 0])
+    for d, raw_person in sql(_NAMED_PERSON_MISSES.format(days=days)):
+        per_day[d][0 if int(raw_person) == 0 else 1] += 1
+    return {"named_person_misses_per_day(clean, ambiguous)": dict(sorted((k, tuple(v)) for k, v in per_day.items()))}
 
 
 def lost_bet(days: int) -> dict:
@@ -194,6 +208,69 @@ def body(days: int) -> dict:
     return {"commits_per_day(author date)": dict(sorted(Counter(out).items()))}
 
 
+def joint(days: int) -> dict:
+    """Per day: how many seed kinds had material, so rotation has a real choice (Orion's question 5).
+
+    A kind counts on day D when: absence -- a named person miss (clean or ambiguous) ended on D;
+    lost_bet -- a calibration gap in the 7 days ending D; far_memory -- always (597-doc index, anchor = now);
+    rehearse -- a Juniper turn in the 72 h before D ends; body -- a sandbox commit on D touching orion/ or
+    services/; contradiction -- a self-definition in the 7 days ending D. Upper bound: the 14-day
+    near-duplicate refusal will spend a standing lost-bet gap or contradiction after its first question.
+    """
+    today = datetime.now(timezone.utc).date()
+    day_list = [(today - timedelta(days=i)).isoformat() for i in range(days - 1, -1, -1)]
+    has: dict[str, set[str]] = {d: {"far_memory"} for d in day_list}
+    for d, _ in sql(_NAMED_PERSON_MISSES.format(days=days)):
+        if d in has:
+            has[d].add("absence")
+    for d in day_list:
+        gaps = lost_bet_gaps_ending(d)
+        if gaps:
+            has[d].add("lost_bet")
+    juniper = [ts(r[0]).replace(tzinfo=timezone.utc) for r in sql(
+        "select created_at at time zone 'UTC' from chat_history_log "
+        f"where {JUNIPER_TURN_PREDICATE} and created_at > now() - interval '{days + 3} days'")]
+    for d in day_list:
+        end = datetime.fromisoformat(d).replace(tzinfo=timezone.utc) + timedelta(days=1)
+        if any(end - timedelta(hours=72) <= t < end for t in juniper):
+            has[d].add("rehearse")
+    commits = set(subprocess.run(
+        ["git", "-C", SANDBOX, "log", "--no-merges", f"--since={days} days ago", "--format=%ad", "--date=short",
+         "--", "orion", "services"], check=True, capture_output=True, text=True).stdout.split())
+    defs = [r[0] for r in sql(
+        "select created_at::date from self_concept_history where concept_id = 'self:definition' "
+        f"and created_at > now() - interval '{days + 7} days'")]
+    for d in day_list:
+        if d in commits:
+            has[d].add("body")
+        lo = (datetime.fromisoformat(d) - timedelta(days=6)).date().isoformat()
+        if any(lo <= x <= d for x in defs):
+            has[d].add("contradiction")
+    counts = {d: len(k) for d, k in has.items()}
+    return {
+        "kinds_per_day": counts,
+        "days_with_ge3_kinds": sum(1 for n in counts.values() if n >= 3),
+        "days": len(counts),
+        "missing_by_kind": dict(Counter(k for d in day_list for k in
+                                        ("absence", "lost_bet", "rehearse", "body", "contradiction")
+                                        if k not in has[d])),
+    }
+
+
+def lost_bet_gaps_ending(day: str) -> int:
+    rows = sql(
+        "select faculty, width_bucket(stated_p, 0, 1, 10), count(*), avg(stated_p), avg((status = 'happened')::int) "
+        "from prediction_turn_self_bet where status in ('happened','not_happened') and stated_p is not null "
+        f"and settled_at >= date '{day}' - 6 and settled_at < date '{day}' + 1 group by 1, 2 having count(*) >= 20"
+    )
+    n = 0
+    for _, _, cnt, p_raw, rate_raw in rows:
+        p, rate, k = float(p_raw), float(rate_raw), int(cnt)
+        if abs(rate - p) >= 0.15 and abs(rate - p) >= 2 * math.sqrt(max(p * (1 - p), 1e-6) / k):
+            n += 1
+    return n
+
+
 def self_def(days: int) -> dict:
     rows = sql(
         "select created_at::date, count(*) from self_concept_history where concept_id = 'self:definition' "
@@ -271,6 +348,7 @@ def main() -> None:
         "rehearse": rehearse(),
         "body": body(14),
         "self_def": self_def(30),
+        "joint": joint(14),
         "far_memory": far_memory(args.anchors, args.show_texts),
     }
     print(json.dumps(report, indent=1, default=str))

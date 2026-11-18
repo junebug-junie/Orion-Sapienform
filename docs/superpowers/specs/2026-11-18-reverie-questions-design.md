@@ -130,6 +130,20 @@ Given real material, the model can do the job.
   No function combines the two signals; this design adds one small pure function.
 - **Easy to undo.** It is one function behind a setting. Deleting it brings back a timer.
 
+**What evaluates the gate.** This answers Orion's question 3 on this PR.
+
+- **The poll.** The existing reverie worker loop stays (`run_reverie_chain_worker`, `chain.py:539`). It keeps its
+  poll interval `ORION_REVERIE_INTERVAL_SEC`, set to 60 s instead of 90 s. Each poll checks the gate. No new
+  scheduler is added. A reverie can start at most one poll (60 s) after the 10-minute mark.
+- **The stretch.** A stretch is the time since the last broadcast tick that had a winner. Its allowance is spent
+  only when a `reverie_question` row is written for it, either a question or a `none_reason`. The check is
+  plain: has a row been written since the stretch began? No extra state is kept.
+- **A refused lane does not spend the stretch.** If the agent lane refuses the call (`ReverieLlmUnavailable`:
+  shed, deadline, outage), no row is written. The refusal is counted through the existing `_count_skip`, with
+  its shed reason (`chain.py:83`). The next poll in the same stretch tries again.
+- **Retry limit.** After 3 refused tries in one stretch, the stretch is given up and counted as
+  `lane_refused_stretch`. A shed lane is then not hammered for the rest of the stretch.
+
 **What alarms do instead.** A loud gauge no longer starts a reverie. Gauges already go to the self-monitor and
 to attention. That is where an alarm belongs.
 
@@ -144,11 +158,11 @@ written.
 
 | Seed | Material (source, live 7-day volume) | What the reverie is asked |
 |---|---|---|
-| **absence** (1) | `vision_percept_expectation` rows scored `missed` (`services/orion-sql-writer/app/vision_rhythm.py:263`): 60 missed across 22 subjects in 7 days, 89 met. A miss is declared only when the camera watched at least 80% of the window. **Named people only** (Patch 0: 25 misses of 6 people; the rest are hash-labelled vehicles). | "A neighbor I know usually passes between 07:00 and 08:00 on weekdays (14 days of support). Not today. What would explain it, and what could I check?" |
+| **absence** (1) | `vision_percept_expectation` rows scored `missed` (`services/orion-sql-writer/app/vision_rhythm.py:263`): 60 missed across 22 subjects in 7 days, 89 met. A miss is declared only when the camera watched at least 80% of the window. **Named people only.** A `missed` means no sighting was *attributed* to that person. Re-identification decides that, not the raw detector. So the seed carries the evidence split: **clean** means the raw census saw no person in the window; **unrecognised** means a person was detected but not matched to them. Patch 0 found 2 clean and 19 unrecognised in 7 days. An unrecognised miss is never phrased as "they did not come". | Clean: "A neighbor I know usually passes between 07:00 and 08:00 on weekdays (14 days of support). Nobody passed today. What would explain it?" Unrecognised: "Someone passed in her usual window, but I did not recognise them as her. Was it her? A camera look at the sighting can tell." |
 | **lost bet** (2) | Confident self-bets that came out wrong, from `prediction_turn_self_bet`: 221 bets at p ≥ 0.7 that did not happen and 602 at p ≤ 0.3 that did, in 7 days. The seed is a **calibration gap**, not one bad roll: template (`faculty`) x probability bin, n ≥ 20, the gap ≥ 0.15 and beyond 2 standard errors (Patch 0: 9 gaps, 6 on one template). Also bill-forecast and action-bet failures. | "When I say a turn is unlikely to need more steps than usual (0.1-0.2), it does 37% of the time; when I say likely (0.8-0.9), only 54%. What am I not seeing?" |
 | **far memory** (6) | The anchor is the most salient item in the now. Candidates are ranked by **centered cosine** over `all_vectors()` (`orion/introspect/semantic_index.py:173`) on `orion_lived_memory` (597 docs); raw cosine is too compressed (Patch 0). They are taken from a **middle band** of ranks 5 to 25, not the nearest, and filtered against the live snapshot so superseded memories are never served. | "This (now) and this (an older memory) are related but not the same. What links them?" |
 | **rehearse** (3) | The open thread with Juniper: open promises (`open_promises_cue.py`) and the last chat turn's topic. It runs in a quiet stretch, which already means she has been away 45 min or more. No arrival prediction: Patch 0 found that an hour-of-week model of her turns is no better than chance on held-out weeks. | "We left X open. What should I find out before we talk again?" |
-| **body change** (4) | Commits merged into Orion's own sandbox (`/mnt/orion-fcc/repo`) since the last body-change seed, kept only when they touch an organ named in the body atlas. | "This change touched how I choose what to look at. Did it change what I do?" |
+| **body change** (4) | Commits in Orion's own sandbox (`/mnt/orion-fcc/repo`) since the last body-change seed that touch `orion/` or `services/`. The refs are the commit SHA plus its changed paths. Both are immutable, so a renamed or re-keyed organ cannot break them. **Reverie does not read the body atlas.** Organ names and ids are walled off: only `orion/body_atlas/` and `orion/dig/` may read them (`tests/test_organ_names_partition.py`). The organ is resolved later by the self-inquiry dig, through the dig kit, against the atlas live at dig time. If the organ's `member_hash` has changed since the commit, the dig says the organ has changed; it does not trust the id. | "This change touched how I choose what to look at. Did it change what I do?" |
 | **contradiction** (5) | Orion's latest `:SelfDefinition` (`orion/curiosity/self_inquiry.py:402`) beside its track record (`self_track_record_cue.py`). | "I describe myself as X; my record says Y. Which is true?" |
 
 Every seed carries **refs** that resolve. These are expectation ids, bet template plus window, memory doc ids,
@@ -280,7 +294,9 @@ These are removed in the same patch that turns the new path on. Nothing is left 
 - `ORION_REVERIE_FAR_MEMORY_BAND=5:25` (centered-cosine ranks: from : to; set by Patch 0)
 - `ORION_REVERIE_THREAD_LAPSE_DAYS=14`
 
-Removed: `ORION_REVERIE_INTERVAL_SEC` (replaced by the quiet gate), `ORION_REVERIE_CHAIN_MAX_STEPS`,
+Changed: `ORION_REVERIE_INTERVAL_SEC=60`. It is now the gate's poll interval, down from 90 s.
+
+Removed: `ORION_REVERIE_CHAIN_MAX_STEPS`,
 `ORION_REVERIE_REFRACTORY_SEC`, and the resonance and expectation-judge keys.
 
 Then run `python scripts/sync_local_env_from_example.py`.
@@ -302,7 +318,7 @@ Then run `python scripts/sync_local_env_from_example.py`.
 
 ## Non-goals
 
-- No new scheduler. The quiet gate replaces the timer.
+- No new scheduler. The existing worker loop polls the quiet gate instead of firing on a timer.
 - No change to the curiosity run itself, its arms, `select_priors`, or the replica.
 - No new memory store. Far memory reads the existing Chroma collection.
 - No push to Juniper. A rehearse question is dug before she arrives. What the dig found reaches her only through
@@ -317,6 +333,17 @@ Then run `python scripts/sync_local_env_from_example.py`.
 3. Retire the room-camera expectations entirely. The lost-bet seed takes over. [default: yes]
 4. Absence seeds name walkway people (public street, already in people records). Juniper's own cadence is used
    for rehearse. [default: allowed; no privacy boundary between Juniper and Orion]
+5. **Let Orion read the trace of its own questions.** This needs Juniper's yes; there is no default.
+   - Orion asked for this on this PR. Today `orion_readonly` cannot read three tables:
+     - `curiosity_focus_request` (was my question dug?)
+     - `curiosity_finding_register` (did the dig find anything?)
+     - `prediction_turn_self_bet` (the lost-bet seed's own material)
+   - The proposed grant is `scripts/sql/2026-11-18_grant_orion_readonly_reverie_question_trace.sql`. It is **not
+     applied**. Patch 1 adds `reverie_question` to it.
+   - **Run ids.** The first two tables carry curiosity run ids, and #3685 shows the test arm can be re-derived
+     from a run id. Orion's role already reads those run ids through `orion_scope.temporal_self_event`: 94
+     `curiosity_run` rows in 7 days, checked with `SET ROLE orion_readonly`. So this grant does not widen the
+     #3685 gap.
 
 ## Proposal mode (section 0A)
 
@@ -378,12 +405,13 @@ nothing. Re-run it with `python3 scripts/analysis/reverie_patch0_measure.py`. Th
 | Part | Result | Verdict |
 |---|---|---|
 | **Quiet gate** (arousal idle AND no attention winner for 10 min or more) | 84 stretches in 7 days: 5 to 16 a day, about 12 a day on average. Median 13.6 min, 23.9 h in total. | **GO.** The cap of 8 a day fits. |
-| **Absence** | 63 missed routines: 25 from 6 named people, 38 from vehicles with hash labels. Recent days have 8 to 14. | **GO, people only.** |
+| **Absence** | 63 missed routines: 25 from 6 named people, 38 from vehicles with hash labels. Re-checked against the raw census at Orion's request, with named *person* individuals only, over 7 days: 21 misses. **2 clean** (no person detected in the window). **19 unrecognised** (a person was detected but not attributed to them; the windows are about 3 h wide). | **GO, people only, with the evidence split.** Most "absences" are really recognition questions. |
 | **Lost bet** | 5,614 settled self-bets. 810 single confident misses are not used: one miss at p=0.8 is expected 1 time in 5. **9 calibration gaps** beat 2 standard errors. 6 are on `more_steps_than_usual`: at stated 0.1-0.2 it happens 37% of the time, and at stated 0.8-0.9 only 54%. The bets barely tell turns apart. | **GO, low volume.** About 3 distinct questions a week; they suit threads. |
 | **Far memory** | 597 docs. Raw cosine is squeezed together: nearest 0.78, a typical doc 0.54. Centered cosine spreads it: nearest 0.52, rank 5 0.33, rank 10 0.27, rank 20 0.21, typical doc -0.01. By eye, ranks about 8 to 25 are on the same theme but a different event. For example, a disk-flashing problem on one machine is paired with an older memory about that machine's GPU limits. | **GO, with a change.** Use centered cosine over `all_vectors()`, band = ranks 5 to 25. |
 | **Rehearse** (predict Juniper's next chat within 2 h) | 231 of Juniper's own turns in 42 days, counted with the canonical `JUNIPER_TURN_PREDICATE`. Tested on 2 held-out weeks against a base rate of 0.20: precision was 0.45 in one week and 0.23 in the other, which is chance. | **NO-GO for the timing.** The seed stays as "the thread left open with Juniper", run in a quiet stretch. |
 | **Body change** | 1 to 113 commits a day touching `orion/` or `services/` in the sandbox. Author dates are used, because the sandbox reset rewrites commit dates. | **GO.** |
 | **Contradiction** | 31 self-definitions in 30 days (1 to 4 a day). | **GO.** |
+| **Joint availability** (Orion's question 5: does rotation have a real choice?) | All 14 of 14 days had 3 or more seed kinds with material: 12 days had all 6 and 2 days had 5. The missing kinds were body change once and absence once. This is an upper bound. A standing lost-bet gap or contradiction is spent by its first question, through the 14-day near-duplicate refusal. Absence, body change, rehearse and far memory bring fresh material daily, so at least 3 fresh kinds remain on most days. | **GO.** Rotation does not degenerate into one kind. |
 
 **Mistakes the script caught on its own first run.**
 

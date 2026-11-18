@@ -249,7 +249,9 @@ def test_no_undiscovered_root_callers_of_claude_permission_argv() -> None:
 def test_fcc_agents_json_is_orions_sandbox_variant_not_the_operator_file() -> None:
     agents = json.loads(claude_spawn.fcc_agents_json())
     spec = agents["orion-repo-agent"]
-    assert set(spec) == {"description", "prompt", "tools"}
+    assert set(spec) == {"description", "prompt", "tools", "model"}
+    # Same model as the turn: an alias like "sonnet" would route through FCC's lane map instead.
+    assert spec["model"] == "inherit"
     # Orion's variant: no nested agents, sandbox rules present, operator worktree recipe absent.
     assert "Agent" not in spec["tools"] and {"Bash", "Edit", "Read"} <= set(spec["tools"])
     assert "/mnt/orion-fcc/repo" in spec["prompt"]
@@ -257,8 +259,10 @@ def test_fcc_agents_json_is_orions_sandbox_variant_not_the_operator_file() -> No
     assert "docker compose up" in spec["prompt"]
     assert "git worktree add" not in spec["prompt"]
     assert "Explore" in spec["description"]
+    # The operator file's opening instruction (read all of AGENTS.md first) is not in Orion's variant.
     operator = (REPO_ROOT / ".claude/agents/orion-repo-agent.md").read_text(encoding="utf-8")
-    assert spec["prompt"] not in operator
+    assert "Before anything else, read the `AGENTS.md`" in operator
+    assert "Before anything else, read the `AGENTS.md`" not in spec["prompt"]
 
 
 def test_fcc_agents_json_refuses_a_file_whose_name_does_not_match(tmp_path, monkeypatch) -> None:
@@ -274,3 +278,20 @@ def test_fcc_agents_argv_default_on_and_off_switch(monkeypatch) -> None:
     assert argv[0] == "--agents" and "orion-repo-agent" in json.loads(argv[1])
     monkeypatch.setenv("HARNESS_FCC_REPO_AGENT_ENABLED", "false")
     assert claude_spawn.fcc_agents_argv("HARNESS_FCC_REPO_AGENT_ENABLED") == []
+
+
+def test_fcc_agents_parser_refuses_block_scalars_and_strips_quotes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(claude_spawn, "FCC_AGENTS_DIR", tmp_path)
+    (tmp_path / "a.md").write_text("---\r\nname: a\r\ndescription: \"quoted\"\r\n---\r\nbody\r\n", encoding="utf-8")
+    assert json.loads(claude_spawn.fcc_agents_json(("a",)))["a"]["description"] == "quoted"
+    (tmp_path / "b.md").write_text("---\nname: b\ndescription: >\n  folded\n---\nbody\n", encoding="utf-8")
+    with pytest.raises(ValueError):
+        claude_spawn.fcc_agents_json(("b",))
+
+
+def test_fcc_agents_argv_degrades_to_no_flag_when_the_file_is_missing(tmp_path, monkeypatch, caplog) -> None:
+    monkeypatch.delenv("HARNESS_FCC_REPO_AGENT_ENABLED", raising=False)
+    monkeypatch.setattr(claude_spawn, "FCC_AGENTS_DIR", tmp_path)
+    with caplog.at_level("WARNING"):
+        assert claude_spawn.fcc_agents_argv("HARNESS_FCC_REPO_AGENT_ENABLED") == []
+    assert "fcc_agents_unavailable" in caplog.text

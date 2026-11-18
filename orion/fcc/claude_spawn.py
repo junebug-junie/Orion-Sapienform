@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, List, Mapping, Sequence
+
+logger = logging.getLogger(__name__)
 
 
 def mcp_allowed_tool_patterns(mcp_servers: Mapping[str, Any]) -> List[str]:
@@ -147,23 +150,37 @@ FCC_AGENTS_DIR = Path(__file__).resolve().parent / "agents"
 FCC_AGENT_NAMES: tuple[str, ...] = ("orion-repo-agent",)
 
 
+_YAML_BLOCK_MARKERS = frozenset({">", "|", ">-", "|-", ">+", "|+"})
+
+
 def _parse_agent_file(path: Path) -> tuple[str, dict[str, Any]]:
-    """``(name, {description, prompt, tools})`` from a Claude Code agent markdown file."""
-    text = path.read_text(encoding="utf-8")
+    """``(name, {description, prompt, tools, model})`` from a Claude Code agent markdown file.
+
+    Flat ``key: value`` frontmatter only. YAML block scalars are refused, not misread.
+    """
+    text = path.read_text(encoding="utf-8").replace("\r\n", "\n")
     if not text.startswith("---\n"):
         raise ValueError(f"{path}: no frontmatter")
     head, _, body = text[4:].partition("\n---\n")
     meta: dict[str, str] = {}
     for line in head.splitlines():
         key, sep, value = line.partition(":")
-        if sep:
-            meta[key.strip()] = value.strip()
+        if not sep:
+            continue
+        value = value.strip()
+        if value in _YAML_BLOCK_MARKERS:
+            raise ValueError(f"{path}: {key.strip()} uses a YAML block scalar; write it on one line")
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+            value = value[1:-1]
+        meta[key.strip()] = value
     name, description, prompt = meta.get("name", ""), meta.get("description", ""), body.strip()
     if not (name and description and prompt):
         raise ValueError(f"{path}: name, description and prompt are all required")
     spec: dict[str, Any] = {"description": description, "prompt": prompt}
     if meta.get("tools"):
         spec["tools"] = [t.strip() for t in meta["tools"].split(",") if t.strip()]
+    if meta.get("model"):
+        spec["model"] = meta["model"]
     return name, spec
 
 
@@ -183,4 +200,9 @@ def fcc_agents_argv(env_key: str) -> List[str]:
     raw = os.environ.get(env_key, "true").strip().lower()
     if raw in {"0", "false", "no", "off"}:
         return []
-    return ["--agents", fcc_agents_json()]
+    try:
+        return ["--agents", fcc_agents_json()]
+    except (OSError, ValueError) as exc:
+        # An optional helper must never stop every turn; the turn runs with built-in agents only.
+        logger.warning("fcc_agents_unavailable dir=%s err=%s", FCC_AGENTS_DIR, exc)
+        return []

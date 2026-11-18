@@ -271,5 +271,6 @@ def test_every_hinted_sub_agent_type_is_one_the_carry_turn_actually_lists():
     """A named type must be a CLI built-in or one fcc_agents_argv passes, else the Agent call fails."""
     from orion.fcc.claude_spawn import FCC_AGENT_NAMES
 
+    # Snapshot of the CLI built-ins from the 2026-11-17 transcripts (see intention.py), not read live.
     builtins = {"claude", "Explore", "general-purpose", "Plan", "statusline-setup"}
     assert set(it.CARRY_SUBAGENT_TYPES) <= builtins | set(FCC_AGENT_NAMES)

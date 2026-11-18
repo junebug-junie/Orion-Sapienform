@@ -241,9 +241,9 @@ The unified-turn introspection experiment for these flags lives at `scripts/run_
 
 Turns run with `--setting-sources user,local`, so the repo's own `.claude/agents/` is never loaded. Every non-reading turn (spawned and warm pool) instead passes `--agents` with one agent, built from `orion/fcc/agents/orion-repo-agent.md` (`orion/fcc/claude_spawn.py::fcc_agents_argv`). This adds the agent only: the repo's CLAUDE.md, hooks and settings stay off.
 
-The file is Orion's sandbox variant of the operator's `.claude/agents/orion-repo-agent.md`: branch in the sandbox clone (no worktree), never push or commit `main`, never force-push, no `reset --hard`/`clean`/`stash`, no deploys or `docker` writes, no live DB writes, no PR unless the brief asks, never merge. It has no `Agent` tool (no nested sub-agents). The take-on hint (`CARRY_SUBAGENT_HINT`, `orion/prime/intention.py`) names it beside `Explore`; `python -P -m orion.dig take-ons` counts calls by type.
+The file is Orion's sandbox variant of the operator's `.claude/agents/orion-repo-agent.md`: branch in the sandbox clone (no worktree), never push or commit `main`, never force-push, no `reset --hard`/`clean`/`stash`, no deploys or `docker` writes, no live DB writes, no PR unless the brief asks, never merge. It has no `Agent` tool (no nested sub-agents) and no MCP tools (explicit `tools` list; it uses Bash and `python -P -m orion.dig`). The take-on hint (`CARRY_SUBAGENT_HINT`, `orion/prime/intention.py`) names it beside `Explore`; `python -P -m orion.dig take-ons` counts calls by type.
 
-`HARNESS_FCC_REPO_AGENT_ENABLED=true` (default). `false` = built-in agent types only. Check it: the `system/init` stream-json line of a turn lists `orion-repo-agent` in `agents`.
+`HARNESS_FCC_REPO_AGENT_ENABLED=true` (default). `false` = built-in agent types only. Check it: the `system/init` stream-json line of a turn lists `orion-repo-agent` in `agents` (confirmed against the governor CLI 2026-11-17 with a dead API URL: with the flag `agents` gains `orion-repo-agent`, without it only the built-ins).
 
 ### Chat replies do not read Claude Code auto-memory
 

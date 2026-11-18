@@ -1,6 +1,6 @@
 # Game company: Orion watches, comments and chats while someone plays
 
-Status: DESIGN, revision 4. Step 0 has run (2026-11-17, see "Step 0 results"). Patch 1 is merged (PR #3627); its live proof is #3626. Patch 2 waits for Juniper's go.
+Status: revision 4. Step 0 has run (2026-11-17). Patch 1 is merged and deployed (PR #3627; live proof #3626). Patch 2 is merged and deployed (PR #3727; live proof #3726; no look has run on real play yet). Patch 3 is PR #3745 (live proof #3741). The unscripted note-quality check (patch 2 acceptance) has not run: it runs on the first live notes, and Juniper sets the bar.
 Date: 2026-11-16. All live numbers were read on 2026-11-16 unless a line says otherwise.
 Ticket: #3500.
 

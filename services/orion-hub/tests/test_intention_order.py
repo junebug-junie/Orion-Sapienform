@@ -226,3 +226,14 @@ def test_a_re_sent_order_near_the_horizon_follows_the_existing_run():
     late = IntentionDesk(pool_provider=lambda: Pool(Conn(ROW)), durable=Durable(run={"status": "running"}),
                          outreach_provider=lambda: None, clock=lambda: datetime(2026, 11, 15, 6, 0, tzinfo=timezone.utc))
     assert asyncio.run(late.order(order())).status == "exists"
+
+
+def test_the_submitted_brief_carries_the_promise_time_for_the_bid_3640():
+    """#3640: the carry run's want opens at the promise's time (harness_turn_trace.created_at), so the brief Hub
+    submits carries it; the body economy ranks the take-on by the promise's age."""
+    d = desk()
+    asyncio.run(d.order(order()))
+    [body] = d.durable.submitted
+    assert body["brief"]["promised_at"].startswith("2026-11-12T07:08:40")
+    req = DurableRunRequestV1.model_validate(body)
+    assert req.brief.promised_at == PROMISED.replace(tzinfo=timezone.utc)

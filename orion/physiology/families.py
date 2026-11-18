@@ -16,6 +16,12 @@ SCHEMA_VERSION = 1
 # The regulate signals a family can declare it handles (Orion Prime step 3, orion/physiology/prime_charge.py).
 RECEPTORS: tuple[str, ...] = ("slow", "quicken")
 FIXED_COST_FIELDS = frozenset({"seconds", "gpu_seconds", "tokens", "watts", "juniper_msgs", "claude_limit_events"})
+# Where a family's hunger clock starts (orion/physiology/appetite.py ``hunger``). ``last_close`` (the default, the R2
+# drive): the family's last act close resets it. ``want_opened``: each want's own ``opened_at`` -- for a family whose
+# wants are debts with their own birth time, not a recurring drive. durable.intention (#3640, Juniper 2026-11-18): a
+# take-on's rank is the age of the promise, so its want opens at the promise's time and no other promise's close
+# resets it.
+HUNGER_FROM: tuple[str, ...] = ("last_close", "want_opened")
 
 
 @dataclass(frozen=True)
@@ -36,6 +42,8 @@ class FamilyConfig:
     # compaction's consent asks): its target would sit at the prior forever and shift every other family's
     # weight in the tier (review finding, attention patch 3d).
     weighted: bool = True
+    # HUNGER_FROM: where this family's hunger clock starts.
+    hunger_from: str = "last_close"
 
     @property
     def bids(self) -> bool:
@@ -94,12 +102,16 @@ def parse_families(doc: Any) -> FamiliesConfig:
         weighted = body.get("weighted", True)
         if not isinstance(weighted, bool):
             raise ValueError(f"{name}: weighted must be true or false")
+        hunger_from = body.get("hunger_from", "last_close")
+        if hunger_from not in HUNGER_FROM:
+            raise ValueError(f"{name}: hunger_from must be one of {list(HUNGER_FROM)}")
         if tier != 0 and window <= 0:
             raise ValueError(f"{name}: a bidding family needs deferrable_window_s > 0 (its hunger clock)")
         out[name] = FamilyConfig(family=name, tier=int(tier), prior_weight=prior, deferrable_window_s=window,
                                  lanes=tuple(lanes), placement=placement,
                                  fixed_cost={k: float(v) for k, v in fixed.items()}, note=str(body.get("note") or ""),
-                                 receptors=tuple(dict.fromkeys(str(r) for r in receptors)), weighted=weighted)
+                                 receptors=tuple(dict.fromkeys(str(r) for r in receptors)), weighted=weighted,
+                                 hunger_from=hunger_from)
     return FamiliesConfig(families=out)
 
 

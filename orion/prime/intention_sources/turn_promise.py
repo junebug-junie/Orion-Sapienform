@@ -107,7 +107,7 @@ def adapt(event_ref: str, row: Optional[dict[str, Any]], *, why: str) -> Union[I
     return IntentionSourceV1(
         source=SOURCE, horizon_at=promised_at + timedelta(seconds=HORIZON_SEC), prompt=prompt, route="chat_thread",
         route_target=session[:200], quote_ref=f"harness_turn_trace:{corr}#promises_made[{quotes[0][0]}]",
-        retrieval_query=_cut(quotes[0][1], 1000))
+        retrieval_query=_cut(quotes[0][1], 1000), promised_at=promised_at)
 
 
 __all__ = ["FETCH_SQL", "HORIZON_SEC", "PREFIX", "SOURCE", "adapt", "correlation_id", "fetch", "horizon_from"]

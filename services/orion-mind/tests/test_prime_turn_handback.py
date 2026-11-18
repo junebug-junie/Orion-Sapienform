@@ -52,7 +52,8 @@ class JsonCodec:
 
 
 def chat_turn(corr="corr-7", *, promise=True, prompt="walkway again?"):
-    ing = hop(corr, "ingress", {"session_id": "sess-j", "mode": "orion", "user_message": prompt}, T0)
+    ing = hop(corr, "ingress", {"session_id": "sess-j", "mode": "orion", "user_message": prompt,
+                                   "surface_context": {"surface": "hub_desktop", "input_modality": "typed"}}, T0)
     fin = hop(corr, "finalize", {"final_text": f"{PROMISE}.", "compliance_verdict": "completed",
                                  "reflection": {"promises_made": [{"quote": PROMISE, "offer": False}] if promise else []}},
               T0 + timedelta(minutes=2))

@@ -30,6 +30,7 @@ def _hops(corr=CORR, session=SESSION, *, mode="orion", promises=({"offer": False
     ingress = {"session_id": session, "user_message": "ok im off to play zelda for a bit", "attachment_count": 0}
     if mode is not None:
         ingress["mode"] = mode
+        ingress["surface_context"] = {"surface": "hub_desktop", "input_modality": "typed"}
     fin = {"correlation_id": corr, "final_text": final or f"Have fun!\n\n{QUOTE} and see what stands out.",
            "compliance_verdict": "completed",
            "reflection": {"promises_made": [dict(p) for p in promises], "promises_kept": []}}

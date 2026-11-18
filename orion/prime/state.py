@@ -78,6 +78,7 @@ from orion.mindloop.backoff import (  # noqa: F401 -- re-exports
     note_no_model,
     wants_starved_route,
 )
+from orion.schemas.promise_horizon import PROMISE_HORIZON_SEC
 
 MAX_CONCERNS = 3
 MAX_PENDING_CHANGES = 20
@@ -99,7 +100,7 @@ CONCERN_TTL = timedelta(hours=24)
 # browse through the last 24 hours" faded after one day with no move. The kind is read from event_ref, so a
 # concern saved before this change gets the right TTL with no new field.
 PROMISE_EVENT_PREFIX = "turn:"
-PROMISE_CONCERN_TTL = timedelta(hours=72)
+PROMISE_CONCERN_TTL = timedelta(seconds=PROMISE_HORIZON_SEC)  # 72 h, the promise act's clock (#3595)
 PROMISE_TEXT_CAP = 600
 
 Arm = Literal["treated", "control"]

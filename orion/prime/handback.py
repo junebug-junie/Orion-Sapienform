@@ -17,7 +17,8 @@ No new bus event: the hand-back is a second consumer of an existing one.
 The fold is deterministic: the same hops in the same order give the same state (a turn's concern id is derived
 from its correlation id, ``turn_concern_id``). Per finished turn Prime keeps:
 
-* who: ``chat_juniper`` (a turn Juniper typed), ``curiosity``, ``consult``, ``letter`` or ``intention`` (the carry
+* who: ``chat_juniper`` (a turn Juniper sent from a Hub browser surface; an /api/chat post from an eval or a
+  coding session is not handed back, #3602), ``curiosity``, ``consult``, ``letter`` or ``intention`` (the carry
   turn of a concern Prime took on, orion/prime/intention.py; its promises open no concern). Every other session
   (world-pulse reads, self-sense evals, PR field notes, reminiscence, outreach) is not handed back: those are
   ~90% of turns (live 11-09..11-12) and are not threads of Orion's own life with anyone;
@@ -42,7 +43,8 @@ decides whether Prime actually thinks):
   and the turn completed with a reply (verdict ``completed``; a ``partial`` turn was cut short). The concern
   settles, produced = 1 (``CONCERN_BASIS`` names this path). Only the PROMPT counts, never the reply: the Prime
   block (Part 1) puts concern ids into every turn's prefix, so a reply that lists what Prime holds would
-  otherwise settle every concern it names.
+  otherwise settle every concern it names. A day letter's prompt counts for nothing either
+  (``NO_PROMPT_SETTLE_WHO``, #3644): it is the day's record, so it quotes earlier replies, refs and all.
 
 Loop guard (turns open concerns, concerns steer turns). On top of ``MAX_CONCERNS`` and ``CONCERN_TTL``:
 at most ``TURN_CONCERNS_MAX_OPEN`` turn-opened concerns held at once (so at least two slots stay for Prime's own
@@ -68,6 +70,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 from orion.prime.acts import settle_concern
 from orion.prime.state import (CONCERN_TTL, MAX_CONCERNS, PROMISE_EVENT_PREFIX, PROMISE_TEXT_CAP, PrimeConcernV1,
                                PrimeStateV1, note_change)
+from orion.regulation.juniper_turns import is_browser_surface_turn
 
 TURNS_KEY = "orion:prime:turns"
 HANDBACK_CHANNEL = "orion:cockpit:hop"
@@ -90,8 +93,13 @@ LETTER_SESSION_ID = "orion_day_letter"
 INTENTION_SESSION_ID = "orion_intention"
 # Loop guard (choice-as-EFE design Step -1, "Dangerous failure"): a carry turn's own promises open no concern.
 NO_THREAD_WHO = frozenset({"intention"})
-# Orion's own system sessions are named orion_*; a Hub chat turn Juniper typed carries ``mode`` on ingress.
+# Orion's own system sessions are named orion_*; a Hub chat turn Juniper sent from a browser surface carries
+# ``surface_context`` on ingress (``classify_who``).
 SYSTEM_SESSION_PREFIX = "orion_"
+# Turns whose prompt is a record of earlier text, so a ``prime_concern:<id>`` in it is a quote, never an answer
+# (#3644: the 11-17 day letter quoted Orion's own "[prime_concern:438e69ed6bb3d798]" from the day's record and
+# settled that promise). Their prompt citations settle nothing; the turn is still handed back.
+NO_PROMPT_SETTLE_WHO = frozenset({"letter"})
 
 # A turn concern is a promise concern (orion/prime/state.py ``concern_ttl``: 72 h unkept, not 24 h).
 TURN_EVENT_PREFIX = PROMISE_EVENT_PREFIX
@@ -205,7 +213,11 @@ def classify_who(session_id: Optional[str], raw: dict[str, Any]) -> Optional[Tur
         return "letter"
     if sid == INTENTION_SESSION_ID:
         return "intention"
-    if sid and "mode" in raw and not sid.startswith(SYSTEM_SESSION_PREFIX):
+    # Juniper's chat is a turn a Hub browser surface sent (#3602): the same rule the promise ledger and the
+    # report use (orion/regulation/juniper_turns.py ``is_browser_surface_turn``). ``mode`` alone is not enough:
+    # an eval script or a coding session posting to /api/chat carries ``mode`` but no ``surface_context``
+    # (live 11-17: session memory-scoreboard-eval was handed back as chat_juniper with a promise ref).
+    if sid and not sid.startswith(SYSTEM_SESSION_PREFIX) and is_browser_surface_turn(raw):
         return "chat_juniper"
     return None
 
@@ -397,7 +409,7 @@ def fold_turn_signals(
         gist = turn_gist(start.who, start.prompt_excerpt, sig.final_excerpt)
         replied = bool(sig.final_excerpt.strip()) and (sig.verdict or "") in COUNTED_VERDICTS
         settled: list[str] = []
-        if replied:
+        if replied and start.who not in NO_PROMPT_SETTLE_WHO:
             for cid in start.prompt_concern_ids:
                 state, line = settle_concern(state, cid, arm="treated", produced=True, now=now,
                                              note=f"answered in {words} turn {corr}")

@@ -526,8 +526,8 @@ def prime_by_ref(stored: Sequence[Mapping[str, Any]], carry: Mapping[str, list[d
                  prime_state: Optional[Mapping[str, Any]], prime_turns: Optional[Mapping[str, Any]]) -> dict[str, Any]:
     """For each item-bearing turn with a non-offer promise: what Prime did with it, keyed on the exact concern
     id the hand-back derives from the turn (``turn_concern_id(corr)``, the id the carry run and its chat row
-    carry), and the carry replies on that id. ``who`` is Prime's own ``classify_who`` on the ingress session
-    and ``mode`` flag: ``None`` means the hand-back never reads that session (``not_handed_back``). Prime status
+    carry), and the carry replies on that id. ``who`` is Prime's own ``classify_who`` on the ingress session,
+    ``mode`` flag and browser ``surface_context`` (#3602): ``None`` means the hand-back never reads that session (``not_handed_back``). Prime status
     is ``not_read`` when no Prime state was given. ``refused`` is visible only for turns still in Prime's
     recent-turn window (``MAX_RECENT_TURNS``) and a closed concern only while in ``concern_record``
     (``MAX_CONCERN_RECORD``), so ``no_concern_or_aged_out`` holds both "opened nothing" and "aged out"."""
@@ -546,7 +546,10 @@ def prime_by_ref(stored: Sequence[Mapping[str, Any]], carry: Mapping[str, list[d
             continue
         corr = str(row["correlation_id"])
         cid = turn_concern_id(corr)
-        who = classify_who(row.get("session_id"), {"mode": True} if row.get("has_mode") else {})
+        # The ingress raw as classify_who reads it: ``mode`` and, for a Hub browser turn, ``surface_context`` (#3602).
+        raw = {**({"mode": True} if row.get("has_mode") else {}),
+               **({"surface_context": {"from_browser": True}} if row.get("from_browser") else {})}
+        who = classify_who(row.get("session_id"), raw)
         if who is None:
             st = "not_handed_back"
         elif prime_state is None:

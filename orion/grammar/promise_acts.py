@@ -44,12 +44,12 @@ from orion.schemas.harness_finalize import (
     FinalizeReflectionV1,
     PromiseV1,
 )
+from orion.schemas.promise_horizon import PROMISE_HORIZON_SEC  # the one 72 h promise clock (#3595)
 
 PROMISE_ACTOR = "hub.promise"
 PROMISE_VERB = "say"
 PROMISE_SIGNAL = "promise_kept"
 PROMISE_OBJECT_REF = "juniper"
-PROMISE_HORIZON_SEC = 72 * 3600.0
 PROMISE_BASIS = (
     "promise_kept by 72h: Juniper's fixed horizon for every promise (intention ledger, answer 2, "
     "2026-11-12); kept = a later judged reply quotes the words that deliver it; no Juniper chat "

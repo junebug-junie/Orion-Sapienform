@@ -22,20 +22,25 @@ sys.path[:0] = [str(REPO_ROOT), str(SERVICE_ROOT)]
 DSN = os.getenv("ORION_ADMISSION_TEST_DSN")
 pytestmark = pytest.mark.skipif(not DSN, reason="isolated ORION_ADMISSION_TEST_DSN required")
 
-MIGRATIONS = ("manual_migration_episode_memory_v1.sql", "manual_migration_dream_day.sql")
+MIGRATIONS = ("manual_migration_episode_memory_v1.sql", "manual_migration_dream_day.sql",
+              "manual_migration_dream_day_grounding.sql")
 # Only the columns the resolve queries read (live types, 2026-11-18).
 REF_TABLES = """
-CREATE TABLE temporal_self_event (event_id text PRIMARY KEY, source_kind text, label text, verdict text);
+CREATE TABLE temporal_self_event (event_id text PRIMARY KEY, source_kind text, label text, verdict text,
+    payload_json jsonb NOT NULL DEFAULT '{}'::jsonb);
 CREATE TABLE grammar_acts (act_id varchar PRIMARY KEY, actor varchar, verb varchar, object_ref text, outcome_note text);
 CREATE TABLE dream_cycle (cycle_id text PRIMARY KEY, trigger text, status text, hypothesis_count int, cycle_json jsonb);
 CREATE TABLE dream_hypothesis (hypothesis_id text PRIMARY KEY, claim text, why text);
-CREATE TABLE harness_turn_trace (correlation_id varchar PRIMARY KEY, workflow text, created_at timestamp);
+CREATE TABLE harness_turn_trace (correlation_id varchar PRIMARY KEY, workflow text, created_at timestamp,
+    run_artifact jsonb);
 CREATE TABLE chat_history_log (id varchar PRIMARY KEY, correlation_id varchar, prompt text, response text);
-INSERT INTO temporal_self_event VALUES ('reverie_chain:r1', 'reverie_chain', 'an open loop', NULL);
+INSERT INTO temporal_self_event VALUES ('reverie_chain:r1', 'reverie_chain', 'an open loop', NULL,
+    '{"duration_sec": 3588.8}');
 INSERT INTO grammar_acts VALUES ('act_1', 'hub.world_pulse_read', 'look', 'reading:x', 'stage1_completed');
 INSERT INTO dream_cycle VALUES ('dc-1', 'pressure', 'completed', 0, '{"note": "pairs dream=3"}');
 INSERT INTO dream_hypothesis VALUES ('h-1', 'two things link', 'same hour');
-INSERT INTO harness_turn_trace VALUES ('c-1', 'reminiscence_otherwise', '2026-11-17 10:00');
+INSERT INTO harness_turn_trace VALUES ('c-1', 'reminiscence_otherwise', '2026-11-17 10:00',
+    '{"final_text": "saved rm:2026-11-17:otherwise"}');
 INSERT INTO chat_history_log VALUES ('chat-1', 'corr-1', 'hello', 'hi');
 """
 
@@ -76,6 +81,10 @@ def test_every_ref_kind_resolves_and_persist_writes_once():
     async def body(pool):
         resolved = await resolve_refs(pool, refs)
         assert set(resolved) == set(refs[:7])
+        # The grounding judge reads each record's own text, not only a label (orion/memory/dream_day.py RESOLVE_SQL).
+        assert "3588.8" in resolved["experience:reverie_chain:r1"]
+        assert resolved["harness_turn_trace:c-1"].endswith(": saved rm:2026-11-17:otherwise")
+        assert resolved["chat_turn:chat-1"] == "Juniper: hello / Orion: hi"
         text = ('{"memories": [{"statement": "I read a paper and my reverie kept an open loop.", '
                 '"refs": ["act:act_1", "experience:reverie_chain:r1"]}], "plan": [], '
                 '"day": {"text": "A quiet day.", "refs": ["dream_cycle:dc-1"]}}')
@@ -87,7 +96,11 @@ def test_every_ref_kind_resolves_and_persist_writes_once():
             return {"day": day, "run_id": run_id, "items_dropped": 0, "refs_dropped": 0, "plan_rejected": 0,
                     "memories_over_cap": 0, "kept": 0, "dropped": 0, "new": 0, "plan": [], "day_text": check.day_text,
                     "day_refs": check.day_refs, "material": {}, "read": {"unread": {}}, "now_shown_id": "s",
-                    "turn_correlation_id": "t", "created_at": now}
+                    "turn_correlation_id": "t", "created_at": now, "memories_unsupported": 1,
+                    "memories_unjudged": 0,
+                    "grounding": {"enabled": True, "unsupported": 1, "verdicts": [
+                        {"statement": "the camera saw the kids", "status": "unsupported",
+                         "unsupported_claims": ["the kids"]}]}}
 
         first = await persist_dream_day(pool, fields("dream-day-2026-11-17"), result, "memory_distill")
         assert first["outcome"] == "written" and first["memories_written"] == 1 and first["produced"]
@@ -100,10 +113,13 @@ def test_every_ref_kind_resolves_and_persist_writes_once():
                                             "GROUP BY 1, 2")).fetchall()
             ev = await (await conn.execute("SELECT source_kind, source_id FROM episode_memory_evidence "
                                            "ORDER BY source_id")).fetchall()
-            row = await (await conn.execute("SELECT run_id, produced, memories_written, day_text FROM dream_day")).fetchall()
+            row = await (await conn.execute("SELECT run_id, produced, memories_written, day_text, memories_unsupported, "
+                                            "grounding->'verdicts'->0->'unsupported_claims' AS claims "
+                                            "FROM dream_day")).fetchall()
         assert [dict(r) for r in mem] == [{"channel": "dream", "voice": "orion_thought", "n": 1}]
         assert [r["source_id"] for r in ev] == ["act:act_1", "experience:reverie_chain:r1"]
         assert [dict(r) for r in row] == [{"run_id": "dream-day-2026-11-17", "produced": True, "memories_written": 1,
-                                           "day_text": "A quiet day."}]
+                                           "day_text": "A quiet day.", "memories_unsupported": 1,
+                                           "claims": ["the kids"]}]
 
     with_db(body)

@@ -7,6 +7,8 @@
   ids that were shown, at most 3).
 * ``read_receipt``: the read receipt ``dig dream-day`` left in the self dir this container mounts.
 * ``resolve_refs``: one SELECT per ref kind (orion/memory/dream_day.py ``RESOLVE_SQL``).
+* ``resolve_refs``' text per kind is documented at orion/memory/dream_day.py ``RESOLVE_SQL``; the grounding gate
+  (app/dream_day_graph.py ``ground``) reads it.
 * ``persist_dream_day``: the night's memories (orion/memory/episode/store.py ``persist_dream_memories``) and the
   ``dream_day`` row in ONE transaction. First run to persist a day wins; a later run writes nothing and gets the
   stored row back.
@@ -62,8 +64,8 @@ COUNT_SQL = "SELECT count(*) AS n FROM episode_memory WHERE memory_id = ANY(%s::
 INSERT_SQL = """
 INSERT INTO dream_day (day, run_id, status, produced, note, memories_written, memory_ids, items_dropped, refs_dropped,
     memories_rejected, plan_rejected, kept, dropped, new, plan, day_text, day_refs, material, read, now_shown_id,
-    turn_correlation_id, created_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    turn_correlation_id, created_at, memories_unsupported, memories_unjudged, grounding)
+VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON CONFLICT (day) DO NOTHING RETURNING run_id
 """
 
@@ -253,7 +255,8 @@ async def persist_dream_day(pool: Any, fields: dict[str, Any], result: Validatio
                     row.items_dropped, row.refs_dropped, row.memories_rejected, row.plan_rejected, row.kept,
                     row.dropped, row.new, Jsonb(row.plan), row.day_text, row.day_refs, Jsonb(row.material),
                     Jsonb(row.read) if row.read is not None else None, row.now_shown_id, row.turn_correlation_id,
-                    row.created_at))).fetchone()
+                    row.created_at, row.memories_unsupported, row.memories_unjudged,
+                    Jsonb(row.grounding) if row.grounding is not None else None))).fetchone()
                 if inserted is None:
                     raise _AlreadyWritten()
         return {"outcome": "written", "run_id": row.run_id, "memories_written": n, "memory_ids": ids,

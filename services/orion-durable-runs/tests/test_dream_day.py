@@ -302,7 +302,8 @@ def material(**kw) -> DreamDayMaterialV1:
 
 
 class World:
-    def __init__(self, replies=None, *, receipt=True, max_attempts=3, persist_fail=0, cites_fail=0, winner=None):
+    def __init__(self, replies=None, *, receipt=True, max_attempts=3, persist_fail=0, cites_fail=0, winner=None,
+                 judge=None):
         from app.admitted_graph import GRANTED, WAITING
         self.GRANTED, self.WAITING = GRANTED, WAITING
         self.now = T0
@@ -317,6 +318,8 @@ class World:
         self.max_attempts = max_attempts
         self.persist_fail, self.cites_fail, self.winner = persist_fail, cites_fail, winner
         self.receipt_at = None   # fixed receipt time (an old read), else "now"
+        self.judge = judge       # async (prompt, held, timeout) -> {"text", ...}; None = gate off
+        self.judged: list[tuple[str, dict, float]] = []
 
     async def turn(self, req):
         self.turns.append(req)
@@ -362,6 +365,10 @@ class World:
             raise RuntimeError("use endpoint away")
         return {"uses": [{"event_id": c} for c in cites], "rejected_not_shown": [], "rejected_over_cap": []}
 
+    async def _judge(self, prompt, held, timeout):
+        self.judged.append((prompt, held, timeout))
+        return await self.judge(prompt)
+
     async def register(self, state):
         return {"status": "waiting_resource", "hold": {"request_id": f"{RUN_ID}:1", "lease_id": "h"}, "hold_seq": 1}
 
@@ -390,7 +397,7 @@ class World:
         from app.admitted_graph import AdmissionDeps
         deps = DreamDayDeps(run_turn=self.turn, gather=self.gather, read_receipt=self.read_receipt,
                             resolve_refs=self.resolve, known_referents=self.referents, persist=self.persist,
-                            record_cites=self.record_cites)
+                            record_cites=self.record_cites, judge=self._judge if self.judge else None)
         return build_dream_day_graph(deps, AdmissionDeps(self.register, self.lease, self.execute, self.release,
                                                          self.event, now=lambda: self.now,
                                                          max_attempts=self.max_attempts, retry_base_seconds=10.0),
@@ -583,3 +590,156 @@ def test_read_result_without_a_row_is_none():
     from app.dream_day_store import read_result
 
     assert asyncio.run(read_result(_ResultPool(None), date(2026, 11, 17))) is None
+
+
+# --- the grounding gate (2026-11-18 hardening) --------------------------------------------------------------
+
+from orion.memory.dream_day import (  # noqa: E402
+    CheckedMemory, apply_grounding, grounding_prompt, grounding_summary, judge_memories, parse_verdict,
+)
+
+OVERCLAIM = ("That night you played Zelda for 59 minutes while the office camera watched the kids packing a box; "
+             "we traded only eleven chat turns.")
+SUPPORTED = "I read a paper about spiking networks and it pulled at my reverie that afternoon."
+
+
+def verdict(supported, claims=()):
+    import json
+    return {"text": json.dumps({"supported": supported, "unsupported_claims": list(claims)}), "finish_reason": "stop"}
+
+
+def test_parse_verdict_is_strict():
+    assert parse_verdict('{"supported": true, "unsupported_claims": []}').supported is True
+    v = parse_verdict('```json\n{"supported": false, "unsupported_claims": ["the kids"]}\n```')
+    assert v.supported is False and v.unsupported_claims == ["the kids"]
+    for bad in ("", "yes", "supported: true", '{"supported": "true", "unsupported_claims": []}',
+                '{"supported": true}', '{"supported": true, "unsupported_claims": "none"}',
+                '{"supported": true, "unsupported_claims": [1]}', '[true]',
+                # says supported but lists a claim: contradicts itself, unjudged
+                '{"supported": true, "unsupported_claims": ["eleven chat turns"]}',
+                'Sure! {"supported": true, "unsupported_claims": []}'):
+        assert parse_verdict(bad) is None, bad
+
+
+def test_the_judge_prompt_is_its_own_short_factual_prompt():
+    prompt = grounding_prompt(OVERCLAIM, [EXP], RESOLVED)
+    assert OVERCLAIM in prompt and f"[{EXP}] {RESOLVED[EXP]}" in prompt
+    assert '"supported"' in prompt and '"unsupported_claims"' in prompt
+    writer = build_prompt(DreamDayBriefV1(dream_day="dream.day", day=DAY, timeout_sec=900, llm_route="memory_distill"),
+                          material())
+    assert "dig dream-day" not in prompt and writer.splitlines()[0] not in prompt
+    assert len(prompt) < 2500
+
+
+def test_judge_memories_maps_failures_to_unjudged():
+    memories = [CheckedMemory(OVERCLAIM, "about_juniper", [EXP]), CheckedMemory(SUPPORTED, "happened", [ACT]),
+                CheckedMemory("x happened.", "happened", [ACT]), CheckedMemory("y happened.", "happened", [ACT]),
+                CheckedMemory("z happened.", "happened", [ACT])]
+    answers = [verdict(False, ["the kids", "eleven chat turns"]), verdict(True), RuntimeError("gateway down"),
+               {"text": "I think it is fine", "finish_reason": "stop"}, {"text": '{"supported": tr', "finish_reason": "length"}]
+
+    async def ask(prompt):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+    out = asyncio.run(judge_memories(memories, RESOLVED, ask))
+    assert [v["status"] for v in out] == ["unsupported", "supported", "unjudged", "unjudged", "unjudged"]
+    assert out[0]["unsupported_claims"] == ["the kids", "eleven chat turns"]
+    assert "call_failed" in out[2]["error"] and out[3]["error"] == "verdict_unparseable"
+    assert out[4]["error"] == "verdict_cut_at_max_tokens"
+    # No time left: never asked, unjudged.
+    out = asyncio.run(judge_memories(memories[:1], RESOLVED, ask, time_left=lambda: 0.0))
+    assert out[0]["status"] == "unjudged" and out[0]["error"] == "no_time_left"
+    s = grounding_summary([{"status": "supported"}, {"status": "unsupported"}, {"status": "unjudged"}], enabled=True)
+    assert (s["judged"], s["supported"], s["unsupported"], s["unjudged"]) == (3, 1, 1, 1)
+
+
+def test_apply_grounding_writes_only_matched_supported_memories():
+    parsed = parse_answer(answer_json(memories=[
+        {"statement": SUPPORTED, "refs": [ACT]}, {"statement": OVERCLAIM, "refs": [EXP]},
+        {"statement": "A third memory with no verdict at all.", "refs": [CYCLE]}]))
+    check = check_answer(parsed, RESOLVED, [])
+    verdicts = [{"statement": SUPPORTED, "refs": [ACT], "status": "supported"},
+                {"statement": OVERCLAIM, "refs": [EXP], "status": "unsupported", "unsupported_claims": ["kids"]}]
+    check, rows = apply_grounding(check, verdicts)
+    assert [m.statement for m in check.memories] == [SUPPORTED]
+    assert [r["status"] for r in rows] == ["supported", "unsupported", "unjudged"]
+    assert rows[2]["error"] == "no_verdict_for_this_memory"
+    # A run checkpointed before the gate (no verdicts at all) writes nothing.
+    check2, rows2 = apply_grounding(check_answer(parsed, RESOLVED, []), None)
+    assert check2.memories == [] and {r["status"] for r in rows2} == {"unjudged"}
+
+
+def _gate_world(judge_answers):
+    answers = list(judge_answers)
+
+    async def judge(prompt):
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+    return World(replies=[answer_json(memories=[
+        {"statement": OVERCLAIM, "purpose": "about_juniper", "refs": [EXP]},
+        {"statement": SUPPORTED, "purpose": "happened", "refs": [ACT, EXP]}])], judge=judge)
+
+
+def test_the_gate_refuses_an_over_claim_and_writes_the_supported_one():
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    async def scenario():
+        world, saver = _gate_world([verdict(False, ["the kids packing a box", "eleven chat turns"]), verdict(True)]), \
+            InMemorySaver()
+        result = await start_and_grant(world, saver)
+        assert result["status"] == "completed" and result["produced"] is True
+        # The judge ran inside the hold, on the run's lease, once per memory, before the hold was released.
+        assert len(world.judged) == 2 and all(h["lease"]["lease_id"] == "h" for _, h, _ in world.judged)
+        assert world.releases == ["completed"]
+        assert all(t <= 60.0 for _, _, t in world.judged)
+        stored = world.stored
+        assert [m.statement for m in stored["result"].memories] == [SUPPORTED]
+        fields = stored["fields"]
+        assert fields["memories_unsupported"] == 1 and fields["memories_unjudged"] == 0
+        g = fields["grounding"]
+        assert g["enabled"] and (g["supported"], g["unsupported"]) == (1, 1)
+        refused = [v for v in g["verdicts"] if v["status"] == "unsupported"][0]
+        assert refused["statement"] == OVERCLAIM and "eleven chat turns" in refused["unsupported_claims"]
+        detail = finish_detail(result)
+        assert detail["memories_unsupported"] == 1 and detail["memories_written"] == 1
+        # The turn's limit leaves the gate its reserve.
+        from app.dream_day_graph import GROUNDING_RESERVE_SEC
+        assert world.turns[0].timeout_sec <= 900 - 30 - GROUNDING_RESERVE_SEC
+    asyncio.run(scenario())
+
+
+def test_a_judge_failure_means_not_written_and_a_night_of_refusals_grades_zero():
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    async def scenario():
+        world, saver = _gate_world([RuntimeError("gateway_error: seat busy"),
+                                    {"text": "looks fine to me", "finish_reason": "stop"}]), InMemorySaver()
+        result = await start_and_grant(world, saver)
+        assert result["status"] == "completed"           # a judge failure never fails the run or re-runs the turn
+        assert len(world.turns) == 1
+        assert world.stored["result"].memories == []     # never written by default
+        assert result["produced"] is False and result["produced_note"] == NO_TRACE_NOTE
+        fields = world.stored["fields"]
+        assert fields["memories_unjudged"] == 2 and fields["memories_unsupported"] == 0
+        errors = [v["error"] for v in fields["grounding"]["verdicts"]]
+        assert "call_failed" in errors[0] and errors[1] == "verdict_unparseable"
+    asyncio.run(scenario())
+
+
+def test_gate_off_keeps_the_ref_check_alone():
+    pytest.importorskip("langgraph")
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    async def scenario():
+        world, saver = World(), InMemorySaver()
+        result = await start_and_grant(world, saver)
+        assert result["produced"] is True and world.judged == []
+        assert world.stored["fields"]["grounding"]["enabled"] is False
+        assert world.turns[0].timeout_sec > 900 - 30 - 1
+    asyncio.run(scenario())

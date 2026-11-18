@@ -437,7 +437,26 @@ class AdmissionRuntime:
             known_referents=lambda: store.known_referents(self.pool),
             persist=lambda fields, result, route: store.persist_dream_day(self.pool, fields, result, route),
             record_cites=lambda shown_id, cites, ref: store.record_cites(shown_id, cites, ref),
+            judge=self._dream_day_judge(runner)
+            if getattr(self.settings, "dream_day_grounding_gate_enabled", True) else None,
         )
+
+    def _dream_day_judge(self, runner):
+        """The grounding gate's model call: the local route the run holds (DREAM_DAY_ROUTE), tool-free, JSON only,
+        temperature 0, on the run's own hold. No outside model judges (or writes) Orion's memory."""
+        from types import SimpleNamespace
+
+        from app.graph import _gpu_lease
+        from orion.memory.dream_day import GROUNDING_MAX_TOKENS, GROUNDING_PURPOSE
+
+        async def judge(prompt: str, held: dict, timeout_sec: float) -> dict:
+            route = (held.get("brief") or {}).get("llm_route") or self.settings.dream_day_route
+            brief = SimpleNamespace(llm_route=route, timeout_sec=float(timeout_sec), max_tokens=GROUNDING_MAX_TOKENS)
+            return await runner._call_memory_distill_llm(
+                prompt, brief=brief, run_id=held["run_id"], correlation_id=held.get("correlation_id") or held["run_id"],
+                gpu_lease=_gpu_lease(held), purpose=GROUNDING_PURPOSE, temperature=0.0)
+
+        return judge
 
     async def _load_episode(self, brief) -> dict:
         """memory.episode_distill load_episode: the turns' FULL text from chat_history_log (never a

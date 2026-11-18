@@ -500,6 +500,11 @@ class Settings(BaseSettings):
     dream_day_route: str = Field("memory_distill", min_length=1, alias="DREAM_DAY_ROUTE")
     # One turn attempt's hard bound (same as a reminiscence hop; Hub keeps its finalize reserve out of it).
     dream_day_turn_timeout_sec: float = Field(900.0, ge=60.0, le=3600.0, alias="DREAM_DAY_TURN_TIMEOUT_SEC")
+    # The grounding gate (2026-11-18 hardening): before a dream memory is written, the same local route, on the
+    # run's own hold, judges it against the full text of the records it cites. Only a parsed "supported" verdict is
+    # written; unsupported and unjudged (failed call, unparseable verdict) are counted and kept in the dream_day
+    # row's grounding column, never written. false -> the ref check alone decides (rollback: false, restart).
+    dream_day_grounding_gate_enabled: bool = Field(True, alias="DREAM_DAY_GROUNDING_GATE_ENABLED")
     # Core memory pages, Phase 1a (docs/superpowers/specs/2026-11-13-core-memory-pages-and-concept-growth-design.md):
     # every CORE_PAGE_FOLD_POLL_SEC, inside the Denver window [CORE_PAGE_FOLD_HOUR_LOCAL, CORE_PAGE_FOLD_END_HOUR_LOCAL),
     # fold each of Orion's pages once (one LLM call each, app/core_page_fold.py) when its records changed since

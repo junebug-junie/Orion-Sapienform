@@ -244,3 +244,10 @@ class DreamDayV1(BaseModel):
     now_shown_id: Optional[str] = None
     turn_correlation_id: Optional[str] = None
     created_at: datetime
+    # The grounding gate (2026-11-18 hardening): memories the local judge said its records do not show, and
+    # memories it could not judge (failed call, unparseable verdict, no time left). Neither is ever written.
+    memories_unsupported: int = Field(default=0, ge=0)
+    memories_unjudged: int = Field(default=0, ge=0)
+    # orion/memory/dream_day.py ``grounding_summary``: counts plus every verdict (statement, refs, status,
+    # unsupported_claims, error, raw). None: a row written before the gate existed.
+    grounding: Optional[dict[str, Any]] = None

@@ -49,22 +49,34 @@ EVIDENCE_SOURCE_KIND = "dream_ref"
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*\n(.*?)\n\s*```", re.S | re.I)
 
-# One SELECT per ref kind: (ref id) -> a short text of the record. Every query reads ids only from the
-# ``ids`` array parameter. ``chat`` and ``chat_turn`` both open a chat_history_log row by id or correlation id.
+# One SELECT per ref kind: (ref id) -> the record's text. Every query reads ids only from the ``ids`` array
+# parameter. ``chat`` and ``chat_turn`` both open a chat_history_log row by id or correlation id. The text is
+# what the grounding judge (``grounding_prompt``) and the validator's evidence quote read, so each kind gives
+# the most of its own record it can (cut in SQL, so one huge row never floods the prompt):
+#   experience        source_kind: label [verdict] + the event's payload_json (many kinds carry no label;
+#                     the payload holds their facts: entities seen, minutes played, waited ms)
+#   act               actor verb object + its outcome note
+#   dream_cycle       trigger, status, link count and the cycle's note
+#   dream_hypothesis  the claim and why
+#   harness_turn_trace  the turn's workflow and time + its final reply text (run_artifact.final_text)
+#   chat_turn         Juniper's prompt and Orion's response (up to 1,000 characters each)
+REF_TEXT_CHARS = 1500
 RESOLVE_SQL: dict[str, str] = {
-    "experience": "SELECT event_id AS id, coalesce(source_kind, '') || ': ' || coalesce(label, '') "
-                  "|| coalesce(' [' || verdict || ']', '') AS text FROM temporal_self_event WHERE event_id = ANY(%s)",
-    "act": "SELECT act_id AS id, actor || ' ' || verb || ' ' || coalesce(object_ref, '') "
-           "|| coalesce(': ' || outcome_note, '') AS text FROM grammar_acts WHERE act_id = ANY(%s)",
+    "experience": "SELECT event_id AS id, left(coalesce(source_kind, '') || ': ' || coalesce(label, '') "
+                  "|| coalesce(' [' || verdict || ']', '') || ' ' || coalesce(payload_json::text, ''), 1500) AS text "
+                  "FROM temporal_self_event WHERE event_id = ANY(%s)",
+    "act": "SELECT act_id AS id, left(actor || ' ' || verb || ' ' || coalesce(object_ref, '') "
+           "|| coalesce(': ' || outcome_note, ''), 1500) AS text FROM grammar_acts WHERE act_id = ANY(%s)",
     "dream_cycle": "SELECT cycle_id AS id, 'sleep ' || coalesce(trigger, '') || ' ' || status || ', '"
                    " || coalesce(hypothesis_count, 0) || ' links: ' || coalesce(cycle_json->>'note', '') AS text "
                    "FROM dream_cycle WHERE cycle_id = ANY(%s)",
     "dream_hypothesis": "SELECT hypothesis_id AS id, coalesce(claim, '') || ' because ' || coalesce(why, '') AS text "
                         "FROM dream_hypothesis WHERE hypothesis_id = ANY(%s)",
     "harness_turn_trace": "SELECT correlation_id AS id, 'harness turn ' || coalesce(workflow, 'chat') || ' at ' "
-                          "|| created_at::text AS text FROM harness_turn_trace WHERE correlation_id = ANY(%s)",
+                          "|| created_at::text || coalesce(': ' || left(run_artifact->>'final_text', 1200), '') "
+                          "AS text FROM harness_turn_trace WHERE correlation_id = ANY(%s)",
     "chat_turn": "SELECT x.id, x.text FROM (SELECT unnest(ARRAY[c.id, c.correlation_id]) AS id, "
-                 "'Juniper: ' || left(coalesce(c.prompt, ''), 300) || ' / Orion: ' || left(coalesce(c.response, ''), 300) "
+                 "'Juniper: ' || left(coalesce(c.prompt, ''), 1000) || ' / Orion: ' || left(coalesce(c.response, ''), 1000) "
                  "AS text FROM chat_history_log c WHERE c.id = ANY(%s) OR c.correlation_id = ANY(%s)) x",
 }
 REF_KIND_ALIASES = {"chat": "chat_turn"}
@@ -357,3 +369,143 @@ def experience_cites(check: RefCheck, memory_refs: Iterable[str] = ()) -> list[s
         if r.startswith("experience:") and r not in out:
             out.append(r)
     return out
+
+
+# --------------------------------------------------------------------------- the grounding gate
+#
+# The ref check proves a cited record exists, not that it says what the memory says. Live 2026-11-18: memory
+# bb1b5a42 cited two retro_play sittings ("Juniper played Zelda for 59 min" / "21 min") and also claimed the
+# office camera watched the kids packing a box and that "we traded only eleven chat turns", which no cited record
+# shows. The gate asks the local model, on the run's own hold, one short question per memory: is every specific
+# claim shown by these records? Only a parsed ``supported: true`` lets a memory be written. An unparseable verdict
+# or a failed call is ``unjudged``: never written, counted apart from ``unsupported``.
+
+GROUNDING_PROMPT_VERSION = "dream_day_grounding.v1"
+GROUNDING_PURPOSE = "dream_day_grounding"
+GROUNDING_MAX_TOKENS = 400
+GROUNDING_CLAIMS_MAX = 12
+GROUNDING_RAW_CHARS = 600
+
+
+def grounding_prompt(statement: str, refs: Iterable[str], resolved: Mapping[str, str]) -> str:
+    """The judge's question. Not the writer's prompt: it sees one statement and its records, nothing else."""
+    records = "\n".join(
+        f"[{ref}] {' '.join(str(resolved.get(ref) or '(no text)').split())[:REF_TEXT_CHARS]}" for ref in refs)
+    return "\n".join([
+        "Check one statement against the records it cites. Use only these records, not what seems likely. "
+        "In the statement, \"I\" is Orion and \"you\" is Juniper.",
+        "",
+        f"STATEMENT: {' '.join(str(statement).split())}",
+        "",
+        "RECORDS:",
+        records,
+        "",
+        "The statement may say how Orion felt, liked, wished or thinks. Those parts are not checked and are never "
+        "listed.",
+        "Check every fact about what happened: numbers, counts, durations, people, objects, places, and events "
+        "(who did what). A fact is supported only if a record states it; different words for the same fact "
+        "count as stated. A fact the records do not state is unsupported, even if it is plausible.",
+        "",
+        "Answer with one JSON object and nothing else:",
+        '{"supported": true or false, "unsupported_claims": ["<each claim no record shows>"]}',
+        "supported is true only when unsupported_claims is empty.",
+    ])
+
+
+@dataclass
+class GroundingVerdict:
+    supported: bool
+    unsupported_claims: list[str]
+
+
+def parse_verdict(text: str) -> Optional[GroundingVerdict]:
+    """The judge's strict JSON verdict, or None. Strict: one JSON object (bare or in one ```json fence) with a
+    boolean ``supported`` and a list of strings ``unsupported_claims``. ``supported: true`` with any claim
+    listed contradicts itself: None (unjudged, never written)."""
+    raw = (text or "").strip()
+    fenced = _FENCE_RE.fullmatch(raw)
+    if fenced:
+        raw = fenced.group(1).strip()
+    try:
+        obj = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    supported, claims = obj.get("supported"), obj.get("unsupported_claims")
+    if not isinstance(supported, bool) or not isinstance(claims, list):
+        return None
+    if not all(isinstance(c, str) for c in claims):
+        return None
+    claims = [" ".join(c.split()) for c in claims if c.strip()][:GROUNDING_CLAIMS_MAX]
+    if supported and claims:
+        return None
+    return GroundingVerdict(supported=supported, unsupported_claims=claims)
+
+
+def memory_key(statement: str) -> str:
+    """How a verdict finds its memory again in persist (the statement as check_answer normalizes it)."""
+    return " ".join(str(statement).split())
+
+
+async def judge_memories(memories: Iterable[CheckedMemory], resolved: Mapping[str, str], ask, *,
+                         time_left=None) -> list[dict[str, Any]]:
+    """One verdict per checked memory: ``status`` supported | unsupported | unjudged.
+
+    ``ask(prompt) -> {"text", "finish_reason"}`` is the local model call (raises on a failed call).
+    ``time_left() -> seconds`` (optional): a memory reached with no time left is unjudged, never asked."""
+    out: list[dict[str, Any]] = []
+    for m in memories:
+        row: dict[str, Any] = {"statement": m.statement, "purpose": m.purpose, "refs": list(m.refs),
+                               "status": "unjudged", "unsupported_claims": [], "error": None, "raw": None}
+        out.append(row)
+        if time_left is not None and time_left() <= 0:
+            row["error"] = "no_time_left"
+            continue
+        try:
+            answer = await ask(grounding_prompt(m.statement, m.refs, resolved))
+        except Exception as exc:  # noqa: BLE001 -- a failed call: unjudged, never written
+            row["error"] = f"call_failed: {type(exc).__name__}: {exc}"[:300]
+            continue
+        text = str((answer or {}).get("text") or "")
+        row["raw"] = text[:GROUNDING_RAW_CHARS]
+        if (answer or {}).get("finish_reason") == "length":
+            row["error"] = "verdict_cut_at_max_tokens"
+            continue
+        verdict = parse_verdict(text)
+        if verdict is None:
+            row["error"] = "verdict_unparseable"
+            continue
+        row["status"] = "supported" if verdict.supported else "unsupported"
+        row["unsupported_claims"] = verdict.unsupported_claims
+    return out
+
+
+def grounding_summary(verdicts: Optional[list[dict[str, Any]]], *, enabled: bool) -> dict[str, Any]:
+    """What the dream_day row keeps: the counts and every verdict (statement, refs, claims, raw answer)."""
+    rows = list(verdicts or [])
+    return {"enabled": enabled, "prompt_version": GROUNDING_PROMPT_VERSION, "judged": len(rows),
+            "supported": sum(1 for v in rows if v.get("status") == "supported"),
+            "unsupported": sum(1 for v in rows if v.get("status") == "unsupported"),
+            "unjudged": sum(1 for v in rows if v.get("status") == "unjudged"),
+            "verdicts": rows}
+
+
+def apply_grounding(check: RefCheck, verdicts: Optional[list[dict[str, Any]]]) -> tuple[RefCheck, list[dict[str, Any]]]:
+    """Keep only memories whose verdict says supported. A checked memory with no matching verdict (refs that
+    resolved differently at persist, a run checkpointed before the gate) is unjudged: never written.
+    Returns (the check with only supported memories, one verdict row per checked memory, in order)."""
+    by_key: dict[tuple[str, tuple[str, ...]], dict[str, Any]] = {}
+    for v in verdicts or []:
+        by_key.setdefault((memory_key(v.get("statement") or ""), tuple(v.get("refs") or [])), v)
+    kept, rows = [], []
+    for m in check.memories:
+        v = by_key.get((memory_key(m.statement), tuple(m.refs)))
+        if v is None:
+            v = {"statement": m.statement, "purpose": m.purpose, "refs": list(m.refs), "status": "unjudged",
+                 "unsupported_claims": [], "error": "no_verdict_for_this_memory", "raw": None}
+        rows.append(v)
+        if v.get("status") == "supported":
+            kept.append(m)
+    check.memories = kept
+    return check, rows

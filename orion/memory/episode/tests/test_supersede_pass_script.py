@@ -123,3 +123,26 @@ def test_a_malformed_answer_is_never_cached():
     assert P.cacheable(old_format)
     assert P.cacheable(json.dumps({"a_kind": "event", "b_says_a_wrong_or_changed": "no", "relation": "compatible",
                                    "same_attribute": "no", "confidence": 0.9, "reason": "r"}))
+
+
+def test_gateway_ask_retries_a_transient_5xx(monkeypatch):
+    import httpx
+
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) < 3:
+            return httpx.Response(502, json={})
+        return httpx.Response(200, json={"choices": [{"message": {"content": "{\"ok\": 1}"}}]})
+
+    async def no_sleep(_s):
+        return None
+
+    monkeypatch.setattr(P.asyncio, "sleep", no_sleep)
+
+    async def run():
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            return await P.gateway_ask(client, "http://gw", "memory_distill", "p", timeout=5)
+
+    assert asyncio.run(run()) == "{\"ok\": 1}" and len(calls) == 3

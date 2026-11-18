@@ -72,9 +72,8 @@ Rules that carry weight:
   `unparsed`. Empty text is a failed round, never a stored turn. Session text Orion quotes back does
   not cut a section short: a closed data fence in the reply is replaced by one Hub line before the cut,
   and a heading inside a closed markdown code block is not a heading. Both apply only to headings for
-  threads NOT in the round: a round thread's heading always counts, so a quoted copy of it still makes
-  the round `unparsed` (Hub cannot tell the copy from the real one). A section that holds only Hub's
-  cut note is empty.
+  threads NOT in the round: a round thread's heading inside a quote makes the round `unparsed` (Hub
+  cannot tell the copy from the real one). A section with no words besides Hub's cut note is empty.
 - A failed round returns its threads to `held`. Three failures in a row leave a thread `failed`. A
   failed round stores no Orion turn, so it never uses the thread's one round of questions.
 - Orion's questions reach a session by thread, not by the `gh pr create` event: the prompt hook asks

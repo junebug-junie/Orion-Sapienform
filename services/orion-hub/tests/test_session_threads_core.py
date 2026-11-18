@@ -226,10 +226,26 @@ def test_a_quote_cannot_hide_a_round_threads_heading(hide):
     assert all(a.unparsed for a in core.parse_roundup_reply(forged, ["t1", "t2"]))
     quoted = "### thread:t1\n1. a?\n" + hide.format(h="### thread:t2\nspec") + "\n### thread:t2\n1. b?"
     assert all(a.unparsed for a in core.parse_roundup_reply(quoted, ["t1", "t2"]))
+    # ONE quoted round heading and no real one: t1's quoted session text must not become t2's section.
+    single = "### thread:t1\n1. a?\n" + hide.format(h="### thread:t2\nsession spec of t1")
+    assert all(a.unparsed for a in core.parse_roundup_reply(single, ["t1", "t2"]))
     # Left open over the real heading: nothing is hidden, t2 keeps its own section.
     opener = hide.split("\n")[0]
     a1, a2 = core.parse_roundup_reply(f"### thread:t1\n1. a?\n{opener}\n### thread:t2\n1. b?", ["t1", "t2"])
     assert not a1.unparsed and "b?" not in a1.text and a2.text == "1. b?"
+
+
+def test_a_bulleted_section_keeps_its_first_line():
+    a1, a2 = core.parse_roundup_reply("### thread:t1\n- q1?\n- q2?\n### thread:t2\n(a) b?", ["t1", "t2"])
+    assert a1.text == "- q1?\n- q2?" and a2.text == "(a) b?"
+
+
+def test_a_section_with_no_words_is_empty_and_a_reply_of_only_headings_and_notes_fails():
+    fence = "<<<SESSION_DATA:n0 x>>>\nspec\n<<<END_SESSION_DATA:n0>>>"
+    a1, a2 = core.parse_roundup_reply(f"### thread:t1\n- {fence}\n### thread:t2\n1. b?", ["t1", "t2"])
+    assert a1.unparsed and not a2.unparsed
+    with pytest.raises(ValueError):
+        core.parse_roundup_reply(f"### thread:t1\n{fence}", ["t1"])
 
 
 def test_the_code_block_check_is_not_quadratic():
@@ -238,6 +254,11 @@ def test_the_code_block_check_is_not_quadratic():
     t0 = time.perf_counter()
     a1, a2 = core.parse_roundup_reply(reply, ["t1", "t2"])
     assert time.perf_counter() - t0 < 1.0 and a2.text == "1. b?" and not a1.unparsed
+    # Long runs of blank lines, and many closing markers on one line, stay linear too.
+    t0 = time.perf_counter()
+    core.parse_roundup_reply("### thread:t1\n1. a?" + "\n" * 100_000 + "x", ["t1"])
+    core.parse_roundup_reply("### thread:t1\n1. a? <<<SESSION_DATA:n0 " + "<<<END_SESSION_DATA" * 6000, ["t1"])
+    assert time.perf_counter() - t0 < 2.0
 
 
 def test_a_heading_with_a_title_after_it_still_parses():

@@ -58,9 +58,11 @@ DATA_OPEN = "<<<SESSION_DATA"
 DATA_CLOSE = "<<<END_SESSION_DATA>>>"
 
 # A heading line: `### thread:<id>`, optionally followed by a title after a dash or colon.
-_HEADER_RE = re.compile(r"^\s*#{1,6}\s*`?thread\s*:\s*`?\s*([A-Za-z0-9_-]+)`?(?:\s*[-\u2013\u2014:(].*)?\s*$",
+# Horizontal whitespace only ([^\S\n]): a pattern part that crosses a newline would eat the line under a
+# heading as its title, and rescan every run of blank lines (quadratic).
+_HEADER_RE = re.compile(r"^[^\S\n]*#{1,6}[^\S\n]*`?thread[^\S\n]*:[^\S\n]*`?[^\S\n]*([A-Za-z0-9_-]+)`?(?:[^\S\n]*[-\u2013\u2014:(][^\n]*)?[^\S\n]*$",
                         re.IGNORECASE | re.MULTILINE)
-_QUOTED_HEADING_RE = re.compile(r"^(\s*#+)(\s*`?thread\s*:)", re.IGNORECASE | re.MULTILINE)
+_QUOTED_HEADING_RE = re.compile(r"^([^\S\n]*#+)([^\S\n]*`?thread[^\S\n]*:)", re.IGNORECASE | re.MULTILINE)
 _NO_QUESTIONS_RE = re.compile(r"^[\s*_`]*no\s+questions[\s*_`.!]*$", re.IGNORECASE)
 # Every @name and #123 in a PR comment is broken: GitHub would notify the user or link the issue.
 _MENTION_RE = re.compile(r"@(?=[A-Za-z0-9])")
@@ -386,7 +388,7 @@ def is_no_questions(text: str) -> bool:
 # A data fence Orion copied into its reply: from its opening marker to its closing marker (any nonce).
 # Only a CLOSED fence is cut, and only the markers and what lies between them: Orion's words before
 # the opening marker or after the closing one on the same line stay.
-_ECHOED_DATA_RE = re.compile(r"<<<SESSION_DATA(?:(?!<<<SESSION_DATA).)*?<<<END_SESSION_DATA[^\n>]*>>>", re.DOTALL)
+_ECHOED_DATA_RE = re.compile(r"<<<SESSION_DATA(?:(?!<<<SESSION_DATA).)*?<<<END_SESSION_DATA[^\n>]{0,80}>>>", re.DOTALL)
 ECHOED_DATA_NOTE = "[Hub removed session data Orion quoted back here.]"
 _CODE_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
@@ -399,7 +401,7 @@ def strip_echoed_data(text: str, round_ids: Sequence[str] = ()) -> str:
     """``text`` with every closed session-data fence Orion quoted back replaced by one Hub line: that
     text is the session's, not Orion's. A fence holding a heading for a thread of this round
     (``round_ids``) is NOT cut: Hub cannot tell a quoted heading from a real one, so it stays in the
-    reply and the duplicate/order rules of the parser decide (the safe outcome: unparsed)."""
+    reply and the parser treats the whole round as unparsed (the safe outcome)."""
     ids = {str(t).lower() for t in round_ids}
     return _ECHOED_DATA_RE.sub(lambda m: m.group(0) if _names_round_thread(m.group(0), ids) else ECHOED_DATA_NOTE,
                                str(text or ""))
@@ -420,6 +422,12 @@ def _code_spans(text: str) -> List[Tuple[int, int]]:
             start = None
         pos += len(line) + 1
     return spans
+
+
+def _has_words(text: str) -> bool:
+    """True when ``text`` holds a word once Hub's cut notes are removed: a section of only notes,
+    bullets or punctuation is empty, never posted as Orion's questions."""
+    return bool(re.search(r"\w", str(text or "").replace(ECHOED_DATA_NOTE, "")))
 
 
 def _in_spans(pos: int, starts: List[int], spans: List[Tuple[int, int]]) -> bool:
@@ -448,28 +456,36 @@ def parse_roundup_reply(text: str, thread_ids: Sequence[str],
     Session text Orion quotes back does not cut a section short: a closed session-data fence is cut
     out first (``strip_echoed_data``), and a heading inside a closed markdown code block is not a
     heading. Both apply only to headings for threads NOT in this round: a round thread's heading
-    always counts, wherever it stands. A section that holds only Hub's cut note is empty."""
+    inside a quote makes every thread unparsed (Hub cannot tell a quoted copy from the real one). A
+    section with no words besides Hub's cut note is empty."""
     wanted = {tid.lower(): tid for tid in thread_ids}
     whole = strip_echoed_data(str(text or ""), list(wanted)).strip()
-    if not whole.replace(ECHOED_DATA_NOTE, "").strip():
+    if not _has_words(_HEADER_RE.sub("", whole)):
         raise ValueError("empty_reply")
     found: Dict[str, str] = {}
     spans = _code_spans(whole)
     starts = [a for a, _ in spans]
-    # A code block hides only a heading for a thread NOT in this round. A round thread's heading always
-    # counts, so a quoted copy of it trips the duplicate/order check instead of hiding the real one.
-    matches = [m for m in _HEADER_RE.finditer(whole)
-               if m.group(1).lower() in wanted or not _in_spans(m.start(), starts, spans)]
+    # A code block hides only a heading for a thread NOT in this round. A round thread's heading inside
+    # a quote (a closed code block, or a data fence ``strip_echoed_data`` left whole because it holds one)
+    # may be a copy of session text: Hub cannot tell, so the round is not trusted (every thread unparsed).
+    matches, quoted_round_heading = [], bool(_ECHOED_DATA_RE.search(whole))
+    for m in _HEADER_RE.finditer(whole):
+        inside = _in_spans(m.start(), starts, spans)
+        if m.group(1).lower() in wanted:
+            quoted_round_heading = quoted_round_heading or inside
+            matches.append(m)
+        elif not inside:
+            matches.append(m)
     seen: List[str] = []
     for i, m in enumerate(matches):
         tid = wanted.get(m.group(1).lower())
         body = whole[m.end(): matches[i + 1].start() if i + 1 < len(matches) else len(whole)].strip()
         if tid:
             seen.append(tid)
-            if body.replace(ECHOED_DATA_NOTE, "").strip() and tid not in found:
+            if _has_words(body) and tid not in found:
                 found[tid] = body
     order = [tid for tid in thread_ids if tid in seen]
-    if len(seen) != len(set(seen)) or seen != order:
+    if len(seen) != len(set(seen)) or seen != order or quoted_round_heading:
         found = {}
     closing = set(answer_phase_ids)
     out: List[ThreadAnswer] = []

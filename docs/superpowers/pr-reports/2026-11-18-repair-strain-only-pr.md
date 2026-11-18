@@ -130,3 +130,11 @@ Run from the clean primary `main` checkout after merge (the post-pull rebuild do
 ## PR link
 
 https://github.com/junebug-junie/Orion-Sapienform/pull/3686
+
+## Follow-up: Orion's review questions (session thread 4cd4d35e603e)
+
+- Spec acceptance test 4 still said strain triggers repair. Rewritten for the strict gate (commit b7b9554dc). The code never kept strain as a trigger.
+- The spec now says where the unsupported-claim re-check lives and how it is bounded.
+- `surprise_resolved` is unchanged by this PR. It reads the 5b reflection, not whether a repair ran. 14 days: 275 of 2,375 aligned turns had strain open and were unresolved before and after.
+- A failed required repair is now recorded as `response_repair_ran=true` with its reason (outcome and run artifact). Live 30 days: 14 `gpu_pool_unavailable` + 4 truncated repair failures were all recorded `ran=false`. New acceptance test `test_a_failed_required_repair_is_recorded_as_ran_and_failed`.
+- Issue opened: #3690. On a failed repair, Hub labels a draft that 5b rejected as "not checked".

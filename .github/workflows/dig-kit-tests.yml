@@ -13,6 +13,7 @@ on:
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
       - "orion/harness/working_notes.py"
       - "orion/harness/runner.py"
+      - "orion/harness/session_resume.py"   # `dig digs` / `dig take-ons` rebuild transcript names with it
       - "orion/harness/evals/turn_repeat_baseline.py"
       - "orion/harness/tests/test_working_notes.py"
       - "orion/cockpit/**"
@@ -44,6 +45,7 @@ on:
       - "orion/harness/tests/test_stance_scope_hierarchy.py"
       - "orion/harness/working_notes.py"
       - "orion/harness/runner.py"
+      - "orion/harness/session_resume.py"   # `dig digs` / `dig take-ons` rebuild transcript names with it
       - "orion/harness/evals/turn_repeat_baseline.py"
       - "orion/harness/tests/test_working_notes.py"
       - "orion/cockpit/**"
@@ -79,7 +81,7 @@ jobs:
           python -m pip install -r requirements-dev.txt
           python -m pip install fastapi==0.111.0 httpx==0.27.2 pydantic==2.11.5 pydantic-settings==2.5.2 \
             SQLAlchemy==2.0.43 aiohttp==3.12.15 python-multipart requests python-dotenv loguru numpy==1.26.4
-      - name: Dig kit + shared inventory
+      - name: Dig kit + shared inventory (includes test_digs.py, `dig digs`)
         run: PYTHONPATH=. python -m pytest -q -p no:cacheprovider orion/dig/tests
       - name: Harness prefix with the dig line (turn-rules header rules still hold)
         run: |

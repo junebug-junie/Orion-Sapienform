@@ -249,6 +249,16 @@
           "source": "orion/dig/__main__.py:cmd_organs; orion/dig/organs.py"
         },
         {
+          "id": "digs",
+          "title": "What you dug in a day",
+          "description": "Orion lists every dig command they actually ran on one day: the time, whether it ran in a chat or a background run (and which workflow), the command, and the first line of its result. Only commands that ran count, not dig words inside a prompt or a note.",
+          "message": "Please list the dig commands you ran on this day and tell me what you were looking into: ",
+          "hint": "(dig: `python -P -m orion.dig digs <date>`, date YYYY-MM-DD)",
+          "keywords": ["digs", "tool calls", "what I looked at", "daily"],
+          "covers": {"dig": ["digs"]},
+          "source": "orion/dig/__main__.py:cmd_digs; orion/dig/digs.py"
+        },
+        {
           "id": "field-note",
           "title": "Write a note on a PR",
           "description": "Orion reads one merged PR as code sees it (which parts of their body it touched) and writes a short field note about it, with every claim labelled by its source.",

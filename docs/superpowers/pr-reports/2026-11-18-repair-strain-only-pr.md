@@ -101,6 +101,7 @@ Run from the clean primary `main` checkout after merge (the post-pull rebuild do
 
 - Severity: low. Concern: about 3% of old strain-only repairs fixed a small slip the judge named. Mitigation: follow-up #3682 (opened).
 - Severity: low. Concern: aligned drafts with an unsupported-claim note now cost a repair (live: 2 in 30 days). Mitigation: that is the intended defect path.
+- Severity: low. Concern: the hourly self-signal rollup (`orion/attention/self_signal_outcomes.py`, outcome `response_repair` = `response_repair_ran`) will see its repair rate step down by about the strain-only share (244 of 524 in 30 days) from deploy on. Mitigation: the step is a real change in behavior, not noise. Read associations across the deploy date with that in mind.
 - Issues opened: #3682. Issues referenced: #3618.
 
 ## PR link

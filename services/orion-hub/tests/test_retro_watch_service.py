@@ -554,3 +554,66 @@ def test_the_play_row_says_how_many_notes_orion_stored():
     assert retro_sitting.play_row(s, 3).looks == 3
     assert "watched" not in retro_sitting.play_row(s, 0).summary and retro_sitting.play_row(s, None).looks is None
     assert retro_sitting.play_row(s, 1).summary.endswith("Orion watched: 1 note.")
+
+
+# --- patch 3: frames for a turn, and one play call at a time ---------------------------------------------------
+
+def test_frames_for_a_turn_post_the_newest_ring_frames_as_percepts():
+    async def go():
+        rig = Rig()
+        rig.press()
+        for _ in range(20):
+            await rig.step(press=True)
+        out = await rig.watch.frames_for_turn(4)
+        return rig, out
+    rig, out = run(go())
+    assert out["status"] == "ok" and len(out["frames"]) == 4
+    f = out["frames"][0]
+    assert f["kind"] == "percept" and f["mime"] == "image/png" and f["frames_expire_at"] == out["frames_expire_at"]
+    times = [x["kept_at"] for x in out["frames"]]
+    assert times == sorted(times) and rig.t - times[0] <= 30.0
+    assert any(sql == retro_watch.EXPIRY_SQL for sql, _a in rig.db.calls)    # the re-post moves every row's expiry
+
+
+def test_no_ring_no_frames_and_no_sitting():
+    async def go():
+        rig = Rig()
+        assert (await rig.watch.frames_for_turn())["status"] == "no_sitting"
+        rig.press()
+        assert (await rig.watch.frames_for_turn())["status"] == "no_frames"      # the browser shows nothing
+        await rig.step(press=True)
+        rig.t += 60                                                              # the ring went stale
+        return await rig.watch.frames_for_turn()
+    assert run(go())["status"] == "no_frames"
+
+
+def test_frames_wait_for_a_look_in_flight():
+    async def go():
+        rig = Rig()
+        rig.press()
+        await rig.step(press=True)
+        rig.watch._look_task = asyncio.get_running_loop().create_future()      # a look holds the seat
+        out = await rig.watch.frames_for_turn()
+        rig.watch._look_task.cancel()
+        return out
+    assert run(go())["status"] == "look_in_flight"
+
+
+class LockRedis:
+    def __init__(self, value): self.value = value
+    async def get(self, key):
+        assert key == retro_watch.LINE_LOCK_KEY
+        return self.value
+
+
+def test_no_look_is_bid_for_while_a_line_turn_runs():
+    async def go():
+        rig = Rig()
+        rig.sitting.redis_provider = lambda: LockRedis(b"line-1")
+        rig.press()
+        for _ in range(40):
+            await rig.step(press=True)
+        return rig
+    rig = run(go())
+    assert rig.bids == [] and rig.watch.state.last_refusal[0] == "line_running"
+    assert rig.watch.status()["looking"] is False

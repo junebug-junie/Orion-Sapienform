@@ -54,6 +54,18 @@ class Settings(BaseSettings):
     HUB_RETRO_WATCH_ENABLED: bool = Field(default=True, alias="HUB_RETRO_WATCH_ENABLED")
     HUB_RETRO_LOOK_SEC: float = Field(default=60.0, alias="HUB_RETRO_LOOK_SEC")
     HUB_RETRO_WATCH_SEAT_WAIT_SEC: float = Field(default=30.0, alias="HUB_RETRO_WATCH_SEAT_WAIT_SEC")
+    # Orion's lines while a person plays (scripts/retro_commentary.py; game company design, patch 3). Ships on; needs
+    # the watch (a line needs a stored note) and the watch mode "on" (watch and talk). A funded hub.retro_commentary
+    # bid runs a real unified turn through the outreach door under a GPU pool hold of class chat at priority system,
+    # with the game's newest frames. Off -> no line, no bid; the chat box on the game page still answers.
+    # LINE_MIN_GAP_SEC: since the last line or chat-box exchange. LINE_TIMEOUT_SEC: one line turn's limit.
+    # LINE_SEAT_WAIT_SEC: a funded line waits this long for its GPU hold, then is given up (outcome failed).
+    # GATEWAY_PORT: the Retro gateway's loopback port (docker-compose.yml), where hub-app asks for the frames.
+    HUB_RETRO_COMMENTARY_ENABLED: bool = Field(default=True, alias="HUB_RETRO_COMMENTARY_ENABLED")
+    HUB_RETRO_LINE_MIN_GAP_SEC: float = Field(default=120.0, ge=0.0, alias="HUB_RETRO_LINE_MIN_GAP_SEC")
+    HUB_RETRO_LINE_TIMEOUT_SEC: float = Field(default=240.0, gt=0.0, alias="HUB_RETRO_LINE_TIMEOUT_SEC")
+    HUB_RETRO_LINE_SEAT_WAIT_SEC: float = Field(default=30.0, gt=0.0, alias="HUB_RETRO_LINE_SEAT_WAIT_SEC")
+    HUB_RETRO_GATEWAY_PORT: int = Field(default=8092, alias="HUB_RETRO_GATEWAY_PORT")
     # Solo leisure play (scripts/retro_leisure.py). Ships on; Hub's leisure timer and the doer
     # gates decide when it actually runs.
     RETRO_LEISURE_ENABLED: bool = Field(default=True, alias="RETRO_LEISURE_ENABLED")

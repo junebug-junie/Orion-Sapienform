@@ -200,7 +200,8 @@ def create_router(config, presence=None, experience=None, sitting=None):
         try: data = json.loads(await body(request))
         except ValueError: raise HTTPException(422, 'invalid_watch')
         mode = data.get('mode') if isinstance(data, dict) and set(data) == {'mode'} else None
-        if mode not in ('on', 'off'): raise HTTPException(422, 'invalid_watch')
+        # Three positions (spec section 5): off, quiet (looks, no lines), on (watch and talk).
+        if mode not in ('on', 'quiet', 'off'): raise HTTPException(422, 'invalid_watch')
         if not await watcher.set_juniper(mode): raise HTTPException(503, 'watch_unavailable')
         return JSONResponse(dict(sitting.status(), watch=watcher.status()), headers={'Cache-Control': 'no-store'})
 
@@ -217,6 +218,49 @@ def create_router(config, presence=None, experience=None, sitting=None):
         if player not in ('juniper', 'guest') or not (asked is None or isinstance(asked, str)): raise HTTPException(422, 'invalid_player')
         if not await sitting.state_player(player, asked): raise HTTPException(409, 'no_open_sitting')
         return JSONResponse(sitting.status(), headers={'Cache-Control': 'no-store'})
+
+    def from_hub_app(request):
+        # hub-app only: a loopback caller that presents the Retro hub token both Hub processes mount. tailscale serve
+        # also reaches this process from loopback, so the address alone would let a browser in.
+        host = getattr(getattr(request, 'client', None), 'host', None)
+        if host not in ('127.0.0.1', '::1', 'localhost'): return False
+        try: expected = 'Bearer '+Path(config.HUB_RETRO_AUTH_DIR, 'hub.token').read_text().strip()
+        except OSError: return False
+        import hmac
+        return len(expected) >= len('Bearer ') + 32 and hmac.compare_digest(request.headers.get('authorization') or '', expected)
+
+    @router.get('/api/retro/sitting/frames')
+    async def sitting_frames(request: Request, n: int = 4):
+        # The newest frames of the open sitting as percept refs, for a turn hub-app runs (a line, a chat-box
+        # message from the game page). Each frame is posted to the percept store (gone within the hour).
+        enabled(); bind(request.app)
+        if not from_hub_app(request): raise HTTPException(403, 'hub_app_only')
+        try: result = await watcher.frames_for_turn(n)
+        except AttributeError: result = {'status': 'no_watch'}
+        return JSONResponse(result, headers={'Cache-Control': 'no-store'})
+
+    @router.post('/api/retro/lines/{line_id}/thumb')
+    async def line_thumb(line_id: str, request: Request):
+        # The player's thumb on one delivered line. Who gave it is what the page was told now: a guest's thumb
+        # is stored as a guest's and never counted as Juniper's.
+        await authorize(request); bind(request.app)
+        import json
+        try: data = json.loads(await body(request))
+        except ValueError: raise HTTPException(422, 'invalid_thumb')
+        thumb = data.get('thumb') if isinstance(data, dict) and set(data) == {'thumb'} else None
+        if thumb not in ('up', 'down') or not (0 < len(line_id) <= 80): raise HTTPException(422, 'invalid_thumb')
+        cur = getattr(getattr(sitting, 'tracker', None), 'current', None)
+        by = 'juniper' if cur is not None and getattr(cur, 'player_stated', None) == 'juniper' else 'guest'
+        pool = getattr(getattr(app_ref.get('app'), 'state', None), 'memory_pg_pool', None)
+        if pool is None: raise HTTPException(503, 'no_database')
+        from scripts.retro_commentary import THUMB_SQL
+        try:
+            async with pool.acquire() as conn:
+                stored = await asyncio.wait_for(conn.fetchval(THUMB_SQL, line_id, thumb, by), 4.0)
+        except Exception: raise HTTPException(503, 'thumb_not_stored')
+        if stored is None: raise HTTPException(404, 'no_line')
+        return JSONResponse({'ok': True, 'line_id': line_id, 'thumb': thumb, 'thumb_by': stored},
+                            headers={'Cache-Control': 'no-store'})
 
     @router.get('/api/retro/leisure')
     async def leisure():

@@ -1340,6 +1340,28 @@ async def websocket_endpoint(websocket: WebSocket):
             if not transcript:
                 continue
 
+            # Game company patch 3 (scripts/retro_commentary.py): a person spoke. A running game line yields
+            # first (its row is marked before it is killed; in the background, never in front of this turn). A
+            # message from the game page (surface "retro") gets the game's frames, and a guest's gets its own
+            # history source and no Juniper origin.
+            retro_origin: Optional[str] = "juniper"
+            _retro_commentary = getattr(scripts.main, "retro_commentary", None)
+            _surface_ctx = data.get("surface_context") if isinstance(data.get("surface_context"), dict) else {}
+            _retro_player: Optional[str] = None
+            if _surface_ctx.get("surface") == "retro":
+                try:
+                    from scripts.retro_commentary import prepare_retro_turn
+
+                    data, retro_origin, transcript, _retro_player = await prepare_retro_turn(
+                        data, transcript, bus=bus, commentary=_retro_commentary)
+                except Exception:  # noqa: BLE001 -- unknown speaker: never recorded as Juniper
+                    logger.warning("retro_chat_turn_prepare_failed session=%s", session_id, exc_info=True)
+                    data = dict(data, chat_history_source="retro_guest")
+                    data.pop("source", None)
+                    retro_origin, _retro_player = None, "guest"
+            if _retro_commentary is not None:
+                _retro_commentary.note_human_message(surface=_surface_ctx.get("surface"), player=_retro_player)
+
             if not is_text_input:
                 await websocket.send_json(
                     await _with_biometrics(
@@ -1554,6 +1576,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             harness_rpc_bus=rpc_bus or bus,
                             harness_step_relay=harness_step_relay,
                             client_meta=reply_stamp or None,
+                            utterance_origin=retro_origin,
                         ),
                         bus=rpc_bus or bus,
                         correlation_id=trace_id,
@@ -1662,7 +1685,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     source_label="hub_ws",
                     prompt=prompt_with_ctx,
                     messages=continuity_messages,
-                    utterance_origin="juniper",
+                    utterance_origin=retro_origin,
                 )
             except HubRequestValidationError as exc:
                 await websocket.send_json(

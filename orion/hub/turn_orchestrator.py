@@ -255,6 +255,13 @@ def _cockpit_ingress_payload(
     surface_context = payload.get("surface_context")
     if isinstance(surface_context, dict) and surface_context:
         ingress["surface_context"] = dict(surface_context)
+    # Who the turn belongs to, for Prime's hand-back (orion/prime/handback.py classify_who): a line Orion says
+    # to a person who plays (source retro_commentary) and a guest's chat-box turn (chat_history_source
+    # retro_guest) are class ``play``, never Juniper's chat (game company patch 3, spec section 6 seam 3).
+    for key in ("source", "chat_history_source"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            ingress[key] = value.strip()[:120]
     attachment_meta = _attachment_meta_for_cockpit(raw_attachments)
     if attachment_meta:
         ingress["attachments"] = attachment_meta
@@ -1667,7 +1674,8 @@ async def _execute_unified_turn_body(
             )
             staged_attachments = [
                 HarnessAttachmentV1(
-                    path=item.path, mime=item.mime, sha256=item.sha256, filename=item.filename
+                    path=item.path, mime=item.mime, sha256=item.sha256, filename=item.filename,
+                    source=item.source,
                 )
                 for item in staged
             ]
@@ -2420,8 +2428,13 @@ async def run_unified_turn(
     harness_rpc_bus: Any | None = None,
     harness_step_relay: Any | None = None,
     client_meta: dict[str, Any] | None = None,
+    utterance_origin: str | None = "juniper",
 ) -> list[dict[str, Any]]:
     """Execute unified turn and emit WS frames.
+
+    ``utterance_origin``: "juniper" for her own turn (the default). None for a speaker who is not known to be
+    her: a guest typing in the game page's chat box (game company patch 3), like a relayed third-party room
+    turn on the HTTP path (scripts/api_routes.py).
 
     With HUB_UNIFIED_DRAFT_FIRST_ENABLED (spec L8) the governor's pre-judge
     draft is forwarded as a `draft_preview` frame the moment it arrives, and
@@ -2546,7 +2559,7 @@ async def run_unified_turn(
             harness_step_queue=step_queue,
             cockpit_sink=cockpit_sink,
             cockpit_run_holder=cockpit_run_holder,
-            utterance_origin="juniper",
+            utterance_origin=utterance_origin,
             client_meta=client_meta,
             draft_preview=draft_first,
         )

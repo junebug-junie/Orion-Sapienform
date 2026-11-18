@@ -7,6 +7,9 @@ services:
   # Since game company patch 2 it also runs Orion's look at the game screen (scripts/retro_watch.py):
   # it reads HUB_RETRO_WATCH_*, PERCEPT_STORE_BASE_URL/TOKEN, ORION_BUS_URL, ORION_PHYSIOLOGY_BID_URL
   # and RECALL_PG_DSN from the same .env (env_file below), so no key is repeated here.
+  # Since patch 3 hub-app asks it for the newest frames (loopback, HUB_RETRO_GATEWAY_PORT, with the Retro hub
+  # token both containers mount) for a line and for a chat-box turn; hub-app reads HUB_RETRO_COMMENTARY_ENABLED
+  # and HUB_RETRO_LINE_* from the same .env.
   hub-retro-gateway:
     logging:
       driver: journald

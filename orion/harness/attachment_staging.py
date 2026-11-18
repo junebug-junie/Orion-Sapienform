@@ -17,6 +17,15 @@ make every image-bearing turn look like uncommitted work and trip the rescue
 path. Staging lands in ``<sandbox>/attachments/<correlation_id>/`` instead --
 a sibling of ``repo`` that sync never touches.
 
+Two kinds of attachment are staged. ``kind: "image"`` (the default) is a file a person chose to upload, read
+from Hub's chat attachment store. ``kind: "percept"`` is a still of a game screen (game company patch 3,
+docs/superpowers/specs/2026-11-16-game-company-watch-and-commentary-design.md sections 2 and 5), read over HTTP
+from orion-percept-store, which keeps a frame one hour after its LAST post. A percept ref carries
+``frames_expire_at``: past it the frame is gone by design and staging answers "expired" from the ref without
+asking the store; before it a missing frame is a fault and is logged as lost. Staged percepts carry
+``source = "game_screen"`` so the prompt names them as frames of the game screen, never as something Juniper
+attached.
+
 Reading from there works: claude-code resolves absolute paths outside the
 project directory under the harness's permission mode, and its Read tool sniffs
 image content rather than trusting the extension (both verified live
@@ -30,9 +39,12 @@ import logging
 import os
 import re
 import shutil
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 logger = logging.getLogger("orion.harness.attachment-staging")
 
@@ -46,6 +58,9 @@ _MIME_SUFFIX = {
     "image/gif": ".gif",
 }
 
+GAME_SCREEN = "game_screen"          # StagedAttachment.source of a percept (a still of a game screen)
+PERCEPT_FETCH_TIMEOUT_SEC = 10.0
+
 DEFAULT_SANDBOX_ROOT = "/mnt/orion-fcc"
 DEFAULT_STORE_DIR = "/mnt/orion-chat-attachments"
 STAGING_DIRNAME = "attachments"
@@ -57,6 +72,7 @@ class StagedAttachment:
     mime: str
     sha256: str
     filename: str | None = None
+    source: str | None = None          # None: a person's upload; GAME_SCREEN: a still of a game screen
 
 
 def _default_max_items() -> int:
@@ -128,6 +144,78 @@ def _suffix_for(mime: str) -> str:
     return _MIME_SUFFIX.get(str(mime or "").strip().lower(), ".img")
 
 
+def percept_store_url() -> str:
+    return str(os.environ.get("PERCEPT_STORE_BASE_URL", "") or "").strip().rstrip("/")
+
+
+def _percept_token() -> str:
+    return str(os.environ.get("PERCEPT_STORE_TOKEN", "") or "").strip()
+
+
+def fetch_percept(sha: str, *, base_url: str | None = None, timeout_sec: float = PERCEPT_FETCH_TIMEOUT_SEC) -> bytes | None:
+    """The bytes of one percept from orion-percept-store, or None when the store answers 404 (gone or never
+    there). Any other failure raises OSError. urllib: no new dependency in the harness package."""
+    base = (base_url or percept_store_url()).rstrip("/")
+    if not base:
+        raise OSError("percept_store_unconfigured")
+    req = urllib.request.Request(f"{base}/{sha}", method="GET")
+    token = _percept_token()
+    if token:
+        req.add_header("X-Orion-Percept-Token", token)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout_sec) as resp:  # noqa: S310 -- internal service URL
+            return resp.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise OSError(f"percept_http_{exc.code}") from exc
+
+
+def _as_utc(value: Any) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def percept_state(expires_at: Any, now: Optional[datetime] = None) -> str:
+    """``expired`` when the ref's ``frames_expire_at`` is past (the frame is gone by design: do not ask the
+    store), ``live`` when it is in the future, ``unknown`` when the ref carries no readable time (ask the
+    store; a 404 is then reported as lost)."""
+    when = _as_utc(expires_at)
+    if when is None:
+        return "unknown"
+    return "expired" if (now or datetime.now(timezone.utc)) >= when else "live"
+
+
+def _stage_percept(get: Callable[..., Any], sha: str, target_dir: Path, correlation_id: str,
+                   fetch: Callable[[str], bytes | None], now: Optional[datetime]) -> StagedAttachment | None:
+    state = percept_state(get("frames_expire_at", None), now)
+    if state == "expired":
+        logger.info("percept %s expired by design (frames_expire_at passed) corr=%s", sha[:12], correlation_id)
+        return None
+    mime = str(get("mime", "") or "image/png").strip().lower()
+    if mime not in _MIME_SUFFIX:
+        mime = "image/png"
+    target = target_dir / f"{sha}{_suffix_for(mime)}"
+    if not target.exists():
+        data = fetch(sha)
+        if data is None:
+            # Before its time a missing frame is a fault, never "there was nothing to see".
+            logger.error("percept %s lost: store has no frame before frames_expire_at corr=%s", sha[:12], correlation_id)
+            return None
+        target_dir.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(target.suffix + f".{os.getpid()}.part")
+        tmp.write_bytes(data)
+        tmp.replace(target)
+    return StagedAttachment(path=str(target), mime=mime, sha256=sha, filename=None, source=GAME_SCREEN)
+
+
 def stage_attachments(
     attachments: Sequence[Any],
     *,
@@ -135,6 +223,8 @@ def stage_attachments(
     source_dir: Path | None = None,
     root: Path | None = None,
     max_items: int | None = None,
+    fetch: Callable[[str], bytes | None] | None = None,
+    now: Optional[datetime] = None,
 ) -> list[StagedAttachment]:
     """Copy each attachment out of the store and into the sandbox.
 
@@ -174,6 +264,15 @@ def stage_attachments(
         sha = str(get("sha256", "") or "").strip().lower()
         if not _SHA256_RE.match(sha):
             logger.warning("skipping attachment with non-hex sha256 corr=%s", correlation_id)
+            continue
+        if str(get("kind", "") or "").strip().lower() == "percept":
+            try:
+                item_staged = _stage_percept(get, sha, target_dir, correlation_id, fetch or fetch_percept, now)
+            except OSError as exc:
+                logger.warning("failed staging percept %s corr=%s: %s", sha[:12], correlation_id, exc)
+                item_staged = None
+            if item_staged is not None:
+                staged.append(item_staged)
             continue
         filename = _safe_display_name(get("filename", None))
 
@@ -236,22 +335,39 @@ def describe_for_prompt(attachments: Iterable[Any]) -> str:
 
     Without this the images sit on disk, perfectly readable, and nothing ever
     mentions them -- which is precisely how they were being dropped before.
+
+    The sentence names the source (game company patch 3): frames of a game screen (``source ==
+    GAME_SCREEN``) are introduced as such, with their real count, never as something Juniper attached.
     """
-    lines: list[str] = []
+    uploads: list[str] = []
+    frames: list[str] = []
     for item in attachments:
         get = item.get if isinstance(item, dict) else (lambda k, d=None: getattr(item, k, d))
         path = str(get("path", "") or "").strip()
         if not path:
             continue
+        if get("source", None) == GAME_SCREEN:
+            frames.append(f"- {path}")
+            continue
         name = get("filename", None)
         label = f" (sent as {name})" if name else ""
-        lines.append(f"- {path}{label}")
-    if not lines:
-        return ""
-    plural = "images" if len(lines) > 1 else "an image"
-    return (
-        f"\n\nJuniper attached {plural} to this message. Use your Read tool on "
-        f"the path(s) below to look at {'them' if len(lines) > 1 else 'it'} "
-        f"before you answer -- you can see {'them' if len(lines) > 1 else 'it'} "
-        f"directly, so do not guess or ask for a description:\n" + "\n".join(lines)
-    )
+        uploads.append(f"- {path}{label}")
+    out = ""
+    if uploads:
+        plural = "images" if len(uploads) > 1 else "an image"
+        out += (
+            f"\n\nJuniper attached {plural} to this message. Use your Read tool on "
+            f"the path(s) below to look at {'them' if len(uploads) > 1 else 'it'} "
+            f"before you answer -- you can see {'them' if len(uploads) > 1 else 'it'} "
+            f"directly, so do not guess or ask for a description:\n" + "\n".join(uploads)
+        )
+    if frames:
+        n = len(frames)
+        what = (f"These are {n} frames of the game screen from the last 30 seconds, oldest first"
+                if n > 1 else "This is 1 frame of the game screen from the last 30 seconds")
+        out += (
+            f"\n\n{what}. Use your Read tool on the path(s) below to look at "
+            f"{'them' if n > 1 else 'it'} before you answer -- you can see {'them' if n > 1 else 'it'} directly:\n"
+            + "\n".join(frames)
+        )
+    return out

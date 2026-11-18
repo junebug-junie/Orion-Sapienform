@@ -77,6 +77,9 @@ COPY config/field /app/config/field
 # enumerates organs from it (orion/integration/organs.py: parents[2]/config/integration, /app here).
 # Same COPY orion-durable-runs uses.
 COPY config/integration/organs.yaml /app/config/integration/organs.yaml
+# The GPU pool's route table: a game line (scripts/retro_commentary.py) reads the priority a held turn's calls ask
+# for and refuses to run if it were ever `interactive` (game company patch 3, spec section 4).
+COPY config/gpu_pool.yaml /app/config/gpu_pool.yaml
 
 # Vendor autonomy-gate pure helpers for Hub Drives Analytics (avoids relying solely
 # on the repo volume mount for ORION_REPO_ROOT=/repo).

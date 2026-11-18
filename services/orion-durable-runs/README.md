@@ -1046,6 +1046,15 @@ session, shown in the chat stance cue. The query is skipped while the table does
 (`to_regclass`), so the source can never fail the whole read. Kill switch:
 `TEMPORAL_SELF_RETRO_PLAY_ENABLED` (ON).
 
+**Retro look source (2026-11-18, game company patch 3).** The chronicle reads orion-hub's `retro_watch_look`
+as source `retro_look`, but only notes a line turn checked against frames of the same moment and found to
+hold (`verdict = 'checked_holds'`, `outcome = 'stored'`, `settled_at` set; columns from
+`services/orion-sql-db/manual_migration_retro_lines_v1.sql`, REQUIRED-BY this service). The event is keyed by
+`settled_at`, its subject is the sitting (`retro_sitting:<id>`), its label is "Saw on the game screen:
+<note>", and it carries no salience. The first look opens the sitting's `play` arc, later looks refresh it
+(counts plus first and last look only), and the sitting's `human_play` `retro_play` row closes it. Kill
+switch: `TEMPORAL_SELF_RETRO_LOOK_ENABLED` (ON).
+
 **Street episodes (2026-10-23, walkway follow-ups spec PR #2763 item 1).** The chronicle reads notable
 outside events as source `street_event`, three reads of one kind: published clean motion stories whose
 rules version passed Juniper's spot-check gate (`vision_motion_story` + `vision_motion_story_verdict`;

@@ -68,6 +68,8 @@ STALE_RING_SEC = 60.0          # no packet for this long and no sitting: the che
 PREF_SYNC_FIRST_DAYS = 400     # the first copy of Orion's choices after a start reaches back this far
 PREF_SYNC_DAYS = 2
 KEEP_FINISHED = 8              # counts of recently closed sittings kept for their play row
+# Held in Redis by hub-app while a line turn runs (scripts/retro_commentary.py): no look is bid for meanwhile.
+LINE_LOCK_KEY = "orion:retro:line_turn"
 
 HIST_UPSERT_SQL = """
 INSERT INTO retro_watch_change_hist (game_id, input_in_window, bin, checks, updated_at)
@@ -380,7 +382,25 @@ class WatchService:
         finally:
             st.looking = False
 
+    async def line_running(self) -> bool:
+        """True while hub-app runs a line turn (scripts/retro_commentary.py holds LINE_LOCK_KEY in Redis): one
+        play call at a time on the chat lane (spec section 4, "Juniper goes first"). Unreadable Redis reads as
+        False: the line's own GPU hold (class chat) still queues a look's hold behind it on the same role."""
+        redis = None
+        try:
+            redis = self.sitting.redis_provider()
+            if redis is None:
+                return False
+            return bool(await asyncio.wait_for(redis.get(LINE_LOCK_KEY), OP_TIMEOUT_SEC))
+        except Exception:  # noqa: BLE001
+            self._warn("retro_watch_line_lock_unread")
+            return False
+
     async def _look_inner(self, st: SittingWatch, cur: Any, change: float) -> None:
+        if await self.line_running():
+            st.last_refusal = ("line_running", self.clock())
+            logger.info("retro_watch_no_bid sitting=%s reason=line_running", st.sitting_id)
+            return
         mode = await self.refresh_mode(cur)
         if not self._mode_known:
             st.last_refusal = ("mode_unread", self.clock())
@@ -521,6 +541,55 @@ class WatchService:
                     outcome, failure, len(hashes), change, lane_wait_ms, seconds, prompt_tokens)
         # Never "failed:..." at the start: self-monitor reads such a note as a run that never happened.
         return outcome == "stored", f"look {outcome}: {note or failure or '-'}"
+
+    def looking(self) -> bool:
+        return self._look_task is not None and not self._look_task.done()
+
+    async def frames_for_turn(self, n: int = W.FRAMES_PER_LOOK) -> dict:
+        """The newest frames of the open sitting for a turn (a line, or a chat-box message from the game page):
+        up to ``n`` ring packets spread over the last 30 s, each posted to the percept store (gone one hour after
+        its last post; every look row naming a re-posted hash moves its ``frames_expire_at``). ``status``: ok |
+        no_sitting | no_frames (the browser closed or reconnected: no ring) | look_in_flight | failed:<reason>.
+        Frames are taken now, never from a stale ring (the same freshness rule as a ring check)."""
+        cur = self.sitting.tracker.current
+        if not self.enabled or cur is None:
+            return {"status": "no_sitting"}
+        if self.looking():
+            return {"status": "look_in_flight", "sitting_id": cur.sitting_id}
+        from orion.retro.frames import FrameError, decode_packet, png
+
+        now = self.clock()
+        entries = [e for e in list(self.ring) if e[1] == cur.retro_session_id]
+        if not entries or now - entries[-1][0] > 2 * self.check_sec + 1:
+            return {"status": "no_frames", "sitting_id": cur.sitting_id}
+        picked = [entries[i] for i in W.pick_frames([e[0] for e in entries], now, max(1, min(int(n), W.FRAMES_PER_LOOK)))]
+
+        def render() -> list[tuple[float, bytes, int, int]]:
+            out = []
+            for kept_at, _sid, packet in picked:
+                try:
+                    frame = decode_packet(packet)
+                except FrameError:
+                    continue
+                out.append((kept_at, png(frame.rgb), frame.width * 2, frame.height * 2))
+            return out
+        frames, hashes = [], []
+        try:
+            for kept_at, data, width, height in await asyncio.to_thread(render):
+                sha = await asyncio.to_thread(self._post_frame, data)
+                ref = self._ref(sha, data, width, height).model_dump(mode="json")
+                frames.append({**ref, "kept_at": kept_at})
+                hashes.append(sha)
+        except LookFailed as exc:
+            return {"status": f"failed:{exc.reason}", "sitting_id": cur.sitting_id}
+        if not frames:
+            return {"status": "no_frames", "sitting_id": cur.sitting_id}
+        expires = _utc(self.clock() + W.FRAME_TTL_SEC)
+        await self._db("execute", EXPIRY_SQL, hashes, expires, quiet="retro_watch_expiry_failed")
+        for f in frames:
+            f["frames_expire_at"] = expires.isoformat()
+        logger.info("retro_watch_frames_for_turn sitting=%s frames=%d", cur.sitting_id, len(frames))
+        return {"status": "ok", "sitting_id": cur.sitting_id, "frames": frames, "frames_expire_at": expires.isoformat()}
 
     def _ref(self, sha: str, data: bytes, width: int, height: int) -> Any:
         from orion.core.bus.bus_schemas import AttachmentRefV1
@@ -768,6 +837,7 @@ class WatchService:
             "counts": dict(st.counters) if st else None,
             "floor": {"game_id": game, "floor": cal.floor, "status": cal.status, "words": cal.words()} if cal else None,
             "last_note": st.last_stored_note if st else None,
+            "looking": self.looking(),
         }
 
     async def close(self) -> None:
@@ -804,4 +874,4 @@ def choice_from_act(act: dict) -> Optional[tuple]:
             act.get("session_id"), act.get("set_at"))
 
 
-__all__ = ["HOLDER", "LookFailed", "SittingWatch", "WatchService", "choice_from_act", "post_percept"]
+__all__ = ["HOLDER", "LINE_LOCK_KEY", "LookFailed", "SittingWatch", "WatchService", "choice_from_act", "post_percept"]

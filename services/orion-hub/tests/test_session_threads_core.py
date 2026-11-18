@@ -159,8 +159,13 @@ def test_the_pr_comment_is_headed_names_the_thread_and_pings_nobody():
     ("orion_run_failed:gpu_pool_unavailable:deadline", True),
     ("orion_run_failed:gpu_pool_unavailable:backlog_max_age", True),
     ("orion_run_failed:RuntimeError: gpu_pool_unavailable:backlog_max_age", True),
-    ("orion_run_failed:gpu_pool_unavailable:shed:cabinet_hot", True),
-    ("orion_run_overdue:paused", True),
+    ("orion_run_failed:gpu_pool_unavailable:shed:cabinet_hot", False),   # no producer: a shed waits, never fails a run
+    ("orion_run_failed:workflow_deadline_after_turn", False),           # Orion's turn was attempted: a strike
+    ("orion_run_overdue:waiting_resource", True),
+    ("orion_run_overdue:queued", True),
+    ("orion_run_overdue:paused", False),                                # not waiting for the pool: a strike
+    ("orion_run_overdue:running", False),
+    ("orion_run_overdue:unknown", False),
     ("orion_run_failed:gpu_pool_unavailable:min_ctx_exceeds_class", False),   # the request itself: never placeable
     ("orion_run_failed:gpu_pool_unavailable:unknown_class:x", False),
     ("orion_run_failed:gpu_pool_unavailable", False),

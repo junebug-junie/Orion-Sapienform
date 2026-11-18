@@ -141,22 +141,27 @@ class FakeStore:
                           updated_at=self.clock.now)
         return dict(thread), dict(turn), created
 
-    async def fail_round(self, pool, roundup_id, *, reason, text_for, strike=True):
+    async def fail_round(self, pool, roundup_id, *, reason, text_for, strike=True, refusal_text_for=None):
         out = []
+        oldest = {}
         for u in self.turns:
             if u["roundup_id"] == roundup_id and u["speaker"] == "session":
+                oldest.setdefault(u["thread_id"], u["created_at"])
                 u["roundup_id"] = None
+        # The SQL ages against the database's now(); the fake against the real clock as well.
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=core.BODY_REFUSAL_MAX_AGE_SEC)
         for thread in self.threads.values():
             if thread["last_roundup_id"] == roundup_id and thread["status"] == "reading":
                 prior = thread.get("status_reason")
-                n = thread["roundup_failures"] + (1 if strike else 0)
+                struck = strike or (thread["thread_id"] in oldest and oldest[thread["thread_id"]] < cutoff)
+                n = thread["roundup_failures"] + (1 if struck else 0)
                 thread.update(roundup_failures=n, status="failed" if n >= core.MAX_CONSECUTIVE_FAILURES else "held",
                               status_reason=reason[:300], updated_at=self.clock.now)
-                if not strike and core.is_body_refusal(prior or ""):
+                if not struck and core.is_body_refusal(prior or ""):
                     continue
-                turn = self._add_turn(thread["thread_id"], "hub", text_for(n), roundup_id=roundup_id,
-                                      meta={"roundup_failed": True, "reason": reason[:300],
-                                            **({} if strike else {"body_refusal": True})})
+                turn = self._add_turn(thread["thread_id"], "hub", (text_for if struck else (refusal_text_for or text_for))(n),
+                                      roundup_id=roundup_id, meta={"roundup_failed": True, "reason": reason[:300],
+                                                                   **({} if struck else {"body_refusal": True})})
                 out.append((dict(thread), turn))
         return out
 
@@ -200,7 +205,8 @@ class FakeStore:
     async def mark_delivered(self, pool, turn_ids):
         n = 0
         for u in self.turns:
-            if u["turn_id"] in set(turn_ids) and u["speaker"] == "orion" and u["delivered_at"] is None:
+            if (u["turn_id"] in set(turn_ids) and u["speaker"] == "orion" and u["delivered_at"] is None
+                    and u["meta"].get("requeued") is not True):
                 u["delivered_at"] = self.clock.now
                 n += 1
         return n

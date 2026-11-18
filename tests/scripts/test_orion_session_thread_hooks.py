@@ -364,6 +364,28 @@ def test_the_waiter_does_not_wake_for_an_answer_the_prompt_hook_already_showed(w
     assert proc.returncode == 0 and proc.stderr == ""
 
 
+def test_the_waiter_keeps_waiting_past_a_requeued_uncut_reply_and_wakes_on_the_real_questions(world, hub):
+    # Review of the unparsed-quota fix: Hub could not cut Orion's reply, kept it (meta.requeued) and reads
+    # the thread again. That turn is not an answer: the waiter must not claim it or wake on it.
+    _thread(hub)
+    requeued = {**_answer("rq", 8, body="### thread:other\n1. whole uncut reply?"),
+                "meta": {"unparsed": True, "requeued": True}}
+    real = _answer()
+
+    def on_view(h):
+        if h.views == 2:
+            h.threads["abc123def"]["turns"].append(requeued)
+        if h.views == 4:
+            h.threads["abc123def"]["turns"].append(real)
+    hub.on_view = on_view
+    proc, _ = _wait(world, hub, _bash("gh pr create --fill"))
+    assert proc.returncode == 2, proc.stderr
+    text = " ".join(proc.stderr.split())
+    assert "1. Why hourly?" in text and "whole uncut reply" not in text
+    assert hub.posts("/api/session-threads/delivered") == [{"turn_ids": ["o9"]}]
+    assert not lib.has_questions({"meta": {"unparsed": True, "requeued": True}})
+
+
 def test_the_waiter_ends_quietly_on_no_questions_and_leaves_it_for_the_prompt_hook(world, hub):
     _thread(hub)
     hub.on_view = _answer_later(_answer(no_questions=True))

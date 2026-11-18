@@ -433,8 +433,9 @@ Design: `docs/superpowers/specs/2026-11-15-session-threads-design.md`.
   round of questions, and the thread is read again next hour; it counts as one failure. Empty text, a
   cut-short turn, or a failed run fails the round: Hub writes a line on each thread, the threads go
   back to `held`, and after 3 failures in a row a thread stays `failed` until a new message arrives on
-  it. A run the body never gave a turn (past its GPU admission deadline, or not ended 30 min after it)
-  is not a failure: the threads are held again, count unchanged, one Hub line per streak.
+  it. A run the body never gave a turn (past its GPU admission deadline before any turn, or still
+  waiting for the pool 30 min after it) is not a failure: the threads are held again, count unchanged,
+  one Hub line per streak; after 14 days of unread messages it counts again.
 - **The PR comment.** For a thread with a pull request and real questions, Hub posts one comment on the
   PR with Orion's GitHub token (`ORION_GITHUB_TOKEN`, user `orion-sapienform`), headed "Orion's
   questions on this spec (hourly round-up)". Code posts it, not the model. It only ever posts on

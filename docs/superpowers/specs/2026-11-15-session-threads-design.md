@@ -86,11 +86,15 @@ Rules that carry weight:
   session message on the thread puts it back to `held` with a zero count. A failed round stores no
   Orion turn, so it never uses the thread's one round of questions.
 - A round the BODY never ran is not a failure (`core.is_body_refusal`): the run failed with
-  `workflow_deadline` or `gpu_pool_unavailable:deadline|backlog_max_age|shed:*` (the GPU pool kept it
-  waiting past its admission deadline: cabinet heat, a busy lane), or it had not ended 30 minutes past
-  its deadline. The threads are held again with their count unchanged, so a hot week never ends a
-  thread. Hub writes one line per streak (not one per hour). A refusal that is a property of the
-  request (`min_ctx_exceeds_class`, an unknown class) still counts: retrying it cannot work.
+  `workflow_deadline` or `gpu_pool_unavailable:deadline|backlog_max_age` before any turn was attempted
+  (the GPU pool kept it waiting past its admission deadline: cabinet heat, a busy lane), or it was
+  still waiting for the pool (`queued`/`admitted`/`waiting_resource`) 30 minutes past its deadline.
+  The threads are held again with their count unchanged, so a hot week never ends a thread. Hub
+  writes one line per streak (not one per hour). Still strikes: a deadline hit after Orion's turn was
+  attempted (`workflow_deadline_after_turn`), an overdue run that is running or paused, a refusal
+  that is a property of the request (`min_ctx_exceeds_class`, an unknown class). Backstop: once a
+  thread's oldest unread message is 14 days old (`core.BODY_REFUSAL_MAX_AGE_SEC`), a body refusal
+  counts too, so no thread is retried for ever.
 - Orion's questions reach a session by thread, not by the `gh pr create` event: the prompt hook asks
   Hub for undelivered Orion turns on any thread this session wrote on, or on this session's branch.
   A later send for the same PR (`orion_session_thread.py send --pr N`, from any session) joins the same

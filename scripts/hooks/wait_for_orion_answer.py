@@ -125,7 +125,9 @@ def main() -> int:
                 lib.log(f"answer_wait answer_phase thread={thread_id}")
                 return 0   # the one round of questions is used: nothing will come back to answer
             since_seq = max((int(t.get("seq") or 0) for t in turns), default=0)
-        answers = [t for t in turns if t.get("speaker") == "orion" and int(t.get("seq") or 0) > since_seq]
+        # A re-queued uncut reply is not an answer: Hub reads the thread again next hour, so keep waiting.
+        answers = [t for t in turns if t.get("speaker") == "orion" and int(t.get("seq") or 0) > since_seq
+                   and not (t.get("meta") or {}).get("requeued")]
         if answers:
             answer = answers[0]
             if not lib.has_questions(answer):

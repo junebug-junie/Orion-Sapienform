@@ -530,20 +530,27 @@ def pr_comment_body(*, thread_id: str, questions: str) -> str:
 # strikes (``is_body_refusal``): the thread is held again, its failure count unchanged, and the next
 # round-up tries again. A refusal that is a property of the request itself (``min_ctx_exceeds_class``,
 # ``replay_payload_too_large``, an unknown class) is NOT here: retrying it can never work, so it counts.
-# Sources: services/orion-durable-runs/app/harness_smoke_graph.py (``workflow_deadline``),
-# app/admission_runtime.py + app/pool_hold.py RUN_TERMINAL_PREFIXES (``gpu_pool_unavailable:<reason>``).
-_BODY_REFUSAL_ERRORS = ("workflow_deadline", "gpu_pool_unavailable:deadline", "gpu_pool_unavailable:backlog_max_age",
-                        "gpu_pool_unavailable:shed:")
+# A deadline hit AFTER a turn was attempted is not here either: the loop writes it as
+# ``workflow_deadline_after_turn`` (a prompt that makes the turn too slow must not retry forever).
+# Sources: services/orion-durable-runs/app/admission_runtime.py (``workflow_deadline`` and
+# ``gpu_pool_unavailable:<reason>`` while waiting for the hold), app/pool_hold.py RUN_TERMINAL_PREFIXES.
+_BODY_REFUSAL_ERRORS = ("workflow_deadline", "gpu_pool_unavailable:deadline", "gpu_pool_unavailable:backlog_max_age")
 _EXC_PREFIX_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*:\s+")
+# Run statuses that mean the run is still waiting for the GPU pool, never started on Orion's turn. An
+# overdue run in any other status (running, retrying, paused, unknown) is the round's own failure.
+WAITING_RUN_STATUSES = ("queued", "admitted", "waiting_resource")
+# A backstop for body refusals: once the thread's oldest unread message is this old, a body refusal
+# counts as a strike again, so a thread cannot be retried for ever.
+BODY_REFUSAL_MAX_AGE_SEC = 14 * 86400
 
 
 def is_body_refusal(reason: str) -> bool:
     """True when a failed round's ``reason`` (as the loop writes it) is the body's, not the round's:
-    ``orion_run_overdue:*`` (the run did not end 30 min past its deadline), or a ``failed`` run whose
-    error is in ``_BODY_REFUSAL_ERRORS`` (optionally after an exception name, ``RuntimeError: ...``)."""
+    ``orion_run_overdue:<status>`` for a run still waiting for the pool (``WAITING_RUN_STATUSES``), or a
+    ``failed`` run whose error is in ``_BODY_REFUSAL_ERRORS`` (optionally after an exception name)."""
     text = str(reason or "")
     if text.startswith("orion_run_overdue:"):
-        return True
+        return text[len("orion_run_overdue:"):] in WAITING_RUN_STATUSES
     if not text.startswith("orion_run_failed:"):
         return False
     error = _EXC_PREFIX_RE.sub("", text[len("orion_run_failed:"):].strip(), count=1)

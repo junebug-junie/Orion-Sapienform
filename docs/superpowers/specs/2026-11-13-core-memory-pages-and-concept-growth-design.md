@@ -261,6 +261,10 @@ verbatim. Covered by a test.
   Orion opens a page with `python -P -m orion.dig page <slug>`.
 - Every open is logged with the turn id.
 - A page that no turn has opened in 30 days is archived, not deleted. An open brings it back.
+- **Owner and shape (2026-11-18): #3689.** Births are a selection step at the start of the
+  nightly `core_page_fold` run (same lease, same cite validator), not a separate run. Archive
+  is a deterministic daily pass with no LLM. `memory_page_read` logs `dig page` opens. Built
+  after the scoreboard (#3536) and the read-demand count (#3589).
 
 **Theory anchor:** use-dependent retention. A concept is worth keeping if it keeps being
 needed to think. That count, opens per page, is the test of whether phase 2 works where
@@ -656,6 +660,13 @@ cites behind one sentence. The vetoed claim is stored as a negative fact. The fo
 retrieval both check new text and hits against the negative facts. So a vetoed claim cannot
 come back through a different old record that says the same thing.
 
+**Vetoes and Juniper's quoted words (2026-11-18).** A veto removes the claim sentence, not
+Juniper's own words. A verbatim quote of Juniper stays pinned even when the sentence around it
+is vetoed. It is removed only when Juniper vetoes that specific quote. A quote veto is stored
+like a claim veto and names the quoted span. Reason: the quotes are the flattening guard. A
+claim veto that also took her words would let a veto on Orion's framing erase the record of
+what she said.
+
 ### `matters`: a later re-grade, with gate numbers
 
 *(Changes "How much it matters" above.)*
@@ -683,6 +694,11 @@ come back through a different old record that says the same thing.
   - **Flat:** one grade on 80% or more of all 88 rows. Flat fails even if the counts pass.
   - Juniper still eyeballs both sets before the grade is wired in.
   - Not built yet: #3590.
+- **If the gate fails (2026-11-18).** No row gets a grade, so the "fold right after a
+  core-graded memory" trigger never fires. Folds stay nightly only. The re-grade from read
+  demand also stays off. What re-arms it: a new grader version (prompt or model) that passes
+  the same 44 + 44 gate on a fresh draw, recorded with its version. Only rows graded by a
+  passing version can trigger a fold.
 
 ### Recall trace and heat shedding
 
@@ -744,7 +760,9 @@ The fold rewrites each page from scratch every night. To keep Juniper's words fr
 smoothed away:
 
 - **Pin quotes.** A verbatim-quoted span stays unchanged across versions unless a correction
-  or veto cites it.
+  or veto cites it. **Amended 2026-11-18:** for Juniper's own quoted words, only a veto of that
+  specific quote unpins it. A veto of the surrounding claim, or a correction of Orion's
+  framing, leaves the quote pinned (see "Vetoes and Juniper's quoted words").
 - **Flag large rewrites.** A fold that changes more than a set share of uncorrected text is
   written, but flagged. The Hub page view shows the flag with the version diff. This is a
   flag, not a gate (Decision 1).
@@ -760,6 +778,15 @@ Follow-up: #3553.
   question for text Orion writes itself is #3541.
 - **Known limit: paraphrase.** The mesh-edge check (#3409) refuses verbatim core-page
   sentences only. A paraphrase passes. Follow-up: #3554.
+- **Facts on 2026-11-18.** The check covers Orion's `gh`/`curl` writes in FCC turns, Hub PR
+  comments, and email to anyone but Juniper. It also guards lived-memory sentences. Consult
+  briefs are not checked. No outside-model prompt builder reads core pages or lived memories
+  in code. But Orion writes brief text itself, after seeing the pages, so a paraphrase can
+  reach Claude (#3541).
+- **Recommended interim gate (waits on Juniper, #3554 needs-juniper):** an 8-word shingle
+  overlap check next to the verbatim one. It runs on the same seams plus consult briefs and
+  refuses near-verbatim edits. It is measured on hand-made paraphrases first. It does not
+  catch real rewording; the embedding check in #3554 is still needed.
 
 ### Phase 1 status
 
@@ -797,6 +824,15 @@ Follow-up: #3553.
 - **Drop `memory_page_mention`.** It is no longer needed.
 - **`orion.dig know` is a thin client of orion-recall.** It searches all stores, lived and
   learned, through the same recall path. It does not read Postgres directly.
+  **As built (PR #3645, checked 2026-11-18):** `orion/dig/know.py` posts to orion-recall's
+  `POST /lived/know` over HTTP (`urllib`), with no database role. Today it searches the lived
+  stores only (episode memories, stance crystallizations, person facts), not yet the learned
+  ones. An empty result is kept apart from a failure. "No stored memory shares these words" is
+  printed only for a full search that found nothing. `timeout`, `error`, `busy`, `off`,
+  `unverified`, `degraded` and `skipped_short` each print "NOT the same as having no memory".
+  The `skipped_short` line and the brief's "say you could not look" rule came in PR #3676
+  (merged 2026-11-18 01:10Z). That PR is not live in Orion's sandbox yet: the sandbox is at
+  #3672. UNVERIFIED live.
 
 ### Scoreboard
 

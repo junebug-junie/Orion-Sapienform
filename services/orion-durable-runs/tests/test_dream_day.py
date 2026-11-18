@@ -542,3 +542,44 @@ def test_a_run_that_lost_the_day_grades_zero():
         assert result["produced"] is False and "already_written by" in result["produced_note"]
         assert world.cites == []                               # only the winner records cites
     asyncio.run(scenario())
+
+
+# --- Patch 2b: what Prime reads (GET /dream-day/result) ----------------------------------------------------
+
+
+class _ResultPool:
+    def __init__(self, row):
+        self.row, self.sql = row, []
+
+    @asynccontextmanager
+    async def connection(self):
+        pool = self
+
+        class _Cur:
+            async def fetchone(self):
+                return pool.row
+
+        class _Conn:
+            async def execute(self, sql, params):
+                pool.sql.append((sql, params))
+                return _Cur()
+
+        yield _Conn()
+
+
+def test_read_result_returns_the_stored_plan_for_prime():
+    from app.dream_day_store import RESULT_SQL, read_result
+
+    plan = [{"action": "drop", "concern_id": "a", "reason": "r", "refs": []}, "junk"]
+    pool = _ResultPool({"day": date(2026, 11, 17), "run_id": "dream-day-2026-11-17", "produced": 1,
+                        "plan": __import__("json").dumps(plan)})
+    out = asyncio.run(read_result(pool, date(2026, 11, 17)))
+    assert out == {"day": "2026-11-17", "found": True, "run_id": "dream-day-2026-11-17", "produced": True,
+                   "plan": [plan[0]]}
+    assert pool.sql == [(RESULT_SQL, (date(2026, 11, 17),))] and RESULT_SQL.lstrip().upper().startswith("SELECT")
+
+
+def test_read_result_without_a_row_is_none():
+    from app.dream_day_store import read_result
+
+    assert asyncio.run(read_result(_ResultPool(None), date(2026, 11, 17))) is None

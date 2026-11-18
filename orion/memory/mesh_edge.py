@@ -35,12 +35,15 @@ Failure mode is closed: a writer that cannot load the guarded text must refuse, 
 from __future__ import annotations
 
 import html
+import logging
 import os
 import re
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, List, Optional, Sequence
+
+logger = logging.getLogger(__name__)
 
 MIN_WORDS = 6
 CACHE_TTL_SEC = 300.0
@@ -186,6 +189,8 @@ class MeshEdgeGuard:
     loaded_at: float = 0.0
     shingle_n: int = 0
     shingles: dict[str, str] = field(default_factory=dict)
+    source_rows: int = 0      # rows read (every page version, every retired memory): grows with time
+    source_sentences: int = 0  # guarded-length sentences before dedup; ``phrases`` is after
 
     @classmethod
     def from_texts(cls, items: Iterable[tuple[str, str]], *, min_words: int = MIN_WORDS,
@@ -193,17 +198,23 @@ class MeshEdgeGuard:
         n = shingle_words() if shingle_n is None else max(0, int(shingle_n))
         phrases: dict[str, str] = {}
         shingles: dict[str, str] = {}
+        rows = raw = 0
         for source, text in items:
+            rows += 1
             for sent in sentences(text):
                 norm = normalize(sent)
                 words = norm.split()
                 if len(words) >= min_words:
+                    raw += 1
+                    # Keyed by the normalized sentence: a sentence repeated across page versions or
+                    # rows is stored once, so the guard grows with new sentences, not new versions.
                     phrases.setdefault(" ".join(fold_words(norm)), source)
                 if n and len(words) >= n:
                     for segment in prose_segments(sent):
                         for i in range(len(segment) - n + 1):
                             shingles.setdefault(" ".join(segment[i:i + n]), source)
-        return cls(phrases=phrases, loaded_at=time.monotonic(), shingle_n=n, shingles=shingles)
+        return cls(phrases=phrases, loaded_at=time.monotonic(), shingle_n=n, shingles=shingles,
+                   source_rows=rows, source_sentences=raw)
 
     def _shingle_positions(self, folded: Sequence[str]) -> List[tuple[int, str]]:
         n = self.shingle_n
@@ -349,10 +360,17 @@ def load_guard(dsn: Optional[str] = None, *, ttl_sec: float = CACHE_TTL_SEC) -> 
         cached = _cache.get(dsn)
         if cached is not None and time.monotonic() - cached.loaded_at < ttl_sec:
             return cached
+    started = time.monotonic()
     try:
         guard = _load_sync(dsn)
     except Exception as exc:  # noqa: BLE001
+        logger.warning("mesh_edge_guard_load_failed err=%s load_ms=%d", type(exc).__name__,
+                       (time.monotonic() - started) * 1000)
         raise MeshEdgeUnavailable(f"mesh-edge guard load failed: {type(exc).__name__}") from exc
+    # Size and cost of every (re)load, so growth of the guarded set is visible (thread cf5d4218097a).
+    logger.info("mesh_edge_guard_loaded rows=%d sentences=%d phrases=%d shingles=%d load_ms=%d",
+                guard.source_rows, guard.source_sentences, len(guard.phrases), len(guard.shingles),
+                (time.monotonic() - started) * 1000)
     with _cache_lock:
         _cache[dsn] = guard
     return guard
